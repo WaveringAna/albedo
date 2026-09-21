@@ -2,6 +2,7 @@
 //// This module does not start a network server or a model loop.
 
 import albedo/daemon/store
+import albedo/harness/compaction
 import albedo/harness/plugin
 import albedo/harness/plugins
 import albedo/harness/python/cells as journal
@@ -13,7 +14,7 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/io
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
@@ -23,6 +24,7 @@ pub opaque type Runtime {
     subject: Subject(Message),
     work: work.Store,
     plugins: List(plugin.Plugin),
+    compaction: Option(compaction.Strategy),
   )
 }
 
@@ -45,13 +47,21 @@ type Message {
 }
 
 pub fn start(database: String) -> Result(Runtime, actor.StartError) {
-  start_with_plugins(database, plugins.defaults())
+  start_with_config(database, plugins.defaults())
 }
 
 pub fn start_with_plugins(
   database: String,
   plugins: List(plugin.Plugin),
 ) -> Result(Runtime, actor.StartError) {
+  start_with_config(database, plugins.Config(plugins, None))
+}
+
+pub fn start_with_config(
+  database: String,
+  config: plugins.Config,
+) -> Result(Runtime, actor.StartError) {
+  let plugins = config.tools
   actor.new_with_initialiser(10_000, fn(subject) {
     use ledger <- result.try(
       store.start(
@@ -68,7 +78,12 @@ pub fn start_with_plugins(
       Ok(_) ->
         Ok(
           actor.initialised(State(ledger, dict.new(), plugins))
-          |> actor.returning(Runtime(subject, ledger, plugins)),
+          |> actor.returning(Runtime(
+            subject,
+            ledger,
+            plugins,
+            config.compaction,
+          )),
         )
     }
   })
@@ -290,4 +305,25 @@ pub fn instructions(runtime: Runtime) -> String {
   runtime.plugins
   |> list.map(fn(plugin) { plugin.instructions })
   |> string.join("\n")
+}
+
+/// Prepare a request view without changing saved conversation or Python state.
+pub fn prepare_history(
+  runtime: Runtime,
+  session: Session,
+  model: String,
+  history: List(types.Input),
+) -> Result(List(types.Input), String) {
+  case session.owner == runtime.work, runtime.compaction {
+    False, _ -> Error("session belongs to another runtime")
+    True, None -> Ok(history)
+    True, Some(strategy) ->
+      strategy.prepare(
+        compaction.Context(runtime.work, session.id, session.kernel, model),
+        history,
+      )
+      |> result.map_error(fn(error) {
+        "compaction " <> strategy.name <> ": " <> error
+      })
+  }
 }

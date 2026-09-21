@@ -34,11 +34,17 @@ pub fn run(
     True -> Ok(Nil)
     False -> Error("cancelled")
   })
+  use history <- result.try(runtime.prepare_history(
+    state.host,
+    state.kernel,
+    state.model,
+    list.reverse(inputs),
+  ))
   let request =
     types.Request(
       state.model,
       Some(instructions <> "\n" <> runtime.instructions(state.host)),
-      list.reverse(inputs),
+      history,
       runtime.tools(state.host),
       None,
     )

@@ -1,4 +1,5 @@
-//// Explicit composition. Dependencies must precede consumers; no discovery or hot loading.
+//// Explicit tool plugins: Python bindings, optional host RPC, and model tools.
+//// Dependencies precede consumers; no discovery or hot loading. Compaction is separate.
 
 import albedo/daemon/store
 import albedo/harness/python/kernel as python
@@ -6,6 +7,7 @@ import albedo/openai_api/types
 import gleam/list
 import gleam/option.{type Option}
 import gleam/result
+import gleam/string
 
 pub type Context {
   Context(
@@ -36,38 +38,54 @@ pub type Plugin {
   )
 }
 
+/// Embed a trusted Python module's setup(api) exports in each session's REPL.
+/// Short names select packaged modules; dotted names select installed packages.
+pub fn python_module(
+  name: String,
+  module: String,
+  instructions: String,
+) -> Plugin {
+  Plugin(name, instructions, ["python"], [], [module], fn(_) { Ok(Nil) }, [])
+}
+
 pub fn install(
   plugins: List(Plugin),
   store: store.Store,
 ) -> Result(Nil, String) {
+  // Validate the whole composition before any plugin initialises storage.
   use _ <- result.try(
-    list.try_fold(plugins, #([], [], []), fn(installed, plugin) {
-      let #(names, tools, routes) = installed
+    list.try_fold(plugins, #([], [], [], []), fn(installed, plugin) {
+      let #(names, tools, routes, modules) = installed
       let new_tools = list.map(plugin.tools, fn(tool) { tool.definition.name })
       let new_routes = list.map(plugin.routes, fn(route) { route.0 })
+      let new_modules =
+        list.map(plugin.python_modules, fn(name) {
+          case string.contains(name, ".") {
+            True -> name
+            False -> "albedo_plugins." <> name
+          }
+        })
+      let tools = list.append(new_tools, tools)
+      let routes = list.append(new_routes, routes)
+      let modules = list.append(new_modules, modules)
       case
-        list.contains(names, plugin.name)
+        string.trim(plugin.name) == ""
+        || list.contains(names, plugin.name)
         || !list.all(plugin.requires, list.contains(names, _))
-        || list.any(new_tools, list.contains(tools, _))
-        || list.any(new_routes, list.contains(routes, _))
+        || tools != list.unique(tools)
+        || overlapping_routes(routes)
+        || modules != list.unique(modules)
       {
         True ->
           Error(
             "duplicate plugin capability or missing earlier dependency: "
             <> plugin.name,
           )
-        False -> {
-          use _ <- result.try(plugin.initialise(store))
-          Ok(#(
-            [plugin.name, ..names],
-            list.append(new_tools, tools),
-            list.append(new_routes, routes),
-          ))
-        }
+        False -> Ok(#([plugin.name, ..names], tools, routes, modules))
       }
     }),
   )
-  Ok(Nil)
+  list.try_each(plugins, fn(plugin) { plugin.initialise(store) })
 }
 
 pub fn tools(plugins: List(Plugin)) -> List(Tool) {
@@ -76,4 +94,18 @@ pub fn tools(plugins: List(Plugin)) -> List(Tool) {
 
 pub fn modules(plugins: List(Plugin)) -> List(String) {
   list.flat_map(plugins, fn(p) { p.python_modules })
+}
+
+fn overlapping_routes(routes: List(String)) -> Bool {
+  case routes {
+    [] -> False
+    [route, ..rest] ->
+      route == ""
+      || list.any(rest, fn(other) {
+        route == other
+        || string.starts_with(route, other <> ".")
+        || string.starts_with(other, route <> ".")
+      })
+      || overlapping_routes(rest)
+  }
 }

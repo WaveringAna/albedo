@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+import importlib
+import keyword
 from dataclasses import dataclass
-from typing import Literal, NotRequired, Protocol, TypedDict
+from typing import Literal, NotRequired, Protocol, TypedDict, cast
 
 Host = Callable[[str, dict[str, object]], Awaitable[object]]
 Send = Callable[[dict[str, object]], None]
@@ -92,3 +94,35 @@ class SavedCell(TypedDict):
 
 class PythonPlugin(Protocol):
     def setup(self, api: PythonApi) -> dict[str, object]: ...
+
+
+def load_plugins(names: Sequence[str], api: PythonApi, namespace: dict[str, object]) -> None:
+    """Load explicitly trusted modules before the workspace enters sys.path.
+
+    setup(api) returns public REPL bindings. Plugins use api.host for host RPC,
+    api.on_shutdown for cleanup, and api.background_handle for nonblocking jobs.
+    This is composition, not isolation: installed plugins execute trusted code.
+    """
+    modules: list[str] = []
+    for name in names:
+        if not isinstance(name, str) or not all(part.isidentifier() and not keyword.iskeyword(part) for part in name.split(".")):
+            raise ValueError(f"invalid Python plugin module: {name!r}")
+        module = name if "." in name else "albedo_plugins." + name
+        if module in modules:
+            raise ValueError(f"duplicate Python plugin module: {module}")
+        modules.append(module)
+    for module in modules:
+        try:
+            plugin = cast(PythonPlugin, cast(object, importlib.import_module(module)))
+            exports = plugin.setup(api)
+            if not isinstance(exports, dict) or not all(
+                isinstance(name, str) and name.isidentifier() and not name.startswith("_")
+                and not keyword.iskeyword(name) for name in exports
+            ):
+                raise ValueError("setup(api) must return a dict of public Python bindings")
+            collisions = namespace.keys() & exports.keys()
+            if collisions:
+                raise ValueError(f"duplicate or reserved bindings: {', '.join(sorted(collisions))}")
+            namespace.update(exports)
+        except Exception as error:
+            raise RuntimeError(f"Python plugin {module}: {error}") from error

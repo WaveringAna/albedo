@@ -10,6 +10,7 @@ cd "$(dirname "$0")"
 
 gleam format --check src test
 gleam test
+python3 test/harness/python_plugin_test.py
 
 [ -d cli/node_modules ] || npm --prefix cli install
 npm --prefix cli run typecheck

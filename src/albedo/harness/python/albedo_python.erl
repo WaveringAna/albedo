@@ -35,6 +35,8 @@ start(Owner, Python, Script, Cwd, Host, Modules) ->
                                 Parent ! {Ref, {ok, self()}},
                                 loop(#{port => Port, host => Host, active => none,
                                        events => [], groups => #{}, target => target_of(Ready)});
+                            #{<<"type">> := <<"startup_error">>, <<"message">> := Message} when is_binary(Message) ->
+                                reap_start(Port), Parent ! {Ref, {error, {unavailable, Message}}};
                             _ -> reap_start(Port), Parent ! {Ref, {error, {unavailable, <<"invalid kernel handshake">>}}}
                         end;
                     {Port, {exit_status, _}} -> Parent ! {Ref, {error, {unavailable, <<"python exited at startup">>}}}

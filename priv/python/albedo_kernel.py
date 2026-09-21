@@ -7,7 +7,6 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from typing import Any, cast
 from types import CodeType, FrameType
 import albedo_trace
-import importlib
 import asyncio
 import codecs
 import collections
@@ -574,18 +573,15 @@ def main():
     api = albedo_api.PythonApi(version=1, loop=LOOP, host=host, HostError=WorkError,
         capture=background_capture, preview=PREVIEW, send=send, on_shutdown=CLEANUP.append,
         background_handle=HANDLES.append)
-    for name in cast(list[str], json.loads(sys.argv[1])):
-        if not name.isidentifier():
-            raise ValueError("invalid Python plugin module")
-        plugin = cast(albedo_api.PythonPlugin, cast(object, importlib.import_module("albedo_plugins." + name)))
-        exports = plugin.setup(api)
-        if NAMESPACE.keys() & exports.keys():
-            raise ValueError("duplicate Python plugin binding")
-        NAMESPACE.update(exports)
-    # Match an interactive Python session: imports follow the current workspace,
-    # not the directory containing this launcher script.
-    sys.path[0] = ""
     NAMESPACE.update(cells=Cells(), output=Output())
+    try:
+        albedo_api.load_plugins(cast(list[str], json.loads(sys.argv[1])), api, NAMESPACE)
+    except Exception as error:
+        send({"type": "startup_error", "message": str(error)})
+        die()
+        return
+    # Match an interactive Python session only after loading trusted plugins.
+    sys.path[0] = ""
     # Plugin bindings and session objects are rebuilt on every start, never saved.
     INJECTED.update(NAMESPACE)
     # Declare our own process group; a group we do not lead is never the supervisor's target.
