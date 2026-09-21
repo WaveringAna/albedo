@@ -1,0 +1,12 @@
+*.beam
+*.ez
+/build
+erl_crash.dump
+
+node_modules/
+__pycache__/
+*.pyc
+/.albedo/
+.makima/
+
+.DS_Store

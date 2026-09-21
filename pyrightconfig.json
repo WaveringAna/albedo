@@ -1,0 +1,12 @@
+{
+  "include": [
+    "priv/python"
+  ],
+  "pythonVersion": "3.11",
+  "executionEnvironments": [
+    {
+      "root": "priv/python"
+    }
+  ],
+  "reportImplicitOverride": "none"
+}

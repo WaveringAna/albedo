@@ -1,0 +1,282 @@
+"""Local end-to-end test: CLI startup, real HTTP streaming, Python, detach, replay, stop.
+No live model credentials or network service required.
+"""
+import contextlib
+import http.server
+import json
+import os
+from pathlib import Path
+import subprocess
+import sqlite3
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[2]
+
+class Provider(http.server.BaseHTTPRequestHandler):
+    requests = []
+    lock = threading.Lock()
+
+    def log_message(self, *_):
+        pass
+
+    def do_POST(self):
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        with self.lock:
+            self.requests.append({
+                "path": self.path,
+                "authorization": self.headers.get("Authorization"),
+                "model": request.get("model"),
+            })
+        chat = self.path.endswith("chat/completions")
+        inputs = request["messages" if chat else "input"]
+        tool_turns = sum(item.get("role") == "tool" or item.get("type") == "function_call_output" for item in inputs)
+        long_run = any("over 100 turns" in str(item.get("content", "")) for item in inputs)
+        done = tool_turns >= 105 if long_run else tool_turns > 0
+        call_id = f"call-{tool_turns + 1}"
+        slow = any("hang" in str(item.get("content", "")) for item in inputs)
+        code = "import asyncio, os\nfrom pathlib import Path\nPath('example.txt').write_text('hello\\n')\nsaved = Path('example.txt').read_text()\nassert 'ALBEDO_API_KEY' not in os.environ\nassert 'ALBEDO_TOKEN' not in os.environ\nawait asyncio.sleep(" + ("30" if slow else "0.4") + ")\nlen(saved)"
+        if long_run:
+            code = "1"
+        arguments = json.dumps({"code": code, "timeout_ms": 60000})
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        def event(value):
+            self.wfile.write(("data: " + json.dumps(value) + "\n\n").encode())
+            self.wfile.flush()
+        try:
+            if chat:
+                if not done:
+                    event({"id":"r1","choices":[{"index":0,"delta":{"reasoning_content":"reasoning about the task"},"finish_reason":None}]})
+                    for i in range(0, len(arguments), 20):
+                        function = {"arguments": arguments[i:i+20]}
+                        call = {"index": 0, "function": function}
+                        if i == 0:
+                            function["name"] = "python"
+                            call.update(id=call_id, type="function")
+                        event({"id":"r1", "choices":[{"index":0,"delta":{"tool_calls":[call]},"finish_reason":None}]})
+                    event({"id":"r1", "choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]})
+                else:
+                    event({"id":"r2", "choices":[{"index":0,"delta":{"content":"finished"},"finish_reason":None}]})
+                    event({"id":"r2", "choices":[{"index":0,"delta":{},"finish_reason":"stop"}]})
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            else:
+                event({"type":"response.created", "response":{"id":"r2" if done else "r1"}})
+                if not done:
+                    event({"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"reasoning about the task"})
+                    for i in range(0,len(arguments),20):
+                        event({"type":"response.function_call_arguments.delta","output_index":0,"delta":arguments[i:i+20]})
+                    output=[{"id":"rs1","type":"reasoning","summary":[{"type":"summary_text","text":"reasoning about the task"}]},{"id":"fc1","type":"function_call","call_id":call_id,"name":"python","arguments":arguments,"status":"completed"}]
+                else:
+                    event({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"finished"})
+                    output=[{"id":"m1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"finished","annotations":[]}]}]
+                event({"type":"response.completed","response":{"id":"r2" if done else "r1","status":"completed","output":output,"usage":{"input_tokens":10,"output_tokens":20}}})
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+def run(protocol, endpoint):
+    with tempfile.TemporaryDirectory(prefix="albedo-daemon-test-") as directory:
+        home = Path(directory)/"home"
+        workspace = Path(directory)/"workspace"
+        workspace.mkdir()
+        # An old database has neither provider bindings nor the new column.
+        home.mkdir(mode=0o700)
+        legacy_id = "legacy-fixture"
+        legacy_workspace = Path(directory)/"legacy-workspace"
+        legacy_workspace.mkdir()
+        with sqlite3.connect(home/"albedo.sqlite") as db:
+            db.execute("CREATE TABLE sessions(id TEXT PRIMARY KEY,cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle')")
+            db.execute("INSERT INTO sessions(id,cwd,model,protocol) VALUES(?,?,?,?)", (legacy_id,str(legacy_workspace),"legacy-model",protocol))
+        env = dict(os.environ, ALBEDO_HOME=str(home))
+        for obsolete in ("ALBEDO_API_KEY", "ALBEDO_BASE_URL", "ALBEDO_MODEL", "ALBEDO_PROTOCOL"):
+            env.pop(obsolete, None)
+        connection = None
+        def command(*args):
+            return subprocess.run(["node", "cli/bin/albedo.mjs", *args], cwd=ROOT, env=env, text=True, capture_output=True, timeout=45)
+        def cli(*args):
+            result = command(*args)
+            assert result.returncode == 0, result.stdout + result.stderr + ((home/"daemon.log").read_text() if (home/"daemon.log").exists() else "")
+            return result.stdout
+        def configure(active, providers):
+            home.mkdir(parents=True, exist_ok=True)
+            (home/"config.json").write_text(json.dumps({"active": active, "providers": providers}))
+        def provider(base, key, model):
+            return {"baseUrl": endpoint + base, "apiKey": key, "model": model, "protocol": protocol}
+        def api(path, body=None):
+            headers={"Authorization":"Bearer " + connection["token"], "Content-Type":"application/json"}
+            req=urllib.request.Request(base+path, headers=headers, data=None if body is None else json.dumps(body).encode())
+            return urllib.request.urlopen(req, timeout=15)
+        def ready(id, timeout=15):
+            deadline = time.monotonic()+timeout
+            while time.monotonic()<deadline:
+                with api(f"/sessions/{id}/status") as response:
+                    value=json.load(response)
+                if not value["running"]:
+                    return
+                time.sleep(.05)
+            raise AssertionError("worker did not settle")
+        def snapshot(id):
+            with api(f"/sessions/{id}/stream") as response:
+                while True:
+                    line=response.readline()
+                    if line.startswith(b"data: "):
+                        page=json.loads(line[6:])
+                        return page["events"]
+        try:
+            # The daemon is useful before login: it starts and lists saved sessions.
+            cli("sessions")
+            connection=json.loads((home/"daemon.json").read_text())
+            base=f"http://127.0.0.1:{connection['port']}"
+            try:
+                api("/sessions", {"workspace": str(workspace)}).close()
+                raise AssertionError("unconfigured session creation succeeded")
+            except urllib.error.HTTPError as error:
+                assert error.code == 400
+                assert "/login" in json.load(error)["error"]
+
+            configure("alpha", {
+                "default": provider("/legacy/v1", "legacy-key", "legacy-model"),
+                "alpha": provider("/alpha/v1", "alpha-1", "fixture-alpha"),
+            })
+            # Login may change the active provider before an old session is first reopened.
+            request_start=len(Provider.requests)
+            with api(f"/sessions/{legacy_id}/events", {"content":"inspect the legacy workspace"}):
+                pass
+            ready(legacy_id)
+            legacy_requests=Provider.requests[request_start:]
+            assert legacy_requests and all("/legacy/v1/" in item["path"] for item in legacy_requests), legacy_requests
+            assert all(item["authorization"] == "Bearer legacy-key" for item in legacy_requests), legacy_requests
+            first=json.loads(cli("new",str(workspace)))
+            id=first["session"]
+            with api("/sessions") as response:
+                listed=json.load(response)
+            first_info=next(item for item in listed if item["id"] == id)
+            assert first_info["provider"] == "alpha"
+            assert first_info["title"] == "new session"
+            # Starting another client reuses the daemon, not a second runtime.
+            cli("sessions")
+            assert json.loads((home/"daemon.json").read_text())["pid"] == connection["pid"]
+
+            # Config is re-read for each turn. The session stays on alpha even after beta becomes active.
+            configure("beta", {
+                "alpha": provider("/alpha/v1", "alpha-2", "ignored-new-default"),
+                "beta": provider("/beta/v1", "beta-1", "fixture-beta"),
+            })
+            request_start=len(Provider.requests)
+            with api(f"/sessions/{id}/events",{"content":"write and inspect a file"}):
+                pass
+            snapshot(id)  # disconnect while the Python cell is still running
+            ready(id)
+            alpha_requests=Provider.requests[request_start:]
+            assert alpha_requests and all("/alpha/v1/" in item["path"] for item in alpha_requests), alpha_requests
+            assert all(item["authorization"] == "Bearer alpha-2" for item in alpha_requests), alpha_requests
+            assert all(item["model"] == "fixture-alpha" for item in alpha_requests), alpha_requests
+            events=snapshot(id)
+            assert any(e.get("type")=="message" and e["text"]=="finished" for e in events), events
+            assert any(e.get("type")=="thinking" and e["text"]=="reasoning about the task" for e in events), events
+            tool=next(e for e in events if e.get("type")=="tool")
+            outcome=json.loads(tool["result"])
+            assert outcome.get("status")=="ok", outcome
+            assert any(a["kind"]=="read" and a["target"].endswith("example.txt") for a in tool["trace"]["activities"]), tool
+            assert any(c["path"].endswith("example.txt") for c in tool["trace"]["changes"]), tool
+            with api("/sessions") as response:
+                listed=json.load(response)
+            assert next(item for item in listed if item["id"] == id)["title"] == "write and inspect a file"
+            with api(f"/sessions/{id}/events",{"content":"review the result"}):
+                pass
+            ready(id)
+            with api("/sessions") as response:
+                listed=json.load(response)
+            assert next(item for item in listed if item["id"] == id)["title"] == "review the result"
+            message_times = [(e["type"], e["text"], e.get("timestamp")) for e in snapshot(id) if e.get("type") in ("user", "message")]
+            assert message_times and all(isinstance(stamp, int) for _, _, stamp in message_times)
+            # A single uninterrupted run can cross the former 100-model-turn ceiling.
+            long_session=json.loads(cli("new",str(workspace)))["session"]
+            request_start=len(Provider.requests)
+            with api(f"/sessions/{long_session}/events", {"content":"continue for over 100 turns"}):
+                pass
+            ready(long_session, timeout=60)
+            assert len(Provider.requests[request_start:]) == 106
+            long_events=snapshot(long_session)
+            assert sum(e.get("type") == "tool" for e in long_events) == 105
+            assert any(e.get("type") == "message" and e["text"] == "finished" for e in long_events)
+            # A separate session can be interrupted without stopping the daemon.
+            second=json.loads(cli("new",str(workspace)))["session"]
+            with api("/sessions") as response:
+                listed=json.load(response)
+            second_info=next(item for item in listed if item["id"] == second)
+            assert second_info["provider"] == "beta" and second_info["model"] == "fixture-beta", second_info
+            request_start=len(Provider.requests)
+            with api(f"/sessions/{second}/events",{"content":"hang"}):
+                pass
+            time.sleep(.5)
+            with api(f"/sessions/{second}/interrupt",{}):
+                pass
+            ready(second)
+            beta_requests=Provider.requests[request_start:]
+            assert beta_requests and all("/beta/v1/" in item["path"] for item in beta_requests), beta_requests
+            assert all(item["authorization"] == "Bearer beta-1" for item in beta_requests), beta_requests
+            assert any(e.get("type")=="user" for e in snapshot(second))
+            third=json.loads(cli("new",str(workspace)))["session"]
+            with api(f"/sessions/{third}/events",{"content":"hang then recover"}):
+                pass
+            time.sleep(.5)
+            stamp=(workspace/"example.txt").stat().st_mtime_ns
+            configure("alpha", {
+                "alpha": provider("/alpha/v1", "alpha-3", "changed-alpha-default"),
+                "beta": provider("/beta/v1", "beta-2", "changed-beta-default"),
+            })
+            request_start=len(Provider.requests)
+            os.kill(connection["pid"],9)
+            # Reopening the CLI starts the daemon and resumes work on its saved provider.
+            cli("sessions")
+            connection=json.loads((home/"daemon.json").read_text())
+            base=f"http://127.0.0.1:{connection['port']}"
+            ready(third)
+            restored=snapshot(third)
+            assert any(e.get("type")=="message" and e["text"]=="finished" for e in restored), restored
+            resumed_requests=Provider.requests[request_start:]
+            assert resumed_requests and all("/beta/v1/" in item["path"] for item in resumed_requests), resumed_requests
+            assert all(item["authorization"] == "Bearer beta-2" for item in resumed_requests), resumed_requests
+            assert all(item["model"] == "fixture-beta" for item in resumed_requests), resumed_requests
+            with api("/sessions") as response:
+                restored_sessions={item["id"]: item for item in json.load(response)}
+            assert restored_sessions[legacy_id]["provider"] == "default"
+            assert restored_sessions[legacy_id]["title"] == "inspect the legacy workspace"
+            assert restored_sessions[id]["provider"] == "alpha"
+            assert restored_sessions[id]["title"] == "review the result"
+            assert restored_sessions[third]["provider"] == "beta"
+            assert restored_sessions[third]["title"] == "hang then recover"
+            assert (workspace/"example.txt").stat().st_mtime_ns == stamp, "interrupted Python cell was replayed"
+            recovered = snapshot(id)
+            assert any(e.get("type")=="message" for e in recovered), "completed history lost"
+            assert [(e["type"], e["text"], e.get("timestamp")) for e in recovered if e.get("type") in ("user", "message")] == message_times
+            print(protocol+": config reload, provider isolation, detach, tools, trace, interrupt, and recovery passed")
+        finally:
+            if connection:
+                with contextlib.suppress(Exception):
+                    api("/shutdown",{}).close()
+                deadline=time.monotonic()+10
+                while time.monotonic()<deadline:
+                    try:
+                        os.kill(connection["pid"],0)
+                    except ProcessLookupError:
+                        break
+                    time.sleep(.05)
+                else:
+                    os.kill(connection["pid"],9)
+
+if __name__ == "__main__":
+    server=http.server.ThreadingHTTPServer(("127.0.0.1",0),Provider)
+    thread=threading.Thread(target=server.serve_forever,daemon=True)
+    thread.start()
+    try:
+        for protocol in ("responses","chat_completions"):
+            run(protocol,f"http://127.0.0.1:{server.server_port}/v1")
+    finally:
+        server.shutdown()

@@ -1,0 +1,489 @@
+diff --git a/node_modules/ink/build/frame-throttle.js b/node_modules/ink/build/frame-throttle.js
+new file mode 100644
+index 0000000..347e2ca
+--- /dev/null
++++ b/node_modules/ink/build/frame-throttle.js
+@@ -0,0 +1,29 @@
++// A render deadline must not move when another input event arrives. The compat
++// debounce throttle only checks maxWait on the next call, losing frame cadence.
++export function frameThrottle(render, interval) {
++    let last = -Infinity;
++    let timer;
++    let pending = false;
++    const invoke = () => {
++        if (timer !== undefined) clearTimeout(timer);
++        timer = undefined;
++        if (!pending) return;
++        pending = false;
++        last = performance.now();
++        render();
++    };
++    const schedule = () => {
++        pending = true;
++        const remaining = interval - (performance.now() - last);
++        if (remaining <= 0) invoke();
++        else if (timer === undefined) timer = setTimeout(invoke, Math.ceil(remaining));
++    };
++    schedule.flush = invoke;
++    schedule.cancel = () => {
++        if (timer !== undefined) clearTimeout(timer);
++        timer = undefined;
++        pending = false;
++        last = -Infinity;
++    };
++    return schedule;
++}
+diff --git a/node_modules/ink/build/hooks/use-window-size.js b/node_modules/ink/build/hooks/use-window-size.js
+index 579a30d..50c3100 100644
+--- a/node_modules/ink/build/hooks/use-window-size.js
++++ b/node_modules/ink/build/hooks/use-window-size.js
+@@ -1,22 +1,24 @@
+-import { useState, useEffect } from 'react';
++import { useMemo, useSyncExternalStore } from 'react';
+ import { getWindowSize } from '../utils.js';
+ import useStdout from './use-stdout.js';
+-/**
+-A React hook that returns the current terminal window dimensions and re-renders the component whenever the terminal is resized.
+-*/
++// Terminal geometry is an external store, not a deferred application update.
++// Resize painting must read the new dimensions even before a passive state update.
+ const useWindowSize = () => {
+     const { stdout } = useStdout();
+-    const [size, setSize] = useState(() => getWindowSize(stdout));
+-    useEffect(() => {
+-        const onResize = () => {
+-            setSize(getWindowSize(stdout));
+-        };
+-        stdout.on('resize', onResize);
+-        return () => {
+-            stdout.off('resize', onResize);
++    const store = useMemo(() => {
++        let size = getWindowSize(stdout);
++        return {
++            subscribe(notify) {
++                stdout.on('resize', notify);
++                return () => stdout.off('resize', notify);
++            },
++            getSnapshot() {
++                const next = getWindowSize(stdout);
++                if (next.columns !== size.columns || next.rows !== size.rows) size = next;
++                return size;
++            },
+         };
+     }, [stdout]);
+-    return size;
++    return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+ };
+ export default useWindowSize;
+-//# sourceMappingURL=use-window-size.js.map
+\ No newline at end of file
+diff --git a/node_modules/ink/build/ink.js b/node_modules/ink/build/ink.js
+index 0082666..2df8847 100644
+--- a/node_modules/ink/build/ink.js
++++ b/node_modules/ink/build/ink.js
+@@ -1,6 +1,7 @@
+ import process from 'node:process';
+ import React from 'react';
+-import { throttle } from 'es-toolkit/compat';
++import throttle from 'es-toolkit/compat/throttle';
++import { frameThrottle } from './frame-throttle.js';
+ import ansiEscapes from 'ansi-escapes';
+ import isInCi from 'is-in-ci';
+ import autoBind from 'auto-bind';
+@@ -155,6 +156,9 @@ export default class Ink {
+     lastOutputToRender;
+     lastOutputHeight;
+     lastTerminalWidth;
++    lastTerminalHeight;
++    forceFullRender = false;
++    resizeImmediate;
+     container;
+     rootNode;
+     // This variable is used only in debug mode to store full static output
+@@ -202,10 +206,7 @@ export default class Ink {
+             this.throttledOnRender = undefined;
+         }
+         else {
+-            const throttled = throttle(this.onRender, renderThrottleMs, {
+-                leading: true,
+-                trailing: true,
+-            });
++            const throttled = frameThrottle(this.onRender, renderThrottleMs);
+             this.rootNode.onRender = () => {
+                 this.hasPendingThrottledRender = true;
+                 throttled();
+@@ -244,6 +245,7 @@ export default class Ink {
+         this.lastOutputToRender = '';
+         this.lastOutputHeight = 0;
+         this.lastTerminalWidth = getWindowSize(this.options.stdout).columns;
++        this.lastTerminalHeight = getWindowSize(this.options.stdout).rows;
+         // This variable is used only in debug mode to store full static output
+         // so that it's rerendered every time, not just new static parts, like in non-debug mode
+         this.fullStaticOutput = '';
+@@ -277,18 +279,34 @@ export default class Ink {
+         void this.exitPromise.catch(noop);
+     }
+     resized = () => {
+-        const currentWidth = getWindowSize(this.options.stdout).columns;
+-        if (currentWidth < this.lastTerminalWidth) {
+-            // We clear the screen when decreasing terminal width to prevent duplicate overlapping re-renders.
++        const size = getWindowSize(this.options.stdout);
++        // A terminal may reflow old rows before delivering resize. Their previous
++        // cursor positions are no longer usable for an incremental fullscreen diff.
++        this.throttledOnRender?.cancel();
++        this.throttledLog?.cancel();
++        if (this.lastOutputHeight >= this.lastTerminalHeight) {
++            this.forceFullRender = true;
++            this.log.reset();
++        }
++        else if (size.columns < this.lastTerminalWidth) {
+             this.log.clear();
+             this.lastOutput = '';
+             this.lastOutputToRender = '';
+         }
+-        this.calculateLayout();
+-        dom.emitLayoutListeners(this.rootNode);
+-        this.onRender();
+-        this.lastTerminalWidth = currentWidth;
++        this.lastTerminalWidth = size.columns;
++        this.lastTerminalHeight = size.rows;
++        if (this.resizeImmediate !== undefined) clearImmediate(this.resizeImmediate);
++        // Let useWindowSize subscribers commit the new dimensions first. Painting
++        // the old React geometry at the new terminal width corrupts row positions.
++        this.resizeImmediate = setImmediate(() => {
++            this.resizeImmediate = undefined;
++            if (this.isUnmounted) return;
++            this.calculateLayout();
++            dom.emitLayoutListeners(this.rootNode);
++            this.onRender();
++        });
+     };
++
+     resolveExitPromise = () => { };
+     rejectExitPromise = () => { };
+     unsubscribeExit = () => { };
+@@ -493,6 +511,8 @@ export default class Ink {
+             return;
+         }
+         this.isUnmounting = true;
++        if (this.resizeImmediate !== undefined) clearImmediate(this.resizeImmediate);
++        this.resizeImmediate = undefined;
+         if (this.beforeExitHandler) {
+             process.off('beforeExit', this.beforeExitHandler);
+             this.beforeExitHandler = undefined;
+@@ -753,13 +773,14 @@ export default class Ink {
+         const viewportRows = isTty ? getWindowSize(this.options.stdout).rows : 24;
+         const isFullscreen = isTty && outputHeight >= viewportRows;
+         const outputToRender = isFullscreen ? output : output + '\n';
+-        const shouldClearTerminal = shouldClearTerminalForFrame({
++        const shouldClearTerminal = this.forceFullRender || shouldClearTerminalForFrame({
+             isTty,
+             viewportRows,
+             previousOutputHeight: this.lastOutputHeight,
+             nextOutputHeight: outputHeight,
+             isUnmounting: this.isUnmounting,
+         });
++        this.forceFullRender = false;
+         if (shouldClearTerminal) {
+             const sync = this.shouldSync();
+             if (sync) {
+diff --git a/node_modules/ink/build/measure-text.js b/node_modules/ink/build/measure-text.js
+index 6934dc5..0d78e3d 100644
+--- a/node_modules/ink/build/measure-text.js
++++ b/node_modules/ink/build/measure-text.js
+@@ -1,5 +1,6 @@
+ import widestLine from 'widest-line';
+-const cache = new Map();
++import TextCache from './text-cache.js';
++const cache = new TextCache();
+ const measureText = (text) => {
+     if (text.length === 0) {
+         return {
+diff --git a/node_modules/ink/build/output.js b/node_modules/ink/build/output.js
+index c763b77..8c87a13 100644
+--- a/node_modules/ink/build/output.js
++++ b/node_modules/ink/build/output.js
+@@ -1,48 +1,67 @@
+ import sliceAnsi from 'slice-ansi';
+ import stringWidth from 'string-width';
+ import { styledCharsFromTokens, styledCharsToString, tokenize, } from '@alcalzone/ansi-tokenize';
+-class OutputCaches {
+-    widths = new Map();
+-    blockWidths = new Map();
+-    styledChars = new Map();
+-    getStyledChars(line) {
+-        let cached = this.styledChars.get(line);
+-        if (cached === undefined) {
+-            cached = styledCharsFromTokens(tokenize(line));
+-            this.styledChars.set(line, cached);
++import { styledRuns } from './styled-runs.js';
++// Two bounded generations: scrolling reuses nearby rows without retaining history.
++class FrameCache {
++    current = new Map();
++    previous = new Map();
++    units = 0;
++    nextFrame() {
++        this.previous = this.current;
++        this.current = new Map();
++        this.units = 0;
++    }
++    get(key, compute) {
++        const current = this.current.get(key);
++        if (current !== undefined) return current;
++        const value = this.previous.get(key) ?? compute(key);
++        if (this.current.size < 1024 && this.units + key.length + 1 <= 65536) {
++            this.current.set(key, value);
++            this.units += key.length + 1;
+         }
+-        return cached;
++        return value;
++    }
++}
++const parseStyledLine = line => styledCharsFromTokens(tokenize(line));
++export class OutputCaches {
++    widths = new FrameCache();
++    blockWidths = new FrameCache();
++    styledChars = new FrameCache();
++    rows = new FrameCache();
++    nextFrame() {
++        this.widths.nextFrame();
++        this.blockWidths.nextFrame();
++        this.styledChars.nextFrame();
++        this.rows.nextFrame();
++    }
++    getStyledChars(line) {
++        return this.styledChars.get(line, parseStyledLine);
+     }
+     getStringWidth(text) {
+-        let cached = this.widths.get(text);
+-        if (cached === undefined) {
+-            cached = stringWidth(text);
+-            this.widths.set(text, cached);
+-        }
+-        return cached;
++        return this.widths.get(text, stringWidth);
+     }
+-    getWidestLine(text) {
+-        let cached = this.blockWidths.get(text);
+-        if (cached === undefined) {
+-            let lineWidth = 0;
+-            for (const line of text.split('\n')) {
+-                lineWidth = Math.max(lineWidth, this.getStringWidth(line));
+-            }
+-            cached = lineWidth;
+-            this.blockWidths.set(text, cached);
++    measureBlock = text => {
++        let lineWidth = 0;
++        for (const line of text.split('\n')) {
++            lineWidth = Math.max(lineWidth, this.getStringWidth(line));
+         }
+-        return cached;
++        return lineWidth;
++    };
++    getWidestLine(text) {
++        return this.blockWidths.get(text, this.measureBlock);
+     }
+ }
+ export default class Output {
+     width;
+     height;
+     operations = [];
+-    caches = new OutputCaches();
++    caches;
+     constructor(options) {
+         const { width, height } = options;
+         this.width = width;
+         this.height = height;
++        this.caches = options.caches ?? new OutputCaches();
+     }
+     write(x, y, text, options) {
+         const { transformers } = options;
+@@ -71,17 +90,9 @@ export default class Output {
+     get() {
+         // Initialize output array with a specific set of rows, so that margin/padding at the bottom is preserved
+         const output = [];
++        const spaceCell = { type: 'char', value: ' ', fullWidth: false, styles: [] };
+         for (let y = 0; y < this.height; y++) {
+-            const row = [];
+-            for (let x = 0; x < this.width; x++) {
+-                row.push({
+-                    type: 'char',
+-                    value: ' ',
+-                    fullWidth: false,
+-                    styles: [],
+-                });
+-            }
+-            output.push(row);
++            output.push([]);
+         }
+         const clips = [];
+         for (const operation of this.operations) {
+@@ -144,19 +155,24 @@ export default class Output {
+                     for (const transformer of transformers) {
+                         line = transformer(line, index);
+                     }
++                    currentLine.push([x, line]);
++                    offsetY++;
++                }
++            }
++        }
++        const generatedOutput = output
++            .map(writes => this.caches.rows.get(JSON.stringify([this.width, writes]), () => {
++                // Cache composed rows, not the screen's character matrix. Scrolling
++                // reuses the same row at another y; a spinner changes only its row.
++                const currentLine = [];
++                for (let x = 0; x < this.width; x++) currentLine.push(spaceCell);
++                for (const [x, line] of writes) {
+                     const characters = this.caches.getStyledChars(line);
+                     let offsetX = x;
+                     // Nothing to write (e.g. line was clipped away).
+                     if (characters.length === 0) {
+-                        offsetY++;
+                         continue;
+                     }
+-                    const spaceCell = {
+-                        type: 'char',
+-                        value: ' ',
+-                        fullWidth: false,
+-                        styles: [],
+-                    };
+                     // Wide characters (e.g. CJK) occupy two cells: a leading
+                     // cell with the character and a trailing placeholder with
+                     // value ''. When an overlapping write lands in the middle
+@@ -188,16 +204,9 @@ export default class Output {
+                     if (currentLine[offsetX]?.value === '') {
+                         currentLine[offsetX] = spaceCell;
+                     }
+-                    offsetY++;
+                 }
+-            }
+-        }
+-        const generatedOutput = output
+-            .map(line => {
+-            // See https://github.com/vadimdemedes/ink/pull/564#issuecomment-1637022742
+-            const lineWithoutEmptyItems = line.filter(item => item !== undefined);
+-            return styledCharsToString(lineWithoutEmptyItems).trimEnd();
+-        })
++                return styledCharsToString(styledRuns(currentLine)).trimEnd();
++            }))
+             .join('\n');
+         return {
+             output: generatedOutput,
+diff --git a/node_modules/ink/build/renderer.js b/node_modules/ink/build/renderer.js
+index bf23246..5247e84 100644
+--- a/node_modules/ink/build/renderer.js
++++ b/node_modules/ink/build/renderer.js
+@@ -1,5 +1,6 @@
+ import renderNodeToOutput, { renderNodeToScreenReaderOutput, } from './render-node-to-output.js';
+-import Output from './output.js';
++import Output, { OutputCaches } from './output.js';
++const outputCaches = new WeakMap();
+ const renderer = (node, isScreenReaderEnabled) => {
+     if (node.yogaNode) {
+         if (isScreenReaderEnabled) {
+@@ -19,9 +20,13 @@ const renderer = (node, isScreenReaderEnabled) => {
+                 staticOutput: staticOutput ? `${staticOutput}\n` : '',
+             };
+         }
++        const caches = outputCaches.get(node) ?? new OutputCaches();
++        caches.nextFrame();
++        outputCaches.set(node, caches);
+         const output = new Output({
+             width: node.yogaNode.getComputedWidth(),
+             height: node.yogaNode.getComputedHeight(),
++            caches,
+         });
+         renderNodeToOutput(node, output, {
+             skipStaticElements: true,
+diff --git a/node_modules/ink/build/styled-runs.js b/node_modules/ink/build/styled-runs.js
+new file mode 100644
+index 0000000..87a4580
+--- /dev/null
++++ b/node_modules/ink/build/styled-runs.js
+@@ -0,0 +1,21 @@
++// Style transitions belong to runs, not individual terminal cells. Keep distinct
++// style objects conservative: identity equality proves the transition is a no-op.
++const sameStyles = (left, right) => left.length === right.length &&
++    left.every((code, index) => code === right[index]);
++export function styledRuns(characters) {
++    const runs = [];
++    let run;
++    const values = [];
++    for (const character of characters) {
++        if (character === undefined) continue;
++        if (!run || !sameStyles(run.styles, character.styles)) {
++            if (run) run.value = values.join('');
++            run = { ...character };
++            runs.push(run);
++            values.length = 0;
++        }
++        values.push(character.value);
++    }
++    if (run) run.value = values.join('');
++    return runs;
++}
+diff --git a/node_modules/ink/build/text-cache.js b/node_modules/ink/build/text-cache.js
+new file mode 100644
+index 0000000..96e6c90
+--- /dev/null
++++ b/node_modules/ink/build/text-cache.js
+@@ -0,0 +1,30 @@
++// Wrapping and measurement see a new string on every streamed frame. Retain
++// nearby frames only, bounded by both entry count and UTF-16 storage units.
++export default class TextCache {
++    entries = new Map();
++    units = 0;
++    constructor(maxUnits = 65536, maxEntries = 128) {
++        this.maxUnits = maxUnits;
++        this.maxEntries = maxEntries;
++    }
++    get(key) {
++        const entry = this.entries.get(key);
++        if (entry === undefined) return undefined;
++        this.entries.delete(key);
++        this.entries.set(key, entry);
++        return entry.value;
++    }
++    set(key, value) {
++        const old = this.entries.get(key);
++        if (old !== undefined) { this.units -= old.units; this.entries.delete(key); }
++        const units = key.length + (typeof value === 'string' ? value.length : 0) + 1;
++        if (units > this.maxUnits) return;
++        this.entries.set(key, { value, units });
++        this.units += units;
++        while (this.units > this.maxUnits || this.entries.size > this.maxEntries) {
++            const first = this.entries.keys().next().value;
++            this.units -= this.entries.get(first).units;
++            this.entries.delete(first);
++        }
++    }
++}
+diff --git a/node_modules/ink/build/wrap-text.js b/node_modules/ink/build/wrap-text.js
+index 51f696c..46b0c90 100644
+--- a/node_modules/ink/build/wrap-text.js
++++ b/node_modules/ink/build/wrap-text.js
+@@ -1,10 +1,11 @@
+ import wrapAnsi from 'wrap-ansi';
+ import cliTruncate from 'cli-truncate';
+-const cache = {};
++import TextCache from './text-cache.js';
++const cache = new TextCache();
+ const wrapText = (text, maxWidth, wrapType) => {
+-    const cacheKey = text + String(maxWidth) + String(wrapType);
+-    const cachedText = cache[cacheKey];
+-    if (cachedText) {
++    const cacheKey = `${maxWidth}:${wrapType}:${text}`;
++    const cachedText = cache.get(cacheKey);
++    if (cachedText !== undefined) {
+         return cachedText;
+     }
+     let wrappedText = text;
+@@ -31,7 +32,7 @@ const wrapText = (text, maxWidth, wrapType) => {
+         }
+         wrappedText = cliTruncate(text, maxWidth, { position });
+     }
+-    cache[cacheKey] = wrappedText;
++    cache.set(cacheKey, wrappedText);
+     return wrappedText;
+ };
+ export default wrapText;
