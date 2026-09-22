@@ -58,6 +58,22 @@ pub fn refresh() -> Nil {
   }
 }
 
+/// Fetch and atomically replace the cached catalog now, regardless of its age.
+/// Unlike the opportunistic background refresh, this reports fetch failures so
+/// an explicit `/reload models` never claims stale data was refreshed.
+pub fn reload() -> Result(Nil, String) {
+  use Config(url, _) <- result.try(settings.load(
+    "models",
+    config_decoder(),
+    default_config(),
+  ))
+  reload_at(path(), url)
+}
+
+pub fn reload_at(catalog: String, url: String) -> Result(Nil, String) {
+  native_reload(catalog, url)
+}
+
 pub fn path() -> String {
   settings.home() <> "/" <> catalog_file
 }
@@ -135,6 +151,9 @@ fn info_decoder(catalog: String) {
 
 @external(erlang, "albedo_models", "refresh")
 fn native_refresh(catalog: String, url: String, max_age_ms: Int) -> Nil
+
+@external(erlang, "albedo_models", "reload")
+fn native_reload(catalog: String, url: String) -> Result(Nil, String)
 
 @external(erlang, "albedo_models", "lookup")
 fn native_lookup(

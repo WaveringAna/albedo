@@ -8,7 +8,7 @@ import { ExtensionPicker } from "./extension-picker.js"
 import { TreePicker, type TreeCheckpoint, type TreePage } from "./tree-picker.js"
 import { ContextInspector } from "./context-inspector.js"
 import { request, type Connection, type Session } from "../daemon.js"
-import { parseCommandCatalog, parseCommandInvocation, type SessionCommand } from "../commands.js"
+import { commandMenuItems, parseCommandCatalog, parseCommandInvocation, type SessionCommand } from "../commands.js"
 
 export function App({ connection, initial, workspace, quit, login = false }: { connection: Connection; initial?: Session; workspace: string; quit: () => void; login?: boolean }) {
   const [loggingIn,setLoggingIn]=useState<{ name?: string } | undefined>(login ? {} : undefined)
@@ -30,6 +30,14 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
   const [extensionRevision,setExtensionRevision]=useState(0)
   const [commandCatalog,setCommandCatalog]=useState<SessionCommand[]>([])
   const listedSessions = selected && !sessions.some(session => session.id === selected.id) ? [selected, ...sessions] : sessions
+  const commandMenu = [
+    { name: "/login", description: "add or select a named openai-compatible api" },
+    { name: "/new", description: "new coding session" },
+    { name: "/sessions", description: "switch session" },
+    { name: "/extensions", description: "manage this session's extension plugins" },
+    { name: "/tree", description: "branch this session from a history checkpoint" },
+    ...commandMenuItems(commandCatalog),
+  ]
   const workspaceChanged = (workspace: string): void => {
     setSelected(current => current && { ...current, workspace })
     if (selected) setSessions(current => current.map(session => session.id === selected.id ? { ...session, workspace } : session))
@@ -118,8 +126,8 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
     if (!selected && !sessions.length) create()
   }} />
   return <Box flexDirection="column">
-    {notice && <Text dimColor>{notice}</Text>}
-    {error && <Text color="red">{error}</Text>}
+    {notice && (!selected || choosing) && <Text dimColor>{notice}</Text>}
+    {error && (!selected || choosing) && <Text color="red">{error}</Text>}
     {choosing && sessions.some(session => typeof session.title !== "string") && <Text color="yellow" wrap="wrap">
       daemon upgrade needed for prompt labels and recent ordering. when ready, run albedo daemon --stop, then albedo. restarting clears python variables.
     </Text>}
@@ -130,7 +138,7 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
     ]} onSelect={id => { if (id==="new") create(); else if (id==="login") setLoggingIn({}); else { setSelected(listedSessions.find(session=>session.id===id));setChoosing(false) } }} onCancel={() => selected ? setChoosing(false) : quit()} /> : selected && <><ChatScreen key={selected.id} visible={!choosingModel && !choosingExtensions && !choosingTree && !choosingContext} usageResetKey={extensionRevision}
       baseUrl={`http://127.0.0.1:${connection.port}`} token={connection.token} agentId={selected.id} agentName="albedo"
       workspace={selected.workspace} model={selected.model} onWorkspaceChanged={workspaceChanged} onBack={()=>setChoosing(true)} onQuit={quit} onCreate={create}
-      commands={[{ name:"/login",description:"add or select a named openai-compatible api" },{ name:"/new",description:"new coding session" },{ name:"/sessions",description:"switch session" },{ name:"/extensions",description:"manage this session's extension plugins" },{ name:"/tree",description:"branch this session from a history checkpoint" },...commandCatalog.map(command => ({ name:command.name,description:command.description }))]}
+      notice={notice} errorNotice={error} commands={commandMenu}
       onCommand={(value,clear)=> {
         if (value === "/login" || value.startsWith("/login ")) { clear(); setLoggingIn({ name: value.slice(6).trim() || undefined }); return true }
         if (value.startsWith("/model ")) {
@@ -148,10 +156,13 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
         if (value==="/new") { clear();create();return true }
         const command = parseCommandInvocation(value, commandCatalog)
         if (command) {
-          clear(); setError("")
+          clear(); setError(""); setNotice(command.name === "/reload" ? "Reloading models catalog…" : "")
           void runCommand(command.name, command.arguments)
-            .then(result => { if (result) setNotice(JSON.stringify(result)) })
-            .catch(error=>setError(String(error)))
+            .then(result => {
+              if (!result) return setNotice("")
+              setNotice(typeof result.message === "string" ? result.message : JSON.stringify(result))
+            })
+            .catch(error=>{ setNotice(""); setError(String(error)) })
           return true
         }
         return false }}

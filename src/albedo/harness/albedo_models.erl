@@ -2,7 +2,7 @@
 %% models.dev catalog cache: bounded fetch, parsed once per file revision.
 
 -include_lib("kernel/include/file.hrl").
--export([refresh/3, lookup/3, list/3]).
+-export([refresh/3, reload/2, lookup/3, list/3]).
 
 -define(MAX_BYTES, 33554432).
 -define(FETCH_TIMEOUT_MS, 30000).
@@ -22,6 +22,18 @@ refresh(Catalog0, Url0, MaxAgeMs) ->
                     exit(Pid, kill),
                     nil
             end
+    end.
+
+reload(Catalog0, Url0) ->
+    Catalog = text(Catalog0),
+    Url = unicode:characters_to_binary(Url0),
+    try
+        case safe_url(Url) of
+            true -> fetch(Catalog, Url);
+            false -> {error, <<"models catalog URL must use https or loopback http">>}
+        end
+    catch
+        _:_ -> {error, <<"models catalog URL is invalid">>}
     end.
 
 stale(Catalog, MaxAgeMs) ->
@@ -49,9 +61,14 @@ fetch(Catalog, Url) ->
         {ok, {{_, 200, _}, _, Body}} when byte_size(Body) =< ?MAX_BYTES ->
             case valid_catalog(Body) of
                 true -> store(Catalog, Body);
-                false -> nil
+                false -> {error, <<"models catalog response is not valid">>}
             end;
-        _ -> nil
+        {ok, {{_, 200, _}, _, _}} ->
+            {error, <<"models catalog response is too large">>};
+        {ok, {{_, Status, _}, _, _}} ->
+            {error, iolist_to_binary(io_lib:format("models catalog returned HTTP ~B", [Status]))};
+        {error, _} ->
+            {error, <<"models catalog request failed">>}
     end.
 
 tls_options(Url) ->
@@ -73,19 +90,19 @@ valid_catalog(Body) ->
 
 %% A partly written catalog must never be readable, so the rename is the commit.
 store(Catalog, Body) ->
-    Temporary = Catalog ++ ".fetch",
+    Temporary = Catalog ++ ".fetch." ++ integer_to_list(erlang:unique_integer([positive])),
     _ = filelib:ensure_dir(Catalog),
     case file:write_file(Temporary, Body) of
         ok ->
             case file:rename(Temporary, Catalog) of
                 ok ->
                     _ = persistent_term:erase({?MODULE, Catalog}),
-                    nil;
+                    {ok, nil};
                 _ ->
                     _ = file:delete(Temporary),
-                    nil
+                    {error, <<"models catalog cache could not be replaced">>}
             end;
-        _ -> nil
+        _ -> {error, <<"models catalog cache could not be written">>}
     end.
 
 lookup(Catalog0, Model0, Endpoint0) ->

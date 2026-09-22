@@ -16,7 +16,7 @@ export function useCommandMenu(value: string, submit: (value: string) => void, e
   const [dismissed, dismiss] = useState("")
   // One row per name: the last occurrence wins, so chat's own builtins stay
   // authoritative over catalog entries with the same name.
-  const matches = /^\/\S*$/.test(value) && value !== dismissed
+  const matches = /^\/[^\r\n]*$/.test(value) && value !== dismissed
     ? [...extra, ...common]
         .filter((item, index, all) => all.findLastIndex((other) => other.name === item.name) === index)
         .filter((item) => item.name.startsWith(value)) : []

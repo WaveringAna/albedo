@@ -12,7 +12,9 @@ The catalog is cached at `$ALBEDO_HOME/models.json` (default `~/.albedo/models.j
 { "models": { "url": "https://models.dev/api.json", "refreshHours": 24 } }
 ```
 
-Put this in `$ALBEDO_HOME/extensions.json`. `refreshHours: 0` disables fetching entirely and uses only the cached file, which is what the test suite and air-gapped hosts do. Only `https`, or `http` on the loopback host, is fetched.
+Put this in `$ALBEDO_HOME/extensions.json`. `refreshHours: 0` disables automatic fetching and uses only the cached file, which is what the test suite and air-gapped hosts do. Only `https`, or `http` on the loopback host, is fetched.
+
+Run `/reload models` to fetch the configured catalog immediately, regardless of its age or `refreshHours`. The command returns only after the cache has been atomically replaced, so the next `/model` picker reads the new model list. A failed fetch leaves the previous cache in place and reports the failure.
 
 ## lookup
 

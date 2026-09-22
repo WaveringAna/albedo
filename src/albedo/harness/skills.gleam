@@ -55,7 +55,7 @@ fn skill_command(
   command.Command(
     entry.command,
     entry.description,
-    [command.Argument("arguments", "arguments for the skill", False)],
+    [command.Argument("arguments", "arguments for the skill", False, [])],
     True,
     True,
     fn(_context, caller, args) {

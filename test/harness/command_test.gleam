@@ -29,7 +29,7 @@ fn demo() {
   Command(
     "/demo",
     "Demo",
-    [Argument("arguments", "freeform", False)],
+    [Argument("arguments", "freeform", False, [])],
     True,
     True,
     fn(_context, caller, args) {
@@ -62,7 +62,7 @@ fn placeholder(arguments: List(Argument)) -> Command {
 pub fn parse_arguments_keeps_inner_spacing_exact_test() {
   command.parse_arguments(
     placeholder([
-      Argument("arguments", "", False),
+      Argument("arguments", "", False, []),
     ]),
     "  one  two  ",
   )
@@ -72,8 +72,8 @@ pub fn parse_arguments_keeps_inner_spacing_exact_test() {
 pub fn raw_invocation_maps_tokens_positionally_test() {
   let command =
     placeholder([
-      Argument("model", "", False),
-      Argument("provider", "", False),
+      Argument("model", "", False, []),
+      Argument("provider", "", False, []),
     ])
   command.parse_arguments(command, "gpt-5  acme labs")
   |> should.equal(
@@ -91,7 +91,7 @@ pub fn raw_invocation_maps_tokens_positionally_test() {
 }
 
 pub fn missing_required_arguments_report_usage_test() {
-  let command = placeholder([Argument("model", "", True)])
+  let command = placeholder([Argument("model", "", True, [])])
   command.parse_arguments(command, "  ")
   |> should.equal(Error("missing argument <model>"))
   command.check_arguments(command, dict.new())
@@ -277,6 +277,24 @@ pub fn user_turn_commands_submit_through_state_test() {
   value |> should.equal(json.string("data one  two"))
 }
 
+pub fn reload_declares_models_as_its_first_required_target_test() {
+  let values = extension.commands([commands.extension()])
+  let assert Ok(reload) = command.find(values, "/reload")
+  command.usage(reload) |> should.equal("/reload <target>")
+  let assert [Argument(_, _, _, choices)] = reload.arguments
+  choices |> should.equal(["models"])
+  reload.model_callable |> should.be_false
+  command.dispatch(
+    values,
+    stub_context(),
+    UserCall,
+    "c",
+    "/reload",
+    dict.from_list([#("target", "plugins")]),
+  )
+  |> should.equal(Error("unknown reload target plugins; available: models"))
+}
+
 pub fn model_switching_is_refused_from_the_model_test() {
   let values = extension.commands([commands.extension()])
   // The read form answers for any caller...
@@ -330,7 +348,7 @@ pub fn catalog_carries_usage_and_mintable_methods_test() {
       Command(
         "/skill-model",
         "",
-        [Argument("x", "", True)],
+        [Argument("x", "", True, [])],
         True,
         False,
         fn(_, _, _) { Ok(Data(json.string(""))) },

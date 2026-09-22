@@ -73,6 +73,28 @@ fn write(base: String, relative: String, content: String) -> String
 @external(erlang, "albedo_skills_test_support", "cleanup")
 fn cleanup(root: String) -> Nil
 
+@external(erlang, "albedo_skills_test_support", "serve_once")
+fn serve_once(body: String) -> String
+
+pub fn explicit_reload_replaces_the_cache_before_returning_test() {
+  let #(root, _, home) = fixture()
+  let file = home <> "/models.json"
+  let endpoint = serve_once(catalog)
+
+  models.reload_at(file, endpoint) |> should.equal(Ok(Nil))
+  models.list_at(file, "openai", "")
+  |> should.equal(["only-openai", "shared-model"])
+
+  cleanup(root)
+}
+
+pub fn explicit_reload_rejects_unsafe_urls_test() {
+  let #(root, _, home) = fixture()
+  models.reload_at(home <> "/models.json", "http://models.dev/api.json")
+  |> should.equal(Error("models catalog URL must use https or loopback http"))
+  cleanup(root)
+}
+
 pub fn catalog_lists_provider_models_without_inventing_unknowns_test() {
   let #(root, _, home) = fixture()
   let file = write(home, "models.json", catalog)

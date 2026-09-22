@@ -198,3 +198,50 @@ test("/tree keeps chat mounted, confirms explicitly, cancels, and switches only 
   assert.equal(currentStreams, 1)
   assert.equal(branchStreams, 1)
 })
+
+
+test("/reload suggests models and reports completion in the chat", async t => {
+  const current = { id: "current", title: "current", workspace: "/tmp", provider: "fixture", model: "fixture-model", protocol: "responses" }
+  let reloads = 0
+  const server = createServer((req, res) => {
+    res.setHeader("content-type", "application/json")
+    if (req.url === "/health") res.end(JSON.stringify({ capabilities: ["session_commands"] }))
+    else if (req.url === "/sessions/current/commands" && req.method === "GET") res.end(JSON.stringify([{
+      name: "/reload", description: "Reload cached runtime data", method: "reload", modelCallable: false, userTurn: false,
+      arguments: [{ name: "target", description: "reload the models.dev catalog", required: true, choices: ["models"] }],
+    }]))
+    else if (req.url === "/sessions/current/commands" && req.method === "POST") {
+      let body = ""
+      req.on("data", chunk => { body += chunk })
+      req.on("end", () => {
+        assert.deepEqual(JSON.parse(body), { name: "/reload", arguments: "models" })
+        reloads++
+        setTimeout(() => res.end(JSON.stringify({ result: {
+          reloaded: "models", message: "Models catalog reloaded. /model now shows the latest list.",
+        } })), 150)
+      })
+    } else if (req.url?.includes("/stream")) {
+      res.writeHead(200, { "content-type": "text/event-stream" })
+      res.write(`data: ${JSON.stringify({ cursor: 1, events: [{ type: "message", text: "ready to reload" }] })}\n\n`)
+    } else if (req.url?.endsWith("/status")) res.end(JSON.stringify({ running: false, idle: true }))
+    else { res.writeHead(404); res.end(JSON.stringify({ error: "not found" })) }
+  })
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve))
+  t.after(() => { server.closeAllConnections(); server.close() })
+  const address = server.address()
+  assert(address && typeof address !== "string")
+  const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: () => stdin, ref: () => stdin, unref: () => stdin }) as unknown as NodeJS.ReadStream
+  const stdout = Object.assign(new PassThrough(), { isTTY: true, columns: 120, rows: 40 }) as unknown as NodeJS.WriteStream
+  let painted = ""
+  stdout.on("data", (chunk: Buffer) => { painted += chunk.toString() })
+  const app = render(<App connection={{ port: address.port, token: "fixture", pid: 1, version: 2 }} initial={current} workspace="/tmp" quit={() => {}} />, { stdin, stdout, patchConsole: false, exitOnCtrlC: false })
+  t.after(() => app.unmount())
+
+  await until(() => painted.includes("ready to reload"))
+  painted = ""
+  stdin.write("/reload")
+  await until(() => painted.includes("/reload models") && painted.includes("reload the models.dev catalog"))
+  stdin.write("\r")
+  await until(() => painted.includes("Reloading models catalog…"))
+  await until(() => reloads === 1 && painted.includes("Models catalog reloaded. /model now shows the latest list."))
+})

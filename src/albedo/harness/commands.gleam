@@ -5,8 +5,10 @@ import albedo/harness/command.{
   Data, ModelCall, ModelGet, ModelSelect, UserCall,
 }
 import albedo/harness/extension
+import albedo/harness/models
 import gleam/dict
 import gleam/int
+import gleam/json
 import gleam/option.{None, Some}
 import gleam/result
 
@@ -16,7 +18,7 @@ pub fn extension() -> extension.Extension {
     "Session commands shared by the CLI menu and the Python kernel.",
     ["python"],
     [
-      extension.CommandPlugin([model(), context_inspect()]),
+      extension.CommandPlugin([model(), reload(), context_inspect()]),
       extension.ToolPlugin("", [], ["commands"], []),
     ],
     fn(_) { Ok(Nil) },
@@ -32,11 +34,13 @@ fn model() -> Command {
         "model",
         "model id to switch to (user only); omit to show the current selection",
         False,
+        [],
       ),
       Argument(
         "provider",
         "configured provider name, needed only when switching providers",
         False,
+        [],
       ),
     ],
     True,
@@ -64,13 +68,47 @@ fn model() -> Command {
   )
 }
 
+fn reload() -> Command {
+  Command(
+    "/reload",
+    "Reload cached runtime data. The first supported target is models.",
+    [Argument("target", "reload the models.dev catalog", True, ["models"])],
+    False,
+    False,
+    fn(_ctx, _caller, args) {
+      case dict.get(args, "target") {
+        Ok("models") -> {
+          use _ <- result.try(models.reload())
+          Ok(
+            Data(
+              json.object([
+                #("reloaded", json.string("models")),
+                #(
+                  "message",
+                  json.string(
+                    "Models catalog reloaded. /model now shows the latest list.",
+                  ),
+                ),
+                #("catalog", json.string(models.path())),
+              ]),
+            ),
+          )
+        }
+        Ok(target) ->
+          Error("unknown reload target " <> target <> "; available: models")
+        Error(_) -> Error("reload target is required")
+      }
+    },
+  )
+}
+
 fn context_inspect() -> Command {
   Command(
     "/context",
     "Read the prepared model request: one summary, or a bounded page of one section.",
     [
-      Argument("section", "section id as listed by the summary", False),
-      Argument("page", "0-based page number within the section", False),
+      Argument("section", "section id as listed by the summary", False, []),
+      Argument("page", "0-based page number within the section", False, []),
     ],
     True,
     False,

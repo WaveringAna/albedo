@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
-import { parseCommandCatalog, parseCommandInvocation, type SessionCommand } from "./commands.js"
+import { commandMenuItems, parseCommandCatalog, parseCommandInvocation, type SessionCommand } from "./commands.js"
 
 const catalog: SessionCommand[] = [
   { name: "/review", description: "Review", method: "review", modelCallable: true, userTurn: true,
@@ -9,6 +9,8 @@ const catalog: SessionCommand[] = [
     arguments: [{ name: "arguments", description: "arguments for the skill", required: false }] },
   { name: "/model", description: "Switch models", method: "model", modelCallable: true, userTurn: false,
     arguments: [{ name: "model", description: "model id", required: false }, { name: "provider", description: "provider", required: false }] },
+  { name: "/reload", description: "Reload", method: "reload", modelCallable: false, userTurn: false,
+    arguments: [{ name: "target", description: "reload the models.dev catalog", required: true, choices: ["models"] }] },
 ]
 
 describe("session command invocations", () => {
@@ -21,6 +23,11 @@ describe("session command invocations", () => {
     assert.equal(parseCommandInvocation("/reviewing nope", catalog), undefined)
     assert.equal(parseCommandInvocation("/skill:model args", catalog)?.name, "/skill:model")
     assert.equal(parseCommandInvocation("/model gpt-5", catalog)?.arguments, "gpt-5")
+  })
+
+  it("expands finite required arguments into runnable menu choices", () => {
+    assert(commandMenuItems(catalog).some(item => item.name === "/reload models" && item.description === "reload the models.dev catalog"))
+    assert(!commandMenuItems(catalog).some(item => item.name === "/reload"))
   })
 
   it("validates daemon metadata but survives one malformed row", () => {

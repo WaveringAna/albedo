@@ -31,6 +31,7 @@ export type ChatScreenProps = {
   workspace?: string
   model?: string
   notice?: string
+  errorNotice?: string
   onWorkspaceChanged?: (workspace: string) => void
   copySelection?: (text: string) => Promise<void>
   clipboardImages?: { available: () => boolean; read: () => Promise<ImageAttachment | null> }
@@ -81,7 +82,7 @@ const describeFailure = (error: unknown, agentId?: string): string => {
 
 export function ChatScreen({
   baseUrl, transport, visible = true, usageResetKey = 0, commands, onCommand, onCreate,
-  token, agentId, agentName, workspace, model, notice, onWorkspaceChanged, fetchImpl, copySelection,
+  token, agentId, agentName, workspace, model, notice, errorNotice, onWorkspaceChanged, fetchImpl, copySelection,
   clipboardImages = SYSTEM_CLIPBOARD_IMAGES, onBack, onQuit,
   settleMs = 750, reconnectMs = 1_000,
 }: ChatScreenProps) {
@@ -477,7 +478,7 @@ export function ChatScreen({
   // Chrome owns six rows. Recovery replaces the composer and borrows two more.
   const recoveryRows = workspaceRecovery ? 2 : 0
   const menuRows = Math.min(menu.rows, Math.max(0, height - 9 - recoveryRows))
-  const transcriptRows = Math.max(1, height - 6 - recoveryRows - (notice ? 1 : 0) - menuRows)
+  const transcriptRows = Math.max(1, height - 6 - recoveryRows - (notice || errorNotice ? 1 : 0) - menuRows)
   const history = transcript.layout(flags, speaker, contentWidth, viewportWidth)
   // Resizing or expanding changes row counts above the viewport, not the record
   // being read. Tail appends keep the same layout and never move a history anchor.
@@ -623,7 +624,9 @@ export function ChatScreen({
       {model && <Box maxWidth={Math.floor(contentWidth / 2)} flexShrink={0}><Text color="gray" wrap="truncate-start">{model}</Text></Box>}
     </Box>
     <Text> </Text>
-    {notice && <Text color="redBright" wrap="truncate-end">error: {notice}</Text>}
+    {errorNotice
+      ? <Text color="redBright" wrap="truncate-end">error: {errorNotice}</Text>
+      : notice && <Text color="cyanBright" wrap="truncate-end">{notice}</Text>}
     <Box flexDirection="column" height={transcriptRows} width={viewportWidth} overflow="hidden" flexShrink={0}>
       <Text>{lineCount ? highlightSelection(displayRows.slice(top, top + transcriptRows), top, drag.current?.selection ?? { anchor: { row: 0, column: 0 }, head: { row: 0, column: 0 } }).join("\n") : color(90, "what are we working on?")}</Text>
     </Box>

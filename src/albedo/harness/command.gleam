@@ -19,7 +19,12 @@ import gleam/string
 
 /// One command argument, in invocation order.
 pub type Argument {
-  Argument(name: String, description: String, required: Bool)
+  Argument(
+    name: String,
+    description: String,
+    required: Bool,
+    choices: List(String),
+  )
 }
 
 /// Who invoked the command. Only a user invocation may submit a turn.
@@ -308,11 +313,16 @@ pub fn command_json(command: Command, method: String) -> json.Json {
     #(
       "arguments",
       json.array(command.arguments, fn(argument) {
-        json.object([
+        let fields = [
           #("name", json.string(argument.name)),
           #("description", json.string(argument.description)),
           #("required", json.bool(argument.required)),
-        ])
+        ]
+        json.object(case argument.choices {
+          [] -> fields
+          choices ->
+            list.append(fields, [#("choices", json.array(choices, json.string))])
+        })
       }),
     ),
     #("modelCallable", json.bool(command.model_callable)),

@@ -2,6 +2,7 @@ export type CommandArgument = {
   name: string
   description: string
   required: boolean
+  choices?: string[]
 }
 
 export type SessionCommand = {
@@ -18,6 +19,18 @@ export type CommandInvocation = {
   arguments: string
 }
 
+export type CommandMenuItem = { name: string; description: string }
+
+/** Required finite arguments are shown as complete, runnable menu entries. */
+export function commandMenuItems(catalog: SessionCommand[]): CommandMenuItem[] {
+  return catalog.flatMap(command => {
+    const argument = command.arguments[0]
+    return argument?.required && argument.choices?.length
+      ? argument.choices.map(choice => ({ name: `${command.name} ${choice}`, description: argument.description }))
+      : [{ name: command.name, description: command.description }]
+  })
+}
+
 const commandToken = /^\/[^\s]+/
 
 const commandPattern = /^\/[^\s]+$/
@@ -32,7 +45,8 @@ function parseCommand(item: unknown): SessionCommand | undefined {
     if (!argument || typeof argument !== "object") return false
     const item = argument as Partial<CommandArgument>
     return typeof item.name === "string" && typeof item.description === "string" &&
-      typeof item.required === "boolean"
+      typeof item.required === "boolean" &&
+      (item.choices === undefined || (Array.isArray(item.choices) && item.choices.every(choice => typeof choice === "string")))
   })
   if (typeof command.name !== "string" || !commandPattern.test(command.name) ||
       typeof command.description !== "string" ||
