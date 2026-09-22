@@ -60,7 +60,7 @@ const getKeywords = (lang: string): Set<string> => {
   }
 }
 
-const highlightCode = (code: string, lang: string): string => {
+export const highlightCode = (code: string, lang: string): string => {
   const l = lang.toLowerCase()
   const keywords = getKeywords(l)
   const isPython = l === "python" || l === "py"

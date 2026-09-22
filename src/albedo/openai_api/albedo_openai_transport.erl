@@ -186,4 +186,8 @@ lowercase(_) ->
 
 transport_error(Context, Reason) ->
     Detail = unicode:characters_to_binary(io_lib:format("~0p", [Reason])),
-    {error, {transport_error, <<Context/binary, ": ", Detail/binary>>}}.
+    Hint = case binary:match(Detail, <<"bad_record_mac">>) of
+        nomatch -> <<>>;
+        _ -> <<"TLS record authentication failed (network or TLS intermediary; not a Codex API error); ">>
+    end,
+    {error, {transport_error, <<Context/binary, ": ", Hint/binary, Detail/binary>>}}.

@@ -28,6 +28,8 @@ class Trace:
             self.activities[(kind, target)] = {"kind": kind, "target": target}
 
     def renamed(self, source: str, destination: str) -> None:
+        if source == destination:
+            return
         # Atomic editors write a temporary file then replace the real target.
         # The temporary file is not an edit; snapshot the destination before rename.
         self.writing(destination)

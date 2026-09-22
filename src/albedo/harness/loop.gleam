@@ -57,7 +57,7 @@ pub fn run(
     )
   state.record_context(request)
   use turn <- result.try(
-    openai.stream(state.client, request, fn(event) {
+    stream_with_retries(state.client, request, state.publish, fn(event) {
       let event = case event {
         types.TextDelta(_, _, text) -> view.text("text", text)
         types.ThinkingDelta(text) -> view.text("thinking", text)
@@ -144,6 +144,52 @@ pub fn run(
   }
 }
 
+/// Reissue transient transport and gateway failures. A failed attempt has no committed output
+/// or tool effects; discard its live previews before forwarding the next attempt.
+fn stream_with_retries(
+  client: types.Client,
+  request: types.Request,
+  publish: fn(String) -> Bool,
+  on_event: fn(types.Event) -> types.Control,
+) -> Result(types.Turn, types.Error) {
+  retry_stream(fn() { openai.stream(client, request, on_event) }, publish, 1)
+}
+
+pub fn retry_stream(
+  run: fn() -> Result(types.Turn, types.Error),
+  publish: fn(String) -> Bool,
+  attempt: Int,
+) -> Result(types.Turn, types.Error) {
+  case run() {
+    Error(error) ->
+      case attempt < 3 && retryable(error) {
+        False -> Error(error)
+        True ->
+          case publish(view.event("retry", [])) {
+            False -> Error(types.Cancelled)
+            True -> {
+              sleep_retry(attempt * 250)
+              retry_stream(run, publish, attempt + 1)
+            }
+          }
+      }
+    outcome -> outcome
+  }
+}
+
+fn retryable(error: types.Error) -> Bool {
+  case error {
+    types.ConnectionError(_) | types.Timeout | types.UnexpectedEnd -> True
+    types.HttpError(502, _)
+    | types.HttpError(503, _)
+    | types.HttpError(504, _) -> True
+    _ -> False
+  }
+}
+
+@external(erlang, "albedo_retry", "sleep")
+fn sleep_retry(milliseconds: Int) -> Nil
+
 const instructions = "You are a coding agent operating inside albedo, a coding agent harness; working in the session workspace. Use the tools enabled for this session. Run tests and report real results.\n"
 
 fn summarize(
@@ -173,7 +219,9 @@ fn summarize(
       Some(max_output_tokens),
     )
   use turn <- result.try(
-    openai.stream(state.client, summary_request, fn(_) { types.Continue })
+    stream_with_retries(state.client, summary_request, state.publish, fn(_) {
+      types.Continue
+    })
     |> result.map_error(fn(error) {
       "summarizer provider request failed: " <> string.inspect(error)
     }),

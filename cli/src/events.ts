@@ -36,6 +36,7 @@ export type ToolProgress = {
 
 export type StreamEvent =
   | { type: "reset" }
+  | { type: "retry" }
   | { type: "text"; text: string }
   /** A turn that failed: the runner aborted and the agent said nothing. */
   | { type: "error"; text: string }

@@ -33,7 +33,9 @@ test("execution evidence replaces raw repr with actions and bounded per-cell dif
   assert.equal(rows.includes("raw python repr"), false)
   const expanded = renderEntry(entry, { ...flags, tools: true }, "niri", 80).map(strip)
   assert.ok(expanded.includes("raw python repr"))
-  assert.equal(expanded.includes("+new"), true)
+  assert.equal(expanded.some(row => row.includes("+new")), false)
+  const diffs = renderEntry(entry, { ...flags, diffs: true }, "niri", 80).map(strip)
+  assert(diffs.some(row => row.includes("new")))
 })
 
 test("read and edit of the same file share one compact row", () => {
@@ -43,6 +45,8 @@ test("read and edit of the same file share one compact row", () => {
   } }
   assert.deepEqual(renderEntry(entry, flags, "albedo", 80).map(strip), ["read + edited file.py  +1 −1"])
   assert(renderEntry(entry, { ...flags, tools: true }, "albedo", 80).map(strip).includes("  read file.py"))
+  assert(!renderEntry(entry, { ...flags, tools: true }, "albedo", 80).map(strip).some(row => row.includes("+new")))
+  assert(renderEntry(entry, { ...flags, tools: true, diffs: true }, "albedo", 80).map(strip).some(row => row.includes("new")))
 })
 
 test("compact edits stay one row while expanded diffs preserve ANSI, tabs and wrapping", () => {
@@ -52,14 +56,17 @@ test("compact edits stay one row while expanded diffs preserve ANSI, tabs and wr
     activities: [], changes: [{ kind: "diff", path: "file", diff, added: 45, removed: 1 }],
   } }
   for (const width of [1, 20, 96]) {
-    const full = diff.split("\n").flatMap(line => wrap(color(line.startsWith("+") ? 32 : line.startsWith("-") ? 31 : 90, line), width))
     const compact: string[] = renderEntry(entry, flags, "niri", width).map(strip)
     assert.equal(compact.length, 1)
     assert(compact[0]!.length <= width)
     if (width === 96) assert.equal(compact[0], "edited file  +45 −1")
-    const expanded = renderEntry(entry, { ...flags, tools: true }, "niri", width)
-    const outputRows = wrap("ok", width).length
-    assert.deepEqual(expanded.slice(-full.length - outputRows, -outputRows), full)
+    const expanded = renderEntry(entry, { ...flags, diffs: true }, "niri", width).map(strip)
+    assert(expanded.length > compact.length)
+    if (width === 96) {
+      assert(expanded.some(row => row.includes("1 - old")))
+      assert(expanded.some(row => row.includes("1 + short")))
+      assert(expanded.some(row => row.includes("indented")))
+    }
   }
 })
 

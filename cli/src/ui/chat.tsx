@@ -124,7 +124,7 @@ export function ChatScreen({
     return () => { cancelled = true; clearInterval(timer) }
   }, [visible, pendingImage, clipboardImages])
   const [connection, setConnection] = useState<Connection>("connecting")
-  const [flags, setFlags] = useState<DisplayFlags>({ tools: false, thinking: true })
+  const [flags, setFlags] = useState<DisplayFlags>({ tools: false, thinking: true, diffs: false })
   const [mouseInput] = useState(() => new MouseInput())
   const drag = useRef<Drag | null>(null)
   const [selecting, setSelecting] = useState(false)
@@ -138,6 +138,7 @@ export function ChatScreen({
   const inputPaint = useRef({ pending: false, revision: 0 })
   const streamed = useRef<string[]>([])
   const streamedEntries = useRef<number[]>([])
+  const provisionalEntries = useRef<number[]>([])
   const pendingUsers = useRef<{ index: number; text: string }[]>([])
   const live = useRef(true)
   const requests = useRef<AbortController | undefined>(undefined)
@@ -171,7 +172,10 @@ export function ChatScreen({
     const current = activeLine.current
     if (!current) return
     const index = push({ kind: current.kind === "text" ? "assistant" : "thinking", text: current.content.text() })
-    if (current.kind === "text" && index !== undefined) streamedEntries.current.push(index)
+    if (index !== undefined) {
+      provisionalEntries.current.push(index)
+      if (current.kind === "text") streamedEntries.current.push(index)
+    }
     setActiveLine(null)
   }
   const failTurn = (error: unknown): void => {
@@ -188,7 +192,17 @@ export function ChatScreen({
   const handle = (event: StreamEvent): void => {
     eventRevision.current++
     switch (event.type) {
+      case "retry":
+        setActiveLine(null)
+        for (const index of provisionalEntries.current.reverse()) transcript.discard(index)
+        provisionalEntries.current = []
+        streamedEntries.current = []
+        streamed.current = []
+        setToolProgress(null)
+        setRevision(current => current + 1)
+        return
       case "reset":
+        provisionalEntries.current = []
         setUsage(undefined)
         drag.current = null
         setSelecting(false)
@@ -273,6 +287,7 @@ export function ChatScreen({
         if (duplicate) timestampEntries(streamedEntries.current, event.timestamp)
         else push({ kind: "assistant", text: event.text, timestamp: event.timestamp })
         streamedEntries.current = []
+        provisionalEntries.current = []
         return
       }
     }
@@ -671,6 +686,11 @@ export function ChatScreen({
               return true
             }
             if (menu.onKey(input, key, replace)) return true
+            // In legacy terminals Ctrl+J is LF, while Return is CR. Kitty reports Ctrl+J explicitly.
+            if (input === "\n" || (key.ctrl && input === "j")) {
+              setFlags(current => ({ ...current, diffs: !current.diffs }))
+              return true
+            }
             if (key.escape && pendingImage) { setPendingImage(undefined); setCopyStatus("image removed"); return true }
             if (key.upArrow || key.downArrow) { scroll(key.upArrow ? -1 : 1); return true }
             if (key.pageUp || key.pageDown) { scroll(key.pageUp ? -transcriptRows : transcriptRows); return true }

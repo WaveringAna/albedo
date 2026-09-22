@@ -40,6 +40,28 @@ const mount = (node: ReactElement, t: { after: (fn: () => void) => void }, colum
 }
 
 
+test("ctrl+j toggles rich edit diffs without submitting the composer", async t => {
+  let stream: StreamOptions | undefined
+  let sends = 0
+  const screen = mount(createElement(ChatScreen, {
+    clipboardImages: NO_CLIPBOARD_IMAGES,
+    transport: { send: async () => { sends++; return { ok: true as const } }, getStatus: async () => ({ running: false, idle: true }),
+      stream: async options => { stream = options; options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) } },
+    model: "fixture", onBack: () => {}, onQuit: () => {}, settleMs: 20,
+  }), t, 100)
+  await until(() => stream !== undefined, "connected")
+  stream!.onEvent({ type: "tool", name: "python", args: {}, result: "ok", trace: {
+    activities: [{ kind: "read", target: "sample.py" }],
+    changes: [{ kind: "diff", path: "sample.py", added: 1, removed: 1, diff: "@@ -1 +1 @@\n-old\n+new" }],
+  } })
+  await until(() => screen.last().includes("read + edited sample.py") && !screen.last().includes("1 + new"), "compact edit")
+  screen.write("\n") // Legacy Ctrl+J sends LF; Return sends CR.
+  await until(() => screen.last().includes("1 + new"), "diff expanded")
+  assert.equal(sends, 0)
+  screen.write("\n")
+  await until(() => !screen.last().includes("1 + new"), "diff collapsed")
+})
+
 test("copied chat screen renders Python activity and reset replaces history",async t=>{
   let stream:StreamOptions|undefined
   let running=true
@@ -433,4 +455,23 @@ test("image paste failure preserves draft text and ordinary submission", async t
   screen.write("\r")
   await until(() => sent.length === 1, "text submission after image failure")
   assert.deepEqual(sent, [{ content: "keep this text", image: undefined }])
+})
+
+test("retry discards partial response previews without clearing the conversation", async t => {
+  let stream: StreamOptions | undefined
+  const screen = mount(createElement(ChatScreen, {
+    clipboardImages: NO_CLIPBOARD_IMAGES,
+    transport: { send: async () => ({ ok: true as const }), getStatus: async () => ({ running: true, idle: false }),
+      stream: async options => { stream = options; options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) } },
+    model: "gpt-5", onBack: () => {}, onQuit: () => {}, settleMs: 20,
+  }), t, 120)
+  await until(() => stream !== undefined, "connected")
+  stream!.onEvent({ type: "text", text: "old partial" })
+  stream!.onEvent({ type: "thinking", text: "old reasoning" })
+  await until(() => screen.last().includes("old reasoning"), "partial")
+  stream!.onEvent({ type: "retry" })
+  stream!.onEvent({ type: "text", text: "new answer" })
+  await until(() => screen.last().includes("new answer"), "retry answer")
+  assert(!screen.last().includes("old partial"))
+  assert(!screen.last().includes("old reasoning"))
 })

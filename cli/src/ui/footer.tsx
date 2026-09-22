@@ -23,7 +23,7 @@ export function footerLine(width: number, usage?: Usage, model?: string, flags: 
   const columns = Math.max(0, Math.floor(width))
   const modes = `thinking ${flags.thinking ? "on" : "off"} · verbose ${flags.tools ? "on" : "off"}`
   const brief = `t:${flags.thinking ? "on" : "off"} v:${flags.tools ? "on" : "off"}`
-  for (const [left, stats] of [[`/ commands · drag to copy · ${modes}`, right], [`/ commands · drag to copy · ${modes}`, compact], [`/ commands · drag copy · ${brief}`, compact], [`/ commands · ${brief}`, compact], ["/", compact]] as const) {
+  for (const [left, stats] of [[`/ commands · drag to copy · ctrl+j diffs · ${modes}`, right], [`/ commands · drag to copy · ${modes}`, compact], [`/ commands · ctrl+j diffs · ${brief}`, compact], [`/ commands · drag copy · ${brief}`, compact], [`/ commands · ${brief}`, compact], ["/", compact]] as const) {
     if (left.length + stats.length < columns) return left + " ".repeat(columns - left.length - stats.length) + stats
   }
   return "/ commands".slice(0, columns)

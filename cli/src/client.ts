@@ -94,6 +94,7 @@ const toEvent = (raw: unknown): StreamEvent | null => {
   }
   if (event.type === "message" && typeof event.text === "string") return { type: "message", role: "assistant", text: event.text, ...stamp }
   if (event.type === "interrupted") return { type: "interrupted" }
+  if (event.type === "retry") return { type: "retry" }
 
   if (
     event.type === "user" &&
@@ -304,13 +305,13 @@ export function createChatClient(options: CreateChatClientOptions): ChatClient {
           try { raw = JSON.parse(payload) } catch { continue }
           if (eventType === "error") {
             const error = raw as { error?: unknown; text?: unknown } | null
-            throw new Error(typeof error?.error === "string" ? error.error : typeof error?.text === "string" ? error.text : "stream failed")
+            throw new Error(typeof error?.error === "string" ? error.error : typeof error?.text === "string" ? error.text : `event stream failed: ${JSON.stringify(raw)}`)
           }
           const page = raw as { cursor?: unknown; events?: unknown }
           if (Number.isSafeInteger(page?.cursor) && Array.isArray(page.events)) {
             for (const serialized of page.events) {
               const item = serialized as Record<string, unknown>
-              if (["reset", "turn_started", "message", "interrupted", "error"].includes(String(item.type))) {
+              if (["reset", "retry", "turn_started", "message", "interrupted", "error"].includes(String(item.type))) {
                 argumentsByCall.clear()
                 report(null, "running")
               }

@@ -3,13 +3,14 @@ import type { ToolProgress } from "../client.js"
 import wrapAnsi from "wrap-ansi"
 import type { StreamEvent } from "../client.js"
 import { renderMarkdownAnsi } from "./markdown.js"
+import { renderDiff } from "./diff.js"
 
 export type Entry =
   | { kind: "assistant"; text: string; timestamp?: number }
   | { kind: "thinking" | "note" | "error"; text: string }
   | { kind: "user"; source: string; text: string; timestamp?: number }
   | ({ kind: "tool" } & Pick<Extract<StreamEvent, { type: "tool" }>, "name" | "args" | "result" | "trace">)
-export type DisplayFlags = { tools: boolean; thinking: boolean }
+export type DisplayFlags = { tools: boolean; thinking: boolean; diffs?: boolean }
 export const color = (code: number, text: string): string => `\x1b[${code}m${text}\x1b[0m`
 export const wrap = (text: string, width: number): string[] => wrapAnsi(text, Math.max(1, width), { hard: true, trim: false }).split("\n")
 const count = (n: number, unit: string): string => `${n} ${unit}${n === 1 ? "" : "s"}`
@@ -21,27 +22,6 @@ function preview(rows: string[], limit: number, width: number, tail = false): st
   const visible = (tail ? rows.slice(-limit) : rows.slice(0, limit))
     .map(row => Buffer.from(row, "utf16le").toString("utf16le"))
   return tail ? [...hint, ...visible] : [...visible, ...hint]
-}
-
-function diffRows(diff: string, width: number, expanded: boolean): string[] {
-  const rows: string[] = []
-  let total = 0
-  for (const line of diff.split("\n")) {
-    const tone = line.startsWith("+") ? 32 : line.startsWith("-") ? 31 : 90
-    // Most diff lines fit without wrapping. Don't tokenize ANSI or allocate hidden
-    // styled rows just to count them; tabs/wide text/long lines use the full wrapper.
-    if (line.length <= width && /^[ -~]*$/.test(line)) {
-      total++
-      if (expanded || rows.length < 8) rows.push(color(tone, line))
-    } else {
-      const wrapped = wrap(color(tone, line), width)
-      total += wrapped.length
-      const visible = expanded ? wrapped.length : Math.min(wrapped.length, 8 - rows.length)
-      for (let i = 0; i < visible; i++) rows.push(wrapped[i]!)
-    }
-  }
-  if (total > rows.length) rows.push(...wrap(color(90, `… ${count(total - rows.length, "row")} hidden · /v expand`), width))
-  return rows
 }
 
 function toolSummary(name: string, args: Record<string, unknown>): string {
@@ -91,6 +71,7 @@ export function renderEntry(entry: Entry, flags: DisplayFlags, speaker: string, 
           const read = trace.activities.some(item => item.kind === "read" && item.target === change.path)
           const counts = change.kind === "diff" ? `  +${change.added} −${change.removed}` : ""
           rows.push(color(36, truncate(`${read ? "read + " : ""}edited ${change.path.replace(/[\p{Cc}\p{Cf}]/gu, " ")}${counts}`, width)))
+          if (flags.diffs) rows.push(...(change.kind === "diff" ? renderDiff(change.diff, change.path, width) : wrap(color(90, change.reason), width)))
         }
         if (trace.truncated) rows.push(color(90, truncate("activity capture limited · /v expand", width)))
         return rows
@@ -105,10 +86,7 @@ export function renderEntry(entry: Entry, flags: DisplayFlags, speaker: string, 
       for (const change of trace?.changes ?? []) {
         rows.push(...wrap(`${color(1, `edited ${change.path}`)}${change.kind === "diff"
           ? `  ${color(32, `+${change.added}`)} ${color(31, `−${change.removed}`)}` : ""}`, width))
-        if (change.kind === "unavailable") rows.push(...wrap(color(90, change.reason), width))
-        else {
-          for (const row of diffRows(change.diff, width, flags.tools)) rows.push(row)
-        }
+        if (flags.diffs) rows.push(...(change.kind === "diff" ? renderDiff(change.diff, change.path, width) : wrap(color(90, change.reason), width)))
       }
       if (trace?.truncated) rows.push(...wrap(color(90, "activity capture limited; some operations are not shown"), width))
       if (flags.tools && entry.name === "python" && typeof entry.args.code === "string") {
