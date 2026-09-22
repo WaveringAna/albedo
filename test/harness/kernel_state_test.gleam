@@ -41,11 +41,11 @@ pub fn saved_variables_return_to_a_fresh_kernel_test() {
     runtime.execute(
       host,
       fresh,
-      "import os\n(answer, rows['a'], os.getcwd())",
+      "import os\n(answer, rows['a'], os.path.samefile(os.getcwd(), '/tmp'))",
       5000,
     )
   let assert Ok(after) = after.result
-  after.value |> should.equal("(42, [1, 2, 3], '/private/tmp')")
+  after.value |> should.equal("(42, [1, 2, 3], True)")
   runtime.stop(host)
 }
 
