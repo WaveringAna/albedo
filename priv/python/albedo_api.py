@@ -38,6 +38,10 @@ class PythonApi:
     # The module list this kernel was started with, so a plugin can learn the
     # session's tool selection (remote boots the same set on another machine).
     modules: Sequence[str] = ()
+    # Registers one callback for a retained output channel, fired when the
+    # model reads it, so background work can withdraw a completion wake the
+    # read already satisfied. Absent when the host pre-dates the hook.
+    watch_output: Callable[[str, Callable[[], None]], None] | None = None
 
 
 class Execute(TypedDict):

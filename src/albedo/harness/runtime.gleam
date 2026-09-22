@@ -193,6 +193,13 @@ pub fn kernel_pid(session: Session) -> Result(Int, Nil) {
   python.os_pid(session.kernel)
 }
 
+/// Background jobs whose groups the kernel still owns, local or remote. A
+/// released kernel would kill them, so the idle sweep keeps kernels with
+/// live jobs alive.
+pub fn job_count(session: Session) -> Int {
+  python.job_count(session.kernel)
+}
+
 pub fn save_state(
   session: Session,
   path: String,

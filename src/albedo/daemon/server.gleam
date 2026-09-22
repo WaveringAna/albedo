@@ -347,6 +347,7 @@ fn reap(workers: List(session.Session), config: Config) -> Nil {
         pid,
         report.idle_ms,
         report.running,
+        report.jobs,
         list.key_find(usage, pid) |> result.unwrap(0),
       )
     })

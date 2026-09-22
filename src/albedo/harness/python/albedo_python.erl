@@ -7,7 +7,7 @@
 %% the kernel is wedged, and it returns a structured verdict instead of
 %% kill(1) exit statuses the supervisor would have to guess at.
 -module(albedo_python).
--export([start/6, execute/3, interrupt/1, stop/1, events/1, alive/1, os_pid/1, local_paths/0]).
+-export([start/6, execute/3, interrupt/1, stop/1, events/1, alive/1, os_pid/1, job_count/1, local_paths/0]).
 
 -define(STARTUP_TIMEOUT, 5000).
 -define(SHUTDOWN_GRACE, 2000).   %% must exceed the kernel's own cleanup deadline
@@ -34,7 +34,8 @@ start(Owner, Python, Script, Cwd, Host, Modules) ->
                                     when is_integer(KernelPid), KernelPid > 1 ->
                                 Parent ! {Ref, {ok, self()}},
                                 loop(#{port => Port, host => Host, active => none,
-                                       events => [], groups => #{}, target => target_of(Ready)});
+                                       events => [], groups => #{}, external => 0,
+                                       target => target_of(Ready)});
                             #{<<"type">> := <<"startup_error">>, <<"message">> := Message} when is_binary(Message) ->
                                 reap_start(Port), Parent ! {Ref, {error, {unavailable, Message}}};
                             _ -> reap_start(Port), Parent ! {Ref, {error, {unavailable, <<"invalid kernel handshake">>}}}
@@ -51,6 +52,15 @@ start(Owner, Python, Script, Cwd, Host, Modules) ->
     end.
 
 execute(Pid, Data, Timeout) -> call(Pid, {execute, Data, Timeout}).
+
+%% Background jobs whose groups are still owned: local job groups plus the
+%% remote jobs the remote plugin reported through "jobs" frames. A released
+%% kernel would kill them, so the idle sweep keeps such kernels alive.
+job_count(Pid) ->
+    case call(Pid, job_count) of
+        {ok, Count} when is_integer(Count), Count >= 0 -> Count;
+        _ -> 0
+    end.
 events(Pid) -> case call(Pid, events) of {ok, Events} -> Events; _ -> [] end.
 interrupt(Pid) -> Pid ! interrupt, nil.
 
@@ -94,6 +104,9 @@ loop(S = #{port := Port, active := Active}) ->
         {call, From, Ref, os_pid} ->
             #{target := #{pid := KernelPid}} = S,
             From ! {Ref, {ok, KernelPid}}, loop(S);
+        {call, From, Ref, job_count} ->
+            Count = maps:size(maps:get(groups, S)) + maps:get(external, S, 0),
+            From ! {Ref, {ok, Count}}, loop(S);
         {call, From, Ref, events} ->
             From ! {Ref, {ok, lists:reverse(maps:get(events, S))}}, loop(S#{events => []});
         {call, From, Ref, stop} ->
@@ -154,6 +167,9 @@ handle(#{<<"type">> := <<"job">>, <<"id">> := Id} = Message, Data, S) ->
                  Cleanup -> log({job_cleanup_failed, Id, Cleanup}), maps:get(groups, S)
              end,
     loop(S#{events => lists:sublist([Data | maps:get(events, S)], 100), groups => Groups});
+handle(#{<<"type">> := <<"jobs">>, <<"live">> := Live}, _, S)
+        when is_integer(Live), Live >= 0 ->
+    loop(S#{external => Live});
 handle(#{<<"type">> := <<"trace">>}, Data, S) ->
     loop(S#{events => lists:sublist([Data | maps:get(events, S)],100)});
 handle(#{<<"type">> := <<"cleanup">>, <<"failures">> := Failures}, _, S) ->

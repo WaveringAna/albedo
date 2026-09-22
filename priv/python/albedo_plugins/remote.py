@@ -43,7 +43,22 @@ loop: asyncio.AbstractEventLoop
 host_call: Any
 HostErrorType: type[Exception]
 capture_factory: Any
+send_frame: Any
 session_modules: list[str] = []
+_fallback_live: set[str] = set()   # degraded-mode jobs still running over ssh
+
+
+def _report_live() -> None:
+    """Tell the local supervisor how many remote jobs are still live.
+
+    Releasing the kernel would kill every ssh client and with them the remote
+    kernels, so the idle sweep keeps a kernel alive while remote work runs.
+    """
+    try:
+        live = len(_fallback_live) + sum(len(c._live) for c in connections)
+        send_frame({"type": "jobs", "live": live})
+    except Exception:
+        pass  # no channel or shutdown; the supervisor keeps the last count
 
 configured: dict[str, str | None] = {}
 connections: list["RemoteConnection"] = []
@@ -255,6 +270,7 @@ class RemoteRef:
         self._call_id = call_id
         self._label = label
         self._settled: Any = _UNSET
+        self._withdrawn: bool = False
 
     # --- mirrored job state: sync, like the local handle ---
 
@@ -300,7 +316,17 @@ class RemoteRef:
     def _mirror(self) -> dict[str, Any] | None:
         if self._handle is None:
             return None
-        return self._connection._mirrors.get(self._handle)
+        state = self._connection._mirrors.get(self._handle)
+        # A finished job read through its mirror is consumed on the remote side
+        # too, or its kernel would keep retrying a wake this read satisfies.
+        if (state is not None and state.get("exit_code") is not None
+                and not self._withdrawn):
+            self._withdrawn = True
+            try:
+                _ = loop.create_task(self._connection.mark_read(self._handle))
+            except RuntimeError:
+                pass  # the loop is closing; the notice dies with the kernel
+        return state
 
     # --- the value surface: identical output to the local tool ---
 
@@ -431,6 +457,7 @@ class RemoteConnection:
         self._refs: dict[str, RemoteRef] = {}
         self._mirrors: dict[str, dict[str, Any]] = {}
         self._handshake: asyncio.Future[dict[str, Any]] | None = None
+        self._live: set[str] = set()
         self._stderr_tail = bytearray()
         self._reader: asyncio.Task[None] | None = None
         self._drain: asyncio.Task[None] | None = None
@@ -449,7 +476,10 @@ class RemoteConnection:
         if code != 0:
             await stage(self.host)
         python = self.target.get("python") or "python3"
-        script = f"exec {shlex.quote(python)} -u {shlex.quote(script_path)}" \
+        # The stamp reaches the remote kernel's plugins, so a finished remote
+        # job's wake notice names the machine it ran on.
+        script = f"ALBEDO_REMOTE_TARGET={shlex.quote(self.host)} exec " \
+            + f"{shlex.quote(python)} -u {shlex.quote(script_path)}" \
             + " " + shlex.quote(json.dumps(modules if modules is not None
                                            else default_modules()))
         if self.target.get("remote_cwd"):
@@ -511,8 +541,14 @@ class RemoteConnection:
             _ = loop.create_task(self._relay(frame))
         elif kind == "mirror" and isinstance(frame.get("handle"), str):
             self._mirrors[frame["handle"]] = frame
-        # trace, done, job, job_start, cleanup describe remote cells and jobs;
-        # those are addressed through references, not events on this side.
+        elif kind == "job_start" and isinstance(frame.get("id"), str):
+            self._live.add(frame["id"])
+            _report_live()
+        elif kind == "job" and isinstance(frame.get("id"), str):
+            self._live.discard(frame["id"])
+            _report_live()
+        # trace, done, cleanup describe remote cells; those are addressed
+        # through references, not events on this side.
 
     async def _relay(self, frame: dict[str, Any]) -> None:
         """Answer one remote host-route call against this session's daemon."""
@@ -645,6 +681,18 @@ class RemoteConnection:
         self._refs.pop(handle, None)
         await self._send({"type": "release", "handle": handle})
 
+    async def mark_read(self, handle: str) -> None:
+        """Tell the remote object its result was read, retiring its wake.
+
+        A local mirror read never crosses the channel on its own, so this one
+        round trip (a poll, which the job counts as a read) is the only way a
+        finished remote job learns the model already has its output.
+        """
+        try:
+            await self.invoke(handle=handle, name="poll", timeout=30)
+        except Exception:
+            pass  # the channel is gone; the notice fails its own way
+
     async def tools(self) -> dict[str, Any]:
         """What the remote namespace holds, and the live references it kept."""
         if self.degraded is not None:
@@ -736,6 +784,8 @@ class RemoteConnection:
                 except asyncio.TimeoutError:
                     self._process.kill()
         self.closed = True
+        self._live.clear()
+        _report_live()
         for future in self._pending.values():
             if not future.done():
                 future.set_exception(RemoteLost(f"the connection to {self.host} closed"))
@@ -812,10 +862,14 @@ class FallbackJob:
         self.started: float = loop.time()
         self.duration: float | None = None
         self.capture = capture_factory(self.id)
+        self._awaited = False
+        self._read = False
+        self._connection = connection
+        _fallback_live.add(self.id)
+        _report_live()
         script = f"bash -c {shlex.quote(command)}"
         if connection.target.get("remote_cwd"):
             script = f"cd {shlex.quote(connection.target['remote_cwd'])} && {script}"
-        self._connection = connection
         self._task = loop.create_task(self._run(connection.host, script, timeout))
 
     async def _run(self, host: str, script: str, timeout: float) -> "FallbackJob":
@@ -836,29 +890,72 @@ class FallbackJob:
         finally:
             copying.cancel()
             self.duration = loop.time() - self.started
+            _fallback_live.discard(self.id)
+            _report_live()
+            if host_call is not None and not self._awaited:
+                _ = loop.create_task(self._announce())
         return self
+
+    async def _announce(self) -> None:
+        """Wake the session for this command, retrying while it runs."""
+        while not self._read and not self._awaited:
+            try:
+                await host_call("jobs.completed", self._notice())
+                return
+            except HostErrorType as error:
+                if getattr(error, "code", "") != "busy":
+                    self.capture.write(f"\n[completion notice not delivered: {error}\n")
+                    return
+            except Exception:
+                return  # the kernel is going away; the result stays on the handle
+            await asyncio.sleep(2.0)
+
+    def _notice(self) -> dict[str, object]:
+        """The wake turn's display text, model text, and the facts behind both."""
+        command = self.command[:200] + ("..." if len(self.command) > 200 else "")
+        outcome = ("timed out" if self.timed_out else f"exit_code={self.exit_code}"
+                   if self.exit_code is not None else "exit status unknown")
+        seconds = f"{self.duration:.1f}s" if self.duration is not None else "unknown duration"
+        display = f"bash job finished on {self._connection.host} ({outcome}, {seconds}): {command}"
+        text = (
+            "<system-note>a background bash command finished with its result unread on"
+            f" {self._connection.host} (ssh command mode): {outcome}, {seconds},"
+            f" command: {command}."
+            f" its handle is jobs[{self.id!r}] in python; jobs[{self.id!r}].tail() or"
+            f" output.read({self.id!r}) reads its output."
+            " no user sent this message; use the result if the session's work needs"
+            " it, otherwise acknowledge briefly and stay idle.</system-note>")
+        return {"display": display, "text": text, "id": self.id,
+                "exit_code": self.exit_code, "timed_out": self.timed_out,
+                "duration": self.duration, "host": self._connection.host}
 
     async def _copy(self, stream: Any) -> None:
         while chunk := await stream.read(8192):
             self.capture.write(chunk.decode("utf-8", errors="replace"))
 
     def __await__(self):
+        self._awaited = True
         return asyncio.shield(self._task).__await__()
 
     def poll(self) -> int | None:
+        if self.exit_code is not None:
+            self._read = True
         return self.exit_code
 
     @property
     def returncode(self) -> int | None:
         """`exit_code` under subprocess's name; both spellings answer."""
-        return self.exit_code
+        return self.poll()
 
     def tail(self, n: int = 4000) -> str:
+        if self.exit_code is not None:
+            self._read = True
         data = self.capture.tail_data
         return bytes(data[-max(1, min(n, 65536)):]).decode("utf-8", errors="replace")
 
     async def stop(self) -> None:
         """End the ssh client; the remote command's fate is reported, not assumed."""
+        self._read = True  # an explicit stop is its own report; no wake is owed
         process = getattr(self, "_process", None)
         if process is not None and process.returncode is None:
             process.terminate()
@@ -947,9 +1044,11 @@ remote = Remote()
 
 
 def setup(api: PythonApi) -> dict[str, object]:
-    global loop, host_call, HostErrorType, capture_factory, session_modules
+    global loop, host_call, HostErrorType, capture_factory, send_frame
+    global session_modules
     loop, host_call = api.loop, api.host
     HostErrorType, capture_factory = api.HostError, api.capture
+    send_frame = api.send
     session_modules = list(api.modules)
     api.on_shutdown(Remote.close_all)
     return {"remote": remote, "RemoteError": RemoteError}

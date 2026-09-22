@@ -44,7 +44,13 @@ pub type Page {
 
 /// What a sweep needs to decide whether this session's kernel can be released.
 pub type Report {
-  Report(running: Bool, kernel: Option(Int), history_loaded: Bool, idle_ms: Int)
+  Report(
+    running: Bool,
+    kernel: Option(Int),
+    history_loaded: Bool,
+    idle_ms: Int,
+    jobs: Int,
+  )
 }
 
 pub type ModelSelection {
@@ -67,6 +73,7 @@ pub type Message {
   Resume
   Abort(String)
   Submit(
+    String,
     String,
     String,
     String,
@@ -164,6 +171,17 @@ pub fn start(
         unprepared(),
         now_ms(),
       )
+    // Background jobs wake this session through the kernel's jobs route; the
+    // registered closure lands a completion notice as an ordinary submit, so
+    // the wake reuses the whole turn pipeline and busy answers itself.
+    wakes_register(info.id, fn(display, text) {
+      case
+        actor.call(self, 10_000, Submit(display, text, "bash", "bash", None, _))
+      {
+        Ok(Nil) -> ""
+        Error(error) -> submission_error(error)
+      }
+    })
     Ok(
       actor.initialised(state)
       |> actor.returning(self)
@@ -188,7 +206,7 @@ pub fn submit(
   client_id: String,
   image: Option(types.Image),
 ) -> Result(Nil, SubmissionError) {
-  actor.call(session, 10_000, Submit(text, text, client_id, image, _))
+  actor.call(session, 10_000, Submit(text, text, client_id, "chat", image, _))
 }
 
 pub fn skills(
@@ -359,7 +377,7 @@ fn handle(state: State, message: Message) {
         }
         _ -> actor.continue(state)
       }
-    Submit(display, text, client_id, image, reply) ->
+    Submit(display, text, client_id, source, image, reply) ->
       case state.run {
         Some(_) -> {
           process.send(reply, Error(Rejected("session is busy")))
@@ -440,7 +458,7 @@ fn handle(state: State, message: Message) {
                             Some(image) ->
                               view.user_image(
                                 display,
-                                "chat",
+                                source,
                                 Some(client_id),
                                 Some(timestamp),
                                 image,
@@ -448,7 +466,7 @@ fn handle(state: State, message: Message) {
                             None ->
                               view.user(
                                 display,
-                                "chat",
+                                source,
                                 Some(client_id),
                                 Some(timestamp),
                               )
@@ -545,6 +563,7 @@ fn handle(state: State, message: Message) {
                       display,
                       skill_catalog.activation_prompt(activation),
                       client_id,
+                      "chat",
                       None,
                       reply,
                     ),
@@ -956,6 +975,12 @@ fn handle(state: State, message: Message) {
         Some(kernel) -> option.from_result(runtime.kernel_pid(kernel))
         None -> None
       }
+      // Live background jobs keep their kernel: releasing it would kill work
+      // the session still owes a wake for, so the reaper counts them.
+      let jobs = case state.kernel {
+        Some(kernel) -> runtime.job_count(kernel)
+        None -> 0
+      }
       process.send(
         reply,
         Report(
@@ -963,6 +988,7 @@ fn handle(state: State, message: Message) {
           kernel,
           state.history != None,
           now_ms() - state.last_touch,
+          jobs,
         ),
       )
       actor.continue(state)
@@ -1013,6 +1039,7 @@ fn handle(state: State, message: Message) {
         None, None -> Nil
       }
       runtime.reset_session(state.host, state.info.id)
+      wakes_forget(state.info.id)
       process.send(reply, Nil)
       actor.stop()
     }
@@ -1027,6 +1054,12 @@ fn kill(pid: process.Pid) -> Nil
 
 @external(erlang, "albedo_session", "now_ms")
 fn now_ms() -> Int
+
+@external(erlang, "albedo_wakes", "register")
+fn wakes_register(session: String, submit: fn(String, String) -> String) -> Nil
+
+@external(erlang, "albedo_wakes", "forget")
+fn wakes_forget(session: String) -> Nil
 
 @external(erlang, "albedo_session", "discard")
 fn discard(path: String) -> Nil

@@ -61,6 +61,10 @@ packaged short names resolve to `albedo_plugins.*`; dotted names select installe
 
 interfaces: [`PythonApi`](../priv/python/albedo_api.py), [`work`](../src/albedo/harness/work.gleam), [`compaction strategy`](../src/albedo/harness/compaction.gleam).
 
+## bash
+
+`bash(command)` starts a supervised job that owns its process group; output stays on the handle (`job.tail()`, `output.read(job.id)`) and finished handles stay addressable in `jobs`. a job that finishes with its result unread wakes the session: the kernel reports the completion through the `jobs` host route, and the session submits a user turn naming the job, its exit, and how to read it, so the model never polls or awaits a handle just to learn it finished. awaiting the job, reading its result, or stopping it retires the wake. a busy session is retried, not queued in gleam: the kernel retries the notice until the run ends or the result is read. live jobs pin the kernel against the idle sweep — a detached session is not released while background work still runs, local or remote, because releasing it would kill the job and the wake it owes. remote `bash` jobs wake the same way — the remote kernel's host calls relay over the ssh connection into this session's route, and the notice names the host — and a mirror read (`rem_job.tail()`) tells the remote job it was read through one `poll` round trip.
+
 ## files
 
 see [the files extension](files.md): bounded reads, guarded exact edits, and ripgrep search that runs as a supervised `bash` job instead of a raw subprocess.

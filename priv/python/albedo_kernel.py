@@ -234,10 +234,25 @@ def retained(id: str) -> Capture:
     return capture
 
 
+READ_WATCHERS: dict[str, Callable[[], None]] = {}
+
+
+def watch_output(id: str, notify: Callable[[], None]) -> None:
+    """Register one read callback for a retained output channel (a background job)."""
+    READ_WATCHERS[id] = notify
+
+
 class Output:
     def read(self, id: str, *, offset: int = 0, limit: int = 4000) -> str:
         """Read retained output by cell or job id. At most 1 MiB each, 16 recent cells."""
-        return retained(id).read(offset, limit)
+        capture = retained(id)
+        notify = READ_WATCHERS.pop(id, None)  # one read satisfies the watcher
+        if notify is not None:
+            try:
+                notify()
+            except Exception:
+                pass  # a plugin's bookkeeping must not fail the read
+        return capture.read(offset, limit)
 
     def list(self):
         """Every retained channel: cells, background jobs, and 'native'.
@@ -847,7 +862,7 @@ def main():
     modules = cast(list[str], json.loads(sys.argv[1]))
     api = albedo_api.PythonApi(version=2, loop=LOOP, host=host, HostError=WorkError,
         capture=background_capture, preview=PREVIEW, send=send, on_shutdown=CLEANUP.append,
-        background_handle=HANDLES.append, modules=modules)
+        background_handle=HANDLES.append, modules=modules, watch_output=watch_output)
     NAMESPACE.update(cells=Cells(), output=Output())
     try:
         albedo_api.load_plugins(modules, api, NAMESPACE)

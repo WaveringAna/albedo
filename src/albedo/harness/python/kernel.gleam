@@ -188,6 +188,11 @@ fn saved_decoder() -> decode.Decoder(Result(Saved, Error)) {
 @external(erlang, "albedo_python", "os_pid")
 pub fn os_pid(kernel: Kernel) -> Result(Int, Nil)
 
+/// Live background jobs the kernel still supervises, local groups plus remote
+/// jobs its remote plugin reported. Zero when the kernel cannot answer.
+@external(erlang, "albedo_python", "job_count")
+pub fn job_count(kernel: Kernel) -> Int
+
 @external(erlang, "albedo_python", "interrupt")
 pub fn interrupt(kernel: Kernel) -> Nil
 

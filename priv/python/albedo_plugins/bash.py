@@ -4,14 +4,21 @@ A job runs in its own session, so its shell leads a process group and one signal
 reaches the command plus every descendant that stayed in that group. The group
 is ended when the command ends, when its deadline passes, and at kernel
 shutdown. What survives is reported, and unfinished work keeps its running slot.
+
+A job that finishes with its result unread wakes the session: the kernel tells
+the host, the host submits a user turn naming the job, and the model never has
+to poll or await. Reading the result (tail, poll, await, output.read) or
+stopping the job withdraws the wake, and a busy session is retried until it
+goes idle, so a notice can never overtake the read that satisfies it.
 """
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Callable, Generator
+from collections.abc import Awaitable, Callable, Generator
 from albedo_api import PythonApi, OutputCapture, Send
 import albedo_proc
 import asyncio
+import os
 import uuid
 
 loop: asyncio.AbstractEventLoop
@@ -21,6 +28,8 @@ jobs: dict[str, Job] = {}                        # every handle the session can 
 active: dict[str, Job] = {}                      # unfinished work: the bounded resource
 retained: OrderedDict[str, Job] = OrderedDict()  # finished handles, completion order
 send: Send
+host: Callable[[dict[str, object]], Awaitable[object]] | None = None
+watch_output: Callable[[str, Callable[[], None]], None] | None = None
 
 ACTIVE_LIMIT = 64       # jobs owning running processes at once
 RETAINED_LIMIT = 64     # finished handles still addressable through `jobs`
@@ -28,6 +37,8 @@ COMPLETION_GRACE = 0.1  # seconds to keep reading after the command exits
 EXIT_INTERVAL = 0.01    # seconds between exit checks while the command runs
 SHUTDOWN_TERM = 0.25    # shared by every live group at shutdown
 SHUTDOWN_KILL = 1.0
+NOTICE_RETRY = 2.0      # seconds between wake attempts while the session runs
+NOTICE_COMMAND_CAP = 200  # command characters a wake notice carries
 
 
 class Job:
@@ -45,6 +56,11 @@ class Job:
         self.termination: albedo_proc.Termination | None = None
         self.capture: OutputCapture = capture_factory(self.id)
         self.ending: asyncio.Task[albedo_proc.Termination] | None = None
+        self._awaited = False   # someone awaited this job; its result reached them
+        self._read = False      # the finished result was read; no wake is owed
+        self._remote = os.environ.get("ALBEDO_REMOTE_TARGET") or None
+        if watch_output is not None:
+            watch_output(self.id, self._mark_read)
         self.spawning = loop.create_task(asyncio.create_subprocess_shell(
             self.command, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT, start_new_session=True))
@@ -63,7 +79,7 @@ class Job:
     def _cancelled(self, task: asyncio.Task[Job]) -> None:
         if task.cancelled():
             # Cancellation before _run starts skips its finally block.
-            loop.create_task(self.stop())
+            loop.create_task(self._stop())
 
     async def _spawn(self) -> asyncio.subprocess.Process:
         process = await asyncio.shield(self.spawning)
@@ -82,7 +98,7 @@ class Job:
         except Exception as error:
             self.capture.write(f"{type(error).__name__}: {error}\n")
         finally:
-            ending = await self.stop()
+            ending = await self._stop()
             if self.exit_code is None and self.process is not None:
                 self.exit_code = await self._status(self.process)
             self.duration = loop.time() - self.started
@@ -93,6 +109,8 @@ class Job:
             send({"type": "job", "id": self.id, "exit_code": self.exit_code,
                   "timed_out": self.timed_out, "cleanup": ending.as_json()})
             release(self)
+            if host is not None and not self._awaited:
+                _ = loop.create_task(self._announce())
         return self
 
     async def _drain(self, process: asyncio.subprocess.Process) -> int:
@@ -129,22 +147,74 @@ class Job:
             self.capture.write(chunk.decode("utf-8", errors="replace"))
 
     def __await__(self) -> Generator[object, None, Job]:
+        self._awaited = True
         return asyncio.shield(self.task).__await__()
 
     def poll(self):
+        if self.exit_code is not None:
+            self._read = True
         return self.exit_code
 
     @property
     def returncode(self) -> int | None:
         """`exit_code` under subprocess's name; both spellings answer."""
-        return self.exit_code
+        return self.poll()
 
     def tail(self, n: int = 4000) -> str:
+        if self.exit_code is not None:
+            self._read = True
         data = self.capture.tail_data
         return bytes(data[-max(1, min(n, preview_limit)):]).decode("utf-8", errors="replace")
 
+    def _mark_read(self) -> None:
+        """output.read reached this job's channel; a finished result is read."""
+        if self.exit_code is not None:
+            self._read = True
+
+    async def _announce(self) -> None:
+        """Wake the session for this job's result, retrying while it runs.
+
+        A busy session answers with a refusal rather than queueing, so the
+        notice retries until the run ends; a read or await in the meantime
+        retires it, which is also the creating-cell barrier: a cell that will
+        await its own job suppresses the wake before any turn can start.
+        """
+        while not self._read and not self._awaited:
+            try:
+                await host("jobs.completed", self._notice())
+                return
+            except Exception as error:
+                if getattr(error, "code", "") != "busy":
+                    self.capture.write(f"\n[completion notice not delivered: {error}\n")
+                    return
+            await asyncio.sleep(NOTICE_RETRY)
+
+    def _notice(self) -> dict[str, object]:
+        """The wake turn's display text, model text, and the facts behind both."""
+        command = self.command[:NOTICE_COMMAND_CAP] + (
+            "..." if len(self.command) > NOTICE_COMMAND_CAP else "")
+        where = f" on {self._remote}" if self._remote else ""
+        outcome = ("timed out" if self.timed_out else f"exit_code={self.exit_code}"
+                   if self.exit_code is not None else "exit status unknown")
+        seconds = f"{self.duration:.1f}s" if self.duration is not None else "unknown duration"
+        display = f"bash job finished{where} ({outcome}, {seconds}): {command}"
+        text = (
+            "<system-note>a background bash job finished with its result unread"
+            f"{where}: {outcome}, {seconds}, command: {command}."
+            f" its handle is jobs[{self.id!r}] in python; jobs[{self.id!r}].tail() or"
+            f" output.read({self.id!r}) reads its output."
+            " no user sent this message; use the result if the session's work needs"
+            " it, otherwise acknowledge briefly and stay idle.</system-note>")
+        return {"display": display, "text": text, "id": self.id,
+                "exit_code": self.exit_code, "timed_out": self.timed_out,
+                "duration": self.duration, "host": self._remote}
+
     async def stop(self) -> albedo_proc.Termination:
         """End the job's process group. A failed attempt stays retryable."""
+        self._read = True  # an explicit stop is its own report; no wake is owed
+        return await self._stop()
+
+    async def _stop(self) -> albedo_proc.Termination:
         if self.termination is not None and self.termination.gone:
             return self.termination
         process = self.process
@@ -200,6 +270,11 @@ def bash(command: object, *, timeout: float = 300) -> Job:
     for the retained whole. Jobs survive cell completion and each owns its process
     group. Only unfinished work counts against the concurrent quota; finished
     handles stay usable in `jobs` until newer ones displace them.
+
+    A job that finishes with its result unread wakes the session by itself, so
+    polling or trailing a handle is optional: leave it in a variable, end the
+    cell, and the wake names the job when it lands. Awaiting the job, reading
+    its result, or stopping it first means no wake.
     """
     if not isinstance(command, str) or not 0 < timeout <= 3600:
         raise ValueError("command must be text; 0 < timeout <= 3600 required")
@@ -226,7 +301,9 @@ async def close() -> None:
 
 def setup(api: PythonApi) -> dict[str, object]:
     global loop, capture_factory, preview_limit, jobs, active, retained, send
+    global host, watch_output
     loop, capture_factory, preview_limit, send = api.loop, api.capture, api.preview, api.send
+    host, watch_output = api.host, api.watch_output
     jobs, active, retained = {}, {}, OrderedDict()
     api.background_handle(Job)
     api.on_shutdown(close)
