@@ -3,6 +3,7 @@ import albedo/harness/codex
 import albedo/harness/commands
 import albedo/harness/extension
 import albedo/harness/files
+import albedo/harness/instructions
 import albedo/harness/mcp
 import albedo/harness/models
 import albedo/harness/openai
@@ -23,6 +24,7 @@ pub fn defaults() -> Config {
       bash.extension(),
       work.extension(),
       files.extension(),
+      instructions.extension(),
       commands.extension(),
       skills.extension(),
       models.extension(),
@@ -33,8 +35,8 @@ pub fn defaults() -> Config {
       remote.extension(),
     ],
     [
-      "python", "bash", "work", "files", "commands", "skills", "models",
-      "openai", "codex", "rolling", "remote",
+      "python", "bash", "work", "files", "instructions", "commands", "skills",
+      "models", "openai", "codex", "rolling", "remote",
     ],
   )
 }
