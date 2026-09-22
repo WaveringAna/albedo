@@ -14,8 +14,12 @@ const common: ChatCommand[] = [
 export function useCommandMenu(value: string, submit: (value: string) => void, extra: ChatCommand[] = []) {
   const [selected, select] = useState(0)
   const [dismissed, dismiss] = useState("")
+  // One row per name: the last occurrence wins, so chat's own builtins stay
+  // authoritative over catalog entries with the same name.
   const matches = /^\/\S*$/.test(value) && value !== dismissed
-    ? [...extra, ...common].filter((item) => item.name.startsWith(value)) : []
+    ? [...extra, ...common]
+        .filter((item, index, all) => all.findLastIndex((other) => other.name === item.name) === index)
+        .filter((item) => item.name.startsWith(value)) : []
   const index = Math.min(selected, Math.max(0, matches.length - 1))
   const onKey: NonNullable<TextInputProps["onKey"]> = (_, key, replace) => {
     const choice = matches[index]

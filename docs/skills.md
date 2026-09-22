@@ -24,7 +24,7 @@ The catalog is prepared once when a runtime session opens. Its immutable snapsho
 
 ## Activation and Python API
 
-The `skills` extension depends on the `python` extension. It does not advertise separate model function tools. Every cataloged skill is a session command (see [commands](commands.md)): the kernel mints one typed method per skill from the same catalog the CLI menu shows. Invoking it reads the selected full `SKILL.md` and returns `name`, `description`, `source`, exact `arguments`, and `instructions` to the current Python call. It does not submit or commit another user turn.
+The `skills` extension depends on the `python` extension. It does not advertise separate model function tools. Every cataloged skill is a session command (see [commands](commands.md)): the kernel mints one typed method per skill from the same catalog the CLI menu shows. A model invocation reads the selected full `SKILL.md` and returns `name`, `description`, `source`, exact `arguments`, and `instructions` to the current Python call, without submitting or committing another turn; a user invocation submits exactly one activation turn.
 
 ```python
 await commands.demo("merge these files")

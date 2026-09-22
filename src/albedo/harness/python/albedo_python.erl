@@ -36,12 +36,18 @@ start(Owner, Python, Script, Cwd, Host, Modules) ->
     end.
 
 %% Boot-time host RPC: plugin setup runs before the handshake and may call the
-%% host, so "call" frames can precede "ready". Serve them exactly like the loop
-%% does, but write the reply directly: the loop that would relay it does not
-%% exist yet, and the kernel waits for the reply before it can become ready.
+%% host, so "call" frames can precede "ready". Replies are written straight to
+%% the port — unlike the loop, which relays them through its own mailbox —
+%% because the kernel waits for the reply before it can become ready. Other
+%% frame kinds are left for the loop, and the whole boot keeps one absolute
+%% deadline.
 startup(Port, Host, Parent, Ref) ->
+    startup(Port, Host, Parent, Ref, erlang:monotonic_time(millisecond) + ?STARTUP_TIMEOUT).
+
+startup(Port, Host, Parent, Ref, Deadline) ->
+    After = max(1, Deadline - erlang:monotonic_time(millisecond)),
     receive
-        {Port, {data, Data}} ->
+        {Port, {data, Data}} when byte_size(Data) =< 8388608 ->
             case try json:decode(Data) catch _:_ -> invalid end of
                 #{<<"type">> := <<"ready">>, <<"pid">> := KernelPid, <<"pgid">> := KernelPid} = Ready
                         when is_integer(KernelPid), KernelPid > 1 ->
@@ -52,17 +58,17 @@ startup(Port, Host, Parent, Ref) ->
                 #{<<"type">> := <<"startup_error">>, <<"message">> := Message} when is_binary(Message) ->
                     reap_start(Port), Parent ! {Ref, {error, {unavailable, Message}}};
                 #{<<"type">> := <<"call">>, <<"id">> := Id} = Message ->
-                    Host1 = Host,
                     spawn(fun() ->
-                        Reply = try json:decode(Host1(iolist_to_binary(json:encode(Message))))
+                        Reply = try json:decode(Host(iolist_to_binary(json:encode(Message))))
                                 catch _:_ -> #{ok => false, code => <<"unavailable">>, message => <<"runtime unavailable">>} end,
                         _ = try port_command(Port, json:encode(#{type => <<"reply">>, id => Id, value => Reply})) catch _:_ -> ok end
                     end),
-                    startup(Port, Host, Parent, Ref);
-                _ -> reap_start(Port), Parent ! {Ref, {error, {unavailable, <<"invalid kernel handshake">>}}}
+                    startup(Port, Host, Parent, Ref, Deadline);
+                _ -> startup(Port, Host, Parent, Ref, Deadline)
             end;
+        {Port, {data, _}} -> reap_start(Port), Parent ! {Ref, {error, {unavailable, <<"invalid kernel handshake">>}}};
         {Port, {exit_status, _}} -> Parent ! {Ref, {error, {unavailable, <<"python exited at startup">>}}}
-    after ?STARTUP_TIMEOUT -> reap_start(Port), Parent ! {Ref, {error, {unavailable, <<"python startup timed out">>}}}
+    after After -> reap_start(Port), Parent ! {Ref, {error, {unavailable, <<"python startup timed out">>}}}
     end.
 
 execute(Pid, Data, Timeout) -> call(Pid, {execute, Data, Timeout}).

@@ -23,10 +23,15 @@ describe("session command invocations", () => {
     assert.equal(parseCommandInvocation("/model gpt-5", catalog)?.arguments, "gpt-5")
   })
 
-  it("validates daemon metadata", () => {
+  it("validates daemon metadata but survives one malformed row", () => {
     assert.deepEqual(parseCommandCatalog(catalog), catalog)
-    assert.throws(() => parseCommandCatalog([{ ...catalog[0], name: "/bad command" }]), /invalid/)
-    assert.throws(() => parseCommandCatalog([{ ...catalog[0], modelCallable: "yes" }]), /invalid/)
+    // One bad row must not blank the menu.
+    assert.deepEqual(parseCommandCatalog([{ ...catalog[0], name: "/bad command" }, catalog[1]]), [catalog[1]])
+    assert.deepEqual(parseCommandCatalog([{ ...catalog[0], modelCallable: "yes" }, catalog[2]]), [catalog[2]])
+    // Underscored names are producer-valid and must survive too.
+    const snake: SessionCommand = { name: "/snake_case", description: "Snake", method: "snake_case", modelCallable: true, userTurn: true, arguments: [] }
+    assert.deepEqual(parseCommandCatalog([snake]), [snake])
+    // A wholly invalid payload still refuses.
     assert.throws(() => parseCommandCatalog([{ ...catalog[0], arguments: [{ name: "x", description: 1, required: false }] }]), /invalid/)
     assert.throws(() => parseCommandCatalog({ commands: [] }), /invalid/)
   })

@@ -11,6 +11,7 @@ cd "$(dirname "$0")"
 gleam format --check src test
 gleam test
 python3 test/harness/python_plugin_test.py
+python3 test/harness/commands_plugin_test.py
 python3 test/harness/files_plugin_test.py
 python3 test/harness/job_wake_test.py
 python3 test/harness/remote_kernel_test.py

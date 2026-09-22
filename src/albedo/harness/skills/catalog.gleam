@@ -195,7 +195,7 @@ pub fn read(
 
 fn find(catalog: Catalog, name: String) -> Result(Skill, String) {
   list.find(catalog.skills, fn(skill) { skill.name == name })
-  |> result.replace_error("unknown skill name; use await skills.list()")
+  |> result.replace_error("unknown skill name; the session catalog lists them")
 }
 
 @external(erlang, "albedo_skills", "home")

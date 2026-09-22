@@ -696,51 +696,27 @@ fn route(
                   }
                 }
                 Post, "commands" -> {
-                  let decoder = {
-                    use name <- decode.field("name", decode.string)
-                    use arguments <- decode.optional_field(
-                      "arguments",
-                      "",
-                      decode.string,
-                    )
-                    use args <- decode.optional_field(
-                      "args",
-                      None,
-                      decode.optional(decode.dict(decode.string, decode.string)),
-                    )
-                    use client_id <- decode.optional_field(
-                      "clientId",
-                      "",
-                      decode.string,
-                    )
-                    decode.success(#(name, arguments, args, client_id))
-                  }
                   case
-                    body(req, decoder)
-                    |> result.try(fn(call) {
+                    body(req, decode.dynamic)
+                    |> result.try(fn(fields) {
+                      use #(name, supplied, raw, client) <- result.try(
+                        command.decode_run(
+                          ["name", "args", "arguments", "clientId"],
+                          fields,
+                        ),
+                      )
                       use #(commands, context) <- result.try(session.commands(
                         worker,
                       ))
-                      case call.1 {
-                        "" ->
-                          command.dispatch(
-                            commands,
-                            context,
-                            command.UserCall,
-                            call.3,
-                            call.0,
-                            call.2 |> option.unwrap(dict.new()),
-                          )
-                        arguments ->
-                          command.invoke(
-                            commands,
-                            context,
-                            command.UserCall,
-                            call.3,
-                            call.0,
-                            arguments,
-                          )
-                      }
+                      command.call(
+                        commands,
+                        context,
+                        command.UserCall,
+                        client,
+                        name,
+                        supplied,
+                        raw,
+                      )
                     })
                   {
                     Ok(command.Data(value)) ->

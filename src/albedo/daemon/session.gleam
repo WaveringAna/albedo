@@ -14,7 +14,6 @@ import albedo/harness/python/kernel as python
 import albedo/harness/rolling
 import albedo/harness/runtime
 import albedo/openai_api/types
-import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/json
@@ -182,9 +181,7 @@ pub fn start(
         Error(error) -> submission_error(error)
       }
     })
-    // Command runs execute outside this actor and address state through this
-    // closure, so every state operation serializes here like any other message.
-    commands_register(info.id, fn(op, args) { command_op(self, op, args) })
+    commands_register(info.id, fn(op) { command_op(self, op) })
     Ok(
       actor.initialised(state)
       |> actor.returning(self)
@@ -477,30 +474,13 @@ fn handle(state: State, message: Message) {
           }
         }
       }
-    ReadCommands(reply) ->
-      case directory(state.info.cwd) {
-        False -> {
-          process.send(reply, Error("workspace not found: " <> state.info.cwd))
-          actor.continue(state)
-        }
-        True ->
-          case ensure_kernel(state) {
-            Error(error) -> {
-              process.send(reply, Error(error))
-              actor.continue(state)
-            }
-            Ok(#(next, kernel)) -> {
-              process.send(
-                reply,
-                Ok(#(
-                  runtime.commands(kernel),
-                  command.context(runtime.ledger(next.host), next.info.id),
-                )),
-              )
-              actor.continue(next)
-            }
-          }
-      }
+    ReadCommands(reply) -> {
+      process.send(
+        reply,
+        runtime.peek_commands(state.host, state.info.id, state.info.cwd),
+      )
+      actor.continue(state)
+    }
     ReadSelection(reply) -> {
       process.send(reply, model_selection(state.info))
       actor.continue(state)
@@ -541,7 +521,7 @@ fn handle(state: State, message: Message) {
           let state = case cwd == state.info.cwd {
             True -> state
             False -> {
-              runtime.reset_session(state.host, state.info.id)
+              runtime.forget_session(state.host, state.info.id)
               case state_path(state) {
                 Some(path) -> discard(path)
                 None -> Nil
@@ -970,7 +950,7 @@ fn handle(state: State, message: Message) {
         }
         None, None -> Nil
       }
-      runtime.reset_session(state.host, state.info.id)
+      runtime.forget_session(state.host, state.info.id)
       wakes_forget(state.info.id)
       commands_forget(state.info.id)
       process.send(reply, Nil)
@@ -979,52 +959,28 @@ fn handle(state: State, message: Message) {
   }
 }
 
-/// The registered command state seam: one operation name in, session state out.
+/// The registered command state seam: one operation in, session state out.
 ///
 /// Runs on whichever process invoked the command (the kernel's host-call
 /// process or an HTTP request process), so every branch is one actor call that
 /// reuses the ordinary message handlers instead of duplicating their logic.
 fn command_op(
   session: Session,
-  op: String,
-  args: Dict(String, String),
+  op: command.StateOp,
 ) -> Result(json.Json, String) {
   case op {
-    "model.get" -> Ok(selection_json(actor.call(session, 5000, ReadSelection)))
-    "model.select" -> {
-      let provider = case dict.get(args, "provider") {
-        Ok(value) if value != "" -> Some(value)
-        _ -> None
-      }
-      actor.call(session, 5000, ChangeModel(
-        dict.get(args, "model") |> result.unwrap(""),
-        provider,
-        _,
-      ))
+    command.ModelGet ->
+      Ok(selection_json(actor.call(session, 5000, ReadSelection)))
+    command.ModelSelect(model, provider) ->
+      actor.call(session, 5000, ChangeModel(model, provider, _))
       |> result.map(selection_json)
-    }
-    "context.summary" -> Ok(actor.call(session, 5000, ReadContext))
-    "context.page" ->
-      actor.call(session, 5000, ReadContextPage(
-        dict.get(args, "section") |> result.unwrap(""),
-        dict.get(args, "page")
-          |> result.unwrap("0")
-          |> int.parse
-          |> result.unwrap(0),
-        _,
-      ))
-    "submit" ->
-      actor.call(session, 10_000, Submit(
-        dict.get(args, "display") |> result.unwrap(""),
-        dict.get(args, "text") |> result.unwrap(""),
-        dict.get(args, "client") |> result.unwrap(""),
-        "chat",
-        None,
-        _,
-      ))
+    command.ContextSummary -> Ok(actor.call(session, 5000, ReadContext))
+    command.ContextPage(section, page) ->
+      actor.call(session, 5000, ReadContextPage(section, page, _))
+    command.Submit(display, text, client) ->
+      actor.call(session, 10_000, Submit(display, text, client, "chat", None, _))
       |> result.map_error(submission_error)
       |> result.replace(json.object([#("submitted", json.bool(True))]))
-    _ -> Error("unknown session state operation: " <> op)
   }
 }
 
@@ -1043,6 +999,9 @@ fn selection_json(selection: ModelSelection) -> json.Json {
 @external(erlang, "albedo_native", "new_id")
 fn new_id() -> String
 
+@external(erlang, "albedo_daemon", "directory")
+fn directory(path: String) -> Bool
+
 @external(erlang, "albedo_session", "kill")
 fn kill(pid: process.Pid) -> Nil
 
@@ -1058,7 +1017,7 @@ fn wakes_forget(session: String) -> Nil
 @external(erlang, "albedo_commands", "register")
 fn commands_register(
   session: String,
-  state_op: fn(String, Dict(String, String)) -> Result(json.Json, String),
+  state_op: fn(command.StateOp) -> Result(json.Json, String),
 ) -> Nil
 
 @external(erlang, "albedo_commands", "forget")
@@ -1397,21 +1356,6 @@ fn recover_pending(state: State, kernel: runtime.Session) -> List(types.Input) {
     |> list.filter(fn(call) { !list.contains(completed, call.id) })
   list.map(pending, runtime.recover(state.host, kernel, _))
 }
-
-pub fn select_model(
-  session: Session,
-  model: String,
-  provider: Option(String),
-) -> Result(ModelSelection, String) {
-  actor.call(session, 5000, ChangeModel(model, provider, _))
-}
-
-pub fn set_model(session: Session, model: String) -> Result(Nil, String) {
-  select_model(session, model, None) |> result.replace(Nil)
-}
-
-@external(erlang, "albedo_daemon", "directory")
-fn directory(path: String) -> Bool
 
 pub fn set_workspace(
   session: Session,

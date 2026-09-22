@@ -153,7 +153,7 @@ def run(endpoint):
             tools = {tool["name"] for tool in request["tools"]}
             installed = api(route)  # Managed capabilities resolve when the lazy worker opens.
             skills = next(item for item in installed if item["name"] == "skills")
-            assert skills["requires"] == ["python"]
+            assert skills["requires"] == ["python", "commands"]
             assert "skills" in skills["python_modules"], skills
             assert skills["tools"] == []
             assert not {"skills_read", "skills_list"} & tools
@@ -163,6 +163,7 @@ def run(endpoint):
                 "name": "/demo",
                 "description": "catalog-only fixture description",
                 "method": "demo",
+                "usage": "/demo [arguments]",
                 "arguments": [{"name": "arguments", "description": "arguments for the skill", "required": False}],
                 "modelCallable": True,
                 "userTurn": True,
@@ -208,7 +209,6 @@ def run(endpoint):
             assert len(Provider.requests) == before + 2
             tool_output = next(item["output"] for item in Provider.requests[-1]["input"] if item.get("type") == "function_call_output")
             assert "MODEL_COMMAND_OK" in tool_output, tool_output
-            # A user switches through the same command the CLI menu shows.
             switched = api(f"/sessions/{model_session}/commands", {"name": "/model", "args": {"model": "switched-model"}})
             assert switched["result"]["model"] == "switched-model", switched
             assert switched["result"]["provider"] == "fixture", switched

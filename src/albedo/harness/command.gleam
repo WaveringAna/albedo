@@ -4,14 +4,16 @@
 //// A command runs outside the session actor — on the kernel's host-call process
 //// or an HTTP request process — and reaches session state only through
 //// `Context.state`, which serializes on the session actor. A handler running
-//// inside that actor must never run a command itself: its state calls would
-//// deadlock against the actor it is running in.
+//// inside that actor must never run a command: its state calls would deadlock
+//// against the actor it is running in.
 
 import albedo/daemon/store
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
+import gleam/option.{type Option}
 import gleam/result
 import gleam/string
 
@@ -20,33 +22,32 @@ pub type Argument {
   Argument(name: String, description: String, required: Bool)
 }
 
-/// Who invoked the command. Runs branch only where the two faces genuinely
-/// differ: a user invocation may submit a turn, a model invocation returns data.
+/// Who invoked the command. Only a user invocation may submit a turn.
 pub type Caller {
   UserCall
   ModelCall
 }
 
 pub type Outcome {
-  /// A JSON value for the invoking caller.
   Data(json.Json)
   /// One user turn: the label shown in the transcript and the model-visible text.
   Turn(display: String, text: String)
 }
 
-/// Capabilities handed to a running command.
-///
-/// `state` addresses session state by operation name with string arguments:
-/// "model.get" (no arguments), "model.select" (model, provider?), "context.summary"
-/// (no arguments), "context.page" (section, page), and "submit" (display, text,
-/// client). Unknown operations answer an error. This is the seam between
-/// harness commands and daemon state; both sides live behind it.
+/// Session state a command may reach. The session actor answers these through
+/// its registered bridge, reusing its ordinary message handlers; an unknown
+/// operation is unrepresentable.
+pub type StateOp {
+  ModelGet
+  ModelSelect(model: String, provider: Option(String))
+  ContextSummary
+  ContextPage(section: String, page: Int)
+  Submit(display: String, text: String, client: String)
+}
+
+/// The dispatch context: `state` is the session's registered command bridge.
 pub type Context {
-  Context(
-    session: String,
-    store: store.Store,
-    state: fn(String, Dict(String, String)) -> Result(json.Json, String),
-  )
+  Context(state: fn(StateOp) -> Result(json.Json, String))
 }
 
 pub type Command {
@@ -54,12 +55,12 @@ pub type Command {
     /// The slash spelling, e.g. "/model".
     name: String,
     description: String,
-    /// Declared in invocation order. The last argument takes the rest of the raw
-    /// invocation: outer whitespace trims, inner spacing stays exact.
+    /// Declared in invocation order; the last argument takes the rest of the raw
+    /// invocation with outer whitespace trimmed and inner spacing exact, so
+    /// `/fix-lint one  two` reaches the command as "one  two".
     arguments: List(Argument),
-    /// False for commands only a user may invoke.
     model_callable: Bool,
-    /// User invocations submit the outcome as a user turn instead of returning it.
+    /// User invocations submit the outcome as a turn instead of returning it.
     user_turn: Bool,
     run: fn(Context, Caller, Dict(String, String)) -> Result(Outcome, String),
   )
@@ -67,23 +68,22 @@ pub type Command {
 
 /// The context every dispatch path builds: state serializes through the
 /// session's registered command bridge.
-pub fn context(store: store.Store, session: String) -> Context {
-  Context(session, store, fn(op, args) { state_call(session, op, args) })
+pub fn context(session: String) -> Context {
+  Context(fn(op) { state_call(session, op) })
 }
 
 @external(erlang, "albedo_commands", "call")
-fn state_call(
-  session: String,
-  op: String,
-  args: Dict(String, String),
-) -> Result(json.Json, String)
+fn state_call(session: String, op: StateOp) -> Result(json.Json, String)
 
 const identifier_characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
 
 const digits = "0123456789"
 
-/// The Python binding name minted for one command: `/model` -> "model",
-/// `/fix-lint` -> "fix_lint". Carried in the catalog so both sides agree.
+/// Binding names the Python object reserves for itself.
+const reserved_methods = ["catalog", "invoke", "help", "__init__"]
+
+/// The Python binding name of one command: `/model` -> "model",
+/// `/fix-lint` -> "fix_lint".
 pub fn method_name(name: String) -> String {
   let mangled =
     string.replace(name, "/", "")
@@ -103,6 +103,43 @@ pub fn method_name(name: String) -> String {
         False -> mangled
       }
   }
+}
+
+/// Every command's minted binding name, computed for the whole catalog:
+/// reserved names gain a suffix and collisions gain a numeric suffix, so the
+/// name advertised in the catalog and prompt is always the name Python mints.
+pub fn method_names(commands: List(Command)) -> Dict(String, String) {
+  let #(_taken, pairs) =
+    list.fold(commands, #(dict.new(), []), fn(state, command) {
+      let #(taken, pairs) = state
+      let method = unique_method(method_name(command.name), taken)
+      #(dict.insert(taken, method, True), [#(command.name, method), ..pairs])
+    })
+  dict.from_list(list.reverse(pairs))
+}
+
+fn unique_method(base: String, taken: Dict(String, Bool)) -> String {
+  let candidate = case list.contains(reserved_methods, base) {
+    True -> base <> "_"
+    False -> base
+  }
+  find_free(candidate, taken, 2)
+}
+
+fn find_free(candidate: String, taken: Dict(String, Bool), n: Int) -> String {
+  case dict.has_key(taken, candidate) {
+    False -> candidate
+    True -> find_free(candidate <> int.to_string(n), taken, n + 1)
+  }
+}
+
+/// A slash name is usable in the catalog: one non-space token after the slash.
+pub fn valid_name(name: String) -> Bool {
+  string.starts_with(name, "/")
+  && string.length(string.trim(name)) > 1
+  && !string.contains(name, " ")
+  && !string.contains(name, "\t")
+  && !string.contains(name, "\n")
 }
 
 /// Split one raw invocation into declared arguments. Leading arguments take one
@@ -154,7 +191,8 @@ fn missing(argument: Argument) -> Result(List(#(String, String)), String) {
   Error("missing argument <" <> argument.name <> ">")
 }
 
-fn usage(command: Command) -> String {
+/// One command's invocation shape: `/model [model] [provider]`.
+pub fn usage(command: Command) -> String {
   let arguments =
     command.arguments
     |> list.map(fn(argument) {
@@ -203,9 +241,29 @@ pub fn find(commands: List(Command), name: String) -> Result(Command, String) {
   |> result.replace_error("unknown command " <> name)
 }
 
+/// Resolve one wire call: declared arguments or raw invocation text, never
+/// both. This is the single precedence rule behind both entry paths.
+pub fn call(
+  commands: List(Command),
+  context: Context,
+  caller: Caller,
+  client: String,
+  name: String,
+  supplied: Dict(String, String),
+  raw: String,
+) -> Result(Outcome, String) {
+  use command <- result.try(find(commands, name))
+  use args <- result.try(case raw, dict.size(supplied) {
+    "", _ -> Ok(supplied)
+    text, 0 -> parse_arguments(command, text)
+    _, _ -> Error("pass either arguments or args, not both")
+  })
+  dispatch(commands, context, caller, client, name, args)
+}
+
 /// Run one command and apply the caller policy. A user invocation of a
-/// `user_turn` command submits its turn through state; every other outcome is
-/// returned to the caller. A model invocation may never submit a turn.
+/// `user_turn` command submits its turn through state and otherwise returns
+/// data; a model invocation may never submit a turn.
 pub fn dispatch(
   commands: List(Command),
   context: Context,
@@ -227,43 +285,26 @@ pub fn dispatch(
         command.name
         <> " submits a user turn and cannot run from the model; ask the user to run it",
       )
-    UserCall, Turn(display, text) -> {
+    UserCall, Turn(display, text) if command.user_turn -> {
       use _ <- result.try(
-        context.state(
-          "submit",
-          dict.from_list([
-            #("display", display),
-            #("text", text),
-            #("client", client),
-          ]),
-        )
-        |> result.replace(Nil),
+        context.state(Submit(display, text, client)) |> result.replace(Nil),
       )
       Ok(Turn(display, text))
     }
+    UserCall, Turn(_, _) ->
+      Error(command.name <> " returned a turn but is not a user-turn command")
+    UserCall, Data(_) if command.user_turn ->
+      Error(command.name <> " is a user-turn command but returned data")
     _, data -> Ok(data)
   }
 }
 
-/// Parse a raw user invocation and dispatch it.
-pub fn invoke(
-  commands: List(Command),
-  context: Context,
-  caller: Caller,
-  client: String,
-  name: String,
-  raw: String,
-) -> Result(Outcome, String) {
-  use command <- result.try(find(commands, name))
-  use args <- result.try(parse_arguments(command, raw))
-  dispatch(commands, context, caller, client, name, args)
-}
-
-pub fn command_json(command: Command) -> json.Json {
+pub fn command_json(command: Command, method: String) -> json.Json {
   json.object([
     #("name", json.string(command.name)),
     #("description", json.string(command.description)),
-    #("method", json.string(method_name(command.name))),
+    #("method", json.string(method)),
+    #("usage", json.string(usage(command))),
     #(
       "arguments",
       json.array(command.arguments, fn(argument) {
@@ -280,16 +321,24 @@ pub fn command_json(command: Command) -> json.Json {
 }
 
 pub fn catalog_json(commands: List(Command)) -> json.Json {
-  json.array(commands, command_json)
+  let methods = method_names(commands)
+  json.array(commands, fn(command) {
+    command_json(
+      command,
+      dict.get(methods, command.name)
+        |> result.unwrap(method_name(command.name)),
+    )
+  })
 }
 
-/// Metadata-only startup context, so the model knows the catalog before it can
-/// call it. The typed bindings are minted from this same list at kernel boot.
-/// An empty catalog adds nothing to the request.
+/// Metadata-only startup context so the model knows the catalog before it can
+/// call it, minted from the same list as the typed bindings. An empty catalog
+/// adds nothing to the request.
 pub fn context_block(commands: List(Command)) -> String {
   case commands {
     [] -> ""
     _ -> {
+      let methods = method_names(commands)
       let rows =
         commands
         |> list.map(fn(command) {
@@ -311,7 +360,13 @@ pub fn context_block(commands: List(Command)) -> String {
           }
           <> {
             case command.model_callable {
-              True -> " (method: " <> method_name(command.name) <> ")"
+              True ->
+                " (method: "
+                <> {
+                  dict.get(methods, command.name)
+                  |> result.unwrap(method_name(command.name))
+                }
+                <> ")"
               False -> " (user only)"
             }
           }
@@ -346,7 +401,7 @@ pub fn routes(
 
 fn respond(
   commands: List(Command),
-  store: store.Store,
+  _store: store.Store,
   session: String,
   request: String,
 ) -> String {
@@ -360,7 +415,7 @@ fn respond(
     Ok(#(method, args)) ->
       case method {
         "commands.list" -> answered(catalog_json(commands))
-        "commands.run" -> run_request(commands, context(store, session), args)
+        "commands.run" -> run_request(commands, session, args)
         _ -> failed("commands", "unknown commands operation")
       }
   }
@@ -368,10 +423,40 @@ fn respond(
 
 fn run_request(
   commands: List(Command),
-  context: Context,
+  session: String,
   args: decode.Dynamic,
 ) -> String {
-  let named = {
+  case decode_run(["name", "args", "arguments"], args) {
+    Error(message) -> failed("commands", message)
+    Ok(#(name, supplied, raw, _)) ->
+      case
+        call(
+          commands,
+          context(session),
+          ModelCall,
+          "kernel",
+          name,
+          supplied,
+          raw,
+        )
+      {
+        Ok(Data(value)) -> answered(value)
+        Ok(Turn(_, _)) ->
+          failed("commands", "command submitted a turn from the model")
+        Error(message) -> failed("commands", message)
+      }
+  }
+}
+
+/// Decode one run request strictly: unknown fields fail, non-string argument
+/// values fail, and `arguments` (raw text) and `args` (declared names) are
+/// mutually exclusive at `call`.
+pub fn decode_run(
+  allowed: List(String),
+  args: decode.Dynamic,
+) -> Result(#(String, Dict(String, String), String, String), String) {
+  let decoder = {
+    use fields <- decode.then(decode.dict(decode.string, decode.dynamic))
     use name <- decode.field("name", decode.string)
     use supplied <- decode.optional_field(
       "args",
@@ -379,30 +464,33 @@ fn run_request(
       decode.dict(decode.string, decode.string),
     )
     use raw <- decode.optional_field("arguments", "", decode.string)
-    decode.success(#(name, supplied, raw))
+    use client <- decode.optional_field("clientId", "", decode.string)
+    use _ <- decode.then(case unknown_fields(fields, allowed) {
+      [] -> decode.success(Nil)
+      names ->
+        decode.failure(Nil, "unknown fields: " <> string.join(names, ", "))
+    })
+    decode.success(#(name, supplied, raw, client))
   }
-  case decode.run(args, named) {
-    Error(_) -> failed("commands", "invalid commands run request")
-    Ok(#(name, supplied, raw)) -> {
-      let prepared = case raw {
-        "" -> Ok(supplied)
-        text ->
-          find(commands, name)
-          |> result.try(fn(command) { parse_arguments(command, text) })
-      }
-      case
-        prepared
-        |> result.try(fn(args) {
-          dispatch(commands, context, ModelCall, "kernel", name, args)
-        })
-      {
-        Ok(Data(value)) -> answered(value)
-        Ok(Turn(_, _)) ->
-          failed("commands", "command submitted a turn from the model")
-        Error(message) -> failed("commands", message)
-      }
-    }
+  case decode.run(args, decoder) {
+    Ok(values) -> Ok(values)
+    Error(errors) ->
+      Error(
+        list.first(errors)
+        |> result.map(fn(error) { error.expected })
+        |> result.unwrap("invalid commands run request"),
+      )
   }
+}
+
+fn unknown_fields(
+  fields: Dict(String, decode.Dynamic),
+  allowed: List(String),
+) -> List(String) {
+  fields
+  |> dict.keys
+  |> list.filter(fn(key) { !list.contains(allowed, key) })
+  |> list.sort(string.compare)
 }
 
 fn answered(value: json.Json) -> String {

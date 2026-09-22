@@ -77,7 +77,7 @@ see [the models catalog](models.md): the cached models.dev catalog that supplies
 
 ## commands
 
-see [the commands extension](commands.md): one catalog drives the CLI menu, user invocation, and the kernel's typed `commands` bindings. `CommandPlugin` contributes static commands and `Managed.commands` dynamic ones; runs execute outside the session actor and reach state only through the registered state seam.
+see [the commands extension](commands.md) for the full contract. `CommandPlugin` contributes static commands and `Managed.commands` dynamic ones; runs execute outside the session actor and reach state only through the registered state seam.
 
 ## mcp
 

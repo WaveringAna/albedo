@@ -14,7 +14,7 @@ from typing import TypedDict, cast
 
 from albedo_api import Host, PythonApi
 
-RESERVED = frozenset({"catalog", "invoke", "help"})
+RESERVED = frozenset({"catalog", "invoke", "help", "__init__"})
 
 
 class CommandArgument(TypedDict):
@@ -27,14 +27,13 @@ class CommandSummary(TypedDict):
     name: str
     description: str
     method: str
+    usage: str
     arguments: list[CommandArgument]
     modelCallable: bool
     userTurn: bool
 
 
 def _wire_value(value: object, name: str) -> str:
-    if value is None:
-        raise ValueError(f"argument {name!r} is required")
     return value if isinstance(value, str) else str(value)
 
 
@@ -56,11 +55,7 @@ def _bind(spec: list[CommandArgument], args: tuple[object, ...], kwargs: dict[st
 
 
 def _docstring(summary: CommandSummary) -> str:
-    lines = [summary["description"], ""]
-    usage = [summary["name"]]
-    for argument in summary["arguments"]:
-        usage.append(f"<{argument['name']}>" if argument["required"] else f"[{argument['name']}]")
-    lines.append("Usage: " + " ".join(usage))
+    lines = [summary["description"], "", "Usage: " + summary["usage"]]
     if summary["arguments"]:
         lines.append("")
         lines.append("Args:")
@@ -124,9 +119,9 @@ class Commands:
     async def invoke(self, name: str, arguments: str | dict[str, object] = "") -> object:
         """Run any model-callable command by slash name or method name.
 
-        `arguments` is either the raw invocation text ("/model gpt-5") or a
-        dict of declared argument names to values. Returns the command's JSON
-        result; never submits a turn.
+        The arguments are either the raw invocation text or a dict of declared
+        argument names to values. Returns the command's JSON result and never
+        submits a turn.
         """
         target = name if name.startswith("/") else "/" + name
         for summary in self._catalog:
@@ -145,12 +140,15 @@ class Commands:
 
 async def setup(api: PythonApi) -> dict[str, object]:
     """Mint typed bindings from the boot catalog. A fast pure RPC: the route
-    answers from the session's captured command list before any turn runs."""
+    answers from the session's captured command list before any turn runs.
+    The catalog's method names are unique and mintable by construction; the
+    checks below keep a damaged catalog from breaking the kernel."""
     catalog = cast(list[CommandSummary], await api.host("commands.list", {}))
     bindings: dict[str, object] = {}
     for summary in catalog:
         method = summary["method"]
-        if method in RESERVED or method in bindings or not method.isidentifier() or keyword.iskeyword(method):
+        if (not summary["modelCallable"] or method in RESERVED or method in bindings
+                or not method.isidentifier() or keyword.iskeyword(method)):
             continue
         bindings[method] = staticmethod(_method(api.host, summary))
     session_commands = type("SessionCommands", (Commands,), bindings)

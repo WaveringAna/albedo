@@ -4,7 +4,7 @@ every session command is one definition with three faces: the CLI menu, user inv
 
 ## the catalog
 
-`GET /sessions/:id/commands` lists the materialized catalog: name (the slash spelling), description, the minted python `method`, declared `arguments`, and the `modelCallable` / `userTurn` flags. the CLI menu renders it (merged with its presentation-only entries like `/login` and `/sessions`), `GET`'s list mints the kernel bindings at boot, and the prompt's `<session_commands>` block summarizes it. all three read the same list.
+`GET /sessions/:id/commands` lists the materialized catalog: name (the slash spelling), description, the minted python `method`, its `usage` line, declared `arguments`, and the `modelCallable` / `userTurn` flags. the CLI menu renders it (merged with its presentation-only entries like `/login` and `/sessions`), `GET`'s list mints the kernel bindings at boot, and the prompt's `<session_commands>` block summarizes it. all three read the same list.
 
 `POST /sessions/:id/commands` runs one command. the body is `{name, arguments}` with raw invocation text (`{"name": "/model", "arguments": "gpt-5 anthropic"}`) or `{name, args}` with declared names (`{"name": "/model", "args": {"model": "gpt-5"}}`); `clientId` labels a submitted turn. the answer is `{"result": ...}` with the command's JSON value or `{"submitted": true}` when a user invocation submitted its turn.
 
@@ -23,7 +23,7 @@ Command(
 )
 ```
 
-a run executes **outside** the session actor — on the kernel's host-call process or an HTTP request process — and reaches session state only through `Context.state`, the registered state seam (`"model.get"`, `"model.select"`, `"context.summary"`, `"context.page"`, `"submit"`). a handler running inside the session actor must never run a command: its state calls would deadlock against itself.
+a run executes **outside** the session actor — on the kernel's host-call process or an HTTP request process — and reaches session state only through `Context.state`, whose operations are the `StateOp` variant type in [`command.gleam`](../src/albedo/harness/command.gleam) (the exhaustive case in `session.gleam` answers them). a handler running inside the session actor must never run a command: its state calls would deadlock against itself.
 
 `model_callable: False` keeps a command user-only (`/login`-class commands). a `user_turn: True` command submits its outcome as one user turn when a user invokes it and returns data when the model invokes it — one run, two callers, only the delivery differs. dispatch refuses a model invocation of a user-only command and refuses any turn submission from the model.
 

@@ -23,7 +23,7 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
   harness_extension.Extension(
     "skills",
     "Discover Agent Skills metadata and activate selected instructions or resources on demand.",
-    ["python"],
+    ["python", "commands"],
     [
       harness_extension.ManagedPlugin(fn(_, _, workspace) {
         use snapshot <- result.try(catalog.scan_at(workspace, home))

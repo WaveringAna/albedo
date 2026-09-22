@@ -1,15 +1,13 @@
-//// The built-in session commands and the kernel's typed `commands` object.
-////
-//// The command catalog itself is aggregate: every enabled extension
-//// contributes commands, and the dispatch routes and prompt block are
-//// composed from all of them. This extension adds the session introspection
-//// commands and the Python bindings the model calls.
+//// The built-in session commands and the Python kernel's `commands` object.
 
 import albedo/harness/command.{
-  type Command, type Context, Argument, Command, Data, ModelCall, UserCall,
+  type Command, type Context, Argument, Command, ContextPage, ContextSummary,
+  Data, ModelCall, ModelGet, ModelSelect, UserCall,
 }
 import albedo/harness/extension
 import gleam/dict
+import gleam/int
+import gleam/option.{None, Some}
 import gleam/result
 
 pub fn extension() -> extension.Extension {
@@ -44,22 +42,22 @@ fn model() -> Command {
     True,
     False,
     fn(ctx: Context, caller, args) {
-      // A model call is always mid-turn, and switching mid-turn is refused for
-      // users too, so the model can read the selection but never switch it.
+      // A model call is always mid-turn, so it may only read the selection.
+      let provider = case dict.get(args, "provider") {
+        Ok(value) if value != "" -> Some(value)
+        _ -> None
+      }
       use value <- result.try(case caller, dict.get(args, "model") {
         ModelCall, Ok(_) ->
           Error(
             "switching models is a user action between turns; ask the user to run /model",
           )
-        _, Error(_) -> ctx.state("model.get", dict.new())
-        UserCall, Ok(model) ->
-          ctx.state(
-            "model.select",
-            dict.from_list([
-              #("model", model),
-              #("provider", dict.get(args, "provider") |> result.unwrap("")),
-            ]),
-          )
+        _, Error(_) ->
+          case provider {
+            Some(_) -> Error("provider requires model")
+            None -> ctx.state(ModelGet)
+          }
+        UserCall, Ok(model) -> ctx.state(ModelSelect(model, provider))
       })
       Ok(Data(value))
     },
@@ -78,15 +76,16 @@ fn context_inspect() -> Command {
     False,
     fn(ctx: Context, _caller, args) {
       use value <- result.try(case dict.get(args, "section") {
-        Error(_) -> ctx.state("context.summary", dict.new())
-        Ok(section) ->
-          ctx.state(
-            "context.page",
-            dict.from_list([
-              #("section", section),
-              #("page", dict.get(args, "page") |> result.unwrap("0")),
-            ]),
+        Error(_) -> ctx.state(ContextSummary)
+        Ok(section) -> {
+          use page <- result.try(
+            dict.get(args, "page")
+            |> result.unwrap("0")
+            |> int.parse
+            |> result.replace_error("page must be a number"),
           )
+          ctx.state(ContextPage(section, page))
+        }
       })
       Ok(Data(value))
     },

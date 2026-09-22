@@ -64,9 +64,17 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
   useEffect(() => {
     if (!selected) { setCommandCatalog([]); return }
     let active = true
-    void request<unknown>(connection, `/sessions/${encodeURIComponent(selected.id)}/commands`)
+    void request<{ capabilities?: string[] }>(connection, "/health").then(health => {
+      if (!health.capabilities?.includes("session_commands"))
+        throw new Error("daemon upgrade needed for the command menu; when ready, run albedo daemon --stop, then albedo (this clears python variables)")
+      return request<unknown>(connection, `/sessions/${encodeURIComponent(selected.id)}/commands`)
+    })
       .then(value => { if (active) setCommandCatalog(parseCommandCatalog(value)) })
-      .catch(() => { if (active) setCommandCatalog([]) })
+      .catch(error => {
+        if (!active) return
+        setCommandCatalog([])
+        if (String(error).includes("daemon upgrade")) setError(String(error))
+      })
     return () => { active = false }
   }, [connection, selected?.id, selected?.workspace, extensionRevision])
   useEffect(() => {
@@ -122,7 +130,7 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
     ]} onSelect={id => { if (id==="new") create(); else if (id==="login") setLoggingIn({}); else { setSelected(listedSessions.find(session=>session.id===id));setChoosing(false) } }} onCancel={() => selected ? setChoosing(false) : quit()} /> : selected && <><ChatScreen key={selected.id} visible={!choosingModel && !choosingExtensions && !choosingTree && !choosingContext} usageResetKey={extensionRevision}
       baseUrl={`http://127.0.0.1:${connection.port}`} token={connection.token} agentId={selected.id} agentName="albedo"
       workspace={selected.workspace} model={selected.model} onWorkspaceChanged={workspaceChanged} onBack={()=>setChoosing(true)} onQuit={quit} onCreate={create}
-      commands={[{ name:"/login",description:"add or select a named openai-compatible api" },{ name:"/new",description:"new coding session" },{ name:"/sessions",description:"switch session" },{ name:"/model",description:"choose this session's provider and model" },{ name:"/extensions",description:"manage this session's extension plugins" },{ name:"/tree",description:"branch this session from a history checkpoint" },{ name:"/context",description:"inspect the exact prepared model request" },...commandCatalog.map(command => ({ name:command.name,description:command.description }))]}
+      commands={[{ name:"/login",description:"add or select a named openai-compatible api" },{ name:"/new",description:"new coding session" },{ name:"/sessions",description:"switch session" },{ name:"/extensions",description:"manage this session's extension plugins" },{ name:"/tree",description:"branch this session from a history checkpoint" },...commandCatalog.map(command => ({ name:command.name,description:command.description }))]}
       onCommand={(value,clear)=> {
         if (value === "/login" || value.startsWith("/login ")) { clear(); setLoggingIn({ name: value.slice(6).trim() || undefined }); return true }
         if (value.startsWith("/model ")) {

@@ -245,12 +245,13 @@ pub fn skill_commands_share_one_snapshot_across_callers_test() {
   let assert Ok(host) =
     runtime.start_with_extensions(root <> "/skills.sqlite", [
       python.extension(),
+      commands.extension(),
       skills.extension_at(home),
     ])
   let assert Ok(session) =
     runtime.open_session(host, "skills-commands", workspace)
-  let commands = runtime.commands(session)
-  let assert [entry] = commands
+  let catalog = runtime.commands(session)
+  let assert [entry] = list.filter(catalog, fn(item) { item.name == "/demo" })
   entry.name |> should.equal("/demo")
   entry.description |> should.equal("Demo")
   entry.model_callable |> should.be_true
@@ -260,13 +261,10 @@ pub fn skill_commands_share_one_snapshot_across_callers_test() {
   argument.name |> should.equal("arguments")
   argument.required |> should.be_false
   let context =
-    command.Context("skills-commands", runtime.ledger(host), fn(_, _) {
-      Ok(json.object([#("submitted", json.bool(True))]))
-    })
-  // The model caller receives the activation as data and exact arguments.
+    command.Context(fn(_) { Ok(json.object([#("submitted", json.bool(True))])) })
   let assert Ok(command.Data(data)) =
     command.dispatch(
-      commands,
+      catalog,
       context,
       command.ModelCall,
       "kernel",
@@ -276,10 +274,9 @@ pub fn skill_commands_share_one_snapshot_across_callers_test() {
   let encoded = json.to_string(data)
   encoded |> string.contains("Do the demo.") |> should.be_true
   encoded |> string.contains("one  two") |> should.be_true
-  // The user caller gets one turn whose display keeps the invocation exact.
   let assert Ok(command.Turn(display, text)) =
     command.dispatch(
-      commands,
+      catalog,
       context,
       command.UserCall,
       "client",
@@ -324,7 +321,7 @@ pub fn snapshot_does_not_discover_new_skills_and_detects_metadata_drift_test() {
 
 pub fn extension_requires_python_and_advertises_no_bare_model_tools_test() {
   let value = skills.extension()
-  value.requires |> should.equal(["python"])
+  value.requires |> should.equal(["python", "commands"])
   let assert [extension.ManagedPlugin(_)] = value.plugins
 }
 
