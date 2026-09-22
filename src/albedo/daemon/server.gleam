@@ -4,9 +4,9 @@ import albedo/daemon/history
 import albedo/daemon/image
 import albedo/daemon/reaper
 import albedo/daemon/session
+import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/runtime
-import albedo/harness/skills/catalog as skill_catalog
 import albedo/openai_api/types
 import gleam/bytes_tree
 import gleam/dict.{type Dict}
@@ -436,24 +436,6 @@ fn extension_json(summary: extension.Summary) -> json.Json {
   ])
 }
 
-fn skill_command_json(command: skill_catalog.Command) -> json.Json {
-  json.object([
-    #("name", json.string(command.name)),
-    #("description", json.string(command.description)),
-    #("command", json.string(command.command)),
-    #("source", json.string(command.source)),
-  ])
-}
-
-fn selection_json(selection: session.ModelSelection) -> json.Json {
-  json.object([
-    #("ok", json.bool(True)),
-    #("provider", json.string(selection.provider)),
-    #("model", json.string(selection.model)),
-    #("protocol", json.string(conversation.protocol(selection.protocol))),
-  ])
-}
-
 fn reply(status: Int, value: json.Json) {
   response.new(status)
   |> response.set_header("content-type", "application/json")
@@ -532,7 +514,7 @@ fn route(
                     "session_extensions",
                     "session_tree",
                     "session_context",
-                    "session_skills",
+                    "session_commands",
                   ],
                   json.string,
                 ),
@@ -616,61 +598,16 @@ fn route(
             Error(e) -> error(409, e)
           }
         }
-        Post, ["sessions", id, "skills", "activate"] ->
-          case actor.call(registry, 5000, Lookup(id, _)) {
-            Error(e) -> error(404, e)
-            Ok(worker) -> {
-              let decoder = {
-                use name <- decode.field("name", decode.string)
-                use arguments <- decode.optional_field(
-                  "arguments",
-                  "",
-                  decode.string,
-                )
-                use client_id <- decode.optional_field(
-                  "clientId",
-                  "",
-                  decode.string,
-                )
-                decode.success(#(name, arguments, client_id))
-              }
-              case
-                body(req, decoder)
-                |> result.map_error(session.Rejected)
-                |> result.try(fn(values) {
-                  session.activate_skill(worker, values.0, values.1, values.2)
-                })
-              {
-                Ok(_) -> reply(202, json.object([#("ok", json.bool(True))]))
-                Error(session.Rejected(e)) -> error(409, e)
-                Error(session.WorkspaceMissing(path)) ->
-                  reply(
-                    409,
-                    json.object([
-                      #("code", json.string("workspace_missing")),
-                      #("workspace", json.string(path)),
-                      #("error", json.string("workspace not found: " <> path)),
-                    ]),
-                  )
-              }
-            }
-          }
         _, ["sessions", id, operation] ->
           case actor.call(registry, 5000, Lookup(id, _)) {
             Error(e) -> error(404, e)
             Ok(worker) ->
               case req.method, operation {
                 Get, "context" -> reply(200, session.context(worker))
-                Get, "skills" ->
-                  case session.skills(worker) {
-                    Ok(#(commands, diagnostics)) ->
-                      reply(
-                        200,
-                        json.object([
-                          #("skills", json.array(commands, skill_command_json)),
-                          #("diagnostics", json.array(diagnostics, json.string)),
-                        ]),
-                      )
+                Get, "commands" ->
+                  case session.commands(worker) {
+                    Ok(#(commands, _)) ->
+                      reply(200, command.catalog_json(commands))
                     Error(e) -> error(409, e)
                   }
                 Get, "extensions" ->
@@ -758,23 +695,58 @@ fn route(
                     Error(e) -> error(409, e)
                   }
                 }
-                Post, "model" -> {
+                Post, "commands" -> {
                   let decoder = {
-                    use model <- decode.field("model", decode.string)
-                    use provider <- decode.optional_field(
-                      "provider",
-                      None,
-                      decode.optional(decode.string),
+                    use name <- decode.field("name", decode.string)
+                    use arguments <- decode.optional_field(
+                      "arguments",
+                      "",
+                      decode.string,
                     )
-                    decode.success(#(model, provider))
+                    use args <- decode.optional_field(
+                      "args",
+                      None,
+                      decode.optional(decode.dict(decode.string, decode.string)),
+                    )
+                    use client_id <- decode.optional_field(
+                      "clientId",
+                      "",
+                      decode.string,
+                    )
+                    decode.success(#(name, arguments, args, client_id))
                   }
                   case
                     body(req, decoder)
-                    |> result.try(fn(selection) {
-                      session.select_model(worker, selection.0, selection.1)
+                    |> result.try(fn(call) {
+                      use #(commands, context) <- result.try(session.commands(
+                        worker,
+                      ))
+                      case call.1 {
+                        "" ->
+                          command.dispatch(
+                            commands,
+                            context,
+                            command.UserCall,
+                            call.3,
+                            call.0,
+                            call.2 |> option.unwrap(dict.new()),
+                          )
+                        arguments ->
+                          command.invoke(
+                            commands,
+                            context,
+                            command.UserCall,
+                            call.3,
+                            call.0,
+                            arguments,
+                          )
+                      }
                     })
                   {
-                    Ok(selection) -> reply(200, selection_json(selection))
+                    Ok(command.Data(value)) ->
+                      reply(200, json.object([#("result", value)]))
+                    Ok(command.Turn(_, _)) ->
+                      reply(202, json.object([#("submitted", json.bool(True))]))
                     Error(e) -> error(409, e)
                   }
                 }

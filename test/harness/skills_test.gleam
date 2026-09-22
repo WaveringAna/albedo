@@ -1,10 +1,11 @@
+import albedo/harness/command
+import albedo/harness/commands
 import albedo/harness/extension
 import albedo/harness/python
 import albedo/harness/runtime
 import albedo/harness/skills
 import albedo/harness/skills/catalog
-import albedo/harness/skills/rpc
-import gleam/dynamic/decode
+import gleam/dict
 import gleam/json
 import gleam/list
 import gleam/string
@@ -233,7 +234,7 @@ pub fn slash_commands_preserve_builtins_with_namespaced_fallback_test() {
   |> should.equal([#("model", "/skill:model"), #("review", "/review")])
 }
 
-pub fn rpc_activation_returns_current_run_data_and_exact_arguments_test() {
+pub fn skill_commands_share_one_snapshot_across_callers_test() {
   let #(root, workspace, home) = fixture()
   let _ =
     write(
@@ -241,18 +242,54 @@ pub fn rpc_activation_returns_current_run_data_and_exact_arguments_test() {
       ".albedo/skills/demo/SKILL.md",
       "---\nname: demo\ndescription: Demo\n---\nDo the demo.\n",
     )
-  let assert Ok(snapshot) = catalog.scan_at(workspace, home)
-  let response =
-    rpc.handle(
-      snapshot,
-      "{\"method\":\"skills.activate\",\"args\":{\"name\":\"demo\",\"arguments\":\"one  two\"}}",
+  let assert Ok(host) =
+    runtime.start_with_extensions(root <> "/skills.sqlite", [
+      python.extension(),
+      skills.extension_at(home),
+    ])
+  let assert Ok(session) =
+    runtime.open_session(host, "skills-commands", workspace)
+  let commands = runtime.commands(session)
+  let assert [entry] = commands
+  entry.name |> should.equal("/demo")
+  entry.description |> should.equal("Demo")
+  entry.model_callable |> should.be_true
+  entry.user_turn |> should.be_true
+  command.method_name(entry.name) |> should.equal("demo")
+  let assert [argument] = entry.arguments
+  argument.name |> should.equal("arguments")
+  argument.required |> should.be_false
+  let context =
+    command.Context("skills-commands", runtime.ledger(host), fn(_, _) {
+      Ok(json.object([#("submitted", json.bool(True))]))
+    })
+  // The model caller receives the activation as data and exact arguments.
+  let assert Ok(command.Data(data)) =
+    command.dispatch(
+      commands,
+      context,
+      command.ModelCall,
+      "kernel",
+      "/demo",
+      dict.from_list([#("arguments", "one  two")]),
     )
-  assert json.parse(response, decode.at(["ok"], decode.bool)) == Ok(True)
-  assert json.parse(response, decode.at(["value", "arguments"], decode.string))
-    == Ok("one  two")
-  let assert Ok(instructions) =
-    json.parse(response, decode.at(["value", "instructions"], decode.string))
-  instructions |> string.contains("Do the demo.") |> should.be_true
+  let encoded = json.to_string(data)
+  encoded |> string.contains("Do the demo.") |> should.be_true
+  encoded |> string.contains("one  two") |> should.be_true
+  // The user caller gets one turn whose display keeps the invocation exact.
+  let assert Ok(command.Turn(display, text)) =
+    command.dispatch(
+      commands,
+      context,
+      command.UserCall,
+      "client",
+      "/demo",
+      dict.from_list([#("arguments", "one  two")]),
+    )
+  display |> should.equal("/demo one  two")
+  text |> string.contains("Do the demo.") |> should.be_true
+  text |> string.contains("one  two") |> should.be_true
+  runtime.stop(host)
   cleanup(root)
 }
 
@@ -302,6 +339,7 @@ pub fn python_module_uses_the_same_managed_snapshot_without_model_tools_test() {
   let assert Ok(host) =
     runtime.start_with_extensions(root <> "/skills.sqlite", [
       python.extension(),
+      commands.extension(),
       skills.extension_at(home),
     ])
   let assert Ok(session) =
@@ -310,17 +348,12 @@ pub fn python_module_uses_the_same_managed_snapshot_without_model_tools_test() {
   |> list.map(fn(tool) { tool.name })
   |> should.equal(["python"])
   let assert Ok(listed) =
-    runtime.execute(host, session, "await skills.list()", 5000)
+    runtime.execute(host, session, "await commands.catalog()", 5000)
   let assert Ok(listed) = listed.result
   listed.value |> string.contains("Python fixture") |> should.be_true
   listed.value |> string.contains("PYTHON_ACTIVATED_BODY") |> should.be_false
   let assert Ok(activated) =
-    runtime.execute(
-      host,
-      session,
-      "await skills.activate('demo', 'one  two')",
-      5000,
-    )
+    runtime.execute(host, session, "await commands.demo('one  two')", 5000)
   let assert Ok(activated) = activated.result
   activated.value |> string.contains("PYTHON_ACTIVATED_BODY") |> should.be_true
   activated.value |> string.contains("one  two") |> should.be_true

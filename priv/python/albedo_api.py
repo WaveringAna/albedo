@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 import importlib
+import inspect
 import keyword
 from dataclasses import dataclass
 from typing import Literal, NotRequired, Protocol, TypedDict, cast
@@ -124,15 +125,17 @@ class SavedCell(TypedDict):
 
 
 class PythonPlugin(Protocol):
-    def setup(self, api: PythonApi) -> dict[str, object]: ...
+    def setup(self, api: PythonApi) -> "dict[str, object] | Awaitable[dict[str, object]]": ...
 
 
-def load_plugins(names: Sequence[str], api: PythonApi, namespace: dict[str, object]) -> None:
+async def load_plugins(names: Sequence[str], api: PythonApi, namespace: dict[str, object]) -> None:
     """Load explicitly trusted modules before the workspace enters sys.path.
 
-    setup(api) returns public REPL bindings. Plugins use api.host for host RPC,
-    api.on_shutdown for cleanup, and api.background_handle for nonblocking jobs.
-    This is composition, not isolation: installed plugins execute trusted code.
+    setup(api) returns public REPL bindings, or an awaitable that resolves them,
+    so a plugin may call api.host while the kernel boots. Plugins use api.host
+    for host RPC, api.on_shutdown for cleanup, and api.background_handle for
+    nonblocking jobs. This is composition, not isolation: installed plugins
+    execute trusted code.
     """
     modules: list[str] = []
     for name in names:
@@ -146,6 +149,8 @@ def load_plugins(names: Sequence[str], api: PythonApi, namespace: dict[str, obje
         try:
             plugin = cast(PythonPlugin, cast(object, importlib.import_module(module)))
             exports = plugin.setup(api)
+            if inspect.isawaitable(exports):
+                exports = await cast(Awaitable[dict[str, object]], exports)
             if not isinstance(exports, dict) or not all(
                 isinstance(name, str) and name.isidentifier() and not name.startswith("_")
                 and not keyword.iskeyword(name) for name in exports

@@ -1,11 +1,17 @@
 //// Progressive Agent Skills extension.
 ////
 //// Each opened runtime session gets one immutable metadata snapshot. That same
-//// snapshot drives prompt context, Python RPC, and user slash activation.
+//// snapshot drives prompt context, Python RPC, session commands, and user slash
+//// activation: every cataloged skill contributes its slash command to the
+//// unified command catalog, where a user invocation submits the activation as
+//// one turn and a model invocation returns it as data.
 
+import albedo/harness/command
 import albedo/harness/extension as harness_extension
 import albedo/harness/skills/catalog
 import albedo/harness/skills/rpc
+import gleam/dict
+import gleam/list
 import gleam/result
 
 pub fn extension() -> harness_extension.Extension {
@@ -24,16 +30,54 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
         Ok(
           harness_extension.Managed(
             catalog.context(snapshot),
-            "Agent Skills are exposed through the async Python `skills` object. Use `await skills.list()` for this session's immutable metadata catalog, `await skills.activate(name, arguments)` to load one full SKILL.md into the current Python result, `await skills.resources(name)` to list resource names, and `await skills.read(name, resource=..., offset=..., limit=...)` for bounded content. Activation returns data only; it never submits another turn or executes bundled scripts.",
+            instructions,
             [],
             ["skills"],
             [#("skills", fn(_, _, request) { rpc.handle(snapshot, request) })],
+            list.map(catalog.commands(snapshot), skill_command(snapshot, _)),
             fn() { Nil },
           ),
         )
       }),
     ],
     fn(_) { Ok(Nil) },
+  )
+}
+
+const instructions = "Agent Skills are cataloged session commands. Invoke one through the `commands` object (commands.catalog() maps slash names to methods): it returns the skill's instructions as data and never submits a turn or executes bundled scripts. `await skills.resources(name)` lists bundled resource names, and `await skills.read(name, resource=..., offset=..., limit=...)` reads one bounded page. A user may explicitly run the listed slash command, which submits the activation as one user turn."
+
+/// One cataloged skill as a session command: both callers resolve the same
+/// activation, and only the delivery differs.
+fn skill_command(
+  snapshot: catalog.Catalog,
+  entry: catalog.Command,
+) -> command.Command {
+  command.Command(
+    entry.command,
+    entry.description,
+    [command.Argument("arguments", "arguments for the skill", False)],
+    True,
+    True,
+    fn(_context, caller, args) {
+      let arguments = dict.get(args, "arguments") |> result.unwrap("")
+      use activation <- result.try(catalog.activate(
+        snapshot,
+        entry.name,
+        arguments,
+      ))
+      case caller {
+        command.UserCall ->
+          Ok(command.Turn(
+            entry.command
+              <> case arguments {
+              "" -> ""
+              value -> " " <> value
+            },
+            catalog.activation_prompt(activation),
+          ))
+        command.ModelCall -> Ok(command.Data(rpc.activation_json(activation)))
+      }
+    },
   )
 }
 

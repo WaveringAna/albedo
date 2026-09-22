@@ -20,22 +20,19 @@ Each immediate child must contain a regular `SKILL.md`. Its parent directory and
 
 Discovery is bounded to 128 candidates, 64 diagnostics, 64 KiB of frontmatter per file, and 1 MiB per `SKILL.md`. A catalog never includes the Markdown body or resource content.
 
-The catalog is prepared once when a runtime session opens. Its immutable snapshot is shared by prompt context, Python RPC, and user slash commands. Changes on disk take effect after the skills extension or session is reloaded. This prevents a UI lookup from seeing a different skill set than the model.
+The catalog is prepared once when a runtime session opens. Its immutable snapshot is shared by prompt context, session commands, Python RPC, and user slash activation. Changes on disk take effect after the skills extension or session is reloaded. This prevents a UI lookup from seeing a different skill set than the model.
 
 ## Activation and Python API
 
-The `skills` extension depends on the `python` extension. It does not advertise separate model function tools. It adds one trusted, async Python object:
+The `skills` extension depends on the `python` extension. It does not advertise separate model function tools. Every cataloged skill is a session command (see [commands](commands.md)): the kernel mints one typed method per skill from the same catalog the CLI menu shows. Invoking it reads the selected full `SKILL.md` and returns `name`, `description`, `source`, exact `arguments`, and `instructions` to the current Python call. It does not submit or commit another user turn.
 
 ```python
-await skills.list()
-await skills.activate("pdf-processing", "merge these files")
-await skills.resources("pdf-processing")
-await skills.read("pdf-processing", "references/formats.md", offset=0, limit=16384)
+await commands.demo("merge these files")
+await skills.resources("demo")
+await skills.read("demo", "references/formats.md", offset=0, limit=16384)
 ```
 
-`skills.list()` returns the immutable metadata catalog, diagnostics, and assigned slash commands.
-
-`skills.activate(name, arguments)` reads the selected full `SKILL.md` and returns `name`, `description`, `source`, exact `arguments`, and `instructions` to the current Python call. It does not submit or commit another user turn. If required metadata changed since discovery, activation asks the caller to reload instead of silently switching identities.
+`commands.catalog()` lists this session's commands (skills and built-ins) with argument details, and `commands.invoke("/demo", arguments)` runs one by slash name. If required metadata changed since discovery, activation asks the caller to reload instead of silently switching identities.
 
 `skills.resources(name)` lists resource names beneath one selected skill without loading their contents. It returns at most 512 files, traverses at most 2,048 entries and 16 directory levels, and reports skipped or escaping resources as diagnostics.
 
@@ -45,7 +42,7 @@ await skills.read("pdf-processing", "references/formats.md", offset=0, limit=163
 
 The official client guide recommends user-explicit activation through a slash command or mention, while leaving the exact syntax to the client. Albedo assigns `/<skill-name>` and includes it in command autocomplete. Built-in commands always win. A colliding skill such as `model` gets the deterministic command `/skill:model` instead of replacing `/model`.
 
-The client sends the skill name and all trailing argument text to the daemon. The daemon resolves the same immutable session catalog used by Python, loads the skill through the same activation function, and submits one normal user turn. The visible intent remains the original slash command while the model input carries a JSON-delimited activation with the exact arguments, source, and instructions. Normal idle, enabled-extension, and workspace checks still apply.
+The CLI resolves an invocation against the daemon's [command catalog](commands.md) and asks the daemon to run it. The daemon resolves the same immutable session catalog used by Python, runs the same skill command, and a user invocation submits one normal user turn. The visible intent remains the original slash command while the model input carries a JSON-delimited activation with the exact arguments, source, and instructions. Normal idle, enabled-extension, and workspace checks still apply.
 
 ## Trust and execution
 

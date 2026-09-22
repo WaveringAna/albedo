@@ -132,8 +132,8 @@ def run(endpoint):
             assert secret not in json.dumps(pages)
             assert len(Provider.requests) == 1, "summary/page inspection must not contact the provider"
 
-            changed = api(f"/sessions/{session}/model", {"model": "changed-model"})
-            assert changed["model"] == "changed-model"
+            changed = api(f"/sessions/{session}/commands", {"name": "/model", "args": {"model": "changed-model"}})
+            assert changed["result"]["model"] == "changed-model"
             assert api(route) == {
                 "state": "pending",
                 "reason": "runtime session has not prepared a provider request",

@@ -1,6 +1,7 @@
 //// An embeddable extension runtime with durable work and session-owned Python kernels.
 
 import albedo/daemon/store
+import albedo/harness/command
 import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/harness/extensions
@@ -279,6 +280,15 @@ fn open_selected(
     Ok(kernel) -> {
       let context =
         list.append(static_context, extension.managed_context(managed))
+        |> list.append([
+          #(
+            "commands",
+            command.context_block(extension.materialized_commands(
+              selected,
+              managed,
+            )),
+          ),
+        ])
         |> list.filter(fn(item) { string.trim(item.1) != "" })
         |> list.map(fn(item) {
           types.User(
@@ -503,6 +513,12 @@ pub fn recover(
 
 pub fn instructions(session: Session) -> String {
   extension.materialized_instructions(session.extensions, session.managed)
+}
+
+/// This session's materialized commands: the exact list and run callbacks the
+/// kernel routes and user adapters dispatch against.
+pub fn commands(session: Session) -> List(command.Command) {
+  extension.materialized_commands(session.extensions, session.managed)
 }
 
 pub fn compaction_name(session: Session) -> Option(String) {

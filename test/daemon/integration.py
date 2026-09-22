@@ -305,7 +305,7 @@ def run(protocol, endpoint):
 
             # Switch only after a complete assistant/tool conversation exists.
             switched=json.loads(cli("new",str(switch_workspace)))["session"]
-            with api(f"/sessions/{switched}/model", {"provider":"alpha", "model":"initial-alpha"}):
+            with api(f"/sessions/{switched}/commands", {"name":"/model", "args":{"provider":"alpha", "model":"initial-alpha"}}):
                 pass
             request_start=len(Provider.requests)
             with api(f"/sessions/{switched}/events", {"content":"build switch history"}):
@@ -316,15 +316,15 @@ def run(protocol, endpoint):
             assert all("/alpha/v1/" in item["path"] for item in initial_requests), initial_requests
 
             # The model endpoint atomically moves that history to another protocol.
-            with api(f"/sessions/{switched}/model", {"provider":"gamma", "model":"chosen-gamma"}) as response:
+            with api(f"/sessions/{switched}/commands", {"name":"/model", "args":{"provider":"gamma", "model":"chosen-gamma"}}) as response:
                 selection=json.load(response)
-            assert selection == {"ok": True, "provider":"gamma", "model":"chosen-gamma", "protocol":other_protocol}, selection
+            assert selection == {"result": {"provider":"gamma", "model":"chosen-gamma", "protocol":other_protocol}}, selection
             # Existing model-only callers keep the current provider and protocol.
-            with api(f"/sessions/{switched}/model", {"model":"renamed-gamma"}) as response:
+            with api(f"/sessions/{switched}/commands", {"name":"/model", "args":{"model":"renamed-gamma"}}) as response:
                 selection=json.load(response)
-            assert selection == {"ok": True, "provider":"gamma", "model":"renamed-gamma", "protocol":other_protocol}, selection
+            assert selection == {"result": {"provider":"gamma", "model":"renamed-gamma", "protocol":other_protocol}}, selection
             try:
-                api(f"/sessions/{switched}/model", {"provider":"unknown", "model":"wrong"}).close()
+                api(f"/sessions/{switched}/commands", {"name":"/model", "args":{"provider":"unknown", "model":"wrong"}}).close()
                 raise AssertionError("unknown provider switch succeeded")
             except urllib.error.HTTPError as error:
                 assert error.code == 409
@@ -340,9 +340,9 @@ def run(protocol, endpoint):
 
             # Switching back projects the newer foreign turn while preserving the
             # original provider's raw replay and every tool/result association.
-            with api(f"/sessions/{switched}/model", {"provider":"alpha", "model":"returned-alpha"}) as response:
+            with api(f"/sessions/{switched}/commands", {"name":"/model", "args":{"provider":"alpha", "model":"returned-alpha"}}) as response:
                 selection=json.load(response)
-            assert selection == {"ok": True, "provider":"alpha", "model":"returned-alpha", "protocol":protocol}, selection
+            assert selection == {"result": {"provider":"alpha", "model":"returned-alpha", "protocol":protocol}}, selection
             request_start=len(Provider.requests)
             with api(f"/sessions/{switched}/events", {"content":"after second switch"}):
                 pass
@@ -441,7 +441,7 @@ def run(protocol, endpoint):
             with api(f"/sessions/{second}/events",{"content":"hang"}):
                 pass
             time.sleep(.5)
-            for operation, body in [("workspace", {"workspace":str(moved_workspace)}), ("model", {"provider":"gamma", "model":"busy-rejected"})]:
+            for operation, body in [("workspace", {"workspace":str(moved_workspace)}), ("commands", {"name":"/model", "args":{"provider":"gamma", "model":"busy-rejected"}})]:
                 try:
                     api(f"/sessions/{second}/{operation}", body).close()
                     raise AssertionError("busy session changed " + operation)

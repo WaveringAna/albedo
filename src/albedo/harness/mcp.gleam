@@ -185,6 +185,7 @@ fn prepare(
           }),
           [],
           [],
+          [],
           fn() { native_close(handle) },
         ),
       )

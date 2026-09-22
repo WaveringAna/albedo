@@ -1,6 +1,7 @@
 //// Extensions are ordered bundles of model context, tools, REPL modules, RPC routes, and request policies.
 
 import albedo/daemon/store
+import albedo/harness/command
 import albedo/harness/compaction
 import albedo/harness/python/kernel as python
 import albedo/openai_api/types
@@ -36,6 +37,7 @@ pub type Managed {
     tools: List(Tool),
     python_modules: List(String),
     routes: List(#(String, fn(store.Store, String, String) -> String)),
+    commands: List(command.Command),
     close: fn() -> Nil,
   )
 }
@@ -94,6 +96,8 @@ pub type Plugin {
   ManagedPlugin(
     prepare: fn(store.Store, String, String) -> Result(Managed, String),
   )
+  /// Session commands shared by the CLI menu and the kernel's `commands` object.
+  CommandPlugin(commands: List(command.Command))
   CompactionPlugin(strategy: compaction.Strategy)
   /// A catalog answers only for models and providers it actually lists.
   ModelsPlugin(catalog: ModelCatalog)
@@ -299,6 +303,7 @@ fn validate_selection(selected: List(Extension)) -> Result(Nil, String) {
   let tools = selected |> tools |> list.map(fn(tool) { tool.definition.name })
   let routes = selected |> routes |> list.map(fn(route) { route.0 })
   let modules = selected |> modules |> list.map(canonical_module)
+  let commands = selected |> commands |> list.map(fn(command) { command.name })
   let compactions =
     selected
     |> list.flat_map(fn(extension) {
@@ -313,6 +318,7 @@ fn validate_selection(selected: List(Extension)) -> Result(Nil, String) {
     tools != list.unique(tools)
     || overlapping_routes(routes)
     || modules != list.unique(modules)
+    || commands != list.unique(commands)
     || list.length(compactions) > 1
   {
     True ->
@@ -378,6 +384,7 @@ pub fn materialized_summaries(
             ContextPlugin(_) -> "context"
             ToolPlugin(_, _, _, _) -> "tool"
             ManagedPlugin(_) -> "managed"
+            CommandPlugin(_) -> "commands"
             CompactionPlugin(_) -> "compaction"
             ModelsPlugin(_) -> "models"
             ModelProviderPlugin(_) -> "model_provider"
@@ -512,9 +519,25 @@ pub fn materialized_routes(
   installed: List(Extension),
   prepared: List(Prepared),
 ) -> List(#(String, fn(store.Store, String, String) -> String)) {
-  list.append(
+  list.flatten([
     routes(installed),
     list.flat_map(prepared, fn(item) { item.value.routes }),
+    // The aggregate command routes are injected here so capability validation
+    // sees them: a plugin route cannot squat the "commands" namespace.
+    command.routes(materialized_commands(installed, prepared)),
+  ])
+}
+
+/// Every session command: static contributions plus prepared ones, in
+/// registry order. One list feeds the CLI menu, the kernel bindings, and the
+/// aggregate command routes.
+pub fn materialized_commands(
+  installed: List(Extension),
+  prepared: List(Prepared),
+) -> List(command.Command) {
+  list.append(
+    commands(installed),
+    list.flat_map(prepared, fn(item) { item.value.commands }),
   )
 }
 
@@ -543,10 +566,14 @@ fn validate_materialized(
   let modules =
     materialized_modules(installed, prepared)
     |> list.map(canonical_module)
+  let commands =
+    materialized_commands(installed, prepared)
+    |> list.map(fn(command) { command.name })
   case
     tools != list.unique(tools)
     || overlapping_routes(routes)
     || modules != list.unique(modules)
+    || commands != list.unique(commands)
   {
     True -> Error("prepared extensions have duplicate capabilities")
     False -> Ok(Nil)
@@ -565,6 +592,10 @@ pub fn routes(
   installed: List(Extension),
 ) -> List(#(String, fn(store.Store, String, String) -> String)) {
   list.flat_map(installed, fn(extension) { route_values(extension.plugins) })
+}
+
+pub fn commands(installed: List(Extension)) -> List(command.Command) {
+  list.flat_map(installed, fn(extension) { command_values(extension.plugins) })
 }
 
 pub fn instructions(installed: List(Extension)) -> String {
@@ -719,6 +750,15 @@ fn route_values(
   list.flat_map(plugins, fn(plugin) {
     case plugin {
       ToolPlugin(_, _, _, values) -> values
+      _ -> []
+    }
+  })
+}
+
+fn command_values(plugins: List(Plugin)) -> List(command.Command) {
+  list.flat_map(plugins, fn(plugin) {
+    case plugin {
+      CommandPlugin(values) -> values
       _ -> []
     }
   })

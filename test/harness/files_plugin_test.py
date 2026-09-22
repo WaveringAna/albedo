@@ -43,7 +43,7 @@ class FilesPluginTest(unittest.TestCase):
         return path
 
     def test_setup_binds_one_namespace_object(self):
-        load_plugins(["files"], self.api, self.namespace)
+        self.loop.run_until_complete(load_plugins(["files"], self.api, self.namespace))
         self.assertIsInstance(self.namespace["files"], plugin.Files)
 
     def test_read_numbers_lines_and_bounds_its_window(self):

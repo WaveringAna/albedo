@@ -42,15 +42,17 @@ test("/model switches saved providers and models with manual fallback without lo
       } else {
         res.writeHead(404); res.end(JSON.stringify({ error: "catalog provider not found" }))
       }
-    } else if (req.url === "/sessions/session/model") {
+    } else if (req.url === "/sessions/session/commands" && req.method === "POST") {
       let body = ""
       for await (const chunk of req) body += chunk
-      const change = JSON.parse(body) as { model: string; provider?: string }
+      const call = JSON.parse(body) as { name: string; args?: { model?: string; provider?: string } }
+      assert.equal(call.name, "/model")
+      const change = { model: call.args?.model ?? "", ...(call.args?.provider ? { provider: call.args.provider } : {}) }
       if (rejectChange) { res.writeHead(409); res.end(JSON.stringify({ error: "session must be idle" })); return }
       changes.push(change); session.model = change.model
       if (change.provider) { session.provider = change.provider; session.protocol = change.provider === "other" ? "chat_completions" : "responses" }
-      res.end(JSON.stringify({ ok: true, model: session.model, provider: session.provider, protocol: session.protocol }))
-    } else if (req.url === "/sessions/session/skills") {
+      res.end(JSON.stringify({ result: { model: session.model, provider: session.provider, protocol: session.protocol } }))
+    } else if (req.url === "/sessions/session/commands") {
       res.end(JSON.stringify([]))
     } else if (req.url?.startsWith("/sessions/session/stream")) {
       streams++

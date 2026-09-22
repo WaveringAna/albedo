@@ -1,6 +1,6 @@
 # extensions
 
-an extension is a named bundle of plugins. it can contribute any number of context, tool, managed, or compaction plugins. `python`, `bash`, `work`, `skills`, `rolling`, and `remote` are enabled by default; `mcp` is installed and disabled until a session enables it. plugin contributions compose inside them.
+an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, or compaction plugins. `python`, `bash`, `work`, `files`, `commands`, `skills`, `rolling`, and `remote` are enabled by default; `mcp` is installed and disabled until a session enables it. plugin contributions compose inside them.
 
 ## select extensions
 
@@ -30,7 +30,9 @@ extension.Extension(
 
 `ToolPlugin` supplies model-facing tools, python modules, host routes, and tool instructions. model tools declare a definition, an invocation callback, and a recovery callback. recovery must report a stored result or unknown outcome, not replay a potentially side-effecting operation.
 
-`ManagedPlugin` prepares session-owned contributions together: context, tool instructions, tools, python modules, and host routes. preparation returns a close callback. a failed replacement releases its prepared resources and leaves the old selection active; successful replacement releases the old resources after the swap. use this for connections or an immutable catalog shared by context and tools.
+`CommandPlugin` supplies [session commands](commands.md): the same catalog drives the CLI menu, user invocation, and the kernel's typed `commands` bindings. duplicate command names are rejected with the other capability collisions.
+
+`ManagedPlugin` prepares session-owned contributions together: context, tool instructions, tools, python modules, host routes, and commands. preparation returns a close callback. a failed replacement releases its prepared resources and leaves the old selection active; successful replacement releases the old resources after the swap. use this for connections or an immutable catalog shared by context and tools.
 
 `ModelsPlugin` supplies catalogued model facts and provider model lists. `ModelProviderPlugin` declares its models.dev namespace and resolves a tagged saved profile into a request client. Built-in dependencies keep these layers explicit: `codex -> openai -> models`. See [models](models.md) and [model authentication](auth.md).
 
@@ -42,7 +44,7 @@ optional `$ALBEDO_HOME/extensions.json` (default `~/.albedo/extensions.json`) ho
 
 ## python bindings
 
-an explicitly registered python module exports `setup(api)`:
+an explicitly registered python module exports `setup(api)`, which may be a plain function or an async function (awaited at kernel boot, so a plugin can fetch its catalog through `api.host` before the handshake):
 
 ```python
 def setup(api):
@@ -73,6 +75,10 @@ see [the files extension](files.md): bounded reads, guarded exact edits, and rip
 
 see [the models catalog](models.md): the cached models.dev catalog that supplies context windows, modalities, and provider endpoints to compaction and `/context`.
 
+## commands
+
+see [the commands extension](commands.md): one catalog drives the CLI menu, user invocation, and the kernel's typed `commands` bindings. `CommandPlugin` contributes static commands and `Managed.commands` dynamic ones; runs execute outside the session actor and reach state only through the registered state seam.
+
 ## mcp
 
 see [the mcp extension](mcp.md) for connecting Model Context Protocol servers: configuration, credential scope, namespaced tools, and connection lifecycle.
@@ -95,7 +101,7 @@ a bare host asks the remote for its `pwd` once. if the host is reachable but its
 
 ## skills
 
-see [the skills extension](skills.md) for discovery paths, metadata-only startup context, and on-demand reading of actual `SKILL.md` files and resources. skills requires python: the model uses `await skills.activate(name, arguments)`, while users invoke the listed slash command. both resolve the same session catalog. python activation returns instructions without submitting another turn. installing or reading a skill does not run its scripts or import its code automatically.
+see [the skills extension](skills.md) for discovery paths, metadata-only startup context, and on-demand reading of actual `SKILL.md` files and resources. skills requires python: every cataloged skill is a [session command](commands.md) with a typed `commands.<method>(...)` binding, while users invoke the listed slash command. both resolve the same session catalog and the same activation. the model caller receives instructions as data without submitting another turn; the user caller submits one activation turn. installing or reading a skill does not run its scripts or import its code automatically.
 
 ## rolling compaction
 

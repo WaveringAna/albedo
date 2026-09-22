@@ -34,8 +34,20 @@ class Provider(http.server.BaseHTTPRequestHandler):
             "type": "message", "role": "assistant", "status": "completed",
             "content": [{"type": "output_text", "text": "done", "annotations": []}],
         }]
+        if prompt == "model probe via python" and messages[-1].get("type") != "function_call_output":
+            code = ("selection = await commands.model()\n"
+                    "assert selection['model'] == 'fixture', selection\n"
+                    "try:\n"
+                    "    await commands.model('unreachable-model')\n"
+                    "    assert False, 'switch must refuse from the model'\n"
+                    "except CommandsError as error:\n"
+                    "    assert 'user action' in str(error), error\n"
+                    "print('MODEL_COMMAND_OK')")
+            output = [{"type": "function_call", "id": "fc-model", "call_id": "call-model",
+                       "name": "python", "arguments": json.dumps({"code": code, "timeout_ms": 10000}),
+                       "status": "completed"}]
         if prompt == "activate demo via python" and messages[-1].get("type") != "function_call_output":
-            code = "activation = await skills.activate('demo', 'python argument')\nassert 'BODY_MUST_NOT_AUTOLOAD' in activation['instructions']\nassert activation['arguments'] == 'python argument'\nprint('SKILL_PYTHON_ACTIVATION_OK')"
+            code = "activation = await commands.demo('python argument')\nassert 'BODY_MUST_NOT_AUTOLOAD' in activation['instructions']\nassert activation['arguments'] == 'python argument'\nprint('SKILL_PYTHON_ACTIVATION_OK')"
             output = [{"type": "function_call", "id": "fc-skills", "call_id": "call-skills",
                        "name": "python", "arguments": json.dumps({"code": code, "timeout_ms": 10000}),
                        "status": "completed"}]
@@ -145,31 +157,35 @@ def run(endpoint):
             assert "skills" in skills["python_modules"], skills
             assert skills["tools"] == []
             assert not {"skills_read", "skills_list"} & tools
-            skill_catalog = api(f"/sessions/{session}/skills")
-            assert skill_catalog["skills"] == [{
-                "name": "demo",
+            catalog = api(f"/sessions/{session}/commands")
+            demo = [c for c in catalog if c["name"] == "/demo"]
+            assert demo == [{
+                "name": "/demo",
                 "description": "catalog-only fixture description",
-                "command": "/demo",
-                "source": str(skill.resolve()),
-            }]
+                "method": "demo",
+                "arguments": [{"name": "arguments", "description": "arguments for the skill", "required": False}],
+                "modelCallable": True,
+                "userTurn": True,
+            }], demo
+            assert {c["name"] for c in catalog} >= {"/model", "/context"}
             before = len(Provider.requests)
-            api(f"/sessions/{session}/skills/activate", {
-                "name": "demo", "arguments": "one  two", "clientId": "fixture-client",
+            outcome = api(f"/sessions/{session}/commands", {
+                "name": "/demo", "arguments": "one  two", "clientId": "fixture-client",
             })
+            assert outcome == {"submitted": True}, outcome
             ready(session)
             assert len(Provider.requests) == before + 1
             activation = json.dumps(Provider.requests[-1]["input"])
             assert "BODY_MUST_NOT_AUTOLOAD" in activation
             assert "one  two" in activation and str(skill.resolve()) in activation
-            commands = api(f"/sessions/{session}/skills")["skills"]
-            assert commands == [{"name": "demo", "description": "catalog-only fixture description",
-                                 "command": "/demo", "source": str(skill.resolve())}], commands
+            listed = api(f"/sessions/{session}/commands")
+            assert listed == catalog, listed
             original_skill = skill.read_text()
             skill.write_text(original_skill.replace("catalog-only fixture description", "changed on disk"))
-            assert api(f"/sessions/{session}/skills")["skills"] == commands, "catalog changed without reload"
+            assert api(f"/sessions/{session}/commands") == catalog, "catalog changed without reload"
             skill.write_text(original_skill)
             before = len(Provider.requests)
-            api(f"/sessions/{session}/skills/activate", {"name": "demo", "arguments": "slash argument"})
+            api(f"/sessions/{session}/commands", {"name": "/demo", "arguments": "slash argument"})
             ready(session)
             assert len(Provider.requests) == before + 1, "slash activation must submit exactly one turn"
             activation_request = Provider.requests[-1]
@@ -185,12 +201,25 @@ def run(endpoint):
             assert len(Provider.requests) == before + 2, "python activation must not submit another user turn"
             tool_output = next(item["output"] for item in Provider.requests[-1]["input"] if item.get("type") == "function_call_output")
             assert "SKILL_PYTHON_ACTIVATION_OK" in tool_output, tool_output
+            model_session = json.loads(cli("new", str(workspace)))["session"]
+            before = len(Provider.requests)
+            api(f"/sessions/{model_session}/events", {"content": "model probe via python"})
+            ready(model_session)
+            assert len(Provider.requests) == before + 2
+            tool_output = next(item["output"] for item in Provider.requests[-1]["input"] if item.get("type") == "function_call_output")
+            assert "MODEL_COMMAND_OK" in tool_output, tool_output
+            # A user switches through the same command the CLI menu shows.
+            switched = api(f"/sessions/{model_session}/commands", {"name": "/model", "args": {"model": "switched-model"}})
+            assert switched["result"]["model"] == "switched-model", switched
+            assert switched["result"]["provider"] == "fixture", switched
+            listed_sessions = api("/sessions")
+            assert next(s for s in listed_sessions if s["id"] == model_session)["model"] == "switched-model"
             rejected(route, {"name": "not-installed", "enabled": False})
             rejected(route, {"name": "python", "enabled": False})
             assert api(route) == installed
             disabled = api(route, {"name": "skills", "enabled": False})
             assert not next(item["enabled"] for item in disabled if item["name"] == "skills")
-            rejected(f"/sessions/{session}/skills/activate", {"name": "demo", "arguments": "must not run"})
+            rejected(f"/sessions/{session}/commands", {"name": "/demo", "arguments": "must not run"})
             assert json.loads((home/"daemon.json").read_text())["pid"] == daemon_pid
             request = catalog_request(session, "extension disabled")
             assert "<available_skills>" not in json.dumps(request), request
@@ -199,6 +228,7 @@ def run(endpoint):
             api(f"/sessions/{session}/events", {"content": "hold this turn"})
             assert Provider.entered.wait(10)
             rejected(route, {"name": "skills", "enabled": True})
+            rejected(f"/sessions/{session}/commands", {"name": "/model", "args": {"model": "mid-run"}})
             assert api(route) == disabled
             Provider.release.set()
             ready(session)

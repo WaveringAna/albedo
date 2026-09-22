@@ -3,26 +3,6 @@ from typing import TypedDict, cast
 from albedo_api import Host, PythonApi
 
 
-class SkillSummary(TypedDict):
-    name: str
-    description: str
-    command: str
-    source: str
-
-
-class SkillCatalog(TypedDict):
-    skills: list[SkillSummary]
-    diagnostics: list[str]
-
-
-class SkillActivation(TypedDict):
-    name: str
-    description: str
-    source: str
-    arguments: str
-    instructions: str
-
-
 class SkillResources(TypedDict):
     resources: list[str]
     truncated: bool
@@ -42,17 +22,6 @@ host: Host
 
 
 class Skills:
-    async def list(self) -> SkillCatalog:
-        """List this session's immutable startup catalog and slash commands."""
-        return cast(SkillCatalog, await host("skills.list", {}))
-
-    async def activate(self, name: str, arguments: str = "") -> SkillActivation:
-        """Load one cataloged SKILL.md. This returns data and never submits a turn."""
-        return cast(
-            SkillActivation,
-            await host("skills.activate", {"name": name, "arguments": arguments}),
-        )
-
     async def resources(self, name: str) -> SkillResources:
         """List resource names without reading or executing their contents."""
         return cast(SkillResources, await host("skills.resources", {"name": name}))

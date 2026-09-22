@@ -7,14 +7,14 @@ import albedo/daemon/events as view
 import albedo/daemon/projection
 import albedo/daemon/transcript
 import albedo/daemon/usage
+import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/loop
 import albedo/harness/python/kernel as python
 import albedo/harness/rolling
 import albedo/harness/runtime
-import albedo/harness/skills/catalog as skill_catalog
-import albedo/harness/skills/rpc as skills_rpc
 import albedo/openai_api/types
+import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/json
@@ -80,10 +80,10 @@ pub type Message {
     Option(types.Image),
     Subject(Result(Nil, SubmissionError)),
   )
-  ReadSkills(
-    Subject(Result(#(List(skill_catalog.Command), List(String)), String)),
+  ReadCommands(
+    Subject(Result(#(List(command.Command), command.Context), String)),
   )
-  ActivateSkill(String, String, String, Subject(Result(Nil, SubmissionError)))
+  ReadSelection(Subject(ModelSelection))
   ChangeWorkspace(String, Subject(Result(conversation.Info, String)))
   ReadExtensions(Subject(Result(List(extension.Summary), String)))
   ChangeExtension(
@@ -182,6 +182,9 @@ pub fn start(
         Error(error) -> submission_error(error)
       }
     })
+    // Command runs execute outside this actor and address state through this
+    // closure, so every state operation serializes here like any other message.
+    commands_register(info.id, fn(op, args) { command_op(self, op, args) })
     Ok(
       actor.initialised(state)
       |> actor.returning(self)
@@ -209,19 +212,12 @@ pub fn submit(
   actor.call(session, 10_000, Submit(text, text, client_id, "chat", image, _))
 }
 
-pub fn skills(
+/// This session's materialized command catalog and the context that runs them.
+/// Answered through the kernel's session, so the list matches its bindings.
+pub fn commands(
   session: Session,
-) -> Result(#(List(skill_catalog.Command), List(String)), String) {
-  actor.call(session, 15_000, ReadSkills)
-}
-
-pub fn activate_skill(
-  session: Session,
-  name: String,
-  arguments: String,
-  client_id: String,
-) -> Result(Nil, SubmissionError) {
-  actor.call(session, 15_000, ActivateSkill(name, arguments, client_id, _))
+) -> Result(#(List(command.Command), command.Context), String) {
+  actor.call(session, 15_000, ReadCommands)
 }
 
 pub fn interrupt(session: Session) -> Bool {
@@ -312,8 +308,7 @@ fn handle(state: State, message: Message) {
   // Anything a client sends counts as attention; a detached session goes quiet.
   let state = case message {
     Submit(..)
-    | ReadSkills(..)
-    | ActivateSkill(..)
+    | ReadCommands(..)
     | Interrupt(..)
     | Status(..)
     | Read(..)
@@ -482,7 +477,7 @@ fn handle(state: State, message: Message) {
           }
         }
       }
-    ReadSkills(reply) ->
+    ReadCommands(reply) ->
       case directory(state.info.cwd) {
         False -> {
           process.send(reply, Error("workspace not found: " <> state.info.cwd))
@@ -495,84 +490,21 @@ fn handle(state: State, message: Message) {
               actor.continue(state)
             }
             Ok(#(next, kernel)) -> {
-              let commands = {
-                use response <- result.try(runtime.host_request(
-                  next.host,
-                  kernel,
-                  "{\"method\":\"skills.list\",\"args\":{}}",
-                ))
-                skills_rpc.decode_commands_response(response)
-              }
-              process.send(reply, commands)
+              process.send(
+                reply,
+                Ok(#(
+                  runtime.commands(kernel),
+                  command.context(runtime.ledger(next.host), next.info.id),
+                )),
+              )
               actor.continue(next)
             }
           }
       }
-    ActivateSkill(name, arguments, client_id, reply) ->
-      case state.run, directory(state.info.cwd) {
-        Some(_), _ -> {
-          process.send(reply, Error(Rejected("session is busy")))
-          actor.continue(state)
-        }
-        None, False -> {
-          process.send(reply, Error(WorkspaceMissing(state.info.cwd)))
-          actor.continue(state)
-        }
-        None, True ->
-          case ensure_kernel(state) {
-            Error(error) -> {
-              process.send(reply, Error(Rejected(error)))
-              actor.continue(state)
-            }
-            Ok(#(next, kernel)) -> {
-              let request =
-                json.object([
-                  #("method", json.string("skills.activate")),
-                  #(
-                    "args",
-                    json.object([
-                      #("name", json.string(name)),
-                      #("arguments", json.string(arguments)),
-                    ]),
-                  ),
-                ])
-                |> json.to_string
-              let resolved = {
-                use response <- result.try(runtime.host_request(
-                  next.host,
-                  kernel,
-                  request,
-                ))
-                skills_rpc.decode_activation_response(response)
-              }
-              case resolved {
-                Error(error) -> {
-                  process.send(reply, Error(Rejected(error)))
-                  actor.continue(next)
-                }
-                Ok(activation) -> {
-                  let display =
-                    skill_catalog.command_name(activation.name)
-                    <> case arguments {
-                      "" -> ""
-                      _ -> " " <> arguments
-                    }
-                  handle(
-                    next,
-                    Submit(
-                      display,
-                      skill_catalog.activation_prompt(activation),
-                      client_id,
-                      "chat",
-                      None,
-                      reply,
-                    ),
-                  )
-                }
-              }
-            }
-          }
-      }
+    ReadSelection(reply) -> {
+      process.send(reply, model_selection(state.info))
+      actor.continue(state)
+    }
     Interrupt(reply) ->
       case state.run {
         None -> {
@@ -1040,10 +972,72 @@ fn handle(state: State, message: Message) {
       }
       runtime.reset_session(state.host, state.info.id)
       wakes_forget(state.info.id)
+      commands_forget(state.info.id)
       process.send(reply, Nil)
       actor.stop()
     }
   }
+}
+
+/// The registered command state seam: one operation name in, session state out.
+///
+/// Runs on whichever process invoked the command (the kernel's host-call
+/// process or an HTTP request process), so every branch is one actor call that
+/// reuses the ordinary message handlers instead of duplicating their logic.
+fn command_op(
+  session: Session,
+  op: String,
+  args: Dict(String, String),
+) -> Result(json.Json, String) {
+  case op {
+    "model.get" -> Ok(selection_json(actor.call(session, 5000, ReadSelection)))
+    "model.select" -> {
+      let provider = case dict.get(args, "provider") {
+        Ok(value) if value != "" -> Some(value)
+        _ -> None
+      }
+      actor.call(session, 5000, ChangeModel(
+        dict.get(args, "model") |> result.unwrap(""),
+        provider,
+        _,
+      ))
+      |> result.map(selection_json)
+    }
+    "context.summary" -> Ok(actor.call(session, 5000, ReadContext))
+    "context.page" ->
+      actor.call(session, 5000, ReadContextPage(
+        dict.get(args, "section") |> result.unwrap(""),
+        dict.get(args, "page")
+          |> result.unwrap("0")
+          |> int.parse
+          |> result.unwrap(0),
+        _,
+      ))
+    "submit" ->
+      actor.call(session, 10_000, Submit(
+        dict.get(args, "display") |> result.unwrap(""),
+        dict.get(args, "text") |> result.unwrap(""),
+        dict.get(args, "client") |> result.unwrap(""),
+        "chat",
+        None,
+        _,
+      ))
+      |> result.map_error(submission_error)
+      |> result.replace(json.object([#("submitted", json.bool(True))]))
+    _ -> Error("unknown session state operation: " <> op)
+  }
+}
+
+fn model_selection(info: conversation.Info) -> ModelSelection {
+  ModelSelection(info.provider, info.model, info.protocol)
+}
+
+fn selection_json(selection: ModelSelection) -> json.Json {
+  json.object([
+    #("provider", json.string(selection.provider)),
+    #("model", json.string(selection.model)),
+    #("protocol", json.string(conversation.protocol(selection.protocol))),
+  ])
 }
 
 @external(erlang, "albedo_native", "new_id")
@@ -1060,6 +1054,15 @@ fn wakes_register(session: String, submit: fn(String, String) -> String) -> Nil
 
 @external(erlang, "albedo_wakes", "forget")
 fn wakes_forget(session: String) -> Nil
+
+@external(erlang, "albedo_commands", "register")
+fn commands_register(
+  session: String,
+  state_op: fn(String, Dict(String, String)) -> Result(json.Json, String),
+) -> Nil
+
+@external(erlang, "albedo_commands", "forget")
+fn commands_forget(session: String) -> Nil
 
 @external(erlang, "albedo_session", "discard")
 fn discard(path: String) -> Nil

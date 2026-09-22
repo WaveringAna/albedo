@@ -26,29 +26,43 @@ start(Owner, Python, Script, Cwd, Host, Modules) ->
         try open_port({spawn_executable, binary_to_list(Python)},
                 [binary, {packet, 4}, use_stdio, exit_status, hide,
                  {args, ["-u", binary_to_list(Script), binary_to_list(iolist_to_binary(json:encode(Modules)))]}, {cd, binary_to_list(Cwd)}, {env, clean_environment()}]) of
-            Port ->
-                receive
-                    {Port, {data, Data}} ->
-                        case try json:decode(Data) catch _:_ -> invalid end of
-                            #{<<"type">> := <<"ready">>, <<"pid">> := KernelPid, <<"pgid">> := KernelPid} = Ready
-                                    when is_integer(KernelPid), KernelPid > 1 ->
-                                Parent ! {Ref, {ok, self()}},
-                                loop(#{port => Port, host => Host, active => none,
-                                       events => [], groups => #{}, external => 0,
-                                       target => target_of(Ready)});
-                            #{<<"type">> := <<"startup_error">>, <<"message">> := Message} when is_binary(Message) ->
-                                reap_start(Port), Parent ! {Ref, {error, {unavailable, Message}}};
-                            _ -> reap_start(Port), Parent ! {Ref, {error, {unavailable, <<"invalid kernel handshake">>}}}
-                        end;
-                    {Port, {exit_status, _}} -> Parent ! {Ref, {error, {unavailable, <<"python exited at startup">>}}}
-                after ?STARTUP_TIMEOUT -> reap_start(Port), Parent ! {Ref, {error, {unavailable, <<"python startup timed out">>}}}
-                end
+            Port -> startup(Port, Host, Parent, Ref)
         catch _:Reason -> Parent ! {Ref, {error, {unavailable, detail(Reason)}}}
         end
     end),
     receive
         {Ref, Result} -> demonitor(Mon, [flush]), Result;
         {'DOWN', Mon, process, Pid, _} -> {error, lost}
+    end.
+
+%% Boot-time host RPC: plugin setup runs before the handshake and may call the
+%% host, so "call" frames can precede "ready". Serve them exactly like the loop
+%% does, but write the reply directly: the loop that would relay it does not
+%% exist yet, and the kernel waits for the reply before it can become ready.
+startup(Port, Host, Parent, Ref) ->
+    receive
+        {Port, {data, Data}} ->
+            case try json:decode(Data) catch _:_ -> invalid end of
+                #{<<"type">> := <<"ready">>, <<"pid">> := KernelPid, <<"pgid">> := KernelPid} = Ready
+                        when is_integer(KernelPid), KernelPid > 1 ->
+                    Parent ! {Ref, {ok, self()}},
+                    loop(#{port => Port, host => Host, active => none,
+                           events => [], groups => #{}, external => 0,
+                           target => target_of(Ready)});
+                #{<<"type">> := <<"startup_error">>, <<"message">> := Message} when is_binary(Message) ->
+                    reap_start(Port), Parent ! {Ref, {error, {unavailable, Message}}};
+                #{<<"type">> := <<"call">>, <<"id">> := Id} = Message ->
+                    Host1 = Host,
+                    spawn(fun() ->
+                        Reply = try json:decode(Host1(iolist_to_binary(json:encode(Message))))
+                                catch _:_ -> #{ok => false, code => <<"unavailable">>, message => <<"runtime unavailable">>} end,
+                        _ = try port_command(Port, json:encode(#{type => <<"reply">>, id => Id, value => Reply})) catch _:_ -> ok end
+                    end),
+                    startup(Port, Host, Parent, Ref);
+                _ -> reap_start(Port), Parent ! {Ref, {error, {unavailable, <<"invalid kernel handshake">>}}}
+            end;
+        {Port, {exit_status, _}} -> Parent ! {Ref, {error, {unavailable, <<"python exited at startup">>}}}
+    after ?STARTUP_TIMEOUT -> reap_start(Port), Parent ! {Ref, {error, {unavailable, <<"python startup timed out">>}}}
     end.
 
 execute(Pid, Data, Timeout) -> call(Pid, {execute, Data, Timeout}).

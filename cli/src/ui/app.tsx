@@ -8,7 +8,7 @@ import { ExtensionPicker } from "./extension-picker.js"
 import { TreePicker, type TreeCheckpoint, type TreePage } from "./tree-picker.js"
 import { ContextInspector } from "./context-inspector.js"
 import { request, type Connection, type Session } from "../daemon.js"
-import { parseSkillCatalog, parseSkillInvocation, type SkillCatalog } from "../skills.js"
+import { parseCommandCatalog, parseCommandInvocation, type SessionCommand } from "../commands.js"
 
 export function App({ connection, initial, workspace, quit, login = false }: { connection: Connection; initial?: Session; workspace: string; quit: () => void; login?: boolean }) {
   const [loggingIn,setLoggingIn]=useState<{ name?: string } | undefined>(login ? {} : undefined)
@@ -28,11 +28,22 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
   const [treePageIndex,setTreePageIndex]=useState(0)
   const [treeNextCursor,setTreeNextCursor]=useState<number>()
   const [extensionRevision,setExtensionRevision]=useState(0)
-  const [skillCatalog,setSkillCatalog]=useState<SkillCatalog>({ skills: [], diagnostics: [] })
+  const [commandCatalog,setCommandCatalog]=useState<SessionCommand[]>([])
   const listedSessions = selected && !sessions.some(session => session.id === selected.id) ? [selected, ...sessions] : sessions
   const workspaceChanged = (workspace: string): void => {
     setSelected(current => current && { ...current, workspace })
     if (selected) setSessions(current => current.map(session => session.id === selected.id ? { ...session, workspace } : session))
+  }
+  const applySelection = (changed: Partial<Pick<Session, "model" | "provider" | "protocol">>): void => {
+    if (!selected) return
+    setSelected({ ...selected, model: changed.model ?? selected.model, provider: changed.provider ?? selected.provider, protocol: changed.protocol ?? selected.protocol })
+  }
+  const runCommand = async (name: string, args: Record<string, string> | string): Promise<Record<string, unknown> | undefined> => {
+    if (!selected) return
+    const call = typeof args === "string" ? { name, arguments: args } : { name, args }
+    const outcome = await request<{ result?: Record<string, unknown>; submitted?: boolean }>(connection,
+      `/sessions/${encodeURIComponent(selected.id)}/commands`, call)
+    return outcome.result
   }
   const changeModel = async (model: string, provider?: string): Promise<void> => {
     if (!selected) return
@@ -41,8 +52,7 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
       if (!health.capabilities?.includes("session_provider"))
         throw new Error("daemon upgrade needed to switch providers; when ready, run albedo daemon --stop, then albedo (this clears python variables)")
     }
-    const changed = await request<Partial<Pick<Session, "model" | "provider" | "protocol">>>(connection, `/sessions/${selected.id}/model`, { model, provider })
-    setSelected({ ...selected, model: changed.model ?? model, provider: changed.provider ?? selected.provider, protocol: changed.protocol ?? selected.protocol })
+    applySelection((await runCommand("/model", provider ? { model, provider } : { model }) ?? {}) as Partial<Pick<Session, "model" | "provider" | "protocol">>)
     setChoosingModel(false); setError("")
   }
   useEffect(() => {
@@ -52,11 +62,11 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
     return () => controller.abort()
   },[choosing,connection])
   useEffect(() => {
-    if (!selected) { setSkillCatalog({ skills: [], diagnostics: [] }); return }
+    if (!selected) { setCommandCatalog([]); return }
     let active = true
-    void request<unknown>(connection, `/sessions/${encodeURIComponent(selected.id)}/skills`)
-      .then(value => { if (active) setSkillCatalog(parseSkillCatalog(value)) })
-      .catch(() => { if (active) setSkillCatalog({ skills: [], diagnostics: [] }) })
+    void request<unknown>(connection, `/sessions/${encodeURIComponent(selected.id)}/commands`)
+      .then(value => { if (active) setCommandCatalog(parseCommandCatalog(value)) })
+      .catch(() => { if (active) setCommandCatalog([]) })
     return () => { active = false }
   }, [connection, selected?.id, selected?.workspace, extensionRevision])
   useEffect(() => {
@@ -112,20 +122,27 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
     ]} onSelect={id => { if (id==="new") create(); else if (id==="login") setLoggingIn({}); else { setSelected(listedSessions.find(session=>session.id===id));setChoosing(false) } }} onCancel={() => selected ? setChoosing(false) : quit()} /> : selected && <><ChatScreen key={selected.id} visible={!choosingModel && !choosingExtensions && !choosingTree && !choosingContext} usageResetKey={extensionRevision}
       baseUrl={`http://127.0.0.1:${connection.port}`} token={connection.token} agentId={selected.id} agentName="albedo"
       workspace={selected.workspace} model={selected.model} onWorkspaceChanged={workspaceChanged} onBack={()=>setChoosing(true)} onQuit={quit} onCreate={create}
-      commands={[{ name:"/login",description:"add or select a named openai-compatible api" },{ name:"/new",description:"new coding session" },{ name:"/sessions",description:"switch session" },{ name:"/model",description:"choose this session's provider and model" },{ name:"/extensions",description:"manage this session's extension plugins" },{ name:"/tree",description:"branch this session from a history checkpoint" },{ name:"/context",description:"inspect the exact prepared model request" },...skillCatalog.skills.map(skill => ({ name:skill.command,description:skill.description }))]}
+      commands={[{ name:"/login",description:"add or select a named openai-compatible api" },{ name:"/new",description:"new coding session" },{ name:"/sessions",description:"switch session" },{ name:"/model",description:"choose this session's provider and model" },{ name:"/extensions",description:"manage this session's extension plugins" },{ name:"/tree",description:"branch this session from a history checkpoint" },{ name:"/context",description:"inspect the exact prepared model request" },...commandCatalog.map(command => ({ name:command.name,description:command.description }))]}
       onCommand={(value,clear)=> {
         if (value === "/login" || value.startsWith("/login ")) { clear(); setLoggingIn({ name: value.slice(6).trim() || undefined }); return true }
-        if (value.startsWith("/model ")) { clear();setError("");void changeModel(value.slice(7).trim()).catch(error=>setError(String(error)));return true }
+        if (value.startsWith("/model ")) {
+          clear(); setError("")
+          void runCommand("/model", value.slice(7))
+            .then(changed => applySelection((changed ?? {}) as Partial<Pick<Session, "model" | "provider" | "protocol">>))
+            .catch(error=>setError(String(error)))
+          return true
+        }
         if (value==="/model") { clear();setError("");setChoosingModel(true);return true }
         if (["/extensions","/plugins"].includes(value)) { clear();setError("");setChoosingExtensions(true);return true }
         if (value==="/tree") { clear();setError("");openTree();return true }
         if (value==="/context") { clear();setError("");setChoosingContext(true);return true }
         if (["/sessions","/agents","/a"].includes(value)) { clear();setChoosing(true);return true }
         if (value==="/new") { clear();create();return true }
-        const skill = parseSkillInvocation(value, skillCatalog)
-        if (skill) {
+        const command = parseCommandInvocation(value, commandCatalog)
+        if (command) {
           clear(); setError("")
-          void request(connection, `/sessions/${encodeURIComponent(selected.id)}/skills/activate`, { name:skill.skill.name, arguments:skill.arguments })
+          void runCommand(command.name, command.arguments)
+            .then(result => { if (result) setNotice(JSON.stringify(result)) })
             .catch(error=>setError(String(error)))
           return true
         }

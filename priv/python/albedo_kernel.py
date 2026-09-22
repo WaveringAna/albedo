@@ -865,7 +865,7 @@ def main():
         background_handle=HANDLES.append, modules=modules, watch_output=watch_output)
     NAMESPACE.update(cells=Cells(), output=Output())
     try:
-        albedo_api.load_plugins(modules, api, NAMESPACE)
+        LOOP.run_until_complete(albedo_api.load_plugins(modules, api, NAMESPACE))
     except Exception as error:
         send({"type": "startup_error", "message": str(error)})
         die()
