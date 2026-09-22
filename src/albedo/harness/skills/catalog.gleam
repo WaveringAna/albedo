@@ -129,7 +129,7 @@ pub fn context(catalog: Catalog) -> String {
   <> skill_xml
   <> diagnostic_xml
   <> "\n</available_skills>\n"
-  <> "This catalog contains metadata only. When a skill is relevant, call await skills.activate(name, arguments) before applying it. await skills.resources(name) lists bundled resource names, and await skills.read(name, resource=...) reads one bounded page. A user may explicitly activate the shown slash command. Reading or activating a skill never executes scripts, imports skill modules, fetches links, or grants tools; allowed-tools metadata is descriptive only."
+  <> "This catalog contains metadata only. When a skill is relevant, call await skills.activate(name, arguments) before applying it. await skills.resources(name) lists bundled resource names, and await skills.read(name, resource=...) reads one bounded page, returning {content, next_offset, size, truncated}. A user may explicitly activate the shown slash command. Reading or activating a skill never executes scripts, imports skill modules, fetches links, or grants tools; allowed-tools metadata is descriptive only."
 }
 
 pub fn activate(

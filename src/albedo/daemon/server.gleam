@@ -62,6 +62,7 @@ type State {
 
 type Stream {
   Tick
+  Wake
 }
 
 pub fn start(config: Config, port: Int) -> Result(Int, String) {
@@ -771,6 +772,20 @@ fn route(
   }
 }
 
+fn when_running(
+  worker: session.Session,
+  continue_: fn() -> actor.Next(state, message),
+) -> actor.Next(state, message) {
+  case process.subject_owner(worker) {
+    Ok(pid) ->
+      case process.is_alive(pid) {
+        True -> continue_()
+        False -> actor.stop()
+      }
+    Error(_) -> actor.stop()
+  }
+}
+
 fn stream(req, worker) {
   let after =
     request.get_query(req)
@@ -782,28 +797,49 @@ fn stream(req, worker) {
     req,
     response.new(200),
     fn(self) {
+      // The session wakes this stream per event; the tick is only a keepalive
+      // and the way a dropped connection is noticed while nothing is streaming.
+      case process.subject_owner(self) {
+        Ok(owner) ->
+          session.watch(worker, owner, fn() { process.send(self, Wake) })
+        Error(_) -> Nil
+      }
       process.send(self, Tick)
       #(self, after)
     },
-    fn(state, _, connection) {
+    fn(state, message, connection) {
+      // A closing daemon stops session workers while clients are still attached,
+      // so a dead worker ends this stream instead of failing a call into it.
+      use <- when_running(worker)
       let page = session.read(worker, state.1)
-      let events =
-        string_tree.from_strings([
-          "{\"cursor\":",
-          int.to_string(page.cursor),
-          ",\"events\":[",
-        ])
-        |> string_tree.append_tree(
-          page.events
-          |> list.map(string_tree.from_string)
-          |> string_tree.join(","),
-        )
-        |> string_tree.append("]}")
-      case mist.send_event(connection, mist.event(events)) {
-        Error(_) -> actor.stop()
-        Ok(_) -> {
-          let _ = process.send_after(state.0, 100, Tick)
-          actor.continue(#(state.0, page.cursor))
+      case message, page.events {
+        Wake, [] -> actor.continue(state)
+        _, _ -> {
+          let events =
+            string_tree.from_strings([
+              "{\"cursor\":",
+              int.to_string(page.cursor),
+              ",\"events\":[",
+            ])
+            |> string_tree.append_tree(
+              page.events
+              |> list.map(string_tree.from_string)
+              |> string_tree.join(","),
+            )
+            |> string_tree.append("]}")
+          case mist.send_event(connection, mist.event(events)) {
+            Error(_) -> actor.stop()
+            Ok(_) -> {
+              case message {
+                Tick -> {
+                  let _ = process.send_after(state.0, 1000, Tick)
+                  Nil
+                }
+                Wake -> Nil
+              }
+              actor.continue(#(state.0, page.cursor))
+            }
+          }
         }
       }
     },

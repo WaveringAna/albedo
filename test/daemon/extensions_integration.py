@@ -137,6 +137,7 @@ def run(endpoint):
             assert "BODY_MUST_NOT_AUTOLOAD" not in json.dumps(request), request
             assert "catalog-only fixture description" not in request.get("instructions", ""), request
             assert text.index("catalog-only fixture description") < text.index("first turn")
+            assert "returning {content, next_offset, size, truncated}" in text, request
             tools = {tool["name"] for tool in request["tools"]}
             installed = api(route)  # Managed capabilities resolve when the lazy worker opens.
             skills = next(item for item in installed if item["name"] == "skills")

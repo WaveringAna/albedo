@@ -17,6 +17,23 @@ export type TextInputProps = {
 /** Control characters never reach the buffer; pasted text arrives as one chunk. */
 const typed = (input: string): string => [...input].filter((char) => char >= " " && char !== "\u007f").join("")
 
+const space = (char: string | undefined): boolean => char === undefined || /\s/.test(char)
+
+/** Word motion skips the gap first, then the word, like readline and every editor. */
+const wordLeft = (text: string, at: number): number => {
+  let index = at
+  while (index > 0 && space(text[index - 1])) index--
+  while (index > 0 && !space(text[index - 1])) index--
+  return index
+}
+
+const wordRight = (text: string, at: number): number => {
+  let index = at
+  while (index < text.length && space(text[index])) index++
+  while (index < text.length && !space(text[index])) index++
+  return index
+}
+
 /**
  * Minimal controlled line editor. The buffer belongs to the caller, so the
  * prompt beside it lives in the render tree and no keystroke can erase it.
@@ -30,15 +47,20 @@ export function TextInput({ value, onChange, onSubmit, onKey, onLeftWhenEmpty, i
     if (onKey?.(input, key, (next) => edit(next, next.length))) {
       return
     }
-    if (multiline && ((key.return && key.shift) || (input.length > 1 && /[\r\n]/.test(input)))) {
+    // Terminals disagree about shift+return, so option/alt+return opens a line too.
+    if (multiline && ((key.return && (key.shift || key.meta)) || (input.length > 1 && /[\r\n]/.test(input)))) {
       const pasted = key.return ? "\n" : input.replace(/\r\n?/g, "\n")
       const insert = pasted.split("\n").map(typed).join("\n")
       edit(value.slice(0, cursor) + insert + value.slice(cursor), cursor + insert.length)
       return
     }
     if (key.return) { setOffset(0); onSubmit?.(value); return }
-    if (key.leftArrow) { if (!value) onLeftWhenEmpty?.(); else setOffset(Math.max(0, cursor - 1)); return }
-    if (key.rightArrow) return setOffset(Math.min(value.length, cursor + 1))
+    // option/alt on macOS and ctrl elsewhere both mean "by word" here.
+    const byWord = key.meta || key.ctrl
+    if (key.leftArrow) { if (!value) onLeftWhenEmpty?.(); else setOffset(byWord ? wordLeft(value, cursor) : Math.max(0, cursor - 1)); return }
+    if (key.rightArrow) return setOffset(byWord ? wordRight(value, cursor) : Math.min(value.length, cursor + 1))
+    // Some terminals send option+arrow as the readline word motions instead.
+    if (key.meta && (input === "b" || input === "f")) return setOffset(input === "b" ? wordLeft(value, cursor) : wordRight(value, cursor))
     if (key.home) return setOffset(0)
     if (key.end) return setOffset(value.length)
     if (key.backspace) return cursor === 0 ? undefined : edit(value.slice(0, cursor - 1) + value.slice(cursor), cursor - 1)

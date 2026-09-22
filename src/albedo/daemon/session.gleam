@@ -89,6 +89,7 @@ pub type Message {
   ChangeModel(String, Option(String), Subject(Result(ModelSelection, String)))
   Status(Subject(String))
   Read(Int, Subject(Page))
+  Watch(process.Pid, fn() -> Nil)
   Publish(String, String, Subject(Bool))
   Commit(String, List(types.Input), String, Subject(Result(Int, String)))
   RecordContext(String, context_snapshot.Snapshot, Subject(Nil))
@@ -119,6 +120,7 @@ type State {
     run: Option(Run),
     sequence: Int,
     events: List(#(Int, String)),
+    watchers: List(#(process.Pid, fn() -> Nil)),
     phase: String,
     notice: Option(String),
     context: context_snapshot.Snapshot,
@@ -156,6 +158,7 @@ pub fn start(
         latest_usage,
         None,
         0,
+        [],
         [],
         phase,
         None,
@@ -212,6 +215,12 @@ pub fn status(session: Session) -> String {
   actor.call(session, 5000, Status)
 }
 
+/// Register a wake callback for one streaming client. The callback runs in the
+/// session process and must only notify; dead watchers are dropped.
+pub fn watch(session: Session, owner: process.Pid, notify: fn() -> Nil) -> Nil {
+  process.send(session, Watch(owner, notify))
+}
+
 pub fn read(session: Session, after: Int) -> Page {
   actor.call(session, 5000, Read(after, _))
 }
@@ -254,10 +263,15 @@ fn unprepared() -> context_snapshot.Snapshot {
   )
 }
 
+/// Streaming clients are woken as each event is published, so a model delta
+/// reaches a terminal without waiting for a polling interval.
 fn emit(state: State, event: String) -> State {
   let seq = state.sequence + 1
   let events = trim([#(seq, event), ..state.events], 256, 4_194_304)
-  State(..state, sequence: seq, events: events)
+  let watchers =
+    list.filter(state.watchers, fn(watcher) { process.is_alive(watcher.0) })
+  list.each(watchers, fn(watcher) { watcher.1() })
+  State(..state, sequence: seq, events: events, watchers: watchers)
 }
 
 fn trim(
@@ -766,6 +780,15 @@ fn handle(state: State, message: Message) {
       )
       actor.continue(state)
     }
+    Watch(owner, notify) ->
+      actor.continue(
+        State(..state, watchers: [
+          #(owner, notify),
+          ..list.filter(state.watchers, fn(watcher) {
+            process.is_alive(watcher.0) && watcher.0 != owner
+          })
+        ]),
+      )
     Read(after, reply) -> {
       let oldest =
         list.last(state.events)
