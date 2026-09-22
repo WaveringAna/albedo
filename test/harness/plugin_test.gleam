@@ -223,3 +223,14 @@ pub fn transcript_remains_durable_when_context_is_request_only_test() {
   |> should.equal(Ok(history))
   runtime.stop(host)
 }
+
+// `ssh` installs like every bundled extension but stays opt-in like `mcp`:
+// remote execution changes where every command runs, so a session must select it.
+pub fn ssh_is_installed_and_opt_in_test() {
+  let config = extensions.defaults()
+  config.extensions
+  |> list.map(fn(extension) { extension.name })
+  |> list.contains("ssh")
+  |> should.be_true
+  config.default_enabled |> list.contains("ssh") |> should.be_false
+}

@@ -144,7 +144,7 @@ pub fn run(
   }
 }
 
-const instructions = "You are a coding agent working in the session workspace. Use the tools enabled for this session. Run tests and report real results. Client disconnection does not stop your session.\n"
+const instructions = "You are a coding agent operating inside albedo, a coding agent harness; working in the session workspace. Use the tools enabled for this session. Run tests and report real results.\n"
 
 fn summarize(
   state: Loop,

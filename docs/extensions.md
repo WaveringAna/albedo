@@ -1,6 +1,6 @@
 # extensions
 
-an extension is a named bundle of plugins. it can contribute any number of context, tool, managed, or compaction plugins. `python`, `bash`, `work`, `skills`, and `rolling` are enabled by default; `mcp` is installed and disabled until a session enables it. plugin contributions compose inside them.
+an extension is a named bundle of plugins. it can contribute any number of context, tool, managed, or compaction plugins. `python`, `bash`, `work`, `skills`, and `rolling` are enabled by default; `mcp` and `ssh` are installed and disabled until a session enables them. plugin contributions compose inside them.
 
 ## select extensions
 
@@ -61,6 +61,10 @@ packaged short names resolve to `albedo_plugins.*`; dotted names select installe
 
 interfaces: [`PythonApi`](../priv/python/albedo_api.py), [`work`](../src/albedo/harness/work.gleam), [`compaction strategy`](../src/albedo/harness/compaction.gleam).
 
+## files
+
+see [the files extension](files.md): bounded reads, guarded exact edits, and ripgrep search that runs as a supervised `bash` job instead of a raw subprocess.
+
 ## models
 
 see [the models catalog](models.md): the cached models.dev catalog that supplies context windows, modalities, and provider endpoints to compaction and `/context`.
@@ -68,6 +72,18 @@ see [the models catalog](models.md): the cached models.dev catalog that supplies
 ## mcp
 
 see [the mcp extension](mcp.md) for connecting Model Context Protocol servers: configuration, credential scope, namespaced tools, and connection lifecycle.
+
+## ssh
+
+the `ssh` extension runs commands and moves files on one remote host; installed and disabled until a session enables it. `ssh.run(command)` executes remotely and returns its exit code and output; exit code 255 usually means the connection itself failed. `ssh.read(path)` returns remote file text and `ssh.write(path, content)` replaces it. paths under the session workspace map onto the remote cwd. the target resolves per call from a `host=` argument, then the value `ssh.configure(host, remote_cwd=None)` stored, then `$ALBEDO_SSH` (`user@host[:/path]`), then the `ssh` section of extensions.json:
+
+```json
+{
+  "ssh": { "host": "deploy@box", "remoteCwd": "/srv/app" }
+}
+```
+
+a bare host asks the remote for its `pwd` once. commands run under `BatchMode=yes`, so key-based auth is required.
 
 ## skills
 

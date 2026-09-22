@@ -129,8 +129,8 @@ def run(endpoint):
             session = json.loads(cli("new", str(workspace)))["session"]
             route = f"/sessions/{session}/extensions"
             installed = api(route)
-            assert {"python", "bash", "work", "skills"} <= {item["name"] for item in installed}
-            assert all(item["enabled"] for item in installed if item["name"] in {"python", "bash", "work", "skills"})
+            assert {"python", "bash", "work", "files", "skills"} <= {item["name"] for item in installed}
+            assert all(item["enabled"] for item in installed if item["name"] in {"python", "bash", "work", "files", "skills"})
             request = catalog_request(session, "first turn")
             text = json.dumps(request["input"])
             assert "catalog-only fixture description" in text and str(skill.resolve()) in text, request

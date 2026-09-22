@@ -5,6 +5,7 @@ import { createElement, type ReactElement } from "react"
 import { render } from "ink"
 import { ChatScreen } from "./chat.js"
 import { WorkspaceMissingError, type StreamEvent, type StreamOptions } from "../client.js"
+const NO_CLIPBOARD_IMAGES = { available: () => false, read: async () => null }
 const strip = (text: string): string => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
 const tick = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 5) })
 const until = async (ready: () => boolean, what: string): Promise<void> => {
@@ -127,6 +128,7 @@ test("drag highlights and copies text while wheel scrolling stays enabled",async
 test("chat footer shows only command/copy hints and restores usage after a snapshot reset", async t => {
   let stream: StreamOptions | undefined
   const screen = mount(createElement(ChatScreen, {
+    clipboardImages: NO_CLIPBOARD_IMAGES,
     transport: { send: async () => ({ ok: true as const }), getStatus: async () => ({ running: false, idle: true }),
       stream: async options => { stream = options; options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) } },
     model: "gpt-5", onBack: () => {}, onQuit: () => {}, settleMs: 20,
@@ -150,6 +152,7 @@ test("chat footer shows only command/copy hints and restores usage after a snaps
 test("confirmed user and streamed assistant headings get clocks without duplicates, including replay", async t => {
   let stream: StreamOptions | undefined
   const screen = mount(createElement(ChatScreen, {
+    clipboardImages: NO_CLIPBOARD_IMAGES,
     transport: { clientId: "clock-client", send: async () => ({ ok: true as const }), getStatus: async () => ({ running: false, idle: true }),
       stream: async options => { stream = options; options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) } },
     agentName: "albedo", onBack: () => {}, onQuit: () => {}, settleMs: 20,
@@ -194,6 +197,7 @@ test("missing workspace asks for a replacement and retries only after confirmati
   const replacements: string[] = []
   const updated: string[] = []
   const screen = mount(createElement(ChatScreen, {
+    clipboardImages: NO_CLIPBOARD_IMAGES,
     transport: {
       send: async content => {
         sent.push(content)
@@ -231,6 +235,7 @@ test("canceling workspace recovery preserves the chat and unsent prompt", async 
   let stream: StreamOptions | undefined
   let replacements = 0
   const screen = mount(createElement(ChatScreen, {
+    clipboardImages: NO_CLIPBOARD_IMAGES,
     transport: {
       send: async () => { throw new WorkspaceMissingError("/gone") },
       replaceWorkspace: async workspace => { replacements++; return { workspace } },
@@ -257,6 +262,7 @@ test("canceling workspace recovery preserves the chat and unsent prompt", async 
 test("a rejected workspace stays open with the daemon's reason and the typed path", async t => {
   const attempts: string[] = []
   const screen = mount(createElement(ChatScreen, {
+    clipboardImages: NO_CLIPBOARD_IMAGES,
     transport: {
       send: async () => { throw new WorkspaceMissingError("/gone") },
       replaceWorkspace: async workspace => {
@@ -291,6 +297,7 @@ test("a rejected workspace stays open with the daemon's reason and the typed pat
 
 test("mouse reports never edit the workspace path while recovery is open", async t => {
   const screen = mount(createElement(ChatScreen, {
+    clipboardImages: NO_CLIPBOARD_IMAGES,
     transport: {
       send: async () => { throw new WorkspaceMissingError("/gone") },
       replaceWorkspace: async workspace => ({ workspace }),
@@ -314,6 +321,7 @@ test("unmount aborts a hung status request", async t => {
   let requested = false
   let aborted = false
   const screen = mount(createElement(ChatScreen, {
+    clipboardImages: NO_CLIPBOARD_IMAGES,
     transport: {
       send: async () => ({ ok: true as const }),
       getStatus: signal => new Promise((_resolve, reject) => {
