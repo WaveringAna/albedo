@@ -1,7 +1,7 @@
 import albedo/openai_api/types.{
-  type Error, type Input, type Protocol, type Request, type Tool, Assistant,
-  ChatCompletions, InvalidRequest, Replay, Responses, ToolOutput, User,
-  UserImage,
+  type Error, type Input, type Protocol, type ProviderPolicy, type Request,
+  type Tool, Assistant, ChatCompletions, Codex, InvalidRequest, OpenAI, Replay,
+  Responses, ToolOutput, User, UserImage,
 }
 import gleam/json.{type Json}
 import gleam/list
@@ -13,6 +13,14 @@ import gleam/string_tree.{type StringTree}
 /// Encode directly to iodata; never flatten the complete request for HTTP.
 pub fn encode(
   protocol: Protocol,
+  request: Request,
+) -> Result(StringTree, Error) {
+  encode_with_policy(protocol, OpenAI, request)
+}
+
+pub fn encode_with_policy(
+  protocol: Protocol,
+  policy: ProviderPolicy,
   request: Request,
 ) -> Result(StringTree, Error) {
   use _ <- result.try(validate(request))
@@ -31,8 +39,18 @@ pub fn encode(
         #("include", json.array(["reasoning.encrypted_content"], json.string)),
         ..fields
       ]
-      optional(fields, "instructions", request.instructions, json.string)
-      |> optional("max_output_tokens", request.max_output_tokens, json.int)
+      let fields =
+        optional(fields, "instructions", request.instructions, json.string)
+      case policy {
+        OpenAI ->
+          optional(
+            fields,
+            "max_output_tokens",
+            request.max_output_tokens,
+            json.int,
+          )
+        Codex(_, _) -> fields
+      }
     }
     ChatCompletions -> {
       let messages = case request.instructions {
@@ -50,7 +68,27 @@ pub fn encode(
   }
   let fields = case request.tools {
     [] -> fields
-    tools -> [#("tools", json.array(tools, encode_tool(protocol, _))), ..fields]
+    tools -> [
+      #("tools", json.array(tools, encode_tool(protocol, policy, _))),
+      ..fields
+    ]
+  }
+  let fields = case policy, protocol {
+    Codex(_, session_id), Responses -> [
+      #("tool_choice", json.string("auto")),
+      #("parallel_tool_calls", json.bool(True)),
+      #("text", json.object([#("verbosity", json.string("low"))])),
+      #(
+        "reasoning",
+        json.object([
+          #("effort", json.string("medium")),
+          #("summary", json.string("auto")),
+        ]),
+      ),
+      #("prompt_cache_key", json.string(session_id)),
+      ..fields
+    ]
+    _, _ -> fields
   }
   Ok(json.to_string_tree(json.object(fields)))
 }
@@ -143,15 +181,18 @@ fn image_message(protocol: Protocol, text: String, image: types.Image) -> Json {
 /// The exact provider-facing tool schema array used by `encode`.
 /// Context inspection can reuse this without rebuilding request policy.
 pub fn encode_tools(protocol: Protocol, tools: List(Tool)) -> Json {
-  json.array(tools, encode_tool(protocol, _))
+  json.array(tools, encode_tool(protocol, OpenAI, _))
 }
 
-fn encode_tool(protocol: Protocol, tool: Tool) -> Json {
+fn encode_tool(protocol: Protocol, policy: ProviderPolicy, tool: Tool) -> Json {
   let fields = [
     #("name", json.string(tool.name)),
     #("description", json.string(tool.description)),
     #("parameters", tool.parameters),
-    #("strict", json.bool(tool.strict)),
+    #("strict", case policy {
+      Codex(_, _) -> json.null()
+      OpenAI -> json.bool(tool.strict)
+    }),
   ]
   json.object(case protocol {
     Responses -> [#("type", json.string("function")), ..fields]

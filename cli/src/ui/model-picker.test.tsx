@@ -30,14 +30,18 @@ test("/model switches saved providers and models with manual fallback without lo
   const server = createServer(async (req, res) => {
     if (req.url === "/health") {
       res.end(JSON.stringify({ ok: true, version: 2, ...(supportsProviders ? { capabilities: ["session_provider"] } : {}) }))
-    } else if (req.url === "/saved/models") {
-      listed++
-      assert.equal(req.headers.authorization, "Bearer saved-key")
-      res.writeHead(unavailable ? 503 : 200, { "content-type": "application/json" })
-      res.end(JSON.stringify({ data: [{ id: "old-model" }, { id: "new-model" }] }))
-    } else if (req.url === "/other/models") {
-      assert.equal(req.headers.authorization, "Bearer other-key")
-      res.end(JSON.stringify({ data: [{ id: "other-model" }] }))
+    } else if (req.url?.startsWith("/models/openai?endpoint=")) {
+      const endpoint = new URL(req.url, "http://localhost").searchParams.get("endpoint") ?? ""
+      assert.equal(req.headers.authorization, "Bearer fixture")
+      if (endpoint.endsWith("/saved")) {
+        listed++
+        res.writeHead(unavailable ? 503 : 200, { "content-type": "application/json" })
+        res.end(JSON.stringify(["old-model", "new-model"]))
+      } else if (endpoint.endsWith("/other")) {
+        res.end(JSON.stringify(["other-model"]))
+      } else {
+        res.writeHead(404); res.end(JSON.stringify({ error: "catalog provider not found" }))
+      }
     } else if (req.url === "/sessions/session/model") {
       let body = ""
       for await (const chunk of req) body += chunk

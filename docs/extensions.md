@@ -32,7 +32,7 @@ extension.Extension(
 
 `ManagedPlugin` prepares session-owned contributions together: context, tool instructions, tools, python modules, and host routes. preparation returns a close callback. a failed replacement releases its prepared resources and leaves the old selection active; successful replacement releases the old resources after the swap. use this for connections or an immutable catalog shared by context and tools.
 
-`ModelsPlugin` answers `lookup(model, endpoint)` with catalogued model facts, or nothing when the model is unknown; see [models](models.md).
+`ModelsPlugin` supplies catalogued model facts and provider model lists. `ModelProviderPlugin` declares its models.dev namespace and resolves a tagged saved profile into a request client. Built-in dependencies keep these layers explicit: `codex -> openai -> models`. See [models](models.md) and [model authentication](auth.md).
 
 `CompactionPlugin` supplies a history strategy; see [compaction](compaction.md). at most one enabled compaction strategy owns the request-history view. a strategy receives chronological history and must preserve tool call/result associations; it must not replace the durable transcript.
 

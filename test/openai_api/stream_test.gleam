@@ -372,3 +372,24 @@ pub fn reasoning_details_merge_fragments_by_index_and_keep_metadata_test() {
     )
     == Ok(["unknown"])
 }
+
+pub fn responses_uses_streamed_done_items_when_terminal_output_is_empty_test() {
+  let state = stream.new(types.Responses)
+  let done =
+    "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"python\",\"arguments\":\"{\\\"code\\\":\\\"20 + 22\\\",\\\"timeout_ms\\\":1000}\",\"status\":\"completed\"}}"
+  let assert Ok(#(state, [], None)) = send(state, "", done)
+  let completed =
+    "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}"
+  let assert Ok(#(
+    _,
+    [types.Started("resp_1")],
+    Some(types.Turn(
+      Some("resp_1"),
+      [_],
+      [types.ToolCall("call_1", "python", arguments)],
+      _,
+      types.ToolCalls,
+    )),
+  )) = send(state, "", completed)
+  assert arguments == "{\"code\":\"20 + 22\",\"timeout_ms\":1000}"
+}

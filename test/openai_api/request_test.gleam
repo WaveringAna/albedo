@@ -4,6 +4,7 @@ import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{Some}
+import gleam/result
 import gleam/string_tree
 
 fn tool() {
@@ -172,4 +173,34 @@ pub fn validates_image_metadata_bounds_test() {
     types.image("image/png", "aGVsbG8=", 10_000, 5000, 5)
   let assert Error(types.InvalidRequest(_)) =
     types.image("image/png", "aGVsbG8=", 2, 3, types.max_image_bytes + 1)
+}
+
+pub fn codex_request_policy_adds_subscription_fields_test() {
+  let request = types.Request(..openai.request("model", []), tools: [tool()])
+  let assert Ok(tree) =
+    request.encode_with_policy(
+      types.Responses,
+      types.Codex("account", "session"),
+      request,
+    )
+  let encoded = string_tree.to_string(tree)
+  assert json.parse(encoded, decode.at(["tool_choice"], decode.string))
+    == Ok("auto")
+  assert json.parse(encoded, decode.at(["parallel_tool_calls"], decode.bool))
+    == Ok(True)
+  assert json.parse(encoded, decode.at(["text", "verbosity"], decode.string))
+    == Ok("low")
+  assert json.parse(encoded, decode.at(["reasoning", "effort"], decode.string))
+    == Ok("medium")
+  assert json.parse(encoded, decode.at(["reasoning", "summary"], decode.string))
+    == Ok("auto")
+  assert json.parse(encoded, decode.at(["prompt_cache_key"], decode.string))
+    == Ok("session")
+  assert json.parse(encoded, decode.at(["max_output_tokens"], decode.int))
+    |> result.is_error
+  assert json.parse(
+      encoded,
+      decode.at(["tools"], decode.list(decode.at(["strict"], decode.dynamic))),
+    )
+    |> result.is_ok
 }

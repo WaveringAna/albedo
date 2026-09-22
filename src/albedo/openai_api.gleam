@@ -43,6 +43,25 @@ pub fn client(protocol: Protocol, base_url: String, api_key: String) -> Client {
     api_key,
     timeout_ms: 60_000,
     max_event_bytes: 8 * 1024 * 1024,
+    policy: types.OpenAI,
+  )
+}
+
+/// ChatGPT subscription transport. OAuth and account selection stay outside
+/// the protocol adapter; this client owns only Codex wire policy.
+pub fn codex_client(
+  base_url: String,
+  access_token: String,
+  account_id: String,
+  session_id: String,
+) -> Client {
+  types.Client(
+    Responses,
+    base_url,
+    access_token,
+    timeout_ms: 60_000,
+    max_event_bytes: 8 * 1024 * 1024,
+    policy: types.Codex(account_id, session_id),
   )
 }
 
@@ -60,16 +79,35 @@ pub fn stream(
   on_event: fn(Event) -> Control,
 ) -> Result(Turn, Error) {
   use _ <- result.try(validate_client(client))
-  use body <- result.try(request.encode(client.protocol, request))
-  let path = case client.protocol {
-    Responses -> "/responses"
-    ChatCompletions -> "/chat/completions"
+  use _ <- result.try(validate_policy(client.policy, request.model))
+  use body <- result.try(request.encode_with_policy(
+    client.protocol,
+    client.policy,
+    request,
+  ))
+  let path = case client.policy, client.protocol {
+    types.Codex(_, _), _ -> "/codex/responses"
+    _, Responses -> "/responses"
+    _, ChatCompletions -> "/chat/completions"
   }
   let url = string.remove_suffix(client.base_url, "/") <> path
   let headers = [
     #("content-type", "application/json"),
     #("accept", "text/event-stream"),
   ]
+  let headers = case client.policy {
+    types.OpenAI -> headers
+    types.Codex(account_id, session_id) -> [
+      #("chatgpt-account-id", account_id),
+      #("originator", "albedo"),
+      #("user-agent", "albedo"),
+      #("openai-beta", "responses=experimental"),
+      #("x-codex-routing-hint", "model=" <> request.model),
+      #("session_id", session_id),
+      #("x-client-request-id", session_id),
+      ..headers
+    ]
+  }
   let headers = case client.api_key {
     "" -> headers
     key -> [#("authorization", "Bearer " <> key), ..headers]
@@ -82,11 +120,12 @@ pub fn stream(
   use first <- result.try(receive(connection))
   case first {
     transport.Headers(status, headers, final) if status >= 200 && status < 300 -> {
-      case event_stream(headers) {
-        False ->
-          Error(types.InvalidEvent("expected content-type text/event-stream"))
-        True if final -> Error(types.UnexpectedEnd)
-        True ->
+      case event_stream(headers), client.policy {
+        False, types.OpenAI -> http_error(connection, status, final, [], 0)
+        _, _ if final -> Error(types.UnexpectedEnd)
+        // ChatGPT's Codex endpoint currently streams valid SSE with a generic
+        // content type. Its framing, not that header, is authoritative.
+        _, _ ->
           pump(
             connection,
             sse.new(client.max_event_bytes),
@@ -116,6 +155,30 @@ fn validate_client(client: Client) -> Result(Nil, Error) {
         False -> Ok(Nil)
       }
   }
+}
+
+fn validate_policy(
+  policy: types.ProviderPolicy,
+  model: String,
+) -> Result(Nil, Error) {
+  case policy {
+    types.OpenAI -> Ok(Nil)
+    types.Codex(account_id, session_id) ->
+      case
+        unsafe_header(model)
+        || string.trim(account_id) == ""
+        || unsafe_header(account_id)
+        || string.trim(session_id) == ""
+        || unsafe_header(session_id)
+      {
+        True -> Error(types.InvalidRequest("invalid Codex request identity"))
+        False -> Ok(Nil)
+      }
+  }
+}
+
+fn unsafe_header(value: String) -> Bool {
+  string.contains(value, "\r") || string.contains(value, "\n")
 }
 
 fn event_stream(headers: List(#(String, String))) -> Bool {

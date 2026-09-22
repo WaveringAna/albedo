@@ -2,7 +2,7 @@
 %% models.dev catalog cache: bounded fetch, parsed once per file revision.
 
 -include_lib("kernel/include/file.hrl").
--export([refresh/3, lookup/3]).
+-export([refresh/3, lookup/3, list/3]).
 
 -define(MAX_BYTES, 33554432).
 -define(FETCH_TIMEOUT_MS, 30000).
@@ -94,7 +94,7 @@ lookup(Catalog0, Model0, Endpoint0) ->
     Endpoint = unicode:characters_to_binary(Endpoint0),
     try
         case catalog(Catalog) of
-            {ok, Index} -> resolve(Index, Model, host(Endpoint));
+            {ok, CatalogData} -> resolve(maps:get(index, CatalogData), Model, host(Endpoint));
             {error, Reason} -> {error, Reason}
         end
     catch
@@ -119,9 +119,9 @@ parse(Catalog, Revision) ->
         {ok, Body} ->
             try json:decode(Body) of
                 Providers when is_map(Providers) ->
-                    Index = index(maps:to_list(Providers), #{}),
-                    persistent_term:put({?MODULE, Catalog}, {Revision, Index}),
-                    {ok, Index};
+                    CatalogData = #{index => index(maps:to_list(Providers), #{}), providers => Providers},
+                    persistent_term:put({?MODULE, Catalog}, {Revision, CatalogData}),
+                    {ok, CatalogData};
                 _ -> {error, <<"models catalog is not a provider object">>}
             catch
                 _:_ -> {error, <<"models catalog is not valid JSON">>}
@@ -206,5 +206,47 @@ host(Url) when is_binary(Url) ->
         _ -> <<>>
     end;
 host(_) -> <<>>.
+
+list(Catalog0, Provider0, Endpoint0) ->
+    Catalog = text(Catalog0),
+    Provider = unicode:characters_to_binary(Provider0),
+    Endpoint = unicode:characters_to_binary(Endpoint0),
+    try
+        case catalog(Catalog) of
+            {ok, CatalogData} -> list_provider(maps:get(providers, CatalogData), Provider, host(Endpoint));
+            {error, Reason} -> {error, Reason}
+        end
+    catch
+        _:_ -> {error, <<"models catalog listing failed">>}
+    end.
+
+list_provider(Providers, Provider, EndpointHost) ->
+    Candidate = case find_provider(maps:values(Providers), EndpointHost) of
+        Value when is_map(Value) -> Value;
+        _ -> maps:get(Provider, Providers, undefined)
+    end,
+    case Candidate of
+        CandidateMap when is_map(CandidateMap) ->
+            Models = maps:get(<<"models">>, CandidateMap, #{}),
+            Names = case is_map(Models) of
+                true -> maps:fold(fun(Key, Model, Acc) ->
+                    Id = case Model of
+                        #{<<"id">> := ModelId} when is_binary(ModelId), ModelId =/= <<>> -> ModelId;
+                        _ -> Key
+                    end,
+                    case is_binary(Id) andalso Id =/= <<>> of true -> [Id | Acc]; false -> Acc end
+                end, [], Models);
+                false -> []
+            end,
+            {ok, iolist_to_binary(json:encode(lists:usort(Names)))};
+        _ -> {error, <<"provider is not in the cached catalog">>}
+    end.
+
+find_provider(_, <<>>) -> undefined;
+find_provider(Providers, EndpointHost) ->
+    case [P || P <- Providers, is_map(P), host(api(P)) =:= EndpointHost] of
+        [Provider | _] -> Provider;
+        [] -> undefined
+    end.
 
 text(Value) -> unicode:characters_to_list(Value).

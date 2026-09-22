@@ -24,8 +24,16 @@ An answer carries the context window, the maximum output, the input modalities, 
 
 `rolling` compaction asks for the context window when `contextWindowTokens` is not configured, so compaction works without hand-configuring each model. An explicit setting still wins. `/context` shows the window and names where it came from; an unlisted model stays explicitly unknown.
 
-The provider endpoint and environment names are the hook for provider authentication work: a future auth extension can describe a provider without Albedo hardcoding a list of vendors.
+Provider extensions consume the catalog's endpoint and environment metadata, so authentication and transport policy do not require the daemon to hardcode a model list.
+
+## provider extensions
+
+The catalog also lists model ids by provider or endpoint. `/login` and `/model` read those lists only from this cache; they never call a provider's `/models` endpoint. The `openai` model-provider extension depends on `models` and owns API-key configuration plus the shared Responses/Chat Completions client. The `codex` extension depends on `openai`; it reuses that request stack and adds only ChatGPT OAuth, account selection, and Codex wire policy. The dependency chain is therefore `codex -> openai -> models`.
+
+Saved provider profiles carry an `extension` tag. Existing profiles without one migrate as `openai`. Codex profiles use `extension: "codex"` and keep OAuth credentials separately in `$ALBEDO_HOME/auth.json`; see [model authentication](auth.md).
 
 ## contribute another catalog
 
-`extension.ModelsPlugin(lookup: fn(model, endpoint) -> Option(ModelInfo))` is the plugin contract. The first enabled catalog that knows a model answers, so a private or offline catalog can be installed ahead of the models.dev one.
+`extension.ModelsPlugin(ModelCatalog(lookup, list))` is the catalog contract. `lookup(model, endpoint)` returns facts for one model; `list(provider, endpoint)` returns ids owned by one catalog provider. The first enabled catalog with an answer wins, so a private or offline catalog can be installed ahead of models.dev.
+
+A model transport contributes `ModelProviderPlugin(ModelProvider(catalog_provider, resolve))`. `catalog_provider` is the models.dev namespace used by `/login` and `/model`; `resolve` builds the request client. Its extension should require the catalog or transport extension whose metadata and wire behavior it reuses. For example, `openai` declares the `openai` namespace, while `codex` also declares `openai` and inherits the shared transport through its dependency. New provider extensions get catalog-backed discovery by declaring their namespace; they do not implement provider `/models` calls.

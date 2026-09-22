@@ -7,6 +7,7 @@ import albedo/harness/settings
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{type Option, None}
+import gleam/result
 
 const catalog_file = "models.json"
 
@@ -37,7 +38,7 @@ pub fn extension() -> extension.Extension {
     "models",
     "models.dev catalog of model context limits, modalities, and provider endpoints",
     [],
-    [extension.ModelsPlugin(lookup)],
+    [extension.ModelsPlugin(extension.ModelCatalog(lookup, list))],
     initialise,
   )
 }
@@ -81,6 +82,24 @@ pub fn lookup_at(
   }
 }
 
+pub fn list(provider: String, endpoint: String) -> List(String) {
+  refresh()
+  list_at(path(), provider, endpoint)
+}
+
+pub fn list_at(
+  catalog: String,
+  provider: String,
+  endpoint: String,
+) -> List(String) {
+  case native_list(catalog, provider, endpoint) {
+    Error(_) -> []
+    Ok(encoded) ->
+      json.parse(encoded, decode.list(decode.string))
+      |> result.unwrap([])
+  }
+}
+
 fn info_decoder(catalog: String) {
   use model <- decode.field("model", decode.string)
   use provider <- decode.field("provider", decode.string)
@@ -121,5 +140,12 @@ fn native_refresh(catalog: String, url: String, max_age_ms: Int) -> Nil
 fn native_lookup(
   catalog: String,
   model: String,
+  endpoint: String,
+) -> Result(String, String)
+
+@external(erlang, "albedo_models", "list")
+fn native_list(
+  catalog: String,
+  provider: String,
   endpoint: String,
 ) -> Result(String, String)

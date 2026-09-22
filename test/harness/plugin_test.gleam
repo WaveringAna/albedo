@@ -234,3 +234,51 @@ pub fn remote_is_installed_and_default_test() {
   |> should.be_true
   config.default_enabled |> list.contains("remote") |> should.be_true
 }
+
+pub fn model_provider_extensions_form_catalog_openai_codex_chain_test() {
+  let config = extensions.defaults()
+  let assert Ok(openai) =
+    list.find(config.extensions, fn(item) { item.name == "openai" })
+  let assert Ok(codex) =
+    list.find(config.extensions, fn(item) { item.name == "codex" })
+  openai.requires |> should.equal(["models"])
+  codex.requires |> should.equal(["openai"])
+  let catalog =
+    extension.Extension(
+      "catalog",
+      "fixture catalog",
+      [],
+      [
+        extension.ModelsPlugin(
+          extension.ModelCatalog(fn(_, _) { None }, fn(provider, _) {
+            case provider {
+              "future-provider" -> ["catalog-model"]
+              _ -> []
+            }
+          }),
+        ),
+      ],
+      no_op,
+    )
+  let provider =
+    extension.Extension(
+      "future",
+      "fixture provider",
+      ["catalog"],
+      [
+        extension.ModelProviderPlugin(
+          extension.ModelProvider("future-provider", fn(_) { None }),
+        ),
+      ],
+      no_op,
+    )
+  extension.provider_model_names([catalog, provider], "future", "")
+  |> should.equal(["catalog-model"])
+  let assert Ok(host) = runtime.start_with_config(":memory:", config)
+  let assert Ok(_) = runtime.open_session(host, "model-chain", "/tmp")
+  runtime.reload_extension(host, "model-chain", "/tmp", "openai", False)
+  |> should.equal(Error("codex requires enabled extension openai"))
+  runtime.reload_extension(host, "model-chain", "/tmp", "models", False)
+  |> should.equal(Error("openai requires enabled extension models"))
+  runtime.stop(host)
+}

@@ -40,7 +40,8 @@ cli.command("daemon").option("--stop").action(async options=>{
 })
 cli.command("login").argument("[name]", "provider name").action(async name=>{
   if (!stdin.isTTY || !stdout.isTTY) throw new Error("login requires a terminal; keys are entered with hidden input")
-  const app=render(createElement(Login,{ name,onDone:()=>app.unmount(),onCancel:()=>app.unmount() }),{ exitOnCtrlC:false,patchConsole:false })
+  const connection = await ensure()
+  const app=render(createElement(Login,{ connection,name,onDone:()=>app.unmount(),onCancel:()=>app.unmount() }),{ exitOnCtrlC:false,patchConsole:false })
   await app.waitUntilExit()
 })
 export async function main(): Promise<void> {

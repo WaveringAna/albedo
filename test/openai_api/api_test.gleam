@@ -98,14 +98,18 @@ pub fn http_error_preserves_status_and_body_test() {
     == Error(types.HttpError(429, "{\"error\":\"slow down\"}"))
 }
 
-pub fn rejects_non_sse_success_response_test() {
-  use base, _ <- with_server("{}", 200, "application/json")
-  let assert Error(types.InvalidEvent(_)) =
-    openai.stream(
+pub fn non_sse_success_preserves_body_for_diagnostics_test() {
+  use base, _ <- with_server(
+    "{\"error\":\"streaming unavailable\"}",
+    200,
+    "application/json",
+  )
+  assert openai.stream(
       openai.client(types.Responses, base, ""),
       openai.request("model", []),
       fn(_) { types.Continue },
     )
+    == Error(types.HttpError(200, "{\"error\":\"streaming unavailable\"}"))
 }
 
 pub fn validates_config_before_opening_connection_test() {
@@ -117,4 +121,43 @@ pub fn validates_config_before_opening_connection_test() {
     )
   let assert Error(types.InvalidRequest(_)) =
     openai.stream(client, openai.request("model", []), fn(_) { types.Continue })
+}
+
+pub fn codex_stream_uses_chatgpt_endpoint_and_identity_headers_test() {
+  use base, fixture <- with_server(response_body, 200, "application/json")
+  let client =
+    openai.codex_client(base, "oauth-token", "account-1", "session-1")
+  let assert Ok(_) =
+    openai.stream(client, openai.request("model", [types.User("hi")]), fn(_) {
+      types.Continue
+    })
+  let request = received(fixture)
+  assert string.contains(request, "POST /codex/responses HTTP/1.1")
+  assert string.contains(request, "authorization: Bearer oauth-token")
+  assert string.contains(request, "chatgpt-account-id: account-1")
+  assert string.contains(request, "originator: albedo")
+  assert string.contains(request, "openai-beta: responses=experimental")
+  assert string.contains(request, "x-codex-routing-hint: model=model")
+  assert string.contains(request, "session_id: session-1")
+}
+
+pub fn codex_rejects_dynamic_header_newlines_test() {
+  let request = openai.request("model\r\nx-injected: yes", [])
+  let assert Error(types.InvalidRequest(_)) =
+    openai.stream(
+      openai.codex_client("http://127.0.0.1:1", "token", "account", "session"),
+      request,
+      fn(_) { types.Continue },
+    )
+  let assert Error(types.InvalidRequest(_)) =
+    openai.stream(
+      openai.codex_client(
+        "http://127.0.0.1:1",
+        "token",
+        "account\nx-injected: yes",
+        "session",
+      ),
+      openai.request("model", []),
+      fn(_) { types.Continue },
+    )
 }

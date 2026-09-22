@@ -1,14 +1,15 @@
 import { useEffect, useState } from "react"
 import { Box, Text, useWindowSize } from "ink"
-import { modelNames, profiles, type Profiles, type Settings } from "../profiles.js"
+import { request, type Connection } from "../daemon.js"
+import { profiles, type Profiles, type Settings } from "../profiles.js"
 import { Picker } from "./picker.js"
 import { TextInput } from "./text-input.js"
 
 type ModelPickerProps = {
-  provider: string; current: string; onSelect: (model: string, provider: string) => Promise<void>; onCancel: () => void
+  connection: Connection; provider: string; current: string; onSelect: (model: string, provider: string) => Promise<void>; onCancel: () => void
 }
 
-export function ModelPicker({ provider, current, onSelect, onCancel }: ModelPickerProps) {
+export function ModelPicker({ connection, provider, current, onSelect, onCancel }: ModelPickerProps) {
   const [saved, setSaved] = useState<Profiles>()
   const [name, setName] = useState(provider)
   const [choosingProvider, setChoosingProvider] = useState(false)
@@ -33,12 +34,12 @@ export function ModelPicker({ provider, current, onSelect, onCancel }: ModelPick
     </> : choosingProvider ? <Picker search title="session provider" initialSelection={name} items={
       Object.entries(saved.providers).map(([id, settings]) => ({ id, label: id, detail: `${settings.protocol}${id === sessionProvider ? " · current" : ""}` }))
     } onSelect={name => { setName(name); setChoosingProvider(false) }} onCancel={() => setChoosingProvider(false)} /> :
-      <ProviderModels key={name} provider={name} settings={saved.providers[name]} current={name === sessionProvider ? current : undefined}
+      <ProviderModels key={name} connection={connection} provider={name} settings={saved.providers[name]} current={name === sessionProvider ? current : undefined}
         onSelect={onSelect} onCancel={onCancel} onProvider={() => setChoosingProvider(true)} />}
   </Box>
 }
 
-function ProviderModels({ provider, settings, current, onSelect, onCancel, onProvider }: Omit<ModelPickerProps, "current"> & {
+function ProviderModels({ connection, provider, settings, current, onSelect, onCancel, onProvider }: Omit<ModelPickerProps, "current"> & {
   settings?: Settings; current?: string; onProvider: () => void
 }) {
   const initial = current ?? settings?.model ?? ""
@@ -50,8 +51,10 @@ function ProviderModels({ provider, settings, current, onSelect, onCancel, onPro
   const { columns } = useWindowSize()
   useEffect(() => {
     const controller = new AbortController()
+    const providerExtension = settings?.extension ?? "openai"
+    const endpoint = providerExtension === "codex" ? "" : settings?.baseUrl ?? ""
     void (settings
-      ? modelNames(settings.baseUrl, settings.apiKey, AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]))
+      ? request<string[]>(connection, `/models/${providerExtension}?endpoint=${encodeURIComponent(endpoint)}`)
       : Promise.reject(new Error("session provider missing"))
     ).then(names => {
       if (!controller.signal.aborted) setCatalog({ names, ...(!names.length ? { note: "no models listed; enter a model id manually" } : {}) })
@@ -59,7 +62,7 @@ function ProviderModels({ provider, settings, current, onSelect, onCancel, onPro
       if (!controller.signal.aborted) setCatalog({ names: [], note: "could not list models for this provider; enter a model id manually or check /login" })
     })
     return () => controller.abort()
-  }, [settings])
+  }, [connection, settings])
   const select = async (value: string): Promise<void> => {
     const model = value.trim()
     if (!model || model.length > 512 || /[\x00-\x1f\x7f]/.test(model)) { setError("enter a model id of 1–512 characters"); return }

@@ -568,6 +568,35 @@ pub fn model_info(
   extension.model_info(session.extensions, model, endpoint)
 }
 
+pub fn model_names(
+  runtime: Runtime,
+  provider: String,
+  endpoint: String,
+) -> List(String) {
+  extension.provider_model_names(runtime.extensions, provider, endpoint)
+}
+
+pub fn model_client(
+  runtime: Runtime,
+  session: String,
+  home: String,
+  profile: String,
+  provider: String,
+  model: String,
+  protocol: types.Protocol,
+) -> Result(types.Client, String) {
+  use selected <- result.try(extension.enabled(
+    runtime.work,
+    runtime.extensions,
+    runtime.default_enabled,
+    session,
+  ))
+  extension.model_client(
+    selected,
+    extension.ModelContext(home, session, profile, provider, model, protocol),
+  )
+}
+
 fn capacity(
   session: Session,
   model: String,

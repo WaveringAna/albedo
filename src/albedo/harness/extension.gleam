@@ -58,6 +58,31 @@ pub type ModelInfo {
   )
 }
 
+pub type ModelCatalog {
+  ModelCatalog(
+    lookup: fn(String, String) -> Option(ModelInfo),
+    list: fn(String, String) -> List(String),
+  )
+}
+
+pub type ModelContext {
+  ModelContext(
+    home: String,
+    session: String,
+    profile: String,
+    provider: String,
+    model: String,
+    protocol: types.Protocol,
+  )
+}
+
+pub type ModelProvider {
+  ModelProvider(
+    catalog_provider: String,
+    resolve: fn(ModelContext) -> Option(Result(types.Client, String)),
+  )
+}
+
 pub type Plugin {
   ContextPlugin(load: fn(String) -> Result(String, String))
   ToolPlugin(
@@ -70,8 +95,10 @@ pub type Plugin {
     prepare: fn(store.Store, String, String) -> Result(Managed, String),
   )
   CompactionPlugin(strategy: compaction.Strategy)
-  /// `lookup(model, endpoint)` answers only for models a catalog actually lists.
-  ModelsPlugin(lookup: fn(String, String) -> Option(ModelInfo))
+  /// A catalog answers only for models and providers it actually lists.
+  ModelsPlugin(catalog: ModelCatalog)
+  /// A provider turns one tagged saved profile into a request client.
+  ModelProviderPlugin(provider: ModelProvider)
 }
 
 pub type Extension {
@@ -353,6 +380,7 @@ pub fn materialized_summaries(
             ManagedPlugin(_) -> "managed"
             CompactionPlugin(_) -> "compaction"
             ModelsPlugin(_) -> "models"
+            ModelProviderPlugin(_) -> "model_provider"
           }
         }),
       )
@@ -580,7 +608,7 @@ pub fn model_info(
   |> list.flat_map(fn(extension) {
     list.filter_map(extension.plugins, fn(plugin) {
       case plugin {
-        ModelsPlugin(lookup) -> Ok(lookup)
+        ModelsPlugin(catalog) -> Ok(catalog.lookup)
         _ -> Error(Nil)
       }
     })
@@ -591,6 +619,80 @@ pub fn model_info(
       None -> list.Continue(None)
     }
   })
+}
+
+/// The first enabled catalog that lists this provider or endpoint answers.
+pub fn model_names(
+  installed: List(Extension),
+  provider: String,
+  endpoint: String,
+) -> List(String) {
+  installed
+  |> list.flat_map(fn(extension) {
+    list.filter_map(extension.plugins, fn(plugin) {
+      case plugin {
+        ModelsPlugin(catalog) -> Ok(catalog.list)
+        _ -> Error(Nil)
+      }
+    })
+  })
+  |> list.fold_until([], fn(_, list_models) {
+    case list_models(provider, endpoint) {
+      [] -> list.Continue([])
+      names -> list.Stop(names)
+    }
+  })
+}
+
+/// The first provider plugin claiming the saved profile owns its client.
+/// Resolve an extension's declared models.dev namespace through enabled catalogs.
+pub fn provider_model_names(
+  installed: List(Extension),
+  provider: String,
+  endpoint: String,
+) -> List(String) {
+  installed
+  |> list.find(fn(item) { item.name == provider })
+  |> result.try(fn(item) {
+    item.plugins
+    |> list.find_map(fn(plugin) {
+      case plugin {
+        ModelProviderPlugin(value) -> Ok(value.catalog_provider)
+        _ -> Error(Nil)
+      }
+    })
+  })
+  |> result.map(fn(catalog_provider) {
+    model_names(installed, catalog_provider, endpoint)
+  })
+  |> result.unwrap([])
+}
+
+pub fn model_client(
+  installed: List(Extension),
+  context: ModelContext,
+) -> Result(types.Client, String) {
+  installed
+  |> list.flat_map(fn(extension) {
+    list.filter_map(extension.plugins, fn(plugin) {
+      case plugin {
+        ModelProviderPlugin(provider) -> Ok(provider.resolve)
+        _ -> Error(Nil)
+      }
+    })
+  })
+  |> list.fold_until(
+    Error("no enabled model provider extension handles this profile"),
+    fn(_, resolve) {
+      case resolve(context) {
+        None ->
+          list.Continue(Error(
+            "no enabled model provider extension handles this profile",
+          ))
+        Some(answer) -> list.Stop(answer)
+      }
+    },
+  )
 }
 
 fn tool_values(plugins: List(Plugin)) -> List(Tool) {

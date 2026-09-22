@@ -19,11 +19,12 @@ const until = async (ready: () => boolean): Promise<void> => {
 
 test("first login masks the key, discovers models and saves a named provider", async t => {
   const key = "private-key-never-painted"
-  let authorization = ""
+  let authorization = "", requested = ""
   const server = createServer((req, res) => {
     authorization = req.headers.authorization ?? ""
+    requested = req.url ?? ""
     res.setHeader("content-type", "application/json")
-    res.end(JSON.stringify({ data: [{ id: "fixture-model" }] }))
+    res.end(JSON.stringify(["fixture-model"]))
   })
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve))
   t.after(() => { server.close(); server.closeAllConnections() })
@@ -35,7 +36,8 @@ test("first login masks the key, discovers models and saves a named provider", a
   let painted = ""
   stdout.on("data", (chunk: Buffer) => { painted += chunk.toString() })
   let chosen: string | undefined
-  const app = render(createElement(Login, { onDone: name => { chosen = name }, onCancel: () => assert.fail("unexpected cancel") }), { stdin, stdout, patchConsole: false, exitOnCtrlC: false })
+  const connection = { port: address.port, token: "daemon-token", pid: 1, version: 2 }
+  const app = render(createElement(Login, { connection, onDone: name => { chosen = name }, onCancel: () => assert.fail("unexpected cancel") }), { stdin, stdout, patchConsole: false, exitOnCtrlC: false })
   t.after(() => app.unmount())
   const press = async (keys: string): Promise<void> => {
     await app.waitUntilRenderFlush()
@@ -54,9 +56,10 @@ test("first login masks the key, discovers models and saves a named provider", a
   await press("\r")
   await until(() => chosen !== undefined)
   assert.equal(chosen, "fixture")
-  assert.equal(authorization, `Bearer ${key}`)
+  assert.equal(authorization, "Bearer daemon-token")
+  assert.match(requested, /^\/models\/openai\?endpoint=/)
   const saved = await profiles()
   assert.equal(saved.active, "fixture")
-  assert.deepEqual(saved.providers.fixture, { baseUrl, apiKey: key, model: "fixture-model", protocol: "responses" })
+  assert.deepEqual(saved.providers.fixture, { extension: "openai", baseUrl, apiKey: key, model: "fixture-model", protocol: "responses" })
   assert(!painted.includes(key), "api key appeared in terminal output")
 })

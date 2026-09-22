@@ -14,7 +14,6 @@ import albedo/harness/rolling
 import albedo/harness/runtime
 import albedo/harness/skills/catalog as skill_catalog
 import albedo/harness/skills/rpc as skills_rpc
-import albedo/openai_api as openai
 import albedo/openai_api/types
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -704,6 +703,8 @@ fn handle(state: State, message: Message) {
         state.run == None
         && string.trim(model) != ""
         && string.byte_size(model) <= 512
+        && !string.contains(model, "\r")
+        && !string.contains(model, "\n")
       {
         False -> {
           process.send(reply, Error("model must be nonempty and session idle"))
@@ -1214,10 +1215,16 @@ fn configured_client(state: State) -> Result(#(State, types.Client), String) {
       )
     _ -> state
   }
-  Ok(#(
-    state,
-    openai.client(state.info.protocol, provider.base_url, provider.api_key),
+  use client <- result.try(runtime.model_client(
+    state.host,
+    state.info.id,
+    state.home,
+    provider.name,
+    provider.extension,
+    state.info.model,
+    state.info.protocol,
   ))
+  Ok(#(state, client))
 }
 
 fn start_run(

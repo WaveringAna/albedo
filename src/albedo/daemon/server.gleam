@@ -43,6 +43,7 @@ type Message {
   Create(String, String, Subject(Result(conversation.Info, String)))
   Lookup(String, Subject(Result(session.Session, String)))
   List(Subject(List(conversation.Info)))
+  Models(String, String, Subject(List(String)))
   ReadTree(String, Int, Int, Subject(Result(history.Page, String)))
   Fork(String, Int, Subject(Result(conversation.Info, String)))
   SetWorkspace(String, String, Subject(Result(conversation.Info, String)))
@@ -152,6 +153,8 @@ fn handle(state: State, message: Message) {
           directory(cwd)
           && string.trim(info.model) != ""
           && string.byte_size(info.model) <= 512
+          && !string.contains(info.model, "\r")
+          && !string.contains(info.model, "\n")
         {
           False -> Error("expected an existing absolute workspace and a model")
           True ->
@@ -196,6 +199,10 @@ fn handle(state: State, message: Message) {
         reply,
         conversation.list(runtime.ledger(state.host)) |> result.unwrap([]),
       )
+      actor.continue(state)
+    }
+    Models(provider, endpoint, reply) -> {
+      process.send(reply, runtime.model_names(state.host, provider, endpoint))
       actor.continue(state)
     }
     ReadTree(id, after, limit, reply) -> {
@@ -533,6 +540,20 @@ fn route(
           )
         Get, ["sessions"] ->
           reply(200, json.array(actor.call(registry, 5000, List), info_json))
+        Get, ["models", provider] -> {
+          let endpoint =
+            request.get_query(req)
+            |> result.unwrap([])
+            |> list.key_find("endpoint")
+            |> result.unwrap("")
+          reply(
+            200,
+            json.array(
+              actor.call(registry, 5000, Models(provider, endpoint, _)),
+              json.string,
+            ),
+          )
+        }
         Post, ["sessions"] -> {
           let decoder = {
             use cwd <- decode.field("workspace", decode.string)

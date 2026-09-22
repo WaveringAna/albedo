@@ -72,3 +72,16 @@ fn write(base: String, relative: String, content: String) -> String
 
 @external(erlang, "albedo_skills_test_support", "cleanup")
 fn cleanup(root: String) -> Nil
+
+pub fn catalog_lists_provider_models_without_inventing_unknowns_test() {
+  let #(root, _, home) = fixture()
+  let file = write(home, "models.json", catalog)
+  models.list_at(file, "openai", "")
+  |> should.equal(["only-openai", "shared-model"])
+  models.list_at(file, "", "https://mirror.example.com/v1")
+  |> should.equal(["disputed", "shared-model", "vendor/qualified"])
+  models.list_at(file, "openai", "https://mirror.example.com/v1")
+  |> should.equal(["disputed", "shared-model", "vendor/qualified"])
+  models.list_at(file, "missing", "") |> should.equal([])
+  cleanup(root)
+}

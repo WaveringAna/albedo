@@ -94,7 +94,7 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
   const create = (): void => {
     void request<Session>(connection,"/sessions",{ workspace }).then(session => { setSelected(session); setChoosing(false) }).catch(error => setError(String(error)))
   }
-  if (loggingIn) return <Login name={loggingIn.name} onCancel={()=>setLoggingIn(undefined)} onDone={name=>{
+  if (loggingIn) return <Login connection={connection} name={loggingIn.name} onCancel={()=>setLoggingIn(undefined)} onDone={name=>{
     setLoggingIn(undefined); setError("")
     setNotice(`${name} selected for new sessions${selected ? `; use /model to switch this session from ${selected.provider}` : ""}`)
     if (!selected && !sessions.length) create()
@@ -131,7 +131,7 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
         }
         return false }}
       />
-      {choosingModel && <ModelPicker provider={selected.provider} current={selected.model} onSelect={changeModel} onCancel={()=>setChoosingModel(false)} />}
+      {choosingModel && <ModelPicker connection={connection} provider={selected.provider} current={selected.model} onSelect={changeModel} onCancel={()=>setChoosingModel(false)} />}
       {choosingExtensions && <ExtensionPicker connection={connection} sessionId={selected.id} onChanged={()=>setExtensionRevision(value=>value+1)} onCancel={()=>setChoosingExtensions(false)} />}
       {choosingTree && <TreePicker page={treePage} loading={treeLoading} error={treeError} onPrevious={()=>setTreePageIndex(index=>Math.max(0,index-1))} onNext={nextTreePage} onFork={forkTree} onCancel={()=>setChoosingTree(false)} />}
       {choosingContext && <ContextInspector connection={connection} sessionId={selected.id} onCancel={()=>setChoosingContext(false)} />}</>}

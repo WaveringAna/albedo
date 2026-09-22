@@ -4,7 +4,9 @@ import { homedir } from "node:os"
 import { resolve } from "node:path"
 
 export const home = resolve(process.env.ALBEDO_HOME ?? `${homedir()}/.albedo`)
-export type Settings = { baseUrl: string; apiKey: string; model: string; protocol: "responses" | "chat_completions" }
+export type OpenAISettings = { extension?: "openai"; baseUrl: string; apiKey: string; model: string; protocol: "responses" | "chat_completions" }
+export type CodexSettings = { extension: "codex"; model: string; protocol: "responses"; baseUrl?: never; apiKey?: never }
+export type Settings = OpenAISettings | CodexSettings
 export type Profiles = { active?: string; providers: Record<string, Settings> }
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value)
 export function providerName(value: string): string {
@@ -19,13 +21,23 @@ export function endpoint(value: string): string {
     throw new Error("use an http or https base url without credentials, query or fragment")
   return url.href.replace(/\/+$/, "")
 }
+function model(value: unknown): string {
+  if (typeof value !== "string" || !value.trim() || value.length > 512 || /[\x00-\x1f\x7f]/.test(value))
+    throw new Error("provider needs a model id of 1–512 characters")
+  return value.trim()
+}
 function settings(value: unknown): Settings {
-  if (!object(value) || typeof value.baseUrl !== "string" || typeof value.apiKey !== "string" ||
-      typeof value.model !== "string" || !value.apiKey || /[\s\x00-\x1f\x7f]/.test(value.apiKey) ||
-      !value.model.trim() || value.model.length > 512 || /[\x00-\x1f\x7f]/.test(value.model) ||
+  if (!object(value)) throw new Error("provider settings must be an object")
+  if (value.extension === "codex") {
+    if (value.protocol !== "responses") throw new Error("codex requires the responses protocol")
+    return { extension: "codex", model: model(value.model), protocol: "responses" }
+  }
+  if ((value.extension !== undefined && value.extension !== "openai") || typeof value.baseUrl !== "string" ||
+      typeof value.apiKey !== "string" || !value.apiKey || /[\s\x00-\x1f\x7f]/.test(value.apiKey) ||
       (value.protocol !== "responses" && value.protocol !== "chat_completions"))
-    throw new Error("provider needs an endpoint, api key, model and valid protocol")
-  return { baseUrl: endpoint(value.baseUrl), apiKey: value.apiKey, model: value.model.trim(), protocol: value.protocol }
+    throw new Error("openai provider needs an endpoint, api key, model and valid protocol")
+  return { extension: "openai", baseUrl: endpoint(value.baseUrl), apiKey: value.apiKey,
+    model: model(value.model), protocol: value.protocol }
 }
 export async function profiles(directory = home): Promise<Profiles> {
   let text: string
@@ -64,15 +76,4 @@ export async function saveProvider(name: string, value: Settings, directory = ho
     } finally { await file.close() }
     await rename(temporary, resolve(directory, "config.json"))
   } finally { await unlink(temporary).catch(() => {}); await owner.close(); await unlink(lock) }
-}
-export async function modelNames(baseUrl: string, apiKey: string, signal: AbortSignal): Promise<string[]> {
-  const response = await fetch(`${endpoint(baseUrl)}/models`, {
-    headers: { authorization: `Bearer ${apiKey}` }, redirect: "error",
-    signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
-  })
-  if (!response.ok) throw new Error(`model list unavailable (http ${response.status})`)
-  const value: unknown = await response.json()
-  if (!object(value) || !Array.isArray(value.data)) throw new Error("endpoint does not provide a model list")
-  return [...new Set(value.data.flatMap((item: unknown) => object(item) && typeof item.id === "string" &&
-    item.id.trim() && item.id.length <= 512 && !/[\x00-\x1f\x7f]/.test(item.id) ? [item.id] : []))].sort()
 }

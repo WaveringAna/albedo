@@ -8,8 +8,7 @@ import gleam/string
 pub type Provider {
   Provider(
     name: String,
-    base_url: String,
-    api_key: String,
+    extension: String,
     model: String,
     protocol: types.Protocol,
   )
@@ -46,12 +45,23 @@ fn configured(config: Configuration, name: String) -> Result(Provider, String) {
   )
   case
     string.trim(name) == ""
-    || string.trim(provider.base_url) == ""
-    || string.trim(provider.api_key) == ""
+    || string.trim(provider.extension) == ""
     || string.trim(provider.model) == ""
+    || !valid_extension_protocol(provider.extension, provider.protocol)
   {
     True -> Error("provider configuration is invalid; run /login")
     False -> Ok(Provider(..provider, name: name))
+  }
+}
+
+fn valid_extension_protocol(
+  extension: String,
+  protocol: types.Protocol,
+) -> Bool {
+  case extension, protocol {
+    "codex", types.Responses -> True
+    "codex", _ -> False
+    _, _ -> True
   }
 }
 
@@ -85,11 +95,50 @@ fn legacy_decoder() {
 }
 
 fn provider_decoder() {
-  use base_url <- decode.field("baseUrl", decode.string)
-  use api_key <- decode.field("apiKey", decode.string)
+  use provider_extension <- decode.optional_field(
+    "extension",
+    "openai",
+    decode.string,
+  )
   use model <- decode.field("model", decode.string)
   use protocol <- decode.field("protocol", protocol_decoder())
-  decode.success(Provider("", base_url, api_key, model, protocol))
+  decode.success(Provider("", provider_extension, model, protocol))
+}
+
+/// Decode one provider's extension-owned settings without exposing credentials
+/// through the generic configuration type.
+pub fn settings(
+  home: String,
+  name: String,
+  decoder: decode.Decoder(a),
+) -> Result(a, String) {
+  use bytes <- result.try(
+    read_config(home)
+    |> result.replace_error("provider is not configured; run /login"),
+  )
+  use root <- result.try(
+    json.parse_bits(bytes, decode.dict(decode.string, decode.dynamic))
+    |> result.replace_error("provider configuration is invalid; run /login"),
+  )
+  let value = case dict.get(root, "providers") {
+    Ok(providers) ->
+      decode.run(providers, decode.dict(decode.string, decode.dynamic))
+      |> result.replace_error("provider configuration is invalid; run /login")
+      |> result.try(fn(providers) {
+        dict.get(providers, name)
+        |> result.replace_error("provider is not configured; run /login")
+      })
+    Error(_) if name == "default" ->
+      json.parse_bits(bytes, decode.dynamic)
+      |> result.replace_error("provider configuration is invalid; run /login")
+    Error(_) -> Error("provider is not configured; run /login")
+  }
+  use value <- result.try(
+    value
+    |> result.replace_error("provider is not configured; run /login"),
+  )
+  decode.run(value, decoder)
+  |> result.replace_error("provider configuration is invalid; run /login")
 }
 
 fn protocol_decoder() {

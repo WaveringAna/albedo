@@ -9,6 +9,11 @@ pub type Protocol {
   ChatCompletions
 }
 
+pub type ProviderPolicy {
+  OpenAI
+  Codex(account_id: String, session_id: String)
+}
+
 pub type Client {
   Client(
     protocol: Protocol,
@@ -16,6 +21,7 @@ pub type Client {
     api_key: String,
     timeout_ms: Int,
     max_event_bytes: Int,
+    policy: ProviderPolicy,
   )
 }
 

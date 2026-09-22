@@ -1,14 +1,20 @@
 import albedo/openai_api/types
 import gleam/dynamic
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order
 import gleam/result
 import gleam/string
 
 pub opaque type State {
-  State(response_id: Option(String), terminal: Bool)
+  State(
+    response_id: Option(String),
+    streamed_output: List(#(Int, dynamic.Dynamic)),
+    terminal: Bool,
+  )
 }
 
 type Envelope {
@@ -25,14 +31,14 @@ type Response {
 }
 
 pub fn new() -> State {
-  State(None, False)
+  State(None, [], False)
 }
 
 pub fn feed(
   state: State,
   data: String,
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
-  let State(_, terminal) = state
+  let State(_, _, terminal) = state
   case terminal {
     True -> Error(types.InvalidEvent("response event after terminal event"))
     False -> {
@@ -68,6 +74,7 @@ fn dispatch(
     "response.reasoning_text.delta" ->
       reasoning_delta(state, value, "response.reasoning_text.delta")
     "response.function_call_arguments.delta" -> arguments_delta(state, value)
+    "response.output_item.done" -> output_item_done(state, value)
     "response.completed" -> completed(state, value)
     "response.incomplete" -> incomplete(state, value)
     "response.failed" -> failed(value)
@@ -128,6 +135,38 @@ fn arguments_delta(
   Ok(#(state, [event], None))
 }
 
+fn output_item_done(
+  state: State,
+  value: dynamic.Dynamic,
+) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
+  let decoder = {
+    use index <- decode.field("output_index", decode.int)
+    use item <- decode.field("item", decode.dynamic)
+    decode.success(#(index, item))
+  }
+  use item <- result.try(run(value, decoder, "response.output_item.done"))
+  let State(id, output, terminal) = state
+  Ok(#(State(id, put_output(output, item), terminal), [], None))
+}
+
+fn put_output(
+  output: List(#(Int, dynamic.Dynamic)),
+  item: #(Int, dynamic.Dynamic),
+) -> List(#(Int, dynamic.Dynamic)) {
+  let #(index, _) = item
+  case output {
+    [] -> [item]
+    [first, ..rest] -> {
+      let #(first_index, _) = first
+      case int.compare(index, first_index) {
+        order.Lt -> [item, first, ..rest]
+        order.Eq -> [item, ..rest]
+        order.Gt -> [first, ..put_output(rest, item)]
+      }
+    }
+  }
+}
+
 fn reasoning_delta(
   state: State,
   value: dynamic.Dynamic,
@@ -151,15 +190,20 @@ fn completed(
     "response.completed",
   ))
   use #(state, started) <- result.try(record_id(state, response.id))
-  use output <- result.try(replay_output(response.output))
-  use tools <- result.try(function_calls(response.output))
+  let State(_, streamed, _) = state
+  let authoritative = case response.output {
+    [] -> list.map(streamed, fn(item) { item.1 })
+    output -> output
+  }
+  use output <- result.try(replay_output(authoritative))
+  use tools <- result.try(function_calls(authoritative))
   let finish = case tools {
     [] -> types.Complete
     _ -> types.ToolCalls
   }
-  let State(id, _) = state
+  let State(id, streamed, _) = state
   Ok(#(
-    State(id, True),
+    State(id, streamed, True),
     started,
     Some(types.Turn(id, output, tools, response.usage, finish)),
   ))
@@ -182,9 +226,9 @@ fn incomplete(
     Some(reason) -> types.OtherFinish(reason)
     None -> types.OtherFinish("incomplete")
   }
-  let State(id, _) = state
+  let State(id, streamed, _) = state
   Ok(#(
-    State(id, True),
+    State(id, streamed, True),
     started,
     Some(types.Turn(id, output, [], response.usage, finish)),
   ))
@@ -297,9 +341,10 @@ fn record_id(
   state: State,
   incoming: Option(String),
 ) -> Result(#(State, List(types.Event)), types.Error) {
-  let State(current, terminal) = state
+  let State(current, output, terminal) = state
   case current, incoming {
-    None, Some(id) -> Ok(#(State(Some(id), terminal), [types.Started(id)]))
+    None, Some(id) ->
+      Ok(#(State(Some(id), output, terminal), [types.Started(id)]))
     Some(current), Some(incoming) if current != incoming ->
       Error(types.InvalidEvent("Responses response id changed"))
     _, _ -> Ok(#(state, []))
