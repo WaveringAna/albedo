@@ -136,16 +136,15 @@ test("chat footer shows only command/copy hints and restores usage after a snaps
   await until(() => stream !== undefined, "connected")
   const usage: StreamEvent = { type: "usage", model: "gpt-5", promptTokens: 10000, completionTokens: 200, totalTokens: 10200, cachedPromptTokens: 8000, recordedAt: Date.now() }
   stream!.onEvent(usage)
-  await until(() => screen.last().includes("cached 80%"), "footer usage")
+  await until(() => screen.last().includes("cached 8,000/10,000"), "footer usage")
   assert(screen.last().includes("/ commands · drag to copy"))
   assert(screen.last().includes("ctx 10.2k"))
-  assert(screen.last().includes("ttl ~"))
   assert(!screen.last().includes("wheel/"))
   assert(!screen.last().includes("ctrl-d detach"))
   stream!.onEvent({ type: "reset" })
   await until(() => screen.last().includes("cached —"), "old usage removed")
   stream!.onEvent(usage)
-  await until(() => screen.last().includes("cached 80%"), "usage restored")
+  await until(() => screen.last().includes("cached 8,000/10,000"), "usage restored")
 })
 
 

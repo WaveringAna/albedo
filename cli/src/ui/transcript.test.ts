@@ -29,17 +29,23 @@ test("execution evidence replaces raw repr with actions and bounded per-cell dif
     changes: [{ kind: "diff", path: "app.ts", added: 12, removed: 1, diff: "@@ -1 +1 @@\n-old\n" + "+new\n".repeat(12).trimEnd() }],
   } }
   const rows = renderEntry(entry, flags, "niri", 80).map(strip)
-  assert.equal(rows[0], "explored")
-  assert.ok(rows.includes("  read src/app.ts"))
-  assert.ok(rows.includes("edited app.ts  +12 −1"))
-  assert.match(rows.at(-1)!, /rows hidden/)
+  assert.deepEqual(rows, ["read src/app.ts", "search timer in src", "edited app.ts  +12 −1"])
   assert.equal(rows.includes("raw python repr"), false)
   const expanded = renderEntry(entry, { ...flags, tools: true }, "niri", 80).map(strip)
   assert.ok(expanded.includes("raw python repr"))
   assert.equal(expanded.includes("+new"), true)
 })
 
-test("diff previews count hidden rows without changing ANSI, tab, or wide-text wrapping", () => {
+test("read and edit of the same file share one compact row", () => {
+  const entry: Entry = { kind: "tool", name: "python", args: {}, result: "ok", trace: {
+    activities: [{ kind: "read", target: "file.py" }],
+    changes: [{ kind: "diff", path: "file.py", diff: "-old\n+new", added: 1, removed: 1 }],
+  } }
+  assert.deepEqual(renderEntry(entry, flags, "albedo", 80).map(strip), ["read + edited file.py  +1 −1"])
+  assert(renderEntry(entry, { ...flags, tools: true }, "albedo", 80).map(strip).includes("  read file.py"))
+})
+
+test("compact edits stay one row while expanded diffs preserve ANSI, tabs and wrapping", () => {
   const diff = ["@@ -1 +1 @@", "-old", "+short", "+\tindented", "+" + "界".repeat(40),
     "+\x1b[1mbold\x1b[0m", ...Array.from({ length: 40 }, (_, i) => `+line ${i} ` + "x".repeat(i))].join("\n")
   const entry: Entry = { kind: "tool", name: "python", args: {}, result: "ok", trace: {
@@ -47,9 +53,10 @@ test("diff previews count hidden rows without changing ANSI, tab, or wide-text w
   } }
   for (const width of [1, 20, 96]) {
     const full = diff.split("\n").flatMap(line => wrap(color(line.startsWith("+") ? 32 : line.startsWith("-") ? 31 : 90, line), width))
-    const heading = wrap(`${color(1, "edited file")}  ${color(32, "+45")} ${color(31, "−1")}`, width)
-    const expected = [...heading, ...full.slice(0, 8), ...wrap(color(90, `… ${full.length - 8} rows hidden · /v expand`), width)]
-    assert.deepEqual(renderEntry(entry, flags, "niri", width), expected)
+    const compact: string[] = renderEntry(entry, flags, "niri", width).map(strip)
+    assert.equal(compact.length, 1)
+    assert(compact[0]!.length <= width)
+    if (width === 96) assert.equal(compact[0], "edited file  +45 −1")
     const expanded = renderEntry(entry, { ...flags, tools: true }, "niri", width)
     const outputRows = wrap("ok", width).length
     assert.deepEqual(expanded.slice(-full.length - outputRows, -outputRows), full)

@@ -81,6 +81,20 @@ export function renderEntry(entry: Entry, flags: DisplayFlags, speaker: string, 
       const hasTrace = trace && (trace.activities.length > 0 || trace.changes.length > 0)
       if (!hasTrace || flags.tools || failed) rows.push(...wrap(color(failed ? 91 : 90,
         `${toolSummary(entry.name, entry.args)}${failed ? " · failed" : ""}`), width))
+      if (hasTrace && !flags.tools && !failed) {
+        const edited = new Set(trace.changes.map(change => change.path))
+        for (const item of trace.activities) {
+          if (item.kind === "read" && edited.has(item.target)) continue
+          rows.push(color(item.failed ? 91 : 36, truncate(`${item.kind}${item.failed ? " failed" : ""} ${item.target.replace(/[\p{Cc}\p{Cf}]/gu, " ")}`, width)))
+        }
+        for (const change of trace.changes) {
+          const read = trace.activities.some(item => item.kind === "read" && item.target === change.path)
+          const counts = change.kind === "diff" ? `  +${change.added} −${change.removed}` : ""
+          rows.push(color(36, truncate(`${read ? "read + " : ""}edited ${change.path.replace(/[\p{Cc}\p{Cf}]/gu, " ")}${counts}`, width)))
+        }
+        if (trace.truncated) rows.push(color(90, truncate("activity capture limited · /v expand", width)))
+        return rows
+      }
       if (trace?.activities.length) {
         rows.push(color(1, trace.activities.some(item => item.kind === "run") ? "executed" : "explored"))
         for (const item of trace.activities) {

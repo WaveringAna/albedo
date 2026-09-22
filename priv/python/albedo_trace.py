@@ -27,6 +27,12 @@ class Trace:
             target = str(target)[:1000]
             self.activities[(kind, target)] = {"kind": kind, "target": target}
 
+    def renamed(self, source: str, destination: str) -> None:
+        # Atomic editors write a temporary file then replace the real target.
+        # The temporary file is not an edit; snapshot the destination before rename.
+        self.writing(destination)
+        self.before.pop(source, None)
+
     def writing(self, path: str) -> None:
         if path in self.before:
             return
@@ -80,6 +86,8 @@ def install(get_capture: Callable[[], TracedCapture | None]) -> None:
         try:
             if event == "open" and isinstance(args[0], (str, bytes)):
                 path = os.path.abspath(os.fsdecode(args[0]))
+                if path == "/proc" or path.startswith("/proc/"):
+                    return  # process supervision is harness bookkeeping, not user exploration
                 flags = args[2]
                 if not isinstance(flags, int):
                     raise TypeError("invalid open flags")
@@ -87,8 +95,13 @@ def install(get_capture: Callable[[], TracedCapture | None]) -> None:
                     capture.trace.writing(path)
                 else:
                     capture.trace.activity("read", path)
+            elif event in ("os.rename", "os.replace") and len(args) >= 2:
+                source, destination = (os.path.abspath(os.fsdecode(path)) for path in args[:2])
+                capture.trace.renamed(source, destination)
             elif event in ("os.listdir", "os.scandir"):
-                capture.trace.activity("list", args[0] if args else ".")
+                path = os.fsdecode(args[0]) if args else "."
+                if path != "/proc" and not path.startswith("/proc/"):
+                    capture.trace.activity("list", path)
             elif event == "subprocess.Popen":
                 capture.trace.activity("run", " ".join(map(str, cast(list[object] | tuple[object, ...], args[1]))) if isinstance(args[1], (tuple,list)) else args[1])
         except Exception:

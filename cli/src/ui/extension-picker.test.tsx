@@ -67,7 +67,7 @@ test("/extensions shows plugin capabilities and confirms retryable session toggl
   const write = async (input: string): Promise<void> => { tty.stdin.write(input); await app.waitUntilRenderFlush() }
   const enter = async (input = ""): Promise<void> => { if (input) await write(input); await write("\r") }
 
-  await until(() => tty.painted().includes("preserved conversation") && tty.painted().includes("cached 50%"), "chat and usage")
+  await until(() => tty.painted().includes("preserved conversation") && tty.painted().includes("cached 50/100"), "chat and usage")
   tty.clear()
   await enter("/extensions")
   await until(() => tty.painted().includes("memory-kit") && tty.painted().includes("workspace-index"), "extension viewer")

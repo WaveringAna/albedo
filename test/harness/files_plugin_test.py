@@ -58,6 +58,18 @@ class FilesPluginTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             files.read(str(path), start_line=0)
 
+    def test_read_keeps_long_lines_intact_or_explains_how_to_retry(self):
+        long_line = "x" * 300 + " unique ending"
+        path = self.write("long.txt", f"short\n{long_line}\ntail\n")
+        files = plugin.Files()
+        self.assertEqual(files.read(str(path), start_line=2, end_line=2),
+                         f"     2 | {long_line}")
+        bounded = files.read(str(path), start_line=2, end_line=2, limit=100)
+        self.assertIn("line 2 has", bounded)
+        self.assertIn("start_line=2, end_line=2, limit=", bounded)
+        self.assertNotIn("     2 | x", bounded)
+        self.assertIn("read again with start_line=2", files.read(str(path), limit=20))
+
     def test_edit_replaces_one_exact_occurrence_and_keeps_the_mode(self):
         path = self.write("edit.py", "alpha\nbeta\ngamma\n")
         path.chmod(0o640)

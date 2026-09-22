@@ -75,7 +75,11 @@ class Files:
 
     def read(self, path: str, *, start_line: int = 1, end_line: int | None = None,
              limit: int = READ_LIMIT) -> str:
-        """Numbered lines from one file. The numbers are what `edit(line_hint=)` takes."""
+        """Complete numbered lines within `limit`; retry an oversized line with a larger limit.
+
+        The numbers are what `edit(line_hint=)` takes. Edit diagnostics still use
+        short previews, but a read never silently shortens source lines.
+        """
         if start_line < 1 or (end_line is not None and end_line < start_line) or not 0 < limit <= 200_000:
             raise ValueError("start_line >= 1, end_line >= start_line, 0 < limit <= 200000")
         target = Path(path).expanduser()
@@ -84,11 +88,21 @@ class Files:
         last = len(lines) if end_line is None else min(end_line, len(lines))
         body, used = [], 0
         for number in range(start_line, last + 1):
-            row = _numbered(number, lines)
-            used += len(row) + 1
-            if used > limit:
-                body.append(f"[{last - number + 1} more lines; read again with start_line={number}]")
+            row = f"{number:>6} | {lines[number - 1]}"
+            if used + len(row) + 1 > limit:
+                if not body:
+                    retry = (
+                        f"read again with start_line={number}, end_line={number}, limit={len(row) + 1}"
+                        if len(row) + 1 <= 200_000 else "exceeds the 200000-character read limit"
+                    )
+                    body.append(
+                        f"[line {number} has {len(row)} characters including its line number; "
+                        f"exceeds limit={limit}; {retry}]"
+                    )
+                else:
+                    body.append(f"[{last - number + 1} more lines; read again with start_line={number}]")
                 break
+            used += len(row) + 1
             body.append(row)
         if start_line > len(lines):
             return f"[{path} has {len(lines)} lines; nothing at line {start_line}]"
