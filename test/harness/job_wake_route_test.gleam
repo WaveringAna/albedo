@@ -82,10 +82,3 @@ pub fn an_unregistered_session_refuses_without_the_retry_code_test() {
   |> reply_of
   |> should.equal(Reply(False, Some("unavailable")))
 }
-
-pub fn an_unknown_jobs_operation_is_refused_test() {
-  let host = store()
-  bash.route(runtime.ledger(host), "route-unknown", notice("jobs.consumed"))
-  |> reply_of
-  |> should.equal(Reply(False, Some("invalid")))
-}

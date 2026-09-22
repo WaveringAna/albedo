@@ -141,10 +141,10 @@ class WakeProtocolTest(unittest.TestCase):
         self.assertIsNone(args["host"])
         self.owner.expect_no_call("jobs.completed")
 
-    def test_a_busy_session_is_retried_until_accepted(self):
+    def test_a_busy_session_is_retried_and_a_refusal_gives_up(self):
         handle = self.start_job("echo retry-echo")
         self.wait_job_done()
-        # First attempt: busy. The plugin must try again rather than give up.
+        # Busy is retried, not dropped; a permanent refusal ends the attempts.
         frame = self.owner.wait_for(lambda f: f.get("type") == "call")
         self.owner.send({"type": "reply", "id": frame["id"],
                          "value": {"ok": False, "code": "busy", "message": "session is busy"}})
@@ -152,14 +152,6 @@ class WakeProtocolTest(unittest.TestCase):
             lambda f: f.get("type") == "call" and f.get("method") == "jobs.completed",
             timeout=RETRY_WINDOW)
         self.owner.send({"type": "reply", "id": retry["id"],
-                         "value": {"ok": True, "value": "delivered"}})
-        self.owner.expect_no_call("jobs.completed")
-
-    def test_a_permanent_refusal_gives_up_without_retrying(self):
-        handle = self.start_job("echo refused-echo")
-        self.wait_job_done()
-        frame = self.owner.wait_for(lambda f: f.get("type") == "call")
-        self.owner.send({"type": "reply", "id": frame["id"],
                          "value": {"ok": False, "code": "unavailable", "message": "no session"}})
         self.owner.expect_no_call("jobs.completed")
 

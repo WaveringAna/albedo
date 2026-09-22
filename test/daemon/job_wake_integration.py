@@ -4,7 +4,8 @@ The fake provider answers the first turn with a python tool call that starts a
 job and returns, answers the second with plain text so the run ends, and then
 must be asked a third time: the job finishing with its result unread submits
 the wake turn through the kernel's jobs route, the registry, and the session
-actor's registered submit closure.
+actor's registered submit closure. One provider protocol: the wake sits below
+that layer, and integration.py owns protocol coverage.
 """
 import contextlib
 import glob
@@ -49,8 +50,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        chat = self.path.endswith("chat/completions")
-        inputs = request["messages" if chat else "input"]
+        inputs = request["messages"]
         tool_turns = sum(item.get("role") == "tool" or item.get("type") == "function_call_output"
                          for item in inputs)
         tool_turns = sum(item.get("role") == "tool" or item.get("type") == "function_call_output"
@@ -76,49 +76,29 @@ class Provider(http.server.BaseHTTPRequestHandler):
             self.wfile.write(("data: " + json.dumps(value) + "\n\n").encode())
             self.wfile.flush()
         try:
-            if chat:
-                if not done:
-                    for i in range(0, len(arguments), 20):
-                        function = {"arguments": arguments[i:i+20]}
-                        call = {"index": 0, "function": function}
-                        if i == 0:
-                            function["name"] = "python"
-                            call.update(id=call_id, type="function")
-                        event({"id": "r1", "choices": [{"index": 0, "delta": {"tool_calls": [call]},
-                                                        "finish_reason": None}]})
-                    event({"id": "r1", "choices": [{"index": 0, "delta": {},
-                                                    "finish_reason": "tool_calls"}]})
-                else:
-                    event({"id": "r2", "choices": [{"index": 0, "delta": {"content": "finished"},
+            if not done:
+                for i in range(0, len(arguments), 20):
+                    function = {"arguments": arguments[i:i+20]}
+                    call = {"index": 0, "function": function}
+                    if i == 0:
+                        function["name"] = "python"
+                        call.update(id=call_id, type="function")
+                    event({"id": "r1", "choices": [{"index": 0, "delta": {"tool_calls": [call]},
                                                     "finish_reason": None}]})
-                    event({"id": "r2", "choices": [{"index": 0, "delta": {},
-                                                    "finish_reason": "stop"}]})
-                self.wfile.write(b"data: [DONE]\n\n")
-                self.wfile.flush()
+                event({"id": "r1", "choices": [{"index": 0, "delta": {},
+                                                "finish_reason": "tool_calls"}]})
             else:
-                event({"type": "response.created", "response": {"id": "r2" if done else "r1"}})
-                if not done:
-                    for i in range(0, len(arguments), 20):
-                        event({"type": "response.function_call_arguments.delta",
-                               "output_index": 0, "delta": arguments[i:i+20]})
-                    output = [{"id": "fc1", "type": "function_call", "call_id": call_id,
-                               "name": "python", "arguments": arguments, "status": "completed"}]
-                else:
-                    event({"type": "response.output_text.delta", "output_index": 0,
-                           "content_index": 0, "delta": "finished"})
-                    output = [{"id": "m1", "type": "message", "role": "assistant",
-                               "status": "completed",
-                               "content": [{"type": "output_text", "text": "finished",
-                                            "annotations": []}]}]
-                event({"type": "response.completed",
-                       "response": {"id": "r2" if done else "r1", "status": "completed",
-                                    "output": output,
-                                    "usage": {"input_tokens": 10, "output_tokens": 20}}})
+                event({"id": "r2", "choices": [{"index": 0, "delta": {"content": "finished"},
+                                                "finish_reason": None}]})
+                event({"id": "r2", "choices": [{"index": 0, "delta": {},
+                                                "finish_reason": "stop"}]})
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
 
 
-def run(protocol, endpoint):
+def run(endpoint):
     with tempfile.TemporaryDirectory(prefix="albedo-wake-e2e-") as directory:
         home = Path(directory) / "home"
         workspace = Path(directory) / "workspace"
@@ -128,7 +108,7 @@ def run(protocol, endpoint):
         (home / "config.json").write_text(json.dumps({
             "active": "alpha",
             "providers": {"alpha": {"baseUrl": endpoint + "/alpha/v1", "apiKey": "key",
-                                     "model": "fixture-alpha", "protocol": protocol}},
+                                     "model": "fixture-alpha", "protocol": "chat_completions"}},
         }))
         env = dict(os.environ, HOME=str(Path(directory) / "user-home"), ALBEDO_HOME=str(home),
                    ALBEDO_IDLE_SECONDS="10")
@@ -235,7 +215,7 @@ def run(protocol, endpoint):
             settle(session_id)
             assert len(seen()) == 6, [r["latest_user"] for r in seen()]
             assert "background bash job finished" in seen()[5]["latest_user"], seen()[5]
-            print(protocol + ": background job wake delivered a turn, once, and survived an idle detach")
+            print("background job wake delivered a turn, once, and survived an idle detach")
         finally:
             if connection:
                 with contextlib.suppress(Exception):
@@ -256,7 +236,8 @@ if __name__ == "__main__":
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        for protocol in ("responses", "chat_completions"):
-            run(protocol, f"http://127.0.0.1:{server.server_port}/v1")
+        # One protocol: the wake sits below the provider layer, and
+        # integration.py owns projected history for both protocols.
+        run(f"http://127.0.0.1:{server.server_port}/v1")
     finally:
         server.shutdown()
