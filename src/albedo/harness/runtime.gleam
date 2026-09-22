@@ -552,10 +552,36 @@ pub fn prepare_history_with(
     session,
     model,
     model,
+    "",
     instructions,
     summarize,
     history,
   )
+}
+
+/// Only a catalog answer becomes a capacity; an unknown model stays unknown.
+pub fn model_info(
+  session: Session,
+  model: String,
+  endpoint: String,
+) -> Option(extension.ModelInfo) {
+  extension.model_info(session.extensions, model, endpoint)
+}
+
+fn capacity(
+  session: Session,
+  model: String,
+  endpoint: String,
+) -> Option(compaction.Capacity) {
+  case model_info(session, model, endpoint) {
+    Some(extension.ModelInfo(
+      context_tokens: Some(tokens),
+      provider: provider,
+      source: source,
+      ..,
+    )) -> Some(compaction.Capacity(tokens, provider <> " " <> source))
+    _ -> None
+  }
 }
 
 pub fn prepare_history_scoped(
@@ -563,6 +589,7 @@ pub fn prepare_history_scoped(
   session: Session,
   model: String,
   source: String,
+  endpoint: String,
   instructions: String,
   summarize: fn(compaction.SummaryRequest) -> Result(String, String),
   history: List(types.Input),
@@ -581,6 +608,7 @@ pub fn prepare_history_scoped(
           model,
           source,
           pinned_tokens,
+          capacity(session, model, endpoint),
           summarize,
         ),
         history,

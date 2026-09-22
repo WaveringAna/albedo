@@ -63,6 +63,8 @@ def run(endpoint):
         (home/"config.json").write_text(json.dumps({"active": "fixture", "providers": {"fixture": {
             "baseUrl": endpoint, "apiKey": "fixture-key", "model": "fixture", "protocol": "responses",
         }}}))
+        # Catalog refresh is disabled so the suite never reaches the network.
+        (home/"extensions.json").write_text(json.dumps({"models": {"refreshHours": 0}}))
         env = dict(os.environ, HOME=str(user_home), ALBEDO_HOME=str(home))
         connection = None
 

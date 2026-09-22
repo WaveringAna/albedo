@@ -32,6 +32,8 @@ extension.Extension(
 
 `ManagedPlugin` prepares session-owned contributions together: context, tool instructions, tools, python modules, and host routes. preparation returns a close callback. a failed replacement releases its prepared resources and leaves the old selection active; successful replacement releases the old resources after the swap. use this for connections or an immutable catalog shared by context and tools.
 
+`ModelsPlugin` answers `lookup(model, endpoint)` with catalogued model facts, or nothing when the model is unknown; see [models](models.md).
+
 `CompactionPlugin` supplies a history strategy; see [compaction](compaction.md). at most one enabled compaction strategy owns the request-history view. a strategy receives chronological history and must preserve tool call/result associations; it must not replace the durable transcript.
 
 ## extension settings
@@ -58,6 +60,10 @@ packaged short names resolve to `albedo_plugins.*`; dotted names select installe
 - `await api.host("namespace.method", args)` calls an enabled host route.
 
 interfaces: [`PythonApi`](../priv/python/albedo_api.py), [`work`](../src/albedo/harness/work.gleam), [`compaction strategy`](../src/albedo/harness/compaction.gleam).
+
+## models
+
+see [the models catalog](models.md): the cached models.dev catalog that supplies context windows, modalities, and provider endpoints to compaction and `/context`.
 
 ## mcp
 

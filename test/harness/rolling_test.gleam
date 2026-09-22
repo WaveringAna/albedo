@@ -132,6 +132,7 @@ pub fn source_or_model_change_resets_summary_before_recompacting_test() {
       "model-b",
       "provider-a:model-b",
       "",
+      "",
       summarize("first"),
       history,
     )
@@ -142,6 +143,7 @@ pub fn source_or_model_change_resets_summary_before_recompacting_test() {
       session,
       "model-b",
       "provider-b:model-b",
+      "",
       "",
       fn(request) {
         process.send(requests, request)

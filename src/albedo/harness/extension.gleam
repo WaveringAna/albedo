@@ -6,7 +6,7 @@ import albedo/harness/python/kernel as python
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import sqlight
@@ -44,6 +44,20 @@ pub type Prepared {
   Prepared(extension: String, value: Managed)
 }
 
+/// Locally known facts about one model, read from a catalog rather than guessed.
+pub type ModelInfo {
+  ModelInfo(
+    model: String,
+    provider: String,
+    context_tokens: Option(Int),
+    max_output_tokens: Option(Int),
+    input_modalities: List(String),
+    endpoint: Option(String),
+    environment: List(String),
+    source: String,
+  )
+}
+
 pub type Plugin {
   ContextPlugin(load: fn(String) -> Result(String, String))
   ToolPlugin(
@@ -56,6 +70,8 @@ pub type Plugin {
     prepare: fn(store.Store, String, String) -> Result(Managed, String),
   )
   CompactionPlugin(strategy: compaction.Strategy)
+  /// `lookup(model, endpoint)` answers only for models a catalog actually lists.
+  ModelsPlugin(lookup: fn(String, String) -> Option(ModelInfo))
 }
 
 pub type Extension {
@@ -336,6 +352,7 @@ pub fn materialized_summaries(
             ToolPlugin(_, _, _, _) -> "tool"
             ManagedPlugin(_) -> "managed"
             CompactionPlugin(_) -> "compaction"
+            ModelsPlugin(_) -> "models"
           }
         }),
       )
@@ -551,6 +568,29 @@ pub fn compaction(installed: List(Extension)) -> Option(compaction.Strategy) {
   })
   |> list.first
   |> option.from_result
+}
+
+/// The first enabled catalog that knows this model answers.
+pub fn model_info(
+  installed: List(Extension),
+  model: String,
+  endpoint: String,
+) -> Option(ModelInfo) {
+  installed
+  |> list.flat_map(fn(extension) {
+    list.filter_map(extension.plugins, fn(plugin) {
+      case plugin {
+        ModelsPlugin(lookup) -> Ok(lookup)
+        _ -> Error(Nil)
+      }
+    })
+  })
+  |> list.fold_until(None, fn(_, lookup) {
+    case lookup(model, endpoint) {
+      Some(info) -> list.Stop(Some(info))
+      None -> list.Continue(None)
+    }
+  })
 }
 
 fn tool_values(plugins: List(Plugin)) -> List(Tool) {

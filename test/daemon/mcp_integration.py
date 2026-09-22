@@ -62,7 +62,7 @@ def run(endpoint):
         }}}))
 
         def configure(args, startup=20000):
-            (home/"extensions.json").write_text(json.dumps({"mcp": {"servers": {"fake": {
+            (home/"extensions.json").write_text(json.dumps({"models": {"refreshHours": 0}, "mcp": {"servers": {"fake": {
                 "type": "stdio", "command": sys.executable, "args": args,
                 "env": {"FAKE_SECRET": {"env": "ALBEDO_MCP_SECRET"},
                         "FAKE_MCP_CLOSED": {"env": "ALBEDO_MCP_CLOSED"}},

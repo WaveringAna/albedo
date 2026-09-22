@@ -1,6 +1,7 @@
 import albedo/harness/bash
 import albedo/harness/extension
 import albedo/harness/mcp
+import albedo/harness/models
 import albedo/harness/python
 import albedo/harness/rolling
 import albedo/harness/skills
@@ -17,9 +18,10 @@ pub fn defaults() -> Config {
       bash.extension(),
       work.extension(),
       skills.extension(),
+      models.extension(),
       rolling.extension(),
       mcp.configured_extension(),
     ],
-    ["python", "bash", "work", "skills", "rolling"],
+    ["python", "bash", "work", "skills", "models", "rolling"],
   )
 }

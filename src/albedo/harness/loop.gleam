@@ -42,6 +42,7 @@ pub fn run(
     state.kernel,
     state.model,
     request_source(state.client, state.model),
+    state.client.base_url,
     request_instructions,
     summarize(state, _),
     list.reverse(inputs),

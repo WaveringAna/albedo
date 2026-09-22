@@ -19,6 +19,20 @@ class Provider(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+    catalog = json.dumps({"fixture-cloud": {
+        "id": "fixture-cloud", "name": "Fixture Cloud", "env": ["FIXTURE_API_KEY"],
+        "models": {"fixture": {"id": "fixture", "limit": {"context": 200000, "output": 8000},
+                               "modalities": {"input": ["text"]}}},
+    }})
+
+    def do_GET(self):
+        body = self.catalog.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.requests.append(request)
@@ -46,6 +60,10 @@ def run(endpoint):
         (home/"config.json").write_text(json.dumps({"active": "fixture", "providers": {"fixture": {
             "baseUrl": endpoint, "apiKey": secret, "model": "fixture", "protocol": "responses",
         }}}))
+        # The catalog provider is the same local server, so no test reaches the network.
+        (home/"extensions.json").write_text(json.dumps({"models": {
+            "url": endpoint.rsplit("/", 1)[0] + "/models.json", "refreshHours": 24,
+        }}))
         env = dict(os.environ, HOME=str(user_home), ALBEDO_HOME=str(home))
         connection = None
 
@@ -89,9 +107,14 @@ def run(endpoint):
             snapshot = api(route)
             assert snapshot["state"] == "ready"
             assert snapshot["provider"] == "fixture" and snapshot["model"] == "fixture"
-            assert "context_window_tokens" not in snapshot, "unknown capacity must remain unknown"
-            assert snapshot["compaction"]["estimate_method"] == "local byte-based estimate; not provider token usage"
-            assert snapshot["compaction"]["status"] == "unknown"
+            assert json.loads((home/"models.json").read_text()) == json.loads(Provider.catalog)
+            assert snapshot["context_window_tokens"] == 200_000, snapshot
+            compaction = snapshot["compaction"]
+            assert compaction["estimate_method"] == "local byte-based estimate; not provider token usage"
+            assert compaction["status"] == "not_needed", compaction
+            assert compaction["input_limit_tokens"] == 200_000, compaction
+            assert compaction["trigger_free_percent"] == 10, compaction
+            assert "fixture-cloud" in compaction["source"] and "models.dev catalog" in compaction["source"], compaction
             labels = [section["label"] for section in snapshot["sections"]]
             assert labels[0] == "system instructions" and labels[-2:] == ["prepared conversation", "tool schemas"]
             assert all(label.startswith("extension context · ") for label in labels[1:-2])
@@ -116,6 +139,15 @@ def run(endpoint):
                 "reason": "runtime session has not prepared a provider request",
             }, "a snapshot for the old model must not survive model selection"
             assert len(Provider.requests) == 1, "model invalidation must not contact the provider"
+
+            # A model the catalog does not list stays explicitly unknown.
+            api(f"/sessions/{session}/events", {"content": "a model outside the catalog"})
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline and api(f"/sessions/{session}/status")["running"]:
+                time.sleep(.025)
+            unknown = api(route)
+            assert "context_window_tokens" not in unknown, unknown
+            assert unknown["compaction"]["status"] == "unknown", unknown["compaction"]
             print("context pending/ready sources, exact schema reuse, bounds, read-only behavior, and model invalidation passed")
         finally:
             stop()

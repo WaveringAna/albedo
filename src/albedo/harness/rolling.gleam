@@ -248,18 +248,25 @@ fn prepare(
     model,
     source,
     pinned_tokens,
+    catalogued,
     summarize,
   ) = context
   let original_items = list.length(history)
   let original_bytes = compaction.inputs_bytes(history)
-  case config.context_window_tokens {
+  // Configuration overrides a catalog; neither one is guessed from the model id.
+  let window = case config.context_window_tokens {
+    Some(tokens) ->
+      Some(compaction.Capacity(tokens, "configured contextWindowTokens"))
+    None -> catalogued
+  }
+  case window {
     None -> {
       use _ <- result.try(save_observation(
         ledger,
         session,
         observation_for(
           "unknown",
-          "estimated; context window capacity is not configured",
+          "estimated; no configured or catalogued context window",
           None,
           pinned_tokens + compaction.estimate_inputs(history),
           config,
@@ -272,7 +279,7 @@ fn prepare(
       ))
       Ok(history)
     }
-    Some(capacity) -> {
+    Some(compaction.Capacity(capacity, capacity_source)) -> {
       use saved <- result.try(load_state(ledger, session))
       let #(state, invalidated) = valid_state(saved, source, history)
       use _ <- result.try(case invalidated {
@@ -286,7 +293,8 @@ fn prepare(
           let observation =
             observation_for(
               "limitation",
-              "estimated pinned system, extension context, and tool schemas",
+              "estimated pinned system, extension context, and tool schemas; window from "
+                <> capacity_source,
               Some(capacity),
               estimated,
               config,
@@ -298,7 +306,7 @@ fn prepare(
             )
           let _ = save_observation(ledger, session, observation)
           Error(
-            "configured context window is not large enough for pinned system, extension context, and tool schemas",
+            "context window is not large enough for pinned system, extension context, and tool schemas",
           )
         }
         False if estimated * 100 < capacity * config.trigger_percent -> {
@@ -311,6 +319,7 @@ fn prepare(
               "estimated after source fingerprint changed; saved projection reset"
             False -> "estimated from current request projection"
           }
+          let source = source <> "; window from " <> capacity_source
           use _ <- result.try(save_observation(
             ledger,
             session,
@@ -379,13 +388,14 @@ fn prepare(
             True -> Ok(Nil)
             False ->
               Error(
-                "summary, recap, and indivisible recent tail do not fit the configured context window",
+                "summary, recap, and indivisible recent tail do not fit the context window",
               )
           })
           let observation =
             observation_for(
               "compacted",
-              "estimated from configured capacity and current request projection",
+              "estimated from current request projection; window from "
+                <> capacity_source,
               Some(capacity),
               next_estimated,
               config,

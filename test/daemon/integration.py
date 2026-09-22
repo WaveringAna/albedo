@@ -116,6 +116,8 @@ def run(protocol, endpoint):
             db.execute("INSERT INTO sessions(id,cwd,model,protocol) VALUES(?,?,?,?)", (legacy_id,str(legacy_workspace),"legacy-model",protocol))
         user_home = Path(directory)/"user-home"
         user_home.mkdir()
+        # Catalog refresh is disabled so the suite never reaches the network.
+        (home/"extensions.json").write_text(json.dumps({"models": {"refreshHours": 0}}))
         env = dict(os.environ, HOME=str(user_home), ALBEDO_HOME=str(home))
         for obsolete in ("ALBEDO_API_KEY", "ALBEDO_BASE_URL", "ALBEDO_MODEL", "ALBEDO_PROTOCOL"):
             env.pop(obsolete, None)

@@ -32,8 +32,9 @@ pub fn load_at(
   }
 }
 
+/// `$ALBEDO_HOME`, else `~/.albedo`: where extension-owned state belongs.
 @external(erlang, "albedo_extension_settings", "home")
-fn home() -> String
+pub fn home() -> String
 
 @external(erlang, "albedo_extension_settings", "read")
 fn read(home: String) -> Result(BitArray, String)

@@ -23,7 +23,7 @@ Each time it compacts, the model folds the previous summary together with the ne
 { "rolling": { "contextWindowTokens": 200000, "triggerPercent": 90, "tailPercent": 25 } }
 ```
 
-Put this in `$ALBEDO_HOME/extensions.json`. `contextWindowTokens` has no default: Albedo does not guess a model's capacity. Without it, `rolling` stays a no-op and `/context` reports the capacity as unknown rather than inventing one.
+Put this in `$ALBEDO_HOME/extensions.json`. `contextWindowTokens` is optional: without it, `rolling` asks the enabled [models catalog](models.md) for the current model's context window. An explicit setting always wins. When neither knows the model, `rolling` stays a no-op and `/context` reports the window as unknown rather than inventing one.
 
 Estimates are local byte-based approximations, never provider token accounting. Image payloads are sized by their dimensions, not by base64 length, so an attached image cannot fake a million-token conversation.
 

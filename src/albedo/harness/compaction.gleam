@@ -17,6 +17,12 @@ pub type SummaryRequest {
   )
 }
 
+/// A context window a catalog or configuration actually reported, with the
+/// provenance a strategy must show rather than an assumed model limit.
+pub type Capacity {
+  Capacity(tokens: Int, source: String)
+}
+
 pub type Context {
   Context(
     store: store.Store,
@@ -25,6 +31,7 @@ pub type Context {
     model: String,
     source: String,
     pinned_tokens: Int,
+    capacity: Option(Capacity),
     summarize: fn(SummaryRequest) -> Result(String, String),
   )
 }
