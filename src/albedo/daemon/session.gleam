@@ -9,9 +9,9 @@ import albedo/daemon/transcript
 import albedo/daemon/usage
 import albedo/harness/command
 import albedo/harness/extension
+import albedo/harness/extensions/python/kernel as python
+import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/loop
-import albedo/harness/python/kernel as python
-import albedo/harness/rolling
 import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/erlang/process.{type Subject}

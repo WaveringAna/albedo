@@ -1,4 +1,4 @@
-import albedo/harness/python/kernel as python
+import albedo/harness/extensions/python/kernel as python
 import albedo/harness/runtime
 import gleam/option.{Some}
 import gleam/string

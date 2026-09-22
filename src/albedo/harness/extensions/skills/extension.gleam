@@ -8,8 +8,8 @@
 
 import albedo/harness/command
 import albedo/harness/extension as harness_extension
-import albedo/harness/skills/catalog
-import albedo/harness/skills/rpc
+import albedo/harness/extensions/skills/catalog
+import albedo/harness/extensions/skills/rpc
 import gleam/dict
 import gleam/list
 import gleam/result

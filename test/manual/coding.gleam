@@ -2,8 +2,8 @@
 //// Uses ALBEDO_BENCH_URL/MODEL/KEY and ALBEDO_LIVE_WORKSPACE/DATABASE/PROTOCOL.
 //// No credentials are retained in the kernel environment or output.
 
+import albedo/harness/extensions/work/ledger as work
 import albedo/harness/runtime
-import albedo/harness/work/ledger as work
 import albedo/openai_api as openai
 import albedo/openai_api/types
 import gleam/io

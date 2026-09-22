@@ -1,7 +1,7 @@
 //// One trusted CPython process per session. POSIX, Python 3.11+.
 
-import albedo/harness/work/ledger as work
-import albedo/harness/work/rpc
+import albedo/harness/extensions/work/ledger as work
+import albedo/harness/extensions/work/rpc
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json

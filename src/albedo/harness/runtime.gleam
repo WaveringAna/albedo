@@ -5,10 +5,10 @@ import albedo/harness/command
 import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/harness/extensions
-import albedo/harness/python/cells as journal
-import albedo/harness/python/kernel as python
+import albedo/harness/extensions/python/cells as journal
+import albedo/harness/extensions/python/kernel as python
+import albedo/harness/extensions/work/ledger as work
 import albedo/harness/rpc
-import albedo/harness/work/ledger as work
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}

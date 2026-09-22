@@ -1,5 +1,5 @@
 import albedo/daemon/context_snapshot
-import albedo/harness/rolling
+import albedo/harness/extensions/rolling/extension as rolling
 import albedo/openai_api/types
 import gleam/json
 import gleam/option.{None, Some}

@@ -1,9 +1,9 @@
 //// The single model-facing tool. Host capabilities are ordinary Python functions.
 
 import albedo/harness/extension
-import albedo/harness/python/cells as journal
-import albedo/harness/python/kernel as python
-import albedo/harness/python/rpc as cells
+import albedo/harness/extensions/python/cells as journal
+import albedo/harness/extensions/python/kernel as python
+import albedo/harness/extensions/python/rpc as cells
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/json

@@ -1,6 +1,6 @@
 import albedo/harness/extension as harness_extension
-import albedo/harness/work/ledger as work
-import albedo/harness/work/rpc
+import albedo/harness/extensions/work/ledger as work
+import albedo/harness/extensions/work/rpc
 
 pub fn extension() -> harness_extension.Extension {
   harness_extension.Extension(

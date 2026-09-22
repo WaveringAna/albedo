@@ -1,5 +1,5 @@
-import albedo/harness/python/kernel as python
-import albedo/harness/work/ledger as work
+import albedo/harness/extensions/python/kernel as python
+import albedo/harness/extensions/work/ledger as work
 import gleam/erlang/process
 import gleam/string
 import gleeunit/should

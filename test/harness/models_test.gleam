@@ -1,5 +1,5 @@
 import albedo/harness/extension
-import albedo/harness/models
+import albedo/harness/extensions/models/extension as models
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should

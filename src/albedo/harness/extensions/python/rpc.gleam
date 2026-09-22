@@ -1,6 +1,6 @@
-import albedo/harness/python/cells as journal
-import albedo/harness/python/kernel as python
-import albedo/harness/work/ledger as work
+import albedo/harness/extensions/python/cells as journal
+import albedo/harness/extensions/python/kernel as python
+import albedo/harness/extensions/work/ledger as work
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{None}

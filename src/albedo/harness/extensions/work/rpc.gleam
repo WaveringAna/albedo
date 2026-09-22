@@ -1,6 +1,6 @@
 //// The same ledger operations used by the Python tool and other clients.
 
-import albedo/harness/work/ledger as work
+import albedo/harness/extensions/work/ledger as work
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{None}

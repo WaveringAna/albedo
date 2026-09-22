@@ -1,7 +1,7 @@
 import albedo/daemon/store
 import albedo/daemon/transcript
 import albedo/daemon/usage
-import albedo/harness/python/cells as journal
+import albedo/harness/extensions/python/cells as journal
 import albedo/openai_api/types
 import gleam/dict
 import gleam/dynamic/decode

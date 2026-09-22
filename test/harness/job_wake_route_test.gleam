@@ -1,6 +1,6 @@
 //// The jobs route: a kernel wake notice lands as a submit through the registry.
 
-import albedo/harness/bash
+import albedo/harness/extensions/bash/extension as bash
 import albedo/harness/runtime
 import gleam/dynamic/decode
 import gleam/erlang/process

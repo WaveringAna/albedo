@@ -4,8 +4,8 @@ import albedo/harness/command.{
   type Argument, type Command, Argument, Command, Data, ModelCall, Turn,
   UserCall,
 }
-import albedo/harness/commands
 import albedo/harness/extension
+import albedo/harness/extensions/commands/extension as commands
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/json

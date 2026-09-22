@@ -5,7 +5,7 @@ import albedo/harness/command.{
   Data, ModelCall, ModelGet, ModelSelect, UserCall,
 }
 import albedo/harness/extension
-import albedo/harness/models
+import albedo/harness/extensions/models/extension as models
 import gleam/dict
 import gleam/int
 import gleam/json

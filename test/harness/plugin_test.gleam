@@ -2,7 +2,7 @@ import albedo/daemon/conversation
 import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/harness/extensions
-import albedo/harness/python
+import albedo/harness/extensions/python/extension as python
 import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/erlang/process

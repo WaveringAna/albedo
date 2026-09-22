@@ -1,4 +1,4 @@
-import albedo/harness/work/ledger as work
+import albedo/harness/extensions/work/ledger as work
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleeunit/should

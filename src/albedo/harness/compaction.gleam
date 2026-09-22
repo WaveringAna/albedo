@@ -1,7 +1,7 @@
 //// Optional request-history projection, not a transcript rewrite.
 
 import albedo/daemon/store
-import albedo/harness/python/kernel
+import albedo/harness/extensions/python/kernel
 import albedo/openai_api/types
 import gleam/json
 import gleam/list

@@ -1,5 +1,5 @@
 import albedo/harness/extensions
-import albedo/harness/instructions
+import albedo/harness/extensions/instructions/extension as instructions
 import gleam/list
 import gleam/string
 import gleeunit/should

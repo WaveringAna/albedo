@@ -3,7 +3,7 @@
 import albedo/daemon/store
 import albedo/harness/command
 import albedo/harness/compaction
-import albedo/harness/python/kernel as python
+import albedo/harness/extensions/python/kernel as python
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/list

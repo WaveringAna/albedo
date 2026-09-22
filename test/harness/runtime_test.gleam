@@ -1,7 +1,7 @@
-import albedo/harness/python/cells as journal
-import albedo/harness/python/kernel as python
+import albedo/harness/extensions/python/cells as journal
+import albedo/harness/extensions/python/kernel as python
+import albedo/harness/extensions/work/ledger as work
 import albedo/harness/runtime
-import albedo/harness/work/ledger as work
 import albedo/openai_api/types
 import gleam/erlang/process
 import gleam/option.{None, Some}

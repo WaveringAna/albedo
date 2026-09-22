@@ -1,7 +1,7 @@
 //// Cell source and terminal results survive kernel loss. Never replay automatically.
 
 import albedo/daemon/store
-import albedo/harness/python/kernel as python
+import albedo/harness/extensions/python/kernel as python
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json.{type Json}

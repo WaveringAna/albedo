@@ -1,6 +1,6 @@
 //// Session-scoped Python RPC over one immutable skills catalog snapshot.
 
-import albedo/harness/skills/catalog
+import albedo/harness/extensions/skills/catalog
 import gleam/dynamic/decode
 import gleam/json
 import gleam/result

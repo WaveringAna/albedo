@@ -2,7 +2,7 @@
 //// This module never prepares history, invokes tools, or calls a provider.
 
 import albedo/harness/compaction as context_size
-import albedo/harness/rolling
+import albedo/harness/extensions/rolling/extension as rolling
 import albedo/openai_api/request as provider_request
 import albedo/openai_api/types
 import gleam/int

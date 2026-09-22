@@ -1,6 +1,6 @@
 import albedo/harness/compaction
 import albedo/harness/extensions
-import albedo/harness/rolling
+import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/erlang/process

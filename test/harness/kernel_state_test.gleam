@@ -1,6 +1,6 @@
 //// Variables outlive their kernel when they can be written to disk.
 
-import albedo/harness/python/kernel as python
+import albedo/harness/extensions/python/kernel as python
 import albedo/harness/runtime
 import gleam/list
 import gleam/string

@@ -1,10 +1,10 @@
 import albedo/harness/command
-import albedo/harness/commands
 import albedo/harness/extension
-import albedo/harness/python
+import albedo/harness/extensions/commands/extension as commands
+import albedo/harness/extensions/python/extension as python
+import albedo/harness/extensions/skills/catalog
+import albedo/harness/extensions/skills/extension as skills
 import albedo/harness/runtime
-import albedo/harness/skills
-import albedo/harness/skills/catalog
 import gleam/dict
 import gleam/json
 import gleam/list
