@@ -294,6 +294,15 @@ fn info_json(info: conversation.Info) -> json.Json {
   ])
 }
 
+fn selection_json(selection: session.ModelSelection) -> json.Json {
+  json.object([
+    #("ok", json.bool(True)),
+    #("provider", json.string(selection.provider)),
+    #("model", json.string(selection.model)),
+    #("protocol", json.string(conversation.protocol(selection.protocol))),
+  ])
+}
+
 fn reply(status: Int, value: json.Json) {
   response.new(status)
   |> response.set_header("content-type", "application/json")
@@ -330,7 +339,17 @@ fn route(
         Get, ["health"] ->
           reply(
             200,
-            json.object([#("ok", json.bool(True)), #("version", json.int(2))]),
+            json.object([
+              #("ok", json.bool(True)),
+              #("version", json.int(2)),
+              #(
+                "capabilities",
+                json.array(
+                  ["session_provider", "session_workspace"],
+                  json.string,
+                ),
+              ),
+            ]),
           )
         Get, ["sessions"] ->
           reply(200, json.array(actor.call(registry, 5000, List), info_json))
@@ -377,23 +396,56 @@ fn route(
                   }
                   case
                     body(req, decoder)
+                    |> result.map_error(session.Rejected)
                     |> result.try(fn(pair) {
                       session.submit(worker, pair.0, pair.1)
                     })
                   {
                     Ok(_) -> reply(202, json.object([#("ok", json.bool(True))]))
+                    Error(session.Rejected(e)) -> error(409, e)
+                    Error(session.WorkspaceMissing(path)) ->
+                      reply(
+                        409,
+                        json.object([
+                          #("code", json.string("workspace_missing")),
+                          #("workspace", json.string(path)),
+                          #(
+                            "error",
+                            json.string("workspace not found: " <> path),
+                          ),
+                        ]),
+                      )
+                  }
+                }
+                Post, "workspace" -> {
+                  case
+                    body(
+                      req,
+                      decode.field("workspace", decode.string, decode.success),
+                    )
+                    |> result.try(session.set_workspace(worker, _))
+                  {
+                    Ok(info) -> reply(200, info_json(info))
                     Error(e) -> error(409, e)
                   }
                 }
                 Post, "model" -> {
-                  case
-                    body(
-                      req,
-                      decode.field("model", decode.string, decode.success),
+                  let decoder = {
+                    use model <- decode.field("model", decode.string)
+                    use provider <- decode.optional_field(
+                      "provider",
+                      None,
+                      decode.optional(decode.string),
                     )
-                    |> result.try(session.set_model(worker, _))
+                    decode.success(#(model, provider))
+                  }
+                  case
+                    body(req, decoder)
+                    |> result.try(fn(selection) {
+                      session.select_model(worker, selection.0, selection.1)
+                    })
                   {
-                    Ok(_) -> reply(200, json.object([#("ok", json.bool(True))]))
+                    Ok(selection) -> reply(200, selection_json(selection))
                     Error(e) -> error(409, e)
                   }
                 }

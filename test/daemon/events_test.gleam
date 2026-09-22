@@ -48,7 +48,11 @@ pub fn snapshot_surfaces_saved_reasoning_apart_from_the_answer_test() {
       types.replay_decoder(types.ChatCompletions),
     )
   let chat_events =
-    view.snapshot(store, [transcript.Entry(types.Replay(chat), None)], None)
+    view.snapshot(
+      store,
+      [transcript.Entry(types.Replay(chat), None, None)],
+      None,
+    )
   types_of(chat_events) |> should.equal(["thinking", "message"])
   texts(chat_events, "thinking") |> should.equal(["think"])
   texts(chat_events, "message") |> should.equal(["answer"])
@@ -67,8 +71,8 @@ pub fn snapshot_surfaces_saved_reasoning_apart_from_the_answer_test() {
     view.snapshot(
       store,
       [
-        transcript.Entry(types.Replay(reasoning), None),
-        transcript.Entry(types.Replay(message), None),
+        transcript.Entry(types.Replay(reasoning), None, None),
+        transcript.Entry(types.Replay(message), None, None),
       ],
       None,
     )

@@ -3,6 +3,7 @@
 import albedo/daemon/configuration
 import albedo/daemon/conversation
 import albedo/daemon/events as view
+import albedo/daemon/projection
 import albedo/daemon/transcript
 import albedo/daemon/usage
 import albedo/harness/loop
@@ -42,12 +43,29 @@ pub type Report {
   Report(running: Bool, kernel: Option(Int), idle_ms: Int)
 }
 
+pub type ModelSelection {
+  ModelSelection(provider: String, model: String, protocol: types.Protocol)
+}
+
+pub type SubmissionError {
+  WorkspaceMissing(String)
+  Rejected(String)
+}
+
+fn submission_error(error: SubmissionError) -> String {
+  case error {
+    WorkspaceMissing(path) -> "workspace not found: " <> path
+    Rejected(message) -> message
+  }
+}
+
 pub type Message {
   Resume
   Abort(String)
-  Submit(String, String, Subject(Result(Nil, String)))
+  Submit(String, String, Subject(Result(Nil, SubmissionError)))
+  ChangeWorkspace(String, Subject(Result(conversation.Info, String)))
   Interrupt(Subject(Bool))
-  ChangeModel(String, Subject(Result(Nil, String)))
+  ChangeModel(String, Option(String), Subject(Result(ModelSelection, String)))
   Status(Subject(String))
   Read(Int, Subject(Page))
   Publish(String, String, Subject(Bool))
@@ -112,7 +130,7 @@ pub fn start(
         None,
         home,
         self,
-        list.reverse(inputs),
+        inputs |> tag_unknown_provider(info.provider) |> list.reverse,
         latest_usage,
         None,
         0,
@@ -143,7 +161,7 @@ pub fn submit(
   session: Session,
   text: String,
   client_id: String,
-) -> Result(Nil, String) {
+) -> Result(Nil, SubmissionError) {
   actor.call(session, 10_000, Submit(text, client_id, _))
 }
 
@@ -199,8 +217,12 @@ fn trim(
 fn handle(state: State, message: Message) {
   // Anything a client sends counts as attention; a detached session goes quiet.
   let state = case message {
-    Submit(..) | Interrupt(..) | Status(..) | Read(..) | ChangeModel(..) ->
-      State(..state, last_touch: now_ms())
+    Submit(..)
+    | Interrupt(..)
+    | Status(..)
+    | Read(..)
+    | ChangeModel(..)
+    | ChangeWorkspace(..) -> State(..state, last_touch: now_ms())
     _ -> state
   }
   case message {
@@ -209,29 +231,40 @@ fn handle(state: State, message: Message) {
         Error(error) ->
           actor.continue(
             State(..state, phase: "resting")
-            |> emit(view.text("error", error)),
+            |> emit(view.text("error", submission_error(error))),
           )
         Ok(#(state, kernel, client)) -> {
           let recovered = recover_pending(state, kernel)
-          case
-            conversation.commit(
-              runtime.ledger(state.host),
-              state.info.id,
-              recovered,
-              "model",
-            )
-          {
-            Error(e) -> actor.continue(emit(state, view.text("error", e)))
-            Ok(timestamp) -> {
-              let state = remember(state, recovered, timestamp)
+          let candidate = remember(state, recovered, 0)
+          case projected_inputs(candidate) {
+            Error(error) ->
               actor.continue(
-                start_run(state, kernel, client, model_inputs(state.history))
-                |> emit(view.text(
-                  "error",
-                  "runtime restarted; python namespace was reset. Resuming from saved work, not replaying cells.",
-                )),
+                State(..state, phase: "resting")
+                |> emit(view.text("error", error)),
               )
-            }
+            Ok(model_history) ->
+              case
+                conversation.commit_from(
+                  runtime.ledger(state.host),
+                  state.info.id,
+                  recovered,
+                  "model",
+                  Some(state.info.provider),
+                )
+              {
+                Error(error) ->
+                  actor.continue(emit(state, view.text("error", error)))
+                Ok(timestamp) -> {
+                  let state = remember(state, recovered, timestamp)
+                  actor.continue(
+                    start_run(state, kernel, client, model_history)
+                    |> emit(view.text(
+                      "error",
+                      "runtime restarted; python namespace was reset. Resuming from saved work, not replaying cells.",
+                    )),
+                  )
+                }
+              }
           }
         }
       }
@@ -247,13 +280,16 @@ fn handle(state: State, message: Message) {
     Submit(text, client_id, reply) ->
       case state.run {
         Some(_) -> {
-          process.send(reply, Error("session is busy"))
+          process.send(reply, Error(Rejected("session is busy")))
           actor.continue(state)
         }
         None ->
           case string.trim(text) == "" || string.byte_size(text) > 1_048_576 {
             True -> {
-              process.send(reply, Error("prompt must contain 1..1048576 bytes"))
+              process.send(
+                reply,
+                Error(Rejected("prompt must contain 1..1048576 bytes")),
+              )
               actor.continue(state)
             }
             False ->
@@ -267,21 +303,13 @@ fn handle(state: State, message: Message) {
                     list.append(recover_pending(state, kernel), [
                       types.User(text),
                     ])
-                  case
-                    conversation.commit(
-                      runtime.ledger(state.host),
-                      state.info.id,
-                      accepted,
-                      "model",
-                    )
-                  {
+                  let candidate = remember(state, accepted, 0)
+                  case projected_inputs(candidate) {
                     Error(error) -> {
-                      process.send(reply, Error(error))
+                      process.send(reply, Error(Rejected(error)))
                       actor.continue(state)
                     }
-                    Ok(timestamp) -> {
-                      let state = remember(state, accepted, timestamp)
-                      let history = model_inputs(state.history)
+                    Ok(history) -> {
                       let model_history = case state.notice {
                         None -> history
                         Some(notice) ->
@@ -293,19 +321,36 @@ fn handle(state: State, message: Message) {
                             _ -> history
                           }
                       }
-                      let state =
-                        State(..state, phase: "preparing", notice: None)
-                      let state =
-                        start_run(state, kernel, client, model_history)
-                      let event =
-                        view.user(
-                          text,
-                          "chat",
-                          Some(client_id),
-                          Some(timestamp),
+                      case
+                        conversation.commit_from(
+                          runtime.ledger(state.host),
+                          state.info.id,
+                          accepted,
+                          "model",
+                          Some(state.info.provider),
                         )
-                      process.send(reply, Ok(Nil))
-                      actor.continue(emit(state, event))
+                      {
+                        Error(error) -> {
+                          process.send(reply, Error(Rejected(error)))
+                          actor.continue(state)
+                        }
+                        Ok(timestamp) -> {
+                          let state = remember(state, accepted, timestamp)
+                          let state =
+                            State(..state, phase: "preparing", notice: None)
+                          let state =
+                            start_run(state, kernel, client, model_history)
+                          let event =
+                            view.user(
+                              text,
+                              "chat",
+                              Some(client_id),
+                              Some(timestamp),
+                            )
+                          process.send(reply, Ok(Nil))
+                          actor.continue(emit(state, event))
+                        }
+                      }
                     }
                   }
                 }
@@ -328,7 +373,51 @@ fn handle(state: State, message: Message) {
           actor.continue(State(..state, run: Some(Run(..run, cancelled: True))))
         }
       }
-    ChangeModel(model, reply) -> {
+    ChangeWorkspace(cwd, reply) -> {
+      let changed = case state.run, directory(cwd) {
+        Some(_), _ -> Error("session must be idle to change workspace")
+        None, False -> Error("workspace must be an existing absolute directory")
+        None, True ->
+          conversation.set_workspace(
+            runtime.ledger(state.host),
+            state.info.id,
+            cwd,
+          )
+      }
+      case changed {
+        Error(error) -> {
+          process.send(reply, Error(error))
+          actor.continue(state)
+        }
+        Ok(_) -> {
+          let state = case cwd == state.info.cwd {
+            True -> state
+            False -> {
+              let state = case state.kernel {
+                Some(kernel) -> {
+                  let saved =
+                    save_state_within(state, kernel, close_state_timeout)
+                  emit(
+                    state,
+                    view.text("note", released_text(saved, "workspace changed")),
+                  )
+                }
+                None -> state
+              }
+              runtime.reset_session(state.host, state.info.id)
+              State(
+                ..state,
+                kernel: None,
+                info: conversation.Info(..state.info, cwd: cwd),
+              )
+            }
+          }
+          process.send(reply, Ok(state.info))
+          actor.continue(state)
+        }
+      }
+    }
+    ChangeModel(model, provider_name, reply) -> {
       case
         state.run == None
         && string.trim(model) != ""
@@ -339,19 +428,48 @@ fn handle(state: State, message: Message) {
           actor.continue(state)
         }
         True -> {
-          let written =
-            conversation.set_model(
+          let selected = {
+            use #(provider, protocol) <- result.try(case provider_name {
+              None -> Ok(#(state.info.provider, state.info.protocol))
+              Some(name) ->
+                configuration.named(state.home, name)
+                |> result.map(fn(configured) {
+                  #(configured.name, configured.protocol)
+                })
+            })
+            let selection = ModelSelection(provider, model, protocol)
+            use _ <- result.try(
+              projection.for_model(state.history, provider, protocol)
+              |> result.replace(Nil)
+              |> result.map_error(fn(error) {
+                "cannot switch provider: " <> error
+              }),
+            )
+            use _ <- result.try(conversation.set_configuration(
               runtime.ledger(state.host),
               state.info.id,
+              provider,
               model,
-            )
-          process.send(reply, written)
-          case written {
-            Ok(_) ->
+              protocol,
+            ))
+            Ok(selection)
+          }
+          process.send(reply, selected)
+          case selected {
+            Ok(selection) ->
               actor.continue(
                 State(
                   ..state,
-                  info: conversation.Info(..state.info, model: model),
+                  history: tag_unknown_provider(
+                    state.history,
+                    state.info.provider,
+                  ),
+                  info: conversation.Info(
+                    ..state.info,
+                    provider: selection.provider,
+                    model: selection.model,
+                    protocol: selection.protocol,
+                  ),
                 ),
               )
             Error(_) -> actor.continue(state)
@@ -411,11 +529,12 @@ fn handle(state: State, message: Message) {
         Some(run) if run.id == id -> {
           // Completed tool results are saved even when cancellation was requested.
           let written =
-            conversation.commit(
+            conversation.commit_from(
               runtime.ledger(state.host),
               state.info.id,
               inputs,
               phase,
+              Some(state.info.provider),
             )
           process.send(reply, written)
           case written {
@@ -461,11 +580,12 @@ fn handle(state: State, message: Message) {
             _, _ -> "interrupted"
           }
           let persisted =
-            conversation.commit(
+            conversation.commit_from(
               runtime.ledger(state.host),
               state.info.id,
               [],
               stage,
+              Some(state.info.provider),
             )
           let state = State(..state, run: None, phase: "resting")
           let state = case run.cancelled, outcome, persisted {
@@ -510,7 +630,10 @@ fn handle(state: State, message: Message) {
           process.send(reply, True)
           actor.continue(
             State(..state, kernel: None)
-            |> emit(view.text("note", released_text(saved))),
+            |> emit(view.text(
+              "note",
+              released_text(saved, "nothing was attached"),
+            )),
           )
         }
         _, _ -> {
@@ -550,9 +673,17 @@ fn now_ms() -> Int
 
 fn prepare_submission(
   state: State,
-) -> Result(#(State, runtime.Session, types.Client), String) {
-  use #(state, client) <- result.try(configured_client(state))
-  use #(state, kernel) <- result.try(ensure_kernel(state))
+) -> Result(#(State, runtime.Session, types.Client), SubmissionError) {
+  use _ <- result.try(case directory(state.info.cwd) {
+    True -> Ok(Nil)
+    False -> Error(WorkspaceMissing(state.info.cwd))
+  })
+  use #(state, client) <- result.try(
+    configured_client(state) |> result.map_error(Rejected),
+  )
+  use #(state, kernel) <- result.try(
+    ensure_kernel(state) |> result.map_error(Rejected),
+  )
   Ok(#(state, kernel, client))
 }
 
@@ -674,10 +805,14 @@ fn restored_text(saved: python.Saved) -> String {
   }
 }
 
-fn released_text(saved: Result(python.Saved, String)) -> String {
+fn released_text(
+  saved: Result(python.Saved, String),
+  reason: String,
+) -> String {
+  let prefix = "python kernel released: " <> reason <> "; "
   case saved {
     Ok(python.Saved([_, ..] as names, missed, engine)) ->
-      "python kernel released while nothing was attached; "
+      prefix
       <> int.to_string(list.length(names))
       <> " variables saved to disk"
       <> case missed, engine {
@@ -688,8 +823,7 @@ fn released_text(saved: Result(python.Saved, String)) -> String {
           <> " skipped (install dill to also save functions and classes)"
         _, _ -> ", " <> int.to_string(list.length(missed)) <> " skipped"
       }
-    _ ->
-      "python kernel released while nothing was attached; variables are gone, the transcript is intact"
+    _ -> prefix <> "variables are gone, the transcript is intact"
   }
 }
 
@@ -710,6 +844,7 @@ fn configured_client(state: State) -> Result(#(State, types.Client), String) {
     "" ->
       State(
         ..state,
+        history: tag_unknown_provider(state.history, provider.name),
         info: conversation.Info(..state.info, provider: provider.name),
       )
     _ -> state
@@ -753,18 +888,41 @@ fn start_run(
   State(..state, run: Some(active), phase: "preparing")
 }
 
-fn model_inputs(entries: List(transcript.Entry)) -> List(types.Input) {
+fn raw_inputs(entries: List(transcript.Entry)) -> List(types.Input) {
   list.map(entries, fn(entry) { entry.input })
+}
+
+fn projected_inputs(state: State) -> Result(List(types.Input), String) {
+  projection.for_model(state.history, state.info.provider, state.info.protocol)
+  |> result.map_error(fn(error) { "cannot prepare model history: " <> error })
+}
+
+fn tag_unknown_provider(
+  entries: List(transcript.Entry),
+  provider: String,
+) -> List(transcript.Entry) {
+  case provider {
+    "" -> entries
+    provider ->
+      list.map(entries, fn(entry) {
+        case entry.provider {
+          Some(_) -> entry
+          None -> transcript.Entry(..entry, provider: Some(provider))
+        }
+      })
+  }
 }
 
 fn remember(state: State, inputs: List(types.Input), timestamp: Int) -> State {
   let entries =
-    list.map(inputs, fn(input) { transcript.Entry(input, Some(timestamp)) })
+    list.map(inputs, fn(input) {
+      transcript.Entry(input, Some(timestamp), Some(state.info.provider))
+    })
   State(..state, history: list.append(list.reverse(entries), state.history))
 }
 
 fn recover_pending(state: State, kernel: runtime.Session) -> List(types.Input) {
-  let inputs = state.history |> list.reverse |> model_inputs
+  let inputs = state.history |> list.reverse |> raw_inputs
   let completed =
     list.filter_map(inputs, fn(input) {
       case input {
@@ -778,6 +936,24 @@ fn recover_pending(state: State, kernel: runtime.Session) -> List(types.Input) {
   list.map(pending, runtime.recover(state.host, kernel, _))
 }
 
+pub fn select_model(
+  session: Session,
+  model: String,
+  provider: Option(String),
+) -> Result(ModelSelection, String) {
+  actor.call(session, 5000, ChangeModel(model, provider, _))
+}
+
 pub fn set_model(session: Session, model: String) -> Result(Nil, String) {
-  actor.call(session, 5000, ChangeModel(model, _))
+  select_model(session, model, None) |> result.replace(Nil)
+}
+
+@external(erlang, "albedo_daemon", "directory")
+fn directory(path: String) -> Bool
+
+pub fn set_workspace(
+  session: Session,
+  cwd: String,
+) -> Result(conversation.Info, String) {
+  actor.call(session, 20_000, ChangeWorkspace(cwd, _))
 }

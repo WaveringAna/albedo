@@ -27,7 +27,7 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
   store.query(store, fn(db) {
     use _ <- result.try(
       sqlight.exec(
-        "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);",
+        "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);",
         db,
       )
       |> result.map_error(fn(e) { e.message }),
@@ -101,6 +101,12 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
       True -> Ok(Nil)
       False ->
         sqlight.exec("ALTER TABLE transcript ADD COLUMN timestamp INTEGER", db)
+        |> result.map_error(fn(e) { e.message })
+    })
+    use _ <- result.try(case list.contains(transcript_columns, "provider") {
+      True -> Ok(Nil)
+      False ->
+        sqlight.exec("ALTER TABLE transcript ADD COLUMN provider TEXT", db)
         |> result.map_error(fn(e) { e.message })
     })
     use _ <- result.try(recover_sessions(db))
@@ -346,13 +352,14 @@ pub fn load_entries(
   store.query(store, fn(db) {
     use rows <- result.try(
       sqlight.query(
-        "SELECT payload,timestamp FROM transcript WHERE session=? ORDER BY seq",
+        "SELECT payload,timestamp,provider FROM transcript WHERE session=? ORDER BY seq",
         db,
         [sqlight.text(id)],
         {
           use payload <- decode.field(0, decode.bit_array)
           use timestamp <- decode.field(1, decode.optional(decode.int))
-          decode.success(#(payload, timestamp))
+          use provider <- decode.field(2, decode.optional(decode.string))
+          decode.success(#(payload, timestamp, provider))
         },
       )
       |> result.map_error(fn(e) { e.message }),
@@ -361,7 +368,7 @@ pub fn load_entries(
       use input <- result.try(
         unpack(row.0) |> result.replace_error("invalid saved transcript item"),
       )
-      Ok(transcript.Entry(input, row.1))
+      Ok(transcript.Entry(input, row.1, row.2))
     })
   })
 }
@@ -382,6 +389,18 @@ pub fn commit(
   inputs: List(types.Input),
   stage: String,
 ) -> Result(Int, String) {
+  commit_from(store, id, inputs, stage, None)
+}
+
+/// Appends inputs with the provider that produced or accepted them. Provider
+/// provenance lets model preparation distinguish lossless replay from transfer.
+pub fn commit_from(
+  store: store.Store,
+  id: String,
+  inputs: List(types.Input),
+  stage: String,
+  provider: Option(String),
+) -> Result(Int, String) {
   let timestamp = usage.now()
   store.query(store, fn(db) {
     use _ <- result.try(
@@ -396,12 +415,13 @@ pub fn commit(
       use _ <- result.try(
         list.try_each(inputs, fn(input) {
           sqlight.query(
-            "INSERT INTO transcript(session,payload,timestamp) VALUES(?,?,?)",
+            "INSERT INTO transcript(session,payload,timestamp,provider) VALUES(?,?,?,?)",
             db,
             [
               sqlight.text(id),
               sqlight.blob(pack(input)),
               sqlight.int(timestamp),
+              sqlight.nullable(sqlight.text, provider),
             ],
             decode.dynamic,
           )
@@ -529,19 +549,70 @@ fn pack(input: types.Input) -> BitArray
 @external(erlang, "albedo_conversation", "unpack")
 fn unpack(bytes: BitArray) -> Result(types.Input, Nil)
 
-pub fn set_model(
+pub fn set_configuration(
   store: store.Store,
   id: String,
+  provider: String,
   model: String,
+  selected_protocol: types.Protocol,
+) -> Result(Nil, String) {
+  store.query(store, fn(db) {
+    use _ <- result.try(
+      sqlight.exec("BEGIN IMMEDIATE", db)
+      |> result.map_error(fn(e) { e.message }),
+    )
+    let written = {
+      use _ <- result.try(
+        sqlight.query(
+          "UPDATE transcript SET provider=(SELECT provider FROM sessions WHERE id=?) WHERE session=? AND provider IS NULL",
+          db,
+          [sqlight.text(id), sqlight.text(id)],
+          decode.dynamic,
+        )
+        |> result.replace(Nil)
+        |> result.map_error(fn(e) { e.message }),
+      )
+      sqlight.query(
+        "UPDATE sessions SET provider=?,model=?,protocol=? WHERE id=?",
+        db,
+        [
+          sqlight.text(provider),
+          sqlight.text(model),
+          sqlight.text(protocol(selected_protocol)),
+          sqlight.text(id),
+        ],
+        decode.dynamic,
+      )
+      |> result.replace(Nil)
+      |> result.map_error(fn(e) { e.message })
+    }
+    case written {
+      Ok(_) ->
+        sqlight.exec("COMMIT", db)
+        |> result.replace(Nil)
+        |> result.map_error(fn(e) { e.message })
+      Error(error) -> {
+        let _ = sqlight.exec("ROLLBACK", db)
+        Error(error)
+      }
+    }
+  })
+}
+
+/// Workspace changes are serialized by the session actor with submissions.
+pub fn set_workspace(
+  store: store.Store,
+  id: String,
+  cwd: String,
 ) -> Result(Nil, String) {
   store.query(store, fn(db) {
     sqlight.query(
-      "UPDATE sessions SET model=? WHERE id=?",
+      "UPDATE sessions SET cwd=? WHERE id=?",
       db,
-      [sqlight.text(model), sqlight.text(id)],
+      [sqlight.text(cwd), sqlight.text(id)],
       decode.dynamic,
     )
     |> result.replace(Nil)
-    |> result.map_error(fn(e) { e.message })
+    |> result.map_error(fn(error) { error.message })
   })
 }

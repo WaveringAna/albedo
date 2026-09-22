@@ -20,13 +20,22 @@ export interface StreamOptions {
 
 export type AgentPhase = "resting" | "preparing" | "reasoning" | "tool" | "waiting"
 export type AgentStatus = { running: boolean; idle: boolean; phase?: AgentPhase }
+export type WorkspaceUpdate = { workspace: string }
+
+export class WorkspaceMissingError extends Error {
+  readonly name = "WorkspaceMissingError"
+  constructor(readonly workspace: string) {
+    super(`workspace not found: ${workspace}`)
+  }
+}
 
 export interface ChatClient {
   /** The sender identity used by send; lets views suppress their optimistic echo. */
   readonly clientId?: string
-  send: (content: string) => Promise<{ ok: true }>
+  send: (content: string, signal?: AbortSignal) => Promise<{ ok: true }>
+  replaceWorkspace?: (workspace: string, signal?: AbortSignal) => Promise<WorkspaceUpdate>
   interrupt?: () => Promise<{ interrupted: boolean }>
-  getStatus: () => Promise<AgentStatus>
+  getStatus: (signal?: AbortSignal) => Promise<AgentStatus>
   stream: (options: StreamOptions) => Promise<void>
 }
 
@@ -154,15 +163,17 @@ const toMessage = (raw: unknown): StreamEvent | null => {
   return { type: "message", role: "assistant", text: record.content }
 }
 
-const parseError = async (res: Response): Promise<string> => {
-  const fallback = `${res.status} ${res.statusText}`.trim()
+const responseError = async (res: Response): Promise<Error> => {
+  const fallback = `${res.status} ${res.statusText}`.trim() || "request failed"
 
   try {
-    const data = (await res.json()) as { error?: unknown }
-    if (typeof data.error === "string" && data.error.trim()) return data.error
+    const data = (await res.json()) as { code?: unknown; error?: unknown; workspace?: unknown }
+    if (data.code === "workspace_missing" && typeof data.workspace === "string")
+      return new WorkspaceMissingError(data.workspace)
+    if (typeof data.error === "string" && data.error.trim()) return new Error(data.error)
   } catch {}
 
-  return fallback || "request failed"
+  return new Error(fallback)
 }
 
 const splitLines = (chunkBuffer: string): { lines: string[]; rest: string } => {
@@ -184,31 +195,53 @@ export function createChatClient(options: CreateChatClientOptions): ChatClient {
   const agentUrl = (path: string) =>
     agentId ? url(`/sessions/${encodeURIComponent(agentId)}${path}`) : url(path)
 
-  const send: ChatClient["send"] = async (content) => {
+  const requestSignal = (signal?: AbortSignal): AbortSignal => signal
+    ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000)
+  const send: ChatClient["send"] = async (content, signal) => {
     const res = await fetchImpl(agentUrl(agentId ? "/events" : "/trigger/chat"), {
       method: "POST",
       headers: headers(true),
       body: JSON.stringify({ content, ...(clientId ? { clientId } : {}) }),
+      signal: requestSignal(signal),
     })
 
     if (!res.ok) {
-      throw new Error(await parseError(res))
+      throw await responseError(res)
     }
 
     return { ok: true }
   }
 
+  const replaceWorkspace: ChatClient["replaceWorkspace"] = agentId ? async (workspace, signal) => {
+    const health = await fetchImpl(url("/health"), { headers: headers(), signal: requestSignal(signal) })
+    if (!health.ok) throw await responseError(health)
+    const capabilities = (await health.json() as { capabilities?: unknown }).capabilities
+    if (!Array.isArray(capabilities) || !capabilities.includes("session_workspace"))
+      throw new Error("daemon upgrade needed to change this workspace; when ready, run albedo daemon --stop, then albedo (this clears python variables)")
+
+    const res = await fetchImpl(agentUrl("/workspace"), {
+      method: "POST",
+      headers: headers(true),
+      body: JSON.stringify({ workspace }),
+      signal: requestSignal(signal),
+    })
+    if (!res.ok) throw await responseError(res)
+    const data = await res.json() as { workspace?: unknown }
+    if (typeof data.workspace !== "string") throw new Error("daemon returned invalid session metadata")
+    return { workspace: data.workspace }
+  } : undefined
+
   const interrupt = async (): Promise<{ interrupted: boolean }> => {
     const res = await fetchImpl(agentUrl(agentId ? "/interrupt" : "/awp/interrupt"), { method: "POST", headers: headers(), signal: AbortSignal.timeout(15_000) })
-    if (!res.ok) throw new Error(await parseError(res))
+    if (!res.ok) throw await responseError(res)
     const data = await res.json() as { interrupted?: unknown }
     return { interrupted: data.interrupted === true }
   }
 
-  const getStatus: ChatClient["getStatus"] = async () => {
-    const res = await fetchImpl(agentUrl("/status"), { headers: headers() })
+  const getStatus: ChatClient["getStatus"] = async (signal) => {
+    const res = await fetchImpl(agentUrl("/status"), { headers: headers(), signal: requestSignal(signal) })
     if (!res.ok) {
-      throw new Error(await parseError(res))
+      throw await responseError(res)
     }
 
     const data = (await res.json()) as { running?: unknown; idle?: unknown; phase?: unknown }
@@ -226,7 +259,7 @@ export function createChatClient(options: CreateChatClientOptions): ChatClient {
       : `/awp/stream?${afterSeq ? `after_seq=${afterSeq}` : "tail=true"}`
     const res = await fetchImpl(agentUrl(route), { signal, headers: headers() })
     if (!res.ok || !res.body) {
-      throw new Error(res.ok ? "stream body missing" : await parseError(res))
+      throw res.ok ? new Error("stream body missing") : await responseError(res)
     }
     onOpen?.()
 
@@ -290,8 +323,14 @@ export function createChatClient(options: CreateChatClientOptions): ChatClient {
                 }
               }
               if (item.type === "arguments_delta" && typeof item.callId === "string" && typeof item.text === "string") {
+                const fresh = !argumentsByCall.has(item.callId)
+                const retained = [...argumentsByCall].reduce((size, [id, args]) => size + id.length + args.length, 0)
+                if ((fresh && argumentsByCall.size >= 32) || retained + item.text.length + (fresh ? item.callId.length : 0) > 2_000_000) {
+                  argumentsByCall.clear()
+                  afterSeq = -1
+                  throw new Error("tool argument previews exceed client limit")
+                }
                 const args = (argumentsByCall.get(item.callId) ?? "") + item.text
-                if (args.length > 2_000_000) throw new Error("tool arguments exceed client limit")
                 argumentsByCall.set(item.callId, args)
                 report({ id: item.callId, function: { name: "python", arguments: args } }, "generating")
                 continue
@@ -316,8 +355,9 @@ export function createChatClient(options: CreateChatClientOptions): ChatClient {
         }
       }
     } finally {
-      // Keep only unfinished raw arguments for cursor-based reconnection, never
-      // their decoded code or syntax tree while the transport is disconnected.
+      // Reconnects keep bounded unfinished arguments; detaching releases them
+      // and starts any future attachment from a fresh snapshot.
+      if (signal?.aborted) { argumentsByCall.clear(); afterSeq = -1 }
       signal?.removeEventListener("abort", cancel)
       await reader.cancel().catch(() => {})
       reader.releaseLock()
@@ -328,6 +368,7 @@ export function createChatClient(options: CreateChatClientOptions): ChatClient {
   return {
     clientId,
     send,
+    ...(replaceWorkspace ? { replaceWorkspace } : {}),
     interrupt,
     getStatus,
     stream,

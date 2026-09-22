@@ -42,6 +42,14 @@ export class TranscriptIndex {
     return start
   }
 
+  /** Remove a provisional tail entry that the daemon did not accept. */
+  discard(index: number): boolean {
+    if (index !== this.entries.length - 1) return false
+    this.entries.pop()
+    this.layouts.clear()
+    return true
+  }
+
   timestamp(index: number, timestamp: number): void {
     const entry = this.entries[index]
     if (!entry || (entry.kind !== "user" && entry.kind !== "assistant")) return

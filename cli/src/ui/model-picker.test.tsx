@@ -15,7 +15,7 @@ const until = async (ready: () => boolean, what: string): Promise<void> => {
   throw new Error(`timed out: ${what}`)
 }
 
-test("/model opens the session provider's picker, saves selections and offers manual fallback without losing chat", { timeout: 15_000 }, async t => {
+test("/model switches saved providers and models with manual fallback without losing chat", { timeout: 15_000 }, async t => {
   const home = await mkdtemp(join(tmpdir(), "albedo-model-"))
   const previousHome = process.env.ALBEDO_HOME
   process.env.ALBEDO_HOME = home
@@ -24,22 +24,28 @@ test("/model opens the session provider's picker, saves selections and offers ma
     else process.env.ALBEDO_HOME = previousHome
     await rm(home, { recursive: true, force: true })
   })
-  let listed = 0, streams = 0, unavailable = false, rejectChange = false
-  const changes: string[] = []
+  let listed = 0, streams = 0, unavailable = false, rejectChange = false, supportsProviders = false
+  const changes: { model: string; provider?: string }[] = []
   const session = { id: "session", title: "existing conversation", workspace: "/tmp", provider: "saved", protocol: "responses", model: "old-model" }
   const server = createServer(async (req, res) => {
-    if (req.url === "/saved/models") {
+    if (req.url === "/health") {
+      res.end(JSON.stringify({ ok: true, version: 2, ...(supportsProviders ? { capabilities: ["session_provider"] } : {}) }))
+    } else if (req.url === "/saved/models") {
       listed++
       assert.equal(req.headers.authorization, "Bearer saved-key")
       res.writeHead(unavailable ? 503 : 200, { "content-type": "application/json" })
       res.end(JSON.stringify({ data: [{ id: "old-model" }, { id: "new-model" }] }))
+    } else if (req.url === "/other/models") {
+      assert.equal(req.headers.authorization, "Bearer other-key")
+      res.end(JSON.stringify({ data: [{ id: "other-model" }] }))
     } else if (req.url === "/sessions/session/model") {
       let body = ""
       for await (const chunk of req) body += chunk
-      const model = (JSON.parse(body) as { model: string }).model
+      const change = JSON.parse(body) as { model: string; provider?: string }
       if (rejectChange) { res.writeHead(409); res.end(JSON.stringify({ error: "session must be idle" })); return }
-      changes.push(model); session.model = model
-      res.end(JSON.stringify({ ok: true }))
+      changes.push(change); session.model = change.model
+      if (change.provider) { session.provider = change.provider; session.protocol = change.provider === "other" ? "chat_completions" : "responses" }
+      res.end(JSON.stringify({ ok: true, model: session.model, provider: session.provider, protocol: session.protocol }))
     } else if (req.url?.startsWith("/sessions/session/stream")) {
       streams++
       res.writeHead(200, { "content-type": "text/event-stream" })
@@ -53,7 +59,7 @@ test("/model opens the session provider's picker, saves selections and offers ma
   assert(address && typeof address !== "string")
   const config = JSON.stringify({ active: "other", providers: {
     saved: { baseUrl: `http://127.0.0.1:${address.port}/saved`, apiKey: "saved-key", model: "old-model", protocol: "responses" },
-    other: { baseUrl: `http://127.0.0.1:${address.port}/wrong`, apiKey: "other-key", model: "other-model", protocol: "responses" },
+    other: { baseUrl: `http://127.0.0.1:${address.port}/other`, apiKey: "other-key", model: "other-model", protocol: "chat_completions" },
   } })
   await writeFile(join(home, "config.json"), config)
   // profiles captures ALBEDO_HOME on import; this test file has its own process.
@@ -68,7 +74,7 @@ test("/model opens the session provider's picker, saves selections and offers ma
   const open = async (): Promise<void> => {
     painted = ""
     await enter("/model")
-    await until(() => painted.includes("session model"), "model picker")
+    await until(() => painted.includes("session model") && painted.includes("current") && painted.includes(unavailable ? "could not list models" : "new-model"), "model picker")
     assert(painted.includes("current"))
   }
   await until(() => painted.includes("keep this conversation visible"), "chat")
@@ -76,7 +82,7 @@ test("/model opens the session provider's picker, saves selections and offers ma
   painted = ""
   await enter("new-model")
   await until(() => changes.length === 1 && painted.includes("keep this conversation visible"), "selection returns to preserved chat")
-  assert.deepEqual(changes, ["new-model"])
+  assert.deepEqual(changes, [{ model: "new-model", provider: "saved" }])
   assert(painted.includes("new-model"))
   await open()
   painted = ""
@@ -98,8 +104,41 @@ test("/model opens the session provider's picker, saves selections and offers ma
   painted = ""
   stdin.write("\r")
   await until(() => changes.length === 2 && painted.includes("keep this conversation visible"), "retry manual selection")
-  assert.deepEqual(changes, ["new-model", "manual-model"])
+  assert.deepEqual(changes, [{ model: "new-model", provider: "saved" }, { model: "manual-model", provider: "saved" }])
   assert.equal(listed, 3)
-  assert.equal(streams, 1, "switching models must not discard the mounted conversation")
+  await open()
+  await enter("change provider")
+  await until(() => painted.includes("session provider") && painted.includes("chat_completions"), "provider picker")
+  await enter("other")
+  await until(() => painted.includes("other-model"), "other provider models")
+  painted = ""
+  stdin.write("\x1b")
+  await until(() => painted.includes("keep this conversation visible"), "cancel provider change")
+  assert.equal(changes.length, 2, "browsing providers must not save a change")
+  await open()
+  await enter("change provider")
+  await until(() => painted.includes("chat_completions"), "provider picker again")
+  await enter("other")
+  await until(() => painted.includes("other-model"), "other provider models again")
+  painted = ""
+  stdin.write("\r")
+  await until(() => painted.includes("daemon upgrade needed"), "old daemon requires upgrade before changing provider")
+  assert.equal(changes.length, 2, "old daemon must not receive a model from another provider")
+  supportsProviders = true
+  rejectChange = true
+  stdin.write("\r")
+  await until(() => painted.includes("session must be idle"), "busy session rejects provider switch")
+  assert.equal(changes.length, 2)
+  rejectChange = false
+  painted = ""
+  stdin.write("\r")
+  await until(() => changes.length === 3 && painted.includes("keep this conversation visible"), "provider selection preserves chat")
+  assert.deepEqual(changes[2], { model: "other-model", provider: "other" })
+  painted = ""
+  await enter("/model")
+  await until(() => painted.includes("albedo /model · other") && painted.includes("current"), "reopen on selected provider")
+  assert(!painted.includes("manual-model"), "old provider's model must not leak into the new catalog")
+  stdin.write("\x1b")
+  assert.equal(streams, 1, "switching providers must not discard the mounted conversation")
   assert.equal(await readFile(join(home, "config.json"), "utf8"), config, "session selection must not change provider defaults")
 })

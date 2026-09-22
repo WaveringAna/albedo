@@ -37,7 +37,11 @@ test("first login masks the key, discovers models and saves a named provider", a
   let chosen: string | undefined
   const app = render(createElement(Login, { onDone: name => { chosen = name }, onCancel: () => assert.fail("unexpected cancel") }), { stdin, stdout, patchConsole: false, exitOnCtrlC: false })
   t.after(() => app.unmount())
-  const press = async (keys: string): Promise<void> => { (stdin as unknown as PassThrough).write(keys); await new Promise(resolve => setTimeout(resolve, 20)) }
+  const press = async (keys: string): Promise<void> => {
+    await app.waitUntilRenderFlush()
+    ;(stdin as unknown as PassThrough).write(keys)
+    await app.waitUntilRenderFlush()
+  }
   await until(() => painted.includes("provider name:"))
   await press("fixture"); await press("\r")
   await until(() => painted.includes("api base url:"))

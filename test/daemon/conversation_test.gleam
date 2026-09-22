@@ -292,11 +292,14 @@ pub fn transcript_timestamps_migrate_without_invention_and_roundtrip_test() {
   // must not claim to know when this row was accepted.
   let assert Ok(_) =
     store.query(ledger, fn(db) {
-      sqlight.exec("ALTER TABLE transcript DROP COLUMN timestamp", db)
+      sqlight.exec(
+        "ALTER TABLE transcript DROP COLUMN timestamp; ALTER TABLE transcript DROP COLUMN provider",
+        db,
+      )
     })
   let assert Ok(_) = conversation.initialise(ledger)
   conversation.load_entries(ledger, "timestamped")
-  |> should.equal(Ok([transcript.Entry(types.User("legacy"), None)]))
+  |> should.equal(Ok([transcript.Entry(types.User("legacy"), None, None)]))
 
   let new_inputs = [types.User("current"), types.Assistant("answer")]
   let assert Ok(timestamp) =
@@ -305,9 +308,9 @@ pub fn transcript_timestamps_migrate_without_invention_and_roundtrip_test() {
   let assert Ok(entries) = conversation.load_entries(ledger, "timestamped")
   entries
   |> should.equal([
-    transcript.Entry(types.User("legacy"), None),
-    transcript.Entry(types.User("current"), Some(timestamp)),
-    transcript.Entry(types.Assistant("answer"), Some(timestamp)),
+    transcript.Entry(types.User("legacy"), None, None),
+    transcript.Entry(types.User("current"), Some(timestamp), None),
+    transcript.Entry(types.Assistant("answer"), Some(timestamp), None),
   ])
   conversation.load(ledger, "timestamped")
   |> should.equal(Ok([types.User("legacy"), ..new_inputs]))
@@ -350,6 +353,89 @@ pub fn transcript_timestamps_migrate_without_invention_and_roundtrip_test() {
   conversation.load_entries(ledger, "timestamped") |> should.equal(Ok(entries))
   let assert Ok(restored) = conversation.load_entries(ledger, "timestamped")
   view.snapshot(ledger, restored, None) |> should.equal(snapshot)
+  runtime.stop(restarted)
+  cleanup(path)
+}
+
+pub fn provider_provenance_backfills_on_switch_and_survives_restart_test() {
+  let path = temporary_database()
+  let assert Ok(host) = runtime.start(path)
+  let ledger = runtime.ledger(host)
+  let assert Ok(_) = conversation.initialise(ledger)
+  let assert Ok(_) = conversation.create(ledger, session("provenance"))
+  let original = [types.User("old provider input"), types.Assistant("answer")]
+  let assert Ok(old_timestamp) =
+    conversation.commit(ledger, "provenance", original, "idle")
+  let assert Ok(before_payloads) =
+    store.query(ledger, fn(db) {
+      sqlight.query(
+        "SELECT payload FROM transcript WHERE session=? ORDER BY seq",
+        db,
+        [sqlight.text("provenance")],
+        decode.field(0, decode.bit_array, decode.success),
+      )
+    })
+  let assert Ok(_) =
+    conversation.set_configuration(
+      ledger,
+      "provenance",
+      "new-provider",
+      "new-model",
+      types.ChatCompletions,
+    )
+  let assert Ok(after_payloads) =
+    store.query(ledger, fn(db) {
+      sqlight.query(
+        "SELECT payload FROM transcript WHERE session=? ORDER BY seq",
+        db,
+        [sqlight.text("provenance")],
+        decode.field(0, decode.bit_array, decode.success),
+      )
+    })
+  after_payloads |> should.equal(before_payloads)
+  let assert Ok(new_timestamp) =
+    conversation.commit_from(
+      ledger,
+      "provenance",
+      [types.User("new provider input")],
+      "idle",
+      Some("new-provider"),
+    )
+  let expected = [
+    transcript.Entry(
+      types.User("old provider input"),
+      Some(old_timestamp),
+      Some("provider"),
+    ),
+    transcript.Entry(
+      types.Assistant("answer"),
+      Some(old_timestamp),
+      Some("provider"),
+    ),
+    transcript.Entry(
+      types.User("new provider input"),
+      Some(new_timestamp),
+      Some("new-provider"),
+    ),
+  ]
+  conversation.load_entries(ledger, "provenance") |> should.equal(Ok(expected))
+  conversation.load(ledger, "provenance")
+  |> should.equal(
+    Ok([
+      types.User("old provider input"),
+      types.Assistant("answer"),
+      types.User("new provider input"),
+    ]),
+  )
+
+  runtime.stop(host)
+  let assert Ok(restarted) = runtime.start(path)
+  let ledger = runtime.ledger(restarted)
+  let assert Ok(_) = conversation.initialise(ledger)
+  conversation.load_entries(ledger, "provenance") |> should.equal(Ok(expected))
+  let assert Ok([info]) = conversation.list(ledger)
+  #(info.provider, info.model, info.protocol)
+  |> should.equal(#("new-provider", "new-model", types.ChatCompletions))
   runtime.stop(restarted)
   cleanup(path)
 }

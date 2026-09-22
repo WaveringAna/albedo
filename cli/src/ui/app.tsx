@@ -15,10 +15,20 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
   const [choosing,setChoosing]=useState(!initial)
   const [choosingModel,setChoosingModel]=useState(false)
   const listedSessions = selected && !sessions.some(session => session.id === selected.id) ? [selected, ...sessions] : sessions
-  const changeModel = async (model: string): Promise<void> => {
+  const workspaceChanged = (workspace: string): void => {
+    setSelected(current => current && { ...current, workspace })
+    if (selected) setSessions(current => current.map(session => session.id === selected.id ? { ...session, workspace } : session))
+  }
+  const changeModel = async (model: string, provider?: string): Promise<void> => {
     if (!selected) return
-    await request(connection, `/sessions/${selected.id}/model`, { model })
-    setSelected({ ...selected, model }); setChoosingModel(false); setError("")
+    if (provider && provider !== selected.provider) {
+      const health = await request<{ capabilities?: string[] }>(connection, "/health")
+      if (!health.capabilities?.includes("session_provider"))
+        throw new Error("daemon upgrade needed to switch providers; when ready, run albedo daemon --stop, then albedo (this clears python variables)")
+    }
+    const changed = await request<Partial<Pick<Session, "model" | "provider" | "protocol">>>(connection, `/sessions/${selected.id}/model`, { model, provider })
+    setSelected({ ...selected, model: changed.model ?? model, provider: changed.provider ?? selected.provider, protocol: changed.protocol ?? selected.protocol })
+    setChoosingModel(false); setError("")
   }
   useEffect(() => {
     if (!choosing) return
@@ -31,7 +41,7 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
   }
   if (loggingIn) return <Login name={loggingIn.name} onCancel={()=>setLoggingIn(undefined)} onDone={name=>{
     setLoggingIn(undefined); setError("")
-    setNotice(`${name} selected for new sessions${selected ? `; this session keeps ${selected.provider}` : ""}`)
+    setNotice(`${name} selected for new sessions${selected ? `; use /model to switch this session from ${selected.provider}` : ""}`)
     if (!selected && !sessions.length) create()
   }} />
   return <Box flexDirection="column">
@@ -46,8 +56,8 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
       ...listedSessions.map(session => ({ id:session.id,label:typeof session.title === "string" ? session.title.trim() || "new session" : "session · label unavailable",detail:`${session.model} · ${session.workspace}` })),
     ]} onSelect={id => { if (id==="new") create(); else if (id==="login") setLoggingIn({}); else { setSelected(listedSessions.find(session=>session.id===id));setChoosing(false) } }} onCancel={() => selected ? setChoosing(false) : quit()} /> : selected && <><ChatScreen key={selected.id} visible={!choosingModel}
       baseUrl={`http://127.0.0.1:${connection.port}`} token={connection.token} agentId={selected.id} agentName="albedo"
-      workspace={selected.workspace} model={selected.model} onBack={()=>setChoosing(true)} onQuit={quit} onCreate={create}
-      commands={[{ name:"/login",description:"add or select a named openai-compatible api" },{ name:"/new",description:"new coding session" },{ name:"/sessions",description:"switch session" },{ name:"/model",description:"choose this session's model" }]}
+      workspace={selected.workspace} model={selected.model} onWorkspaceChanged={workspaceChanged} onBack={()=>setChoosing(true)} onQuit={quit} onCreate={create}
+      commands={[{ name:"/login",description:"add or select a named openai-compatible api" },{ name:"/new",description:"new coding session" },{ name:"/sessions",description:"switch session" },{ name:"/model",description:"choose this session's provider and model" }]}
       onCommand={(value,clear)=> {
         if (value === "/login" || value.startsWith("/login ")) { clear(); setLoggingIn({ name: value.slice(6).trim() || undefined }); return true }
         if (value.startsWith("/model ")) { clear();setError("");void changeModel(value.slice(7).trim()).catch(error=>setError(String(error)));return true }

@@ -4,7 +4,7 @@ import { PassThrough } from "node:stream"
 import { createElement, type ReactElement } from "react"
 import { render } from "ink"
 import { ChatScreen } from "./chat.js"
-import type { StreamEvent, StreamOptions } from "../client.js"
+import { WorkspaceMissingError, type StreamEvent, type StreamOptions } from "../client.js"
 const strip = (text: string): string => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
 const tick = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 5) })
 const until = async (ready: () => boolean, what: string): Promise<void> => {
@@ -12,7 +12,7 @@ const until = async (ready: () => boolean, what: string): Promise<void> => {
   throw new Error(`timed out waiting for ${what}`)
 }
 
-type Screen = { last: () => string; all: () => string; raw: () => string; shows: (text: string) => Promise<void>; write: (text: string) => void }
+type Screen = { last: () => string; all: () => string; raw: () => string; shows: (text: string) => Promise<void>; write: (text: string) => void; flush: () => Promise<void>; unmount: () => void }
 
 /** Mount a screen on injected streams that look like a terminal to Ink. */
 const mount = (node: ReactElement, t: { after: (fn: () => void) => void }, columns = 80): Screen => {
@@ -30,6 +30,10 @@ const mount = (node: ReactElement, t: { after: (fn: () => void) => void }, colum
     shows: (text) => until(() => screen.all().includes(text), `screen text ${JSON.stringify(text)}`),
     raw: () => frames.join(""),
     write: (text) => { stdin.write(text) },
+    // Two writes in one tick reach Ink as one paste-sized chunk; a person types
+    // the text and presses enter in separate turns, so flush between them.
+    flush: () => app.waitUntilRenderFlush(),
+    unmount: () => app.unmount(),
   }
   return screen
 }
@@ -183,4 +187,144 @@ test("confirmed user and streamed assistant headings get clocks without duplicat
   await until(() => screen.last().includes("00:58:31") && screen.last().includes("question"), "replayed clocks and own user")
   assert.equal(screen.last().split("question").length - 1, 1)
   assert.equal(screen.last().split("the answer").length - 1, 1)
+})
+
+test("missing workspace asks for a replacement and retries only after confirmation", async t => {
+  const sent: string[] = []
+  const replacements: string[] = []
+  const updated: string[] = []
+  const screen = mount(createElement(ChatScreen, {
+    transport: {
+      send: async content => {
+        sent.push(content)
+        if (sent.length === 1) throw new WorkspaceMissingError("/old/missing")
+        return { ok: true as const }
+      },
+      replaceWorkspace: async workspace => { replacements.push(workspace); return { workspace: `${workspace}/` } },
+      getStatus: async () => ({ running: false, idle: true }),
+      stream: async options => { options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) },
+    },
+    workspace: "/old/missing", agentName: "albedo", onWorkspaceChanged: workspace => { updated.push(workspace) },
+    onBack: () => {}, onQuit: () => {}, settleMs: 20,
+  }), t)
+
+  await until(() => screen.last().includes("ready"), "chat ready")
+  screen.write("finish the task")
+  await screen.flush()
+  screen.write("\r")
+  await until(() => screen.last().includes("workspace not found: /old/missing"), "workspace recovery form")
+  assert.deepEqual(sent, ["finish the task"])
+  assert.deepEqual(replacements, [])
+  screen.write("\u0015")
+  await screen.flush()
+  screen.write("/new/workspace")
+  await screen.flush()
+  screen.write("\r")
+  await until(() => sent.length === 2, "original prompt retried")
+  assert.deepEqual(replacements, ["/new/workspace"])
+  assert.deepEqual(updated, ["/new/workspace/"], "session metadata comes from the daemon")
+  assert.deepEqual(sent, ["finish the task", "finish the task"])
+  await until(() => !screen.last().includes("workspace not found"), "recovery form closed")
+})
+
+test("canceling workspace recovery preserves the chat and unsent prompt", async t => {
+  let stream: StreamOptions | undefined
+  let replacements = 0
+  const screen = mount(createElement(ChatScreen, {
+    transport: {
+      send: async () => { throw new WorkspaceMissingError("/gone") },
+      replaceWorkspace: async workspace => { replacements++; return { workspace } },
+      getStatus: async () => ({ running: false, idle: true }),
+      stream: async options => { stream = options; options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) },
+    },
+    workspace: "/gone", agentName: "albedo", onBack: () => {}, onQuit: () => {}, settleMs: 20,
+  }), t)
+  await until(() => stream !== undefined, "stream connected")
+  stream!.onEvent({ type: "message", role: "assistant", text: "existing chat stays here" })
+  await screen.shows("existing chat stays here")
+  await until(() => screen.last().includes("ready"), "chat ready")
+  screen.write("unsent work")
+  await screen.flush()
+  screen.write("\r")
+  await until(() => screen.last().includes("workspace not found: /gone"), "workspace recovery form")
+  screen.write("\u001b")
+  await until(() => !screen.last().includes("workspace not found"), "recovery canceled")
+  assert(screen.last().includes("existing chat stays here"))
+  assert(screen.last().includes("unsent work"))
+  assert.equal(replacements, 0)
+})
+
+test("a rejected workspace stays open with the daemon's reason and the typed path", async t => {
+  const attempts: string[] = []
+  const screen = mount(createElement(ChatScreen, {
+    transport: {
+      send: async () => { throw new WorkspaceMissingError("/gone") },
+      replaceWorkspace: async workspace => {
+        attempts.push(workspace)
+        throw new Error("workspace must be an existing absolute directory")
+      },
+      getStatus: async () => ({ running: false, idle: true }),
+      stream: async options => { options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) },
+    },
+    workspace: "/gone", agentName: "albedo", onBack: () => {}, onQuit: () => {}, settleMs: 20,
+  }), t)
+  await until(() => screen.last().includes("ready"), "chat ready")
+  screen.write("retry me")
+  await screen.flush()
+  screen.write("\r")
+  await until(() => screen.last().includes("workspace not found: /gone"), "workspace recovery form")
+  screen.write("\u0015")
+  await screen.flush()
+  screen.write("/relative")
+  await screen.flush()
+  screen.write("\r")
+  await until(() => screen.last().includes("workspace must be an existing absolute directory"), "daemon reason")
+  assert(screen.last().includes("new workspace › /relative"))
+  screen.write("\u0015")
+  await screen.flush()
+  screen.write("/absolute/path")
+  await screen.flush()
+  screen.write("\r")
+  await until(() => attempts.length === 2, "corrected path retried")
+  assert.deepEqual(attempts, ["/relative", "/absolute/path"])
+})
+
+test("mouse reports never edit the workspace path while recovery is open", async t => {
+  const screen = mount(createElement(ChatScreen, {
+    transport: {
+      send: async () => { throw new WorkspaceMissingError("/gone") },
+      replaceWorkspace: async workspace => ({ workspace }),
+      getStatus: async () => ({ running: false, idle: true }),
+      stream: async options => { options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) },
+    },
+    workspace: "/gone", agentName: "albedo", onBack: () => {}, onQuit: () => {}, settleMs: 20,
+  }), t)
+  await until(() => screen.last().includes("ready"), "chat ready")
+  screen.write("retry me")
+  await screen.flush()
+  screen.write("\r")
+  await until(() => screen.last().includes("workspace not found: /gone"), "workspace recovery form")
+  screen.write("\u001b[<64;10;10M")
+  await screen.flush()
+  screen.write("x")
+  await until(() => screen.last().includes("new workspace › /gonex"), "path holds only typed text")
+})
+
+test("unmount aborts a hung status request", async t => {
+  let requested = false
+  let aborted = false
+  const screen = mount(createElement(ChatScreen, {
+    transport: {
+      send: async () => ({ ok: true as const }),
+      getStatus: signal => new Promise((_resolve, reject) => {
+        requested = true
+        signal?.addEventListener("abort", () => { aborted = true; reject(signal.reason) }, { once: true })
+      }),
+      stream: async options => { options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) },
+    },
+    agentName: "albedo", onBack: () => {}, onQuit: () => {}, settleMs: 20,
+  }), t)
+  await until(() => requested, "status request")
+  screen.unmount()
+  await until(() => aborted, "status abort")
 })

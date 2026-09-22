@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { setTimeout as delay } from "node:timers/promises"
 import { Box, Text, useApp, useInput, useWindowSize, useStdout, useAnimation, useIsScreenReaderEnabled } from "ink"
 import { homedir } from "node:os"
-import { createChatClient, type AgentStatus, type ChatClient, type StreamEvent } from "../client.js"
+import { createChatClient, WorkspaceMissingError, type AgentStatus, type ChatClient, type StreamEvent } from "../client.js"
 import { advanceCodeLine, type CodeLine } from "./code-line.js"
 import { MouseInput, type MouseEvent } from "./mouse.js"
 import { copyText } from "./clipboard.js"
@@ -28,6 +28,7 @@ export type ChatScreenProps = {
   workspace?: string
   model?: string
   notice?: string
+  onWorkspaceChanged?: (workspace: string) => void
   copySelection?: (text: string) => Promise<void>
   fetchImpl?: typeof fetch
   onBack: () => void
@@ -39,6 +40,7 @@ export type ChatScreenProps = {
 type Drag = { rows: Rows; selection: Selection; top: number; column: number; direction: number }
 
 type Active = { kind: "text" | "thinking"; content: MarkdownIndex }
+type WorkspaceRecovery = { missing: string; replacement: string; prompt: string; saving: boolean; error?: string }
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 type Connection = "connecting" | "live" | "disconnected"
 
@@ -73,7 +75,7 @@ const describeFailure = (error: unknown, agentId?: string): string => {
 
 export function ChatScreen({
   baseUrl, transport, visible = true, commands, onCommand, onCreate,
-  token, agentId, agentName, workspace, model, notice, fetchImpl, copySelection, onBack, onQuit,
+  token, agentId, agentName, workspace, model, notice, onWorkspaceChanged, fetchImpl, copySelection, onBack, onQuit,
   settleMs = 750, reconnectMs = 1_000,
 }: ChatScreenProps) {
   const speaker = agentName?.trim() || agentId?.trim() || "agent"
@@ -84,6 +86,7 @@ export function ChatScreen({
   const [codeLine, setCodeLine] = useState<CodeLine | null>(null)
   const eventRevision = useRef(0)
   const [draft, setDraft] = useState("")
+  const [workspaceRecovery, setWorkspaceRecovery] = useState<WorkspaceRecovery>()
   const [status, setStatus] = useState<AgentStatus>()
   const [failure, setFailure] = useState("")
   const [stopping, setStopping] = useState(false)
@@ -108,6 +111,7 @@ export function ChatScreen({
   const streamedEntries = useRef<number[]>([])
   const pendingUsers = useRef<{ index: number; text: string }[]>([])
   const live = useRef(true)
+  const requests = useRef<AbortController | undefined>(undefined)
   const clientId = useRef(`cli-${crypto.randomUUID()}`)
   const client = useMemo(() => {
     if (transport || !baseUrl) return transport
@@ -249,6 +253,7 @@ export function ChatScreen({
     live.current = true
     if (!client) return
     const controller = new AbortController()
+    requests.current = controller
     let reported = ""
     const disconnected = (error: unknown): void => {
       if (controller.signal.aborted) return
@@ -276,7 +281,7 @@ export function ChatScreen({
       while (!controller.signal.aborted) {
         try {
           const revision = eventRevision.current
-          const next = await client.getStatus()
+          const next = await client.getStatus(controller.signal)
           if (controller.signal.aborted) return
           // A response requested before a stream update cannot erase newer activity.
           if (revision !== eventRevision.current) {
@@ -300,6 +305,35 @@ export function ChatScreen({
     return () => { live.current = false; controller.abort() }
   }, [client, agentId, settleMs, reconnectMs])
 
+  const sendTurn = (value: string): void => {
+    const trimmed = value.trim()
+    if (!client || !trimmed) return
+    setDraft("")
+    settle()
+    setScrollTop(null)
+    setFailure("")
+    setStopped(false)
+    setUsage(undefined)
+    const index = push({ kind: "user", source: "you", text: trimmed })
+    if (index !== undefined) pendingUsers.current.push({ index, text: trimmed })
+    setStatus({ running: true, idle: false, phase: "preparing" })
+    const sent = client.send(trimmed, requests.current?.signal)
+    sending.current = sent
+    void sent.catch((error) => {
+      if (!live.current) return
+      pendingUsers.current = pendingUsers.current.filter(item => item.index !== index)
+      if (error instanceof WorkspaceMissingError) {
+        if (index !== undefined && transcript.discard(index)) setRevision(current => current + 1)
+        setStatus({ running: false, idle: true, phase: "resting" })
+        setDraft(current => current || value)
+        setWorkspaceRecovery({ missing: error.workspace, replacement: error.workspace, prompt: value, saving: false })
+        return
+      }
+      failTurn(error)
+      if (live.current) setDraft((current) => current || value)
+    }).finally(() => { if (sending.current === sent) sending.current = null })
+  }
+
   const submit = (value: string): void => {
     const trimmed = value.trim()
     if (onCommand?.(trimmed, () => setDraft(""))) return
@@ -308,7 +342,7 @@ export function ChatScreen({
     if (trimmed === "/q" || trimmed === "/quit" || trimmed === "/exit") return onQuit()
     if (trimmed === "/status") {
       setDraft("")
-      void client?.getStatus().then((status) => push({ kind: "note", text: `${awakeness(status, speaker)}${workspace ? `\nworkspace: ${workspace}` : ""}${model ? `\nmodel: ${model}` : ""}${usage ? `\n${formatUsage(usage)}` : ""}` })).catch(failTurn)
+      void client?.getStatus(requests.current?.signal).then((status) => push({ kind: "note", text: `${awakeness(status, speaker)}${workspace ? `\nworkspace: ${workspace}` : ""}${model ? `\nmodel: ${model}` : ""}${usage ? `\n${formatUsage(usage)}` : ""}` })).catch(failTurn)
       return
     }
     if (["/v", "/verbose", "/t", "/thinking"].includes(trimmed)) {
@@ -322,23 +356,26 @@ export function ChatScreen({
       setCopyStatus("wheel scrolling and drag-to-copy are always on")
       return
     }
-    if (!client) return
-    setDraft("")
-    settle()
-    setScrollTop(null)
-    setFailure("")
-    setStopped(false)
-    setUsage(undefined)
-    const index = push({ kind: "user", source: "you", text: trimmed })
-    if (index !== undefined) pendingUsers.current.push({ index, text: trimmed })
-    setStatus({ running: true, idle: false, phase: "preparing" })
-    const sent = client.send(trimmed)
-    sending.current = sent
-    void sent.catch((error) => {
-      pendingUsers.current = pendingUsers.current.filter(item => item.index !== index)
-      failTurn(error)
-      if (live.current) setDraft((current) => current || value)
-    }).finally(() => { if (sending.current === sent) sending.current = null })
+    sendTurn(value)
+  }
+
+  const replaceWorkspace = (replacement: string): void => {
+    const next = replacement.trim()
+    const recovery = workspaceRecovery
+    if (!recovery || recovery.saving || !next) return
+    if (!client?.replaceWorkspace) {
+      setWorkspaceRecovery({ ...recovery, error: "this connection cannot change a session workspace" })
+      return
+    }
+    setWorkspaceRecovery({ ...recovery, replacement, saving: true, error: undefined })
+    void client.replaceWorkspace(next, requests.current?.signal).then(updated => {
+      if (!live.current) return
+      onWorkspaceChanged?.(updated.workspace)
+      setWorkspaceRecovery(undefined)
+      sendTurn(recovery.prompt)
+    }).catch(error => {
+      if (live.current) setWorkspaceRecovery({ ...recovery, replacement, saving: false, error: message(error) })
+    })
   }
 
   const stop = (): void => {
@@ -381,9 +418,10 @@ export function ChatScreen({
   const nextCodeLine = advanceCodeLine(codeLine, toolProgress, screenReader ? 0 : progressCodeWidth(toolProgress, contentWidth))
   // Adjust on a new sample/width before painting; animation ticks don't consume code again.
   if (nextCodeLine !== codeLine) setCodeLine(nextCodeLine)
-  // Chrome owns six rows. Menus borrow transcript space, never composer space.
-  const menuRows = Math.min(menu.rows, Math.max(0, height - 9))
-  const transcriptRows = Math.max(1, height - 6 - (notice ? 1 : 0) - menuRows)
+  // Chrome owns six rows. Recovery replaces the composer and borrows two more.
+  const recoveryRows = workspaceRecovery ? 2 : 0
+  const menuRows = Math.min(menu.rows, Math.max(0, height - 9 - recoveryRows))
+  const transcriptRows = Math.max(1, height - 6 - recoveryRows - (notice ? 1 : 0) - menuRows)
   const history = transcript.layout(flags, speaker, contentWidth, viewportWidth)
   // Resizing or expanding changes row counts above the viewport, not the record
   // being read. Tail appends keep the same layout and never move a history anchor.
@@ -538,23 +576,43 @@ export function ChatScreen({
       {!inHistory && !failure && width >= 60 && <Text color="gray">{stats}</Text>}
     </Box>
     <Text color="gray">{"─".repeat(Math.max(1, width - padding * 2))}</Text>
-    <Box height={1} flexShrink={0}>
-      <Text color="cyanBright">› </Text>
-      <TextInput multiline isActive={visible} value={draft} onChange={setDraft} onSubmit={submit}
-        onLeftWhenEmpty={onBack} onKey={(input, key, replace) => {
-          const events = mouseInput.read(input)
-          if (events !== null) { for (const event of events) handleMouse(event); return true }
-          if (key.escape && drag.current) { drag.current = null; setSelecting(false); redrawSelection(); return true }
-          if (menu.onKey(input, key, replace)) return true
-          if (key.upArrow || key.downArrow) { scroll(key.upArrow ? -1 : 1); return true }
-          if (key.pageUp || key.pageDown) { scroll(key.pageUp ? -transcriptRows : transcriptRows); return true }
-          if (key.ctrl && key.home) { setScrollTop(0); paintInput(); return true }
-          if (key.ctrl && key.end) { setScrollTop(null); paintInput(); return true }
-          if (key.escape) { stop(); return true }
-          return false
-        }} width={Math.max(1, width - padding * 2 - 2)} />
-    </Box>
-    {menuRows > 0 && <Box height={menuRows} overflow="hidden" flexShrink={0}>{menu.view}</Box>}
+    {workspaceRecovery ? <>
+      <Text color="yellow" wrap="truncate-middle">workspace not found: {workspaceRecovery.missing}</Text>
+      <Box height={1} flexShrink={0}>
+        <Text color="cyanBright">new workspace › </Text>
+        <TextInput isActive={visible && !workspaceRecovery.saving} value={workspaceRecovery.replacement}
+          onChange={replacement => setWorkspaceRecovery(current => current && { ...current, replacement, error: undefined })}
+          onSubmit={replaceWorkspace} onKey={(input, key) => {
+            // The composer is unmounted here but mouse reporting is not, and a
+            // wheel or drag report would otherwise land in the path.
+            if (mouseInput.read(input) !== null) return true
+            if (!key.escape) return false
+            setWorkspaceRecovery(undefined)
+            return true
+          }} width={Math.max(1, width - padding * 2 - 16)} />
+      </Box>
+      <Text color={workspaceRecovery.error ? "redBright" : "gray"} wrap="truncate-end">
+        {workspaceRecovery.error ?? (workspaceRecovery.saving ? "updating workspace…" : "enter confirms and retries · esc cancels")}
+      </Text>
+    </> : <>
+      <Box height={1} flexShrink={0}>
+        <Text color="cyanBright">› </Text>
+        <TextInput multiline isActive={visible} value={draft} onChange={setDraft} onSubmit={submit}
+          onLeftWhenEmpty={onBack} onKey={(input, key, replace) => {
+            const events = mouseInput.read(input)
+            if (events !== null) { for (const event of events) handleMouse(event); return true }
+            if (key.escape && drag.current) { drag.current = null; setSelecting(false); redrawSelection(); return true }
+            if (menu.onKey(input, key, replace)) return true
+            if (key.upArrow || key.downArrow) { scroll(key.upArrow ? -1 : 1); return true }
+            if (key.pageUp || key.pageDown) { scroll(key.pageUp ? -transcriptRows : transcriptRows); return true }
+            if (key.ctrl && key.home) { setScrollTop(0); paintInput(); return true }
+            if (key.ctrl && key.end) { setScrollTop(null); paintInput(); return true }
+            if (key.escape) { stop(); return true }
+            return false
+          }} width={Math.max(1, width - padding * 2 - 2)} />
+      </Box>
+      {menuRows > 0 && <Box height={menuRows} overflow="hidden" flexShrink={0}>{menu.view}</Box>}
+    </>}
     <ChatFooter width={viewportWidth} usage={usage} model={model} flags={flags} />
   </Box>
 }

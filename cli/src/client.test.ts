@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { createChatClient, type StreamEvent } from "./client.js"
+import { createChatClient, WorkspaceMissingError, type StreamEvent } from "./client.js"
 
 const page=(cursor:number,events:unknown[]) => `data: ${JSON.stringify({cursor,events})}\n\n`
 test("daemon thinking events stay a distinct type from assistant text",async()=>{
@@ -82,4 +82,80 @@ test("message timestamps survive the wire without inventing missing or invalid d
   const client = createChatClient({ baseUrl: "http://localhost", agentId: "session", fetchImpl: async () => new Response(page(1, [user, { ...message, timestamp: user.timestamp + 1000 }, message, { ...message, timestamp: "wrong" }]), { headers: { "content-type": "text/event-stream" } }) })
   await client.stream({ onEvent: event => events.push(event) })
   assert.deepEqual(events, [user, { ...message, timestamp: user.timestamp + 1000 }, message, message])
+})
+
+test("unfinished argument previews are bounded across reconnects and recover from a snapshot", async () => {
+  for (const [count, text] of [[33, '{"code":"'], [3, 'x'.repeat(700_000)]] as const) {
+    const urls: string[] = []
+    const client = createChatClient({ baseUrl: "http://localhost", agentId: "session", fetchImpl: async url => {
+      urls.push(String(url))
+      const cursor = urls.length
+      return new Response(page(cursor, cursor <= count
+        ? [{ type: "arguments_delta", callId: `call-${cursor}`, text }]
+        : [{ type: "reset" }, { type: "message", role: "assistant", text: "recovered" }]))
+    } })
+    for (let i = 1; i < count; i++) await client.stream({ onEvent: () => {} })
+    await assert.rejects(client.stream({ onEvent: () => {} }), /previews exceed client limit/)
+    const events: StreamEvent[] = []
+    await client.stream({ onEvent: event => events.push(event) })
+    assert.match(urls.at(-1)!, /after_seq=-1$/)
+    assert.deepEqual(events.at(-1), { type: "message", role: "assistant", text: "recovered" })
+  }
+})
+
+test("detaching drops argument previews and resets the reconnect cursor", async () => {
+  const controller = new AbortController()
+  const urls: string[] = []
+  const client = createChatClient({ baseUrl: "http://localhost", agentId: "session", fetchImpl: async url => {
+    urls.push(String(url))
+    return new Response(page(urls.length, [{ type: "arguments_delta", callId: "same", text: JSON.stringify({ code: urls.length === 1 ? "old()" : "new()" }) }]))
+  } })
+  await client.stream({ signal: controller.signal, onEvent: event => {
+    if (event.type === "tool_progress" && event.progress) controller.abort()
+  } })
+  const events: StreamEvent[] = []
+  await client.stream({ onEvent: event => events.push(event) })
+  assert.match(urls[1]!, /after_seq=-1$/)
+  assert(events.some(event => event.type === "tool_progress" && event.progress?.code?.text === "new()"))
+})
+
+test("canceling a chat lifetime aborts pending send and status requests", async () => {
+  const controller = new AbortController()
+  const client = createChatClient({ baseUrl: "http://localhost", agentId: "session", fetchImpl: async (_url, init) => {
+    const signal = init?.signal
+    assert(signal)
+    return new Promise<Response>((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+    })
+  } })
+  const sent = client.send("hello", controller.signal)
+  const status = client.getStatus(controller.signal)
+  controller.abort()
+  await assert.rejects(sent, { name: "AbortError" })
+  await assert.rejects(status, { name: "AbortError" })
+})
+
+
+
+
+test("send exposes a structured missing-workspace error", async () => {
+  const client = createChatClient({ baseUrl: "http://localhost", agentId: "session", fetchImpl: async () =>
+    new Response(JSON.stringify({ code: "workspace_missing", error: "workspace not found", workspace: "/gone" }), { status: 409, headers: { "content-type": "application/json" } }),
+  })
+  await assert.rejects(client.send("continue"), error => error instanceof WorkspaceMissingError && error.workspace === "/gone")
+})
+
+test("workspace replacement requires daemon capability and returns authoritative metadata", async () => {
+  const requests: { url: string; body?: string }[] = []
+  const client = createChatClient({ baseUrl: "http://localhost", agentId: "session", fetchImpl: async (input, init) => {
+    requests.push({ url: String(input), ...(typeof init?.body === "string" ? { body: init.body } : {}) })
+    if (String(input).endsWith("/health")) return Response.json({ capabilities: ["session_workspace"] })
+    return Response.json({ workspace: "/actual/workspace", id: "session" })
+  } })
+  assert.deepEqual(await client.replaceWorkspace?.("/requested/workspace"), { workspace: "/actual/workspace" })
+  assert.deepEqual(requests.map(request => request.url), ["http://localhost/health", "http://localhost/sessions/session/workspace"])
+  assert.deepEqual(JSON.parse(requests[1]!.body!), { workspace: "/requested/workspace" })
+
+  const old = createChatClient({ baseUrl: "http://localhost", agentId: "session", fetchImpl: async () => Response.json({ capabilities: [] }) })
+  await assert.rejects(old.replaceWorkspace!("/new"), /daemon upgrade needed/)
 })

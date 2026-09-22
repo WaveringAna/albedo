@@ -30,6 +30,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 "path": self.path,
                 "authorization": self.headers.get("Authorization"),
                 "model": request.get("model"),
+                "request": request,
             })
         chat = self.path.endswith("chat/completions")
         inputs = request["messages" if chat else "input"]
@@ -41,6 +42,10 @@ class Provider(http.server.BaseHTTPRequestHandler):
         code = "import asyncio, os\nfrom pathlib import Path\nPath('example.txt').write_text('hello\\n')\nsaved = Path('example.txt').read_text()\nassert 'ALBEDO_API_KEY' not in os.environ\nassert 'ALBEDO_TOKEN' not in os.environ\nawait asyncio.sleep(" + ("30" if slow else "0.4") + ")\nlen(saved)"
         if long_run:
             code = "1"
+        latest_user = next((item.get("content", "") for item in reversed(inputs) if item.get("role") == "user"), "")
+        if latest_user.startswith("workspace probe"):
+            done = inputs[-1].get("role") == "tool" or inputs[-1].get("type") == "function_call_output"
+            code = "import os\nfrom pathlib import Path\nPath('cwd-probe').write_text(os.getcwd())"
         arguments = json.dumps({"code": code, "timeout_ms": 60000})
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -84,6 +89,8 @@ def run(protocol, endpoint):
         home = Path(directory)/"home"
         workspace = Path(directory)/"workspace"
         workspace.mkdir()
+        switch_workspace = Path(directory)/"switch-workspace"
+        switch_workspace.mkdir()
         # An old database has neither provider bindings nor the new column.
         home.mkdir(mode=0o700)
         legacy_id = "legacy-fixture"
@@ -105,8 +112,8 @@ def run(protocol, endpoint):
         def configure(active, providers):
             home.mkdir(parents=True, exist_ok=True)
             (home/"config.json").write_text(json.dumps({"active": active, "providers": providers}))
-        def provider(base, key, model):
-            return {"baseUrl": endpoint + base, "apiKey": key, "model": model, "protocol": protocol}
+        def provider(base, key, model, provider_protocol=protocol):
+            return {"baseUrl": endpoint + base, "apiKey": key, "model": model, "protocol": provider_protocol}
         def api(path, body=None):
             headers={"Authorization":"Bearer " + connection["token"], "Content-Type":"application/json"}
             req=urllib.request.Request(base+path, headers=headers, data=None if body is None else json.dumps(body).encode())
@@ -127,11 +134,29 @@ def run(protocol, endpoint):
                     if line.startswith(b"data: "):
                         page=json.loads(line[6:])
                         return page["events"]
+        def assert_projected_history(record, target_protocol, users):
+            request=record["request"]
+            items=request["messages" if target_protocol == "chat_completions" else "input"]
+            saved=json.dumps(items)
+            for user in users:
+                assert user in saved, (user, items)
+            assert "finished" in saved, items
+            if target_protocol == "chat_completions":
+                calls=[call["id"] for item in items if item.get("role") == "assistant" for call in item.get("tool_calls", [])]
+                outputs=[item["tool_call_id"] for item in items if item.get("role") == "tool"]
+            else:
+                calls=[item["call_id"] for item in items if item.get("type") == "function_call"]
+                outputs=[item["call_id"] for item in items if item.get("type") == "function_call_output"]
+            assert "call-1" in calls, (calls, items)
+            assert "call-1" in outputs, (outputs, items)
         try:
             # The daemon is useful before login: it starts and lists saved sessions.
             cli("sessions")
             connection=json.loads((home/"daemon.json").read_text())
             base=f"http://127.0.0.1:{connection['port']}"
+            with api("/health") as response:
+                health=json.load(response)
+            assert health == {"ok": True, "version": 2, "capabilities": ["session_provider", "session_workspace"]}, health
             try:
                 api("/sessions", {"workspace": str(workspace)}).close()
                 raise AssertionError("unconfigured session creation succeeded")
@@ -163,10 +188,103 @@ def run(protocol, endpoint):
             assert json.loads((home/"daemon.json").read_text())["pid"] == connection["pid"]
 
             # Config is re-read for each turn. The session stays on alpha even after beta becomes active.
+            other_protocol = "chat_completions" if protocol == "responses" else "responses"
             configure("beta", {
                 "alpha": provider("/alpha/v1", "alpha-2", "ignored-new-default"),
                 "beta": provider("/beta/v1", "beta-1", "fixture-beta"),
+                "gamma": provider("/gamma/v1", "gamma-1", "fixture-gamma", other_protocol),
             })
+
+            # Repair a renamed workspace without restarting daemon or losing history.
+            original_workspace = Path(directory)/"original-workspace"
+            original_workspace.mkdir()
+            moved_workspace = Path(directory)/"moved-workspace"
+            moved = json.loads(cli("new", str(original_workspace)))["session"]
+            with api(f"/sessions/{moved}/events", {"content":"workspace probe before move"}):
+                pass
+            ready(moved)
+            assert Path((original_workspace/"cwd-probe").read_text()).resolve() == original_workspace.resolve()
+            original_workspace.rename(moved_workspace)
+            before_repair = snapshot(moved)
+            try:
+                api(f"/sessions/{moved}/events", {"content":"workspace probe after move"}).close()
+                raise AssertionError("missing workspace accepted a turn")
+            except urllib.error.HTTPError as error:
+                failure = json.load(error)
+                assert error.code == 409 and failure["code"] == "workspace_missing", failure
+                assert failure["workspace"] == str(original_workspace), failure
+            for invalid in ["relative", str(original_workspace), str(moved_workspace/"cwd-probe")]:
+                try:
+                    api(f"/sessions/{moved}/workspace", {"workspace":invalid}).close()
+                    raise AssertionError("invalid replacement workspace accepted")
+                except urllib.error.HTTPError as error:
+                    assert error.code == 409
+            with api(f"/sessions/{moved}/workspace", {"workspace":str(moved_workspace)}) as response:
+                repaired = json.load(response)
+            assert repaired["workspace"] == str(moved_workspace), repaired
+            assert json.loads((home/"daemon.json").read_text())["pid"] == connection["pid"]
+            with api(f"/sessions/{moved}/events", {"content":"workspace probe after move"}):
+                pass
+            ready(moved)
+            assert Path((moved_workspace/"cwd-probe").read_text()).resolve() == moved_workspace.resolve()
+            assert not original_workspace.exists()
+            after_repair = snapshot(moved)
+            assert [event for event in before_repair if event.get("type") == "user"] == [event for event in after_repair if event.get("type") == "user"][:-1]
+            with sqlite3.connect(home/"albedo.sqlite") as db:
+                assert db.execute("SELECT cwd FROM sessions WHERE id=?", (moved,)).fetchone()[0] == str(moved_workspace)
+
+            # Switch only after a complete assistant/tool conversation exists.
+            switched=json.loads(cli("new",str(switch_workspace)))["session"]
+            with api(f"/sessions/{switched}/model", {"provider":"alpha", "model":"initial-alpha"}):
+                pass
+            request_start=len(Provider.requests)
+            with api(f"/sessions/{switched}/events", {"content":"build switch history"}):
+                pass
+            ready(switched)
+            initial_requests=Provider.requests[request_start:]
+            assert len(initial_requests) >= 2, initial_requests
+            assert all("/alpha/v1/" in item["path"] for item in initial_requests), initial_requests
+
+            # The model endpoint atomically moves that history to another protocol.
+            with api(f"/sessions/{switched}/model", {"provider":"gamma", "model":"chosen-gamma"}) as response:
+                selection=json.load(response)
+            assert selection == {"ok": True, "provider":"gamma", "model":"chosen-gamma", "protocol":other_protocol}, selection
+            # Existing model-only callers keep the current provider and protocol.
+            with api(f"/sessions/{switched}/model", {"model":"renamed-gamma"}) as response:
+                selection=json.load(response)
+            assert selection == {"ok": True, "provider":"gamma", "model":"renamed-gamma", "protocol":other_protocol}, selection
+            try:
+                api(f"/sessions/{switched}/model", {"provider":"unknown", "model":"wrong"}).close()
+                raise AssertionError("unknown provider switch succeeded")
+            except urllib.error.HTTPError as error:
+                assert error.code == 409
+            request_start=len(Provider.requests)
+            with api(f"/sessions/{switched}/events", {"content":"after first switch"}):
+                pass
+            ready(switched)
+            gamma_requests=Provider.requests[request_start:]
+            assert gamma_requests and all("/gamma/v1/" in item["path"] for item in gamma_requests), gamma_requests
+            assert all(item["authorization"] == "Bearer gamma-1" for item in gamma_requests), gamma_requests
+            assert all(item["model"] == "renamed-gamma" for item in gamma_requests), gamma_requests
+            assert_projected_history(gamma_requests[0], other_protocol, ["build switch history", "after first switch"])
+
+            # Switching back projects the newer foreign turn while preserving the
+            # original provider's raw replay and every tool/result association.
+            with api(f"/sessions/{switched}/model", {"provider":"alpha", "model":"returned-alpha"}) as response:
+                selection=json.load(response)
+            assert selection == {"ok": True, "provider":"alpha", "model":"returned-alpha", "protocol":protocol}, selection
+            request_start=len(Provider.requests)
+            with api(f"/sessions/{switched}/events", {"content":"after second switch"}):
+                pass
+            ready(switched)
+            returned_requests=Provider.requests[request_start:]
+            assert returned_requests and all("/alpha/v1/" in item["path"] for item in returned_requests), returned_requests
+            assert all(item["model"] == "returned-alpha" for item in returned_requests), returned_requests
+            assert_projected_history(returned_requests[0], protocol, ["build switch history", "after first switch", "after second switch"])
+            with api("/sessions") as response:
+                switched_info=next(item for item in json.load(response) if item["id"] == switched)
+            assert (switched_info["provider"], switched_info["model"], switched_info["protocol"]) == ("alpha", "returned-alpha", protocol), switched_info
+
             request_start=len(Provider.requests)
             with api(f"/sessions/{id}/events",{"content":"write and inspect a file"}):
                 pass
@@ -215,6 +333,15 @@ def run(protocol, endpoint):
             with api(f"/sessions/{second}/events",{"content":"hang"}):
                 pass
             time.sleep(.5)
+            for operation, body in [("workspace", {"workspace":str(moved_workspace)}), ("model", {"provider":"gamma", "model":"busy-rejected"})]:
+                try:
+                    api(f"/sessions/{second}/{operation}", body).close()
+                    raise AssertionError("busy session changed " + operation)
+                except urllib.error.HTTPError as error:
+                    assert error.code == 409
+            with api("/sessions") as response:
+                unchanged = next(item for item in json.load(response) if item["id"] == second)
+            assert unchanged["workspace"] == str(workspace) and unchanged["provider"] == "beta"
             with api(f"/sessions/{second}/interrupt",{}):
                 pass
             ready(second)
@@ -230,6 +357,7 @@ def run(protocol, endpoint):
             configure("alpha", {
                 "alpha": provider("/alpha/v1", "alpha-3", "changed-alpha-default"),
                 "beta": provider("/beta/v1", "beta-2", "changed-beta-default"),
+                "gamma": provider("/gamma/v1", "gamma-2", "changed-gamma-default", other_protocol),
             })
             request_start=len(Provider.requests)
             os.kill(connection["pid"],9)
@@ -246,17 +374,27 @@ def run(protocol, endpoint):
             assert all(item["model"] == "fixture-beta" for item in resumed_requests), resumed_requests
             with api("/sessions") as response:
                 restored_sessions={item["id"]: item for item in json.load(response)}
+            assert restored_sessions[moved]["workspace"] == str(moved_workspace)
             assert restored_sessions[legacy_id]["provider"] == "default"
             assert restored_sessions[legacy_id]["title"] == "inspect the legacy workspace"
             assert restored_sessions[id]["provider"] == "alpha"
             assert restored_sessions[id]["title"] == "review the result"
             assert restored_sessions[third]["provider"] == "beta"
             assert restored_sessions[third]["title"] == "hang then recover"
+            assert (restored_sessions[switched]["provider"], restored_sessions[switched]["model"], restored_sessions[switched]["protocol"]) == ("alpha", "returned-alpha", protocol)
+            request_start=len(Provider.requests)
+            with api(f"/sessions/{switched}/events", {"content":"after persisted restart"}):
+                pass
+            ready(switched)
+            restarted_requests=Provider.requests[request_start:]
+            assert restarted_requests and all("/alpha/v1/" in item["path"] for item in restarted_requests), restarted_requests
+            assert all(item["model"] == "returned-alpha" for item in restarted_requests), restarted_requests
+            assert_projected_history(restarted_requests[0], protocol, ["build switch history", "after first switch", "after second switch", "after persisted restart"])
             assert (workspace/"example.txt").stat().st_mtime_ns == stamp, "interrupted Python cell was replayed"
             recovered = snapshot(id)
             assert any(e.get("type")=="message" for e in recovered), "completed history lost"
             assert [(e["type"], e["text"], e.get("timestamp")) for e in recovered if e.get("type") in ("user", "message")] == message_times
-            print(protocol+": config reload, provider isolation, detach, tools, trace, interrupt, and recovery passed")
+            print(protocol+": provider switching, config reload, detach, tools, trace, interrupt, and recovery passed")
         finally:
             if connection:
                 with contextlib.suppress(Exception):
