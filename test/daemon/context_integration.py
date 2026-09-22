@@ -1,0 +1,131 @@
+"""Real daemon read-only /context snapshot against an observed provider request."""
+import contextlib
+import http.server
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import threading
+import time
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+class Provider(http.server.BaseHTTPRequestHandler):
+    requests = []
+
+    def log_message(self, *_):
+        pass
+
+    def do_POST(self):
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.requests.append(request)
+        response = {"type": "response.completed", "response": {
+            "id": "fixture", "status": "completed", "output": [{
+                "type": "message", "role": "assistant", "status": "completed",
+                "content": [{"type": "output_text", "text": "done", "annotations": []}],
+            }], "usage": {"input_tokens": 20, "output_tokens": 1},
+        }}
+        body = ("data: " + json.dumps(response) + "\n\n").encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def run(endpoint):
+    with tempfile.TemporaryDirectory(prefix="albedo-context-") as directory:
+        root = Path(directory)
+        home, workspace, user_home = root/"state", root/"workspace", root/"user"
+        for path in (home, workspace, user_home):
+            path.mkdir(mode=0o700)
+        secret = "credential-must-never-appear-in-inspector"
+        (home/"config.json").write_text(json.dumps({"active": "fixture", "providers": {"fixture": {
+            "baseUrl": endpoint, "apiKey": secret, "model": "fixture", "protocol": "responses",
+        }}}))
+        env = dict(os.environ, HOME=str(user_home), ALBEDO_HOME=str(home))
+        connection = None
+
+        def cli(*args):
+            result = subprocess.run(["node", "cli/bin/albedo.mjs", *args], cwd=ROOT, env=env,
+                                    capture_output=True, text=True, timeout=45)
+            assert result.returncode == 0, result.stdout + result.stderr + (home/"daemon.log").read_text()
+            return result.stdout
+
+        def api(path, data=None):
+            request = urllib.request.Request(f"http://127.0.0.1:{connection['port']}" + path,
+                headers={"Authorization": "Bearer " + connection["token"], "Content-Type": "application/json"},
+                data=None if data is None else json.dumps(data).encode())
+            with urllib.request.urlopen(request, timeout=25) as response:
+                return json.load(response)
+
+        def stop():
+            if not connection:
+                return
+            with contextlib.suppress(Exception):
+                api("/shutdown", {})
+
+        try:
+            cli("sessions")
+            connection = json.loads((home/"daemon.json").read_text())
+            assert "session_context" in api("/health")["capabilities"]
+            session = json.loads(cli("new", str(workspace)))["session"]
+            route = f"/sessions/{session}/context"
+
+            before = api(route)
+            assert before == {"state": "pending", "reason": "runtime session has not prepared a provider request"}
+            assert Provider.requests == [], "inspection must not contact the provider"
+
+            api(f"/sessions/{session}/events", {"content": "inspect exact composition"})
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline and api(f"/sessions/{session}/status")["running"]:
+                time.sleep(.025)
+            assert len(Provider.requests) == 1
+            sent = Provider.requests[0]
+
+            snapshot = api(route)
+            assert snapshot["state"] == "ready"
+            assert snapshot["provider"] == "fixture" and snapshot["model"] == "fixture"
+            assert "context_window_tokens" not in snapshot, "unknown capacity must remain unknown"
+            assert snapshot["compaction"]["estimate_method"] == "local byte-based estimate; not provider token usage"
+            assert snapshot["compaction"]["status"] == "unknown"
+            labels = [section["label"] for section in snapshot["sections"]]
+            assert labels[0] == "system instructions" and labels[-2:] == ["prepared conversation", "tool schemas"]
+            assert all(label.startswith("extension context · ") for label in labels[1:-2])
+            assert all(section["preview"] and len(section["preview"]) <= 180 for section in snapshot["sections"])
+            assert secret not in json.dumps(snapshot)
+
+            pages = {}
+            for section in snapshot["sections"]:
+                page = api(f"{route}/{section['id']}/0")
+                assert len(page["content"].encode()) <= 32_000
+                pages[section["id"]] = page["content"]
+            assert pages["instructions"] == sent["instructions"]
+            assert json.loads(pages["tools"]) == sent["tools"]
+            assert "inspect exact composition" in pages["history"]
+            assert secret not in json.dumps(pages)
+            assert len(Provider.requests) == 1, "summary/page inspection must not contact the provider"
+
+            changed = api(f"/sessions/{session}/model", {"model": "changed-model"})
+            assert changed["model"] == "changed-model"
+            assert api(route) == {
+                "state": "pending",
+                "reason": "runtime session has not prepared a provider request",
+            }, "a snapshot for the old model must not survive model selection"
+            assert len(Provider.requests) == 1, "model invalidation must not contact the provider"
+            print("context pending/ready sources, exact schema reuse, bounds, read-only behavior, and model invalidation passed")
+        finally:
+            stop()
+
+
+if __name__ == "__main__":
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Provider)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        run(f"http://127.0.0.1:{server.server_port}/v1")
+    finally:
+        server.shutdown()

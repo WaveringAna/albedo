@@ -3,9 +3,11 @@ import { setTimeout as delay } from "node:timers/promises"
 import { Box, Text, useApp, useInput, useWindowSize, useStdout, useAnimation, useIsScreenReaderEnabled } from "ink"
 import { homedir } from "node:os"
 import { createChatClient, WorkspaceMissingError, type AgentStatus, type ChatClient, type StreamEvent } from "../client.js"
+import { imageLabel, type ImageAttachment, type ImageMetadata } from "../image.js"
 import { advanceCodeLine, type CodeLine } from "./code-line.js"
 import { MouseInput, type MouseEvent } from "./mouse.js"
 import { copyText } from "./clipboard.js"
+import { clipboardHasImage, readClipboardImage } from "./clipboard-image.js"
 import { highlightSelection, selectedText, type Point, type Selection } from "./selection.js"
 import { TextInput } from "./text-input.js"
 import { ChatFooter } from "./footer.js"
@@ -19,6 +21,7 @@ export type ChatScreenProps = {
   baseUrl?: string
   transport?: ChatClient
   visible?: boolean
+  usageResetKey?: number
   commands?: ChatCommand[]
   onCommand?: (value: string, clear: () => void) => boolean
   onCreate?: () => void
@@ -30,6 +33,7 @@ export type ChatScreenProps = {
   notice?: string
   onWorkspaceChanged?: (workspace: string) => void
   copySelection?: (text: string) => Promise<void>
+  clipboardImages?: { available: () => boolean; read: () => Promise<ImageAttachment | null> }
   fetchImpl?: typeof fetch
   onBack: () => void
   onQuit: () => void
@@ -40,7 +44,9 @@ export type ChatScreenProps = {
 type Drag = { rows: Rows; selection: Selection; top: number; column: number; direction: number }
 
 type Active = { kind: "text" | "thinking"; content: MarkdownIndex }
-type WorkspaceRecovery = { missing: string; replacement: string; prompt: string; saving: boolean; error?: string }
+type WorkspaceRecovery = { missing: string; replacement: string; prompt: string; image?: ImageAttachment; saving: boolean; error?: string }
+const SYSTEM_CLIPBOARD_IMAGES = { available: clipboardHasImage, read: readClipboardImage }
+const userText = (text: string, image?: ImageMetadata): string => image ? `${text}\n[image · ${imageLabel(image)}]` : text
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 type Connection = "connecting" | "live" | "disconnected"
 
@@ -74,8 +80,9 @@ const describeFailure = (error: unknown, agentId?: string): string => {
 }
 
 export function ChatScreen({
-  baseUrl, transport, visible = true, commands, onCommand, onCreate,
-  token, agentId, agentName, workspace, model, notice, onWorkspaceChanged, fetchImpl, copySelection, onBack, onQuit,
+  baseUrl, transport, visible = true, usageResetKey = 0, commands, onCommand, onCreate,
+  token, agentId, agentName, workspace, model, notice, onWorkspaceChanged, fetchImpl, copySelection,
+  clipboardImages = SYSTEM_CLIPBOARD_IMAGES, onBack, onQuit,
   settleMs = 750, reconnectMs = 1_000,
 }: ChatScreenProps) {
   const speaker = agentName?.trim() || agentId?.trim() || "agent"
@@ -86,6 +93,14 @@ export function ChatScreen({
   const [codeLine, setCodeLine] = useState<CodeLine | null>(null)
   const eventRevision = useRef(0)
   const [draft, setDraft] = useState("")
+  const [pendingImage, setPendingImageState] = useState<ImageAttachment>()
+  const pendingImageRef = useRef<ImageAttachment | undefined>(undefined)
+  const pendingImageRead = useRef<Promise<ImageAttachment | null> | undefined>(undefined)
+  const setPendingImage = (image: ImageAttachment | undefined): void => {
+    pendingImageRef.current = image
+    setPendingImageState(image)
+  }
+  const [clipboardImageAvailable, setClipboardImageAvailable] = useState(false)
   const [workspaceRecovery, setWorkspaceRecovery] = useState<WorkspaceRecovery>()
   const [status, setStatus] = useState<AgentStatus>()
   const [failure, setFailure] = useState("")
@@ -94,6 +109,19 @@ export function ChatScreen({
   const stopRequested = useRef<"requesting" | "stopping" | null>(null)
   const sending = useRef<Promise<unknown> | null>(null)
   const [usage, setUsage] = useState<Extract<StreamEvent, { type: "usage" }>>()
+  useEffect(() => { setUsage(undefined) }, [usageResetKey])
+  useEffect(() => {
+    if (!visible || pendingImage) { setClipboardImageAvailable(false); return }
+    let cancelled = false
+    const detect = (): void => {
+      let available = false
+      try { available = clipboardImages.available() } catch {}
+      if (!cancelled) setClipboardImageAvailable(available)
+    }
+    detect()
+    const timer = setInterval(detect, 2_000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [visible, pendingImage, clipboardImages])
   const [connection, setConnection] = useState<Connection>("connecting")
   const [flags, setFlags] = useState<DisplayFlags>({ tools: false, thinking: true })
   const [mouseInput] = useState(() => new MouseInput())
@@ -214,7 +242,7 @@ export function ChatScreen({
         setFailure("")
         setStopped(false)
         settle()
-        return void push({ kind: "user", source: event.source === "chat" ? "you" : event.source, text: event.text, timestamp: event.timestamp })
+        return void push({ kind: "user", source: event.source === "chat" ? "you" : event.source, text: userText(event.text, event.image), timestamp: event.timestamp })
       }
       case "usage":
         settle()
@@ -305,28 +333,30 @@ export function ChatScreen({
     return () => { live.current = false; controller.abort() }
   }, [client, agentId, settleMs, reconnectMs])
 
-  const sendTurn = (value: string): void => {
+  const sendTurn = (value: string, image = pendingImageRef.current): void => {
     const trimmed = value.trim()
     if (!client || !trimmed) return
-    setDraft("")
+    setDraft(current => current === value ? "" : current)
+    setPendingImage(undefined)
     settle()
     setScrollTop(null)
     setFailure("")
     setStopped(false)
     setUsage(undefined)
-    const index = push({ kind: "user", source: "you", text: trimmed })
+    const index = push({ kind: "user", source: "you", text: userText(trimmed, image) })
     if (index !== undefined) pendingUsers.current.push({ index, text: trimmed })
     setStatus({ running: true, idle: false, phase: "preparing" })
-    const sent = client.send(trimmed, requests.current?.signal)
+    const sent = client.send(trimmed, requests.current?.signal, image)
     sending.current = sent
     void sent.catch((error) => {
       if (!live.current) return
       pendingUsers.current = pendingUsers.current.filter(item => item.index !== index)
+      if (image && !pendingImageRef.current) setPendingImage(image)
       if (error instanceof WorkspaceMissingError) {
         if (index !== undefined && transcript.discard(index)) setRevision(current => current + 1)
         setStatus({ running: false, idle: true, phase: "resting" })
         setDraft(current => current || value)
-        setWorkspaceRecovery({ missing: error.workspace, replacement: error.workspace, prompt: value, saving: false })
+        setWorkspaceRecovery({ missing: error.workspace, replacement: error.workspace, prompt: value, ...(image ? { image } : {}), saving: false })
         return
       }
       failTurn(error)
@@ -356,6 +386,14 @@ export function ChatScreen({
       setCopyStatus("wheel scrolling and drag-to-copy are always on")
       return
     }
+    const reading = pendingImageRead.current
+    if (reading) {
+      setDraft("")
+      void reading.catch(() => null).then(() => {
+        if (live.current) sendTurn(value)
+      })
+      return
+    }
     sendTurn(value)
   }
 
@@ -372,9 +410,27 @@ export function ChatScreen({
       if (!live.current) return
       onWorkspaceChanged?.(updated.workspace)
       setWorkspaceRecovery(undefined)
-      sendTurn(recovery.prompt)
+      sendTurn(recovery.prompt, recovery.image)
     }).catch(error => {
       if (live.current) setWorkspaceRecovery({ ...recovery, replacement, saving: false, error: message(error) })
+    })
+  }
+
+  const pasteClipboardImage = (): void => {
+    if (pendingImageRead.current) return
+    setCopyStatus("reading clipboard image…")
+    const reading = clipboardImages.read()
+    pendingImageRead.current = reading
+    void reading.then(image => {
+      if (!live.current) return
+      if (!image) { setClipboardImageAvailable(false); setCopyStatus("clipboard has no supported image"); return }
+      setPendingImage(image)
+      setClipboardImageAvailable(false)
+      setCopyStatus("")
+    }).catch(error => {
+      if (live.current) setCopyStatus(`image paste failed: ${message(error)}`)
+    }).finally(() => {
+      if (pendingImageRead.current === reading) pendingImageRead.current = undefined
     })
   }
 
@@ -456,6 +512,8 @@ export function ChatScreen({
         : !status.running || status.idle ? stopped ? "stopped" : "ready"
           : active?.kind === "text" ? "responding"
             : ({ reasoning: "thinking", tool: "running tool", preparing: "preparing", waiting: "ready", resting: "ready" }[status.phase ?? "reasoning"])
+  const imageStatus = pendingImage ? `${imageLabel(pendingImage)} attached · esc remove`
+    : clipboardImageAvailable ? "ctrl+v to paste image" : statusText
   const stats = usage ? [
     typeof usage.elapsedMs === "number" ? `${(usage.elapsedMs / 1000).toFixed(1)}s` : "",
     typeof usage.tokensPerSecond === "number" ? `${formatNumber(usage.tokensPerSecond)} tok/s` : "",
@@ -571,7 +629,7 @@ export function ChatScreen({
     </Box>
     <Box height={1} flexShrink={0} justifyContent="space-between">
       <Text color={connection === "disconnected" || failure ? "redBright" : "gray"} wrap="truncate-end">
-        {spinner && (!toolProgress || inHistory) ? `${spinner} ` : ""}{copyStatus || (inHistory ? `history · ${tail - top} rows below · pgdn` : statusText)}
+        {spinner && (!toolProgress || inHistory) ? `${spinner} ` : ""}{copyStatus || (inHistory ? `history · ${tail - top} rows below · pgdn` : imageStatus)}
       </Text>
       {!inHistory && !failure && width >= 60 && <Text color="gray">{stats}</Text>}
     </Box>
@@ -602,7 +660,15 @@ export function ChatScreen({
             const events = mouseInput.read(input)
             if (events !== null) { for (const event of events) handleMouse(event); return true }
             if (key.escape && drag.current) { drag.current = null; setSelecting(false); redrawSelection(); return true }
+            if (key.ctrl && input === "v") {
+              let available = false
+              try { available = clipboardImages.available() } catch {}
+              if (!available) { setClipboardImageAvailable(false); return false }
+              pasteClipboardImage()
+              return true
+            }
             if (menu.onKey(input, key, replace)) return true
+            if (key.escape && pendingImage) { setPendingImage(undefined); setCopyStatus("image removed"); return true }
             if (key.upArrow || key.downArrow) { scroll(key.upArrow ? -1 : 1); return true }
             if (key.pageUp || key.pageDown) { scroll(key.pageUp ? -transcriptRows : transcriptRows); return true }
             if (key.ctrl && key.home) { setScrollTop(0); paintInput(); return true }

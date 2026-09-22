@@ -80,11 +80,12 @@ fn timestamp_field(timestamp: Option(Int)) -> List(#(String, json.Json)) {
   }
 }
 
-pub fn user(
+fn user_event(
   text: String,
   source: String,
   client_id: Option(String),
   timestamp: Option(Int),
+  fields: List(#(String, json.Json)),
 ) -> String {
   let client_fields = case client_id {
     Some(value) -> [#("clientId", json.string(value))]
@@ -94,7 +95,42 @@ pub fn user(
     #("text", json.string(text)),
     #("source", json.string(source)),
     #("triggeredAt", json.string("")),
-    ..list.append(client_fields, timestamp_field(timestamp))
+    ..list.append(
+      fields,
+      list.append(client_fields, timestamp_field(timestamp)),
+    )
+  ])
+}
+
+pub fn user(
+  text: String,
+  source: String,
+  client_id: Option(String),
+  timestamp: Option(Int),
+) -> String {
+  user_event(text, source, client_id, timestamp, [])
+}
+
+/// User-facing streams carry safe image metadata; the durable base64 payload
+/// stays in the transcript and is sent only to the selected model provider.
+pub fn user_image(
+  text: String,
+  source: String,
+  client_id: Option(String),
+  timestamp: Option(Int),
+  image: types.Image,
+) -> String {
+  let #(mime_type, _, width, height, bytes) = types.image_parts(image)
+  user_event(text, source, client_id, timestamp, [
+    #(
+      "image",
+      json.object([
+        #("mimeType", json.string(mime_type)),
+        #("width", json.int(width)),
+        #("height", json.int(height)),
+        #("bytes", json.int(bytes)),
+      ]),
+    ),
   ])
 }
 
@@ -127,6 +163,9 @@ pub fn snapshot(
     list.flat_map(entries, fn(entry) {
       case entry.input {
         types.User(value) -> [user(value, "user", None, entry.timestamp)]
+        types.UserImage(value, image) -> [
+          user_image(value, "user", None, entry.timestamp, image),
+        ]
         types.Assistant(_) -> assistant_message(entry.input, entry.timestamp)
         types.ToolOutput(id, output) -> {
           let call = dict.get(tool_calls, id)

@@ -121,3 +121,55 @@ pub fn validates_request_configuration_test() {
       types.Request(..request, tools: [tool(), tool()]),
     )
 }
+
+fn test_image() -> types.Image {
+  let assert Ok(image) = types.image("image/png", "aGVsbG8=", 2, 3, 5)
+  image
+}
+
+pub fn responses_image_input_shape_test() {
+  let encoded =
+    openai.request("vision-model", [
+      types.UserImage("describe this", test_image()),
+    ])
+    |> body(types.Responses, _)
+  let assert Ok([user]) =
+    json.parse(encoded, decode.at(["input"], decode.list(decode.dynamic)))
+  assert decode.run(
+      user,
+      decode.at(["content"], decode.list(decode.at(["type"], decode.string))),
+    )
+    == Ok(["input_text", "input_image"])
+  let assert Ok([_, image]) =
+    decode.run(user, decode.at(["content"], decode.list(decode.dynamic)))
+  assert decode.run(image, decode.at(["image_url"], decode.string))
+    == Ok("data:image/png;base64,aGVsbG8=")
+}
+
+pub fn chat_completions_image_input_shape_test() {
+  let encoded =
+    openai.request("vision-model", [
+      types.UserImage("describe this", test_image()),
+    ])
+    |> body(types.ChatCompletions, _)
+  let assert Ok([user]) =
+    json.parse(encoded, decode.at(["messages"], decode.list(decode.dynamic)))
+  assert decode.run(
+      user,
+      decode.at(["content"], decode.list(decode.at(["type"], decode.string))),
+    )
+    == Ok(["text", "image_url"])
+  let assert Ok([_, image]) =
+    decode.run(user, decode.at(["content"], decode.list(decode.dynamic)))
+  assert decode.run(image, decode.at(["image_url", "url"], decode.string))
+    == Ok("data:image/png;base64,aGVsbG8=")
+}
+
+pub fn validates_image_metadata_bounds_test() {
+  let assert Error(types.InvalidRequest(_)) =
+    types.image("image/gif", "aGVsbG8=", 2, 3, 5)
+  let assert Error(types.InvalidRequest(_)) =
+    types.image("image/png", "aGVsbG8=", 10_000, 5000, 5)
+  let assert Error(types.InvalidRequest(_)) =
+    types.image("image/png", "aGVsbG8=", 2, 3, types.max_image_bytes + 1)
+}

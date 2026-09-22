@@ -1,6 +1,6 @@
 //// The single model-facing tool. Host capabilities are ordinary Python functions.
 
-import albedo/harness/plugin
+import albedo/harness/extension
 import albedo/harness/python/cells as journal
 import albedo/harness/python/kernel as python
 import albedo/harness/python/rpc as cells
@@ -40,7 +40,7 @@ pub fn definition() -> types.Tool {
 
 /// Storage failure stops the harness rather than encouraging an unsafe tool retry.
 pub fn invoke(
-  context: plugin.Context,
+  context: extension.Context,
   arguments: String,
 ) -> Result(String, String) {
   let decoder = {
@@ -79,16 +79,25 @@ pub fn invoke(
   }
 }
 
-pub fn plugin() -> plugin.Plugin {
-  plugin.Plugin(
+pub fn extension() -> extension.Extension {
+  extension.Extension(
     "python",
-    "Python has a persistent namespace, top-level await, cells.read/info/trace and cells.run for saved-source repair, and output.read/output.list for bounded retained output. output.list() names every retained channel: cells, background jobs, and 'native' for bytes written to fd 1/2 while no cell was running.",
+    "A persistent Python namespace with saved cell recovery.",
     [],
-    [plugin.Tool(definition(), invoke, recover)],
-    [],
+    [
+      extension.ToolPlugin(
+        "Python has a persistent namespace, top-level await, cells.read/info/trace and cells.run for saved-source repair, and output.read/output.list for bounded retained output. output.list() names every retained channel: cells, background jobs, and 'native' for bytes written to fd 1/2 while no cell was running.",
+        [extension.Tool(definition(), invoke, recover)],
+        [],
+        [#("cells", cells.handle)],
+      ),
+    ],
     journal.initialise,
-    [#("cells", cells.handle)],
   )
+}
+
+pub fn plugin() -> extension.Extension {
+  extension()
 }
 
 fn outcome_json(
@@ -127,7 +136,7 @@ fn outcome_json(
   }
 }
 
-fn recover(context: plugin.Context) {
+fn recover(context: extension.Context) {
   let id = context.session <> "/" <> context.call_id
   let outcome = case journal.get(context.store, id) {
     Ok(cell) ->

@@ -1,8 +1,13 @@
 import albedo/daemon/configuration
 import albedo/daemon/conversation
+import albedo/daemon/history
+import albedo/daemon/image
 import albedo/daemon/reaper
 import albedo/daemon/session
+import albedo/harness/extension
 import albedo/harness/runtime
+import albedo/harness/skills/catalog as skill_catalog
+import albedo/openai_api/types
 import gleam/bytes_tree
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
@@ -14,7 +19,7 @@ import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
@@ -38,6 +43,9 @@ type Message {
   Create(String, String, Subject(Result(conversation.Info, String)))
   Lookup(String, Subject(Result(session.Session, String)))
   List(Subject(List(conversation.Info)))
+  ReadTree(String, Int, Int, Subject(Result(history.Page, String)))
+  Fork(String, Int, Subject(Result(conversation.Info, String)))
+  SetWorkspace(String, String, Subject(Result(conversation.Info, String)))
   WorkerDown(process.Down)
   Sweep
   Shutdown
@@ -47,7 +55,7 @@ type State {
   State(
     host: runtime.Runtime,
     config: Config,
-    sessions: Dict(String, #(conversation.Info, session.Session)),
+    sessions: Dict(String, #(conversation.Info, Option(session.Session))),
     self: Subject(Message),
   )
 }
@@ -71,21 +79,26 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
       })
       use saved <- result.try(conversation.list(runtime.ledger(host)))
       let sessions =
-        list.filter_map(saved, fn(info) {
-          case session.start(host, info, config.home) {
-            Ok(worker) -> {
-              watch(worker)
-              Ok(#(info.id, #(info, worker)))
-            }
-            Error(_) -> {
-              io.println(
-                "session unavailable: "
-                <> info.id
-                <> "; check its workspace and saved state",
-              )
-              Error(Nil)
-            }
+        list.map(saved, fn(info) {
+          let worker = case info.stage {
+            "model" | "tool" ->
+              case session.start(host, info, config.home) {
+                Ok(worker) -> {
+                  watch(worker)
+                  Some(worker)
+                }
+                Error(_) -> {
+                  io.println(
+                    "session unavailable: "
+                    <> info.id
+                    <> "; recovery will retry when opened",
+                  )
+                  None
+                }
+              }
+            _ -> None
           }
+          #(info.id, #(info, worker))
         })
       let _ = process.send_after(self, sweep_interval(config), Sweep)
       Ok(
@@ -140,44 +153,42 @@ fn handle(state: State, message: Message) {
           && string.byte_size(info.model) <= 512
         {
           False -> Error("expected an existing absolute workspace and a model")
-          True -> {
-            use _ <- result.try(conversation.create(
-              runtime.ledger(state.host),
-              info,
-            ))
-            use worker <- result.try(
-              session.start(state.host, info, state.config.home)
-              |> result.map_error(string.inspect),
-            )
-            Ok(#(info, worker))
-          }
+          True ->
+            conversation.create(runtime.ledger(state.host), info)
+            |> result.replace(info)
         }
       }
+      process.send(reply, created)
       case created {
-        Ok(#(info, worker)) -> {
-          watch(worker)
-          process.send(reply, Ok(info))
+        Ok(info) ->
           actor.continue(
             State(
               ..state,
-              sessions: dict.insert(state.sessions, info.id, #(info, worker)),
+              sessions: dict.insert(state.sessions, info.id, #(info, None)),
             ),
           )
-        }
-        Error(error) -> {
-          process.send(reply, Error(error))
-          actor.continue(state)
-        }
+        Error(_) -> actor.continue(state)
       }
     }
     Lookup(id, reply) -> {
-      process.send(
-        reply,
-        dict.get(state.sessions, id)
-          |> result.map(fn(pair) { pair.1 })
-          |> result.replace_error("session not found"),
-      )
+      let #(state, found) = activate(state, id)
+      process.send(reply, found)
       actor.continue(state)
+    }
+    SetWorkspace(id, cwd, reply) -> {
+      let #(state, worker) = activate(state, id)
+      let changed = worker |> result.try(session.set_workspace(_, cwd))
+      process.send(reply, changed)
+      case changed, worker {
+        Ok(info), Ok(active) ->
+          actor.continue(
+            State(
+              ..state,
+              sessions: dict.insert(state.sessions, id, #(info, Some(active))),
+            ),
+          )
+        _, _ -> actor.continue(state)
+      }
     }
     List(reply) -> {
       process.send(
@@ -186,10 +197,37 @@ fn handle(state: State, message: Message) {
       )
       actor.continue(state)
     }
+    ReadTree(id, after, limit, reply) -> {
+      process.send(
+        reply,
+        history.page(runtime.ledger(state.host), id, after, limit),
+      )
+      actor.continue(state)
+    }
+    Fork(id, checkpoint, reply) -> {
+      let forked =
+        history.fork(runtime.ledger(state.host), id, new_id(), checkpoint)
+      process.send(reply, forked)
+      case forked {
+        Ok(info) ->
+          actor.continue(
+            State(
+              ..state,
+              sessions: dict.insert(state.sessions, info.id, #(info, None)),
+            ),
+          )
+        Error(_) -> actor.continue(state)
+      }
+    }
     WorkerDown(process.ProcessDown(_, pid, _)) -> {
       let entry =
         dict.values(state.sessions)
-        |> list.find(fn(pair) { process.subject_owner(pair.1) == Ok(pid) })
+        |> list.find(fn(pair) {
+          case pair.1 {
+            Some(worker) -> process.subject_owner(worker) == Ok(pid)
+            None -> False
+          }
+        })
       case entry {
         Error(_) -> actor.continue(state)
         Ok(#(previous, _)) -> {
@@ -205,13 +243,19 @@ fn handle(state: State, message: Message) {
               actor.continue(
                 State(
                   ..state,
-                  sessions: dict.insert(state.sessions, info.id, #(info, worker)),
+                  sessions: dict.insert(state.sessions, info.id, #(
+                    info,
+                    Some(worker),
+                  )),
                 ),
               )
             }
             Error(_) ->
               actor.continue(
-                State(..state, sessions: dict.delete(state.sessions, info.id)),
+                State(
+                  ..state,
+                  sessions: dict.insert(state.sessions, info.id, #(info, None)),
+                ),
               )
           }
         }
@@ -219,9 +263,16 @@ fn handle(state: State, message: Message) {
     }
     WorkerDown(_) -> actor.continue(state)
     Sweep -> {
-      // Off the registry: releasing a kernel writes its variables to disk, and
-      // no API call should wait behind that.
-      let workers = dict.values(state.sessions) |> list.map(fn(pair) { pair.1 })
+      // Off the registry: saving Python state and dropping reloadable history
+      // must not make API calls wait behind filesystem or database work.
+      let workers =
+        dict.values(state.sessions)
+        |> list.filter_map(fn(pair) {
+          case pair.1 {
+            Some(worker) -> Ok(worker)
+            None -> Error(Nil)
+          }
+        })
       let config = state.config
       let _ = process.spawn_unlinked(fn() { reap(workers, config) })
       let _ =
@@ -229,7 +280,12 @@ fn handle(state: State, message: Message) {
       actor.continue(state)
     }
     Shutdown -> {
-      dict.each(state.sessions, fn(_, pair) { session.close(pair.1) })
+      dict.each(state.sessions, fn(_, pair) {
+        case pair.1 {
+          Some(worker) -> session.close(worker)
+          None -> Nil
+        }
+      })
       runtime.stop(state.host)
       shutdown()
       actor.stop()
@@ -237,13 +293,39 @@ fn handle(state: State, message: Message) {
   }
 }
 
+fn activate(
+  state: State,
+  id: String,
+) -> #(State, Result(session.Session, String)) {
+  case dict.get(state.sessions, id) {
+    Error(_) -> #(state, Error("session not found"))
+    Ok(#(_, Some(worker))) -> #(state, Ok(worker))
+    Ok(#(info, None)) ->
+      case session.start(state.host, info, state.config.home) {
+        Error(error) -> #(state, Error(string.inspect(error)))
+        Ok(worker) -> {
+          watch(worker)
+          #(
+            State(
+              ..state,
+              sessions: dict.insert(state.sessions, id, #(info, Some(worker))),
+            ),
+            Ok(worker),
+          )
+        }
+      }
+  }
+}
+
 /// Release kernels that nobody is attached to: first those idle past the limit,
 /// then, while the pool is over budget, the ones unattended longest. A session
 /// that is attached or running is never a candidate, though its memory counts.
 fn reap(workers: List(session.Session), config: Config) -> Nil {
+  let reports =
+    list.map(workers, fn(worker) { #(worker, session.report(worker)) })
   let held =
-    list.filter_map(workers, fn(worker) {
-      let report = session.report(worker)
+    list.filter_map(reports, fn(entry) {
+      let #(worker, report) = entry
       case report.kernel {
         Some(pid) -> Ok(#(pid, worker, report))
         None -> Error(Nil)
@@ -260,18 +342,33 @@ fn reap(workers: List(session.Session), config: Config) -> Nil {
         list.key_find(usage, pid) |> result.unwrap(0),
       )
     })
-  let workers = list.map(held, fn(entry) { #(entry.0, entry.1) })
+  let held_workers = list.map(held, fn(entry) { #(entry.0, entry.1) })
   reaper.victims(
     candidates,
     reaper.Limits(config.idle_ms, config.budget_kb, detached_ms),
   )
   |> list.each(fn(victim) {
-    case list.key_find(workers, victim.pid) {
+    case list.key_find(held_workers, victim.pid) {
       Ok(worker) -> {
         let _ = session.release(worker)
         Nil
       }
       Error(_) -> Nil
+    }
+  })
+  // Transcript state is durable and cheap to reload. Keep it only while a
+  // client is polling or a run owns its prepared request.
+  reports
+  |> list.each(fn(entry) {
+    let #(worker, report) = entry
+    case
+      report.history_loaded && !report.running && report.idle_ms >= detached_ms
+    {
+      True -> {
+        let _ = session.evict_history(worker)
+        Nil
+      }
+      False -> Nil
     }
   })
 }
@@ -291,6 +388,51 @@ fn info_json(info: conversation.Info) -> json.Json {
       Some(timestamp) -> json.int(timestamp)
       None -> json.null()
     }),
+  ])
+}
+
+fn tree_item_json(item: history.Item) -> json.Json {
+  json.object([
+    #("id", json.int(item.id)),
+    #("type", json.string(history.kind_name(item.kind))),
+    #("preview", json.string(item.preview)),
+    #("timestamp", case item.timestamp {
+      Some(timestamp) -> json.int(timestamp)
+      None -> json.null()
+    }),
+  ])
+}
+
+fn tree_page_json(page: history.Page) -> json.Json {
+  json.object([
+    #("items", json.array(page.items, tree_item_json)),
+    #("nextCursor", case page.next_cursor {
+      Some(cursor) -> json.int(cursor)
+      None -> json.null()
+    }),
+    #("hasMore", json.bool(page.has_more)),
+  ])
+}
+
+fn extension_json(summary: extension.Summary) -> json.Json {
+  json.object([
+    #("name", json.string(summary.name)),
+    #("description", json.string(summary.description)),
+    #("enabled", json.bool(summary.enabled)),
+    #("context", json.bool(summary.context)),
+    #("tools", json.array(summary.tools, json.string)),
+    #("python_modules", json.array(summary.python_modules, json.string)),
+    #("requires", json.array(summary.requires, json.string)),
+    #("plugins", json.array(summary.plugins, json.string)),
+  ])
+}
+
+fn skill_command_json(command: skill_catalog.Command) -> json.Json {
+  json.object([
+    #("name", json.string(command.name)),
+    #("description", json.string(command.description)),
+    #("command", json.string(command.command)),
+    #("source", json.string(command.source)),
   ])
 }
 
@@ -315,8 +457,38 @@ fn error(status: Int, message: String) {
   reply(status, json.object([#("error", json.string(message))]))
 }
 
+type SubmittedImage {
+  SubmittedImage(
+    mime_type: String,
+    data: String,
+    width: Int,
+    height: Int,
+    bytes: Int,
+  )
+}
+
+fn submitted_image_decoder() -> decode.Decoder(SubmittedImage) {
+  use mime_type <- decode.field("mimeType", decode.string)
+  use data <- decode.field("data", decode.string)
+  use width <- decode.field("width", decode.int)
+  use height <- decode.field("height", decode.int)
+  use bytes <- decode.field("bytes", decode.int)
+  decode.success(SubmittedImage(mime_type, data, width, height, bytes))
+}
+
+fn validate_submitted_image(
+  submitted: Option(SubmittedImage),
+) -> Result(Option(types.Image), String) {
+  case submitted {
+    None -> Ok(None)
+    Some(SubmittedImage(mime_type, data, width, height, bytes)) ->
+      image.validate(mime_type, data, width, height, bytes)
+      |> result.map(Some)
+  }
+}
+
 fn body(req, decoder) {
-  mist.read_body(req, 1_100_000)
+  mist.read_body(req, 9_200_000)
   |> result.replace_error("invalid request body")
   |> result.try(fn(req) {
     json.parse_bits(req.body, decoder)
@@ -345,7 +517,14 @@ fn route(
               #(
                 "capabilities",
                 json.array(
-                  ["session_provider", "session_workspace"],
+                  [
+                    "session_provider",
+                    "session_workspace",
+                    "session_extensions",
+                    "session_tree",
+                    "session_context",
+                    "session_skills",
+                  ],
                   json.string,
                 ),
               ),
@@ -373,11 +552,127 @@ fn route(
           let _ = process.send_after(registry, 100, Shutdown)
           reply(200, json.object([#("ok", json.bool(True))]))
         }
+        Get, ["sessions", id, "tree"] -> {
+          let query = request.get_query(req) |> result.unwrap([])
+          let after =
+            query
+            |> list.key_find("after")
+            |> result.try(int.parse)
+            |> result.unwrap(0)
+          let limit =
+            query
+            |> list.key_find("limit")
+            |> result.try(int.parse)
+            |> result.unwrap(50)
+          case actor.call(registry, 10_000, ReadTree(id, after, limit, _)) {
+            Ok(page) -> reply(200, tree_page_json(page))
+            Error(e) -> error(400, e)
+          }
+        }
+        Get, ["sessions", id, "context", section, page] ->
+          case
+            int.parse(page)
+            |> result.replace_error("invalid context page")
+            |> result.try(fn(page) {
+              actor.call(registry, 5000, Lookup(id, _))
+              |> result.try(session.context_page(_, section, page))
+            })
+          {
+            Ok(content) -> reply(200, content)
+            Error(e) -> error(404, e)
+          }
+        Post, ["sessions", id, "fork"] -> {
+          let decoder = decode.field("checkpoint", decode.int, decode.success)
+          case
+            body(req, decoder)
+            |> result.try(fn(checkpoint) {
+              actor.call(registry, 15_000, Fork(id, checkpoint, _))
+            })
+          {
+            Ok(info) -> reply(201, info_json(info))
+            Error(e) -> error(409, e)
+          }
+        }
+        Post, ["sessions", id, "skills", "activate"] ->
+          case actor.call(registry, 5000, Lookup(id, _)) {
+            Error(e) -> error(404, e)
+            Ok(worker) -> {
+              let decoder = {
+                use name <- decode.field("name", decode.string)
+                use arguments <- decode.optional_field(
+                  "arguments",
+                  "",
+                  decode.string,
+                )
+                use client_id <- decode.optional_field(
+                  "clientId",
+                  "",
+                  decode.string,
+                )
+                decode.success(#(name, arguments, client_id))
+              }
+              case
+                body(req, decoder)
+                |> result.map_error(session.Rejected)
+                |> result.try(fn(values) {
+                  session.activate_skill(worker, values.0, values.1, values.2)
+                })
+              {
+                Ok(_) -> reply(202, json.object([#("ok", json.bool(True))]))
+                Error(session.Rejected(e)) -> error(409, e)
+                Error(session.WorkspaceMissing(path)) ->
+                  reply(
+                    409,
+                    json.object([
+                      #("code", json.string("workspace_missing")),
+                      #("workspace", json.string(path)),
+                      #("error", json.string("workspace not found: " <> path)),
+                    ]),
+                  )
+              }
+            }
+          }
         _, ["sessions", id, operation] ->
           case actor.call(registry, 5000, Lookup(id, _)) {
             Error(e) -> error(404, e)
             Ok(worker) ->
               case req.method, operation {
+                Get, "context" -> reply(200, session.context(worker))
+                Get, "skills" ->
+                  case session.skills(worker) {
+                    Ok(#(commands, diagnostics)) ->
+                      reply(
+                        200,
+                        json.object([
+                          #("skills", json.array(commands, skill_command_json)),
+                          #("diagnostics", json.array(diagnostics, json.string)),
+                        ]),
+                      )
+                    Error(e) -> error(409, e)
+                  }
+                Get, "extensions" ->
+                  case session.extensions(worker) {
+                    Ok(summaries) ->
+                      reply(200, json.array(summaries, extension_json))
+                    Error(e) -> error(409, e)
+                  }
+                Post, "extensions" -> {
+                  let decoder = {
+                    use name <- decode.field("name", decode.string)
+                    use enabled <- decode.field("enabled", decode.bool)
+                    decode.success(#(name, enabled))
+                  }
+                  case
+                    body(req, decoder)
+                    |> result.try(fn(change) {
+                      session.set_extension(worker, change.0, change.1)
+                    })
+                  {
+                    Ok(summaries) ->
+                      reply(200, json.array(summaries, extension_json))
+                    Error(e) -> error(409, e)
+                  }
+                }
                 Get, "status" ->
                   response.new(200)
                   |> response.set_header("content-type", "application/json")
@@ -392,13 +687,22 @@ fn route(
                       "",
                       decode.string,
                     )
-                    decode.success(#(text, client_id))
+                    use submitted_image <- decode.optional_field(
+                      "image",
+                      None,
+                      decode.optional(submitted_image_decoder()),
+                    )
+                    decode.success(#(text, client_id, submitted_image))
                   }
                   case
                     body(req, decoder)
                     |> result.map_error(session.Rejected)
-                    |> result.try(fn(pair) {
-                      session.submit(worker, pair.0, pair.1)
+                    |> result.try(fn(submission) {
+                      use image <- result.try(
+                        validate_submitted_image(submission.2)
+                        |> result.map_error(session.Rejected),
+                      )
+                      session.submit(worker, submission.0, submission.1, image)
                     })
                   {
                     Ok(_) -> reply(202, json.object([#("ok", json.bool(True))]))
@@ -423,7 +727,9 @@ fn route(
                       req,
                       decode.field("workspace", decode.string, decode.success),
                     )
-                    |> result.try(session.set_workspace(worker, _))
+                    |> result.try(fn(cwd) {
+                      actor.call(registry, 20_000, SetWorkspace(id, cwd, _))
+                    })
                   {
                     Ok(info) -> reply(200, info_json(info))
                     Error(e) -> error(409, e)

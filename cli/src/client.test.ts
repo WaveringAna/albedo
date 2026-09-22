@@ -159,3 +159,28 @@ test("workspace replacement requires daemon capability and returns authoritative
   const old = createChatClient({ baseUrl: "http://localhost", agentId: "session", fetchImpl: async () => Response.json({ capabilities: [] }) })
   await assert.rejects(old.replaceWorkspace!("/new"), /daemon upgrade needed/)
 })
+
+
+test("send carries one bounded image attachment without changing auth or redirect handling", async () => {
+  let request: RequestInit | undefined
+  const client = createChatClient({ baseUrl: "http://localhost", agentId: "session", clientId: "sender", fetchImpl: async (_url, init) => {
+    request = init
+    return new Response("{}", { status: 200 })
+  } })
+  const image = { mimeType: "image/png" as const, data: "aGVsbG8=", width: 2, height: 3, bytes: 5 }
+  await client.send("describe", undefined, image)
+  assert.equal(request?.method, "POST")
+  assert.deepEqual(JSON.parse(String(request?.body)), { content: "describe", image, clientId: "sender" })
+})
+
+test("user replay accepts bounded image metadata and drops payload-shaped or invalid metadata", async () => {
+  const events: StreamEvent[] = []
+  const frames = page(1, [
+    { type: "user", text: "one", source: "chat", triggeredAt: "", image: { mimeType: "image/png", width: 2, height: 3, bytes: 5 } },
+    { type: "user", text: "two", source: "chat", triggeredAt: "", image: { mimeType: "image/gif", width: 2, height: 3, bytes: 5, data: "secret" } },
+  ])
+  const client = createChatClient({ baseUrl: "http://localhost", agentId: "session", fetchImpl: async () => new Response(frames, { headers: { "content-type": "text/event-stream" } }) })
+  await client.stream({ onEvent: event => events.push(event) })
+  assert.deepEqual(events[0], { type: "user", text: "one", source: "chat", triggeredAt: "", image: { mimeType: "image/png", width: 2, height: 3, bytes: 5 } })
+  assert.deepEqual(events[1], { type: "user", text: "two", source: "chat", triggeredAt: "" })
+})

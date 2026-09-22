@@ -1,7 +1,9 @@
 import { createToolProgressReporter } from "./progress.js"
 import { parseToolTrace, type StreamEvent, type ToolProgress } from "./events.js"
+import { parseImageMetadata, type ImageAttachment } from "./image.js"
 
 export type { StreamEvent, ToolTrace, ToolProgress } from "./events.js"
+export type { ImageAttachment, ImageMetadata } from "./image.js"
 
 export type FetchLike = (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>
 
@@ -32,7 +34,7 @@ export class WorkspaceMissingError extends Error {
 export interface ChatClient {
   /** The sender identity used by send; lets views suppress their optimistic echo. */
   readonly clientId?: string
-  send: (content: string, signal?: AbortSignal) => Promise<{ ok: true }>
+  send: (content: string, signal?: AbortSignal, image?: ImageAttachment) => Promise<{ ok: true }>
   replaceWorkspace?: (workspace: string, signal?: AbortSignal) => Promise<WorkspaceUpdate>
   interrupt?: () => Promise<{ interrupted: boolean }>
   getStatus: (signal?: AbortSignal) => Promise<AgentStatus>
@@ -58,6 +60,7 @@ type UnknownEvent = {
   cacheWriteTokens?: unknown
   completionTokens?: unknown
   totalTokens?: unknown
+  image?: unknown
   elapsedMs?: unknown
   tokensPerSecond?: unknown
 }
@@ -98,13 +101,15 @@ const toEvent = (raw: unknown): StreamEvent | null => {
     typeof event.source === "string" &&
     typeof event.triggeredAt === "string"
   ) {
+    const image = parseImageMetadata(event.image)
     return {
       type: "user",
       text: event.text,
       source: event.source,
       triggeredAt: event.triggeredAt,
       ...stamp,
-      clientId: typeof event.clientId === "string" ? event.clientId : undefined,
+      ...(typeof event.clientId === "string" ? { clientId: event.clientId } : {}),
+      ...(image ? { image } : {}),
     }
   }
 
@@ -197,11 +202,11 @@ export function createChatClient(options: CreateChatClientOptions): ChatClient {
 
   const requestSignal = (signal?: AbortSignal): AbortSignal => signal
     ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000)
-  const send: ChatClient["send"] = async (content, signal) => {
+  const send: ChatClient["send"] = async (content, signal, image) => {
     const res = await fetchImpl(agentUrl(agentId ? "/events" : "/trigger/chat"), {
       method: "POST",
       headers: headers(true),
-      body: JSON.stringify({ content, ...(clientId ? { clientId } : {}) }),
+      body: JSON.stringify({ content, ...(image ? { image } : {}), ...(clientId ? { clientId } : {}) }),
       signal: requestSignal(signal),
     })
 

@@ -1,173 +1,225 @@
 import albedo/daemon/conversation
-import albedo/harness/bash
 import albedo/harness/compaction
-import albedo/harness/plugin
-import albedo/harness/plugins
+import albedo/harness/extension
+import albedo/harness/extensions
 import albedo/harness/python
-import albedo/harness/python/kernel
 import albedo/harness/runtime
-import albedo/harness/work
 import albedo/openai_api/types
 import gleam/erlang/process
+import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{None}
 import gleam/string
 import gleeunit/should
 
-pub fn python_alone_has_no_bash_or_work_test() {
-  let assert Ok(host) =
-    runtime.start_with_plugins(":memory:", [python.plugin()])
-  let assert Ok(session) = runtime.open_session(host, "isolated", "/tmp")
-  let assert Ok(execution) =
-    runtime.execute(
-      host,
-      session,
-      "('bash' in globals(), 'work' in globals(), 'cells' in globals())",
-      1000,
-    )
-  let assert Ok(result) = execution.result
-  result.value |> should.equal("(False, False, True)")
-  runtime.stop(host)
+@external(erlang, "albedo_runtime_test_support", "temporary_database")
+fn temporary_database() -> String
+
+@external(erlang, "albedo_runtime_test_support", "cleanup")
+fn cleanup(path: String) -> Nil
+
+fn no_op(_) {
+  Ok(Nil)
 }
 
-pub fn dependency_order_is_explicit_test() {
-  runtime.start_with_plugins(":memory:", [bash.plugin(), python.plugin()])
-  |> should.be_error
+fn fixture_tool(name: String) -> extension.Tool {
+  extension.Tool(
+    types.Tool(
+      name,
+      "fixture",
+      json.object([#("type", json.string("object"))]),
+      True,
+    ),
+    fn(_, _) { Ok("fixture") },
+    fn(_) { None },
+  )
 }
 
-pub fn work_is_a_python_tool_plugin_test() {
-  let assert Ok(host) =
-    runtime.start_with_plugins(":memory:", [python.plugin(), work.plugin()])
-  let assert Ok(session) = runtime.open_session(host, "work-plugin", "/tmp")
-  let assert Ok(execution) =
-    runtime.execute(
-      host,
-      session,
-      "item = await work.create('plugin work')\n(await work.get(item['id']))['title']",
-      5000,
-    )
-  let assert Ok(result) = execution.result
-  result.value |> should.equal("'plugin work'")
-  runtime.tools(host)
-  |> list.map(fn(tool) { tool.name })
-  |> should.equal(["python"])
-  runtime.stop(host)
+fn bundle(load) -> extension.Extension {
+  extension.Extension(
+    "bundle",
+    "fixture mixed extension",
+    ["python"],
+    [
+      extension.ContextPlugin(load),
+      extension.ToolPlugin(
+        "bundle instructions",
+        [fixture_tool("fixture_tool")],
+        ["bash"],
+        [],
+      ),
+    ],
+    no_op,
+  )
 }
 
-pub fn plugin_validation_happens_before_initialisers_test() {
-  let called = process.new_subject()
-  let first =
-    plugin.Plugin(..python.plugin(), initialise: fn(_) {
-      process.send(called, "initialised")
-      Ok(Nil)
-    })
-  runtime.start_with_plugins(":memory:", [first, first]) |> should.be_error
-  process.receive(called, 0) |> should.equal(Error(Nil))
-  let repeated_tool =
-    plugin.Plugin(..python.plugin(), tools: [
-      plugin.Tool(python.definition(), python.invoke, fn(_) { None }),
-      plugin.Tool(python.definition(), python.invoke, fn(_) { None }),
-    ])
-  runtime.start_with_plugins(":memory:", [repeated_tool]) |> should.be_error
-  let nested_route =
-    plugin.Plugin(..work.plugin(), routes: [
-      #("work", fn(_, _, _) { "" }),
-      #("work.private", fn(_, _, _) { "" }),
-    ])
-  runtime.start_with_plugins(":memory:", [python.plugin(), nested_route])
-  |> should.be_error
-  let repeated_module =
-    plugin.Plugin(..bash.plugin(), python_modules: [
-      "bash",
-      "albedo_plugins.bash",
-    ])
-  runtime.start_with_plugins(":memory:", [python.plugin(), repeated_module])
-  |> should.be_error
-}
-
-pub fn compaction_is_optional_and_has_one_request_view_owner_test() {
-  let history = [types.User("one"), types.Assistant("two"), types.User("three")]
-  let assert Ok(host) =
-    runtime.start_with_plugins(":memory:", [python.plugin()])
-  let assert Ok(session) = runtime.open_session(host, "unchanged", "/tmp")
-  runtime.prepare_history(host, session, "fixture", history)
-  |> should.equal(Ok(history))
-  runtime.stop(host)
-  // A test-only strategy proves the hook, not a shipped compaction policy.
+pub fn context_loads_once_and_is_prefixed_after_compaction_test() {
+  let loaded = process.new_subject()
+  let context = fn(workspace) {
+    process.send(loaded, workspace)
+    Ok("fixture context")
+  }
   let strategy =
-    compaction.Strategy("fixture", fn(context, inputs) {
-      context.session |> should.equal("projected")
-      context.model |> should.equal("fixture-model")
-      inputs |> should.equal(history)
-      Ok([types.User("request-only fixture")])
+    compaction.Strategy("fixture", fn(_, _) {
+      Ok([types.User("compacted conversation")])
     })
+  let compact =
+    extension.Extension(
+      "compact",
+      "fixture compactor",
+      [],
+      [extension.CompactionPlugin(strategy)],
+      no_op,
+    )
+  let installed = [python.extension(), bundle(context), compact]
   let assert Ok(host) =
     runtime.start_with_config(
       ":memory:",
-      plugins.Config([python.plugin()], Some(strategy)),
+      extensions.Config(installed, ["python", "bundle", "compact"]),
     )
-  let assert Ok(session) = runtime.open_session(host, "projected", "/tmp")
+  let assert Ok(session) = runtime.open_session(host, "context", "/tmp")
+  process.receive(loaded, 0) |> should.equal(Ok("/tmp"))
+  let history = [types.User("durable")]
+  let assert Ok([types.User(prefix), types.User("compacted conversation")]) =
+    runtime.prepare_history(host, session, "fixture", history)
+  string.contains(prefix, "fixture context") |> should.be_true
+  let assert Ok(_) = runtime.prepare_history(host, session, "fixture", history)
+  process.receive(loaded, 0) |> should.equal(Error(Nil))
+  runtime.stop(host)
+}
+
+pub fn reload_disables_every_bundle_contribution_and_persists_test() {
+  let path = temporary_database()
+  let installed = [python.extension(), bundle(fn(_) { Ok("bundle context") })]
+  let config = extensions.Config(installed, ["python", "bundle"])
+  let assert Ok(host) = runtime.start_with_config(path, config)
+  let assert Ok(session) = runtime.open_session(host, "toggle", "/tmp")
+  runtime.tools(session)
+  |> list.map(fn(tool) { tool.name })
+  |> should.equal(["python", "fixture_tool"])
+  let assert Ok(execution) =
+    runtime.execute(host, session, "'bash' in globals()", 1000)
+  let assert Ok(outcome) = execution.result
+  outcome.value |> should.equal("True")
+  let assert Ok(reloaded) =
+    runtime.reload_extension(host, "toggle", "/tmp", "bundle", False)
+  runtime.tools(reloaded)
+  |> list.map(fn(tool) { tool.name })
+  |> should.equal(["python"])
+  string.contains(runtime.instructions(reloaded), "bundle instructions")
+  |> should.be_false
+  runtime.prepare_history(host, reloaded, "fixture", [
+    types.User("conversation"),
+  ])
+  |> should.equal(Ok([types.User("conversation")]))
+  let assert Ok(execution) =
+    runtime.execute(host, reloaded, "'bash' in globals()", 1000)
+  let assert Ok(outcome) = execution.result
+  outcome.value |> should.equal("False")
+  runtime.stop(host)
+
+  let assert Ok(restarted) = runtime.start_with_config(path, config)
+  let assert Ok([_, summary]) = runtime.extension_summaries(restarted, "toggle")
+  summary.name |> should.equal("bundle")
+  summary.enabled |> should.be_false
+  let assert Ok(reopened) = runtime.open_session(restarted, "toggle", "/tmp")
+  runtime.tools(reopened)
+  |> list.map(fn(tool) { tool.name })
+  |> should.equal(["python"])
+  runtime.stop(restarted)
+  cleanup(path)
+}
+
+pub fn dependencies_and_reload_readiness_guard_selection_test() {
+  let dependent = bundle(fn(_) { Ok("") })
+  let broken =
+    extension.python_module(
+      "broken",
+      "missing module fixture",
+      "albedo_missing_fixture.tools",
+      "",
+      ["python"],
+    )
+  let installed = [python.extension(), dependent, broken]
+  let config = extensions.Config(installed, ["python", "bundle"])
+  let assert Ok(host) = runtime.start_with_config(":memory:", config)
+  let assert Ok(_) = runtime.open_session(host, "guard", "/tmp")
+  runtime.reload_extension(host, "guard", "/tmp", "python", False)
+  |> should.equal(Error("bundle requires enabled extension python"))
+  let assert Error(error) =
+    runtime.reload_extension(host, "guard", "/tmp", "broken", True)
+  string.contains(error, "could not reload extensions") |> should.be_true
+  let assert Ok(summaries) = runtime.extension_summaries(host, "guard")
+  let assert Ok(broken) =
+    list.find(summaries, fn(item) { item.name == "broken" })
+  broken.enabled |> should.be_false
+  runtime.stop(host)
+}
+
+pub fn registry_supports_disabled_compaction_alternatives_test() {
+  let one =
+    extension.Extension(
+      "one",
+      "first strategy",
+      [],
+      [
+        extension.CompactionPlugin(
+          compaction.Strategy("one", fn(_, value) { Ok(value) }),
+        ),
+      ],
+      no_op,
+    )
+  let two =
+    extension.Extension(
+      "two",
+      "second strategy",
+      [],
+      [
+        extension.CompactionPlugin(
+          compaction.Strategy("two", fn(_, value) { Ok(value) }),
+        ),
+      ],
+      no_op,
+    )
+  let assert Ok(host) =
+    runtime.start_with_config(
+      ":memory:",
+      extensions.Config([python.extension(), one, two], ["python", "one"]),
+    )
+  let assert Ok(_) = runtime.open_session(host, "compact", "/tmp")
+  let assert Error(error) =
+    runtime.reload_extension(host, "compact", "/tmp", "two", True)
+  string.contains(error, "multiple compaction") |> should.be_true
+  runtime.stop(host)
+}
+
+pub fn transcript_remains_durable_when_context_is_request_only_test() {
+  let assert Ok(host) =
+    runtime.start_with_extensions(":memory:", [
+      python.extension(),
+      bundle(fn(_) { Ok("ephemeral") }),
+    ])
   let assert Ok(_) = conversation.initialise(runtime.ledger(host))
   let info =
     conversation.Info(
-      "projected",
+      "durable",
       "title",
       "/tmp",
       "fixture",
-      "fixture-model",
+      "model",
       types.Responses,
       "idle",
       None,
     )
   let assert Ok(_) = conversation.create(runtime.ledger(host), info)
+  let history = [types.User("saved")]
   let assert Ok(_) =
-    conversation.commit(runtime.ledger(host), "projected", history, "idle")
-  runtime.prepare_history(host, session, "fixture-model", history)
-  |> should.equal(Ok([types.User("request-only fixture")]))
-  conversation.load(runtime.ledger(host), "projected")
+    conversation.commit(runtime.ledger(host), "durable", history, "idle")
+  let assert Ok(session) = runtime.open_session(host, "durable", "/tmp")
+  let assert Ok([types.User(prefix), types.User("saved")]) =
+    runtime.prepare_history(host, session, "model", history)
+  string.contains(prefix, "ephemeral") |> should.be_true
+  conversation.load(runtime.ledger(host), "durable")
   |> should.equal(Ok(history))
-  runtime.stop(host)
-}
-
-pub fn compaction_failure_stops_request_preparation_test() {
-  let strategy = compaction.Strategy("fixture", fn(_, _) { Error("not ready") })
-  let assert Ok(host) =
-    runtime.start_with_config(
-      ":memory:",
-      plugins.Config([python.plugin()], Some(strategy)),
-    )
-  let assert Ok(session) = runtime.open_session(host, "failure", "/tmp")
-  runtime.prepare_history(host, session, "fixture", [types.User("keep")])
-  |> should.equal(Error("compaction fixture: not ready"))
-  runtime.stop(host)
-}
-
-pub fn explicit_python_module_is_embedded_and_startup_errors_name_it_test() {
-  let module =
-    plugin.python_module(
-      "shell",
-      "albedo_plugins.bash",
-      "Use bash from Python.",
-    )
-  let assert Ok(host) =
-    runtime.start_with_plugins(":memory:", [python.plugin(), module])
-  let assert Ok(session) = runtime.open_session(host, "module", "/tmp")
-  let assert Ok(execution) =
-    runtime.execute(
-      host,
-      session,
-      "job = await bash('printf embedded')\njob.tail()",
-      5000,
-    )
-  let assert Ok(result) = execution.result
-  result.value |> should.equal("'embedded'")
-  runtime.stop(host)
-  let absent =
-    plugin.python_module("missing", "albedo_missing_fixture.tools", "")
-  let assert Ok(host) =
-    runtime.start_with_plugins(":memory:", [python.plugin(), absent])
-  let assert Error(kernel.Unavailable(error)) =
-    runtime.open_session(host, "missing", "/tmp")
-  error |> string.contains("albedo_missing_fixture.tools") |> should.be_true
   runtime.stop(host)
 }

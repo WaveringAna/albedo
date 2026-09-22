@@ -328,3 +328,102 @@ test("unmount aborts a hung status request", async t => {
   screen.unmount()
   await until(() => aborted, "status abort")
 })
+
+
+test("ctrl-v previews a clipboard image, escape removes it, and submit sends it without auto-submit", async t => {
+  const image = { mimeType: "image/png" as const, data: "aGVsbG8=", width: 2, height: 3, bytes: 5 }
+  const sent: Array<{ content: string; image: typeof image | undefined }> = []
+  let reads = 0
+  const screen = mount(createElement(ChatScreen, {
+    transport: {
+      send: async (content, _signal, attachment) => { sent.push({ content, image: attachment as typeof image | undefined }); return { ok: true as const } },
+      getStatus: async () => ({ running: false, idle: true }),
+      stream: async options => { options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) },
+    },
+    clipboardImages: { available: () => true, read: async () => { reads++; return image } },
+    onBack: () => {}, onQuit: () => {}, settleMs: 20,
+  }), t)
+  await screen.shows("ctrl+v to paste image")
+  screen.write("\x16")
+  await screen.shows("PNG 2×3 · 5 B attached · esc remove")
+  assert.equal(reads, 1)
+  assert.equal(sent.length, 0, "pasting must not submit")
+  screen.write("\x1b")
+  await screen.shows("image removed")
+  screen.write("\x16")
+  await until(() => reads === 2, "second clipboard image read")
+  await screen.shows("PNG 2×3 · 5 B attached · esc remove")
+  screen.write("describe this")
+  await screen.flush()
+  screen.write("\r")
+  await until(() => sent.length === 1, "image submission")
+  assert.deepEqual(sent, [{ content: "describe this", image }])
+  await screen.shows("[image · PNG 2×3 · 5 B]")
+})
+
+test("ordinary pasted text remains text when clipboard image metadata is absent", async t => {
+  const sent: string[] = []
+  const screen = mount(createElement(ChatScreen, {
+    transport: {
+      send: async content => { sent.push(content); return { ok: true as const } },
+      getStatus: async () => ({ running: false, idle: true }),
+      stream: async options => { options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) },
+    },
+    clipboardImages: { available: () => false, read: async () => { throw new Error("must not read image bytes") } },
+    onBack: () => {}, onQuit: () => {}, settleMs: 20,
+  }), t)
+  screen.write("pasted text")
+  await screen.flush()
+  screen.write("\r")
+  await until(() => sent.length === 1, "text submission")
+  assert.deepEqual(sent, ["pasted text"])
+})
+
+
+test("submit waits for an in-flight image read and uses the resolved attachment", async t => {
+  const image = { mimeType: "image/png" as const, data: "aGVsbG8=", width: 2, height: 3, bytes: 5 }
+  let resolveRead!: (value: typeof image | null) => void
+  const reading = new Promise<typeof image | null>(resolve => { resolveRead = resolve })
+  const sent: Array<{ content: string; image: typeof image | undefined }> = []
+  const screen = mount(createElement(ChatScreen, {
+    transport: {
+      send: async (content, _signal, attachment) => { sent.push({ content, image: attachment as typeof image | undefined }); return { ok: true as const } },
+      getStatus: async () => ({ running: false, idle: true }),
+      stream: async options => { options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) },
+    },
+    clipboardImages: { available: () => true, read: () => reading },
+    onBack: () => {}, onQuit: () => {}, settleMs: 20,
+  }), t)
+  await screen.shows("ctrl+v to paste image")
+  screen.write("\x16")
+  await screen.shows("reading clipboard image…")
+  screen.write("describe this")
+  await screen.flush()
+  screen.write("\r")
+  await tick()
+  assert.equal(sent.length, 0, "enter must wait for explicit paste acquisition")
+  resolveRead(image)
+  await until(() => sent.length === 1, "deferred image submission")
+  assert.deepEqual(sent, [{ content: "describe this", image }])
+})
+
+test("image paste failure preserves draft text and ordinary submission", async t => {
+  const sent: Array<{ content: string; image: unknown }> = []
+  const screen = mount(createElement(ChatScreen, {
+    transport: {
+      send: async (content, _signal, image) => { sent.push({ content, image }); return { ok: true as const } },
+      getStatus: async () => ({ running: false, idle: true }),
+      stream: async options => { options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) },
+    },
+    clipboardImages: { available: () => true, read: async () => { throw new Error("clipboard permission denied") } },
+    onBack: () => {}, onQuit: () => {}, settleMs: 20,
+  }), t)
+  screen.write("keep this text")
+  await screen.flush()
+  screen.write("\x16")
+  await screen.shows("image paste failed: clipboard permission denied")
+  assert(screen.last().includes("keep this text"))
+  screen.write("\r")
+  await until(() => sent.length === 1, "text submission after image failure")
+  assert.deepEqual(sent, [{ content: "keep this text", image: undefined }])
+})

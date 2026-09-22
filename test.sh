@@ -17,5 +17,8 @@ npm --prefix cli run typecheck
 npm --prefix cli test
 
 python3 test/daemon/integration.py
+python3 test/daemon/extensions_integration.py
+python3 test/daemon/mcp_integration.py
+python3 test/daemon/context_integration.py
 python3 test/daemon/kernel_reset_integration.py
 python3 test/daemon/idle_reap_integration.py

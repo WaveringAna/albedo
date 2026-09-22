@@ -117,3 +117,84 @@ test("returning to sessions keeps the active row selected before and after a reo
   assert(painted.includes(`> ${newer.title}`), "returning must select the session just opened")
   refreshList([current, newer])
 })
+
+
+test("/tree keeps chat mounted, confirms explicitly, cancels, and switches only after a successful fork", async t => {
+  const current = { id: "current", title: "current conversation", workspace: "/tmp", provider: "fixture", model: "fixture-model", protocol: "responses" }
+  const branch = { ...current, id: "branch", title: "branch checkpoint" }
+  let currentStreams = 0
+  let branchStreams = 0
+  let forks = 0
+  const server = createServer((req, res) => {
+    res.setHeader("content-type", "application/json")
+    if (req.url === "/health") res.end(JSON.stringify({ capabilities: ["session_tree"] }))
+    else if (req.url === "/sessions/current/tree?after=0&limit=50") res.end(JSON.stringify({ items: [
+      { id: 11, type: "user", preview: "first prompt" },
+      { id: 12, type: "assistant", preview: "first answer" },
+      { id: 13, type: "tool", preview: "call python" },
+    ], nextCursor: 13, hasMore: false }))
+    else if (req.url === "/sessions/current/fork" && req.method === "POST") {
+      forks += 1
+      let body = ""
+      req.on("data", chunk => { body += chunk })
+      req.on("end", () => {
+        assert.deepEqual(JSON.parse(body), { checkpoint: 11 })
+        res.end(JSON.stringify(branch))
+      })
+    } else if (req.url?.includes("/sessions/current/stream")) {
+      currentStreams += 1
+      res.writeHead(200, { "content-type": "text/event-stream" })
+      res.write(`data: ${JSON.stringify({ cursor: 1, events: [{ type: "message", text: "mounted current chat" }] })}\n\n`)
+    } else if (req.url?.includes("/sessions/branch/stream")) {
+      branchStreams += 1
+      res.writeHead(200, { "content-type": "text/event-stream" })
+      res.write(`data: ${JSON.stringify({ cursor: 1, events: [{ type: "message", text: "branched chat" }] })}\n\n`)
+    } else if (req.url?.endsWith("/status")) res.end(JSON.stringify({ running: false, idle: true }))
+    else { res.writeHead(404); res.end(JSON.stringify({ error: "not found" })) }
+  })
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve))
+  t.after(() => { server.closeAllConnections(); server.close() })
+  const address = server.address()
+  assert(address && typeof address !== "string")
+  const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: () => stdin, ref: () => stdin, unref: () => stdin }) as unknown as NodeJS.ReadStream
+  const stdout = Object.assign(new PassThrough(), { isTTY: true, columns: 120, rows: 40 }) as unknown as NodeJS.WriteStream
+  let painted = ""
+  stdout.on("data", (chunk: Buffer) => { painted += chunk.toString() })
+  const app = render(<App connection={{ port: address.port, token: "fixture", pid: 1, version: 2 }} initial={current} workspace="/tmp" quit={() => {}} />, { stdin, stdout, patchConsole: false, exitOnCtrlC: false })
+  t.after(() => app.unmount())
+
+  await until(() => painted.includes("mounted current chat"))
+  painted = ""
+  stdin.write("/tree")
+  await app.waitUntilRenderFlush()
+  stdin.write("\r")
+  await until(() => painted.includes("first prompt") && painted.includes("call python"))
+  assert.equal(currentStreams, 1, "opening tree must not remount the current chat")
+  stdin.write("\r")
+  await until(() => painted.includes("fresh python namespace"))
+  assert.equal(forks, 0, "first enter only confirms")
+  stdin.write("\x1b")
+  await app.waitUntilRenderFlush()
+  assert.equal(forks, 0)
+  stdin.write("\x1b")
+  await until(() => painted.includes("mounted current chat"))
+  assert.equal(currentStreams, 1, "cancel must reveal the still-mounted chat")
+
+  painted = ""
+  stdin.write("/tree")
+  await app.waitUntilRenderFlush()
+  stdin.write("\r")
+  await until(() => painted.includes("first prompt"))
+  stdin.write("\r")
+  await app.waitUntilRenderFlush()
+  await new Promise(resolve => setTimeout(resolve, 25))
+  for (let attempt = 0; attempt < 10 && forks === 0; attempt++) {
+    stdin.write("\r")
+    await app.waitUntilRenderFlush()
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  assert.equal(forks, 1, `fork request missing; output: ${painted}`)
+  await until(() => painted.includes("branched chat"))
+  assert.equal(currentStreams, 1)
+  assert.equal(branchStreams, 1)
+})

@@ -53,7 +53,7 @@ pub fn main() {
         types.Request(
           ..openai.request(env("ALBEDO_BENCH_MODEL"), [types.User(task)]),
           instructions: Some(instructions),
-          tools: runtime.tools(host),
+          tools: runtime.tools(session),
           max_output_tokens: Some(4096),
         )
       let start = now()

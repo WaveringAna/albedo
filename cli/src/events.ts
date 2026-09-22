@@ -1,3 +1,5 @@
+import type { ImageMetadata } from "./image.js"
+
 /** Display-only execution evidence, never appended to the model's tool output. */
 export type ToolActivity = { kind: "read" | "search" | "list" | "run"; target: string; failed?: boolean }
 export type FileChange =
@@ -43,7 +45,7 @@ export type StreamEvent =
    * chunks; replayed history has only this, because chunks are not persisted.
    */
   | { type: "message"; role: "assistant"; text: string; timestamp?: number }
-  | { type: "user"; text: string; source: string; triggeredAt: string; clientId?: string; timestamp?: number }
+  | { type: "user"; text: string; source: string; triggeredAt: string; clientId?: string; timestamp?: number; image?: ImageMetadata }
   | { type: "thinking"; text: string }
   /** Something the daemon did on its own, such as releasing an idle kernel. */
   | { type: "note"; text: string }

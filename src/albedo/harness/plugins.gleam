@@ -1,15 +1,7 @@
-import albedo/harness/bash
-import albedo/harness/compaction
-import albedo/harness/plugin
-import albedo/harness/python
-import albedo/harness/work
-import gleam/option.{type Option, None}
+//// Deprecated compatibility entry point. New code uses albedo/harness/extensions.
 
-/// Tool plugins compose; compaction has exactly one optional owner.
-pub type Config {
-  Config(tools: List(plugin.Plugin), compaction: Option(compaction.Strategy))
-}
+import albedo/harness/extensions
 
-pub fn defaults() -> Config {
-  Config([python.plugin(), bash.plugin(), work.plugin()], None)
+pub fn defaults() -> extensions.Config {
+  extensions.defaults()
 }

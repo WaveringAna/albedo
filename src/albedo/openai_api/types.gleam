@@ -2,6 +2,7 @@ import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json.{type Json}
 import gleam/option.{type Option}
+import gleam/string
 
 pub type Protocol {
   Responses
@@ -18,8 +19,53 @@ pub type Client {
   )
 }
 
+pub const max_image_bytes = 5_242_880
+
+pub const max_image_edge = 16_384
+
+pub const max_image_pixels = 40_000_000
+
+/// A bounded, header-validated image. The daemon revalidates decoded bytes before
+/// constructing this value; dimensions are display metadata, not decode proof.
+pub opaque type Image {
+  Image(mime_type: String, data: String, width: Int, height: Int, bytes: Int)
+}
+
+pub fn image(
+  mime_type: String,
+  data: String,
+  width: Int,
+  height: Int,
+  bytes: Int,
+) -> Result(Image, Error) {
+  case
+    mime_type == "image/png"
+    || mime_type == "image/jpeg"
+    || mime_type == "image/webp",
+    string.byte_size(data) > 0 && string.byte_size(data) <= 6_990_508,
+    width > 0
+    && height > 0
+    && width <= max_image_edge
+    && height <= max_image_edge
+    && width * height <= max_image_pixels,
+    bytes > 0 && bytes <= max_image_bytes
+  {
+    False, _, _, _ -> Error(InvalidRequest("image must be PNG, JPEG, or WebP"))
+    _, False, _, _ -> Error(InvalidRequest("invalid image payload size"))
+    _, _, False, _ -> Error(InvalidRequest("invalid image dimensions"))
+    _, _, _, False -> Error(InvalidRequest("invalid decoded image size"))
+    True, True, True, True -> Ok(Image(mime_type, data, width, height, bytes))
+  }
+}
+
+pub fn image_parts(image: Image) -> #(String, String, Int, Int, Int) {
+  let Image(mime_type, data, width, height, bytes) = image
+  #(mime_type, data, width, height, bytes)
+}
+
 pub type Input {
   User(String)
+  UserImage(String, Image)
   Assistant(String)
   ToolOutput(call_id: String, output: String)
   Replay(ReplayItem)

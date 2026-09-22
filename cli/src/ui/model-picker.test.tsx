@@ -46,6 +46,8 @@ test("/model switches saved providers and models with manual fallback without lo
       changes.push(change); session.model = change.model
       if (change.provider) { session.provider = change.provider; session.protocol = change.provider === "other" ? "chat_completions" : "responses" }
       res.end(JSON.stringify({ ok: true, model: session.model, provider: session.provider, protocol: session.protocol }))
+    } else if (req.url === "/sessions/session/skills") {
+      res.end(JSON.stringify([]))
     } else if (req.url?.startsWith("/sessions/session/stream")) {
       streams++
       res.writeHead(200, { "content-type": "text/event-stream" })

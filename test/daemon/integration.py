@@ -16,6 +16,14 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 
+def content_text(item):
+    content = item.get("content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(part["text"] for part in content if isinstance(part, dict) and isinstance(part.get("text"), str))
+    return ""
+
 class Provider(http.server.BaseHTTPRequestHandler):
     requests = []
     lock = threading.Lock()
@@ -35,17 +43,20 @@ class Provider(http.server.BaseHTTPRequestHandler):
         chat = self.path.endswith("chat/completions")
         inputs = request["messages" if chat else "input"]
         tool_turns = sum(item.get("role") == "tool" or item.get("type") == "function_call_output" for item in inputs)
-        long_run = any("over 100 turns" in str(item.get("content", "")) for item in inputs)
+        latest_user = next((content_text(item) for item in reversed(inputs) if item.get("role") == "user"), "")
+        long_run = "over 100 turns" in latest_user
         done = tool_turns >= 105 if long_run else tool_turns > 0
         call_id = f"call-{tool_turns + 1}"
-        slow = any("hang" in str(item.get("content", "")) for item in inputs)
+        slow = "hang" in latest_user
         code = "import asyncio, os\nfrom pathlib import Path\nPath('example.txt').write_text('hello\\n')\nsaved = Path('example.txt').read_text()\nassert 'ALBEDO_API_KEY' not in os.environ\nassert 'ALBEDO_TOKEN' not in os.environ\nawait asyncio.sleep(" + ("30" if slow else "0.4") + ")\nlen(saved)"
         if long_run:
             code = "1"
-        latest_user = next((item.get("content", "") for item in reversed(inputs) if item.get("role") == "user"), "")
         if latest_user.startswith("workspace probe"):
             done = inputs[-1].get("role") == "tool" or inputs[-1].get("type") == "function_call_output"
-            code = "import os\nfrom pathlib import Path\nPath('cwd-probe').write_text(os.getcwd())"
+            code = "import os\nfrom pathlib import Path\nassert 'workspace_marker' not in globals()\nworkspace_marker = os.getcwd()\nPath('cwd-probe').write_text(os.getcwd())"
+        if latest_user == "continue from branch":
+            done = tool_turns > 1
+            code = "from pathlib import Path\nassert 'saved' not in globals()\nassert Path('example.txt').read_text() == 'hello\\n'\nbranch_only = True"
         arguments = json.dumps({"code": code, "timeout_ms": 60000})
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -91,6 +102,10 @@ def run(protocol, endpoint):
         workspace.mkdir()
         switch_workspace = Path(directory)/"switch-workspace"
         switch_workspace.mkdir()
+        busy_workspace = Path(directory)/"busy-workspace"
+        busy_workspace.mkdir()
+        busy_replacement = Path(directory)/"busy-replacement"
+        busy_replacement.mkdir()
         # An old database has neither provider bindings nor the new column.
         home.mkdir(mode=0o700)
         legacy_id = "legacy-fixture"
@@ -99,7 +114,9 @@ def run(protocol, endpoint):
         with sqlite3.connect(home/"albedo.sqlite") as db:
             db.execute("CREATE TABLE sessions(id TEXT PRIMARY KEY,cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle')")
             db.execute("INSERT INTO sessions(id,cwd,model,protocol) VALUES(?,?,?,?)", (legacy_id,str(legacy_workspace),"legacy-model",protocol))
-        env = dict(os.environ, ALBEDO_HOME=str(home))
+        user_home = Path(directory)/"user-home"
+        user_home.mkdir()
+        env = dict(os.environ, HOME=str(user_home), ALBEDO_HOME=str(home))
         for obsolete in ("ALBEDO_API_KEY", "ALBEDO_BASE_URL", "ALBEDO_MODEL", "ALBEDO_PROTOCOL"):
             env.pop(obsolete, None)
         connection = None
@@ -126,7 +143,7 @@ def run(protocol, endpoint):
                 if not value["running"]:
                     return
                 time.sleep(.05)
-            raise AssertionError("worker did not settle")
+            raise AssertionError(f"worker did not settle: {value}\n{(home/'daemon.log').read_text()}")
         def snapshot(id):
             with api(f"/sessions/{id}/stream") as response:
                 while True:
@@ -156,7 +173,8 @@ def run(protocol, endpoint):
             base=f"http://127.0.0.1:{connection['port']}"
             with api("/health") as response:
                 health=json.load(response)
-            assert health == {"ok": True, "version": 2, "capabilities": ["session_provider", "session_workspace"]}, health
+            assert health["ok"] is True and health["version"] == 2, health
+            assert {"session_provider", "session_workspace"} <= set(health["capabilities"]), health
             try:
                 api("/sessions", {"workspace": str(workspace)}).close()
                 raise AssertionError("unconfigured session creation succeeded")
@@ -168,6 +186,36 @@ def run(protocol, endpoint):
                 "default": provider("/legacy/v1", "legacy-key", "legacy-model"),
                 "alpha": provider("/alpha/v1", "alpha-1", "fixture-alpha"),
             })
+
+            # The request boundary derives actual image metadata before durable
+            # storage. A later turn proves both provider protocols retain the data
+            # URL, while the user event exposes metadata only.
+            vision_workspace = Path(directory)/"vision-workspace"
+            vision_workspace.mkdir()
+            vision=json.loads(cli("new",str(vision_workspace)))["session"]
+            png="iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD"
+            attachment={"mimeType":"image/png","data":png,"width":2,"height":3,"bytes":24}
+            try:
+                api(f"/sessions/{vision}/events", {"content":"reject this", "image":dict(attachment,width=4)}).close()
+                raise AssertionError("spoofed image metadata was accepted")
+            except urllib.error.HTTPError as error:
+                assert error.code == 409, error
+            request_start=len(Provider.requests)
+            with api(f"/sessions/{vision}/events", {"content":"describe this image", "image":attachment}):
+                pass
+            ready(vision)
+            with api(f"/sessions/{vision}/events", {"content":"confirm image history"}):
+                pass
+            ready(vision)
+            vision_requests=Provider.requests[request_start:]
+            assert len(vision_requests) == 3, len(vision_requests)
+            data_url="data:image/png;base64,"+png
+            assert all(data_url in json.dumps(record["request"]) for record in vision_requests), vision_requests
+            vision_events=snapshot(vision)
+            image_event=next(event for event in vision_events if event.get("type")=="user" and event.get("image"))
+            assert image_event["image"] == {"mimeType":"image/png","width":2,"height":3,"bytes":24}, image_event
+            assert png not in json.dumps(image_event), image_event
+
             # Login may change the active provider before an old session is first reopened.
             request_start=len(Provider.requests)
             with api(f"/sessions/{legacy_id}/events", {"content":"inspect the legacy workspace"}):
@@ -194,6 +242,23 @@ def run(protocol, endpoint):
                 "beta": provider("/beta/v1", "beta-1", "fixture-beta"),
                 "gamma": provider("/gamma/v1", "gamma-1", "fixture-gamma", other_protocol),
             })
+
+            # Workspace updates are idle-only and never interrupt active work.
+            busy = json.loads(cli("new", str(busy_workspace)))["session"]
+            with api(f"/sessions/{busy}/events", {"content":"hang while workspace update is attempted"}):
+                pass
+            time.sleep(.5)
+            try:
+                api(f"/sessions/{busy}/workspace", {"workspace":str(busy_replacement)}).close()
+                raise AssertionError("busy workspace update succeeded")
+            except urllib.error.HTTPError as error:
+                assert error.code == 409
+            with api(f"/sessions/{busy}/interrupt", {}):
+                pass
+            ready(busy)
+            with api("/sessions") as response:
+                busy_info = next(item for item in json.load(response) if item["id"] == busy)
+            assert busy_info["workspace"] == str(busy_workspace), busy_info
 
             # Repair a renamed workspace without restarting daemon or losing history.
             original_workspace = Path(directory)/"original-workspace"
@@ -222,6 +287,9 @@ def run(protocol, endpoint):
             with api(f"/sessions/{moved}/workspace", {"workspace":str(moved_workspace)}) as response:
                 repaired = json.load(response)
             assert repaired["workspace"] == str(moved_workspace), repaired
+            with api("/sessions") as response:
+                moved_info = next(item for item in json.load(response) if item["id"] == moved)
+            assert moved_info["workspace"] == str(moved_workspace), moved_info
             assert json.loads((home/"daemon.json").read_text())["pid"] == connection["pid"]
             with api(f"/sessions/{moved}/events", {"content":"workspace probe after move"}):
                 pass
@@ -302,6 +370,44 @@ def run(protocol, endpoint):
             assert outcome.get("status")=="ok", outcome
             assert any(a["kind"]=="read" and a["target"].endswith("example.txt") for a in tool["trace"]["activities"]), tool
             assert any(c["path"].endswith("example.txt") for c in tool["trace"]["changes"]), tool
+
+            # Tree checkpoints are durable transcript sequence numbers. Forking
+            # at a call copies only that prefix and adds an explicit result
+            # without executing the source call again.
+            with api(f"/sessions/{id}/tree?after=0&limit=100") as response:
+                source_tree = json.load(response)
+            source_items = source_tree["items"]
+            assert source_tree["hasMore"] is False
+            assert {item["type"] for item in source_items} == {"user", "assistant", "tool"}, source_items
+            # Only the Responses protocol stores reasoning as its own durable item.
+            assert (protocol != "responses") or any(
+                item["preview"].startswith("[reasoning]") for item in source_items), source_items
+            call_checkpoint = next(item for item in source_items if item["preview"] == "call python")
+            with api(f"/sessions/{id}/fork", {"checkpoint":call_checkpoint["id"]}) as response:
+                branch_info = json.load(response)
+            branch = branch_info["id"]
+            assert branch_info["title"] == "write and inspect a file", branch_info
+            assert (branch_info["provider"], branch_info["model"], branch_info["protocol"]) == ("alpha", "fixture-alpha", protocol), branch_info
+            with api(f"/sessions/{branch}/tree?after=0&limit=100") as response:
+                branch_tree = json.load(response)
+            assert branch_tree["items"][-1]["preview"] == "not executed after branch checkpoint", branch_tree
+            assert [item["preview"] for item in branch_tree["items"][:-1]] == [item["preview"] for item in source_items if item["id"] <= call_checkpoint["id"]]
+            request_start = len(Provider.requests)
+            with api(f"/sessions/{branch}/events", {"content":"continue from branch"}):
+                pass
+            ready(branch)
+            branch_requests = Provider.requests[request_start:]
+            # The synthetic result completes the copied call, so the branch turn
+            # needs one request and never re-runs the source tool.
+            assert len(branch_requests) == 1, branch_requests
+            assert all("/alpha/v1/" in item["path"] and item["model"] == "fixture-alpha" for item in branch_requests), branch_requests
+            branch_inputs = branch_requests[0]["request"]["messages" if protocol == "chat_completions" else "input"]
+            outputs = [item for item in branch_inputs if item.get("role") == "tool" or item.get("type") == "function_call_output"]
+            assert [item.get("content", item.get("output")) for item in outputs] == ["not executed after branch checkpoint"], outputs
+            assert any(event.get("type") == "message" and event.get("text") == "finished" for event in snapshot(branch))
+            with api(f"/sessions/{id}/tree?after=0&limit=100") as response:
+                assert json.load(response)["items"] == source_items, "fork mutated source transcript"
+
             with api("/sessions") as response:
                 listed=json.load(response)
             assert next(item for item in listed if item["id"] == id)["title"] == "write and inspect a file"

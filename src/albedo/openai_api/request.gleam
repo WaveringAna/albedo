@@ -1,6 +1,7 @@
 import albedo/openai_api/types.{
   type Error, type Input, type Protocol, type Request, type Tool, Assistant,
   ChatCompletions, InvalidRequest, Replay, Responses, ToolOutput, User,
+  UserImage,
 }
 import gleam/json.{type Json}
 import gleam/list
@@ -78,6 +79,7 @@ fn validate_tools(tools: List(Tool), seen: List(String)) -> Result(Nil, Error) {
 fn encode_input(protocol: Protocol, input: Input) -> Result(Json, Error) {
   case input {
     User(text) -> Ok(message("user", text))
+    UserImage(text, image) -> Ok(image_message(protocol, text, image))
     Assistant(text) -> Ok(message("assistant", text))
     ToolOutput(id, text) ->
       Ok(case protocol {
@@ -104,6 +106,44 @@ fn encode_input(protocol: Protocol, input: Input) -> Result(Json, Error) {
 
 fn message(role: String, content: String) -> Json {
   json.object([#("role", json.string(role)), #("content", json.string(content))])
+}
+
+fn image_message(protocol: Protocol, text: String, image: types.Image) -> Json {
+  let #(mime_type, data, _, _, _) = types.image_parts(image)
+  let url = "data:" <> mime_type <> ";base64," <> data
+  let content = case protocol {
+    Responses -> [
+      json.object([
+        #("type", json.string("input_text")),
+        #("text", json.string(text)),
+      ]),
+      json.object([
+        #("type", json.string("input_image")),
+        #("detail", json.string("auto")),
+        #("image_url", json.string(url)),
+      ]),
+    ]
+    ChatCompletions -> [
+      json.object([
+        #("type", json.string("text")),
+        #("text", json.string(text)),
+      ]),
+      json.object([
+        #("type", json.string("image_url")),
+        #("image_url", json.object([#("url", json.string(url))])),
+      ]),
+    ]
+  }
+  json.object([
+    #("role", json.string("user")),
+    #("content", json.preprocessed_array(content)),
+  ])
+}
+
+/// The exact provider-facing tool schema array used by `encode`.
+/// Context inspection can reuse this without rebuilding request policy.
+pub fn encode_tools(protocol: Protocol, tools: List(Tool)) -> Json {
+  json.array(tools, encode_tool(protocol, _))
 }
 
 fn encode_tool(protocol: Protocol, tool: Tool) -> Json {

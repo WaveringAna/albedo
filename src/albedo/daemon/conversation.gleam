@@ -332,7 +332,7 @@ fn has_visible_assistant(inputs: List(types.Input)) -> Bool {
 fn latest_user(inputs: List(types.Input)) -> Option(String) {
   list.fold(inputs, None, fn(latest, input) {
     case input {
-      types.User(text) -> Some(text)
+      types.User(text) | types.UserImage(text, _) -> Some(text)
       _ -> latest
     }
   })
@@ -507,6 +507,19 @@ pub fn load_usage(
     |> result.try(fn(rows) {
       list.first(rows) |> result.replace_error("session not found")
     })
+  })
+}
+
+pub fn clear_usage(store: store.Store, id: String) -> Result(Nil, String) {
+  store.query(store, fn(db) {
+    sqlight.query(
+      "UPDATE sessions SET usage_model=NULL,usage_recorded_at=NULL,usage_prompt_tokens=NULL,usage_completion_tokens=NULL,usage_cached_prompt_tokens=NULL WHERE id=?",
+      db,
+      [sqlight.text(id)],
+      decode.dynamic,
+    )
+    |> result.replace(Nil)
+    |> result.map_error(fn(error) { error.message })
   })
 }
 

@@ -29,6 +29,7 @@ todo
 - [] flesh out plugin system more
 - [] sdk and -p, command to print out most recent assistant message from session
 - [] compaction strategy plugins LCM and snapcompact
+- [] compaction evaluations: old-fact recall, corrected instructions, tool pairing, images, restarts, and token/cost comparisons
 - [] subagents plugin
 - [] social plugins like discord
 - [] plugins like heartbeat and skills
