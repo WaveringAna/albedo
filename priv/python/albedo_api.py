@@ -35,6 +35,9 @@ class PythonApi:
     on_shutdown: Callable[[Cleanup], None]
     background_handle: Callable[[type[object]], None]
     version: int = 1
+    # The module list this kernel was started with, so a plugin can learn the
+    # session's tool selection (remote boots the same set on another machine).
+    modules: Sequence[str] = ()
 
 
 class Execute(TypedDict):
@@ -74,6 +77,30 @@ class Shutdown(TypedDict):
     type: Literal["shutdown"]
 
 
+class Invoke(TypedDict):
+    """One owner tool call: a namespace path or live reference, never both.
+
+    A `wait: true` frame (spelled "await" on the wire, a JSON key TypedDict
+    cannot express) awaits the live reference instead of calling a method.
+    """
+    type: Literal["invoke"]
+    id: str
+    name: NotRequired[str]
+    target: NotRequired[dict[str, str]]
+    args: NotRequired[list[object]]
+    kwargs: NotRequired[dict[str, object]]
+
+
+class Introspect(TypedDict):
+    type: Literal["introspect"]
+    id: str
+
+
+class Release(TypedDict):
+    type: Literal["release"]
+    handle: str
+
+
 class State(TypedDict):
     """Save the namespace to disk, or revive it from an earlier save."""
     type: Literal["snapshot", "restore"]
@@ -81,7 +108,7 @@ class State(TypedDict):
     path: str
 
 
-Incoming = Execute | Reply | Interrupt | Shutdown | State
+Incoming = Execute | Reply | Interrupt | Shutdown | Invoke | Introspect | Release | State
 
 
 class SavedCell(TypedDict):

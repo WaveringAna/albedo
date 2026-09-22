@@ -62,7 +62,7 @@ async def _run(command: str) -> tuple[int | None, str]:
     """One supervised shell job, awaited to completion, with its bounded output."""
     job = jobs.bash(command, timeout=SEARCH_TIMEOUT)
     await job
-    return job.returncode, job.tail(jobs.preview_limit)
+    return job.exit_code, job.tail(jobs.preview_limit)
 
 
 def _numbered(number: int, lines: Sequence[str]) -> str:

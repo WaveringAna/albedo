@@ -1,6 +1,6 @@
 # extensions
 
-an extension is a named bundle of plugins. it can contribute any number of context, tool, managed, or compaction plugins. `python`, `bash`, `work`, `skills`, and `rolling` are enabled by default; `mcp` and `ssh` are installed and disabled until a session enables them. plugin contributions compose inside them.
+an extension is a named bundle of plugins. it can contribute any number of context, tool, managed, or compaction plugins. `python`, `bash`, `work`, `skills`, `rolling`, and `remote` are enabled by default; `mcp` is installed and disabled until a session enables it. plugin contributions compose inside them.
 
 ## select extensions
 
@@ -73,17 +73,21 @@ see [the models catalog](models.md): the cached models.dev catalog that supplies
 
 see [the mcp extension](mcp.md) for connecting Model Context Protocol servers: configuration, credential scope, namespaced tools, and connection lifecycle.
 
-## ssh
+## remote
 
-the `ssh` extension runs commands and moves files on one remote host; installed and disabled until a session enables it. `ssh.run(command)` executes remotely and returns its exit code and output; exit code 255 usually means the connection itself failed. `ssh.read(path)` returns remote file text and `ssh.write(path, content)` replaces it. paths under the session workspace map onto the remote cwd. the target resolves per call from a `host=` argument, then the value `ssh.configure(host, remote_cwd=None)` stored, then `$ALBEDO_SSH` (`user@host[:/path]`), then the `ssh` section of extensions.json:
+the `remote` extension boots this session's Python kernel on a remote host over one SSH connection, so every harness tool is callable on it, and it is enabled by default. `rem = await remote.connect()` stages albedo's python bundle on the target, starts the kernel there through SSH with `ControlMaster`/`ControlPersist` (one multiplexed TCP connection: no re-authentication per call), and answers the remote kernel's host-route calls against this session's daemon.
+
+machine tools run on the remote kernel: `rem.bash(command)` starts a supervised job on the host immediately and synchronously, like local bash — the handle exists right away, `job.tail()`, `job.id`, `job.exit_code`, `job.duration`, and `job.timed_out` answer synchronously from the mirrored output stream, `await job` waits for completion, and `await job.stop()` stops it. session tools run where the daemon runs: `await rem.work.*` and `await rem.skills.*` relay over the connection to the local daemon's ledger and catalog. both kernels load the same content-hashed bundle, so a tool's remote shape matches its local one. every other call returns a reference that settles on its first await: values cross as real objects — dataclasses and list subclasses are rebuilt, so remote output prints exactly like local output — and a result that cannot cross comes back as a live reference whose methods are further remote calls. references passed back into remote calls stay references, not copies, including ones still in flight. one rule remains: a call whose local counterpart is synchronous (`rem.files.read`) still needs `await`, because the value itself crosses the network; handles and their state never do.
+
+the target resolves per call from a `host=` argument, then `remote.configure(host, remote_cwd=None)`, then `$ALBEDO_SSH` (`user@host[:/path]`), then the `remote` section of extensions.json:
 
 ```json
 {
-  "ssh": { "host": "deploy@box", "remoteCwd": "/srv/app" }
+  "remote": { "host": "deploy@box", "remoteCwd": "/srv/app", "python": "python3" }
 }
 ```
 
-a bare host asks the remote for its `pwd` once. commands run under `BatchMode=yes`, so key-based auth is required.
+a bare host asks the remote for its `pwd` once. if the host is reachable but its kernel cannot boot (no python, staging failed, bad handshake), `connect()` still returns and prints a warning: the connection is degraded to SSH command mode, where only `rem.bash(command, timeout=300)`, `rem.read(path)`, and `rem.write(path, content)` answer and everything else raises. an unreachable host fails `connect()`. connections are scoped: a lost SSH channel invalidates the connection rather than silently reconnecting, and `await rem.close()` ends it. connections run under `BatchMode=yes`, so key-based auth is required.
 
 ## skills
 

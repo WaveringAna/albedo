@@ -325,5 +325,6 @@ local_paths() ->
 
 %% Model tools must not inherit provider credentials or the daemon's client token.
 clean_environment() ->
-    Keep = ["PATH","HOME","USER","LOGNAME","TMPDIR","TMP","TEMP","LANG","LC_ALL","LC_CTYPE","SYSTEMROOT"],
+    Keep = ["PATH","HOME","USER","LOGNAME","TMPDIR","TMP","TEMP","LANG","LC_ALL","LC_CTYPE","SYSTEMROOT",
+            "ALBEDO_HOME","ALBEDO_SSH"],
     [{Name,false} || Entry <- os:getenv(), Name <- [hd(string:split(Entry,"="))], not lists:member(Name,Keep)].

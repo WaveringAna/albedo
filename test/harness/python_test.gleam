@@ -211,7 +211,7 @@ pub fn shell_deadline_is_reported_and_kernel_remains_usable_test() {
     python.execute(
       kernel,
       "deadline",
-      "job = bash('sleep 30', timeout=0.05)\nawait job\nprint(job.tail())\n(job.timed_out, job.returncode < 0)",
+      "job = bash('sleep 30', timeout=0.05)\nawait job\nprint(job.tail())\n(job.timed_out, job.exit_code < 0)",
       5000,
     )
   outcome.status |> should.equal(python.Succeeded)

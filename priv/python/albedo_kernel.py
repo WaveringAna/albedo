@@ -8,9 +8,11 @@ from typing import Any, cast
 from types import CodeType, FrameType
 import albedo_trace
 import asyncio
+import base64
 import codecs
 import collections
 import contextvars
+import dataclasses
 import inspect
 import io
 import json
@@ -40,6 +42,13 @@ asyncio.set_event_loop(LOOP)
 QUEUE: asyncio.Queue[albedo_api.Execute | albedo_api.State] = asyncio.Queue()
 PENDING: dict[str, asyncio.Future[albedo_api.HostReply]] = {}
 HOST_SLOTS = asyncio.Semaphore(32)
+OWNER_CALLS = asyncio.Semaphore(32)  # concurrent tool calls from the connection owner
+OWNER_TASKS: dict[str, asyncio.Task[object]] = {}  # interruptable by invoke id
+LIVE: collections.OrderedDict[str, object] = collections.OrderedDict()  # remote references
+LIVE_LIMIT = 64  # live references retained for the owner; LRU beyond that
+PENDING_OBJECTS: collections.OrderedDict[str, asyncio.Future[object]] = collections.OrderedDict()
+MIRROR_INTERVAL = 0.15  # seconds between output-tail mirror frames while data flows
+MIRROR_TAIL = 16 * 1024  # bytes of tail a mirror frame carries
 active: asyncio.Task[object] | None = None
 active_capture: Capture | None = None
 interrupt_capture: Capture | None = None
@@ -126,19 +135,33 @@ def reader():
                     interrupt_capture = capture
                     capture.interruption = message.get("reason", "cancelled")
                     os.kill(os.getpid(), signal.SIGINT)
+                else:
+                    task = OWNER_TASKS.get(message["id"])
+                    if task is not None:
+                        LOOP.call_soon_threadsafe(task.cancel)
             else:
                 _ = LOOP.call_soon_threadsafe(deliver, message)
     except (EOFError, OSError, ValueError, KeyError):
         die()
 
 
-def deliver(message: albedo_api.Reply | albedo_api.Execute | albedo_api.State) -> None:
-    if message["type"] == "reply":
+def deliver(message: dict[str, object]) -> None:
+    kind = message["type"]
+    if kind == "reply":
         future = PENDING.pop(message["id"], None)
         if future is not None and not future.done():
             future.set_result(message["value"])
+    elif kind == "invoke":
+        _ = LOOP.create_task(serve_invoke(cast(dict[str, object], message)))
+    elif kind == "introspect":
+        send({"type": "introspected", "id": message["id"],
+              "names": sorted(name for name in NAMESPACE
+                              if name.isidentifier() and not name.startswith("_")),
+              "handles": [{"id": key, "repr": show(value)} for key, value in LIVE.items()]})
+    elif kind == "release":
+        LIVE.pop(message.get("handle", ""), None)
     else:
-        QUEUE.put_nowait(message)
+        QUEUE.put_nowait(cast(albedo_api.Execute | albedo_api.State, message))
 
 
 class WorkError(Exception):
@@ -510,6 +533,257 @@ def state_reply(message: albedo_api.State) -> dict[str, object]:
             "output": "", "value": "", "truncated": False, "state": state}
 
 
+MAX_RESULT_BYTES = 4 * 1024 * 1024  # one invoke reply ceiling, below the 8 MiB frame guard
+
+
+class Unencodable(Exception):
+    """The value cannot cross the connection; it stays a live remote reference."""
+
+
+def _wire_encode(value: object, depth: int = 0) -> object:
+    """One value as connection-crossable JSON; Unencodable means a live reference.
+
+    Dataclasses and list subclasses carry their class so the owner rebuilds the
+    real object and remote results read exactly like local ones.
+    """
+    if depth > 32:
+        raise Unencodable
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return {"__bytes__": base64.b64encode(bytes(value)).decode("ascii")}
+    if isinstance(value, dict) and type(value) is dict:
+        return {str(key): _wire_encode(item, depth + 1) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        try:
+            if type(value) is not list:
+                cls = type(value)
+                return {"__list__": cls.__module__ + "." + cls.__qualname__,
+                        "items": [_wire_encode(item, depth + 1) for item in value]}
+        except Unencodable:
+            raise
+        except (TypeError, ValueError):
+            raise Unencodable from None
+        return [_wire_encode(item, depth + 1) for item in value]
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        cls = type(value)
+        try:
+            return {"__class__": cls.__module__ + "." + cls.__qualname__,
+                    "fields": {field.name: _wire_encode(getattr(value, field.name), depth + 1)
+                               for field in dataclasses.fields(value)}}
+        except (TypeError, ValueError, AttributeError):
+            raise Unencodable from None
+    raise Unencodable
+
+
+def retain(value: object) -> str:
+    """Keep one live object addressable by the owner; identity-stable, oldest rolls out."""
+    for key, held in LIVE.items():
+        if held is value:
+            LIVE.move_to_end(key)
+            return key
+    key = uuid.uuid4().hex
+    LIVE[key] = value
+    LIVE.move_to_end(key)
+    while len(LIVE) > LIVE_LIMIT:
+        LIVE.popitem(last=False)
+    capture = getattr(value, "capture", None)
+    if isinstance(capture, Capture):
+        _ = LOOP.create_task(_mirror(key, value, capture))
+    return key
+
+
+def _mirror_state(obj: object) -> dict[str, object]:
+    """One snapshot of a captured object: what the owner's tail() and poll() answer from."""
+    capture = cast(Capture, getattr(obj, "capture"))
+    return {"job": getattr(obj, "id", None), "seen": capture.seen,
+            "tail": bytes(capture.tail_data[-MIRROR_TAIL:]).decode("utf-8", errors="replace"),
+            "exit_code": getattr(obj, "exit_code", None),
+            "timed_out": getattr(obj, "timed_out", False),
+            "duration": getattr(obj, "duration", None)}
+
+
+async def _mirror(key: str, obj: object, capture: Capture) -> None:
+    """Stream one live reference's output tail, so the owner reads it without a round trip.
+
+    Frames are coalesced to the mirror interval; the final frame carries the
+    completion state, and the pump ends once the object has settled and quieted.
+    """
+    seen, quiet = -1, 0
+    while LIVE.get(key) is obj:
+        await asyncio.sleep(MIRROR_INTERVAL)
+        changed = capture.seen != seen
+        if changed:
+            seen, quiet = capture.seen, 0
+        else:
+            quiet += 1
+        finished = getattr(obj, "exit_code", None)
+        if changed or (finished is not None and quiet <= 1):
+            send({"type": "mirror", "handle": key, **_mirror_state(obj)})
+        if finished is not None and quiet >= 3:
+            return
+
+
+def _invoke_reply(call_id: str, result: object,
+                  state: dict[str, object] | None = None) -> dict[str, object]:
+    """One reference per result: inline the value when it can cross, retain it live.
+
+    Typed composites (dataclasses, list subclasses) get both, so the owner can
+    read them as values and still call methods on the live remote object. Plain
+    data crosses raw: its methods are pure and its state already crossed, so a
+    remote call would be the same computation plus a network fee, and retaining
+    it would evict live references worth keeping.
+    """
+    try:
+        wire = _wire_encode(result)
+        encoded = json.dumps(wire, ensure_ascii=True)
+    except (Unencodable, TypeError, ValueError, RecursionError):
+        reply: dict[str, object] = {"type": "invoked", "id": call_id, "ok": True,
+                                    "handle": retain(result)}
+        if state is not None:
+            reply["state"] = state
+        return reply
+    if len(encoded) > MAX_RESULT_BYTES:
+        return {"type": "invoked", "id": call_id, "ok": False,
+                "error": {"ename": "RemoteValueError",
+                          "evalue": f"result is {len(encoded)} bytes, over the "
+                                    f"{MAX_RESULT_BYTES}-byte ceiling",
+                          "traceback": []}}
+    typed = isinstance(result, list) and type(result) is not list \
+        or dataclasses.is_dataclass(result) and not isinstance(result, type)
+    if typed:
+        return {"type": "invoked", "id": call_id, "ok": True,
+                "handle": retain(result), "value": wire}
+    if state is not None:
+        return {"type": "invoked", "id": call_id, "ok": True,
+                "handle": retain(result), "state": state}
+    return {"type": "invoked", "id": call_id, "ok": True, "value": wire}
+
+
+def _owner_args(value: object) -> object:
+    """Resolve `{"__ref__": id}` markers in owner arguments back to live objects."""
+    if isinstance(value, dict):
+        if set(value) == {"__ref__"} and isinstance(value.get("__ref__"), str):
+            obj = LIVE.get(value["__ref__"])
+            if obj is None:
+                raise LookupError(f"live reference {value['__ref__']!r} is gone")
+            return obj
+        return {key: _owner_args(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_owner_args(item) for item in value]
+    return value
+
+
+def _resolve(name: str) -> object:
+    """The callable a namespace-path invoke addresses; handles resolve before this."""
+    parts = name.split(".") if name else []
+    if not all(part.isidentifier() and not part.startswith("_") for part in parts):
+        raise ValueError(f"unaddressable owner invoke: {name!r}")
+    obj = NAMESPACE.get(parts[0]) if parts else None
+    if obj is None:
+        raise LookupError("no remote binding " + repr(parts[0] if parts else name)
+                          + "; rem.tools() lists what exists")
+    for part in parts[1:]:
+        obj = getattr(obj, part)
+    return obj
+
+
+async def _target_object(target: object) -> object | None:
+    """The object a target names: a live reference, a pending call's result, or nothing.
+
+    A `{"pending": id}` target waits for the call that produced the object, so
+    method calls raced ahead of their own reply still resolve in order.
+    """
+    if not isinstance(target, dict):
+        return None
+    key = target.get("handle")
+    if isinstance(key, str):
+        obj = LIVE.get(key)
+        if obj is None:
+            raise LookupError(f"live reference {key!r} is gone")
+        return obj
+    pending = target.get("pending")
+    if isinstance(pending, str):
+        future = PENDING_OBJECTS.get(pending)
+        if future is None:
+            raise LookupError(f"pending call {pending!r} is gone")
+        ok, value = await cast(Awaitable[tuple[bool, object]], future)
+        if not ok:
+            raise cast(BaseException, value)
+        return value
+    return None
+
+
+async def serve_invoke(message: dict[str, object]) -> None:
+    """One owner tool call: resolve, call, await by the cell rule, answer one reference.
+
+    The reply inlines the value when it can cross and otherwise retains the
+    object as a live reference; `value` and `handle` are one concept. Awaitables
+    run to completion unless their class is a registered handle, the same rule
+    the local evaluator applies, so a tool's remote shape matches its local one.
+    An awaited object's reply carries its final state, so the owner's poll() is
+    never racy, and every call's result object is retained briefly as a pending
+    target for method calls that raced ahead of the reply.
+    """
+    call_id = cast(str, message["id"])
+    OWNER_TASKS[call_id] = cast(asyncio.Task[object], asyncio.current_task())
+    future: asyncio.Future[tuple[bool, object]] = LOOP.create_future()
+    PENDING_OBJECTS[call_id] = future
+    PENDING_OBJECTS.move_to_end(call_id)
+    while len(PENDING_OBJECTS) > LIVE_LIMIT:
+        PENDING_OBJECTS.popitem(last=False)
+    reply: dict[str, object]
+    result: object = None
+    state: dict[str, object] | None = None
+    failure: BaseException | None = None
+    try:
+        async with OWNER_CALLS:
+            base = await _target_object(message.get("target"))
+            if message.get("await") is True:
+                if base is None:
+                    raise ValueError("await needs a live or pending reference target")
+                result = await cast(Awaitable[object], base)
+                state = _mirror_state(result) if getattr(result, "capture", None) else None
+            else:
+                name = cast(str, message.get("name", ""))
+                if base is None:
+                    call = _resolve(name)
+                else:
+                    parts = name.split(".") if name else []
+                    if not all(part.isidentifier() and not part.startswith("_") for part in parts):
+                        raise ValueError(f"unaddressable owner invoke: {name!r}")
+                    call = base
+                    for part in parts:
+                        call = getattr(call, part)
+                args = [_owner_args(item) for item in message.get("args", ())]
+                kwargs = {key: _owner_args(item)
+                          for key, item in cast(dict[str, object], message.get("kwargs", {})).items()}
+                result = call(*args, **kwargs)
+                if inspect.isawaitable(result) and not isinstance(result, tuple(HANDLES)):
+                    result = await cast(Awaitable[object], result)
+    except asyncio.CancelledError as error:
+        failure = error
+        # The owner cancelled its wait; the remote effect may continue, and the
+        # live reference (a running job, for instance) stays addressable.
+        reply = {"type": "invoked", "id": call_id, "ok": False, "cancelled": True,
+                 "error": {"ename": "CancelledError",
+                           "evalue": "the owner cancelled this wait; the remote effect "
+                                     "may continue and its reference stays addressable",
+                           "traceback": []}}
+    except BaseException as error:
+        failure = error
+        reply = {"type": "invoked", "id": call_id, "ok": False,
+                 "error": {"ename": type(error).__name__, "evalue": str(error)[:8192],
+                           "traceback": traceback.format_exc().splitlines()[-8:]}}
+    else:
+        reply = _invoke_reply(call_id, result, state)
+    finally:
+        OWNER_TASKS.pop(call_id, None)
+        if not future.done():
+            future.set_result((failure is None, failure if failure is not None else result))
+    send(reply)
+
+
 async def serve():
     global active, active_capture
     while True:
@@ -570,12 +844,13 @@ def main():
     threading.Thread(target=reader, daemon=True).start()
     _ = signal.signal(signal.SIGINT, interrupt)
     albedo_trace.install(CELL.get)
-    api = albedo_api.PythonApi(version=1, loop=LOOP, host=host, HostError=WorkError,
+    modules = cast(list[str], json.loads(sys.argv[1]))
+    api = albedo_api.PythonApi(version=2, loop=LOOP, host=host, HostError=WorkError,
         capture=background_capture, preview=PREVIEW, send=send, on_shutdown=CLEANUP.append,
-        background_handle=HANDLES.append)
+        background_handle=HANDLES.append, modules=modules)
     NAMESPACE.update(cells=Cells(), output=Output())
     try:
-        albedo_api.load_plugins(cast(list[str], json.loads(sys.argv[1])), api, NAMESPACE)
+        albedo_api.load_plugins(modules, api, NAMESPACE)
     except Exception as error:
         send({"type": "startup_error", "message": str(error)})
         die()

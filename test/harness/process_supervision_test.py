@@ -152,7 +152,7 @@ class SupervisionTest(unittest.TestCase):
         finally:
             asyncio.create_subprocess_shell = real
         self.assertIsNotNone(job.process)
-        self.assertLess(job.returncode, 0)   # the child the spawn created was ended
+        self.assertLess(job.exit_code, 0)   # the child the spawn created was ended
         self.assertTrue(job.termination.gone)
         self.assertFalse(present(job.group.pgid))
 

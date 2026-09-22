@@ -38,8 +38,10 @@ class Job:
         self.command: str = command
         self.process: asyncio.subprocess.Process | None = None
         self.group: albedo_proc.Group | None = None
-        self.returncode: int | None = None
+        self.exit_code: int | None = None
         self.timed_out: bool = False
+        self.started: float = loop.time()
+        self.duration: float | None = None  # wall seconds once the command ended
         self.termination: albedo_proc.Termination | None = None
         self.capture: OutputCapture = capture_factory(self.id)
         self.ending: asyncio.Task[albedo_proc.Termination] | None = None
@@ -72,7 +74,7 @@ class Job:
     async def _run(self, timeout: float) -> Job:
         try:
             process = self.process = await self._spawn()
-            self.returncode = await asyncio.wait_for(self._drain(process), timeout)
+            self.exit_code = await asyncio.wait_for(self._drain(process), timeout)
         except asyncio.TimeoutError:
             self.timed_out = True
         except asyncio.CancelledError:
@@ -81,13 +83,14 @@ class Job:
             self.capture.write(f"{type(error).__name__}: {error}\n")
         finally:
             ending = await self.stop()
-            if self.returncode is None and self.process is not None:
-                self.returncode = await self._status(self.process)
+            if self.exit_code is None and self.process is not None:
+                self.exit_code = await self._status(self.process)
+            self.duration = loop.time() - self.started
             if self.timed_out:
                 self.capture.write(f"\n[deadline exceeded after {timeout:g}s; {ending.report()}]\n")
             elif not ending.gone:
                 self.capture.write(f"\n[cleanup failed: {ending.report()}]\n")
-            send({"type": "job", "id": self.id, "returncode": self.returncode,
+            send({"type": "job", "id": self.id, "exit_code": self.exit_code,
                   "timed_out": self.timed_out, "cleanup": ending.as_json()})
             release(self)
         return self
@@ -129,7 +132,12 @@ class Job:
         return asyncio.shield(self.task).__await__()
 
     def poll(self):
-        return self.returncode
+        return self.exit_code
+
+    @property
+    def returncode(self) -> int | None:
+        """`exit_code` under subprocess's name; both spellings answer."""
+        return self.exit_code
 
     def tail(self, n: int = 4000) -> str:
         data = self.capture.tail_data
@@ -154,12 +162,14 @@ class Job:
         self.termination = ending
         release(self)
         if self.task.done():
-            send({"type": "job", "id": self.id, "returncode": process.returncode,
+            send({"type": "job", "id": self.id, "exit_code": process.returncode,
                   "timed_out": self.timed_out, "cleanup": ending.as_json()})
         return ending
 
     def __repr__(self) -> str:
-        return f"Job(id={self.id!r}, returncode={self.returncode!r}, timed_out={self.timed_out!r}, bytes={self.capture.seen})"
+        return (f"Job(id={self.id!r}, exit_code={self.exit_code!r}, "
+                f"timed_out={self.timed_out!r}, duration={self.duration!r}, "
+                f"bytes={self.capture.seen})")
 
 
 async def _terminate_one(group: albedo_proc.Group) -> albedo_proc.Termination:

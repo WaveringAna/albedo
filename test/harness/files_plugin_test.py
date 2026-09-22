@@ -15,8 +15,8 @@ from albedo_plugins import files as plugin
 class FakeJob:
     """What `bash(command)` returns: an awaitable handle owning its output."""
 
-    def __init__(self, output, returncode=0):
-        self.output, self.returncode = output, returncode
+    def __init__(self, output, exit_code=0):
+        self.output, self.exit_code = output, exit_code
 
     def __await__(self):
         async def settled():
