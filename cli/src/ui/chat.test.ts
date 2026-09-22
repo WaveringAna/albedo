@@ -62,6 +62,81 @@ test("ctrl+j toggles rich edit diffs without submitting the composer", async t =
   await until(() => !screen.last().includes("1 + new"), "diff collapsed")
 })
 
+test("rejected steering leaves the current assistant turn intact and restores the draft", async t => {
+  let stream: StreamOptions | undefined
+  const screen = mount(createElement(ChatScreen, {
+    clipboardImages: NO_CLIPBOARD_IMAGES,
+    transport: { send: async () => { throw new Error("queue full") },
+      getStatus: async () => ({ running: true, idle: false, phase: "reasoning" as const }),
+      stream: async options => { stream = options; options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) } },
+    onBack: () => {}, onQuit: () => {}, settleMs: 20,
+  }), t, 100)
+  await until(() => stream !== undefined && screen.last().includes("thinking"), "running")
+  stream!.onEvent({ type: "text", text: "still working" })
+  await screen.shows("still working")
+  screen.write("failed steer")
+  await screen.flush()
+  screen.write("\r")
+  await until(() => screen.last().includes("message not queued: queue full"), "rejection")
+  assert(screen.last().includes("still working"))
+  assert(!screen.last().includes("queued 1"))
+  assert(screen.last().includes("› failed steer"), "the unsent text stays editable")
+})
+
+test("daemon can queue a message even when the UI last observed idle", async t => {
+  let stream: StreamOptions | undefined
+  const screen = mount(createElement(ChatScreen, {
+    clipboardImages: NO_CLIPBOARD_IMAGES,
+    transport: { clientId: "racing-client", send: async () => ({ ok: true as const, queued: true }),
+      getStatus: async () => ({ running: false, idle: true }),
+      stream: async options => { stream = options; options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) } },
+    onBack: () => {}, onQuit: () => {}, settleMs: 20,
+  }), t, 100)
+  await until(() => stream !== undefined && screen.last().includes("ready"), "idle status")
+  screen.write("racing steer")
+  await screen.flush()
+  screen.write("\r")
+  await until(() => screen.last().includes("queued 1 · racing steer"), "authoritative queued response")
+  stream!.onEvent({ type: "tool", name: "python", args: { code: "1" }, result: "ok" })
+  stream!.onEvent({ type: "user", text: "racing steer", source: "chat", triggeredAt: "", clientId: "racing-client" })
+  await until(() => !screen.last().includes("queued 1") && screen.last().includes("racing steer"), "delivered steer")
+  assert(screen.last().indexOf("python") < screen.last().indexOf("racing steer"))
+})
+
+test("steering stays in a separate queue until the daemon appends it after tool output", async t => {
+  let stream: StreamOptions | undefined
+  const sent: string[] = []
+  const screen = mount(createElement(ChatScreen, {
+    clipboardImages: NO_CLIPBOARD_IMAGES,
+    transport: { clientId: "steer-client", send: async text => { sent.push(text); return { ok: true as const, queued: true } },
+      getStatus: async () => ({ running: true, idle: false, phase: "tool" as const }),
+      stream: async options => { stream = options; options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) } },
+    agentName: "albedo", onBack: () => {}, onQuit: () => {}, settleMs: 20,
+  }), t, 100)
+  await until(() => stream !== undefined && screen.last().includes("running tool"), "busy session")
+  stream!.onEvent({ type: "text", text: "working through the original task" })
+  await screen.shows("working through the original task")
+  screen.write("first steer")
+  await screen.flush()
+  screen.write("\r")
+  await until(() => screen.last().includes("queued 1 · first steer"), "queued steer")
+  screen.write("second steer")
+  await screen.flush()
+  screen.write("\r")
+  await until(() => screen.last().includes("queued 2 · second steer"), "second queued steer")
+  assert.deepEqual(sent, ["first steer", "second steer"])
+  assert(!screen.last().includes("you\nfirst steer"), "not yet a transcript entry")
+  stream!.onEvent({ type: "tool", name: "python", args: { code: "1" }, result: "done" })
+  stream!.onEvent({ type: "user", text: "first steer", source: "chat", triggeredAt: "", clientId: "steer-client" })
+  stream!.onEvent({ type: "user", text: "second steer", source: "chat", triggeredAt: "", clientId: "steer-client" })
+  await until(() => screen.last().includes("second steer") && !screen.last().includes("queued 1"), "queued messages moved")
+  const painted = screen.last()
+  assert(painted.indexOf("working through the original task") < painted.indexOf("python"))
+  assert(painted.indexOf("python") < painted.indexOf("first steer"))
+  assert(painted.indexOf("first steer") < painted.indexOf("second steer"))
+  assert.equal(painted.split("first steer").length - 1, 1)
+})
+
 test("copied chat screen renders Python activity and reset replaces history",async t=>{
   let stream:StreamOptions|undefined
   let running=true
@@ -182,7 +257,7 @@ test("confirmed user and streamed assistant headings get clocks without duplicat
   screen.write("question")
   await tick()
   screen.write("\r")
-  await until(() => screen.last().includes("you"), "optimistic question")
+  await until(() => screen.last().includes("sending · question"), "pending question")
   const timestamp = new Date(2026, 8, 21, 0, 58, 30).getTime()
   const user: StreamEvent = { type: "user", text: "question", source: "chat", triggeredAt: "", clientId: "clock-client", timestamp }
   stream!.onEvent(user)

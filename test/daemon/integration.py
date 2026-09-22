@@ -250,11 +250,11 @@ def run(protocol, endpoint):
             queue_workspace.mkdir()
             queued=json.loads(cli("new", str(queue_workspace)))["session"]
             request_start=len(Provider.requests)
-            with api(f"/sessions/{queued}/events", {"content":"first task"}):
-                pass
+            with api(f"/sessions/{queued}/events", {"content":"first task"}) as response:
+                assert json.load(response)["queued"] is False
             time.sleep(.15)
-            with api(f"/sessions/{queued}/events", {"content":"queued direction"}):
-                pass
+            with api(f"/sessions/{queued}/events", {"content":"queued direction"}) as response:
+                assert json.load(response)["queued"] is True
             with api(f"/sessions/{queued}/events", {"content":"another direction"}):
                 pass
             ready(queued)

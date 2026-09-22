@@ -34,7 +34,7 @@ export class WorkspaceMissingError extends Error {
 export interface ChatClient {
   /** The sender identity used by send; lets views suppress their optimistic echo. */
   readonly clientId?: string
-  send: (content: string, signal?: AbortSignal, image?: ImageAttachment) => Promise<{ ok: true }>
+  send: (content: string, signal?: AbortSignal, image?: ImageAttachment) => Promise<{ ok: true; queued?: boolean }>
   replaceWorkspace?: (workspace: string, signal?: AbortSignal) => Promise<WorkspaceUpdate>
   interrupt?: () => Promise<{ interrupted: boolean }>
   getStatus: (signal?: AbortSignal) => Promise<AgentStatus>
@@ -215,7 +215,8 @@ export function createChatClient(options: CreateChatClientOptions): ChatClient {
       throw await responseError(res)
     }
 
-    return { ok: true }
+    const data = await res.json().catch(() => ({})) as { queued?: unknown }
+    return { ok: true, queued: data.queued === true }
   }
 
   const replaceWorkspace: ChatClient["replaceWorkspace"] = agentId ? async (workspace, signal) => {

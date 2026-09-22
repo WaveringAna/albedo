@@ -3,6 +3,16 @@ import test from "node:test"
 import { createChatClient, WorkspaceMissingError, type StreamEvent } from "./client.js"
 
 const page=(cursor:number,events:unknown[]) => `data: ${JSON.stringify({cursor,events})}\n\n`
+test("send returns the daemon's authoritative queued state", async () => {
+  const responses = [false, true]
+  const client = createChatClient({ baseUrl: "http://localhost", agentId: "session", fetchImpl: async () =>
+    new Response(JSON.stringify({ ok: true, queued: responses.shift() }), { status: 202 }) })
+  assert.deepEqual(await client.send("first"), { ok: true, queued: false })
+  assert.deepEqual(await client.send("steer"), { ok: true, queued: true })
+  const older = createChatClient({ baseUrl: "http://localhost", agentId: "session", fetchImpl: async () => new Response(null, { status: 202 }) })
+  assert.deepEqual(await older.send("legacy"), { ok: true, queued: false })
+})
+
 test("daemon thinking events stay a distinct type from assistant text",async()=>{
   const page=`data: ${JSON.stringify({cursor:1,events:[{type:"thinking",text:"weighing options"},{type:"text",text:"answer"},{type:"message",role:"assistant",text:"answer"}]})}\n\n`
   const events:StreamEvent[]=[]

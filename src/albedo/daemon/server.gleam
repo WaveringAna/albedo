@@ -665,7 +665,14 @@ fn route(
                       session.submit(worker, submission.0, submission.1, image)
                     })
                   {
-                    Ok(_) -> reply(202, json.object([#("ok", json.bool(True))]))
+                    Ok(queued) ->
+                      reply(
+                        202,
+                        json.object([
+                          #("ok", json.bool(True)),
+                          #("queued", json.bool(queued)),
+                        ]),
+                      )
                     Error(session.Rejected(e)) -> error(409, e)
                     Error(session.WorkspaceMissing(path)) ->
                       reply(

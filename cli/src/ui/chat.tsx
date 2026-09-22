@@ -45,6 +45,7 @@ export type ChatScreenProps = {
 type Drag = { rows: Rows; selection: Selection; top: number; column: number; direction: number }
 
 type Active = { kind: "text" | "thinking"; content: MarkdownIndex }
+type PendingUser = { text: string; image?: ImageAttachment; queued: boolean }
 type WorkspaceRecovery = { missing: string; replacement: string; prompt: string; image?: ImageAttachment; saving: boolean; error?: string }
 const SYSTEM_CLIPBOARD_IMAGES = { available: clipboardHasImage, read: readClipboardImage }
 const userText = (text: string, image?: ImageMetadata): string => image ? `${text}\n[image · ${imageLabel(image)}]` : text
@@ -139,7 +140,7 @@ export function ChatScreen({
   const streamed = useRef<string[]>([])
   const streamedEntries = useRef<number[]>([])
   const provisionalEntries = useRef<number[]>([])
-  const pendingUsers = useRef<{ index: number; text: string }[]>([])
+  const pendingUsers = useRef<PendingUser[]>([])
   const live = useRef(true)
   const requests = useRef<AbortController | undefined>(undefined)
   const clientId = useRef(`cli-${crypto.randomUUID()}`)
@@ -207,7 +208,7 @@ export function ChatScreen({
         drag.current = null
         setSelecting(false)
         transcript.clear()
-        pendingUsers.current = []
+        // Pending messages stay visible across a stream snapshot until their user events arrive.
         streamedEntries.current = []
         streamed.current = []
         setActiveLine(null)
@@ -251,8 +252,7 @@ export function ChatScreen({
           ? pendingUsers.current.find(item => item.text === event.text) : undefined
         if (pending) {
           pendingUsers.current = pendingUsers.current.filter(item => item !== pending)
-          timestampEntries([pending.index], event.timestamp)
-          return
+          setRevision(current => current + 1)
         }
         setFailure("")
         setStopped(false)
@@ -354,22 +354,33 @@ export function ChatScreen({
     if (!client || !trimmed) return
     setDraft(current => current === value ? "" : current)
     setPendingImage(undefined)
-    settle()
-    setScrollTop(null)
-    setFailure("")
-    setStopped(false)
-    setUsage(undefined)
-    const index = push({ kind: "user", source: "you", text: userText(trimmed, image) })
-    if (index !== undefined) pendingUsers.current.push({ index, text: trimmed })
-    setStatus({ running: true, idle: false, phase: "preparing" })
+    const pending: PendingUser = { text: trimmed, image, queued: Boolean(status?.running && !status.idle || sending.current) }
+    pendingUsers.current.push(pending)
+    setRevision(current => current + 1)
+    if (!pending.queued) {
+      setScrollTop(null)
+      setFailure("")
+      setStopped(false)
+      setUsage(undefined)
+      setStatus({ running: true, idle: false, phase: "preparing" })
+    }
     const sent = client.send(trimmed, requests.current?.signal, image)
     sending.current = sent
-    void sent.catch((error) => {
+    void sent.then(result => {
+      if (!live.current || !pendingUsers.current.includes(pending)) return
+      pending.queued = result.queued === true
+      setRevision(current => current + 1)
+    }).catch((error) => {
       if (!live.current) return
-      pendingUsers.current = pendingUsers.current.filter(item => item.index !== index)
+      pendingUsers.current = pendingUsers.current.filter(item => item !== pending)
+      setRevision(current => current + 1)
       if (image && !pendingImageRef.current) setPendingImage(image)
+      if (pending.queued) {
+        push({ kind: "error", text: `message not queued: ${message(error)}` })
+        setDraft(current => current || value)
+        return
+      }
       if (error instanceof WorkspaceMissingError) {
-        if (index !== undefined && transcript.discard(index)) setRevision(current => current + 1)
         setStatus({ running: false, idle: true, phase: "resting" })
         setDraft(current => current || value)
         setWorkspaceRecovery({ missing: error.workspace, replacement: error.workspace, prompt: value, ...(image ? { image } : {}), saving: false })
@@ -492,8 +503,10 @@ export function ChatScreen({
   if (nextCodeLine !== codeLine) setCodeLine(nextCodeLine)
   // Chrome owns six rows. Recovery replaces the composer and borrows two more.
   const recoveryRows = workspaceRecovery ? 2 : 0
-  const menuRows = Math.min(menu.rows, Math.max(0, height - 9 - recoveryRows))
-  const transcriptRows = Math.max(1, height - 6 - recoveryRows - (notice || errorNotice ? 1 : 0) - menuRows)
+  const pending = pendingUsers.current
+  const pendingRows = Math.min(3, pending.length, Math.max(0, height - 7 - recoveryRows - (notice || errorNotice ? 1 : 0)))
+  const menuRows = Math.min(menu.rows, Math.max(0, height - 9 - recoveryRows - pendingRows))
+  const transcriptRows = Math.max(1, height - 6 - recoveryRows - pendingRows - (notice || errorNotice ? 1 : 0) - menuRows)
   const history = transcript.layout(flags, speaker, contentWidth, viewportWidth)
   // Resizing or expanding changes row counts above the viewport, not the record
   // being read. Tail appends keep the same layout and never move a history anchor.
@@ -645,9 +658,11 @@ export function ChatScreen({
     <Box flexDirection="column" height={transcriptRows} width={viewportWidth} overflow="hidden" flexShrink={0}>
       <Text>{lineCount ? highlightSelection(displayRows.slice(top, top + transcriptRows), top, drag.current?.selection ?? { anchor: { row: 0, column: 0 }, head: { row: 0, column: 0 } }).join("\n") : color(90, "what are we working on?")}</Text>
     </Box>
+    {pending.slice(0, pendingRows < 3 ? pendingRows : 2).map((item, index) => <Text key={index} color="yellow" wrap="truncate-end">{item.queued ? `queued ${index + 1}` : "sending"} · {userText(item.text, item.image).replace(/\s+/g, " ")}</Text>)}
+    {pendingRows === 3 && pending.length > 2 && <Text color="yellow" wrap="truncate-end">+{pending.length - 2} more pending</Text>}
     <Box height={1} flexShrink={0} justifyContent="space-between">
       <Text color={connection === "disconnected" || failure ? "redBright" : "gray"} wrap="truncate-end">
-        {spinner && (!toolProgress || inHistory) ? `${spinner} ` : ""}{copyStatus || (inHistory ? `history · ${tail - top} rows below · pgdn` : imageStatus)}
+        {spinner && (!toolProgress || inHistory) ? `${spinner} ` : ""}{copyStatus || (inHistory ? `history · ${tail - top} rows below · pgdn` : pendingRows === 0 && pending.length ? `${pending.length} pending · ${imageStatus}` : imageStatus)}
       </Text>
       {!inHistory && !failure && width >= 60 && <Text color="gray">{stats}</Text>}
     </Box>

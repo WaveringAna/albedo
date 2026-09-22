@@ -87,7 +87,7 @@ pub type Message {
     String,
     String,
     Option(types.Image),
-    Subject(Result(Nil, SubmissionError)),
+    Subject(Result(Bool, SubmissionError)),
   )
   ReadCommands(
     Subject(Result(#(List(command.Command), command.Context), String)),
@@ -190,7 +190,7 @@ pub fn start(
       case
         actor.call(self, 10_000, Submit(display, text, "bash", "bash", None, _))
       {
-        Ok(Nil) -> ""
+        Ok(_) -> ""
         Error(error) -> submission_error(error)
       }
     })
@@ -218,7 +218,7 @@ pub fn submit(
   text: String,
   client_id: String,
   image: Option(types.Image),
-) -> Result(Nil, SubmissionError) {
+) -> Result(Bool, SubmissionError) {
   actor.call(session, 10_000, Submit(text, text, client_id, "chat", image, _))
 }
 
@@ -391,7 +391,7 @@ fn handle(state: State, message: Message) {
             && list.length(state.steering) < 32
           {
             True -> {
-              process.send(reply, Ok(Nil))
+              process.send(reply, Ok(True))
               actor.continue(
                 State(
                   ..state,
@@ -498,7 +498,7 @@ fn handle(state: State, message: Message) {
                                 Some(timestamp),
                               )
                           }
-                          process.send(reply, Ok(Nil))
+                          process.send(reply, Ok(False))
                           actor.continue(emit(state, event))
                         }
                       }
