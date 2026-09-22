@@ -51,6 +51,10 @@ test("/model switches saved providers and models with manual fallback without lo
       if (rejectChange) { res.writeHead(409); res.end(JSON.stringify({ error: "session must be idle" })); return }
       changes.push(change); session.model = change.model
       if (change.provider) { session.provider = change.provider; session.protocol = change.provider === "other" ? "chat_completions" : "responses" }
+      const configuration = JSON.parse(await readFile(join(home, "config.json"), "utf8")) as { active: string; providers: Record<string, { model: string }> }
+      configuration.active = session.provider
+      configuration.providers[session.provider]!.model = session.model
+      await writeFile(join(home, "config.json"), JSON.stringify(configuration))
       res.end(JSON.stringify({ result: { model: session.model, provider: session.provider, protocol: session.protocol } }))
     } else if (req.url === "/sessions/session/commands") {
       res.end(JSON.stringify([]))
@@ -148,5 +152,8 @@ test("/model switches saved providers and models with manual fallback without lo
   assert(!painted.includes("manual-model"), "old provider's model must not leak into the new catalog")
   stdin.write("\x1b")
   assert.equal(streams, 1, "switching providers must not discard the mounted conversation")
-  assert.equal(await readFile(join(home, "config.json"), "utf8"), config, "session selection must not change provider defaults")
+  const defaults = JSON.parse(await readFile(join(home, "config.json"), "utf8")) as { active: string; providers: Record<string, { model: string }> }
+  assert.equal(defaults.active, "other")
+  assert.equal(defaults.providers.other?.model, "other-model")
+  assert.equal(defaults.providers.saved?.model, "manual-model")
 })

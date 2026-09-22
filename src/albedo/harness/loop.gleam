@@ -23,6 +23,7 @@ pub type Loop {
     commit: fn(List(types.Input), String) -> Result(Int, String),
     record_context: fn(types.Request) -> Nil,
     record_usage: fn(usage.Metadata) -> Result(Nil, String),
+    drain_steering: fn() -> Result(List(types.Input), String),
   )
 }
 
@@ -101,7 +102,22 @@ pub fn run(
   case turn.tool_calls {
     [] ->
       case turn.finish {
-        types.Complete -> Ok(Nil)
+        types.Complete -> {
+          use steering <- result.try(state.drain_steering())
+          case steering {
+            [] -> Ok(Nil)
+            _ ->
+              run(
+                state,
+                id,
+                list.append(
+                  list.reverse(steering),
+                  list.append(list.reverse(replay), inputs),
+                ),
+                step + 1,
+              )
+          }
+        }
         _ -> Error("model stopped: " <> string.inspect(turn.finish))
       }
     calls -> {
@@ -130,13 +146,17 @@ pub fn run(
           }
         }),
       )
+      use steering <- result.try(state.drain_steering())
       use _ <- result.try(state.commit([], "model"))
       run(
         state,
         id,
         list.append(
-          list.reverse(results),
-          list.append(list.reverse(replay), inputs),
+          list.reverse(steering),
+          list.append(
+            list.reverse(results),
+            list.append(list.reverse(replay), inputs),
+          ),
         ),
         step + 1,
       )

@@ -152,5 +152,20 @@ fn protocol_decoder() {
   })
 }
 
+pub fn select_default(
+  home: String,
+  provider: String,
+  model: String,
+) -> Result(Nil, String) {
+  write_default(home, provider, model)
+}
+
+@external(erlang, "albedo_daemon", "write_default")
+fn write_default(
+  home: String,
+  provider: String,
+  model: String,
+) -> Result(Nil, String)
+
 @external(erlang, "albedo_daemon", "read_config")
 fn read_config(home: String) -> Result(BitArray, Nil)

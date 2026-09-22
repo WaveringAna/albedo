@@ -245,6 +245,27 @@ def run(protocol, endpoint):
                 "gamma": provider("/gamma/v1", "gamma-1", "fixture-gamma", other_protocol),
             })
 
+            # Busy chat messages steer at the next model boundary, after tool output.
+            queue_workspace=Path(directory)/"queue-workspace"
+            queue_workspace.mkdir()
+            queued=json.loads(cli("new", str(queue_workspace)))["session"]
+            request_start=len(Provider.requests)
+            with api(f"/sessions/{queued}/events", {"content":"first task"}):
+                pass
+            time.sleep(.15)
+            with api(f"/sessions/{queued}/events", {"content":"queued direction"}):
+                pass
+            with api(f"/sessions/{queued}/events", {"content":"another direction"}):
+                pass
+            ready(queued)
+            queued_requests=Provider.requests[request_start:]
+            assert len(queued_requests) == 2, queued_requests
+            assert "queued direction" not in json.dumps(queued_requests[0]["request"]), queued_requests
+            assert "queued direction" in json.dumps(queued_requests[1]["request"]), queued_requests
+            assert "another direction" in json.dumps(queued_requests[1]["request"]), queued_requests
+            assert json.dumps(queued_requests[1]["request"]).index("queued direction") < json.dumps(queued_requests[1]["request"]).index("another direction")
+            assert any(e.get("type") == "user" and e.get("text") == "queued direction" for e in snapshot(queued)), snapshot(queued)
+
             # Workspace updates are idle-only and never interrupt active work.
             busy = json.loads(cli("new", str(busy_workspace)))["session"]
             with api(f"/sessions/{busy}/events", {"content":"hang while workspace update is attempted"}):
@@ -319,10 +340,17 @@ def run(protocol, endpoint):
             with api(f"/sessions/{switched}/commands", {"name":"/model", "args":{"provider":"gamma", "model":"chosen-gamma"}}) as response:
                 selection=json.load(response)
             assert selection == {"result": {"provider":"gamma", "model":"chosen-gamma", "protocol":other_protocol}}, selection
+            defaults=json.loads((home/"config.json").read_text())
+            assert defaults["active"] == "gamma" and defaults["providers"]["gamma"]["model"] == "chosen-gamma", defaults
+            with api("/sessions", {"workspace": str(workspace)}) as response:
+                default_session=json.load(response)
+            assert default_session["provider"] == "gamma" and default_session["model"] == "chosen-gamma", default_session
             # Existing model-only callers keep the current provider and protocol.
             with api(f"/sessions/{switched}/commands", {"name":"/model", "args":{"model":"renamed-gamma"}}) as response:
                 selection=json.load(response)
             assert selection == {"result": {"provider":"gamma", "model":"renamed-gamma", "protocol":other_protocol}}, selection
+            defaults=json.loads((home/"config.json").read_text())
+            assert defaults["active"] == "gamma" and defaults["providers"]["gamma"]["model"] == "renamed-gamma", defaults
             try:
                 api(f"/sessions/{switched}/commands", {"name":"/model", "args":{"provider":"unknown", "model":"wrong"}}).close()
                 raise AssertionError("unknown provider switch succeeded")
@@ -343,6 +371,8 @@ def run(protocol, endpoint):
             with api(f"/sessions/{switched}/commands", {"name":"/model", "args":{"provider":"alpha", "model":"returned-alpha"}}) as response:
                 selection=json.load(response)
             assert selection == {"result": {"provider":"alpha", "model":"returned-alpha", "protocol":protocol}}, selection
+            defaults=json.loads((home/"config.json").read_text())
+            assert defaults["active"] == "alpha" and defaults["providers"]["alpha"]["model"] == "returned-alpha", defaults
             request_start=len(Provider.requests)
             with api(f"/sessions/{switched}/events", {"content":"after second switch"}):
                 pass
@@ -421,6 +451,11 @@ def run(protocol, endpoint):
             assert next(item for item in listed if item["id"] == id)["title"] == "review the result"
             message_times = [(e["type"], e["text"], e.get("timestamp")) for e in snapshot(id) if e.get("type") in ("user", "message")]
             assert message_times and all(isinstance(stamp, int) for _, _, stamp in message_times)
+            configure("beta", {
+                "alpha": provider("/alpha/v1", "alpha-2", "returned-alpha"),
+                "beta": provider("/beta/v1", "beta-1", "fixture-beta"),
+                "gamma": provider("/gamma/v1", "gamma-1", "renamed-gamma", other_protocol),
+            })
             # A single uninterrupted run can cross the former 100-model-turn ceiling.
             long_session=json.loads(cli("new",str(workspace)))["session"]
             request_start=len(Provider.requests)

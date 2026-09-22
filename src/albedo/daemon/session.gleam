@@ -61,6 +61,16 @@ pub type SubmissionError {
   Rejected(String)
 }
 
+fn valid_submission(display: String, text: String) -> Bool {
+  let maximum = case display == text {
+    True -> 1_048_576
+    False -> 2_200_000
+  }
+  string.trim(text) != ""
+  && string.byte_size(text) <= maximum
+  && string.byte_size(display) <= 1_048_576
+}
+
 fn submission_error(error: SubmissionError) -> String {
   case error {
     WorkspaceMissing(path) -> "workspace not found: " <> path
@@ -99,6 +109,7 @@ pub type Message {
   Commit(String, List(types.Input), String, Subject(Result(Int, String)))
   RecordContext(String, context_snapshot.Snapshot, Subject(Nil))
   RecordUsage(String, usage.Metadata, Subject(Result(Nil, String)))
+  DrainSteering(String, Subject(Result(List(types.Input), String)))
   ReadContext(Subject(json.Json))
   ReadContextPage(String, Int, Subject(Result(json.Json, String)))
   Finished(String, Result(Nil, String))
@@ -123,6 +134,7 @@ type State {
     history: Option(List(transcript.Entry)),
     latest_usage: Option(usage.Metadata),
     run: Option(Run),
+    steering: List(#(String, String, String, String, Option(types.Image))),
     sequence: Int,
     events: List(#(Int, String)),
     watchers: List(#(process.Pid, fn() -> Nil)),
@@ -162,6 +174,7 @@ pub fn start(
         None,
         latest_usage,
         None,
+        [],
         0,
         [],
         [],
@@ -372,8 +385,30 @@ fn handle(state: State, message: Message) {
     Submit(display, text, client_id, source, image, reply) ->
       case state.run {
         Some(_) -> {
-          process.send(reply, Error(Rejected("session is busy")))
-          actor.continue(state)
+          case
+            source == "chat"
+            && valid_submission(display, text)
+            && list.length(state.steering) < 32
+          {
+            True -> {
+              process.send(reply, Ok(Nil))
+              actor.continue(
+                State(
+                  ..state,
+                  steering: list.append(state.steering, [
+                    #(display, text, client_id, source, image),
+                  ]),
+                ),
+              )
+            }
+            False -> {
+              process.send(
+                reply,
+                Error(Rejected("session is busy or message queue is full")),
+              )
+              actor.continue(state)
+            }
+          }
         }
         None -> {
           let maximum = case display == text {
@@ -665,6 +700,11 @@ fn handle(state: State, message: Message) {
                     "cannot switch provider: " <> error
                   }),
                 )
+                use _ <- result.try(configuration.select_default(
+                  state.home,
+                  provider,
+                  model,
+                ))
                 use _ <- result.try(conversation.set_configuration(
                   runtime.ledger(state.host),
                   state.info.id,
@@ -805,6 +845,68 @@ fn handle(state: State, message: Message) {
           actor.continue(state)
         }
       }
+    DrainSteering(id, reply) ->
+      case state.run {
+        Some(run) if run.id == id && !run.cancelled -> {
+          let inputs =
+            list.map(state.steering, fn(item) {
+              case item.4 {
+                Some(image) -> types.UserImage(item.1, image)
+                None -> types.User(item.1)
+              }
+            })
+          case inputs {
+            [] -> {
+              process.send(reply, Ok([]))
+              actor.continue(state)
+            }
+            _ ->
+              case
+                conversation.commit_from(
+                  runtime.ledger(state.host),
+                  state.info.id,
+                  inputs,
+                  "model",
+                  Some(state.info.provider),
+                )
+              {
+                Error(error) -> {
+                  process.send(reply, Error(error))
+                  actor.continue(state)
+                }
+                Ok(timestamp) -> {
+                  let state = remember(state, inputs, timestamp)
+                  let state =
+                    list.fold(state.steering, state, fn(state, item) {
+                      emit(state, case item.4 {
+                        Some(image) ->
+                          view.user_image(
+                            item.0,
+                            item.3,
+                            Some(item.2),
+                            Some(timestamp),
+                            image,
+                          )
+                        None ->
+                          view.user(
+                            item.0,
+                            item.3,
+                            Some(item.2),
+                            Some(timestamp),
+                          )
+                      })
+                    })
+                  process.send(reply, Ok(inputs))
+                  actor.continue(State(..state, steering: []))
+                }
+              }
+          }
+        }
+        _ -> {
+          process.send(reply, Error("cancelled"))
+          actor.continue(state)
+        }
+      }
     RecordContext(id, snapshot, reply) -> {
       process.send(reply, Nil)
       case state.run {
@@ -865,7 +967,7 @@ fn handle(state: State, message: Message) {
             _, _, Error(error) -> emit(state, view.text("error", error))
             _, _, _ -> state
           }
-          actor.continue(state)
+          actor.continue(start_queued(state))
         }
         _ -> actor.continue(state)
       }
@@ -1222,6 +1324,80 @@ fn configured_client(state: State) -> Result(#(State, types.Client), String) {
   Ok(#(state, client))
 }
 
+fn failed_queued(state: State, error: String) -> State {
+  emit(
+    State(..state, steering: []),
+    view.text(
+      "error",
+      "queued messages were not delivered; resend them: " <> error,
+    ),
+  )
+}
+
+fn start_queued(state: State) -> State {
+  case state.steering {
+    [] -> state
+    queued ->
+      case prepare_submission(state) {
+        Error(error) -> failed_queued(state, submission_error(error))
+        Ok(#(state, kernel, client)) -> {
+          let inputs =
+            list.map(queued, fn(item) {
+              case item.4 {
+                Some(image) -> types.UserImage(item.1, image)
+                None -> types.User(item.1)
+              }
+            })
+          let accepted = list.append(recover_pending(state, kernel), inputs)
+          case projected_inputs(remember(state, accepted, 0)) {
+            Error(error) -> failed_queued(state, error)
+            Ok(history) ->
+              case
+                conversation.commit_from(
+                  runtime.ledger(state.host),
+                  state.info.id,
+                  accepted,
+                  "model",
+                  Some(state.info.provider),
+                )
+              {
+                Error(error) -> failed_queued(state, error)
+                Ok(timestamp) -> {
+                  let state = remember(state, accepted, timestamp)
+                  let state =
+                    list.fold(queued, state, fn(state, item) {
+                      emit(state, case item.4 {
+                        Some(image) ->
+                          view.user_image(
+                            item.0,
+                            item.3,
+                            Some(item.2),
+                            Some(timestamp),
+                            image,
+                          )
+                        None ->
+                          view.user(
+                            item.0,
+                            item.3,
+                            Some(item.2),
+                            Some(timestamp),
+                          )
+                      })
+                    })
+                  start_run(
+                    State(..state, steering: [], notice: None),
+                    kernel,
+                    client,
+                    history,
+                  )
+                }
+              }
+          }
+        }
+      }
+  }
+}
+
 fn start_run(
   state: State,
   kernel: runtime.Session,
@@ -1261,6 +1437,7 @@ fn start_run(
       fn(metadata) {
         actor.call(owner, 10_000, RecordUsage(run_id, metadata, _))
       },
+      fn() { actor.call(owner, 10_000, DrainSteering(run_id, _)) },
     )
   let pid =
     process.spawn(fn() {

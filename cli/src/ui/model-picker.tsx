@@ -24,7 +24,7 @@ export function ModelPicker({ connection, provider, current, onSelect, onCancel 
   }, [provider])
   return <Box flexDirection="column">
     <Text>albedo /model · {name || "session provider"}</Text>
-    <Text dimColor>changes this idle session only · provider defaults stay unchanged</Text>
+    <Text dimColor>changes this idle session and the default for new sessions</Text>
     {!saved ? <>
       <Text color={error ? "red" : undefined} dimColor={!error}>{error || "loading providers…"}</Text>
       <TextInput value="" onChange={() => {}} onKey={(input, key) => {

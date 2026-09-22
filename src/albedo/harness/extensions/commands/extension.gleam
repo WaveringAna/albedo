@@ -28,7 +28,7 @@ pub fn extension() -> extension.Extension {
 fn model() -> Command {
   Command(
     "/model",
-    "Show this session's provider and model, or switch the model. Switching is a user action and needs an idle session.",
+    "Show this session's provider and model, or switch it and make the selection the default for new sessions. Switching is a user action and needs an idle session.",
     [
       Argument(
         "model",
