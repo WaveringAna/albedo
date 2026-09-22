@@ -324,7 +324,10 @@ group_of(Message) ->
       leader => maps:get(<<"leader">>, Message, nil)}.
 
 target_spec(Label, #{pid := Pid, pgid := Pgid, leader := Leader}) ->
-    #{label => iolist_to_binary(Label), pid => Pid, pgid => Pgid, leader => Leader}.
+    Base = #{label => iolist_to_binary(Label), pid => Pid, pgid => Pgid},
+    %% json:encode(nil) is the string "nil", which the helper would mistake for
+    %% a process identity and reject even while an untagged group is alive.
+    case Leader of nil -> Base; _ -> Base#{leader => Leader} end.
 
 job_specs(Groups) ->
     [target_spec(<<"job ", Id/binary>>, Spec) || {Id, Spec} <- maps:to_list(Groups)].
@@ -334,7 +337,7 @@ job_specs(Groups) ->
 reap_start(Port) ->
     Target = case erlang:port_info(Port, os_pid) of
                  {os_pid, OsPid} when is_integer(OsPid), OsPid > 1 ->
-                     [#{label => <<"kernel startup">>, pid => OsPid, leader => nil}];
+                     [#{label => <<"kernel startup">>, pid => OsPid}];
                  _ -> []
              end,
     report(startup_reaped, supervise(Target, ?TERM_MS, ?KILL_MS)),
