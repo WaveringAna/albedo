@@ -1492,9 +1492,23 @@ fn start_queued(state: State) -> State {
 }
 
 fn submission_input(submission: Submission) -> types.Input {
+  let text = case submission.source {
+    turn.Note(_) -> system_note(submission.text)
+    _ -> submission.text
+  }
   case submission.image {
-    Some(image) -> types.UserImage(submission.text, image)
-    None -> types.User(submission.text)
+    Some(image) -> types.UserImage(text, image)
+    None -> types.User(text)
+  }
+}
+
+fn system_note(text: String) -> String {
+  case
+    string.starts_with(text, "<system-note>")
+    && string.ends_with(text, "</system-note>")
+  {
+    True -> text
+    False -> "<system-note>" <> text <> "</system-note>"
   }
 }
 
@@ -1792,6 +1806,7 @@ fn context_update(
     ])
   ]
   |> string.join("\n\n")
+  |> fn(content) { system_note("\n" <> content <> "\n") }
 }
 
 /// The `name` of an `<extension-context name="...">` block, or "".

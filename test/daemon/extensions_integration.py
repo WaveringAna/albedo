@@ -269,8 +269,9 @@ def run(endpoint):
             assert request["input"][0] == cached["input"][0], "reload changed the cached leading context"
             assert "added after the session opened" not in json.dumps(request["input"][0])
             updates = [item for item in request["input"] if item.get("role") == "user"
-                       and str(item.get("content", "")).startswith("[albedo] This session's extensions changed")]
+                       and str(item.get("content", "")).startswith("<system-note>\n[albedo] This session's extensions changed")]
             assert len(updates) == 1 and "added after the session opened" in updates[0]["content"], request
+            assert updates[0]["content"].endswith("</system-note>"), updates[0]
             before = len(Provider.requests)
             api(f"/sessions/{session}/events", {"content": "hot probe after reload"})
             ready(session)
@@ -320,6 +321,9 @@ def run(endpoint):
             request = catalog_request(session, "anything new on the ledger?")
             text = json.dumps(request["input"])
             assert "The user added work item" in text, text
+            work_note = next(item["content"] for item in request["input"] if item.get("role") == "user"
+                             and "The user added work item" in item.get("content", ""))
+            assert work_note.count("<system-note>") == 1 and work_note.count("</system-note>") == 1, work_note
             assert text.index("The user added work item") < text.index("anything new on the ledger?"), text
             page = api(f"/sessions/{session}/commands", {"name": "/work", "args": {}})["result"]["page"]
             assert any(row["text"] == "write the release notes" for row in page["glance"]["rows"]), page
@@ -334,7 +338,7 @@ def run(endpoint):
             # Disabling skills keeps the cached prefix (the python tool is
             # unchanged); the model is told the skills context was removed.
             update = next(item["content"] for item in reversed(request["input"]) if item.get("role") == "user"
-                          and item.get("content", "").startswith("[albedo] This session's extensions changed"))
+                          and item.get("content", "").startswith("<system-note>\n[albedo] This session's extensions changed"))
             assert "Removed context:\n- skills" in update and "<available_skills>" not in update, update
             assert "Current extension instructions" not in update and len(update) < 4000, update
             assert "skills" not in {module for item in disabled if item["enabled"] for module in item["python_modules"]}
