@@ -241,6 +241,7 @@ type ChatModel struct {
 	droppedSettledLines int
 
 	scrollOffset int
+	scrollLimit  int
 
 	activeKind ActiveStreamKind
 	activeText string
@@ -302,7 +303,7 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		TextArea:    ta,
 		CommandMenu: NewCommandMenuModel(),
 		Flags: DisplayFlags{
-			Thinking:   true,
+			Thinking:   false,
 			Tools:      false,
 			Compaction: false,
 		},
@@ -450,10 +451,10 @@ func (m *ChatModel) settleActiveStream() {
 	m.activeText = ""
 }
 
-func (m *ChatModel) refreshViewportContent() {
+func (m *ChatModel) refreshViewportContent() int {
 	if m.Viewport.Height != max(1, m.Height-6-m.chromeRows()) {
 		m.SetSize(m.Width, m.Height)
-		return
+		return m.scrollLimit
 	}
 	var allLines []string
 
@@ -495,6 +496,7 @@ func (m *ChatModel) refreshViewportContent() {
 	totalLines := len(allLines)
 	vpHeight := max(1, m.Viewport.Height)
 	maxScroll := max(0, totalLines-vpHeight)
+	m.scrollLimit = maxScroll
 
 	var visibleSlice []string
 	if m.Follow {
@@ -510,6 +512,21 @@ func (m *ChatModel) refreshViewportContent() {
 		}
 		m.Viewport.SetContent(strings.Join(visibleSlice, "\n"))
 		m.Viewport.GotoTop()
+	}
+	return maxScroll
+}
+
+// scrollBy moves through the complete rendered transcript, including live output.
+func (m *ChatModel) scrollBy(rows int) {
+	if rows < 0 {
+		m.Follow = false
+	} else if m.Follow {
+		return
+	}
+	m.scrollOffset = max(0, m.scrollOffset+rows)
+	maxScroll := m.refreshViewportContent()
+	if rows > 0 && m.scrollOffset >= maxScroll {
+		m.Follow = true
 	}
 }
 
@@ -707,36 +724,20 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		}
 
 		if msg.Type == tea.KeyPgUp {
-			m.Follow = false
-			m.scrollOffset = max(0, m.scrollOffset-m.Viewport.Height)
-			m.refreshViewportContent()
+			m.scrollBy(-m.Viewport.Height)
 			return m, nil
 		}
 		if msg.Type == tea.KeyPgDown {
-			m.scrollOffset += m.Viewport.Height
-			m.refreshViewportContent()
-			if m.scrollOffset >= max(0, len(m.settledLines)-m.Viewport.Height) {
-				m.Follow = true
-			}
+			m.scrollBy(m.Viewport.Height)
 			return m, nil
 		}
-		if msg.Type == tea.KeyUp {
-			if m.TextArea.Line() == 0 {
-				m.Follow = false
-				m.scrollOffset = max(0, m.scrollOffset-1)
-				m.refreshViewportContent()
-				return m, nil
-			}
+		if msg.Type == tea.KeyUp && m.TextArea.Line() == 0 {
+			m.scrollBy(-1)
+			return m, nil
 		}
-		if msg.Type == tea.KeyDown {
-			if m.TextArea.Line() >= m.TextArea.LineCount()-1 {
-				m.scrollOffset += 1
-				m.refreshViewportContent()
-				if m.scrollOffset >= max(0, len(m.settledLines)-m.Viewport.Height) {
-					m.Follow = true
-				}
-				return m, nil
-			}
+		if msg.Type == tea.KeyDown && m.TextArea.Line() >= m.TextArea.LineCount()-1 {
+			m.scrollBy(1)
+			return m, nil
 		}
 		if msg.Type == tea.KeyCtrlHome {
 			m.Follow = false
@@ -814,16 +815,10 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		}
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
-			m.Follow = false
-			m.scrollOffset = max(0, m.scrollOffset-3)
-			m.refreshViewportContent()
+			m.scrollBy(-3)
 			return m, nil
 		case tea.MouseButtonWheelDown:
-			m.scrollOffset += 3
-			m.refreshViewportContent()
-			if m.scrollOffset >= max(0, len(m.settledLines)-m.Viewport.Height) {
-				m.Follow = true
-			}
+			m.scrollBy(3)
 			return m, nil
 		}
 
@@ -1643,7 +1638,7 @@ func (m ChatModel) View() string {
 		status = spinner + " " + status
 	}
 	if !m.Follow {
-		status = fmt.Sprintf("history · %d rows below · pgdn", max(0, len(m.settledLines)-m.scrollOffset-m.Viewport.Height))
+		status = fmt.Sprintf("history · %d rows below · pgdn", max(0, m.scrollLimit-m.scrollOffset))
 	}
 	if m.AttachedImage != nil {
 		status = daemon.ImageLabel(m.AttachedImage.ImageMetadata) + " attached · esc remove"

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"encoding/json"
 	"fmt"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -134,6 +135,13 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 	return strings.Join(rows, "\n")
 }
 
+func lineUnit(n int) string {
+	if n == 1 {
+		return "line"
+	}
+	return "lines"
+}
+
 func toolSummary(entry HistoryEntry) string {
 	arg := func(key string) string {
 		if entry.ToolArgs == nil {
@@ -143,7 +151,8 @@ func toolSummary(entry HistoryEntry) string {
 	}
 	switch entry.ToolName {
 	case "python":
-		return fmt.Sprintf("python · %d lines", strings.Count(arg("code"), "\n")+1)
+		lines := strings.Count(arg("code"), "\n") + 1
+		return fmt.Sprintf("python · %d %s", lines, lineUnit(lines))
 	case "shell":
 		return "$ " + arg("command")
 	case "read_file":
@@ -245,11 +254,29 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 	return strings.Join(rows, "\n")
 }
 
+func toolFailed(entry HistoryEntry) bool {
+	if entry.ToolName == "python" {
+		var result struct {
+			Status string `json:"status"`
+			Error  string `json:"error"`
+		}
+		if json.Unmarshal([]byte(entry.ToolResult), &result) == nil {
+			if result.Status != "" {
+				return result.Status != "ok"
+			}
+			return result.Error != ""
+		}
+	}
+	return toolErrorLine.MatchString(entry.ToolResult)
+}
+
+var toolErrorLine = regexp.MustCompile(`(?im)^(?:error:|cancelled:|traceback \(most recent call last\):)`)
+
 func (r TranscriptRenderer) faintMarkdownRows(text string, width int) []string {
 	var rows []string
 	for _, line := range strings.Split(RenderMarkdownAnsi(text, width), "\n") {
 		for _, wrapped := range wrapOrChunkLine(line, width) {
-			rows = append(rows, r.Styles.Faint.Render(wrapped))
+			rows = append(rows, r.Styles.Faint.Render(ansi.Strip(wrapped)))
 		}
 	}
 	return rows
@@ -285,16 +312,15 @@ func (r TranscriptRenderer) RenderEntry(entry HistoryEntry, flags DisplayFlags, 
 		}
 		rows = []string{heading, RenderMarkdownAnsi(entry.Text, width)}
 	case EntryThinking:
-		rows = []string{r.Styles.Faint.Render("thinking")}
 		if flags.Thinking {
-			rows = append(rows, r.faintMarkdownRows(entry.Text, width)...)
+			rows = append([]string{r.Styles.Faint.Render("thinking")}, r.faintMarkdownRows(entry.Text, width)...)
 		} else {
-			rows = append(rows, r.Styles.Faint.Render("hidden · /t show"))
+			rows = []string{r.Styles.Faint.Render(ansi.Truncate("thinking · /t expand", max(1, width), "…"))}
 		}
 	case EntryTool:
 		trace := entry.ToolTrace
 		hasTrace := trace != nil && (len(trace.Activities) > 0 || len(trace.Changes) > 0)
-		failed := strings.Contains(strings.ToLower(entry.ToolResult), "error:") || strings.Contains(strings.ToLower(entry.ToolResult), "cancelled:") || strings.Contains(strings.ToLower(entry.ToolResult), "traceback (most recent call last):")
+		failed := toolFailed(entry)
 		if !hasTrace || flags.Tools || failed {
 			style := r.Styles.Faint
 			if failed {
@@ -303,6 +329,13 @@ func (r TranscriptRenderer) RenderEntry(entry HistoryEntry, flags DisplayFlags, 
 			label := toolSummary(entry)
 			if failed {
 				label += " · failed"
+			}
+			if !flags.Tools && !hasTrace {
+				if output := strings.TrimSpace(entry.ToolResult); output != "" {
+					label += fmt.Sprintf(" · %d output %s", strings.Count(output, "\n")+1, lineUnit(strings.Count(output, "\n")+1))
+				}
+				label += " · /v expand"
+				label = ansi.Truncate(strings.Join(strings.Fields(label), " "), max(1, width), "…")
 			}
 			rows = append(rows, style.Render(label))
 		}
@@ -317,21 +350,12 @@ func (r TranscriptRenderer) RenderEntry(entry HistoryEntry, flags DisplayFlags, 
 				rows = append(rows, RenderMarkdownAnsi("```python\n"+code+"\n```", width))
 			}
 		}
-		if flags.Tools || failed || !hasTrace {
+		if flags.Tools {
 			output := strings.TrimRight(entry.ToolResult, "\n")
 			if output == "" {
 				output = "(no output)"
 			}
-			lines := strings.Split(output, "\n")
-			if !flags.Tools && len(lines) > 3 {
-				if failed {
-					lines = append([]string{r.Styles.Faint.Render(fmt.Sprintf("… %d rows hidden · /v expand", len(lines)-3))}, lines[len(lines)-3:]...)
-				}
-				if !failed {
-					lines = append(lines[:3], r.Styles.Faint.Render(fmt.Sprintf("… %d rows hidden · /v expand", len(lines)-3)))
-				}
-			}
-			rows = append(rows, lines...)
+			rows = append(rows, strings.Split(output, "\n")...)
 		}
 	case EntryNote:
 		rows = []string{r.Styles.Faint.Render(entry.Text)}
