@@ -1,10 +1,11 @@
 """This session's slash commands as typed bindings, minted from the catalog.
 
-The daemon sends one immutable command catalog at kernel boot; each
-model-callable command becomes a typed async method whose docstring and
-signature come from its declared arguments, so help(commands.<method>) is the
-command's help text. A command whose method name is reserved, invalid, or
-taken stays callable through commands.invoke().
+Each model-callable command in the catalog at kernel boot becomes a typed
+async method whose docstring and signature come from its declared arguments,
+so help(commands.<method>) is the command's help text. catalog() and invoke()
+read the live catalog, so a session /reload reaches them without a kernel
+restart; a command whose method name is reserved, invalid, taken, or added
+after boot stays callable through commands.invoke().
 """
 from __future__ import annotations
 
@@ -104,17 +105,16 @@ def _method(host: Host, summary: CommandSummary) -> object:
 
 
 class Commands:
-    """This session's slash commands. Every model-callable command is a typed
-    async method minted from the catalog at kernel boot; see the catalog for
-    method names and help(commands.<method>) for one command's help."""
+    """This session's slash commands. Every model-callable command at kernel
+    boot is a typed async method; see the catalog for method names and
+    help(commands.<method>) for one command's help."""
 
-    def __init__(self, host: Host, catalog: list[CommandSummary]) -> None:
+    def __init__(self, host: Host) -> None:
         self._host = host
-        self._catalog = catalog
 
     async def catalog(self) -> list[CommandSummary]:
-        """This session's immutable command catalog (minted at kernel boot)."""
-        return list(self._catalog)
+        """This session's current command catalog, including reloaded ones."""
+        return cast(list[CommandSummary], await self._host("commands.list", {}))
 
     async def invoke(self, name: str, arguments: str | dict[str, object] = "") -> object:
         """Run any model-callable command by slash name or method name.
@@ -124,7 +124,7 @@ class Commands:
         submits a turn.
         """
         target = name if name.startswith("/") else "/" + name
-        for summary in self._catalog:
+        for summary in await self.catalog():
             if summary["name"] == target or summary["method"] == name:
                 break
         else:
@@ -152,4 +152,4 @@ async def setup(api: PythonApi) -> dict[str, object]:
             continue
         bindings[method] = staticmethod(_method(api.host, summary))
     session_commands = type("SessionCommands", (Commands,), bindings)
-    return {"commands": session_commands(api.host, catalog), "CommandsError": api.HostError}
+    return {"commands": session_commands(api.host), "CommandsError": api.HostError}

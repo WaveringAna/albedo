@@ -144,7 +144,12 @@ def run(endpoint):
                 assert error.code == 409, error.read()
 
         def snapshot(session):
-            with api(f"/sessions/{session}/stream") as response:
+            # `api` would json.load an endless event stream; read one frame instead.
+            # after_seq=0 replays the live log: a fresh stream gets a transcript
+            # snapshot, which does not carry live-only events like `compacted`.
+            request = urllib.request.Request(f"http://127.0.0.1:{connection['port']}/sessions/{session}/stream?after_seq=0",
+                headers={"Authorization": "Bearer " + connection["token"]})
+            with urllib.request.urlopen(request, timeout=25) as response:
                 while True:
                     line = response.readline()
                     if line.startswith(b"data: "):
@@ -249,7 +254,7 @@ def run(endpoint):
             api(f"/sessions/{session}/events", {"content": "hot probe before reload"})
             ready(session)
             assert len(Provider.requests) == before + 2
-            tool_output = next(item["output"] for item in Provider.requests[-1]["input"] if item.get("type") == "function_call_output")
+            tool_output = next(item["output"] for item in reversed(Provider.requests[-1]["input"]) if item.get("type") == "function_call_output")
             assert "BEFORE_RELOAD_OK" in tool_output, tool_output
             reloaded = api(f"/sessions/{session}/commands", {"name": "/reload", "args": {"target": "session"}})
             assert reloaded["result"]["reloaded"] == "session", reloaded
@@ -260,21 +265,21 @@ def run(endpoint):
             api(f"/sessions/{session}/events", {"content": "hot probe after reload"})
             ready(session)
             assert len(Provider.requests) == before + 2
-            tool_output = next(item["output"] for item in Provider.requests[-1]["input"] if item.get("type") == "function_call_output")
+            tool_output = next(item["output"] for item in reversed(Provider.requests[-1]["input"]) if item.get("type") == "function_call_output")
             assert "AFTER_RELOAD_OK" in tool_output, tool_output
             python_session = json.loads(cli("new", str(workspace)))["session"]
             before = len(Provider.requests)
             api(f"/sessions/{python_session}/events", {"content": "activate demo via python"})
             ready(python_session)
             assert len(Provider.requests) == before + 2, "python activation must not submit another user turn"
-            tool_output = next(item["output"] for item in Provider.requests[-1]["input"] if item.get("type") == "function_call_output")
+            tool_output = next(item["output"] for item in reversed(Provider.requests[-1]["input"]) if item.get("type") == "function_call_output")
             assert "SKILL_PYTHON_ACTIVATION_OK" in tool_output, tool_output
             model_session = json.loads(cli("new", str(workspace)))["session"]
             before = len(Provider.requests)
             api(f"/sessions/{model_session}/events", {"content": "model probe via python"})
             ready(model_session)
             assert len(Provider.requests) == before + 2
-            tool_output = next(item["output"] for item in Provider.requests[-1]["input"] if item.get("type") == "function_call_output")
+            tool_output = next(item["output"] for item in reversed(Provider.requests[-1]["input"]) if item.get("type") == "function_call_output")
             assert "MODEL_COMMAND_OK" in tool_output, tool_output
             switched = api(f"/sessions/{model_session}/commands", {"name": "/model", "args": {"model": "switched-model"}})
             assert switched["result"]["model"] == "switched-model", switched
