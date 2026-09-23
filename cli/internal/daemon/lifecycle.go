@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -230,6 +231,10 @@ func Ensure(homeDir, projectRoot string) (*Connection, error) {
 
 	lockPath := filepath.Join(homeDir, "starting.lock")
 	lockFile, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil && os.IsExist(err) && staleLock(lockPath) {
+		_ = os.Remove(lockPath)
+		lockFile, err = os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	}
 	if err != nil {
 		if os.IsExist(err) {
 			for attempt := 0; attempt < pollAttempts; attempt++ {
@@ -246,6 +251,7 @@ func Ensure(homeDir, projectRoot string) (*Connection, error) {
 		}
 		return nil, err
 	}
+	_, _ = fmt.Fprintf(lockFile, "%d", os.Getpid())
 	defer func() {
 		_ = lockFile.Close()
 		_ = os.Remove(lockPath)
@@ -277,12 +283,17 @@ func Ensure(homeDir, projectRoot string) (*Connection, error) {
 	}
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
+	detach(cmd)
 
+	logStart, _ := logFile.Seek(0, io.SeekEnd)
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
 		return nil, err
 	}
 	_ = logFile.Close()
+
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
 
 	for attempt := 0; attempt < pollAttempts; attempt++ {
 		running, err := Existing(homeDir)
@@ -292,10 +303,55 @@ func Ensure(homeDir, projectRoot string) (*Connection, error) {
 		if running != nil {
 			return checkCompatible(running)
 		}
-		time.Sleep(pollInterval)
+		select {
+		case waitErr := <-exited:
+			root := projectRoot
+			if daemonExe != "" {
+				root = ""
+			}
+			return nil, startupExitError(waitErr, logPath, logStart, root)
+		case <-time.After(pollInterval):
+		}
 	}
 
 	return nil, fmt.Errorf("daemon startup timed out; inspect %s/daemon.log", homeDir)
+}
+
+// staleLock reports whether the startup lock was left by a starter that is no
+// longer running (e.g. one interrupted with ctrl-c before it could clean up).
+func staleLock(lockPath string) bool {
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		// Locks from older clients carry no pid; treat them as stale once they
+		// are older than the startup window.
+		fi, statErr := os.Stat(lockPath)
+		return statErr == nil && time.Since(fi.ModTime()) > pollInterval*pollAttempts
+	}
+	return !processAlive(pid)
+}
+
+func startupExitError(waitErr error, logPath string, logStart int64, projectRoot string) error {
+	msg := "daemon exited during startup"
+	if waitErr != nil {
+		msg = fmt.Sprintf("%s (%v)", msg, waitErr)
+	}
+	if f, err := os.Open(logPath); err == nil {
+		defer f.Close()
+		if _, err := f.Seek(logStart, io.SeekStart); err == nil {
+			out, _ := io.ReadAll(io.LimitReader(f, 4096))
+			if tail := strings.TrimSpace(string(out)); tail != "" {
+				msg += ":\n" + tail
+			}
+		}
+	}
+	if projectRoot != "" {
+		msg += fmt.Sprintf("\n(project root: %s; set ALBEDO_ROOT or install with -ldflags \"-X main.buildRoot=...\")", projectRoot)
+	}
+	return errors.New(msg)
 }
 
 func Request[T any](ctx context.Context, conn *Connection, path string, body any) (T, error) {
