@@ -30,6 +30,7 @@ retained: OrderedDict[str, Job] = OrderedDict()  # finished handles, completion 
 send: Send
 host: Callable[[dict[str, object]], Awaitable[object]] | None = None
 watch_output: Callable[[str, Callable[[], None]], None] | None = None
+forget_output: Callable[[str], None] | None = None
 
 ACTIVE_LIMIT = 64       # jobs owning running processes at once
 RETAINED_LIMIT = 64     # finished handles still addressable through `jobs`
@@ -263,6 +264,17 @@ def release(job: Job) -> None:
             del jobs[evicted.id]
 
 
+def forget(job: Job) -> None:
+    """Drop a finished job a plugin ran for its own purposes: it leaves `jobs`
+    and the retained output channels, so internal work never shows up beside,
+    or crowds out, the model's own jobs and cells."""
+    if jobs.get(job.id) is job:
+        del jobs[job.id]
+    retained.pop(job.id, None)
+    if forget_output is not None:
+        forget_output(job.id)
+
+
 def bash(command: object, *, timeout: float = 300) -> Job:
     """Start immediately; await the handle to wait.
 
@@ -301,9 +313,9 @@ async def close() -> None:
 
 def setup(api: PythonApi) -> dict[str, object]:
     global loop, capture_factory, preview_limit, jobs, active, retained, send
-    global host, watch_output
+    global host, watch_output, forget_output
     loop, capture_factory, preview_limit, send = api.loop, api.capture, api.preview, api.send
-    host, watch_output = api.host, api.watch_output
+    host, watch_output, forget_output = api.host, api.watch_output, api.forget_output
     jobs, active, retained = {}, {}, OrderedDict()
     api.background_handle(Job)
     api.on_shutdown(close)

@@ -16,6 +16,44 @@ Send = Callable[[dict[str, object]], None]
 Cleanup = Callable[[], object]
 
 
+def _ready(value):
+    """`await` on a value that is already here: returns it without suspending."""
+    yield from ()
+    return value
+
+
+class Text(str):
+    """A result that is ready now. Awaiting it is harmless, so a synchronous
+    call reads the same with or without `await`."""
+
+    def __await__(self):
+        return _ready(self)
+
+
+class ReadyList(list):
+    """A list result that is ready now; like Text, it may be awaited."""
+
+    def __await__(self):
+        return _ready(self)
+
+
+class Record(dict):
+    """A result record: `item["id"]` and `item.id` both work, it prints and
+    serializes as the plain dict it is, and it may be awaited like Text."""
+
+    __slots__ = ()
+
+    def __getattr__(self, name: str) -> object:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(
+                f"{type(self).__name__} has no field {name!r}; its fields are {', '.join(self) or 'none'}") from None
+
+    def __await__(self):
+        return _ready(self)
+
+
 class OutputCapture(Protocol):
     tail_data: bytearray
     seen: int
@@ -43,6 +81,9 @@ class PythonApi:
     # model reads it, so background work can withdraw a completion wake the
     # read already satisfied. Absent when the host pre-dates the hook.
     watch_output: Callable[[str, Callable[[], None]], None] | None = None
+    # Drops one retained output channel, so work a plugin runs for itself (a
+    # search job, say) never crowds the model's own output out of retention.
+    forget_output: Callable[[str], None] | None = None
 
 
 class Execute(TypedDict):

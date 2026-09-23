@@ -29,7 +29,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from albedo_api import PythonApi
+from albedo_api import PythonApi, ReadyList
 
 CONNECT_TIMEOUT = 15  # seconds before an unreachable target gives up
 HANDSHAKE_TIMEOUT = 30  # seconds for the remote kernel to say ready
@@ -230,6 +230,12 @@ def wire_decode(value: Any) -> Any:
                     **{key: wire_decode(item) for key, item in value["fields"].items()})
             except Exception:
                 return {key: wire_decode(item) for key, item in value["fields"].items()}
+        if set(value) == {"__record__", "fields"} and isinstance(value.get("__record__"), str):
+            fields = {key: wire_decode(item) for key, item in value["fields"].items()}
+            try:
+                return _load_class(value["__record__"])(fields)
+            except Exception:
+                return fields
         if set(value) == {"__list__", "items"} and isinstance(value.get("__list__"), str):
             items = [wire_decode(item) for item in value["items"]]
             try:
@@ -1029,9 +1035,9 @@ class Remote:
         return connection
 
     @staticmethod
-    def connections() -> tuple[RemoteConnection, ...]:
+    def connections() -> ReadyList:
         """Every open connection, kernel or degraded."""
-        return tuple(connections)
+        return ReadyList(connections)
 
     @staticmethod
     async def close_all() -> None:

@@ -16,7 +16,7 @@ class FakeJob:
     """What `bash(command)` returns: an awaitable handle owning its output."""
 
     def __init__(self, output, exit_code=0):
-        self.output, self.exit_code = output, exit_code
+        self.output, self.exit_code, self.timed_out = output, exit_code, False
 
     def __await__(self):
         async def settled():
@@ -133,11 +133,15 @@ class FilesPluginTest(unittest.TestCase):
             commands.append(command)
             return FakeJob(matches)
 
+        forgotten = []
         with patch.object(plugin.jobs, "bash", fake_bash), \
+             patch.object(plugin.jobs, "forget", forgotten.append), \
              patch.object(plugin.jobs, "preview_limit", 65_536, create=True), \
              patch.object(plugin, "_which", lambda name: "/usr/bin/rg"):
             found = self.loop.run_until_complete(
                 plugin.Files().find("needle", str(self.root), glob="*.py"))
+        # The search job is the plugin's own; it must not linger in jobs or output.list().
+        self.assertEqual(len(forgotten), 1)
         self.assertEqual([match.to_dict() for match in found],
                          [{"path": "a.py", "line": 7, "text": "needle here"}])
         self.assertIn("rg --json -g '*.py' -e needle", commands[0])
@@ -205,6 +209,23 @@ class FilesPluginTest(unittest.TestCase):
         self.assertEqual(files.read(str(path), 2, 3), "     2 | alpha\n     3 | needle")
         with self.assertRaises(ValueError):
             files.find("x", context=51)
+
+    # An agent searched paths("*.md"), got [], and concluded nothing matched;
+    # reading a missing file raised a bare FileNotFoundError.
+    def test_path_globs_and_missing_file_diagnostics(self):
+        self.write("notes.md", "x")
+        self.write("sub/README.md", "y")
+        self.write("a.py", "z")
+        files = plugin.Files()
+        with patch.object(plugin, "_which", lambda name: None):
+            globbed = self.loop.run_until_complete(files.paths("*.md", str(self.root)))
+            text = self.loop.run_until_complete(files.paths("readme", str(self.root)))
+        self.assertEqual(sorted(Path(name).name for name in globbed), ["README.md", "notes.md"])
+        self.assertEqual([Path(name).name for name in text], ["README.md"])
+        with self.assertRaisesRegex(FileNotFoundError, "nearby paths: .*notes.md"):
+            files.read(str(self.root/"note.md"))
+        with self.assertRaisesRegex(IsADirectoryError, r"files\.ls"):
+            files.read(str(self.root/"sub"))
 
 
 if __name__ == "__main__":

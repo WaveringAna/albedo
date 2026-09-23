@@ -31,7 +31,7 @@ pub fn extension() -> harness_extension.Extension {
       <> " still needs await, because the value itself crosses the network; handles and"
       <> " their state never do. await rem.tools() lists what the remote namespace holds;"
       <> " await rem.read(path) and await rem.write(path, content) move one file's text"
-      <> " directly. remote.connections() lists open connections and await"
+      <> " directly. remote.connections() lists open connections (awaiting it also works) and await"
       <> " remote.close_all() ends them all. Failures raise RemoteError."
       <> " The target resolves per call from a host="
       <> " argument, then remote.configure(host, remote_cwd=None), then $ALBEDO_SSH"

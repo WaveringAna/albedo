@@ -107,7 +107,9 @@ pub fn failed_changes_and_model_calls_queue_nothing_test() {
     command.UserCall,
     dict.from_list([#("action", "status"), #("details", "1 finished")]),
   )
-  |> should.equal(Error("unknown work status"))
+  |> should.equal(Error(
+    "unknown work status finished; use open, active, blocked, done, or cancelled",
+  ))
   process.receive(notes, 0) |> should.equal(Error(Nil))
 }
 

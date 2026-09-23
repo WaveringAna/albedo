@@ -44,7 +44,7 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
   )
 }
 
-const instructions = "Agent Skills are cataloged session commands. Invoke one through the `commands` object (commands.catalog() maps slash names to methods): it returns the skill's instructions as data and never submits a turn or executes bundled scripts. `await skills.resources(name)` returns a dict whose \"resources\" lists bundled resource names, and `await skills.read(name, resource=\"SKILL.md\", offset=0, limit=16384)` reads one bounded page as a dict: page[\"content\"], page[\"next_offset\"], page[\"truncated\"]. Failures raise SkillsError. A user may explicitly run the listed slash command, which submits the activation as one user turn."
+const instructions = "Agent Skills are cataloged session commands. Invoke one through the `commands` object (commands.catalog() maps slash names to methods): it returns the skill's instructions as data and never submits a turn or executes bundled scripts. `await skills.resources(name)` returns a record whose .resources lists bundled resource names, and `await skills.read(name, resource=\"SKILL.md\", offset=0, limit=16384)` reads one bounded page as a record: page.content, page.next_offset, and page.truncated (page[\"content\"] works too). Failures raise SkillsError. A user may explicitly run the listed slash command, which submits the activation as one user turn."
 
 /// One cataloged skill as a session command: both callers resolve the same
 /// activation, and only the delivery differs.

@@ -14,7 +14,7 @@ import gleam/result
 pub fn definition() -> types.Tool {
   types.Tool(
     "python",
-    "Execute Python in your persistent session. Always provide both JSON arguments: code (string) and timeout_ms (integer, 1–3600000), even for a one-line call. Top-level await works. Variables stay alive. Only printed output and the final expression return; truncated=true means the output passed the 64 KiB preview, and the rest is readable with output.read(cell_id, offset=65536). Failed cells are retained: await cells.read(id) for bounded source, await cells.info(id) for status without source, await cells.trace(id) for what the cell read, ran and changed. Repair exact unique text without resending the source with await cells.run(id, replacements=[(old,new)]), or pass check=True first to compile the rewrite and get the syntax error back without running anything. A cell that started requires allow_partial=True after checking side effects; never retry blindly.",
+    "Execute Python in your persistent session. Always provide both JSON arguments: code (string) and timeout_ms (integer, 1–3600000), even for a one-line call. Top-level await works. Variables stay alive. Only printed output and the final expression return; truncated=true means the output passed the 64 KiB preview, and the rest (up to 1 MiB) is readable with output.read(cell_id, offset=65536) while the cell is among the 16 most recent; read it before running many more cells, or print less. Failed cells are retained: await cells.read(id) for bounded source, await cells.info(id) for its status (ok, error, interrupted, started, saved) without source, await cells.trace(id) for what the cell read, ran and changed. Repair exact unique text without resending the source with await cells.run(id, replacements=[(old,new)]), or pass check=True first to compile the rewrite and get the syntax error back without running anything. A cell that started requires allow_partial=True after checking side effects; never retry blindly.",
     json.object([
       #("type", json.string("object")),
       #("additionalProperties", json.bool(False)),
@@ -86,7 +86,7 @@ pub fn extension() -> extension.Extension {
     [],
     [
       extension.ToolPlugin(
-        "Python has a persistent namespace, top-level await, cells.read/info/trace and cells.run for saved-source repair (all async), and output.read/output.list for bounded retained output (synchronous). cells.last_id is the id of the latest cell. output.read(id, offset=0, limit=4000) returns up to limit characters. output.list() names every retained channel, which is also how to find earlier cells: cells, background jobs, and 'native' for bytes written to fd 1/2 while no cell was running.",
+        "Python has a persistent namespace, top-level await, cells.read/info/trace and cells.run for saved-source repair (all async), and output.read/output.list for bounded retained output (synchronous; awaiting them also works). cells.last_id is the id of the latest cell, and await cells.list(limit=20) lists this session's cells newest first with their status and first line, even after their output has rolled out. output.read(id, offset=0, limit=4000) returns up to limit characters. output.list() names every retained channel, which is also how to find earlier cells: cells, background jobs, and 'native' for bytes written to fd 1/2 while no cell was running.",
         [extension.Tool(definition(), invoke, recover)],
         [],
         [#("cells", cells.handle)],

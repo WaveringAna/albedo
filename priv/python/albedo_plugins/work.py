@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from albedo_api import Host, PythonApi
-from typing import TypedDict, cast
+from albedo_api import Host, PythonApi, Record
+from typing import cast
 
 
-class WorkItem(TypedDict):
+class WorkItem(Record):
+    """One ledger item: item.id and item["id"] both work."""
     id: int
     title: str
     notes: str
@@ -19,23 +20,23 @@ host: Host
 
 class Work:
     async def list(self, after: int = 0, limit: int = 50) -> list[WorkItem]:
-        return cast(list[WorkItem], await host("work.list", {"after": after, "limit": limit}))
+        return [WorkItem(item) for item in cast(list[dict], await host("work.list", {"after": after, "limit": limit}))]
 
     async def get(self, id: int) -> WorkItem:
-        return cast(WorkItem, await host("work.get", {"id": id}))
+        return WorkItem(cast(dict, await host("work.get", {"id": id})))
 
     async def create(self, title: str, notes: str = "", parent: int | None = None) -> WorkItem:
-        return cast(WorkItem, await host("work.create", {"title": title, "notes": notes, "parent": parent}))
+        return WorkItem(cast(dict, await host("work.create", {"title": title, "notes": notes, "parent": parent})))
 
     async def update(self, id: int, *, revision: int, **changes: object) -> WorkItem:
         allowed = {"title", "notes", "status", "session", "run"}
         if changes.keys() - allowed:
             raise ValueError("unknown work fields: " + repr(changes.keys() - allowed))
-        return cast(WorkItem, await host("work.update", {"id": id, "revision": revision, **changes}))
+        return WorkItem(cast(dict, await host("work.update", {"id": id, "revision": revision, **changes})))
 
     async def delete(self, id: int, *, revision: int) -> WorkItem:
         """Remove an item at the revision you last read; one with sub-items stays."""
-        return cast(WorkItem, await host("work.delete", {"id": id, "revision": revision}))
+        return WorkItem(cast(dict, await host("work.delete", {"id": id, "revision": revision})))
 
 
 def setup(api: PythonApi) -> dict[str, object]:

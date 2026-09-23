@@ -99,7 +99,12 @@ pub fn parse_status(name: String) -> Result(Status, Error) {
     "blocked" -> Ok(Blocked)
     "done" -> Ok(Done)
     "cancelled" -> Ok(Cancelled)
-    _ -> Error(Invalid("unknown work status"))
+    _ ->
+      Error(Invalid(
+        "unknown work status "
+        <> name
+        <> "; use open, active, blocked, done, or cancelled",
+      ))
   }
 }
 

@@ -3,8 +3,10 @@ import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/work/ledger as work
 import gleam/dynamic/decode
 import gleam/json
-import gleam/option.{None}
+import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
+import gleam/string
 
 pub fn handle(store: work.Store, session: String, request: String) -> String {
   let decoder = {
@@ -13,6 +15,21 @@ pub fn handle(store: work.Store, session: String, request: String) -> String {
     decode.success(#(method, args))
   }
   case json.parse(request, decoder) {
+    Ok(#("cells.list", args)) -> {
+      let limit =
+        decode.run(
+          args,
+          decode.optional_field("limit", 20, decode.int, decode.success),
+        )
+        |> result.unwrap(20)
+      case limit < 1 || limit > 200 {
+        True -> Error("1 <= limit <= 200 required")
+        False ->
+          journal.recent(store, session, limit)
+          |> result.map(json.array(_, summary_json))
+      }
+      |> answer
+    }
     Ok(#(method, args))
       if method == "cells.read"
       || method == "cells.trace"
@@ -21,20 +38,62 @@ pub fn handle(store: work.Store, session: String, request: String) -> String {
       || method == "cells.started"
       || method == "cells.finish"
     -> {
-      let answer = cells(store, session, method, args)
-      case answer {
-        Ok(value) -> json.object([#("ok", json.bool(True)), #("value", value)])
-        Error(message) ->
-          json.object([
-            #("ok", json.bool(False)),
-            #("code", json.string("cell")),
-            #("message", json.string(message)),
-          ])
-      }
-      |> json.to_string
+      cells(store, session, method, args) |> answer
     }
     _ ->
       "{\"ok\":false,\"code\":\"cell\",\"message\":\"unknown cells operation\"}"
+  }
+}
+
+fn answer(result: Result(json.Json, String)) -> String {
+  case result {
+    Ok(value) -> json.object([#("ok", json.bool(True)), #("value", value)])
+    Error(message) ->
+      json.object([
+        #("ok", json.bool(False)),
+        #("code", json.string("cell")),
+        #("message", json.string(message)),
+      ])
+  }
+  |> json.to_string
+}
+
+/// A cell without its source: what `cells.info` and `cells.list` show.
+fn summary_json(cell: journal.Cell) -> json.Json {
+  json.object([
+    #("id", json.string(cell.id)),
+    #("status", json.string(status(cell))),
+    #("started", json.bool(cell.started)),
+    #("parent", json.nullable(cell.parent, json.string)),
+    #("finished", json.bool(cell.outcome != None)),
+    #(
+      "first_line",
+      json.string(
+        cell.source
+        |> string.split("\n")
+        |> list.find(fn(line) { string.trim(line) != "" })
+        |> result.unwrap("")
+        |> string.slice(0, 120),
+      ),
+    ),
+  ])
+}
+
+/// ok, error, or interrupted once finished; lost or unavailable when the
+/// kernel could not run it; started when it began without a recorded end
+/// (effects unknown); saved when it never started.
+fn status(cell: journal.Cell) -> String {
+  case cell.outcome, cell.started {
+    Some(Ok(outcome)), _ ->
+      case outcome.status {
+        python.Succeeded -> "ok"
+        python.Failed -> "error"
+        python.Interrupted -> "interrupted"
+      }
+    Some(Error(python.Lost)), _ -> "lost"
+    Some(Error(_)), _ -> "unavailable"
+    None, True -> "started"
+    None, False -> "saved"
   }
 }
 
@@ -106,5 +165,6 @@ fn to_json(cell: journal.Cell) -> json.Json {
     #("started", json.bool(cell.started)),
     #("parent", json.nullable(cell.parent, json.string)),
     #("finished", json.bool(cell.outcome != None)),
+    #("status", json.string(status(cell))),
   ])
 }

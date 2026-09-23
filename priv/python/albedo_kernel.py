@@ -229,8 +229,9 @@ def retained(id: str) -> Capture:
     capture = ARCHIVES.get(id)
     if capture is None:
         raise LookupError(
-            f"no retained output for {id!r}; output.list() names what is kept, and a background "
-            f"job keeps its own output on its handle: jobs[{id!r}].tail()")
+            f"no retained output for {id!r}: only the 16 most recent cells and 64 most recent jobs "
+            f"keep output, so it may have rolled out; output.list() names what is kept, and a "
+            f"background job keeps its own output on its handle: jobs[{id!r}].tail()")
     return capture
 
 
@@ -244,7 +245,8 @@ def watch_output(id: str, notify: Callable[[], None]) -> None:
 
 class Output:
     def read(self, id: str, *, offset: int = 0, limit: int = 4000) -> str:
-        """Read retained output by cell or job id. At most 1 MiB each, 16 recent cells."""
+        """Read retained output by cell or job id: up to 1 MiB each, for the 16
+        most recent cells and 64 most recent jobs."""
         capture = retained(id)
         notify = READ_WATCHERS.pop(id, None)  # one read satisfies the watcher
         if notify is not None:
@@ -252,7 +254,7 @@ class Output:
                 notify()
             except Exception:
                 pass  # a plugin's bookkeeping must not fail the read
-        return capture.read(offset, limit)
+        return albedo_api.Text(capture.read(offset, limit))
 
     def list(self):
         """Every retained channel: cells, background jobs, and 'native'.
@@ -260,7 +262,8 @@ class Output:
         'native' holds bytes written to fd 1/2 while no cell was running; bytes a
         cell's subprocesses write land in that cell's own output instead.
         """
-        return [{"id": c.id, "kind": c.kind, "bytes": c.seen, "retained": len(c.data)} for c in ARCHIVES.values()]
+        return albedo_api.ReadyList(
+            {"id": c.id, "kind": c.kind, "bytes": c.seen, "retained": len(c.data)} for c in ARCHIVES.values())
 
 
 class Stream(io.TextIOBase):
@@ -374,10 +377,17 @@ class Cells:
             f"\n[{limit} of {len(data)} bytes; the cell has {len(lines)} lines; "
             f"narrow with start_line/end_line or raise limit]")
 
-    async def info(self, id: str) -> dict[str, object]:
-        """Status, parentage and whether the cell started, without its source."""
+    async def info(self, id: str) -> albedo_api.Record:
+        """Status (ok, error, interrupted, started, saved, lost, unavailable),
+        parentage and whether the cell started, without its source."""
         cell = cast(albedo_api.SavedCell, await host("cells.read", {"id": id}))
-        return {key: value for key, value in cell.items() if key != "source"}
+        return albedo_api.Record((key, value) for key, value in cell.items() if key != "source")
+
+    async def list(self, limit: int = 20) -> albedo_api.ReadyList:
+        """This session's cells, newest first: id, status, parent, and first line.
+        Unlike output.list(), it reaches cells whose output has rolled out."""
+        cells = cast(list[dict[str, object]], await host("cells.list", {"limit": limit}))
+        return albedo_api.ReadyList(albedo_api.Record(cell) for cell in cells)
 
     async def trace(self, id: str) -> dict[str, object]:
         """What the cell read, ran and changed: activities plus diffs of files it wrote.
@@ -569,6 +579,10 @@ def _wire_encode(value: object, depth: int = 0) -> object:
         return {"__bytes__": base64.b64encode(bytes(value)).decode("ascii")}
     if isinstance(value, dict) and type(value) is dict:
         return {str(key): _wire_encode(item, depth + 1) for key, item in value.items()}
+    if isinstance(value, albedo_api.Record):
+        cls = type(value)
+        return {"__record__": cls.__module__ + "." + cls.__qualname__,
+                "fields": {str(key): _wire_encode(item, depth + 1) for key, item in value.items()}}
     if isinstance(value, (list, tuple)):
         try:
             if type(value) is not list:
@@ -861,6 +875,7 @@ def main():
     albedo_trace.install(CELL.get)
     modules = cast(list[str], json.loads(sys.argv[1]))
     api = albedo_api.PythonApi(version=2, loop=LOOP, host=host, HostError=WorkError,
+        forget_output=lambda id: ARCHIVES.pop(id, None) and None,
         capture=background_capture, preview=PREVIEW, send=send, on_shutdown=CLEANUP.append,
         background_handle=HANDLES.append, modules=modules, watch_output=watch_output)
     NAMESPACE.update(cells=Cells(), output=Output())

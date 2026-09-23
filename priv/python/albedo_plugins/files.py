@@ -18,7 +18,7 @@ from pathlib import Path
 from collections.abc import Awaitable, Callable, Generator
 from typing import Iterable, Sequence
 
-from albedo_api import PythonApi
+from albedo_api import PythonApi, ReadyList, Text
 from albedo_plugins import bash as jobs
 
 READ_LIMIT = 16_000
@@ -50,30 +50,13 @@ class Match:
         return fields
 
 
-def _ready(value):
-    """`await` on a value that is already here: returns it without suspending."""
-    yield from ()
-    return value
-
-
-class Text(str):
-    """A result that is ready now. Awaiting it is harmless, so `files.read(...)`
-    and `await files.read(...)` both work."""
-
-    def __await__(self) -> Generator[object, None, "Text"]:
-        return _ready(self)
-
-
-class Rows(list):
+class Rows(ReadyList):
     """A list that prints one row per line, so a REPL result reads like output.
     Like Text, it may be awaited or used directly."""
 
     def __init__(self, items: Iterable[object] = (), truncated: bool = False) -> None:
         super().__init__(items)
         self.truncated = truncated
-
-    def __await__(self) -> Generator[object, None, "Rows"]:
-        return _ready(self)
 
     def __repr__(self) -> str:
         if not self:
@@ -123,8 +106,13 @@ class Search:
 async def _run(command: str) -> tuple[int | None, str]:
     """One supervised shell job, awaited to completion, with its bounded output."""
     job = jobs.bash(command, timeout=SEARCH_TIMEOUT)
-    await job
-    return job.exit_code, job.tail(jobs.preview_limit)
+    try:
+        await job
+        return job.exit_code, job.tail(jobs.preview_limit)
+    finally:
+        # The search is the plugin's own work, not a job the model started.
+        if job.exit_code is not None or job.timed_out:
+            jobs.forget(job)
 
 
 def _numbered(number: int, lines: Sequence[str]) -> str:
@@ -150,6 +138,10 @@ class Files:
             raise ValueError("start_line >= 1, end_line >= start_line, limit >= 1 line, "
                              "0 < max_chars <= 200000")
         target = Path(path).expanduser()
+        if not target.is_file():
+            if target.is_dir():
+                raise IsADirectoryError(f"{path} is a directory; files.ls({path!r}) lists it")
+            raise FileNotFoundError(_missing(target, path))
         lines = target.read_bytes().decode("utf-8", errors="replace").splitlines()
         if start_line > len(lines):
             return Text(f"[{path} has {len(lines)} lines; nothing at line {start_line}]")
@@ -248,7 +240,8 @@ class Files:
 
     def paths(self, pattern: str | None = None, path: str = ".", *,
               glob: str | None = None, max_results: int = 100, hidden: bool = False) -> Search:
-        """File names, not contents; the same ripgrep-or-Python split.
+        """File names, not contents; the same ripgrep-or-Python split. A pattern
+        with *, ? or [ is a glob over names; other text matches anywhere in the path.
         Await it: `await files.paths(pattern)`."""
         return Search("paths", lambda: self._paths(pattern, path, glob, max_results, hidden))
 
@@ -264,9 +257,8 @@ class Files:
             flags += ["-g", glob]
         command = " ".join(shlex.quote(part) for part in ["rg", *flags, str(target)])
         _, output = await _run(command)
-        matcher = re.compile(re.escape(pattern), re.IGNORECASE) if pattern else None
-        found = [line for line in output.splitlines()
-                 if line and (matcher is None or matcher.search(line))]
+        matches = _name_matcher(pattern)
+        found = [line for line in output.splitlines() if line and matches(line)]
         return Rows(found[:max_results], truncated=len(found) > max_results)
 
     def edit(self, path: str, old_str: str, new_str: str, line_hint: int | None = None) -> Text:
@@ -335,11 +327,22 @@ def _fallback_find(pattern, targets: list[Path], glob, context, max_results,
     return Rows(results)
 
 
+def _name_matcher(pattern: str | None) -> Callable[[str], bool]:
+    """A pattern with *, ? or [ is a glob over the file name (or the whole path
+    when it has a /); anything else matches as case-insensitive text anywhere
+    in the path, so "*.md" and "readme" both mean what they look like."""
+    if not pattern:
+        return lambda _path: True
+    folded = pattern.lower()
+    if any(char in pattern for char in "*?["):
+        return lambda path: fnmatch.fnmatch((path if "/" in pattern else Path(path).name).lower(), folded)
+    return lambda path: folded in path.lower()
+
+
 def _fallback_paths(pattern, path: Path, glob, max_results, hidden) -> Rows:
-    matcher = re.compile(re.escape(pattern), re.IGNORECASE) if pattern else None
+    matches = _name_matcher(pattern)
     found = [str(file) for file in _walk(path, hidden)
-             if (glob is None or fnmatch.fnmatch(file.name, glob))
-             and (matcher is None or matcher.search(str(file)))]
+             if (glob is None or fnmatch.fnmatch(file.name, glob)) and matches(str(file))]
     return Rows(found[:max_results], truncated=len(found) > max_results)
 
 

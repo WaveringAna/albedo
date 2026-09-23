@@ -136,6 +136,26 @@ pub fn get(storage: store.Store, id: String) -> Result(Cell, String) {
   }
 }
 
+/// This session's cells, newest first, at most `limit` of them.
+pub fn recent(
+  storage: store.Store,
+  session: String,
+  limit: Int,
+) -> Result(List(Cell), String) {
+  use ids <- result.try(
+    store.query(storage, fn(db) {
+      sqlight.query(
+        "SELECT id FROM cells WHERE session=? ORDER BY rowid DESC LIMIT ?",
+        db,
+        [sqlight.text(session), sqlight.int(limit)],
+        decode.field(0, decode.string, decode.success),
+      )
+      |> result.map_error(fn(e) { e.message })
+    }),
+  )
+  list.try_map(ids, get(storage, _))
+}
+
 @external(erlang, "albedo_native", "new_id")
 fn new_id() -> String
 
