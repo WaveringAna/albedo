@@ -1,8 +1,19 @@
 # MCP extension
 
-Albedo's `mcp` extension connects one session to configured [Model Context Protocol](https://modelcontextprotocol.io) servers and advertises their discovered tools, resources, and prompts as ordinary model tools. It is installed but disabled by default: enable it per session from `/extensions`.
+Albedo's `mcp` extension connects one session to configured [Model Context Protocol](https://modelcontextprotocol.io) servers and advertises their discovered tools, resources, and prompts as ordinary model tools. It is installed but disabled by default: enable it from `/extensions`, for every session or (after `s`) just the current one.
 
 The client is [`barrel_mcp`](https://hex.pm/packages/barrel_mcp), so stdio and streamable HTTP transports, protocol negotiation, pagination, and cancellation come from a maintained MCP implementation. Albedo owns configuration, credential scope, naming, and lifecycle.
+
+## Add servers from albedo
+
+`/mcp` lists configured servers. `n` opens one form for a new server:
+
+- **transport**: `http` (default) or `stdio`, switched with ← →.
+- **url** for HTTP, or **command** for stdio, written as you would type it in a shell (`npx -y @modelcontextprotocol/server-filesystem "/srv/my docs"`); quotes are honoured but no shell runs.
+- **name**, suggested from the URL host or the command's package until you edit it.
+- **bearer token** and one custom **header** for HTTP, or `KEY=value` **env** entries for stdio. These are optional, masked while typed, and stored in `mcp-credentials.json` (mode 0600), never in `extensions.json`.
+
+Nothing is written until the form is saved with ctrl+s (or enter on its last field). The server and its credentials are saved together and the session reloads once; if the server cannot connect, both files are restored and the form stays open with the error. `enter` edits a server in the same form (a blank secret keeps the stored one, `-` removes it), `d` deletes a server and its credentials, and `e` re-enables a server switched off with `"enabled": false`.
 
 ## Configure servers
 

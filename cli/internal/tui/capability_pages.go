@@ -13,23 +13,22 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
 
 // CapabilityPageModel owns a dedicated session page for one source of agent
-// context. The list stays visible while the MCP detail pane edits a server.
+// context. MCP servers are added and edited through one form (mcp_form.go).
 type CapabilityPageModel struct {
-	Conn                                                                      *daemon.Connection
-	SessionID, Workspace, Kind, Home                                          string
-	Items                                                                     []capabilityItem
-	Prefs                                                                     config.CapabilityPrefs
-	Cursor, Width, Height, Generation                                         int
-	Global, Detail, Auth, Loading, Saving, ExtensionEnabled, ConfirmExtension bool
-	Edit, FieldName                                                           string
-	Input                                                                     textinput.Model
-	Error, Notice                                                             string
+	Conn                                                        *daemon.Connection
+	SessionID, Workspace, Kind, Home                            string
+	Items                                                       []capabilityItem
+	Prefs                                                       config.CapabilityPrefs
+	Cursor, Width, Height, Generation                           int
+	Global, Loading, Saving, ExtensionEnabled, ConfirmExtension bool
+	ConfirmDelete                                               bool
+	Form                                                        *mcpForm
+	Error, Notice                                               string
 }
 type capabilityItem struct {
 	ID, Title, Detail string
@@ -54,16 +53,12 @@ type CapabilityPageChangedMsg struct{}
 type ChatOpenCapabilityPageMsg struct{ Kind string }
 
 func NewCapabilityPageModel(conn *daemon.Connection, sessionID, workspace, kind string) CapabilityPageModel {
-	ti := textinput.New()
-	ti.Prompt = ""
-	ti.CharLimit = 4096
 	// Pages open on the global defaults; s scopes changes to this session.
-	return CapabilityPageModel{Conn: conn, SessionID: sessionID, Workspace: workspace, Kind: kind, Home: config.HomeDir(), Input: ti, Loading: true, Global: true}
+	return CapabilityPageModel{Conn: conn, SessionID: sessionID, Workspace: workspace, Kind: kind, Home: config.HomeDir(), Loading: true, Global: true}
 }
 func (m *CapabilityPageModel) SetSize(w, h int) {
 	m.Width = w
 	m.Height = h
-	m.Input.Width = max(1, w-12)
 }
 func (m CapabilityPageModel) Init() tea.Cmd { return m.loadCmd(m.Generation) }
 func (m CapabilityPageModel) loadCmd(gen int) tea.Cmd {
@@ -248,102 +243,79 @@ func (m CapabilityPageModel) toggleCmd(item capabilityItem, gen int) tea.Cmd {
 		return capabilitySavedMsg{Gen: gen, Err: err}
 	}
 }
-func (m CapabilityPageModel) secretCmd(item capabilityItem, value string, gen int) tea.Cmd {
-	return func() tea.Msg {
-		if err := m.checkIdle(); err != nil {
-			return capabilitySavedMsg{Gen: gen, Err: err}
-		}
-		old, err := config.ReadMCPCredentials(m.Home)
-		if err != nil {
-			return capabilitySavedMsg{Gen: gen, Err: err}
-		}
-		secret := old.Servers[item.ID]
-		before := secret
-		secret.BearerToken = value
-		if err = config.SetMCPServerSecrets(m.Home, item.ID, secret); err != nil {
-			return capabilitySavedMsg{Gen: gen, Err: err}
-		}
-		if err = m.reload(); err != nil {
-			_ = config.SetMCPServerSecrets(m.Home, item.ID, before)
-		}
-		return capabilitySavedMsg{Gen: gen, Err: err}
-	}
-}
-func (m CapabilityPageModel) secretFieldCmd(item capabilityItem, field, key, value string, gen int) tea.Cmd {
-	return func() tea.Msg {
-		if err := m.checkIdle(); err != nil {
-			return capabilitySavedMsg{Gen: gen, Err: err}
-		}
-		old, err := config.ReadMCPCredentials(m.Home)
-		if err != nil {
-			return capabilitySavedMsg{Gen: gen, Err: err}
-		}
-		before := old.Servers[item.ID]
-		secret := before
-		if field == "headers" {
-			next := make(map[string]string, len(before.Headers)+1)
-			for k, v := range before.Headers {
-				next[k] = v
-			}
-			next[key] = value
-			secret.Headers = next
-		} else {
-			next := make(map[string]string, len(before.Env)+1)
-			for k, v := range before.Env {
-				next[k] = v
-			}
-			next[key] = value
-			secret.Env = next
-		}
-		if err = config.SetMCPServerSecrets(m.Home, item.ID, secret); err != nil {
-			return capabilitySavedMsg{Gen: gen, Err: err}
-		}
-		err = m.reload()
-		if err != nil {
-			_ = config.SetMCPServerSecrets(m.Home, item.ID, before)
-		}
-		return capabilitySavedMsg{Gen: gen, Err: err}
-	}
-}
 
 var mcpHeaderName = regexp.MustCompile(`^[!#$%&'*+.^_` + "`" + `|~0-9A-Za-z-]+$`)
 var mcpEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z_0-9]*$`)
 
-func (m CapabilityPageModel) serverCmd(item capabilityItem, server *config.MCPServer, gen int) tea.Cmd {
+// saveMCPCmd writes a server and its credentials together and reloads the
+// session once. If the reload fails (the server cannot connect), both files
+// are restored, so a half-configured server is never left behind.
+func (m CapabilityPageModel) saveMCPCmd(sub mcpSubmission, gen int) tea.Cmd {
 	return func() tea.Msg {
-		if err := m.checkIdle(); err != nil {
-			return capabilitySavedMsg{Gen: gen, Err: err}
-		}
-		var previous *config.MCPServer
-		if !item.Draft && item.Server.Type != "" {
-			prior := item.Server
-			previous = &prior
-		}
-		if err := config.PutMCPServer(m.Home, item.ID, server); err != nil {
-			return capabilitySavedMsg{Gen: gen, Err: err}
-		}
-		err := m.reload()
-		if err != nil {
-			_ = config.PutMCPServer(m.Home, item.ID, previous)
-		}
-		return capabilitySavedMsg{Gen: gen, Err: err}
+		return capabilitySavedMsg{Gen: gen, Err: m.replaceMCP(sub.Name, &sub.Server, sub.Secrets)}
 	}
+}
+
+func (m CapabilityPageModel) deleteMCPCmd(name string, gen int) tea.Cmd {
+	return func() tea.Msg {
+		return capabilitySavedMsg{Gen: gen, Err: m.replaceMCP(name, nil, config.MCPServerSecrets{})}
+	}
+}
+
+func (m CapabilityPageModel) replaceMCP(name string, server *config.MCPServer, secrets config.MCPServerSecrets) error {
+	if err := m.checkIdle(); err != nil {
+		return err
+	}
+	servers, err := config.ReadMCPServers(m.Home)
+	if err != nil {
+		return err
+	}
+	credentials, err := config.ReadMCPCredentials(m.Home)
+	if err != nil {
+		return err
+	}
+	var previous *config.MCPServer
+	if prior, ok := servers[name]; ok {
+		previous = &prior
+	}
+	priorSecrets := credentials.Servers[name]
+	restore := func() {
+		_ = config.PutMCPServer(m.Home, name, previous)
+		_ = config.SetMCPServerSecrets(m.Home, name, priorSecrets)
+	}
+	if err = config.SetMCPServerSecrets(m.Home, name, secrets); err != nil {
+		return err
+	}
+	if err = config.PutMCPServer(m.Home, name, server); err != nil {
+		restore()
+		return err
+	}
+	if err = m.reload(); err != nil {
+		restore()
+		return err
+	}
+	return nil
 }
 
 var mcpName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
-func (m *CapabilityPageModel) startEdit(kind string, initial string) {
-	m.Edit = kind
-	m.Input.Reset()
-	m.Input.EchoMode = textinput.EchoNormal
-	if kind == "secret" || kind == "header-value" || kind == "env-value" {
-		m.Input.EchoMode = textinput.EchoPassword
-	} else {
-		m.Input.SetValue(initial)
+// openForm starts adding a server, or editing the selected one with its
+// stored credentials summarized (never shown).
+func (m *CapabilityPageModel) openForm(edit bool) {
+	m.Error, m.Notice = "", ""
+	if !edit {
+		m.Form = newMCPForm("", config.MCPServer{Type: "http"}, config.MCPServerSecrets{})
+		return
 	}
-	m.Input.Focus()
-	m.Error = ""
+	item := m.Items[m.Cursor]
+	credentials, err := config.ReadMCPCredentials(m.Home)
+	if err != nil {
+		m.Error = err.Error()
+		return
+	}
+	m.Form = newMCPForm(item.ID, item.Server, credentials.Servers[item.ID])
 }
+
 func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case capabilityLoadedMsg:
@@ -382,7 +354,8 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 			m.Error = msg.Err.Error()
 			return m, nil
 		}
-		m.Edit = ""
+		m.Form = nil
+		m.ConfirmDelete = false
 		m.Notice = "saved · session reloaded"
 		m.Loading = true
 		return m, tea.Batch(m.loadCmd(m.Generation), func() tea.Msg { return CapabilityPageChangedMsg{} })
@@ -403,107 +376,36 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 			}
 			return m, nil
 		}
-		if m.Edit != "" {
+		if m.Form != nil {
 			if msg.Type == tea.KeyEsc {
-				m.Edit = ""
-				m.Input.Blur()
+				m.Form = nil
+				m.Error = ""
 				return m, nil
 			}
-			if msg.Type == tea.KeyEnter {
-				value := strings.TrimSpace(m.Input.Value())
-				mode := m.Edit
-				m.Edit = ""
-				m.Input.Blur()
-				if len(m.Items) == 0 && mode != "new-name" {
-					return m, nil
-				}
-				var item capabilityItem
-				if len(m.Items) > 0 {
-					item = m.Items[m.Cursor]
-				}
-				switch mode {
-				case "header-name", "env-name":
-					valid := mcpHeaderName.MatchString(value)
-					if mode == "env-name" {
-						valid = mcpEnvName.MatchString(value)
-					}
-					if !valid {
-						m.Error = "invalid header or environment name"
-						return m, nil
-					}
-					m.FieldName = value
-					if mode == "header-name" {
-						m.startEdit("header-value", "")
-					} else {
-						m.startEdit("env-value", "")
-					}
-					return m, nil
-				case "header-value", "env-value":
-					if value == "" {
-						m.Error = "secret cannot be empty"
-						return m, nil
-					}
-					field := "headers"
-					if mode == "env-value" {
-						field = "env"
-					}
-					m.Saving = true
-					m.Generation++
-					return m, m.secretFieldCmd(item, field, m.FieldName, value, m.Generation)
-				case "secret":
-					m.Saving = true
-					m.Generation++
-					return m, m.secretCmd(item, value, m.Generation)
-				case "url":
-					if value == "" {
-						m.Error = "endpoint cannot be empty"
-						return m, nil
-					}
-					server := item.Server
-					server.URL = value
-					m.Saving = true
-					m.Generation++
-					return m, m.serverCmd(item, &server, m.Generation)
-				case "new-name":
-					if !mcpName.MatchString(value) {
-						m.Error = "use 1–64 letters, digits, _ or -"
-						return m, nil
-					}
-					for _, existing := range m.Items {
-						if existing.ID == value {
-							m.Error = "server already exists"
-							return m, nil
-						}
-					}
-					m.Items = append(m.Items, capabilityItem{ID: value, Title: value, Draft: true, Server: config.MCPServer{Type: "http"}})
-					m.Cursor = len(m.Items) - 1
-					m.startEdit("new-url", "")
-					return m, nil
-				case "new-url":
-					if value == "" {
-						m.Error = "endpoint cannot be empty"
-						return m, nil
-					}
-					server := config.MCPServer{Type: "http", URL: value}
-					m.Saving = true
-					m.Generation++
-					return m, m.serverCmd(item, &server, m.Generation)
-				}
+			submit, cmd := m.Form.update(msg)
+			if !submit {
+				return m, cmd
+			}
+			sub, err := m.Form.submission(m.Items)
+			if err != nil {
+				m.Error = err.Error()
 				return m, nil
 			}
-			var cmd tea.Cmd
-			m.Input, cmd = m.Input.Update(msg)
-			return m, cmd
+			m.Error = ""
+			m.Saving = true
+			m.Generation++
+			return m, m.saveMCPCmd(sub, m.Generation)
+		}
+		if m.ConfirmDelete {
+			m.ConfirmDelete = false
+			if msg.Type == tea.KeyEnter && len(m.Items) > 0 {
+				m.Saving = true
+				m.Generation++
+				return m, m.deleteMCPCmd(m.Items[m.Cursor].ID, m.Generation)
+			}
+			return m, nil
 		}
 		if msg.Type == tea.KeyEsc || msg.Type == tea.KeyCtrlC {
-			if m.Auth {
-				m.Auth = false
-				return m, nil
-			}
-			if m.Detail {
-				m.Detail = false
-				return m, nil
-			}
 			return m, func() tea.Msg { return CapabilityPageDoneMsg{} }
 		}
 		if m.Loading {
@@ -534,48 +436,31 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 				}
 			case "n":
 				if m.Kind == "mcp" {
-					m.startEdit("new-name", "")
+					m.openForm(false)
+				}
+			case "d":
+				if m.Kind == "mcp" && len(m.Items) > 0 {
+					m.ConfirmDelete = true
 				}
 			case "e":
-				if m.Detail && m.Kind == "mcp" && len(m.Items) > 0 {
+				// Re-enables a server switched off in extensions.json.
+				if m.Kind == "mcp" && len(m.Items) > 0 && m.Items[m.Cursor].Server.Enabled != nil && !*m.Items[m.Cursor].Server.Enabled {
 					item := m.Items[m.Cursor]
 					server := item.Server
-					next := server.Enabled != nil && !*server.Enabled
-					server.Enabled = &next
+					server.Enabled = nil
+					credentials, err := config.ReadMCPCredentials(m.Home)
+					if err != nil {
+						m.Error = err.Error()
+						return m, nil
+					}
 					m.Saving = true
 					m.Generation++
-					return m, m.serverCmd(item, &server, m.Generation)
-				}
-			case "a":
-				if m.Detail && m.Kind == "mcp" && len(m.Items) > 0 {
-					m.Auth = true
-				}
-			case "b":
-				if m.Auth && len(m.Items) > 0 {
-					m.startEdit("secret", "")
-				}
-			case "h":
-				if m.Auth && len(m.Items) > 0 {
-					m.startEdit("header-name", "")
-				}
-			case "v":
-				if m.Auth && len(m.Items) > 0 {
-					m.startEdit("env-name", "")
-				}
-			case "u":
-				if m.Detail && m.Kind == "mcp" && len(m.Items) > 0 && m.Items[m.Cursor].Server.Type == "http" {
-					m.startEdit("url", m.Items[m.Cursor].Server.URL)
-				}
-			case "x":
-				if m.Auth && len(m.Items) > 0 {
-					m.Saving = true
-					m.Generation++
-					return m, m.secretCmd(m.Items[m.Cursor], "", m.Generation)
+					return m, m.saveMCPCmd(mcpSubmission{Name: item.ID, Server: server, Secrets: credentials.Servers[item.ID]}, m.Generation)
 				}
 			}
 		case tea.KeyEnter:
 			if m.Kind == "mcp" && len(m.Items) > 0 {
-				m.Detail = true
+				m.openForm(true)
 			}
 		case tea.KeySpace:
 			if len(m.Items) > 0 {
@@ -639,33 +524,37 @@ func (m CapabilityPageModel) View() string {
 		}
 		rows = append(rows, ansi.Truncate(mark+label+"  "+item.Title+detail, width, "…"))
 	}
-	if len(m.Items) > 0 {
-		selected := m.Items[m.Cursor]
-		rows = append(rows, "", ansi.Truncate(selected.Detail, width, "…"))
-		if m.Kind == "mcp" && m.Detail {
-			status := "not set"
-			if selected.HasSecret {
-				status = "stored privately"
-			}
-			rows = append(rows, "transport: "+selected.Server.Type, "auth: "+status)
-			if m.Auth {
-				rows = append(rows, "authentication · b bearer · h HTTP header · v stdio env · x remove bearer · esc back")
-			} else {
-				rows = append(rows, "a authentication · e enable/disable server · u edit URL · esc back")
-			}
+	if m.Form != nil {
+		rows = append(rows, "")
+		rows = append(rows, m.Form.view(width)...)
+		if m.Saving {
+			rows = append(rows, "connecting and reloading…")
 		}
-	}
-	if m.ConfirmExtension {
+	} else if m.ConfirmExtension {
 		rows = append(rows, "", "enable extension and reload workers? enter confirm · esc cancel")
-	} else if m.Edit != "" {
-		label := map[string]string{"secret": "Bearer token (masked)", "url": "MCP URL", "new-name": "Server name", "new-url": "MCP URL", "header-name": "HTTP header name", "header-value": "Header value (masked)", "env-name": "Environment name", "env-value": "Environment value (masked)"}[m.Edit]
-		rows = append(rows, "", label+": "+m.Input.View(), "enter save · esc cancel")
+	} else if m.ConfirmDelete && len(m.Items) > 0 {
+		rows = append(rows, "", "delete MCP server "+m.Items[m.Cursor].ID+" and its stored credentials? enter confirm · any other key cancels")
 	} else if m.Saving {
 		rows = append(rows, "saving and reloading…")
 	} else {
+		if len(m.Items) > 0 {
+			selected := m.Items[m.Cursor]
+			detail := selected.Detail
+			if m.Kind == "mcp" {
+				auth := "no credentials"
+				if selected.HasSecret {
+					auth = "credentials stored privately"
+				}
+				detail += " · " + auth
+				if selected.Server.Enabled != nil && !*selected.Server.Enabled {
+					detail += " · disabled in extensions.json · e enable"
+				}
+			}
+			rows = append(rows, "", ansi.Truncate(detail, width, "…"))
+		}
 		rows = append(rows, "", "↑↓ select · space toggle · s session · g global · r refresh · esc back")
 		if m.Kind == "mcp" {
-			rows = append(rows, "enter details · n add HTTP server")
+			rows = append(rows, "n add server · enter edit · d delete")
 		}
 	}
 	if m.Height > 0 && len(rows) > m.Height {

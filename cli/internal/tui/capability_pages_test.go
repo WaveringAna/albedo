@@ -67,21 +67,3 @@ description: test
 		t.Fatal("selected row scrolled offscreen")
 	}
 }
-
-func TestMCPAuthEditorMasksSecret(t *testing.T) {
-	m := NewCapabilityPageModel(nil, "s", "/workspace", "mcp")
-	m.SetSize(80, 24)
-	m.Loading = false
-	m.Items = []capabilityItem{{ID: "docs", Title: "docs", Server: config.MCPServer{Type: "http"}}}
-	m.Detail = true
-	m.Auth = true
-	m.startEdit("secret", "")
-	m.Input.SetValue("sensitive-token")
-	if strings.Contains(m.View(), "sensitive-token") {
-		t.Fatal("secret rendered in TUI")
-	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if m.Edit != "" {
-		t.Fatal("escape did not cancel secret editor")
-	}
-}
