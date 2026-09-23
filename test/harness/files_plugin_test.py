@@ -51,8 +51,9 @@ class FilesPluginTest(unittest.TestCase):
         files = plugin.Files()
         self.assertEqual(files.read(str(path), start_line=2, end_line=3),
                          "     2 | line 2\n     3 | line 3")
-        bounded = files.read(str(path), limit=40)
-        self.assertIn("more lines; read again with start_line=", bounded)
+        bounded = files.read(str(path), max_chars=40)
+        self.assertIn("stopped at max_chars=40 characters", bounded)
+        self.assertIn("read again with start_line=", bounded)
         self.assertLess(len(bounded.splitlines()), 20)
         self.assertIn("nothing at line 99", files.read(str(path), start_line=99))
         with self.assertRaises(ValueError):
@@ -64,11 +65,27 @@ class FilesPluginTest(unittest.TestCase):
         files = plugin.Files()
         self.assertEqual(files.read(str(path), start_line=2, end_line=2),
                          f"     2 | {long_line}")
-        bounded = files.read(str(path), start_line=2, end_line=2, limit=100)
-        self.assertIn("line 2 has", bounded)
-        self.assertIn("start_line=2, end_line=2, limit=", bounded)
+        bounded = files.read(str(path), start_line=2, end_line=2, max_chars=100)
+        self.assertIn("line 2 is", bounded)
+        self.assertIn("start_line=2, end_line=2, max_chars=", bounded)
         self.assertNotIn("     2 | x", bounded)
-        self.assertIn("read again with start_line=2", files.read(str(path), limit=20))
+        self.assertIn("read again with start_line=2", files.read(str(path), max_chars=20))
+
+    # Every model read `limit` as a line count; one asked for lines 144-400
+    # with limit=400, got six lines of a character budget, and fell back to sed.
+    def test_limit_counts_lines(self):
+        path = self.write("many.txt", "".join(f"line {n}\n" for n in range(1, 501)))
+        files = plugin.Files()
+        window = files.read(str(path), start_line=144, end_line=400, limit=400)
+        self.assertEqual(len(window.splitlines()), 257)
+        self.assertTrue(window.endswith("   400 | line 400"))
+        capped = files.read(str(path), start_line=10, limit=3)
+        self.assertEqual(capped.splitlines()[:3],
+                         ["    10 | line 10", "    11 | line 11", "    12 | line 12"])
+        self.assertIn("limit=3 lines reached", capped)
+        self.assertIn("start_line=13", capped)
+        with self.assertRaises(ValueError):
+            files.read(str(path), limit=0)
 
     def test_edit_replaces_one_exact_occurrence_and_keeps_the_mode(self):
         path = self.write("edit.py", "alpha\nbeta\ngamma\n")
@@ -136,6 +153,58 @@ class FilesPluginTest(unittest.TestCase):
         self.assertEqual([(Path(match.path).name, match.line) for match in found], [("one.py", 2)])
         self.assertEqual([Path(name).name for name in names], ["one.py"])
         self.assertEqual(list(files.ls(str(self.root))), ["nested/"])
+
+    # Agents kept awaiting the synchronous calls and forgetting to await the
+    # searches; both spellings of the synchronous calls must work, and a
+    # forgotten await must say what to do instead of printing a coroutine.
+    def test_ready_results_may_be_awaited_or_used_directly(self):
+        path = self.write("sample.py", "alpha\nbeta\n")
+        files = plugin.Files()
+
+        async def awaited():
+            return (await files.read(str(path)), await files.ls(str(self.root)),
+                    await files.edit(str(path), "beta", "gamma"),
+                    await files.write(str(self.root/"new.txt"), "x"))
+
+        read, listing, edited, wrote = self.loop.run_until_complete(awaited())
+        self.assertEqual(read, "     1 | alpha\n     2 | beta")
+        self.assertEqual(list(listing), ["sample.py"])
+        self.assertIn("Edited", edited)
+        self.assertIn("Wrote", wrote)
+        self.assertIsInstance(files.read(str(path)), str)
+
+    def test_an_unawaited_search_explains_itself(self):
+        files = plugin.Files()
+        pending = files.find("needle", str(self.root))
+        self.assertIn("await files.find(", repr(pending))
+        with self.assertRaisesRegex(TypeError, r"use `await files\.find"):
+            list(pending)
+        with self.assertRaisesRegex(TypeError, r"use `await files\.paths"):
+            len(files.paths("x", str(self.root)))
+
+    # Agents shelled out to `grep -B2 -A8` and multi-path greps because find
+    # had no context and one path; they also wrote `await files.find(...)[:35]`,
+    # which slices before it awaits, and `files.read(path, 600, 720)`.
+    def test_find_context_paths_slicing_and_positional_reads(self):
+        self.write("a/one.py", "zero\nalpha\nneedle\nbeta\nneedle\ngamma\n")
+        self.write("b/two.py", "needle\n")
+        files = plugin.Files()
+        with patch.object(plugin, "_which", lambda name: None):
+            found = self.loop.run_until_complete(files.find(
+                "needle", [str(self.root/"a"), str(self.root/"b")], context=1))
+            first = self.loop.run_until_complete(files.find("needle", str(self.root/"a"))[:1])
+            one = self.loop.run_until_complete(files.find("needle", str(self.root/"a"))[0])
+        rows = [(Path(item.path).name, item.line, item.context) for item in found]
+        self.assertEqual(rows, [("one.py", 2, True), ("one.py", 3, False), ("one.py", 4, True),
+                                ("one.py", 5, False), ("one.py", 6, True), ("two.py", 1, False)])
+        self.assertTrue(str(found[0]).endswith("one.py-2- alpha"))
+        self.assertTrue(str(found[1]).endswith("one.py:3: needle"))
+        self.assertEqual(len(first), 1)
+        self.assertEqual(one.line, 3)
+        path = self.root/"a"/"one.py"
+        self.assertEqual(files.read(str(path), 2, 3), "     2 | alpha\n     3 | needle")
+        with self.assertRaises(ValueError):
+            files.find("x", context=51)
 
 
 if __name__ == "__main__":

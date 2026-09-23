@@ -15,6 +15,7 @@ import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Awaitable, Callable, Generator
 from typing import Iterable, Sequence
 
 from albedo_api import PythonApi
@@ -31,23 +32,48 @@ PREVIEW_LINES = 2
 
 @dataclass(frozen=True)
 class Match:
+    """One matching line, or with `context=` a surrounding line that prints
+    grep-style as `path-line- text`."""
     path: str
     line: int
     text: str
+    context: bool = False
 
     def __str__(self) -> str:
-        return f"{self.path}:{self.line}: {self.text}"
+        mark = "-" if self.context else ":"
+        return f"{self.path}{mark}{self.line}{mark} {self.text}"
 
-    def to_dict(self) -> dict[str, str | int]:
-        return {"path": self.path, "line": self.line, "text": self.text}
+    def to_dict(self) -> dict[str, str | int | bool]:
+        fields: dict[str, str | int | bool] = {"path": self.path, "line": self.line, "text": self.text}
+        if self.context:
+            fields["context"] = True
+        return fields
+
+
+def _ready(value):
+    """`await` on a value that is already here: returns it without suspending."""
+    yield from ()
+    return value
+
+
+class Text(str):
+    """A result that is ready now. Awaiting it is harmless, so `files.read(...)`
+    and `await files.read(...)` both work."""
+
+    def __await__(self) -> Generator[object, None, "Text"]:
+        return _ready(self)
 
 
 class Rows(list):
-    """A list that prints one row per line, so a REPL result reads like output."""
+    """A list that prints one row per line, so a REPL result reads like output.
+    Like Text, it may be awaited or used directly."""
 
     def __init__(self, items: Iterable[object] = (), truncated: bool = False) -> None:
         super().__init__(items)
         self.truncated = truncated
+
+    def __await__(self) -> Generator[object, None, "Rows"]:
+        return _ready(self)
 
     def __repr__(self) -> str:
         if not self:
@@ -56,6 +82,42 @@ class Rows(list):
         return body + ("\n[truncated]" if self.truncated else "")
 
     __str__ = __repr__
+
+
+class Search:
+    """A search that runs a supervised job, so its rows exist only once awaited.
+    Using it without `await` explains that instead of printing a coroutine."""
+
+    def __init__(self, name: str, run: Callable[[], Awaitable[Rows]]) -> None:
+        self._name = name
+        self._run = run
+
+    def __await__(self) -> Generator[object, None, Rows]:
+        return self._run().__await__()
+
+    def __getitem__(self, index: object) -> "Search":
+        """`await files.find(...)[:10]` slices before it awaits; apply the
+        slice to the rows instead of failing on precedence."""
+        async def run() -> object:
+            rows = await self._run()
+            picked = rows[index]  # type: ignore[index]
+            return Rows(picked, truncated=rows.truncated) if isinstance(index, slice) else picked
+        return Search(self._name, run)  # type: ignore[arg-type]
+
+    def _unawaited(self) -> TypeError:
+        return TypeError(f"files.{self._name}(...) searches in the background; "
+                         f"use `await files.{self._name}(...)` to get its rows")
+
+    def __repr__(self) -> str:
+        return f"<files.{self._name}(...) has not run: use `await files.{self._name}(...)` for its rows>"
+
+    __str__ = __repr__
+
+    def __iter__(self):
+        raise self._unawaited()
+
+    def __len__(self) -> int:
+        raise self._unawaited()
 
 
 async def _run(command: str) -> tuple[int | None, str]:
@@ -73,40 +135,48 @@ def _numbered(number: int, lines: Sequence[str]) -> str:
 class Files:
     """Workspace file access with the diagnostics an exact edit needs."""
 
-    def read(self, path: str, *, start_line: int = 1, end_line: int | None = None,
-             limit: int = READ_LIMIT) -> str:
-        """Complete numbered lines within `limit`; retry an oversized line with a larger limit.
+    def read(self, path: str, start_line: int = 1, end_line: int | None = None, *,
+             limit: int | None = None, max_chars: int = READ_LIMIT) -> Text:
+        """Numbered lines from start_line through end_line, at most `limit` lines.
 
-        The numbers are what `edit(line_hint=)` takes. Edit diagnostics still use
-        short previews, but a read never silently shortens source lines.
+        `limit` counts lines. `max_chars` is a separate character budget (at
+        most 200000) that keeps a huge window from flooding the context; when it
+        stops a read early, the result says so and names the line to resume
+        from. Lines are never shortened. The numbers are what `edit(line_hint=)`
+        takes.
         """
-        if start_line < 1 or (end_line is not None and end_line < start_line) or not 0 < limit <= 200_000:
-            raise ValueError("start_line >= 1, end_line >= start_line, 0 < limit <= 200000")
+        if start_line < 1 or (end_line is not None and end_line < start_line) \
+                or (limit is not None and limit < 1) or not 0 < max_chars <= 200_000:
+            raise ValueError("start_line >= 1, end_line >= start_line, limit >= 1 line, "
+                             "0 < max_chars <= 200000")
         target = Path(path).expanduser()
-        data = target.read_bytes()
-        lines = data.decode("utf-8", errors="replace").splitlines()
-        last = len(lines) if end_line is None else min(end_line, len(lines))
+        lines = target.read_bytes().decode("utf-8", errors="replace").splitlines()
+        if start_line > len(lines):
+            return Text(f"[{path} has {len(lines)} lines; nothing at line {start_line}]")
+        requested = len(lines) if end_line is None else min(end_line, len(lines))
+        last = requested if limit is None else min(requested, start_line + limit - 1)
         body, used = [], 0
         for number in range(start_line, last + 1):
             row = f"{number:>6} | {lines[number - 1]}"
-            if used + len(row) + 1 > limit:
+            if used + len(row) + 1 > max_chars:
                 if not body:
                     retry = (
-                        f"read again with start_line={number}, end_line={number}, limit={len(row) + 1}"
-                        if len(row) + 1 <= 200_000 else "exceeds the 200000-character read limit"
+                        f"read it alone with start_line={number}, end_line={number}, max_chars={len(row) + 1}"
+                        if len(row) + 1 <= 200_000 else "it exceeds the 200000-character maximum"
                     )
-                    body.append(
-                        f"[line {number} has {len(row)} characters including its line number; "
-                        f"exceeds limit={limit}; {retry}]"
-                    )
+                    body.append(f"[line {number} is {len(row)} characters with its number, over "
+                                f"max_chars={max_chars}; {retry}]")
                 else:
-                    body.append(f"[{last - number + 1} more lines; read again with start_line={number}]")
+                    body.append(f"[stopped at max_chars={max_chars} characters; lines {number}-{last} "
+                                f"not shown; read again with start_line={number}, or raise max_chars]")
                 break
             used += len(row) + 1
             body.append(row)
-        if start_line > len(lines):
-            return f"[{path} has {len(lines)} lines; nothing at line {start_line}]"
-        return "\n".join(body)
+        else:
+            if last < requested:
+                body.append(f"[limit={limit} lines reached; {requested - last} more through line "
+                            f"{requested}; read again with start_line={last + 1}]")
+        return Text("\n".join(body))
 
     def ls(self, path: str = ".", pattern: str | None = None, *, hidden: bool = False) -> Rows:
         """One directory, directories suffixed with `/`."""
@@ -120,14 +190,28 @@ class Files:
             entries.append(entry.name + ("/" if entry.is_dir() else ""))
         return Rows(entries)
 
-    async def find(self, pattern: str, path: str = ".", *, glob: str | Sequence[str] | None = None,
-                   max_results: int = 50, literal: bool = False,
-                   case_sensitive: bool | None = None, hidden: bool = False) -> Rows:
-        """Content search through ripgrep when it is installed, else pure Python."""
-        target = Path(path).expanduser()
+    def find(self, pattern: str, path: str | Sequence[str] = ".", *,
+             glob: str | Sequence[str] | None = None, context: int = 0,
+             max_results: int = 50, literal: bool = False,
+             case_sensitive: bool | None = None, hidden: bool = False) -> Search:
+        """Content search through ripgrep when it is installed, else pure Python.
+        `path` may be one path or a list; `context=N` adds N lines around each
+        match. Await it: `await files.find(pattern)`."""
+        if not 0 <= context <= 50:
+            raise ValueError("0 <= context <= 50")
+        return Search("find", lambda: self._find(pattern, path, glob, context, max_results,
+                                                 literal, case_sensitive, hidden))
+
+    async def _find(self, pattern: str, path: str | Sequence[str], glob: str | Sequence[str] | None,
+                    context: int, max_results: int, literal: bool, case_sensitive: bool | None,
+                    hidden: bool) -> Rows:
+        targets = [Path(item).expanduser() for item in ([path] if isinstance(path, str) else path)]
         if not _which("rg"):
-            return _fallback_find(pattern, target, glob, max_results, literal, case_sensitive, hidden)
+            return _fallback_find(pattern, targets, glob, context, max_results,
+                                  literal, case_sensitive, hidden)
         flags = ["--json"]
+        if context:
+            flags += ["-C", str(context)]
         if literal:
             flags.append("-F")
         if case_sensitive is True:
@@ -139,28 +223,37 @@ class Files:
         for value in ([glob] if isinstance(glob, str) else list(glob or [])):
             flags += ["-g", value]
         command = " ".join(shlex.quote(part) for part in
-                           ["rg", *flags, "-e", pattern, str(target)])
-        status, output = await _run(f"{command} | head -n {max(1, max_results) * 4}")
+                           ["rg", *flags, "-e", pattern, *map(str, targets)])
+        per_match = 4 + 2 * context
+        status, output = await _run(f"{command} | head -n {max(1, max_results) * per_match}")
         if status not in (0, 1, None) and not output.strip():
             raise RuntimeError(f"search failed: {output.strip()[:400]}")
-        results = []
+        results, matched = [], 0
         for line in output.splitlines():
             try:
                 event = json.loads(line)
             except ValueError:
                 continue
-            if event.get("type") != "match":
+            kind = event.get("type")
+            if kind not in ("match", "context"):
                 continue
+            if kind == "match" and matched >= max_results:
+                return Rows(results, truncated=True)
             data = event["data"]
             results.append(Match(data["path"]["text"], data["line_number"],
-                                 data["lines"]["text"].rstrip("\r\n")[:LINE_WIDTH * 4]))
-            if len(results) >= max_results:
-                return Rows(results, truncated=True)
+                                 data["lines"]["text"].rstrip("\r\n")[:LINE_WIDTH * 4],
+                                 context=kind == "context"))
+            matched += kind == "match"
         return Rows(results)
 
-    async def paths(self, pattern: str | None = None, path: str = ".", *,
-                    glob: str | None = None, max_results: int = 100, hidden: bool = False) -> Rows:
-        """File names, not contents; the same ripgrep-or-Python split."""
+    def paths(self, pattern: str | None = None, path: str = ".", *,
+              glob: str | None = None, max_results: int = 100, hidden: bool = False) -> Search:
+        """File names, not contents; the same ripgrep-or-Python split.
+        Await it: `await files.paths(pattern)`."""
+        return Search("paths", lambda: self._paths(pattern, path, glob, max_results, hidden))
+
+    async def _paths(self, pattern: str | None, path: str, glob: str | None,
+                     max_results: int, hidden: bool) -> Rows:
         target = Path(path).expanduser()
         if not _which("rg"):
             return _fallback_paths(pattern, target, glob, max_results, hidden)
@@ -176,7 +269,7 @@ class Files:
                  if line and (matcher is None or matcher.search(line))]
         return Rows(found[:max_results], truncated=len(found) > max_results)
 
-    def edit(self, path: str, old_str: str, new_str: str, line_hint: int | None = None) -> str:
+    def edit(self, path: str, old_str: str, new_str: str, line_hint: int | None = None) -> Text:
         """Replace one exact, unique string. A miss reports what is actually there."""
         if not old_str:
             raise ValueError("old_str must be non-empty")
@@ -195,14 +288,14 @@ class Files:
         chosen = _choose(content, old_str, found, line_hint, path)
         replacement = (content[:chosen.index] + new_str + content[chosen.index + len(old_str):]).encode("utf-8")
         _replace(target, snapshot, replacement)
-        return f"Edited {target}"
+        return Text(f"Edited {target}")
 
-    def write(self, path: str, content: str) -> str:
+    def write(self, path: str, content: str) -> Text:
         """Create or replace a whole file. Use `edit` to change part of one."""
         target = Path(path).expanduser()
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        return f"Wrote {target.resolve()} ({len(content.encode())} bytes)"
+        return Text(f"Wrote {target.resolve()} ({len(content.encode())} bytes)")
 
 
 def _which(name: str) -> str | None:
@@ -213,23 +306,32 @@ def _which(name: str) -> str | None:
     return None
 
 
-def _fallback_find(pattern, path: Path, glob, max_results, literal, case_sensitive, hidden) -> Rows:
+def _fallback_find(pattern, targets: list[Path], glob, context, max_results,
+                   literal, case_sensitive, hidden) -> Rows:
     flags = 0 if case_sensitive else re.IGNORECASE
     matcher = re.compile(re.escape(pattern) if literal else pattern, flags)
     globs = [glob] if isinstance(glob, str) else list(glob or [])
-    results = []
-    for file in _walk(path, hidden):
-        if globs and not any(fnmatch.fnmatch(str(file), value) or fnmatch.fnmatch(file.name, value) for value in globs):
-            continue
-        try:
-            text = file.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        for number, line in enumerate(text.splitlines(), 1):
-            if matcher.search(line):
-                results.append(Match(str(file), number, line[:LINE_WIDTH * 4]))
-                if len(results) >= max_results:
+    results, matched = [], 0
+    for target in targets:
+        for file in _walk(target, hidden):
+            if globs and not any(fnmatch.fnmatch(str(file), value) or fnmatch.fnmatch(file.name, value)
+                                 for value in globs):
+                continue
+            try:
+                lines = file.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            hits = [number for number, line in enumerate(lines, 1) if matcher.search(line)]
+            hit = set(hits)
+            shown = 0
+            for number in hits:
+                if matched >= max_results:
                     return Rows(results, truncated=True)
+                for around in range(max(number - context, shown + 1), min(number + context, len(lines)) + 1):
+                    results.append(Match(str(file), around, lines[around - 1][:LINE_WIDTH * 4],
+                                         context=around not in hit))
+                    shown = around
+                matched += 1
     return Rows(results)
 
 

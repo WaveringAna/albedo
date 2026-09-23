@@ -15,7 +15,7 @@ files.write("notes/plan.md", "...")
 
 ## read
 
-`read(path, start_line=1, end_line=None, limit=16000)` returns numbered lines. The numbers are the ones `edit(line_hint=)` accepts. A window that reaches the limit ends with the line to resume from, so a large file is read in explicit steps rather than truncated silently.
+`read(path, start_line=1, end_line=None, *, limit=None, max_chars=16000)` returns numbered lines. `limit` is a number of lines; `max_chars` is a separate character budget that keeps a huge window out of the context. A window stopped by either ends with which one stopped it and the line to resume from, so a large file is read in explicit steps rather than truncated silently. Lines are never shortened, and the numbers are the ones `edit(line_hint=)` accepts.
 
 ## edit
 
@@ -29,4 +29,8 @@ files.write("notes/plan.md", "...")
 
 ## search
 
-`await find(pattern, path=".", glob=..., max_results=50, literal=False, case_sensitive=None, hidden=False)` searches contents and returns rows that print as `path:line: text`. `await paths(pattern=None, path=".", glob=...)` searches file names. Both bound their results and say when the list was cut.
+`await find(pattern, path=".", glob=..., context=0, max_results=50, literal=False, case_sensitive=None, hidden=False)` searches contents and returns rows that print as `path:line: text`. `path` may be a list of paths. `context=N` adds up to N lines around each match, printed grep-style as `path-line- text` and marked `context=True`; `max_results` counts matches, not context lines. Slicing or indexing before the await applies to the rows, so `await find(...)[:10]` reads as intended. `await paths(pattern=None, path=".", glob=...)` searches file names. Both bound their results and say when the list was cut.
+
+## await
+
+`read`, `ls`, `edit`, and `write` return their result immediately, and that result may also be awaited: `files.read(path)` and `await files.read(path)` are the same call. `find` and `paths` run a background search, so they must be awaited; using one without `await` prints, or raises on iteration, a message saying so rather than a coroutine.
