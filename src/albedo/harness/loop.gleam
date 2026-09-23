@@ -12,7 +12,7 @@ import albedo/openai_api/types
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -24,7 +24,7 @@ pub type Loop {
     client: types.Client,
     publish: fn(String) -> Bool,
     commit: fn(List(types.Input), conversation.Stage) -> Result(Int, String),
-    record_context: fn(types.Request) -> Nil,
+    record_context: fn(types.Request, Option(compaction.Observation)) -> Nil,
     record_usage: fn(usage.Metadata) -> Result(Nil, String),
     drain_steering: fn() -> Result(List(types.Input), String),
   )
@@ -41,7 +41,7 @@ pub fn run(
     False -> Error("cancelled")
   })
   let request_instructions = instructions <> runtime.instructions(state.kernel)
-  use history <- result.try(runtime.prepare_history_scoped(
+  use prepared <- result.try(runtime.prepare_view_scoped(
     state.host,
     state.kernel,
     state.model,
@@ -50,16 +50,17 @@ pub fn run(
     request_instructions,
     summarize(state, _),
     list.reverse(inputs),
+    False,
   ))
   let request =
     types.Request(
       state.model,
       Some(request_instructions),
-      history,
+      prepared.inputs,
       runtime.tools(state.kernel),
       None,
     )
-  state.record_context(request)
+  state.record_context(request, prepared.observation)
   use turn <- result.try(
     stream_with_retries(state.client, request, state.publish, fn(event) {
       let event = case event {
@@ -178,7 +179,7 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
   let request_instructions = instructions <> runtime.instructions(state.kernel)
   // `inputs` accumulates newest-first; strategies read chronological history.
   let original = list.reverse(inputs)
-  use history <- result.try(runtime.compact_history_scoped(
+  use prepared <- result.try(runtime.prepare_view_scoped(
     state.host,
     state.kernel,
     state.model,
@@ -187,14 +188,19 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
     request_instructions,
     summarize(state, _),
     original,
+    True,
   ))
-  state.record_context(types.Request(
-    state.model,
-    Some(request_instructions),
-    history,
-    runtime.tools(state.kernel),
-    None,
-  ))
+  let history = prepared.inputs
+  state.record_context(
+    types.Request(
+      state.model,
+      Some(request_instructions),
+      history,
+      runtime.tools(state.kernel),
+      None,
+    ),
+    prepared.observation,
+  )
   // The projection keeps a verbatim tail, so everything before the shared
   // suffix is what the strategy's replacement stands in for.
   let suffix = common_suffix(original, history)

@@ -61,7 +61,7 @@ pub fn context_loads_once_and_is_prefixed_after_compaction_test() {
   }
   let strategy =
     compaction.Strategy("fixture", fn(_, _) {
-      Ok([types.User("compacted conversation")])
+      Ok(compaction.Prepared([types.User("compacted conversation")], None))
     })
   let compact =
     extension.Extension(
@@ -164,7 +164,9 @@ pub fn registry_supports_disabled_compaction_alternatives_test() {
       [],
       [
         extension.CompactionPlugin(
-          compaction.Strategy("one", fn(_, value) { Ok(value) }),
+          compaction.Strategy("one", fn(_, value) {
+            Ok(compaction.Prepared(value, None))
+          }),
         ),
       ],
       no_op,
@@ -176,7 +178,9 @@ pub fn registry_supports_disabled_compaction_alternatives_test() {
       [],
       [
         extension.CompactionPlugin(
-          compaction.Strategy("two", fn(_, value) { Ok(value) }),
+          compaction.Strategy("two", fn(_, value) {
+            Ok(compaction.Prepared(value, None))
+          }),
         ),
       ],
       no_op,

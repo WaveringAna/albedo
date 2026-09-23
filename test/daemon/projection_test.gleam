@@ -19,6 +19,13 @@ fn entry(input: types.Input, provider: String) -> transcript.Entry {
   transcript.Entry(input, None, Some(provider))
 }
 
+fn sourced(input: types.Input, seq: Int) -> transcript.SourcedEntry {
+  transcript.SourcedEntry(
+    transcript.SourceRef("session", seq),
+    entry(input, "source"),
+  )
+}
+
 fn encode(protocol: types.Protocol, newest: List(transcript.Entry)) -> String {
   let assert Ok(inputs) = projection.for_model(newest, "target", protocol)
   let request = types.Request("model", None, list.reverse(inputs), [], None)
@@ -151,4 +158,67 @@ pub fn unsupported_meaningful_output_rejects_projection_test() {
     projection.for_model(newest, "target", types.ChatCompletions)
   string.contains(error, "computer_call") |> should.be_true
   string.contains(error, "not portable") |> should.be_true
+}
+
+pub fn source_references_follow_provider_projection_test() {
+  let chronological = [
+    sourced(types.User("prompt"), 10),
+    sourced(
+      replay(
+        types.Responses,
+        "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}",
+      ),
+      11,
+    ),
+    sourced(
+      replay(
+        types.Responses,
+        "{\"type\":\"reasoning\",\"encrypted_content\":\"opaque\"}",
+      ),
+      12,
+    ),
+    sourced(
+      replay(
+        types.Responses,
+        "{\"type\":\"function_call\",\"call_id\":\"a\",\"name\":\"python\",\"arguments\":\"{}\",\"status\":\"completed\"}",
+      ),
+      13,
+    ),
+    sourced(types.ToolOutput("a", "done", []), 14),
+  ]
+  let newest = list.reverse(chronological)
+  let assert Ok(projected) =
+    projection.for_model_with_sources(newest, "target", types.ChatCompletions)
+  let chronological_inputs = list.reverse(projected)
+  let assert [prompt, assistant, output] = chronological_inputs
+  prompt.sources |> should.equal([transcript.SourceRef("session", 10)])
+  assistant.sources
+  |> should.equal([
+    transcript.SourceRef("session", 11),
+    transcript.SourceRef("session", 13),
+  ])
+  output.sources |> should.equal([transcript.SourceRef("session", 14)])
+  let assert Ok(plain) =
+    projection.for_model(
+      list.map(newest, fn(item) { item.entry }),
+      "target",
+      types.ChatCompletions,
+    )
+  list.map(projected, fn(item) { item.input }) |> should.equal(plain)
+}
+
+pub fn one_source_can_produce_multiple_portable_inputs_test() {
+  let newest = [
+    sourced(
+      replay(
+        types.ChatCompletions,
+        "{\"role\":\"assistant\",\"content\":\"working\",\"tool_calls\":[{\"id\":\"a\",\"type\":\"function\",\"function\":{\"name\":\"python\",\"arguments\":\"{}\"}}]}",
+      ),
+      20,
+    ),
+  ]
+  let assert Ok([call, text]) =
+    projection.for_model_with_sources(newest, "target", types.Responses)
+  call.sources |> should.equal([transcript.SourceRef("session", 20)])
+  text.sources |> should.equal([transcript.SourceRef("session", 20)])
 }

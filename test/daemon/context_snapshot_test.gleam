@@ -1,5 +1,5 @@
 import albedo/daemon/context_snapshot
-import albedo/harness/extensions/rolling/extension as rolling
+import albedo/harness/compaction
 import albedo/openai_api/types
 import gleam/json
 import gleam/option.{None, Some}
@@ -151,23 +151,17 @@ pub fn exact_request_builder_keeps_source_order_and_omits_payload_bodies_test() 
       None,
     )
   let observation =
-    rolling.Observation(
-      "rolling",
+    compaction.Observation(
+      "fixture",
       "compacted",
       "same request preparation",
+      "durable transcript through fixture projection",
+      Some(10),
       Some(1000),
-      910,
-      90,
-      20,
-      2000,
-      1,
-      100,
-      1,
-      100,
-      2,
-      500,
-      4,
-      700,
+      Some(910),
+      Some("local byte-based estimate; not provider token usage"),
+      Some(20),
+      Some(4),
     )
   let snapshot =
     context_snapshot.from_request(
@@ -188,6 +182,8 @@ pub fn exact_request_builder_keeps_source_order_and_omits_payload_bodies_test() 
   string.contains(after_history, "tool schemas") |> should.be_true
   string.contains(encoded, "\"trigger_free_percent\":10")
   |> should.be_true
+  string.contains(encoded, "\"strategy\":\"fixture\"")
+  |> should.be_true
   string.contains(encoded, "not provider token usage") |> should.be_true
 
   let assert Ok(history_page) = context_snapshot.page(snapshot, "history", 0)
@@ -196,6 +192,8 @@ pub fn exact_request_builder_keeps_source_order_and_omits_payload_bodies_test() 
   string.contains(history_page, "image/png") |> should.be_true
   string.contains(history_page, "c2VjcmV0LWJhc2U2NA==") |> should.be_false
   string.contains(history_page, "image base64 payload") |> should.be_true
+  string.contains(encoded, "durable transcript through fixture projection")
+  |> should.be_true
 
   let assert Ok(tool_page) = context_snapshot.page(snapshot, "tools", 0)
   let tool_page = json.to_string(tool_page)

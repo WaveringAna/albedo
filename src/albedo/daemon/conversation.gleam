@@ -385,12 +385,58 @@ pub fn load_entries(
   store: store.Store,
   id: String,
 ) -> Result(List(transcript.Entry), String) {
+  load_sources(store, id)
+  |> result.map(fn(rows) { list.map(rows, fn(row) { row.entry }) })
+}
+
+/// Read durable entries with their SQLite identities in chronological order.
+/// These references can be retained by derived context views without changing
+/// the transcript payload or the existing plain-entry callers.
+pub fn load_sources(
+  store: store.Store,
+  id: String,
+) -> Result(List(transcript.SourcedEntry), String) {
   store.query(store, fn(db) {
     use rows <- result.try(
       sqlight.query(
-        "SELECT payload,timestamp,provider FROM transcript WHERE session=? ORDER BY seq",
+        "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? ORDER BY seq",
         db,
         [sqlight.text(id)],
+        {
+          use seq <- decode.field(0, decode.int)
+          use payload <- decode.field(1, decode.bit_array)
+          use timestamp <- decode.field(2, decode.optional(decode.int))
+          use provider <- decode.field(3, decode.optional(decode.string))
+          decode.success(#(seq, payload, timestamp, provider))
+        },
+      )
+      |> result.map_error(fn(e) { e.message }),
+    )
+    list.try_map(rows, fn(row) {
+      use input <- result.try(
+        unpack(row.1) |> result.replace_error("invalid saved transcript item"),
+      )
+      Ok(transcript.SourcedEntry(
+        transcript.SourceRef(id, row.0),
+        transcript.Entry(input, row.2, row.3),
+      ))
+    })
+  })
+}
+
+/// Resolve one reference by both session and sequence. A missing row is an
+/// ordinary result (for example, a reference from a different database).
+pub fn source(
+  store: store.Store,
+  reference: transcript.SourceRef,
+) -> Result(Option(transcript.Entry), String) {
+  let transcript.SourceRef(session, seq) = reference
+  store.query(store, fn(db) {
+    use rows <- result.try(
+      sqlight.query(
+        "SELECT payload,timestamp,provider FROM transcript WHERE session=? AND seq=?",
+        db,
+        [sqlight.text(session), sqlight.int(seq)],
         {
           use payload <- decode.field(0, decode.bit_array)
           use timestamp <- decode.field(1, decode.optional(decode.int))
@@ -400,12 +446,14 @@ pub fn load_entries(
       )
       |> result.map_error(fn(e) { e.message }),
     )
-    list.try_map(rows, fn(row) {
-      use input <- result.try(
-        unpack(row.0) |> result.replace_error("invalid saved transcript item"),
-      )
-      Ok(transcript.Entry(input, row.1, row.2))
-    })
+    case rows {
+      [] -> Ok(None)
+      [row] ->
+        unpack(row.0)
+        |> result.replace_error("invalid saved transcript item")
+        |> result.map(fn(input) { Some(transcript.Entry(input, row.1, row.2)) })
+      _ -> Error("duplicate transcript source reference")
+    }
   })
 }
 

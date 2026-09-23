@@ -868,7 +868,7 @@ pub fn prepare_history_scoped(
   summarize: fn(compaction.SummaryRequest) -> Result(String, String),
   history: List(types.Input),
 ) -> Result(List(types.Input), String) {
-  prepare_scoped(
+  prepare_view_scoped(
     runtime,
     session,
     model,
@@ -879,6 +879,7 @@ pub fn prepare_history_scoped(
     history,
     False,
   )
+  |> result.map(fn(prepared) { prepared.inputs })
 }
 
 /// Run the active strategy now, independent of its automatic threshold.
@@ -892,7 +893,7 @@ pub fn compact_history_scoped(
   summarize: fn(compaction.SummaryRequest) -> Result(String, String),
   history: List(types.Input),
 ) -> Result(List(types.Input), String) {
-  prepare_scoped(
+  prepare_view_scoped(
     runtime,
     session,
     model,
@@ -903,9 +904,11 @@ pub fn compact_history_scoped(
     history,
     True,
   )
+  |> result.map(fn(prepared) { prepared.inputs })
 }
 
-fn prepare_scoped(
+/// Prepare one provider request and its strategy-neutral inspection facts.
+pub fn prepare_view_scoped(
   runtime: Runtime,
   session: Session,
   model: String,
@@ -915,7 +918,7 @@ fn prepare_scoped(
   summarize: fn(compaction.SummaryRequest) -> Result(String, String),
   history: List(types.Input),
   force: Bool,
-) -> Result(List(types.Input), String) {
+) -> Result(compaction.Prepared, String) {
   use _ <- result.try(owned_by(runtime, session))
   let pinned_tokens =
     compaction.estimate_pinned(instructions, session.context, tools(session))
@@ -923,7 +926,7 @@ fn prepare_scoped(
     extension.compaction(extension.extensions(session.composition))
   {
     None if force -> Error("no compaction strategy is enabled")
-    None -> Ok(history)
+    None -> Ok(compaction.Prepared(history, None))
     Some(strategy) ->
       strategy.prepare(
         compaction.Context(
@@ -943,5 +946,11 @@ fn prepare_scoped(
         "compaction " <> strategy.name <> ": " <> error
       })
   }
-  prepared |> result.map(fn(history) { list.append(session.context, history) })
+  prepared
+  |> result.map(fn(view) {
+    compaction.Prepared(
+      list.append(session.context, view.inputs),
+      view.observation,
+    )
+  })
 }

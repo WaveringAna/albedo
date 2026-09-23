@@ -108,7 +108,7 @@ pub fn extension() -> extension.Extension {
       extension.CompactionPlugin(
         compaction.Strategy("rolling", fn(context, history) {
           use config <- result.try(load_config())
-          prepare(config, context, history)
+          prepare_view(config, context, history)
         }),
       ),
     ],
@@ -119,8 +119,40 @@ pub fn extension() -> extension.Extension {
 pub fn strategy(config: Config) -> compaction.Strategy {
   compaction.Strategy("rolling", fn(context, history) {
     use valid <- result.try(validate_config(config))
-    prepare(valid, context, history)
+    prepare_view(valid, context, history)
   })
+}
+
+fn prepare_view(
+  config: Config,
+  context: compaction.Context,
+  history: List(types.Input),
+) -> Result(compaction.Prepared, String) {
+  use inputs <- result.try(prepare(config, context, history))
+  // Diagnostics must not fail a request after its projection was committed.
+  let recorded =
+    observation(context.store, context.session) |> result.unwrap(None)
+  let observed = case recorded {
+    Some(recorded) ->
+      Some(compaction.Observation(
+        "rolling",
+        recorded.status,
+        recorded.source,
+        case recorded.status {
+          "compacted" ->
+            "durable transcript through rolling summary + recent user recap + verbatim tail"
+          _ -> "durable transcript; rolling compaction observation attached"
+        },
+        Some(100 - recorded.trigger_percent),
+        recorded.capacity_tokens,
+        Some(recorded.estimated_tokens),
+        Some("local byte-based estimate; not provider token usage"),
+        Some(recorded.original_items),
+        Some(recorded.prepared_items),
+      ))
+    None -> None
+  }
+  Ok(compaction.Prepared(inputs, observed))
 }
 
 fn validate_config(config: Config) -> Result(Config, String) {

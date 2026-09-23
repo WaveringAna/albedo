@@ -12,7 +12,6 @@ import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/bash/extension as bash
 import albedo/harness/extensions/python/kernel as python
-import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/loop
 import albedo/harness/runtime
 import albedo/openai_api/types
@@ -1516,13 +1515,7 @@ fn start_worker(
       fn(inputs, stage) {
         actor.call(owner, 10_000, Commit(run_id, inputs, stage, _))
       },
-      fn(request) {
-        let observation = case runtime.compaction_name(kernel) {
-          Some("rolling") ->
-            rolling.observation(runtime.ledger(state.host), state.info.id)
-            |> result.unwrap(None)
-          _ -> None
-        }
+      fn(request, observation) {
         let snapshot =
           context_snapshot.from_request(
             Some(usage.now()),
