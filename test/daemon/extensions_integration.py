@@ -67,6 +67,10 @@ class Provider(http.server.BaseHTTPRequestHandler):
             output = [{"type": "function_call", "id": "fc-hot-after", "call_id": "call-hot-after",
                        "name": "python", "arguments": json.dumps({"code": code, "timeout_ms": 10000}),
                        "status": "completed"}]
+        if prompt == "lcm tool probe" and messages[-1].get("type") != "function_call_output":
+            output = [{"type": "function_call", "id": "fc-lcm-grep", "call_id": "call-lcm-grep",
+                       "name": "lcm_grep", "arguments": json.dumps({"pattern": "first turn"}),
+                       "status": "completed"}]
         response = {"type": "response.completed", "response": {
             "id": "fixture", "status": "completed", "output": output,
             "usage": {"input_tokens": 20, "output_tokens": 1},
@@ -334,6 +338,25 @@ def run(endpoint):
             context = request["input"][0]["content"]
             assert "catalog-only fixture description" not in context
             assert "BODY_MUST_NOT_AUTOLOAD" not in context
+            rejected(route, {"name": "lcm", "enabled": True})
+            api(route, {"name": "rolling", "enabled": False})
+            lcm_selected = api(route, {"name": "lcm", "enabled": True})
+            assert next(item["enabled"] for item in lcm_selected if item["name"] == "lcm")
+            lcm_request = catalog_request(session, "lcm preflight")
+            assert {"lcm_grep", "lcm_describe", "lcm_expand"} <= {tool["name"] for tool in lcm_request["tools"]}
+            compacted = api(f"/sessions/{session}/commands", {"name": "/compact"})
+            assert compacted["result"]["strategy"] == "lcm" and compacted["result"]["started"] is True
+            ready(session)
+            before = len(Provider.requests)
+            api(f"/sessions/{session}/events", {"content": "lcm tool probe"})
+            ready(session)
+            assert len(Provider.requests) == before + 2
+            lcm_request = Provider.requests[before]
+            assert "LCM summary node #" in json.dumps(lcm_request["input"]), lcm_request
+            tool_result = next(item["output"] for item in reversed(Provider.requests[-1]["input"])
+                               if item.get("type") == "function_call_output")
+            assert "source_count" in tool_result and "first turn" in tool_result, tool_result
+            assert api(f"/sessions/{session}/context")["compaction"]["strategy"] == "lcm"
             print("extension context, live toggles, busy/dependency guards, and persistence passed")
         finally:
             Provider.release.set()

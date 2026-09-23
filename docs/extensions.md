@@ -1,6 +1,6 @@
 # extensions
 
-an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, or compaction plugins. `python`, `bash`, `work`, `files`, `commands`, `skills`, `rolling`, and `remote` are enabled by default; `mcp` and `view` are installed and disabled until a session enables them. plugin contributions compose inside them.
+an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, or compaction plugins. `python`, `bash`, `work`, `files`, `commands`, `skills`, `rolling`, and `remote` are enabled by default; `mcp`, `view`, and `lcm` are installed and disabled until a session enables them. plugin contributions compose inside them.
 
 ## select extensions
 
@@ -129,3 +129,7 @@ see [the skills extension](skills.md) for discovery paths, metadata-only startup
 ## rolling compaction
 
 `rolling` is the enabled-by-default compaction strategy: summary, recent-user recap, then a verbatim tail, triggered by remaining context. see [compaction](compaction.md) for its contract, settings, and state handling.
+
+## lcm compaction
+
+`lcm` is an alternative compaction extension with source-backed hierarchical summaries and bounded retrieval tools. disable `rolling` before enabling `lcm`; the extension registry permits only one active compaction strategy. see [compaction](compaction.md) for its behavior and limits.
