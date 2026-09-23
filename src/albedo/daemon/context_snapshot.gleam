@@ -117,6 +117,14 @@ pub fn compaction(
   )
 }
 
+/// The strategy's own token estimate for the prepared request, when it recorded one.
+pub fn estimate(snapshot: Snapshot) -> Option(Int) {
+  case snapshot {
+    Pending(_) -> None
+    Ready(_, _, _, _, _, compaction, _) -> compaction.estimated_input_tokens
+  }
+}
+
 pub fn pending(reason: String) -> Snapshot {
   Pending(reason)
 }

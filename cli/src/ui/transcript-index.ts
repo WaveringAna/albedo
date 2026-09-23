@@ -61,7 +61,7 @@ export class TranscriptIndex {
   }
 
   layout(flags: DisplayFlags, speaker: string, width: number, headingWidth = width): TranscriptLayout {
-    const key = JSON.stringify([flags.tools, flags.thinking, !!flags.diffs, speaker, width, headingWidth])
+    const key = JSON.stringify([flags.tools, flags.thinking, !!flags.diffs, !!flags.compaction, speaker, width, headingWidth])
     const layout = this.layouts.get(key) ?? new TranscriptLayout(speaker, headingWidth)
     // LRU order; old layouts catch up from their own cursor, never rerender old entries.
     this.layouts.delete(key)

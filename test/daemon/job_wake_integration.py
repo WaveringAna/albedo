@@ -110,7 +110,7 @@ def run(endpoint):
             "providers": {"alpha": {"baseUrl": endpoint + "/alpha/v1", "apiKey": "key",
                                      "model": "fixture-alpha", "protocol": "chat_completions"}},
         }))
-        env = dict(os.environ, HOME=str(Path(directory) / "user-home"), ALBEDO_HOME=str(home),
+        env = dict(os.environ, HOME=str(Path(directory) / "user-home"), ALBEDO_HOME=str(home), ALBEDO_PARENT_PID=str(os.getpid()),
                    ALBEDO_IDLE_SECONDS="10")
         import shutil
         if TOOLCHAIN and shutil.which("gleam") is None:

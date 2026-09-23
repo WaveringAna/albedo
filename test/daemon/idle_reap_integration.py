@@ -92,7 +92,7 @@ def run(endpoint):
                 "protocol": "responses",
             }},
         }))
-        env = dict(os.environ, ALBEDO_HOME=str(home), ALBEDO_IDLE_SECONDS=str(IDLE_SECONDS))
+        env = dict(os.environ, ALBEDO_HOME=str(home), ALBEDO_PARENT_PID=str(os.getpid()), ALBEDO_IDLE_SECONDS=str(IDLE_SECONDS))
         connection = None
 
         def cli(*args):

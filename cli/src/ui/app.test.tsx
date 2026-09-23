@@ -208,16 +208,17 @@ test("/reload suggests models and reports completion in the chat", async t => {
     if (req.url === "/health") res.end(JSON.stringify({ capabilities: ["session_commands"] }))
     else if (req.url === "/sessions/current/commands" && req.method === "GET") res.end(JSON.stringify([{
       name: "/reload", description: "Reload cached runtime data", method: "reload", modelCallable: false, userTurn: false,
-      arguments: [{ name: "target", description: "reload the models.dev catalog", required: true, choices: ["models"] }],
+      arguments: [{ name: "target", description: "models, session, or omit for both", required: false, choices: ["models", "session"] }],
     }]))
     else if (req.url === "/sessions/current/commands" && req.method === "POST") {
       let body = ""
       req.on("data", chunk => { body += chunk })
       req.on("end", () => {
-        assert.deepEqual(JSON.parse(body), { name: "/reload", arguments: "models" })
+        assert.deepEqual(JSON.parse(body), { name: "/reload", arguments: "" })
         reloads++
         setTimeout(() => res.end(JSON.stringify({ result: {
-          reloaded: "models", message: "Models catalog reloaded. /model now shows the latest list.",
+          reloaded: "models+session",
+          message: "Models catalog reloaded; extension context, skills catalog, and session commands rescanned.",
         } })), 150)
       })
     } else if (req.url?.includes("/stream")) {
@@ -240,8 +241,8 @@ test("/reload suggests models and reports completion in the chat", async t => {
   await until(() => painted.includes("ready to reload"))
   painted = ""
   stdin.write("/reload")
-  await until(() => painted.includes("/reload models") && painted.includes("reload the models.dev catalog"))
+  await until(() => painted.includes("/reload") && painted.includes("Reload cached runtime data"))
   stdin.write("\r")
-  await until(() => painted.includes("Reloading models catalog…"))
-  await until(() => reloads === 1 && painted.includes("Models catalog reloaded. /model now shows the latest list."))
+  await until(() => painted.includes("Reloading…"))
+  await until(() => reloads === 1 && painted.includes("Models catalog reloaded; extension context, skills catalog, and session commands rescanned."))
 })

@@ -8,9 +8,10 @@ import { renderDiff } from "./diff.js"
 export type Entry =
   | { kind: "assistant"; text: string; timestamp?: number }
   | { kind: "thinking" | "note" | "error"; text: string }
+  | { kind: "compaction"; text: string; evicted: number }
   | { kind: "user"; source: string; text: string; timestamp?: number }
   | ({ kind: "tool" } & Pick<Extract<StreamEvent, { type: "tool" }>, "name" | "args" | "result" | "trace">)
-export type DisplayFlags = { tools: boolean; thinking: boolean; diffs?: boolean }
+export type DisplayFlags = { tools: boolean; thinking: boolean; diffs?: boolean; compaction?: boolean }
 export const color = (code: number, text: string): string => `\x1b[${code}m${text}\x1b[0m`
 export const wrap = (text: string, width: number): string[] => wrapAnsi(text, Math.max(1, width), { hard: true, trim: false }).split("\n")
 const count = (n: number, unit: string): string => `${n} ${unit}${n === 1 ? "" : "s"}`
@@ -53,6 +54,10 @@ export function renderEntry(entry: Entry, flags: DisplayFlags, speaker: string, 
     case "thinking": return [color(90, "thinking"), ...(flags.thinking
       ? markdown(entry.text).map(line => color(90, line)) : [color(90, "hidden · /t show")])]
     case "note": return wrap(color(90, entry.text), width)
+    case "compaction": return [
+      ...wrap(color(90, `compaction done · ${entry.evicted} items summarized · ctrl+k ${flags.compaction ? "hide" : "view"} summary`), width),
+      ...(flags.compaction ? markdown(entry.text).map(line => color(90, line)) : []),
+    ]
     case "error": return wrap(color(91, `error: ${entry.text}`), width)
     case "tool": {
       const failed = /(?:^|\n)(?:error:|cancelled:|traceback \(most recent call last\):)/i.test(entry.result)

@@ -70,7 +70,7 @@ def run(endpoint):
             }}}}))
 
         configure([str(SERVER)])
-        env = dict(os.environ, HOME=str(user_home), ALBEDO_HOME=str(home),
+        env = dict(os.environ, HOME=str(user_home), ALBEDO_HOME=str(home), ALBEDO_PARENT_PID=str(os.getpid()),
                    ALBEDO_MCP_SECRET="configured-secret", ALBEDO_MCP_CLOSED=str(closed),
                    ALBEDO_MCP_AMBIENT="must-not-reach-the-server")
         connection = None

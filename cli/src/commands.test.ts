@@ -10,7 +10,9 @@ const catalog: SessionCommand[] = [
   { name: "/model", description: "Switch models", method: "model", modelCallable: true, userTurn: false,
     arguments: [{ name: "model", description: "model id", required: false }, { name: "provider", description: "provider", required: false }] },
   { name: "/reload", description: "Reload", method: "reload", modelCallable: false, userTurn: false,
-    arguments: [{ name: "target", description: "reload the models.dev catalog", required: true, choices: ["models"] }] },
+    arguments: [{ name: "target", description: "models, session, or omit for both", required: false, choices: ["models", "session"] }] },
+  { name: "/switch", description: "Switch", method: "switch", modelCallable: false, userTurn: false,
+    arguments: [{ name: "target", description: "switch the target", required: true, choices: ["staging", "prod"] }] },
 ]
 
 describe("session command invocations", () => {
@@ -26,8 +28,13 @@ describe("session command invocations", () => {
   })
 
   it("expands finite required arguments into runnable menu choices", () => {
-    assert(commandMenuItems(catalog).some(item => item.name === "/reload models" && item.description === "reload the models.dev catalog"))
-    assert(!commandMenuItems(catalog).some(item => item.name === "/reload"))
+    assert(commandMenuItems(catalog).some(item => item.name === "/switch staging" && item.description === "switch the target"))
+    assert(!commandMenuItems(catalog).some(item => item.name === "/switch"))
+  })
+
+  it("optional arguments keep one bare menu entry instead of per-choice expansion", () => {
+    assert(commandMenuItems(catalog).some(item => item.name === "/reload" && item.description === "Reload"))
+    assert(!commandMenuItems(catalog).some(item => item.name === "/reload models"))
   })
 
   it("validates daemon metadata but survives one malformed row", () => {

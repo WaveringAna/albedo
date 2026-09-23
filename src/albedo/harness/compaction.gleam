@@ -32,6 +32,7 @@ pub type Context {
     source: String,
     pinned_tokens: Int,
     capacity: Option(Capacity),
+    force: Bool,
     summarize: fn(SummaryRequest) -> Result(String, String),
   )
 }

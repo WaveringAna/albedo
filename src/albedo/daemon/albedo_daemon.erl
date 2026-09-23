@@ -1,5 +1,5 @@
 -module(albedo_daemon).
--export([env/1,ready/3,read_config/1,write_default/3,directory/1,shutdown/0,rss/1]).
+-export([env/1,ready/3,read_config/1,write_default/3,directory/1,shutdown/0,rss/1,watch_parent/1]).
 env(Name) -> case os:getenv(binary_to_list(Name)) of false -> <<>>; Value -> unicode:characters_to_binary(Value) end.
 read_config(Home) ->
     case file:read_file(filename:join(Home,<<"config.json">>)) of
@@ -53,6 +53,21 @@ ready(Home,Port,Token) ->
       {error,Reason} -> {error,atom_to_binary(Reason)}
     end.
 shutdown() -> init:stop(), nil.
+
+%% Stop when the process named by Parent exits, so a killed test runner cannot leave
+%% its detached daemon behind. The sh loop also ends if this VM dies first.
+watch_parent(<<>>) -> nil;
+watch_parent(Parent) ->
+    case string:to_integer(Parent) of
+        {Pid, <<>>} when Pid > 0 ->
+            Script = "while kill -0 " ++ integer_to_list(Pid) ++ " 2>/dev/null && kill -0 $PPID 2>/dev/null; do sleep 1; done",
+            spawn(fun() ->
+                Port = open_port({spawn_executable, "/bin/sh"}, [{args, ["-c", Script]}, exit_status, hide]),
+                receive {Port, {exit_status, _}} -> init:stop() end
+            end),
+            nil;
+        _ -> nil
+    end.
 
 %% Resident memory of live kernels, in kibibytes. One ps per sweep, never per session;
 %% a pid ps does not report is simply absent from the result.

@@ -156,7 +156,7 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
         if (value==="/new") { clear();create();return true }
         const command = parseCommandInvocation(value, commandCatalog)
         if (command) {
-          clear(); setError(""); setNotice(command.name === "/reload" ? "Reloading models catalog…" : "")
+          clear(); setError(""); setNotice(command.name === "/reload" ? "Reloading…" : "")
           void runCommand(command.name, command.arguments)
             .then(result => {
               if (!result) return setNotice("")

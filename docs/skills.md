@@ -20,7 +20,7 @@ Each immediate child must contain a regular `SKILL.md`. Its parent directory and
 
 Discovery is bounded to 128 candidates, 64 diagnostics, 64 KiB of frontmatter per file, and 1 MiB per `SKILL.md`. A catalog never includes the Markdown body or resource content.
 
-The catalog is prepared once when a runtime session opens. Its immutable snapshot is shared by prompt context, session commands, Python RPC, and user slash activation. Changes on disk take effect after the skills extension or session is reloaded. This prevents a UI lookup from seeing a different skill set than the model.
+The catalog is prepared once when a runtime session opens. Its immutable snapshot is shared by prompt context, session commands, Python RPC, and user slash activation. Changes on disk take effect after the skills extension or session is reloaded, or immediately through `/reload session`, which re-runs discovery and swaps the snapshot in place: the kernel, its Python namespace, and `skills` RPC routes rebind without a restart, and the refreshed catalog reaches prompt context, the command menu, and Python in the same swap. This prevents a UI lookup from seeing a different skill set than the model. New skills gained by a reload are reachable through `commands.catalog()` and `commands.invoke` right away; the typed `commands.<method>` bindings minted at kernel boot are not re-minted, so a skill added mid-session is invoked by name.
 
 ## Activation and Python API
 

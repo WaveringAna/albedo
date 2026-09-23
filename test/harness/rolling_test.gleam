@@ -41,6 +41,84 @@ fn long_history() {
   ]
 }
 
+pub fn manual_compaction_uses_active_strategy_below_trigger_test() {
+  let #(host, session) = host(rolling.Config(Some(10_000), 90, 25))
+  let history = long_history()
+  let summaries = process.new_subject()
+  let assert Ok(projected) =
+    runtime.compact_history_scoped(
+      host,
+      session,
+      "model-a",
+      "model-a",
+      "",
+      "system",
+      fn(request) {
+        process.send(summaries, request)
+        Ok("kept facts")
+      },
+      history,
+    )
+  let assert Ok(compaction.SummaryRequest(_, None, evicted, _)) =
+    process.receive(summaries, 0)
+  list.is_empty(evicted) |> should.be_false
+  let assert [types.User(summary), types.User(_), ..tail] = projected
+  string.contains(summary, "kept facts") |> should.be_true
+  tail |> should.equal(list.drop(history, list.length(evicted)))
+  let assert Ok(Some(observation)) =
+    rolling.observation(runtime.ledger(host), "rolling-test")
+  observation.status |> should.equal("compacted")
+  // A normal next request reuses the saved projection without summarizing again.
+  runtime.prepare_history_with(
+    host,
+    session,
+    "model-a",
+    "system",
+    fn(_) { Error("unexpected summary") },
+    history,
+  )
+  |> should.equal(Ok(projected))
+  runtime.stop(host)
+}
+
+pub fn manual_compaction_works_without_known_model_capacity_test() {
+  let #(host, session) = host(rolling.Config(None, 90, 25))
+  let history = long_history()
+  let assert Ok(projected) =
+    runtime.compact_history_scoped(
+      host,
+      session,
+      "model-a",
+      "model-a",
+      "",
+      "system",
+      summarize("manual facts"),
+      history,
+    )
+  let assert [types.User(summary), ..] = projected
+  string.contains(summary, "manual facts") |> should.be_true
+  // The saved projection outlives the manual run: the next ordinary request
+  // uses it even though no context window is known, and grows its tail.
+  let grown =
+    list.append(history, [types.User("newer"), types.Assistant("reply")])
+  let assert Ok(reused) =
+    runtime.prepare_history_with(
+      host,
+      session,
+      "model-a",
+      "system",
+      fn(_) { Error("must not summarize again") },
+      grown,
+    )
+  let assert [types.User(kept), types.User(_recap), ..reused_tail] = reused
+  string.contains(kept, "manual facts") |> should.be_true
+  reused_tail |> should.equal(list.drop(grown, 4))
+  let assert Ok(Some(observation)) =
+    rolling.observation(runtime.ledger(host), "rolling-test")
+  observation.status |> should.equal("compacted")
+  runtime.stop(host)
+}
+
 pub fn below_threshold_is_an_exact_no_op_test() {
   let #(host, session) = host(rolling.Config(Some(10_000), 90, 25))
   let history = [types.User("hello"), types.Assistant("hi")]

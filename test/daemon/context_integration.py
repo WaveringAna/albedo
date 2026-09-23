@@ -64,7 +64,7 @@ def run(endpoint):
         (home/"extensions.json").write_text(json.dumps({"models": {
             "url": endpoint.rsplit("/", 1)[0] + "/models.json", "refreshHours": 24,
         }}))
-        env = dict(os.environ, HOME=str(user_home), ALBEDO_HOME=str(home))
+        env = dict(os.environ, HOME=str(user_home), ALBEDO_HOME=str(home), ALBEDO_PARENT_PID=str(os.getpid()))
         connection = None
 
         def cli(*args):

@@ -51,6 +51,22 @@ class Provider(http.server.BaseHTTPRequestHandler):
             output = [{"type": "function_call", "id": "fc-skills", "call_id": "call-skills",
                        "name": "python", "arguments": json.dumps({"code": code, "timeout_ms": 10000}),
                        "status": "completed"}]
+        if prompt == "hot probe before reload" and messages[-1].get("type") != "function_call_output":
+            code = ("names = [c['name'] for c in await commands.catalog()]\n"
+                    "assert '/late' not in names, names\n"
+                    "hot_marker = 'kernel-kept-running'\n"
+                    "print('BEFORE_RELOAD_OK')")
+            output = [{"type": "function_call", "id": "fc-hot-before", "call_id": "call-hot-before",
+                       "name": "python", "arguments": json.dumps({"code": code, "timeout_ms": 10000}),
+                       "status": "completed"}]
+        if prompt == "hot probe after reload" and messages[-1].get("type") != "function_call_output":
+            code = ("names = [c['name'] for c in await commands.catalog()]\n"
+                    "assert '/late' in names, names\n"
+                    "assert hot_marker == 'kernel-kept-running', 'kernel was restarted'\n"
+                    "print('AFTER_RELOAD_OK')")
+            output = [{"type": "function_call", "id": "fc-hot-after", "call_id": "call-hot-after",
+                       "name": "python", "arguments": json.dumps({"code": code, "timeout_ms": 10000}),
+                       "status": "completed"}]
         response = {"type": "response.completed", "response": {
             "id": "fixture", "status": "completed", "output": output,
             "usage": {"input_tokens": 20, "output_tokens": 1},
@@ -77,7 +93,7 @@ def run(endpoint):
         }}}))
         # Catalog refresh is disabled so the suite never reaches the network.
         (home/"extensions.json").write_text(json.dumps({"models": {"refreshHours": 0}}))
-        env = dict(os.environ, HOME=str(user_home), ALBEDO_HOME=str(home))
+        env = dict(os.environ, HOME=str(user_home), ALBEDO_HOME=str(home), ALBEDO_PARENT_PID=str(os.getpid()))
         connection = None
 
         def cli(*args):
@@ -127,6 +143,13 @@ def run(endpoint):
             except urllib.error.HTTPError as error:
                 assert error.code == 409, error.read()
 
+        def snapshot(session):
+            with api(f"/sessions/{session}/stream") as response:
+                while True:
+                    line = response.readline()
+                    if line.startswith(b"data: "):
+                        return json.loads(line[6:])["events"]
+
         def catalog_request(session, prompt):
             before = len(Provider.requests)
             api(f"/sessions/{session}/events", {"content": prompt})
@@ -168,7 +191,7 @@ def run(endpoint):
                 "modelCallable": True,
                 "userTurn": True,
             }], demo
-            assert {c["name"] for c in catalog} >= {"/model", "/context"}
+            assert {c["name"] for c in catalog} >= {"/model", "/context", "/compact"}
             before = len(Provider.requests)
             outcome = api(f"/sessions/{session}/commands", {
                 "name": "/demo", "arguments": "one  two", "clientId": "fixture-client",
@@ -179,6 +202,27 @@ def run(endpoint):
             activation = json.dumps(Provider.requests[-1]["input"])
             assert "BODY_MUST_NOT_AUTOLOAD" in activation
             assert "one  two" in activation and str(skill.resolve()) in activation
+            before = len(Provider.requests)
+            original_tree = api(f"/sessions/{session}/tree?after=0&limit=100")["items"]
+            started = api(f"/sessions/{session}/commands", {"name": "/compact"})
+            assert started["result"]["strategy"] == "rolling" and started["result"]["started"] is True, started
+            ready(session)
+            assert len(Provider.requests) == before + 1, "only the active summarizer may call the provider"
+            assert api(f"/sessions/{session}/tree?after=0&limit=100")["items"] == original_tree, "manual compaction rewrote the transcript"
+            before = len(Provider.requests)
+            api(f"/sessions/{session}/events", {"content": "after manual compaction"})
+            ready(session)
+            assert len(Provider.requests) == before + 1
+            followup = json.dumps(Provider.requests[-1]["input"])
+            assert "older conversation summary" in followup, "compacted projection was not reused: LOG: " + (home/"daemon.log").read_text()[-3000:] + " CONTEXT: " + json.dumps(api(f"/sessions/{session}/context"))[:1200]
+            assert api(f"/sessions/{session}/context")["compaction"]["status"] == "compacted"
+            context = api(f"/sessions/{session}/context")
+            assert context["state"] == "ready" and context["compaction"]["status"] == "compacted", context
+            events = snapshot(session)
+            compacted = next(e for e in events if e.get("type") == "compacted")
+            assert compacted["evicted"] > 0 and "older conversation summary" in compacted["summary"], compacted
+            prepared = api(f"/sessions/{session}/context/history/0")["content"]
+            assert "older conversation summary" in prepared, prepared
             listed = api(f"/sessions/{session}/commands")
             assert listed == catalog, listed
             original_skill = skill.read_text()
@@ -189,12 +233,35 @@ def run(endpoint):
             api(f"/sessions/{session}/commands", {"name": "/demo", "arguments": "slash argument"})
             ready(session)
             assert len(Provider.requests) == before + 1, "slash activation must submit exactly one turn"
-            activation_request = Provider.requests[-1]
-            activated = next(item["content"] for item in reversed(activation_request["input"]) if item.get("role") == "user")
+            activated = next(item["content"] for item in reversed(Provider.requests[-1]["input"]) if item.get("role") == "user")
             activation = json.loads(activated.split("\n", 1)[1])
             assert activation["name"] == "demo" and activation["arguments"] == "slash argument"
             assert activation["source"] == str(skill.resolve())
             assert "BODY_MUST_NOT_AUTOLOAD" in activation["instructions"]
+            # A skill written after the session opened stays invisible until a
+            # session reload — then reaches the menu, the prompt context, and the
+            # live kernel's routes in one swap, with the kernel still running.
+            late = workspace/".agents"/"skills"/"late"/"SKILL.md"
+            late.parent.mkdir(parents=True)
+            late.write_text("---\nname: late\ndescription: added after the session opened\n---\nLATE_BODY\n")
+            assert "/late" not in {c["name"] for c in api(f"/sessions/{session}/commands")}
+            before = len(Provider.requests)
+            api(f"/sessions/{session}/events", {"content": "hot probe before reload"})
+            ready(session)
+            assert len(Provider.requests) == before + 2
+            tool_output = next(item["output"] for item in Provider.requests[-1]["input"] if item.get("type") == "function_call_output")
+            assert "BEFORE_RELOAD_OK" in tool_output, tool_output
+            reloaded = api(f"/sessions/{session}/commands", {"name": "/reload", "args": {"target": "session"}})
+            assert reloaded["result"]["reloaded"] == "session", reloaded
+            assert "/late" in {c["name"] for c in api(f"/sessions/{session}/commands")}
+            request = catalog_request(session, "after session reload")
+            assert "added after the session opened" in json.dumps(request["input"]), request
+            before = len(Provider.requests)
+            api(f"/sessions/{session}/events", {"content": "hot probe after reload"})
+            ready(session)
+            assert len(Provider.requests) == before + 2
+            tool_output = next(item["output"] for item in Provider.requests[-1]["input"] if item.get("type") == "function_call_output")
+            assert "AFTER_RELOAD_OK" in tool_output, tool_output
             python_session = json.loads(cli("new", str(workspace)))["session"]
             before = len(Provider.requests)
             api(f"/sessions/{python_session}/events", {"content": "activate demo via python"})
@@ -229,6 +296,7 @@ def run(endpoint):
             assert Provider.entered.wait(10)
             rejected(route, {"name": "skills", "enabled": True})
             rejected(f"/sessions/{session}/commands", {"name": "/model", "args": {"model": "mid-run"}})
+            rejected(f"/sessions/{session}/commands", {"name": "/compact"})
             assert api(route) == disabled
             Provider.release.set()
             ready(session)

@@ -7,7 +7,7 @@
 %% the kernel is wedged, and it returns a structured verdict instead of
 %% kill(1) exit statuses the supervisor would have to guess at.
 -module(albedo_python).
--export([start/6, execute/3, interrupt/1, stop/1, events/1, alive/1, os_pid/1, job_count/1, local_paths/0]).
+-export([start/6, execute/3, interrupt/1, stop/1, events/1, alive/1, os_pid/1, job_count/1, local_paths/0, rebind/2]).
 
 -define(STARTUP_TIMEOUT, 5000).
 -define(SHUTDOWN_GRACE, 2000).   %% must exceed the kernel's own cleanup deadline
@@ -111,6 +111,11 @@ call(Pid, Request) ->
         {'DOWN', Mon, process, Pid, _} -> {error, lost}
     end.
 
+%% Swap the live host RPC closure: a refreshed extension snapshot rebinds the
+%% routes Python reaches without restarting the kernel. A host call already in
+%% flight finishes on the closure it captured; the swap lands between calls.
+rebind(Pid, Host) when is_function(Host, 1) -> call(Pid, {rebind, Host}).
+
 loop(S = #{port := Port, active := Active}) ->
     receive
         {call, From, Ref, {execute, Data, Timeout}} when Active =:= none ->
@@ -127,6 +132,8 @@ loop(S = #{port := Port, active := Active}) ->
         {call, From, Ref, job_count} ->
             Count = maps:size(maps:get(groups, S)) + maps:get(external, S, 0),
             From ! {Ref, {ok, Count}}, loop(S);
+        {call, From, Ref, {rebind, Host}} when is_function(Host, 1) ->
+            From ! {Ref, {ok, nil}}, loop(S#{host => Host});
         {call, From, Ref, events} ->
             From ! {Ref, {ok, lists:reverse(maps:get(events, S))}}, loop(S#{events => []});
         {call, From, Ref, stop} ->

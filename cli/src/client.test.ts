@@ -9,6 +9,12 @@ test("send returns the daemon's authoritative queued state", async () => {
     new Response(JSON.stringify({ ok: true, queued: responses.shift() }), { status: 202 }) })
   assert.deepEqual(await client.send("first"), { ok: true, queued: false })
   assert.deepEqual(await client.send("steer"), { ok: true, queued: true })
+  const client2 = createChatClient({ baseUrl: "http://localhost", agentId: "session", fetchImpl: async () =>
+    new Response(page(1, [{ type: "compacted", evicted: 12, summary: "facts" }, { type: "compacted", evicted: -1, summary: "no" }, { type: "compacted", evicted: 5, summary: "x".repeat(60_001) }]), { headers: { "content-type": "text/event-stream" } }) })
+  const compacted: StreamEvent[] = []
+  await client2.stream({ onEvent: event => compacted.push(event) })
+  assert.deepEqual(compacted, [{ type: "compacted", evicted: 12, summary: "facts" }])
+
   const older = createChatClient({ baseUrl: "http://localhost", agentId: "session", fetchImpl: async () => new Response(null, { status: 202 }) })
   assert.deepEqual(await older.send("legacy"), { ok: true, queued: false })
 })

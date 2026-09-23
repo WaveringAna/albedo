@@ -200,6 +200,13 @@ pub fn interrupt(kernel: Kernel) -> Nil
 @external(erlang, "albedo_python", "stop")
 pub fn stop(kernel: Kernel) -> Result(Nil, String)
 
+/// Swap the live host RPC closure: a refreshed extension snapshot rebinds the
+/// routes Python reaches without restarting the kernel, so skills.read and its
+/// sibling routes resolve against the new catalog immediately. A host call
+/// already in flight finishes on the routes it captured.
+@external(erlang, "albedo_python", "rebind")
+pub fn rebind(kernel: Kernel, host: fn(String) -> String) -> Result(Nil, Error)
+
 /// Drain up to 100 background completion notifications.
 @external(erlang, "albedo_python", "events")
 pub fn events(kernel: Kernel) -> List(String)

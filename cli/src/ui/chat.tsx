@@ -71,6 +71,7 @@ const awakeness = (status: AgentStatus, speaker: string): string => {
   switch (status.phase) {
     case "reasoning": return `${speaker} is reasoning`
     case "tool": return `${speaker} is using a tool`
+    case "compacting": return `${speaker} is compacting context`
     case "preparing": return `${speaker} is preparing a turn`
     case "waiting": return `${speaker} is ready`
     default: return status.running && !status.idle ? `${speaker} is working` : `${speaker} is ready`
@@ -125,7 +126,7 @@ export function ChatScreen({
     return () => { cancelled = true; clearInterval(timer) }
   }, [visible, pendingImage, clipboardImages])
   const [connection, setConnection] = useState<Connection>("connecting")
-  const [flags, setFlags] = useState<DisplayFlags>({ tools: false, thinking: true, diffs: false })
+  const [flags, setFlags] = useState<DisplayFlags>({ tools: false, thinking: true, diffs: false, compaction: false })
   const [mouseInput] = useState(() => new MouseInput())
   const drag = useRef<Drag | null>(null)
   const [selecting, setSelecting] = useState(false)
@@ -277,6 +278,12 @@ export function ChatScreen({
       case "note": {
         settle()
         return void push({ kind: "note", text: event.text })
+      }
+      case "compacted": {
+        setToolProgress(null)
+        setFailure("")
+        settle()
+        return void push({ kind: "compaction", text: event.summary, evicted: event.evicted })
       }
       case "message": {
         setToolProgress(null)
@@ -540,7 +547,7 @@ export function ChatScreen({
       : !status ? client ? "connecting…" : "opening session…"
         : !status.running || status.idle ? stopped ? "stopped" : "ready"
           : active?.kind === "text" ? "responding"
-            : ({ reasoning: "thinking", tool: "running tool", preparing: "preparing", waiting: "ready", resting: "ready" }[status.phase ?? "reasoning"])
+            : ({ reasoning: "thinking", tool: "running tool", preparing: "preparing", compacting: "compacting context", waiting: "ready", resting: "ready" }[status.phase ?? "reasoning"])
   const imageStatus = pendingImage ? `${imageLabel(pendingImage)} attached · esc remove`
     : clipboardImageAvailable ? "ctrl+v to paste image" : statusText
   const stats = usage ? [
@@ -704,6 +711,10 @@ export function ChatScreen({
             // In legacy terminals Ctrl+J is LF, while Return is CR. Kitty reports Ctrl+J explicitly.
             if (input === "\n" || (key.ctrl && input === "j")) {
               setFlags(current => ({ ...current, diffs: !current.diffs }))
+              return true
+            }
+            if (key.ctrl && input === "k") {
+              setFlags(current => ({ ...current, compaction: !current.compaction }))
               return true
             }
             if (key.escape && pendingImage) { setPendingImage(undefined); setCopyStatus("image removed"); return true }

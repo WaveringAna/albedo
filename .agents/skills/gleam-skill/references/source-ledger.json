@@ -1,0 +1,445 @@
+{
+  "research_date": "2026-09-22",
+  "repository_count": 16,
+  "source_file_count": 36,
+  "test_files_read": [
+    "S08",
+    "S10",
+    "S11",
+    "S35",
+    "S36"
+  ],
+  "method": "Selected implementation paths read through GitHub connector; official runtime/language documentation verified through web search. Not a whole-repository audit.",
+  "execution_status": "No Gleam compiler or Erlang runtime was available. No upstream test suites, application deployments, or bundled Gleam examples were executed.",
+  "version_note": "ref_read is the actual requested ref. Branch links can move. git_blob_sha identifies file content, not a commit; use immutable_blob_url to retrieve that exact blob. Pinned commit refs are retained where explicitly fetched. Repository revisions do not imply mutually compatible dependency versions.",
+  "source_files": [
+    {
+      "id": "S01",
+      "repository": "gleam-lang/packages",
+      "path": "src/packages.gleam",
+      "ref_read": "main",
+      "git_blob_sha": "5e503e854bf4cd419259b75ba66c819b82d7241e",
+      "read_scope": "whole file",
+      "focus": "Composition, captured context, index and periodic-worker startup",
+      "source_url": "https://github.com/gleam-lang/packages/blob/main/src/packages.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/gleam-lang/packages/git/blobs/5e503e854bf4cd419259b75ba66c819b82d7241e"
+    },
+    {
+      "id": "S02",
+      "repository": "gleam-lang/packages",
+      "path": "src/packages/text_search.gleam",
+      "ref_read": "main",
+      "git_blob_sha": "897fa795428d6e8562a5491cd9752420e11f9c8f",
+      "read_scope": "whole file via raw source; header and metadata rechecked",
+      "focus": "Opaque index, direct reads, ordinary search logic, multi-operation updates",
+      "source_url": "https://github.com/gleam-lang/packages/blob/main/src/packages/text_search.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/gleam-lang/packages/git/blobs/897fa795428d6e8562a5491cd9752420e11f9c8f"
+    },
+    {
+      "id": "S03",
+      "repository": "gleam-lang/packages",
+      "path": "src/packages/storage.gleam",
+      "ref_read": "main",
+      "git_blob_sha": "99ea69b143fbf233bdf141a502ee843f1d1cdbcc",
+      "read_scope": "partial implementation excerpt; tool response truncated; metadata rechecked",
+      "focus": "Typed collections, domain operations, codecs, search outcomes",
+      "source_url": "https://github.com/gleam-lang/packages/blob/main/src/packages/storage.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/gleam-lang/packages/git/blobs/99ea69b143fbf233bdf141a502ee843f1d1cdbcc"
+    },
+    {
+      "id": "S04",
+      "repository": "gleam-lang/packages",
+      "path": "src/packages/periodic.gleam",
+      "ref_read": "main",
+      "git_blob_sha": "ca5c5c7ebaa7f8a814bb16be33bcc97b98a60c4f",
+      "read_scope": "whole file",
+      "focus": "Callback-driven actor and schedule-after-completion",
+      "source_url": "https://github.com/gleam-lang/packages/blob/main/src/packages/periodic.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/gleam-lang/packages/git/blobs/ca5c5c7ebaa7f8a814bb16be33bcc97b98a60c4f"
+    },
+    {
+      "id": "S05",
+      "repository": "gleam-lang/packages",
+      "path": "src/ethos_ffi.erl",
+      "ref_read": "main",
+      "git_blob_sha": "57999df8706dcc0fa0715e81e18af07fa5417c08",
+      "read_scope": "whole file",
+      "focus": "Public ETS bag implementation beneath typed index",
+      "source_url": "https://github.com/gleam-lang/packages/blob/main/src/ethos_ffi.erl",
+      "immutable_blob_url": "https://api.github.com/repos/gleam-lang/packages/git/blobs/57999df8706dcc0fa0715e81e18af07fa5417c08"
+    },
+    {
+      "id": "S06",
+      "repository": "lpil/cell",
+      "path": "src/cell.gleam",
+      "ref_read": "main",
+      "git_blob_sha": "c650ce4c8a657dad169b15a89b87fc0ec0a19e72",
+      "read_scope": "whole file",
+      "focus": "Generic opaque cells, empty values and table lifetime",
+      "source_url": "https://github.com/lpil/cell/blob/main/src/cell.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/lpil/cell/git/blobs/c650ce4c8a657dad169b15a89b87fc0ec0a19e72"
+    },
+    {
+      "id": "S07",
+      "repository": "lpil/cell",
+      "path": "src/cell_ffi.erl",
+      "ref_read": "main",
+      "git_blob_sha": "e5fa057cce532c92dbc42b97174843576274189e",
+      "read_scope": "whole file",
+      "focus": "Public ETS set, error conversion, individual operations",
+      "source_url": "https://github.com/lpil/cell/blob/main/src/cell_ffi.erl",
+      "immutable_blob_url": "https://api.github.com/repos/lpil/cell/git/blobs/e5fa057cce532c92dbc42b97174843576274189e"
+    },
+    {
+      "id": "S08",
+      "repository": "lpil/cell",
+      "path": "test/cell_test.gleam",
+      "ref_read": "main",
+      "git_blob_sha": "4b60954c28c464946ccd55ce6243a8109173b9cc",
+      "read_scope": "whole file",
+      "focus": "Sequential create/read/write/delete/drop behavior",
+      "source_url": "https://github.com/lpil/cell/blob/main/test/cell_test.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/lpil/cell/git/blobs/4b60954c28c464946ccd55ce6243a8109173b9cc"
+    },
+    {
+      "id": "S09",
+      "repository": "gleam-lang/otp",
+      "path": "src/gleam/otp/actor.gleam",
+      "ref_read": "main",
+      "git_blob_sha": "950b153570d544c0e89cc6577b5d68c81ab8b47c",
+      "read_scope": "lines 1-560",
+      "focus": "Started data vs PID, custom initialization, Next, selectors, runtime loop",
+      "source_url": "https://github.com/gleam-lang/otp/blob/main/src/gleam/otp/actor.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/gleam-lang/otp/git/blobs/950b153570d544c0e89cc6577b5d68c81ab8b47c"
+    },
+    {
+      "id": "S10",
+      "repository": "gleam-lang/otp",
+      "path": "test/gleam/otp/actor_test.gleam",
+      "ref_read": "3702798d922763a3cd2bb73094236995d41f69ca",
+      "git_blob_sha": "4f7ebb48a10921cac4515577475d4a2b83a95df5",
+      "read_scope": "lines 1-240",
+      "focus": "Initialization failure/timeouts, system messages, selector replacement",
+      "source_url": "https://github.com/gleam-lang/otp/blob/3702798d922763a3cd2bb73094236995d41f69ca/test/gleam/otp/actor_test.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/gleam-lang/otp/git/blobs/4f7ebb48a10921cac4515577475d4a2b83a95df5"
+    },
+    {
+      "id": "S11",
+      "repository": "gleam-lang/otp",
+      "path": "test/gleam/otp/static_supervisor_test.gleam",
+      "ref_read": "3702798d922763a3cd2bb73094236995d41f69ca",
+      "git_blob_sha": "efc8ddfbc984a24f2121e8a1f2ecc71b6eeedc51",
+      "read_scope": "whole file",
+      "focus": "Actual OneForOne, RestForOne, OneForAll restart assertions",
+      "source_url": "https://github.com/gleam-lang/otp/blob/3702798d922763a3cd2bb73094236995d41f69ca/test/gleam/otp/static_supervisor_test.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/gleam-lang/otp/git/blobs/efc8ddfbc984a24f2121e8a1f2ecc71b6eeedc51"
+    },
+    {
+      "id": "S12",
+      "repository": "gleam-lang/erlang",
+      "path": "src/gleam/erlang/process.gleam",
+      "ref_read": "dfa7cd705d8e97fe3af48754307130ecc14b5a45",
+      "git_blob_sha": "4e9c0ef140601bf8e055df18019f79d848146785",
+      "read_scope": "lines 1-250, 300-570, 650-880",
+      "focus": "Subject ownership, names/atoms, selectors, monitors, call, timers",
+      "source_url": "https://github.com/gleam-lang/erlang/blob/dfa7cd705d8e97fe3af48754307130ecc14b5a45/src/gleam/erlang/process.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/gleam-lang/erlang/git/blobs/4e9c0ef140601bf8e055df18019f79d848146785"
+    },
+    {
+      "id": "S13",
+      "repository": "rawhat/glisten",
+      "path": "src/glisten/internal/handler.gleam",
+      "ref_read": "930b772c98958ac4a4d139da5ce9b48b74887016",
+      "git_blob_sha": "a5a4ab4beca36cf9f505f4171536d1e7fac73e34",
+      "read_scope": "whole file",
+      "focus": "Per-connection state, typed internal/user events, socket activation",
+      "source_url": "https://github.com/rawhat/glisten/blob/930b772c98958ac4a4d139da5ce9b48b74887016/src/glisten/internal/handler.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/rawhat/glisten/git/blobs/a5a4ab4beca36cf9f505f4171536d1e7fac73e34"
+    },
+    {
+      "id": "S14",
+      "repository": "rawhat/glisten",
+      "path": "src/glisten/internal/acceptor.gleam",
+      "ref_read": "930b772c98958ac4a4d139da5ce9b48b74887016",
+      "git_blob_sha": "8bd85887f8796b375fbee42d3ab565459386597c",
+      "read_scope": "whole file",
+      "focus": "Accept loop, controlling-process handoff, temporary connection children",
+      "source_url": "https://github.com/rawhat/glisten/blob/930b772c98958ac4a4d139da5ce9b48b74887016/src/glisten/internal/acceptor.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/rawhat/glisten/git/blobs/8bd85887f8796b375fbee42d3ab565459386597c"
+    },
+    {
+      "id": "S15",
+      "repository": "gleam-wisp/wisp",
+      "path": "src/wisp.gleam",
+      "ref_read": "main",
+      "git_blob_sha": "65b23db622b516fbf0e90d146695a13d17c8f140",
+      "read_scope": "lines 1-240",
+      "focus": "Public response/body types and ordinary transformation functions",
+      "source_url": "https://github.com/gleam-wisp/wisp/blob/main/src/wisp.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/gleam-wisp/wisp/git/blobs/65b23db622b516fbf0e90d146695a13d17c8f140"
+    },
+    {
+      "id": "S16",
+      "repository": "gleam-wisp/wisp",
+      "path": "examples/src/using_a_database/app.gleam",
+      "ref_read": "f6e70b460f318d3308f9810f090315f575cbab24",
+      "git_blob_sha": "be93efbc5d6bdf9b96db82460355c673798c1c02",
+      "read_scope": "whole file",
+      "focus": "One database handle passed through captured application context",
+      "source_url": "https://github.com/gleam-wisp/wisp/blob/f6e70b460f318d3308f9810f090315f575cbab24/examples/src/using_a_database/app.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/gleam-wisp/wisp/git/blobs/be93efbc5d6bdf9b96db82460355c673798c1c02"
+    },
+    {
+      "id": "S17",
+      "repository": "rawhat/mist",
+      "path": "src/mist.gleam",
+      "ref_read": "master",
+      "git_blob_sha": "b10e3fd6fb55686d21a20d93f6142dbac5176a32",
+      "read_scope": "lines 1-260",
+      "focus": "Public facade, opaque Next, response variants, body type transition",
+      "source_url": "https://github.com/rawhat/mist/blob/master/src/mist.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/rawhat/mist/git/blobs/b10e3fd6fb55686d21a20d93f6142dbac5176a32"
+    },
+    {
+      "id": "S18",
+      "repository": "rawhat/mist",
+      "path": "src/mist/internal/handler.gleam",
+      "ref_read": "master",
+      "git_blob_sha": "ddf00ee4d823241cc33e6171c6f9e86aecb7fcb9",
+      "read_scope": "whole file",
+      "focus": "Http1/Http2 state, closure-based integration, protocol transitions",
+      "source_url": "https://github.com/rawhat/mist/blob/master/src/mist/internal/handler.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/rawhat/mist/git/blobs/ddf00ee4d823241cc33e6171c6f9e86aecb7fcb9"
+    },
+    {
+      "id": "S19",
+      "repository": "lpil/pog",
+      "path": "src/pog.gleam",
+      "ref_read": "main",
+      "git_blob_sha": "7549db44c37c57232da959c874e59aa95daa7339",
+      "read_scope": "lines 1-270, 370-690",
+      "focus": "Pool vs checked-out connection, transaction cleanup, decoder-bearing queries",
+      "source_url": "https://github.com/lpil/pog/blob/main/src/pog.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/lpil/pog/git/blobs/7549db44c37c57232da959c874e59aa95daa7339"
+    },
+    {
+      "id": "S20",
+      "repository": "lpil/sqlight",
+      "path": "src/sqlight.gleam",
+      "ref_read": "main",
+      "git_blob_sha": "0adcfcac7e3d9fe395d859e45dfaba5fc3b99489",
+      "read_scope": "lines 1-560, through end",
+      "focus": "Cross-target FFI, typed rows, callback scope and normal-path close",
+      "source_url": "https://github.com/lpil/sqlight/blob/main/src/sqlight.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/lpil/sqlight/git/blobs/0adcfcac7e3d9fe395d859e45dfaba5fc3b99489"
+    },
+    {
+      "id": "S21",
+      "repository": "lustre-labs/lustre",
+      "path": "src/lustre.gleam",
+      "ref_read": "e5ca4d8b647c2c13f2f42f51d500c2198a7a4d19",
+      "git_blob_sha": "4d992edfa9e458fc763316656da917d6fdf18ab3",
+      "read_scope": "lines 1-260",
+      "focus": "MVU public contract, App parameters, runtime/domain message distinction",
+      "source_url": "https://github.com/lustre-labs/lustre/blob/e5ca4d8b647c2c13f2f42f51d500c2198a7a4d19/src/lustre.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/lustre-labs/lustre/git/blobs/4d992edfa9e458fc763316656da917d6fdf18ab3"
+    },
+    {
+      "id": "S22",
+      "repository": "lustre-labs/lustre",
+      "path": "src/lustre/runtime/server/runtime.gleam",
+      "ref_read": "e5ca4d8b647c2c13f2f42f51d500c2198a7a4d19",
+      "git_blob_sha": "aa5465dcc95093d7c78205f505fbbe23a1dfe0eb",
+      "read_scope": "lines 1-540, through end",
+      "focus": "Model inside actor, typed runtime events, subscriber monitors, effect execution",
+      "source_url": "https://github.com/lustre-labs/lustre/blob/e5ca4d8b647c2c13f2f42f51d500c2198a7a4d19/src/lustre/runtime/server/runtime.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/lustre-labs/lustre/git/blobs/aa5465dcc95093d7c78205f505fbbe23a1dfe0eb"
+    },
+    {
+      "id": "S23",
+      "repository": "lustre-labs/lustre",
+      "path": "src/lustre/effect.gleam",
+      "ref_read": "e5ca4d8b647c2c13f2f42f51d500c2198a7a4d19",
+      "git_blob_sha": "dd46686371b9d1be5ad9722cff68fea18e89202b",
+      "read_scope": "lines 1-210",
+      "focus": "Opaque effect representation, callback actions, synchronous effect construction",
+      "source_url": "https://github.com/lustre-labs/lustre/blob/e5ca4d8b647c2c13f2f42f51d500c2198a7a4d19/src/lustre/effect.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/lustre-labs/lustre/git/blobs/dd46686371b9d1be5ad9722cff68fea18e89202b"
+    },
+    {
+      "id": "S24",
+      "repository": "ghivert/gloogle",
+      "path": "apps/jupiter/src/jupiter/gleam/type_search.gleam",
+      "ref_read": "d2d7e99b544af96631ccc48fb8cecdb61cc05ef4",
+      "git_blob_sha": "8c515d92691bd9e7fccd5fe0cd8c7ff8d0202c45",
+      "read_scope": "whole file",
+      "focus": "Actor-coordinated writes and direct cell snapshot reads",
+      "source_url": "https://github.com/ghivert/gloogle/blob/d2d7e99b544af96631ccc48fb8cecdb61cc05ef4/apps/jupiter/src/jupiter/gleam/type_search.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/ghivert/gloogle/git/blobs/8c515d92691bd9e7fccd5fe0cd8c7ff8d0202c45"
+    },
+    {
+      "id": "S25",
+      "repository": "ghivert/gloogle",
+      "path": "apps/jupiter/src/jupiter/context.gleam",
+      "ref_read": "d2d7e99b544af96631ccc48fb8cecdb61cc05ef4",
+      "git_blob_sha": "9b820b0068bcda77c9b351a882dab1a6e3991463",
+      "read_scope": "whole file",
+      "focus": "Table creation location, shared handles, request-specific record updates",
+      "source_url": "https://github.com/ghivert/gloogle/blob/d2d7e99b544af96631ccc48fb8cecdb61cc05ef4/apps/jupiter/src/jupiter/context.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/ghivert/gloogle/git/blobs/9b820b0068bcda77c9b351a882dab1a6e3991463"
+    },
+    {
+      "id": "S26",
+      "repository": "ghivert/gloogle",
+      "path": "apps/jupiter/src/jupiter/gleam/type_search/search.gleam",
+      "ref_read": "d2d7e99b544af96631ccc48fb8cecdb61cc05ef4",
+      "git_blob_sha": "8289db085fd5b2adbd78763e5f81e619e43d2015",
+      "read_scope": "lines 1-250",
+      "focus": "Recursive immutable index updates; lookup can also consult database",
+      "source_url": "https://github.com/ghivert/gloogle/blob/d2d7e99b544af96631ccc48fb8cecdb61cc05ef4/apps/jupiter/src/jupiter/gleam/type_search/search.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/ghivert/gloogle/git/blobs/8289db085fd5b2adbd78763e5f81e619e43d2015"
+    },
+    {
+      "id": "S27",
+      "repository": "ghivert/gloogle",
+      "path": "apps/jupiter/src/jupiter.gleam",
+      "ref_read": "d2d7e99b544af96631ccc48fb8cecdb61cc05ef4",
+      "git_blob_sha": "8e6e7d192d650ec0e0c4b147f1536ce4db7546b5",
+      "read_scope": "whole file",
+      "focus": "Composition, startup order, nested periodic supervisors",
+      "source_url": "https://github.com/ghivert/gloogle/blob/d2d7e99b544af96631ccc48fb8cecdb61cc05ef4/apps/jupiter/src/jupiter.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/ghivert/gloogle/git/blobs/8e6e7d192d650ec0e0c4b147f1536ce4db7546b5"
+    },
+    {
+      "id": "S28",
+      "repository": "gleam-lang/http",
+      "path": "src/gleam/http/request.gleam",
+      "ref_read": "main",
+      "git_blob_sha": "4b801d12811a3acd93d0ffb394d931a6e9ff0c30",
+      "read_scope": "lines 1-220",
+      "focus": "Public generic records and type-changing body transformations",
+      "source_url": "https://github.com/gleam-lang/http/blob/main/src/gleam/http/request.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/gleam-lang/http/git/blobs/4b801d12811a3acd93d0ffb394d931a6e9ff0c30"
+    },
+    {
+      "id": "S29",
+      "repository": "gleam-lang/stdlib",
+      "path": "src/gleam/dict.gleam",
+      "ref_read": "main",
+      "git_blob_sha": "710b469c0cc45824a177e580cc459e30a0a2a7bb",
+      "read_scope": "lines 1-210",
+      "focus": "Immutable public API and encapsulated JavaScript mutable transients",
+      "source_url": "https://github.com/gleam-lang/stdlib/blob/main/src/gleam/dict.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/gleam-lang/stdlib/git/blobs/710b469c0cc45824a177e580cc459e30a0a2a7bb"
+    },
+    {
+      "id": "S30",
+      "repository": "gleam-lang/stdlib",
+      "path": "src/gleam/dynamic/decode.gleam",
+      "ref_read": "main",
+      "git_blob_sha": "bffb9d84ac781bd0530e48ae7feebe45dba3d492",
+      "read_scope": "lines 1-250, 350-600",
+      "focus": "Composable decoders, field errors, final run boundary",
+      "source_url": "https://github.com/gleam-lang/stdlib/blob/main/src/gleam/dynamic/decode.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/gleam-lang/stdlib/git/blobs/bffb9d84ac781bd0530e48ae7feebe45dba3d492"
+    },
+    {
+      "id": "S31",
+      "repository": "gleam-lang/json",
+      "path": "src/gleam/json.gleam",
+      "ref_read": "main",
+      "git_blob_sha": "e3a3cae5566f7ccd8db19fb6f4213e8cba00fe88",
+      "read_scope": "lines 1-230",
+      "focus": "Syntax vs shape errors, typed parse, target-specific FFI",
+      "source_url": "https://github.com/gleam-lang/json/blob/main/src/gleam/json.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/gleam-lang/json/git/blobs/e3a3cae5566f7ccd8db19fb6f4213e8cba00fe88"
+    },
+    {
+      "id": "S32",
+      "repository": "giacomocavalieri/squirrel",
+      "path": "src/squirrel/internal/gleam.gleam",
+      "ref_read": "5b6407d14a7c83af102944f2c86f52a521a74d57",
+      "git_blob_sha": "f7b8c68909c61acb35d77a2983ae7ebf18a58a12",
+      "read_scope": "lines 1-240",
+      "focus": "Opaque validated identifier types, structured type representation",
+      "source_url": "https://github.com/giacomocavalieri/squirrel/blob/5b6407d14a7c83af102944f2c86f52a521a74d57/src/squirrel/internal/gleam.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/giacomocavalieri/squirrel/git/blobs/f7b8c68909c61acb35d77a2983ae7ebf18a58a12"
+    },
+    {
+      "id": "S33",
+      "repository": "giacomocavalieri/squirrel",
+      "path": "src/squirrel/internal/database/postgres.gleam",
+      "ref_read": "5b6407d14a7c83af102944f2c86f52a521a74d57",
+      "git_blob_sha": "73262e7a6bd7ce858a08acb69d213b859f441ec9",
+      "read_scope": "lines 1-195, 320-495",
+      "focus": "Connection/cache context, state threading, typed query inference flow",
+      "source_url": "https://github.com/giacomocavalieri/squirrel/blob/5b6407d14a7c83af102944f2c86f52a521a74d57/src/squirrel/internal/database/postgres.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/giacomocavalieri/squirrel/git/blobs/73262e7a6bd7ce858a08acb69d213b859f441ec9"
+    },
+    {
+      "id": "S34",
+      "repository": "giacomocavalieri/birdie",
+      "path": "src/birdie.gleam",
+      "ref_read": "main",
+      "git_blob_sha": "e23f741f624831582e7d88d4daaaa858704d23b8",
+      "read_scope": "lines 1-255, 270-470",
+      "focus": "Phantom snapshot states, typed outcomes, IO boundaries and delayed analysis",
+      "source_url": "https://github.com/giacomocavalieri/birdie/blob/main/src/birdie.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/giacomocavalieri/birdie/git/blobs/e23f741f624831582e7d88d4daaaa858704d23b8"
+    },
+    {
+      "id": "S35",
+      "repository": "gleam-lang/http",
+      "path": "test/gleam/http/request_test.gleam",
+      "ref_read": "main",
+      "git_blob_sha": "6eebc292e7d5ae71e434fe7bdf384c4254bf6ea8",
+      "read_scope": "lines 1-165",
+      "focus": "Direct value tests, missing/malformed input, request transformations",
+      "source_url": "https://github.com/gleam-lang/http/blob/main/test/gleam/http/request_test.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/gleam-lang/http/git/blobs/6eebc292e7d5ae71e434fe7bdf384c4254bf6ea8"
+    },
+    {
+      "id": "S36",
+      "repository": "lpil/pog",
+      "path": "test/pog_test.gleam",
+      "ref_read": "1260e90168cba09acdab3a226ca026c9afb69285",
+      "git_blob_sha": "3a6f7adc6d5fec1e4c357ffbb1f39404831666e6",
+      "read_scope": "lines 320-620",
+      "focus": "Decoder mismatch, timeouts, commit, returned-error rollback, panic rollback",
+      "source_url": "https://github.com/lpil/pog/blob/1260e90168cba09acdab3a226ca026c9afb69285/test/pog_test.gleam",
+      "immutable_blob_url": "https://api.github.com/repos/lpil/pog/git/blobs/3a6f7adc6d5fec1e4c357ffbb1f39404831666e6"
+    }
+  ],
+  "external_sources": [
+    {
+      "id": "E01",
+      "title": "Erlang/OTP ETS reference (OTP 28 documentation)",
+      "url": "https://www.erlang.org/docs/28/apps/stdlib/ets.html",
+      "focus": "Atomicity scope, access modes, owner lifetime, copying, transfer and table traversal"
+    },
+    {
+      "id": "E02",
+      "title": "Erlang efficiency guide: processes",
+      "url": "https://www.erlang.org/doc/system/eff_guide_processes.html",
+      "focus": "Message copying, refcounted binaries/literals, loss of sharing, measurement"
+    },
+    {
+      "id": "E03",
+      "title": "Erlang persistent_term reference",
+      "url": "https://www.erlang.org/doc/apps/erts/persistent_term.html",
+      "focus": "Read-mostly use and update/garbage-collection costs"
+    },
+    {
+      "id": "E04",
+      "title": "Gleam language tour: use",
+      "url": "https://gleam.run/book/tour/use.html",
+      "focus": "Use expression desugars to a callback"
+    },
+    {
+      "id": "E05",
+      "title": "Gleam language tour",
+      "url": "https://tour.gleam.run/everything/",
+      "focus": "Opaque types and smart-constructor semantics"
+    }
+  ]
+}

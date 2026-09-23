@@ -103,6 +103,29 @@ test("daemon can queue a message even when the UI last observed idle", async t =
   assert(screen.last().indexOf("python") < screen.last().indexOf("racing steer"))
 })
 
+test("a finished compaction renders a collapsed summary that ctrl+k expands", async t => {
+  let stream: StreamOptions | undefined
+  const screen = mount(createElement(ChatScreen, {
+    clipboardImages: NO_CLIPBOARD_IMAGES,
+    transport: { send: async () => ({ ok: true as const }), getStatus: async () => ({ running: false, idle: true }),
+      stream: async options => { stream = options; options.onOpen?.(); await new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true })) } },
+    onBack: () => {}, onQuit: () => {}, settleMs: 20,
+  }), t, 110)
+  await until(() => stream !== undefined, "connected")
+  stream!.onEvent({ type: "message", role: "assistant", text: "work before compaction" })
+  await screen.shows("work before compaction")
+  stream!.onEvent({ type: "compacted", evicted: 42, summary: "kept decisions: ship the parser first" })
+  await until(() => screen.last().includes("compaction done · 42 items summarized · ctrl+k view summary"), "collapsed compaction row")
+  assert(!screen.last().includes("kept decisions"), "summary stays collapsed until requested")
+  screen.write("\x0b")
+  await until(() => screen.last().includes("kept decisions: ship the parser first"), "ctrl+k expands the summary")
+  assert(screen.last().includes("ctrl+k hide summary"))
+  screen.write("\x0b")
+  await until(() => !screen.last().includes("kept decisions"), "ctrl+k collapses again")
+  stream!.onEvent({ type: "usage", model: "m", promptTokens: 900, completionTokens: 0, totalTokens: 900, recordedAt: Date.now() })
+  await until(() => screen.last().includes("ctx 900"), "compaction estimate reaches the footer")
+})
+
 test("steering stays in a separate queue until the daemon appends it after tool output", async t => {
   let stream: StreamOptions | undefined
   const sent: string[] = []

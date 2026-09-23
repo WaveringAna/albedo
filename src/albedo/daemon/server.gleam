@@ -837,6 +837,7 @@ pub fn main() -> Nil {
     as "start albedo through its CLI"
   let assert Ok(port) = start(config, 0)
   let assert Ok(_) = ready(home, port, token)
+  watch_parent(env("ALBEDO_PARENT_PID"))
   process.sleep_forever()
 }
 
@@ -859,6 +860,9 @@ fn directory(path: String) -> Bool
 
 @external(erlang, "albedo_daemon", "shutdown")
 fn shutdown() -> Nil
+
+@external(erlang, "albedo_daemon", "watch_parent")
+fn watch_parent(pid: String) -> Nil
 
 @external(erlang, "albedo_native", "new_id")
 fn new_id() -> String

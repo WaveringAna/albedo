@@ -50,6 +50,8 @@ export type StreamEvent =
   | { type: "thinking"; text: string }
   /** Something the daemon did on its own, such as releasing an idle kernel. */
   | { type: "note"; text: string }
+  /** A manual compaction finished; summary is the strategy's replacement view. */
+  | { type: "compacted"; evicted: number; summary: string }
   | { type: "tool_progress"; progress: ToolProgress | null }
   | { type: "tool"; name: string; args: Record<string, unknown>; result: string; trace?: ToolTrace }
   | {

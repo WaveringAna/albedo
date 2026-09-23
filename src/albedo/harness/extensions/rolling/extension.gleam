@@ -249,6 +249,7 @@ fn prepare(
     source,
     pinned_tokens,
     catalogued,
+    force,
     summarize,
   ) = context
   let original_items = list.length(history)
@@ -257,27 +258,48 @@ fn prepare(
   let window = case config.context_window_tokens {
     Some(tokens) ->
       Some(compaction.Capacity(tokens, "configured contextWindowTokens"))
-    None -> catalogued
+    None ->
+      case catalogued, force {
+        None, True ->
+          Some(compaction.Capacity(
+            pinned_tokens + compaction.estimate_inputs(history),
+            "estimated for manual compaction",
+          ))
+        _, _ -> catalogued
+      }
   }
   case window {
     None -> {
+      // Without a window there is no threshold to compare, but a saved
+      // projection is still the user's standing instruction: honor it.
+      use saved <- result.try(load_state(ledger, session))
+      let #(state, invalidated) = valid_state(saved, source, history)
+      use _ <- result.try(case invalidated {
+        True -> delete_state(ledger, session)
+        False -> Ok(Nil)
+      })
+      let current = projection(state, history)
+      let status = case state {
+        Some(_) -> "compacted"
+        None -> "unknown"
+      }
       use _ <- result.try(save_observation(
         ledger,
         session,
         observation_for(
-          "unknown",
+          status,
           "estimated; no configured or catalogued context window",
           None,
-          pinned_tokens + compaction.estimate_inputs(history),
+          pinned_tokens + compaction.estimate_inputs(current.3),
           config,
           original_items,
           original_bytes,
-          [],
-          [],
-          history,
+          current.0,
+          current.1,
+          current.2,
         ),
       ))
-      Ok(history)
+      Ok(current.3)
     }
     Some(compaction.Capacity(capacity, capacity_source)) -> {
       use saved <- result.try(load_state(ledger, session))
@@ -309,7 +331,7 @@ fn prepare(
             "context window is not large enough for pinned system, extension context, and tool schemas",
           )
         }
-        False if estimated * 100 < capacity * config.trigger_percent -> {
+        False if !force && estimated * 100 < capacity * config.trigger_percent -> {
           let status = case state {
             Some(_) -> "compacted"
             None -> "not_needed"
@@ -343,7 +365,13 @@ fn prepare(
             Some(saved) -> saved.cutoff_count
             None -> 0
           }
-          let tail_budget = capacity * config.tail_percent / 100
+          let tail_budget = case force {
+            True ->
+              int.min(capacity, compaction.estimate_inputs(history))
+              * config.tail_percent
+              / 100
+            False -> capacity * config.tail_percent / 100
+          }
           use cutoff <- result.try(legal_cutoff(history, tail_budget))
           use _ <- result.try(case cutoff > previous_cutoff {
             True -> Ok(Nil)
@@ -384,7 +412,9 @@ fn prepare(
           let next = projection(Some(next_state), history)
           let next_estimated =
             pinned_tokens + compaction.estimate_inputs(next.3)
-          use _ <- result.try(case next_estimated < capacity {
+          // The fit guarantee belongs to a real window; a forced compaction's
+          // synthetic window is a tail budget, so the projection always saves.
+          use _ <- result.try(case next_estimated < capacity || force {
             True -> Ok(Nil)
             False ->
               Error(

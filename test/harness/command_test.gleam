@@ -17,6 +17,7 @@ fn stub_state(op: command.StateOp) -> Result(json.Json, String) {
     command.Submit(display, _, _) ->
       Ok(json.object([#("display", json.string(display))]))
     command.ModelGet -> Ok(json.string("selection"))
+    command.Compact -> Ok(json.string("started"))
     _ -> Error("unexpected state operation")
   }
 }
@@ -277,12 +278,38 @@ pub fn user_turn_commands_submit_through_state_test() {
   value |> should.equal(json.string("data one  two"))
 }
 
-pub fn reload_declares_models_as_its_first_required_target_test() {
+pub fn compact_is_a_generic_user_command_test() {
+  let values = extension.commands([commands.extension()])
+  let assert Ok(compact) = command.find(values, "/compact")
+  compact.model_callable |> should.be_false
+  compact.user_turn |> should.be_false
+  command.dispatch(
+    values,
+    stub_context(),
+    UserCall,
+    "c",
+    "/compact",
+    dict.new(),
+  )
+  |> should.equal(Ok(Data(json.string("started"))))
+  let assert Error(_) =
+    command.dispatch(
+      values,
+      stub_context(),
+      ModelCall,
+      "c",
+      "/compact",
+      dict.new(),
+    )
+}
+
+pub fn reload_declares_models_as_its_first_optional_target_test() {
   let values = extension.commands([commands.extension()])
   let assert Ok(reload) = command.find(values, "/reload")
-  command.usage(reload) |> should.equal("/reload <target>")
-  let assert [Argument(_, _, _, choices)] = reload.arguments
-  choices |> should.equal(["models"])
+  command.usage(reload) |> should.equal("/reload [target]")
+  let assert [Argument(_, _, required, choices)] = reload.arguments
+  required |> should.be_false
+  choices |> should.equal(["models", "session"])
   reload.model_callable |> should.be_false
   command.dispatch(
     values,
@@ -292,7 +319,9 @@ pub fn reload_declares_models_as_its_first_required_target_test() {
     "/reload",
     dict.from_list([#("target", "plugins")]),
   )
-  |> should.equal(Error("unknown reload target plugins; available: models"))
+  |> should.equal(Error(
+    "unknown reload target plugins; available: models, session",
+  ))
 }
 
 pub fn model_switching_is_refused_from_the_model_test() {

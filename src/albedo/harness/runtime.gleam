@@ -70,6 +70,7 @@ type Message {
     Subject(Result(#(List(command.Command), command.Context), String)),
   )
   Reload(String, String, String, Bool, Subject(Result(Session, String)))
+  Refresh(String, Subject(Result(Option(Session), String)))
   Summaries(String, Subject(Result(List(extension.Summary), String)))
   Reset(String, Subject(Nil))
   Forget(String, Subject(Nil))
@@ -189,6 +190,21 @@ pub fn reload_extension(
   actor.call(runtime.subject, 30_000, Reload(id, cwd, name, enabled, _))
 }
 
+/// Re-prepare one session's cached composition from disk and swap it into the
+/// live kernel: static context, every managed plugin (the skills catalog among
+/// them), and the aggregate command catalog. The kernel keeps its process and
+/// Python namespace; only its host route closure is rebound. The persisted
+/// selection is untouched — enablement changes go through `reload_extension`,
+/// which replaces the kernel. Answers the refreshed session while its kernel is
+/// open, or `None` when there was nothing live to rebind (a closed session's
+/// next open picks the refreshed composition up anyway).
+pub fn refresh_session(
+  runtime: Runtime,
+  id: String,
+) -> Result(Option(Session), String) {
+  actor.call(runtime.subject, 30_000, Refresh(id, _))
+}
+
 pub fn extension_summaries(
   runtime: Runtime,
   id: String,
@@ -303,9 +319,21 @@ fn build_composition(
     None ->
       extension.enabled(state.work, state.extensions, state.default_enabled, id)
   })
-  use static_context <- result.try(extension.context(selected, cwd))
   use managed <- result.try(extension.prepare(selected, state.work, id, cwd))
-  let context =
+  use context <- result.try(compose_context(selected, managed, cwd))
+  Ok(Composition(cwd, selected, managed, context))
+}
+
+/// The prepared extension-context inputs for one composition: static
+/// ContextPlugin loads, prepared managed context, and the aggregate command
+/// catalog block, each wrapped as one marked user input.
+fn compose_context(
+  selected: List(extension.Extension),
+  managed: List(extension.Prepared),
+  cwd: String,
+) -> Result(List(types.Input), String) {
+  use static_context <- result.try(extension.context(selected, cwd))
+  Ok(
     list.append(static_context, extension.managed_context(managed))
     |> list.append([
       #(
@@ -323,8 +351,73 @@ fn build_composition(
         <> item.1
         <> "\n</extension-context>",
       )
-    })
-  Ok(Composition(cwd, selected, managed, context))
+    }),
+  )
+}
+
+/// Re-run every prepare and context load over one cached composition. The
+/// kernel is not replaced, so the materialized module set must be unchanged —
+/// those install at boot; a changed set needs `reload_extension`. A failed
+/// refresh keeps the previous composition: the new managed values are closed
+/// before the error escapes, and the old routes stay bound in the kernel.
+fn refresh_composition(
+  state: State,
+  id: String,
+  previous: Composition,
+) -> Result(#(Composition, Option(Session)), String) {
+  let Composition(cwd, selected, old, _) = previous
+  use managed <- result.try(
+    extension.prepare(selected, state.work, id, cwd)
+    |> result.map_error(fn(error) { "could not refresh extensions: " <> error }),
+  )
+  use context <- result.try(compose_context(selected, managed, cwd))
+  case
+    extension.materialized_modules(selected, managed)
+    == extension.materialized_modules(selected, old)
+  {
+    False -> {
+      extension.close(managed)
+      Error("the extension module set changed; reload extensions to apply it")
+    }
+    True -> {
+      let fresh = Composition(cwd, selected, managed, context)
+      let live = case dict.get(state.sessions, id) {
+        Ok(session) ->
+          case session.cwd == cwd && python.alive(session.kernel) {
+            True -> Some(session)
+            False -> None
+          }
+        Error(_) -> None
+      }
+      case live {
+        Some(session) ->
+          case
+            python.rebind(session.kernel, rpc.handle_routes(
+              extension.materialized_routes(selected, managed),
+              state.work,
+              id,
+              _,
+            ))
+          {
+            Error(error) -> {
+              extension.close(managed)
+              Error("could not rebind kernel routes: " <> string.inspect(error))
+            }
+            Ok(_) -> {
+              extension.close(old)
+              Ok(#(
+                fresh,
+                Some(Session(..session, managed: managed, context: context)),
+              ))
+            }
+          }
+        None -> {
+          extension.close(old)
+          Ok(#(fresh, None))
+        }
+      }
+    }
+  }
 }
 
 /// The cached composition for this workspace, or a fresh one. A stale
@@ -498,6 +591,36 @@ fn handle(state: State, message: Message) {
               }
           }
         }
+      }
+    }
+    Refresh(id, reply) -> {
+      case dict.get(state.compositions, id) {
+        // Nothing cached to refresh; the next open scans from scratch anyway.
+        Error(_) -> {
+          process.send(reply, Ok(None))
+          actor.continue(state)
+        }
+        Ok(composition) ->
+          case refresh_composition(state, id, composition) {
+            Error(error) -> {
+              process.send(reply, Error(error))
+              actor.continue(state)
+            }
+            Ok(#(fresh, update)) -> {
+              let sessions = case update {
+                Some(session) -> dict.insert(state.sessions, id, session)
+                None -> state.sessions
+              }
+              process.send(reply, Ok(update))
+              actor.continue(
+                State(
+                  ..state,
+                  sessions: sessions,
+                  compositions: dict.insert(state.compositions, id, fresh),
+                ),
+              )
+            }
+          }
       }
     }
     Summaries(id, reply) -> {
@@ -777,10 +900,59 @@ pub fn prepare_history_scoped(
   summarize: fn(compaction.SummaryRequest) -> Result(String, String),
   history: List(types.Input),
 ) -> Result(List(types.Input), String) {
+  prepare_scoped(
+    runtime,
+    session,
+    model,
+    source,
+    endpoint,
+    instructions,
+    summarize,
+    history,
+    False,
+  )
+}
+
+/// Run the active strategy now, independent of its automatic threshold.
+pub fn compact_history_scoped(
+  runtime: Runtime,
+  session: Session,
+  model: String,
+  source: String,
+  endpoint: String,
+  instructions: String,
+  summarize: fn(compaction.SummaryRequest) -> Result(String, String),
+  history: List(types.Input),
+) -> Result(List(types.Input), String) {
+  prepare_scoped(
+    runtime,
+    session,
+    model,
+    source,
+    endpoint,
+    instructions,
+    summarize,
+    history,
+    True,
+  )
+}
+
+fn prepare_scoped(
+  runtime: Runtime,
+  session: Session,
+  model: String,
+  source: String,
+  endpoint: String,
+  instructions: String,
+  summarize: fn(compaction.SummaryRequest) -> Result(String, String),
+  history: List(types.Input),
+  force: Bool,
+) -> Result(List(types.Input), String) {
   use _ <- result.try(owned_by(runtime, session))
   let pinned_tokens =
     compaction.estimate_pinned(instructions, session.context, tools(session))
   let prepared = case extension.compaction(session.extensions) {
+    None if force -> Error("no compaction strategy is enabled")
     None -> Ok(history)
     Some(strategy) ->
       strategy.prepare(
@@ -792,6 +964,7 @@ pub fn prepare_history_scoped(
           source,
           pinned_tokens,
           capacity(session, model, endpoint),
+          force,
           summarize,
         ),
         history,

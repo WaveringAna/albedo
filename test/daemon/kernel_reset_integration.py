@@ -69,7 +69,7 @@ def run(endpoint):
                 "protocol": "responses",
             }},
         }))
-        env = dict(os.environ, ALBEDO_HOME=str(home))
+        env = dict(os.environ, ALBEDO_HOME=str(home), ALBEDO_PARENT_PID=str(os.getpid()))
         connection = None
 
         def command(*args):

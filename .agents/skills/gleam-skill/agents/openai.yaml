@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gleam Design"
+  short_description: "Types, ownership, and concurrency without actor sprawl"
+  default_prompt: "Use $gleam-design to inspect this Gleam project, choose appropriate type and state-ownership boundaries, and implement or review the smallest correct change."

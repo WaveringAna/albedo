@@ -1,8 +1,8 @@
 //// The built-in session commands and the Python kernel's `commands` object.
 
 import albedo/harness/command.{
-  type Command, type Context, Argument, Command, ContextPage, ContextSummary,
-  Data, ModelCall, ModelGet, ModelSelect, UserCall,
+  type Command, type Context, Argument, Command, Compact, ContextPage,
+  ContextSummary, Data, ModelCall, ModelGet, ModelSelect, Refresh, UserCall,
 }
 import albedo/harness/extension
 import albedo/harness/extensions/models/extension as models
@@ -18,7 +18,7 @@ pub fn extension() -> extension.Extension {
     "Session commands shared by the CLI menu and the Python kernel.",
     ["python"],
     [
-      extension.CommandPlugin([model(), reload(), context_inspect()]),
+      extension.CommandPlugin([model(), reload(), context_inspect(), compact()]),
       extension.ToolPlugin("", [], ["commands"], []),
     ],
     fn(_) { Ok(Nil) },
@@ -71,32 +71,79 @@ fn model() -> Command {
 fn reload() -> Command {
   Command(
     "/reload",
-    "Reload cached runtime data. The first supported target is models.",
-    [Argument("target", "reload the models.dev catalog", True, ["models"])],
+    "Reload cached runtime data: the models.dev catalog, the session's skills catalog and extension context, or both. A session reload rescans in place — the kernel, its Python namespace, and the prompt cache keep running.",
+    [
+      Argument(
+        "target",
+        "models, session (skills, context, and commands), or omit for both",
+        False,
+        ["models", "session"],
+      ),
+    ],
     False,
     False,
-    fn(_ctx, _caller, args) {
+    fn(ctx: Context, _caller, args) {
       case dict.get(args, "target") {
-        Ok("models") -> {
+        Ok("models") -> models_reload()
+        Ok("session") -> ctx.state(Refresh) |> result.map(Data)
+        Ok(target) ->
+          Error(
+            "unknown reload target " <> target <> "; available: models, session",
+          )
+        Error(_) -> {
           use _ <- result.try(models.reload())
+          use _ <- result.try(ctx.state(Refresh))
           Ok(
             Data(
               json.object([
-                #("reloaded", json.string("models")),
+                #("reloaded", json.string("models+session")),
                 #(
                   "message",
                   json.string(
-                    "Models catalog reloaded. /model now shows the latest list.",
+                    "Models catalog reloaded; extension context, skills catalog, and session commands rescanned.",
                   ),
                 ),
-                #("catalog", json.string(models.path())),
               ]),
             ),
           )
         }
-        Ok(target) ->
-          Error("unknown reload target " <> target <> "; available: models")
-        Error(_) -> Error("reload target is required")
+      }
+    },
+  )
+}
+
+fn models_reload() -> Result(command.Outcome, String) {
+  use _ <- result.try(models.reload())
+  Ok(
+    Data(
+      json.object([
+        #("reloaded", json.string("models")),
+        #(
+          "message",
+          json.string(
+            "Models catalog reloaded. /model now shows the latest list.",
+          ),
+        ),
+        #("catalog", json.string(models.path())),
+      ]),
+    ),
+  )
+}
+
+fn compact() -> Command {
+  Command(
+    "/compact",
+    "Compact this idle session now using its active compaction strategy. The transcript is preserved.",
+    [],
+    False,
+    False,
+    fn(ctx: Context, caller, _args) {
+      case caller {
+        ModelCall ->
+          Error(
+            "compaction is a user action between turns; ask the user to run /compact",
+          )
+        UserCall -> ctx.state(Compact) |> result.map(Data)
       }
     },
   )

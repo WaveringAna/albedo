@@ -109,6 +109,8 @@ pub type Message {
   Commit(String, List(types.Input), String, Subject(Result(Int, String)))
   RecordContext(String, context_snapshot.Snapshot, Subject(Nil))
   RecordUsage(String, usage.Metadata, Subject(Result(Nil, String)))
+  Compact(Subject(Result(json.Json, String)))
+  RefreshData(Subject(Result(json.Json, String)))
   DrainSteering(String, Subject(Result(List(types.Input), String)))
   ReadContext(Subject(json.Json))
   ReadContextPage(String, Int, Subject(Result(json.Json, String)))
@@ -121,7 +123,13 @@ pub type Message {
 }
 
 type Run {
-  Run(id: String, pid: process.Pid, monitor: process.Monitor, cancelled: Bool)
+  Run(
+    id: String,
+    pid: process.Pid,
+    monitor: process.Monitor,
+    cancelled: Bool,
+    compacting: Bool,
+  )
 }
 
 type State {
@@ -325,6 +333,8 @@ fn handle(state: State, message: Message) {
     | ReadContext(..)
     | ReadContextPage(..)
     | ChangeModel(..)
+    | Compact(..)
+    | RefreshData(..)
     | ChangeWorkspace(..)
     | ReadExtensions(..)
     | ChangeExtension(..) -> State(..state, last_touch: now_ms())
@@ -740,6 +750,93 @@ fn handle(state: State, message: Message) {
       }
     }
 
+    RefreshData(reply) -> {
+      case state.run {
+        Some(_) -> {
+          process.send(reply, Error("session must be idle to reload"))
+          actor.continue(state)
+        }
+        None ->
+          case runtime.refresh_session(state.host, state.info.id) {
+            Error(error) -> {
+              process.send(reply, Error(error))
+              actor.continue(state)
+            }
+            Ok(update) -> {
+              let state = case update {
+                Some(kernel) ->
+                  State(
+                    ..state,
+                    kernel: Some(kernel),
+                    latest_usage: None,
+                    context: unprepared(),
+                  )
+                None -> state
+              }
+              process.send(
+                reply,
+                Ok(
+                  json.object([
+                    #("reloaded", json.string("session")),
+                    #(
+                      "message",
+                      json.string(
+                        "Extension context, skills catalog, and session commands rescanned from disk.",
+                      ),
+                    ),
+                  ]),
+                ),
+              )
+              actor.continue(emit(
+                state,
+                view.text("note", "session data reloaded from disk"),
+              ))
+            }
+          }
+      }
+    }
+
+    Compact(reply) -> {
+      let prepared = {
+        use _ <- result.try(case state.run {
+          Some(_) -> Error("session must be idle to compact")
+          None -> Ok(Nil)
+        })
+        use #(state, kernel, client) <- result.try(
+          prepare_submission(state) |> result.map_error(submission_error),
+        )
+        use strategy <- result.try(case runtime.compaction_name(kernel) {
+          Some(strategy) -> Ok(strategy)
+          None -> Error("no compaction strategy is enabled")
+        })
+        use history <- result.try(projected_inputs(state))
+        use _ <- result.try(case history {
+          [] -> Error("no conversation history to compact")
+          _ -> Ok(Nil)
+        })
+        Ok(#(state, kernel, client, strategy, history))
+      }
+      case prepared {
+        Error(error) -> {
+          process.send(reply, Error(error))
+          actor.continue(state)
+        }
+        Ok(#(state, kernel, client, strategy, history)) -> {
+          let state = start_worker(state, kernel, client, history, True)
+          process.send(
+            reply,
+            Ok(
+              json.object([
+                #("started", json.bool(True)),
+                #("strategy", json.string(strategy)),
+                #("message", json.string("Compacting with " <> strategy <> "…")),
+              ]),
+            ),
+          )
+          actor.continue(state)
+        }
+      }
+    }
     Status(reply) -> {
       process.send(
         reply,
@@ -965,6 +1062,26 @@ fn handle(state: State, message: Message) {
             True, _, _ -> emit(state, view.event("interrupted", []))
             _, Error(error), _ -> emit(state, view.text("error", error))
             _, _, Error(error) -> emit(state, view.text("error", error))
+            // Compaction makes no provider request, so the footer's last real
+            // usage is stale; the strategy's own estimate replaces it.
+            _, Ok(_), Ok(_) if run.compacting -> {
+              let state = case context_snapshot.estimate(state.context) {
+                Some(tokens) -> {
+                  let metadata =
+                    usage.Metadata(
+                      state.info.model,
+                      usage.now(),
+                      Some(usage.Tokens(tokens, 0, None)),
+                    )
+                  emit(
+                    State(..state, latest_usage: Some(metadata)),
+                    usage.event(metadata),
+                  )
+                }
+                None -> state
+              }
+              state
+            }
             _, _, _ -> state
           }
           actor.continue(start_queued(state))
@@ -1077,6 +1194,8 @@ fn command_op(
       actor.call(session, 5000, ChangeModel(model, provider, _))
       |> result.map(selection_json)
     command.ContextSummary -> Ok(actor.call(session, 5000, ReadContext))
+    command.Compact -> actor.call(session, 15_000, Compact)
+    command.Refresh -> actor.call(session, 30_000, RefreshData)
     command.ContextPage(section, page) ->
       actor.call(session, 5000, ReadContextPage(section, page, _))
     command.Submit(display, text, client) ->
@@ -1404,6 +1523,16 @@ fn start_run(
   client: types.Client,
   model_history: List(types.Input),
 ) -> State {
+  start_worker(state, kernel, client, model_history, False)
+}
+
+fn start_worker(
+  state: State,
+  kernel: runtime.Session,
+  client: types.Client,
+  model_history: List(types.Input),
+  compacting: Bool,
+) -> State {
   let run_id = new_id()
   let owner = state.self
   let worker =
@@ -1443,11 +1572,25 @@ fn start_run(
     process.spawn(fn() {
       process.send(
         owner,
-        Finished(run_id, loop.run(worker, run_id, model_history, 0)),
+        Finished(run_id, case compacting {
+          True -> loop.compact(worker, model_history)
+          False -> loop.run(worker, run_id, model_history, 0)
+        }),
       )
     })
-  let active = Run(run_id, pid, process.monitor(pid), False)
-  State(..state, run: Some(active), phase: "preparing", context: unprepared())
+  let active = Run(run_id, pid, process.monitor(pid), False, compacting)
+  State(
+    ..state,
+    run: Some(active),
+    phase: case compacting {
+      True -> "compacting"
+      False -> "preparing"
+    },
+    context: case compacting {
+      True -> state.context
+      False -> unprepared()
+    },
+  )
 }
 
 fn raw_inputs(entries: List(transcript.Entry)) -> List(types.Input) {

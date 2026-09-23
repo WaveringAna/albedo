@@ -46,8 +46,10 @@ pub type StateOp {
   ModelGet
   ModelSelect(model: String, provider: Option(String))
   ContextSummary
+  Compact
   ContextPage(section: String, page: Int)
   Submit(display: String, text: String, client: String)
+  Refresh
 }
 
 /// The dispatch context: `state` is the session's registered command bridge.

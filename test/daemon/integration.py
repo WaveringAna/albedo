@@ -118,7 +118,7 @@ def run(protocol, endpoint):
         user_home.mkdir()
         # Catalog refresh is disabled so the suite never reaches the network.
         (home/"extensions.json").write_text(json.dumps({"models": {"refreshHours": 0}}))
-        env = dict(os.environ, HOME=str(user_home), ALBEDO_HOME=str(home))
+        env = dict(os.environ, HOME=str(user_home), ALBEDO_HOME=str(home), ALBEDO_PARENT_PID=str(os.getpid()))
         for obsolete in ("ALBEDO_API_KEY", "ALBEDO_BASE_URL", "ALBEDO_MODEL", "ALBEDO_PROTOCOL"):
             env.pop(obsolete, None)
         connection = None

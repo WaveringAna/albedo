@@ -164,6 +164,93 @@ pub fn run(
   }
 }
 
+/// Force the session's selected strategy without sending an ordinary assistant turn.
+/// The durable transcript remains unchanged; the next request uses the saved projection.
+pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
+  use _ <- result.try(case state.publish(view.event("checkpoint", [])) {
+    True -> Ok(Nil)
+    False -> Error("cancelled")
+  })
+  let request_instructions = instructions <> runtime.instructions(state.kernel)
+  // `inputs` accumulates newest-first; strategies read chronological history.
+  let original = list.reverse(inputs)
+  use history <- result.try(runtime.compact_history_scoped(
+    state.host,
+    state.kernel,
+    state.model,
+    request_source(state.client, state.model),
+    state.client.base_url,
+    request_instructions,
+    summarize(state, _),
+    original,
+  ))
+  state.record_context(types.Request(
+    state.model,
+    Some(request_instructions),
+    history,
+    runtime.tools(state.kernel),
+    None,
+  ))
+  // The projection keeps a verbatim tail, so everything before the shared
+  // suffix is what the strategy's replacement stands in for.
+  let suffix = common_suffix(original, history)
+  let evicted = list.length(inputs) - suffix
+  let _ = case evicted > 0 {
+    True ->
+      state.publish(
+        view.event("compacted", [
+          #("evicted", json.int(evicted)),
+          #(
+            "summary",
+            json.string(
+              display_text(list.take(history, list.length(history) - suffix)),
+            ),
+          ),
+        ]),
+      )
+    False ->
+      state.publish(view.text(
+        "note",
+        "history already fits; nothing new to summarize",
+      ))
+  }
+  Ok(Nil)
+}
+
+fn common_suffix(a: List(types.Input), b: List(types.Input)) -> Int {
+  suffix_length(list.reverse(a), list.reverse(b), 0)
+}
+
+fn suffix_length(a: List(types.Input), b: List(types.Input), n: Int) -> Int {
+  case a, b {
+    [x, ..xs], [y, ..ys] if x == y -> suffix_length(xs, ys, n + 1)
+    _, _ -> n
+  }
+}
+
+fn display_text(items: List(types.Input)) -> String {
+  let text =
+    items
+    |> list.map(fn(input) {
+      case input {
+        types.User(text) -> text
+        types.UserImage(text, _) ->
+          text <> "\n[image omitted from summary view]"
+        types.ToolOutput(id, _) -> "[tool output " <> id <> " omitted]"
+        input ->
+          option.unwrap(
+            view.visible_assistant_text(input),
+            "[assistant tool call omitted]",
+          )
+      }
+    })
+    |> string.join("\n\n")
+  case string.length(text) > 20_000 {
+    True -> string.slice(text, 0, 20_000) <> "\n[remainder omitted]"
+    False -> text
+  }
+}
+
 /// Reissue transient transport and gateway failures. A failed attempt has no committed output
 /// or tool effects; discard its live previews before forwarding the next attempt.
 fn stream_with_retries(

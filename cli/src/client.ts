@@ -20,7 +20,7 @@ export interface StreamOptions {
   onEvent: (event: StreamEvent) => void
 }
 
-export type AgentPhase = "resting" | "preparing" | "reasoning" | "tool" | "waiting"
+export type AgentPhase = "resting" | "preparing" | "reasoning" | "tool" | "waiting" | "compacting"
 export type AgentStatus = { running: boolean; idle: boolean; phase?: AgentPhase }
 export type WorkspaceUpdate = { workspace: string }
 
@@ -60,6 +60,8 @@ type UnknownEvent = {
   cacheWriteTokens?: unknown
   completionTokens?: unknown
   totalTokens?: unknown
+  evicted?: unknown
+  summary?: unknown
   image?: unknown
   elapsedMs?: unknown
   tokensPerSecond?: unknown
@@ -152,6 +154,12 @@ const toEvent = (raw: unknown): StreamEvent | null => {
       elapsedMs: typeof event.elapsedMs === "number" ? event.elapsedMs : undefined,
       tokensPerSecond: typeof event.tokensPerSecond === "number" ? event.tokensPerSecond : undefined,
     }
+  }
+
+  if (event.type === "compacted" && typeof event.evicted === "number"
+      && Number.isSafeInteger(event.evicted) && event.evicted >= 0 && event.evicted <= 1_000_000
+      && typeof event.summary === "string" && event.summary.length <= 60_000) {
+    return { type: "compacted", evicted: event.evicted, summary: event.summary }
   }
 
   if (typeof event.text === "string") {
