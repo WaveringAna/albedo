@@ -10,7 +10,7 @@ pub fn extension() -> harness_extension.Extension {
     ["python"],
     [
       harness_extension.ToolPlugin(
-        "work.list/get/create/update/delete are async; use await. Humans and agents share this revision-checked work ledger. Keep execution status separate from work status.",
+        "Humans and agents share this revision-checked work ledger; every call is async. await work.list(after=0, limit=50), work.get(id), work.create(title, notes=\"\", parent=None), work.update(id, revision=, title=, notes=, status=), and work.delete(id, revision=) return plain dicts (item[\"id\"], item[\"revision\"], item[\"status\"]). Status is open, active, blocked, done, or cancelled. Pass the revision you last read; a stale one raises WorkError, so get the item again. Keep execution status separate from work status. People manage the same ledger with /work, and their changes reach you as notes.",
         [],
         ["work"],
         [#("work", fn(store, _, request) { rpc.handle(store, request) })],

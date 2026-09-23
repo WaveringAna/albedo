@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from albedo_api import Host, PythonApi
 from typing import TypedDict, cast
 

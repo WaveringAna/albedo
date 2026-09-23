@@ -397,10 +397,11 @@ pub fn context_block(commands: List(Command)) -> String {
         |> string.join("\n")
       "Session commands are exposed through the async `commands` object. Every"
       <> " model-callable command is a typed method (commands.<method>(...));"
-      <> " commands.catalog() lists the immutable catalog with argument details, and"
+      <> " commands.catalog() lists the current catalog with argument details, and"
       <> " help(commands.<method>) shows one command's help. commands.invoke(name, arguments)"
-      <> " runs any model-callable command by its slash name. Invoking a command returns data"
-      <> " and never submits a turn.\n<session_commands>\n"
+      <> " runs any model-callable command by its slash name, including one added by a"
+      <> " session reload after the kernel started. Invoking a command returns data and never"
+      <> " submits a turn; a refusal raises CommandsError.\n<session_commands>\n"
       <> rows
       <> "\n</session_commands>"
     }

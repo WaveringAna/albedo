@@ -86,7 +86,7 @@ pub fn extension() -> extension.Extension {
     [],
     [
       extension.ToolPlugin(
-        "Python has a persistent namespace, top-level await, cells.read/info/trace and cells.run for saved-source repair, and output.read/output.list for bounded retained output. output.list() names every retained channel: cells, background jobs, and 'native' for bytes written to fd 1/2 while no cell was running.",
+        "Python has a persistent namespace, top-level await, cells.read/info/trace and cells.run for saved-source repair (all async), and output.read/output.list for bounded retained output (synchronous). cells.last_id is the id of the latest cell. output.read(id, offset=0, limit=4000) returns up to limit characters. output.list() names every retained channel, which is also how to find earlier cells: cells, background jobs, and 'native' for bytes written to fd 1/2 while no cell was running.",
         [extension.Tool(definition(), invoke, recover)],
         [],
         [#("cells", cells.handle)],
