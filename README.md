@@ -3,16 +3,54 @@
 small gleam coding and (not yet) persistent agent daemon with a detachable cli
 
 - python repl and bash.
-- cli for now is ink based 
+- native go cli using charm (bubbletea, lipgloss, bubbles)
+
+```sh
+# build native go cli
+go -C cli build -o bin/albedo ./cmd/albedo
+./cli/bin/albedo
+
+# or to install it globally
+go -C cli install ./cmd/albedo
+albedo
+```
+
+when installed globally outside the checkout, set `ALBEDO_ROOT` to the absolute repo path if the daemon needs to be started:
+```sh
+ALBEDO_ROOT=/path/to/albedo albedo
+```
+`ALBEDO_ROOT` is only needed when the installed binary needs to launch the daemon from outside the repo tree; the local binary (`./cli/bin/albedo`) discovers the repo root automatically from its file path. you can also embed the root at build/install time if preferred:
+```sh
+go -C cli install -ldflags "-X main.buildRoot=$(pwd)" ./cmd/albedo
+```
+
+nix package (includes the compiled daemon and python runtime):
+
+```sh
+nix build .#albedo
+nix run . -- --help
+# package checks, with a local mock provider (no model credentials):
+python3 test/manual/nix_package_smoke.py "$PWD/result/bin/albedo"
+ALBEDO_NO_BROWSER=1 ALBEDO_TEST_BINARY="$PWD/result/bin/albedo" python3 test/daemon/integration.py
+```
+
+while the nix files are untracked, use `nix build path:.#albedo` and
+`nix run path:. -- --help` so nix includes them.
+
+`default.nix` is also available through `pkgs.callPackage ./default.nix { }`.
+no checkout or gleam compiler is needed at runtime. `ALBEDO_DAEMON` can override
+the packaged daemon with an absolute executable path.
+
+legacy typescript reference (kept for parity testing):
 
 ```sh
 npm --prefix cli install
-node cli/bin/albedo.mjs
+# ALBEDO_USE_TS=1 forces the launcher to use the TypeScript reference instead of native binary
+ALBEDO_USE_TS=1 node cli/bin/albedo.mjs
 
-# or to install it globally
-
+# or to install it globally via npm
 npm install -g ./cli
-albedo
+ALBEDO_USE_TS=1 albedo
 ```
 
 optional: `view`, which lets the model see its changes and code as highlighted
@@ -25,12 +63,44 @@ native/render/install.sh   # then enable `view` in /extensions
 tests
 
 ```sh
-./test.sh          # gleam, cli, and daemon suites
-gleam test         # gleam suite plus the python harnesses that hold no build lock
+./test.sh               # gleam, native go cli, and daemon suites
+go -C cli test ./...    # native go cli tests
+go -C cli vet ./...     # native go cli vet
+gleam test              # gleam suite plus the python harnesses that hold no build lock
 ```
+
+manual comparisons and performance tools:
 
 `test/manual` is opt-in: those benchmarks need a provider, a PTY, or artifacts
 from an earlier run.
+
+ui checks are manual: real terminal screenshots and interaction walkthroughs,
+not ui unit or golden tests. the capture tool uses isolated fake providers and
+writes PNGs, terminal recordings, and capture metadata under
+`/tmp/albedo-visual-parity/atlas`.
+
+```sh
+# paired TS/Go screenshots (Pillow via uv; npm dependencies from cli)
+uv run --no-project --script cli/test/manual/visual_parity.py --help
+
+# standalone PTY smoke and parity verification
+ALBEDO_NO_BROWSER=1 python3 test/manual/go_port_smoke.py
+
+# 120Hz scrollback performance and timing evaluation
+ALBEDO_NO_BROWSER=1 python3 test/manual/go_scroll_perf.py
+
+# native heap and runtime memory attribution profile
+ALBEDO_NO_BROWSER=1 python3 test/manual/go_memory_profile.py
+```
+
+### memory policy & bounds
+
+the native go cli bounds transcript and scrollback memory (process RSS and go runtime allocations are not hard-capped; history accounting measures payload bytes and excludes runtime/object overhead):
+- **raw history retention**: capped at 500 entries or 2 MiB payload bytes.
+- **rendered scrollback**: capped at 1,000 lines or 256 KiB in terminal memory.
+- **scrollback trimming**: older visible lines are trimmed with a notice banner (`[X scrollback lines truncated]`); daemon durable history remains completely intact in SQLite.
+- **live streaming segmentation**: active text chunks segment at 64 KiB (`MaxLiveStreamBytes`) before settling into history blocks to avoid unbounded live chunk buffers.
+- **renderer scheduling**: Bubble Tea runs with `tea.WithFPS(120)` render scheduling budget; this represents the engine frame budget and is distinct from physical display refresh rate.
 
 todo
 - [] flesh out plugin system more

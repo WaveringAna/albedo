@@ -7,6 +7,7 @@
 # a PTY, or artifacts from an earlier benchmark run.
 set -euo pipefail
 cd "$(dirname "$0")"
+export ALBEDO_NO_BROWSER=1
 
 gleam format --check src test
 cargo test --release --locked --manifest-path native/render/Cargo.toml
@@ -21,6 +22,11 @@ python3 test/harness/trace_test.py
 python3 test/harness/job_wake_test.py
 python3 test/harness/remote_kernel_test.py
 python3 test/harness/remote_plugin_test.py
+
+if [ -f cli/go.mod ]; then
+  (cd cli && go vet ./...)
+  (cd cli && go test ./...)
+fi
 
 [ -d cli/node_modules ] || npm --prefix cli install
 npm --prefix cli run typecheck

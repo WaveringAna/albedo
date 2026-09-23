@@ -123,7 +123,9 @@ def run(protocol, endpoint):
             env.pop(obsolete, None)
         connection = None
         def command(*args):
-            return subprocess.run(["node", "cli/bin/albedo.mjs", *args], cwd=ROOT, env=env, text=True, capture_output=True, timeout=45)
+            binary = os.environ.get("ALBEDO_TEST_BINARY")
+            argv = [binary, *args] if binary else ["node", "cli/bin/albedo.mjs", *args]
+            return subprocess.run(argv, cwd=workspace if binary else ROOT, env=env, text=True, capture_output=True, timeout=45)
         def cli(*args):
             result = command(*args)
             assert result.returncode == 0, result.stdout + result.stderr + ((home/"daemon.log").read_text() if (home/"daemon.log").exists() else "")

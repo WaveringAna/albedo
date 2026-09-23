@@ -13,3 +13,4 @@ __pycache__/
 
 /native/render/target/
 /priv/bin/
+/cli/bin/albedo
