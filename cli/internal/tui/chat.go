@@ -1768,8 +1768,7 @@ func (m ChatModel) renderFooter() string {
 	right := "ctx " + context + " · cached " + cache
 	compact := context + " · " + cache
 	candidates := [][2]string{
-		{"/ commands · drag to copy · ctrl+j diffs · ctrl+k summary · " + modes, right},
-		{"/ commands · drag to copy · ctrl+k summary · " + modes, right},
+		{"/ commands · drag to copy · ctrl+j diffs · " + modes, right},
 		{"/ commands · drag to copy · " + modes, right},
 		{"/ commands · ctrl+j diffs · " + brief, compact},
 		{"/ commands · drag copy · " + brief, compact},

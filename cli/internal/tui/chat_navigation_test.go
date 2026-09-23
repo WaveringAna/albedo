@@ -70,6 +70,24 @@ func TestFragmentedThinkingStaysCollapsed(t *testing.T) {
 	}
 }
 
+func TestCompactionHintLivesOnEventNotFooter(t *testing.T) {
+	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m.SetSize(120, 35)
+	if strings.Contains(m.View(), "ctrl+k") {
+		t.Fatal("footer advertises compaction shortcut without an event")
+	}
+	entry := HistoryEntry{Kind: EntryCompacted, Evicted: 12, Text: "summary"}
+	for _, flags := range []DisplayFlags{{}, {Compaction: true}} {
+		want := "ctrl+k view summary"
+		if flags.Compaction {
+			want = "ctrl+k hide summary"
+		}
+		if rendered := m.Renderer.RenderEntry(entry, flags, m.Viewport.Width); !strings.Contains(rendered, want) {
+			t.Fatalf("compaction event missing %q: %q", want, rendered)
+		}
+	}
+}
+
 func TestCompactTranscriptEntries(t *testing.T) {
 	r := NewTranscriptRenderer()
 	flags := DisplayFlags{}
