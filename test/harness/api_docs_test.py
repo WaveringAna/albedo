@@ -37,7 +37,7 @@ def namespace() -> dict[str, object]:
 
     api = PythonApi(loop, host, RuntimeError, None, 100, lambda e: None, lambda c: None, lambda _: None)
     bindings = {"cells": kernel.Cells(), "output": kernel.Output(), "show_image": kernel.show_image}
-    for name in ["bash", "work", "files", "skills", "commands", "remote"]:
+    for name in ["bash", "work", "files", "skills", "commands", "remote", "view"]:
         result = importlib.import_module("albedo_plugins." + name).setup(api)
         bindings.update(loop.run_until_complete(result) if inspect.isawaitable(result) else result)
     loop.close()

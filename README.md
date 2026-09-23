@@ -15,6 +15,13 @@ npm install -g ./cli
 albedo
 ```
 
+optional: `view_code`, which lets the model see code as highlighted images for
+a final review pass. needs cargo.
+
+```sh
+native/render/install.sh   # then enable `view` in /extensions
+```
+
 tests
 
 ```sh

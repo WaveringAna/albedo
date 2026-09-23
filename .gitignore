@@ -10,3 +10,6 @@ __pycache__/
 .makima/
 
 .DS_Store
+
+/native/render/target/
+/priv/bin/

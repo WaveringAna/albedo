@@ -36,3 +36,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## JetBrains Mono
+
+`native/render/fonts/JetBrainsMonoNL-Medium.ttf` is JetBrains Mono 2.304,
+bundled unmodified into `albedo-render` to draw code for `files.view_code`.
+Copyright 2020 The JetBrains Mono Project Authors
+(https://github.com/JetBrains/JetBrainsMono). It is licensed under the SIL Open
+Font License, Version 1.1, whose full text sits beside the font in
+`native/render/fonts/JetBrainsMono-OFL.txt`.
+
+## arborium
+
+`albedo-render` links arborium (https://github.com/bearcove/arborium),
+MIT OR Apache-2.0, and the tree-sitter grammars its enabled `lang-*` features
+compile in, each under its own upstream license. They are fetched by Cargo,
+not vendored here; `native/render/Cargo.lock` pins their versions.

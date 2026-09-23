@@ -1,5 +1,6 @@
 //// Images a cell returns reach the model beside its tool result.
 
+import albedo/harness/extensions
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/loop
 import albedo/harness/runtime
@@ -47,6 +48,47 @@ pub fn a_shown_image_returns_with_the_result_and_survives_recovery_test() {
   runtime.recover(host, session, shown)
   |> should.equal(types.ToolOutput("shown", text, [image]))
   runtime.stop(host)
+}
+
+pub fn view_code_returns_rendered_pages_as_images_test() {
+  let defaults = extensions.defaults()
+  let assert Ok(host) =
+    runtime.start_with_config(
+      ":memory:",
+      extensions.Config(..defaults, default_enabled: [
+        "view",
+        ..defaults.default_enabled
+      ]),
+    )
+  let assert Ok(session) = runtime.open_session(host, "a", "/tmp")
+  let code =
+    "import os, tempfile\n"
+    <> "sample = tempfile.NamedTemporaryFile('w', suffix='.py', delete=False)\n"
+    <> "sample.write('def answer():\\n    return 42\\n')\n"
+    <> "sample.close()\n"
+    <> "shown = await view_code(sample.name, 1, 2)\n"
+    <> "os.unlink(sample.name)\n"
+    <> "shown"
+  let assert Ok(types.ToolOutput(_, text, [page])) =
+    runtime.invoke(host, session, call("view", code))
+  let #(mime, _, width, height, _) = types.image_parts(page)
+  #(mime, width > height) |> should.equal(#("image/png", True))
+  field(text, "value") |> string.contains("(python)") |> should.be_true
+  field(text, "value")
+  |> string.contains("image 1: lines 1-2, ")
+  |> should.be_true
+  runtime.stop(host)
+}
+
+pub fn view_is_installed_but_off_until_a_session_enables_it_test() {
+  let defaults = extensions.defaults()
+  let installed =
+    list.map(defaults.extensions, fn(extension) { extension.name })
+  #(
+    list.contains(installed, "view"),
+    list.contains(defaults.default_enabled, "view"),
+  )
+  |> should.equal(#(True, False))
 }
 
 pub fn an_unreadable_image_is_reported_in_the_text_not_sent_test() {

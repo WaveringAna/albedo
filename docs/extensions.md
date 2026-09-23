@@ -1,6 +1,6 @@
 # extensions
 
-an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, or compaction plugins. `python`, `bash`, `work`, `files`, `commands`, `skills`, `rolling`, and `remote` are enabled by default; `mcp` is installed and disabled until a session enables it. plugin contributions compose inside them.
+an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, or compaction plugins. `python`, `bash`, `work`, `files`, `commands`, `skills`, `rolling`, and `remote` are enabled by default; `mcp` and `view` are installed and disabled until a session enables them. plugin contributions compose inside them.
 
 ## select extensions
 
@@ -77,6 +77,14 @@ interfaces: [`PythonApi`](../priv/python/albedo_api.py), [`work`](../src/albedo/
 ## bash
 
 `bash(command)` starts a supervised job that owns its process group; output stays on the handle (`job.tail()`, `output.read(job.id)`) and finished handles stay addressable in `jobs`. a job that finishes with its result unread wakes the session: the kernel reports the completion through the `jobs` host route, and the session submits a user turn naming the job, its exit, and how to read it, so the model never polls or awaits a handle just to learn it finished. awaiting the job, reading its result, or stopping it retires the wake. a busy session is retried, not queued in gleam: the kernel retries the notice until the run ends or the result is read. live jobs pin the kernel against the idle sweep — a detached session is not released while background work still runs, local or remote, because releasing it would kill the job and the wake it owes. remote `bash` jobs wake the same way — the remote kernel's host calls relay over the ssh connection into this session's route, and the notice names the host — and a mirror read (`rem_job.tail()`) tells the remote job it was read through one `poll` round trip.
+
+## view
+
+optional. `await view_code(path, start_line=1, end_line=None, *, columns=79)` renders a range as syntax-highlighted PNG pages and returns them with the cell's result (see [images in tool results](#images-in-tool-results)). its instructions ask the model for a final review pass before it reports code work as done: view each changed region, check it against the surrounding style, for repetition an existing helper should carry, and for leftovers, fix, and view again.
+
+the whole file is highlighted, so a range starting inside a comment or string is colored correctly. lines wrap at `columns`, tabs expand to 4, wide characters take two cells. up to 4 pages of about 80 rows, split evenly at line boundaries; the returned text names each page's lines and the call that continues.
+
+rendering is `albedo-render`, a rust binary in `native/render` (arborium's tree-sitter grammars, bundled JetBrains Mono), run as a supervised `bash` job. `native/render/install.sh` builds it into `priv/bin`; `PATH` also works. a language without a compiled-in grammar renders unhighlighted.
 
 ## work
 

@@ -9,10 +9,13 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 gleam format --check src test
+cargo test --release --locked --manifest-path native/render/Cargo.toml
+native/render/install.sh
 gleam test
 python3 test/harness/python_plugin_test.py
 python3 test/harness/commands_plugin_test.py
 python3 test/harness/files_plugin_test.py
+python3 test/harness/view_plugin_test.py
 python3 test/harness/api_docs_test.py
 python3 test/harness/trace_test.py
 python3 test/harness/job_wake_test.py

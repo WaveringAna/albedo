@@ -11,6 +11,7 @@ import albedo/harness/extensions/python/extension as python
 import albedo/harness/extensions/remote/extension as remote
 import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/extensions/skills/extension as skills
+import albedo/harness/extensions/view/extension as view
 import albedo/harness/extensions/work/extension as work
 
 pub type Config {
@@ -33,6 +34,7 @@ pub fn defaults() -> Config {
       rolling.extension(),
       mcp.configured_extension(),
       remote.extension(),
+      view.extension(),
     ],
     [
       "python", "bash", "work", "files", "instructions", "commands", "skills",

@@ -68,12 +68,13 @@ class Rows(ReadyList):
 
 
 class Search:
-    """A search that runs a supervised job, so its rows exist only once awaited.
+    """Work that runs a supervised job, so its result exists only once awaited.
     Using it without `await` explains that instead of printing a coroutine."""
 
-    def __init__(self, name: str, run: Callable[[], Awaitable[Rows]]) -> None:
-        self._name = name
+    def __init__(self, call: str, run: Callable[[], Awaitable[Rows]], result: str = "rows") -> None:
+        self._call = call
         self._run = run
+        self._result = result
 
     def __await__(self) -> Generator[object, None, Rows]:
         return self._run().__await__()
@@ -85,14 +86,14 @@ class Search:
             rows = await self._run()
             picked = rows[index]  # type: ignore[index]
             return Rows(picked, truncated=rows.truncated) if isinstance(index, slice) else picked
-        return Search(self._name, run)  # type: ignore[arg-type]
+        return Search(self._call, run, self._result)  # type: ignore[arg-type]
 
     def _unawaited(self) -> TypeError:
-        return TypeError(f"files.{self._name}(...) searches in the background; "
-                         f"use `await files.{self._name}(...)` to get its rows")
+        return TypeError(f"{self._call}(...) runs in the background; "
+                         f"use `await {self._call}(...)` to get its {self._result}")
 
     def __repr__(self) -> str:
-        return f"<files.{self._name}(...) has not run: use `await files.{self._name}(...)` for its rows>"
+        return f"<{self._call}(...) has not run: use `await {self._call}(...)` for its {self._result}>"
 
     __str__ = __repr__
 
@@ -191,8 +192,8 @@ class Files:
         match. Await it: `await files.find(pattern)`."""
         if not 0 <= context <= 50:
             raise ValueError("0 <= context <= 50")
-        return Search("find", lambda: self._find(pattern, path, glob, context, max_results,
-                                                 literal, case_sensitive, hidden))
+        return Search("files.find", lambda: self._find(pattern, path, glob, context, max_results,
+                                                       literal, case_sensitive, hidden))
 
     async def _find(self, pattern: str, path: str | Sequence[str], glob: str | Sequence[str] | None,
                     context: int, max_results: int, literal: bool, case_sensitive: bool | None,
@@ -243,7 +244,7 @@ class Files:
         """File names, not contents; the same ripgrep-or-Python split. A pattern
         with *, ? or [ is a glob over names; other text matches anywhere in the path.
         Await it: `await files.paths(pattern)`."""
-        return Search("paths", lambda: self._paths(pattern, path, glob, max_results, hidden))
+        return Search("files.paths", lambda: self._paths(pattern, path, glob, max_results, hidden))
 
     async def _paths(self, pattern: str | None, path: str, glob: str | None,
                      max_results: int, hidden: bool) -> Rows:

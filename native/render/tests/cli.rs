@@ -1,0 +1,152 @@
+//! The binary as albedo calls it: a file in, PNG pages and a text report out.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Scratch {
+        let dir = std::env::temp_dir().join(format!("albedo-render-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Scratch(dir)
+    }
+
+    fn file(&self, name: &str, content: &[u8]) -> PathBuf {
+        let path = self.0.join(name);
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn render(file: &Path, out: &Path, args: &[&str]) -> (bool, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_albedo-render"))
+        .arg(file)
+        .arg("--out")
+        .arg(out)
+        .args(args)
+        .output()
+        .unwrap();
+    let text = |bytes: Vec<u8>| String::from_utf8(bytes).unwrap();
+    (
+        output.status.success(),
+        text(output.stdout),
+        text(output.stderr),
+    )
+}
+
+fn png_size(path: &Path) -> (u32, u32) {
+    let bytes = std::fs::read(path).unwrap();
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    let field = |at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
+    (field(16), field(20))
+}
+
+#[test]
+fn a_range_becomes_pages_and_a_report() {
+    let scratch = Scratch::new("pages");
+    let source: String = (1..=300)
+        .map(|n| format!("let value_{n} = {n};\n"))
+        .collect();
+    let file = scratch.file("sample.rs", source.as_bytes());
+    let (ok, report, _) = render(
+        &file,
+        &scratch.0,
+        &[
+            "--start",
+            "11",
+            "--end",
+            "400",
+            "--max-rows",
+            "50",
+            "--max-images",
+            "2",
+        ],
+    );
+    assert!(ok);
+    let lines: Vec<&str> = report.lines().collect();
+    assert_eq!(lines[0], "language rust");
+    // 290 rows need 6 pages of at most 50; each holds 49, and two are drawn.
+    let first = scratch.0.join("view-1.png");
+    let (width, height) = png_size(&first);
+    assert_eq!(
+        lines[1],
+        format!("image {} 11 59 {width}x{height}", first.display())
+    );
+    let second = scratch.0.join("view-2.png");
+    assert_eq!(png_size(&second), (width, height));
+    assert_eq!(
+        lines[2],
+        format!("image {} 60 108 {width}x{height}", second.display())
+    );
+    assert_eq!(lines[3], "remaining 109 300");
+    assert_eq!(lines.len(), 4);
+}
+
+#[test]
+fn keywords_are_colored_and_unknown_files_render_plain() {
+    let scratch = Scratch::new("colors");
+    let rust = scratch.file("a.rs", b"fn main() {}\n");
+    let text = scratch.file("a.unknown", b"fn main() {}\n");
+    let (_, report, _) = render(&rust, &scratch.0, &["--start", "1", "--end", "1"]);
+    assert_eq!(report.lines().next(), Some("language rust"));
+    let colored = std::fs::read(scratch.0.join("view-1.png")).unwrap();
+    let (_, report, _) = render(&text, &scratch.0, &["--start", "1", "--end", "1"]);
+    assert_eq!(
+        report.lines().next(),
+        Some("language plain unknown file type")
+    );
+    let plain = std::fs::read(scratch.0.join("view-1.png")).unwrap();
+    assert_ne!(colored, plain);
+    let (_, report, _) = render(
+        &text,
+        &scratch.0,
+        &["--start", "1", "--end", "1", "--language", "cobol"],
+    );
+    assert_eq!(
+        report.lines().next(),
+        Some("language plain no grammar for cobol")
+    );
+}
+
+#[test]
+fn bad_requests_fail_with_a_reason() {
+    let scratch = Scratch::new("errors");
+    let file = scratch.file("a.py", b"x = 1\n");
+    let binary = scratch.file("a.bin", b"\x00\x01\x02");
+    for (target, args, reason) in [
+        (
+            &file,
+            vec!["--start", "5", "--end", "6"],
+            "has 1 lines; --start 5 is past the end",
+        ),
+        (
+            &file,
+            vec!["--start", "3", "--end", "2"],
+            "--end 2 is before --start 3",
+        ),
+        (
+            &file,
+            vec!["--start", "1"],
+            "--start and --end are required",
+        ),
+        (
+            &file,
+            vec!["--start", "1", "--end", "1", "--columns", "5"],
+            "--columns must be an integer from 20 to 400",
+        ),
+        (&binary, vec!["--start", "1", "--end", "1"], "looks binary"),
+    ] {
+        let (ok, report, error) = render(target, &scratch.0, &args);
+        assert!(!ok, "{args:?} succeeded");
+        assert_eq!(report, "");
+        assert!(error.contains(reason), "{error:?} lacks {reason:?}");
+    }
+}

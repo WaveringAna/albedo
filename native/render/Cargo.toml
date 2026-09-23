@@ -1,0 +1,32 @@
+[package]
+name = "albedo-render"
+version = "0.1.0"
+edition = "2024"
+description = "Renders a highlighted range of a source file to PNG for albedo's files.view_code"
+license = "WTFPL"
+publish = false
+
+[dependencies]
+arborium-highlight = "2.18.2"
+arborium-theme = "2.18.2"
+fontdue = "0.9.4"
+png = "0.18.1"
+unicode-width = "0.2.2"
+
+# Grammars are compiled in; a file in any other language renders unhighlighted.
+[dependencies.arborium]
+version = "2.18.2"
+features = [
+    "lang-bash", "lang-c", "lang-c-sharp", "lang-clojure", "lang-cmake", "lang-cpp",
+    "lang-css", "lang-dart", "lang-diff", "lang-dockerfile", "lang-elixir", "lang-erlang",
+    "lang-fish", "lang-gleam", "lang-go", "lang-haskell", "lang-hcl", "lang-html",
+    "lang-ini", "lang-java", "lang-javascript", "lang-json", "lang-just", "lang-kotlin",
+    "lang-lua", "lang-make", "lang-markdown", "lang-nix", "lang-ocaml", "lang-php",
+    "lang-proto", "lang-python", "lang-ruby", "lang-rust", "lang-scala", "lang-scss",
+    "lang-sql", "lang-svelte", "lang-swift", "lang-toml", "lang-tsx", "lang-typescript",
+    "lang-vue", "lang-xml", "lang-yaml", "lang-zig", "lang-zsh",
+]
+
+[profile.release]
+lto = "thin"
+strip = true
