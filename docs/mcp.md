@@ -33,7 +33,7 @@ Servers live in the `mcp` section of `$ALBEDO_HOME/extensions.json` (default `~/
 
 Secrets are named, never inlined: every `env` value and HTTP header reads one process environment variable of the daemon, and a missing variable fails preparation instead of connecting without it. `enabled`, `enabledTools`, `disabledTools`, `startupTimeoutMs`, and `callTimeoutMs` are optional.
 
-A stdio server is launched as an exact executable and argument vector through Albedo's own launcher, with no shell, a scoped working directory, discarded server stderr, and an environment reduced to `HOME`, `PATH`, `TMPDIR`, and the values you named. An HTTP server must be `https`, or `http` on the loopback host; credentials are bound to that endpoint, and URLs carrying userinfo or a fragment are rejected.
+A stdio server is launched as an exact executable and argument vector through Albedo's own launcher, with no shell, a scoped working directory, discarded server stderr, and an environment reduced to `HOME`, `PATH`, `TMPDIR`, and the values you named. HTTP servers may use `https` or `http`, including trusted LAN and tailnet addresses. Plain HTTP provides no transport encryption by itself: use it only on a network you trust (a tailnet encrypts its own traffic). Credentials are sent to the configured endpoint, so verify its address before adding auth. URLs carrying userinfo or a fragment are rejected.
 
 ## Tools and lifecycle
 

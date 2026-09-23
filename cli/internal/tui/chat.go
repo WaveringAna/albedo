@@ -1082,7 +1082,7 @@ func (m *ChatModel) isRecognizedCommand(input string) bool {
 	switch token {
 	case "/a", "/agents", "/sessions", "/q", "/quit", "/exit", "/new", "/model", "/extensions",
 		"/plugins", "/tree", "/context", "/t", "/thinking", "/v", "/verbose",
-		"/status", "/login", "/mouse":
+		"/status", "/login", "/mouse", "/skills", "/instructions", "/mcp":
 		return true
 	}
 	for _, cmd := range m.CommandMenu.Catalog {
@@ -1164,6 +1164,9 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 			Text: statusText,
 		})
 		m.refreshViewportContent()
+	case trimmed == "/skills" || trimmed == "/instructions" || trimmed == "/mcp":
+		kind := strings.TrimPrefix(trimmed, "/")
+		*cmds = append(*cmds, func() tea.Msg { return ChatOpenCapabilityPageMsg{Kind: kind} })
 	case strings.HasPrefix(trimmed, "/login"):
 		name := strings.TrimSpace(strings.TrimPrefix(trimmed, "/login"))
 		*cmds = append(*cmds, func() tea.Msg { return ChatOpenLoginMsg{Name: name} })
@@ -1701,7 +1704,16 @@ func (m ChatModel) composerView() string {
 	if cursor+1 < end {
 		after = string(shown[cursor+1 : end])
 	}
+	if value == "" && m.waitingForInput() {
+		after = m.Styles.Faint.Render(ansi.Truncate("waiting for user input", max(0, columns-1), "…"))
+	}
 	return m.Styles.PromptBright.Render("› ") + before + lipgloss.NewStyle().Reverse(true).Render(block) + after
+}
+
+// waitingForInput reports an opened session with no turn in flight, so an
+// empty composer reads as the agent's cue rather than a stalled turn.
+func (m ChatModel) waitingForInput() bool {
+	return m.Status.Phase != nil && !m.animating() && m.WorkspaceRecovery == nil
 }
 
 func (m ChatModel) renderGlances() string {

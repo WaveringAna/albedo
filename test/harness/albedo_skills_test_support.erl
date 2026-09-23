@@ -1,5 +1,5 @@
 -module(albedo_skills_test_support).
--export([fixture/0, write/3, write_repeat/4, symlink/3, symlink_raw/3, replace_with_symlink/3, exists/2, serve_once/1, cleanup/1]).
+-export([fixture/0, write/3, write_repeat/4, symlink/3, symlink_raw/3, replace_with_symlink/3, exists/2, serve_once/1, chmod/3, cleanup/1]).
 
 fixture() ->
     Root = filename:join("/tmp", "albedo-skills-" ++ integer_to_list(erlang:system_time(nanosecond)) ++ "-" ++ integer_to_list(erlang:unique_integer([positive]))),
@@ -61,6 +61,10 @@ serve_once(Body0) ->
         gen_tcp:close(Listener)
     end),
     iolist_to_binary(io_lib:format("http://127.0.0.1:~B/models.json", [Port])).
+
+chmod(Base, Relative, Mode) ->
+    ok = file:change_mode(filename:join(text(Base), text(Relative)), Mode),
+    nil.
 
 cleanup(Root) ->
     _ = file:del_dir_r(Root),

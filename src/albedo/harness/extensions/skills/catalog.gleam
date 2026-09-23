@@ -79,6 +79,13 @@ pub fn scan_at(workspace: String, home: String) -> Result(Catalog, String) {
   ))
 }
 
+pub fn only(catalog: Catalog, names: List(String)) -> Catalog {
+  Catalog(
+    list.filter(catalog.skills, fn(skill) { list.contains(names, skill.name) }),
+    catalog.diagnostics,
+  )
+}
+
 pub fn commands(catalog: Catalog) -> List(Command) {
   list.map(catalog.skills, fn(skill) {
     Command(skill.name, skill.description, command_name(skill.name), skill.path)

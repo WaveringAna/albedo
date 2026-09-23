@@ -1,23 +1,25 @@
 -module(albedo_mcp).
 
--export([prepare/1, definitions/1, context/1, call/3, close/1]).
+-export([prepare/1, prepare/2, definitions/1, context/1, call/3, close/1, url_allowed/1]).
 
 -define(DEFAULT_STARTUP_MS, 20000).
 -define(DEFAULT_CALL_MS, 60000).
 -define(CLOSE_MS, 2500).
 -define(SAFE_ENV, ["HOME", "PATH", "TMPDIR", "TEMP", "TMP", "SystemRoot", "WINDIR"]).
 
-prepare(ConfigJson) ->
+prepare(ConfigJson) -> prepare(ConfigJson, undefined).
+
+prepare(ConfigJson, Session) ->
     try
         Config = json:decode(ConfigJson),
         Servers = maps:get(<<"servers">>, Config, #{}),
         true = is_map(Servers),
-        open_servers(lists:sort(maps:to_list(Servers)), [])
+        open_servers(lists:sort(maps:to_list(Servers)), [], Session)
     catch
         _:_ -> {error, <<"MCP configuration is invalid">>}
     end.
 
-open_servers([], Opened) ->
+open_servers([], Opened, _) ->
     Servers = lists:reverse(Opened),
     case catalogue(Servers) of
         {ok, Operations, Context} ->
@@ -26,22 +28,38 @@ open_servers([], Opened) ->
             close_servers(Servers),
             {error, Reason}
     end;
-open_servers([{Name, Config} | Rest], Opened) ->
-    case maps:get(<<"enabled">>, Config, true) of
-        false -> open_servers(Rest, Opened);
-        true ->
+open_servers([{Name, Config} | Rest], Opened, Session) ->
+    Selected = case Session of
+        undefined -> {ok, true};
+        _ -> albedo_capabilities:enabled(albedo_extension_settings:home(), Session, <<"mcp">>, Name)
+    end,
+    case {maps:get(<<"enabled">>, Config, true), Selected} of
+        {false, _} -> open_servers(Rest, Opened, Session);
+        {_, {ok, false}} -> open_servers(Rest, Opened, Session);
+        {true, {ok, true}} ->
             case open_server(Name, Config) of
-                {ok, Server} -> open_servers(Rest, [Server | Opened]);
+                {ok, Server} -> open_servers(Rest, [Server | Opened], Session);
                 {error, Reason} ->
                     close_servers(Opened),
                     {error, Reason}
-            end
+            end;
+        {_, {error, Reason}} ->
+            close_servers(Opened),
+            {error, Reason}
     end.
 
 open_server(Name, Config) when is_binary(Name), is_map(Config) ->
     case valid_name(Name) of
         false -> {error, <<"MCP server name is invalid">>};
         true ->
+            case albedo_mcp_credentials:server(Name) of
+                {ok, Secrets} -> open_server_with_secrets(Name, Config, Secrets);
+                Error -> Error
+            end
+    end;
+open_server(_, _) -> {error, <<"MCP server configuration is invalid">>}.
+
+open_server_with_secrets(Name, Config, Secrets) ->
             try
                 Startup = positive_ms(maps:get(<<"startupTimeoutMs">>, Config, ?DEFAULT_STARTUP_MS)),
                 Call = positive_ms(maps:get(<<"callTimeoutMs">>, Config, ?DEFAULT_CALL_MS)),
@@ -53,7 +71,7 @@ open_server(Name, Config) when is_binary(Name), is_map(Config) ->
                     request_timeout => Call,
                     ping_interval => infinity
                 },
-                Spec = transport_spec(Config, Spec0),
+                Spec = transport_spec(Config, Secrets, Spec0),
                 case barrel_mcp_client:start(Spec) of
                     {ok, Pid} ->
                         case await_ready(Pid, Startup) of
@@ -66,45 +84,48 @@ open_server(Name, Config) when is_binary(Name), is_map(Config) ->
                 end
             catch
                 _:_ -> {error, unavailable(Name)}
-            end
-    end;
-open_server(_, _) -> {error, <<"MCP server configuration is invalid">>}.
+            end.
 
-transport_spec(#{<<"type">> := <<"http">>, <<"url">> := Url} = Config, Spec)
+transport_spec(#{<<"type">> := <<"http">>, <<"url">> := Url} = Config, Secrets, Spec)
         when is_binary(Url), byte_size(Url) > 0 ->
     ok = validate_url(Url),
-    Headers = http_headers(Config),
+    Headers = http_headers(Config, Secrets),
     Spec#{transport => {http, Url}, auth => none, http_headers => Headers};
-transport_spec(#{<<"type">> := <<"stdio">>, <<"command">> := Command} = Config, Spec)
+transport_spec(#{<<"type">> := <<"stdio">>, <<"command">> := Command} = Config, Secrets, Spec)
         when is_binary(Command), byte_size(Command) > 0 ->
     Args = string_list(maps:get(<<"args">>, Config, [])),
     Cwd = optional_binary(maps:get(<<"cwd">>, Config, null)),
     Target = executable(Command),
     Python = executable(<<"python3">>),
     Launcher = launcher(),
-    Env = scoped_env(maps:get(<<"env">>, Config, #{})),
+    Env = scoped_env(maps:get(<<"env">>, Config, #{}), maps:get(<<"env">>, Secrets, #{})),
     Stdio = #{
         command => binary_to_list(Python),
         args => lists:map(fun binary_to_list/1, [Launcher, Cwd, Target | Args]),
         env => Env
     },
     Spec#{transport => {stdio, Stdio}, auth => none};
-transport_spec(_, _) -> erlang:error(invalid_transport).
+transport_spec(_, _, _) -> erlang:error(invalid_transport).
 
 validate_url(Url) ->
-    Parsed = uri_string:parse(Url),
-    Scheme = maps:get(scheme, Parsed, undefined),
-    Host = string:lowercase(maps:get(host, Parsed, <<>>)),
-    UserInfo = maps:get(userinfo, Parsed, undefined),
-    Fragment = maps:get(fragment, Parsed, undefined),
-    SafeScheme = Scheme =:= <<"https">> orelse
-        (Scheme =:= <<"http">> andalso lists:member(Host, [<<"localhost">>, <<"127.0.0.1">>, <<"::1">>])),
-    case SafeScheme andalso UserInfo =:= undefined andalso Fragment =:= undefined of
+    case url_allowed(Url) of
         true -> ok;
         false -> erlang:error(unsafe_url)
     end.
 
-http_headers(Config) ->
+url_allowed(Url) ->
+    try
+        Parsed = uri_string:parse(Url),
+        Scheme = maps:get(scheme, Parsed, undefined),
+        Host = maps:get(host, Parsed, <<>>),
+        (Scheme =:= <<"https">> orelse Scheme =:= <<"http">>) andalso
+        is_binary(Host) andalso Host =/= <<>> andalso
+        maps:get(userinfo, Parsed, undefined) =:= undefined andalso
+        maps:get(fragment, Parsed, undefined) =:= undefined
+    catch _:_ -> false
+    end.
+
+http_headers(Config, Secrets) ->
     Raw = maps:get(<<"headers">>, Config, #{}),
     true = is_map(Raw),
     Resolved = maps:fold(fun(Name, Ref, Acc) when is_binary(Name) ->
@@ -113,21 +134,36 @@ http_headers(Config) ->
         false = contains_newline(Value),
         [{Name, Value} | Acc]
     end, [], Raw),
-    case maps:get(<<"bearerTokenEnvVar">>, Config, null) of
-        null -> Resolved;
-        EnvName when is_binary(EnvName) ->
-            Token = required_env(EnvName),
-            [{<<"authorization">>, <<"Bearer ", Token/binary>>} |
-             lists:keydelete(<<"authorization">>, 1, Resolved)];
+    Saved = maps:get(<<"headers">>, Secrets, #{}),
+    true = is_map(Saved),
+    SavedHeaders = maps:fold(fun(Name, Value, Acc)
+             when is_binary(Name), is_binary(Value) ->
+        true = valid_header(Name),
+        false = contains_newline(Value),
+        [{Name, Value} | lists:keydelete(Name, 1, Acc)]
+    end, Resolved, Saved),
+    EnvName = maps:get(<<"bearerTokenEnvVar">>, Config, null),
+    StoredToken = maps:get(<<"bearerToken">>, Secrets, null),
+    case {EnvName, StoredToken} of
+        {null, null} -> SavedHeaders;
+        {Name, null} when is_binary(Name) ->
+            with_bearer(required_env(Name), SavedHeaders);
+        {null, Token} when is_binary(Token), byte_size(Token) > 0 ->
+            with_bearer(Token, SavedHeaders);
         _ -> erlang:error(invalid_auth)
     end.
+
+with_bearer(Token, Headers) ->
+    false = contains_newline(Token),
+    [{<<"authorization">>, <<"Bearer ", Token/binary>>} |
+     lists:keydelete(<<"authorization">>, 1, Headers)].
 
 valid_header(Name) ->
     re:run(Name, <<"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$">>, [{capture, none}]) =:= match.
 contains_newline(Value) ->
     binary:match(Value, [<<"\r">>, <<"\n">>]) =/= nomatch.
 
-scoped_env(Raw) when is_map(Raw) ->
+scoped_env(Raw, Secrets) when is_map(Raw), is_map(Secrets) ->
     Ambient = os:env(),
     Removed = [{Name, false} || Entry <- Ambient,
                                 Name <- [env_name(Entry)],
@@ -135,8 +171,16 @@ scoped_env(Raw) when is_map(Raw) ->
     Added = maps:fold(fun(Target, Ref, Acc) when is_binary(Target) ->
         [{binary_to_list(Target), binary_to_list(env_reference(Ref))} | Acc]
     end, [], Raw),
-    Added ++ Removed;
-scoped_env(_) -> erlang:error(invalid_env).
+    Saved = maps:fold(fun(Target, Value, Acc)
+            when is_binary(Target), is_binary(Value) ->
+        true = valid_env_name(Target),
+        [{binary_to_list(Target), binary_to_list(Value)} | Acc]
+    end, [], Secrets),
+    Added ++ Saved ++ Removed;
+scoped_env(_, _) -> erlang:error(invalid_env).
+
+valid_env_name(Name) ->
+    re:run(Name, <<"^[A-Za-z_][A-Za-z_0-9]*$">>, [{capture, none}]) =:= match.
 
 env_name({Name, _}) when is_list(Name) -> Name;
 env_name(Entry) when is_list(Entry) -> hd(string:split(Entry, "=", leading)).

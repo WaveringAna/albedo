@@ -26,6 +26,7 @@ const (
 	AppStateContextInspector
 	AppStatePageView
 	AppStateLogin
+	AppStateCapabilityPage
 )
 
 type sessionsLoadedMsg struct {
@@ -119,6 +120,7 @@ type AppModel struct {
 	ContextInspector ContextInspectorModel
 	PageView         PageViewModel
 	Login            LoginModel
+	CapabilityPage   CapabilityPageModel
 }
 
 func (m AppModel) newChatClient(sessionID string) *daemon.ChatClient {
@@ -557,6 +559,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		m.TreePicker.SetSize(msg.Width, msg.Height)
 		m.ContextInspector.SetSize(msg.Width, msg.Height)
 		m.PageView.SetSize(msg.Width, msg.Height)
+		m.CapabilityPage.SetSize(msg.Width, msg.Height)
 		m.Login.SetSize(msg.Width, msg.Height)
 		return m, nil
 
@@ -817,6 +820,22 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		m.State = AppStateChat
 		return m, nil
 
+	case ChatOpenCapabilityPageMsg:
+		if m.ActiveSession != nil {
+			m.CapabilityPage = NewCapabilityPageModel(m.Conn, m.ActiveSession.ID, m.ActiveSession.Workspace, msg.Kind)
+			m.CapabilityPage.SetSize(m.Width, m.Height)
+			m.State = AppStateCapabilityPage
+			return m, m.CapabilityPage.Init()
+		}
+
+	case CapabilityPageDoneMsg:
+		m.State = AppStateChat
+		return m, nil
+
+	case CapabilityPageChangedMsg:
+		m.CatalogGen++
+		return m, m.loadCommandCatalogCmd(m.CatalogGen)
+
 	case ChatOpenPageMsg:
 		if m.ActiveSession != nil {
 			m.PageView = NewPageViewModel(m.Conn, m.ActiveSession.ID, msg.Command)
@@ -995,6 +1014,8 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		m.ContextInspector, cmd = m.ContextInspector.Update(msg)
 	case AppStatePageView:
 		m.PageView, cmd = m.PageView.Update(msg)
+	case AppStateCapabilityPage:
+		m.CapabilityPage, cmd = m.CapabilityPage.Update(msg)
 	case AppStateLogin:
 		m.Login, cmd = m.Login.Update(msg)
 	}
@@ -1029,6 +1050,8 @@ func (m AppModel) View() string {
 		content = m.ContextInspector.View()
 	case AppStatePageView:
 		content = m.PageView.View()
+	case AppStateCapabilityPage:
+		content = m.CapabilityPage.View()
 	case AppStateLogin:
 		content = m.Login.View()
 	}

@@ -25,6 +25,9 @@ var AppCommands = []ChatCommand{
 	{Name: "/new", Description: "new coding session"},
 	{Name: "/sessions", Description: "switch session"},
 	{Name: "/extensions", Description: "manage this session's extension plugins"},
+	{Name: "/skills", Description: "manage loaded skills and per-skill defaults"},
+	{Name: "/instructions", Description: "manage AGENTS.md and other instruction files"},
+	{Name: "/mcp", Description: "manage MCP servers and authentication"},
 	{Name: "/tree", Description: "branch this session from a history checkpoint"},
 }
 

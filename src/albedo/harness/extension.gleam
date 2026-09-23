@@ -4,7 +4,9 @@ import albedo/daemon/store
 import albedo/harness/command
 import albedo/harness/compaction
 import albedo/harness/extensions/python/kernel as python
+import albedo/harness/settings
 import albedo/openai_api/types
+import gleam/dict
 import gleam/dynamic/decode
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -133,6 +135,11 @@ pub type Summary {
     name: String,
     description: String,
     enabled: Bool,
+    /// The session has its own choice for this extension; otherwise it
+    /// follows the global default.
+    overridden: Bool,
+    /// What sessions without their own choice get.
+    global_enabled: Bool,
     context: Bool,
     tools: List(String),
     python_modules: List(String),
@@ -208,32 +215,156 @@ pub fn enabled(
   default_enabled: List(String),
   session: String,
 ) -> Result(List(Extension), String) {
-  use overrides <- result.try(
-    store.query(ledger, fn(db) {
-      sqlight.query(
-        "SELECT name,enabled FROM session_extensions WHERE session=?",
-        db,
-        [sqlight.text(session)],
-        {
-          use name <- decode.field(0, decode.string)
-          use enabled <- decode.field(1, decode.int)
-          decode.success(#(name, enabled == 1))
-        },
-      )
-      |> result.map_error(fn(error) { error.message })
-    }),
-  )
-  let selected =
-    list.filter(installed, fn(extension) {
-      list.key_find(overrides, extension.name)
-      |> result.unwrap(list.contains(default_enabled, extension.name))
-    })
+  use overrides <- result.try(overrides(ledger, session))
+  let selected = select(installed, global_defaults(default_enabled), overrides)
   use _ <- result.try(validate_selection(selected))
   Ok(selected)
 }
 
-/// The selection that would result from toggling one extension. Nothing is
-/// persisted; `set_enabled` records the choice once its composition succeeds.
+fn overrides(
+  ledger: store.Store,
+  session: String,
+) -> Result(List(#(String, Bool)), String) {
+  store.query(ledger, fn(db) {
+    sqlight.query(
+      "SELECT name,enabled FROM session_extensions WHERE session=?",
+      db,
+      [sqlight.text(session)],
+      {
+        use name <- decode.field(0, decode.string)
+        use enabled <- decode.field(1, decode.int)
+        decode.success(#(name, enabled == 1))
+      },
+    )
+    |> result.map_error(fn(error) { error.message })
+  })
+}
+
+fn select(
+  installed: List(Extension),
+  defaults: List(String),
+  overrides: List(#(String, Bool)),
+) -> List(Extension) {
+  list.filter(installed, fn(extension) {
+    list.key_find(overrides, extension.name)
+    |> result.unwrap(list.contains(defaults, extension.name))
+  })
+}
+
+/// The built-in defaults with the user's global choices from the `enabled`
+/// section of extensions.json applied. An unreadable file keeps the built-in
+/// defaults so a bad edit cannot make every session fail to open.
+pub fn global_defaults(built_in: List(String)) -> List(String) {
+  let chosen =
+    settings.load(
+      "enabled",
+      decode.dict(decode.string, decode.bool),
+      dict.new(),
+    )
+    |> result.unwrap(dict.new())
+  let kept =
+    list.filter(built_in, fn(name) { dict.get(chosen, name) != Ok(False) })
+  let added =
+    dict.to_list(chosen)
+    |> list.filter_map(fn(pair) {
+      case pair.1 && !list.contains(kept, pair.0) {
+        True -> Ok(pair.0)
+        False -> Error(Nil)
+      }
+    })
+  list.append(kept, added)
+}
+
+/// How a user changes which extensions a session runs. `SetSession` records a
+/// choice for one session; `SetGlobal` changes the default every session
+/// without its own choice follows; `Inherit` drops the session's choice.
+pub type Change {
+  SetSession(name: String, enabled: Bool)
+  SetGlobal(name: String, enabled: Bool)
+  Inherit(name: String)
+}
+
+fn change_name(change: Change) -> String {
+  case change {
+    SetSession(name, _) | SetGlobal(name, _) | Inherit(name) -> name
+  }
+}
+
+/// The selection a session would run after `change`. Nothing is persisted;
+/// `record` stores the change once its composition succeeds. A global change
+/// must also leave sessions without their own choices with a valid selection.
+pub fn propose(
+  ledger: store.Store,
+  installed: List(Extension),
+  default_enabled: List(String),
+  session: String,
+  change: Change,
+) -> Result(List(Extension), String) {
+  let name = change_name(change)
+  use _ <- result.try(
+    list.find(installed, fn(extension) { extension.name == name })
+    |> result.replace_error("unknown extension: " <> name),
+  )
+  use current <- result.try(overrides(ledger, session))
+  let defaults = global_defaults(default_enabled)
+  let #(defaults, current) = case change {
+    SetSession(name, value) -> #(defaults, [
+      #(name, value),
+      ..list.filter(current, fn(pair) { pair.0 != name })
+    ])
+    Inherit(name) -> #(
+      defaults,
+      list.filter(current, fn(pair) { pair.0 != name }),
+    )
+    SetGlobal(name, True) -> #(
+      [name, ..list.filter(defaults, fn(other) { other != name })],
+      current,
+    )
+    SetGlobal(name, False) -> #(
+      list.filter(defaults, fn(other) { other != name }),
+      current,
+    )
+  }
+  use _ <- result.try(case change {
+    SetGlobal(..) ->
+      validate_selection(select(installed, defaults, []))
+      |> result.map_error(fn(error) { "as the global default: " <> error })
+    _ -> Ok(Nil)
+  })
+  let selected = select(installed, defaults, current)
+  use _ <- result.try(validate_selection(selected))
+  Ok(selected)
+}
+
+/// Persists a change `propose` accepted.
+pub fn record(
+  ledger: store.Store,
+  session: String,
+  change: Change,
+) -> Result(Nil, String) {
+  case change {
+    SetSession(name, value) -> set_enabled(ledger, session, name, value)
+    SetGlobal(name, value) -> set_global(settings.home(), name, value)
+    Inherit(name) ->
+      store.query(ledger, fn(db) {
+        sqlight.query(
+          "DELETE FROM session_extensions WHERE session=? AND name=?",
+          db,
+          [sqlight.text(session), sqlight.text(name)],
+          decode.dynamic,
+        )
+        |> result.replace(Nil)
+        |> result.map_error(fn(error) { error.message })
+      })
+  }
+}
+
+@external(erlang, "albedo_extension_settings", "set_enabled")
+fn set_global(home: String, name: String, enabled: Bool) -> Result(Nil, String)
+
+/// The selection that would result from toggling one extension for this
+/// session. Nothing is persisted; `set_enabled` records the choice once its
+/// composition succeeds.
 pub fn selection(
   ledger: store.Store,
   installed: List(Extension),
@@ -242,26 +373,7 @@ pub fn selection(
   name: String,
   value: Bool,
 ) -> Result(List(Extension), String) {
-  use _ <- result.try(
-    list.find(installed, fn(extension) { extension.name == name })
-    |> result.replace_error("unknown extension: " <> name),
-  )
-  use selected <- result.try(enabled(
-    ledger,
-    installed,
-    default_enabled,
-    session,
-  ))
-  let candidate = case value {
-    True ->
-      list.filter(installed, fn(extension) {
-        extension.name == name
-        || list.any(selected, fn(active) { active.name == extension.name })
-      })
-    False -> list.filter(selected, fn(extension) { extension.name != name })
-  }
-  use _ <- result.try(validate_selection(candidate))
-  Ok(candidate)
+  propose(ledger, installed, default_enabled, session, SetSession(name, value))
 }
 
 pub fn set_enabled(
@@ -447,6 +559,8 @@ pub fn summaries(
     default_enabled,
     session,
   ))
+  use chosen <- result.try(overrides(ledger, session))
+  let defaults = global_defaults(default_enabled)
   let names = list.map(selected, fn(extension) { extension.name })
   let managed = case composition {
     Some(composition) -> composition.managed
@@ -465,6 +579,8 @@ pub fn summaries(
         extension.name,
         extension.description,
         list.contains(names, extension.name),
+        list.key_find(chosen, extension.name) |> result.is_ok,
+        list.contains(defaults, extension.name),
         list.any(extension.plugins, fn(plugin) {
           case plugin {
             ContextPlugin(_) | ManagedPlugin(_) -> True

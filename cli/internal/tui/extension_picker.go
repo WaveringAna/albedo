@@ -21,6 +21,10 @@ type ExtensionItem struct {
 	PythonModules []string `json:"python_modules"`
 	Requires      []string `json:"requires"`
 	Plugins       []string `json:"plugins"`
+	// Overridden means this session has its own choice; otherwise it follows
+	// GlobalEnabled, the default for sessions without one.
+	Overridden    bool `json:"overridden"`
+	GlobalEnabled bool `json:"global_enabled"`
 }
 
 type ExtensionPickerDoneMsg struct{}
@@ -30,6 +34,8 @@ type extensionsLoadedMsg struct {
 	Extensions []ExtensionItem
 	Err        error
 	Gen        int
+	// NoGlobal reports a daemon that predates global extension defaults.
+	NoGlobal bool
 }
 
 type extensionToggledMsg struct {
@@ -43,7 +49,13 @@ type ExtensionPickerModel struct {
 	SessionID  string
 	Extensions []ExtensionItem
 	Cursor     int
+	// Session scopes changes to this session; the page opens on the global
+	// defaults, so a session only diverges once a change is made here.
+	Session    bool
+	NoGlobal   bool
 	Confirming bool
+	// Inheriting confirms dropping this session's choice instead of a toggle.
+	Inheriting bool
 	Saving     bool
 	Loading    bool
 	Error      string
@@ -81,12 +93,16 @@ func (m ExtensionPickerModel) loadExtensionsCmd(gen int) tea.Cmd {
 		health, err := daemon.Request[struct {
 			Capabilities []string `json:"capabilities"`
 		}](context.Background(), m.Conn, "/health", nil)
+		noGlobal := false
 		if err == nil {
 			hasCap := false
+			noGlobal = true
 			for _, c := range health.Capabilities {
 				if c == "session_extensions" {
 					hasCap = true
-					break
+				}
+				if c == "global_extensions" {
+					noGlobal = false
 				}
 			}
 			if !hasCap {
@@ -99,17 +115,26 @@ func (m ExtensionPickerModel) loadExtensionsCmd(gen int) tea.Cmd {
 
 		path := fmt.Sprintf("/sessions/%s/extensions", m.SessionID)
 		items, err := daemon.Request[[]ExtensionItem](context.Background(), m.Conn, path, nil)
-		return extensionsLoadedMsg{Extensions: items, Err: err, Gen: gen}
+		return extensionsLoadedMsg{Extensions: items, Err: err, Gen: gen, NoGlobal: noGlobal}
 	}
 }
 
-func (m ExtensionPickerModel) toggleExtensionCmd(name string, enabled bool, gen int) tea.Cmd {
+// changeExtensionCmd sends one change: scope "global" or "session" with a
+// value, or "inherit" to drop this session's choice.
+func (m ExtensionPickerModel) changeExtensionCmd(name, scope string, enabled bool, gen int) tea.Cmd {
 	return func() tea.Msg {
 		if m.Conn == nil {
 			return extensionToggledMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
 		path := fmt.Sprintf("/sessions/%s/extensions", m.SessionID)
-		body := map[string]any{"name": name, "enabled": enabled}
+		body := map[string]any{"name": name, "scope": scope}
+		if scope != "inherit" {
+			body["enabled"] = enabled
+		}
+		if m.NoGlobal {
+			// Older daemons only know session choices.
+			body = map[string]any{"name": name, "enabled": enabled}
+		}
 		updated, err := daemon.Request[[]ExtensionItem](context.Background(), m.Conn, path, body)
 		return extensionToggledMsg{Extensions: updated, Err: err, Gen: gen}
 	}
@@ -142,6 +167,10 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		}
 		m.Extensions = msg.Extensions
 		m.Error = ""
+		m.NoGlobal = msg.NoGlobal
+		if m.NoGlobal {
+			m.Session = true
+		}
 		if m.Cursor >= len(m.Extensions) {
 			m.Cursor = max(0, len(m.Extensions)-1)
 		}
@@ -168,6 +197,7 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 			}
 		}
 		m.Confirming = false
+		m.Inheriting = false
 		m.Error = ""
 		return m, func() tea.Msg { return ExtensionPickerChangedMsg{} }
 
@@ -175,6 +205,7 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		if msg.Type == tea.KeyEsc || (msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyCtrlD) {
 			if m.Confirming {
 				m.Confirming = false
+				m.Inheriting = false
 				m.Error = ""
 				return m, nil
 			}
@@ -201,7 +232,14 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 				m.Saving = true
 				m.Error = ""
 				m.Generation++
-				return m, m.toggleExtensionCmd(ext.Name, !ext.Enabled, m.Generation)
+				switch {
+				case m.Inheriting:
+					return m, m.changeExtensionCmd(ext.Name, "inherit", false, m.Generation)
+				case m.Session:
+					return m, m.changeExtensionCmd(ext.Name, "session", !ext.Enabled, m.Generation)
+				default:
+					return m, m.changeExtensionCmd(ext.Name, "global", !ext.GlobalEnabled, m.Generation)
+				}
 			}
 			return m, nil
 		}
@@ -220,6 +258,21 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 				m.Error = ""
 				m.Confirming = true
 			}
+		case tea.KeyRunes:
+			switch msg.String() {
+			case "g":
+				if !m.NoGlobal {
+					m.Session = false
+				}
+			case "s":
+				m.Session = true
+			case "x":
+				if m.Session && !m.NoGlobal && m.Cursor < len(m.Extensions) && m.Extensions[m.Cursor].Overridden {
+					m.Error = ""
+					m.Confirming = true
+					m.Inheriting = true
+				}
+			}
 		}
 	}
 	return m, nil
@@ -228,9 +281,19 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 func (m ExtensionPickerModel) View() string {
 	var b strings.Builder
 
-	b.WriteString("albedo /extensions · session plugins")
-	b.WriteString("\n")
-	b.WriteString(m.Styles.Dim.Render("extensions bundle plugins for this session only"))
+	if m.Session {
+		b.WriteString("albedo /extensions · this session")
+		b.WriteString("\n")
+		hint := "choices here apply to this session only · g global defaults"
+		if m.NoGlobal {
+			hint = "this daemon only supports per-session choices; restart it for global defaults"
+		}
+		b.WriteString(m.Styles.Dim.Render(inkWrap(hint, m.Width)))
+	} else {
+		b.WriteString("albedo /extensions · global defaults")
+		b.WriteString("\n")
+		b.WriteString(m.Styles.Dim.Render(inkWrap("every session without its own choice follows these · s this session only", m.Width)))
+	}
 	b.WriteString("\n")
 	b.WriteString(inkYellow.Render(ansi.Wrap("changes reload workers and available plugins, bust prompt-cache reuse, and may reset unsavable python variables", max(1, m.Width), " ")))
 	b.WriteString("\n")
@@ -256,11 +319,24 @@ func (m ExtensionPickerModel) View() string {
 
 	lines := make([]string, len(m.Extensions))
 	for i, ext := range m.Extensions {
+		on, scope := ext.GlobalEnabled, ""
+		if m.Session {
+			on, scope = ext.Enabled, "  follows global"
+			if ext.Overridden {
+				scope = "  this session"
+			}
+		} else if ext.Overridden {
+			state := "off"
+			if ext.Enabled {
+				state = "on"
+			}
+			scope = "  this session: " + state
+		}
 		status := "off"
-		if ext.Enabled {
+		if on {
 			status = inkGreen.Render("on ")
 		}
-		lines[i] = status + "  " + ext.Name
+		lines[i] = status + "  " + ext.Name + m.Styles.Dim.Render(scope)
 		if ext.Description != "" {
 			lines[i] += lipgloss.NewStyle().Faint(true).Render("  " + ext.Description)
 		}
@@ -300,15 +376,27 @@ func (m ExtensionPickerModel) View() string {
 		b.WriteString("\n")
 
 		if m.Confirming {
+			on := current.GlobalEnabled
+			if m.Session {
+				on = current.Enabled
+			}
 			actionWord := "enable"
-			if current.Enabled {
+			if on {
 				actionWord = "disable"
 			}
 			choice := "enter confirm"
 			if m.Error != "" {
 				choice = "enter retry"
 			}
-			confirmMsg := fmt.Sprintf("%s %s and reload this session's workers? %s · esc cancel", actionWord, current.Name, choice)
+			var confirmMsg string
+			switch {
+			case m.Inheriting:
+				confirmMsg = fmt.Sprintf("drop this session's choice for %s and follow the global default? %s · esc cancel", current.Name, choice)
+			case m.Session:
+				confirmMsg = fmt.Sprintf("%s %s for this session only and reload its workers? %s · esc cancel", actionWord, current.Name, choice)
+			default:
+				confirmMsg = fmt.Sprintf("%s %s for every session that follows the global default? %s · esc cancel", actionWord, current.Name, choice)
+			}
 			b.WriteString(inkYellow.Render(confirmMsg))
 			b.WriteString("\n")
 		}
@@ -323,7 +411,14 @@ func (m ExtensionPickerModel) View() string {
 	} else if m.Confirming {
 		b.WriteString(m.Styles.Dim.Render("waiting for confirmation"))
 	} else {
-		b.WriteString(m.Styles.Dim.Render(inkWrap("↑↓ select · enter/space toggle · esc return to chat", m.Width)))
+		keys := "↑↓ select · enter/space toggle · s this session · esc return to chat"
+		if m.Session {
+			keys = "↑↓ select · enter/space toggle · x follow global · g global defaults · esc return to chat"
+			if m.NoGlobal {
+				keys = "↑↓ select · enter/space toggle · esc return to chat"
+			}
+		}
+		b.WriteString(m.Styles.Dim.Render(inkWrap(keys, m.Width)))
 	}
 
 	return b.String()

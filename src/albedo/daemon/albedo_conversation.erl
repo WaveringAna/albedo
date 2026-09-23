@@ -1,5 +1,5 @@
 -module(albedo_conversation).
--export([pack/1,unpack/1,unpack_trace/1]).
+-export([pack/1,unpack/1,unpack_trace/1,pack_list/1,unpack_list/1]).
 pack(Input) -> term_to_binary({1,Input}).
 unpack(Bytes) ->
   try binary_to_term(Bytes,[safe]) of
@@ -21,5 +21,17 @@ unpack(Bytes) ->
 
 unpack_trace(Bytes) -> try binary_to_term(Bytes,[safe]) of
   {1,#{<<"activities">> := A, <<"changes">> := C}=Trace} when is_list(A),is_list(C) -> {ok,Trace};
+  _ -> {error,nil}
+catch _:_ -> {error,nil} end.
+
+%% A pinned prompt's context inputs, each packed like a transcript entry.
+pack_list(Inputs) -> term_to_binary({1,[pack(I) || I <- Inputs]}).
+unpack_list(Bytes) -> try binary_to_term(Bytes,[safe]) of
+  {1,Packed} when is_list(Packed) ->
+    Inputs = [unpack(P) || P <- Packed],
+    case lists:all(fun({ok,_}) -> true; (_) -> false end, Inputs) of
+      true -> {ok,[I || {ok,I} <- Inputs]};
+      false -> {error,nil}
+    end;
   _ -> {error,nil}
 catch _:_ -> {error,nil} end.

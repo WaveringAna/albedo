@@ -70,6 +70,9 @@ def run(endpoint):
             }}}}))
 
         configure([str(SERVER)])
+        credentials = home/"mcp-credentials.json"
+        credentials.write_text(json.dumps({"servers":{"fake":{"env":{"FAKE_SECRET":"stored-secret"}}}}))
+        credentials.chmod(0o600)
         env = dict(os.environ, HOME=str(user_home), ALBEDO_HOME=str(home), ALBEDO_PARENT_PID=str(os.getpid()),
                    ALBEDO_MCP_SECRET="configured-secret", ALBEDO_MCP_CLOSED=str(closed),
                    ALBEDO_MCP_AMBIENT="must-not-reach-the-server")
@@ -122,7 +125,7 @@ def run(endpoint):
             result = next(item["output"] for item in requests[1]["input"]
                           if item.get("type") == "function_call_output")
             assert json.loads(json.loads(result)["content"][0]["text"]) == {
-                "echoed": "ping from albedo", "secret": "configured-secret", "ambient": None}, result
+                "echoed": "ping from albedo", "secret": "stored-secret", "ambient": None}, result
             summary = next(item for item in api(route) if item["name"] == "mcp")
             assert summary["tools"] == advertised, summary
 
@@ -134,6 +137,16 @@ def run(endpoint):
             assert closed.exists(), "disabling mcp must close its server process"
             requests = turn(session, "the server is gone")
             assert not any(tool["name"].startswith("mcp_") for tool in requests[0]["tools"]), requests[0]["tools"]
+
+            # Credentials must remain private; preparation fails closed if a
+            # user makes the file readable by other accounts.
+            credentials.chmod(0o644)
+            try:
+                api(route, {"name": "mcp", "enabled": True})
+                raise AssertionError("world-readable credentials must be rejected")
+            except urllib.error.HTTPError as error:
+                assert error.code == 409, error.read()
+            credentials.chmod(0o600)
 
             # An unavailable server fails the replacement instead of silently
             # dropping capabilities from a live session.

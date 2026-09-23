@@ -189,6 +189,18 @@ pub fn responses_streams_reasoning_apart_from_the_answer_test() {
     )
 }
 
+pub fn responses_separates_reasoning_summary_parts_test() {
+  let part = fn(index) {
+    "{\"type\":\"response.reasoning_summary_part.added\",\"output_index\":0,\"summary_index\":"
+    <> index
+    <> ",\"part\":{\"type\":\"summary_text\",\"text\":\"\"}}"
+  }
+  let state = stream.new(types.Responses)
+  let assert Ok(#(state, [], None)) = send(state, "", part("0"))
+  let assert Ok(#(_state, [types.ThinkingDelta("\n\n")], None)) =
+    send(state, "", part("1"))
+}
+
 pub fn chat_streams_one_thinking_event_per_delta_test() {
   let chunk =
     "{\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"r1\",\"reasoning_content\":\"c1\"}}]}"

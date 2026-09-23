@@ -2,7 +2,7 @@
 
 -include_lib("kernel/include/file.hrl").
 
--export([home/0, load/2]).
+-export([home/0, load/2, load_selected/3]).
 
 -define(MAX_FILE_BYTES, 1048576).
 -define(MAX_FILES, 128).
@@ -13,7 +13,12 @@ home() ->
         Value -> unicode:characters_to_binary(Value)
     end.
 
-load(Workspace0, Home0) ->
+load(Workspace0, Home0) -> load_impl(Workspace0, Home0, undefined).
+
+load_selected(Workspace0, Home0, Session) ->
+    load_impl(Workspace0, Home0, {albedo_extension_settings:home(), Session}).
+
+load_impl(Workspace0, Home0, Selection) ->
     try
         Workspace = text_list(Workspace0),
         Home = text_list(Home0),
@@ -28,13 +33,31 @@ load(Workspace0, Home0) ->
         case length(Files) =< ?MAX_FILES of
             false -> {error, <<"more than 128 instruction files were discovered">>};
             true ->
-                case read_all(Files, []) of
-                    {ok, Loaded} -> {ok, render(Loaded)};
+                case select_files(Files, Selection, []) of
+                    {ok, Selected} ->
+                        case read_all(Selected, []) of
+                            {ok, Loaded} -> {ok, render(Loaded)};
+                            Error -> Error
+                        end;
                     Error -> Error
                 end
         end
     catch
         _:_ -> {error, <<"instruction file discovery failed">>}
+    end.
+
+select_files([], _, Selected) -> {ok, lists:reverse(Selected)};
+select_files([File = {Scope, Display, _} | Rest], Selection, Selected) ->
+    Enabled = case Selection of
+        undefined -> {ok, true};
+        {Home, Session} ->
+            Name = <<(atom_to_binary(Scope))/binary, ":", Display/binary>>,
+            albedo_capabilities:enabled(Home, Session, <<"instructions">>, Name)
+    end,
+    case Enabled of
+        {ok, true} -> select_files(Rest, Selection, [File | Selected]);
+        {ok, false} -> select_files(Rest, Selection, Selected);
+        Error -> Error
     end.
 
 root_files(Workspace) ->

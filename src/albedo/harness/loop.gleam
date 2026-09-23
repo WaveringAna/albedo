@@ -12,7 +12,7 @@ import albedo/openai_api/types
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -21,13 +21,27 @@ pub type Loop {
     model: String,
     host: runtime.Runtime,
     kernel: runtime.Session,
+    pin: Pin,
     client: types.Client,
     publish: fn(String) -> Bool,
     commit: fn(List(types.Input), conversation.Stage) -> Result(Int, String),
     record_context: fn(types.Request) -> Nil,
     record_usage: fn(usage.Metadata) -> Result(Nil, String),
     drain_steering: fn() -> Result(List(types.Input), String),
+    /// Reports the pin's compaction baseline (`Some`) or that compaction
+    /// replaced the history the pinned prompt was cached with (`None`).
+    report_pin: fn(Option(Int)) -> Nil,
   )
+}
+
+/// A live session keeps the system prompt it was cached with after its
+/// capabilities change; the change reaches the model as a transcript update
+/// instead. `head` is how many original inputs compaction had replaced when
+/// the pin was first used, so a new compaction, which invalidates the cache
+/// anyway, can drop the pin.
+pub type Pin {
+  Unpinned
+  Pinned(prompt: conversation.PinnedPrompt, head: Option(Int))
 }
 
 pub fn run(
@@ -40,17 +54,19 @@ pub fn run(
     True -> Ok(Nil)
     False -> Error("cancelled")
   })
-  let request_instructions = instructions <> runtime.instructions(state.kernel)
+  let original = list.reverse(inputs)
   use history <- result.try(runtime.prepare_history_scoped(
     state.host,
-    state.kernel,
+    request_kernel(state),
     state.model,
     request_source(state.client, state.model),
     state.client.base_url,
-    request_instructions,
+    request_instructions(state),
     summarize(state, _),
-    list.reverse(inputs),
+    original,
   ))
+  let #(state, history) = settle_pin(state, original, history)
+  let request_instructions = request_instructions(state)
   let request =
     types.Request(
       state.model,
@@ -175,12 +191,12 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
     True -> Ok(Nil)
     False -> Error("cancelled")
   })
-  let request_instructions = instructions <> runtime.instructions(state.kernel)
+  let request_instructions = request_instructions(state)
   // `inputs` accumulates newest-first; strategies read chronological history.
   let original = list.reverse(inputs)
   use history <- result.try(runtime.compact_history_scoped(
     state.host,
-    state.kernel,
+    request_kernel(state),
     state.model,
     request_source(state.client, state.model),
     state.client.base_url,
@@ -200,7 +216,12 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
   let suffix = common_suffix(original, history)
   let evicted = list.length(inputs) - suffix
   let _ = case evicted > 0 {
-    True ->
+    True -> {
+      // The summary replaced the history the pinned prompt was cached with.
+      case state.pin {
+        Pinned(..) -> state.report_pin(None)
+        Unpinned -> Nil
+      }
       state.publish(
         view.event("compacted", [
           #("evicted", json.int(evicted)),
@@ -212,6 +233,7 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
           ),
         ]),
       )
+    }
     False ->
       state.publish(view.text(
         "note",
@@ -285,6 +307,59 @@ pub fn retry_stream(
           }
       }
     outcome -> outcome
+  }
+}
+
+fn request_instructions(state: Loop) -> String {
+  instructions
+  <> case state.pin {
+    Pinned(prompt, _) -> prompt.instructions
+    Unpinned -> runtime.instructions(state.kernel)
+  }
+}
+
+/// The kernel view a request is prepared with: a pinned session keeps the
+/// leading context its prompt cache was built with.
+fn request_kernel(state: Loop) -> runtime.Session {
+  case state.pin {
+    Pinned(prompt, _) -> runtime.with_context(state.kernel, prompt.context)
+    Unpinned -> state.kernel
+  }
+}
+
+/// Keeps the pin while compaction has replaced no further inputs. More
+/// replaced inputs mean compaction rewrote history, so the cached prompt is
+/// already lost:
+/// the pin is dropped and this request's leading context, prepared from the
+/// pin, is swapped for the session's current one.
+fn settle_pin(
+  state: Loop,
+  original: List(types.Input),
+  history: List(types.Input),
+) -> #(Loop, List(types.Input)) {
+  case state.pin {
+    Unpinned -> #(state, history)
+    Pinned(prompt, baseline) -> {
+      let pinned = list.length(prompt.context)
+      let projected = list.drop(history, pinned)
+      // Strategies may rebuild recap text every request, but the count of
+      // original inputs they stand in for only grows when compaction runs.
+      let head = list.length(original) - common_suffix(original, projected)
+      case baseline {
+        None -> {
+          state.report_pin(Some(head))
+          #(Loop(..state, pin: Pinned(prompt, Some(head))), history)
+        }
+        Some(previous) if previous == head -> #(state, history)
+        Some(_) -> {
+          state.report_pin(None)
+          #(
+            Loop(..state, pin: Unpinned),
+            list.append(runtime.context(state.kernel), projected),
+          )
+        }
+      }
+    }
   }
 }
 

@@ -257,17 +257,35 @@ def run(endpoint):
             assert len(Provider.requests) == before + 2
             tool_output = next(item["output"] for item in reversed(Provider.requests[-1]["input"]) if item.get("type") == "function_call_output")
             assert "BEFORE_RELOAD_OK" in tool_output, tool_output
+            cached = Provider.requests[-1]
             reloaded = api(f"/sessions/{session}/commands", {"name": "/reload", "args": {"target": "session"}})
             assert reloaded["result"]["reloaded"] == "session", reloaded
             assert "/late" in {c["name"] for c in api(f"/sessions/{session}/commands")}
             request = catalog_request(session, "after session reload")
             assert "added after the session opened" in json.dumps(request["input"]), request
+            # A live session keeps the prompt prefix the provider cached; the
+            # new skill arrives as a durable user-role context update instead.
+            assert request["instructions"] == cached["instructions"], "reload changed the cached system prompt"
+            assert request["input"][0] == cached["input"][0], "reload changed the cached leading context"
+            assert "added after the session opened" not in json.dumps(request["input"][0])
+            updates = [item for item in request["input"] if item.get("role") == "user"
+                       and str(item.get("content", "")).startswith("[albedo] This session's skills")]
+            assert len(updates) == 1 and "added after the session opened" in updates[0]["content"], request
             before = len(Provider.requests)
             api(f"/sessions/{session}/events", {"content": "hot probe after reload"})
             ready(session)
             assert len(Provider.requests) == before + 2
             tool_output = next(item["output"] for item in reversed(Provider.requests[-1]["input"]) if item.get("type") == "function_call_output")
             assert "AFTER_RELOAD_OK" in tool_output, tool_output
+            assert Provider.requests[-1]["input"][0] == cached["input"][0], "pin must hold until compaction"
+            # Compaction rewrites history and loses the cache anyway, so the
+            # prompt prefix is rebuilt from the session's current capabilities.
+            api(f"/sessions/{session}/commands", {"name": "/compact"})
+            ready(session)
+            request = catalog_request(session, "after compaction following reload")
+            assert "added after the session opened" in json.dumps(request["input"][0]), request["input"][0]
+            request = catalog_request(session, "pin stays released")
+            assert "added after the session opened" in json.dumps(request["input"][0]), request["input"][0]
             python_session = json.loads(cli("new", str(workspace)))["session"]
             before = len(Provider.requests)
             api(f"/sessions/{python_session}/events", {"content": "activate demo via python"})

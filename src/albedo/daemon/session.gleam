@@ -84,8 +84,7 @@ pub type Message {
   ChangeWorkspace(String, Subject(Result(conversation.Info, String)))
   ReadExtensions(Subject(Result(List(extension.Summary), String)))
   ChangeExtension(
-    String,
-    Bool,
+    extension.Change,
     Subject(Result(List(extension.Summary), String)),
   )
   Interrupt(Subject(Bool))
@@ -102,6 +101,7 @@ pub type Message {
   )
   RecordContext(String, context_snapshot.Snapshot, Subject(Nil))
   RecordUsage(String, usage.Metadata, Subject(Result(Nil, String)))
+  ReportPin(String, Option(Int), Subject(Nil))
   Compact(Subject(Result(json.Json, String)))
   RefreshData(Subject(Result(json.Json, String)))
   DrainSteering(String, Subject(Result(List(types.Input), String)))
@@ -131,6 +131,7 @@ type State {
     watchers: List(#(process.Pid, fn() -> Nil)),
     notice: Option(String),
     context: context_snapshot.Snapshot,
+    pin: loop.Pin,
     last_touch: Int,
   )
 }
@@ -143,6 +144,10 @@ pub fn start(
 ) -> Result(Session, actor.StartError) {
   actor.new_with_initialiser(10_000, fn(self) {
     use latest_usage <- result.try(conversation.load_usage(
+      runtime.ledger(host),
+      info.id,
+    ))
+    use pinned <- result.try(conversation.prompt_pin(
       runtime.ledger(host),
       info.id,
     ))
@@ -170,6 +175,10 @@ pub fn start(
         [],
         None,
         unprepared(),
+        case pinned {
+          Some(prompt) -> loop.Pinned(prompt, None)
+          None -> loop.Unpinned
+        },
         now_ms(),
       )
     // Background jobs wake this session through the kernel's jobs route; the
@@ -537,7 +546,7 @@ fn handle(state: State, message: Message) {
       )
       actor.continue(state)
     }
-    ChangeExtension(name, enabled, reply) ->
+    ChangeExtension(change, reply) ->
       case turn.running(state.activity) {
         Some(_) -> {
           process.send(
@@ -553,19 +562,27 @@ fn handle(state: State, message: Message) {
             None -> Error("no active python namespace")
           }
           case
-            runtime.reload_extension(
+            runtime.change_extension(
               state.host,
               state.info.id,
               state.info.cwd,
-              name,
-              enabled,
+              change,
             )
           {
             Error(error) -> {
               process.send(reply, Error(error))
               actor.continue(state)
             }
-            Ok(kernel) -> {
+            // The choice was recorded but this session runs the same
+            // extensions, so its kernel and prompt cache stay as they are.
+            Ok(None) -> {
+              process.send(
+                reply,
+                runtime.extension_summaries(state.host, state.info.id),
+              )
+              actor.continue(state)
+            }
+            Ok(Some(kernel)) -> {
               let restored = case saved, state_path(state) {
                 Ok(_), Some(path) ->
                   runtime.load_state(kernel, path, state_timeout)
@@ -697,7 +714,8 @@ fn handle(state: State, message: Message) {
           process.send(reply, Error("session must be idle to reload"))
           actor.continue(state)
         }
-        None ->
+        None -> {
+          let previous = runtime.peek_prompt(state.host, state.info.id)
           case runtime.refresh_session(state.host, state.info.id) {
             Error(error) -> {
               process.send(reply, Error(error))
@@ -714,26 +732,42 @@ fn handle(state: State, message: Message) {
                   )
                 None -> state
               }
-              process.send(
-                reply,
-                Ok(
-                  json.object([
-                    #("reloaded", json.string("session")),
-                    #(
-                      "message",
-                      json.string(
-                        "Extension context, skills catalog, and session commands rescanned from disk.",
-                      ),
+              case record_refresh_context(state, previous) {
+                Ok(#(state, note)) -> {
+                  process.send(
+                    reply,
+                    Ok(
+                      json.object([
+                        #("reloaded", json.string("session")),
+                        #(
+                          "message",
+                          json.string(
+                            "Extension context, skills catalog, and session commands rescanned from disk."
+                            <> note,
+                          ),
+                        ),
+                      ]),
                     ),
-                  ]),
-                ),
-              )
-              actor.continue(emit(
-                state,
-                view.text("note", "session data reloaded from disk"),
-              ))
+                  )
+                  actor.continue(emit(
+                    state,
+                    view.text("note", "session data reloaded from disk" <> note),
+                  ))
+                }
+                Error(error) -> {
+                  process.send(
+                    reply,
+                    Error(
+                      "session data reloaded, but its context update could not be saved: "
+                      <> error,
+                    ),
+                  )
+                  actor.continue(state)
+                }
+              }
             }
           }
+        }
       }
     }
 
@@ -927,6 +961,32 @@ fn handle(state: State, message: Message) {
           }
         }
       }
+    ReportPin(id, head, reply) -> {
+      process.send(reply, Nil)
+      case turn.live(state.activity, id), head, state.pin {
+        True, Some(head), loop.Pinned(prompt, _) ->
+          actor.continue(State(..state, pin: loop.Pinned(prompt, Some(head))))
+        True, None, loop.Pinned(..) ->
+          case
+            conversation.clear_prompt_pin(
+              runtime.ledger(state.host),
+              state.info.id,
+            )
+          {
+            Ok(_) -> actor.continue(State(..state, pin: loop.Unpinned))
+            Error(error) ->
+              actor.continue(emit(
+                state,
+                view.text(
+                  "error",
+                  "compaction finished but the pinned system prompt could not be released: "
+                    <> error,
+                ),
+              ))
+          }
+        _, _, _ -> actor.continue(state)
+      }
+    }
     RecordContext(id, snapshot, reply) -> {
       process.send(reply, Nil)
       case turn.live(state.activity, id) {
@@ -1511,6 +1571,7 @@ fn start_worker(
       state.info.model,
       state.host,
       kernel,
+      state.pin,
       client,
       fn(event) { actor.call(owner, 5000, Publish(run_id, event, _)) },
       fn(inputs, stage) {
@@ -1538,6 +1599,7 @@ fn start_worker(
         actor.call(owner, 10_000, RecordUsage(run_id, metadata, _))
       },
       fn() { actor.call(owner, 10_000, DrainSteering(run_id, _)) },
+      fn(head) { actor.call(owner, 5000, ReportPin(run_id, head, _)) },
     )
   let pid =
     process.spawn(fn() {
@@ -1587,6 +1649,69 @@ fn projected_for(
     None -> Error("transcript is not loaded")
     Some(history) -> projection.for_model(history, provider, protocol)
   }
+}
+
+/// After a reload changed the session's prompt prefix (system instructions or
+/// leading extension context), keep the prefix the provider has cached and
+/// deliver the new one as a durable user turn. The pin lasts until compaction
+/// rewrites history. Sessions without history have nothing cached and simply
+/// use the new prompt.
+fn record_refresh_context(
+  state: State,
+  previous: Option(#(String, List(types.Input))),
+) -> Result(#(State, String), String) {
+  let current = runtime.peek_prompt(state.host, state.info.id)
+  case previous, current {
+    Some(#(old_instructions, old_context)), Some(#(instructions, context))
+      if old_instructions != instructions || old_context != context
+    -> {
+      use state <- result.try(ensure_history(state))
+      case state.history {
+        Some([_, ..]) -> {
+          let #(pinned, head) = case state.pin {
+            loop.Pinned(prompt, head) -> #(prompt, head)
+            loop.Unpinned -> #(
+              conversation.PinnedPrompt(old_instructions, old_context),
+              None,
+            )
+          }
+          let update = context_update(instructions, context)
+          use timestamp <- result.try(conversation.append_capability_update(
+            runtime.ledger(state.host),
+            state.info.id,
+            pinned,
+            update,
+          ))
+          let state = remember(state, [types.User(update)], timestamp)
+          Ok(#(
+            State(..state, pin: loop.Pinned(pinned, head)),
+            "; the change reaches the model as a context update, and the system prompt is rebuilt at the next compaction",
+          ))
+        }
+        _ -> Ok(#(state, ""))
+      }
+    }
+    _, _ -> Ok(#(state, ""))
+  }
+}
+
+fn context_update(instructions: String, context: List(types.Input)) -> String {
+  let context =
+    list.filter_map(context, fn(input) {
+      case input {
+        types.User(text) | types.Assistant(text) -> Ok(text)
+        _ -> Error(Nil)
+      }
+    })
+  [
+    "[albedo] This session's skills, instruction files, or MCP servers changed. "
+      <> "Until the next compaction, the extension instructions and context "
+      <> "earlier in this conversation are out of date; what follows replaces them.",
+    "Current extension instructions:\n" <> instructions,
+    ..context
+  ]
+  |> list.filter(fn(part) { string.trim(part) != "" })
+  |> string.join("\n\n")
 }
 
 fn projected_inputs(state: State) -> Result(List(types.Input), String) {
@@ -1653,8 +1778,7 @@ pub fn extensions(session: Session) -> Result(List(extension.Summary), String) {
 
 pub fn set_extension(
   session: Session,
-  name: String,
-  enabled: Bool,
+  change: extension.Change,
 ) -> Result(List(extension.Summary), String) {
-  actor.call(session, 40_000, ChangeExtension(name, enabled, _))
+  actor.call(session, 40_000, ChangeExtension(change, _))
 }

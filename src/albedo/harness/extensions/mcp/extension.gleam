@@ -155,10 +155,10 @@ fn bundle(resolve: fn() -> Result(Config, String)) -> extension.Extension {
 fn prepare(
   config: Config,
   _ledger: store.Store,
-  _session: String,
+  session: String,
   _workspace: String,
 ) -> Result(extension.Managed, String) {
-  use handle <- result.try(native_prepare(encode_config(config)))
+  use handle <- result.try(native_prepare(encode_config(config), session))
   case decode_definitions(native_definitions(handle)) {
     Error(error) -> {
       native_close(handle)
@@ -267,7 +267,7 @@ fn encode_refs(values: Dict(String, EnvRef)) -> Json {
 fn dynamic_json(value: Dynamic) -> Json
 
 @external(erlang, "albedo_mcp", "prepare")
-fn native_prepare(config: String) -> Result(Handle, String)
+fn native_prepare(config: String, session: String) -> Result(Handle, String)
 
 @external(erlang, "albedo_mcp", "definitions")
 fn native_definitions(handle: Handle) -> String

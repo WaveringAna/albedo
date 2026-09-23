@@ -10,6 +10,7 @@ import albedo/harness/command
 import albedo/harness/extension as harness_extension
 import albedo/harness/extensions/skills/catalog
 import albedo/harness/extensions/skills/rpc
+import albedo/harness/settings
 import gleam/dict
 import gleam/list
 import gleam/result
@@ -25,8 +26,24 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
     "Discover Agent Skills metadata and activate selected instructions or resources on demand.",
     ["python", "commands"],
     [
-      harness_extension.ManagedPlugin(fn(_, _, workspace) {
-        use snapshot <- result.try(catalog.scan_at(workspace, home))
+      harness_extension.ManagedPlugin(fn(_, session, workspace) {
+        use discovered <- result.try(catalog.scan_at(workspace, home))
+        use selected <- result.try(
+          list.try_map(discovered.skills, fn(skill) {
+            use enabled <- result.try(item_enabled(
+              settings.home(),
+              session,
+              "skills",
+              skill.name,
+            ))
+            Ok(#(skill.name, enabled))
+          }),
+        )
+        let names =
+          selected
+          |> list.filter(fn(pair) { pair.1 })
+          |> list.map(fn(pair) { pair.0 })
+        let snapshot = catalog.only(discovered, names)
         Ok(
           harness_extension.Managed(
             catalog.context(snapshot),
@@ -43,6 +60,14 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
     fn(_) { Ok(Nil) },
   )
 }
+
+@external(erlang, "albedo_capabilities", "enabled")
+fn item_enabled(
+  home: String,
+  session: String,
+  kind: String,
+  name: String,
+) -> Result(Bool, String)
 
 const instructions = "Agent Skills are cataloged session commands. Invoke one through the `commands` object (commands.catalog() maps slash names to methods): it returns the skill's instructions as data and never submits a turn or executes bundled scripts. `await skills.resources(name)` returns a record whose .resources lists bundled resource names, and `await skills.read(name, resource=\"SKILL.md\", offset=0, limit=16384)` reads one bounded page as a record: page.content, page.next_offset, and page.truncated (page[\"content\"] works too). Failures raise SkillsError. A user may explicitly run the listed slash command, which submits the activation as one user turn."
 

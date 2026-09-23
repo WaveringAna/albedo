@@ -9,6 +9,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 
 pub fn event(kind: String, fields: List(#(String, json.Json))) -> String {
   json.object([#("type", json.string(kind)), ..fields]) |> json.to_string
@@ -274,7 +275,7 @@ fn responses_thinking(item: types.ReplayItem) -> String {
         [] -> fragments("content")
         summary -> summary
       }
-      list.fold(parts, "", fn(text, part) { text <> part })
+      string.join(parts, "\n\n")
     }
     _ -> ""
   }

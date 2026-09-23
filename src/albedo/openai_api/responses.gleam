@@ -69,6 +69,7 @@ fn dispatch(
   case kind {
     "response.created" -> created(state, value)
     "response.output_text.delta" -> text_delta(state, value)
+    "response.reasoning_summary_part.added" -> summary_part_added(state, value)
     "response.reasoning_summary_text.delta" ->
       reasoning_delta(state, value, "response.reasoning_summary_text.delta")
     "response.reasoning_text.delta" ->
@@ -164,6 +165,24 @@ fn put_output(
         order.Gt -> [first, ..put_output(rest, item)]
       }
     }
+  }
+}
+
+/// Summary parts arrive as separate paragraphs with no separator in their
+/// deltas; every part after the first opens with a paragraph break.
+fn summary_part_added(
+  state: State,
+  value: dynamic.Dynamic,
+) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
+  let decoder = decode.field("summary_index", decode.int, decode.success)
+  use index <- result.try(run(
+    value,
+    decoder,
+    "response.reasoning_summary_part.added",
+  ))
+  case index > 0 {
+    True -> Ok(#(state, [types.ThinkingDelta("\n\n")], None))
+    False -> Ok(#(state, [], None))
   }
 }
 

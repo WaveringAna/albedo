@@ -67,9 +67,15 @@ type Message {
     String,
     Subject(Result(#(List(command.Command), command.Context), String)),
   )
-  Reload(String, String, String, Bool, Subject(Result(Session, String)))
+  Reload(
+    String,
+    String,
+    extension.Change,
+    Subject(Result(Option(Session), String)),
+  )
   Refresh(String, Subject(Result(Option(Session), String)))
   Summaries(String, Subject(Result(List(extension.Summary), String)))
+  PeekPrompt(String, Subject(Option(#(String, List(types.Input)))))
   Reset(String, Subject(Nil))
   Forget(String, Subject(Nil))
   Stop(Subject(Nil))
@@ -177,7 +183,30 @@ pub fn reload_extension(
   name: String,
   enabled: Bool,
 ) -> Result(Session, String) {
-  actor.call(runtime.subject, 30_000, Reload(id, cwd, name, enabled, _))
+  use replaced <- result.try(change_extension(
+    runtime,
+    id,
+    cwd,
+    extension.SetSession(name, enabled),
+  ))
+  case replaced {
+    Some(session) -> Ok(session)
+    None ->
+      actor.call(runtime.subject, 30_000, Open(id, cwd, _))
+      |> result.map_error(string.inspect)
+  }
+}
+
+/// Applies an extension change for one session. A change that leaves this
+/// session's selection as it was is only recorded and answers `None`;
+/// otherwise the session gets a replacement kernel, as `reload_extension`.
+pub fn change_extension(
+  runtime: Runtime,
+  id: String,
+  cwd: String,
+  change: extension.Change,
+) -> Result(Option(Session), String) {
+  actor.call(runtime.subject, 30_000, Reload(id, cwd, change, _))
 }
 
 /// Re-prepare one session's cached composition from disk and swap it into the
@@ -193,6 +222,27 @@ pub fn refresh_session(
   id: String,
 ) -> Result(Option(Session), String) {
   actor.call(runtime.subject, 30_000, Refresh(id, _))
+}
+
+/// The prompt prefix this session's composition contributes, as its system
+/// instructions and leading context inputs, if the session already has one.
+/// Reads no files and never opens a kernel.
+pub fn peek_prompt(
+  runtime: Runtime,
+  id: String,
+) -> Option(#(String, List(types.Input))) {
+  actor.call(runtime.subject, 10_000, PeekPrompt(id, _))
+}
+
+/// The extension context that leads this session's model input.
+pub fn context(session: Session) -> List(types.Input) {
+  session.context
+}
+
+/// The same session with a different leading context, for a request that
+/// must reuse the context its prompt cache was built with.
+pub fn with_context(session: Session, context: List(types.Input)) -> Session {
+  Session(..session, context: context)
 }
 
 pub fn extension_summaries(
@@ -489,19 +539,41 @@ fn handle(state: State, message: Message) {
               }
           }
       }
-    Reload(id, cwd, name, enabled, reply) -> {
+    Reload(id, cwd, change, reply) -> {
       let proposed =
-        extension.selection(
+        extension.propose(
           state.work,
           state.extensions,
           state.default_enabled,
           id,
-          name,
-          enabled,
+          change,
         )
+      let current =
+        extension.enabled(
+          state.work,
+          state.extensions,
+          state.default_enabled,
+          id,
+        )
+      let names = fn(selected: List(extension.Extension)) {
+        list.map(selected, fn(extension) { extension.name })
+      }
+      let unchanged = case proposed, current {
+        Ok(selected), Ok(running) -> names(selected) == names(running)
+        _, _ -> False
+      }
       case proposed {
         Error(error) -> {
           process.send(reply, Error(error))
+          actor.continue(state)
+        }
+        // Nothing this session runs changes: record the choice and keep the
+        // live kernel, its namespace, and its prompt cache.
+        Ok(_) if unchanged -> {
+          process.send(
+            reply,
+            extension.record(state.work, id, change) |> result.replace(None),
+          )
           actor.continue(state)
         }
         Ok(selected) -> {
@@ -533,7 +605,7 @@ fn handle(state: State, message: Message) {
               actor.continue(state)
             }
             Ok(#(cached, replacement)) ->
-              case extension.set_enabled(state.work, id, name, enabled) {
+              case extension.record(state.work, id, change) {
                 Error(error) -> {
                   stop_session("extension reload rollback", replacement)
                   process.send(reply, Error(error))
@@ -548,7 +620,7 @@ fn handle(state: State, message: Message) {
                     Ok(prior) -> extension.close(prior.composition)
                     Error(_) -> Nil
                   }
-                  process.send(reply, Ok(replacement))
+                  process.send(reply, Ok(Some(replacement)))
                   actor.continue(
                     State(
                       ..state,
@@ -591,6 +663,17 @@ fn handle(state: State, message: Message) {
             }
           }
       }
+    }
+    PeekPrompt(id, reply) -> {
+      process.send(
+        reply,
+        dict.get(state.compositions, id)
+          |> result.map(fn(cached) {
+            Some(#(extension.instructions(cached.composition), cached.context))
+          })
+          |> result.unwrap(None),
+      )
+      actor.continue(state)
     }
     Summaries(id, reply) -> {
       let composition = case

@@ -429,6 +429,8 @@ fn extension_json(summary: extension.Summary) -> json.Json {
     #("name", json.string(summary.name)),
     #("description", json.string(summary.description)),
     #("enabled", json.bool(summary.enabled)),
+    #("overridden", json.bool(summary.overridden)),
+    #("global_enabled", json.bool(summary.global_enabled)),
     #("context", json.bool(summary.context)),
     #("tools", json.array(summary.tools, json.string)),
     #("python_modules", json.array(summary.python_modules, json.string)),
@@ -513,6 +515,7 @@ fn route(
                     "session_provider",
                     "session_workspace",
                     "session_extensions",
+                    "global_extensions",
                     "session_tree",
                     "session_context",
                     "session_commands",
@@ -618,16 +621,37 @@ fn route(
                     Error(e) -> error(409, e)
                   }
                 Post, "extensions" -> {
+                  // `scope` "global" changes the default every session
+                  // without its own choice follows; "inherit" drops this
+                  // session's choice. Omitted, it is a session choice.
                   let decoder = {
                     use name <- decode.field("name", decode.string)
-                    use enabled <- decode.field("enabled", decode.bool)
-                    decode.success(#(name, enabled))
+                    use scope <- decode.optional_field(
+                      "scope",
+                      "session",
+                      decode.string,
+                    )
+                    use enabled <- decode.optional_field(
+                      "enabled",
+                      None,
+                      decode.optional(decode.bool),
+                    )
+                    case scope, enabled {
+                      "session", Some(value) ->
+                        decode.success(extension.SetSession(name, value))
+                      "global", Some(value) ->
+                        decode.success(extension.SetGlobal(name, value))
+                      "inherit", _ -> decode.success(extension.Inherit(name))
+                      _, _ ->
+                        decode.failure(
+                          extension.Inherit(name),
+                          "scope session or global with enabled, or inherit",
+                        )
+                    }
                   }
                   case
                     body(req, decoder)
-                    |> result.try(fn(change) {
-                      session.set_extension(worker, change.0, change.1)
-                    })
+                    |> result.try(session.set_extension(worker, _))
                   {
                     Ok(summaries) ->
                       reply(200, json.array(summaries, extension_json))
