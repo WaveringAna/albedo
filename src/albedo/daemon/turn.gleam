@@ -7,14 +7,19 @@
 import albedo/daemon/conversation
 import albedo/openai_api/types
 import gleam/erlang/process
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 
-/// Who submitted a turn. Only chat messages wait in the steering queue; a job
-/// wake that finds the session busy is refused so the kernel retries it.
+/// Who submitted a turn. Chat messages wait in the queue while a run is
+/// active; a job wake that finds the session busy is refused so the kernel
+/// retries it; a note always waits, and never starts a turn on its own.
 pub type Source {
   Chat
   JobWake
+  /// Something an extension tells the agent, such as a user's work ledger
+  /// change. `origin` labels it in the transcript.
+  Note(origin: String)
 }
 
 pub type Submission {
@@ -63,13 +68,14 @@ pub type Rejection {
   Oversized
 }
 
-/// The most chat messages that wait behind one active run.
+/// The most chat messages and notes that wait in one session's queue.
 pub const queue_limit = 32
 
 pub fn source_name(source: Source) -> String {
   case source {
     Chat -> "chat"
     JobWake -> "bash"
+    Note(origin) -> origin
   }
 }
 
@@ -78,14 +84,19 @@ pub fn admit(
   submission: Submission,
   queued: Int,
 ) -> Admission {
-  case activity, bounded(submission) {
-    _, False -> Reject(Oversized)
-    Running(_), True ->
-      case submission.source == Chat && queued < queue_limit {
-        True -> Queue
-        False -> Reject(Busy)
-      }
-    Resting, True | Interrupted, True -> Start
+  case activity, bounded(submission), submission.source {
+    _, False, _ -> Reject(Oversized)
+    _, True, Note(_) -> room(queued)
+    Running(_), True, Chat -> room(queued)
+    Running(_), True, JobWake -> Reject(Busy)
+    Resting, True, _ | Interrupted, True, _ -> Start
+  }
+}
+
+fn room(queued: Int) -> Admission {
+  case queued < queue_limit {
+    True -> Queue
+    False -> Reject(Busy)
   }
 }
 
@@ -99,6 +110,12 @@ fn bounded(submission: Submission) -> Bool {
   string.trim(submission.text) != ""
   && string.byte_size(submission.text) <= maximum
   && string.byte_size(submission.display) <= 1_048_576
+}
+
+/// Whether a finished run should start another for this queue: notes alone
+/// wait for the user's next message.
+pub fn starts_turn(queued: List(Submission)) -> Bool {
+  list.any(queued, fn(submission) { submission.source == Chat })
 }
 
 pub fn running(activity: Activity) -> Option(Run) {

@@ -31,6 +31,10 @@ class Work:
             raise ValueError("unknown work fields: " + repr(changes.keys() - allowed))
         return cast(WorkItem, await host("work.update", {"id": id, "revision": revision, **changes}))
 
+    async def delete(self, id: int, *, revision: int) -> WorkItem:
+        """Remove an item at the revision you last read; one with sub-items stays."""
+        return cast(WorkItem, await host("work.delete", {"id": id, "revision": revision}))
+
 
 def setup(api: PythonApi) -> dict[str, object]:
     global host

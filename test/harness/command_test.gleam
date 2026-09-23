@@ -33,6 +33,7 @@ fn demo() {
     [Argument("arguments", "freeform", False, [])],
     True,
     True,
+    False,
     fn(_context, caller, args) {
       let arguments = dict.get(args, "arguments") |> result.unwrap("")
       case caller {
@@ -50,12 +51,13 @@ fn locked() {
     [],
     False,
     False,
+    False,
     fn(_context, _caller, _args) { Ok(Data(json.string("locked"))) },
   )
 }
 
 fn placeholder(arguments: List(Argument)) -> Command {
-  Command("/x", "", arguments, True, False, fn(_, _, _) {
+  Command("/x", "", arguments, True, False, False, fn(_, _, _) {
     Ok(Data(json.string("")))
   })
 }
@@ -109,16 +111,16 @@ pub fn method_names_are_mintable_and_collision_free_test() {
   let methods =
     command.method_names([
       demo(),
-      Command("/skill:model", "", [], True, False, fn(_, _, _) {
+      Command("/skill:model", "", [], True, False, False, fn(_, _, _) {
         Ok(Data(json.string("")))
       }),
-      Command("/skill-model", "", [], True, False, fn(_, _, _) {
+      Command("/skill-model", "", [], True, False, False, fn(_, _, _) {
         Ok(Data(json.string("")))
       }),
-      Command("/catalog", "", [], True, False, fn(_, _, _) {
+      Command("/catalog", "", [], True, False, False, fn(_, _, _) {
         Ok(Data(json.string("")))
       }),
-      Command("/__init__", "", [], True, False, fn(_, _, _) {
+      Command("/__init__", "", [], True, False, False, fn(_, _, _) {
         Ok(Data(json.string("")))
       }),
     ])
@@ -207,7 +209,7 @@ pub fn model_calls_cannot_run_user_only_commands_or_submit_turns_test() {
   // A run that misbehaves and returns a turn in model mode is refused, and the
   // turn is never submitted.
   let sneaky =
-    Command("/sneaky", "", [], True, True, fn(_, _, _) {
+    Command("/sneaky", "", [], True, True, False, fn(_, _, _) {
       Ok(Turn("display", "text"))
     })
   command.dispatch(
@@ -224,7 +226,7 @@ pub fn model_calls_cannot_run_user_only_commands_or_submit_turns_test() {
 pub fn user_turn_is_enforced_in_both_directions_test() {
   // A user-turn command that returns data violates its declaration.
   let confused =
-    Command("/confused", "", [], True, True, fn(_, _, _) {
+    Command("/confused", "", [], True, True, False, fn(_, _, _) {
       Ok(Data(json.string("data")))
     })
   command.dispatch(
@@ -238,7 +240,7 @@ pub fn user_turn_is_enforced_in_both_directions_test() {
   |> should.equal(Error("/confused is a user-turn command but returned data"))
   // A plain command that returns a turn violates its declaration.
   let sneaky =
-    Command("/sneaky", "", [], True, False, fn(_, _, _) {
+    Command("/sneaky", "", [], True, False, False, fn(_, _, _) {
       Ok(Turn("display", "text"))
     })
   command.dispatch(
@@ -380,6 +382,7 @@ pub fn catalog_carries_usage_and_mintable_methods_test() {
         [Argument("x", "", True, [])],
         True,
         False,
+        False,
         fn(_, _, _) { Ok(Data(json.string(""))) },
       ),
     ])
@@ -389,9 +392,9 @@ pub fn catalog_carries_usage_and_mintable_methods_test() {
     "[{\"name\":\"/demo\",\"description\":\"Demo\",\"method\":\"demo\","
     <> "\"usage\":\"/demo [arguments]\",\"arguments\":[{\"name\":\"arguments\","
     <> "\"description\":\"freeform\",\"required\":false}],\"modelCallable\":true,"
-    <> "\"userTurn\":true},{\"name\":\"/skill-model\",\"description\":\"\","
+    <> "\"userTurn\":true,\"page\":false},{\"name\":\"/skill-model\",\"description\":\"\","
     <> "\"method\":\"skill_model\",\"usage\":\"/skill-model <x>\","
     <> "\"arguments\":[{\"name\":\"x\",\"description\":\"\",\"required\":true}],"
-    <> "\"modelCallable\":true,\"userTurn\":false}]",
+    <> "\"modelCallable\":true,\"userTurn\":false,\"page\":false}]",
   )
 }

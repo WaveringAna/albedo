@@ -195,6 +195,7 @@ def run(endpoint):
                 "arguments": [{"name": "arguments", "description": "arguments for the skill", "required": False}],
                 "modelCallable": True,
                 "userTurn": True,
+                "page": False,
             }], demo
             assert {c["name"] for c in catalog} >= {"/model", "/context", "/compact"}
             before = len(Provider.requests)
@@ -286,6 +287,24 @@ def run(endpoint):
             assert switched["result"]["provider"] == "fixture", switched
             listed_sessions = api("/sessions")
             assert next(s for s in listed_sessions if s["id"] == model_session)["model"] == "switched-model"
+            # /work is the work extension's own page. A user change is told to
+            # the agent, but never starts a turn: while idle it waits and rides
+            # ahead of the next message.
+            work_command = next(c for c in api(f"/sessions/{session}/commands") if c["name"] == "/work")
+            assert work_command["page"] is True and not work_command["modelCallable"], work_command
+            page = api(f"/sessions/{session}/commands", {"name": "/work", "args": {}})["result"]["page"]
+            assert page["title"] == "work" and {action["key"] for action in page["actions"]} >= {"a", "d", "x"}, page
+            added = api(f"/sessions/{session}/commands", {"name": "/work", "args": {"action": "add", "details": "write the release notes"}})
+            assert "the agent will be told" in added["result"]["message"], added
+            before = len(Provider.requests)
+            time.sleep(0.3)
+            assert len(Provider.requests) == before, "a ledger note must not start a turn"
+            request = catalog_request(session, "anything new on the ledger?")
+            text = json.dumps(request["input"])
+            assert "The user added work item" in text, text
+            assert text.index("The user added work item") < text.index("anything new on the ledger?"), text
+            page = api(f"/sessions/{session}/commands", {"name": "/work", "args": {}})["result"]["page"]
+            assert any(row["text"] == "write the release notes" for row in page["glance"]["rows"]), page
             rejected(route, {"name": "not-installed", "enabled": False})
             rejected(route, {"name": "python", "enabled": False})
             assert api(route) == installed

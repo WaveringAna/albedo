@@ -132,6 +132,15 @@ fn dispatch(store, method, args) {
       )
       |> result.map(work.to_json)
     }
+    "work.delete" -> {
+      let decoder = {
+        use id <- decode.field("id", decode.int)
+        use revision <- decode.field("revision", decode.int)
+        decode.success(#(id, revision))
+      }
+      use #(id, revision) <- result.try(parse(args, decoder))
+      work.delete(store, id, revision) |> result.map(work.to_json)
+    }
     _ -> Error(work.Invalid("unknown host operation"))
   }
 }

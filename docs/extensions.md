@@ -32,6 +32,10 @@ extension.Extension(
 
 `CommandPlugin` supplies [session commands](commands.md): the same catalog drives the CLI menu, user invocation, and the kernel's typed `commands` bindings. duplicate command names are rejected with the other capability collisions.
 
+A command may also be an extension's own **page**: set `page: True` and, run with no arguments, answer a [`page.Document`](../src/albedo/harness/page.gleam) — a title, rows with a badge and tone, the actions available on them, and an optional short glance. The CLI opens a bare `/name` of a page command as that screen and renders it generically: each action runs the same command with `action` = the action's `run` and `details` = the selected row's id followed by any entered text, chosen option, or preset value, and the page is fetched again afterwards. A glance appears in the chat's right margin when the terminal leaves room beside the 100-column body, and as a count in the header when it does not. `/work` is the first page; a skills toggle or an MCP server list would declare theirs the same way, with no client changes.
+
+A command that tells the agent about a user's change uses the `Note(origin, display, text)` state operation: the note waits in the session's queue, reaches the model at its next step if a run is active or ahead of the user's next message if not, and never starts a turn by itself.
+
 `ManagedPlugin` prepares session-owned contributions together: context, tool instructions, tools, python modules, host routes, and commands. preparation returns a close callback. a failed replacement releases its prepared resources and leaves the old selection active; successful replacement releases the old resources after the swap. use this for connections or an immutable catalog shared by context and tools.
 
 `ModelsPlugin` supplies catalogued model facts and provider model lists. `ModelProviderPlugin` declares its models.dev namespace and resolves a tagged saved profile into a request client. Built-in dependencies keep these layers explicit: `codex -> openai -> models`. See [models](models.md) and [model authentication](auth.md).
@@ -66,6 +70,10 @@ interfaces: [`PythonApi`](../priv/python/albedo_api.py), [`work`](../src/albedo/
 ## bash
 
 `bash(command)` starts a supervised job that owns its process group; output stays on the handle (`job.tail()`, `output.read(job.id)`) and finished handles stay addressable in `jobs`. a job that finishes with its result unread wakes the session: the kernel reports the completion through the `jobs` host route, and the session submits a user turn naming the job, its exit, and how to read it, so the model never polls or awaits a handle just to learn it finished. awaiting the job, reading its result, or stopping it retires the wake. a busy session is retried, not queued in gleam: the kernel retries the notice until the run ends or the result is read. live jobs pin the kernel against the idle sweep — a detached session is not released while background work still runs, local or remote, because releasing it would kill the job and the wake it owes. remote `bash` jobs wake the same way — the remote kernel's host calls relay over the ssh connection into this session's route, and the notice names the host — and a mirror read (`rem_job.tail()`) tells the remote job it was read through one `poll` round trip.
+
+## work
+
+`work` is a revision-checked ledger shared by humans and agents. The model uses `await work.list/get/create/update/delete`. People use `/work`, its page: `a` adds an item, `e` renames, `d` marks done, `s` sets a status, and `x` removes one (an item with sub-items stays). Typed forms work too: `/work add <title>`, `/work edit <id> <title>`, `/work status <id> <status>`, `/work remove <id>`. Every change a person makes is queued as a note for the agent. Open items appear beside the conversation when the terminal is wide enough.
 
 ## files
 

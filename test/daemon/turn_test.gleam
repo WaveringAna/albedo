@@ -107,3 +107,24 @@ pub fn only_a_clean_finish_leaves_the_session_idle_test() {
   turn.final_stage(turn.Run(..done, cancelled: True), Ok(Nil))
   |> should.equal(conversation.Interrupted)
 }
+
+fn note(text: String) -> turn.Submission {
+  turn.Submission(text, text, "", turn.Note("work"), None)
+}
+
+// A ledger change is news for the agent, not a request: it waits whether or
+// not a run is active, and never starts one by itself.
+pub fn notes_always_wait_and_never_start_a_turn_test() {
+  turn.admit(turn.Resting, note("added #1"), 0) |> should.equal(turn.Queue)
+  turn.admit(running("a"), note("added #1"), 0) |> should.equal(turn.Queue)
+  turn.admit(running("a"), note("added #1"), turn.queue_limit)
+  |> should.equal(turn.Reject(turn.Busy))
+  turn.starts_turn([note("a"), note("b")]) |> should.be_false
+  turn.starts_turn([note("a"), chat("go")]) |> should.be_true
+}
+
+// Waiting notes must not crowd out the user's own message when idle.
+pub fn a_full_note_queue_does_not_block_an_idle_chat_test() {
+  turn.admit(turn.Resting, chat("hello"), turn.queue_limit)
+  |> should.equal(turn.Start)
+}

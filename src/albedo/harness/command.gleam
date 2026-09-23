@@ -50,6 +50,10 @@ pub type StateOp {
   ContextPage(section: String, page: Int)
   Submit(display: String, text: String, client: String)
   Refresh
+  /// Tell the agent something without starting a turn: the note waits in the
+  /// session's queue and reaches the model at its next step or next turn.
+  /// `origin` labels it in the transcript.
+  Note(origin: String, display: String, text: String)
 }
 
 /// The dispatch context: `state` is the session's registered command bridge.
@@ -69,6 +73,10 @@ pub type Command {
     model_callable: Bool,
     /// User invocations submit the outcome as a turn instead of returning it.
     user_turn: Bool,
+    /// Run with no arguments, it answers a page document (`page.document`) that
+    /// a client renders as the extension's own screen; its actions run this
+    /// same command with arguments.
+    page: Bool,
     run: fn(Context, Caller, Dict(String, String)) -> Result(Outcome, String),
   )
 }
@@ -329,6 +337,7 @@ pub fn command_json(command: Command, method: String) -> json.Json {
     ),
     #("modelCallable", json.bool(command.model_callable)),
     #("userTurn", json.bool(command.user_turn)),
+    #("page", json.bool(command.page)),
   ])
 }
 

@@ -397,9 +397,13 @@ fn handle(state: State, message: Message) {
               actor.continue(state)
             }
             Ok(#(state, kernel, client)) -> {
+              // Notes queued while idle ride along ahead of this message.
+              let notes = state.steering
               let accepted =
-                list.append(recover_pending(state, kernel), [
-                  submission_input(submission),
+                list.flatten([
+                  recover_pending(state, kernel),
+                  list.map(notes, submission_input),
+                  [submission_input(submission)],
                 ])
               case projected_inputs(remember(state, accepted, 0)) {
                 Error(error) -> {
@@ -439,7 +443,10 @@ fn handle(state: State, message: Message) {
                     Ok(timestamp) -> {
                       let state =
                         remember(state, accepted, timestamp)
-                        |> fn(state) { State(..state, notice: None) }
+                        |> emit_submissions(notes, timestamp)
+                        |> fn(state) {
+                          State(..state, notice: None, steering: [])
+                        }
                         |> start_run(kernel, client, model_history)
                       process.send(reply, Ok(False))
                       actor.continue(emit(
@@ -1116,6 +1123,13 @@ fn command_op(
       ))
       |> result.map_error(submission_error)
       |> result.replace(json.object([#("submitted", json.bool(True))]))
+    command.Note(origin, display, text) ->
+      actor.call(session, 10_000, Submit(
+        Submission(display, text, "", turn.Note(origin), None),
+        _,
+      ))
+      |> result.map_error(submission_error)
+      |> result.replace(json.object([#("queued", json.bool(True))]))
   }
 }
 
@@ -1371,9 +1385,10 @@ fn failed_queued(state: State, error: String) -> State {
 }
 
 fn start_queued(state: State) -> State {
-  case state.steering {
-    [] -> state
-    queued ->
+  case turn.starts_turn(state.steering) {
+    False -> state
+    True -> {
+      let queued = state.steering
       case prepare_submission(state) {
         Error(error) -> failed_queued(state, submission_error(error))
         Ok(#(state, kernel, client)) -> {
@@ -1413,6 +1428,7 @@ fn start_queued(state: State) -> State {
           }
         }
       }
+    }
   }
 }
 

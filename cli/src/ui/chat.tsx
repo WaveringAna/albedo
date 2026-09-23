@@ -16,6 +16,8 @@ import { MarkdownIndex } from "./markdown-index.js"
 import { joinRows, type Rows } from "./row-index.js"
 import { TranscriptIndex, type TranscriptLayout } from "./transcript-index.js"
 import { useCommandMenu, type ChatCommand } from "./commands.js"
+import { toneColor } from "./page-view.js"
+import type { Glance, PageTone } from "../page.js"
 
 export type ChatScreenProps = {
   baseUrl?: string
@@ -23,6 +25,8 @@ export type ChatScreenProps = {
   visible?: boolean
   usageResetKey?: number
   commands?: ChatCommand[]
+  /** Extension page glances, shown in the right margin when it has room. */
+  glances?: Glance[]
   onCommand?: (value: string, clear: () => void) => boolean
   onCreate?: () => void
   token?: string
@@ -51,6 +55,23 @@ const SYSTEM_CLIPBOARD_IMAGES = { available: clipboardHasImage, read: readClipbo
 const userText = (text: string, image?: ImageMetadata): string => image ? `${text}\n[image · ${imageLabel(image)}]` : text
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 type Connection = "connecting" | "live" | "disconnected"
+const SIDEBAR_GAP = 2
+const SIDEBAR_MIN = 16
+const SIDEBAR_MAX = 32
+const GLANCE_MARK: Record<PageTone, string> = { active: "●", warning: "!", plain: "○", muted: "✓" }
+
+/** A page's glance: its title, then one truncated row per item, most important first. */
+function GlancePanel({ glance, width, height }: { glance: Glance; width: number; height: number }) {
+  const room = Math.max(0, Math.min(height, 12) - 1)
+  const shown = glance.rows.length > room ? glance.rows.slice(0, Math.max(0, room - 1)) : glance.rows
+  return <Box flexDirection="column" width={width} flexShrink={0}>
+    <Text color="gray" wrap="truncate-end">{glance.title} · {glance.rows.length}</Text>
+    {shown.map(row => <Text key={row.id} wrap="truncate-end">
+      <Text color={toneColor(row.tone)}>{GLANCE_MARK[row.tone]}</Text> {row.text}
+    </Text>)}
+    {shown.length < glance.rows.length && <Text color="gray">+{glance.rows.length - shown.length} more</Text>}
+  </Box>
+}
 
 const formatNumber = (value: number): string => value >= 100 ? value.toFixed(0) : value >= 10 ? value.toFixed(1) : value.toFixed(2)
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error)
@@ -83,7 +104,7 @@ const describeFailure = (error: unknown, agentId?: string): string => {
 }
 
 export function ChatScreen({
-  baseUrl, transport, visible = true, usageResetKey = 0, commands, onCommand, onCreate,
+  baseUrl, transport, visible = true, usageResetKey = 0, commands, glances = [], onCommand, onCreate,
   token, agentId, agentName, workspace, model, notice, errorNotice, onWorkspaceChanged, fetchImpl, copySelection,
   clipboardImages = SYSTEM_CLIPBOARD_IMAGES, onBack, onQuit,
   settleMs = 750, reconnectMs = 1_000,
@@ -501,6 +522,13 @@ export function ChatScreen({
   const padding = width >= 50 ? 2 : 1
   const viewportWidth = Math.max(1, width - padding * 2)
   const contentWidth = Math.min(100, viewportWidth)
+  // A glance lives only in the margin beside the capped body text: message text
+  // never reflows for it, and headings end at its left edge so their clocks sit
+  // beside it. Without room it collapses to a count in the header.
+  const glance = glances.find(item => item.rows.length)
+  const margin = viewportWidth - contentWidth - SIDEBAR_GAP
+  const sidebarWidth = glance && margin >= SIDEBAR_MIN ? Math.min(SIDEBAR_MAX, margin) : 0
+  const transcriptWidth = sidebarWidth ? viewportWidth - sidebarWidth - SIDEBAR_GAP : viewportWidth
   const screenReader = useIsScreenReaderEnabled()
   const busy = connection !== "disconnected" && !failure && Boolean(stopping || toolProgress || (status?.running && !status.idle && status.phase !== "waiting"))
   const { frame } = useAnimation({ interval: 80, isActive: visible && busy && !screenReader })
@@ -514,7 +542,7 @@ export function ChatScreen({
   const pendingRows = Math.min(3, pending.length, Math.max(0, height - 7 - recoveryRows - (notice || errorNotice ? 1 : 0)))
   const menuRows = Math.min(menu.rows, Math.max(0, height - 9 - recoveryRows - pendingRows))
   const transcriptRows = Math.max(1, height - 6 - recoveryRows - pendingRows - (notice || errorNotice ? 1 : 0) - menuRows)
-  const history = transcript.layout(flags, speaker, contentWidth, viewportWidth)
+  const history = transcript.layout(flags, speaker, contentWidth, transcriptWidth)
   // Resizing or expanding changes row counts above the viewport, not the record
   // being read. Tail appends keep the same layout and never move a history anchor.
   if (scrollLayout !== history) {
@@ -589,7 +617,7 @@ export function ChatScreen({
   const firstRow = 2 + (notice ? 1 : 0)
   const pointAt = (event: MouseEvent, position: number): Point => ({
     row: position + Math.max(0, Math.min(event.y - 1 - firstRow, transcriptRows - 1)),
-    column: Math.max(0, Math.min(event.x - 1 - padding, viewportWidth)),
+    column: Math.max(0, Math.min(event.x - 1 - padding, transcriptWidth)),
   })
   const handleMouse = (event: MouseEvent): void => {
     if (event.press && (event.button === 64 || event.button === 65)) {
@@ -656,14 +684,18 @@ export function ChatScreen({
     <Box height={1} flexShrink={0} gap={2}>
       <Box flexShrink={0}><Text bold>{speaker}</Text></Box>
       <Box flexGrow={1} flexShrink={1}><Text color="gray" wrap="truncate-middle">{directory ?? "chat"}</Text></Box>
+      {glance && !sidebarWidth && <Box flexShrink={0}><Text color="gray">{glance.title} {glance.rows.length}</Text></Box>}
       {model && <Box maxWidth={Math.floor(contentWidth / 2)} flexShrink={0}><Text color="gray" wrap="truncate-start">{model}</Text></Box>}
     </Box>
     <Text> </Text>
     {errorNotice
       ? <Text color="redBright" wrap="truncate-end">error: {errorNotice}</Text>
       : notice && <Text color="cyanBright" wrap="truncate-end">{notice}</Text>}
-    <Box flexDirection="column" height={transcriptRows} width={viewportWidth} overflow="hidden" flexShrink={0}>
-      <Text>{lineCount ? highlightSelection(displayRows.slice(top, top + transcriptRows), top, drag.current?.selection ?? { anchor: { row: 0, column: 0 }, head: { row: 0, column: 0 } }).join("\n") : color(90, "what are we working on?")}</Text>
+    <Box height={transcriptRows} flexShrink={0} gap={SIDEBAR_GAP}>
+      <Box flexDirection="column" height={transcriptRows} width={transcriptWidth} overflow="hidden" flexShrink={0}>
+        <Text>{lineCount ? highlightSelection(displayRows.slice(top, top + transcriptRows), top, drag.current?.selection ?? { anchor: { row: 0, column: 0 }, head: { row: 0, column: 0 } }).join("\n") : color(90, "what are we working on?")}</Text>
+      </Box>
+      {glance && sidebarWidth > 0 && <GlancePanel glance={glance} width={sidebarWidth} height={transcriptRows} />}
     </Box>
     {pending.slice(0, pendingRows < 3 ? pendingRows : 2).map((item, index) => <Text key={index} color="yellow" wrap="truncate-end">{item.queued ? `queued ${index + 1}` : "sending"} · {userText(item.text, item.image).replace(/\s+/g, " ")}</Text>)}
     {pendingRows === 3 && pending.length > 2 && <Text color="yellow" wrap="truncate-end">+{pending.length - 2} more pending</Text>}

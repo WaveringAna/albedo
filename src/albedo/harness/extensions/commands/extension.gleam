@@ -45,6 +45,7 @@ fn model() -> Command {
     ],
     True,
     False,
+    False,
     fn(ctx: Context, caller, args) {
       // A model call is always mid-turn, so it may only read the selection.
       let provider = case dict.get(args, "provider") {
@@ -80,6 +81,7 @@ fn reload() -> Command {
         ["models", "session"],
       ),
     ],
+    False,
     False,
     False,
     fn(ctx: Context, _caller, args) {
@@ -137,6 +139,7 @@ fn compact() -> Command {
     [],
     False,
     False,
+    False,
     fn(ctx: Context, caller, _args) {
       case caller {
         ModelCall ->
@@ -158,6 +161,7 @@ fn context_inspect() -> Command {
       Argument("page", "0-based page number within the section", False, []),
     ],
     True,
+    False,
     False,
     fn(ctx: Context, _caller, args) {
       use value <- result.try(case dict.get(args, "section") {

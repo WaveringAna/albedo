@@ -7,6 +7,8 @@ import { ModelPicker } from "./model-picker.js"
 import { ExtensionPicker } from "./extension-picker.js"
 import { TreePicker, type TreeCheckpoint, type TreePage } from "./tree-picker.js"
 import { ContextInspector } from "./context-inspector.js"
+import { PageView } from "./page-view.js"
+import { parsePage, type Glance } from "../page.js"
 import { request, type Connection, type Session } from "../daemon.js"
 import { commandMenuItems, parseCommandCatalog, parseCommandInvocation, type SessionCommand } from "../commands.js"
 
@@ -29,6 +31,10 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
   const [treeNextCursor,setTreeNextCursor]=useState<number>()
   const [extensionRevision,setExtensionRevision]=useState(0)
   const [commandCatalog,setCommandCatalog]=useState<SessionCommand[]>([])
+  const [openPage,setOpenPage]=useState<string>()
+  const [glances,setGlances]=useState<Glance[]>([])
+  const [glanceRevision,setGlanceRevision]=useState(0)
+  const pageCommands = commandCatalog.filter(command => command.page).map(command => command.name).join(" ")
   const listedSessions = selected && !sessions.some(session => session.id === selected.id) ? [selected, ...sessions] : sessions
   const commandMenu = [
     { name: "/login", description: "add or select a named openai-compatible api" },
@@ -85,6 +91,19 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
       })
     return () => { active = false }
   }, [connection, selected?.id, selected?.workspace, extensionRevision])
+  // Extension pages may offer a glance for the chat's sidebar; poll them while chatting.
+  useEffect(() => {
+    const names = pageCommands ? pageCommands.split(" ") : []
+    if (!selected || !names.length) { setGlances([]); return }
+    let active = true
+    const refresh = (): void => {
+      void Promise.all(names.map(name => runCommand(name, {}).then(parsePage).catch(() => undefined)))
+        .then(pages => { if (active) setGlances(pages.flatMap(page => page?.glance ? [page.glance] : [])) })
+    }
+    refresh()
+    const timer = setInterval(refresh, 3_000)
+    return () => { active = false; clearInterval(timer) }
+  }, [connection, selected?.id, pageCommands, glanceRevision])
   useEffect(() => {
     if (!choosingTree || !selected) return
     let active = true
@@ -135,7 +154,7 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
       { id:"new",label:"new coding session",detail:workspace },
       { id:"login",label:"/login",detail:"add or select an api provider" },
       ...listedSessions.map(session => ({ id:session.id,label:typeof session.title === "string" ? session.title.trim() || "new session" : "session · label unavailable",detail:`${session.model} · ${session.workspace}` })),
-    ]} onSelect={id => { if (id==="new") create(); else if (id==="login") setLoggingIn({}); else { setSelected(listedSessions.find(session=>session.id===id));setChoosing(false) } }} onCancel={() => selected ? setChoosing(false) : quit()} /> : selected && <><ChatScreen key={selected.id} visible={!choosingModel && !choosingExtensions && !choosingTree && !choosingContext} usageResetKey={extensionRevision}
+    ]} onSelect={id => { if (id==="new") create(); else if (id==="login") setLoggingIn({}); else { setSelected(listedSessions.find(session=>session.id===id));setChoosing(false) } }} onCancel={() => selected ? setChoosing(false) : quit()} /> : selected && <><ChatScreen key={selected.id} visible={!choosingModel && !choosingExtensions && !choosingTree && !choosingContext && !openPage} glances={glances} usageResetKey={extensionRevision}
       baseUrl={`http://127.0.0.1:${connection.port}`} token={connection.token} agentId={selected.id} agentName="albedo"
       workspace={selected.workspace} model={selected.model} onWorkspaceChanged={workspaceChanged} onBack={()=>setChoosing(true)} onQuit={quit} onCreate={create}
       notice={notice} errorNotice={error} commands={commandMenu}
@@ -154,6 +173,7 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
         if (value==="/context") { clear();setError("");setChoosingContext(true);return true }
         if (["/sessions","/agents","/a"].includes(value)) { clear();setChoosing(true);return true }
         if (value==="/new") { clear();create();return true }
+        if (commandCatalog.some(command => command.page && command.name === value)) { clear();setError("");setOpenPage(value);return true }
         const command = parseCommandInvocation(value, commandCatalog)
         if (command) {
           clear(); setError(""); setNotice(command.name === "/reload" ? "Reloading…" : "")
@@ -170,6 +190,8 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
       {choosingModel && <ModelPicker connection={connection} provider={selected.provider} current={selected.model} onSelect={changeModel} onCancel={()=>setChoosingModel(false)} />}
       {choosingExtensions && <ExtensionPicker connection={connection} sessionId={selected.id} onChanged={()=>setExtensionRevision(value=>value+1)} onCancel={()=>setChoosingExtensions(false)} />}
       {choosingTree && <TreePicker page={treePage} loading={treeLoading} error={treeError} onPrevious={()=>setTreePageIndex(index=>Math.max(0,index-1))} onNext={nextTreePage} onFork={forkTree} onCancel={()=>setChoosingTree(false)} />}
+      {openPage && <PageView key={openPage} command={openPage} run={args => runCommand(openPage, args)}
+        onChanged={()=>setGlanceRevision(value=>value+1)} onCancel={()=>setOpenPage(undefined)} />}
       {choosingContext && <ContextInspector connection={connection} sessionId={selected.id} onCancel={()=>setChoosingContext(false)} />}</>}
   </Box>
 }

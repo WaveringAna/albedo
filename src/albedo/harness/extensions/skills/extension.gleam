@@ -58,6 +58,7 @@ fn skill_command(
     [command.Argument("arguments", "arguments for the skill", False, [])],
     True,
     True,
+    False,
     fn(_context, caller, args) {
       let arguments = dict.get(args, "arguments") |> result.unwrap("")
       use activation <- result.try(catalog.activate(

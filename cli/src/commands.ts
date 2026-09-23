@@ -12,6 +12,8 @@ export type SessionCommand = {
   arguments: CommandArgument[]
   modelCallable: boolean
   userTurn: boolean
+  /** Opens as the extension's own page when run bare; older daemons omit it. */
+  page?: boolean
 }
 
 export type CommandInvocation = {
@@ -52,7 +54,8 @@ function parseCommand(item: unknown): SessionCommand | undefined {
       typeof command.description !== "string" ||
       typeof command.method !== "string" || !methodPattern.test(command.method) ||
       !validArgs ||
-      typeof command.modelCallable !== "boolean" || typeof command.userTurn !== "boolean")
+      typeof command.modelCallable !== "boolean" || typeof command.userTurn !== "boolean" ||
+      (command.page !== undefined && typeof command.page !== "boolean"))
     return undefined
   return command as SessionCommand
 }

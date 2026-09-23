@@ -223,6 +223,37 @@ pub fn update(store: Store, item: Item) -> Result(Item, Error) {
   one(items)
 }
 
+/// Remove one item at the revision the caller last saw. An item with children
+/// stays: its sub-items would lose their parent.
+pub fn delete(store: Store, id: Int, revision: Int) -> Result(Item, Error) {
+  use items <- result.try(
+    query(store, fn(db) {
+      use existing <- result.try(
+        rows(db, "SELECT " <> columns <> " FROM work WHERE id=?", [
+          sqlight.int(id),
+        ]),
+      )
+      use children <- result.try(
+        rows(db, "SELECT " <> columns <> " FROM work WHERE parent=? LIMIT 1", [
+          sqlight.int(id),
+        ]),
+      )
+      case existing, children {
+        [], _ -> Error(NotFound)
+        _, [_, ..] -> Error(Invalid("remove its sub-items first"))
+        [current, ..], [] if current.revision != revision -> Error(Conflict)
+        _, [] ->
+          rows(
+            db,
+            "DELETE FROM work WHERE id=? AND revision=? RETURNING " <> columns,
+            [sqlight.int(id), sqlight.int(revision)],
+          )
+      }
+    }),
+  )
+  items |> list.first |> result.replace_error(Conflict)
+}
+
 fn validate(title, notes, session, run) {
   case
     string.trim(title) == ""
