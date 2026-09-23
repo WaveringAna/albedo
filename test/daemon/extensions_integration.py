@@ -269,7 +269,7 @@ def run(endpoint):
             assert request["input"][0] == cached["input"][0], "reload changed the cached leading context"
             assert "added after the session opened" not in json.dumps(request["input"][0])
             updates = [item for item in request["input"] if item.get("role") == "user"
-                       and str(item.get("content", "")).startswith("[albedo] This session's skills")]
+                       and str(item.get("content", "")).startswith("[albedo] This session's extensions changed")]
             assert len(updates) == 1 and "added after the session opened" in updates[0]["content"], request
             before = len(Provider.requests)
             api(f"/sessions/{session}/events", {"content": "hot probe after reload"})
@@ -331,7 +331,12 @@ def run(endpoint):
             rejected(f"/sessions/{session}/commands", {"name": "/demo", "arguments": "must not run"})
             assert json.loads((home/"daemon.json").read_text())["pid"] == daemon_pid
             request = catalog_request(session, "extension disabled")
-            assert "<available_skills>" not in json.dumps(request), request
+            # Disabling skills keeps the cached prefix (the python tool is
+            # unchanged); the model is told the skills context was removed.
+            update = next(item["content"] for item in reversed(request["input"]) if item.get("role") == "user"
+                          and item.get("content", "").startswith("[albedo] This session's extensions changed"))
+            assert "Removed context:\n- skills" in update and "<available_skills>" not in update, update
+            assert "Current extension instructions" not in update and len(update) < 4000, update
             assert "skills" not in {module for item in disabled if item["enabled"] for module in item["python_modules"]}
             assert not {"skills_read", "skills_list"} & {tool["name"] for tool in request.get("tools", [])}
             api(f"/sessions/{session}/events", {"content": "hold this turn"})

@@ -561,6 +561,8 @@ fn handle(state: State, message: Message) {
               save_state_within(state, kernel, close_state_timeout)
             None -> Error("no active python namespace")
           }
+          let previous = runtime.peek_prompt(state.host, state.info.id)
+          let previous_tools = option.map(state.kernel, runtime.tools)
           case
             runtime.change_extension(
               state.host,
@@ -595,34 +597,31 @@ fn handle(state: State, message: Message) {
                   "python namespace reset; unsaved variables were lost"
               }
               let state =
-                State(
-                  ..state,
-                  kernel: Some(kernel),
-                  latest_usage: None,
-                  context: unprepared(),
-                )
-              let usage_cleared =
-                conversation.clear_usage(
-                  runtime.ledger(state.host),
-                  state.info.id,
-                )
-              let state =
-                state
-                |> emit(view.text(
-                  "note",
-                  "extensions reloaded; prompt cache usage reset; " <> namespace,
-                ))
-              let state = case usage_cleared {
-                Ok(_) -> state
-                Error(error) ->
-                  emit(
-                    state,
-                    view.text(
-                      "error",
-                      "extensions reloaded but cached usage metadata could not be cleared: "
-                        <> error,
-                    ),
-                  )
+                State(..state, kernel: Some(kernel), context: unprepared())
+              // Most extensions add python modules rather than tools. With
+              // the tool definitions unchanged, the provider's cached prompt
+              // prefix still applies: pin it and deliver the change as a
+              // context update, as /reload does.
+              let state = case previous_tools == Some(runtime.tools(kernel)) {
+                True ->
+                  case pin_changed_prompt(state, previous) {
+                    Ok(#(state, note)) ->
+                      emit(
+                        state,
+                        view.text(
+                          "note",
+                          "extensions reloaded; " <> namespace <> note,
+                        ),
+                      )
+                    Error(error) ->
+                      reset_prompt_cache(state, namespace)
+                      |> emit(view.text(
+                        "error",
+                        "extensions reloaded but the context update could not be saved: "
+                          <> error,
+                      ))
+                  }
+                False -> reset_prompt_cache(state, namespace)
               }
               let summaries =
                 runtime.extension_summaries(state.host, state.info.id)
@@ -732,7 +731,7 @@ fn handle(state: State, message: Message) {
                   )
                 None -> state
               }
-              case record_refresh_context(state, previous) {
+              case pin_changed_prompt(state, previous) {
                 Ok(#(state, note)) -> {
                   process.send(
                     reply,
@@ -1651,12 +1650,47 @@ fn projected_for(
   }
 }
 
-/// After a reload changed the session's prompt prefix (system instructions or
+/// A changed tool list invalidates the provider's cached prefix, so the next
+/// request uses the current prompt: any pin is released and cached-usage
+/// metadata, which described the old prefix, is cleared.
+fn reset_prompt_cache(state: State, namespace: String) -> State {
+  let ledger = runtime.ledger(state.host)
+  let released = case state.pin {
+    loop.Pinned(..) -> conversation.clear_prompt_pin(ledger, state.info.id)
+    loop.Unpinned -> Ok(Nil)
+  }
+  let state = case released {
+    Ok(_) -> State(..state, pin: loop.Unpinned, latest_usage: None)
+    Error(_) -> State(..state, latest_usage: None)
+  }
+  let state =
+    emit(
+      state,
+      view.text(
+        "note",
+        "extensions reloaded; prompt cache usage reset; " <> namespace,
+      ),
+    )
+  case released, conversation.clear_usage(ledger, state.info.id) {
+    Ok(_), Ok(_) -> state
+    Error(error), _ | _, Error(error) ->
+      emit(
+        state,
+        view.text(
+          "error",
+          "extensions reloaded but the previous prompt cache state could not be cleared: "
+            <> error,
+        ),
+      )
+  }
+}
+
+/// After a reload or extension toggle changed the session's prompt prefix (system instructions or
 /// leading extension context), keep the prefix the provider has cached and
 /// deliver the new one as a durable user turn. The pin lasts until compaction
 /// rewrites history. Sessions without history have nothing cached and simply
 /// use the new prompt.
-fn record_refresh_context(
+fn pin_changed_prompt(
   state: State,
   previous: Option(#(String, List(types.Input))),
 ) -> Result(#(State, String), String) {
@@ -1675,7 +1709,8 @@ fn record_refresh_context(
               None,
             )
           }
-          let update = context_update(instructions, context)
+          let update =
+            context_update(old_instructions, old_context, instructions, context)
           use timestamp <- result.try(conversation.append_capability_update(
             runtime.ledger(state.host),
             state.info.id,
@@ -1695,23 +1730,87 @@ fn record_refresh_context(
   }
 }
 
-fn context_update(instructions: String, context: List(types.Input)) -> String {
-  let context =
-    list.filter_map(context, fn(input) {
+/// Describes only what changed between two prompt prefixes: instruction
+/// paragraphs added or dropped, and context blocks added, changed, or removed.
+fn context_update(
+  old_instructions: String,
+  old_context: List(types.Input),
+  instructions: String,
+  context: List(types.Input),
+) -> String {
+  let paragraphs = fn(text) {
+    string.split(text, "\n")
+    |> list.filter(fn(line) { string.trim(line) != "" })
+  }
+  let before = paragraphs(old_instructions)
+  let after = paragraphs(instructions)
+  let blocks = fn(inputs) {
+    list.filter_map(inputs, fn(input) {
       case input {
-        types.User(text) | types.Assistant(text) -> Ok(text)
+        types.User(text) -> Ok(text)
         _ -> Error(Nil)
       }
     })
+  }
+  let old_blocks = blocks(old_context)
+  let new_blocks = blocks(context)
+  let new_names = list.map(new_blocks, block_name)
+  let section = fn(title, items) {
+    case items {
+      [] -> []
+      _ -> [title <> "\n" <> string.join(items, "\n")]
+    }
+  }
   [
-    "[albedo] This session's skills, instruction files, or MCP servers changed. "
-      <> "Until the next compaction, the extension instructions and context "
-      <> "earlier in this conversation are out of date; what follows replaces them.",
-    "Current extension instructions:\n" <> instructions,
-    ..context
+    "[albedo] This session's extensions changed. Until the next compaction, "
+      <> "the extension instructions and context earlier in this conversation "
+      <> "are out of date; apply these changes to them.",
+    ..list.flatten([
+      section(
+        "New or updated instructions:",
+        list.filter(after, fn(line) { !list.contains(before, line) }),
+      ),
+      section(
+        "No longer applies:",
+        before
+          |> list.filter(fn(line) { !list.contains(after, line) })
+          |> list.map(fn(line) { "- " <> first_sentence(line) }),
+      ),
+      section(
+        "New or updated context:",
+        list.filter(new_blocks, fn(block) { !list.contains(old_blocks, block) }),
+      ),
+      section(
+        "Removed context:",
+        old_blocks
+          |> list.map(block_name)
+          |> list.filter(fn(name) {
+            name != "" && !list.contains(new_names, name)
+          })
+          |> list.map(fn(name) { "- " <> name }),
+      ),
+    ])
   ]
-  |> list.filter(fn(part) { string.trim(part) != "" })
   |> string.join("\n\n")
+}
+
+/// The `name` of an `<extension-context name="...">` block, or "".
+fn block_name(block: String) -> String {
+  case string.split_once(block, "<extension-context name=\"") {
+    Ok(#(_, rest)) ->
+      case string.split_once(rest, "\"") {
+        Ok(#(name, _)) -> name
+        Error(_) -> ""
+      }
+    Error(_) -> ""
+  }
+}
+
+fn first_sentence(line: String) -> String {
+  case string.split_once(line, ". ") {
+    Ok(#(sentence, _)) -> sentence <> "."
+    Error(_) -> line
+  }
 }
 
 fn projected_inputs(state: State) -> Result(List(types.Input), String) {
