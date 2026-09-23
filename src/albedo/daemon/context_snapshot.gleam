@@ -286,21 +286,31 @@ fn render_input(input: types.Input) -> String {
   case input {
     types.User(text) -> "[user]
 " <> text
-    types.UserImage(text, image) -> {
-      let #(mime, _, width, height, bytes) = types.image_parts(image)
-      "[user]
+    types.UserImage(text, image) -> "[user]
 " <> text <> "
-[image · " <> mime <> " · " <> int.to_string(width) <> "×" <> int.to_string(
-        height,
-      ) <> " · " <> int.to_string(bytes) <> " decoded bytes · payload omitted]"
-    }
+" <> image_label(image)
     types.Assistant(text) -> "[assistant]
 " <> text
-    types.ToolOutput(id, output) -> "[tool output · " <> id <> "]
-" <> output
+    types.ToolOutput(id, output, images) -> "[tool output · " <> id <> "]
+" <> output <> string.concat(
+        list.map(images, fn(image) { "\n" <> image_label(image) }),
+      )
     types.Replay(_) ->
       "[provider replay item · opaque provider payload omitted]"
   }
+}
+
+fn image_label(image: types.Image) -> String {
+  let #(mime, _, width, height, bytes) = types.image_parts(image)
+  "[image · "
+  <> mime
+  <> " · "
+  <> int.to_string(width)
+  <> "×"
+  <> int.to_string(height)
+  <> " · "
+  <> int.to_string(bytes)
+  <> " decoded bytes · payload omitted]"
 }
 
 fn input_omission(inputs: List(types.Input)) -> Option(String) {
@@ -308,7 +318,9 @@ fn input_omission(inputs: List(types.Input)) -> Option(String) {
     inputs
     |> list.flat_map(fn(input) {
       case input {
-        types.UserImage(_, _) -> ["image base64 payload"]
+        types.UserImage(_, _) | types.ToolOutput(_, _, [_, ..]) -> [
+          "image base64 payload",
+        ]
         types.Replay(_) -> ["opaque provider replay payload"]
         _ -> []
       }

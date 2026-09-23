@@ -179,6 +179,7 @@ fn prepare(
               ),
               fn(_, arguments) {
                 native_call(handle, definition.name, arguments)
+                |> result.map(extension.text)
               },
               fn(_) { None },
             )

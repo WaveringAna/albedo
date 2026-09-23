@@ -42,7 +42,7 @@ pub fn definition() -> types.Tool {
 pub fn invoke(
   context: extension.Context,
   arguments: String,
-) -> Result(String, String) {
+) -> Result(extension.Output, String) {
   let decoder = {
     use code <- decode.field("code", decode.string)
     use timeout <- decode.field("timeout_ms", decode.int)
@@ -72,10 +72,10 @@ pub fn invoke(
             _ -> Ok(Nil)
           }
         })
-      let body = outcome_json(id, outcome)
-      Ok(json.to_string(body))
+      Ok(outcome_output(id, outcome))
     }
-    Error(_) -> Ok("{\"error\":\"expected code and timeout_ms\"}")
+    Error(_) ->
+      Ok(extension.text("{\"error\":\"expected code and timeout_ms\"}"))
   }
 }
 
@@ -86,7 +86,7 @@ pub fn extension() -> extension.Extension {
     [],
     [
       extension.ToolPlugin(
-        "Python has a persistent namespace, top-level await, cells.read/info/trace and cells.run for saved-source repair (all async), and output.read/output.list for bounded retained output (synchronous; awaiting them also works). cells.last_id is the id of the latest cell, and await cells.list(limit=20) lists this session's cells newest first with their status and first line, even after their output has rolled out. output.read(id, offset=0, limit=4000) returns up to limit characters. output.list() names every retained channel, which is also how to find earlier cells: cells, background jobs, and 'native' for bytes written to fd 1/2 while no cell was running.",
+        "Python has a persistent namespace, top-level await, cells.read/info/trace and cells.run for saved-source repair (all async), and output.read/output.list for bounded retained output (synchronous; awaiting them also works). cells.last_id is the id of the latest cell, and await cells.list(limit=20) lists this session's cells newest first with their status and first line, even after their output has rolled out. output.read(id, offset=0, limit=4000) returns up to limit characters. output.list() names every retained channel, which is also how to find earlier cells: cells, background jobs, and 'native' for bytes written to fd 1/2 while no cell was running. show_image(source) returns a PNG, JPEG, or WebP (bytes or a file path) to you with this cell's result, so you see it after the cell ends; at most 4 images and 5 MiB per cell.",
         [extension.Tool(definition(), invoke, recover)],
         [],
         [#("cells", cells.handle)],
@@ -98,6 +98,18 @@ pub fn extension() -> extension.Extension {
 
 pub fn plugin() -> extension.Extension {
   extension()
+}
+
+/// The cell's JSON result with its images beside it.
+fn outcome_output(
+  id: String,
+  outcome: Result(python.Outcome, python.Error),
+) -> extension.Output {
+  let images = case outcome {
+    Ok(outcome) -> outcome.images
+    Error(_) -> []
+  }
+  extension.Output(json.to_string(outcome_json(id, outcome)), images)
 }
 
 fn outcome_json(
@@ -119,6 +131,10 @@ fn outcome_json(
         #("output", json.string(outcome.output)),
         #("value", json.string(outcome.value)),
         #("truncated", json.bool(outcome.truncated)),
+        ..case outcome.image_errors {
+          [] -> []
+          errors -> [#("image_errors", json.array(errors, json.string))]
+        }
       ])
     Error(error) ->
       json.object([
@@ -139,15 +155,11 @@ fn outcome_json(
 fn recover(context: extension.Context) {
   let id = context.session <> "/" <> context.call_id
   let outcome = case journal.get(context.store, id) {
-    Ok(cell) ->
-      case cell.outcome {
-        Some(outcome) -> Some(outcome_json(id, outcome))
-        None -> None
-      }
+    Ok(cell) -> cell.outcome
     Error(_) -> None
   }
   Some(case outcome {
-    Some(value) -> json.to_string(value)
+    Some(outcome) -> outcome_output(id, outcome)
     None ->
       json.object([
         #("cell_id", json.string(id)),
@@ -159,5 +171,6 @@ fn recover(context: extension.Context) {
         ),
       ])
       |> json.to_string
+      |> extension.text
   })
 }

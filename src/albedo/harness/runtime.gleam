@@ -700,10 +700,12 @@ pub fn invoke(
 ) -> Result(types.Input, String) {
   use _ <- result.try(owned_by(runtime, session))
   case tool_call(runtime, session, call) {
-    Error(_) -> Ok(types.ToolOutput(call.id, "tool is not installed"))
+    Error(_) -> Ok(types.ToolOutput(call.id, "tool is not installed", []))
     Ok(#(tool, context)) ->
       tool.invoke(context, call.arguments)
-      |> result.map(types.ToolOutput(call.id, _))
+      |> result.map(fn(output) {
+        types.ToolOutput(call.id, output.text, output.images)
+      })
   }
 }
 
@@ -716,11 +718,15 @@ pub fn recover(
     Ok(#(tool, context)) -> tool.recover(context)
     Error(_) -> None
   }
-  types.ToolOutput(call.id, case saved {
-    Some(output) -> output
+  case saved {
+    Some(output) -> types.ToolOutput(call.id, output.text, output.images)
     None ->
-      "execution interrupted; outcome unknown. Inspect effects before any retry."
-  })
+      types.ToolOutput(
+        call.id,
+        "execution interrupted; outcome unknown. Inspect effects before any retry.",
+        [],
+      )
+  }
 }
 
 pub fn instructions(session: Session) -> String {

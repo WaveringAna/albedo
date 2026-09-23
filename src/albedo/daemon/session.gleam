@@ -1630,7 +1630,7 @@ fn recover_pending(state: State, kernel: runtime.Session) -> List(types.Input) {
   let completed =
     list.filter_map(inputs, fn(input) {
       case input {
-        types.ToolOutput(id, _) -> Ok(id)
+        types.ToolOutput(id, _, _) -> Ok(id)
         _ -> Error(Nil)
       }
     })

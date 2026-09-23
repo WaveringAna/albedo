@@ -72,7 +72,7 @@ pub fn latest_user_title_survives_restart_and_legacy_migration_test() {
       "session",
       [
         types.Assistant("must not replace it"),
-        types.ToolOutput("call", "output"),
+        types.ToolOutput("call", "output", []),
       ],
       conversation.Idle,
     )
@@ -128,7 +128,7 @@ pub fn last_assistant_at_tracks_only_visible_assistant_messages_test() {
 
   let non_messages = [
     [types.User("prompt")],
-    [types.ToolOutput("call", "result")],
+    [types.ToolOutput("call", "result", [])],
     [types.Replay(reasoning)],
     [types.Assistant("")],
   ]

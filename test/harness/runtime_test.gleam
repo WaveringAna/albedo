@@ -59,7 +59,7 @@ pub fn sessions_outlive_callers_and_tools_share_the_runtime_test() {
       "python",
       "{\"code\":\"await work.create('from tool')\",\"timeout_ms\":5000}",
     )
-  let assert Ok(types.ToolOutput("call", _)) =
+  let assert Ok(types.ToolOutput("call", _, _)) =
     runtime.invoke(host, session, call)
   let assert Ok([item]) = work.list(runtime.ledger(host), 0, 50)
   item.title |> should.equal("from tool")

@@ -24,9 +24,7 @@ pub fn encode_with_policy(
   request: Request,
 ) -> Result(StringTree, Error) {
   use _ <- result.try(validate(request))
-  use input <- result.try(
-    list.try_map(request.input, encode_input(protocol, _)),
-  )
+  use input <- result.try(encode_inputs(protocol, request.input, []))
   let fields = [
     #("model", json.string(request.model)),
     #("stream", json.bool(True)),
@@ -114,24 +112,101 @@ fn validate_tools(tools: List(Tool), seen: List(String)) -> Result(Nil, Error) {
   }
 }
 
+fn encode_inputs(
+  protocol: Protocol,
+  inputs: List(Input),
+  encoded: List(Json),
+) -> Result(List(Json), Error) {
+  case protocol, inputs {
+    _, [] -> Ok(list.reverse(encoded))
+    // Chat Completions tool messages carry text only, and nothing may come
+    // between an assistant's tool calls and their results. The images of a
+    // whole run of results follow it in one user message, labelled per call.
+    ChatCompletions, [ToolOutput(..), ..] -> {
+      let #(encoded, images, rest) = chat_tool_run(inputs, encoded, [])
+      let encoded = case images {
+        [] -> encoded
+        _ -> [
+          json.object([
+            #("role", json.string("user")),
+            #("content", json.preprocessed_array(images)),
+          ]),
+          ..encoded
+        ]
+      }
+      encode_inputs(protocol, rest, encoded)
+    }
+    _, [input, ..rest] -> {
+      use json <- result.try(encode_input(protocol, input))
+      encode_inputs(protocol, rest, [json, ..encoded])
+    }
+  }
+}
+
+fn chat_tool_run(
+  inputs: List(Input),
+  encoded: List(Json),
+  images: List(Json),
+) -> #(List(Json), List(Json), List(Input)) {
+  case inputs {
+    [ToolOutput(id, text, attached), ..rest] -> {
+      let tool =
+        json.object([
+          #("role", json.string("tool")),
+          #("tool_call_id", json.string(id)),
+          #("content", json.string(tool_text(text, attached))),
+        ])
+      let images = case attached {
+        [] -> images
+        _ ->
+          list.flatten([
+            images,
+            [text_part(ChatCompletions, "Images from tool call " <> id <> ":")],
+            list.map(attached, image_part(ChatCompletions, _)),
+          ])
+      }
+      chat_tool_run(rest, [tool, ..encoded], images)
+    }
+    rest -> #(encoded, images, rest)
+  }
+}
+
+/// Some providers reject an empty tool result even when images accompany it.
+fn tool_text(text: String, images: List(types.Image)) -> String {
+  case text, images {
+    "", [_, ..] -> "(see attached image)"
+    _, _ -> text
+  }
+}
+
 fn encode_input(protocol: Protocol, input: Input) -> Result(Json, Error) {
   case input {
     User(text) -> Ok(message("user", text))
     UserImage(text, image) -> Ok(image_message(protocol, text, image))
     Assistant(text) -> Ok(message("assistant", text))
-    ToolOutput(id, text) ->
+    ToolOutput(id, text, images) ->
       Ok(case protocol {
         Responses ->
           json.object([
             #("type", json.string("function_call_output")),
             #("call_id", json.string(id)),
-            #("output", json.string(text)),
+            #("output", case images {
+              [] -> json.string(text)
+              _ ->
+                json.preprocessed_array(case text {
+                  "" -> list.map(images, image_part(Responses, _))
+                  _ -> [
+                    text_part(Responses, text),
+                    ..list.map(images, image_part(Responses, _))
+                  ]
+                })
+            }),
           ])
         ChatCompletions ->
           json.object([
             #("role", json.string("tool")),
             #("tool_call_id", json.string(id)),
-            #("content", json.string(text)),
+            #("content", json.string(tool_text(text, images))),
           ])
       })
     Replay(item) ->
@@ -147,35 +222,42 @@ fn message(role: String, content: String) -> Json {
 }
 
 fn image_message(protocol: Protocol, text: String, image: types.Image) -> Json {
+  json.object([
+    #("role", json.string("user")),
+    #(
+      "content",
+      json.preprocessed_array([
+        text_part(protocol, text),
+        image_part(protocol, image),
+      ]),
+    ),
+  ])
+}
+
+fn text_part(protocol: Protocol, text: String) -> Json {
+  let kind = case protocol {
+    Responses -> "input_text"
+    ChatCompletions -> "text"
+  }
+  json.object([#("type", json.string(kind)), #("text", json.string(text))])
+}
+
+fn image_part(protocol: Protocol, image: types.Image) -> Json {
   let #(mime_type, data, _, _, _) = types.image_parts(image)
   let url = "data:" <> mime_type <> ";base64," <> data
-  let content = case protocol {
-    Responses -> [
-      json.object([
-        #("type", json.string("input_text")),
-        #("text", json.string(text)),
-      ]),
+  case protocol {
+    Responses ->
       json.object([
         #("type", json.string("input_image")),
         #("detail", json.string("auto")),
         #("image_url", json.string(url)),
-      ]),
-    ]
-    ChatCompletions -> [
-      json.object([
-        #("type", json.string("text")),
-        #("text", json.string(text)),
-      ]),
+      ])
+    ChatCompletions ->
       json.object([
         #("type", json.string("image_url")),
         #("image_url", json.object([#("url", json.string(url))])),
-      ]),
-    ]
+      ])
   }
-  json.object([
-    #("role", json.string("user")),
-    #("content", json.preprocessed_array(content)),
-  ])
 }
 
 /// The exact provider-facing tool schema array used by `encode`.

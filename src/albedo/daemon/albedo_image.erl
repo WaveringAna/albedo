@@ -1,5 +1,5 @@
 -module(albedo_image).
--export([inspect/1]).
+-export([inspect/1, valid/1]).
 
 -define(MAX_DATA_BYTES, 6990508).
 -define(MAX_IMAGE_BYTES, 5242880).
@@ -18,6 +18,12 @@ inspect(Data) when is_binary(Data), byte_size(Data) > 0, byte_size(Data) =< ?MAX
     _ -> {error, nil}
   catch _:_ -> {error, nil} end;
 inspect(_) -> {error, nil}.
+
+%% A saved types.Image whose metadata still matches its payload.
+valid({image, Mime, Data, Width, Height, Bytes})
+    when is_binary(Mime), is_binary(Data), is_integer(Width), is_integer(Height), is_integer(Bytes) ->
+  inspect(Data) =:= {ok, {Mime, Width, Height, Bytes}};
+valid(_) -> false.
 
 dimensions(<<16#89, "PNG", 13, 10, 26, 10, 13:32/big, "IHDR", Width:32/big, Height:32/big, _/binary>>)
     when Width > 0, Height > 0 -> {ok, <<"image/png">>, Width, Height};

@@ -33,6 +33,10 @@ CLEANUP_DEADLINE = 1.5  # seconds: plugins must finish cleanup inside the superv
 PREVIEW = 64 * 1024
 RETAIN = 1024 * 1024
 LIMITS = {"cell": 16, "job": 64, "native": 1}  # retained captures per kind
+MAX_IMAGES = 4  # images one cell may return to the model
+# Decoded bytes across one cell's images. Base64 grows this by 4/3, and the done
+# frame must stay under the 8 MiB guard with its output preview alongside.
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
 CELL: contextvars.ContextVar[Capture | None] = contextvars.ContextVar("cell", default=None)
 CONTROL_IN = os.fdopen(os.dup(0), "rb", buffering=0)
 CONTROL_OUT = os.fdopen(os.dup(1), "wb", buffering=0)
@@ -200,6 +204,7 @@ class Capture:
         self.seen: int = 0
         self.trace: albedo_trace.Trace = albedo_trace.Trace()
         self.interruption: str = "cancelled"
+        self.images: list[bytes] = []
 
     def write(self, text: str) -> None:
         data = text.encode("utf-8", errors="replace")
@@ -216,6 +221,56 @@ class Capture:
         if status == "ok":
             return self.read(0, PREVIEW)
         return bytes(self.tail_data).decode("utf-8", errors="ignore")
+
+    def attach(self, data: bytes) -> str:
+        """Queue one image for this cell's result; raises ValueError past the limits."""
+        mime = image_type(data)
+        if mime is None:
+            raise ValueError("image must be PNG, JPEG, or WebP bytes")
+        if len(self.images) >= MAX_IMAGES:
+            raise ValueError(f"a cell returns at most {MAX_IMAGES} images")
+        if sum(map(len, self.images)) + len(data) > MAX_IMAGE_BYTES:
+            raise ValueError(f"a cell's images total at most {MAX_IMAGE_BYTES} bytes; "
+                             f"this {len(data)}-byte image does not fit")
+        self.images.append(data)
+        return f"{mime}, {len(data)} bytes"
+
+    def encoded_images(self) -> list[str]:
+        return [base64.b64encode(image).decode("ascii") for image in self.images]
+
+
+def image_type(data: bytes) -> str | None:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def attach_image(data: bytes) -> str:
+    """Attach image bytes to the running cell; plugins reach this as api.attach_image."""
+    capture = CELL.get()
+    # A task spawned by a finished cell still carries that cell's context; only
+    # the capture currently receiving output belongs to a result not yet sent.
+    if capture is None or capture.kind != "cell" or capture is not sink:
+        raise RuntimeError("images attach to a running cell; background work has no result to carry them")
+    return capture.attach(bytes(data))
+
+
+def show_image(source: bytes | bytearray | memoryview | str | os.PathLike[str]) -> albedo_api.Text:
+    """Return an image to yourself with this cell's result. `source` is PNG,
+    JPEG, or WebP bytes, or a path to such a file. At most 4 images and 5 MiB
+    per cell; the image arrives after the cell finishes, not mid-cell."""
+    if isinstance(source, (bytes, bytearray, memoryview)):
+        data = bytes(source)
+    elif isinstance(source, (str, os.PathLike)):
+        with open(source, "rb") as file:
+            data = file.read(MAX_IMAGE_BYTES + 1)
+    else:
+        raise TypeError(f"show_image takes image bytes or a path, not {type(source).__name__}")
+    return albedo_api.Text("attached " + attach_image(data))
 
 
 NATIVE = Capture("native", "native")
@@ -439,9 +494,15 @@ class Cells:
             CELL.reset(token)
             if outer is not None:
                 outer.write("[cell " + cell["id"] + "]\n" + capture.read(0, PREVIEW))
+                for image in capture.images:
+                    try:
+                        _ = outer.attach(image)
+                    except ValueError as dropped:
+                        outer.write(f"[image from cell {cell['id']} dropped: {dropped}]\n")
         _ = await host("cells.finish", {"id": cell["id"], "outcome": {
             "id": cell["id"], "status": status, "output": capture.preview(status),
-            "value": text, "truncated": capture.seen > PREVIEW}})
+            "value": text, "truncated": capture.seen > PREVIEW,
+            "images": capture.encoded_images()}})
         if error is not None:
             raise error
         return value
@@ -852,7 +913,7 @@ async def serve():
         send({"type": "trace", "id": capture.id, "trace": capture.trace.finish()})
         send({"type": "done", "id": capture.id, "status": status,
               "output": capture.preview(status), "value": value,
-              "truncated": capture.seen > PREVIEW})
+              "truncated": capture.seen > PREVIEW, "images": capture.encoded_images()})
 
 
 def main():
@@ -877,8 +938,9 @@ def main():
     api = albedo_api.PythonApi(version=2, loop=LOOP, host=host, HostError=WorkError,
         forget_output=lambda id: ARCHIVES.pop(id, None) and None,
         capture=background_capture, preview=PREVIEW, send=send, on_shutdown=CLEANUP.append,
-        background_handle=HANDLES.append, modules=modules, watch_output=watch_output)
-    NAMESPACE.update(cells=Cells(), output=Output())
+        background_handle=HANDLES.append, modules=modules, watch_output=watch_output,
+        attach_image=attach_image)
+    NAMESPACE.update(cells=Cells(), output=Output(), show_image=show_image)
     try:
         LOOP.run_until_complete(albedo_api.load_plugins(modules, api, NAMESPACE))
     except Exception as error:

@@ -39,6 +39,7 @@ pub fn tool(
   store: store.Store,
   call: types.ToolCall,
   output: String,
+  images: List(types.Image),
 ) -> String {
   let trace =
     json.parse(output, decode.field("cell_id", decode.string, decode.success))
@@ -53,6 +54,7 @@ pub fn tool(
       Some(value) -> value
       None -> json.null()
     }),
+    #("images", json.array(images, image_metadata)),
   ])
 }
 
@@ -120,17 +122,19 @@ pub fn user_image(
   timestamp: Option(Int),
   image: types.Image,
 ) -> String {
-  let #(mime_type, _, width, height, bytes) = types.image_parts(image)
   user_event(text, source, client_id, timestamp, [
-    #(
-      "image",
-      json.object([
-        #("mimeType", json.string(mime_type)),
-        #("width", json.int(width)),
-        #("height", json.int(height)),
-        #("bytes", json.int(bytes)),
-      ]),
-    ),
+    #("image", image_metadata(image)),
+  ])
+}
+
+/// What clients show of an image: never its payload.
+fn image_metadata(image: types.Image) -> json.Json {
+  let #(mime_type, _, width, height, bytes) = types.image_parts(image)
+  json.object([
+    #("mimeType", json.string(mime_type)),
+    #("width", json.int(width)),
+    #("height", json.int(height)),
+    #("bytes", json.int(bytes)),
   ])
 }
 
@@ -167,10 +171,10 @@ pub fn snapshot(
           user_image(value, "user", None, entry.timestamp, image),
         ]
         types.Assistant(_) -> assistant_message(entry.input, entry.timestamp)
-        types.ToolOutput(id, output) -> {
+        types.ToolOutput(id, output, images) -> {
           let call = dict.get(tool_calls, id)
           case call {
-            Ok(call) -> [tool(store, call, output)]
+            Ok(call) -> [tool(store, call, output, images)]
             Error(_) -> []
           }
         }

@@ -267,7 +267,7 @@ export function ChatScreen({
       case "tool": {
         setToolProgress(null)
         settle()
-        return void push({ kind: "tool", name: event.name, args: event.args, result: event.result, ...(event.trace ? { trace: event.trace } : {}) })
+        return void push({ kind: "tool", name: event.name, args: event.args, result: event.result, ...(event.trace ? { trace: event.trace } : {}), ...(event.images ? { images: event.images } : {}) })
       }
       case "user": {
         const pending = event.clientId === (client?.clientId ?? clientId.current)

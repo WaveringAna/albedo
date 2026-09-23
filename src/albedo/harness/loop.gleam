@@ -134,11 +134,12 @@ pub fn run(
               ))
               use _ <- result.try(state.commit([output], conversation.Tool))
               let _ = case output {
-                types.ToolOutput(_, body) ->
+                types.ToolOutput(_, body, images) ->
                   state.publish(view.tool(
                     runtime.ledger(state.host),
                     call,
                     body,
+                    images,
                   ))
                 _ -> True
               }
@@ -237,7 +238,7 @@ fn display_text(items: List(types.Input)) -> String {
         types.User(text) -> text
         types.UserImage(text, _) ->
           text <> "\n[image omitted from summary view]"
-        types.ToolOutput(id, _) -> "[tool output " <> id <> " omitted]"
+        types.ToolOutput(id, _, _) -> "[tool output " <> id <> " omitted]"
         input ->
           option.unwrap(
             view.visible_assistant_text(input),
@@ -353,29 +354,43 @@ fn summarize(
   }
 }
 
-fn render_summary_input(input: types.Input) -> String {
+/// One evicted item as the summarizer reads it: image payloads never reach it.
+pub fn render_summary_input(input: types.Input) -> String {
   case input {
     types.User(text) -> "[user]\n" <> bounded_summary_text(text)
-    types.UserImage(text, image) -> {
-      let #(mime, _, width, height, bytes) = types.image_parts(image)
-      "[user with image "
-      <> mime
-      <> " "
-      <> int.to_string(width)
-      <> "x"
-      <> int.to_string(height)
-      <> ", "
-      <> int.to_string(bytes)
-      <> " bytes; binary omitted]\n"
+    types.UserImage(text, image) ->
+      "[user with "
+      <> describe_image(image)
+      <> "; binary omitted]\n"
       <> bounded_summary_text(text)
-    }
     types.Assistant(text) -> "[assistant]\n" <> bounded_summary_text(text)
-    types.ToolOutput(id, output) ->
-      "[tool output " <> id <> "]\n" <> bounded_summary_text(output)
+    types.ToolOutput(id, output, images) ->
+      "[tool output "
+      <> id
+      <> "]\n"
+      <> bounded_summary_text(output)
+      <> string.concat(
+        list.map(images, fn(image) {
+          "\n[" <> describe_image(image) <> "; binary omitted]"
+        }),
+      )
     types.Replay(item) ->
       "[assistant provider item]\n"
       <> bounded_summary_text(json.to_string(types.replay_json(item)))
   }
+}
+
+fn describe_image(image: types.Image) -> String {
+  let #(mime, _, width, height, bytes) = types.image_parts(image)
+  "image "
+  <> mime
+  <> " "
+  <> int.to_string(width)
+  <> "x"
+  <> int.to_string(height)
+  <> ", "
+  <> int.to_string(bytes)
+  <> " bytes"
 }
 
 fn bounded_summary_text(text: String) -> String {

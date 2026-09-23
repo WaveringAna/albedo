@@ -182,7 +182,7 @@ pub fn tool_output_stays_with_its_assistant_unit_test() {
   let history = [
     types.User("old " <> string.repeat("a", 500)),
     types.Assistant("tool call representation"),
-    types.ToolOutput("call-1", string.repeat("x", 300)),
+    types.ToolOutput("call-1", string.repeat("x", 300), []),
     types.User("new"),
     types.Assistant("answer"),
   ]

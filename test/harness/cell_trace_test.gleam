@@ -26,7 +26,7 @@ fn value(output: String) -> String {
 pub fn a_cell_trace_is_readable_from_the_session_test() {
   let assert Ok(host) = runtime.start(":memory:")
   let assert Ok(session) = runtime.open_session(host, "a", "/tmp")
-  let assert Ok(types.ToolOutput(_, written)) =
+  let assert Ok(types.ToolOutput(_, written, _)) =
     runtime.invoke(
       host,
       session,
@@ -36,7 +36,7 @@ pub fn a_cell_trace_is_readable_from_the_session_test() {
       ),
     )
   written |> string.contains("\"status\":\"ok\"") |> should.be_true
-  let assert Ok(types.ToolOutput(_, read)) =
+  let assert Ok(types.ToolOutput(_, read, _)) =
     runtime.invoke(
       host,
       session,
@@ -46,7 +46,7 @@ pub fn a_cell_trace_is_readable_from_the_session_test() {
       ),
     )
   value(read) |> should.equal("['/tmp/albedo_trace_probe.txt']")
-  let assert Ok(types.ToolOutput(_, missing)) =
+  let assert Ok(types.ToolOutput(_, missing, _)) =
     runtime.invoke(
       host,
       session,

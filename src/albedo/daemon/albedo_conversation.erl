@@ -5,8 +5,11 @@ unpack(Bytes) ->
   try binary_to_term(Bytes,[safe]) of
     {1,{Tag,Text}=Input} when (Tag=:=user orelse Tag=:=assistant), is_binary(Text) -> {ok,Input};
     {1,{user_image,Text,Image}=Input} when is_binary(Text) ->
-      case valid_image(Image) of true -> {ok,Input}; false -> {error,nil} end;
-    {1,{tool_output,Id,Text}=Input} when is_binary(Id),is_binary(Text) -> {ok,Input};
+      case albedo_image:valid(Image) of true -> {ok,Input}; false -> {error,nil} end;
+    %% Tool outputs saved before tool images carry no image list.
+    {1,{tool_output,Id,Text}} when is_binary(Id),is_binary(Text) -> {ok,{tool_output,Id,Text,[]}};
+    {1,{tool_output,Id,Text,Images}=Input} when is_binary(Id),is_binary(Text),is_list(Images) ->
+      case lists:all(fun albedo_image:valid/1,Images) of true -> {ok,Input}; false -> {error,nil} end;
     {1,{replay,{replay_item,Protocol,Value}}=Input} when is_map(Value), (Protocol=:=responses orelse Protocol=:=chat_completions) ->
       case {Protocol,Value} of
         {responses,#{<<"type">> := Type}} when is_binary(Type) -> {ok,Input};
@@ -15,14 +18,6 @@ unpack(Bytes) ->
       end;
     _ -> {error,nil}
   catch _:_ -> {error,nil} end.
-
-valid_image({image,Mime,Data,Width,Height,Bytes})
-    when is_binary(Mime), is_binary(Data), is_integer(Width), is_integer(Height), is_integer(Bytes) ->
-  case albedo_image:inspect(Data) of
-    {ok,{Mime,Width,Height,Bytes}} -> true;
-    _ -> false
-  end;
-valid_image(_) -> false.
 
 unpack_trace(Bytes) -> try binary_to_term(Bytes,[safe]) of
   {1,#{<<"activities">> := A, <<"changes">> := C}=Trace} when is_list(A),is_list(C) -> {ok,Trace};

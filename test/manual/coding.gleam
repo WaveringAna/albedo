@@ -116,7 +116,7 @@ fn run(client, request, host, session, step, tools) {
               ])
               use output <- result.try(runtime.invoke(host, session, call))
               case output {
-                types.ToolOutput(_, text) ->
+                types.ToolOutput(_, text, _) ->
                   log([
                     #("event", json.string("tool_result")),
                     #("body", json.string(text)),

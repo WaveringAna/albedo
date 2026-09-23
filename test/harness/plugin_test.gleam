@@ -30,7 +30,7 @@ fn fixture_tool(name: String) -> extension.Tool {
       json.object([#("type", json.string("object"))]),
       True,
     ),
-    fn(_, _) { Ok("fixture") },
+    fn(_, _) { Ok(extension.text("fixture")) },
     fn(_) { None },
   )
 }

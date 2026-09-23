@@ -71,7 +71,7 @@ pub fn page_is_bounded_chronological_and_redacts_provider_bodies_test() {
         types.User("first prompt"),
         types.Replay(reasoning),
         types.Replay(call),
-        types.ToolOutput("call-1", "tool output"),
+        types.ToolOutput("call-1", "tool output", []),
       ],
       conversation.Idle,
       Some("provider"),
@@ -132,7 +132,7 @@ pub fn fork_copies_only_prefix_provenance_extensions_and_completes_tools_test() 
       ledger,
       "source",
       [
-        types.ToolOutput("call-1", "actual later result"),
+        types.ToolOutput("call-1", "actual later result", []),
         types.Assistant("later answer"),
       ],
       conversation.Idle,
@@ -172,10 +172,9 @@ pub fn fork_copies_only_prefix_provenance_extensions_and_completes_tools_test() 
   replay.input |> should.equal(types.Replay(call))
   replay.provider |> should.equal(Some("provider-a"))
   completed.input
-  |> should.equal(types.ToolOutput(
-    "call-1",
-    "not executed after branch checkpoint",
-  ))
+  |> should.equal(
+    types.ToolOutput("call-1", "not executed after branch checkpoint", []),
+  )
   conversation.load_usage(ledger, "branch") |> should.equal(Ok(None))
   let assert Ok([#("python", 0)]) =
     store.query(ledger, fn(db) {
@@ -211,7 +210,7 @@ pub fn incompatible_or_missing_checkpoints_leave_no_branch_test() {
     conversation.commit(
       ledger,
       "source",
-      [types.ToolOutput("orphan", "bad history")],
+      [types.ToolOutput("orphan", "bad history", [])],
       conversation.Idle,
     )
   let assert [checkpoint] = sequences(ledger, "source")

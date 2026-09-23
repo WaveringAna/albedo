@@ -57,8 +57,8 @@ pub fn responses_span_becomes_one_valid_chat_assistant_message_test() {
       ),
       "source",
     ),
-    entry(types.ToolOutput("a", "result-a"), "source"),
-    entry(types.ToolOutput("b", "result-b"), "source"),
+    entry(types.ToolOutput("a", "result-a", []), "source"),
+    entry(types.ToolOutput("b", "result-b", []), "source"),
     entry(types.User("after"), "source"),
   ]
   let body = encode(types.ChatCompletions, list.reverse(chronological))
@@ -104,8 +104,8 @@ pub fn chat_text_calls_and_results_project_to_responses_in_order_test() {
       ),
       "source",
     ),
-    entry(types.ToolOutput("a", "result-a"), "source"),
-    entry(types.ToolOutput("b", "result-b"), "source"),
+    entry(types.ToolOutput("a", "result-a", []), "source"),
+    entry(types.ToolOutput("b", "result-b", []), "source"),
   ]
   let body = encode(types.Responses, list.reverse(chronological))
   let assert Ok(inputs) =

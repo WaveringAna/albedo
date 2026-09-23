@@ -29,9 +29,18 @@ pub type Route =
 pub type Tool {
   Tool(
     definition: types.Tool,
-    invoke: fn(Context, String) -> Result(String, String),
-    recover: fn(Context) -> Option(String),
+    invoke: fn(Context, String) -> Result(Output, String),
+    recover: fn(Context) -> Option(Output),
   )
+}
+
+/// A tool result: text, plus images the provider shows the model beside it.
+pub type Output {
+  Output(text: String, images: List(types.Image))
+}
+
+pub fn text(value: String) -> Output {
+  Output(value, [])
 }
 
 pub type Managed {

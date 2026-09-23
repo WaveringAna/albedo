@@ -84,6 +84,10 @@ class PythonApi:
     # Drops one retained output channel, so work a plugin runs for itself (a
     # search job, say) never crowds the model's own output out of retention.
     forget_output: Callable[[str], None] | None = None
+    # Attaches PNG, JPEG, or WebP bytes to the running cell's result, so the
+    # model sees the image; returns a short description, raises ValueError
+    # past the per-cell limits. Absent when the host pre-dates images.
+    attach_image: Callable[[bytes], str] | None = None
 
 
 class Execute(TypedDict):

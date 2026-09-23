@@ -1,9 +1,12 @@
 //// One trusted CPython process per session. POSIX, Python 3.11+.
 
+import albedo/daemon/image
 import albedo/harness/extensions/work/ledger as work
 import albedo/harness/extensions/work/rpc
+import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/erlang/process
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/result
@@ -30,6 +33,10 @@ pub type Outcome {
     output: String,
     value: String,
     truncated: Bool,
+    /// Images the cell returned with show_image, read from their own headers.
+    images: List(types.Image),
+    /// Why an image the kernel sent could not be read; it is never sent on.
+    image_errors: List(String),
   )
 }
 
@@ -220,17 +227,31 @@ pub fn outcome_decoder() {
   use output <- decode.field("output", decode.string)
   use value <- decode.field("value", decode.string)
   use truncated <- decode.field("truncated", decode.bool)
+  use encoded <- decode.optional_field("images", [], decode.list(decode.string))
+  let #(images, image_errors) = read_images(encoded)
+  let outcome = Outcome(id, _, output, value, truncated, images, image_errors)
   case status {
-    "ok" -> decode.success(Outcome(id, Succeeded, output, value, truncated))
-    "error" -> decode.success(Outcome(id, Failed, output, value, truncated))
-    "interrupted" ->
-      decode.success(Outcome(id, Interrupted, output, value, truncated))
-    _ ->
-      decode.failure(
-        Outcome(id, Failed, output, value, truncated),
-        "cell status",
-      )
+    "ok" -> decode.success(outcome(Succeeded))
+    "error" -> decode.success(outcome(Failed))
+    "interrupted" -> decode.success(outcome(Interrupted))
+    _ -> decode.failure(outcome(Failed), "cell status")
   }
+}
+
+/// One unreadable image costs only itself, not the cell's whole result.
+/// Both lists keep the order the cell showed its images in.
+fn read_images(encoded: List(String)) -> #(List(types.Image), List(String)) {
+  let #(images, errors) =
+    encoded
+    |> list.index_map(fn(data, index) {
+      image.from_base64(data)
+      |> result.map_error(fn(reason) {
+        "image " <> int.to_string(index + 1) <> ": " <> reason
+      })
+    })
+    |> result.partition
+  // result.partition returns both lists reversed.
+  #(list.reverse(images), list.reverse(errors))
 }
 
 /// Start with python3 from PATH and albedo's packaged kernel script.

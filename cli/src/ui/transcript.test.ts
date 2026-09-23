@@ -97,3 +97,9 @@ test("message clocks sit at the viewport edge without widening body text", async
     assert(!strip(heading).includes("\n"))
   }
 })
+
+test("images a tool returned are listed by metadata after its output", () => {
+  const entry: Entry = { kind: "tool", name: "python", args: {}, result: "ok", images: [{ mimeType: "image/png", width: 640, height: 480, bytes: 2048 }] }
+  const rows = renderEntry(entry, flags, "niri", 60).map(strip)
+  assert.equal(rows.at(-1), "image PNG 640×480 · 2 KB")
+})

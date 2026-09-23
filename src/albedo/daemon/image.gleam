@@ -25,5 +25,20 @@ pub fn validate(
   }
 }
 
+/// An image whose MIME type and dimensions are read from its own header.
+pub fn from_base64(data: String) -> Result(types.Image, String) {
+  use #(mime_type, width, height, bytes) <- result.try(
+    inspect(data)
+    |> result.replace_error("not a PNG, JPEG, or WebP albedo can read"),
+  )
+  types.image(mime_type, data, width, height, bytes)
+  |> result.map_error(fn(error) {
+    case error {
+      types.InvalidRequest(message) -> message
+      other -> string.inspect(other)
+    }
+  })
+}
+
 @external(erlang, "albedo_image", "inspect")
 fn inspect(data: String) -> Result(#(String, Int, Int, Int), Nil)

@@ -60,8 +60,13 @@ pub fn input_bytes(input: types.Input) -> Int {
       let #(_, data, _, _, _) = types.image_parts(image)
       string.byte_size(text) + string.byte_size(data)
     }
-    types.ToolOutput(id, output) ->
-      string.byte_size(id) + string.byte_size(output)
+    types.ToolOutput(id, output, images) ->
+      string.byte_size(id)
+      + string.byte_size(output)
+      + list.fold(images, 0, fn(total, image) {
+        let #(_, data, _, _, _) = types.image_parts(image)
+        total + string.byte_size(data)
+      })
     types.Replay(item) ->
       types.replay_json(item) |> json.to_string |> string.byte_size
   }
@@ -78,6 +83,12 @@ pub fn estimate_input(input: types.Input) -> Int {
   case input {
     types.UserImage(text, image) ->
       estimate_text(text) + estimate_image(image) + 20
+    types.ToolOutput(id, output, [_, ..] as images) ->
+      estimate_text(id <> output)
+      + list.fold(images, 0, fn(total, image) {
+        total + estimate_image(image) + 20
+      })
+      + 12
     _ -> { input_bytes(input) + 3 } / 4 + 12
   }
 }

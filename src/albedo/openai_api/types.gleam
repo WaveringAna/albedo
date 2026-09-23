@@ -73,7 +73,7 @@ pub type Input {
   User(String)
   UserImage(String, Image)
   Assistant(String)
-  ToolOutput(call_id: String, output: String)
+  ToolOutput(call_id: String, output: String, images: List(Image))
   Replay(ReplayItem)
 }
 

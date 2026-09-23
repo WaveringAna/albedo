@@ -53,7 +53,7 @@ export type StreamEvent =
   /** A manual compaction finished; summary is the strategy's replacement view. */
   | { type: "compacted"; evicted: number; summary: string }
   | { type: "tool_progress"; progress: ToolProgress | null }
-  | { type: "tool"; name: string; args: Record<string, unknown>; result: string; trace?: ToolTrace }
+  | { type: "tool"; name: string; args: Record<string, unknown>; result: string; trace?: ToolTrace; images?: ImageMetadata[] }
   | {
       type: "usage"
       model?: string

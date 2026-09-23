@@ -4,13 +4,14 @@ import wrapAnsi from "wrap-ansi"
 import type { StreamEvent } from "../client.js"
 import { renderMarkdownAnsi } from "./markdown.js"
 import { renderDiff } from "./diff.js"
+import { imageLabel } from "../image.js"
 
 export type Entry =
   | { kind: "assistant"; text: string; timestamp?: number }
   | { kind: "thinking" | "note" | "error"; text: string }
   | { kind: "compaction"; text: string; evicted: number }
   | { kind: "user"; source: string; text: string; timestamp?: number }
-  | ({ kind: "tool" } & Pick<Extract<StreamEvent, { type: "tool" }>, "name" | "args" | "result" | "trace">)
+  | ({ kind: "tool" } & Pick<Extract<StreamEvent, { type: "tool" }>, "name" | "args" | "result" | "trace" | "images">)
 export type DisplayFlags = { tools: boolean; thinking: boolean; diffs?: boolean; compaction?: boolean }
 export const color = (code: number, text: string): string => `\x1b[${code}m${text}\x1b[0m`
 export const wrap = (text: string, width: number): string[] => wrapAnsi(text, Math.max(1, width), { hard: true, trim: false }).split("\n")
@@ -64,6 +65,7 @@ export function renderEntry(entry: Entry, flags: DisplayFlags, speaker: string, 
       const trace = entry.trace
       const rows: string[] = []
       const hasTrace = trace && (trace.activities.length > 0 || trace.changes.length > 0)
+      const images = (entry.images ?? []).map(image => color(36, truncate(`image ${imageLabel(image)}`, width)))
       if (!hasTrace || flags.tools || failed) rows.push(...wrap(color(failed ? 91 : 90,
         `${toolSummary(entry.name, entry.args)}${failed ? " · failed" : ""}`), width))
       if (hasTrace && !flags.tools && !failed) {
@@ -79,7 +81,7 @@ export function renderEntry(entry: Entry, flags: DisplayFlags, speaker: string, 
           if (flags.diffs) rows.push(...(change.kind === "diff" ? renderDiff(change.diff, change.path, width) : wrap(color(90, change.reason), width)))
         }
         if (trace.truncated) rows.push(color(90, truncate("activity capture limited · /v expand", width)))
-        return rows
+        return [...rows, ...images]
       }
       if (trace?.activities.length) {
         rows.push(color(1, trace.activities.some(item => item.kind === "run") ? "executed" : "explored"))
@@ -101,7 +103,7 @@ export function renderEntry(entry: Entry, flags: DisplayFlags, speaker: string, 
         const output = wrap(entry.result.trimEnd() || "(no output)", width)
         rows.push(...(flags.tools ? output : preview(output, 3, width, failed)))
       }
-      return rows
+      return [...rows, ...images]
     }
   }
 }

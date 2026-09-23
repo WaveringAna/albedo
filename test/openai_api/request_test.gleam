@@ -25,7 +25,7 @@ pub fn responses_request_shape_test() {
   let request =
     openai.request("model", [
       types.User("hello"),
-      types.ToolOutput("call1", "file contents"),
+      types.ToolOutput("call1", "file contents", []),
     ])
   let request =
     types.Request(
@@ -58,7 +58,7 @@ pub fn chat_request_shape_test() {
   let request =
     openai.request("model", [
       types.User("a \"quote\"\n"),
-      types.ToolOutput("call1", "done"),
+      types.ToolOutput("call1", "done", []),
     ])
   let request =
     types.Request(..request, instructions: Some("system"), tools: [tool()])
@@ -203,4 +203,69 @@ pub fn codex_request_policy_adds_subscription_fields_test() {
       decode.at(["tools"], decode.list(decode.at(["strict"], decode.dynamic))),
     )
     |> result.is_ok
+}
+
+fn tool_image() -> types.Image {
+  let assert Ok(image) =
+    types.image("image/png", "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD", 2, 3, 24)
+  image
+}
+
+pub fn responses_tool_images_ride_in_the_function_call_output_test() {
+  let request =
+    openai.request("model", [
+      types.ToolOutput("call1", "rendered", [tool_image()]),
+      types.ToolOutput("call2", "plain", []),
+    ])
+  let encoded = body(types.Responses, request)
+  let assert Ok([with_image, plain]) =
+    json.parse(encoded, decode.at(["input"], decode.list(decode.dynamic)))
+  let part = {
+    use kind <- decode.field("type", decode.string)
+    use text <- decode.optional_field("text", "", decode.string)
+    use url <- decode.optional_field("image_url", "", decode.string)
+    decode.success(#(kind, text, url))
+  }
+  assert decode.run(with_image, decode.at(["output"], decode.list(part)))
+    == Ok([
+      #("input_text", "rendered", ""),
+      #(
+        "input_image",
+        "",
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD",
+      ),
+    ])
+  assert decode.run(plain, decode.at(["output"], decode.string)) == Ok("plain")
+}
+
+pub fn chat_tool_images_follow_the_whole_run_of_results_test() {
+  let request =
+    openai.request("model", [
+      types.ToolOutput("call1", "", [tool_image()]),
+      types.ToolOutput("call2", "plain", []),
+      types.ToolOutput("call3", "more", [tool_image()]),
+      types.User("next"),
+    ])
+  let encoded = body(types.ChatCompletions, request)
+  assert json.parse(
+      encoded,
+      decode.at(["messages"], decode.list(decode.at(["role"], decode.string))),
+    )
+    == Ok(["tool", "tool", "tool", "user", "user"])
+  let assert Ok([empty, _, _, images, _]) =
+    json.parse(encoded, decode.at(["messages"], decode.list(decode.dynamic)))
+  assert decode.run(empty, decode.at(["content"], decode.string))
+    == Ok("(see attached image)")
+  let part = {
+    use kind <- decode.field("type", decode.string)
+    use text <- decode.optional_field("text", "", decode.string)
+    decode.success(#(kind, text))
+  }
+  assert decode.run(images, decode.at(["content"], decode.list(part)))
+    == Ok([
+      #("text", "Images from tool call call1:"),
+      #("image_url", ""),
+      #("text", "Images from tool call call3:"),
+      #("image_url", ""),
+    ])
 }

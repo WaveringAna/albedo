@@ -173,25 +173,26 @@ fn decode_row(row) -> Result(Row, String) {
 fn row_item(row: Row) -> Item {
   let #(kind, text) = case row.input {
     types.User(text) -> #(User, text)
-    types.UserImage(text, image) -> {
-      let #(mime, _, width, height, _) = types.image_parts(image)
-      #(
-        User,
-        text
-          <> " ["
-          <> mime
-          <> " "
-          <> int.to_string(width)
-          <> "x"
-          <> int.to_string(height)
-          <> "]",
-      )
-    }
+    types.UserImage(text, image) -> #(User, text <> image_label(image))
     types.Assistant(text) -> #(Assistant, text)
-    types.ToolOutput(_, output) -> #(Tool, output)
+    types.ToolOutput(_, output, images) -> #(
+      Tool,
+      output <> string.concat(list.map(images, image_label)),
+    )
     types.Replay(item) -> replay_preview(item)
   }
   Item(row.seq, kind, safe_preview(text), row.timestamp)
+}
+
+fn image_label(image: types.Image) -> String {
+  let #(mime, _, width, height, _) = types.image_parts(image)
+  " ["
+  <> mime
+  <> " "
+  <> int.to_string(width)
+  <> "x"
+  <> int.to_string(height)
+  <> "]"
 }
 
 fn replay_preview(item: types.ReplayItem) -> #(Kind, String) {
@@ -277,7 +278,7 @@ fn unmatched_calls(rows: List(Row)) -> Result(List(String), String) {
             False -> Ok(list.append(pending, [call.id]))
           }
         })
-      types.ToolOutput(id, _) ->
+      types.ToolOutput(id, _, _) ->
         case list.contains(pending, id) {
           True -> Ok(list.filter(pending, fn(value) { value != id }))
           False -> Error("checkpoint contains a tool result without its call")
@@ -357,7 +358,9 @@ fn append_incomplete_results(
       db,
       [
         sqlight.text(branch_id),
-        sqlight.blob(pack(types.ToolOutput(call_id, incomplete_tool_result))),
+        sqlight.blob(
+          pack(types.ToolOutput(call_id, incomplete_tool_result, [])),
+        ),
         sqlight.text(provider),
       ],
       decode.dynamic,

@@ -36,7 +36,7 @@ def namespace() -> dict[str, object]:
         return [] if method == "commands.list" else {}
 
     api = PythonApi(loop, host, RuntimeError, None, 100, lambda e: None, lambda c: None, lambda _: None)
-    bindings = {"cells": kernel.Cells(), "output": kernel.Output()}
+    bindings = {"cells": kernel.Cells(), "output": kernel.Output(), "show_image": kernel.show_image}
     for name in ["bash", "work", "files", "skills", "commands", "remote"]:
         result = importlib.import_module("albedo_plugins." + name).setup(api)
         bindings.update(loop.run_until_complete(result) if inspect.isawaitable(result) else result)

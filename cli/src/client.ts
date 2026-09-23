@@ -1,6 +1,6 @@
 import { createToolProgressReporter } from "./progress.js"
 import { parseToolTrace, type StreamEvent, type ToolProgress } from "./events.js"
-import { parseImageMetadata, type ImageAttachment } from "./image.js"
+import { parseImageMetadata, type ImageAttachment, type ImageMetadata } from "./image.js"
 
 export type { StreamEvent, ToolTrace, ToolProgress } from "./events.js"
 export type { ImageAttachment, ImageMetadata } from "./image.js"
@@ -52,6 +52,7 @@ type UnknownEvent = {
   args?: unknown
   result?: unknown
   trace?: unknown
+  images?: unknown
   progress?: unknown
   model?: unknown
   recordedAt?: unknown
@@ -132,12 +133,15 @@ const toEvent = (raw: unknown): StreamEvent | null => {
     typeof event.args === "object"
   ) {
     const trace = parseToolTrace(event.trace)
+    const images = Array.isArray(event.images)
+      ? event.images.map(parseImageMetadata).filter((image): image is ImageMetadata => image !== undefined) : []
     return {
       type: "tool",
       name: event.name,
       args: event.args as Record<string, unknown>,
       result: event.result,
       ...(trace ? { trace } : {}),
+      ...(images.length ? { images } : {}),
     }
   }
 
