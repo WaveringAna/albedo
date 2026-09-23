@@ -74,11 +74,6 @@ manual comparisons and performance tools:
 `test/manual` is opt-in: those benchmarks need a provider, a PTY, or artifacts
 from an earlier run.
 
-ui checks are manual: real terminal screenshots and interaction walkthroughs,
-not ui unit or golden tests. the capture tool uses isolated fake providers and
-writes PNGs, terminal recordings, and capture metadata under
-`/tmp/albedo-visual-parity/atlas`.
-
 ```sh
 # paired TS/Go screenshots (Pillow via uv; npm dependencies from cli)
 uv run --no-project --script cli/test/manual/visual_parity.py --help
@@ -93,15 +88,6 @@ ALBEDO_NO_BROWSER=1 python3 test/manual/go_scroll_perf.py
 ALBEDO_NO_BROWSER=1 python3 test/manual/go_memory_profile.py
 ```
 
-### memory policy & bounds
-
-the native go cli bounds transcript and scrollback memory (process RSS and go runtime allocations are not hard-capped; history accounting measures payload bytes and excludes runtime/object overhead):
-- **raw history retention**: capped at 500 entries or 2 MiB payload bytes.
-- **rendered scrollback**: capped at 1,000 lines or 256 KiB in terminal memory.
-- **scrollback trimming**: older visible lines are trimmed with a notice banner (`[X scrollback lines truncated]`); daemon durable history remains completely intact in SQLite.
-- **live streaming segmentation**: active text chunks segment at 64 KiB (`MaxLiveStreamBytes`) before settling into history blocks to avoid unbounded live chunk buffers.
-- **renderer scheduling**: Bubble Tea runs with `tea.WithFPS(120)` render scheduling budget; this represents the engine frame budget and is distinct from physical display refresh rate.
-
 todo
 - [] flesh out plugin system more
 - [] sdk and -p, command to print out most recent assistant message from session
@@ -109,7 +95,7 @@ todo
 - [] compaction evaluations: old-fact recall, corrected instructions, tool pairing, images, restarts, and token/cost comparisons
 - [] subagents plugin
 - [] social plugins like discord
-- [] plugins like heartbeat and skills
+- [ish skills are done] plugins like heartbeat and skills
 - [] oauth that we shamelessly rip from omp
 - [] ai powered approve for me (jev/llm)
 - [] improve verbose mode on tui
