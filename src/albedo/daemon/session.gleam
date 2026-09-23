@@ -6,9 +6,11 @@ import albedo/daemon/conversation
 import albedo/daemon/events as view
 import albedo/daemon/projection
 import albedo/daemon/transcript
+import albedo/daemon/turn.{type Submission, Submission}
 import albedo/daemon/usage
 import albedo/harness/command
 import albedo/harness/extension
+import albedo/harness/extensions/bash/extension as bash
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/loop
@@ -58,22 +60,15 @@ pub type ModelSelection {
 
 pub type SubmissionError {
   WorkspaceMissing(String)
+  /// A run is active and this submission cannot wait for it.
+  Busy
   Rejected(String)
-}
-
-fn valid_submission(display: String, text: String) -> Bool {
-  let maximum = case display == text {
-    True -> 1_048_576
-    False -> 2_200_000
-  }
-  string.trim(text) != ""
-  && string.byte_size(text) <= maximum
-  && string.byte_size(display) <= 1_048_576
 }
 
 fn submission_error(error: SubmissionError) -> String {
   case error {
     WorkspaceMissing(path) -> "workspace not found: " <> path
+    Busy -> "session is busy or message queue is full"
     Rejected(message) -> message
   }
 }
@@ -81,14 +76,7 @@ fn submission_error(error: SubmissionError) -> String {
 pub type Message {
   Resume
   Abort(String)
-  Submit(
-    String,
-    String,
-    String,
-    String,
-    Option(types.Image),
-    Subject(Result(Bool, SubmissionError)),
-  )
+  Submit(Submission, Subject(Result(Bool, SubmissionError)))
   ReadCommands(
     Subject(Result(#(List(command.Command), command.Context), String)),
   )
@@ -106,7 +94,12 @@ pub type Message {
   Read(Int, Subject(Page))
   Watch(process.Pid, fn() -> Nil)
   Publish(String, String, Subject(Bool))
-  Commit(String, List(types.Input), String, Subject(Result(Int, String)))
+  Commit(
+    String,
+    List(types.Input),
+    conversation.Stage,
+    Subject(Result(Int, String)),
+  )
   RecordContext(String, context_snapshot.Snapshot, Subject(Nil))
   RecordUsage(String, usage.Metadata, Subject(Result(Nil, String)))
   Compact(Subject(Result(json.Json, String)))
@@ -122,16 +115,6 @@ pub type Message {
   Close(Subject(Nil))
 }
 
-type Run {
-  Run(
-    id: String,
-    pid: process.Pid,
-    monitor: process.Monitor,
-    cancelled: Bool,
-    compacting: Bool,
-  )
-}
-
 type State {
   State(
     info: conversation.Info,
@@ -141,12 +124,11 @@ type State {
     self: Session,
     history: Option(List(transcript.Entry)),
     latest_usage: Option(usage.Metadata),
-    run: Option(Run),
-    steering: List(#(String, String, String, String, Option(types.Image))),
+    activity: turn.Activity,
+    steering: List(Submission),
     sequence: Int,
     events: List(#(Int, String)),
     watchers: List(#(process.Pid, fn() -> Nil)),
-    phase: String,
     notice: Option(String),
     context: context_snapshot.Snapshot,
     last_touch: Int,
@@ -164,13 +146,13 @@ pub fn start(
       runtime.ledger(host),
       info.id,
     ))
-    case info.stage {
-      "model" | "tool" -> process.send(self, Resume)
-      _ -> Nil
+    case conversation.resumable(info.stage) {
+      True -> process.send(self, Resume)
+      False -> Nil
     }
-    let phase = case info.stage {
-      "idle" -> "resting"
-      _ -> "interrupted"
+    let activity = case info.stage {
+      conversation.Idle -> turn.Resting
+      _ -> turn.Interrupted
     }
     let state =
       State(
@@ -181,12 +163,11 @@ pub fn start(
         self,
         None,
         latest_usage,
-        None,
+        activity,
         [],
         0,
         [],
         [],
-        phase,
         None,
         unprepared(),
         now_ms(),
@@ -195,12 +176,7 @@ pub fn start(
     // registered closure lands a completion notice as an ordinary submit, so
     // the wake reuses the whole turn pipeline and busy answers itself.
     wakes_register(info.id, fn(display, text) {
-      case
-        actor.call(self, 10_000, Submit(display, text, "bash", "bash", None, _))
-      {
-        Ok(_) -> ""
-        Error(error) -> submission_error(error)
-      }
+      wake(self, Submission(display, text, "bash", turn.JobWake, None))
     })
     commands_register(info.id, fn(op) { command_op(self, op) })
     Ok(
@@ -227,7 +203,10 @@ pub fn submit(
   client_id: String,
   image: Option(types.Image),
 ) -> Result(Bool, SubmissionError) {
-  actor.call(session, 10_000, Submit(text, text, client_id, "chat", image, _))
+  actor.call(session, 10_000, Submit(
+    Submission(text, text, client_id, turn.Chat, image),
+    _,
+  ))
 }
 
 /// This session's materialized command catalog and the context that runs them.
@@ -345,7 +324,7 @@ fn handle(state: State, message: Message) {
       case prepare_submission(state) {
         Error(error) ->
           actor.continue(
-            State(..state, phase: "resting")
+            State(..state, activity: turn.Resting)
             |> emit(view.text("error", submission_error(error))),
           )
         Ok(#(state, kernel, client)) -> {
@@ -354,7 +333,7 @@ fn handle(state: State, message: Message) {
           case projected_inputs(candidate) {
             Error(error) ->
               actor.continue(
-                State(..state, phase: "resting")
+                State(..state, activity: turn.Resting)
                 |> emit(view.text("error", error)),
               )
             Ok(model_history) ->
@@ -363,7 +342,7 @@ fn handle(state: State, message: Message) {
                   runtime.ledger(state.host),
                   state.info.id,
                   recovered,
-                  "model",
+                  conversation.Model,
                   Some(state.info.provider),
                 )
               {
@@ -385,139 +364,94 @@ fn handle(state: State, message: Message) {
       }
     }
     Abort(id) ->
-      case state.run {
-        Some(run) if run.id == id && run.cancelled -> {
+      case turn.owner(state.activity, id) {
+        Some(run) if run.cancelled -> {
           kill(run.pid)
           handle(state, Finished(id, Error("cancelled")))
         }
         _ -> actor.continue(state)
       }
-    Submit(display, text, client_id, source, image, reply) ->
-      case state.run {
-        Some(_) -> {
-          case
-            source == "chat"
-            && valid_submission(display, text)
-            && list.length(state.steering) < 32
-          {
-            True -> {
-              process.send(reply, Ok(True))
-              actor.continue(
-                State(
-                  ..state,
-                  steering: list.append(state.steering, [
-                    #(display, text, client_id, source, image),
-                  ]),
-                ),
-              )
-            }
-            False -> {
-              process.send(
-                reply,
-                Error(Rejected("session is busy or message queue is full")),
-              )
-              actor.continue(state)
-            }
-          }
+    Submit(submission, reply) ->
+      case turn.admit(state.activity, submission, list.length(state.steering)) {
+        turn.Reject(turn.Busy) -> {
+          process.send(reply, Error(Busy))
+          actor.continue(state)
         }
-        None -> {
-          let maximum = case display == text {
-            True -> 1_048_576
-            False -> 2_200_000
-          }
-          case
-            string.trim(text) == ""
-            || string.byte_size(text) > maximum
-            || string.byte_size(display) > 1_048_576
-          {
-            True -> {
-              process.send(
-                reply,
-                Error(Rejected("prompt or activation exceeds its bounded size")),
-              )
+        turn.Reject(turn.Oversized) -> {
+          process.send(
+            reply,
+            Error(Rejected("prompt or activation exceeds its bounded size")),
+          )
+          actor.continue(state)
+        }
+        turn.Queue -> {
+          process.send(reply, Ok(True))
+          actor.continue(
+            State(..state, steering: list.append(state.steering, [submission])),
+          )
+        }
+        turn.Start ->
+          case prepare_submission(state) {
+            Error(error) -> {
+              process.send(reply, Error(error))
               actor.continue(state)
             }
-            False ->
-              case prepare_submission(state) {
+            Ok(#(state, kernel, client)) -> {
+              let accepted =
+                list.append(recover_pending(state, kernel), [
+                  submission_input(submission),
+                ])
+              case projected_inputs(remember(state, accepted, 0)) {
                 Error(error) -> {
-                  process.send(reply, Error(error))
+                  process.send(reply, Error(Rejected(error)))
                   actor.continue(state)
                 }
-                Ok(#(state, kernel, client)) -> {
-                  let user_input = case image {
-                    Some(image) -> types.UserImage(text, image)
-                    None -> types.User(text)
+                Ok(history) -> {
+                  // Projection is newest-first: the head is this submission.
+                  let model_history = case state.notice {
+                    None -> history
+                    Some(notice) ->
+                      case history {
+                        [types.User(_), ..rest] -> [
+                          types.User(submission.text <> notice),
+                          ..rest
+                        ]
+                        [types.UserImage(_, image), ..rest] -> [
+                          types.UserImage(submission.text <> notice, image),
+                          ..rest
+                        ]
+                        _ -> history
+                      }
                   }
-                  let accepted =
-                    list.append(recover_pending(state, kernel), [user_input])
-                  let candidate = remember(state, accepted, 0)
-                  case projected_inputs(candidate) {
+                  case
+                    conversation.commit_from(
+                      runtime.ledger(state.host),
+                      state.info.id,
+                      accepted,
+                      conversation.Model,
+                      Some(state.info.provider),
+                    )
+                  {
                     Error(error) -> {
                       process.send(reply, Error(Rejected(error)))
                       actor.continue(state)
                     }
-                    Ok(history) -> {
-                      let model_history = case state.notice {
-                        None -> history
-                        Some(notice) ->
-                          case history {
-                            [types.User(_), ..rest] -> [
-                              types.User(text <> notice),
-                              ..rest
-                            ]
-                            [types.UserImage(_, image), ..rest] -> [
-                              types.UserImage(text <> notice, image),
-                              ..rest
-                            ]
-                            _ -> history
-                          }
-                      }
-                      case
-                        conversation.commit_from(
-                          runtime.ledger(state.host),
-                          state.info.id,
-                          accepted,
-                          "model",
-                          Some(state.info.provider),
-                        )
-                      {
-                        Error(error) -> {
-                          process.send(reply, Error(Rejected(error)))
-                          actor.continue(state)
-                        }
-                        Ok(timestamp) -> {
-                          let state = remember(state, accepted, timestamp)
-                          let state =
-                            State(..state, phase: "preparing", notice: None)
-                          let state =
-                            start_run(state, kernel, client, model_history)
-                          let event = case image {
-                            Some(image) ->
-                              view.user_image(
-                                display,
-                                source,
-                                Some(client_id),
-                                Some(timestamp),
-                                image,
-                              )
-                            None ->
-                              view.user(
-                                display,
-                                source,
-                                Some(client_id),
-                                Some(timestamp),
-                              )
-                          }
-                          process.send(reply, Ok(False))
-                          actor.continue(emit(state, event))
-                        }
-                      }
+                    Ok(timestamp) -> {
+                      let state =
+                        remember(state, accepted, timestamp)
+                        |> fn(state) { State(..state, notice: None) }
+                        |> start_run(kernel, client, model_history)
+                      process.send(reply, Ok(False))
+                      actor.continue(emit(
+                        state,
+                        submission_event(submission, timestamp),
+                      ))
                     }
                   }
                 }
               }
+            }
           }
-        }
       }
     ReadCommands(reply) -> {
       process.send(
@@ -531,7 +465,7 @@ fn handle(state: State, message: Message) {
       actor.continue(state)
     }
     Interrupt(reply) ->
-      case state.run {
+      case turn.running(state.activity) {
         None -> {
           process.send(reply, False)
           actor.continue(state)
@@ -543,11 +477,11 @@ fn handle(state: State, message: Message) {
           }
           let _ = process.send_after(state.self, 2500, Abort(run.id))
           process.send(reply, True)
-          actor.continue(State(..state, run: Some(Run(..run, cancelled: True))))
+          actor.continue(State(..state, activity: turn.cancel(state.activity)))
         }
       }
     ChangeWorkspace(cwd, reply) -> {
-      let changed = case state.run, directory(cwd) {
+      let changed = case turn.running(state.activity), directory(cwd) {
         Some(_), _ -> Error("session must be idle to change workspace")
         None, False -> Error("workspace must be an existing absolute directory")
         None, True ->
@@ -597,7 +531,7 @@ fn handle(state: State, message: Message) {
       actor.continue(state)
     }
     ChangeExtension(name, enabled, reply) ->
-      case state.run {
+      case turn.running(state.activity) {
         Some(_) -> {
           process.send(
             reply,
@@ -676,7 +610,7 @@ fn handle(state: State, message: Message) {
       }
     ChangeModel(model, provider_name, reply) -> {
       case
-        state.run == None
+        turn.running(state.activity) == None
         && string.trim(model) != ""
         && string.byte_size(model) <= 512
         && !string.contains(model, "\r")
@@ -751,7 +685,7 @@ fn handle(state: State, message: Message) {
     }
 
     RefreshData(reply) -> {
-      case state.run {
+      case turn.running(state.activity) {
         Some(_) -> {
           process.send(reply, Error("session must be idle to reload"))
           actor.continue(state)
@@ -798,7 +732,7 @@ fn handle(state: State, message: Message) {
 
     Compact(reply) -> {
       let prepared = {
-        use _ <- result.try(case state.run {
+        use _ <- result.try(case turn.running(state.activity) {
           Some(_) -> Error("session must be idle to compact")
           None -> Ok(Nil)
         })
@@ -822,7 +756,8 @@ fn handle(state: State, message: Message) {
           actor.continue(state)
         }
         Ok(#(state, kernel, client, strategy, history)) -> {
-          let state = start_worker(state, kernel, client, history, True)
+          let state =
+            start_worker(state, kernel, client, history, turn.Compaction)
           process.send(
             reply,
             Ok(
@@ -841,9 +776,9 @@ fn handle(state: State, message: Message) {
       process.send(
         reply,
         json.object([
-          #("running", json.bool(state.run != None)),
-          #("idle", json.bool(state.run == None)),
-          #("phase", json.string(state.phase)),
+          #("running", json.bool(turn.running(state.activity) != None)),
+          #("idle", json.bool(turn.running(state.activity) == None)),
+          #("phase", json.string(turn.phase(state.activity))),
         ])
           |> json.to_string,
       )
@@ -906,33 +841,38 @@ fn handle(state: State, message: Message) {
     }
 
     Publish(id, event, reply) ->
-      case state.run {
-        Some(run) if run.id == id && !run.cancelled -> {
+      case turn.live(state.activity, id) {
+        True -> {
           process.send(reply, True)
           actor.continue(emit(state, event))
         }
-        _ -> {
+        False -> {
           process.send(reply, False)
           actor.continue(state)
         }
       }
-    Commit(id, inputs, phase, reply) ->
-      case state.run {
-        Some(run) if run.id == id -> {
+    Commit(id, inputs, stage, reply) ->
+      case turn.owner(state.activity, id) {
+        Some(_) -> {
           // Completed tool results are saved even when cancellation was requested.
           let written =
             conversation.commit_from(
               runtime.ledger(state.host),
               state.info.id,
               inputs,
-              phase,
+              stage,
               Some(state.info.provider),
             )
           process.send(reply, written)
           case written {
             Ok(timestamp) -> {
               let state = remember(state, inputs, timestamp)
-              actor.continue(State(..state, phase: phase))
+              actor.continue(
+                State(
+                  ..state,
+                  activity: turn.committed(state.activity, id, stage),
+                ),
+              )
             }
             Error(_) -> actor.continue(state)
           }
@@ -943,73 +883,48 @@ fn handle(state: State, message: Message) {
         }
       }
     DrainSteering(id, reply) ->
-      case state.run {
-        Some(run) if run.id == id && !run.cancelled -> {
-          let inputs =
-            list.map(state.steering, fn(item) {
-              case item.4 {
-                Some(image) -> types.UserImage(item.1, image)
-                None -> types.User(item.1)
-              }
-            })
-          case inputs {
-            [] -> {
-              process.send(reply, Ok([]))
-              actor.continue(state)
-            }
-            _ ->
-              case
-                conversation.commit_from(
-                  runtime.ledger(state.host),
-                  state.info.id,
-                  inputs,
-                  "model",
-                  Some(state.info.provider),
-                )
-              {
-                Error(error) -> {
-                  process.send(reply, Error(error))
-                  actor.continue(state)
-                }
-                Ok(timestamp) -> {
-                  let state = remember(state, inputs, timestamp)
-                  let state =
-                    list.fold(state.steering, state, fn(state, item) {
-                      emit(state, case item.4 {
-                        Some(image) ->
-                          view.user_image(
-                            item.0,
-                            item.3,
-                            Some(item.2),
-                            Some(timestamp),
-                            image,
-                          )
-                        None ->
-                          view.user(
-                            item.0,
-                            item.3,
-                            Some(item.2),
-                            Some(timestamp),
-                          )
-                      })
-                    })
-                  process.send(reply, Ok(inputs))
-                  actor.continue(State(..state, steering: []))
-                }
-              }
-          }
-        }
-        _ -> {
+      case turn.live(state.activity, id), state.steering {
+        False, _ -> {
           process.send(reply, Error("cancelled"))
           actor.continue(state)
+        }
+        True, [] -> {
+          process.send(reply, Ok([]))
+          actor.continue(state)
+        }
+        True, queued -> {
+          let inputs = list.map(queued, submission_input)
+          case
+            conversation.commit_from(
+              runtime.ledger(state.host),
+              state.info.id,
+              inputs,
+              conversation.Model,
+              Some(state.info.provider),
+            )
+          {
+            Error(error) -> {
+              process.send(reply, Error(error))
+              actor.continue(state)
+            }
+            Ok(timestamp) -> {
+              let state =
+                emit_submissions(
+                  remember(state, inputs, timestamp),
+                  queued,
+                  timestamp,
+                )
+              process.send(reply, Ok(inputs))
+              actor.continue(State(..state, steering: []))
+            }
+          }
         }
       }
     RecordContext(id, snapshot, reply) -> {
       process.send(reply, Nil)
-      case state.run {
-        Some(run) if run.id == id && !run.cancelled ->
-          actor.continue(State(..state, context: snapshot))
-        _ -> actor.continue(state)
+      case turn.live(state.activity, id) {
+        True -> actor.continue(State(..state, context: snapshot))
+        False -> actor.continue(state)
       }
     }
     ReadContext(reply) -> {
@@ -1021,8 +936,8 @@ fn handle(state: State, message: Message) {
       actor.continue(state)
     }
     RecordUsage(id, metadata, reply) ->
-      case state.run {
-        Some(run) if run.id == id -> {
+      case turn.owner(state.activity, id) {
+        Some(_) -> {
           let written =
             conversation.record_usage(
               runtime.ledger(state.host),
@@ -1042,29 +957,25 @@ fn handle(state: State, message: Message) {
         }
       }
     Finished(id, outcome) ->
-      case state.run {
-        Some(run) if run.id == id -> {
+      case turn.owner(state.activity, id) {
+        Some(run) -> {
           process.demonitor_process(run.monitor)
-          let stage = case outcome, run.cancelled {
-            Ok(_), False -> "idle"
-            _, _ -> "interrupted"
-          }
           let persisted =
             conversation.commit_from(
               runtime.ledger(state.host),
               state.info.id,
               [],
-              stage,
+              turn.final_stage(run, outcome),
               Some(state.info.provider),
             )
-          let state = State(..state, run: None, phase: "resting")
+          let state = State(..state, activity: turn.Resting)
           let state = case run.cancelled, outcome, persisted {
             True, _, _ -> emit(state, view.event("interrupted", []))
             _, Error(error), _ -> emit(state, view.text("error", error))
             _, _, Error(error) -> emit(state, view.text("error", error))
             // Compaction makes no provider request, so the footer's last real
             // usage is stale; the strategy's own estimate replaces it.
-            _, Ok(_), Ok(_) if run.compacting -> {
+            _, Ok(_), Ok(_) if run.work == turn.Compaction -> {
               let state = case context_snapshot.estimate(state.context) {
                 Some(tokens) -> {
                   let metadata =
@@ -1089,7 +1000,7 @@ fn handle(state: State, message: Message) {
         _ -> actor.continue(state)
       }
     Down(process.ProcessDown(_, pid, _)) ->
-      case state.run {
+      case turn.running(state.activity) {
         Some(run) if run.pid == pid ->
           handle(
             state,
@@ -1115,7 +1026,7 @@ fn handle(state: State, message: Message) {
       process.send(
         reply,
         Report(
-          state.run != None,
+          turn.running(state.activity) != None,
           kernel,
           state.history != None,
           now_ms() - state.last_touch,
@@ -1125,7 +1036,7 @@ fn handle(state: State, message: Message) {
       actor.continue(state)
     }
     Release(reply) ->
-      case state.kernel, state.run {
+      case state.kernel, turn.running(state.activity) {
         Some(kernel), None -> {
           let saved = save_state(state, kernel)
           runtime.reset_session(state.host, state.info.id)
@@ -1144,7 +1055,7 @@ fn handle(state: State, message: Message) {
         }
       }
     EvictHistory(reply) ->
-      case state.run {
+      case turn.running(state.activity) {
         Some(_) -> {
           process.send(reply, False)
           actor.continue(state)
@@ -1156,7 +1067,7 @@ fn handle(state: State, message: Message) {
         }
       }
     Close(reply) -> {
-      case state.run, state.kernel {
+      case turn.running(state.activity), state.kernel {
         Some(run), Some(kernel) -> {
           runtime.interrupt(kernel)
           kill(run.pid)
@@ -1199,7 +1110,10 @@ fn command_op(
     command.ContextPage(section, page) ->
       actor.call(session, 5000, ReadContextPage(section, page, _))
     command.Submit(display, text, client) ->
-      actor.call(session, 10_000, Submit(display, text, client, "chat", None, _))
+      actor.call(session, 10_000, Submit(
+        Submission(display, text, client, turn.Chat, None),
+        _,
+      ))
       |> result.map_error(submission_error)
       |> result.replace(json.object([#("submitted", json.bool(True))]))
   }
@@ -1230,7 +1144,10 @@ fn kill(pid: process.Pid) -> Nil
 fn now_ms() -> Int
 
 @external(erlang, "albedo_wakes", "register")
-fn wakes_register(session: String, submit: fn(String, String) -> String) -> Nil
+fn wakes_register(
+  session: String,
+  submit: fn(String, String) -> bash.Wake,
+) -> Nil
 
 @external(erlang, "albedo_wakes", "forget")
 fn wakes_forget(session: String) -> Nil
@@ -1460,14 +1377,11 @@ fn start_queued(state: State) -> State {
       case prepare_submission(state) {
         Error(error) -> failed_queued(state, submission_error(error))
         Ok(#(state, kernel, client)) -> {
-          let inputs =
-            list.map(queued, fn(item) {
-              case item.4 {
-                Some(image) -> types.UserImage(item.1, image)
-                None -> types.User(item.1)
-              }
-            })
-          let accepted = list.append(recover_pending(state, kernel), inputs)
+          let accepted =
+            list.append(
+              recover_pending(state, kernel),
+              list.map(queued, submission_input),
+            )
           case projected_inputs(remember(state, accepted, 0)) {
             Error(error) -> failed_queued(state, error)
             Ok(history) ->
@@ -1476,33 +1390,18 @@ fn start_queued(state: State) -> State {
                   runtime.ledger(state.host),
                   state.info.id,
                   accepted,
-                  "model",
+                  conversation.Model,
                   Some(state.info.provider),
                 )
               {
                 Error(error) -> failed_queued(state, error)
                 Ok(timestamp) -> {
-                  let state = remember(state, accepted, timestamp)
                   let state =
-                    list.fold(queued, state, fn(state, item) {
-                      emit(state, case item.4 {
-                        Some(image) ->
-                          view.user_image(
-                            item.0,
-                            item.3,
-                            Some(item.2),
-                            Some(timestamp),
-                            image,
-                          )
-                        None ->
-                          view.user(
-                            item.0,
-                            item.3,
-                            Some(item.2),
-                            Some(timestamp),
-                          )
-                      })
-                    })
+                    emit_submissions(
+                      remember(state, accepted, timestamp),
+                      queued,
+                      timestamp,
+                    )
                   start_run(
                     State(..state, steering: [], notice: None),
                     kernel,
@@ -1517,13 +1416,69 @@ fn start_queued(state: State) -> State {
   }
 }
 
+fn submission_input(submission: Submission) -> types.Input {
+  case submission.image {
+    Some(image) -> types.UserImage(submission.text, image)
+    None -> types.User(submission.text)
+  }
+}
+
+fn submission_event(submission: Submission, timestamp: Int) -> String {
+  let source = turn.source_name(submission.source)
+  let client = Some(submission.client_id)
+  case submission.image {
+    Some(image) ->
+      view.user_image(
+        submission.display,
+        source,
+        client,
+        Some(timestamp),
+        image,
+      )
+    None -> view.user(submission.display, source, client, Some(timestamp))
+  }
+}
+
+fn emit_submissions(
+  state: State,
+  submissions: List(Submission),
+  timestamp: Int,
+) -> State {
+  list.fold(submissions, state, fn(state, submission) {
+    emit(state, submission_event(submission, timestamp))
+  })
+}
+
+/// Deliver one job wake as an ordinary submission. Runs in the kernel's route
+/// process, so it waits with its own deadline instead of `actor.call`, whose
+/// timeout would crash the route: an owner too occupied to answer is busy and
+/// the kernel retries; only a stopped owner is unavailable.
+fn wake(session: Session, submission: Submission) -> bash.Wake {
+  case process.subject_owner(session) {
+    Error(_) -> bash.Unavailable("session stopped")
+    Ok(owner) ->
+      case process.is_alive(owner) {
+        False -> bash.Unavailable("session stopped")
+        True -> {
+          let reply = process.new_subject()
+          process.send(session, Submit(submission, reply))
+          case process.receive(reply, 10_000) {
+            Ok(Ok(_)) -> bash.Delivered
+            Ok(Error(Busy)) | Error(Nil) -> bash.Busy
+            Ok(Error(error)) -> bash.Unavailable(submission_error(error))
+          }
+        }
+      }
+  }
+}
+
 fn start_run(
   state: State,
   kernel: runtime.Session,
   client: types.Client,
   model_history: List(types.Input),
 ) -> State {
-  start_worker(state, kernel, client, model_history, False)
+  start_worker(state, kernel, client, model_history, turn.Turn(None))
 }
 
 fn start_worker(
@@ -1531,7 +1486,7 @@ fn start_worker(
   kernel: runtime.Session,
   client: types.Client,
   model_history: List(types.Input),
-  compacting: Bool,
+  work: turn.Work,
 ) -> State {
   let run_id = new_id()
   let owner = state.self
@@ -1542,8 +1497,8 @@ fn start_worker(
       kernel,
       client,
       fn(event) { actor.call(owner, 5000, Publish(run_id, event, _)) },
-      fn(inputs, phase) {
-        actor.call(owner, 10_000, Commit(run_id, inputs, phase, _))
+      fn(inputs, stage) {
+        actor.call(owner, 10_000, Commit(run_id, inputs, stage, _))
       },
       fn(request) {
         let observation = case runtime.compaction_name(kernel) {
@@ -1572,25 +1527,17 @@ fn start_worker(
     process.spawn(fn() {
       process.send(
         owner,
-        Finished(run_id, case compacting {
-          True -> loop.compact(worker, model_history)
-          False -> loop.run(worker, run_id, model_history, 0)
+        Finished(run_id, case work {
+          turn.Compaction -> loop.compact(worker, model_history)
+          turn.Turn(_) -> loop.run(worker, run_id, model_history, 0)
         }),
       )
     })
-  let active = Run(run_id, pid, process.monitor(pid), False, compacting)
-  State(
-    ..state,
-    run: Some(active),
-    phase: case compacting {
-      True -> "compacting"
-      False -> "preparing"
-    },
-    context: case compacting {
-      True -> state.context
-      False -> unprepared()
-    },
-  )
+  let run = turn.Run(run_id, pid, process.monitor(pid), False, work)
+  State(..state, activity: turn.Running(run), context: case work {
+    turn.Compaction -> state.context
+    turn.Turn(_) -> unprepared()
+  })
 }
 
 fn raw_inputs(entries: List(transcript.Entry)) -> List(types.Input) {

@@ -128,7 +128,7 @@ pub fn fork(
             source.provider,
             source.model,
             source.protocol,
-            "idle",
+            conversation.Idle,
             None,
           ))
         }
@@ -224,36 +224,12 @@ fn safe_preview(text: String) -> String {
   }
 }
 
-fn info_decoder() {
-  use id <- decode.field(0, decode.string)
-  use title <- decode.field(1, decode.string)
-  use cwd <- decode.field(2, decode.string)
-  use provider <- decode.field(3, decode.string)
-  use model <- decode.field(4, decode.string)
-  use protocol <- decode.field(5, decode.string)
-  use stage <- decode.field(6, decode.string)
-  use last_assistant_at <- decode.field(7, decode.optional(decode.int))
-  decode.success(conversation.Info(
-    id,
-    title,
-    cwd,
-    provider,
-    model,
-    case protocol {
-      "responses" -> types.Responses
-      _ -> types.ChatCompletions
-    },
-    stage,
-    last_assistant_at,
-  ))
-}
-
 fn read_info(db, id: String) -> Result(conversation.Info, String) {
   sqlight.query(
     "SELECT id,COALESCE(NULLIF(title,''),'new session'),cwd,COALESCE(provider,''),model,protocol,stage,last_assistant_at FROM sessions WHERE id=?",
     db,
     [sqlight.text(id)],
-    info_decoder(),
+    conversation.info_decoder(),
   )
   |> result.map_error(fn(error) { error.message })
   |> result.try(fn(rows) {

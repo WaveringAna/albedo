@@ -82,8 +82,8 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
       use saved <- result.try(conversation.list(runtime.ledger(host)))
       let sessions =
         list.map(saved, fn(info) {
-          let worker = case info.stage {
-            "model" | "tool" ->
+          let worker = case conversation.resumable(info.stage) {
+            True ->
               case session.start(host, info, config.home) {
                 Ok(worker) -> {
                   watch(worker)
@@ -98,7 +98,7 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
                   None
                 }
               }
-            _ -> None
+            False -> None
           }
           #(info.id, #(info, worker))
         })
@@ -146,7 +146,7 @@ fn handle(state: State, message: Message) {
               _ -> model
             },
             provider.protocol,
-            "idle",
+            conversation.Idle,
             None,
           )
         case
@@ -674,6 +674,8 @@ fn route(
                         ]),
                       )
                     Error(session.Rejected(e)) -> error(409, e)
+                    Error(session.Busy) ->
+                      error(409, "session is busy or message queue is full")
                     Error(session.WorkspaceMissing(path)) ->
                       reply(
                         409,

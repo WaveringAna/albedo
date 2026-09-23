@@ -25,6 +25,13 @@ pub fn plugin() -> harness_extension.Extension {
   extension()
 }
 
+/// A session's answer to a job wake. `Busy` is the kernel's retry signal.
+pub type Wake {
+  Delivered
+  Busy
+  Unavailable(reason: String)
+}
+
 /// The kernel's wake route: a finished background job reports itself here, and
 /// the submit closure its session registered turns the notice into an ordinary
 /// user turn, so the model never polls for completion. The reply's code is the
@@ -35,15 +42,15 @@ pub fn route(_store: store.Store, session: String, request: String) -> String {
       case decode.run(args, notice_decoder()) {
         Ok(notice) ->
           case deliver(session, notice.display, notice.text) {
-            "" ->
+            Delivered ->
               json.to_string(
                 json.object([
                   #("ok", json.bool(True)),
                   #("value", json.string("delivered")),
                 ]),
               )
-            "session is busy" -> refused("busy", "session is busy")
-            message -> refused("unavailable", message)
+            Busy -> refused("busy", "session is busy")
+            Unavailable(reason) -> refused("unavailable", reason)
           }
         Error(_) -> refused("invalid", "invalid jobs notice")
       }
@@ -68,7 +75,7 @@ fn notice_decoder() -> decode.Decoder(Notice) {
 }
 
 @external(erlang, "albedo_wakes", "deliver")
-fn deliver(session: String, display: String, text: String) -> String
+fn deliver(session: String, display: String, text: String) -> Wake
 
 fn refused(code: String, message: String) -> String {
   json.object([

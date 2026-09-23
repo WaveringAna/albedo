@@ -1,5 +1,6 @@
 //// Model → tools → model. The session owns cancellation and durable commits.
 
+import albedo/daemon/conversation
 import albedo/daemon/events as view
 import albedo/daemon/usage
 import albedo/harness/compaction
@@ -20,7 +21,7 @@ pub type Loop {
     kernel: runtime.Session,
     client: types.Client,
     publish: fn(String) -> Bool,
-    commit: fn(List(types.Input), String) -> Result(Int, String),
+    commit: fn(List(types.Input), conversation.Stage) -> Result(Int, String),
     record_context: fn(types.Request) -> Nil,
     record_usage: fn(usage.Metadata) -> Result(Nil, String),
     drain_steering: fn() -> Result(List(types.Input), String),
@@ -86,8 +87,8 @@ pub fn run(
   let replay = list.map(turn.output, types.Replay)
   use timestamp <- result.try(
     state.commit(replay, case turn.tool_calls {
-      [] -> "idle"
-      _ -> "tool"
+      [] -> conversation.Idle
+      _ -> conversation.Tool
     }),
   )
   list.each(replay, fn(input) {
@@ -131,7 +132,7 @@ pub fn run(
                 state.kernel,
                 call,
               ))
-              use _ <- result.try(state.commit([output], "tool"))
+              use _ <- result.try(state.commit([output], conversation.Tool))
               let _ = case output {
                 types.ToolOutput(_, body) ->
                   state.publish(view.tool(
@@ -147,7 +148,7 @@ pub fn run(
         }),
       )
       use steering <- result.try(state.drain_steering())
-      use _ <- result.try(state.commit([], "model"))
+      use _ <- result.try(state.commit([], conversation.Model))
       run(
         state,
         id,

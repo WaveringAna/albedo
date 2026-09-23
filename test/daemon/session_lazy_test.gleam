@@ -23,7 +23,7 @@ fn info(id: String) -> conversation.Info {
     "provider",
     "model",
     types.Responses,
-    "idle",
+    conversation.Idle,
     None,
   )
 }
@@ -64,7 +64,7 @@ pub fn evicted_idle_history_reloads_from_durable_transcript_test() {
       ledger,
       "reload",
       [types.User("first durable turn")],
-      "idle",
+      conversation.Idle,
     )
   let assert Ok(worker) = session.start(host, info("reload"), "/tmp")
   let first = session.read(worker, -1)
@@ -77,7 +77,7 @@ pub fn evicted_idle_history_reloads_from_durable_transcript_test() {
       ledger,
       "reload",
       [types.Assistant("written while detached")],
-      "idle",
+      conversation.Idle,
     )
   session.evict_history(worker) |> should.be_true
   session.report(worker).history_loaded |> should.be_false

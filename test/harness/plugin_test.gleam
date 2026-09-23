@@ -208,13 +208,18 @@ pub fn transcript_remains_durable_when_context_is_request_only_test() {
       "fixture",
       "model",
       types.Responses,
-      "idle",
+      conversation.Idle,
       None,
     )
   let assert Ok(_) = conversation.create(runtime.ledger(host), info)
   let history = [types.User("saved")]
   let assert Ok(_) =
-    conversation.commit(runtime.ledger(host), "durable", history, "idle")
+    conversation.commit(
+      runtime.ledger(host),
+      "durable",
+      history,
+      conversation.Idle,
+    )
   let assert Ok(session) = runtime.open_session(host, "durable", "/tmp")
   let assert Ok([types.User(prefix), types.User("saved")]) =
     runtime.prepare_history(host, session, "model", history)

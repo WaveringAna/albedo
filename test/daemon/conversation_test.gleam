@@ -28,7 +28,7 @@ fn session(id: String) -> conversation.Info {
     "provider",
     "model",
     types.Responses,
-    "idle",
+    conversation.Idle,
     None,
   )
 }
@@ -57,14 +57,14 @@ pub fn latest_user_title_survives_restart_and_legacy_migration_test() {
       ledger,
       "session",
       [types.User("earlier title"), types.Assistant("not the title")],
-      "model",
+      conversation.Model,
     )
   let assert Ok(_) =
     conversation.commit(
       ledger,
       "session",
       [types.User("  latest\naccepted 👩‍💻  ")],
-      "model",
+      conversation.Model,
     )
   let assert Ok(_) =
     conversation.commit(
@@ -74,7 +74,7 @@ pub fn latest_user_title_survives_restart_and_legacy_migration_test() {
         types.Assistant("must not replace it"),
         types.ToolOutput("call", "output"),
       ],
-      "idle",
+      conversation.Idle,
     )
   let assert Ok([before]) = conversation.list(ledger)
   before.title |> should.equal("latest accepted 👩‍💻")
@@ -133,7 +133,12 @@ pub fn last_assistant_at_tracks_only_visible_assistant_messages_test() {
     [types.Assistant("")],
   ]
   list.try_each(non_messages, fn(inputs) {
-    use _ <- result.try(conversation.commit(ledger, "session", inputs, "model"))
+    use _ <- result.try(conversation.commit(
+      ledger,
+      "session",
+      inputs,
+      conversation.Model,
+    ))
     use infos <- result.try(conversation.list(ledger))
     case infos {
       [info] -> {
@@ -146,7 +151,12 @@ pub fn last_assistant_at_tracks_only_visible_assistant_messages_test() {
   |> should.be_ok
 
   let assert Ok(_) =
-    conversation.commit(ledger, "session", [types.Replay(message)], "idle")
+    conversation.commit(
+      ledger,
+      "session",
+      [types.Replay(message)],
+      conversation.Idle,
+    )
   let assert Ok([answered]) = conversation.list(ledger)
   let assert Some(timestamp) = answered.last_assistant_at
   let assert True = timestamp > 7
@@ -166,7 +176,12 @@ pub fn list_orders_sessions_by_latest_activity_test() {
   older.id |> should.equal("older")
 
   let assert Ok(_) =
-    conversation.commit(ledger, "older", [types.User("latest task")], "model")
+    conversation.commit(
+      ledger,
+      "older",
+      [types.User("latest task")],
+      conversation.Model,
+    )
   let assert Ok([active, _]) = conversation.list(ledger)
   active.id |> should.equal("older")
   active.title |> should.equal("latest task")
@@ -176,7 +191,7 @@ pub fn list_orders_sessions_by_latest_activity_test() {
       ledger,
       "newer",
       [types.Assistant("assistant activity")],
-      "idle",
+      conversation.Idle,
     )
   let assert Ok([active, _]) = conversation.list(ledger)
   active.id |> should.equal("newer")
@@ -193,9 +208,19 @@ pub fn migration_recovers_placeholder_titles_and_activity_order_test() {
   let assert Ok(_) = conversation.create(ledger, session("first"))
   let assert Ok(_) = conversation.create(ledger, session("second"))
   let assert Ok(_) =
-    conversation.commit(ledger, "second", [types.User("older prompt")], "idle")
+    conversation.commit(
+      ledger,
+      "second",
+      [types.User("older prompt")],
+      conversation.Idle,
+    )
   let assert Ok(_) =
-    conversation.commit(ledger, "first", [types.User("newest prompt")], "idle")
+    conversation.commit(
+      ledger,
+      "first",
+      [types.User("newest prompt")],
+      conversation.Idle,
+    )
   let assert Ok(_) =
     store.query(ledger, fn(db) {
       sqlight.exec(
@@ -286,7 +311,12 @@ pub fn transcript_timestamps_migrate_without_invention_and_roundtrip_test() {
   let assert Ok(_) = conversation.initialise(ledger)
   let assert Ok(_) = conversation.create(ledger, session("timestamped"))
   let assert Ok(_) =
-    conversation.commit(ledger, "timestamped", [types.User("legacy")], "idle")
+    conversation.commit(
+      ledger,
+      "timestamped",
+      [types.User("legacy")],
+      conversation.Idle,
+    )
 
   // Recreate the legacy transcript shape. Migration adds a nullable column and
   // must not claim to know when this row was accepted.
@@ -303,7 +333,7 @@ pub fn transcript_timestamps_migrate_without_invention_and_roundtrip_test() {
 
   let new_inputs = [types.User("current"), types.Assistant("answer")]
   let assert Ok(timestamp) =
-    conversation.commit(ledger, "timestamped", new_inputs, "idle")
+    conversation.commit(ledger, "timestamped", new_inputs, conversation.Idle)
   let assert True = timestamp > 1_000_000_000_000
   let assert Ok(entries) = conversation.load_entries(ledger, "timestamped")
   entries
@@ -365,7 +395,7 @@ pub fn provider_provenance_backfills_on_switch_and_survives_restart_test() {
   let assert Ok(_) = conversation.create(ledger, session("provenance"))
   let original = [types.User("old provider input"), types.Assistant("answer")]
   let assert Ok(old_timestamp) =
-    conversation.commit(ledger, "provenance", original, "idle")
+    conversation.commit(ledger, "provenance", original, conversation.Idle)
   let assert Ok(before_payloads) =
     store.query(ledger, fn(db) {
       sqlight.query(
@@ -398,7 +428,7 @@ pub fn provider_provenance_backfills_on_switch_and_survives_restart_test() {
       ledger,
       "provenance",
       [types.User("new provider input")],
-      "idle",
+      conversation.Idle,
       Some("new-provider"),
     )
   let expected = [

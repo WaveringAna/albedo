@@ -18,9 +18,44 @@ pub type Info {
     provider: String,
     model: String,
     protocol: types.Protocol,
-    stage: String,
+    stage: Stage,
     last_assistant_at: Option(Int),
   )
+}
+
+/// Where a session's turn stood at its last commit. A daemon restart resumes
+/// a session left at `Model` or `Tool`; `Interrupted` is a turn that ended
+/// cancelled or failed and is not resumed.
+pub type Stage {
+  Idle
+  Model
+  Tool
+  Interrupted
+}
+
+/// The stored and reported spelling of a stage.
+pub fn stage_name(stage: Stage) -> String {
+  case stage {
+    Idle -> "idle"
+    Model -> "model"
+    Tool -> "tool"
+    Interrupted -> "interrupted"
+  }
+}
+
+/// An unrecognised stored stage is treated as a turn that did not finish.
+fn parse_stage(name: String) -> Stage {
+  case name {
+    "idle" -> Idle
+    "model" -> Model
+    "tool" -> Tool
+    _ -> Interrupted
+  }
+}
+
+/// A restart picks up a turn that was waiting on the model or a tool.
+pub fn resumable(stage: Stage) -> Bool {
+  stage == Model || stage == Tool
 }
 
 pub fn initialise(store: store.Store) -> Result(Nil, String) {
@@ -220,7 +255,8 @@ pub fn assign_session_provider(
   })
 }
 
-fn info_decoder() {
+/// Decodes the `id,title,cwd,provider,model,protocol,stage,last_assistant_at` columns.
+pub fn info_decoder() -> decode.Decoder(Info) {
   use id <- decode.field(0, decode.string)
   use title <- decode.field(1, decode.string)
   use cwd <- decode.field(2, decode.string)
@@ -239,7 +275,7 @@ fn info_decoder() {
       "responses" -> types.Responses
       _ -> types.ChatCompletions
     },
-    stage,
+    parse_stage(stage),
     last_assistant_at,
   ))
 }
@@ -387,7 +423,7 @@ pub fn commit(
   store: store.Store,
   id: String,
   inputs: List(types.Input),
-  stage: String,
+  stage: Stage,
 ) -> Result(Int, String) {
   commit_from(store, id, inputs, stage, None)
 }
@@ -398,7 +434,7 @@ pub fn commit_from(
   store: store.Store,
   id: String,
   inputs: List(types.Input),
-  stage: String,
+  stage: Stage,
   provider: Option(String),
 ) -> Result(Int, String) {
   let timestamp = usage.now()
@@ -435,7 +471,7 @@ pub fn commit_from(
             "UPDATE sessions SET stage=?,title=?,activity_seq=(SELECT COALESCE(MAX(activity_seq),0)+1 FROM sessions),last_assistant_at=CASE WHEN ?=1 THEN unixepoch() ELSE last_assistant_at END WHERE id=?",
             db,
             [
-              sqlight.text(stage),
+              sqlight.text(stage_name(stage)),
               sqlight.text(title(text)),
               sqlight.int(advances_assistant),
               sqlight.text(id),
@@ -447,7 +483,7 @@ pub fn commit_from(
             "UPDATE sessions SET stage=?,activity_seq=(SELECT COALESCE(MAX(activity_seq),0)+1 FROM sessions),last_assistant_at=CASE WHEN ?=1 THEN unixepoch() ELSE last_assistant_at END WHERE id=?",
             db,
             [
-              sqlight.text(stage),
+              sqlight.text(stage_name(stage)),
               sqlight.int(advances_assistant),
               sqlight.text(id),
             ],

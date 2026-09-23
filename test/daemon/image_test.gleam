@@ -32,7 +32,7 @@ fn session(id: String) -> conversation.Info {
     "provider",
     "model",
     types.Responses,
-    "idle",
+    conversation.Idle,
     None,
   )
 }
@@ -83,7 +83,8 @@ pub fn image_inputs_survive_restart_and_fork_without_losing_payload_test() {
   let assert Ok(_) = conversation.initialise(ledger)
   let assert Ok(_) = conversation.create(ledger, session("source"))
   let input = types.UserImage("describe", test_image())
-  let assert Ok(_) = conversation.commit(ledger, "source", [input], "idle")
+  let assert Ok(_) =
+    conversation.commit(ledger, "source", [input], conversation.Idle)
   let assert Ok([checkpoint]) =
     store.query(ledger, fn(db) {
       sqlight.query(

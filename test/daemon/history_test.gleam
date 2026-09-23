@@ -25,7 +25,7 @@ fn info(id: String) -> conversation.Info {
     "provider",
     "model",
     types.Responses,
-    "idle",
+    conversation.Idle,
     None,
   )
 }
@@ -73,7 +73,7 @@ pub fn page_is_bounded_chronological_and_redacts_provider_bodies_test() {
         types.Replay(call),
         types.ToolOutput("call-1", "tool output"),
       ],
-      "idle",
+      conversation.Idle,
       Some("provider"),
     )
   let assert [user_seq, reasoning_seq, call_seq, _] =
@@ -124,7 +124,7 @@ pub fn fork_copies_only_prefix_provenance_extensions_and_completes_tools_test() 
       ledger,
       "source",
       [types.User("branch me"), types.Replay(call)],
-      "tool",
+      conversation.Tool,
       Some("provider-a"),
     )
   let assert Ok(_) =
@@ -135,7 +135,7 @@ pub fn fork_copies_only_prefix_provenance_extensions_and_completes_tools_test() 
         types.ToolOutput("call-1", "actual later result"),
         types.Assistant("later answer"),
       ],
-      "idle",
+      conversation.Idle,
       Some("provider-a"),
     )
   let assert Ok(_) =
@@ -155,7 +155,12 @@ pub fn fork_copies_only_prefix_provenance_extensions_and_completes_tools_test() 
     })
   let assert [_, checkpoint, _, _] = sequences(ledger, "source")
   let assert Ok(branch) = history.fork(ledger, "source", "branch", checkpoint)
-  #(branch.id, branch.title, branch.stage, branch.last_assistant_at)
+  #(
+    branch.id,
+    branch.title,
+    conversation.stage_name(branch.stage),
+    branch.last_assistant_at,
+  )
   |> should.equal(#("branch", "branch me", "idle", None))
 
   let assert Ok(source) = conversation.load_entries(ledger, "source")
@@ -207,7 +212,7 @@ pub fn incompatible_or_missing_checkpoints_leave_no_branch_test() {
       ledger,
       "source",
       [types.ToolOutput("orphan", "bad history")],
-      "idle",
+      conversation.Idle,
     )
   let assert [checkpoint] = sequences(ledger, "source")
   history.fork(ledger, "source", "orphan-branch", checkpoint)
