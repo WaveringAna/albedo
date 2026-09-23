@@ -71,6 +71,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
             output = [{"type": "function_call", "id": "fc-lcm-grep", "call_id": "call-lcm-grep",
                        "name": "lcm_grep", "arguments": json.dumps({"pattern": "first turn"}),
                        "status": "completed"}]
+        if prompt == "fold list probe" and messages[-1].get("type") != "function_call_output":
+            output = [{"type": "function_call", "id": "fc-lcm-list", "call_id": "call-lcm-list",
+                       "name": "lcm_list", "arguments": "{}", "status": "completed"}]
         response = {"type": "response.completed", "response": {
             "id": "fixture", "status": "completed", "output": output,
             "usage": {"input_tokens": 20, "output_tokens": 1},
@@ -338,12 +341,12 @@ def run(endpoint):
             context = request["input"][0]["content"]
             assert "catalog-only fixture description" not in context
             assert "BODY_MUST_NOT_AUTOLOAD" not in context
-            rejected(route, {"name": "lcm", "enabled": True})
-            api(route, {"name": "rolling", "enabled": False})
             lcm_selected = api(route, {"name": "lcm", "enabled": True})
             assert next(item["enabled"] for item in lcm_selected if item["name"] == "lcm")
+            assert not next(item["enabled"] for item in lcm_selected if item["name"] == "rolling")
+            rejected(route, {"name": "lcm", "enabled": False})
             lcm_request = catalog_request(session, "lcm preflight")
-            assert {"lcm_grep", "lcm_describe", "lcm_expand"} <= {tool["name"] for tool in lcm_request["tools"]}
+            assert {"lcm_list", "lcm_grep", "lcm_describe", "lcm_expand"} <= {tool["name"] for tool in lcm_request["tools"]}
             compacted = api(f"/sessions/{session}/commands", {"name": "/compact"})
             assert compacted["result"]["strategy"] == "lcm" and compacted["result"]["started"] is True
             ready(session)
@@ -357,6 +360,26 @@ def run(endpoint):
                                if item.get("type") == "function_call_output")
             assert "source_count" in tool_result and "first turn" in tool_result, tool_result
             assert api(f"/sessions/{session}/context")["compaction"]["strategy"] == "lcm"
+            rolling_selected = api(route, {"name": "rolling", "enabled": True})
+            assert next(item["enabled"] for item in rolling_selected if item["name"] == "rolling")
+            assert not next(item["enabled"] for item in rolling_selected if item["name"] == "lcm")
+            rolling_request = catalog_request(session, "folded under rolling")
+            assert "LCM summary node #" in json.dumps(rolling_request["input"]), rolling_request
+            before = len(Provider.requests)
+            api(f"/sessions/{session}/events", {"content": "fold list probe"})
+            ready(session)
+            assert len(Provider.requests) == before + 2
+            tool_result = next(item["output"] for item in reversed(Provider.requests[-1]["input"])
+                               if item.get("type") == "function_call_output")
+            assert json.loads(tool_result)["total"] > 0, tool_result
+            assert api(f"/sessions/{session}/context")["compaction"]["strategy"] == "rolling"
+            stop()
+            connect()
+            restored = api(route)
+            assert next(item["enabled"] for item in restored if item["name"] == "rolling")
+            assert not next(item["enabled"] for item in restored if item["name"] == "lcm")
+            reopened = catalog_request(session, "folded after restart")
+            assert "LCM summary node #" in json.dumps(reopened["input"]), reopened
             print("extension context, live toggles, busy/dependency guards, and persistence passed")
         finally:
             Provider.release.set()

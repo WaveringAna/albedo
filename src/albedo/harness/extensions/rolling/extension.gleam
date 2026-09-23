@@ -4,6 +4,7 @@
 import albedo/daemon/store
 import albedo/harness/compaction
 import albedo/harness/extension
+import albedo/harness/extensions/lcm/extension as lcm
 import albedo/harness/settings
 import albedo/openai_api/types
 import gleam/dynamic/decode
@@ -128,7 +129,13 @@ fn prepare_view(
   context: compaction.Context,
   history: List(types.Input),
 ) -> Result(compaction.Prepared, String) {
-  use inputs <- result.try(prepare(config, context, history))
+  use folded <- result.try(lcm.stored_view(
+    context.store,
+    context.session,
+    history,
+  ))
+  let carries_lcm = folded != history
+  use inputs <- result.try(prepare(config, context, folded))
   // Diagnostics must not fail a request after its projection was committed.
   let recorded =
     observation(context.store, context.session) |> result.unwrap(None)
@@ -138,10 +145,15 @@ fn prepare_view(
         "rolling",
         recorded.status,
         recorded.source,
-        case recorded.status {
-          "compacted" ->
+        case recorded.status, carries_lcm {
+          "compacted", True ->
+            "durable transcript through stored LCM nodes, rolling summary, recent user recap, and verbatim tail"
+          "compacted", False ->
             "durable transcript through rolling summary + recent user recap + verbatim tail"
-          _ -> "durable transcript; rolling compaction observation attached"
+          _, True ->
+            "durable transcript through stored LCM nodes and verbatim tail; rolling observation attached"
+          _, False ->
+            "durable transcript; rolling compaction observation attached"
         },
         Some(100 - recorded.trigger_percent),
         recorded.capacity_tokens,

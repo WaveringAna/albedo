@@ -232,8 +232,8 @@ pub fn enabled(
   Ok(selected)
 }
 
-/// The selection that would result from toggling one extension. Nothing is
-/// persisted; `set_enabled` records the choice once its composition succeeds.
+/// The selection that would result from toggling one extension. Enabling a
+/// compaction strategy replaces the selected strategy in the same reload.
 pub fn selection(
   ledger: store.Store,
   installed: List(Extension),
@@ -242,7 +242,7 @@ pub fn selection(
   name: String,
   value: Bool,
 ) -> Result(List(Extension), String) {
-  use _ <- result.try(
+  use target <- result.try(
     list.find(installed, fn(extension) { extension.name == name })
     |> result.replace_error("unknown extension: " <> name),
   )
@@ -252,11 +252,22 @@ pub fn selection(
     default_enabled,
     session,
   ))
+  let target_compacts = is_compaction(target)
+  let target_selected =
+    list.any(selected, fn(extension) { extension.name == name })
+  use _ <- result.try(case value, target_compacts, target_selected {
+    False, True, True ->
+      Error("select another compaction strategy to replace " <> name)
+    _, _, _ -> Ok(Nil)
+  })
   let candidate = case value {
     True ->
       list.filter(installed, fn(extension) {
         extension.name == name
-        || list.any(selected, fn(active) { active.name == extension.name })
+        || {
+          { !target_compacts || !is_compaction(extension) }
+          && list.any(selected, fn(active) { active.name == extension.name })
+        }
       })
     False -> list.filter(selected, fn(extension) { extension.name != name })
   }
@@ -264,28 +275,70 @@ pub fn selection(
   Ok(candidate)
 }
 
-pub fn set_enabled(
+fn is_compaction(extension: Extension) -> Bool {
+  list.any(extension.plugins, fn(plugin) {
+    case plugin {
+      CompactionPlugin(_) -> True
+      _ -> False
+    }
+  })
+}
+
+/// Save only changed selections. A single transaction prevents a restart from
+/// seeing both compaction strategies enabled during a replacement.
+pub fn set_selection(
   ledger: store.Store,
   session: String,
-  name: String,
-  value: Bool,
+  previous: List(Extension),
+  selected: List(Extension),
 ) -> Result(Nil, String) {
-  store.query(ledger, fn(db) {
-    sqlight.query(
-      "INSERT INTO session_extensions(session,name,enabled) VALUES(?,?,?) ON CONFLICT(session,name) DO UPDATE SET enabled=excluded.enabled",
-      db,
-      [
-        sqlight.text(session),
-        sqlight.text(name),
-        sqlight.int(case value {
-          True -> 1
-          False -> 0
-        }),
-      ],
-      decode.dynamic,
+  let changes =
+    list.append(
+      selected
+        |> list.filter(fn(item) {
+          !list.any(previous, fn(old) { old.name == item.name })
+        })
+        |> list.map(fn(item) { #(item.name, True) }),
+      previous
+        |> list.filter(fn(item) {
+          !list.any(selected, fn(next) { next.name == item.name })
+        })
+        |> list.map(fn(item) { #(item.name, False) }),
     )
-    |> result.replace(Nil)
-    |> result.map_error(fn(error) { error.message })
+  store.query(ledger, fn(db) {
+    use _ <- result.try(
+      sqlight.exec("BEGIN IMMEDIATE", db)
+      |> result.replace(Nil)
+      |> result.map_error(fn(error) { error.message }),
+    )
+    let written =
+      list.try_each(changes, fn(change) {
+        sqlight.query(
+          "INSERT INTO session_extensions(session,name,enabled) VALUES(?,?,?) ON CONFLICT(session,name) DO UPDATE SET enabled=excluded.enabled",
+          db,
+          [
+            sqlight.text(session),
+            sqlight.text(change.0),
+            sqlight.int(case change.1 {
+              True -> 1
+              False -> 0
+            }),
+          ],
+          decode.dynamic,
+        )
+        |> result.replace(Nil)
+        |> result.map_error(fn(error) { error.message })
+      })
+    case written {
+      Ok(_) ->
+        sqlight.exec("COMMIT", db)
+        |> result.replace(Nil)
+        |> result.map_error(fn(error) { error.message })
+      Error(error) -> {
+        let _ = sqlight.exec("ROLLBACK", db)
+        Error(error)
+      }
+    }
   })
 }
 

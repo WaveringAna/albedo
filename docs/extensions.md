@@ -1,16 +1,16 @@
 # extensions
 
-an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, or compaction plugins. `python`, `bash`, `work`, `files`, `commands`, `skills`, `rolling`, and `remote` are enabled by default; `mcp`, `view`, and `lcm` are installed and disabled until a session enables them. plugin contributions compose inside them.
+an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, or compaction plugins. `python`, `bash`, `work`, `files`, `commands`, `skills`, `rolling`, `lcm-memory`, and `remote` are enabled by default; `mcp`, `view`, and `lcm` are installed and disabled until a session enables them. plugin contributions compose inside them.
 
 ## select extensions
 
-open `/extensions` in a session to inspect installed extensions and enable or disable them. selection is saved per session. required extensions must stay enabled, and changes require an idle session.
+open `/extensions` in a session to inspect installed extensions and enable or disable them. selection is saved per session. enabling a compaction strategy disables the previously selected strategy in the same reload. to replace the active strategy, enable the new one; disabling the only active strategy is rejected. required extensions must stay enabled, and changes require an idle session.
 
 confirming a change reloads that session's workers, context, model tools, python bindings, and host routes. it does not restart the daemon or rewrite the conversation. changing the prompt prefix/tools busts prompt-cache reuse. python variables are saved and restored where possible; values that cannot be saved may be lost. the viewer warns before applying a change.
 
 ## installed and enabled
 
-`extensions.Config(installed, default_enabled)` separates installed extensions from their default selection. multiple compaction strategies may be installed, but at most one can be enabled for a session. `runtime.start_with_config(database, config)` uses this selection; `runtime.start_with_extensions(database, installed)` enables every supplied extension.
+`extensions.Config(installed, default_enabled)` separates installed extensions from their default selection. multiple compaction strategies may be installed, but at most one can be enabled for a session. built-in sessions start with `rolling`; custom hosts can omit compaction. `runtime.start_with_config(database, config)` uses this selection; `runtime.start_with_extensions(database, installed)` enables every supplied extension.
 
 ## contribute plugins
 
@@ -40,7 +40,7 @@ A command that tells the agent about a user's change uses the `Note(origin, disp
 
 `ModelsPlugin` supplies catalogued model facts and provider model lists. `ModelProviderPlugin` declares its models.dev namespace and resolves a tagged saved profile into a request client. Built-in dependencies keep these layers explicit: `codex -> openai -> models`. See [models](models.md) and [model authentication](auth.md).
 
-`CompactionPlugin` supplies a history strategy; see [compaction](compaction.md). at most one enabled compaction strategy owns the request-history view. a strategy receives chronological history and must preserve tool call/result associations; it must not replace the durable transcript.
+`CompactionPlugin` supplies a history strategy; see [compaction](compaction.md). one enabled compaction strategy owns the request-history view in a built-in session. a strategy receives chronological history and must preserve tool call/result associations; it must not replace the durable transcript.
 
 ## extension settings
 
@@ -132,4 +132,4 @@ see [the skills extension](skills.md) for discovery paths, metadata-only startup
 
 ## lcm compaction
 
-`lcm` is an alternative compaction extension with source-backed hierarchical summaries and bounded retrieval tools. disable `rolling` before enabling `lcm`; the extension registry permits only one active compaction strategy. see [compaction](compaction.md) for its behavior and limits.
+`lcm` is an alternative compaction strategy with source-backed hierarchical summaries. enabling it disables `rolling` in the same reload. `lcm-memory` keeps `lcm_list`, `lcm_grep`, `lcm_describe`, and `lcm_expand` available after a switch back to `rolling`, so stored folds remain accessible even if a rolling summary omits them. see [compaction](compaction.md) for the handoff and retrieval limits.

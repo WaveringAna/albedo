@@ -17,6 +17,39 @@ pub fn definitions() -> List(extension.Tool) {
   [
     extension.Tool(
       types.Tool(
+        "lcm_list",
+        "List every stored LCM fold in this session, including folds absent from the current request. Results are paged.",
+        json.object([
+          #("type", json.string("object")),
+          #("additionalProperties", json.bool(False)),
+          #("required", json.array([], json.string)),
+          #(
+            "properties",
+            json.object([
+              #("limit", json.object([#("type", json.string("integer"))])),
+              #("offset", json.object([#("type", json.string("integer"))])),
+            ]),
+          ),
+        ]),
+        False,
+      ),
+      fn(context, arguments) {
+        let decoder = {
+          use limit <- decode.optional_field("limit", 20, decode.int)
+          use offset <- decode.optional_field("offset", 0, decode.int)
+          decode.success(#(limit, offset))
+        }
+        case json.parse(arguments, decoder) {
+          Ok(#(limit, offset)) ->
+            list_folds(context.store, context.session, limit, offset)
+            |> result.map(extension.text)
+          Error(_) -> Ok(extension.text("expected optional limit and offset"))
+        }
+      },
+      fn(_) { None },
+    ),
+    extension.Tool(
+      types.Tool(
         "lcm_grep",
         "Find a case-insensitive literal term in this session's durable conversation and LCM summaries. Results are paged; source matches name their covering summary node.",
         json.object([
@@ -132,6 +165,48 @@ pub fn definitions() -> List(extension.Tool) {
       fn(_) { None },
     ),
   ]
+}
+
+pub fn list_folds(
+  ledger: store.Store,
+  session: String,
+  limit: Int,
+  offset: Int,
+) -> Result(String, String) {
+  use _ <- result.try(case offset >= 0 {
+    True -> Ok(Nil)
+    False -> Error("LCM list offset must be nonnegative")
+  })
+  use nodes <- result.try(graph.all_nodes(ledger, session))
+  use frontier <- result.try(graph.frontier(ledger, session))
+  let limit = int.min(20, int.max(1, limit))
+  let next = offset + limit
+  json.object([
+    #("total", json.int(list.length(nodes))),
+    #("offset", json.int(offset)),
+    #("next_offset", case next < list.length(nodes) {
+      True -> json.int(next)
+      False -> json.null()
+    }),
+    #(
+      "folds",
+      json.array(list.take(list.drop(nodes, offset), limit), fn(node) {
+        json.object([
+          #("id", json.int(node.id)),
+          #("depth", json.int(node.depth)),
+          #("first_seq", json.int(node.first_seq)),
+          #("last_seq", json.int(node.last_seq)),
+          #(
+            "frontier",
+            json.bool(list.any(frontier, fn(item) { item.id == node.id })),
+          ),
+          #("preview", json.string(excerpt(node.summary, 200))),
+        ])
+      }),
+    ),
+  ])
+  |> json.to_string
+  |> Ok
 }
 
 pub fn grep(

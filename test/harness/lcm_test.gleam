@@ -4,7 +4,9 @@ import albedo/harness/compaction
 import albedo/harness/extensions
 import albedo/harness/extensions/lcm/extension as lcm
 import albedo/harness/extensions/lcm/graph
+import albedo/harness/extensions/lcm/memory
 import albedo/harness/extensions/lcm/tools
+import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/int
@@ -14,9 +16,16 @@ import gleam/string
 import gleeunit/should
 
 fn host(capacity: Int) {
-  let installed = [lcm.configured_extension(lcm.Config(Some(capacity), 90, 25))]
+  let installed = [
+    memory.extension(),
+    lcm.configured_extension(lcm.Config(Some(capacity), 90, 25)),
+    rolling.configured_extension(rolling.Config(Some(capacity), 90, 25)),
+  ]
   let assert Ok(host) =
-    runtime.start_with_config(":memory:", extensions.Config(installed, ["lcm"]))
+    runtime.start_with_config(
+      ":memory:",
+      extensions.Config(installed, ["lcm-memory", "lcm"]),
+    )
   let ledger = runtime.ledger(host)
   let assert Ok(_) = conversation.initialise(ledger)
   let assert Ok(_) =
@@ -66,7 +75,7 @@ pub fn lcm_manual_compaction_keeps_sources_retrievable_and_tail_whole_test() {
   save(host, original)
   runtime.tools(session)
   |> list.map(fn(tool) { tool.name })
-  |> should.equal(["lcm_grep", "lcm_describe", "lcm_expand"])
+  |> should.equal(["lcm_list", "lcm_grep", "lcm_describe", "lcm_expand"])
 
   let assert Ok(projected) =
     runtime.compact_history_scoped(
@@ -113,6 +122,77 @@ pub fn lcm_manual_compaction_keeps_sources_retrievable_and_tail_whole_test() {
     original,
   )
   |> should.equal(Ok(projected))
+  runtime.stop(host)
+}
+
+pub fn switching_from_lcm_to_rolling_keeps_folded_history_retrievable_test() {
+  let #(host, session) = host(2000)
+  let original = history()
+  save(host, original)
+  let assert Ok(_) =
+    runtime.compact_history_scoped(
+      host,
+      session,
+      "model",
+      "provider:model",
+      "",
+      "",
+      fn(_) { Ok("first and second clues were explored") },
+      original,
+    )
+  let ledger = runtime.ledger(host)
+  let assert Ok([node]) = graph.frontier(ledger, "lcm-test")
+  let assert Ok(rolling_session) =
+    runtime.reload_extension(host, "lcm-test", "/tmp", "rolling", True)
+  let assert Ok(summaries) = runtime.extension_summaries(host, "lcm-test")
+  let enabled =
+    summaries
+    |> list.filter(fn(item) { item.enabled })
+    |> list.map(fn(item) { item.name })
+  enabled |> should.equal(["lcm-memory", "rolling"])
+  runtime.tools(rolling_session)
+  |> list.map(fn(tool) { tool.name })
+  |> should.equal(["lcm_list", "lcm_grep", "lcm_describe", "lcm_expand"])
+
+  let assert Ok(folded) =
+    runtime.prepare_history_scoped(
+      host,
+      rolling_session,
+      "model",
+      "provider:model",
+      "",
+      "",
+      fn(_) { Error("unexpected summary call") },
+      original,
+    )
+  let assert [types.User(summary), ..] = folded
+  string.contains(summary, "LCM summary node #") |> should.be_true
+  string.contains(summary, "first clue") |> should.be_false
+  list.drop(folded, 1) |> should.equal(list.drop(original, 4))
+
+  let assert Ok(compacted) =
+    runtime.compact_history_scoped(
+      host,
+      rolling_session,
+      "model",
+      "provider:model",
+      "",
+      "",
+      fn(request) {
+        let assert [types.User(evicted), ..] = request.evicted
+        string.contains(evicted, "LCM summary node #") |> should.be_true
+        string.contains(evicted, "first clue") |> should.be_false
+        Ok("rolled memory")
+      },
+      original,
+    )
+  let assert [types.User(rolled), ..] = compacted
+  string.contains(rolled, "rolled memory") |> should.be_true
+  let assert Ok(folds) = tools.list_folds(ledger, "lcm-test", 20, 0)
+  string.contains(folds, "\"id\":" <> int.to_string(node.id))
+  |> should.be_true
+  let assert Ok(expanded) = tools.expand(ledger, "lcm-test", node.id, 0, 8000)
+  string.contains(expanded, "first clue") |> should.be_true
   runtime.stop(host)
 }
 
@@ -177,6 +257,21 @@ pub fn lcm_condenses_and_fork_reuses_completed_summary_tree_test() {
     graph.save_parent(ledger, "lcm-test", [left, right], "duplicate parent")
   let assert Ok(nodes_after_failed_write) = graph.all_nodes(ledger, "lcm-test")
   list.length(nodes_after_failed_write) |> should.equal(3)
+  let assert Ok(folds) = tools.list_folds(ledger, "lcm-test", 20, 0)
+  string.contains(folds, "\"total\":3") |> should.be_true
+  string.contains(folds, "\"id\":" <> int.to_string(left.id))
+  |> should.be_true
+  string.contains(folds, "\"id\":" <> int.to_string(right.id))
+  |> should.be_true
+  string.contains(folds, "\"id\":" <> int.to_string(parent.id))
+  |> should.be_true
+  let assert Ok(first_page) = tools.list_folds(ledger, "lcm-test", 2, 0)
+  string.contains(first_page, "\"next_offset\":2") |> should.be_true
+  let assert Ok(second_page) = tools.list_folds(ledger, "lcm-test", 2, 2)
+  string.contains(second_page, "\"id\":" <> int.to_string(parent.id))
+  |> should.be_true
+  string.contains(second_page, "\"next_offset\":null")
+  |> should.be_true
   let assert [types.User(summary), ..] = projected
   string.contains(summary, "condensed earlier exploration")
   |> should.be_true
@@ -214,6 +309,44 @@ pub fn lcm_condenses_and_fork_reuses_completed_summary_tree_test() {
   let assert [types.User(branch_summary), ..] = branch_view
   string.contains(branch_summary, "condensed earlier exploration")
   |> should.be_true
+  let assert Ok(rolling_branch) =
+    runtime.reload_extension(host, "branch", "/tmp", "rolling", True)
+  let assert Ok(folded_branch) =
+    runtime.prepare_history_scoped(
+      host,
+      rolling_branch,
+      "model",
+      "provider:model",
+      "",
+      "",
+      fn(_) { Error("folded prefix needs no summary call") },
+      list.take(original, 4),
+    )
+  let assert [types.User(only_fold)] = folded_branch
+  string.contains(only_fold, "condensed earlier exploration")
+  |> should.be_true
+  let continuation =
+    list.append(list.take(original, 4), [types.Assistant("post-fold result")])
+  let assert Ok(_) =
+    conversation.commit_from(
+      ledger,
+      "branch",
+      continuation,
+      conversation.Idle,
+      Some("provider"),
+    )
+  let assert Ok(continued) =
+    runtime.prepare_history_scoped(
+      host,
+      rolling_branch,
+      "model",
+      "provider:model",
+      "",
+      "",
+      fn(_) { Error("continued branch needs no summary call") },
+      continuation,
+    )
+  let assert Ok(types.Assistant("post-fold result")) = list.last(continued)
   let assert Error(error) = tools.describe(ledger, "branch", parent.id)
   string.contains(error, "not found") |> should.be_true
   runtime.stop(host)

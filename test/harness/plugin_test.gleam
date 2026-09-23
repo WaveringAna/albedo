@@ -191,9 +191,17 @@ pub fn registry_supports_disabled_compaction_alternatives_test() {
       extensions.Config([python.extension(), one, two], ["python", "one"]),
     )
   let assert Ok(_) = runtime.open_session(host, "compact", "/tmp")
-  let assert Error(error) =
+  let assert Ok(_) =
     runtime.reload_extension(host, "compact", "/tmp", "two", True)
-  string.contains(error, "multiple compaction") |> should.be_true
+  let assert Ok(summaries) = runtime.extension_summaries(host, "compact")
+  let assert Ok(first) = list.find(summaries, fn(item) { item.name == "one" })
+  let assert Ok(second) = list.find(summaries, fn(item) { item.name == "two" })
+  first.enabled |> should.be_false
+  second.enabled |> should.be_true
+  let assert Error(error) =
+    runtime.reload_extension(host, "compact", "/tmp", "two", False)
+  string.contains(error, "select another compaction strategy")
+  |> should.be_true
   runtime.stop(host)
 }
 

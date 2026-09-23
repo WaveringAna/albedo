@@ -2,11 +2,11 @@
 //// All summary nodes are derived views over immutable transcript rows.
 
 import albedo/daemon/conversation
+import albedo/daemon/store
 import albedo/daemon/transcript
 import albedo/harness/compaction
 import albedo/harness/extension as harness_extension
 import albedo/harness/extensions/lcm/graph
-import albedo/harness/extensions/lcm/tools
 import albedo/harness/settings
 import albedo/openai_api/types
 import gleam/dynamic/decode
@@ -57,7 +57,7 @@ fn bundle(
   harness_extension.Extension(
     "lcm",
     "Source-backed hierarchical summaries with bounded history retrieval",
-    [],
+    ["lcm-memory"],
     [
       harness_extension.CompactionPlugin(
         compaction.Strategy("lcm", fn(context, history) {
@@ -65,15 +65,34 @@ fn bundle(
           prepare(config, context, history)
         }),
       ),
-      harness_extension.ToolPlugin(
-        "Older conversation is summarized into source-backed LCM nodes. Use lcm_grep to locate exact earlier details, lcm_describe to inspect a node's lineage, and lcm_expand to read a bounded page of its original transcript rows. A summary may omit details; verify them against sources when they matter.",
-        tools.definitions(),
-        [],
-        [],
-      ),
     ],
     graph.initialise,
   )
+}
+
+/// Reuse durable LCM folds as rolling's source history after a strategy change.
+/// The graph stays fixed while LCM is inactive, so rolling's source hashes
+/// continue to refer to the same folded prefix as new turns arrive.
+pub fn stored_view(
+  ledger: store.Store,
+  session: String,
+  history: List(types.Input),
+) -> Result(List(types.Input), String) {
+  use available <- result.try(graph.storage_available(ledger))
+  case available {
+    False -> Ok(history)
+    True -> {
+      use frontier <- result.try(graph.frontier(ledger, session))
+      case frontier {
+        [] -> Ok(history)
+        _ -> {
+          use covered <- result.try(graph.last_seq(ledger, session))
+          use sources <- result.try(conversation.load_sources(ledger, session))
+          Ok(projection(frontier, history, sources, covered, None, 0))
+        }
+      }
+    }
+  }
 }
 
 fn decoder() {
@@ -138,7 +157,7 @@ fn prepare(
       Some(tokens * config.tail_percent / 100)
     None -> None
   }
-  let current = projection(frontier, history, sources, covered, tail_budget)
+  let current = projection(frontier, history, sources, covered, tail_budget, 1)
   let estimated = context.pinned_tokens + compaction.estimate_inputs(current)
   case window {
     None ->
@@ -226,7 +245,7 @@ fn prepare(
             0,
           ))
           let next =
-            projection(frontier, history, sources, covered, tail_budget)
+            projection(frontier, history, sources, covered, tail_budget, 1)
           let next_estimated =
             context.pinned_tokens + compaction.estimate_inputs(next)
           use _ <- result.try(case next_estimated < capacity || context.force {
@@ -305,22 +324,31 @@ fn projection(
   sources: List(transcript.SourcedEntry),
   covered: Int,
   tail_budget: Option(Int),
+  minimum_tail_units: Int,
 ) -> List(types.Input) {
   case frontier {
     [] -> history
     nodes -> {
+      let unsummarized =
+        list.filter(sources, fn(item) { item.source.seq > covered })
       let unsummarized_users =
-        sources
+        unsummarized
         |> list.filter(fn(item) {
-          item.source.seq > covered
-          && case item.entry.input {
+          case item.entry.input {
             types.User(_) | types.UserImage(_, _) -> True
             _ -> False
           }
         })
         |> list.length
+      // An assistant or tool result can follow the cursor without a user row.
+      // Retain its whole projected unit until live source references permit
+      // a narrower cut.
+      let minimum = case unsummarized {
+        [] -> minimum_tail_units
+        _ -> int.max(1, minimum_tail_units)
+      }
       let tail =
-        retain_tail(history, int.max(1, unsummarized_users), tail_budget)
+        retain_tail(history, int.max(minimum, unsummarized_users), tail_budget)
       list.append(list.map(nodes, node_input), tail)
     }
   }
@@ -511,7 +539,7 @@ fn condense_until_fit(
   summary_limit: Int,
   attempts: Int,
 ) -> Result(List(graph.Node), String) {
-  let view = projection(frontier, history, sources, covered, tail_budget)
+  let view = projection(frontier, history, sources, covered, tail_budget, 1)
   let estimated = context.pinned_tokens + compaction.estimate_inputs(view)
   case estimated < capacity || attempts >= 16 {
     True -> Ok(frontier)

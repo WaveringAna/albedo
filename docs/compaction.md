@@ -2,35 +2,35 @@
 
 Compaction changes only what a request shows the model. The durable transcript, `/tree`, and forks always keep the full conversation.
 
-At most one enabled compaction strategy owns the request view of history. `rolling` is enabled by default; `lcm` is installed but disabled until selected for a session. Disable `rolling` before enabling `lcm` through `/extensions`.
+The default session uses `rolling`. Selecting `lcm` through `/extensions` disables `rolling` in the same reload. Selecting `rolling` again disables `lcm`. A session with the built-in extensions keeps one compaction strategy enabled. The registry also permits a custom host with no compaction strategy installed.
 
-A strategy returns its prepared inputs with an observation for `/context`. The observation belongs to that exact preparation; the inspector does not read a particular strategy's saved state. The saved transcript remains the source of truth when a strategy's derived view is rebuilt.
+A strategy returns prepared inputs and an observation for `/context`. The observation describes that preparation. The inspector does not read strategy state. The durable transcript supplies the source rows for each derived view.
 
 ## source references
 
-`conversation.load_sources` reads transcript rows with `SourceRef(session, seq)`, and `conversation.source` resolves one reference. The sequence is SQLite's append-only transcript identity; a fork copies rows into its own session and gets new references. Derived compaction state is scoped to a session. During a fork, LCM copies saved summary nodes whose entire source range lies before the checkpoint and remaps their row and node IDs; it makes no model call. A node crossing the checkpoint is left out, but its complete children remain reusable. Only the unrepresented remainder may need a later model call if the branch reaches its compaction trigger.
+`conversation.load_sources` reads transcript rows with `SourceRef(session, seq)`. `conversation.source` resolves one reference. The sequence is SQLite's append-only transcript identity. A fork copies rows into a new session with new references. LCM copies saved nodes whose entire source range precedes the fork checkpoint and remaps their row and node IDs without a model call. LCM omits a node that crosses the checkpoint, but can reuse its complete child nodes. The branch may summarize the remaining rows if it later reaches the compaction trigger.
 
-Provider projection can combine several durable rows into one model input, split one row into several inputs, or omit a nonportable reasoning item. `projection.for_model_with_sources` records all rows that produced each projected input while `projection.for_model` continues to return plain inputs for existing callers. Synthetic extension context and strategy-created summary inputs have no transcript reference.
+Provider projection can combine several durable rows into one model input, split one row into several inputs, or omit a nonportable reasoning item. `projection.for_model_with_sources` records the rows that produced each projected input. `projection.for_model` still returns plain inputs for existing callers. Synthetic extension context and strategy summaries have no transcript reference.
 
-`lcm` uses durable source rows for its summary ranges and the existing plain model projection for its verbatim tail. It preserves every unsummarized user unit and the latest whole user/tool unit. Carrying references with each live projected input would let future strategies make finer cuts without relying on those unit boundaries.
+`lcm` uses durable source rows for summary ranges and plain model inputs for its verbatim tail. It preserves every unsummarized user unit and the latest whole user/tool unit. Source references on live projected inputs would let future strategies cut history within those unit boundaries.
 
-To carry references through live turns, the session coordinator should retain the inserted sequence IDs from the same transaction that commits inputs, then project those identified entries before preparing a request. Its current commit callback returns only a timestamp, and its in-memory entries have no sequence field. Keep the existing plain-input path for callers that do not need provenance. Matching rows later by text or list position would be unsafe: messages can repeat and provider projection can change item counts. A marker for an excursion belongs to its parent session; the branch's copied rows have their own references, so returning an outcome requires an explicit link to the parent marker.
+Live source references need the sequence IDs from the transaction that commits inputs. The session coordinator can then project those identified entries before preparing a request. Its current commit callback returns only a timestamp, and its in-memory entries have no sequence field. Callers that do not need references can keep the plain-input path. Text or list positions cannot identify rows reliably because messages can repeat and provider projection can change item counts. An excursion marker belongs to its parent session. The branch has different row references, so returning its outcome requires an explicit link to the parent marker.
 
 ## lcm
 
-`lcm` implements the source-backed memory part of [Lossless Context Management](https://arxiv.org/html/2605.04050v1). It keeps the existing transcript as the authority and writes derived leaf summaries, condensed parent summaries, their child links, and a covered source cursor into SQLite. The summary tree is scoped to one session. A fork gets its own transcript identities and copies the parent's complete prefix summaries, including their child links, under remapped identities.
+`lcm` implements the source-backed memory part of [Lossless Context Management](https://arxiv.org/html/2605.04050v1). It stores leaf summaries, condensed parent summaries, child links, and a covered source cursor in SQLite. The durable transcript supplies their source rows. The summary tree belongs to one session. A fork copies complete prefix summaries and their links with remapped row and node IDs.
 
-Before the configured trigger, it sends the ordinary history without a summarizer call. On compaction, it summarizes complete older conversation units in chunks. The model request then sees ordered source-labelled summary nodes followed by a verbatim tail. The latest user/tool unit always stays in that tail. Summaries have source ranges; condensation joins older nodes into parents whose children remain in the database. A failed provider summary does not advance the covered cursor. If a summary grows beyond its source, the extension retries with a smaller output cap and then uses a short source pointer, so the original remains retrievable.
+Before the configured trigger, `lcm` sends ordinary history without a summarizer call. At the trigger, it summarizes complete older conversation units in chunks. The request then contains ordered summary nodes with source ranges, followed by a verbatim tail. The latest user/tool unit remains in the tail. Condensation joins older nodes into parents and keeps the children in SQLite. A failed summary does not advance the covered cursor. If a summary exceeds the size of its source, `lcm` retries with a smaller output limit and then stores a short source pointer. The original rows remain available.
 
-The model gets three read-only tools: `lcm_grep` searches literal text in raw history and summaries with paged results and optional node scope; `lcm_describe` shows a node's range, children, and summary; `lcm_expand` reads bounded pages of the original text rows covered by a node. Expansion is page-limited in the main session. Image bytes remain in the transcript, but these text tools show image metadata rather than returning the image to the model. This first extension covers hierarchical memory, not the paper's large-file dispatcher, map operators, or subagent-only expansion.
+The default-enabled `lcm-memory` extension provides four read-only tools. `lcm_list` pages through every stored fold in the current session, including nodes absent from the request view. `lcm_grep` searches literal text in raw history and summaries with paged results and optional node scope. `lcm_describe` returns a node's source range, children, and summary. `lcm_expand` reads bounded pages of the original text rows covered by a node. These tools remain enabled when the session switches from `lcm` to `rolling`. Image bytes remain in the transcript; the text tools show image metadata. The extension implements hierarchical memory. It does not implement the paper's large-file dispatcher, map operators, or subagent-only expansion.
 
-The same settings names as `rolling` apply under an `lcm` section in `$ALBEDO_HOME/extensions.json`:
+The `lcm` section in `$ALBEDO_HOME/extensions.json` accepts the same setting names as `rolling`:
 
 ```json
 { "lcm": { "contextWindowTokens": 200000, "triggerPercent": 90, "tailPercent": 25 } }
 ```
 
-`contextWindowTokens` is optional. With no explicit setting or catalogued window, automatic LCM compaction stays off; `/compact` can still force it. The estimate is byte-based and the newest whole unit may itself exceed the available window, in which case preparation reports that limit rather than discarding part of the unit.
+`contextWindowTokens` is optional. Without an explicit setting or catalogued window, automatic LCM compaction stays off; `/compact` can still force it. The estimate uses byte counts. The newest whole unit can exceed the available window. In that case preparation reports the limit without discarding part of the unit.
 
 ## rolling
 
@@ -43,7 +43,9 @@ The same settings names as `rolling` apply under an `lcm` section in `$ALBEDO_HO
 
 It compacts when the estimated request reaches `triggerPercent` of the configured context window, so roughly the last 10% stays free for work. The tail keeps about `tailPercent` of the window. A cut is only made between whole conversation units, so an assistant tool call always keeps its result.
 
-Each time it compacts, the model folds the previous summary together with the newly evicted history into a replacement summary. That summarizer call carries no tools. Summary and cut position are stored per session and written only after a successful summary, so a provider failure leaves the previous usable projection and the transcript untouched. A branch starts with no projection state, and a provider or model change resets it.
+Each rolling compaction combines the previous summary with newly evicted history in a replacement summary. The summarizer call has no tools. Rolling writes its summary and cut position only after a successful call. A provider failure leaves the previous projection and the transcript intact. A branch starts without rolling state. A provider or model change resets that state.
+
+After a switch from `lcm` to `rolling`, rolling reads the stored LCM summary nodes and the unsummarized tail as its source history. It does not expand covered rows to rebuild the LCM summary. If new assistant or tool rows follow the covered cursor without a new user row, rolling retains their whole conversation unit; that unit can overlap the fold. A later rolling summary can omit details from an LCM node. `lcm_list`, `lcm_describe`, and `lcm_expand` still reach the stored node and its original rows. Switching back to `lcm` uses its saved nodes and the durable transcript; it does not summarize the rolling summary.
 
 ## configure
 
@@ -51,7 +53,7 @@ Each time it compacts, the model folds the previous summary together with the ne
 { "rolling": { "contextWindowTokens": 200000, "triggerPercent": 90, "tailPercent": 25 } }
 ```
 
-Put this in `$ALBEDO_HOME/extensions.json`. `contextWindowTokens` is optional: without it, `rolling` asks the enabled [models catalog](models.md) for the current model's context window. An explicit setting always wins. When neither knows the model, `rolling` stays a no-op and `/context` reports the window as unknown rather than inventing one.
+Put this in `$ALBEDO_HOME/extensions.json`. `contextWindowTokens` is optional. Without it, `rolling` reads the current model's context window from the enabled [models catalog](models.md). An explicit setting takes precedence. Without either source, `rolling` does not compact automatically and `/context` reports an unknown window.
 
 Estimates are local byte-based approximations, never provider token accounting. Image payloads are sized by their dimensions, not by base64 length, so an attached image cannot fake a million-token conversation.
 

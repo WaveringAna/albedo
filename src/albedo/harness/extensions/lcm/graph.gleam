@@ -28,6 +28,19 @@ pub fn initialise(ledger: store.Store) -> Result(Nil, String) {
   })
 }
 
+pub fn storage_available(ledger: store.Store) -> Result(Bool, String) {
+  store.query(ledger, fn(db) {
+    sqlight.query(
+      "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lcm_compaction_node'",
+      db,
+      [],
+      decode.field(0, decode.int, decode.success),
+    )
+    |> result.map_error(fn(error) { error.message })
+    |> result.map(fn(rows) { rows == [1] })
+  })
+}
+
 pub fn last_seq(ledger: store.Store, session: String) -> Result(Int, String) {
   store.query(ledger, fn(db) {
     sqlight.query(

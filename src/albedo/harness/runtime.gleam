@@ -490,21 +490,29 @@ fn handle(state: State, message: Message) {
           }
       }
     Reload(id, cwd, name, enabled, reply) -> {
-      let proposed =
-        extension.selection(
+      let proposed = {
+        use previous <- result.try(extension.enabled(
+          state.work,
+          state.extensions,
+          state.default_enabled,
+          id,
+        ))
+        use selected <- result.try(extension.selection(
           state.work,
           state.extensions,
           state.default_enabled,
           id,
           name,
           enabled,
-        )
+        ))
+        Ok(#(previous, selected))
+      }
       case proposed {
         Error(error) -> {
           process.send(reply, Error(error))
           actor.continue(state)
         }
-        Ok(selected) -> {
+        Ok(#(previous_selected, selected)) -> {
           let previous = dict.get(state.sessions, id)
           let previous_cached = dict.get(state.compositions, id)
           let workspace = case previous {
@@ -533,7 +541,14 @@ fn handle(state: State, message: Message) {
               actor.continue(state)
             }
             Ok(#(cached, replacement)) ->
-              case extension.set_enabled(state.work, id, name, enabled) {
+              case
+                extension.set_selection(
+                  state.work,
+                  id,
+                  previous_selected,
+                  selected,
+                )
+              {
                 Error(error) -> {
                   stop_session("extension reload rollback", replacement)
                   process.send(reply, Error(error))
