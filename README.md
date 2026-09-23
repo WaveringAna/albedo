@@ -34,9 +34,6 @@ python3 test/manual/nix_package_smoke.py "$PWD/result/bin/albedo"
 ALBEDO_NO_BROWSER=1 ALBEDO_TEST_BINARY="$PWD/result/bin/albedo" python3 test/daemon/integration.py
 ```
 
-while the nix files are untracked, use `nix build path:.#albedo` and
-`nix run path:. -- --help` so nix includes them.
-
 `default.nix` is also available through `pkgs.callPackage ./default.nix { }`.
 no checkout or gleam compiler is needed at runtime. `ALBEDO_DAEMON` can override
 the packaged daemon with an absolute executable path.

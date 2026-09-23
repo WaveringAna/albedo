@@ -1,6 +1,9 @@
-{ lib, stdenv, buildGoModule, fetchurl, gleam, beamPackages, rebar3, python3, bash, coreutils, makeWrapper }:
+{ lib, stdenv, buildGoModule, fetchurl, gleam, beamPackages, python3, bash, coreutils, makeWrapper }:
 let
   erlang = beamPackages.erlang;
+  # esqlite loads the pc plugin during its Rebar3 build, which cannot fetch
+  # plugins from Hex inside the Nix sandbox.
+  rebar3 = beamPackages.rebar3WithPlugins { plugins = [ beamPackages.pc ]; };
   manifest = builtins.fromTOML (builtins.readFile ./manifest.toml);
   source = lib.fileset.toSource {
     root = ./.;
