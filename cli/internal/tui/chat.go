@@ -251,6 +251,10 @@ type ChatModel struct {
 	pendingUsers      []PendingUserTurn
 	isSending         bool
 	interruptDeferred bool
+	// sentHere keeps replayed errors from an earlier attach from reopening
+	// /login; loginRequested carries a sign-in failure out of handleStreamEvent.
+	sentHere       bool
+	loginRequested bool
 
 	WorkspaceRecovery *WorkspaceRecoveryState
 	RecoveryInput     textinput.Model
@@ -864,6 +868,10 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		m.statusRevision++
 		m.handleStreamEvent(msg.Event)
 		m.refreshViewportContent()
+		if m.loginRequested {
+			m.loginRequested = false
+			return m, tea.Batch(m.waitForNextEvent(), func() tea.Msg { return ChatOpenLoginMsg{} })
+		}
 		return m, tea.Batch(m.waitForNextEvent(), m.startAnimation())
 
 	case ChatClearCopyStatusMsg:
@@ -1109,6 +1117,7 @@ func (m *ChatModel) submitInput(input string, cmds *[]tea.Cmd) {
 		Image: img,
 	})
 	m.isSending = true
+	m.sentHere = true
 	m.Follow = true
 	m.refreshViewportContent()
 
@@ -1367,6 +1376,10 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			Timestamp: time.Now().UnixMilli(),
 		}
 		m.appendSettledEntry(entry)
+		// The daemon ends errors that only a new sign-in can fix with "run /login".
+		if m.sentHere && strings.HasSuffix(evt.Text, "run /login") {
+			m.loginRequested = true
+		}
 
 	case daemon.EventCompacted:
 		m.settleActiveStream()

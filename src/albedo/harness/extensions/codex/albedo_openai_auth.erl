@@ -1,7 +1,7 @@
 -module(albedo_openai_auth).
 %% Shared OpenAI auth primitives and Codex multi-account credential selection.
 
--export([codex_access/2]).
+-export([codex_access/2, codex_revoke/2]).
 
 -define(CLIENT_ID, <<"app_EMoamEEZ73f0CkXaXp7hrann">>).
 -define(TOKEN_URL, "https://auth.openai.com/oauth/token").
@@ -36,6 +36,51 @@ select([Credential | Rest], Path, Session) ->
             end;
         error -> select(Rest, Path, Session)
     end.
+
+%% Drops the account whose access token the server rejected, so the next turn
+%% picks a sibling or asks for /login instead of replaying a revoked token.
+%% Returns the removed account's email, or <<>> when none is recorded.
+codex_revoke(Home0, Access) ->
+    Path = filename:join(text(Home0), "auth.json"),
+    Identity = identity(#{<<"access">> => Access}),
+    Lock = filename:join(filename:dirname(Path), "auth.lock"),
+    case acquire(Lock, ?LOCK_ATTEMPTS) of
+        {ok, Device} ->
+            try remove_identity(Path, Access, Identity)
+            after
+                file:close(Device),
+                file:delete(Lock)
+            end;
+        {error, _} -> {error, <<"credential store is busy">>}
+    end.
+
+remove_identity(Path, Access, Identity) ->
+    case read_auth(Path) of
+        {ok, Data} ->
+            Values = credentials(Data),
+            Revoked = fun(Value) ->
+                maps:get(<<"access">>, Value, <<>>) =:= Access orelse
+                (Identity =/= <<>> andalso identity(Value) =:= Identity)
+            end,
+            case lists:partition(Revoked, Values) of
+                {[], _} -> {ok, <<>>};
+                {[Removed | _], Kept} ->
+                    Updated = case Kept of
+                        [] -> maps:remove(<<"openai-codex">>, Data);
+                        _ -> set_credentials(Data, Kept)
+                    end,
+                    case write_auth(Path, Updated) of
+                        ok -> {ok, email(Removed)};
+                        {error, _} -> {error, <<"could not remove revoked Codex credential">>}
+                    end
+            end;
+        {error, enoent} -> {ok, <<>>};
+        {error, _} -> {error, <<"stored Codex credentials are unreadable">>}
+    end.
+
+email(Credential) ->
+    Claims = token_identity(maps:get(<<"access">>, Credential, <<>>)),
+    first([maps:get(<<"email">>, Claims, undefined), lower(maps:get(<<"email">>, Credential, undefined))]).
 
 encode_access(Credential) ->
     Access = maps:get(<<"access">>, Credential),

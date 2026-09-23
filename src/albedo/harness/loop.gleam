@@ -4,7 +4,9 @@ import albedo/daemon/conversation
 import albedo/daemon/events as view
 import albedo/daemon/usage
 import albedo/harness/compaction
+import albedo/harness/extensions/codex/extension as codex
 import albedo/harness/runtime
+import albedo/harness/settings
 import albedo/openai_api as openai
 import albedo/openai_api/types
 import gleam/int
@@ -80,7 +82,7 @@ pub fn run(
         False -> types.Stop
       }
     })
-    |> result.map_error(fn(error) { string.inspect(error) }),
+    |> result.map_error(describe(state.client, _)),
   )
   let completed_usage =
     usage.from_completion(state.model, turn.usage, usage.now())
@@ -286,6 +288,13 @@ pub fn retry_stream(
   }
 }
 
+fn describe(client: types.Client, error: types.Error) -> String {
+  case codex.unauthorized(settings.home(), client, error) {
+    Some(message) -> message
+    None -> string.inspect(error)
+  }
+}
+
 fn retryable(error: types.Error) -> Bool {
   case error {
     types.ConnectionError(_) | types.Timeout | types.UnexpectedEnd -> True
@@ -332,7 +341,7 @@ fn summarize(
       types.Continue
     })
     |> result.map_error(fn(error) {
-      "summarizer provider request failed: " <> string.inspect(error)
+      "summarizer provider request failed: " <> describe(state.client, error)
     }),
   )
   let text =

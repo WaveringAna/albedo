@@ -1,7 +1,12 @@
 import albedo/daemon/configuration
+import albedo/harness/extensions/codex/extension as codex
+import albedo/openai_api
+import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
+import gleam/option.{None, Some}
+import gleam/string
 import gleeunit/should
 
 pub type Access {
@@ -31,6 +36,39 @@ pub fn session_pin_survives_credential_reordering_test() {
   let _ = write(home, "auth.json", reversed_credentials)
   access(home, "durable-session") |> should.equal(selected)
   cleanup(root)
+}
+
+pub fn revoked_codex_account_is_removed_test() {
+  let #(root, _, home) = fixture()
+  let _ = write(home, "auth.json", credentials)
+  let #(revoked, client) = codex_client(home, "revoked-session")
+  let assert Some(message) =
+    codex.unauthorized(home, client, types.HttpError(401, "token_revoked"))
+  string.ends_with(message, "run /login") |> should.be_true
+  codex.unauthorized(home, client, types.HttpError(500, ""))
+  |> should.equal(None)
+  let remaining = access(home, "revoked-session")
+  { remaining == revoked } |> should.be_false
+  access(home, "another-session") |> should.equal(remaining)
+  let #(_, last) = codex_client(home, "revoked-session")
+  let assert Some(_) =
+    codex.unauthorized(home, last, types.HttpError(401, "token_revoked"))
+  let assert Error(_) = native_access(home, "revoked-session")
+  cleanup(root)
+}
+
+fn codex_client(home: String, session: String) -> #(String, types.Client) {
+  let assert Ok(encoded) = native_access(home, session)
+  let decoder = {
+    use token <- decode.field("access", decode.string)
+    use account <- decode.field("accountId", decode.string)
+    decode.success(#(token, account))
+  }
+  let assert Ok(#(token, account)) = json.parse(encoded, decoder)
+  #(
+    account,
+    openai_api.codex_client("http://127.0.0.1", token, account, session),
+  )
 }
 
 fn access(home: String, session: String) -> String {

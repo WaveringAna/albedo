@@ -53,6 +53,32 @@ fn resolve(
   }
 }
 
+/// A 401 from the Codex backend means the ChatGPT sign-in was revoked or
+/// expired server-side; refreshing cannot recover it. The account is removed
+/// from auth.json and the message ends in "run /login", which clients treat
+/// as a prompt to sign in again.
+pub fn unauthorized(
+  home: String,
+  client: types.Client,
+  error: types.Error,
+) -> Option(String) {
+  case client.policy, error {
+    types.Codex(_, _), types.HttpError(401, _) -> {
+      let message = case native_revoke(home, client.api_key) {
+        Ok("") -> "ChatGPT sign-in was revoked and has been removed"
+        Ok(email) ->
+          "ChatGPT sign-in for " <> email <> " was revoked and has been removed"
+        Error(reason) ->
+          "ChatGPT sign-in was revoked but could not be removed ("
+          <> reason
+          <> ")"
+      }
+      Some(message <> "; run /login")
+    }
+    _, _ -> None
+  }
+}
+
 fn access_decoder() {
   use token <- decode.field("access", decode.string)
   use account_id <- decode.field("accountId", decode.string)
@@ -61,3 +87,6 @@ fn access_decoder() {
 
 @external(erlang, "albedo_openai_auth", "codex_access")
 fn native_access(home: String, session: String) -> Result(String, String)
+
+@external(erlang, "albedo_openai_auth", "codex_revoke")
+fn native_revoke(home: String, access: String) -> Result(String, String)
