@@ -20,8 +20,10 @@ pub struct Painter {
 
 pub struct Page<'a> {
     pub rows: &'a [Row],
-    /// Cells reserved for line numbers, so every page of one view aligns.
+    /// Cells left of the code, so every page of one view aligns.
     pub gutter: usize,
+    /// False for text whose own line numbers are not the source's, like a diff.
+    pub numbers: bool,
     pub columns: usize,
     pub foreground: Color,
     pub background: Color,
@@ -62,7 +64,7 @@ impl Painter {
     }
 
     fn paint(&mut self, page: &Page) -> (usize, usize, Vec<u8>) {
-        // gutter digits, a gap holding the separator, then the code.
+        // the gutter, a gap holding the separator, then the code.
         let code_x = PADDING + (page.gutter + 2) * self.cell;
         let width = code_x + page.columns * self.cell + PADDING;
         let height = 2 * PADDING + page.rows.len().max(1) * self.row;
@@ -73,27 +75,20 @@ impl Painter {
         canvas.fill(0, 0, width, height, page.background);
         let number = mix(page.foreground, page.background, 0.5);
         let rule = mix(page.foreground, page.background, 0.85);
-        canvas.fill(
-            PADDING + page.gutter * self.cell + self.cell,
-            PADDING,
-            1,
-            height - 2 * PADDING,
-            rule,
-        );
+        let x = PADDING + (page.gutter + 1) * self.cell;
+        canvas.fill(x, PADDING, 1, height - 2 * PADDING, rule);
         for (index, row) in page.rows.iter().enumerate() {
             let top = PADDING + index * self.row;
-            if !row.continued {
-                let label = row.line.to_string();
-                let first = page.gutter.saturating_sub(label.len());
-                for (offset, ch) in label.chars().enumerate() {
-                    self.glyph(
-                        &mut canvas,
-                        PADDING + (first + offset) * self.cell,
-                        top,
-                        ch,
-                        number,
-                    );
-                }
+            // A wrapped line's later rows say so, since they start at column 0.
+            let label = match (row.continued, page.numbers) {
+                (true, _) => "↪".to_string(),
+                (false, true) => row.line.to_string(),
+                (false, false) => String::new(),
+            };
+            let first = page.gutter.saturating_sub(label.chars().count());
+            for (offset, ch) in label.chars().enumerate() {
+                let x = PADDING + (first + offset) * self.cell;
+                self.glyph(&mut canvas, x, top, ch, number);
             }
             for glyph in &row.glyphs {
                 self.glyph(

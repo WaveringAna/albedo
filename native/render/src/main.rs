@@ -2,6 +2,7 @@
 //!
 //! albedo-render FILE --start N --end N --out DIR [--columns 79]
 //!     [--tab-width 4] [--language NAME] [--max-rows 80] [--max-images 4]
+//!     [--no-line-numbers]
 //!
 //! Writes DIR/view-1.png onward and prints one line per fact, for the caller
 //! to parse from text output:
@@ -32,6 +33,7 @@ struct Request {
     language: Option<String>,
     max_rows: usize,
     max_images: usize,
+    line_numbers: bool,
 }
 
 fn main() -> ExitCode {
@@ -59,6 +61,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Request, String> {
         language: None,
         max_rows: 80,
         max_images: 4,
+        line_numbers: true,
     };
     let mut out = None;
     while let Some(arg) = args.next() {
@@ -80,6 +83,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Request, String> {
             "--max-rows" => request.max_rows = number(1, 1000)?,
             "--max-images" => request.max_images = number(1, 64)?,
             "--language" => request.language = Some(value()?),
+            "--no-line-numbers" => request.line_numbers = false,
             "--out" => out = Some(PathBuf::from(value()?)),
             flag if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
             _ if file.is_none() => file = Some(PathBuf::from(arg)),
@@ -151,13 +155,17 @@ fn run(request: &Request) -> Result<String, String> {
         Language::Unknown => "language plain unknown file type\n".to_string(),
     };
     let mut painter = raster::Painter::new();
-    let gutter = end.to_string().len();
+    let gutter = match request.line_numbers {
+        true => end.to_string().len(),
+        false => 1,
+    };
     for (index, range) in pages.iter().take(request.max_images).enumerate() {
         let page = &rows[range.clone()];
         let path = request.out.join(format!("view-{}.png", index + 1));
         let png = painter.png(&raster::Page {
             rows: page,
             gutter,
+            numbers: request.line_numbers,
             columns: request.columns,
             foreground: colors.foreground,
             background: colors.background,

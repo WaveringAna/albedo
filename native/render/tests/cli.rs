@@ -1,4 +1,4 @@
-//! The binary as albedo calls it: a file in, PNG pages and a text report out.
+//! The binary end to end: a file in, PNG pages and a text report out.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -43,7 +43,10 @@ fn render(file: &Path, out: &Path, args: &[&str]) -> (bool, String, String) {
 }
 
 fn png_size(path: &Path) -> (u32, u32) {
-    let bytes = std::fs::read(path).unwrap();
+    size(&std::fs::read(path).unwrap())
+}
+
+fn size(bytes: &[u8]) -> (u32, u32) {
     assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
     let field = |at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
     (field(16), field(20))
@@ -149,4 +152,24 @@ fn bad_requests_fail_with_a_reason() {
         assert_eq!(report, "");
         assert!(error.contains(reason), "{error:?} lacks {reason:?}");
     }
+}
+
+#[test]
+fn without_line_numbers_the_gutter_keeps_only_wrap_marks() {
+    let scratch = Scratch::new("gutter");
+    let file = scratch.file("a.diff", b"@@ -1 +1 @@\n-old\n+new\n");
+    let page = scratch.0.join("view-1.png");
+    render(&file, &scratch.0, &["--start", "1", "--end", "3"]);
+    let numbered = std::fs::read(&page).unwrap();
+    let (ok, report, _) = render(
+        &file,
+        &scratch.0,
+        &["--start", "1", "--end", "3", "--no-line-numbers"],
+    );
+    assert!(ok);
+    assert_eq!(report.lines().next(), Some("language diff"));
+    let bare = std::fs::read(&page).unwrap();
+    // One digit or one wrap mark: the same width, without the numbers.
+    assert_eq!(size(&bare), size(&numbered));
+    assert_ne!(bare, numbered);
 }

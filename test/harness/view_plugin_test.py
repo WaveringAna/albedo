@@ -1,5 +1,6 @@
 """The view plugin: albedo-render pages attached to the running cell."""
 import asyncio
+import inspect
 from pathlib import Path
 import subprocess
 import sys
@@ -42,16 +43,19 @@ class ViewPluginTest(unittest.TestCase):
         path.write_text(content)
         return path
 
-    def view_code(self, attach):
+    def bindings(self, attach):
         api = PythonApi(self.loop, None, RuntimeError, None, 100, lambda event: None,
                         lambda close: None, lambda _: None, attach_image=attach)
-        return plugin.setup(api)["view_code"]
+        return plugin.setup(api)
 
-    def run_view(self, attach, *args, **kwargs):
+    def view_code(self, attach):
+        return self.bindings(attach)["view_code"]
+
+    def run_view(self, attach, *args, name="view_code", **kwargs):
         with patch.object(files.jobs, "bash", real_bash), \
              patch.object(files.jobs, "forget", lambda job: None), \
              patch.object(files.jobs, "preview_limit", 65_536, create=True):
-            return self.loop.run_until_complete(self.view_code(attach)(*args, **kwargs))
+            return self.loop.run_until_complete(self.bindings(attach)[name](*args, **kwargs))
 
     @unittest.skipUnless(plugin.RENDERER.exists(), "albedo-render is not built")
     def test_pages_attach_in_order_and_the_text_names_the_rest(self):
@@ -101,6 +105,38 @@ class ViewPluginTest(unittest.TestCase):
                          "<view_code(...) has not run: use `await view_code(...)` for its images>")
         with self.assertRaisesRegex(ValueError, "end_line >= start_line"):
             self.view_code(None)(str(path), 5, 4)
+
+    def test_signatures_name_what_awaiting_returns(self):
+        for name, view in self.bindings(None).items():
+            with self.subTest(name=name):
+                self.assertEqual(inspect.signature(view).return_annotation, "Search[Text]")
+
+    @unittest.skipUnless(plugin.RENDERER.exists(), "albedo-render is not built")
+    def test_view_diff_shows_uncommitted_changes_and_nothing_else(self):
+        git = lambda *args: subprocess.run(["git", "-C", str(self.root), *args],
+                                           check=True, capture_output=True)
+        git("init", "-q")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "root")
+        path = self.write("app.py", "def answer():\n    return 41\n")
+        git("add", "app.py")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "app")
+        attached = []
+        attach = lambda data: attached.append(data) or "attached"
+        self.assertEqual(self.run_view(attach, str(self.root), name="view_diff"),
+                         f"no uncommitted changes under {self.root}")
+        path.write_text("def answer():\n    return 42\n")
+        self.write("new.py", "untracked = True\n")
+        lines = self.run_view(attach, str(self.root), name="view_diff").splitlines()
+        self.assertEqual(lines[0], f"diff of {self.root} (diff)")
+        self.assertRegex(lines[1], r"^image 1: lines 1-\d+, \d+x\d+$")
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(len(attached), 1)
+        git("add", "app.py")
+        self.assertEqual(self.run_view(attach, str(path), name="view_diff"),
+                         f"no uncommitted changes under {path}")
+        self.assertIn("(staged)", self.run_view(attach, str(path), name="view_diff", staged=True))
+        with self.assertRaisesRegex(RuntimeError, "git diff failed: .*not a git repository"):
+            self.run_view(attach, tempfile.mkdtemp(prefix="albedo-no-git-"), name="view_diff")
 
 
 if __name__ == "__main__":

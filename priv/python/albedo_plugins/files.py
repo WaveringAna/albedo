@@ -16,7 +16,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Awaitable, Callable, Generator
-from typing import Iterable, Sequence
+from typing import Generic, Iterable, Sequence, TypeVar
 
 from albedo_api import PythonApi, ReadyList, Text
 from albedo_plugins import bash as jobs
@@ -67,25 +67,31 @@ class Rows(ReadyList):
     __str__ = __repr__
 
 
-class Search:
-    """Work that runs a supervised job, so its result exists only once awaited.
-    Using it without `await` explains that instead of printing a coroutine."""
+Result = TypeVar("Result")
 
-    def __init__(self, call: str, run: Callable[[], Awaitable[Rows]], result: str = "rows") -> None:
+
+class Search(Generic[Result]):
+    """Work that runs a supervised job, so its result exists only once awaited:
+    `Search[Rows]` awaits to Rows. Using it without `await` explains that
+    instead of printing a coroutine."""
+
+    def __init__(self, call: str, run: Callable[[], Awaitable[Result]], result: str = "rows") -> None:
         self._call = call
         self._run = run
         self._result = result
 
-    def __await__(self) -> Generator[object, None, Rows]:
+    def __await__(self) -> Generator[object, None, Result]:
         return self._run().__await__()
 
-    def __getitem__(self, index: object) -> "Search":
+    def __getitem__(self, index: object) -> "Search[Result]":
         """`await files.find(...)[:10]` slices before it awaits; apply the
         slice to the rows instead of failing on precedence."""
         async def run() -> object:
             rows = await self._run()
             picked = rows[index]  # type: ignore[index]
-            return Rows(picked, truncated=rows.truncated) if isinstance(index, slice) else picked
+            if isinstance(rows, Rows) and isinstance(index, slice):
+                return Rows(picked, truncated=rows.truncated)
+            return picked
         return Search(self._call, run, self._result)  # type: ignore[arg-type]
 
     def _unawaited(self) -> TypeError:
@@ -186,7 +192,7 @@ class Files:
     def find(self, pattern: str, path: str | Sequence[str] = ".", *,
              glob: str | Sequence[str] | None = None, context: int = 0,
              max_results: int = 50, literal: bool = False,
-             case_sensitive: bool | None = None, hidden: bool = False) -> Search:
+             case_sensitive: bool | None = None, hidden: bool = False) -> Search[Rows]:
         """Content search through ripgrep when it is installed, else pure Python.
         `path` may be one path or a list; `context=N` adds N lines around each
         match. Await it: `await files.find(pattern)`."""
@@ -240,7 +246,7 @@ class Files:
         return Rows(results)
 
     def paths(self, pattern: str | None = None, path: str = ".", *,
-              glob: str | None = None, max_results: int = 100, hidden: bool = False) -> Search:
+              glob: str | None = None, max_results: int = 100, hidden: bool = False) -> Search[Rows]:
         """File names, not contents; the same ripgrep-or-Python split. A pattern
         with *, ? or [ is a glob over names; other text matches anywhere in the path.
         Await it: `await files.paths(pattern)`."""
