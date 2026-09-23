@@ -139,7 +139,7 @@ pub fn failed_lcm_summary_leaves_graph_and_transcript_unchanged_test() {
   runtime.stop(host)
 }
 
-pub fn lcm_condenses_source_backed_leaves_and_fork_starts_fresh_test() {
+pub fn lcm_condenses_and_fork_reuses_completed_summary_tree_test() {
   let #(host, session) = host(700)
   let original = [
     types.User("first"),
@@ -186,9 +186,81 @@ pub fn lcm_condenses_source_backed_leaves_and_fork_starts_fresh_test() {
 
   let assert Ok(_) =
     history.fork(ledger, "lcm-test", "branch", fourth.source.seq)
-  graph.frontier(ledger, "branch") |> should.equal(Ok([]))
+  let assert Ok([branch_parent]) = graph.frontier(ledger, "branch")
+  branch_parent.summary |> should.equal(parent.summary)
+  branch_parent.depth |> should.equal(parent.depth)
+  let assert Ok(branch_sources) = conversation.load_sources(ledger, "branch")
+  let assert [branch_first, _, _, branch_fourth] = branch_sources
+  branch_parent.first_seq |> should.equal(branch_first.source.seq)
+  branch_parent.last_seq |> should.equal(branch_fourth.source.seq)
+  graph.last_seq(ledger, "branch")
+  |> should.equal(Ok(branch_fourth.source.seq))
+  let assert Ok(branch_expanded) =
+    tools.expand(ledger, "branch", branch_parent.id, 0, 8000)
+  string.contains(branch_expanded, "first") |> should.be_true
+  string.contains(branch_expanded, "second") |> should.be_true
+  let assert Ok(branch_session) = runtime.open_session(host, "branch", "/tmp")
+  let assert Ok(branch_view) =
+    runtime.prepare_history_scoped(
+      host,
+      branch_session,
+      "model",
+      "provider:model",
+      "",
+      "",
+      fn(_) { Error("fork should reuse the saved summary") },
+      list.take(original, 4),
+    )
+  let assert [types.User(branch_summary), ..] = branch_view
+  string.contains(branch_summary, "condensed earlier exploration")
+  |> should.be_true
   let assert Error(error) = tools.describe(ledger, "branch", parent.id)
   string.contains(error, "not found") |> should.be_true
+  runtime.stop(host)
+}
+
+pub fn lcm_fork_inside_summary_reuses_only_complete_child_nodes_test() {
+  let #(host, _) = host(2000)
+  let ledger = runtime.ledger(host)
+  let original = [
+    types.User("first"),
+    types.Assistant("one"),
+    types.User("second"),
+    types.Assistant("two"),
+    types.User("third"),
+    types.Assistant("three"),
+  ]
+  save(host, original)
+  let assert Ok([first, second, third, fourth, fifth, sixth]) =
+    conversation.load_sources(ledger, "lcm-test")
+  let assert Ok(_) =
+    graph.save_leaves(ledger, "lcm-test", [
+      graph.Leaf(first.source.seq, second.source.seq, "first unit"),
+      graph.Leaf(third.source.seq, fourth.source.seq, "second unit"),
+      graph.Leaf(fifth.source.seq, sixth.source.seq, "third unit"),
+    ])
+  let assert Ok([one, two, three]) = graph.frontier(ledger, "lcm-test")
+  let assert Ok(_) =
+    graph.save_parent(ledger, "lcm-test", [one, two, three], "all three units")
+
+  let assert Ok(_) =
+    history.fork(ledger, "lcm-test", "partial", fourth.source.seq)
+  let assert Ok([branch_one, branch_two]) = graph.frontier(ledger, "partial")
+  branch_one.summary |> should.equal("first unit")
+  branch_two.summary |> should.equal("second unit")
+  let assert Ok([_, _, _, branch_fourth]) =
+    conversation.load_sources(ledger, "partial")
+  graph.last_seq(ledger, "partial")
+  |> should.equal(Ok(branch_fourth.source.seq))
+
+  let assert Ok(_) =
+    history.fork(ledger, "lcm-test", "mid-leaf", third.source.seq)
+  let assert Ok([only_complete]) = graph.frontier(ledger, "mid-leaf")
+  only_complete.summary |> should.equal("first unit")
+  let assert Ok([_, middle_second, _]) =
+    conversation.load_sources(ledger, "mid-leaf")
+  graph.last_seq(ledger, "mid-leaf")
+  |> should.equal(Ok(middle_second.source.seq))
   runtime.stop(host)
 }
 

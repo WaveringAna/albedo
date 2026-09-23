@@ -1,6 +1,7 @@
 //// Derived summary tree. The transcript remains the authority for every leaf.
 
 import albedo/daemon/store
+import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
@@ -107,6 +108,150 @@ pub fn children(ledger: store.Store, parent: Int) -> Result(List(Int), String) {
     )
     |> result.map_error(fn(error) { error.message })
   })
+}
+
+/// Copy only summary nodes whose complete source span survives a transcript
+/// fork. The fork transaction owns this connection, so either transcript and
+/// remapped graph both commit or neither does. A node crossing the checkpoint
+/// is omitted; its complete children can still become the branch frontier.
+pub fn inherit_fork_prefix(
+  db: sqlight.Connection,
+  source: String,
+  branch: String,
+  checkpoint: Int,
+  source_seqs: List(Int),
+) -> Result(Nil, String) {
+  use installed <- result.try(
+    sqlight.query(
+      "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lcm_compaction_node'",
+      db,
+      [],
+      decode.field(0, decode.int, decode.success),
+    )
+    |> result.map_error(fn(error) { error.message }),
+  )
+  case installed {
+    [0] -> Ok(Nil)
+    [1] -> {
+      use nodes <- result.try(
+        sqlight.query(
+          "SELECT id,depth,first_seq,last_seq,summary FROM lcm_compaction_node WHERE session=? AND last_seq<=? ORDER BY id",
+          db,
+          [sqlight.text(source), sqlight.int(checkpoint)],
+          node_decoder(),
+        )
+        |> result.map_error(fn(error) { error.message }),
+      )
+      case nodes {
+        [] -> Ok(Nil)
+        _ -> inherit_nodes(db, source, branch, checkpoint, source_seqs, nodes)
+      }
+    }
+    _ -> Error("could not inspect installed LCM storage")
+  }
+}
+
+fn inherit_nodes(
+  db: sqlight.Connection,
+  source: String,
+  branch: String,
+  checkpoint: Int,
+  source_seqs: List(Int),
+  nodes: List(Node),
+) -> Result(Nil, String) {
+  use branch_seqs <- result.try(
+    sqlight.query(
+      "SELECT seq FROM transcript WHERE session=? ORDER BY seq",
+      db,
+      [sqlight.text(branch)],
+      decode.field(0, decode.int, decode.success),
+    )
+    |> result.map_error(fn(error) { error.message }),
+  )
+  use seq_map <- result.try(pair_sequences(source_seqs, branch_seqs, dict.new()))
+  use node_map <- result.try(
+    list.fold(nodes, Ok(dict.new()), fn(state, node) {
+      use state <- result.try(state)
+      use first <- result.try(mapped(seq_map, node.first_seq))
+      use last <- result.try(mapped(seq_map, node.last_seq))
+      use id <- result.try(insert_node(
+        db,
+        branch,
+        node.depth,
+        first,
+        last,
+        node.summary,
+      ))
+      Ok(dict.insert(state, node.id, id))
+    }),
+  )
+  use edges <- result.try(
+    sqlight.query(
+      "SELECT e.child,e.parent,e.position FROM lcm_compaction_edge e JOIN lcm_compaction_node p ON p.id=e.parent WHERE p.session=? AND p.last_seq<=? ORDER BY e.parent,e.position",
+      db,
+      [sqlight.text(source), sqlight.int(checkpoint)],
+      {
+        use child <- decode.field(0, decode.int)
+        use parent <- decode.field(1, decode.int)
+        use position <- decode.field(2, decode.int)
+        decode.success(#(child, parent, position))
+      },
+    )
+    |> result.map_error(fn(error) { error.message }),
+  )
+  use _ <- result.try(
+    list.try_each(edges, fn(edge) {
+      use child <- result.try(mapped(node_map, edge.0))
+      use parent <- result.try(mapped(node_map, edge.1))
+      sqlight.query(
+        "INSERT INTO lcm_compaction_edge(child,parent,position) VALUES(?,?,?)",
+        db,
+        [sqlight.int(child), sqlight.int(parent), sqlight.int(edge.2)],
+        decode.dynamic,
+      )
+      |> result.replace(Nil)
+      |> result.map_error(fn(error) { error.message })
+    }),
+  )
+  let covered =
+    list.fold(nodes, 0, fn(highest, node) {
+      case node.depth == 0 {
+        True -> int.max(highest, node.last_seq)
+        False -> highest
+      }
+    })
+  case covered {
+    0 -> Ok(Nil)
+    covered -> {
+      use remapped <- result.try(mapped(seq_map, covered))
+      sqlight.query(
+        "INSERT INTO lcm_compaction_state(session,last_seq) VALUES(?,?)",
+        db,
+        [sqlight.text(branch), sqlight.int(remapped)],
+        decode.dynamic,
+      )
+      |> result.replace(Nil)
+      |> result.map_error(fn(error) { error.message })
+    }
+  }
+}
+
+fn pair_sequences(
+  source: List(Int),
+  branch: List(Int),
+  pairs: Dict(Int, Int),
+) -> Result(Dict(Int, Int), String) {
+  case source, branch {
+    [], [] -> Ok(pairs)
+    [old, ..old_rest], [new, ..new_rest] ->
+      pair_sequences(old_rest, new_rest, dict.insert(pairs, old, new))
+    _, _ -> Error("fork transcript copy changed its source row count")
+  }
+}
+
+fn mapped(mapping: Dict(Int, Int), original: Int) -> Result(Int, String) {
+  dict.get(mapping, original)
+  |> result.replace_error("fork has no matching source row")
 }
 
 /// A failed summary never advances the cursor. Persist a complete successful
