@@ -71,7 +71,8 @@ test("/extensions shows plugin capabilities and confirms retryable session toggl
   tty.clear()
   await enter("/extensions")
   await until(() => tty.painted().includes("memory-kit") && tty.painted().includes("workspace-index"), "extension viewer")
-  assert.match(tty.painted(), /on\s+memory-kit/)
+  // Color codes sit between the toggle and the name when FORCE_COLOR is set.
+  assert.match(tty.painted().replace(/\x1b\[[0-9;]*m/g, ""), /on\s+memory-kit/)
   assert(tty.painted().includes("context · tools (remember, recall) · python modules (memory_store)"))
   assert(tty.painted().includes("bust prompt-cache reuse"))
   assert(tty.painted().includes("plugins: context, tool, compaction"))
