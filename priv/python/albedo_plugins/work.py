@@ -16,13 +16,13 @@ class WorkItem(TypedDict):
 host: Host
 
 class Work:
-    async def list(self, *, after: int = 0, limit: int = 50) -> list[WorkItem]:
+    async def list(self, after: int = 0, limit: int = 50) -> list[WorkItem]:
         return cast(list[WorkItem], await host("work.list", {"after": after, "limit": limit}))
 
     async def get(self, id: int) -> WorkItem:
         return cast(WorkItem, await host("work.get", {"id": id}))
 
-    async def create(self, title: str, *, notes: str = "", parent: int | None = None) -> WorkItem:
+    async def create(self, title: str, notes: str = "", parent: int | None = None) -> WorkItem:
         return cast(WorkItem, await host("work.create", {"title": title, "notes": notes, "parent": parent}))
 
     async def update(self, id: int, *, revision: int, **changes: object) -> WorkItem:
