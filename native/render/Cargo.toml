@@ -2,7 +2,7 @@
 name = "albedo-render"
 version = "0.1.0"
 edition = "2024"
-description = "Renders a highlighted range of a source file to PNG for albedo's files.view_code"
+description = "Renders a highlighted range of a source file to PNG for albedo's view_code"
 license = "WTFPL"
 publish = false
 
