@@ -282,3 +282,50 @@ pub fn model_provider_extensions_form_catalog_openai_codex_chain_test() {
   |> should.equal(Error("openai requires enabled extension models"))
   runtime.stop(host)
 }
+
+// A context load that fails must not strand resources a managed plugin
+// already opened: the failed composition owns nothing afterwards.
+pub fn failed_context_leaves_no_prepared_resources_test() {
+  let events = process.new_subject()
+  let managed =
+    extension.Extension(
+      "managed",
+      "fixture managed plugin",
+      [],
+      [
+        extension.ManagedPlugin(fn(_, _, _) {
+          process.send(events, "prepared")
+          Ok(
+            extension.Managed("", "", [], [], [], [], fn() {
+              process.send(events, "closed")
+            }),
+          )
+        }),
+      ],
+      no_op,
+    )
+  let failing =
+    extension.Extension(
+      "failing",
+      "fixture context failure",
+      [],
+      [extension.ContextPlugin(fn(_) { Error("unreadable") })],
+      no_op,
+    )
+  let assert Ok(host) =
+    runtime.start_with_extensions(":memory:", [
+      python.extension(),
+      managed,
+      failing,
+    ])
+  let assert Error(error) = runtime.open_session(host, "leak", "/tmp")
+  string.inspect(error)
+  |> string.contains("failing: unreadable")
+  |> should.be_true
+  let prepared = process.receive(events, 0) == Ok("prepared")
+  case prepared {
+    True -> process.receive(events, 0) |> should.equal(Ok("closed"))
+    False -> Nil
+  }
+  runtime.stop(host)
+}

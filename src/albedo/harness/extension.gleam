@@ -22,6 +22,10 @@ pub type Context {
   )
 }
 
+/// A host route: calls whose method starts with `namespace.` reach its handler.
+pub type Route =
+  #(String, fn(store.Store, String, String) -> String)
+
 pub type Tool {
   Tool(
     definition: types.Tool,
@@ -36,7 +40,7 @@ pub type Managed {
     instructions: String,
     tools: List(Tool),
     python_modules: List(String),
-    routes: List(#(String, fn(store.Store, String, String) -> String)),
+    routes: List(Route),
     commands: List(command.Command),
     close: fn() -> Nil,
   )
@@ -91,7 +95,7 @@ pub type Plugin {
     instructions: String,
     tools: List(Tool),
     python_modules: List(String),
-    routes: List(#(String, fn(store.Store, String, String) -> String)),
+    routes: List(Route),
   )
   ManagedPlugin(
     prepare: fn(store.Store, String, String) -> Result(Managed, String),
@@ -219,6 +223,8 @@ pub fn enabled(
   Ok(selected)
 }
 
+/// The selection that would result from toggling one extension. Nothing is
+/// persisted; `set_enabled` records the choice once its composition succeeds.
 pub fn selection(
   ledger: store.Store,
   installed: List(Extension),
@@ -251,20 +257,10 @@ pub fn selection(
 
 pub fn set_enabled(
   ledger: store.Store,
-  installed: List(Extension),
-  default_enabled: List(String),
   session: String,
   name: String,
   value: Bool,
-) -> Result(List(Extension), String) {
-  use candidate <- result.try(selection(
-    ledger,
-    installed,
-    default_enabled,
-    session,
-    name,
-    value,
-  ))
+) -> Result(Nil, String) {
   store.query(ledger, fn(db) {
     sqlight.query(
       "INSERT INTO session_extensions(session,name,enabled) VALUES(?,?,?) ON CONFLICT(session,name) DO UPDATE SET enabled=excluded.enabled",
@@ -279,11 +275,13 @@ pub fn set_enabled(
       ],
       decode.dynamic,
     )
-    |> result.replace(candidate)
+    |> result.replace(Nil)
     |> result.map_error(fn(error) { error.message })
   })
 }
 
+/// Checks what a selection declares before anything is loaded or prepared.
+/// `compose` repeats the capability check once managed contributions exist.
 fn validate_selection(selected: List(Extension)) -> Result(Nil, String) {
   let names = list.map(selected, fn(extension) { extension.name })
   use _ <- result.try(
@@ -300,13 +298,8 @@ fn validate_selection(selected: List(Extension)) -> Result(Nil, String) {
       }
     }),
   )
-  let tools = selected |> tools |> list.map(fn(tool) { tool.definition.name })
-  let routes = selected |> routes |> list.map(fn(route) { route.0 })
-  let modules = selected |> modules |> list.map(canonical_module)
-  let commands = selected |> commands |> list.map(fn(command) { command.name })
   let compactions =
-    selected
-    |> list.flat_map(fn(extension) {
+    list.flat_map(selected, fn(extension) {
       list.filter(extension.plugins, fn(plugin) {
         case plugin {
           CompactionPlugin(_) -> True
@@ -315,10 +308,7 @@ fn validate_selection(selected: List(Extension)) -> Result(Nil, String) {
       })
     })
   case
-    tools != list.unique(tools)
-    || overlapping_routes(routes)
-    || modules != list.unique(modules)
-    || commands != list.unique(commands)
+    duplicate_capabilities(list.flat_map(selected, declared))
     || list.length(compactions) > 1
   {
     True ->
@@ -329,21 +319,118 @@ fn validate_selection(selected: List(Extension)) -> Result(Nil, String) {
   }
 }
 
+/// One session's extension state, composed from nothing: every selected
+/// extension's static contributions in registry order, then every prepared
+/// managed plugin. It is never mutated. A refresh or reload composes a
+/// replacement and closes whichever composition loses, so each contribution
+/// applies exactly once and a plugin that disappears takes its tools with it.
+pub opaque type Composition {
+  Composition(
+    extensions: List(Extension),
+    contributions: List(Prepared),
+    managed: List(Prepared),
+  )
+}
+
+/// Load context and prepare managed plugins for one selection. A failure
+/// closes everything already prepared and leaves no composition to own.
+pub fn compose(
+  selected: List(Extension),
+  ledger: store.Store,
+  session: String,
+  workspace: String,
+) -> Result(Composition, String) {
+  use static <- result.try(
+    list.try_map(selected, fn(extension) {
+      list.try_map(extension.plugins, fn(plugin) {
+        case plugin {
+          ContextPlugin(load) ->
+            load(workspace)
+            |> result.map(fn(context) { [Managed(..empty(), context: context)] })
+            |> result.map_error(fn(error) { extension.name <> ": " <> error })
+          _ -> Ok(option.values([declare(plugin)]))
+        }
+      })
+      |> result.map(fn(values) {
+        values
+        |> list.flatten
+        |> list.map(Prepared(extension.name, _))
+      })
+    })
+    |> result.map(list.flatten),
+  )
+  use managed <- result.try(prepare(selected, ledger, session, workspace))
+  let composition = Composition(selected, list.append(static, managed), managed)
+  case
+    duplicate_capabilities(
+      list.map(composition.contributions, fn(item) { item.value }),
+    )
+  {
+    False -> Ok(composition)
+    True -> {
+      close(composition)
+      Error("prepared extensions have duplicate capabilities")
+    }
+  }
+}
+
+/// Release every managed resource, newest first.
+pub fn close(composition: Composition) -> Nil {
+  close_prepared(composition.managed)
+}
+
+pub fn extensions(composition: Composition) -> List(Extension) {
+  composition.extensions
+}
+
+/// Nonempty context blocks, labelled by the extension that supplied them.
+pub fn context(composition: Composition) -> List(#(String, String)) {
+  composition.contributions
+  |> list.filter(fn(item) { string.trim(item.value.context) != "" })
+  |> list.map(fn(item) { #(item.extension, item.value.context) })
+}
+
+pub fn instructions(composition: Composition) -> String {
+  composition.contributions
+  |> list.map(fn(item) { item.value.instructions })
+  |> list.filter(fn(value) { string.trim(value) != "" })
+  |> string.join("\n")
+}
+
+pub fn tools(composition: Composition) -> List(Tool) {
+  list.flat_map(composition.contributions, fn(item) { item.value.tools })
+}
+
+pub fn python_modules(composition: Composition) -> List(String) {
+  list.flat_map(composition.contributions, fn(item) {
+    item.value.python_modules
+  })
+}
+
+/// Every session command, in registry order. One list feeds the CLI menu,
+/// the kernel bindings, and the aggregate command routes.
+pub fn commands(composition: Composition) -> List(command.Command) {
+  list.flat_map(composition.contributions, fn(item) { item.value.commands })
+}
+
+pub fn routes(composition: Composition) -> List(Route) {
+  contribution_routes(
+    list.map(composition.contributions, fn(item) { item.value }),
+  )
+}
+
+/// Static commands declared by these extensions, without preparing any.
+pub fn declared_commands(installed: List(Extension)) -> List(command.Command) {
+  list.flat_map(installed, declared)
+  |> list.flat_map(fn(value) { value.commands })
+}
+
 pub fn summaries(
   ledger: store.Store,
   installed: List(Extension),
   default_enabled: List(String),
   session: String,
-) -> Result(List(Summary), String) {
-  materialized_summaries(ledger, installed, default_enabled, session, [])
-}
-
-pub fn materialized_summaries(
-  ledger: store.Store,
-  installed: List(Extension),
-  default_enabled: List(String),
-  session: String,
-  prepared: List(Prepared),
+  composition: Option(Composition),
 ) -> Result(List(Summary), String) {
   use selected <- result.try(enabled(
     ledger,
@@ -352,10 +439,19 @@ pub fn materialized_summaries(
     session,
   ))
   let names = list.map(selected, fn(extension) { extension.name })
+  let managed = case composition {
+    Some(composition) -> composition.managed
+    None -> []
+  }
   Ok(
     list.map(installed, fn(extension) {
-      let managed =
-        list.filter(prepared, fn(item) { item.extension == extension.name })
+      let values =
+        list.append(
+          declared(extension),
+          managed
+            |> list.filter(fn(item) { item.extension == extension.name })
+            |> list.map(fn(item) { item.value }),
+        )
       Summary(
         extension.name,
         extension.description,
@@ -366,18 +462,10 @@ pub fn materialized_summaries(
             _ -> False
           }
         }),
-        list.append(
-          extension.plugins
-            |> tool_values
-            |> list.map(fn(tool) { tool.definition.name }),
-          managed
-            |> list.flat_map(fn(item) { item.value.tools })
-            |> list.map(fn(tool) { tool.definition.name }),
-        ),
-        list.append(
-          module_values(extension.plugins),
-          list.flat_map(managed, fn(item) { item.value.python_modules }),
-        ),
+        values
+          |> list.flat_map(fn(value) { value.tools })
+          |> list.map(fn(tool) { tool.definition.name }),
+        list.flat_map(values, fn(value) { value.python_modules }),
         extension.requires,
         list.map(extension.plugins, fn(plugin) {
           case plugin {
@@ -395,224 +483,96 @@ pub fn materialized_summaries(
   )
 }
 
-pub fn context(
-  installed: List(Extension),
-  workspace: String,
-) -> Result(List(#(String, String)), String) {
-  installed
-  |> list.try_fold([], fn(loaded, extension) {
-    use values <- result.try(
-      extension.plugins
-      |> list.filter_map(fn(plugin) {
-        case plugin {
-          ContextPlugin(load) -> Ok(load)
-          _ -> Error(Nil)
-        }
-      })
-      |> list.try_map(fn(load) {
-        load(workspace)
-        |> result.map_error(fn(error) { extension.name <> ": " <> error })
-      }),
-    )
-    Ok(list.append(
-      loaded,
-      list.map(values, fn(value) { #(extension.name, value) }),
-    ))
-  })
+fn empty() -> Managed {
+  Managed("", "", [], [], [], [], fn() { Nil })
+}
+
+/// A static plugin's contribution, known without loading or preparing it.
+fn declare(plugin: Plugin) -> Option(Managed) {
+  case plugin {
+    ToolPlugin(instructions, tools, modules, routes) ->
+      Some(
+        Managed(
+          ..empty(),
+          instructions: instructions,
+          tools: tools,
+          python_modules: modules,
+          routes: routes,
+        ),
+      )
+    CommandPlugin(commands) -> Some(Managed(..empty(), commands: commands))
+    _ -> None
+  }
+}
+
+fn declared(extension: Extension) -> List(Managed) {
+  extension.plugins |> list.map(declare) |> option.values
+}
+
+/// The aggregate command routes are included so capability validation sees
+/// them: a plugin route cannot squat the "commands" namespace.
+fn contribution_routes(values: List(Managed)) -> List(Route) {
+  list.append(
+    list.flat_map(values, fn(value) { value.routes }),
+    command.routes(list.flat_map(values, fn(value) { value.commands })),
+  )
+}
+
+fn duplicate_capabilities(values: List(Managed)) -> Bool {
+  let tools =
+    values
+    |> list.flat_map(fn(value) { value.tools })
+    |> list.map(fn(tool) { tool.definition.name })
+  let modules =
+    values
+    |> list.flat_map(fn(value) { value.python_modules })
+    |> list.map(canonical_module)
+  let commands =
+    values
+    |> list.flat_map(fn(value) { value.commands })
+    |> list.map(fn(command) { command.name })
+  tools != list.unique(tools)
+  || overlapping_routes(
+    list.map(contribution_routes(values), fn(route) { route.0 }),
+  )
+  || modules != list.unique(modules)
+  || commands != list.unique(commands)
 }
 
 /// Prepare every session-owned plugin in registry order. A failed prepare closes
 /// all earlier values; a plugin that fails must close any resources it started itself.
-pub fn prepare(
+fn prepare(
   installed: List(Extension),
   ledger: store.Store,
   session: String,
   workspace: String,
 ) -> Result(List(Prepared), String) {
-  let preparations =
-    installed
-    |> list.flat_map(fn(extension) {
-      extension.plugins
-      |> list.filter_map(fn(plugin) {
-        case plugin {
-          ManagedPlugin(run) -> Ok(#(extension.name, run))
-          _ -> Error(Nil)
-        }
-      })
-    })
-  use prepared <- result.try(do_prepare(
-    preparations,
-    [],
-    ledger,
-    session,
-    workspace,
-  ))
-  case validate_materialized(installed, prepared) {
-    Ok(_) -> Ok(prepared)
-    Error(error) -> {
-      close(prepared)
-      Error(error)
-    }
-  }
-}
-
-fn do_prepare(
-  remaining: List(
-    #(String, fn(store.Store, String, String) -> Result(Managed, String)),
-  ),
-  prepared: List(Prepared),
-  ledger: store.Store,
-  session: String,
-  workspace: String,
-) -> Result(List(Prepared), String) {
-  case remaining {
-    [] -> Ok(list.reverse(prepared))
-    [#(name, run), ..rest] ->
-      case run(ledger, session, workspace) {
-        Ok(value) ->
-          do_prepare(
-            rest,
-            [Prepared(name, value), ..prepared],
-            ledger,
-            session,
-            workspace,
-          )
-        Error(error) -> {
-          close(list.reverse(prepared))
-          Error(name <> ": " <> error)
-        }
-      }
-  }
-}
-
-pub fn close(prepared: List(Prepared)) -> Nil {
-  prepared
-  |> list.reverse
-  |> list.each(fn(item) { item.value.close() })
-}
-
-pub fn managed_context(prepared: List(Prepared)) -> List(#(String, String)) {
-  list.map(prepared, fn(item) { #(item.extension, item.value.context) })
-}
-
-pub fn materialized_tools(
-  installed: List(Extension),
-  prepared: List(Prepared),
-) -> List(Tool) {
-  list.append(
-    tools(installed),
-    list.flat_map(prepared, fn(item) { item.value.tools }),
-  )
-}
-
-pub fn materialized_modules(
-  installed: List(Extension),
-  prepared: List(Prepared),
-) -> List(String) {
-  list.append(
-    modules(installed),
-    list.flat_map(prepared, fn(item) { item.value.python_modules }),
-  )
-}
-
-pub fn materialized_routes(
-  installed: List(Extension),
-  prepared: List(Prepared),
-) -> List(#(String, fn(store.Store, String, String) -> String)) {
-  list.flatten([
-    routes(installed),
-    list.flat_map(prepared, fn(item) { item.value.routes }),
-    // The aggregate command routes are injected here so capability validation
-    // sees them: a plugin route cannot squat the "commands" namespace.
-    command.routes(materialized_commands(installed, prepared)),
-  ])
-}
-
-/// Every session command: static contributions plus prepared ones, in
-/// registry order. One list feeds the CLI menu, the kernel bindings, and the
-/// aggregate command routes.
-pub fn materialized_commands(
-  installed: List(Extension),
-  prepared: List(Prepared),
-) -> List(command.Command) {
-  list.append(
-    commands(installed),
-    list.flat_map(prepared, fn(item) { item.value.commands }),
-  )
-}
-
-pub fn materialized_instructions(
-  installed: List(Extension),
-  prepared: List(Prepared),
-) -> String {
-  [
-    instructions(installed),
-    ..list.map(prepared, fn(item) { item.value.instructions })
-  ]
-  |> list.filter(fn(value) { string.trim(value) != "" })
-  |> string.join("\n")
-}
-
-fn validate_materialized(
-  installed: List(Extension),
-  prepared: List(Prepared),
-) -> Result(Nil, String) {
-  let tools =
-    materialized_tools(installed, prepared)
-    |> list.map(fn(tool) { tool.definition.name })
-  let routes =
-    materialized_routes(installed, prepared)
-    |> list.map(fn(route) { route.0 })
-  let modules =
-    materialized_modules(installed, prepared)
-    |> list.map(canonical_module)
-  let commands =
-    materialized_commands(installed, prepared)
-    |> list.map(fn(command) { command.name })
-  case
-    tools != list.unique(tools)
-    || overlapping_routes(routes)
-    || modules != list.unique(modules)
-    || commands != list.unique(commands)
-  {
-    True -> Error("prepared extensions have duplicate capabilities")
-    False -> Ok(Nil)
-  }
-}
-
-pub fn tools(installed: List(Extension)) -> List(Tool) {
-  list.flat_map(installed, fn(extension) { tool_values(extension.plugins) })
-}
-
-pub fn modules(installed: List(Extension)) -> List(String) {
-  list.flat_map(installed, fn(extension) { module_values(extension.plugins) })
-}
-
-pub fn routes(
-  installed: List(Extension),
-) -> List(#(String, fn(store.Store, String, String) -> String)) {
-  list.flat_map(installed, fn(extension) { route_values(extension.plugins) })
-}
-
-pub fn commands(installed: List(Extension)) -> List(command.Command) {
-  list.flat_map(installed, fn(extension) { command_values(extension.plugins) })
-}
-
-pub fn instructions(installed: List(Extension)) -> String {
   installed
   |> list.flat_map(fn(extension) {
     list.filter_map(extension.plugins, fn(plugin) {
       case plugin {
-        ToolPlugin(value, _, _, _) ->
-          case string.trim(value) {
-            "" -> Error(Nil)
-            _ -> Ok(value)
-          }
+        ManagedPlugin(run) -> Ok(#(extension.name, run))
         _ -> Error(Nil)
       }
     })
   })
-  |> string.join("\n")
+  |> list.try_fold([], fn(prepared, item) {
+    let #(name, run) = item
+    case run(ledger, session, workspace) {
+      Ok(value) -> Ok([Prepared(name, value), ..prepared])
+      Error(error) -> {
+        close_prepared(list.reverse(prepared))
+        Error(name <> ": " <> error)
+      }
+    }
+  })
+  |> result.map(list.reverse)
+}
+
+fn close_prepared(prepared: List(Prepared)) -> Nil {
+  prepared
+  |> list.reverse
+  |> list.each(fn(item) { item.value.close() })
 }
 
 pub fn compaction(installed: List(Extension)) -> Option(compaction.Strategy) {
@@ -724,44 +684,6 @@ pub fn model_client(
       }
     },
   )
-}
-
-fn tool_values(plugins: List(Plugin)) -> List(Tool) {
-  list.flat_map(plugins, fn(plugin) {
-    case plugin {
-      ToolPlugin(_, values, _, _) -> values
-      _ -> []
-    }
-  })
-}
-
-fn module_values(plugins: List(Plugin)) -> List(String) {
-  list.flat_map(plugins, fn(plugin) {
-    case plugin {
-      ToolPlugin(_, _, values, _) -> values
-      _ -> []
-    }
-  })
-}
-
-fn route_values(
-  plugins: List(Plugin),
-) -> List(#(String, fn(store.Store, String, String) -> String)) {
-  list.flat_map(plugins, fn(plugin) {
-    case plugin {
-      ToolPlugin(_, _, _, values) -> values
-      _ -> []
-    }
-  })
-}
-
-fn command_values(plugins: List(Plugin)) -> List(command.Command) {
-  list.flat_map(plugins, fn(plugin) {
-    case plugin {
-      CommandPlugin(values) -> values
-      _ -> []
-    }
-  })
 }
 
 fn canonical_module(name: String) -> String {

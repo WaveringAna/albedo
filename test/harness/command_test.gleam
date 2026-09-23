@@ -279,7 +279,7 @@ pub fn user_turn_commands_submit_through_state_test() {
 }
 
 pub fn compact_is_a_generic_user_command_test() {
-  let values = extension.commands([commands.extension()])
+  let values = extension.declared_commands([commands.extension()])
   let assert Ok(compact) = command.find(values, "/compact")
   compact.model_callable |> should.be_false
   compact.user_turn |> should.be_false
@@ -304,7 +304,7 @@ pub fn compact_is_a_generic_user_command_test() {
 }
 
 pub fn reload_declares_models_as_its_first_optional_target_test() {
-  let values = extension.commands([commands.extension()])
+  let values = extension.declared_commands([commands.extension()])
   let assert Ok(reload) = command.find(values, "/reload")
   command.usage(reload) |> should.equal("/reload [target]")
   let assert [Argument(_, _, required, choices)] = reload.arguments
@@ -325,7 +325,7 @@ pub fn reload_declares_models_as_its_first_optional_target_test() {
 }
 
 pub fn model_switching_is_refused_from_the_model_test() {
-  let values = extension.commands([commands.extension()])
+  let values = extension.declared_commands([commands.extension()])
   // The read form answers for any caller...
   let assert Ok(Data(reading)) =
     command.dispatch(

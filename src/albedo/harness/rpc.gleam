@@ -6,16 +6,7 @@ import gleam/list
 import gleam/string
 
 pub fn handle(
-  extensions: List(extension.Extension),
-  store: store.Store,
-  session: String,
-  request: String,
-) -> String {
-  handle_routes(extension.routes(extensions), store, session, request)
-}
-
-pub fn handle_routes(
-  routes: List(#(String, fn(store.Store, String, String) -> String)),
+  routes: List(extension.Route),
   store: store.Store,
   session: String,
   request: String,
