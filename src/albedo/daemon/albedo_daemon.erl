@@ -1,5 +1,5 @@
 -module(albedo_daemon).
--export([env/1,ready/3,read_config/1,write_default/3,directory/1,shutdown/0,rss/1,watch_parent/1]).
+-export([env/1,ready/3,read_config/1,write_default/3,directory/1,shutdown/0,rss/1,watch_parent/1,hold/1]).
 env(Name) -> case os:getenv(binary_to_list(Name)) of false -> <<>>; Value -> unicode:characters_to_binary(Value) end.
 read_config(Home) ->
     case file:read_file(filename:join(Home,<<"config.json">>)) of
@@ -53,6 +53,10 @@ ready(Home,Port,Token) ->
       {error,Reason} -> {error,atom_to_binary(Reason)}
     end.
 shutdown() -> init:stop(), nil.
+
+%% Keeps the home lock connection reachable; a collected connection closes and
+%% releases the lock.
+hold(Connection) -> put(albedo_home_lock, Connection), nil.
 
 %% Stop when the process named by Parent exits, so a killed test runner cannot leave
 %% its detached daemon behind. The sh loop also ends if this VM dies first.

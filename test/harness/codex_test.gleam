@@ -43,17 +43,69 @@ pub fn revoked_codex_account_is_removed_test() {
   let _ = write(home, "auth.json", credentials)
   let #(revoked, client) = codex_client(home, "revoked-session")
   let assert Some(message) =
-    codex.unauthorized(home, client, types.HttpError(401, "token_revoked"))
+    codex.account_failure(home, client, types.HttpError(401, "token_revoked"))
   string.ends_with(message, "run /login") |> should.be_true
-  codex.unauthorized(home, client, types.HttpError(500, ""))
+  codex.account_failure(home, client, types.HttpError(500, ""))
   |> should.equal(None)
   let remaining = access(home, "revoked-session")
   { remaining == revoked } |> should.be_false
   access(home, "another-session") |> should.equal(remaining)
   let #(_, last) = codex_client(home, "revoked-session")
   let assert Some(_) =
-    codex.unauthorized(home, last, types.HttpError(401, "token_revoked"))
+    codex.account_failure(home, last, types.HttpError(401, "token_revoked"))
   let assert Error(_) = native_access(home, "revoked-session")
+  cleanup(root)
+}
+
+pub fn usage_limit_moves_the_session_to_a_sibling_account_test() {
+  let #(root, _, home) = fixture()
+  let _ = write(home, "auth.json", credentials)
+  let #(limited, client) = codex_client(home, "busy-session")
+
+  // Ordinary rate limiting is transient and must not move the session.
+  codex.account_failure(home, client, types.HttpError(429, "slow down"))
+  |> should.equal(None)
+  access(home, "busy-session") |> should.equal(limited)
+
+  let body =
+    "{\"error\":{\"type\":\"usage_limit_reached\",\"resets_in_seconds\":3600}}"
+  let assert Some(message) =
+    codex.account_failure(home, client, types.HttpError(429, body))
+  string.contains(message, "usage limit reached") |> should.be_true
+  string.contains(message, "the next turn will use") |> should.be_true
+  let next = access(home, "busy-session")
+  { next == limited } |> should.be_false
+  // Every session avoids the limited account while a sibling has usage.
+  access(home, "fresh-session") |> should.equal(next)
+
+  // With every account limited the message says so instead of naming one.
+  let #(_, sibling) = codex_client(home, "busy-session")
+  let assert Some(exhausted) =
+    codex.account_failure(home, sibling, types.HttpError(429, body))
+  string.contains(exhausted, "no other ChatGPT account") |> should.be_true
+  cleanup(root)
+}
+
+pub fn selected_account_overrides_the_session_pin_test() {
+  let #(root, _, home) = fixture()
+  let _ = write(home, "auth.json", credentials)
+  let pinned = access(home, "pinned-session")
+  let other = case pinned {
+    "account-1" -> "account-2"
+    _ -> "account-1"
+  }
+  let _ =
+    write(
+      home,
+      "auth.json",
+      string.replace(
+        credentials,
+        "\"accountId\":\"" <> other <> "\"",
+        "\"accountId\":\"" <> other <> "\",\"selected\":true",
+      ),
+    )
+  access(home, "pinned-session") |> should.equal(other)
+  access(home, "any-session") |> should.equal(other)
   cleanup(root)
 }
 

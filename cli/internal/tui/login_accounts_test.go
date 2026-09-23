@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"albedo/cli/internal/config"
 
@@ -45,9 +48,10 @@ func TestLoginListsAndRemovesCodexAccounts(t *testing.T) {
 		t.Fatalf("codex has accounts and should not read signed out:\n%s", view)
 	}
 
-	m, _ = m.Update(PickerSelectMsg{ID: "account:" + config.CredentialIdentity(gone)})
+	m.ChoosePicker.Cursor = pickerIndex(t, m, "account:"+config.CredentialIdentity(gone))
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
 	if m.Step != StepRemove {
-		t.Fatalf("selecting an account should ask to confirm removal, step=%v", m.Step)
+		t.Fatalf("d on an account should ask to confirm removal, step=%v", m.Step)
 	}
 	m, cmd := m.Update(PickerSelectMsg{ID: "remove"})
 	m, _ = m.Update(cmd())
@@ -58,7 +62,8 @@ func TestLoginListsAndRemovesCodexAccounts(t *testing.T) {
 		t.Fatalf("removed account is still listed:\n%s", m.View())
 	}
 
-	m, _ = m.Update(PickerSelectMsg{ID: "account:" + config.CredentialIdentity(kept)})
+	m.ChoosePicker.Cursor = pickerIndex(t, m, "account:"+config.CredentialIdentity(kept))
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
 	m, cmd = m.Update(PickerSelectMsg{ID: "remove"})
 	m, _ = m.Update(cmd())
 	if !strings.Contains(m.View(), "signed out") {
@@ -105,5 +110,68 @@ func TestLoginRemovesHighlightedProvider(t *testing.T) {
 	}
 	if strings.Contains(m.View(), "work") {
 		t.Fatalf("removed provider is still listed:\n%s", m.View())
+	}
+}
+
+func pickerIndex(t *testing.T, m LoginModel, id string) int {
+	t.Helper()
+	for i, item := range m.ChoosePicker.Filtered {
+		if item.ID == id {
+			return i
+		}
+	}
+	t.Fatalf("no picker row %q", id)
+	return -1
+}
+
+func planToken(plan string) string {
+	payload, _ := json.Marshal(map[string]any{"https://api.openai.com/auth": map[string]string{"chatgpt_plan_type": plan}})
+	return "h." + base64.RawURLEncoding.EncodeToString(payload) + ".s"
+}
+
+func TestLoginTellsApartAndSelectsAccountsSharingAnEmail(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ALBEDO_HOME", home)
+	work := codexTestCredential("acct-work", "same@example.test")
+	work.Access = planToken("team")
+	work.LimitedUntil = time.Now().Add(time.Hour).UnixMilli()
+	personal := codexTestCredential("acct-home", "same@example.test")
+	personal.Access = planToken("plus")
+	twin := codexTestCredential("acct-twin", "same@example.test")
+	twin.Access = planToken("plus")
+	for _, c := range []config.CodexCredential{work, personal, twin} {
+		if err := config.SaveCodexAccount(home, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	m := NewLoginModel(nil, "")
+	m.SetSize(200, 40)
+	view := m.View()
+	for _, want := range []string{"same@example.test · team", "usage limit until", "same@example.test · plus · acct-hom", "same@example.test · plus · acct-twi"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("login should show %q:\n%s", want, view)
+		}
+	}
+
+	m, cmd := m.Update(PickerSelectMsg{ID: "account:" + config.CredentialIdentity(personal)})
+	m, _ = m.Update(cmd())
+	if m.Step != StepChoose || m.Error != "" {
+		t.Fatalf("expected the chooser after selecting, step=%v error=%q", m.Step, m.Error)
+	}
+	accounts, err := config.LoadCodexAccounts(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range accounts {
+		if want := account.AccountID == "acct-home"; account.Selected != want {
+			t.Fatalf("account %s selected=%v, want %v", account.AccountID, account.Selected, want)
+		}
+		if account.AccountID == "acct-work" && account.LimitedUntil != work.LimitedUntil {
+			t.Fatalf("selecting must keep the recorded usage limit")
+		}
+	}
+	if !strings.Contains(m.View(), "selected") {
+		t.Fatalf("the chosen account should read selected:\n%s", m.View())
 	}
 }

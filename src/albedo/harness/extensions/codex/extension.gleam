@@ -18,7 +18,7 @@ pub type Access {
 pub fn extension() -> extension.Extension {
   extension.Extension(
     "codex",
-    "ChatGPT Plus/Pro OAuth for Codex models with session-sticky multi-account selection",
+    "ChatGPT Plus/Pro OAuth for Codex models with selectable, session-sticky multi-account selection that skips accounts past their usage limit",
     ["openai"],
     [extension.ModelProviderPlugin(extension.ModelProvider("openai", resolve))],
     initialise,
@@ -53,11 +53,15 @@ fn resolve(
   }
 }
 
-/// A 401 from the Codex backend means the ChatGPT sign-in was revoked or
-/// expired server-side; refreshing cannot recover it. The account is removed
-/// from auth.json and the message ends in "run /login", which clients treat
-/// as a prompt to sign in again.
-pub fn unauthorized(
+/// Explains a Codex failure that changes which account should be used.
+///
+/// A 401 means the ChatGPT sign-in was revoked or expired server-side;
+/// refreshing cannot recover it. The account is removed from auth.json and the
+/// message ends in "run /login", which clients treat as a prompt to sign in again.
+///
+/// A usage-limit 429 marks the account limited until its reset, so the next
+/// turn moves to a sibling account that still has usage.
+pub fn account_failure(
   home: String,
   client: types.Client,
   error: types.Error,
@@ -75,8 +79,43 @@ pub fn unauthorized(
       }
       Some(message <> "; run /login")
     }
+    types.Codex(_, _), types.HttpError(429, body) ->
+      case native_limited(home, client.api_key, body) {
+        Ok(encoded) ->
+          case json.parse(encoded, limit_decoder()) {
+            Ok(#(account, until, next)) ->
+              Some(limit_message(account, until, next))
+            Error(_) -> None
+          }
+        Error(_) -> None
+      }
     _, _ -> None
   }
+}
+
+fn limit_message(account: String, until: String, next: String) -> String {
+  let account = case account {
+    "" -> "this ChatGPT account"
+    _ -> account
+  }
+  let head = "ChatGPT usage limit reached for " <> account <> " until " <> until
+  case next {
+    "" ->
+      head
+      <> "; no other ChatGPT account has usage left. Add one with /login or wait for the reset"
+    _ ->
+      head
+      <> "; the next turn will use "
+      <> next
+      <> ". Send your message again to continue"
+  }
+}
+
+fn limit_decoder() {
+  use account <- decode.field("account", decode.string)
+  use until <- decode.field("until", decode.string)
+  use next <- decode.field("next", decode.string)
+  decode.success(#(account, until, next))
 }
 
 fn access_decoder() {
@@ -90,3 +129,10 @@ fn native_access(home: String, session: String) -> Result(String, String)
 
 @external(erlang, "albedo_openai_auth", "codex_revoke")
 fn native_revoke(home: String, access: String) -> Result(String, String)
+
+@external(erlang, "albedo_openai_auth", "codex_limited")
+fn native_limited(
+  home: String,
+  access: String,
+  body: String,
+) -> Result(String, String)

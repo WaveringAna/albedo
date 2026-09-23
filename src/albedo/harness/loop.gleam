@@ -289,7 +289,7 @@ pub fn retry_stream(
 }
 
 fn describe(client: types.Client, error: types.Error) -> String {
-  case codex.unauthorized(settings.home(), client, error) {
+  case codex.account_failure(settings.home(), client, error) {
     Some(message) -> message
     None -> string.inspect(error)
   }

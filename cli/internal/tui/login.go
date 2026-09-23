@@ -76,7 +76,8 @@ type removal struct {
 	Label string
 }
 
-type removedMsg struct {
+// storedMsg carries profiles and accounts reloaded after /login changed them.
+type storedMsg struct {
 	Profiles config.Profiles
 	Accounts []config.CodexCredential
 	Err      error
@@ -358,11 +359,21 @@ func (m *LoginModel) buildChoosePicker() {
 			Detail: detail,
 		})
 	}
+	seen := map[string]int{}
 	for _, account := range m.Accounts {
+		seen[accountLabel(account)]++
+	}
+	now := time.Now()
+	for _, account := range m.Accounts {
+		label := accountLabel(account)
+		// Accounts can share an email and plan; the account id tells them apart.
+		if seen[label] > 1 && account.AccountID != "" {
+			label += " · " + account.AccountID[:min(8, len(account.AccountID))]
+		}
 		items = append(items, PickerItem{
 			ID:     "account:" + config.CredentialIdentity(account),
-			Label:  accountLabel(account),
-			Detail: "chatgpt account",
+			Label:  label,
+			Detail: accountDetail(account, now),
 		})
 	}
 	items = append(items, PickerItem{
@@ -382,10 +393,29 @@ func (m *LoginModel) buildChoosePicker() {
 }
 
 func accountLabel(account config.CodexCredential) string {
+	label := account.AccountID
 	if account.Email != nil && *account.Email != "" {
-		return *account.Email
+		label = *account.Email
 	}
-	return account.AccountID
+	if plan := config.CodexPlan(account); plan != "" {
+		label += " · " + plan
+	}
+	return label
+}
+
+func accountDetail(account config.CodexCredential, now time.Time) string {
+	detail := "chatgpt account"
+	if account.Selected {
+		detail += " · selected"
+	}
+	if until := time.UnixMilli(account.LimitedUntil); account.LimitedUntil > 0 && until.After(now) {
+		layout := "15:04"
+		if y, m, d := until.Date(); y != now.Year() || m != now.Month() || d != now.Day() {
+			layout = "Jan 2 15:04"
+		}
+		detail += " · usage limit until " + until.Format(layout)
+	}
+	return detail
 }
 
 // removalFor maps a chooser row to what removing it would delete.
@@ -431,14 +461,29 @@ func (m LoginModel) removeCmd(target removal) tea.Cmd {
 			err = config.RemoveProvider(home, target.ID)
 		}
 		if err != nil {
-			return removedMsg{Err: err}
+			return storedMsg{Err: err}
 		}
 		profiles, err := config.LoadProfiles(home)
 		if err != nil {
-			return removedMsg{Err: err}
+			return storedMsg{Err: err}
 		}
 		accounts, err := config.LoadCodexAccounts(home)
-		return removedMsg{Profiles: profiles, Accounts: accounts, Err: err}
+		return storedMsg{Profiles: profiles, Accounts: accounts, Err: err}
+	}
+}
+
+func (m LoginModel) selectAccountCmd(identity string) tea.Cmd {
+	return func() tea.Msg {
+		home := config.HomeDir()
+		if err := config.SelectCodexAccount(home, identity); err != nil {
+			return storedMsg{Err: err}
+		}
+		profiles, err := config.LoadProfiles(home)
+		if err != nil {
+			return storedMsg{Err: err}
+		}
+		accounts, err := config.LoadCodexAccounts(home)
+		return storedMsg{Profiles: profiles, Accounts: accounts, Err: err}
 	}
 }
 
@@ -610,7 +655,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		m.buildModelPicker()
 		return m, m.ModelPicker.Init()
 
-	case removedMsg:
+	case storedMsg:
 		m.Removing = removal{}
 		m.Error = ""
 		if msg.Err != nil {
@@ -666,11 +711,10 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			if msg.ID == "add-codex" {
 				return m, m.startCodexAuth()
 			}
-			// Removing is the only thing to do with an account row.
-			if strings.HasPrefix(msg.ID, "account:") {
-				if target, ok := m.removalFor(msg.ID); ok {
-					return m, m.confirmRemoval(target)
-				}
+			// Choosing an account selects it; d removes it.
+			if identity, ok := strings.CutPrefix(msg.ID, "account:"); ok {
+				m.Step = StepSaving
+				return m, m.selectAccountCmd(identity)
 			}
 			if strings.HasPrefix(msg.ID, "use:") {
 				name := strings.TrimPrefix(msg.ID, "use:")

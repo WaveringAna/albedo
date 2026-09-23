@@ -41,6 +41,23 @@ type CodexCredential struct {
 	AccountID     string  `json:"accountId"`
 	AccountUserID *string `json:"accountUserId,omitempty"`
 	Email         *string `json:"email,omitempty"`
+	// Selected marks the account the user chose in /login; the daemon tries it
+	// before its per-session choice.
+	Selected bool `json:"selected,omitempty"`
+	// LimitedUntil is when a reported usage limit resets (unix ms); the daemon
+	// skips the account until then while a sibling has usage.
+	LimitedUntil int64 `json:"limitedUntil,omitempty"`
+}
+
+// CodexPlan returns the ChatGPT plan (plus, pro, team, ...) named in the
+// credential's access token, or "" when it is not recorded.
+func CodexPlan(cred CodexCredential) string {
+	claims, err := parseJWT(cred.Access)
+	if err != nil {
+		return ""
+	}
+	plan, _ := asMap(claims["https://api.openai.com/auth"])["chatgpt_plan_type"].(string)
+	return plan
 }
 
 // CredentialIdentity returns the canonical identity string for a credential.
@@ -326,6 +343,12 @@ func parseCredentialList(entry any) ([]CodexCredential, error) {
 			email = &em
 		}
 
+		selected, _ := m["selected"].(bool)
+		var limitedUntil int64
+		if v, ok := m["limitedUntil"].(float64); ok {
+			limitedUntil = int64(v)
+		}
+
 		results = append(results, CodexCredential{
 			Type:          t,
 			Access:        access,
@@ -334,6 +357,8 @@ func parseCredentialList(entry any) ([]CodexCredential, error) {
 			AccountID:     accountID,
 			AccountUserID: accountUserID,
 			Email:         email,
+			Selected:      selected,
+			LimitedUntil:  limitedUntil,
 		})
 	}
 	return results, nil
@@ -359,6 +384,17 @@ func SaveCodexAccount(directory string, cred CodexCredential) error {
 			}
 		}
 		return append(accounts, cred)
+	})
+}
+
+// SelectCodexAccount makes the account with the given identity the one the
+// daemon tries first, for new and running sessions alike.
+func SelectCodexAccount(directory, identity string) error {
+	return updateCodexAccounts(directory, func(accounts []CodexCredential) []CodexCredential {
+		for i := range accounts {
+			accounts[i].Selected = CredentialIdentity(accounts[i]) == identity
+		}
+		return accounts
 	})
 }
 

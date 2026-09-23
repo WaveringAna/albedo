@@ -111,7 +111,7 @@ lookup(Catalog0, Model0, Endpoint0) ->
     Endpoint = unicode:characters_to_binary(Endpoint0),
     try
         case catalog(Catalog) of
-            {ok, CatalogData} -> resolve(maps:get(index, CatalogData), Model, host(Endpoint));
+            {ok, CatalogData} -> resolve(CatalogData, Model, host(Endpoint));
             {error, Reason} -> {error, Reason}
         end
     catch
@@ -131,12 +131,17 @@ catalog(Catalog) ->
         _ -> {error, <<"no models catalog is cached">>}
     end.
 
+%% persistent_term pins the cached value for the VM lifetime and each replacement
+%% costs a global GC pass, so the decoded JSON is reduced to the fields lookup and
+%% list read. Index entries name their provider instead of embedding it: embedded
+%% provider maps are shared on the heap but expand to over a gigabyte when copied.
 parse(Catalog, Revision) ->
     case file:read_file(Catalog) of
         {ok, Body} ->
             try json:decode(Body) of
-                Providers when is_map(Providers) ->
-                    CatalogData = #{index => index(maps:to_list(Providers), #{}), providers => Providers},
+                Decoded when is_map(Decoded) ->
+                    {Providers, Index} = maps:fold(fun provider/3, {#{}, #{}}, Decoded),
+                    CatalogData = #{index => Index, providers => Providers},
                     persistent_term:put({?MODULE, Catalog}, {Revision, CatalogData}),
                     {ok, CatalogData};
                 _ -> {error, <<"models catalog is not a provider object">>}
@@ -146,17 +151,37 @@ parse(Catalog, Revision) ->
         _ -> {error, <<"models catalog could not be read">>}
     end.
 
-index([], Index) -> Index;
-index([{Name, Provider} | Rest], Index) when is_binary(Name), is_map(Provider) ->
-    Models = maps:get(<<"models">>, Provider, #{}),
-    Updated = case is_map(Models) of
-        true -> maps:fold(fun(Key, Model, Acc) ->
-                    add(Acc, Key, {Name, Provider, Model})
-                end, Index, Models);
-        false -> Index
+%% Provider: {Host, Api, Env, SortedModelIds}. Model: {Id, Context, Output, Inputs}.
+provider(Name, Provider, {Providers, Index}) when is_binary(Name), is_map(Provider) ->
+    Models = case maps:get(<<"models">>, Provider, #{}) of
+        M when is_map(M) -> maps:to_list(M);
+        _ -> []
     end,
-    index(Rest, Updated);
-index([_ | Rest], Index) -> index(Rest, Index).
+    Api = maps:get(<<"api">>, Provider, null),
+    Ids = lists:usort([Id || {Key, Model} <- Models, Id <- [model_id(Key, Model)], Id =/= <<>>]),
+    Updated = lists:foldl(fun({Key, Model}, Acc) when is_binary(Key) ->
+                              add(Acc, Key, {Name, model(Model)});
+                             (_, Acc) -> Acc
+                          end, Index, Models),
+    {Providers#{Name => {host(Api), Api, strings(maps:get(<<"env">>, Provider, [])), Ids}}, Updated};
+provider(_, _, Acc) -> Acc.
+
+model_id(_, #{<<"id">> := Id}) when is_binary(Id), Id =/= <<>> -> Id;
+model_id(Key, _) when is_binary(Key) -> Key;
+model_id(_, _) -> <<>>.
+
+model(Model) when is_map(Model) ->
+    Limit = field(<<"limit">>, Model),
+    Id = case maps:get(<<"id">>, Model, <<>>) of I when is_binary(I) -> I; _ -> <<>> end,
+    {Id, maps:get(<<"context">>, Limit, null), maps:get(<<"output">>, Limit, null),
+     strings(maps:get(<<"input">>, field(<<"modalities">>, Model), []))};
+model(_) -> {<<>>, null, null, []}.
+
+field(Key, Map) ->
+    case maps:get(Key, Map, #{}) of
+        Value when is_map(Value) -> Value;
+        _ -> #{}
+    end.
 
 %% A catalog key may be qualified ("vendor/model"), so both spellings resolve.
 add(Index, Key, Entry) ->
@@ -167,47 +192,41 @@ add(Index, Key, Entry) ->
     lists:foldl(fun(K, Acc) -> maps:update_with(K, fun(V) -> [Entry | V] end, [Entry], Acc) end,
                 Index, Keys).
 
-resolve(Index, Model, Host) ->
+resolve(#{index := Index, providers := Providers}, Model, Host) ->
     case maps:get(Model, Index, []) of
         [] -> {error, <<"model is not in the cached catalog">>};
         Candidates ->
-            case select(Candidates, Host) of
-                {ok, Entry, Matched} -> {ok, encode(Entry, Matched)};
+            case select(Candidates, Providers, Host) of
+                {ok, Entry, Matched} -> {ok, encode(Entry, Providers, Matched)};
                 error -> {error, <<"model id is ambiguous across catalog providers">>}
             end
     end.
 
 %% The configured endpoint decides between providers that publish one model id.
 %% Without a host match, agreeing candidates still answer and conflicting ones do not.
-select(Candidates, Host) ->
-    case [E || {_, Provider, _} = E <- Candidates, Host =/= <<>>, host(api(Provider)) =:= Host] of
+select(Candidates, Providers, Host) ->
+    case [E || {Name, _} = E <- Candidates, Host =/= <<>>,
+               element(1, maps:get(Name, Providers)) =:= Host] of
         [Entry | _] -> {ok, Entry, <<"provider endpoint">>};
         [] ->
-            case lists:usort([limits(Model) || {_, _, Model} <- Candidates]) of
+            case lists:usort([{Context, Output} || {_, {_, Context, Output, _}} <- Candidates]) of
                 [_] -> {ok, hd(lists:sort(Candidates)), <<"model id">>};
                 _ -> error
             end
     end.
 
-limits(Model) ->
-    Limit = maps:get(<<"limit">>, Model, #{}),
-    {maps:get(<<"context">>, Limit, null), maps:get(<<"output">>, Limit, null)}.
-
-encode({Name, Provider, Model}, Matched) ->
-    Limit = maps:get(<<"limit">>, Model, #{}),
-    Modalities = maps:get(<<"modalities">>, Model, #{}),
+encode({Name, {Id, Context, Output, Inputs}}, Providers, Matched) ->
+    {_, Api, Env, _} = maps:get(Name, Providers),
     iolist_to_binary(json:encode(#{
-        <<"model">> => maps:get(<<"id">>, Model, <<>>),
+        <<"model">> => Id,
         <<"provider">> => Name,
-        <<"context">> => integer_or_null(maps:get(<<"context">>, Limit, null)),
-        <<"output">> => integer_or_null(maps:get(<<"output">>, Limit, null)),
-        <<"input_modalities">> => strings(maps:get(<<"input">>, Modalities, [])),
-        <<"api">> => api(Provider),
-        <<"env">> => strings(maps:get(<<"env">>, Provider, [])),
+        <<"context">> => integer_or_null(Context),
+        <<"output">> => integer_or_null(Output),
+        <<"input_modalities">> => Inputs,
+        <<"api">> => Api,
+        <<"env">> => Env,
         <<"matched">> => Matched
     })).
-
-api(Provider) -> maps:get(<<"api">>, Provider, null).
 
 integer_or_null(Value) when is_integer(Value), Value > 0 -> Value;
 integer_or_null(_) -> null.
@@ -239,29 +258,17 @@ list(Catalog0, Provider0, Endpoint0) ->
 
 list_provider(Providers, Provider, EndpointHost) ->
     Candidate = case find_provider(maps:values(Providers), EndpointHost) of
-        Value when is_map(Value) -> Value;
-        _ -> maps:get(Provider, Providers, undefined)
+        undefined -> maps:get(Provider, Providers, undefined);
+        Found -> Found
     end,
     case Candidate of
-        CandidateMap when is_map(CandidateMap) ->
-            Models = maps:get(<<"models">>, CandidateMap, #{}),
-            Names = case is_map(Models) of
-                true -> maps:fold(fun(Key, Model, Acc) ->
-                    Id = case Model of
-                        #{<<"id">> := ModelId} when is_binary(ModelId), ModelId =/= <<>> -> ModelId;
-                        _ -> Key
-                    end,
-                    case is_binary(Id) andalso Id =/= <<>> of true -> [Id | Acc]; false -> Acc end
-                end, [], Models);
-                false -> []
-            end,
-            {ok, iolist_to_binary(json:encode(lists:usort(Names)))};
+        {_, _, _, Ids} -> {ok, iolist_to_binary(json:encode(Ids))};
         _ -> {error, <<"provider is not in the cached catalog">>}
     end.
 
 find_provider(_, <<>>) -> undefined;
 find_provider(Providers, EndpointHost) ->
-    case [P || P <- Providers, is_map(P), host(api(P)) =:= EndpointHost] of
+    case [P || {Host, _, _, _} = P <- Providers, Host =:= EndpointHost] of
         [Provider | _] -> Provider;
         [] -> undefined
     end.

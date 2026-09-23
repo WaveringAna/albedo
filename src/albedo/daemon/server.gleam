@@ -25,6 +25,7 @@ import gleam/result
 import gleam/string
 import gleam/string_tree
 import mist
+import sqlight
 
 pub type Config {
   Config(home: String, token: String, idle_ms: Int, budget_kb: Int)
@@ -837,6 +838,8 @@ pub fn main() -> Nil {
     )
   let assert True = string.byte_size(token) >= 32 && home != ""
     as "start albedo through its CLI"
+  let assert Ok(_) = claim_home(home)
+    as "another albedo daemon is already running for this ALBEDO_HOME"
   let assert Ok(port) = start(config, 0)
   let assert Ok(_) = ready(home, port, token)
   watch_parent(env("ALBEDO_PARENT_PID"))
@@ -853,6 +856,30 @@ fn setting(name: String, fallback: Int, low: Int, high: Int) -> Int {
 
 @external(erlang, "albedo_daemon", "env")
 fn env(name: String) -> String
+
+/// Takes an exclusive SQLite lock on `home` for the life of the calling
+/// process. Startup resumes saved sessions, so a second daemon on the same home
+/// would run every in-flight turn twice. The OS drops the lock when the process
+/// exits, so a crashed daemon never leaves it stale.
+pub fn claim_home(home: String) -> Result(Nil, Nil) {
+  use connection <- result.try(
+    sqlight.open(home <> "/daemon.lock") |> result.replace_error(Nil),
+  )
+  case
+    // The transaction is never committed: holding it open keeps the exclusive
+    // lock, and a refused BEGIN leaves no lock behind on its connection.
+    sqlight.exec("BEGIN EXCLUSIVE;", connection)
+  {
+    Ok(_) -> Ok(hold(connection))
+    Error(_) -> {
+      let _ = sqlight.close(connection)
+      Error(Nil)
+    }
+  }
+}
+
+@external(erlang, "albedo_daemon", "hold")
+fn hold(connection: sqlight.Connection) -> Nil
 
 @external(erlang, "albedo_daemon", "ready")
 fn ready(home: String, port: Int, token: String) -> Result(Nil, String)
