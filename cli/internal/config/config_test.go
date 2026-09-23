@@ -120,3 +120,42 @@ func TestProfilesPersistenceAndMigration(t *testing.T) {
 		t.Fatalf("expected corrupt file to remain untouched, got: %s", string(currentContent))
 	}
 }
+
+func TestRemoveProviderHandsOffActive(t *testing.T) {
+	dir := t.TempDir()
+	settings := Settings{BaseURL: "https://api.openai.com/v1", APIKey: "k", Model: "gpt-5", Protocol: "responses"}
+	for _, name := range []string{"beta", "alpha", "gamma"} {
+		if err := SaveProvider(dir, name, settings); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := RemoveProvider(dir, "beta"); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := LoadProfiles(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profiles.Active != "gamma" || len(profiles.Providers) != 2 {
+		t.Fatalf("removing an inactive provider should keep gamma active, got %+v", profiles)
+	}
+
+	if err := RemoveProvider(dir, "gamma"); err != nil {
+		t.Fatal(err)
+	}
+	if profiles, _ = LoadProfiles(dir); profiles.Active != "alpha" {
+		t.Fatalf("removing the active provider should hand off to alpha, got %q", profiles.Active)
+	}
+
+	if err := RemoveProvider(dir, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err = LoadProfiles(dir)
+	if err != nil {
+		t.Fatalf("config with no providers left should still load: %v", err)
+	}
+	if profiles.Active != "" || len(profiles.Providers) != 0 {
+		t.Fatalf("expected no providers and no active, got %+v", profiles)
+	}
+}

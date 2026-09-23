@@ -848,6 +848,10 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 
 	case LoginCancelMsg:
 		m.ProfileGen++
+		// /login may have removed providers even when it ends without a choice.
+		if profiles, err := config.LoadProfiles(config.HomeDir()); err == nil {
+			m.Profiles = profiles
+		}
 		if m.StandaloneLogin {
 			return m, tea.Quit
 		}

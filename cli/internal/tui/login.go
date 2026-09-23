@@ -38,6 +38,7 @@ const (
 	StepModel
 	StepCodexAuth
 	StepCodexModels
+	StepRemove
 	StepSaving
 )
 
@@ -67,6 +68,20 @@ type codexAuthExchangedMsg struct {
 	Gen    int
 }
 
+// removal names something saved that /login can delete: a provider in
+// config.json or a ChatGPT account in auth.json.
+type removal struct {
+	Kind  string // "provider" | "account"
+	ID    string // provider name or credential identity
+	Label string
+}
+
+type removedMsg struct {
+	Profiles config.Profiles
+	Accounts []config.CodexCredential
+	Err      error
+}
+
 type providerSavedMsg struct {
 	Name     string
 	Settings config.Settings
@@ -77,6 +92,8 @@ type LoginModel struct {
 	Conn             *daemon.Connection
 	Step             LoginStep
 	Profiles         config.Profiles
+	Accounts         []config.CodexCredential
+	Removing         removal
 	Name             string
 	Kind             string // "openai" | "codex"
 	Draft            config.Settings
@@ -84,6 +101,7 @@ type LoginModel struct {
 	ChoosePicker     PickerModel
 	ProtocolPicker   PickerModel
 	ModelPicker      PickerModel
+	ConfirmPicker    PickerModel
 	BrowserOpener    func(url string) // Fail-closed: nil means do not launch browser
 	ExchangeCodeFunc func(ctx context.Context, client *http.Client, code, verifier string) (*config.CodexCredential, error)
 	CodexVerifier    string
@@ -143,6 +161,11 @@ func NewLoginModel(conn *daemon.Connection, nameHint string) LoginModel {
 		m.buildChoosePicker()
 		return m
 	}
+	accounts, accountsErr := config.LoadCodexAccounts(home)
+	if accountsErr != nil {
+		m.Error = accountsErr.Error()
+	}
+	m.Accounts = accounts
 
 	if nameHint != "" {
 		cleanName, err := config.ValidateProviderName(nameHint)
@@ -152,15 +175,15 @@ func NewLoginModel(conn *daemon.Connection, nameHint string) LoginModel {
 			m.buildChoosePicker()
 			return m
 		}
-		if s, ok := profiles.Providers[cleanName]; ok {
+		if s, ok := profiles.Providers[cleanName]; ok && !(s.IsCodex() && len(accounts) == 0) {
 			m.Name = cleanName
 			m.Draft = s
 			m.Step = StepSaving
 			return m
 		}
-		if cleanName == "codex" {
+		if s, ok := profiles.Providers[cleanName]; cleanName == "codex" || (ok && s.IsCodex()) {
 			m.Kind = "codex"
-			m.Name = "codex"
+			m.Name = cleanName
 			m.Step = StepCodexAuth
 			m.TextInput.Focus()
 			return m
@@ -174,7 +197,7 @@ func NewLoginModel(conn *daemon.Connection, nameHint string) LoginModel {
 		return m
 	}
 
-	if len(profiles.Providers) > 0 {
+	if len(profiles.Providers) > 0 || len(accounts) > 0 {
 		m.Step = StepChoose
 		m.buildChoosePicker()
 	} else {
@@ -209,6 +232,7 @@ func (m *LoginModel) SetSize(width, height int) {
 	m.ChoosePicker.SetSize(width, height)
 	m.ProtocolPicker.SetSize(width, height)
 	m.ModelPicker.SetSize(width, height)
+	m.ConfirmPicker.SetSize(width, height)
 }
 
 func (m *LoginModel) cancelCodex() {
@@ -322,6 +346,9 @@ func (m *LoginModel) buildChoosePicker() {
 			extension = "openai"
 		}
 		detail := fmt.Sprintf("%s · %s", settings.Model, extension)
+		if settings.IsCodex() && len(m.Accounts) == 0 {
+			detail += " · signed out"
+		}
 		if name == m.Profiles.Active {
 			detail += " · active"
 		}
@@ -329,6 +356,13 @@ func (m *LoginModel) buildChoosePicker() {
 			ID:     "use:" + name,
 			Label:  name,
 			Detail: detail,
+		})
+	}
+	for _, account := range m.Accounts {
+		items = append(items, PickerItem{
+			ID:     "account:" + config.CredentialIdentity(account),
+			Label:  accountLabel(account),
+			Detail: "chatgpt account",
 		})
 	}
 	items = append(items, PickerItem{
@@ -345,6 +379,84 @@ func (m *LoginModel) buildChoosePicker() {
 	initialSel := "use:" + m.Profiles.Active
 	m.ChoosePicker = NewPickerModel("provider for new sessions", items, false, initialSel)
 	m.ChoosePicker.SetSize(m.Width, m.Height)
+}
+
+func accountLabel(account config.CodexCredential) string {
+	if account.Email != nil && *account.Email != "" {
+		return *account.Email
+	}
+	return account.AccountID
+}
+
+// removalFor maps a chooser row to what removing it would delete.
+func (m LoginModel) removalFor(id string) (removal, bool) {
+	if name, ok := strings.CutPrefix(id, "use:"); ok {
+		if _, saved := m.Profiles.Providers[name]; saved {
+			return removal{Kind: "provider", ID: name, Label: name}, true
+		}
+	}
+	if identity, ok := strings.CutPrefix(id, "account:"); ok {
+		for _, account := range m.Accounts {
+			if config.CredentialIdentity(account) == identity {
+				return removal{Kind: "account", ID: identity, Label: accountLabel(account)}, true
+			}
+		}
+	}
+	return removal{}, false
+}
+
+func (m *LoginModel) confirmRemoval(target removal) tea.Cmd {
+	detail := "deletes it from config.json"
+	if target.Kind == "account" {
+		detail = "deletes its tokens from auth.json"
+	}
+	m.Removing = target
+	m.Step = StepRemove
+	items := []PickerItem{
+		{ID: "keep", Label: "keep", Detail: ""},
+		{ID: "remove", Label: "remove", Detail: detail},
+	}
+	m.ConfirmPicker = NewPickerModel("remove "+target.Kind+" "+target.Label+"?", items, false, "keep")
+	m.ConfirmPicker.SetSize(m.Width, m.Height)
+	return m.ConfirmPicker.Init()
+}
+
+func (m LoginModel) removeCmd(target removal) tea.Cmd {
+	return func() tea.Msg {
+		home := config.HomeDir()
+		var err error
+		if target.Kind == "account" {
+			err = config.RemoveCodexAccount(home, target.ID)
+		} else {
+			err = config.RemoveProvider(home, target.ID)
+		}
+		if err != nil {
+			return removedMsg{Err: err}
+		}
+		profiles, err := config.LoadProfiles(home)
+		if err != nil {
+			return removedMsg{Err: err}
+		}
+		accounts, err := config.LoadCodexAccounts(home)
+		return removedMsg{Profiles: profiles, Accounts: accounts, Err: err}
+	}
+}
+
+func (m *LoginModel) backToChoose() tea.Cmd {
+	m.Step = StepChoose
+	m.buildChoosePicker()
+	return m.ChoosePicker.Init()
+}
+
+func (m *LoginModel) startCodexAuth() tea.Cmd {
+	m.Kind = "codex"
+	m.Name = "codex"
+	m.Step = StepCodexAuth
+	m.resetInput()
+	m.TextInput.Placeholder = ""
+	m.TextInput.Focus()
+	m.Generation++
+	return m.startCodexCmd(m.Generation)
 }
 
 func (m *LoginModel) buildProtocolPicker() {
@@ -498,6 +610,17 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		m.buildModelPicker()
 		return m, m.ModelPicker.Init()
 
+	case removedMsg:
+		m.Removing = removal{}
+		m.Error = ""
+		if msg.Err != nil {
+			m.Error = msg.Err.Error()
+		} else {
+			m.Profiles = msg.Profiles
+			m.Accounts = msg.Accounts
+		}
+		return m, m.backToChoose()
+
 	case providerSavedMsg:
 		if msg.Err != nil {
 			m.Error = msg.Err.Error()
@@ -510,8 +633,16 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		if m.Step == StepChoose && (msg.Type == tea.KeyDelete || msg.String() == "d") {
+			if item, ok := m.ChoosePicker.Highlighted(); ok {
+				if target, ok := m.removalFor(item.ID); ok {
+					return m, m.confirmRemoval(target)
+				}
+			}
+			return m, nil
+		}
 		if msg.Type == tea.KeyEsc || msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyCtrlD {
-			pickerStep := m.Step == StepChoose || m.Step == StepProtocol || m.Step == StepModels || m.Step == StepCodexModels
+			pickerStep := m.Step == StepChoose || m.Step == StepProtocol || m.Step == StepModels || m.Step == StepCodexModels || m.Step == StepRemove
 			if !pickerStep || msg.Type == tea.KeyCtrlD {
 				m.cancelCodex()
 				m.Generation++
@@ -533,22 +664,32 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 				return m, textinput.Blink
 			}
 			if msg.ID == "add-codex" {
-				m.Kind = "codex"
-				m.Name = "codex"
-				m.Step = StepCodexAuth
-				m.resetInput()
-				m.TextInput.Placeholder = ""
-				m.TextInput.Focus()
-				m.Generation++
-				return m, m.startCodexCmd(m.Generation)
+				return m, m.startCodexAuth()
+			}
+			// Removing is the only thing to do with an account row.
+			if strings.HasPrefix(msg.ID, "account:") {
+				if target, ok := m.removalFor(msg.ID); ok {
+					return m, m.confirmRemoval(target)
+				}
 			}
 			if strings.HasPrefix(msg.ID, "use:") {
 				name := strings.TrimPrefix(msg.ID, "use:")
 				if s, ok := m.Profiles.Providers[name]; ok {
+					// A codex provider with no accounts left cannot run; sign in first.
+					if s.IsCodex() && len(m.Accounts) == 0 {
+						return m, m.startCodexAuth()
+					}
 					m.Step = StepSaving
 					return m, m.saveProviderCmd(name, s)
 				}
 			}
+
+		case StepRemove:
+			if msg.ID == "remove" {
+				m.Step = StepSaving
+				return m, m.removeCmd(m.Removing)
+			}
+			return m, m.backToChoose()
 
 		case StepProtocol:
 			m.Draft.Protocol = msg.ID
@@ -600,6 +741,9 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		if m.Step == StepCodexModels {
 			return m, func() tea.Msg { return LoginCancelMsg{} }
 		}
+		if m.Step == StepRemove {
+			return m, m.backToChoose()
+		}
 	}
 
 	// Handle input submissions per step
@@ -612,6 +756,11 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 	case StepProtocol:
 		var cmd tea.Cmd
 		m.ProtocolPicker, cmd = m.ProtocolPicker.Update(msg)
+		return m, cmd
+
+	case StepRemove:
+		var cmd tea.Cmd
+		m.ConfirmPicker, cmd = m.ConfirmPicker.Update(msg)
 		return m, cmd
 
 	case StepModels, StepCodexModels:
@@ -771,8 +920,12 @@ func (m LoginModel) View() string {
 	switch m.Step {
 	case StepChoose:
 		b.WriteString(m.ChoosePicker.View())
+		b.WriteByte('\n')
+		b.WriteString(m.Styles.Dim.Render(ansi.Wrap("enter select · d remove · esc cancel", m.Width, "")))
 	case StepProtocol:
 		b.WriteString(m.ProtocolPicker.View())
+	case StepRemove:
+		b.WriteString(m.ConfirmPicker.View())
 	case StepModels, StepCodexModels:
 		if m.Catalog == nil {
 			b.WriteString(m.Styles.Dim.Render("loading models…"))
@@ -799,6 +952,10 @@ func (m LoginModel) View() string {
 		b.WriteByte('\n')
 		b.WriteString(m.Styles.Dim.Render(ansi.Hardwrap("browser callback completes automatically · enter pastes manually · esc cancel", m.Width, true)))
 	case StepSaving:
+		if m.Removing.Kind != "" {
+			b.WriteString(m.Styles.Dim.Render("removing " + m.Removing.Kind + "…"))
+			break
+		}
 		b.WriteString(m.Styles.Dim.Render("saving provider…"))
 	default:
 		stepLabels := map[LoginStep]string{

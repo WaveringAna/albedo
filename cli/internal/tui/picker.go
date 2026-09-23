@@ -62,6 +62,14 @@ func NewPickerModel(title string, items []PickerItem, withSearch bool, initialSe
 	return m
 }
 
+// Highlighted returns the item under the cursor.
+func (m PickerModel) Highlighted() (PickerItem, bool) {
+	if m.Cursor < 0 || m.Cursor >= len(m.Filtered) {
+		return PickerItem{}, false
+	}
+	return m.Filtered[m.Cursor], true
+}
+
 func (m *PickerModel) SetSize(width, height int) {
 	m.Width = width
 	m.Height = height

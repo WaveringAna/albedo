@@ -1,11 +1,8 @@
 package config
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -230,7 +227,8 @@ func LoadProfiles(directory string) (Profiles, error) {
 	}, nil
 }
 
-// SaveProvider stores a named provider configuration in config.json.
+// SaveProvider stores a named provider configuration in config.json and makes
+// it active.
 func SaveProvider(directory, name string, s Settings) error {
 	validatedName, err := ValidateProviderName(name)
 	if err != nil {
@@ -240,65 +238,45 @@ func SaveProvider(directory, name string, s Settings) error {
 	if err != nil {
 		return err
 	}
+	return updateProfiles(directory, func(profiles *Profiles) {
+		profiles.Active = validatedName
+		profiles.Providers[validatedName] = validatedSettings
+	})
+}
 
-	if err := os.MkdirAll(directory, 0700); err != nil {
-		return err
-	}
-	_ = os.Chmod(directory, 0700)
-
-	lockPath := filepath.Join(directory, "config.lock")
-	lockFile, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		if os.IsExist(err) {
-			return errors.New("another login is saving; retry, or remove config.lock if that process has stopped")
+// RemoveProvider deletes a named provider from config.json. Removing the
+// active provider hands activity to the first remaining one by name, since the
+// daemon cannot start sessions without an active provider.
+func RemoveProvider(directory, name string) error {
+	return updateProfiles(directory, func(profiles *Profiles) {
+		delete(profiles.Providers, name)
+		if _, ok := profiles.Providers[profiles.Active]; ok {
+			return
 		}
-		return err
-	}
-	defer func() {
-		_ = lockFile.Close()
-		_ = os.Remove(lockPath)
-	}()
+		profiles.Active = ""
+		for remaining := range profiles.Providers {
+			if profiles.Active == "" || remaining < profiles.Active {
+				profiles.Active = remaining
+			}
+		}
+	})
+}
 
-	saved, err := LoadProfiles(directory)
-	if err != nil {
-		return err
+// updateProfiles rewrites config.json under config.lock.
+func updateProfiles(directory string, update func(*Profiles)) error {
+	err := lockedUpdate(directory, "config.lock", 1, func() error {
+		saved, err := LoadProfiles(directory)
+		if err != nil {
+			return err
+		}
+		if saved.Providers == nil {
+			saved.Providers = make(map[string]Settings)
+		}
+		update(&saved)
+		return writeJSONAtomic(directory, "config.json", saved)
+	})
+	if errors.Is(err, os.ErrExist) {
+		return errors.New("another login is saving; retry, or remove config.lock if that process has stopped")
 	}
-
-	if saved.Providers == nil {
-		saved.Providers = make(map[string]Settings)
-	}
-	saved.Active = validatedName
-	saved.Providers[validatedName] = validatedSettings
-
-	randomBytes := make([]byte, 16)
-	_, _ = rand.Read(randomBytes)
-	tempPath := filepath.Join(directory, fmt.Sprintf("config.%s.tmp", hex.EncodeToString(randomBytes)))
-
-	encoded, err := json.MarshalIndent(saved, "", "  ")
-	if err != nil {
-		return err
-	}
-	encoded = append(encoded, '\n')
-
-	tempFile, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = tempFile.Close()
-		_ = os.Remove(tempPath)
-	}()
-
-	if _, err := tempFile.Write(encoded); err != nil {
-		return err
-	}
-	if err := tempFile.Sync(); err != nil {
-		return err
-	}
-	if err := tempFile.Close(); err != nil {
-		return err
-	}
-
-	configPath := filepath.Join(directory, "config.json")
-	return os.Rename(tempPath, configPath)
+	return err
 }

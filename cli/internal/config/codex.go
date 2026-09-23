@@ -350,92 +350,54 @@ func LoadCodexAccounts(directory string) ([]CodexCredential, error) {
 
 // SaveCodexAccount saves or updates a codex credential in auth.json.
 func SaveCodexAccount(directory string, cred CodexCredential) error {
-	if err := os.MkdirAll(directory, 0700); err != nil {
-		return err
-	}
-	_ = os.Chmod(directory, 0700)
-
-	lockPath := filepath.Join(directory, "auth.lock")
-	var lockFile *os.File
-	var err error
-	for attempt := 0; attempt < 100; attempt++ {
-		lockFile, err = os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-		if err == nil {
-			break
+	identity := CredentialIdentity(cred)
+	return updateCodexAccounts(directory, func(accounts []CodexCredential) []CodexCredential {
+		for i, acct := range accounts {
+			if CredentialIdentity(acct) == identity {
+				accounts[i] = cred
+				return accounts
+			}
 		}
-		if !os.IsExist(err) {
+		return append(accounts, cred)
+	})
+}
+
+// RemoveCodexAccount drops the codex credential with the given identity from
+// auth.json. Removing an account that is already gone is not an error.
+func RemoveCodexAccount(directory, identity string) error {
+	return updateCodexAccounts(directory, func(accounts []CodexCredential) []CodexCredential {
+		kept := accounts[:0]
+		for _, acct := range accounts {
+			if CredentialIdentity(acct) != identity {
+				kept = append(kept, acct)
+			}
+		}
+		return kept
+	})
+}
+
+// updateCodexAccounts rewrites the openai-codex entry under auth.lock.
+func updateCodexAccounts(directory string, update func([]CodexCredential) []CodexCredential) error {
+	return lockedUpdate(directory, "auth.lock", 100, func() error {
+		data, err := readAuthData(directory)
+		if err != nil {
 			return err
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = lockFile.Close()
-		_ = os.Remove(lockPath)
-	}()
-
-	data, err := readAuthData(directory)
-	if err != nil {
-		return err
-	}
-
-	accounts, err := parseCredentialList(data["openai-codex"])
-	if err != nil {
-		return err
-	}
-
-	identity := CredentialIdentity(cred)
-	found := false
-	for i, acct := range accounts {
-		if CredentialIdentity(acct) == identity {
-			accounts[i] = cred
-			found = true
-			break
+		accounts, err := parseCredentialList(data["openai-codex"])
+		if err != nil {
+			return err
 		}
-	}
-	if !found {
-		accounts = append(accounts, cred)
-	}
-
-	if len(accounts) == 1 {
-		data["openai-codex"] = accounts[0]
-	} else {
-		data["openai-codex"] = accounts
-	}
-
-	randomBytes := make([]byte, 16)
-	_, _ = rand.Read(randomBytes)
-	tempPath := filepath.Join(directory, fmt.Sprintf("auth.%s.tmp", hex.EncodeToString(randomBytes)))
-
-	encoded, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return err
-	}
-	encoded = append(encoded, '\n')
-
-	tempFile, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = tempFile.Close()
-		_ = os.Remove(tempPath)
-	}()
-
-	if _, err := tempFile.Write(encoded); err != nil {
-		return err
-	}
-	if err := tempFile.Sync(); err != nil {
-		return err
-	}
-	if err := tempFile.Close(); err != nil {
-		return err
-	}
-
-	authPath := filepath.Join(directory, "auth.json")
-	return os.Rename(tempPath, authPath)
+		accounts = update(accounts)
+		switch len(accounts) {
+		case 0:
+			delete(data, "openai-codex")
+		case 1:
+			data["openai-codex"] = accounts[0]
+		default:
+			data["openai-codex"] = accounts
+		}
+		return writeJSONAtomic(directory, "auth.json", data)
+	})
 }
 
 // OpenBrowser opens a URL in the system's default browser.

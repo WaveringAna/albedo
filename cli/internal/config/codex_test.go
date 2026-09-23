@@ -177,3 +177,39 @@ func TestCodexAccountsPersistence(t *testing.T) {
 		t.Fatalf("expected file mode 0600, got %o", perm)
 	}
 }
+
+func TestRemoveCodexAccount(t *testing.T) {
+	tempDir := t.TempDir()
+	c1 := makeCredential("acct-1", "user-1", "v1")
+	c2 := makeCredential("acct-2", "user-2", "v1")
+	for _, c := range []CodexCredential{c1, c2} {
+		if err := SaveCodexAccount(tempDir, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := RemoveCodexAccount(tempDir, CredentialIdentity(c1)); err != nil {
+		t.Fatal(err)
+	}
+	accounts, err := LoadCodexAccounts(tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts) != 1 || accounts[0].AccountID != "acct-2" {
+		t.Fatalf("expected only acct-2 to remain, got %+v", accounts)
+	}
+
+	if err := RemoveCodexAccount(tempDir, CredentialIdentity(c2)); err != nil {
+		t.Fatal(err)
+	}
+	data, err := readAuthData(tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := data["openai-codex"]; ok {
+		t.Fatal("removing the last account should drop the openai-codex key")
+	}
+	if err := RemoveCodexAccount(tempDir, CredentialIdentity(c2)); err != nil {
+		t.Fatalf("removing a missing account should succeed, got %v", err)
+	}
+}
