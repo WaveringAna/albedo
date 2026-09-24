@@ -1,3 +1,4 @@
+import albedo/daemon/note
 import albedo/daemon/store
 import albedo/daemon/transcript
 import albedo/daemon/usage
@@ -167,7 +168,11 @@ pub fn snapshot(
   let rendered =
     list.flat_map(entries, fn(entry) {
       case entry.input {
-        types.User(value) -> [user(value, "user", None, entry.timestamp)]
+        types.User(value) ->
+          case note.parse(value) {
+            Some(#(origin, body)) -> [user(body, origin, None, entry.timestamp)]
+            None -> [user(value, "chat", None, entry.timestamp)]
+          }
         types.UserImage(value, image) -> [
           user_image(value, "user", None, entry.timestamp, image),
         ]

@@ -1,4 +1,5 @@
 import albedo/daemon/events
+import albedo/daemon/note
 import albedo/daemon/store
 import albedo/daemon/transcript
 import albedo/daemon/usage
@@ -393,10 +394,16 @@ fn has_visible_assistant(inputs: List(types.Input)) -> Bool {
   })
 }
 
-fn latest_user(inputs: List(types.Input)) -> Option(String) {
+/// The newest message a person wrote. Notes are the daemon talking, so they
+/// never name a session.
+pub fn latest_user(inputs: List(types.Input)) -> Option(String) {
   list.fold(inputs, None, fn(latest, input) {
     case input {
-      types.User(text) | types.UserImage(text, _) -> Some(text)
+      types.User(text) | types.UserImage(text, _) ->
+        case note.parse(text) {
+          Some(_) -> latest
+          None -> Some(text)
+        }
       _ -> latest
     }
   })

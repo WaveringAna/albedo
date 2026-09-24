@@ -333,12 +333,8 @@ fn read_prefix(db, id: String, checkpoint: Int) -> Result(List(Row), String) {
 
 fn prefix_title(rows: List(Row)) -> String {
   rows
-  |> list.fold(None, fn(latest, row) {
-    case row.input {
-      types.User(text) | types.UserImage(text, _) -> Some(text)
-      _ -> latest
-    }
-  })
+  |> list.map(fn(row) { row.input })
+  |> conversation.latest_user
   |> fn(latest) {
     case latest {
       Some(text) -> conversation.title(text)

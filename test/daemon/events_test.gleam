@@ -1,4 +1,5 @@
 import albedo/daemon/events as view
+import albedo/daemon/note
 import albedo/daemon/transcript
 import albedo/harness/runtime
 import albedo/openai_api/types
@@ -79,5 +80,35 @@ pub fn snapshot_surfaces_saved_reasoning_apart_from_the_answer_test() {
   types_of(response_events) |> should.equal(["thinking", "message"])
   texts(response_events, "thinking") |> should.equal(["why"])
   texts(response_events, "message") |> should.equal(["answer"])
+  runtime.stop(host)
+}
+
+/// A reloaded transcript labels a note by its origin and shows its body, and
+/// labels a typed message the way the live stream does.
+pub fn snapshot_labels_notes_by_origin_test() {
+  let assert Ok(host) = runtime.start(":memory:")
+  let decoder = {
+    use source <- decode.field("source", decode.string)
+    use text <- decode.field("text", decode.string)
+    decode.success(#(source, text))
+  }
+  view.snapshot(
+    runtime.ledger(host),
+    [
+      types.User("hello"),
+      types.User(note.wrap("daemon restart", "resumed")),
+      types.User("<system-note>legacy</system-note>"),
+    ]
+      |> list.map(transcript.Entry(_, None, None)),
+    None,
+  )
+  |> list.filter_map(fn(event) {
+    json.parse(event, decoder) |> result.replace_error(Nil)
+  })
+  |> should.equal([
+    #("chat", "hello"),
+    #("daemon restart", "resumed"),
+    #("note", "legacy"),
+  ])
   runtime.stop(host)
 }

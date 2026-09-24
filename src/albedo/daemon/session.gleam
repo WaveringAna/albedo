@@ -4,6 +4,7 @@ import albedo/daemon/configuration
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
 import albedo/daemon/events as view
+import albedo/daemon/note
 import albedo/daemon/projection
 import albedo/daemon/transcript
 import albedo/daemon/turn.{type Submission, Submission}
@@ -24,6 +25,18 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
+
+/// What a turn resumed after a daemon restart tells the model, and the
+/// transcript's marker for the restart.
+const restart_text = "albedo restarted while this turn was running. Tool calls that were in flight are marked interrupted with an unknown outcome; check their effects before retrying anything, then continue the task."
+
+const restart_note = Submission(
+  restart_text,
+  restart_text,
+  "daemon",
+  turn.Note("daemon restart"),
+  None,
+)
 
 const lost_notice = "<system-note>The python kernel got reset and all variables are lost</system-note>"
 
@@ -342,7 +355,10 @@ fn handle(state: State, message: Message) {
             |> emit(view.text("error", submission_error(error))),
           )
         Ok(#(state, kernel, client)) -> {
-          let recovered = recover_pending(state, kernel)
+          let recovered =
+            list.append(recover_pending(state, kernel), [
+              submission_input(restart_note),
+            ])
           let candidate = remember(state, recovered, 0)
           case projected_inputs(candidate) {
             Error(error) ->
@@ -363,14 +379,24 @@ fn handle(state: State, message: Message) {
                 Error(error) ->
                   actor.continue(emit(state, view.text("error", error)))
                 Ok(timestamp) -> {
-                  let state = remember(state, recovered, timestamp)
-                  actor.continue(
-                    start_run(state, kernel, client, model_history)
-                    |> emit(view.text(
-                      "error",
-                      "runtime restarted; python namespace was reset. Resuming from saved work, not replaying cells.",
-                    )),
-                  )
+                  // The kernel notice reaches the model but not the ledger,
+                  // as it does for a chat message.
+                  let model_history = case state.notice, model_history {
+                    Some(notice), [types.User(text), ..rest] -> [
+                      types.User(text <> notice),
+                      ..rest
+                    ]
+                    _, _ -> model_history
+                  }
+                  let state =
+                    remember(state, recovered, timestamp)
+                    |> emit(submission_event(restart_note, timestamp))
+                  actor.continue(start_run(
+                    State(..state, notice: None),
+                    kernel,
+                    client,
+                    model_history,
+                  ))
                 }
               }
           }
@@ -1517,22 +1543,12 @@ fn start_queued(state: State) -> State {
 
 fn submission_input(submission: Submission) -> types.Input {
   let text = case submission.source {
-    turn.Note(_) -> system_note(submission.text)
+    turn.Note(origin) -> note.wrap(origin, submission.text)
     _ -> submission.text
   }
   case submission.image {
     Some(image) -> types.UserImage(text, image)
     None -> types.User(text)
-  }
-}
-
-fn system_note(text: String) -> String {
-  case
-    string.starts_with(text, "<system-note>")
-    && string.ends_with(text, "</system-note>")
-  {
-    True -> text
-    False -> "<system-note>" <> text <> "</system-note>"
   }
 }
 
@@ -1846,7 +1862,7 @@ fn context_update(
     ])
   ]
   |> string.join("\n\n")
-  |> fn(content) { system_note("\n" <> content <> "\n") }
+  |> fn(content) { note.wrap("context update", "\n" <> content <> "\n") }
 }
 
 /// The `name` of an `<extension-context name="...">` block, or "".

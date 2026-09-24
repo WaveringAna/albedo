@@ -1,5 +1,6 @@
 import albedo/daemon/conversation
 import albedo/daemon/events as view
+import albedo/daemon/note
 import albedo/daemon/store
 import albedo/daemon/transcript
 import albedo/daemon/usage
@@ -468,4 +469,18 @@ pub fn provider_provenance_backfills_on_switch_and_survives_restart_test() {
   |> should.equal(#("new-provider", "new-model", types.ChatCompletions))
   runtime.stop(restarted)
   cleanup(path)
+}
+
+/// A note committed after a message, such as a daemon restart marker, leaves
+/// the session named after the message.
+pub fn latest_user_skips_notes_test() {
+  [
+    types.User("fix the parser"),
+    types.User(note.wrap("daemon restart", "albedo restarted")),
+  ]
+  |> conversation.latest_user
+  |> should.equal(Some("fix the parser"))
+  [types.User("<system-note>only a note</system-note>")]
+  |> conversation.latest_user
+  |> should.equal(None)
 }

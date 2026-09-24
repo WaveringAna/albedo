@@ -517,6 +517,13 @@ def run(protocol, endpoint):
             assert resumed_requests and all("/beta/v1/" in item["path"] for item in resumed_requests), resumed_requests
             assert all(item["authorization"] == "Bearer beta-2" for item in resumed_requests), resumed_requests
             assert all(item["model"] == "fixture-beta" for item in resumed_requests), resumed_requests
+            # The resumed turn is told about the restart, and the kernel reset rides along.
+            resumed_input=resumed_requests[0]["request"]["messages" if protocol == "chat_completions" else "input"]
+            restart_note=[content_text(item) for item in resumed_input if item.get("role") == "user"][-1]
+            assert restart_note.startswith('<system-note origin="daemon restart">albedo restarted'), restart_note
+            assert "<system-note>The python kernel" in restart_note, restart_note
+            markers=[e for e in restored if e.get("type") == "user" and e.get("source") == "daemon restart"]
+            assert len(markers) == 1 and markers[0]["text"].startswith("albedo restarted"), restored
             with api("/sessions") as response:
                 restored_sessions={item["id"]: item for item in json.load(response)}
             assert restored_sessions[moved]["workspace"] == str(moved_workspace)
