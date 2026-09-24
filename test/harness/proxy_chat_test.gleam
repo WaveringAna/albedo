@@ -104,3 +104,25 @@ pub fn a_turn_becomes_a_completion_and_closing_chunks_test() {
   assert string.contains(usage, "\"choices\":[]")
   assert chat.delta(reply, types.ArgumentsDelta(0, "{")) == None
 }
+
+pub fn client_generation_options_are_kept_test() {
+  let assert Ok(completion) =
+    parse(
+      "{\"model\":\"p/m\",\"messages\":[],\"temperature\":1,\"top_p\":0.5,\"stop\":\"END\",\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"bash\"}},\"parallel_tool_calls\":false,\"reasoning\":{\"effort\":\"high\"},\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"a\",\"schema\":{\"type\":\"object\"}}}}",
+    )
+  let options = completion.request.options
+  assert options.temperature == Some(1.0)
+  assert options.top_p == Some(0.5)
+  assert options.stop == ["END"]
+  assert options.tool_choice == Some(types.NamedTool("bash"))
+  assert options.parallel_tool_calls == Some(False)
+  assert options.effort == Some("high")
+  let assert Some(types.JsonSchema("a", _, False)) = options.format
+  let assert Ok(plain) =
+    parse(
+      "{\"model\":\"p/m\",\"messages\":[],\"tool_choice\":\"required\",\"reasoning_effort\":\"low\",\"response_format\":{\"type\":\"text\"}}",
+    )
+  assert plain.request.options.tool_choice == Some(types.AnyTool)
+  assert plain.request.options.effort == Some("low")
+  assert plain.request.options.format == None
+}

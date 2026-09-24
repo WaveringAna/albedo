@@ -52,6 +52,10 @@ pub fn encode(
       add(history, input, model)
     }),
   )
+  let history = case request.tools, forced(model, request.options.tool_choice) {
+    [_, ..], Some(directive) -> push(history, "user", [text_part(directive)])
+    _, _ -> history
+  }
   let contents =
     history.contents
     |> list.reverse
@@ -64,7 +68,10 @@ pub fn encode(
   let fields =
     [
       #("contents", json.preprocessed_array(contents)),
-      #("generationConfig", generation(model, request.max_output_tokens)),
+      #(
+        "generationConfig",
+        generation(model, request.max_output_tokens, request.options),
+      ),
       #("labels", labels(context, request.input)),
       #("sessionId", json.string(session_number(context.session))),
     ]
@@ -77,7 +84,7 @@ pub fn encode(
   let fields = case request.tools, catalog.family(model) {
     [], catalog.Gemini -> fields
     tools, _ -> [
-      #("toolConfig", validated()),
+      #("toolConfig", tool_config(model, request.options.tool_choice)),
       ..case tools {
         [] -> fields
         tools -> [
@@ -309,10 +316,20 @@ fn inline(image: types.Image) -> Json {
   ])
 }
 
-fn generation(model: Model, requested: Option(Int)) -> Json {
+fn generation(
+  model: Model,
+  requested: Option(Int),
+  options: types.Options,
+) -> Json {
   let limit = model.max_output_tokens
+  let effort = option.unwrap(options.effort, "high")
   let #(output, thinking) = case model.thinking {
-    catalog.Budget(budget) -> {
+    catalog.Budget(low, medium, high) -> {
+      let budget = case effort {
+        "minimal" | "low" -> low
+        "medium" -> medium
+        _ -> high
+      }
       let output = case requested {
         Some(n) -> int.min(n + budget, limit)
         None -> limit
@@ -323,32 +340,87 @@ fn generation(model: Model, requested: Option(Int)) -> Json {
       }
       #(output, #("thinkingBudget", json.int(budget)))
     }
-    catalog.Level(level) -> #(
+    catalog.Level -> #(
       option.unwrap(requested, limit),
-      #("thinkingLevel", json.string(level)),
+      #(
+        "thinkingLevel",
+        json.string(case effort {
+          "minimal" | "low" -> "LOW"
+          "medium" -> "MEDIUM"
+          _ -> "HIGH"
+        }),
+      ),
     )
   }
   let output = case model.pinned_output {
     True -> limit
     False -> output
   }
-  json.object([
+  [
     #("maxOutputTokens", json.int(output)),
     #(
       "thinkingConfig",
       json.object([#("includeThoughts", json.bool(True)), thinking]),
     ),
-  ])
+  ]
+  |> optional("temperature", options.temperature, json.float)
+  |> optional("topP", options.top_p, json.float)
+  |> optional(
+    "stopSequences",
+    case options.stop {
+      [] -> None
+      stop -> Some(stop)
+    },
+    json.array(_, json.string),
+  )
+  |> list.append(case options.format {
+    None -> []
+    Some(types.JsonObject) -> [
+      #("responseMimeType", json.string("application/json")),
+    ]
+    Some(types.JsonSchema(_, schema, _)) -> [
+      #("responseMimeType", json.string("application/json")),
+      #("responseSchema", normalize_schema(schema)),
+    ]
+  })
+  |> json.object
 }
 
-fn validated() -> Json {
+/// Claude routes always run tools VALIDATED. Gemini routes take the mode,
+/// but Cloud Code Assist drops it there, so `forced` restates a forced
+/// choice in the transcript.
+fn tool_config(model: Model, choice: Option(types.ToolChoice)) -> Json {
+  let #(mode, names) = case catalog.family(model), choice {
+    catalog.Claude, _ | _, None -> #("VALIDATED", [])
+    _, Some(types.AutoTool) -> #("AUTO", [])
+    _, Some(types.NoTool) -> #("NONE", [])
+    _, Some(types.AnyTool) -> #("ANY", [])
+    _, Some(types.NamedTool(name)) -> #("ANY", [name])
+  }
   json.object([
     #(
       "functionCallingConfig",
-      json.object([#("mode", json.string("VALIDATED"))]),
+      json.object(
+        [#("mode", json.string(mode))]
+        |> when(names != [], #(
+          "allowedFunctionNames",
+          json.array(names, json.string),
+        )),
+      ),
     ),
   ])
 }
+
+fn forced(model: Model, choice: Option(types.ToolChoice)) -> Option(String) {
+  case catalog.family(model), choice {
+    catalog.Gemini, Some(types.AnyTool) -> Some(forced_directive)
+    catalog.Gemini, Some(types.NamedTool(name)) ->
+      Some(forced_directive <> "Call " <> name <> ".\n")
+    _, _ -> None
+  }
+}
+
+const forced_directive = "TOOL-ONLY TURN. This turn accepts a tool call and nothing else; a text reply here is discarded unread and you will be re-prompted. Emit the tool call now.\n"
 
 /// The antigravity/hub client numbers each agent step within a trajectory.
 /// Deriving it from history keeps it stable across daemon restarts.

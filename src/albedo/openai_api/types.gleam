@@ -1,7 +1,7 @@
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json.{type Json}
-import gleam/option.{type Option}
+import gleam/option.{type Option, None}
 import gleam/string
 
 pub type Protocol {
@@ -88,7 +88,38 @@ pub type Request {
     input: List(Input),
     tools: List(Tool),
     max_output_tokens: Option(Int),
+    options: Options,
   )
+}
+
+/// Generation controls a caller may set; `None` and `[]` keep the provider's
+/// default. A provider applies the ones its wire can express.
+pub type Options {
+  Options(
+    temperature: Option(Float),
+    top_p: Option(Float),
+    stop: List(String),
+    tool_choice: Option(ToolChoice),
+    parallel_tool_calls: Option(Bool),
+    /// Reasoning effort: "minimal", "low", "medium", or "high".
+    effort: Option(String),
+    format: Option(Format),
+  )
+}
+
+pub const defaults = Options(None, None, [], None, None, None, None)
+
+pub type ToolChoice {
+  AnyTool
+  NoTool
+  AutoTool
+  NamedTool(String)
+}
+
+/// Structured output: any JSON object, or one matching `schema`.
+pub type Format {
+  JsonObject
+  JsonSchema(name: String, schema: Json, strict: Bool)
 }
 
 /// An unmodified provider output object, including opaque replay fields.

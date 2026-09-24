@@ -269,3 +269,89 @@ pub fn chat_tool_images_follow_the_whole_run_of_results_test() {
       #("image_url", ""),
     ])
 }
+
+fn options() -> types.Options {
+  types.Options(
+    Some(0.2),
+    Some(0.9),
+    ["END"],
+    Some(types.NamedTool("read_file")),
+    Some(False),
+    Some("low"),
+    Some(types.JsonSchema(
+      "answer",
+      json.object([#("type", json.string("object"))]),
+      True,
+    )),
+  )
+}
+
+fn with_options(tools) {
+  types.Request(
+    ..openai.request("model", [types.User("hi")]),
+    tools: tools,
+    options: options(),
+  )
+}
+
+fn field(encoded: String, path: List(String), decoder) {
+  json.parse(encoded, decode.at(path, decoder))
+}
+
+pub fn chat_encodes_generation_options_test() {
+  let encoded = body(types.ChatCompletions, with_options([tool()]))
+  assert field(encoded, ["temperature"], decode.float) == Ok(0.2)
+  assert field(encoded, ["top_p"], decode.float) == Ok(0.9)
+  assert field(encoded, ["stop"], decode.list(decode.string)) == Ok(["END"])
+  assert field(encoded, ["tool_choice", "function", "name"], decode.string)
+    == Ok("read_file")
+  assert field(encoded, ["parallel_tool_calls"], decode.bool) == Ok(False)
+  assert field(encoded, ["reasoning_effort"], decode.string) == Ok("low")
+  assert field(
+      encoded,
+      ["response_format", "json_schema", "name"],
+      decode.string,
+    )
+    == Ok("answer")
+  // Without tools OpenAI rejects parallel_tool_calls, so it is left out.
+  let bare = body(types.ChatCompletions, with_options([]))
+  let assert Error(_) = field(bare, ["parallel_tool_calls"], decode.bool)
+}
+
+pub fn responses_encodes_generation_options_test() {
+  let encoded = body(types.Responses, with_options([tool()]))
+  assert field(encoded, ["reasoning", "effort"], decode.string) == Ok("low")
+  assert field(encoded, ["tool_choice", "name"], decode.string)
+    == Ok("read_file")
+  assert field(encoded, ["text", "format", "name"], decode.string)
+    == Ok("answer")
+  assert field(encoded, ["temperature"], decode.float) == Ok(0.2)
+  // Responses has no stop sequences.
+  let assert Error(_) = field(encoded, ["stop"], decode.dynamic)
+}
+
+pub fn codex_overrides_only_what_its_backend_accepts_test() {
+  let assert Ok(encoded) =
+    request.encode_with_policy(
+      types.Responses,
+      types.Codex("account", "session"),
+      with_options([tool()]),
+    )
+  let encoded = string_tree.to_string(encoded)
+  assert field(encoded, ["reasoning", "effort"], decode.string) == Ok("low")
+  assert field(encoded, ["reasoning", "summary"], decode.string) == Ok("auto")
+  assert field(encoded, ["parallel_tool_calls"], decode.bool) == Ok(False)
+  assert field(encoded, ["text", "verbosity"], decode.string) == Ok("low")
+  assert field(encoded, ["text", "format", "type"], decode.string)
+    == Ok("json_schema")
+  let assert Error(_) = field(encoded, ["temperature"], decode.float)
+  let assert Ok(defaults) =
+    request.encode_with_policy(
+      types.Responses,
+      types.Codex("account", "session"),
+      openai.request("model", [types.User("hi")]),
+    )
+  let defaults = string_tree.to_string(defaults)
+  assert field(defaults, ["reasoning", "effort"], decode.string) == Ok("medium")
+  assert field(defaults, ["tool_choice"], decode.string) == Ok("auto")
+}

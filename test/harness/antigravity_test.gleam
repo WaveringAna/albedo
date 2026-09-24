@@ -199,7 +199,14 @@ pub fn foreign_calls_carry_the_skip_signature_on_gemini_test() {
 
 pub fn envelope_carries_project_identity_and_thinking_test() {
   let request =
-    types.Request(gemini, Some("be brief"), [types.User("hi")], [], None)
+    types.Request(
+      gemini,
+      Some("be brief"),
+      [types.User("hi")],
+      [],
+      None,
+      types.defaults,
+    )
   let value = body(gemini, request)
   assert at(value, ["project"], decode.string) == "project-1"
   assert at(value, ["model"], decode.string) == gemini
@@ -237,7 +244,17 @@ pub fn tool_schemas_are_flattened_for_cloud_code_assist_test() {
     )
   let tool = types.Tool("t", "d", wire.encode_value(schema), False)
   let value =
-    body(gemini, types.Request(gemini, None, [types.User("hi")], [tool], None))
+    body(
+      gemini,
+      types.Request(
+        gemini,
+        None,
+        [types.User("hi")],
+        [tool],
+        None,
+        types.defaults,
+      ),
+    )
   let parameters =
     at(
       value,
@@ -389,7 +406,7 @@ pub fn discovery_supplies_ids_and_model_enums_test() {
     == ["gemini-3-flash-agent", "gemini-9-flash-high"]
   let known = catalog.model(home, "gemini-3-flash-agent")
   assert known.model_enum == Some("MODEL_PLACEHOLDER_M84")
-  assert known.thinking == catalog.Budget(10_000)
+  assert known.thinking == catalog.Budget(1000, 4000, 10_000)
   let fresh = catalog.model(home, "gemini-9-flash-high")
   assert fresh.context_tokens == 1000
   assert !fresh.images
@@ -517,3 +534,73 @@ fn with_routes(
 
 @external(erlang, "albedo_antigravity_test_support", "seen")
 fn seen(log: dynamic.Dynamic) -> List(String)
+
+pub fn effort_and_forced_tools_reach_the_envelope_test() {
+  let tool =
+    types.Tool(
+      "bash",
+      "run",
+      json.object([#("type", json.string("object"))]),
+      False,
+    )
+  let options =
+    types.Options(
+      ..types.defaults,
+      temperature: Some(0.5),
+      effort: Some("low"),
+      tool_choice: Some(types.NamedTool("bash")),
+      format: Some(types.JsonObject),
+    )
+  let request =
+    types.Request(gemini, None, [types.User("hi")], [tool], None, options)
+  let value = body(gemini, request)
+  assert at(
+      value,
+      ["request", "generationConfig", "thinkingConfig", "thinkingBudget"],
+      decode.int,
+    )
+    == 1001
+  assert at(value, ["request", "generationConfig", "temperature"], decode.float)
+    == 0.5
+  assert at(
+      value,
+      ["request", "generationConfig", "responseMimeType"],
+      decode.string,
+    )
+    == "application/json"
+  assert at(
+      value,
+      ["request", "toolConfig", "functionCallingConfig", "allowedFunctionNames"],
+      decode.list(decode.string),
+    )
+    == ["bash"]
+  // Gemini routes drop toolConfig, so the choice is restated last.
+  let contents = at(value, ["request", "contents"], decode.list(decode.dynamic))
+  let assert Ok(last) = list.last(contents)
+  let assert [_, directive] =
+    at(last, ["parts"], decode.list(decode.at(["text"], decode.string)))
+  assert string.contains(directive, "Call bash.")
+  // Level models take a named level; Claude always runs VALIDATED.
+  let level =
+    body(
+      "gemini-3.7-flash-low",
+      types.Request(
+        ..request,
+        model: "gemini-3.7-flash-low",
+        options: types.Options(..options, effort: Some("medium")),
+      ),
+    )
+  assert at(
+      level,
+      ["request", "generationConfig", "thinkingConfig", "thinkingLevel"],
+      decode.string,
+    )
+    == "MEDIUM"
+  let claude_body = body(claude, types.Request(..request, model: claude))
+  assert at(
+      claude_body,
+      ["request", "toolConfig", "functionCallingConfig", "mode"],
+      decode.string,
+    )
+    == "VALIDATED"
+}

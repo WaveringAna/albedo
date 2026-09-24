@@ -43,7 +43,7 @@ type Message {
 }
 
 pub fn parse(body: BitArray) -> Result(Completion, String) {
-  use #(requested, messages, tools, stream, include_usage, limit) <- result.try(
+  use #(requested, messages, tools, stream, include_usage, limit, options) <- result.try(
     json.parse_bits(body, request_decoder())
     |> result.map_error(fn(error) {
       "invalid chat completion request: " <> string.inspect(error)
@@ -58,7 +58,7 @@ pub fn parse(body: BitArray) -> Result(Completion, String) {
     requested,
     profile,
     model,
-    types.Request(model, instructions, input, tools, limit),
+    types.Request(model, instructions, input, tools, limit, options),
     stream,
     include_usage,
     profile <> "\n" <> first_user_text(messages),
@@ -116,6 +116,7 @@ fn request_decoder() {
     None,
     decode.optional(decode.int),
   )
+  use options <- decode.then(options_decoder())
   decode.success(#(
     model,
     messages,
@@ -123,6 +124,88 @@ fn request_decoder() {
     stream,
     include_usage,
     option.or(completion, tokens),
+    options,
+  ))
+}
+
+fn maybe(
+  name: String,
+  decoder: decode.Decoder(a),
+) -> decode.Decoder(Option(a)) {
+  decode.optional_field(name, None, decode.optional(decoder), decode.success)
+}
+
+fn options_decoder() -> decode.Decoder(types.Options) {
+  let number =
+    decode.one_of(decode.float, [decode.int |> decode.map(int.to_float)])
+  let choice =
+    decode.one_of(
+      decode.string
+        |> decode.then(fn(choice) {
+          case choice {
+            "auto" -> decode.success(types.AutoTool)
+            "none" -> decode.success(types.NoTool)
+            "required" | "any" -> decode.success(types.AnyTool)
+            other ->
+              decode.failure(types.AutoTool, "tool choice, got " <> other)
+          }
+        }),
+      [
+        decode.at(["function", "name"], decode.string)
+        |> decode.map(types.NamedTool),
+      ],
+    )
+  let format = {
+    use kind <- decode.field("type", decode.string)
+    case kind {
+      "json_object" -> decode.success(Some(types.JsonObject))
+      "json_schema" -> {
+        use name <- decode.subfield(["json_schema", "name"], decode.string)
+        use schema <- decode.subfield(
+          ["json_schema", "schema"],
+          decode.dynamic |> decode.map(encode),
+        )
+        use strict <- decode.then(decode.optionally_at(
+          ["json_schema", "strict"],
+          False,
+          decode.bool,
+        ))
+        decode.success(Some(types.JsonSchema(name, schema, strict)))
+      }
+      _ -> decode.success(None)
+    }
+  }
+  use temperature <- decode.then(maybe("temperature", number))
+  use top_p <- decode.then(maybe("top_p", number))
+  use stop <- decode.optional_field(
+    "stop",
+    [],
+    decode.one_of(decode.list(decode.string), [
+      decode.string |> decode.map(fn(stop) { [stop] }),
+      decode.success([]),
+    ]),
+  )
+  use tool_choice <- decode.then(maybe("tool_choice", choice))
+  use parallel <- decode.then(maybe("parallel_tool_calls", decode.bool))
+  use effort <- decode.then(maybe("reasoning_effort", decode.string))
+  use nested_effort <- decode.then(decode.optionally_at(
+    ["reasoning", "effort"],
+    None,
+    decode.optional(decode.string),
+  ))
+  use format <- decode.optional_field(
+    "response_format",
+    None,
+    decode.optional(format) |> decode.map(option.flatten),
+  )
+  decode.success(types.Options(
+    temperature,
+    top_p,
+    stop,
+    tool_choice,
+    parallel,
+    option.or(effort, nested_effort),
+    format,
   ))
 }
 

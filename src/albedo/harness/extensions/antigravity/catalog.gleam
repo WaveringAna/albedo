@@ -18,11 +18,11 @@ pub type Family {
   Claude
 }
 
-/// How a model is asked to think. Albedo has no effort selector, so each
-/// model carries the budget or level of the client's highest supported effort.
+/// How a model is asked to think: token budgets per effort, or Google's
+/// named levels. Without a requested effort a model thinks at its high end.
 pub type Thinking {
-  Budget(tokens: Int)
-  Level(String)
+  Budget(low: Int, medium: Int, high: Int)
+  Level
 }
 
 pub type Model {
@@ -62,11 +62,11 @@ pub fn images_in_tool_results(model: Model) -> Bool {
   }
 }
 
-const flash_budget = Budget(10_000)
+const flash_budget = Budget(1000, 4000, 10_000)
 
-const pro_budget = Budget(10_001)
+const pro_budget = Budget(1001, 8192, 10_001)
 
-const default_budget = Budget(16_384)
+const default_budget = Budget(4096, 8192, 16_384)
 
 /// What the backend last offered, with this table's thinking hints, or the
 /// table itself before the first discovery.
@@ -137,13 +137,8 @@ pub fn known() -> List(Model) {
       default_budget,
     ),
     gemini("gemini-2.5-pro", "Gemini 2.5 Pro", 65_536, default_budget),
-    gemini("gemini-3-pro-low", "Gemini 3 Pro (Low)", 65_535, Level("HIGH")),
-    gemini(
-      "gemini-3.1-flash-lite",
-      "Gemini 3.1 Flash Lite",
-      65_535,
-      Level("HIGH"),
-    ),
+    gemini("gemini-3-pro-low", "Gemini 3 Pro (Low)", 65_535, Level),
+    gemini("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite", 65_535, Level),
     Model(
       ..gemini("gemini-3.1-pro-low", "Gemini 3.1 Pro (Low)", 65_535, pro_budget),
       model_enum: Some("MODEL_PLACEHOLDER_M36"),
@@ -184,18 +179,8 @@ pub fn known() -> List(Model) {
       model_enum: Some("MODEL_PLACEHOLDER_M132"),
       pinned_output: True,
     ),
-    gemini(
-      "gemini-3.6-flash-low",
-      "Gemini 3.6 Flash (Low)",
-      65_536,
-      Level("HIGH"),
-    ),
-    gemini(
-      "gemini-3.7-flash-low",
-      "Gemini 3.7 Flash (Low)",
-      65_536,
-      Level("HIGH"),
-    ),
+    gemini("gemini-3.6-flash-low", "Gemini 3.6 Flash (Low)", 65_536, Level),
+    gemini("gemini-3.7-flash-low", "Gemini 3.7 Flash (Low)", 65_536, Level),
     Model(
       "gpt-oss-120b-medium",
       "GPT OSS 120B",
@@ -203,7 +188,7 @@ pub fn known() -> List(Model) {
       32_768,
       False,
       // The backend rejects a larger budget for this route.
-      Budget(8192),
+      Budget(4096, 8192, 8192),
       None,
       False,
     ),
@@ -250,7 +235,7 @@ fn infer_thinking(id: String) -> Thinking {
         || string.starts_with(id, "gemini-3.7-flash")
         || id == "gemini-3.1-flash-lite"
       {
-        True -> Level("HIGH")
+        True -> Level
         False ->
           case string.contains(id, "flash") {
             True -> flash_budget

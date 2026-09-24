@@ -72,6 +72,7 @@ pub fn run(
       history,
       runtime.tools(state.kernel),
       None,
+      types.defaults,
     )
   state.record_context(request)
   use turn <- result.try(
@@ -208,6 +209,7 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
     history,
     runtime.tools(state.kernel),
     None,
+    types.defaults,
   ))
   // The projection keeps a verbatim tail, so everything before the shared
   // suffix is what the strategy's replacement stands in for.
@@ -405,6 +407,7 @@ fn summarize(
       [types.User(prompt)],
       [],
       Some(max_output_tokens),
+      types.defaults,
     )
   use turn <- result.try(
     stream_with_retries(state.upstream, summary_request, state.publish, fn(_) {

@@ -21,7 +21,8 @@ fn entry(input: types.Input, provider: String) -> transcript.Entry {
 
 fn encode(protocol: types.Protocol, newest: List(transcript.Entry)) -> String {
   let assert Ok(inputs) = projection.for_model(newest, "target", protocol)
-  let request = types.Request("model", None, list.reverse(inputs), [], None)
+  let request =
+    types.Request("model", None, list.reverse(inputs), [], None, types.defaults)
   let assert Ok(body) = request.encode(protocol, request)
   string_tree.to_string(body)
 }

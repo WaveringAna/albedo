@@ -149,6 +149,7 @@ pub fn exact_request_builder_keeps_source_order_and_omits_payload_bodies_test() 
         ),
       ],
       None,
+      types.defaults,
     )
   let observation =
     rolling.Observation(

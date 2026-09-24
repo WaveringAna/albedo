@@ -67,7 +67,7 @@ pub fn codex_client(
 }
 
 pub fn request(model: String, input: List(Input)) -> Request {
-  types.Request(model, None, input, [], None)
+  types.Request(model, None, input, [], None, types.defaults)
 }
 
 /// Returns final replayable items and tool-call proposals. The caller must validate

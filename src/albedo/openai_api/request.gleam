@@ -72,22 +72,75 @@ pub fn encode_with_policy(
       ..fields
     ]
   }
+  let options = request.options
+  let tools = request.tools != []
   let fields = case policy, protocol {
+    // The ChatGPT reasoning backend fixes sampling; only what it accepts
+    // overrides its defaults.
     Codex(_, session_id), Responses -> [
-      #("tool_choice", json.string("auto")),
-      #("parallel_tool_calls", json.bool(True)),
-      #("text", json.object([#("verbosity", json.string("low"))])),
+      #(
+        "tool_choice",
+        option.map(options.tool_choice, tool_choice(protocol, _))
+          |> option.unwrap(json.string("auto")),
+      ),
+      #(
+        "parallel_tool_calls",
+        json.bool(option.unwrap(options.parallel_tool_calls, True)),
+      ),
+      #(
+        "text",
+        json.object(
+          [#("verbosity", json.string("low"))]
+          |> optional("format", options.format, response_format(protocol, _)),
+        ),
+      ),
       #(
         "reasoning",
         json.object([
-          #("effort", json.string("medium")),
+          #("effort", json.string(option.unwrap(options.effort, "medium"))),
           #("summary", json.string("auto")),
         ]),
       ),
       #("prompt_cache_key", json.string(session_id)),
       ..fields
     ]
-    _, _ -> fields
+    _, Responses ->
+      fields
+      |> sampling(options)
+      |> optional("tool_choice", options.tool_choice, tool_choice(protocol, _))
+      |> optional(
+        "parallel_tool_calls",
+        when_tools(tools, options.parallel_tool_calls),
+        json.bool,
+      )
+      |> optional("reasoning", options.effort, fn(effort) {
+        json.object([#("effort", json.string(effort))])
+      })
+      |> optional("text", options.format, fn(format) {
+        json.object([#("format", response_format(protocol, format))])
+      })
+    _, ChatCompletions ->
+      fields
+      |> sampling(options)
+      |> optional(
+        "stop",
+        case options.stop {
+          [] -> None
+          stop -> Some(stop)
+        },
+        json.array(_, json.string),
+      )
+      |> optional("tool_choice", options.tool_choice, tool_choice(protocol, _))
+      |> optional(
+        "parallel_tool_calls",
+        when_tools(tools, options.parallel_tool_calls),
+        json.bool,
+      )
+      |> optional("reasoning_effort", options.effort, json.string)
+      |> optional("response_format", options.format, response_format(
+        protocol,
+        _,
+      ))
   }
   Ok(json.to_string_tree(json.object(fields)))
 }
@@ -286,6 +339,68 @@ fn encode_tool(protocol: Protocol, policy: ProviderPolicy, tool: Tool) -> Json {
       #("function", json.object(fields)),
     ]
   })
+}
+
+/// OpenAI rejects `parallel_tool_calls` on a request without tools.
+fn when_tools(tools: Bool, value: Option(Bool)) -> Option(Bool) {
+  case tools {
+    True -> value
+    False -> None
+  }
+}
+
+fn sampling(
+  fields: List(#(String, Json)),
+  options: types.Options,
+) -> List(#(String, Json)) {
+  fields
+  |> optional("temperature", options.temperature, json.float)
+  |> optional("top_p", options.top_p, json.float)
+}
+
+fn tool_choice(protocol: Protocol, choice: types.ToolChoice) -> Json {
+  case choice, protocol {
+    types.AutoTool, _ -> json.string("auto")
+    types.NoTool, _ -> json.string("none")
+    types.AnyTool, _ -> json.string("required")
+    types.NamedTool(name), Responses ->
+      json.object([
+        #("type", json.string("function")),
+        #("name", json.string(name)),
+      ])
+    types.NamedTool(name), ChatCompletions ->
+      json.object([
+        #("type", json.string("function")),
+        #("function", json.object([#("name", json.string(name))])),
+      ])
+  }
+}
+
+/// Chat Completions nests a schema under `json_schema`; Responses flattens it
+/// into `text.format`.
+fn response_format(protocol: Protocol, format: types.Format) -> Json {
+  case format, protocol {
+    types.JsonObject, _ -> json.object([#("type", json.string("json_object"))])
+    types.JsonSchema(name, schema, strict), Responses ->
+      json.object([
+        #("type", json.string("json_schema")),
+        #("name", json.string(name)),
+        #("schema", schema),
+        #("strict", json.bool(strict)),
+      ])
+    types.JsonSchema(name, schema, strict), ChatCompletions ->
+      json.object([
+        #("type", json.string("json_schema")),
+        #(
+          "json_schema",
+          json.object([
+            #("name", json.string(name)),
+            #("schema", schema),
+            #("strict", json.bool(strict)),
+          ]),
+        ),
+      ])
+  }
 }
 
 fn optional(

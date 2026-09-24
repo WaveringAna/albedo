@@ -18,7 +18,10 @@ Each request is translated into albedo's request types and projected onto the pr
 - Leading `system` and `developer` messages become the instructions. Later ones become user notes in place.
 - `user` text and base64 `data:` images become user input. Image urls are not fetched.
 - `assistant` messages with `tool_calls` become replayable tool calls. `tool` messages become their results.
-- `tools` and `max_tokens`/`max_completion_tokens` are passed through. Sampling options, `tool_choice`, and response formats are ignored.
+- `tools`, `max_tokens`/`max_completion_tokens`, `temperature`, `top_p`, `stop`, `tool_choice`, `parallel_tool_calls`, `reasoning_effort` (or `reasoning.effort`), and `response_format` (`json_object` or `json_schema`) become albedo's generation options. Each provider applies what its wire can express:
+  - OpenAI Chat Completions and Responses take all of them, except that Responses has no stop sequences.
+  - Codex keeps its fixed sampling. Effort, tool choice, parallel calls, and format override its defaults (medium effort, automatic parallel tools).
+  - Antigravity maps effort onto each model's thinking budget or level, and sampling, stop sequences, and format into `generationConfig`. Claude routes always run tools `VALIDATED`. On Gemini routes a forced tool choice is also restated as a final instruction, because Cloud Code Assist drops the tool mode there.
 
 Text and reasoning stream as `delta.content` and `delta.reasoning_content`. Each tool call is sent whole, with its id, name, and arguments, when the turn ends. Errors from the provider arrive as an `error` chunk while streaming, or as a JSON error otherwise.
 
