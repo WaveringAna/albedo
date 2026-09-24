@@ -489,7 +489,7 @@ func (m CapabilityPageModel) View() string {
 	if m.Global {
 		scope = "global default"
 	}
-	rows := []string{"albedo /" + m.Kind + " · " + scope, ""}
+	rows := []string{titleRule(width, brand("albedo")+" "+DefaultStyles.Muted.Render("/"+m.Kind), DefaultStyles.Faint.Render(scope)), ""}
 	if m.Error != "" {
 		rows = append(rows, DefaultStyles.Error.Render(ansi.Truncate(m.Error, width, "…")))
 	}
@@ -497,32 +497,36 @@ func (m CapabilityPageModel) View() string {
 		rows = append(rows, DefaultStyles.Faint.Render(m.Notice))
 	}
 	if m.Loading {
-		rows = append(rows, "loading "+heading+"…")
+		rows = append(rows, DefaultStyles.Faint.Render("loading "+heading+"…"))
 		return strings.Join(rows, "\n")
 	}
 	if !m.ExtensionEnabled {
-		rows = append(rows, "extension off · E enable (restarts Python worker)")
+		rows = append(rows, DefaultStyles.Warning.Render("extension off")+DefaultStyles.Decor.Render(" · ")+keyHints(hint{"E", "enable (restarts Python worker)"}))
 	}
 	if len(m.Items) == 0 {
-		rows = append(rows, "no "+strings.ToLower(heading)+" found")
+		rows = append(rows, DefaultStyles.Faint.Render("no "+strings.ToLower(heading)+" found"))
 	}
 	listRows := max(1, m.Height-12)
 	start := max(0, m.Cursor-listRows+1)
 	for i := start; i < min(len(m.Items), start+listRows); i++ {
 		item := m.Items[i]
-		label := "on "
+		label := DefaultStyles.Success.Render("on ")
 		if !m.selectedEnabled(item) || m.Kind == "mcp" && item.Server.Enabled != nil && !*item.Server.Enabled {
-			label = "off"
+			label = DefaultStyles.Faint.Render("off")
 		}
 		mark := "  "
 		if i == m.Cursor {
-			mark = "› "
+			mark = selectBar() + " "
 		}
 		detail := ""
 		if m.Kind == "mcp" {
-			detail = " · " + item.Detail
+			detail = DefaultStyles.Faint.Render(" · " + item.Detail)
 		}
-		rows = append(rows, ansi.Truncate(mark+label+"  "+item.Title+detail, width, "…"))
+		row := ansi.Truncate(mark+label+"  "+item.Title+detail, width, "…")
+		if i == m.Cursor {
+			row = selectedLine(row, width)
+		}
+		rows = append(rows, row)
 	}
 	if m.Form != nil {
 		rows = append(rows, "")
@@ -531,9 +535,9 @@ func (m CapabilityPageModel) View() string {
 			rows = append(rows, "connecting and reloading…")
 		}
 	} else if m.ConfirmExtension {
-		rows = append(rows, "", "enable extension and reload workers? enter confirm · esc cancel")
+		rows = append(rows, "", DefaultStyles.Warning.Render("enable extension and reload workers?")+" "+keyHints(hint{"enter", "confirm"}, hint{"esc", "cancel"}))
 	} else if m.ConfirmDelete && len(m.Items) > 0 {
-		rows = append(rows, "", "delete MCP server "+m.Items[m.Cursor].ID+" and its stored credentials? enter confirm · any other key cancels")
+		rows = append(rows, "", DefaultStyles.Warning.Render("delete MCP server "+m.Items[m.Cursor].ID+" and its stored credentials?")+" "+keyHints(hint{"enter", "confirm"}, hint{"any other key", "cancels"}))
 	} else if m.Saving {
 		rows = append(rows, "saving and reloading…")
 	} else {
@@ -550,11 +554,11 @@ func (m CapabilityPageModel) View() string {
 					detail += " · disabled in extensions.json · e enable"
 				}
 			}
-			rows = append(rows, "", ansi.Truncate(detail, width, "…"))
+			rows = append(rows, "", DefaultStyles.Faint.Render(ansi.Truncate(detail, width, "…")))
 		}
-		rows = append(rows, "", "↑↓ select · space toggle · s session · g global · r refresh · esc back")
+		rows = append(rows, "", keyHints(hint{"↑↓", "select"}, hint{"space", "toggle"}, hint{"s", "session"}, hint{"g", "global"}, hint{"r", "refresh"}, hint{"esc", "back"}))
 		if m.Kind == "mcp" {
-			rows = append(rows, "n add server · enter edit · d delete")
+			rows = append(rows, keyHints(hint{"n", "add server"}, hint{"enter", "edit"}, hint{"d", "delete"}))
 		}
 	}
 	if m.Height > 0 && len(rows) > m.Height {

@@ -149,6 +149,9 @@ type StreamEvent struct {
 	ToolResult  string         `json:"result,omitempty"`
 	ToolTrace   *ToolTrace     `json:"trace,omitempty"`
 	Usage       *Usage         `json:"usage,omitempty"`
+	// Replayed marks an event from the transcript snapshot that follows a
+	// reset: history, which says nothing about what the session does now.
+	Replayed bool `json:"-"`
 }
 
 func sanitizeControlRunes(s string) string {

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/charmbracelet/lipgloss"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -281,38 +280,39 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 func (m ExtensionPickerModel) View() string {
 	var b strings.Builder
 
+	head := func(scope string) string {
+		return titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/extensions"), m.Styles.Faint.Render(scope)) + "\n"
+	}
 	if m.Session {
-		b.WriteString("albedo /extensions · this session")
-		b.WriteString("\n")
+		b.WriteString(head("this session"))
 		hint := "choices here apply to this session only · g global defaults"
 		if m.NoGlobal {
 			hint = "this daemon only supports per-session choices; restart it for global defaults"
 		}
-		b.WriteString(m.Styles.Dim.Render(inkWrap(hint, m.Width)))
+		b.WriteString(m.Styles.Faint.Render(inkWrap(hint, m.Width)))
 	} else {
-		b.WriteString("albedo /extensions · global defaults")
-		b.WriteString("\n")
-		b.WriteString(m.Styles.Dim.Render(inkWrap("every session without its own choice follows these · s this session only", m.Width)))
+		b.WriteString(head("global defaults"))
+		b.WriteString(m.Styles.Faint.Render(inkWrap("every session without its own choice follows these · s this session only", m.Width)))
 	}
 	b.WriteString("\n")
-	b.WriteString(inkYellow.Render(ansi.Wrap("changes reload workers and available plugins, bust prompt-cache reuse, and may reset unsavable python variables", max(1, m.Width), " ")))
+	b.WriteString(DefaultStyles.Warning.Render(ansi.Wrap("changes reload workers and available plugins, bust prompt-cache reuse, and may reset unsavable python variables", max(1, m.Width), " ")))
 	b.WriteString("\n")
 
 	if m.Error != "" {
-		b.WriteString(inkRed.Render(m.Error))
+		b.WriteString(DefaultStyles.Error.Render(m.Error))
 		b.WriteString("\n")
 	}
 
 	if m.Loading {
-		b.WriteString(m.Styles.Dim.Render("loading extensions…\n"))
+		b.WriteString(m.Styles.Faint.Render("loading extensions…\n"))
 		return b.String()
 	}
 
 	if len(m.Extensions) == 0 {
 		if m.Error != "" {
-			b.WriteString(m.Styles.Dim.Render("r retry · esc return to chat\n"))
+			b.WriteString(keyHints(hint{"r", "retry"}, hint{"esc", "return to chat"}) + "\n")
 		} else {
-			b.WriteString(m.Styles.Dim.Render("no matches\nno extensions installed for this session\n" + inkWrap("↑↓ select · enter/space toggle · esc return to chat", m.Width)))
+			b.WriteString(m.Styles.Faint.Render("no matches\nno extensions installed for this session") + "\n" + inkWrap(keyHints(hint{"↑↓", "select"}, hint{"enter/space", "toggle"}, hint{"esc", "return to chat"}), m.Width))
 		}
 		return b.String()
 	}
@@ -332,13 +332,13 @@ func (m ExtensionPickerModel) View() string {
 			}
 			scope = "  this session: " + state
 		}
-		status := "off"
+		status := m.Styles.Faint.Render("off")
 		if on {
-			status = inkGreen.Render("on ")
+			status = DefaultStyles.Success.Render("on ")
 		}
-		lines[i] = status + "  " + ext.Name + m.Styles.Dim.Render(scope)
+		lines[i] = status + "  " + ext.Name + m.Styles.Faint.Render(scope)
 		if ext.Description != "" {
-			lines[i] += lipgloss.NewStyle().Faint(true).Render("  " + ext.Description)
+			lines[i] += DefaultStyles.Faint.Render("  " + ext.Description)
 		}
 	}
 	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles))
@@ -357,7 +357,7 @@ func (m ExtensionPickerModel) View() string {
 		if len(current.Plugins) > 0 {
 			pluginsStr = strings.Join(current.Plugins, ", ")
 		}
-		b.WriteString(m.Styles.Dim.Render("plugins: " + pluginsStr))
+		b.WriteString(m.Styles.Faint.Render("plugins: " + pluginsStr))
 		b.WriteString("\n")
 
 		caps := m.capabilitiesList(current)
@@ -365,14 +365,14 @@ func (m ExtensionPickerModel) View() string {
 		if len(caps) > 0 {
 			capsStr = strings.Join(caps, " · ")
 		}
-		b.WriteString(m.Styles.Dim.Render("capabilities: " + capsStr))
+		b.WriteString(m.Styles.Faint.Render("capabilities: " + capsStr))
 		b.WriteString("\n")
 
 		reqStr := "none"
 		if len(current.Requires) > 0 {
 			reqStr = strings.Join(current.Requires, ", ")
 		}
-		b.WriteString(m.Styles.Dim.Render("requires: " + reqStr))
+		b.WriteString(m.Styles.Faint.Render("requires: " + reqStr))
 		b.WriteString("\n")
 
 		if m.Confirming {
@@ -384,20 +384,20 @@ func (m ExtensionPickerModel) View() string {
 			if on {
 				actionWord = "disable"
 			}
-			choice := "enter confirm"
+			choice := hint{"enter", "confirm"}
 			if m.Error != "" {
-				choice = "enter retry"
+				choice = hint{"enter", "retry"}
 			}
 			var confirmMsg string
 			switch {
 			case m.Inheriting:
-				confirmMsg = fmt.Sprintf("drop this session's choice for %s and follow the global default? %s · esc cancel", current.Name, choice)
+				confirmMsg = fmt.Sprintf("drop this session's choice for %s and follow the global default?", current.Name)
 			case m.Session:
-				confirmMsg = fmt.Sprintf("%s %s for this session only and reload its workers? %s · esc cancel", actionWord, current.Name, choice)
+				confirmMsg = fmt.Sprintf("%s %s for this session only and reload its workers?", actionWord, current.Name)
 			default:
-				confirmMsg = fmt.Sprintf("%s %s for every session that follows the global default? %s · esc cancel", actionWord, current.Name, choice)
+				confirmMsg = fmt.Sprintf("%s %s for every session that follows the global default?", actionWord, current.Name)
 			}
-			b.WriteString(inkYellow.Render(confirmMsg))
+			b.WriteString(DefaultStyles.Warning.Render(confirmMsg) + " " + keyHints(choice, hint{"esc", "cancel"}))
 			b.WriteString("\n")
 		}
 	}
@@ -407,18 +407,18 @@ func (m ExtensionPickerModel) View() string {
 		if m.Cursor < len(m.Extensions) {
 			currName = m.Extensions[m.Cursor].Name
 		}
-		b.WriteString(m.Styles.Dim.Render(fmt.Sprintf("reloading workers for %s…", currName)))
+		b.WriteString(m.Styles.Faint.Render(fmt.Sprintf("reloading workers for %s…", currName)))
 	} else if m.Confirming {
-		b.WriteString(m.Styles.Dim.Render("waiting for confirmation"))
+		b.WriteString(m.Styles.Faint.Render("waiting for confirmation"))
 	} else {
-		keys := "↑↓ select · enter/space toggle · s this session · esc return to chat"
+		keys := []hint{{"↑↓", "select"}, {"enter/space", "toggle"}, {"s", "this session"}, {"esc", "return to chat"}}
 		if m.Session {
-			keys = "↑↓ select · enter/space toggle · x follow global · g global defaults · esc return to chat"
+			keys = []hint{{"↑↓", "select"}, {"enter/space", "toggle"}, {"x", "follow global"}, {"g", "global defaults"}, {"esc", "return to chat"}}
 			if m.NoGlobal {
-				keys = "↑↓ select · enter/space toggle · esc return to chat"
+				keys = []hint{{"↑↓", "select"}, {"enter/space", "toggle"}, {"esc", "return to chat"}}
 			}
 		}
-		b.WriteString(m.Styles.Dim.Render(inkWrap(keys, m.Width)))
+		b.WriteString(inkWrap(keyHints(keys...), m.Width))
 	}
 
 	return b.String()

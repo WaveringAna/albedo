@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/charmbracelet/lipgloss"
 	"regexp"
 	"strings"
 
@@ -251,31 +250,31 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 func (m TreePickerModel) View() string {
 	var b strings.Builder
 
-	b.WriteString("albedo /tree · branch history")
+	b.WriteString(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/tree"), m.Styles.Faint.Render("branch history")))
 	b.WriteString("\n")
-	b.WriteString(m.Styles.Dim.Render(inkWrap("choose the checkpoint the new session should end after", m.Width)))
+	b.WriteString(m.Styles.Faint.Render(inkWrap("choose the checkpoint the new session should end after", m.Width)))
 	b.WriteString("\n")
 
 	if m.Error != "" {
-		b.WriteString(inkRed.Render("Error: " + m.Error))
+		b.WriteString(DefaultStyles.Error.Render("error:") + " " + m.Error)
 		b.WriteByte('\n')
 	}
 	if m.Loading || len(m.Checkpoints) == 0 {
 		if m.Error == "" && !m.Loading {
-			b.WriteString(m.Styles.Dim.Render("no branchable history in this session"))
+			b.WriteString(m.Styles.Faint.Render("no branchable history in this session"))
 			b.WriteByte('\n')
 		}
 		if m.Error == "" && m.Loading {
-			b.WriteString(m.Styles.Dim.Render("loading history…"))
+			b.WriteString(m.Styles.Faint.Render("loading history…"))
 			b.WriteByte('\n')
 		}
-		b.WriteString(m.Styles.Dim.Render("enter confirm · esc cancel"))
+		b.WriteString(keyHints(hint{"enter", "confirm"}, hint{"esc", "cancel"}))
 		return b.String()
 	}
 
 	lines := make([]string, len(m.Checkpoints))
 	for i, cp := range m.Checkpoints {
-		lines[i] = lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf("%-9s", cp.Type)) + " " + readablePreview(cp.Preview)
+		lines[i] = DefaultStyles.Faint.Render(fmt.Sprintf("%-9s", cp.Type)) + " " + readablePreview(cp.Preview)
 	}
 	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles))
 	b.WriteByte('\n')
@@ -283,25 +282,25 @@ func (m TreePickerModel) View() string {
 	if m.Confirming && m.Cursor < len(m.Checkpoints) {
 		current := m.Checkpoints[m.Cursor]
 		b.WriteString("\n")
-		b.WriteString(inkYellow.Render(fmt.Sprintf("branch after %s · %s?", current.Type, readablePreview(current.Preview))))
+		b.WriteString(DefaultStyles.Warning.Render(fmt.Sprintf("branch after %s · %s?", current.Type, readablePreview(current.Preview))))
 		b.WriteString("\n")
-		b.WriteString("new session · fresh python namespace · workspace files stay unchanged\n")
+		b.WriteString(m.Styles.Faint.Render("new session · fresh python namespace · workspace files stay unchanged") + "\n")
 		if m.ForkError != "" {
-			b.WriteString(inkRed.Render(m.ForkError))
+			b.WriteString(DefaultStyles.Error.Render(m.ForkError))
 			b.WriteByte('\n')
 		}
 	}
 
 	if m.Forking {
-		b.WriteString(m.Styles.Dim.Render("creating branch…"))
+		b.WriteString(m.Styles.Faint.Render("creating branch…"))
 	} else if m.Confirming {
-		confirmAction := "enter confirm"
+		confirm := hint{"enter", "confirm"}
 		if m.ForkError != "" {
-			confirmAction = "enter retry"
+			confirm = hint{"enter", "retry"}
 		}
-		b.WriteString(m.Styles.Dim.Render(fmt.Sprintf("%s · esc cancel", confirmAction)))
+		b.WriteString(keyHints(confirm, hint{"esc", "cancel"}))
 	} else {
-		b.WriteString(m.Styles.Dim.Render(inkWrap("↑↓ select · ←→/pgup/pgdn page · enter branch · esc return to chat", m.Width)))
+		b.WriteString(inkWrap(keyHints(hint{"↑↓", "select"}, hint{"←→/pgup/pgdn", "page"}, hint{"enter", "branch"}, hint{"esc", "return to chat"}), m.Width))
 	}
 
 	return b.String()

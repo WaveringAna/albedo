@@ -355,18 +355,18 @@ func (m ModelPickerModel) View() string {
 	if titleProvider == "" {
 		titleProvider = "session provider"
 	}
-	b.WriteString(fmt.Sprintf("albedo /model · %s", titleProvider))
+	b.WriteString(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/model"), m.Styles.Faint.Render(titleProvider)))
 	b.WriteString("\n")
-	b.WriteString(m.Styles.Dim.Render(inkWrap("changes this idle session and the default for new sessions", m.Width)))
+	b.WriteString(m.Styles.Faint.Render(inkWrap("changes this idle session and the default for new sessions", m.Width)))
 	b.WriteByte('\n')
 
 	if m.Error != "" {
-		b.WriteString(inkRed.Render(m.Error))
+		b.WriteString(DefaultStyles.Error.Render(m.Error))
 		b.WriteByte('\n')
 	}
 
 	if m.Saving {
-		b.WriteString(m.Styles.Dim.Render("switching model…"))
+		b.WriteString(m.Styles.Faint.Render("switching model…"))
 		return b.String()
 	}
 
@@ -378,17 +378,17 @@ func (m ModelPickerModel) View() string {
 	if m.EnteringManual {
 		b.WriteString(m.ManualInput.View())
 		b.WriteByte('\n')
-		b.WriteString(m.Styles.Dim.Render("enter choose · esc cancel"))
+		b.WriteString(keyHints(hint{"enter", "choose"}, hint{"esc", "cancel"}))
 		return b.String()
 	}
 
 	if m.LoadingModels {
-		b.WriteString(m.Styles.Dim.Render("loading models…"))
+		b.WriteString(m.Styles.Faint.Render("loading models…"))
 		b.WriteByte('\n')
 	}
 
 	if m.CatalogNote != "" {
-		b.WriteString(m.Styles.Dim.Render(inkWrap(m.CatalogNote, m.Width)))
+		b.WriteString(m.Styles.Faint.Render(inkWrap(m.CatalogNote, m.Width)))
 		b.WriteByte('\n')
 	}
 

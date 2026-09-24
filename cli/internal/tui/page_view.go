@@ -532,17 +532,17 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 func (m PageViewModel) View() string {
 	var b strings.Builder
 	line := func(text string) { b.WriteString(text); b.WriteByte('\n') }
-	faint := func(text string) { line(m.Styles.Dim.Render(text)) }
-	title := "albedo " + m.Command
-	if m.Doc != nil && m.Doc.Summary != "" {
-		title += " · " + m.Doc.Summary
+	faint := func(text string) { line(m.Styles.Faint.Render(text)) }
+	summary := ""
+	if m.Doc != nil {
+		summary = m.Styles.Faint.Render(m.Doc.Summary)
 	}
-	line(title)
+	line(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render(m.Command), summary))
 	if m.Error != "" {
-		line(inkRed.Render(m.Error))
+		line(DefaultStyles.Error.Render(m.Error))
 	}
 	if m.Notice != "" && m.Error == "" {
-		line(inkBrightCyan.Render(m.Notice))
+		line(m.Styles.Faint.Render(m.Notice))
 	}
 	if m.Doc == nil {
 		if m.Error != "" {
@@ -561,9 +561,9 @@ func (m PageViewModel) View() string {
 			var style lipgloss.Style
 			switch item.Tone {
 			case ToneActive:
-				style = inkGreen
+				style = DefaultStyles.Success
 			case ToneWarning:
-				style = inkYellow
+				style = DefaultStyles.Warning
 			case ToneMuted:
 				style = m.Styles.Faint
 			default:
@@ -571,7 +571,7 @@ func (m PageViewModel) View() string {
 			}
 			rows[i] = style.Render(fmt.Sprintf("%-9s", item.Badge)) + " " + item.Text
 			if item.ID != item.Text {
-				rows[i] += lipgloss.NewStyle().Faint(true).Render("  #" + item.ID)
+				rows[i] += DefaultStyles.Faint.Render("  #" + item.ID)
 			}
 		}
 		line(selectableRows(rows, m.currentIndex(), m.Height, m.Height, m.Width, m.Styles))
@@ -592,14 +592,14 @@ func (m PageViewModel) View() string {
 		}
 		switch m.Mode {
 		case modeConfirm:
-			line(inkYellow.Render(act.Label + actionTarget + "? enter confirm · esc cancel"))
+			line(DefaultStyles.Warning.Render(act.Label + actionTarget + "? enter confirm · esc cancel"))
 		case modeChoice:
 			var choice strings.Builder
-			choice.WriteString(inkBrightCyan.Render(act.Label + target + " › "))
+			choice.WriteString(m.Styles.Prompt.Render(act.Label+target) + " " + promptLead())
 			for i, opt := range act.Options {
 				label := " " + opt + " "
 				if i == m.ChoiceIndex {
-					label = m.Styles.Selected.Render(label)
+					label = selectedLine(label, 0)
 				}
 				choice.WriteString(label)
 			}
@@ -609,33 +609,33 @@ func (m PageViewModel) View() string {
 			if prompt == "" {
 				prompt = act.Label
 			}
-			b.WriteString(inkBrightCyan.Render(act.Label + actionTarget + " · " + prompt + " › "))
+			b.WriteString(m.Styles.Prompt.Render(act.Label+actionTarget+" · "+prompt) + " " + promptLead())
 			line(m.TextInput.View())
 		}
 	}
-	var hints []string
+	var hints []hint
 	switch {
 	case m.Busy:
-		hints = []string{"working…"}
+		hints = []hint{{"working…", ""}}
 	case m.Mode == modeBrowse:
 		if len(m.Doc.Rows) > 1 {
-			hints = append(hints, "↑↓ select")
+			hints = append(hints, hint{"↑↓", "select"})
 		}
 		for _, act := range m.Doc.Actions {
 			if !act.Row || row != nil {
-				hints = append(hints, act.Key+" "+act.Label)
+				hints = append(hints, hint{act.Key, act.Label})
 			}
 		}
-		hints = append(hints, "esc return to chat")
+		hints = append(hints, hint{"esc", "return to chat"})
 	case m.Mode == modeText:
-		hints = []string{"enter save · esc cancel"}
+		hints = []hint{{"enter", "save"}, {"esc", "cancel"}}
 	case m.Mode == modeChoice:
-		hints = []string{"←→ choose · enter apply · esc cancel"}
+		hints = []hint{{"←→", "choose"}, {"enter", "apply"}, {"esc", "cancel"}}
 	}
-	footer := strings.Join(hints, " · ")
+	footer := keyHints(hints...)
 	if m.Width > 0 {
 		footer = ansi.Truncate(footer, m.Width, "…")
 	}
-	faint(footer)
+	line(footer)
 	return strings.TrimSuffix(b.String(), "\n")
 }

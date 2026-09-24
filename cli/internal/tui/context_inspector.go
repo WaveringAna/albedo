@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/charmbracelet/lipgloss"
 	"math"
 	"net/url"
 	"strings"
@@ -347,18 +346,18 @@ func contextCount(n int, unit string) string {
 func (m ContextInspectorModel) View() string {
 	var b strings.Builder
 	line := func(text string) { b.WriteString(text); b.WriteByte('\n') }
-	faint := func(text string) { line(m.Styles.Dim.Render(text)) }
+	faint := func(text string) { line(m.Styles.Faint.Render(text)) }
 	if m.Detail != nil {
 		sec, d := m.Detail.Section, m.Detail
-		line("albedo /context · " + sec.Label)
+		line(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/context"), m.Styles.Faint.Render(sec.Label)))
 		faint(fmt.Sprintf("%s · page %d/%d · %s", sec.Source, d.Page+1, sec.Pages, contextCount(sec.ByteCount, "byte")))
 		if d.Error != "" {
-			line(inkRed.Render(d.Error))
+			line(DefaultStyles.Error.Render(d.Error))
 		} else if d.Value == nil {
 			faint("loading inspectable prepared content…")
 		} else {
 			if d.Value.Omitted != "" {
-				line(inkYellow.Render("omitted: " + d.Value.Omitted))
+				line(DefaultStyles.Warning.Render("omitted: " + d.Value.Omitted))
 			}
 			line("")
 			rows := wrapContextContent(d.Value.Content, m.Width-4)
@@ -370,22 +369,22 @@ func (m ContextInspectorModel) View() string {
 				line(row)
 			}
 		}
-		faint("↑↓ scroll · pgup/pgdn jump · ←→ page · esc sections")
+		line(keyHints(hint{"↑↓", "scroll"}, hint{"pgup/pgdn", "jump"}, hint{"←→", "page"}, hint{"esc", "sections"}))
 		return strings.TrimSuffix(b.String(), "\n")
 	}
-	line("albedo /context · prepared request")
+	line(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/context"), m.Styles.Faint.Render("prepared request")))
 	faint(inkWrap("read-only · durable transcript and request-only context are separate", m.Width))
 	if m.Error != "" {
-		line(inkRed.Render(m.Error))
+		line(DefaultStyles.Error.Render(m.Error))
 	}
 	if m.Loading && m.Snapshot == nil && m.Error == "" {
 		faint("loading prepared request snapshot…")
 	} else if m.Snapshot == nil {
-		faint("r retry · esc return to chat")
+		line(keyHints(hint{"r", "retry"}, hint{"esc", "return to chat"}))
 	} else if m.Snapshot.State == "pending" {
-		line(inkYellow.Render("pending · no request has been prepared for this runtime session"))
+		line(DefaultStyles.Warning.Render("pending · no request has been prepared for this runtime session"))
 		faint(m.Snapshot.Reason)
-		faint("r refresh · esc return to chat")
+		line(keyHints(hint{"r", "refresh"}, hint{"esc", "return to chat"}))
 	} else {
 		snap := m.Snapshot
 		label := snap.Model
@@ -427,17 +426,12 @@ func (m ContextInspectorModel) View() string {
 			sec := snap.Sections[i]
 			marker := " "
 			if i == m.Cursor {
-				marker = ">"
+				marker = selectBar()
 			}
-			label := fmt.Sprintf("%s %d. %s ", marker, i+1, sec.Label)
-			source := "· " + sec.Source
+			label := fmt.Sprintf("%s %d. %s ", marker, i+1, sec.Label) + DefaultStyles.Faint.Render("· "+sec.Source)
 			if i == m.Cursor {
-				label = inkCyan.Render(label)
-				source = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Faint(true).Render(source)
-			} else {
-				source = lipgloss.NewStyle().Faint(true).Render(source)
+				label = selectedLine(label, m.Width)
 			}
-			label += source
 			line(label)
 			available := "content unavailable"
 			if sec.Pages > 0 {
@@ -454,7 +448,7 @@ func (m ContextInspectorModel) View() string {
 		if len(snap.Sections) > capacity {
 			faint(fmt.Sprintf("showing %d–%d of %d sections", first+1, min(len(snap.Sections), first+capacity), len(snap.Sections)))
 		}
-		faint(inkWrap("↑↓ select · enter inspect content · r refresh · esc return to chat", m.Width))
+		line(inkWrap(keyHints(hint{"↑↓", "select"}, hint{"enter", "inspect content"}, hint{"r", "refresh"}, hint{"esc", "return to chat"}), m.Width))
 	}
 	return strings.TrimSuffix(b.String(), "\n")
 }

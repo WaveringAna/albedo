@@ -267,11 +267,11 @@ func (f *mcpForm) view(width int) []string {
 	if f.Editing != "" {
 		title = "edit " + f.Editing
 	}
-	rows := []string{title}
+	rows := []string{DefaultStyles.Bold.Render(title)}
 	for i, key := range f.fields() {
 		mark := "  "
 		if i == f.Focus {
-			mark = "› "
+			mark = promptLead()
 		}
 		var value string
 		if key == fieldTransport {
@@ -290,20 +290,25 @@ func (f *mcpForm) view(width int) []string {
 		}
 		rows = append(rows, ansi.Truncate(mark+padRight(mcpFieldLabels[key], 13)+value, width, "…"))
 	}
-	hint := "tab/↑↓ move · enter next · ctrl+s save · esc cancel"
+	keys := []hint{{"tab/↑↓", "move"}, {"enter", "next"}, {"ctrl+s", "save"}, {"esc", "cancel"}}
+	note := ""
 	switch f.current() {
 	case fieldTransport:
 		if f.Editing == "" {
-			hint = "←→ http or stdio · " + hint
+			keys = append([]hint{{"←→", "http or stdio"}}, keys...)
 		}
 	case fieldToken:
-		hint = "optional · sent as Authorization: Bearer · " + hint
+		note = "optional · sent as Authorization: Bearer"
 	case fieldHeader, fieldValue:
-		hint = "optional custom header, stored privately · " + hint
+		note = "optional custom header, stored privately"
 	case fieldEnv:
-		hint = "optional, stored privately · " + hint
+		note = "optional, stored privately"
 	}
-	return append(rows, "", hint)
+	line := keyHints(keys...)
+	if note != "" {
+		line = DefaultStyles.Faint.Render(note) + DefaultStyles.Decor.Render(" · ") + line
+	}
+	return append(rows, "", line)
 }
 
 func padRight(s string, n int) string {

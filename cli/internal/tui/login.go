@@ -14,7 +14,6 @@ import (
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -871,19 +870,16 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 
 func (m LoginModel) View() string {
 	var b strings.Builder
-	b.WriteString("albedo /login")
-	if m.Name != "" {
-		b.WriteString("  " + m.Name)
-	}
+	b.WriteString(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/login"), m.Styles.Faint.Render(m.Name)))
 	b.WriteByte('\n')
 	location := "model auth extensions · saved in " + config.HomeDir()
 	if m.Width > 0 && ansi.StringWidth(location) > m.Width && ansi.StringWidth(config.HomeDir()) <= m.Width {
 		location = "model auth extensions · saved in\n" + config.HomeDir()
 	}
-	b.WriteString(m.Styles.Dim.Render(ansi.Wrap(location, m.Width, "")))
+	b.WriteString(m.Styles.Faint.Render(ansi.Wrap(location, m.Width, "")))
 	b.WriteByte('\n')
 	if m.Error != "" {
-		b.WriteString(m.Styles.Error.Foreground(lipgloss.Color("1")).Render(ansi.Wrap(m.Error, m.Width, "")))
+		b.WriteString(m.Styles.Error.Render(ansi.Wrap(m.Error, m.Width, "")))
 		b.WriteByte('\n')
 	}
 
@@ -891,18 +887,18 @@ func (m LoginModel) View() string {
 	case StepChoose:
 		b.WriteString(m.ChoosePicker.View())
 		b.WriteByte('\n')
-		b.WriteString(m.Styles.Dim.Render(ansi.Wrap("enter select · d remove · esc cancel", m.Width, "")))
+		b.WriteString(ansi.Wrap(keyHints(hint{"enter", "select"}, hint{"d", "remove"}, hint{"esc", "cancel"}), m.Width, ""))
 	case StepProtocol:
 		b.WriteString(m.ProtocolPicker.View())
 	case StepRemove:
 		b.WriteString(m.ConfirmPicker.View())
 	case StepModels, StepOAuthModels:
 		if m.Catalog == nil {
-			b.WriteString(m.Styles.Dim.Render("loading models…"))
+			b.WriteString(m.Styles.Faint.Render("loading models…"))
 			break
 		}
 		if m.CatalogNote != "" {
-			b.WriteString(m.Styles.Dim.Render(m.CatalogNote))
+			b.WriteString(m.Styles.Faint.Render(m.CatalogNote))
 			b.WriteByte('\n')
 		}
 		b.WriteString(m.ModelPicker.View())
@@ -914,19 +910,19 @@ func (m LoginModel) View() string {
 		b.WriteString(status)
 		b.WriteByte('\n')
 		if m.SignInURL != "" {
-			b.WriteString(m.Styles.Dim.Render(ansi.Hardwrap(m.SignInURL, m.Width, true)))
+			b.WriteString(m.Styles.Faint.Render(ansi.Hardwrap(m.SignInURL, m.Width, true)))
 			b.WriteByte('\n')
 		}
 		b.WriteString("callback url or code: ")
 		b.WriteString(m.TextInput.View())
 		b.WriteByte('\n')
-		b.WriteString(m.Styles.Dim.Render(ansi.Hardwrap("browser callback completes automatically · enter pastes manually · esc cancel", m.Width, true)))
+		b.WriteString(ansi.Wrap(m.Styles.Faint.Render("browser callback completes automatically")+m.Styles.Decor.Render(" · ")+keyHints(hint{"enter", "pastes manually"}, hint{"esc", "cancel"}), m.Width, ""))
 	case StepSaving:
 		if m.Removing.Kind != "" {
-			b.WriteString(m.Styles.Dim.Render("removing " + m.Removing.Kind + "…"))
+			b.WriteString(m.Styles.Faint.Render("removing " + m.Removing.Kind + "…"))
 			break
 		}
-		b.WriteString(m.Styles.Dim.Render("saving provider…"))
+		b.WriteString(m.Styles.Faint.Render("saving provider…"))
 	default:
 		stepLabels := map[LoginStep]string{
 			StepName: "provider name", StepBaseURL: "api base url",
@@ -935,17 +931,17 @@ func (m LoginModel) View() string {
 		b.WriteString(stepLabels[m.Step] + ": ")
 		b.WriteString(m.TextInput.View())
 		b.WriteByte('\n')
-		var hints []string
+		var hints []hint
 		if m.Step == StepAPIKey && m.Draft.APIKey != "" {
-			hints = append(hints, "enter keeps the saved key")
+			hints = append(hints, hint{"enter", "keeps the saved key"})
 		}
 		if m.Step == StepName {
 			for _, login := range m.SignIns {
-				hints = append(hints, "use "+login.Provider+" to sign in")
+				hints = append(hints, hint{"", "use " + login.Provider + " to sign in"})
 			}
 		}
-		hints = append(hints, "enter continue", "esc cancel")
-		b.WriteString(m.Styles.Dim.Render(ansi.Wrap(strings.Join(hints, " · "), m.Width, "")))
+		hints = append(hints, hint{"enter", "continue"}, hint{"esc", "cancel"})
+		b.WriteString(ansi.Wrap(keyHints(hints...), m.Width, ""))
 	}
 	return b.String()
 }

@@ -347,6 +347,43 @@ func (c *ChatClient) Interrupt(ctx context.Context) (bool, error) {
 	return data.Interrupted, nil
 }
 
+// ContextWindow reads the model's context window from the session's last
+// prepared request. It is nil when neither a catalog nor the configuration
+// knows it, or when no request has been prepared yet.
+func (c *ChatClient) ContextWindow(ctx context.Context) (*int, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.agentURL("/context"), nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, c.parseResponseError(res)
+	}
+	body, err := readBounded(res.Body, 1024*1024)
+	if err != nil {
+		return nil, err
+	}
+	var data struct {
+		Window *int `json:"context_window_tokens"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, err
+	}
+	if data.Window != nil && *data.Window <= 0 {
+		return nil, nil
+	}
+	return data.Window, nil
+}
+
 func (c *ChatClient) GetStatus(ctx context.Context) (*AgentStatus, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -687,6 +724,8 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 			if cursorVal, hasCursor := rawMap["cursor"]; hasCursor {
 				if cursorNum, ok := cursorVal.(float64); ok {
 					if eventsArr, ok := rawMap["events"].([]any); ok {
+						// a reset opens the snapshot, and the snapshot is the rest of its page
+						snapshot := false
 						for _, evRaw := range eventsArr {
 							evMap, ok := evRaw.(map[string]any)
 							if !ok {
@@ -704,6 +743,7 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 							}
 
 							if itemType == "reset" {
+								snapshot = true
 								if err := onEvent(StreamEvent{Type: EventReset}); err != nil {
 									return err
 								}
@@ -791,6 +831,7 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 							}
 
 							if ev := parseStreamEvent(evMap); ev != nil {
+								ev.Replayed = snapshot
 								if err := onEvent(*ev); err != nil {
 									return err
 								}

@@ -5,7 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"math/rand/v2"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -59,6 +62,15 @@ type ChatStatusMsg struct {
 	Generation int64
 	Revision   uint64
 	Status     *daemon.AgentStatus
+	Err        error
+}
+
+// ChatWindowMsg carries the context window for the model a usage event named.
+type ChatWindowMsg struct {
+	SessionID  string
+	Generation int64
+	Model      string
+	Tokens     *int
 	Err        error
 }
 
@@ -117,6 +129,7 @@ type PendingUserTurn struct {
 	Text   string
 	Image  *daemon.ImageAttachment
 	Queued bool
+	At     int64
 }
 
 const (
@@ -200,25 +213,33 @@ func wrapOrChunkLine(line string, width int) []string {
 }
 
 type ChatModel struct {
-	SessionID          string
-	Generation         int64
-	AgentName          string
-	Workspace          string
-	Model              string
-	Provider           string
-	Client             *daemon.ChatClient
-	History            *BoundedHistory
-	Renderer           TranscriptRenderer
-	Viewport           viewport.Model
-	TextArea           textarea.Model
-	CommandMenu        CommandMenuModel
-	Flags              DisplayFlags
-	Follow             bool
-	TurnFailed         bool
-	Stopping           bool
-	Stopped            bool
-	Status             daemon.AgentStatus
-	Usage              *daemon.Usage
+	SessionID   string
+	Generation  int64
+	AgentName   string
+	Workspace   string
+	Model       string
+	Provider    string
+	Client      *daemon.ChatClient
+	History     *BoundedHistory
+	Renderer    TranscriptRenderer
+	Viewport    viewport.Model
+	TextArea    textarea.Model
+	CommandMenu CommandMenuModel
+	Flags       DisplayFlags
+	Follow      bool
+	TurnFailed  bool
+	Stopping    bool
+	Stopped     bool
+	Status      daemon.AgentStatus
+	Usage       *daemon.Usage
+	// window is the context window of windowModel, read once per model so
+	// the footer can say how full the context is.
+	window      *int
+	windowModel *string
+	// stretch is the phase run the status face animates; moodSeed picks its
+	// animation.
+	stretch            stretch
+	moodSeed           int64
 	Glances            []PageGlance
 	AttachedImage      *daemon.ImageAttachment
 	Notice             string
@@ -263,6 +284,12 @@ type ChatModel struct {
 	dragAnchor *Point
 	dragHead   Point
 
+	turn *openTurn
+	// userRows are the settled rows where your messages start, and
+	// settledOffset is how many notice rows sit above the settled rows.
+	userRows      []int
+	settledOffset int
+
 	streamCtx    context.Context
 	streamCancel context.CancelFunc
 	eventChan    chan daemon.StreamEvent
@@ -271,13 +298,13 @@ type ChatModel struct {
 func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel {
 	ta := textarea.New()
 	ta.Placeholder = ""
-	ta.Prompt = "› "
+	ta.Prompt = promptMark
 	ta.ShowLineNumbers = false
 	ta.KeyMap.InsertNewline.SetKeys("enter", "ctrl+m", "alt+enter", "shift+enter")
 	ta.SetHeight(1)
-	ta.FocusedStyle.Prompt = DefaultStyles.PromptBright
+	ta.FocusedStyle.Prompt = DefaultStyles.Prompt
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.Cursor.Style = lipgloss.NewStyle().Reverse(true)
+	ta.Cursor.Style = DefaultStyles.Cursor
 	ta.Cursor.SetMode(cursor.CursorStatic)
 	ta.Focus()
 
@@ -331,9 +358,9 @@ func (m ChatModel) chromeRows() int {
 	}
 	notice := 0
 	if m.Notice != "" || m.ErrorNotice != "" || m.ExternalNotice != "" || m.ExternalError != "" {
-		notice = 1
+		notice = 2
 	}
-	return menu + notice + min(3, len(m.pendingUsers))
+	return menu + notice
 }
 
 func (m *ChatModel) SetSize(width, height int) {
@@ -358,7 +385,6 @@ func (m *ChatModel) SetSize(width, height int) {
 		transcriptWidth -= m.sidebarWidth() + 2
 	}
 	m.Viewport.Width = transcriptWidth
-	m.Renderer.HeadingWidth = transcriptWidth
 	m.Renderer.BodyWidth = min(100, available)
 	m.Viewport.Height = max(1, height-6-chromeRows)
 	m.TextArea.SetHeight(1)
@@ -372,26 +398,22 @@ func (m *ChatModel) SetSize(width, height int) {
 func (m *ChatModel) rebuildSettledLines() {
 	m.settledLines = nil
 	m.settledLinesBytes = 0
+	m.userRows = nil
 	entries := m.History.Entries()
-	for _, entry := range entries {
-		block := m.Renderer.RenderEntry(entry, m.Flags, m.Viewport.Width)
-		if len(m.settledLines) > 0 {
-			m.appendSettledLines([]string{""}, false)
-		}
-		m.appendSettledLines(strings.Split(block, "\n"), entry.Kind == EntryUser || entry.Kind == EntryAssistant)
+	for i := range entries {
+		m.appendBlock(entries[:i], entries[i])
 	}
 }
 
-func (m *ChatModel) appendSettledLines(rawLines []string, heading bool) {
-	for i, line := range rawLines {
-		width := m.Renderer.BodyWidth
-		if heading && i == 0 {
-			width = m.Viewport.Width
-		}
-		for _, chunk := range wrapOrChunkLine(line, width) {
-			m.settledLines = append(m.settledLines, chunk)
-			m.settledLinesBytes += int64(len(chunk))
-		}
+// appendBlock renders entry after the settled entries before it.
+func (m *ChatModel) appendBlock(before []HistoryEntry, entry HistoryEntry) {
+	rows, head := m.Renderer.Block(before, entry, m.Flags)
+	if entry.Kind == EntryUser {
+		m.userRows = append(m.userRows, len(m.settledLines)+head)
+	}
+	for _, row := range rows {
+		m.settledLines = append(m.settledLines, row)
+		m.settledLinesBytes += int64(len(row))
 	}
 	m.trimSettledLines()
 }
@@ -412,6 +434,13 @@ func (m *ChatModel) trimSettledLines() {
 	if dropped > 0 {
 		m.droppedSettledLines += dropped
 		m.scrollOffset = max(0, m.scrollOffset-dropped)
+		kept := m.userRows[:0]
+		for _, row := range m.userRows {
+			if row >= dropped {
+				kept = append(kept, row-dropped)
+			}
+		}
+		m.userRows = kept
 		fresh := make([]string, len(m.settledLines))
 		for i := range m.settledLines {
 			fresh[i] = strings.Clone(m.settledLines[i])
@@ -422,12 +451,9 @@ func (m *ChatModel) trimSettledLines() {
 }
 
 func (m *ChatModel) appendSettledEntry(entry HistoryEntry) {
+	before := m.History.Entries()
+	m.appendBlock(before, entry)
 	m.History.Append(entry)
-	block := m.Renderer.RenderEntry(entry, m.Flags, m.Viewport.Width)
-	if len(m.settledLines) > 0 {
-		m.appendSettledLines([]string{""}, false)
-	}
-	m.appendSettledLines(strings.Split(block, "\n"), entry.Kind == EntryUser || entry.Kind == EntryAssistant)
 }
 
 func (m *ChatModel) settleActiveStream() {
@@ -458,40 +484,41 @@ func (m *ChatModel) refreshViewportContent() int {
 	}
 	var allLines []string
 
+	indent := m.Renderer.rail(laneNone)
 	if notice := m.History.TruncationNotice(); notice != "" {
-		allLines = append(allLines, m.Styles.Warning.Render(notice), "")
+		allLines = append(allLines, indent+m.Styles.Warning.Render(notice), "")
 	}
 	if m.droppedSettledLines > 0 {
-		allLines = append(allLines, m.Styles.Faint.Render(fmt.Sprintf("[%d scrollback lines truncated]", m.droppedSettledLines)), "")
+		allLines = append(allLines, indent+m.Styles.Faint.Render(fmt.Sprintf("[%d scrollback lines truncated]", m.droppedSettledLines)), "")
 	}
 
+	m.settledOffset = len(allLines)
 	allLines = append(allLines, m.settledLines...)
 
+	last, stacks := laneNone, false
+	if entries := m.History.Entries(); len(entries) > 0 {
+		last = laneOf(entries[len(entries)-1])
+		stacks = Compact(entries[len(entries)-1], m.Flags)
+	}
 	if m.activeKind != StreamKindNone && m.activeText != "" {
-		if len(m.settledLines) > 0 {
-			allLines = append(allLines, "")
-		}
 		var kind EntryKind = EntryAssistant
 		if m.activeKind == StreamKindThinking {
 			kind = EntryThinking
 		}
 		activeEntry := HistoryEntry{Kind: kind, Speaker: m.AgentName, Text: m.activeText}
-		activeBlock := m.Renderer.RenderEntry(activeEntry, m.Flags, m.Viewport.Width)
-		for i, line := range strings.Split(activeBlock, "\n") {
-			width := m.Renderer.BodyWidth
-			if i == 0 {
-				width = m.Viewport.Width
-			}
-			allLines = append(allLines, wrapOrChunkLine(line, width)...)
-		}
+		rows, _ := m.Renderer.Block(m.History.Entries(), activeEntry, m.Flags)
+		allLines = append(allLines, rows...)
+		last, stacks = laneOf(activeEntry), false
 	}
 
 	if m.ToolProgressText != "" {
-		if len(allLines) > 0 {
-			allLines = append(allLines, "")
+		// the live row stacks under tool rows like the row it settles into
+		if len(allLines) > 0 && !stacks {
+			allLines = append(allLines, strings.TrimRight(m.Renderer.rail(joint(last, laneBusy)), " "))
 		}
-		allLines = append(allLines, m.renderProgress())
+		allLines = append(allLines, m.Renderer.rail(laneBusy)+m.renderProgress())
 	}
+	allLines = append(allLines, m.pendingRows()...)
 
 	totalLines := len(allLines)
 	vpHeight := max(1, m.Viewport.Height)
@@ -514,6 +541,62 @@ func (m *ChatModel) refreshViewportContent() int {
 		m.Viewport.GotoTop()
 	}
 	return maxScroll
+}
+
+// pendingRows are your messages the daemon has not echoed yet, greyed out at
+// the end of the transcript where they will settle. Each follows whatever is
+// live above it, so the rails and names join up as they will once settled.
+func (m ChatModel) pendingRows() []string {
+	if len(m.pendingUsers) == 0 {
+		return nil
+	}
+	before := slices.Clone(m.History.Entries())
+	if m.activeKind != StreamKindNone && m.activeText != "" {
+		before = append(before, HistoryEntry{Kind: EntryAssistant, Speaker: m.AgentName})
+	}
+	if m.ToolProgressText != "" {
+		before = append(before, HistoryEntry{Kind: EntryTool, Speaker: m.AgentName})
+	}
+	var rows []string
+	for _, p := range m.pendingUsers {
+		state := sending
+		if p.Queued {
+			state = queued
+		}
+		entry := HistoryEntry{Kind: EntryUser, Speaker: "You", Text: p.Text, Timestamp: p.At, Pending: state}
+		block, _ := m.Renderer.Block(before, entry, m.Flags)
+		rows = append(rows, block...)
+		before = append(before, entry)
+	}
+	return rows
+}
+
+// jumpToYou scrolls to the start of your previous or next message. Past
+// your newest message it follows the live transcript again.
+func (m *ChatModel) jumpToYou(back bool) {
+	at := m.scrollOffset
+	if m.Follow {
+		at = m.scrollLimit
+	}
+	target := -1
+	for _, row := range m.userRows {
+		row += m.settledOffset
+		if back && row < at {
+			target = row
+		}
+		if !back && row > at {
+			target = row
+			break
+		}
+	}
+	switch {
+	case target >= 0 && target < m.scrollLimit:
+		m.Follow = false
+		m.scrollOffset = target
+	case !back || target >= 0:
+		m.Follow = true
+	}
+	m.refreshViewportContent()
 }
 
 // scrollBy moves through the complete rendered transcript, including live output.
@@ -618,6 +701,19 @@ func (m ChatModel) statusCmd() tea.Cmd {
 	return func() tea.Msg {
 		value, err := client.GetStatus(ctx)
 		return ChatStatusMsg{SessionID: id, Generation: generation, Revision: revision, Status: value, Err: err}
+	}
+}
+
+// windowCmd reads the context window when usage names a model whose window
+// has not been read yet.
+func (m ChatModel) windowCmd() tea.Cmd {
+	if m.Client == nil || m.Usage == nil || m.windowModel != nil && *m.windowModel == m.Usage.Model {
+		return nil
+	}
+	client, ctx, id, generation, model := m.Client, m.streamCtx, m.SessionID, m.Generation, m.Usage.Model
+	return func() tea.Msg {
+		tokens, err := client.ContextWindow(ctx)
+		return ChatWindowMsg{SessionID: id, Generation: generation, Model: model, Tokens: tokens, Err: err}
 	}
 }
 
@@ -739,6 +835,10 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.scrollBy(1)
 			return m, nil
 		}
+		if msg.Type == tea.KeyShiftUp || msg.Type == tea.KeyShiftDown {
+			m.jumpToYou(msg.Type == tea.KeyShiftUp)
+			return m, nil
+		}
 		if msg.Type == tea.KeyCtrlHome {
 			m.Follow = false
 			m.scrollOffset = 0
@@ -777,14 +877,14 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	case tea.MouseMsg:
 		firstRow := 2
 		if m.Notice != "" || m.ErrorNotice != "" || m.ExternalNotice != "" || m.ExternalError != "" {
-			firstRow++
+			firstRow += 2
 		}
 		point := func() Point {
 			return Point{Row: max(0, min(m.Viewport.Height-1, msg.Y-firstRow)), Col: max(0, min(m.Viewport.Width, msg.X-m.padding()))}
 		}
 		if msg.Action == tea.MouseActionRelease && m.dragAnchor != nil {
 			m.dragHead = point()
-			sel := Selection{Anchor: *m.dragAnchor, Head: m.dragHead}
+			sel := Selection{Anchor: *m.dragAnchor, Head: m.dragHead, Gutter: railWidth}
 			m.dragAnchor = nil
 			if !sel.IsEmpty() {
 				lines := strings.Split(m.Viewport.View(), "\n")
@@ -847,10 +947,14 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		}
 		if msg.Err == nil && msg.Status != nil && msg.Revision == m.statusRevision {
 			m.Status = *msg.Status
+			defer m.reseedMood()
 			if !m.Status.Running || m.Status.Idle {
 				m.Progress = nil
 				m.ToolProgressText = ""
 				m.settleActiveStream()
+				if m.turn != nil && m.turn.begun() {
+					m.closeTurn(false)
+				}
 				m.refreshViewportContent()
 			}
 		}
@@ -860,14 +964,23 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
 			return m, nil
 		}
-		m.statusRevision++
+		// only a live event outdates a status reply in flight
+		if !msg.Event.Replayed {
+			m.statusRevision++
+		}
 		m.handleStreamEvent(msg.Event)
 		m.refreshViewportContent()
 		if m.loginRequested {
 			m.loginRequested = false
 			return m, tea.Batch(m.waitForNextEvent(), func() tea.Msg { return ChatOpenLoginMsg{} })
 		}
-		return m, tea.Batch(m.waitForNextEvent(), m.startAnimation())
+		return m, tea.Batch(m.waitForNextEvent(), m.startAnimation(), m.windowCmd())
+
+	case ChatWindowMsg:
+		if msg.SessionID == m.SessionID && msg.Generation == m.Generation && msg.Err == nil {
+			m.window, m.windowModel = msg.Tokens, &msg.Model
+		}
+		return m, nil
 
 	case ChatClearCopyStatusMsg:
 		if msg.SessionID == m.SessionID && msg.Generation == m.Generation && msg.Revision == m.copyStatusRevision {
@@ -917,8 +1030,8 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				ti.SetValue(wsErr.Workspace)
 				ti.Focus()
 				ti.Prompt = "new workspace › "
-				ti.PromptStyle = m.Styles.PromptBright
-				ti.Cursor.Style = lipgloss.NewStyle().Reverse(true)
+				ti.PromptStyle = m.Styles.Prompt
+				ti.Cursor.Style = DefaultStyles.Cursor
 				ti.Cursor.SetMode(cursor.CursorStatic)
 				m.RecoveryInput = ti
 				m.WorkspaceRecovery = &WorkspaceRecoveryState{
@@ -1110,8 +1223,10 @@ func (m *ChatModel) submitInput(input string, cmds *[]tea.Cmd) {
 	m.pendingUsers = append(m.pendingUsers, PendingUserTurn{
 		Text:  input,
 		Image: img,
+		At:    time.Now().UnixMilli(),
 	})
 	m.isSending = true
+	m.reseedMood()
 	m.sentHere = true
 	m.Follow = true
 	m.refreshViewportContent()
@@ -1190,6 +1305,13 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 }
 
 func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
+	defer m.reseedMood()
+	if evt.Replayed {
+		// the snapshot rebuilds the transcript; whether albedo is working
+		// now is for /status to say, so reopening a session never flashes
+		// the phase its last turn ended in
+		defer func(live daemon.AgentStatus) { m.Status = live }(m.Status)
+	}
 	if evt.Type != daemon.EventToolProgress {
 		m.Progress = nil
 	}
@@ -1214,6 +1336,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		m.Follow = true
 		m.scrollOffset = 0
 		m.pendingUsers = nil
+		m.turn = nil
 
 	case daemon.EventRetry:
 		m.activeKind = StreamKindNone
@@ -1255,9 +1378,22 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			ClientID:  evt.ClientID,
 			Timestamp: ts,
 		}
+		// Your message starts a turn and closes the one before it. Another
+		// source only opens a turn when none is in flight.
+		opens := m.turn == nil || speaker == "You"
+		if opens {
+			m.closeTurn(false)
+		}
 		m.appendSettledEntry(entry)
+		if opens {
+			if ts == 0 {
+				ts = time.Now().UnixMilli()
+			}
+			m.turn = &openTurn{start: ts, last: ts}
+		}
 
 	case daemon.EventText:
+		m.turnIsLive()
 		m.ToolProgressText = ""
 		m.Status.Running = true
 		m.Status.Idle = false
@@ -1296,6 +1432,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		}
 
 	case daemon.EventToolProgress:
+		m.turnIsLive()
 		m.Progress = evt.Progress
 		if evt.Progress != nil {
 			m.settleActiveStream()
@@ -1323,6 +1460,10 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			Timestamp:  time.Now().UnixMilli(),
 		}
 		m.appendSettledEntry(entry)
+		if m.turn != nil {
+			m.turn.tools++
+			m.turn.touch(evt.Timestamp)
+		}
 
 	case daemon.EventMessage:
 		m.ToolProgressText = ""
@@ -1349,6 +1490,9 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			Timestamp: ts,
 		}
 		m.appendSettledEntry(entry)
+		if m.turn != nil {
+			m.turn.touch(evt.Timestamp)
+		}
 
 	case daemon.EventNote:
 		m.settleActiveStream()
@@ -1374,6 +1518,10 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			Timestamp: time.Now().UnixMilli(),
 		}
 		m.appendSettledEntry(entry)
+		if m.turn != nil {
+			m.turn.failed = true
+			m.closeTurn(false)
+		}
 		// The daemon ends errors that only a new sign-in can fix with "run /login".
 		if m.sentHere && strings.HasSuffix(evt.Text, "run /login") {
 			m.loginRequested = true
@@ -1406,13 +1554,85 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		phase := daemon.PhaseResting
 		m.Status.Phase = &phase
 
-		entry := HistoryEntry{
+		if m.turn != nil {
+			m.closeTurn(true)
+			return
+		}
+		m.appendSettledEntry(HistoryEntry{
 			Kind:      EntryNote,
 			Text:      "stopped by you",
 			Timestamp: time.Now().UnixMilli(),
-		}
-		m.appendSettledEntry(entry)
+		})
 	}
+}
+
+// openTurn follows the turn in flight until its signoff.
+type openTurn struct {
+	// start and last are daemon timestamps in milliseconds.
+	start, last int64
+	tools       int
+	// live marks a turn streamed to this client, which ends now rather
+	// than at its last replayed event.
+	live   bool
+	failed bool
+}
+
+func (t *openTurn) touch(ts *int64) {
+	if ts != nil && *ts > t.last {
+		t.last = *ts
+	}
+}
+
+// begun reports whether the turn has done anything, so an idle status
+// that races its first event cannot sign it off early.
+func (t *openTurn) begun() bool {
+	return t.live || t.tools > 0 || t.last > t.start
+}
+
+func (m *ChatModel) turnIsLive() {
+	if m.turn != nil {
+		m.turn.live = true
+	}
+}
+
+// stretch is one run of a phase: a thinking or replying spell, or one tool
+// call, which keeps a single animation from start to end.
+type stretch struct {
+	mood mood
+	call string
+}
+
+// reseedMood draws a new animation when a new stretch starts, at random, so
+// the same one may well come up twice.
+func (m *ChatModel) reseedMood() {
+	now := stretch{mood: m.phaseMood()}
+	if m.Progress != nil {
+		now.call = m.Progress.CallID
+	}
+	if now != m.stretch {
+		m.stretch, m.moodSeed = now, rand.Int64()
+	}
+}
+
+// closeTurn signs off the turn in flight, if there is one.
+func (m *ChatModel) closeTurn(stopped bool) {
+	t := m.turn
+	if t == nil {
+		return
+	}
+	m.turn = nil
+	end := t.last
+	if t.live {
+		end = max(end, time.Now().UnixMilli())
+	}
+	elapsed := end - t.start
+	m.appendSettledEntry(HistoryEntry{
+		Kind:      EntryTurnEnd,
+		Mood:      outcome(t.failed, stopped, elapsed),
+		ElapsedMs: elapsed,
+		Tools:     t.tools,
+		Timestamp: end,
+	})
 }
 
 func formatUsage(u *daemon.Usage) string {
@@ -1476,33 +1696,25 @@ func progressLabel(progress daemon.ToolProgress) string {
 	return "running " + progress.Name
 }
 
+// renderProgress is the live row for the tool call in flight. It is shaped
+// like the tool row it settles into, and code being written shows its
+// newest end.
 func (m ChatModel) renderProgress() string {
 	if m.Progress == nil {
 		return ""
 	}
-	width := m.Renderer.BodyWidth
-	label := strings.Map(func(r rune) rune {
-		if r < 32 || r == 127 {
-			return ' '
+	width := max(1, m.Renderer.BodyWidth-railWidth)
+	row := oneLine(m.ToolProgressText)
+	if code := m.Progress.Code; m.Progress.Phase == "generating" && code != nil {
+		if text := oneLine(code.Text); text != "" {
+			row += " · "
+			if room := width - ansi.StringWidth(row); room >= 12 && ansi.StringWidth(text) > room {
+				text = ansi.TruncateLeft(text, ansi.StringWidth(text)-room+1, "…")
+			}
+			row += text
 		}
-		return r
-	}, m.ToolProgressText)
-	codeWidth := 0
-	if m.Progress.Phase == "generating" && m.Progress.Code != nil {
-		labelWidth := min(ansi.StringWidth(label), max(0, (width-5)/2))
-		codeWidth = max(0, width-2-labelWidth-3)
 	}
-	spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}[m.ProgressFrame%10]
-	prefix := spinner + " "
-	if width < 2 {
-		return "\x1b[36m" + spinner + "\x1b[0m"
-	}
-	label = ansi.Truncate(label, max(0, width-ansi.StringWidth(prefix)-max(0, codeWidth+3)), "…")
-	line := "\x1b[36m" + prefix + "\x1b[0m\x1b[37m" + label + "\x1b[0m"
-	if codeWidth > 0 {
-		line += "\x1b[90m · \x1b[0m\x1b[37m" + ansi.Truncate(m.Progress.Code.Text, codeWidth, "…") + "\x1b[0m"
-	}
-	return line
+	return m.Styles.Faint.Render(ansi.Truncate(row, width, "…"))
 }
 
 func (m ChatModel) statusLine() string {
@@ -1512,8 +1724,10 @@ func (m ChatModel) statusLine() string {
 	if m.Stopping {
 		return "stopping…"
 	}
+	// an idle session says nothing unless verbose: the transcript already
+	// ends in the turn's signoff.
 	if m.Stopped {
-		return "stopped"
+		return m.verbose("stopped")
 	}
 	if m.isSending || len(m.pendingUsers) > 0 && !m.Status.Running {
 		return "preparing"
@@ -1546,7 +1760,35 @@ func (m ChatModel) statusLine() string {
 	if m.Status.Phase == nil {
 		return "opening session…"
 	}
-	return "ready"
+	return m.verbose("ready")
+}
+
+func (m ChatModel) verbose(status string) string {
+	if m.Flags.Tools {
+		return status
+	}
+	return ""
+}
+
+// phaseMood is the face class for the phase statusLine names.
+func (m ChatModel) phaseMood() mood {
+	switch {
+	case m.Stopping:
+		return moodStopping
+	case m.isSending || len(m.pendingUsers) > 0 && !m.Status.Running:
+		return moodPreparing
+	case m.Progress != nil:
+		return moodWorking
+	case m.activeKind == StreamKindText:
+		return moodResponding
+	case m.Status.Phase != nil && *m.Status.Phase == daemon.PhaseTool:
+		return moodWorking
+	case m.Status.Phase != nil && *m.Status.Phase == daemon.PhaseCompacting:
+		return moodCompacting
+	case m.Status.Phase != nil && *m.Status.Phase == daemon.PhasePreparing:
+		return moodPreparing
+	}
+	return moodThinking
 }
 
 func truncateMiddle(text string, width int) string {
@@ -1584,14 +1826,8 @@ func (m ChatModel) View() string {
 	if glance != nil && width-100 < 26 {
 		right = fmt.Sprintf("%s %d", glance.Title, len(glance.Rows)) + "  " + right
 	}
-	nameWidth := lipgloss.Width(m.AgentName)
-	workspaceWidth := max(1, width-nameWidth-2-lipgloss.Width(right)-2)
-	workspace = truncateMiddle(workspace, workspaceWidth)
-	header := m.Styles.Bold.Render(m.AgentName) + "  " + m.Styles.Faint.Render(workspace)
-	if right != "" {
-		space := max(1, width-lipgloss.Width(header)-lipgloss.Width(right))
-		header += strings.Repeat(" ", space) + m.Styles.Faint.Render(right)
-	}
+	room := width - lipgloss.Width("✦ "+m.AgentName+" on ") - lipgloss.Width(right) - 5
+	header := titleRule(width, located(m.AgentName, truncateMiddle(homePath(workspace), max(1, room))), m.Styles.Faint.Render(right))
 	rows = append(rows, header, "")
 	errorNotice := m.ExternalError
 	if m.ErrorNotice != "" {
@@ -1602,14 +1838,14 @@ func (m ChatModel) View() string {
 		notice = m.Notice
 	}
 	if errorNotice != "" {
-		rows = append(rows, m.Styles.Error.Render("error: "+errorNotice))
+		rows = append(rows, m.Renderer.errorRow(errorNotice), "")
 	} else if notice != "" {
-		rows = append(rows, lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Render(notice))
+		rows = append(rows, m.Styles.Faint.Render(notice), "")
 	}
 
 	view := m.Viewport.View()
 	if m.History.Len() == 0 && m.activeText == "" && m.ToolProgressText == "" {
-		view = m.Styles.Faint.Render("what are we working on?")
+		view = m.Renderer.rail(laneNone) + m.Styles.Faint.Render("what are we working on?")
 	}
 	if m.sidebarWidth() > 0 {
 		view = lipgloss.JoinHorizontal(lipgloss.Top, view, "  ", m.renderGlances())
@@ -1620,27 +1856,15 @@ func (m ChatModel) View() string {
 	}
 	content = content[:min(len(content), m.Viewport.Height)]
 	if m.dragAnchor != nil {
-		content = HighlightSelection(content, Selection{Anchor: *m.dragAnchor, Head: m.dragHead})
+		content = HighlightSelection(content, Selection{Anchor: *m.dragAnchor, Head: m.dragHead, Gutter: railWidth})
 	}
 	rows = append(rows, content...)
-	pendingRows := min(3, len(m.pendingUsers))
-	for i := 0; i < pendingRows; i++ {
-		if i == 2 && len(m.pendingUsers) > 2 {
-			rows = append(rows, m.Styles.ChatWarning.Render(fmt.Sprintf("+%d more pending", len(m.pendingUsers)-2)))
-			break
-		}
-		label := "sending"
-		if m.pendingUsers[i].Queued {
-			label = fmt.Sprintf("queued %d", i+1)
-		}
-		rows = append(rows, m.Styles.ChatWarning.Render(label+" · "+strings.Join(strings.Fields(m.pendingUsers[i].Text), " ")))
-	}
 	status := m.statusLine()
-	if m.Follow && m.animating() && m.Progress == nil && !m.TurnFailed && m.ErrorNotice == "" && m.ExternalError == "" {
-		spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}[m.ProgressFrame%10]
-		status = spinner + " " + status
+	// the face trails the text, so its frames never move anything
+	if m.animating() && !m.TurnFailed && m.ErrorNotice == "" && m.ExternalError == "" {
+		status = m.Styles.Faint.Render(status) + " " + m.Styles.Agent.Render(m.phaseMood().frame(m.moodSeed, m.ProgressFrame))
 	}
-	if !m.Follow {
+	if !m.Follow && m.Flags.Tools {
 		status = fmt.Sprintf("history · %d rows below · pgdn", max(0, m.scrollLimit-m.scrollOffset))
 	}
 	if m.AttachedImage != nil {
@@ -1654,9 +1878,9 @@ func (m ChatModel) View() string {
 	} else {
 		rows = append(rows, m.Styles.Faint.Render(status))
 	}
-	rows = append(rows, m.Styles.Faint.Render(strings.Repeat("─", width)))
+	rows = append(rows, m.Styles.Decor.Render(strings.Repeat("─", width)))
 	if m.WorkspaceRecovery != nil {
-		rows = append(rows, m.Styles.ChatWarning.Render("workspace not found: "+m.WorkspaceRecovery.Missing), m.RecoveryInput.View())
+		rows = append(rows, m.Styles.Warning.Render("workspace not found: "+m.WorkspaceRecovery.Missing), m.RecoveryInput.View())
 		help := "enter confirms and retries · esc cancels"
 		if m.WorkspaceRecovery.Saving {
 			help = "updating workspace…"
@@ -1707,7 +1931,7 @@ func (m ChatModel) composerView() string {
 	if value == "" && m.waitingForInput() {
 		after = m.Styles.Faint.Render(ansi.Truncate("waiting for user input", max(0, columns-1), "…"))
 	}
-	return m.Styles.PromptBright.Render("› ") + before + lipgloss.NewStyle().Reverse(true).Render(block) + after
+	return promptLead() + before + m.Styles.Cursor.Render(block) + after
 }
 
 // waitingForInput reports an opened session with no turn in flight, so an
@@ -1733,10 +1957,10 @@ func (m ChatModel) renderGlances() string {
 			switch item.Tone {
 			case ToneActive:
 				mark = "●"
-				style = m.Styles.ChatSuccess
+				style = m.Styles.Success
 			case ToneWarning:
 				mark = "!"
-				style = m.Styles.ChatWarning
+				style = m.Styles.Warning
 			case ToneMuted:
 				mark = "✓"
 			}
@@ -1752,55 +1976,86 @@ func (m ChatModel) renderGlances() string {
 
 func (m ChatModel) renderFooter() string {
 	width := m.chatWidth()
-	context, cache := "—", "—/—"
-	usage := m.Usage
-	if usage != nil && (usage.Model == "" || m.Model == "" || usage.Model == m.Model) {
-		total := usage.TotalTokens
-		if total == nil && usage.PromptTokens != nil {
-			fallback := *usage.PromptTokens
-			if usage.CompletionTokens != nil {
-				fallback += *usage.CompletionTokens
-			}
-			total = &fallback
-		}
-		if total != nil && *total >= 0 {
-			context = formatTokens(*total)
-		}
-		prompt, cached := "—", "—"
-		if usage.PromptTokens != nil && *usage.PromptTokens >= 0 {
-			prompt = formatGroupedCount(*usage.PromptTokens)
-		}
-		if usage.CachedPromptTokens != nil && *usage.CachedPromptTokens >= 0 {
-			cached = formatGroupedCount(*usage.CachedPromptTokens)
-		}
-		cache = cached + "/" + prompt
+	right, compact := m.contextStat()
+	modes := []hint{{"thinking", onOff(m.Flags.Thinking)}, {"verbose", onOff(m.Flags.Tools)}}
+	brief := []hint{{"t", onOff(m.Flags.Thinking)}, {"v", onOff(m.Flags.Tools)}}
+	commands := hint{"/", "commands"}
+	join := func(h ...[]hint) []hint { return slices.Concat(h...) }
+	candidates := []struct {
+		left  []hint
+		right string
+	}{
+		{join([]hint{commands, {"shift+↑↓", "turns"}, {"drag", "copy"}, {"ctrl+j", "diffs"}}, modes), right},
+		{join([]hint{commands, {"drag", "copy"}, {"ctrl+j", "diffs"}}, modes), right},
+		{join([]hint{commands, {"drag", "copy"}}, modes), right},
+		{join([]hint{commands, {"ctrl+j", "diffs"}}, brief), compact},
+		{join([]hint{commands}, brief), compact},
+		{[]hint{{"/", ""}}, compact},
 	}
-	modes := fmt.Sprintf("thinking %s · verbose %s", onOff(m.Flags.Thinking), onOff(m.Flags.Tools))
-	brief := fmt.Sprintf("t:%s v:%s", onOff(m.Flags.Thinking), onOff(m.Flags.Tools))
-	right := "ctx " + context + " · cached " + cache
-	compact := context + " · " + cache
-	candidates := [][2]string{
-		{"/ commands · drag to copy · ctrl+j diffs · " + modes, right},
-		{"/ commands · drag to copy · " + modes, right},
-		{"/ commands · ctrl+j diffs · " + brief, compact},
-		{"/ commands · drag copy · " + brief, compact},
-		{"/ commands · " + brief, compact},
-		{"/", compact},
-	}
-	for _, pair := range candidates {
-		if lipgloss.Width(pair[0])+lipgloss.Width(pair[1]) < width {
-			return m.Styles.Footer.Render(pair[0] + strings.Repeat(" ", width-lipgloss.Width(pair[0])-lipgloss.Width(pair[1])) + pair[1])
+	for _, c := range candidates {
+		left := keyHints(c.left...)
+		if gap := width - lipgloss.Width(left) - lipgloss.Width(c.right); gap > 0 {
+			return left + strings.Repeat(" ", gap) + c.right
 		}
 	}
-	return m.Styles.Footer.Render(string([]rune("/ commands")[:min(width, len([]rune("/ commands")))]))
+	return ansi.Truncate(keyHints(commands), width, "…")
 }
 
-func formatGroupedCount(count int) string {
-	digits := strconv.Itoa(count)
-	for i := len(digits) - 3; i > 0; i -= 3 {
-		digits = digits[:i] + "," + digits[i:]
+// contextStat is how much of the prompt was cached and how full the context
+// is: "392k/396k cached (38%)", with a shorter form for narrow footers. The
+// share turns yellow near the window, where compaction starts.
+func (m ChatModel) contextStat() (full, short string) {
+	usage := m.Usage
+	if usage == nil || usage.Model != "" && m.Model != "" && usage.Model != m.Model {
+		return m.Styles.Faint.Render("—/— cached"), m.Styles.Faint.Render("—/—")
 	}
-	return digits
+	count := func(n *int) string {
+		if n == nil || *n < 0 {
+			return "—"
+		}
+		return shortCount(*n)
+	}
+	ratio := m.Styles.Muted.Render(count(usage.CachedPromptTokens) + "/" + count(usage.PromptTokens))
+	share := ""
+	if total := contextTokens(usage); total != nil && m.window != nil && m.windowModel != nil && *m.windowModel == usage.Model {
+		pct := int(math.Round(100 * float64(*total) / float64(*m.window)))
+		style := m.Styles.Faint
+		if pct >= 90 {
+			style = m.Styles.Warning
+		}
+		share = " " + style.Render(fmt.Sprintf("(%d%%)", pct))
+	}
+	return ratio + m.Styles.Faint.Render(" cached") + share, ratio + share
+}
+
+// contextTokens is what the context holds after a reply: the prompt and the
+// completion, when the provider did not report a total.
+func contextTokens(u *daemon.Usage) *int {
+	if u.TotalTokens != nil && *u.TotalTokens >= 0 {
+		return u.TotalTokens
+	}
+	if u.PromptTokens == nil || *u.PromptTokens < 0 {
+		return nil
+	}
+	total := *u.PromptTokens
+	if u.CompletionTokens != nil && *u.CompletionTokens > 0 {
+		total += *u.CompletionTokens
+	}
+	return &total
+}
+
+// shortCount keeps token counts to about three digits: 812, 4.2k, 392k, 1.2m.
+func shortCount(n int) string {
+	switch {
+	case n < 1_000:
+		return strconv.Itoa(n)
+	case n < 10_000:
+		return strings.TrimSuffix(fmt.Sprintf("%.1f", float64(n)/1_000), ".0") + "k"
+	case n < 999_500:
+		return fmt.Sprintf("%dk", int(math.Round(float64(n)/1_000)))
+	default:
+		return strings.TrimSuffix(fmt.Sprintf("%.1f", float64(n)/1_000_000), ".0") + "m"
+	}
 }
 
 func onOff(enabled bool) string {

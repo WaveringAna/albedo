@@ -1,0 +1,64 @@
+//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd
+
+package tui
+
+import (
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/charmbracelet/x/term"
+	"golang.org/x/sys/unix"
+)
+
+// queryColors asks for the text and background colors and the palette entries the theme mixes from, then asks
+// for the device attributes every terminal answers, so a terminal that
+// ignores the color queries ends the read instead of stalling it.
+func queryColors() string {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return ""
+	}
+	defer tty.Close()
+	fd := tty.Fd()
+	state, err := term.MakeRaw(fd)
+	if err != nil {
+		return ""
+	}
+	defer term.Restore(fd, state) //nolint:errcheck
+	query := "\x1b]10;?\x1b\\\x1b]11;?\x1b\\"
+	for _, i := range queriedPalette {
+		query += "\x1b]4;" + strconv.Itoa(i) + ";?\x1b\\"
+	}
+	if _, err := tty.WriteString(query + "\x1b[c"); err != nil {
+		return ""
+	}
+	var reply strings.Builder
+	deadline := time.Now().Add(300 * time.Millisecond)
+	buf := make([]byte, 256)
+	for {
+		left := time.Until(deadline)
+		if left <= 0 {
+			return reply.String()
+		}
+		tv := unix.NsecToTimeval(int64(left))
+		var ready unix.FdSet
+		ready.Set(int(fd))
+		n, err := unix.Select(int(fd)+1, &ready, nil, nil, &tv)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil || n == 0 {
+			return reply.String()
+		}
+		n, err = tty.Read(buf)
+		if err != nil {
+			return reply.String()
+		}
+		reply.Write(buf[:n])
+		if da := strings.Index(reply.String(), "\x1b[?"); da >= 0 && strings.Contains(reply.String()[da:], "c") {
+			return reply.String()
+		}
+	}
+}

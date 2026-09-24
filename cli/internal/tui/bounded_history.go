@@ -16,6 +16,8 @@ const (
 	EntryNote      EntryKind = "note"
 	EntryError     EntryKind = "error"
 	EntryCompacted EntryKind = "compacted"
+	// EntryTurnEnd closes a turn with its outcome, length, and tool count.
+	EntryTurnEnd EntryKind = "turn_end"
 )
 
 type HistoryEntry struct {
@@ -30,7 +32,22 @@ type HistoryEntry struct {
 	ToolTrace  *daemon.ToolTrace
 	Evicted    int
 	SizeBytes  int64
+	Mood       mood
+	ElapsedMs  int64
+	Tools      int
+	// Pending is a message of yours the daemon has not echoed back yet.
+	Pending pending
 }
+
+// pending is how far a message of yours has got: sent and waiting for the
+// daemon, or accepted and queued behind the running turn.
+type pending int
+
+const (
+	settled pending = iota
+	sending
+	queued
+)
 
 func (e *HistoryEntry) ComputeSize() int64 {
 	size := int64(len(e.Speaker) + len(e.Text) + len(e.ClientID) + len(e.ToolName) + len(e.ToolResult) + 64)

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"strings"
 
@@ -105,19 +104,14 @@ func (m *PickerModel) applyFilter() {
 	}
 }
 
-// selectableRows shares Ink's bottom-anchored list window and full-row inverse marker.
+// selectableRows is a bottom-anchored list window with the selected row on
+// the selection surface.
 func inkWrap(text string, width int) string {
 	if width <= 0 {
 		return text
 	}
 	return ansi.Wrap(text, width, " ")
 }
-
-var inkRed = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-var inkYellow = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-var inkGreen = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-var inkCyan = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-var inkBrightCyan = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 
 func selectableRows(lines []string, selected, height, limit, width int, styles Styles) string {
 	if height <= 0 {
@@ -129,20 +123,20 @@ func selectableRows(lines []string, selected, height, limit, width int, styles S
 	available := max(1, min(limit, height-8))
 	first := min(max(0, selected-available+1), max(0, len(lines)-available))
 	if len(lines) == 0 {
-		return styles.Dim.Render("no matches")
+		return styles.Faint.Render("no matches")
 	}
 	var b strings.Builder
 	for i := first; i < min(len(lines), first+available); i++ {
 		prefix := "  "
 		if i == selected {
-			prefix = "> "
+			prefix = selectBar() + " "
 		}
 		line := prefix + lines[i]
 		if width > 0 {
 			line = ansi.Truncate(line, width, "…")
 		}
 		if i == selected {
-			line = "\x1b[7m" + strings.ReplaceAll(line, "\x1b[0m", "\x1b[0m\x1b[7m") + "\x1b[0m"
+			line = selectedLine(line, width)
 		}
 		if i > first {
 			b.WriteByte('\n')
@@ -155,7 +149,7 @@ func selectableRows(lines []string, selected, height, limit, width int, styles S
 func pickerRow(item PickerItem, styles Styles) string {
 	line := item.Label
 	if item.Detail != "" {
-		line += lipgloss.NewStyle().Faint(true).Render("  " + item.Detail)
+		line += DefaultStyles.Faint.Render("  " + item.Detail)
 	}
 	return line
 }
@@ -217,12 +211,10 @@ func (m PickerModel) View() string {
 	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles))
 	b.WriteByte('\n')
 	if m.WithSearch {
-		b.WriteString(m.Styles.Dim.Render("search: "))
+		b.WriteString(promptLead())
 		b.WriteString(m.SearchInput.View())
-	} else {
-		b.WriteString(m.Styles.Selected.Render(" "))
 	}
 	b.WriteByte('\n')
-	b.WriteString(m.Styles.Dim.Render("↑↓ select · enter choose · esc cancel"))
+	b.WriteString(keyHints(hint{"↑↓", "select"}, hint{"enter", "choose"}, hint{"esc", "cancel"}))
 	return b.String()
 }

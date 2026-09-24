@@ -147,12 +147,11 @@ func (m CommandMenuModel) View(input string) string {
 	for i := start; i < end; i++ {
 		cmd := matches[i]
 		isSel := (i == idx)
-		line := cmd.Name + "  " + cmd.Description
+		line := "  " + cmd.Name + "  " + m.Styles.Faint.Render(cmd.Description)
 		if isSel {
-			b.WriteString(m.Styles.Selected.Render(line))
-		} else {
-			b.WriteString(line)
+			line = selectedLine(selectBar()+" "+cmd.Name+"  "+m.Styles.Faint.Render(cmd.Description), 0)
 		}
+		b.WriteString(line)
 		b.WriteString("\n")
 	}
 	return b.String()

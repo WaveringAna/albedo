@@ -7,7 +7,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -87,8 +86,8 @@ type SessionViewer struct {
 func NewSessionViewer(workspace string) SessionViewer {
 	p := NewPickerModel("", sessionViewerActions(workspace), true, "new")
 	p.SearchInput.Placeholder = "search sessions, models, folders…"
-	p.SearchInput.PlaceholderStyle = svDim
-	p.SearchInput.Cursor.Style = lipgloss.NewStyle().Foreground(svCyan)
+	p.SearchInput.PlaceholderStyle = DefaultStyles.Faint
+	p.SearchInput.Cursor.Style = DefaultStyles.Cursor
 	return SessionViewer{
 		PickerModel: p,
 		Workspace:   workspace,

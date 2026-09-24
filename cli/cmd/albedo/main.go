@@ -217,6 +217,7 @@ func open(id, workspace string, fresh bool) error {
 		return nil
 	}
 
+	tui.DetectInk()
 	appModel := tui.NewAppModel(conn, profs, initial, absWorkspace, !configured)
 	appModel.SessionPicker.LoadPrefs(filepath.Join(config.HomeDir(), "picker.json"))
 	if os.Getenv("ALBEDO_NO_BROWSER") == "" {
@@ -411,6 +412,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
+		tui.DetectInk()
 		appModel := tui.NewAppModel(conn, profs, nil, cwd, true)
 		appModel.StandaloneLogin = true
 		if os.Getenv("ALBEDO_NO_BROWSER") == "" {

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type DisplayFlags struct {
@@ -20,9 +21,8 @@ type DisplayFlags struct {
 }
 
 type TranscriptRenderer struct {
-	Styles       Styles
-	HeadingWidth int
-	BodyWidth    int
+	Styles    Styles
+	BodyWidth int
 }
 
 func NewTranscriptRenderer() TranscriptRenderer {
@@ -33,25 +33,102 @@ func formatClock(timestamp int64) string {
 	if timestamp <= 0 {
 		return ""
 	}
-	t := time.UnixMilli(timestamp)
-	return t.Format("15:04:05")
+	return time.UnixMilli(timestamp).Format("15:04:05")
 }
 
-func (r TranscriptRenderer) RenderHeading(label string, width int, timestamp int64) string {
-	clock := formatClock(timestamp)
-	if width < len(clock)+3 {
-		clock = ""
+// speaker names who wrote a chat entry, or "" for tool and status rows.
+func speaker(entry HistoryEntry) string {
+	switch {
+	case entry.Kind == EntryUser && entry.Speaker == "":
+		return "You"
+	case entry.Kind == EntryAssistant && entry.Speaker == "":
+		return "albedo"
+	case entry.Kind == EntryUser || entry.Kind == EntryAssistant:
+		return entry.Speaker
 	}
-	name := label
-	if width < len([]rune(name))+len(clock)+1 && width > len(clock)+1 {
-		runes := []rune(name)
-		name = string(runes[:max(0, width-len(clock)-2)]) + "…"
+	return ""
+}
+
+// prior is what a new entry follows: the newest chat author, and when the
+// conversation last moved, which a turn's end also marks.
+type prior struct {
+	speaker string
+	at      int64
+}
+
+func priorOf(entries []HistoryEntry) prior {
+	var p prior
+	for i := len(entries) - 1; i >= 0 && p.speaker == ""; i-- {
+		e := entries[i]
+		if p.at == 0 && (e.Kind == EntryTurnEnd || speaker(e) != "") {
+			p.at = e.Timestamp
+		}
+		p.speaker = speaker(e)
 	}
-	heading := r.Styles.Bold.Render(name)
-	if clock != "" {
-		heading += strings.Repeat(" ", max(1, width-len([]rune(name))-len(clock))) + r.Styles.Faint.Render(clock)
+	return p
+}
+
+// awayMs is the pause before your message that earns a "later" note.
+const awayMs = 30 * 60_000
+
+// nameplate labels a change of speaker, so a turn that resumes after tool
+// rows keeps its author's name once. Verbose mode labels every message.
+func (r TranscriptRenderer) nameplate(entry HistoryEntry, flags DisplayFlags, before prior) string {
+	who := speaker(entry)
+	if !flags.Tools && who == before.speaker {
+		return ""
 	}
-	return heading
+	style := r.Styles.Agent
+	if entry.Kind == EntryUser {
+		style = r.Styles.You
+	}
+	var meta []string
+	if clock := formatClock(entry.Timestamp); flags.Tools && clock != "" {
+		meta = append(meta, clock)
+	}
+	if gap := entry.Timestamp - before.at; entry.Kind == EntryUser && before.at > 0 && gap >= awayMs {
+		meta = append(meta, formatGap(gap))
+	}
+	if entry.Pending == queued {
+		meta = append(meta, "queued")
+	}
+	plate := style.Render(strings.ToLower(who))
+	if len(meta) > 0 {
+		plate += r.Styles.Faint.Render(" · " + strings.Join(meta, " · "))
+	}
+	return plate
+}
+
+// errorRow marks only the label red. Long red text tires the eye, and the
+// message reads best in the prose color.
+func (r TranscriptRenderer) errorRow(text string) string {
+	return r.Styles.Error.Render("error:") + " " + text
+}
+
+// signoff closes a turn: a face for how it ended, then how long it took.
+func (r TranscriptRenderer) signoff(entry HistoryEntry) string {
+	style := r.Styles.Agent
+	switch entry.Mood {
+	case moodFailed:
+		style = r.Styles.Error
+	case moodStopped:
+		style = r.Styles.Warning
+	}
+	var meta []string
+	if entry.Mood == moodStopped {
+		meta = append(meta, "stopped by you")
+	}
+	if entry.ElapsedMs > 0 {
+		meta = append(meta, formatElapsed(entry.ElapsedMs))
+	}
+	if entry.Tools > 0 {
+		meta = append(meta, fmt.Sprintf("%d %s", entry.Tools, map[bool]string{true: "tool", false: "tools"}[entry.Tools == 1]))
+	}
+	row := style.Render(entry.Mood.face(entry.Timestamp))
+	if len(meta) > 0 {
+		row += " " + r.Styles.Faint.Render(strings.Join(meta, " · "))
+	}
+	return row
 }
 
 var diffHunk = regexp.MustCompile(`^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
@@ -91,10 +168,9 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 		}, text)
 	}
 	row := func(gutter, content, bg string, syntax bool) {
-		body := "\x1b[90m" + content + "\x1b[39m"
+		body := keepBackground(r.Styles.Faint.Render(content))
 		if syntax {
-			body = HighlightCode(content, lang)
-			body = strings.ReplaceAll(body, "\x1b[0m", "\x1b[39;22;23m")
+			body = keepBackground(HighlightCode(content, lang))
 		}
 		for i, part := range strings.Split(ansi.Hardwrap(body, max(1, width-ansi.StringWidth(gutter)), true), "\n") {
 			prefix := gutter
@@ -102,10 +178,13 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 				prefix = strings.Repeat(" ", ansi.StringWidth(gutter))
 			}
 			cell := prefix + part
-			rows = append(rows, bg+cell+strings.Repeat(" ", max(0, width-ansi.StringWidth(cell)))+"\x1b[0m")
+			rows = append(rows, bg+cell+strings.Repeat(" ", max(0, width-ansi.StringWidth(cell)))+ansiReset)
 		}
 	}
-	panel, add, remove := "\x1b[48;2;37;40;50m", "\x1b[48;2;24;53;39m", "\x1b[48;2;59;35;40m"
+	panel, add, remove := diffPanel(), diffAdded(), diffRemoved()
+	gutter := func(style lipgloss.Style, n int, sign string) string {
+		return keepBackground(style.Render(fmt.Sprintf("%4d %s ", n, sign)))
+	}
 	row(" ", clean(path), panel, false)
 	for _, line := range strings.Split(diff, "\n") {
 		if line == "" || strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ") {
@@ -119,13 +198,13 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 		}
 		switch line[0] {
 		case '+':
-			row(fmt.Sprintf("\x1b[32m%4d + \x1b[39m", newLine), clean(line[1:]), add, true)
+			row(gutter(r.Styles.Success, newLine, "+"), clean(line[1:]), add, true)
 			newLine++
 		case '-':
-			row(fmt.Sprintf("\x1b[31m%4d - \x1b[39m", oldLine), clean(line[1:]), remove, true)
+			row(gutter(r.Styles.Error, oldLine, "-"), clean(line[1:]), remove, true)
 			oldLine++
 		case ' ':
-			row(fmt.Sprintf("\x1b[90m%4d   \x1b[39m", newLine), clean(line[1:]), panel, true)
+			row(gutter(r.Styles.Decor, newLine, " "), clean(line[1:]), panel, true)
 			newLine++
 			oldLine++
 		default:
@@ -142,6 +221,15 @@ func lineUnit(n int) string {
 	return "lines"
 }
 
+func firstLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
 func toolSummary(entry HistoryEntry) string {
 	arg := func(key string) string {
 		if entry.ToolArgs == nil {
@@ -151,10 +239,9 @@ func toolSummary(entry HistoryEntry) string {
 	}
 	switch entry.ToolName {
 	case "python":
-		lines := strings.Count(arg("code"), "\n") + 1
-		return fmt.Sprintf("python · %d %s", lines, lineUnit(lines))
+		return "python · " + firstLine(arg("code"))
 	case "shell":
-		return "$ " + arg("command")
+		return "$ " + firstLine(arg("command"))
 	case "read_file":
 		return "read " + arg("path")
 	case "write_file":
@@ -164,6 +251,77 @@ func toolSummary(entry HistoryEntry) string {
 	default:
 		return entry.ToolName
 	}
+}
+
+// toolOutput is what a tool printed. Python cells answer with a JSON
+// envelope, and counting the envelope reports one line for every cell.
+func toolOutput(entry HistoryEntry) string {
+	if entry.ToolName == "python" {
+		var cell struct{ Output, Value, Error string }
+		if json.Unmarshal([]byte(entry.ToolResult), &cell) == nil {
+			var parts []string
+			for _, part := range []string{cell.Output, cell.Value, cell.Error} {
+				if part = strings.TrimSpace(part); part != "" {
+					parts = append(parts, part)
+				}
+			}
+			return strings.Join(parts, "\n")
+		}
+	}
+	return strings.TrimSpace(entry.ToolResult)
+}
+
+// oneLine folds text onto one row: control characters and runs of
+// whitespace become single spaces.
+func oneLine(text string) string {
+	return strings.Join(strings.Fields(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, text)), " ")
+}
+
+// fit truncates head so the row fits width, keeping tail whole when there is
+// room, so a long target never hides the counts after it.
+func fit(head, tail string, width int) string {
+	if room := width - ansi.StringWidth(tail); room >= 12 {
+		return ansi.Truncate(head, room, "…") + tail
+	}
+	return ansi.Truncate(head+tail, max(1, width), "…")
+}
+
+func countLines(text string) string {
+	n := strings.Count(text, "\n") + 1
+	return fmt.Sprintf("%d %s", n, lineUnit(n))
+}
+
+// toolRow is the collapsed tool line: what ran, then how much.
+func toolRow(entry HistoryEntry, failed bool, clock string, width int) string {
+	var tail []string
+	if code, ok := entry.ToolArgs["code"].(string); ok && entry.ToolName == "python" {
+		if n := strings.Count(strings.TrimSpace(code), "\n") + 1; n > 1 {
+			tail = append(tail, countLines(strings.TrimSpace(code)))
+		}
+	}
+	if output := toolOutput(entry); output != "" {
+		tail = append(tail, countLines(output)+" out")
+	}
+	if failed {
+		tail = append(tail, "failed")
+	}
+	if clock != "" {
+		tail = append(tail, clock)
+	}
+	suffix := ""
+	if len(tail) > 0 {
+		suffix = " · " + strings.Join(tail, " · ")
+	}
+	return fit(oneLine(toolSummary(entry)), suffix, width)
+}
+
+func (r TranscriptRenderer) diffCounts(change daemon.FileChange) string {
+	return r.Styles.Success.Render(fmt.Sprintf("+%d", change.Added)) + " " + r.Styles.Error.Render(fmt.Sprintf("−%d", change.Removed))
 }
 
 func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags DisplayFlags, width int) string {
@@ -184,11 +342,11 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 			if activity.Failed {
 				label += " failed"
 			}
-			style := r.Styles.Prompt
+			style := r.Styles.Faint
 			if activity.Failed {
 				style = r.Styles.Error
 			}
-			rows = append(rows, style.Render(label+" "+activity.Target))
+			rows = append(rows, style.Render(fit(label+" "+oneLine(activity.Target), "", width)))
 		}
 		for _, change := range trace.Changes {
 			label := "edited " + change.Path
@@ -198,10 +356,11 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 					break
 				}
 			}
+			counts := ""
 			if change.Kind == "diff" {
-				label += fmt.Sprintf("  +%d −%d", change.Added, change.Removed)
+				counts = "  " + r.diffCounts(change)
 			}
-			rows = append(rows, r.Styles.Prompt.Render(label))
+			rows = append(rows, fit(r.Styles.Faint.Render(oneLine(label)), counts, width))
 			if flags.Diffs {
 				if change.Kind == "diff" {
 					rows = append(rows, r.renderDiffPath(change.Diff, change.Path, width))
@@ -225,21 +384,21 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 		}
 		rows = append(rows, r.Styles.Bold.Render(verb))
 		for _, act := range trace.Activities {
-			style := r.Styles.Prompt
+			style := r.Styles.Faint
 			label := act.Kind
 			if act.Failed {
 				style = r.Styles.Error
 				label += " failed"
 			}
-			rows = append(rows, "  "+style.Render(label)+" "+act.Target)
+			rows = append(rows, fit("  "+style.Render(label)+" "+oneLine(act.Target), "", width))
 		}
 	}
 	for _, change := range trace.Changes {
-		line := r.Styles.Bold.Render("edited " + change.Path)
+		counts := ""
 		if change.Kind == "diff" {
-			line += fmt.Sprintf("  %s %s", lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(fmt.Sprintf("+%d", change.Added)), lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render(fmt.Sprintf("−%d", change.Removed)))
+			counts = "  " + r.diffCounts(change)
 		}
-		rows = append(rows, line)
+		rows = append(rows, fit(r.Styles.Bold.Render(oneLine("edited "+change.Path)), counts, width))
 		if flags.Diffs {
 			if change.Kind == "diff" {
 				rows = append(rows, r.renderDiffPath(change.Diff, change.Path, width))
@@ -282,62 +441,49 @@ func (r TranscriptRenderer) faintMarkdownRows(text string, width int) []string {
 	return rows
 }
 
+// RenderEntry renders an entry on its own, so a chat entry always names its author.
 func (r TranscriptRenderer) RenderEntry(entry HistoryEntry, flags DisplayFlags, width int) string {
-	if r.BodyWidth > 0 {
-		width = r.BodyWidth
-	}
+	return r.RenderAfter(prior{}, entry, flags, width)
+}
+
+// RenderAfter renders an entry in the context of what came before it.
+func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags DisplayFlags, width int) string {
 	var rows []string
 	switch entry.Kind {
 	case EntryUser, EntryAssistant:
-		speaker := entry.Speaker
-		if speaker == "" {
-			if entry.Kind == EntryUser {
-				speaker = "You"
-			} else {
-				speaker = "albedo"
-			}
+		if plate := r.nameplate(entry, flags, before); plate != "" {
+			rows = append(rows, plate)
 		}
-		headingWidth := width
-		if r.HeadingWidth > 0 {
-			headingWidth = r.HeadingWidth
+		if entry.Pending != settled {
+			// greyed out until the daemon echoes it back
+			rows = append(rows, r.faintMarkdownRows(entry.Text, width)...)
+			break
 		}
-		heading := r.RenderHeading(speaker, headingWidth, entry.Timestamp)
-		if entry.Kind == EntryUser {
-			clock := formatClock(entry.Timestamp)
-			if clock != "" && headingWidth >= len([]rune(speaker))+len(clock)+2 {
-				heading = "\x1b[96m" + strings.ToLower(speaker) + "\x1b[0m" + strings.Repeat(" ", headingWidth-len([]rune(speaker))-len(clock)) + r.Styles.Faint.Render(clock)
-			} else {
-				heading = "\x1b[96m" + strings.ToLower(speaker) + "\x1b[0m"
-			}
-		}
-		rows = []string{heading, RenderMarkdownAnsi(entry.Text, width)}
+		rows = append(rows, RenderMarkdownAnsi(entry.Text, width))
 	case EntryThinking:
 		if flags.Thinking {
 			rows = append([]string{r.Styles.Faint.Render("thinking")}, r.faintMarkdownRows(entry.Text, width)...)
 		} else {
-			rows = []string{r.Styles.Faint.Render(ansi.Truncate("thinking · /t expand", max(1, width), "…"))}
+			rows = []string{r.Styles.Faint.Render("thinking")}
 		}
 	case EntryTool:
 		trace := entry.ToolTrace
 		hasTrace := trace != nil && (len(trace.Activities) > 0 || len(trace.Changes) > 0)
 		failed := toolFailed(entry)
 		if !hasTrace || flags.Tools || failed {
+			// a glance in normal mode, read in full in verbose mode
 			style := r.Styles.Faint
+			if flags.Tools {
+				style = lipgloss.NewStyle()
+			}
 			if failed {
 				style = r.Styles.Error
 			}
-			label := toolSummary(entry)
-			if failed {
-				label += " · failed"
+			clock := ""
+			if flags.Tools {
+				clock = formatClock(entry.Timestamp)
 			}
-			if !flags.Tools && !hasTrace {
-				if output := strings.TrimSpace(entry.ToolResult); output != "" {
-					label += fmt.Sprintf(" · %d output %s", strings.Count(output, "\n")+1, lineUnit(strings.Count(output, "\n")+1))
-				}
-				label += " · /v expand"
-				label = ansi.Truncate(strings.Join(strings.Fields(label), " "), max(1, width), "…")
-			}
-			rows = append(rows, style.Render(label))
+			rows = append(rows, style.Render(toolRow(entry, failed, clock, width)))
 		}
 		if hasTrace {
 			rows = append(rows, r.RenderToolTrace(trace, flags, width))
@@ -351,16 +497,18 @@ func (r TranscriptRenderer) RenderEntry(entry HistoryEntry, flags DisplayFlags, 
 			}
 		}
 		if flags.Tools {
-			output := strings.TrimRight(entry.ToolResult, "\n")
+			output := toolOutput(entry)
 			if output == "" {
 				output = "(no output)"
 			}
 			rows = append(rows, strings.Split(output, "\n")...)
 		}
+	case EntryTurnEnd:
+		rows = []string{r.signoff(entry)}
 	case EntryNote:
 		rows = []string{r.Styles.Faint.Render(entry.Text)}
 	case EntryError:
-		rows = []string{r.Styles.Error.Render("error: " + entry.Text)}
+		rows = []string{r.errorRow(entry.Text)}
 	case EntryCompacted:
 		action := "view"
 		if flags.Compaction {
@@ -374,16 +522,102 @@ func (r TranscriptRenderer) RenderEntry(entry HistoryEntry, flags DisplayFlags, 
 	return strings.Join(rows, "\n")
 }
 
-func (r TranscriptRenderer) RenderHistory(history *BoundedHistory, flags DisplayFlags, width int) string {
+// Compact entries are one-line summaries. A run of them stacks without blank
+// rows so a burst of tool calls reads as one block.
+func Compact(entry HistoryEntry, flags DisplayFlags) bool {
+	switch entry.Kind {
+	case EntryTool:
+		return !flags.Tools
+	case EntryThinking:
+		return !flags.Thinking
+	}
+	return false
+}
+
+// Separated reports whether a blank row belongs between two adjacent entries.
+// A turn's signoff hangs directly under the turn it closes.
+func Separated(prev *HistoryEntry, next HistoryEntry, flags DisplayFlags) bool {
+	return prev != nil && next.Kind != EntryTurnEnd && !(Compact(*prev, flags) && Compact(next, flags))
+}
+
+// railWidth is the rail and the space after it, at the start of every row.
+const railWidth = 2
+
+// lane is the rail an entry hangs on. A turn is one unbroken rail: yours in
+// your color, albedo's in its color, dimmer while it works in tools.
+type lane int
+
+const (
+	laneNone lane = iota
+	laneYou
+	laneAgent
+	laneBusy
+)
+
+func laneOf(entry HistoryEntry) lane {
+	switch entry.Kind {
+	case EntryUser:
+		return laneYou
+	case EntryAssistant, EntryTurnEnd, EntryError:
+		return laneAgent
+	case EntryTool, EntryThinking:
+		return laneBusy
+	}
+	return laneNone
+}
+
+// joint is the lane of the blank row between two entries, so the rail
+// carries through a turn and breaks between turns.
+func joint(above, below lane) lane {
+	switch {
+	case above == laneNone || below == laneNone || (above == laneYou) != (below == laneYou):
+		return laneNone
+	case above == laneBusy || below == laneBusy:
+		return laneBusy
+	}
+	return above
+}
+
+func (r TranscriptRenderer) rail(l lane) string {
+	switch l {
+	case laneYou:
+		return r.Styles.You.Render("│") + " "
+	case laneAgent:
+		return r.Styles.Agent.Render("│") + " "
+	case laneBusy:
+		return r.Styles.Busy.Render("│") + " "
+	}
+	return strings.Repeat(" ", railWidth)
+}
+
+// Block is an entry as finished transcript rows: the blank row that
+// separates it from the entry before, when one belongs, then its rows
+// wrapped beside its rail. head indexes the entry's first row.
+func (r TranscriptRenderer) Block(before []HistoryEntry, entry HistoryEntry, flags DisplayFlags) (rows []string, head int) {
+	own := laneOf(entry)
+	if n := len(before); n > 0 && Separated(&before[n-1], entry, flags) {
+		rows = append(rows, strings.TrimRight(r.rail(joint(laneOf(before[n-1]), own)), " "))
+	}
+	head = len(rows)
+	width := max(1, r.BodyWidth-railWidth)
+	gutter := r.rail(own)
+	for _, line := range strings.Split(r.RenderAfter(priorOf(before), entry, flags, width), "\n") {
+		for _, chunk := range wrapOrChunkLine(line, width) {
+			rows = append(rows, gutter+chunk)
+		}
+	}
+	return rows, head
+}
+
+func (r TranscriptRenderer) RenderHistory(history *BoundedHistory, flags DisplayFlags) string {
 	var rows []string
 	if notice := history.TruncationNotice(); notice != "" {
-		rows = append(rows, r.Styles.Warning.Render(notice), "")
+		rows = append(rows, r.rail(laneNone)+r.Styles.Warning.Render(notice), "")
 	}
-	for _, entry := range history.Entries() {
-		if len(rows) > 0 {
-			rows = append(rows, "")
-		}
-		rows = append(rows, r.RenderEntry(entry, flags, width))
+	entries := history.Entries()
+	for i, entry := range entries {
+		block, _ := r.Block(entries[:i], entry, flags)
+		rows = append(rows, block...)
 	}
 	return strings.Join(rows, "\n")
 }

@@ -3,7 +3,8 @@ package tui
 import (
 	"regexp"
 	"strings"
-	"unicode"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 var (
@@ -11,277 +12,202 @@ var (
 	ulRegex     = regexp.MustCompile(`^(\s*)[*\-+]\s+(.*)`)
 	olRegex     = regexp.MustCompile(`^(\s*)(\d+)\.\s+(.*)`)
 	hrRegex     = regexp.MustCompile(`^(\*\*\*|---|___)$`)
-
-	kwPy = map[string]bool{
-		"if": true, "elif": true, "else": true, "for": true, "while": true, "in": true, "not": true, "and": true,
-		"or": true, "is": true, "import": true, "from": true, "as": true, "def": true, "class": true, "return": true,
-		"yield": true, "pass": true, "break": true, "continue": true, "try": true, "except": true, "finally": true,
-		"raise": true, "with": true, "lambda": true, "True": true, "False": true, "None": true, "async": true, "await": true,
-	}
-
-	kwJS = map[string]bool{
-		"if": true, "else": true, "for": true, "while": true, "do": true, "switch": true, "case": true, "break": true,
-		"continue": true, "return": true, "function": true, "class": true, "const": true, "let": true, "var": true,
-		"new": true, "import": true, "export": true, "default": true, "from": true, "async": true, "await": true,
-		"try": true, "catch": true, "finally": true, "throw": true, "null": true, "undefined": true, "true": true, "false": true,
-	}
-
-	kwGo = map[string]bool{
-		"break": true, "default": true, "func": true, "interface": true, "select": true, "case": true, "defer": true,
-		"go": true, "map": true, "struct": true, "chan": true, "else": true, "goto": true, "package": true,
-		"switch": true, "const": true, "fallthrough": true, "if": true, "range": true, "type": true, "continue": true,
-		"for": true, "import": true, "return": true, "var": true, "nil": true, "true": true, "false": true,
-	}
 )
 
-const (
-	ansiReset    = "\x1b[0m"
-	ansiBold     = "\x1b[1m"
-	ansiDim      = "\x1b[2m"
-	ansiItalic   = "\x1b[3m"
-	ansiGreen    = "\x1b[32m"
-	ansiCyan     = "\x1b[36m"
-	ansiGray     = "\x1b[90m"
-	ansiBYellow  = "\x1b[93m"
-	ansiBBlue    = "\x1b[94m"
-	ansiBMagenta = "\x1b[95m"
-	ansiBCyan    = "\x1b[96m"
-)
-
-func getKeywords(lang string) map[string]bool {
-	switch strings.ToLower(lang) {
-	case "python", "py":
-		return kwPy
-	default:
-		return kwJS
-	}
+// hashComments are the languages whose line comments start with "#".
+var hashComments = map[string]bool{
+	"python": true, "py": true, "sh": true, "bash": true, "zsh": true, "shell": true, "nu": true,
+	"nix": true, "toml": true, "yaml": true, "yml": true, "ruby": true, "rb": true, "elixir": true,
 }
 
+// HighlightCode marks only comments. Every other token keeps the code's own
+// ink: highlighting has shown little measured benefit for comprehension, and
+// a hue per token class drowns the few hues that carry meaning here.
+// Comments stay readable because they are the notes in the code.
 func HighlightCode(code string, lang string) string {
 	l := strings.ToLower(lang)
 	if l == "" || l == "text" || l == "plain" || l == "txt" {
 		return code
 	}
-	keywords := getKeywords(l)
-	isPy := l == "python" || l == "py"
-
+	hash := hashComments[l]
+	comment := faintInk() + ansiItalic
 	var b strings.Builder
 	chars := []rune(code)
-	n := len(chars)
-	i := 0
-
-	for i < n {
+	for i := 0; i < len(chars); {
 		ch := chars[i]
-
-		// Single line comments
-		if (!isPy && ch == '/' && i+1 < n && chars[i+1] == '/') || (isPy && ch == '#') {
+		if (hash && ch == '#') || (!hash && ch == '/' && i+1 < len(chars) && chars[i+1] == '/') {
 			j := i
-			for j < n && chars[j] != '\n' {
+			for j < len(chars) && chars[j] != '\n' {
 				j++
 			}
-			b.WriteString(ansiGray + ansiItalic)
-			b.WriteString(string(chars[i:j]))
-			b.WriteString(ansiReset)
+			b.WriteString(comment + string(chars[i:j]) + ansiReset + codeInk())
 			i = j
 			continue
 		}
-
-		// Strings
 		if ch == '"' || ch == '\'' || ch == '`' {
-			quote := ch
 			j := i + 1
-			for j < n {
-				if chars[j] == '\\' && j+1 < n {
-					j += 2
-					continue
-				}
-				if chars[j] == quote {
+			for j < len(chars) && chars[j] != ch && chars[j] != '\n' {
+				if chars[j] == '\\' {
 					j++
-					break
 				}
 				j++
 			}
-			b.WriteString(ansiGreen)
+			j = min(j+1, len(chars))
 			b.WriteString(string(chars[i:j]))
-			b.WriteString(ansiReset)
 			i = j
 			continue
 		}
-
-		// Numbers
-		if unicode.IsDigit(ch) && (i == 0 || !unicode.IsLetter(chars[i-1])) {
-			j := i
-			for j < n && (unicode.IsDigit(chars[j]) || chars[j] == '.' || chars[j] == '_' || chars[j] == 'x' || chars[j] == 'b') {
-				j++
-			}
-			b.WriteString(ansiBYellow)
-			b.WriteString(string(chars[i:j]))
-			b.WriteString(ansiReset)
-			i = j
-			continue
-		}
-
-		// Identifiers / keywords
-		if unicode.IsLetter(ch) || ch == '_' {
-			j := i
-			for j < n && (unicode.IsLetter(chars[j]) || unicode.IsDigit(chars[j]) || chars[j] == '_') {
-				j++
-			}
-			word := string(chars[i:j])
-			if keywords[word] {
-				b.WriteString(ansiBMagenta + word + ansiReset)
-			} else if unicode.IsUpper(chars[i]) {
-				b.WriteString(ansiBYellow + word + ansiReset)
-			} else if j < n && chars[j] == '(' {
-				b.WriteString(ansiBBlue + word + ansiReset)
-			} else {
-				b.WriteString(word)
-			}
-			i = j
-			continue
-		}
-
 		b.WriteRune(ch)
 		i++
 	}
-
 	return b.String()
 }
 
+// A bold lead before a colon or dash labels a list item, and a wholly bold
+// item is a label too. Models bold nearly every item, and a signal on every
+// line stops signalling, so these render plain.
+var (
+	boldLeadThenMark = regexp.MustCompile(`^\*\*([^*]+)\*\*(\s*(?::|—|–|\s-\s))`)
+	boldLeadWithMark = regexp.MustCompile(`^\*\*([^*]+(?::|—|–))\*\*`)
+	boldWhole        = regexp.MustCompile(`^\*\*([^*]+)\*\*\s*$`)
+)
+
+func plainLead(item string) string {
+	switch {
+	case boldWhole.MatchString(item):
+		return boldWhole.ReplaceAllString(item, "$1")
+	case boldLeadThenMark.MatchString(item):
+		return boldLeadThenMark.ReplaceAllString(item, "$1$2")
+	}
+	return boldLeadWithMark.ReplaceAllString(item, "$1")
+}
+
+type emphasis struct{ strong, em, code bool }
+
+// sgr restates the whole style after a full reset, so a closing span never
+// strips an enclosing one and wrapOrChunkLine can reopen it on a later row.
+func (e emphasis) sgr() string {
+	s := ansiReset
+	if e.code {
+		s += inlineCodeInk()
+	}
+	if e.strong {
+		s += ansiBold
+	}
+	if e.em {
+		s += ansiItalic
+	}
+	return s
+}
+
+func inline(text string, base emphasis) string {
+	var b strings.Builder
+	strong, em := false, false
+	style := func() emphasis { return emphasis{strong: base.strong || strong, em: base.em || em} }
+	b.WriteString(base.sgr())
+	for i := 0; i < len(text); {
+		rest := text[i:]
+		switch {
+		case rest[0] == '`':
+			if j := strings.IndexByte(rest[1:], '`'); j >= 0 {
+				code := style()
+				code.code = true
+				// dim ticks mark the edges and pad the tint, and copied text keeps its markdown
+				tick := decorInk() + "`"
+				b.WriteString(code.sgr() + tick + code.sgr() + rest[1:1+j] + tick + style().sgr())
+				i += j + 2
+				continue
+			}
+		case strings.HasPrefix(rest, "**"):
+			if strong || strings.Contains(rest[2:], "**") {
+				strong = !strong
+				b.WriteString(style().sgr())
+				i += 2
+				continue
+			}
+		case rest[0] == '*':
+			opens := !em && len(rest) > 1 && rest[1] != ' ' && strings.Contains(rest[2:], "*")
+			closes := em && text[i-1] != ' '
+			if opens || closes {
+				em = opens
+				b.WriteString(style().sgr())
+				i++
+				continue
+			}
+		}
+		b.WriteByte(rest[0])
+		i++
+	}
+	return b.String() + ansiReset
+}
+
 func RenderInlineMarkdown(text string) string {
-	// Inline code: `code`
-	res := text
-	for {
-		start := strings.Index(res, "`")
-		if start == -1 {
-			break
-		}
-		end := strings.Index(res[start+1:], "`")
-		if end == -1 {
-			break
-		}
-		end += start + 1
-		code := res[start+1 : end]
-		res = res[:start] + ansiCyan + code + ansiReset + res[end+1:]
-	}
-
-	// Bold: **text**
-	for {
-		start := strings.Index(res, "**")
-		if start == -1 {
-			break
-		}
-		end := strings.Index(res[start+2:], "**")
-		if end == -1 {
-			break
-		}
-		end += start + 2
-		content := res[start+2 : end]
-		res = res[:start] + ansiBold + content + ansiReset + res[end+2:]
-	}
-
-	// Italic: *text*
-	for {
-		start := strings.Index(res, "*")
-		if start == -1 {
-			break
-		}
-		end := strings.Index(res[start+1:], "*")
-		if end == -1 {
-			break
-		}
-		end += start + 1
-		content := res[start+1 : end]
-		res = res[:start] + ansiItalic + content + ansiReset + res[end+1:]
-	}
-
-	return res
+	return inline(text, emphasis{})
 }
 
 func RenderMarkdownAnsi(text string, width int) string {
 	if width <= 0 {
 		width = 80
 	}
+	mark := func(s string) string { return decorInk() + s + ansiReset }
+	// hang wraps body under its lead so continuation rows keep the list,
+	// quote, or code gutter instead of falling back to column zero.
+	hang := func(lead, cont, body string) []string {
+		rows := wrapOrChunkLine(body, max(1, width-ansi.StringWidth(lead)))
+		for i := range rows {
+			if i == 0 {
+				rows[i] = lead + rows[i]
+			} else {
+				rows[i] = cont + rows[i]
+			}
+		}
+		return rows
+	}
 	lines := strings.Split(text, "\n")
 	var out []string
-	i := 0
-
-	for i < len(lines) {
+	for i := 0; i < len(lines); i++ {
 		line := lines[i]
-
-		// Fenced code block
 		if strings.HasPrefix(line, "```") {
 			lang := strings.TrimSpace(strings.TrimPrefix(line, "```"))
-			var codeLines []string
-			i++
-			for i < len(lines) && !strings.HasPrefix(lines[i], "```") {
-				codeLines = append(codeLines, lines[i])
-				i++
+			start := i + 1
+			for i = start; i < len(lines) && !strings.HasPrefix(lines[i], "```"); i++ {
 			}
-			if i < len(lines) {
-				i++
-			}
-
-			code := strings.Join(codeLines, "\n")
-			highlighted := HighlightCode(code, lang)
-
+			code := strings.Join(lines[start:min(i, len(lines))], "\n")
 			if lang != "" {
-				out = append(out, ansiDim+ansiCyan+"┌─ "+lang+ansiReset)
+				out = append(out, mark("┌─ "+lang))
 			}
-			for _, hl := range strings.Split(highlighted, "\n") {
-				out = append(out, ansiDim+"│"+ansiReset+" "+hl)
+			for _, hl := range strings.Split(HighlightCode(code, lang), "\n") {
+				out = append(out, hang(mark("│")+" ", mark("│")+" ", codeInk()+hl+ansiReset)...)
 			}
-			out = append(out, ansiDim+"└"+ansiReset)
+			out = append(out, mark("└"))
 			continue
 		}
-
-		// Headers
-		if hMatch := headerRegex.FindStringSubmatch(line); hMatch != nil {
-			title := RenderInlineMarkdown(hMatch[2])
-			colors := []string{ansiBCyan, ansiCyan, ansiBBlue, ansiBBlue, ansiBMagenta, ansiBMagenta}
-			out = append(out, ansiBold+colors[len(hMatch[1])-1]+title+ansiReset)
-			i++
+		if h := headerRegex.FindStringSubmatch(line); h != nil {
+			out = append(out, inline(h[2], emphasis{strong: true}))
 			continue
 		}
-
-		// Horizontal rule
 		if hrRegex.MatchString(strings.TrimSpace(line)) {
-			barLen := width
-			out = append(out, ansiDim+strings.Repeat("─", barLen)+ansiReset)
-			i++
+			out = append(out, mark(strings.Repeat("─", width)))
 			continue
 		}
-
-		// Bullet list
-		if ulMatch := ulRegex.FindStringSubmatch(line); ulMatch != nil {
-			indent := ulMatch[1]
-			item := RenderInlineMarkdown(ulMatch[2])
-			out = append(out, indent+ansiDim+"•"+ansiReset+" "+item)
-			i++
+		if ul := ulRegex.FindStringSubmatch(line); ul != nil {
+			out = append(out, hang(ul[1]+mark("•")+" ", ul[1]+"  ", inline(plainLead(ul[2]), emphasis{}))...)
 			continue
 		}
-
-		// Numbered list
-		if olMatch := olRegex.FindStringSubmatch(line); olMatch != nil {
-			indent := olMatch[1]
-			num := olMatch[2]
-			item := RenderInlineMarkdown(olMatch[3])
-			out = append(out, indent+ansiDim+num+"."+ansiReset+" "+item)
-			i++
+		if ol := olRegex.FindStringSubmatch(line); ol != nil {
+			lead := ol[1] + ol[2] + ". "
+			out = append(out, hang(ol[1]+mark(ol[2]+".")+" ", strings.Repeat(" ", len(lead)), inline(plainLead(ol[3]), emphasis{}))...)
 			continue
 		}
-
-		// Blockquote
-		if strings.HasPrefix(line, "> ") {
-			quote := RenderInlineMarkdown(strings.TrimPrefix(line, "> "))
-			out = append(out, ansiDim+"│"+ansiReset+" "+ansiItalic+quote+ansiReset)
-			i++
+		if quote, ok := strings.CutPrefix(line, "> "); ok {
+			out = append(out, hang(mark("│")+" ", mark("│")+" ", inline(quote, emphasis{}))...)
 			continue
 		}
-
-		out = append(out, RenderInlineMarkdown(line))
-		i++
+		if line == "" {
+			out = append(out, "")
+			continue
+		}
+		out = append(out, inline(line, emphasis{}))
 	}
-
 	return strings.Join(out, "\n")
 }

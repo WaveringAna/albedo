@@ -14,6 +14,9 @@ type Point struct {
 type Selection struct {
 	Anchor Point
 	Head   Point
+	// Gutter is the decoration at the start of every row, which neither
+	// the highlight nor the copied text includes.
+	Gutter int
 }
 
 func (s Selection) IsEmpty() bool { return s.Anchor == s.Head }
@@ -55,9 +58,9 @@ func SelectedText(lines []string, sel Selection) string {
 	}
 	var rows []string
 	for row := max(0, start.Row); row <= end.Row && row < len(lines); row++ {
-		from, to := 0, ansi.StringWidth(lines[row])
+		from, to := sel.Gutter, ansi.StringWidth(lines[row])
 		if row == start.Row {
-			from = start.Col
+			from = max(from, start.Col)
 		}
 		if row == end.Row {
 			to = end.Col
@@ -75,16 +78,16 @@ func HighlightSelection(lines []string, sel Selection) []string {
 	start, end := sel.Normalized()
 	out := append([]string(nil), lines...)
 	for row := max(0, start.Row); row <= end.Row && row < len(out); row++ {
-		from, to := 0, ansi.StringWidth(out[row])
+		from, to := sel.Gutter, ansi.StringWidth(out[row])
 		if row == start.Row {
-			from = start.Col
+			from = max(from, start.Col)
 		}
 		if row == end.Row {
 			to = end.Col
 		}
 		_, before, text, after := selectedRange(out[row], from, to)
 		if text != "" {
-			out[row] = before + "\x1b[7m" + text + "\x1b[0m" + after
+			out[row] = before + DefaultStyles.Cursor.Render(text) + after
 		}
 	}
 	return out

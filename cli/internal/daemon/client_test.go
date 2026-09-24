@@ -771,3 +771,55 @@ func TestStreamProgressCallbackErrorBackpressure(t *testing.T) {
 		t.Fatalf("expected %v, got %v", expectedErr, err)
 	}
 }
+
+func TestContextWindowReadsThePreparedRequest(t *testing.T) {
+	bodies := map[string]string{
+		"known":   `{"state":"ready","model":"m","context_window_tokens":1048576,"sections":[]}`,
+		"unknown": `{"state":"ready","model":"m","sections":[]}`,
+		"pending": `{"state":"pending","reason":"no request yet"}`,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/sessions/"), "/context")
+		_, _ = w.Write([]byte(bodies[id]))
+	}))
+	defer server.Close()
+	for id, want := range map[string]int{"known": 1048576, "unknown": 0, "pending": 0} {
+		window, err := NewChatClient(ChatClientOptions{BaseURL: server.URL, AgentID: id}).ContextWindow(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := 0; window != nil {
+			got = *window
+			if got != want {
+				t.Fatalf("%s: window %d, want %d", id, got, want)
+			}
+		} else if want != 0 {
+			t.Fatalf("%s: no window, want %d", id, want)
+		}
+	}
+}
+
+func TestSnapshotEventsAreMarkedReplayed(t *testing.T) {
+	pages := formatPage(2, []any{
+		map[string]any{"type": "reset"},
+		map[string]any{"type": "thinking", "text": "earlier"},
+	}) + formatPage(3, []any{
+		map[string]any{"type": "thinking", "text": "now"},
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(pages))
+	}))
+	defer server.Close()
+	client := NewChatClient(ChatClientOptions{BaseURL: server.URL, AgentID: "session"})
+	replayed := map[string]bool{}
+	_ = client.Stream(context.Background(), nil, func(event StreamEvent) error {
+		if event.Type == EventThinking {
+			replayed[event.Text] = event.Replayed
+		}
+		return nil
+	})
+	if !replayed["earlier"] || replayed["now"] {
+		t.Fatalf("only the snapshot after a reset is history: %v", replayed)
+	}
+}

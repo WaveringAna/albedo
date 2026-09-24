@@ -12,7 +12,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 type AppState int
@@ -1003,10 +1002,10 @@ func (m AppModel) View() string {
 	var prefix strings.Builder
 	if m.State == AppStateSessionPicker {
 		if m.Notice != "" {
-			prefix.WriteString(DefaultStyles.Dim.Render(m.Notice) + "\n")
+			prefix.WriteString(DefaultStyles.Faint.Render(m.Notice) + "\n")
 		}
 		if m.Error != "" {
-			prefix.WriteString(DefaultStyles.Error.Foreground(lipgloss.Color("1")).Render(m.Error) + "\n")
+			prefix.WriteString(DefaultStyles.Error.Render(m.Error) + "\n")
 		}
 	}
 
