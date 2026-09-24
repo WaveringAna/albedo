@@ -30,9 +30,13 @@ Provider extensions consume the catalog's endpoint and environment metadata, so 
 
 ## provider extensions
 
-The catalog also lists model ids by provider or endpoint. `/login` and `/model` read those lists only from this cache; they never call a provider's `/models` endpoint. The `openai` model-provider extension depends on `models` and owns API-key configuration plus the shared Responses/Chat Completions client. The `codex` extension depends on `openai`; it reuses that request stack and adds only ChatGPT OAuth, account selection, and Codex wire policy. The dependency chain is therefore `codex -> openai -> models`.
+The catalog also lists model ids by provider or endpoint. `/login` and `/model` read those lists only from this cache; they never call a provider's `/models` endpoint. The `openai` model-provider extension depends on `models` and owns API-key configuration plus the shared Responses/Chat Completions client. The `codex` extension depends on `openai`; it reuses that request stack and adds only ChatGPT OAuth, account selection, and Codex wire policy. The dependency chain is therefore `codex -> openai -> models`. `antigravity` has no dependencies: it brings its own catalog and sign-in, and its upstream drives `openai_api.exchange` with its own encoder and reducer.
 
 Saved provider profiles carry an `extension` tag. Existing profiles without one migrate as `openai`. Codex profiles use `extension: "codex"` and keep OAuth credentials separately in `$ALBEDO_HOME/auth.json`; see [model authentication](auth.md).
+
+## antigravity models
+
+Antigravity is not on models.dev, and its model ids and required `model_enum` labels change server-side. The `antigravity` extension therefore contributes its own catalog. It asks Cloud Code Assist `fetchAvailableModels` which models the account can use, keeps the ids that the real client's agent picker shows, and caches them with their limits, labels, and the renames of retired ids in `$ALBEDO_HOME/antigravity.json`. The cache refreshes in the background after 6 hours, and the first `/login` listing waits for discovery. A built-in table supplies each model's thinking control and serves as the list before the first discovery. A saved profile that names a retired id follows the backend's rename. The catalog answers lookups only for the Antigravity endpoint, so models.dev keeps answering for the same ids at other providers.
 
 ## contribute another catalog
 

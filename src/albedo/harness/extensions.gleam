@@ -1,4 +1,5 @@
 import albedo/harness/extension
+import albedo/harness/extensions/antigravity/extension as antigravity
 import albedo/harness/extensions/bash/extension as bash
 import albedo/harness/extensions/codex/extension as codex
 import albedo/harness/extensions/commands/extension as commands
@@ -28,6 +29,9 @@ pub fn defaults() -> Config {
       instructions.extension(),
       commands.extension(),
       skills.extension(),
+      // Ahead of models.dev: it answers only for its own endpoint, where a
+      // shared id such as claude-sonnet-4-6 has Antigravity's limits.
+      antigravity.extension(),
       models.extension(),
       openai.extension(),
       codex.extension(),
@@ -38,7 +42,7 @@ pub fn defaults() -> Config {
     ],
     [
       "python", "bash", "work", "files", "instructions", "commands", "skills",
-      "models", "openai", "codex", "rolling", "remote",
+      "models", "openai", "codex", "antigravity", "rolling", "remote",
     ],
   )
 }

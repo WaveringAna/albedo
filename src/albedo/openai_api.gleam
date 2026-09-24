@@ -33,6 +33,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/string_tree.{type StringTree}
 
 /// base_url is the API root, e.g. https://api.openai.com/v1, not a full route.
 /// An empty api_key omits Authorization for local compatible servers.
@@ -90,7 +91,6 @@ pub fn stream(
     _, Responses -> "/responses"
     _, ChatCompletions -> "/chat/completions"
   }
-  let url = string.remove_suffix(client.base_url, "/") <> path
   let headers = [
     #("content-type", "application/json"),
     #("accept", "text/event-stream"),
@@ -112,26 +112,58 @@ pub fn stream(
     "" -> headers
     key -> [#("authorization", "Bearer " <> key), ..headers]
   }
+  exchange(
+    Exchange(
+      string.remove_suffix(client.base_url, "/") <> path,
+      headers,
+      body,
+      client.timeout_ms,
+      client.max_event_bytes,
+      // ChatGPT's Codex endpoint currently streams valid SSE with a generic
+      // content type. Its framing, not that header, is authoritative.
+      require_event_stream: client.policy == types.OpenAI,
+    ),
+    reducer.reducer(client.protocol),
+    on_event,
+  )
+}
+
+/// One streaming POST whose SSE payloads a reducer turns into events and a
+/// turn. A provider with its own wire format drives this directly.
+pub type Exchange {
+  Exchange(
+    url: String,
+    headers: List(#(String, String)),
+    body: StringTree,
+    timeout_ms: Int,
+    max_event_bytes: Int,
+    require_event_stream: Bool,
+  )
+}
+
+pub fn exchange(
+  exchange: Exchange,
+  reducer: reducer.Reducer,
+  on_event: fn(Event) -> Control,
+) -> Result(Turn, Error) {
   use connection <- result.try(
-    transport.open(url, headers, body, client.timeout_ms)
+    transport.open(
+      exchange.url,
+      exchange.headers,
+      exchange.body,
+      exchange.timeout_ms,
+    )
     |> result.map_error(transport_error),
   )
   use <- transport.with_connection(connection)
   use first <- result.try(receive(connection))
   case first {
     transport.Headers(status, headers, final) if status >= 200 && status < 300 -> {
-      case event_stream(headers), client.policy {
-        False, types.OpenAI -> http_error(connection, status, final, [], 0)
-        _, _ if final -> Error(types.UnexpectedEnd)
-        // ChatGPT's Codex endpoint currently streams valid SSE with a generic
-        // content type. Its framing, not that header, is authoritative.
-        _, _ ->
-          pump(
-            connection,
-            sse.new(client.max_event_bytes),
-            reducer.new(client.protocol),
-            on_event,
-          )
+      case event_stream(headers) || !exchange.require_event_stream, final {
+        False, _ -> http_error(connection, status, final, [], 0)
+        True, True -> Error(types.UnexpectedEnd)
+        True, False ->
+          pump(connection, sse.new(exchange.max_event_bytes), reducer, on_event)
       }
     }
     transport.Headers(status, _, final) ->
@@ -200,7 +232,7 @@ fn event_stream(headers: List(#(String, String))) -> Bool {
 fn pump(
   connection: transport.Connection,
   parser: sse.Parser,
-  state: reducer.State,
+  state: reducer.Reducer,
   on_event: fn(Event) -> Control,
 ) -> Result(Turn, Error) {
   use message <- result.try(receive(connection))
@@ -216,10 +248,10 @@ fn pump(
           use events <- result.try(
             sse.finish(parser) |> result.map_error(sse_error),
           )
-          use #(_, turn) <- result.try(deliver(state, events, on_event))
+          use #(state, turn) <- result.try(deliver(state, events, on_event))
           case turn {
             Some(turn) -> Ok(turn)
-            None -> Error(types.UnexpectedEnd)
+            None -> state.finish()
           }
         }
         None, False -> pump(connection, parser, state, on_event)
@@ -230,14 +262,14 @@ fn pump(
 }
 
 fn deliver(
-  state: reducer.State,
+  state: reducer.Reducer,
   events: List(sse.Event),
   on_event: fn(Event) -> Control,
-) -> Result(#(reducer.State, Option(Turn)), Error) {
+) -> Result(#(reducer.Reducer, Option(Turn)), Error) {
   case events {
     [] -> Ok(#(state, None))
     [event, ..rest] -> {
-      use #(state, updates, turn) <- result.try(reducer.feed(state, event))
+      use #(state, updates, turn) <- result.try(state.feed(event.data))
       use _ <- result.try(notify(updates, on_event))
       case turn {
         Some(_) -> Ok(#(state, turn))

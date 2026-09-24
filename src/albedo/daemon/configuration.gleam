@@ -61,6 +61,8 @@ fn valid_extension_protocol(
   case extension, protocol {
     "codex", types.Responses -> True
     "codex", _ -> False
+    "antigravity", types.ChatCompletions -> True
+    "antigravity", _ -> False
     _, _ -> True
   }
 }
