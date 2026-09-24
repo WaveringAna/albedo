@@ -14,6 +14,20 @@
           albedo = pkgs.callPackage ./default.nix { };
           default = albedo;
         });
+      devShells = eachSystem (system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+          beam = pkgs.beamPackages;
+        in {
+          default = pkgs.mkShell {
+            packages = [
+              pkgs.go pkgs.gopls
+              pkgs.gleam beam.erlang (beam.rebar3WithPlugins { plugins = [ beam.pc ]; })
+              pkgs.python3 pkgs.nodejs
+              pkgs.cargo pkgs.rustc
+            ];
+          };
+        });
       apps = eachSystem (system: {
         default = {
           type = "app";
