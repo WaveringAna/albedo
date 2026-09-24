@@ -498,7 +498,9 @@ func (m SessionViewer) preview(width, height int, now time.Time) []string {
 		if s.Model != "" {
 			meta = append(meta, svMuted.Render(sessionText(s.Model)))
 		}
-		meta = append(meta, svMuted.Render(sessionText(svHomePath(s.Workspace))))
+		if s.Workspace != "" {
+			meta = append(meta, svMuted.Render(sessionText(svHomePath(s.Workspace))))
+		}
 		meta = append(meta, svDim.Render(daemon.AssistantAge(s.LastAssistantAt, now)))
 		if c := m.previews[s.ID]; c != nil && !c.loading && !c.err {
 			meta = append(meta, svDim.Render(fmt.Sprintf("%d messages", c.Total)))
@@ -574,6 +576,9 @@ func (m SessionViewer) transcript(s daemon.Session, width, height int) []string 
 	var blocks []*block
 	for _, it := range c.Items {
 		text := sessionText(it.Preview)
+		if it.Type == "assistant" {
+			text = svMarkdownMarks.Replace(text)
+		}
 		if it.Type != "tool" {
 			blocks = append(blocks, &block{kind: it.Type, text: text})
 			continue
@@ -606,11 +611,12 @@ func (m SessionViewer) transcript(s daemon.Session, width, height int) []string 
 		label, textStyle, maxLines := svDim.Render("  ⚙"), svDim, 2
 		switch b.kind {
 		case "user":
-			label, textStyle, maxLines = svCyanBold.Render("  you"), svText, 6
+			label, textStyle, maxLines = svCyanBold.Render("  you"), svText, 3
 		case "assistant":
-			label, textStyle, maxLines = lipgloss.NewStyle().Foreground(svPink).Bold(true).Render("  ✦"), svMuted, 8
+			label, textStyle, maxLines = lipgloss.NewStyle().Foreground(svPink).Bold(true).Render("  ✦"), svMuted, 3
 		}
-		if bi > 0 && b.kind != "tool" {
+		// One exchange per group: a gap only where the user speaks again.
+		if bi > 0 && b.kind == "user" {
 			lines = append(lines, "")
 		}
 		for i, l := range svWrap(b.text, max(1, width-gutter), maxLines) {
@@ -628,6 +634,10 @@ func (m SessionViewer) transcript(s daemon.Session, width, height int) []string 
 	}
 	return lines
 }
+
+// svMarkdownMarks drops emphasis and code markers that only cost width in a
+// one-paragraph excerpt.
+var svMarkdownMarks = strings.NewReplacer("**", "", "__", "", "`", "")
 
 // svWrap word-wraps plain text into at most maxLines lines of width columns.
 func svWrap(text string, width, maxLines int) []string {
