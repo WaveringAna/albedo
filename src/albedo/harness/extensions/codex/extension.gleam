@@ -2,6 +2,7 @@
 
 import albedo/daemon/store
 import albedo/harness/extension
+import albedo/harness/extensions/openai/extension as openai
 import albedo/harness/oauth
 import albedo/openai_api
 import albedo/openai_api/types
@@ -75,7 +76,7 @@ fn initialise(_ledger: store.Store) -> Result(Nil, String) {
 
 fn resolve(
   context: extension.ModelContext,
-) -> Option(Result(types.Client, String)) {
+) -> Option(Result(extension.Upstream, String)) {
   case context.provider {
     "codex" ->
       Some(
@@ -85,12 +86,14 @@ fn resolve(
           |> result.map_error(fn(_) { "invalid Codex credential response" })
         })
         |> result.map(fn(access) {
-          openai_api.codex_client(
-            base_url,
-            access.token,
-            access.account_id,
-            context.session,
-          )
+          let client =
+            openai_api.codex_client(
+              base_url,
+              access.token,
+              access.account_id,
+              context.session,
+            )
+          openai.upstream(client, account_failure(context.home, client, _))
         }),
       )
     _ -> None

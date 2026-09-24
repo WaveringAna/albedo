@@ -910,7 +910,7 @@ pub fn model_names(
   extension.provider_model_names(runtime.extensions, provider, endpoint)
 }
 
-pub fn model_client(
+pub fn upstream(
   runtime: Runtime,
   session: String,
   home: String,
@@ -918,14 +918,14 @@ pub fn model_client(
   provider: String,
   model: String,
   protocol: types.Protocol,
-) -> Result(types.Client, String) {
+) -> Result(extension.Upstream, String) {
   use selected <- result.try(extension.enabled(
     runtime.work,
     runtime.extensions,
     runtime.default_enabled,
     session,
   ))
-  extension.model_client(
+  extension.upstream(
     selected,
     extension.ModelContext(home, session, profile, provider, model, protocol),
   )

@@ -94,10 +94,24 @@ pub type ModelContext {
   )
 }
 
+/// Where a session's requests go. A provider streams albedo's request types
+/// over whatever wire it speaks and explains failures the user can act on.
+pub type Upstream {
+  Upstream(
+    /// The provider base url; catalogs use it to tell shared model ids apart.
+    endpoint: String,
+    /// The shape of the replay items this upstream produces and accepts.
+    protocol: types.Protocol,
+    stream: fn(types.Request, fn(types.Event) -> types.Control) ->
+      Result(types.Turn, types.Error),
+    explain: fn(types.Error) -> Option(String),
+  )
+}
+
 pub type ModelProvider {
   ModelProvider(
     catalog_provider: String,
-    resolve: fn(ModelContext) -> Option(Result(types.Client, String)),
+    resolve: fn(ModelContext) -> Option(Result(Upstream, String)),
   )
 }
 
@@ -117,7 +131,7 @@ pub type Plugin {
   CompactionPlugin(strategy: compaction.Strategy)
   /// A catalog answers only for models and providers it actually lists.
   ModelsPlugin(catalog: ModelCatalog)
-  /// A provider turns one tagged saved profile into a request client.
+  /// A provider turns one tagged saved profile into its upstream.
   ModelProviderPlugin(provider: ModelProvider)
   /// A browser sign-in the daemon runs on behalf of clients.
   LoginPlugin(login: oauth.Login)
@@ -764,7 +778,7 @@ pub fn model_names(
   })
 }
 
-/// The first provider plugin claiming the saved profile owns its client.
+/// The first provider plugin claiming the saved profile owns its upstream.
 /// Resolve an extension's declared models.dev namespace through enabled catalogs.
 pub fn provider_model_names(
   installed: List(Extension),
@@ -799,10 +813,10 @@ pub fn logins(installed: List(Extension)) -> List(oauth.Login) {
   })
 }
 
-pub fn model_client(
+pub fn upstream(
   installed: List(Extension),
   context: ModelContext,
-) -> Result(types.Client, String) {
+) -> Result(Upstream, String) {
   installed
   |> list.flat_map(fn(extension) {
     list.filter_map(extension.plugins, fn(plugin) {

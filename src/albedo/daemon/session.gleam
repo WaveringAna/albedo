@@ -1261,7 +1261,7 @@ fn discard(path: String) -> Nil
 
 fn prepare_submission(
   state: State,
-) -> Result(#(State, runtime.Session, types.Client), SubmissionError) {
+) -> Result(#(State, runtime.Session, extension.Upstream), SubmissionError) {
   use _ <- result.try(case directory(state.info.cwd) {
     True -> Ok(Nil)
     False -> Error(WorkspaceMissing(state.info.cwd))
@@ -1418,7 +1418,9 @@ fn released_text(
   }
 }
 
-fn configured_client(state: State) -> Result(#(State, types.Client), String) {
+fn configured_client(
+  state: State,
+) -> Result(#(State, extension.Upstream), String) {
   use provider <- result.try(case state.info.provider {
     "" -> {
       use provider <- result.try(configuration.legacy(state.home))
@@ -1443,7 +1445,7 @@ fn configured_client(state: State) -> Result(#(State, types.Client), String) {
       )
     _ -> state
   }
-  use client <- result.try(runtime.model_client(
+  use client <- result.try(runtime.upstream(
     state.host,
     state.info.id,
     state.home,
@@ -1586,7 +1588,7 @@ fn wake(session: Session, submission: Submission) -> bash.Wake {
 fn start_run(
   state: State,
   kernel: runtime.Session,
-  client: types.Client,
+  client: extension.Upstream,
   model_history: List(types.Input),
 ) -> State {
   start_worker(state, kernel, client, model_history, turn.Turn(None))
@@ -1595,7 +1597,7 @@ fn start_run(
 fn start_worker(
   state: State,
   kernel: runtime.Session,
-  client: types.Client,
+  client: extension.Upstream,
   model_history: List(types.Input),
   work: turn.Work,
 ) -> State {

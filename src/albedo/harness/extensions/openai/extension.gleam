@@ -30,7 +30,7 @@ fn initialise(_ledger: store.Store) -> Result(Nil, String) {
 
 fn resolve(
   context: extension.ModelContext,
-) -> Option(Result(types.Client, String)) {
+) -> Option(Result(extension.Upstream, String)) {
   case context.provider {
     "openai" ->
       Some(
@@ -45,16 +45,32 @@ fn resolve(
             True ->
               Error("OpenAI provider configuration is invalid; run /login")
             False ->
-              Ok(openai_api.client(
-                context.protocol,
-                config.base_url,
-                config.api_key,
-              ))
+              Ok(
+                openai_api.client(
+                  context.protocol,
+                  config.base_url,
+                  config.api_key,
+                )
+                |> upstream(fn(_) { None }),
+              )
           }
         }),
       )
     _ -> None
   }
+}
+
+/// An upstream served by the shared OpenAI stream.
+pub fn upstream(
+  client: types.Client,
+  explain: fn(types.Error) -> Option(String),
+) -> extension.Upstream {
+  extension.Upstream(
+    client.base_url,
+    client.protocol,
+    fn(request, on_event) { openai_api.stream(client, request, on_event) },
+    explain,
+  )
 }
 
 fn config_decoder() {
