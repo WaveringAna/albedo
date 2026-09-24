@@ -48,6 +48,7 @@ type Message {
   List(Subject(List(conversation.Info)))
   Models(String, String, Subject(List(String)))
   Logins(Subject(List(oauth.Login)))
+  Host(Subject(runtime.Runtime))
   ReadTree(String, Int, Int, Subject(Result(history.Page, String)))
   ReadRecent(String, Int, Subject(Result(history.Recent, String)))
   Fork(String, Int, Subject(Result(conversation.Info, String)))
@@ -212,6 +213,10 @@ fn handle(state: State, message: Message) {
     }
     Logins(reply) -> {
       process.send(reply, runtime.logins(state.host))
+      actor.continue(state)
+    }
+    Host(reply) -> {
+      process.send(reply, state.host)
       actor.continue(state)
     }
     ReadTree(id, after, limit, reply) -> {
@@ -584,7 +589,66 @@ fn uri_decode(segment: String) -> String {
   uri.percent_decode(segment) |> result.unwrap(segment)
 }
 
+/// The daemon's own top-level routes; a service never shadows them.
+const daemon_routes = ["health", "sessions", "models", "auth", "shutdown"]
+
 fn route(
+  config: Config,
+  registry: Subject(Message),
+  req: request.Request(mist.Connection),
+) -> response.Response(mist.ResponseData) {
+  case request.path_segments(req) {
+    [name, ..rest] ->
+      case list.contains(daemon_routes, name) {
+        True -> daemon_route(config, registry, req)
+        False -> {
+          let host = actor.call(registry, 5000, Host)
+          case
+            runtime.global(host)
+            |> result.replace_error(Nil)
+            |> result.try(extension.service(_, name))
+          {
+            // A browser page must not reach a local service that spends the
+            // user's credentials, so cross-origin requests stay refused.
+            Ok(service) ->
+              case request.get_header(req, "origin") {
+                Ok(_) -> error(403, "forbidden")
+                Error(_) ->
+                  service.handle(daemon(config, registry, host), rest, req)
+              }
+            Error(_) -> daemon_route(config, registry, req)
+          }
+        }
+      }
+    [] -> daemon_route(config, registry, req)
+  }
+}
+
+fn daemon(
+  config: Config,
+  registry: Subject(Message),
+  host: runtime.Runtime,
+) -> extension.Daemon {
+  extension.Daemon(
+    config.home,
+    fn(profile, model, session) {
+      use provider <- result.try(configuration.named(config.home, profile))
+      runtime.upstream(
+        host,
+        session,
+        config.home,
+        profile,
+        provider.extension,
+        model,
+        provider.protocol,
+      )
+    },
+    fn(provider, endpoint) { runtime.model_names(host, provider, endpoint) },
+    fn() { actor.call(registry, 5000, List) },
+  )
+}
+
+fn daemon_route(
   config: Config,
   registry: Subject(Message),
   req: request.Request(mist.Connection),
@@ -979,7 +1043,8 @@ pub fn main() -> Nil {
     as "start albedo through its CLI"
   let assert Ok(_) = claim_home(home)
     as "another albedo daemon is already running for this ALBEDO_HOME"
-  let assert Ok(port) = start(config, 0)
+  // A fixed port gives services such as the proxy a stable base url.
+  let assert Ok(port) = start(config, setting("ALBEDO_PORT", 0, 0, 65_535))
   let assert Ok(_) = ready(home, port, token)
   inspect(home)
   watch_parent(env("ALBEDO_PARENT_PID"))

@@ -898,6 +898,16 @@ pub fn model_info(
   )
 }
 
+/// The extensions enabled with no session override: what services run with.
+pub fn global(runtime: Runtime) -> Result(List(extension.Extension), String) {
+  extension.enabled(
+    runtime.work,
+    runtime.extensions,
+    runtime.default_enabled,
+    "",
+  )
+}
+
 pub fn logins(runtime: Runtime) -> List(oauth.Login) {
   extension.logins(runtime.extensions)
 }

@@ -1,5 +1,6 @@
 //// Extensions are ordered bundles of model context, tools, REPL modules, RPC routes, and request policies.
 
+import albedo/daemon/conversation
 import albedo/daemon/store
 import albedo/harness/command
 import albedo/harness/compaction
@@ -9,10 +10,13 @@ import albedo/harness/settings
 import albedo/openai_api/types
 import gleam/dict
 import gleam/dynamic/decode
+import gleam/http/request
+import gleam/http/response
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import mist
 import sqlight
 
 pub type Context {
@@ -135,6 +139,32 @@ pub type Plugin {
   ModelProviderPlugin(provider: ModelProvider)
   /// A browser sign-in the daemon runs on behalf of clients.
   LoginPlugin(login: oauth.Login)
+  /// HTTP routes the daemon serves under `/<extension>/` while the extension
+  /// is enabled globally.
+  ServicePlugin(service: Service)
+}
+
+/// Handles a request below the extension's mount point. The daemon token does
+/// not apply: a service owns its own authentication.
+pub type Service {
+  Service(
+    handle: fn(Daemon, List(String), request.Request(mist.Connection)) ->
+      response.Response(mist.ResponseData),
+  )
+}
+
+/// What a service can reach. It serves requests outside any session, so
+/// upstreams resolve with the global extension selection.
+pub type Daemon {
+  Daemon(
+    home: String,
+    /// The upstream a saved profile resolves to for `model`, with `session`
+    /// naming the conversation for providers that keep per-session identity.
+    upstream: fn(String, String, String) -> Result(Upstream, String),
+    /// Catalog model ids for a provider extension and endpoint.
+    models: fn(String, String) -> List(String),
+    sessions: fn() -> List(conversation.Info),
+  )
 }
 
 pub type Extension {
@@ -619,6 +649,7 @@ pub fn summaries(
             ModelsPlugin(_) -> "models"
             ModelProviderPlugin(_) -> "model_provider"
             LoginPlugin(_) -> "login"
+            ServicePlugin(_) -> "service"
           }
         }),
       )
@@ -800,6 +831,23 @@ pub fn provider_model_names(
     model_names(installed, catalog_provider, endpoint)
   })
   |> result.unwrap([])
+}
+
+/// The service an enabled extension mounts, if any.
+pub fn service(
+  selected: List(Extension),
+  name: String,
+) -> Result(Service, Nil) {
+  selected
+  |> list.find(fn(extension) { extension.name == name })
+  |> result.try(fn(extension) {
+    list.find_map(extension.plugins, fn(plugin) {
+      case plugin {
+        ServicePlugin(service) -> Ok(service)
+        _ -> Error(Nil)
+      }
+    })
+  })
 }
 
 pub fn logins(installed: List(Extension)) -> List(oauth.Login) {
