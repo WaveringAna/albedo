@@ -76,13 +76,16 @@ func (m CommandMenuModel) Matches(input string) []ChatCommand {
 		}
 	}
 
-	var matched []ChatCommand
+	var direct []ChatCommand
+	var others []ChatCommand
 	for _, cmd := range deduped {
-		if strings.HasPrefix(cmd.Name, input) {
-			matched = append(matched, cmd)
+		if cmd.Name == input {
+			direct = append(direct, cmd)
+		} else if strings.HasPrefix(cmd.Name, input) {
+			others = append(others, cmd)
 		}
 	}
-	return matched
+	return append(direct, others...)
 }
 
 // OnKey handles navigation within the command popup. Returns true if consumed.
