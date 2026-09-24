@@ -225,3 +225,23 @@ pub fn damaged_state_falls_back_to_portable_history_test() {
     == Ok(["call_1"])
   assert result.input == types.ToolOutput("call_1", "ok", [])
 }
+
+/// Clients that normalize ids (LiteLLM #37849) must not corrupt a replay.
+/// Short cuts can remove only the zlib checksum and leave complete JSON, so
+/// every one replays portably instead of trusting unverified state.
+pub fn a_shortened_carried_id_replays_portably_test() {
+  let carried = chat.carry(responses_turn(), "cx", types.Responses)
+  let assert [first, second] = carried.tool_calls
+  list.each([1, 2, 3, 4, 5, 6], fn(n) {
+    let cut = string.drop_end(first.id, n)
+    let shortened =
+      types.Turn(..carried, tool_calls: [
+        types.ToolCall(..first, id: cut),
+        second,
+      ])
+    let assert Ok(completion) = parse(echoed(shortened))
+    let assert [_, call, first_result, _] = completion.history
+    assert call.provider == None
+    assert first_result.input == types.ToolOutput("call_1", "ok", [])
+  })
+}

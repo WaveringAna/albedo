@@ -21,6 +21,9 @@ unpack(Text) ->
         Z = zlib:open(),
         ok = zlib:inflateInit(Z),
         Inflated = bounded(Z, zlib:safeInflate(Z, base64:decode(Text, #{mode => urlsafe, padding => false})), []),
+        %% Raises unless the stream ended with a matching checksum, so a
+        %% client that truncated or rewrote the id gets the portable path.
+        ok = zlib:inflateEnd(Z),
         zlib:close(Z),
         Inflated
     catch _:_ -> {error, nil}
