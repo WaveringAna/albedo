@@ -324,6 +324,83 @@ pub fn list(store: store.Store) -> Result(List(Info), String) {
   })
 }
 
+/// Permanently remove a session and its dependent records in one transaction.
+pub fn delete(store: store.Store, id: String) -> Result(Nil, String) {
+  store.query(store, fn(db) {
+    use _ <- result.try(
+      sqlight.exec("BEGIN IMMEDIATE", db)
+      |> result.map_error(fn(e) { e.message }),
+    )
+    let deleted = {
+      use tables <- result.try(
+        sqlight.query(
+          "SELECT name FROM sqlite_master WHERE type='table'",
+          db,
+          [],
+          decode.field(0, decode.string, decode.success),
+        )
+        |> result.map_error(fn(e) { e.message }),
+      )
+      use _ <- result.try(
+        list.try_each(
+          [
+            "transcript",
+            "schedules",
+            "session_extensions",
+            "rolling_compaction_state",
+            "rolling_compaction_observation",
+            "cells",
+            "work",
+          ],
+          fn(table) {
+            case list.contains(tables, table) {
+              False -> Ok(Nil)
+              True -> {
+                use _ <- result.try(case table {
+                  "cells" ->
+                    sqlight.query(
+                      "DELETE FROM cell_traces WHERE id IN (SELECT id FROM cells WHERE session=?)",
+                      db,
+                      [sqlight.text(id)],
+                      decode.dynamic,
+                    )
+                    |> result.replace(Nil)
+                    |> result.map_error(fn(e) { e.message })
+                  _ -> Ok(Nil)
+                })
+                sqlight.query(
+                  "DELETE FROM " <> table <> " WHERE session=?",
+                  db,
+                  [sqlight.text(id)],
+                  decode.dynamic,
+                )
+                |> result.replace(Nil)
+                |> result.map_error(fn(e) { e.message })
+              }
+            }
+          },
+        ),
+      )
+      sqlight.query(
+        "DELETE FROM sessions WHERE id=?",
+        db,
+        [sqlight.text(id)],
+        decode.dynamic,
+      )
+      |> result.replace(Nil)
+      |> result.map_error(fn(e) { e.message })
+    }
+    case deleted {
+      Ok(_) ->
+        sqlight.exec("COMMIT", db) |> result.map_error(fn(e) { e.message })
+      Error(e) -> {
+        let _ = sqlight.exec("ROLLBACK", db)
+        Error(e)
+      }
+    }
+  })
+}
+
 pub fn create(store: store.Store, info: Info) -> Result(Nil, String) {
   store.query(store, fn(db) {
     sqlight.query(

@@ -217,7 +217,11 @@ func svFit(s string, w int) string {
 
 // titleRule is the brand at the workspace over a rule.
 func (m SessionViewer) titleRule(width int) string {
-	return " " + titleRule(width-1, located("albedo", sessionText(homePath(m.Workspace))), "")
+	label := "albedo"
+	if m.ArchiveView {
+		label = "albedo  archive"
+	}
+	return " " + titleRule(width-1, located(label, sessionText(homePath(m.Workspace))), "")
 }
 
 func (m SessionViewer) footer(width int, now time.Time) string {
@@ -225,7 +229,13 @@ func (m SessionViewer) footer(width int, now time.Time) string {
 	if m.HasActive {
 		esc = "back"
 	}
-	left := " " + keyHints(hint{"↑↓", "move"}, hint{"tab", "switch"}, hint{"enter", "open"}, hint{"^s", "pin"}, hint{"esc", esc})
+	left := " " + keyHints(hint{"↑↓", "move"}, hint{"tab", "switch"}, hint{"enter", "open"}, hint{"^s", "pin"}, hint{"^a", "archive"}, hint{"esc", esc})
+	if m.ArchiveView {
+		left = " " + keyHints(hint{"↑↓", "move"}, hint{"enter", "open"}, hint{"^a", "restore"}, hint{"^d", "delete"}, hint{"esc", "back"})
+	}
+	if m.ConfirmDelete != "" {
+		return " " + DefaultStyles.Error.Render("Permanently delete session and its data? y to confirm · any other key cancels")
+	}
 
 	var right string
 	if m.notice != "" {
@@ -239,7 +249,12 @@ func (m SessionViewer) footer(width int, now time.Time) string {
 				today++
 			}
 		}
-		right = DefaultStyles.Faint.Render(fmt.Sprintf("%d sessions", len(m.Sessions)))
+		count := len(m.Sessions)
+		if m.ArchiveView {
+			count = len(m.prefs.Archived)
+			today = 0
+		}
+		right = DefaultStyles.Faint.Render(fmt.Sprintf("%d sessions", count))
 		if today > 0 {
 			right += DefaultStyles.Decor.Render(" · ") + DefaultStyles.Success.Render(fmt.Sprintf("%d today", today))
 		}
@@ -285,6 +300,8 @@ func (m SessionViewer) column(indices []int, width, height int, now time.Time, f
 			DefaultStyles.Faint.Render("   ")+DefaultStyles.Muted.Render("ctrl+s")+DefaultStyles.Faint.Render(" to keep it here."),
 			"", DefaultStyles.Faint.Render("   sessions you open often"),
 			DefaultStyles.Faint.Render("   show up here on their own."))
+	case len(indices) == 0 && m.ArchiveView && m.SearchInput.Value() == "":
+		all = append(all, DefaultStyles.Faint.Render("   archive is empty"))
 	case len(indices) == 0 && m.Loading:
 		all = append(all, DefaultStyles.Faint.Render("   loading sessions…"))
 	case len(indices) == 0:
@@ -344,7 +361,9 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 
 	if sec == secAction {
 		glyph, title, hint, fg := "✦ ", "New session", "in "+sessionText(filepath.Base(m.Workspace)), DefaultStyles.You
-		if item.ID == "login" {
+		if item.ID == "archive" {
+			glyph, title, hint, fg = "▤ ", "Archive", fmt.Sprintf("%d sessions", len(m.prefs.Archived)), DefaultStyles.Muted
+		} else if item.ID == "login" {
 			glyph, title, hint, fg = "◇ ", "Accounts", "providers", DefaultStyles.Muted
 		}
 		titleWidth := min(ansi.StringWidth(title), cols.title)
@@ -452,6 +471,10 @@ func (m SessionViewer) actionPreview(id string, inner, height int) []string {
 		lines = append(lines, "", gradientText("New session", true), "",
 			DefaultStyles.Muted.Render("start fresh in ")+lipgloss.NewStyle().Render(sessionText(homePath(m.Workspace))), "",
 			DefaultStyles.Faint.Render("enter ")+DefaultStyles.Muted.Render("begin"))
+	} else if id == "archive" {
+		lines = append(lines, "", "", DefaultStyles.Muted.Bold(true).Render("▤ Archive"), "",
+			DefaultStyles.Muted.Render("Sessions kept out of the main list."), "",
+			DefaultStyles.Faint.Render("enter ")+DefaultStyles.Muted.Render("browse"))
 	} else {
 		lines = append(lines, "", "", DefaultStyles.Muted.Bold(true).Render("◇ Accounts"), "",
 			DefaultStyles.Muted.Render("add a provider, sign in, or pick"), DefaultStyles.Muted.Render("which one new sessions use."), "",

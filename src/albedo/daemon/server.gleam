@@ -15,7 +15,7 @@ import gleam/bytes_tree
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
-import gleam/http.{Get, Post}
+import gleam/http.{Delete, Get, Post}
 import gleam/http/request
 import gleam/http/response
 import gleam/int
@@ -54,6 +54,7 @@ type Message {
   ReadTree(String, Int, Int, Subject(Result(history.Page, String)))
   ReadRecent(String, Int, Subject(Result(history.Recent, String)))
   Fork(String, Int, Subject(Result(conversation.Info, String)))
+  DeleteSession(String, Subject(Result(Nil, String)))
   SetWorkspace(String, String, Subject(Result(conversation.Info, String)))
   WorkerDown(process.Down)
   Sweep
@@ -264,6 +265,39 @@ fn handle(state: State, message: Message) {
               sessions: dict.insert(state.sessions, info.id, #(info, None)),
             ),
           )
+        Error(_) -> actor.continue(state)
+      }
+    }
+    DeleteSession(id, reply) -> {
+      let deleted = case dict.get(state.sessions, id) {
+        Error(_) -> Error("session not found")
+        Ok(#(info, worker)) ->
+          case worker {
+            Some(active) ->
+              case session.report(active).running {
+                True -> Error("session is busy")
+                False -> conversation.delete(runtime.ledger(state.host), id)
+              }
+            None ->
+              case conversation.resumable(info.stage) {
+                True -> Error("session is busy")
+                False -> conversation.delete(runtime.ledger(state.host), id)
+              }
+          }
+      }
+      process.send(reply, deleted)
+      case deleted {
+        Ok(_) -> {
+          case dict.get(state.sessions, id) {
+            Ok(#(_, Some(worker))) -> session.close(worker)
+            _ -> Nil
+          }
+          runtime.forget_session(state.host, id)
+          session.discard_state(state.config.home, id)
+          actor.continue(
+            State(..state, sessions: dict.delete(state.sessions, id)),
+          )
+        }
         Error(_) -> actor.continue(state)
       }
     }
@@ -813,6 +847,11 @@ fn daemon_route(
           let _ = process.send_after(registry, 100, Shutdown)
           reply(200, json.object([#("ok", json.bool(True))]))
         }
+        Delete, ["sessions", id] ->
+          case actor.call(registry, 40_000, DeleteSession(id, _)) {
+            Ok(_) -> reply(200, json.object([#("ok", json.bool(True))]))
+            Error(e) -> error(409, e)
+          }
         Get, ["sessions", id, "tree"] -> {
           let query = request.get_query(req) |> result.unwrap([])
           let after =

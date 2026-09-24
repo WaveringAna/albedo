@@ -486,3 +486,44 @@ pub fn latest_user_skips_notes_test() {
   |> conversation.latest_user
   |> should.equal(None)
 }
+
+pub fn delete_session_removes_transcript_and_records_test() {
+  let path = temporary_database()
+  let assert Ok(host) = runtime.start(path)
+  let ledger = runtime.ledger(host)
+  let assert Ok(_) = conversation.initialise(ledger)
+  let assert Ok(_) = conversation.create(ledger, session("gone"))
+  let assert Ok(_) = conversation.create(ledger, session("kept"))
+  let assert Ok(_) =
+    store.query(ledger, fn(db) {
+      sqlight.exec(
+        "INSERT INTO transcript(session,payload) VALUES('gone',X'00')",
+        db,
+      )
+    })
+  let assert Ok(_) = conversation.delete(ledger, "gone")
+  let assert Ok(sessions) = conversation.list(ledger)
+  list.map(sessions, fn(info) { info.id }) |> should.equal(["kept"])
+  let assert Ok(entries) =
+    store.query(ledger, fn(db) {
+      sqlight.query(
+        "SELECT session FROM transcript",
+        db,
+        [],
+        decode.field(0, decode.string, decode.success),
+      )
+    })
+  entries |> should.equal([])
+  let assert Ok(cells) =
+    store.query(ledger, fn(db) {
+      sqlight.query(
+        "SELECT id FROM cells",
+        db,
+        [],
+        decode.field(0, decode.string, decode.success),
+      )
+    })
+  cells |> should.equal([])
+  runtime.stop(host)
+  cleanup(path)
+}

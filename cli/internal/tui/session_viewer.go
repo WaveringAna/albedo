@@ -2,6 +2,7 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -21,9 +22,10 @@ const (
 	secToday
 	secWeek
 	secEarlier
+	secArchived
 )
 
-var sectionTitles = [...]string{"", "pinned", "most used", "today", "this week", "earlier"}
+var sectionTitles = [...]string{"", "pinned", "most used", "today", "this week", "earlier", "archived"}
 
 // frequentLimit caps the most-used group; a session needs frequentMinOpens
 // opens before it counts as used rather than merely visited.
@@ -64,12 +66,14 @@ type cachedPreview struct {
 // sessions as lists, and a transcript preview of the highlighted session.
 type SessionViewer struct {
 	PickerModel
-	Sessions  []daemon.Session
-	Workspace string
-	Loading   bool
-	HasActive bool
+	Sessions      []daemon.Session
+	Workspace     string
+	Loading       bool
+	HasActive     bool
+	ArchiveView   bool
+	ConfirmDelete string
 
-	// PrefsPath stores pins and open counts; empty keeps them in memory only.
+	// PrefsPath stores picker and chat preferences; empty keeps them in memory only.
 	PrefsPath string
 	// Fetch loads a preview; nil disables previews.
 	Fetch func(id string) tea.Cmd
@@ -102,10 +106,11 @@ func sessionViewerActions(workspace string) []PickerItem {
 	return []PickerItem{
 		{ID: "new", Label: "New session", Detail: workspace},
 		{ID: "login", Label: "Accounts", Detail: "add or select a provider"},
+		{ID: "archive", Label: "Archive", Detail: "browse archived sessions"},
 	}
 }
 
-// LoadPrefs reads pins and open counts from path and keeps them there.
+// LoadPrefs reads picker and chat preferences from path.
 func (m *SessionViewer) LoadPrefs(path string) {
 	m.PrefsPath = path
 	m.prefs = loadSessionPrefs(path)
@@ -150,7 +155,7 @@ func (m *SessionViewer) SetSessions(sessions []daemon.Session, active *daemon.Se
 	// Initial load favors the active or most recent session; later refreshes
 	// keep the cursor.
 	target := ""
-	if active != nil {
+	if active != nil && !m.prefs.archived(active.ID) && !m.ArchiveView {
 		target = active.ID
 	} else if ok && m.section[previous.ID] != secAction {
 		target = previous.ID
@@ -195,14 +200,14 @@ func (m *SessionViewer) rebuild() {
 	clear(m.section)
 	var ordered []daemon.Session
 	for _, id := range m.prefs.Pinned {
-		if s, ok := byID[id]; ok {
+		if s, ok := byID[id]; ok && !m.prefs.archived(id) {
 			m.section[id] = secPinned
 			ordered = append(ordered, s)
 		}
 	}
 	var frequent []daemon.Session
 	for _, s := range listed {
-		if _, taken := m.section[s.ID]; !taken && m.prefs.Opens[s.ID] >= frequentMinOpens {
+		if _, taken := m.section[s.ID]; !taken && !m.prefs.archived(s.ID) && m.prefs.Opens[s.ID] >= frequentMinOpens {
 			frequent = append(frequent, s)
 		}
 	}
@@ -226,6 +231,10 @@ func (m *SessionViewer) rebuild() {
 	}
 	var rest []daemon.Session
 	for i, s := range listed {
+		if m.prefs.archived(s.ID) {
+			m.section[s.ID] = secArchived
+			continue
+		}
 		if _, taken := m.section[s.ID]; taken {
 			continue
 		}
@@ -242,7 +251,17 @@ func (m *SessionViewer) rebuild() {
 	m.Sessions = append(ordered, rest...)
 
 	items := sessionViewerActions(m.Workspace)
-	for _, s := range m.Sessions {
+	if m.ArchiveView {
+		items = nil
+	}
+	visible := m.Sessions
+	if m.ArchiveView {
+		visible = listed
+	}
+	for _, s := range visible {
+		if m.ArchiveView != m.prefs.archived(s.ID) {
+			continue
+		}
 		items = append(items, PickerItem{ID: s.ID, Label: sessionTitle(s), Detail: sessionText(s.Workspace + " " + s.Model + " " + s.Provider)})
 	}
 	m.Items = items
@@ -276,10 +295,13 @@ func (m *SessionViewer) focus(id string) {
 }
 
 func (m SessionViewer) session(id string) (daemon.Session, bool) {
-	for _, s := range m.Sessions {
+	for _, s := range m.raw {
 		if s.ID == id {
 			return s, true
 		}
+	}
+	if m.active != nil && m.active.ID == id {
+		return *m.active, true
 	}
 	return daemon.Session{}, false
 }
@@ -323,7 +345,7 @@ func (m *SessionViewer) RecordOpen(id string) {
 
 func (m *SessionViewer) togglePin() {
 	item, ok := m.Highlighted()
-	if !ok || m.section[item.ID] == secAction {
+	if !ok || m.section[item.ID] == secAction || m.ArchiveView {
 		return
 	}
 	m.prefs.togglePin(item.ID)
@@ -335,8 +357,53 @@ func (m *SessionViewer) togglePin() {
 func (m *SessionViewer) savePrefs() {
 	m.notice = ""
 	if err := m.prefs.save(m.PrefsPath); err != nil {
-		m.notice = "could not save pins: " + err.Error()
+		m.notice = "could not save session preferences: " + err.Error()
 	}
+}
+
+type SessionDeleteMsg struct{ ID string }
+
+func (m *SessionViewer) toggleArchive() {
+	item, ok := m.Highlighted()
+	if !ok || m.section[item.ID] == secAction {
+		return
+	}
+	if m.prefs.archived(item.ID) {
+		m.prefs.Archived = slices.DeleteFunc(m.prefs.Archived, func(id string) bool { return id == item.ID })
+	} else {
+		m.prefs.Archived = append(m.prefs.Archived, item.ID)
+	}
+	index := m.Cursor
+	m.savePrefs()
+	m.rebuild()
+	m.Cursor = min(index, max(0, len(m.Filtered)-1))
+}
+
+func (m *SessionViewer) OpenArchive() {
+	m.ArchiveView = true
+	m.ConfirmDelete = ""
+	m.SearchInput.SetValue("")
+	m.rebuild()
+	m.Cursor = 0
+}
+
+func (m *SessionViewer) CloseArchive() {
+	m.ArchiveView = false
+	m.ConfirmDelete = ""
+	m.SearchInput.SetValue("")
+	m.rebuild()
+	m.focus("archive")
+}
+
+func (m *SessionViewer) Removed(id string) {
+	m.raw = slices.DeleteFunc(m.raw, func(s daemon.Session) bool { return s.ID == id })
+	m.prefs.Archived = slices.DeleteFunc(m.prefs.Archived, func(v string) bool { return v == id })
+	m.prefs.Pinned = slices.DeleteFunc(m.prefs.Pinned, func(v string) bool { return v == id })
+	delete(m.prefs.Opens, id)
+	delete(m.previews, id)
+	m.ConfirmDelete = ""
+	m.savePrefs()
+	m.rebuild()
 }
 
 func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
@@ -357,7 +424,29 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyMsg:
+		if m.ConfirmDelete != "" {
+			id := m.ConfirmDelete
+			m.ConfirmDelete = ""
+			if msg.Type == tea.KeyRunes && string(msg.Runes) == "y" {
+				return m, func() tea.Msg { return SessionDeleteMsg{ID: id} }
+			}
+			return m, nil
+		}
+		if m.ArchiveView && msg.Type == tea.KeyEsc {
+			m.CloseArchive()
+			return m, nil
+		}
 		switch msg.Type {
+		case tea.KeyCtrlD:
+			if m.ArchiveView {
+				if item, ok := m.Highlighted(); ok {
+					m.ConfirmDelete = item.ID
+				}
+			}
+			return m, nil
+		case tea.KeyCtrlA:
+			m.toggleArchive()
+			return m, nil
 		case tea.KeyCtrlS:
 			m.togglePin()
 			return m, nil

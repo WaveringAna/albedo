@@ -302,6 +302,14 @@ pub fn context_page(
   actor.call(session, 5000, ReadContextPage(section, page, _))
 }
 
+/// Remove the saved variables after a session has stopped.
+pub fn discard_state(home: String, id: String) -> Nil {
+  case id == "" || string.contains(id, "/") || string.contains(id, "..") {
+    True -> Nil
+    False -> discard(home <> "/kernels/" <> id <> ".state")
+  }
+}
+
 pub fn close(session: Session) -> Nil {
   actor.call(session, 30_000, Close)
 }

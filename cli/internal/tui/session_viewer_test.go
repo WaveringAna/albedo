@@ -113,7 +113,7 @@ func TestSessionViewerFavouritesColumnAndPins(t *testing.T) {
 	for _, item := range m.Filtered {
 		order = append(order, item.ID)
 	}
-	if got := strings.Join(order, " "); got != "new login pin busy today old" {
+	if got := strings.Join(order, " "); got != "new login archive pin busy today old" {
 		t.Fatalf("order: %s", got)
 	}
 	if item, _ := m.Highlighted(); item.ID != "today" {
@@ -220,7 +220,7 @@ func TestSessionViewerUndatedSessionsFollowActivity(t *testing.T) {
 	for _, item := range m.Filtered {
 		order = append(order, item.ID)
 	}
-	if got := strings.Join(order, " "); got != "new login fresh waiting today old" {
+	if got := strings.Join(order, " "); got != "new login archive fresh waiting today old" {
 		t.Fatalf("order: %s", got)
 	}
 	if m.section["fresh"] != secToday || m.section["waiting"] != secToday {
@@ -229,5 +229,64 @@ func TestSessionViewerUndatedSessionsFollowActivity(t *testing.T) {
 	m.SetSessions(sessions, nil)
 	if m.section["fresh"] != secEarlier {
 		t.Fatalf("empty inactive session: %d", m.section["fresh"])
+	}
+}
+
+func TestSessionViewerArchiveRestoreAndDeleteConfirmation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "picker.json")
+	m := NewSessionViewer("/work")
+	m.LoadPrefs(path)
+	m.SetSessions([]daemon.Session{{ID: "one", Title: "Keep me"}, {ID: "two", Title: "Archive me"}}, nil)
+	m.focus("two")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	if item, _ := m.Highlighted(); item.ID != "one" {
+		t.Fatalf("archiving jumped to %q instead of neighboring session", item.ID)
+	}
+	if containsSession(m.Sessions, "two") || !m.prefs.archived("two") {
+		t.Fatal("archive must hide, not delete")
+	}
+	reloaded := NewSessionViewer("/work")
+	reloaded.LoadPrefs(path)
+	reloaded.SetSessions(m.raw, nil)
+	reloaded.OpenArchive()
+	if len(reloaded.Filtered) != 1 || reloaded.Filtered[0].ID != "two" {
+		t.Fatalf("archive: %+v", reloaded.Filtered)
+	}
+	reloaded, _ = reloaded.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	if reloaded.ConfirmDelete != "two" {
+		t.Fatal("deletion must request confirmation")
+	}
+	reloaded, cmd := reloaded.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if cmd != nil || reloaded.ConfirmDelete != "" {
+		t.Fatal("cancellation deleted session")
+	}
+	reloaded, _ = reloaded.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	reloaded, cmd = reloaded.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if msg, ok := cmd().(SessionDeleteMsg); !ok || msg.ID != "two" {
+		t.Fatalf("confirmation: %v", msg)
+	}
+	reloaded, _ = reloaded.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	if reloaded.prefs.archived("two") || len(reloaded.Filtered) != 0 {
+		t.Fatal("restore should remove from archive")
+	}
+	reloaded.CloseArchive()
+	if !containsSession(reloaded.Sessions, "two") {
+		t.Fatal("restored session missing")
+	}
+}
+
+func TestSessionViewerArchiveKeepsNearbySelection(t *testing.T) {
+	m := NewSessionViewer("/work")
+	m.SetSessions([]daemon.Session{{ID: "one"}, {ID: "two"}, {ID: "three"}}, nil)
+	m.focus("two")
+	index := m.Cursor
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	if item, _ := m.Highlighted(); item.ID != "three" || m.Cursor != index {
+		t.Fatalf("expected next session at index %d, got %+v at %d", index, item, m.Cursor)
+	}
+	m.OpenArchive()
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	if len(m.Filtered) != 0 || m.Cursor != 0 {
+		t.Fatalf("empty archive cursor: %d", m.Cursor)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -32,6 +33,11 @@ type sessionsLoadedMsg struct {
 	Sessions []daemon.Session
 	Err      error
 	Gen      int
+}
+
+type sessionDeletedMsg struct {
+	ID  string
+	Err error
 }
 
 type sessionCreatedMsg struct {
@@ -124,6 +130,20 @@ type AppModel struct {
 	CapabilityPage   CapabilityPageModel
 }
 
+// LoadPrefs applies the same display choices to the initial and future chats.
+func (m *AppModel) LoadPrefs(path string) {
+	m.SessionPicker.LoadPrefs(path)
+	m.Chat.Flags.Thinking = m.SessionPicker.prefs.Thinking
+	m.Chat.Flags.Tools = m.SessionPicker.prefs.Tools
+}
+
+func (m AppModel) newChatModel(session *daemon.Session) ChatModel {
+	chat := NewChatModel(session, m.newChatClient(session.ID))
+	chat.Flags.Thinking = m.SessionPicker.prefs.Thinking
+	chat.Flags.Tools = m.SessionPicker.prefs.Tools
+	return chat
+}
+
 func (m AppModel) newChatClient(sessionID string) *daemon.ChatClient {
 	var baseURL, token string
 	if m.Conn != nil {
@@ -151,7 +171,7 @@ func NewAppModel(conn *daemon.Connection, profiles config.Profiles, initialSessi
 		m.Login.BrowserOpener = m.BrowserOpener
 	} else if initialSession != nil {
 		m.State = AppStateChat
-		m.Chat = NewChatModel(initialSession, m.newChatClient(initialSession.ID))
+		m.Chat = m.newChatModel(initialSession)
 	} else {
 		m.State = AppStateSessionPicker
 	}
@@ -195,6 +215,17 @@ func (m AppModel) loadSessionsCmd(gen int) tea.Cmd {
 		}
 		sessions, err := daemon.Request[[]daemon.Session](context.Background(), m.Conn, "/sessions", nil)
 		return sessionsLoadedMsg{Sessions: sessions, Err: err, Gen: gen}
+	}
+}
+
+func (m AppModel) deleteSessionCmd(id string) tea.Cmd {
+	conn := m.Conn
+	return func() tea.Msg {
+		if conn == nil {
+			return sessionDeletedMsg{ID: id, Err: errors.New("daemon connection unavailable")}
+		}
+		_, err := daemon.RequestMethod[struct{}](context.Background(), conn, http.MethodDelete, "/sessions/"+url.PathEscape(id), nil)
+		return sessionDeletedMsg{ID: id, Err: err}
 	}
 }
 
@@ -555,6 +586,27 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		}
 		return m, nil
 
+	case sessionDeletedMsg:
+		if msg.Err != nil {
+			m.Error = "Could not delete session: " + msg.Err.Error()
+			return m, nil
+		}
+		m.SessionPicker.Removed(msg.ID)
+		for i, session := range m.Sessions {
+			if session.ID == msg.ID {
+				m.Sessions = append(m.Sessions[:i], m.Sessions[i+1:]...)
+				break
+			}
+		}
+		m.Error = ""
+		return m, nil
+
+	case SessionDeleteMsg:
+		if m.State != AppStateSessionPicker || !m.SessionPicker.ArchiveView || m.ActiveSession != nil && m.ActiveSession.ID == msg.ID {
+			return m, nil
+		}
+		return m, m.deleteSessionCmd(msg.ID)
+
 	case sessionsLoadedMsg:
 		if msg.Gen != m.SessionGen {
 			return m, nil
@@ -583,7 +635,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		s := msg.Session
 		m.ActiveSession = &s
 		m.Sessions = append([]daemon.Session{s}, m.Sessions...)
-		m.Chat = NewChatModel(&s, m.newChatClient(s.ID))
+		m.Chat = m.newChatModel(&s)
 		m.Chat.SetSize(m.Width, m.Height)
 		m.State = AppStateChat
 		m.Error = ""
@@ -787,7 +839,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		branch := msg.Session
 		m.ActiveSession = &branch
 		m.Sessions = append([]daemon.Session{branch}, m.Sessions...)
-		m.Chat = NewChatModel(&branch, m.newChatClient(branch.ID))
+		m.Chat = m.newChatModel(&branch)
 		m.Chat.SetSize(m.Width, m.Height)
 		m.State = AppStateChat
 		m.CatalogGen++
@@ -938,6 +990,10 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 				m.SessionGen++
 				return m, m.createSessionCmd(m.SessionGen)
 			}
+			if msg.ID == "archive" {
+				m.SessionPicker.OpenArchive()
+				return m, nil
+			}
 			if msg.ID == "login" {
 				previous := m.Login.Close()
 				m.Login = NewLoginModel(m.Conn, "")
@@ -966,7 +1022,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 					m.Chat.Close()
 					session := s
 					m.ActiveSession = &session
-					m.Chat = NewChatModel(&session, m.newChatClient(session.ID))
+					m.Chat = m.newChatModel(&session)
 					m.Chat.SetSize(m.Width, m.Height)
 					m.State = AppStateChat
 					m.CatalogGen++
@@ -981,6 +1037,10 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 
 	case PickerCancelMsg:
 		if m.State == AppStateSessionPicker {
+			if m.SessionPicker.ArchiveView {
+				m.SessionPicker.CloseArchive()
+				return m, nil
+			}
 			if m.ActiveSession != nil {
 				m.State = AppStateChat
 				return m, nil
@@ -993,7 +1053,16 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 	var cmd tea.Cmd
 	switch m.State {
 	case AppStateChat:
+		before := m.Chat.Flags
 		m.Chat, cmd = m.Chat.Update(msg)
+		if m.Chat.Flags.Thinking != before.Thinking || m.Chat.Flags.Tools != before.Tools {
+			m.SessionPicker.prefs.Thinking = m.Chat.Flags.Thinking
+			m.SessionPicker.prefs.Tools = m.Chat.Flags.Tools
+			m.SessionPicker.savePrefs()
+			if m.SessionPicker.notice != "" {
+				m.Chat.ErrorNotice = m.SessionPicker.notice
+			}
+		}
 	case AppStateSessionPicker:
 		m.SessionPicker, cmd = m.SessionPicker.Update(msg)
 	case AppStateModelPicker:

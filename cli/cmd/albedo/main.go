@@ -219,7 +219,7 @@ func open(id, workspace string, fresh bool) error {
 
 	tui.DetectInk()
 	appModel := tui.NewAppModel(conn, profs, initial, absWorkspace, !configured)
-	appModel.SessionPicker.LoadPrefs(filepath.Join(config.HomeDir(), "picker.json"))
+	appModel.LoadPrefs(filepath.Join(config.HomeDir(), "picker.json"))
 	if os.Getenv("ALBEDO_NO_BROWSER") == "" {
 		appModel.BrowserOpener = config.OpenBrowser
 		appModel.Login.BrowserOpener = config.OpenBrowser
