@@ -57,21 +57,36 @@ fn handle(
   }
 }
 
-/// Each profile answers for its catalog's models and its own saved one.
+/// A profile with its own endpoint lists only its saved model: models.dev
+/// can only guess what an arbitrary endpoint serves. Every other profile
+/// lists its provider's catalog, or its saved model until one is cached.
+///
+/// Listing only helps clients choose: any `<profile>/<model>` is requested
+/// as given. Profiles that cannot be used are named under a nonstandard
+/// `errors` field, which clients ignore, instead of failing the list.
 fn models(daemon: extension.Daemon) -> Json {
-  let profiles = configuration.providers(daemon.home) |> result.unwrap([])
+  let #(profiles, errors) = case configuration.profiles(daemon.home) {
+    Ok(profiles) -> {
+      let #(usable, broken) = result.partition(profiles)
+      #(list.reverse(usable), list.reverse(broken))
+    }
+    Error(message) -> #([], [#("", message)])
+  }
   let ids =
     list.flat_map(profiles, fn(profile) {
-      [
-        profile.model,
-        ..daemon.models(profile.extension, endpoint(daemon, profile))
-      ]
-      |> list.unique
+      case endpoint(daemon, profile) {
+        "" ->
+          case daemon.models(profile.extension, "") {
+            [] -> [profile.model]
+            catalog -> catalog
+          }
+        _ -> [profile.model]
+      }
       |> list.map(fn(model) {
         #(profile.name <> "/" <> model, profile.extension)
       })
     })
-  json.object([
+  let fields = [
     #("object", json.string("list")),
     #(
       "data",
@@ -84,7 +99,22 @@ fn models(daemon: extension.Daemon) -> Json {
         ])
       }),
     ),
-  ])
+  ]
+  json.object(case errors {
+    [] -> fields
+    errors ->
+      list.append(fields, [
+        #(
+          "errors",
+          json.array(errors, fn(pair) {
+            json.object([
+              #("profile", json.string(pair.0)),
+              #("message", json.string(pair.1)),
+            ])
+          }),
+        ),
+      ])
+  })
 }
 
 fn endpoint(
@@ -105,9 +135,18 @@ fn complete(
   completion: chat.Completion,
 ) -> response.Response(mist.ResponseData) {
   let resolved = {
+    use profiles <- result.try(configuration.profiles(daemon.home))
     use profile <- result.try(
-      configuration.named(daemon.home, completion.profile)
-      |> result.replace_error("unknown model " <> completion.requested),
+      list.find_map(profiles, fn(profile) {
+        case profile {
+          Ok(profile) if profile.name == completion.profile -> Ok(Ok(profile))
+          Error(#(name, reason)) if name == completion.profile ->
+            Ok(Error(completion.profile <> ": " <> reason))
+          _ -> Error(Nil)
+        }
+      })
+      |> result.replace_error("unknown model " <> completion.requested)
+      |> result.flatten,
     )
     let model = case completion.model {
       "" -> profile.model

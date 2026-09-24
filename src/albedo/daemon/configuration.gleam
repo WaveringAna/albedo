@@ -15,8 +15,10 @@ pub type Provider {
   )
 }
 
+/// Each saved profile decodes on its own, so one malformed entry makes only
+/// that profile unusable.
 type Configuration {
-  Configuration(active: String, providers: Dict(String, Provider))
+  Configuration(active: String, providers: Dict(String, Result(Provider, Nil)))
 }
 
 pub fn active(home: String) -> Result(Provider, String) {
@@ -32,11 +34,20 @@ pub fn named(home: String, name: String) -> Result(Provider, String) {
 
 /// Every valid saved profile, by name.
 pub fn providers(home: String) -> Result(List(Provider), String) {
+  profiles(home) |> result.map(result.values)
+}
+
+/// Every saved profile by name: usable, or the profile name and why not.
+pub fn profiles(
+  home: String,
+) -> Result(List(Result(Provider, #(String, String))), String) {
   use config <- result.map(load(home))
   config.providers
   |> dict.keys
   |> list.sort(string.compare)
-  |> list.filter_map(configured(config, _))
+  |> list.map(fn(name) {
+    configured(config, name) |> result.map_error(fn(error) { #(name, error) })
+  })
 }
 
 // A migrated flat config remains "default" even if login selected a new provider.
@@ -52,6 +63,10 @@ fn configured(config: Configuration, name: String) -> Result(Provider, String) {
   use provider <- result.try(
     dict.get(config.providers, name)
     |> result.replace_error("active provider is not configured; run /login"),
+  )
+  use provider <- result.try(
+    provider
+    |> result.replace_error("provider configuration is invalid; run /login"),
   )
   case
     string.trim(name) == ""
@@ -94,7 +109,13 @@ fn named_decoder() {
   use active <- decode.optional_field("active", "", decode.string)
   use providers <- decode.field(
     "providers",
-    decode.dict(decode.string, provider_decoder()),
+    decode.dict(
+      decode.string,
+      decode.dynamic
+        |> decode.map(fn(value) {
+          decode.run(value, provider_decoder()) |> result.replace_error(Nil)
+        }),
+    ),
   )
   decode.success(Configuration(active, providers))
 }
@@ -102,7 +123,7 @@ fn named_decoder() {
 fn legacy_decoder() {
   provider_decoder()
   |> decode.map(fn(provider) {
-    Configuration("default", dict.from_list([#("default", provider)]))
+    Configuration("default", dict.from_list([#("default", Ok(provider))]))
   })
 }
 

@@ -88,7 +88,14 @@ def main():
         (home/"config.json").write_text(json.dumps({"active": "chat", "providers": {
             "chat": {"baseUrl": endpoint, "apiKey": "k", "model": "m-chat", "protocol": "chat_completions"},
             "resp": {"baseUrl": endpoint, "apiKey": "k", "model": "m-resp", "protocol": "responses"},
+            "cx": {"extension": "codex", "model": "gpt-saved", "protocol": "responses"},
+            "broken": {"model": 3},
         }}))
+        # A cached models.dev catalog that also knows the fixture endpoint.
+        (home/"models.json").write_text(json.dumps({
+            "openai": {"api": "https://api.openai.com/v1", "models": {"gpt-a": {"id": "gpt-a"}, "gpt-b": {"id": "gpt-b"}}},
+            "local": {"api": endpoint, "models": {"m-chat": {"id": "m-chat"}, "catalog-only": {"id": "catalog-only"}}},
+        }))
         settings = home/"extensions.json"
         settings.write_text(json.dumps({"models": {"refreshHours": 0}}))
         port = free_port()
@@ -105,8 +112,24 @@ def main():
         assert status(models) == 403
         settings.write_text(json.dumps({"models": {"refreshHours": 0}, "enabled": {"proxy": True}}))
         with models() as response:
-            ids = {model["id"] for model in json.load(response)["data"]}
-        assert {"chat/m-chat", "resp/m-resp"} <= ids, ids
+            listing = json.load(response)
+        ids = {model["id"] for model in listing["data"]}
+        # Endpoint profiles list their saved model; catalog profiles list the catalog.
+        # A malformed profile is reported without hiding the usable ones.
+        assert ids == {"chat/m-chat", "resp/m-resp", "cx/gpt-a", "cx/gpt-b"}, ids
+        assert [error["profile"] for error in listing["errors"]] == ["broken"], listing
+        # Listing is only a hint: an unlisted model id is requested as given.
+        with post(base + "/chat/completions", {"model": "chat/unlisted", "messages": [{"role": "user", "content": "hi"}]}) as response:
+            assert json.load(response)["model"] == "chat/unlisted"
+        assert Provider.requests[-1][1]["model"] == "unlisted", Provider.requests[-1]
+        # Broken and signed-out profiles fail only their own requests.
+        for model in ["broken", "cx/gpt-a"]:
+            try:
+                post(base + "/chat/completions", {"model": model, "messages": [{"role": "user", "content": "hi"}]})
+                raise AssertionError(model + " should fail")
+            except urllib.error.HTTPError as error:
+                body = json.load(error)
+                assert error.code == 400 and "/login" in body["error"]["message"], (model, error.code, body)
         assert status(lambda: post(base + "/chat/completions", {}, {"Origin": "https://example.com"})) == 403
 
         tools = [{"type": "function", "function": {"name": "bash", "parameters": {"type": "object"}}}]

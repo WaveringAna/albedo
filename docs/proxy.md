@@ -6,7 +6,8 @@ The `proxy` extension serves an OpenAI-compatible Chat Completions endpoint for 
 
 The proxy is a [service](extensions.md) mounted at `http://127.0.0.1:<port>/proxy/v1`. Set `ALBEDO_PORT` in the daemon's environment to keep the port stable; otherwise it changes each time the daemon starts (see `$ALBEDO_HOME/daemon.json`).
 
-- `GET /proxy/v1/models` lists `<profile>/<model>` for every profile in `config.json`: its saved model and the models its catalog lists.
+- `GET /proxy/v1/models` lists `<profile>/<model>` for every usable profile in `config.json`. A profile with its own `baseUrl` (an API-key profile) lists only its saved model, because models.dev can only guess what an arbitrary endpoint serves. Other profiles, such as `codex` and `antigravity`, list their provider's catalog, or their saved model while no catalog is cached. Profiles that cannot be used, such as a malformed entry, are named under a nonstandard `errors` field (`[{"profile", "message"}]`) instead of failing the list.
+- The list only helps clients choose. Any `<profile>/<model>` is requested as given, listed or not, and a broken or signed-out profile fails only its own requests.
 - `POST /proxy/v1/chat/completions` accepts `model` as `<profile>/<model>`, or a bare `<profile>` for its saved model. Streaming (`stream`, `stream_options.include_usage`) and non-streaming replies are supported.
 
 There is no API key: the daemon binds only to loopback, and any local process can already read `auth.json`. Put an authenticating reverse proxy in front of it if you need one. Requests with an `Origin` header are refused, so web pages cannot call it.
