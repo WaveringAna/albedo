@@ -7,6 +7,8 @@ export type PickerProps = {
   items: { id: string; label: string; detail?: string }[]
   onSelect: (id: string) => void
   onCancel: () => void
+  /** Removes the row the remove key points at; an unhandled id leaves the key to the query. */
+  onDelete?: (id: string) => boolean
   search?: boolean
   title?: string
   initialQuery?: string
@@ -28,7 +30,7 @@ export function SelectableRows({ items, selected, limit }: { items: Row[]; selec
   </Box>
 }
 
-export function Picker({ items, onSelect, onCancel, search = false, title, initialQuery = "", initialSelection }: PickerProps) {
+export function Picker({ items, onSelect, onCancel, onDelete, search = false, title, initialQuery = "", initialSelection }: PickerProps) {
   const [query, setQuery] = useState(initialQuery)
   const [selectedId, setSelectedId] = useState(initialSelection)
   const tokens = query.toLowerCase().trim().split(/\s+/)
@@ -46,6 +48,9 @@ export function Picker({ items, onSelect, onCancel, search = false, title, initi
         setSelectedId(matches[Math.max(0, Math.min(matches.length - 1, selected + (key.upArrow ? -1 : 1)))]?.id)
         return true
       }
+      if ((input === "d" || key.delete) && onDelete && matches[selected] && onDelete(matches[selected]!.id)) {
+        return true
+      }
       if (key.return) {
         const choice = matches[selected]
         if (choice) {
@@ -55,6 +60,6 @@ export function Picker({ items, onSelect, onCancel, search = false, title, initi
       }
       return !search
     }} /></Box>
-    <Text dimColor>↑↓ select · enter choose · esc cancel</Text>
+    <Text dimColor>↑↓ select · enter choose{onDelete ? " · d remove" : ""} · esc cancel</Text>
   </Box>
 }

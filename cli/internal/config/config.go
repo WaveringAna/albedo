@@ -31,17 +31,13 @@ func HomeDir() string {
 	return filepath.Join(home, ".albedo")
 }
 
-// Settings represents provider configuration for either OpenAI or Codex.
+// Settings represents a provider configuration.
 type Settings struct {
 	Extension string `json:"extension,omitempty"`
 	BaseURL   string `json:"baseUrl,omitempty"`
 	APIKey    string `json:"apiKey,omitempty"`
 	Model     string `json:"model"`
 	Protocol  string `json:"protocol"`
-}
-
-func (s Settings) IsCodex() bool {
-	return s.Extension == "codex"
 }
 
 func validateModel(value string) (string, error) {
@@ -75,7 +71,16 @@ func (s Settings) Validate() (Settings, error) {
 	}
 
 	if s.Extension != "" && s.Extension != "openai" {
-		return s, errors.New("openai provider needs an endpoint, api key, model and valid protocol")
+		// A sign-in provider owns its endpoint and credentials; its profile
+		// carries only the protocol the daemon reported and the model.
+		if s.Protocol != "responses" && s.Protocol != "chat_completions" {
+			return s, errors.New("provider protocol must be responses or chat_completions")
+		}
+		model, err := validateModel(s.Model)
+		if err != nil {
+			return s, err
+		}
+		return Settings{Extension: s.Extension, Model: model, Protocol: s.Protocol}, nil
 	}
 
 	if s.APIKey == "" {

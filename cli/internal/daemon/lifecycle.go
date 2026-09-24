@@ -376,6 +376,14 @@ func startupExitError(waitErr error, logPath string, logStart int64, projectRoot
 }
 
 func Request[T any](ctx context.Context, conn *Connection, path string, body any) (T, error) {
+	method := http.MethodGet
+	if body != nil {
+		method = http.MethodPost
+	}
+	return RequestMethod[T](ctx, conn, method, path, body)
+}
+
+func RequestMethod[T any](ctx context.Context, conn *Connection, method, path string, body any) (T, error) {
 	var zero T
 	if ctx == nil {
 		ctx = context.Background()
@@ -384,10 +392,8 @@ func Request[T any](ctx context.Context, conn *Connection, path string, body any
 	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	method := http.MethodGet
 	var bodyReader io.Reader
 	if body != nil {
-		method = http.MethodPost
 		encoded, err := json.Marshal(body)
 		if err != nil {
 			return zero, err

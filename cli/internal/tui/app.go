@@ -859,11 +859,12 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case ChatOpenLoginMsg:
+		previous := m.Login.Close()
 		m.Login = NewLoginModel(m.Conn, msg.Name)
 		m.Login.BrowserOpener = m.BrowserOpener
 		m.Login.SetSize(m.Width, m.Height)
 		m.State = AppStateLogin
-		return m, m.Login.Init()
+		return m, tea.Batch(previous, m.Login.Init())
 
 	case LoginCancelMsg:
 		m.ProfileGen++
@@ -893,11 +894,12 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 	case ChatExecuteCommandMsg:
 		switch {
 		case msg.Name == "/login":
+			previous := m.Login.Close()
 			m.Login = NewLoginModel(m.Conn, msg.Args)
 			m.Login.BrowserOpener = m.BrowserOpener
 			m.Login.SetSize(m.Width, m.Height)
 			m.State = AppStateLogin
-			return m, m.Login.Init()
+			return m, tea.Batch(previous, m.Login.Init())
 		case msg.Name == "/model" && msg.Args != "":
 			m.ModelGen++
 			return m, m.changeModelCmd(msg.Args, "", m.ModelGen)
@@ -949,11 +951,12 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 				return m, m.createSessionCmd(m.SessionGen)
 			}
 			if msg.ID == "login" {
+				previous := m.Login.Close()
 				m.Login = NewLoginModel(m.Conn, "")
 				m.Login.BrowserOpener = m.BrowserOpener
 				m.Login.SetSize(m.Width, m.Height)
 				m.State = AppStateLogin
-				return m, m.Login.Init()
+				return m, tea.Batch(previous, m.Login.Init())
 			}
 			// The active session may not yet appear in the daemon's recent list.
 			listed := m.Sessions

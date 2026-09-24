@@ -1,16 +1,90 @@
 -module(albedo_openai_auth).
-%% Shared OpenAI auth primitives and Codex multi-account credential selection.
+%% Codex sign-in, multi-account credential selection, and refresh.
 
--export([codex_access/2, codex_revoke/2, codex_limited/3]).
+-export([codex_access/2, codex_revoke/2, codex_limited/3, codex_exchange/3, codex_account/1]).
 
 -define(CLIENT_ID, <<"app_EMoamEEZ73f0CkXaXp7hrann">>).
 -define(TOKEN_URL, "https://auth.openai.com/oauth/token").
+-define(AUTH_CLAIM, <<"https://api.openai.com/auth">>).
 -define(REFRESH_SKEW_MS, 60000).
 -define(HTTP_TIMEOUT_MS, 15000).
--define(LOCK_ATTEMPTS, 1000).
--define(LOCK_STALE_MS, 30000).
 %% Used when a usage-limit response names no reset time.
 -define(DEFAULT_LIMIT_MS, 900000).
+
+%% Trades an authorization code for the credential /login stores.
+codex_exchange(Code, Verifier, Redirect) ->
+    Body = uri_string:compose_query([
+        {<<"grant_type">>, <<"authorization_code">>},
+        {<<"client_id">>, ?CLIENT_ID},
+        {<<"code">>, Code},
+        {<<"code_verifier">>, Verifier},
+        {<<"redirect_uri">>, Redirect}
+    ]),
+    case post_token(Body) of
+        {ok, Response} ->
+            try json:decode(Response) of
+                #{<<"access_token">> := <<_, _/binary>> = Access,
+                  <<"refresh_token">> := <<_, _/binary>> = Refresh,
+                  <<"expires_in">> := In} = Token when is_number(In), In > 0 ->
+                    IdClaims = case maps:get(<<"id_token">>, Token, <<>>) of
+                        IdToken when is_binary(IdToken) -> token_identity(IdToken);
+                        _ -> #{}
+                    end,
+                    Claims = maps:merge(IdClaims, token_identity(Access)),
+                    Credential = maps:merge(maps:with([<<"accountId">>, <<"accountUserId">>, <<"email">>], Claims), #{
+                        <<"type">> => <<"oauth">>,
+                        <<"access">> => Access,
+                        <<"refresh">> => Refresh,
+                        <<"expires">> => erlang:system_time(millisecond) + round(In * 1000)
+                    }),
+                    case maps:is_key(<<"accountId">>, Credential) of
+                        true -> {ok, json:encode(Credential)};
+                        false -> {error, <<"codex token has no ChatGPT account id">>}
+                    end;
+                _ -> {error, <<"codex token exchange response is incomplete">>}
+            catch _:_ -> {error, <<"codex token exchange response is incomplete">>}
+            end;
+        {error, Status, Detail} ->
+            {error, iolist_to_binary(io_lib:format("codex token exchange failed (~B)~s", [Status, Detail]))};
+        {error, Reason} -> {error, Reason}
+    end.
+
+%% How /login lists a stored Codex account.
+codex_account(Credential) when is_map(Credential) ->
+    Name = first([email(Credential), account_id(Credential), <<"chatgpt account">>]),
+    Label = case plan(Credential) of
+        <<>> -> Name;
+        Plan -> <<Name/binary, " · "/utf8, Plan/binary>>
+    end,
+    Now = erlang:system_time(millisecond),
+    Detail = iolist_to_binary([
+        <<"chatgpt account">>,
+        case selected(Credential) of true -> <<" · selected"/utf8>>; false -> <<>> end,
+        case limited(Credential, Now) of
+            true -> [<<" · usage limit until "/utf8>>, local_time(maps:get(<<"limitedUntil">>, Credential))];
+            false -> <<>>
+        end
+    ]),
+    {account, identity(Credential), Label, Detail, selected(Credential)};
+codex_account(_) -> {account, <<>>, <<"invalid chatgpt account">>, <<>>, false}.
+
+post_token(Body) ->
+    _ = application:ensure_all_started(inets),
+    _ = application:ensure_all_started(ssl),
+    Request = {?TOKEN_URL, [{"accept", "application/json"}],
+               "application/x-www-form-urlencoded", binary_to_list(Body)},
+    Options = [{timeout, ?HTTP_TIMEOUT_MS}, {connect_timeout, 10000},
+               {ssl, albedo_credentials:tls_options("auth.openai.com")}],
+    case httpc:request(post, Request, Options, [{body_format, binary}]) of
+        {ok, {{_, 200, _}, _, Response}} -> {ok, Response};
+        {ok, {{_, Status, _}, _, Response}} ->
+            Detail = case string:trim(binary:part(Response, 0, min(byte_size(Response), 4096))) of
+                <<>> -> <<>>;
+                Text -> <<": ", Text/binary>>
+            end,
+            {error, Status, Detail};
+        _ -> {error, <<"codex token exchange failed">>}
+    end.
 
 codex_access(Home0, Session0) ->
     Home = text(Home0),
@@ -45,16 +119,8 @@ select([Credential | Rest], Path, Session) ->
 codex_revoke(Home0, Access) ->
     Path = filename:join(text(Home0), "auth.json"),
     Identity = identity(#{<<"access">> => Access}),
-    Lock = filename:join(filename:dirname(Path), "auth.lock"),
-    case acquire(Lock, ?LOCK_ATTEMPTS) of
-        {ok, Device} ->
-            try remove_identity(Path, Access, Identity)
-            after
-                file:close(Device),
-                file:delete(Lock)
-            end;
-        {error, _} -> {error, <<"credential store is busy">>}
-    end.
+    albedo_credentials:with_lock(Path, fun() -> remove_identity(Path, Access, Identity) end,
+                                 fun() -> {error, <<"credential store is busy">>} end).
 
 remove_identity(Path, Access, Identity) ->
     case read_auth(Path) of
@@ -152,16 +218,8 @@ codex_limited(Home0, Access, Body) ->
         {ok, Until} ->
             Path = filename:join(text(Home0), "auth.json"),
             Identity = identity(#{<<"access">> => Access}),
-            Lock = filename:join(filename:dirname(Path), "auth.lock"),
-            case acquire(Lock, ?LOCK_ATTEMPTS) of
-                {ok, Device} ->
-                    try mark_limited(Path, Access, Identity, Until)
-                    after
-                        file:close(Device),
-                        file:delete(Lock)
-                    end;
-                {error, _} -> {error, <<"credential store is busy">>}
-            end;
+            albedo_credentials:with_lock(Path, fun() -> mark_limited(Path, Access, Identity, Until) end,
+                                         fun() -> {error, <<"credential store is busy">>} end);
         error -> {error, <<"not_usage_limit">>}
     end.
 
@@ -234,58 +292,8 @@ fnv1a(Bytes) ->
                 16#811c9dc5, binary_to_list(Bytes)).
 
 refresh_locked(Path, Identity) ->
-    Lock = filename:join(filename:dirname(Path), "auth.lock"),
-    case acquire(Lock, ?LOCK_ATTEMPTS) of
-        {ok, Device} ->
-            try refresh_current(Path, Identity)
-            after
-                file:close(Device),
-                file:delete(Lock)
-            end;
-        {error, _} -> refreshed_after_wait(Path, Identity)
-    end.
-
-acquire(_, 0) -> {error, timeout};
-acquire(Path, Attempts) ->
-    _ = filelib:ensure_dir(Path),
-    case file:open(Path, [write, exclusive, raw]) of
-        {ok, Device} ->
-            _ = file:change_mode(Path, 8#600),
-            _ = file:write(Device, term_to_binary({node(), self(), erlang:system_time(millisecond)})),
-            _ = file:sync(Device),
-            {ok, Device};
-        {error, eexist} ->
-            case stale_lock(Path) of
-                true ->
-                    _ = file:delete(Path),
-                    acquire(Path, Attempts);
-                false ->
-                    timer:sleep(20),
-                    acquire(Path, Attempts - 1)
-            end;
-        Error -> Error
-    end.
-
-stale_lock(Path) ->
-    Now = erlang:system_time(millisecond),
-    case file:read_file(Path) of
-        {ok, Bytes} ->
-            try binary_to_term(Bytes, [safe]) of
-                {OwnerNode, Owner, Created} when is_pid(Owner), is_integer(Created) ->
-                    (OwnerNode =:= node() andalso not erlang:is_process_alive(Owner)) orelse
-                    Now - Created > ?LOCK_STALE_MS;
-                _ -> stale_mtime(Path)
-            catch _:_ -> stale_mtime(Path) end;
-        _ -> stale_mtime(Path)
-    end.
-
-stale_mtime(Path) ->
-    case filelib:last_modified(Path) of
-        0 -> false;
-        Modified ->
-            Now = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
-            Now - calendar:datetime_to_gregorian_seconds(Modified) > ?LOCK_STALE_MS div 1000
-    end.
+    albedo_credentials:with_lock(Path, fun() -> refresh_current(Path, Identity) end,
+                                 fun() -> refreshed_after_wait(Path, Identity) end).
 
 refreshed_after_wait(Path, Identity) ->
     case read_auth(Path) of
@@ -340,23 +348,16 @@ set_credentials(Data, [Only]) -> maps:put(<<"openai-codex">>, Only, Data);
 set_credentials(Data, Values) -> maps:put(<<"openai-codex">>, Values, Data).
 
 refresh_token(Credential) ->
-    Refresh = maps:get(<<"refresh">>, Credential),
     Body = uri_string:compose_query([
         {<<"grant_type">>, <<"refresh_token">>},
-        {<<"refresh_token">>, Refresh},
+        {<<"refresh_token">>, maps:get(<<"refresh">>, Credential)},
         {<<"client_id">>, ?CLIENT_ID}
     ]),
-    _ = application:ensure_all_started(inets),
-    _ = application:ensure_all_started(ssl),
-    Request = {?TOKEN_URL, [{"accept", "application/json"}],
-               "application/x-www-form-urlencoded", binary_to_list(Body)},
-    Options = [{timeout, ?HTTP_TIMEOUT_MS}, {connect_timeout, 10000},
-               {ssl, tls_options("auth.openai.com")}],
-    case httpc:request(post, Request, Options, [{body_format, binary}]) of
-        {ok, {{_, 200, _}, _, Response}} -> parse_refresh(Response, Credential);
-        {ok, {{_, Status, _}, _, _}} ->
+    case post_token(Body) of
+        {ok, Response} -> parse_refresh(Response, Credential);
+        {error, Status, _} ->
             {error, iolist_to_binary(io_lib:format("Codex token refresh failed (~B)", [Status]))};
-        _ -> {error, <<"Codex token refresh failed">>}
+        {error, _} -> {error, <<"Codex token refresh failed">>}
     end.
 
 parse_refresh(Response, Previous) ->
@@ -454,32 +455,8 @@ pad64(Value) ->
         _ -> Value
     end.
 
-read_auth(Path) ->
-    case file:read_file(Path) of
-        {ok, Bytes} ->
-            try json:decode(Bytes) of
-                Data when is_map(Data) -> {ok, Data};
-                _ -> {error, invalid}
-            catch _:_ -> {error, invalid} end;
-        Error -> Error
-    end.
+read_auth(Path) -> albedo_credentials:read(Path).
 
-write_auth(Path, Data) ->
-    Temporary = Path ++ ".tmp." ++ integer_to_list(erlang:unique_integer([positive])),
-    _ = filelib:ensure_dir(Path),
-    case file:write_file(Temporary, iolist_to_binary(json:encode(Data)), [binary, sync]) of
-        ok ->
-            _ = file:change_mode(Temporary, 8#600),
-            case file:rename(Temporary, Path) of
-                ok -> ok;
-                Error -> _ = file:delete(Temporary), Error
-            end;
-        Error -> Error
-    end.
-
-tls_options(Host) ->
-    [{verify, verify_peer}, {cacerts, public_key:cacerts_get()}, {depth, 5},
-     {server_name_indication, Host},
-     {customize_hostname_check, [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}].
+write_auth(Path, Data) -> albedo_credentials:write(Path, Data).
 
 text(Value) -> unicode:characters_to_list(Value).

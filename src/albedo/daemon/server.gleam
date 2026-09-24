@@ -6,6 +6,7 @@ import albedo/daemon/reaper
 import albedo/daemon/session
 import albedo/harness/command
 import albedo/harness/extension
+import albedo/harness/oauth
 import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/bytes_tree
@@ -24,6 +25,7 @@ import gleam/otp/actor
 import gleam/result
 import gleam/string
 import gleam/string_tree
+import gleam/uri
 import mist
 import sqlight
 
@@ -45,6 +47,7 @@ type Message {
   Lookup(String, Subject(Result(session.Session, String)))
   List(Subject(List(conversation.Info)))
   Models(String, String, Subject(List(String)))
+  Logins(Subject(List(oauth.Login)))
   ReadTree(String, Int, Int, Subject(Result(history.Page, String)))
   Fork(String, Int, Subject(Result(conversation.Info, String)))
   SetWorkspace(String, String, Subject(Result(conversation.Info, String)))
@@ -204,6 +207,10 @@ fn handle(state: State, message: Message) {
     }
     Models(provider, endpoint, reply) -> {
       process.send(reply, runtime.model_names(state.host, provider, endpoint))
+      actor.continue(state)
+    }
+    Logins(reply) -> {
+      process.send(reply, runtime.logins(state.host))
       actor.continue(state)
     }
     ReadTree(id, after, limit, reply) -> {
@@ -490,6 +497,88 @@ fn body(req, decoder) {
   })
 }
 
+/// Sign-ins run here so every client shares one OAuth implementation;
+/// clients render the url and poll the status.
+fn auth(
+  home: String,
+  logins: List(oauth.Login),
+  req: request.Request(mist.Connection),
+  path: List(String),
+) {
+  let login = fn(provider) {
+    list.find(logins, fn(login) { login.provider == provider })
+    |> result.replace_error("no enabled sign-in for " <> provider)
+  }
+  let done = fn(outcome) {
+    case outcome {
+      Ok(Nil) -> reply(200, json.object([#("ok", json.bool(True))]))
+      Error(e) -> error(400, e)
+    }
+  }
+  case req.method, list.map(path, uri_decode) {
+    Get, [] ->
+      reply(
+        200,
+        json.object([
+          #("logins", json.array(logins, oauth.login_json)),
+          #(
+            "accounts",
+            json.preprocessed_array(
+              list.flat_map(logins, fn(login) {
+                oauth.accounts(home, login)
+                |> distinct_labels
+                |> list.map(oauth.account_json(login.provider, _))
+              }),
+            ),
+          ),
+        ]),
+      )
+    Post, [provider] ->
+      case login(provider) |> result.try(oauth.start(home, _)) {
+        Ok(#(id, url)) ->
+          reply(
+            201,
+            json.object([#("id", json.string(id)), #("url", json.string(url))]),
+          )
+        Error(e) -> error(400, e)
+      }
+    Get, ["logins", id] ->
+      case oauth.status(id) {
+        Ok(status) -> reply(200, oauth.status_json(status))
+        Error(e) -> error(404, e)
+      }
+    Post, ["logins", id] ->
+      body(req, decode.field("input", decode.string, decode.success))
+      |> result.try(oauth.input(id, _))
+      |> done
+    http.Delete, ["logins", id] -> oauth.cancel(id) |> done
+    Post, [provider, "accounts", id] ->
+      login(provider) |> result.try(oauth.select(home, _, id)) |> done
+    http.Delete, [provider, "accounts", id] ->
+      login(provider) |> result.try(oauth.remove(home, _, id)) |> done
+    _, _ -> error(404, "not found")
+  }
+}
+
+/// Accounts that share a label, such as one email on two plans, are told
+/// apart by the start of their id.
+fn distinct_labels(accounts: List(oauth.Account)) -> List(oauth.Account) {
+  list.map(accounts, fn(account) {
+    case list.count(accounts, fn(other) { other.label == account.label }) {
+      1 -> account
+      _ ->
+        oauth.Account(
+          ..account,
+          label: account.label <> " · " <> string.slice(account.id, 0, 8),
+        )
+    }
+  })
+}
+
+fn uri_decode(segment: String) -> String {
+  uri.percent_decode(segment) |> result.unwrap(segment)
+}
+
 fn route(
   config: Config,
   registry: Subject(Message),
@@ -541,6 +630,8 @@ fn route(
             ),
           )
         }
+        _, ["auth", ..rest] ->
+          auth(config.home, actor.call(registry, 5000, Logins), req, rest)
         Post, ["sessions"] -> {
           let decoder = {
             use cwd <- decode.field("workspace", decode.string)

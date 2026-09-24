@@ -4,11 +4,10 @@ import (
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
 	"context"
-	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,11 +35,14 @@ const (
 	StepProtocol
 	StepModels
 	StepModel
-	StepCodexAuth
-	StepCodexModels
+	StepOAuth
+	StepOAuthModels
 	StepRemove
 	StepSaving
 )
+
+// signInPollInterval is how often the daemon is asked about a running sign-in.
+const signInPollInterval = 300 * time.Millisecond
 
 type loginModelsLoadedMsg struct {
 	Models []string
@@ -49,38 +51,43 @@ type loginModelsLoadedMsg struct {
 	Gen    int
 }
 
-type codexAuthStartedMsg struct {
-	Verifier string
-	State    string
-	AuthURL  string
-	Ctx      context.Context
-	Cancel   context.CancelFunc
-	Close    func()
-	CodeChan <-chan string
-	ErrChan  <-chan error
+// signInsLoadedMsg carries the daemon's sign-ins and accounts, after the first
+// read and after every change to them. Profiles is set when the change also
+// rewrote config.json.
+type signInsLoadedMsg struct {
+	Listed   daemon.SignIns
+	Profiles *config.Profiles
+	Err      error
 	Gen      int
 }
 
-type codexAuthExchangedMsg struct {
-	Cred   *config.CodexCredential
-	Models []string
-	Err    error
-	Gen    int
+type signInStartedMsg struct {
+	ID  string
+	URL string
+	Err error
+	Gen int
 }
 
-// removal names something saved that /login can delete: a provider in
-// config.json or a ChatGPT account in auth.json.
+type signInStatusMsg struct {
+	ID      string
+	State   string
+	Message string
+	Err     error
+	Gen     int
+}
+
+type signInPollMsg struct {
+	ID  string
+	Gen int
+}
+
+// removal names something /login can delete: a provider in config.json or an
+// account in the daemon's credential store.
 type removal struct {
-	Kind  string // "provider" | "account"
-	ID    string // provider name or credential identity
-	Label string
-}
-
-// storedMsg carries profiles and accounts reloaded after /login changed them.
-type storedMsg struct {
-	Profiles config.Profiles
-	Accounts []config.CodexCredential
-	Err      error
+	Kind     string // "provider" | "account"
+	Provider string
+	ID       string // provider name or daemon account id
+	Label    string
 }
 
 type providerSavedMsg struct {
@@ -90,35 +97,32 @@ type providerSavedMsg struct {
 }
 
 type LoginModel struct {
-	Conn             *daemon.Connection
-	Step             LoginStep
-	Profiles         config.Profiles
-	Accounts         []config.CodexCredential
-	Removing         removal
-	Name             string
-	Kind             string // "openai" | "codex"
-	Draft            config.Settings
-	TextInput        textinput.Model
-	ChoosePicker     PickerModel
-	ProtocolPicker   PickerModel
-	ModelPicker      PickerModel
-	ConfirmPicker    PickerModel
-	BrowserOpener    func(url string) // Fail-closed: nil means do not launch browser
-	ExchangeCodeFunc func(ctx context.Context, client *http.Client, code, verifier string) (*config.CodexCredential, error)
-	CodexVerifier    string
-	CodexState       string
-	CodexAuthURL     string
-	CodexStatus      string
-	CodexClose       func()
-	CodexCancel      context.CancelFunc
-	CodexManualChan  chan string
-	Catalog          []string
-	CatalogNote      string
-	Error            string
-	Generation       int
-	Width            int
-	Height           int
-	Styles           Styles
+	Conn           *daemon.Connection
+	Step           LoginStep
+	Profiles       config.Profiles
+	SignIns        []daemon.SignIn
+	Accounts       []daemon.Account
+	Hint           string
+	Removing       removal
+	Name           string
+	Draft          config.Settings
+	TextInput      textinput.Model
+	ChoosePicker   PickerModel
+	ProtocolPicker PickerModel
+	ModelPicker    PickerModel
+	ConfirmPicker  PickerModel
+	BrowserOpener  func(url string) // Fail-closed: nil means do not launch browser
+	Provider       string           // sign-in provider in flight, or just finished
+	LoginID        string           // daemon id of the sign-in in flight
+	SignInURL      string
+	Status         string // daemon progress line while a sign-in runs
+	Catalog        []string
+	CatalogNote    string
+	Error          string
+	Generation     int
+	Width          int
+	Height         int
+	Styles         Styles
 }
 
 func (m LoginModel) openBrowserCmd(urlStr string) tea.Cmd {
@@ -136,84 +140,31 @@ func (m LoginModel) openBrowser(urlStr string) {
 }
 
 func NewLoginModel(conn *daemon.Connection, nameHint string) LoginModel {
-	home := config.HomeDir()
-	profiles, loadErr := config.LoadProfiles(home)
+	profiles, loadErr := config.LoadProfiles(config.HomeDir())
 
 	ti := textinput.New()
 	ti.Prompt = ""
 	ti.Cursor.SetMode(cursor.CursorStatic)
 
-	emptyDraft := config.Settings{
-		Extension: "openai",
-		BaseURL:   "https://api.openai.com/v1",
-		Protocol:  "responses",
-	}
-
 	m := LoginModel{
 		Conn:      conn,
+		Step:      StepChoose,
 		Profiles:  profiles,
-		Draft:     emptyDraft,
+		Hint:      strings.TrimSpace(nameHint),
+		Draft:     config.Settings{Extension: "openai", BaseURL: "https://api.openai.com/v1", Protocol: "responses"},
 		TextInput: ti,
 		Styles:    DefaultStyles,
 	}
 	if loadErr != nil {
 		m.Error = loadErr.Error()
-		m.Step = StepChoose
-		m.buildChoosePicker()
-		return m
 	}
-	accounts, accountsErr := config.LoadCodexAccounts(home)
-	if accountsErr != nil {
-		m.Error = accountsErr.Error()
-	}
-	m.Accounts = accounts
-
-	if nameHint != "" {
-		cleanName, err := config.ValidateProviderName(nameHint)
-		if err != nil {
-			m.Error = err.Error()
-			m.Step = StepChoose
-			m.buildChoosePicker()
-			return m
-		}
-		if s, ok := profiles.Providers[cleanName]; ok && !(s.IsCodex() && len(accounts) == 0) {
-			m.Name = cleanName
-			m.Draft = s
-			m.Step = StepSaving
-			return m
-		}
-		if s, ok := profiles.Providers[cleanName]; cleanName == "codex" || (ok && s.IsCodex()) {
-			m.Kind = "codex"
-			m.Name = cleanName
-			m.Step = StepCodexAuth
-			m.TextInput.Focus()
-			return m
-		}
-		m.Name = cleanName
-		m.Kind = "openai"
-		m.Step = StepBaseURL
-		m.resetInput()
-		m.TextInput.SetValue(emptyDraft.BaseURL)
-		m.TextInput.Focus()
-		return m
-	}
-
-	if len(profiles.Providers) > 0 || len(accounts) > 0 {
-		m.Step = StepChoose
-		m.buildChoosePicker()
-	} else {
-		m.Step = StepName
-		m.resetInput()
-		m.TextInput.Placeholder = ""
-		m.TextInput.Focus()
-	}
-
+	m.buildChoosePicker()
 	return m
 }
 
 func (m LoginModel) inputWidth() int {
 	// Ink includes its cursor cell in width; Bubbles tracks the cursor separately.
-	if m.Step == StepCodexAuth {
+	if m.Step == StepOAuth {
 		return max(8, m.Width-25)
 	}
 	return max(8, m.Width-19)
@@ -236,101 +187,37 @@ func (m *LoginModel) SetSize(width, height int) {
 	m.ConfirmPicker.SetSize(width, height)
 }
 
-func (m *LoginModel) cancelCodex() {
-	if m.CodexClose != nil {
-		m.CodexClose()
-		m.CodexClose = nil
+// signInFor finds the daemon sign-in a profile extension or provider name uses.
+func (m LoginModel) signInFor(provider string) (daemon.SignIn, bool) {
+	for _, login := range m.SignIns {
+		if login.Provider == provider {
+			return login, true
+		}
 	}
-	if m.CodexCancel != nil {
-		m.CodexCancel()
-		m.CodexCancel = nil
-	}
-	m.CodexManualChan = nil
+	return daemon.SignIn{}, false
 }
 
-func (m LoginModel) startCodexCmd(gen int) tea.Cmd {
-	return func() tea.Msg {
-		verifier, state, authURL := config.CreateAuthorization()
-		ctx, cancel := context.WithCancel(context.Background())
-
-		listener, codeChan, errChan, closeServer := config.StartCallbackServer(ctx, state)
-		if listener == nil {
-			codeChan = nil
-		}
-
-		return codexAuthStartedMsg{
-			Verifier: verifier,
-			State:    state,
-			AuthURL:  authURL,
-			Ctx:      ctx,
-			Cancel:   cancel,
-			Close:    closeServer,
-			CodeChan: codeChan,
-			ErrChan:  errChan,
-			Gen:      gen,
+// signedOut reports a sign-in provider with no stored account, which cannot run
+// until the user signs in again.
+func (m LoginModel) signedOut(provider string) bool {
+	if _, known := m.signInFor(provider); !known {
+		return false
+	}
+	for _, account := range m.Accounts {
+		if account.Provider == provider {
+			return false
 		}
 	}
+	return true
 }
 
-func (m LoginModel) waitForCodexAuthCmd(ctx context.Context, codeChan <-chan string, errChan <-chan error, manualChan <-chan string, verifier, state string, gen int) tea.Cmd {
-	return func() tea.Msg {
-		var code string
-		select {
-		case <-ctx.Done():
-			return codexAuthExchangedMsg{Err: ctx.Err(), Gen: gen}
-		case err, ok := <-errChan:
-			if !ok || err == nil {
-				return codexAuthExchangedMsg{Err: errors.New("callback server closed"), Gen: gen}
-			}
-			return codexAuthExchangedMsg{Err: err, Gen: gen}
-		case c, ok := <-codeChan:
-			if !ok || c == "" {
-				return codexAuthExchangedMsg{Err: errors.New("callback server closed"), Gen: gen}
-			}
-			code = c
-		case manualInput, ok := <-manualChan:
-			if !ok || manualInput == "" {
-				return codexAuthExchangedMsg{Err: errors.New("manual input closed"), Gen: gen}
-			}
-			parsedCode, parsedState := config.ParseAuthorizationInput(manualInput)
-			if parsedState != "" && parsedState != state {
-				return codexAuthExchangedMsg{Err: errors.New("oauth state mismatch"), Gen: gen}
-			}
-			if parsedCode == "" {
-				return codexAuthExchangedMsg{Err: errors.New("missing authorization code"), Gen: gen}
-			}
-			code = parsedCode
-		}
-
-		reqCtx, reqCancel := context.WithTimeout(ctx, 20*time.Second)
-		defer reqCancel()
-
-		var cred *config.CodexCredential
-		var err error
-
-		if m.ExchangeCodeFunc != nil {
-			cred, err = m.ExchangeCodeFunc(reqCtx, nil, code, verifier)
-		} else {
-			client := &http.Client{Timeout: 20 * time.Second}
-			cred, err = config.ExchangeCodexCode(reqCtx, client, code, verifier)
-		}
-
-		if err != nil {
-			return codexAuthExchangedMsg{Err: err, Gen: gen}
-		}
-
-		home := config.HomeDir()
-		if err := config.SaveCodexAccount(home, *cred); err != nil {
-			return codexAuthExchangedMsg{Err: err, Gen: gen}
-		}
-
-		var names []string
-		if m.Conn != nil {
-			names, _ = daemon.Request[[]string](reqCtx, m.Conn, "/models/codex", nil)
-		}
-
-		return codexAuthExchangedMsg{Cred: cred, Models: names, Gen: gen}
+// accountAt resolves a chooser row back to the account it lists.
+func (m LoginModel) accountAt(id string) (daemon.Account, bool) {
+	index, err := strconv.Atoi(strings.TrimPrefix(id, "account:"))
+	if err != nil || index < 0 || index >= len(m.Accounts) {
+		return daemon.Account{}, false
 	}
+	return m.Accounts[index], true
 }
 
 func (m *LoginModel) buildChoosePicker() {
@@ -347,7 +234,7 @@ func (m *LoginModel) buildChoosePicker() {
 			extension = "openai"
 		}
 		detail := fmt.Sprintf("%s · %s", settings.Model, extension)
-		if settings.IsCodex() && len(m.Accounts) == 0 {
+		if m.signedOut(extension) {
 			detail += " · signed out"
 		}
 		if name == m.Profiles.Active {
@@ -359,21 +246,11 @@ func (m *LoginModel) buildChoosePicker() {
 			Detail: detail,
 		})
 	}
-	seen := map[string]int{}
-	for _, account := range m.Accounts {
-		seen[accountLabel(account)]++
-	}
-	now := time.Now()
-	for _, account := range m.Accounts {
-		label := accountLabel(account)
-		// Accounts can share an email and plan; the account id tells them apart.
-		if seen[label] > 1 && account.AccountID != "" {
-			label += " · " + account.AccountID[:min(8, len(account.AccountID))]
-		}
+	for index, account := range m.Accounts {
 		items = append(items, PickerItem{
-			ID:     "account:" + config.CredentialIdentity(account),
-			Label:  label,
-			Detail: accountDetail(account, now),
+			ID:     "account:" + strconv.Itoa(index),
+			Label:  account.Label,
+			Detail: account.Detail,
 		})
 	}
 	items = append(items, PickerItem{
@@ -381,41 +258,17 @@ func (m *LoginModel) buildChoosePicker() {
 		Label:  "add or update openai-compatible provider",
 		Detail: "",
 	})
-	items = append(items, PickerItem{
-		ID:     "add-codex",
-		Label:  "add chatgpt codex account",
-		Detail: "oauth · supports multiple accounts",
-	})
+	for _, login := range m.SignIns {
+		items = append(items, PickerItem{
+			ID:     "signin:" + login.Provider,
+			Label:  login.Label,
+			Detail: login.Detail,
+		})
+	}
 
 	initialSel := "use:" + m.Profiles.Active
 	m.ChoosePicker = NewPickerModel("provider for new sessions", items, false, initialSel)
 	m.ChoosePicker.SetSize(m.Width, m.Height)
-}
-
-func accountLabel(account config.CodexCredential) string {
-	label := account.AccountID
-	if account.Email != nil && *account.Email != "" {
-		label = *account.Email
-	}
-	if plan := config.CodexPlan(account); plan != "" {
-		label += " · " + plan
-	}
-	return label
-}
-
-func accountDetail(account config.CodexCredential, now time.Time) string {
-	detail := "chatgpt account"
-	if account.Selected {
-		detail += " · selected"
-	}
-	if until := time.UnixMilli(account.LimitedUntil); account.LimitedUntil > 0 && until.After(now) {
-		layout := "15:04"
-		if y, m, d := until.Date(); y != now.Year() || m != now.Month() || d != now.Day() {
-			layout = "Jan 2 15:04"
-		}
-		detail += " · usage limit until " + until.Format(layout)
-	}
-	return detail
 }
 
 // removalFor maps a chooser row to what removing it would delete.
@@ -425,12 +278,8 @@ func (m LoginModel) removalFor(id string) (removal, bool) {
 			return removal{Kind: "provider", ID: name, Label: name}, true
 		}
 	}
-	if identity, ok := strings.CutPrefix(id, "account:"); ok {
-		for _, account := range m.Accounts {
-			if config.CredentialIdentity(account) == identity {
-				return removal{Kind: "account", ID: identity, Label: accountLabel(account)}, true
-			}
-		}
+	if account, ok := m.accountAt(id); ok {
+		return removal{Kind: "account", Provider: account.Provider, ID: account.ID, Label: account.Label}, true
 	}
 	return removal{}, false
 }
@@ -451,40 +300,36 @@ func (m *LoginModel) confirmRemoval(target removal) tea.Cmd {
 	return m.ConfirmPicker.Init()
 }
 
-func (m LoginModel) removeCmd(target removal) tea.Cmd {
+// reloadCmd changes the daemon's accounts or the saved profiles, then re-reads
+// what /login can choose from.
+func (m LoginModel) reloadCmd(change func(context.Context) error) tea.Cmd {
 	return func() tea.Msg {
-		home := config.HomeDir()
-		var err error
-		if target.Kind == "account" {
-			err = config.RemoveCodexAccount(home, target.ID)
-		} else {
-			err = config.RemoveProvider(home, target.ID)
+		ctx := context.Background()
+		if err := change(ctx); err != nil {
+			return signInsLoadedMsg{Err: err, Gen: m.Generation}
 		}
+		profiles, err := config.LoadProfiles(config.HomeDir())
 		if err != nil {
-			return storedMsg{Err: err}
+			return signInsLoadedMsg{Err: err, Gen: m.Generation}
 		}
-		profiles, err := config.LoadProfiles(home)
-		if err != nil {
-			return storedMsg{Err: err}
-		}
-		accounts, err := config.LoadCodexAccounts(home)
-		return storedMsg{Profiles: profiles, Accounts: accounts, Err: err}
+		listed, err := daemon.SignInList(ctx, m.Conn)
+		return signInsLoadedMsg{Listed: listed, Profiles: &profiles, Err: err, Gen: m.Generation}
 	}
 }
 
-func (m LoginModel) selectAccountCmd(identity string) tea.Cmd {
-	return func() tea.Msg {
-		home := config.HomeDir()
-		if err := config.SelectCodexAccount(home, identity); err != nil {
-			return storedMsg{Err: err}
+func (m LoginModel) removeCmd(target removal) tea.Cmd {
+	return m.reloadCmd(func(ctx context.Context) error {
+		if target.Kind == "account" {
+			return daemon.RemoveAccount(ctx, m.Conn, target.Provider, target.ID)
 		}
-		profiles, err := config.LoadProfiles(home)
-		if err != nil {
-			return storedMsg{Err: err}
-		}
-		accounts, err := config.LoadCodexAccounts(home)
-		return storedMsg{Profiles: profiles, Accounts: accounts, Err: err}
-	}
+		return config.RemoveProvider(config.HomeDir(), target.ID)
+	})
+}
+
+func (m LoginModel) selectAccountCmd(account daemon.Account) tea.Cmd {
+	return m.reloadCmd(func(ctx context.Context) error {
+		return daemon.SelectAccount(ctx, m.Conn, account.Provider, account.ID)
+	})
 }
 
 func (m *LoginModel) backToChoose() tea.Cmd {
@@ -493,15 +338,114 @@ func (m *LoginModel) backToChoose() tea.Cmd {
 	return m.ChoosePicker.Init()
 }
 
-func (m *LoginModel) startCodexAuth() tea.Cmd {
-	m.Kind = "codex"
-	m.Name = "codex"
-	m.Step = StepCodexAuth
+func (m LoginModel) loadSignInsCmd(gen int) tea.Cmd {
+	return func() tea.Msg {
+		listed, err := daemon.SignInList(context.Background(), m.Conn)
+		return signInsLoadedMsg{Listed: listed, Err: err, Gen: gen}
+	}
+}
+
+// startSignIn hands the provider to the daemon, which owns the PKCE pair, the
+// callback listener, and the token exchange.
+func (m *LoginModel) startSignIn(login daemon.SignIn) tea.Cmd {
+	m.Provider = login.Provider
+	m.Name = login.Provider
+	m.Draft = config.Settings{Extension: login.Provider, Protocol: login.Protocol}
+	if saved, ok := m.Profiles.Providers[login.Provider]; ok {
+		m.Draft.Model = saved.Model
+	}
+	m.Step = StepOAuth
 	m.resetInput()
 	m.TextInput.Placeholder = ""
 	m.TextInput.Focus()
 	m.Generation++
-	return m.startCodexCmd(m.Generation)
+	return m.startSignInCmd(login.Provider, m.Generation)
+}
+
+func (m LoginModel) startSignInCmd(provider string, gen int) tea.Cmd {
+	return func() tea.Msg {
+		started, err := daemon.StartSignIn(context.Background(), m.Conn, provider)
+		return signInStartedMsg{ID: started.ID, URL: started.URL, Err: err, Gen: gen}
+	}
+}
+
+func (m LoginModel) pollSignInCmd(id string, gen int) tea.Cmd {
+	return func() tea.Msg {
+		status, err := daemon.PollSignIn(context.Background(), m.Conn, id)
+		return signInStatusMsg{ID: id, State: status.State, Message: status.Message, Err: err, Gen: gen}
+	}
+}
+
+func signInPollTickCmd(id string, gen int) tea.Cmd {
+	return tea.Tick(signInPollInterval, func(time.Time) tea.Msg {
+		return signInPollMsg{ID: id, Gen: gen}
+	})
+}
+
+func (m LoginModel) inputSignInCmd(id, input string, gen int) tea.Cmd {
+	return func() tea.Msg {
+		if err := daemon.SignInInput(context.Background(), m.Conn, id, input); err != nil {
+			return signInStatusMsg{ID: id, Err: err, Gen: gen}
+		}
+		return signInPollMsg{ID: id, Gen: gen}
+	}
+}
+
+// cancelSignInCmd drops a sign-in this client no longer waits for, closing the
+// daemon's callback listener.
+func (m LoginModel) cancelSignInCmd(id string) tea.Cmd {
+	if id == "" || m.Conn == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		_ = daemon.CancelSignIn(context.Background(), m.Conn, id)
+		return nil
+	}
+}
+
+// endSignIn forgets the sign-in in flight and returns the command cancelling it.
+func (m *LoginModel) endSignIn() tea.Cmd {
+	id := m.LoginID
+	m.LoginID = ""
+	m.SignInURL = ""
+	m.Status = ""
+	return m.cancelSignInCmd(id)
+}
+
+// Close cancels a sign-in still in flight when the login screen goes away.
+func (m *LoginModel) Close() tea.Cmd {
+	return m.endSignIn()
+}
+
+// applyHint routes a name given to `/login <name>`: a saved profile is chosen as
+// it stands, a sign-in provider starts its sign-in, anything else is a new
+// openai-compatible provider.
+func (m *LoginModel) applyHint() tea.Cmd {
+	hint := m.Hint
+	m.Hint = ""
+	name, err := config.ValidateProviderName(hint)
+	if err != nil {
+		m.Error = err.Error()
+		m.Step = StepChoose
+		return m.ChoosePicker.Init()
+	}
+	m.Name = name
+	if saved, ok := m.Profiles.Providers[name]; ok {
+		if login, ok := m.signInFor(saved.Extension); ok && m.signedOut(saved.Extension) {
+			return m.startSignIn(login)
+		}
+		m.Draft = saved
+		m.Step = StepSaving
+		return m.saveProviderCmd(name, saved)
+	}
+	if login, ok := m.signInFor(name); ok {
+		return m.startSignIn(login)
+	}
+	m.Step = StepBaseURL
+	m.resetInput()
+	m.TextInput.SetValue(m.Draft.BaseURL)
+	m.TextInput.Focus()
+	return textinput.Blink
 }
 
 func (m *LoginModel) buildProtocolPicker() {
@@ -534,16 +478,7 @@ func (m *LoginModel) buildModelPicker() {
 }
 
 func (m LoginModel) Init() tea.Cmd {
-	if m.Step == StepSaving {
-		return m.saveProviderCmd(m.Name, m.Draft)
-	}
-	if m.Step == StepChoose {
-		return m.ChoosePicker.Init()
-	}
-	if m.Step == StepCodexAuth {
-		return m.startCodexCmd(m.Generation)
-	}
-	return textinput.Blink
+	return m.loadSignInsCmd(m.Generation)
 }
 
 func (m LoginModel) fetchCatalogCmd(ext, endpoint string, gen int) tea.Cmd {
@@ -555,7 +490,7 @@ func (m LoginModel) fetchCatalogCmd(ext, endpoint string, gen int) tea.Cmd {
 			}
 		}
 
-		path := fmt.Sprintf("/models/%s?endpoint=%s", ext, url.QueryEscape(endpoint))
+		path := fmt.Sprintf("/models/%s?endpoint=%s", url.PathEscape(ext), url.QueryEscape(endpoint))
 		names, err := daemon.Request[[]string](context.Background(), m.Conn, path, nil)
 		if err != nil {
 			return loginModelsLoadedMsg{
@@ -585,43 +520,94 @@ func (m LoginModel) saveProviderCmd(name string, settings config.Settings) tea.C
 
 func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 	switch msg := msg.(type) {
-	case codexAuthStartedMsg:
-		if msg.Gen != m.Generation || m.Step != StepCodexAuth {
-			// Stale started result: close listener and cancel context immediately
-			if msg.Close != nil {
-				msg.Close()
-			}
-			if msg.Cancel != nil {
-				msg.Cancel()
-			}
+	case signInsLoadedMsg:
+		if msg.Gen != m.Generation {
 			return m, nil
 		}
-
-		m.CodexClose = msg.Close
-		m.CodexCancel = msg.Cancel
-		m.CodexVerifier = msg.Verifier
-		m.CodexState = msg.State
-		m.CodexAuthURL = msg.AuthURL
-		m.CodexStatus = "waiting for browser authorization"
-		m.CodexManualChan = make(chan string, 1)
-		m.TextInput.Focus()
-
-		var cmds []tea.Cmd
-		cmds = append(cmds, textinput.Blink)
-
-		if msg.AuthURL != "" {
-			cmds = append(cmds, m.openBrowserCmd(msg.AuthURL))
+		m.SignIns = msg.Listed.Logins
+		m.Accounts = msg.Listed.Accounts
+		if msg.Profiles != nil {
+			m.Profiles = *msg.Profiles
 		}
-
-		if msg.CodeChan == nil {
-			m.Error = "could not start callback server on port 1455; paste callback url or code manually"
+		if msg.Err != nil && m.Error == "" {
+			m.Error = msg.Err.Error()
 		}
+		if m.Step == StepSaving {
+			m.Removing = removal{}
+			m.Step = StepChoose
+			if msg.Err == nil {
+				m.Error = ""
+			}
+			return m, m.backToChoose()
+		}
+		m.buildChoosePicker()
+		if m.Hint != "" {
+			return m, m.applyHint()
+		}
+		if m.Step != StepChoose {
+			return m, nil
+		}
+		if len(m.Profiles.Providers) == 0 && len(m.Accounts) == 0 {
+			m.Step = StepName
+			m.resetInput()
+			m.TextInput.Placeholder = ""
+			m.TextInput.Focus()
+			return m, textinput.Blink
+		}
+		return m, m.ChoosePicker.Init()
 
-		cmds = append(cmds, m.waitForCodexAuthCmd(msg.Ctx, msg.CodeChan, msg.ErrChan, m.CodexManualChan, msg.Verifier, msg.State, m.Generation))
+	case signInStartedMsg:
+		if msg.Gen != m.Generation || m.Step != StepOAuth {
+			// Stale start: cancel the sign-in this client no longer shows.
+			return m, m.cancelSignInCmd(msg.ID)
+		}
+		if msg.Err != nil {
+			m.Error = msg.Err.Error()
+			return m, nil
+		}
+		m.LoginID = msg.ID
+		m.SignInURL = msg.URL
+		m.Status = ""
+
+		cmds := []tea.Cmd{textinput.Blink}
+		if msg.URL != "" {
+			cmds = append(cmds, m.openBrowserCmd(msg.URL))
+		}
+		cmds = append(cmds, m.pollSignInCmd(msg.ID, m.Generation))
 		return m, tea.Batch(cmds...)
 
+	case signInPollMsg:
+		if msg.Gen != m.Generation || m.Step != StepOAuth || msg.ID != m.LoginID {
+			return m, m.cancelSignInCmd(msg.ID)
+		}
+		return m, m.pollSignInCmd(msg.ID, msg.Gen)
+
+	case signInStatusMsg:
+		if msg.Gen != m.Generation || m.Step != StepOAuth || msg.ID != m.LoginID {
+			// A stale result: cancel the sign-in this client no longer shows.
+			return m, m.cancelSignInCmd(msg.ID)
+		}
+		if msg.Err != nil {
+			m.Error = msg.Err.Error()
+			return m, m.endSignIn()
+		}
+		m.Status = msg.Message
+		switch msg.State {
+		case "done":
+			m.LoginID = ""
+			m.Step = StepOAuthModels
+			m.Generation++
+			return m, m.fetchCatalogCmd(m.Provider, "", m.Generation)
+		case "failed":
+			m.LoginID = ""
+			m.Error = msg.Message
+			return m, nil
+		default:
+			return m, signInPollTickCmd(msg.ID, m.Generation)
+		}
+
 	case loginModelsLoadedMsg:
-		if msg.Gen != m.Generation || m.Step != StepModels {
+		if msg.Gen != m.Generation || (m.Step != StepModels && m.Step != StepOAuthModels) {
 			return m, nil
 		}
 		m.Catalog = msg.Models
@@ -631,40 +617,6 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		m.CatalogNote = msg.Note
 		m.buildModelPicker()
 		return m, m.ModelPicker.Init()
-
-	case codexAuthExchangedMsg:
-		if msg.Gen != m.Generation || m.Step != StepCodexAuth {
-			return m, nil
-		}
-		m.cancelCodex()
-		if msg.Err != nil {
-			m.Error = msg.Err.Error()
-			return m, nil
-		}
-		m.Catalog = msg.Models
-		if m.Catalog == nil {
-			m.Catalog = []string{}
-		}
-		if len(m.Catalog) == 0 {
-			m.CatalogNote = "models.dev has no OpenAI models cached; enter a model id"
-		}
-		if current, ok := m.Profiles.Providers["codex"]; ok && current.IsCodex() {
-			m.Draft.Model = current.Model
-		}
-		m.Step = StepCodexModels
-		m.buildModelPicker()
-		return m, m.ModelPicker.Init()
-
-	case storedMsg:
-		m.Removing = removal{}
-		m.Error = ""
-		if msg.Err != nil {
-			m.Error = msg.Err.Error()
-		} else {
-			m.Profiles = msg.Profiles
-			m.Accounts = msg.Accounts
-		}
-		return m, m.backToChoose()
 
 	case providerSavedMsg:
 		if msg.Err != nil {
@@ -687,11 +639,11 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Type == tea.KeyEsc || msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyCtrlD {
-			pickerStep := m.Step == StepChoose || m.Step == StepProtocol || m.Step == StepModels || m.Step == StepCodexModels || m.Step == StepRemove
+			pickerStep := m.Step == StepChoose || m.Step == StepProtocol || m.Step == StepModels || m.Step == StepOAuthModels || m.Step == StepRemove
 			if !pickerStep || msg.Type == tea.KeyCtrlD {
-				m.cancelCodex()
+				cancel := m.Close()
 				m.Generation++
-				return m, func() tea.Msg { return LoginCancelMsg{} }
+				return m, tea.Batch(cancel, func() tea.Msg { return LoginCancelMsg{} })
 			}
 		}
 
@@ -700,7 +652,6 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		case StepChoose:
 			if msg.ID == "add-openai" {
 				m.Name = ""
-				m.Kind = "openai"
 				m.Draft = config.Settings{Extension: "openai", BaseURL: "https://api.openai.com/v1", Protocol: "responses"}
 				m.Step = StepName
 				m.resetInput()
@@ -708,20 +659,22 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 				m.TextInput.Focus()
 				return m, textinput.Blink
 			}
-			if msg.ID == "add-codex" {
-				return m, m.startCodexAuth()
+			if provider, ok := strings.CutPrefix(msg.ID, "signin:"); ok {
+				if login, ok := m.signInFor(provider); ok {
+					return m, m.startSignIn(login)
+				}
 			}
 			// Choosing an account selects it; d removes it.
-			if identity, ok := strings.CutPrefix(msg.ID, "account:"); ok {
+			if account, ok := m.accountAt(msg.ID); ok {
 				m.Step = StepSaving
-				return m, m.selectAccountCmd(identity)
+				return m, m.selectAccountCmd(account)
 			}
 			if strings.HasPrefix(msg.ID, "use:") {
 				name := strings.TrimPrefix(msg.ID, "use:")
 				if s, ok := m.Profiles.Providers[name]; ok {
-					// A codex provider with no accounts left cannot run; sign in first.
-					if s.IsCodex() && len(m.Accounts) == 0 {
-						return m, m.startCodexAuth()
+					// A sign-in provider with no accounts left cannot run; sign in first.
+					if login, ok := m.signInFor(s.Extension); ok && m.signedOut(s.Extension) {
+						return m, m.startSignIn(login)
 					}
 					m.Step = StepSaving
 					return m, m.saveProviderCmd(name, s)
@@ -743,7 +696,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			m.Generation++
 			return m, m.fetchCatalogCmd("openai", m.Draft.BaseURL, m.Generation)
 
-		case StepModels, StepCodexModels:
+		case StepModels, StepOAuthModels:
 			if msg.ID == "manual" {
 				m.Step = StepModel
 				m.resetInput()
@@ -751,14 +704,9 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 				m.TextInput.Focus()
 				return m, textinput.Blink
 			}
-			if strings.HasPrefix(msg.ID, "model:") {
-				modelName := strings.TrimPrefix(msg.ID, "model:")
+			if modelName, ok := strings.CutPrefix(msg.ID, "model:"); ok {
 				m.Draft.Model = modelName
 				m.Step = StepSaving
-				if m.Kind == "codex" {
-					m.Draft.Extension = "codex"
-					m.Draft.Protocol = "responses"
-				}
 				return m, m.saveProviderCmd(m.Name, m.Draft)
 			}
 		}
@@ -782,7 +730,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			m.TextInput.Focus()
 			return m, textinput.Blink
 		}
-		if m.Step == StepCodexModels {
+		if m.Step == StepOAuthModels {
 			return m, func() tea.Msg { return LoginCancelMsg{} }
 		}
 		if m.Step == StepRemove {
@@ -807,7 +755,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		m.ConfirmPicker, cmd = m.ConfirmPicker.Update(msg)
 		return m, cmd
 
-	case StepModels, StepCodexModels:
+	case StepModels, StepOAuthModels:
 		var cmd tea.Cmd
 		m.ModelPicker, cmd = m.ModelPicker.Update(msg)
 		return m, cmd
@@ -824,29 +772,15 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			m.Name = name
 			m.Error = ""
 
-			_, saved := m.Profiles.Providers[name]
-			if name == "codex" && !saved {
-				m.Kind = "codex"
-				m.Step = StepCodexAuth
-				m.resetInput()
-				m.TextInput.Placeholder = ""
-				m.TextInput.Focus()
-				m.Generation++
-				return m, m.startCodexCmd(m.Generation)
+			// A name that is a sign-in provider — or a saved profile for one —
+			// signs in instead of asking for an api key.
+			extension := name
+			if saved, known := m.Profiles.Providers[name]; known {
+				extension = saved.Extension
+				m.Draft = saved
 			}
-
-			// If exists in providers, prefill
-			if s, ok := m.Profiles.Providers[name]; ok {
-				if s.IsCodex() {
-					m.Kind = "codex"
-					m.Step = StepCodexAuth
-					m.resetInput()
-					m.TextInput.Placeholder = ""
-					m.TextInput.Focus()
-					m.Generation++
-					return m, m.startCodexCmd(m.Generation)
-				}
-				m.Draft = s
+			if login, ok := m.signInFor(extension); ok {
+				return m, m.startSignIn(login)
 			}
 
 			m.Step = StepBaseURL
@@ -905,17 +839,13 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			return m, m.ProtocolPicker.Init()
 		}
 
-	case StepCodexAuth:
+	case StepOAuth:
 		if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyEnter {
 			val := strings.TrimSpace(m.TextInput.Value())
-			if val != "" && m.CodexManualChan != nil {
-				m.CodexStatus = "exchanging authorization code…"
+			if val != "" && m.LoginID != "" {
+				m.Status = "exchanging authorization code…"
 				m.Error = ""
-				select {
-				case m.CodexManualChan <- val:
-				default:
-				}
-				return m, nil
+				return m, m.inputSignInCmd(m.LoginID, val, m.Generation)
 			}
 		}
 
@@ -930,10 +860,6 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			m.Draft.Model = val
 			m.Error = ""
 			m.Step = StepSaving
-			if m.Kind == "codex" {
-				m.Draft.Extension = "codex"
-				m.Draft.Protocol = "responses"
-			}
 			return m, m.saveProviderCmd(m.Name, m.Draft)
 		}
 	}
@@ -970,7 +896,7 @@ func (m LoginModel) View() string {
 		b.WriteString(m.ProtocolPicker.View())
 	case StepRemove:
 		b.WriteString(m.ConfirmPicker.View())
-	case StepModels, StepCodexModels:
+	case StepModels, StepOAuthModels:
 		if m.Catalog == nil {
 			b.WriteString(m.Styles.Dim.Render("loading models…"))
 			break
@@ -980,15 +906,15 @@ func (m LoginModel) View() string {
 			b.WriteByte('\n')
 		}
 		b.WriteString(m.ModelPicker.View())
-	case StepCodexAuth:
-		status := m.CodexStatus
+	case StepOAuth:
+		status := m.Status
 		if status == "" {
-			status = "starting codex oauth…"
+			status = "starting sign-in…"
 		}
 		b.WriteString(status)
 		b.WriteByte('\n')
-		if m.CodexAuthURL != "" {
-			b.WriteString(m.Styles.Dim.Render(ansi.Hardwrap(m.CodexAuthURL, m.Width, true)))
+		if m.SignInURL != "" {
+			b.WriteString(m.Styles.Dim.Render(ansi.Hardwrap(m.SignInURL, m.Width, true)))
 			b.WriteByte('\n')
 		}
 		b.WriteString("callback url or code: ")
@@ -1013,8 +939,10 @@ func (m LoginModel) View() string {
 		if m.Step == StepAPIKey && m.Draft.APIKey != "" {
 			hints = append(hints, "enter keeps the saved key")
 		}
-		if m.Step == StepName && m.Conn != nil {
-			hints = append(hints, "use codex for ChatGPT oauth")
+		if m.Step == StepName {
+			for _, login := range m.SignIns {
+				hints = append(hints, "use "+login.Provider+" to sign in")
+			}
 		}
 		hints = append(hints, "enter continue", "esc cancel")
 		b.WriteString(m.Styles.Dim.Render(ansi.Wrap(strings.Join(hints, " · "), m.Width, "")))

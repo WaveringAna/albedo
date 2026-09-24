@@ -29,3 +29,14 @@ test("named providers persist privately, preserve other providers and migrate th
   assert.equal(await readFile(join(home, "config.json"), "utf8"), "broken private config")
 })
 
+test("a profile for a daemon sign-in provider keeps its extension, model and protocol", async t => {
+  const home = await mkdtemp(join(tmpdir(), "albedo-profiles-"))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  await saveProvider("work", { extension: "codex", model: "gpt-5-codex", protocol: "responses" }, home)
+  await saveProvider("later", { extension: "future-provider", model: "future-model", protocol: "chat_completions" }, home)
+  const saved = await profiles(home)
+  assert.deepEqual(saved.providers.work, { extension: "codex", model: "gpt-5-codex", protocol: "responses" })
+  assert.deepEqual(saved.providers.later, { extension: "future-provider", model: "future-model", protocol: "chat_completions" })
+  await assert.rejects(saveProvider("work", { extension: "codex", model: "gpt-5-codex", protocol: "chat_completions" }, home), /codex requires the responses protocol/)
+  await assert.rejects(saveProvider("work", { extension: "bad extension", model: "gpt-5-codex", protocol: "responses" }, home))
+})

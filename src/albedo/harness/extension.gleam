@@ -4,6 +4,7 @@ import albedo/daemon/store
 import albedo/harness/command
 import albedo/harness/compaction
 import albedo/harness/extensions/python/kernel as python
+import albedo/harness/oauth
 import albedo/harness/settings
 import albedo/openai_api/types
 import gleam/dict
@@ -118,6 +119,8 @@ pub type Plugin {
   ModelsPlugin(catalog: ModelCatalog)
   /// A provider turns one tagged saved profile into a request client.
   ModelProviderPlugin(provider: ModelProvider)
+  /// A browser sign-in the daemon runs on behalf of clients.
+  LoginPlugin(login: oauth.Login)
 }
 
 pub type Extension {
@@ -601,6 +604,7 @@ pub fn summaries(
             CompactionPlugin(_) -> "compaction"
             ModelsPlugin(_) -> "models"
             ModelProviderPlugin(_) -> "model_provider"
+            LoginPlugin(_) -> "login"
           }
         }),
       )
@@ -782,6 +786,17 @@ pub fn provider_model_names(
     model_names(installed, catalog_provider, endpoint)
   })
   |> result.unwrap([])
+}
+
+pub fn logins(installed: List(Extension)) -> List(oauth.Login) {
+  list.flat_map(installed, fn(extension) {
+    list.filter_map(extension.plugins, fn(plugin) {
+      case plugin {
+        LoginPlugin(login) -> Ok(login)
+        _ -> Error(Nil)
+      }
+    })
+  })
 }
 
 pub fn model_client(

@@ -4,9 +4,11 @@ import { homedir } from "node:os"
 import { resolve } from "node:path"
 
 export const home = resolve(process.env.ALBEDO_HOME ?? `${homedir()}/.albedo`)
-export type OpenAISettings = { extension?: "openai"; baseUrl: string; apiKey: string; model: string; protocol: "responses" | "chat_completions" }
-export type CodexSettings = { extension: "codex"; model: string; protocol: "responses"; baseUrl?: never; apiKey?: never }
-export type Settings = OpenAISettings | CodexSettings
+export type Protocol = "responses" | "chat_completions"
+export type OpenAISettings = { extension?: "openai"; baseUrl: string; apiKey: string; model: string; protocol: Protocol }
+/** A profile whose credentials the daemon owns for that provider extension. */
+export type SignInSettings = { extension: string; model: string; protocol: Protocol; baseUrl?: never; apiKey?: never }
+export type Settings = OpenAISettings | SignInSettings
 export type Profiles = { active?: string; providers: Record<string, Settings> }
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value)
 export function providerName(value: string): string {
@@ -28,11 +30,15 @@ function model(value: unknown): string {
 }
 function settings(value: unknown): Settings {
   if (!object(value)) throw new Error("provider settings must be an object")
-  if (value.extension === "codex") {
-    if (value.protocol !== "responses") throw new Error("codex requires the responses protocol")
-    return { extension: "codex", model: model(value.model), protocol: "responses" }
+  if (value.extension !== undefined && value.extension !== "openai") {
+    if (typeof value.extension !== "string") throw new Error("provider settings need a text extension")
+    const extension = providerName(value.extension)
+    if (extension === "codex" && value.protocol !== "responses") throw new Error("codex requires the responses protocol")
+    if (value.protocol !== "responses" && value.protocol !== "chat_completions")
+      throw new Error(`${extension} requires the responses or chat completions protocol`)
+    return { extension, model: model(value.model), protocol: value.protocol }
   }
-  if ((value.extension !== undefined && value.extension !== "openai") || typeof value.baseUrl !== "string" ||
+  if (typeof value.baseUrl !== "string" ||
       typeof value.apiKey !== "string" || !value.apiKey || /[\s\x00-\x1f\x7f]/.test(value.apiKey) ||
       (value.protocol !== "responses" && value.protocol !== "chat_completions"))
     throw new Error("openai provider needs an endpoint, api key, model and valid protocol")

@@ -51,10 +51,10 @@ function ProviderModels({ connection, provider, settings, current, onSelect, onC
   const { columns } = useWindowSize()
   useEffect(() => {
     const controller = new AbortController()
-    const providerExtension = settings?.extension ?? "openai"
-    const endpoint = providerExtension === "codex" ? "" : settings?.baseUrl ?? ""
+    const provider = settings?.extension ?? "openai"
+    const endpoint = settings?.baseUrl ?? ""
     void (settings
-      ? request<string[]>(connection, `/models/${providerExtension}?endpoint=${encodeURIComponent(endpoint)}`)
+      ? request<string[]>(connection, `/models/${encodeURIComponent(provider)}?endpoint=${encodeURIComponent(endpoint)}`)
       : Promise.reject(new Error("session provider missing"))
     ).then(names => {
       if (!controller.signal.aborted) setCatalog({ names, ...(!names.length ? { note: "no models listed; enter a model id manually" } : {}) })

@@ -8,6 +8,7 @@ import albedo/harness/extensions
 import albedo/harness/extensions/python/cells as journal
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/work/ledger as work
+import albedo/harness/oauth
 import albedo/harness/rpc
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
@@ -895,6 +896,10 @@ pub fn model_info(
     model,
     endpoint,
   )
+}
+
+pub fn logins(runtime: Runtime) -> List(oauth.Login) {
+  extension.logins(runtime.extensions)
 }
 
 pub fn model_names(

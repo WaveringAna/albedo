@@ -9,9 +9,9 @@ import { home } from "./profiles.js"
 export type Connection = { port: number; token: string; pid: number; version: number }
 export type Session = { id: string; title?: string; last_assistant_at?: number | null; workspace: string; model: string; protocol: string; provider: string }
 const record = resolve(home, "daemon.json")
-export async function request<T>(connection: Connection, path: string, body?: unknown): Promise<T> {
+export async function request<T>(connection: Connection, path: string, body?: unknown, method?: "GET" | "POST" | "DELETE"): Promise<T> {
   const response = await fetch(`http://127.0.0.1:${connection.port}${path}`, {
-    method: body === undefined ? "GET" : "POST", redirect: "error", signal: AbortSignal.timeout(20_000),
+    method: method ?? (body === undefined ? "GET" : "POST"), redirect: "error", signal: AbortSignal.timeout(20_000),
     headers: { authorization: `Bearer ${connection.token}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   })

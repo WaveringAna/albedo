@@ -2,14 +2,21 @@
 
 import albedo/daemon/store
 import albedo/harness/extension
+import albedo/harness/oauth
 import albedo/openai_api
 import albedo/openai_api/types
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/uri
 
 const base_url = "https://chatgpt.com/backend-api"
+
+const client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
+
+const scope = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 
 pub type Access {
   Access(token: String, account_id: String)
@@ -20,9 +27,46 @@ pub fn extension() -> extension.Extension {
     "codex",
     "ChatGPT Plus/Pro OAuth for Codex models with selectable, session-sticky multi-account selection that skips accounts past their usage limit",
     ["openai"],
-    [extension.ModelProviderPlugin(extension.ModelProvider("openai", resolve))],
+    [
+      extension.ModelProviderPlugin(extension.ModelProvider("openai", resolve)),
+      extension.LoginPlugin(login()),
+    ],
     initialise,
   )
+}
+
+/// The Codex CLI browser flow. OpenAI allowlists the exact localhost:1455
+/// redirect, so a busy port fails instead of moving.
+pub fn login() -> oauth.Login {
+  oauth.Login(
+    "codex",
+    "add chatgpt codex account",
+    "oauth · supports multiple accounts",
+    types.Responses,
+    "openai-codex",
+    oauth.Callback("localhost", 1455, "/auth/callback", True),
+    authorize,
+    fn(grant, code, _progress) {
+      native_exchange(code, grant.verifier, grant.redirect)
+    },
+    native_account,
+  )
+}
+
+fn authorize(grant: oauth.Grant) -> String {
+  "https://auth.openai.com/oauth/authorize?"
+  <> uri.query_to_string([
+    #("response_type", "code"),
+    #("client_id", client_id),
+    #("redirect_uri", grant.redirect),
+    #("scope", scope),
+    #("code_challenge", grant.challenge),
+    #("code_challenge_method", "S256"),
+    #("state", grant.state),
+    #("id_token_add_organizations", "true"),
+    #("codex_cli_simplified_flow", "true"),
+    #("originator", "albedo"),
+  ])
 }
 
 fn initialise(_ledger: store.Store) -> Result(Nil, String) {
@@ -123,6 +167,16 @@ fn access_decoder() {
   use account_id <- decode.field("accountId", decode.string)
   decode.success(Access(token, account_id))
 }
+
+@external(erlang, "albedo_openai_auth", "codex_exchange")
+fn native_exchange(
+  code: String,
+  verifier: String,
+  redirect: String,
+) -> Result(json.Json, String)
+
+@external(erlang, "albedo_openai_auth", "codex_account")
+fn native_account(credential: Dynamic) -> oauth.Account
 
 @external(erlang, "albedo_openai_auth", "codex_access")
 fn native_access(home: String, session: String) -> Result(String, String)
