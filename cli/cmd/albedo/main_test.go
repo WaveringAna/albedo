@@ -167,3 +167,14 @@ func TestRun_SessionsWithMockDaemon(t *testing.T) {
 		t.Fatalf("sessions plain failed: %v", err)
 	}
 }
+
+func TestConfirmed(t *testing.T) {
+	for answer, want := range map[string]bool{
+		"y\n": true, " YES \n": true, "\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\\x1b[24;1Ry\n": true,
+		"\n": false, "n\n": false, "": false, "yep\n": false,
+	} {
+		if got := confirmed(answer); got != want {
+			t.Errorf("confirmed(%q) = %v, want %v", answer, got, want)
+		}
+	}
+}

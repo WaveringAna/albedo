@@ -36,7 +36,9 @@ ALBEDO_NO_BROWSER=1 ALBEDO_TEST_BINARY="$PWD/result/bin/albedo" python3 test/dae
 
 `default.nix` is also available through `pkgs.callPackage ./default.nix { }`.
 no checkout or gleam compiler is needed at runtime. `ALBEDO_DAEMON` can override
-the packaged daemon with an absolute executable path.
+the packaged daemon with an absolute executable path. when the running daemon
+is from another build, the packaged cli asks in a terminal whether to restart it,
+and elsewhere keeps it and prints a warning.
 
 legacy typescript reference (kept for parity testing):
 

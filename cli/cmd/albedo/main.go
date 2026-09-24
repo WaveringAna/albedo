@@ -4,6 +4,7 @@ import (
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
 	"albedo/cli/internal/tui"
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-isatty"
 )
 
@@ -77,6 +79,28 @@ func isTTY() bool {
 	return isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
 }
 
+// replaceStale asks before stopping a daemon from another build. Without a
+// terminal it keeps the running daemon.
+func replaceStale(s daemon.Stale) bool {
+	if !isTTY() {
+		fmt.Fprintf(os.Stderr, "albedo: daemon %d is from another build; run albedo daemon --stop to start this one\n", s.Running.Pid)
+		return false
+	}
+	fmt.Printf("daemon %d is from another albedo build. restart it with this one? running turns will stop. [y/N] ", s.Running.Pid)
+	answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	return confirmed(answer)
+}
+
+// confirmed reads a [y/N] answer. A late reply to the terminal's startup
+// queries can precede it.
+func confirmed(answer string) bool {
+	switch strings.ToLower(strings.TrimSpace(ansi.Strip(answer))) {
+	case "y", "yes":
+		return true
+	}
+	return false
+}
+
 const helpText = `Usage: albedo [options] [command]
 
 persistent coding sessions
@@ -104,7 +128,7 @@ func open(id, workspace string, fresh bool) error {
 		absWorkspace = workspace
 	}
 
-	conn, err := daemon.Ensure(homeDir, projectRoot)
+	conn, err := daemon.Ensure(homeDir, projectRoot, replaceStale)
 	if err != nil {
 		return err
 	}
@@ -266,7 +290,7 @@ func run(args []string) error {
 		}
 		homeDir := config.HomeDir()
 		projectRoot := findProjectRoot()
-		conn, err := daemon.Ensure(homeDir, projectRoot)
+		conn, err := daemon.Ensure(homeDir, projectRoot, replaceStale)
 		if err != nil {
 			return err
 		}
@@ -297,7 +321,7 @@ func run(args []string) error {
 		prompt := subArgs[1]
 		homeDir := config.HomeDir()
 		projectRoot := findProjectRoot()
-		conn, err := daemon.Ensure(homeDir, projectRoot)
+		conn, err := daemon.Ensure(homeDir, projectRoot, replaceStale)
 		if err != nil {
 			return err
 		}
@@ -321,7 +345,7 @@ func run(args []string) error {
 		sessID := subArgs[0]
 		homeDir := config.HomeDir()
 		projectRoot := findProjectRoot()
-		conn, err := daemon.Ensure(homeDir, projectRoot)
+		conn, err := daemon.Ensure(homeDir, projectRoot, replaceStale)
 		if err != nil {
 			return err
 		}
@@ -358,7 +382,7 @@ func run(args []string) error {
 			return nil
 		}
 		projectRoot := findProjectRoot()
-		current, err := daemon.Ensure(homeDir, projectRoot)
+		current, err := daemon.Ensure(homeDir, projectRoot, replaceStale)
 		if err != nil {
 			return err
 		}
@@ -379,7 +403,7 @@ func run(args []string) error {
 		}
 		homeDir := config.HomeDir()
 		projectRoot := findProjectRoot()
-		conn, err := daemon.Ensure(homeDir, projectRoot)
+		conn, err := daemon.Ensure(homeDir, projectRoot, replaceStale)
 		if err != nil {
 			return err
 		}

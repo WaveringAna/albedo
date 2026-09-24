@@ -47,7 +47,11 @@ write_default(Home, Provider, Model) ->
 directory(Path) -> filename:pathtype(Path) =:= absolute andalso filelib:is_dir(Path).
 ready(Home,Port,Token) ->
     File=filename:join(Home,<<"daemon.json">>), Temp= <<File/binary,".tmp">>,
-    Data=json:encode(#{pid=>list_to_integer(os:getpid()),port=>Port,token=>Token,version=>2}),
+    Record=#{pid=>list_to_integer(os:getpid()),port=>Port,token=>Token,version=>2},
+    Data=json:encode(case os:getenv("ALBEDO_BUILD") of
+        false -> Record;
+        Build -> Record#{build=>unicode:characters_to_binary(Build)}
+    end),
     case file:write_file(Temp,Data,[write,sync]) of
       ok -> ok=file:change_mode(Temp,8#600), file:rename(Temp,File), {ok,nil};
       {error,Reason} -> {error,atom_to_binary(Reason)}

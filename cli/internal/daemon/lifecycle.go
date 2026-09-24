@@ -34,7 +34,17 @@ type Connection struct {
 	Token   string `json:"token"`
 	Pid     int    `json:"pid"`
 	Version int    `json:"version"`
+	Build   string `json:"build,omitempty"`
 }
+
+// Stale is a live daemon from a build other than the one this client bundles.
+type Stale struct {
+	Running *Connection
+	Bundled string
+}
+
+// Replace decides whether a stale daemon stops so the bundled build can start.
+type Replace func(Stale) bool
 
 type Session struct {
 	ID              string `json:"id"`
@@ -176,13 +186,30 @@ func resolveDaemonExecutable(path string) (string, error) {
 	return resolved, nil
 }
 
-func buildDaemonEnv(homeDir, tokenHex string) []string {
+// bundledBuild names a packaged daemon by its resolved executable, which a
+// content-addressed install changes on every build. A source checkout has none.
+func bundledBuild(daemonExe string) string {
+	if daemonExe == "" {
+		return ""
+	}
+	resolved, err := resolveDaemonExecutable(daemonExe)
+	if err != nil {
+		return ""
+	}
+	if real, err := filepath.EvalSymlinks(resolved); err == nil {
+		return real
+	}
+	return resolved
+}
+
+func buildDaemonEnv(homeDir, tokenHex, build string) []string {
 	var env []string
 	filteredVars := map[string]bool{
 		"ALBEDO_API_KEY":  true,
 		"ALBEDO_MODEL":    true,
 		"ALBEDO_BASE_URL": true,
 		"ALBEDO_PROTOCOL": true,
+		"ALBEDO_BUILD":    true,
 	}
 	erlFlags := daemonErlFlags
 	for _, kv := range os.Environ() {
@@ -196,7 +223,11 @@ func buildDaemonEnv(homeDir, tokenHex string) []string {
 			env = append(env, kv)
 		}
 	}
-	return append(env, "ERL_FLAGS="+erlFlags, "ALBEDO_HOME="+homeDir, "ALBEDO_TOKEN="+tokenHex)
+	env = append(env, "ERL_FLAGS="+erlFlags, "ALBEDO_HOME="+homeDir, "ALBEDO_TOKEN="+tokenHex)
+	if build != "" {
+		env = append(env, "ALBEDO_BUILD="+build)
+	}
+	return env
 }
 
 // Sized for one local daemon, measured with ALBEDO_INSPECT (three large
@@ -232,16 +263,43 @@ func daemonCommand(daemonExe, projectRoot string, env []string) (*exec.Cmd, erro
 	return cmd, nil
 }
 
-func Ensure(homeDir, projectRoot string) (*Connection, error) {
+// stop shuts a daemon down and waits until its process has exited, so the
+// next daemon can take the home.
+func stop(homeDir string, conn *Connection) error {
+	_, _ = Request[any](context.Background(), conn, "/shutdown", map[string]any{})
+	for attempt := 0; attempt < pollAttempts; attempt++ {
+		running, err := Existing(homeDir)
+		if err != nil {
+			return err
+		}
+		if running == nil && !processAlive(conn.Pid) {
+			return nil
+		}
+		time.Sleep(pollInterval)
+	}
+	return fmt.Errorf("daemon %d did not exit; inspect %s/daemon.log", conn.Pid, homeDir)
+}
+
+// Ensure connects to the running daemon or starts one. When this client bundles
+// a daemon and the running one is another build, replace (if non-nil) decides
+// whether it is stopped first.
+func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
+	daemonExe := os.Getenv("ALBEDO_DAEMON")
+	build := bundledBuild(daemonExe)
+
 	current, err := Existing(homeDir)
 	if err != nil {
 		return nil, err
 	}
 	if current != nil {
-		return checkCompatible(current)
+		if build == "" || current.Build == build || replace == nil || !replace(Stale{current, build}) {
+			return checkCompatible(current)
+		}
+		if err := stop(homeDir, current); err != nil {
+			return nil, err
+		}
 	}
 
-	daemonExe := os.Getenv("ALBEDO_DAEMON")
 	if daemonExe != "" {
 		if _, err := resolveDaemonExecutable(daemonExe); err != nil {
 			return nil, err
@@ -299,7 +357,7 @@ func Ensure(homeDir, projectRoot string) (*Connection, error) {
 	_, _ = rand.Read(randomToken)
 	tokenHex := hex.EncodeToString(randomToken)
 
-	env := buildDaemonEnv(homeDir, tokenHex)
+	env := buildDaemonEnv(homeDir, tokenHex, build)
 	cmd, err := daemonCommand(daemonExe, projectRoot, env)
 	if err != nil {
 		_ = logFile.Close()
