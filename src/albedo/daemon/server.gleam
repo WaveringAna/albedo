@@ -4,8 +4,10 @@ import albedo/daemon/history
 import albedo/daemon/image
 import albedo/daemon/reaper
 import albedo/daemon/session
+import albedo/daemon/store
 import albedo/harness/command
 import albedo/harness/extension
+import albedo/harness/extensions/schedule/ledger as schedule
 import albedo/harness/oauth
 import albedo/harness/runtime
 import albedo/openai_api/types
@@ -55,6 +57,7 @@ type Message {
   SetWorkspace(String, String, Subject(Result(conversation.Info, String)))
   WorkerDown(process.Down)
   Sweep
+  ScheduleTick
   Shutdown
 }
 
@@ -64,6 +67,7 @@ type State {
     config: Config,
     sessions: Dict(String, #(conversation.Info, Option(session.Session))),
     self: Subject(Message),
+    scheduling: Option(process.Pid),
   )
 }
 
@@ -109,8 +113,15 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
           #(info.id, #(info, worker))
         })
       let _ = process.send_after(self, sweep_interval(config), Sweep)
+      let _ = process.send_after(self, 15_000, ScheduleTick)
       Ok(
-        actor.initialised(State(host, config, dict.from_list(sessions), self))
+        actor.initialised(State(
+          host,
+          config,
+          dict.from_list(sessions),
+          self,
+          None,
+        ))
         |> actor.returning(self)
         |> actor.selecting(
           process.new_selector()
@@ -245,6 +256,9 @@ fn handle(state: State, message: Message) {
         Error(_) -> actor.continue(state)
       }
     }
+    WorkerDown(process.ProcessDown(_, pid, _))
+      if state.scheduling == Some(pid)
+    -> actor.continue(State(..state, scheduling: None))
     WorkerDown(process.ProcessDown(_, pid, _)) -> {
       let entry =
         dict.values(state.sessions)
@@ -288,6 +302,20 @@ fn handle(state: State, message: Message) {
       }
     }
     WorkerDown(_) -> actor.continue(state)
+    ScheduleTick -> {
+      let _ = process.send_after(state.self, 15_000, ScheduleTick)
+      case state.scheduling {
+        Some(_) -> actor.continue(state)
+        None -> {
+          let db = runtime.ledger(state.host)
+          let registry = state.self
+          let worker =
+            process.spawn_unlinked(fn() { dispatch_schedules(db, registry) })
+          let _ = process.monitor(worker)
+          actor.continue(State(..state, scheduling: Some(worker)))
+        }
+      }
+    }
     Sweep -> {
       // Off the registry: saving Python state and dropping reloadable history
       // must not make API calls wait behind filesystem or database work.
@@ -315,6 +343,54 @@ fn handle(state: State, message: Message) {
       runtime.stop(state.host)
       shutdown()
       actor.stop()
+    }
+  }
+}
+
+fn dispatch_schedules(db: store.Store, registry: Subject(Message)) -> Nil {
+  let time = schedule.now()
+  case schedule.due(db, time) {
+    Error(error) -> io.println("scheduler query failed: " <> error)
+    Ok(jobs) -> list.each(jobs, dispatch_schedule(db, registry, _))
+  }
+}
+
+fn dispatch_schedule(
+  db: store.Store,
+  registry: Subject(Message),
+  job: schedule.Job,
+) -> Nil {
+  case actor.call(registry, 10_000, Lookup(job.session, _)) {
+    Error(_) -> Nil
+    Ok(worker) -> {
+      let busy = session.report(worker).running
+      let delivered = case job.kind == "heartbeat" && busy {
+        True -> True
+        False ->
+          case
+            session.submit(
+              worker,
+              "[scheduled "
+                <> job.kind
+                <> " #"
+                <> int.to_string(job.id)
+                <> "] "
+                <> job.prompt,
+              "schedule",
+              None,
+            )
+          {
+            Ok(_) -> True
+            Error(_) -> False
+          }
+      }
+      case delivered {
+        True -> {
+          let _ = schedule.advance(db, job, schedule.now())
+          Nil
+        }
+        False -> Nil
+      }
     }
   }
 }
