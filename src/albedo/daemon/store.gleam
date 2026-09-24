@@ -16,6 +16,7 @@ type Message {
 
 pub fn start(path: String, schema: String) -> Result(Store, actor.StartError) {
   actor.new_with_initialiser(5000, fn(subject) {
+    label("albedo_store", path)
     use db <- result.try(
       sqlight.open(path) |> result.map_error(fn(e) { e.message }),
     )
@@ -31,6 +32,9 @@ pub fn start(path: String, schema: String) -> Result(Store, actor.StartError) {
     case message {
       Run(run) -> {
         run(db)
+        // A transcript load leaves every decoded row on this heap; the store
+        // then idles and would hold that garbage indefinitely.
+        collect_over(131_072)
         actor.continue(db)
       }
       Close(reply) -> {
@@ -61,3 +65,9 @@ pub fn query(store: Store, run: fn(sqlight.Connection) -> a) -> a {
     Run(fn(db) { process.send(reply, run(db)) })
   })
 }
+
+@external(erlang, "albedo_inspect", "label")
+fn label(kind: String, id: String) -> Nil
+
+@external(erlang, "albedo_session", "collect_over")
+fn collect_over(words: Int) -> Nil

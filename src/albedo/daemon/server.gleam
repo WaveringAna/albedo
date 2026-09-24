@@ -866,6 +866,7 @@ pub fn main() -> Nil {
     as "another albedo daemon is already running for this ALBEDO_HOME"
   let assert Ok(port) = start(config, 0)
   let assert Ok(_) = ready(home, port, token)
+  inspect(home)
   watch_parent(env("ALBEDO_PARENT_PID"))
   process.sleep_forever()
 }
@@ -913,6 +914,9 @@ fn directory(path: String) -> Bool
 
 @external(erlang, "albedo_daemon", "shutdown")
 fn shutdown() -> Nil
+
+@external(erlang, "albedo_inspect", "start")
+fn inspect(home: String) -> Nil
 
 @external(erlang, "albedo_daemon", "watch_parent")
 fn watch_parent(pid: String) -> Nil

@@ -105,6 +105,7 @@ pub fn start_with_config(
   let installed = config.extensions
   let default_enabled = config.default_enabled
   actor.new_with_initialiser(10_000, fn(subject) {
+    label("albedo_runtime", database)
     use ledger <- result.try(
       store.start(
         database,
@@ -1028,3 +1029,6 @@ fn prepare_scoped(
   }
   prepared |> result.map(fn(history) { list.append(session.context, history) })
 }
+
+@external(erlang, "albedo_inspect", "label")
+fn label(kind: String, id: String) -> Nil

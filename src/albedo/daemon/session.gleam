@@ -112,6 +112,10 @@ pub type Message {
   Idle(Subject(Report))
   Release(Subject(Bool))
   EvictHistory(Subject(Bool))
+  /// Queued behind a handler that dropped a large part of the state. An idle
+  /// actor never collects on its own, so without this the dropped history and
+  /// the binaries it references stay resident until the next message.
+  Collect
   Close(Subject(Nil))
 }
 
@@ -143,6 +147,7 @@ pub fn start(
   home: String,
 ) -> Result(Session, actor.StartError) {
   actor.new_with_initialiser(10_000, fn(self) {
+    label("albedo_session", info.id)
     use latest_usage <- result.try(conversation.load_usage(
       runtime.ledger(host),
       info.id,
@@ -874,7 +879,11 @@ fn handle(state: State, message: Message) {
                   )
                 ]),
               )
-              actor.continue(state)
+              // A reset renders the transcript once for the client; keeping it
+              // afterwards would hold every attached session's conversation in
+              // memory between turns. The next turn reads it again.
+              process.send(state.self, Collect)
+              actor.continue(State(..state, history: None))
             }
           }
       }
@@ -1061,6 +1070,7 @@ fn handle(state: State, message: Message) {
             }
             _, _, _ -> state
           }
+          process.send(state.self, Collect)
           actor.continue(start_queued(state))
         }
         _ -> actor.continue(state)
@@ -1107,6 +1117,7 @@ fn handle(state: State, message: Message) {
           let saved = save_state(state, kernel)
           runtime.reset_session(state.host, state.info.id)
           process.send(reply, True)
+          process.send(state.self, Collect)
           actor.continue(
             State(..state, kernel: None, context: unprepared())
             |> emit(view.text(
@@ -1129,9 +1140,14 @@ fn handle(state: State, message: Message) {
         None -> {
           let evicted = state.history != None
           process.send(reply, evicted)
+          process.send(state.self, Collect)
           actor.continue(State(..state, history: None))
         }
       }
+    Collect -> {
+      collect()
+      actor.continue(state)
+    }
     Close(reply) -> {
       case turn.running(state.activity), state.kernel {
         Some(run), Some(kernel) -> {
@@ -1212,6 +1228,12 @@ fn directory(path: String) -> Bool
 
 @external(erlang, "albedo_session", "kill")
 fn kill(pid: process.Pid) -> Nil
+
+@external(erlang, "albedo_inspect", "label")
+fn label(kind: String, id: String) -> Nil
+
+@external(erlang, "albedo_session", "collect")
+fn collect() -> Nil
 
 @external(erlang, "albedo_session", "now_ms")
 fn now_ms() -> Int
@@ -1579,6 +1601,13 @@ fn start_worker(
 ) -> State {
   let run_id = new_id()
   let owner = state.self
+  // The worker's closures must capture these fields, never `state`: a spawn
+  // copies everything its closure references, and the session state carries
+  // the loaded transcript.
+  let ledger = runtime.ledger(state.host)
+  let id = state.info.id
+  let provider = state.info.provider
+  let protocol = state.info.protocol
   let worker =
     loop.Loop(
       state.info.model,
@@ -1593,16 +1622,16 @@ fn start_worker(
       fn(request) {
         let observation = case runtime.compaction_name(kernel) {
           Some("rolling") ->
-            rolling.observation(runtime.ledger(state.host), state.info.id)
+            rolling.observation(ledger, id)
             |> result.unwrap(None)
           _ -> None
         }
         let snapshot =
           context_snapshot.from_request(
             Some(usage.now()),
-            state.info.provider,
-            conversation.protocol(state.info.protocol),
-            state.info.protocol,
+            provider,
+            conversation.protocol(protocol),
+            protocol,
             request,
             observation,
           )
@@ -1616,6 +1645,7 @@ fn start_worker(
     )
   let pid =
     process.spawn(fn() {
+      label("albedo_worker", run_id)
       process.send(
         owner,
         Finished(run_id, case work {
@@ -1625,10 +1655,18 @@ fn start_worker(
       )
     })
   let run = turn.Run(run_id, pid, process.monitor(pid), False, work)
-  State(..state, activity: turn.Running(run), context: case work {
-    turn.Compaction -> state.context
-    turn.Turn(_) -> unprepared()
-  })
+  // The worker holds the projected history it runs on; the session's copy is
+  // released until the next load, since every commit is durable first.
+  process.send(owner, Collect)
+  State(
+    ..state,
+    history: None,
+    activity: turn.Running(run),
+    context: case work {
+      turn.Compaction -> state.context
+      turn.Turn(_) -> unprepared()
+    },
+  )
 }
 
 fn raw_inputs(entries: List(transcript.Entry)) -> List(types.Input) {
@@ -1854,11 +1892,14 @@ fn remember(state: State, inputs: List(types.Input), timestamp: Int) -> State {
     list.map(inputs, fn(input) {
       transcript.Entry(input, Some(timestamp), Some(state.info.provider))
     })
-  let history = case state.history {
-    Some(history) -> list.append(list.reverse(entries), history)
-    None -> list.reverse(entries)
+  // An unloaded transcript stays unloaded: the entries are already durable and
+  // the next load reads them. Starting a list here would pass a transcript of
+  // only these entries off as the whole conversation.
+  case state.history {
+    Some(history) ->
+      State(..state, history: Some(list.append(list.reverse(entries), history)))
+    None -> state
   }
-  State(..state, history: Some(history))
 }
 
 fn recover_pending(state: State, kernel: runtime.Session) -> List(types.Input) {

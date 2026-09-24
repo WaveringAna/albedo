@@ -181,14 +181,35 @@ func buildDaemonEnv(homeDir, tokenHex string) []string {
 		"ALBEDO_BASE_URL": true,
 		"ALBEDO_PROTOCOL": true,
 	}
+	erlFlags := daemonErlFlags
 	for _, kv := range os.Environ() {
-		k := strings.SplitN(kv, "=", 2)[0]
+		k, v, _ := strings.Cut(kv, "=")
+		if k == "ERL_FLAGS" {
+			// The operator's flags come last so they override the defaults.
+			erlFlags += " " + v
+			continue
+		}
 		if !filteredVars[k] {
 			env = append(env, kv)
 		}
 	}
-	return append(env, "ALBEDO_HOME="+homeDir, "ALBEDO_TOKEN="+tokenHex)
+	return append(env, "ERL_FLAGS="+erlFlags, "ALBEDO_HOME="+homeDir, "ALBEDO_TOKEN="+tokenHex)
 }
+
+// Sized for one local daemon, measured with ALBEDO_INSPECT (three large
+// sessions running turns at once peaked near 80 MB instead of 100).
+//
+// +P/+Q: the process and port tables are preallocated at their limits; the
+// defaults (1,048,576 processes, 65,536 ports) cost about 16 MB up front.
+//
+// +MB*/+MH* (binary and heap allocators): transcripts are loaded and dropped
+// per turn, so allocations come in bursts. Small carriers, address-order
+// best fit, a low single-block threshold (so large binaries get their own
+// mapping) and no carrier pooling let freed bursts go back to the OS instead
+// of staying resident as empty carrier space.
+const daemonErlFlags = "+P 65536 +Q 16384" +
+	" +MBsbct 16 +MHsbct 32 +MBlmbcs 256 +MHlmbcs 256 +MBsmbcs 32 +MHsmbcs 32" +
+	" +MBas aobf +MHas aobf +MBacul 0 +MHacul 0"
 
 func daemonCommand(daemonExe, projectRoot string, env []string) (*exec.Cmd, error) {
 	if daemonExe != "" {

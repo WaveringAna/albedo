@@ -145,3 +145,17 @@ func TestDaemonEnvironment(t *testing.T) {
 		t.Fatal("incorrect daemon environment")
 	}
 }
+
+func TestDaemonEnvironmentKeepsOperatorErlFlagsLast(t *testing.T) {
+	t.Setenv("ERL_FLAGS", "+P 500000")
+	env := buildDaemonEnv("/tmp/home", "token")
+	var flags []string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "ERL_FLAGS=") {
+			flags = append(flags, kv)
+		}
+	}
+	if len(flags) != 1 || flags[0] != "ERL_FLAGS="+daemonErlFlags+" +P 500000" {
+		t.Fatalf("ERL_FLAGS = %q", flags)
+	}
+}

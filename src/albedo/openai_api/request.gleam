@@ -10,7 +10,8 @@ import gleam/result
 import gleam/string
 import gleam/string_tree.{type StringTree}
 
-/// Encode directly to iodata; never flatten the complete request for HTTP.
+/// Encode to iodata; the request is never flattened. Each input's small
+/// fragments are coalesced as it is encoded (see `flatten`).
 pub fn encode(
   protocol: Protocol,
   request: Request,
@@ -127,10 +128,12 @@ fn encode_inputs(
       let encoded = case images {
         [] -> encoded
         _ -> [
-          json.object([
-            #("role", json.string("user")),
-            #("content", json.preprocessed_array(images)),
-          ]),
+          flatten(
+            json.object([
+              #("role", json.string("user")),
+              #("content", json.preprocessed_array(images)),
+            ]),
+          ),
           ..encoded
         ]
       }
@@ -138,7 +141,7 @@ fn encode_inputs(
     }
     _, [input, ..rest] -> {
       use json <- result.try(encode_input(protocol, input))
-      encode_inputs(protocol, rest, [json, ..encoded])
+      encode_inputs(protocol, rest, [flatten(json), ..encoded])
     }
   }
 }
@@ -165,7 +168,7 @@ fn chat_tool_run(
             list.map(attached, image_part(ChatCompletions, _)),
           ])
       }
-      chat_tool_run(rest, [tool, ..encoded], images)
+      chat_tool_run(rest, [flatten(tool), ..encoded], images)
     }
     rest -> #(encoded, images, rest)
   }
@@ -244,18 +247,18 @@ fn text_part(protocol: Protocol, text: String) -> Json {
 
 fn image_part(protocol: Protocol, image: types.Image) -> Json {
   let #(mime_type, data, _, _, _) = types.image_parts(image)
-  let url = "data:" <> mime_type <> ";base64," <> data
+  let url = data_url(mime_type, data)
   case protocol {
     Responses ->
       json.object([
         #("type", json.string("input_image")),
         #("detail", json.string("auto")),
-        #("image_url", json.string(url)),
+        #("image_url", url),
       ])
     ChatCompletions ->
       json.object([
         #("type", json.string("image_url")),
-        #("image_url", json.object([#("url", json.string(url))])),
+        #("image_url", json.object([#("url", url)])),
       ])
   }
 }
@@ -296,3 +299,12 @@ fn optional(
     Some(value) -> [#(key, encode(value)), ..fields]
   }
 }
+
+/// One encoded input with its small fragments coalesced while only that
+/// input's fragments are live. The request then crosses to the HTTP connection
+/// process as a short list of binaries, large ones shared rather than copied.
+@external(erlang, "albedo_openai_json", "flatten")
+fn flatten(json: Json) -> Json
+
+@external(erlang, "albedo_openai_json", "data_url")
+fn data_url(mime_type: String, data: String) -> Json

@@ -32,7 +32,10 @@ pub opaque type Section {
     source: String,
     item_count: Int,
     byte_count: Int,
-    content: String,
+    /// Rendered only when an inspector asks. A snapshot is taken for every
+    /// model step and kept by the session, so an eager render would copy the
+    /// whole prepared history into a string that is almost never read.
+    content: fn() -> String,
     omitted: Option(String),
   )
 }
@@ -79,6 +82,28 @@ pub fn section(
   item_count: Int,
   byte_count: Int,
   content: String,
+  omitted: Option(String),
+) -> Section {
+  lazy_section(
+    id,
+    label,
+    kind,
+    source,
+    item_count,
+    byte_count,
+    fn() { content },
+    omitted,
+  )
+}
+
+fn lazy_section(
+  id: String,
+  label: String,
+  kind: SectionKind,
+  source: String,
+  item_count: Int,
+  byte_count: Int,
+  content: fn() -> String,
   omitted: Option(String),
 ) -> Section {
   Section(
@@ -185,14 +210,14 @@ pub fn from_request(
   let sections = case history {
     [] -> sections
     history -> [
-      section(
+      lazy_section(
         "history",
         "prepared conversation",
         History,
         history_source(observation),
         list.length(history),
         context_size.inputs_bytes(history),
-        render_inputs(history),
+        fn() { render_inputs(history) },
         input_omission(history),
       ),
       ..sections
@@ -431,7 +456,8 @@ pub fn page(
         list.find(sections, fn(section) { section.id == section_id })
         |> result.replace_error("context section not found"),
       )
-      let pages = page_count(section.content)
+      let content = section.content()
+      let pages = page_count(content)
       case index >= 0 && index < pages {
         False -> Error("context page not found")
         True -> {
@@ -442,7 +468,7 @@ pub fn page(
             #(
               "content",
               json.string(string.slice(
-                section.content,
+                content,
                 index * page_characters,
                 page_characters,
               )),
@@ -463,6 +489,7 @@ pub fn page(
 }
 
 fn section_json(section: Section) -> json.Json {
+  let content = section.content()
   json.object([
     #("id", json.string(section.id)),
     #("label", json.string(section.label)),
@@ -470,8 +497,8 @@ fn section_json(section: Section) -> json.Json {
     #("source", json.string(section.source)),
     #("item_count", json.int(section.item_count)),
     #("byte_count", json.int(section.byte_count)),
-    #("preview", json.string(preview(section.content))),
-    #("pages", json.int(page_count(section.content))),
+    #("preview", json.string(preview(content))),
+    #("pages", json.int(page_count(content))),
   ])
 }
 

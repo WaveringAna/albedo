@@ -19,11 +19,75 @@ inspect(Data) when is_binary(Data), byte_size(Data) > 0, byte_size(Data) =< ?MAX
   catch _:_ -> {error, nil} end;
 inspect(_) -> {error, nil}.
 
-%% A saved types.Image whose metadata still matches its payload.
+%% A saved types.Image whose metadata still matches its payload. Runs for every
+%% image each time a transcript loads, so it proves what inspect/1 proves
+%% without its two full-size copies: a scan establishes canonical base64 and the
+%% decoded size, and only a prefix is decoded to read the dimensions.
 valid({image, Mime, Data, Width, Height, Bytes})
-    when is_binary(Mime), is_binary(Data), is_integer(Width), is_integer(Height), is_integer(Bytes) ->
-  inspect(Data) =:= {ok, {Mime, Width, Height, Bytes}};
+    when is_binary(Mime), is_binary(Data), is_integer(Width), is_integer(Height), is_integer(Bytes),
+         byte_size(Data) > 0, byte_size(Data) =< ?MAX_DATA_BYTES ->
+  case canonical_size(Data) of
+    Bytes when Bytes > 0, Bytes =< ?MAX_IMAGE_BYTES ->
+      header_dimensions(Data) =:= {ok, Mime, Width, Height};
+    _ -> false
+  end;
 valid(_) -> false.
+
+%% Headers are read from this many base64 characters (48 KiB decoded); a JPEG
+%% whose frame header lies beyond them is decoded whole, as before.
+-define(HEADER_CHARS, 65536).
+
+header_dimensions(Data) when byte_size(Data) =< ?HEADER_CHARS -> dimensions(base64:decode(Data));
+header_dimensions(Data) ->
+  case dimensions(base64:decode(binary:part(Data, 0, ?HEADER_CHARS))) of
+    {ok, <<"image/webp">>, _, _} -> dimensions(base64:decode(Data));  %% RIFF size covers the whole file
+    {ok, _, _, _} = Found -> Found;
+    error -> dimensions(base64:decode(Data))
+  end.
+
+%% The decoded size of canonical, padded base64 (what base64:encode/1 emits),
+%% or error. Canonical means encode(decode(Data)) =:= Data: standard alphabet,
+%% length a multiple of four, at most two '=' at the end, and zero unused bits
+%% in the final character.
+canonical_size(Data) when byte_size(Data) >= 4, byte_size(Data) rem 4 =:= 0 ->
+  Body = byte_size(Data) - 4,
+  <<Head:Body/binary, Last:4/binary>> = Data,
+  case alphabet(Head) of
+    true ->
+      case Last of
+        <<A, B, $=, $=>> -> quad_tail(A, B, 16#0F, 1, Body);
+        <<A, B, C, $=>> -> quad_tail3(A, B, C, Body);
+        <<A, B, C, D>> ->
+          case alphabet(<<A, B, C, D>>) of true -> Body div 4 * 3 + 3; false -> error end;
+        _ -> error
+      end;
+    false -> error
+  end;
+canonical_size(_) -> error.
+
+quad_tail(A, B, Mask, Extra, Body) ->
+  case alphabet(<<A, B>>) andalso value(B) band Mask =:= 0 of
+    true -> Body div 4 * 3 + Extra;
+    false -> error
+  end.
+
+quad_tail3(A, B, C, Body) ->
+  case alphabet(<<A, B, C>>) andalso value(C) band 16#03 =:= 0 of
+    true -> Body div 4 * 3 + 2;
+    false -> error
+  end.
+
+alphabet(<<C, Rest/binary>>)
+    when (C >= $A andalso C =< $Z); (C >= $a andalso C =< $z);
+         (C >= $0 andalso C =< $9); C =:= $+; C =:= $/ -> alphabet(Rest);
+alphabet(<<>>) -> true;
+alphabet(_) -> false.
+
+value(C) when C >= $A, C =< $Z -> C - $A;
+value(C) when C >= $a, C =< $z -> C - $a + 26;
+value(C) when C >= $0, C =< $9 -> C - $0 + 52;
+value($+) -> 62;
+value($/) -> 63.
 
 dimensions(<<16#89, "PNG", 13, 10, 26, 10, 13:32/big, "IHDR", Width:32/big, Height:32/big, _/binary>>)
     when Width > 0, Height > 0 -> {ok, <<"image/png">>, Width, Height};

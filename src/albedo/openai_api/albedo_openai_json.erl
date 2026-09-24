@@ -1,6 +1,40 @@
 -module(albedo_openai_json).
--export([encode/1, null/0]).
+-export([encode/1, null/0, flatten/1, data_url/2]).
 
 encode(Value) -> json:encode(Value).
 
 null() -> null.
+
+%% Binaries at least this large cross process boundaries by reference.
+-define(SHARED, 512).
+
+%% One encoded input as iodata with its small fragments coalesced. Encoding
+%% leaves thousands of tiny pieces (keys, quotes, escape-split slices) that are
+%% deep-copied whenever the request is sent to the HTTP connection process;
+%% large binaries (message text, image data) stay as references, uncopied.
+flatten(Json) -> coalesce(Json, [], [], []).
+
+coalesce([], [], Small, Out) -> lists:reverse(emit(Small, Out));
+coalesce([], [Next | Stack], Small, Out) -> coalesce(Next, Stack, Small, Out);
+coalesce([H | T], Stack, Small, Out) -> coalesce(H, [T | Stack], Small, Out);
+coalesce(B, Stack, Small, Out) when is_binary(B), byte_size(B) >= ?SHARED ->
+    coalesce([], Stack, [], [B | emit(Small, Out)]);
+coalesce(Piece, Stack, Small, Out) -> coalesce([], Stack, [Piece | Small], Out).
+
+emit([], Out) -> Out;
+emit(Small, Out) -> [iolist_to_binary(lists:reverse(Small)) | Out].
+
+%% A `data:` URL as a JSON string without concatenating the payload first. The
+%% base64 alphabet needs no JSON escaping, so clean data is emitted as is.
+data_url(Mime, Data) ->
+    case base64_clean(Data) of
+        true -> [<<"\"data:">>, Mime, <<";base64,">>, Data, $"];
+        false -> json:encode_binary(<<"data:", Mime/binary, ";base64,", Data/binary>>)
+    end.
+
+base64_clean(<<C, Rest/binary>>)
+        when (C >= $A andalso C =< $Z); (C >= $a andalso C =< $z);
+             (C >= $0 andalso C =< $9); C =:= $+; C =:= $/; C =:= $= ->
+    base64_clean(Rest);
+base64_clean(<<>>) -> true;
+base64_clean(_) -> false.

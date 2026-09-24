@@ -64,6 +64,51 @@ pub fn catalog_answers_qualified_and_unqualified_ids_test() {
   cleanup(root)
 }
 
+/// A catalog cached before trimming existed: names, prices and dates albedo
+/// never reads. The first lookup rewrites it with only what lookup reads.
+pub fn a_full_catalog_is_trimmed_in_place_without_changing_answers_test() {
+  let #(root, _, home) = fixture()
+  let full =
+    string.replace(
+      catalog,
+      "\"limit\":",
+      "\"cost\":{\"input\":1.5},\"release_date\":\"2026-01-01\",\"limit\":",
+    )
+  let file = write(home, "models.json", full)
+
+  let assert Some(info) =
+    models.lookup_at(file, "shared-model", "https://mirror.example.com/v1")
+  info.context_tokens |> should.equal(Some(400_000))
+
+  let assert Ok(trimmed) = read(file)
+  string.contains(trimmed, "\"name\"") |> should.be_false
+  string.contains(trimmed, "cost") |> should.be_false
+  { string.byte_size(trimmed) < string.byte_size(full) } |> should.be_true
+  // The rewritten file answers exactly as the original did.
+  let assert Some(again) =
+    models.lookup_at(file, "shared-model", "https://mirror.example.com/v1")
+  again |> should.equal(info)
+  models.lookup_at(file, "disputed", "") |> should.equal(None)
+  models.list_at(file, "openai", "")
+  |> should.equal(["only-openai", "shared-model"])
+
+  cleanup(root)
+}
+
+pub fn a_fetched_catalog_is_stored_trimmed_test() {
+  let #(root, _, home) = fixture()
+  let file = home <> "/models.json"
+  models.reload_at(file, serve_once(catalog)) |> should.equal(Ok(Nil))
+  let assert Ok(stored) = read(file)
+  string.contains(stored, "\"name\"") |> should.be_false
+  let assert Some(info) = models.lookup_at(file, "vendor/qualified", "")
+  info.context_tokens |> should.equal(Some(32_000))
+  cleanup(root)
+}
+
+@external(erlang, "file", "read_file")
+fn read(path: String) -> Result(String, a)
+
 @external(erlang, "albedo_skills_test_support", "fixture")
 fn fixture() -> #(String, String, String)
 

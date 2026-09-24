@@ -107,7 +107,10 @@ def run(endpoint):
             snapshot = api(route)
             assert snapshot["state"] == "ready"
             assert snapshot["provider"] == "fixture" and snapshot["model"] == "fixture"
-            assert json.loads((home/"models.json").read_text()) == json.loads(Provider.catalog)
+            # The catalog is stored trimmed to the fields lookup reads.
+            served = json.loads(Provider.catalog)["fixture-cloud"]
+            assert json.loads((home/"models.json").read_text()) == {"fixture-cloud": {
+                "env": served["env"], "models": served["models"]}}
             assert snapshot["context_window_tokens"] == 200_000, snapshot
             compaction = snapshot["compaction"]
             assert compaction["estimate_method"] == "local byte-based estimate; not provider token usage"

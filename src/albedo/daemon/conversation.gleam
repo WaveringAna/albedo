@@ -407,28 +407,60 @@ pub fn load_entries(
   store: store.Store,
   id: String,
 ) -> Result(List(transcript.Entry), String) {
-  store.query(store, fn(db) {
-    use rows <- result.try(
-      sqlight.query(
-        "SELECT payload,timestamp,provider FROM transcript WHERE session=? ORDER BY seq",
-        db,
-        [sqlight.text(id)],
-        {
-          use payload <- decode.field(0, decode.bit_array)
-          use timestamp <- decode.field(1, decode.optional(decode.int))
-          use provider <- decode.field(2, decode.optional(decode.string))
-          decode.success(#(payload, timestamp, provider))
-        },
+  load_pages(store, id, -1, [])
+}
+
+/// Rows per store round trip. A transcript is read a page at a time so the
+/// raw rows and their decoded entries are only ever live for one page, not
+/// the whole transcript at once.
+const load_page_rows = 128
+
+fn load_pages(
+  store: store.Store,
+  id: String,
+  after: Int,
+  pages: List(List(transcript.Entry)),
+) -> Result(List(transcript.Entry), String) {
+  let page =
+    store.query(store, fn(db) {
+      use rows <- result.try(
+        sqlight.query(
+          "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? AND seq>? ORDER BY seq LIMIT ?",
+          db,
+          [sqlight.text(id), sqlight.int(after), sqlight.int(load_page_rows)],
+          {
+            use seq <- decode.field(0, decode.int)
+            use payload <- decode.field(1, decode.bit_array)
+            use timestamp <- decode.field(2, decode.optional(decode.int))
+            use provider <- decode.field(3, decode.optional(decode.string))
+            decode.success(#(seq, payload, timestamp, provider))
+          },
+        )
+        |> result.map_error(fn(e) { e.message }),
       )
-      |> result.map_error(fn(e) { e.message }),
-    )
-    list.try_map(rows, fn(row) {
-      use input <- result.try(
-        unpack(row.0) |> result.replace_error("invalid saved transcript item"),
+      use entries <- result.try(
+        list.try_map(rows, fn(row) {
+          use input <- result.try(
+            unpack(row.1)
+            |> result.replace_error("invalid saved transcript item"),
+          )
+          Ok(transcript.Entry(input, row.2, row.3))
+        }),
       )
-      Ok(transcript.Entry(input, row.1, row.2))
+      Ok(#(entries, list.last(rows) |> result.map(fn(row) { row.0 })))
     })
-  })
+  // Only the owning session appends to its transcript, and it is the one
+  // loading, so no row can land between pages.
+  case page {
+    Error(error) -> Error(error)
+    Ok(#(entries, Ok(last))) ->
+      case list.length(entries) == load_page_rows {
+        True -> load_pages(store, id, last, [entries, ..pages])
+        False -> Ok(list.flatten(list.reverse([entries, ..pages])))
+      }
+    Ok(#(entries, Error(_))) ->
+      Ok(list.flatten(list.reverse([entries, ..pages])))
+  }
 }
 
 pub fn load(

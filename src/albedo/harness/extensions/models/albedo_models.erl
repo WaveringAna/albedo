@@ -1,5 +1,6 @@
 -module(albedo_models).
-%% models.dev catalog cache: bounded fetch, parsed once per file revision.
+%% models.dev catalog cache: bounded fetch, trimmed to the fields lookup reads,
+%% parsed once per file revision.
 
 -include_lib("kernel/include/file.hrl").
 -export([refresh/3, reload/2, lookup/3, list/3]).
@@ -29,7 +30,7 @@ reload(Catalog0, Url0) ->
     Url = unicode:characters_to_binary(Url0),
     try
         case safe_url(Url) of
-            true -> fetch(Catalog, Url);
+            true -> isolated(fun() -> fetch(Catalog, Url) end);
             false -> {error, <<"models catalog URL must use https or loopback http">>}
         end
     catch
@@ -59,9 +60,9 @@ fetch(Catalog, Url) ->
     Options = [{timeout, ?FETCH_TIMEOUT_MS}, {connect_timeout, 10000}, {ssl, tls_options(Url)}],
     case httpc:request(get, Request, Options, [{body_format, binary}]) of
         {ok, {{_, 200, _}, _, Body}} when byte_size(Body) =< ?MAX_BYTES ->
-            case valid_catalog(Body) of
-                true -> store(Catalog, Body);
-                false -> {error, <<"models catalog response is not valid">>}
+            case compact(Body) of
+                {ok, Trimmed} -> store(Catalog, Trimmed);
+                error -> {error, <<"models catalog response is not valid">>}
             end;
         {ok, {{_, 200, _}, _, _}} ->
             {error, <<"models catalog response is too large">>};
@@ -77,15 +78,56 @@ tls_options(Url) ->
      {server_name_indication, Host},
      {customize_hostname_check, [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}].
 
-valid_catalog(Body) ->
+%% A valid catalog re-encoded with only what provider/3 and model/1 read. Every
+%% provider stays: lookup falls back to matching a model id across all of them,
+%% which is how endpoints outside the catalog (codex, proxies) get a capacity.
+%% models.dev is about 4.9 MB; the trimmed form is about a quarter of that.
+compact(Body) ->
     try json:decode(Body) of
         Providers when is_map(Providers), map_size(Providers) > 0 ->
-            lists:any(fun({_, Provider}) ->
-                is_map(Provider) andalso is_map(maps:get(<<"models">>, Provider, undefined))
-            end, maps:to_list(Providers));
-        _ -> false
+            case lists:any(fun({_, Provider}) ->
+                     is_map(Provider) andalso is_map(maps:get(<<"models">>, Provider, undefined))
+                 end, maps:to_list(Providers)) of
+                true -> {ok, trim(Providers)};
+                false -> error
+            end;
+        _ -> error
     catch
-        _:_ -> false
+        _:_ -> error
+    end.
+
+trim(Providers) -> iolist_to_binary(json:encode(maps:filtermap(fun trim_provider/2, Providers))).
+
+%% models.dev names every provider; a trimmed catalog never does.
+trimmed(Providers) ->
+    not lists:any(fun(P) -> is_map(P) andalso is_map_key(<<"name">>, P) end, maps:values(Providers)).
+
+trim_provider(_, Provider) when is_map(Provider) ->
+    Models = case maps:get(<<"models">>, Provider, #{}) of
+        M when is_map(M) -> maps:filtermap(fun trim_model/2, M);
+        _ -> #{}
+    end,
+    {true, (maps:with([<<"api">>, <<"env">>], Provider))#{<<"models">> => Models}};
+trim_provider(_, _) -> false.
+
+trim_model(_, Model) when is_map(Model) ->
+    Limit = maps:with([<<"context">>, <<"output">>], field(<<"limit">>, Model)),
+    Inputs = maps:with([<<"input">>], field(<<"modalities">>, Model)),
+    Trimmed = maps:with([<<"id">>], Model),
+    {true, nonempty(<<"modalities">>, Inputs, nonempty(<<"limit">>, Limit, Trimmed))};
+trim_model(_, _) -> false.
+
+nonempty(_, Value, Map) when map_size(Value) =:= 0 -> Map;
+nonempty(Key, Value, Map) -> Map#{Key => Value}.
+
+%% Runs Fun in a fresh process so a large decode's garbage dies with it instead
+%% of growing the caller's heap for the rest of its life. Fun's result crosses
+%% back as an exit reason, so it must be small.
+isolated(Fun) ->
+    {Pid, Ref} = spawn_monitor(fun() -> exit({done, Fun()}) end),
+    receive
+        {'DOWN', Ref, process, Pid, {done, Result}} -> Result;
+        {'DOWN', Ref, process, Pid, _} -> {error, <<"models catalog could not be read">>}
     end.
 
 %% A partly written catalog must never be readable, so the rename is the commit.
@@ -97,6 +139,7 @@ store(Catalog, Body) ->
             case file:rename(Temporary, Catalog) of
                 ok ->
                     _ = persistent_term:erase({?MODULE, Catalog}),
+                    _ = file:delete(index_path(Catalog)),
                     {ok, nil};
                 _ ->
                     _ = file:delete(Temporary),
@@ -125,7 +168,7 @@ catalog(Catalog) ->
             Revision = {Size, Modified},
             case persistent_term:get({?MODULE, Catalog}, undefined) of
                 {Revision, Index} -> {ok, Index};
-                _ -> parse(Catalog, Revision)
+                _ -> load(Catalog, Revision)
             end;
         {ok, _} -> {error, <<"models catalog is too large">>};
         _ -> {error, <<"no models catalog is cached">>}
@@ -135,6 +178,40 @@ catalog(Catalog) ->
 %% costs a global GC pass, so the decoded JSON is reduced to the fields lookup and
 %% list read. Index entries name their provider instead of embedding it: embedded
 %% provider maps are shared on the heap but expand to over a gigabyte when copied.
+%%
+%% Sessions start turns together, so a missing revision is parsed by one caller
+%% while the rest wait on the lock and then read its result.
+load(Catalog, Revision) ->
+    global:trans({{?MODULE, Catalog}, self()}, fun() ->
+        case persistent_term:get({?MODULE, Catalog}, undefined) of
+            {Revision, Index} -> {ok, Index};
+            _ ->
+                case isolated(fun() -> from_index(Catalog, Revision) end) of
+                    ok -> {ok, element(2, persistent_term:get({?MODULE, Catalog}))};
+                    Error -> Error
+                end
+        end
+    end, [node()]).
+
+%% The reduced index of the current revision, saved beside the catalog, loads
+%% straight into its final shape; decoding the JSON takes several times more
+%% memory than the index it produces. A missing or stale index is rebuilt.
+from_index(Catalog, Revision) ->
+    case file:read_file(index_path(Catalog)) of
+        {ok, Bytes} ->
+            try binary_to_term(Bytes, [safe]) of
+                {1, Revision, #{index := I, providers := P} = CatalogData} when is_map(I), is_map(P) ->
+                    persistent_term:put({?MODULE, Catalog}, {Revision, CatalogData}),
+                    ok;
+                _ -> parse(Catalog, Revision)
+            catch
+                _:_ -> parse(Catalog, Revision)
+            end;
+        _ -> parse(Catalog, Revision)
+    end.
+
+index_path(Catalog) -> Catalog ++ ".index".
+
 parse(Catalog, Revision) ->
     case file:read_file(Catalog) of
         {ok, Body} ->
@@ -142,13 +219,47 @@ parse(Catalog, Revision) ->
                 Decoded when is_map(Decoded) ->
                     {Providers, Index} = maps:fold(fun provider/3, {#{}, #{}}, Decoded),
                     CatalogData = #{index => Index, providers => Providers},
-                    persistent_term:put({?MODULE, Catalog}, {Revision, CatalogData}),
-                    {ok, CatalogData};
+                    Current = retrim(Catalog, Decoded, Revision),
+                    save_index(Catalog, Current, CatalogData),
+                    persistent_term:put({?MODULE, Catalog}, {Current, CatalogData}),
+                    ok;
                 _ -> {error, <<"models catalog is not a provider object">>}
             catch
                 _:_ -> {error, <<"models catalog is not valid JSON">>}
             end;
         _ -> {error, <<"models catalog could not be read">>}
+    end.
+
+%% Best effort: without an index the next start parses the catalog again.
+save_index(Catalog, Revision, CatalogData) ->
+    Path = index_path(Catalog),
+    Temporary = Path ++ "." ++ integer_to_list(erlang:unique_integer([positive])),
+    case file:write_file(Temporary, term_to_binary({1, Revision, CatalogData}, [{compressed, 1}])) of
+        ok ->
+            case file:rename(Temporary, Path) of
+                ok -> ok;
+                _ -> file:delete(Temporary)
+            end;
+        _ -> file:delete(Temporary)
+    end.
+
+%% A catalog cached before trimming existed is trimmed in place on first parse,
+%% keeping its mtime so the refresh schedule is unchanged. Answers the revision
+%% the cache entry must carry: the rewritten file's, or the original's when the
+%% file is already trimmed or cannot be replaced.
+retrim(Catalog, Decoded, {_, Modified} = Revision) ->
+    case trimmed(Decoded) of
+        true -> Revision;
+        false ->
+            case store(Catalog, trim(Decoded)) of
+                {ok, nil} ->
+                    _ = file:write_file_info(Catalog, #file_info{mtime = Modified}, [{time, posix}]),
+                    case file:read_file_info(Catalog, [{time, posix}]) of
+                        {ok, #file_info{size = Size, mtime = Mtime}} -> {Size, Mtime};
+                        _ -> Revision
+                    end;
+                _ -> Revision
+            end
     end.
 
 %% Provider: {Host, Api, Env, SortedModelIds}. Model: {Id, Context, Output, Inputs}.

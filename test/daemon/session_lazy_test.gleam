@@ -53,7 +53,7 @@ pub fn dormant_session_start_does_not_decode_full_transcript_test() {
   cleanup(path)
 }
 
-pub fn evicted_idle_history_reloads_from_durable_transcript_test() {
+pub fn history_is_read_from_the_durable_transcript_and_not_kept_test() {
   let path = temporary_database()
   let assert Ok(host) = runtime.start(path)
   let ledger = runtime.ledger(host)
@@ -70,7 +70,9 @@ pub fn evicted_idle_history_reloads_from_durable_transcript_test() {
   let first = session.read(worker, -1)
   list.any(first.events, string.contains(_, "first durable turn"))
   |> should.be_true
-  session.report(worker).history_loaded |> should.be_true
+  // A reset renders the transcript from disk and keeps none of it resident.
+  session.report(worker).history_loaded |> should.be_false
+  session.evict_history(worker) |> should.be_false
 
   let assert Ok(_) =
     conversation.commit(
@@ -79,12 +81,10 @@ pub fn evicted_idle_history_reloads_from_durable_transcript_test() {
       [types.Assistant("written while detached")],
       conversation.Idle,
     )
-  session.evict_history(worker) |> should.be_true
-  session.report(worker).history_loaded |> should.be_false
   let reloaded = session.read(worker, -1)
   list.any(reloaded.events, string.contains(_, "written while detached"))
   |> should.be_true
-  session.report(worker).history_loaded |> should.be_true
+  session.report(worker).history_loaded |> should.be_false
 
   session.close(worker)
   runtime.stop(host)
