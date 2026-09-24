@@ -269,7 +269,7 @@ def run(endpoint):
             assert request["input"][0] == cached["input"][0], "reload changed the cached leading context"
             assert "added after the session opened" not in json.dumps(request["input"][0])
             updates = [item for item in request["input"] if item.get("role") == "user"
-                       and str(item.get("content", "")).startswith("<system-note>\n[albedo] This session's extensions changed")]
+                       and ("[albedo] This session's extensions changed" in str(item.get("content", "")) and str(item.get("content", "")).startswith("<system-note"))]
             assert len(updates) == 1 and "added after the session opened" in updates[0]["content"], request
             assert updates[0]["content"].endswith("</system-note>"), updates[0]
             before = len(Provider.requests)
@@ -306,6 +306,25 @@ def run(endpoint):
             assert switched["result"]["provider"] == "fixture", switched
             listed_sessions = api("/sessions")
             assert next(s for s in listed_sessions if s["id"] == model_session)["model"] == "switched-model"
+            # /effort on a non-reasoning model is rejected
+            rejected(f"/sessions/{model_session}/commands", {"name": "/effort"})
+            # switch to a reasoning model (o3-mini)
+            o3_switched = api(f"/sessions/{model_session}/commands", {"name": "/model", "args": {"model": "o3-mini"}})
+            assert o3_switched["result"]["model"] == "o3-mini", o3_switched
+            assert o3_switched["result"]["effort"] == "medium", o3_switched
+            # /effort query returns current and available
+            effort_info = api(f"/sessions/{model_session}/commands", {"name": "/effort"})
+            assert effort_info["result"]["effort"] == "medium", effort_info
+            assert effort_info["result"]["available"] == ["low", "medium", "high"], effort_info
+            # setting invalid effort level is rejected
+            rejected(f"/sessions/{model_session}/commands", {"name": "/effort", "args": {"level": "bogus"}})
+            # setting valid effort level succeeds
+            set_res = api(f"/sessions/{model_session}/commands", {"name": "/effort", "args": {"level": "high"}})
+            assert set_res["result"]["effort"] == "high", set_res
+            assert "reasoning effort set to high" in set_res["result"]["message"], set_res
+            # session listing reflects the updated effort
+            listed_sessions = api("/sessions")
+            assert next(s for s in listed_sessions if s["id"] == model_session)["effort"] == "high" 
             # /work is the work extension's own page. A user change is told to
             # the agent, but never starts a turn: while idle it waits and rides
             # ahead of the next message.
@@ -338,7 +357,7 @@ def run(endpoint):
             # Disabling skills keeps the cached prefix (the python tool is
             # unchanged); the model is told the skills context was removed.
             update = next(item["content"] for item in reversed(request["input"]) if item.get("role") == "user"
-                          and item.get("content", "").startswith("<system-note>\n[albedo] This session's extensions changed"))
+                          and ("[albedo] This session's extensions changed" in item.get("content", "") and item.get("content", "").startswith("<system-note")))
             assert "Removed context:\n- skills" in update and "<available_skills>" not in update, update
             assert "Current extension instructions" not in update and len(update) < 4000, update
             assert "skills" not in {module for item in disabled if item["enabled"] for module in item["python_modules"]}

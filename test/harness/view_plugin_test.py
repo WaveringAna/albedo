@@ -116,10 +116,10 @@ class ViewPluginTest(unittest.TestCase):
         git = lambda *args: subprocess.run(["git", "-C", str(self.root), *args],
                                            check=True, capture_output=True)
         git("init", "-q")
-        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "root")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "root")
         path = self.write("app.py", "def answer():\n    return 41\n")
         git("add", "app.py")
-        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "app")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "app")
         attached = []
         attach = lambda data: attached.append(data) or "attached"
         self.assertEqual(self.run_view(attach, str(self.root), name="view_diff"),

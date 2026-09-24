@@ -23,7 +23,7 @@ const claude = "claude-sonnet-4-6"
 
 /// No discovery cache here, so the built-in table answers.
 fn model(id: String) -> catalog.Model {
-  catalog.model("/nonexistent/albedo-home", id)
+  catalog.model("/nonexistent/albedo-home", id, None)
 }
 
 fn context(id: String) -> wire.Context {
@@ -404,13 +404,14 @@ pub fn discovery_supplies_ids_and_model_enums_test() {
     )
   assert list.map(catalog.models(home), fn(model) { model.id })
     == ["gemini-3-flash-agent", "gemini-9-flash-high"]
-  let known = catalog.model(home, "gemini-3-flash-agent")
+  let known = catalog.model(home, "gemini-3-flash-agent", None)
   assert known.model_enum == Some("MODEL_PLACEHOLDER_M84")
   assert known.thinking == catalog.Budget(1000, 4000, 10_000)
-  let fresh = catalog.model(home, "gemini-9-flash-high")
+  let fresh = catalog.model(home, "gemini-9-flash-high", None)
   assert fresh.context_tokens == 1000
   assert !fresh.images
-  assert catalog.model(home, "gemini-3.1-pro-high").id == "gemini-9-flash-high"
+  assert catalog.model(home, "gemini-3.1-pro-high", None).id
+    == "gemini-9-flash-high"
   assert string.contains(native_user_agent(home), "antigravity/hub/9.9.9 ")
   cleanup(root)
 }
@@ -603,4 +604,55 @@ pub fn effort_and_forced_tools_reach_the_envelope_test() {
       decode.string,
     )
     == "VALIDATED"
+}
+
+pub fn antigravity_collapses_effort_suffixes_to_base_models_test() {
+  assert catalog.split_id("gemini-3.8-flash-high")
+    == #("gemini-3.8-flash", Some("high"))
+  assert catalog.split_id("gemini-3.8-flash-medium")
+    == #("gemini-3.8-flash", Some("medium"))
+  assert catalog.split_id("gemini-3.8-flash-low")
+    == #("gemini-3.8-flash", Some("low"))
+  assert catalog.split_id("gemini-pro-agent")
+    == #("gemini-3.1-pro", Some("high"))
+  assert catalog.split_id("gemini-3.1-pro-low")
+    == #("gemini-3.1-pro", Some("low"))
+  assert catalog.split_id("claude-sonnet-4-6") == #("claude-sonnet-4-6", None)
+
+  let #(root, _, home) = fixture()
+  let _ =
+    write(
+      home,
+      "antigravity.json",
+      "{\"version\":\"2.17.0\",\"models\":[{\"id\":\"gemini-3.8-flash-high\",\"name\":\"Gemini 3.8 Flash (High)\",\"context\":1048576,\"output\":65536,\"images\":true,\"modelEnum\":\"MODEL_PLACEHOLDER_M318\"},{\"id\":\"gemini-3.8-flash-medium\",\"name\":\"Gemini 3.8 Flash (Medium)\",\"context\":1048576,\"output\":65536,\"images\":true,\"modelEnum\":\"MODEL_PLACEHOLDER_M319\"},{\"id\":\"gemini-3.8-flash-low\",\"name\":\"Gemini 3.8 Flash (Low)\",\"context\":1048576,\"output\":65536,\"images\":true,\"modelEnum\":\"MODEL_PLACEHOLDER_M320\"},{\"id\":\"gemini-pro-agent\",\"name\":\"Gemini 3.1 Pro (High)\",\"context\":1048576,\"output\":65535,\"images\":true,\"modelEnum\":\"MODEL_PLACEHOLDER_M16\"},{\"id\":\"gemini-3.1-pro-low\",\"name\":\"Gemini 3.1 Pro (Low)\",\"context\":1048576,\"output\":65535,\"images\":true,\"modelEnum\":\"MODEL_PLACEHOLDER_M36\"},{\"id\":\"claude-sonnet-4-6\",\"name\":\"Claude Sonnet 4.6\",\"context\":250000,\"output\":64000,\"images\":true}],\"renamed\":{\"gemini-3.1-pro-high\":\"gemini-pro-agent\"}}",
+    )
+
+  assert catalog.base_model_ids(home)
+    == ["gemini-3.8-flash", "gemini-3.1-pro", "claude-sonnet-4-6"]
+
+  assert catalog.available_efforts(home, "gemini-3.8-flash")
+    == ["low", "medium", "high"]
+  assert catalog.available_efforts(home, "gemini-3.1-pro") == ["low", "high"]
+  assert catalog.available_efforts(home, "claude-sonnet-4-6") == []
+
+  // Resolving variants with effort
+  let high_var = catalog.resolve_variant(home, "gemini-3.8-flash", Some("high"))
+  assert high_var.id == "gemini-3.8-flash-high"
+  assert high_var.model_enum == Some("MODEL_PLACEHOLDER_M318")
+
+  let med_var =
+    catalog.resolve_variant(home, "gemini-3.8-flash", Some("medium"))
+  assert med_var.id == "gemini-3.8-flash-medium"
+  assert med_var.model_enum == Some("MODEL_PLACEHOLDER_M319")
+
+  // Default effort for flash is medium
+  let def_var = catalog.resolve_variant(home, "gemini-3.8-flash", None)
+  assert def_var.id == "gemini-3.8-flash-medium"
+
+  // Default effort for 3.1 pro (which has only low and high) is high
+  let pro_var = catalog.resolve_variant(home, "gemini-3.1-pro", None)
+  assert pro_var.id == "gemini-pro-agent"
+  assert pro_var.model_enum == Some("MODEL_PLACEHOLDER_M16")
+
+  cleanup(root)
 }

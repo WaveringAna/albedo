@@ -45,6 +45,8 @@ pub type Outcome {
 pub type StateOp {
   ModelGet
   ModelSelect(model: String, provider: Option(String))
+  EffortGet
+  EffortSelect(effort: String)
   ContextSummary
   Compact
   ContextPage(section: String, page: Int)

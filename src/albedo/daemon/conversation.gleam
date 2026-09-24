@@ -21,6 +21,7 @@ pub type Info {
     protocol: types.Protocol,
     stage: Stage,
     last_assistant_at: Option(Int),
+    effort: Option(String),
   )
 }
 
@@ -63,7 +64,7 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
   store.query(store, fn(db) {
     use _ <- result.try(
       sqlight.exec(
-        "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);",
+        "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER,effort TEXT); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);",
         db,
       )
       |> result.map_error(fn(e) { e.message }),
@@ -124,6 +125,12 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
         }
       }),
     )
+    use _ <- result.try(case list.contains(columns, "effort") {
+      True -> Ok(Nil)
+      False ->
+        sqlight.exec("ALTER TABLE sessions ADD COLUMN effort TEXT", db)
+        |> result.map_error(fn(e) { e.message })
+    })
     use _ <- result.try(
       list.try_each(
         [
@@ -288,6 +295,7 @@ pub fn info_decoder() -> decode.Decoder(Info) {
   use protocol <- decode.field(5, decode.string)
   use stage <- decode.field(6, decode.string)
   use last_assistant_at <- decode.field(7, decode.optional(decode.int))
+  use effort <- decode.field(8, decode.optional(decode.string))
   decode.success(Info(
     id,
     title,
@@ -300,13 +308,14 @@ pub fn info_decoder() -> decode.Decoder(Info) {
     },
     parse_stage(stage),
     last_assistant_at,
+    effort,
   ))
 }
 
 pub fn list(store: store.Store) -> Result(List(Info), String) {
   store.query(store, fn(db) {
     sqlight.query(
-      "SELECT id,COALESCE(NULLIF(title,''),'new session'),cwd,COALESCE(provider,''),model,protocol,stage,last_assistant_at FROM sessions ORDER BY activity_seq DESC,rowid DESC",
+      "SELECT id,COALESCE(NULLIF(title,''),'new session'),cwd,COALESCE(provider,''),model,protocol,stage,last_assistant_at,effort FROM sessions ORDER BY activity_seq DESC,rowid DESC",
       db,
       [],
       info_decoder(),
@@ -318,7 +327,7 @@ pub fn list(store: store.Store) -> Result(List(Info), String) {
 pub fn create(store: store.Store, info: Info) -> Result(Nil, String) {
   store.query(store, fn(db) {
     sqlight.query(
-      "INSERT INTO sessions(id,title,cwd,provider,model,protocol,activity_seq,last_assistant_at) SELECT ?,?,?,?,?,?,COALESCE(MAX(activity_seq),0)+1,? FROM sessions",
+      "INSERT INTO sessions(id,title,cwd,provider,model,protocol,activity_seq,last_assistant_at,effort) SELECT ?,?,?,?,?,?,COALESCE(MAX(activity_seq),0)+1,?,? FROM sessions",
       db,
       [
         sqlight.text(info.id),
@@ -328,6 +337,7 @@ pub fn create(store: store.Store, info: Info) -> Result(Nil, String) {
         sqlight.text(info.model),
         sqlight.text(protocol(info.protocol)),
         sqlight.nullable(sqlight.int, info.last_assistant_at),
+        sqlight.nullable(sqlight.text, info.effort),
       ],
       decode.dynamic,
     )
@@ -783,12 +793,30 @@ fn pack_list(inputs: List(types.Input)) -> BitArray
 @external(erlang, "albedo_conversation", "unpack_list")
 fn unpack_list(bytes: BitArray) -> Result(List(types.Input), Nil)
 
+pub fn set_effort(
+  store: store.Store,
+  id: String,
+  effort: Option(String),
+) -> Result(Nil, String) {
+  store.query(store, fn(db) {
+    sqlight.query(
+      "UPDATE sessions SET effort=? WHERE id=?",
+      db,
+      [sqlight.nullable(sqlight.text, effort), sqlight.text(id)],
+      decode.dynamic,
+    )
+    |> result.replace(Nil)
+    |> result.map_error(fn(e) { e.message })
+  })
+}
+
 pub fn set_configuration(
   store: store.Store,
   id: String,
   provider: String,
   model: String,
   selected_protocol: types.Protocol,
+  effort: Option(String),
 ) -> Result(Nil, String) {
   store.query(store, fn(db) {
     use _ <- result.try(
@@ -807,12 +835,13 @@ pub fn set_configuration(
         |> result.map_error(fn(e) { e.message }),
       )
       sqlight.query(
-        "UPDATE sessions SET provider=?,model=?,protocol=? WHERE id=?",
+        "UPDATE sessions SET provider=?,model=?,protocol=?,effort=? WHERE id=?",
         db,
         [
           sqlight.text(provider),
           sqlight.text(model),
           sqlight.text(protocol(selected_protocol)),
+          sqlight.nullable(sqlight.text, effort),
           sqlight.text(id),
         ],
         decode.dynamic,

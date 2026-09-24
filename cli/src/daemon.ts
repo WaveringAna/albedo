@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises"
 
 import { home } from "./profiles.js"
 export type Connection = { port: number; token: string; pid: number; version: number }
-export type Session = { id: string; title?: string; last_assistant_at?: number | null; workspace: string; model: string; protocol: string; provider: string }
+export type Session = { id: string; title?: string; last_assistant_at?: number | null; workspace: string; model: string; effort?: string | null; protocol: string; provider: string }
 const record = resolve(home, "daemon.json")
 export async function request<T>(connection: Connection, path: string, body?: unknown, method?: "GET" | "POST" | "DELETE"): Promise<T> {
   const response = await fetch(`http://127.0.0.1:${connection.port}${path}`, {

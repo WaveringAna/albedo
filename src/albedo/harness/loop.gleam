@@ -17,6 +17,7 @@ import gleam/string
 pub type Loop {
   Loop(
     model: String,
+    effort: Option(String),
     host: runtime.Runtime,
     kernel: runtime.Session,
     pin: Pin,
@@ -72,7 +73,7 @@ pub fn run(
       history,
       runtime.tools(state.kernel),
       None,
-      types.defaults,
+      types.Options(..types.defaults, effort: state.effort),
     )
   state.record_context(request)
   use turn <- result.try(

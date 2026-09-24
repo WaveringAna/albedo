@@ -48,9 +48,9 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
     setSelected(current => current && { ...current, workspace })
     if (selected) setSessions(current => current.map(session => session.id === selected.id ? { ...session, workspace } : session))
   }
-  const applySelection = (changed: Partial<Pick<Session, "model" | "provider" | "protocol">>): void => {
+  const applySelection = (changed: Partial<Pick<Session, "model" | "provider" | "protocol" | "effort">>): void => {
     if (!selected) return
-    setSelected({ ...selected, model: changed.model ?? selected.model, provider: changed.provider ?? selected.provider, protocol: changed.protocol ?? selected.protocol })
+    setSelected({ ...selected, model: changed.model ?? selected.model, provider: changed.provider ?? selected.provider, protocol: changed.protocol ?? selected.protocol, effort: changed.effort !== undefined ? changed.effort : selected.effort })
   }
   const runCommand = async (name: string, args: Record<string, string> | string): Promise<Record<string, unknown> | undefined> => {
     if (!selected) return
@@ -66,7 +66,7 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
       if (!health.capabilities?.includes("session_provider"))
         throw new Error("daemon upgrade needed to switch providers; when ready, run albedo daemon --stop, then albedo (this clears python variables)")
     }
-    applySelection((await runCommand("/model", provider ? { model, provider } : { model }) ?? {}) as Partial<Pick<Session, "model" | "provider" | "protocol">>)
+    applySelection((await runCommand("/model", provider ? { model, provider } : { model }) ?? {}) as Partial<Pick<Session, "model" | "provider" | "protocol" | "effort">>)
     setChoosingModel(false); setError("")
   }
   useEffect(() => {
@@ -156,14 +156,14 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
       ...listedSessions.map(session => ({ id:session.id,label:typeof session.title === "string" ? session.title.trim() || "new session" : "session · label unavailable",detail:`${session.model} · ${session.workspace}` })),
     ]} onSelect={id => { if (id==="new") create(); else if (id==="login") setLoggingIn({}); else { setSelected(listedSessions.find(session=>session.id===id));setChoosing(false) } }} onCancel={() => selected ? setChoosing(false) : quit()} /> : selected && <><ChatScreen key={selected.id} visible={!choosingModel && !choosingExtensions && !choosingTree && !choosingContext && !openPage} glances={glances} usageResetKey={extensionRevision}
       baseUrl={`http://127.0.0.1:${connection.port}`} token={connection.token} agentId={selected.id} agentName="albedo"
-      workspace={selected.workspace} model={selected.model} onWorkspaceChanged={workspaceChanged} onBack={()=>setChoosing(true)} onQuit={quit} onCreate={create}
+      workspace={selected.workspace} model={selected.model} effort={selected.effort} onWorkspaceChanged={workspaceChanged} onBack={()=>setChoosing(true)} onQuit={quit} onCreate={create}
       notice={notice} errorNotice={error} commands={commandMenu}
       onCommand={(value,clear)=> {
         if (value === "/login" || value.startsWith("/login ")) { clear(); setLoggingIn({ name: value.slice(6).trim() || undefined }); return true }
         if (value.startsWith("/model ")) {
           clear(); setError("")
           void runCommand("/model", value.slice(7))
-            .then(changed => applySelection((changed ?? {}) as Partial<Pick<Session, "model" | "provider" | "protocol">>))
+            .then(changed => applySelection((changed ?? {}) as Partial<Pick<Session, "model" | "provider" | "protocol" | "effort">>))
             .catch(error=>setError(String(error)))
           return true
         }
@@ -180,6 +180,9 @@ export function App({ connection, initial, workspace, quit, login = false }: { c
           void runCommand(command.name, command.arguments)
             .then(result => {
               if (!result) return setNotice("")
+              if (typeof (result as Record<string, unknown>).effort === "string") {
+                applySelection({ effort: (result as Record<string, unknown>).effort as string })
+              }
               setNotice(typeof result.message === "string" ? result.message : JSON.stringify(result))
             })
             .catch(error=>{ setNotice(""); setError(String(error)) })

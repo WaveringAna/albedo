@@ -50,16 +50,19 @@ pub fn catalog_answers_qualified_and_unqualified_ids_test() {
   let assert Some(info) =
     models.lookup_at(file, "only-openai", "https://api.openai.com/v1")
   info
-  |> should.equal(extension.ModelInfo(
-    "only-openai",
-    "openai",
-    Some(128_000),
-    None,
-    [],
-    Some("https://api.openai.com/v1"),
-    ["OPENAI_API_KEY"],
-    info.source,
-  ))
+  |> should.equal(
+    extension.ModelInfo(
+      "only-openai",
+      "openai",
+      Some(128_000),
+      None,
+      [],
+      Some("https://api.openai.com/v1"),
+      ["OPENAI_API_KEY"],
+      info.source,
+      [],
+    ),
+  )
 
   cleanup(root)
 }

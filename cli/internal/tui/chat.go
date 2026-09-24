@@ -218,6 +218,7 @@ type ChatModel struct {
 	AgentName   string
 	Workspace   string
 	Model       string
+	Effort      string
 	Provider    string
 	Client      *daemon.ChatClient
 	History     *BoundedHistory
@@ -322,6 +323,7 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		AgentName:   "albedo",
 		Workspace:   session.Workspace,
 		Model:       session.Model,
+		Effort:      session.Effort,
 		Provider:    session.Provider,
 		Client:      client,
 		History:     bh,
@@ -1271,6 +1273,9 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 		m.refreshViewportContent()
 	case trimmed == "/status":
 		statusText := fmt.Sprintf("session: %s\nworkspace: %s\nmodel: %s", m.SessionID, m.Workspace, m.Model)
+		if m.Effort != "" {
+			statusText += fmt.Sprintf("\neffort: %s", m.Effort)
+		}
 		if m.Usage != nil {
 			statusText += fmt.Sprintf("\ntokens: %s", formatUsage(m.Usage))
 		}
@@ -1815,6 +1820,9 @@ func (m ChatModel) View() string {
 		workspace = "chat"
 	}
 	model := m.Model
+	if m.Effort != "" {
+		model = fmt.Sprintf("%s:%s", m.Model, m.Effort)
+	}
 	var glance *PageGlance
 	for i := range m.Glances {
 		if len(m.Glances[i].Rows) > 0 {

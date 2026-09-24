@@ -5,6 +5,7 @@ import albedo/harness/extension
 import albedo/harness/settings
 import gleam/bool
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -195,12 +196,134 @@ pub fn known() -> List(Model) {
   ]
 }
 
-/// A retired id follows the backend's rename, so saved profiles keep working.
-pub fn model(home: String, id: String) -> Model {
-  let id = renamed(home, id)
+const effort_suffixes = [
+  #("-extra-low", "extra-low"),
+  #("-low", "low"),
+  #("-medium", "medium"),
+  #("-high", "high"),
+]
+
+/// Splits a model id into its base model id and effort tier.
+/// Maps "gemini-pro-agent" to base "gemini-3.1-pro" and effort "high".
+pub fn split_id(id: String) -> #(String, Option(String)) {
+  case id {
+    "gemini-pro-agent" -> #("gemini-3.1-pro", Some("high"))
+    _ ->
+      case
+        list.find_map(effort_suffixes, fn(pair) {
+          case string.ends_with(id, pair.0) {
+            True ->
+              Ok(#(string.drop_end(id, string.length(pair.0)), Some(pair.1)))
+            False -> Error(Nil)
+          }
+        })
+      {
+        Ok(res) -> res
+        Error(Nil) -> #(id, None)
+      }
+  }
+}
+
+fn effort_rank(effort: String) -> Int {
+  case effort {
+    "extra-low" | "minimal" -> 0
+    "low" -> 1
+    "medium" -> 2
+    "high" -> 3
+    "xhigh" -> 4
+    "max" -> 5
+    _ -> 6
+  }
+}
+
+pub fn sort_efforts(efforts: List(String)) -> List(String) {
+  list.sort(efforts, fn(a, b) { int.compare(effort_rank(a), effort_rank(b)) })
+}
+
+/// Available reasoning efforts for a base or variant model id.
+pub fn available_efforts(home: String, id: String) -> List(String) {
+  let #(base_id, _) = split_id(renamed(home, id))
   models(home)
-  |> list.find(fn(model) { model.id == id })
-  |> result.lazy_unwrap(fn() { hint(id) })
+  |> list.filter_map(fn(m) {
+    let #(b, e) = split_id(m.id)
+    case b == base_id {
+      True -> e |> option.to_result(Nil)
+      False -> Error(Nil)
+    }
+  })
+  |> list.unique
+  |> sort_efforts
+}
+
+/// Base model ids discovered from Antigravity, deduplicated while preserving
+/// first-seen order.
+pub fn base_model_ids(home: String) -> List(String) {
+  models(home)
+  |> list.map(fn(m) { split_id(m.id).0 })
+  |> list.unique
+}
+
+/// Resolves a base or variant model id and optional effort to an exact backend Model variant.
+pub fn resolve_variant(
+  home: String,
+  id: String,
+  effort: Option(String),
+) -> Model {
+  let all = models(home)
+  let ren = renamed(home, id)
+  let #(base_id, id_effort) = split_id(ren)
+  let target_effort = case effort {
+    Some(e) -> Some(e)
+    None -> id_effort
+  }
+  let variants =
+    list.filter_map(all, fn(m) {
+      let #(b, e) = split_id(m.id)
+      case b == base_id {
+        True -> Ok(#(e, m))
+        False -> Error(Nil)
+      }
+    })
+  case variants {
+    [] ->
+      case list.find(all, fn(m) { m.id == ren }) {
+        Ok(m) -> m
+        Error(_) -> hint(ren)
+      }
+    _ -> {
+      let eff = case target_effort {
+        Some(e) -> e
+        None -> {
+          let available =
+            list.filter_map(variants, fn(p) { option.to_result(p.0, Nil) })
+          extension.default_effort(available)
+          |> option.unwrap("medium")
+        }
+      }
+      case list.find(variants, fn(p) { p.0 == Some(eff) }) {
+        Ok(#(_, m)) -> m
+        Error(_) ->
+          case list.find(variants, fn(p) { p.0 == Some("medium") }) {
+            Ok(#(_, m)) -> m
+            Error(_) ->
+              case list.find(variants, fn(p) { p.0 == Some("high") }) {
+                Ok(#(_, m)) -> m
+                Error(_) ->
+                  case list.first(variants) {
+                    Ok(#(_, m)) -> m
+                    Error(_) -> hint(ren)
+                  }
+              }
+          }
+      }
+    }
+  }
+}
+
+/// A retired id follows the backend's rename, so saved profiles keep working.
+pub fn model(home: String, id: String, effort: Option(String)) -> Model {
+  let id = renamed(home, id)
+  resolve_variant(home, id, effort)
 }
 
 fn renamed(home: String, id: String) -> String {
@@ -252,28 +375,38 @@ pub fn catalog() -> extension.ModelCatalog {
 /// Answers only for the Antigravity endpoint, so models.dev keeps every
 /// other provider's facts for a shared id such as claude-sonnet-4-6.
 fn lookup(id: String, at: String) -> Option(extension.ModelInfo) {
-  use <- bool.guard(string.remove_suffix(at, "/") != endpoint, None)
-  case list.find(models(settings.home()), fn(model) { model.id == id }) {
-    Error(_) -> None
-    Ok(model) ->
+  use <- bool.guard(at != "" && string.remove_suffix(at, "/") != endpoint, None)
+  let home = settings.home()
+  let ren = renamed(home, id)
+  let #(base_id, _) = split_id(ren)
+  let all = models(home)
+  let matches_base = list.any(all, fn(m) { split_id(m.id).0 == base_id })
+  let matches_raw = list.any(all, fn(m) { m.id == id || m.id == ren })
+  case matches_base || matches_raw {
+    False -> None
+    True -> {
+      let efforts = available_efforts(home, base_id)
+      let variant = resolve_variant(home, id, extension.default_effort(efforts))
       Some(extension.ModelInfo(
-        model.id,
+        base_id,
         "antigravity",
-        Some(model.context_tokens),
-        Some(model.max_output_tokens),
-        case model.images {
+        Some(variant.context_tokens),
+        Some(variant.max_output_tokens),
+        case variant.images {
           True -> ["text", "image"]
           False -> ["text"]
         },
         Some(endpoint),
         [],
-        "antigravity model discovery cached in " <> settings.home(),
+        "antigravity model discovery cached in " <> home,
+        efforts,
       ))
+    }
   }
 }
 
 /// The first listing after sign-in waits for discovery, so /login never
-/// offers ids the backend has already retired.
+/// offers ids the backend has already retired. Returns deduplicated base model ids.
 fn list_models(provider: String, _endpoint: String) -> List(String) {
   case provider {
     "antigravity" -> {
@@ -281,11 +414,10 @@ fn list_models(provider: String, _endpoint: String) -> List(String) {
       case discovered(home) {
         [] -> {
           let _ = native_reload(home)
-          models(home)
+          base_model_ids(home)
         }
-        offered -> offered
+        _ -> base_model_ids(home)
       }
-      |> list.map(fn(model) { model.id })
     }
     _ -> []
   }

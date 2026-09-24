@@ -34,6 +34,7 @@ export type ChatScreenProps = {
   agentName?: string
   workspace?: string
   model?: string
+  effort?: string | null
   notice?: string
   errorNotice?: string
   onWorkspaceChanged?: (workspace: string) => void
@@ -105,7 +106,7 @@ const describeFailure = (error: unknown, agentId?: string): string => {
 
 export function ChatScreen({
   baseUrl, transport, visible = true, usageResetKey = 0, commands, glances = [], onCommand, onCreate,
-  token, agentId, agentName, workspace, model, notice, errorNotice, onWorkspaceChanged, fetchImpl, copySelection,
+  token, agentId, agentName, workspace, model, effort, notice, errorNotice, onWorkspaceChanged, fetchImpl, copySelection,
   clipboardImages = SYSTEM_CLIPBOARD_IMAGES, onBack, onQuit,
   settleMs = 750, reconnectMs = 1_000,
 }: ChatScreenProps) {
@@ -685,7 +686,7 @@ export function ChatScreen({
       <Box flexShrink={0}><Text bold>{speaker}</Text></Box>
       <Box flexGrow={1} flexShrink={1}><Text color="gray" wrap="truncate-middle">{directory ?? "chat"}</Text></Box>
       {glance && !sidebarWidth && <Box flexShrink={0}><Text color="gray">{glance.title} {glance.rows.length}</Text></Box>}
-      {model && <Box maxWidth={Math.floor(contentWidth / 2)} flexShrink={0}><Text color="gray" wrap="truncate-start">{model}</Text></Box>}
+      {model && <Box maxWidth={Math.floor(contentWidth / 2)} flexShrink={0}><Text color="gray" wrap="truncate-start">{model}{effort ? `:${effort}` : ""}</Text></Box>}
     </Box>
     <Text> </Text>
     {errorNotice

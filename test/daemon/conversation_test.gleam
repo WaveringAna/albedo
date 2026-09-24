@@ -31,6 +31,7 @@ fn session(id: String) -> conversation.Info {
     types.Responses,
     conversation.Idle,
     None,
+    None,
   )
 }
 
@@ -413,6 +414,7 @@ pub fn provider_provenance_backfills_on_switch_and_survives_restart_test() {
       "new-provider",
       "new-model",
       types.ChatCompletions,
+      None,
     )
   let assert Ok(after_payloads) =
     store.query(ledger, fn(db) {

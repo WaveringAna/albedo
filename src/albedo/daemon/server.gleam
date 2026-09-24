@@ -152,19 +152,30 @@ fn handle(state: State, message: Message) {
     Create(cwd, model, reply) -> {
       let created = {
         use provider <- result.try(configuration.active(state.config.home))
+        let model = case model {
+          "" -> provider.model
+          _ -> model
+        }
+        let efforts = case runtime.global(state.host) {
+          Ok(extensions) ->
+            case extension.model_info(extensions, model, "") {
+              Some(m_info) -> m_info.efforts
+              None -> []
+            }
+          Error(_) -> []
+        }
+        let effort = extension.default_effort(efforts)
         let info =
           conversation.Info(
             new_id(),
             "new session",
             cwd,
             provider.name,
-            case model {
-              "" -> provider.model
-              _ -> model
-            },
+            model,
             provider.protocol,
             conversation.Idle,
             None,
+            effort,
           )
         case
           directory(cwd)
@@ -486,6 +497,10 @@ fn info_json(info: conversation.Info) -> json.Json {
     #("workspace", json.string(info.cwd)),
     #("provider", json.string(info.provider)),
     #("model", json.string(info.model)),
+    #("effort", case info.effort {
+      Some(effort) -> json.string(effort)
+      None -> json.null()
+    }),
     #("protocol", json.string(conversation.protocol(info.protocol))),
     #("last_assistant_at", case info.last_assistant_at {
       Some(timestamp) -> json.int(timestamp)
@@ -717,6 +732,7 @@ fn daemon(
         provider.extension,
         model,
         provider.protocol,
+        None,
       )
     },
     fn(provider, endpoint) { runtime.model_names(host, provider, endpoint) },

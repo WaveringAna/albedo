@@ -77,7 +77,30 @@ pub type ModelInfo {
     endpoint: Option(String),
     environment: List(String),
     source: String,
+    efforts: List(String),
   )
+}
+
+/// Picks the default reasoning effort: "medium" when supported, otherwise the
+/// first available tier above medium (e.g. "high", "xhigh", "max"), or the
+/// highest tier available. Models without reasoning return `None`.
+pub fn default_effort(efforts: List(String)) -> Option(String) {
+  case efforts {
+    [] -> None
+    _ ->
+      case list.contains(efforts, "medium") {
+        True -> Some("medium")
+        False ->
+          case
+            list.find(efforts, fn(e) {
+              e == "high" || e == "xhigh" || e == "max"
+            })
+          {
+            Ok(e) -> Some(e)
+            Error(_) -> list.last(efforts) |> option.from_result
+          }
+      }
+  }
 }
 
 pub type ModelCatalog {
@@ -95,6 +118,7 @@ pub type ModelContext {
     provider: String,
     model: String,
     protocol: types.Protocol,
+    effort: Option(String),
   )
 }
 

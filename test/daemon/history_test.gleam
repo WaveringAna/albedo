@@ -27,6 +27,7 @@ fn info(id: String) -> conversation.Info {
     types.Responses,
     conversation.Idle,
     None,
+    None,
   )
 }
 

@@ -109,7 +109,7 @@ fn resolve(
           context.home,
           access,
           context.session,
-          catalog.model(context.home, context.model),
+          catalog.model(context.home, context.model, context.effort),
           user_agent(context.home),
         )
       })
@@ -130,8 +130,11 @@ pub fn upstream(
     catalog.endpoint,
     types.ChatCompletions,
     fn(request, on_event) {
-      use exchange <- result.try(wire.encode(context, request))
-      openai_api.exchange(exchange, stream.reducer(model), on_event)
+      let resolved_model =
+        catalog.resolve_variant(home, model.id, request.options.effort)
+      let resolved_context = wire.Context(..context, model: resolved_model)
+      use exchange <- result.try(wire.encode(resolved_context, request))
+      openai_api.exchange(exchange, stream.reducer(resolved_model), on_event)
     },
     explain(home, access, _),
   )

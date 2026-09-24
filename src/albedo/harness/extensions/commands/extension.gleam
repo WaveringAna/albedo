@@ -2,7 +2,8 @@
 
 import albedo/harness/command.{
   type Command, type Context, Argument, Command, Compact, ContextPage,
-  ContextSummary, Data, ModelCall, ModelGet, ModelSelect, Refresh, UserCall,
+  ContextSummary, Data, EffortGet, EffortSelect, ModelCall, ModelGet,
+  ModelSelect, Refresh, UserCall,
 }
 import albedo/harness/extension
 import albedo/harness/extensions/models/extension as models
@@ -18,10 +19,45 @@ pub fn extension() -> extension.Extension {
     "Session commands shared by the CLI menu and the Python kernel.",
     ["python"],
     [
-      extension.CommandPlugin([model(), reload(), context_inspect(), compact()]),
+      extension.CommandPlugin([
+        model(),
+        reload(),
+        context_inspect(),
+        compact(),
+        effort(),
+      ]),
       extension.ToolPlugin("", [], ["commands"], []),
     ],
     fn(_) { Ok(Nil) },
+  )
+}
+
+fn effort() -> Command {
+  Command(
+    "/effort",
+    "Show this session's reasoning effort, or switch it to an available level (user only).",
+    [
+      Argument(
+        "level",
+        "reasoning effort level; omit to show the current setting",
+        False,
+        ["low", "medium", "high"],
+      ),
+    ],
+    True,
+    False,
+    False,
+    fn(ctx: Context, caller, args) {
+      use value <- result.try(case caller, dict.get(args, "level") {
+        ModelCall, Ok(_) ->
+          Error(
+            "switching effort is a user action between turns; ask the user to run /effort",
+          )
+        _, Error(_) -> ctx.state(EffortGet)
+        UserCall, Ok(level) -> ctx.state(EffortSelect(level))
+      })
+      Ok(Data(value))
+    },
   )
 }
 

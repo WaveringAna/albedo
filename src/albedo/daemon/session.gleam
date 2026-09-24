@@ -68,7 +68,12 @@ pub type Report {
 }
 
 pub type ModelSelection {
-  ModelSelection(provider: String, model: String, protocol: types.Protocol)
+  ModelSelection(
+    provider: String,
+    model: String,
+    protocol: types.Protocol,
+    effort: Option(String),
+  )
 }
 
 pub type SubmissionError {
@@ -102,6 +107,8 @@ pub type Message {
   )
   Interrupt(Subject(Bool))
   ChangeModel(String, Option(String), Subject(Result(ModelSelection, String)))
+  ReadEffort(Subject(Result(json.Json, String)))
+  ChangeEffort(String, Subject(Result(json.Json, String)))
   Status(Subject(String))
   Read(Int, Subject(Page))
   Watch(process.Pid, fn() -> Nil)
@@ -176,6 +183,27 @@ pub fn start(
     let activity = case info.stage {
       conversation.Idle -> turn.Resting
       _ -> turn.Interrupted
+    }
+    let info = case info.effort {
+      Some(_) -> info
+      None -> {
+        let efforts = case runtime.global(host) {
+          Ok(extensions) ->
+            case extension.model_info(extensions, info.model, "") {
+              Some(m_info) -> m_info.efforts
+              None -> []
+            }
+          Error(_) -> []
+        }
+        case extension.default_effort(efforts) {
+          Some(def) -> {
+            let _ =
+              conversation.set_effort(runtime.ledger(host), info.id, Some(def))
+            conversation.Info(..info, effort: Some(def))
+          }
+          None -> info
+        }
+      }
     }
     let state =
       State(
@@ -690,7 +718,17 @@ fn handle(state: State, message: Message) {
                       #(configured.name, configured.protocol)
                     })
                 })
-                let selection = ModelSelection(provider, model, protocol)
+                let efforts = efforts_for_model(state, provider, model)
+                let new_effort = case state.info.effort {
+                  Some(current) ->
+                    case list.contains(efforts, current) {
+                      True -> Some(current)
+                      False -> extension.default_effort(efforts)
+                    }
+                  None -> extension.default_effort(efforts)
+                }
+                let selection =
+                  ModelSelection(provider, model, protocol, new_effort)
                 use _ <- result.try(
                   projected_for(state, provider, protocol)
                   |> result.replace(Nil)
@@ -709,6 +747,7 @@ fn handle(state: State, message: Message) {
                   provider,
                   model,
                   protocol,
+                  new_effort,
                 ))
                 Ok(selection)
               }
@@ -727,6 +766,7 @@ fn handle(state: State, message: Message) {
                         provider: selection.provider,
                         model: selection.model,
                         protocol: selection.protocol,
+                        effort: selection.effort,
                       ),
                       context: unprepared(),
                     ),
@@ -735,6 +775,133 @@ fn handle(state: State, message: Message) {
               }
             }
           }
+      }
+    }
+
+    ReadEffort(reply) -> {
+      let efforts =
+        efforts_for_model(state, state.info.provider, state.info.model)
+      case efforts {
+        [] -> {
+          process.send(
+            reply,
+            Error(
+              "model "
+              <> state.info.model
+              <> " does not support reasoning effort",
+            ),
+          )
+          actor.continue(state)
+        }
+        _ -> {
+          let current = state.info.effort
+          let available_str = string.join(efforts, ", ")
+          let message = case current {
+            Some(c) ->
+              "reasoning effort is "
+              <> c
+              <> " (available: "
+              <> available_str
+              <> ")"
+            None ->
+              "reasoning effort is not set (available: " <> available_str <> ")"
+          }
+          process.send(
+            reply,
+            Ok(
+              json.object([
+                #("effort", json.nullable(current, json.string)),
+                #("available", json.array(efforts, json.string)),
+                #("message", json.string(message)),
+              ]),
+            ),
+          )
+          actor.continue(state)
+        }
+      }
+    }
+
+    ChangeEffort(level, reply) -> {
+      case turn.running(state.activity) == None {
+        False -> {
+          process.send(
+            reply,
+            Error("switching effort requires an idle session"),
+          )
+          actor.continue(state)
+        }
+        True -> {
+          let efforts =
+            efforts_for_model(state, state.info.provider, state.info.model)
+          case efforts {
+            [] -> {
+              process.send(
+                reply,
+                Error(
+                  "model "
+                  <> state.info.model
+                  <> " does not support reasoning effort",
+                ),
+              )
+              actor.continue(state)
+            }
+            _ -> {
+              let trimmed = string.trim(string.lowercase(level))
+              case list.contains(efforts, trimmed) {
+                False -> {
+                  let available_str = string.join(efforts, ", ")
+                  process.send(
+                    reply,
+                    Error(
+                      "unsupported reasoning effort: "
+                      <> trimmed
+                      <> "; available: "
+                      <> available_str,
+                    ),
+                  )
+                  actor.continue(state)
+                }
+                True -> {
+                  let res =
+                    conversation.set_effort(
+                      runtime.ledger(state.host),
+                      state.info.id,
+                      Some(trimmed),
+                    )
+                  case res {
+                    Error(err) -> {
+                      process.send(reply, Error(err))
+                      actor.continue(state)
+                    }
+                    Ok(_) -> {
+                      process.send(
+                        reply,
+                        Ok(
+                          json.object([
+                            #("effort", json.string(trimmed)),
+                            #(
+                              "message",
+                              json.string("reasoning effort set to " <> trimmed),
+                            ),
+                          ]),
+                        ),
+                      )
+                      actor.continue(
+                        State(
+                          ..state,
+                          info: conversation.Info(
+                            ..state.info,
+                            effort: Some(trimmed),
+                          ),
+                        ),
+                      )
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
 
@@ -1212,6 +1379,9 @@ fn command_op(
     command.ModelSelect(model, provider) ->
       actor.call(session, 5000, ChangeModel(model, provider, _))
       |> result.map(selection_json)
+    command.EffortGet -> actor.call(session, 5000, ReadEffort)
+    command.EffortSelect(level) ->
+      actor.call(session, 5000, ChangeEffort(level, _))
     command.ContextSummary -> Ok(actor.call(session, 5000, ReadContext))
     command.Compact -> actor.call(session, 15_000, Compact)
     command.Refresh -> actor.call(session, 30_000, RefreshData)
@@ -1235,7 +1405,7 @@ fn command_op(
 }
 
 fn model_selection(info: conversation.Info) -> ModelSelection {
-  ModelSelection(info.provider, info.model, info.protocol)
+  ModelSelection(info.provider, info.model, info.protocol, info.effort)
 }
 
 fn selection_json(selection: ModelSelection) -> json.Json {
@@ -1243,7 +1413,26 @@ fn selection_json(selection: ModelSelection) -> json.Json {
     #("provider", json.string(selection.provider)),
     #("model", json.string(selection.model)),
     #("protocol", json.string(conversation.protocol(selection.protocol))),
+    #("effort", case selection.effort {
+      Some(e) -> json.string(e)
+      None -> json.null()
+    }),
   ])
+}
+
+fn efforts_for_model(
+  state: State,
+  _provider: String,
+  model: String,
+) -> List(String) {
+  case runtime.global(state.host) {
+    Ok(extensions) ->
+      case extension.model_info(extensions, model, "") {
+        Some(info) -> info.efforts
+        None -> []
+      }
+    Error(_) -> []
+  }
 }
 
 @external(erlang, "albedo_native", "new_id")
@@ -1479,6 +1668,7 @@ fn configured_client(
     provider.extension,
     state.info.model,
     state.info.protocol,
+    state.info.effort,
   ))
   Ok(#(state, client))
 }
@@ -1629,6 +1819,7 @@ fn start_worker(
   let worker =
     loop.Loop(
       state.info.model,
+      state.info.effort,
       state.host,
       kernel,
       state.pin,

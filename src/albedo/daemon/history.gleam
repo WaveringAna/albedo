@@ -212,6 +212,7 @@ pub fn fork(
             source.protocol,
             conversation.Idle,
             None,
+            source.effort,
           ))
         }
         case written {
@@ -309,7 +310,7 @@ fn safe_preview(text: String) -> String {
 
 fn read_info(db, id: String) -> Result(conversation.Info, String) {
   sqlight.query(
-    "SELECT id,COALESCE(NULLIF(title,''),'new session'),cwd,COALESCE(provider,''),model,protocol,stage,last_assistant_at FROM sessions WHERE id=?",
+    "SELECT id,COALESCE(NULLIF(title,''),'new session'),cwd,COALESCE(provider,''),model,protocol,stage,last_assistant_at,effort FROM sessions WHERE id=?",
     db,
     [sqlight.text(id)],
     conversation.info_decoder(),

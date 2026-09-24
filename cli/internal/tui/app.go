@@ -50,6 +50,7 @@ type modelChangedMsg struct {
 	Model    string
 	Provider string
 	Protocol string
+	Effort   string
 	Err      error
 	Gen      int
 }
@@ -57,6 +58,7 @@ type modelChangedMsg struct {
 type commandExecutedMsg struct {
 	Name    string
 	Message string
+	Effort  string
 	Err     error
 	Gen     int
 }
@@ -314,6 +316,7 @@ func (m AppModel) changeModelCmd(model, provider string, gen int) tea.Cmd {
 		newModel := model
 		newProvider := provider
 		var newProtocol string
+		var newEffort string
 
 		if r, ok := res["result"].(map[string]any); ok {
 			if mVal, ok := r["model"].(string); ok && mVal != "" {
@@ -325,12 +328,16 @@ func (m AppModel) changeModelCmd(model, provider string, gen int) tea.Cmd {
 			if protoVal, ok := r["protocol"].(string); ok && protoVal != "" {
 				newProtocol = protoVal
 			}
+			if eVal, ok := r["effort"].(string); ok {
+				newEffort = eVal
+			}
 		}
 
 		return modelChangedMsg{
 			Model:    newModel,
 			Provider: newProvider,
 			Protocol: newProtocol,
+			Effort:   newEffort,
 			Gen:      gen,
 		}
 	}
@@ -356,8 +363,12 @@ func (m AppModel) executeCommandCmd(name, args string, gen int) tea.Cmd {
 		}
 
 		msg := fmt.Sprintf("%s done", name)
+		var newEffort string
 		if res != nil {
 			if r, ok := res["result"].(map[string]any); ok {
+				if eStr, ok := r["effort"].(string); ok {
+					newEffort = eStr
+				}
 				if mStr, ok := r["message"].(string); ok && mStr != "" {
 					msg = mStr
 				}
@@ -366,7 +377,7 @@ func (m AppModel) executeCommandCmd(name, args string, gen int) tea.Cmd {
 			}
 		}
 
-		return commandExecutedMsg{Name: name, Message: msg, Gen: gen}
+		return commandExecutedMsg{Name: name, Message: msg, Effort: newEffort, Gen: gen}
 	}
 }
 
@@ -635,6 +646,8 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 				m.ActiveSession.Model = msg.Model
 				m.Chat.Model = msg.Model
 			}
+			m.ActiveSession.Effort = msg.Effort
+			m.Chat.Effort = msg.Effort
 			if msg.Provider != "" {
 				m.ActiveSession.Provider = msg.Provider
 				m.Chat.Provider = msg.Provider
@@ -658,6 +671,10 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		} else {
 			m.Notice = msg.Message
 			m.Error = ""
+			if msg.Effort != "" && m.ActiveSession != nil {
+				m.ActiveSession.Effort = msg.Effort
+				m.Chat.Effort = msg.Effort
+			}
 		}
 		return m, nil
 

@@ -6,8 +6,9 @@ import albedo/harness/extension
 import albedo/harness/settings
 import gleam/dynamic/decode
 import gleam/json
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 
 const catalog_file = "models.json"
 
@@ -21,6 +22,22 @@ pub type Config {
 
 pub fn default_config() -> Config {
   Config(default_url, default_refresh_hours)
+}
+
+pub fn infer_reasoning_efforts(model: String) -> List(String) {
+  let id = string.lowercase(model)
+  let reasoning =
+    string.starts_with(id, "o1")
+    || string.starts_with(id, "o3")
+    || string.starts_with(id, "o4")
+    || string.starts_with(id, "gpt-5")
+    || string.contains(id, "reasoner")
+    || string.contains(id, "reasoning")
+    || string.contains(id, "thinking")
+  case reasoning {
+    True -> ["low", "medium", "high"]
+    False -> []
+  }
 }
 
 pub fn config_decoder() {
@@ -91,7 +108,24 @@ pub fn lookup_at(
   endpoint: String,
 ) -> Option(extension.ModelInfo) {
   case native_lookup(catalog, model, endpoint) {
-    Error(_) -> None
+    Error(_) -> {
+      let efforts = infer_reasoning_efforts(model)
+      case efforts {
+        [] -> None
+        _ ->
+          Some(extension.ModelInfo(
+            model,
+            "models",
+            None,
+            None,
+            [],
+            None,
+            [],
+            "inferred reasoning model",
+            efforts,
+          ))
+      }
+    }
     Ok(encoded) ->
       json.parse(encoded, info_decoder(catalog))
       |> option.from_result
@@ -146,6 +180,7 @@ fn info_decoder(catalog: String) {
     api,
     env,
     "models.dev catalog cached at " <> catalog <> "; matched by " <> matched,
+    infer_reasoning_efforts(model),
   ))
 }
 

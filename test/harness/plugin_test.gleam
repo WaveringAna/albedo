@@ -210,6 +210,7 @@ pub fn transcript_remains_durable_when_context_is_request_only_test() {
       types.Responses,
       conversation.Idle,
       None,
+      None,
     )
   let assert Ok(_) = conversation.create(runtime.ledger(host), info)
   let history = [types.User("saved")]

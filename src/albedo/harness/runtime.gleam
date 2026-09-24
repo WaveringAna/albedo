@@ -928,6 +928,7 @@ pub fn upstream(
   provider: String,
   model: String,
   protocol: types.Protocol,
+  effort: Option(String),
 ) -> Result(extension.Upstream, String) {
   use selected <- result.try(extension.enabled(
     runtime.work,
@@ -937,7 +938,15 @@ pub fn upstream(
   ))
   extension.upstream(
     selected,
-    extension.ModelContext(home, session, profile, provider, model, protocol),
+    extension.ModelContext(
+      home,
+      session,
+      profile,
+      provider,
+      model,
+      protocol,
+      effort,
+    ),
   )
 }
 

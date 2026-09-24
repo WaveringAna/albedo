@@ -341,7 +341,7 @@ def run(protocol, endpoint):
             # The model endpoint atomically moves that history to another protocol.
             with api(f"/sessions/{switched}/commands", {"name":"/model", "args":{"provider":"gamma", "model":"chosen-gamma"}}) as response:
                 selection=json.load(response)
-            assert selection == {"result": {"provider":"gamma", "model":"chosen-gamma", "protocol":other_protocol}}, selection
+            assert selection == {"result": {"provider":"gamma", "model":"chosen-gamma", "protocol":other_protocol, "effort":None}}, selection
             defaults=json.loads((home/"config.json").read_text())
             assert defaults["active"] == "gamma" and defaults["providers"]["gamma"]["model"] == "chosen-gamma", defaults
             with api("/sessions", {"workspace": str(workspace)}) as response:
@@ -350,7 +350,7 @@ def run(protocol, endpoint):
             # Existing model-only callers keep the current provider and protocol.
             with api(f"/sessions/{switched}/commands", {"name":"/model", "args":{"model":"renamed-gamma"}}) as response:
                 selection=json.load(response)
-            assert selection == {"result": {"provider":"gamma", "model":"renamed-gamma", "protocol":other_protocol}}, selection
+            assert selection == {"result": {"provider":"gamma", "model":"renamed-gamma", "protocol":other_protocol, "effort":None}}, selection
             defaults=json.loads((home/"config.json").read_text())
             assert defaults["active"] == "gamma" and defaults["providers"]["gamma"]["model"] == "renamed-gamma", defaults
             try:
@@ -372,7 +372,7 @@ def run(protocol, endpoint):
             # original provider's raw replay and every tool/result association.
             with api(f"/sessions/{switched}/commands", {"name":"/model", "args":{"provider":"alpha", "model":"returned-alpha"}}) as response:
                 selection=json.load(response)
-            assert selection == {"result": {"provider":"alpha", "model":"returned-alpha", "protocol":protocol}}, selection
+            assert selection == {"result": {"provider":"alpha", "model":"returned-alpha", "protocol":protocol, "effort":None}}, selection
             defaults=json.loads((home/"config.json").read_text())
             assert defaults["active"] == "alpha" and defaults["providers"]["alpha"]["model"] == "returned-alpha", defaults
             request_start=len(Provider.requests)

@@ -34,6 +34,7 @@ fn session(id: String) -> conversation.Info {
     types.Responses,
     conversation.Idle,
     None,
+    None,
   )
 }
 
