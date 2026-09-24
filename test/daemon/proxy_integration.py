@@ -39,10 +39,18 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 send({"id": "c", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 7, "completion_tokens": 3}})
             self.wfile.write(b"data: [DONE]\n\n")
         else:
-            send({"type": "response.completed", "response": {"id": "r", "status": "completed", "output": [
-                {"type": "message", "role": "assistant", "status": "completed",
-                 "content": [{"type": "output_text", "text": "done", "annotations": []}]}],
-                "usage": {"input_tokens": 5, "output_tokens": 1}}})
+            last = request["input"][-1]
+            if last.get("role") == "user" and last.get("content") == "call a tool":
+                output = [
+                    {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "sealed-reasoning"},
+                    {"type": "function_call", "id": "fc_1", "call_id": "call_r1", "name": "bash",
+                     "arguments": "{\"command\":\"ls\"}", "status": "completed"},
+                ]
+            else:
+                output = [{"type": "message", "role": "assistant", "status": "completed",
+                           "content": [{"type": "output_text", "text": "done", "annotations": []}]}]
+            send({"type": "response.completed", "response": {"id": "r", "status": "completed", "output": output,
+                  "usage": {"input_tokens": 5, "output_tokens": 1}}})
 
 
 def free_port():
@@ -112,8 +120,9 @@ def main():
         assert "".join(d.get("content", "") for d in deltas) == "hel"
         assert "".join(d.get("reasoning_content", "") for d in deltas) == "hmm"
         calls = [call for d in deltas for call in d.get("tool_calls", [])]
-        assert calls == [{"index": 0, "id": "call-1", "type": "function",
-                          "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"}}], calls
+        [streamed_call] = calls
+        assert streamed_call["id"].startswith("call-1__albedo__"), streamed_call
+        assert streamed_call["function"] == {"name": "bash", "arguments": "{\"command\":\"ls\"}"}, streamed_call
         assert [c["choices"][0]["finish_reason"] for c in stream if c["choices"]][-1] == "tool_calls"
         assert stream[-1]["usage"]["prompt_tokens"] == 7 and stream[-1]["choices"] == []
         assert all(c["model"] == "chat" for c in stream)
@@ -141,9 +150,32 @@ def main():
                 assert kinds == ["user", "assistant", "function_call", "function_call_output"], sent["input"]
                 assert sent["input"][3] == {"type": "function_call_output", "call_id": "call-1", "output": "a.txt"}
 
+        # Provider state rides back through the client in the tool-call id.
+        ask = [{"role": "user", "content": "call a tool"}]
+        with post(base + "/chat/completions", {"model": "resp", "messages": ask, "tools": tools}) as response:
+            first = json.load(response)["choices"][0]["message"]
+        [call] = first["tool_calls"]
+        assert call["id"].startswith("call_r1__albedo__"), call
+        echoed = ask + [{"role": "assistant", "content": None, "tool_calls": [call]},
+                        {"role": "tool", "tool_call_id": call["id"], "content": "a.txt"}]
+        with post(base + "/chat/completions", {"model": "resp", "messages": echoed, "tools": tools}):
+            pass
+        path, sent = Provider.requests[-1]
+        assert sent["input"][1] == {"type": "reasoning", "id": "rs_1", "summary": [],
+                                    "encrypted_content": "sealed-reasoning"}, sent["input"]
+        assert sent["input"][2]["call_id"] == "call_r1" and sent["input"][3]["call_id"] == "call_r1", sent["input"]
+        # Another profile never sees that state; it gets the portable call.
+        with post(base + "/chat/completions", {"model": "chat", "messages": echoed, "tools": tools}):
+            pass
+        path, sent = Provider.requests[-1]
+        assert path == "/v1/chat/completions", path
+        assert "sealed-reasoning" not in json.dumps(sent), sent
+        assert sent["messages"][1]["tool_calls"][0]["id"] == "call_r1", sent["messages"]
+        assert sent["messages"][2]["tool_call_id"] == "call_r1", sent["messages"]
+
         bad = lambda: post(base + "/chat/completions", {"model": "missing/x", "messages": opening})
         assert status(bad) == 400
-    print("proxy: enablement, models, streaming chunks, chat and responses projection, origin refusal passed")
+    print("proxy: enablement, models, streaming chunks, projection, carried provider state, origin refusal passed")
 
 
 if __name__ == "__main__":

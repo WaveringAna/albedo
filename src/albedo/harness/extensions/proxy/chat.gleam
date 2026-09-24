@@ -4,6 +4,7 @@
 
 import albedo/daemon/events
 import albedo/daemon/image
+import albedo/daemon/transcript
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/int
@@ -20,7 +21,10 @@ pub type Completion {
     profile: String,
     /// Empty when the client names only a profile: its saved model is used.
     model: String,
+    /// Always without input: the conversation is `history`, which the
+    /// proxy projects onto the resolved upstream.
     request: types.Request,
+    history: List(transcript.Entry),
     stream: Bool,
     include_usage: Bool,
     /// Stable across one conversation's requests; seeds upstream identity.
@@ -53,12 +57,13 @@ pub fn parse(body: BitArray) -> Result(Completion, String) {
     Ok(#(profile, model)) -> #(profile, model)
     Error(_) -> #(requested, "")
   }
-  use #(instructions, input) <- result.try(inputs(messages))
+  use #(instructions, history) <- result.try(inputs(messages))
   Ok(Completion(
     requested,
     profile,
     model,
-    types.Request(model, instructions, input, tools, limit, options),
+    types.Request(model, instructions, [], tools, limit, options),
+    history,
     stream,
     include_usage,
     profile <> "\n" <> first_user_text(messages),
@@ -253,7 +258,7 @@ fn message_decoder() -> decode.Decoder(Message) {
 /// stays where the client put it, as a note the model reads in order.
 fn inputs(
   messages: List(Message),
-) -> Result(#(Option(String), List(types.Input)), String) {
+) -> Result(#(Option(String), List(transcript.Entry)), String) {
   let #(leading, rest) =
     list.split_while(messages, fn(message) { system(message.role) })
   let instructions = case list.map(leading, fn(m) { text(m.parts) }) {
@@ -268,21 +273,117 @@ fn system(role: String) -> Bool {
   role == "system" || role == "developer"
 }
 
-fn input(message: Message) -> Result(List(types.Input), String) {
+fn input(message: Message) -> Result(List(transcript.Entry), String) {
   let Message(role, parts, calls, call_id) = message
+  let portable = fn(inputs) {
+    list.map(inputs, transcript.Entry(_, None, None))
+  }
   case role {
-    "user" -> user(parts)
+    "user" -> user(parts) |> result.map(portable)
     "system" | "developer" ->
-      Ok([types.User("<system>\n" <> text(parts) <> "\n</system>")])
-    "tool" -> Ok([types.ToolOutput(call_id, text(parts), [])])
+      Ok(portable([types.User("<system>\n" <> text(parts) <> "\n</system>")]))
+    "tool" ->
+      Ok(portable([types.ToolOutput(original(call_id), text(parts), [])]))
     "assistant" ->
       case calls {
-        [] -> Ok([types.Assistant(text(parts))])
+        [] -> Ok(portable([types.Assistant(text(parts))]))
         calls ->
-          assistant(text(parts), calls) |> result.map(fn(item) { [item] })
+          case list.find_map(calls, fn(call) { carried(call.id) }) {
+            Ok(entries) -> Ok(entries)
+            Error(_) ->
+              assistant(
+                text(parts),
+                list.map(calls, fn(call) {
+                  types.ToolCall(..call, id: original(call.id))
+                }),
+              )
+              |> result.map(fn(item) { portable([item]) })
+          }
       }
     other -> Error("unsupported message role " <> other)
   }
+}
+
+// ---- provider state in tool-call ids ---------------------------------------
+
+/// Separates a tool call's own id from the provider state riding with it.
+const marker = "__albedo__"
+
+/// Past this the state is dropped rather than risk clients that cap id size;
+/// the turn still replays portably.
+const max_carried = 262_144
+
+/// Puts a tool-calling turn's native output, tagged with the profile that
+/// produced it, on its first call's id. Those are the turns whose reasoning
+/// providers require back, and every client echoes a call id verbatim.
+pub fn carry(
+  turn: types.Turn,
+  profile: String,
+  protocol: types.Protocol,
+) -> types.Turn {
+  case turn.tool_calls {
+    [] -> turn
+    [first, ..rest] -> {
+      let state =
+        json.object([
+          #("profile", json.string(profile)),
+          #(
+            "protocol",
+            json.string(case protocol {
+              types.Responses -> "responses"
+              types.ChatCompletions -> "chat_completions"
+            }),
+          ),
+          #("output", json.array(turn.output, types.replay_json)),
+        ])
+        |> json.to_string
+        |> pack
+      case string.byte_size(state) > max_carried {
+        True -> turn
+        False ->
+          types.Turn(..turn, tool_calls: [
+            types.ToolCall(..first, id: first.id <> marker <> state),
+            ..rest
+          ])
+      }
+    }
+  }
+}
+
+fn original(id: String) -> String {
+  case string.split_once(id, marker) {
+    Ok(#(id, _)) -> id
+    Error(_) -> id
+  }
+}
+
+fn carried(id: String) -> Result(List(transcript.Entry), Nil) {
+  use #(_, state) <- result.try(string.split_once(id, marker))
+  use state <- result.try(unpack(state))
+  let decoder = {
+    use profile <- decode.field("profile", decode.string)
+    use protocol <- decode.field(
+      "protocol",
+      decode.string
+        |> decode.then(fn(name) {
+          case name {
+            "responses" -> decode.success(types.Responses)
+            "chat_completions" -> decode.success(types.ChatCompletions)
+            _ -> decode.failure(types.Responses, "protocol")
+          }
+        }),
+    )
+    use output <- decode.field(
+      "output",
+      decode.list(types.replay_decoder(protocol)),
+    )
+    decode.success(
+      list.map(output, fn(item) {
+        transcript.Entry(types.Replay(item), None, Some(profile))
+      }),
+    )
+  }
+  json.parse_bits(state, decoder) |> result.replace_error(Nil)
 }
 
 fn user(parts: List(Part)) -> Result(List(types.Input), String) {
@@ -561,6 +662,12 @@ fn when(
 pub fn id(seed: Int) -> String {
   "chatcmpl-" <> int.to_base36(seed)
 }
+
+@external(erlang, "albedo_proxy", "pack")
+fn pack(json: String) -> String
+
+@external(erlang, "albedo_proxy", "unpack")
+fn unpack(state: String) -> Result(BitArray, Nil)
 
 @external(erlang, "albedo_proxy", "encode")
 fn encode(value: decode.Dynamic) -> Json

@@ -5,7 +5,6 @@
 import albedo/daemon/configuration
 import albedo/daemon/projection
 import albedo/daemon/store
-import albedo/daemon/transcript
 import albedo/harness/extension
 import albedo/harness/extensions/proxy/chat
 import albedo/openai_api/types
@@ -17,7 +16,7 @@ import gleam/http/request
 import gleam/http/response
 import gleam/json.{type Json}
 import gleam/list
-import gleam/option.{None}
+import gleam/option
 import gleam/otp/actor
 import gleam/result
 import gleam/string
@@ -119,26 +118,34 @@ fn complete(
       model,
       conversation(completion.conversation),
     ))
+    // Carried turns replay verbatim only to the profile that produced them.
     // Projection takes and returns history newest first.
     use input <- result.map(
-      completion.request.input
+      completion.history
       |> list.reverse
-      |> list.map(transcript.Entry(_, None, None))
-      |> projection.for_model("", upstream.protocol)
+      |> projection.for_model(profile.name, upstream.protocol)
       |> result.map(list.reverse),
     )
-    #(upstream, types.Request(..completion.request, model: model, input: input))
+    #(
+      profile.name,
+      upstream,
+      types.Request(..completion.request, model: model, input: input),
+    )
   }
   let reply = chat.Reply(chat.id(unique()), now(), completion.requested)
   case resolved, completion.stream {
     Error(message), _ -> respond(400, chat.error(message))
-    Ok(#(upstream, request)), False ->
+    Ok(#(profile, upstream, request)), False ->
       case upstream.stream(request, fn(_) { types.Continue }) {
-        Ok(turn) -> respond(200, chat.completion(reply, turn))
+        Ok(turn) ->
+          respond(
+            200,
+            chat.completion(reply, chat.carry(turn, profile, upstream.protocol)),
+          )
         Error(error) -> respond(502, chat.error(describe(upstream, error)))
       }
-    Ok(#(upstream, request)), True ->
-      stream(req, upstream, request, reply, completion.include_usage)
+    Ok(#(profile, upstream, request)), True ->
+      stream(req, profile, upstream, request, reply, completion.include_usage)
   }
 }
 
@@ -149,6 +156,7 @@ type Out {
 
 fn stream(
   req: request.Request(mist.Connection),
+  profile: String,
   upstream: extension.Upstream,
   request: types.Request,
   reply: chat.Reply,
@@ -179,7 +187,10 @@ fn stream(
             |> option.unwrap(types.Continue)
           })
         case outcome {
-          Ok(turn) -> list.each(chat.closing(reply, turn, include_usage), send)
+          Ok(turn) ->
+            chat.carry(turn, profile, upstream.protocol)
+            |> chat.closing(reply, _, include_usage)
+            |> list.each(send)
           Error(error) -> {
             let _ = send(chat.error(describe(upstream, error)))
             Nil
