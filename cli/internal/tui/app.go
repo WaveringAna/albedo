@@ -113,7 +113,7 @@ type AppModel struct {
 
 	// Sub-models
 	Chat             ChatModel
-	SessionPicker    PickerModel
+	SessionPicker    SessionViewer
 	ModelPicker      ModelPickerModel
 	ExtensionPicker  ExtensionPickerModel
 	TreePicker       TreePickerModel
@@ -153,10 +153,11 @@ func NewAppModel(conn *daemon.Connection, profiles config.Profiles, initialSessi
 		m.Chat = NewChatModel(initialSession, m.newChatClient(initialSession.ID))
 	} else {
 		m.State = AppStateSessionPicker
-		m.SessionPicker = NewPickerModel("albedo  sessions", []PickerItem{
-			{ID: "new", Label: "new coding session", Detail: workspace},
-			{ID: "login", Label: "/login", Detail: "add or select an api provider"},
-		}, true, "new")
+	}
+	// Built even when starting in a session so /sessions has a working search.
+	m.SessionPicker = NewSessionViewer(workspace)
+	if conn != nil {
+		m.SessionPicker.Fetch = m.sessionPreviewCmd
 	}
 
 	return m
@@ -193,6 +194,14 @@ func (m AppModel) loadSessionsCmd(gen int) tea.Cmd {
 		}
 		sessions, err := daemon.Request[[]daemon.Session](context.Background(), m.Conn, "/sessions", nil)
 		return sessionsLoadedMsg{Sessions: sessions, Err: err, Gen: gen}
+	}
+}
+
+func (m AppModel) sessionPreviewCmd(id string) tea.Cmd {
+	conn := m.Conn
+	return func() tea.Msg {
+		preview, err := daemon.Request[SessionPreview](context.Background(), conn, "/sessions/"+url.PathEscape(id)+"/preview?limit=16", nil)
+		return SessionPreviewMsg{ID: id, Preview: preview, Err: err}
 	}
 }
 
@@ -418,47 +427,7 @@ func (m AppModel) pollGlancesCmd(gen int) tea.Cmd {
 }
 
 func (m *AppModel) updateSessionPickerItems() {
-	var items []PickerItem
-	items = append(items, PickerItem{ID: "new", Label: "new coding session", Detail: m.Workspace})
-	items = append(items, PickerItem{ID: "login", Label: "/login", Detail: "add or select an api provider"})
-
-	// Prepend active session if not in list
-	listed := m.Sessions
-	if m.ActiveSession != nil {
-		found := false
-		for _, s := range m.Sessions {
-			if s.ID == m.ActiveSession.ID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			listed = append([]daemon.Session{*m.ActiveSession}, m.Sessions...)
-		}
-	}
-
-	for _, s := range listed {
-		label := strings.TrimSpace(s.Title)
-		if label == "" {
-			label = "new session"
-		}
-		detail := fmt.Sprintf("%s · %s", s.Model, s.Workspace)
-		items = append(items, PickerItem{
-			ID:     s.ID,
-			Label:  label,
-			Detail: detail,
-		})
-	}
-
-	curSel := "new"
-	if len(listed) > 0 {
-		curSel = listed[0].ID
-	}
-	if m.ActiveSession != nil {
-		curSel = m.ActiveSession.ID
-	}
-	m.SessionPicker = NewPickerModel("albedo  sessions", items, true, curSel)
-	m.SessionPicker.SetSize(m.Width, m.Height)
+	m.SessionPicker.SetSessions(m.Sessions, m.ActiveSession)
 }
 
 func mouseModeCmd(state AppState) tea.Cmd {
@@ -581,11 +550,14 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 			return m, nil
 		}
 		if msg.Err != nil {
+			m.SessionPicker.Loading = false
 			m.Error = "Error: " + msg.Err.Error()
 		} else {
 			m.Sessions = msg.Sessions
 			m.Error = ""
+			m.SessionPicker.Prune(msg.Sessions)
 			m.updateSessionPickerItems()
+			return m, m.SessionPicker.PreviewCmd()
 		}
 		return m, nil
 
@@ -974,6 +946,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 			}
 			for _, s := range listed {
 				if s.ID == msg.ID {
+					m.SessionPicker.RecordOpen(s.ID)
 					m.Chat.Close()
 					session := s
 					m.ActiveSession = &session

@@ -81,6 +81,88 @@ pub fn page(
   })
 }
 
+pub type Recent {
+  Recent(items: List(Item), total: Int)
+}
+
+const recent_excerpt = 400
+
+const recent_tool_excerpt = 120
+
+/// The newest conversational items of a transcript, oldest first, for the
+/// session list's preview pane. Excerpts are longer than tree previews, bodiless
+/// provider items are skipped, and `total` counts every transcript row. Like
+/// `page`, this reads only the durable ledger.
+pub fn recent(
+  ledger: store.Store,
+  session_id: String,
+  requested_limit: Int,
+) -> Result(Recent, String) {
+  let limit = case requested_limit <= 0 {
+    True -> 12
+    False -> int.min(requested_limit, max_page_size)
+  }
+  store.query(ledger, fn(db) {
+    use total <- result.try(
+      sqlight.query(
+        "SELECT COUNT(*) FROM transcript WHERE session=?",
+        db,
+        [sqlight.text(session_id)],
+        decode.field(0, decode.int, decode.success),
+      )
+      |> result.map_error(fn(error) { error.message }),
+    )
+    // Reasoning-only rows are dropped below, so read past the limit to keep
+    // the pane full.
+    use rows <- result.try(
+      sqlight.query(
+        "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? ORDER BY seq DESC LIMIT ?",
+        db,
+        [sqlight.text(session_id), sqlight.int(limit * 4)],
+        row_decoder(),
+      )
+      |> result.map_error(fn(error) { error.message }),
+    )
+    use decoded <- result.try(list.try_map(rows, decode_row))
+    let items =
+      decoded
+      |> list.filter_map(recent_item)
+      |> list.take(limit)
+      |> list.reverse
+    Ok(Recent(items, list.first(total) |> result.unwrap(0)))
+  })
+}
+
+fn recent_item(row: Row) -> Result(Item, Nil) {
+  let item = fn(kind, text, limit) {
+    case conversation.excerpt(text, limit) {
+      "" -> Error(Nil)
+      clean -> Ok(Item(row.seq, kind, clean, row.timestamp))
+    }
+  }
+  case row.input {
+    types.User(text) -> item(User, text, recent_excerpt)
+    types.UserImage(text, image) ->
+      item(User, text <> image_label(image), recent_excerpt)
+    types.Assistant(text) -> item(Assistant, text, recent_excerpt)
+    types.ToolOutput(_, _, _) -> Error(Nil)
+    types.Replay(replay) ->
+      case events.calls(types.Replay(replay)) {
+        [] ->
+          case events.visible_assistant_text(types.Replay(replay)) {
+            Some(text) -> item(Assistant, text, recent_excerpt)
+            None -> Error(Nil)
+          }
+        calls ->
+          item(
+            Tool,
+            list.map(calls, fn(call) { call.name }) |> string.join(", "),
+            recent_tool_excerpt,
+          )
+      }
+  }
+}
+
 /// Create a durable, idle session containing exactly the selected prefix plus
 /// protocol-completing results for tool calls interrupted by the checkpoint.
 /// Runtime, Python, request-strategy, and usage state are intentionally absent.

@@ -223,3 +223,47 @@ pub fn incompatible_or_missing_checkpoints_leave_no_branch_test() {
   runtime.stop(host)
   cleanup(path)
 }
+
+pub fn recent_keeps_newest_conversation_and_counts_every_row_test() {
+  let path = temporary_database()
+  let assert Ok(host) = runtime.start(path)
+  let ledger = runtime.ledger(host)
+  let assert Ok(_) = conversation.initialise(ledger)
+  let assert Ok(_) = conversation.create(ledger, info("source"))
+  let reasoning =
+    response_item(
+      "{\"type\":\"reasoning\",\"id\":\"reasoning-1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"hidden\"}]}",
+    )
+  let call =
+    response_item(
+      "{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"python\",\"arguments\":\"{}\",\"status\":\"completed\"}",
+    )
+  let assert Ok(_) =
+    conversation.commit_from(
+      ledger,
+      "source",
+      [
+        types.User("first\nprompt"),
+        types.Replay(reasoning),
+        types.Replay(call),
+        types.ToolOutput("call-1", "tool output", []),
+        types.Assistant("all done"),
+      ],
+      conversation.Idle,
+      Some("provider"),
+    )
+
+  let assert Ok(history.Recent(items, 5)) = history.recent(ledger, "source", 2)
+  items
+  |> list.map(fn(item) { #(item.kind, item.preview) })
+  |> should.equal([#(history.Tool, "python"), #(history.Assistant, "all done")])
+
+  let assert Ok(history.Recent(all, _)) = history.recent(ledger, "source", 10)
+  all
+  |> list.map(fn(item) { item.preview })
+  |> should.equal(["first prompt", "python", "all done"])
+
+  let assert Ok(history.Recent([], 0)) = history.recent(ledger, "missing", 10)
+  runtime.stop(host)
+  cleanup(path)
+}

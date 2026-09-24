@@ -49,6 +49,7 @@ type Message {
   Models(String, String, Subject(List(String)))
   Logins(Subject(List(oauth.Login)))
   ReadTree(String, Int, Int, Subject(Result(history.Page, String)))
+  ReadRecent(String, Int, Subject(Result(history.Recent, String)))
   Fork(String, Int, Subject(Result(conversation.Info, String)))
   SetWorkspace(String, String, Subject(Result(conversation.Info, String)))
   WorkerDown(process.Down)
@@ -218,6 +219,10 @@ fn handle(state: State, message: Message) {
         reply,
         history.page(runtime.ledger(state.host), id, after, limit),
       )
+      actor.continue(state)
+    }
+    ReadRecent(id, limit, reply) -> {
+      process.send(reply, history.recent(runtime.ledger(state.host), id, limit))
       actor.continue(state)
     }
     Fork(id, checkpoint, reply) -> {
@@ -666,6 +671,25 @@ fn route(
             |> result.unwrap(50)
           case actor.call(registry, 10_000, ReadTree(id, after, limit, _)) {
             Ok(page) -> reply(200, tree_page_json(page))
+            Error(e) -> error(400, e)
+          }
+        }
+        Get, ["sessions", id, "preview"] -> {
+          let limit =
+            request.get_query(req)
+            |> result.unwrap([])
+            |> list.key_find("limit")
+            |> result.try(int.parse)
+            |> result.unwrap(12)
+          case actor.call(registry, 10_000, ReadRecent(id, limit, _)) {
+            Ok(recent) ->
+              reply(
+                200,
+                json.object([
+                  #("items", json.array(recent.items, tree_item_json)),
+                  #("total", json.int(recent.total)),
+                ]),
+              )
             Error(e) -> error(400, e)
           }
         }

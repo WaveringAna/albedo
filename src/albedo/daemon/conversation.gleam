@@ -343,6 +343,16 @@ pub fn protocol(protocol: types.Protocol) -> String {
 }
 
 pub fn title(text: String) -> String {
+  case excerpt(text, 80) {
+    "" -> "new session"
+    clean -> clean
+  }
+}
+
+/// One line of display-safe text: control and invisible characters become
+/// spaces, runs of whitespace collapse, and anything past `limit` graphemes is
+/// cut with an ellipsis.
+pub fn excerpt(text: String, limit: Int) -> String {
   let assert Ok(space) = string.utf_codepoint(32)
   let clean =
     text
@@ -368,13 +378,9 @@ pub fn title(text: String) -> String {
     |> string.split(" ")
     |> list.filter(fn(part) { part != "" })
     |> string.join(" ")
-  case clean {
-    "" -> "new session"
-    _ ->
-      case string.length(clean) > 80 {
-        True -> string.slice(clean, 0, 79) <> "…"
-        False -> clean
-      }
+  case string.length(clean) > limit {
+    True -> string.slice(clean, 0, limit - 1) <> "…"
+    False -> clean
   }
 }
 

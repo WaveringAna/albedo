@@ -21,6 +21,9 @@ import (
 
 var sanitizerRegex = regexp.MustCompile(`[\p{Cc}\x{202a}-\x{202e}\x{2066}-\x{2069}]`)
 
+// SessionText replaces control characters and direction overrides in session metadata.
+func SessionText(s string) string { return sanitizerRegex.ReplaceAllString(s, " ") }
+
 const (
 	pollInterval = 100 * time.Millisecond
 	pollAttempts = 300
@@ -70,7 +73,7 @@ func SessionListing(sessions []Session, now time.Time) string {
 
 	lines := make([]string, 0, len(sessions))
 	for _, s := range sessions {
-		title := sanitizerRegex.ReplaceAllString(s.Title, " ")
+		title := SessionText(s.Title)
 		title = strings.TrimSpace(title)
 		if title == "" {
 			title = "session name unavailable"
