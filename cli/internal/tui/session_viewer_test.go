@@ -204,3 +204,30 @@ func TestSessionViewerPreviewFetchesOnSettleAndRenders(t *testing.T) {
 		t.Fatal("missing daemon hint")
 	}
 }
+
+func TestSessionViewerUndatedSessionsFollowActivity(t *testing.T) {
+	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.Local)
+	at := func(d time.Duration) *int64 { v := now.Add(-d).Unix(); return &v }
+	sessions := []daemon.Session{
+		{ID: "waiting", Title: "prompt sent, no reply yet"},
+		{ID: "today", Title: "Today", LastAssistantAt: at(time.Hour)},
+		{ID: "old", Title: "Old", LastAssistantAt: at(30 * 24 * time.Hour)},
+		{ID: "fresh", Title: ""},
+	}
+	m := viewerAt(now)
+	m.SetSessions(sessions, &sessions[3])
+	var order []string
+	for _, item := range m.Filtered {
+		order = append(order, item.ID)
+	}
+	if got := strings.Join(order, " "); got != "new login fresh waiting today old" {
+		t.Fatalf("order: %s", got)
+	}
+	if m.section["fresh"] != secToday || m.section["waiting"] != secToday {
+		t.Fatalf("sections: %v", m.section)
+	}
+	m.SetSessions(sessions, nil)
+	if m.section["fresh"] != secEarlier {
+		t.Fatalf("empty inactive session: %d", m.section["fresh"])
+	}
+}

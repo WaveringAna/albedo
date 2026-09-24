@@ -214,12 +214,29 @@ func (m *SessionViewer) rebuild() {
 		m.section[s.ID] = secFrequent
 		ordered = append(ordered, s)
 	}
-	var rest []daemon.Session
-	for _, s := range listed {
-		if _, taken := m.section[s.ID]; !taken {
-			m.section[s.ID] = dateSection(s, now)
-			rest = append(rest, s)
+	// A session with no reply yet has no date of its own. The daemon lists by
+	// activity, so it takes the group of the next older dated session; the
+	// session in use is always today's and leads the list.
+	dated := make([]int, len(listed))
+	older := secEarlier
+	for i := len(listed) - 1; i >= 0; i-- {
+		if listed[i].LastAssistantAt != nil {
+			older = dateSection(listed[i], now)
 		}
+		dated[i] = older
+	}
+	var rest []daemon.Session
+	for i, s := range listed {
+		if _, taken := m.section[s.ID]; taken {
+			continue
+		}
+		m.section[s.ID] = dated[i]
+		if m.active != nil && s.ID == m.active.ID {
+			m.section[s.ID] = secToday
+			rest = append([]daemon.Session{s}, rest...)
+			continue
+		}
+		rest = append(rest, s)
 	}
 	// Navigation follows the grouping; the daemon's order holds within a day group.
 	sort.SliceStable(rest, func(i, j int) bool { return m.section[rest[i].ID] < m.section[rest[j].ID] })
