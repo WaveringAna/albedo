@@ -8,6 +8,7 @@ import albedo/harness/extensions/instructions/extension as instructions
 import albedo/harness/extensions/mcp/extension as mcp
 import albedo/harness/extensions/models/extension as models
 import albedo/harness/extensions/openai/extension as openai
+import albedo/harness/extensions/proxy/extension as proxy
 import albedo/harness/extensions/python/extension as python
 import albedo/harness/extensions/remote/extension as remote
 import albedo/harness/extensions/rolling/extension as rolling
@@ -39,6 +40,7 @@ pub fn defaults() -> Config {
       mcp.configured_extension(),
       remote.extension(),
       view.extension(),
+      proxy.extension(),
     ],
     [
       "python", "bash", "work", "files", "instructions", "commands", "skills",

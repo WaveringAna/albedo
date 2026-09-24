@@ -1,6 +1,6 @@
 # extensions
 
-an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, or compaction plugins. `python`, `bash`, `work`, `files`, `commands`, `skills`, `rolling`, and `remote` are enabled by default; `mcp` and `view` are installed and disabled until a session enables them. plugin contributions compose inside them.
+an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, or compaction plugins. `python`, `bash`, `work`, `files`, `commands`, `skills`, `rolling`, and `remote` are enabled by default; `mcp`, `view`, and [`proxy`](proxy.md) are installed and disabled until they are enabled. plugin contributions compose inside them.
 
 ## select extensions
 

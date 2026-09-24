@@ -2,6 +2,7 @@ import albedo/openai_api/types
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/result
 import gleam/string
 
@@ -27,6 +28,15 @@ pub fn named(home: String, name: String) -> Result(Provider, String) {
   use config <- result.try(load(home))
   configured(config, name)
   |> result.replace_error("session provider is not configured; run /login")
+}
+
+/// Every valid saved profile, by name.
+pub fn providers(home: String) -> Result(List(Provider), String) {
+  use config <- result.map(load(home))
+  config.providers
+  |> dict.keys
+  |> list.sort(string.compare)
+  |> list.filter_map(configured(config, _))
 }
 
 // A migrated flat config remains "default" even if login selected a new provider.
