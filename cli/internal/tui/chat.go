@@ -398,6 +398,8 @@ func (m *ChatModel) SetSize(width, height int) {
 }
 
 func (m *ChatModel) rebuildSettledLines() {
+	// Re-rendering retained history must not move the reading position.
+	offset := m.scrollOffset
 	m.settledLines = nil
 	m.settledLinesBytes = 0
 	m.userRows = nil
@@ -405,6 +407,7 @@ func (m *ChatModel) rebuildSettledLines() {
 	for i := range entries {
 		m.appendBlock(entries[:i], entries[i])
 	}
+	m.scrollOffset = offset
 }
 
 // appendBlock renders entry after the settled entries before it.
@@ -1972,7 +1975,11 @@ func (m ChatModel) renderGlances() string {
 			case ToneMuted:
 				mark = "✓"
 			}
-			rows = append(rows, style.Render(mark)+" "+item.Text)
+			label := item.Text
+			if item.ID != "" {
+				label = "#" + item.ID + " " + label
+			}
+			rows = append(rows, style.Render(mark)+" "+label)
 		}
 		if shown < len(g.Rows) {
 			rows = append(rows, m.Styles.Faint.Render(fmt.Sprintf("+%d more", len(g.Rows)-shown)))

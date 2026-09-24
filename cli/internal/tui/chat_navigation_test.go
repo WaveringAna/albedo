@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -47,6 +48,38 @@ func TestScrollDoesNotResumeFollowBeforeEndOfLiveOutput(t *testing.T) {
 			m.scrollBy(1000)
 			if !m.Follow || m.scrollOffset != bottom {
 				t.Fatalf("tail not restored at actual end: offset=%d bottom=%d", m.scrollOffset, bottom)
+			}
+		})
+	}
+}
+
+func TestReadingPositionSurvivesIncomingTranscript(t *testing.T) {
+	for _, scroll := range []struct {
+		name string
+		msg  tea.Msg
+	}{
+		{"keyboard", tea.KeyMsg{Type: tea.KeyPgUp}},
+		{"wheel", tea.MouseMsg{Button: tea.MouseButtonWheelUp}},
+	} {
+		t.Run(scroll.name, func(t *testing.T) {
+			m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+			m.SetSize(80, 20)
+			var text strings.Builder
+			for i := 0; i < MaxSettledLines+50; i++ {
+				fmt.Fprintf(&text, "row %d\n", i)
+			}
+			m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Text: text.String()})
+			m.refreshViewportContent()
+			m, _ = m.Update(scroll.msg)
+			if m.Follow {
+				t.Fatal("scrolling up did not pause following")
+			}
+			before := m.scrollOffset
+			visible := strings.Split(ansi.Strip(m.Viewport.View()), "\n")[0]
+			m.Notice = "new activity"
+			m, _ = m.Update(ChatStreamEventMsg{SessionID: m.SessionID, Generation: m.Generation, Event: daemon.StreamEvent{Type: daemon.EventNote, Text: "a new line"}})
+			if m.Follow || strings.Split(ansi.Strip(m.Viewport.View()), "\n")[0] != visible {
+				t.Fatalf("reading position changed: offset %d -> %d, follow=%v", before, m.scrollOffset, m.Follow)
 			}
 		})
 	}

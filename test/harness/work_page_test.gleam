@@ -59,6 +59,7 @@ pub fn listing_is_a_page_document_ordered_by_status_test() {
       }
     }
   string.contains(document, "\"glance\":{") |> should.be_true
+  string.contains(document, "\"title\":\"pending work\"") |> should.be_true
 }
 
 pub fn user_changes_update_the_ledger_and_queue_a_note_test() {

@@ -88,7 +88,7 @@ fn listing(store: work.Store) -> Result(command.Outcome, String) {
           ),
           page.Action("x", "remove", "remove", True, page.NoInput, True),
         ],
-        Some(page.Glance("work", list.map(pending, row))),
+        Some(page.Glance("pending work", list.map(pending, row))),
       )),
     ),
   )

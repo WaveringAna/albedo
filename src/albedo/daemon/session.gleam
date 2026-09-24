@@ -1,30 +1,29 @@
 //// One coordinator per session. Workers own model/tool loops; clients never own workers.
 
-import albedo/daemon/configuration
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
 import albedo/daemon/events as view
-import albedo/daemon/note
-import albedo/daemon/projection
-import albedo/daemon/transcript
+import albedo/daemon/session_extensions
+import albedo/daemon/session_history
+import albedo/daemon/session_namespace
+import albedo/daemon/session_provider
+import albedo/daemon/session_run
+import albedo/daemon/session_state
+import albedo/daemon/session_submission
 import albedo/daemon/turn.{type Submission, Submission}
 import albedo/daemon/usage
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/bash/extension as bash
-import albedo/harness/extensions/python/kernel as python
-import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/loop
 import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/erlang/process.{type Subject}
-import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
-import gleam/string
 
 /// What a turn resumed after a daemon restart tells the model, and the
 /// transcript's marker for the restart.
@@ -37,17 +36,6 @@ const restart_note = Submission(
   turn.Note("daemon restart"),
   None,
 )
-
-const lost_notice = "<system-note>The python kernel got reset and all variables are lost</system-note>"
-
-/// A kernel is opened on demand and released when nobody is attached, so an idle
-/// session costs no operating system process. Variables outlive the kernel when
-/// they can be written to disk; the model is told either way.
-const state_timeout = 30_000
-
-/// Shutdown waits on this per session, so a restart cannot stall behind a large
-/// namespace. An idle release is nobody's wait and gets the full budget.
-const close_state_timeout = 5000
 
 pub type Session =
   Subject(Message)
@@ -139,26 +127,8 @@ pub type Message {
   Close(Subject(Nil))
 }
 
-type State {
-  State(
-    info: conversation.Info,
-    host: runtime.Runtime,
-    kernel: Option(runtime.Session),
-    home: String,
-    self: Session,
-    history: Option(List(transcript.Entry)),
-    latest_usage: Option(usage.Metadata),
-    activity: turn.Activity,
-    steering: List(Submission),
-    sequence: Int,
-    events: List(#(Int, String)),
-    watchers: List(#(process.Pid, fn() -> Nil)),
-    notice: Option(String),
-    context: context_snapshot.Snapshot,
-    pin: loop.Pin,
-    last_touch: Int,
-  )
-}
+type State =
+  session_state.State(Message)
 
 /// Starting a session costs no Python process; the first run opens the kernel.
 pub fn start(
@@ -206,7 +176,7 @@ pub fn start(
       }
     }
     let state =
-      State(
+      session_state.State(
         info,
         host,
         None,
@@ -220,7 +190,7 @@ pub fn start(
         [],
         [],
         None,
-        unprepared(),
+        session_state.unprepared(),
         case pinned {
           Some(prompt) -> loop.Pinned(prompt, None)
           None -> loop.Unpinned
@@ -304,9 +274,9 @@ pub fn context_page(
 
 /// Remove the saved variables after a session has stopped.
 pub fn discard_state(home: String, id: String) -> Nil {
-  case id == "" || string.contains(id, "/") || string.contains(id, "..") {
-    True -> Nil
-    False -> discard(home <> "/kernels/" <> id <> ".state")
+  case session_namespace.state_path(home, id) {
+    Some(path) -> discard(path)
+    None -> Nil
   }
 }
 
@@ -330,40 +300,6 @@ pub fn evict_history(session: Session) -> Bool {
   actor.call(session, 5000, EvictHistory)
 }
 
-fn unprepared() -> context_snapshot.Snapshot {
-  context_snapshot.pending(
-    "runtime session has not prepared a provider request",
-  )
-}
-
-/// Streaming clients are woken as each event is published, so a model delta
-/// reaches a terminal without waiting for a polling interval.
-fn emit(state: State, event: String) -> State {
-  let seq = state.sequence + 1
-  let events = trim([#(seq, event), ..state.events], 256, 4_194_304)
-  let watchers =
-    list.filter(state.watchers, fn(watcher) { process.is_alive(watcher.0) })
-  list.each(watchers, fn(watcher) { watcher.1() })
-  State(..state, sequence: seq, events: events, watchers: watchers)
-}
-
-fn trim(
-  events: List(#(Int, String)),
-  count: Int,
-  bytes: Int,
-) -> List(#(Int, String)) {
-  case events {
-    [] -> []
-    [event, ..rest] -> {
-      let size = string.byte_size(event.1)
-      case count > 0 && size <= bytes {
-        True -> [event, ..trim(rest, count - 1, bytes - size)]
-        False -> []
-      }
-    }
-  }
-}
-
 fn handle(state: State, message: Message) {
   // Anything a client sends counts as attention; a detached session goes quiet.
   let state = case message {
@@ -379,7 +315,7 @@ fn handle(state: State, message: Message) {
     | RefreshData(..)
     | ChangeWorkspace(..)
     | ReadExtensions(..)
-    | ChangeExtension(..) -> State(..state, last_touch: now_ms())
+    | ChangeExtension(..) -> session_state.State(..state, last_touch: now_ms())
     _ -> state
   }
   case message {
@@ -387,20 +323,23 @@ fn handle(state: State, message: Message) {
       case prepare_submission(state) {
         Error(error) ->
           actor.continue(
-            State(..state, activity: turn.Resting)
-            |> emit(view.text("error", submission_error(error))),
+            session_state.State(..state, activity: turn.Resting)
+            |> session_state.emit(view.text("error", submission_error(error))),
           )
         Ok(#(state, kernel, client)) -> {
           let recovered =
-            list.append(recover_pending(state, kernel), [
-              submission_input(restart_note),
-            ])
-          let candidate = remember(state, recovered, 0)
+            list.append(
+              session_history.recover_pending(state.host, state.history, kernel),
+              [
+                session_submission.input(restart_note),
+              ],
+            )
+          let candidate = session_history.remember(state, recovered, 0)
           case projected_inputs(candidate) {
             Error(error) ->
               actor.continue(
-                State(..state, activity: turn.Resting)
-                |> emit(view.text("error", error)),
+                session_state.State(..state, activity: turn.Resting)
+                |> session_state.emit(view.text("error", error)),
               )
             Ok(model_history) ->
               case
@@ -413,7 +352,10 @@ fn handle(state: State, message: Message) {
                 )
               {
                 Error(error) ->
-                  actor.continue(emit(state, view.text("error", error)))
+                  actor.continue(session_state.emit(
+                    state,
+                    view.text("error", error),
+                  ))
                 Ok(timestamp) -> {
                   // The kernel notice reaches the model but not the ledger,
                   // as it does for a chat message.
@@ -425,10 +367,13 @@ fn handle(state: State, message: Message) {
                     _, _ -> model_history
                   }
                   let state =
-                    remember(state, recovered, timestamp)
-                    |> emit(submission_event(restart_note, timestamp))
+                    session_history.remember(state, recovered, timestamp)
+                    |> session_state.emit(session_submission.event(
+                      restart_note,
+                      timestamp,
+                    ))
                   actor.continue(start_run(
-                    State(..state, notice: None),
+                    session_state.State(..state, notice: None),
                     kernel,
                     client,
                     model_history,
@@ -463,7 +408,10 @@ fn handle(state: State, message: Message) {
         turn.Queue -> {
           process.send(reply, Ok(True))
           actor.continue(
-            State(..state, steering: list.append(state.steering, [submission])),
+            session_state.State(
+              ..state,
+              steering: list.append(state.steering, [submission]),
+            ),
           )
         }
         turn.Start ->
@@ -477,11 +425,17 @@ fn handle(state: State, message: Message) {
               let notes = state.steering
               let accepted =
                 list.flatten([
-                  recover_pending(state, kernel),
-                  list.map(notes, submission_input),
-                  [submission_input(submission)],
+                  session_history.recover_pending(
+                    state.host,
+                    state.history,
+                    kernel,
+                  ),
+                  list.map(notes, session_submission.input),
+                  [session_submission.input(submission)],
                 ])
-              case projected_inputs(remember(state, accepted, 0)) {
+              case
+                projected_inputs(session_history.remember(state, accepted, 0))
+              {
                 Error(error) -> {
                   process.send(reply, Error(Rejected(error)))
                   actor.continue(state)
@@ -518,16 +472,20 @@ fn handle(state: State, message: Message) {
                     }
                     Ok(timestamp) -> {
                       let state =
-                        remember(state, accepted, timestamp)
-                        |> emit_submissions(notes, timestamp)
+                        session_history.remember(state, accepted, timestamp)
+                        |> session_submission.emit(notes, timestamp)
                         |> fn(state) {
-                          State(..state, notice: None, steering: [])
+                          session_state.State(
+                            ..state,
+                            notice: None,
+                            steering: [],
+                          )
                         }
                         |> start_run(kernel, client, model_history)
                       process.send(reply, Ok(False))
-                      actor.continue(emit(
+                      actor.continue(session_state.emit(
                         state,
-                        submission_event(submission, timestamp),
+                        session_submission.event(submission, timestamp),
                       ))
                     }
                   }
@@ -560,7 +518,9 @@ fn handle(state: State, message: Message) {
           }
           let _ = process.send_after(state.self, 2500, Abort(run.id))
           process.send(reply, True)
-          actor.continue(State(..state, activity: turn.cancel(state.activity)))
+          actor.continue(
+            session_state.State(..state, activity: turn.cancel(state.activity)),
+          )
         }
       }
     ChangeWorkspace(cwd, reply) -> {
@@ -584,18 +544,18 @@ fn handle(state: State, message: Message) {
             True -> state
             False -> {
               runtime.forget_session(state.host, state.info.id)
-              case state_path(state) {
+              case session_namespace.state_path(state.home, state.info.id) {
                 Some(path) -> discard(path)
                 None -> Nil
               }
-              State(
+              session_state.State(
                 ..state,
                 kernel: None,
                 info: conversation.Info(..state.info, cwd: cwd),
-                notice: Some(lost_notice),
-                context: unprepared(),
+                notice: Some(session_namespace.lost_notice),
+                context: session_state.unprepared(),
               )
-              |> emit(view.text(
+              |> session_state.emit(view.text(
                 "note",
                 "workspace changed; python variables were cleared, the transcript is intact",
               ))
@@ -613,369 +573,36 @@ fn handle(state: State, message: Message) {
       )
       actor.continue(state)
     }
-    ChangeExtension(change, reply) ->
-      case turn.running(state.activity) {
-        Some(_) -> {
-          process.send(
-            reply,
-            Error("session must be idle to reload extensions"),
-          )
-          actor.continue(state)
-        }
-        None -> {
-          let saved = case state.kernel {
-            Some(kernel) ->
-              save_state_within(state, kernel, close_state_timeout)
-            None -> Error("no active python namespace")
-          }
-          let previous = runtime.peek_prompt(state.host, state.info.id)
-          let previous_tools = option.map(state.kernel, runtime.tools)
-          case
-            runtime.change_extension(
-              state.host,
-              state.info.id,
-              state.info.cwd,
-              change,
-            )
-          {
-            Error(error) -> {
-              process.send(reply, Error(error))
-              actor.continue(state)
-            }
-            // The choice was recorded but this session runs the same
-            // extensions, so its kernel and prompt cache stay as they are.
-            Ok(None) -> {
-              process.send(
-                reply,
-                runtime.extension_summaries(state.host, state.info.id),
-              )
-              actor.continue(state)
-            }
-            Ok(Some(kernel)) -> {
-              let restored = case saved, state_path(state) {
-                Ok(_), Some(path) ->
-                  runtime.load_state(kernel, path, state_timeout)
-                _, _ -> Error(python.Invalid("namespace snapshot unavailable"))
-              }
-              let namespace = case state.kernel, restored {
-                None, _ -> "new python namespace started"
-                _, Ok(saved) -> restored_text(saved)
-                _, Error(_) ->
-                  "python namespace reset; unsaved variables were lost"
-              }
-              let state =
-                State(..state, kernel: Some(kernel), context: unprepared())
-              // Most extensions add python modules rather than tools. With
-              // the tool definitions unchanged, the provider's cached prompt
-              // prefix still applies: pin it and deliver the change as a
-              // context update, as /reload does.
-              let state = case previous_tools == Some(runtime.tools(kernel)) {
-                True ->
-                  case pin_changed_prompt(state, previous) {
-                    Ok(#(state, note)) ->
-                      emit(
-                        state,
-                        view.text(
-                          "note",
-                          "extensions reloaded; " <> namespace <> note,
-                        ),
-                      )
-                    Error(error) ->
-                      reset_prompt_cache(state, namespace)
-                      |> emit(view.text(
-                        "error",
-                        "extensions reloaded but the context update could not be saved: "
-                          <> error,
-                      ))
-                  }
-                False -> reset_prompt_cache(state, namespace)
-              }
-              let summaries =
-                runtime.extension_summaries(state.host, state.info.id)
-              process.send(reply, summaries)
-              actor.continue(state)
-            }
-          }
-        }
-      }
+    ChangeExtension(change, reply) -> {
+      let #(state, outcome) = session_extensions.change(state, change)
+      process.send(reply, outcome)
+      actor.continue(state)
+    }
     ChangeModel(model, provider_name, reply) -> {
-      case
-        turn.running(state.activity) == None
-        && string.trim(model) != ""
-        && string.byte_size(model) <= 512
-        && !string.contains(model, "\r")
-        && !string.contains(model, "\n")
-      {
-        False -> {
-          process.send(reply, Error("model must be nonempty and session idle"))
-          actor.continue(state)
-        }
-        True ->
-          case ensure_history(state) {
-            Error(error) -> {
-              process.send(reply, Error(error))
-              actor.continue(state)
-            }
-            Ok(state) -> {
-              let selected = {
-                use #(provider, protocol) <- result.try(case provider_name {
-                  None -> Ok(#(state.info.provider, state.info.protocol))
-                  Some(name) ->
-                    configuration.named(state.home, name)
-                    |> result.map(fn(configured) {
-                      #(configured.name, configured.protocol)
-                    })
-                })
-                let efforts = efforts_for_model(state, provider, model)
-                let new_effort = case state.info.effort {
-                  Some(current) ->
-                    case list.contains(efforts, current) {
-                      True -> Some(current)
-                      False -> extension.default_effort(efforts)
-                    }
-                  None -> extension.default_effort(efforts)
-                }
-                let selection =
-                  ModelSelection(provider, model, protocol, new_effort)
-                use _ <- result.try(
-                  projected_for(state, provider, protocol)
-                  |> result.replace(Nil)
-                  |> result.map_error(fn(error) {
-                    "cannot switch provider: " <> error
-                  }),
-                )
-                use _ <- result.try(configuration.select_default(
-                  state.home,
-                  provider,
-                  model,
-                ))
-                use _ <- result.try(conversation.set_configuration(
-                  runtime.ledger(state.host),
-                  state.info.id,
-                  provider,
-                  model,
-                  protocol,
-                  new_effort,
-                ))
-                Ok(selection)
-              }
-              process.send(reply, selected)
-              case selected {
-                Ok(selection) ->
-                  actor.continue(
-                    State(
-                      ..state,
-                      history: option.map(state.history, tag_unknown_provider(
-                        _,
-                        state.info.provider,
-                      )),
-                      info: conversation.Info(
-                        ..state.info,
-                        provider: selection.provider,
-                        model: selection.model,
-                        protocol: selection.protocol,
-                        effort: selection.effort,
-                      ),
-                      context: unprepared(),
-                    ),
-                  )
-                Error(_) -> actor.continue(state)
-              }
-            }
-          }
-      }
+      let #(state, outcome) =
+        session_provider.select(state, model, provider_name)
+      process.send(
+        reply,
+        result.map(outcome, fn(_) { model_selection(state.info) }),
+      )
+      actor.continue(state)
     }
 
     ReadEffort(reply) -> {
-      let efforts =
-        efforts_for_model(state, state.info.provider, state.info.model)
-      case efforts {
-        [] -> {
-          process.send(
-            reply,
-            Error(
-              "model "
-              <> state.info.model
-              <> " does not support reasoning effort",
-            ),
-          )
-          actor.continue(state)
-        }
-        _ -> {
-          let current = state.info.effort
-          let available_str = string.join(efforts, ", ")
-          let message = case current {
-            Some(c) ->
-              "reasoning effort is "
-              <> c
-              <> " (available: "
-              <> available_str
-              <> ")"
-            None ->
-              "reasoning effort is not set (available: " <> available_str <> ")"
-          }
-          process.send(
-            reply,
-            Ok(
-              json.object([
-                #("effort", json.nullable(current, json.string)),
-                #("available", json.array(efforts, json.string)),
-                #("message", json.string(message)),
-              ]),
-            ),
-          )
-          actor.continue(state)
-        }
-      }
+      process.send(reply, session_provider.read_effort(state))
+      actor.continue(state)
     }
-
     ChangeEffort(level, reply) -> {
-      case turn.running(state.activity) == None {
-        False -> {
-          process.send(
-            reply,
-            Error("switching effort requires an idle session"),
-          )
-          actor.continue(state)
-        }
-        True -> {
-          let efforts =
-            efforts_for_model(state, state.info.provider, state.info.model)
-          case efforts {
-            [] -> {
-              process.send(
-                reply,
-                Error(
-                  "model "
-                  <> state.info.model
-                  <> " does not support reasoning effort",
-                ),
-              )
-              actor.continue(state)
-            }
-            _ -> {
-              let trimmed = string.trim(string.lowercase(level))
-              case list.contains(efforts, trimmed) {
-                False -> {
-                  let available_str = string.join(efforts, ", ")
-                  process.send(
-                    reply,
-                    Error(
-                      "unsupported reasoning effort: "
-                      <> trimmed
-                      <> "; available: "
-                      <> available_str,
-                    ),
-                  )
-                  actor.continue(state)
-                }
-                True -> {
-                  let res =
-                    conversation.set_effort(
-                      runtime.ledger(state.host),
-                      state.info.id,
-                      Some(trimmed),
-                    )
-                  case res {
-                    Error(err) -> {
-                      process.send(reply, Error(err))
-                      actor.continue(state)
-                    }
-                    Ok(_) -> {
-                      process.send(
-                        reply,
-                        Ok(
-                          json.object([
-                            #("effort", json.string(trimmed)),
-                            #(
-                              "message",
-                              json.string("reasoning effort set to " <> trimmed),
-                            ),
-                          ]),
-                        ),
-                      )
-                      actor.continue(
-                        State(
-                          ..state,
-                          info: conversation.Info(
-                            ..state.info,
-                            effort: Some(trimmed),
-                          ),
-                        ),
-                      )
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
+      let #(state, outcome) = session_provider.change_effort(state, level)
+      process.send(reply, outcome)
+      actor.continue(state)
     }
 
     RefreshData(reply) -> {
-      case turn.running(state.activity) {
-        Some(_) -> {
-          process.send(reply, Error("session must be idle to reload"))
-          actor.continue(state)
-        }
-        None -> {
-          let previous = runtime.peek_prompt(state.host, state.info.id)
-          case runtime.refresh_session(state.host, state.info.id) {
-            Error(error) -> {
-              process.send(reply, Error(error))
-              actor.continue(state)
-            }
-            Ok(update) -> {
-              let state = case update {
-                Some(kernel) ->
-                  State(
-                    ..state,
-                    kernel: Some(kernel),
-                    latest_usage: None,
-                    context: unprepared(),
-                  )
-                None -> state
-              }
-              case pin_changed_prompt(state, previous) {
-                Ok(#(state, note)) -> {
-                  process.send(
-                    reply,
-                    Ok(
-                      json.object([
-                        #("reloaded", json.string("session")),
-                        #(
-                          "message",
-                          json.string(
-                            "Extension context, skills catalog, and session commands rescanned from disk."
-                            <> note,
-                          ),
-                        ),
-                      ]),
-                    ),
-                  )
-                  actor.continue(emit(
-                    state,
-                    view.text("note", "session data reloaded from disk" <> note),
-                  ))
-                }
-                Error(error) -> {
-                  process.send(
-                    reply,
-                    Error(
-                      "session data reloaded, but its context update could not be saved: "
-                      <> error,
-                    ),
-                  )
-                  actor.continue(state)
-                }
-              }
-            }
-          }
-        }
-      }
+      let #(state, outcome) = session_extensions.refresh(state)
+      process.send(reply, outcome)
+      actor.continue(state)
     }
-
     Compact(reply) -> {
       let prepared = {
         use _ <- result.try(case turn.running(state.activity) {
@@ -1032,7 +659,7 @@ fn handle(state: State, message: Message) {
     }
     Watch(owner, notify) ->
       actor.continue(
-        State(..state, watchers: [
+        session_state.State(..state, watchers: [
           #(owner, notify),
           ..list.filter(state.watchers, fn(watcher) {
             process.is_alive(watcher.0) && watcher.0 != owner
@@ -1056,7 +683,7 @@ fn handle(state: State, message: Message) {
           actor.continue(state)
         }
         True ->
-          case ensure_history(state) {
+          case session_history.ensure_history(state) {
             Error(error) -> {
               process.send(
                 reply,
@@ -1084,7 +711,7 @@ fn handle(state: State, message: Message) {
               // afterwards would hold every attached session's conversation in
               // memory between turns. The next turn reads it again.
               process.send(state.self, Collect)
-              actor.continue(State(..state, history: None))
+              actor.continue(session_state.State(..state, history: None))
             }
           }
       }
@@ -1094,7 +721,7 @@ fn handle(state: State, message: Message) {
       case turn.live(state.activity, id) {
         True -> {
           process.send(reply, True)
-          actor.continue(emit(state, event))
+          actor.continue(session_state.emit(state, event))
         }
         False -> {
           process.send(reply, False)
@@ -1116,9 +743,9 @@ fn handle(state: State, message: Message) {
           process.send(reply, written)
           case written {
             Ok(timestamp) -> {
-              let state = remember(state, inputs, timestamp)
+              let state = session_history.remember(state, inputs, timestamp)
               actor.continue(
-                State(
+                session_state.State(
                   ..state,
                   activity: turn.committed(state.activity, id, stage),
                 ),
@@ -1143,7 +770,7 @@ fn handle(state: State, message: Message) {
           actor.continue(state)
         }
         True, queued -> {
-          let inputs = list.map(queued, submission_input)
+          let inputs = list.map(queued, session_submission.input)
           case
             conversation.commit_from(
               runtime.ledger(state.host),
@@ -1159,13 +786,13 @@ fn handle(state: State, message: Message) {
             }
             Ok(timestamp) -> {
               let state =
-                emit_submissions(
-                  remember(state, inputs, timestamp),
+                session_submission.emit(
+                  session_history.remember(state, inputs, timestamp),
                   queued,
                   timestamp,
                 )
               process.send(reply, Ok(inputs))
-              actor.continue(State(..state, steering: []))
+              actor.continue(session_state.State(..state, steering: []))
             }
           }
         }
@@ -1174,7 +801,9 @@ fn handle(state: State, message: Message) {
       process.send(reply, Nil)
       case turn.live(state.activity, id), head, state.pin {
         True, Some(head), loop.Pinned(prompt, _) ->
-          actor.continue(State(..state, pin: loop.Pinned(prompt, Some(head))))
+          actor.continue(
+            session_state.State(..state, pin: loop.Pinned(prompt, Some(head))),
+          )
         True, None, loop.Pinned(..) ->
           case
             conversation.clear_prompt_pin(
@@ -1182,9 +811,10 @@ fn handle(state: State, message: Message) {
               state.info.id,
             )
           {
-            Ok(_) -> actor.continue(State(..state, pin: loop.Unpinned))
+            Ok(_) ->
+              actor.continue(session_state.State(..state, pin: loop.Unpinned))
             Error(error) ->
-              actor.continue(emit(
+              actor.continue(session_state.emit(
                 state,
                 view.text(
                   "error",
@@ -1199,7 +829,7 @@ fn handle(state: State, message: Message) {
     RecordContext(id, snapshot, reply) -> {
       process.send(reply, Nil)
       case turn.live(state.activity, id) {
-        True -> actor.continue(State(..state, context: snapshot))
+        True -> actor.continue(session_state.State(..state, context: snapshot))
         False -> actor.continue(state)
       }
     }
@@ -1223,7 +853,9 @@ fn handle(state: State, message: Message) {
           process.send(reply, written)
           case written {
             Ok(_) ->
-              actor.continue(State(..state, latest_usage: Some(metadata)))
+              actor.continue(
+                session_state.State(..state, latest_usage: Some(metadata)),
+              )
             Error(_) -> actor.continue(state)
           }
         }
@@ -1244,11 +876,14 @@ fn handle(state: State, message: Message) {
               turn.final_stage(run, outcome),
               Some(state.info.provider),
             )
-          let state = State(..state, activity: turn.Resting)
+          let state = session_state.State(..state, activity: turn.Resting)
           let state = case run.cancelled, outcome, persisted {
-            True, _, _ -> emit(state, view.event("interrupted", []))
-            _, Error(error), _ -> emit(state, view.text("error", error))
-            _, _, Error(error) -> emit(state, view.text("error", error))
+            True, _, _ ->
+              session_state.emit(state, view.event("interrupted", []))
+            _, Error(error), _ ->
+              session_state.emit(state, view.text("error", error))
+            _, _, Error(error) ->
+              session_state.emit(state, view.text("error", error))
             // Compaction makes no provider request, so the footer's last real
             // usage is stale; the strategy's own estimate replaces it.
             _, Ok(_), Ok(_) if run.work == turn.Compaction -> {
@@ -1260,8 +895,8 @@ fn handle(state: State, message: Message) {
                       usage.now(),
                       Some(usage.Tokens(tokens, 0, None)),
                     )
-                  emit(
-                    State(..state, latest_usage: Some(metadata)),
+                  session_state.emit(
+                    session_state.State(..state, latest_usage: Some(metadata)),
                     usage.event(metadata),
                   )
                 }
@@ -1315,15 +950,20 @@ fn handle(state: State, message: Message) {
     Release(reply) ->
       case state.kernel, turn.running(state.activity) {
         Some(kernel), None -> {
-          let saved = save_state(state, kernel)
+          let saved =
+            session_namespace.save_state(state.home, state.info.id, kernel)
           runtime.reset_session(state.host, state.info.id)
           process.send(reply, True)
           process.send(state.self, Collect)
           actor.continue(
-            State(..state, kernel: None, context: unprepared())
-            |> emit(view.text(
+            session_state.State(
+              ..state,
+              kernel: None,
+              context: session_state.unprepared(),
+            )
+            |> session_state.emit(view.text(
               "note",
-              released_text(saved, "nothing was attached"),
+              session_namespace.released_text(saved, "nothing was attached"),
             )),
           )
         }
@@ -1342,7 +982,7 @@ fn handle(state: State, message: Message) {
           let evicted = state.history != None
           process.send(reply, evicted)
           process.send(state.self, Collect)
-          actor.continue(State(..state, history: None))
+          actor.continue(session_state.State(..state, history: None))
         }
       }
     Collect -> {
@@ -1358,7 +998,13 @@ fn handle(state: State, message: Message) {
         Some(run), None -> kill(run.pid)
         // A clean shutdown is the other moment variables are worth keeping.
         None, Some(kernel) -> {
-          let _ = save_state_within(state, kernel, close_state_timeout)
+          let _ =
+            session_namespace.save_state_within(
+              state.home,
+              state.info.id,
+              kernel,
+              session_namespace.close_state_timeout,
+            )
           Nil
         }
         None, None -> Nil
@@ -1428,24 +1074,6 @@ fn selection_json(selection: ModelSelection) -> json.Json {
   ])
 }
 
-fn efforts_for_model(
-  state: State,
-  _provider: String,
-  model: String,
-) -> List(String) {
-  case runtime.global(state.host) {
-    Ok(extensions) ->
-      case extension.model_info(extensions, model, "") {
-        Some(info) -> info.efforts
-        None -> []
-      }
-    Error(_) -> []
-  }
-}
-
-@external(erlang, "albedo_native", "new_id")
-fn new_id() -> String
-
 @external(erlang, "albedo_daemon", "directory")
 fn directory(path: String) -> Bool
 
@@ -1489,201 +1117,23 @@ fn prepare_submission(
     True -> Ok(Nil)
     False -> Error(WorkspaceMissing(state.info.cwd))
   })
-  use state <- result.try(ensure_history(state) |> result.map_error(Rejected))
+  use state <- result.try(
+    session_history.ensure_history(state) |> result.map_error(Rejected),
+  )
   use #(state, client) <- result.try(
-    configured_client(state) |> result.map_error(Rejected),
+    session_provider.configured_client(state) |> result.map_error(Rejected),
   )
   use #(state, kernel) <- result.try(
-    ensure_kernel(state) |> result.map_error(Rejected),
+    session_namespace.ensure_kernel(state) |> result.map_error(Rejected),
   )
   Ok(#(state, kernel, client))
 }
 
 /// The kernel opens on first use. A session with history had a namespace the
 /// model still believes in, so its saved variables are revived and the gap named.
-fn ensure_kernel(state: State) -> Result(#(State, runtime.Session), String) {
-  case state.kernel {
-    Some(kernel) ->
-      case runtime.alive(kernel) {
-        True -> Ok(#(state, kernel))
-        False -> open_kernel(State(..state, kernel: None))
-      }
-    None -> open_kernel(state)
-  }
-}
-
-fn open_kernel(state: State) -> Result(#(State, runtime.Session), String) {
-  let opened = case
-    runtime.open_session(state.host, state.info.id, state.info.cwd)
-  {
-    Error(python.Lost) -> {
-      runtime.reset_session(state.host, state.info.id)
-      runtime.open_session(state.host, state.info.id, state.info.cwd)
-    }
-    result -> result
-  }
-  use kernel <- result.try(
-    opened
-    |> result.replace_error("could not start the session python kernel"),
-  )
-  case state.notice, state.history {
-    Some(notice), _ if notice == lost_notice ->
-      Ok(#(State(..state, kernel: Some(kernel)), kernel))
-    _, None | _, Some([]) -> Ok(#(State(..state, kernel: Some(kernel)), kernel))
-    _, Some(_) -> {
-      let revived = case state_path(state) {
-        Some(path) -> runtime.load_state(kernel, path, state_timeout)
-        None -> Error(python.Invalid("session has no state file"))
-      }
-      let state = case revived {
-        Ok(python.Saved([_, ..], _, _) as saved) ->
-          State(
-            ..state,
-            kernel: Some(kernel),
-            notice: Some(restored_notice(saved)),
-          )
-          |> emit(view.text("note", restored_text(saved)))
-        _ ->
-          State(..state, kernel: Some(kernel), notice: Some(lost_notice))
-          |> emit(view.text(
-            "note",
-            "python kernel restarted; earlier variables are gone, the transcript is intact",
-          ))
-      }
-      Ok(#(state, kernel))
-    }
-  }
-}
-
-/// Saved state lives beside the transcript, one file per session.
-fn state_path(state: State) -> Option(String) {
-  case
-    state.info.id == ""
-    || string.contains(state.info.id, "/")
-    || string.contains(state.info.id, "..")
-  {
-    True -> None
-    False -> Some(state.home <> "/kernels/" <> state.info.id <> ".state")
-  }
-}
-
-fn save_state(
-  state: State,
-  kernel: runtime.Session,
-) -> Result(python.Saved, String) {
-  save_state_within(state, kernel, state_timeout)
-}
-
-fn save_state_within(
-  state: State,
-  kernel: runtime.Session,
-  timeout_ms: Int,
-) -> Result(python.Saved, String) {
-  case state_path(state) {
-    None -> Error("session has no state file")
-    Some(path) ->
-      runtime.save_state(kernel, path, timeout_ms)
-      |> result.replace_error("the kernel could not write its variables")
-  }
-}
-
-fn names(saved: python.Saved) -> String {
-  string.join(list.take(saved.names, 40), ", ")
-}
-
-fn restored_notice(saved: python.Saved) -> String {
-  "<system-note>The python kernel restarted. These variables were restored from disk: "
-  <> names(saved)
-  <> case saved.missed {
-    [] -> "."
-    missed ->
-      ". These were not: "
-      <> string.join(
-        list.map(list.take(missed, 20), fn(entry) {
-          entry.0 <> " (" <> entry.1 <> ")"
-        }),
-        ", ",
-      )
-      <> "."
-  }
-  <> " Imports and definitions from earlier cells are gone unless named here.</system-note>"
-}
-
-fn restored_text(saved: python.Saved) -> String {
-  "python kernel restarted; restored "
-  <> int.to_string(list.length(saved.names))
-  <> " variables from disk"
-  <> case saved.missed {
-    [] -> ""
-    missed -> ", " <> int.to_string(list.length(missed)) <> " could not be read"
-  }
-}
-
-fn released_text(
-  saved: Result(python.Saved, String),
-  reason: String,
-) -> String {
-  let prefix = "python kernel released: " <> reason <> "; "
-  case saved {
-    Ok(python.Saved([_, ..] as names, missed, engine)) ->
-      prefix
-      <> int.to_string(list.length(names))
-      <> " variables saved to disk"
-      <> case missed, engine {
-        [], _ -> ""
-        _, "pickle" ->
-          ", "
-          <> int.to_string(list.length(missed))
-          <> " skipped (install dill to also save functions and classes)"
-        _, _ -> ", " <> int.to_string(list.length(missed)) <> " skipped"
-      }
-    _ -> prefix <> "variables are gone, the transcript is intact"
-  }
-}
-
-fn configured_client(
-  state: State,
-) -> Result(#(State, extension.Upstream), String) {
-  use provider <- result.try(case state.info.provider {
-    "" -> {
-      use provider <- result.try(configuration.legacy(state.home))
-      use _ <- result.try(conversation.assign_session_provider(
-        runtime.ledger(state.host),
-        state.info.id,
-        provider.name,
-      ))
-      Ok(provider)
-    }
-    name -> configuration.named(state.home, name)
-  })
-  let state = case state.info.provider {
-    "" ->
-      State(
-        ..state,
-        history: option.map(state.history, tag_unknown_provider(
-          _,
-          provider.name,
-        )),
-        info: conversation.Info(..state.info, provider: provider.name),
-      )
-    _ -> state
-  }
-  use client <- result.try(runtime.upstream(
-    state.host,
-    state.info.id,
-    state.home,
-    provider.name,
-    provider.extension,
-    state.info.model,
-    state.info.protocol,
-    state.info.effort,
-  ))
-  Ok(#(state, client))
-}
-
 fn failed_queued(state: State, error: String) -> State {
-  emit(
-    State(..state, steering: []),
+  session_state.emit(
+    session_state.State(..state, steering: []),
     view.text(
       "error",
       "queued messages were not delivered; resend them: " <> error,
@@ -1701,10 +1151,10 @@ fn start_queued(state: State) -> State {
         Ok(#(state, kernel, client)) -> {
           let accepted =
             list.append(
-              recover_pending(state, kernel),
-              list.map(queued, submission_input),
+              session_history.recover_pending(state.host, state.history, kernel),
+              list.map(queued, session_submission.input),
             )
-          case projected_inputs(remember(state, accepted, 0)) {
+          case projected_inputs(session_history.remember(state, accepted, 0)) {
             Error(error) -> failed_queued(state, error)
             Ok(history) ->
               case
@@ -1719,13 +1169,13 @@ fn start_queued(state: State) -> State {
                 Error(error) -> failed_queued(state, error)
                 Ok(timestamp) -> {
                   let state =
-                    emit_submissions(
-                      remember(state, accepted, timestamp),
+                    session_submission.emit(
+                      session_history.remember(state, accepted, timestamp),
                       queued,
                       timestamp,
                     )
                   start_run(
-                    State(..state, steering: [], notice: None),
+                    session_state.State(..state, steering: [], notice: None),
                     kernel,
                     client,
                     history,
@@ -1737,43 +1187,6 @@ fn start_queued(state: State) -> State {
       }
     }
   }
-}
-
-fn submission_input(submission: Submission) -> types.Input {
-  let text = case submission.source {
-    turn.Note(origin) -> note.wrap(origin, submission.text)
-    _ -> submission.text
-  }
-  case submission.image {
-    Some(image) -> types.UserImage(text, image)
-    None -> types.User(text)
-  }
-}
-
-fn submission_event(submission: Submission, timestamp: Int) -> String {
-  let source = turn.source_name(submission.source)
-  let client = Some(submission.client_id)
-  case submission.image {
-    Some(image) ->
-      view.user_image(
-        submission.display,
-        source,
-        client,
-        Some(timestamp),
-        image,
-      )
-    None -> view.user(submission.display, source, client, Some(timestamp))
-  }
-}
-
-fn emit_submissions(
-  state: State,
-  submissions: List(Submission),
-  timestamp: Int,
-) -> State {
-  list.fold(submissions, state, fn(state, submission) {
-    emit(state, submission_event(submission, timestamp))
-  })
 }
 
 /// Deliver one job wake as an ordinary submission. Runs in the kernel's route
@@ -1815,326 +1228,32 @@ fn start_worker(
   model_history: List(types.Input),
   work: turn.Work,
 ) -> State {
-  let run_id = new_id()
-  let owner = state.self
-  // The worker's closures must capture these fields, never `state`: a spawn
-  // copies everything its closure references, and the session state carries
-  // the loaded transcript.
-  let ledger = runtime.ledger(state.host)
-  let id = state.info.id
-  let provider = state.info.provider
-  let protocol = state.info.protocol
-  let worker =
-    loop.Loop(
-      state.info.model,
-      state.info.effort,
-      state.host,
-      kernel,
-      state.pin,
-      client,
-      fn(event) { actor.call(owner, 5000, Publish(run_id, event, _)) },
-      fn(inputs, stage) {
-        actor.call(owner, 10_000, Commit(run_id, inputs, stage, _))
-      },
-      fn(request) {
-        let observation = case runtime.compaction_name(kernel) {
-          Some("rolling") ->
-            rolling.observation(ledger, id)
-            |> result.unwrap(None)
-          _ -> None
-        }
-        let snapshot =
-          context_snapshot.from_request(
-            Some(usage.now()),
-            provider,
-            conversation.protocol(protocol),
-            protocol,
-            request,
-            observation,
-          )
-        actor.call(owner, 5000, RecordContext(run_id, snapshot, _))
-      },
-      fn(metadata) {
-        actor.call(owner, 10_000, RecordUsage(run_id, metadata, _))
-      },
-      fn() { actor.call(owner, 10_000, DrainSteering(run_id, _)) },
-      fn(head) { actor.call(owner, 5000, ReportPin(run_id, head, _)) },
-    )
-  let pid =
-    process.spawn(fn() {
-      label("albedo_worker", run_id)
-      process.send(
-        owner,
-        Finished(run_id, case work {
-          turn.Compaction -> loop.compact(worker, model_history)
-          turn.Turn(_) -> loop.run(worker, run_id, model_history, 0)
-        }),
-      )
-    })
-  let run = turn.Run(run_id, pid, process.monitor(pid), False, work)
-  // The worker holds the projected history it runs on; the session's copy is
-  // released until the next load, since every commit is durable first.
-  process.send(owner, Collect)
-  State(
-    ..state,
-    history: None,
-    activity: turn.Running(run),
-    context: case work {
-      turn.Compaction -> state.context
-      turn.Turn(_) -> unprepared()
-    },
+  session_run.start(
+    state,
+    kernel,
+    client,
+    model_history,
+    work,
+    session_run.Messages(
+      Publish,
+      Commit,
+      RecordContext,
+      RecordUsage,
+      DrainSteering,
+      ReportPin,
+      Finished,
+      Collect,
+    ),
   )
 }
 
-fn raw_inputs(entries: List(transcript.Entry)) -> List(types.Input) {
-  list.map(entries, fn(entry) { entry.input })
-}
-
-fn ensure_history(state: State) -> Result(State, String) {
-  case state.history {
-    Some(_) -> Ok(state)
-    None ->
-      conversation.load_entries(runtime.ledger(state.host), state.info.id)
-      |> result.map(fn(entries) {
-        State(
-          ..state,
-          history: Some(
-            entries
-            |> tag_unknown_provider(state.info.provider)
-            |> list.reverse,
-          ),
-        )
-      })
-  }
-}
-
-fn projected_for(
-  state: State,
-  provider: String,
-  protocol: types.Protocol,
-) -> Result(List(types.Input), String) {
-  case state.history {
-    None -> Error("transcript is not loaded")
-    Some(history) -> projection.for_model(history, provider, protocol)
-  }
-}
-
-/// A changed tool list invalidates the provider's cached prefix, so the next
-/// request uses the current prompt: any pin is released and cached-usage
-/// metadata, which described the old prefix, is cleared.
-fn reset_prompt_cache(state: State, namespace: String) -> State {
-  let ledger = runtime.ledger(state.host)
-  let released = case state.pin {
-    loop.Pinned(..) -> conversation.clear_prompt_pin(ledger, state.info.id)
-    loop.Unpinned -> Ok(Nil)
-  }
-  let state = case released {
-    Ok(_) -> State(..state, pin: loop.Unpinned, latest_usage: None)
-    Error(_) -> State(..state, latest_usage: None)
-  }
-  let state =
-    emit(
-      state,
-      view.text(
-        "note",
-        "extensions reloaded; prompt cache usage reset; " <> namespace,
-      ),
-    )
-  case released, conversation.clear_usage(ledger, state.info.id) {
-    Ok(_), Ok(_) -> state
-    Error(error), _ | _, Error(error) ->
-      emit(
-        state,
-        view.text(
-          "error",
-          "extensions reloaded but the previous prompt cache state could not be cleared: "
-            <> error,
-        ),
-      )
-  }
-}
-
-/// After a reload or extension toggle changed the session's prompt prefix (system instructions or
-/// leading extension context), keep the prefix the provider has cached and
-/// deliver the new one as a durable user turn. The pin lasts until compaction
-/// rewrites history. Sessions without history have nothing cached and simply
-/// use the new prompt.
-fn pin_changed_prompt(
-  state: State,
-  previous: Option(#(String, List(types.Input))),
-) -> Result(#(State, String), String) {
-  let current = runtime.peek_prompt(state.host, state.info.id)
-  case previous, current {
-    Some(#(old_instructions, old_context)), Some(#(instructions, context))
-      if old_instructions != instructions || old_context != context
-    -> {
-      use state <- result.try(ensure_history(state))
-      case state.history {
-        Some([_, ..]) -> {
-          let #(pinned, head) = case state.pin {
-            loop.Pinned(prompt, head) -> #(prompt, head)
-            loop.Unpinned -> #(
-              conversation.PinnedPrompt(old_instructions, old_context),
-              None,
-            )
-          }
-          let update =
-            context_update(old_instructions, old_context, instructions, context)
-          use timestamp <- result.try(conversation.append_capability_update(
-            runtime.ledger(state.host),
-            state.info.id,
-            pinned,
-            update,
-          ))
-          let state = remember(state, [types.User(update)], timestamp)
-          Ok(#(
-            State(..state, pin: loop.Pinned(pinned, head)),
-            "; the change reaches the model as a context update, and the system prompt is rebuilt at the next compaction",
-          ))
-        }
-        _ -> Ok(#(state, ""))
-      }
-    }
-    _, _ -> Ok(#(state, ""))
-  }
-}
-
-/// Describes only what changed between two prompt prefixes: instruction
-/// paragraphs added or dropped, and context blocks added, changed, or removed.
-fn context_update(
-  old_instructions: String,
-  old_context: List(types.Input),
-  instructions: String,
-  context: List(types.Input),
-) -> String {
-  let paragraphs = fn(text) {
-    string.split(text, "\n")
-    |> list.filter(fn(line) { string.trim(line) != "" })
-  }
-  let before = paragraphs(old_instructions)
-  let after = paragraphs(instructions)
-  let blocks = fn(inputs) {
-    list.filter_map(inputs, fn(input) {
-      case input {
-        types.User(text) -> Ok(text)
-        _ -> Error(Nil)
-      }
-    })
-  }
-  let old_blocks = blocks(old_context)
-  let new_blocks = blocks(context)
-  let new_names = list.map(new_blocks, block_name)
-  let section = fn(title, items) {
-    case items {
-      [] -> []
-      _ -> [title <> "\n" <> string.join(items, "\n")]
-    }
-  }
-  [
-    "[albedo] This session's extensions changed. Until the next compaction, "
-      <> "the extension instructions and context earlier in this conversation "
-      <> "are out of date; apply these changes to them.",
-    ..list.flatten([
-      section(
-        "New or updated instructions:",
-        list.filter(after, fn(line) { !list.contains(before, line) }),
-      ),
-      section(
-        "No longer applies:",
-        before
-          |> list.filter(fn(line) { !list.contains(after, line) })
-          |> list.map(fn(line) { "- " <> first_sentence(line) }),
-      ),
-      section(
-        "New or updated context:",
-        list.filter(new_blocks, fn(block) { !list.contains(old_blocks, block) }),
-      ),
-      section(
-        "Removed context:",
-        old_blocks
-          |> list.map(block_name)
-          |> list.filter(fn(name) {
-            name != "" && !list.contains(new_names, name)
-          })
-          |> list.map(fn(name) { "- " <> name }),
-      ),
-    ])
-  ]
-  |> string.join("\n\n")
-  |> fn(content) { note.wrap("context update", "\n" <> content <> "\n") }
-}
-
-/// The `name` of an `<extension-context name="...">` block, or "".
-fn block_name(block: String) -> String {
-  case string.split_once(block, "<extension-context name=\"") {
-    Ok(#(_, rest)) ->
-      case string.split_once(rest, "\"") {
-        Ok(#(name, _)) -> name
-        Error(_) -> ""
-      }
-    Error(_) -> ""
-  }
-}
-
-fn first_sentence(line: String) -> String {
-  case string.split_once(line, ". ") {
-    Ok(#(sentence, _)) -> sentence <> "."
-    Error(_) -> line
-  }
-}
-
 fn projected_inputs(state: State) -> Result(List(types.Input), String) {
-  projected_for(state, state.info.provider, state.info.protocol)
+  session_history.projected_for(
+    state.history,
+    state.info.provider,
+    state.info.protocol,
+  )
   |> result.map_error(fn(error) { "cannot prepare model history: " <> error })
-}
-
-fn tag_unknown_provider(
-  entries: List(transcript.Entry),
-  provider: String,
-) -> List(transcript.Entry) {
-  case provider {
-    "" -> entries
-    provider ->
-      list.map(entries, fn(entry) {
-        case entry.provider {
-          Some(_) -> entry
-          None -> transcript.Entry(..entry, provider: Some(provider))
-        }
-      })
-  }
-}
-
-fn remember(state: State, inputs: List(types.Input), timestamp: Int) -> State {
-  let entries =
-    list.map(inputs, fn(input) {
-      transcript.Entry(input, Some(timestamp), Some(state.info.provider))
-    })
-  // An unloaded transcript stays unloaded: the entries are already durable and
-  // the next load reads them. Starting a list here would pass a transcript of
-  // only these entries off as the whole conversation.
-  case state.history {
-    Some(history) ->
-      State(..state, history: Some(list.append(list.reverse(entries), history)))
-    None -> state
-  }
-}
-
-fn recover_pending(state: State, kernel: runtime.Session) -> List(types.Input) {
-  let inputs = case state.history {
-    Some(history) -> history |> list.reverse |> raw_inputs
-    None -> []
-  }
-  let completed =
-    list.filter_map(inputs, fn(input) {
-      case input {
-        types.ToolOutput(id, _, _) -> Ok(id)
-        _ -> Error(Nil)
-      }
-    })
-  let pending =
-    list.flat_map(inputs, view.calls)
-    |> list.filter(fn(call) { !list.contains(completed, call.id) })
-  list.map(pending, runtime.recover(state.host, kernel, _))
 }
 
 pub fn set_workspace(

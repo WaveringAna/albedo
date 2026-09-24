@@ -1,0 +1,107 @@
+//// Transcript projection, provider attribution, and interrupted tool recovery.
+
+import albedo/daemon/conversation
+import albedo/daemon/events as view
+import albedo/daemon/projection
+import albedo/daemon/session_state
+import albedo/daemon/transcript
+import albedo/harness/runtime
+import albedo/openai_api/types
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/result
+
+fn raw_inputs(entries: List(transcript.Entry)) -> List(types.Input) {
+  list.map(entries, fn(entry) { entry.input })
+}
+
+pub fn projected_for(
+  history: Option(List(transcript.Entry)),
+  provider: String,
+  protocol: types.Protocol,
+) -> Result(List(types.Input), String) {
+  case history {
+    None -> Error("transcript is not loaded")
+    Some(history) -> projection.for_model(history, provider, protocol)
+  }
+}
+
+pub fn tag_unknown_provider(
+  entries: List(transcript.Entry),
+  provider: String,
+) -> List(transcript.Entry) {
+  case provider {
+    "" -> entries
+    provider ->
+      list.map(entries, fn(entry) {
+        case entry.provider {
+          Some(_) -> entry
+          None -> transcript.Entry(..entry, provider: Some(provider))
+        }
+      })
+  }
+}
+
+pub fn recover_pending(
+  host: runtime.Runtime,
+  history: Option(List(transcript.Entry)),
+  kernel: runtime.Session,
+) -> List(types.Input) {
+  let inputs = case history {
+    Some(history) -> history |> list.reverse |> raw_inputs
+    None -> []
+  }
+  let completed =
+    list.filter_map(inputs, fn(input) {
+      case input {
+        types.ToolOutput(id, _, _) -> Ok(id)
+        _ -> Error(Nil)
+      }
+    })
+  let pending =
+    list.flat_map(inputs, view.calls)
+    |> list.filter(fn(call) { !list.contains(completed, call.id) })
+  list.map(pending, runtime.recover(host, kernel, _))
+}
+
+pub fn ensure_history(
+  state: session_state.State(message),
+) -> Result(session_state.State(message), String) {
+  case state.history {
+    Some(_) -> Ok(state)
+    None ->
+      conversation.load_entries(runtime.ledger(state.host), state.info.id)
+      |> result.map(fn(entries) {
+        session_state.State(
+          ..state,
+          history: Some(
+            entries
+            |> tag_unknown_provider(state.info.provider)
+            |> list.reverse,
+          ),
+        )
+      })
+  }
+}
+
+pub fn remember(
+  state: session_state.State(message),
+  inputs: List(types.Input),
+  timestamp: Int,
+) -> session_state.State(message) {
+  let entries =
+    list.map(inputs, fn(input) {
+      transcript.Entry(input, Some(timestamp), Some(state.info.provider))
+    })
+  // An unloaded transcript stays unloaded: the entries are already durable and
+  // the next load reads them. Starting a list here would pass a transcript of
+  // only these entries off as the whole conversation.
+  case state.history {
+    Some(history) ->
+      session_state.State(
+        ..state,
+        history: Some(list.append(list.reverse(entries), history)),
+      )
+    None -> state
+  }
+}
