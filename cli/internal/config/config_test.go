@@ -159,3 +159,42 @@ func TestRemoveProviderHandsOffActive(t *testing.T) {
 		t.Fatalf("expected no providers and no active, got %+v", profiles)
 	}
 }
+
+func TestAlibabaSettingsValidation(t *testing.T) {
+	good := Settings{
+		Extension: "alibaba",
+		Model:     "qwen3.8-max",
+		Protocol:  "chat_completions",
+		BaseURL:   "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+		APIKey:    "sk-test-key",
+	}
+	validated, err := good.Validate()
+	if err != nil {
+		t.Fatalf("expected valid alibaba settings, got error: %v", err)
+	}
+	if validated.Extension != "alibaba" || validated.Model != "qwen3.8-max" || validated.Protocol != "chat_completions" {
+		t.Fatalf("unexpected validated settings: %+v", validated)
+	}
+
+	badProtocol := good
+	badProtocol.Protocol = "responses"
+	if _, err := badProtocol.Validate(); err == nil {
+		t.Fatal("expected error on alibaba with responses protocol")
+	}
+
+	badEndpoint := good
+	badEndpoint.BaseURL = "invalid-url"
+	if _, err := badEndpoint.Validate(); err == nil {
+		t.Fatal("expected error on invalid alibaba base url")
+	}
+
+	emptyEndpoint := good
+	emptyEndpoint.BaseURL = ""
+	validatedEmpty, err := emptyEndpoint.Validate()
+	if err != nil {
+		t.Fatalf("expected valid alibaba settings without endpoint, got: %v", err)
+	}
+	if validatedEmpty.BaseURL != "" {
+		t.Fatalf("expected empty BaseURL, got: %s", validatedEmpty.BaseURL)
+	}
+}

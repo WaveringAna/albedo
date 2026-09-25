@@ -212,6 +212,7 @@ func TestLoginChooserListsDaemonSignInsAndAccounts(t *testing.T) {
 		"oauth · supports multiple accounts",
 		"a@b.c · plus",
 		"chatgpt account · selected",
+		"add or update alibaba provider",
 		"add or update openai-compatible provider",
 	} {
 		if !strings.Contains(view, want) {
@@ -476,5 +477,66 @@ func TestLoginReportsAnUnavailableSignInService(t *testing.T) {
 	}
 	if !strings.Contains(m.View(), "use:local") && !strings.Contains(m.View(), "local") {
 		t.Fatalf("saved providers should still be choosable:\n%s", m.View())
+	}
+}
+
+func TestLoginConfiguresAlibabaProvider(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ALBEDO_HOME", home)
+	f := newFakeDaemon(t)
+	f.models = []string{"qwen3.8-max", "deepseek-v4.1-flash"}
+	saveOpenAI(t, "local")
+	m := newLogin(t, f, "")
+
+	if m.Step != StepChoose {
+		t.Fatalf("expected choose step, got %v", m.Step)
+	}
+
+	// Select add-alibaba
+	m, cmd := m.Update(PickerSelectMsg{ID: "add-alibaba"})
+	m, _ = apply(t, m, cmd)
+	if m.Step != StepName || m.Draft.Extension != "alibaba" {
+		t.Fatalf("expected StepName for alibaba, got step=%v draft=%+v", m.Step, m.Draft)
+	}
+
+	// Enter provider name
+	m.TextInput.SetValue("my-ali")
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = apply(t, m, cmd)
+	if m.Step != StepBaseURL {
+		t.Fatalf("expected StepBaseURL, got step=%v", m.Step)
+	}
+
+	// Accept default base URL
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = apply(t, m, cmd)
+	if m.Step != StepAPIKey {
+		t.Fatalf("expected StepAPIKey, got step=%v", m.Step)
+	}
+
+	// Enter API key
+	m.TextInput.SetValue("sk-test-ali-key")
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = apply(t, m, cmd)
+	// For Alibaba, StepProtocol is skipped straight to StepModels
+	if m.Step != StepModels {
+		t.Fatalf("expected StepModels (skipping StepProtocol), got step=%v", m.Step)
+	}
+
+	// Select model
+	m, cmd = m.Update(PickerSelectMsg{ID: "model:qwen3.8-max"})
+	m, _ = apply(t, m, cmd)
+
+	// Verify saved provider in config
+	profiles, err := config.LoadProfiles(home)
+	if err != nil {
+		t.Fatalf("failed to load profiles: %v", err)
+	}
+	saved, ok := profiles.Providers["my-ali"]
+	if !ok {
+		t.Fatalf("expected my-ali saved in profiles, got: %+v", profiles.Providers)
+	}
+	if saved.Extension != "alibaba" || saved.Model != "qwen3.8-max" || saved.Protocol != "chat_completions" || saved.APIKey != "sk-test-ali-key" {
+		t.Fatalf("unexpected saved alibaba settings: %+v", saved)
 	}
 }

@@ -88,6 +88,8 @@ fn valid_extension_protocol(
     "codex", _ -> False
     "antigravity", types.ChatCompletions -> True
     "antigravity", _ -> False
+    "alibaba", types.ChatCompletions -> True
+    "alibaba", _ -> False
     _, _ -> True
   }
 }

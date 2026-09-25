@@ -70,6 +70,30 @@ func (s Settings) Validate() (Settings, error) {
 		}, nil
 	}
 
+	if s.Extension == "alibaba" {
+		if s.Protocol != "chat_completions" {
+			return s, errors.New("alibaba requires the chat_completions protocol")
+		}
+		model, err := validateModel(s.Model)
+		if err != nil {
+			return s, err
+		}
+		var endpoint string
+		if s.BaseURL != "" {
+			endpoint, err = ValidateEndpoint(s.BaseURL)
+			if err != nil {
+				return s, err
+			}
+		}
+		return Settings{
+			Extension: "alibaba",
+			BaseURL:   endpoint,
+			APIKey:    s.APIKey,
+			Model:     model,
+			Protocol:  "chat_completions",
+		}, nil
+	}
+
 	if s.Extension != "" && s.Extension != "openai" {
 		// A sign-in provider owns its endpoint and credentials; its profile
 		// carries only the protocol the daemon reported and the model.

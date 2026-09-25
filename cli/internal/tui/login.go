@@ -40,6 +40,52 @@ const (
 	StepSaving
 )
 
+type customProvider struct {
+	ID            string
+	Label         string
+	Detail        string
+	Extension     string
+	DefaultName   string
+	DefaultURL    string
+	FixedProtocol string
+}
+
+var customProviders = []customProvider{
+	{
+		ID:            "add-alibaba",
+		Label:         "add or update alibaba provider",
+		Detail:        "token plan · qwen, deepseek, glm",
+		Extension:     "alibaba",
+		DefaultName:   "alibaba",
+		DefaultURL:    "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+		FixedProtocol: "chat_completions",
+	},
+	{
+		ID:         "add-openai",
+		Label:      "add or update openai-compatible provider",
+		Extension:  "openai",
+		DefaultURL: "https://api.openai.com/v1",
+	},
+}
+
+func customProviderByID(id string) (customProvider, bool) {
+	for _, p := range customProviders {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return customProvider{}, false
+}
+
+func customProviderByExtension(ext string) (customProvider, bool) {
+	for _, p := range customProviders {
+		if p.Extension == ext {
+			return p, true
+		}
+	}
+	return customProvider{}, false
+}
+
 // signInPollInterval is how often the daemon is asked about a running sign-in.
 const signInPollInterval = 300 * time.Millisecond
 
@@ -186,6 +232,33 @@ func (m *LoginModel) SetSize(width, height int) {
 	m.ConfirmPicker.SetSize(width, height)
 }
 
+func (m LoginModel) isFixedProtocol() bool {
+	p, ok := customProviderByExtension(m.Draft.Extension)
+	return ok && p.FixedProtocol != ""
+}
+
+func (m *LoginModel) advanceToModels() tea.Cmd {
+	m.Catalog = nil
+	m.CatalogNote = ""
+	m.Step = StepModels
+	m.Generation++
+	return m.fetchCatalogCmd(m.Draft.Extension, m.Draft.BaseURL, m.Generation)
+}
+
+func (m *LoginModel) startCustomProvider(p customProvider) tea.Cmd {
+	m.Name = p.DefaultName
+	proto := p.FixedProtocol
+	if proto == "" {
+		proto = "responses"
+	}
+	m.Draft = config.Settings{Extension: p.Extension, BaseURL: p.DefaultURL, Protocol: proto}
+	m.Step = StepName
+	m.resetInput()
+	m.TextInput.Placeholder = p.DefaultName
+	m.TextInput.Focus()
+	return textinput.Blink
+}
+
 // signInFor finds the daemon sign-in a profile extension or provider name uses.
 func (m LoginModel) signInFor(provider string) (daemon.SignIn, bool) {
 	for _, login := range m.SignIns {
@@ -252,11 +325,13 @@ func (m *LoginModel) buildChoosePicker() {
 			Detail: account.Detail,
 		})
 	}
-	items = append(items, PickerItem{
-		ID:     "add-openai",
-		Label:  "add or update openai-compatible provider",
-		Detail: "",
-	})
+	for _, p := range customProviders {
+		items = append(items, PickerItem{
+			ID:     p.ID,
+			Label:  p.Label,
+			Detail: p.Detail,
+		})
+	}
 	for _, login := range m.SignIns {
 		items = append(items, PickerItem{
 			ID:     "signin:" + login.Provider,
@@ -649,14 +724,8 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 	case PickerSelectMsg:
 		switch m.Step {
 		case StepChoose:
-			if msg.ID == "add-openai" {
-				m.Name = ""
-				m.Draft = config.Settings{Extension: "openai", BaseURL: "https://api.openai.com/v1", Protocol: "responses"}
-				m.Step = StepName
-				m.resetInput()
-				m.TextInput.Placeholder = ""
-				m.TextInput.Focus()
-				return m, textinput.Blink
+			if p, ok := customProviderByID(msg.ID); ok {
+				return m, m.startCustomProvider(p)
 			}
 			if provider, ok := strings.CutPrefix(msg.ID, "signin:"); ok {
 				if login, ok := m.signInFor(provider); ok {
@@ -689,11 +758,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 
 		case StepProtocol:
 			m.Draft.Protocol = msg.ID
-			m.Catalog = nil
-			m.CatalogNote = ""
-			m.Step = StepModels
-			m.Generation++
-			return m, m.fetchCatalogCmd("openai", m.Draft.BaseURL, m.Generation)
+			return m, m.advanceToModels()
 
 		case StepModels, StepOAuthModels:
 			if msg.ID == "manual" {
@@ -723,6 +788,14 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		}
 		if m.Step == StepModels {
 			m.Generation++
+			if m.isFixedProtocol() {
+				m.Step = StepAPIKey
+				m.resetInput()
+				m.TextInput.EchoMode = textinput.EchoPassword
+				m.TextInput.SetValue(m.Draft.APIKey)
+				m.TextInput.Focus()
+				return m, textinput.Blink
+			}
 			m.Step = StepBaseURL
 			m.resetInput()
 			m.TextInput.SetValue(m.Draft.BaseURL)
@@ -833,6 +906,9 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			}
 			m.Draft.APIKey = val
 			m.Error = ""
+			if m.isFixedProtocol() {
+				return m, m.advanceToModels()
+			}
 			m.Step = StepProtocol
 			m.buildProtocolPicker()
 			return m, m.ProtocolPicker.Init()
