@@ -102,8 +102,7 @@ type AppModel struct {
 	Workspace         string
 	Width             int
 	Height            int
-	Notice            string
-	Error             string
+	Notices           Notices
 	CommandCatalog    []daemon.SessionCommand
 	Glances           []PageGlance
 	ExtensionRevision int
@@ -139,10 +138,12 @@ func (m *AppModel) LoadPrefs(path string) {
 	m.Chat.Flags.Tools = m.SessionPicker.prefs.Tools
 }
 
-func (m AppModel) newChatModel(session *daemon.Session) ChatModel {
+func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
 	chat := NewChatModel(session, m.newChatClient(session.ID))
 	chat.Flags.Thinking = m.SessionPicker.prefs.Thinking
 	chat.Flags.Tools = m.SessionPicker.prefs.Tools
+	chat.Notices = append(Notices(nil), m.Notices...)
+	m.Notices = nil
 	return chat
 }
 
@@ -482,14 +483,26 @@ func mouseModeCmd(state AppState) tea.Cmd {
 	}
 }
 
-func (m *AppModel) syncChatNotices() {
-	if m.ActiveSession == nil || m.Chat.History == nil {
+func (m *AppModel) AddNotice(message string) {
+	if m.ActiveSession != nil {
+		m.Chat.AddNotice(message)
 		return
 	}
-	if m.Chat.ExternalNotice != m.Notice || m.Chat.ExternalError != m.Error {
-		m.Chat.ExternalNotice = m.Notice
-		m.Chat.ExternalError = m.Error
-		m.Chat.SetSize(m.Width, m.Height)
+	m.Notices.AddNotice(message)
+}
+
+func (m *AppModel) AddError(message string) {
+	if m.ActiveSession != nil {
+		m.Chat.AddError(message)
+		return
+	}
+	m.Notices.AddError(message)
+}
+
+func (m *AppModel) ClearNotices() {
+	m.Notices.Clear()
+	if m.ActiveSession != nil {
+		m.Chat.ClearNotices()
 	}
 }
 
@@ -500,7 +513,6 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		if !ok {
 			return
 		}
-		updated.syncChatNotices()
 		result = updated
 		if updated.State != previous {
 			command = tea.Batch(command, mouseModeCmd(updated.State))
@@ -529,6 +541,9 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 	case ChatStreamEventMsg:
 		var cmd tea.Cmd
 		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
+			if streamMsg.Event.Type == daemon.EventUser && !streamMsg.Event.Replayed {
+				m.ClearNotices()
+			}
 			m.Chat, cmd = m.Chat.Update(msg)
 		}
 		return m, cmd
@@ -541,6 +556,9 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 	case ChatTurnSentMsg:
 		var cmd tea.Cmd
 		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
+			if streamMsg.Err == nil {
+				m.ClearNotices()
+			}
 			m.Chat, cmd = m.Chat.Update(msg)
 		}
 		return m, cmd
@@ -591,7 +609,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 
 	case sessionDeletedMsg:
 		if msg.Err != nil {
-			m.Error = "Could not delete session: " + msg.Err.Error()
+			m.AddError("Could not delete session: " + msg.Err.Error())
 			return m, nil
 		}
 		m.SessionPicker.Removed(msg.ID)
@@ -601,7 +619,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 				break
 			}
 		}
-		m.Error = ""
+		m.ClearNotices()
 		return m, nil
 
 	case SessionDeleteMsg:
@@ -616,10 +634,10 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		}
 		if msg.Err != nil {
 			m.SessionPicker.Loading = false
-			m.Error = "Error: " + msg.Err.Error()
+			m.AddError("Error: " + msg.Err.Error())
 		} else {
 			m.Sessions = msg.Sessions
-			m.Error = ""
+			m.ClearNotices()
 			m.SessionPicker.Prune(msg.Sessions)
 			m.updateSessionPickerItems()
 			return m, m.SessionPicker.PreviewCmd()
@@ -631,7 +649,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 			return m, nil
 		}
 		if msg.Err != nil {
-			m.Error = "Error: " + msg.Err.Error()
+			m.AddError("Error: " + msg.Err.Error())
 			return m, nil
 		}
 		m.Chat.Close()
@@ -641,7 +659,6 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		m.Chat = m.newChatModel(&s)
 		m.Chat.SetSize(m.Width, m.Height)
 		m.State = AppStateChat
-		m.Error = ""
 		m.CatalogGen++
 		return m, tea.Batch(
 			m.Chat.Init(),
@@ -654,7 +671,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		}
 		if msg.Err != nil {
 			if strings.Contains(msg.Err.Error(), "daemon upgrade") {
-				m.Error = "Error: " + msg.Err.Error()
+				m.AddError("Error: " + msg.Err.Error())
 				if m.ActiveSession != nil {
 				}
 			}
@@ -692,7 +709,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 				m.ModelPicker.Saving = false
 				m.ModelPicker.Error = msg.Err.Error()
 			} else {
-				m.Error = "Error: " + msg.Err.Error()
+				m.AddError("Error: " + msg.Err.Error())
 			}
 			return m, nil
 		}
@@ -713,19 +730,18 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		}
 		m.ModelPicker.Saving = false
 		m.State = AppStateChat
-		m.Error = ""
+		m.ClearNotices()
 		return m, nil
 
 	case commandExecutedMsg:
 		if msg.Gen != m.CommandGen {
 			return m, nil
 		}
+		m.ClearNotices()
 		if msg.Err != nil {
-			m.Error = "Error: " + msg.Err.Error()
-			m.Notice = ""
+			m.AddError("Error: " + msg.Err.Error())
 		} else {
-			m.Notice = msg.Message
-			m.Error = ""
+			m.AddNotice(msg.Message)
 			if msg.Effort != "" && m.ActiveSession != nil {
 				m.ActiveSession.Effort = msg.Effort
 				m.Chat.Effort = msg.Effort
@@ -748,15 +764,16 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		if msg.Gen != m.ProfileGen {
 			return m, nil
 		}
+		m.ClearNotices()
 		if msg.Err != nil {
-			m.Error = "Error: " + msg.Err.Error()
+			m.AddError("Error: " + msg.Err.Error())
 		} else {
 			m.Profiles = msg.Profiles
-			m.Error = ""
-			m.Notice = fmt.Sprintf("%s selected for new sessions", msg.Provider)
+			notice := fmt.Sprintf("%s selected for new sessions", msg.Provider)
 			if m.ActiveSession != nil {
-				m.Notice += fmt.Sprintf("; use /model to switch this session from %s", m.ActiveSession.Provider)
+				notice += fmt.Sprintf("; use /model to switch this session from %s", m.ActiveSession.Provider)
 			}
+			m.AddNotice(notice)
 		}
 		if m.StandaloneLogin {
 			return m, tea.Quit
@@ -1039,6 +1056,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 					m.ActiveSession = &session
 					m.Chat = m.newChatModel(&session)
 					m.Chat.SetSize(m.Width, m.Height)
+					m.ClearNotices()
 					m.State = AppStateChat
 					m.CatalogGen++
 					m.GlanceGen++
@@ -1068,14 +1086,18 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 	var cmd tea.Cmd
 	switch m.State {
 	case AppStateChat:
+		beforePending := len(m.Chat.pendingUsers)
 		before := m.Chat.Flags
 		m.Chat, cmd = m.Chat.Update(msg)
+		if len(m.Chat.pendingUsers) > beforePending {
+			m.ClearNotices()
+		}
 		if m.Chat.Flags.Thinking != before.Thinking || m.Chat.Flags.Tools != before.Tools {
 			m.SessionPicker.prefs.Thinking = m.Chat.Flags.Thinking
 			m.SessionPicker.prefs.Tools = m.Chat.Flags.Tools
 			m.SessionPicker.savePrefs()
 			if m.SessionPicker.notice != "" {
-				m.Chat.ErrorNotice = m.SessionPicker.notice
+				m.Chat.AddError(m.SessionPicker.notice)
 			}
 		}
 	case AppStateSessionPicker:
@@ -1104,11 +1126,12 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 func (m AppModel) View() string {
 	var prefix strings.Builder
 	if m.State == AppStateSessionPicker {
-		if m.Notice != "" {
-			prefix.WriteString(DefaultStyles.Faint.Render(m.Notice) + "\n")
-		}
-		if m.Error != "" {
-			prefix.WriteString(DefaultStyles.Error.Render(m.Error) + "\n")
+		for _, n := range m.Notices {
+			if n.Error {
+				prefix.WriteString(DefaultStyles.Error.Render(n.Message) + "\n")
+			} else {
+				prefix.WriteString(DefaultStyles.Faint.Render(n.Message) + "\n")
+			}
 		}
 	}
 

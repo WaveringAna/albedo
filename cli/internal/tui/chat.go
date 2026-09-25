@@ -257,12 +257,9 @@ type ChatModel struct {
 	moodSeed           int64
 	Glances            []PageGlance
 	AttachedImage      *daemon.ImageAttachment
-	Notice             string
+	Notices            Notices
 	CopyStatus         string
 	copyStatusRevision uint64
-	ErrorNotice        string
-	ExternalNotice     string
-	ExternalError      string
 	ToolProgressText   string
 	Progress           *daemon.ToolProgress
 	ProgressFrame      int
@@ -378,16 +375,40 @@ func (m *ChatModel) Close() {
 	}
 }
 
+func (m *ChatModel) syncViewportHeight() {
+	if m == nil || m.History == nil || m.Height <= 0 {
+		return
+	}
+	m.Viewport.Height = max(1, m.Height-6-m.chromeRows())
+	m.refreshViewportContent()
+}
+
+func (m *ChatModel) AddNotice(message string) {
+	if m.Notices.AddNotice(message) {
+		m.syncViewportHeight()
+	}
+}
+
+func (m *ChatModel) AddError(message string) {
+	if m.Notices.AddError(message) {
+		m.syncViewportHeight()
+	}
+}
+
+func (m *ChatModel) ClearNotices() {
+	if len(m.Notices) == 0 {
+		return
+	}
+	m.Notices.Clear()
+	m.syncViewportHeight()
+}
+
 func (m ChatModel) chromeRows() int {
 	menu := min(4, len(m.CommandMenu.Matches(m.TextArea.Value())))
 	if m.WorkspaceRecovery != nil {
 		menu = 2
 	}
-	notice := 0
-	if m.Notice != "" || m.ErrorNotice != "" || m.ExternalNotice != "" || m.ExternalError != "" {
-		notice = 2
-	}
-	return menu + notice
+	return menu + m.Notices.ChromeRows()
 }
 
 func (m *ChatModel) SetSize(width, height int) {
@@ -841,15 +862,14 @@ func (m *ChatModel) loadOlder() tea.Cmd {
 }
 
 // showOlder puts a fetched page above what is shown without moving it.
-func (m ChatModel) showOlder(msg ChatOlderLoadedMsg) ChatModel {
+func (m *ChatModel) showOlder(msg ChatOlderLoadedMsg) ChatModel {
 	if msg.SessionID != m.SessionID || msg.Generation != m.Generation || !m.loadingOlder {
-		return m
+		return *m
 	}
 	m.loadingOlder = false
 	if msg.Err != nil {
-		m.ErrorNotice = fmt.Sprintf("could not load earlier messages: %v", msg.Err)
-		m.refreshViewportContent()
-		return m
+		m.AddError(fmt.Sprintf("could not load earlier messages: %v", msg.Err))
+		return *m
 	}
 	// The page renders exactly as a reset would, in a scratch transcript.
 	scratch := NewChatModel(&daemon.Session{ID: m.SessionID}, nil)
@@ -863,7 +883,7 @@ func (m ChatModel) showOlder(msg ChatOlderLoadedMsg) ChatModel {
 	m.olderBefore, m.olderMore = msg.Page.Before, msg.Page.More && msg.Page.Before > 0
 	m.rebuildSettledLines()
 	m.refreshViewportContent()
-	return m
+	return *m
 }
 
 func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
@@ -1015,10 +1035,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		}
 
 	case tea.MouseMsg:
-		firstRow := 2
-		if m.Notice != "" || m.ErrorNotice != "" || m.ExternalNotice != "" || m.ExternalError != "" {
-			firstRow += 2
-		}
+		firstRow := 2 + m.Notices.ChromeRows()
 		point := func() Point {
 			return Point{Row: max(0, min(m.Viewport.Height-1, msg.Y-firstRow)), Col: max(0, min(m.Viewport.Width, msg.X-m.padding()))}
 		}
@@ -1071,7 +1088,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.CopyStatus = ""
 			m.refreshViewportContent()
 		} else if msg.Err != nil && msg.Err.Error() != "no image in clipboard" {
-			m.ErrorNotice = fmt.Sprintf("image paste failed: %v", msg.Err)
+			m.AddError(fmt.Sprintf("image paste failed: %v", msg.Err))
 		}
 		return m, nil
 
@@ -1184,7 +1201,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				return m, nil
 			}
 
-			m.ErrorNotice = fmt.Sprintf("send failed: %v", msg.Err)
+			m.AddError(fmt.Sprintf("send failed: %v", msg.Err))
 			if msg.Queued {
 				m.appendSettledEntry(HistoryEntry{Kind: EntryError, Text: "message not queued: " + msg.Err.Error()})
 			} else {
@@ -1353,10 +1370,12 @@ func (m *ChatModel) submitInput(input string, cmds *[]tea.Cmd) {
 	}
 
 	if len(m.pendingUsers) >= MaxPendingUsers {
-		m.ErrorNotice = "too many pending turns; wait for current turn to complete"
+		m.AddError("too many pending turns; wait for current turn to complete")
 		m.refreshViewportContent()
 		return
 	}
+
+	m.ClearNotices()
 
 	img := m.AttachedImage
 	m.AttachedImage = nil
@@ -1473,8 +1492,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		m.streamedLen = 0
 		m.ToolProgressText = ""
 		m.Usage = nil
-		m.Notice = ""
-		m.ErrorNotice = ""
+		m.ClearNotices()
 		m.TurnFailed = false
 		m.Stopping = false
 		m.Stopped = false
@@ -1498,6 +1516,9 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		m.Stopped = false
 		m.TurnFailed = false
 		m.settleActiveStream()
+		if !evt.Replayed {
+			m.ClearNotices()
+		}
 
 		if m.Client != nil && evt.ClientID == m.Client.ClientID() {
 			for i, p := range m.pendingUsers {
@@ -1867,7 +1888,7 @@ func (m ChatModel) renderProgress() string {
 }
 
 func (m ChatModel) statusLine() string {
-	if m.TurnFailed || m.ErrorNotice != "" || m.ExternalError != "" {
+	if m.TurnFailed || m.Notices.HasError() {
 		return "turn failed · see error above"
 	}
 	if m.Stopping {
@@ -1981,18 +2002,15 @@ func (m ChatModel) View() string {
 	room := width - lipgloss.Width("✦ "+m.AgentName+" on ") - lipgloss.Width(right) - 5
 	header := titleRule(width, located(m.AgentName, truncateMiddle(homePath(workspace), max(1, room))), m.Styles.Faint.Render(right))
 	rows = append(rows, header, "")
-	errorNotice := m.ExternalError
-	if m.ErrorNotice != "" {
-		errorNotice = m.ErrorNotice
+	for _, n := range m.Notices {
+		if n.Error {
+			rows = append(rows, m.Renderer.errorRow(n.Message))
+		} else {
+			rows = append(rows, m.Styles.Faint.Render(n.Message))
+		}
 	}
-	notice := m.ExternalNotice
-	if m.Notice != "" {
-		notice = m.Notice
-	}
-	if errorNotice != "" {
-		rows = append(rows, m.Renderer.errorRow(errorNotice), "")
-	} else if notice != "" {
-		rows = append(rows, m.Styles.Faint.Render(notice), "")
+	if len(m.Notices) > 0 {
+		rows = append(rows, "")
 	}
 
 	view := m.Viewport.View()
@@ -2013,7 +2031,7 @@ func (m ChatModel) View() string {
 	rows = append(rows, content...)
 	status := m.statusLine()
 	// the face trails the text, so its frames never move anything
-	if m.animating() && !m.TurnFailed && m.ErrorNotice == "" && m.ExternalError == "" {
+	if m.animating() && !m.TurnFailed && !m.Notices.HasError() {
 		status = m.Styles.Faint.Render(status) + " " + m.Styles.Agent.Render(m.phaseMood().frame(m.moodSeed, m.ProgressFrame))
 	}
 	if !m.Follow && m.Flags.Tools {
@@ -2025,7 +2043,7 @@ func (m ChatModel) View() string {
 	if m.CopyStatus != "" {
 		status = m.CopyStatus
 	}
-	if m.TurnFailed || m.ErrorNotice != "" || m.ExternalError != "" {
+	if m.TurnFailed || m.Notices.HasError() {
 		rows = append(rows, m.Styles.Error.Render(status))
 	} else {
 		rows = append(rows, m.Styles.Faint.Render(status))

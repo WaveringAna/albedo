@@ -76,7 +76,7 @@ func TestReadingPositionSurvivesIncomingTranscript(t *testing.T) {
 			}
 			before := m.scrollOffset
 			visible := strings.Split(ansi.Strip(m.Viewport.View()), "\n")[0]
-			m.Notice = "new activity"
+			m.AddNotice("new activity")
 			m, _ = m.Update(ChatStreamEventMsg{SessionID: m.SessionID, Generation: m.Generation, Event: daemon.StreamEvent{Type: daemon.EventNote, Text: "a new line"}})
 			if m.Follow || strings.Split(ansi.Strip(m.Viewport.View()), "\n")[0] != visible {
 				t.Fatalf("reading position changed: offset %d -> %d, follow=%v", before, m.scrollOffset, m.Follow)
