@@ -51,7 +51,7 @@ def main():
                              + glob.glob("/nix/store/*erlang*/bin"))
         if toolchain:
             env["PATH"] = toolchain + ":" + env["PATH"]
-        first = subprocess.run(["node", "cli/bin/albedo.mjs", "sessions"], cwd=ROOT,
+        first = subprocess.run([str(ROOT / "cli/bin/albedo"), "sessions"], cwd=ROOT,
                                env=env, text=True, capture_output=True, timeout=120)
         assert first.returncode == 0, first.stdout + first.stderr
         connection = json.loads((home / "daemon.json").read_text())
@@ -65,7 +65,7 @@ def main():
             return urllib.request.urlopen(request, timeout=60)
 
         created = json.loads(subprocess.run(
-            ["node", "cli/bin/albedo.mjs", "new", str(workspace)], cwd=ROOT, env=env,
+            [str(ROOT / "cli/bin/albedo"), "new", str(workspace)], cwd=ROOT, env=env,
             text=True, capture_output=True, timeout=120, check=True).stdout)
         session_id = created["session"]
         print("session", session_id)

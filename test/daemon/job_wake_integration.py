@@ -120,7 +120,7 @@ def run(endpoint):
         connection = None
         requests_at_start = len(Provider.requests)
         try:
-            first = subprocess.run(["node", "cli/bin/albedo.mjs", "sessions"], cwd=ROOT,
+            first = subprocess.run([str(ROOT / "cli/bin/albedo"), "sessions"], cwd=ROOT,
                                    env=env, text=True, capture_output=True, timeout=45)
             assert first.returncode == 0, first.stdout + first.stderr
             connection = json.loads((home / "daemon.json").read_text())
@@ -152,7 +152,7 @@ def run(endpoint):
                 raise AssertionError(f"session never settled: {value}")
 
             created = json.loads(subprocess.run(
-                ["node", "cli/bin/albedo.mjs", "new", str(workspace)], cwd=ROOT, env=env,
+                [str(ROOT / "cli/bin/albedo"), "new", str(workspace)], cwd=ROOT, env=env,
                 text=True, capture_output=True, timeout=45, check=True).stdout)
             session_id = created["session"]
             with api(f"/sessions/{session_id}/events", {"content": "start a slow job"}):

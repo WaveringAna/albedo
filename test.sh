@@ -23,14 +23,10 @@ python3 test/harness/job_wake_test.py
 python3 test/harness/remote_kernel_test.py
 python3 test/harness/remote_plugin_test.py
 
-if [ -f cli/go.mod ]; then
-  (cd cli && go vet ./...)
-  (cd cli && go test ./...)
-fi
-
-[ -d cli/node_modules ] || npm --prefix cli install
-npm --prefix cli run typecheck
-npm --prefix cli test
+(cd cli && go vet ./...)
+(cd cli && go test ./...)
+# the daemon suites drive the CLI through this binary
+go -C cli build -o bin/albedo ./cmd/albedo
 
 python3 test/daemon/integration.py
 python3 test/daemon/extensions_integration.py

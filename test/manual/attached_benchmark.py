@@ -83,7 +83,7 @@ def run(output, prompt, timeout):
     previous = {}
     terminal_bytes = 0
     try:
-        created = subprocess.run(["node", str(ROOT / "cli/bin/albedo.mjs"), "new", str(workspace)],
+        created = subprocess.run([str(ROOT / "cli/bin/albedo"), "new", str(workspace)],
                                  cwd=ROOT, env=env, text=True, capture_output=True, timeout=60, check=True)
         session = json.loads(created.stdout)["session"]
         connection = json.loads((home / "daemon.json").read_text())
@@ -95,7 +95,7 @@ def run(output, prompt, timeout):
                 return json.load(response)
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-        cli = subprocess.Popen(["node", str(ROOT / "cli/bin/albedo.mjs"), "resume", session],
+        cli = subprocess.Popen([str(ROOT / "cli/bin/albedo"), "resume", session],
             cwd=workspace, env=env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
         os.close(slave)
         os.set_blocking(master, False)

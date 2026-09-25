@@ -13,3 +13,6 @@ charm stack (`bubbletea`, `lipgloss`, `bubbles`). the port preserves the
 transcript layout, interactive keybindings, slash-command popovers, diff rendering,
 and virtual scrolling while providing a standalone executable with bounded
 memory and streaming event processing.
+
+the typescript/ink reference and its visual parity harness have since been
+removed; the go cli is the only client.

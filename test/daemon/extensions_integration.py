@@ -104,7 +104,7 @@ def run(endpoint):
         connection = None
 
         def cli(*args):
-            result = subprocess.run(["node", "cli/bin/albedo.mjs", *args], cwd=ROOT, env=env,
+            result = subprocess.run([str(ROOT / "cli/bin/albedo"), *args], cwd=ROOT, env=env,
                                     capture_output=True, text=True, timeout=45)
             assert result.returncode == 0, result.stdout + result.stderr + (home/"daemon.log").read_text()
             return result.stdout

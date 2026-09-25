@@ -124,7 +124,7 @@ def run(protocol, endpoint):
         connection = None
         def command(*args):
             binary = os.environ.get("ALBEDO_TEST_BINARY")
-            argv = [binary, *args] if binary else ["node", "cli/bin/albedo.mjs", *args]
+            argv = [binary, *args] if binary else [str(ROOT / "cli/bin/albedo"), *args]
             return subprocess.run(argv, cwd=workspace if binary else ROOT, env=env, text=True, capture_output=True, timeout=45)
         def cli(*args):
             result = command(*args)

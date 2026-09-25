@@ -40,18 +40,6 @@ the packaged daemon with an absolute executable path. when the running daemon
 is from another build, the packaged cli asks in a terminal whether to restart it,
 and elsewhere keeps it and prints a warning.
 
-legacy typescript reference (kept for parity testing):
-
-```sh
-npm --prefix cli install
-# ALBEDO_USE_TS=1 forces the launcher to use the TypeScript reference instead of native binary
-ALBEDO_USE_TS=1 node cli/bin/albedo.mjs
-
-# or to install it globally via npm
-npm install -g ./cli
-ALBEDO_USE_TS=1 albedo
-```
-
 optional: `view`, which lets the model see its changes and code as highlighted
 images for a final review pass. needs cargo.
 
@@ -68,16 +56,13 @@ go -C cli vet ./...     # native go cli vet
 gleam test              # gleam suite plus the python harnesses that hold no build lock
 ```
 
-manual comparisons and performance tools:
+manual performance tools:
 
 `test/manual` is opt-in: those benchmarks need a provider, a PTY, or artifacts
 from an earlier run.
 
 ```sh
-# paired TS/Go screenshots (Pillow via uv; npm dependencies from cli)
-uv run --no-project --script cli/test/manual/visual_parity.py --help
-
-# standalone PTY smoke and parity verification
+# standalone PTY smoke verification of the cli
 ALBEDO_NO_BROWSER=1 python3 test/manual/go_port_smoke.py
 
 # 120Hz scrollback performance and timing evaluation

@@ -23,7 +23,7 @@
             packages = [
               pkgs.go pkgs.gopls
               pkgs.gleam beam.erlang (beam.rebar3WithPlugins { plugins = [ beam.pc ]; })
-              pkgs.python3 pkgs.nodejs
+              pkgs.python3
               pkgs.cargo pkgs.rustc
             ];
           };

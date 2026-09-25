@@ -74,7 +74,7 @@ def run(endpoint):
 
         def command(*args):
             return subprocess.run(
-                ["node", "cli/bin/albedo.mjs", *args],
+                [str(ROOT / "cli/bin/albedo"), *args],
                 cwd=ROOT,
                 env=env,
                 text=True,

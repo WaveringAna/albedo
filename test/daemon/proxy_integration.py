@@ -101,7 +101,7 @@ def main():
         port = free_port()
         env = dict(os.environ, HOME=str(user_home), ALBEDO_HOME=str(home), ALBEDO_PORT=str(port),
                    ALBEDO_PARENT_PID=str(os.getpid()))
-        result = subprocess.run(["node", "cli/bin/albedo.mjs", "sessions"], cwd=ROOT, env=env,
+        result = subprocess.run([str(ROOT / "cli/bin/albedo"), "sessions"], cwd=ROOT, env=env,
                                 capture_output=True, text=True, timeout=60)
         assert result.returncode == 0, result.stdout + result.stderr
         assert json.loads((home/"daemon.json").read_text())["port"] == port
