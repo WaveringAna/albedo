@@ -81,7 +81,7 @@ in buildGoModule {
   src = source;
   modRoot = "cli";
   subPackages = [ "cmd/albedo" ];
-  vendorHash = "sha256-6zL5hCue5V3Vjv42iRyZqBzF/OWum6sJ9YktyT2OOgM=";
+  vendorHash = "sha256-29enU7fEUjk8pZdv6sm2J1AxpPO+v6dXEycJuG5EfQY=";
   nativeBuildInputs = [ makeWrapper ];
   ALBEDO_NO_BROWSER = "1";
   postInstall = ''
