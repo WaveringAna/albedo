@@ -42,6 +42,8 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 "content": [{"type": "output_text", "text": "done", "annotations": []}],
             }], "usage": {"input_tokens": 20, "output_tokens": 1},
         }}
+        if "without provider usage" in json.dumps(request):
+            response["response"].pop("usage")
         body = ("data: " + json.dumps(response) + "\n\n").encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -113,6 +115,8 @@ def run(endpoint):
                 "env": served["env"], "models": served["models"]}}
             assert snapshot["context_window_tokens"] == 200_000, snapshot
             compaction = snapshot["compaction"]
+            assert compaction["provider_input_tokens"] == 20, compaction
+            assert "provider_cached_input_tokens" not in compaction, compaction
             assert compaction["estimate_method"] == "local byte-based estimate; not provider token usage"
             assert compaction["status"] == "not_needed", compaction
             assert compaction["input_limit_tokens"] == 200_000, compaction
@@ -135,13 +139,21 @@ def run(endpoint):
             assert secret not in json.dumps(pages)
             assert len(Provider.requests) == 1, "summary/page inspection must not contact the provider"
 
+            api(f"/sessions/{session}/events", {"content": "without provider usage"})
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline and api(f"/sessions/{session}/status")["running"]:
+                time.sleep(.025)
+            unreported = api(route)["compaction"]
+            assert "provider_input_tokens" not in unreported, unreported
+            assert "estimated_input_tokens" in unreported, unreported
+
             changed = api(f"/sessions/{session}/commands", {"name": "/model", "args": {"model": "changed-model"}})
             assert changed["result"]["model"] == "changed-model"
             assert api(route) == {
                 "state": "pending",
                 "reason": "runtime session has not prepared a provider request",
             }, "a snapshot for the old model must not survive model selection"
-            assert len(Provider.requests) == 1, "model invalidation must not contact the provider"
+            assert len(Provider.requests) == 2, "model invalidation must not contact the provider"
 
             # A model the catalog does not list stays explicitly unknown.
             api(f"/sessions/{session}/events", {"content": "a model outside the catalog"})

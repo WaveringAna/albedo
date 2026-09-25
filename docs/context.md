@@ -13,7 +13,7 @@ Sections appear in provider request order:
 3. prepared conversation history
 4. enabled tool schemas
 
-Each section names its source and reports exact item and byte counts for its underlying prepared request value. Byte counts measure UTF-8 request content or the exact encoded provider tool schema, not displayed terminal width. Compaction token counts are labeled estimates with their method; they are not provider usage. A configured context-window limit is shown only when it is known.
+Each section names its source and reports exact item and byte counts for its underlying prepared request value. Byte counts measure UTF-8 request content or the exact encoded provider tool schema, not displayed terminal width. The compaction observation keeps its local `estimated_input_tokens` and method. Once the provider completes that prepared request, `/context` also reports `provider_input_tokens` and, when available, `provider_cached_input_tokens`; the inspector displays the measured input instead of the estimate. Cached tokens are a subset of the reported input, not an amount to add. A provider that omits usage leaves the estimate as the fallback, and a new request starts without the preceding request's measurement. The configured context-window limit is shown only when it is known.
 
 The summary endpoint returns only bounded previews. Full inspectable text is available in bounded 8,000-character pages. Image base64 bodies and opaque provider replay bodies are never copied into inspector pages; the page names each omission while preserving its position and available image metadata. Provider credentials are not part of the recorded request.
 

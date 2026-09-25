@@ -35,6 +35,8 @@ const snapshot = {
     trigger_free_percent: 10,
     input_limit_tokens: 128_000,
     estimated_input_tokens: 117_200,
+    provider_input_tokens: 194_000,
+    provider_cached_input_tokens: 12_000,
     estimate_method: "pinned tokenizer estimate",
     before_items: 42,
     after_items: 14,
@@ -81,7 +83,8 @@ test("context inspector shows ordered sources and paged exact content using only
   assert(output.includes("128,000 tokens (configured)"))
   assert(output.includes("rolling · applied"))
   assert(output.includes("trigger: keep 10% free"))
-  assert(output.includes("117,200 tokens · pinned tokenizer estimate"))
+  assert(output.includes("provider input: 194,000 tokens · 12,000 cached tokens"))
+  assert(!output.includes("estimated input:"))
   assert(output.includes("900 measured bytes"))
   assert(output.includes("durable transcript and request-only context are separate"))
 
@@ -144,6 +147,10 @@ test("old daemon capability preflight prevents unsupported context requests", { 
 
 test("context decoders bound metadata and page content", () => {
   assert.equal(parseContextSnapshot(snapshot).state, "ready")
+  assert.throws(() => parseContextSnapshot({ ...snapshot, compaction: { ...snapshot.compaction, provider_input_tokens: -1 } }), /invalid compaction metadata/)
+  const fallback = parseContextSnapshot({ ...snapshot, compaction: { ...snapshot.compaction, provider_input_tokens: undefined, provider_cached_input_tokens: undefined } })
+  assert.equal(fallback.state, "ready")
+  if (fallback.state === "ready") assert.equal(fallback.compaction.estimated_input_tokens, 117_200)
   assert.throws(() => parseContextSnapshot({ ...snapshot, sections: Array.from({ length: 1_001 }, () => snapshot.sections[0]) }), /invalid context metadata/)
   assert.throws(() => parseContextPage({ section: "history", page: 0, pages: 1, content: "x".repeat(65_537) }, "history"), /invalid context page/)
   assert.throws(() => parseContextPage({ section: "wrong", page: 0, pages: 1, content: "safe" }, "history"), /invalid context page/)

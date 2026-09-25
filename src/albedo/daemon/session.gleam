@@ -854,7 +854,11 @@ fn handle(state: State, message: Message) {
           case written {
             Ok(_) ->
               actor.continue(
-                session_state.State(..state, latest_usage: Some(metadata)),
+                session_state.State(
+                  ..state,
+                  latest_usage: Some(metadata),
+                  context: context_snapshot.with_usage(state.context, metadata),
+                ),
               )
             Error(_) -> actor.continue(state)
           }

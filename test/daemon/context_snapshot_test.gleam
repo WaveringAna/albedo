@@ -1,4 +1,5 @@
 import albedo/daemon/context_snapshot
+import albedo/daemon/usage
 import albedo/harness/compaction
 import albedo/openai_api/types
 import gleam/json
@@ -69,6 +70,51 @@ pub fn summary_preserves_order_sources_known_limits_and_bounded_previews_test() 
   |> should.be_true
   string.contains(encoded, string.repeat("x", 181)) |> should.be_false
   string.contains(encoded, "image payload bytes") |> should.be_false
+}
+
+pub fn provider_completion_measurement_belongs_to_its_prepared_request_test() {
+  let prepared = observed()
+  let measured =
+    context_snapshot.with_usage(
+      prepared,
+      usage.Metadata(
+        "fixture-model",
+        1235,
+        Some(usage.Tokens(194_000, 40, Some(12_000))),
+      ),
+    )
+  let encoded = measured |> context_snapshot.summary |> json.to_string
+  string.contains(encoded, "\"provider_input_tokens\":194000") |> should.be_true
+  string.contains(encoded, "\"provider_cached_input_tokens\":12000")
+  |> should.be_true
+  string.contains(encoded, "\"estimated_input_tokens\":117200")
+  |> should.be_true
+  context_snapshot.estimate(measured) |> should.equal(Some(117_200))
+
+  let missing =
+    context_snapshot.with_usage(
+      measured,
+      usage.Metadata("fixture-model", 1236, None),
+    )
+    |> context_snapshot.summary
+    |> json.to_string
+  string.contains(missing, "provider_input_tokens") |> should.be_false
+  let mismatched =
+    context_snapshot.with_usage(
+      prepared,
+      usage.Metadata("other-model", 1237, Some(usage.Tokens(9, 1, None))),
+    )
+  mismatched
+  |> context_snapshot.summary
+  |> should.equal(context_snapshot.summary(prepared))
+  context_snapshot.with_usage(
+    context_snapshot.pending("not prepared"),
+    usage.Metadata("fixture-model", 1238, Some(usage.Tokens(9, 1, None))),
+  )
+  |> context_snapshot.summary
+  |> should.equal(
+    context_snapshot.summary(context_snapshot.pending("not prepared")),
+  )
 }
 
 pub fn page_is_bounded_and_names_intentional_omissions_test() {

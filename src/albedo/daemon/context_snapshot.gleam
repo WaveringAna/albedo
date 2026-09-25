@@ -1,6 +1,7 @@
 //// Bounded, read-only observations of an already prepared provider request.
 //// This module never prepares history, invokes tools, or calls a provider.
 
+import albedo/daemon/usage
 import albedo/harness/compaction as context_size
 import albedo/openai_api/request as provider_request
 import albedo/openai_api/types
@@ -54,6 +55,8 @@ pub opaque type Compaction {
     trigger_free_percent: Option(Int),
     input_limit_tokens: Option(Int),
     estimated_input_tokens: Option(Int),
+    provider_input_tokens: Option(Int),
+    provider_cached_input_tokens: Option(Int),
     estimate_method: Option(String),
     before_items: Option(Int),
     after_items: Option(Int),
@@ -135,10 +138,39 @@ pub fn compaction(
     clamp_percent(trigger_free_percent),
     non_negative(input_limit_tokens),
     non_negative(estimated_input_tokens),
+    None,
+    None,
     estimate_method,
     non_negative(before_items),
     non_negative(after_items),
   )
+}
+
+/// Attach the completion's measured input usage to the request that produced it.
+/// A newer prepared request starts without a measurement; missing provider usage
+/// clears this request's measurement rather than reusing an older completion.
+pub fn with_usage(snapshot: Snapshot, metadata: usage.Metadata) -> Snapshot {
+  case snapshot {
+    Ready(model: model, compaction: compaction, ..) if model == metadata.model -> {
+      let #(input, cached) = case metadata.tokens {
+        Some(usage.Tokens(
+          prompt_tokens: prompt,
+          cached_prompt_tokens: cached,
+          ..,
+        )) -> #(non_negative(Some(prompt)), non_negative(cached))
+        None -> #(None, None)
+      }
+      Ready(
+        ..snapshot,
+        compaction: Compaction(
+          ..compaction,
+          provider_input_tokens: input,
+          provider_cached_input_tokens: cached,
+        ),
+      )
+    }
+    _ -> snapshot
+  }
 }
 
 /// The strategy's own token estimate for the prepared request, when it recorded one.
@@ -508,6 +540,12 @@ fn compaction_json(value: Compaction) -> json.Json {
   |> optional("trigger_free_percent", value.trigger_free_percent, json.int)
   |> optional("input_limit_tokens", value.input_limit_tokens, json.int)
   |> optional("estimated_input_tokens", value.estimated_input_tokens, json.int)
+  |> optional("provider_input_tokens", value.provider_input_tokens, json.int)
+  |> optional(
+    "provider_cached_input_tokens",
+    value.provider_cached_input_tokens,
+    json.int,
+  )
   |> optional("estimate_method", value.estimate_method, json.string)
   |> optional("before_items", value.before_items, json.int)
   |> optional("after_items", value.after_items, json.int)

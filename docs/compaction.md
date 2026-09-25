@@ -61,4 +61,4 @@ Image bytes are never copied into the recap or the summarizer prompt; a recent i
 
 ## inspect
 
-`/context` shows the prepared request: its sections in order, their sources, the compaction status, and what the estimate is based on. See [the context inspector](context.md).
+`/context` shows the prepared request: its sections in order, their sources, and compaction status. After a provider completes that request, it shows the provider's measured input tokens (and cached tokens when reported); until then, or when usage is omitted, the strategy's local estimate is shown instead. The JSON retains `estimated_input_tokens` separately from `provider_input_tokens` so neither is mistaken for the other. A manual `/compact` sends no ordinary provider request, so its snapshot has only an estimate. See [the context inspector](context.md).

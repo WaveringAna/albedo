@@ -21,6 +21,8 @@ export type CompactionState = {
   trigger_free_percent?: number
   input_limit_tokens?: number
   estimated_input_tokens?: number
+  provider_input_tokens?: number
+  provider_cached_input_tokens?: number
   estimate_method?: string
   before_items?: number
   after_items?: number
@@ -112,6 +114,8 @@ export const parseContextSnapshot = (value: unknown): ContextSnapshot => {
       ...(free === undefined ? {} : { trigger_free_percent: free as number }),
       ...(optionalInteger("input_limit_tokens") === undefined ? {} : { input_limit_tokens: optionalInteger("input_limit_tokens") }),
       ...(optionalInteger("estimated_input_tokens") === undefined ? {} : { estimated_input_tokens: optionalInteger("estimated_input_tokens") }),
+      ...(optionalInteger("provider_input_tokens") === undefined ? {} : { provider_input_tokens: optionalInteger("provider_input_tokens") }),
+      ...(optionalInteger("provider_cached_input_tokens") === undefined ? {} : { provider_cached_input_tokens: optionalInteger("provider_cached_input_tokens") }),
       ...(optionalText("estimate_method", 500) === undefined ? {} : { estimate_method: optionalText("estimate_method", 500) }),
       ...(optionalInteger("before_items") === undefined ? {} : { before_items: optionalInteger("before_items") }),
       ...(optionalInteger("after_items") === undefined ? {} : { after_items: optionalInteger("after_items") }),
@@ -226,7 +230,9 @@ export function ContextInspector({ connection, sessionId, onCancel }: ContextIns
         <Text dimColor>context window: {snapshot.context_window_tokens === undefined ? "not reported" : `${snapshot.context_window_tokens.toLocaleString("en-US")} tokens (configured)`}</Text>
         <Text dimColor>compaction: {compactionLabel(snapshot.compaction)}</Text>
         {snapshot.compaction.trigger_free_percent !== undefined && <Text dimColor>trigger: keep {snapshot.compaction.trigger_free_percent}% free</Text>}
-        {snapshot.compaction.estimated_input_tokens !== undefined && <Text dimColor>estimated input: {snapshot.compaction.estimated_input_tokens.toLocaleString("en-US")} tokens · {snapshot.compaction.estimate_method || "method not reported"}</Text>}
+        {snapshot.compaction.provider_input_tokens !== undefined
+          ? <Text dimColor>provider input: {snapshot.compaction.provider_input_tokens.toLocaleString("en-US")} tokens{snapshot.compaction.provider_cached_input_tokens === undefined ? "" : ` · ${snapshot.compaction.provider_cached_input_tokens.toLocaleString("en-US")} cached tokens`}</Text>
+          : snapshot.compaction.estimated_input_tokens !== undefined && <Text dimColor>estimated input: {snapshot.compaction.estimated_input_tokens.toLocaleString("en-US")} tokens · {snapshot.compaction.estimate_method || "method not reported"}</Text>}
         <Box flexDirection="column" marginTop={1}>{visibleSections.map((section, row) => {
           const position = sectionStart + row
           return <Box key={section.id} flexDirection="column">

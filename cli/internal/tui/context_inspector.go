@@ -28,15 +28,17 @@ type ContextSection struct {
 }
 
 type CompactionState struct {
-	Strategy             string   `json:"strategy,omitempty"`
-	Status               string   `json:"status"` // "not_configured" | "not_needed" | "compacted" | "unknown"
-	Source               string   `json:"source,omitempty"`
-	TriggerFreePercent   *float64 `json:"trigger_free_percent,omitempty"`
-	InputLimitTokens     *int     `json:"input_limit_tokens,omitempty"`
-	EstimatedInputTokens *int     `json:"estimated_input_tokens,omitempty"`
-	EstimateMethod       string   `json:"estimate_method,omitempty"`
-	BeforeItems          *int     `json:"before_items,omitempty"`
-	AfterItems           *int     `json:"after_items,omitempty"`
+	Strategy                  string   `json:"strategy,omitempty"`
+	Status                    string   `json:"status"` // "not_configured" | "not_needed" | "compacted" | "unknown"
+	Source                    string   `json:"source,omitempty"`
+	TriggerFreePercent        *float64 `json:"trigger_free_percent,omitempty"`
+	InputLimitTokens          *int     `json:"input_limit_tokens,omitempty"`
+	EstimatedInputTokens      *int     `json:"estimated_input_tokens,omitempty"`
+	ProviderInputTokens       *int     `json:"provider_input_tokens,omitempty"`
+	ProviderCachedInputTokens *int     `json:"provider_cached_input_tokens,omitempty"`
+	EstimateMethod            string   `json:"estimate_method,omitempty"`
+	BeforeItems               *int     `json:"before_items,omitempty"`
+	AfterItems                *int     `json:"after_items,omitempty"`
 }
 
 type ContextSnapshot struct {
@@ -141,6 +143,7 @@ func validContextSnapshot(s ContextSnapshot) error {
 	if !statuses[c.Status] || jsLength(c.Strategy) > 200 || jsLength(c.Source) > 500 || jsLength(c.EstimateMethod) > 500 ||
 		c.TriggerFreePercent != nil && (math.IsNaN(*c.TriggerFreePercent) || math.IsInf(*c.TriggerFreePercent, 0) || *c.TriggerFreePercent < 0 || *c.TriggerFreePercent > 100) ||
 		c.InputLimitTokens != nil && *c.InputLimitTokens < 0 || c.EstimatedInputTokens != nil && *c.EstimatedInputTokens < 0 ||
+		c.ProviderInputTokens != nil && *c.ProviderInputTokens < 0 || c.ProviderCachedInputTokens != nil && *c.ProviderCachedInputTokens < 0 ||
 		c.BeforeItems != nil && *c.BeforeItems < 0 || c.AfterItems != nil && *c.AfterItems < 0 {
 		return errors.New("daemon returned invalid compaction metadata")
 	}
@@ -409,7 +412,13 @@ func (m ContextInspectorModel) View() string {
 		if snap.Compaction.TriggerFreePercent != nil {
 			faint(fmt.Sprintf("trigger: keep %g%% free", *snap.Compaction.TriggerFreePercent))
 		}
-		if snap.Compaction.EstimatedInputTokens != nil {
+		if snap.Compaction.ProviderInputTokens != nil {
+			measured := "provider input: " + contextCount(*snap.Compaction.ProviderInputTokens, "token")
+			if snap.Compaction.ProviderCachedInputTokens != nil {
+				measured += " · " + contextCount(*snap.Compaction.ProviderCachedInputTokens, "cached token")
+			}
+			faint(measured)
+		} else if snap.Compaction.EstimatedInputTokens != nil {
 			method := snap.Compaction.EstimateMethod
 			if method == "" {
 				method = "method not reported"
