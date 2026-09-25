@@ -1,4 +1,5 @@
 import albedo/daemon/note
+import albedo/daemon/notice
 import albedo/daemon/store
 import albedo/daemon/transcript
 import albedo/daemon/usage
@@ -248,9 +249,13 @@ fn render(
 ) -> List(String) {
   case entry.input {
     types.User(value) ->
-      case note.parse(value) {
-        Some(#(origin, body)) -> [user(body, origin, None, entry.timestamp)]
-        None -> [user(value, "chat", None, entry.timestamp)]
+      case notice.is_notice(value) {
+        True -> []
+        False ->
+          case note.parse(value) {
+            Some(#(origin, body)) -> [user(body, origin, None, entry.timestamp)]
+            None -> [user(value, "chat", None, entry.timestamp)]
+          }
       }
     types.UserImage(value, image) -> [
       user_image(value, "user", None, entry.timestamp, image),

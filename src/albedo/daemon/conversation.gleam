@@ -1,6 +1,7 @@
 import albedo/daemon/events
 import albedo/daemon/images
 import albedo/daemon/note
+import albedo/daemon/notice
 import albedo/daemon/store
 import albedo/daemon/transcript
 import albedo/daemon/usage
@@ -511,9 +512,9 @@ pub fn latest_user(inputs: List(types.Input)) -> Option(String) {
   list.fold(inputs, None, fn(latest, input) {
     case input {
       types.User(text) | types.UserImage(text, _) ->
-        case note.parse(text), is_webhook(text) {
-          None, False -> Some(text)
-          _, _ -> latest
+        case notice.is_notice(text), note.parse(text), is_webhook(text) {
+          False, None, False -> Some(text)
+          _, _, _ -> latest
         }
       _ -> latest
     }

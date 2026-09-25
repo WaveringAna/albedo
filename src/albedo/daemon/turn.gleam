@@ -22,6 +22,7 @@ pub type Source {
   /// Something an extension tells the agent, such as a user's work ledger
   /// change. `origin` labels it in the transcript.
   Note(origin: String)
+  Continue
 }
 
 pub type Submission {
@@ -79,6 +80,7 @@ pub fn source_name(source: Source) -> String {
     JobWake -> "bash"
     Webhook(_) -> "webhook"
     Note(origin) -> origin
+    Continue -> "continue"
   }
 }
 
@@ -90,7 +92,7 @@ pub fn admit(
   case activity, bounded(submission), submission.source {
     _, False, _ -> Reject(Oversized)
     _, True, Note(_) -> room(queued)
-    Running(_), True, Chat -> room(queued)
+    Running(_), True, Chat | Running(_), True, Continue -> room(queued)
     Running(_), True, JobWake | Running(_), True, Webhook(_) -> Reject(Busy)
     Resting, True, _ | Interrupted, True, _ -> Start
   }
@@ -118,7 +120,9 @@ fn bounded(submission: Submission) -> Bool {
 /// Whether a finished run should start another for this queue: notes alone
 /// wait for the user's next message.
 pub fn starts_turn(queued: List(Submission)) -> Bool {
-  list.any(queued, fn(submission) { submission.source == Chat })
+  list.any(queued, fn(submission) {
+    submission.source == Chat || submission.source == Continue
+  })
 }
 
 pub fn running(activity: Activity) -> Option(Run) {

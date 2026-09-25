@@ -1079,28 +1079,51 @@ fn daemon_route(
                   )
                 Post, "events" -> {
                   let decoder = {
-                    use text <- decode.field("content", decode.string)
-                    use client_id <- decode.optional_field(
-                      "clientId",
-                      "",
+                    use kind <- decode.optional_field(
+                      "type",
+                      "user",
                       decode.string,
                     )
-                    use submitted_image <- decode.optional_field(
-                      "image",
-                      None,
-                      decode.optional(submitted_image_decoder()),
-                    )
-                    decode.success(#(text, client_id, submitted_image))
+                    case kind {
+                      "continue" | "resume" -> {
+                        use client_id <- decode.optional_field(
+                          "clientId",
+                          "",
+                          decode.string,
+                        )
+                        decode.success(#(True, "", client_id, None))
+                      }
+                      _ -> {
+                        use text <- decode.field("content", decode.string)
+                        use client_id <- decode.optional_field(
+                          "clientId",
+                          "",
+                          decode.string,
+                        )
+                        use submitted_image <- decode.optional_field(
+                          "image",
+                          None,
+                          decode.optional(submitted_image_decoder()),
+                        )
+                        decode.success(#(False, text, client_id, submitted_image))
+                      }
+                    }
                   }
                   case
                     body(req, decoder)
                     |> result.map_error(session.Rejected)
                     |> result.try(fn(submission) {
-                      use image <- result.try(
-                        validate_submitted_image(submission.2)
-                        |> result.map_error(session.Rejected),
-                      )
-                      session.submit(worker, submission.0, submission.1, image)
+                      let #(is_continue, text, client_id, raw_image) = submission
+                      case is_continue {
+                        True -> session.submit_continue(worker, client_id)
+                        False -> {
+                          use image <- result.try(
+                            validate_submitted_image(raw_image)
+                            |> result.map_error(session.Rejected),
+                          )
+                          session.submit(worker, text, client_id, image)
+                        }
+                      }
                     })
                   {
                     Ok(queued) ->

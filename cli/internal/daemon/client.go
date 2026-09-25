@@ -195,16 +195,10 @@ func (c *ChatClient) parseResponseError(res *http.Response) error {
 	return errors.New(fallback)
 }
 
-func (c *ChatClient) Send(ctx context.Context, content string, image *ImageAttachment) (*SendResult, error) {
+func (c *ChatClient) submitPayload(ctx context.Context, payload map[string]any) (*SendResult, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	payload := map[string]any{
-		"content": content,
-	}
-	if image != nil {
-		payload["image"] = image
-	}
 	if c.clientID != "" {
 		payload["clientId"] = c.clientID
 	}
@@ -253,6 +247,22 @@ func (c *ChatClient) Send(ctx context.Context, content string, image *ImageAttac
 		OK:     true,
 		Queued: data.Queued,
 	}, nil
+}
+
+func (c *ChatClient) Send(ctx context.Context, content string, image *ImageAttachment) (*SendResult, error) {
+	payload := map[string]any{
+		"content": content,
+	}
+	if image != nil {
+		payload["image"] = image
+	}
+	return c.submitPayload(ctx, payload)
+}
+
+func (c *ChatClient) Continue(ctx context.Context) (*SendResult, error) {
+	return c.submitPayload(ctx, map[string]any{
+		"type": "continue",
+	})
 }
 
 func (c *ChatClient) ReplaceWorkspace(ctx context.Context, workspace string) (*WorkspaceUpdate, error) {

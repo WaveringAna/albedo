@@ -37,6 +37,13 @@ const restart_note = Submission(
   None,
 )
 
+pub const continue_prompt = "<system-notice>
+continue your unfinished task, by resuming the most recent intent.
+if interrupted mid-step, just pick it back up from where it stopped.
+never pause to summarize progress, re-confirm the plan, or ask whether to proceed.
+just continue.
+</system-notice>"
+
 pub type Session =
   Subject(Message)
 
@@ -251,6 +258,16 @@ pub fn submit(
 ) -> Result(Bool, SubmissionError) {
   actor.call(session, 10_000, Submit(
     Submission(text, text, client_id, turn.Chat, image),
+    _,
+  ))
+}
+
+pub fn submit_continue(
+  session: Session,
+  client_id: String,
+) -> Result(Bool, SubmissionError) {
+  actor.call(session, 10_000, Submit(
+    Submission("", continue_prompt, client_id, turn.Continue, None),
     _,
   ))
 }
@@ -519,10 +536,14 @@ fn handle(state: State, message: Message) {
                         }
                         |> start_run(kernel, client, model_history)
                       process.send(reply, Ok(False))
-                      actor.continue(session_state.emit(
-                        state,
-                        session_submission.event(submission, timestamp),
-                      ))
+                      actor.continue(case submission.source {
+                        turn.Continue -> state
+                        _ ->
+                          session_state.emit(
+                            state,
+                            session_submission.event(submission, timestamp),
+                          )
+                      })
                     }
                   }
                 }

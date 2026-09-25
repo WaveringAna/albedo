@@ -823,3 +823,40 @@ func TestSnapshotEventsAreMarkedReplayed(t *testing.T) {
 		t.Fatalf("only the snapshot after a reset is history: %v", replayed)
 	}
 }
+
+func TestChatClientContinue(t *testing.T) {
+	var receivedPath string
+	var receivedBody map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "queued": false})
+	}))
+	defer server.Close()
+
+	client := NewChatClient(ChatClientOptions{
+		BaseURL:  server.URL,
+		AgentID:  "session-1",
+		ClientID: "test-client",
+	})
+
+	res, err := client.Continue(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.OK {
+		t.Fatal("expected OK true")
+	}
+	if receivedPath != "/sessions/session-1/events" {
+		t.Fatalf("expected /sessions/session-1/events, got %s", receivedPath)
+	}
+	if receivedBody["type"] != "continue" {
+		t.Fatalf("expected type continue, got %v", receivedBody)
+	}
+	if receivedBody["clientId"] != "test-client" {
+		t.Fatalf("expected clientId test-client, got %v", receivedBody)
+	}
+}

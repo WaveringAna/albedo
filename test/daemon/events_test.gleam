@@ -1,5 +1,6 @@
 import albedo/daemon/events as view
 import albedo/daemon/note
+import albedo/daemon/session
 import albedo/daemon/transcript
 import albedo/harness/runtime
 import albedo/openai_api/types
@@ -80,6 +81,18 @@ pub fn snapshot_surfaces_saved_reasoning_apart_from_the_answer_test() {
   types_of(response_events) |> should.equal(["thinking", "message"])
   texts(response_events, "thinking") |> should.equal(["why"])
   texts(response_events, "message") |> should.equal(["answer"])
+  runtime.stop(host)
+}
+
+pub fn snapshot_omits_continue_notice_test() {
+  let assert Ok(host) = runtime.start(":memory:")
+  let events =
+    view.snapshot(
+      runtime.ledger(host),
+      [transcript.Entry(types.User(session.continue_prompt), None, None)],
+      None,
+    )
+  types_of(events) |> should.equal([])
   runtime.stop(host)
 }
 

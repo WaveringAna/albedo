@@ -41,6 +41,9 @@ pub fn emit(
   timestamp: Int,
 ) -> session_state.State(message) {
   list.fold(submissions, state, fn(state, submission) {
-    session_state.emit(state, event(submission, timestamp))
+    case submission.source {
+      turn.Continue -> state
+      _ -> session_state.emit(state, event(submission, timestamp))
+    }
   })
 }

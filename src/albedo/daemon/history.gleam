@@ -2,6 +2,7 @@
 
 import albedo/daemon/conversation
 import albedo/daemon/events
+import albedo/daemon/notice
 import albedo/daemon/store
 import albedo/harness/extensions/lcm/graph as lcm_graph
 import albedo/openai_api/types
@@ -167,9 +168,16 @@ fn recent_item(row: Row) -> Result(Item, Nil) {
     }
   }
   case row.input {
-    types.User(text) -> item(User, text, recent_excerpt)
+    types.User(text) ->
+      case notice.is_notice(text) {
+        True -> Error(Nil)
+        False -> item(User, text, recent_excerpt)
+      }
     types.UserImage(text, image) ->
-      item(User, text <> image_label(image), recent_excerpt)
+      case notice.is_notice(text) {
+        True -> Error(Nil)
+        False -> item(User, text <> image_label(image), recent_excerpt)
+      }
     types.Assistant(text) -> item(Assistant, text, recent_excerpt)
     types.ToolOutput(_, _, _) -> Error(Nil)
     types.Replay(replay) ->

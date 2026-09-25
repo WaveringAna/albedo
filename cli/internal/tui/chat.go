@@ -107,6 +107,7 @@ type ChatTurnSentMsg struct {
 	Generation int64
 	Prompt     string
 	Image      *daemon.ImageAttachment
+	Continue   bool
 	OK         bool
 	Queued     bool
 	Err        error
@@ -1284,11 +1285,13 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			if errors.As(msg.Err, &wsErr) {
 				m.Status.Running = false
 				m.Status.Idle = true
-				if len(m.pendingUsers) > 0 {
-					m.pendingUsers = m.pendingUsers[1:]
-				}
-				if m.TextArea.Value() == "" {
-					m.TextArea.SetValue(msg.Prompt)
+				if !msg.Continue {
+					if len(m.pendingUsers) > 0 {
+						m.pendingUsers = m.pendingUsers[1:]
+					}
+					if m.TextArea.Value() == "" {
+						m.TextArea.SetValue(msg.Prompt)
+					}
 				}
 				if m.AttachedImage == nil && msg.Image != nil {
 					m.AttachedImage = msg.Image
@@ -1301,10 +1304,14 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				ti.Cursor.Style = DefaultStyles.Cursor
 				ti.Cursor.SetMode(cursor.CursorStatic)
 				m.RecoveryInput = ti
+				recoveryPrompt := msg.Prompt
+				if msg.Continue {
+					recoveryPrompt = ""
+				}
 				m.WorkspaceRecovery = &WorkspaceRecoveryState{
 					Missing:     wsErr.Workspace,
 					Replacement: wsErr.Workspace,
-					Prompt:      msg.Prompt,
+					Prompt:      recoveryPrompt,
 					Image:       msg.Image,
 				}
 				m.refreshViewportContent()
@@ -1317,14 +1324,16 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			} else {
 				m.appendSettledEntry(HistoryEntry{Kind: EntryError, Text: msg.Err.Error()})
 			}
-			if m.TextArea.Value() == "" {
-				m.TextArea.SetValue(msg.Prompt)
+			if !msg.Continue {
+				if m.TextArea.Value() == "" {
+					m.TextArea.SetValue(msg.Prompt)
+				}
+				if len(m.pendingUsers) > 0 {
+					m.pendingUsers = m.pendingUsers[1:]
+				}
 			}
 			if m.AttachedImage == nil && msg.Image != nil {
 				m.AttachedImage = msg.Image
-			}
-			if len(m.pendingUsers) > 0 {
-				m.pendingUsers = m.pendingUsers[1:]
 			}
 			m.refreshViewportContent()
 			return m, nil
@@ -1519,6 +1528,23 @@ func (m *ChatModel) sendTurnCmd(content string, image *daemon.ImageAttachment) t
 	}
 }
 
+func (m *ChatModel) sendContinueCmd() tea.Cmd {
+	client := m.Client
+	sessID := m.SessionID
+	gen := m.Generation
+
+	return func() tea.Msg {
+		if client == nil {
+			return ChatTurnSentMsg{SessionID: sessID, Generation: gen, Prompt: ".", Continue: true, Err: fmt.Errorf("no client available")}
+		}
+		res, err := client.Continue(context.Background())
+		if err != nil {
+			return ChatTurnSentMsg{SessionID: sessID, Generation: gen, Prompt: ".", Continue: true, Err: err}
+		}
+		return ChatTurnSentMsg{SessionID: sessID, Generation: gen, Prompt: ".", Continue: true, OK: res.OK, Queued: res.Queued}
+	}
+}
+
 func (m *ChatModel) interruptCmd() tea.Cmd {
 	client := m.Client
 	sessID := m.SessionID
@@ -1560,6 +1586,24 @@ func (m *ChatModel) isRecognizedCommand(input string) bool {
 func (m *ChatModel) submitInput(input string, cmds *[]tea.Cmd) {
 	if strings.HasPrefix(input, "/") && m.isRecognizedCommand(input) {
 		m.handleSubmittedCommand(input, cmds)
+		return
+	}
+
+	if input == "." {
+		if len(m.pendingUsers) >= MaxPendingUsers {
+			m.AddError("too many pending turns; wait for current turn to complete")
+			m.refreshViewportContent()
+			return
+		}
+
+		m.ClearNotices()
+		m.isSending = true
+		m.reseedMood()
+		m.sentHere = true
+		m.Follow = true
+		m.refreshViewportContent()
+
+		*cmds = append(*cmds, m.sendContinueCmd(), m.startAnimation())
 		return
 	}
 
@@ -1792,10 +1836,12 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			Timestamp:  time.Now().UnixMilli(),
 		}
 		m.appendSettledEntry(entry)
-		if m.turn != nil {
-			m.turn.tools++
-			m.turn.touch(evt.Timestamp)
+		if m.turn == nil {
+			ts := time.Now().UnixMilli()
+			m.turn = &openTurn{start: ts, last: ts}
 		}
+		m.turn.tools++
+		m.turn.touch(evt.Timestamp)
 
 	case daemon.EventMessage:
 		m.ToolProgressText = ""
@@ -1822,9 +1868,14 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			Timestamp: ts,
 		}
 		m.appendSettledEntry(entry)
-		if m.turn != nil {
-			m.turn.touch(evt.Timestamp)
+		if m.turn == nil {
+			start := ts
+			if start == 0 {
+				start = time.Now().UnixMilli()
+			}
+			m.turn = &openTurn{start: start, last: start}
 		}
+		m.turn.touch(evt.Timestamp)
 
 	case daemon.EventNote:
 		m.settleActiveStream()
@@ -1919,9 +1970,11 @@ func (t *openTurn) begun() bool {
 }
 
 func (m *ChatModel) turnIsLive() {
-	if m.turn != nil {
-		m.turn.live = true
+	if m.turn == nil {
+		ts := time.Now().UnixMilli()
+		m.turn = &openTurn{start: ts, last: ts}
 	}
+	m.turn.live = true
 }
 
 // stretch is one run of a phase: a thinking or replying spell, or one tool

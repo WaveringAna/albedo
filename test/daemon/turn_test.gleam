@@ -142,3 +142,15 @@ pub fn a_full_note_queue_does_not_block_an_idle_chat_test() {
   turn.admit(turn.Resting, chat("hello"), turn.queue_limit)
   |> should.equal(turn.Start)
 }
+
+fn cont(text: String) -> turn.Submission {
+  turn.Submission("", text, "client", turn.Continue, None)
+}
+
+pub fn continue_submission_starts_turn_and_queues_when_busy_test() {
+  turn.admit(turn.Resting, cont("continue"), 0) |> should.equal(turn.Start)
+  turn.admit(turn.Interrupted, cont("continue"), 0) |> should.equal(turn.Start)
+  turn.admit(running("a"), cont("continue"), 0) |> should.equal(turn.Queue)
+  turn.starts_turn([cont("continue")]) |> should.be_true
+  turn.starts_turn([note("note"), cont("continue")]) |> should.be_true
+}
