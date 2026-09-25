@@ -99,20 +99,27 @@ fn resolve(
 ) -> Option(Result(extension.Upstream, String)) {
   case context.provider {
     "antigravity" ->
-      Some({
-        use encoded <- result.try(native_access(context.home))
-        use access <- result.map(
-          json.parse(encoded, access_decoder())
-          |> result.replace_error("invalid Antigravity credential response"),
-        )
-        upstream(
-          context.home,
-          access,
-          context.session,
-          catalog.model(context.home, context.model, context.effort),
-          user_agent(context.home),
-        )
-      })
+      case context.protocol {
+        types.ChatCompletions ->
+          Some({
+            use encoded <- result.try(native_access(context.home))
+            use access <- result.map(
+              json.parse(encoded, access_decoder())
+              |> result.replace_error("invalid Antigravity credential response"),
+            )
+            upstream(
+              context.home,
+              access,
+              context.session,
+              catalog.model(context.home, context.model, context.effort),
+              user_agent(context.home),
+            )
+          })
+        _ ->
+          Some(Error(
+            "Antigravity provider requires the chat_completions protocol",
+          ))
+      }
     _ -> None
   }
 }

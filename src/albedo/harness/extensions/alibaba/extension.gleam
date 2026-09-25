@@ -39,27 +39,32 @@ fn resolve(
 ) -> Option(Result(extension.Upstream, String)) {
   case context.provider {
     "alibaba" ->
-      Some({
-        use #(base_url, api_key) <- result.try(native_resolve_credentials(
-          context.home,
-          context.profile,
-        ))
-        case string.trim(api_key) == "" {
-          True ->
-            Error(
-              "Alibaba API key not found; set ALIBABA_API_KEY, add to auth.json, or configure in /login",
-            )
-          False ->
-            case string.trim(base_url) == "" {
-              True -> Error("Alibaba base URL is invalid")
-              False -> {
-                let client =
-                  openai_api.client(context.protocol, base_url, api_key)
-                Ok(upstream(client))
-              }
+      case context.protocol {
+        types.ChatCompletions ->
+          Some({
+            use #(base_url, api_key) <- result.try(native_resolve_credentials(
+              context.home,
+              context.profile,
+            ))
+            case string.trim(api_key) == "" {
+              True ->
+                Error(
+                  "Alibaba API key not found; set ALIBABA_API_KEY, add to auth.json, or configure in /login",
+                )
+              False ->
+                case string.trim(base_url) == "" {
+                  True -> Error("Alibaba base URL is invalid")
+                  False -> {
+                    let client =
+                      openai_api.client(context.protocol, base_url, api_key)
+                    Ok(upstream(client))
+                  }
+                }
             }
-        }
-      })
+          })
+        _ ->
+          Some(Error("Alibaba provider requires the chat_completions protocol"))
+      }
     _ -> None
   }
 }

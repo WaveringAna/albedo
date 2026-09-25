@@ -72,25 +72,9 @@ fn configured(config: Configuration, name: String) -> Result(Provider, String) {
     string.trim(name) == ""
     || string.trim(provider.extension) == ""
     || string.trim(provider.model) == ""
-    || !valid_extension_protocol(provider.extension, provider.protocol)
   {
     True -> Error("provider configuration is invalid; run /login")
     False -> Ok(Provider(..provider, name: name))
-  }
-}
-
-fn valid_extension_protocol(
-  extension: String,
-  protocol: types.Protocol,
-) -> Bool {
-  case extension, protocol {
-    "codex", types.Responses -> True
-    "codex", _ -> False
-    "antigravity", types.ChatCompletions -> True
-    "antigravity", _ -> False
-    "alibaba", types.ChatCompletions -> True
-    "alibaba", _ -> False
-    _, _ -> True
   }
 }
 

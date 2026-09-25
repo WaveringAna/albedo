@@ -1,6 +1,6 @@
-import albedo/daemon/configuration
 import albedo/daemon/projection
 import albedo/daemon/transcript
+import albedo/harness/extension
 import albedo/harness/extensions/antigravity/catalog
 import albedo/harness/extensions/antigravity/extension as antigravity
 import albedo/harness/extensions/antigravity/stream
@@ -16,6 +16,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleam/string_tree
+import gleeunit/should
 
 const gemini = "gemini-3.1-pro-low"
 
@@ -354,16 +355,22 @@ pub fn failures_tell_the_user_what_to_do_test() {
 }
 
 pub fn antigravity_profiles_require_chat_completions_test() {
-  let #(root, _, home) = fixture()
-  let _ =
-    write(
-      home,
-      "config.json",
-      "{\"active\":\"ok\",\"providers\":{\"ok\":{\"extension\":\"antigravity\",\"model\":\"gemini-3-flash-agent\",\"protocol\":\"chat_completions\"},\"bad\":{\"extension\":\"antigravity\",\"model\":\"gemini-3-flash-agent\",\"protocol\":\"responses\"}}}",
-    )
-  let assert Ok(_) = configuration.named(home, "ok")
-  let assert Error(_) = configuration.named(home, "bad")
-  cleanup(root)
+  let ext = antigravity.extension()
+  extension.upstream(
+    [ext],
+    extension.ModelContext(
+      "/nonexistent",
+      "s1",
+      "bad",
+      "antigravity",
+      "gemini-3-flash-agent",
+      types.Responses,
+      None,
+    ),
+  )
+  |> should.equal(Error(
+    "Antigravity provider requires the chat_completions protocol",
+  ))
 }
 
 pub fn access_prefers_the_selected_fresh_account_test() {

@@ -177,9 +177,9 @@ func TestAlibabaSettingsValidation(t *testing.T) {
 	}
 
 	badProtocol := good
-	badProtocol.Protocol = "responses"
+	badProtocol.Protocol = "carrier-pigeon"
 	if _, err := badProtocol.Validate(); err == nil {
-		t.Fatal("expected error on alibaba with responses protocol")
+		t.Fatal("expected error on invalid protocol")
 	}
 
 	badEndpoint := good

@@ -55,74 +55,8 @@ func validateModel(value string) (string, error) {
 
 // Validate checks whether the Settings instance is valid.
 func (s Settings) Validate() (Settings, error) {
-	if s.Extension == "codex" {
-		if s.Protocol != "responses" {
-			return s, errors.New("codex requires the responses protocol")
-		}
-		model, err := validateModel(s.Model)
-		if err != nil {
-			return s, err
-		}
-		return Settings{
-			Extension: "codex",
-			Model:     model,
-			Protocol:  "responses",
-		}, nil
-	}
-
-	if s.Extension == "alibaba" {
-		if s.Protocol != "chat_completions" {
-			return s, errors.New("alibaba requires the chat_completions protocol")
-		}
-		model, err := validateModel(s.Model)
-		if err != nil {
-			return s, err
-		}
-		var endpoint string
-		if s.BaseURL != "" {
-			endpoint, err = ValidateEndpoint(s.BaseURL)
-			if err != nil {
-				return s, err
-			}
-		}
-		return Settings{
-			Extension: "alibaba",
-			BaseURL:   endpoint,
-			APIKey:    s.APIKey,
-			Model:     model,
-			Protocol:  "chat_completions",
-		}, nil
-	}
-
-	if s.Extension != "" && s.Extension != "openai" {
-		// A sign-in provider owns its endpoint and credentials; its profile
-		// carries only the protocol the daemon reported and the model.
-		if s.Protocol != "responses" && s.Protocol != "chat_completions" {
-			return s, errors.New("provider protocol must be responses or chat_completions")
-		}
-		model, err := validateModel(s.Model)
-		if err != nil {
-			return s, err
-		}
-		return Settings{Extension: s.Extension, Model: model, Protocol: s.Protocol}, nil
-	}
-
-	if s.APIKey == "" {
-		return s, errors.New("openai provider needs an endpoint, api key, model and valid protocol")
-	}
-	for _, r := range s.APIKey {
-		if unicode.IsSpace(r) || r < 0x20 || r == 0x7f {
-			return s, errors.New("openai provider needs an endpoint, api key, model and valid protocol")
-		}
-	}
-
 	if s.Protocol != "responses" && s.Protocol != "chat_completions" {
-		return s, errors.New("openai provider needs an endpoint, api key, model and valid protocol")
-	}
-
-	endpoint, err := ValidateEndpoint(s.BaseURL)
-	if err != nil {
-		return s, err
+		return s, errors.New("provider protocol must be responses or chat_completions")
 	}
 
 	model, err := validateModel(s.Model)
@@ -130,8 +64,36 @@ func (s Settings) Validate() (Settings, error) {
 		return s, err
 	}
 
+	ext := s.Extension
+	if ext == "" {
+		ext = "openai"
+	}
+
+	var endpoint string
+	if s.BaseURL != "" {
+		endpoint, err = ValidateEndpoint(s.BaseURL)
+		if err != nil {
+			return s, err
+		}
+	}
+
+	// For openai, endpoint and api key are required.
+	if ext == "openai" {
+		if endpoint == "" || s.APIKey == "" {
+			return s, errors.New("openai provider needs an endpoint, api key, model and valid protocol")
+		}
+	}
+
+	if s.APIKey != "" {
+		for _, r := range s.APIKey {
+			if unicode.IsSpace(r) || r < 0x20 || r == 0x7f {
+				return s, errors.New("openai provider needs an endpoint, api key, model and valid protocol")
+			}
+		}
+	}
+
 	return Settings{
-		Extension: "openai",
+		Extension: ext,
 		BaseURL:   endpoint,
 		APIKey:    s.APIKey,
 		Model:     model,

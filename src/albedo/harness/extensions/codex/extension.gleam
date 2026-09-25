@@ -79,23 +79,27 @@ fn resolve(
 ) -> Option(Result(extension.Upstream, String)) {
   case context.provider {
     "codex" ->
-      Some(
-        native_access(context.home, context.session)
-        |> result.try(fn(encoded) {
-          json.parse(encoded, access_decoder())
-          |> result.map_error(fn(_) { "invalid Codex credential response" })
-        })
-        |> result.map(fn(access) {
-          let client =
-            openai_api.codex_client(
-              base_url,
-              access.token,
-              access.account_id,
-              context.session,
-            )
-          openai.upstream(client, account_failure(context.home, client, _))
-        }),
-      )
+      case context.protocol {
+        types.Responses ->
+          Some(
+            native_access(context.home, context.session)
+            |> result.try(fn(encoded) {
+              json.parse(encoded, access_decoder())
+              |> result.map_error(fn(_) { "invalid Codex credential response" })
+            })
+            |> result.map(fn(access) {
+              let client =
+                openai_api.codex_client(
+                  base_url,
+                  access.token,
+                  access.account_id,
+                  context.session,
+                )
+              openai.upstream(client, account_failure(context.home, client, _))
+            }),
+          )
+        _ -> Some(Error("Codex provider requires the responses protocol"))
+      }
     _ -> None
   }
 }

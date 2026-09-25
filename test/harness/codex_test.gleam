@@ -1,4 +1,4 @@
-import albedo/daemon/configuration
+import albedo/harness/extension
 import albedo/harness/extensions/codex/extension as codex
 import albedo/openai_api
 import albedo/openai_api/types
@@ -146,13 +146,18 @@ fn write(base: String, relative: String, content: String) -> String
 fn cleanup(root: String) -> Nil
 
 pub fn codex_profiles_require_responses_protocol_test() {
-  let #(root, _, home) = fixture()
-  let _ =
-    write(
-      home,
-      "config.json",
-      "{\"active\":\"bad\",\"providers\":{\"bad\":{\"extension\":\"codex\",\"model\":\"gpt-5.3-codex\",\"protocol\":\"chat_completions\"}}}",
-    )
-  let assert Error(_) = configuration.named(home, "bad")
-  cleanup(root)
+  let ext = codex.extension()
+  extension.upstream(
+    [ext],
+    extension.ModelContext(
+      "/nonexistent",
+      "s1",
+      "bad",
+      "codex",
+      "gpt-5.3-codex",
+      types.ChatCompletions,
+      None,
+    ),
+  )
+  |> should.equal(Error("Codex provider requires the responses protocol"))
 }
