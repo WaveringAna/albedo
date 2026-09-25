@@ -520,6 +520,12 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 	}()
 	// First: forward chat lifecycle messages even while a modal is open.
 	switch streamMsg := msg.(type) {
+	case ChatEditorFinishedMsg:
+		var cmd tea.Cmd
+		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
+			m.Chat, cmd = m.Chat.Update(msg)
+		}
+		return m, cmd
 	case ChatClearCopyStatusMsg:
 		var cmd tea.Cmd
 		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {

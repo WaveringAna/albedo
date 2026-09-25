@@ -8,6 +8,8 @@ import (
 	"math"
 	"math/rand/v2"
 	"regexp"
+	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,6 +26,14 @@ import (
 
 type ChatBackToSessionsMsg struct{}
 type ChatQuitMsg struct{}
+
+// ChatEditorFinishedMsg is sent after the external editor process exits.
+type ChatEditorFinishedMsg struct {
+	SessionID  string
+	Generation int64
+	Path       string
+	Err        error
+}
 
 // ChatOlderLoadedMsg carries a page of history from before what is shown.
 type ChatOlderLoadedMsg struct {
@@ -381,7 +391,6 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		client.Tail = olderPageRows
 	}
 
-	m.syncPlaceholder()
 	return m
 }
 
@@ -470,13 +479,6 @@ func (m *ChatModel) syncLayout() {
 	m.refreshViewportContent()
 }
 
-func (m *ChatModel) syncPlaceholder() {
-	if m.waitingForInput() && m.TextArea.Value() == "" {
-		m.TextArea.Placeholder = "waiting for user input"
-	} else {
-		m.TextArea.Placeholder = ""
-	}
-}
 
 func (m *ChatModel) SetSize(width, height int) {
 	if m == nil || m.History == nil {
@@ -1020,7 +1022,6 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		)
 		if consumed {
 			m.syncLayout()
-			m.syncPlaceholder()
 			return m, tea.Batch(cmds...)
 		}
 
@@ -1046,6 +1047,9 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 		if msg.Type == tea.KeyCtrlV {
 			return m, PasteClipboardImageCmd(m.SessionID, m.Generation)
+		}
+		if msg.Type == tea.KeyCtrlG {
+			return m, m.openEditorCmd()
 		}
 
 		if msg.Type == tea.KeyPgUp {
@@ -1098,7 +1102,6 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			if trimmed != "" {
 				m.TextArea.Reset()
 				m.syncLayout()
-				m.syncPlaceholder()
 				m.submitInput(trimmed, &cmds)
 				return m, tea.Batch(cmds...)
 			}
@@ -1333,9 +1336,28 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		}
 		m.TextArea.Reset()
 		m.syncLayout()
-		m.syncPlaceholder()
 		m.submitInput(prompt, &cmds)
 		return m, tea.Batch(cmds...)
+
+	case ChatEditorFinishedMsg:
+		if msg.Path != "" {
+			defer os.Remove(msg.Path)
+		}
+		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.AddError("editor error: " + msg.Err.Error())
+			return m, nil
+		}
+		data, err := os.ReadFile(msg.Path)
+		if err != nil {
+			m.AddError("could not read edited prompt: " + err.Error())
+			return m, nil
+		}
+		m.TextArea.SetValue(strings.TrimRight(string(data), "\r\n"))
+		m.syncLayout()
+		return m, nil
 
 	case ChatInterruptMsg:
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
@@ -1362,7 +1384,6 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		m.syncLayout()
 	}
 	cmds = append(cmds, taCmd)
-	m.syncPlaceholder()
 
 	return m, tea.Batch(cmds...)
 }
@@ -1382,6 +1403,64 @@ func (m *ChatModel) replaceWorkspaceCmd(newWorkspace string) tea.Cmd {
 		}
 		return ChatReplaceWorkspaceMsg{SessionID: sessID, Generation: gen, Workspace: upd.Workspace}
 	}
+}
+
+func (m ChatModel) openEditorCmd() tea.Cmd {
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = os.Getenv("VISUAL")
+	}
+	if editor == "" {
+		editor = "nano"
+	}
+	args := strings.Fields(editor)
+	if len(args) == 0 {
+		args = []string{"nano"}
+	}
+
+	tmpFile, err := os.CreateTemp("", "albedo-prompt-*.md")
+	if err != nil {
+		sessID := m.SessionID
+		gen := m.Generation
+		return func() tea.Msg {
+			return ChatEditorFinishedMsg{
+				SessionID:  sessID,
+				Generation: gen,
+				Err:        fmt.Errorf("could not create temporary file: %w", err),
+			}
+		}
+	}
+
+	if _, err := tmpFile.WriteString(m.TextArea.Value()); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpFile.Name())
+		sessID := m.SessionID
+		gen := m.Generation
+		return func() tea.Msg {
+			return ChatEditorFinishedMsg{
+				SessionID:  sessID,
+				Generation: gen,
+				Err:        fmt.Errorf("could not write to temporary file: %w", err),
+			}
+		}
+	}
+	tmpFile.Close()
+
+	cmdArgs := append(args[1:], tmpFile.Name())
+	c := exec.Command(args[0], cmdArgs...)
+
+	sessID := m.SessionID
+	gen := m.Generation
+	path := tmpFile.Name()
+
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		return ChatEditorFinishedMsg{
+			SessionID:  sessID,
+			Generation: gen,
+			Path:       path,
+			Err:        err,
+		}
+	})
 }
 
 func (m *ChatModel) sendTurnCmd(content string, image *daemon.ImageAttachment) tea.Cmd {
@@ -1472,7 +1551,6 @@ func (m *ChatModel) submitInput(input string, cmds *[]tea.Cmd) {
 func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 	m.TextArea.Reset()
 	m.syncLayout()
-	m.syncPlaceholder()
 	trimmed := strings.TrimSpace(input)
 
 	switch {
@@ -1548,7 +1626,6 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 
 func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	defer m.reseedMood()
-	defer m.syncPlaceholder()
 	if evt.Replayed {
 		// the snapshot rebuilds the transcript; whether albedo is working
 		// now is for /status to say, so reopening a session never flashes
@@ -2154,7 +2231,13 @@ func (m ChatModel) View() string {
 }
 
 func (m ChatModel) composerView() string {
-	lines := strings.Split(m.TextArea.View(), "\n")
+	ta := m.TextArea
+	if m.waitingForInput() && ta.Value() == "" {
+		ta.Placeholder = "ctrl+g editor"
+	} else {
+		ta.Placeholder = ""
+	}
+	lines := strings.Split(ta.View(), "\n")
 	h := m.promptHeight()
 	if h < len(lines) {
 		lines = lines[:h]

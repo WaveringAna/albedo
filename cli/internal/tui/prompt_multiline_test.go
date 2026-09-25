@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -209,5 +210,51 @@ func TestPromptPast6LinesScrollsAndHasNoCharLimit(t *testing.T) {
 	// Line 10 (latest line) is visible in the view
 	if !strings.Contains(view, "line 10") {
 		t.Fatalf("expected line 10 to be visible in scrolled view:\n%s", view)
+	}
+}
+
+func TestPromptCtrlGAndEditorFinishedMsg(t *testing.T) {
+	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m.SetSize(60, 25)
+	m.TextArea.SetValue("initial prompt text")
+
+	// Pressing Ctrl+G should return a non-nil tea.Cmd
+	var cmd tea.Cmd
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd from KeyCtrlG")
+	}
+
+	// Create a temp file simulating editor output
+	tmp, err := os.CreateTemp("", "test-editor-finished-*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newContent := "updated text from external editor\nwith multiple lines\n"
+	tmp.WriteString(newContent)
+	tmp.Close()
+
+	// Dispatch ChatEditorFinishedMsg
+	m, _ = m.Update(ChatEditorFinishedMsg{
+		SessionID:  m.SessionID,
+		Generation: m.Generation,
+		Path:       tmp.Name(),
+		Err:        nil,
+	})
+
+	// Verify temp file was removed
+	if _, err := os.Stat(tmp.Name()); !os.IsNotExist(err) {
+		t.Fatalf("expected temp file to be removed after ChatEditorFinishedMsg, stat err: %v", err)
+	}
+
+	// Verify prompt value was updated (trailing newline trimmed)
+	expectedVal := strings.TrimRight(newContent, "\r\n")
+	if m.TextArea.Value() != expectedVal {
+		t.Fatalf("expected TextArea value %q, got %q", expectedVal, m.TextArea.Value())
+	}
+
+	// Verify layout synced to 2 lines
+	if m.promptHeight() != 2 {
+		t.Fatalf("expected promptHeight 2 after editor returned 2 lines, got %d", m.promptHeight())
 	}
 }
