@@ -6,3 +6,13 @@ import gleam/option.{type Option}
 pub type Entry {
   Entry(input: types.Input, timestamp: Option(Int), provider: Option(String))
 }
+
+/// A durable position in one session's append-only transcript. Forks copy
+/// payloads into new rows, so their references belong to the new session.
+pub type SourceRef {
+  SourceRef(session: String, seq: Int)
+}
+
+pub type SourcedEntry {
+  SourcedEntry(source: SourceRef, entry: Entry)
+}

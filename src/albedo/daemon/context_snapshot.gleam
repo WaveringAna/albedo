@@ -2,7 +2,6 @@
 //// This module never prepares history, invokes tools, or calls a provider.
 
 import albedo/harness/compaction as context_size
-import albedo/harness/extensions/rolling/extension as rolling
 import albedo/openai_api/request as provider_request
 import albedo/openai_api/types
 import gleam/int
@@ -183,7 +182,7 @@ pub fn from_request(
   protocol_name: String,
   protocol: types.Protocol,
   request: types.Request,
-  observation: Option(rolling.Observation),
+  observation: Option(context_size.Observation),
 ) -> Snapshot {
   let #(extension_inputs, history) = split_context(request.input, [])
   let sections = []
@@ -357,29 +356,30 @@ fn input_omission(inputs: List(types.Input)) -> Option(String) {
 }
 
 fn observation_capacity(
-  observation: Option(rolling.Observation),
+  observation: Option(context_size.Observation),
 ) -> Option(Int) {
   case observation {
-    Some(rolling.Observation(capacity_tokens: capacity, ..)) -> capacity
+    Some(context_size.Observation(input_limit_tokens: capacity, ..)) -> capacity
     None -> None
   }
 }
 
 fn observation_compaction(
-  observation: Option(rolling.Observation),
+  observation: Option(context_size.Observation),
 ) -> Compaction {
   case observation {
     None ->
       compaction(None, NotConfigured, None, None, None, None, None, None, None)
-    Some(rolling.Observation(
+    Some(context_size.Observation(
       strategy: strategy,
       status: status,
       source: source,
-      capacity_tokens: capacity,
-      estimated_tokens: estimated,
-      trigger_percent: trigger,
-      original_items: before,
-      prepared_items: after,
+      input_limit_tokens: capacity,
+      estimated_input_tokens: estimated,
+      trigger_free_percent: trigger,
+      estimate_method: method,
+      before_items: before,
+      after_items: after,
       ..,
     )) ->
       compaction(
@@ -390,21 +390,19 @@ fn observation_compaction(
           _ -> Unknown
         },
         Some(source),
-        Some(100 - trigger),
+        trigger,
         capacity,
-        Some(estimated),
-        Some("local byte-based estimate; not provider token usage"),
-        Some(before),
-        Some(after),
+        estimated,
+        method,
+        before,
+        after,
       )
   }
 }
 
-fn history_source(observation: Option(rolling.Observation)) -> String {
+fn history_source(observation: Option(context_size.Observation)) -> String {
   case observation {
-    Some(rolling.Observation(status: "compacted", ..)) ->
-      "durable transcript through rolling summary + recent user recap + verbatim tail"
-    Some(_) -> "durable transcript; rolling compaction observation attached"
+    Some(value) -> value.history_source
     None -> "durable transcript without a selected compaction strategy"
   }
 }

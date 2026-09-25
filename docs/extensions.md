@@ -1,16 +1,16 @@
 # extensions
 
-an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, or compaction plugins. `python`, `bash`, `work`, `files`, `commands`, `skills`, `rolling`, and `remote` are enabled by default; `mcp`, `view`, and [`proxy`](proxy.md) are installed and disabled until they are enabled. plugin contributions compose inside them.
+an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, or compaction plugins. `python`, `bash`, `work`, `schedule`, `files`, `instructions`, `commands`, `skills`, `rolling`, `lcm-memory`, and `remote` are enabled by default; `mcp`, `view`, [`proxy`](proxy.md), and `lcm` are installed and disabled until enabled. plugin contributions compose inside them.
 
 ## select extensions
 
-open `/extensions` in a session to inspect installed extensions and enable or disable them. selection is saved per session. required extensions must stay enabled, and changes require an idle session.
+open `/extensions` in a session to inspect installed extensions and enable or disable them. selection is saved per session. enabling a compaction strategy disables the previously selected strategy in the same reload. to replace the active strategy, enable the new one; disabling the only active strategy is rejected. required extensions must stay enabled, and changes require an idle session.
 
 confirming a change reloads that session's workers, context, model tools, python bindings, and host routes. it does not restart the daemon or rewrite the conversation. changing the prompt prefix/tools busts prompt-cache reuse. python variables are saved and restored where possible; values that cannot be saved may be lost. the viewer warns before applying a change.
 
 ## installed and enabled
 
-`extensions.Config(installed, default_enabled)` separates installed extensions from their default selection. multiple compaction strategies may be installed, but at most one can be enabled for a session. `runtime.start_with_config(database, config)` uses this selection; `runtime.start_with_extensions(database, installed)` enables every supplied extension.
+`extensions.Config(installed, default_enabled)` separates installed extensions from their default selection. multiple compaction strategies may be installed, but at most one can be enabled for a session. built-in sessions start with `rolling`; custom hosts can omit compaction. `runtime.start_with_config(database, config)` uses this selection; `runtime.start_with_extensions(database, installed)` enables every supplied extension.
 
 ## contribute plugins
 
@@ -42,7 +42,7 @@ A command that tells the agent about a user's change uses the `Note(origin, disp
 
 `ServicePlugin(Service(handle))` serves HTTP from the daemon while its extension is enabled globally (sessions do not select services). Requests to `/<extension>/...` go to `handle(daemon, path, request)` with the path below the mount. The daemon token does not apply there, so a service owns its own authentication; requests carrying an `Origin` header are still refused, so a web page cannot reach a local service that spends your credentials. The daemon's own routes (`health`, `sessions`, `models`, `auth`, `shutdown`) always win. `extension.Daemon` gives the service `home`, `upstream(profile, model, session)` to resolve a saved profile outside any session, catalog `models`, and the daemon's `sessions`. Set `ALBEDO_PORT` in the daemon's environment to pin its port so a service has a stable base url; the default is a free port chosen at start. Built-in dependencies keep these layers explicit: `codex -> openai -> models`. See [models](models.md) and [model authentication](auth.md).
 
-`CompactionPlugin` supplies a history strategy; see [compaction](compaction.md). at most one enabled compaction strategy owns the request-history view. a strategy receives chronological history and must preserve tool call/result associations; it must not replace the durable transcript.
+`CompactionPlugin` supplies a history strategy; see [compaction](compaction.md). one enabled compaction strategy owns the request-history view in a built-in session. a strategy receives chronological history and must preserve tool call/result associations; it must not replace the durable transcript.
 
 ## extension settings
 
@@ -131,3 +131,7 @@ see [the skills extension](skills.md) for discovery paths, metadata-only startup
 ## rolling compaction
 
 `rolling` is the enabled-by-default compaction strategy: summary, recent-user recap, then a verbatim tail, triggered by remaining context. see [compaction](compaction.md) for its contract, settings, and state handling.
+
+## lcm compaction
+
+`lcm` is an alternative compaction strategy with source-backed hierarchical summaries. enabling it disables `rolling` in the same reload. `lcm-memory` keeps `lcm_list`, `lcm_grep`, `lcm_describe`, and `lcm_expand` available after a switch back to `rolling`, so stored folds remain accessible even if a rolling summary omits them. see [compaction](compaction.md) for the handoff and retrieval limits.

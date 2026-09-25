@@ -24,7 +24,7 @@ pub type Loop {
     upstream: extension.Upstream,
     publish: fn(String) -> Bool,
     commit: fn(List(types.Input), conversation.Stage) -> Result(Int, String),
-    record_context: fn(types.Request) -> Nil,
+    record_context: fn(types.Request, Option(compaction.Observation)) -> Nil,
     record_usage: fn(usage.Metadata) -> Result(Nil, String),
     drain_steering: fn() -> Result(List(types.Input), String),
     /// Reports the pin's compaction baseline (`Some`) or that compaction
@@ -54,28 +54,30 @@ pub fn run(
     False -> Error("cancelled")
   })
   let original = list.reverse(inputs)
-  use history <- result.try(runtime.prepare_history_scoped(
+  let pinned_instructions = request_instructions(state)
+  use prepared <- result.try(runtime.prepare_view_scoped(
     state.host,
     request_kernel(state),
     state.model,
     request_source(state.upstream, state.model),
     state.upstream.endpoint,
-    request_instructions(state),
+    pinned_instructions,
     summarize(state, _),
     original,
+    False,
   ))
-  let #(state, history) = settle_pin(state, original, history)
-  let request_instructions = request_instructions(state)
+  let #(state, history) = settle_pin(state, original, prepared.inputs)
+  let current_instructions = request_instructions(state)
   let request =
     types.Request(
       state.model,
-      Some(request_instructions),
+      Some(current_instructions),
       history,
       runtime.tools(state.kernel),
       None,
       types.Options(..types.defaults, effort: state.effort),
     )
-  state.record_context(request)
+  state.record_context(request, prepared.observation)
   use turn <- result.try(
     stream_with_retries(state.upstream, request, state.publish, fn(event) {
       let event = case event {
@@ -194,7 +196,7 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
   let request_instructions = request_instructions(state)
   // `inputs` accumulates newest-first; strategies read chronological history.
   let original = list.reverse(inputs)
-  use history <- result.try(runtime.compact_history_scoped(
+  use prepared <- result.try(runtime.prepare_view_scoped(
     state.host,
     request_kernel(state),
     state.model,
@@ -203,15 +205,20 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
     request_instructions,
     summarize(state, _),
     original,
+    True,
   ))
-  state.record_context(types.Request(
-    state.model,
-    Some(request_instructions),
-    history,
-    runtime.tools(state.kernel),
-    None,
-    types.defaults,
-  ))
+  let history = prepared.inputs
+  state.record_context(
+    types.Request(
+      state.model,
+      Some(request_instructions),
+      history,
+      runtime.tools(state.kernel),
+      None,
+      types.defaults,
+    ),
+    prepared.observation,
+  )
   // The projection keeps a verbatim tail, so everything before the shared
   // suffix is what the strategy's replacement stands in for.
   let suffix = common_suffix(original, history)

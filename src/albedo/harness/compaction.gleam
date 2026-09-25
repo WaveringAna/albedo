@@ -37,13 +37,36 @@ pub type Context {
   )
 }
 
+/// What a strategy prepared for one request. The observation describes this
+/// exact preparation, so inspectors do not need to query strategy-owned state.
+pub type Prepared {
+  Prepared(inputs: List(types.Input), observation: Option(Observation))
+}
+
+/// Strategy-neutral facts for the request inspector. A strategy may add more
+/// detail to `source` and `history_source` without changing the inspector.
+pub type Observation {
+  Observation(
+    strategy: String,
+    status: String,
+    source: String,
+    history_source: String,
+    trigger_free_percent: Option(Int),
+    input_limit_tokens: Option(Int),
+    estimated_input_tokens: Option(Int),
+    estimate_method: Option(String),
+    before_items: Option(Int),
+    after_items: Option(Int),
+  )
+}
+
 /// Receives chronological history before each model request. Implementations
 /// own their summaries/state and must preserve valid tool call/result pairs.
 /// Failure stops the turn; the full durable transcript is never replaced.
 pub type Strategy {
   Strategy(
     name: String,
-    prepare: fn(Context, List(types.Input)) -> Result(List(types.Input), String),
+    prepare: fn(Context, List(types.Input)) -> Result(Prepared, String),
   )
 }
 

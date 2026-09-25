@@ -378,23 +378,85 @@ pub fn propose(
   )
   use current <- result.try(overrides(ledger, session))
   let defaults = global_defaults(default_enabled)
+  use _ <- result.try(case change {
+    SetSession(name, False) ->
+      case list.find(installed, fn(item) { item.name == name }) {
+        Ok(item) ->
+          case
+            is_compaction(item)
+            && list.any(select(installed, defaults, current), fn(active) {
+              active.name == name
+            })
+          {
+            True ->
+              Error("select another compaction strategy to replace " <> name)
+            False -> Ok(Nil)
+          }
+        Error(_) -> Ok(Nil)
+      }
+    _ -> Ok(Nil)
+  })
+  let target = list.find(installed, fn(extension) { extension.name == name })
+  let switching = case change, target {
+    SetSession(_, True), Ok(extension) | SetGlobal(_, True), Ok(extension) ->
+      is_compaction(extension)
+    _, _ -> False
+  }
+  let without_other_compactions = fn(names: List(String)) {
+    list.filter(names, fn(other) {
+      other == name
+      || !list.any(installed, fn(extension) {
+        extension.name == other && is_compaction(extension)
+      })
+    })
+  }
   let #(defaults, current) = case change {
     SetSession(name, value) -> #(defaults, [
       #(name, value),
-      ..list.filter(current, fn(pair) { pair.0 != name })
+      ..list.filter(current, fn(pair) {
+        pair.0 != name
+        && {
+          !switching
+          || !list.any(installed, fn(extension) {
+            extension.name == pair.0 && is_compaction(extension)
+          })
+        }
+      })
     ])
     Inherit(name) -> #(
       defaults,
       list.filter(current, fn(pair) { pair.0 != name }),
     )
     SetGlobal(name, True) -> #(
-      [name, ..list.filter(defaults, fn(other) { other != name })],
+      [
+        name,
+        ..list.filter(
+          case switching {
+            True -> without_other_compactions(defaults)
+            False -> defaults
+          },
+          fn(other) { other != name },
+        )
+      ],
       current,
     )
     SetGlobal(name, False) -> #(
       list.filter(defaults, fn(other) { other != name }),
       current,
     )
+  }
+  let current = case switching, change {
+    True, SetSession(..) ->
+      list.append(
+        current,
+        list.filter_map(installed, fn(extension) {
+          case is_compaction(extension) && extension.name != name {
+            True -> Ok(#(extension.name, False))
+            False -> Error(Nil)
+          }
+        }),
+      )
+    _, _ -> current
   }
   use _ <- result.try(case change {
     SetGlobal(..) ->
@@ -447,28 +509,149 @@ pub fn selection(
   propose(ledger, installed, default_enabled, session, SetSession(name, value))
 }
 
-pub fn set_enabled(
+fn is_compaction(extension: Extension) -> Bool {
+  list.any(extension.plugins, fn(plugin) {
+    case plugin {
+      CompactionPlugin(_) -> True
+      _ -> False
+    }
+  })
+}
+
+/// Save only changed selections. A single transaction prevents a restart from
+/// seeing both compaction strategies enabled during a replacement.
+pub fn set_selection(
+  ledger: store.Store,
+  session: String,
+  previous: List(Extension),
+  selected: List(Extension),
+) -> Result(Nil, String) {
+  set_selection_with(ledger, session, previous, selected, None)
+}
+
+fn set_enabled(
   ledger: store.Store,
   session: String,
   name: String,
   value: Bool,
 ) -> Result(Nil, String) {
-  store.query(ledger, fn(db) {
-    sqlight.query(
-      "INSERT INTO session_extensions(session,name,enabled) VALUES(?,?,?) ON CONFLICT(session,name) DO UPDATE SET enabled=excluded.enabled",
-      db,
-      [
-        sqlight.text(session),
-        sqlight.text(name),
-        sqlight.int(case value {
-          True -> 1
-          False -> 0
-        }),
-      ],
-      decode.dynamic,
+  write_changes(ledger, session, [#(name, value)])
+}
+
+/// Persist a strategy replacement and the explicit choice in one transaction.
+pub fn record_selected(
+  ledger: store.Store,
+  session: String,
+  change: Change,
+  previous: List(Extension),
+  selected: List(Extension),
+  installed: List(Extension),
+) -> Result(Nil, String) {
+  case change {
+    SetSession(name, True) ->
+      case list.find(installed, fn(item) { item.name == name }) {
+        Ok(item) ->
+          case is_compaction(item) {
+            True ->
+              set_selection_with(
+                ledger,
+                session,
+                previous,
+                selected,
+                Some(#(name, True)),
+              )
+            False -> record(ledger, session, change)
+          }
+        _ -> record(ledger, session, change)
+      }
+    SetGlobal(name, True) ->
+      case list.find(installed, fn(item) { item.name == name }) {
+        Ok(item) ->
+          case is_compaction(item) {
+            True -> {
+              use _ <- result.try(
+                list.try_each(installed, fn(other) {
+                  case other.name != name && is_compaction(other) {
+                    True -> set_global(settings.home(), other.name, False)
+                    False -> Ok(Nil)
+                  }
+                }),
+              )
+              record(ledger, session, change)
+            }
+            False -> record(ledger, session, change)
+          }
+        _ -> record(ledger, session, change)
+      }
+    _ -> record(ledger, session, change)
+  }
+}
+
+fn set_selection_with(
+  ledger: store.Store,
+  session: String,
+  previous: List(Extension),
+  selected: List(Extension),
+  explicit: Option(#(String, Bool)),
+) -> Result(Nil, String) {
+  let changes =
+    list.append(
+      selected
+        |> list.filter(fn(item) {
+          !list.any(previous, fn(old) { old.name == item.name })
+        })
+        |> list.map(fn(item) { #(item.name, True) }),
+      previous
+        |> list.filter(fn(item) {
+          !list.any(selected, fn(next) { next.name == item.name })
+        })
+        |> list.map(fn(item) { #(item.name, False) }),
     )
-    |> result.replace(Nil)
-    |> result.map_error(fn(error) { error.message })
+  write_changes(ledger, session, case explicit {
+    Some(choice) -> [choice, ..changes]
+    None -> changes
+  })
+}
+
+fn write_changes(
+  ledger: store.Store,
+  session: String,
+  changes: List(#(String, Bool)),
+) -> Result(Nil, String) {
+  store.query(ledger, fn(db) {
+    use _ <- result.try(
+      sqlight.exec("BEGIN IMMEDIATE", db)
+      |> result.replace(Nil)
+      |> result.map_error(fn(error) { error.message }),
+    )
+    let written =
+      list.try_each(changes, fn(change) {
+        sqlight.query(
+          "INSERT INTO session_extensions(session,name,enabled) VALUES(?,?,?) ON CONFLICT(session,name) DO UPDATE SET enabled=excluded.enabled",
+          db,
+          [
+            sqlight.text(session),
+            sqlight.text(change.0),
+            sqlight.int(case change.1 {
+              True -> 1
+              False -> 0
+            }),
+          ],
+          decode.dynamic,
+        )
+        |> result.replace(Nil)
+        |> result.map_error(fn(error) { error.message })
+      })
+    case written {
+      Ok(_) ->
+        sqlight.exec("COMMIT", db)
+        |> result.replace(Nil)
+        |> result.map_error(fn(error) { error.message })
+      Error(error) -> {
+        let _ = sqlight.exec("ROLLBACK", db)
+        Error(error)
+      }
+    }
   })
 }
 

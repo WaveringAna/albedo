@@ -507,7 +507,31 @@ pub fn load_entries(
   store: store.Store,
   id: String,
 ) -> Result(List(transcript.Entry), String) {
-  load_pages(store, id, -1, [])
+  load_sources(store, id)
+  |> result.map(fn(rows) { list.map(rows, fn(row) { row.entry }) })
+}
+
+/// Read durable entries with their SQLite identities in chronological order.
+pub fn load_sources(
+  store: store.Store,
+  id: String,
+) -> Result(List(transcript.SourcedEntry), String) {
+  use upper <- result.try(
+    store.query(store, fn(db) {
+      sqlight.query(
+        "SELECT COALESCE(MAX(seq),-1) FROM transcript WHERE session=?",
+        db,
+        [sqlight.text(id)],
+        {
+          use count <- decode.field(0, decode.int)
+          decode.success(count)
+        },
+      )
+      |> result.map_error(fn(error) { error.message })
+      |> result.map(fn(rows) { list.first(rows) |> result.unwrap(-1) })
+    }),
+  )
+  load_source_pages(store, id, -1, upper, [])
 }
 
 /// Rows per store round trip. A transcript is read a page at a time so the
@@ -515,19 +539,25 @@ pub fn load_entries(
 /// the whole transcript at once.
 const load_page_rows = 128
 
-fn load_pages(
+fn load_source_pages(
   store: store.Store,
   id: String,
   after: Int,
-  pages: List(List(transcript.Entry)),
-) -> Result(List(transcript.Entry), String) {
+  upper: Int,
+  pages: List(List(transcript.SourcedEntry)),
+) -> Result(List(transcript.SourcedEntry), String) {
   let page =
     store.query(store, fn(db) {
       use rows <- result.try(
         sqlight.query(
-          "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? AND seq>? ORDER BY seq LIMIT ?",
+          "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
           db,
-          [sqlight.text(id), sqlight.int(after), sqlight.int(load_page_rows)],
+          [
+            sqlight.text(id),
+            sqlight.int(after),
+            sqlight.int(upper),
+            sqlight.int(load_page_rows),
+          ],
           {
             use seq <- decode.field(0, decode.int)
             use payload <- decode.field(1, decode.bit_array)
@@ -544,23 +574,58 @@ fn load_pages(
             unpack(row.1)
             |> result.replace_error("invalid saved transcript item"),
           )
-          Ok(transcript.Entry(input, row.2, row.3))
+          Ok(transcript.SourcedEntry(
+            transcript.SourceRef(id, row.0),
+            transcript.Entry(input, row.2, row.3),
+          ))
         }),
       )
       Ok(#(entries, list.last(rows) |> result.map(fn(row) { row.0 })))
     })
-  // Only the owning session appends to its transcript, and it is the one
-  // loading, so no row can land between pages.
+  // New rows may land between pages; the captured upper bound keeps one view.
   case page {
     Error(error) -> Error(error)
     Ok(#(entries, Ok(last))) ->
       case list.length(entries) == load_page_rows {
-        True -> load_pages(store, id, last, [entries, ..pages])
+        True -> load_source_pages(store, id, last, upper, [entries, ..pages])
         False -> Ok(list.flatten(list.reverse([entries, ..pages])))
       }
     Ok(#(entries, Error(_))) ->
       Ok(list.flatten(list.reverse([entries, ..pages])))
   }
+}
+
+/// Resolve one reference by both session and sequence. A missing row is an
+/// ordinary result (for example, a reference from a different database).
+pub fn source(
+  store: store.Store,
+  reference: transcript.SourceRef,
+) -> Result(Option(transcript.Entry), String) {
+  let transcript.SourceRef(session, seq) = reference
+  store.query(store, fn(db) {
+    use rows <- result.try(
+      sqlight.query(
+        "SELECT payload,timestamp,provider FROM transcript WHERE session=? AND seq=?",
+        db,
+        [sqlight.text(session), sqlight.int(seq)],
+        {
+          use payload <- decode.field(0, decode.bit_array)
+          use timestamp <- decode.field(1, decode.optional(decode.int))
+          use provider <- decode.field(2, decode.optional(decode.string))
+          decode.success(#(payload, timestamp, provider))
+        },
+      )
+      |> result.map_error(fn(e) { e.message }),
+    )
+    case rows {
+      [] -> Ok(None)
+      [row] ->
+        unpack(row.0)
+        |> result.replace_error("invalid saved transcript item")
+        |> result.map(fn(input) { Some(transcript.Entry(input, row.1, row.2)) })
+      _ -> Error("duplicate transcript source reference")
+    }
+  })
 }
 
 pub fn load(

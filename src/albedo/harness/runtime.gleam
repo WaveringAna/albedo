@@ -564,6 +564,17 @@ fn handle(state: State, message: Message) {
         Ok(selected), Ok(running) -> names(selected) == names(running)
         _, _ -> False
       }
+      let persist = fn(selected) {
+        use previous <- result.try(current)
+        extension.record_selected(
+          state.work,
+          id,
+          change,
+          previous,
+          selected,
+          state.extensions,
+        )
+      }
       case proposed {
         Error(error) -> {
           process.send(reply, Error(error))
@@ -571,11 +582,8 @@ fn handle(state: State, message: Message) {
         }
         // Nothing this session runs changes: record the choice and keep the
         // live kernel, its namespace, and its prompt cache.
-        Ok(_) if unchanged -> {
-          process.send(
-            reply,
-            extension.record(state.work, id, change) |> result.replace(None),
-          )
+        Ok(selected) if unchanged -> {
+          process.send(reply, persist(selected) |> result.replace(None))
           actor.continue(state)
         }
         Ok(selected) -> {
@@ -607,7 +615,7 @@ fn handle(state: State, message: Message) {
               actor.continue(state)
             }
             Ok(#(cached, replacement)) ->
-              case extension.record(state.work, id, change) {
+              case persist(selected) {
                 Error(error) -> {
                   stop_session("extension reload rollback", replacement)
                   process.send(reply, Error(error))
@@ -976,7 +984,7 @@ pub fn prepare_history_scoped(
   summarize: fn(compaction.SummaryRequest) -> Result(String, String),
   history: List(types.Input),
 ) -> Result(List(types.Input), String) {
-  prepare_scoped(
+  prepare_view_scoped(
     runtime,
     session,
     model,
@@ -987,6 +995,7 @@ pub fn prepare_history_scoped(
     history,
     False,
   )
+  |> result.map(fn(prepared) { prepared.inputs })
 }
 
 /// Run the active strategy now, independent of its automatic threshold.
@@ -1000,7 +1009,7 @@ pub fn compact_history_scoped(
   summarize: fn(compaction.SummaryRequest) -> Result(String, String),
   history: List(types.Input),
 ) -> Result(List(types.Input), String) {
-  prepare_scoped(
+  prepare_view_scoped(
     runtime,
     session,
     model,
@@ -1011,9 +1020,11 @@ pub fn compact_history_scoped(
     history,
     True,
   )
+  |> result.map(fn(prepared) { prepared.inputs })
 }
 
-fn prepare_scoped(
+/// Prepare one provider request and its strategy-neutral inspection facts.
+pub fn prepare_view_scoped(
   runtime: Runtime,
   session: Session,
   model: String,
@@ -1023,7 +1034,7 @@ fn prepare_scoped(
   summarize: fn(compaction.SummaryRequest) -> Result(String, String),
   history: List(types.Input),
   force: Bool,
-) -> Result(List(types.Input), String) {
+) -> Result(compaction.Prepared, String) {
   use _ <- result.try(owned_by(runtime, session))
   let pinned_tokens =
     compaction.estimate_pinned(instructions, session.context, tools(session))
@@ -1031,7 +1042,7 @@ fn prepare_scoped(
     extension.compaction(extension.extensions(session.composition))
   {
     None if force -> Error("no compaction strategy is enabled")
-    None -> Ok(history)
+    None -> Ok(compaction.Prepared(history, None))
     Some(strategy) ->
       strategy.prepare(
         compaction.Context(
@@ -1051,7 +1062,13 @@ fn prepare_scoped(
         "compaction " <> strategy.name <> ": " <> error
       })
   }
-  prepared |> result.map(fn(history) { list.append(session.context, history) })
+  prepared
+  |> result.map(fn(view) {
+    compaction.Prepared(
+      list.append(session.context, view.inputs),
+      view.observation,
+    )
+  })
 }
 
 @external(erlang, "albedo_inspect", "label")

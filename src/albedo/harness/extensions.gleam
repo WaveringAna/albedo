@@ -5,6 +5,8 @@ import albedo/harness/extensions/codex/extension as codex
 import albedo/harness/extensions/commands/extension as commands
 import albedo/harness/extensions/files/extension as files
 import albedo/harness/extensions/instructions/extension as instructions
+import albedo/harness/extensions/lcm/extension as lcm
+import albedo/harness/extensions/lcm/memory as lcm_memory
 import albedo/harness/extensions/mcp/extension as mcp
 import albedo/harness/extensions/models/extension as models
 import albedo/harness/extensions/openai/extension as openai
@@ -39,6 +41,8 @@ pub fn defaults() -> Config {
       openai.extension(),
       codex.extension(),
       rolling.extension(),
+      lcm_memory.extension(),
+      lcm.extension(),
       mcp.configured_extension(),
       remote.extension(),
       view.extension(),
@@ -46,7 +50,8 @@ pub fn defaults() -> Config {
     ],
     [
       "python", "bash", "work", "schedule", "files", "instructions", "commands",
-      "skills", "models", "openai", "codex", "antigravity", "rolling", "remote",
+      "skills", "models", "openai", "codex", "antigravity", "rolling",
+      "lcm-memory", "remote",
     ],
   )
 }

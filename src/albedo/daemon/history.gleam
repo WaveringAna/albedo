@@ -3,6 +3,7 @@
 import albedo/daemon/conversation
 import albedo/daemon/events
 import albedo/daemon/store
+import albedo/harness/extensions/lcm/graph as lcm_graph
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/int
@@ -196,6 +197,13 @@ pub fn fork(
           let title = prefix_title(rows)
           use _ <- result.try(insert_session(db, source, branch_id, title))
           use _ <- result.try(copy_prefix(db, source_id, branch_id, checkpoint))
+          use _ <- result.try(lcm_graph.inherit_fork_prefix(
+            db,
+            source_id,
+            branch_id,
+            checkpoint,
+            list.map(rows, fn(row) { row.seq }),
+          ))
           use _ <- result.try(copy_extension_overrides(db, source_id, branch_id))
           use _ <- result.try(append_incomplete_results(
             db,

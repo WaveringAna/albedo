@@ -6,14 +6,12 @@ import albedo/daemon/session_state
 import albedo/daemon/turn
 import albedo/daemon/usage
 import albedo/harness/extension
-import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/loop
 import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/erlang/process.{type Subject}
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
-import gleam/result
 
 pub type Messages(message) {
   Messages(
@@ -52,8 +50,6 @@ pub fn start(
   // The worker's closures must capture these fields, never `state`: a spawn
   // copies everything its closure references, and the session state carries
   // the loaded transcript.
-  let ledger = runtime.ledger(state.host)
-  let id = state.info.id
   let provider = state.info.provider
   let protocol = state.info.protocol
   let worker =
@@ -68,13 +64,7 @@ pub fn start(
       fn(inputs, stage) {
         actor.call(owner, 10_000, messages.commit(run_id, inputs, stage, _))
       },
-      fn(request) {
-        let observation = case runtime.compaction_name(kernel) {
-          Some("rolling") ->
-            rolling.observation(ledger, id)
-            |> result.unwrap(None)
-          _ -> None
-        }
+      fn(request, observation) {
         let snapshot =
           context_snapshot.from_request(
             Some(usage.now()),
