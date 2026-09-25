@@ -17,6 +17,8 @@ import gleam/string
 pub type Source {
   Chat
   JobWake
+  /// A durable intake receipt starts a turn only when the session is idle.
+  Webhook(id: String)
   /// Something an extension tells the agent, such as a user's work ledger
   /// change. `origin` labels it in the transcript.
   Note(origin: String)
@@ -75,6 +77,7 @@ pub fn source_name(source: Source) -> String {
   case source {
     Chat -> "chat"
     JobWake -> "bash"
+    Webhook(_) -> "webhook"
     Note(origin) -> origin
   }
 }
@@ -88,7 +91,7 @@ pub fn admit(
     _, False, _ -> Reject(Oversized)
     _, True, Note(_) -> room(queued)
     Running(_), True, Chat -> room(queued)
-    Running(_), True, JobWake -> Reject(Busy)
+    Running(_), True, JobWake | Running(_), True, Webhook(_) -> Reject(Busy)
     Resting, True, _ | Interrupted, True, _ -> Start
   }
 }

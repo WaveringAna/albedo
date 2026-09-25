@@ -28,6 +28,8 @@ pub type Input {
   NoInput
   /// Free text. `prefill` starts the field with the selected row's text.
   Text(prompt: String, prefill: Bool)
+  /// Sensitive input is masked in the client and never echoed into the page.
+  Secret(prompt: String)
   Choice(options: List(String))
   /// A preset value, so one key applies it: "done", "on", "off".
   Value(String)
@@ -108,6 +110,10 @@ fn action_json(action: Action) -> json.Json {
       #("input", json.string("text")),
       #("prompt", json.string(prompt)),
       #("prefill", json.bool(prefill)),
+    ]
+    Secret(prompt) -> [
+      #("input", json.string("secret")),
+      #("prompt", json.string(prompt)),
     ]
     Choice(options) -> [
       #("input", json.string("choice")),

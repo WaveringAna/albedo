@@ -915,6 +915,30 @@ pub fn commit_from(
   stage: Stage,
   provider: Option(String),
 ) -> Result(Int, String) {
+  commit_with_delivery(store, id, inputs, stage, provider, None)
+}
+
+/// A webhook receipt and its session input commit together; retrying an accepted
+/// delivery after a crash cannot append a second copy to the transcript.
+pub fn commit_webhook_from(
+  store: store.Store,
+  id: String,
+  inputs: List(types.Input),
+  stage: Stage,
+  provider: Option(String),
+  delivery: String,
+) -> Result(Int, String) {
+  commit_with_delivery(store, id, inputs, stage, provider, Some(delivery))
+}
+
+fn commit_with_delivery(
+  store: store.Store,
+  id: String,
+  inputs: List(types.Input),
+  stage: Stage,
+  provider: Option(String),
+  delivery: Option(String),
+) -> Result(Int, String) {
   let timestamp = usage.now()
   let read = images.reader(store)
   store.query(store, fn(db) {
@@ -923,6 +947,23 @@ pub fn commit_from(
       |> result.map_error(fn(e) { e.message }),
     )
     let written = {
+      use _ <- result.try(case delivery {
+        None -> Ok(Nil)
+        Some(delivery) ->
+          sqlight.query(
+            "UPDATE webhook_deliveries SET delivered_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND session=? AND delivered_at IS NULL RETURNING id",
+            db,
+            [sqlight.text(delivery), sqlight.text(id)],
+            decode.field(0, decode.string, decode.success),
+          )
+          |> result.map_error(fn(e) { e.message })
+          |> result.try(fn(rows) {
+            case rows {
+              [_, ..] -> Ok(Nil)
+              [] -> Error("webhook delivery already committed")
+            }
+          })
+      })
       let advances_assistant = case has_visible_assistant(inputs) {
         True -> 1
         False -> 0

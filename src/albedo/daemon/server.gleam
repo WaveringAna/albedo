@@ -10,9 +10,11 @@ import albedo/daemon/usage
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/schedule/ledger as schedule
+import albedo/harness/extensions/webhooks/ledger as webhooks
 import albedo/harness/oauth
 import albedo/harness/runtime
 import albedo/openai_api/types
+import gleam/bit_array
 import gleam/bytes_tree
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
@@ -381,7 +383,17 @@ fn handle(state: State, message: Message) {
           let db = runtime.ledger(state.host)
           let registry = state.self
           let worker =
-            process.spawn_unlinked(fn() { dispatch_schedules(db, registry) })
+            process.spawn_unlinked(fn() {
+              dispatch_schedules(db, registry)
+              case
+                runtime.global(state.host)
+                |> result.replace_error(Nil)
+                |> result.try(extension.service(_, "webhooks"))
+              {
+                Ok(_) -> dispatch_webhooks(db, registry)
+                Error(_) -> Nil
+              }
+            })
           let _ = process.monitor(worker)
           actor.continue(State(..state, scheduling: Some(worker)))
         }
@@ -423,6 +435,49 @@ fn dispatch_schedules(db: store.Store, registry: Subject(Message)) -> Nil {
   case schedule.due(db, time) {
     Error(error) -> io.println("scheduler query failed: " <> error)
     Ok(jobs) -> list.each(jobs, dispatch_schedule(db, registry, _))
+  }
+}
+
+fn dispatch_webhooks(db: store.Store, registry: Subject(Message)) -> Nil {
+  case webhooks.pending(db, 25) {
+    Error(error) ->
+      io.println_error("webhook inbox query failed: " <> string.inspect(error))
+    Ok(deliveries) ->
+      list.each(deliveries, fn(delivery) {
+        case actor.call(registry, 10_000, Lookup(delivery.session, _)) {
+          Error(reason) -> {
+            let _ = webhooks.record_failure(db, delivery.id, reason)
+            Nil
+          }
+          Ok(worker) -> {
+            let preview =
+              delivery.body
+              |> bit_array.to_string
+              |> result.map(fn(text) { string.slice(text, 0, 4000) })
+              |> result.unwrap("[binary payload; read the delivery by id]")
+            // submit_webhook commits the receipt and transcript input together.
+            case
+              session.submit_webhook(
+                worker,
+                delivery.id,
+                delivery.name,
+                preview,
+              )
+            {
+              Ok(_) | Error(session.Busy) -> Nil
+              Error(error) -> {
+                let _ =
+                  webhooks.record_failure(
+                    db,
+                    delivery.id,
+                    string.inspect(error),
+                  )
+                Nil
+              }
+            }
+          }
+        }
+      })
   }
 }
 
@@ -782,6 +837,7 @@ fn daemon(
 ) -> extension.Daemon {
   extension.Daemon(
     config.home,
+    runtime.ledger(host),
     fn(profile, model, session) {
       use provider <- result.try(configuration.named(config.home, profile))
       runtime.upstream(

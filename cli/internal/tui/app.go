@@ -813,6 +813,14 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 			return m, m.ExtensionPicker.Init()
 		}
 
+	case ExtensionPickerOpenPageMsg:
+		if m.ActiveSession != nil {
+			m.PageView = NewPageViewModel(m.Conn, m.ActiveSession.ID, msg.Command)
+			m.PageView.SetSize(m.Width, m.Height)
+			m.State = AppStatePageView
+			return m, m.PageView.Init()
+		}
+
 	case ExtensionPickerDoneMsg:
 		m.State = AppStateChat
 		return m, nil

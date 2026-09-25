@@ -31,6 +31,7 @@ go -C cli build -o bin/albedo ./cmd/albedo
 python3 test/daemon/integration.py
 python3 test/daemon/extensions_integration.py
 python3 test/daemon/proxy_integration.py
+python3 test/daemon/webhooks_integration.py
 python3 test/daemon/mcp_integration.py
 python3 test/daemon/context_integration.py
 python3 test/daemon/kernel_reset_integration.py

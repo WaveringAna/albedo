@@ -17,6 +17,7 @@ import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/extensions/schedule/extension as schedule
 import albedo/harness/extensions/skills/extension as skills
 import albedo/harness/extensions/view/extension as view
+import albedo/harness/extensions/webhooks/extension as webhooks
 import albedo/harness/extensions/work/extension as work
 
 pub type Config {
@@ -47,6 +48,7 @@ pub fn defaults() -> Config {
       remote.extension(),
       view.extension(),
       proxy.extension(),
+      webhooks.extension(),
     ],
     [
       "python", "bash", "work", "schedule", "files", "instructions", "commands",

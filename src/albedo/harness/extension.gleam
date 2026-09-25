@@ -182,6 +182,8 @@ pub type Service {
 pub type Daemon {
   Daemon(
     home: String,
+    /// The daemon's serialized durable store, also used by session ledgers.
+    ledger: store.Store,
     /// The upstream a saved profile resolves to for `model`, with `session`
     /// naming the conversation for providers that keep per-session identity.
     upstream: fn(String, String, String) -> Result(Upstream, String),

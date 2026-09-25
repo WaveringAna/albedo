@@ -62,6 +62,20 @@ pub fn busy_session_refuses_job_wakes_as_busy_test() {
   |> should.equal(turn.Reject(turn.Busy))
 }
 
+pub fn webhook_waits_for_an_idle_session_test() {
+  let delivery =
+    turn.Submission(
+      "webhook",
+      "external alert",
+      "receipt",
+      turn.Webhook("receipt"),
+      None,
+    )
+  turn.admit(running("a"), delivery, 0) |> should.equal(turn.Reject(turn.Busy))
+  turn.admit(turn.Resting, delivery, 0) |> should.equal(turn.Start)
+  turn.admit(turn.Interrupted, delivery, 0) |> should.equal(turn.Start)
+}
+
 pub fn late_messages_from_an_old_run_are_not_owned_test() {
   let activity = running("current")
   turn.owner(activity, "old") |> should.equal(None)

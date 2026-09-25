@@ -108,6 +108,10 @@ see [the commands extension](commands.md) for the full contract. `CommandPlugin`
 
 see [the mcp extension](mcp.md) for connecting Model Context Protocol servers: configuration, credential scope, namespaced tools, and connection lifecycle.
 
+## webhooks
+
+Optional. A signed HTTP hook wakes one persistent session, with an opt-in setting for agent self-management. See [webhooks](webhooks.md) for setup, signing, retries, and security boundaries.
+
 ## remote
 
 the `remote` extension boots this session's Python kernel on a remote host over one SSH connection, so every harness tool is callable on it, and it is enabled by default. `rem = await remote.connect()` stages albedo's python bundle on the target, starts the kernel there through SSH with `ControlMaster`/`ControlPersist` (one multiplexed TCP connection: no re-authentication per call), and answers the remote kernel's host-route calls against this session's daemon.

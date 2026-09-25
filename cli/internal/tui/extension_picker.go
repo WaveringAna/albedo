@@ -27,6 +27,7 @@ type ExtensionItem struct {
 }
 
 type ExtensionPickerDoneMsg struct{}
+type ExtensionPickerOpenPageMsg struct{ Command string }
 type ExtensionPickerChangedMsg struct{}
 
 type extensionsLoadedMsg struct {
@@ -265,6 +266,10 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 				}
 			case "s":
 				m.Session = true
+			case "o":
+				if m.Cursor < len(m.Extensions) && m.Extensions[m.Cursor].Name == "webhooks" && m.Extensions[m.Cursor].Enabled {
+					return m, func() tea.Msg { return ExtensionPickerOpenPageMsg{Command: "/webhooks"} }
+				}
 			case "x":
 				if m.Session && !m.NoGlobal && m.Cursor < len(m.Extensions) && m.Extensions[m.Cursor].Overridden {
 					m.Error = ""
@@ -412,6 +417,9 @@ func (m ExtensionPickerModel) View() string {
 		b.WriteString(m.Styles.Faint.Render("waiting for confirmation"))
 	} else {
 		keys := []hint{{"↑↓", "select"}, {"enter/space", "toggle"}, {"s", "this session"}, {"esc", "return to chat"}}
+		if m.Cursor < len(m.Extensions) && m.Extensions[m.Cursor].Name == "webhooks" && m.Extensions[m.Cursor].Enabled {
+			keys = append(keys, hint{"o", "open webhooks"})
+		}
 		if m.Session {
 			keys = []hint{{"↑↓", "select"}, {"enter/space", "toggle"}, {"x", "follow global"}, {"g", "global defaults"}, {"esc", "return to chat"}}
 			if m.NoGlobal {

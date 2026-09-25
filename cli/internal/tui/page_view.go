@@ -36,7 +36,7 @@ type PageAction struct {
 	Run     string   `json:"run"`
 	Row     bool     `json:"row"`
 	Confirm bool     `json:"confirm"`
-	Input   string   `json:"input"` // "none" | "text" | "choice" | "value"
+	Input   string   `json:"input"` // "none" | "text" | "secret" | "choice" | "value"
 	Prompt  string   `json:"prompt,omitempty"`
 	Prefill bool     `json:"prefill,omitempty"`
 	Options []string `json:"options,omitempty"`
@@ -183,8 +183,8 @@ func parsePageDocument(result any) (*PageDocument, error) {
 			action := PageAction{Key: key, Label: label, Run: run, Row: obj["row"] == true, Confirm: obj["confirm"] == true, Input: "none"}
 			kind, _ := obj["input"].(string)
 			switch kind {
-			case "text":
-				action.Input = "text"
+			case "text", "secret":
+				action.Input = kind
 				action.Prompt = label
 				if prompt, ok := obj["prompt"].(string); ok {
 					action.Prompt = prompt
@@ -390,10 +390,14 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 				m.Mode = modeBrowse
 				// If action still needs text or choice, collect it
 				switch act.Input {
-				case "text":
+				case "text", "secret":
 					m.Mode = modeText
 					m.CurrentAction = &act
 					m.TextInput.Reset()
+					m.TextInput.EchoMode = textinput.EchoNormal
+					if act.Input == "secret" {
+						m.TextInput.EchoMode = textinput.EchoPassword
+					}
 					if act.Prefill && m.currentRow() != nil {
 						m.TextInput.SetValue(m.currentRow().Text)
 					}
@@ -452,6 +456,7 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 					act := *m.CurrentAction
 					m.CurrentAction = nil
 					m.Mode = modeBrowse
+					m.TextInput.Reset()
 					m.Busy = true
 					m.Error = ""
 					m.Notice = ""
@@ -494,10 +499,14 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 						}
 
 						switch actionCopy.Input {
-						case "text":
+						case "text", "secret":
 							m.Mode = modeText
 							m.CurrentAction = &actionCopy
 							m.TextInput.Reset()
+							m.TextInput.EchoMode = textinput.EchoNormal
+							if actionCopy.Input == "secret" {
+								m.TextInput.EchoMode = textinput.EchoPassword
+							}
 							if actionCopy.Prefill && m.currentRow() != nil {
 								m.TextInput.SetValue(m.currentRow().Text)
 							}
