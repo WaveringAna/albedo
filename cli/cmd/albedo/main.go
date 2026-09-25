@@ -224,7 +224,7 @@ func open(id, workspace string, fresh bool) error {
 		appModel.BrowserOpener = config.OpenBrowser
 		appModel.Login.BrowserOpener = config.OpenBrowser
 	}
-	p := tea.NewProgram(appModel, tea.WithFPS(120))
+	p := tea.NewProgram(appModel, tea.WithFPS(120), tea.WithFilter(tui.RepairSplitMouse()))
 	_, err = p.Run()
 	return err
 }
@@ -425,7 +425,7 @@ func run(args []string) error {
 				appModel.Login.BrowserOpener = config.OpenBrowser
 			}
 		}
-		p := tea.NewProgram(appModel, tea.WithFPS(120))
+		p := tea.NewProgram(appModel, tea.WithFPS(120), tea.WithFilter(tui.RepairSplitMouse()))
 		_, err = p.Run()
 		return err
 
