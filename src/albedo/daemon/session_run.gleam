@@ -83,7 +83,7 @@ pub fn start(
       fn(head) { actor.call(owner, 5000, messages.pin(run_id, head, _)) },
     )
   let pid =
-    process.spawn(fn() {
+    process.spawn_unlinked(fn() {
       label("albedo_worker", run_id)
       process.send(
         owner,
