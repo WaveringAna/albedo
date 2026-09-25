@@ -155,3 +155,35 @@ pub fn catalog_lists_provider_models_without_inventing_unknowns_test() {
   models.list_at(file, "missing", "") |> should.equal([])
   cleanup(root)
 }
+
+pub fn catalog_lookup_decodes_reasoning_efforts_test() {
+  let #(root, _, home) = fixture()
+  let reasoning_catalog =
+    "{\"reasoner\":{\"id\":\"reasoner\",\"name\":\"Reasoner\",\"api\":\"https://reasoner.example.com/v1\",\"models\":{\"smart-model\":{\"id\":\"smart-model\",\"limit\":{\"context\":200000,\"output\":64000},\"reasoning_options\":[{\"type\":\"toggle\"},{\"type\":\"effort\",\"values\":[\"low\",\"high\",\"max\"]}]}}}}"
+  let file = write(home, "models.json", reasoning_catalog)
+
+  let assert Some(info) =
+    models.lookup_at(file, "smart-model", "https://reasoner.example.com/v1")
+  info.efforts |> should.equal(["low", "high", "max"])
+
+  // Also test complete_model
+  let base =
+    extension.ModelInfo(
+      model: "smart-model",
+      provider: "reasoner",
+      context_tokens: None,
+      max_output_tokens: None,
+      input_modalities: [],
+      endpoint: Some("https://reasoner.example.com/v1"),
+      environment: [],
+      source: "Reasoner",
+      efforts: [],
+    )
+  let assert [completed] =
+    models.complete_models_at(file, [base], "https://reasoner.example.com/v1")
+  completed.context_tokens |> should.equal(Some(200_000))
+  completed.max_output_tokens |> should.equal(Some(64_000))
+  completed.efforts |> should.equal(["low", "high", "max"])
+
+  cleanup(root)
+}

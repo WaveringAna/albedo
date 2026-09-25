@@ -63,7 +63,7 @@ func (f *fakeDaemon) connection(t *testing.T) *daemon.Connection {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &daemon.Connection{Port: port, Token: fakeToken, Version: 2}
+	return daemon.NewConnection(daemon.ConnectionSnapshot{Port: port, Token: fakeToken, Version: 2}, "")
 }
 
 func (f *fakeDaemon) setAccounts(accounts ...daemon.Account) {

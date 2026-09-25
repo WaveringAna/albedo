@@ -148,19 +148,21 @@ func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
 }
 
 func (m AppModel) newChatClient(sessionID string) *daemon.ChatClient {
-	var baseURL, token string
-	if m.Conn != nil {
-		baseURL = fmt.Sprintf("http://127.0.0.1:%d", m.Conn.Port)
-		token = m.Conn.Token
-	}
 	return daemon.NewChatClient(daemon.ChatClientOptions{
-		BaseURL: baseURL,
-		Token:   token,
 		AgentID: sessionID,
+		Conn:    m.Conn,
 	})
 }
 
 func NewAppModel(conn *daemon.Connection, profiles config.Profiles, initialSession *daemon.Session, workspace string, needsLogin bool) AppModel {
+	if conn != nil && conn.HomeDir() == "" {
+		conn.SetHomeDir(config.HomeDir())
+	}
+	if conn == nil {
+		if existing, _ := daemon.Existing(config.HomeDir()); existing != nil {
+			conn = existing
+		}
+	}
 	m := AppModel{
 		Conn:          conn,
 		Profiles:      profiles,

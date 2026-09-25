@@ -83,10 +83,10 @@ func isTTY() bool {
 // terminal it keeps the running daemon.
 func replaceStale(s daemon.Stale) bool {
 	if !isTTY() {
-		fmt.Fprintf(os.Stderr, "albedo: daemon %d is from another build; run albedo daemon --stop to start this one\n", s.Running.Pid)
+		fmt.Fprintf(os.Stderr, "albedo: daemon %d is from another build; run albedo daemon --stop to start this one\n", s.Running.Pid())
 		return false
 	}
-	fmt.Printf("daemon %d is from another albedo build. restart it with this one? running turns will stop. [y/N] ", s.Running.Pid)
+	fmt.Printf("daemon %d is from another albedo build. restart it with this one? running turns will stop. [y/N] ", s.Running.Pid())
 	answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	return confirmed(answer)
 }
@@ -387,7 +387,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("albedo daemon running on 127.0.0.1:%d\n", current.Port)
+		fmt.Printf("albedo daemon running on 127.0.0.1:%d\n", current.Port())
 		return nil
 
 	case "login":

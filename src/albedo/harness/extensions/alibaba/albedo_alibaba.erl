@@ -10,18 +10,7 @@
 -define(CACHE_MAX_AGE_MS, 86400000). %% 24 hours
 -define(FETCH_TIMEOUT_MS, 10000).
 
--define(DEFAULT_MODELS, [
-    <<"deepseek-v4-flash-0731">>,
-    <<"deepseek-v4-pro">>,
-    <<"deepseek-v4.1-flash">>,
-    <<"glm-5.2">>,
-    <<"glm-5.3">>,
-    <<"qwen3.6-flash">>,
-    <<"qwen3.7-max">>,
-    <<"qwen3.7-plus">>,
-    <<"qwen3.8-flash">>,
-    <<"qwen3.8-max">>
-]).
+
 
 %% Returns the entitled model IDs for Alibaba: reads fresh disk cache,
 %% or fetches live from the endpoint and caches to disk.
@@ -75,7 +64,7 @@ refresh_or_default(Home, Endpoint, CachePath) ->
 fallback_cache_or_default(CachePath) ->
     case read_cache(CachePath) of
         {ok, Ids} when Ids =/= [] -> {ok, Ids};
-        _ -> {ok, ?DEFAULT_MODELS}
+        _ -> {ok, []}
     end.
 
 %% Live GET to ${BaseUrl}/models with Bearer auth.
@@ -103,10 +92,7 @@ fetch_models(BaseUrl0, ApiKey0) ->
             try json:decode(Body) of
                 #{<<"data">> := List} when is_list(List) ->
                     Ids = [Id || #{<<"id">> := Id} <- List, is_binary(Id), is_chat_model(Id)],
-                    case Ids of
-                        [] -> {ok, ?DEFAULT_MODELS};
-                        _ -> {ok, lists:usort(Ids)}
-                    end;
+                    {ok, lists:usort(Ids)};
                 _ -> {error, <<"unexpected /models response shape">>}
             catch _:_ -> {error, <<"invalid JSON from /models">>}
             end;

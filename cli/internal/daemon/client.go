@@ -67,11 +67,12 @@ type ChatClientOptions struct {
 	AgentID    string
 	ClientID   string
 	HTTPClient *http.Client
+	Conn       *Connection
+	Endpoint   EndpointProvider
 }
 
 type ChatClient struct {
-	baseURL         string
-	token           string
+	endpoint        EndpointProvider
 	agentID         string
 	clientID        string
 	httpClient      *http.Client
@@ -95,24 +96,44 @@ func readBounded(r io.Reader, limit int64) ([]byte, error) {
 }
 
 func NewChatClient(opts ChatClientOptions) *ChatClient {
-	baseURL := strings.TrimRight(opts.BaseURL, "/")
+	var endpoint EndpointProvider
+	if opts.Conn != nil {
+		endpoint = opts.Conn
+	} else if opts.Endpoint != nil {
+		endpoint = opts.Endpoint
+	} else if opts.BaseURL != "" {
+		endpoint = StaticEndpoint{URL: opts.BaseURL, Token: opts.Token}
+	} else {
+		endpoint = StaticEndpoint{}
+	}
+
 	clientID := opts.ClientID
 	if clientID == "" {
 		b := make([]byte, 16)
 		_, _ = rand.Read(b)
 		clientID = "cli-" + hex.EncodeToString(b)
 	}
-	httpClient := opts.HTTPClient
-	if httpClient == nil {
+
+	var httpClient *http.Client
+	if opts.HTTPClient == nil {
+		httpClient = NewReconnectingClient(endpoint)
+	} else {
+		base := opts.HTTPClient.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
 		httpClient = &http.Client{
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
+			Transport: &ReconnectingTransport{
+				Provider: endpoint,
+				Base:     base,
 			},
+			CheckRedirect: opts.HTTPClient.CheckRedirect,
+			Timeout:       opts.HTTPClient.Timeout,
 		}
 	}
+
 	return &ChatClient{
-		baseURL:         baseURL,
-		token:           opts.Token,
+		endpoint:        endpoint,
 		agentID:         strings.TrimSpace(opts.AgentID),
 		clientID:        clientID,
 		httpClient:      httpClient,
@@ -125,11 +146,26 @@ func (c *ChatClient) ClientID() string {
 	return c.clientID
 }
 
-func (c *ChatClient) agentURL(path string) string {
-	if c.agentID != "" {
-		return fmt.Sprintf("%s/sessions/%s%s", c.baseURL, url.PathEscape(c.agentID), path)
+func (c *ChatClient) BaseURL() string {
+	if c.endpoint == nil {
+		return ""
 	}
-	return c.baseURL + path
+	return c.endpoint.BaseURL()
+}
+
+func (c *ChatClient) Token() string {
+	if c.endpoint == nil {
+		return ""
+	}
+	return c.endpoint.AuthToken()
+}
+
+func (c *ChatClient) agentURL(path string) string {
+	base := c.BaseURL()
+	if c.agentID != "" {
+		return fmt.Sprintf("%s/sessions/%s%s", base, url.PathEscape(c.agentID), path)
+	}
+	return base + path
 }
 
 func (c *ChatClient) parseResponseError(res *http.Response) error {
@@ -188,8 +224,8 @@ func (c *ChatClient) Send(ctx context.Context, content string, image *ImageAttac
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	if token := c.Token(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	res, err := c.httpClient.Do(req)
@@ -227,12 +263,12 @@ func (c *ChatClient) ReplaceWorkspace(ctx context.Context, workspace string) (*W
 	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	healthReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.baseURL+"/health", nil)
+	healthReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.BaseURL()+"/health", nil)
 	if err != nil {
 		return nil, err
 	}
-	if c.token != "" {
-		healthReq.Header.Set("Authorization", "Bearer "+c.token)
+	if token := c.Token(); token != "" {
+		healthReq.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	healthRes, err := c.httpClient.Do(healthReq)
@@ -281,8 +317,8 @@ func (c *ChatClient) ReplaceWorkspace(ctx context.Context, workspace string) (*W
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	if token := c.Token(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	res, err := c.httpClient.Do(req)
@@ -324,8 +360,8 @@ func (c *ChatClient) Interrupt(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	if token := c.Token(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	res, err := c.httpClient.Do(req)
@@ -373,8 +409,8 @@ func (c *ChatClient) History(ctx context.Context, before int64, rows int) (*Hist
 	if err != nil {
 		return nil, err
 	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	if token := c.Token(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	res, err := c.httpClient.Do(req)
 	if err != nil {
@@ -413,8 +449,8 @@ func (c *ChatClient) ContextWindow(ctx context.Context) (*int, error) {
 	if err != nil {
 		return nil, err
 	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	if token := c.Token(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	res, err := c.httpClient.Do(req)
 	if err != nil {
@@ -448,8 +484,8 @@ func (c *ChatClient) GetStatus(ctx context.Context) (*AgentStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	if token := c.Token(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	res, err := c.httpClient.Do(req)
@@ -719,8 +755,8 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	if token := c.Token(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	res, err := c.httpClient.Do(req)

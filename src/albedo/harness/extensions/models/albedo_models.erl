@@ -113,7 +113,8 @@ trim_provider(_, _) -> false.
 trim_model(_, Model) when is_map(Model) ->
     Limit = maps:with([<<"context">>, <<"output">>], field(<<"limit">>, Model)),
     Inputs = maps:with([<<"input">>], field(<<"modalities">>, Model)),
-    Trimmed = maps:with([<<"id">>], Model),
+    Reasoning = maps:with([<<"reasoning_options">>], Model),
+    Trimmed = maps:merge(maps:with([<<"id">>], Model), Reasoning),
     {true, nonempty(<<"modalities">>, Inputs, nonempty(<<"limit">>, Limit, Trimmed))};
 trim_model(_, _) -> false.
 
@@ -200,7 +201,7 @@ from_index(Catalog, Revision) ->
     case file:read_file(index_path(Catalog)) of
         {ok, Bytes} ->
             try binary_to_term(Bytes, [safe]) of
-                {1, Revision, #{index := I, providers := P} = CatalogData} when is_map(I), is_map(P) ->
+                {2, Revision, #{index := I, providers := P} = CatalogData} when is_map(I), is_map(P) ->
                     persistent_term:put({?MODULE, Catalog}, {Revision, CatalogData}),
                     ok;
                 _ -> parse(Catalog, Revision)
@@ -234,7 +235,7 @@ parse(Catalog, Revision) ->
 save_index(Catalog, Revision, CatalogData) ->
     Path = index_path(Catalog),
     Temporary = Path ++ "." ++ integer_to_list(erlang:unique_integer([positive])),
-    case file:write_file(Temporary, term_to_binary({1, Revision, CatalogData}, [{compressed, 1}])) of
+    case file:write_file(Temporary, term_to_binary({2, Revision, CatalogData}, [{compressed, 1}])) of
         ok ->
             case file:rename(Temporary, Path) of
                 ok -> ok;
@@ -284,9 +285,18 @@ model_id(_, _) -> <<>>.
 model(Model) when is_map(Model) ->
     Limit = field(<<"limit">>, Model),
     Id = case maps:get(<<"id">>, Model, <<>>) of I when is_binary(I) -> I; _ -> <<>> end,
+    Efforts = case maps:get(<<"reasoning_options">>, Model, []) of
+        Opts when is_list(Opts) ->
+            lists:foldl(fun(#{<<"type">> := <<"effort">>, <<"values">> := Vals}, _) when is_list(Vals) ->
+                            [V || V <- Vals, is_binary(V)];
+                           (_, Acc) -> Acc
+                        end, [], Opts);
+        _ -> []
+    end,
     {Id, maps:get(<<"context">>, Limit, null), maps:get(<<"output">>, Limit, null),
-     strings(maps:get(<<"input">>, field(<<"modalities">>, Model), []))};
-model(_) -> {<<>>, null, null, []}.
+     strings(maps:get(<<"input">>, field(<<"modalities">>, Model), [])),
+     Efforts};
+model(_) -> {<<>>, null, null, [], []}.
 
 field(Key, Map) ->
     case maps:get(Key, Map, #{}) of
@@ -320,13 +330,13 @@ select(Candidates, Providers, Host) ->
                element(1, maps:get(Name, Providers)) =:= Host] of
         [Entry | _] -> {ok, Entry, <<"provider endpoint">>};
         [] ->
-            case lists:usort([{Context, Output} || {_, {_, Context, Output, _}} <- Candidates]) of
+            case lists:usort([{Context, Output} || {_, {_, Context, Output, _, _}} <- Candidates]) of
                 [_] -> {ok, hd(lists:sort(Candidates)), <<"model id">>};
                 _ -> error
             end
     end.
 
-encode({Name, {Id, Context, Output, Inputs}}, Providers, Matched) ->
+encode({Name, {Id, Context, Output, Inputs, Efforts}}, Providers, Matched) ->
     {_, Api, Env, _} = maps:get(Name, Providers),
     iolist_to_binary(json:encode(#{
         <<"model">> => Id,
@@ -336,7 +346,8 @@ encode({Name, {Id, Context, Output, Inputs}}, Providers, Matched) ->
         <<"input_modalities">> => Inputs,
         <<"api">> => Api,
         <<"env">> => Env,
-        <<"matched">> => Matched
+        <<"matched">> => Matched,
+        <<"efforts">> => Efforts
     })).
 
 integer_or_null(Value) when is_integer(Value), Value > 0 -> Value;

@@ -126,7 +126,7 @@ func TestFailedConnectionRestoresConfigAndKeepsTheForm(t *testing.T) {
 	port, _ := strconv.Atoi(address.Port())
 
 	m := mcpPage(t)
-	m.Conn = &daemon.Connection{Port: port, Token: "t"}
+	m.Conn = daemon.NewConnection(daemon.ConnectionSnapshot{Port: port, Token: "t", Version: 2}, "")
 	m = typeText(m, "n")
 	m = typeText(m, "https://mcp.linear.app/mcp")
 	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})

@@ -6,6 +6,7 @@ import albedo/harness/extension
 import albedo/harness/settings
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -171,6 +172,15 @@ fn info_decoder(catalog: String) {
   use api <- decode.optional_field("api", None, decode.optional(decode.string))
   use env <- decode.optional_field("env", [], decode.list(decode.string))
   use matched <- decode.field("matched", decode.string)
+  use efforts <- decode.optional_field(
+    "efforts",
+    [],
+    decode.list(decode.string),
+  )
+  let resolved_efforts = case efforts {
+    [] -> infer_reasoning_efforts(model)
+    _ -> efforts
+  }
   decode.success(extension.ModelInfo(
     model,
     provider,
@@ -180,7 +190,7 @@ fn info_decoder(catalog: String) {
     api,
     env,
     "models.dev catalog cached at " <> catalog <> "; matched by " <> matched,
-    infer_reasoning_efforts(model),
+    resolved_efforts,
   ))
 }
 
@@ -203,3 +213,80 @@ fn native_list(
   provider: String,
   endpoint: String,
 ) -> Result(String, String)
+
+/// Fills in missing fields of a ModelInfo (context tokens, max output tokens,
+/// input modalities, efforts, endpoint, environment) by looking up the model
+/// in the models.dev catalog. If the model is not found, the base ModelInfo
+/// is returned unchanged.
+pub fn complete_model(
+  info: extension.ModelInfo,
+  endpoint: String,
+) -> extension.ModelInfo {
+  case complete_models([info], endpoint) {
+    [completed, ..] -> completed
+    _ -> info
+  }
+}
+
+/// Batch completes a list of ModelInfo records against models.dev.
+/// Refreshes the models.dev cache at most once across the entire batch,
+/// then resolves each model against the local index.
+pub fn complete_models(
+  models: List(extension.ModelInfo),
+  endpoint: String,
+) -> List(extension.ModelInfo) {
+  refresh()
+  complete_models_at(path(), models, endpoint)
+}
+
+/// Batch completes ModelInfo records using a specific catalog file path.
+pub fn complete_models_at(
+  catalog_path: String,
+  models: List(extension.ModelInfo),
+  endpoint: String,
+) -> List(extension.ModelInfo) {
+  list.map(models, fn(item) {
+    case lookup_at(catalog_path, item.model, endpoint) {
+      Some(found) -> fill_info(item, found)
+      None -> item
+    }
+  })
+}
+
+fn fill_info(
+  base: extension.ModelInfo,
+  found: extension.ModelInfo,
+) -> extension.ModelInfo {
+  extension.ModelInfo(
+    model: base.model,
+    provider: case base.provider {
+      "" -> found.provider
+      p -> p
+    },
+    context_tokens: case base.context_tokens {
+      Some(_) -> base.context_tokens
+      None -> found.context_tokens
+    },
+    max_output_tokens: case base.max_output_tokens {
+      Some(_) -> base.max_output_tokens
+      None -> found.max_output_tokens
+    },
+    input_modalities: case base.input_modalities {
+      [] -> found.input_modalities
+      mods -> mods
+    },
+    endpoint: case base.endpoint {
+      Some(_) -> base.endpoint
+      None -> found.endpoint
+    },
+    environment: case base.environment {
+      [] -> found.environment
+      env -> env
+    },
+    source: base.source <> "; enriched from " <> found.source,
+    efforts: case base.efforts {
+      [] -> found.efforts
+      eff -> eff
+    },
+  )
+}

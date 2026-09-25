@@ -49,7 +49,7 @@ func TestExistingAndRequest(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	connInfo := Connection{
+	connInfo := ConnectionSnapshot{
 		Port:    port,
 		Token:   "test-token",
 		Pid:     1234,
@@ -65,7 +65,7 @@ func TestExistingAndRequest(t *testing.T) {
 	if conn == nil {
 		t.Fatal("expected active connection from Existing()")
 	}
-	if conn.Port != port || conn.Token != "test-token" {
+	if conn.Port() != port || conn.Token() != "test-token" {
 		t.Fatalf("unexpected conn info: %+v", conn)
 	}
 
@@ -82,12 +82,12 @@ func TestExistingAndRequest(t *testing.T) {
 }
 
 func TestCheckCompatibleVersion(t *testing.T) {
-	conn1 := &Connection{Version: 1}
+	conn1 := NewConnection(ConnectionSnapshot{Version: 1}, "")
 	if _, err := checkCompatible(conn1); err == nil {
 		t.Fatal("expected error on version 1 daemon")
 	}
 
-	conn2 := &Connection{Version: 2}
+	conn2 := NewConnection(ConnectionSnapshot{Version: 2}, "")
 	if _, err := checkCompatible(conn2); err != nil {
 		t.Fatalf("expected nil error on version 2 daemon, got: %v", err)
 	}
@@ -191,7 +191,7 @@ func fakeDaemon(t *testing.T, build string, pid int) (home string, down *atomic.
 	t.Cleanup(ts.Close)
 	port, _ := strconv.Atoi(ts.URL[strings.LastIndex(ts.URL, ":")+1:])
 	home = t.TempDir()
-	data, _ := json.Marshal(Connection{Port: port, Token: "t", Pid: pid, Version: 2, Build: build})
+	data, _ := json.Marshal(ConnectionSnapshot{Port: port, Token: "t", Pid: pid, Version: 2, Build: build})
 	if err := os.WriteFile(filepath.Join(home, "daemon.json"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestEnsureAsksOnlyAboutAnotherBundledBuild(t *testing.T) {
 			if (len(asked) == 1) != c.asked {
 				t.Fatalf("asked %d times, want asked=%v", len(asked), c.asked)
 			}
-			if c.asked && (asked[0].Bundled != build || asked[0].Running.Build != running) {
+			if c.asked && (asked[0].Bundled != build || asked[0].Running.Build() != running) {
 				t.Fatalf("unexpected stale report: %+v", asked[0])
 			}
 		})

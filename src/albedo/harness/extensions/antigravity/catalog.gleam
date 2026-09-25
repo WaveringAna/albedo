@@ -2,6 +2,7 @@
 //// labels captured from the real antigravity/hub client.
 
 import albedo/harness/extension
+import albedo/harness/extensions/models/extension as models
 import albedo/harness/settings
 import gleam/bool
 import gleam/dynamic/decode
@@ -73,10 +74,7 @@ const default_budget = Budget(4096, 8192, 16_384)
 /// table itself before the first discovery.
 pub fn models(home: String) -> List(Model) {
   refresh(home)
-  case discovered(home) {
-    [] -> known()
-    offered -> offered
-  }
+  discovered(home)
 }
 
 fn discovered(home: String) -> List(Model) {
@@ -109,91 +107,6 @@ fn discovered(home: String) -> List(Model) {
     |> result.replace_error(Nil)
   })
   |> result.unwrap([])
-}
-
-/// The model table captured from the antigravity/hub client.
-pub fn known() -> List(Model) {
-  let gemini = fn(id, name, output, thinking) {
-    Model(id, name, 1_048_576, output, True, thinking, None, False)
-  }
-  let claude = fn(id, name, context) {
-    Model(id, name, context, 64_000, True, default_budget, None, False)
-  }
-  [
-    claude("claude-opus-4-5-thinking", "Claude Opus 4.5", 200_000),
-    Model(
-      ..claude("claude-opus-4-6-thinking", "Claude Opus 4.6", 250_000),
-      pinned_output: True,
-    ),
-    claude("claude-sonnet-4-5", "Claude Sonnet 4.5", 1_000_000),
-    Model(
-      ..claude("claude-sonnet-4-6", "Claude Sonnet 4.6", 250_000),
-      pinned_output: True,
-    ),
-    gemini("gemini-2.5-flash", "Gemini 2.5 Flash", 65_535, default_budget),
-    gemini(
-      "gemini-2.5-flash-lite",
-      "Gemini 2.5 Flash Lite",
-      65_535,
-      default_budget,
-    ),
-    gemini("gemini-2.5-pro", "Gemini 2.5 Pro", 65_536, default_budget),
-    gemini("gemini-3-pro-low", "Gemini 3 Pro (Low)", 65_535, Level),
-    gemini("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite", 65_535, Level),
-    Model(
-      ..gemini("gemini-3.1-pro-low", "Gemini 3.1 Pro (Low)", 65_535, pro_budget),
-      model_enum: Some("MODEL_PLACEHOLDER_M36"),
-      pinned_output: True,
-    ),
-    Model(
-      ..gemini("gemini-pro-agent", "Gemini Pro Agent", 65_535, pro_budget),
-      model_enum: Some("MODEL_PLACEHOLDER_M16"),
-      pinned_output: True,
-    ),
-    Model(
-      ..gemini(
-        "gemini-3.5-flash-extra-low",
-        "Gemini 3.5 Flash (Extra Low)",
-        65_536,
-        flash_budget,
-      ),
-      model_enum: Some("MODEL_PLACEHOLDER_M187"),
-      pinned_output: True,
-    ),
-    Model(
-      ..gemini(
-        "gemini-3.5-flash-low",
-        "Gemini 3.5 Flash (Low)",
-        65_536,
-        flash_budget,
-      ),
-      model_enum: Some("MODEL_PLACEHOLDER_M20"),
-      pinned_output: True,
-    ),
-    Model(
-      ..gemini(
-        "gemini-3-flash-agent",
-        "Gemini 3 Flash Agent",
-        65_536,
-        flash_budget,
-      ),
-      model_enum: Some("MODEL_PLACEHOLDER_M132"),
-      pinned_output: True,
-    ),
-    gemini("gemini-3.6-flash-low", "Gemini 3.6 Flash (Low)", 65_536, Level),
-    gemini("gemini-3.7-flash-low", "Gemini 3.7 Flash (Low)", 65_536, Level),
-    Model(
-      "gpt-oss-120b-medium",
-      "GPT OSS 120B",
-      131_072,
-      32_768,
-      False,
-      // The backend rejects a larger budget for this route.
-      Budget(4096, 8192, 8192),
-      None,
-      False,
-    ),
-  ]
 }
 
 const effort_suffixes = [
@@ -335,14 +248,10 @@ fn renamed(home: String, id: String) -> String {
   |> result.unwrap(id)
 }
 
-/// A known model, or one inferred from its family so a newly released id
+/// An inferred model from its family so a newly released id
 /// still gets the right thinking control.
 fn hint(id: String) -> Model {
-  known()
-  |> list.find(fn(model) { model.id == id })
-  |> result.lazy_unwrap(fn() {
-    Model(id, id, 200_000, 64_000, True, infer_thinking(id), None, False)
-  })
+  Model(id, id, 200_000, 64_000, True, infer_thinking(id), None, False)
 }
 
 fn infer_thinking(id: String) -> Thinking {
@@ -387,20 +296,22 @@ fn lookup(id: String, at: String) -> Option(extension.ModelInfo) {
     True -> {
       let efforts = available_efforts(home, base_id)
       let variant = resolve_variant(home, id, extension.default_effort(efforts))
-      Some(extension.ModelInfo(
-        base_id,
-        "antigravity",
-        Some(variant.context_tokens),
-        Some(variant.max_output_tokens),
-        case variant.images {
-          True -> ["text", "image"]
-          False -> ["text"]
-        },
-        Some(endpoint),
-        [],
-        "antigravity model discovery cached in " <> home,
-        efforts,
-      ))
+      let info =
+        extension.ModelInfo(
+          base_id,
+          "antigravity",
+          Some(variant.context_tokens),
+          Some(variant.max_output_tokens),
+          case variant.images {
+            True -> ["text", "image"]
+            False -> ["text"]
+          },
+          Some(endpoint),
+          [],
+          "antigravity model discovery cached in " <> home,
+          efforts,
+        )
+      Some(models.complete_model(info, at))
     }
   }
 }

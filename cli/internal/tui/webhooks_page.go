@@ -243,10 +243,10 @@ func sessionLabel(sessions []daemon.Session, id, current string) string {
 // address is where a sender posts: the daemon's local address, which a
 // reverse proxy can expose.
 func (m WebhooksPageModel) address(hook webhookEntry) string {
-	if m.Conn == nil || m.Conn.Port == 0 {
+	if m.Conn == nil || m.Conn.Port() == 0 {
 		return hook.URL
 	}
-	return fmt.Sprintf("http://127.0.0.1:%d%s", m.Conn.Port, hook.URL)
+	return fmt.Sprintf("http://127.0.0.1:%d%s", m.Conn.Port(), hook.URL)
 }
 
 func (m WebhooksPageModel) begin(notice string, steps ...[2]string) (WebhooksPageModel, tea.Cmd) {

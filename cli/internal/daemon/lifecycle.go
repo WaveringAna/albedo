@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"albedo/cli/internal/config"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -9,13 +10,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -29,12 +35,274 @@ const (
 	pollAttempts = 300
 )
 
-type Connection struct {
+type ConnectionSnapshot struct {
 	Port    int    `json:"port"`
 	Token   string `json:"token"`
 	Pid     int    `json:"pid"`
 	Version int    `json:"version"`
 	Build   string `json:"build,omitempty"`
+}
+
+type Connection struct {
+	snapshot  atomic.Pointer[ConnectionSnapshot]
+	refreshMu sync.Mutex
+	homeDir   string
+}
+
+func NewConnection(snap ConnectionSnapshot, homeDir string) *Connection {
+	c := &Connection{homeDir: homeDir}
+	c.snapshot.Store(&snap)
+	return c
+}
+
+func (c *Connection) Snapshot() ConnectionSnapshot {
+	if c == nil {
+		return ConnectionSnapshot{}
+	}
+	p := c.snapshot.Load()
+	if p == nil {
+		return ConnectionSnapshot{}
+	}
+	return *p
+}
+
+func (c *Connection) Port() int {
+	return c.Snapshot().Port
+}
+
+func (c *Connection) Token() string {
+	return c.Snapshot().Token
+}
+
+func (c *Connection) Pid() int {
+	return c.Snapshot().Pid
+}
+
+func (c *Connection) Version() int {
+	return c.Snapshot().Version
+}
+
+func (c *Connection) Build() string {
+	return c.Snapshot().Build
+}
+
+func (c *Connection) BaseURL() string {
+	port := c.Port()
+	if port <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", port)
+}
+
+func (c *Connection) AuthToken() string {
+	return c.Token()
+}
+
+func (c *Connection) HomeDir() string {
+	if c == nil {
+		return ""
+	}
+	return c.homeDir
+}
+
+func (c *Connection) SetHomeDir(dir string) {
+	if c != nil {
+		c.homeDir = dir
+	}
+}
+
+func (c *Connection) Update(other *Connection) {
+	if c == nil || other == nil || c == other {
+		return
+	}
+	snap := other.Snapshot()
+	c.snapshot.Store(&snap)
+	if other.homeDir != "" {
+		c.homeDir = other.homeDir
+	}
+}
+
+func (c *Connection) Refresh(ctx context.Context) error {
+	if c == nil {
+		return errors.New("nil connection")
+	}
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+
+	homeDir := c.HomeDir()
+	if homeDir == "" {
+		homeDir = config.HomeDir()
+	}
+
+	const attempts = 20
+	const interval = 100 * time.Millisecond
+
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		latest, err := Existing(homeDir)
+		if err != nil {
+			lastErr = err
+		} else if latest != nil {
+			if _, compErr := checkCompatible(latest); compErr != nil {
+				return compErr
+			}
+			c.Update(latest)
+			return nil
+		}
+		if i < attempts-1 {
+			select {
+			case <-time.After(interval):
+			case <-ctxDone(ctx):
+				return ctx.Err()
+			}
+		}
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("daemon restart failed or daemon not running at %s", homeDir)
+}
+
+func (c *Connection) HTTPClient() *http.Client {
+	return NewReconnectingClient(c)
+}
+
+func (c *Connection) MarshalJSON() ([]byte, error) {
+	snap := c.Snapshot()
+	return json.Marshal(snap)
+}
+
+func (c *Connection) UnmarshalJSON(data []byte) error {
+	var snap ConnectionSnapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return err
+	}
+	c.snapshot.Store(&snap)
+	return nil
+}
+
+type EndpointProvider interface {
+	BaseURL() string
+	AuthToken() string
+	Refresh(ctx context.Context) error
+}
+
+type StaticEndpoint struct {
+	URL   string
+	Token string
+}
+
+func (s StaticEndpoint) BaseURL() string {
+	return strings.TrimRight(s.URL, "/")
+}
+
+func (s StaticEndpoint) AuthToken() string {
+	return s.Token
+}
+
+func (s StaticEndpoint) Refresh(ctx context.Context) error {
+	return errors.New("static endpoint cannot refresh")
+}
+
+type ReconnectingTransport struct {
+	Provider EndpointProvider
+	Base     http.RoundTripper
+}
+
+func (t *ReconnectingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.Base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+
+	res, err := base.RoundTrip(req)
+	status := 0
+	if res != nil {
+		status = res.StatusCode
+	}
+
+	if t.Provider != nil && req.URL != nil && req.URL.Path != "/shutdown" && isStaleDaemon(err, status) {
+		if res != nil {
+			_ = res.Body.Close()
+		}
+		if refreshErr := t.Provider.Refresh(req.Context()); refreshErr == nil {
+			newReq := req.Clone(req.Context())
+			newBase := t.Provider.BaseURL()
+			if parsed, parseErr := url.Parse(newBase); parseErr == nil && newReq.URL != nil {
+				newReq.URL.Scheme = parsed.Scheme
+				newReq.URL.Host = parsed.Host
+				newReq.Host = parsed.Host
+			}
+			if token := t.Provider.AuthToken(); token != "" {
+				newReq.Header.Set("Authorization", "Bearer "+token)
+			}
+			if req.GetBody != nil {
+				body, bodyErr := req.GetBody()
+				if bodyErr != nil {
+					return nil, bodyErr
+				}
+				newReq.Body = body
+			}
+			return base.RoundTrip(newReq)
+		}
+	}
+	return res, err
+}
+
+func NewReconnectingClient(provider EndpointProvider) *http.Client {
+	return &http.Client{
+		Transport: &ReconnectingTransport{
+			Provider: provider,
+			Base: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
+			},
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func ctxDone(ctx context.Context) <-chan struct{} {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Done()
+}
+
+func isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, io.EOF) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "EOF")
+}
+
+func isStaleDaemon(err error, statusCode int) bool {
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+		return true
+	}
+	return isConnectionError(err)
 }
 
 // Stale is a live daemon from a build other than the one this client bundles.
@@ -110,23 +378,23 @@ func Existing(homeDir string) (*Connection, error) {
 		return nil, nil
 	}
 
-	var conn Connection
-	if err := json.Unmarshal(data, &conn); err != nil {
+	var snap ConnectionSnapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
 		return nil, nil
 	}
 
-	if conn.Port < 1 || conn.Port > 65535 || conn.Token == "" || (conn.Version != 1 && conn.Version != 2) {
+	if snap.Port < 1 || snap.Port > 65535 || snap.Token == "" || (snap.Version != 1 && snap.Version != 2) {
 		return nil, nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/health", conn.Port), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/health", snap.Port), nil)
 	if err != nil {
 		return nil, nil
 	}
-	req.Header.Set("Authorization", "Bearer "+conn.Token)
+	req.Header.Set("Authorization", "Bearer "+snap.Token)
 
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -155,15 +423,15 @@ func Existing(homeDir string) (*Connection, error) {
 		return nil, nil
 	}
 
-	if health.Version == conn.Version {
-		return &conn, nil
+	if health.Version == snap.Version {
+		return NewConnection(snap, homeDir), nil
 	}
 
 	return nil, nil
 }
 
 func checkCompatible(conn *Connection) (*Connection, error) {
-	if conn.Version != 2 {
+	if conn.Version() != 2 {
 		return nil, errors.New("an older daemon is running; when its work is finished, run albedo daemon --stop, then start albedo again")
 	}
 	return conn, nil
@@ -273,12 +541,12 @@ func stop(homeDir string, conn *Connection) error {
 		if err != nil {
 			return err
 		}
-		if running == nil && !processAlive(conn.Pid) {
+		if running == nil && !processAlive(conn.Pid()) {
 			return nil
 		}
 		time.Sleep(pollInterval)
 	}
-	return fmt.Errorf("daemon %d did not exit; inspect %s/daemon.log", conn.Pid, homeDir)
+	return fmt.Errorf("daemon %d did not exit; inspect %s/daemon.log", conn.Pid(), homeDir)
 }
 
 // Ensure connects to the running daemon or starts one. When this client bundles
@@ -293,7 +561,7 @@ func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
 		return nil, err
 	}
 	if current != nil {
-		if build == "" || current.Build == build || replace == nil || !replace(Stale{current, build}) {
+		if build == "" || current.Build() == build || replace == nil || !replace(Stale{current, build}) {
 			return checkCompatible(current)
 		}
 		if err := stop(homeDir, current); err != nil {
@@ -463,20 +731,30 @@ func RequestMethod[T any](ctx context.Context, conn *Connection, method, path st
 		bodyReader = bytes.NewReader(encoded)
 	}
 
-	reqURL := fmt.Sprintf("http://127.0.0.1:%d%s", conn.Port, path)
+	var client *http.Client
+	var baseURL, token string
+	if conn != nil {
+		client = conn.HTTPClient()
+		baseURL = conn.BaseURL()
+		token = conn.AuthToken()
+	} else {
+		client = &http.Client{
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+		baseURL = "http://127.0.0.1:0"
+	}
+
+	reqURL := fmt.Sprintf("%s%s", baseURL, path)
 	req, err := http.NewRequestWithContext(reqCtx, method, reqURL, bodyReader)
 	if err != nil {
 		return zero, err
 	}
-
-	req.Header.Set("Authorization", "Bearer "+conn.Token)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	req.Header.Set("Content-Type", "application/json")
 
 	res, err := client.Do(req)
 	if err != nil {

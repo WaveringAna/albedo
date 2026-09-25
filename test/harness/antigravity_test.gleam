@@ -22,9 +22,33 @@ const gemini = "gemini-3.1-pro-low"
 
 const claude = "claude-sonnet-4-6"
 
-/// No discovery cache here, so the built-in table answers.
+/// Test fixture models for wire encoding and streaming tests.
 fn model(id: String) -> catalog.Model {
-  catalog.model("/nonexistent/albedo-home", id, None)
+  case id {
+    "gemini-3.1-pro-low" ->
+      catalog.Model(
+        id,
+        "Gemini 3.1 Pro (Low)",
+        1_048_576,
+        65_535,
+        True,
+        catalog.Budget(1001, 8192, 10_001),
+        Some("MODEL_PLACEHOLDER_M36"),
+        True,
+      )
+    "claude-sonnet-4-6" ->
+      catalog.Model(
+        id,
+        "Claude Sonnet 4.6",
+        250_000,
+        64_000,
+        True,
+        catalog.Budget(4096, 8192, 16_384),
+        None,
+        True,
+      )
+    _ -> catalog.model("/nonexistent/albedo-home", id, None)
+  }
 }
 
 fn context(id: String) -> wire.Context {

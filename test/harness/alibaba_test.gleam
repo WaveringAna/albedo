@@ -3,41 +3,69 @@ import albedo/harness/extensions/alibaba/catalog
 import albedo/harness/extensions/alibaba/extension as alibaba
 import albedo/harness/extensions/antigravity/extension as antigravity
 import albedo/harness/extensions/codex/extension as codex
+import albedo/harness/extensions/models/extension as models
 import albedo/openai_api/types
 import gleam/list
 import gleam/option.{None, Some}
 import gleeunit/should
 
-pub fn known_models_contain_expected_chat_models_test() {
-  let ids = list.map(catalog.known(), fn(m) { m.id })
-  list.contains(ids, "deepseek-v4.1-flash") |> should.be_true
-  list.contains(ids, "deepseek-v4-pro") |> should.be_true
-  list.contains(ids, "deepseek-v4-flash-0731") |> should.be_true
-  list.contains(ids, "glm-5.2") |> should.be_true
-  list.contains(ids, "glm-5.3") |> should.be_true
-  list.contains(ids, "qwen3.6-flash") |> should.be_true
-  list.contains(ids, "qwen3.7-max") |> should.be_true
-  list.contains(ids, "qwen3.7-plus") |> should.be_true
-  list.contains(ids, "qwen3.8-flash") |> should.be_true
-  list.contains(ids, "qwen3.8-max") |> should.be_true
+const mock_catalog = "{\"alibaba-token-plan\":{\"id\":\"alibaba-token-plan\",\"name\":\"Alibaba Token Plan\",\"api\":\"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1\",\"models\":{\"deepseek-v4.1-flash\":{\"id\":\"deepseek-v4.1-flash\",\"limit\":{\"context\":1000000,\"output\":384000},\"modalities\":{\"input\":[\"text\",\"image\"]},\"reasoning_options\":[{\"type\":\"effort\",\"values\":[\"low\",\"high\",\"max\"]}]},\"qwen3.8-max\":{\"id\":\"qwen3.8-max\",\"limit\":{\"context\":1000000,\"output\":131072},\"modalities\":{\"input\":[\"text\",\"image\",\"video\",\"pdf\"]},\"reasoning_options\":[{\"type\":\"effort\",\"values\":[\"low\",\"medium\",\"xhigh\"]}]}}}}"
+
+pub fn complete_models_fills_missing_fields_from_catalog_test() {
+  let #(root, _, home) = fixture()
+  let file = write(home, "models.json", mock_catalog)
+
+  let base =
+    extension.ModelInfo(
+      model: "qwen3.8-max",
+      provider: "alibaba",
+      context_tokens: None,
+      max_output_tokens: None,
+      input_modalities: [],
+      endpoint: Some(catalog.default_base_url),
+      environment: ["ALIBABA_API_KEY"],
+      source: "Alibaba Model Studio",
+      efforts: [],
+    )
+
+  let completed =
+    models.complete_models_at(file, [base], catalog.default_base_url)
+  let assert [enriched] = completed
+
+  enriched.model |> should.equal("qwen3.8-max")
+  enriched.context_tokens |> should.equal(Some(1_000_000))
+  enriched.max_output_tokens |> should.equal(Some(131_072))
+  enriched.input_modalities
+  |> should.equal(["text", "image", "video", "pdf"])
+  enriched.efforts |> should.equal(["low", "medium", "xhigh"])
+
+  cleanup(root)
 }
 
-pub fn reasoning_efforts_match_family_capabilities_test() {
-  // DeepSeek models expose the full effort ladder
-  let ds = catalog.hint("deepseek-v4.1-flash")
-  ds.efforts |> should.equal(["low", "medium", "high", "xhigh", "max"])
+pub fn complete_models_preserves_unmatched_model_test() {
+  let #(root, _, home) = fixture()
+  let file = write(home, "models.json", mock_catalog)
 
-  // GLM-5.3 accepts only low/high/max
-  let glm53 = catalog.hint("glm-5.3")
-  glm53.efforts |> should.equal(["low", "high", "max"])
+  let base =
+    extension.ModelInfo(
+      model: "unlisted-new-model",
+      provider: "alibaba",
+      context_tokens: None,
+      max_output_tokens: None,
+      input_modalities: ["text"],
+      endpoint: Some(catalog.default_base_url),
+      environment: ["ALIBABA_API_KEY"],
+      source: "Alibaba Model Studio",
+      efforts: [],
+    )
 
-  // GLM-5.2 accepts the full effort ladder
-  let glm52 = catalog.hint("glm-5.2")
-  glm52.efforts |> should.equal(["low", "medium", "high", "xhigh", "max"])
+  let completed =
+    models.complete_models_at(file, [base], catalog.default_base_url)
+  let assert [unmatched] = completed
 
-  // Qwen models have no effort parameter on Model Studio chat completions
-  let qwen = catalog.hint("qwen3.8-max")
-  qwen.efforts |> should.equal([])
+  unmatched |> should.equal(base)
+
+  cleanup(root)
 }
 
 pub fn catalog_lookup_respects_endpoints_test() {
@@ -46,28 +74,26 @@ pub fn catalog_lookup_respects_endpoints_test() {
   // Matches default endpoint
   let assert Some(info) = cat.lookup("qwen3.8-max", catalog.default_base_url)
   info.provider |> should.equal("alibaba")
-  info.context_tokens |> should.equal(Some(1_000_000))
-  info.max_output_tokens |> should.equal(Some(131_072))
-  info.input_modalities |> should.equal(["text", "image"])
-  info.efforts |> should.equal([])
-
-  // Matches empty endpoint for Alibaba model
-  let assert Some(ds_info) = cat.lookup("deepseek-v4-pro", "")
-  ds_info.efforts |> should.equal(["low", "medium", "high", "xhigh", "max"])
+  info.endpoint |> should.equal(Some(catalog.default_base_url))
 
   // Rejects foreign endpoint like OpenAI
   cat.lookup("qwen3.8-max", "https://api.openai.com/v1") |> should.equal(None)
 }
 
-pub fn catalog_list_models_returns_alibaba_ids_test() {
-  let cat = catalog.catalog()
-  let models = cat.list("alibaba", "")
-  list.contains(models, "qwen3.8-max") |> should.be_true
-  list.contains(models, "deepseek-v4.1-flash") |> should.be_true
-  list.contains(models, "glm-5.3") |> should.be_true
+pub fn catalog_list_models_returns_empty_when_no_cache_test() {
+  let #(root, _, home) = fixture()
+  // When no cache file exists in home, models discovery returns Ok([])
+  catalog.models(home, "") |> should.equal(Ok([]))
 
-  // Does not answer for other providers
+  // When cached on disk, returns cached ids
+  write(home, "alibaba-models.json", "[\"qwen3.8-max\"]")
+  catalog.models(home, "") |> should.equal(Ok(["qwen3.8-max"]))
+
+  // Provider filter rejects other providers
+  let cat = catalog.catalog()
   cat.list("openai", "") |> should.equal([])
+
+  cleanup(root)
 }
 
 pub fn extension_metadata_and_plugins_test() {
@@ -152,3 +178,12 @@ pub fn explain_alibaba_errors_test() {
   ))
   |> should.equal(Some("Alibaba Model Studio error (500): internal error"))
 }
+
+@external(erlang, "albedo_skills_test_support", "fixture")
+fn fixture() -> #(String, String, String)
+
+@external(erlang, "albedo_skills_test_support", "write")
+fn write(base: String, relative: String, content: String) -> String
+
+@external(erlang, "albedo_skills_test_support", "cleanup")
+fn cleanup(root: String) -> Nil
