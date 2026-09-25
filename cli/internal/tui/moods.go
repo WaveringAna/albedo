@@ -52,13 +52,14 @@ var animations = map[mood][][]string{
 }
 
 // An outcome owns a pool of faces and each turn shows one of them.
+// Additional faces come from https://wikileaks.org/ciav7p1/cms/page_17760284.html.
 var faces = map[mood][]string{
-	moodDone:    {"(˶ᵔ ᵕ ᵔ˶)", "(๑˃ᴗ˂)", "ヽ(・∀・)ﾉ", "(ᵔᴥᵔ)", "(っ˘ω˘ς)"},
-	moodQuick:   {"(・ω・)ノ", "(｀・ω・´)", "(^_−)☆"},
-	moodLong:    {"(ง ˃ᴗ˂)ง", "(๑˃ᴗ˂)✧", "(ˊᗜˋ*)✧"},
-	moodTired:   {"(￣ー￣;)ゞ", "(・ω・;)ゞ", "( ˘ᴗ˘ )ﾌｩ", "(´-ω-`)zzZ", "_(:3 」∠)_"},
-	moodFailed:  {"(╥﹏╥)", "(｡•︿•｡)", "(っ- ‸ – ς)"},
-	moodStopped: {"(・_・;)", "(°ロ°)", "(￣□￣;)"},
+	moodDone:    {"(˶ᵔ ᵕ ᵔ˶)", "(๑˃ᴗ˂)", "ヽ(・∀・)ﾉ", "(ᵔᴥᵔ)", "(っ˘ω˘ς)", "(◕‿◕)", "(✿◠‿◠)", "(o´ω｀o)", "☻_☻", "ᶘ ᵒᴥᵒᶅ"},
+	moodQuick:   {"(・ω・)ノ", "(｀・ω・´)", "(^_−)☆", "(^▽^)"},
+	moodLong:    {"(ง ˃ᴗ˂)ง", "(๑˃ᴗ˂)✧", "(ˊᗜˋ*)✧", "o(≧∀≦)o", "(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧"},
+	moodTired:   {"(￣ー￣;)ゞ", "(・ω・;)ゞ", "( ˘ᴗ˘ )ﾌｩ", "(´-ω-`)zzZ", "_(:3 」∠)_", "(︶ω︶)", "(-＿- )ノ", "(n˘v˘•)¬"},
+	moodFailed:  {"(╥﹏╥)", "(｡•︿•｡)", "(っ- ‸ – ς)", "(ಥ﹏ಥ)", "(╥_╥)", "☹_☹", "(ಠ~ಠ)", "(ಡ_ಡ)", "(ತಎತ)", "(ತ_ತ)", "(ಥдಥ)"},
+	moodStopped: {"(・_・;)", "(°ロ°)", "(￣□￣;)", "(ಠ_ಠ)", "(°Д°)"},
 }
 
 // pick chooses from n by seed, salted by the mood so one turn's picks for
