@@ -317,7 +317,13 @@ fn prepare(
       // Without a window there is no threshold to compare, but a saved
       // projection is still the user's standing instruction: honor it.
       use saved <- result.try(load_state(ledger, session))
-      let #(state, invalidated) = valid_state(saved, source, history)
+      use #(state, invalidated) <- result.try(valid_state(
+        ledger,
+        session,
+        saved,
+        source,
+        history,
+      ))
       use _ <- result.try(case invalidated {
         True -> delete_state(ledger, session)
         False -> Ok(Nil)
@@ -347,7 +353,13 @@ fn prepare(
     }
     Some(compaction.Capacity(capacity, capacity_source)) -> {
       use saved <- result.try(load_state(ledger, session))
-      let #(state, invalidated) = valid_state(saved, source, history)
+      use #(state, invalidated) <- result.try(valid_state(
+        ledger,
+        session,
+        saved,
+        source,
+        history,
+      ))
       use _ <- result.try(case invalidated {
         True -> delete_state(ledger, session)
         False -> Ok(Nil)
@@ -553,23 +565,67 @@ fn bounded_excerpt(text: String) -> String {
 }
 
 fn valid_state(
+  ledger: store.Store,
+  session: String,
   saved: Option(State),
   source: String,
   history: List(types.Input),
-) -> #(Option(State), Bool) {
+) -> Result(#(Option(State), Bool), String) {
+  let length = list.length(history)
   case saved {
-    None -> #(None, False)
+    None -> Ok(#(None, False))
+    Some(state) if state.cutoff_count > length -> Ok(#(None, True))
     Some(state) -> {
-      let valid =
-        state.cutoff_count <= list.length(history)
-        && source_fingerprint(source, list.take(history, state.cutoff_count))
-        == state.source_hash
-      case valid {
-        True -> #(Some(state), False)
-        False -> #(None, True)
+      let prefix = list.take(history, state.cutoff_count)
+      let current = source_fingerprint(source, prefix)
+      case current == state.source_hash {
+        True -> Ok(#(Some(state), False))
+        // A hash saved before images were stored covered their payload
+        // bytes. Checking it reads them once; a match is rewritten in the
+        // current form and a mismatch is deleted by the caller, so this runs
+        // at most once per saved state.
+        False ->
+          case
+            has_images(prefix)
+            && legacy_fingerprint(#(source, prefix)) == Ok(state.source_hash)
+          {
+            True -> {
+              let upgraded = State(..state, source_hash: current)
+              use _ <- result.try(save_hash(ledger, session, current))
+              Ok(#(Some(upgraded), False))
+            }
+            False -> Ok(#(None, True))
+          }
       }
     }
   }
+}
+
+fn has_images(inputs: List(types.Input)) -> Bool {
+  list.any(inputs, fn(input) {
+    case input {
+      types.UserImage(..) -> True
+      types.ToolOutput(images: [_, ..], ..) -> True
+      _ -> False
+    }
+  })
+}
+
+fn save_hash(
+  ledger: store.Store,
+  session: String,
+  source_hash: String,
+) -> Result(Nil, String) {
+  store.query(ledger, fn(db) {
+    sqlight.query(
+      "UPDATE rolling_compaction_state SET source_hash=? WHERE session=?",
+      db,
+      [sqlight.text(source_hash), sqlight.text(session)],
+      decode.dynamic,
+    )
+    |> result.replace(Nil)
+    |> result.map_error(fn(error) { error.message })
+  })
 }
 
 fn legal_cutoff(
@@ -789,3 +845,6 @@ fn source_fingerprint(source: String, inputs: List(types.Input)) -> String {
 
 @external(erlang, "albedo_rolling", "fingerprint")
 fn fingerprint(value: a) -> String
+
+@external(erlang, "albedo_rolling", "legacy_fingerprint")
+fn legacy_fingerprint(value: a) -> Result(String, Nil)

@@ -2,9 +2,11 @@ import albedo/daemon/configuration
 import albedo/daemon/conversation
 import albedo/daemon/history
 import albedo/daemon/image
+import albedo/daemon/images
 import albedo/daemon/reaper
 import albedo/daemon/session
 import albedo/daemon/store
+import albedo/daemon/usage
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/schedule/ledger as schedule
@@ -86,6 +88,22 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
         |> result.replace_error("could not start runtime"),
       )
       use _ <- result.try(conversation.initialise(runtime.ledger(host)))
+      use moved <- result.try(images.migrate(
+        runtime.ledger(host),
+        config.home
+          <> "/backups/albedo-before-image-store-"
+          <> int.to_string(usage.now())
+          <> ".sqlite",
+      ))
+      case moved {
+        0 -> Nil
+        rows ->
+          io.println(
+            "image store: moved images out of "
+            <> int.to_string(rows)
+            <> " transcript rows",
+          )
+      }
       use _ <- result.try(case configuration.legacy(config.home) {
         Ok(provider) ->
           conversation.assign_provider(runtime.ledger(host), provider.name)

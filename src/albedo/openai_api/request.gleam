@@ -299,8 +299,8 @@ fn text_part(protocol: Protocol, text: String) -> Json {
 }
 
 fn image_part(protocol: Protocol, image: types.Image) -> Json {
-  let #(mime_type, data, _, _, _) = types.image_parts(image)
-  let url = data_url(mime_type, data)
+  let #(mime_type, _, _, _) = types.image_meta(image)
+  let url = data_url(mime_type, types.image_data(image))
   case protocol {
     Responses ->
       json.object([
@@ -422,4 +422,4 @@ fn optional(
 fn flatten(json: Json) -> Json
 
 @external(erlang, "albedo_openai_json", "data_url")
-fn data_url(mime_type: String, data: String) -> Json
+fn data_url(mime_type: String, data: types.ImageData) -> Json

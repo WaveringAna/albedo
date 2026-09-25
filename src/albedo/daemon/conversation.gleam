@@ -1,4 +1,5 @@
 import albedo/daemon/events
+import albedo/daemon/images
 import albedo/daemon/note
 import albedo/daemon/store
 import albedo/daemon/transcript
@@ -65,7 +66,8 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
   store.query(store, fn(db) {
     use _ <- result.try(
       sqlight.exec(
-        "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER,effort TEXT); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);",
+        "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER,effort TEXT); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);"
+          <> images.schema,
         db,
       )
       |> result.map_error(fn(e) { e.message }),
@@ -232,7 +234,7 @@ fn recover_sessions(db) -> Result(Nil, String) {
           |> result.map_error(fn(e) { e.message })
           |> result.map(fn(rows) {
             rows
-            |> list.filter_map(unpack)
+            |> list.filter_map(unpack(_, unread))
             |> latest_user
             |> title_or_default
           })
@@ -333,6 +335,7 @@ pub fn delete(store: store.Store, id: String) -> Result(Nil, String) {
       |> result.map_error(fn(e) { e.message }),
     )
     let deleted = {
+      use hashes <- result.try(images.session_hashes(db, id))
       use tables <- result.try(
         sqlight.query(
           "SELECT name FROM sqlite_master WHERE type='table'",
@@ -382,14 +385,16 @@ pub fn delete(store: store.Store, id: String) -> Result(Nil, String) {
           },
         ),
       )
-      sqlight.query(
-        "DELETE FROM sessions WHERE id=?",
-        db,
-        [sqlight.text(id)],
-        decode.dynamic,
+      use _ <- result.try(
+        sqlight.query(
+          "DELETE FROM sessions WHERE id=?",
+          db,
+          [sqlight.text(id)],
+          decode.dynamic,
+        )
+        |> result.map_error(fn(e) { e.message }),
       )
-      |> result.replace(Nil)
-      |> result.map_error(fn(e) { e.message })
+      images.release(db, hashes)
     }
     case deleted {
       Ok(_) ->
@@ -547,6 +552,7 @@ fn load_source_pages(
   upper: Int,
   pages: List(List(transcript.SourcedEntry)),
 ) -> Result(List(transcript.SourcedEntry), String) {
+  let read = images.reader(store)
   let page =
     store.query(store, fn(db) {
       use rows <- result.try(
@@ -572,7 +578,7 @@ fn load_source_pages(
       use entries <- result.try(
         list.try_map(rows, fn(row) {
           use input <- result.try(
-            unpack(row.1)
+            unpack(row.1, read)
             |> result.replace_error("invalid saved transcript item"),
           )
           Ok(transcript.SourcedEntry(
@@ -686,6 +692,7 @@ fn read_before(
   upper: Int,
   limit: Int,
 ) -> Result(#(List(transcript.SourcedEntry), Bool), String) {
+  let read = images.reader(store)
   store.query(store, fn(db) {
     use rows <- result.try(
       sqlight.query(
@@ -705,7 +712,7 @@ fn read_before(
     use entries <- result.try(
       list.try_map(list.reverse(rows), fn(row) {
         use input <- result.try(
-          unpack(row.1)
+          unpack(row.1, read)
           |> result.replace_error("invalid saved transcript item"),
         )
         Ok(transcript.SourcedEntry(
@@ -741,6 +748,7 @@ pub fn source(
   reference: transcript.SourceRef,
 ) -> Result(Option(transcript.Entry), String) {
   let transcript.SourceRef(session, seq) = reference
+  let read = images.reader(store)
   store.query(store, fn(db) {
     use rows <- result.try(
       sqlight.query(
@@ -759,7 +767,7 @@ pub fn source(
     case rows {
       [] -> Ok(None)
       [row] ->
-        unpack(row.0)
+        unpack(row.0, read)
         |> result.replace_error("invalid saved transcript item")
         |> result.map(fn(input) { Some(transcript.Entry(input, row.1, row.2)) })
       _ -> Error("duplicate transcript source reference")
@@ -864,7 +872,7 @@ pub fn prompt_pin(
     case rows {
       [#(Some(instructions), Some(context))] ->
         Ok(
-          unpack_list(context)
+          unpack_list(context, images.reader(store))
           |> result.map(PinnedPrompt(instructions, _))
           |> option.from_result,
         )
@@ -908,6 +916,7 @@ pub fn commit_from(
   provider: Option(String),
 ) -> Result(Int, String) {
   let timestamp = usage.now()
+  let read = images.reader(store)
   store.query(store, fn(db) {
     use _ <- result.try(
       sqlight.exec("BEGIN IMMEDIATE", db)
@@ -920,6 +929,7 @@ pub fn commit_from(
       }
       use _ <- result.try(
         list.try_each(inputs, fn(input) {
+          use input <- result.try(images.externalize(db, input, read))
           sqlight.query(
             "INSERT INTO transcript(session,payload,timestamp,provider) VALUES(?,?,?,?)",
             db,
@@ -1066,13 +1076,25 @@ pub fn record_usage(
 fn pack(input: types.Input) -> BitArray
 
 @external(erlang, "albedo_conversation", "unpack")
-fn unpack(bytes: BitArray) -> Result(types.Input, Nil)
+fn unpack(
+  bytes: BitArray,
+  read: fn(String) -> Result(String, Nil),
+) -> Result(types.Input, Nil)
+
+/// For rows read only for their text, inside the store (which a real reader
+/// would call back into).
+fn unread(_hash: String) -> Result(String, Nil) {
+  Error(Nil)
+}
 
 @external(erlang, "albedo_conversation", "pack_list")
 fn pack_list(inputs: List(types.Input)) -> BitArray
 
 @external(erlang, "albedo_conversation", "unpack_list")
-fn unpack_list(bytes: BitArray) -> Result(List(types.Input), Nil)
+fn unpack_list(
+  bytes: BitArray,
+  read: fn(String) -> Result(String, Nil),
+) -> Result(List(types.Input), Nil)
 
 pub fn set_effort(
   store: store.Store,

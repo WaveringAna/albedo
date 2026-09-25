@@ -304,13 +304,13 @@ fn text_part(text: String) -> Json {
 }
 
 fn inline(image: types.Image) -> Json {
-  let #(mime_type, data, _, _, _) = types.image_parts(image)
+  let #(mime_type, _, _, _) = types.image_meta(image)
   json.object([
     #(
       "inlineData",
       json.object([
         #("mimeType", json.string(mime_type)),
-        #("data", json.string(data)),
+        #("data", base64_string(types.image_data(image))),
       ]),
     ),
   ])
@@ -486,6 +486,9 @@ fn optional(
     None -> fields
   }
 }
+
+@external(erlang, "albedo_openai_json", "base64_string")
+fn base64_string(data: types.ImageData) -> Json
 
 @external(erlang, "albedo_antigravity", "encode")
 pub fn encode_value(value: Dynamic) -> Json

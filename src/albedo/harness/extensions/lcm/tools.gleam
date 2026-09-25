@@ -413,7 +413,7 @@ fn source_text(input: types.Input) -> String {
 }
 
 fn image_description(image: types.Image) -> String {
-  let #(mime, _, width, height, _) = types.image_parts(image)
+  let #(mime, width, height, _) = types.image_meta(image)
   mime <> " " <> int.to_string(width) <> "x" <> int.to_string(height)
 }
 

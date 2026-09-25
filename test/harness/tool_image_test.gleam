@@ -43,7 +43,8 @@ pub fn a_shown_image_returns_with_the_result_and_survives_recovery_test() {
   let assert Ok(types.ToolOutput("shown", text, [image])) =
     runtime.invoke(host, session, shown)
   field(text, "value") |> should.equal("'attached image/png, 24 bytes'")
-  types.image_parts(image) |> should.equal(#("image/png", png, 2, 3, 24))
+  types.image_meta(image) |> should.equal(#("image/png", 2, 3, 24))
+  types.image_data(image) |> should.equal(types.InlineData(png))
   // A result lost in flight is rebuilt from the journal with its image.
   runtime.recover(host, session, shown)
   |> should.equal(types.ToolOutput("shown", text, [image]))
@@ -71,7 +72,7 @@ pub fn view_code_returns_rendered_pages_as_images_test() {
     <> "shown"
   let assert Ok(types.ToolOutput(_, text, [page])) =
     runtime.invoke(host, session, call("view", code))
-  let #(mime, _, width, height, _) = types.image_parts(page)
+  let #(mime, width, height, _) = types.image_meta(page)
   #(mime, width > height) |> should.equal(#("image/png", True))
   field(text, "value") |> string.contains("(python)") |> should.be_true
   field(text, "value")
@@ -162,7 +163,7 @@ pub fn the_kernel_decoder_reads_images_at_the_boundary_test() {
   // Both lists keep the order the cell showed its images in.
   mixed.images
   |> list.map(fn(image) {
-    let #(_, _, width, height, _) = types.image_parts(image)
+    let #(_, width, height, _) = types.image_meta(image)
     #(width, height)
   })
   |> should.equal([#(2, 3), #(5, 3)])
@@ -247,8 +248,15 @@ fn journaled_png(width: Int) -> BitArray {
 @external(erlang, "erlang", "term_to_binary")
 fn term_to_binary(value: a) -> BitArray
 
+fn unpack_input(bytes: BitArray) -> Result(types.Input, Nil) {
+  unpack_with(bytes, fn(_) { Error(Nil) })
+}
+
 @external(erlang, "albedo_conversation", "unpack")
-fn unpack_input(bytes: BitArray) -> Result(types.Input, Nil)
+fn unpack_with(
+  bytes: BitArray,
+  read: fn(String) -> Result(String, Nil),
+) -> Result(types.Input, Nil)
 
 @external(erlang, "albedo_native", "unpack_cell")
 fn unpack_cell(

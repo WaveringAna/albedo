@@ -7,6 +7,7 @@ import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/option.{None, Some}
 import gleeunit/should
 import sqlight
@@ -40,7 +41,8 @@ fn session(id: String) -> conversation.Info {
 
 pub fn validation_uses_canonical_bytes_header_and_derived_metadata_test() {
   let value = test_image()
-  types.image_parts(value) |> should.equal(#("image/png", png, 2, 3, 24))
+  types.image_meta(value) |> should.equal(#("image/png", 2, 3, 24))
+  types.image_data(value) |> should.equal(types.InlineData(png))
   image.validate("image/jpeg", png, 2, 3, 24)
   |> should.equal(Error("image metadata does not match its payload"))
   image.validate("image/png", png, 2, 4, 24)
@@ -77,6 +79,22 @@ pub fn user_events_expose_metadata_without_the_base64_payload_test() {
   |> should.equal(Ok(#("image/png", 2, 3, 24, None)))
 }
 
+/// Each loaded user image as its text and the payload its reference reads.
+fn resolved(
+  ledger: store.Store,
+  id: String,
+) -> List(#(String, Result(String, Nil))) {
+  let assert Ok(inputs) = conversation.load(ledger, id)
+  list.map(inputs, fn(input) {
+    let assert types.UserImage(text, image) = input
+    types.image_meta(image) |> should.equal(#("image/png", 2, 3, 24))
+    case types.image_data(image) {
+      types.StoredData(read: read, ..) -> #(text, read())
+      types.InlineData(data) -> #(text, Ok(data))
+    }
+  })
+}
+
 pub fn image_inputs_survive_restart_and_fork_without_losing_payload_test() {
   let path = temporary_database()
   let assert Ok(host) = runtime.start(path)
@@ -96,15 +114,15 @@ pub fn image_inputs_survive_restart_and_fork_without_losing_payload_test() {
       )
     })
   let assert Ok(_) = history.fork(ledger, "source", "branch", checkpoint)
-  conversation.load(ledger, "source") |> should.equal(Ok([input]))
-  conversation.load(ledger, "branch") |> should.equal(Ok([input]))
+  resolved(ledger, "source") |> should.equal([#("describe", Ok(png))])
+  resolved(ledger, "branch") |> should.equal([#("describe", Ok(png))])
   runtime.stop(host)
 
   let assert Ok(restarted) = runtime.start(path)
   let ledger = runtime.ledger(restarted)
   let assert Ok(_) = conversation.initialise(ledger)
-  conversation.load(ledger, "source") |> should.equal(Ok([input]))
-  conversation.load(ledger, "branch") |> should.equal(Ok([input]))
+  resolved(ledger, "source") |> should.equal([#("describe", Ok(png))])
+  resolved(ledger, "branch") |> should.equal([#("describe", Ok(png))])
   runtime.stop(restarted)
   cleanup(path)
 }

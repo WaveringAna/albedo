@@ -281,7 +281,8 @@ fn row_decoder() {
 fn decode_row(row) -> Result(Row, String) {
   let #(seq, payload, timestamp, provider) = row
   use input <- result.try(
-    unpack(payload) |> result.replace_error("invalid saved transcript item"),
+    unpack(payload, unread)
+    |> result.replace_error("invalid saved transcript item"),
   )
   Ok(Row(seq, payload, input, timestamp, provider))
 }
@@ -301,7 +302,7 @@ fn row_item(row: Row) -> Item {
 }
 
 fn image_label(image: types.Image) -> String {
-  let #(mime, _, width, height, _) = types.image_parts(image)
+  let #(mime, width, height, _) = types.image_meta(image)
   " ["
   <> mime
   <> " "
@@ -486,4 +487,13 @@ fn append_incomplete_results(
 fn pack(input: types.Input) -> BitArray
 
 @external(erlang, "albedo_conversation", "unpack")
-fn unpack(bytes: BitArray) -> Result(types.Input, Nil)
+fn unpack(
+  bytes: BitArray,
+  read: fn(String) -> Result(String, Nil),
+) -> Result(types.Input, Nil)
+
+/// History rows are previews and fork bookkeeping (a fork copies payload bytes,
+/// references included); none is sent to a model, so none reads an image.
+fn unread(_hash: String) -> Result(String, Nil) {
+  Error(Nil)
+}

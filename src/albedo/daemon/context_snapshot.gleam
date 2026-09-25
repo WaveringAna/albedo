@@ -357,7 +357,7 @@ fn render_input(input: types.Input) -> String {
 }
 
 fn image_label(image: types.Image) -> String {
-  let #(mime, _, width, height, bytes) = types.image_parts(image)
+  let #(mime, width, height, bytes) = types.image_meta(image)
   "[image · "
   <> mime
   <> " · "

@@ -52,13 +52,89 @@ await_connection(Pid, Monitor, Target, Headers, Body, Timeout) ->
     end.
 
 start_request(Pid, Monitor, Target, Headers, Body, Timeout) ->
-    try gun:post(Pid, Target, Headers, Body, #{flow => ?FLOW}) of
-        Stream ->
-            {ok, {connection, self(), Pid, Stream, Monitor, Timeout}}
+    try send(Pid, Target, Headers, Body, Timeout) of
+        {ok, Stream} ->
+            {ok, {connection, self(), Pid, Stream, Monitor, Timeout}};
+        {error, Reason} ->
+            cleanup(Pid, Monitor),
+            {error, {transport_error, Reason}}
     catch
         _Class:_Reason ->
             cleanup(Pid, Monitor),
             {error, {transport_error, <<"request failed">>}}
+    end.
+
+%% A body with stored images ({albedo_image, Size, Read} placeholders, see
+%% albedo_openai_json:data_url/2) is written in segments: each payload is read
+%% just before it is sent, and the next is not read until the connection
+%% process has taken it, so at most one image is held at a time.
+send(Pid, Target, Headers, Body, Timeout) ->
+    case segments(Body) of
+        plain ->
+            {ok, gun:post(Pid, Target, Headers, Body, #{flow => ?FLOW})};
+        {Segments, Length} ->
+            Sized = [{<<"content-length">>, integer_to_binary(Length)} | Headers],
+            Stream = gun:post(Pid, Target, Sized, #{flow => ?FLOW}),
+            Deadline = erlang:monotonic_time(millisecond) + Timeout,
+            case write(Pid, Stream, Segments, Deadline) of
+                ok -> {ok, Stream};
+                {error, Reason} ->
+                    gun:cancel(Pid, Stream),
+                    {error, Reason}
+            end
+    end.
+
+%% plain, or {[{data, iodata()} | {image, Size, Read}], ContentLength}.
+segments(Body) ->
+    case walk(Body, {[], [], 0, false}) of
+        {_, _, _, false} -> plain;
+        {Current, Segments, Length, true} ->
+            {lists:reverse(flush(Current, Segments)), Length}
+    end.
+
+walk({albedo_image, Size, Read}, {Current, Segments, Length, _}) ->
+    {[], [{image, Size, Read} | flush(Current, Segments)], Length + Size, true};
+walk([H | T], Acc) -> walk(T, walk(H, Acc));
+walk([], Acc) -> Acc;
+walk(Piece, {Current, Segments, Length, Images}) when is_binary(Piece) ->
+    {[Piece | Current], Segments, Length + byte_size(Piece), Images};
+walk(Byte, {Current, Segments, Length, Images}) when is_integer(Byte) ->
+    {[Byte | Current], Segments, Length + 1, Images}.
+
+flush([], Segments) -> Segments;
+flush(Current, Segments) -> [{data, lists:reverse(Current)} | Segments].
+
+write(_, _, [], _) -> ok;
+write(Pid, Stream, [{data, Data} | Rest], Deadline) ->
+    gun:data(Pid, Stream, fin(Rest), Data),
+    write(Pid, Stream, Rest, Deadline);
+write(Pid, Stream, [{image, Size, Read} | Rest], Deadline) ->
+    case Read() of
+        {ok, Payload} when byte_size(Payload) =:= Size ->
+            gun:data(Pid, Stream, fin(Rest), Payload),
+            case drained(Pid, Deadline) of
+                ok -> write(Pid, Stream, Rest, Deadline);
+                Error -> Error
+            end;
+        _ ->
+            {error, <<"a stored image payload is missing or damaged">>}
+    end.
+
+fin([]) -> fin;
+fin(_) -> nofin.
+
+%% Waits until the connection process has consumed what it was sent.
+drained(Pid, Deadline) ->
+    case erlang:process_info(Pid, message_queue_len) of
+        {message_queue_len, 0} -> ok;
+        undefined -> ok;
+        _ ->
+            case erlang:monotonic_time(millisecond) >= Deadline of
+                true -> {error, <<"timed out writing the request body">>};
+                false ->
+                    receive after 1 -> ok end,
+                    drained(Pid, Deadline)
+            end
     end.
 
 receive_message({connection, Owner, Pid, Stream, Monitor, Timeout})

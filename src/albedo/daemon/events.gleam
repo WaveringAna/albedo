@@ -131,7 +131,7 @@ pub fn user_image(
 
 /// What clients show of an image: never its payload.
 fn image_metadata(image: types.Image) -> json.Json {
-  let #(mime_type, _, width, height, bytes) = types.image_parts(image)
+  let #(mime_type, width, height, bytes) = types.image_meta(image)
   json.object([
     #("mimeType", json.string(mime_type)),
     #("width", json.int(width)),

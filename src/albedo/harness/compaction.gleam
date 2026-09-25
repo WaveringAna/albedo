@@ -80,15 +80,13 @@ pub fn input_bytes(input: types.Input) -> Int {
   case input {
     types.User(text) | types.Assistant(text) -> string.byte_size(text)
     types.UserImage(text, image) -> {
-      let #(_, data, _, _, _) = types.image_parts(image)
-      string.byte_size(text) + string.byte_size(data)
+      string.byte_size(text) + types.image_size(image)
     }
     types.ToolOutput(id, output, images) ->
       string.byte_size(id)
       + string.byte_size(output)
       + list.fold(images, 0, fn(total, image) {
-        let #(_, data, _, _, _) = types.image_parts(image)
-        total + string.byte_size(data)
+        total + types.image_size(image)
       })
     types.Replay(item) ->
       types.replay_json(item) |> json.to_string |> string.byte_size
@@ -117,7 +115,7 @@ pub fn estimate_input(input: types.Input) -> Int {
 }
 
 fn estimate_image(image: types.Image) -> Int {
-  let #(_, _, width, height, _) = types.image_parts(image)
+  let #(_, width, height, _) = types.image_meta(image)
   // Provider-neutral approximation based on 512px vision tiles. Providers
   // may tokenize images differently; this is only the rolling trigger signal.
   85 + 170 * ceiling_div(width, 512) * ceiling_div(height, 512)

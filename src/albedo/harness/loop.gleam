@@ -471,7 +471,7 @@ pub fn render_summary_input(input: types.Input) -> String {
 }
 
 fn describe_image(image: types.Image) -> String {
-  let #(mime, _, width, height, bytes) = types.image_parts(image)
+  let #(mime, width, height, bytes) = types.image_meta(image)
   "image "
   <> mime
   <> " "

@@ -34,7 +34,17 @@ pub const max_image_pixels = 40_000_000
 /// A bounded, header-validated image. The daemon revalidates decoded bytes before
 /// constructing this value; dimensions are display metadata, not decode proof.
 pub opaque type Image {
-  Image(mime_type: String, data: String, width: Int, height: Int, bytes: Int)
+  Image(mime_type: String, data: ImageData, width: Int, height: Int, bytes: Int)
+}
+
+/// Where an image's base64 payload lives. A saved image is a content hash into
+/// the daemon's image table (see albedo_images.erl): its bytes are read only
+/// while a request body is being written, so a loaded transcript holds
+/// references rather than every screenshot it ever showed the model.
+pub type ImageData {
+  InlineData(data: String)
+  /// `size` is the payload's byte length; `read` returns exactly those bytes.
+  StoredData(hash: String, size: Int, read: fn() -> Result(String, Nil))
 }
 
 pub fn image(
@@ -60,13 +70,27 @@ pub fn image(
     _, False, _, _ -> Error(InvalidRequest("invalid image payload size"))
     _, _, False, _ -> Error(InvalidRequest("invalid image dimensions"))
     _, _, _, False -> Error(InvalidRequest("invalid decoded image size"))
-    True, True, True, True -> Ok(Image(mime_type, data, width, height, bytes))
+    True, True, True, True ->
+      Ok(Image(mime_type, InlineData(data), width, height, bytes))
   }
 }
 
-pub fn image_parts(image: Image) -> #(String, String, Int, Int, Int) {
-  let Image(mime_type, data, width, height, bytes) = image
-  #(mime_type, data, width, height, bytes)
+/// MIME type, width, height, and decoded byte count.
+pub fn image_meta(image: Image) -> #(String, Int, Int, Int) {
+  let Image(mime_type, _, width, height, bytes) = image
+  #(mime_type, width, height, bytes)
+}
+
+pub fn image_data(image: Image) -> ImageData {
+  image.data
+}
+
+/// The base64 payload's byte length, known without reading a stored payload.
+pub fn image_size(image: Image) -> Int {
+  case image.data {
+    InlineData(data) -> string.byte_size(data)
+    StoredData(size: size, ..) -> size
+  }
 }
 
 pub type Input {
