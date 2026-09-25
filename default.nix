@@ -1,4 +1,4 @@
-{ lib, stdenv, buildGoModule, fetchurl, gleam, beamPackages, python3, bash, coreutils, makeWrapper }:
+{ lib, stdenv, rustPlatform, buildGoModule, fetchurl, gleam, beamPackages, python3, bash, coreutils, makeWrapper }:
 let
   erlang = beamPackages.erlang;
   # esqlite loads the pc plugin during its Rebar3 build, which cannot fetch
@@ -22,6 +22,28 @@ let
   }) manifest.packages;
   packageIndex = builtins.toFile "packages.toml" ("[packages]\n" + lib.concatMapStrings
     (p: "${p.name} = \"${p.version}\"\n") hexPackages + "\n[git]\n");
+  renderSource = lib.fileset.toSource {
+    root = ./native/render;
+    fileset = lib.fileset.unions [
+      ./native/render/Cargo.toml
+      ./native/render/Cargo.lock
+      ./native/render/src
+      ./native/render/fonts
+      ./native/render/tests
+    ];
+  };
+  render = rustPlatform.buildRustPackage {
+    pname = "albedo-render";
+    version = "0.1.0";
+    src = renderSource;
+    cargoLock.lockFile = ./native/render/Cargo.lock;
+    meta = {
+      description = "renders a range of a source file as syntax-highlighted PNG pages";
+      license = lib.licenses.wtfpl;
+      mainProgram = "albedo-render";
+      platforms = lib.platforms.unix;
+    };
+  };
   daemon = stdenv.mkDerivation {
     pname = "albedo-daemon";
     version = "1.0.0";
@@ -45,9 +67,11 @@ let
       runHook preInstall
       mkdir -p $out/lib/albedo $out/bin
       cp -R build/erlang-shipment/. $out/lib/albedo/
+      mkdir -p $out/lib/albedo/albedo/priv/bin
+      ln -s ${render}/bin/albedo-render $out/lib/albedo/albedo/priv/bin/albedo-render
       makeWrapper $out/lib/albedo/entrypoint.sh $out/bin/albedo-daemon \
         --add-flags run \
-        --prefix PATH : ${lib.makeBinPath [ erlang python3 bash coreutils ]}
+        --prefix PATH : ${lib.makeBinPath [ erlang python3 bash coreutils render ]}
       runHook postInstall
     '';
   };
@@ -64,7 +88,7 @@ in buildGoModule {
     wrapProgram $out/bin/albedo \
       --set-default ALBEDO_DAEMON ${daemon}/bin/albedo-daemon
   '';
-  passthru = { inherit daemon; };
+  passthru = { inherit daemon render; };
   meta = {
     description = "coding agent daemon with a Charm terminal client";
     license = lib.licenses.wtfpl;

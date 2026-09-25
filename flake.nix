@@ -12,6 +12,7 @@
         let pkgs = import nixpkgs { inherit system; };
         in rec {
           albedo = pkgs.callPackage ./default.nix { };
+          inherit (albedo) daemon render;
           default = albedo;
         });
       devShells = eachSystem (system:
