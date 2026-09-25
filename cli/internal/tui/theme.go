@@ -235,6 +235,7 @@ func sectionRule(label string, count, width int) string {
 
 // promptMark is where you type.
 const promptMark = "› "
+const promptMarkWidth = 2
 
 func promptLead() string { return DefaultStyles.Prompt.Render(promptMark) }
 

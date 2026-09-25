@@ -125,6 +125,13 @@ type WorkspaceRecoveryState struct {
 	Error       string
 }
 
+func (s *WorkspaceRecoveryState) Rows() int {
+	if s == nil {
+		return 0
+	}
+	return 3 // missing warning, input field, and help/status
+}
+
 type ActiveStreamKind string
 
 const (
@@ -315,11 +322,22 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 	ta := textarea.New()
 	ta.Placeholder = ""
 	ta.Prompt = promptMark
+	ta.CharLimit = 0
 	ta.ShowLineNumbers = false
+	ta.SetPromptFunc(promptMarkWidth, func(lineIdx int) string {
+		if lineIdx == 0 {
+			return promptMark
+		}
+		return strings.Repeat(" ", promptMarkWidth)
+	})
 	ta.KeyMap.InsertNewline.SetKeys("enter", "ctrl+m", "alt+enter", "shift+enter")
-	ta.SetHeight(1)
+	ta.SetHeight(6)
 	ta.FocusedStyle.Prompt = DefaultStyles.Prompt
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.Placeholder = DefaultStyles.Faint
+	ta.BlurredStyle.Prompt = DefaultStyles.Prompt
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.Placeholder = DefaultStyles.Faint
 	ta.Cursor.Style = DefaultStyles.Cursor
 	ta.Cursor.SetMode(cursor.CursorStatic)
 	ta.Focus()
@@ -363,6 +381,7 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		client.Tail = olderPageRows
 	}
 
+	m.syncPlaceholder()
 	return m
 }
 
@@ -400,12 +419,63 @@ func (m *ChatModel) ClearNotices() {
 	m.syncViewportHeight()
 }
 
-func (m ChatModel) chromeRows() int {
-	menu := min(4, len(m.CommandMenu.Matches(m.TextArea.Value())))
+func (m ChatModel) promptLines() int {
 	if m.WorkspaceRecovery != nil {
-		menu = 2
+		return 0
 	}
-	return menu + m.Notices.ChromeRows()
+	val := m.TextArea.Value()
+	if val == "" {
+		return 1
+	}
+	textWidth := max(1, m.chatWidth()-promptMarkWidth)
+	lines := strings.Split(val, "\n")
+	total := 0
+	for _, l := range lines {
+		total += len(wrapOrChunkLine(l, textWidth))
+	}
+	return max(1, total)
+}
+
+func (m ChatModel) maxPromptHeight() int {
+	maxHeight := 6
+	if m.Height > 0 {
+		maxHeight = max(1, min(6, (m.Height-8)/2))
+	}
+	return maxHeight
+}
+
+func (m ChatModel) promptHeight() int {
+	if m.WorkspaceRecovery != nil {
+		return 0
+	}
+	lines := m.promptLines()
+	return min(lines, m.maxPromptHeight())
+}
+
+func (m ChatModel) inputRows() int {
+	if m.WorkspaceRecovery != nil {
+		return m.WorkspaceRecovery.Rows()
+	}
+	menu := min(4, len(m.CommandMenu.Matches(m.TextArea.Value())))
+	return m.promptHeight() + menu
+}
+
+func (m ChatModel) chromeRows() int {
+	return m.inputRows() + m.Notices.ChromeRows()
+}
+
+func (m *ChatModel) syncLayout() {
+	m.TextArea.SetHeight(m.maxPromptHeight())
+	m.Viewport.Height = max(1, m.Height-6-m.chromeRows())
+	m.refreshViewportContent()
+}
+
+func (m *ChatModel) syncPlaceholder() {
+	if m.waitingForInput() && m.TextArea.Value() == "" {
+		m.TextArea.Placeholder = "waiting for user input"
+	} else {
+		m.TextArea.Placeholder = ""
+	}
 }
 
 func (m *ChatModel) SetSize(width, height int) {
@@ -424,17 +494,18 @@ func (m *ChatModel) SetSize(width, height int) {
 
 	padding := m.padding()
 	available := max(1, width-2*padding)
-	chromeRows := m.chromeRows()
 	transcriptWidth := available
 	if m.sidebarWidth() > 0 {
 		transcriptWidth -= m.sidebarWidth() + 2
 	}
+
 	m.Viewport.Width = transcriptWidth
 	m.Renderer.BodyWidth = min(100, available)
-	m.Viewport.Height = max(1, height-6-chromeRows)
-	m.TextArea.SetHeight(1)
-	m.TextArea.SetWidth(max(1, available-2))
+	m.TextArea.SetWidth(available)
+	m.TextArea.SetHeight(m.maxPromptHeight())
 	m.RecoveryInput.Width = max(1, available-16)
+
+	m.Viewport.Height = max(1, height-6-m.chromeRows())
 
 	m.rebuildSettledLines()
 	m.refreshViewportContent()
@@ -948,7 +1019,8 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			},
 		)
 		if consumed {
-			m.SetSize(m.Width, m.Height)
+			m.syncLayout()
+			m.syncPlaceholder()
 			return m, tea.Batch(cmds...)
 		}
 
@@ -984,11 +1056,11 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.scrollBy(m.Viewport.Height)
 			return m, nil
 		}
-		if msg.Type == tea.KeyUp && m.TextArea.Line() == 0 {
+		if msg.Type == tea.KeyUp && m.TextArea.Line() == 0 && m.TextArea.LineInfo().RowOffset == 0 {
 			m.scrollBy(-1)
 			return m, nil
 		}
-		if msg.Type == tea.KeyDown && m.TextArea.Line() >= m.TextArea.LineCount()-1 {
+		if msg.Type == tea.KeyDown && m.TextArea.Line() >= m.TextArea.LineCount()-1 && m.TextArea.LineInfo().RowOffset >= m.TextArea.LineInfo().Height-1 {
 			m.scrollBy(1)
 			return m, nil
 		}
@@ -1025,6 +1097,8 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			trimmed := strings.TrimSpace(m.TextArea.Value())
 			if trimmed != "" {
 				m.TextArea.Reset()
+				m.syncLayout()
+				m.syncPlaceholder()
 				m.submitInput(trimmed, &cmds)
 				return m, tea.Batch(cmds...)
 			}
@@ -1258,6 +1332,8 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.AttachedImage = img
 		}
 		m.TextArea.Reset()
+		m.syncLayout()
+		m.syncPlaceholder()
 		m.submitInput(prompt, &cmds)
 		return m, tea.Batch(cmds...)
 
@@ -1275,12 +1351,18 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	}
 
 	var taCmd tea.Cmd
-	oldMenuRows := min(4, len(m.CommandMenu.Matches(m.TextArea.Value())))
+	menuMatches := m.CommandMenu.Matches(m.TextArea.Value())
+	oldMenuRows := min(4, len(menuMatches))
+	oldPromptHeight := m.promptHeight()
 	m.TextArea, taCmd = m.TextArea.Update(msg)
-	if min(4, len(m.CommandMenu.Matches(m.TextArea.Value()))) != oldMenuRows {
-		m.SetSize(m.Width, m.Height)
+	newMatches := m.CommandMenu.Matches(m.TextArea.Value())
+	newMenuRows := min(4, len(newMatches))
+	newPromptHeight := m.promptHeight()
+	if newMenuRows != oldMenuRows || newPromptHeight != oldPromptHeight {
+		m.syncLayout()
 	}
 	cmds = append(cmds, taCmd)
+	m.syncPlaceholder()
 
 	return m, tea.Batch(cmds...)
 }
@@ -1389,6 +1471,8 @@ func (m *ChatModel) submitInput(input string, cmds *[]tea.Cmd) {
 
 func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 	m.TextArea.Reset()
+	m.syncLayout()
+	m.syncPlaceholder()
 	trimmed := strings.TrimSpace(input)
 
 	switch {
@@ -1464,6 +1548,7 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 
 func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	defer m.reseedMood()
+	defer m.syncPlaceholder()
 	if evt.Replayed {
 		// the snapshot rebuilds the transcript; whether albedo is working
 		// now is for /status to say, so reopening a session never flashes
@@ -2055,11 +2140,12 @@ func (m ChatModel) View() string {
 			rows = append(rows, m.Styles.Faint.Render(help))
 		}
 	} else {
-		rows = append(rows, m.composerView())
+		rows = append(rows, strings.Split(strings.TrimSuffix(m.composerView(), "\n"), "\n")...)
 		if menu := m.CommandMenu.View(m.TextArea.Value()); menu != "" {
 			rows = append(rows, strings.Split(strings.TrimSuffix(menu, "\n"), "\n")...)
 		}
 	}
+	rows = append(rows, m.Styles.Decor.Render(strings.Repeat("─", width)))
 	rows = append(rows, m.renderFooter())
 	for i, row := range rows {
 		rows[i] = pad + row
@@ -2068,31 +2154,12 @@ func (m ChatModel) View() string {
 }
 
 func (m ChatModel) composerView() string {
-	value := m.TextArea.Value()
-	lines := strings.Split(value, "\n")
-	cursor := 0
-	for i := 0; i < min(m.TextArea.Line(), len(lines)); i++ {
-		cursor += len([]rune(lines[i])) + 1
+	lines := strings.Split(m.TextArea.View(), "\n")
+	h := m.promptHeight()
+	if h < len(lines) {
+		lines = lines[:h]
 	}
-	cursor += m.TextArea.LineInfo().StartColumn + m.TextArea.LineInfo().ColumnOffset
-	shown := []rune(strings.ReplaceAll(value, "\n", " "))
-	cursor = min(cursor, len(shown))
-	columns := max(1, m.chatWidth()-2)
-	first := max(0, cursor-columns+1)
-	end := min(len(shown), first+columns)
-	before := string(shown[first:cursor])
-	block := " "
-	if cursor < len(shown) {
-		block = string(shown[cursor : cursor+1])
-	}
-	after := ""
-	if cursor+1 < end {
-		after = string(shown[cursor+1 : end])
-	}
-	if value == "" && m.waitingForInput() {
-		after = m.Styles.Faint.Render(ansi.Truncate("waiting for user input", max(0, columns-1), "…"))
-	}
-	return promptLead() + before + m.Styles.Cursor.Render(block) + after
+	return strings.Join(lines, "\n")
 }
 
 // waitingForInput reports an opened session with no turn in flight, so an

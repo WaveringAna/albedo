@@ -17,7 +17,7 @@ func TestScrollDoesNotResumeFollowBeforeEndOfLiveOutput(t *testing.T) {
 		step int
 	}{
 		{"arrow", tea.KeyMsg{Type: tea.KeyDown}, 1},
-		{"page", tea.KeyMsg{Type: tea.KeyPgDown}, 14},
+		{"page", tea.KeyMsg{Type: tea.KeyPgDown}, 13},
 		{"wheel", tea.MouseMsg{Button: tea.MouseButtonWheelDown}, 3},
 	} {
 		t.Run(down.name, func(t *testing.T) {
