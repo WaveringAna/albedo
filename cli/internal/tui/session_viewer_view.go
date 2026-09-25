@@ -129,9 +129,8 @@ func svSep() string { return DefaultStyles.Decor.Render(" │ ") }
 
 // ── view ───────────────────────────────────────────────────────────────────
 
-// View lays the screen out by width: favourites | recent | preview when there
-// is room for all three, one list beside the preview below that, and the list
-// alone on narrow terminals.
+// View shows the grouped session list beside its preview when there is room,
+// and the list alone on narrow terminals.
 func (m SessionViewer) View() string {
 	width := m.Width
 	if width <= 0 {
@@ -158,35 +157,20 @@ func (m SessionViewer) View() string {
 	}
 	body := max(1, height-len(lines)-len(tail))
 
-	var favourites, recent, all []int
-	for i := range m.Filtered {
-		all = append(all, i)
-		if m.favourite(i) {
-			favourites = append(favourites, i)
-		} else {
-			recent = append(recent, i)
-		}
+	all := make([]int, len(m.Filtered))
+	for i := range all {
+		all[i] = i
 	}
 
 	var columns [][]string
-	switch {
-	case width >= 150 && height >= 14:
-		favW := min(44, max(30, width*24/100))
-		recW := min(64, max(40, width*34/100))
-		prevW := width - favW - recW - 2*ansi.StringWidth(svSep())
-		columns = [][]string{
-			m.column(favourites, favW, body, now, true),
-			m.column(recent, recW, body, now, false),
-			m.preview(prevW, body, now),
-		}
-	case width >= 96 && height >= 14:
+	if width >= 96 && height >= 14 {
 		listW := width / 2
 		columns = [][]string{
-			m.column(all, listW, body, now, false),
+			m.column(all, listW, body, now),
 			m.preview(width-listW-ansi.StringWidth(svSep()), body, now),
 		}
-	default:
-		columns = [][]string{m.column(all, width, body, now, false)}
+	} else {
+		columns = [][]string{m.column(all, width, body, now)}
 	}
 	for row := 0; row < body; row++ {
 		var b strings.Builder
@@ -268,7 +252,7 @@ func (m SessionViewer) footer(width int, now time.Time) string {
 
 // column renders Filtered[indices] with section headings at exactly
 // width × height, scrolled to keep the cursor visible.
-func (m SessionViewer) column(indices []int, width, height int, now time.Time, favourites bool) []string {
+func (m SessionViewer) column(indices []int, width, height int, now time.Time) []string {
 	cols := svLayout(width)
 	counts := map[int]int{}
 	for _, i := range indices {
@@ -294,12 +278,6 @@ func (m SessionViewer) column(indices []int, width, height int, now time.Time, f
 		all = append(all, m.row(item, s, sec, i == m.Cursor, width, cols, now))
 	}
 	switch {
-	case favourites && counts[secPinned]+counts[secFrequent] == 0 && m.SearchInput.Value() == "":
-		all = append(all, "", DefaultStyles.Faint.Render("   ★ nothing pinned yet"), "",
-			DefaultStyles.Faint.Render("   highlight a session and press"),
-			DefaultStyles.Faint.Render("   ")+DefaultStyles.Muted.Render("ctrl+s")+DefaultStyles.Faint.Render(" to keep it here."),
-			"", DefaultStyles.Faint.Render("   sessions you open often"),
-			DefaultStyles.Faint.Render("   show up here on their own."))
 	case len(indices) == 0 && m.ArchiveView && m.SearchInput.Value() == "":
 		all = append(all, DefaultStyles.Faint.Render("   archive is empty"))
 	case len(indices) == 0 && m.Loading:

@@ -71,6 +71,43 @@ func TestSessionViewerResponsiveViewport(t *testing.T) {
 	}
 }
 
+func TestSessionViewerKeepsTodayBelowMostUsedInOneList(t *testing.T) {
+	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.Local)
+	stamp := now.Add(-time.Hour).Unix()
+	for _, width := range []int{110, 170} {
+		m := viewerAt(now)
+		m.SetSize(width, 30)
+		sessions := []daemon.Session{
+			{ID: "today", Title: "Today's session", LastAssistantAt: &stamp},
+			{ID: "used", Title: "Frequent session", LastAssistantAt: &stamp},
+		}
+		m.SetSessions(sessions, nil)
+		m.RecordOpen("used")
+		m.RecordOpen("used")
+		m.SetSessions(sessions, nil)
+		rows := strings.Split(ansi.Strip(m.View()), "\n")
+		used, today := -1, -1
+		for i, row := range rows {
+			if divider := strings.Index(row, " │ "); divider >= 0 {
+				if heading := strings.Index(row, "most used 1"); heading >= 0 && heading < divider {
+					used = i
+				}
+				if heading := strings.Index(row, "today 1"); heading >= 0 && heading < divider {
+					today = i
+				}
+			}
+			if strings.Contains(row, "Frequent session") || strings.Contains(row, "Today's session") {
+				if got := strings.Count(row, " │ "); got != 1 {
+					t.Errorf("width %d rendered %d dividers in %q", width, got, row)
+				}
+			}
+		}
+		if used < 0 || today <= used {
+			t.Errorf("width %d did not keep today below most used in the list: %q", width, rows)
+		}
+	}
+}
+
 func TestSessionViewerActiveAndUntrustedTitle(t *testing.T) {
 	m := NewSessionViewer("/work/current")
 	m.SetSize(60, 16)

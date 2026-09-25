@@ -14,7 +14,7 @@ import (
 func sessionText(s string) string { return daemon.SessionText(ansi.Strip(s)) }
 
 // Sections of the session list, in navigation order. Pinned and most used
-// sessions form the favourites column; the rest are grouped by date.
+// sessions lead the dated groups.
 const (
 	secAction = iota
 	secPinned
@@ -62,8 +62,8 @@ type cachedPreview struct {
 	err     bool
 }
 
-// SessionViewer is the start screen: search on top, favourites and recent
-// sessions as lists, and a transcript preview of the highlighted session.
+// SessionViewer is the start screen: search over a grouped session list
+// beside a transcript preview of the highlighted session.
 type SessionViewer struct {
 	PickerModel
 	Sessions      []daemon.Session
@@ -306,14 +306,14 @@ func (m SessionViewer) session(id string) (daemon.Session, bool) {
 	return daemon.Session{}, false
 }
 
-// favourite reports whether a Filtered index belongs to the left-hand column
-// (actions, pins, most used) rather than the dated list.
+// favourite reports whether a Filtered index belongs to the leading groups
+// (actions, pins, most used) rather than the dated groups.
 func (m SessionViewer) favourite(i int) bool {
 	return i >= 0 && i < len(m.Filtered) && m.section[m.Filtered[i].ID] <= secFrequent
 }
 
-// switchColumn jumps between the favourites and the dated sessions.
-func (m *SessionViewer) switchColumn() {
+// switchGroup jumps between the leading and dated groups.
+func (m *SessionViewer) switchGroup() {
 	toFavourites := !m.favourite(m.Cursor)
 	first := -1
 	for i := range m.Filtered {
@@ -323,7 +323,7 @@ func (m *SessionViewer) switchColumn() {
 		if first < 0 {
 			first = i
 		}
-		// Heading left, prefer a pinned or frequent session over the actions.
+		// Prefer a pinned or frequent session over the actions.
 		if !toFavourites || m.section[m.Filtered[i].ID] != secAction {
 			m.Cursor = i
 			return
@@ -451,12 +451,12 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 			m.togglePin()
 			return m, nil
 		case tea.KeyTab, tea.KeyShiftTab:
-			m.switchColumn()
+			m.switchGroup()
 			return m, m.previewAfter(before.ID)
 		case tea.KeyLeft, tea.KeyRight:
 			// Arrows edit the query once there is one.
 			if m.SearchInput.Value() == "" {
-				m.switchColumn()
+				m.switchGroup()
 				return m, m.previewAfter(before.ID)
 			}
 		}

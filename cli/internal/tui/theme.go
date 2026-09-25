@@ -78,7 +78,6 @@ func useInk(detected ink) {
 
 const (
 	ansiReset  = "\x1b[0m"
-	ansiBold   = "\x1b[1m"
 	ansiItalic = "\x1b[3m"
 	ansiGray   = "\x1b[90m"
 )
@@ -107,15 +106,6 @@ func faintInk() string { return sgr(transcriptInk.secondary, ansiGray) }
 
 // decorInk is the Decor token as a raw sequence.
 func decorInk() string { return sgr(transcriptInk.decor, ansiGray) }
-
-// inlineCodeInk sets inline code on a tint in the prose color, where the
-// terminal reported its colors. Without them it falls back to the code ink.
-func inlineCodeInk() string {
-	if bg := sgrLayer(transcriptInk.codeBg, "", true); bg != "" {
-		return bg
-	}
-	return codeInk()
-}
 
 // Diff rows sit on tints mixed toward the palette's red and green. The
 // fallbacks are dark tints, the only case without reported colors.
