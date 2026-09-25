@@ -172,9 +172,9 @@ pub fn stream_text(delta: Delta) -> String {
 
 fn canonical(text: Dict(String, String)) -> String {
   case dict.get(text, "reasoning_content"), dict.get(text, "reasoning") {
-    Ok(value), _ -> value
-    Error(_), Ok(value) -> value
-    Error(_), Error(_) -> ""
+    Ok(value), _ if value != "" -> value
+    _, Ok(value) if value != "" -> value
+    _, _ -> ""
   }
 }
 

@@ -209,6 +209,22 @@ pub fn chat_streams_one_thinking_event_per_delta_test() {
   assert events == [types.ThinkingDelta("c1")]
 }
 
+pub fn chat_suppresses_empty_content_delta_during_thinking_test() {
+  let chunk =
+    "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"reasoning_content\":\"c1\"}}]}"
+  let assert Ok(#(_state, events, None)) =
+    send(stream.new(types.ChatCompletions), "", chunk)
+  assert events == [types.ThinkingDelta("c1")]
+}
+
+pub fn chat_suppresses_empty_reasoning_delta_during_content_test() {
+  let chunk =
+    "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\",\"reasoning_content\":\"\"}}]}"
+  let assert Ok(#(_state, events, None)) =
+    send(stream.new(types.ChatCompletions), "", chunk)
+  assert events == [types.TextDelta(0, 0, "hello")]
+}
+
 pub fn chat_rejects_multiple_choices_and_nonempty_unknown_semantics_test() {
   let multiple =
     "{\"choices\":[{\"index\":0,\"delta\":{}},{\"index\":1,\"delta\":{}}]}"

@@ -6,6 +6,7 @@ import albedo/harness/extensions/python/cells as journal
 import albedo/openai_api/types
 import gleam/dict
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -18,6 +19,33 @@ pub fn event(kind: String, fields: List(#(String, json.Json))) -> String {
 
 pub fn text(kind: String, value: String) -> String {
   event(kind, [#("text", json.string(value))])
+}
+
+pub fn stream_event(
+  id: String,
+  step: Int,
+  incoming: types.Event,
+) -> Option(String) {
+  case incoming {
+    types.TextDelta(_, _, "") -> None
+    types.TextDelta(_, _, value) -> Some(text("text", value))
+    types.ThinkingDelta("") -> None
+    types.ThinkingDelta(value) -> Some(text("thinking", value))
+    types.ArgumentsDelta(_, "") -> None
+    types.ArgumentsDelta(index, value) ->
+      Some(
+        event("arguments_delta", [
+          #(
+            "callId",
+            json.string(
+              id <> ":" <> int.to_string(step) <> ":" <> int.to_string(index),
+            ),
+          ),
+          #("text", json.string(value)),
+        ]),
+      )
+    types.Started(_) -> Some(event("turn_started", []))
+  }
 }
 
 pub fn phase(value: String) -> String {
@@ -297,9 +325,9 @@ fn chat_thinking(item: types.ReplayItem) -> String {
     optional_text(item, "reasoning_content"),
     optional_text(item, "reasoning")
   {
-    Some(value), _ -> value
-    None, Some(value) -> value
-    None, None -> ""
+    Some(value), _ if value != "" -> value
+    _, Some(value) if value != "" -> value
+    _, _ -> ""
   }
 }
 

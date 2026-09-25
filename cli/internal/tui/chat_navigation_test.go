@@ -103,6 +103,28 @@ func TestFragmentedThinkingStaysCollapsed(t *testing.T) {
 	}
 }
 
+func TestInterleavedEmptyTextDoesNotSettleThinking(t *testing.T) {
+	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m.SetSize(80, 20)
+	parts := []string{"First thinking token", " second thinking token", " third thinking token"}
+	for _, part := range parts {
+		m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventThinking, Text: part})
+		m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventText, Text: ""})
+	}
+	m.settleActiveStream()
+	entries := m.History.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 settled thinking entry, got %d entries: %+v", len(entries), entries)
+	}
+	if entries[0].Kind != EntryThinking {
+		t.Fatalf("expected EntryThinking, got %v", entries[0].Kind)
+	}
+	want := "First thinking token second thinking token third thinking token"
+	if entries[0].Text != want {
+		t.Fatalf("expected %q, got %q", want, entries[0].Text)
+	}
+}
+
 func TestCompactionHintLivesOnEventNotFooter(t *testing.T) {
 	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
 	m.SetSize(120, 35)

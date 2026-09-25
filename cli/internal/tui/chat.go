@@ -662,6 +662,33 @@ func (m *ChatModel) settleActiveStream() {
 	m.activeText = ""
 }
 
+func (m *ChatModel) streamDelta(kind ActiveStreamKind, text string) {
+	if text == "" {
+		return
+	}
+	m.turnIsLive()
+	m.ToolProgressText = ""
+	m.Status.Running = true
+	m.Status.Idle = false
+	phase := daemon.PhaseReasoning
+	m.Status.Phase = &phase
+
+	if m.activeKind != kind {
+		m.settleActiveStream()
+		m.activeKind = kind
+	}
+	m.activeText += text
+	if kind == StreamKindText {
+		m.streamedHash = fnv1a(m.streamedHash, text)
+		m.streamedLen += int64(len(text))
+	}
+
+	if len(m.activeText) > MaxLiveStreamBytes {
+		m.settleActiveStream()
+		m.activeKind = kind
+	}
+}
+
 func (m *ChatModel) refreshViewportContent() int {
 	if m.Viewport.Height != max(1, m.Height-6-m.chromeRows()) {
 		m.SetSize(m.Width, m.Height)
@@ -1731,43 +1758,10 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		}
 
 	case daemon.EventText:
-		m.turnIsLive()
-		m.ToolProgressText = ""
-		m.Status.Running = true
-		m.Status.Idle = false
-		phase := daemon.PhaseReasoning
-		m.Status.Phase = &phase
-
-		if m.activeKind != StreamKindText {
-			m.settleActiveStream()
-			m.activeKind = StreamKindText
-		}
-		m.activeText += evt.Text
-		m.streamedHash = fnv1a(m.streamedHash, evt.Text)
-		m.streamedLen += int64(len(evt.Text))
-
-		if len(m.activeText) > MaxLiveStreamBytes {
-			m.settleActiveStream()
-			m.activeKind = StreamKindText
-		}
+		m.streamDelta(StreamKindText, evt.Text)
 
 	case daemon.EventThinking:
-		m.ToolProgressText = ""
-		m.Status.Running = true
-		m.Status.Idle = false
-		phase := daemon.PhaseReasoning
-		m.Status.Phase = &phase
-
-		if m.activeKind != StreamKindThinking {
-			m.settleActiveStream()
-			m.activeKind = StreamKindThinking
-		}
-		m.activeText += evt.Text
-
-		if len(m.activeText) > MaxLiveStreamBytes {
-			m.settleActiveStream()
-			m.activeKind = StreamKindThinking
-		}
+		m.streamDelta(StreamKindThinking, evt.Text)
 
 	case daemon.EventToolProgress:
 		m.turnIsLive()

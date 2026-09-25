@@ -80,24 +80,13 @@ pub fn run(
   state.record_context(request, prepared.observation)
   use turn <- result.try(
     stream_with_retries(state.upstream, request, state.publish, fn(event) {
-      let event = case event {
-        types.TextDelta(_, _, text) -> view.text("text", text)
-        types.ThinkingDelta(text) -> view.text("thinking", text)
-        types.ArgumentsDelta(index, text) ->
-          view.event("arguments_delta", [
-            #(
-              "callId",
-              json.string(
-                id <> ":" <> int.to_string(step) <> ":" <> int.to_string(index),
-              ),
-            ),
-            #("text", json.string(text)),
-          ])
-        types.Started(_) -> view.event("turn_started", [])
-      }
-      case state.publish(event) {
-        True -> types.Continue
-        False -> types.Stop
+      case view.stream_event(id, step, event) {
+        Some(serialized) ->
+          case state.publish(serialized) {
+            True -> types.Continue
+            False -> types.Stop
+          }
+        None -> types.Continue
       }
     })
     |> result.map_error(describe(state.upstream, _)),

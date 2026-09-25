@@ -127,16 +127,8 @@ fn delta_decoder() -> decode.Decoder(Delta) {
         None,
         decode.optional(decode.string),
       )
-      use content <- decode.optional_field(
-        "content",
-        None,
-        decode.optional(decode.string),
-      )
-      use refusal <- decode.optional_field(
-        "refusal",
-        None,
-        decode.optional(decode.string),
-      )
+      use content <- decode.optional_field("content", None, non_empty_string())
+      use refusal <- decode.optional_field("refusal", None, non_empty_string())
       use reasoning <- decode.then(reasoning.decoder())
       use tools <- decode.optional_field(
         "tool_calls",
@@ -156,9 +148,19 @@ fn delta_decoder() -> decode.Decoder(Delta) {
   }
 }
 
+fn non_empty_string() -> decode.Decoder(Option(String)) {
+  decode.optional(decode.string)
+  |> decode.map(fn(value) {
+    case value {
+      Some("") -> None
+      other -> other
+    }
+  })
+}
+
 fn tool_fragment_decoder() -> decode.Decoder(ToolFragment) {
   use index <- decode.field("index", decode.int)
-  use id <- decode.optional_field("id", None, decode.optional(decode.string))
+  use id <- decode.optional_field("id", None, non_empty_string())
   use kind <- decode.optional_field(
     "type",
     None,
@@ -181,16 +183,8 @@ fn tool_fragment_decoder() -> decode.Decoder(ToolFragment) {
 fn function_fragment_decoder() -> decode.Decoder(
   #(Option(String), Option(String)),
 ) {
-  use name <- decode.optional_field(
-    "name",
-    None,
-    decode.optional(decode.string),
-  )
-  use arguments <- decode.optional_field(
-    "arguments",
-    None,
-    decode.optional(decode.string),
-  )
+  use name <- decode.optional_field("name", None, non_empty_string())
+  use arguments <- decode.optional_field("arguments", None, non_empty_string())
   decode.success(#(name, arguments))
 }
 
