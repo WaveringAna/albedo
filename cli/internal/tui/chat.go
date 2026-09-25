@@ -432,15 +432,27 @@ func (m ChatModel) promptLines() int {
 	if m.WorkspaceRecovery != nil {
 		return 0
 	}
-	val := m.TextArea.Value()
-	if val == "" {
-		return 1
+	lineCount := m.TextArea.LineCount()
+	if lineCount <= 1 {
+		return max(1, m.TextArea.LineInfo().Height)
 	}
-	textWidth := max(1, m.chatWidth()-promptMarkWidth)
-	lines := strings.Split(val, "\n")
+	cp := m.TextArea
+	for cp.Line() > 0 {
+		cp.CursorUp()
+	}
 	total := 0
-	for _, l := range lines {
-		total += len(wrapOrChunkLine(l, textWidth))
+	for line := 0; line < lineCount; line++ {
+		total += cp.LineInfo().Height
+		if line < lineCount-1 {
+			curr := cp.Line()
+			for cp.Line() == curr {
+				beforeRow := cp.LineInfo().RowOffset
+				cp.CursorDown()
+				if cp.Line() == curr && cp.LineInfo().RowOffset == beforeRow {
+					break
+				}
+			}
+		}
 	}
 	return max(1, total)
 }

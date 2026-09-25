@@ -258,3 +258,35 @@ func TestPromptCtrlGAndEditorFinishedMsg(t *testing.T) {
 		t.Fatalf("expected promptHeight 2 after editor returned 2 lines, got %d", m.promptHeight())
 	}
 }
+
+
+func TestPromptWrappingBoundaryExactMatch(t *testing.T) {
+	input := "can you figure out how to make manual triggers from our ci auth properly with WIF? rn it doesnt..."
+	for width := 40; width <= 130; width++ {
+		m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+		height := 25
+		m.SetSize(width, height)
+
+		for _, r := range input {
+			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		}
+
+		view := ansi.Strip(m.View())
+		lines := strings.Split(view, "\n")
+		if len(lines) != height {
+			t.Fatalf("width %d: expected view height %d, got %d", width, height, len(lines))
+		}
+
+		// "doesnt..." must never disappear from the view
+		if !strings.Contains(view, "doesnt...") {
+			t.Fatalf("width %d: prompt text 'doesnt...' was truncated from view:\n%s", width, view)
+		}
+
+		// Prompt height must match composerView line count exactly
+		cvLines := strings.Split(ansi.Strip(m.composerView()), "\n")
+		if len(cvLines) != m.promptHeight() {
+			t.Fatalf("width %d: composerView line count %d != promptHeight %d", width, len(cvLines), m.promptHeight())
+		}
+	}
+}
+
