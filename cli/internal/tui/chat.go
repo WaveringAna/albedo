@@ -2209,19 +2209,16 @@ func (m ChatModel) renderGlances() string {
 func (m ChatModel) renderFooter() string {
 	width := m.chatWidth()
 	right, compact := m.contextStat()
-	modes := []hint{{"thinking", onOff(m.Flags.Thinking)}, {"verbose", onOff(m.Flags.Tools)}}
-	brief := []hint{{"t", onOff(m.Flags.Thinking)}, {"v", onOff(m.Flags.Tools)}}
 	commands := hint{"/", "commands"}
-	join := func(h ...[]hint) []hint { return slices.Concat(h...) }
 	candidates := []struct {
 		left  []hint
 		right string
 	}{
-		{join([]hint{commands, {"shift+↑↓", "turns"}, {"drag", "copy"}, {"ctrl+j", "diffs"}}, modes), right},
-		{join([]hint{commands, {"drag", "copy"}, {"ctrl+j", "diffs"}}, modes), right},
-		{join([]hint{commands, {"drag", "copy"}}, modes), right},
-		{join([]hint{commands, {"ctrl+j", "diffs"}}, brief), compact},
-		{join([]hint{commands}, brief), compact},
+		{[]hint{commands, {"shift+↑↓", "turns"}, {"drag", "copy"}, {"ctrl+j", "diffs"}}, right},
+		{[]hint{commands, {"drag", "copy"}, {"ctrl+j", "diffs"}}, right},
+		{[]hint{commands, {"drag", "copy"}}, right},
+		{[]hint{commands, {"ctrl+j", "diffs"}}, compact},
+		{[]hint{commands}, compact},
 		{[]hint{{"/", ""}}, compact},
 	}
 	for _, c := range candidates {
@@ -2290,9 +2287,3 @@ func shortCount(n int) string {
 	}
 }
 
-func onOff(enabled bool) string {
-	if enabled {
-		return "on"
-	}
-	return "off"
-}
