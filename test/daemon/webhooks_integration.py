@@ -127,7 +127,7 @@ def main():
             assert Provider.requests, (home/"daemon.log").read_text()
             assert any("[webhook outage #" in json.dumps(request) for request in Provider.requests)
             assert len(Provider.requests) == 1, "retry should wake the session once"
-            assert api(command, {"name": "/webhooks", "args": {"action": "list"}})["result"]["page"]["rows"][0]["id"] == hook["id"]
+            assert api(command, {"name": "/webhooks", "args": {"action": "list"}})["result"]["hooks"][0]["hook"]["id"] == hook["id"]
             api(command, {"name": "/webhooks", "args": {"action": "agent_on"}})
             Provider.delivery_id = delivery
             api(f"/sessions/{session}/events", {"content": "probe webhook binding"})

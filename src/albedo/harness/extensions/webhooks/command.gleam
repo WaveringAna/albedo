@@ -2,9 +2,7 @@ import albedo/harness/command.{
   type Command, Argument, Command, Data, ModelCall, UserCall,
 }
 import albedo/harness/extensions/webhooks/ledger as hooks
-import albedo/harness/page
 import gleam/dict
-import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
@@ -14,24 +12,24 @@ import gleam/string
 pub fn command(db: hooks.Store, session: String) -> Command {
   Command(
     "/webhooks",
-    "Manage signed webhooks targeting this session. Agent management requires the human opt-in on the Webhooks page. Generated secrets are returned only on create or rotate.",
+    "Manage signed webhooks targeting this session. Agent management requires the human opt-in on the Webhooks screen. Generated secrets are returned only on create or rotate.",
     [
       Argument(
         "action",
-        "list, create, create_with_secret, rotate, rotate_with_secret, enable, disable, delete",
+        "list, create, create_with_secret, rotate, rotate_with_secret, signature, enable, disable, delete",
         False,
         [],
       ),
       Argument(
         "details",
-        "hook name or id, optionally followed by a secret",
+        "hook name or id, then a secret (create/rotate_with_secret) or a header and prefix (signature)",
         False,
         [],
       ),
     ],
     True,
     False,
-    True,
+    False,
     fn(_, caller, args) {
       let action = dict.get(args, "action") |> result.unwrap("")
       let details =
@@ -71,16 +69,32 @@ pub fn command(db: hooks.Store, session: String) -> Command {
           })
           |> result.map_error(describe)
         }
-        "header", _ | "prefix", _ -> {
-          let #(id, setting) = split(details)
-          use hook <- result.try(
-            hooks.get(db, actor, session, id) |> result.map_error(describe),
-          )
-          let #(header, prefix) = case action {
-            "header" -> #(setting, hook.signature_prefix)
-            _ -> #(hook.signature_header, setting)
+        "create_in", UserCall -> {
+          let #(target_session, rest) = split(details)
+          let #(name, supplied) = split(rest)
+          let secret = case supplied {
+            "" -> None
+            _ -> Some(supplied)
           }
-          hooks.configure(db, actor, session, id, hook.revision, header, prefix)
+          hooks.create(db, actor, target_session, name, secret)
+          |> result.map(fn(provisioned) { receipt(provisioned, secret == None) })
+          |> result.map_error(describe)
+        }
+        "create_in", ModelCall ->
+          Error("an agent can only create hooks for its own session")
+        "signature", _ -> {
+          let #(id, setting) = split(details)
+          let #(header, prefix) = split(setting)
+          use hook <- result.try(target(db, actor, session, id))
+          hooks.configure(
+            db,
+            actor,
+            hook.session,
+            id,
+            hook.revision,
+            header,
+            prefix,
+          )
           |> result.map(fn(updated) { Data(hooks.to_json(updated)) })
           |> result.map_error(describe)
         }
@@ -90,26 +104,23 @@ pub fn command(db: hooks.Store, session: String) -> Command {
             "rotate_with_secret" -> Some(supplied)
             _ -> None
           }
-          use hook <- result.try(
-            hooks.get(db, actor, session, id) |> result.map_error(describe),
-          )
-          hooks.rotate(db, actor, session, id, hook.revision, secret)
+          use hook <- result.try(target(db, actor, session, id))
+          hooks.rotate(db, actor, hook.session, id, hook.revision, secret)
           |> result.map(fn(provisioned) {
             receipt(provisioned, action == "rotate")
           })
           |> result.map_error(describe)
         }
         "enable", _ | "disable", _ | "delete", _ -> {
-          use hook <- result.try(
-            hooks.get(db, actor, session, details) |> result.map_error(describe),
-          )
+          use hook <- result.try(target(db, actor, session, details))
           let result = case action {
-            "delete" -> hooks.delete(db, actor, session, details, hook.revision)
+            "delete" ->
+              hooks.delete(db, actor, hook.session, details, hook.revision)
             _ ->
               hooks.set_enabled(
                 db,
                 actor,
-                session,
+                hook.session,
                 details,
                 hook.revision,
                 action == "enable",
@@ -123,6 +134,21 @@ pub fn command(db: hooks.Store, session: String) -> Command {
       }
     },
   )
+}
+
+/// The hook an id names. A human may manage any session's hooks; an agent
+/// only its own.
+fn target(
+  db: hooks.Store,
+  actor: hooks.Actor,
+  session: String,
+  id: String,
+) -> Result(hooks.Hook, String) {
+  case actor {
+    hooks.Human -> hooks.find(db, id)
+    hooks.Agent(_) -> hooks.get(db, actor, session, id)
+  }
+  |> result.map_error(describe)
 }
 
 fn split(text: String) -> #(String, String) {
@@ -163,127 +189,43 @@ fn receipt(provisioned: hooks.Provisioned, generated: Bool) -> command.Outcome {
   )
 }
 
+/// What the Webhooks screen shows: every session's hooks with their inboxes,
+/// and whether this session's agent may manage its own. Secrets are never
+/// listed.
 fn listing(
   db: hooks.Store,
   session: String,
 ) -> Result(command.Outcome, String) {
-  use items <- result.try(
-    hooks.list(db, hooks.Human, session) |> result.map_error(describe),
-  )
+  use items <- result.try(hooks.list_all(db) |> result.map_error(describe))
   use agent <- result.try(
     hooks.agent_management(db, session) |> result.map_error(describe),
   )
-  use rows <- result.try(
+  use entries <- result.try(
     list.try_map(items, fn(hook) {
-      use waiting <- result.try(
-        hooks.pending_count(db, session, hook.id) |> result.map_error(describe),
+      use queued <- result.try(
+        hooks.pending_count(db, hook.session, hook.id)
+        |> result.map_error(describe),
       )
       use failure <- result.try(
-        hooks.last_failure(db, session, hook.id) |> result.map_error(describe),
+        hooks.last_failure(db, hook.session, hook.id)
+        |> result.map_error(describe),
       )
-      let badge =
-        if_on(hook.enabled)
-        <> case waiting {
-          0 -> ""
-          n -> " · " <> int.to_string(n) <> " queued"
-        }
       Ok(
-        page.Row(
-          hook.id,
-          hook.name
-            <> " · /webhooks/"
-            <> hook.id
-            <> case failure {
-            None -> ""
-            Some(reason) -> " · delivery deferred: " <> reason
-          },
-          badge,
-          case hook.enabled {
-            True -> page.Active
-            False -> page.Muted
-          },
-        ),
+        json.object([
+          #("hook", hooks.to_json(hook)),
+          #("queued", json.int(queued)),
+          #("deferred", json.nullable(failure, json.string)),
+        ]),
       )
     }),
   )
   Ok(
     Data(
-      page.to_json(page.Document(
-        "webhooks · this session",
-        "POST /webhooks/<id> · HMAC-SHA256 · agent management " <> if_on(agent),
-        "no hooks yet · a adds a signed endpoint",
-        rows,
-        [
-          page.Action(
-            "a",
-            "add with generated secret",
-            "create",
-            False,
-            page.Text("hook name", False),
-            False,
-          ),
-          page.Action(
-            "p",
-            "add with your secret",
-            "create_with_secret",
-            False,
-            page.Secret("name then secret (space separated)"),
-            False,
-          ),
-          page.Action(
-            "r",
-            "rotate generated secret",
-            "rotate",
-            True,
-            page.NoInput,
-            True,
-          ),
-          page.Action(
-            "k",
-            "rotate to your secret",
-            "rotate_with_secret",
-            True,
-            page.Secret("replacement secret"),
-            True,
-          ),
-          page.Action(
-            "h",
-            "signature header",
-            "header",
-            True,
-            page.Text("header name", False),
-            False,
-          ),
-          page.Action(
-            "f",
-            "signature prefix",
-            "prefix",
-            True,
-            page.Text("prefix (e.g. sha256=)", False),
-            False,
-          ),
-          page.Action("e", "enable", "enable", True, page.NoInput, False),
-          page.Action("d", "disable", "disable", True, page.NoInput, False),
-          page.Action("x", "delete", "delete", True, page.NoInput, True),
-          page.Action(
-            "m",
-            "allow agent to manage",
-            "agent_on",
-            False,
-            page.NoInput,
-            False,
-          ),
-          page.Action(
-            "n",
-            "disallow agent management",
-            "agent_off",
-            False,
-            page.NoInput,
-            False,
-          ),
-        ],
-        None,
-      )),
+      json.object([
+        #("session", json.string(session)),
+        #("agentManagement", json.bool(agent)),
+        #("hooks", json.preprocessed_array(entries)),
+      ]),
     ),
   )
 }

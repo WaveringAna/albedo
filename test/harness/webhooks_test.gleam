@@ -8,6 +8,7 @@ import albedo/openai_api/types
 import gleam/bit_array
 import gleam/dict
 import gleam/dynamic/decode
+import gleam/json
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
@@ -82,6 +83,40 @@ pub fn management_page_and_agent_route_enforce_opt_in_test() {
       "",
     )
   webhooks.list(db, webhooks.Human, "infra") |> should.be_ok
+  store.close(db)
+}
+
+pub fn human_screen_targets_any_session_test() {
+  let db = database()
+  let cmd = webhook_command.command(db, "infra")
+  let context =
+    command.Context(fn(_) {
+      panic as "webhook management must not submit a turn"
+    })
+  let call = fn(caller, action, details) {
+    command.call(
+      [cmd],
+      context,
+      caller,
+      "cli",
+      "/webhooks",
+      dict.from_list([#("action", action), #("details", details)]),
+      "",
+    )
+  }
+  let assert Ok(Data(_)) = call(UserCall, "create_in", "other ci")
+  let assert Ok([hook]) = webhooks.list(db, webhooks.Human, "other")
+  hook.name |> should.equal("ci")
+  let assert Ok([]) = webhooks.list(db, webhooks.Human, "infra")
+  // The screen opened from infra still lists and manages other's hook.
+  let assert Ok(Data(listed)) = call(UserCall, "list", "")
+  json.to_string(listed) |> string.contains(hook.id) |> should.equal(True)
+  let assert Ok(Data(_)) = call(UserCall, "disable", hook.id)
+  let assert Ok(webhooks.Hook(enabled: False, ..)) = webhooks.find(db, hook.id)
+  // An agent can neither target another session nor reach its hooks.
+  let assert Ok(Nil) = webhooks.allow_agent(db, "infra", True)
+  call(ModelCall, "create_in", "other sneaky") |> should.be_error
+  call(ModelCall, "enable", hook.id) |> should.be_error
   store.close(db)
 }
 

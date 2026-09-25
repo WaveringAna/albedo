@@ -48,6 +48,14 @@ pub fn title_is_a_safe_bounded_unicode_preview_test() {
   bounded |> should.equal(string.repeat(family, 79) <> "…")
 }
 
+pub fn webhook_deliveries_never_name_a_session_test() {
+  let delivery =
+    conversation.webhook_text("deploy", "d062", "{\"hello\":\"world\"}")
+  conversation.latest_user([types.User("fix the deploy"), types.User(delivery)])
+  |> should.equal(Some("fix the deploy"))
+  conversation.latest_user([types.User(delivery)]) |> should.equal(None)
+}
+
 pub fn latest_user_title_survives_restart_and_legacy_migration_test() {
   let path = temporary_database()
   let assert Ok(host) = runtime.start(path)

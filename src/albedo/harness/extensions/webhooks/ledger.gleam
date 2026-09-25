@@ -252,6 +252,28 @@ pub fn list(
   })
 }
 
+/// Every session's hooks, for the human's Webhooks screen.
+pub fn list_all(db: store.Store) -> Result(List(Hook), Error) {
+  store.query(db, fn(connection) {
+    rows(
+      connection,
+      "SELECT " <> columns <> " FROM webhook_hooks ORDER BY session,name",
+      [],
+    )
+  })
+}
+
+/// A hook by id in whichever session it targets. Only the human path uses
+/// this; the agent's lookups stay scoped to its own session.
+pub fn find(db: store.Store, id: String) -> Result(Hook, Error) {
+  store.query(db, fn(connection) {
+    rows(connection, "SELECT " <> columns <> " FROM webhook_hooks WHERE id=?", [
+      sqlight.text(id),
+    ])
+    |> result.try(one)
+  })
+}
+
 fn find_owned(
   db: sqlight.Connection,
   actor: Actor,

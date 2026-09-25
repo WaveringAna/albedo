@@ -1,0 +1,125 @@
+package tui
+
+import (
+	"albedo/cli/internal/daemon"
+	"strings"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
+)
+
+var webhookSessions = []daemon.Session{
+	{ID: "s", Title: "infra bot", Workspace: "/srv/infra"},
+	{ID: "t", Title: "release notes", Workspace: "/srv/docs"},
+}
+
+func loadedWebhooksPage(t *testing.T) WebhooksPageModel {
+	t.Helper()
+	m := NewWebhooksPageModel(nil, "s")
+	m.SetSize(100, 30)
+	m, _ = m.Update(webhooksLoadedMsg{Mounted: true, Sessions: webhookSessions, Hooks: []webhookEntry{
+		{ID: "wh1", Session: "s", Name: "deploy", Enabled: true, URL: "/webhooks/wh1", Header: "x-hub-signature-256", Prefix: "sha256=", Queued: 2, Deferred: "session busy"},
+		{ID: "wh2", Session: "t", Name: "grafana", URL: "/webhooks/wh2", Header: "x-albedo-signature", Prefix: "sha256="},
+	}})
+	return m
+}
+
+func TestWebhooksPageExplainsTheSelectedHook(t *testing.T) {
+	view := ansi.Strip(loadedWebhooksPage(t).View())
+	for _, want := range []string{"agent access off", "this session · infra bot · /srv/infra", "release notes · /srv/docs", "wakes      this session · infra bot", "deploy", "2 queued", "POST /webhooks/wh1", "x-hub-signature-256: sha256=", "2 waiting for the session", "session busy", "n add hook"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view is missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestWebhookFormSetsSignatureOnTheCreatedHook(t *testing.T) {
+	f := newWebhookForm(nil, webhookSessions, "s")
+	f.Inputs[hookFieldName].SetValue("deploy")
+	f.Inputs[hookFieldHeader].SetValue("x-hub-signature-256")
+	steps, _, err := f.steps()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := [][2]string{{"create_in", "s deploy"}, {"signature", newHookID + " x-hub-signature-256 sha256="}}
+	if len(steps) != 2 || steps[0] != want[0] || steps[1] != want[1] {
+		t.Fatalf("steps = %v", steps)
+	}
+
+	f.Inputs[hookFieldSecret].SetValue("short")
+	if _, _, err := f.steps(); err == nil || !strings.HasPrefix(err.Error(), "secret") {
+		t.Fatalf("short secret accepted: %v", err)
+	}
+}
+
+func TestWebhookEditOnlySendsWhatChanged(t *testing.T) {
+	m := loadedWebhooksPage(t)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.Form == nil || m.Form.current() != hookFieldSecret || m.Form.Chosen != "s" {
+		t.Fatal("enter should edit the selected hook, starting at its secret")
+	}
+	if steps, _, _ := m.Form.steps(); len(steps) != 0 {
+		t.Fatalf("unchanged form produced %v", steps)
+	}
+	m.Form.Inputs[hookFieldSecret].SetValue("a-new-sixteen-byte-secret")
+	steps, _, err := m.Form.steps()
+	if err != nil || len(steps) != 1 || steps[0] != [2]string{"rotate_with_secret", "wh1 a-new-sixteen-byte-secret"} {
+		t.Fatalf("steps = %v, %v", steps, err)
+	}
+	if strings.Contains(m.View(), "a-new-sixteen-byte-secret") {
+		t.Fatal("an entered secret was rendered")
+	}
+}
+
+func TestGeneratedSecretIsShownUntilDismissed(t *testing.T) {
+	m := loadedWebhooksPage(t)
+	m.Saving = true
+	m, _ = m.Update(webhooksSavedMsg{Gen: m.Generation, Notice: "added ci", Reveal: &webhookSecret{Hook: "ci", Secret: "whsec_generated"}})
+	if !strings.Contains(m.View(), "whsec_generated") {
+		t.Fatal("generated secret was not shown")
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	if m.Reveal == nil || m.Confirm != "" {
+		t.Fatal("keys other than enter must not dismiss the secret")
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.Reveal != nil || strings.Contains(m.View(), "whsec_generated") {
+		t.Fatal("secret should be gone once dismissed")
+	}
+}
+
+func TestLongSessionTitlesKeepTheirPlace(t *testing.T) {
+	sessions := []daemon.Session{{ID: "s", Title: strings.Repeat("webhook payload text ", 6), Workspace: "/srv/infra"}}
+	label := sessionLabel(sessions, "s", "s")
+	if !strings.HasPrefix(label, "this session · ") || !strings.HasSuffix(label, "… · /srv/infra") {
+		t.Fatalf("label = %q", label)
+	}
+}
+
+func TestWebhookFormPicksTheSessionToWake(t *testing.T) {
+	m := loadedWebhooksPage(t)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if m.Form.Chosen != "s" || !strings.Contains(ansi.Strip(m.View()), "session    this session · infra bot · /srv/infra") {
+		t.Fatalf("the form should default to the session it was opened from:\n%s", ansi.Strip(m.View()))
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	for _, r := range "release" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if m.Form.Chosen != "t" {
+		t.Fatalf("filtering should choose the matching session, got %q", m.Form.Chosen)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	m.Form.Inputs[hookFieldSession].SetValue("")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	if m.Form.Chosen != "s" {
+		t.Fatalf("← should step back to the first session, got %q", m.Form.Chosen)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m.Form.Inputs[hookFieldName].SetValue("notes")
+	steps, notice, err := m.Form.steps()
+	if err != nil || steps[0] != [2]string{"create_in", "t notes"} || !strings.Contains(notice, "release notes") {
+		t.Fatalf("steps = %v, %q, %v", steps, notice, err)
+	}
+}

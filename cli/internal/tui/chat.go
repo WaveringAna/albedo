@@ -1425,6 +1425,8 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 	case trimmed == "/skills" || trimmed == "/instructions" || trimmed == "/mcp":
 		kind := strings.TrimPrefix(trimmed, "/")
 		*cmds = append(*cmds, func() tea.Msg { return ChatOpenCapabilityPageMsg{Kind: kind} })
+	case trimmed == "/webhooks":
+		*cmds = append(*cmds, func() tea.Msg { return ChatOpenWebhooksPageMsg{} })
 	case strings.HasPrefix(trimmed, "/login"):
 		name := strings.TrimSpace(strings.TrimPrefix(trimmed, "/login"))
 		*cmds = append(*cmds, func() tea.Msg { return ChatOpenLoginMsg{Name: name} })
