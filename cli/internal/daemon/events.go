@@ -118,6 +118,8 @@ const (
 	EventToolProgress EventType = "tool_progress"
 	EventTool         EventType = "tool"
 	EventUsage        EventType = "usage"
+	// EventCommitted says transcript rows up to Seq now cover what was shown.
+	EventCommitted EventType = "committed"
 )
 
 type Usage struct {
@@ -149,6 +151,12 @@ type StreamEvent struct {
 	ToolResult  string         `json:"result,omitempty"`
 	ToolTrace   *ToolTrace     `json:"trace,omitempty"`
 	Usage       *Usage         `json:"usage,omitempty"`
+	// Seq is the newest transcript row an EventCommitted covers.
+	Seq int64 `json:"seq,omitempty"`
+	// Before and More describe the history a reset or page carried: Before is
+	// its first row (the cursor for the next older page), More whether one exists.
+	Before int64 `json:"before,omitempty"`
+	More   bool  `json:"more,omitempty"`
 	// Replayed marks an event from the transcript snapshot that follows a
 	// reset: history, which says nothing about what the session does now.
 	Replayed bool `json:"-"`

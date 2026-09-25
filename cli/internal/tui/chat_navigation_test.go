@@ -158,3 +158,35 @@ func TestCompactTranscriptEntries(t *testing.T) {
 		t.Fatalf("failure should remain visible without flooding transcript: %q", collapsed)
 	}
 }
+
+func TestReadingPositionSurvivesOutputPastTheLineCap(t *testing.T) {
+	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m.SetSize(80, 20)
+	block := func(name string) HistoryEntry {
+		return HistoryEntry{Kind: EntryAssistant, Text: name + "\n" + strings.Repeat("line\n", 15)}
+	}
+	for i := range 60 {
+		m.appendSettledEntry(block(fmt.Sprintf("block %d", i)))
+	}
+	m.Follow = false
+	m.scrollOffset = len(m.settledLines) / 2
+	m.refreshViewportContent()
+	view, offset := m.Viewport.View(), m.scrollOffset
+	// Enough output to trim everything above the reading row at the normal cap.
+	for i := range 40 {
+		m.appendSettledEntry(block(fmt.Sprintf("new %d", i)))
+		m.refreshViewportContent()
+		if m.Viewport.View() != view || m.scrollOffset != offset {
+			t.Fatalf("after %d blocks the view moved: offset %d → %d", i+1, offset, m.scrollOffset)
+		}
+	}
+	m.SetSize(80, 20)
+	if m.Viewport.View() != view {
+		t.Fatal("re-rendering moved the reading position")
+	}
+	m.scrollBy(1 << 20)
+	m.appendSettledEntry(block("tail"))
+	if !m.Follow || len(m.settledLines) > MaxSettledLines {
+		t.Fatalf("caps not restored when following: follow=%v lines=%d", m.Follow, len(m.settledLines))
+	}
+}

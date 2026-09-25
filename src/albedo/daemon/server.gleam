@@ -53,6 +53,7 @@ type Message {
   Host(Subject(runtime.Runtime))
   ReadTree(String, Int, Int, Subject(Result(history.Page, String)))
   ReadRecent(String, Int, Subject(Result(history.Recent, String)))
+  ReadHistory(String, Option(Int), Int, Subject(Result(String, String)))
   Fork(String, Int, Subject(Result(conversation.Info, String)))
   DeleteSession(String, Subject(Result(Nil, String)))
   SetWorkspace(String, String, Subject(Result(conversation.Info, String)))
@@ -251,6 +252,13 @@ fn handle(state: State, message: Message) {
     }
     ReadRecent(id, limit, reply) -> {
       process.send(reply, history.recent(runtime.ledger(state.host), id, limit))
+      actor.continue(state)
+    }
+    ReadHistory(id, before, rows, reply) -> {
+      process.send(
+        reply,
+        history.rendered(runtime.ledger(state.host), id, before, rows),
+      )
       actor.continue(state)
     }
     Fork(id, checkpoint, reply) -> {
@@ -888,6 +896,27 @@ fn daemon_route(
             Error(e) -> error(400, e)
           }
         }
+        // Older transcript as rendered events, for a client scrolled past what
+        // its reset carried: `before` is the `before` of the page it holds.
+        Get, ["sessions", id, "history"] -> {
+          let query = request.get_query(req) |> result.unwrap([])
+          let before =
+            list.key_find(query, "before")
+            |> result.try(int.parse)
+            |> option.from_result
+          let rows =
+            list.key_find(query, "rows")
+            |> result.try(int.parse)
+            |> result.unwrap(history_page_rows)
+            |> int.clamp(1, 400)
+          case actor.call(registry, 10_000, ReadHistory(id, before, rows, _)) {
+            Ok(body) ->
+              response.new(200)
+              |> response.set_header("content-type", "application/json")
+              |> response.set_body(mist.Bytes(bytes_tree.from_string(body)))
+            Error(e) -> error(400, e)
+          }
+        }
         Get, ["sessions", id, "context", section, page] ->
           case
             int.parse(page)
@@ -1100,13 +1129,22 @@ fn when_running(
   }
 }
 
+/// Rows a client asks for per history page when it does not say.
+const history_page_rows = 120
+
 fn stream(req, worker) {
+  let query = request.get_query(req) |> result.unwrap([])
   let after =
-    request.get_query(req)
-    |> result.unwrap([])
-    |> list.key_find("after_seq")
+    list.key_find(query, "after_seq")
     |> result.try(int.parse)
     |> result.unwrap(-1)
+  // With `tail`, a reset replays only the newest rows; older ones are paged
+  // from /sessions/:id/history. Without it, the whole transcript as before.
+  let tail =
+    list.key_find(query, "tail")
+    |> result.try(int.parse)
+    |> option.from_result
+    |> option.map(int.clamp(_, 1, 400))
   mist.server_sent_events(
     req,
     response.new(200),
@@ -1125,7 +1163,7 @@ fn stream(req, worker) {
       // A closing daemon stops session workers while clients are still attached,
       // so a dead worker ends this stream instead of failing a call into it.
       use <- when_running(worker)
-      let page = session.read(worker, state.1)
+      let page = session.read(worker, state.1, tail)
       case message, page.events {
         Wake, [] -> actor.continue(state)
         _, _ -> {

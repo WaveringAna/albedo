@@ -98,7 +98,7 @@ pub type Message {
   ReadEffort(Subject(Result(json.Json, String)))
   ChangeEffort(String, Subject(Result(json.Json, String)))
   Status(Subject(String))
-  Read(Int, Subject(Page))
+  Read(Int, Option(Int), Subject(Page))
   Watch(process.Pid, fn() -> Nil)
   Publish(String, String, Subject(Bool))
   Commit(
@@ -256,8 +256,11 @@ pub fn watch(session: Session, owner: process.Pid, notify: fn() -> Nil) -> Nil {
   process.send(session, Watch(owner, notify))
 }
 
-pub fn read(session: Session, after: Int) -> Page {
-  actor.call(session, 5000, Read(after, _))
+/// Events after `after`. A reset (a new or lagging client) replays the
+/// transcript: whole, or with `tail` only its newest rows, which the client
+/// pages back from with `history.rendered`.
+pub fn read(session: Session, after: Int, tail: Option(Int)) -> Page {
+  actor.call(session, 5000, Read(after, tail, _))
 }
 
 pub fn context(session: Session) -> json.Json {
@@ -666,7 +669,7 @@ fn handle(state: State, message: Message) {
           })
         ]),
       )
-    Read(after, reply) -> {
+    Read(after, tail, reply) -> {
       let oldest =
         list.last(state.events)
         |> result.map(fn(e) { e.0 })
@@ -680,6 +683,34 @@ fn handle(state: State, message: Message) {
             |> list.reverse
             |> list.map(fn(e) { e.1 })
           process.send(reply, Page(state.sequence, False, events))
+          actor.continue(state)
+        }
+        True if tail != None -> {
+          let rows = option.unwrap(tail, 0)
+          let events = case
+            conversation.load_tail(
+              runtime.ledger(state.host),
+              state.info.id,
+              None,
+              rows,
+            )
+          {
+            Error(error) -> [
+              view.event("reset", []),
+              view.text("error", "could not load transcript: " <> error),
+            ]
+            Ok(#(entries, more)) -> [
+              view.event("reset", view.page_fields(entries, more)),
+              ..list.append(
+                view.rows(runtime.ledger(state.host), entries),
+                case state.latest_usage {
+                  Some(metadata) -> [usage.event(metadata)]
+                  None -> []
+                },
+              )
+            ]
+          }
+          process.send(reply, Page(state.sequence, True, events))
           actor.continue(state)
         }
         True ->

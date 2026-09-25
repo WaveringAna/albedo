@@ -24,6 +24,14 @@ import (
 
 type ChatBackToSessionsMsg struct{}
 type ChatQuitMsg struct{}
+
+// ChatOlderLoadedMsg carries a page of history from before what is shown.
+type ChatOlderLoadedMsg struct {
+	SessionID  string
+	Generation int64
+	Page       *daemon.HistoryPage
+	Err        error
+}
 type ChatNewSessionMsg struct{}
 type ChatOpenModelPickerMsg struct{}
 type ChatOpenExtensionPickerMsg struct{}
@@ -137,8 +145,14 @@ const (
 	MaxPendingUsers      = 10
 	MaxSettledLines      = 1000
 	MaxSettledLinesBytes = 256 * 1024
-	fnvOffset64          = 14695981039346656037
-	fnvPrime64           = 1099511628211
+	// readingSlack multiplies the caps while you are scrolled up, so output
+	// arriving as you read does not shrink the transcript above you.
+	readingSlack = 8
+	// olderPageRows is how many transcript rows a reset replays and each
+	// older page adds; the daemon widens both back to a turn's start.
+	olderPageRows = 120
+	fnvOffset64   = 14695981039346656037
+	fnvPrime64    = 1099511628211
 )
 
 func fnv1a(h uint64, s string) uint64 {
@@ -261,6 +275,13 @@ type ChatModel struct {
 	settledLines        []string
 	settledLinesBytes   int64
 	droppedSettledLines int
+	// rebuilding defers trimming until a re-render has placed the reading position.
+	rebuilding bool
+	// olderBefore is the first transcript row the reset or the last older page
+	// carried; olderMore says rows before it exist. loadingOlder is a fetch in flight.
+	olderBefore  int64
+	olderMore    bool
+	loadingOlder bool
 
 	scrollOffset int
 	scrollLimit  int
@@ -343,6 +364,10 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		streamCancel: cancel,
 		eventChan:    make(chan daemon.StreamEvent, 16),
 	}
+	if client != nil {
+		// A reset replays the newest rows; loadOlder pages back from there.
+		client.Tail = olderPageRows
+	}
 
 	return m
 }
@@ -398,16 +423,57 @@ func (m *ChatModel) SetSize(width, height int) {
 }
 
 func (m *ChatModel) rebuildSettledLines() {
-	// Re-rendering retained history must not move the reading position.
-	offset := m.scrollOffset
+	// Re-rendering retained history must not move the reading position: it
+	// keeps its distance from the end of the settled rows, and trimming waits
+	// until it is placed.
+	fromEnd := m.settledOffset + len(m.settledLines) - m.scrollOffset
 	m.settledLines = nil
 	m.settledLinesBytes = 0
+	m.droppedSettledLines = 0
 	m.userRows = nil
+	m.rebuilding = true
 	entries := m.History.Entries()
 	for i := range entries {
 		m.appendBlock(entries[:i], entries[i])
 	}
-	m.scrollOffset = offset
+	m.rebuilding = false
+	m.settledOffset = len(m.headerLines())
+	m.scrollOffset = max(0, m.settledOffset+len(m.settledLines)-fromEnd)
+	m.trimSettledLines()
+}
+
+// headerLines lead the transcript: where older history stands. Their count
+// only changes with what is loaded, and refreshViewportContent keeps the
+// reading position steady when it does.
+func (m ChatModel) headerLines() []string {
+	indent := m.Renderer.rail(laneNone)
+	switch {
+	case m.loadingOlder:
+		return []string{indent + m.Styles.Faint.Render("↑ loading earlier messages…"), ""}
+	case m.hasOlder():
+		return []string{indent + m.Styles.Faint.Render("↑ earlier messages load as you scroll up"), ""}
+	}
+	if notice := m.History.TruncationNotice(); notice != "" {
+		return []string{indent + m.Styles.Warning.Render(notice), ""}
+	}
+	return nil
+}
+
+// hasOlder is whether scrolling past the top can show more: rows trimmed
+// from the rendering, or transcript the daemon has not sent.
+func (m ChatModel) hasOlder() bool {
+	_, more := m.olderCursor()
+	return m.droppedSettledLines > 0 || more
+}
+
+// olderCursor is the row the next older page ends before. Evicted entries
+// move it forward: everything up to the newest evicted row is re-read.
+func (m ChatModel) olderCursor() (int64, bool) {
+	before, more := m.olderBefore, m.olderMore
+	if through := m.History.EvictedThrough(); through > 0 && through >= before {
+		before, more = through+1, true
+	}
+	return before, more && before > 0
 }
 
 // appendBlock renders entry after the settled entries before it.
@@ -423,10 +489,21 @@ func (m *ChatModel) appendBlock(before []HistoryEntry, entry HistoryEntry) {
 	m.trimSettledLines()
 }
 
+// trimSettledLines drops the oldest rows past the caps. While you are scrolled
+// up the caps stretch by readingSlack and the row you are reading is never
+// dropped, so output arriving meanwhile cannot push your place off the top;
+// the normal caps apply again once the transcript follows its end.
 func (m *ChatModel) trimSettledLines() {
+	if m.rebuilding {
+		return
+	}
+	maxLines, maxBytes := MaxSettledLines, int64(MaxSettledLinesBytes)
+	if !m.Follow {
+		maxLines, maxBytes = maxLines*readingSlack, maxBytes*readingSlack
+	}
 	dropped := 0
-	for len(m.settledLines) > MaxSettledLines || m.settledLinesBytes > MaxSettledLinesBytes {
-		if len(m.settledLines) == 0 {
+	for len(m.settledLines) > maxLines || m.settledLinesBytes > maxBytes {
+		if len(m.settledLines) == 0 || !m.Follow && dropped >= m.scrollOffset-m.settledOffset {
 			break
 		}
 		removed := m.settledLines[0]
@@ -487,16 +564,11 @@ func (m *ChatModel) refreshViewportContent() int {
 		m.SetSize(m.Width, m.Height)
 		return m.scrollLimit
 	}
-	var allLines []string
-
-	indent := m.Renderer.rail(laneNone)
-	if notice := m.History.TruncationNotice(); notice != "" {
-		allLines = append(allLines, indent+m.Styles.Warning.Render(notice), "")
+	allLines := m.headerLines()
+	if !m.Follow {
+		// a header growing or shrinking above must not move what you read
+		m.scrollOffset = max(0, m.scrollOffset+len(allLines)-m.settledOffset)
 	}
-	if m.droppedSettledLines > 0 {
-		allLines = append(allLines, indent+m.Styles.Faint.Render(fmt.Sprintf("[%d scrollback lines truncated]", m.droppedSettledLines)), "")
-	}
-
 	m.settledOffset = len(allLines)
 	allLines = append(allLines, m.settledLines...)
 
@@ -731,7 +803,70 @@ func (m ChatModel) Init() tea.Cmd {
 	return tea.Batch(m.startStreamSubscription(), m.statusCmd())
 }
 
+// Update handles msg, then fetches older history when it left you at the top.
 func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
+	if loaded, ok := msg.(ChatOlderLoadedMsg); ok {
+		return m.showOlder(loaded), nil
+	}
+	m, cmd := m.update(msg)
+	if older := m.loadOlder(); older != nil {
+		return m, tea.Batch(cmd, older)
+	}
+	return m, cmd
+}
+
+// loadOlder runs when you are scrolled to the top of the transcript: rows
+// trimmed from the rendering come back from retained history first, then a
+// page is asked of the daemon.
+func (m *ChatModel) loadOlder() tea.Cmd {
+	if m.Follow || m.scrollOffset > 0 || m.loadingOlder {
+		return nil
+	}
+	if m.droppedSettledLines > 0 {
+		m.rebuildSettledLines()
+		m.refreshViewportContent()
+		return nil
+	}
+	before, more := m.olderCursor()
+	if !more || m.Client == nil {
+		return nil
+	}
+	m.loadingOlder = true
+	m.refreshViewportContent()
+	client, id, generation := m.Client, m.SessionID, m.Generation
+	return func() tea.Msg {
+		page, err := client.History(context.Background(), before, olderPageRows)
+		return ChatOlderLoadedMsg{SessionID: id, Generation: generation, Page: page, Err: err}
+	}
+}
+
+// showOlder puts a fetched page above what is shown without moving it.
+func (m ChatModel) showOlder(msg ChatOlderLoadedMsg) ChatModel {
+	if msg.SessionID != m.SessionID || msg.Generation != m.Generation || !m.loadingOlder {
+		return m
+	}
+	m.loadingOlder = false
+	if msg.Err != nil {
+		m.ErrorNotice = fmt.Sprintf("could not load earlier messages: %v", msg.Err)
+		m.refreshViewportContent()
+		return m
+	}
+	// The page renders exactly as a reset would, in a scratch transcript.
+	scratch := NewChatModel(&daemon.Session{ID: m.SessionID}, nil)
+	scratch.AgentName = m.AgentName
+	scratch.History = NewBoundedHistory(1<<30, 1<<40)
+	for _, evt := range msg.Page.Events {
+		scratch.handleStreamEvent(evt)
+	}
+	scratch.settleActiveStream()
+	m.History.Prepend(scratch.History.Entries())
+	m.olderBefore, m.olderMore = msg.Page.Before, msg.Page.More && msg.Page.Before > 0
+	m.rebuildSettledLines()
+	m.refreshViewportContent()
+	return m
+}
+
+func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
@@ -1345,6 +1480,10 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		m.scrollOffset = 0
 		m.pendingUsers = nil
 		m.turn = nil
+		m.olderBefore, m.olderMore, m.loadingOlder = evt.Before, evt.More, false
+
+	case daemon.EventCommitted:
+		m.History.Stamp(evt.Seq)
 
 	case daemon.EventRetry:
 		m.activeKind = StreamKindNone

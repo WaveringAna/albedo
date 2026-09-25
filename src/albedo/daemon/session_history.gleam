@@ -96,12 +96,27 @@ pub fn remember(
   // An unloaded transcript stays unloaded: the entries are already durable and
   // the next load reads them. Starting a list here would pass a transcript of
   // only these entries off as the whole conversation.
-  case state.history {
+  let state = case state.history {
     Some(history) ->
       session_state.State(
         ..state,
         history: Some(list.append(list.reverse(entries), history)),
       )
     None -> state
+  }
+  // A zero timestamp is a candidate projection, not a commit.
+  case timestamp, inputs {
+    0, _ | _, [] -> state
+    _, _ -> mark_committed(state)
+  }
+}
+
+/// Tells clients which rows now cover what they have shown (see view.rows).
+fn mark_committed(
+  state: session_state.State(message),
+) -> session_state.State(message) {
+  case conversation.last_seq(runtime.ledger(state.host), state.info.id) {
+    Ok(seq) -> session_state.emit(state, view.committed(seq))
+    Error(_) -> state
   }
 }

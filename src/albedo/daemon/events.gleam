@@ -161,44 +161,88 @@ pub fn snapshot(
   entries: List(transcript.Entry),
   latest_usage: Option(usage.Metadata),
 ) -> List(String) {
-  let tool_calls =
-    list.flat_map(entries, fn(entry) { calls(entry.input) })
-    |> list.map(fn(call) { #(call.id, call) })
-    |> dict.from_list
-  let rendered =
-    list.flat_map(entries, fn(entry) {
-      case entry.input {
-        types.User(value) ->
-          case note.parse(value) {
-            Some(#(origin, body)) -> [user(body, origin, None, entry.timestamp)]
-            None -> [user(value, "chat", None, entry.timestamp)]
-          }
-        types.UserImage(value, image) -> [
-          user_image(value, "user", None, entry.timestamp, image),
-        ]
-        types.Assistant(_) -> assistant_message(entry.input, entry.timestamp)
-        types.ToolOutput(id, output, images) -> {
-          let call = dict.get(tool_calls, id)
-          case call {
-            Ok(call) -> [tool(store, call, output, images)]
-            Error(_) -> []
-          }
-        }
-        types.Replay(item) -> {
-          let thinking = thinking_text(item)
-          list.append(
-            case thinking {
-              "" -> []
-              _ -> [event("thinking", [#("text", json.string(thinking))])]
-            },
-            assistant_message(entry.input, entry.timestamp),
-          )
-        }
-      }
-    })
+  let tool_calls = calls_by_id(entries)
+  let rendered = list.flat_map(entries, render(store, tool_calls, _))
   case latest_usage {
     Some(metadata) -> list.append(rendered, [usage.event(metadata)])
     None -> rendered
+  }
+}
+
+/// Rendered transcript rows, each followed by a `committed` marker naming
+/// its row: a client stamps what it shows with the rows it came from, and so
+/// knows where to resume when it asks for older history.
+pub fn rows(
+  store: store.Store,
+  entries: List(transcript.SourcedEntry),
+) -> List(String) {
+  let tool_calls = calls_by_id(list.map(entries, fn(item) { item.entry }))
+  list.flat_map(entries, fn(item) {
+    case render(store, tool_calls, item.entry) {
+      [] -> []
+      events -> list.append(events, [committed(item.source.seq)])
+    }
+  })
+}
+
+/// Where a rendered page starts: `before` is its first row, the cursor for
+/// the next older page, and `more` says whether one exists.
+pub fn page_fields(
+  entries: List(transcript.SourcedEntry),
+  more: Bool,
+) -> List(#(String, json.Json)) {
+  case entries {
+    [first, ..] -> [
+      #("before", json.int(first.source.seq)),
+      #("more", json.bool(more)),
+    ]
+    [] -> [#("more", json.bool(False))]
+  }
+}
+
+/// Everything shown so far is covered by transcript rows up to `seq`.
+pub fn committed(seq: Int) -> String {
+  event("committed", [#("seq", json.int(seq))])
+}
+
+fn calls_by_id(
+  entries: List(transcript.Entry),
+) -> dict.Dict(String, types.ToolCall) {
+  list.flat_map(entries, fn(entry) { calls(entry.input) })
+  |> list.map(fn(call) { #(call.id, call) })
+  |> dict.from_list
+}
+
+fn render(
+  store: store.Store,
+  tool_calls: dict.Dict(String, types.ToolCall),
+  entry: transcript.Entry,
+) -> List(String) {
+  case entry.input {
+    types.User(value) ->
+      case note.parse(value) {
+        Some(#(origin, body)) -> [user(body, origin, None, entry.timestamp)]
+        None -> [user(value, "chat", None, entry.timestamp)]
+      }
+    types.UserImage(value, image) -> [
+      user_image(value, "user", None, entry.timestamp, image),
+    ]
+    types.Assistant(_) -> assistant_message(entry.input, entry.timestamp)
+    types.ToolOutput(id, output, images) ->
+      case dict.get(tool_calls, id) {
+        Ok(call) -> [tool(store, call, output, images)]
+        Error(_) -> []
+      }
+    types.Replay(item) -> {
+      let thinking = thinking_text(item)
+      list.append(
+        case thinking {
+          "" -> []
+          _ -> [event("thinking", [#("text", json.string(thinking))])]
+        },
+        assistant_message(entry.input, entry.timestamp),
+      )
+    }
   }
 }
 

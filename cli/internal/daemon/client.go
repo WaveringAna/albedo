@@ -78,6 +78,9 @@ type ChatClient struct {
 	mu              sync.Mutex
 	afterSeq        int
 	argumentsByCall map[string]string
+	// Tail, when positive, asks a reset to replay only the newest rows of the
+	// transcript; History pages back through the rest.
+	Tail int
 }
 
 func readBounded(r io.Reader, limit int64) ([]byte, error) {
@@ -350,6 +353,59 @@ func (c *ChatClient) Interrupt(ctx context.Context) (bool, error) {
 // ContextWindow reads the model's context window from the session's last
 // prepared request. It is nil when neither a catalog nor the configuration
 // knows it, or when no request has been prepared yet.
+// HistoryPage is older transcript, rendered as the stream renders a reset.
+type HistoryPage struct {
+	Events []StreamEvent
+	Before int64 // first row of the page: the cursor for the next older one
+	More   bool
+}
+
+// History returns up to rows transcript rows before the given row, oldest
+// first, widened back to the start of a turn.
+func (c *ChatClient) History(ctx context.Context, before int64, rows int) (*HistoryPage, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	route := fmt.Sprintf("/history?rows=%d", rows)
+	if before > 0 {
+		route += fmt.Sprintf("&before=%d", before)
+	}
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.agentURL(route), nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, c.parseResponseError(res)
+	}
+	body, err := readBounded(res.Body, 32*1024*1024)
+	if err != nil {
+		return nil, err
+	}
+	var data struct {
+		Events []map[string]any `json:"events"`
+		Before int64            `json:"before"`
+		More   bool             `json:"more"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, err
+	}
+	page := &HistoryPage{Before: data.Before, More: data.More}
+	for _, evMap := range data.Events {
+		if ev := normalizeEvent(evMap); ev != nil {
+			ev.Replayed = true
+			page.Events = append(page.Events, *ev)
+		}
+	}
+	return page, nil
+}
+
 func (c *ChatClient) ContextWindow(ctx context.Context) (*int, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -435,6 +491,28 @@ func (c *ChatClient) GetStatus(ctx context.Context) (*AgentStatus, error) {
 	}, nil
 }
 
+func int64Field(raw map[string]any, key string) int64 {
+	if n, ok := raw[key].(float64); ok && n > 0 {
+		return int64(n)
+	}
+	return 0
+}
+
+// normalizeEvent parses one daemon event map, decoding a tool's JSON-encoded args.
+func normalizeEvent(evMap map[string]any) *StreamEvent {
+	if evMap["type"] == "tool" {
+		if strArgs, ok := evMap["args"].(string); ok {
+			var parsedArgs map[string]any
+			if err := json.Unmarshal([]byte(strArgs), &parsedArgs); err == nil {
+				evMap["args"] = parsedArgs
+			} else {
+				evMap["args"] = make(map[string]any)
+			}
+		}
+	}
+	return parseStreamEvent(evMap)
+}
+
 func parseStreamEvent(raw map[string]any) *StreamEvent {
 	typ, _ := raw["type"].(string)
 	if typ == "" {
@@ -512,7 +590,14 @@ func parseStreamEvent(raw map[string]any) *StreamEvent {
 		return &StreamEvent{Type: EventRetry}
 
 	case "reset":
-		return &StreamEvent{Type: EventReset}
+		return &StreamEvent{Type: EventReset, Before: int64Field(raw, "before"), More: raw["more"] == true}
+
+	case "committed":
+		seq := int64Field(raw, "seq")
+		if seq <= 0 {
+			return nil
+		}
+		return &StreamEvent{Type: EventCommitted, Seq: seq}
 
 	case "note":
 		txt, _ := raw["text"].(string)
@@ -618,6 +703,9 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 	var route string
 	if c.agentID != "" {
 		route = fmt.Sprintf("/stream?after_seq=%d", afterSeq)
+		if c.Tail > 0 {
+			route += fmt.Sprintf("&tail=%d", c.Tail)
+		}
 	} else {
 		if afterSeq > 0 {
 			route = fmt.Sprintf("/awp/stream?after_seq=%d", afterSeq)
@@ -744,7 +832,7 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 
 							if itemType == "reset" {
 								snapshot = true
-								if err := onEvent(StreamEvent{Type: EventReset}); err != nil {
+								if err := onEvent(*parseStreamEvent(evMap)); err != nil {
 									return err
 								}
 								continue
@@ -819,18 +907,7 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 								}
 							}
 
-							if itemType == "tool" {
-								if strArgs, ok := evMap["args"].(string); ok {
-									var parsedArgs map[string]any
-									if err := json.Unmarshal([]byte(strArgs), &parsedArgs); err == nil {
-										evMap["args"] = parsedArgs
-									} else {
-										evMap["args"] = make(map[string]any)
-									}
-								}
-							}
-
-							if ev := parseStreamEvent(evMap); ev != nil {
+							if ev := normalizeEvent(evMap); ev != nil {
 								ev.Replayed = snapshot
 								if err := onEvent(*ev); err != nil {
 									return err

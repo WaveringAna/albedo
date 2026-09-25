@@ -5,6 +5,7 @@ import albedo/daemon/transcript
 import albedo/daemon/usage
 import albedo/openai_api/types
 import gleam/dynamic/decode
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -593,6 +594,144 @@ fn load_source_pages(
     Ok(#(entries, Error(_))) ->
       Ok(list.flatten(list.reverse([entries, ..pages])))
   }
+}
+
+/// Rows read per step when a tail that starts on a tool result is widened.
+const tail_step_rows = 32
+
+/// At most this many extra rows widen a tail.
+const tail_step_limit = 512
+
+/// The newest `rows` transcript rows before `before` (exclusive; None reads
+/// from the end), chronological. A page never starts on a tool result, whose
+/// call would be on the page before: it is widened back to the nearest row
+/// that is not one. The flag says whether older rows remain. Clients page
+/// history with this instead of loading it whole.
+pub fn load_tail(
+  store: store.Store,
+  id: String,
+  before: Option(Int),
+  rows: Int,
+) -> Result(#(List(transcript.SourcedEntry), Bool), String) {
+  let upper = option.unwrap(before, 9_223_372_036_854_775_807)
+  use #(newest, full) <- result.try(read_before(
+    store,
+    id,
+    upper,
+    int.max(1, rows),
+  ))
+  widen(store, id, newest, full, 0)
+}
+
+fn widen(
+  store: store.Store,
+  id: String,
+  entries: List(transcript.SourcedEntry),
+  full: Bool,
+  extra: Int,
+) -> Result(#(List(transcript.SourcedEntry), Bool), String) {
+  case entries {
+    [] -> Ok(#([], False))
+    [first, ..] ->
+      case
+        is_tool_result(first.entry.input) && full && extra < tail_step_limit
+      {
+        False -> Ok(#(entries, full))
+        True -> {
+          use #(older, older_full) <- result.try(read_before(
+            store,
+            id,
+            first.source.seq,
+            tail_step_rows,
+          ))
+          // Keep only what is needed: from the newest row that is not a
+          // tool result. Older rows left out mean more remain.
+          let skipped =
+            older
+            |> list.reverse
+            |> list.take_while(fn(item) { is_tool_result(item.entry.input) })
+            |> list.length
+          case list.length(older) - skipped - 1 {
+            head if head >= 0 ->
+              Ok(#(
+                list.append(list.drop(older, head), entries),
+                head > 0 || older_full,
+              ))
+            _ ->
+              widen(
+                store,
+                id,
+                list.append(older, entries),
+                older_full,
+                extra + tail_step_rows,
+              )
+          }
+        }
+      }
+  }
+}
+
+fn is_tool_result(input: types.Input) -> Bool {
+  case input {
+    types.ToolOutput(..) -> True
+    _ -> False
+  }
+}
+
+/// Up to `limit` rows before `upper`, chronological, and whether the read
+/// was full (so older rows may remain).
+fn read_before(
+  store: store.Store,
+  id: String,
+  upper: Int,
+  limit: Int,
+) -> Result(#(List(transcript.SourcedEntry), Bool), String) {
+  store.query(store, fn(db) {
+    use rows <- result.try(
+      sqlight.query(
+        "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? AND seq<? ORDER BY seq DESC LIMIT ?",
+        db,
+        [sqlight.text(id), sqlight.int(upper), sqlight.int(limit)],
+        {
+          use seq <- decode.field(0, decode.int)
+          use payload <- decode.field(1, decode.bit_array)
+          use timestamp <- decode.field(2, decode.optional(decode.int))
+          use provider <- decode.field(3, decode.optional(decode.string))
+          decode.success(#(seq, payload, timestamp, provider))
+        },
+      )
+      |> result.map_error(fn(e) { e.message }),
+    )
+    use entries <- result.try(
+      list.try_map(list.reverse(rows), fn(row) {
+        use input <- result.try(
+          unpack(row.1)
+          |> result.replace_error("invalid saved transcript item"),
+        )
+        Ok(transcript.SourcedEntry(
+          transcript.SourceRef(id, row.0),
+          transcript.Entry(input, row.2, row.3),
+        ))
+      }),
+    )
+    Ok(#(entries, list.length(rows) == limit))
+  })
+}
+
+/// The session's newest transcript sequence, or 0 when it has none.
+pub fn last_seq(store: store.Store, id: String) -> Result(Int, String) {
+  store.query(store, fn(db) {
+    sqlight.query(
+      "SELECT COALESCE(MAX(seq),0) FROM transcript WHERE session=?",
+      db,
+      [sqlight.text(id)],
+      decode.field(0, decode.int, decode.success),
+    )
+    |> result.map_error(fn(e) { e.message })
+    |> result.try(fn(rows) {
+      list.first(rows) |> result.replace_error("session not found")
+    })
+  })
 }
 
 /// Resolve one reference by both session and sequence. A missing row is an

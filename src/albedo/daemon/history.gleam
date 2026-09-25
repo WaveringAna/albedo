@@ -7,6 +7,7 @@ import albedo/harness/extensions/lcm/graph as lcm_graph
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -80,6 +81,30 @@ pub fn page(
     }
     Ok(Page(items, next_cursor, has_more))
   })
+}
+
+/// Up to `rows` transcript rows before `before` (None: the newest), rendered
+/// as the stream renders them, with `committed` markers, as a JSON body:
+/// {"events":[...],"before":first row,"more":older rows remain}.
+pub fn rendered(
+  ledger: store.Store,
+  session_id: String,
+  before: Option(Int),
+  rows: Int,
+) -> Result(String, String) {
+  use #(entries, more) <- result.try(conversation.load_tail(
+    ledger,
+    session_id,
+    before,
+    rows,
+  ))
+  let page = json.object(events.page_fields(entries, more)) |> json.to_string
+  Ok(
+    "{\"events\":["
+    <> string.join(events.rows(ledger, entries), ",")
+    <> "],"
+    <> string.drop_start(page, 1),
+  )
 }
 
 pub type Recent {

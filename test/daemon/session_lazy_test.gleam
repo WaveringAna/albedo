@@ -68,7 +68,7 @@ pub fn history_is_read_from_the_durable_transcript_and_not_kept_test() {
       conversation.Idle,
     )
   let assert Ok(worker) = session.start(host, info("reload"), "/tmp")
-  let first = session.read(worker, -1)
+  let first = session.read(worker, -1, None)
   list.any(first.events, string.contains(_, "first durable turn"))
   |> should.be_true
   // A reset renders the transcript from disk and keeps none of it resident.
@@ -82,7 +82,7 @@ pub fn history_is_read_from_the_durable_transcript_and_not_kept_test() {
       [types.Assistant("written while detached")],
       conversation.Idle,
     )
-  let reloaded = session.read(worker, -1)
+  let reloaded = session.read(worker, -1, None)
   list.any(reloaded.events, string.contains(_, "written while detached"))
   |> should.be_true
   session.report(worker).history_loaded |> should.be_false
