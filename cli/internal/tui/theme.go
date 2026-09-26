@@ -148,9 +148,10 @@ func diffAdded() string   { return sgrLayer(transcriptInk.added, "\x1b[48;2;24;5
 func diffRemoved() string { return sgrLayer(transcriptInk.removed, "\x1b[48;2;59;35;40m", true) }
 
 // keepBackground turns full resets into foreground and attribute resets, so
-// a styled span inside a tinted row keeps the row's background.
+// a styled span inside a tinted row keeps the row's background. Lip Gloss
+// spells a full reset "ESC[m"; the raw ink spells it "ESC[0m".
 func keepBackground(s string) string {
-	return strings.ReplaceAll(s, ansiReset, "\x1b[39;22;23m")
+	return strings.NewReplacer(ansiReset, "\x1b[39;22;23m", "\x1b[m", "\x1b[39;22;23m").Replace(s)
 }
 
 // gradient is the brand ramp at t in [0, 1], or nil when the terminal did
@@ -274,7 +275,7 @@ func selectedLine(line string, width int) string {
 	if pad := width - ansi.StringWidth(line); pad > 0 {
 		line += strings.Repeat(" ", pad)
 	}
-	return open + strings.ReplaceAll(line, ansiReset, ansiReset+open) + ansiReset
+	return open + strings.NewReplacer(ansiReset, ansiReset+open, "\x1b[m", "\x1b[m"+open).Replace(line) + ansiReset
 }
 
 // homePath shortens a path under your home directory to start with ~.

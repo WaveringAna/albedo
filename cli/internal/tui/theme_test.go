@@ -32,3 +32,17 @@ func TestColorsComeFromTheTheme(t *testing.T) {
 		}
 	}
 }
+
+// A full reset comes as "ESC[m" from Lip Gloss and "ESC[0m" from the raw ink;
+// the selection surface and a diff row's tint must survive both.
+func TestBackgroundsOutliveStyledSpans(t *testing.T) {
+	span := DefaultStyles.Muted.Render("a")
+	marked := DefaultStyles.Selected.Render("\x00")
+	open := marked[:strings.IndexByte(marked, 0)]
+	if line := selectedLine(span+" b", 0); !strings.Contains(line, open+" b") {
+		t.Errorf("selection surface ends at the first span: %q", line)
+	}
+	if kept := keepBackground(span); strings.Contains(kept, "\x1b[m") || strings.Contains(kept, "\x1b[0m") {
+		t.Errorf("a span still resets the row tint: %q", kept)
+	}
+}
