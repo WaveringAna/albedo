@@ -160,7 +160,14 @@ pub fn encode(
   }
   let fields = case request.options.effort {
     Some(effort) if request.model != "claude-haiku-4-5" -> [
-      #("thinking", json.object([#("type", json.string("adaptive"))])),
+      // Newer models omit thinking text unless asked for a summary.
+      #(
+        "thinking",
+        json.object([
+          #("type", json.string("adaptive")),
+          #("display", json.string("summarized")),
+        ]),
+      ),
       #("output_config", json.object([#("effort", json.string(effort))])),
       ..fields
     ]
@@ -170,9 +177,8 @@ pub fn encode(
     list.flatten([
       [
         "claude-code-20250219", "oauth-2025-04-20",
-        "interleaved-thinking-2025-05-14", "redact-thinking-2026-02-12",
-        "thinking-token-count-2026-05-13", "context-management-2025-06-27",
-        "prompt-caching-scope-2026-01-05",
+        "interleaved-thinking-2025-05-14", "thinking-token-count-2026-05-13",
+        "context-management-2025-06-27", "prompt-caching-scope-2026-01-05",
       ],
       case request.model {
         "claude-haiku-4-5" -> []

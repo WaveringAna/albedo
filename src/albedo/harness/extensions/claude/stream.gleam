@@ -151,6 +151,7 @@ fn delta(
   let text = case kind {
     "input_json_delta" -> field(value, ["delta", "partial_json"])
     "signature_delta" -> field(value, ["delta", "signature"])
+    "thinking_delta" -> field(value, ["delta", "thinking"])
     _ -> field(value, ["delta", "text"])
   }
   let #(blocks, events) = update(state.blocks, index, kind, text)
@@ -218,10 +219,25 @@ fn finish(state: State) -> Result(types.Turn, types.Error) {
       }
     })
     |> string.concat
+  let thinking =
+    blocks
+    |> list.filter_map(fn(block) {
+      case block {
+        Thinking(_, chunks, _) -> Ok(flat(chunks))
+        _ -> Error(Nil)
+      }
+    })
+    |> string.concat
   let fields = [
     #("role", json.string("assistant")),
     #("content", json.string(text)),
   ]
+  // The transcript reads thinking back from reasoning_content; replay to
+  // Claude uses the signed blocks instead.
+  let fields = case thinking {
+    "" -> fields
+    thinking -> [#("reasoning_content", json.string(thinking)), ..fields]
+  }
   let fields = case native {
     [] -> fields
     native -> [

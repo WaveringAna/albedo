@@ -1,3 +1,4 @@
+import albedo/daemon/events
 import albedo/harness/extensions/claude/extension as claude
 import albedo/harness/extensions/claude/stream
 import albedo/harness/extensions/claude/wire
@@ -103,10 +104,10 @@ pub fn claude_messages_request_carries_client_identity_and_tools_test() {
   assert string.split(betas, ",")
     == [
       "claude-code-20250219", "oauth-2025-04-20",
-      "interleaved-thinking-2025-05-14", "redact-thinking-2026-02-12",
-      "thinking-token-count-2026-05-13", "context-management-2025-06-27",
-      "prompt-caching-scope-2026-01-05", "mid-conversation-system-2026-04-07",
-      "per-turn-control-2026-07-01", "mid-conversation-tool-changes-2026-07-01",
+      "interleaved-thinking-2025-05-14", "thinking-token-count-2026-05-13",
+      "context-management-2025-06-27", "prompt-caching-scope-2026-01-05",
+      "mid-conversation-system-2026-04-07", "per-turn-control-2026-07-01",
+      "mid-conversation-tool-changes-2026-07-01",
       "extended-cache-ttl-2025-04-11",
     ]
   assert list_key(headers, "user-agent")
@@ -297,6 +298,8 @@ pub fn current_claude_effort_uses_adaptive_thinking_test() {
   let assert Ok(value) = json.parse(sent(body), decode.dynamic)
   let assert Ok("adaptive") =
     decode.run(value, decode.at(["thinking", "type"], decode.string))
+  let assert Ok("summarized") =
+    decode.run(value, decode.at(["thinking", "display"], decode.string))
   let assert Ok("max") =
     decode.run(value, decode.at(["output_config", "effort"], decode.string))
 }
@@ -358,6 +361,83 @@ pub fn claude_stream_preserves_tool_calls_and_replay_test() {
   assert string.contains(encoded, "tool_result")
   assert string.contains(encoded, "tool_use")
   assert string.contains(encoded, "hello")
+}
+
+pub fn claude_stream_shows_thinking_and_replays_it_signed_test() {
+  let chunks = [
+    "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}",
+    "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}",
+    "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"weighing \"}}",
+    "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"options\"}}",
+    "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_1\"}}",
+    "{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+    "{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}",
+    "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}",
+    "{\"type\":\"message_stop\"}",
+  ]
+  let #(deltas, turn) =
+    feed_thinking(stream.reducer("claude-opus-5-5", []), chunks, [])
+  assert deltas == ["weighing ", "options"]
+  let item = list_first(turn.output)
+  assert events.thinking_text(item) == "weighing options"
+  let request =
+    types.Request(
+      "claude-opus-5-5",
+      None,
+      [types.User("start"), types.Replay(item), types.User("next")],
+      [],
+      None,
+      types.defaults,
+    )
+  let assert Ok(openai_api.Exchange(body: body, ..)) =
+    wire.encode(
+      no_files_home,
+      "token",
+      "11111111-2222-4333-8444-555555555555",
+      string.repeat("a", 64),
+      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      request,
+    )
+  let assert Ok(value) = json.parse(sent(body), decode.dynamic)
+  let block = fn(name) {
+    decode.at(
+      ["messages"],
+      decode.list(decode.at(
+        ["content"],
+        decode.list(decode.optional_field(
+          name,
+          "",
+          decode.string,
+          decode.success,
+        )),
+      )),
+    )
+  }
+  let assert Ok([_, [thinking, _], _]) = decode.run(value, block("thinking"))
+  assert thinking == "weighing options"
+  let assert Ok([_, [signature, _], _]) = decode.run(value, block("signature"))
+  assert signature == "sig_1"
+}
+
+/// Feeds every chunk and keeps the thinking deltas the stream emitted.
+fn feed_thinking(
+  reducer: reducer.Reducer,
+  chunks: List(String),
+  deltas: List(String),
+) -> #(List(String), types.Turn) {
+  let assert [chunk, ..rest] = chunks
+  let assert Ok(#(next, emitted, turn)) = reducer.feed(chunk)
+  let deltas =
+    list.fold(emitted, deltas, fn(deltas, event) {
+      case event {
+        types.ThinkingDelta(text) -> [text, ..deltas]
+        _ -> deltas
+      }
+    })
+  case turn {
+    Some(turn) -> #(list.reverse(deltas), turn)
+    None -> feed_thinking(next, rest, deltas)
+  }
 }
 
 pub fn claude_mcp_tools_use_subscription_namespace_and_round_trip_test() {
