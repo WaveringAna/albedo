@@ -5,6 +5,7 @@
 //// kernel, a provider, or an actor.
 
 import albedo/daemon/conversation
+import albedo/daemon/mail
 import albedo/openai_api/types
 import gleam/erlang/process
 import gleam/list
@@ -17,8 +18,9 @@ import gleam/string
 pub type Source {
   Chat
   JobWake
-  /// A durable intake receipt starts a turn only when the session is idle.
-  Webhook(id: String)
+  /// A letter from the durable inbox, marked delivered when its input commits.
+  /// Letters between agents steer a running turn; webhooks wait for idle.
+  Mail(id: String, kind: mail.Kind)
   /// Something an extension tells the agent, such as a user's work ledger
   /// change. `origin` labels it in the transcript.
   Note(origin: String)
@@ -78,7 +80,8 @@ pub fn source_name(source: Source) -> String {
   case source {
     Chat -> "chat"
     JobWake -> "bash"
-    Webhook(_) -> "webhook"
+    Mail(_, mail.Webhook) -> "webhook"
+    Mail(..) -> "mail"
     Note(origin) -> origin
     Continue -> "continue"
   }
@@ -93,7 +96,9 @@ pub fn admit(
     _, False, _ -> Reject(Oversized)
     _, True, Note(_) -> room(queued)
     Running(_), True, Chat | Running(_), True, Continue -> room(queued)
-    Running(_), True, JobWake | Running(_), True, Webhook(_) -> Reject(Busy)
+    Running(_), True, Mail(_, mail.Webhook) -> Reject(Busy)
+    Running(_), True, Mail(..) -> room(queued)
+    Running(_), True, JobWake -> Reject(Busy)
     Resting, True, _ | Interrupted, True, _ -> Start
   }
 }
@@ -121,8 +126,26 @@ fn bounded(submission: Submission) -> Bool {
 /// wait for the user's next message.
 pub fn starts_turn(queued: List(Submission)) -> Bool {
   list.any(queued, fn(submission) {
-    submission.source == Chat || submission.source == Continue
+    case submission.source {
+      Chat | Continue | Mail(..) -> True
+      JobWake | Note(_) -> False
+    }
   })
+}
+
+/// The letters these submissions deliver, for the commit that writes them.
+pub fn letters(submissions: List(Submission)) -> List(String) {
+  list.filter_map(submissions, fn(submission) {
+    case submission.source {
+      Mail(id, _) -> Ok(id)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+/// Whether letter `id` already waits in this queue.
+pub fn holds_letter(queued: List(Submission), id: String) -> Bool {
+  list.contains(letters(queued), id)
 }
 
 pub fn running(activity: Activity) -> Option(Run) {

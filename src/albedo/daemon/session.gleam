@@ -1,8 +1,11 @@
 //// One coordinator per session. Workers own model/tool loops; clients never own workers.
 
+import albedo/daemon/bus
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
 import albedo/daemon/events as view
+import albedo/daemon/family
+import albedo/daemon/mail
 import albedo/daemon/session_extensions
 import albedo/daemon/session_history
 import albedo/daemon/session_namespace
@@ -78,7 +81,7 @@ pub type SubmissionError {
   Rejected(String)
 }
 
-fn submission_error(error: SubmissionError) -> String {
+pub fn submission_error(error: SubmissionError) -> String {
   case error {
     WorkspaceMissing(path) -> "workspace not found: " <> path
     Busy -> "session is busy or message queue is full"
@@ -211,6 +214,9 @@ pub fn start(
       wake(self, Submission(display, text, "bash", turn.JobWake, None))
     })
     commands_register(info.id, fn(op) { command_op(self, op) })
+    mailbox_register(info.id, fn(letter) {
+      submit_mail(self, letter) |> result.map_error(submission_error)
+    })
     Ok(
       actor.initialised(state)
       |> actor.returning(self)
@@ -229,21 +235,19 @@ pub fn start(
   })
 }
 
-/// A pending webhook is retried while busy; its receipt is committed atomically
-/// with the resulting session transcript input when the turn starts.
-pub fn submit_webhook(
+/// A stored letter, admitted like any submission. Its receipt commits with the
+/// transcript input it becomes; a letter already queued or committed is
+/// accepted again without a second copy.
+pub fn submit_mail(
   session: Session,
-  id: String,
-  name: String,
-  preview: String,
+  letter: mail.Letter,
 ) -> Result(Bool, SubmissionError) {
-  let text = conversation.webhook_text(name, id, preview)
   actor.call(session, 10_000, Submit(
     Submission(
-      "webhook " <> name <> " #" <> id,
-      text,
-      id,
-      turn.Webhook(id),
+      mail.display(letter),
+      mail.text(letter),
+      letter.id,
+      turn.Mail(letter.id, letter.kind),
       None,
     ),
     _,
@@ -433,124 +437,24 @@ fn handle(state: State, message: Message) {
         }
         _ -> actor.continue(state)
       }
-    Submit(submission, reply) ->
-      case turn.admit(state.activity, submission, list.length(state.steering)) {
-        turn.Reject(turn.Busy) -> {
-          process.send(reply, Error(Busy))
-          actor.continue(state)
-        }
-        turn.Reject(turn.Oversized) -> {
-          process.send(
-            reply,
-            Error(Rejected("prompt or activation exceeds its bounded size")),
-          )
-          actor.continue(state)
-        }
-        turn.Queue -> {
+    // The dispatcher retries letters it cannot see were admitted; one already
+    // queued or committed here is accepted again without a second copy.
+    Submit(Submission(source: turn.Mail(id, _), ..) as submission, reply) ->
+      case
+        turn.holds_letter(state.steering, id),
+        mail.undelivered(runtime.ledger(state.host), id)
+      {
+        True, _ -> {
           process.send(reply, Ok(True))
-          actor.continue(
-            session_state.State(
-              ..state,
-              steering: list.append(state.steering, [submission]),
-            ),
-          )
+          actor.continue(state)
         }
-        turn.Start ->
-          case prepare_submission(state) {
-            Error(error) -> {
-              process.send(reply, Error(error))
-              actor.continue(state)
-            }
-            Ok(#(state, kernel, client)) -> {
-              // Notes queued while idle ride along ahead of this message.
-              let notes = state.steering
-              let accepted =
-                list.flatten([
-                  session_history.recover_pending(
-                    state.host,
-                    state.history,
-                    kernel,
-                  ),
-                  list.map(notes, session_submission.input),
-                  [session_submission.input(submission)],
-                ])
-              case
-                projected_inputs(session_history.remember(state, accepted, 0))
-              {
-                Error(error) -> {
-                  process.send(reply, Error(Rejected(error)))
-                  actor.continue(state)
-                }
-                Ok(history) -> {
-                  // Projection is newest-first: the head is this submission.
-                  let model_history = case state.notice {
-                    None -> history
-                    Some(notice) ->
-                      case history {
-                        [types.User(_), ..rest] -> [
-                          types.User(submission.text <> notice),
-                          ..rest
-                        ]
-                        [types.UserImage(_, image), ..rest] -> [
-                          types.UserImage(submission.text <> notice, image),
-                          ..rest
-                        ]
-                        _ -> history
-                      }
-                  }
-                  case
-                    case submission.source {
-                      turn.Webhook(delivery) ->
-                        conversation.commit_webhook_from(
-                          runtime.ledger(state.host),
-                          state.info.id,
-                          accepted,
-                          conversation.Model,
-                          Some(state.info.provider),
-                          delivery,
-                        )
-                      _ ->
-                        conversation.commit_from(
-                          runtime.ledger(state.host),
-                          state.info.id,
-                          accepted,
-                          conversation.Model,
-                          Some(state.info.provider),
-                        )
-                    }
-                  {
-                    Error(error) -> {
-                      process.send(reply, Error(Rejected(error)))
-                      actor.continue(state)
-                    }
-                    Ok(timestamp) -> {
-                      let state =
-                        session_history.remember(state, accepted, timestamp)
-                        |> session_submission.emit(notes, timestamp)
-                        |> fn(state) {
-                          session_state.State(
-                            ..state,
-                            notice: None,
-                            steering: [],
-                          )
-                        }
-                        |> start_run(kernel, client, model_history)
-                      process.send(reply, Ok(False))
-                      actor.continue(case submission.source {
-                        turn.Continue -> state
-                        _ ->
-                          session_state.emit(
-                            state,
-                            session_submission.event(submission, timestamp),
-                          )
-                      })
-                    }
-                  }
-                }
-              }
-            }
-          }
+        False, False -> {
+          process.send(reply, Ok(False))
+          actor.continue(state)
+        }
+        False, True -> admit(state, submission, reply)
       }
+    Submit(submission, reply) -> admit(state, submission, reply)
     ReadCommands(reply) -> {
       process.send(
         reply,
@@ -857,12 +761,13 @@ fn handle(state: State, message: Message) {
         True, queued -> {
           let inputs = list.map(queued, session_submission.input)
           case
-            conversation.commit_from(
+            conversation.commit_letters(
               runtime.ledger(state.host),
               state.info.id,
               inputs,
               conversation.Model,
               Some(state.info.provider),
+              turn.letters(queued),
             )
           {
             Error(error) -> {
@@ -966,6 +871,7 @@ fn handle(state: State, message: Message) {
               Some(state.info.provider),
             )
           let state = session_state.State(..state, activity: turn.Resting)
+          bus.running(state.info.id, False)
           let state = case run.cancelled, outcome, persisted {
             True, _, _ ->
               session_state.emit(state, view.event("interrupted", []))
@@ -994,6 +900,10 @@ fn handle(state: State, message: Message) {
               state
             }
             _, _, _ -> state
+          }
+          let state = case run.work, run.cancelled {
+            turn.Turn(_), False -> answer_parent(state, outcome)
+            _, _ -> state
           }
           process.send(state.self, Collect)
           actor.continue(start_queued(state))
@@ -1101,6 +1011,7 @@ fn handle(state: State, message: Message) {
       runtime.forget_session(state.host, state.info.id)
       wakes_forget(state.info.id)
       commands_forget(state.info.id)
+      mailbox_forget(state.info.id)
       process.send(reply, Nil)
       actor.stop()
     }
@@ -1196,6 +1107,15 @@ fn commands_register(
 @external(erlang, "albedo_commands", "forget")
 fn commands_forget(session: String) -> Nil
 
+@external(erlang, "albedo_mailbox", "register")
+fn mailbox_register(
+  session: String,
+  admit: fn(mail.Letter) -> Result(Bool, String),
+) -> Nil
+
+@external(erlang, "albedo_mailbox", "forget")
+fn mailbox_forget(session: String) -> Nil
+
 @external(erlang, "albedo_session", "discard")
 fn discard(path: String) -> Nil
 
@@ -1230,6 +1150,178 @@ fn failed_queued(state: State, error: String) -> State {
   )
 }
 
+/// A child whose run ends without having answered its parent's latest task or
+/// message sends its last words, marked unreviewed, so nothing it found is
+/// lost. Letters already queued here mean the child is not done yet.
+fn answer_parent(state: State, outcome: Result(Nil, String)) -> State {
+  let db = runtime.ledger(state.host)
+  let owed = case turn.starts_turn(state.steering) {
+    True -> Error(Nil)
+    False ->
+      case family.get(db, state.info.id) {
+        Ok(Some(member)) ->
+          case mail.owes_reply(db, state.info.id, member.parent) {
+            Ok(True) -> Ok(member)
+            _ -> Error(Nil)
+          }
+        _ -> Error(Nil)
+      }
+  }
+  case owed {
+    Error(_) -> state
+    Ok(member) -> {
+      let #(state, words) = last_words(state)
+      let body = case outcome, words {
+        Ok(_), Some(text) -> text
+        Ok(_), None -> "(finished without writing anything)"
+        Error(error), Some(text) -> "run failed: " <> error <> "\n\n" <> text
+        Error(error), None -> "run failed: " <> error
+      }
+      case
+        mail.post(
+          db,
+          mail.new_id(),
+          member.parent,
+          Some(state.info.id),
+          member.name,
+          mail.Answer(unreviewed: True),
+          body,
+        )
+      {
+        // Off the actor: the parent's actor may be the one calling into us.
+        Ok(letter) -> {
+          process.spawn_unlinked(fn() { mail.deliver(letter) })
+          state
+        }
+        Error(error) ->
+          session_state.emit(
+            state,
+            view.text("error", "could not answer the parent: " <> error),
+          )
+      }
+    }
+  }
+}
+
+/// The newest assistant text in this session's transcript.
+fn last_words(state: State) -> #(State, Option(String)) {
+  case session_history.ensure_history(state) {
+    Error(_) -> #(state, None)
+    Ok(state) -> #(
+      state,
+      option.unwrap(state.history, [])
+        |> list.find_map(fn(entry) {
+          view.visible_assistant_text(entry.input) |> option.to_result(Nil)
+        })
+        |> option.from_result,
+    )
+  }
+}
+
+/// Whether a submission starts a run, waits in the queue, or is refused.
+fn admit(
+  state: State,
+  submission: Submission,
+  reply: Subject(Result(Bool, SubmissionError)),
+) -> actor.Next(State, Message) {
+  case turn.admit(state.activity, submission, list.length(state.steering)) {
+    turn.Reject(turn.Busy) -> {
+      process.send(reply, Error(Busy))
+      actor.continue(state)
+    }
+    turn.Reject(turn.Oversized) -> {
+      process.send(
+        reply,
+        Error(Rejected("prompt or activation exceeds its bounded size")),
+      )
+      actor.continue(state)
+    }
+    turn.Queue -> {
+      process.send(reply, Ok(True))
+      actor.continue(
+        session_state.State(
+          ..state,
+          steering: list.append(state.steering, [submission]),
+        ),
+      )
+    }
+    turn.Start ->
+      case prepare_submission(state) {
+        Error(error) -> {
+          process.send(reply, Error(error))
+          actor.continue(state)
+        }
+        Ok(#(state, kernel, client)) -> {
+          // Notes queued while idle ride along ahead of this message.
+          let notes = state.steering
+          let accepted =
+            list.flatten([
+              session_history.recover_pending(state.host, state.history, kernel),
+              list.map(notes, session_submission.input),
+              [session_submission.input(submission)],
+            ])
+          case projected_inputs(session_history.remember(state, accepted, 0)) {
+            Error(error) -> {
+              process.send(reply, Error(Rejected(error)))
+              actor.continue(state)
+            }
+            Ok(history) -> {
+              // Projection is newest-first: the head is this submission.
+              let model_history = case state.notice {
+                None -> history
+                Some(notice) ->
+                  case history {
+                    [types.User(_), ..rest] -> [
+                      types.User(submission.text <> notice),
+                      ..rest
+                    ]
+                    [types.UserImage(_, image), ..rest] -> [
+                      types.UserImage(submission.text <> notice, image),
+                      ..rest
+                    ]
+                    _ -> history
+                  }
+              }
+              case
+                conversation.commit_letters(
+                  runtime.ledger(state.host),
+                  state.info.id,
+                  accepted,
+                  conversation.Model,
+                  Some(state.info.provider),
+                  turn.letters([submission, ..notes]),
+                )
+              {
+                Error(error) -> {
+                  process.send(reply, Error(Rejected(error)))
+                  actor.continue(state)
+                }
+                Ok(timestamp) -> {
+                  let state =
+                    session_history.remember(state, accepted, timestamp)
+                    |> session_submission.emit(notes, timestamp)
+                    |> fn(state) {
+                      session_state.State(..state, notice: None, steering: [])
+                    }
+                    |> start_run(kernel, client, model_history)
+                  process.send(reply, Ok(False))
+                  actor.continue(case submission.source {
+                    turn.Continue -> state
+                    _ ->
+                      session_state.emit(
+                        state,
+                        session_submission.event(submission, timestamp),
+                      )
+                  })
+                }
+              }
+            }
+          }
+        }
+      }
+  }
+}
+
 fn start_queued(state: State) -> State {
   case turn.starts_turn(state.steering) {
     False -> state
@@ -1247,12 +1339,13 @@ fn start_queued(state: State) -> State {
             Error(error) -> failed_queued(state, error)
             Ok(history) ->
               case
-                conversation.commit_from(
+                conversation.commit_letters(
                   runtime.ledger(state.host),
                   state.info.id,
                   accepted,
                   conversation.Model,
                   Some(state.info.provider),
+                  turn.letters(queued),
                 )
               {
                 Error(error) -> failed_queued(state, error)
@@ -1317,6 +1410,7 @@ fn start_worker(
   model_history: List(types.Input),
   work: turn.Work,
 ) -> State {
+  bus.running(state.info.id, True)
   session_run.start(
     state,
     kernel,

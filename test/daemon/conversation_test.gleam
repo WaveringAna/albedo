@@ -1,5 +1,6 @@
 import albedo/daemon/conversation
 import albedo/daemon/events as view
+import albedo/daemon/mail
 import albedo/daemon/note
 import albedo/daemon/store
 import albedo/daemon/transcript
@@ -49,8 +50,7 @@ pub fn title_is_a_safe_bounded_unicode_preview_test() {
 }
 
 pub fn webhook_deliveries_never_name_a_session_test() {
-  let delivery =
-    conversation.webhook_text("deploy", "d062", "{\"hello\":\"world\"}")
+  let delivery = mail.webhook_text("deploy", "d062", "{\"hello\":\"world\"}")
   conversation.latest_user([types.User("fix the deploy"), types.User(delivery)])
   |> should.equal(Some("fix the deploy"))
   conversation.latest_user([types.User(delivery)]) |> should.equal(None)

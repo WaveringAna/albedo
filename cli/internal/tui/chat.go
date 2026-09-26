@@ -1044,6 +1044,9 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if msg.Type == tea.KeyCtrlN {
 			return m, func() tea.Msg { return ChatNewSessionMsg{} }
 		}
+		if msg.Type == tea.KeyCtrlG {
+			return m, func() tea.Msg { return ChatOpenAgentsMsg{} }
+		}
 		if msg.Type == tea.KeyEsc && m.dragAnchor != nil {
 			m.dragAnchor = nil
 			return m, nil
@@ -1637,7 +1640,9 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 	trimmed := strings.TrimSpace(input)
 
 	switch {
-	case trimmed == "/a" || trimmed == "/agents" || trimmed == "/sessions":
+	case trimmed == "/agents":
+		*cmds = append(*cmds, func() tea.Msg { return ChatOpenAgentsMsg{} })
+	case trimmed == "/a" || trimmed == "/sessions":
 		*cmds = append(*cmds, func() tea.Msg { return ChatBackToSessionsMsg{} })
 	case trimmed == "/q" || trimmed == "/quit" || trimmed == "/exit":
 		if m.streamCancel != nil {

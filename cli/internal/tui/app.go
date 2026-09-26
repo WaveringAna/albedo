@@ -28,6 +28,7 @@ const (
 	AppStateLogin
 	AppStateCapabilityPage
 	AppStateWebhooksPage
+	AppStateAgents
 )
 
 type sessionsLoadedMsg struct {
@@ -129,6 +130,7 @@ type AppModel struct {
 	Login            LoginModel
 	CapabilityPage   CapabilityPageModel
 	WebhooksPage     WebhooksPageModel
+	Agents           AgentsViewModel
 }
 
 // LoadPrefs applies the same display choices to the initial and future chats.
@@ -476,6 +478,24 @@ func (m *AppModel) updateSessionPickerItems() {
 	m.SessionPicker.SetSessions(m.Sessions, m.ActiveSession)
 }
 
+// openSession makes session the chat on screen.
+func (m *AppModel) openSession(s daemon.Session) tea.Cmd {
+	m.SessionPicker.RecordOpen(s.ID)
+	m.Chat.Close()
+	session := s
+	m.ActiveSession = &session
+	m.Chat = m.newChatModel(&session)
+	m.Chat.SetSize(m.Width, m.Height)
+	m.ClearNotices()
+	m.State = AppStateChat
+	m.CatalogGen++
+	m.GlanceGen++
+	return tea.Batch(
+		m.Chat.Init(),
+		m.loadCommandCatalogCmd(m.CatalogGen),
+	)
+}
+
 func mouseModeCmd(state AppState) tea.Cmd {
 	return func() tea.Msg {
 		if state == AppStateChat {
@@ -599,6 +619,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		m.PageView.SetSize(msg.Width, msg.Height)
 		m.CapabilityPage.SetSize(msg.Width, msg.Height)
 		m.WebhooksPage.SetSize(msg.Width, msg.Height)
+		m.Agents.SetSize(msg.Width, msg.Height)
 		m.Login.SetSize(msg.Width, msg.Height)
 		return m, nil
 
@@ -853,6 +874,30 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		m.State = AppStateChat
 		return m, nil
 
+	case ChatOpenAgentsMsg:
+		if m.ActiveSession != nil {
+			m.Agents.Close()
+			m.Agents = NewAgentsViewModel(m.Conn, m.ActiveSession.ID)
+			m.Agents.SetSize(m.Width, m.Height)
+			m.State = AppStateAgents
+			return m, m.Agents.Init()
+		}
+
+	case AgentsDoneMsg:
+		m.Agents.Close()
+		m.State = AppStateChat
+		return m, nil
+
+	case AgentsAttachMsg:
+		m.Agents.Close()
+		session := msg.Session
+		for _, listed := range m.Sessions {
+			if listed.ID == session.ID {
+				session = listed
+			}
+		}
+		return m, m.openSession(session)
+
 	case ExtensionPickerDoneMsg:
 		m.State = AppStateChat
 		return m, nil
@@ -1058,20 +1103,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 			}
 			for _, s := range listed {
 				if s.ID == msg.ID {
-					m.SessionPicker.RecordOpen(s.ID)
-					m.Chat.Close()
-					session := s
-					m.ActiveSession = &session
-					m.Chat = m.newChatModel(&session)
-					m.Chat.SetSize(m.Width, m.Height)
-					m.ClearNotices()
-					m.State = AppStateChat
-					m.CatalogGen++
-					m.GlanceGen++
-					return m, tea.Batch(
-						m.Chat.Init(),
-						m.loadCommandCatalogCmd(m.CatalogGen),
-					)
+					return m, m.openSession(s)
 				}
 			}
 		}
@@ -1124,6 +1156,8 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		m.CapabilityPage, cmd = m.CapabilityPage.Update(msg)
 	case AppStateWebhooksPage:
 		m.WebhooksPage, cmd = m.WebhooksPage.Update(msg)
+	case AppStateAgents:
+		m.Agents, cmd = m.Agents.Update(msg)
 	case AppStateLogin:
 		m.Login, cmd = m.Login.Update(msg)
 	}
@@ -1163,6 +1197,8 @@ func (m AppModel) View() string {
 		content = m.CapabilityPage.View()
 	case AppStateWebhooksPage:
 		content = m.WebhooksPage.View()
+	case AppStateAgents:
+		content = m.Agents.View()
 	case AppStateLogin:
 		content = m.Login.View()
 	}

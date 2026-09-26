@@ -1,4 +1,5 @@
 import albedo/daemon/conversation
+import albedo/daemon/mail
 import albedo/daemon/store
 import albedo/harness/command.{Data, ModelCall, UserCall}
 import albedo/harness/extensions/webhooks/command as webhook_command
@@ -9,6 +10,7 @@ import gleam/bit_array
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
@@ -200,33 +202,36 @@ pub fn signed_intake_and_atomic_session_receipt_test() {
     Some("alert-1"),
   )
   |> should.equal(Error(webhooks.Conflict))
-  let assert Ok([pending]) = webhooks.pending(db, 10)
+  // The delivery waits in the session's mail as a letter from outside.
+  let assert Ok([pending]) = mail.pending(db, 10)
   pending.id |> should.equal(delivery)
+  pending.recipient |> should.equal("infra")
+  pending.sender |> should.equal(None)
+  pending.sender_name |> should.equal("outage")
+  pending.kind |> should.equal(mail.Webhook)
+  pending.body |> should.equal("{\"status\":\"down\"}")
+  webhooks.pending_count(db, "infra", hook.id) |> should.equal(Ok(1))
   let assert Ok(_) =
     webhooks.delete(db, webhooks.Human, "infra", hook.id, hook.revision)
-  webhooks.pending(db, 10) |> should.equal(Ok([pending]))
-  pending.body |> should.equal(body)
+  mail.pending(db, 10) |> should.equal(Ok([pending]))
+  let assert Ok(saved) = webhooks.delivery(db, "infra", delivery)
+  saved.body |> should.equal(body)
   let message = types.User("webhook outage")
   let assert Ok(_) =
-    conversation.commit_webhook_from(
+    conversation.commit_letters(
       db,
       "infra",
       [message],
       conversation.Model,
       None,
-      delivery,
+      [delivery],
     )
-  webhooks.pending(db, 10) |> should.equal(Ok([]))
+  mail.pending(db, 10) |> should.equal(Ok([]))
   webhooks.accept(db, hook.id, headers(sign(body, key)), body, None)
   |> should.equal(Error(webhooks.NotFound))
-  conversation.commit_webhook_from(
-    db,
-    "infra",
-    [message],
-    conversation.Model,
-    None,
+  conversation.commit_letters(db, "infra", [message], conversation.Model, None, [
     delivery,
-  )
+  ])
   |> should.be_error
   let assert Ok(history) = conversation.load(db, "infra")
   history |> should.equal([message])
@@ -239,9 +244,9 @@ pub fn full_inbox_refuses_new_delivery_test() {
     webhooks.create(db, webhooks.Human, "infra", "outage", None)
   store.query(db, fn(connection) {
     sqlight.query(
-      "WITH RECURSIVE nums(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM nums WHERE n<1000) INSERT INTO webhook_deliveries(id,hook,name,session,body,body_sha256) SELECT 'seed-'||n,?,'outage','infra',x'00','digest' FROM nums",
+      "WITH RECURSIVE nums(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM nums WHERE n<1000) INSERT INTO mail(id,recipient,sender_name,kind,body,created_at) SELECT 'seed-'||n,'infra','outage','webhook','x',0 FROM nums",
       connection,
-      [sqlight.text(hook.id)],
+      [],
       decode.dynamic,
     )
   })
@@ -249,6 +254,45 @@ pub fn full_inbox_refuses_new_delivery_test() {
   let body = bit_array.from_string("outage")
   webhooks.accept(db, hook.id, headers(sign(body, key)), body, None)
   |> should.equal(Error(webhooks.Overloaded))
+  // The refused delivery left no half behind.
+  store.query(db, fn(connection) {
+    sqlight.query(
+      "SELECT count(*) FROM webhook_deliveries",
+      connection,
+      [],
+      decode.field(0, decode.int, decode.success),
+    )
+  })
+  |> should.equal(Ok([0]))
+  store.close(db)
+}
+
+pub fn deliveries_waiting_before_mail_become_letters_test() {
+  let db = database()
+  let assert Ok(webhooks.Provisioned(hook, _)) =
+    webhooks.create(db, webhooks.Human, "infra", "outage", None)
+  store.query(db, fn(connection) {
+    sqlight.query(
+      "INSERT INTO webhook_deliveries(id,hook,name,session,body,body_sha256) VALUES('old',?,'outage','infra',?,'digest'),('binary',?,'outage','infra',x'ff00','digest')",
+      connection,
+      [
+        sqlight.text(hook.id),
+        sqlight.blob(bit_array.from_string("disk full")),
+        sqlight.text(hook.id),
+      ],
+      decode.dynamic,
+    )
+  })
+  |> should.be_ok
+  let assert Ok(Nil) = webhooks.initialise(db)
+  let assert Ok(Nil) = webhooks.initialise(db)
+  let assert Ok(letters) = mail.pending(db, 10)
+  let bodies = letters |> list.map(fn(letter) { #(letter.id, letter.body) })
+  list.sort(bodies, fn(a, b) { string.compare(a.0, b.0) })
+  |> should.equal([
+    #("binary", "[binary payload; read the delivery by id]"),
+    #("old", "disk full"),
+  ])
   store.close(db)
 }
 

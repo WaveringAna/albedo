@@ -1,7 +1,7 @@
 %% Shared ETS plumbing for session-id -> closure registries whose table must
 %% outlive every individual session. Each table's payload contract belongs to
-%% its own module: albedo_wakes carries turn submissions, albedo_commands
-%% carries session state operations.
+%% its own module: albedo_wakes carries turn submissions, albedo_mailbox
+%% carries letters, albedo_commands carries session state operations.
 -module(albedo_registry).
 -export([register/3, forget/2, fetch/3]).
 

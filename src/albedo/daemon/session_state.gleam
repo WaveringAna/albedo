@@ -1,5 +1,6 @@
 //// Actor-owned session data and its bounded event stream.
 
+import albedo/daemon/bus
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
 import albedo/daemon/transcript
@@ -41,6 +42,7 @@ pub fn emit(state: State(message), event: String) -> State(message) {
   let watchers =
     list.filter(state.watchers, fn(watcher) { process.is_alive(watcher.0) })
   list.each(watchers, fn(watcher) { watcher.1() })
+  bus.activity(state.info.id, event)
   State(..state, sequence: seq, events: events, watchers: watchers)
 }
 

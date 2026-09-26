@@ -1,6 +1,8 @@
 //// Durable hook definitions. All mutations run on the daemon store owner.
 
+import albedo/daemon/mail
 import albedo/daemon/store
+import albedo/daemon/usage
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/json
@@ -89,9 +91,50 @@ CREATE INDEX IF NOT EXISTS webhook_pending ON webhook_deliveries(received_at) WH
 "
 
 pub fn initialise(db: store.Store) -> Result(Nil, String) {
+  use _ <- result.try(mail.initialise(db))
   store.query(db, fn(connection) {
-    sqlight.exec(schema, connection) |> result.map_error(fn(e) { e.message })
+    use _ <- result.try(
+      sqlight.exec(schema, connection) |> result.map_error(fn(e) { e.message }),
+    )
+    move_inbox(connection)
   })
+}
+
+/// Deliveries accepted before the daemon's mail inbox existed waited in this
+/// table; each becomes the letter it would have been. Later deliveries write
+/// their letter in `accept`, so they are never missing one.
+fn move_inbox(connection: sqlight.Connection) -> Result(Nil, String) {
+  use waiting <- result.try(
+    sqlight.query(
+      "SELECT id,hook,name,session,body FROM webhook_deliveries d WHERE delivered_at IS NULL AND NOT EXISTS(SELECT 1 FROM mail m WHERE m.id=d.id)",
+      connection,
+      [],
+      delivery_decoder(),
+    )
+    |> result.map_error(fn(e) { e.message }),
+  )
+  list.try_each(waiting, fn(delivery) {
+    mail.insert(connection, letter(delivery)) |> result.replace(Nil)
+  })
+}
+
+/// A delivery as the letter its session reads: a bounded preview, with the
+/// whole payload a `webhooks.delivery(id)` call away.
+fn letter(delivery: Delivery) -> mail.Letter {
+  let preview =
+    delivery.body
+    |> bit_array.to_string
+    |> result.map(fn(text) { string.slice(text, 0, 4000) })
+    |> result.unwrap("[binary payload; read the delivery by id]")
+  mail.Letter(
+    delivery.id,
+    delivery.session,
+    None,
+    delivery.name,
+    mail.Webhook,
+    preview,
+    usage.now(),
+  )
 }
 
 const columns = "id,session,name,enabled,signature_header,signature_prefix,revision"
@@ -182,24 +225,6 @@ pub fn allow_agent(
   })
 }
 
-/// Report a failed dispatch without changing its durable pending state.
-pub fn record_failure(
-  db: store.Store,
-  id: String,
-  message: String,
-) -> Result(Nil, Error) {
-  store.query(db, fn(connection) {
-    sqlight.query(
-      "UPDATE webhook_deliveries SET attempts=attempts+1,last_error=? WHERE id=? AND delivered_at IS NULL RETURNING id",
-      connection,
-      [sqlight.text(string.slice(message, 0, 200)), sqlight.text(id)],
-      decode.field(0, decode.string, decode.success),
-    )
-    |> result.map_error(fn(e) { Storage(e.message) })
-    |> result.map(fn(_) { Nil })
-  })
-}
-
 /// The page shows whether a hook has accepted work still awaiting the session.
 pub fn last_failure(
   db: store.Store,
@@ -208,7 +233,7 @@ pub fn last_failure(
 ) -> Result(Option(String), Error) {
   store.query(db, fn(connection) {
     sqlight.query(
-      "SELECT last_error FROM webhook_deliveries WHERE session=? AND hook=? AND delivered_at IS NULL AND last_error IS NOT NULL ORDER BY received_at DESC,id DESC LIMIT 1",
+      "SELECT m.last_error FROM webhook_deliveries d JOIN mail m ON m.id=d.id WHERE d.session=? AND d.hook=? AND m.delivered_at IS NULL AND m.last_error IS NOT NULL ORDER BY m.created_at DESC,m.id DESC LIMIT 1",
       connection,
       [sqlight.text(session), sqlight.text(id)],
       decode.field(0, decode.string, decode.success),
@@ -225,7 +250,7 @@ pub fn pending_count(
 ) -> Result(Int, Error) {
   store.query(db, fn(connection) {
     sqlight.query(
-      "SELECT count(*) FROM webhook_deliveries WHERE session=? AND hook=? AND delivered_at IS NULL",
+      "SELECT count(*) FROM webhook_deliveries d JOIN mail m ON m.id=d.id WHERE d.session=? AND d.hook=? AND m.delivered_at IS NULL",
       connection,
       [sqlight.text(session), sqlight.text(id)],
       decode.field(0, decode.int, decode.success),
@@ -561,24 +586,12 @@ pub fn accept(
               True -> {
                 let delivery_id = new_id()
                 let digest = fingerprint(body)
-                use inserted <- result.try(
-                  sqlight.query(
-                    "INSERT INTO webhook_deliveries(id,hook,name,session,body,body_sha256,event_key) SELECT ?,?,?,?,?,?,? WHERE (SELECT count(*) FROM webhook_deliveries WHERE session=? AND delivered_at IS NULL) < 1000 ON CONFLICT DO NOTHING RETURNING id",
-                    connection,
-                    [
-                      sqlight.text(delivery_id),
-                      sqlight.text(id),
-                      sqlight.text(name),
-                      sqlight.text(session),
-                      sqlight.blob(body),
-                      sqlight.text(digest),
-                      sqlight.nullable(sqlight.text, event_key),
-                      sqlight.text(session),
-                    ],
-                    decode.field(0, decode.string, decode.success),
-                  )
-                  |> result.map_error(fn(e) { Storage(e.message) }),
-                )
+                use inserted <- result.try(enqueue(
+                  connection,
+                  Delivery(delivery_id, id, name, session, body),
+                  digest,
+                  event_key,
+                ))
                 case inserted {
                   [] ->
                     case event_key {
@@ -617,6 +630,60 @@ pub fn accept(
   }
 }
 
+/// The delivery and its letter, or neither: a full inbox or a repeated event
+/// id writes nothing and answers no rows.
+fn enqueue(
+  connection: sqlight.Connection,
+  delivery: Delivery,
+  digest: String,
+  event_key: Option(String),
+) -> Result(List(String), Error) {
+  let storage = fn(e: sqlight.Error) { Storage(e.message) }
+  use _ <- result.try(
+    sqlight.exec("SAVEPOINT webhook_accept", connection)
+    |> result.map_error(storage),
+  )
+  let written = {
+    use inserted <- result.try(
+      sqlight.query(
+        "INSERT INTO webhook_deliveries(id,hook,name,session,body,body_sha256,event_key) VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING RETURNING id",
+        connection,
+        [
+          sqlight.text(delivery.id),
+          sqlight.text(delivery.hook),
+          sqlight.text(delivery.name),
+          sqlight.text(delivery.session),
+          sqlight.blob(delivery.body),
+          sqlight.text(digest),
+          sqlight.nullable(sqlight.text, event_key),
+        ],
+        decode.field(0, decode.string, decode.success),
+      )
+      |> result.map_error(storage),
+    )
+    case inserted {
+      [] -> Ok([])
+      _ ->
+        case mail.insert(connection, letter(delivery)) {
+          Ok(True) -> Ok(inserted)
+          Ok(False) -> Error(Overloaded)
+          Error(message) -> Error(Storage(message))
+        }
+    }
+  }
+  case written {
+    Ok(rows) ->
+      sqlight.exec("RELEASE webhook_accept", connection)
+      |> result.map_error(storage)
+      |> result.replace(rows)
+    Error(error) -> {
+      let _ = sqlight.exec("ROLLBACK TO webhook_accept", connection)
+      let _ = sqlight.exec("RELEASE webhook_accept", connection)
+      Error(error)
+    }
+  }
+}
+
 fn invalid_event_key(key: Option(String)) -> Bool {
   case key {
     None -> False
@@ -635,22 +702,6 @@ fn delivery_decoder() {
   use session <- decode.field(3, decode.string)
   use body <- decode.field(4, decode.bit_array)
   decode.success(Delivery(id, hook, name, session, body))
-}
-
-pub fn pending(db: store.Store, limit: Int) -> Result(List(Delivery), Error) {
-  case limit < 1 || limit > 100 {
-    True -> Error(Invalid("limit must be 1–100"))
-    False ->
-      store.query(db, fn(connection) {
-        sqlight.query(
-          "SELECT id,hook,name,session,body FROM webhook_deliveries WHERE delivered_at IS NULL ORDER BY received_at,id LIMIT ?",
-          connection,
-          [sqlight.int(limit)],
-          delivery_decoder(),
-        )
-        |> result.map_error(fn(e) { Storage(e.message) })
-      })
-  }
 }
 
 /// Reading an accepted payload is not a management operation. The target

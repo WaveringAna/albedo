@@ -1,8 +1,11 @@
+import albedo/daemon/bus
 import albedo/daemon/configuration
 import albedo/daemon/conversation
+import albedo/daemon/family
 import albedo/daemon/history
 import albedo/daemon/image
 import albedo/daemon/images
+import albedo/daemon/mail
 import albedo/daemon/reaper
 import albedo/daemon/session
 import albedo/daemon/store
@@ -10,11 +13,9 @@ import albedo/daemon/usage
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/schedule/ledger as schedule
-import albedo/harness/extensions/webhooks/ledger as webhooks
 import albedo/harness/oauth
 import albedo/harness/runtime
 import albedo/openai_api/types
-import gleam/bit_array
 import gleam/bytes_tree
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
@@ -50,7 +51,18 @@ fn sweep_interval(config: Config) -> Int {
 
 type Message {
   Create(String, String, Subject(Result(conversation.Info, String)))
+  /// A child of the first session: its name among its siblings, its task, and
+  /// a model, or "" for the parent's.
+  CreateChild(
+    String,
+    String,
+    String,
+    String,
+    Subject(Result(#(conversation.Info, family.Member), String)),
+  )
   Lookup(String, Subject(Result(session.Session, String)))
+  /// The tree `session` belongs to, from its root down.
+  ReadAgents(String, Subject(Result(#(String, List(AgentNode)), String)))
   List(Subject(List(conversation.Info)))
   Models(String, String, Subject(List(String)))
   Logins(Subject(List(oauth.Login)))
@@ -82,6 +94,20 @@ type Stream {
   Wake
 }
 
+/// The agents stream: bus events arrive one by one and leave in batches.
+type AgentStream {
+  Flush
+  Heard(String)
+}
+
+type AgentNode {
+  AgentNode(
+    info: conversation.Info,
+    member: Option(family.Member),
+    running: Bool,
+  )
+}
+
 pub fn start(config: Config, port: Int) -> Result(Int, String) {
   use registry <- result.try(
     actor.new_with_initialiser(30_000, fn(self) {
@@ -90,6 +116,8 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
         |> result.replace_error("could not start runtime"),
       )
       use _ <- result.try(conversation.initialise(runtime.ledger(host)))
+      use _ <- result.try(mail.initialise(runtime.ledger(host)))
+      use _ <- result.try(family.initialise(runtime.ledger(host)))
       use moved <- result.try(images.migrate(
         runtime.ledger(host),
         config.home
@@ -224,6 +252,79 @@ fn handle(state: State, message: Message) {
         Error(_) -> actor.continue(state)
       }
     }
+    CreateChild(parent, name, task, model, reply) -> {
+      let db = runtime.ledger(state.host)
+      let created = {
+        use #(above, _) <- result.try(
+          dict.get(state.sessions, parent)
+          |> result.replace_error("session not found"),
+        )
+        use _ <- result.try(family.valid_name(name))
+        let info =
+          conversation.Info(
+            ..above,
+            id: new_id(),
+            title: name,
+            stage: conversation.Idle,
+            last_assistant_at: None,
+            model: case model {
+              "" -> above.model
+              _ -> model
+            },
+          )
+        use _ <- result.try(conversation.create(db, info))
+        case family.link(db, info.id, parent, name) {
+          Ok(member) -> Ok(#(info, member))
+          Error(error) -> {
+            let _ = conversation.delete(db, info.id)
+            Error(error)
+          }
+        }
+      }
+      case created {
+        Error(error) -> {
+          process.send(reply, Error(error))
+          actor.continue(state)
+        }
+        Ok(#(info, member)) -> {
+          bus.spawned(member, info.model)
+          let state =
+            State(
+              ..state,
+              sessions: dict.insert(state.sessions, info.id, #(info, None)),
+            )
+          let #(state, worker) = activate(state, info.id)
+          let sent = {
+            use letter <- result.try(mail.post(
+              db,
+              mail.new_id(),
+              info.id,
+              Some(parent),
+              family_name(state, parent),
+              mail.Task,
+              task,
+            ))
+            // Off the registry: admitting the task may boot the child's kernel.
+            // The letter is durable, so a failed hand-off is the dispatcher's.
+            case worker {
+              Ok(worker) -> {
+                process.spawn_unlinked(fn() {
+                  session.submit_mail(worker, letter)
+                })
+                Ok(Nil)
+              }
+              Error(_) -> Ok(Nil)
+            }
+          }
+          process.send(reply, sent |> result.replace(#(info, member)))
+          actor.continue(state)
+        }
+      }
+    }
+    ReadAgents(id, reply) -> {
+      process.send(reply, agent_tree(state, id))
+      actor.continue(state)
+    }
     Lookup(id, reply) -> {
       let #(state, found) = activate(state, id)
       process.send(reply, found)
@@ -297,21 +398,18 @@ fn handle(state: State, message: Message) {
       }
     }
     DeleteSession(id, reply) -> {
-      let deleted = case dict.get(state.sessions, id) {
-        Error(_) -> Error("session not found")
-        Ok(#(info, worker)) ->
-          case worker {
-            Some(active) ->
-              case session.report(active).running {
-                True -> Error("session is busy")
-                False -> conversation.delete(runtime.ledger(state.host), id)
-              }
-            None ->
-              case conversation.resumable(info.stage) {
-                True -> Error("session is busy")
-                False -> conversation.delete(runtime.ledger(state.host), id)
-              }
-          }
+      let children =
+        family.children(runtime.ledger(state.host), id) |> result.unwrap([])
+      let deleted = case dict.get(state.sessions, id), children {
+        Error(_), _ -> Error("session not found")
+        // Deleting a parent would strand its children's work; they go first.
+        Ok(_), [_, ..] ->
+          Error(
+            "session has "
+            <> int.to_string(list.length(children))
+            <> " child sessions; delete them first",
+          )
+        Ok(pair), [] -> delete_idle(state, id, pair)
       }
       process.send(reply, deleted)
       case deleted {
@@ -322,6 +420,7 @@ fn handle(state: State, message: Message) {
           }
           runtime.forget_session(state.host, id)
           session.discard_state(state.config.home, id)
+          bus.gone(id)
           actor.continue(
             State(..state, sessions: dict.delete(state.sessions, id)),
           )
@@ -385,14 +484,7 @@ fn handle(state: State, message: Message) {
           let worker =
             process.spawn_unlinked(fn() {
               dispatch_schedules(db, registry)
-              case
-                runtime.global(state.host)
-                |> result.replace_error(Nil)
-                |> result.try(extension.service(_, "webhooks"))
-              {
-                Ok(_) -> dispatch_webhooks(db, registry)
-                Error(_) -> Nil
-              }
+              dispatch_mail(db, registry)
             })
           let _ = process.monitor(worker)
           actor.continue(State(..state, scheduling: Some(worker)))
@@ -430,6 +522,35 @@ fn handle(state: State, message: Message) {
   }
 }
 
+/// Delete a session that is not running a turn.
+fn delete_idle(
+  state: State,
+  id: String,
+  pair: #(conversation.Info, Option(session.Session)),
+) -> Result(Nil, String) {
+  let #(info, worker) = pair
+  let busy = case worker {
+    Some(active) -> session.report(active).running
+    None -> conversation.resumable(info.stage)
+  }
+  case busy {
+    True -> Error("session is busy")
+    False -> conversation.delete(runtime.ledger(state.host), id)
+  }
+}
+
+/// How a session's children and siblings address it.
+fn family_name(state: State, session: String) -> String {
+  case family.get(runtime.ledger(state.host), session) {
+    Ok(Some(member)) -> member.name
+    _ ->
+      case dict.get(state.sessions, session) {
+        Ok(#(info, _)) -> info.title
+        Error(_) -> "parent"
+      }
+  }
+}
+
 fn dispatch_schedules(db: store.Store, registry: Subject(Message)) -> Nil {
   let time = schedule.now()
   case schedule.due(db, time) {
@@ -438,43 +559,31 @@ fn dispatch_schedules(db: store.Store, registry: Subject(Message)) -> Nil {
   }
 }
 
-fn dispatch_webhooks(db: store.Store, registry: Subject(Message)) -> Nil {
-  case webhooks.pending(db, 25) {
-    Error(error) ->
-      io.println_error("webhook inbox query failed: " <> string.inspect(error))
-    Ok(deliveries) ->
-      list.each(deliveries, fn(delivery) {
-        case actor.call(registry, 10_000, Lookup(delivery.session, _)) {
-          Error(reason) -> {
-            let _ = webhooks.record_failure(db, delivery.id, reason)
-            Nil
-          }
-          Ok(worker) -> {
-            let preview =
-              delivery.body
-              |> bit_array.to_string
-              |> result.map(fn(text) { string.slice(text, 0, 4000) })
-              |> result.unwrap("[binary payload; read the delivery by id]")
-            // submit_webhook commits the receipt and transcript input together.
-            case
-              session.submit_webhook(
-                worker,
-                delivery.id,
-                delivery.name,
-                preview,
-              )
-            {
-              Ok(_) | Error(session.Busy) -> Nil
-              Error(error) -> {
-                let _ =
-                  webhooks.record_failure(
-                    db,
-                    delivery.id,
-                    string.inspect(error),
-                  )
-                Nil
+/// Hand undelivered letters to their recipients: after a restart, for a
+/// recipient whose actor was not running, or for one whose queue was full.
+fn dispatch_mail(db: store.Store, registry: Subject(Message)) -> Nil {
+  case mail.pending(db, 50) {
+    Error(error) -> io.println_error("mail inbox query failed: " <> error)
+    Ok(letters) ->
+      list.each(letters, fn(letter) {
+        let outcome =
+          actor.call(registry, 10_000, Lookup(letter.recipient, _))
+          |> result.try(fn(worker) {
+            session.submit_mail(worker, letter)
+            |> result.map_error(fn(error) {
+              case error {
+                // A webhook waits for idle and a full queue drains; neither
+                // is a failure worth recording.
+                session.Busy -> ""
+                other -> session.submission_error(other)
               }
-            }
+            })
+          })
+        case outcome {
+          Error("") | Ok(_) -> Nil
+          Error(reason) -> {
+            let _ = mail.record_failure(db, letter.id, reason)
+            Nil
           }
         }
       })
@@ -621,6 +730,132 @@ fn info_json(info: conversation.Info) -> json.Json {
       Some(timestamp) -> json.int(timestamp)
       None -> json.null()
     }),
+  ])
+}
+
+fn agent_tree(
+  state: State,
+  id: String,
+) -> Result(#(String, List(AgentNode)), String) {
+  let db = runtime.ledger(state.host)
+  use _ <- result.try(
+    dict.get(state.sessions, id) |> result.replace_error("session not found"),
+  )
+  let root = root_of(db, id, family.max_depth + 1)
+  Ok(#(root, descendants(state, db, root, None)))
+}
+
+fn root_of(db: store.Store, id: String, budget: Int) -> String {
+  case budget, family.get(db, id) {
+    0, _ -> id
+    _, Ok(Some(member)) -> root_of(db, member.parent, budget - 1)
+    _, _ -> id
+  }
+}
+
+/// `id` and everything below it, parents before children.
+fn descendants(
+  state: State,
+  db: store.Store,
+  id: String,
+  member: Option(family.Member),
+) -> List(AgentNode) {
+  case dict.get(state.sessions, id) {
+    Error(_) -> []
+    Ok(#(info, worker)) -> {
+      let running = case worker {
+        Some(active) -> session.report(active).running
+        None -> False
+      }
+      let below =
+        family.children(db, id)
+        |> result.unwrap([])
+        |> list.flat_map(fn(child) {
+          descendants(state, db, child.session, Some(child))
+        })
+      [AgentNode(info, member, running), ..below]
+    }
+  }
+}
+
+fn agent_json(node: AgentNode) -> json.Json {
+  let family_fields = case node.member {
+    Some(member) -> [
+      #("parent", json.string(member.parent)),
+      #("name", json.string(member.name)),
+      #("depth", json.int(member.depth)),
+      #("closed", json.bool(member.closed)),
+    ]
+    None -> [
+      #("parent", json.null()),
+      #("name", json.string(node.info.title)),
+      #("depth", json.int(0)),
+      #("closed", json.bool(False)),
+    ]
+  }
+  json.object([
+    #("session", info_json(node.info)),
+    #("running", json.bool(node.running)),
+    ..family_fields
+  ])
+}
+
+/// Every bus event, batched every 100 ms so a hundred streaming agents cost the
+/// client ten frames a second, not thousands of writes.
+fn agents_stream(req) {
+  mist.server_sent_events(
+    req,
+    response.new(200),
+    fn(self) {
+      case process.subject_owner(self) {
+        Ok(owner) ->
+          bus.subscribe(owner, fn(event) { process.send(self, Heard(event)) })
+        Error(_) -> Nil
+      }
+      process.send(self, Flush)
+      #(self, [], 0)
+    },
+    fn(state, message, connection) {
+      let #(self, buffered, quiet) = state
+      case message {
+        // Past the cap, a stalled client loses deltas rather than memory.
+        Heard(event) ->
+          case list.length(buffered) < 4000 {
+            True -> actor.continue(#(self, [event, ..buffered], quiet))
+            False -> actor.continue(state)
+          }
+        Flush -> {
+          let _ = process.send_after(self, 100, Flush)
+          case buffered, quiet >= 50 {
+            [], False -> actor.continue(#(self, [], quiet + 1))
+            _, _ -> {
+              let body =
+                string_tree.from_string("{\"events\":[")
+                |> string_tree.append_tree(
+                  list.reverse(buffered)
+                  |> list.map(string_tree.from_string)
+                  |> string_tree.join(","),
+                )
+                |> string_tree.append("]}")
+              case mist.send_event(connection, mist.event(body)) {
+                Error(_) -> actor.stop()
+                Ok(_) -> actor.continue(#(self, [], 0))
+              }
+            }
+          }
+        }
+      }
+    },
+  )
+}
+
+fn member_json(member: family.Member) -> json.Json {
+  json.object([
+    #("session", json.string(member.session)),
+    #("parent", json.string(member.parent)),
+    #("name", json.string(member.name)),
+    #("depth", json.int(member.depth)),
+    #("closed", json.bool(member.closed)),
   ])
 }
 
@@ -796,7 +1031,9 @@ fn uri_decode(segment: String) -> String {
 }
 
 /// The daemon's own top-level routes; a service never shadows them.
-const daemon_routes = ["health", "sessions", "models", "auth", "shutdown"]
+const daemon_routes = [
+  "health", "sessions", "models", "auth", "shutdown", "agents",
+]
 
 fn route(
   config: Config,
@@ -893,6 +1130,26 @@ fn daemon_route(
           )
         Get, ["sessions"] ->
           reply(200, json.array(actor.call(registry, 5000, List), info_json))
+        // The tree the given session belongs to, for the orchestrator view.
+        Get, ["agents"] -> {
+          let id =
+            request.get_query(req)
+            |> result.unwrap([])
+            |> list.key_find("session")
+            |> result.unwrap("")
+          case actor.call(registry, 10_000, ReadAgents(id, _)) {
+            Ok(#(root, nodes)) ->
+              reply(
+                200,
+                json.object([
+                  #("root", json.string(root)),
+                  #("nodes", json.array(nodes, agent_json)),
+                ]),
+              )
+            Error(e) -> error(404, e)
+          }
+        }
+        Get, ["agents", "stream"] -> agents_stream(req)
         Get, ["models", provider] -> {
           let endpoint =
             request.get_query(req)
@@ -1015,6 +1272,74 @@ fn daemon_route(
             Error(e) -> error(409, e)
           }
         }
+        // A child session the user starts by hand; agents use the same path.
+        Post, ["sessions", id, "children"] -> {
+          let decoder = {
+            use name <- decode.field("name", decode.string)
+            use task <- decode.field("task", decode.string)
+            use model <- decode.optional_field("model", "", decode.string)
+            decode.success(#(name, task, model))
+          }
+          case
+            body(req, decoder)
+            |> result.try(fn(fields) {
+              let #(name, task, model) = fields
+              actor.call(registry, 15_000, CreateChild(id, name, task, model, _))
+            })
+          {
+            Ok(#(info, member)) ->
+              reply(
+                201,
+                json.object([
+                  #("session", info_json(info)),
+                  #("member", member_json(member)),
+                ]),
+              )
+            Error(e) -> error(409, e)
+          }
+        }
+        Get, ["sessions", id, "children"] ->
+          case
+            family.children(
+              runtime.ledger(actor.call(registry, 5000, Host)),
+              id,
+            )
+          {
+            Ok(members) -> reply(200, json.array(members, member_json))
+            Error(e) -> error(400, e)
+          }
+        // Mail written as session `id`: the daemon token is the user's, who may
+        // speak for any of their sessions.
+        Post, ["sessions", id, "mail"] -> {
+          let decoder = {
+            use to <- decode.field("to", decode.string)
+            use text <- decode.field("body", decode.string)
+            decode.success(#(to, text))
+          }
+          case
+            body(req, decoder)
+            |> result.try(fn(fields) {
+              mail.send(
+                runtime.ledger(actor.call(registry, 5000, Host)),
+                id,
+                fields.0,
+                fields.1,
+              )
+            })
+          {
+            Ok(receipt) ->
+              reply(
+                202,
+                json.object([
+                  #("id", json.string(receipt.id)),
+                  #("to", json.string(receipt.recipient)),
+                  #("name", json.string(receipt.name)),
+                  #("status", json.string(receipt.status)),
+                ]),
+              )
+            Error(e) -> error(409, e)
+          }
+        }
         _, ["sessions", id, operation] ->
           case actor.call(registry, 5000, Lookup(id, _)) {
             Error(e) -> error(404, e)
@@ -1105,7 +1430,12 @@ fn daemon_route(
                           None,
                           decode.optional(submitted_image_decoder()),
                         )
-                        decode.success(#(False, text, client_id, submitted_image))
+                        decode.success(#(
+                          False,
+                          text,
+                          client_id,
+                          submitted_image,
+                        ))
                       }
                     }
                   }
@@ -1113,7 +1443,8 @@ fn daemon_route(
                     body(req, decoder)
                     |> result.map_error(session.Rejected)
                     |> result.try(fn(submission) {
-                      let #(is_continue, text, client_id, raw_image) = submission
+                      let #(is_continue, text, client_id, raw_image) =
+                        submission
                       case is_continue {
                         True -> session.submit_continue(worker, client_id)
                         False -> {

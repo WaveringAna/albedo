@@ -255,3 +255,32 @@ func homePath(p string) string {
 	}
 	return p
 }
+
+// agentPalette colors the orchestrator view. Each agent keeps one identity
+// hue wherever it appears; structure and quiet text follow the terminal's
+// own ink like every other screen.
+type agentPalette struct {
+	hues                        []rgb
+	you, mail, faint, decor, hi rgb
+}
+
+func agentColors() agentPalette {
+	hex := func(value, fallback string) rgb {
+		if c := parseHex(value); c != nil {
+			return *c
+		}
+		return *parseHex(fallback)
+	}
+	var hues []rgb
+	for _, h := range []string{"#e08cf5", "#6fd1c4", "#f28fb8", "#f0c674", "#b6e37a", "#b9a6f5", "#80aaf9", "#f5a97f"} {
+		hues = append(hues, *parseHex(h))
+	}
+	return agentPalette{
+		hues:  hues,
+		you:   hex("", "#7fd8e6"),
+		mail:  hex("", "#f0c674"),
+		faint: hex(transcriptInk.secondary, "#6a6378"),
+		decor: hex(transcriptInk.decor, "#3a3448"),
+		hi:    hex("", "#ffffff"),
+	}
+}

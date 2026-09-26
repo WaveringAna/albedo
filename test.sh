@@ -37,3 +37,4 @@ python3 test/daemon/context_integration.py
 python3 test/daemon/kernel_reset_integration.py
 python3 test/daemon/idle_reap_integration.py
 python3 test/daemon/job_wake_integration.py
+python3 test/daemon/agents_integration.py

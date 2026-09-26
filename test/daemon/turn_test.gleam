@@ -1,4 +1,5 @@
 import albedo/daemon/conversation
+import albedo/daemon/mail
 import albedo/daemon/turn
 import gleam/erlang/process
 import gleam/option.{None, Some}
@@ -60,20 +61,6 @@ pub fn busy_session_queues_chat_up_to_its_limit_test() {
 pub fn busy_session_refuses_job_wakes_as_busy_test() {
   turn.admit(running("a"), wake("job done"), 0)
   |> should.equal(turn.Reject(turn.Busy))
-}
-
-pub fn webhook_waits_for_an_idle_session_test() {
-  let delivery =
-    turn.Submission(
-      "webhook",
-      "external alert",
-      "receipt",
-      turn.Webhook("receipt"),
-      None,
-    )
-  turn.admit(running("a"), delivery, 0) |> should.equal(turn.Reject(turn.Busy))
-  turn.admit(turn.Resting, delivery, 0) |> should.equal(turn.Start)
-  turn.admit(turn.Interrupted, delivery, 0) |> should.equal(turn.Start)
 }
 
 pub fn late_messages_from_an_old_run_are_not_owned_test() {
@@ -153,4 +140,32 @@ pub fn continue_submission_starts_turn_and_queues_when_busy_test() {
   turn.admit(running("a"), cont("continue"), 0) |> should.equal(turn.Queue)
   turn.starts_turn([cont("continue")]) |> should.be_true
   turn.starts_turn([note("note"), cont("continue")]) |> should.be_true
+}
+
+fn letter(id: String, kind: mail.Kind) -> turn.Submission {
+  turn.Submission("mail", "a letter", id, turn.Mail(id, kind), None)
+}
+
+pub fn agent_mail_steers_a_running_turn_test() {
+  turn.admit(turn.Resting, letter("m1", mail.Message), 0)
+  |> should.equal(turn.Start)
+  turn.admit(running("a"), letter("m1", mail.Message), 0)
+  |> should.equal(turn.Queue)
+  turn.admit(running("a"), letter("m1", mail.Answer(True)), turn.queue_limit)
+  |> should.equal(turn.Reject(turn.Busy))
+  turn.starts_turn([letter("m1", mail.Task)]) |> should.be_true
+}
+
+pub fn webhook_mail_waits_for_an_idle_session_test() {
+  turn.admit(running("a"), letter("m1", mail.Webhook), 0)
+  |> should.equal(turn.Reject(turn.Busy))
+  turn.admit(turn.Resting, letter("m1", mail.Webhook), 0)
+  |> should.equal(turn.Start)
+}
+
+pub fn letters_are_the_mail_among_submissions_test() {
+  let queued = [chat("hi"), letter("m1", mail.Task), letter("m2", mail.Message)]
+  turn.letters(queued) |> should.equal(["m1", "m2"])
+  turn.holds_letter(queued, "m2") |> should.be_true
+  turn.holds_letter(queued, "m3") |> should.be_false
 }

@@ -1,0 +1,26 @@
+%% Session mailbox registry: session id -> the closure its actor registered to
+%% admit one letter.
+%%
+%% Letters are posted from outside any session actor (a kernel host route, an
+%% HTTP request, another session finishing), so posting needs a lookup from
+%% session id to the actor that can admit a turn. A closure answers the Gleam
+%% Result(Bool, String): {ok, Queued} or {error, Reason}. A missing or crashed
+%% session is not an error the sender must handle: the letter is durable, and
+%% the dispatcher delivers it once the session is running.
+-module(albedo_mailbox).
+-export([register/2, forget/1, deliver/2]).
+
+-define(TABLE, albedo_mailbox).
+
+register(Id, Fun) -> albedo_registry:register(?TABLE, Id, Fun).
+
+forget(Id) -> albedo_registry:forget(?TABLE, Id).
+
+deliver(Id, Letter) ->
+    case albedo_registry:fetch(?TABLE, Id, 1) of
+        {ok, Fun} ->
+            try Fun(Letter)
+            catch _:_ -> {error, <<"session unavailable">>}
+            end;
+        undefined -> {error, <<"session unavailable">>}
+    end.

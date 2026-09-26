@@ -4,6 +4,7 @@
 import gleam/string
 
 pub const open = "<system-notice>"
+
 pub const close = "</system-notice>"
 
 pub fn wrap(text: String) -> String {
