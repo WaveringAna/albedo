@@ -342,6 +342,8 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		return strings.Repeat(" ", promptMarkWidth)
 	})
 	ta.KeyMap.InsertNewline.SetKeys("enter", "ctrl+m", "alt+enter", "shift+enter")
+	ta.KeyMap.WordBackward.SetKeys("alt+left", "alt+b", "ctrl+left")
+	ta.KeyMap.WordForward.SetKeys("alt+right", "alt+f", "ctrl+right")
 	ta.SetHeight(6)
 	ta.FocusedStyle.Prompt = DefaultStyles.Prompt
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
@@ -427,6 +429,25 @@ func (m *ChatModel) ClearNotices() {
 	}
 	m.Notices.Clear()
 	m.syncViewportHeight()
+}
+
+// wordBackwardAtStart reports whether the prompt has no word before its cursor.
+// The textarea's word-backward handler loops indefinitely in this case.
+func (m ChatModel) wordBackwardAtStart() bool {
+	lines := strings.Split(m.TextArea.Value(), "\n")
+	row := m.TextArea.Line()
+	if row < 0 || row >= len(lines) {
+		return false
+	}
+	col := m.TextArea.LineInfo().StartColumn + m.TextArea.LineInfo().ColumnOffset
+	current := []rune(lines[row])
+	col = max(0, min(col, len(current)))
+	for _, line := range lines[:row] {
+		if strings.TrimSpace(line) != "" {
+			return false
+		}
+	}
+	return strings.TrimSpace(string(current[:col])) == ""
 }
 
 func (m ChatModel) promptLines() int {
@@ -1138,6 +1159,14 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.rebuildSettledLines()
 			m.refreshViewportContent()
 			return m, nil
+		}
+
+		// Bubbles wordLeft never terminates when everything before the cursor
+		// is whitespace. Move to the input start directly in that case.
+		if msg.Type == tea.KeyCtrlLeft && m.wordBackwardAtStart() {
+			var cmd tea.Cmd
+			m.TextArea, cmd = m.TextArea.Update(tea.KeyMsg{Type: tea.KeyCtrlHome})
+			return m, cmd
 		}
 
 		if msg.Type == tea.KeyEnter && !msg.Alt {
