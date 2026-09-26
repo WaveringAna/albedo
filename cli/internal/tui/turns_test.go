@@ -76,3 +76,24 @@ func TestJumpToYouLandsOnYourMessages(t *testing.T) {
 		t.Fatal("jumping forward past your newest message should follow the live transcript")
 	}
 }
+
+// An idle status poll with nothing live leaves the transcript as it is, and
+// one that ends a live tool row settles it.
+func TestIdleStatusPollRefreshesOnlyToSettle(t *testing.T) {
+	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m.SetSize(100, 40)
+	idle := daemon.AgentStatus{Idle: true}
+	poll := func() {
+		m, _ = m.Update(ChatStatusMsg{SessionID: m.SessionID, Generation: m.Generation, Revision: m.statusRevision, Status: &idle})
+	}
+	m.Viewport.SetContent("untouched")
+	poll()
+	if !strings.Contains(m.Viewport.View(), "untouched") {
+		t.Fatal("an idle poll with nothing live rendered the transcript again")
+	}
+	m.ToolProgressText = "running python"
+	poll()
+	if strings.Contains(m.Viewport.View(), "untouched") || m.ToolProgressText != "" {
+		t.Fatal("an idle poll should settle the live tool row")
+	}
+}

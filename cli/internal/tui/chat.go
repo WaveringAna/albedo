@@ -1283,7 +1283,9 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if msg.Err == nil && msg.Status != nil && msg.Revision == m.statusRevision {
 			m.Status = *msg.Status
 			defer m.reseedMood()
-			if !m.Status.Running || m.Status.Idle {
+			// most polls find the session idle with nothing live to settle
+			live := m.Progress != nil || m.ToolProgressText != "" || m.activeKind != StreamKindNone || m.turn != nil && m.turn.begun()
+			if live && (!m.Status.Running || m.Status.Idle) {
 				m.Progress = nil
 				m.ToolProgressText = ""
 				m.settleActiveStream()
