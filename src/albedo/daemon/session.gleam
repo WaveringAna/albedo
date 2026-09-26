@@ -817,7 +817,7 @@ fn handle(state: State, message: Message) {
                     usage.Metadata(
                       state.info.model,
                       usage.now(),
-                      Some(usage.Tokens(tokens, 0, None)),
+                      Some(usage.Tokens(tokens, 0, None, None)),
                     )
                   session_state.emit(
                     session_state.State(..state, latest_usage: Some(metadata)),

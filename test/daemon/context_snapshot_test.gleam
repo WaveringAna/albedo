@@ -80,7 +80,7 @@ pub fn provider_completion_measurement_belongs_to_its_prepared_request_test() {
       usage.Metadata(
         "fixture-model",
         1235,
-        Some(usage.Tokens(194_000, 40, Some(12_000))),
+        Some(usage.Tokens(194_000, 40, Some(12_000), None)),
       ),
     )
   let encoded = measured |> context_snapshot.summary |> json.to_string
@@ -102,14 +102,14 @@ pub fn provider_completion_measurement_belongs_to_its_prepared_request_test() {
   let mismatched =
     context_snapshot.with_usage(
       prepared,
-      usage.Metadata("other-model", 1237, Some(usage.Tokens(9, 1, None))),
+      usage.Metadata("other-model", 1237, Some(usage.Tokens(9, 1, None, None))),
     )
   mismatched
   |> context_snapshot.summary
   |> should.equal(context_snapshot.summary(prepared))
   context_snapshot.with_usage(
     context_snapshot.pending("not prepared"),
-    usage.Metadata("fixture-model", 1238, Some(usage.Tokens(9, 1, None))),
+    usage.Metadata("fixture-model", 1238, Some(usage.Tokens(9, 1, None, None))),
   )
   |> context_snapshot.summary
   |> should.equal(

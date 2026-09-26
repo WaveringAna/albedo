@@ -192,7 +192,12 @@ pub type ToolCall {
 }
 
 pub type Usage {
-  Usage(input_tokens: Int, output_tokens: Int, cached_input_tokens: Option(Int))
+  Usage(
+    input_tokens: Int,
+    output_tokens: Int,
+    cached_input_tokens: Option(Int),
+    cache_creation_tokens: Option(Int),
+  )
 }
 
 pub type Finish {

@@ -262,7 +262,7 @@ pub fn usage_metadata_roundtrips_without_touching_conversation_activity_test() {
     usage.Metadata(
       "openai/gpt-test",
       1_735_689_600_123,
-      Some(usage.Tokens(120, 30, Some(0))),
+      Some(usage.Tokens(120, 30, Some(0), Some(14))),
     )
   let assert Ok(_) = conversation.record_usage(ledger, "measured", measured)
   let assert Ok([newer, unchanged]) = conversation.list(ledger)
@@ -288,12 +288,23 @@ pub fn usage_metadata_roundtrips_without_touching_conversation_activity_test() {
     use prompt <- decode.field("promptTokens", decode.int)
     use completion <- decode.field("completionTokens", decode.int)
     use cached <- decode.field("cachedPromptTokens", decode.int)
+    use creation <- decode.field("cacheCreationTokens", decode.int)
     use total <- decode.field("totalTokens", decode.int)
     use recorded_at <- decode.field("recordedAt", decode.int)
-    decode.success(#(model, prompt, completion, cached, total, recorded_at))
+    decode.success(#(
+      model,
+      prompt,
+      completion,
+      cached,
+      creation,
+      total,
+      recorded_at,
+    ))
   }
   json.parse(event, event_decoder)
-  |> should.equal(Ok(#("openai/gpt-test", 120, 30, 0, 150, 1_735_689_600_123)))
+  |> should.equal(
+    Ok(#("openai/gpt-test", 120, 30, 0, 14, 150, 1_735_689_600_123)),
+  )
 
   let unreported = usage.Metadata("openai/gpt-next", 1_735_689_600_456, None)
   let assert Ok(_) = conversation.record_usage(ledger, "measured", unreported)

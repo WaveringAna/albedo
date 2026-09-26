@@ -89,37 +89,49 @@ fn resolve(
               access,
               context.session,
             ))
-            Ok(
-              extension.Upstream(
-                endpoint,
-                types.ChatCompletions,
-                fn(request, on_event) {
-                  use exchange <- result.try(wire.encode(
-                    access,
-                    account,
-                    device,
-                    session,
-                    request,
-                  ))
+            Ok(extension.Upstream(
+              endpoint,
+              types.ChatCompletions,
+              fn(request, on_event) {
+                ensure_files(context.home, access, account, endpoint, request)
+                use exchange <- result.try(wire.encode(
+                  context.home,
+                  access,
+                  account,
+                  device,
+                  session,
+                  request,
+                ))
+                case
                   openai_api.exchange(
                     exchange,
                     stream.reducer(request.model, request.tools),
                     on_event,
                   )
-                },
-                fn(error) {
-                  case error {
-                    types.HttpError(401, _) -> {
-                      native_expire(context.home, access)
-                      Some(
-                        "Claude rejected this access token; send your message again to refresh it, or run /login",
-                      )
-                    }
-                    _ -> None
+                {
+                  Ok(turn) -> Ok(turn)
+                  // Drop cached file handles on 4xx so next turn heals inline.
+                  Error(types.HttpError(status, body))
+                    if status >= 400 && status < 500
+                  -> {
+                    reject_files(context.home, account, body)
+                    Error(types.HttpError(status, body))
                   }
-                },
-              ),
-            )
+                  Error(other) -> Error(other)
+                }
+              },
+              fn(error) {
+                case error {
+                  types.HttpError(401, _) -> {
+                    native_expire(context.home, access)
+                    Some(
+                      "Claude rejected this access token; send your message again to refresh it, or run /login",
+                    )
+                  }
+                  _ -> None
+                }
+              },
+            ))
           })
         _ ->
           Some(Error("Claude provider requires the chat_completions protocol"))
@@ -170,6 +182,18 @@ pub fn model_at(
       })
   }
 }
+
+@external(erlang, "albedo_claude_files", "ensure")
+fn ensure_files(
+  home: String,
+  access: String,
+  account: String,
+  endpoint: String,
+  request: types.Request,
+) -> Nil
+
+@external(erlang, "albedo_claude_files", "reject")
+fn reject_files(home: String, account: String, body: String) -> Nil
 
 @external(erlang, "albedo_claude_auth", "exchange")
 fn native_exchange(

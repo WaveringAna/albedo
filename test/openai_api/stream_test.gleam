@@ -36,7 +36,7 @@ pub fn responses_normalizes_deltas_and_preserves_authoritative_output_test() {
       Some("resp_1"),
       [reasoning, _, _],
       [types.ToolCall("call_1", "lookup", "{\"x\":1}")],
-      Some(types.Usage(11, 7, Some(4))),
+      Some(types.Usage(11, 7, Some(4), None)),
       types.ToolCalls,
     )),
   )) = send(state, "response.completed", completed)
@@ -122,7 +122,7 @@ pub fn chat_accumulates_interleaved_tools_usage_and_native_replay_test() {
         types.ToolCall("call_a", "alpha", "{\"a\":1}"),
         types.ToolCall("call_b", "beta", "{\"b\":2}"),
       ],
-      Some(types.Usage(5, 8, Some(0))),
+      Some(types.Usage(5, 8, Some(0), None)),
       types.ToolCalls,
     )),
   )) = send(state, "", "[DONE]")
@@ -149,7 +149,7 @@ pub fn cache_usage_details_tolerate_null_and_reject_malformed_values_test() {
   let assert Ok(#(
     _,
     [],
-    Some(types.Turn(_, [], [], Some(types.Usage(3, 2, None)), _)),
+    Some(types.Turn(_, [], [], Some(types.Usage(3, 2, None, None)), _)),
   )) = send(stream.new(types.Responses), "", responses_null)
 
   let chat_null =
@@ -159,7 +159,7 @@ pub fn cache_usage_details_tolerate_null_and_reject_malformed_values_test() {
   let assert Ok(#(
     _,
     [],
-    Some(types.Turn(_, _, [], Some(types.Usage(3, 2, None)), _)),
+    Some(types.Turn(_, _, [], Some(types.Usage(3, 2, None, None)), _)),
   )) = send(state, "", "[DONE]")
 
   let responses_malformed =

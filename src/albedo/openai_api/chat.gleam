@@ -196,7 +196,7 @@ fn usage_decoder() -> decode.Decoder(types.Usage) {
     None,
     decode.optional(cached_tokens_decoder()),
   )
-  decode.success(types.Usage(input, output, option.flatten(details)))
+  decode.success(types.Usage(input, output, option.flatten(details), None))
 }
 
 fn cached_tokens_decoder() -> decode.Decoder(Option(Int)) {

@@ -89,9 +89,8 @@ fn apply(
         decode.run(value, decode.at(["usage", "output_tokens"], decode.int))
         |> option.from_result
       let usage = case state.usage, output {
-        Some(old), Some(n) ->
-          Some(types.Usage(old.input_tokens, n, old.cached_input_tokens))
-        None, Some(n) -> Some(types.Usage(0, n, None))
+        Some(old), Some(n) -> Some(types.Usage(..old, output_tokens: n))
+        None, Some(n) -> Some(types.Usage(0, n, None, None))
         _, None -> state.usage
       }
       emit(
@@ -320,8 +319,17 @@ fn native_block(block: Block) -> Result(Json, Nil) {
 fn usage_decoder() -> decode.Decoder(types.Usage) {
   use input <- decode.optional_field("input_tokens", 0, decode.int)
   use output <- decode.optional_field("output_tokens", 0, decode.int)
-  use cache <- decode.optional_field("cache_read_input_tokens", 0, decode.int)
-  decode.success(types.Usage(input, output, Some(cache)))
+  use cache <- decode.optional_field(
+    "cache_read_input_tokens",
+    None,
+    decode.optional(decode.int),
+  )
+  use creation <- decode.optional_field(
+    "cache_creation_input_tokens",
+    None,
+    decode.optional(decode.int),
+  )
+  decode.success(types.Usage(input, output, cache, creation))
 }
 
 fn original_name(name: String, tools: List(types.Tool)) -> String {

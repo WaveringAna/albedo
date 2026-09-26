@@ -82,7 +82,7 @@ pub fn a_turn_becomes_a_completion_and_closing_chunks_test() {
       Some("r"),
       [item],
       [types.ToolCall("c1", "bash", "{}")],
-      Some(types.Usage(3, 2, None)),
+      Some(types.Usage(3, 2, None, None)),
       types.ToolCalls,
     )
   let reply = chat.Reply("chatcmpl-1", 7, "p/m")

@@ -68,7 +68,7 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
   store.query(store, fn(db) {
     use _ <- result.try(
       sqlight.exec(
-        "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER,effort TEXT); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);"
+        "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER,usage_cache_creation_tokens INTEGER,effort TEXT); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);"
           <> images.schema,
         db,
       )
@@ -117,6 +117,7 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
         #("usage_prompt_tokens", "INTEGER"),
         #("usage_completion_tokens", "INTEGER"),
         #("usage_cached_prompt_tokens", "INTEGER"),
+        #("usage_cache_creation_tokens", "INTEGER"),
       ]
       |> list.try_each(fn(column) {
         case list.contains(columns, column.0) {
@@ -1021,6 +1022,7 @@ fn usage_decoder() {
   use prompt <- decode.field(2, decode.optional(decode.int))
   use completion <- decode.field(3, decode.optional(decode.int))
   use cached <- decode.field(4, decode.optional(decode.int))
+  use creation <- decode.field(5, decode.optional(decode.int))
   case model, recorded_at, prompt, completion {
     None, None, None, None -> decode.success(None)
     Some(model), Some(recorded_at), None, None ->
@@ -1030,7 +1032,7 @@ fn usage_decoder() {
         Some(usage.Metadata(
           model,
           recorded_at,
-          Some(usage.Tokens(prompt, completion, cached)),
+          Some(usage.Tokens(prompt, completion, cached, creation)),
         )),
       )
     _, _, _, _ -> decode.failure(None, "consistent saved usage metadata")
@@ -1043,7 +1045,7 @@ pub fn load_usage(
 ) -> Result(Option(usage.Metadata), String) {
   store.query(store, fn(db) {
     sqlight.query(
-      "SELECT usage_model,usage_recorded_at,usage_prompt_tokens,usage_completion_tokens,usage_cached_prompt_tokens FROM sessions WHERE id=?",
+      "SELECT usage_model,usage_recorded_at,usage_prompt_tokens,usage_completion_tokens,usage_cached_prompt_tokens,usage_cache_creation_tokens FROM sessions WHERE id=?",
       db,
       [sqlight.text(id)],
       usage_decoder(),
@@ -1058,7 +1060,7 @@ pub fn load_usage(
 pub fn clear_usage(store: store.Store, id: String) -> Result(Nil, String) {
   store.query(store, fn(db) {
     sqlight.query(
-      "UPDATE sessions SET usage_model=NULL,usage_recorded_at=NULL,usage_prompt_tokens=NULL,usage_completion_tokens=NULL,usage_cached_prompt_tokens=NULL WHERE id=?",
+      "UPDATE sessions SET usage_model=NULL,usage_recorded_at=NULL,usage_prompt_tokens=NULL,usage_completion_tokens=NULL,usage_cached_prompt_tokens=NULL,usage_cache_creation_tokens=NULL WHERE id=?",
       db,
       [sqlight.text(id)],
       decode.dynamic,
@@ -1074,17 +1076,18 @@ pub fn record_usage(
   metadata: usage.Metadata,
 ) -> Result(Nil, String) {
   let usage.Metadata(model, recorded_at, tokens) = metadata
-  let #(prompt, completion, cached) = case tokens {
-    Some(usage.Tokens(prompt, completion, cached)) -> #(
+  let #(prompt, completion, cached, creation) = case tokens {
+    Some(usage.Tokens(prompt, completion, cached, creation)) -> #(
       Some(prompt),
       Some(completion),
       cached,
+      creation,
     )
-    None -> #(None, None, None)
+    None -> #(None, None, None, None)
   }
   store.query(store, fn(db) {
     sqlight.query(
-      "UPDATE sessions SET usage_model=?,usage_recorded_at=?,usage_prompt_tokens=?,usage_completion_tokens=?,usage_cached_prompt_tokens=? WHERE id=?",
+      "UPDATE sessions SET usage_model=?,usage_recorded_at=?,usage_prompt_tokens=?,usage_completion_tokens=?,usage_cached_prompt_tokens=?,usage_cache_creation_tokens=? WHERE id=?",
       db,
       [
         sqlight.text(model),
@@ -1092,6 +1095,7 @@ pub fn record_usage(
         sqlight.nullable(sqlight.int, prompt),
         sqlight.nullable(sqlight.int, completion),
         sqlight.nullable(sqlight.int, cached),
+        sqlight.nullable(sqlight.int, creation),
         sqlight.text(id),
       ],
       decode.dynamic,

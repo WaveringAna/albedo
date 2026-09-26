@@ -1,6 +1,6 @@
 -module(albedo_openai_transport).
 
--export([open/4, receive_message/1, close/1, with_connection/2]).
+-export([open/4, receive_message/1, close/1, with_connection/2, materialize/1]).
 
 -define(FLOW, 1).
 
@@ -59,24 +59,26 @@ start_request(Pid, Monitor, Target, Headers, Body, Timeout) ->
             cleanup(Pid, Monitor),
             {error, {transport_error, Reason}}
     catch
+        error:{attested_body, Why} ->
+            cleanup(Pid, Monitor),
+            {error, {transport_error, Why}};
         _Class:_Reason ->
             cleanup(Pid, Monitor),
             {error, {transport_error, <<"request failed">>}}
     end.
 
-%% A body with stored images ({albedo_image, Size, Read} placeholders, see
-%% albedo_openai_json:data_url/2) is written in segments: each payload is read
-%% just before it is sent, and the next is not read until the connection
-%% process has taken it, so at most one image is held at a time.
+%% Segmented body writer for lazy image reads and streaming attestation.
+%% Invariants: nothing placeholder-bearing may follow {albedo_attest, ...},
+%% and Emit must return exactly byte_size(Placeholder).
 send(Pid, Target, Headers, Body, Timeout) ->
     case segments(Body) of
         plain ->
             {ok, gun:post(Pid, Target, Headers, Body, #{flow => ?FLOW})};
-        {Segments, Length} ->
+        {Segments, Length, Marker} ->
             Sized = [{<<"content-length">>, integer_to_binary(Length)} | Headers],
             Stream = gun:post(Pid, Target, Sized, #{flow => ?FLOW}),
             Deadline = erlang:monotonic_time(millisecond) + Timeout,
-            case write(Pid, Stream, Segments, Deadline) of
+            case write(Pid, Stream, Segments, Deadline, hasher(Marker)) of
                 ok -> {ok, Stream};
                 {error, Reason} ->
                     gun:cancel(Pid, Stream),
@@ -84,41 +86,101 @@ send(Pid, Target, Headers, Body, Timeout) ->
             end
     end.
 
-%% plain, or {[{data, iodata()} | {image, Size, Read}], ContentLength}.
 segments(Body) ->
-    case walk(Body, {[], [], 0, false}) of
-        {_, _, _, false} -> plain;
-        {Current, Segments, Length, true} ->
-            {lists:reverse(flush(Current, Segments)), Length}
+    case walk(Body, {[], [], 0, none}) of
+        {_, _, _, none} -> plain;
+        {Current, Segments, Length, Marker} ->
+            {lists:reverse(flush(Current, Segments)), Length, Marker}
     end.
 
-walk({albedo_image, Size, Read}, {Current, Segments, Length, _}) ->
-    {[], [{image, Size, Read} | flush(Current, Segments)], Length + Size, true};
+walk({albedo_image, Size, Read}, {Current, Segments, Length, Marker}) ->
+    case Marker of
+        {_, _, _, _} ->
+            bad_body(<<"a stored image cannot follow an attestation marker">>);
+        _ ->
+            {[], [{image, Size, Read} | flush(Current, Segments)], Length + Size, images}
+    end;
+walk({albedo_attest, Init, Update, Emit, Placeholder}, {Current, Segments, Length, Marker}) ->
+    case Marker of
+        {_, _, _, _} ->
+            bad_body(<<"a body may carry at most one attestation marker">>);
+        _ ->
+            {[], [{attest, Emit, Placeholder} | flush(Current, Segments)],
+             Length + byte_size(Placeholder), {Init, Update, Emit, Placeholder}}
+    end;
 walk([H | T], Acc) -> walk(T, walk(H, Acc));
 walk([], Acc) -> Acc;
-walk(Piece, {Current, Segments, Length, Images}) when is_binary(Piece) ->
-    {[Piece | Current], Segments, Length + byte_size(Piece), Images};
-walk(Byte, {Current, Segments, Length, Images}) when is_integer(Byte) ->
-    {[Byte | Current], Segments, Length + 1, Images}.
+walk(Piece, {Current, Segments, Length, Marker}) when is_binary(Piece) ->
+    {[Piece | Current], Segments, Length + byte_size(Piece), Marker};
+walk(Byte, {Current, Segments, Length, Marker}) when is_integer(Byte) ->
+    {[Byte | Current], Segments, Length + 1, Marker}.
+
+bad_body(Why) -> erlang:error({attested_body, Why}).
 
 flush([], Segments) -> Segments;
 flush(Current, Segments) -> [{data, lists:reverse(Current)} | Segments].
 
-write(_, _, [], _) -> ok;
-write(Pid, Stream, [{data, Data} | Rest], Deadline) ->
-    gun:data(Pid, Stream, fin(Rest), Data),
-    write(Pid, Stream, Rest, Deadline);
-write(Pid, Stream, [{image, Size, Read} | Rest], Deadline) ->
+hasher(none) -> none;
+hasher(images) -> none;
+hasher({Init, Update, _Emit, _Placeholder}) -> {hashing, Update, Init()}.
+
+feed(none, _) -> none;
+feed(done, _) -> done;
+feed({hashing, Update, State}, Data) -> {hashing, Update, Update(State, Data)}.
+
+%% Emits marker digits; walk guarantees only in-memory data segments follow.
+marker_value({attest, Emit, Placeholder}, Rest, {hashing, Update, State}) ->
+    Tail = [Data || {data, Data} <- Rest],
+    Emit(Update(Update(State, Placeholder), Tail)).
+
+read_payload(Size, Read) ->
     case Read() of
-        {ok, Payload} when byte_size(Payload) =:= Size ->
+        {ok, Payload} when byte_size(Payload) =:= Size -> {ok, Payload};
+        _ -> {error, <<"a stored image payload is missing or damaged">>}
+    end.
+
+write(_, _, [], _, _) -> ok;
+write(Pid, Stream, [{data, Data} | Rest], Deadline, Hasher) ->
+    gun:data(Pid, Stream, fin(Rest), Data),
+    write(Pid, Stream, Rest, Deadline, feed(Hasher, Data));
+write(Pid, Stream, [{image, Size, Read} | Rest], Deadline, Hasher) ->
+    case read_payload(Size, Read) of
+        {ok, Payload} ->
             gun:data(Pid, Stream, fin(Rest), Payload),
             case drained(Pid, Deadline) of
-                ok -> write(Pid, Stream, Rest, Deadline);
+                ok -> write(Pid, Stream, Rest, Deadline, feed(Hasher, Payload));
                 Error -> Error
             end;
-        _ ->
-            {error, <<"a stored image payload is missing or damaged">>}
+        {error, _} = Error -> Error
+    end;
+write(Pid, Stream, [{attest, _, _} = Segment | Rest], Deadline, Hasher) ->
+    Value = marker_value(Segment, Rest, Hasher),
+    gun:data(Pid, Stream, fin(Rest), Value),
+    write(Pid, Stream, Rest, Deadline, done).
+
+%% The exact binary sent over the wire, with payloads read and markers spliced.
+materialize(Body) ->
+    try
+        case segments(Body) of
+            plain -> {ok, iolist_to_binary(Body)};
+            {Segments, _Length, Marker} -> fold(Segments, hasher(Marker), [])
+        end
+    catch
+        error:{attested_body, Why} -> {error, Why};
+        _:_ -> {error, <<"a body could not be materialized">>}
     end.
+
+fold([], _, Out) -> {ok, iolist_to_binary(lists:reverse(Out))};
+fold([{data, Data} | Rest], Hasher, Out) ->
+    fold(Rest, feed(Hasher, Data), [Data | Out]);
+fold([{image, Size, Read} | Rest], Hasher, Out) ->
+    case read_payload(Size, Read) of
+        {ok, Payload} -> fold(Rest, feed(Hasher, Payload), [Payload | Out]);
+        {error, _} = Error -> Error
+    end;
+fold([{attest, _, _} = Segment | Rest], Hasher, Out) ->
+    Value = marker_value(Segment, Rest, Hasher),
+    fold(Rest, done, [Value | Out]).
 
 fin([]) -> fin;
 fin(_) -> nofin.
@@ -127,7 +189,7 @@ fin(_) -> nofin.
 drained(Pid, Deadline) ->
     case erlang:process_info(Pid, message_queue_len) of
         {message_queue_len, 0} -> ok;
-        undefined -> ok;
+        undefined -> {error, <<"the connection closed while writing the request body">>};
         _ ->
             case erlang:monotonic_time(millisecond) >= Deadline of
                 true -> {error, <<"timed out writing the request body">>};

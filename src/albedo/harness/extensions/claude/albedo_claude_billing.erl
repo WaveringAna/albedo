@@ -1,7 +1,7 @@
 -module(albedo_claude_billing).
-%% Claude Code's first system block and body attestation. Hash the exact bytes
-%% written to the transport, with cch=00000 still in the billing block.
--export([header/2, sign/1, hash/1]).
+%% Claude Code first system block and streaming body attestation.
+%% The cch digits ride as an albedo_openai_transport marker spliced during write.
+-export([billing_block/2, hash/1, hash_streamed/1, xxh_init/0, xx_update/2, cch_emit/1]).
 
 -define(VERSION_SALT, <<"59cf53e54c78">>).
 -define(SEED, 16#4d659218e32a3268).
@@ -11,63 +11,91 @@
 -define(P3, 1609587929392839161).
 -define(P4, 9650029242287828579).
 -define(P5, 2870177450012600261).
--define(PLACEHOLDER, <<"cch=00000">>).
--define(MARKER, <<"\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header:">>).
+-define(DIGITS, <<"00000">>).
+-define(ATTEST, {albedo_attest, fun ?MODULE:xxh_init/0, fun ?MODULE:xx_update/2, fun ?MODULE:cch_emit/1, ?DIGITS}).
 
-header(Version, FirstUser) ->
+billing_block(Version, FirstUser) ->
     Text = unicode:characters_to_binary(FirstUser),
     Utf16 = unicode:characters_to_binary(Text, utf8, {utf16, little}),
     Units = [Unit || <<Unit:16/little>> <= Utf16],
     Sample = unicode:characters_to_binary([at(Units, 4), at(Units, 7), at(Units, 20)]),
     Digest = binary:encode_hex(crypto:hash(sha256, <<?VERSION_SALT/binary, Sample/binary, Version/binary>>), lowercase),
     Suffix = binary:part(Digest, 0, 3),
-    <<"x-anthropic-billing-header: cc_version=", Version/binary, ".", Suffix/binary,
-      "; cc_entrypoint=cli; cch=00000;">>.
+    Pre = <<"x-anthropic-billing-header: cc_version=", Version/binary, ".", Suffix/binary,
+            "; cc_entrypoint=cli; cch=">>,
+    [<<"{\"type\":\"text\",\"text\":">>, $", escaped(Pre), ?ATTEST, <<";\"}">>].
+
+escaped(Text) ->
+    Encoded = iolist_to_binary(json:encode_binary(Text)),
+    binary:part(Encoded, 1, byte_size(Encoded) - 2).
 
 at(Units, Index) ->
     case length(Units) > Index of
-        true -> lists:nth(Index + 1, Units);
+        true ->
+            case lists:nth(Index + 1, Units) of
+                Unit when Unit >= 16#D800, Unit =< 16#DFFF -> $0;
+                Unit -> Unit
+            end;
         false -> $0
     end.
 
-sign(Tree) ->
-    Body = iolist_to_binary(Tree),
-    case binary:match(Body, ?MARKER) of
-        {Start, _} ->
-            Offset = Start + byte_size(?MARKER),
-            Window = binary:part(Body, Offset, min(150, byte_size(Body) - Offset)),
-            case binary:match(Window, ?PLACEHOLDER) of
-                {Index, _} ->
-                    Hash = hash(Body),
-                    Begin = Offset + Index + byte_size(<<"cch=">>),
-                    <<Before:Begin/binary, _:5/binary, After/binary>> = Body,
-                    {ok, <<Before/binary, Hash/binary, After/binary>>};
-                nomatch -> {error, <<"Claude billing block has no cch placeholder">>}
-            end;
-        nomatch -> {error, <<"Claude billing block is not the first system block">>}
+hash(Data) -> digits(xxh_final(xx_update(xxh_init(), Data))).
+
+hash_streamed(Chunks) ->
+    cch_emit(lists:foldl(fun(Data, State) -> xx_update(State, Data) end,
+                         xxh_init(), Chunks)).
+
+xxh_init() ->
+    {u(?SEED + ?P1 + ?P2), u(?SEED + ?P2), ?SEED, u(?SEED - ?P1), <<>>, 0}.
+
+xx_update(State, Data) -> absorb(Data, State).
+
+absorb([], State) -> State;
+absorb([Head | Tail], State) -> absorb(Tail, absorb(Head, State));
+absorb(Byte, {V1, V2, V3, V4, Buffer, Total})
+        when is_integer(Byte), Byte >= 0, Byte =< 255 ->
+    case byte_size(Buffer) of
+        31 ->
+            <<A:64/little, B:64/little, C:64/little, D:64/little>> = <<Buffer/binary, Byte>>,
+            {round(V1, A), round(V2, B), round(V3, C), round(V4, D), <<>>, Total + 1};
+        _ ->
+            {V1, V2, V3, V4, <<Buffer/binary, Byte>>, Total + 1}
+    end;
+absorb(Binary, {V1, V2, V3, V4, Buffer, Total}) when is_binary(Binary) ->
+    Need = 32 - byte_size(Buffer),
+    case byte_size(Binary) >= Need of
+        true ->
+            Fill = binary:part(Binary, 0, Need),
+            <<A:64/little, B:64/little, C:64/little, D:64/little>> = <<Buffer/binary, Fill/binary>>,
+            Rest = binary:part(Binary, Need, byte_size(Binary) - Need),
+            {V1a, V2a, V3a, V4a, Tail} = lanes(Rest, round(V1, A), round(V2, B), round(V3, C), round(V4, D)),
+            {V1a, V2a, V3a, V4a, binary:copy(Tail), Total + byte_size(Binary)};
+        false ->
+            {V1, V2, V3, V4, <<Buffer/binary, Binary/binary>>, Total + byte_size(Binary)}
     end.
-
-%% XXHash64 with Claude Code's CCH seed, truncated to the low 20 bits.
-hash(Data) ->
-    Value = xxh64(Data, ?SEED) band 16#fffff,
-    iolist_to_binary(io_lib:format("~5.16.0b", [Value])).
-
-xxh64(Data, Seed) when byte_size(Data) >= 32 ->
-    V1 = u(Seed + ?P1 + ?P2), V2 = u(Seed + ?P2),
-    {A, B, C, D, Rest} = lanes(Data, V1, V2, Seed, u(Seed - ?P1)),
-    H = u(rol(A, 1) + rol(B, 7) + rol(C, 12) + rol(D, 18)),
-    tail(Rest, byte_size(Data), merge(D, merge(C, merge(B, merge(A, H)))));
-xxh64(Data, Seed) ->
-    tail(Data, byte_size(Data), u(Seed + ?P5)).
 
 lanes(<<A:64/little, B:64/little, C:64/little, D:64/little, Rest/binary>>, V1, V2, V3, V4) ->
     lanes(Rest, round(V1, A), round(V2, B), round(V3, C), round(V4, D));
 lanes(Rest, V1, V2, V3, V4) -> {V1, V2, V3, V4, Rest}.
 
+xxh_final({V1, V2, V3, V4, Buffer, Total}) ->
+    case Total >= 32 of
+        true ->
+            H = u(rol(V1, 1) + rol(V2, 7) + rol(V3, 12) + rol(V4, 18)),
+            Acc = merge(V4, merge(V3, merge(V2, merge(V1, H)))),
+            chunks(Buffer, u(Acc + Total));
+        false ->
+            chunks(Buffer, u(u(?SEED + ?P5) + Total))
+    end.
+
+cch_emit(State) -> digits(xxh_final(State)).
+
+digits(Value) ->
+    iolist_to_binary(io_lib:format("~5.16.0b", [Value band 16#fffff])).
+
 round(Acc, Word) -> u(rol(u(Acc + u(Word * ?P2)), 31) * ?P1).
 merge(Value, Acc) -> u(((Acc bxor round(0, Value)) * ?P1) + ?P4).
 
-tail(Rest, Length, Hash) -> chunks(Rest, u(Hash + Length)).
 chunks(<<Word:64/little, Rest/binary>>, Hash) ->
     chunks(Rest, u(rol(Hash bxor round(0, Word), 27) * ?P1 + ?P4));
 chunks(<<Word:32/little, Rest/binary>>, Hash) ->

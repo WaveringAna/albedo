@@ -109,7 +109,7 @@ pub fn stream_reduces_thoughts_text_and_calls_test() {
   ] = events
   assert arguments == "{\"command\":\"ls\"}"
   assert turn.finish == types.ToolCalls
-  assert turn.usage == Some(types.Usage(10, 5, Some(4)))
+  assert turn.usage == Some(types.Usage(10, 5, Some(4), None))
   let assert [types.ToolCall(id, "bash", "{\"command\":\"ls\"}")] =
     turn.tool_calls
   assert string.starts_with(id, "call_")

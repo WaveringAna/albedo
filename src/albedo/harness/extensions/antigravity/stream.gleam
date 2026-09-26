@@ -389,7 +389,7 @@ fn chunk_decoder() -> decode.Decoder(Chunk) {
       None,
       decode.optional(decode.int),
     )
-    decode.success(types.Usage(input, output + thoughts, cached))
+    decode.success(types.Usage(input, output + thoughts, cached, None))
   }
   let response = {
     use response_id <- decode.optional_field(

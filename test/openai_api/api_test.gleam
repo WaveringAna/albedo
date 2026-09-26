@@ -35,7 +35,7 @@ pub fn responses_stream_end_to_end_test() {
     })
   assert turn.finish == types.Complete
   assert turn.response_id == Some("resp1")
-  assert turn.usage == Some(types.Usage(2, 1, None))
+  assert turn.usage == Some(types.Usage(2, 1, None, None))
   let request = received(fixture)
   assert string.contains(request, "POST /v1/responses HTTP/1.1")
   assert string.contains(request, "authorization: Bearer test-key")

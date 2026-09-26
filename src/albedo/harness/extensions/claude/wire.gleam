@@ -13,10 +13,13 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import gleam/string_tree.{type StringTree}
 
 type Message {
   Message(role: String, blocks: List(Json))
+}
+
+type Files {
+  Files(home: String, account: String)
 }
 
 type History {
@@ -28,6 +31,7 @@ pub const blocks_detail = "claude.blocks"
 const claude_code_version = "2.1.283"
 
 pub fn encode(
+  home: String,
   access: String,
   account: String,
   device: String,
@@ -44,10 +48,22 @@ pub fn encode(
       False -> Error(types.InvalidRequest("invalid Claude access token"))
     },
   )
+  let files = Files(home, account)
+  let input_count = list.length(request.input)
   use history <- result.try(
-    list.try_fold(request.input, History([], dict.new()), fn(history, input) {
-      add(history, input, request.model)
-    }),
+    list.try_fold(
+      list.index_map(request.input, fn(input, index) { #(input, index) }),
+      History([], dict.new()),
+      fn(history, indexed) {
+        add(
+          history,
+          indexed.0,
+          request.model,
+          files,
+          indexed.1 + 1 == input_count,
+        )
+      },
+    ),
   )
   let messages =
     history.messages
@@ -105,19 +121,7 @@ pub fn encode(
     ),
     #(
       "system",
-      json.array(
-        [
-          text_block(billing_header(claude_code_version, first_user)),
-          cached_text_block(
-            "You are Claude Code, Anthropic's official CLI for Claude.",
-          ),
-          ..case request.instructions {
-            Some(text) -> [cached_text_block(text)]
-            None -> []
-          }
-        ],
-        fn(block) { block },
-      ),
+      json.array(system_blocks(request, first_user), fn(block) { block }),
     ),
   ]
   let fields = case request.tools {
@@ -125,13 +129,10 @@ pub fn encode(
     tools -> [
       #(
         "tools",
-        json.array(tools, fn(tool) {
-          json.object([
-            #("name", json.string(claude_name(tool.name))),
-            #("description", json.string(tool.description)),
-            #("input_schema", normalize_schema(tool.parameters)),
-          ])
-        }),
+        json.array(
+          mark_last(tools, fn(tool, last) { tool_block(tool, last) }),
+          fn(block) { block },
+        ),
       ),
       ..fields
     ]
@@ -195,11 +196,7 @@ pub fn encode(
   case request.model == "" || request.max_output_tokens == Some(0) {
     True ->
       Error(types.InvalidRequest("invalid Claude model or output token limit"))
-    False -> {
-      use body <- result.try(
-        sign_body(json.to_string_tree(json.object(fields)))
-        |> result.map_error(types.InvalidRequest),
-      )
+    False ->
       Ok(openai_api.Exchange(
         "https://api.anthropic.com/v1/messages",
         [
@@ -224,12 +221,11 @@ pub fn encode(
           #("content-type", "application/json"),
           #("accept", "application/json"),
         ],
-        body,
+        json.to_string_tree(json.object(fields)),
         120_000,
         8 * 1024 * 1024,
         True,
       ))
-    }
   }
 }
 
@@ -237,12 +233,20 @@ fn add(
   history: History,
   input: types.Input,
   model: String,
+  files: Files,
+  last: Bool,
 ) -> Result(History, types.Error) {
   case input {
-    types.User(text) -> Ok(push(history, "user", [text_block(text)]))
-    types.Assistant(text) -> Ok(push(history, "assistant", [text_block(text)]))
+    types.User(text) -> Ok(push(history, "user", [text_block(text, last)]))
+    types.Assistant(text) ->
+      Ok(push(history, "assistant", [text_block(text, last)]))
     types.UserImage(text, image) ->
-      Ok(push(history, "user", [text_block(text), image_block(image)]))
+      Ok(
+        push(history, "user", [
+          text_block(text, False),
+          image_block(files, image, last),
+        ]),
+      )
     types.ToolOutput(id, text, images) -> {
       use _ <- result.try(
         dict.get(history.calls, id)
@@ -254,8 +258,8 @@ fn add(
         [] -> json.string(text)
         images ->
           json.preprocessed_array([
-            text_block(text),
-            ..list.map(images, image_block)
+            text_block(text, False),
+            ..list.map(images, image_block(files, _, False))
           ])
       }
       Ok(
@@ -264,6 +268,10 @@ fn add(
             #("type", json.string("tool_result")),
             #("tool_use_id", json.string(id)),
             #("content", content),
+            ..case last {
+              True -> [tail_cache()]
+              False -> []
+            }
           ]),
         ]),
       )
@@ -355,7 +363,7 @@ fn replay_decoder() -> decode.Decoder(Replay) {
 fn portable_blocks(message: Replay) -> List(Json) {
   let text = case message.text {
     "" -> []
-    text -> [text_block(text)]
+    text -> [text_block(text, False)]
   }
   list.append(
     text,
@@ -387,37 +395,93 @@ fn push(history: History, role: String, blocks: List(Json)) -> History {
   }
 }
 
+fn system_blocks(request: types.Request, first_user: String) -> List(Json) {
+  let identity = "You are Claude Code, Anthropic's official CLI for Claude."
+  [
+    billing_block(claude_code_version, first_user),
+    ..case request.instructions {
+      Some(text) -> [text_block(identity, False), cached_text_block(text)]
+      None -> [cached_text_block(identity)]
+    }
+  ]
+}
+
 fn cached_text_block(text: String) -> Json {
   json.object([
     #("type", json.string("text")),
     #("text", json.string(text)),
-    #(
-      "cache_control",
-      json.object([
-        #("type", json.string("ephemeral")),
-        #("ttl", json.string("1h")),
-      ]),
-    ),
+    head_cache(),
   ])
 }
 
-fn text_block(text: String) -> Json {
-  json.object([#("type", json.string("text")), #("text", json.string(text))])
+fn text_block(text: String, cache: Bool) -> Json {
+  json.object([
+    #("type", json.string("text")),
+    #("text", json.string(text)),
+    ..case cache {
+      True -> [tail_cache()]
+      False -> []
+    }
+  ])
 }
 
-fn image_block(image: types.Image) -> Json {
+fn tool_block(tool: types.Tool, last: Bool) -> Json {
+  json.object([
+    #("name", json.string(claude_name(tool.name))),
+    #("description", json.string(tool.description)),
+    #("input_schema", normalize_schema(tool.parameters)),
+    ..case last {
+      True -> [head_cache()]
+      False -> []
+    }
+  ])
+}
+
+fn image_block(files: Files, image: types.Image, cache: Bool) -> Json {
   let #(mime, _, _, _) = types.image_meta(image)
   json.object([
     #("type", json.string("image")),
     #(
       "source",
-      json.object([
-        #("type", json.string("base64")),
-        #("media_type", json.string(mime)),
-        #("data", base64_string(types.image_data(image))),
-      ]),
+      case file_source(files.home, files.account, types.image_data(image)) {
+        Ok(source) -> source
+        Error(Nil) ->
+          json.object([
+            #("type", json.string("base64")),
+            #("media_type", json.string(mime)),
+            #("data", base64_string(types.image_data(image))),
+          ])
+      },
     ),
+    ..case cache {
+      True -> [tail_cache()]
+      False -> []
+    }
   ])
+}
+
+// 1-hour TTL for stable head (tools, system); tail uses default 5m.
+fn head_cache() -> #(String, Json) {
+  #(
+    "cache_control",
+    json.object([
+      #("type", json.string("ephemeral")),
+      #("ttl", json.string("1h")),
+    ]),
+  )
+}
+
+/// Maps a list, telling the mapper when it is holding the final item.
+fn mark_last(items: List(a), mapper: fn(a, Bool) -> b) -> List(b) {
+  case items {
+    [] -> []
+    [last] -> [mapper(last, True)]
+    [first, ..rest] -> [mapper(first, False), ..mark_last(rest, mapper)]
+  }
+}
+
+fn tail_cache() -> #(String, Json) {
+  #("cache_control", json.object([#("type", json.string("ephemeral"))]))
 }
 
 /// Albedo MCP tool names need Claude Code's MCP namespace on OAuth requests.
@@ -464,14 +528,18 @@ fn canonical_name(name: String) -> String {
   |> result.unwrap(name)
 }
 
-@external(erlang, "albedo_claude_billing", "header")
-fn billing_header(version: String, first_user: String) -> String
-
-@external(erlang, "albedo_claude_billing", "sign")
-fn sign_body(body: StringTree) -> Result(StringTree, String)
+@external(erlang, "albedo_claude_billing", "billing_block")
+fn billing_block(version: String, first_user: String) -> Json
 
 @external(erlang, "albedo_claude_schema", "normalize")
 pub fn normalize_schema(schema: Json) -> Json
+
+@external(erlang, "albedo_claude_files", "file_source")
+fn file_source(
+  home: String,
+  account: String,
+  data: types.ImageData,
+) -> Result(Json, Nil)
 
 @external(erlang, "albedo_openai_json", "base64_string")
 fn base64_string(data: types.ImageData) -> Json

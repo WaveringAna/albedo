@@ -635,8 +635,8 @@ fn finish(finish: types.Finish) -> String {
 }
 
 fn usage(usage: Option(types.Usage)) -> Json {
-  let types.Usage(input, output, cached) =
-    option.unwrap(usage, types.Usage(0, 0, None))
+  let types.Usage(input, output, cached, ..) =
+    option.unwrap(usage, types.Usage(0, 0, None, None))
   json.object([
     #("prompt_tokens", json.int(input)),
     #("completion_tokens", json.int(output)),

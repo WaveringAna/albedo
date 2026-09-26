@@ -15,6 +15,7 @@ pub type Tokens {
     prompt_tokens: Int,
     completion_tokens: Int,
     cached_prompt_tokens: Option(Int),
+    cache_creation_tokens: Option(Int),
   )
 }
 
@@ -24,26 +25,28 @@ pub fn from_completion(
   recorded_at: Int,
 ) -> Metadata {
   let tokens = case provider_usage {
-    Some(types.Usage(prompt, completion, cached)) ->
-      Some(Tokens(prompt, completion, cached))
+    Some(types.Usage(prompt, completion, cached, creation)) ->
+      Some(Tokens(prompt, completion, cached, creation))
     None -> None
   }
   Metadata(model, recorded_at, tokens)
 }
 
-/// An event is emitted for every provider completion. Token fields are absent
-/// when the provider omitted usage; cachedPromptTokens is absent when its
-/// detail was not reported. This lets absence clear older client state without
-/// turning an unknown value into zero.
+/// Encodes a usage completion event. Unreported token counts are omitted so
+/// clients distinguish unknown from zero.
 pub fn event(metadata: Metadata) -> String {
   let Metadata(model, recorded_at, tokens) = metadata
   let token_fields = case tokens {
-    Some(Tokens(prompt, completion, cached)) -> {
+    Some(Tokens(prompt, completion, cached, creation)) -> {
       let fields = [
         #("promptTokens", json.int(prompt)),
         #("completionTokens", json.int(completion)),
         #("totalTokens", json.int(prompt + completion)),
       ]
+      let fields = case creation {
+        Some(value) -> [#("cacheCreationTokens", json.int(value)), ..fields]
+        None -> fields
+      }
       case cached {
         Some(value) -> [#("cachedPromptTokens", json.int(value)), ..fields]
         None -> fields
