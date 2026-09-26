@@ -1,0 +1,356 @@
+//// Anthropic Messages SSE into albedo events and chat-shaped portable replay.
+
+import albedo/harness/extensions/claude/wire
+import albedo/openai_api/stream.{type Reducer, Reducer}
+import albedo/openai_api/types
+import gleam/dynamic.{type Dynamic}
+import gleam/dynamic/decode
+import gleam/json.{type Json}
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/result
+import gleam/string
+
+type Block {
+  Text(index: Int, chunks: List(String))
+  Thinking(index: Int, chunks: List(String), signature: Option(String))
+  Tool(index: Int, id: String, name: String, chunks: List(String))
+}
+
+type State {
+  State(
+    model: String,
+    tools: List(types.Tool),
+    id: Option(String),
+    blocks: List(Block),
+    usage: Option(types.Usage),
+    reason: Option(String),
+  )
+}
+
+pub fn reducer(model: String, tools: List(types.Tool)) -> Reducer {
+  wrap(State(model, tools, None, [], None, None))
+}
+
+fn wrap(state: State) -> Reducer {
+  Reducer(
+    feed: fn(data) {
+      use value <- result.try(
+        json.parse(data, decode.dynamic)
+        |> result.map_error(fn(_) {
+          types.InvalidEvent("invalid Anthropic event JSON")
+        }),
+      )
+      use kind <- result.try(
+        decode.run(value, decode.at(["type"], decode.string))
+        |> result.map_error(fn(_) {
+          types.InvalidEvent("Anthropic event has no type")
+        }),
+      )
+      apply(state, kind, value)
+    },
+    finish: fn() { Error(types.UnexpectedEnd) },
+  )
+}
+
+fn apply(
+  state: State,
+  kind: String,
+  value: Dynamic,
+) -> Result(#(Reducer, List(types.Event), Option(types.Turn)), types.Error) {
+  case kind {
+    "error" ->
+      Error(types.ProviderError(
+        decode.run(value, decode.at(["error", "message"], decode.string))
+        |> result.unwrap("Anthropic stream error"),
+      ))
+    "message_start" -> {
+      use id <- result.try(
+        decode.run(value, decode.at(["message", "id"], decode.string))
+        |> result.map_error(fn(_) {
+          types.InvalidEvent("invalid message_start")
+        }),
+      )
+      let usage =
+        decode.run(value, decode.at(["message", "usage"], usage_decoder()))
+        |> option.from_result
+      emit(State(..state, id: Some(id), usage: usage), [types.Started(id)])
+    }
+    "content_block_start" -> start(state, value)
+    "content_block_delta" -> delta(state, value)
+    "message_delta" -> {
+      let reason =
+        decode.run(
+          value,
+          decode.at(["delta", "stop_reason"], decode.optional(decode.string)),
+        )
+        |> result.unwrap(None)
+      let output =
+        decode.run(value, decode.at(["usage", "output_tokens"], decode.int))
+        |> option.from_result
+      let usage = case state.usage, output {
+        Some(old), Some(n) ->
+          Some(types.Usage(old.input_tokens, n, old.cached_input_tokens))
+        None, Some(n) -> Some(types.Usage(0, n, None))
+        _, None -> state.usage
+      }
+      emit(
+        State(..state, usage: usage, reason: option.or(reason, state.reason)),
+        [],
+      )
+    }
+    "message_stop" -> {
+      use turn <- result.try(finish(state))
+      Ok(#(wrap(state), [], Some(turn)))
+    }
+    "ping" | "content_block_stop" -> emit(state, [])
+    _ -> emit(state, [])
+  }
+}
+
+fn start(
+  state: State,
+  value: Dynamic,
+) -> Result(#(Reducer, List(types.Event), Option(types.Turn)), types.Error) {
+  use index <- result.try(
+    decode.run(value, decode.at(["index"], decode.int))
+    |> result.map_error(fn(_) { types.InvalidEvent("missing block index") }),
+  )
+  use kind <- result.try(
+    decode.run(value, decode.at(["content_block", "type"], decode.string))
+    |> result.map_error(fn(_) { types.InvalidEvent("missing block type") }),
+  )
+  let block = case kind {
+    "text" -> Some(Text(index, [field(value, ["content_block", "text"])]))
+    "thinking" ->
+      Some(Thinking(index, [field(value, ["content_block", "thinking"])], None))
+    "tool_use" -> {
+      let id = field(value, ["content_block", "id"])
+      let name = field(value, ["content_block", "name"])
+      Some(Tool(index, id, original_name(name, state.tools), []))
+    }
+    _ -> None
+  }
+  case block {
+    Some(block) -> emit(State(..state, blocks: [block, ..state.blocks]), [])
+    None -> emit(state, [])
+  }
+}
+
+fn delta(
+  state: State,
+  value: Dynamic,
+) -> Result(#(Reducer, List(types.Event), Option(types.Turn)), types.Error) {
+  use index <- result.try(
+    decode.run(value, decode.at(["index"], decode.int))
+    |> result.map_error(fn(_) { types.InvalidEvent("missing delta index") }),
+  )
+  use kind <- result.try(
+    decode.run(value, decode.at(["delta", "type"], decode.string))
+    |> result.map_error(fn(_) { types.InvalidEvent("missing delta type") }),
+  )
+  let text = case kind {
+    "input_json_delta" -> field(value, ["delta", "partial_json"])
+    "signature_delta" -> field(value, ["delta", "signature"])
+    _ -> field(value, ["delta", "text"])
+  }
+  let #(blocks, events) = update(state.blocks, index, kind, text)
+  emit(State(..state, blocks: blocks), events)
+}
+
+fn update(
+  blocks: List(Block),
+  index: Int,
+  kind: String,
+  text: String,
+) -> #(List(Block), List(types.Event)) {
+  case blocks {
+    [Text(i, chunks), ..rest] if i == index && kind == "text_delta" -> #(
+      [Text(i, [text, ..chunks]), ..rest],
+      [types.TextDelta(i, 0, text)],
+    )
+    [Thinking(i, chunks, signature), ..rest]
+      if i == index && kind == "thinking_delta"
+    -> #([Thinking(i, [text, ..chunks], signature), ..rest], [
+      types.ThinkingDelta(text),
+    ])
+    [Thinking(i, chunks, _), ..rest]
+      if i == index && kind == "signature_delta"
+    -> #([Thinking(i, chunks, Some(text)), ..rest], [])
+    [Tool(i, id, name, chunks), ..rest]
+      if i == index && kind == "input_json_delta"
+    -> #([Tool(i, id, name, [text, ..chunks]), ..rest], [
+      types.ArgumentsDelta(i, text),
+    ])
+    [head, ..rest] -> {
+      let #(rest, events) = update(rest, index, kind, text)
+      #([head, ..rest], events)
+    }
+    [] -> #([], [])
+  }
+}
+
+fn finish(state: State) -> Result(types.Turn, types.Error) {
+  let blocks = list.reverse(state.blocks)
+  let calls =
+    list.filter_map(blocks, fn(block) {
+      case block {
+        Tool(_, id, name, chunks) ->
+          Ok(types.ToolCall(id, name, arguments(chunks)))
+        _ -> Error(Nil)
+      }
+    })
+  use _ <- result.try(
+    list.try_each(calls, fn(call) {
+      json.parse(call.arguments, decode.dict(decode.string, decode.dynamic))
+      |> result.map(fn(_) { Nil })
+      |> result.map_error(fn(_) {
+        types.InvalidEvent("invalid Claude tool input")
+      })
+    }),
+  )
+  let native = list.filter_map(blocks, native_block)
+  let text =
+    blocks
+    |> list.filter_map(fn(block) {
+      case block {
+        Text(_, chunks) -> Ok(flat(chunks))
+        _ -> Error(Nil)
+      }
+    })
+    |> string.concat
+  let fields = [
+    #("role", json.string("assistant")),
+    #("content", json.string(text)),
+  ]
+  let fields = case native {
+    [] -> fields
+    native -> [
+      #(
+        "reasoning_details",
+        json.preprocessed_array([
+          json.object([
+            #("type", json.string(wire.blocks_detail)),
+            #("model", json.string(state.model)),
+            #("blocks", json.preprocessed_array(native)),
+          ]),
+        ]),
+      ),
+      ..fields
+    ]
+  }
+  let fields = case calls {
+    [] -> fields
+    calls -> [
+      #(
+        "tool_calls",
+        json.array(calls, fn(call) {
+          json.object([
+            #("id", json.string(call.id)),
+            #("type", json.string("function")),
+            #(
+              "function",
+              json.object([
+                #("name", json.string(call.name)),
+                #("arguments", json.string(call.arguments)),
+              ]),
+            ),
+          ])
+        }),
+      ),
+      ..fields
+    ]
+  }
+  use item <- result.try(
+    json.parse(
+      json.to_string(json.object(fields)),
+      types.replay_decoder(types.ChatCompletions),
+    )
+    |> result.map_error(fn(_) { types.InvalidEvent("invalid Claude replay") }),
+  )
+  let finish = case state.reason {
+    Some("tool_use") -> types.ToolCalls
+    Some("max_tokens") -> types.LengthLimit
+    Some("refusal") -> types.ContentFiltered
+    Some("end_turn") | Some("stop_sequence") | None ->
+      case calls {
+        [] -> types.Complete
+        _ -> types.ToolCalls
+      }
+    Some(other) -> types.OtherFinish(other)
+  }
+  Ok(types.Turn(state.id, [item], calls, state.usage, finish))
+}
+
+fn native_block(block: Block) -> Result(Json, Nil) {
+  case block {
+    Text(_, chunks) ->
+      Ok(
+        json.object([
+          #("type", json.string("text")),
+          #("text", json.string(flat(chunks))),
+        ]),
+      )
+    Thinking(_, chunks, Some(signature)) ->
+      Ok(
+        json.object([
+          #("type", json.string("thinking")),
+          #("thinking", json.string(flat(chunks))),
+          #("signature", json.string(signature)),
+        ]),
+      )
+    Thinking(_, _, None) -> Error(Nil)
+    Tool(_, id, name, chunks) -> {
+      let input =
+        json.parse(arguments(chunks), decode.dynamic)
+        |> result.map(wire.encode_value)
+        |> result.unwrap(json.object([]))
+      Ok(
+        json.object([
+          #("type", json.string("tool_use")),
+          #("id", json.string(id)),
+          #("name", json.string(wire.claude_name(name))),
+          #("input", input),
+        ]),
+      )
+    }
+  }
+}
+
+fn usage_decoder() -> decode.Decoder(types.Usage) {
+  use input <- decode.optional_field("input_tokens", 0, decode.int)
+  use output <- decode.optional_field("output_tokens", 0, decode.int)
+  use cache <- decode.optional_field("cache_read_input_tokens", 0, decode.int)
+  decode.success(types.Usage(input, output, Some(cache)))
+}
+
+fn original_name(name: String, tools: List(types.Tool)) -> String {
+  tools
+  |> list.find(fn(tool) {
+    string.lowercase(tool.name) == string.lowercase(name)
+  })
+  |> result.map(fn(tool) { tool.name })
+  |> result.unwrap(name)
+}
+
+fn arguments(chunks: List(String)) -> String {
+  case flat(chunks) {
+    "" -> "{}"
+    value -> value
+  }
+}
+
+fn flat(chunks: List(String)) -> String {
+  chunks |> list.reverse |> string.concat
+}
+
+fn field(value: Dynamic, path: List(String)) -> String {
+  decode.run(value, decode.at(path, decode.string)) |> result.unwrap("")
+}
+
+fn emit(
+  state: State,
+  events: List(types.Event),
+) -> Result(#(Reducer, List(types.Event), Option(types.Turn)), types.Error) {
+  Ok(#(wrap(state), events, None))
+}

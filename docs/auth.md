@@ -8,7 +8,7 @@ The enabled-by-default `openai` extension requires `models`. It handles existing
 
 ## chatgpt codex oauth
 
-The enabled-by-default `codex` extension requires `openai`, so it reuses the OpenAI Responses encoder, SSE transport, replay format, and model metadata. `/login` can add ChatGPT Plus/Pro accounts. A fresh install can enter `codex` as the provider name; an existing install can choose **add chatgpt codex account**.
+The enabled-by-default `codex` extension requires `openai`, so it reuses the OpenAI Responses encoder, SSE transport, replay format, and model metadata. Its picker shows only models.dev-listed GPT-5.6 and GPT-6 series; API-key OpenAI profiles still show the full OpenAI catalog. Catalog presence does not guarantee that a ChatGPT subscription can use every listed model. `/login` can add ChatGPT Plus/Pro accounts. A fresh install can enter `codex` as the provider name; an existing install can choose **add chatgpt codex account**.
 
 The daemon runs the login (see [sign-in api](#sign-in-api)) with the Codex CLI browser flow: PKCE S256, the allowlisted `http://localhost:1455/auth/callback`, state validation, and a manual callback-url/code input that races the local callback. The token exchange uses OpenAI's public Codex client id and stores access, rotating refresh, expiry, ChatGPT workspace id, seat id when present, and email when present.
 
@@ -32,6 +32,12 @@ Clients use these daemon routes. All of them require the daemon token.
 - `POST /auth/{provider}/accounts/{id}` selects that account; `DELETE` on the same path removes it.
 
 After a sign-in finishes, the client lists models with `GET /models/{provider}` and saves the profile `{extension: provider, model, protocol}` itself. Profiles stay client-owned; credentials are daemon-owned.
+
+## claude code oauth
+
+The enabled-by-default `claude` extension adds Claude Pro/Max accounts through `/login` using Anthropic’s Claude Code OAuth client. It stores rotating access and refresh tokens in `$ALBEDO_HOME/auth.json` under `anthropic` (mode 0600), with refresh under `auth.lock`. The fixed `http://localhost:53692/callback` loopback redirect must be available; a pasted callback URL also works. Choose a Claude model after signing in; profiles use `extension: "claude"` and `protocol: "chat_completions"`. The picker shows Opus 5.5, Fable 5.1, Sonnet 5, Opus 5, Opus 4.8, and Haiku 4.5 only when the cached models.dev Anthropic catalog contains them. `/reload models` refreshes this availability and the models’ limits. New model families still require a picker-policy update.
+
+Requests go to Anthropic’s Messages endpoint with Claude Code’s OAuth beta, client headers, identity system block, and tool names. Replay is saved as provider-neutral chat messages so changing models retains conversation and tool history. This is subscription access, not an Anthropic API-key profile. Anthropic can change or restrict this unofficial client behavior at any time.
 
 ## google antigravity oauth
 

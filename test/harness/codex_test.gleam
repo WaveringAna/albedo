@@ -1,5 +1,6 @@
 import albedo/harness/extension
 import albedo/harness/extensions/codex/extension as codex
+import albedo/harness/extensions/models/extension as models
 import albedo/harness/rotation
 import albedo/openai_api
 import albedo/openai_api/types
@@ -275,6 +276,29 @@ fn write(base: String, relative: String, content: String) -> String
 
 @external(erlang, "albedo_skills_test_support", "cleanup")
 fn cleanup(root: String) -> Nil
+
+pub fn codex_picker_shows_only_catalogued_gpt_5_6_and_6_models_test() {
+  let #(root, _, home) = fixture()
+  let file =
+    write(
+      home,
+      "models.json",
+      "{\"openai\":{\"models\":{\"gpt-5.5\":{},\"gpt-5.6\":{},\"gpt-5.6-sol\":{},\"gpt-5.6-luna\":{},\"gpt-6\":{},\"gpt-6-astra\":{},\"gpt-6.1\":{},\"gpt-60\":{}}}}",
+    )
+  assert codex.available_models(file)
+    == [
+      "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6", "gpt-6-astra",
+      "gpt-6.1",
+    ]
+  assert list.contains(models.list_at(file, "openai", ""), "gpt-5.5")
+  let assert [
+    extension.ModelProviderPlugin(provider),
+    _,
+    extension.ModelsPlugin(_),
+  ] = codex.extension().plugins
+  assert provider.catalog_provider == "codex"
+  cleanup(root)
+}
 
 pub fn codex_profiles_require_responses_protocol_test() {
   let ext = codex.extension()

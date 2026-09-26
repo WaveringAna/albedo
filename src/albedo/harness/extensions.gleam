@@ -3,6 +3,7 @@ import albedo/harness/extensions/agents/extension as agents
 import albedo/harness/extensions/alibaba/extension as alibaba
 import albedo/harness/extensions/antigravity/extension as antigravity
 import albedo/harness/extensions/bash/extension as bash
+import albedo/harness/extensions/claude/extension as claude
 import albedo/harness/extensions/codex/extension as codex
 import albedo/harness/extensions/commands/extension as commands
 import albedo/harness/extensions/files/extension as files
@@ -44,9 +45,12 @@ pub fn defaults() -> Config {
       // shared id such as claude-sonnet-4-6 has Antigravity's limits.
       antigravity.extension(),
       alibaba.extension(),
+      claude.extension(),
+      // Before models.dev so Codex's picker keeps its own series filter;
+      // API-key OpenAI profiles keep the full catalog.
+      codex.extension(),
       models.extension(),
       openai.extension(),
-      codex.extension(),
       rolling.extension(),
       lcm_memory.extension(),
       lcm.extension(),
@@ -59,7 +63,7 @@ pub fn defaults() -> Config {
     [
       "python", "bash", "work", "mail", "agents", "schedule", "files",
       "instructions", "commands", "skills", "models", "openai", "codex",
-      "antigravity", "alibaba", "rolling", "lcm-memory", "remote",
+      "antigravity", "alibaba", "claude", "rolling", "lcm-memory", "remote",
     ],
   )
 }

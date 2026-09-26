@@ -133,6 +133,28 @@ pub fn lookup_at(
   }
 }
 
+/// Exact models.dev provider namespace; avoids selecting another provider's
+/// conflicting limits when the provider omits an API endpoint.
+pub fn lookup_provider(
+  provider: String,
+  model: String,
+) -> Option(extension.ModelInfo) {
+  refresh()
+  lookup_provider_at(path(), provider, model)
+}
+
+pub fn lookup_provider_at(
+  catalog: String,
+  provider: String,
+  model: String,
+) -> Option(extension.ModelInfo) {
+  case native_lookup_provider(catalog, provider, model) {
+    Ok(encoded) ->
+      json.parse(encoded, info_decoder(catalog)) |> option.from_result
+    Error(_) -> None
+  }
+}
+
 pub fn list(provider: String, endpoint: String) -> List(String) {
   refresh()
   list_at(path(), provider, endpoint)
@@ -205,6 +227,13 @@ fn native_lookup(
   catalog: String,
   model: String,
   endpoint: String,
+) -> Result(String, String)
+
+@external(erlang, "albedo_models", "lookup_provider")
+fn native_lookup_provider(
+  catalog: String,
+  provider: String,
+  model: String,
 ) -> Result(String, String)
 
 @external(erlang, "albedo_models", "list")

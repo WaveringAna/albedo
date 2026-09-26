@@ -2,6 +2,7 @@
 
 import albedo/daemon/store
 import albedo/harness/extension
+import albedo/harness/extensions/models/extension as models
 import albedo/harness/oauth
 import albedo/harness/rotation
 import albedo/openai_api
@@ -9,8 +10,10 @@ import albedo/openai_api/types
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import gleam/uri
 
 const base_url = "https://chatgpt.com/backend-api"
@@ -29,11 +32,38 @@ pub fn extension() -> extension.Extension {
     "ChatGPT Plus/Pro OAuth for Codex models with selectable, session-sticky multi-account selection that skips accounts past their usage limit",
     ["openai"],
     [
-      extension.ModelProviderPlugin(extension.ModelProvider("openai", resolve)),
+      extension.ModelProviderPlugin(extension.ModelProvider("codex", resolve)),
       extension.LoginPlugin(login()),
+      extension.ModelsPlugin(extension.ModelCatalog(
+        fn(_, _) { None },
+        list_models,
+      )),
     ],
     initialise,
   )
+}
+
+fn list_models(provider: String, _endpoint: String) -> List(String) {
+  case provider {
+    "codex" -> {
+      models.refresh()
+      available_models(models.path())
+    }
+    _ -> []
+  }
+}
+
+/// Codex has its own picker policy; generic OpenAI profiles keep the full
+/// models.dev OpenAI list. Availability and model facts still come from the cache.
+pub fn available_models(catalog: String) -> List(String) {
+  models.list_at(catalog, "openai", "")
+  |> list.filter(fn(id) {
+    id == "gpt-5.6"
+    || string.starts_with(id, "gpt-5.6-")
+    || id == "gpt-6"
+    || string.starts_with(id, "gpt-6-")
+    || string.starts_with(id, "gpt-6.")
+  })
 }
 
 /// The Codex CLI browser flow. OpenAI allowlists the exact localhost:1455

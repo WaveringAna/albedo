@@ -23,6 +23,20 @@ pub fn endpoint_selects_between_providers_publishing_one_model_test() {
   cleanup(root)
 }
 
+pub fn provider_scoped_lookup_keeps_metadata_with_its_provider_test() {
+  let #(root, _, home) = fixture()
+  let file = write(home, "models.json", catalog)
+  let assert Some(info) =
+    models.lookup_provider_at(file, "mirror", "shared-model")
+  assert info.provider == "mirror"
+  assert info.context_tokens == Some(400_000)
+  assert info.source
+    == "models.dev catalog cached at " <> file <> "; matched by provider name"
+  assert models.lookup_provider_at(file, "openai", "disputed") == None
+  assert models.lookup_provider_at(file, "mirror", "disputed") != None
+  cleanup(root)
+}
+
 pub fn unknown_disputed_and_missing_catalogs_stay_unknown_test() {
   let #(root, _, home) = fixture()
   let file = write(home, "models.json", catalog)

@@ -253,14 +253,17 @@ pub fn remote_is_installed_and_default_test() {
   config.default_enabled |> list.contains("remote") |> should.be_true
 }
 
-pub fn model_provider_extensions_form_catalog_openai_codex_chain_test() {
+pub fn model_provider_extensions_require_their_catalogs_test() {
   let config = extensions.defaults()
   let assert Ok(openai) =
     list.find(config.extensions, fn(item) { item.name == "openai" })
   let assert Ok(codex) =
     list.find(config.extensions, fn(item) { item.name == "codex" })
+  let assert Ok(claude) =
+    list.find(config.extensions, fn(item) { item.name == "claude" })
   openai.requires |> should.equal(["models"])
   codex.requires |> should.equal(["openai"])
+  claude.requires |> should.equal(["models"])
   let catalog =
     extension.Extension(
       "catalog",
@@ -297,7 +300,7 @@ pub fn model_provider_extensions_form_catalog_openai_codex_chain_test() {
   runtime.reload_extension(host, "model-chain", "/tmp", "openai", False)
   |> should.equal(Error("codex requires enabled extension openai"))
   runtime.reload_extension(host, "model-chain", "/tmp", "models", False)
-  |> should.equal(Error("openai requires enabled extension models"))
+  |> should.equal(Error("claude requires enabled extension models"))
   runtime.stop(host)
 }
 

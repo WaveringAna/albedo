@@ -3,7 +3,7 @@
 %% parsed once per file revision.
 
 -include_lib("kernel/include/file.hrl").
--export([refresh/3, reload/2, lookup/3, list/3]).
+-export([refresh/3, reload/2, lookup/3, lookup_provider/3, list/3]).
 
 -define(MAX_BYTES, 33554432).
 -define(FETCH_TIMEOUT_MS, 30000).
@@ -156,6 +156,25 @@ lookup(Catalog0, Model0, Endpoint0) ->
     try
         case catalog(Catalog) of
             {ok, CatalogData} -> resolve(CatalogData, Model, host(Endpoint));
+            {error, Reason} -> {error, Reason}
+        end
+    catch
+        _:_ -> {error, <<"models catalog lookup failed">>}
+    end.
+
+%% A provider-owned transport must not borrow another provider's metadata
+%% when a shared model id has a different context or output limit.
+lookup_provider(Catalog0, Provider0, Model0) ->
+    Catalog = text(Catalog0),
+    Provider = unicode:characters_to_binary(Provider0),
+    Model = unicode:characters_to_binary(Model0),
+    try
+        case catalog(Catalog) of
+            {ok, #{index := Index, providers := Providers}} ->
+                case [E || {Name, _} = E <- maps:get(Model, Index, []), Name =:= Provider] of
+                    [Entry | _] -> {ok, encode(Entry, Providers, <<"provider name">>)};
+                    [] -> {error, <<"model is not listed by this provider">>}
+                end;
             {error, Reason} -> {error, Reason}
         end
     catch
