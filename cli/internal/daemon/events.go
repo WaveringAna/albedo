@@ -89,6 +89,8 @@ type ToolIntent struct {
 	Target string `json:"target"`
 }
 
+// ToolCodePreview is a window on a call's code: while it generates, the
+// newest end; once it runs, the first line.
 type ToolCodePreview struct {
 	Offset int    `json:"offset"`
 	Text   string `json:"text"`

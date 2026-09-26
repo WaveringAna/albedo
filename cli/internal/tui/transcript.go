@@ -377,6 +377,12 @@ func countLines(text string) string {
 
 // toolRow is the collapsed tool line: what ran, then how much.
 func toolRow(entry HistoryEntry, failed bool, clock string, width int) string {
+	head, tail := toolRowParts(entry, failed, clock)
+	return fit(head, tail, width)
+}
+
+// toolRowParts is toolRow unfitted: what ran, and the " · " tail of how much.
+func toolRowParts(entry HistoryEntry, failed bool, clock string) (string, string) {
 	var tail []string
 	if code, ok := entry.ToolArgs["code"].(string); ok && entry.ToolName == "python" {
 		if n := strings.Count(strings.TrimSpace(code), "\n") + 1; n > 1 {
@@ -396,7 +402,7 @@ func toolRow(entry HistoryEntry, failed bool, clock string, width int) string {
 	if len(tail) > 0 {
 		suffix = " · " + strings.Join(tail, " · ")
 	}
-	return fit(oneLine(toolSummary(entry)), suffix, width)
+	return oneLine(toolSummary(entry)), suffix
 }
 
 func (r TranscriptRenderer) diffCounts(change daemon.FileChange) string {

@@ -125,3 +125,24 @@ pub fn snapshot_labels_notes_by_origin_test() {
   ])
   runtime.stop(host)
 }
+
+/// A running call carries the start of its code, and a call without code
+/// carries none.
+pub fn running_progress_carries_the_start_of_its_code_test() {
+  let code = fn(event) {
+    json.parse(event, decode.at(["progress", "code", "text"], decode.string))
+  }
+  view.progress(
+    types.ToolCall("call", "python", "{\"code\":\"print(42)\\nx = 1\"}"),
+    "running",
+  )
+  |> code
+  |> should.equal(Ok("print(42)\nx = 1"))
+  view.progress(
+    types.ToolCall("call", "web_search", "{\"query\":\"q\"}"),
+    "running",
+  )
+  |> code
+  |> result.is_error
+  |> should.be_true
+}

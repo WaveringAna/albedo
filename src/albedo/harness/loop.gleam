@@ -133,7 +133,7 @@ pub fn run(
     calls -> {
       use results <- result.try(
         list.try_map(calls, fn(call) {
-          case state.publish(view.progress(call.id, call.name, "running")) {
+          case state.publish(view.progress(call, "running")) {
             False -> Error("cancelled before tool execution")
             True -> {
               use output <- result.try(runtime.invoke(

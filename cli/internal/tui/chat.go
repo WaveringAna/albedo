@@ -306,7 +306,10 @@ type ChatModel struct {
 	burstEpoch   int
 	// burstRenders counts frame builds; tests watch it to catch a cache that
 	// redraws every refresh or misses an invalidation.
-	burstRenders    int
+	burstRenders int
+	// toolIntent says the action row names what the call did (read a file,
+	// ran a command) rather than the call itself.
+	toolIntent      bool
 	Progress        *daemon.ToolProgress
 	ProgressFrame   int
 	animationActive bool
@@ -703,6 +706,7 @@ func (m *ChatModel) trimSettledLines() {
 // clearAction drops the live action row; the next action starts a new one.
 func (m *ChatModel) clearAction() {
 	m.ToolProgressText = ""
+	m.toolIntent = false
 	m.ThoughtProgressText = ""
 }
 
@@ -2015,6 +2019,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			phase := daemon.PhaseTool
 			m.Status.Phase = &phase
 			m.ToolProgressText = progressLabel(*evt.Progress)
+			m.toolIntent = evt.Progress.Intent != nil
 		}
 
 	case daemon.EventTool:
@@ -2032,11 +2037,17 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			Timestamp:  time.Now().UnixMilli(),
 		}
 		m.appendSettledEntry(entry)
-		if !evt.Replayed {
-			m.ToolProgressText = finishedProgress(m.ToolProgressText, evt.ToolName, toolFailed(entry))
-		} else {
+		switch {
+		case evt.Replayed:
 			m.ToolProgressText = ""
+		case m.toolIntent:
+			m.ToolProgressText = finishedProgress(m.ToolProgressText, evt.ToolName, toolFailed(entry))
+		default:
+			// the call itself, as its collapsed tool row names it
+			head, tail := toolRowParts(entry, toolFailed(entry), "")
+			m.ToolProgressText = head + tail
 		}
+		m.toolIntent = false
 		if m.turn == nil {
 			ts := time.Now().UnixMilli()
 			m.turn = &openTurn{start: ts, last: ts}
@@ -2301,6 +2312,10 @@ func progressLabel(progress daemon.ToolProgress) string {
 	}
 	if progress.Phase == "generating" {
 		return "making a " + progress.Name + " call"
+	}
+	if progress.Code != nil && progress.Code.Text != "" {
+		// the head of the row the call settles into
+		return toolSummary(HistoryEntry{ToolName: progress.Name, ToolArgs: map[string]any{"code": progress.Code.Text}})
 	}
 	return "running " + progress.Name
 }

@@ -601,11 +601,22 @@ func parseStreamEvent(raw map[string]any) *StreamEvent {
 		}
 
 		var code *ToolCodePreview
-		if cm, ok := progMap["code"].(map[string]any); ok && phase == "generating" {
+		if cm, ok := progMap["code"].(map[string]any); ok {
 			off, hasOff := cm["offset"].(float64)
 			txt, hasTxt := cm["text"].(string)
-			if hasOff && hasTxt && off >= 0 && len(txt) <= 512 {
-				code = &ToolCodePreview{Offset: int(off), Text: txt}
+			if hasOff && hasTxt && off >= 0 {
+				switch {
+				case phase == "generating" && len(txt) <= 512:
+					code = &ToolCodePreview{Offset: int(off), Text: txt}
+				case phase == "running" && len(txt) <= 16000:
+					// a running call's code is its start: what it does, and
+					// the first line to name it by
+					if intent == nil && name == "python" {
+						intent = ParsePythonIntent(txt)
+					}
+					head, _, _ := strings.Cut(strings.TrimSpace(txt), "\n")
+					code = &ToolCodePreview{Text: sanitizeControlRunes(head)}
+				}
 			}
 		}
 

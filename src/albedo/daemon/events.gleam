@@ -53,14 +53,31 @@ pub fn phase(value: String) -> String {
   event("phase", [#("phase", json.string(value))])
 }
 
-pub fn progress(id: String, name: String, phase: String) -> String {
+/// A call's progress. A call with code carries its start, so a client that
+/// missed the arguments streaming can still say what it runs.
+pub fn progress(call: types.ToolCall, phase: String) -> String {
+  let code =
+    json.parse(call.arguments, decode.at(["code"], decode.string))
+    |> result.map(fn(code) {
+      [
+        #(
+          "code",
+          json.object([
+            #("offset", json.int(0)),
+            #("text", json.string(string.slice(code, 0, 2000))),
+          ]),
+        ),
+      ]
+    })
+    |> result.unwrap([])
   event("tool_progress", [
     #(
       "progress",
       json.object([
-        #("callId", json.string(id)),
-        #("name", json.string(name)),
+        #("callId", json.string(call.id)),
+        #("name", json.string(call.name)),
         #("phase", json.string(phase)),
+        ..code
       ]),
     ),
   ])

@@ -415,6 +415,21 @@ func TestCompletedCallPreviewsReleaseState(t *testing.T) {
 	}
 }
 
+func TestRunningProgressCarriesItsCode(t *testing.T) {
+	running := func(code string) *ToolProgress {
+		return parseStreamEvent(map[string]any{"type": "tool_progress", "progress": map[string]any{
+			"callId": "c", "name": "python", "phase": "running",
+			"code": map[string]any{"offset": 0.0, "text": code},
+		}}).Progress
+	}
+	if p := running("\n  print(42)\nx = 1"); p.Intent != nil || p.Code == nil || p.Code.Text != "print(42)" {
+		t.Fatalf("running call lost its first line: %+v", p)
+	}
+	if p := running("x = 1\nrun('go', 'test')"); p.Intent == nil || *p.Intent != (ToolIntent{Kind: "run", Target: "go test"}) {
+		t.Fatalf("running call lost its intent: %+v", p)
+	}
+}
+
 func TestMessageTimestampsSurvive(t *testing.T) {
 	ts := int64(1700000000000)
 	page := formatPage(1, []any{

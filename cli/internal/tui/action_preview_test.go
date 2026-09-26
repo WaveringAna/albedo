@@ -74,6 +74,26 @@ func TestGroupedActionRowHoldsUntilTheNextAction(t *testing.T) {
 	}
 }
 
+// A cell with no named intent holds its collapsed tool row: its first line,
+// then how much it was and printed.
+func TestPythonActionRowShowsItsCode(t *testing.T) {
+	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m.SetSize(100, 30)
+	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventUser, Text: "do it"})
+	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventToolProgress, Progress: &daemon.ToolProgress{
+		Name: "python", Phase: "running", Code: &daemon.ToolCodePreview{Text: "x = 6 * 7"}}})
+	m.refreshViewportContent()
+	if got := ansi.Strip(m.Viewport.View()); !strings.Contains(got, "python · x = 6 * 7") {
+		t.Fatalf("running cell does not show its code: %q", got)
+	}
+	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventToolProgress})
+	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventTool, ToolName: "python",
+		ToolArgs: map[string]any{"code": "x = 6 * 7\nprint(x)"}, ToolResult: `{"output":"42\n"}`})
+	if want := "python · x = 6 * 7 · 2 lines · 1 line out"; m.ToolProgressText != want {
+		t.Fatalf("finished cell row = %q, want %q", m.ToolProgressText, want)
+	}
+}
+
 func TestFinishedActionDoesNotLeakIntoVerboseOrReplayedHistory(t *testing.T) {
 	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
 	m.SetSize(100, 30)
@@ -116,13 +136,13 @@ func TestTurnSignoffReplacesTheLastActionRow(t *testing.T) {
 		ToolArgs: map[string]any{"code": "print(42)"}, ToolResult: `{"status":"ok"}`})
 	m.refreshViewportContent()
 	view := ansi.Strip(m.Viewport.View())
-	if strings.Count(view, "ran python") != 1 || !strings.Contains(view, "python print(42)") {
+	if strings.Count(view, "python · print(42)") != 1 || !strings.Contains(view, "python print(42)") {
 		t.Fatalf("group summary and completed action are not both visible: %q", view)
 	}
 	status := daemon.AgentStatus{Idle: true}
 	m, _ = m.Update(ChatStatusMsg{SessionID: m.SessionID, Generation: m.Generation,
 		Revision: m.statusRevision, Status: &status})
-	if m.ToolProgressText != "" || strings.Contains(ansi.Strip(m.Viewport.View()), "ran python") ||
+	if m.ToolProgressText != "" || strings.Contains(ansi.Strip(m.Viewport.View()), "python · print(42)") ||
 		!strings.Contains(ansi.Strip(m.Viewport.View()), "python print(42)") {
 		t.Fatalf("turn signoff left an action row behind: %q", m.Viewport.View())
 	}
