@@ -31,6 +31,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
+import gleam/set
 import gleam/string
 import gleam/string_tree
 import gleam/uri
@@ -292,9 +293,14 @@ fn handle(state: State, message: Message) {
       }
     }
     List(reply) -> {
+      let db = runtime.ledger(state.host)
+      let children =
+        family.descendants(db) |> result.unwrap([]) |> set.from_list
       process.send(
         reply,
-        conversation.list(runtime.ledger(state.host)) |> result.unwrap([]),
+        conversation.list(db)
+          |> result.unwrap([])
+          |> list.filter(fn(info) { !set.contains(children, info.id) }),
       )
       actor.continue(state)
     }

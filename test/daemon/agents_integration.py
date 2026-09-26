@@ -158,6 +158,8 @@ def run(endpoint):
             assert spawned["member"] == {"session": coder, "parent": lead, "name": "coder",
                                          "depth": 1, "closed": False}, spawned
             assert spawned["session"]["title"] == "coder", spawned
+            listed = [s["id"] for s in api("/sessions")]
+            assert lead in listed and coder not in listed, "children stay out of the session list"
             wait_for(lambda: asked('kind="task"'), "the task")
             task = asked('kind="task"')[0]
             assert f'session="{lead}"' in task and "map every wake path" in task, task

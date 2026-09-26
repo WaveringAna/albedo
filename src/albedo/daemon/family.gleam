@@ -93,6 +93,20 @@ pub fn get(db: store.Store, session: String) -> Result(Option(Member), String) {
   |> result.map(fn(found) { list.first(found) |> option.from_result })
 }
 
+/// Every session that has a parent. Session lists leave these out: a child is
+/// reached through its parent's agents view.
+pub fn descendants(db: store.Store) -> Result(List(String), String) {
+  store.query(db, fn(connection) {
+    sqlight.query(
+      "SELECT session FROM session_family",
+      connection,
+      [],
+      decode.field(0, decode.string, decode.success),
+    )
+    |> result.map_error(fn(e) { e.message })
+  })
+}
+
 pub fn children(
   db: store.Store,
   parent: String,

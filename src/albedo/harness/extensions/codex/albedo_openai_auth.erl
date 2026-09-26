@@ -244,6 +244,14 @@ usage_limit(Body) ->
                 #{<<"resets_in_seconds">> := In} when is_integer(In), In > 0 -> {ok, Now + In * 1000};
                 _ -> {ok, Now + ?RATE_LIMIT_MS}
             end;
+        #{<<"error">> := #{<<"code">> := <<"rate_limit_exceeded">>}} ->
+            {ok, erlang:system_time(millisecond) + ?RATE_LIMIT_MS};
+        %% The Codex edge answers a burst with {"detail":"Rate limit exceeded"}.
+        #{<<"detail">> := Detail} when is_binary(Detail) ->
+            case string:find(string:lowercase(Detail), <<"rate limit">>) of
+                nomatch -> error;
+                _ -> {ok, erlang:system_time(millisecond) + ?RATE_LIMIT_MS}
+            end;
         _ -> error
     catch
         _:_ -> error

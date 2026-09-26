@@ -9,8 +9,10 @@ import albedo/openai_api/types
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import gleam/uri
 
 const base_url = "https://chatgpt.com/backend-api"
@@ -93,8 +95,7 @@ fn resolve(
                   client,
                   request,
                   on_event,
-                  rotations,
-                  openai_api.stream,
+                  Rotation(rotations, 0, openai_api.stream, sleep),
                 )
               })
             }),
@@ -120,28 +121,75 @@ fn connect(home: String, session: String) -> Result(types.Client, String) {
   })
 }
 
+/// How far one request may go looking for room: account hops left, waits
+/// taken so far, and the stream and sleep it uses (tests replace both).
+pub type Rotation {
+  Rotation(
+    hops: Int,
+    waits: Int,
+    stream: fn(types.Client, types.Request, fn(types.Event) -> types.Control) ->
+      Result(types.Turn, types.Error),
+    pause: fn(Int) -> Nil,
+  )
+}
+
+/// Backoff when every account is briefly rate limited: about a minute in all.
+const waits = [4000, 8000, 15_000, 30_000]
+
 /// Streams on this account; when it hits a limit, marks it and retries the same
-/// request on the next account that still has room. A 429 arrives before any
-/// output, so a retry repeats nothing the model or the user saw.
+/// request on the next account that still has room. When none has, a short
+/// rate limit is waited out and retried; a usage limit, which lasts hours, is
+/// not. A 429 arrives before any output, so a retry repeats nothing the model
+/// or the user saw.
 pub fn rotating(
   home: String,
   session: String,
   client: types.Client,
   request: types.Request,
   on_event: fn(types.Event) -> types.Control,
-  left: Int,
-  stream: fn(types.Client, types.Request, fn(types.Event) -> types.Control) ->
-    Result(types.Turn, types.Error),
+  rotation: Rotation,
 ) -> Result(types.Turn, types.Error) {
-  case stream(client, request, on_event) {
-    Error(types.HttpError(429, body)) as failed if left > 0 ->
-      case next_account(home, session, client, body) {
-        Some(next) ->
-          rotating(home, session, next, request, on_event, left - 1, stream)
-        None -> failed
+  case rotation.stream(client, request, on_event) {
+    Error(types.HttpError(429, body)) as failed -> {
+      let next = case rotation.hops > 0 {
+        True -> next_account(home, session, client, body)
+        False -> None
       }
+      case next, list.drop(waits, rotation.waits) {
+        Some(next), _ ->
+          rotating(
+            home,
+            session,
+            next,
+            request,
+            on_event,
+            Rotation(..rotation, hops: rotation.hops - 1),
+          )
+        None, [delay, ..] ->
+          case usage_limited(body), connect(home, session) {
+            False, Ok(retry) -> {
+              rotation.pause(delay)
+              rotating(
+                home,
+                session,
+                retry,
+                request,
+                on_event,
+                Rotation(..rotation, waits: rotation.waits + 1),
+              )
+            }
+            _, _ -> failed
+          }
+        None, [] -> failed
+      }
+    }
     other -> other
   }
+}
+
+fn usage_limited(body: String) -> Bool {
+  string.contains(body, "usage_limit_reached")
+  || string.contains(body, "usage_not_included")
 }
 
 /// Records the limit against this account and names another with room left.
@@ -260,3 +308,6 @@ fn native_limited(
   access: String,
   body: String,
 ) -> Result(String, String)
+
+@external(erlang, "albedo_retry", "sleep")
+fn sleep(milliseconds: Int) -> Nil
