@@ -3,6 +3,7 @@ import albedo/harness/extensions/codex/extension as codex
 import albedo/openai_api
 import albedo/openai_api/types
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
@@ -83,6 +84,78 @@ pub fn usage_limit_moves_the_session_to_a_sibling_account_test() {
   let assert Some(exhausted) =
     codex.account_failure(home, sibling, types.HttpError(429, body))
   string.contains(exhausted, "no other ChatGPT account") |> should.be_true
+  cleanup(root)
+}
+
+/// Replays a stream where the named tokens answer 429 with `body` and every
+/// other account fails plainly, recording which accounts were tried.
+fn limited_stream(
+  limited: List(String),
+  body: String,
+  tried: process.Subject(String),
+) {
+  fn(client: types.Client, _request, _on_event) {
+    process.send(tried, client.api_key)
+    case list.contains(limited, client.api_key) {
+      True -> Error(types.HttpError(429, body))
+      False -> Error(types.HttpError(500, "second account answered"))
+    }
+  }
+}
+
+fn drain(tried: process.Subject(String), found: List(String)) -> List(String) {
+  case process.receive(tried, 0) {
+    Ok(token) -> drain(tried, [token, ..found])
+    Error(_) -> list.reverse(found)
+  }
+}
+
+pub fn a_limited_account_hands_the_same_request_to_the_next_test() {
+  let #(root, _, home) = fixture()
+  let _ = write(home, "auth.json", credentials)
+  let #(_, first) = codex_client(home, "swarm-session")
+  let tried = process.new_subject()
+  let body =
+    "{\"error\":{\"type\":\"usage_limit_reached\",\"resets_in_seconds\":3600}}"
+  let request = openai_api.request("gpt-5.5", [types.User("hi")])
+  codex.rotating(
+    home,
+    "swarm-session",
+    first,
+    request,
+    fn(_) { types.Continue },
+    8,
+    limited_stream([first.api_key], body, tried),
+  )
+  |> should.equal(Error(types.HttpError(500, "second account answered")))
+  let attempts = drain(tried, [])
+  list.length(attempts) |> should.equal(2)
+  list.first(attempts) |> should.equal(Ok(first.api_key))
+  cleanup(root)
+}
+
+pub fn a_rate_limit_rotates_too_and_stops_when_all_are_busy_test() {
+  let #(root, _, home) = fixture()
+  let _ = write(home, "auth.json", credentials)
+  let #(_, first) = codex_client(home, "busy-swarm")
+  let tried = process.new_subject()
+  let body =
+    "{\"error\":{\"type\":\"rate_limit_exceeded\",\"resets_in_seconds\":20}}"
+  let #(_, second) = codex_client(home, "other-busy-swarm")
+  let both = list.unique([first.api_key, second.api_key])
+  let request = openai_api.request("gpt-5.5", [types.User("hi")])
+  codex.rotating(
+    home,
+    "busy-swarm",
+    first,
+    request,
+    fn(_) { types.Continue },
+    8,
+    limited_stream(both, body, tried),
+  )
+  |> should.equal(Error(types.HttpError(429, body)))
+  // Each account once, then the limit stands: no loop over busy accounts.
+  list.length(drain(tried, [])) |> should.equal(2)
   cleanup(root)
 }
 

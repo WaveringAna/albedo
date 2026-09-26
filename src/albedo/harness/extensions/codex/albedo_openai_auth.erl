@@ -4,12 +4,14 @@
 -export([codex_access/2, codex_revoke/2, codex_limited/3, codex_exchange/3, codex_account/1]).
 
 -define(CLIENT_ID, <<"app_EMoamEEZ73f0CkXaXp7hrann">>).
--define(TOKEN_URL, "https://auth.openai.com/oauth/token").
+-define(TOKEN_URL, "https://auth.openai.com/api/accounts/oauth/token").
 -define(AUTH_CLAIM, <<"https://api.openai.com/auth">>).
 -define(REFRESH_SKEW_MS, 60000).
 -define(HTTP_TIMEOUT_MS, 15000).
 %% Used when a usage-limit response names no reset time.
 -define(DEFAULT_LIMIT_MS, 900000).
+%% Used when a short-term rate limit names no reset time.
+-define(RATE_LIMIT_MS, 30000).
 
 %% Trades an authorization code for the credential /login stores.
 codex_exchange(Code, Verifier, Redirect) ->
@@ -234,6 +236,14 @@ usage_limit(Body) ->
                 _ -> Now + ?DEFAULT_LIMIT_MS
             end,
             {ok, Until};
+        %% A short-term rate limit cools the account down briefly, so a busy
+        %% swarm spreads onto siblings instead of queueing on one account.
+        #{<<"error">> := #{<<"type">> := <<"rate_limit_exceeded">>} = Error} ->
+            Now = erlang:system_time(millisecond),
+            case Error of
+                #{<<"resets_in_seconds">> := In} when is_integer(In), In > 0 -> {ok, Now + In * 1000};
+                _ -> {ok, Now + ?RATE_LIMIT_MS}
+            end;
         _ -> error
     catch
         _:_ -> error

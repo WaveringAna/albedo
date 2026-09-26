@@ -55,7 +55,7 @@ pub fn login() -> oauth.Login {
 }
 
 fn authorize(grant: oauth.Grant) -> String {
-  "https://auth.openai.com/oauth/authorize?"
+  "https://auth.openai.com/api/accounts/authorize?"
   <> uri.query_to_string([
     #("response_type", "code"),
     #("client_id", client_id),
@@ -82,23 +82,86 @@ fn resolve(
       case context.protocol {
         types.Responses ->
           Some(
-            native_access(context.home, context.session)
-            |> result.try(fn(encoded) {
-              json.parse(encoded, access_decoder())
-              |> result.map_error(fn(_) { "invalid Codex credential response" })
-            })
-            |> result.map(fn(access) {
-              let client =
-                openai_api.codex_client(
-                  base_url,
-                  access.token,
-                  access.account_id,
+            connect(context.home, context.session)
+            |> result.map(fn(client) {
+              let upstream =
+                openai.upstream(client, account_failure(context.home, client, _))
+              extension.Upstream(..upstream, stream: fn(request, on_event) {
+                rotating(
+                  context.home,
                   context.session,
+                  client,
+                  request,
+                  on_event,
+                  rotations,
+                  openai_api.stream,
                 )
-              openai.upstream(client, account_failure(context.home, client, _))
+              })
             }),
           )
         _ -> Some(Error("Codex provider requires the responses protocol"))
+      }
+    _ -> None
+  }
+}
+
+/// Accounts one request may move through after limits, beyond the first.
+const rotations = 8
+
+/// The session's current account as a client.
+fn connect(home: String, session: String) -> Result(types.Client, String) {
+  native_access(home, session)
+  |> result.try(fn(encoded) {
+    json.parse(encoded, access_decoder())
+    |> result.map_error(fn(_) { "invalid Codex credential response" })
+  })
+  |> result.map(fn(access) {
+    openai_api.codex_client(base_url, access.token, access.account_id, session)
+  })
+}
+
+/// Streams on this account; when it hits a limit, marks it and retries the same
+/// request on the next account that still has room. A 429 arrives before any
+/// output, so a retry repeats nothing the model or the user saw.
+pub fn rotating(
+  home: String,
+  session: String,
+  client: types.Client,
+  request: types.Request,
+  on_event: fn(types.Event) -> types.Control,
+  left: Int,
+  stream: fn(types.Client, types.Request, fn(types.Event) -> types.Control) ->
+    Result(types.Turn, types.Error),
+) -> Result(types.Turn, types.Error) {
+  case stream(client, request, on_event) {
+    Error(types.HttpError(429, body)) as failed if left > 0 ->
+      case next_account(home, session, client, body) {
+        Some(next) ->
+          rotating(home, session, next, request, on_event, left - 1, stream)
+        None -> failed
+      }
+    other -> other
+  }
+}
+
+/// Records the limit against this account and names another with room left.
+fn next_account(
+  home: String,
+  session: String,
+  client: types.Client,
+  body: String,
+) -> Option(types.Client) {
+  let has_next =
+    native_limited(home, client.api_key, body)
+    |> result.try(fn(encoded) {
+      json.parse(encoded, limit_decoder()) |> result.replace_error("")
+    })
+    |> result.map(fn(limit) { limit.2 != "" })
+  case has_next {
+    Ok(True) ->
+      case connect(home, session) {
+        Ok(next) if next.api_key != client.api_key -> Some(next)
+        _ -> None
       }
     _ -> None
   }
@@ -110,8 +173,8 @@ fn resolve(
 /// refreshing cannot recover it. The account is removed from auth.json and the
 /// message ends in "run /login", which clients treat as a prompt to sign in again.
 ///
-/// A usage-limit 429 marks the account limited until its reset, so the next
-/// turn moves to a sibling account that still has usage.
+/// A usage-limit 429 marks the account limited until its reset. By the time
+/// this explains one, `rotating` has already tried every sibling with room.
 pub fn account_failure(
   home: String,
   client: types.Client,
