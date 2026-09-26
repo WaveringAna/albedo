@@ -1044,7 +1044,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if msg.Type == tea.KeyCtrlN {
 			return m, func() tea.Msg { return ChatNewSessionMsg{} }
 		}
-		if msg.Type == tea.KeyCtrlG {
+		if msg.Type == tea.KeyCtrlO {
 			return m, func() tea.Msg { return ChatOpenAgentsMsg{} }
 		}
 		if msg.Type == tea.KeyEsc && m.dragAnchor != nil {
@@ -2361,9 +2361,11 @@ func (m ChatModel) renderFooter() string {
 		left  []hint
 		right string
 	}{
-		{[]hint{commands, {"shift+↑↓", "turns"}, {"drag", "copy"}, {"ctrl+j", "diffs"}}, right},
-		{[]hint{commands, {"drag", "copy"}, {"ctrl+j", "diffs"}}, right},
+		{[]hint{commands, {"shift+↑↓", "turns"}, {"drag", "copy"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right},
+		{[]hint{commands, {"drag", "copy"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right},
+		{[]hint{commands, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right},
 		{[]hint{commands, {"drag", "copy"}}, right},
+		{[]hint{commands, {"ctrl+o", "agents"}}, compact},
 		{[]hint{commands, {"ctrl+j", "diffs"}}, compact},
 		{[]hint{commands}, compact},
 		{[]hint{{"/", ""}}, compact},

@@ -24,7 +24,7 @@ var AppCommands = []ChatCommand{
 	{Name: "/login", Description: "add or select a named openai-compatible api"},
 	{Name: "/new", Description: "new coding session"},
 	{Name: "/sessions", Description: "switch session"},
-	{Name: "/agents", Description: "watch and message this session's agents (ctrl+g)"},
+	{Name: "/agents", Description: "watch and message this session's agents (ctrl+o)"},
 	{Name: "/extensions", Description: "manage this session's extension plugins"},
 	{Name: "/skills", Description: "manage loaded skills and per-skill defaults"},
 	{Name: "/instructions", Description: "manage AGENTS.md and other instruction files"},

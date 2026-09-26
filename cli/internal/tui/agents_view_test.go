@@ -75,3 +75,22 @@ func TestAgentsViewSizesBeforeItOpens(t *testing.T) {
 		t.Log("an unopened view renders nothing, as expected")
 	}
 }
+
+func TestAgentsOpenFromTheCommandAndCtrlO(t *testing.T) {
+	m := AppModel{State: AppStateChat, ActiveSession: &daemon.Session{ID: "lead"}}
+	_, cmd := m.Update(ChatExecuteCommandMsg{Name: "/agents"})
+	if cmd == nil {
+		t.Fatal("/agents did nothing")
+	}
+	if _, ok := cmd().(ChatOpenAgentsMsg); !ok {
+		t.Fatal("/agents should open the agents view, not the session browser")
+	}
+	chat := NewChatModel(&daemon.Session{ID: "lead"}, nil)
+	_, cmd = chat.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	if cmd == nil {
+		t.Fatal("ctrl+o did nothing")
+	}
+	if _, ok := cmd().(ChatOpenAgentsMsg); !ok {
+		t.Fatal("ctrl+o should open the agents view")
+	}
+}

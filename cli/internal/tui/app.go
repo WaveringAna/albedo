@@ -1038,7 +1038,9 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		case msg.Name == "/new":
 			m.SessionGen++
 			return m, m.createSessionCmd(m.SessionGen)
-		case msg.Name == "/sessions" || msg.Name == "/agents" || msg.Name == "/a":
+		case msg.Name == "/agents":
+			return m, func() tea.Msg { return ChatOpenAgentsMsg{} }
+		case msg.Name == "/sessions" || msg.Name == "/a":
 			m.State = AppStateSessionPicker
 			m.SessionGen++
 			m.GlanceGen++

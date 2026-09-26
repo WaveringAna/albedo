@@ -340,7 +340,7 @@ type agentsReconnectMsg struct{ Gen int }
 func (m AgentsViewModel) key(msg tea.KeyMsg) (AgentsViewModel, tea.Cmd) {
 	empty := m.input.Value() == ""
 	switch {
-	case msg.Type == tea.KeyEsc || msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyCtrlG:
+	case msg.Type == tea.KeyEsc || msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyCtrlO:
 		if !empty && msg.Type == tea.KeyEsc {
 			m.input.SetValue("")
 			return m, nil
