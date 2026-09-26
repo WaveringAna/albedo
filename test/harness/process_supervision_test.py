@@ -23,12 +23,13 @@ asyncio.set_event_loop(LOOP)
 EVENTS: list[dict[str, object]] = []
 
 
-def install() -> None:
+def install(job_slot=None) -> None:
     plugin.setup(albedo_api.PythonApi(
         version=1, loop=LOOP,
         host=lambda method, args: (_ for _ in ()).throw(RuntimeError("no host in tests")),
         HostError=RuntimeError, capture=albedo_kernel.background_capture, preview=albedo_kernel.PREVIEW,
-        send=EVENTS.append, on_shutdown=lambda close: None, background_handle=lambda _: None))
+        send=EVENTS.append, on_shutdown=lambda close: None, background_handle=lambda _: None,
+        job_slot=job_slot))
 
 
 def run(coro):
@@ -137,24 +138,43 @@ class SupervisionTest(unittest.TestCase):
         self.assertIn(job.id, plugin.retained)
 
     def test_cancelled_spawn_still_owns_its_child(self):
-        real = asyncio.create_subprocess_shell
+        real = plugin.spawn
 
         async def slow(*args, **kwargs):
             await asyncio.sleep(0.05)
             return await real(*args, **kwargs)
 
-        asyncio.create_subprocess_shell = slow
+        plugin.spawn = slow
         try:
             job = start("sleep 30", timeout=30)
             run(asyncio.sleep(0.01))       # inside the spawn
             job.task.cancel()
             run(asyncio.sleep(0.3))
         finally:
-            asyncio.create_subprocess_shell = real
+            plugin.spawn = real
         self.assertIsNotNone(job.process)
         self.assertLess(job.exit_code, 0)   # the child the spawn created was ended
         self.assertTrue(job.termination.gone)
         self.assertFalse(present(job.group.pgid))
+
+    def test_command_wait_uses_exit_notifications_not_periodic_timers(self):
+        from unittest.mock import patch
+
+        async def check():
+            job = start("sleep 30")
+            try:
+                await job._spawn()
+                with patch.object(LOOP, "call_later", wraps=LOOP.call_later) as timers:
+                    # Drain ready callbacks, not wall time: _drain has now
+                    # installed its wait even if it raced the spawn reply.
+                    for _ in range(4):
+                        await asyncio.sleep(0)
+                    self.assertFalse(job.task.done())
+                    self.assertFalse(any(call.args[0] < 1 for call in timers.call_args_list))
+            finally:
+                await job.stop()
+                await job
+        run(check())
 
     def test_surviving_group_keeps_its_slot_and_is_surfaced(self):
         """A group that outlives KILL keeps its slot and is reported, not forgotten."""
@@ -242,6 +262,69 @@ class SupervisionTest(unittest.TestCase):
             result = run(albedo_proc.terminate([albedo_proc.Group(os.getpgrp())], term=0, kill=0))[0]
         self.assertFalse(result.gone)
         self.assertEqual(len(result.failures), 2)
+
+    def test_long_jobs_pause_for_a_heavy_slot_and_quick_ones_never_ask(self):
+        import subprocess
+
+        async def check():
+            asked: list[str] = []
+            grant = LOOP.create_future()
+
+            async def admission(id, on_queued):
+                asked.append(id)
+                on_queued()  # no slot free: the job is paused
+                await grant
+
+            install(admission)
+            grace = plugin.GRACE
+            plugin.GRACE = 0.2
+            try:
+                quick = start("true")
+                await quick
+                self.assertEqual(asked, [], "a quick command must never ask for a slot")
+                slow = start("sleep 5", timeout=1.0)
+                await asyncio.sleep(0.5)
+                self.assertEqual(asked, [slow.id])
+                self.assertTrue(slow.queued)
+                state = subprocess.run(["ps", "-o", "stat=", "-p", str(slow.process.pid)],
+                                       capture_output=True, text=True).stdout.strip()
+                self.assertTrue(state.startswith("T"), f"paused job should be stopped, ps says {state!r}")
+                # Time spent paused does not count against the timeout.
+                await asyncio.sleep(1.2)
+                self.assertFalse(slow.task.done())
+                grant.set_result(None)
+                await asyncio.sleep(0.1)
+                self.assertFalse(slow.queued)
+                await slow
+                self.assertTrue(slow.timed_out)
+                self.assertTrue(slow.termination.gone)
+            finally:
+                plugin.GRACE = grace
+                await plugin.close()
+
+        run(check())
+
+    def test_a_paused_job_stops_cleanly(self):
+        async def check():
+            async def admission(id, on_queued):
+                on_queued()
+                await LOOP.create_future()
+
+            install(admission)
+            grace = plugin.GRACE
+            plugin.GRACE = 0.1
+            try:
+                job = start("sleep 30")
+                await asyncio.sleep(0.3)
+                self.assertTrue(job.queued)
+                self.assertTrue((await job.stop()).gone)
+                await job
+                self.assertFalse(job.queued)
+            finally:
+                plugin.GRACE = grace
+                await plugin.close()
+
+        run(check())
 
     def test_stop_before_spawn_and_immediate_cancellation_keep_ownership(self):
         async def check():

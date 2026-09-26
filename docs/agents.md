@@ -29,3 +29,33 @@ a letter is stored first and marked delivered in the same transaction that write
 `ctrl+o` or `/agents` in a session shows its whole tree live: running agents pulse with their token rate, mail travels the edges as blocks. tab picks an agent, enter opens it (typing there is you, as the user), text + enter sends to it, `/spawn <name> <task>` starts a child under it.
 
 routes: `GET /agents?session=<id>` (the tree), `GET /agents/stream` (batched events), `POST /sessions/:id/children`, `POST /sessions/:id/mail`.
+
+## swarm overhead
+
+kernel boots queue behind four slots. each boot owns only its session's composition,
+and each kernel's host callback captures only its routes, store handle, and session
+id—not a snapshot of the other agents. bash waits on process-exit notifications,
+not periodic exit checks; descendant cleanup and deadlines still apply.
+
+session replay retains at most 256 events or 4 mib, evicting incrementally rather
+than copying the full window per token. missing events require a transcript reset.
+the orchestrator feed batches every 100 ms and skips activity serialization when
+nobody is watching.
+
+bash jobs start at once, at low priority (`nice`, and utility QoS on macOS), so a
+busy swarm yields to the person at the machine. a job still running after the grace
+window (5 s) is heavy and needs one of a few daemon-wide slots; without one it is
+paused (`SIGSTOP`, `job.queued` is true) and resumed when one frees, so waiting
+costs no cpu and loses no work. quick commands never wait. the timeout counts only
+time the command ran. `await job.stop()` resumes a paused job so it can exit.
+
+slots default to the machine's cores and shrink while the one-minute load average
+runs past 1.25× the cores, which catches heavy jobs that fan out workers of their
+own. a freed slot goes to the kernel holding the fewest, oldest request first, so
+one busy agent cannot starve the rest. a slot is released only after process-group
+cleanup is confirmed; failed cleanup keeps it held.
+
+settings, read when the daemon starts: `ALBEDO_MAX_LOCAL_JOBS` fixes the slot count
+(1–256), `ALBEDO_JOB_GRACE_SECONDS` sets the grace window, `ALBEDO_JOB_LOAD=0`
+turns off the load adjustment. this bounds sustained shell work, not agent/model
+concurrency, remote kernels, or python computed directly in a cell.

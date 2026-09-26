@@ -3,12 +3,18 @@
 %% only sends a message, and a dead owner's entry is dropped on the next
 %% publish, so a closed stream needs no cleanup call.
 -module(albedo_bus).
--export([subscribe/2, publish/1, mark_running/2, running/1, forget/1]).
+-export([subscribe/2, publish/1, has_subscribers/0, mark_running/2, running/1, forget/1]).
 
 -define(TABLE, albedo_bus).
 
 subscribe(Owner, Fun) ->
     albedo_registry:register(?TABLE, make_ref(), {Owner, Fun}).
+
+has_subscribers() ->
+    case ets:info(?TABLE, size) of
+        Size when is_integer(Size), Size > 0 -> true;
+        _ -> false
+    end.
 
 publish(Event) ->
     case ets:whereis(?TABLE) of

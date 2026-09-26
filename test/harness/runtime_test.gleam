@@ -4,6 +4,8 @@ import albedo/harness/extensions/work/ledger as work
 import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/erlang/process
+import gleam/int
+import gleam/list
 import gleam/option.{None, Some}
 import gleeunit/should
 
@@ -12,6 +14,30 @@ fn temporary_database() -> String
 
 @external(erlang, "albedo_runtime_test_support", "cleanup")
 fn cleanup(path: String) -> Nil
+
+@external(erlang, "albedo_runtime_test_support", "kernel_memory")
+fn kernel_memory(session: runtime.Session) -> Int
+
+pub fn kernel_host_ownership_does_not_grow_with_the_swarm_test() {
+  let assert Ok(host) = runtime.start_with_extensions(":memory:", [])
+  let assert Ok(first) = runtime.open_session(host, "first", "/tmp")
+  let baseline = kernel_memory(first)
+  // A hundred dormant compositions, not a hundred OS processes. None belongs
+  // in another kernel's RPC closure or in the worker that boots that kernel.
+  list.repeat(Nil, 100)
+  |> list.index_map(fn(_, n) {
+    let assert Ok(_) =
+      runtime.peek_commands(host, "dormant-" <> int.to_string(n), "/tmp")
+  })
+  let assert Ok(last) = runtime.open_session(host, "last", "/tmp")
+  let opened = kernel_memory(last)
+  let assert Ok(Some(refreshed)) = runtime.refresh_session(host, "last")
+  let rebound = kernel_memory(refreshed)
+  runtime.stop(host)
+  // Allocator size classes may differ; sibling state must not accumulate.
+  should.be_true(opened <= baseline * 2 + 4096)
+  should.be_true(rebound <= baseline * 2 + 4096)
+}
 
 pub fn durable_work_and_native_cell_results_test() {
   let path = temporary_database()

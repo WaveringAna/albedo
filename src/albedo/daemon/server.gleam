@@ -1021,21 +1021,22 @@ fn agents_stream(req) {
         Error(_) -> Nil
       }
       process.send(self, Flush)
-      #(self, [], 0)
+      #(self, [], 0, 0)
     },
     fn(state, message, connection) {
-      let #(self, buffered, quiet) = state
+      let #(self, buffered, count, quiet) = state
       case message {
         // Past the cap, a stalled client loses deltas rather than memory.
         Heard(event) ->
-          case list.length(buffered) < 4000 {
-            True -> actor.continue(#(self, [event, ..buffered], quiet))
+          case count < 4000 {
+            True ->
+              actor.continue(#(self, [event, ..buffered], count + 1, quiet))
             False -> actor.continue(state)
           }
         Flush -> {
           let _ = process.send_after(self, 100, Flush)
           case buffered, quiet >= 50 {
-            [], False -> actor.continue(#(self, [], quiet + 1))
+            [], False -> actor.continue(#(self, [], 0, quiet + 1))
             _, _ -> {
               let body =
                 string_tree.from_string("{\"events\":[")
@@ -1047,7 +1048,7 @@ fn agents_stream(req) {
                 |> string_tree.append("]}")
               case mist.send_event(connection, mist.event(body)) {
                 Error(_) -> actor.stop()
-                Ok(_) -> actor.continue(#(self, [], 0))
+                Ok(_) -> actor.continue(#(self, [], 0, 0))
               }
             }
           }

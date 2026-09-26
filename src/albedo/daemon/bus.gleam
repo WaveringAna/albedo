@@ -14,6 +14,13 @@ import gleam/string
 
 /// Forward one of a session's stream events, reduced to what the view shows.
 pub fn activity(session: String, event: String) -> Nil {
+  case has_subscribers() {
+    False -> Nil
+    True -> publish_activity(session, event)
+  }
+}
+
+fn publish_activity(session: String, event: String) -> Nil {
   case kind(event) {
     // Deltas and progress are small and frequent: tag them and pass them on.
     "text"
@@ -167,6 +174,9 @@ fn quote(value: String) -> String {
 
 @external(erlang, "albedo_bus", "publish")
 fn publish(event: String) -> Nil
+
+@external(erlang, "albedo_bus", "has_subscribers")
+fn has_subscribers() -> Bool
 
 @external(erlang, "albedo_bus", "subscribe")
 fn bus_subscribe(owner: process.Pid, deliver: fn(String) -> Nil) -> Nil

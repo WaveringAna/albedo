@@ -3,6 +3,7 @@
 import albedo/daemon/bus
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
+import albedo/daemon/event_buffer
 import albedo/daemon/events as view
 import albedo/daemon/family
 import albedo/daemon/mail
@@ -202,7 +203,7 @@ pub fn start(
         activity,
         [],
         0,
-        [],
+        event_buffer.new(),
         [],
         None,
         session_state.unprepared(),
@@ -567,22 +568,12 @@ fn handle(state: State, message: Message) {
         ]),
       )
     Read(after, tail, reply) -> {
-      let oldest =
-        list.last(state.events)
-        |> result.map(fn(e) { e.0 })
-        |> result.unwrap(state.sequence)
-      let reset = after < 0 || after > state.sequence || after < oldest - 1
-      case reset {
-        False -> {
-          let events =
-            state.events
-            |> list.filter(fn(e) { e.0 > after })
-            |> list.reverse
-            |> list.map(fn(e) { e.1 })
+      case event_buffer.since(state.events, after, state.sequence) {
+        Ok(events) -> {
           process.send(reply, Page(state.sequence, False, events))
           actor.continue(state)
         }
-        True if tail != None -> {
+        Error(_) if tail != None -> {
           let rows = option.unwrap(tail, 0)
           let events = case
             conversation.load_tail(
@@ -610,7 +601,7 @@ fn handle(state: State, message: Message) {
           process.send(reply, Page(state.sequence, True, events))
           actor.continue(state)
         }
-        True ->
+        Error(_) ->
           case session_history.ensure_history(state) {
             Error(error) -> {
               process.send(

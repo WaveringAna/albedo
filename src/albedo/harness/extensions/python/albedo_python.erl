@@ -23,10 +23,13 @@ start(Owner, Python, Script, Cwd, Host, Modules) ->
     {Pid, Mon} = spawn_monitor(fun() ->
         process_flag(trap_exit, true),
         monitor(process, Owner),
+        Pool = albedo_job_slots:ensure(),
+        monitor(process, Pool),
         try open_port({spawn_executable, binary_to_list(Python)},
                 [binary, {packet, 4}, use_stdio, exit_status, hide,
-                 {args, ["-u", binary_to_list(Script), binary_to_list(iolist_to_binary(json:encode(Modules)))]}, {cd, binary_to_list(Cwd)}, {env, clean_environment()}]) of
-            Port -> startup(Port, Host, Parent, Ref)
+                 {args, ["-u", binary_to_list(Script), binary_to_list(iolist_to_binary(json:encode(Modules)))]}, {cd, binary_to_list(Cwd)},
+                 {env, [{"ALBEDO_JOB_ADMISSION", "1"} | lists:keydelete("ALBEDO_JOB_ADMISSION", 1, clean_environment())]}]) of
+            Port -> startup(Port, Host, Parent, Ref, Pool)
         catch _:Reason -> Parent ! {Ref, {error, {unavailable, detail(Reason)}}}
         end
     end),
@@ -35,16 +38,14 @@ start(Owner, Python, Script, Cwd, Host, Modules) ->
         {'DOWN', Mon, process, Pid, _} -> {error, lost}
     end.
 
-%% Boot-time host RPC: plugin setup runs before the handshake and may call the
-%% host, so "call" frames can precede "ready". Replies are written straight to
-%% the port — unlike the loop, which relays them through its own mailbox —
-%% because the kernel waits for the reply before it can become ready. Other
-%% frame kinds are left for the loop, and the whole boot keeps one absolute
-%% deadline.
-startup(Port, Host, Parent, Ref) ->
-    startup(Port, Host, Parent, Ref, erlang:monotonic_time(millisecond) + ?STARTUP_TIMEOUT).
+%% Plugin setup can call the host or start a job before the ready handshake.
+%% Keep admission and ownership responsive through the same absolute boot deadline.
+startup(Port, Host, Parent, Ref, Pool) ->
+    S = #{port => Port, host => Host, active => none, events => [], groups => #{},
+          external => 0, pool => Pool, slots => #{}},
+    startup(S, Parent, Ref, erlang:monotonic_time(millisecond) + ?STARTUP_TIMEOUT).
 
-startup(Port, Host, Parent, Ref, Deadline) ->
+startup(S = #{port := Port, host := Host}, Parent, Ref, Deadline) ->
     After = max(1, Deadline - erlang:monotonic_time(millisecond)),
     receive
         {Port, {data, Data}} when byte_size(Data) =< 8388608 ->
@@ -52,23 +53,25 @@ startup(Port, Host, Parent, Ref, Deadline) ->
                 #{<<"type">> := <<"ready">>, <<"pid">> := KernelPid, <<"pgid">> := KernelPid} = Ready
                         when is_integer(KernelPid), KernelPid > 1 ->
                     Parent ! {Ref, {ok, self()}},
-                    loop(#{port => Port, host => Host, active => none,
-                           events => [], groups => #{}, external => 0,
-                           target => target_of(Ready)});
+                    loop(S#{target => target_of(Ready)});
                 #{<<"type">> := <<"startup_error">>, <<"message">> := Message} when is_binary(Message) ->
-                    reap_start(Port), Parent ! {Ref, {error, {unavailable, Message}}};
+                    reap_start(S), Parent ! {Ref, {error, {unavailable, Message}}};
                 #{<<"type">> := <<"call">>, <<"id">> := Id} = Message ->
                     spawn(fun() ->
                         Reply = try json:decode(Host(iolist_to_binary(json:encode(Message))))
                                 catch _:_ -> #{ok => false, code => <<"unavailable">>, message => <<"runtime unavailable">>} end,
                         _ = try port_command(Port, json:encode(#{type => <<"reply">>, id => Id, value => Reply})) catch _:_ -> ok end
                     end),
-                    startup(Port, Host, Parent, Ref, Deadline);
-                _ -> startup(Port, Host, Parent, Ref, Deadline)
+                    startup(S, Parent, Ref, Deadline);
+                #{<<"type">> := <<"job_acquire">>, <<"id">> := Id} when is_binary(Id) ->
+                    startup(acquire_slot(Id, S), Parent, Ref, Deadline);
+                _ -> startup(track_cleanup(Data, S), Parent, Ref, Deadline)
             end;
-        {Port, {data, _}} -> reap_start(Port), Parent ! {Ref, {error, {unavailable, <<"invalid kernel handshake">>}}};
-        {Port, {exit_status, _}} -> Parent ! {Ref, {error, {unavailable, <<"python exited at startup">>}}}
-    after After -> reap_start(Port), Parent ! {Ref, {error, {unavailable, <<"python startup timed out">>}}}
+        {job_slot, Id, Result} -> startup(slot_reply(Id, Result, S), Parent, Ref, Deadline);
+        {Port, {data, _}} -> reap_start(S), Parent ! {Ref, {error, {unavailable, <<"invalid kernel handshake">>}}};
+        {Port, {exit_status, _}} -> reap_start(S), Parent ! {Ref, {error, {unavailable, <<"python exited at startup">>}}};
+        {'DOWN', _, process, _, _} -> reap_start(S), Parent ! {Ref, {error, lost}}
+    after After -> reap_start(S), Parent ! {Ref, {error, {unavailable, <<"python startup timed out">>}}}
     end.
 
 execute(Pid, Data, Timeout) -> call(Pid, {execute, Data, Timeout}).
@@ -130,7 +133,7 @@ loop(S = #{port := Port, active := Active}) ->
             #{target := #{pid := KernelPid}} = S,
             From ! {Ref, {ok, KernelPid}}, loop(S);
         {call, From, Ref, job_count} ->
-            Count = maps:size(maps:get(groups, S)) + maps:get(external, S, 0),
+            Count = maps:size(maps:merge(maps:get(groups, S), maps:get(slots, S))) + maps:get(external, S, 0),
             From ! {Ref, {ok, Count}}, loop(S);
         {call, From, Ref, {rebind, Host}} when is_function(Host, 1) ->
             From ! {Ref, {ok, nil}}, loop(S#{host => Host});
@@ -162,6 +165,7 @@ loop(S = #{port := Port, active := Active}) ->
         {Port, {data, _}} -> abandon(S);
         {host_reply, Id, Reply} ->
             port_command(Port, json:encode(#{type => <<"reply">>, id => Id, value => Reply})), loop(S);
+        {job_slot, Id, Result} -> loop(slot_reply(Id, Result, S));
         {Port, {exit_status, _}} -> abandon(S#{exited => true});
         {'EXIT', Port, _} -> abandon(S#{exited => true});
         {'DOWN', Caller, process, _, _} ->
@@ -183,6 +187,10 @@ handle(#{<<"type">> := <<"call">>, <<"id">> := Id} = Message, _, S) ->
                 catch _:_ -> #{ok => false, code => <<"unavailable">>, message => <<"runtime unavailable">>} end,
         Parent ! {host_reply, Id, Reply}
     end), loop(S);
+handle(#{<<"type">> := <<"job_acquire">>, <<"id">> := Id}, _, S) when is_binary(Id) ->
+    loop(acquire_slot(Id, S));
+handle(#{<<"type">> := <<"job_cancel">>, <<"id">> := Id}, _, S) ->
+    loop(release_slot(Id, S));
 handle(#{<<"type">> := <<"job_start">>, <<"id">> := Id, <<"pgid">> := Pgid} = Message, _, S)
         when is_integer(Pgid), Pgid > 1 ->
     loop(S#{groups => maps:put(Id, group_of(Message), maps:get(groups, S))});
@@ -193,7 +201,11 @@ handle(#{<<"type">> := <<"job">>, <<"id">> := Id} = Message, Data, S) ->
                  none -> maps:get(groups, S);   %% unverified: keep owning the group
                  Cleanup -> log({job_cleanup_failed, Id, Cleanup}), maps:get(groups, S)
              end,
-    loop(S#{events => lists:sublist([Data | maps:get(events, S)], 100), groups => Groups});
+    Next = case maps:get(<<"cleanup">>, Message, none) of
+               #{<<"gone">> := true} -> release_slot(Id, S);
+               _ -> S
+           end,
+    loop(Next#{events => lists:sublist([Data | maps:get(events, S)], 100), groups => Groups});
 handle(#{<<"type">> := <<"jobs">>, <<"live">> := Live}, _, S)
         when is_integer(Live), Live >= 0 ->
     loop(S#{external => Live});
@@ -202,6 +214,28 @@ handle(#{<<"type">> := <<"trace">>}, Data, S) ->
 handle(#{<<"type">> := <<"cleanup">>, <<"failures">> := Failures}, _, S) ->
     log({kernel_cleanup_failed, Failures}), loop(S);
 handle(_, _, S) -> loop(S).
+
+acquire_slot(Id, S) ->
+    albedo_job_slots:acquire(maps:get(pool, S), Id),
+    S#{slots => maps:put(Id, true, maps:get(slots, S))}.
+
+slot_reply(Id, Result, S) ->
+    case maps:is_key(Id, maps:get(slots, S)) of
+        false -> S;  %% cancelled before the grant reached us
+        true ->
+            Reply = case Result of
+                        ok -> #{ok => true};
+                        %% No slot yet: the kernel pauses the job until one frees.
+                        queued -> #{ok => false, queued => true};
+                        {error, Why} -> #{ok => false, message => Why}
+                    end,
+            port_command(maps:get(port, S), json:encode(Reply#{type => <<"job_slot">>, id => Id})),
+            case Result of {error, _} -> release_slot(Id, S); _ -> S end
+    end.
+
+release_slot(Id, S) ->
+    albedo_job_slots:release(maps:get(pool, S), Id),
+    S#{slots => maps:remove(Id, maps:get(slots, S))}.
 
 interrupt_active(#{active := none}, _) -> ok;
 interrupt_active(#{port := Port, active := {_, Ref, _, _, Id}}, Reason) ->
@@ -221,6 +255,7 @@ shutdown(S = #{port := Port, target := Target}, TermMs, KillMs) ->
     Targets = [target_spec(<<"kernel">>, Target) | job_specs(maps:get(groups, Settled))],
     Result = verdict(supervise(Targets, TermMs, KillMs)),
     close_port(Port),
+    case Result of ok -> albedo_job_slots:release_owner(maps:get(pool, S)); _ -> ok end,
     Result.
 
 abandon(S) -> report(owner_lost, shutdown(S, ?TERM_MS, ?KILL_MS)).
@@ -247,7 +282,8 @@ track_cleanup(Data, S = #{groups := Groups}) ->
             when is_integer(Pgid), Pgid > 1 ->
                 S#{groups => maps:put(Id, group_of(Message), Groups)};
         #{<<"type">> := <<"job">>, <<"id">> := Id, <<"cleanup">> := #{<<"gone">> := true}} ->
-            S#{groups => maps:remove(Id, Groups)};
+            (release_slot(Id, S))#{groups => maps:remove(Id, Groups)};
+        #{<<"type">> := <<"job_cancel">>, <<"id">> := Id} -> release_slot(Id, S);
         #{<<"type">> := <<"cleanup">>, <<"failures">> := Failures} ->
             log({kernel_cleanup_failed, Failures}), S;
         _ -> S
@@ -341,13 +377,15 @@ job_specs(Groups) ->
 
 %% Before the handshake the helper checks whether this still-owned process
 %% already leads a group. Never assume startup has not reached setsid yet.
-reap_start(Port) ->
+reap_start(S = #{port := Port}) ->
     Target = case erlang:port_info(Port, os_pid) of
                  {os_pid, OsPid} when is_integer(OsPid), OsPid > 1 ->
                      [#{label => <<"kernel startup">>, pid => OsPid}];
                  _ -> []
              end,
-    report(startup_reaped, supervise(Target, ?TERM_MS, ?KILL_MS)),
+    Result = verdict(supervise(Target ++ job_specs(maps:get(groups, S)), ?TERM_MS, ?KILL_MS)),
+    report(startup_reaped, Result),
+    case Result of ok -> albedo_job_slots:release_owner(maps:get(pool, S)); _ -> ok end,
     close_port(Port).
 
 close_port(Port) -> _ = try port_close(Port) catch _:_ -> ok end, ok.
@@ -372,5 +410,5 @@ local_paths() ->
 %% Model tools must not inherit provider credentials or the daemon's client token.
 clean_environment() ->
     Keep = ["PATH","HOME","USER","LOGNAME","TMPDIR","TMP","TEMP","LANG","LC_ALL","LC_CTYPE","SYSTEMROOT",
-            "ALBEDO_HOME","ALBEDO_SSH"],
+            "ALBEDO_HOME","ALBEDO_SSH","ALBEDO_JOB_GRACE_SECONDS"],
     [{Name,false} || Entry <- os:getenv(), Name <- [hd(string:split(Entry,"="))], not lists:member(Name,Keep)].

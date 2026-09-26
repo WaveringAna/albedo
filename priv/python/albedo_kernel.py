@@ -45,6 +45,7 @@ LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(LOOP)
 QUEUE: asyncio.Queue[albedo_api.Execute | albedo_api.State] = asyncio.Queue()
 PENDING: dict[str, asyncio.Future[albedo_api.HostReply]] = {}
+JOB_SLOTS: dict[str, tuple[asyncio.Future[None], Callable[[], None]]] = {}
 HOST_SLOTS = asyncio.Semaphore(32)
 OWNER_CALLS = asyncio.Semaphore(32)  # concurrent tool calls from the connection owner
 OWNER_TASKS: dict[str, asyncio.Task[object]] = {}  # interruptable by invoke id
@@ -151,7 +152,17 @@ def reader():
 
 def deliver(message: dict[str, object]) -> None:
     kind = message["type"]
-    if kind == "reply":
+    if kind == "job_slot":
+        entry = JOB_SLOTS.get(cast(str, message["id"]))
+        if entry is not None and not entry[0].done():
+            slot, on_queued = entry
+            if message.get("ok") is True:
+                slot.set_result(None)
+            elif message.get("queued") is True:
+                on_queued()
+            else:
+                slot.set_exception(RuntimeError(str(message.get("message", "job admission failed"))))
+    elif kind == "reply":
         future = PENDING.pop(message["id"], None)
         if future is not None and not future.done():
             future.set_result(message["value"])
@@ -172,6 +183,21 @@ class WorkError(Exception):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code: str = code
+
+
+async def job_slot(id: str, on_queued: Callable[[], None]) -> None:
+    """Wait for a heavy-job slot; `on_queued` runs at once if none is free, so
+    the caller can pause the job. Independent of host RPC slots."""
+    future: asyncio.Future[None] = LOOP.create_future()
+    JOB_SLOTS[id] = (future, on_queued)
+    send({"type": "job_acquire", "id": id})
+    try:
+        await future
+    except BaseException:
+        send({"type": "job_cancel", "id": id})
+        raise
+    finally:
+        JOB_SLOTS.pop(id, None)
 
 
 async def host(method: str, args: dict[str, object]) -> object:
@@ -939,7 +965,9 @@ def main():
         forget_output=lambda id: ARCHIVES.pop(id, None) and None,
         capture=background_capture, preview=PREVIEW, send=send, on_shutdown=CLEANUP.append,
         background_handle=HANDLES.append, modules=modules, watch_output=watch_output,
-        attach_image=attach_image)
+        attach_image=attach_image,
+        job_slot=job_slot if os.environ.get("ALBEDO_JOB_ADMISSION") == "1"
+                 and not os.environ.get("ALBEDO_REMOTE_TARGET") else None)
     NAMESPACE.update(cells=Cells(), output=Output(), show_image=show_image)
     try:
         LOOP.run_until_complete(albedo_api.load_plugins(modules, api, NAMESPACE))

@@ -3,6 +3,7 @@
 import albedo/daemon/bus
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
+import albedo/daemon/event_buffer
 import albedo/daemon/transcript
 import albedo/daemon/turn.{type Submission}
 import albedo/daemon/usage
@@ -11,7 +12,6 @@ import albedo/harness/runtime
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option}
-import gleam/string
 
 pub type State(message) {
   State(
@@ -25,7 +25,7 @@ pub type State(message) {
     activity: turn.Activity,
     steering: List(Submission),
     sequence: Int,
-    events: List(#(Int, String)),
+    events: event_buffer.Buffer,
     watchers: List(#(process.Pid, fn() -> Nil)),
     notice: Option(String),
     context: context_snapshot.Snapshot,
@@ -41,29 +41,12 @@ pub type State(message) {
 /// reaches a terminal without waiting for a polling interval.
 pub fn emit(state: State(message), event: String) -> State(message) {
   let seq = state.sequence + 1
-  let events = trim([#(seq, event), ..state.events], 256, 4_194_304)
+  let events = event_buffer.push(state.events, seq, event)
   let watchers =
     list.filter(state.watchers, fn(watcher) { process.is_alive(watcher.0) })
   list.each(watchers, fn(watcher) { watcher.1() })
   bus.activity(state.info.id, event)
   State(..state, sequence: seq, events: events, watchers: watchers)
-}
-
-fn trim(
-  events: List(#(Int, String)),
-  count: Int,
-  bytes: Int,
-) -> List(#(Int, String)) {
-  case events {
-    [] -> []
-    [event, ..rest] -> {
-      let size = string.byte_size(event.1)
-      case count > 0 && size <= bytes {
-        True -> [event, ..trim(rest, count - 1, bytes - size)]
-        False -> []
-      }
-    }
-  }
 }
 
 pub fn unprepared() -> context_snapshot.Snapshot {

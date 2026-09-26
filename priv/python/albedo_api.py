@@ -88,6 +88,9 @@ class PythonApi:
     # model sees the image; returns a short description, raises ValueError
     # past the per-cell limits. Absent when the host pre-dates images.
     attach_image: Callable[[bytes], str] | None = None
+    # Local shell admission, shared across the daemon's kernels. Completion
+    # releases it through the existing verified `job` cleanup frame.
+    job_slot: Callable[[str, Callable[[], None]], Awaitable[None]] | None = None
 
 
 class Execute(TypedDict):
@@ -127,6 +130,14 @@ class Shutdown(TypedDict):
     type: Literal["shutdown"]
 
 
+class JobSlot(TypedDict):
+    type: Literal["job_slot"]
+    id: str
+    ok: bool
+    queued: NotRequired[bool]
+    message: NotRequired[str]
+
+
 class Invoke(TypedDict):
     """One owner tool call: a namespace path or live reference, never both.
 
@@ -158,7 +169,7 @@ class State(TypedDict):
     path: str
 
 
-Incoming = Execute | Reply | Interrupt | Shutdown | Invoke | Introspect | Release | State
+Incoming = Execute | Reply | Interrupt | Shutdown | Invoke | Introspect | Release | State | JobSlot
 
 
 class SavedCell(TypedDict):

@@ -426,8 +426,15 @@ fn context_inputs(composition: extension.Composition) -> List(types.Input) {
   })
 }
 
-fn kernel_routes(state: State, id: String, composition: extension.Composition) {
-  rpc.handle(extension.routes(composition), state.work, id, _)
+fn kernel_routes(
+  owner: work.Store,
+  id: String,
+  composition: extension.Composition,
+) {
+  // Partial application captures its expressions, not just their results.
+  // Keep only this session's routes: the callback is copied for every RPC.
+  let routes = extension.routes(composition)
+  rpc.handle(routes, owner, id, _)
 }
 
 /// Compose the cached selection again from scratch and swap it into the live
@@ -466,7 +473,10 @@ fn refresh_cached(
       Error("the extension module set changed; reload extensions to apply it")
     True, None -> Ok(None)
     True, Some(session) ->
-      python.rebind(session.kernel, kernel_routes(state, id, fresh.composition))
+      python.rebind(
+        session.kernel,
+        kernel_routes(state.work, id, fresh.composition),
+      )
       |> result.map(fn(_) {
         Some(
           Session(
@@ -521,25 +531,18 @@ fn ensure_cached(
 /// Boot a kernel over one composition. A failed boot keeps the composition:
 /// it is valid, and the next open retries only the kernel.
 fn open_kernel(
-  state: State,
+  owner: work.Store,
   id: String,
   cached: Cached,
 ) -> Result(Session, python.Error) {
   python.local_with_plugins(
-    state.work,
+    owner,
     cached.cwd,
-    kernel_routes(state, id, cached.composition),
+    kernel_routes(owner, id, cached.composition),
     extension.python_modules(cached.composition),
   )
   |> result.map(fn(kernel) {
-    Session(
-      id,
-      cached.cwd,
-      kernel,
-      state.work,
-      cached.composition,
-      cached.context,
-    )
+    Session(id, cached.cwd, kernel, owner, cached.composition, cached.context)
   })
 }
 
@@ -556,8 +559,9 @@ fn boot_next(state: State) -> State {
     [#(id, cached), ..rest], True -> {
       let state = State(..state, waiting: rest)
       let self = state.self
+      let owner = state.work
       process.spawn_unlinked(fn() {
-        let result = case protect(fn() { open_kernel(state, id, cached) }) {
+        let result = case protect(fn() { open_kernel(owner, id, cached) }) {
           Ok(result) -> result
           Error(crash) ->
             Error(python.Unavailable("kernel boot failed: " <> crash))
@@ -721,7 +725,7 @@ fn handle(state: State, message: Message) {
                 "could not reload extensions: " <> error
               }),
             )
-            open_kernel(state, id, cached)
+            open_kernel(state.work, id, cached)
             |> result.map(fn(replacement) { #(cached, replacement) })
             |> result.map_error(fn(error) {
               "could not reload extensions: " <> string.inspect(error)
