@@ -13,7 +13,7 @@ import (
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 const fakeToken = "fake-daemon-token"
@@ -237,7 +237,7 @@ func TestLoginSignsInThroughTheDaemon(t *testing.T) {
 	}
 
 	m.TextInput.SetValue("codex")
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m, cmd = apply(t, m, cmd)
 	if m.Step != StepOAuth || m.LoginID != "signin-1" {
 		t.Fatalf("typing a sign-in provider should start it, step=%v error=%q", m.Step, m.Error)
@@ -314,7 +314,7 @@ func TestLoginPastesInputAndShowsTheDaemonFailure(t *testing.T) {
 
 	f.setStatus(daemon.SignInStatus{State: "failed", Message: "missing authorization code"})
 	m.TextInput.SetValue("code#state")
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m, cmd = apply(t, m, cmd)
 	m, _ = apply(t, m, cmd)
 	if len(f.input) != 1 || f.input[0] != "code#state" {
@@ -340,7 +340,7 @@ func TestLoginCancelsSignInOnExitAndStaleResults(t *testing.T) {
 	m := newLogin(t, f, "")
 	m = startSignIn(t, m, f)
 
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.LoginID != "" || m.Step != StepOAuth {
 		t.Fatalf("esc should end the sign-in, step=%v id=%q", m.Step, m.LoginID)
 	}
@@ -418,7 +418,7 @@ func TestLoginSelectsAndRemovesAccountsThroughTheDaemon(t *testing.T) {
 	}
 
 	m.ChoosePicker.Cursor = pickerIndex(t, m, "account:1")
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
 	if m.Step != StepRemove || m.Removing.ID != "account:acct/2" || m.Removing.Provider != "codex" {
 		t.Fatalf("d on an account should confirm its removal, step=%v removing=%+v", m.Step, m.Removing)
 	}
@@ -444,7 +444,7 @@ func TestLoginRemovesHighlightedProvider(t *testing.T) {
 	if item, _ := m.ChoosePicker.Highlighted(); item.ID != "use:work" {
 		t.Fatalf("expected the active provider highlighted, got %q", item.ID)
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
 	if m.Step != StepRemove || m.Removing.Kind != "provider" || m.Removing.ID != "work" {
 		t.Fatalf("d should confirm removing the highlighted provider, got step=%v removing=%+v", m.Step, m.Removing)
 	}
@@ -453,7 +453,7 @@ func TestLoginRemovesHighlightedProvider(t *testing.T) {
 		t.Fatalf("cancelling the confirmation should return to the chooser, step=%v", m.Step)
 	}
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDelete})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDelete})
 	m, cmd := m.Update(PickerSelectMsg{ID: "remove"})
 	m, _ = apply(t, m, cmd)
 	if _, ok := m.Profiles.Providers["work"]; ok || m.Profiles.Active != "local" {
@@ -501,14 +501,14 @@ func TestLoginConfiguresAlibabaProvider(t *testing.T) {
 
 	// Enter provider name
 	m.TextInput.SetValue("my-ali")
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m, _ = apply(t, m, cmd)
 	if m.Step != StepBaseURL {
 		t.Fatalf("expected StepBaseURL, got step=%v", m.Step)
 	}
 
 	// Accept default base URL
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m, _ = apply(t, m, cmd)
 	if m.Step != StepAPIKey {
 		t.Fatalf("expected StepAPIKey, got step=%v", m.Step)
@@ -516,7 +516,7 @@ func TestLoginConfiguresAlibabaProvider(t *testing.T) {
 
 	// Enter API key
 	m.TextInput.SetValue("sk-test-ali-key")
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m, _ = apply(t, m, cmd)
 	// For Alibaba, StepProtocol is skipped straight to StepModels
 	if m.Step != StepModels {

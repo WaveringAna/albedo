@@ -2,9 +2,9 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"charm.land/lipgloss/v2"
 	"encoding/json"
 	"fmt"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"regexp"
 	"strconv"

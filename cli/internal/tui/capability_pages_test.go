@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -61,7 +61,7 @@ description: test
 		m.Items = append(m.Items, capabilityItem{ID: strings.Repeat("a", i+1), Title: strings.Repeat("a", i+1)})
 	}
 	for i := 0; i < 29; i++ {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	if !strings.Contains(ansi.Strip(m.View()), strings.Repeat("a", 29)) {
 		t.Fatal("selected row scrolled offscreen")

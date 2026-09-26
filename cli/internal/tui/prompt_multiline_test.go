@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"albedo/cli/internal/daemon"
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -22,8 +22,8 @@ func TestPromptMultilineWrappingAndSeparators(t *testing.T) {
 		t.Fatalf("expected initial promptHeight to be 1, got %d", m.promptHeight())
 	}
 	expectedVpHeight := height - 6 - m.chromeRows()
-	if m.Viewport.Height != expectedVpHeight {
-		t.Fatalf("expected viewport height %d, got %d", expectedVpHeight, m.Viewport.Height)
+	if m.Viewport.Height() != expectedVpHeight {
+		t.Fatalf("expected viewport height %d, got %d", expectedVpHeight, m.Viewport.Height())
 	}
 
 	// Verify view has top separator, prompt, bottom separator, and footer
@@ -44,7 +44,7 @@ func TestPromptMultilineWrappingAndSeparators(t *testing.T) {
 	// Now type long text that should wrap to multiple lines
 	longText := "this is a very long prompt sentence that should definitely wrap across multiple lines in a sixty column terminal"
 	for _, r := range longText {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
 
 	if m.promptHeight() <= 1 {
@@ -53,8 +53,8 @@ func TestPromptMultilineWrappingAndSeparators(t *testing.T) {
 
 	// Viewport height should have shrunk by (promptHeight - 1)
 	expectedNewVpHeight := height - 6 - m.chromeRows()
-	if m.Viewport.Height != expectedNewVpHeight {
-		t.Fatalf("expected viewport height %d, got %d", expectedNewVpHeight, m.Viewport.Height)
+	if m.Viewport.Height() != expectedNewVpHeight {
+		t.Fatalf("expected viewport height %d, got %d", expectedNewVpHeight, m.Viewport.Height())
 	}
 
 	// Rendered view must still exactly equal terminal height
@@ -80,14 +80,14 @@ func TestPromptMultilineWrappingAndSeparators(t *testing.T) {
 	}
 
 	// Move cursor down one visual line
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.TextArea.LineInfo().RowOffset != 1 {
 		t.Fatalf("expected rowOffset 1 after KeyDown, got %d", m.TextArea.LineInfo().RowOffset)
 	}
 
 	// Up key while not on row 0 should move up inside textarea, NOT scroll viewport
 	beforeScroll := m.scrollOffset
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	if m.TextArea.LineInfo().RowOffset != 0 {
 		t.Fatalf("expected rowOffset 0 after KeyUp, got %d", m.TextArea.LineInfo().RowOffset)
 	}
@@ -96,12 +96,12 @@ func TestPromptMultilineWrappingAndSeparators(t *testing.T) {
 	}
 
 	// Submit should reset prompt back to 1 line and restore viewport height
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.promptHeight() != 1 {
 		t.Fatalf("expected promptHeight to reset to 1 after Enter, got %d", m.promptHeight())
 	}
-	if m.Viewport.Height != expectedVpHeight {
-		t.Fatalf("expected viewport height restored to %d after Enter, got %d", expectedVpHeight, m.Viewport.Height)
+	if m.Viewport.Height() != expectedVpHeight {
+		t.Fatalf("expected viewport height restored to %d after Enter, got %d", expectedVpHeight, m.Viewport.Height())
 	}
 }
 
@@ -111,16 +111,16 @@ func TestPromptAltEnterNewline(t *testing.T) {
 
 	// Type first line
 	for _, r := range "hello" {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
 	if m.promptHeight() != 1 {
 		t.Fatalf("expected promptHeight 1, got %d", m.promptHeight())
 	}
 
 	// Press Alt+Enter to insert a newline
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt})
 	for _, r := range "world" {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
 
 	if m.promptHeight() != 2 {
@@ -139,7 +139,7 @@ func TestPromptWrappingInteractiveKeystrokesNoLossNoBlankBottom(t *testing.T) {
 
 	text := "this is a line of text that wraps around right now"
 	for _, r := range text {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		// In interactive TUI, View() is rendered after every keystroke
 		view := ansi.Strip(m.View())
 		lines := strings.Split(view, "\n")
@@ -176,13 +176,13 @@ func TestPromptPast6LinesScrollsAndHasNoCharLimit(t *testing.T) {
 		t.Fatalf("expected CharLimit to be 0 (unlimited), got %d", m.TextArea.CharLimit)
 	}
 
-	altEnter := tea.KeyMsg{Type: tea.KeyEnter, Alt: true}
+	altEnter := tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt}
 
 	// Type 10 lines (exceeds max 6 lines)
 	for i := 1; i <= 10; i++ {
 		lineText := fmt.Sprintf("line %d with plenty of characters to exceed 400 total chars across all lines", i)
 		for _, r := range lineText {
-			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			m, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		}
 		_ = m.View()
 		if i < 10 {
@@ -220,7 +220,7 @@ func TestPromptCtrlGAndEditorFinishedMsg(t *testing.T) {
 
 	// Pressing Ctrl+G should return a non-nil tea.Cmd
 	var cmd tea.Cmd
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	m, cmd = m.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("expected non-nil cmd from KeyCtrlG")
 	}
@@ -242,11 +242,9 @@ func TestPromptCtrlGAndEditorFinishedMsg(t *testing.T) {
 		Path:       tmp.Name(),
 		Err:        nil,
 	})
-	if finishCmd == nil {
-		t.Fatal("expected non-nil cmd restoring mouse mode after editor finished")
-	}
-	if finishCmd() != tea.EnableMouseCellMotion() {
-		t.Fatalf("expected EnableMouseCellMotion msg from editor finished cmd, got %#v", finishCmd())
+	// the view declares the mouse mode, so returning from the editor needs no command
+	if finishCmd != nil {
+		t.Fatalf("expected nil cmd after editor finished, got %#v", finishCmd())
 	}
 
 	// Verify temp file was removed
@@ -266,7 +264,6 @@ func TestPromptCtrlGAndEditorFinishedMsg(t *testing.T) {
 	}
 }
 
-
 func TestPromptWrappingBoundaryExactMatch(t *testing.T) {
 	input := "can you figure out how to make manual triggers from our ci auth properly with WIF? rn it doesnt..."
 	for width := 40; width <= 130; width++ {
@@ -275,7 +272,7 @@ func TestPromptWrappingBoundaryExactMatch(t *testing.T) {
 		m.SetSize(width, height)
 
 		for _, r := range input {
-			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			m, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		}
 
 		view := ansi.Strip(m.View())
@@ -296,4 +293,3 @@ func TestPromptWrappingBoundaryExactMatch(t *testing.T) {
 		}
 	}
 }
-

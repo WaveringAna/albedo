@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
@@ -108,7 +108,7 @@ func TestDisplayPreferencesFollowChatsAndRestart(t *testing.T) {
 	app.LoadPrefs(path)
 	for _, command := range []string{"/t", "/v"} {
 		app.Chat.TextArea.SetValue(command)
-		updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 		app = updated.(AppModel)
 	}
 	if !app.Chat.Flags.Thinking || !app.Chat.Flags.Tools {
@@ -128,7 +128,7 @@ func TestDisplayPreferencesFollowChatsAndRestart(t *testing.T) {
 		t.Fatal("restart reset display choices")
 	}
 	restarted.Chat.TextArea.SetValue("/t")
-	updated, _ := restarted.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := restarted.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	restarted = updated.(AppModel)
 	if !restarted.Chat.Flags.Tools || restarted.Chat.Flags.Thinking {
 		t.Fatal("thinking toggle also reset verbose")

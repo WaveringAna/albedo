@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -200,8 +200,8 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		m.Error = ""
 		return m, func() tea.Msg { return ExtensionPickerChangedMsg{} }
 
-	case tea.KeyMsg:
-		if msg.Type == tea.KeyEsc || (msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyCtrlD) {
+	case tea.KeyPressMsg:
+		if msg.String() == "esc" || msg.String() == "ctrl+c" || msg.String() == "ctrl+d" {
 			if m.Confirming {
 				m.Confirming = false
 				m.Inheriting = false
@@ -226,7 +226,7 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		}
 
 		if m.Confirming {
-			if msg.Type == tea.KeyEnter && len(m.Extensions) > m.Cursor {
+			if msg.String() == "enter" && len(m.Extensions) > m.Cursor {
 				ext := m.Extensions[m.Cursor]
 				m.Saving = true
 				m.Error = ""
@@ -243,38 +243,35 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 			return m, nil
 		}
 
-		switch msg.Type {
-		case tea.KeyUp, tea.KeyCtrlP:
+		switch msg.String() {
+		case "up", "ctrl+p":
 			if m.Cursor > 0 {
 				m.Cursor--
 			}
-		case tea.KeyDown, tea.KeyCtrlN:
+		case "down", "ctrl+n":
 			if m.Cursor < len(m.Extensions)-1 {
 				m.Cursor++
 			}
-		case tea.KeySpace, tea.KeyEnter:
+		case "space", "enter":
 			if len(m.Extensions) > 0 && m.Cursor < len(m.Extensions) {
 				m.Error = ""
 				m.Confirming = true
 			}
-		case tea.KeyRunes:
-			switch msg.String() {
-			case "g":
-				if !m.NoGlobal {
-					m.Session = false
-				}
-			case "s":
-				m.Session = true
-			case "o":
-				if m.Cursor < len(m.Extensions) && m.Extensions[m.Cursor].Name == "webhooks" && m.Extensions[m.Cursor].Enabled {
-					return m, func() tea.Msg { return ChatOpenWebhooksPageMsg{} }
-				}
-			case "x":
-				if m.Session && !m.NoGlobal && m.Cursor < len(m.Extensions) && m.Extensions[m.Cursor].Overridden {
-					m.Error = ""
-					m.Confirming = true
-					m.Inheriting = true
-				}
+		case "g":
+			if !m.NoGlobal {
+				m.Session = false
+			}
+		case "s":
+			m.Session = true
+		case "o":
+			if m.Cursor < len(m.Extensions) && m.Extensions[m.Cursor].Name == "webhooks" && m.Extensions[m.Cursor].Enabled {
+				return m, func() tea.Msg { return ChatOpenWebhooksPageMsg{} }
+			}
+		case "x":
+			if m.Session && !m.NoGlobal && m.Cursor < len(m.Extensions) && m.Extensions[m.Cursor].Overridden {
+				m.Error = ""
+				m.Confirming = true
+				m.Inheriting = true
 			}
 		}
 	}

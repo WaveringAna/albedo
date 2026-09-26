@@ -4,7 +4,7 @@ import (
 	"albedo/cli/internal/daemon"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 type ChatCommand struct {
@@ -90,7 +90,7 @@ func (m CommandMenuModel) Matches(input string) []ChatCommand {
 }
 
 // OnKey handles navigation within the command popup. Returns true if consumed.
-func (m *CommandMenuModel) OnKey(msg tea.KeyMsg, input string, replace func(string), submit func(string)) bool {
+func (m *CommandMenuModel) OnKey(msg tea.KeyPressMsg, input string, replace func(string), submit func(string)) bool {
 	matches := m.Matches(input)
 	if len(matches) == 0 {
 		return false
@@ -104,24 +104,24 @@ func (m *CommandMenuModel) OnKey(msg tea.KeyMsg, input string, replace func(stri
 		idx = 0
 	}
 
-	switch msg.Type {
-	case tea.KeyEsc:
+	switch msg.String() {
+	case "esc":
 		m.Dismissed = input
 		return true
-	case tea.KeyUp:
+	case "up":
 		if idx > 0 {
 			m.Selected = idx - 1
 		}
 		return true
-	case tea.KeyDown:
+	case "down":
 		if idx < len(matches)-1 {
 			m.Selected = idx + 1
 		}
 		return true
-	case tea.KeyTab:
+	case "tab":
 		replace(matches[idx].Name)
 		return true
-	case tea.KeyEnter:
+	case "enter":
 		submit(matches[idx].Name)
 		return true
 	default:

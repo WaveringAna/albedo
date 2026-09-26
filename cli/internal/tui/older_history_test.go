@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"albedo/cli/internal/daemon"
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -65,7 +65,7 @@ func TestScrollingToTheTopLoadsOlderHistoryInPlace(t *testing.T) {
 	m.Follow = false
 	m.scrollOffset = 1
 	m.refreshViewportContent()
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	if cmd == nil || !m.loadingOlder {
 		t.Fatal("reaching the top did not ask for older history")
 	}
@@ -92,7 +92,7 @@ func TestScrollingToTheTopLoadsOlderHistoryInPlace(t *testing.T) {
 	if !strings.Contains(ansi.Strip(m.Viewport.View()), "older question") {
 		t.Fatal("older page not shown above")
 	}
-	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyUp}); cmd != nil {
+	if _, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyUp}); cmd != nil {
 		t.Fatal("asked again with nothing older")
 	}
 }

@@ -16,8 +16,8 @@ import (
 
 	"albedo/cli/internal/daemon"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -170,7 +170,7 @@ var (
 )
 
 func NewAgentsViewModel(conn *daemon.Connection, sessionID string) AgentsViewModel {
-	input := textinput.New()
+	input := newTextInput()
 	input.Prompt = ""
 	input.CharLimit = 4000
 	input.Focus()
@@ -399,7 +399,7 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.key(msg)
 	}
 	var cmd tea.Cmd
@@ -409,7 +409,7 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 
 type agentsReconnectMsg struct{ Gen int }
 
-func (m AgentsViewModel) key(msg tea.KeyMsg) (AgentsViewModel, tea.Cmd) {
+func (m AgentsViewModel) key(msg tea.KeyPressMsg) (AgentsViewModel, tea.Cmd) {
 	empty := m.input.Value() == ""
 	if m.confirm != "" {
 		id := m.confirm
@@ -421,7 +421,7 @@ func (m AgentsViewModel) key(msg tea.KeyMsg) (AgentsViewModel, tea.Cmd) {
 		m.say("kept")
 		return m, nil
 	}
-	if msg.Type == tea.KeyCtrlX {
+	if msg.String() == "ctrl+x" {
 		n := m.nodes[m.selected]
 		switch {
 		case n == nil || n.id == agentsYou:
@@ -433,19 +433,19 @@ func (m AgentsViewModel) key(msg tea.KeyMsg) (AgentsViewModel, tea.Cmd) {
 		return m, nil
 	}
 	switch {
-	case msg.Type == tea.KeyEsc || msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyCtrlO:
-		if !empty && msg.Type == tea.KeyEsc {
+	case msg.String() == "esc" || msg.String() == "ctrl+c" || msg.String() == "ctrl+o":
+		if !empty && msg.String() == "esc" {
 			m.input.SetValue("")
 			return m, nil
 		}
 		return m, func() tea.Msg { return AgentsDoneMsg{} }
-	case msg.Type == tea.KeyTab, empty && (msg.Type == tea.KeyRight || msg.Type == tea.KeyDown):
+	case msg.String() == "tab", empty && (msg.String() == "right" || msg.String() == "down"):
 		m.cycle(1)
 		return m, m.seedCmd()
-	case msg.Type == tea.KeyShiftTab, empty && (msg.Type == tea.KeyLeft || msg.Type == tea.KeyUp):
+	case msg.String() == "shift+tab", empty && (msg.String() == "left" || msg.String() == "up"):
 		m.cycle(-1)
 		return m, m.seedCmd()
-	case msg.Type == tea.KeyEnter:
+	case msg.String() == "enter":
 		text := strings.TrimSpace(m.input.Value())
 		n := m.nodes[m.selected]
 		if n == nil {

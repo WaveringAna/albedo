@@ -15,12 +15,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -337,8 +336,8 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 	ta.Prompt = promptMark
 	ta.CharLimit = 0
 	ta.ShowLineNumbers = false
-	ta.SetPromptFunc(promptMarkWidth, func(lineIdx int) string {
-		if lineIdx == 0 {
+	ta.SetPromptFunc(promptMarkWidth, func(info textarea.PromptInfo) string {
+		if info.LineNumber == 0 {
 			return promptMark
 		}
 		return strings.Repeat(" ", promptMarkWidth)
@@ -347,17 +346,19 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 	ta.KeyMap.WordBackward.SetKeys("alt+left", "alt+b", "ctrl+left")
 	ta.KeyMap.WordForward.SetKeys("alt+right", "alt+f", "ctrl+right")
 	ta.SetHeight(6)
-	ta.FocusedStyle.Prompt = DefaultStyles.Prompt
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Placeholder = DefaultStyles.Faint
-	ta.BlurredStyle.Prompt = DefaultStyles.Prompt
-	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
-	ta.BlurredStyle.Placeholder = DefaultStyles.Faint
-	ta.Cursor.Style = DefaultStyles.Cursor
-	ta.Cursor.SetMode(cursor.CursorStatic)
+	st := ta.Styles()
+	st.Focused.Prompt = DefaultStyles.Prompt
+	st.Focused.CursorLine = lipgloss.NewStyle()
+	st.Focused.Placeholder = DefaultStyles.Faint
+	st.Blurred.Prompt = DefaultStyles.Prompt
+	st.Blurred.CursorLine = lipgloss.NewStyle()
+	st.Blurred.Placeholder = DefaultStyles.Faint
+	st.Cursor.Blink = false
+	st.Cursor.Color = nil
+	ta.SetStyles(st)
 	ta.Focus()
 
-	vp := viewport.New(80, 20)
+	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
 	vp.YPosition = 0
 
 	bh := NewBoundedHistory(500, 2*1024*1024)
@@ -409,7 +410,7 @@ func (m *ChatModel) syncViewportHeight() {
 	if m == nil || m.History == nil || m.Height <= 0 {
 		return
 	}
-	m.Viewport.Height = max(1, m.Height-6-m.chromeRows())
+	m.Viewport.SetHeight(max(1, m.Height-6-m.chromeRows()))
 	m.refreshViewportContent()
 }
 
@@ -514,7 +515,7 @@ func (m ChatModel) chromeRows() int {
 
 func (m *ChatModel) syncLayout() {
 	m.TextArea.SetHeight(m.maxPromptHeight())
-	m.Viewport.Height = max(1, m.Height-6-m.chromeRows())
+	m.Viewport.SetHeight(max(1, m.Height-6-m.chromeRows()))
 	m.refreshViewportContent()
 }
 
@@ -539,12 +540,12 @@ func (m *ChatModel) SetSize(width, height int) {
 		transcriptWidth -= m.sidebarWidth() + 2
 	}
 
-	m.Viewport.Width = transcriptWidth
+	m.Viewport.SetWidth(transcriptWidth)
 	m.TextArea.SetWidth(available)
 	m.TextArea.SetHeight(m.maxPromptHeight())
-	m.RecoveryInput.Width = max(1, available-16)
+	m.RecoveryInput.SetWidth(max(1, available-16))
 
-	m.Viewport.Height = max(1, height-6-m.chromeRows())
+	m.Viewport.SetHeight(max(1, height-6-m.chromeRows()))
 
 	// settled rows are rendered at the body width alone, so only a new body
 	// width renders them again
@@ -720,7 +721,7 @@ func (m *ChatModel) streamDelta(kind ActiveStreamKind, text string) {
 }
 
 func (m *ChatModel) refreshViewportContent() int {
-	if m.Viewport.Height != max(1, m.Height-6-m.chromeRows()) {
+	if m.Viewport.Height() != max(1, m.Height-6-m.chromeRows()) {
 		m.SetSize(m.Width, m.Height)
 		return m.scrollLimit
 	}
@@ -758,7 +759,7 @@ func (m *ChatModel) refreshViewportContent() int {
 	allLines = append(allLines, m.pendingRows()...)
 
 	totalLines := len(allLines)
-	vpHeight := max(1, m.Viewport.Height)
+	vpHeight := max(1, m.Viewport.Height())
 	maxScroll := max(0, totalLines-vpHeight)
 	m.scrollLimit = maxScroll
 
@@ -1029,9 +1030,9 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if m.WorkspaceRecovery != nil {
-			if msg.Type == tea.KeyEsc {
+			if msg.String() == "esc" {
 				prompt := m.WorkspaceRecovery.Prompt
 				img := m.WorkspaceRecovery.Image
 				m.WorkspaceRecovery = nil
@@ -1044,7 +1045,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				m.refreshViewportContent()
 				return m, nil
 			}
-			if msg.Type == tea.KeyEnter {
+			if msg.String() == "enter" {
 				m.RecoveryInput.CursorStart()
 				replacement := strings.TrimSpace(m.RecoveryInput.Value())
 				if replacement != "" && !m.WorkspaceRecovery.Saving {
@@ -1062,20 +1063,20 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 		// The selector owns keys while open, before chat navigation or composer input.
 		if len(m.effortOptions) > 0 {
-			switch msg.Type {
-			case tea.KeyLeft, tea.KeyUp:
+			switch msg.String() {
+			case "left", "up":
 				m.effortSelected = max(0, m.effortSelected-1)
-			case tea.KeyRight, tea.KeyDown:
+			case "right", "down":
 				m.effortSelected = min(len(m.effortOptions)-1, m.effortSelected+1)
-			case tea.KeyEnter:
+			case "enter":
 				level := m.effortOptions[m.effortSelected]
 				m.effortOptions = nil
 				m.syncLayout()
 				return m, func() tea.Msg { return ChatExecuteCommandMsg{Name: "/effort", Args: level} }
-			case tea.KeyEsc:
+			case "esc":
 				m.effortOptions = nil
 				m.syncLayout()
-			case tea.KeyCtrlC:
+			case "ctrl+c":
 				if m.streamCancel != nil {
 					m.streamCancel()
 				}
@@ -1084,23 +1085,23 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			return m, nil
 		}
 
-		if msg.Type == tea.KeyLeft && m.TextArea.Value() == "" {
+		if msg.String() == "left" && m.TextArea.Value() == "" {
 			return m, func() tea.Msg { return ChatBackToSessionsMsg{} }
 		}
 
-		if msg.Type == tea.KeyCtrlC || (msg.Type == tea.KeyCtrlD && m.TextArea.Focused() && m.TextArea.Value() == "") {
+		if msg.String() == "ctrl+c" || (msg.String() == "ctrl+d" && m.TextArea.Focused() && m.TextArea.Value() == "") {
 			if m.streamCancel != nil {
 				m.streamCancel()
 			}
 			return m, func() tea.Msg { return ChatQuitMsg{} }
 		}
-		if msg.Type == tea.KeyCtrlN {
+		if msg.String() == "ctrl+n" {
 			return m, func() tea.Msg { return ChatNewSessionMsg{} }
 		}
-		if msg.Type == tea.KeyCtrlO {
+		if msg.String() == "ctrl+o" {
 			return m, func() tea.Msg { return ChatOpenAgentsMsg{} }
 		}
-		if msg.Type == tea.KeyEsc && m.dragAnchor != nil {
+		if msg.String() == "esc" && m.dragAnchor != nil {
 			m.dragAnchor = nil
 			return m, nil
 		}
@@ -1121,7 +1122,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		}
 
-		if msg.Type == tea.KeyEsc {
+		if msg.String() == "esc" {
 			if m.AttachedImage != nil {
 				m.AttachedImage = nil
 				m.CopyStatus = "image removed"
@@ -1141,52 +1142,52 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			}
 		}
 
-		if msg.Type == tea.KeyCtrlV {
+		if msg.String() == "ctrl+v" {
 			return m, PasteClipboardImageCmd(m.SessionID, m.Generation)
 		}
-		if msg.Type == tea.KeyCtrlG {
+		if msg.String() == "ctrl+g" {
 			return m, m.openEditorCmd()
 		}
 
-		if msg.Type == tea.KeyPgUp {
-			m.scrollBy(-m.Viewport.Height)
+		if msg.String() == "pgup" {
+			m.scrollBy(-m.Viewport.Height())
 			return m, nil
 		}
-		if msg.Type == tea.KeyPgDown {
-			m.scrollBy(m.Viewport.Height)
+		if msg.String() == "pgdown" {
+			m.scrollBy(m.Viewport.Height())
 			return m, nil
 		}
-		if msg.Type == tea.KeyUp && m.TextArea.Line() == 0 && m.TextArea.LineInfo().RowOffset == 0 {
+		if msg.String() == "up" && m.TextArea.Line() == 0 && m.TextArea.LineInfo().RowOffset == 0 {
 			m.scrollBy(-1)
 			return m, nil
 		}
-		if msg.Type == tea.KeyDown && m.TextArea.Line() >= m.TextArea.LineCount()-1 && m.TextArea.LineInfo().RowOffset >= m.TextArea.LineInfo().Height-1 {
+		if msg.String() == "down" && m.TextArea.Line() >= m.TextArea.LineCount()-1 && m.TextArea.LineInfo().RowOffset >= m.TextArea.LineInfo().Height-1 {
 			m.scrollBy(1)
 			return m, nil
 		}
-		if msg.Type == tea.KeyShiftUp || msg.Type == tea.KeyShiftDown {
-			m.jumpToYou(msg.Type == tea.KeyShiftUp)
+		if msg.String() == "shift+up" || msg.String() == "shift+down" {
+			m.jumpToYou(msg.String() == "shift+up")
 			return m, nil
 		}
-		if msg.Type == tea.KeyCtrlHome {
+		if msg.String() == "ctrl+home" {
 			m.Follow = false
 			m.scrollOffset = 0
 			m.refreshViewportContent()
 			return m, nil
 		}
-		if msg.Type == tea.KeyCtrlEnd {
+		if msg.String() == "ctrl+end" {
 			m.Follow = true
 			m.refreshViewportContent()
 			return m, nil
 		}
 
-		if msg.Type == tea.KeyCtrlJ {
+		if msg.String() == "ctrl+j" {
 			m.Flags.Diffs = !m.Flags.Diffs
 			m.rebuildSettledLines()
 			m.refreshViewportContent()
 			return m, nil
 		}
-		if msg.Type == tea.KeyCtrlK {
+		if msg.String() == "ctrl+k" {
 			m.Flags.Compaction = !m.Flags.Compaction
 			m.rebuildSettledLines()
 			m.refreshViewportContent()
@@ -1195,13 +1196,13 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 		// Bubbles wordLeft never terminates when everything before the cursor
 		// is whitespace. Move to the input start directly in that case.
-		if msg.Type == tea.KeyCtrlLeft && m.wordBackwardAtStart() {
+		if msg.String() == "ctrl+left" && m.wordBackwardAtStart() {
 			var cmd tea.Cmd
-			m.TextArea, cmd = m.TextArea.Update(tea.KeyMsg{Type: tea.KeyCtrlHome})
+			m.TextArea, cmd = m.TextArea.Update(tea.KeyPressMsg{Code: tea.KeyHome, Mod: tea.ModCtrl})
 			return m, cmd
 		}
 
-		if msg.Type == tea.KeyEnter && !msg.Alt {
+		if msg.String() == "enter" {
 			trimmed := strings.TrimSpace(m.TextArea.Value())
 			if trimmed != "" {
 				m.TextArea.Reset()
@@ -1214,10 +1215,15 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 	case tea.MouseMsg:
 		firstRow := 2 + m.Notices.ChromeRows()
+		mouse := msg.Mouse()
 		point := func() Point {
-			return Point{Row: max(0, min(m.Viewport.Height-1, msg.Y-firstRow)), Col: max(0, min(m.Viewport.Width, msg.X-m.padding()))}
+			return Point{Row: max(0, min(m.Viewport.Height()-1, mouse.Y-firstRow)), Col: max(0, min(m.Viewport.Width(), mouse.X-m.padding()))}
 		}
-		if msg.Action == tea.MouseActionRelease && m.dragAnchor != nil {
+		switch msg := msg.(type) {
+		case tea.MouseReleaseMsg:
+			if m.dragAnchor == nil {
+				return m, nil
+			}
 			m.dragHead = point()
 			sel := Selection{Anchor: *m.dragAnchor, Head: m.dragHead, Gutter: railWidth}
 			m.dragAnchor = nil
@@ -1233,29 +1239,28 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 					return m, m.clearCopyStatusCmd()
 				}
 			}
-			return m, nil
-		}
-		if msg.Action == tea.MouseActionMotion && m.dragAnchor != nil {
-			m.dragHead = point()
-			return m, nil
-		}
-		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			if msg.Y < firstRow || msg.Y >= firstRow+m.Viewport.Height {
-				return m, nil
+		case tea.MouseMotionMsg:
+			if m.dragAnchor != nil {
+				m.dragHead = point()
 			}
-			pt := point()
-			m.dragAnchor = &pt
-			m.dragHead = pt
-			return m, nil
+		case tea.MouseClickMsg:
+			if msg.Button == tea.MouseLeft {
+				if mouse.Y < firstRow || mouse.Y >= firstRow+m.Viewport.Height() {
+					return m, nil
+				}
+				pt := point()
+				m.dragAnchor = &pt
+				m.dragHead = pt
+			}
+		case tea.MouseWheelMsg:
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				m.scrollBy(-3)
+			case tea.MouseWheelDown:
+				m.scrollBy(3)
+			}
 		}
-		switch msg.Button {
-		case tea.MouseButtonWheelUp:
-			m.scrollBy(-3)
-			return m, nil
-		case tea.MouseButtonWheelDown:
-			m.scrollBy(3)
-			return m, nil
-		}
+		return m, nil
 
 	case ClipboardImagePastedMsg:
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
@@ -1362,13 +1367,14 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				if m.AttachedImage == nil && msg.Image != nil {
 					m.AttachedImage = msg.Image
 				}
-				ti := textinput.New()
+				ti := newTextInput()
 				ti.SetValue(wsErr.Workspace)
 				ti.Focus()
 				ti.Prompt = "new workspace › "
-				ti.PromptStyle = m.Styles.Prompt
-				ti.Cursor.Style = DefaultStyles.Cursor
-				ti.Cursor.SetMode(cursor.CursorStatic)
+				st := ti.Styles()
+				st.Focused.Prompt = m.Styles.Prompt
+				st.Blurred.Prompt = m.Styles.Prompt
+				ti.SetStyles(st)
 				m.RecoveryInput = ti
 				recoveryPrompt := msg.Prompt
 				if msg.Continue {
@@ -1458,20 +1464,20 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			defer os.Remove(msg.Path)
 		}
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
-			return m, tea.EnableMouseCellMotion
+			return m, nil
 		}
 		if msg.Err != nil {
 			m.AddError("editor error: " + msg.Err.Error())
-			return m, tea.EnableMouseCellMotion
+			return m, nil
 		}
 		data, err := os.ReadFile(msg.Path)
 		if err != nil {
 			m.AddError("could not read edited prompt: " + err.Error())
-			return m, tea.EnableMouseCellMotion
+			return m, nil
 		}
 		m.TextArea.SetValue(strings.TrimRight(string(data), "\r\n"))
 		m.syncLayout()
-		return m, tea.EnableMouseCellMotion
+		return m, nil
 
 	case ChatInterruptMsg:
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
@@ -2300,10 +2306,10 @@ func (m ChatModel) View() string {
 		view = lipgloss.JoinHorizontal(lipgloss.Top, view, "  ", m.renderGlances())
 	}
 	content := strings.Split(view, "\n")
-	for len(content) < m.Viewport.Height {
+	for len(content) < m.Viewport.Height() {
 		content = append(content, "")
 	}
-	content = content[:min(len(content), m.Viewport.Height)]
+	content = content[:min(len(content), m.Viewport.Height())]
 	if m.dragAnchor != nil {
 		content = HighlightSelection(content, Selection{Anchor: *m.dragAnchor, Head: m.dragHead, Gutter: railWidth})
 	}
@@ -2384,7 +2390,7 @@ func (m ChatModel) renderGlances() string {
 		if len(g.Rows) == 0 {
 			continue
 		}
-		room := max(0, min(m.Viewport.Height, 12)-1)
+		room := max(0, min(m.Viewport.Height(), 12)-1)
 		shown := min(room, len(g.Rows))
 		if len(g.Rows) > room {
 			shown = max(0, room-1)

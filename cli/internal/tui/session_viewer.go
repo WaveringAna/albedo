@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -90,8 +90,10 @@ type SessionViewer struct {
 func NewSessionViewer(workspace string) SessionViewer {
 	p := NewPickerModel("", sessionViewerActions(workspace), true, "new")
 	p.SearchInput.Placeholder = "search sessions, models, folders…"
-	p.SearchInput.PlaceholderStyle = DefaultStyles.Faint
-	p.SearchInput.Cursor.Style = DefaultStyles.Cursor
+	st := p.SearchInput.Styles()
+	st.Focused.Placeholder = DefaultStyles.Faint
+	st.Blurred.Placeholder = DefaultStyles.Faint
+	p.SearchInput.SetStyles(st)
 	return SessionViewer{
 		PickerModel: p,
 		Workspace:   workspace,
@@ -119,7 +121,7 @@ func (m *SessionViewer) LoadPrefs(path string) {
 
 func (m *SessionViewer) SetSize(width, height int) {
 	m.PickerModel.SetSize(width, height)
-	m.SearchInput.Width = max(1, width-8)
+	m.SearchInput.SetWidth(max(1, width-8))
 }
 
 func (m SessionViewer) clock() time.Time {
@@ -423,37 +425,37 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 			return m, m.fetchPreview(msg.ID)
 		}
 		return m, nil
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if m.ConfirmDelete != "" {
 			id := m.ConfirmDelete
 			m.ConfirmDelete = ""
-			if msg.Type == tea.KeyRunes && string(msg.Runes) == "y" {
+			if msg.Text == "y" {
 				return m, func() tea.Msg { return SessionDeleteMsg{ID: id} }
 			}
 			return m, nil
 		}
-		if m.ArchiveView && msg.Type == tea.KeyEsc {
+		if m.ArchiveView && msg.String() == "esc" {
 			m.CloseArchive()
 			return m, nil
 		}
-		switch msg.Type {
-		case tea.KeyCtrlD:
+		switch msg.String() {
+		case "ctrl+d":
 			if m.ArchiveView {
 				if item, ok := m.Highlighted(); ok {
 					m.ConfirmDelete = item.ID
 				}
 			}
 			return m, nil
-		case tea.KeyCtrlA:
+		case "ctrl+a":
 			m.toggleArchive()
 			return m, nil
-		case tea.KeyCtrlS:
+		case "ctrl+s":
 			m.togglePin()
 			return m, nil
-		case tea.KeyTab, tea.KeyShiftTab:
+		case "tab", "shift+tab":
 			m.switchGroup()
 			return m, m.previewAfter(before.ID)
-		case tea.KeyLeft, tea.KeyRight:
+		case "left", "right":
 			// Arrows edit the query once there is one.
 			if m.SearchInput.Value() == "" {
 				m.switchGroup()

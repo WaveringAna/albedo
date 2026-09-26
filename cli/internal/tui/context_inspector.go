@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode/utf16"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
@@ -241,8 +241,8 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 		}
 		return m, nil
 
-	case tea.KeyMsg:
-		if msg.Type == tea.KeyEsc || msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyCtrlD {
+	case tea.KeyPressMsg:
+		if msg.String() == "esc" || msg.String() == "ctrl+c" || msg.String() == "ctrl+d" {
 			if m.Detail != nil {
 				m.Detail = nil
 				m.Generation++
@@ -259,8 +259,8 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 			visibleRows := max(1, m.Height-7)
 			maxScroll := max(0, len(lines)-visibleRows)
 
-			switch msg.Type {
-			case tea.KeyLeft:
+			switch msg.String() {
+			case "left":
 				if m.Detail.Page > 0 {
 					m.Detail.Page--
 					m.Detail.Value = nil
@@ -269,7 +269,7 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 					m.Generation++
 					return m, m.loadPageCmd(m.Detail.Section.ID, m.Detail.Page, m.Generation)
 				}
-			case tea.KeyRight:
+			case "right":
 				if m.Detail.Page+1 < m.Detail.Section.Pages {
 					m.Detail.Page++
 					m.Detail.Value = nil
@@ -278,17 +278,17 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 					m.Generation++
 					return m, m.loadPageCmd(m.Detail.Section.ID, m.Detail.Page, m.Generation)
 				}
-			case tea.KeyUp:
+			case "up":
 				if m.Detail.Scroll > 0 {
 					m.Detail.Scroll--
 				}
-			case tea.KeyDown:
+			case "down":
 				if m.Detail.Scroll < maxScroll {
 					m.Detail.Scroll++
 				}
-			case tea.KeyPgUp:
+			case "pgup":
 				m.Detail.Scroll = max(0, m.Detail.Scroll-visibleRows)
-			case tea.KeyPgDown:
+			case "pgdown":
 				m.Detail.Scroll = min(maxScroll, m.Detail.Scroll+visibleRows)
 			}
 			return m, nil
@@ -303,16 +303,16 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 			return m, m.loadSnapshotCmd(m.Generation)
 		}
 
-		switch msg.Type {
-		case tea.KeyUp, tea.KeyCtrlP:
+		switch msg.String() {
+		case "up", "ctrl+p":
 			if m.Cursor > 0 {
 				m.Cursor--
 			}
-		case tea.KeyDown, tea.KeyCtrlN:
+		case "down", "ctrl+n":
 			if m.Snapshot != nil && m.Cursor < len(m.Snapshot.Sections)-1 {
 				m.Cursor++
 			}
-		case tea.KeyEnter:
+		case "enter":
 			if m.Snapshot != nil && len(m.Snapshot.Sections) > m.Cursor {
 				sec := m.Snapshot.Sections[m.Cursor]
 				if sec.Pages > 0 {

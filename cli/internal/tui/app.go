@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 type AppState int
@@ -200,7 +200,6 @@ func (m AppModel) Init() tea.Cmd {
 		return tea.Batch(
 			m.Chat.Init(),
 			m.loadCommandCatalogCmd(m.CatalogGen),
-			mouseModeCmd(AppStateChat),
 		)
 	case AppStateLogin:
 		m.Login.BrowserOpener = m.BrowserOpener
@@ -514,15 +513,6 @@ func (m *AppModel) openSession(s daemon.Session) tea.Cmd {
 	)
 }
 
-func mouseModeCmd(state AppState) tea.Cmd {
-	return func() tea.Msg {
-		if state == AppStateChat {
-			return tea.EnableMouseCellMotion()
-		}
-		return tea.DisableMouse()
-	}
-}
-
 func (m *AppModel) AddNotice(message string) {
 	if m.ActiveSession != nil {
 		m.Chat.AddNotice(message)
@@ -546,18 +536,7 @@ func (m *AppModel) ClearNotices() {
 	}
 }
 
-func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
-	previous := m.State
-	defer func() {
-		updated, ok := result.(AppModel)
-		if !ok {
-			return
-		}
-		result = updated
-		if updated.State != previous {
-			command = tea.Batch(command, mouseModeCmd(updated.State))
-		}
-	}()
+func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// First: forward chat lifecycle messages even while a modal is open.
 	switch streamMsg := msg.(type) {
 	case ChatEditorFinishedMsg:
@@ -565,7 +544,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
 			m.Chat, cmd = m.Chat.Update(msg)
 		}
-		return m, tea.Batch(cmd, mouseModeCmd(m.State))
+		return m, cmd
 	case ChatClearCopyStatusMsg:
 		var cmd tea.Cmd
 		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
@@ -1196,7 +1175,17 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 	return m, cmd
 }
 
-func (m AppModel) View() string {
+// View captures the mouse only in chat, where it scrolls and selects; every
+// other screen leaves it to the terminal.
+func (m AppModel) View() tea.View {
+	v := tea.NewView(m.content())
+	if m.State == AppStateChat {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
+	return v
+}
+
+func (m AppModel) content() string {
 	var prefix strings.Builder
 	if m.State == AppStateSessionPicker {
 		for _, n := range m.Notices {

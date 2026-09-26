@@ -3,9 +3,9 @@ package tui
 import (
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
+	tea "charm.land/bubbletea/v2"
 	"encoding/json"
 	"fmt"
-	tea "github.com/charmbracelet/bubbletea"
 	"os"
 	"os/exec"
 	"path/filepath"

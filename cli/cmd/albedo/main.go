@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-isatty"
 )
@@ -224,7 +224,7 @@ func open(id, workspace string, fresh bool) error {
 		appModel.BrowserOpener = config.OpenBrowser
 		appModel.Login.BrowserOpener = config.OpenBrowser
 	}
-	p := tea.NewProgram(appModel, tea.WithFPS(120), tea.WithFilter(tui.RepairSplitMouse()))
+	p := tea.NewProgram(appModel, tea.WithFPS(120))
 	_, err = p.Run()
 	return err
 }
@@ -425,7 +425,7 @@ func run(args []string) error {
 				appModel.Login.BrowserOpener = config.OpenBrowser
 			}
 		}
-		p := tea.NewProgram(appModel, tea.WithFPS(120), tea.WithFilter(tui.RepairSplitMouse()))
+		p := tea.NewProgram(appModel, tea.WithFPS(120))
 		_, err = p.Run()
 		return err
 

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -55,7 +55,7 @@ func TestWebhookFormSetsSignatureOnTheCreatedHook(t *testing.T) {
 
 func TestWebhookEditOnlySendsWhatChanged(t *testing.T) {
 	m := loadedWebhooksPage(t)
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.Form == nil || m.Form.current() != hookFieldSecret || m.Form.Chosen != "s" {
 		t.Fatal("enter should edit the selected hook, starting at its secret")
 	}
@@ -79,11 +79,11 @@ func TestGeneratedSecretIsShownUntilDismissed(t *testing.T) {
 	if !strings.Contains(m.View(), "whsec_generated") {
 		t.Fatal("generated secret was not shown")
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
 	if m.Reveal == nil || m.Confirm != "" {
 		t.Fatal("keys other than enter must not dismiss the secret")
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.Reveal != nil || strings.Contains(m.View(), "whsec_generated") {
 		t.Fatal("secret should be gone once dismissed")
 	}
@@ -99,24 +99,24 @@ func TestLongSessionTitlesKeepTheirPlace(t *testing.T) {
 
 func TestWebhookFormPicksTheSessionToWake(t *testing.T) {
 	m := loadedWebhooksPage(t)
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
 	if m.Form.Chosen != "s" || !strings.Contains(ansi.Strip(m.View()), "session    this session · infra bot · /srv/infra") {
 		t.Fatalf("the form should default to the session it was opened from:\n%s", ansi.Strip(m.View()))
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	for _, r := range "release" {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
 	if m.Form.Chosen != "t" {
 		t.Fatalf("filtering should choose the matching session, got %q", m.Form.Chosen)
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
 	m.Form.Inputs[hookFieldSession].SetValue("")
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
 	if m.Form.Chosen != "s" {
 		t.Fatalf("← should step back to the first session, got %q", m.Form.Chosen)
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 	m.Form.Inputs[hookFieldName].SetValue("notes")
 	steps, notice, err := m.Form.steps()
 	if err != nil || steps[0] != [2]string{"create_in", "t notes"} || !strings.Contains(notice, "release notes") {

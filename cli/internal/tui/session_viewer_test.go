@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -23,7 +23,7 @@ func TestSessionViewerSearchAndRefresh(t *testing.T) {
 	if item, _ := m.Highlighted(); item.ID != "first" {
 		t.Fatalf("initial selection: %q", item.ID)
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	if item, _ := m.Highlighted(); item.ID != "second" {
 		t.Fatalf("navigation: %q", item.ID)
 	}
@@ -156,16 +156,16 @@ func TestSessionViewerFavouritesColumnAndPins(t *testing.T) {
 	if item, _ := m.Highlighted(); item.ID != "today" {
 		t.Fatalf("initial highlight: %s", item.ID)
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	if item, _ := m.Highlighted(); item.ID != "pin" {
 		t.Fatalf("tab to favourites: %s", item.ID)
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 	if item, _ := m.Highlighted(); item.ID != "today" {
 		t.Fatalf("right to recent: %s", item.ID)
 	}
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if m.section["today"] != secPinned {
 		t.Fatal("ctrl+s did not pin")
 	}
@@ -205,7 +205,7 @@ func TestSessionViewerPreviewFetchesOnSettleAndRenders(t *testing.T) {
 	m.SetSize(120, 30)
 	m.SetSessions(sessions, nil)
 
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	if cmd == nil {
 		t.Fatal("moving did not schedule a preview")
 	}
@@ -275,7 +275,7 @@ func TestSessionViewerArchiveRestoreAndDeleteConfirmation(t *testing.T) {
 	m.LoadPrefs(path)
 	m.SetSessions([]daemon.Session{{ID: "one", Title: "Keep me"}, {ID: "two", Title: "Archive me"}}, nil)
 	m.focus("two")
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl})
 	if item, _ := m.Highlighted(); item.ID != "one" {
 		t.Fatalf("archiving jumped to %q instead of neighboring session", item.ID)
 	}
@@ -289,20 +289,20 @@ func TestSessionViewerArchiveRestoreAndDeleteConfirmation(t *testing.T) {
 	if len(reloaded.Filtered) != 1 || reloaded.Filtered[0].ID != "two" {
 		t.Fatalf("archive: %+v", reloaded.Filtered)
 	}
-	reloaded, _ = reloaded.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	reloaded, _ = reloaded.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	if reloaded.ConfirmDelete != "two" {
 		t.Fatal("deletion must request confirmation")
 	}
-	reloaded, cmd := reloaded.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	reloaded, cmd := reloaded.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
 	if cmd != nil || reloaded.ConfirmDelete != "" {
 		t.Fatal("cancellation deleted session")
 	}
-	reloaded, _ = reloaded.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
-	reloaded, cmd = reloaded.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	reloaded, _ = reloaded.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
+	reloaded, cmd = reloaded.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
 	if msg, ok := cmd().(SessionDeleteMsg); !ok || msg.ID != "two" {
 		t.Fatalf("confirmation: %v", msg)
 	}
-	reloaded, _ = reloaded.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	reloaded, _ = reloaded.Update(tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl})
 	if reloaded.prefs.archived("two") || len(reloaded.Filtered) != 0 {
 		t.Fatal("restore should remove from archive")
 	}
@@ -317,12 +317,12 @@ func TestSessionViewerArchiveKeepsNearbySelection(t *testing.T) {
 	m.SetSessions([]daemon.Session{{ID: "one"}, {ID: "two"}, {ID: "three"}}, nil)
 	m.focus("two")
 	index := m.Cursor
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl})
 	if item, _ := m.Highlighted(); item.ID != "three" || m.Cursor != index {
 		t.Fatalf("expected next session at index %d, got %+v at %d", index, item, m.Cursor)
 	}
 	m.OpenArchive()
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl})
 	if len(m.Filtered) != 0 || m.Cursor != 0 {
 		t.Fatalf("empty archive cursor: %d", m.Cursor)
 	}

@@ -2,11 +2,14 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -87,25 +90,45 @@ func useInk(detected ink) {
 	DefaultStyles.Selected = lipgloss.NewStyle().Background(lipgloss.Color(detected.surface))
 }
 
+// newTextInput is a text input in the theme: plain text and prompt whether
+// focused or not, and a reverse-video cursor that holds still, so an idle
+// input never wakes the program to blink.
+func newTextInput() textinput.Model {
+	ti := textinput.New()
+	s := ti.Styles()
+	s.Focused.Prompt, s.Focused.Text = lipgloss.NewStyle(), lipgloss.NewStyle()
+	s.Blurred = s.Focused
+	s.Cursor = textinput.CursorStyle{Shape: tea.CursorBlock}
+	ti.SetStyles(s)
+	return ti
+}
+
+// fitInputs sizes form fields to the columns their rows leave for a value.
+// A textinput without a width shows only the first rune of its placeholder.
+func fitInputs(inputs map[string]*textinput.Model, width int) {
+	for _, input := range inputs {
+		input.SetWidth(max(1, width))
+	}
+}
+
 const (
 	ansiReset  = "\x1b[0m"
 	ansiItalic = "\x1b[3m"
 	ansiGray   = "\x1b[90m"
 )
 
-// sgr is a foreground color as an escape sequence for the active color
-// profile, or fallback when the ramp is unknown.
+// sgr is a foreground color as an escape sequence, or fallback when the
+// ramp is unknown. Bubble Tea downsamples it to the terminal's profile.
 func sgr(hex, fallback string) string { return sgrLayer(hex, fallback, false) }
 
 func sgrLayer(hex, fallback string, background bool) string {
-	if hex == "" {
+	if parseHex(hex) == nil {
 		return fallback
 	}
-	seq := lipgloss.ColorProfile().Color(hex).Sequence(background)
-	if seq == "" {
-		return ""
+	if background {
+		return ansi.NewStyle().BackgroundColor(lipgloss.Color(hex)).String()
 	}
-	return "\x1b[" + seq + "m"
+	return ansi.NewStyle().ForegroundColor(lipgloss.Color(hex)).String()
 }
 
 // codeInk steps code down from prose so a reply that decorates every
@@ -132,7 +155,7 @@ func keepBackground(s string) string {
 
 // gradient is the brand ramp at t in [0, 1], or nil when the terminal did
 // not report the colors it is mixed from.
-func gradient(t float64) lipgloss.TerminalColor {
+func gradient(t float64) color.Color {
 	from, to := parseHex(transcriptInk.brandFrom), parseHex(transcriptInk.brandTo)
 	if from == nil || to == nil {
 		return nil

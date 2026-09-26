@@ -7,17 +7,13 @@ import (
 	"time"
 
 	"albedo/cli/internal/daemon"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 )
 
 // A message you send shows at once as a greyed-out copy where it will
 // settle, not as a "sending" row under the transcript.
 func TestPendingMessageIsAGreyedOutCopyInTheTranscript(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI256)
-	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
 	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
 	m.Client = daemon.NewChatClient(daemon.ChatClientOptions{BaseURL: "http://127.0.0.1:1", AgentID: "s"})
 	m.SetSize(80, 30)
@@ -48,8 +44,6 @@ func TestPendingMessageIsAGreyedOutCopyInTheTranscript(t *testing.T) {
 }
 
 func TestDotContinueDoesNotAppearInUI(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI256)
-	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
 	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
 	m.Client = daemon.NewChatClient(daemon.ChatClientOptions{BaseURL: "http://127.0.0.1:1", AgentID: "s"})
 	m.SetSize(80, 30)

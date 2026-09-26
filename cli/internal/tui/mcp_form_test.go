@@ -14,17 +14,17 @@ import (
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
 func typeText(m CapabilityPageModel, text string) CapabilityPageModel {
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text)})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyExtended, Text: text})
 	return m
 }
 
-func key(m CapabilityPageModel, k tea.KeyType) CapabilityPageModel {
-	m, _ = m.Update(tea.KeyMsg{Type: k})
+func key(m CapabilityPageModel, k rune) CapabilityPageModel {
+	m, _ = m.Update(tea.KeyPressMsg{Code: k})
 	return m
 }
 
@@ -101,7 +101,7 @@ func TestEditingKeepsOrRemovesStoredSecrets(t *testing.T) {
 	if err != nil || sub.Secrets.BearerToken != "old" || sub.Secrets.Headers["X-Key"] != "k" || sub.Server.Enabled == nil {
 		t.Fatalf("a blank edit must keep stored secrets and other fields: %+v %v", sub, err)
 	}
-	if !strings.Contains(strings.Join(f.view(100), "\n"), "stored · blank keeps it") {
+	if !strings.Contains(ansi.Strip(strings.Join(f.view(100), "\n")), "stored · blank keeps it") {
 		t.Fatal("edit form should say a token is stored")
 	}
 	f.Inputs[fieldToken].SetValue("-")
@@ -129,7 +129,7 @@ func TestFailedConnectionRestoresConfigAndKeepsTheForm(t *testing.T) {
 	m.Conn = daemon.NewConnection(daemon.ConnectionSnapshot{Port: port, Token: "t", Version: 2}, "")
 	m = typeText(m, "n")
 	m = typeText(m, "https://mcp.linear.app/mcp")
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if !m.Saving || cmd == nil {
 		t.Fatal("ctrl+s should save")
 	}

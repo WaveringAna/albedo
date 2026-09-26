@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/mattn/go-isatty"
 )
 
@@ -340,7 +340,7 @@ func runScrollScenario(width, height int, streaming bool, sampleCount int) Scena
 
 	// Warmup
 	for i := 0; i < 20; i++ {
-		m, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+		m, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 		_ = m.View()
 	}
 
@@ -386,24 +386,24 @@ func runScrollScenario(width, height int, streaming bool, sampleCount int) Scena
 
 		// Dynamically generate action to guarantee continuous motion across full buffer
 		var act tea.Msg
-		maxScroll := max(0, len(m.settledLines)-m.Viewport.Height)
+		maxScroll := max(0, len(m.settledLines)-m.Viewport.Height())
 		if scrollDirection < 0 {
 			if m.scrollOffset <= 0 {
 				scrollDirection = 1
-				act = tea.MouseMsg{Button: tea.MouseButtonWheelDown}
+				act = tea.MouseWheelMsg{Button: tea.MouseWheelDown}
 			} else if i%25 == 0 {
-				act = tea.KeyMsg{Type: tea.KeyPgUp}
+				act = tea.KeyPressMsg{Code: tea.KeyPgUp}
 			} else {
-				act = tea.MouseMsg{Button: tea.MouseButtonWheelUp}
+				act = tea.MouseWheelMsg{Button: tea.MouseWheelUp}
 			}
 		} else {
 			if m.scrollOffset >= maxScroll {
 				scrollDirection = -1
-				act = tea.MouseMsg{Button: tea.MouseButtonWheelUp}
+				act = tea.MouseWheelMsg{Button: tea.MouseWheelUp}
 			} else if i%25 == 0 {
-				act = tea.KeyMsg{Type: tea.KeyPgDown}
+				act = tea.KeyPressMsg{Code: tea.KeyPgDown}
 			} else {
-				act = tea.MouseMsg{Button: tea.MouseButtonWheelDown}
+				act = tea.MouseWheelMsg{Button: tea.MouseWheelDown}
 			}
 		}
 
@@ -459,7 +459,7 @@ func runScrollScenario(width, height int, streaming bool, sampleCount int) Scena
 	runtime.GC()
 	runtime.ReadMemStats(&memBefore)
 	allocs := testing.AllocsPerRun(benchRuns, func() {
-		testM, _ := allocSampleModel.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+		testM, _ := allocSampleModel.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 		_ = testM.View()
 	})
 	runtime.ReadMemStats(&memAfter)
@@ -625,6 +625,9 @@ func runBubbleTeaProgramEmissionTest() (OutputSyscallResult, error) {
 		wrapper,
 		tea.WithInput(inBuf),
 		tea.WithOutput(writer),
+		// A pipe reports a 0x0 window, where the renderer draws nothing; use
+		// the chat's size so emission stays measurable.
+		tea.WithWindowSize(120, 40),
 		tea.WithFPS(120),
 		tea.WithoutSignals(),
 		tea.WithoutSignalHandler(),
@@ -644,9 +647,9 @@ func runBubbleTeaProgramEmissionTest() (OutputSyscallResult, error) {
 	for i := 0; i < totalEvents; i++ {
 		<-ticker.C
 		if i%2 == 0 {
-			p.Send(tea.KeyMsg{Type: tea.KeyPgUp})
+			p.Send(tea.KeyPressMsg{Code: tea.KeyPgUp})
 		} else {
-			p.Send(tea.KeyMsg{Type: tea.KeyPgDown})
+			p.Send(tea.KeyPressMsg{Code: tea.KeyPgDown})
 		}
 	}
 
@@ -814,7 +817,7 @@ func (w bubbleTeaBenchmarkWrapper) Init() tea.Cmd {
 }
 
 func (w bubbleTeaBenchmarkWrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if _, ok := msg.(tea.KeyMsg); ok {
+	if _, ok := msg.(tea.KeyPressMsg); ok {
 		w.eventsLeft--
 		if w.eventsLeft <= 0 {
 			return w, tea.Quit
@@ -825,8 +828,8 @@ func (w bubbleTeaBenchmarkWrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return w, cmd
 }
 
-func (w bubbleTeaBenchmarkWrapper) View() string {
-	return w.chat.View()
+func (w bubbleTeaBenchmarkWrapper) View() tea.View {
+	return tea.NewView(w.chat.View())
 }
 
 // Standard Go Benchmarks
@@ -837,8 +840,8 @@ func BenchmarkScroll_UpdateView_120x40_Settled(b *testing.B) {
 	m.SetSize(120, 40)
 	buildRealisticHistory(&m)
 
-	upMsg := tea.KeyMsg{Type: tea.KeyPgUp}
-	downMsg := tea.KeyMsg{Type: tea.KeyPgDown}
+	upMsg := tea.KeyPressMsg{Code: tea.KeyPgUp}
+	downMsg := tea.KeyPressMsg{Code: tea.KeyPgDown}
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -858,8 +861,8 @@ func BenchmarkScroll_UpdateView_180x60_Settled(b *testing.B) {
 	m.SetSize(180, 60)
 	buildRealisticHistory(&m)
 
-	upMsg := tea.KeyMsg{Type: tea.KeyPgUp}
-	downMsg := tea.KeyMsg{Type: tea.KeyPgDown}
+	upMsg := tea.KeyPressMsg{Code: tea.KeyPgUp}
+	downMsg := tea.KeyPressMsg{Code: tea.KeyPgDown}
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -879,8 +882,8 @@ func BenchmarkScroll_UpdateView_120x40_Streaming(b *testing.B) {
 	m.SetSize(120, 40)
 	buildRealisticHistory(&m)
 
-	upMsg := tea.KeyMsg{Type: tea.KeyPgUp}
-	downMsg := tea.KeyMsg{Type: tea.KeyPgDown}
+	upMsg := tea.KeyPressMsg{Code: tea.KeyPgUp}
+	downMsg := tea.KeyPressMsg{Code: tea.KeyPgDown}
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -907,8 +910,8 @@ func BenchmarkScroll_UpdateView_180x60_Streaming(b *testing.B) {
 	m.SetSize(180, 60)
 	buildRealisticHistory(&m)
 
-	upMsg := tea.KeyMsg{Type: tea.KeyPgUp}
-	downMsg := tea.KeyMsg{Type: tea.KeyPgDown}
+	upMsg := tea.KeyPressMsg{Code: tea.KeyPgUp}
+	downMsg := tea.KeyPressMsg{Code: tea.KeyPgDown}
 
 	b.ResetTimer()
 	b.ReportAllocs()

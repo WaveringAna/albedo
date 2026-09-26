@@ -6,7 +6,7 @@ import (
 
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -40,7 +40,7 @@ func TestNoticeClearedOnUserMessageSubmit(t *testing.T) {
 
 	// Now user enters a new message and submits
 	app.Chat.TextArea.SetValue("how's the weather?")
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	app = updated.(AppModel)
 
 	if len(app.Chat.Notices) != 0 {

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"albedo/cli/internal/daemon"
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -16,9 +16,9 @@ func TestScrollDoesNotResumeFollowBeforeEndOfLiveOutput(t *testing.T) {
 		msg  tea.Msg
 		step int
 	}{
-		{"arrow", tea.KeyMsg{Type: tea.KeyDown}, 1},
-		{"page", tea.KeyMsg{Type: tea.KeyPgDown}, 13},
-		{"wheel", tea.MouseMsg{Button: tea.MouseButtonWheelDown}, 3},
+		{"arrow", tea.KeyPressMsg{Code: tea.KeyDown}, 1},
+		{"page", tea.KeyPressMsg{Code: tea.KeyPgDown}, 13},
+		{"wheel", tea.MouseWheelMsg{Button: tea.MouseWheelDown}, 3},
 	} {
 		t.Run(down.name, func(t *testing.T) {
 			m := NewChatModel(&daemon.Session{ID: "s"}, nil)
@@ -41,7 +41,7 @@ func TestScrollDoesNotResumeFollowBeforeEndOfLiveOutput(t *testing.T) {
 			if m.scrollOffset != before+down.step {
 				t.Fatal("next refresh lost scroll position")
 			}
-			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+			m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 			if m.scrollOffset != before+down.step-1 || m.Follow {
 				t.Fatalf("up did not move one row: offset=%d follow=%v", m.scrollOffset, m.Follow)
 			}
@@ -58,8 +58,8 @@ func TestReadingPositionSurvivesIncomingTranscript(t *testing.T) {
 		name string
 		msg  tea.Msg
 	}{
-		{"keyboard", tea.KeyMsg{Type: tea.KeyPgUp}},
-		{"wheel", tea.MouseMsg{Button: tea.MouseButtonWheelUp}},
+		{"keyboard", tea.KeyPressMsg{Code: tea.KeyPgUp}},
+		{"wheel", tea.MouseWheelMsg{Button: tea.MouseWheelUp}},
 	} {
 		t.Run(scroll.name, func(t *testing.T) {
 			m := NewChatModel(&daemon.Session{ID: "s"}, nil)
@@ -137,7 +137,7 @@ func TestCompactionHintLivesOnEventNotFooter(t *testing.T) {
 		if flags.Compaction {
 			want = "ctrl+k hide summary"
 		}
-		if rendered := m.Renderer.RenderEntry(entry, flags, m.Viewport.Width); !strings.Contains(rendered, want) {
+		if rendered := m.Renderer.RenderEntry(entry, flags, m.Viewport.Width()); !strings.Contains(rendered, want) {
 			t.Fatalf("compaction event missing %q: %q", want, rendered)
 		}
 	}

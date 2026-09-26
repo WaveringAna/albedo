@@ -6,7 +6,7 @@ import (
 
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -16,7 +16,7 @@ func TestEffortSelectorStaysInChatAndCommits(t *testing.T) {
 	app.Chat.SetSize(80, 22)
 	updated, _ := app.Update(commandExecutedMsg{Name: "/effort", Available: []string{"low", "medium", "high", "xhigh", "max"}, Gen: app.CommandGen})
 	app = updated.(AppModel)
-	view := ansi.Strip(app.View())
+	view := ansi.Strip(app.View().Content)
 	if app.State != AppStateChat || app.Chat.effortSelected != 2 || !strings.Contains(view, "[high]") {
 		t.Fatal("expected current tier selected within chat")
 	}
@@ -33,15 +33,15 @@ func TestEffortSelectorStaysInChatAndCommits(t *testing.T) {
 	if strings.Contains(view, "ctrl+g editor") {
 		t.Fatal("composer must be hidden while choosing effort")
 	}
-	oldHeight := app.Chat.Viewport.Height
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyRight})
+	oldHeight := app.Chat.Viewport.Height()
+	updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 	app = updated.(AppModel)
-	if app.Chat.effortSelected != 3 || !strings.Contains(ansi.Strip(app.View()), "[xhigh]") {
+	if app.Chat.effortSelected != 3 || !strings.Contains(ansi.Strip(app.View().Content), "[xhigh]") {
 		t.Fatal("right did not select xhigh")
 	}
-	updated, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := app.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	app = updated.(AppModel)
-	if len(app.Chat.effortOptions) != 0 || app.Chat.Viewport.Height != oldHeight+3 {
+	if len(app.Chat.effortOptions) != 0 || app.Chat.Viewport.Height() != oldHeight+3 {
 		t.Fatal("selector did not close and restore viewport")
 	}
 	got, ok := cmd().(ChatExecuteCommandMsg)
@@ -57,7 +57,7 @@ func TestEffortSelectorEscapeAndNarrowLayout(t *testing.T) {
 	if line := m.effortSelectorView(); !strings.Contains(ansi.Strip(line), "[max]") || ansi.StringWidth(line) > m.chatWidth() {
 		t.Fatalf("selected level clipped or line too wide: %q", line)
 	}
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if cmd != nil || len(m.effortOptions) != 0 {
 		t.Fatal("escape did not dismiss selector")
 	}

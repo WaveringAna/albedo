@@ -14,8 +14,8 @@ import (
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -44,18 +44,18 @@ func loadedPicker(t *testing.T) ModelPickerModel {
 	return m
 }
 
-func pickerKey(m ModelPickerModel, keys ...tea.KeyMsg) ModelPickerModel {
+func pickerKey(m ModelPickerModel, keys ...tea.KeyPressMsg) ModelPickerModel {
 	for _, k := range keys {
 		m, _ = m.Update(k)
 	}
 	return m
 }
 
-func typed(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
+func typed(s string) tea.KeyPressMsg { return tea.KeyPressMsg{Code: tea.KeyExtended, Text: s} }
 
 func chosen(t *testing.T, m ModelPickerModel) ModelPickerSelectMsg {
 	t.Helper()
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("enter chose nothing")
 	}
@@ -95,7 +95,7 @@ func TestModelPickerGroupsProfilesWithTheSessionsFirst(t *testing.T) {
 
 func TestModelPickerKeepsTheCursorWhenAListingArrives(t *testing.T) {
 	m := NewModelPickerModel(nil, pickerProfiles, "gpt-5", "work", "")
-	m = pickerKey(m, tea.KeyMsg{Type: tea.KeyDown})
+	m = pickerKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	before, _ := m.highlighted()
 	m, _ = m.Update(modelCatalogLoadedMsg{Profile: "work", Models: []daemon.Model{{ID: "a"}, {ID: "b"}}})
 	if after, _ := m.highlighted(); after.key() != before.key() {
@@ -108,26 +108,26 @@ func TestModelPickerArrowsStepEffortAndEnterSendsIt(t *testing.T) {
 	if got := chosen(t, m); got.Effort != "high" || got.Model != "gpt-5" || got.Provider != "work" {
 		t.Fatalf("unchanged choice %+v, want the session's high effort", got)
 	}
-	m = pickerKey(m, tea.KeyMsg{Type: tea.KeyLeft}, tea.KeyMsg{Type: tea.KeyLeft}, tea.KeyMsg{Type: tea.KeyLeft})
+	m = pickerKey(m, tea.KeyPressMsg{Code: tea.KeyLeft}, tea.KeyPressMsg{Code: tea.KeyLeft}, tea.KeyPressMsg{Code: tea.KeyLeft})
 	if got := chosen(t, m); got.Effort != "low" {
 		t.Fatalf("effort %q after stepping down past the end, want low", got.Effort)
 	}
-	m = pickerKey(m, tea.KeyMsg{Type: tea.KeyRight})
+	m = pickerKey(m, tea.KeyPressMsg{Code: tea.KeyRight})
 	if got := chosen(t, m); got.Effort != "medium" {
 		t.Fatalf("effort %q, want medium", got.Effort)
 	}
 	// Another row lacking the session's level shows the daemon's default,
 	// and the first row keeps its pick.
-	m = pickerKey(m, tea.KeyMsg{Type: tea.KeyDown}, tea.KeyMsg{Type: tea.KeyDown})
+	m = pickerKey(m, tea.KeyPressMsg{Code: tea.KeyDown}, tea.KeyPressMsg{Code: tea.KeyDown})
 	if got := chosen(t, m); got.Model != "o4-mini" || got.Effort != "medium" {
 		t.Fatalf("choice %+v, want o4-mini at medium", got)
 	}
-	m = pickerKey(m, tea.KeyMsg{Type: tea.KeyUp}, tea.KeyMsg{Type: tea.KeyUp})
+	m = pickerKey(m, tea.KeyPressMsg{Code: tea.KeyUp}, tea.KeyPressMsg{Code: tea.KeyUp})
 	if got := chosen(t, m); got.Effort != "medium" {
 		t.Fatalf("first row forgot its pick: %+v", got)
 	}
 	// A model without levels sends none.
-	m = pickerKey(m, tea.KeyMsg{Type: tea.KeyDown}, tea.KeyMsg{Type: tea.KeyRight})
+	m = pickerKey(m, tea.KeyPressMsg{Code: tea.KeyDown}, tea.KeyPressMsg{Code: tea.KeyRight})
 	if got := chosen(t, m); got.Model != "gpt-4.1" || got.Effort != "" {
 		t.Fatalf("choice %+v, want gpt-4.1 without effort", got)
 	}
@@ -139,11 +139,11 @@ func TestModelPickerArrowsEditASearchUntilYouBrowse(t *testing.T) {
 	if got := strings.Join(rowIDs(m), " "); got != "codex/gpt-5-codex typed:work/codex typed:codex/codex" {
 		t.Fatalf("search rows %q", got)
 	}
-	m = pickerKey(m, tea.KeyMsg{Type: tea.KeyLeft}, typed("x"))
+	m = pickerKey(m, tea.KeyPressMsg{Code: tea.KeyLeft}, typed("x"))
 	if m.search.Value() != "codexx" {
 		t.Fatalf("left arrow did not reach the search: %q", m.search.Value())
 	}
-	m = pickerKey(m, tea.KeyMsg{Type: tea.KeyBackspace}, tea.KeyMsg{Type: tea.KeyUp}, tea.KeyMsg{Type: tea.KeyLeft})
+	m = pickerKey(m, tea.KeyPressMsg{Code: tea.KeyBackspace}, tea.KeyPressMsg{Code: tea.KeyUp}, tea.KeyPressMsg{Code: tea.KeyLeft})
 	if got := chosen(t, m); got.Model != "gpt-5-codex" || got.Effort != "medium" {
 		t.Fatalf("after browsing, left should lower high to medium: %+v", got)
 	}
@@ -217,7 +217,7 @@ func TestModelPickerOffersATypedIDToEveryProfileMissingIt(t *testing.T) {
 	if got != "codex/gpt-5-codex typed:work/gpt-5-codex" {
 		t.Fatalf("rows %q", got)
 	}
-	m = pickerKey(m, tea.KeyMsg{Type: tea.KeyDown})
+	m = pickerKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	if got := chosen(t, m); got.Model != "gpt-5-codex" || got.Provider != "work" || got.Effort != "" {
 		t.Fatalf("typed choice %+v", got)
 	}
@@ -252,7 +252,7 @@ func TestModelPickerViewShowsProfilesLadderAndDetails(t *testing.T) {
 	if strings.Count(view, "‹") != 1 {
 		t.Fatalf("arrows belong to the selected row only:\n%s", view)
 	}
-	m = pickerKey(m, tea.KeyMsg{Type: tea.KeyDown})
+	m = pickerKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	if view := ansi.Strip(m.View()); !strings.Contains(view, "1.05m tokens") {
 		t.Fatalf("details did not follow the cursor:\n%s", view)
 	}
@@ -310,9 +310,9 @@ func TestModelPickerListsWithDetailsAndSwitchesWithTheChosenEffort(t *testing.T)
 		t.Fatalf("rows %q", got)
 	}
 
-	updated, _ = app.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
 	app = updated.(AppModel)
-	updated, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := app.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	app = updated.(AppModel)
 	updated, cmd = app.Update(cmd())
 	app = updated.(AppModel)

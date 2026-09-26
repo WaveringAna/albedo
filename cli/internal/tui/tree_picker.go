@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 var whitespaceRegex = regexp.MustCompile(`[\p{Cc}\p{Cf}\p{Z}]+`)
@@ -184,8 +184,8 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 			return TreeForkSuccessMsg{Session: branch}
 		}
 
-	case tea.KeyMsg:
-		if msg.Type == tea.KeyEsc || msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyCtrlD {
+	case tea.KeyPressMsg:
+		if msg.String() == "esc" || msg.String() == "ctrl+c" || msg.String() == "ctrl+d" {
 			if m.Confirming {
 				m.Confirming = false
 				m.Error = ""
@@ -199,7 +199,7 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 		}
 
 		if m.Confirming {
-			if msg.Type == tea.KeyEnter && len(m.Checkpoints) > m.Cursor {
+			if msg.String() == "enter" && len(m.Checkpoints) > m.Cursor {
 				cp := m.Checkpoints[m.Cursor]
 				m.Forking = true
 				m.ForkError = ""
@@ -210,16 +210,16 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 			return m, nil
 		}
 
-		switch msg.Type {
-		case tea.KeyUp, tea.KeyCtrlP:
+		switch msg.String() {
+		case "up", "ctrl+p":
 			if m.Cursor > 0 {
 				m.Cursor--
 			}
-		case tea.KeyDown, tea.KeyCtrlN:
+		case "down", "ctrl+n":
 			if m.Cursor < len(m.Checkpoints)-1 {
 				m.Cursor++
 			}
-		case tea.KeyLeft, tea.KeyPgUp:
+		case "left", "pgup":
 			if m.PageIndex > 0 {
 				m.PageIndex--
 				m.Loading = true
@@ -227,7 +227,7 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 				m.Generation++
 				return m, m.loadTreeCmd(m.Cursors[m.PageIndex], m.Generation)
 			}
-		case tea.KeyRight, tea.KeyPgDown:
+		case "right", "pgdown":
 			if m.HasMore && m.NextCursor != nil {
 				next := *m.NextCursor
 				m.Cursors = append(m.Cursors[:m.PageIndex+1], next)
@@ -237,7 +237,7 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 				m.Generation++
 				return m, m.loadTreeCmd(next, m.Generation)
 			}
-		case tea.KeyEnter:
+		case "enter":
 			if len(m.Checkpoints) > 0 && m.Cursor < len(m.Checkpoints) {
 				m.ForkError = ""
 				m.Confirming = true

@@ -6,7 +6,7 @@ import (
 
 	"albedo/cli/internal/daemon"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -61,7 +61,7 @@ func TestAgentsViewSelectsAndAttaches(t *testing.T) {
 	if m.selected == "lead" {
 		t.Fatal("tab did not move the selection")
 	}
-	_, cmd := m.key(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := m.key(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("enter on an empty input should attach")
 	}
@@ -130,7 +130,7 @@ func TestAgentsOpenFromTheCommandAndCtrlO(t *testing.T) {
 		t.Fatal("/agents should open the agents view, not the session browser")
 	}
 	chat := NewChatModel(&daemon.Session{ID: "lead"}, nil)
-	_, cmd = chat.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	_, cmd = chat.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("ctrl+o did nothing")
 	}
@@ -197,22 +197,22 @@ func TestCodeLinesReadsPartialJSON(t *testing.T) {
 
 func TestAgentsDeleteAsksFirstAndSparesTheOpenSession(t *testing.T) {
 	m := agentsFixture(t)
-	m, _ = m.key(tea.KeyMsg{Type: tea.KeyCtrlX})
+	m, _ = m.key(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
 	if m.confirm != "" || !strings.Contains(ansi.Strip(m.View()), "session browser") {
 		t.Fatal("the session the view opened from must not be deletable here")
 	}
 	m.selected = "coder"
-	m, _ = m.key(tea.KeyMsg{Type: tea.KeyCtrlX})
+	m, _ = m.key(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
 	view := ansi.Strip(m.View())
 	if m.confirm != "coder" || !strings.Contains(view, "delete coder and the agent below it?") {
 		t.Fatalf("ctrl+x should ask first:\n%s", view)
 	}
-	m, cmd := m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	m, cmd := m.key(tea.KeyPressMsg{Code: 'n', Text: "n"})
 	if m.confirm != "" || cmd != nil {
 		t.Fatal("any key but y keeps the agent")
 	}
-	m, _ = m.key(tea.KeyMsg{Type: tea.KeyCtrlX})
-	_, cmd = m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m, _ = m.key(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	_, cmd = m.key(tea.KeyPressMsg{Code: 'y', Text: "y"})
 	if cmd == nil {
 		t.Fatal("y should delete")
 	}

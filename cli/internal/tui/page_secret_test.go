@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestPageSecretInputIsMasked(t *testing.T) {
@@ -21,7 +21,7 @@ func TestPageSecretInputIsMasked(t *testing.T) {
 	m.Doc = doc
 	m.Busy = false
 	m.SetSize(80, 24)
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'k', Text: "k"})
 	if m.Mode != modeText || m.TextInput.EchoMode != textinput.EchoPassword {
 		t.Fatalf("secret action should mask input: %+v", m)
 	}

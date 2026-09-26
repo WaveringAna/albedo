@@ -7,10 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -102,8 +101,7 @@ type PageViewModel struct {
 }
 
 func NewPageViewModel(conn *daemon.Connection, sessionID, command string) PageViewModel {
-	ti := textinput.New()
-	ti.Cursor.SetMode(cursor.CursorStatic)
+	ti := newTextInput()
 	ti.Prompt = ""
 	return PageViewModel{
 		Conn:      conn,
@@ -118,7 +116,7 @@ func NewPageViewModel(conn *daemon.Connection, sessionID, command string) PageVi
 func (m *PageViewModel) SetSize(width, height int) {
 	m.Width = width
 	m.Height = height
-	m.TextInput.Width = max(10, width-20)
+	m.TextInput.SetWidth(max(10, width-20))
 }
 
 func (m PageViewModel) Init() tea.Cmd {
@@ -358,8 +356,8 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 			m.loadPageCmd(m.Generation),
 		)
 
-	case tea.KeyMsg:
-		if msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyEsc {
+	case tea.KeyPressMsg:
+		if msg.String() == "ctrl+c" || msg.String() == "esc" {
 			if m.Mode == modeBrowse {
 				return m, func() tea.Msg { return PageCancelMsg{} }
 			}
@@ -384,7 +382,7 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 
 		switch m.Mode {
 		case modeConfirm:
-			if msg.Type == tea.KeyEnter && m.CurrentAction != nil {
+			if msg.String() == "enter" && m.CurrentAction != nil {
 				act := *m.CurrentAction
 				m.CurrentAction = nil
 				m.Mode = modeBrowse
@@ -429,12 +427,12 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 		case modeChoice:
 			if m.CurrentAction != nil && len(m.CurrentAction.Options) > 0 {
 				numOpts := len(m.CurrentAction.Options)
-				switch msg.Type {
-				case tea.KeyLeft, tea.KeyUp:
+				switch msg.String() {
+				case "left", "up":
 					m.ChoiceIndex = (m.ChoiceIndex - 1 + numOpts) % numOpts
-				case tea.KeyRight, tea.KeyDown:
+				case "right", "down":
 					m.ChoiceIndex = (m.ChoiceIndex + 1) % numOpts
-				case tea.KeyEnter:
+				case "enter":
 					act := *m.CurrentAction
 					chosenOpt := act.Options[m.ChoiceIndex]
 					m.CurrentAction = nil
@@ -449,8 +447,8 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 			return m, nil
 
 		case modeText:
-			switch msg.Type {
-			case tea.KeyEnter:
+			switch msg.String() {
+			case "enter":
 				val := strings.TrimSpace(m.TextInput.Value())
 				if val != "" && m.CurrentAction != nil {
 					act := *m.CurrentAction
@@ -471,12 +469,12 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 
 		case modeBrowse:
 			idx := m.currentIndex()
-			switch msg.Type {
-			case tea.KeyUp, tea.KeyCtrlP:
+			switch msg.String() {
+			case "up", "ctrl+p":
 				if idx > 0 {
 					m.SelectedID = m.Doc.Rows[idx-1].ID
 				}
-			case tea.KeyDown, tea.KeyCtrlN:
+			case "down", "ctrl+n":
 				if idx < len(m.Doc.Rows)-1 {
 					m.SelectedID = m.Doc.Rows[idx+1].ID
 				}

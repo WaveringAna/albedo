@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -299,7 +299,7 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 		m.Loading = true
 		m.Generation++
 		return m, m.loadCmd(m.Generation)
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if m.Saving {
 			return m, nil
 		}
@@ -311,13 +311,13 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 				} else {
 					m.Error, m.Notice = "", "secret copied"
 				}
-			case msg.Type == tea.KeyEnter || msg.Type == tea.KeyEsc:
+			case msg.String() == "enter" || msg.String() == "esc":
 				m.Reveal = nil
 			}
 			return m, nil
 		}
 		if m.Form != nil {
-			if msg.Type == tea.KeyEsc {
+			if msg.String() == "esc" {
 				m.Form = nil
 				m.Error = ""
 				return m, nil
@@ -342,7 +342,7 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 			confirm := m.Confirm
 			m.Confirm = ""
 			hook := m.selected()
-			if msg.Type != tea.KeyEnter || hook == nil {
+			if msg.String() != "enter" || hook == nil {
 				return m, nil
 			}
 			if confirm == "delete" {
@@ -350,7 +350,7 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 			}
 			return m.begin("new secret for "+hook.Name, [2]string{"rotate", hook.ID})
 		}
-		if msg.Type == tea.KeyEsc || msg.Type == tea.KeyCtrlC {
+		if msg.String() == "esc" || msg.String() == "ctrl+c" {
 			return m, func() tea.Msg { return WebhooksPageDoneMsg{} }
 		}
 		if m.Loading {
@@ -366,51 +366,54 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 			return m, nil
 		}
 		hook := m.selected()
-		switch msg.Type {
-		case tea.KeyUp, tea.KeyCtrlP:
+		switch msg.String() {
+		case "up", "ctrl+p":
 			m.Cursor = max(0, m.Cursor-1)
-		case tea.KeyDown, tea.KeyCtrlN:
+		case "down", "ctrl+n":
 			m.Cursor = min(max(0, len(m.Hooks)-1), m.Cursor+1)
-		case tea.KeyEnter:
+		case "enter":
 			if hook != nil {
 				m.Error, m.Notice = "", ""
 				m.Form = newWebhookForm(hook, m.Sessions, m.SessionID)
 			}
-		case tea.KeySpace:
+		case "space":
 			if hook != nil {
 				if hook.Enabled {
 					return m.begin(hook.Name+" off · deliveries now answer 404", [2]string{"disable", hook.ID})
 				}
 				return m.begin(hook.Name+" on", [2]string{"enable", hook.ID})
 			}
-		case tea.KeyRunes:
-			switch msg.String() {
-			case "n":
-				m.Error, m.Notice = "", ""
-				m.Form = newWebhookForm(nil, m.Sessions, m.SessionID)
-			case "a":
-				if m.AgentManagement {
-					return m.begin("this session's agent can no longer manage its hooks", [2]string{"agent_off", ""})
-				}
-				return m.begin("this session's agent can now manage its own hooks", [2]string{"agent_on", ""})
-			case "d":
-				if hook != nil {
-					m.Confirm = "delete"
-				}
-			case "k":
-				if hook != nil {
-					m.Confirm = "rotate"
-				}
-			case "y":
-				if hook != nil {
-					if err := CopyText(m.address(*hook)); err != nil {
-						m.Error = "copy failed: " + err.Error()
-					} else {
-						m.Error, m.Notice = "", "url copied"
-					}
+		case "n":
+			m.Error, m.Notice = "", ""
+			m.Form = newWebhookForm(nil, m.Sessions, m.SessionID)
+		case "a":
+			if m.AgentManagement {
+				return m.begin("this session's agent can no longer manage its hooks", [2]string{"agent_off", ""})
+			}
+			return m.begin("this session's agent can now manage its own hooks", [2]string{"agent_on", ""})
+		case "d":
+			if hook != nil {
+				m.Confirm = "delete"
+			}
+		case "k":
+			if hook != nil {
+				m.Confirm = "rotate"
+			}
+		case "y":
+			if hook != nil {
+				if err := CopyText(m.address(*hook)); err != nil {
+					m.Error = "copy failed: " + err.Error()
+				} else {
+					m.Error, m.Notice = "", "url copied"
 				}
 			}
 		}
+	case tea.PasteMsg:
+		if m.Saving || m.Reveal != nil || m.Form == nil {
+			return m, nil
+		}
+		_, cmd := m.Form.update(msg)
+		return m, cmd
 	}
 	return m, nil
 }
@@ -583,7 +586,7 @@ var (
 func newWebhookForm(editing *webhookEntry, sessions []daemon.Session, current string) *webhookForm {
 	f := &webhookForm{Inputs: map[string]*textinput.Model{}, Sessions: sessions, Current: current, Chosen: current}
 	for _, key := range hookFields {
-		input := textinput.New()
+		input := newTextInput()
 		input.Prompt = ""
 		input.CharLimit = 4096
 		f.Inputs[key] = &input
@@ -652,39 +655,43 @@ func (f *webhookForm) chosenIndex(matches []daemon.Session) int {
 	return -1
 }
 
-// update handles one key; submit reports that the form should be saved.
-func (f *webhookForm) update(msg tea.KeyMsg) (submit bool, cmd tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyTab, tea.KeyDown:
-		f.move(1)
-		return false, nil
-	case tea.KeyShiftTab, tea.KeyUp:
-		f.move(-1)
-		return false, nil
-	case tea.KeyCtrlS:
-		return true, nil
-	case tea.KeyEnter:
-		if f.Focus == len(hookFields)-1 {
+// update handles one key or paste; submit reports that the form should be saved.
+func (f *webhookForm) update(msg tea.Msg) (submit bool, cmd tea.Cmd) {
+	if key, ok := msg.(tea.KeyPressMsg); ok {
+		switch key.String() {
+		case "tab", "down":
+			f.move(1)
+			return false, nil
+		case "shift+tab", "up":
+			f.move(-1)
+			return false, nil
+		case "ctrl+s":
 			return true, nil
+		case "enter":
+			if f.Focus == len(hookFields)-1 {
+				return true, nil
+			}
+			f.move(1)
+			return false, nil
 		}
-		f.move(1)
-		return false, nil
 	}
 	if f.current() == hookFieldSession {
-		matches := f.matches()
-		if (msg.Type == tea.KeyLeft || msg.Type == tea.KeyRight) && len(matches) > 0 {
-			step := 1
-			if msg.Type == tea.KeyLeft {
-				step = -1
+		if key, ok := msg.(tea.KeyPressMsg); ok && (key.String() == "left" || key.String() == "right") {
+			matches := f.matches()
+			if len(matches) > 0 {
+				step := 1
+				if key.String() == "left" {
+					step = -1
+				}
+				i := f.chosenIndex(matches)
+				if i < 0 {
+					i = 0
+				} else {
+					i = (i + step + len(matches)) % len(matches)
+				}
+				f.Chosen = matches[i].ID
+				return false, nil
 			}
-			i := f.chosenIndex(matches)
-			if i < 0 {
-				i = 0
-			} else {
-				i = (i + step + len(matches)) % len(matches)
-			}
-			f.Chosen = matches[i].ID
-			return false, nil
 		}
 	}
 	input := f.Inputs[f.current()]
@@ -744,6 +751,7 @@ func (f *webhookForm) view(width int) []string {
 	if f.Editing != nil {
 		title = "edit " + f.Editing.Name
 	}
+	fitInputs(f.Inputs, width-14)
 	rows := []string{DefaultStyles.Bold.Render(title)}
 	indent := strings.Repeat(" ", 13)
 	for i, key := range hookFields {

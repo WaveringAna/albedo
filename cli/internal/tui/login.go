@@ -11,9 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -187,9 +186,8 @@ func (m LoginModel) openBrowser(urlStr string) {
 func NewLoginModel(conn *daemon.Connection, nameHint string) LoginModel {
 	profiles, loadErr := config.LoadProfiles(config.HomeDir())
 
-	ti := textinput.New()
+	ti := newTextInput()
 	ti.Prompt = ""
-	ti.Cursor.SetMode(cursor.CursorStatic)
 
 	m := LoginModel{
 		Conn:      conn,
@@ -218,13 +216,13 @@ func (m LoginModel) inputWidth() int {
 func (m *LoginModel) resetInput() {
 	m.TextInput.Reset()
 	m.TextInput.EchoMode = textinput.EchoNormal
-	m.TextInput.Width = m.inputWidth()
+	m.TextInput.SetWidth(m.inputWidth())
 }
 
 func (m *LoginModel) SetSize(width, height int) {
 	m.Width = width
 	m.Height = height
-	m.TextInput.Width = m.inputWidth()
+	m.TextInput.SetWidth(m.inputWidth())
 	m.TextInput.SetValue(m.TextInput.Value())
 	m.ChoosePicker.SetSize(width, height)
 	m.ProtocolPicker.SetSize(width, height)
@@ -703,8 +701,8 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			return LoginDoneMsg{Name: msg.Name, Settings: msg.Settings}
 		}
 
-	case tea.KeyMsg:
-		if m.Step == StepChoose && (msg.Type == tea.KeyDelete || msg.String() == "d") {
+	case tea.KeyPressMsg:
+		if m.Step == StepChoose && (msg.String() == "delete" || msg.String() == "d") {
 			if item, ok := m.ChoosePicker.Highlighted(); ok {
 				if target, ok := m.removalFor(item.ID); ok {
 					return m, m.confirmRemoval(target)
@@ -712,9 +710,9 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if msg.Type == tea.KeyEsc || msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyCtrlD {
+		if msg.String() == "esc" || msg.String() == "ctrl+c" || msg.String() == "ctrl+d" {
 			pickerStep := m.Step == StepChoose || m.Step == StepProtocol || m.Step == StepModels || m.Step == StepOAuthModels || m.Step == StepRemove
-			if !pickerStep || msg.Type == tea.KeyCtrlD {
+			if !pickerStep || msg.String() == "ctrl+d" {
 				cancel := m.Close()
 				m.Generation++
 				return m, tea.Batch(cancel, func() tea.Msg { return LoginCancelMsg{} })
@@ -833,7 +831,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		return m, cmd
 
 	case StepName:
-		if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyEnter {
+		if keyMsg, ok := msg.(tea.KeyPressMsg); ok && keyMsg.String() == "enter" {
 			val := strings.TrimSpace(m.TextInput.Value())
 			m.TextInput.SetCursor(0)
 			name, err := config.ValidateProviderName(val)
@@ -863,7 +861,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		}
 
 	case StepBaseURL:
-		if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyEnter {
+		if keyMsg, ok := msg.(tea.KeyPressMsg); ok && keyMsg.String() == "enter" {
 			val := strings.TrimSpace(m.TextInput.Value())
 			m.TextInput.SetCursor(0)
 			if val == "" {
@@ -888,7 +886,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		}
 
 	case StepAPIKey:
-		if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyEnter {
+		if keyMsg, ok := msg.(tea.KeyPressMsg); ok && keyMsg.String() == "enter" {
 			val := m.TextInput.Value()
 			m.TextInput.SetCursor(0)
 			if val == "" && m.Draft.APIKey != "" {
@@ -915,7 +913,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		}
 
 	case StepOAuth:
-		if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyEnter {
+		if keyMsg, ok := msg.(tea.KeyPressMsg); ok && keyMsg.String() == "enter" {
 			val := strings.TrimSpace(m.TextInput.Value())
 			if val != "" && m.LoginID != "" {
 				m.Status = "exchanging authorization code…"
@@ -925,7 +923,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		}
 
 	case StepModel:
-		if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyEnter {
+		if keyMsg, ok := msg.(tea.KeyPressMsg); ok && keyMsg.String() == "enter" {
 			val := strings.TrimSpace(m.TextInput.Value())
 			m.TextInput.SetCursor(0)
 			if err := validateModelID(val); err != nil {

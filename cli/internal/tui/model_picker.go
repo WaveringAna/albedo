@@ -12,10 +12,9 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/sahilm/fuzzy"
 )
@@ -111,12 +110,13 @@ func NewModelPickerModel(conn *daemon.Connection, profiles config.Profiles, mode
 		})
 	}
 
-	search := textinput.New()
+	search := newTextInput()
 	search.Prompt = ""
 	search.Placeholder = "search models, or type an id"
-	search.PlaceholderStyle = DefaultStyles.Faint
-	search.Cursor.Style = DefaultStyles.Cursor
-	search.Cursor.SetMode(cursor.CursorStatic)
+	st := search.Styles()
+	st.Focused.Placeholder = DefaultStyles.Faint
+	st.Blurred.Placeholder = DefaultStyles.Faint
+	search.SetStyles(st)
 	search.Focus()
 
 	m := ModelPickerModel{
@@ -165,7 +165,7 @@ func mergeModels(seeds []string, listed []daemon.Model) []daemon.Model {
 func (m *ModelPickerModel) SetSize(width, height int) {
 	m.Width = width
 	m.Height = height
-	m.search.Width = max(1, width-6)
+	m.search.SetWidth(max(1, width-6))
 }
 
 func (m ModelPickerModel) Init() tea.Cmd {
@@ -397,14 +397,14 @@ func (m ModelPickerModel) Update(msg tea.Msg) (ModelPickerModel, tea.Cmd) {
 		m.refilter(false)
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if m.Saving {
 			return m, nil
 		}
-		switch msg.Type {
-		case tea.KeyEsc, tea.KeyCtrlC, tea.KeyCtrlD:
+		switch msg.String() {
+		case "esc", "ctrl+c", "ctrl+d":
 			return m, func() tea.Msg { return ModelPickerCancelMsg{} }
-		case tea.KeyEnter:
+		case "enter":
 			r, ok := m.highlighted()
 			if !ok {
 				return m, nil
@@ -416,21 +416,21 @@ func (m ModelPickerModel) Update(msg tea.Msg) (ModelPickerModel, tea.Cmd) {
 			m.Error = ""
 			choice := ModelPickerSelectMsg{Model: r.model.ID, Provider: r.profile, Effort: m.effort(r)}
 			return m, func() tea.Msg { return choice }
-		case tea.KeyUp, tea.KeyCtrlP:
+		case "up", "ctrl+p":
 			m.move(-1)
 			return m, nil
-		case tea.KeyDown, tea.KeyCtrlN:
+		case "down", "ctrl+n":
 			m.move(1)
 			return m, nil
-		case tea.KeyPgUp:
+		case "pgup":
 			m.move(-max(1, m.Height/2))
 			return m, nil
-		case tea.KeyPgDown:
+		case "pgdown":
 			m.move(max(1, m.Height/2))
 			return m, nil
-		case tea.KeyLeft, tea.KeyRight:
+		case "left", "right":
 			// Arrows edit a typed search until you move into the list.
-			by := map[tea.KeyType]int{tea.KeyLeft: -1, tea.KeyRight: 1}[msg.Type]
+			by := map[string]int{"left": -1, "right": 1}[msg.String()]
 			if (m.search.Value() == "" || m.browsing) && m.stepEffort(by) {
 				return m, nil
 			}

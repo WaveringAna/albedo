@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -359,16 +359,22 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 		m.Notice = "saved · session reloaded"
 		m.Loading = true
 		return m, tea.Batch(m.loadCmd(m.Generation), func() tea.Msg { return CapabilityPageChangedMsg{} })
-	case tea.KeyMsg:
+	case tea.PasteMsg:
+		if m.Form == nil || m.Saving {
+			return m, nil
+		}
+		_, cmd := m.Form.update(msg)
+		return m, cmd
+	case tea.KeyPressMsg:
 		if m.Saving {
 			return m, nil
 		}
 		if m.ConfirmExtension {
-			if msg.Type == tea.KeyEsc {
+			if msg.String() == "esc" {
 				m.ConfirmExtension = false
 				return m, nil
 			}
-			if msg.Type == tea.KeyEnter {
+			if msg.String() == "enter" {
 				m.ConfirmExtension = false
 				m.Saving = true
 				m.Generation++
@@ -377,7 +383,7 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 			return m, nil
 		}
 		if m.Form != nil {
-			if msg.Type == tea.KeyEsc {
+			if msg.String() == "esc" {
 				m.Form = nil
 				m.Error = ""
 				return m, nil
@@ -398,71 +404,68 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 		}
 		if m.ConfirmDelete {
 			m.ConfirmDelete = false
-			if msg.Type == tea.KeyEnter && len(m.Items) > 0 {
+			if msg.String() == "enter" && len(m.Items) > 0 {
 				m.Saving = true
 				m.Generation++
 				return m, m.deleteMCPCmd(m.Items[m.Cursor].ID, m.Generation)
 			}
 			return m, nil
 		}
-		if msg.Type == tea.KeyEsc || msg.Type == tea.KeyCtrlC {
+		if msg.String() == "esc" || msg.String() == "ctrl+c" {
 			return m, func() tea.Msg { return CapabilityPageDoneMsg{} }
 		}
 		if m.Loading {
 			return m, nil
 		}
-		switch msg.Type {
-		case tea.KeyUp:
+		switch msg.String() {
+		case "up":
 			if m.Cursor > 0 {
 				m.Cursor--
 			}
-		case tea.KeyDown:
+		case "down":
 			if m.Cursor < len(m.Items)-1 {
 				m.Cursor++
 			}
-		case tea.KeyRunes:
-			switch msg.String() {
-			case "r":
-				m.Loading = true
-				m.Generation++
-				return m, m.loadCmd(m.Generation)
-			case "g":
-				m.Global = true
-			case "s":
-				m.Global = false
-			case "E":
-				if !m.ExtensionEnabled {
-					m.ConfirmExtension = true
-				}
-			case "n":
-				if m.Kind == "mcp" {
-					m.openForm(false)
-				}
-			case "d":
-				if m.Kind == "mcp" && len(m.Items) > 0 {
-					m.ConfirmDelete = true
-				}
-			case "e":
-				// Re-enables a server switched off in extensions.json.
-				if m.Kind == "mcp" && len(m.Items) > 0 && m.Items[m.Cursor].Server.Enabled != nil && !*m.Items[m.Cursor].Server.Enabled {
-					item := m.Items[m.Cursor]
-					server := item.Server
-					server.Enabled = nil
-					credentials, err := config.ReadMCPCredentials(m.Home)
-					if err != nil {
-						m.Error = err.Error()
-						return m, nil
-					}
-					m.Saving = true
-					m.Generation++
-					return m, m.saveMCPCmd(mcpSubmission{Name: item.ID, Server: server, Secrets: credentials.Servers[item.ID]}, m.Generation)
-				}
+		case "r":
+			m.Loading = true
+			m.Generation++
+			return m, m.loadCmd(m.Generation)
+		case "g":
+			m.Global = true
+		case "s":
+			m.Global = false
+		case "E":
+			if !m.ExtensionEnabled {
+				m.ConfirmExtension = true
 			}
-		case tea.KeyEnter:
+		case "n":
+			if m.Kind == "mcp" {
+				m.openForm(false)
+			}
+		case "d":
+			if m.Kind == "mcp" && len(m.Items) > 0 {
+				m.ConfirmDelete = true
+			}
+		case "e":
+			// Re-enables a server switched off in extensions.json.
+			if m.Kind == "mcp" && len(m.Items) > 0 && m.Items[m.Cursor].Server.Enabled != nil && !*m.Items[m.Cursor].Server.Enabled {
+				item := m.Items[m.Cursor]
+				server := item.Server
+				server.Enabled = nil
+				credentials, err := config.ReadMCPCredentials(m.Home)
+				if err != nil {
+					m.Error = err.Error()
+					return m, nil
+				}
+				m.Saving = true
+				m.Generation++
+				return m, m.saveMCPCmd(mcpSubmission{Name: item.ID, Server: server, Secrets: credentials.Servers[item.ID]}, m.Generation)
+			}
+		case "enter":
 			if m.Kind == "mcp" && len(m.Items) > 0 {
 				m.openForm(true)
 			}
-		case tea.KeySpace:
+		case "space":
 			if len(m.Items) > 0 {
 				m.Saving = true
 				m.Generation++

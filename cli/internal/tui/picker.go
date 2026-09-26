@@ -4,9 +4,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 )
 
 type PickerItem struct {
@@ -34,8 +33,7 @@ type PickerModel struct {
 }
 
 func NewPickerModel(title string, items []PickerItem, withSearch bool, initialSelection string) PickerModel {
-	ti := textinput.New()
-	ti.Cursor.SetMode(cursor.CursorStatic)
+	ti := newTextInput()
 	ti.Placeholder = ""
 	ti.Focus()
 	ti.Prompt = ""
@@ -72,7 +70,7 @@ func (m PickerModel) Highlighted() (PickerItem, bool) {
 func (m *PickerModel) SetSize(width, height int) {
 	m.Width = width
 	m.Height = height
-	m.SearchInput.Width = max(1, width-8)
+	m.SearchInput.SetWidth(max(1, width-8))
 }
 
 func (m *PickerModel) applyFilter() {
@@ -165,22 +163,22 @@ func (m PickerModel) Update(msg tea.Msg) (PickerModel, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyEsc, tea.KeyCtrlC, tea.KeyCtrlD:
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "esc", "ctrl+c", "ctrl+d":
 			return m, func() tea.Msg { return PickerCancelMsg{} }
-		case tea.KeyEnter:
+		case "enter":
 			if len(m.Filtered) > 0 && m.Cursor < len(m.Filtered) {
 				selectedID := m.Filtered[m.Cursor].ID
 				return m, func() tea.Msg { return PickerSelectMsg{ID: selectedID} }
 			}
 			return m, nil
-		case tea.KeyUp, tea.KeyCtrlP:
+		case "up", "ctrl+p":
 			if m.Cursor > 0 {
 				m.Cursor--
 			}
 			return m, nil
-		case tea.KeyDown, tea.KeyCtrlN:
+		case "down", "ctrl+n":
 			if m.Cursor < len(m.Filtered)-1 {
 				m.Cursor++
 			}

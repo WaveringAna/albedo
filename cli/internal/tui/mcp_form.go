@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -59,7 +59,7 @@ func newMCPForm(editing string, server config.MCPServer, stored config.MCPServer
 		f.Transport = "stdio"
 	}
 	for _, key := range []string{fieldURL, fieldCommand, fieldName, fieldToken, fieldHeader, fieldValue, fieldEnv} {
-		input := textinput.New()
+		input := newTextInput()
 		input.Prompt = ""
 		input.CharLimit = 4096
 		switch key {
@@ -117,34 +117,38 @@ func (f *mcpForm) move(delta int) {
 	f.focus()
 }
 
-// update handles one key; submit reports that the form should be saved.
-func (f *mcpForm) update(msg tea.KeyMsg) (submit bool, cmd tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyTab, tea.KeyDown:
-		f.move(1)
-		return false, nil
-	case tea.KeyShiftTab, tea.KeyUp:
-		f.move(-1)
-		return false, nil
-	case tea.KeyCtrlS:
-		return true, nil
-	case tea.KeyEnter:
-		if f.Focus == len(f.fields())-1 {
+// update handles one key or paste; submit reports that the form should be saved.
+func (f *mcpForm) update(msg tea.Msg) (submit bool, cmd tea.Cmd) {
+	if key, ok := msg.(tea.KeyPressMsg); ok {
+		switch key.String() {
+		case "tab", "down":
+			f.move(1)
+			return false, nil
+		case "shift+tab", "up":
+			f.move(-1)
+			return false, nil
+		case "ctrl+s":
 			return true, nil
+		case "enter":
+			if f.Focus == len(f.fields())-1 {
+				return true, nil
+			}
+			f.move(1)
+			return false, nil
 		}
-		f.move(1)
-		return false, nil
 	}
 	if f.current() == fieldTransport {
-		switch msg.Type {
-		case tea.KeyLeft, tea.KeyRight, tea.KeySpace:
-			if f.Editing == "" {
-				if f.Transport == "http" {
-					f.Transport = "stdio"
-				} else {
-					f.Transport = "http"
+		if key, ok := msg.(tea.KeyPressMsg); ok {
+			switch key.String() {
+			case "left", "right", "space":
+				if f.Editing == "" {
+					if f.Transport == "http" {
+						f.Transport = "stdio"
+					} else {
+						f.Transport = "http"
+					}
+					f.suggestName()
 				}
-				f.suggestName()
 			}
 		}
 		return false, nil
@@ -267,6 +271,7 @@ func (f *mcpForm) view(width int) []string {
 	if f.Editing != "" {
 		title = "edit " + f.Editing
 	}
+	fitInputs(f.Inputs, width-16)
 	rows := []string{DefaultStyles.Bold.Render(title)}
 	for i, key := range f.fields() {
 		mark := "  "
