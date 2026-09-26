@@ -178,11 +178,12 @@ def run(endpoint):
                 assert tree["root"] == lead, tree
                 assert [(n["name"], n["parent"], n["depth"]) for n in tree["nodes"]] == [
                     (tree["nodes"][0]["name"], None, 0), ("coder", lead, 1)], tree
-            kinds = {(e["type"], e.get("session") or e.get("to")) for e in heard}
-            assert ("spawn", coder) in kinds, kinds
-            assert ("mail", coder) in kinds and ("mail", lead) in kinds, kinds
-            assert ("running", coder) in kinds and ("running", lead) in kinds, kinds
-            assert any(e["type"] == "text" and e["session"] == coder for e in heard), kinds
+            # The stream flushes every 100 ms, so the last batch may still be on its way.
+            def kinds():
+                return {(e["type"], e.get("session") or e.get("to")) for e in list(heard)}
+            expected = {("spawn", coder), ("mail", coder), ("mail", lead), ("running", coder),
+                        ("running", lead), ("text", coder)}
+            wait_for(lambda: expected <= kinds(), f"bus events {expected - kinds()}", timeout=10)
 
             # A follow-up by name, then an explicit reply by "parent".
             receipt = api(f"/sessions/{lead}/mail", {"to": "coder", "body": "also cover schedules"})
