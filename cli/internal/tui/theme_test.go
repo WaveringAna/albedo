@@ -46,3 +46,18 @@ func TestBackgroundsOutliveStyledSpans(t *testing.T) {
 		t.Errorf("a span still resets the row tint: %q", kept)
 	}
 }
+
+// The header's ramp renders once per ink, and a new ink renders it anew.
+func TestBrandRampFollowsTheInk(t *testing.T) {
+	before, styles := transcriptInk, DefaultStyles
+	defer func() { transcriptInk, DefaultStyles = before, styles }()
+	useInk(ink{code: "#c0c0c0", secondary: "#808080", decor: "#404040", brandFrom: "#e08cf5", brandTo: "#6fd1c4"})
+	pink := titleRule(80, brand("albedo"), "")
+	if again := titleRule(80, brand("albedo"), ""); again != pink {
+		t.Fatalf("the same ink rendered a different header:\n%q\n%q", pink, again)
+	}
+	useInk(ink{code: "#c0c0c0", secondary: "#808080", decor: "#404040", brandFrom: "#f0c674", brandTo: "#80aaf9"})
+	if gold := titleRule(80, brand("albedo"), ""); gold == pink {
+		t.Fatal("a new ink kept the old header")
+	}
+}

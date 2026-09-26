@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -178,13 +179,45 @@ func gradientText(s string, bold bool) string {
 	if gradient(0) == nil {
 		return DefaultStyles.Agent.Bold(bold).Render(s)
 	}
-	runes := []rune(s)
-	var b strings.Builder
-	for i, r := range runes {
-		t := float64(i) / float64(max(1, len(runes)-1))
-		b.WriteString(lipgloss.NewStyle().Foreground(gradient(t)).Bold(bold).Render(string(r)))
+	return ramp(rampKey{text: s, bold: bold}, func() string {
+		runes := []rune(s)
+		var b strings.Builder
+		for i, r := range runes {
+			t := float64(i) / float64(max(1, len(runes)-1))
+			b.WriteString(lipgloss.NewStyle().Foreground(gradient(t)).Bold(bold).Render(string(r)))
+		}
+		return b.String()
+	})
+}
+
+// rampKey names a rendering of the brand ramp: text swept by it, or a rule
+// of rule cells fading from it.
+type rampKey struct {
+	text string
+	bold bool
+	rule int
+}
+
+// ramps keeps renderings of the brand ramp. They change only with the
+// detected ink, and every frame's header asks for the same few again.
+var ramps struct {
+	sync.Mutex
+	ink   ink
+	byKey map[rampKey]string
+}
+
+func ramp(key rampKey, render func() string) string {
+	ramps.Lock()
+	defer ramps.Unlock()
+	if ramps.byKey == nil || ramps.ink != transcriptInk || len(ramps.byKey) > 256 {
+		ramps.ink, ramps.byKey = transcriptInk, map[rampKey]string{}
 	}
-	return b.String()
+	s, ok := ramps.byKey[key]
+	if !ok {
+		s = render()
+		ramps.byKey[key] = s
+	}
+	return s
 }
 
 // brandInk colors a mark along the brand ramp, or in the agent color.
@@ -207,6 +240,11 @@ func titleRule(width int, left, right string) string {
 	if n < 3 {
 		return left
 	}
+	return left + " " + ramp(rampKey{rule: n}, func() string { return fadeRule(n) }) + right
+}
+
+// fadeRule is n rule cells fading from the brand's end into Decor.
+func fadeRule(n int) string {
 	var rule strings.Builder
 	from, to := parseHex(transcriptInk.brandTo), parseHex(transcriptInk.decor)
 	for i := range n {
@@ -217,7 +255,7 @@ func titleRule(width int, left, right string) string {
 		}
 		rule.WriteString(DefaultStyles.Decor.Render("─"))
 	}
-	return left + " " + rule.String() + right
+	return rule.String()
 }
 
 // located is the brand at a place: "✦ albedo on ~/path".
