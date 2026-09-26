@@ -1,6 +1,9 @@
 package tui
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // A mood is a class of moment in a turn. Each class owns its own faces, so a
 // face always means something: what albedo is doing, or how a turn ended.
@@ -74,14 +77,14 @@ func (m mood) face(seed int64) string {
 	return set[m.pick(seed, len(set))]
 }
 
-// framesPerFace slows faces against the 80ms spinner tick, about 0.5s each.
-const framesPerFace = 6
+// faceInterval is how long each frame of an animation shows.
+const faceInterval = 500 * time.Millisecond
 
-// frame is the turn's animation at spinner tick.
+// frame is the turn's animation at tick, one frame per faceInterval.
 func (m mood) frame(seed int64, tick int) string {
 	pool := animations[m]
 	set := pool[m.pick(seed, len(pool))]
-	return set[(tick/framesPerFace)%len(set)]
+	return set[tick%len(set)]
 }
 
 // outcome classes a finished turn by how it ended and how long it took.

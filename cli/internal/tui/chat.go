@@ -860,7 +860,7 @@ func (m *ChatModel) startAnimation() tea.Cmd {
 
 func (m ChatModel) progressTickCmd() tea.Cmd {
 	id, generation := m.SessionID, m.Generation
-	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg { return ChatProgressTickMsg{SessionID: id, Generation: generation} })
+	return tea.Tick(faceInterval, func(time.Time) tea.Msg { return ChatProgressTickMsg{SessionID: id, Generation: generation} })
 }
 
 func (m ChatModel) waitForNextEvent() tea.Cmd {
@@ -1324,8 +1324,8 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.animationActive = false
 			return m, nil
 		}
+		// the face lives in the status line, so the transcript stays as it is
 		m.ProgressFrame++
-		m.refreshViewportContent()
 		return m, m.progressTickCmd()
 
 	case ChatStreamClosedMsg:
