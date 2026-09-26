@@ -332,6 +332,12 @@ def run(endpoint):
             # session listing reflects the updated effort
             listed_sessions = api("/sessions")
             assert next(s for s in listed_sessions if s["id"] == model_session)["effort"] == "high" 
+            # /model sets the effort it switches with, and refuses one the model lacks
+            picked = api(f"/sessions/{model_session}/commands", {"name": "/model", "args": {"model": "o3-mini", "effort": "low"}})
+            assert picked["result"]["effort"] == "low", picked
+            rejected(f"/sessions/{model_session}/commands", {"name": "/model", "args": {"model": "o3-mini", "effort": "max"}})
+            rejected(f"/sessions/{model_session}/commands", {"name": "/model", "args": {"model": "switched-model", "effort": "low"}})
+            assert next(s for s in api("/sessions") if s["id"] == model_session)["model"] == "o3-mini"
             # /work is the work extension's own page. A user change is told to
             # the agent, but never starts a turn: while idle it waits and rides
             # ahead of the next message.

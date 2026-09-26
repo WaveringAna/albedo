@@ -1051,6 +1051,54 @@ pub fn model_names(
   extension.provider_model_names(runtime.extensions, provider, endpoint)
 }
 
+/// One model a provider lists, with what the catalog knows about it.
+pub type ListedModel {
+  ListedModel(
+    id: String,
+    info: Option(extension.ModelInfo),
+    efforts: List(String),
+  )
+}
+
+pub fn listed_models(
+  runtime: Runtime,
+  provider: String,
+  endpoint: String,
+  facts_at facts_at: String,
+  efforts_at efforts_at: String,
+) -> List(ListedModel) {
+  let enabled = global(runtime) |> result.unwrap([])
+  model_names(runtime, provider, endpoint)
+  |> list.map(fn(id) {
+    ListedModel(
+      id,
+      extension.model_info(enabled, id, facts_at),
+      efforts_in(enabled, id, efforts_at),
+    )
+  })
+}
+
+/// The reasoning efforts the catalog publishes for a model at `endpoint`.
+pub fn model_efforts(
+  runtime: Runtime,
+  model: String,
+  endpoint: String,
+) -> List(String) {
+  global(runtime)
+  |> result.map(efforts_in(_, model, endpoint))
+  |> result.unwrap([])
+}
+
+fn efforts_in(
+  enabled: List(extension.Extension),
+  model: String,
+  endpoint: String,
+) -> List(String) {
+  extension.model_info(enabled, model, endpoint)
+  |> option.map(fn(info) { info.efforts })
+  |> option.unwrap([])
+}
+
 pub fn upstream(
   runtime: Runtime,
   session: String,

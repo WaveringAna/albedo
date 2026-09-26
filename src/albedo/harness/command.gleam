@@ -44,7 +44,7 @@ pub type Outcome {
 /// operation is unrepresentable.
 pub type StateOp {
   ModelGet
-  ModelSelect(model: String, provider: Option(String))
+  ModelSelect(model: String, provider: Option(String), effort: Option(String))
   EffortGet
   EffortSelect(effort: String)
   ContextSummary

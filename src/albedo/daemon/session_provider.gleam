@@ -53,38 +53,35 @@ pub fn configured_client(
   Ok(#(state, client))
 }
 
-pub fn efforts_for_model(
-  state: session_state.State(message),
-  model: String,
-) -> List(String) {
-  model_efforts(state.host, state.home, state.info.provider, model)
+/// The endpoint a profile's reasoning efforts are looked up under. Codex
+/// subscriptions read OpenAI's metadata through the ChatGPT endpoint. Other
+/// extensions ignore the endpoint.
+pub fn effort_endpoint(extension: String) -> String {
+  case extension {
+    "codex" -> "https://chatgpt.com/backend-api"
+    _ -> ""
+  }
 }
 
+/// The reasoning efforts a session on `provider` accepts for `model`.
 pub fn model_efforts(
   host: runtime.Runtime,
   home: String,
   provider: String,
   model: String,
 ) -> List(String) {
-  let endpoint = case configuration.named(home, provider) {
-    Ok(configured) if configured.extension == "codex" ->
-      "https://chatgpt.com/backend-api"
-    _ -> ""
+  let extension = case configuration.named(home, provider) {
+    Ok(configured) -> configured.extension
+    Error(_) -> ""
   }
-  case runtime.global(host) {
-    Ok(extensions) ->
-      case extension.model_info(extensions, model, endpoint) {
-        option.Some(info) -> info.efforts
-        option.None -> []
-      }
-    Error(_) -> []
-  }
+  runtime.model_efforts(host, model, effort_endpoint(extension))
 }
 
 pub fn read_effort(
   state: session_state.State(message),
 ) -> Result(json.Json, String) {
-  let efforts = efforts_for_model(state, state.info.model)
+  let efforts =
+    model_efforts(state.host, state.home, state.info.provider, state.info.model)
   case efforts {
     [] ->
       Error(
@@ -110,68 +107,66 @@ pub fn read_effort(
   }
 }
 
+/// The level as `model` on `provider` spells it, or why the model refuses it.
+fn supported_effort(
+  state: session_state.State(message),
+  provider: String,
+  model: String,
+  level: String,
+) -> Result(String, String) {
+  let level = string.trim(string.lowercase(level))
+  case model_efforts(state.host, state.home, provider, model) {
+    [] -> Error("model " <> model <> " does not support reasoning effort")
+    efforts ->
+      case list.contains(efforts, level) {
+        True -> Ok(level)
+        False ->
+          Error(
+            "unsupported reasoning effort: "
+            <> level
+            <> "; available: "
+            <> string.join(efforts, ", "),
+          )
+      }
+  }
+}
+
 pub fn change_effort(
   state: session_state.State(message),
   level: String,
 ) -> #(session_state.State(message), Result(json.Json, String)) {
-  case turn.running(state.activity) {
-    option.Some(_) -> #(
+  let changed = {
+    use _ <- result.try(case turn.running(state.activity) {
+      option.Some(_) -> Error("switching effort requires an idle session")
+      option.None -> Ok(Nil)
+    })
+    use level <- result.try(supported_effort(
       state,
-      Error("switching effort requires an idle session"),
+      state.info.provider,
+      state.info.model,
+      level,
+    ))
+    conversation.set_effort(
+      runtime.ledger(state.host),
+      state.info.id,
+      option.Some(level),
     )
-    option.None -> {
-      let efforts = efforts_for_model(state, state.info.model)
-      case efforts {
-        [] -> #(
-          state,
-          Error(
-            "model " <> state.info.model <> " does not support reasoning effort",
-          ),
-        )
-        _ -> {
-          let trimmed = string.trim(string.lowercase(level))
-          case list.contains(efforts, trimmed) {
-            False -> #(
-              state,
-              Error(
-                "unsupported reasoning effort: "
-                <> trimmed
-                <> "; available: "
-                <> string.join(efforts, ", "),
-              ),
-            )
-            True ->
-              case
-                conversation.set_effort(
-                  runtime.ledger(state.host),
-                  state.info.id,
-                  option.Some(trimmed),
-                )
-              {
-                Error(error) -> #(state, Error(error))
-                Ok(_) -> #(
-                  session_state.State(
-                    ..state,
-                    info: conversation.Info(
-                      ..state.info,
-                      effort: option.Some(trimmed),
-                    ),
-                  ),
-                  Ok(
-                    json.object([
-                      #("effort", json.string(trimmed)),
-                      #(
-                        "message",
-                        json.string("reasoning effort set to " <> trimmed),
-                      ),
-                    ]),
-                  ),
-                )
-              }
-          }
-        }
-      }
-    }
+    |> result.replace(level)
+  }
+  case changed {
+    Error(error) -> #(state, Error(error))
+    Ok(level) -> #(
+      session_state.State(
+        ..state,
+        info: conversation.Info(..state.info, effort: option.Some(level)),
+      ),
+      Ok(
+        json.object([
+          #("effort", json.string(level)),
+          #("message", json.string("reasoning effort set to " <> level)),
+        ]),
+      ),
+    )
   }
 }
 
@@ -180,6 +175,7 @@ pub fn select(
   state: session_state.State(message),
   model: String,
   provider_name: option.Option(String),
+  effort: option.Option(String),
 ) -> #(session_state.State(message), Result(Nil, String)) {
   case
     turn.running(state.activity) == option.None
@@ -202,15 +198,25 @@ pub fn select(
                   #(configured.name, configured.protocol)
                 })
             })
-            let efforts = model_efforts(state.host, state.home, provider, model)
-            let new_effort = case state.info.effort {
-              option.Some(current) ->
-                case list.contains(efforts, current) {
-                  True -> option.Some(current)
-                  False -> extension.default_effort(efforts)
-                }
-              option.None -> extension.default_effort(efforts)
-            }
+            // An asked-for level must fit the new model. Otherwise the
+            // current one carries over when it fits.
+            use new_effort <- result.try(case effort {
+              option.Some(level) ->
+                supported_effort(state, provider, model, level)
+                |> result.map(option.Some)
+              option.None -> {
+                let efforts =
+                  model_efforts(state.host, state.home, provider, model)
+                Ok(case state.info.effort {
+                  option.Some(current) ->
+                    case list.contains(efforts, current) {
+                      True -> option.Some(current)
+                      False -> extension.default_effort(efforts)
+                    }
+                  option.None -> extension.default_effort(efforts)
+                })
+              }
+            })
             use _ <- result.try(
               session_history.projected_for(state.history, provider, protocol)
               |> result.replace(Nil)

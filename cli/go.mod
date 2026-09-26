@@ -14,6 +14,7 @@ require (
 	github.com/mattn/go-isatty v0.0.20
 	github.com/muesli/termenv v0.16.0
 	github.com/rivo/uniseg v0.4.7
+	github.com/sahilm/fuzzy v0.1.3
 	golang.org/x/sys v0.37.0
 	golang.org/x/text v0.30.0
 )

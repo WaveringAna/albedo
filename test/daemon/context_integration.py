@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,6 +22,8 @@ class Provider(http.server.BaseHTTPRequestHandler):
 
     catalog = json.dumps({"fixture-cloud": {
         "id": "fixture-cloud", "name": "Fixture Cloud", "env": ["FIXTURE_API_KEY"],
+        # Listing matches the endpoint's host. The port is ignored.
+        "api": "http://127.0.0.1/v1",
         "models": {"fixture": {"id": "fixture", "limit": {"context": 200000, "output": 8000},
                                "modalities": {"input": ["text"]}}},
     }})
@@ -112,7 +115,13 @@ def run(endpoint):
             # The catalog is stored trimmed to the fields lookup reads.
             served = json.loads(Provider.catalog)["fixture-cloud"]
             assert json.loads((home/"models.json").read_text()) == {"fixture-cloud": {
-                "env": served["env"], "models": served["models"]}}
+                "api": served["api"], "env": served["env"], "models": served["models"]}}
+            # The picker's listing: plain ids, or objects with catalog facts.
+            listing = "/models/openai?" + urllib.parse.urlencode({"endpoint": endpoint})
+            assert api(listing) == ["fixture"], api(listing)
+            detailed = api(listing + "&details=1")
+            assert detailed == [{"id": "fixture", "efforts": [], "context": 200000, "output": 8000,
+                                 "input": ["text"]}], detailed
             assert snapshot["context_window_tokens"] == 200_000, snapshot
             compaction = snapshot["compaction"]
             assert compaction["provider_input_tokens"] == 20, compaction

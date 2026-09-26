@@ -311,7 +311,7 @@ func (m AppModel) loadCommandCatalogCmd(gen int) tea.Cmd {
 	}
 }
 
-func (m AppModel) changeModelCmd(model, provider string, gen int) tea.Cmd {
+func (m AppModel) changeModelCmd(model, provider, effort string, gen int) tea.Cmd {
 	return func() tea.Msg {
 		if m.Conn == nil || m.ActiveSession == nil {
 			return modelChangedMsg{Err: errors.New("no active session or connection"), Gen: gen}
@@ -342,6 +342,9 @@ func (m AppModel) changeModelCmd(model, provider string, gen int) tea.Cmd {
 		args := map[string]string{"model": model}
 		if provider != "" {
 			args["provider"] = provider
+		}
+		if effort != "" {
+			args["effort"] = effort
 		}
 		body := map[string]any{
 			"name": "/model",
@@ -857,7 +860,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 
 	case ChatOpenModelPickerMsg:
 		if m.ActiveSession != nil {
-			m.ModelPicker = NewModelPickerModel(m.Conn, m.Profiles, m.ActiveSession.Model, m.ActiveSession.Provider)
+			m.ModelPicker = NewModelPickerModel(m.Conn, m.Profiles, m.ActiveSession.Model, m.ActiveSession.Provider, m.ActiveSession.Effort)
 			m.ModelPicker.SetSize(m.Width, m.Height)
 			m.State = AppStateModelPicker
 			return m, m.ModelPicker.Init()
@@ -867,7 +870,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		m.ModelPicker.Saving = true
 		m.ModelPicker.Error = ""
 		m.ModelGen++
-		return m, m.changeModelCmd(msg.Model, msg.Provider, m.ModelGen)
+		return m, m.changeModelCmd(msg.Model, msg.Provider, msg.Effort, m.ModelGen)
 
 	case ModelPickerCancelMsg:
 		m.State = AppStateChat
@@ -1046,10 +1049,10 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 			return m, tea.Batch(previous, m.Login.Init())
 		case msg.Name == "/model" && msg.Args != "":
 			m.ModelGen++
-			return m, m.changeModelCmd(msg.Args, "", m.ModelGen)
+			return m, m.changeModelCmd(msg.Args, "", "", m.ModelGen)
 		case msg.Name == "/model":
 			if m.ActiveSession != nil {
-				m.ModelPicker = NewModelPickerModel(m.Conn, m.Profiles, m.ActiveSession.Model, m.ActiveSession.Provider)
+				m.ModelPicker = NewModelPickerModel(m.Conn, m.Profiles, m.ActiveSession.Model, m.ActiveSession.Provider, m.ActiveSession.Effort)
 				m.ModelPicker.SetSize(m.Width, m.Height)
 				m.State = AppStateModelPicker
 				return m, m.ModelPicker.Init()

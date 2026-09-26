@@ -35,7 +35,7 @@ argument parsing is shared: leading arguments take one whitespace token each, th
 
 ## v1 commands
 
-- `/model [model] [provider]` — show the selection (any caller) or switch it (user only, idle session; a model call is always mid-turn, so switching is refused and the model is told to ask the user).
+- `/model [model] [provider] [effort]` — show the selection (any caller) or switch it (user only, idle session; a model call is always mid-turn, so switching is refused and the model is told to ask the user). A given effort must be one the new model supports; without one, the current effort carries over when the new model supports it.
 - `/context [section] [page]` — the prepared model request: a summary, or one bounded section page.
 
 skills contributes one command per cataloged skill; `/tree`, `/fork`, `/login`, and the other picker-style entries stay presentation-only in the CLI.

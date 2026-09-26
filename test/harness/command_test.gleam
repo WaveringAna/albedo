@@ -9,6 +9,7 @@ import albedo/harness/extensions/commands/extension as commands
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/json
+import gleam/option
 import gleam/result
 import gleeunit/should
 
@@ -17,6 +18,11 @@ fn stub_state(op: command.StateOp) -> Result(json.Json, String) {
     command.Submit(display, _, _) ->
       Ok(json.object([#("display", json.string(display))]))
     command.ModelGet -> Ok(json.string("selection"))
+    command.ModelSelect(model, provider, effort) ->
+      Ok(json.array(
+        [model, option.unwrap(provider, "-"), option.unwrap(effort, "-")],
+        json.string,
+      ))
     command.Compact -> Ok(json.string("started"))
     _ -> Error("unexpected state operation")
   }
@@ -370,6 +376,27 @@ pub fn model_switching_is_refused_from_the_model_test() {
     dict.from_list([#("provider", "acme")]),
   )
   |> should.equal(Error("provider requires model"))
+}
+
+pub fn model_switch_carries_an_optional_effort_test() {
+  let values = extension.declared_commands([commands.extension()])
+  let switch = fn(args) {
+    command.dispatch(
+      values,
+      stub_context(),
+      UserCall,
+      "c",
+      "/model",
+      dict.from_list(args),
+    )
+  }
+  let assert Ok(Data(selected)) =
+    switch([#("model", "next"), #("provider", "acme"), #("effort", "high")])
+  selected |> should.equal(json.array(["next", "acme", "high"], json.string))
+  let assert Ok(Data(kept)) = switch([#("model", "next"), #("effort", "")])
+  kept |> should.equal(json.array(["next", "-", "-"], json.string))
+  switch([#("effort", "high")])
+  |> should.equal(Error("effort requires model; /effort changes it alone"))
 }
 
 pub fn catalog_carries_usage_and_mintable_methods_test() {

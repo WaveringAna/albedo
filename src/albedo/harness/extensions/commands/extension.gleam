@@ -78,27 +78,39 @@ fn model() -> Command {
         False,
         [],
       ),
+      Argument(
+        "effort",
+        "reasoning effort for the new model; omit to keep the current level when the model supports it",
+        False,
+        [],
+      ),
     ],
     True,
     False,
     False,
     fn(ctx: Context, caller, args) {
       // A model call is always mid-turn, so it may only read the selection.
-      let provider = case dict.get(args, "provider") {
-        Ok(value) if value != "" -> Some(value)
-        _ -> None
+      let given = fn(name) {
+        case dict.get(args, name) {
+          Ok(value) if value != "" -> Some(value)
+          _ -> None
+        }
       }
+      let provider = given("provider")
       use value <- result.try(case caller, dict.get(args, "model") {
         ModelCall, Ok(_) ->
           Error(
             "switching models is a user action between turns; ask the user to run /model",
           )
         _, Error(_) ->
-          case provider {
-            Some(_) -> Error("provider requires model")
-            None -> ctx.state(ModelGet)
+          case provider, given("effort") {
+            None, None -> ctx.state(ModelGet)
+            Some(_), _ -> Error("provider requires model")
+            None, Some(_) ->
+              Error("effort requires model; /effort changes it alone")
           }
-        UserCall, Ok(model) -> ctx.state(ModelSelect(model, provider))
+        UserCall, Ok(model) ->
+          ctx.state(ModelSelect(model, provider, given("effort")))
       })
       Ok(Data(value))
     },

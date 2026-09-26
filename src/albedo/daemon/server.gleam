@@ -71,7 +71,6 @@ type Message {
   /// The tree `session` belongs to, from its root down.
   ReadAgents(String, Subject(Result(#(String, List(AgentNode)), String)))
   List(Subject(List(conversation.Info)))
-  Models(String, String, Subject(List(String)))
   Logins(Subject(List(oauth.Login)))
   Host(Subject(runtime.Runtime))
   ReadTree(String, Int, Int, Subject(Result(history.Page, String)))
@@ -243,10 +242,6 @@ fn handle(state: State, message: Message) {
           |> result.unwrap([])
           |> list.filter(fn(info) { !set.contains(children, info.id) }),
       )
-      actor.continue(state)
-    }
-    Models(provider, endpoint, reply) -> {
-      process.send(reply, runtime.model_names(state.host, provider, endpoint))
       actor.continue(state)
     }
     Logins(reply) -> {
@@ -1158,6 +1153,29 @@ fn member_json(member: family.Member) -> json.Json {
   ])
 }
 
+fn listed_model_json(model: runtime.ListedModel) -> json.Json {
+  let fact = fn(read) { option.then(model.info, read) }
+  json.object([
+    #("id", json.string(model.id)),
+    #("efforts", json.array(model.efforts, json.string)),
+    #(
+      "context",
+      json.nullable(fact(fn(info) { info.context_tokens }), json.int),
+    ),
+    #(
+      "output",
+      json.nullable(fact(fn(info) { info.max_output_tokens }), json.int),
+    ),
+    #(
+      "input",
+      model.info
+        |> option.map(fn(info) { info.input_modalities })
+        |> option.unwrap([])
+        |> json.array(json.string),
+    ),
+  ])
+}
+
 fn tree_item_json(item: history.Item) -> json.Json {
   json.object([
     #("id", json.int(item.id)),
@@ -1449,19 +1467,42 @@ fn daemon_route(
           }
         }
         Get, ["agents", "stream"] -> agents_stream(req)
+        // `details` lists objects with catalog facts. Without it, plain ids.
+        // Efforts come from where sessions of this extension look them up,
+        // and facts from the endpoint, or there when none is given.
         Get, ["models", provider] -> {
-          let endpoint =
-            request.get_query(req)
-            |> result.unwrap([])
-            |> list.key_find("endpoint")
-            |> result.unwrap("")
-          reply(
-            200,
-            json.array(
-              actor.call(registry, 5000, Models(provider, endpoint, _)),
-              json.string,
-            ),
-          )
+          let query = request.get_query(req) |> result.unwrap([])
+          let endpoint = list.key_find(query, "endpoint") |> result.unwrap("")
+          let host = actor.call(registry, 5000, Host)
+          let efforts_at = session_provider.effort_endpoint(provider)
+          let facts_at = case endpoint {
+            "" -> efforts_at
+            _ -> endpoint
+          }
+          case list.key_find(query, "details") {
+            Ok(_) ->
+              reply(
+                200,
+                json.array(
+                  runtime.listed_models(
+                    host,
+                    provider,
+                    endpoint,
+                    facts_at:,
+                    efforts_at:,
+                  ),
+                  listed_model_json,
+                ),
+              )
+            Error(_) ->
+              reply(
+                200,
+                json.array(
+                  runtime.model_names(host, provider, endpoint),
+                  json.string,
+                ),
+              )
+          }
         }
         _, ["auth", ..rest] ->
           auth(config.home, actor.call(registry, 5000, Logins), req, rest)

@@ -286,6 +286,12 @@ func (m SessionViewer) column(indices []int, width, height int, now time.Time) [
 		all = append(all, DefaultStyles.Faint.Render("   no matches"))
 	}
 
+	return scrollWindow(all, selectedAt, width, height)
+}
+
+// scrollWindow shows exactly width × height of lines, centred on selectedAt
+// when they overflow, with ··· where lines were cut off.
+func scrollWindow(all []string, selectedAt, width, height int) []string {
 	if len(all) > height {
 		start := 0
 		if selectedAt >= 0 {

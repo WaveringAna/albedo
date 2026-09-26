@@ -106,7 +106,12 @@ pub type Message {
     Subject(Result(List(extension.Summary), String)),
   )
   Interrupt(Subject(Bool))
-  ChangeModel(String, Option(String), Subject(Result(ModelSelection, String)))
+  ChangeModel(
+    String,
+    Option(String),
+    Option(String),
+    Subject(Result(ModelSelection, String)),
+  )
   ReadEffort(Subject(Result(json.Json, String)))
   ChangeEffort(String, Subject(Result(json.Json, String)))
   Status(Subject(String))
@@ -503,9 +508,9 @@ fn handle(state: State, message: Message) {
       process.send(reply, outcome)
       actor.continue(state)
     }
-    ChangeModel(model, provider_name, reply) -> {
+    ChangeModel(model, provider_name, effort, reply) -> {
       let #(state, outcome) =
-        session_provider.select(state, model, provider_name)
+        session_provider.select(state, model, provider_name, effort)
       process.send(
         reply,
         result.map(outcome, fn(_) { model_selection(state.info) }),
@@ -955,8 +960,8 @@ fn command_op(
   case op {
     command.ModelGet ->
       Ok(selection_json(actor.call(session, 5000, ReadSelection)))
-    command.ModelSelect(model, provider) ->
-      actor.call(session, 5000, ChangeModel(model, provider, _))
+    command.ModelSelect(model, provider, effort) ->
+      actor.call(session, 5000, ChangeModel(model, provider, effort, _))
       |> result.map(selection_json)
     command.EffortGet -> actor.call(session, 5000, ReadEffort)
     command.EffortSelect(level) ->
