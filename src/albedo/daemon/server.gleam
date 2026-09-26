@@ -1,3 +1,4 @@
+import albedo/daemon/agents
 import albedo/daemon/bus
 import albedo/daemon/configuration
 import albedo/daemon/conversation
@@ -61,6 +62,8 @@ type Message {
     Subject(Result(#(conversation.Info, family.Member), String)),
   )
   Lookup(String, Subject(Result(session.Session, String)))
+  /// What an agent asks of other sessions, through the agents seam.
+  AgentOp(agents.Op, Subject(Result(json.Json, String)))
   /// The tree `session` belongs to, from its root down.
   ReadAgents(String, Subject(Result(#(String, List(AgentNode)), String)))
   List(Subject(List(conversation.Info)))
@@ -164,6 +167,8 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
         })
       let _ = process.send_after(self, sweep_interval(config), Sweep)
       let _ = process.send_after(self, 15_000, ScheduleTick)
+      // Agents start and stop other sessions from kernel host routes.
+      agents.register(fn(op) { actor.call(self, 60_000, AgentOp(op, _)) })
       Ok(
         actor.initialised(State(
           host,
@@ -253,73 +258,14 @@ fn handle(state: State, message: Message) {
       }
     }
     CreateChild(parent, name, task, model, reply) -> {
-      let db = runtime.ledger(state.host)
-      let created = {
-        use #(above, _) <- result.try(
-          dict.get(state.sessions, parent)
-          |> result.replace_error("session not found"),
-        )
-        use _ <- result.try(family.valid_name(name))
-        let info =
-          conversation.Info(
-            ..above,
-            id: new_id(),
-            title: name,
-            stage: conversation.Idle,
-            last_assistant_at: None,
-            model: case model {
-              "" -> above.model
-              _ -> model
-            },
-          )
-        use _ <- result.try(conversation.create(db, info))
-        case family.link(db, info.id, parent, name) {
-          Ok(member) -> Ok(#(info, member))
-          Error(error) -> {
-            let _ = conversation.delete(db, info.id)
-            Error(error)
-          }
-        }
-      }
-      case created {
-        Error(error) -> {
-          process.send(reply, Error(error))
-          actor.continue(state)
-        }
-        Ok(#(info, member)) -> {
-          bus.spawned(member, info.model)
-          let state =
-            State(
-              ..state,
-              sessions: dict.insert(state.sessions, info.id, #(info, None)),
-            )
-          let #(state, worker) = activate(state, info.id)
-          let sent = {
-            use letter <- result.try(mail.post(
-              db,
-              mail.new_id(),
-              info.id,
-              Some(parent),
-              family_name(state, parent),
-              mail.Task,
-              task,
-            ))
-            // Off the registry: admitting the task may boot the child's kernel.
-            // The letter is durable, so a failed hand-off is the dispatcher's.
-            case worker {
-              Ok(worker) -> {
-                process.spawn_unlinked(fn() {
-                  session.submit_mail(worker, letter)
-                })
-                Ok(Nil)
-              }
-              Error(_) -> Ok(Nil)
-            }
-          }
-          process.send(reply, sent |> result.replace(#(info, member)))
-          actor.continue(state)
-        }
-      }
+      let #(state, created) = create_child(state, parent, name, task, model)
+      process.send(reply, created)
+      actor.continue(state)
+    }
+    AgentOp(op, reply) -> {
+      let #(state, answer) = agent_op(state, op)
+      process.send(reply, answer)
+      actor.continue(state)
     }
     ReadAgents(id, reply) -> {
       process.send(reply, agent_tree(state, id))
@@ -731,6 +677,154 @@ fn info_json(info: conversation.Info) -> json.Json {
       None -> json.null()
     }),
   ])
+}
+
+/// A child of `parent`, linked, running, and handed its task.
+fn create_child(
+  state: State,
+  parent: String,
+  name: String,
+  task: String,
+  model: String,
+) -> #(State, Result(#(conversation.Info, family.Member), String)) {
+  let db = runtime.ledger(state.host)
+  let created = {
+    use #(above, _) <- result.try(
+      dict.get(state.sessions, parent)
+      |> result.replace_error("session not found"),
+    )
+    use _ <- result.try(family.valid_name(name))
+    let info =
+      conversation.Info(
+        ..above,
+        id: new_id(),
+        title: name,
+        stage: conversation.Idle,
+        last_assistant_at: None,
+        model: case model {
+          "" -> above.model
+          _ -> model
+        },
+      )
+    use _ <- result.try(conversation.create(db, info))
+    case family.link(db, info.id, parent, name) {
+      Ok(member) -> Ok(#(info, member))
+      Error(error) -> {
+        let _ = conversation.delete(db, info.id)
+        Error(error)
+      }
+    }
+  }
+  case created {
+    Error(error) -> #(state, Error(error))
+    Ok(#(info, member)) -> {
+      bus.spawned(member, info.model)
+      let state =
+        State(
+          ..state,
+          sessions: dict.insert(state.sessions, info.id, #(info, None)),
+        )
+      let #(state, worker) = activate(state, info.id)
+      let sent = {
+        use letter <- result.try(mail.post(
+          db,
+          mail.new_id(),
+          info.id,
+          Some(parent),
+          family_name(state, parent),
+          mail.Task,
+          task,
+        ))
+        // Off the registry: admitting the task may boot the child's kernel.
+        // The letter is durable, so a failed hand-off is the dispatcher's.
+        case worker {
+          Ok(worker) -> {
+            process.spawn_unlinked(fn() { session.submit_mail(worker, letter) })
+            Ok(Nil)
+          }
+          Error(_) -> Ok(Nil)
+        }
+      }
+      #(state, sent |> result.replace(#(info, member)))
+    }
+  }
+}
+
+fn agent_op(
+  state: State,
+  op: agents.Op,
+) -> #(State, Result(json.Json, String)) {
+  let worker = fn(id) {
+    case dict.get(state.sessions, id) {
+      Ok(#(_, Some(active))) -> Some(active)
+      _ -> None
+    }
+  }
+  case op {
+    agents.Spawn(parent, name, task, model) -> {
+      let #(state, created) = create_child(state, parent, name, task, model)
+      #(
+        state,
+        result.map(created, fn(pair) {
+          json.object([
+            #("member", member_json(pair.1)),
+            #("model", json.string({ pair.0 }.model)),
+          ])
+        }),
+      )
+    }
+    agents.Running(id) -> #(
+      state,
+      Ok(
+        json.bool(case worker(id) {
+          Some(active) -> session.report(active).running
+          None -> False
+        }),
+      ),
+    )
+    agents.Stop(id) -> #(
+      state,
+      Ok(
+        json.bool(case worker(id) {
+          Some(active) -> session.interrupt(active)
+          None -> False
+        }),
+      ),
+    )
+    agents.Close(id) -> {
+      case worker(id) {
+        Some(active) -> {
+          let _ = session.interrupt(active)
+          // Saving the kernel's variables can take a while; not on the registry.
+          process.spawn_unlinked(fn() { session.release(active) })
+          Nil
+        }
+        None -> Nil
+      }
+      let closed = family.close(runtime.ledger(state.host), id)
+      case closed {
+        Ok(_) -> bus.closed(id)
+        Error(_) -> Nil
+      }
+      #(state, closed |> result.replace(json.bool(True)))
+    }
+    agents.Models(id) -> {
+      let listed = case dict.get(state.sessions, id) {
+        Error(_) -> []
+        Ok(#(info, _)) -> {
+          let catalog = case
+            configuration.named(state.config.home, info.provider)
+          {
+            Ok(provider) ->
+              runtime.model_names(state.host, provider.extension, "")
+            Error(_) -> []
+          }
+          list.unique([info.model, ..catalog])
+        }
+      }
+      #(state, Ok(json.array(listed, json.string)))
+    }
+  }
 }
 
 fn agent_tree(

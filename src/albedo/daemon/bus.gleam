@@ -56,6 +56,16 @@ pub fn spawned(member: family.Member, model: String) -> Nil {
   )
 }
 
+/// A child was closed: its work stays, its kernel goes.
+pub fn closed(session: String) -> Nil {
+  publish(event_json(session, "closed", []))
+}
+
+/// A short note an agent posts about where it is, without starting a turn.
+pub fn progress(session: String, text: String) -> Nil {
+  publish(event_json(session, "progress", [#("text", json.string(text))]))
+}
+
 pub fn gone(session: String) -> Nil {
   publish(event_json(session, "gone", []))
 }

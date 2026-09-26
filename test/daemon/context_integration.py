@@ -130,9 +130,10 @@ def run(endpoint):
 
             pages = {}
             for section in snapshot["sections"]:
-                page = api(f"{route}/{section['id']}/0")
-                assert len(page["content"].encode()) <= 32_000
-                pages[section["id"]] = page["content"]
+                first = api(f"{route}/{section['id']}/0")
+                parts = [first] + [api(f"{route}/{section['id']}/{n}") for n in range(1, first["pages"])]
+                assert all(len(part["content"].encode()) <= 32_000 for part in parts)
+                pages[section["id"]] = "".join(part["content"] for part in parts)
             assert pages["instructions"] == sent["instructions"]
             assert json.loads(pages["tools"]) == sent["tools"]
             assert "inspect exact composition" in pages["history"]

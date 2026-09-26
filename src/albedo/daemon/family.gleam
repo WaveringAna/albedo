@@ -28,7 +28,7 @@ pub type Member {
 pub const max_depth = 3
 
 /// Open children one parent may have at once.
-pub const max_children = 8
+pub const max_children = 12
 
 const schema = "
 CREATE TABLE IF NOT EXISTS session_family (

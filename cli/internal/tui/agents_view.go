@@ -563,6 +563,13 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 	case "interrupted":
 		m.flushLine(n)
 		m.pushTail(n, "· interrupted")
+	case "progress":
+		m.flushLine(n)
+		m.pushTail(n, "» "+str(event, "text"))
+		n.flash = 0.6
+	case "closed":
+		n.closed = true
+		n.running = false
 	}
 	return false
 }

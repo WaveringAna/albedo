@@ -34,13 +34,15 @@ func TestAgentsViewDrawsTheTreeAndTail(t *testing.T) {
 		{"type": "tool_progress", "session": "lead", "progress": map[string]any{"name": "python", "phase": "running"}},
 		{"type": "mail", "id": "m1", "from": "coder", "fromName": "coder", "to": "lead", "kind": "result", "bytes": 4000.0},
 		{"type": "spawn", "session": "docs", "parent": "coder", "name": "docs", "depth": 2.0, "model": "gpt-6-luna"},
+		{"type": "progress", "session": "lead", "text": "three scouts out"},
+		{"type": "closed", "session": "scout"},
 	}})
 	for range 8 {
 		m.step()
 	}
 	view := ansi.Strip(m.View())
 	t.Log("\n" + view)
-	for _, want := range []string{"lead", "scout", "coder", "tests", "docs", "▸ python", "spawning the scouts", "← coder result", "/agents"} {
+	for _, want := range []string{"lead", "scout", "coder", "tests", "docs", "▸ python", "spawning the scouts", "← coder result", "» three scouts out", "✓ scout", "/agents"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view is missing %q", want)
 		}

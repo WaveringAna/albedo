@@ -1,4 +1,5 @@
 import albedo/harness/extension
+import albedo/harness/extensions/agents/extension as agents
 import albedo/harness/extensions/alibaba/extension as alibaba
 import albedo/harness/extensions/antigravity/extension as antigravity
 import albedo/harness/extensions/bash/extension as bash
@@ -8,6 +9,7 @@ import albedo/harness/extensions/files/extension as files
 import albedo/harness/extensions/instructions/extension as instructions
 import albedo/harness/extensions/lcm/extension as lcm
 import albedo/harness/extensions/lcm/memory as lcm_memory
+import albedo/harness/extensions/mail/extension as mail
 import albedo/harness/extensions/mcp/extension as mcp
 import albedo/harness/extensions/models/extension as models
 import albedo/harness/extensions/openai/extension as openai
@@ -31,6 +33,8 @@ pub fn defaults() -> Config {
       python.extension(),
       bash.extension(),
       work.extension(),
+      mail.extension(),
+      agents.extension(),
       schedule.extension(),
       files.extension(),
       instructions.extension(),
@@ -53,9 +57,9 @@ pub fn defaults() -> Config {
       webhooks.extension(),
     ],
     [
-      "python", "bash", "work", "schedule", "files", "instructions", "commands",
-      "skills", "models", "openai", "codex", "antigravity", "alibaba", "rolling",
-      "lcm-memory", "remote",
+      "python", "bash", "work", "mail", "agents", "schedule", "files",
+      "instructions", "commands", "skills", "models", "openai", "codex",
+      "antigravity", "alibaba", "rolling", "lcm-memory", "remote",
     ],
   )
 }
