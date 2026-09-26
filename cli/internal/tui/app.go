@@ -231,7 +231,7 @@ func (m AppModel) deleteSessionCmd(id string) tea.Cmd {
 		if conn == nil {
 			return sessionDeletedMsg{ID: id, Err: errors.New("daemon connection unavailable")}
 		}
-		_, err := daemon.RequestMethod[struct{}](context.Background(), conn, http.MethodDelete, "/sessions/"+url.PathEscape(id), nil)
+		_, err := daemon.RequestMethod[struct{}](context.Background(), conn, http.MethodDelete, "/sessions/"+url.PathEscape(id)+"?tree=1", nil)
 		return sessionDeletedMsg{ID: id, Err: err}
 	}
 }

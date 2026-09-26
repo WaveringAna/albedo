@@ -152,3 +152,26 @@ func TestCodeLinesReadsPartialJSON(t *testing.T) {
 		t.Fatalf("a closed string stops at its quote, got %q", got)
 	}
 }
+
+func TestAgentsDeleteAsksFirstAndSparesTheOpenSession(t *testing.T) {
+	m := agentsFixture(t)
+	m, _ = m.key(tea.KeyMsg{Type: tea.KeyCtrlX})
+	if m.confirm != "" || !strings.Contains(ansi.Strip(m.View()), "session browser") {
+		t.Fatal("the session the view opened from must not be deletable here")
+	}
+	m.selected = "coder"
+	m, _ = m.key(tea.KeyMsg{Type: tea.KeyCtrlX})
+	view := ansi.Strip(m.View())
+	if m.confirm != "coder" || !strings.Contains(view, "delete coder and the agent below it?") {
+		t.Fatalf("ctrl+x should ask first:\n%s", view)
+	}
+	m, cmd := m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if m.confirm != "" || cmd != nil {
+		t.Fatal("any key but y keeps the agent")
+	}
+	m, _ = m.key(tea.KeyMsg{Type: tea.KeyCtrlX})
+	_, cmd = m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if cmd == nil {
+		t.Fatal("y should delete")
+	}
+}

@@ -685,6 +685,53 @@ fn info_json(info: conversation.Info) -> json.Json {
   ])
 }
 
+/// Delete `id` and its descendants, children before parents. A running agent
+/// is interrupted and given a few seconds to stop; one that will not stop
+/// ends the walk with what was deleted so far still deleted.
+fn delete_tree(registry: Subject(Message), id: String) -> Result(Int, String) {
+  let db = runtime.ledger(actor.call(registry, 5000, Host))
+  subtree(db, id, family.max_depth + 1)
+  |> list.try_fold(0, fn(deleted, session_id) {
+    case actor.call(registry, 10_000, Lookup(session_id, _)) {
+      Ok(worker) -> stop_run(worker, 50)
+      Error(_) -> Nil
+    }
+    actor.call(registry, 40_000, DeleteSession(session_id, _))
+    |> result.replace(deleted + 1)
+    |> result.map_error(fn(e) {
+      family.name_of(db, session_id)
+      <> ": "
+      <> e
+      <> " ("
+      <> int.to_string(deleted)
+      <> " deleted before it)"
+    })
+  })
+}
+
+/// `id` after everything below it.
+fn subtree(db: store.Store, id: String, budget: Int) -> List(String) {
+  let below = case budget {
+    0 -> []
+    _ ->
+      family.children(db, id)
+      |> result.unwrap([])
+      |> list.flat_map(fn(child) { subtree(db, child.session, budget - 1) })
+  }
+  list.append(below, [id])
+}
+
+fn stop_run(worker: session.Session, polls: Int) -> Nil {
+  case session.report(worker).running, polls {
+    False, _ | _, 0 -> Nil
+    True, _ -> {
+      let _ = session.interrupt(worker)
+      process.sleep(100)
+      stop_run(worker, polls - 1)
+    }
+  }
+}
+
 /// A child of `parent`, linked, running, and handed its task.
 fn create_child(
   state: State,
@@ -1286,11 +1333,33 @@ fn daemon_route(
           let _ = process.send_after(registry, 100, Shutdown)
           reply(200, json.object([#("ok", json.bool(True))]))
         }
-        Delete, ["sessions", id] ->
-          case actor.call(registry, 40_000, DeleteSession(id, _)) {
-            Ok(_) -> reply(200, json.object([#("ok", json.bool(True))]))
-            Error(e) -> error(409, e)
+        // With ?tree=1, the session and every agent below it, deepest first.
+        Delete, ["sessions", id] -> {
+          let tree =
+            request.get_query(req)
+            |> result.unwrap([])
+            |> list.key_find("tree")
+            == Ok("1")
+          case tree {
+            False ->
+              actor.call(registry, 40_000, DeleteSession(id, _))
+              |> result.replace(1)
+            True -> delete_tree(registry, id)
           }
+          |> fn(deleted) {
+            case deleted {
+              Ok(count) ->
+                reply(
+                  200,
+                  json.object([
+                    #("ok", json.bool(True)),
+                    #("deleted", json.int(count)),
+                  ]),
+                )
+              Error(e) -> error(409, e)
+            }
+          }
+        }
         Get, ["sessions", id, "tree"] -> {
           let query = request.get_query(req) |> result.unwrap([])
           let after =

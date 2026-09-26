@@ -222,8 +222,11 @@ def run(endpoint):
             except urllib.error.HTTPError as error:
                 assert error.code == 409, error.code
                 assert "child" in error.read().decode(), "refusal should name the children"
-            api(f"/sessions/{coder}", method="DELETE")
-            api(f"/sessions/{lead}", method="DELETE")
+            # A tree delete takes the parent and everything below it, children first.
+            deleted = api(f"/sessions/{lead}?tree=1", method="DELETE")
+            assert deleted["deleted"] == 2, deleted
+            listed = [s["id"] for s in api("/sessions")]
+            assert lead not in listed and coder not in listed, listed
             print("spawn, forwarded answers, mail by name and id, and parent deletion order hold")
         finally:
             if connection:

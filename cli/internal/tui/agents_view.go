@@ -154,6 +154,7 @@ type AgentsViewModel struct {
 	noticeT  float64
 	err      error
 	input    textinput.Model
+	confirm  string // the agent waiting for y to delete it
 	cancel   context.CancelFunc
 	events   chan []map[string]any
 }
@@ -394,6 +395,27 @@ type agentsReconnectMsg struct{ Gen int }
 
 func (m AgentsViewModel) key(msg tea.KeyMsg) (AgentsViewModel, tea.Cmd) {
 	empty := m.input.Value() == ""
+	if m.confirm != "" {
+		id := m.confirm
+		m.confirm = ""
+		if msg.String() == "y" {
+			m.say("deleting " + m.label(id, "") + "…")
+			return m, m.deleteCmd(id)
+		}
+		m.say("kept")
+		return m, nil
+	}
+	if msg.Type == tea.KeyCtrlX {
+		n := m.nodes[m.selected]
+		switch {
+		case n == nil || n.id == agentsYou:
+		case n.id == m.SessionID:
+			m.say("this is the session you opened the view from; delete it from the session browser")
+		default:
+			m.confirm = n.id
+		}
+		return m, nil
+	}
 	switch {
 	case msg.Type == tea.KeyEsc || msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyCtrlO:
 		if !empty && msg.Type == tea.KeyEsc {
@@ -448,6 +470,37 @@ func (m *AgentsViewModel) seedCmd() tea.Cmd {
 		}
 		res.Gen, res.ID = gen, id
 		return res
+	}
+}
+
+// below counts the agents under id.
+func (m AgentsViewModel) below(id string) int {
+	count := 0
+	for _, n := range m.nodes {
+		for p := n.parent; p != ""; p = m.nodes[p].parent {
+			if p == id {
+				count++
+				break
+			}
+			if m.nodes[p] == nil {
+				break
+			}
+		}
+	}
+	return count
+}
+
+func (m AgentsViewModel) deleteCmd(id string) tea.Cmd {
+	conn, gen, name := m.Conn, m.Gen, m.label(id, "")
+	return func() tea.Msg {
+		path := fmt.Sprintf("/sessions/%s?tree=1", url.PathEscape(id))
+		res, err := daemon.RequestMethod[struct {
+			Deleted int `json:"deleted"`
+		}](context.Background(), conn, http.MethodDelete, path, nil)
+		if err != nil {
+			return agentsSentMsg{Gen: gen, Err: err}
+		}
+		return agentsSentMsg{Gen: gen, Notice: fmt.Sprintf("deleted %s (%d sessions)", name, res.Deleted)}
 	}
 }
 
@@ -1315,6 +1368,17 @@ func (m AgentsViewModel) View() string {
 
 	status := ""
 	switch {
+	case m.confirm != "":
+		what := m.label(m.confirm, "")
+		switch below := m.below(m.confirm); below {
+		case 0:
+		case 1:
+			what += " and the agent below it"
+		default:
+			what += fmt.Sprintf(" and the %d agents below it", below)
+		}
+		status = DefaultStyles.Warning.Render("delete "+what+"? their transcripts and work go too") +
+			"  " + keyHints(hint{"y", "delete"}, hint{"any key", "keep"})
 	case m.err != nil:
 		status = DefaultStyles.Error.Render(m.err.Error())
 	case m.noticeT > 0:
@@ -1330,6 +1394,6 @@ func (m AgentsViewModel) View() string {
 		input = DefaultStyles.Faint.Render("message " + target + "…  or /spawn <name> <task>")
 	}
 	out = append(out, promptLead()+input)
-	out = append(out, keyHints(hint{"tab", "next agent"}, hint{"enter", "open or send"}, hint{"esc", "back"}))
+	out = append(out, keyHints(hint{"tab", "next agent"}, hint{"enter", "open or send"}, hint{"ctrl+x", "delete"}, hint{"esc", "back"}))
 	return strings.Join(out, "\n")
 }
