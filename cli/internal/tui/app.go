@@ -578,6 +578,13 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 			m.Chat, cmd = m.Chat.Update(msg)
 		}
 		return m, cmd
+	case ChatProgressTickMsg:
+		// a tick dropped under a modal would leave the face frozen for good
+		var cmd tea.Cmd
+		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
+			m.Chat, cmd = m.Chat.Update(msg)
+		}
+		return m, cmd
 	case ChatStatusMsg:
 		var cmd tea.Cmd
 		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {

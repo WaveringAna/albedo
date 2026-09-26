@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -57,5 +58,21 @@ func TestEachTickShowsTheNextFace(t *testing.T) {
 			t.Fatalf("tick %d shows %q, want %q", i, got, want)
 		}
 		m, _ = m.Update(ChatProgressTickMsg{SessionID: m.SessionID, Generation: m.Generation})
+	}
+}
+
+// The face keeps its tick while a modal covers the chat, so it still moves
+// once you come back.
+func TestFaceKeepsTickingUnderAModal(t *testing.T) {
+	session := daemon.Session{ID: "s1", Model: "model"}
+	app := NewAppModel(nil, config.Profiles{}, &session, "/work", false)
+	app.Chat.SetSize(80, 22)
+	app.Chat.Status.Running = true
+	app.Chat.startAnimation()
+	app.State = AppStateModelPicker
+	updated, cmd := app.Update(ChatProgressTickMsg{SessionID: session.ID, Generation: app.Chat.Generation})
+	app = updated.(AppModel)
+	if app.Chat.ProgressFrame != 1 || cmd == nil {
+		t.Fatal("a tick under a modal should advance the face and schedule the next")
 	}
 }
