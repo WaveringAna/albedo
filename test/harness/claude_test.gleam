@@ -5,6 +5,7 @@ import albedo/harness/oauth
 import albedo/openai_api
 import albedo/openai_api/stream as reducer
 import albedo/openai_api/types
+import gleam/dict
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -111,6 +112,87 @@ fn list_key(
   key: String,
 ) -> Result(String, Nil) {
   list.key_find(pairs, key)
+}
+
+pub fn claude_tool_schemas_flatten_only_top_level_combiners_test() {
+  let assert Ok(schema) =
+    json.parse(
+      "{\"type\":\"object\",\"properties\":{\"urls\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}},\"oneOf\":[{\"required\":[\"urls\"]},{\"required\":[\"ids\"]}],\"allOf\":[{\"required\":[\"mode\"],\"properties\":{\"mode\":{\"oneOf\":[{\"type\":\"string\"},{\"type\":\"integer\"}]}}}]}",
+      decode.dynamic,
+    )
+  let request =
+    types.Request(
+      "claude-opus-5-5",
+      None,
+      [types.User("hi")],
+      [
+        types.Tool(
+          "contents",
+          "Fetch URLs or IDs",
+          wire.encode_value(schema),
+          False,
+        ),
+      ],
+      None,
+      types.defaults,
+    )
+  let assert Ok(openai_api.Exchange(body: body, ..)) =
+    wire.encode("token", request)
+  let assert Ok(value) = json.parse(string_tree.to_string(body), decode.dynamic)
+  let assert Ok([tool]) =
+    decode.run(value, decode.at(["tools"], decode.list(decode.dynamic)))
+  let assert Ok("object") =
+    decode.run(tool, decode.at(["input_schema", "type"], decode.string))
+  let assert Ok(props) =
+    decode.run(
+      tool,
+      decode.at(
+        ["input_schema", "properties"],
+        decode.dict(decode.string, decode.dynamic),
+      ),
+    )
+  assert list.length(dict.to_list(props)) == 3
+  let assert Ok(["mode"]) =
+    decode.run(
+      tool,
+      decode.at(["input_schema", "required"], decode.list(decode.string)),
+    )
+  let assert Ok(hint) =
+    decode.run(tool, decode.at(["input_schema", "description"], decode.string))
+  assert string.contains(hint, "urls or ids")
+  let assert Ok([_, _]) =
+    decode.run(
+      tool,
+      decode.at(
+        ["input_schema", "properties", "mode", "oneOf"],
+        decode.list(decode.dynamic),
+      ),
+    )
+  let assert Error(_) =
+    decode.run(tool, decode.at(["input_schema", "oneOf"], decode.dynamic))
+  let assert Error(_) =
+    decode.run(tool, decode.at(["input_schema", "allOf"], decode.dynamic))
+}
+
+pub fn claude_tool_schema_accepts_branch_only_root_union_test() {
+  let assert Ok(schema) =
+    json.parse(
+      "{\"oneOf\":[{\"type\":\"object\",\"properties\":{\"urls\":{\"type\":\"array\"}},\"required\":[\"urls\"]},{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\"}},\"required\":[\"ids\"]}]}",
+      decode.dynamic,
+    )
+  let normalized = wire.normalize_schema(wire.encode_value(schema))
+  let assert Ok(value) = json.parse(json.to_string(normalized), decode.dynamic)
+  let assert Ok(props) =
+    decode.run(
+      value,
+      decode.at(["properties"], decode.dict(decode.string, decode.dynamic)),
+    )
+  assert list.length(dict.to_list(props)) == 2
+  let assert Ok("object") =
+    decode.run(value, decode.at(["type"], decode.string))
+  let assert Ok(hint) =
+    decode.run(value, decode.at(["description"], decode.string))
+  assert string.contains(hint, "urls or ids")
 }
 
 pub fn current_claude_effort_uses_adaptive_thinking_test() {

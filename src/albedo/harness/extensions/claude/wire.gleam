@@ -78,7 +78,7 @@ pub fn encode(
           json.object([
             #("name", json.string(claude_name(tool.name))),
             #("description", json.string(tool.description)),
-            #("input_schema", tool.parameters),
+            #("input_schema", normalize_schema(tool.parameters)),
           ])
         }),
       ),
@@ -338,6 +338,9 @@ pub fn claude_name(name: String) -> String {
   })
   |> result.unwrap(name)
 }
+
+@external(erlang, "albedo_claude_schema", "normalize")
+pub fn normalize_schema(schema: Json) -> Json
 
 @external(erlang, "albedo_openai_json", "base64_string")
 fn base64_string(data: types.ImageData) -> Json
