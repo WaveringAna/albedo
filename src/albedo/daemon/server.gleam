@@ -795,6 +795,77 @@ fn wait_stopped(id: String, polls: Int) -> Nil {
   }
 }
 
+fn provider_models(
+  host: runtime.Runtime,
+  provider: configuration.Provider,
+) -> List(String) {
+  list.unique([
+    provider.model,
+    ..runtime.model_names(host, provider.extension, "")
+  ])
+}
+
+fn child_model(
+  state: State,
+  parent: conversation.Info,
+  requested: String,
+) -> Result(#(configuration.Provider, String), String) {
+  use profiles <- result.try(configuration.providers(state.config.home))
+  let models =
+    list.map(profiles, fn(profile) {
+      #(profile, provider_models(state.host, profile))
+    })
+  let qualified =
+    list.find_map(models, fn(pair) {
+      let #(profile, available) = pair
+      let prefix = profile.name <> "/"
+      case string.starts_with(requested, prefix) {
+        True ->
+          Ok(#(
+            profile,
+            string.drop_start(requested, string.length(prefix)),
+            available,
+          ))
+        False -> Error(Nil)
+      }
+    })
+  case qualified {
+    Ok(#(profile, model, available)) ->
+      case list.contains(available, model) {
+        True -> Ok(#(profile, model))
+        False -> Error("model is not available from provider " <> profile.name)
+      }
+    Error(_) -> {
+      use current <- result.try(configuration.named(
+        state.config.home,
+        parent.provider,
+      ))
+      let model = case requested {
+        "" -> parent.model
+        _ -> requested
+      }
+      case list.contains(provider_models(state.host, current), model) {
+        True -> Ok(#(current, model))
+        False -> {
+          let matches =
+            list.filter(models, fn(pair) {
+              let #(profile, available) = pair
+              profile.name != current.name && list.contains(available, model)
+            })
+          case matches {
+            [#(profile, _)] -> Ok(#(profile, model))
+            [] -> Ok(#(current, model))
+            _ ->
+              Error(
+                "model is available from multiple providers; use provider/model",
+              )
+          }
+        }
+      }
+    }
+  }
+}
+
 /// A child of `parent`, linked, running, and handed its task.
 fn create_child(
   state: State,
@@ -810,6 +881,18 @@ fn create_child(
       |> result.replace_error("session not found"),
     )
     use _ <- result.try(family.valid_name(name))
+    use #(provider, selected_model) <- result.try(child_model(
+      state,
+      above,
+      model,
+    ))
+    let efforts =
+      session_provider.model_efforts(
+        state.host,
+        state.config.home,
+        provider.name,
+        selected_model,
+      )
     let info =
       conversation.Info(
         ..above,
@@ -817,10 +900,10 @@ fn create_child(
         title: name,
         stage: conversation.Idle,
         last_assistant_at: None,
-        model: case model {
-          "" -> above.model
-          _ -> model
-        },
+        provider: provider.name,
+        model: selected_model,
+        protocol: provider.protocol,
+        effort: extension.default_effort(efforts),
       )
     use _ <- result.try(conversation.create(db, info))
     case family.link(db, info.id, parent, name) {
@@ -926,14 +1009,21 @@ fn agent_op(
       let listed = case dict.get(state.sessions, id) {
         Error(_) -> []
         Ok(#(info, _)) -> {
-          let catalog = case
-            configuration.named(state.config.home, info.provider)
-          {
-            Ok(provider) ->
-              runtime.model_names(state.host, provider.extension, "")
-            Error(_) -> []
-          }
-          list.unique([info.model, ..catalog])
+          let profiles =
+            configuration.providers(state.config.home)
+            |> result.unwrap([])
+          let same =
+            profiles
+            |> list.filter(fn(profile) { profile.name == info.provider })
+            |> list.flat_map(provider_models(state.host, _))
+          let other =
+            profiles
+            |> list.filter(fn(profile) { profile.name != info.provider })
+            |> list.flat_map(fn(profile) {
+              provider_models(state.host, profile)
+              |> list.map(fn(model) { profile.name <> "/" <> model })
+            })
+          list.unique([info.model, ..list.append(same, other)])
         }
       }
       #(state, Ok(json.array(listed, json.string)))

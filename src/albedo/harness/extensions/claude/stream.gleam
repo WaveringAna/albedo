@@ -327,7 +327,7 @@ fn usage_decoder() -> decode.Decoder(types.Usage) {
 fn original_name(name: String, tools: List(types.Tool)) -> String {
   tools
   |> list.find(fn(tool) {
-    string.lowercase(tool.name) == string.lowercase(name)
+    string.lowercase(wire.claude_name(tool.name)) == string.lowercase(name)
   })
   |> result.map(fn(tool) { tool.name })
   |> result.unwrap(name)

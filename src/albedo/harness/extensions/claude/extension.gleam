@@ -81,32 +81,44 @@ fn resolve(
       case context.protocol {
         types.ChatCompletions ->
           Some({
-            use access <- result.map(native_access(
+            use access <- result.try(native_access(
               context.home,
               context.session,
             ))
-            extension.Upstream(
-              endpoint,
-              types.ChatCompletions,
-              fn(request, on_event) {
-                use exchange <- result.try(wire.encode(access, request))
-                openai_api.exchange(
-                  exchange,
-                  stream.reducer(request.model, request.tools),
-                  on_event,
-                )
-              },
-              fn(error) {
-                case error {
-                  types.HttpError(401, _) -> {
-                    native_expire(context.home, access)
-                    Some(
-                      "Claude rejected this access token; send your message again to refresh it, or run /login",
-                    )
+            use #(account, device, session) <- result.try(native_profile(
+              access,
+              context.session,
+            ))
+            Ok(
+              extension.Upstream(
+                endpoint,
+                types.ChatCompletions,
+                fn(request, on_event) {
+                  use exchange <- result.try(wire.encode(
+                    access,
+                    account,
+                    device,
+                    session,
+                    request,
+                  ))
+                  openai_api.exchange(
+                    exchange,
+                    stream.reducer(request.model, request.tools),
+                    on_event,
+                  )
+                },
+                fn(error) {
+                  case error {
+                    types.HttpError(401, _) -> {
+                      native_expire(context.home, access)
+                      Some(
+                        "Claude rejected this access token; send your message again to refresh it, or run /login",
+                      )
+                    }
+                    _ -> None
                   }
-                  _ -> None
-                }
-              },
+                },
+              ),
             )
           })
         _ ->
@@ -172,6 +184,12 @@ fn native_account(credential: Dynamic) -> oauth.Account
 
 @external(erlang, "albedo_claude_auth", "expire")
 fn native_expire(home: String, access: String) -> Nil
+
+@external(erlang, "albedo_claude_auth", "profile")
+fn native_profile(
+  access: String,
+  session: String,
+) -> Result(#(String, String, String), String)
 
 @external(erlang, "albedo_claude_auth", "access")
 fn native_access(home: String, session: String) -> Result(String, String)

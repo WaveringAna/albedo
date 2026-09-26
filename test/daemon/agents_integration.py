@@ -47,6 +47,7 @@ def content_text(item):
 class Provider(http.server.BaseHTTPRequestHandler):
     """Answers every request in plain text naming what it was asked."""
     requests = []
+    paths = []
     lock = threading.Lock()
 
     def log_message(self, *_):
@@ -58,6 +59,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
                             if item.get("role") == "user"), "")
         with self.lock:
             self.requests.append(latest_user)
+            self.paths.append(self.path)
         answer = "answered: " + latest_user.splitlines()[-2 if "</mail>" in latest_user else -1]
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -85,8 +87,12 @@ def run(endpoint):
         (home / "extensions.json").write_text(json.dumps({"models": {"refreshHours": 0}}))
         (home / "config.json").write_text(json.dumps({
             "active": "alpha",
-            "providers": {"alpha": {"baseUrl": endpoint + "/alpha/v1", "apiKey": "key",
-                                     "model": "fixture-alpha", "protocol": "chat_completions"}},
+            "providers": {
+                "alpha": {"baseUrl": endpoint + "/alpha/v1", "apiKey": "key",
+                          "model": "fixture-alpha", "protocol": "chat_completions"},
+                "beta": {"baseUrl": endpoint + "/beta/v1", "apiKey": "key",
+                         "model": "fixture-beta", "protocol": "chat_completions"},
+            },
         }))
         env = dict(os.environ, HOME=str(Path(directory) / "user-home"), ALBEDO_HOME=str(home),
                    ALBEDO_PARENT_PID=str(os.getpid()))
@@ -227,7 +233,24 @@ def run(endpoint):
             assert deleted["deleted"] == 2, deleted
             listed = [s["id"] for s in api("/sessions")]
             assert lead not in listed and coder not in listed, listed
-            print("spawn, forwarded answers, mail by name and id, and parent deletion order hold")
+
+            # A child can use a different configured provider without changing its parent.
+            try:
+                api(f"/sessions/{radio}/children",
+                    {"name": "missing", "task": "should not run", "model": "beta/no-such-model"})
+                raise AssertionError("accepted an unavailable qualified model")
+            except urllib.error.HTTPError as error:
+                assert error.code == 409, error.code
+            for name, model in (("explicit", "beta/fixture-beta"),
+                                ("inferred", "fixture-beta")):
+                child = api(f"/sessions/{radio}/children",
+                            {"name": name, "task": "cross-provider task", "model": model})
+                assert child["session"]["provider"] == "beta", child
+                assert child["session"]["model"] == "fixture-beta", child
+                assert child["member"]["parent"] == radio, child
+                settle(child["session"]["id"])
+            assert sum("/beta/" in path for path in Provider.paths) >= 2, Provider.paths
+            print("spawn, cross-provider routing, forwarded answers, mail, and deletion hold")
         finally:
             if connection:
                 with contextlib.suppress(Exception):

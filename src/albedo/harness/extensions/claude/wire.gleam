@@ -3,6 +3,8 @@
 
 import albedo/openai_api
 import albedo/openai_api/types
+import gleam/bit_array
+import gleam/crypto.{Sha256}
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -27,6 +29,9 @@ const claude_code_version = "2.1.283"
 
 pub fn encode(
   access: String,
+  account: String,
+  device: String,
+  session: String,
   request: types.Request,
 ) -> Result(openai_api.Exchange, types.Error) {
   use _ <- result.try(
@@ -68,17 +73,50 @@ pub fn encode(
     #("max_tokens", json.int(option.unwrap(request.max_output_tokens, 8192))),
     #("stream", json.bool(True)),
     #(
+      "metadata",
+      json.object([
+        #(
+          "user_id",
+          json.string(
+            json.to_string(
+              json.object([
+                #("device_id", json.string(device)),
+                #("account_uuid", json.string(account)),
+                #("session_id", json.string(session)),
+              ]),
+            ),
+          ),
+        ),
+      ]),
+    ),
+    #(
+      "context_management",
+      json.object([
+        #(
+          "edits",
+          json.preprocessed_array([
+            json.object([
+              #("type", json.string("clear_thinking_20251015")),
+              #("keep", json.string("all")),
+            ]),
+          ]),
+        ),
+      ]),
+    ),
+    #(
       "system",
       json.array(
         [
-          billing_header(claude_code_version, first_user),
-          "You are Claude Code, Anthropic's official CLI for Claude.",
+          text_block(billing_header(claude_code_version, first_user)),
+          cached_text_block(
+            "You are Claude Code, Anthropic's official CLI for Claude.",
+          ),
           ..case request.instructions {
-            Some(text) -> [text]
+            Some(text) -> [cached_text_block(text)]
             None -> []
           }
         ],
-        fn(text) { text_block(text) },
+        fn(block) { block },
       ),
     ),
   ]
@@ -127,6 +165,33 @@ pub fn encode(
     ]
     _ -> fields
   }
+  let betas =
+    list.flatten([
+      [
+        "claude-code-20250219", "oauth-2025-04-20",
+        "interleaved-thinking-2025-05-14", "redact-thinking-2026-02-12",
+        "thinking-token-count-2026-05-13", "context-management-2025-06-27",
+        "prompt-caching-scope-2026-01-05",
+      ],
+      case request.model {
+        "claude-haiku-4-5" -> []
+        "claude-sonnet-5" -> ["mid-conversation-system-2026-04-07"]
+        "claude-opus-5-5" | "claude-fable-5-1" -> [
+          "mid-conversation-system-2026-04-07",
+          "per-turn-control-2026-07-01",
+          "mid-conversation-tool-changes-2026-07-01",
+        ]
+        _ -> [
+          "mid-conversation-system-2026-04-07",
+          "mid-conversation-tool-changes-2026-07-01",
+        ]
+      },
+      case request.options.effort {
+        Some(_) if request.model != "claude-haiku-4-5" -> ["effort-2025-11-24"]
+        _ -> []
+      },
+      ["extended-cache-ttl-2025-04-11"],
+    ])
   case request.model == "" || request.max_output_tokens == Some(0) {
     True ->
       Error(types.InvalidRequest("invalid Claude model or output token limit"))
@@ -140,12 +205,24 @@ pub fn encode(
         [
           #("authorization", "Bearer " <> access),
           #("anthropic-version", "2023-06-01"),
-          #("anthropic-beta", "claude-code-20250219,oauth-2025-04-20"),
-          #("user-agent", "claude-cli/" <> claude_code_version),
+          #("anthropic-beta", string.join(betas, ",")),
+          #(
+            "user-agent",
+            "claude-cli/" <> claude_code_version <> " (external, cli)",
+          ),
           #("x-app", "cli"),
+          #("x-stainless-lang", "js"),
+          #("x-stainless-runtime", "node"),
+          #("x-stainless-package-version", "0.112.1"),
+          #("x-stainless-retry-count", "0"),
+          #("x-stainless-timeout", "600"),
+          #("x-stainless-arch", "arm64"),
+          #("x-stainless-os", "MacOS"),
+          #("x-stainless-runtime-version", "v26.3.0"),
+          #("x-claude-code-session-id", session),
           #("anthropic-dangerous-direct-browser-access", "true"),
           #("content-type", "application/json"),
-          #("accept", "text/event-stream"),
+          #("accept", "application/json"),
         ],
         body,
         120_000,
@@ -310,6 +387,20 @@ fn push(history: History, role: String, blocks: List(Json)) -> History {
   }
 }
 
+fn cached_text_block(text: String) -> Json {
+  json.object([
+    #("type", json.string("text")),
+    #("text", json.string(text)),
+    #(
+      "cache_control",
+      json.object([
+        #("type", json.string("ephemeral")),
+        #("ttl", json.string("1h")),
+      ]),
+    ),
+  ])
+}
+
 fn text_block(text: String) -> Json {
   json.object([#("type", json.string("text")), #("text", json.string(text))])
 }
@@ -329,8 +420,24 @@ fn image_block(image: types.Image) -> Json {
   ])
 }
 
-/// Only canonical Claude Code names are changed; other albedo tool names stay intact.
+/// Albedo MCP tool names need Claude Code's MCP namespace on OAuth requests.
+/// Stable aliases keep historical tool references valid across turns.
 pub fn claude_name(name: String) -> String {
+  case string.starts_with(name, "mcp_") {
+    True -> {
+      let digest =
+        <<name:utf8>>
+        |> crypto.hash(Sha256, _)
+        |> bit_array.base16_encode
+        |> string.lowercase
+        |> string.slice(0, 16)
+      "mcp__albedo__" <> string.slice(name, 4, 24) <> "_" <> digest
+    }
+    False -> canonical_name(name)
+  }
+}
+
+fn canonical_name(name: String) -> String {
   let known = [
     "Read",
     "Write",

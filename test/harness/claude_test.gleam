@@ -84,16 +84,72 @@ pub fn claude_messages_request_carries_client_identity_and_tools_test() {
       types.defaults,
     )
   let assert Ok(openai_api.Exchange(headers: headers, body: body, ..)) =
-    wire.encode("sk-ant-oat-test", request)
-  assert list_key(headers, "anthropic-beta")
-    == Ok("claude-code-20250219,oauth-2025-04-20")
-  assert list_key(headers, "user-agent") == Ok("claude-cli/2.1.283")
+    wire.encode(
+      "sk-ant-oat-test",
+      "11111111-2222-4333-8444-555555555555",
+      string.repeat("a", 64),
+      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      request,
+    )
+  let assert Ok(betas) = list_key(headers, "anthropic-beta")
+  assert string.split(betas, ",")
+    == [
+      "claude-code-20250219", "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14", "redact-thinking-2026-02-12",
+      "thinking-token-count-2026-05-13", "context-management-2025-06-27",
+      "prompt-caching-scope-2026-01-05", "mid-conversation-system-2026-04-07",
+      "per-turn-control-2026-07-01", "mid-conversation-tool-changes-2026-07-01",
+      "extended-cache-ttl-2025-04-11",
+    ]
+  assert list_key(headers, "user-agent")
+    == Ok("claude-cli/2.1.283 (external, cli)")
+  assert list_key(headers, "x-stainless-lang") == Ok("js")
+  assert list_key(headers, "x-stainless-runtime") == Ok("node")
+  assert list_key(headers, "x-stainless-package-version") == Ok("0.112.1")
+  assert list_key(headers, "x-stainless-retry-count") == Ok("0")
+  assert list_key(headers, "x-stainless-timeout") == Ok("600")
+  assert list_key(headers, "x-stainless-arch") == Ok("arm64")
+  assert list_key(headers, "x-stainless-os") == Ok("MacOS")
+  assert list_key(headers, "x-stainless-runtime-version") == Ok("v26.3.0")
+  assert list_key(headers, "x-claude-code-session-id")
+    == Ok("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
   let assert Ok(value) = json.parse(string_tree.to_string(body), decode.dynamic)
   let assert Ok(system) =
     decode.run(
       value,
       decode.at(["system"], decode.list(decode.at(["text"], decode.string))),
     )
+  let assert Ok(user_id) =
+    decode.run(value, decode.at(["metadata", "user_id"], decode.string))
+  let assert Ok(identity_fields) = json.parse(user_id, decode.dynamic)
+  let assert Ok("11111111-2222-4333-8444-555555555555") =
+    decode.run(identity_fields, decode.at(["account_uuid"], decode.string))
+  let assert Ok("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee") =
+    decode.run(identity_fields, decode.at(["session_id"], decode.string))
+  let assert Ok(device) =
+    decode.run(identity_fields, decode.at(["device_id"], decode.string))
+  assert device == string.repeat("a", 64)
+  let assert Ok(["all"]) =
+    decode.run(
+      value,
+      decode.at(
+        ["context_management", "edits"],
+        decode.list(decode.at(["keep"], decode.string)),
+      ),
+    )
+  let assert Ok(ttls) =
+    decode.run(
+      value,
+      decode.at(
+        ["system"],
+        decode.list(
+          decode.one_of(decode.at(["cache_control", "ttl"], decode.string), or: [
+            decode.success("none"),
+          ]),
+        ),
+      ),
+    )
+  assert ttls == ["none", "1h", "1h"]
   let assert [billing, identity, local] = system
   assert identity == "You are Claude Code, Anthropic's official CLI for Claude."
   assert local == "local instructions"
@@ -144,7 +200,13 @@ pub fn claude_tool_schemas_flatten_only_top_level_combiners_test() {
       types.defaults,
     )
   let assert Ok(openai_api.Exchange(body: body, ..)) =
-    wire.encode("token", request)
+    wire.encode(
+      "token",
+      "11111111-2222-4333-8444-555555555555",
+      string.repeat("a", 64),
+      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      request,
+    )
   let assert Ok(value) = json.parse(string_tree.to_string(body), decode.dynamic)
   let assert Ok([tool]) =
     decode.run(value, decode.at(["tools"], decode.list(decode.dynamic)))
@@ -213,8 +275,16 @@ pub fn current_claude_effort_uses_adaptive_thinking_test() {
       None,
       options,
     )
-  let assert Ok(openai_api.Exchange(body: body, ..)) =
-    wire.encode("token", request)
+  let assert Ok(openai_api.Exchange(headers: headers, body: body, ..)) =
+    wire.encode(
+      "token",
+      "11111111-2222-4333-8444-555555555555",
+      string.repeat("a", 64),
+      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      request,
+    )
+  let assert Ok(betas) = list_key(headers, "anthropic-beta")
+  assert string.contains(betas, "effort-2025-11-24")
   let assert Ok(value) = json.parse(string_tree.to_string(body), decode.dynamic)
   let assert Ok("adaptive") =
     decode.run(value, decode.at(["thinking", "type"], decode.string))
@@ -258,7 +328,13 @@ pub fn claude_stream_preserves_tool_calls_and_replay_test() {
       types.defaults,
     )
   let assert Ok(openai_api.Exchange(body: body, ..)) =
-    wire.encode("token", request)
+    wire.encode(
+      "token",
+      "11111111-2222-4333-8444-555555555555",
+      string.repeat("a", 64),
+      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      request,
+    )
   let assert Ok(value) = json.parse(string_tree.to_string(body), decode.dynamic)
   let assert Ok(names) =
     decode.run(
@@ -270,6 +346,97 @@ pub fn claude_stream_preserves_tool_calls_and_replay_test() {
   assert string.contains(encoded, "tool_result")
   assert string.contains(encoded, "tool_use")
   assert string.contains(encoded, "hello")
+}
+
+pub fn claude_mcp_tools_use_subscription_namespace_and_round_trip_test() {
+  let name = "mcp_web_extract_web_search_9cdda7e075"
+  let alias = "mcp__albedo__web_extract_web_search_9_be5f1c469f2fb0ae"
+  assert wire.claude_name(name) == alias
+  let long = "mcp_" <> string.repeat("a", 49) <> "_0123456789"
+  assert string.length(wire.claude_name(long)) <= 64
+  assert wire.claude_name(long) != wire.claude_name(long <> "b")
+  let tool =
+    types.Tool(
+      name,
+      "Search",
+      json.object([#("type", json.string("object"))]),
+      False,
+    )
+  let request =
+    types.Request(
+      "claude-opus-5-5",
+      None,
+      [types.User("search")],
+      [tool],
+      None,
+      types.defaults,
+    )
+  let assert Ok(openai_api.Exchange(body: body, ..)) =
+    wire.encode(
+      "token",
+      "11111111-2222-4333-8444-555555555555",
+      string.repeat("a", 64),
+      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      request,
+    )
+  let assert Ok(value) = json.parse(string_tree.to_string(body), decode.dynamic)
+  let assert Ok([declared]) =
+    decode.run(
+      value,
+      decode.at(["tools"], decode.list(decode.at(["name"], decode.string))),
+    )
+  assert declared == alias
+  let chunks = [
+    "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":12,\"output_tokens\":0}}}",
+    "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\""
+      <> alias
+      <> "\",\"input\":{}}}",
+    "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}",
+    "{\"type\":\"message_stop\"}",
+  ]
+  let assert Ok(turn) =
+    feed_all(stream.reducer("claude-opus-5-5", [tool]), chunks)
+  let assert [call] = turn.tool_calls
+  assert call.name == name
+  let replay =
+    types.Request(
+      "claude-opus-5-5",
+      None,
+      [
+        types.User("search"),
+        types.Replay(list_first(turn.output)),
+        types.ToolOutput("tool_1", "ok", []),
+      ],
+      [tool],
+      None,
+      types.defaults,
+    )
+  let assert Ok(openai_api.Exchange(body: replay_body, ..)) =
+    wire.encode(
+      "token",
+      "11111111-2222-4333-8444-555555555555",
+      string.repeat("a", 64),
+      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      replay,
+    )
+  let assert Ok(replayed) =
+    json.parse(string_tree.to_string(replay_body), decode.dynamic)
+  let assert Ok(names) =
+    decode.run(
+      replayed,
+      decode.at(
+        ["messages"],
+        decode.list(decode.at(
+          ["content"],
+          decode.list(
+            decode.one_of(decode.at(["name"], decode.string), or: [
+              decode.success(""),
+            ]),
+          ),
+        )),
+      ),
+    )
+  assert list.any(names, fn(items) { list.contains(items, alias) })
 }
 
 fn feed_all(

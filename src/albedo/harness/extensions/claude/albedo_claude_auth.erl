@@ -1,6 +1,6 @@
 -module(albedo_claude_auth).
 
--export([exchange/4, account/1, access/2, expire/2]).
+-export([exchange/4, account/1, access/2, profile/2, expire/2]).
 
 -define(KEY, <<"anthropic">>).
 -define(CLIENT_ID, <<"9d1c250a-e61b-44d9-88ed-5944d1962f5e">>).
@@ -69,6 +69,32 @@ access(Home0, Session0) ->
             first_access(Ordered, Path, Session);
         _ -> {error, <<"Claude is not authenticated; run /login and add a Claude account">>}
     end.
+
+%% A session-stable device and UUID must accompany the OAuth account identity.
+%% Resolve the account from the token, never from a claimed client header.
+profile(Access, Session) ->
+    _ = application:ensure_all_started(inets),
+    _ = application:ensure_all_started(ssl),
+    Request = {"https://api.anthropic.com/api/oauth/profile",
+               [{"authorization", "Bearer " ++ unicode:characters_to_list(Access)},
+                {"accept", "application/json"}]},
+    Options = [{timeout, ?HTTP_TIMEOUT_MS}, {connect_timeout, 10000},
+               {ssl, albedo_credentials:tls_options("api.anthropic.com")}],
+    case httpc:request(get, Request, Options, [{body_format, binary}]) of
+        {ok, {{_, 200, _}, _, Body}} ->
+            try json:decode(Body) of
+                #{<<"account">> := #{<<"uuid">> := UUID}} when is_binary(UUID), byte_size(UUID) =:= 36 ->
+                    Device = binary:encode_hex(crypto:hash(sha256, <<"albedo:claude-device:", UUID/binary>>), lowercase),
+                    {ok, {UUID, Device, session_uuid(Session)}};
+                _ -> {error, <<"Claude profile has no account UUID">>}
+            catch _:_ -> {error, <<"Claude profile response is invalid">>} end;
+        _ -> {error, <<"could not read Claude account profile">>}
+    end.
+
+session_uuid(Session) ->
+    <<A:32, B:16, _:4, C:12, _:2, D:14, E:48, _/binary>> = crypto:hash(sha256, Session),
+    iolist_to_binary(io_lib:format("~8.16.0b-~4.16.0b-4~3.16.0b-~4.16.0b-~12.16.0b",
+        [A, B, C, 16#8000 bor D, E])).
 
 credentials(Data) ->
     case maps:get(?KEY, Data, []) of

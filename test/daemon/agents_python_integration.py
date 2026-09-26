@@ -44,6 +44,7 @@ def content_text(item):
 
 
 LEAD = """m = await agents.models()
+assert "beta/fixture-beta" in m, m
 kid = await agents.self.spawn("count to three", name="scout", model=m[0])
 try:
     await agents.self.spawn("again", name="scout2", model="")
@@ -122,8 +123,12 @@ def run(endpoint):
         (home / "extensions.json").write_text(json.dumps({"models": {"refreshHours": 0}}))
         (home / "config.json").write_text(json.dumps({
             "active": "alpha",
-            "providers": {"alpha": {"baseUrl": endpoint + "/alpha/v1", "apiKey": "key",
-                                     "model": "fixture-alpha", "protocol": "chat_completions"}},
+            "providers": {
+                "alpha": {"baseUrl": endpoint + "/alpha/v1", "apiKey": "key",
+                          "model": "fixture-alpha", "protocol": "chat_completions"},
+                "beta": {"baseUrl": endpoint + "/beta/v1", "apiKey": "key",
+                         "model": "fixture-beta", "protocol": "chat_completions"},
+            },
         }))
         env = dict(os.environ, HOME=str(Path(directory) / "user-home"), ALBEDO_HOME=str(home),
                    ALBEDO_PARENT_PID=str(os.getpid()))
