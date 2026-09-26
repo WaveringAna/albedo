@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand/v2"
 	"os"
@@ -322,6 +323,10 @@ type ChatModel struct {
 	dragAnchor *Point
 	dragHead   Point
 
+	// graphemes says the terminal measures grapheme clusters (mode 2027),
+	// which Bubble Tea turns off when it hands the terminal to the editor.
+	graphemes bool
+
 	turn *openTurn
 	// userRows are the settled rows where your messages start, and
 	// settledOffset is how many notice rows sit above the settled rows.
@@ -583,7 +588,7 @@ func (m *ChatModel) rebuildSettledLines() {
 // only changes with what is loaded, and refreshViewportContent keeps the
 // reading position steady when it does.
 func (m ChatModel) headerLines() []string {
-	indent := m.Renderer.rail(laneNone)
+	indent := markChrome + m.Renderer.rail(laneNone)
 	switch {
 	case m.loadingOlder:
 		return []string{indent + m.Styles.Faint.Render("↑ loading earlier messages…"), ""}
@@ -746,7 +751,7 @@ func (m *ChatModel) refreshViewportContent() int {
 		if m.activeKind == StreamKindThinking {
 			kind = EntryThinking
 		}
-		activeEntry := HistoryEntry{Kind: kind, Speaker: m.AgentName, Text: m.activeText}
+		activeEntry := HistoryEntry{Kind: kind, Speaker: m.AgentName, Text: m.activeText, Live: true}
 		rows, _ := m.Renderer.Block(m.History.Entries(), activeEntry, m.Flags)
 		allLines = append(allLines, rows...)
 		last, stacks = laneOf(activeEntry), false
@@ -1233,13 +1238,9 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			if !sel.IsEmpty() {
 				lines := strings.Split(m.Viewport.View(), "\n")
 				if text := SelectedText(lines, sel); text != "" {
-					if err := CopyText(text); err != nil {
-						m.CopyStatus = "copy failed: " + err.Error()
-					} else {
-						m.CopyStatus = "copied"
-					}
+					m.CopyStatus = "copied"
 					m.copyStatusRevision++
-					return m, m.clearCopyStatusCmd()
+					return m, tea.Batch(CopyText(text), m.clearCopyStatusCmd())
 				}
 			}
 		case tea.MouseMotionMsg:
@@ -1576,7 +1577,7 @@ func (m ChatModel) openEditorCmd() tea.Cmd {
 	gen := m.Generation
 	path := tmpFile.Name()
 
-	return tea.ExecProcess(c, func(err error) tea.Msg {
+	return tea.Exec(editorProcess{c, m.graphemes}, func(err error) tea.Msg {
 		return ChatEditorFinishedMsg{
 			SessionID:  sessID,
 			Generation: gen,
@@ -1584,6 +1585,33 @@ func (m ChatModel) openEditorCmd() tea.Cmd {
 			Err:        err,
 		}
 	})
+}
+
+// editorProcess runs the editor on the terminal, then hands the terminal back
+// the way Bubble Tea left it. Bubble Tea repaints from where it left the
+// cursor and trusts the column, but leaving the alternate screen puts the
+// cursor back wherever the editor found it, and a terminal reply echoed
+// before the editor took raw mode can have moved it along the row; the
+// repaint then starts mid-row, wraps the header and scrolls it off the top.
+// Bubble Tea also turns grapheme widths off for the editor and never turns
+// them back on, while it keeps measuring by grapheme.
+type editorProcess struct {
+	*exec.Cmd
+	graphemes bool
+}
+
+func (p editorProcess) SetStdin(r io.Reader)  { p.Stdin = r }
+func (p editorProcess) SetStdout(w io.Writer) { p.Stdout = w }
+func (p editorProcess) SetStderr(w io.Writer) { p.Stderr = w }
+
+func (p editorProcess) Run() error {
+	err := p.Cmd.Run()
+	restore := "\r"
+	if p.graphemes {
+		restore += ansi.SetModeUnicodeCore
+	}
+	_, _ = io.WriteString(p.Stdout, restore)
+	return err
 }
 
 func (m *ChatModel) sendTurnCmd(content string, image *daemon.ImageAttachment) tea.Cmd {

@@ -41,6 +41,9 @@ type HistoryEntry struct {
 	// Seq is the newest transcript row this entry came from; 0 until a
 	// `committed` event says which rows cover it.
 	Seq int64
+	// Live is a reply still streaming in. It renders on every token, so it
+	// skips the second rendering that marks wraps for a copy until it settles.
+	Live bool
 }
 
 // pending is how far a message of yours has got: sent and waiting for the

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type AppState int
@@ -113,6 +114,9 @@ type AppModel struct {
 	StandaloneLogin   bool
 	BrowserOpener     func(url string)
 
+	// Graphemes says the terminal measures grapheme clusters; see ChatModel.
+	Graphemes bool
+
 	// Independent generation counters for concurrent async tasks
 	SessionGen int
 	CatalogGen int
@@ -147,6 +151,7 @@ func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
 	chat.Flags.Thinking = m.SessionPicker.prefs.Thinking
 	chat.Flags.Tools = m.SessionPicker.prefs.Tools
 	chat.Notices = append(Notices(nil), m.Notices...)
+	chat.graphemes = m.Graphemes
 	m.Notices = nil
 	return chat
 }
@@ -625,6 +630,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.WebhooksPage.SetSize(msg.Width, msg.Height)
 		m.Agents.SetSize(msg.Width, msg.Height)
 		m.Login.SetSize(msg.Width, msg.Height)
+		return m, nil
+
+	case tea.ModeReportMsg:
+		// the reply Bubble Tea switches to grapheme widths on
+		if msg.Mode == ansi.ModeUnicodeCore {
+			switch msg.Value {
+			case ansi.ModeReset, ansi.ModeSet, ansi.ModePermanentlySet:
+				m.Graphemes = true
+				m.Chat.graphemes = true
+			}
+		}
 		return m, nil
 
 	case ChatWorkspaceChangedMsg:

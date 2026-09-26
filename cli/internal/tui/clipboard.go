@@ -52,8 +52,16 @@ func defaultExec(ctx context.Context, name string, args ...string) ([]byte, erro
 
 var CurrentExecutor CommandExecutor = defaultExec
 
-func CopyText(text string) error {
-	return clipboard.WriteAll(text)
+// CopyText puts text on the clipboard of the machine albedo runs on and asks
+// the terminal to put it on its own with OSC 52. Those differ when you reach
+// albedo over ssh or attach to its session from another device, and only the
+// terminal's is the one you paste from; a terminal without OSC 52 still has
+// the local copy.
+func CopyText(text string) tea.Cmd {
+	return tea.Batch(tea.SetClipboard(text), func() tea.Msg {
+		_ = clipboard.WriteAll(text)
+		return nil
+	})
 }
 
 func ReadClipboardText() (string, error) {

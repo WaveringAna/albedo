@@ -65,6 +65,17 @@ func HighlightCode(code string, lang string) string {
 
 var markdownThemes sync.Mutex
 
+// fenceOpen and fenceClose mark the rows that frame a code block.
+const (
+	fenceOpen  = "┌─"
+	fenceClose = "└"
+)
+
+// codeFence is a code block's frame row in Decor, and quoteBar leads each
+// quoted row. Both are decoration, which a copy does not carry.
+func codeFence(mark string) string { return decorInk() + mark + ansiReset }
+func quoteBar() string             { return decorInk() + "│ " + ansiReset }
+
 // Chroma themes are registered by name; key them by the detected terminal
 // palette so a theme change cannot reuse the previous palette's colors.
 func codeTheme(colors ink) string {
@@ -104,10 +115,10 @@ func markdownStyle() ansi.StyleConfig {
 	style.Strong = ansi.StylePrimitive{Bold: &bold}
 	style.Emph = ansi.StylePrimitive{Italic: &bold}
 	style.Table.Margin = &zero
-	style.BlockQuote.IndentToken = new(decorInk() + "│ " + ansiReset)
+	style.BlockQuote.IndentToken = new(quoteBar())
 	style.CodeBlock.Margin = &zero
-	style.CodeBlock.BlockPrefix = decorInk() + "┌─" + ansiReset + "\n"
-	style.CodeBlock.BlockSuffix = decorInk() + "└" + ansiReset
+	style.CodeBlock.BlockPrefix = codeFence(fenceOpen) + "\n"
+	style.CodeBlock.BlockSuffix = codeFence(fenceClose)
 	style.HorizontalRule.Format = "\n────────────\n"
 	if transcriptInk.decor != "" {
 		style.HorizontalRule.Color = &transcriptInk.decor
@@ -123,6 +134,17 @@ func RenderMarkdownAnsi(text string, width int) string {
 	if width <= 0 {
 		width = 80
 	}
+	return renderBlocks(text, width)
+}
+
+// renderCopyable renders text to width with its wrapped rows marked, so a
+// copy can join them back into the lines they were.
+func renderCopyable(text string, width int) string {
+	return markWraps(RenderMarkdownAnsi(text, width), renderBlocks(text, 0))
+}
+
+// renderBlocks is RenderMarkdownAnsi at width, or unwrapped at 0.
+func renderBlocks(text string, width int) string {
 	blocks := markdownBlocks(text)
 	var b strings.Builder
 	for i, block := range blocks {

@@ -306,11 +306,8 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 		if m.Reveal != nil {
 			switch {
 			case msg.String() == "c":
-				if err := CopyText(m.Reveal.Secret); err != nil {
-					m.Error = "copy failed: " + err.Error()
-				} else {
-					m.Error, m.Notice = "", "secret copied"
-				}
+				m.Error, m.Notice = "", "secret copied"
+				return m, CopyText(m.Reveal.Secret)
 			case msg.String() == "enter" || msg.String() == "esc":
 				m.Reveal = nil
 			}
@@ -401,11 +398,8 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 			}
 		case "y":
 			if hook != nil {
-				if err := CopyText(m.address(*hook)); err != nil {
-					m.Error = "copy failed: " + err.Error()
-				} else {
-					m.Error, m.Notice = "", "url copied"
-				}
+				m.Error, m.Notice = "", "url copied"
+				return m, CopyText(m.address(*hook))
 			}
 		}
 	case tea.PasteMsg:

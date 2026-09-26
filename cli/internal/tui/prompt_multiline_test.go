@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -261,6 +263,58 @@ func TestPromptCtrlGAndEditorFinishedMsg(t *testing.T) {
 	// Verify layout synced to 2 lines
 	if m.promptHeight() != 2 {
 		t.Fatalf("expected promptHeight 2 after editor returned 2 lines, got %d", m.promptHeight())
+	}
+}
+
+// The repaint after the editor starts wherever the cursor is, so the editor
+// process must hand the terminal back at the start of a row, with grapheme
+// widths back on when the terminal had them.
+func TestEditorProcessRestoresTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		graphemes bool
+		want      string
+	}{
+		{false, "echoed reply\r"},
+		{true, "echoed reply\r" + ansi.SetModeUnicodeCore},
+	} {
+		var out strings.Builder
+		p := editorProcess{exec.Command("sh", "-c", "printf 'echoed reply'"), tc.graphemes}
+		p.SetStdout(&out)
+		if err := p.Run(); err != nil {
+			t.Fatal(err)
+		}
+		if out.String() != tc.want {
+			t.Fatalf("graphemes %v: expected %q, got %q", tc.graphemes, tc.want, out.String())
+		}
+	}
+}
+
+func TestAppRemembersGraphemeTerminal(t *testing.T) {
+	m := AppModel{}
+	next, _ := m.Update(tea.ModeReportMsg{Mode: ansi.ModeUnicodeCore, Value: ansi.ModeNotRecognized})
+	if next.(AppModel).Graphemes {
+		t.Fatal("a terminal without mode 2027 does not measure graphemes")
+	}
+	next, _ = next.Update(tea.ModeReportMsg{Mode: ansi.ModeUnicodeCore, Value: ansi.ModeReset})
+	app := next.(AppModel)
+	if !app.Graphemes || !app.Chat.graphemes {
+		t.Fatal("expected the app and its chat to remember grapheme widths")
+	}
+	if chat := app.newChatModel(&daemon.Session{ID: "s"}); !chat.graphemes {
+		t.Fatal("expected a new chat to inherit grapheme widths")
+	}
+}
+
+// Copying asks the terminal too, since the local clipboard is not the one
+// you paste from when attached from another machine.
+func TestCopyTextAsksTerminal(t *testing.T) {
+	batch, ok := CopyText("hello")().(tea.BatchMsg)
+	if !ok || len(batch) == 0 {
+		t.Fatal("expected a batch of copies")
+	}
+	// only the terminal's copy runs; the other writes the real clipboard
+	if got, want := batch[0](), tea.SetClipboard("hello")(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected OSC 52 copy %#v, got %#v", want, got)
 	}
 }
 

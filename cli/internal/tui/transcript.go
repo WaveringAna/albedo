@@ -92,7 +92,7 @@ func (r TranscriptRenderer) nameplate(entry HistoryEntry, flags DisplayFlags, be
 	if entry.Pending == queued {
 		meta = append(meta, "queued")
 	}
-	plate := style.Render(strings.ToLower(who))
+	plate := markChrome + style.Render(strings.ToLower(who))
 	if len(meta) > 0 {
 		plate += r.Styles.Faint.Render(" · " + strings.Join(meta, " · "))
 	}
@@ -124,7 +124,7 @@ func (r TranscriptRenderer) signoff(entry HistoryEntry) string {
 	if entry.Tools > 0 {
 		meta = append(meta, fmt.Sprintf("%d %s", entry.Tools, map[bool]string{true: "tool", false: "tools"}[entry.Tools == 1]))
 	}
-	row := style.Render(entry.Mood.face(entry.Timestamp))
+	row := markChrome + style.Render(entry.Mood.face(entry.Timestamp))
 	if len(meta) > 0 {
 		row += " " + r.Styles.Faint.Render(strings.Join(meta, " · "))
 	}
@@ -459,12 +459,15 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 			rows = append(rows, r.faintMarkdownRows(entry.Text, width)...)
 			break
 		}
-		rows = append(rows, RenderMarkdownAnsi(entry.Text, width))
+		render := renderCopyable
+		if entry.Live {
+			render = RenderMarkdownAnsi
+		}
+		rows = append(rows, render(entry.Text, width))
 	case EntryThinking:
+		rows = []string{markChrome + r.Styles.Faint.Render("thinking")}
 		if flags.Thinking {
-			rows = append([]string{r.Styles.Faint.Render("thinking")}, r.faintMarkdownRows(entry.Text, width)...)
-		} else {
-			rows = []string{r.Styles.Faint.Render("thinking")}
+			rows = append(rows, r.faintMarkdownRows(entry.Text, width)...)
 		}
 	case EntryTool:
 		trace := entry.ToolTrace
@@ -483,17 +486,17 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 			if flags.Tools {
 				clock = formatClock(entry.Timestamp)
 			}
-			rows = append(rows, style.Render(toolRow(entry, failed, clock, width)))
+			rows = append(rows, markChrome+style.Render(toolRow(entry, failed, clock, width)))
 		}
 		if hasTrace {
-			rows = append(rows, r.RenderToolTrace(trace, flags, width))
+			rows = append(rows, chrome(r.RenderToolTrace(trace, flags, width)))
 			if !flags.Tools && !failed {
 				break
 			}
 		}
 		if flags.Tools && entry.ToolName == "python" {
 			if code, ok := entry.ToolArgs["code"].(string); ok {
-				rows = append(rows, RenderMarkdownAnsi("```python\n"+code+"\n```", width))
+				rows = append(rows, renderCopyable("```python\n"+code+"\n```", width))
 			}
 		}
 		if flags.Tools {
@@ -514,7 +517,7 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 		if flags.Compaction {
 			action = "hide"
 		}
-		rows = []string{r.Styles.Faint.Render(fmt.Sprintf("compaction done · %d items summarized · ctrl+k %s summary", entry.Evicted, action))}
+		rows = []string{markChrome + r.Styles.Faint.Render(fmt.Sprintf("compaction done · %d items summarized · ctrl+k %s summary", entry.Evicted, action))}
 		if flags.Compaction {
 			rows = append(rows, r.faintMarkdownRows(entry.Text, width)...)
 		}
@@ -602,7 +605,7 @@ func (r TranscriptRenderer) Block(before []HistoryEntry, entry HistoryEntry, fla
 	width := max(1, r.BodyWidth-railWidth)
 	gutter := r.rail(own)
 	for _, line := range strings.Split(r.RenderAfter(priorOf(before), entry, flags, width), "\n") {
-		for _, chunk := range wrapOrChunkLine(line, width) {
+		for _, chunk := range markChunks(line, wrapOrChunkLine(line, width)) {
 			rows = append(rows, gutter+chunk)
 		}
 	}
