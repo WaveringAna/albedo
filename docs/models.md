@@ -34,6 +34,8 @@ The catalog also lists model ids by provider or endpoint. `/login` and `/model` 
 
 Saved provider profiles carry an `extension` tag. Existing profiles without one migrate as `openai`. Codex profiles use `extension: "codex"` and keep OAuth credentials separately in `$ALBEDO_HOME/auth.json`; see [model authentication](auth.md).
 
+Codex metadata lookups select the `openai` provider in models.dev explicitly, including its reasoning effort tiers and context limits. `/effort`, session defaults, and model switches use this same selection; another provider publishing the same model id cannot replace OpenAI's metadata. No authenticated Codex model catalog is fetched.
+
 ## antigravity models
 
 Antigravity is not on models.dev, and its model ids and required `model_enum` labels change server-side. The `antigravity` extension therefore contributes its own catalog. It asks Cloud Code Assist `fetchAvailableModels` which models the account can use, keeps the ids that the real client's agent picker shows, and caches them with their limits, labels, and the renames of retired ids in `$ALBEDO_HOME/antigravity.json`. The cache refreshes in the background after 6 hours, and the first `/login` listing waits for discovery. A built-in table supplies each model's thinking control and serves as the list before the first discovery. A saved profile that names a retired id follows the backend's rename. The catalog answers lookups only for the Antigravity endpoint, so models.dev keeps answering for the same ids at other providers.

@@ -57,9 +57,23 @@ pub fn efforts_for_model(
   state: session_state.State(message),
   model: String,
 ) -> List(String) {
-  case runtime.global(state.host) {
+  model_efforts(state.host, state.home, state.info.provider, model)
+}
+
+pub fn model_efforts(
+  host: runtime.Runtime,
+  home: String,
+  provider: String,
+  model: String,
+) -> List(String) {
+  let endpoint = case configuration.named(home, provider) {
+    Ok(configured) if configured.extension == "codex" ->
+      "https://chatgpt.com/backend-api"
+    _ -> ""
+  }
+  case runtime.global(host) {
     Ok(extensions) ->
-      case extension.model_info(extensions, model, "") {
+      case extension.model_info(extensions, model, endpoint) {
         option.Some(info) -> info.efforts
         option.None -> []
       }
@@ -188,7 +202,7 @@ pub fn select(
                   #(configured.name, configured.protocol)
                 })
             })
-            let efforts = efforts_for_model(state, model)
+            let efforts = model_efforts(state.host, state.home, provider, model)
             let new_effort = case state.info.effort {
               option.Some(current) ->
                 case list.contains(efforts, current) {

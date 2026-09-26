@@ -9,6 +9,7 @@ import albedo/daemon/images
 import albedo/daemon/mail
 import albedo/daemon/reaper
 import albedo/daemon/session
+import albedo/daemon/session_provider
 import albedo/daemon/store
 import albedo/daemon/usage
 import albedo/harness/command
@@ -157,14 +158,13 @@ fn handle(state: State, message: Message) {
           "" -> provider.model
           _ -> model
         }
-        let efforts = case runtime.global(state.host) {
-          Ok(extensions) ->
-            case extension.model_info(extensions, model, "") {
-              Some(m_info) -> m_info.efforts
-              None -> []
-            }
-          Error(_) -> []
-        }
+        let efforts =
+          session_provider.model_efforts(
+            state.host,
+            state.config.home,
+            provider.name,
+            model,
+          )
         let effort = extension.default_effort(efforts)
         let info =
           conversation.Info(

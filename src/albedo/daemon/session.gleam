@@ -173,14 +173,8 @@ pub fn start(
     let info = case info.effort {
       Some(_) -> info
       None -> {
-        let efforts = case runtime.global(host) {
-          Ok(extensions) ->
-            case extension.model_info(extensions, info.model, "") {
-              Some(m_info) -> m_info.efforts
-              None -> []
-            }
-          Error(_) -> []
-        }
+        let efforts =
+          session_provider.model_efforts(host, home, info.provider, info.model)
         case extension.default_effort(efforts) {
           Some(def) -> {
             let _ =

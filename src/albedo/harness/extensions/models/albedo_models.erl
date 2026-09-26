@@ -325,6 +325,13 @@ resolve(#{index := Index, providers := Providers}, Model, Host) ->
 
 %% The configured endpoint decides between providers that publish one model id.
 %% Without a host match, agreeing candidates still answer and conflicting ones do not.
+%% Codex subscription models use OpenAI's metadata, even though models.dev
+%% does not publish the ChatGPT endpoint (or an API URL for OpenAI).
+select(Candidates, _Providers, <<"chatgpt.com">>) ->
+    case [E || {<<"openai">>, _} = E <- Candidates] of
+        [Entry | _] -> {ok, Entry, <<"provider identity">>};
+        [] -> error
+    end;
 select(Candidates, Providers, Host) ->
     case [E || {Name, _} = E <- Candidates, Host =/= <<>>,
                element(1, maps:get(Name, Providers)) =:= Host] of
