@@ -247,6 +247,19 @@ func wrapOrChunkLine(line string, width int) []string {
 	return rows
 }
 
+// burstRowsKey is what the cached live burst rows were rendered for: which
+// entries end the transcript (count and evictions, since an eviction swaps the
+// head without changing the count), how wide they render, where paths are
+// named from, and which of them group at all.
+type burstRowsKey struct {
+	entries   int
+	evicted   int
+	epoch     int
+	width     int
+	workspace string
+	flags     DisplayFlags
+}
+
 type ChatModel struct {
 	SessionID      string
 	Generation     int64
@@ -276,21 +289,31 @@ type ChatModel struct {
 	windowModel *string
 	// stretch is the phase run the status face animates; moodSeed picks its
 	// animation.
-	stretch            stretch
-	moodSeed           int64
-	Glances            []PageGlance
-	AttachedImage      *daemon.ImageAttachment
-	Notices            Notices
-	CopyStatus         string
-	copyStatusRevision uint64
-	ToolProgressText   string
-	Progress           *daemon.ToolProgress
-	ProgressFrame      int
-	animationActive    bool
-	statusRevision     uint64
-	Width              int
-	Height             int
-	Styles             Styles
+	stretch             stretch
+	moodSeed            int64
+	Glances             []PageGlance
+	AttachedImage       *daemon.ImageAttachment
+	Notices             Notices
+	CopyStatus          string
+	copyStatusRevision  uint64
+	ToolProgressText    string
+	ThoughtProgressText string
+	// burstRows is the rendered frame of the trailing run of compact entries.
+	// Its key names every input the rows depend on, so a refresh that changes
+	// nothing redraws nothing, and nothing can ask for a stale frame.
+	burstRows    []string
+	burstRowsKey burstRowsKey
+	burstEpoch   int
+	// burstRenders counts frame builds; tests watch it to catch a cache that
+	// redraws every refresh or misses an invalidation.
+	burstRenders    int
+	Progress        *daemon.ToolProgress
+	ProgressFrame   int
+	animationActive bool
+	statusRevision  uint64
+	Width           int
+	Height          int
+	Styles          Styles
 
 	settledLines        []string
 	settledLinesBytes   int64
@@ -308,6 +331,9 @@ type ChatModel struct {
 
 	activeKind ActiveStreamKind
 	activeText string
+	// thinkingSince is when a thought this client watched began; replayed
+	// thoughts have no start, so no duration.
+	thinkingSince time.Time
 
 	streamedHash uint64
 	streamedLen  int64
@@ -384,7 +410,7 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		Provider:    session.Provider,
 		Client:      client,
 		History:     bh,
-		Renderer:    NewTranscriptRenderer(),
+		Renderer:    TranscriptRenderer{Styles: DefaultStyles, Workspace: session.Workspace},
 		Viewport:    vp,
 		TextArea:    ta,
 		CommandMenu: NewCommandMenuModel(),
@@ -618,9 +644,9 @@ func (m ChatModel) olderCursor() (int64, bool) {
 	return before, more && before > 0
 }
 
-// appendBlock renders entry after the settled entries before it.
+// appendBlock settles entry after the entries before it.
 func (m *ChatModel) appendBlock(before []HistoryEntry, entry HistoryEntry) {
-	rows, head := m.Renderer.Block(before, entry, m.Flags)
+	rows, head := m.Renderer.Settle(before, entry, m.Flags)
 	if entry.Kind == EntryUser {
 		m.userRows = append(m.userRows, len(m.settledLines)+head)
 	}
@@ -674,7 +700,17 @@ func (m *ChatModel) trimSettledLines() {
 	}
 }
 
+// clearAction drops the live action row; the next action starts a new one.
+func (m *ChatModel) clearAction() {
+	m.ToolProgressText = ""
+	m.ThoughtProgressText = ""
+}
+
 func (m *ChatModel) appendSettledEntry(entry HistoryEntry) {
+	if Compact(entry, m.Flags) {
+		facts := factsOf(entry)
+		entry.facts = &facts
+	}
 	before := m.History.Entries()
 	m.appendBlock(before, entry)
 	m.History.Append(entry)
@@ -684,6 +720,7 @@ func (m *ChatModel) settleActiveStream() {
 	if m.activeKind == StreamKindNone || m.activeText == "" {
 		m.activeKind = StreamKindNone
 		m.activeText = ""
+		m.thinkingSince = time.Time{}
 		return
 	}
 	var kind EntryKind = EntryAssistant
@@ -696,9 +733,17 @@ func (m *ChatModel) settleActiveStream() {
 		Text:      m.activeText,
 		Timestamp: time.Now().UnixMilli(),
 	}
+	if kind == EntryThinking && !m.thinkingSince.IsZero() {
+		entry.ElapsedMs = time.Since(m.thinkingSince).Milliseconds()
+		m.ThoughtProgressText = thinkingLine(entry.Text)
+		if m.ThoughtProgressText == "" {
+			m.ThoughtProgressText = "thought"
+		}
+	}
 	m.appendSettledEntry(entry)
 	m.activeKind = StreamKindNone
 	m.activeText = ""
+	m.thinkingSince = time.Time{}
 }
 
 func (m *ChatModel) streamDelta(kind ActiveStreamKind, text string) {
@@ -716,6 +761,7 @@ func (m *ChatModel) streamDelta(kind ActiveStreamKind, text string) {
 		m.settleActiveStream()
 		m.activeKind = kind
 	}
+	m.ThoughtProgressText = ""
 	m.activeText += text
 	if kind == StreamKindText {
 		m.streamedHash = fnv1a(m.streamedHash, text)
@@ -723,8 +769,13 @@ func (m *ChatModel) streamDelta(kind ActiveStreamKind, text string) {
 	}
 
 	if len(m.activeText) > MaxLiveStreamBytes {
+		// one long thought splits into entries, each timed from its own start
+		watched := !m.thinkingSince.IsZero()
 		m.settleActiveStream()
 		m.activeKind = kind
+		if watched {
+			m.thinkingSince = time.Now()
+		}
 	}
 }
 
@@ -745,9 +796,19 @@ func (m *ChatModel) refreshViewportContent() int {
 	if entries := m.History.Entries(); len(entries) > 0 {
 		last = laneOf(entries[len(entries)-1])
 		stacks = Compact(entries[len(entries)-1], m.Flags)
+		if burst := trailingBurst(entries, m.Flags); len(burst) > 0 {
+			key := burstRowsKey{len(entries), m.History.EvictedCount(), m.burstEpoch, m.Renderer.BodyWidth, m.Renderer.Workspace, m.Flags}
+			if key != m.burstRowsKey {
+				m.burstRows = m.Renderer.BurstBlock(entries[:len(entries)-len(burst)], burst, m.Flags)
+				m.burstRowsKey = key
+				m.burstRenders++
+			}
+			allLines = append(allLines, m.burstRows...)
+		}
 	}
-	if m.activeKind != StreamKindNone && m.activeText != "" {
-		var kind EntryKind = EntryAssistant
+	if m.activeKind != StreamKindNone && m.activeText != "" &&
+		(m.activeKind != StreamKindThinking || m.Flags.Thinking) {
+		kind := EntryAssistant
 		if m.activeKind == StreamKindThinking {
 			kind = EntryThinking
 		}
@@ -757,12 +818,22 @@ func (m *ChatModel) refreshViewportContent() int {
 		last, stacks = laneOf(activeEntry), false
 	}
 
-	if m.ToolProgressText != "" {
-		// the live row stacks under tool rows like the row it settles into
+	// One live-tail slot stays occupied by the last action until another begins.
+	action := ""
+	switch {
+	case m.activeKind == StreamKindThinking && m.activeText != "" && !m.Flags.Thinking:
+		action = m.renderThought()
+	case m.ToolProgressText != "" && (m.Progress != nil || !m.Flags.Tools):
+		action = m.renderProgress()
+	case m.ThoughtProgressText != "" && !m.Flags.Thinking:
+		width := max(1, m.Renderer.BodyWidth-railWidth)
+		action = markChrome + m.Styles.Faint.Render(ansi.Truncate(m.ThoughtProgressText, width, "…"))
+	}
+	if action != "" {
 		if len(allLines) > 0 && !stacks {
 			allLines = append(allLines, strings.TrimRight(m.Renderer.rail(joint(last, laneBusy)), " "))
 		}
-		allLines = append(allLines, m.Renderer.rail(laneBusy)+m.renderProgress())
+		allLines = append(allLines, m.Renderer.rail(laneBusy)+action)
 	}
 	allLines = append(allLines, m.pendingRows()...)
 
@@ -798,10 +869,16 @@ func (m ChatModel) pendingRows() []string {
 	}
 	before := slices.Clone(m.History.Entries())
 	if m.activeKind != StreamKindNone && m.activeText != "" {
-		before = append(before, HistoryEntry{Kind: EntryAssistant, Speaker: m.AgentName})
+		kind := EntryAssistant
+		if m.activeKind == StreamKindThinking {
+			kind = EntryThinking
+		}
+		before = append(before, HistoryEntry{Kind: kind, Speaker: m.AgentName})
 	}
-	if m.ToolProgressText != "" {
+	if m.ToolProgressText != "" && (m.Progress != nil || !m.Flags.Tools) {
 		before = append(before, HistoryEntry{Kind: EntryTool, Speaker: m.AgentName})
+	} else if m.ThoughtProgressText != "" && !m.Flags.Thinking {
+		before = append(before, HistoryEntry{Kind: EntryThinking, Speaker: m.AgentName})
 	}
 	var rows []string
 	for _, p := range m.pendingUsers {
@@ -1293,11 +1370,12 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.Status = *msg.Status
 			defer m.reseedMood()
 			// most polls find the session idle with nothing live to settle
-			live := m.Progress != nil || m.ToolProgressText != "" || m.activeKind != StreamKindNone || m.turn != nil && m.turn.begun()
+			live := m.Progress != nil || m.ToolProgressText != "" || m.ThoughtProgressText != "" || m.activeKind != StreamKindNone || m.turn != nil && m.turn.begun()
 			if live && (!m.Status.Running || m.Status.Idle) {
 				m.Progress = nil
-				m.ToolProgressText = ""
 				m.settleActiveStream()
+				m.ToolProgressText = ""
+				m.ThoughtProgressText = ""
 				if m.turn != nil && m.turn.begun() {
 					m.closeTurn(false)
 				}
@@ -1447,6 +1525,8 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			return m, nil
 		}
 		m.Workspace = msg.Workspace
+		m.Renderer.Workspace = msg.Workspace
+		m.rebuildSettledLines() // settled rows name paths from the old workspace
 		prompt := m.WorkspaceRecovery.Prompt
 		img := m.WorkspaceRecovery.Image
 		m.WorkspaceRecovery = nil
@@ -1827,6 +1907,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	case daemon.EventReset:
 		m.settleActiveStream()
 		m.History.Clear()
+		m.burstEpoch++
 		m.settledLines = nil
 		m.settledLinesBytes = 0
 		m.droppedSettledLines = 0
@@ -1834,7 +1915,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		m.activeText = ""
 		m.streamedHash = fnvOffset64
 		m.streamedLen = 0
-		m.ToolProgressText = ""
+		m.clearAction()
 		m.Usage = nil
 		m.ClearNotices()
 		m.TurnFailed = false
@@ -1854,12 +1935,13 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		m.activeText = ""
 		m.streamedHash = fnvOffset64
 		m.streamedLen = 0
-		m.ToolProgressText = ""
+		m.clearAction()
 
 	case daemon.EventUser:
 		m.Stopped = false
 		m.TurnFailed = false
 		m.settleActiveStream()
+		m.clearAction()
 		if !evt.Replayed {
 			m.ClearNotices()
 		}
@@ -1910,25 +1992,34 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		m.streamDelta(StreamKindText, evt.Text)
 
 	case daemon.EventThinking:
+		if m.activeKind != StreamKindThinking {
+			m.settleActiveStream()
+			m.activeKind = StreamKindThinking
+			if !evt.Replayed {
+				m.thinkingSince = time.Now()
+			}
+		}
 		m.streamDelta(StreamKindThinking, evt.Text)
 
 	case daemon.EventToolProgress:
+		if evt.Replayed {
+			break // a progress snapshot is not an action happening now
+		}
 		m.turnIsLive()
 		m.Progress = evt.Progress
 		if evt.Progress != nil {
 			m.settleActiveStream()
+			m.ThoughtProgressText = ""
 			m.Status.Running = true
 			m.Status.Idle = false
 			phase := daemon.PhaseTool
 			m.Status.Phase = &phase
 			m.ToolProgressText = progressLabel(*evt.Progress)
-		} else {
-			m.ToolProgressText = ""
 		}
 
 	case daemon.EventTool:
 		m.settleActiveStream()
-		m.ToolProgressText = ""
+		m.ThoughtProgressText = ""
 		m.Status.Running = true
 		m.Status.Idle = false
 
@@ -1941,6 +2032,11 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			Timestamp:  time.Now().UnixMilli(),
 		}
 		m.appendSettledEntry(entry)
+		if !evt.Replayed {
+			m.ToolProgressText = finishedProgress(m.ToolProgressText, evt.ToolName, toolFailed(entry))
+		} else {
+			m.ToolProgressText = ""
+		}
 		if m.turn == nil {
 			ts := time.Now().UnixMilli()
 			m.turn = &openTurn{start: ts, last: ts}
@@ -1949,7 +2045,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		m.turn.touch(evt.Timestamp)
 
 	case daemon.EventMessage:
-		m.ToolProgressText = ""
+		m.clearAction()
 
 		targetHash := fnv1a(fnvOffset64, evt.Text)
 		isDuplicate := (m.streamedLen == int64(len(evt.Text))) && (m.streamedHash == targetHash)
@@ -1957,6 +2053,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		m.streamedLen = 0
 
 		m.settleActiveStream()
+		m.ThoughtProgressText = ""
 
 		if isDuplicate {
 			return
@@ -1984,6 +2081,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 
 	case daemon.EventNote:
 		m.settleActiveStream()
+		m.clearAction()
 		entry := HistoryEntry{
 			Kind:      EntryNote,
 			Text:      evt.Text,
@@ -1994,7 +2092,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	case daemon.EventError:
 		m.TurnFailed = true
 		m.settleActiveStream()
-		m.ToolProgressText = ""
+		m.clearAction()
 		m.Status.Running = false
 		m.Status.Idle = true
 		phase := daemon.PhaseResting
@@ -2013,7 +2111,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 
 	case daemon.EventCompacted:
 		m.settleActiveStream()
-		m.ToolProgressText = ""
+		m.clearAction()
 
 		entry := HistoryEntry{
 			Kind:      EntryCompacted,
@@ -2032,7 +2130,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		m.Stopped = true
 		m.TurnFailed = false
 		m.settleActiveStream()
-		m.ToolProgressText = ""
+		m.clearAction()
 		m.Status.Running = false
 		m.Status.Idle = true
 		phase := daemon.PhaseResting
@@ -2167,6 +2265,31 @@ func (m ChatModel) sidebarWidth() int {
 	return 0
 }
 
+// The live action row becomes a completed label, rather than disappearing
+// between the tool result and the next action.
+func finishedProgress(label, name string, failed bool) string {
+	completed := ""
+	for _, pair := range [][2]string{
+		{"reading ", "read "}, {"writing ", "wrote "}, {"editing ", "edited "},
+		{"running ", "ran "}, {"preparing ", "ran "},
+	} {
+		if target, ok := strings.CutPrefix(label, pair[0]); ok {
+			completed = pair[1] + target
+			break
+		}
+	}
+	if completed == "" {
+		if name == "" {
+			name = "tool"
+		}
+		completed = "used " + name
+	}
+	if failed {
+		completed += " · failed"
+	}
+	return completed
+}
+
 func progressLabel(progress daemon.ToolProgress) string {
 	if intent := progress.Intent; intent != nil {
 		verbs := map[string]string{"write": "writing", "edit": "editing", "read": "reading", "run": "running"}
@@ -2182,16 +2305,13 @@ func progressLabel(progress daemon.ToolProgress) string {
 	return "running " + progress.Name
 }
 
-// renderProgress is the live row for the tool call in flight. It is shaped
-// like the tool row it settles into, and code being written shows its
-// newest end.
+// renderProgress holds the last tool action in one row; a call still being
+// generated also shows the newest end of its code.
 func (m ChatModel) renderProgress() string {
-	if m.Progress == nil {
-		return ""
-	}
 	width := max(1, m.Renderer.BodyWidth-railWidth)
 	row := oneLine(m.ToolProgressText)
-	if code := m.Progress.Code; m.Progress.Phase == "generating" && code != nil {
+	if m.Progress != nil && m.Progress.Phase == "generating" && m.Progress.Code != nil {
+		code := m.Progress.Code
 		if text := oneLine(code.Text); text != "" {
 			row += " · "
 			if room := width - ansi.StringWidth(row); room >= 12 && ansi.StringWidth(text) > room {
@@ -2200,7 +2320,17 @@ func (m ChatModel) renderProgress() string {
 			row += text
 		}
 	}
-	return m.Styles.Faint.Render(ansi.Truncate(row, width, "…"))
+	return markChrome + m.Styles.Faint.Render(ansi.Truncate(row, width, "…"))
+}
+
+// renderThought follows the newest line while the thought streams.
+func (m ChatModel) renderThought() string {
+	header := thinkingLine(m.activeText)
+	if header == "" {
+		header = "thinking"
+	}
+	width := max(1, m.Renderer.BodyWidth-railWidth)
+	return markChrome + m.Styles.Faint.Render(ansi.Truncate(header+"…", width, "…"))
 }
 
 func (m ChatModel) statusLine() string {
@@ -2350,7 +2480,7 @@ func (m ChatModel) View() string {
 	if m.animating() && !m.TurnFailed && !m.Notices.HasError() {
 		status = m.Styles.Faint.Render(status) + " " + m.Styles.Agent.Render(m.phaseMood().frame(m.moodSeed, m.ProgressFrame))
 	}
-	if !m.Follow && m.Flags.Tools {
+	if !m.Follow {
 		status = fmt.Sprintf("history · %d rows below · pgdn", max(0, m.scrollLimit-m.scrollOffset))
 	}
 	if m.AttachedImage != nil {

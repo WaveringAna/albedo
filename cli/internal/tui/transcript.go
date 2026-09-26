@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/charmbracelet/x/ansi"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,6 +25,8 @@ type DisplayFlags struct {
 type TranscriptRenderer struct {
 	Styles    Styles
 	BodyWidth int
+	// Workspace roots the paths trace rows name.
+	Workspace string
 }
 
 func NewTranscriptRenderer() TranscriptRenderer {
@@ -291,6 +295,81 @@ func fit(head, tail string, width int) string {
 	return ansi.Truncate(head+tail, max(1, width), "…")
 }
 
+var storeHash = regexp.MustCompile(`/nix/store/[0-9a-z]{32}-`)
+
+// shortTarget fits what a trace row names into room cells. Paths in the
+// workspace are named from it, the rest of home from ~, and store hashes are
+// elided, in commands too; a path that still overflows loses its middle, so
+// the file name stays visible.
+func (r TranscriptRenderer) shortTarget(target string, path bool, room int) string {
+	target = r.named(target)
+	width := ansi.StringWidth(target)
+	if !path || width <= room || room < 12 {
+		return ansi.Truncate(target, max(1, room), "…")
+	}
+	head := room / 3
+	return ansi.Truncate(target, head, "") + "…" + ansi.TruncateLeft(target, width-(room-head-1), "")
+}
+
+// namer names targets the way a person reads them: from the workspace, from ~,
+// and without store hashes. One replacer serves a whole row.
+type namer struct {
+	replacer *strings.Replacer
+}
+
+func (r TranscriptRenderer) namer() namer {
+	home, _ := os.UserHomeDir()
+	var roots []string
+	if workspace := expandHome(r.Workspace, home); workspace != "/" && workspace != "." {
+		roots = append(roots, workspace+"/", "")
+	}
+	if home != "" {
+		roots = append(roots, home+"/", "~/")
+	}
+	// the workspace comes first, so it wins where it sits inside home
+	return namer{replacer: strings.NewReplacer(roots...)}
+}
+
+// prepareTarget strips what naming always strips, workspace-independently:
+// control runs, store hashes. Facts store prepared targets so a render only
+// applies the workspace replacer.
+func prepareTarget(target string) string {
+	return storeHash.ReplaceAllString(oneLine(target), "/nix/store/…-")
+}
+
+func (n namer) name(target string) string {
+	return n.replacer.Replace(target)
+}
+
+func (n namer) all(targets []string) []string {
+	named := make([]string, len(targets))
+	for i, target := range targets {
+		named[i] = n.name(target)
+	}
+	return named
+}
+
+// named is target as a person reads it; see namer.
+func (r TranscriptRenderer) named(target string) string {
+	return r.namer().name(prepareTarget(target))
+}
+
+func expandHome(path, home string) string {
+	if rest, ok := strings.CutPrefix(path, "~/"); ok && home != "" {
+		path = filepath.Join(home, rest)
+	}
+	return filepath.Clean(path)
+}
+
+// traceLine is a verb then its target, the target shortened to fit width.
+func (r TranscriptRenderer) traceLine(verb, target string, path bool, width int) string {
+	return fit(verb+" "+r.shortTarget(target, path, width-ansi.StringWidth(verb)-1), "", width)
+}
+
+func isPath(activity daemon.ToolActivity) bool {
+	return activity.Kind == "read" || activity.Kind == "list"
+}
+
 func countLines(text string) string {
 	n := strings.Count(text, "\n") + 1
 	return fmt.Sprintf("%d %s", n, lineUnit(n))
@@ -346,10 +425,10 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 			if activity.Failed {
 				style = r.Styles.Error
 			}
-			rows = append(rows, style.Render(fit(label+" "+oneLine(activity.Target), "", width)))
+			rows = append(rows, style.Render(r.traceLine(label, activity.Target, isPath(activity), width)))
 		}
 		for _, change := range trace.Changes {
-			label := "edited " + change.Path
+			label := "edited"
 			for _, activity := range trace.Activities {
 				if activity.Kind == "read" && activity.Target == change.Path {
 					label = "read + " + label
@@ -360,7 +439,8 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 			if change.Kind == "diff" {
 				counts = "  " + r.diffCounts(change)
 			}
-			rows = append(rows, fit(r.Styles.Faint.Render(oneLine(label)), counts, width))
+			line := r.traceLine(label, change.Path, true, width-ansi.StringWidth(counts))
+			rows = append(rows, fit(r.Styles.Faint.Render(line), counts, width))
 			if flags.Diffs {
 				if change.Kind == "diff" {
 					rows = append(rows, r.renderDiffPath(change.Diff, change.Path, width))
@@ -390,7 +470,7 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 				style = r.Styles.Error
 				label += " failed"
 			}
-			rows = append(rows, fit("  "+style.Render(label)+" "+oneLine(act.Target), "", width))
+			rows = append(rows, "  "+r.traceLine(style.Render(label), act.Target, isPath(act), width-2))
 		}
 	}
 	for _, change := range trace.Changes {
@@ -398,7 +478,8 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 		if change.Kind == "diff" {
 			counts = "  " + r.diffCounts(change)
 		}
-		rows = append(rows, fit(r.Styles.Bold.Render(oneLine("edited "+change.Path)), counts, width))
+		line := r.traceLine("edited", change.Path, true, width-ansi.StringWidth(counts))
+		rows = append(rows, fit(r.Styles.Bold.Render(line), counts, width))
 		if flags.Diffs {
 			if change.Kind == "diff" {
 				rows = append(rows, r.renderDiffPath(change.Diff, change.Path, width))
@@ -597,19 +678,64 @@ func (r TranscriptRenderer) rail(l lane) string {
 // separates it from the entry before, when one belongs, then its rows
 // wrapped beside its rail. head indexes the entry's first row.
 func (r TranscriptRenderer) Block(before []HistoryEntry, entry HistoryEntry, flags DisplayFlags) (rows []string, head int) {
-	own := laneOf(entry)
-	if n := len(before); n > 0 && Separated(&before[n-1], entry, flags) {
+	return r.frame(before, entry, flags, func(width int) string {
+		return r.RenderAfter(priorOf(before), entry, flags, width)
+	})
+}
+
+// RenderBurst collects entries' facts and renders them; the live path keeps
+// the collected burst cached instead.
+func (r TranscriptRenderer) RenderBurst(entries []HistoryEntry, flags DisplayFlags, width int) string {
+	return r.renderBurst(collect(entries), flags, width)
+}
+
+// BurstBlock is a burst as finished transcript rows, framed like a Block.
+func (r TranscriptRenderer) BurstBlock(before, burst []HistoryEntry, flags DisplayFlags) []string {
+	rows, _ := r.frame(before, burst[0], flags, func(width int) string {
+		return r.RenderBurst(burst, flags, width)
+	})
+	return rows
+}
+
+// frame hangs body beside first's rail, after the blank row that separates
+// it from before when one belongs. head indexes body's first row.
+func (r TranscriptRenderer) frame(before []HistoryEntry, first HistoryEntry, flags DisplayFlags, body func(width int) string) (rows []string, head int) {
+	own := laneOf(first)
+	if n := len(before); n > 0 && Separated(&before[n-1], first, flags) {
 		rows = append(rows, strings.TrimRight(r.rail(joint(laneOf(before[n-1]), own)), " "))
 	}
 	head = len(rows)
 	width := max(1, r.BodyWidth-railWidth)
 	gutter := r.rail(own)
-	for _, line := range strings.Split(r.RenderAfter(priorOf(before), entry, flags, width), "\n") {
+	for _, line := range strings.Split(body(width), "\n") {
 		for _, chunk := range markChunks(line, wrapOrChunkLine(line, width)) {
 			rows = append(rows, gutter+chunk)
 		}
 	}
 	return rows, head
+}
+
+// Settle is the rows entry settles after before: none for a compact entry,
+// whose burst waits for what ends it, else the burst it ends, then itself.
+// head indexes the entry's first row.
+func (r TranscriptRenderer) Settle(before []HistoryEntry, entry HistoryEntry, flags DisplayFlags) (rows []string, head int) {
+	if Compact(entry, flags) {
+		return nil, 0
+	}
+	if burst := trailingBurst(before, flags); len(burst) > 0 {
+		rows = r.BurstBlock(before[:len(before)-len(burst)], burst, flags)
+	}
+	block, at := r.Block(before, entry, flags)
+	return append(rows, block...), len(rows) + at
+}
+
+// OpenBurst is the burst that ends entries, drawn live until it settles.
+func (r TranscriptRenderer) OpenBurst(entries []HistoryEntry, flags DisplayFlags) []string {
+	burst := trailingBurst(entries, flags)
+	if len(burst) == 0 {
+		return nil
+	}
+	return r.BurstBlock(entries[:len(entries)-len(burst)], burst, flags)
 }
 
 func (r TranscriptRenderer) RenderHistory(history *BoundedHistory, flags DisplayFlags) string {
@@ -619,8 +745,9 @@ func (r TranscriptRenderer) RenderHistory(history *BoundedHistory, flags Display
 	}
 	entries := history.Entries()
 	for i, entry := range entries {
-		block, _ := r.Block(entries[:i], entry, flags)
+		block, _ := r.Settle(entries[:i], entry, flags)
 		rows = append(rows, block...)
 	}
+	rows = append(rows, r.OpenBurst(entries, flags)...)
 	return strings.Join(rows, "\n")
 }

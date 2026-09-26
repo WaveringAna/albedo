@@ -1,7 +1,7 @@
 """The wake protocol: unfinished jobs tell the host, reads retire the notice.
 
 The owner here is a fake daemon: it answers the kernel's host calls, so the
-bash plugin's notice machinery can be exercised against the real kernel without
+run plugin's notice machinery can be exercised against the real kernel without
 gleam. The replies cover the whole contract: accepted, refused with busy
 (retried), refused otherwise (given up), and no call at all when the job was
 awaited or its result was already read.
@@ -33,7 +33,7 @@ class Owner:
         self.process = subprocess.Popen(
             [sys.executable, "-u", str(KERNEL), json.dumps(modules)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            cwd=self.workspace, env=environment)
+            cwd=self.workspace, env=environment, bufsize=0)
         self.buffered = []
         self.calls = []          # host calls the owner has seen, in order
         self.answers = []        # canned answers, popped per call; default ok
@@ -51,14 +51,23 @@ class Owner:
         self.process.stdin.flush()
 
     def recv(self, timeout=0.05):
-        """One frame, or None when the kernel stays quiet for the window."""
+        """One frame, or None when the kernel stays quiet for the window.
+        stdout is unbuffered: a frame read ahead into a buffer is invisible to
+        select(), and would stall until the next one arrives."""
         ready, _, _ = select.select([self.process.stdout], [], [], timeout)
         if not ready:
             return None
-        header = self.process.stdout.read(4)
-        size = struct.unpack(">I", header)[0]
+        size = struct.unpack(">I", self.read_exactly(4))[0]
         assert size <= MAX_FRAME, "control frame exceeds the ceiling"
-        return json.loads(self.process.stdout.read(size))
+        return json.loads(self.read_exactly(size))
+
+    def read_exactly(self, size):
+        data = b""
+        while len(data) < size:
+            chunk = self.process.stdout.read(size - len(data))
+            assert chunk, "kernel closed its control stream"
+            data += chunk
+        return data
 
     def wait_for(self, predicate, timeout=10.0):
         deadline = time.monotonic() + timeout
@@ -104,14 +113,40 @@ class Owner:
                 return reply
 
 
+class JobTraceTest(unittest.TestCase):
+    def test_a_cell_trace_names_the_job_command_not_its_wrapper(self):
+        owner = Owner(["run"])
+        self.addCleanup(owner.close)
+        owner.wait_for(lambda f: f.get("type") == "ready")
+        owner.send({"type": "execute", "id": "c1", "code": "await run('echo', 'traced-echo')"})
+        trace = owner.wait_for(lambda f: f.get("type") == "trace" and f.get("id") == "c1")["trace"]
+        self.assertEqual([item for item in trace["activities"] if item["kind"] == "run"],
+                         [{"kind": "run", "target": "echo traced-echo"}])
+
+
+class PipeWakeTest(unittest.TestCase):
+    def test_a_pipeline_wakes_once_naming_every_stage(self):
+        owner = Owner(["run"])
+        self.addCleanup(owner.close)
+        owner.wait_for(lambda f: f.get("type") == "ready")
+        owner.send({"type": "execute", "id": "c1", "code": "reader = run('echo', 'piped').pipe('cat')\nNone"})
+        owner.wait_for(lambda f: f.get("type") == "done" and f.get("id") == "c1")
+        for _ in range(2):
+            owner.wait_for(lambda f: f.get("type") == "job")
+        wakes = [f for f in owner.serve_calls() if f["method"] == "jobs.completed"]
+        self.assertEqual(len(wakes), 1)
+        self.assertIn("echo piped | cat", wakes[0]["args"]["text"])
+        owner.expect_no_call("jobs.completed")
+
+
 class WakeProtocolTest(unittest.TestCase):
     def setUp(self):
-        self.owner = Owner(["bash"])
+        self.owner = Owner(["run"])
         self.addCleanup(self.owner.close)
         self.assertEqual(self.owner.wait_for(lambda f: f.get("type") == "ready")["type"], "ready")
 
-    def start_job(self, command):
-        reply = self.owner.invoke("j1", name="bash", args=[command])
+    def start_job(self, *argv):
+        reply = self.owner.invoke("j1", name="run", args=list(argv))
         self.assertTrue(reply["ok"])
         return reply["handle"]
 
@@ -130,7 +165,7 @@ class WakeProtocolTest(unittest.TestCase):
         return args
 
     def test_an_unread_job_completion_reports_to_the_host(self):
-        handle = self.start_job("echo wake-echo")
+        handle = self.start_job("echo", "wake-echo")
         self.wait_job_done()
         notices = self.owner.serve_calls()
         wakes = [f for f in notices if f["method"] == "jobs.completed"]
@@ -142,7 +177,7 @@ class WakeProtocolTest(unittest.TestCase):
         self.owner.expect_no_call("jobs.completed")
 
     def test_a_busy_session_is_retried_and_a_refusal_gives_up(self):
-        handle = self.start_job("echo retry-echo")
+        handle = self.start_job("echo", "retry-echo")
         self.wait_job_done()
         # Busy is retried, not dropped; a permanent refusal ends the attempts.
         frame = self.owner.wait_for(lambda f: f.get("type") == "call")
@@ -156,12 +191,12 @@ class WakeProtocolTest(unittest.TestCase):
         self.owner.expect_no_call("jobs.completed")
 
     def test_an_awaited_job_never_reports(self):
-        handle = self.start_job("echo awaited-echo")
+        handle = self.start_job("echo", "awaited-echo")
         self.owner.invoke("w1", target={"handle": handle}, **{"await": True})
         self.owner.expect_no_call("jobs.completed")
 
     def test_a_read_result_retires_a_pending_notice(self):
-        handle = self.start_job("echo read-echo")
+        handle = self.start_job("echo", "read-echo")
         self.wait_job_done()
         # The notice is in flight (busy) when the result is read; the retry must stop.
         frame = self.owner.wait_for(lambda f: f.get("type") == "call")
@@ -172,7 +207,7 @@ class WakeProtocolTest(unittest.TestCase):
         self.owner.expect_no_call("jobs.completed")
 
     def test_output_read_retires_a_pending_notice(self):
-        handle = self.start_job("echo output-echo")
+        handle = self.start_job("echo", "output-echo")
         job_id = self.wait_job_done()["id"]
         frame = self.owner.wait_for(lambda f: f.get("type") == "call")
         self.owner.send({"type": "reply", "id": frame["id"],
@@ -182,16 +217,16 @@ class WakeProtocolTest(unittest.TestCase):
         self.owner.expect_no_call("jobs.completed")
 
     def test_a_stopped_job_wakes_no_one(self):
-        handle = self.start_job("sleep 5")
+        handle = self.start_job("sleep", "5")
         stopped = self.owner.invoke("s1", target={"handle": handle}, name="stop")
         self.assertTrue(stopped["ok"])
         self.owner.expect_no_call("jobs.completed", window=1.5)
 
     def test_the_remote_stamp_names_the_host(self):
-        owner = Owner(["bash"], env={"ALBEDO_REMOTE_TARGET": "trimounts"})
+        owner = Owner(["run"], env={"ALBEDO_REMOTE_TARGET": "trimounts"})
         self.addCleanup(owner.close)
         self.assertEqual(owner.wait_for(lambda f: f.get("type") == "ready")["type"], "ready")
-        reply = owner.invoke("j1", name="bash", args=["echo remote-echo"])
+        reply = owner.invoke("j1", name="run", args=["echo", "remote-echo"])
         start = owner.wait_for(lambda f: f.get("type") == "job_start")
         owner.wait_for(lambda f: f.get("type") == "job" and f.get("id") == start["id"])
         frame = owner.wait_for(lambda f: f.get("type") == "call")

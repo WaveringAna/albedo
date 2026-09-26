@@ -9,6 +9,8 @@ import keyword
 from dataclasses import dataclass
 from typing import Literal, NotRequired, Protocol, TypedDict, cast
 
+RAW_RETAIN = 1024 * 1024  # bytes a late pipe reader can replay
+
 Host = Callable[[str, dict[str, object]], Awaitable[object]]
 Send = Callable[[dict[str, object]], None]
 # Shutdown callbacks run while the loop can still run code; returning an
@@ -54,11 +56,26 @@ class Record(dict):
         return _ready(self)
 
 
+def excerpt(text: str, chars: int, lines: int | None, *, end: bool) -> str:
+    """Output's first or last `lines` lines, else its first or last `chars`
+    characters: what a job handle's head() and tail() answer."""
+    if lines is not None:
+        kept = text.splitlines(keepends=True)
+        return "".join(kept[-lines:] if end else kept[:lines]) if lines > 0 else ""
+    chars = max(1, chars)
+    return text[-chars:] if end else text[:chars]
+
+
 class OutputCapture(Protocol):
-    tail_data: bytearray
-    seen: int
+    data: bytearray       # the retained start of the output
+    raw_data: bytearray   # original bytes from a job, for a late pipe reader
+    raw_seen: int         # original bytes written by that job
+    tail_data: bytearray  # its latest end
+    seen: int             # bytes written, retained or not
 
     def write(self, text: str) -> None: ...
+
+    def read(self, offset: int = 0, limit: int = 4000) -> str: ...
 
 
 @dataclass(frozen=True)

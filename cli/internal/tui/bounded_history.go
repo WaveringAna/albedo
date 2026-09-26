@@ -44,6 +44,9 @@ type HistoryEntry struct {
 	// Live is a reply still streaming in. It renders on every token, so it
 	// skips the second rendering that marks wraps for a copy until it settles.
 	Live bool
+	// facts is what this entry contributes to a grouped row, computed once
+	// when the entry settles. Targets stay as recorded; naming is at render.
+	facts *entryFacts
 }
 
 // pending is how far a message of yours has got: sent and waiting for the

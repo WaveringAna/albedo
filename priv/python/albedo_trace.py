@@ -4,15 +4,43 @@ This is observation, not a sandbox. External processes and native writes may byp
 """
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Protocol, cast
+from collections.abc import Callable, Iterator
+from typing import Protocol
+import albedo_shell
+import contextlib
 import contextvars
 import difflib
 import os
+import shlex
 import sys
 
 GUARD = contextvars.ContextVar("albedo_trace_guard", default=False)
 LIMIT = 128 * 1024
+
+@contextlib.contextmanager
+def unobserved() -> Iterator[None]:
+    """Harness bookkeeping inside this block, and tasks created in it, stay out of the trace."""
+    token = GUARD.set(True)
+    try:
+        yield
+    finally:
+        GUARD.reset(token)
+
+def text(value: object) -> str:
+    return os.fsdecode(value) if isinstance(value, (str, bytes, os.PathLike)) else str(value)
+
+def command(args: object) -> str:
+    """The command as a person would type it: no `sh -c` wrapper, no store path on argv[0]."""
+    if not isinstance(args, (list, tuple)):
+        return text(args)
+    argv = [text(arg) for arg in args]
+    if not argv:
+        return ""
+    script = albedo_shell.shell_script(argv)
+    if script is not None:
+        return script
+    name = os.path.basename(argv[0]) if os.path.isabs(argv[0]) else argv[0]
+    return shlex.join([name, *argv[1:]])
 
 class Trace:
     def __init__(self):
@@ -44,8 +72,7 @@ class Trace:
         self.before[path] = snapshot(path)
 
     def finish(self) -> dict[str, object]:
-        token = GUARD.set(True)
-        try:
+        with unobserved():
             changes: list[dict[str, str | int]] = []
             for path, before in self.before.items():
                 after = snapshot(path)
@@ -61,8 +88,6 @@ class Trace:
                     "added": sum(line.startswith("+") and not line.startswith("+++") for line in lines),
                     "removed": sum(line.startswith("-") and not line.startswith("---") for line in lines)})
             return {"activities": list(self.activities.values()), "changes": changes, "truncated": self.truncated}
-        finally:
-            GUARD.reset(token)
 
 def snapshot(path: str) -> str | None:
     try:
@@ -79,7 +104,18 @@ def snapshot(path: str) -> str | None:
 class TracedCapture(Protocol):
     trace: Trace
 
+current: Callable[[], TracedCapture | None] = lambda: None
+
+def note(kind: str, target: str) -> None:
+    """Record what a harness tool did for the running cell, as it was asked
+    for: the command run() started, the pattern files.find searched."""
+    capture = current()
+    if capture is not None:
+        capture.trace.activity(kind, target)
+
 def install(get_capture: Callable[[], TracedCapture | None]) -> None:
+    global current
+    current = get_capture
     def audit(event: str, args: tuple[object, ...]) -> None:
         capture = get_capture()
         if capture is None or GUARD.get():
@@ -105,7 +141,7 @@ def install(get_capture: Callable[[], TracedCapture | None]) -> None:
                 if path != "/proc" and not path.startswith("/proc/"):
                     capture.trace.activity("list", path)
             elif event == "subprocess.Popen":
-                capture.trace.activity("run", " ".join(map(str, cast(list[object] | tuple[object, ...], args[1]))) if isinstance(args[1], (tuple,list)) else args[1])
+                capture.trace.activity("run", command(args[1]))
         except Exception:
             capture.trace.truncated = True
         finally:

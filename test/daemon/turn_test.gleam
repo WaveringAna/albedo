@@ -11,7 +11,7 @@ fn chat(text: String) -> turn.Submission {
 }
 
 fn wake(text: String) -> turn.Submission {
-  turn.Submission(text, text, "bash", turn.JobWake, None)
+  turn.Submission(text, text, "job", turn.JobWake, None)
 }
 
 fn run(id: String, work: turn.Work) -> turn.Run {

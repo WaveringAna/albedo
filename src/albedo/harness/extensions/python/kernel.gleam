@@ -53,7 +53,7 @@ pub fn start(
     script,
     cwd,
     rpc.handle(store, _),
-    ["bash", "work"],
+    ["run", "work"],
   )
 }
 
@@ -270,7 +270,7 @@ pub fn local_with_host(
 ) -> Result(Kernel, Error) {
   use #(executable, script) <- result.try(local_paths())
   start_native(work.owner(store), executable, script, cwd, host, [
-    "bash",
+    "run",
     "work",
   ])
 }

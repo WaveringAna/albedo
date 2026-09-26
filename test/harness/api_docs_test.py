@@ -16,7 +16,7 @@ import albedo_kernel as kernel  # noqa: E402
 from albedo_api import PythonApi  # noqa: E402
 
 # Plumbing the kernel or the remote relay calls; not part of the model's API.
-INTERNAL = {"bash.Job.claim", "remote.Remote.connect_many"}
+INTERNAL = {"run.Job.claim", "remote.Remote.connect_many"}
 
 
 def model_text() -> str:
@@ -37,7 +37,7 @@ def namespace() -> dict[str, object]:
 
     api = PythonApi(loop, host, RuntimeError, None, 100, lambda e: None, lambda c: None, lambda _: None)
     bindings = {"cells": kernel.Cells(), "output": kernel.Output(), "show_image": kernel.show_image}
-    for name in ["bash", "work", "files", "skills", "commands", "remote", "view"]:
+    for name in ["run", "work", "files", "skills", "commands", "remote", "view"]:
         result = importlib.import_module("albedo_plugins." + name).setup(api)
         bindings.update(loop.run_until_complete(result) if inspect.isawaitable(result) else result)
     loop.close()
@@ -65,9 +65,9 @@ class ApiDocsTest(unittest.TestCase):
         self.assertEqual(sorted(set(missing)), [], "public API the model is never told about")
 
     def test_job_handles_are_documented(self):
-        from albedo_plugins import bash
+        from albedo_plugins import run
         text = model_text()
-        public = [name for name in vars(bash.Job) if not name.startswith("_") and f"bash.Job.{name}" not in INTERNAL]
+        public = [name for name in vars(run.Job) if not name.startswith("_") and f"run.Job.{name}" not in INTERNAL]
         fields = ["id", "command", "exit_code", "duration", "timed_out"]
         missing = [name for name in public + fields if not re.search(rf"\bjob\.{name}\b", text)]
         self.assertEqual(missing, [], "job handle members the model is never told about")

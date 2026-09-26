@@ -34,7 +34,7 @@ routes: `GET /agents?session=<id>` (the tree), `GET /agents/stream` (batched eve
 
 kernel boots queue behind four slots. each boot owns only its session's composition,
 and each kernel's host callback captures only its routes, store handle, and session
-id—not a snapshot of the other agents. bash waits on process-exit notifications,
+id—not a snapshot of the other agents. run waits on process-exit notifications,
 not periodic exit checks; descendant cleanup and deadlines still apply.
 
 session replay retains at most 256 events or 4 mib, evicting incrementally rather
@@ -42,7 +42,7 @@ than copying the full window per token. missing events require a transcript rese
 the orchestrator feed batches every 100 ms and skips activity serialization when
 nobody is watching.
 
-bash jobs start at once, at low priority (`nice`, and utility QoS on macOS), so a
+run jobs start at once, at low priority (`nice`, and utility QoS on macOS), so a
 busy swarm yields to the person at the machine. a job still running after the grace
 window (5 s) is heavy and needs one of a few daemon-wide slots; without one it is
 paused (`SIGSTOP`, `job.queued` is true) and resumed when one frees, so waiting

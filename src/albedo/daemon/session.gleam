@@ -18,8 +18,8 @@ import albedo/daemon/turn.{type Submission, Submission}
 import albedo/daemon/usage
 import albedo/harness/command
 import albedo/harness/extension
-import albedo/harness/extensions/bash/extension as bash
 import albedo/harness/extensions/python/kernel as python
+import albedo/harness/extensions/run/extension as run
 import albedo/harness/loop
 import albedo/harness/runtime
 import albedo/openai_api/types
@@ -217,7 +217,7 @@ pub fn start(
     // registered closure lands a completion notice as an ordinary submit, so
     // the wake reuses the whole turn pipeline and busy answers itself.
     wakes_register(info.id, fn(display, text) {
-      wake(self, Submission(display, text, "bash", turn.JobWake, None))
+      wake(self, Submission(display, text, "job", turn.JobWake, None))
     })
     commands_register(info.id, fn(op) { command_op(self, op) })
     live_register(info.id, self)
@@ -1022,7 +1022,7 @@ fn now_ms() -> Int
 @external(erlang, "albedo_wakes", "register")
 fn wakes_register(
   session: String,
-  submit: fn(String, String) -> bash.Wake,
+  submit: fn(String, String) -> run.Wake,
 ) -> Nil
 
 @external(erlang, "albedo_wakes", "forget")
@@ -1604,19 +1604,19 @@ fn start_queued(state: State) -> State {
 /// process, so it waits with its own deadline instead of `actor.call`, whose
 /// timeout would crash the route: an owner too occupied to answer is busy and
 /// the kernel retries; only a stopped owner is unavailable.
-fn wake(session: Session, submission: Submission) -> bash.Wake {
+fn wake(session: Session, submission: Submission) -> run.Wake {
   case process.subject_owner(session) {
-    Error(_) -> bash.Unavailable("session stopped")
+    Error(_) -> run.Unavailable("session stopped")
     Ok(owner) ->
       case process.is_alive(owner) {
-        False -> bash.Unavailable("session stopped")
+        False -> run.Unavailable("session stopped")
         True -> {
           let reply = process.new_subject()
           process.send(session, Submit(submission, reply))
           case process.receive(reply, 10_000) {
-            Ok(Ok(_)) -> bash.Delivered
-            Ok(Error(Busy)) | Error(Nil) -> bash.Busy
-            Ok(Error(error)) -> bash.Unavailable(submission_error(error))
+            Ok(Ok(_)) -> run.Delivered
+            Ok(Error(Busy)) | Error(Nil) -> run.Busy
+            Ok(Error(error)) -> run.Unavailable(submission_error(error))
           }
         }
       }

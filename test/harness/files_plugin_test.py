@@ -13,10 +13,10 @@ from albedo_plugins import files as plugin
 
 
 class FakeJob:
-    """What `bash(command)` returns: an awaitable handle owning its output."""
+    """What `run.start(argv, ...)` returns: an awaitable handle owning its output."""
 
     def __init__(self, output, exit_code=0):
-        self.output, self.exit_code, self.timed_out = output, exit_code, False
+        self.output, self.exit_code, self.timed_out, self.termination = output, exit_code, False, None
 
     def __await__(self):
         async def settled():
@@ -129,12 +129,12 @@ class FilesPluginTest(unittest.TestCase):
                                        "lines": {"text": "needle here\n"}}},
         ])
 
-        def fake_bash(command, timeout=None):
-            commands.append(command)
+        def fake_start(argv, timeout, **options):
+            commands.append(argv[-1])
             return FakeJob(matches)
 
         forgotten = []
-        with patch.object(plugin.jobs, "bash", fake_bash), \
+        with patch.object(plugin.jobs, "start", fake_start), \
              patch.object(plugin.jobs, "forget", forgotten.append), \
              patch.object(plugin.jobs, "preview_limit", 65_536, create=True), \
              patch.object(plugin, "_which", lambda name: "/usr/bin/rg"):

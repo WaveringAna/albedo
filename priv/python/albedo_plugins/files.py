@@ -1,10 +1,11 @@
 """Bounded reads, exact edits, and ripgrep-backed search over workspace files.
 
-Every external command runs through the supervised `bash` job plugin, so this
+Every external command runs through the supervised `run` job plugin, so this
 module never spawns a process of its own and every child stays in a job's group.
 """
 from __future__ import annotations
 
+import asyncio
 import difflib
 import fnmatch
 import json
@@ -19,7 +20,8 @@ from collections.abc import Awaitable, Callable, Generator
 from typing import Generic, Iterable, Sequence, TypeVar
 
 from albedo_api import PythonApi, ReadyList, Text
-from albedo_plugins import bash as jobs
+import albedo_trace
+from albedo_plugins import run as jobs
 
 READ_LIMIT = 16_000
 SEARCH_TIMEOUT = 30
@@ -111,14 +113,17 @@ class Search(Generic[Result]):
 
 
 async def _run(command: str) -> tuple[int | None, str]:
-    """One supervised shell job, awaited to completion, with its bounded output."""
-    job = jobs.bash(command, timeout=SEARCH_TIMEOUT)
+    """One supervised shell job, awaited to completion, with its bounded output.
+    The plugin's own work, so neither traced as the cell's command nor refused."""
+    job = jobs.start(["/bin/sh", "-c", command], SEARCH_TIMEOUT, traced=False)
     try:
         await job
         return job.exit_code, job.tail(jobs.preview_limit)
+    except asyncio.CancelledError:
+        await job.stop()
+        raise
     finally:
-        # The search is the plugin's own work, not a job the model started.
-        if job.exit_code is not None or job.timed_out:
+        if job.exit_code is not None or job.timed_out or job.termination is not None:
             jobs.forget(job)
 
 
@@ -204,6 +209,7 @@ class Files:
     async def _find(self, pattern: str, path: str | Sequence[str], glob: str | Sequence[str] | None,
                     context: int, max_results: int, literal: bool, case_sensitive: bool | None,
                     hidden: bool) -> Rows:
+        albedo_trace.note("search", pattern)
         targets = [Path(item).expanduser() for item in ([path] if isinstance(path, str) else path)]
         if not _which("rg"):
             return _fallback_find(pattern, targets, glob, context, max_results,

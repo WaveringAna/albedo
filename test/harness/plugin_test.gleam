@@ -45,7 +45,7 @@ fn bundle(load) -> extension.Extension {
       extension.ToolPlugin(
         "bundle instructions",
         [fixture_tool("fixture_tool")],
-        ["bash"],
+        ["run"],
         [],
       ),
     ],
@@ -98,7 +98,7 @@ pub fn reload_disables_every_bundle_contribution_and_persists_test() {
   |> list.map(fn(tool) { tool.name })
   |> should.equal(["python", "fixture_tool"])
   let assert Ok(execution) =
-    runtime.execute(host, session, "'bash' in globals()", 1000)
+    runtime.execute(host, session, "'run' in globals()", 1000)
   let assert Ok(outcome) = execution.result
   outcome.value |> should.equal("True")
   let assert Ok(reloaded) =
@@ -113,7 +113,7 @@ pub fn reload_disables_every_bundle_contribution_and_persists_test() {
   ])
   |> should.equal(Ok([types.User("conversation")]))
   let assert Ok(execution) =
-    runtime.execute(host, reloaded, "'bash' in globals()", 1000)
+    runtime.execute(host, reloaded, "'run' in globals()", 1000)
   let assert Ok(outcome) = execution.result
   outcome.value |> should.equal("False")
   runtime.stop(host)

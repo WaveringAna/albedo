@@ -49,7 +49,7 @@ class PluginTest(unittest.TestCase):
 
     def test_modules_are_validated_before_setup_and_errors_name_the_plugin(self):
         with patch("albedo_api.importlib.import_module") as importer:
-            for names in [["bash", "albedo_plugins.bash"], ["fixture..tools"], ["fixture.class"]]:
+            for names in [["run", "albedo_plugins.run"], ["fixture..tools"], ["fixture.class"]]:
                 with self.assertRaises(ValueError):
                     self.loop.run_until_complete(load_plugins(names, self.api, self.namespace))
             importer.assert_not_called()

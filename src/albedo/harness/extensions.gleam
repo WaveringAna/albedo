@@ -2,7 +2,6 @@ import albedo/harness/extension
 import albedo/harness/extensions/agents/extension as agents
 import albedo/harness/extensions/alibaba/extension as alibaba
 import albedo/harness/extensions/antigravity/extension as antigravity
-import albedo/harness/extensions/bash/extension as bash
 import albedo/harness/extensions/claude/extension as claude
 import albedo/harness/extensions/codex/extension as codex
 import albedo/harness/extensions/commands/extension as commands
@@ -18,6 +17,7 @@ import albedo/harness/extensions/proxy/extension as proxy
 import albedo/harness/extensions/python/extension as python
 import albedo/harness/extensions/remote/extension as remote
 import albedo/harness/extensions/rolling/extension as rolling
+import albedo/harness/extensions/run/extension as run
 import albedo/harness/extensions/schedule/extension as schedule
 import albedo/harness/extensions/skills/extension as skills
 import albedo/harness/extensions/snapcompact/extension as snapcompact
@@ -33,7 +33,7 @@ pub fn defaults() -> Config {
   Config(
     [
       python.extension(),
-      bash.extension(),
+      run.extension(),
       work.extension(),
       mail.extension(),
       agents.extension(),
@@ -64,7 +64,7 @@ pub fn defaults() -> Config {
       webhooks.extension(),
     ],
     [
-      "python", "bash", "work", "mail", "agents", "schedule", "files",
+      "python", "run", "work", "mail", "agents", "schedule", "files",
       "instructions", "commands", "skills", "models", "openai", "codex",
       "antigravity", "alibaba", "claude", "snapcompact", "lcm-memory", "remote",
     ],

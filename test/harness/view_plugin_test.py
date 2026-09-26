@@ -26,9 +26,9 @@ class FakeJob:
         return self.output
 
 
-def real_bash(command, timeout):
-    """What `bash(command)` would run, executed here without a kernel."""
-    done = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
+def real_start(argv, timeout, **options):
+    """What `run.start(argv, ...)` would run, executed here without a kernel."""
+    done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     return FakeJob(done.stdout + done.stderr, done.returncode)
 
 
@@ -52,7 +52,7 @@ class ViewPluginTest(unittest.TestCase):
         return self.bindings(attach)["view_code"]
 
     def run_view(self, attach, *args, name="view_code", **kwargs):
-        with patch.object(files.jobs, "bash", real_bash), \
+        with patch.object(files.jobs, "start", real_start), \
              patch.object(files.jobs, "forget", lambda job: None), \
              patch.object(files.jobs, "preview_limit", 65_536, create=True):
             return self.loop.run_until_complete(self.bindings(attach)[name](*args, **kwargs))

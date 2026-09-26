@@ -3,7 +3,7 @@
 %% The kernel reports finished background jobs through a host route, which runs
 %% outside any session actor, so the notice needs a lookup from session id to
 %% the actor that can submit a turn. Registered closures answer the Gleam
-%% `bash.Wake` type: delivered, busy (the kernel retries), or
+%% `run.Wake` type: delivered, busy (the kernel retries), or
 %% {unavailable, Reason}.
 -module(albedo_wakes).
 -export([register/2, forget/1, deliver/3]).

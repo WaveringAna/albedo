@@ -1,8 +1,8 @@
 # files extension
 
-`files` gives the model file vocabulary inside the Python session: bounded reads, one directory listing, exact edits, and search. It is enabled by default and depends on `python` and `bash`.
+`files` gives the model file vocabulary inside the Python session: bounded reads, one directory listing, exact edits, and search. It is enabled by default and depends on `python` and `run`.
 
-Nothing here spawns a process directly. When ripgrep is installed, search runs as a supervised `bash` job, so every child belongs to a job's process group and is ended with it. Without ripgrep the same calls fall back to pure Python. An awaited search behaves like any awaited job; one abandoned mid-run finishes under the same wake contract as [bash](extensions.md#bash) — its result read, no wake; unread, the session is woken when it lands.
+Nothing here spawns a process directly. When ripgrep is installed, search runs as a supervised `run` job, so every child belongs to a job's process group and is ended with it. Without ripgrep the same calls fall back to pure Python. The internal search job is awaited and forgotten when it finishes; it does not appear in `jobs` or wake the session. If the cell is cancelled mid-search, its job is stopped before the cancellation continues.
 
 ```python
 files.read("src/app.py", start_line=40, end_line=80)

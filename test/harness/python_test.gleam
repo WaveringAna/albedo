@@ -95,7 +95,12 @@ pub fn shell_handles_and_job_output_test() {
   let assert Ok(store) = work.start(":memory:")
   let assert Ok(kernel) = python.local(store, "/tmp")
   let assert Ok(first) =
-    python.execute(kernel, "a", "job = bash('printf hello; exit 3')\njob", 5000)
+    python.execute(
+      kernel,
+      "a",
+      "import sys\njob = run(sys.executable, '-c', 'import sys; sys.stdout.write(\"hello\"); sys.exit(3)')\njob",
+      5000,
+    )
   first.value |> string.contains("Job(") |> should.be_true
   let assert Ok(second) =
     python.execute(kernel, "b", "await job\n(job.poll(), job.tail())", 5000)
@@ -117,6 +122,10 @@ pub fn shell_handles_and_job_output_test() {
   work.close(store)
 }
 
+/// Cells may not spawn processes themselves, but a library they call may:
+/// this defines one, `spawn`, compiled outside any cell.
+const library_spawn = "library = {}\nexec(compile('import subprocess\\ndef spawn(*args, **kwargs):\\n    return subprocess.Popen(*args, **kwargs)', 'fixture_library.py', 'exec'), library)\nspawn = library['spawn']\n"
+
 /// A subprocess writing to the inherited fd keeps its place among the cell's prints.
 pub fn native_output_joins_the_running_cell_test() {
   let assert Ok(store) = work.start(":memory:")
@@ -125,7 +134,8 @@ pub fn native_output_joins_the_running_cell_test() {
     python.execute(
       kernel,
       "a",
-      "import subprocess\nprint('A')\nsubprocess.run(['sh', '-c', 'printf B'])\nprint('C')",
+      library_spawn
+        <> "print('A')\nspawn(['sh', '-c', 'printf B']).wait()\nprint('C')",
       5000,
     )
   ordered.output |> should.equal("A\nBC\n")
@@ -133,7 +143,7 @@ pub fn native_output_joins_the_running_cell_test() {
     python.execute(
       kernel,
       "b",
-      "late = subprocess.Popen(['sh', '-c', 'sleep 0.2; printf late'])",
+      "late = spawn(['sh', '-c', 'sleep 0.2; printf late'])",
       5000,
     )
   process.sleep(600)
@@ -211,7 +221,7 @@ pub fn shell_deadline_is_reported_and_kernel_remains_usable_test() {
     python.execute(
       kernel,
       "deadline",
-      "job = bash('sleep 30', timeout=0.05)\nawait job\nprint(job.tail())\n(job.timed_out, job.exit_code < 0)",
+      "job = run('sleep', '30', timeout=0.05)\nawait job\nprint(job.tail())\n(job.timed_out, job.exit_code < 0)",
       5000,
     )
   outcome.status |> should.equal(python.Succeeded)
@@ -223,7 +233,7 @@ pub fn shell_deadline_is_reported_and_kernel_remains_usable_test() {
     python.execute(
       kernel,
       "next",
-      "quick = await bash('printf done')\n(quick.timed_out, quick.tail())",
+      "quick = await run('printf', 'done')\n(quick.timed_out, quick.tail())",
       5000,
     )
   next.value |> should.equal("(False, 'done')")

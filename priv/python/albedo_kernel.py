@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import albedo_api
 import albedo_proc
+import albedo_shell
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from typing import Any, cast
 from types import CodeType, FrameType
@@ -31,7 +32,7 @@ import uuid
 MAX_FRAME = 8 * 1024 * 1024
 CLEANUP_DEADLINE = 1.5  # seconds: plugins must finish cleanup inside the supervisor's patience
 PREVIEW = 64 * 1024
-RETAIN = 1024 * 1024
+RETAIN = albedo_api.RAW_RETAIN
 LIMITS = {"cell": 16, "job": 64, "native": 1}  # retained captures per kind
 MAX_IMAGES = 4  # images one cell may return to the model
 # Decoded bytes across one cell's images. Base64 grows this by 4/3, and the done
@@ -228,6 +229,8 @@ class Capture:
         self.id: str = id
         self.kind: str = kind
         self.data: bytearray = bytearray()
+        self.raw_data: bytearray = bytearray()  # bytes before UTF-8 replacement, for late pipe readers
+        self.raw_seen: int = 0
         self.tail_data: bytearray = bytearray()
         self.seen: int = 0
         self.trace: albedo_trace.Trace = albedo_trace.Trace()
@@ -961,6 +964,7 @@ def main():
     threading.Thread(target=native_output, args=(read_fd,), daemon=True).start()
     threading.Thread(target=reader, daemon=True).start()
     _ = signal.signal(signal.SIGINT, interrupt)
+    albedo_shell.install()  # refusals precede observational audit hooks
     albedo_trace.install(CELL.get)
     modules = cast(list[str], json.loads(sys.argv[1]))
     api = albedo_api.PythonApi(version=2, loop=LOOP, host=host, HostError=WorkError,

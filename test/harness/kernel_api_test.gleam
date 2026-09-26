@@ -1,8 +1,8 @@
 //// The model-facing Python API in a live kernel, where a fake cannot hide drift.
 
-import albedo/harness/extensions/bash/extension as bash
 import albedo/harness/extensions/files/extension as files
 import albedo/harness/extensions/python/extension as python
+import albedo/harness/extensions/run/extension as run
 import albedo/harness/extensions/work/extension as work
 import albedo/harness/runtime
 import gleeunit/should
@@ -11,7 +11,7 @@ pub fn a_search_leaves_no_job_or_output_channel_test() {
   let assert Ok(host) =
     runtime.start_with_extensions(":memory:", [
       python.extension(),
-      bash.extension(),
+      run.extension(),
       files.extension(),
     ])
   let assert Ok(session) = runtime.open_session(host, "search", "/tmp")

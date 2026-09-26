@@ -1,7 +1,7 @@
 """Source ranges and diffs as syntax-highlighted images, for reviewing code by
 its shape.
 
-Rendering is albedo-render (native/render), run as a supervised `bash` job
+Rendering is albedo-render (native/render), run as a supervised `run` job
 like the files plugin's searches; its pages attach to the running cell.
 """
 from __future__ import annotations

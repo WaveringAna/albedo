@@ -68,7 +68,7 @@ pub fn session_objects_are_never_saved_test() {
   let assert Ok(_) = runtime.execute(host, session, "kept = 1", 5000)
   let assert Ok(saved) = runtime.save_state(session, path, 30_000)
   list.contains(saved.names, "cells") |> should.be_false
-  list.contains(saved.names, "bash") |> should.be_false
+  list.contains(saved.names, "run") |> should.be_false
   list.contains(saved.names, "jobs") |> should.be_false
   saved.names |> should.equal(["kept"])
   runtime.stop(host)

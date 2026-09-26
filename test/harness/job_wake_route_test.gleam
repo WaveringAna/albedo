@@ -1,6 +1,6 @@
 //// The jobs route: a kernel wake notice lands as a submit through the registry.
 
-import albedo/harness/extensions/bash/extension as bash
+import albedo/harness/extensions/run/extension as run
 import albedo/harness/runtime
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -9,7 +9,7 @@ import gleam/option.{None, Some}
 import gleeunit/should
 
 @external(erlang, "albedo_wakes", "register")
-fn register(session: String, submit: fn(String, String) -> bash.Wake) -> Nil
+fn register(session: String, submit: fn(String, String) -> run.Wake) -> Nil
 
 @external(erlang, "albedo_wakes", "forget")
 fn forget(session: String) -> Nil
@@ -24,7 +24,7 @@ fn notice(method: String) -> String {
     #(
       "args",
       json.object([
-        #("display", json.string("bash job finished (exit_code=0)")),
+        #("display", json.string("job finished (exit_code=0)")),
         #("text", json.string("<system-note>wake</system-note>")),
       ]),
     ),
@@ -56,12 +56,12 @@ pub fn delivered_wake_reaches_the_registered_submit_test() {
   let seen = process.new_subject()
   register("route-delivered", fn(display, text) {
     process.send(seen, #(display, text))
-    bash.Delivered
+    run.Delivered
   })
-  bash.route(runtime.ledger(host), "route-delivered", notice("jobs.completed"))
+  run.route(runtime.ledger(host), "route-delivered", notice("jobs.completed"))
   |> reply_of
   |> should.equal(Reply(True, None))
-  let assert Ok(#("bash job finished (exit_code=0)", text)) =
+  let assert Ok(#("job finished (exit_code=0)", text)) =
     process.receive(seen, 1000)
   text |> should.equal("<system-note>wake</system-note>")
   forget("route-delivered")
@@ -69,8 +69,8 @@ pub fn delivered_wake_reaches_the_registered_submit_test() {
 
 pub fn busy_wake_answers_with_the_code_the_kernel_retries_test() {
   let host = store()
-  register("route-busy", fn(_display, _text) { bash.Busy })
-  bash.route(runtime.ledger(host), "route-busy", notice("jobs.completed"))
+  register("route-busy", fn(_display, _text) { run.Busy })
+  run.route(runtime.ledger(host), "route-busy", notice("jobs.completed"))
   |> reply_of
   |> should.equal(Reply(False, Some("busy")))
   forget("route-busy")
@@ -78,7 +78,7 @@ pub fn busy_wake_answers_with_the_code_the_kernel_retries_test() {
 
 pub fn an_unregistered_session_refuses_without_the_retry_code_test() {
   let host = store()
-  bash.route(runtime.ledger(host), "route-nobody", notice("jobs.completed"))
+  run.route(runtime.ledger(host), "route-nobody", notice("jobs.completed"))
   |> reply_of
   |> should.equal(Reply(False, Some("unavailable")))
 }
@@ -86,7 +86,7 @@ pub fn an_unregistered_session_refuses_without_the_retry_code_test() {
 pub fn a_crashed_submit_is_unavailable_not_busy_test() {
   let host = store()
   register("route-crash", fn(_display, _text) { panic as "session died" })
-  bash.route(runtime.ledger(host), "route-crash", notice("jobs.completed"))
+  run.route(runtime.ledger(host), "route-crash", notice("jobs.completed"))
   |> reply_of
   |> should.equal(Reply(False, Some("unavailable")))
   forget("route-crash")

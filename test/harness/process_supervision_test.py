@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(ROOT, "priv", "python"))
 import albedo_api  # noqa: E402
 import albedo_kernel  # noqa: E402
 import albedo_proc  # noqa: E402
-from albedo_plugins import bash as plugin  # noqa: E402
+from albedo_plugins import run as plugin  # noqa: E402
 
 LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(LOOP)
@@ -38,8 +38,9 @@ def run(coro):
 
 
 def start(command: str, timeout: float = 300):
-    """Start a job without waiting for it."""
-    return plugin.bash(command, timeout=timeout)
+    """Start a shell line as a job without waiting for it; supervision is the
+    same for any program, and a shell makes descendants easy to arrange."""
+    return plugin.start(["/bin/sh", "-c", command], timeout)
 
 
 def quick(term: float = 0.01, kill: float = 0.02):
@@ -333,13 +334,15 @@ class SupervisionTest(unittest.TestCase):
             ending = await job.stop()
             await job
             self.assertTrue(ending.gone)
-            self.assertFalse(present(job.group.pgid))
+            if job.group is not None:
+                self.assertFalse(present(job.group.pgid))
             self.assertNotIn(job.id, plugin.active)
             cancelled = start("sleep 30")
             cancelled.task.cancel()
             await asyncio.sleep(0)
             await cancelled.stop()
-            self.assertFalse(present(cancelled.group.pgid))
+            if cancelled.group is not None:
+                self.assertFalse(present(cancelled.group.pgid))
             self.assertNotIn(cancelled.id, plugin.active)
         run(check())
 

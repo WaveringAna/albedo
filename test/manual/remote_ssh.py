@@ -36,7 +36,7 @@ async def main(host: str) -> int:
 
     api = PythonApi(loop, daemon_host, RuntimeError, FakeCapture, 65536,
                     lambda event: None, lambda close: None, lambda cls: None,
-                    2, ["bash", "files", "work", "skills", "remote"])
+                    2, ["run", "files", "work", "skills", "remote"])
     namespace = remote.setup(api)
     rem_mod = namespace["remote"]
     rem = await rem_mod.connect(host=host)
@@ -44,11 +44,11 @@ async def main(host: str) -> int:
     tools = await rem.tools()
     print("remote tools:", tools["names"])
 
-    # the local-bash shape: sync call, sync state, one await for completion
-    job = rem.bash("echo real-ssh-echo; uname -s")
+    # the local-run shape: sync call, sync state, one await for completion
+    job = rem.run("uname", "-s")
     print("mid-run tail:", repr(job.tail()), "poll:", job.poll())
     await job
-    print("bash:", job.tail().strip(), "exit:", job.poll())
+    print("run:", job.tail().strip(), "exit:", job.poll())
 
     listing = await rem.files.ls(".")
     print("files.ls entries:", len(listing))
@@ -57,7 +57,7 @@ async def main(host: str) -> int:
 
     import time
     started = time.monotonic()
-    again = rem.bash("true")
+    again = rem.run("true")
     await again
     print(f"second call over the control socket: {time.monotonic() - started:.2f}s")
 

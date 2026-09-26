@@ -12,8 +12,11 @@ var (
 	assignStrRegex  = regexp.MustCompile(`^([a-zA-Z_]\w*)\s*=\s*[rR]?['"]([^'"]*)['"]`)
 	assignPathRegex = regexp.MustCompile(`^([a-zA-Z_]\w*)\s*=\s*(?:pathlib\.)?Path\(\s*[rR]?['"]([^'"]*)['"]\s*\)`)
 	pathMethodRegex = regexp.MustCompile(`(?:(?:pathlib\.)?Path\(\s*[rR]?['"]([^'"]*)['"]\s*\)|([a-zA-Z_]\w*))\.(write_text|write_bytes|read_text|read_bytes|open)\(\s*([^)]*)\)`)
-	funcCallRegex   = regexp.MustCompile(`\b(edit|read|sh|open)\(\s*([^)]*)\)`)
-	argExtractRegex = regexp.MustCompile(`(?:(?:path|file|command)\s*=\s*)?(?:[rR]?['"]([^'"]*)['"]|([a-zA-Z_]\w*))`)
+	funcCallRegex   = regexp.MustCompile(`\b(edit|read|open)\(\s*([^)]*)\)`)
+	// run(program, *args) and rem.run(...), but not cells.run(id)
+	runCallRegex    = regexp.MustCompile(`(?:^|[^.\w]|\brem\.)run\(([^)]*)`)
+	runWordRegex    = regexp.MustCompile(`^\s*[rR]?['"]([^'"]*)['"]\s*(?:,|$)`)
+	argExtractRegex = regexp.MustCompile(`(?:(?:path|file)\s*=\s*)?(?:[rR]?['"]([^'"]*)['"]|([a-zA-Z_]\w*))`)
 	modeRegex       = regexp.MustCompile(`['"]([rwaxbt+]+)['"]`)
 )
 
@@ -81,6 +84,13 @@ func ParsePythonIntent(code string) *ToolIntent {
 			}
 		}
 
+		if m := runCallRegex.FindStringSubmatch(line); m != nil {
+			if words := runWords(m[1]); len(words) > 0 {
+				intents = append(intents, ToolIntent{Kind: "run", Target: cleanLabel(strings.Join(words, " "))})
+				continue
+			}
+		}
+
 		if m := funcCallRegex.FindStringSubmatch(line); m != nil {
 			fnName := m[1]
 			args := m[2]
@@ -100,8 +110,6 @@ func ParsePythonIntent(code string) *ToolIntent {
 						intents = append(intents, ToolIntent{Kind: "edit", Target: label})
 					case "read":
 						intents = append(intents, ToolIntent{Kind: "read", Target: label})
-					case "sh":
-						intents = append(intents, ToolIntent{Kind: "run", Target: label})
 					case "open":
 						mode := "r"
 						if mm := modeRegex.FindStringSubmatch(args); mm != nil {
@@ -122,6 +130,20 @@ func ParsePythonIntent(code string) *ToolIntent {
 		return nil
 	}
 	return &intents[len(intents)-1]
+}
+
+// runWords is the leading string literals of run()'s arguments: the program
+// and its arguments, up to the first expression or keyword.
+func runWords(args string) []string {
+	var words []string
+	for {
+		m := runWordRegex.FindStringSubmatchIndex(args)
+		if m == nil {
+			return words
+		}
+		words = append(words, args[m[2]:m[3]])
+		args = args[m[1]:]
+	}
 }
 
 func ExtractPartialJSONCode(s string) string {

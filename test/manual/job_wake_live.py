@@ -26,7 +26,7 @@ AUTH = json.load(open(AUTH_PATH))
 KEY = AUTH["deepseek"]["key"]
 PROMPT = (
     "use the python tool to run exactly this cell and nothing else: "
-    "job = bash(\"sleep 25; echo WAKE-DONE-42\") ; print(job.id) . "
+    "import sys; job = run(sys.executable, '-c', 'import time; time.sleep(25); print(\"WAKE-DONE-42\")'); print(job.id). "
     "then end your turn with a one-sentence confirmation. do not await the job, "
     "do not poll it, do not run anything else."
 )
@@ -99,7 +99,7 @@ def main():
                 page = json.loads(line[6:])
                 seen.extend(page["events"])
                 users = [e for e in page["events"] if e.get("type") == "user"
-                         and "bash job finished" in e.get("text", "")]
+                         and "job finished" in e.get("text", "")]
                 if users and wake_at is None:
                     wake_at = time.monotonic()
                     print("WAKE TURN ARRIVED:")

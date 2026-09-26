@@ -3,14 +3,14 @@
 connect() stages albedo's python bundle on the target, boots the same kernel
 over one long-lived ssh connection, and answers its host-route calls against
 this session's daemon, so session tools (work, skills, cells) keep running
-where the daemon runs while machine tools (bash, files) run on the target.
+where the daemon runs while machine tools (run, files) run on the target.
 Both kernels load the same content-hashed bundle, so a tool's remote shape
 matches its local one and results cross as real objects.
 
 Every call is one reference: the reply inlines the value when it can cross and
 keeps the object live over there otherwise, so methods can be called on the
 remote object either way. If the kernel cannot boot, the connection degrades
-to command mode -- only rem.bash() -- and says so at connect.
+to command mode -- only rem.run() -- and says so at connect.
 """
 from __future__ import annotations
 
@@ -29,7 +29,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from albedo_api import PythonApi, ReadyList
+from albedo_api import PythonApi, ReadyList, excerpt
+import albedo_shell
 
 CONNECT_TIMEOUT = 15  # seconds before an unreachable target gives up
 HANDSHAKE_TIMEOUT = 30  # seconds for the remote kernel to say ready
@@ -259,7 +260,7 @@ class RemoteRef:
     A call returns this immediately -- the invoke is already in flight, no
     round trip blocks the call -- and the reference settles on first await.
     Methods called before the reply lands target the pending call, so
-    `rem.bash(cmd)` behaves like local bash: the handle exists now, `await`
+    `rem.run(program, ...)` behaves like local run: the handle exists now, `await`
     waits for the object, and mirrored job state answers tail() and poll()
     locally, with no round trip. A result whose value crossed reads and
     iterates like that value; its local methods run locally, and attributes
@@ -280,11 +281,11 @@ class RemoteRef:
 
     # --- mirrored job state: sync, like the local handle ---
 
-    def tail(self, n: int = 4000) -> str:
-        """The recent output of the remote job this reference holds."""
+    def tail(self, n: int = 4000, *, lines: int | None = None) -> str:
+        """The recent output of the remote job this reference holds: the last
+        n characters, or its last `lines` lines."""
         state = self._mirror()
-        data = str(state.get("tail", "")) if state else ""
-        return data[-max(1, min(n, 16384)):]
+        return excerpt(str(state.get("tail", "")) if state else "", min(n, 16384), lines, end=True)
 
     def poll(self) -> int | None:
         """The remote job's exit status so far, from the mirrored stream."""
@@ -448,6 +449,9 @@ class _RemoteCall:
     def __repr__(self) -> str:
         where = self._handle[:8] if self._handle else (self._pending[:8] if self._pending else "namespace")
         return f"<remote call {self._name} on {where}>"
+
+
+SHELL_ONLY_DEGRADED = "rem.shell is only available in degraded SSH command mode; use rem.run(...).pipe(...) instead"
 
 
 class RemoteConnection:
@@ -618,7 +622,7 @@ class RemoteConnection:
         """
         if self.degraded is not None:
             raise RemoteError(
-                f"degraded to ssh command mode ({self.degraded}); only rem.bash() is available")
+                f"degraded to ssh command mode ({self.degraded}); only rem.run() is available")
         call_id = call_id or uuid.uuid4().hex
         frame: dict[str, Any] = {"type": "invoke", "id": call_id,
                                  "args": [_encode_arg(item) for item in args],
@@ -702,7 +706,7 @@ class RemoteConnection:
     async def tools(self) -> dict[str, Any]:
         """What the remote namespace holds, and the live references it kept."""
         if self.degraded is not None:
-            return {"names": ["bash"], "handles": [],
+            return {"names": ["run"], "handles": [],
                     "degraded": str(self.degraded)}
         call_id = uuid.uuid4().hex
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
@@ -741,29 +745,57 @@ class RemoteConnection:
     # --- degraded mode ---
 
     @property
-    def bash(self) -> Any:
-        """rem.bash: the remote binding in kernel mode, command mode otherwise."""
+    def run(self) -> Any:
+        """rem.run: the remote binding in kernel mode, command mode otherwise."""
         if self.degraded is None:
             if self.closed:
                 raise RemoteLost(f"the connection to {self.host} is closed")
-            return _RemoteCall(self, None, "bash")
+            return _RemoteCall(self, None, "run")
 
-        def run(command: str, *, timeout: float = 300) -> FallbackJob:
-            if not isinstance(command, str) or not 0 < timeout <= 3600:
-                raise ValueError("command must be text; 0 < timeout <= 3600 required")
-            return FallbackJob(self, command, timeout)
+        def run(program: object, *args: object, cwd: str | None = None, env: dict[str, object] | None = None,
+                stdin: str | bytes | None = None, timeout: float = 300) -> FallbackJob:
+            if not 0 < timeout <= 3600:
+                raise ValueError("0 < timeout <= 3600 required")
+            if not (stdin is None or isinstance(stdin, (str, bytes))):
+                raise TypeError("in ssh command mode stdin is text or bytes")
+            argv = albedo_shell.words((program, *args))
+            script = albedo_shell.shell_script(argv)
+            if script is not None:
+                raise albedo_shell.refusal(f"`{os.path.basename(argv[0])} -c`", script=script)
+            return FallbackJob(self, argv, timeout, cwd=cwd, env=env, stdin=stdin)
 
         return run
+
+    @property
+    def shell(self) -> Any:
+        """A shell escape hatch only when the remote kernel could not boot."""
+        if self.degraded is None:
+            raise AttributeError(SHELL_ONLY_DEGRADED)
+        if self.closed:
+            raise RemoteLost(f"the connection to {self.host} is closed")
+
+        def shell(script: str, *, cwd: str | None = None, env: dict[str, object] | None = None,
+                  stdin: str | bytes | None = None, timeout: float = 300) -> FallbackJob:
+            if not isinstance(script, str) or not 0 < timeout <= 3600:
+                raise ValueError("shell script must be text; 0 < timeout <= 3600 required")
+            if not (stdin is None or isinstance(stdin, (str, bytes))):
+                raise TypeError("in ssh command mode stdin is text or bytes")
+            return FallbackJob(self, ["bash", "-c", script], timeout, cwd=cwd, env=env,
+                               stdin=stdin, shell=script)
+
+        return shell
 
     # --- surface ---
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
             raise AttributeError(name)
+        if name == "shell" and self.degraded is None:
+            raise AttributeError(SHELL_ONLY_DEGRADED)
         if self.degraded is not None:
             raise AttributeError(
                 f"{name!r} is unavailable: this connection is degraded to ssh command "
-                f"mode ({self.degraded}); only rem.bash(), rem.read, and rem.write work")
+                f"mode ({self.degraded}); only rem.run(), rem.shell(), rem.read, and rem.write work")
         if self.closed:
             raise RemoteLost(f"the connection to {self.host} is closed")
         return _RemoteCall(self, None, name)
@@ -855,14 +887,17 @@ def _remote_path(connection: RemoteConnection, path: str) -> str:
 class FallbackJob:
     """One command over the control connection when no kernel could boot.
 
-    The same shape as a bash job: await it, tail() it, stop() it. Killing the
+    The same shape as a run job: await it, tail() it, stop() it. Killing the
     ssh client cannot stop the remote side, so a deadline reports timed_out
     and says the remote effect is unknown rather than ended.
     """
 
-    def __init__(self, connection: RemoteConnection, command: str, timeout: float) -> None:
+    def __init__(self, connection: RemoteConnection, argv: list[str], timeout: float, *,
+                 cwd: str | None = None, env: dict[str, object] | None = None,
+                 stdin: str | bytes | None = None, shell: str | None = None) -> None:
         self.id = uuid.uuid4().hex
-        self.command = command
+        self.argv = argv
+        self.command = shell if shell is not None else shlex.join(argv)
         self.timed_out = False
         self.exit_code: int | None = None
         self.started: float = loop.time()
@@ -873,16 +908,22 @@ class FallbackJob:
         self._connection = connection
         _fallback_live.add(self.id)
         _report_live()
-        script = f"bash -c {shlex.quote(command)}"
-        if connection.target.get("remote_cwd"):
-            script = f"cd {shlex.quote(connection.target['remote_cwd'])} && {script}"
-        self._task = loop.create_task(self._run(connection.host, script, timeout))
+        # the remote login shell reads this line; everything in it is quoted
+        steps = [f"cd {shlex.quote(str(where))}" for where in (connection.target.get("remote_cwd"), cwd) if where]
+        assignments = [f"{name}={value}" for name, value in (env or {}).items()]
+        steps.append(shlex.join(["exec", *(["env", *assignments] if assignments else []), *argv]))
+        data = stdin.encode() if isinstance(stdin, str) else stdin
+        self._task = loop.create_task(self._run(connection.host, " && ".join(steps), timeout, data))
 
-    async def _run(self, host: str, script: str, timeout: float) -> "FallbackJob":
+    async def _run(self, host: str, script: str, timeout: float, stdin: bytes | None) -> "FallbackJob":
         process = await asyncio.create_subprocess_exec(
             *ssh_base(), host, script,
+            stdin=asyncio.subprocess.DEVNULL if stdin is None else asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         self._process = process
+        if stdin is not None and process.stdin is not None:
+            process.stdin.write(stdin)
+            process.stdin.close()
         copying = loop.create_task(self._copy(process.stdout))
         try:
             self.exit_code = await asyncio.wait_for(process.wait(), timeout)
@@ -922,9 +963,9 @@ class FallbackJob:
         outcome = ("timed out" if self.timed_out else f"exit_code={self.exit_code}"
                    if self.exit_code is not None else "exit status unknown")
         seconds = f"{self.duration:.1f}s" if self.duration is not None else "unknown duration"
-        display = f"bash job finished on {self._connection.host} ({outcome}, {seconds}): {command}"
+        display = f"job finished on {self._connection.host} ({outcome}, {seconds}): {command}"
         text = (
-            "<system-note>a background bash command finished with its result unread on"
+            "<system-note>a background command finished with its result unread on"
             f" {self._connection.host} (ssh command mode): {outcome}, {seconds},"
             f" command: {command}."
             f" its handle is jobs[{self.id!r}] in python; jobs[{self.id!r}].tail() or"
@@ -953,11 +994,16 @@ class FallbackJob:
         """`exit_code` under subprocess's name; both spellings answer."""
         return self.poll()
 
-    def tail(self, n: int = 4000) -> str:
+    def tail(self, n: int = 4000, *, lines: int | None = None) -> str:
         if self.exit_code is not None:
             self._read = True
-        data = self.capture.tail_data
-        return bytes(data[-max(1, min(n, 65536)):]).decode("utf-8", errors="replace")
+        return excerpt(bytes(self.capture.tail_data).decode("utf-8", errors="replace"),
+                       min(n, 65536), lines, end=True)
+
+    def head(self, n: int = 4000, *, lines: int | None = None) -> str:
+        if self.exit_code is not None:
+            self._read = True
+        return excerpt(self.capture.read(0, 65536), min(n, 65536), lines, end=False)
 
     async def stop(self) -> None:
         """End the ssh client; the remote command's fate is reported, not assumed."""
@@ -1005,7 +1051,7 @@ class Remote:
         `remote.configure` stored, then `$ALBEDO_SSH`, then the `remote`
         section of extensions.json. If the host is reachable but the kernel
         cannot boot, the connection still returns, prints a warning, and
-        answers only `rem.bash()`, `rem.read`, and `rem.write`.
+        answers `rem.run()`, degraded-only `rem.shell()`, `rem.read`, and `rem.write`.
         """
         target = resolve(host, remote_cwd, python)
         code, _, stderr = await ssh_run(str(target["host"]), "true", timeout=CONNECT_TIMEOUT)
@@ -1030,7 +1076,9 @@ class Remote:
             connection._process = None
             connection._stdin = connection._stdout = None
             print(f"[remote] kernel boot failed on {target['host']}: {error}; "
-                  "degraded to ssh command mode -- only rem.bash() is available")
+                  "degraded to ssh command mode: rem.run(program, *args) still works; "
+                  "for pipes or shell syntax use rem.shell('git log --oneline | rg fix') "
+                  "(bash on the host; no remote process supervision)")
         connections.append(connection)
         return connection
 

@@ -27,14 +27,17 @@ class FakeCapture:
 
     def __init__(self, id):
         self.id, self.seen, self.tail_data = id, 0, bytearray()
-        self._data = bytearray()
+        self.data = bytearray()
 
     def write(self, text):
         data = text.encode()
-        self._data.extend(data)
+        self.data.extend(data)
         self.seen += len(data)
         self.tail_data.extend(data)
         del self.tail_data[:-65536]
+
+    def read(self, offset=0, limit=4000):
+        return bytes(self.data[offset:offset + limit]).decode(errors="ignore")
 
 
 def fake_ssh_path() -> str:
@@ -89,7 +92,7 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         self.api = PythonApi(self.loop, daemon_host, FakeHostError, FakeCapture,
                              64 * 1024, lambda event: None, lambda close: None,
                              lambda cls: None, 2,
-                             ["bash", "files", "work", "skills", "remote"])
+                             ["run", "files", "work", "skills", "remote"])
         self.namespace = {}
         self.remote = remote.setup(self.api)["remote"]
 
@@ -110,13 +113,13 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         rem = await self.connect()
         self.addCleanup(rem.close)
         self.assertIn("kernel", repr(rem))
-        self.assertIn("bash", (await rem.tools())["names"])
+        self.assertIn("run", (await rem.tools())["names"])
 
         text = await rem.files.read("/etc/hosts")
         self.assertIsInstance(text, str)
 
-        # The call is synchronous like local bash; the reference settles on await.
-        job = rem.bash("echo loopback-echo; sleep 0.2")
+        # The call is synchronous like local run; the reference settles on await.
+        job = rem.run(sys.executable, "-c", "import time; print('loopback-echo', flush=True); time.sleep(0.2)")
         self.assertIn("pending", repr(job))
         self.assertIsNone(job.poll())
         self.assertEqual(job.tail(), "")
@@ -170,16 +173,34 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         await rem.write("greeting.txt", "hola")
         self.assertEqual(await rem.read("greeting.txt"), "hola")
 
+    async def test_remote_jobs_pipe_and_read_lines_like_local_ones(self):
+        rem = await self.connect()
+        self.addCleanup(rem.close)
+        Path(self.workspace, "sub").mkdir()
+        Path(self.workspace, "sub", "notes.txt").write_text("b\na\nb\n")
+        job = await rem.run("cat", "notes.txt", cwd="sub").pipe("sort").pipe("uniq", "-c")
+        self.assertEqual(job.exit_code, 0)
+        self.assertEqual(job.tail(lines=1).split(), ["2", "b"])
+        self.assertEqual((await job.head(lines=1)).split(), ["1", "a"])
+
     async def test_references_passed_back_stay_references(self):
         rem = await self.connect()
         self.addCleanup(rem.close)
-        job = await rem.bash("echo roundtrip")
+        job = await rem.run("echo", "roundtrip")
         encoded = remote._encode_arg(job)
         self.assertEqual(encoded, {"__ref__": job._handle})
         # a call still in flight passes its pending identity, not a copy
-        racing = rem.bash("echo still-pending")
+        racing = rem.run("echo", "still-pending")
         self.assertEqual(remote._encode_arg(racing), {"pending": racing._call_id})
         await racing
+
+    async def test_shell_is_not_available_when_the_remote_kernel_boots(self):
+        rem = await self.connect()
+        self.addCleanup(rem.close)
+        with self.assertRaisesRegex(AttributeError, "only available in degraded"):
+            rem.shell("echo no")
+        job = await rem.run("echo", "normal")
+        self.assertEqual(job.tail(), "normal\n")
 
     async def test_a_kernel_that_cannot_boot_degrades_with_a_warning(self):
         warning = io.StringIO()
@@ -187,8 +208,21 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
             rem = await self.connect(modules=["definitely-not-a-module"])
         self.addCleanup(rem.close)
         self.assertIn("degraded", repr(rem))
-        self.assertIn("only rem.bash() is available", warning.getvalue())
-        job = rem.bash("echo degraded-echo")
+        self.assertIn("for pipes or shell syntax use rem.shell('git log --oneline | rg fix')", warning.getvalue())
+        Path(self.workspace, "sub").mkdir()
+        parity = rem.run(
+            sys.executable, "-c", "import os, sys; print(os.path.basename(os.getcwd()), os.environ['WHO'], sys.stdin.read())",
+            cwd="sub", env={"WHO": "me"}, stdin="fed")
+        await parity
+        self.assertEqual(parity.tail(), "sub me fed\n")
+        self.assertEqual(parity.head(lines=1), "sub me fed\n")
+        piped = await rem.shell("printf 'b\\na\\nb\\n' | sort | uniq -c", cwd="sub")
+        self.assertEqual(piped.exit_code, 0)
+        self.assertEqual(piped.tail().split(), ["1", "a", "2", "b"])
+        self.assertEqual(piped.command, "printf 'b\\na\\nb\\n' | sort | uniq -c")
+        with self.assertRaisesRegex(TypeError, "stdin is text or bytes"):
+            rem.shell("cat", stdin=piped)
+        job = rem.run("echo", "degraded-echo")
         await job
         self.assertEqual(job.poll(), 0)
         self.assertEqual(job.returncode, 0)  # subprocess's spelling answers too

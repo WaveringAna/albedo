@@ -20,6 +20,7 @@ python3 test/harness/view_plugin_test.py
 python3 test/harness/api_docs_test.py
 python3 test/harness/trace_test.py
 python3 test/harness/job_wake_test.py
+python3 test/harness/run_plugin_test.py
 python3 test/harness/remote_kernel_test.py
 python3 test/harness/remote_plugin_test.py
 

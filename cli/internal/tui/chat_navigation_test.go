@@ -85,21 +85,28 @@ func TestReadingPositionSurvivesIncomingTranscript(t *testing.T) {
 	}
 }
 
+// A collapsed thought follows its newest line and keeps it after settling,
+// until the next action replaces it; earlier lines stay hidden.
 func TestFragmentedThinkingStaysCollapsed(t *testing.T) {
 	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
 	m.SetSize(80, 20)
-	for _, part := range []string{"Preparing resize/status tests", "\n**Verifying scroll behavior**"} {
-		m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventThinking, Text: part})
+	for _, step := range []struct{ text, want, hidden string }{
+		{"**Preparing resize/status tests**", "Preparing resize/status tests…", "Verifying"},
+		{"\n", "Preparing resize/status tests…", "Verifying"},
+		{"**Verifying scroll", "Verifying scroll…", "Preparing"},
+		{" behavior**\n\n", "Verifying scroll behavior…", "Preparing"},
+	} {
+		m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventThinking, Text: step.text})
 		m.refreshViewportContent()
 		visible := ansi.Strip(m.Viewport.View())
-		if strings.Contains(visible, "Preparing") || strings.Contains(visible, "Verifying") || !strings.Contains(visible, "thinking") {
-			t.Fatalf("thinking chunk leaked in collapsed mode: %q", visible)
+		if !strings.Contains(visible, step.want) || strings.Contains(visible, step.hidden) || strings.Contains(visible, "**") {
+			t.Fatalf("thought did not follow its newest line: %q", visible)
 		}
 	}
 	m.settleActiveStream()
 	m.refreshViewportContent()
-	if visible := ansi.Strip(m.Viewport.View()); strings.Contains(visible, "Verifying") || !strings.Contains(visible, "thinking") {
-		t.Fatalf("settled thinking leaked: %q", visible)
+	if visible := ansi.Strip(m.Viewport.View()); !strings.Contains(visible, "Verifying scroll behavior") || strings.Contains(visible, "Preparing") || strings.Contains(visible, "**") || !strings.Contains(visible, "thought") {
+		t.Fatalf("settled thought lost its latest line: %q", visible)
 	}
 }
 
@@ -210,5 +217,23 @@ func TestReadingPositionSurvivesOutputPastTheLineCap(t *testing.T) {
 	m.appendSettledEntry(block("tail"))
 	if !m.Follow || len(m.settledLines) > MaxSettledLines {
 		t.Fatalf("caps not restored when following: follow=%v lines=%d", m.Follow, len(m.settledLines))
+	}
+}
+
+// Scrolling up says how much is below in the default compact mode too, not
+// only in verbose.
+func TestScrollHintShowsInCompactMode(t *testing.T) {
+	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m.SetSize(80, 12)
+	for i := range 10 {
+		m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Speaker: "albedo", Text: strings.Repeat("line\n", 6) + fmt.Sprint(i)})
+	}
+	m.refreshViewportContent()
+	m.scrollBy(-20)
+	if m.Follow {
+		t.Fatal("scrolling up should leave follow mode")
+	}
+	if !strings.Contains(ansi.Strip(m.View()), "rows below") {
+		t.Fatalf("compact mode hides the scroll hint: %q", ansi.Strip(m.View()))
 	}
 }

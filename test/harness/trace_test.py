@@ -1,6 +1,8 @@
 """File trace distinguishes user edits from process supervision and atomic temporaries."""
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -40,6 +42,25 @@ class TraceTest(unittest.TestCase):
             self.assertEqual([change["path"] for change in trace["changes"]], [str(target)])
             self.assertEqual(trace["changes"][0]["kind"], "diff")
             self.assertEqual(trace["changes"][0]["added"], 1)
+
+    def test_run_shows_the_command_without_shell_or_store_prefix(self):
+        capture = Capture()
+        albedo_trace.install(lambda: capture)
+        subprocess.run("true 'shell form'", shell=True, check=True)
+        subprocess.run([shutil.which("true"), "a b"], check=True)
+        with albedo_trace.unobserved():
+            subprocess.run(["true", "harness plumbing"], check=True)
+        albedo_trace.note("run", "echo asked")
+        trace = capture.trace.finish()
+        self.assertEqual([item["target"] for item in trace["activities"] if item["kind"] == "run"],
+                         ["true 'shell form'", "true 'a b'", "echo asked"])
+
+    def test_command_keeps_relative_programs_and_odd_argv(self):
+        self.assertEqual(albedo_trace.command(["./build/tool", "-v"]), "./build/tool -v")
+        self.assertEqual(albedo_trace.command([b"/bin/zsh", b"-c", b"ls | wc"]), "ls | wc")
+        self.assertEqual(albedo_trace.command(["/bin/sh", "-e", "-c", "x"]), "x")
+        self.assertEqual(albedo_trace.command("plain string"), "plain string")
+        self.assertEqual(albedo_trace.command([]), "")
 
 
 if __name__ == "__main__":

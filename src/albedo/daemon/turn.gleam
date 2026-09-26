@@ -79,7 +79,7 @@ pub const queue_limit = 32
 pub fn source_name(source: Source) -> String {
   case source {
     Chat -> "chat"
-    JobWake -> "bash"
+    JobWake -> "job"
     Mail(_, mail.Webhook) -> "webhook"
     Mail(..) -> "mail"
     Note(origin) -> origin

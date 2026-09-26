@@ -16,6 +16,16 @@ const reaped_probe = "import os, time\nstate = 'alive'\nfor _ in range(50):\n"
   <> "    if reachable == 0:\n        state = 'gone'\n        break\n"
   <> "    time.sleep(0.02)\n"
 
+/// Parent programs for a job, as `program`: each prints the pid of a sleeping
+/// child that stays in the job's group, then waits for it or leaves it behind.
+const waits_on_a_sleeper = "program = 'import subprocess; child = subprocess.Popen([\"sleep\", \"30\"]); print(child.pid, flush=True); child.wait()'\n"
+
+/// Cells may not spawn processes themselves, but a library they call may:
+/// this defines one, `spawn`, compiled outside any cell.
+const library_spawn = "library = {}\nexec(compile('import subprocess\\ndef spawn(*args, **kwargs):\\n    return subprocess.Popen(*args, **kwargs)', 'fixture_library.py', 'exec'), library)\nspawn = library['spawn']\n"
+
+const leaves_a_sleeper = "program = 'import subprocess; child = subprocess.Popen([\"sleep\", \"30\"]); print(child.pid, flush=True)'\n"
+
 pub fn completed_jobs_do_not_consume_the_running_quota_test() {
   let assert Ok(store) = work.start(":memory:")
   let assert Ok(kernel) = python.local(store, "/tmp")
@@ -23,7 +33,7 @@ pub fn completed_jobs_do_not_consume_the_running_quota_test() {
     python.execute(
       kernel,
       "a",
-      "job = bash('printf first')\nawait job\n(job.poll(), job.tail())",
+      "job = run('printf', 'first')\nawait job\n(job.poll(), job.tail())",
       5000,
     )
   first.value |> should.equal("(0, 'first')")
@@ -31,7 +41,7 @@ pub fn completed_jobs_do_not_consume_the_running_quota_test() {
     python.execute(
       kernel,
       "b",
-      "for _ in range(70):\n    await bash('true')\n(len(jobs), job.poll(), job.tail())",
+      "for _ in range(70):\n    await run('true')\n(len(jobs), job.poll(), job.tail())",
       60_000,
     )
   many.status |> should.equal(python.Succeeded)
@@ -49,7 +59,8 @@ pub fn deadline_ends_the_group_and_reports_it_test() {
     python.execute(
       kernel,
       "a",
-      "import os\njob = bash('sleep 30 & echo $!; wait', timeout=0.1)\nawait job\n"
+      waits_on_a_sleeper
+        <> "import os, sys\njob = run(sys.executable, '-c', program, timeout=0.1)\nawait job\n"
         <> "grandchild = int(job.tail().split()[0])\n"
         <> reaped_probe
         <> "(job.timed_out, job.termination.gone, state, job.poll() < 0, "
@@ -69,8 +80,9 @@ pub fn command_exit_ends_a_descendant_that_holds_output_test() {
     python.execute(
       kernel,
       "a",
-      "import os, time\nstarted = time.monotonic()\n"
-        <> "job = bash('sleep 30 & echo $!; exit 0', timeout=30)\nawait job\n"
+      leaves_a_sleeper
+        <> "import os, sys, time\nstarted = time.monotonic()\n"
+        <> "job = run(sys.executable, '-c', program, timeout=30)\nawait job\n"
         <> "grandchild = int(job.tail().split()[0])\n"
         <> reaped_probe
         <> "(job.timed_out, job.termination.gone, state, time.monotonic() - started < 5)",
@@ -89,7 +101,7 @@ pub fn stop_ends_a_running_job_group_test() {
     python.execute(
       kernel,
       "a",
-      "import asyncio\nlate = bash('sleep 30', timeout=300)\nawait asyncio.sleep(0.3)\nlate.group.pgid",
+      "import asyncio\nlate = run('sleep', '30', timeout=300)\nawait asyncio.sleep(0.3)\nlate.group.pgid",
       10_000,
     )
   let assert Ok(pgid) = int.parse(started.value)
@@ -117,7 +129,7 @@ pub fn owner_death_still_ends_reported_job_groups_test() {
     python.execute(
       kernel,
       "a",
-      "late = bash('sleep 30', timeout=300)\nimport asyncio\nawait asyncio.sleep(0.3)\nlate.group.pgid",
+      "late = run('sleep', '30', timeout=300)\nimport asyncio\nawait asyncio.sleep(0.3)\nlate.group.pgid",
       10_000,
     )
   let assert Ok(pgid) = int.parse(started.value)
@@ -149,14 +161,9 @@ pub fn kernel_death_ends_unregistered_children_in_its_own_group_test() {
   let assert Ok(store) = work.start(":memory:")
   let assert Ok(kernel) = python.local(store, "/tmp")
   let assert Ok(started) =
-    python.execute(
-      kernel,
-      "start",
-      "import subprocess
-child = subprocess.Popen(['sleep', '30'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-child.pid",
-      5000,
-    )
+    python.execute(kernel, "start", library_spawn <> "import subprocess
+child = spawn(['sleep', '30'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+child.pid", 5000)
   let assert Ok(pid) = int.parse(started.value)
   let assert Error(python.Lost) =
     python.execute(
@@ -186,12 +193,12 @@ pub fn shutdown_keeps_ownership_of_late_job_registrations_test() {
     python.execute(
       kernel,
       "start",
-      "import __main__ as kernel, os, subprocess, tempfile
+      library_spawn <> "import __main__ as kernel, os, subprocess, tempfile
 from pathlib import Path
 fd, report = tempfile.mkstemp(prefix='albedo-owned-shutdown-')
 os.close(fd)
 def late():
-    child = subprocess.Popen(['sleep', '30'], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    child = spawn(['sleep', '30'], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     Path(report).write_text(str(child.pid))
     kernel.send({'type': 'job_start', 'id': 'late-fixture', 'pgid': child.pid})
     os._exit(0)

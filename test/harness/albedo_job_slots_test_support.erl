@@ -83,21 +83,21 @@ relayed(Relay, Id, Answer) ->
 kernels() ->
     {ok, {Python, Script}} = albedo_python:local_paths(),
     Host = fun(_) -> <<"{\"ok\":true,\"value\":null}">> end,
-    Kernels = [begin {ok, K} = albedo_python:start(self(), Python, Script, <<"/tmp">>, Host, [<<"bash">>]), K end
+    Kernels = [begin {ok, K} = albedo_python:start(self(), Python, Script, <<"/tmp">>, Host, [<<"run">>]), K end
                || _ <- lists:seq(1, 3)],
     [A, B, C] = Kernels,
     try
         %% Two long jobs pass the grace window and take both heavy slots.
-        [cell(K, <<"j = bash('sleep 30')\nimport asyncio\nawait asyncio.sleep(0.6)\nj.queued">>) || K <- [A, B]],
+        [cell(K, <<"j = run('sleep', '30')\nimport asyncio\nawait asyncio.sleep(0.6)\nj.queued">>) || K <- [A, B]],
         %% A third long job is paused, not refused: its handle answers.
-        <<"True">> = cell(C, <<"j = bash('sleep 30')\nimport asyncio\nawait asyncio.sleep(0.8)\nj.queued">>),
+        <<"True">> = cell(C, <<"j = run('sleep', '30')\nimport asyncio\nawait asyncio.sleep(0.8)\nj.queued">>),
         %% Quick commands never wait for a slot, even with none free.
-        <<"(0, 'quick')">> = cell(C, <<"q = bash('printf quick')\nawait q\n(q.exit_code, q.tail())">>),
+        <<"(0, 'quick')">> = cell(C, <<"q = run('printf', 'quick')\nawait q\n(q.exit_code, q.tail())">>),
         %% Freeing a slot resumes the paused job.
         cell(A, <<"await j.stop()\nNone">>),
         <<"False">> = cell(C, <<"await asyncio.sleep(0.3)\nj.queued">>),
         %% A paused job still stops cleanly.
-        cell(B, <<"j2 = bash('sleep 30')\nawait asyncio.sleep(0.8)\nNone">>),
+        cell(B, <<"j2 = run('sleep', '30')\nawait asyncio.sleep(0.8)\nNone">>),
         <<"(True, True)">> = cell(B, <<"(await j2.stop()).gone, j2.exit_code is not None or True">>)
     after
         [albedo_python:stop(K) || K <- Kernels]
@@ -122,14 +122,14 @@ bootstrap() ->
          end || F <- Files],
         ok = file:make_dir(filename:join(Dir, "fixture")),
         ok = file:write_file(filename:join([Dir, "fixture", "boot_job.py"]),
-            <<"from albedo_plugins.bash import bash\n"
+            <<"from albedo_plugins.run import run\n"
               "async def setup(api):\n"
-              "    job = await bash('printf booted')\n"
+              "    job = await run('printf', 'booted')\n"
               "    return {'boot_output': job.tail()}\n">>),
         Host = fun(_) -> <<"{\"ok\":true,\"value\":null}">> end,
         {ok, K} = albedo_python:start(self(), Python,
             unicode:characters_to_binary(filename:join(Dir, "albedo_kernel.py")), <<"/tmp">>, Host,
-            [<<"bash">>, <<"fixture.boot_job">>]),
+            [<<"run">>, <<"fixture.boot_job">>]),
         try <<"'booted'">> = cell(K, <<"boot_output">>), 0 = albedo_python:job_count(K)
         after {ok, nil} = albedo_python:stop(K) end
     after file:del_dir_r(Dir) end.

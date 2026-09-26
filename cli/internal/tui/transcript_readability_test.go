@@ -129,7 +129,7 @@ func TestSelectionCopiesOnlyText(t *testing.T) {
 	for i, line := range lines {
 		if strings.Contains(ansi.Strip(line), "bash") {
 			row := Selection{Anchor: Point{Row: i, Col: 0}, Head: Point{Row: i, Col: 60}, Gutter: railWidth}
-			if got := SelectedText(lines, row); got != "bash" {
+			if got := SelectedText(lines, row); got != "ran bash" {
 				t.Fatalf("copied the tool row as %q", got)
 			}
 		}

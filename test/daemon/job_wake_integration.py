@@ -65,7 +65,8 @@ class Provider(http.server.BaseHTTPRequestHandler):
         starts = last.get("role") == "user" and "start a slow job" in latest_user
         done = not starts
         sleep = "20" if "detached" in latest_user else "1.2"
-        code = f'job = bash("sleep {sleep}; echo wake-done")\njob.id'
+        code = (f'import sys\njob = run(sys.executable, "-c", '
+                f'"import time; time.sleep({sleep}); print(\'wake-done\')")\njob.id')
         call_id = f"call-{tool_turns + 1}"
         arguments = json.dumps({"code": code, "timeout_ms": 60000})
         self.send_response(200)
@@ -178,21 +179,21 @@ def run(endpoint):
             settle(session_id)
             assert len(seen()) == 3, [r["latest_user"] for r in seen()]
             wake = seen()[2]["latest_user"]
-            assert "background bash job finished" in wake, wake
+            assert "background job finished" in wake, wake
             assert "jobs[" in wake and "output.read" in wake, wake
 
             live = stream(f"?after_seq={before['cursor']}")["events"]
             live_wake = [e for e in live
-                         if e.get("type") == "user" and "bash job finished" in e.get("text", "")]
+                         if e.get("type") == "user" and "job finished" in e.get("text", "")]
             assert len(live_wake) == 1, [e.get("type") for e in live]
-            assert live_wake[0]["source"] == "bash", live_wake[0]
-            assert live_wake[0]["clientId"] == "bash", live_wake[0]
+            assert live_wake[0]["source"] == "job", live_wake[0]
+            assert live_wake[0]["clientId"] == "job", live_wake[0]
             assert "exit_code=0" in live_wake[0]["text"], live_wake[0]
 
             # The durable snapshot renders user turns uniformly, so the wake is
             # identified by its text there; the provider request already proved it ran.
             durable = [e for e in stream("?after_seq=-1")["events"]
-                       if e.get("type") == "user" and "bash job finished" in e.get("text", "")]
+                       if e.get("type") == "user" and "job finished" in e.get("text", "")]
             assert len(durable) == 1, "the wake turn did not commit durably"
 
             # No further wake: the notice was delivered once.
@@ -214,7 +215,7 @@ def run(endpoint):
                 time.sleep(0.2)  # no daemon contact: the session stays detached
             settle(session_id)
             assert len(seen()) == 6, [r["latest_user"] for r in seen()]
-            assert "background bash job finished" in seen()[5]["latest_user"], seen()[5]
+            assert "background job finished" in seen()[5]["latest_user"], seen()[5]
             print("background job wake delivered a turn, once, and survived an idle detach")
         finally:
             if connection:

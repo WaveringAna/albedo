@@ -22,7 +22,11 @@ func TestParsePythonIntent(t *testing.T) {
 			expected: &ToolIntent{Kind: "edit", Target: "main.go"},
 		},
 		{
-			code:     "sh('ls -la')",
+			code:     "job = run('go', 'test', './...', cwd='cli')",
+			expected: &ToolIntent{Kind: "run", Target: "go test ./..."},
+		},
+		{
+			code:     "await rem.run(\"ls\", \"-la\")",
 			expected: &ToolIntent{Kind: "run", Target: "ls -la"},
 		},
 		{
@@ -39,6 +43,9 @@ func TestParsePythonIntent(t *testing.T) {
 		},
 	}
 
+	if intent := ParsePythonIntent("await cells.run('abc', replacements=[])"); intent != nil {
+		t.Fatalf("cells.run is not a program run: %+v", intent)
+	}
 	for _, tc := range cases {
 		intent := ParsePythonIntent(tc.code)
 		if intent == nil {
