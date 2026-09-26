@@ -64,11 +64,13 @@ type modelChangedMsg struct {
 }
 
 type commandExecutedMsg struct {
-	Name    string
-	Message string
-	Effort  string
-	Err     error
-	Gen     int
+	Name      string
+	Message   string
+	Effort    string
+	Available []string
+	SessionID string
+	Err       error
+	Gen       int
 }
 
 type ChatWorkspaceChangedMsg struct {
@@ -404,6 +406,19 @@ func (m AppModel) executeCommandCmd(name, args string, gen int) tea.Cmd {
 		var newEffort string
 		if res != nil {
 			if r, ok := res["result"].(map[string]any); ok {
+				var available []string
+				if name == "/effort" && args == "" {
+					if levels, ok := r["available"].([]any); ok {
+						for _, level := range levels {
+							if text, ok := level.(string); ok {
+								available = append(available, text)
+							}
+						}
+					}
+				}
+				if len(available) > 0 {
+					return commandExecutedMsg{Name: name, Available: available, SessionID: m.ActiveSession.ID, Gen: gen}
+				}
 				if eStr, ok := r["effort"].(string); ok {
 					newEffort = eStr
 				}
@@ -763,10 +778,14 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		return m, nil
 
 	case commandExecutedMsg:
-		if msg.Gen != m.CommandGen {
+		if msg.Gen != m.CommandGen || (msg.SessionID != "" && (m.ActiveSession == nil || msg.SessionID != m.ActiveSession.ID)) {
 			return m, nil
 		}
 		m.ClearNotices()
+		if len(msg.Available) > 0 && m.State == AppStateChat {
+			m.Chat.openEffortSelector(msg.Available)
+			return m, nil
+		}
 		if msg.Err != nil {
 			m.AddError("Error: " + msg.Err.Error())
 		} else {

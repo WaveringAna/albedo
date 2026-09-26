@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
-	"regexp"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -245,26 +245,28 @@ func wrapOrChunkLine(line string, width int) []string {
 }
 
 type ChatModel struct {
-	SessionID   string
-	Generation  int64
-	AgentName   string
-	Workspace   string
-	Model       string
-	Effort      string
-	Provider    string
-	Client      *daemon.ChatClient
-	History     *BoundedHistory
-	Renderer    TranscriptRenderer
-	Viewport    viewport.Model
-	TextArea    textarea.Model
-	CommandMenu CommandMenuModel
-	Flags       DisplayFlags
-	Follow      bool
-	TurnFailed  bool
-	Stopping    bool
-	Stopped     bool
-	Status      daemon.AgentStatus
-	Usage       *daemon.Usage
+	SessionID      string
+	Generation     int64
+	AgentName      string
+	Workspace      string
+	Model          string
+	Effort         string
+	Provider       string
+	Client         *daemon.ChatClient
+	History        *BoundedHistory
+	Renderer       TranscriptRenderer
+	Viewport       viewport.Model
+	TextArea       textarea.Model
+	CommandMenu    CommandMenuModel
+	effortOptions  []string
+	effortSelected int
+	Flags          DisplayFlags
+	Follow         bool
+	TurnFailed     bool
+	Stopping       bool
+	Stopped        bool
+	Status         daemon.AgentStatus
+	Usage          *daemon.Usage
 	// window is the context window of windowModel, read once per model so
 	// the footer can say how full the context is.
 	window      *int
@@ -310,7 +312,7 @@ type ChatModel struct {
 	pendingUsers      []PendingUserTurn
 	isSending         bool
 	interruptDeferred bool
-	sentHere bool
+	sentHere          bool
 
 	WorkspaceRecovery *WorkspaceRecoveryState
 	RecoveryInput     textinput.Model
@@ -499,6 +501,9 @@ func (m ChatModel) inputRows() int {
 	if m.WorkspaceRecovery != nil {
 		return m.WorkspaceRecovery.Rows()
 	}
+	if len(m.effortOptions) > 0 {
+		return 4 // breathing room, title, choices, keyboard hint; no composer
+	}
 	menu := min(4, len(m.CommandMenu.Matches(m.TextArea.Value())))
 	return m.promptHeight() + menu
 }
@@ -512,7 +517,6 @@ func (m *ChatModel) syncLayout() {
 	m.Viewport.Height = max(1, m.Height-6-m.chromeRows())
 	m.refreshViewportContent()
 }
-
 
 func (m *ChatModel) SetSize(width, height int) {
 	if m == nil || m.History == nil {
@@ -1050,6 +1054,30 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			var riCmd tea.Cmd
 			m.RecoveryInput, riCmd = m.RecoveryInput.Update(msg)
 			return m, riCmd
+		}
+
+		// The selector owns keys while open, before chat navigation or composer input.
+		if len(m.effortOptions) > 0 {
+			switch msg.Type {
+			case tea.KeyLeft, tea.KeyUp:
+				m.effortSelected = max(0, m.effortSelected-1)
+			case tea.KeyRight, tea.KeyDown:
+				m.effortSelected = min(len(m.effortOptions)-1, m.effortSelected+1)
+			case tea.KeyEnter:
+				level := m.effortOptions[m.effortSelected]
+				m.effortOptions = nil
+				m.syncLayout()
+				return m, func() tea.Msg { return ChatExecuteCommandMsg{Name: "/effort", Args: level} }
+			case tea.KeyEsc:
+				m.effortOptions = nil
+				m.syncLayout()
+			case tea.KeyCtrlC:
+				if m.streamCancel != nil {
+					m.streamCancel()
+				}
+				return m, func() tea.Msg { return ChatQuitMsg{} }
+			}
+			return m, nil
 		}
 
 		if msg.Type == tea.KeyLeft && m.TextArea.Value() == "" {
@@ -1940,7 +1968,6 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			m.closeTurn(false)
 		}
 
-
 	case daemon.EventCompacted:
 		m.settleActiveStream()
 		m.ToolProgressText = ""
@@ -2309,6 +2336,8 @@ func (m ChatModel) View() string {
 		} else {
 			rows = append(rows, m.Styles.Faint.Render(help))
 		}
+	} else if len(m.effortOptions) > 0 {
+		rows = append(rows, "", m.Styles.Bold.Render(ansi.Truncate("Reasoning effort", width, "")), m.effortSelectorView(), m.Styles.Faint.Render(ansi.Truncate("← → choose  ·  enter apply  ·  esc cancel", width, "")))
 	} else {
 		rows = append(rows, strings.Split(strings.TrimSuffix(m.composerView(), "\n"), "\n")...)
 		if menu := m.CommandMenu.View(m.TextArea.Value()); menu != "" {
@@ -2464,4 +2493,3 @@ func shortCount(n int) string {
 		return strings.TrimSuffix(fmt.Sprintf("%.1f", float64(n)/1_000_000), ".0") + "m"
 	}
 }
-

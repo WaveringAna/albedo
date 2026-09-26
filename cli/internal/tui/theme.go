@@ -44,24 +44,35 @@ type Styles struct {
 	// Selected is the surface under a selected row: a tint where the
 	// terminal reported its colors, reverse video where it did not.
 	Selected lipgloss.Style
+	// Effort tiers form a cool-to-warm scale; max is violet.
+	EffortLow    lipgloss.Style
+	EffortMedium lipgloss.Style
+	EffortHigh   lipgloss.Style
+	EffortXHigh  lipgloss.Style
+	EffortMax    lipgloss.Style
 	// Cursor is the text cursor and a drag selection.
 	Cursor lipgloss.Style
 }
 
 var DefaultStyles = Styles{
-	Muted:    lipgloss.NewStyle().Foreground(lipgloss.Color("7")),
-	Faint:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
-	Decor:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
-	Bold:     lipgloss.NewStyle().Bold(true),
-	You:      lipgloss.NewStyle().Foreground(lipgloss.Color("6")),
-	Agent:    lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
-	Busy:     lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Faint(true),
-	Error:    lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
-	Warning:  lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
-	Success:  lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
-	Prompt:   lipgloss.NewStyle().Foreground(lipgloss.Color("6")),
-	Selected: lipgloss.NewStyle().Reverse(true),
-	Cursor:   lipgloss.NewStyle().Reverse(true),
+	Muted:        lipgloss.NewStyle().Foreground(lipgloss.Color("7")),
+	Faint:        lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+	Decor:        lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+	Bold:         lipgloss.NewStyle().Bold(true),
+	You:          lipgloss.NewStyle().Foreground(lipgloss.Color("6")),
+	Agent:        lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
+	Busy:         lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Faint(true),
+	Error:        lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
+	Warning:      lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
+	Success:      lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
+	Prompt:       lipgloss.NewStyle().Foreground(lipgloss.Color("6")),
+	Selected:     lipgloss.NewStyle().Reverse(true),
+	EffortLow:    lipgloss.NewStyle().Foreground(lipgloss.Color("#8DCFF5")),
+	EffortMedium: lipgloss.NewStyle().Foreground(lipgloss.Color("#78CFC3")),
+	EffortHigh:   lipgloss.NewStyle().Foreground(lipgloss.Color("#F3AD68")),
+	EffortXHigh:  lipgloss.NewStyle().Foreground(lipgloss.Color("#F27979")),
+	EffortMax:    lipgloss.NewStyle().Foreground(lipgloss.Color("#C39AF5")),
+	Cursor:       lipgloss.NewStyle().Reverse(true),
 }
 
 func useInk(detected ink) {
