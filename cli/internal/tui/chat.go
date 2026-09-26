@@ -540,14 +540,18 @@ func (m *ChatModel) SetSize(width, height int) {
 	}
 
 	m.Viewport.Width = transcriptWidth
-	m.Renderer.BodyWidth = min(100, available)
 	m.TextArea.SetWidth(available)
 	m.TextArea.SetHeight(m.maxPromptHeight())
 	m.RecoveryInput.Width = max(1, available-16)
 
 	m.Viewport.Height = max(1, height-6-m.chromeRows())
 
-	m.rebuildSettledLines()
+	// settled rows are rendered at the body width alone, so only a new body
+	// width renders them again
+	if body := min(100, available); body != m.Renderer.BodyWidth {
+		m.Renderer.BodyWidth = body
+		m.rebuildSettledLines()
+	}
 	m.refreshViewportContent()
 }
 
