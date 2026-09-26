@@ -1035,7 +1035,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			return m, func() tea.Msg { return ChatBackToSessionsMsg{} }
 		}
 
-		if msg.Type == tea.KeyCtrlC {
+		if msg.Type == tea.KeyCtrlC || (msg.Type == tea.KeyCtrlD && m.TextArea.Focused() && m.TextArea.Value() == "") {
 			if m.streamCancel != nil {
 				m.streamCancel()
 			}
