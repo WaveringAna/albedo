@@ -6,6 +6,7 @@ import (
 )
 
 var markdownSamples = []string{
+	"shown as source:\n\n```md\n[x]: https://example.com\n<!-- note -->\n```\n\nsee [x] and <pre>\n\nafter",
 	`fixed in ` + "`" + `25424ba` + "`" + ` "keep row backgrounds across lip gloss v2 resets". lipgloss v2 closes styled text with the short reset ` + "`" + `\x1b[m` + "`" + `, where v1 used ` + "`" + `\x1b[0m` + "`" + `.
 
 i also measured cpu over 45 seconds while you were testing:
@@ -114,5 +115,8 @@ func TestMarkdownBlocksKeepFencesAndListsWhole(t *testing.T) {
 	}
 	if blocks := markdownBlocks("see [x]\n\n[x]: https://example.com"); len(blocks) != 1 {
 		t.Fatalf("a link definition must keep the text whole, got %q", blocks)
+	}
+	if blocks := markdownBlocks("a\n\n```md\n[x]: https://example.com\n```\n\nb"); len(blocks) != 3 {
+		t.Fatalf("a link definition shown in a fence must not keep the text whole, got %q", blocks)
 	}
 }

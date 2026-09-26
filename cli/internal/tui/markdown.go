@@ -180,16 +180,14 @@ func renderMarkdown(text string, width int) string {
 var (
 	orderedItem = regexp.MustCompile(`^\d{1,9}[.)](\s|$)`)
 	// Link definitions and raw HTML blocks can reach across blank lines.
-	spansBlocks = regexp.MustCompile(`(?im)^ {0,3}(\[[^\]]+\]:|<(pre|script|style|textarea)\b|<!--)`)
+	spansBlocks = regexp.MustCompile(`(?i)^ {0,3}(\[[^\]]+\]:|<(pre|script|style|textarea)\b|<!--)`)
 )
 
 // markdownBlocks splits text before every line that has to open a new
 // top-level block: one at the margin after a blank line, outside a fence,
-// that cannot continue a list or quote above it.
+// that cannot continue a list or quote above it. Text that can reach across
+// blank lines outside a fence keeps it whole.
 func markdownBlocks(text string) []string {
-	if spansBlocks.MatchString(text) {
-		return []string{text}
-	}
 	var blocks []string
 	start, fence, blank := 0, "", false
 	for pos := 0; pos < len(text); {
@@ -198,6 +196,9 @@ func markdownBlocks(text string) []string {
 			end = pos + i + 1
 		}
 		line := strings.TrimRight(text[pos:end], "\r\n")
+		if fence == "" && spansBlocks.MatchString(line) {
+			return []string{text}
+		}
 		if fence == "" && blank && pos > start && opensBlock(line) {
 			blocks = append(blocks, text[start:pos])
 			start = pos
@@ -210,7 +211,7 @@ func markdownBlocks(text string) []string {
 }
 
 func opensBlock(line string) bool {
-	return line != "" && !strings.ContainsRune(" \t-*+>|", rune(line[0])) && !orderedItem.MatchString(line)
+	return line != "" && strings.IndexByte(" \t-*+>|", line[0]) < 0 && !orderedItem.MatchString(line)
 }
 
 // fenceAfter is the code fence open after line, given the one open before.
@@ -266,10 +267,13 @@ func (c *pieceCache) get(key pieceKey) (string, bool) {
 	return piece, ok
 }
 
+// put keeps copies: the key and piece are slices of one moment's stream and
+// its rendering, and would hold all of it.
 func (c *pieceCache) put(key pieceKey, piece string) {
+	key.prev, key.block = strings.Clone(key.prev), strings.Clone(key.block)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.store(key, piece)
+	c.store(key, strings.Clone(piece))
 }
 
 func (c *pieceCache) store(key pieceKey, piece string) {
