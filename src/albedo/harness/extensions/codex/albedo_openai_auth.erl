@@ -3,6 +3,8 @@
 
 -export([codex_access/2, codex_revoke/2, codex_limited/3, codex_exchange/3, codex_account/1]).
 
+-define(SCOPE, <<"codex">>).
+-define(STORE, <<"openai-codex">>).
 -define(CLIENT_ID, <<"app_EMoamEEZ73f0CkXaXp7hrann">>).
 -define(TOKEN_URL, "https://auth.openai.com/api/accounts/oauth/token").
 -define(AUTH_CLAIM, <<"https://api.openai.com/auth">>).
@@ -62,8 +64,8 @@ codex_account(Credential) when is_map(Credential) ->
     Detail = iolist_to_binary([
         <<"chatgpt account">>,
         case selected(Credential) of true -> <<" · selected"/utf8>>; false -> <<>> end,
-        case limited(Credential, Now) of
-            true -> [<<" · usage limit until "/utf8>>, local_time(maps:get(<<"limitedUntil">>, Credential))];
+        case albedo_accounts:limited(Credential, Now) of
+            true -> [<<" · limited until "/utf8>>, albedo_accounts:local_time(maps:get(<<"limitedUntil">>, Credential))];
             false -> <<>>
         end
     ]),
@@ -95,7 +97,7 @@ codex_access(Home0, Session0) ->
     case read_auth(Path) of
         {ok, Data} ->
             Credentials = credentials(Data),
-            select(order(Credentials, Session), Path, Session);
+            select(albedo_accounts:order(?SCOPE, Credentials, Session, fun identity/1), Path, Session);
         {error, _} -> {error, <<"Codex is not authenticated; run /login and add a ChatGPT account">>}
     end.
 
@@ -136,7 +138,7 @@ remove_identity(Path, Access, Identity) ->
                 {[], _} -> {ok, <<>>};
                 {[Removed | _], Kept} ->
                     Updated = case Kept of
-                        [] -> maps:remove(<<"openai-codex">>, Data);
+                        [] -> maps:remove(?STORE, Data);
                         _ -> set_credentials(Data, Kept)
                     end,
                     case write_auth(Path, Updated) of
@@ -173,7 +175,7 @@ usable(Credential) when is_map(Credential) ->
 usable(_) -> error.
 
 credentials(Data) when is_map(Data) ->
-    case maps:get(<<"openai-codex">>, Data, []) of
+    case maps:get(?STORE, Data, []) of
         Values when is_list(Values) -> [V || V <- Values, is_map(V), maps:get(<<"type">>, V, <<>>) =:= <<"oauth">>];
         Value when is_map(Value) ->
             case maps:get(<<"type">>, Value, <<>>) of <<"oauth">> -> [Value]; _ -> [] end;
@@ -181,47 +183,22 @@ credentials(Data) when is_map(Data) ->
     end;
 credentials(_) -> [].
 
-%% A user-selected account comes first, then the session's sticky or hashed
-%% choice. Accounts still inside a reported usage limit go last: they are only
-%% worth trying when every sibling is limited too.
-order([], _) -> [];
-order(Values, Session) ->
-    Now = erlang:system_time(millisecond),
-    {Limited, Open} = lists:partition(fun(V) -> limited(V, Now) end, Values),
-    {Selected, Rest} = lists:partition(fun selected/1, spread(Open, Session)),
-    Selected ++ Rest ++ Limited.
-
-spread([], _) -> [];
-spread(Values, Session) ->
-    case erlang:get({?MODULE, Session}) of
-        Identity when is_binary(Identity), Identity =/= <<>> ->
-            {Pinned, Others} = lists:partition(fun(Value) -> identity(Value) =:= Identity end, Values),
-            Pinned ++ Others;
-        _ ->
-            N = length(Values),
-            Start = fnv1a(Session) rem N,
-            {Head, Tail} = lists:split(Start, Values),
-            Tail ++ Head
-    end.
-
 selected(Credential) -> maps:get(<<"selected">>, Credential, false) =:= true.
 
-limited(Credential, Now) ->
-    case maps:get(<<"limitedUntil">>, Credential, 0) of
-        Until when is_integer(Until) -> Until > Now;
-        _ -> false
-    end.
-
-%% Records a Codex usage-limit response against the account that received it,
-%% so the next turn moves to a sibling. Returns a JSON summary for the message,
-%% or {error, not_usage_limit} for ordinary rate limiting.
+%% Records a Codex limit response against the account that received it, so
+%% this and later requests move to a sibling. Returns a JSON summary for the
+%% message, or {error, not_usage_limit} when the body is not a limit.
 codex_limited(Home0, Access, Body) ->
     case usage_limit(Body) of
-        {ok, Until} ->
+        {ok, Until, Lasting} ->
             Path = filename:join(text(Home0), "auth.json"),
             Identity = identity(#{<<"access">> => Access}),
-            albedo_credentials:with_lock(Path, fun() -> mark_limited(Path, Access, Identity, Until) end,
-                                         fun() -> {error, <<"credential store is busy">>} end);
+            Hit = fun(V) -> maps:get(<<"access">>, V, <<>>) =:= Access orelse
+                            (Identity =/= <<>> andalso identity(V) =:= Identity) end,
+            case albedo_accounts:mark(Path, ?STORE, Hit, Until) of
+                {ok, Updated} -> summary(credentials(#{?STORE => Updated}), Hit, Until, Lasting);
+                Error -> Error
+            end;
         error -> {error, <<"not_usage_limit">>}
     end.
 
@@ -235,60 +212,39 @@ usage_limit(Body) ->
                 #{<<"resets_in_seconds">> := In} when is_integer(In), In > 0 -> Now + In * 1000;
                 _ -> Now + ?DEFAULT_LIMIT_MS
             end,
-            {ok, Until};
+            {ok, Until, true};
         %% A short-term rate limit cools the account down briefly, so a busy
         %% swarm spreads onto siblings instead of queueing on one account.
         #{<<"error">> := #{<<"type">> := <<"rate_limit_exceeded">>} = Error} ->
             Now = erlang:system_time(millisecond),
             case Error of
-                #{<<"resets_in_seconds">> := In} when is_integer(In), In > 0 -> {ok, Now + In * 1000};
-                _ -> {ok, Now + ?RATE_LIMIT_MS}
+                #{<<"resets_in_seconds">> := In} when is_integer(In), In > 0 -> {ok, Now + In * 1000, false};
+                _ -> {ok, Now + ?RATE_LIMIT_MS, false}
             end;
         #{<<"error">> := #{<<"code">> := <<"rate_limit_exceeded">>}} ->
-            {ok, erlang:system_time(millisecond) + ?RATE_LIMIT_MS};
+            {ok, erlang:system_time(millisecond) + ?RATE_LIMIT_MS, false};
         %% The Codex edge answers a burst with {"detail":"Rate limit exceeded"}.
         #{<<"detail">> := Detail} when is_binary(Detail) ->
             case string:find(string:lowercase(Detail), <<"rate limit">>) of
                 nomatch -> error;
-                _ -> {ok, erlang:system_time(millisecond) + ?RATE_LIMIT_MS}
+                _ -> {ok, erlang:system_time(millisecond) + ?RATE_LIMIT_MS, false}
             end;
         _ -> error
     catch
         _:_ -> error
     end.
 
-mark_limited(Path, Access, Identity, Until) ->
-    case read_auth(Path) of
-        {ok, Data} ->
-            Values = credentials(Data),
-            Hit = fun(V) -> maps:get(<<"access">>, V, <<>>) =:= Access orelse
-                            (Identity =/= <<>> andalso identity(V) =:= Identity) end,
-            Updated = [case Hit(V) of true -> V#{<<"limitedUntil">> => Until}; false -> V end || V <- Values],
-            case Updated =:= Values orelse write_auth(Path, set_credentials(Data, Updated)) =:= ok of
-                true -> summary(Updated, Hit, Until);
-                false -> {error, <<"could not record the Codex usage limit">>}
-            end;
-        {error, _} -> {error, <<"stored Codex credentials are unreadable">>}
-    end.
-
-summary(Updated, Hit, Until) ->
+summary(Updated, Hit, Until, Lasting) ->
     Now = erlang:system_time(millisecond),
     Limited = [V || V <- Updated, Hit(V)],
-    Next = [V || V <- order(Updated, <<>>), not Hit(V), not limited(V, Now)],
+    Next = [V || V <- albedo_accounts:order(?SCOPE, Updated, <<>>, fun identity/1),
+                 not Hit(V), not albedo_accounts:limited(V, Now)],
     {ok, iolist_to_binary(json:encode(#{
         <<"account">> => describe(Limited),
-        <<"until">> => local_time(Until),
-        <<"next">> => describe(Next)
+        <<"until">> => albedo_accounts:local_time(Until),
+        <<"next">> => describe(Next),
+        <<"lasting">> => Lasting
     }))}.
-
-local_time(Ms) ->
-    {{_, _, _} = Date, {H, M, _}} = calendar:system_time_to_local_time(Ms, millisecond),
-    {Today, _} = calendar:local_time(),
-    Clock = io_lib:format("~2..0B:~2..0B", [H, M]),
-    iolist_to_binary(case Date =:= Today of
-        true -> Clock;
-        false -> {Y, Mo, D} = Date, io_lib:format("~4..0B-~2..0B-~2..0B ~s", [Y, Mo, D, Clock])
-    end).
 
 describe([]) -> <<>>;
 describe([Credential | _]) ->
@@ -302,12 +258,7 @@ plan(Credential) ->
     first([maps:get(<<"plan">>, token_identity(maps:get(<<"access">>, Credential, <<>>)), undefined)]).
 
 remember(Session, Credential) ->
-    erlang:put({?MODULE, Session}, identity(Credential)),
-    ok.
-
-fnv1a(Bytes) ->
-    lists:foldl(fun(Byte, Hash) -> ((Hash bxor Byte) * 16777619) band 16#ffffffff end,
-                16#811c9dc5, binary_to_list(Bytes)).
+    albedo_accounts:remember(?SCOPE, Session, identity(Credential)).
 
 refresh_locked(Path, Identity) ->
     albedo_credentials:with_lock(Path, fun() -> refresh_current(Path, Identity) end,
@@ -362,8 +313,8 @@ find_identity([Credential | Rest], Identity) ->
 replace_identity(Values, Identity, Updated) ->
     [case identity(Value) =:= Identity of true -> Updated; false -> Value end || Value <- Values].
 
-set_credentials(Data, [Only]) -> maps:put(<<"openai-codex">>, Only, Data);
-set_credentials(Data, Values) -> maps:put(<<"openai-codex">>, Values, Data).
+set_credentials(Data, [Only]) -> maps:put(?STORE, Only, Data);
+set_credentials(Data, Values) -> maps:put(?STORE, Values, Data).
 
 refresh_token(Credential) ->
     Body = uri_string:compose_query([

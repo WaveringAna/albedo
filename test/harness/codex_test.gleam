@@ -1,5 +1,6 @@
 import albedo/harness/extension
 import albedo/harness/extensions/codex/extension as codex
+import albedo/harness/rotation
 import albedo/openai_api
 import albedo/openai_api/types
 import gleam/dynamic/decode
@@ -104,6 +105,17 @@ fn limited_stream(
   }
 }
 
+fn rotate(home, session, first, request, stream, pause) {
+  rotation.stream(
+    codex.pool(home, session, stream),
+    first,
+    request,
+    fn(_) { types.Continue },
+    rotation.Budget(8, 0, pause),
+    fn(_) { Nil },
+  )
+}
+
 fn drain(tried: process.Subject(String), found: List(String)) -> List(String) {
   case process.receive(tried, 0) {
     Ok(token) -> drain(tried, [token, ..found])
@@ -119,15 +131,13 @@ pub fn a_limited_account_hands_the_same_request_to_the_next_test() {
   let body =
     "{\"error\":{\"type\":\"usage_limit_reached\",\"resets_in_seconds\":3600}}"
   let request = openai_api.request("gpt-5.5", [types.User("hi")])
-  codex.rotating(
+  rotate(
     home,
     "swarm-session",
     first,
     request,
-    fn(_) { types.Continue },
-    codex.Rotation(8, 0, limited_stream([first.api_key], body, tried), fn(_) {
-      panic as "a sibling had room; nothing should wait"
-    }),
+    limited_stream([first.api_key], body, tried),
+    fn(_) { panic as "a sibling had room; nothing should wait" },
   )
   |> should.equal(Error(types.HttpError(500, "second account answered")))
   let attempts = drain(tried, [])
@@ -142,22 +152,17 @@ pub fn a_burst_rate_limit_body_rotates_test() {
   let #(_, first) = codex_client(home, "burst-session")
   let tried = process.new_subject()
   let request = openai_api.request("gpt-6-luna", [types.User("hi")])
-  codex.rotating(
+  rotate(
     home,
     "burst-session",
     first,
     request,
-    fn(_) { types.Continue },
-    codex.Rotation(
-      8,
-      0,
-      limited_stream(
-        [first.api_key],
-        "{\"detail\":\"Rate limit exceeded\"}",
-        tried,
-      ),
-      fn(_) { panic as "a sibling had room; nothing should wait" },
+    limited_stream(
+      [first.api_key],
+      "{\"detail\":\"Rate limit exceeded\"}",
+      tried,
     ),
+    fn(_) { panic as "a sibling had room; nothing should wait" },
   )
   |> should.equal(Error(types.HttpError(500, "second account answered")))
   list.length(drain(tried, [])) |> should.equal(2)
@@ -175,15 +180,13 @@ pub fn a_rate_limit_rotates_too_and_stops_when_all_are_busy_test() {
   let both = list.unique([first.api_key, second.api_key])
   let request = openai_api.request("gpt-5.5", [types.User("hi")])
   let paused = process.new_subject()
-  codex.rotating(
+  rotate(
     home,
     "busy-swarm",
     first,
     request,
-    fn(_) { types.Continue },
-    codex.Rotation(8, 0, limited_stream(both, body, tried), fn(delay) {
-      process.send(paused, int.to_string(delay))
-    }),
+    limited_stream(both, body, tried),
+    fn(delay) { process.send(paused, int.to_string(delay)) },
   )
   |> should.equal(Error(types.HttpError(429, body)))
   // Each account once, then four waits with a retry after each, then it stops.
@@ -201,18 +204,13 @@ pub fn a_usage_limit_on_every_account_does_not_wait_test() {
   let body =
     "{\"error\":{\"type\":\"usage_limit_reached\",\"resets_in_seconds\":3600}}"
   let request = openai_api.request("gpt-6-luna", [types.User("hi")])
-  codex.rotating(
+  rotate(
     home,
     "spent-swarm",
     first,
     request,
-    fn(_) { types.Continue },
-    codex.Rotation(
-      8,
-      0,
-      limited_stream(list.unique([first.api_key, second.api_key]), body, tried),
-      fn(_) { panic as "a usage limit lasts hours; it must not be waited on" },
-    ),
+    limited_stream(list.unique([first.api_key, second.api_key]), body, tried),
+    fn(_) { panic as "a usage limit lasts hours; it must not be waited on" },
   )
   |> should.equal(Error(types.HttpError(429, body)))
   list.length(drain(tried, [])) |> should.equal(2)

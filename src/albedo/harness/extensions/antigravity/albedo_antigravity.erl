@@ -2,7 +2,7 @@
 %% Antigravity credentials, request identity, and Cloud Code Assist schemas.
 
 -include_lib("kernel/include/file.hrl").
--export([access/1, encode/1, normalize_schema/1, session_number/1, uuid/1,
+-export([access/1, access/2, limited/3, encode/1, normalize_schema/1, session_number/1, uuid/1,
          call_id/0, now_ms/0, user_agent/1, discovered/1, refresh/1, reload/1, expire/2,
          exchange/4, discover/3, account/1, client_id/0]).
 
@@ -20,19 +20,33 @@
 -define(DEFAULT_VERSION, <<"2.16.0">>).
 -define(ENDPOINT, "https://daily-cloudcode-pa.googleapis.com").
 -define(MANIFEST_URL, "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml").
+-define(SCOPE, <<"antigravity">>).
+%% Used when a quota response names no reset time.
+-define(DEFAULT_LIMIT_MS, 900000).
+%% Used when a rate limit names no retry delay.
+-define(RATE_LIMIT_MS, 30000).
+%% Limits longer than this are not worth waiting on.
+-define(BRIEF_MS, 300000).
 -define(SIGNED_OUT, <<"Antigravity is not authenticated; run /login and add a Google account">>).
 
 %% ---- credentials --------------------------------------------------------
 
-access(Home) ->
+access(Home) -> access(Home, <<>>).
+
+%% The session's account: selected first, then its sticky or hashed choice,
+%% with accounts inside a reported limit last.
+access(Home, Session0) ->
+    Session = unicode:characters_to_binary(Session0),
     Path = filename:join(unicode:characters_to_list(Home), "auth.json"),
     case albedo_credentials:read(Path) of
-        {ok, Data} -> first_usable(order(credentials(Data)), Path);
+        {ok, Data} ->
+            Ordered = albedo_accounts:order(?SCOPE, credentials(Data), Session, fun account_id/1),
+            first_usable(Ordered, Path, Session);
         {error, _} -> {error, ?SIGNED_OUT}
     end.
 
-first_usable([], _) -> {error, ?SIGNED_OUT};
-first_usable([Credential | Rest], Path) ->
+first_usable([], _, _) -> {error, ?SIGNED_OUT};
+first_usable([Credential | Rest], Path, Session) ->
     Outcome = case usable(Credential) of
         fresh -> {ok, Credential};
         stale -> albedo_credentials:with_lock(Path,
@@ -41,9 +55,11 @@ first_usable([Credential | Rest], Path) ->
         invalid -> {error, invalid}
     end,
     case Outcome of
-        {ok, Access} -> {ok, iolist_to_binary(json:encode(maps:with(
-                            [<<"access">>, <<"projectId">>, <<"email">>], Access)))};
-        {error, _} -> first_usable(Rest, Path)
+        {ok, Access} ->
+            albedo_accounts:remember(?SCOPE, Session, account_id(Access)),
+            {ok, iolist_to_binary(json:encode(maps:with(
+                [<<"access">>, <<"projectId">>, <<"email">>], Access)))};
+        {error, _} -> first_usable(Rest, Path, Session)
     end.
 
 credentials(Data) ->
@@ -52,10 +68,6 @@ credentials(Data) ->
         One -> [One]
     end,
     [V || V <- Values, is_map(V), maps:get(<<"type">>, V, <<>>) =:= <<"oauth">>].
-
-order(Values) ->
-    {Selected, Rest} = lists:partition(fun(V) -> maps:get(<<"selected">>, V, false) =:= true end, Values),
-    Selected ++ Rest.
 
 usable(Credential) ->
     Present = fun(Key) -> case maps:get(Key, Credential, <<>>) of
@@ -76,6 +88,99 @@ identity(Credential) ->
     case maps:get(<<"email">>, Credential, <<>>) of
         <<_, _/binary>> = Email -> {email, string:lowercase(Email)};
         _ -> {refresh, maps:get(<<"refresh">>, Credential, <<>>)}
+    end.
+
+%% Records a Cloud Code Assist 429 against the account whose token received
+%% it. Returns a JSON summary, or {error, not_a_limit} when the body is not a
+%% per-account limit: a model out of capacity for everyone moves nobody.
+limited(Home, Access, Body) ->
+    case limit(Body) of
+        {ok, Until, Lasting} ->
+            Path = filename:join(unicode:characters_to_list(Home), "auth.json"),
+            Hit = fun(V) -> maps:get(<<"access">>, V, <<>>) =:= Access end,
+            case albedo_accounts:mark(Path, ?KEY, Hit, Until) of
+                {ok, Updated} ->
+                    Values = credentials(#{?KEY => Updated}),
+                    Now = erlang:system_time(millisecond),
+                    Next = [V || V <- albedo_accounts:order(?SCOPE, Values, <<>>, fun account_id/1),
+                                 not Hit(V), not albedo_accounts:limited(V, Now)],
+                    {ok, iolist_to_binary(json:encode(#{
+                        <<"account">> => label([V || V <- Values, Hit(V)]),
+                        <<"until">> => albedo_accounts:local_time(Until),
+                        <<"next">> => label(Next),
+                        <<"lasting">> => Lasting
+                    }))};
+                Error -> Error
+            end;
+        error -> {error, <<"not_a_limit">>}
+    end.
+
+label([#{<<"email">> := <<_, _/binary>> = Email} | _]) -> Email;
+label([_ | _]) -> <<"another Google account">>;
+label([]) -> <<>>.
+
+%% Google explains a 429 in google.rpc details: an ErrorInfo reason with an
+%% optional reset in its metadata, and a RetryInfo delay.
+limit(Body) ->
+    try json:decode(unicode:characters_to_binary(Body)) of
+        #{<<"error">> := #{} = Error} ->
+            Details = [D || D <- maps:get(<<"details">>, Error, []), is_map(D)],
+            Reasons = [R || #{<<"reason">> := R} <- Details],
+            Metadata = lists:foldl(fun(#{<<"metadata">> := M}, Acc) when is_map(M) -> maps:merge(Acc, M);
+                                      (_, Acc) -> Acc end, #{}, Details),
+            Now = erlang:system_time(millisecond),
+            Reset = first_reset([
+                reset_at(maps:get(<<"quotaResetTimeStamp">>, Metadata, undefined), Now),
+                duration(maps:get(<<"quotaResetDelay">>, Metadata, undefined)),
+                duration(hd([D || #{<<"retryDelay">> := D} <- Details] ++ [undefined]))
+            ]),
+            Quota = lists:member(<<"QUOTA_EXHAUSTED">>, Reasons),
+            Capacity = lists:member(<<"MODEL_CAPACITY_EXHAUSTED">>, Reasons),
+            Exhausted = maps:get(<<"status">>, Error, <<>>) =:= <<"RESOURCE_EXHAUSTED">>
+                        orelse maps:get(<<"code">>, Error, 0) =:= 429,
+            case {Capacity, Quota, Reset} of
+                {true, _, _} -> error;
+                {_, true, undefined} -> {ok, Now + ?DEFAULT_LIMIT_MS, true};
+                {_, true, In} -> {ok, Now + In, true};
+                {_, _, undefined} when Exhausted -> {ok, Now + ?RATE_LIMIT_MS, false};
+                {_, _, In} when Exhausted -> {ok, Now + In, In > ?BRIEF_MS};
+                _ -> error
+            end;
+        _ -> error
+    catch _:_ -> error
+    end.
+
+first_reset([]) -> undefined;
+first_reset([In | _]) when is_integer(In), In > 0 -> In;
+first_reset([_ | Rest]) -> first_reset(Rest).
+
+reset_at(Stamp, Now) when is_binary(Stamp) ->
+    try calendar:rfc3339_to_system_time(binary_to_list(Stamp), [{unit, millisecond}]) - Now
+    catch _:_ -> undefined
+    end;
+reset_at(_, _) -> undefined.
+
+%% A protobuf duration as Google prints it: "3s", "1.5s", "2h3m4.5s", "500ms".
+duration(Text) when is_binary(Text) ->
+    case re:run(Text, <<"([0-9]+(?:\\.[0-9]+)?)(ms|h|m|s)">>, [global, {capture, all_but_first, binary}]) of
+        {match, Parts} ->
+            round(lists:sum([number(N) * unit(U) || [N, U] <- Parts]));
+        nomatch -> undefined
+    end;
+duration(_) -> undefined.
+
+number(N) -> try binary_to_float(N) catch _:_ -> binary_to_integer(N) end.
+
+unit(<<"h">>) -> 3600000;
+unit(<<"m">>) -> 60000;
+unit(<<"s">>) -> 1000;
+unit(<<"ms">>) -> 1.
+
+%% The account's stable id: its email, or a hash of its refresh token.
+account_id(Credential) ->
+    case identity(Credential) of
+        {email, Email} -> Email;
+        {refresh, Refresh} -> binary:encode_hex(binary:part(crypto:hash(sha256, Refresh), 0, 8), lowercase)
     end.
 
 %% After a 401 the stored token is marked expired, so the next turn refreshes
@@ -346,19 +451,21 @@ http(Method, Url0, Headers, Body) ->
 
 %% How /login lists a stored Antigravity account.
 account(Credential) when is_map(Credential) ->
-    Id = case identity(Credential) of
-        {email, Email} -> Email;
-        {refresh, Refresh} -> binary:encode_hex(binary:part(crypto:hash(sha256, Refresh), 0, 8), lowercase)
-    end,
+    Id = account_id(Credential),
     Label = case maps:get(<<"email">>, Credential, <<>>) of
         <<_, _/binary>> = Email0 -> Email0;
         _ -> <<"antigravity account">>
     end,
     Selected = maps:get(<<"selected">>, Credential, false) =:= true,
-    Detail = case Selected of
-        true -> <<"antigravity account · selected"/utf8>>;
-        false -> <<"antigravity account">>
-    end,
+    Detail = iolist_to_binary([
+        <<"antigravity account">>,
+        case Selected of true -> <<" · selected"/utf8>>; false -> <<>> end,
+        case albedo_accounts:limited(Credential, erlang:system_time(millisecond)) of
+            true -> [<<" · limited until "/utf8>>,
+                     albedo_accounts:local_time(maps:get(<<"limitedUntil">>, Credential))];
+            false -> <<>>
+        end
+    ]),
     {account, Id, Label, Detail, Selected};
 account(_) -> {account, <<>>, <<"invalid antigravity account">>, <<>>, false}.
 

@@ -8,6 +8,7 @@ import albedo/harness/extensions/antigravity/catalog
 import albedo/harness/extensions/antigravity/stream
 import albedo/harness/extensions/antigravity/wire
 import albedo/harness/oauth
+import albedo/harness/rotation
 import albedo/openai_api
 import albedo/openai_api/types
 import gleam/dynamic.{type Dynamic}
@@ -27,7 +28,7 @@ pub type Access {
 pub fn extension() -> extension.Extension {
   extension.Extension(
     "antigravity",
-    "Google Antigravity OAuth for Gemini 3 and Claude through Cloud Code Assist",
+    "Google Antigravity OAuth for Gemini 3 and Claude through Cloud Code Assist, with session-sticky multi-account selection that moves past rate limits and spent quotas",
     [],
     [
       extension.LoginPlugin(login(google)),
@@ -102,11 +103,7 @@ fn resolve(
       case context.protocol {
         types.ChatCompletions ->
           Some({
-            use encoded <- result.try(native_access(context.home))
-            use access <- result.map(
-              json.parse(encoded, access_decoder())
-              |> result.replace_error("invalid Antigravity credential response"),
-            )
+            use access <- result.map(connect(context.home, context.session))
             upstream(
               context.home,
               access,
@@ -124,6 +121,14 @@ fn resolve(
   }
 }
 
+/// The session's current account.
+fn connect(home: String, session: String) -> Result(Access, String) {
+  use encoded <- result.try(native_access(home, session))
+  json.parse(encoded, access_decoder())
+  |> result.replace_error("invalid Antigravity credential response")
+}
+
+/// Streams on `access`, and on sibling Google accounts when it hits a limit.
 pub fn upstream(
   home: String,
   access: Access,
@@ -131,20 +136,68 @@ pub fn upstream(
   model: catalog.Model,
   user_agent: String,
 ) -> extension.Upstream {
-  let context =
-    wire.Context(access.token, access.project, session, model, user_agent)
-  extension.Upstream(
+  rotation.upstream(
     catalog.endpoint,
     types.ChatCompletions,
-    fn(request, on_event) {
+    pool(home, session, fn(access, request, on_event) {
       let resolved_model =
         catalog.resolve_variant(home, model.id, request.options.effort)
-      let resolved_context = wire.Context(..context, model: resolved_model)
-      use exchange <- result.try(wire.encode(resolved_context, request))
+      let context =
+        wire.Context(
+          access.token,
+          access.project,
+          session,
+          resolved_model,
+          user_agent,
+        )
+      use exchange <- result.try(wire.encode(context, request))
       openai_api.exchange(exchange, stream.reducer(resolved_model), on_event)
-    },
-    explain(home, access, _),
+    }),
+    access,
+    fn(access, error) { explain(home, access, error) },
   )
+}
+
+/// The Google accounts in auth.json as a rotation pool. A spent quota is
+/// lasting; a rate limit is brief. A model out of capacity for everyone is not
+/// an account's limit, so it waits without moving the session.
+pub fn pool(
+  home: String,
+  session: String,
+  stream: fn(Access, types.Request, fn(types.Event) -> types.Control) ->
+    Result(types.Turn, types.Error),
+) -> rotation.Pool(Access) {
+  rotation.Pool(
+    current: fn() { connect(home, session) },
+    mark: fn(access, body) {
+      limited(home, access, body)
+      |> option.from_result
+      |> option.map(fn(limit) {
+        rotation.marked(limit.lasting, limit.next != "")
+      })
+    },
+    same: fn(a: Access, b: Access) { a.token == b.token },
+    stream: stream,
+  )
+}
+
+type Limited {
+  Limited(account: String, until: String, next: String, lasting: Bool)
+}
+
+fn limited(home: String, access: Access, body: String) -> Result(Limited, Nil) {
+  let decoder = {
+    use account <- decode.field("account", decode.string)
+    use until <- decode.field("until", decode.string)
+    use next <- decode.field("next", decode.string)
+    use lasting <- decode.field("lasting", decode.bool)
+    decode.success(Limited(account, until, next, lasting))
+  }
+  native_limited(home, access.token, body)
+  |> result.replace_error(Nil)
+  |> result.try(fn(encoded) {
+    json.parse(encoded, decoder) |> result.replace_error(Nil)
+  })
 }
 
 pub fn explain(
@@ -165,6 +218,11 @@ pub fn explain(
         <> "; send your message again to refresh it, or run /login",
       )
     }
+    types.HttpError(429, body) ->
+      case limited(home, access, body) {
+        Ok(limit) -> Some(limit_message(account, limit))
+        Error(_) -> Some("Cloud Code Assist API error (429): " <> message(body))
+      }
     types.HttpError(status, body) ->
       Some(case validation_url(body) {
         Ok(url) ->
@@ -180,6 +238,27 @@ pub fn explain(
           <> message(body)
       })
     _ -> None
+  }
+}
+
+/// By the time this explains a limit, the rotation has already tried every
+/// sibling with room.
+fn limit_message(account: String, limit: Limited) -> String {
+  let kind = case limit.lasting {
+    True -> "quota exhausted"
+    False -> "rate limited"
+  }
+  let head =
+    "Antigravity " <> kind <> " for " <> account <> " until " <> limit.until
+  case limit.next {
+    "" ->
+      head
+      <> "; no other Google account has room. Add one with /login or wait for the reset"
+    next ->
+      head
+      <> "; the next turn will use "
+      <> next
+      <> ". Send your message again to continue"
   }
 }
 
@@ -238,4 +317,11 @@ fn native_account(credential: Dynamic) -> oauth.Account
 fn client_id() -> String
 
 @external(erlang, "albedo_antigravity", "access")
-fn native_access(home: String) -> Result(String, String)
+fn native_access(home: String, session: String) -> Result(String, String)
+
+@external(erlang, "albedo_antigravity", "limited")
+fn native_limited(
+  home: String,
+  access: String,
+  body: String,
+) -> Result(String, String)

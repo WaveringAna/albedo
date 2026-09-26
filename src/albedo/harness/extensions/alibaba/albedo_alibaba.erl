@@ -3,12 +3,17 @@
 %% non-chat entitlement filtering, and key/endpoint resolution.
 
 -include_lib("kernel/include/file.hrl").
--export([models/2, reload/2, fetch_models/2, resolve_credentials/2]).
+-export([models/2, reload/2, fetch_models/2, access/3, limited/4]).
 
 -define(DEFAULT_BASE_URL, <<"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1">>).
 -define(CATALOG_FILE, "alibaba-models.json").
 -define(CACHE_MAX_AGE_MS, 86400000). %% 24 hours
 -define(FETCH_TIMEOUT_MS, 10000).
+-define(SCOPE, <<"alibaba">>).
+%% Used when a spent quota names no reset time.
+-define(DEFAULT_LIMIT_MS, 900000).
+%% Tokens- and requests-per-minute limits clear within a minute.
+-define(RATE_LIMIT_MS, 30000).
 
 
 
@@ -149,29 +154,99 @@ write_cache(Path, Ids) ->
             Error
     end.
 
-%% Resolves BaseUrl and ApiKey for a session or profile.
-%% Resolution order for key:
-%% 1. Profile setting in config.json
-%% 2. auth.json -> "alibaba"
-%% 3. ALIBABA_API_KEY / DASHSCOPE_API_KEY environment variables
-resolve_credentials(Home0, Profile0) ->
-    Home = text(Home0),
-    Profile = binary(Profile0),
-    {ProfileUrl, ProfileKey} = profile_settings(Home, Profile),
-    BaseUrl = case ProfileUrl of
-        <<>> -> resolve_base_url(<<>>);
-        Url -> Url
-    end,
-    ApiKeyRes = case ProfileKey of
-        <<>> -> find_api_key(Home);
-        Key -> {ok, Key}
-    end,
-    case ApiKeyRes of
-        {ok, ApiKey} ->
-            {ok, {BaseUrl, ApiKey}};
-        {error, Reason} ->
-            {error, Reason}
+%% ---- key pool -----------------------------------------------------------
+
+%% The session's key as {"baseUrl", "apiKey"} JSON. Every Alibaba key albedo
+%% can see is a sibling: other alibaba profiles in config.json, auth.json's
+%% "alibaba" entry or list, and the environment. The key this profile would
+%% use on its own comes first; limited keys go last.
+access(Home0, Profile0, Session0) ->
+    Session = binary(Session0),
+    case pool(text(Home0), binary(Profile0)) of
+        [] -> {error, <<"Alibaba API key not found; set ALIBABA_API_KEY, add to auth.json, or configure in /login">>};
+        Keys ->
+            [First | _] = albedo_accounts:order(?SCOPE, Keys, Session, fun id/1),
+            albedo_accounts:remember(?SCOPE, Session, id(First)),
+            {ok, iolist_to_binary(json:encode(maps:with([<<"baseUrl">>, <<"apiKey">>], First)))}
     end.
+
+%% Records a 429 against the key that received it. Every Alibaba 429 is a
+%% limit; one naming a spent quota or an unpaid bill lasts, the rest are
+%% per-minute rate limits.
+limited(Home0, Profile0, Key, Body0) ->
+    Body = binary(Body0),
+    Lasting = lists:any(fun(Mark) -> binary:match(Body, Mark) =/= nomatch end,
+                        [<<"insufficient_quota">>, <<"exceeded your current quota">>,
+                         <<"exhausted">>, <<"Arrearage">>, <<"Overdue">>]),
+    Until = erlang:system_time(millisecond) + case Lasting of
+        true -> ?DEFAULT_LIMIT_MS;
+        false -> ?RATE_LIMIT_MS
+    end,
+    Id = id(#{<<"apiKey">> => Key}),
+    ok = albedo_accounts:note(?SCOPE, Id, Until),
+    Now = erlang:system_time(millisecond),
+    Next = [K || K <- pool(text(Home0), binary(Profile0)), id(K) =/= Id,
+                 not albedo_accounts:limited(K, Now)],
+    {ok, iolist_to_binary(json:encode(#{
+        <<"until">> => albedo_accounts:local_time(Until),
+        <<"next">> => case Next of [#{<<"name">> := Name} | _] -> Name; [] -> <<>> end,
+        <<"lasting">> => Lasting
+    }))}.
+
+pool(Home, Profile) ->
+    {ProfileUrl, ProfileKey} = profile_settings(Home, Profile),
+    BaseUrl = case ProfileUrl of <<>> -> resolve_base_url(<<>>); Url -> Url end,
+    Own = case ProfileKey of
+        <<>> -> case find_api_key(Home) of {ok, K} -> [{Profile, BaseUrl, K}]; _ -> [] end;
+        K -> [{Profile, BaseUrl, K}]
+    end,
+    Siblings = [{Name, case U of <<>> -> BaseUrl; _ -> U end, K}
+                || {Name, U, K} <- alibaba_profiles(Home), Name =/= Profile]
+        ++ [{<<"auth.json">>, BaseUrl, K} || K <- auth_keys(filename:join(Home, "auth.json"))]
+        ++ [{list_to_binary(Var), BaseUrl, unicode:characters_to_binary(K)}
+            || Var <- ["ALIBABA_API_KEY", "DASHSCOPE_API_KEY"],
+               K <- [os:getenv(Var)], is_list(K), K =/= ""],
+    Unique = lists:foldl(fun({_, _, K} = Entry, Acc) ->
+        case lists:keymember(K, 3, Acc) of true -> Acc; false -> Acc ++ [Entry] end
+    end, [], Own ++ Siblings),
+    [#{<<"name">> => Name, <<"baseUrl">> => U, <<"apiKey">> => K,
+       <<"selected">> => I =:= 1 andalso Own =/= [],
+       <<"limitedUntil">> => albedo_accounts:noted(?SCOPE, id(#{<<"apiKey">> => K}))}
+     || {I, {Name, U, K}} <- lists:enumerate(Unique)].
+
+%% A key's id in limit bookkeeping, never the key itself.
+id(#{<<"apiKey">> := Key}) ->
+    binary:encode_hex(binary:part(crypto:hash(sha256, Key), 0, 8), lowercase).
+
+alibaba_profiles(Home) ->
+    case file:read_file(filename:join(Home, "config.json")) of
+        {ok, Bytes} ->
+            try json:decode(Bytes) of
+                #{<<"providers">> := Providers} when is_map(Providers) ->
+                    [{Name, maps:get(<<"baseUrl">>, P, <<>>), Key}
+                     || {Name, #{<<"extension">> := <<"alibaba">>, <<"apiKey">> := <<_, _/binary>> = Key} = P}
+                            <- lists:sort(maps:to_list(Providers))];
+                _ -> []
+            catch _:_ -> [] end;
+        _ -> []
+    end.
+
+auth_keys(Path) ->
+    case file:read_file(Path) of
+        {ok, Bytes} ->
+            try json:decode(Bytes) of
+                #{<<"alibaba">> := List} when is_list(List) -> lists:filtermap(fun auth_key/1, List);
+                #{<<"alibaba">> := One} -> lists:filtermap(fun auth_key/1, [One]);
+                _ -> []
+            catch _:_ -> [] end;
+        _ -> []
+    end.
+
+auth_key(<<_, _/binary>> = Key) -> {true, Key};
+auth_key(#{<<"key">> := <<_, _/binary>> = Key}) -> {true, Key};
+auth_key(#{<<"apiKey">> := <<_, _/binary>> = Key}) -> {true, Key};
+auth_key(#{<<"access">> := <<_, _/binary>> = Key}) -> {true, Key};
+auth_key(_) -> false.
 
 resolve_base_url(<<>>) ->
     case os:getenv("ALIBABA_BASE_URL") of
@@ -219,20 +294,9 @@ find_api_key(Home) ->
     end.
 
 key_from_auth_file(Path) ->
-    case file:read_file(Path) of
-        {ok, Bytes} ->
-            try json:decode(Bytes) of
-                #{<<"alibaba">> := #{<<"key">> := Key}} when is_binary(Key), Key =/= <<>> ->
-                    {ok, Key};
-                #{<<"alibaba">> := #{<<"apiKey">> := Key}} when is_binary(Key), Key =/= <<>> ->
-                    {ok, Key};
-                #{<<"alibaba">> := #{<<"access">> := Key}} when is_binary(Key), Key =/= <<>> ->
-                    {ok, Key};
-                #{<<"alibaba">> := Key} when is_binary(Key), Key =/= <<>> ->
-                    {ok, Key};
-                _ -> {error, not_found}
-            catch _:_ -> {error, not_found} end;
-        _ -> {error, not_found}
+    case auth_keys(Path) of
+        [Key | _] -> {ok, Key};
+        [] -> {error, not_found}
     end.
 
 text(Val) when is_binary(Val) -> unicode:characters_to_list(Val);
