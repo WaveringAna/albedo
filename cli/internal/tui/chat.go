@@ -186,6 +186,9 @@ func wrapOrChunkLine(line string, width int) []string {
 	if width <= 0 {
 		width = 80
 	}
+	if ansi.StringWidth(line) <= width {
+		return []string{line}
+	}
 	// Match wrap-ansi's hard:true, trim:false word placement: a separator
 	// consumes a cell before deciding whether the next word fits.
 	words := strings.Split(line, " ")
