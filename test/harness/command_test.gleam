@@ -23,7 +23,9 @@ fn stub_state(op: command.StateOp) -> Result(json.Json, String) {
         [model, option.unwrap(provider, "-"), option.unwrap(effort, "-")],
         json.string,
       ))
-    command.Compact -> Ok(json.string("started"))
+    command.Compact(option.None) -> Ok(json.string("started"))
+    command.Compact(option.Some(strategy)) ->
+      Ok(json.string("started " <> strategy))
     _ -> Error("unexpected state operation")
   }
 }

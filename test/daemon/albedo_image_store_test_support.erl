@@ -7,7 +7,7 @@ legacy_payload(Text, Data) ->
 
 exists(Path) -> filelib:is_regular(Path).
 
-%% What albedo_rolling:fingerprint/1 returned for #(Source, [UserImage(Text, _)])
+%% What rolling's fingerprint returned for #(Source, [UserImage(Text, _)])
 %% before images were stored.
 legacy_fingerprint(Source, Text, Data) ->
     Term = {Source, [{user_image, Text, {image, <<"image/png">>, Data, 2, 3, 24}}]},

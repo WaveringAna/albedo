@@ -183,18 +183,27 @@ fn models_reload() -> Result(command.Outcome, String) {
 fn compact() -> Command {
   Command(
     "/compact",
-    "Compact this idle session now using its active compaction strategy. The transcript is preserved.",
-    [],
+    "Compact this idle session now using its active compaction strategy, or switch the session to the named strategy first (rolling for a text summary before changing to a model without image input). The transcript is preserved.",
+    [
+      Argument(
+        "strategy",
+        "compaction strategy to switch this session to; omit to keep the active one",
+        False,
+        ["snapcompact", "rolling", "lcm"],
+      ),
+    ],
     False,
     False,
     False,
-    fn(ctx: Context, caller, _args) {
+    fn(ctx: Context, caller, args) {
       case caller {
         ModelCall ->
           Error(
             "compaction is a user action between turns; ask the user to run /compact",
           )
-        UserCall -> ctx.state(Compact) |> result.map(Data)
+        UserCall ->
+          ctx.state(Compact(option.from_result(dict.get(args, "strategy"))))
+          |> result.map(Data)
       }
     },
   )

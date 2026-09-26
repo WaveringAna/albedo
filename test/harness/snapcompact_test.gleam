@@ -1,10 +1,17 @@
 import albedo/daemon/store
+import albedo/harness/compaction
+import albedo/harness/extension
+import albedo/harness/extensions
 import albedo/harness/extensions/snapcompact/extension as snapcompact
+import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/bit_array
 import gleam/dynamic/decode
+import gleam/erlang/process
+import gleam/int
 import gleam/json
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
 
@@ -147,43 +154,45 @@ pub fn paginate_chunks_the_continuous_cell_stream_test() {
   ])
 }
 
-pub fn paginate_keeps_the_newest_frames_test() {
+pub fn bound_keeps_the_first_and_newest_frames_test() {
   let shape = snapcompact.Shape(11, 16, 256, 1)
-  // 23 cells per frame: 10 frames from 230 cells, capped to 8.
-  let cells = string.repeat("a", 230)
-  let chunks = snapcompact.paginate(shape, cells)
-  chunks |> list.length |> should.equal(8)
-  chunks |> list.first |> should.equal(Ok(string.repeat("a", 23)))
+  // 23 cells per frame: ten frames, bounded to four.
+  let pages =
+    list.map(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"], string.repeat(
+      _,
+      23,
+    ))
+  let #(kept, dropped) = snapcompact.bound(shape, 4, string.concat(pages))
+  snapcompact.paginate(shape, kept)
+  |> should.equal([
+    string.repeat("a", 23),
+    string.repeat("h", 23),
+    string.repeat("i", 23),
+    string.repeat("j", 23),
+  ])
+  dropped |> should.equal(6 * 23)
+  snapcompact.bound(shape, 10, string.concat(pages))
+  |> should.equal(#(string.concat(pages), 0))
 }
 
-pub fn cut_keeps_tail_budget_at_a_user_boundary_test() {
-  let history =
-    list.append(
-      [
-        types.User("first"),
-        types.Assistant("a1"),
-        types.ToolOutput("t1", "o1", []),
-      ],
-      [
-        types.User("second"),
-        types.Assistant("a2"),
-        types.User("third"),
-      ],
-    )
-  let #(evicted, tail) = snapcompact.cut(1, history)
-  // A one-token budget keeps only the final user message as the tail.
-  evicted
-  |> should.equal([
+pub fn split_tail_keeps_whole_units_within_budget_test() {
+  let history = [
     types.User("first"),
     types.Assistant("a1"),
     types.ToolOutput("t1", "o1", []),
     types.User("second"),
     types.Assistant("a2"),
-  ])
-  tail |> should.equal([types.User("third")])
+    types.User("third"),
+  ]
+  // A one-token budget still keeps the newest unit.
+  compaction.split_tail(history, 1)
+  |> should.equal(#(list.take(history, 5), [types.User("third")]))
+  // A single unit is never split.
+  compaction.split_tail([types.User("only"), types.Assistant("a")], 1)
+  |> should.equal(#([], [types.User("only"), types.Assistant("a")]))
 }
 
-pub fn cut_never_orphans_a_tool_output_test() {
+pub fn split_tail_never_orphans_a_tool_output_test() {
   let history = [
     types.User("first"),
     types.User("second"),
@@ -191,15 +200,29 @@ pub fn cut_never_orphans_a_tool_output_test() {
     types.ToolOutput("t9", "result", []),
     types.User("third"),
   ]
-  // The budget lands mid-pair: the result moves back with its call.
-  let #(evicted, tail) = snapcompact.cut(1, history)
-  evicted
-  |> list.last
-  |> should.equal(Ok(types.ToolOutput("t9", "result", [])))
-  tail |> list.first |> should.equal(Ok(types.User("third")))
-  evicted
-  |> list.contains(types.Assistant("calling"))
-  |> should.be_true
+  let #(evicted, tail) = compaction.split_tail(history, 1)
+  evicted |> list.last |> should.equal(Ok(types.ToolOutput("t9", "result", [])))
+  tail |> should.equal([types.User("third")])
+}
+
+pub fn cut_resumes_across_projection_changes_test() {
+  let prefix = [types.User("one"), types.Assistant("a"), types.User("two")]
+  let cut = compaction.cut_of(prefix)
+  cut.users |> should.equal(2)
+  // Another provider merges or drops assistant output; users stay put.
+  let other = [types.User("one"), types.User("two"), types.Assistant("b")]
+  let assert Ok(#(evicted, rest)) =
+    compaction.resume(list.append(other, [types.User("three")]), cut)
+  evicted |> should.equal(other)
+  rest |> should.equal([types.User("three")])
+  // A rewritten user message no longer matches.
+  compaction.resume(
+    [types.User("uno"), types.User("two"), types.User("three")],
+    cut,
+  )
+  |> should.equal(Error(Nil))
+  // No user message left after the cut: nothing to resume into.
+  compaction.resume(prefix, cut) |> should.equal(Error(Nil))
 }
 
 pub fn render_frame_test() {
@@ -281,4 +304,218 @@ fn png_image() -> types.Image {
       64,
     )
   image
+}
+
+// The strategy through the runtime: a saved archive, how it resumes, and the
+// text fallback. These render frames too.
+
+fn host(modalities: List(String)) {
+  let catalog =
+    extension.Extension(
+      "catalog",
+      "test catalog",
+      [],
+      [
+        extension.ModelsPlugin(
+          extension.ModelCatalog(
+            fn(model, _) {
+              Some(
+                extension.ModelInfo(
+                  model,
+                  "test",
+                  None,
+                  None,
+                  modalities,
+                  None,
+                  [],
+                  "test catalog",
+                  [],
+                ),
+              )
+            },
+            fn(_, _) { [] },
+          ),
+        ),
+      ],
+      fn(_) { Ok(Nil) },
+    )
+  // A 10k window: a 1k tail and a four-frame archive budget.
+  let config = snapcompact.Config(Some(10_000), 90, 10, 60, None, True)
+  let assert Ok(host) =
+    runtime.start_with_config(
+      ":memory:",
+      extensions.Config([snapcompact.configured_extension(config), catalog], [
+        "snapcompact", "catalog",
+      ]),
+    )
+  let assert Ok(session) = runtime.open_session(host, "snap-test", "/tmp")
+  #(host, session)
+}
+
+/// `n` turns of about a thousand estimated tokens each.
+fn turns(from: Int, n: Int) -> List(types.Input) {
+  list.repeat(Nil, n)
+  |> list.index_map(fn(_, index) { from + index })
+  |> list.flat_map(fn(i) {
+    [
+      types.User("u" <> int.to_string(i) <> " " <> string.repeat("a", 2000)),
+      types.Assistant(
+        "a" <> int.to_string(i) <> " " <> string.repeat("b", 2000),
+      ),
+    ]
+  })
+}
+
+fn compact(host, session, history) {
+  runtime.compact_history_scoped(
+    host,
+    session,
+    "model",
+    "source",
+    "",
+    "",
+    fn(_) { Error("must not summarize") },
+    history,
+  )
+}
+
+fn prepare(host, session, history) {
+  runtime.prepare_history_with(
+    host,
+    session,
+    "model",
+    "",
+    fn(_) { Error("must not summarize") },
+    history,
+  )
+}
+
+fn archive_length(inputs: List(types.Input)) -> Int {
+  inputs
+  |> list.take_while(fn(input) {
+    case input {
+      types.UserImage(_, _) -> True
+      _ -> False
+    }
+  })
+  |> list.length
+}
+
+/// The regression: a forced compaction used to shape only its own request,
+/// so the next request under the trigger resent the whole history.
+pub fn forced_compaction_holds_for_later_requests_test() {
+  let #(host, session) = host(["text", "image"])
+  let history = turns(1, 6)
+  let assert Ok(compacted) = compact(host, session, history)
+  let assert [types.UserImage(caption, _), ..] = compacted
+  string.starts_with(caption, "The images below archive") |> should.be_true
+  let frames = archive_length(compacted)
+  list.drop(compacted, frames) |> should.equal(list.drop(history, 10))
+  prepare(host, session, history) |> should.equal(Ok(compacted))
+  // New turns extend the verbatim tail behind the same archive.
+  let grown = list.append(history, turns(7, 1))
+  prepare(host, session, grown)
+  |> should.equal(Ok(list.append(compacted, turns(7, 1))))
+  runtime.stop(host)
+}
+
+/// Another provider projects assistant output differently; the cut is
+/// counted in user messages, so the archive still applies.
+pub fn archive_survives_a_projection_change_test() {
+  let #(host, session) = host(["text", "image"])
+  let history = turns(1, 6)
+  let assert Ok(compacted) = compact(host, session, history)
+  let frames = archive_length(compacted)
+  let projected =
+    list.map(history, fn(input) {
+      case input {
+        types.Assistant(_) -> types.Assistant("merged")
+        other -> other
+      }
+    })
+  let assert Ok(view) = prepare(host, session, projected)
+  list.take(view, frames) |> should.equal(list.take(compacted, frames))
+  list.drop(view, frames) |> should.equal(list.drop(projected, 10))
+  runtime.stop(host)
+}
+
+pub fn rewritten_history_resets_the_archive_test() {
+  let #(host, session) = host(["text", "image"])
+  let history = turns(1, 6)
+  let assert Ok(_) = compact(host, session, history)
+  let rewritten = [types.User("a different start"), ..list.drop(history, 1)]
+  prepare(host, session, rewritten) |> should.equal(Ok(rewritten))
+  snapcompact.load_archive(runtime.ledger(host), "snap-test")
+  |> should.equal(Ok(None))
+  runtime.stop(host)
+}
+
+/// Recompacting ages new history into the saved archive text. Past the frame
+/// budget the frames between the first and the newest drop, and the caption
+/// says so; the first frame itself is unchanged, so the frame cache holds.
+pub fn recompaction_extends_the_archive_test() {
+  let #(host, session) = host(["text", "image"])
+  let history = turns(1, 6)
+  let assert Ok([types.UserImage(_, first_frame), ..]) =
+    compact(host, session, history)
+  let assert Ok(Some(before)) =
+    snapcompact.load_archive(runtime.ledger(host), "snap-test")
+  before.dropped |> should.equal(0)
+  let grown = list.append(history, turns(7, 3))
+  let assert Ok(second) = compact(host, session, grown)
+  let assert Ok(Some(after)) =
+    snapcompact.load_archive(runtime.ledger(host), "snap-test")
+  after.cut.users |> should.equal(8)
+  let assert [types.UserImage(caption, frame), ..] = second
+  frame |> should.equal(first_frame)
+  string.contains(caption, "were dropped") |> should.be_true
+  should.be_true(after.dropped > 0)
+  archive_length(second) |> should.equal(4)
+  list.drop(second, 4) |> should.equal(list.drop(grown, 16))
+  runtime.stop(host)
+}
+
+/// A model without image input gets rolling's text summary instead of frames.
+pub fn text_model_falls_back_to_a_text_summary_test() {
+  let #(host, session) = host(["text"])
+  let history = turns(1, 6)
+  let summaries = process.new_subject()
+  let assert Ok([types.User(summary), ..]) =
+    runtime.compact_history_scoped(
+      host,
+      session,
+      "model",
+      "source",
+      "",
+      "",
+      fn(request) {
+        process.send(summaries, request)
+        Ok("text facts")
+      },
+      history,
+    )
+  string.contains(summary, "text facts") |> should.be_true
+  let assert Ok(_) = process.receive(summaries, 0)
+  snapcompact.load_archive(runtime.ledger(host), "snap-test")
+  |> should.equal(Ok(None))
+  runtime.stop(host)
+}
+
+pub fn frame_budget_fits_the_window_and_the_stack_test() {
+  let config = snapcompact.default_config()
+  let shape = snapcompact.shape("claude-opus-5-5")
+  // 20% of 200k at ~1.4k tokens a frame, under the stack's cap.
+  snapcompact.frame_budget(config, shape, "claude-opus-5-5", Some(200_000))
+  |> should.equal(27)
+  snapcompact.frame_budget(config, shape, "claude-opus-5-5", Some(1_000_000))
+  |> should.equal(60)
+  snapcompact.frame_budget(config, shape, "mystery-model", None)
+  |> should.equal(20)
+  snapcompact.frame_budget(
+    snapcompact.Config(..config, max_frames: Some(5)),
+    shape,
+    "qwen3.8-max",
+    Some(1_000_000),
+  )
+  |> should.equal(5)
 }

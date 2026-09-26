@@ -49,12 +49,21 @@ pub type Observation {
 }
 
 type State {
-  State(summary: String, cutoff_count: Int, source_hash: String)
+  State(summary: String, cut: compaction.Cut)
 }
 
-type Unit {
-  Unit(items: List(types.Input), tokens: Int)
+/// A saved row. With `cut_prefix` on `cut_hash`, `cutoff` counts user
+/// messages; a row without it predates that and counts items under one source.
+type Row {
+  Row(summary: String, cutoff: Int, cut_hash: String)
 }
+
+/// A saved state that still matches this history, split at its cut.
+type Resumed {
+  Resumed(state: State, evicted: List(types.Input), tail: List(types.Input))
+}
+
+const cut_prefix = "users:"
 
 pub fn default_config() -> Config {
   Config(None, 90, 25)
@@ -106,15 +115,23 @@ pub fn extension() -> extension.Extension {
     "Incremental summary, recent-user recap, and verbatim conversation tail",
     [],
     [
-      extension.CompactionPlugin(
-        compaction.Strategy("rolling", fn(context, history) {
-          use config <- result.try(load_config())
-          prepare_view(config, context, history)
-        }),
-      ),
+      extension.CompactionPlugin(compaction.Strategy(
+        "rolling",
+        prepare_with_settings,
+      )),
     ],
     initialise,
   )
+}
+
+/// The rolling projection under the saved settings, for a strategy that falls
+/// back to text for a model without image input.
+pub fn prepare_with_settings(
+  context: compaction.Context,
+  history: List(types.Input),
+) -> Result(compaction.Prepared, String) {
+  use config <- result.try(load_config())
+  prepare_view(config, context, history)
 }
 
 pub fn strategy(config: Config) -> compaction.Strategy {
@@ -257,23 +274,23 @@ fn observation_decoder() {
   ))
 }
 
-fn state_decoder() {
+fn row_decoder() {
   use summary <- decode.field(0, decode.string)
   use cutoff <- decode.field(1, decode.int)
-  use source_hash <- decode.field(2, decode.string)
-  decode.success(State(summary, cutoff, source_hash))
+  use cut_hash <- decode.field(2, decode.string)
+  decode.success(Row(summary, cutoff, cut_hash))
 }
 
 fn load_state(
   ledger: store.Store,
   session: String,
-) -> Result(Option(State), String) {
+) -> Result(Option(Row), String) {
   store.query(ledger, fn(db) {
     sqlight.query(
       "SELECT summary,cutoff_count,source_hash FROM rolling_compaction_state WHERE session=?",
       db,
       [sqlight.text(session)],
-      state_decoder(),
+      row_decoder(),
     )
     |> result.map_error(fn(error) { error.message })
     |> result.map(fn(rows) { list.first(rows) |> option_from_result })
@@ -293,6 +310,7 @@ fn prepare(
     source,
     pinned_tokens,
     catalogued,
+    _,
     force,
     summarize,
   ) = context
@@ -312,24 +330,24 @@ fn prepare(
         _, _ -> catalogued
       }
   }
+  use saved <- result.try(load_state(ledger, session))
+  use #(resumed, invalidated) <- result.try(resume(
+    ledger,
+    session,
+    saved,
+    source,
+    history,
+  ))
+  use _ <- result.try(case invalidated {
+    True -> delete_state(ledger, session)
+    False -> Ok(Nil)
+  })
+  let current = projection(resumed, history)
   case window {
     None -> {
       // Without a window there is no threshold to compare, but a saved
       // projection is still the user's standing instruction: honor it.
-      use saved <- result.try(load_state(ledger, session))
-      use #(state, invalidated) <- result.try(valid_state(
-        ledger,
-        session,
-        saved,
-        source,
-        history,
-      ))
-      use _ <- result.try(case invalidated {
-        True -> delete_state(ledger, session)
-        False -> Ok(Nil)
-      })
-      let current = projection(state, history)
-      let status = case state {
+      let status = case resumed {
         Some(_) -> "compacted"
         None -> "unknown"
       }
@@ -352,19 +370,6 @@ fn prepare(
       Ok(current.3)
     }
     Some(compaction.Capacity(capacity, capacity_source)) -> {
-      use saved <- result.try(load_state(ledger, session))
-      use #(state, invalidated) <- result.try(valid_state(
-        ledger,
-        session,
-        saved,
-        source,
-        history,
-      ))
-      use _ <- result.try(case invalidated {
-        True -> delete_state(ledger, session)
-        False -> Ok(Nil)
-      })
-      let current = projection(state, history)
       let estimated = pinned_tokens + compaction.estimate_inputs(current.3)
       case pinned_tokens >= capacity {
         True -> {
@@ -388,13 +393,13 @@ fn prepare(
           )
         }
         False if !force && estimated * 100 < capacity * config.trigger_percent -> {
-          let status = case state {
+          let status = case resumed {
             Some(_) -> "compacted"
             None -> "not_needed"
           }
           let source = case invalidated {
             True ->
-              "estimated after source fingerprint changed; saved projection reset"
+              "estimated after the transcript changed under the saved cut; saved projection reset"
             False -> "estimated from current request projection"
           }
           let source = source <> "; window from " <> capacity_source
@@ -417,9 +422,13 @@ fn prepare(
           Ok(current.3)
         }
         False -> {
-          let previous_cutoff = case state {
-            Some(saved) -> saved.cutoff_count
-            None -> 0
+          let #(previous_summary, evicted, rest) = case resumed {
+            Some(Resumed(state, evicted, tail)) -> #(
+              Some(state.summary),
+              evicted,
+              tail,
+            )
+            None -> #(None, [], history)
           }
           let tail_budget = case force {
             True ->
@@ -428,44 +437,26 @@ fn prepare(
               / 100
             False -> capacity * config.tail_percent / 100
           }
-          use cutoff <- result.try(legal_cutoff(history, tail_budget))
-          use _ <- result.try(case cutoff > previous_cutoff {
-            True -> Ok(Nil)
-            False ->
+          let #(newly_evicted, tail) = compaction.split_tail(rest, tail_budget)
+          use _ <- result.try(case history, newly_evicted {
+            [], _ -> Error("cannot compact an empty conversation")
+            _, [] ->
               Error(
                 "cannot compact further without splitting the newest conversation/tool unit",
               )
+            _, _ -> Ok(Nil)
           })
-          let newly_evicted =
-            history
-            |> list.drop(previous_cutoff)
-            |> list.take(cutoff - previous_cutoff)
-          let previous_summary = case state {
-            Some(saved) -> Some(saved.summary)
-            None -> None
-          }
-          use summary <- result.try(
-            summarize(compaction.SummaryRequest(
-              model,
-              previous_summary,
-              newly_evicted,
-              int.min(2048, int.max(128, capacity / 10)),
-            ))
-            |> result.map(string.trim)
-            |> result.try(fn(value) {
-              case value == "" {
-                True -> Error("summarizer returned an empty summary")
-                False -> Ok(value)
-              }
-            }),
-          )
-          let next_state =
-            State(
-              summary,
-              cutoff,
-              source_fingerprint(source, list.take(history, cutoff)),
-            )
-          let next = projection(Some(next_state), history)
+          use summary <- result.try(summarize_chunks(
+            summarize,
+            model,
+            previous_summary,
+            chunks(newly_evicted, int.max(1000, capacity / 2), 0, [], []),
+            int.min(2048, int.max(128, capacity / 10)),
+          ))
+          let evicted = list.append(evicted, newly_evicted)
+          let next_state = State(summary, compaction.cut_of(evicted))
+          let next =
+            projection(Some(Resumed(next_state, evicted, tail)), history)
           let next_estimated =
             pinned_tokens + compaction.estimate_inputs(next.3)
           // The fit guarantee belongs to a real window; a forced compaction's
@@ -504,9 +495,61 @@ fn prepare(
   }
 }
 
+/// Folds evicted history into the summary one chunk at a time, so a long
+/// eviction, such as a large window's history before a switch to a smaller
+/// model, never asks the summarizer for more than half its window.
+fn summarize_chunks(
+  summarize: fn(compaction.SummaryRequest) -> Result(String, String),
+  model: String,
+  previous: Option(String),
+  chunks: List(List(types.Input)),
+  max_output_tokens: Int,
+) -> Result(String, String) {
+  use summary <- result.try(
+    list.try_fold(chunks, previous, fn(previous, chunk) {
+      summarize(compaction.SummaryRequest(
+        model,
+        previous,
+        chunk,
+        max_output_tokens,
+      ))
+      |> result.map(string.trim)
+      |> result.try(fn(value) {
+        case value == "" {
+          True -> Error("summarizer returned an empty summary")
+          False -> Ok(Some(value))
+        }
+      })
+    }),
+  )
+  option.to_result(summary, "summarizer returned an empty summary")
+}
+
+fn chunks(
+  items: List(types.Input),
+  budget: Int,
+  tokens: Int,
+  current: List(types.Input),
+  complete: List(List(types.Input)),
+) -> List(List(types.Input)) {
+  case items, current {
+    [], [] -> list.reverse(complete)
+    [], _ -> list.reverse([list.reverse(current), ..complete])
+    [item, ..rest], _ -> {
+      let cost = compaction.estimate_input(item)
+      case current != [] && tokens + cost > budget {
+        True ->
+          chunks(rest, budget, cost, [item], [list.reverse(current), ..complete])
+        False ->
+          chunks(rest, budget, tokens + cost, [item, ..current], complete)
+      }
+    }
+  }
+}
+
 /// #(summary inputs, recap inputs, tail inputs, complete projection)
 fn projection(
-  state: Option(State),
+  resumed: Option(Resumed),
   history: List(types.Input),
 ) -> #(
   List(types.Input),
@@ -514,18 +557,17 @@ fn projection(
   List(types.Input),
   List(types.Input),
 ) {
-  case state {
+  case resumed {
     None -> #([], [], history, history)
-    Some(saved) -> {
+    Some(Resumed(state, _, tail)) -> {
       let summary = [
         types.User(
           "[older conversation summary; model-generated]\n"
-          <> saved.summary
+          <> state.summary
           <> "\n[end older conversation summary]",
         ),
       ]
       let recap = recap(history)
-      let tail = list.drop(history, saved.cutoff_count)
       #(summary, recap, tail, list.append(summary, list.append(recap, tail)))
     }
   }
@@ -564,40 +606,49 @@ fn bounded_excerpt(text: String) -> String {
   }
 }
 
-fn valid_state(
+/// The saved state this history still matches, and whether a saved row was
+/// invalidated. A legacy row validates the way it was written, by item count
+/// under one source, and is rewritten as a user-message cut once it matches.
+fn resume(
   ledger: store.Store,
   session: String,
-  saved: Option(State),
+  saved: Option(Row),
   source: String,
   history: List(types.Input),
-) -> Result(#(Option(State), Bool), String) {
-  let length = list.length(history)
+) -> Result(#(Option(Resumed), Bool), String) {
   case saved {
     None -> Ok(#(None, False))
-    Some(state) if state.cutoff_count > length -> Ok(#(None, True))
-    Some(state) -> {
-      let prefix = list.take(history, state.cutoff_count)
-      let current = source_fingerprint(source, prefix)
-      case current == state.source_hash {
-        True -> Ok(#(Some(state), False))
-        // A hash saved before images were stored covered their payload
-        // bytes. Checking it reads them once; a match is rewritten in the
-        // current form and a mismatch is deleted by the caller, so this runs
-        // at most once per saved state.
-        False ->
-          case
-            has_images(prefix)
-            && legacy_fingerprint(#(source, prefix)) == Ok(state.source_hash)
-          {
-            True -> {
-              let upgraded = State(..state, source_hash: current)
-              use _ <- result.try(save_hash(ledger, session, current))
-              Ok(#(Some(upgraded), False))
-            }
-            False -> Ok(#(None, True))
+    Some(Row(summary, cutoff, cut_hash)) ->
+      case string.split_once(cut_hash, cut_prefix) {
+        Ok(#("", fingerprint)) -> {
+          let state = State(summary, compaction.Cut(cutoff, fingerprint))
+          case compaction.resume(history, state.cut) {
+            Ok(#(evicted, tail)) ->
+              Ok(#(Some(Resumed(state, evicted, tail)), False))
+            Error(Nil) -> Ok(#(None, True))
           }
+        }
+        _ -> {
+          let #(evicted, tail) = list.split(history, cutoff)
+          let matches =
+            list.length(evicted) == cutoff
+            && {
+              source_fingerprint(source, evicted) == cut_hash
+              // A hash saved before images were stored covered their
+              // payload bytes; checking it reads them once.
+              || has_images(evicted)
+              && legacy_fingerprint(#(source, evicted)) == Ok(cut_hash)
+            }
+          case matches, tail {
+            True, [types.User(_), ..] | True, [types.UserImage(_, _), ..] -> {
+              let state = State(summary, compaction.cut_of(evicted))
+              use _ <- result.try(save_cut(ledger, session, state.cut))
+              Ok(#(Some(Resumed(state, evicted, tail)), False))
+            }
+            _, _ -> Ok(#(None, True))
+          }
+        }
       }
-    }
   }
 }
 
@@ -611,103 +662,25 @@ fn has_images(inputs: List(types.Input)) -> Bool {
   })
 }
 
-fn save_hash(
+fn save_cut(
   ledger: store.Store,
   session: String,
-  source_hash: String,
+  cut: compaction.Cut,
 ) -> Result(Nil, String) {
   store.query(ledger, fn(db) {
     sqlight.query(
-      "UPDATE rolling_compaction_state SET source_hash=? WHERE session=?",
+      "UPDATE rolling_compaction_state SET cutoff_count=?,source_hash=? WHERE session=?",
       db,
-      [sqlight.text(source_hash), sqlight.text(session)],
+      [
+        sqlight.int(cut.users),
+        sqlight.text(cut_prefix <> cut.fingerprint),
+        sqlight.text(session),
+      ],
       decode.dynamic,
     )
     |> result.replace(Nil)
     |> result.map_error(fn(error) { error.message })
   })
-}
-
-fn legal_cutoff(
-  history: List(types.Input),
-  tail_budget: Int,
-) -> Result(Int, String) {
-  let units = conversation_units(history)
-  case units {
-    [] -> Error("cannot compact an empty conversation")
-    [_] ->
-      Error("cannot compact without splitting the only conversation/tool unit")
-    _ -> {
-      let tail_items = choose_tail(list.reverse(units), tail_budget, 0, 0)
-      let cutoff = list.length(history) - tail_items
-      case cutoff > 0 {
-        True -> Ok(cutoff)
-        False -> Error("conversation tail already fits the configured target")
-      }
-    }
-  }
-}
-
-fn choose_tail(
-  newest_first: List(Unit),
-  budget: Int,
-  tokens: Int,
-  items: Int,
-) -> Int {
-  case newest_first {
-    [] -> items
-    [Unit(unit, unit_tokens), ..rest] -> {
-      let include = items == 0 || tokens + unit_tokens <= budget
-      case include {
-        True ->
-          choose_tail(
-            rest,
-            budget,
-            tokens + unit_tokens,
-            items + list.length(unit),
-          )
-        False -> items
-      }
-    }
-  }
-}
-
-fn conversation_units(history: List(types.Input)) -> List(Unit) {
-  split_units(history, [], [])
-}
-
-fn split_units(
-  remaining: List(types.Input),
-  current: List(types.Input),
-  complete: List(Unit),
-) -> List(Unit) {
-  case remaining {
-    [] -> {
-      let complete = case current {
-        [] -> complete
-        _ -> [make_unit(list.reverse(current)), ..complete]
-      }
-      list.reverse(complete)
-    }
-    [input, ..rest] -> {
-      let begins_turn = case input {
-        types.User(_) | types.UserImage(_, _) -> True
-        _ -> False
-      }
-      case begins_turn && current != [] {
-        True ->
-          split_units(rest, [input], [
-            make_unit(list.reverse(current)),
-            ..complete
-          ])
-        False -> split_units(rest, [input, ..current], complete)
-      }
-    }
-  }
-}
-
-fn make_unit(items: List(types.Input)) -> Unit {
-  Unit(items, compaction.estimate_inputs(items))
 }
 
 fn observation_for(
@@ -771,8 +744,8 @@ fn save_compaction(
           [
             sqlight.text(session),
             sqlight.text(state.summary),
-            sqlight.int(state.cutoff_count),
-            sqlight.text(state.source_hash),
+            sqlight.int(state.cut.users),
+            sqlight.text(cut_prefix <> state.cut.fingerprint),
           ],
           decode.dynamic,
         )
@@ -840,11 +813,8 @@ fn delete_state(ledger: store.Store, session: String) -> Result(Nil, String) {
 }
 
 fn source_fingerprint(source: String, inputs: List(types.Input)) -> String {
-  fingerprint(#(source, inputs))
+  compaction.fingerprint(#(source, inputs))
 }
-
-@external(erlang, "albedo_rolling", "fingerprint")
-fn fingerprint(value: a) -> String
 
 @external(erlang, "albedo_rolling", "legacy_fingerprint")
 fn legacy_fingerprint(value: a) -> Result(String, Nil)

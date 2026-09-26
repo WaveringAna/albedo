@@ -32,7 +32,7 @@ fn exists(path: String) -> Bool
 @external(erlang, "albedo_image_store_test_support", "legacy_fingerprint")
 fn old_fingerprint(source: String, text: String, data: String) -> String
 
-@external(erlang, "albedo_rolling", "fingerprint")
+@external(erlang, "albedo_compaction", "fingerprint")
 fn fingerprint(value: a) -> String
 
 @external(erlang, "albedo_rolling", "legacy_fingerprint")

@@ -48,7 +48,8 @@ pub type StateOp {
   EffortGet
   EffortSelect(effort: String)
   ContextSummary
-  Compact
+  /// Compact now; a named strategy first becomes the session's own.
+  Compact(strategy: Option(String))
   ContextPage(section: String, page: Int)
   Submit(display: String, text: String, client: String)
   Refresh

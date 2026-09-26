@@ -9,6 +9,7 @@ import albedo/daemon/store
 import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/harness/extensions/lcm/extension as lcm
+import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/settings
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
@@ -23,10 +24,21 @@ import sqlight
 
 const default_trigger_percent = 90
 
-const default_tail_percent = 25
+/// Kept verbatim after a compaction: a small tail leaves the window to the
+/// archive and to new turns.
+const default_tail_percent = 10
 
-/// Frame cap per compaction; older frames are dropped, newest kept.
-const max_frames = 8
+/// The archive's share of the window, at the estimated cost of a full frame.
+const default_archive_percent = 20
+
+/// Frames per request for a stack with a known image policy. Anthropic rejects
+/// a request past 100 images, and gateways fail opaquely once a request
+/// carries a few MB of base64 (a frame is about 50 KB), so 60 leaves room for
+/// the images tool results carry.
+const stack_frames = 60
+
+/// Frames per request for a stack whose image limits are unmeasured.
+const unknown_stack_frames = 20
 
 const result_chars = 1600
 
@@ -42,7 +54,12 @@ const frame_retention_ms = 2_592_000_000
 
 const frame_schema = "CREATE TABLE IF NOT EXISTS snapcompact_frames(key TEXT PRIMARY KEY,hash TEXT NOT NULL,data TEXT NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,bytes INTEGER NOT NULL,created_at INTEGER NOT NULL);"
 
+const archive_schema = "CREATE TABLE IF NOT EXISTS snapcompact_archive(session TEXT PRIMARY KEY,users INTEGER NOT NULL CHECK(users >= 0),fingerprint TEXT NOT NULL,text TEXT NOT NULL,dropped INTEGER NOT NULL CHECK(dropped >= 0));"
+
 const truncation_note = "The conversation above this message was truncated; its earlier history could not be archived."
+
+/// U+2588 FULL BLOCK: the cell that stands for a newline in the archive.
+const newline_cell = "\u{2588}"
 
 @external(erlang, "albedo_snapcompact", "render_frames")
 fn render_frames(
@@ -69,7 +86,7 @@ pub fn render_frame_test(
 }
 
 @external(erlang, "albedo_snapcompact", "paginate")
-fn paginate_ffi(text: String, per_frame: Int, max: Int) -> List(String)
+fn paginate_ffi(text: String, per_frame: Int) -> List(String)
 
 @external(erlang, "albedo_snapcompact", "now_ms")
 fn now_ms() -> Int
@@ -88,6 +105,8 @@ pub type Config {
     context_window_tokens: Option(Int),
     trigger_percent: Int,
     tail_percent: Int,
+    archive_percent: Int,
+    max_frames: Option(Int),
     enabled: Bool,
   )
 }
@@ -96,12 +115,27 @@ pub type Shape {
   Shape(advance: Int, pitch: Int, width: Int, rows: Int)
 }
 
+/// The saved archive: the normalized text of everything before `cut`, kept
+/// within the frame budget, and how many characters that budget has dropped.
+/// Frames are re-derived from the text, so a model switch re-renders it in
+/// the new stack's shape instead of discarding it.
+pub type Archive {
+  Archive(cut: compaction.Cut, text: String, dropped: Int)
+}
+
 type FrameRow {
   FrameRow(key: String, hash: String, width: Int, height: Int, bytes: Int)
 }
 
 pub fn default_config() -> Config {
-  Config(None, default_trigger_percent, default_tail_percent, True)
+  Config(
+    None,
+    default_trigger_percent,
+    default_tail_percent,
+    default_archive_percent,
+    None,
+    True,
+  )
 }
 
 pub fn config_decoder() {
@@ -110,10 +144,28 @@ pub fn config_decoder() {
     None,
     decode.optional(decode.int),
   )
-  use trigger <- decode.optional_field("triggerPercent", 90, decode.int)
-  use tail <- decode.optional_field("tailPercent", 25, decode.int)
+  use trigger <- decode.optional_field(
+    "triggerPercent",
+    default_trigger_percent,
+    decode.int,
+  )
+  use tail <- decode.optional_field(
+    "tailPercent",
+    default_tail_percent,
+    decode.int,
+  )
+  use archive <- decode.optional_field(
+    "archivePercent",
+    default_archive_percent,
+    decode.int,
+  )
+  use frames <- decode.optional_field(
+    "maxFrames",
+    None,
+    decode.optional(decode.int),
+  )
   use enabled <- decode.optional_field("enabled", True, decode.bool)
-  decode.success(Config(capacity, trigger, tail, enabled))
+  decode.success(Config(capacity, trigger, tail, archive, frames, enabled))
 }
 
 pub fn load_config() -> Result(Config, String) {
@@ -136,20 +188,24 @@ pub fn load_config_at(home: String) -> Result(Config, String) {
 }
 
 fn validate_config(config: Config) -> Result(Config, String) {
-  case config.context_window_tokens {
-    Some(capacity) if capacity <= 0 ->
+  case config.context_window_tokens, config.max_frames {
+    Some(capacity), _ if capacity <= 0 ->
       Error("snapcompact contextWindowTokens must be positive")
-    _ ->
+    _, Some(frames) if frames <= 0 ->
+      Error("snapcompact maxFrames must be positive")
+    _, _ ->
       case
         config.trigger_percent > 0
         && config.trigger_percent < 100
         && config.tail_percent > 0
         && config.tail_percent < config.trigger_percent
+        && config.archive_percent > 0
+        && config.archive_percent < 100
       {
         True -> Ok(config)
         False ->
           Error(
-            "snapcompact percentages must satisfy 0 < tailPercent < triggerPercent < 100",
+            "snapcompact percentages must satisfy 0 < tailPercent < triggerPercent < 100 and 0 < archivePercent < 100",
           )
       }
   }
@@ -170,20 +226,38 @@ pub fn extension() -> extension.Extension {
 fn compaction_plugins() -> List(extension.Plugin) {
   case load_config() {
     Ok(_) -> [
-      extension.CompactionPlugin(
-        compaction.Strategy("snapcompact", fn(context, history) {
-          use valid <- result.try(load_config())
-          prepare_view(valid, context, history)
-        }),
-      ),
+      extension.CompactionPlugin(strategy_with(load_config)),
     ]
     Error(_) -> []
   }
 }
 
+/// Snapcompact under fixed settings, for embedders and tests.
+pub fn configured_extension(config: Config) -> extension.Extension {
+  extension.Extension(
+    "snapcompact",
+    "History archived as rendered bitmap frames the vision stack reads directly",
+    [],
+    [extension.CompactionPlugin(strategy_with(fn() { Ok(config) }))],
+    initialise,
+  )
+}
+
+/// The strategy under the settings `resolve` answers per compaction.
+fn strategy_with(
+  resolve: fn() -> Result(Config, String),
+) -> compaction.Strategy {
+  compaction.Strategy("snapcompact", fn(context, history) {
+    use valid <- result.try(result.try(resolve(), validate_config))
+    prepare_view(valid, context, history)
+  })
+}
+
+/// The text fallback keeps its summary in rolling's tables.
 pub fn initialise(ledger: store.Store) -> Result(Nil, String) {
+  use _ <- result.try(rolling.initialise(ledger))
   store.query(ledger, fn(db) {
-    case sqlight.exec(frame_schema, db) {
+    case sqlight.exec(frame_schema <> archive_schema, db) {
       Ok(_) -> {
         // A failed prune only costs disk space, never a turn.
         let _ =
@@ -204,63 +278,169 @@ fn prepare_view(
   context: compaction.Context,
   history: List(types.Input),
 ) -> Result(compaction.Prepared, String) {
+  case context.images {
+    Some(False) -> text_view(context, history)
+    _ -> visual_view(config, context, history)
+  }
+}
+
+/// A model without image input cannot read frames: rolling's text summary
+/// stands in, and the frame archive waits for a model that reads images.
+fn text_view(
+  context: compaction.Context,
+  history: List(types.Input),
+) -> Result(compaction.Prepared, String) {
+  use prepared <- result.try(rolling.prepare_with_settings(context, history))
+  Ok(
+    compaction.Prepared(
+      ..prepared,
+      observation: option.map(prepared.observation, fn(observed) {
+        compaction.Observation(
+          ..observed,
+          strategy: "snapcompact",
+          source: "model reads no image input; rolling text compaction: "
+            <> observed.source,
+        )
+      }),
+    ),
+  )
+}
+
+fn visual_view(
+  config: Config,
+  context: compaction.Context,
+  history: List(types.Input),
+) -> Result(compaction.Prepared, String) {
   use folded <- result.try(lcm.stored_view(
     context.store,
     context.session,
     history,
   ))
-  let estimated = context.pinned_tokens + compaction.estimate_inputs(folded)
+  use saved <- result.try(load_archive(context.store, context.session))
+  let resumed =
+    option.then(saved, fn(archive) {
+      compaction.resume(folded, archive.cut)
+      |> result.map(fn(split) { #(archive, split.0, split.1) })
+      |> option.from_result
+    })
+  use _ <- result.try(case saved, resumed {
+    Some(_), None -> delete_archive(context.store, context.session)
+    _, _ -> Ok(Nil)
+  })
+  let shape = shape(context.model)
   let capacity = case context.capacity {
     Some(compaction.Capacity(tokens, _)) -> Some(tokens)
     None -> config.context_window_tokens
   }
-  let compacted = case context.force {
-    True -> True
-    False ->
-      case capacity {
-        Some(tokens) -> estimated >= tokens * config.trigger_percent / 100
-        None -> False
-      }
+  let limit = frame_budget(config, shape, context.model, capacity)
+  let #(current, status) = case resumed {
+    None -> #(folded, "idle")
+    Some(#(archive, _, tail)) ->
+      view(context.store, shape, limit, archive, tail)
   }
-  case compacted, has_user_boundary(folded) {
-    False, _ ->
-      Ok(compaction.Prepared(folded, observation("idle", folded, folded)))
-    True, False ->
-      // No user boundary to cut at: an archive would orphan tool pairs.
-      Ok(compaction.Prepared(folded, observation("idle", folded, folded)))
-    True, True -> {
-      let tail_tokens = case capacity {
-        Some(tokens) -> tokens * config.tail_percent / 100
-        None -> int.max(estimated / 4, 1000)
-      }
-      let #(evicted, tail) = cut(tail_tokens, folded)
-      let text = normalize(evicted)
-      let shape = shape(context.model)
-      let chunks = paginate(shape, text)
-      case chunks {
-        [] ->
-          Ok(compaction.Prepared(folded, observation("idle", folded, folded)))
-        _ ->
-          case frames(context.store, shape, chunks) {
-            Ok(images) -> {
-              let prepared = list.append(archive_inputs(images), tail)
-              Ok(compaction.Prepared(
-                prepared,
-                observation("compacted", folded, prepared),
-              ))
-            }
-            // Rendering failure degrades to a verbatim tail, never a lost
-            // turn: the strategy must not error here.
-            Error(_) -> {
-              let prepared = [types.User(truncation_note), ..tail]
-              Ok(compaction.Prepared(
-                prepared,
-                observation("fallback", folded, prepared),
-              ))
-            }
-          }
-      }
+  let estimated = context.pinned_tokens + compaction.estimate_inputs(current)
+  let triggered =
+    context.force
+    || case capacity {
+      Some(tokens) -> estimated * 100 >= tokens * config.trigger_percent
+      None -> False
     }
+  let #(previous, evicted, rest) = case resumed {
+    Some(#(archive, evicted, tail)) -> #(Some(archive), evicted, tail)
+    None -> #(None, [], folded)
+  }
+  let tail_budget = case capacity {
+    Some(tokens) -> tokens * config.tail_percent / 100
+    None -> int.max(estimated / 4, 1000)
+  }
+  case triggered, compaction.split_tail(rest, tail_budget) {
+    // Only a whole unit remains, or nothing is due: keep the saved cut.
+    False, _ | True, #([], _) ->
+      Ok(compaction.Prepared(current, observation(status, folded, current)))
+    True, #(newly_evicted, tail) -> {
+      let archive = extend(shape, limit, previous, evicted, newly_evicted)
+      use _ <- result.try(save_archive(context.store, context.session, archive))
+      let #(prepared, status) = view(context.store, shape, limit, archive, tail)
+      Ok(compaction.Prepared(prepared, observation(status, folded, prepared)))
+    }
+  }
+}
+
+/// The archive after `newly_evicted` ages into it: the previous kept text,
+/// then the new history, bounded again to the frame budget.
+fn extend(
+  shape: Shape,
+  limit: Int,
+  previous: Option(Archive),
+  evicted: List(types.Input),
+  newly_evicted: List(types.Input),
+) -> Archive {
+  let fresh = normalize(newly_evicted)
+  let #(text, dropped) = case previous {
+    Some(archive) -> #(archive.text <> newline_cell <> fresh, archive.dropped)
+    None -> #(fresh, 0)
+  }
+  let #(text, trimmed) = bound(shape, limit, text)
+  Archive(
+    compaction.cut_of(list.append(evicted, newly_evicted)),
+    text,
+    dropped + trimmed,
+  )
+}
+
+/// The archive as request inputs ahead of `tail`, and the view's status.
+/// Rendering failure degrades to a verbatim tail, never a lost turn.
+fn view(
+  ledger: store.Store,
+  shape: Shape,
+  limit: Int,
+  archive: Archive,
+  tail: List(types.Input),
+) -> #(List(types.Input), String) {
+  // A stack with a smaller budget than the archive was saved under reads
+  // only what fits; the saved text keeps the rest for a larger one.
+  let #(text, trimmed) = bound(shape, limit, archive.text)
+  case frames(ledger, shape, paginate(shape, text)) {
+    Ok(images) -> #(
+      list.append(archive_inputs(images, archive.dropped + trimmed), tail),
+      "compacted",
+    )
+    Error(_) -> #([types.User(truncation_note), ..tail], "fallback")
+  }
+}
+
+/// Frames per request: the stack's image cap, and at most `archivePercent`
+/// of the window at the estimated cost of a full frame.
+pub fn frame_budget(
+  config: Config,
+  shape: Shape,
+  model: String,
+  capacity: Option(Int),
+) -> Int {
+  let cap = option.unwrap(config.max_frames, stack_budget(model))
+  let cost = compaction.image_tokens(shape.width, shape.rows * shape.pitch)
+  case capacity {
+    Some(tokens) ->
+      int.clamp(tokens * config.archive_percent / 100 / cost, min: 1, max: cap)
+    None -> cap
+  }
+}
+
+/// Stacks whose image limits are known to allow a full archive. Qwen on
+/// Model Studio bounds images by tokens only.
+fn stack_budget(model: String) -> Int {
+  let name = string.lowercase(model)
+  case
+    list.any(
+      [
+        "claude", "anthropic", "gemini", "google", "gpt", "codex", "o3", "o4",
+        "qwen",
+      ],
+      string.contains(name, _),
+    )
+  {
+    True -> stack_frames
+    False -> unknown_stack_frames
   }
 }
 
@@ -418,11 +598,34 @@ pub fn normalize(inputs: List(types.Input)) -> String {
 }
 
 /// Chunks the continuous cell stream so one frame holds at most
-/// `shape.rows` wrapped rows; whole leading frames are dropped so frame
-/// boundaries stay aligned, keeping only the newest `max_frames`.
+/// `shape.rows` wrapped rows.
 pub fn paginate(shape: Shape, text: String) -> List(String) {
-  let columns = shape.width / shape.advance
-  paginate_ffi(text, columns * shape.rows, max_frames)
+  paginate_ffi(text, shape.width / shape.advance * shape.rows)
+}
+
+/// Keeps archive text within `limit` frames: the first frame, where the
+/// session's task was set, and the newest after it. Whole frames between them
+/// drop, so the kept frames stay aligned (and cached) across compactions.
+/// Answers the kept text and how many characters were dropped.
+pub fn bound(shape: Shape, limit: Int, text: String) -> #(String, Int) {
+  let pages = paginate(shape, text)
+  let count = list.length(pages)
+  case count > limit {
+    False -> #(text, 0)
+    True -> {
+      let head = case limit > 1 {
+        True -> list.take(pages, 1)
+        False -> []
+      }
+      let newest = list.drop(pages, count - limit + list.length(head))
+      let dropped =
+        pages
+        |> list.drop(list.length(head))
+        |> list.take(count - limit)
+        |> list.fold(0, fn(total, page) { total + string.length(page) })
+      #(string.concat(list.append(head, newest)), dropped)
+    }
+  }
 }
 
 /// Renders or reuses frames for each chunk, keyed by geometry and content so
@@ -591,73 +794,92 @@ fn read_data(db: sqlight.Connection, key: String) -> Result(String, Nil) {
   }
 }
 
-/// Splits so the tail keeps at least `budget` estimated tokens, then moves
-/// the boundary back to a user message so tool call/result pairs never
-/// straddle it: a result without its call is a request error.
-pub fn cut(
-  budget: Int,
-  history: List(types.Input),
-) -> #(List(types.Input), List(types.Input)) {
-  let #(tail, evicted_rev) = take_tail(list.reverse(history), [], 0, budget)
-  let #(moved, kept) = snap_to_user(tail)
-  #(list.append(list.reverse(evicted_rev), moved), kept)
-}
-
-fn take_tail(
-  reversed: List(types.Input),
-  acc: List(types.Input),
-  spent: Int,
-  budget: Int,
-) -> #(List(types.Input), List(types.Input)) {
-  case spent >= budget, reversed {
-    True, [item, ..rest] -> #(acc, [item, ..rest])
-    True, [] -> #(acc, [])
-    False, [item, ..rest] ->
-      take_tail(
-        rest,
-        [item, ..acc],
-        spent + compaction.estimate_input(item),
-        budget,
-      )
-    False, [] -> #(acc, [])
-  }
-}
-
-fn snap_to_user(
-  tail: List(types.Input),
-) -> #(List(types.Input), List(types.Input)) {
-  let #(moved, kept) =
-    list.split_while(tail, fn(input) {
-      case input {
-        types.User(_) | types.UserImage(_, _) -> False
-        _ -> True
-      }
-    })
-  #(moved, kept)
-}
-
-fn has_user_boundary(history: List(types.Input)) -> Bool {
-  history
-  |> list.any(fn(input) {
-    case input {
-      types.User(_) | types.UserImage(_, _) -> True
-      _ -> False
-    }
-  })
-}
-
-fn archive_inputs(images: List(types.Image)) -> List(types.Input) {
+fn archive_inputs(
+  images: List(types.Image),
+  dropped: Int,
+) -> List(types.Input) {
   case images {
     [] -> []
     [first, ..rest] -> [
-      types.UserImage(archive_prompt(), first),
+      types.UserImage(archive_prompt(dropped), first),
       ..list.map(rest, fn(image) { types.UserImage("", image) })
     ]
   }
 }
 
-/// Static on purpose: the prompt rides the request prefix, and any changing
-/// number would invalidate the provider's prompt cache.
-fn archive_prompt() -> String {
-  "The images below archive this session's earlier conversation verbatim, as dense fixed-width text a vision model reads directly. Read them like a transcript: each event starts after a solid black block cell, marked ¶user:, ¶ai:, ¶out, or ¶turn:; `[image h w]` notes where a picture was shown. Text wraps at the frame edge, and the oldest events may be omitted. The conversation continues as plain text after the last image."
+/// Rides the request prefix, so it changes only when a compaction drops more
+/// history; any per-request number would invalidate the prompt cache.
+fn archive_prompt(dropped: Int) -> String {
+  let omitted = case dropped {
+    0 -> ""
+    _ ->
+      " About "
+      <> int.to_string(dropped)
+      <> " characters of older history between the first image and the second were dropped to fit the archive budget; re-derive anything you need from them from the workspace."
+  }
+  "The images below archive this session's earlier conversation verbatim, as dense fixed-width text a vision model reads directly. Read them like a transcript: each event starts after a solid black block cell, marked ¶user:, ¶ai:, ¶out, or ¶turn:; `[image h w]` notes where a picture was shown. Text wraps at the frame edge."
+  <> omitted
+  <> " The conversation continues as plain text after the last image."
+}
+
+pub fn load_archive(
+  ledger: store.Store,
+  session: String,
+) -> Result(Option(Archive), String) {
+  store.query(ledger, fn(db) {
+    sqlight.query(
+      "SELECT users,fingerprint,text,dropped FROM snapcompact_archive WHERE session=?",
+      db,
+      [sqlight.text(session)],
+      {
+        use users <- decode.field(0, decode.int)
+        use fingerprint <- decode.field(1, decode.string)
+        use text <- decode.field(2, decode.string)
+        use dropped <- decode.field(3, decode.int)
+        decode.success(Archive(
+          compaction.Cut(users, fingerprint),
+          text,
+          dropped,
+        ))
+      },
+    )
+    |> result.map(fn(rows) { list.first(rows) |> option.from_result })
+    |> result.map_error(fn(error) { error.message })
+  })
+}
+
+fn save_archive(
+  ledger: store.Store,
+  session: String,
+  archive: Archive,
+) -> Result(Nil, String) {
+  store.query(ledger, fn(db) {
+    sqlight.query(
+      "INSERT INTO snapcompact_archive(session,users,fingerprint,text,dropped) VALUES(?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET users=excluded.users,fingerprint=excluded.fingerprint,text=excluded.text,dropped=excluded.dropped",
+      db,
+      [
+        sqlight.text(session),
+        sqlight.int(archive.cut.users),
+        sqlight.text(archive.cut.fingerprint),
+        sqlight.text(archive.text),
+        sqlight.int(archive.dropped),
+      ],
+      decode.dynamic,
+    )
+    |> result.replace(Nil)
+    |> result.map_error(fn(error) { error.message })
+  })
+}
+
+fn delete_archive(ledger: store.Store, session: String) -> Result(Nil, String) {
+  store.query(ledger, fn(db) {
+    sqlight.query(
+      "DELETE FROM snapcompact_archive WHERE session=?",
+      db,
+      [sqlight.text(session)],
+      decode.dynamic,
+    )
+    |> result.replace(Nil)
+    |> result.map_error(fn(error) { error.message })
+  })
 }

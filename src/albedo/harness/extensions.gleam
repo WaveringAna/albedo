@@ -52,7 +52,6 @@ pub fn defaults() -> Config {
       codex.extension(),
       models.extension(),
       openai.extension(),
-      // Must precede rolling: the first registered compaction plugin wins.
       snapcompact.extension(),
       rolling.extension(),
       lcm_memory.extension(),
@@ -66,7 +65,7 @@ pub fn defaults() -> Config {
     [
       "python", "run", "work", "mail", "agents", "schedule", "files",
       "instructions", "commands", "skills", "models", "openai", "codex",
-      "antigravity", "alibaba", "claude", "snapcompact", "lcm-memory", "remote",
+      "antigravity", "alibaba", "claude", "rolling", "lcm-memory", "remote",
     ],
   )
 }

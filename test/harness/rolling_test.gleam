@@ -1,13 +1,17 @@
+import albedo/daemon/store
 import albedo/harness/compaction
 import albedo/harness/extensions
 import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/runtime
 import albedo/openai_api/types
+import gleam/dynamic/decode
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
+import sqlight
 
 @external(erlang, "albedo_runtime_test_support", "temporary_database")
 fn temporary_database() -> String
@@ -200,22 +204,31 @@ pub fn tool_output_stays_with_its_assistant_unit_test() {
   runtime.stop(host)
 }
 
-pub fn source_or_model_change_resets_summary_before_recompacting_test() {
+/// The cut counts user messages, which every provider projection keeps, so
+/// a text summary made before a model switch still applies after it.
+pub fn summary_survives_a_model_or_provider_change_test() {
   let #(host, session) = host(rolling.Config(Some(700), 90, 25))
   let history = long_history()
-  let assert Ok(_) =
+  let assert Ok(first) =
     runtime.prepare_history_scoped(
       host,
       session,
-      "model-b",
-      "provider-a:model-b",
+      "model-a",
+      "provider-a:model-a",
       "",
       "",
       summarize("first"),
       history,
     )
-  let requests = process.new_subject()
-  let assert Ok(_) =
+  // The new provider projects assistant output differently.
+  let projected =
+    list.map(history, fn(input) {
+      case input {
+        types.Assistant(text) -> types.Assistant(string.slice(text, 0, 20))
+        other -> other
+      }
+    })
+  let assert Ok(second) =
     runtime.prepare_history_scoped(
       host,
       session,
@@ -223,15 +236,130 @@ pub fn source_or_model_change_resets_summary_before_recompacting_test() {
       "provider-b:model-b",
       "",
       "",
+      fn(_) { Error("must not summarize again") },
+      projected,
+    )
+  list.take(second, 1) |> should.equal(list.take(first, 1))
+  list.drop(second, 2) |> should.equal(list.drop(projected, 4))
+  runtime.stop(host)
+}
+
+pub fn rewritten_history_resets_the_summary_test() {
+  let #(host, session) = host(rolling.Config(Some(700), 90, 25))
+  let history = long_history()
+  let assert Ok(_) =
+    runtime.prepare_history_with(
+      host,
+      session,
+      "model-a",
+      "",
+      summarize("first"),
+      history,
+    )
+  let rewritten = [
+    types.User("u1 rewritten " <> string.repeat("z", 380)),
+    ..list.drop(history, 1)
+  ]
+  let requests = process.new_subject()
+  let assert Ok(_) =
+    runtime.prepare_history_with(
+      host,
+      session,
+      "model-a",
+      "",
       fn(request) {
         process.send(requests, request)
         Ok("second")
       },
+      rewritten,
+    )
+  let assert Ok(compaction.SummaryRequest(_, None, _, _)) =
+    process.receive(requests, 0)
+  runtime.stop(host)
+}
+
+/// A row saved before cuts counted user messages validates the old way, by
+/// item count under its source, and is rewritten in the portable form.
+pub fn legacy_item_count_state_upgrades_in_place_test() {
+  let #(host, session) = host(rolling.Config(Some(10_000), 90, 25))
+  let history = long_history()
+  let assert Ok(_) =
+    store.query(runtime.ledger(host), fn(db) {
+      sqlight.query(
+        "INSERT INTO rolling_compaction_state(session,summary,cutoff_count,source_hash) VALUES(?,?,?,?)",
+        db,
+        [
+          sqlight.text("rolling-test"),
+          sqlight.text("legacy facts"),
+          sqlight.int(4),
+          sqlight.text(
+            compaction.fingerprint(#("model-a", list.take(history, 4))),
+          ),
+        ],
+        decode.dynamic,
+      )
+    })
+  let assert Ok([types.User(summary), _, ..tail]) =
+    runtime.prepare_history_with(
+      host,
+      session,
+      "model-a",
+      "",
+      fn(_) { Error("must not summarize") },
       history,
     )
-  let assert Ok(compaction.SummaryRequest("model-b", None, evicted, _)) =
+  string.contains(summary, "legacy facts") |> should.be_true
+  tail |> should.equal(list.drop(history, 4))
+  let assert Ok([#(2, cut_hash)]) =
+    store.query(runtime.ledger(host), fn(db) {
+      sqlight.query(
+        "SELECT cutoff_count,source_hash FROM rolling_compaction_state",
+        db,
+        [],
+        {
+          use users <- decode.field(0, decode.int)
+          use hash <- decode.field(1, decode.string)
+          decode.success(#(users, hash))
+        },
+      )
+    })
+  string.starts_with(cut_hash, "users:") |> should.be_true
+  runtime.stop(host)
+}
+
+/// A long eviction folds into the summary chunk by chunk, each request under
+/// half the window, carrying the summary forward.
+pub fn long_eviction_summarizes_in_chunks_test() {
+  let #(host, session) = host(rolling.Config(Some(2000), 90, 25))
+  let history =
+    list.flatten(list.repeat(long_history(), 4))
+    |> list.index_map(fn(input, index) {
+      case input {
+        types.User(text) -> types.User(int.to_string(index) <> text)
+        other -> other
+      }
+    })
+  let requests = process.new_subject()
+  let assert Ok(_) =
+    runtime.compact_history_scoped(
+      host,
+      session,
+      "model-a",
+      "model-a",
+      "",
+      "",
+      fn(request: compaction.SummaryRequest) {
+        process.send(requests, request)
+        Ok("after " <> int.to_string(list.length(request.evicted)))
+      },
+      history,
+    )
+  let assert Ok(compaction.SummaryRequest(_, None, first, _)) =
     process.receive(requests, 0)
-  evicted |> should.equal(list.take(history, 4))
+  let assert Ok(compaction.SummaryRequest(_, Some(previous), _, _)) =
+    process.receive(requests, 0)
+  previous |> should.equal("after " <> int.to_string(list.length(first)))
+  should.be_true(compaction.estimate_inputs(first) <= 1000)
   runtime.stop(host)
 }
 

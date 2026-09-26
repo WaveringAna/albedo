@@ -3,7 +3,7 @@
 %% needs. The renderer is a subprocess, so a crash is an error, never a
 %% daemon loss.
 -module(albedo_snapcompact).
--export([render_frames/4, paginate/3, now_ms/0, sha256/1, normalize/1, format_args/1]).
+-export([render_frames/4, paginate/2, now_ms/0, sha256/1, normalize/1, format_args/1]).
 
 -define(RENDER_TIMEOUT_MS, 30000).
 %% U+2588 FULL BLOCK in UTF-8: the grid layout's line marker.
@@ -162,21 +162,9 @@ osc(<<27, _, R/binary>>, A) -> norm(R, A);
 osc(<<_, R/binary>>, A) -> osc(R, A);
 osc(<<>>, A) -> lists:reverse(A).
 
-%% Chunks the newest text into at most Max frames of PerFrame cells each:
-%% whole leading frames are dropped so frame boundaries stay aligned.
-paginate(Text, PerFrame, Max) ->
-    Total = cells(Text, 0),
-    Frames = (Total + PerFrame - 1) div PerFrame,
-    Skip = max(0, Frames - Max) * PerFrame,
-    chunk(drop_cells(Text, Skip), PerFrame, PerFrame, [], []).
-
-cells(<<C, R/binary>>, N) when C < 128; C >= 192 -> cells(R, N + 1);
-cells(<<_, R/binary>>, N) -> cells(R, N);
-cells(<<>>, N) -> N.
-
-drop_cells(Bin, 0) -> Bin;
-drop_cells(<<C, R/binary>>, K) when C < 128; C >= 192 -> drop_cells(R, K - 1);
-drop_cells(<<_, R/binary>>, K) -> drop_cells(R, K).
+%% Chunks the text into frames of PerFrame cells each.
+paginate(Text, PerFrame) ->
+    chunk(Text, PerFrame, PerFrame, [], []).
 
 chunk(<<>>, _Per, _N, Cur, Chunks) ->
     case Cur of

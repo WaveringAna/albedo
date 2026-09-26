@@ -6,6 +6,7 @@ import albedo/openai_api/types
 import gleam/json
 import gleam/list
 import gleam/option.{type Option}
+import gleam/result
 import gleam/string
 
 pub type SummaryRequest {
@@ -32,6 +33,8 @@ pub type Context {
     source: String,
     pinned_tokens: Int,
     capacity: Option(Capacity),
+    /// Whether the model reads image input: `None` when no catalog says.
+    images: Option(Bool),
     force: Bool,
     summarize: fn(SummaryRequest) -> Result(String, String),
   )
@@ -116,8 +119,12 @@ pub fn estimate_input(input: types.Input) -> Int {
 
 fn estimate_image(image: types.Image) -> Int {
   let #(_, width, height, _) = types.image_meta(image)
-  // Provider-neutral approximation based on 512px vision tiles. Providers
-  // may tokenize images differently; this is only the rolling trigger signal.
+  image_tokens(width, height)
+}
+
+/// Provider-neutral approximation based on 512px vision tiles. Providers may
+/// tokenize images differently; this is only the compaction trigger signal.
+pub fn image_tokens(width: Int, height: Int) -> Int {
   85 + 170 * ceiling_div(width, 512) * ceiling_div(height, 512)
 }
 
@@ -150,3 +157,105 @@ pub fn estimate_pinned(
   + estimate_inputs(context)
   + estimate_tools(tools)
 }
+
+/// Where a saved compaction splits history: after `users` user messages. Each
+/// provider projection keeps user inputs verbatim and in order, merging or
+/// dropping only assistant output, so a cut counted in user messages survives
+/// a model or provider switch where an item count would not. The fingerprint
+/// covers those user messages, so a rewritten transcript invalidates the cut.
+pub type Cut {
+  Cut(users: Int, fingerprint: String)
+}
+
+/// The cut that evicts exactly `prefix`, which must end before a user message.
+pub fn cut_of(prefix: List(types.Input)) -> Cut {
+  let users = list.filter(prefix, is_user)
+  Cut(list.length(users), fingerprint(users))
+}
+
+/// Splits history at a saved cut: the evicted prefix and the rest, which
+/// starts at a user message. `Error` when this history no longer matches.
+pub fn resume(
+  history: List(types.Input),
+  cut: Cut,
+) -> Result(#(List(types.Input), List(types.Input)), Nil) {
+  use #(prefix, rest) <- result.try(split_users(history, cut.users, 0, []))
+  case cut_of(prefix) == cut {
+    True -> Ok(#(prefix, rest))
+    False -> Error(Nil)
+  }
+}
+
+fn split_users(
+  history: List(types.Input),
+  users: Int,
+  seen: Int,
+  prefix: List(types.Input),
+) -> Result(#(List(types.Input), List(types.Input)), Nil) {
+  case history {
+    [] -> Error(Nil)
+    [input, ..rest] ->
+      case is_user(input), seen == users {
+        True, True -> Ok(#(list.reverse(prefix), history))
+        True, False -> split_users(rest, users, seen + 1, [input, ..prefix])
+        False, _ -> split_users(rest, users, seen, [input, ..prefix])
+      }
+  }
+}
+
+/// Splits history into what compaction may evict and a verbatim tail of the
+/// newest whole units (a user message and everything answering it) within
+/// `budget` estimated tokens, never fewer than the newest unit, so a tool
+/// result never loses its call. Evicts nothing from a single unit.
+pub fn split_tail(
+  history: List(types.Input),
+  budget: Int,
+) -> #(List(types.Input), List(types.Input)) {
+  let kept = keep_units(list.reverse(units(history, [], [])), budget, 0, 0)
+  list.split(history, list.length(history) - kept)
+}
+
+fn keep_units(
+  newest_first: List(List(types.Input)),
+  budget: Int,
+  tokens: Int,
+  items: Int,
+) -> Int {
+  case newest_first {
+    [] -> items
+    [unit, ..rest] -> {
+      let spent = tokens + estimate_inputs(unit)
+      case items == 0 || spent <= budget {
+        True -> keep_units(rest, budget, spent, items + list.length(unit))
+        False -> items
+      }
+    }
+  }
+}
+
+fn units(
+  remaining: List(types.Input),
+  current: List(types.Input),
+  complete: List(List(types.Input)),
+) -> List(List(types.Input)) {
+  case remaining, current {
+    [], [] -> list.reverse(complete)
+    [], _ -> list.reverse([list.reverse(current), ..complete])
+    [input, ..rest], [_, ..] ->
+      case is_user(input) {
+        True -> units(rest, [input], [list.reverse(current), ..complete])
+        False -> units(rest, [input, ..current], complete)
+      }
+    [input, ..rest], [] -> units(rest, [input], complete)
+  }
+}
+
+pub fn is_user(input: types.Input) -> Bool {
+  case input {
+    types.User(_) | types.UserImage(_, _) -> True
+    _ -> False
+  }
+}
+
+@external(erlang, "albedo_compaction", "fingerprint")
+pub fn fingerprint(value: a) -> String

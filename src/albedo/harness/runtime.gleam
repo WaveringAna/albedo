@@ -1145,6 +1145,18 @@ fn capacity(
   }
 }
 
+fn reads_images(
+  session: Session,
+  model: String,
+  endpoint: String,
+) -> Option(Bool) {
+  case model_info(session, model, endpoint) {
+    Some(extension.ModelInfo(input_modalities: [_, ..] as modalities, ..)) ->
+      Some(list.contains(modalities, "image"))
+    _ -> None
+  }
+}
+
 pub fn prepare_history_scoped(
   runtime: Runtime,
   session: Session,
@@ -1224,6 +1236,7 @@ pub fn prepare_view_scoped(
           source,
           pinned_tokens,
           capacity(session, model, endpoint),
+          reads_images(session, model, endpoint),
           force,
           summarize,
         ),

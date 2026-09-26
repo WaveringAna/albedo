@@ -393,15 +393,22 @@ def run(endpoint):
             context = request["input"][0]["content"]
             assert "catalog-only fixture description" not in context
             assert "BODY_MUST_NOT_AUTOLOAD" not in context
-            lcm_selected = api(route, {"name": "lcm", "enabled": True})
+            try:
+                api(f"/sessions/{session}/commands", {"name": "/compact", "arguments": "skills"})
+                raise AssertionError("a non-compaction extension became the strategy")
+            except urllib.error.HTTPError as error:
+                assert b"unknown compaction strategy skills" in error.read()
+            assert not next(item["enabled"] for item in api(route) if item["name"] == "lcm")
+            # Naming a strategy makes it the session's own before compacting.
+            compacted = api(f"/sessions/{session}/commands", {"name": "/compact", "arguments": "lcm"})
+            assert compacted["result"]["strategy"] == "lcm" and compacted["result"]["started"] is True, compacted
+            ready(session)
+            lcm_selected = api(route)
             assert next(item["enabled"] for item in lcm_selected if item["name"] == "lcm")
             assert not next(item["enabled"] for item in lcm_selected if item["name"] == "rolling")
             rejected(route, {"name": "lcm", "enabled": False})
             lcm_request = catalog_request(session, "lcm preflight")
             assert {"lcm_list", "lcm_grep", "lcm_describe", "lcm_expand"} <= {tool["name"] for tool in lcm_request["tools"]}
-            compacted = api(f"/sessions/{session}/commands", {"name": "/compact"})
-            assert compacted["result"]["strategy"] == "lcm" and compacted["result"]["started"] is True
-            ready(session)
             before = len(Provider.requests)
             api(f"/sessions/{session}/events", {"content": "lcm tool probe"})
             ready(session)

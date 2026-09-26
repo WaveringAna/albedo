@@ -1,9 +1,5 @@
 -module(albedo_rolling).
--export([fingerprint/1, legacy_fingerprint/1]).
-
-%% Images count by content hash, so a prefix fingerprints the same whether its
-%% images are inline or stored; a term without images hashes as it always has.
-fingerprint(Inputs) -> hash(albedo_images:canonical(Inputs)).
+-export([legacy_fingerprint/1]).
 
 %% The fingerprint saved before images were stored, over their payload bytes.
 legacy_fingerprint(Inputs) ->

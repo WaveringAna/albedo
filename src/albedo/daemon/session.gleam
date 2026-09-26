@@ -29,6 +29,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
+import gleam/string
 
 /// What a turn resumed after a daemon restart tells the model, and the
 /// transcript's marker for the restart.
@@ -127,7 +128,7 @@ pub type Message {
   RecordContext(String, context_snapshot.Snapshot, Subject(Nil))
   RecordUsage(String, usage.Metadata, Subject(Result(Nil, String)))
   ReportPin(String, Option(Int), Subject(Nil))
-  Compact(Subject(Result(json.Json, String)))
+  Compact(Option(String), Subject(Result(json.Json, String)))
   RefreshData(Subject(Result(json.Json, String)))
   DrainSteering(String, Subject(Result(List(types.Input), String)))
   ReadContext(Subject(json.Json))
@@ -533,10 +534,13 @@ fn handle(state: State, message: Message) {
       process.send(reply, outcome)
       actor.continue(state)
     }
-    Compact(reply) ->
-      case turn.running(state.activity), kernel_or_park(state, Compact(reply)) {
+    Compact(strategy, reply) ->
+      case
+        turn.running(state.activity),
+        kernel_or_park(state, Compact(strategy, reply))
+      {
         None, Error(state) -> actor.continue(state)
-        _, Ok(state) | Some(_), Error(state) -> compact(state, reply)
+        _, Ok(state) | Some(_), Error(state) -> compact(state, strategy, reply)
       }
     Status(reply) -> {
       process.send(
@@ -967,7 +971,9 @@ fn command_op(
     command.EffortSelect(level) ->
       actor.call(session, 5000, ChangeEffort(level, _))
     command.ContextSummary -> Ok(actor.call(session, 5000, ReadContext))
-    command.Compact -> actor.call(session, 15_000, Compact)
+    // Switching strategy reloads the session's extensions first.
+    command.Compact(strategy) ->
+      actor.call(session, 60_000, Compact(strategy, _))
     command.Refresh -> actor.call(session, 30_000, RefreshData)
     command.ContextPage(section, page) ->
       actor.call(session, 5000, ReadContextPage(section, page, _))
@@ -1225,7 +1231,7 @@ fn kernel_opened(
             Resume ->
               session_state.State(..state, activity: turn.Resting)
               |> session_state.emit(view.text("error", why))
-            Compact(reply) -> {
+            Compact(_, reply) -> {
               process.send(reply, Error(why))
               state
             }
@@ -1427,9 +1433,14 @@ fn resume(state: State) -> State {
 
 fn compact(
   state: State,
+  strategy: Option(String),
   reply: Subject(Result(json.Json, String)),
 ) -> actor.Next(State, Message) {
+  // The switch keeps its state even when compaction then fails: the runtime
+  // already runs the new extension set.
+  let #(state, selected) = select_strategy(state, strategy)
   let prepared = {
+    use _ <- result.try(selected)
     use _ <- result.try(case turn.running(state.activity) {
       Some(_) -> Error("session must be idle to compact")
       None -> Ok(Nil)
@@ -1467,6 +1478,50 @@ fn compact(
       )
       actor.continue(state)
     }
+  }
+}
+
+/// A named strategy becomes the session's own compaction extension, so the
+/// projection it saves is the one every later request reads.
+fn select_strategy(
+  state: State,
+  strategy: Option(String),
+) -> #(State, Result(Nil, String)) {
+  case strategy {
+    None -> #(state, Ok(Nil))
+    Some(name) ->
+      case runtime.extension_summaries(state.host, state.info.id) {
+        Error(error) -> #(state, Error(error))
+        Ok(summaries) -> {
+          let strategies =
+            list.filter(summaries, fn(summary) {
+              list.contains(summary.plugins, "compaction")
+            })
+          case list.find(strategies, fn(summary) { summary.name == name }) {
+            Ok(extension.Summary(enabled: True, ..)) -> #(state, Ok(Nil))
+            Ok(_) -> {
+              let #(state, outcome) =
+                session_extensions.change(
+                  state,
+                  extension.SetSession(name, True),
+                )
+              #(state, result.replace(outcome, Nil))
+            }
+            Error(_) -> #(
+              state,
+              Error(
+                "unknown compaction strategy "
+                <> name
+                <> "; available: "
+                <> string.join(
+                  list.map(strategies, fn(summary) { summary.name }),
+                  ", ",
+                ),
+              ),
+            )
+          }
+        }
+      }
   }
 }
 

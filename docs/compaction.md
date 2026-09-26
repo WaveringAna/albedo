@@ -2,7 +2,9 @@
 
 Compaction changes only what a request shows the model. The durable transcript, `/tree`, and forks always keep the full conversation.
 
-The default session uses `rolling`. Selecting `lcm` through `/extensions` disables `rolling` in the same reload. Selecting `rolling` again disables `lcm`. A session with the built-in extensions keeps one compaction strategy enabled. The registry also permits a custom host with no compaction strategy installed.
+The default session uses `rolling`. Selecting another strategy (`snapcompact` or `lcm`) through `/extensions` disables the current one in the same reload. A session with the built-in extensions keeps one compaction strategy enabled. The registry also permits a custom host with no compaction strategy installed.
+
+`/compact` compacts now with the session's strategy. `/compact <strategy>` first makes the named strategy the session's own, as `/extensions` would, then compacts with it. Later requests read the projection that strategy saved. For example, `/compact rolling` before switching to a model without image input leaves a text summary that the new model can read.
 
 A strategy returns prepared inputs and an observation for `/context`. The observation describes that preparation. The inspector does not read strategy state. The durable transcript supplies the source rows for each derived view.
 
@@ -43,9 +45,27 @@ The `lcm` section in `$ALBEDO_HOME/extensions.json` accepts the same setting nam
 
 It compacts when the estimated request reaches `triggerPercent` of the configured context window, so roughly the last 10% stays free for work. The tail keeps about `tailPercent` of the window. A cut is only made between whole conversation units, so an assistant tool call always keeps its result.
 
-Each rolling compaction combines the previous summary with newly evicted history in a replacement summary. The summarizer call has no tools. Rolling writes its summary and cut position only after a successful call. A provider failure leaves the previous projection and the transcript intact. A branch starts without rolling state. A provider or model change resets that state.
+Each rolling compaction combines the previous summary with newly evicted history in a replacement summary. A long eviction is summarized in chunks of at most half the window, with the summary carried from chunk to chunk. The summarizer call has no tools. Rolling writes its summary and cut position only after a successful call. A provider failure leaves the previous projection and the transcript intact. A branch starts without rolling state.
+
+The saved cut counts user messages, not projected items. Provider projection can merge or drop assistant output, but it keeps every user message in order, so the summary still applies after a provider or model change. A fingerprint over the evicted user messages resets the state when the transcript no longer matches. A cut saved as an item count, before this format, is still checked the old way once and then rewritten in the new form.
 
 After a switch from `lcm` to `rolling`, rolling reads the stored LCM summary nodes and the unsummarized tail as its source history. It does not expand covered rows to rebuild the LCM summary. If new assistant or tool rows follow the covered cursor without a new user row, rolling retains their whole conversation unit; that unit can overlap the fold. A later rolling summary can omit details from an LCM node. `lcm_list`, `lcm_describe`, and `lcm_expand` still reach the stored node and its original rows. Switching back to `lcm` uses its saved nodes and the durable transcript; it does not summarize the rolling summary.
+
+## snapcompact
+
+`snapcompact` archives evicted history as rendered bitmap frames that a vision model reads directly, instead of a model-written summary. The frames are X11 8x13 pixel-font text drawn by the local `albedo-render` binary and cached in `snapcompact_frames` by geometry and content. The request contains the frames, then the verbatim tail.
+
+The saved archive is the normalized text of everything before the cut, stored in `snapcompact_archive` with a user-message cut like rolling's. Frames are re-derived from that text for each request, so after a model switch the same archive renders in the new model's frame shape. Recompaction appends newly evicted history to the saved text. Unchanged leading frames keep their cache keys, so the request prefix stays stable.
+
+The archive keeps at most a frame budget: the model family's image cap (60 frames for Anthropic, OpenAI, Google, and Qwen models, 20 for others), and no more than `archivePercent` of the window at the estimated cost of one full frame. When the archive exceeds the budget, whole frames between the first frame and the newest are dropped. The first image's caption then states how many characters were dropped.
+
+When the catalog reports that the current model reads no image input, `snapcompact` uses rolling's text compaction for that model. The frame archive stays saved for a later model that reads images. A model without catalog modalities is treated as vision-capable.
+
+```json
+{ "snapcompact": { "contextWindowTokens": 200000, "triggerPercent": 90, "tailPercent": 10, "archivePercent": 20, "maxFrames": 60 } }
+```
+
+`contextWindowTokens` and `maxFrames` are optional. `maxFrames` replaces the model family's frame cap.
 
 ## configure
 
