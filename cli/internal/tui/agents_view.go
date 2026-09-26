@@ -150,6 +150,7 @@ type AgentsViewModel struct {
 	heat     map[string]float64
 	clock    float64
 	last     time.Time
+	ticking  bool // a frame tick is in flight
 	notice   string
 	noticeT  float64
 	err      error
@@ -192,6 +193,7 @@ func (m *AgentsViewModel) SetSize(w, h int) {
 
 func (m *AgentsViewModel) Init() tea.Cmd {
 	m.Gen++
+	m.ticking = true
 	return tea.Batch(m.snapshotCmd(m.Gen), m.startStream(m.Gen), m.frameCmd(m.Gen), textinput.Blink)
 }
 
@@ -285,7 +287,18 @@ func (m AgentsViewModel) frameCmd(gen int) tea.Cmd {
 	return tea.Tick(agentsFrame, func(time.Time) tea.Msg { return agentsFrameMsg{Gen: gen} })
 }
 
+// Update handles msg, then starts the frame tick again if something began to
+// move while it was stopped.
 func (m AgentsViewModel) Update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
+	m, cmd := m.update(msg)
+	if m.ticking || !m.moving() {
+		return m, cmd
+	}
+	m.ticking, m.last = true, time.Now()
+	return m, tea.Batch(cmd, m.frameCmd(m.Gen))
+}
+
+func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case agentsSnapshotMsg:
 		if msg.Gen != m.Gen {
@@ -370,6 +383,9 @@ func (m AgentsViewModel) Update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 			return m, nil
 		}
 		m.step()
+		if m.ticking = m.moving(); !m.ticking {
+			return m, nil
+		}
 		return m, m.frameCmd(m.Gen)
 
 	case agentsSentMsg:
@@ -993,6 +1009,20 @@ func (m *AgentsViewModel) step() {
 		n.flash = math.Max(0, n.flash-dt*2.5)
 		n.rate *= math.Exp(-dt * 1.5)
 	}
+}
+
+// moving is whether the next frame can differ from this one: running agents
+// pulse, and packets, heat, floats, flashes, and notices play out.
+func (m AgentsViewModel) moving() bool {
+	if len(m.packets) > 0 || len(m.heat) > 0 || len(m.floats) > 0 || m.noticeT > 0 {
+		return true
+	}
+	for _, n := range m.nodes {
+		if n.running || n.flash > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func compactCount(n int) string {

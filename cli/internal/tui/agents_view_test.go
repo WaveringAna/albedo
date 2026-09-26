@@ -70,6 +70,48 @@ func TestAgentsViewSelectsAndAttaches(t *testing.T) {
 	}
 }
 
+// frames runs cmd and counts the frame ticks it schedules.
+func frames(cmd tea.Cmd) int {
+	if cmd == nil {
+		return 0
+	}
+	switch msg := cmd().(type) {
+	case tea.BatchMsg:
+		n := 0
+		for _, c := range msg {
+			n += frames(c)
+		}
+		return n
+	case agentsFrameMsg:
+		return 1
+	}
+	return 0
+}
+
+func TestAgentsFramesStopWhenStillAndResumeOnce(t *testing.T) {
+	m := agentsFixture(t)
+	closed := make(chan []map[string]any)
+	close(closed)
+	m.events = closed
+	running := func(id string, on bool) agentsEventsMsg {
+		return agentsEventsMsg{Gen: 1, Events: []map[string]any{{"type": "running", "session": id, "running": on}}}
+	}
+	m, _ = m.Update(running("lead", false))
+	m, _ = m.Update(running("coder", false))
+	m, cmd := m.Update(agentsFrameMsg{Gen: 1})
+	if n := frames(cmd); n != 0 {
+		t.Fatalf("a still graph scheduled %d frames, want none", n)
+	}
+	m, cmd = m.Update(running("coder", true))
+	if n := frames(cmd); n != 1 {
+		t.Fatalf("a running agent scheduled %d frames, want one", n)
+	}
+	_, cmd = m.Update(running("lead", true))
+	if n := frames(cmd); n != 0 {
+		t.Fatalf("a second runner scheduled %d more frames, want none", n)
+	}
+}
+
 func TestAgentsViewSizesBeforeItOpens(t *testing.T) {
 	var m AgentsViewModel
 	m.SetSize(120, 30)
