@@ -46,6 +46,17 @@ type agentsEventsMsg struct {
 }
 
 type agentsStreamClosedMsg struct{ Gen int }
+
+// agentsSeedMsg is an agent's recent history, so its tail starts from where
+// it is rather than empty.
+type agentsSeedMsg struct {
+	Gen   int
+	ID    string
+	Items []struct {
+		Type    string `json:"type"`
+		Preview string `json:"preview"`
+	}
+}
 type agentsFrameMsg struct{ Gen int }
 type agentsSentMsg struct {
 	Gen    int
@@ -79,11 +90,31 @@ type agentNode struct {
 	rate                    float64
 	flash                   float64
 	phase                   float64
-	tail                    []string
+	tail                    []tailLine
 	line                    string
+	lineKind                tailKind
+	call                    string // the tool call whose arguments are streaming
+	args                    string // its raw JSON arguments so far
+	seeded                  bool
 	mail                    []agentMail
 	hue                     rgb
 	x, y                    int
+}
+
+// What a tail line is, which decides how it is drawn.
+type tailKind byte
+
+const (
+	tailText     tailKind = iota // the agent's reply, as it streams
+	tailThinking                 // reasoning, faint
+	tailCode                     // a tool call's code as the model writes it
+	tailOutput                   // what a tool printed
+	tailMeta                     // ▸ tool, ← letter, » progress, ✕ error
+)
+
+type tailLine struct {
+	kind tailKind
+	text string
 }
 
 type agentPacket struct {
@@ -278,6 +309,30 @@ func (m AgentsViewModel) Update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 			}
 		}
 		m.layout()
+		return m, m.seedCmd()
+
+	case agentsSeedMsg:
+		if msg.Gen != m.Gen {
+			return m, nil
+		}
+		n := m.nodes[msg.ID]
+		if n == nil {
+			return m, nil
+		}
+		var seeded []tailLine
+		for _, item := range msg.Items {
+			switch item.Type {
+			case "user":
+				seeded = append(seeded, tailLine{tailMeta, "← " + firstLine(item.Preview)})
+			case "tool":
+				seeded = append(seeded, tailLine{tailMeta, "▸ " + firstLine(item.Preview)})
+			default:
+				for _, line := range strings.Split(item.Preview, "\n") {
+					seeded = append(seeded, tailLine{tailText, line})
+				}
+			}
+		}
+		n.tail = append(seeded, n.tail...)
 		return m, nil
 
 	case agentsEventsMsg:
@@ -348,10 +403,10 @@ func (m AgentsViewModel) key(msg tea.KeyMsg) (AgentsViewModel, tea.Cmd) {
 		return m, func() tea.Msg { return AgentsDoneMsg{} }
 	case msg.Type == tea.KeyTab, empty && (msg.Type == tea.KeyRight || msg.Type == tea.KeyDown):
 		m.cycle(1)
-		return m, nil
+		return m, m.seedCmd()
 	case msg.Type == tea.KeyShiftTab, empty && (msg.Type == tea.KeyLeft || msg.Type == tea.KeyUp):
 		m.cycle(-1)
-		return m, nil
+		return m, m.seedCmd()
 	case msg.Type == tea.KeyEnter:
 		text := strings.TrimSpace(m.input.Value())
 		n := m.nodes[m.selected]
@@ -375,6 +430,25 @@ func (m AgentsViewModel) key(msg tea.KeyMsg) (AgentsViewModel, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+// seedCmd loads the selected agent's recent history once.
+func (m *AgentsViewModel) seedCmd() tea.Cmd {
+	n := m.nodes[m.selected]
+	if n == nil || n.seeded || n.id == agentsYou || m.Conn == nil {
+		return nil
+	}
+	n.seeded = true
+	conn, gen, id := m.Conn, m.Gen, n.id
+	return func() tea.Msg {
+		path := fmt.Sprintf("/sessions/%s/preview?limit=10", url.PathEscape(id))
+		res, err := daemon.Request[agentsSeedMsg](context.Background(), conn, path, nil)
+		if err != nil {
+			return nil
+		}
+		res.Gen, res.ID = gen, id
+		return res
+	}
 }
 
 func (m AgentsViewModel) sendCmd(id, text string) tea.Cmd {
@@ -527,28 +601,41 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 		if !running {
 			m.flushLine(n)
 		}
-	case "text":
+	case "text", "thinking":
 		text := str(event, "text")
 		n.chars += utf8.RuneCountInString(text)
 		n.rate += float64(len(text))
-		for {
-			head, rest, found := strings.Cut(text, "\n")
-			n.line += head
-			if !found {
-				break
-			}
-			m.flushLine(n)
-			text = rest
+		kind := tailText
+		if str(event, "type") == "thinking" {
+			kind = tailThinking
 		}
-	case "thinking":
-		n.rate += num(event, "n") / 4
+		m.stream(n, kind, text)
+	case "arguments_delta":
+		text := str(event, "text")
+		n.chars += utf8.RuneCountInString(text)
+		n.rate += float64(len(text))
+		if call := str(event, "callId"); call != n.call || n.lineKind != tailCode {
+			m.flushLine(n)
+			n.call = call
+		}
+		n.lineKind = tailCode
+		n.args += text
 	case "tool_progress":
 		progress, _ := event["progress"].(map[string]any)
 		if str(progress, "phase") == "running" {
 			m.flushLine(n)
-			m.pushTail(n, "▸ "+str(progress, "name"))
+			m.pushTail(n, tailMeta, "▸ "+str(progress, "name"))
+		}
+	case "tool":
+		m.flushLine(n)
+		for _, line := range strings.Split(str(event, "output"), "\n") {
+			if strings.TrimSpace(line) != "" {
+				m.pushTail(n, tailOutput, line)
+			}
 		}
 	case "user":
+		m.flushLine(n)
+		m.pushTail(n, tailMeta, "← "+firstLine(str(event, "text")))
 		// Mail already travelled as a packet; a person typing is new.
 		if str(event, "source") == "chat" {
 			m.send(agentsYou, id, max(1, len(str(event, "text"))/4))
@@ -559,13 +646,13 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 			m.send(id, agentsYou, max(1, len(str(event, "text"))/4))
 		}
 	case "error":
-		m.pushTail(n, "✕ "+str(event, "text"))
+		m.pushTail(n, tailMeta, "✕ "+str(event, "text"))
 	case "interrupted":
 		m.flushLine(n)
-		m.pushTail(n, "· interrupted")
+		m.pushTail(n, tailMeta, "· interrupted")
 	case "progress":
 		m.flushLine(n)
-		m.pushTail(n, "» "+str(event, "text"))
+		m.pushTail(n, tailMeta, "» "+str(event, "text"))
 		n.flash = 0.6
 	case "closed":
 		n.closed = true
@@ -600,18 +687,80 @@ func num(event map[string]any, key string) float64 {
 	return v
 }
 
-func (m *AgentsViewModel) flushLine(n *agentNode) {
-	if strings.TrimSpace(n.line) != "" {
-		m.pushTail(n, n.line)
+// stream appends streamed text of one kind, closing a line at each newline.
+func (m *AgentsViewModel) stream(n *agentNode, kind tailKind, text string) {
+	if n.lineKind != kind {
+		m.flushLine(n)
+		n.lineKind = kind
 	}
-	n.line = ""
+	for {
+		head, rest, found := strings.Cut(text, "\n")
+		n.line += head
+		if !found {
+			return
+		}
+		m.flushLine(n)
+		n.lineKind = kind
+		text = rest
+	}
 }
 
-func (m *AgentsViewModel) pushTail(n *agentNode, line string) {
-	n.tail = append(n.tail, strings.TrimSpace(line))
-	if len(n.tail) > 40 {
-		n.tail = n.tail[len(n.tail)-40:]
+// flushLine settles whatever is streaming into the tail: a partial line, or
+// the code of a finished tool call.
+func (m *AgentsViewModel) flushLine(n *agentNode) {
+	if n.lineKind == tailCode {
+		for _, line := range codeLines(n.args) {
+			m.pushTail(n, tailCode, line)
+		}
+		n.args, n.call = "", ""
+	} else if strings.TrimSpace(n.line) != "" {
+		m.pushTail(n, n.lineKind, n.line)
 	}
+	n.line = ""
+	n.lineKind = tailText
+}
+
+func (m *AgentsViewModel) pushTail(n *agentNode, kind tailKind, line string) {
+	n.tail = append(n.tail, tailLine{kind, strings.TrimRight(line, " ")})
+	if len(n.tail) > 120 {
+		n.tail = n.tail[len(n.tail)-120:]
+	}
+}
+
+// codeLines reads the code out of a tool call's JSON arguments while they are
+// still arriving: the "code" string so far, unescaped, or the raw arguments
+// for a tool without one.
+func codeLines(raw string) []string {
+	body := raw
+	if i := strings.Index(raw, `"code"`); i >= 0 {
+		rest := strings.TrimLeft(raw[i+len(`"code"`):], " :")
+		if strings.HasPrefix(rest, `"`) {
+			var b strings.Builder
+			escaped := false
+			for _, r := range rest[1:] {
+				switch {
+				case escaped:
+					switch r {
+					case 'n':
+						b.WriteRune('\n')
+					case 't':
+						b.WriteString("    ")
+					default:
+						b.WriteRune(r)
+					}
+					escaped = false
+				case r == '\\':
+					escaped = true
+				case r == '"':
+					return strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
+				default:
+					b.WriteRune(r)
+				}
+			}
+			body = b.String()
+		}
+	}
+	return strings.Split(strings.TrimRight(body, "\n"), "\n")
 }
 
 // ─── layout ───
@@ -1026,7 +1175,8 @@ func (m *AgentsViewModel) drawNodes(c *agentCanvas) {
 }
 
 func (m AgentsViewModel) pane(height int) []string {
-	width := m.paneWidth()
+	// One column goes to the space after the divider.
+	width := m.paneWidth() - 1
 	rows := make([]string, 0, height)
 	n := m.nodes[m.selected]
 	if n == nil || width == 0 {
@@ -1067,32 +1217,59 @@ func (m AgentsViewModel) pane(height int) []string {
 		}
 		rows = append(rows, "")
 	}
-	rows = append(rows, DefaultStyles.Muted.Render("tail"))
-	lines := append([]string{}, n.tail...)
-	if strings.TrimSpace(n.line) != "" {
-		lines = append(lines, n.line)
+	live := DefaultStyles.Muted.Render("tail")
+	if n.running {
+		live += " " + styled(n.hue, "●") + DefaultStyles.Faint.Render(" live")
+	}
+	rows = append(rows, live)
+	lines := append([]tailLine{}, n.tail...)
+	if n.lineKind == tailCode {
+		for _, line := range codeLines(n.args) {
+			lines = append(lines, tailLine{tailCode, line})
+		}
+	} else if n.line != "" {
+		lines = append(lines, tailLine{n.lineKind, n.line})
 	}
 	var wrapped []string
 	for _, line := range lines {
-		for _, part := range strings.Split(ansi.Wordwrap(line, width, ""), "\n") {
-			wrapped = append(wrapped, part)
-		}
+		wrapped = append(wrapped, drawTail(line, width)...)
 	}
 	room := height - len(rows)
 	if room > 0 && len(wrapped) > room {
 		wrapped = wrapped[len(wrapped)-room:]
 	}
-	for _, line := range wrapped {
-		if strings.HasPrefix(line, "▸") {
-			rows = append(rows, DefaultStyles.Faint.Render(line))
-		} else {
-			rows = append(rows, line)
-		}
-	}
+	rows = append(rows, wrapped...)
 	if len(wrapped) == 0 {
 		rows = append(rows, DefaultStyles.Faint.Render("nothing yet"))
 	}
 	return rows
+}
+
+// drawTail wraps one tail line to width and styles it by kind.
+func drawTail(line tailLine, width int) []string {
+	gutter, body := "", line.text
+	style := func(s string) string { return s }
+	switch line.kind {
+	case tailThinking:
+		style = func(s string) string { return DefaultStyles.Faint.Render(ansiItalic + s) }
+	case tailCode:
+		gutter = DefaultStyles.Decor.Render("│ ")
+		style = func(s string) string { return DefaultStyles.Muted.Render(s) }
+	case tailOutput:
+		gutter = DefaultStyles.Decor.Render("⎿ ")
+		style = func(s string) string { return DefaultStyles.Faint.Render(s) }
+	case tailMeta:
+		style = func(s string) string { return DefaultStyles.Faint.Render(s) }
+	}
+	inner := width
+	if gutter != "" {
+		inner = width - 2
+	}
+	var out []string
+	for _, part := range strings.Split(ansi.Hardwrap(body, max(8, inner), true), "\n") {
+		out = append(out, gutter+style(part))
+	}
+	return out
 }
 
 func (m AgentsViewModel) View() string {

@@ -5,7 +5,9 @@
 import albedo/daemon/family
 import gleam/dynamic/decode
 import gleam/erlang/process
+import gleam/int
 import gleam/json
+import gleam/list
 import gleam/option.{type Option}
 import gleam/result
 import gleam/string
@@ -14,13 +16,14 @@ import gleam/string
 pub fn activity(session: String, event: String) -> Nil {
   case kind(event) {
     // Deltas and progress are small and frequent: tag them and pass them on.
-    "text" | "tool_progress" | "turn_started" | "interrupted" ->
+    "text"
+    | "thinking"
+    | "arguments_delta"
+    | "tool_progress"
+    | "turn_started"
+    | "interrupted" ->
       publish(
         "{\"session\":" <> quote(session) <> "," <> string.drop_start(event, 1),
-      )
-    "thinking" ->
-      publish(
-        event_json(session, "thinking", [#("n", json.int(string.length(event)))]),
       )
     "user" | "message" | "error" | "note" ->
       publish(
@@ -33,6 +36,8 @@ pub fn activity(session: String, event: String) -> Nil {
       publish(
         event_json(session, "tool", [
           #("name", json.string(field(event, "name"))),
+          #("callId", json.string(field(event, "callId"))),
+          #("output", json.string(tool_output(field(event, "result")))),
         ]),
       )
     _ -> Nil
@@ -121,6 +126,17 @@ fn kind(event: String) -> String {
       |> result.map(fn(pair) { pair.0 })
       |> result.unwrap("")
   }
+}
+
+/// The end of what a tool printed: its last few lines, bounded. Python cells
+/// answer JSON with an "output" field; anything else is shown as it came.
+fn tool_output(result: String) -> String {
+  let text =
+    json.parse(result, decode.at(["output"], decode.string))
+    |> result.unwrap(result)
+  let lines = string.split(string.trim_end(text), "\n")
+  let kept = list.drop(lines, int.max(0, list.length(lines) - 6))
+  string.join(kept, "\n") |> string.slice(0, 600)
 }
 
 fn field(event: String, name: String) -> String {

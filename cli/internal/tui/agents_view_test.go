@@ -96,3 +96,59 @@ func TestAgentsOpenFromTheCommandAndCtrlO(t *testing.T) {
 		t.Fatal("ctrl+o should open the agents view")
 	}
 }
+
+func TestAgentsTailStreamsCodeThinkingAndOutput(t *testing.T) {
+	m := agentsFixture(t)
+	events := []map[string]any{
+		{"type": "thinking", "session": "lead", "text": "the scouts need a brief"},
+		{"type": "arguments_delta", "session": "lead", "callId": "c1", "text": `{"code": "kid = await agents.self`},
+		{"type": "arguments_delta", "session": "lead", "callId": "c1", "text": `.spawn(\"map\", name=\"scout\")\nprint(kid`},
+	}
+	m, _ = m.Update(agentsEventsMsg{Gen: 1, Events: events})
+	live := ansi.Strip(m.View())
+	for _, want := range []string{"the scouts need a brief", "│ kid = await agents.self", `name="scout")`, "│ print(kid", "● live"} {
+		if !strings.Contains(live, want) {
+			t.Errorf("mid-stream view is missing %q\n%s", want, live)
+		}
+	}
+	m, _ = m.Update(agentsEventsMsg{Gen: 1, Events: []map[string]any{
+		{"type": "tool_progress", "session": "lead", "progress": map[string]any{"name": "python", "phase": "running"}},
+		{"type": "tool", "session": "lead", "name": "python", "output": "scout\nspawned"},
+	}})
+	done := ansi.Strip(m.View())
+	for _, want := range []string{"│ print(kid", "▸ python", "⎿ scout", "⎿ spawned"} {
+		if !strings.Contains(done, want) {
+			t.Errorf("settled view is missing %q\n%s", want, done)
+		}
+	}
+}
+
+func TestAgentsTailStartsFromHistory(t *testing.T) {
+	m := agentsFixture(t)
+	seed := agentsSeedMsg{Gen: 1, ID: "lead"}
+	seed.Items = append(seed.Items, struct {
+		Type    string `json:"type"`
+		Preview string `json:"preview"`
+	}{"user", "fan out three scouts"}, struct {
+		Type    string `json:"type"`
+		Preview string `json:"preview"`
+	}{"assistant", "sent them off"})
+	m, _ = m.Update(seed)
+	view := ansi.Strip(m.View())
+	for _, want := range []string{"← fan out three scouts", "sent them off"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("seeded tail is missing %q", want)
+		}
+	}
+}
+
+func TestCodeLinesReadsPartialJSON(t *testing.T) {
+	got := codeLines(`{"code": "a = 1\nb = \"x\"\nprint(a`)
+	want := []string{"a = 1", `b = "x"`, "print(a"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("codeLines = %q, want %q", got, want)
+	}
+	if got := codeLines(`{"code": "done\n", "timeout_ms": 5}`); strings.Join(got, "|") != "done" {
+		t.Fatalf("a closed string stops at its quote, got %q", got)
+	}
+}
