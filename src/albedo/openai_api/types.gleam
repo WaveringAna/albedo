@@ -75,6 +75,38 @@ pub fn image(
   }
 }
 
+/// A stored image assembled directly, as compaction frames and loaded
+/// transcripts need: same validity contract as `image`, payload read lazily.
+pub fn stored_image(
+  mime_type: String,
+  hash: String,
+  size: Int,
+  read: fn() -> Result(String, Nil),
+  width: Int,
+  height: Int,
+  bytes: Int,
+) -> Result(Image, Error) {
+  case
+    mime_type == "image/png"
+    || mime_type == "image/jpeg"
+    || mime_type == "image/webp",
+    size > 0 && size <= max_image_bytes,
+    width > 0
+    && height > 0
+    && width <= max_image_edge
+    && height <= max_image_edge
+    && width * height <= max_image_pixels,
+    bytes > 0 && bytes <= max_image_bytes
+  {
+    False, _, _, _ -> Error(InvalidRequest("image must be PNG, JPEG, or WebP"))
+    _, False, _, _ -> Error(InvalidRequest("invalid image payload size"))
+    _, _, False, _ -> Error(InvalidRequest("invalid image dimensions"))
+    _, _, _, False -> Error(InvalidRequest("invalid decoded image size"))
+    True, True, True, True ->
+      Ok(Image(mime_type, StoredData(hash, size, read), width, height, bytes))
+  }
+}
+
 /// MIME type, width, height, and decoded byte count.
 pub fn image_meta(image: Image) -> #(String, Int, Int, Int) {
   let Image(mime_type, _, width, height, bytes) = image
@@ -193,6 +225,7 @@ pub type ToolCall {
 
 pub type Usage {
   Usage(
+    /// Whole input context: cached reads and new cache writes included.
     input_tokens: Int,
     output_tokens: Int,
     cached_input_tokens: Option(Int),

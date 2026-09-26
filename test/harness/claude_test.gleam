@@ -321,7 +321,7 @@ pub fn claude_stream_preserves_tool_calls_and_replay_test() {
   assert call.arguments == "{\"command\":\"pwd\"}"
   assert turn.finish == types.ToolCalls
   let assert Some(usage) = turn.usage
-  assert usage.input_tokens == 12
+  assert usage.input_tokens == 226
   assert usage.output_tokens == 7
   assert usage.cached_input_tokens == Some(200)
   assert usage.cache_creation_tokens == Some(14)
@@ -868,6 +868,42 @@ pub fn claude_file_handles_are_account_scoped_and_rejected_test() {
     )
   assert string.contains(sent(healed.body), png)
   cleanup(root)
+}
+
+/// Frame-style images carry no text block; consecutive user images merge.
+pub fn claude_empty_text_image_emits_no_text_block_test() {
+  let image =
+    stored_image(
+      "image/png",
+      string.repeat("ab", 32),
+      string.byte_size(png),
+      fn() { Ok(png) },
+      2,
+      3,
+      24,
+    )
+  let request =
+    types.Request(
+      "claude-opus-5-5",
+      None,
+      [types.UserImage("", image), types.UserImage("", image)],
+      [],
+      None,
+      types.defaults,
+    )
+  let assert Ok(exchange) =
+    wire.encode(
+      no_files_home,
+      "token",
+      "11111111-2222-4333-8444-555555555555",
+      string.repeat("a", 64),
+      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      request,
+    )
+  let body = sent(exchange.body)
+  assert string.contains(body, "\"text\":\"\"") == False
+  // Two images in one user message: no empty text blocks between them.
+  assert list.length(string.split(body, "\"type\":\"image\"")) == 3
 }
 
 /// An astral first-user message lands a lone surrogate on the sampled utf16

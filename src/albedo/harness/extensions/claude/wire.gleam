@@ -240,13 +240,15 @@ fn add(
     types.User(text) -> Ok(push(history, "user", [text_block(text, last)]))
     types.Assistant(text) ->
       Ok(push(history, "assistant", [text_block(text, last)]))
-    types.UserImage(text, image) ->
-      Ok(
-        push(history, "user", [
-          text_block(text, False),
-          image_block(files, image, last),
-        ]),
-      )
+    types.UserImage(text, image) -> {
+      // An empty text carries no block: compaction frames follow the archive
+      // prompt as bare images in one user message.
+      let blocks = case text {
+        "" -> [image_block(files, image, last)]
+        _ -> [text_block(text, False), image_block(files, image, last)]
+      }
+      Ok(push(history, "user", blocks))
+    }
     types.ToolOutput(id, text, images) -> {
       use _ <- result.try(
         dict.get(history.calls, id)

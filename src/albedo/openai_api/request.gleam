@@ -278,15 +278,15 @@ fn message(role: String, content: String) -> Json {
 }
 
 fn image_message(protocol: Protocol, text: String, image: types.Image) -> Json {
+  // An empty text part is rejected by some endpoints, and frame archives
+  // attach images with no text by design.
+  let parts = case text {
+    "" -> [image_part(protocol, image)]
+    _ -> [text_part(protocol, text), image_part(protocol, image)]
+  }
   json.object([
     #("role", json.string("user")),
-    #(
-      "content",
-      json.preprocessed_array([
-        text_part(protocol, text),
-        image_part(protocol, image),
-      ]),
-    ),
+    #("content", json.preprocessed_array(parts)),
   ])
 }
 

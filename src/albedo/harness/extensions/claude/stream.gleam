@@ -329,7 +329,14 @@ fn usage_decoder() -> decode.Decoder(types.Usage) {
     None,
     decode.optional(decode.int),
   )
-  decode.success(types.Usage(input, output, cache, creation))
+  // Anthropic reports input_tokens without cached reads or writes; the
+  // harness counts the whole input context so cached is a subset of input.
+  decode.success(types.Usage(
+    input + option.unwrap(cache, 0) + option.unwrap(creation, 0),
+    output,
+    cache,
+    creation,
+  ))
 }
 
 fn original_name(name: String, tools: List(types.Tool)) -> String {

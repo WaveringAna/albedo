@@ -12,7 +12,12 @@
 //!   remaining FIRST LAST     (lines left for another call, if any)
 //!
 //! A line split across pages appears in both. Errors go to stderr, exit 1.
+//!
+//! albedo-render --snapcompact[-dir] PATH --out DIR --advance N --pitch N
+//!     --width N: dense pixel-font frames, one `image PATH WxH` stdout line
+//!     per frame. Unknown glyphs render as '?'.
 
+mod grid;
 mod highlight;
 mod layout;
 mod raster;
@@ -34,10 +39,24 @@ struct Request {
     max_rows: usize,
     max_images: usize,
     line_numbers: bool,
+    snapcompact: bool,
+    snapcompact_dir: bool,
+    advance: usize,
+    pitch: usize,
+    frame_width: usize,
 }
 
 fn main() -> ExitCode {
-    match parse(std::env::args().skip(1)).and_then(|request| run(&request)) {
+    let parsed = parse(std::env::args().skip(1));
+    match parsed.and_then(|request| {
+        if request.snapcompact && request.snapcompact_dir {
+            run_snapcompact_dir(&request)
+        } else if request.snapcompact {
+            run_snapcompact(&request)
+        } else {
+            run(&request)
+        }
+    }) {
         Ok(report) => {
             print!("{report}");
             ExitCode::SUCCESS
@@ -62,6 +81,11 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Request, String> {
         max_rows: 80,
         max_images: 4,
         line_numbers: true,
+        snapcompact: false,
+        snapcompact_dir: false,
+        advance: 11,
+        pitch: 16,
+        frame_width: 1568,
     };
     let mut out = None;
     while let Some(arg) = args.next() {
@@ -84,6 +108,14 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Request, String> {
             "--max-images" => request.max_images = number(1, 64)?,
             "--language" => request.language = Some(value()?),
             "--no-line-numbers" => request.line_numbers = false,
+            "--snapcompact" => request.snapcompact = true,
+            "--snapcompact-dir" => {
+                request.snapcompact = true;
+                request.snapcompact_dir = true;
+            }
+            "--advance" => request.advance = number(6, 24)?,
+            "--pitch" => request.pitch = number(10, 64)?,
+            "--width" => request.frame_width = number(256, 4096)?,
             "--out" => out = Some(PathBuf::from(value()?)),
             flag if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
             _ if file.is_none() => file = Some(PathBuf::from(arg)),
@@ -92,6 +124,12 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Request, String> {
     }
     request.file = file.ok_or("a file to render is required")?;
     request.out = out.ok_or("--out DIR is required")?;
+    if request.snapcompact {
+        if !request.snapcompact_dir && !request.file.is_file() {
+            return Err(format!("{}: not a file", request.file.display()));
+        }
+        return Ok(request);
+    }
     if request.start == 0 || request.end == 0 {
         return Err("--start and --end are required".into());
     }
@@ -102,6 +140,52 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Request, String> {
         ));
     }
     Ok(request)
+}
+
+/// One subprocess for all frames: the bundled BDF is parsed once and each
+/// NN.txt in the input dir renders, in name order, to snap-N.png.
+fn run_snapcompact_dir(request: &Request) -> Result<String, String> {
+    if !request.file.is_dir() {
+        return Err(format!("{}: not a directory", request.file.display()));
+    }
+    let mut names: Vec<PathBuf> = std::fs::read_dir(&request.file)
+        .map_err(|e| format!("{}: {e}", request.file.display()))?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.extension().is_some_and(|e| e == "txt"))
+        .collect();
+    names.sort();
+    if names.is_empty() {
+        return Err(format!("{}: no .txt chunks", request.file.display()));
+    }
+    let mut report = String::new();
+    for (index, path) in names.iter().enumerate() {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let frame = grid::render(&text, request.advance, request.pitch, request.frame_width)?;
+        let out = request.out.join(format!("snap-{}.png", index + 1));
+        std::fs::write(&out, &frame.png).map_err(|e| format!("{}: {e}", out.display()))?;
+        report.push_str(&format!(
+            "image {} {}x{}\n",
+            out.display(),
+            frame.width,
+            frame.height
+        ));
+    }
+    Ok(report)
+}
+
+fn run_snapcompact(request: &Request) -> Result<String, String> {
+    let text = std::fs::read_to_string(&request.file)
+        .map_err(|e| format!("{}: {e}", request.file.display()))?;
+    let frame = grid::render(&text, request.advance, request.pitch, request.frame_width)?;
+    let path = request.out.join("snap-1.png");
+    std::fs::write(&path, &frame.png).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(format!(
+        "image {} {}x{}\n",
+        path.display(),
+        frame.width,
+        frame.height
+    ))
 }
 
 fn run(request: &Request) -> Result<String, String> {

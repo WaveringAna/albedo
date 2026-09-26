@@ -20,6 +20,7 @@ import albedo/harness/extensions/remote/extension as remote
 import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/extensions/schedule/extension as schedule
 import albedo/harness/extensions/skills/extension as skills
+import albedo/harness/extensions/snapcompact/extension as snapcompact
 import albedo/harness/extensions/view/extension as view
 import albedo/harness/extensions/webhooks/extension as webhooks
 import albedo/harness/extensions/work/extension as work
@@ -51,6 +52,8 @@ pub fn defaults() -> Config {
       codex.extension(),
       models.extension(),
       openai.extension(),
+      // Must precede rolling: the first registered compaction plugin wins.
+      snapcompact.extension(),
       rolling.extension(),
       lcm_memory.extension(),
       lcm.extension(),
@@ -63,7 +66,7 @@ pub fn defaults() -> Config {
     [
       "python", "bash", "work", "mail", "agents", "schedule", "files",
       "instructions", "commands", "skills", "models", "openai", "codex",
-      "antigravity", "alibaba", "claude", "rolling", "lcm-memory", "remote",
+      "antigravity", "alibaba", "claude", "snapcompact", "lcm-memory", "remote",
     ],
   )
 }
