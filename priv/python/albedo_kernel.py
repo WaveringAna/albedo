@@ -43,6 +43,8 @@ CONTROL_OUT = os.fdopen(os.dup(1), "wb", buffering=0)
 SEND_LOCK = threading.Lock()
 LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(LOOP)
+
+albedo_proc.reap_stopped_safely(LOOP)
 QUEUE: asyncio.Queue[albedo_api.Execute | albedo_api.State] = asyncio.Queue()
 PENDING: dict[str, asyncio.Future[albedo_api.HostReply]] = {}
 JOB_SLOTS: dict[str, tuple[asyncio.Future[None], Callable[[], None]]] = {}

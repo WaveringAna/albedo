@@ -20,6 +20,7 @@ from albedo_plugins import bash as plugin  # noqa: E402
 
 LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(LOOP)
+albedo_proc.reap_stopped_safely(LOOP)
 EVENTS: list[dict[str, object]] = []
 
 

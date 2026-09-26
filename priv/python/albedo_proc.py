@@ -7,8 +7,9 @@ non-running (zombie) members is not work.
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Any
 import asyncio
 import os
 import signal
@@ -18,6 +19,35 @@ import sys
 TERM_GRACE = 0.25     # seconds a group gets to honour TERM
 KILL_GRACE = 2.0      # seconds a group gets to die after KILL
 PROBE_INTERVAL = 0.02
+
+
+def reap_stopped_safely(loop: asyncio.AbstractEventLoop) -> None:
+    """Let `loop` run children that get paused with SIGSTOP.
+
+    Python 3.14's threaded child watcher waits with waitid(WEXITED | WNOWAIT),
+    which macOS also answers for a stopped child, and then reaps with a blocking
+    waitpid on the event loop: a job paused for a heavy slot froze the kernel.
+    The replacement reaps in its thread with a waitpid that ignores stops, as
+    3.13 did. Linux uses pidfds, which only wake on exit, and needs nothing.
+    """
+    threaded: Any = getattr(getattr(asyncio, "unix_events", None), "_ThreadedChildWatcher", None)
+    if sys.platform != "darwin" or threaded is None or not isinstance(getattr(loop, "_watcher", None), threaded):
+        return
+
+    class ExitWatcher(threaded):
+        def _do_waitpid(self, loop: asyncio.AbstractEventLoop, expected_pid: int,
+                        callback: Callable[..., object], args: tuple[object, ...]) -> None:
+            try:
+                returncode = os.waitstatus_to_exitcode(os.waitpid(expected_pid, 0)[1])
+            except ChildProcessError:
+                returncode = 255
+            try:
+                loop.call_soon_threadsafe(callback, expected_pid, returncode, *args)
+            except RuntimeError:  # the loop closed first
+                pass
+            self._threads.pop(expected_pid, None)
+
+    setattr(loop, "_watcher", ExitWatcher())
 
 
 @dataclass(frozen=True)
