@@ -124,7 +124,7 @@ pub fn encode(
           #("authorization", "Bearer " <> access),
           #("anthropic-version", "2023-06-01"),
           #("anthropic-beta", "claude-code-20250219,oauth-2025-04-20"),
-          #("user-agent", "claude-cli/2.1.261"),
+          #("user-agent", "claude-cli/2.1.283"),
           #("x-app", "cli"),
           #("anthropic-dangerous-direct-browser-access", "true"),
           #("content-type", "application/json"),

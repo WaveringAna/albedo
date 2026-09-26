@@ -87,7 +87,7 @@ pub fn claude_messages_request_carries_client_identity_and_tools_test() {
     wire.encode("sk-ant-oat-test", request)
   assert list_key(headers, "anthropic-beta")
     == Ok("claude-code-20250219,oauth-2025-04-20")
-  assert list_key(headers, "user-agent") == Ok("claude-cli/2.1.261")
+  assert list_key(headers, "user-agent") == Ok("claude-cli/2.1.283")
   let assert Ok(value) = json.parse(string_tree.to_string(body), decode.dynamic)
   let assert Ok(system) =
     decode.run(
