@@ -44,10 +44,23 @@ pub fn activity(session: String, event: String) -> Nil {
   }
 }
 
-/// A run started or ended.
+/// A run started or ended. Also recorded, so `is_running` can answer without
+/// asking the session.
 pub fn running(session: String, running: Bool) -> Nil {
+  mark_running(session, running)
   publish(event_json(session, "running", [#("running", json.bool(running))]))
 }
+
+/// Whether `session` was running a turn when it last said.
+pub fn is_running(session: String) -> Bool {
+  lookup_running(session)
+}
+
+@external(erlang, "albedo_bus", "mark_running")
+fn mark_running(session: String, running: Bool) -> Nil
+
+@external(erlang, "albedo_bus", "running")
+fn lookup_running(session: String) -> Bool
 
 /// A child session joined the tree.
 pub fn spawned(member: family.Member, model: String) -> Nil {
@@ -72,8 +85,12 @@ pub fn progress(session: String, text: String) -> Nil {
 }
 
 pub fn gone(session: String) -> Nil {
+  forget_running(session)
   publish(event_json(session, "gone", []))
 }
+
+@external(erlang, "albedo_bus", "forget")
+fn forget_running(session: String) -> Nil
 
 /// A letter was posted: who to whom, what kind, and how big.
 pub fn mailed(

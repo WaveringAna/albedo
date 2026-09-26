@@ -58,11 +58,23 @@ type State {
     compositions: Dict(String, Cached),
     extensions: List(extension.Extension),
     default_enabled: List(String),
+    self: Subject(Message),
+    /// Kernels booting now, each with everyone waiting for it.
+    booting: Dict(String, List(fn(Result(Session, python.Error)) -> Nil)),
+    /// Kernels waiting for a boot slot, oldest first.
+    waiting: List(#(String, Cached)),
   )
 }
 
+/// Kernels that boot at once. Booting is mostly waiting on Python, so a few
+/// overlap well; a swarm queues behind them instead of stampeding.
+const boot_slots = 4
+
 type Message {
-  Open(String, String, Subject(Result(Session, python.Error)))
+  /// Answered through the callback, never by blocking the caller: a session
+  /// actor asks and keeps serving while its kernel boots.
+  Open(String, String, fn(Result(Session, python.Error)) -> Nil)
+  Booted(String, Result(Session, python.Error))
   Peek(
     String,
     String,
@@ -121,13 +133,18 @@ pub fn start_with_config(
       }
       Ok(_) ->
         Ok(
-          actor.initialised(State(
-            ledger,
-            dict.new(),
-            dict.new(),
-            installed,
-            default_enabled,
-          ))
+          actor.initialised(
+            State(
+              ledger,
+              dict.new(),
+              dict.new(),
+              installed,
+              default_enabled,
+              subject,
+              dict.new(),
+              [],
+            ),
+          )
           |> actor.returning(Runtime(
             subject,
             ledger,
@@ -172,7 +189,32 @@ pub fn open_session(
   case string.trim(id) == "" || string.byte_size(id) > 256 {
     True ->
       Error(python.Invalid("session id must be nonempty and <= 256 bytes"))
-    False -> actor.call(runtime.subject, 10_000, Open(id, cwd, _))
+    False -> {
+      let reply = process.new_subject()
+      open_session_async(runtime, id, cwd, process.send(reply, _))
+      process.receive(reply, 180_000)
+      |> result.replace_error(python.Unavailable(
+        "the kernel did not start in time; other sessions may be starting theirs",
+      ))
+      |> result.flatten
+    }
+  }
+}
+
+/// Ask for a session's kernel; `answer` runs once it is ready or has failed.
+/// Kernels boot a few at a time outside this actor, so asking never blocks.
+pub fn open_session_async(
+  runtime: Runtime,
+  id: String,
+  cwd: String,
+  answer: fn(Result(Session, python.Error)) -> Nil,
+) -> Nil {
+  case string.trim(id) == "" || string.byte_size(id) > 256 {
+    True ->
+      answer(
+        Error(python.Invalid("session id must be nonempty and <= 256 bytes")),
+      )
+    False -> process.send(runtime.subject, Open(id, cwd, answer))
   }
 }
 
@@ -194,7 +236,7 @@ pub fn reload_extension(
   case replaced {
     Some(session) -> Ok(session)
     None ->
-      actor.call(runtime.subject, 30_000, Open(id, cwd, _))
+      open_session(runtime, id, cwd)
       |> result.map_error(string.inspect)
   }
 }
@@ -501,46 +543,122 @@ fn open_kernel(
   })
 }
 
+/// Kernels booting right now: requests not still waiting for a slot.
+fn active(state: State) -> Int {
+  dict.size(state.booting) - list.length(state.waiting)
+}
+
+/// Start waiting boots while slots are free. Each boots in its own process
+/// and reports back as `Booted`; the kernel's owner is the store, not that
+/// process, so the kernel outlives it.
+fn boot_next(state: State) -> State {
+  case state.waiting, active(state) < boot_slots {
+    [#(id, cached), ..rest], True -> {
+      let state = State(..state, waiting: rest)
+      let self = state.self
+      process.spawn_unlinked(fn() {
+        let result = case protect(fn() { open_kernel(state, id, cached) }) {
+          Ok(result) -> result
+          Error(crash) ->
+            Error(python.Unavailable("kernel boot failed: " <> crash))
+        }
+        process.send(self, Booted(id, result))
+      })
+      boot_next(state)
+    }
+    _, _ -> state
+  }
+}
+
+/// A boot finished: keep the kernel and answer everyone who waited. One whose
+/// session was forgotten meanwhile is stopped instead.
+fn booted(
+  state: State,
+  id: String,
+  result: Result(Session, python.Error),
+) -> State {
+  case dict.get(state.booting, id), result {
+    Error(_), Ok(session) -> {
+      drop_kernel("boot for a forgotten session", session)
+      state
+    }
+    Error(_), Error(_) -> state
+    Ok(waiters), _ -> {
+      let state = State(..state, booting: dict.delete(state.booting, id))
+      let state = case result {
+        Ok(session) ->
+          State(..state, sessions: dict.insert(state.sessions, id, session))
+        Error(_) -> state
+      }
+      list.each(list.reverse(waiters), fn(answer) { answer(result) })
+      state
+    }
+  }
+}
+
+/// Drop a session's pending boot, telling whoever waited.
+fn abandon(state: State, id: String) -> State {
+  case dict.get(state.booting, id) {
+    Error(_) -> state
+    Ok(waiters) -> {
+      list.each(waiters, fn(answer) {
+        answer(
+          Error(python.Invalid("the session closed while its kernel booted")),
+        )
+      })
+      State(
+        ..state,
+        booting: dict.delete(state.booting, id),
+        waiting: list.filter(state.waiting, fn(entry) { entry.0 != id }),
+      )
+    }
+  }
+}
+
+@external(erlang, "albedo_protect", "run")
+fn protect(run: fn() -> a) -> Result(a, String)
+
 fn handle(state: State, message: Message) {
   case message {
-    Open(id, cwd, reply) ->
-      case dict.get(state.sessions, id) {
-        Ok(session) -> {
-          let answer = case session.cwd == cwd, python.alive(session.kernel) {
+    Open(id, cwd, answer) ->
+      case dict.get(state.sessions, id), dict.get(state.booting, id) {
+        Ok(session), _ -> {
+          answer(case session.cwd == cwd, python.alive(session.kernel) {
             False, _ ->
               Error(python.Invalid(
                 "session workspace differs; reset explicitly to change it",
               ))
             _, False -> Error(python.Lost)
             True, True -> Ok(session)
-          }
-          process.send(reply, answer)
+          })
           actor.continue(state)
         }
-        Error(_) ->
+        // Already on its way: wait with everyone else.
+        Error(_), Ok(waiters) ->
+          actor.continue(
+            State(
+              ..state,
+              booting: dict.insert(state.booting, id, [answer, ..waiters]),
+            ),
+          )
+        Error(_), Error(_) ->
           case ensure_cached(state, id, cwd) {
             Error(message) -> {
-              process.send(reply, Error(python.Invalid(message)))
+              answer(Error(python.Invalid(message)))
               actor.continue(state)
             }
             Ok(#(next, cached)) ->
-              case open_kernel(next, id, cached) {
-                Error(error) -> {
-                  process.send(reply, Error(error))
-                  actor.continue(next)
-                }
-                Ok(session) -> {
-                  process.send(reply, Ok(session))
-                  actor.continue(
-                    State(
-                      ..next,
-                      sessions: dict.insert(next.sessions, id, session),
-                    ),
-                  )
-                }
-              }
+              actor.continue(
+                State(
+                  ..next,
+                  booting: dict.insert(next.booting, id, [answer]),
+                  waiting: list.append(next.waiting, [#(id, cached)]),
+                )
+                |> boot_next,
+              )
           }
       }
+    Booted(id, result) -> actor.continue(booted(state, id, result) |> boot_next)
     Reload(id, cwd, change, reply) -> {
       let proposed =
         extension.propose(
@@ -729,6 +847,7 @@ fn handle(state: State, message: Message) {
       actor.continue(State(..state, sessions: dict.delete(state.sessions, id)))
     }
     Forget(id, reply) -> {
+      let state = abandon(state, id)
       case dict.get(state.sessions, id) {
         Ok(session) -> drop_kernel("session forgotten", session)
         Error(_) -> Nil

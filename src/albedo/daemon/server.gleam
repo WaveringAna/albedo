@@ -30,6 +30,8 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam/otp/static_supervisor as supervisor
+import gleam/otp/supervision
 import gleam/result
 import gleam/set
 import gleam/string
@@ -76,7 +78,8 @@ type Message {
   ReadHistory(String, Option(Int), Int, Subject(Result(String, String)))
   Fork(String, Int, Subject(Result(conversation.Info, String)))
   DeleteSession(String, Subject(Result(Nil, String)))
-  SetWorkspace(String, String, Subject(Result(conversation.Info, String)))
+  /// A session's info changed; the session itself already knows.
+  Remember(String, conversation.Info)
   WorkerDown(process.Down)
   Sweep
   ScheduleTick
@@ -113,86 +116,28 @@ type AgentNode {
 }
 
 pub fn start(config: Config, port: Int) -> Result(Int, String) {
-  use registry <- result.try(
-    actor.new_with_initialiser(30_000, fn(self) {
-      use host <- result.try(
-        runtime.start(config.home <> "/albedo.sqlite")
-        |> result.replace_error("could not start runtime"),
-      )
-      use _ <- result.try(conversation.initialise(runtime.ledger(host)))
-      use _ <- result.try(mail.initialise(runtime.ledger(host)))
-      use _ <- result.try(family.initialise(runtime.ledger(host)))
-      use moved <- result.try(images.migrate(
-        runtime.ledger(host),
-        config.home
-          <> "/backups/albedo-before-image-store-"
-          <> int.to_string(usage.now())
-          <> ".sqlite",
-      ))
-      case moved {
-        0 -> Nil
-        rows ->
-          io.println(
-            "image store: moved images out of "
-            <> int.to_string(rows)
-            <> " transcript rows",
-          )
-      }
-      use _ <- result.try(case configuration.legacy(config.home) {
-        Ok(provider) ->
-          conversation.assign_provider(runtime.ledger(host), provider.name)
-        Error(_) -> Ok(Nil)
-      })
-      use saved <- result.try(conversation.list(runtime.ledger(host)))
-      let sessions =
-        list.map(saved, fn(info) {
-          let worker = case conversation.resumable(info.stage) {
-            True ->
-              case session.start(host, info, config.home) {
-                Ok(worker) -> {
-                  watch(worker)
-                  Some(worker)
-                }
-                Error(_) -> {
-                  io.println(
-                    "session unavailable: "
-                    <> info.id
-                    <> "; recovery will retry when opened",
-                  )
-                  None
-                }
-              }
-            False -> None
-          }
-          #(info.id, #(info, worker))
-        })
-      let _ = process.send_after(self, sweep_interval(config), Sweep)
-      let _ = process.send_after(self, 15_000, ScheduleTick)
-      // Agents start and stop other sessions from kernel host routes.
-      agents.register(fn(op) { actor.call(self, 60_000, AgentOp(op, _)) })
-      Ok(
-        actor.initialised(State(
-          host,
-          config,
-          dict.from_list(sessions),
-          self,
-          None,
-        ))
-        |> actor.returning(self)
-        |> actor.selecting(
-          process.new_selector()
-          |> process.select(self)
-          |> process.select_monitors(WorkerDown),
-        ),
-      )
-    })
-    |> actor.on_message(handle)
-    |> actor.start
+  // Storage is the one thing this daemon cannot run without, so the runtime
+  // that owns it stays linked to the daemon; everything above it is supervised.
+  use host <- result.try(
+    runtime.start(config.home <> "/albedo.sqlite")
+    |> result.replace_error("could not start runtime"),
+  )
+  use _ <- result.try(prepare_storage(config, host))
+  let name = process.new_name("albedo_registry")
+  use _ <- result.try(
+    supervisor.new(supervisor.OneForOne)
+    |> supervisor.restart_tolerance(intensity: 10, period: 60)
+    |> supervisor.add(
+      supervision.worker(fn() { start_registry(config, host, name) }),
+    )
+    |> supervisor.start
     |> result.map_error(string.inspect),
   )
+  // A name, not a pid: handlers keep reaching the registry across restarts.
+  let registry = process.named_subject(name)
   let selected_port = process.new_subject()
   use _ <- result.try(
-    mist.new(route(config, registry.data, _))
+    mist.new(route(config, registry, _))
     |> mist.bind("127.0.0.1")
     |> mist.port(port)
     |> mist.after_start(fn(actual, _, _) { process.send(selected_port, actual) })
@@ -277,21 +222,17 @@ fn handle(state: State, message: Message) {
       process.send(reply, found)
       actor.continue(state)
     }
-    SetWorkspace(id, cwd, reply) -> {
-      let #(state, worker) = activate(state, id)
-      let changed = worker |> result.try(session.set_workspace(_, cwd))
-      process.send(reply, changed)
-      case changed, worker {
-        Ok(info), Ok(active) ->
+    Remember(id, info) ->
+      case dict.get(state.sessions, id) {
+        Ok(#(_, worker)) ->
           actor.continue(
             State(
               ..state,
-              sessions: dict.insert(state.sessions, id, #(info, Some(active))),
+              sessions: dict.insert(state.sessions, id, #(info, worker)),
             ),
           )
-        _, _ -> actor.continue(state)
+        Error(_) -> actor.continue(state)
       }
-    }
     List(reply) -> {
       let db = runtime.ledger(state.host)
       let children =
@@ -366,12 +307,18 @@ fn handle(state: State, message: Message) {
       process.send(reply, deleted)
       case deleted {
         Ok(_) -> {
+          // Closing saves the kernel's variables and can take a while.
           case dict.get(state.sessions, id) {
-            Ok(#(_, Some(worker))) -> session.close(worker)
-            _ -> Nil
+            Ok(#(_, Some(worker))) -> {
+              process.spawn_unlinked(fn() {
+                session.close(worker)
+                session.discard_state(state.config.home, id)
+              })
+              Nil
+            }
+            _ -> session.discard_state(state.config.home, id)
           }
           runtime.forget_session(state.host, id)
-          session.discard_state(state.config.home, id)
           bus.gone(id)
           actor.continue(
             State(..state, sessions: dict.delete(state.sessions, id)),
@@ -395,6 +342,8 @@ fn handle(state: State, message: Message) {
       case entry {
         Error(_) -> actor.continue(state)
         Ok(#(previous, _)) -> {
+          // It cannot announce that it stopped; say so for it.
+          bus.running(previous.id, False)
           runtime.reset_session(state.host, previous.id)
           let info =
             conversation.list(runtime.ledger(state.host))
@@ -482,7 +431,7 @@ fn delete_idle(
 ) -> Result(Nil, String) {
   let #(info, worker) = pair
   let busy = case worker {
-    Some(active) -> session.report(active).running
+    Some(_) -> bus.is_running(id)
     None -> conversation.resumable(info.stage)
   }
   case busy {
@@ -501,6 +450,102 @@ fn family_name(state: State, session: String) -> String {
         Error(_) -> "parent"
       }
   }
+}
+
+/// Schema and one-time migrations, before any session starts.
+fn prepare_storage(
+  config: Config,
+  host: runtime.Runtime,
+) -> Result(Nil, String) {
+  use _ <- result.try(conversation.initialise(runtime.ledger(host)))
+  use _ <- result.try(mail.initialise(runtime.ledger(host)))
+  use _ <- result.try(family.initialise(runtime.ledger(host)))
+  use moved <- result.try(images.migrate(
+    runtime.ledger(host),
+    config.home
+      <> "/backups/albedo-before-image-store-"
+      <> int.to_string(usage.now())
+      <> ".sqlite",
+  ))
+  case moved {
+    0 -> Nil
+    rows ->
+      io.println(
+        "image store: moved images out of "
+        <> int.to_string(rows)
+        <> " transcript rows",
+      )
+  }
+  use _ <- result.try(case configuration.legacy(config.home) {
+    Ok(provider) ->
+      conversation.assign_provider(runtime.ledger(host), provider.name)
+    Error(_) -> Ok(Nil)
+  })
+  Ok(Nil)
+}
+
+/// The session registry. It restarts on a crash: sessions keep running, since
+/// they are not linked to it, and the new registry adopts the live ones.
+fn start_registry(
+  config: Config,
+  host: runtime.Runtime,
+  name: process.Name(Message),
+) {
+  actor.new_with_initialiser(30_000, fn(self) {
+    use saved <- result.try(conversation.list(runtime.ledger(host)))
+    let sessions =
+      list.map(saved, fn(info) {
+        let worker = case
+          session.live(info.id),
+          conversation.resumable(info.stage)
+        {
+          // Still running from before a registry restart: adopt it.
+          Some(worker), _ -> {
+            watch(worker)
+            Some(worker)
+          }
+          None, True ->
+            case session.start(host, info, config.home) {
+              Ok(worker) -> {
+                watch(worker)
+                Some(worker)
+              }
+              Error(_) -> {
+                io.println(
+                  "session unavailable: "
+                  <> info.id
+                  <> "; recovery will retry when opened",
+                )
+                None
+              }
+            }
+          None, False -> None
+        }
+        #(info.id, #(info, worker))
+      })
+    let _ = process.send_after(self, sweep_interval(config), Sweep)
+    let _ = process.send_after(self, 15_000, ScheduleTick)
+    // Agents start and stop other sessions from kernel host routes.
+    agents.register(fn(op) { actor.call(self, 60_000, AgentOp(op, _)) })
+    Ok(
+      actor.initialised(State(
+        host,
+        config,
+        dict.from_list(sessions),
+        self,
+        None,
+      ))
+      |> actor.returning(self)
+      |> actor.selecting(
+        process.new_selector()
+        |> process.select(self)
+        |> process.select_monitors(WorkerDown),
+      ),
+    )
+  })
+  |> actor.named(name)
+  |> actor.on_message(handle)
+  |> actor.start
 }
 
 fn dispatch_schedules(db: store.Store, registry: Subject(Message)) -> Nil {
@@ -550,7 +595,7 @@ fn dispatch_schedule(
   case actor.call(registry, 10_000, Lookup(job.session, _)) {
     Error(_) -> Nil
     Ok(worker) -> {
-      let busy = session.report(worker).running
+      let busy = bus.is_running(job.session)
       let delivered = case job.kind == "heartbeat" && busy {
         True -> True
         False ->
@@ -590,8 +635,15 @@ fn activate(
     Error(_) -> #(state, Error("session not found"))
     Ok(#(_, Some(worker))) -> #(state, Ok(worker))
     Ok(#(info, None)) ->
-      case session.start(state.host, info, state.config.home) {
-        Error(error) -> #(state, Error(string.inspect(error)))
+      case
+        session.live(id)
+        |> option.to_result(Nil)
+        |> result.lazy_or(fn() {
+          session.start(state.host, info, state.config.home)
+          |> result.map_error(fn(_) { Nil })
+        })
+      {
+        Error(_) -> #(state, Error("session could not start"))
         Ok(worker) -> {
           watch(worker)
           #(
@@ -693,7 +745,7 @@ fn delete_tree(registry: Subject(Message), id: String) -> Result(Int, String) {
   subtree(db, id, family.max_depth + 1)
   |> list.try_fold(0, fn(deleted, session_id) {
     case actor.call(registry, 10_000, Lookup(session_id, _)) {
-      Ok(worker) -> stop_run(worker, 50)
+      Ok(worker) -> stop_run(worker, session_id, 50)
       Error(_) -> Nil
     }
     actor.call(registry, 40_000, DeleteSession(session_id, _))
@@ -721,13 +773,24 @@ fn subtree(db: store.Store, id: String, budget: Int) -> List(String) {
   list.append(below, [id])
 }
 
-fn stop_run(worker: session.Session, polls: Int) -> Nil {
-  case session.report(worker).running, polls {
+/// Interrupt a running session once, then give it up to `polls` tenths of a
+/// second to stop.
+fn stop_run(worker: session.Session, id: String, polls: Int) -> Nil {
+  case bus.is_running(id) {
+    False -> Nil
+    True -> {
+      process.spawn_unlinked(fn() { session.interrupt(worker) })
+      wait_stopped(id, polls)
+    }
+  }
+}
+
+fn wait_stopped(id: String, polls: Int) -> Nil {
+  case bus.is_running(id), polls {
     False, _ | _, 0 -> Nil
     True, _ -> {
-      let _ = session.interrupt(worker)
       process.sleep(100)
-      stop_run(worker, polls - 1)
+      wait_stopped(id, polls - 1)
     }
   }
 }
@@ -826,30 +889,28 @@ fn agent_op(
         }),
       )
     }
-    agents.Running(id) -> #(
-      state,
-      Ok(
-        json.bool(case worker(id) {
-          Some(active) -> session.report(active).running
-          None -> False
-        }),
-      ),
-    )
-    agents.Stop(id) -> #(
-      state,
-      Ok(
-        json.bool(case worker(id) {
-          Some(active) -> session.interrupt(active)
-          None -> False
-        }),
-      ),
-    )
+    agents.Running(id) -> #(state, Ok(json.bool(bus.is_running(id))))
+    // The registry never waits on a session: interrupts and releases run in
+    // their own processes, and running state comes from the status cache.
+    agents.Stop(id) -> {
+      let running = bus.is_running(id)
+      case worker(id), running {
+        Some(active), True -> {
+          process.spawn_unlinked(fn() { session.interrupt(active) })
+          Nil
+        }
+        _, _ -> Nil
+      }
+      #(state, Ok(json.bool(running)))
+    }
     agents.Close(id) -> {
       case worker(id) {
         Some(active) -> {
-          let _ = session.interrupt(active)
-          // Saving the kernel's variables can take a while; not on the registry.
-          process.spawn_unlinked(fn() { session.release(active) })
+          // Saving the kernel's variables can take a while.
+          process.spawn_unlinked(fn() {
+            let _ = session.interrupt(active)
+            session.release(active)
+          })
           Nil
         }
         None -> Nil
@@ -911,7 +972,7 @@ fn descendants(
     Error(_) -> []
     Ok(#(info, worker)) -> {
       let running = case worker {
-        Some(active) -> session.report(active).running
+        Some(_) -> bus.is_running(id)
         None -> False
       }
       let below =
@@ -1657,8 +1718,11 @@ fn daemon_route(
                       req,
                       decode.field("workspace", decode.string, decode.success),
                     )
-                    |> result.try(fn(cwd) {
-                      actor.call(registry, 20_000, SetWorkspace(id, cwd, _))
+                    // The session answers here, off the registry.
+                    |> result.try(session.set_workspace(worker, _))
+                    |> result.map(fn(info) {
+                      process.send(registry, Remember(id, info))
+                      info
                     })
                   {
                     Ok(info) -> reply(200, info_json(info))

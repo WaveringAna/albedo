@@ -3,7 +3,7 @@
 %% only sends a message, and a dead owner's entry is dropped on the next
 %% publish, so a closed stream needs no cleanup call.
 -module(albedo_bus).
--export([subscribe/2, publish/1]).
+-export([subscribe/2, publish/1, mark_running/2, running/1, forget/1]).
 
 -define(TABLE, albedo_bus).
 
@@ -24,3 +24,20 @@ publish(Event) ->
                 ets:tab2list(?TABLE)),
             nil
     end.
+
+%% Whether each session is running a turn, as its actor last announced. The
+%% registry reads this instead of asking a session, which may be busy.
+mark_running(Session, Running) ->
+    albedo_registry:register(albedo_running, Session, Running).
+
+running(Session) ->
+    case ets:whereis(albedo_running) of
+        undefined -> false;
+        _ ->
+            case ets:lookup(albedo_running, Session) of
+                [{_, true}] -> true;
+                _ -> false
+            end
+    end.
+
+forget(Session) -> albedo_registry:forget(albedo_running, Session).

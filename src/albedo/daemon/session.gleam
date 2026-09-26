@@ -18,6 +18,7 @@ import albedo/daemon/usage
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/bash/extension as bash
+import albedo/harness/extensions/python/kernel as python
 import albedo/harness/loop
 import albedo/harness/runtime
 import albedo/openai_api/types
@@ -135,6 +136,10 @@ pub type Message {
   /// the binaries it references stay resident until the next message.
   Collect
   Close(Subject(Nil))
+  /// The runtime answered this session's kernel request.
+  KernelOpened(Result(runtime.Session, python.Error))
+  /// Start a turn for what waits in the queue, now that the kernel is here.
+  StartQueued
 }
 
 type State =
@@ -206,6 +211,7 @@ pub fn start(
           None -> loop.Unpinned
         },
         now_ms(),
+        None,
       )
     // Background jobs wake this session through the kernel's jobs route; the
     // registered closure lands a completion notice as an ordinary submit, so
@@ -214,6 +220,7 @@ pub fn start(
       wake(self, Submission(display, text, "bash", turn.JobWake, None))
     })
     commands_register(info.id, fn(op) { command_op(self, op) })
+    live_register(info.id, self)
     mailbox_register(info.id, fn(letter) {
       submit_mail(self, letter) |> result.map_error(submission_error)
     })
@@ -364,71 +371,13 @@ fn handle(state: State, message: Message) {
     _ -> state
   }
   case message {
-    Resume -> {
-      case prepare_submission(state) {
-        Error(error) ->
-          actor.continue(
-            session_state.State(..state, activity: turn.Resting)
-            |> session_state.emit(view.text("error", submission_error(error))),
-          )
-        Ok(#(state, kernel, client)) -> {
-          let recovered =
-            list.append(
-              session_history.recover_pending(state.host, state.history, kernel),
-              [
-                session_submission.input(restart_note),
-              ],
-            )
-          let candidate = session_history.remember(state, recovered, 0)
-          case projected_inputs(candidate) {
-            Error(error) ->
-              actor.continue(
-                session_state.State(..state, activity: turn.Resting)
-                |> session_state.emit(view.text("error", error)),
-              )
-            Ok(model_history) ->
-              case
-                conversation.commit_from(
-                  runtime.ledger(state.host),
-                  state.info.id,
-                  recovered,
-                  conversation.Model,
-                  Some(state.info.provider),
-                )
-              {
-                Error(error) ->
-                  actor.continue(session_state.emit(
-                    state,
-                    view.text("error", error),
-                  ))
-                Ok(timestamp) -> {
-                  // The kernel notice reaches the model but not the ledger,
-                  // as it does for a chat message.
-                  let model_history = case state.notice, model_history {
-                    Some(notice), [types.User(text), ..rest] -> [
-                      types.User(text <> notice),
-                      ..rest
-                    ]
-                    _, _ -> model_history
-                  }
-                  let state =
-                    session_history.remember(state, recovered, timestamp)
-                    |> session_state.emit(session_submission.event(
-                      restart_note,
-                      timestamp,
-                    ))
-                  actor.continue(start_run(
-                    session_state.State(..state, notice: None),
-                    kernel,
-                    client,
-                    model_history,
-                  ))
-                }
-              }
-          }
-        }
+    Resume ->
+      case kernel_or_park(state, Resume) {
+        Error(state) -> actor.continue(state)
+        Ok(state) -> actor.continue(resume(state))
       }
-    }
+    KernelOpened(result) -> actor.continue(kernel_opened(state, result))
+    StartQueued -> actor.continue(start_queued(state))
     Abort(id) ->
       case turn.owner(state.activity, id) {
         Some(run) if run.cancelled -> {
@@ -467,12 +416,32 @@ fn handle(state: State, message: Message) {
       actor.continue(state)
     }
     Interrupt(reply) ->
-      case turn.running(state.activity) {
-        None -> {
+      case turn.running(state.activity), waiting_turn(state) {
+        // A turn still waiting for its kernel: drop it. Letters it held stay
+        // undelivered, so the dispatcher offers them again later.
+        None, True -> {
+          process.send(reply, True)
+          actor.continue(
+            session_state.State(
+              ..state,
+              steering: [],
+              booting: option.map(state.booting, fn(boot) {
+                #(
+                  boot.0,
+                  list.filter(boot.1, fn(work) {
+                    work != StartQueued && work != Resume
+                  }),
+                )
+              }),
+            )
+            |> session_state.emit(view.event("interrupted", [])),
+          )
+        }
+        None, False -> {
           process.send(reply, False)
           actor.continue(state)
         }
-        Some(run) -> {
+        Some(run), _ -> {
           case state.kernel {
             Some(kernel) -> runtime.interrupt(kernel)
             None -> Nil
@@ -564,55 +533,25 @@ fn handle(state: State, message: Message) {
       process.send(reply, outcome)
       actor.continue(state)
     }
-    Compact(reply) -> {
-      let prepared = {
-        use _ <- result.try(case turn.running(state.activity) {
-          Some(_) -> Error("session must be idle to compact")
-          None -> Ok(Nil)
-        })
-        use #(state, kernel, client) <- result.try(
-          prepare_submission(state) |> result.map_error(submission_error),
-        )
-        use strategy <- result.try(case runtime.compaction_name(kernel) {
-          Some(strategy) -> Ok(strategy)
-          None -> Error("no compaction strategy is enabled")
-        })
-        use history <- result.try(projected_inputs(state))
-        use _ <- result.try(case history {
-          [] -> Error("no conversation history to compact")
-          _ -> Ok(Nil)
-        })
-        Ok(#(state, kernel, client, strategy, history))
+    Compact(reply) ->
+      case turn.running(state.activity), kernel_or_park(state, Compact(reply)) {
+        None, Error(state) -> actor.continue(state)
+        _, Ok(state) | Some(_), Error(state) -> compact(state, reply)
       }
-      case prepared {
-        Error(error) -> {
-          process.send(reply, Error(error))
-          actor.continue(state)
-        }
-        Ok(#(state, kernel, client, strategy, history)) -> {
-          let state =
-            start_worker(state, kernel, client, history, turn.Compaction)
-          process.send(
-            reply,
-            Ok(
-              json.object([
-                #("started", json.bool(True)),
-                #("strategy", json.string(strategy)),
-                #("message", json.string("Compacting with " <> strategy <> "…")),
-              ]),
-            ),
-          )
-          actor.continue(state)
-        }
-      }
-    }
     Status(reply) -> {
       process.send(
         reply,
         json.object([
-          #("running", json.bool(turn.running(state.activity) != None)),
-          #("idle", json.bool(turn.running(state.activity) == None)),
-          #("phase", json.string(turn.phase(state.activity))),
+          // A turn waiting for its kernel is already on its way.
+          #("running", json.bool(busy(state))),
+          #("idle", json.bool(!busy(state))),
+          #(
+            "phase",
+            json.string(case state.booting {
+              Some(_) -> "starting"
+              None -> turn.phase(state.activity)
+            }),
+          ),
         ])
           |> json.to_string,
       )
@@ -1012,6 +951,7 @@ fn handle(state: State, message: Message) {
       wakes_forget(state.info.id)
       commands_forget(state.info.id)
       mailbox_forget(state.info.id)
+      live_forget(state.info.id)
       process.send(reply, Nil)
       actor.stop()
     }
@@ -1116,6 +1056,31 @@ fn mailbox_register(
 @external(erlang, "albedo_mailbox", "forget")
 fn mailbox_forget(session: String) -> Nil
 
+@external(erlang, "albedo_sessions", "register")
+fn live_register(session: String, subject: Session) -> Nil
+
+@external(erlang, "albedo_sessions", "forget")
+fn live_forget(session: String) -> Nil
+
+@external(erlang, "albedo_sessions", "find")
+fn live_find(session: String) -> Result(Session, Nil)
+
+/// The session's actor when one is already running, so nobody starts another.
+pub fn live(id: String) -> Option(Session) {
+  case live_find(id) {
+    Ok(session) ->
+      case process.subject_owner(session) {
+        Ok(pid) ->
+          case process.is_alive(pid) {
+            True -> Some(session)
+            False -> None
+          }
+        Error(_) -> None
+      }
+    Error(_) -> None
+  }
+}
+
 @external(erlang, "albedo_session", "discard")
 fn discard(path: String) -> Nil
 
@@ -1132,10 +1097,154 @@ fn prepare_submission(
   use #(state, client) <- result.try(
     session_provider.configured_client(state) |> result.map_error(Rejected),
   )
-  use #(state, kernel) <- result.try(
-    session_namespace.ensure_kernel(state) |> result.map_error(Rejected),
+  case session_namespace.ready(state) {
+    #(state, Some(kernel)) -> Ok(#(state, kernel, client))
+    #(_, None) -> Error(Rejected("the session python kernel is not ready"))
+  }
+}
+
+/// The state when a live kernel is here; otherwise `work` is parked until one
+/// arrives and the state that asked for it comes back as the error.
+fn kernel_or_park(state: State, work: Message) -> Result(State, State) {
+  case session_namespace.ready(state) {
+    #(state, Some(_)) -> Ok(state)
+    #(state, None) -> Error(park(state, work))
+  }
+}
+
+/// The kernel's notice (variables restored or lost) rides on the newest user
+/// message, where the model reads it; the transcript keeps the message as sent.
+fn with_notice(
+  history: List(types.Input),
+  notice: Option(String),
+) -> List(types.Input) {
+  case notice, history {
+    Some(notice), [types.User(text), ..rest] -> [
+      types.User(text <> notice),
+      ..rest
+    ]
+    Some(notice), [types.UserImage(text, image), ..rest] -> [
+      types.UserImage(text <> notice, image),
+      ..rest
+    ]
+    _, _ -> history
+  }
+}
+
+/// Whether a turn is waiting for the kernel to boot before it can start.
+fn waiting_turn(state: State) -> Bool {
+  case state.booting {
+    Some(#(_, parked)) ->
+      list.contains(parked, StartQueued) || list.contains(parked, Resume)
+    None -> False
+  }
+}
+
+/// Running a turn, or about to once the kernel is up.
+fn busy(state: State) -> Bool {
+  turn.running(state.activity) != None || waiting_turn(state)
+}
+
+/// Keep `work` for when the kernel is ready, asking for one if nobody has.
+fn park(state: State, work: Message) -> State {
+  case state.booting {
+    Some(#(attempts, parked)) ->
+      case list.contains(parked, work) {
+        True -> state
+        False ->
+          session_state.State(
+            ..state,
+            booting: Some(#(attempts, list.append(parked, [work]))),
+          )
+      }
+    None -> {
+      request_kernel(state)
+      session_state.State(..state, booting: Some(#(1, [work])))
+    }
+  }
+}
+
+fn request_kernel(state: State) -> Nil {
+  let self = state.self
+  runtime.open_session_async(
+    state.host,
+    state.info.id,
+    state.info.cwd,
+    fn(result) { process.send(self, KernelOpened(result)) },
   )
-  Ok(#(state, kernel, client))
+}
+
+/// The kernel arrived or failed. Parked work runs again on success; a lost
+/// kernel is reset and asked for once more; any other failure fails only the
+/// parked work. Queued letters are not lost: they stay undelivered, and the
+/// dispatcher offers them again.
+/// Adopting revives saved variables only for a session with history, so the
+/// history is loaded first, as the old synchronous open did.
+fn adopt(state: State, kernel: runtime.Session) -> State {
+  session_history.ensure_history(state)
+  |> result.unwrap(state)
+  |> session_namespace.adopt(kernel)
+}
+
+fn kernel_opened(
+  state: State,
+  result: Result(runtime.Session, python.Error),
+) -> State {
+  case state.booting, result {
+    None, Ok(kernel) ->
+      case state.kernel {
+        None -> adopt(state, kernel)
+        Some(_) -> state
+      }
+    None, Error(_) -> state
+    Some(#(attempts, parked)), Error(python.Lost) if attempts < 2 -> {
+      runtime.reset_session(state.host, state.info.id)
+      request_kernel(state)
+      session_state.State(..state, booting: Some(#(attempts + 1, parked)))
+    }
+    Some(#(_, parked)), Ok(kernel) -> {
+      let state = adopt(session_state.State(..state, booting: None), kernel)
+      // Turns start here and now, so no status read can fall between the
+      // kernel arriving and its turn starting; work that answers a caller is
+      // handled as a message again.
+      list.fold(parked, state, fn(state, work) {
+        case work {
+          StartQueued -> start_queued(state)
+          Resume -> resume(state)
+          other -> {
+            process.send(state.self, other)
+            state
+          }
+        }
+      })
+    }
+    Some(#(_, parked)), Error(error) -> {
+      let why =
+        "could not start the session python kernel: "
+        <> case error {
+          python.Unavailable(message) | python.Invalid(message) -> message
+          python.Lost -> "the kernel exited while starting"
+          python.Busy -> "the kernel is busy"
+        }
+      list.fold(
+        parked,
+        session_state.State(..state, booting: None),
+        fn(state, work) {
+          case work {
+            StartQueued -> failed_queued(state, why)
+            Resume ->
+              session_state.State(..state, activity: turn.Resting)
+              |> session_state.emit(view.text("error", why))
+            Compact(reply) -> {
+              process.send(reply, Error(why))
+              state
+            }
+            _ -> state
+          }
+        },
+      )
+    }
+  }
 }
 
 /// The kernel opens on first use. A session with history had a namespace the
@@ -1246,86 +1355,216 @@ fn admit(
       )
     }
     turn.Start ->
-      case prepare_submission(state) {
-        Error(error) -> {
-          process.send(reply, Error(error))
+      case directory(state.info.cwd), session_namespace.ready(state) {
+        False, _ -> {
+          process.send(reply, Error(WorkspaceMissing(state.info.cwd)))
           actor.continue(state)
         }
-        Ok(#(state, kernel, client)) -> {
-          // Notes queued while idle ride along ahead of this message.
-          let notes = state.steering
-          let accepted =
-            list.flatten([
-              session_history.recover_pending(state.host, state.history, kernel),
-              list.map(notes, session_submission.input),
-              [session_submission.input(submission)],
-            ])
-          case projected_inputs(session_history.remember(state, accepted, 0)) {
-            Error(error) -> {
-              process.send(reply, Error(Rejected(error)))
-              actor.continue(state)
-            }
-            Ok(history) -> {
-              // Projection is newest-first: the head is this submission.
-              let model_history = case state.notice {
-                None -> history
-                Some(notice) ->
-                  case history {
-                    [types.User(_), ..rest] -> [
-                      types.User(submission.text <> notice),
-                      ..rest
-                    ]
-                    [types.UserImage(_, image), ..rest] -> [
-                      types.UserImage(submission.text <> notice, image),
-                      ..rest
-                    ]
-                    _ -> history
-                  }
-              }
-              case
-                conversation.commit_letters(
-                  runtime.ledger(state.host),
-                  state.info.id,
-                  accepted,
-                  conversation.Model,
-                  Some(state.info.provider),
-                  turn.letters([submission, ..notes]),
-                )
-              {
-                Error(error) -> {
-                  process.send(reply, Error(Rejected(error)))
-                  actor.continue(state)
-                }
-                Ok(timestamp) -> {
-                  let state =
-                    session_history.remember(state, accepted, timestamp)
-                    |> session_submission.emit(notes, timestamp)
-                    |> fn(state) {
-                      session_state.State(..state, notice: None, steering: [])
-                    }
-                    |> start_run(kernel, client, model_history)
-                  process.send(reply, Ok(False))
-                  actor.continue(case submission.source {
-                    turn.Continue -> state
-                    _ ->
-                      session_state.emit(
-                        state,
-                        session_submission.event(submission, timestamp),
-                      )
-                  })
-                }
-              }
-            }
-          }
+        // It starts once the kernel boots, not behind another turn, so to
+        // the caller it is not queued; the actor keeps answering meanwhile.
+        True, #(state, None) -> {
+          process.send(reply, Ok(False))
+          actor.continue(park(
+            session_state.State(
+              ..state,
+              steering: list.append(state.steering, [submission]),
+            ),
+            StartQueued,
+          ))
         }
+        True, #(state, Some(_)) -> start_now(state, submission, reply)
       }
   }
 }
 
+fn resume(state: State) -> State {
+  case prepare_submission(state) {
+    Error(error) ->
+      session_state.State(..state, activity: turn.Resting)
+      |> session_state.emit(view.text("error", submission_error(error)))
+    Ok(#(state, kernel, client)) -> {
+      let recovered =
+        list.append(
+          session_history.recover_pending(state.host, state.history, kernel),
+          [
+            session_submission.input(restart_note),
+          ],
+        )
+      let candidate = session_history.remember(state, recovered, 0)
+      case projected_inputs(candidate) {
+        Error(error) ->
+          session_state.State(..state, activity: turn.Resting)
+          |> session_state.emit(view.text("error", error))
+        Ok(model_history) ->
+          case
+            conversation.commit_from(
+              runtime.ledger(state.host),
+              state.info.id,
+              recovered,
+              conversation.Model,
+              Some(state.info.provider),
+            )
+          {
+            Error(error) -> session_state.emit(state, view.text("error", error))
+            Ok(timestamp) -> {
+              // The kernel notice reaches the model but not the ledger,
+              // as it does for a chat message.
+              let model_history = case state.notice, model_history {
+                Some(notice), [types.User(text), ..rest] -> [
+                  types.User(text <> notice),
+                  ..rest
+                ]
+                _, _ -> model_history
+              }
+              let state =
+                session_history.remember(state, recovered, timestamp)
+                |> session_state.emit(session_submission.event(
+                  restart_note,
+                  timestamp,
+                ))
+              start_run(
+                session_state.State(..state, notice: None),
+                kernel,
+                client,
+                model_history,
+              )
+            }
+          }
+      }
+    }
+  }
+}
+
+fn compact(
+  state: State,
+  reply: Subject(Result(json.Json, String)),
+) -> actor.Next(State, Message) {
+  let prepared = {
+    use _ <- result.try(case turn.running(state.activity) {
+      Some(_) -> Error("session must be idle to compact")
+      None -> Ok(Nil)
+    })
+    use #(state, kernel, client) <- result.try(
+      prepare_submission(state) |> result.map_error(submission_error),
+    )
+    use strategy <- result.try(case runtime.compaction_name(kernel) {
+      Some(strategy) -> Ok(strategy)
+      None -> Error("no compaction strategy is enabled")
+    })
+    use history <- result.try(projected_inputs(state))
+    use _ <- result.try(case history {
+      [] -> Error("no conversation history to compact")
+      _ -> Ok(Nil)
+    })
+    Ok(#(state, kernel, client, strategy, history))
+  }
+  case prepared {
+    Error(error) -> {
+      process.send(reply, Error(error))
+      actor.continue(state)
+    }
+    Ok(#(state, kernel, client, strategy, history)) -> {
+      let state = start_worker(state, kernel, client, history, turn.Compaction)
+      process.send(
+        reply,
+        Ok(
+          json.object([
+            #("started", json.bool(True)),
+            #("strategy", json.string(strategy)),
+            #("message", json.string("Compacting with " <> strategy <> "…")),
+          ]),
+        ),
+      )
+      actor.continue(state)
+    }
+  }
+}
+
+fn start_now(
+  state: State,
+  submission: Submission,
+  reply: Subject(Result(Bool, SubmissionError)),
+) -> actor.Next(State, Message) {
+  case prepare_submission(state) {
+    Error(error) -> {
+      process.send(reply, Error(error))
+      actor.continue(state)
+    }
+    Ok(#(state, kernel, client)) -> {
+      // Notes queued while idle ride along ahead of this message.
+      let notes = state.steering
+      let accepted =
+        list.flatten([
+          session_history.recover_pending(state.host, state.history, kernel),
+          list.map(notes, session_submission.input),
+          [session_submission.input(submission)],
+        ])
+      case projected_inputs(session_history.remember(state, accepted, 0)) {
+        Error(error) -> {
+          process.send(reply, Error(Rejected(error)))
+          actor.continue(state)
+        }
+        Ok(history) -> {
+          // Projection is newest-first: the head is this submission.
+          let model_history = case state.notice {
+            None -> history
+            Some(notice) ->
+              case history {
+                [types.User(_), ..rest] -> [
+                  types.User(submission.text <> notice),
+                  ..rest
+                ]
+                [types.UserImage(_, image), ..rest] -> [
+                  types.UserImage(submission.text <> notice, image),
+                  ..rest
+                ]
+                _ -> history
+              }
+          }
+          case
+            conversation.commit_letters(
+              runtime.ledger(state.host),
+              state.info.id,
+              accepted,
+              conversation.Model,
+              Some(state.info.provider),
+              turn.letters([submission, ..notes]),
+            )
+          {
+            Error(error) -> {
+              process.send(reply, Error(Rejected(error)))
+              actor.continue(state)
+            }
+            Ok(timestamp) -> {
+              let state =
+                session_history.remember(state, accepted, timestamp)
+                |> session_submission.emit(notes, timestamp)
+                |> fn(state) {
+                  session_state.State(..state, notice: None, steering: [])
+                }
+                |> start_run(kernel, client, model_history)
+              process.send(reply, Ok(False))
+              actor.continue(case submission.source {
+                turn.Continue -> state
+                _ ->
+                  session_state.emit(
+                    state,
+                    session_submission.event(submission, timestamp),
+                  )
+              })
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 fn start_queued(state: State) -> State {
-  case turn.starts_turn(state.steering) {
-    False -> state
-    True -> {
+  case turn.starts_turn(state.steering), kernel_or_park(state, StartQueued) {
+    False, _ -> state
+    True, Error(state) -> state
+    True, Ok(state) -> {
       let queued = state.steering
       case prepare_submission(state) {
         Error(error) -> failed_queued(state, submission_error(error))
@@ -1360,7 +1599,7 @@ fn start_queued(state: State) -> State {
                     session_state.State(..state, steering: [], notice: None),
                     kernel,
                     client,
-                    history,
+                    with_notice(history, state.notice),
                   )
                 }
               }

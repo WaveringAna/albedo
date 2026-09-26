@@ -39,3 +39,4 @@ python3 test/daemon/idle_reap_integration.py
 python3 test/daemon/job_wake_integration.py
 python3 test/daemon/agents_integration.py
 python3 test/daemon/agents_python_integration.py
+python3 test/daemon/agents_swarm_integration.py

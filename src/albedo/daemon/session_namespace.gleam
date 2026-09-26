@@ -101,40 +101,32 @@ pub fn released_text(
   }
 }
 
-pub fn ensure_kernel(
+/// The session's kernel when it has a live one. A dead one is dropped, so the
+/// caller asks the runtime for a replacement.
+pub fn ready(
   state: session_state.State(message),
-) -> Result(#(session_state.State(message), runtime.Session), String) {
+) -> #(session_state.State(message), Option(runtime.Session)) {
   case state.kernel {
     Some(kernel) ->
       case runtime.alive(kernel) {
-        True -> Ok(#(state, kernel))
-        False -> open_kernel(session_state.State(..state, kernel: None))
+        True -> #(state, Some(kernel))
+        False -> #(session_state.State(..state, kernel: None), None)
       }
-    None -> open_kernel(state)
+    None -> #(state, None)
   }
 }
 
-fn open_kernel(
+/// Take a kernel the runtime just opened. A session with history had a
+/// namespace the model still believes in, so its saved variables are revived
+/// and the gap named.
+pub fn adopt(
   state: session_state.State(message),
-) -> Result(#(session_state.State(message), runtime.Session), String) {
-  let opened = case
-    runtime.open_session(state.host, state.info.id, state.info.cwd)
-  {
-    Error(python.Lost) -> {
-      runtime.reset_session(state.host, state.info.id)
-      runtime.open_session(state.host, state.info.id, state.info.cwd)
-    }
-    result -> result
-  }
-  use kernel <- result.try(
-    opened
-    |> result.replace_error("could not start the session python kernel"),
-  )
+  kernel: runtime.Session,
+) -> session_state.State(message) {
   case state.notice, state.history {
     Some(notice), _ if notice == lost_notice ->
-      Ok(#(session_state.State(..state, kernel: Some(kernel)), kernel))
-    _, None | _, Some([]) ->
-      Ok(#(session_state.State(..state, kernel: Some(kernel)), kernel))
+      session_state.State(..state, kernel: Some(kernel))
+    _, None | _, Some([]) -> session_state.State(..state, kernel: Some(kernel))
     _, Some(_) -> {
       let revived = case state_path(state.home, state.info.id) {
         Some(path) -> runtime.load_state(kernel, path, state_timeout)
@@ -159,7 +151,7 @@ fn open_kernel(
             "python kernel restarted; earlier variables are gone, the transcript is intact",
           ))
       }
-      Ok(#(state, kernel))
+      state
     }
   }
 }

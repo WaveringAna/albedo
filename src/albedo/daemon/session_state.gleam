@@ -31,6 +31,9 @@ pub type State(message) {
     context: context_snapshot.Snapshot,
     pin: loop.Pin,
     last_touch: Int,
+    /// While the kernel boots: boot attempts so far, and the work waiting for
+    /// it, re-sent to the actor once the kernel is ready.
+    booting: Option(#(Int, List(message))),
   )
 }
 
