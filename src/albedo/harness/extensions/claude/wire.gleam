@@ -11,6 +11,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/string_tree.{type StringTree}
 
 type Message {
   Message(role: String, blocks: List(Json))
@@ -21,6 +22,8 @@ type History {
 }
 
 pub const blocks_detail = "claude.blocks"
+
+const claude_code_version = "2.1.283"
 
 pub fn encode(
   access: String,
@@ -50,6 +53,15 @@ pub fn encode(
         #("content", json.preprocessed_array(message.blocks)),
       ])
     })
+  let first_user =
+    request.input
+    |> list.find_map(fn(input) {
+      case input {
+        types.User(text) | types.UserImage(text, _) -> Ok(text)
+        _ -> Error(Nil)
+      }
+    })
+    |> result.unwrap("")
   let fields = [
     #("model", json.string(request.model)),
     #("messages", json.preprocessed_array(messages)),
@@ -59,6 +71,7 @@ pub fn encode(
       "system",
       json.array(
         [
+          billing_header(claude_code_version, first_user),
           "You are Claude Code, Anthropic's official CLI for Claude.",
           ..case request.instructions {
             Some(text) -> [text]
@@ -117,24 +130,29 @@ pub fn encode(
   case request.model == "" || request.max_output_tokens == Some(0) {
     True ->
       Error(types.InvalidRequest("invalid Claude model or output token limit"))
-    False ->
+    False -> {
+      use body <- result.try(
+        sign_body(json.to_string_tree(json.object(fields)))
+        |> result.map_error(types.InvalidRequest),
+      )
       Ok(openai_api.Exchange(
         "https://api.anthropic.com/v1/messages",
         [
           #("authorization", "Bearer " <> access),
           #("anthropic-version", "2023-06-01"),
           #("anthropic-beta", "claude-code-20250219,oauth-2025-04-20"),
-          #("user-agent", "claude-cli/2.1.283"),
+          #("user-agent", "claude-cli/" <> claude_code_version),
           #("x-app", "cli"),
           #("anthropic-dangerous-direct-browser-access", "true"),
           #("content-type", "application/json"),
           #("accept", "text/event-stream"),
         ],
-        json.to_string_tree(json.object(fields)),
+        body,
         120_000,
         8 * 1024 * 1024,
         True,
       ))
+    }
   }
 }
 
@@ -338,6 +356,12 @@ pub fn claude_name(name: String) -> String {
   })
   |> result.unwrap(name)
 }
+
+@external(erlang, "albedo_claude_billing", "header")
+fn billing_header(version: String, first_user: String) -> String
+
+@external(erlang, "albedo_claude_billing", "sign")
+fn sign_body(body: StringTree) -> Result(StringTree, String)
 
 @external(erlang, "albedo_claude_schema", "normalize")
 pub fn normalize_schema(schema: Json) -> Json

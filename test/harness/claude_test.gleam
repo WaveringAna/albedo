@@ -94,11 +94,18 @@ pub fn claude_messages_request_carries_client_identity_and_tools_test() {
       value,
       decode.at(["system"], decode.list(decode.at(["text"], decode.string))),
     )
-  assert system
-    == [
-      "You are Claude Code, Anthropic's official CLI for Claude.",
-      "local instructions",
-    ]
+  let assert [billing, identity, local] = system
+  assert identity == "You are Claude Code, Anthropic's official CLI for Claude."
+  assert local == "local instructions"
+  assert string.starts_with(
+    billing,
+    "x-anthropic-billing-header: cc_version=2.1.283.79f; cc_entrypoint=cli; cch=",
+  )
+  let assert [_, hash_with_end] = string.split(billing, "cch=")
+  let assert [hash, ""] = string.split(hash_with_end, ";")
+  let unsigned =
+    string.replace(string_tree.to_string(body), "cch=" <> hash, "cch=00000")
+  assert hash == billing_hash(unsigned)
   let assert Ok(name) =
     decode.run(
       value,
@@ -285,6 +292,18 @@ fn list_first(items: List(types.ReplayItem)) -> types.ReplayItem {
   let assert [first, ..] = items
   first
 }
+
+pub fn claude_billing_hash_matches_reference_vectors_test() {
+  assert billing_hash("cch=00000") == "a47f7"
+  assert billing_hash("{\"messages\":[],\"cch=00000\",\"x\":1}") == "3073d"
+  assert billing_hash(
+      "x-anthropic-billing-header: cc_version=2.1.158; cc_entrypoint=cli; cch=00000;",
+    )
+    == "f2b0b"
+}
+
+@external(erlang, "albedo_claude_billing", "hash")
+fn billing_hash(body: String) -> String
 
 @external(erlang, "albedo_claude_auth", "access")
 fn access(home: String, session: String) -> Result(String, String)
