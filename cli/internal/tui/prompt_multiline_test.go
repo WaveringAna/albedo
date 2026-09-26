@@ -235,12 +235,19 @@ func TestPromptCtrlGAndEditorFinishedMsg(t *testing.T) {
 	tmp.Close()
 
 	// Dispatch ChatEditorFinishedMsg
-	m, _ = m.Update(ChatEditorFinishedMsg{
+	var finishCmd tea.Cmd
+	m, finishCmd = m.Update(ChatEditorFinishedMsg{
 		SessionID:  m.SessionID,
 		Generation: m.Generation,
 		Path:       tmp.Name(),
 		Err:        nil,
 	})
+	if finishCmd == nil {
+		t.Fatal("expected non-nil cmd restoring mouse mode after editor finished")
+	}
+	if finishCmd() != tea.EnableMouseCellMotion() {
+		t.Fatalf("expected EnableMouseCellMotion msg from editor finished cmd, got %#v", finishCmd())
+	}
 
 	// Verify temp file was removed
 	if _, err := os.Stat(tmp.Name()); !os.IsNotExist(err) {

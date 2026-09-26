@@ -1392,20 +1392,20 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			defer os.Remove(msg.Path)
 		}
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
-			return m, nil
+			return m, tea.EnableMouseCellMotion
 		}
 		if msg.Err != nil {
 			m.AddError("editor error: " + msg.Err.Error())
-			return m, nil
+			return m, tea.EnableMouseCellMotion
 		}
 		data, err := os.ReadFile(msg.Path)
 		if err != nil {
 			m.AddError("could not read edited prompt: " + err.Error())
-			return m, nil
+			return m, tea.EnableMouseCellMotion
 		}
 		m.TextArea.SetValue(strings.TrimRight(string(data), "\r\n"))
 		m.syncLayout()
-		return m, nil
+		return m, tea.EnableMouseCellMotion
 
 	case ChatInterruptMsg:
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {

@@ -527,7 +527,7 @@ func (m AppModel) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
 			m.Chat, cmd = m.Chat.Update(msg)
 		}
-		return m, cmd
+		return m, tea.Batch(cmd, mouseModeCmd(m.State))
 	case ChatClearCopyStatusMsg:
 		var cmd tea.Cmd
 		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
