@@ -139,25 +139,6 @@ func TestAgentsTailStreamsCodeThinkingAndOutput(t *testing.T) {
 	}
 }
 
-func TestAgentsTailStartsFromHistory(t *testing.T) {
-	m := agentsFixture(t)
-	seed := agentsSeedMsg{Gen: 1, ID: "lead"}
-	seed.Items = append(seed.Items, struct {
-		Type    string `json:"type"`
-		Preview string `json:"preview"`
-	}{"user", "fan out three scouts"}, struct {
-		Type    string `json:"type"`
-		Preview string `json:"preview"`
-	}{"assistant", "sent them off"})
-	m, _ = m.Update(seed)
-	view := ansi.Strip(m.View())
-	for _, want := range []string{"← fan out three scouts", "sent them off"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("seeded tail is missing %q", want)
-		}
-	}
-}
-
 // Partial JSON arguments arrive before a tool call finishes; a malformed escape must not hide streamed code.
 func TestCodeLinesReadsPartialJSON(t *testing.T) {
 	got := codeLines(`{"code": "a = 1\nb = \"x\"\nprint(a`)
@@ -228,6 +209,7 @@ func TestFailedSeedRetriesOnTheNextSelection(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]string{
 			{"type": "user", "preview": "fan out three scouts"},
+			{"type": "assistant", "preview": "sent them off"},
 		}})
 	}))
 	defer server.Close()
@@ -265,8 +247,10 @@ func TestFailedSeedRetriesOnTheNextSelection(t *testing.T) {
 		t.Fatalf("the retry should answer with history, got %T", msg)
 	}
 	m, _ = m.Update(seed)
-	if !strings.Contains(ansi.Strip(m.View()), "← fan out three scouts") {
-		t.Fatalf("the retried seed should fill the tail:\n%s", ansi.Strip(m.View()))
+	for _, want := range []string{"← fan out three scouts", "sent them off"} {
+		if !strings.Contains(ansi.Strip(m.View()), want) {
+			t.Fatalf("the retried seed should show %q in the tail:\n%s", want, ansi.Strip(m.View()))
+		}
 	}
 
 	// An error from an earlier generation may not unseed the live node.

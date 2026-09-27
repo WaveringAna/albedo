@@ -20,8 +20,11 @@ python3 test/harness/remote_kernel_test.py
 python3 test/harness/remote_plugin_test.py
 
 (cd cli && go vet ./...)
-(cd cli && go test ./...)
 # the daemon suites drive the CLI through this binary
 go -C cli build -o bin/albedo ./cmd/albedo
+# unit tests first, then the Go e2e suite: it builds its own CLI and boots one
+# hermetic daemon, so it must never reuse a cached run or a stale binary
+(cd cli && go test ./internal/... ./cmd/...)
+(cd cli && go test -count=1 ./test/e2e)
 
 python3 test/e2e/run.py
