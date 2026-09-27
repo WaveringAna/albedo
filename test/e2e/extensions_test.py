@@ -204,6 +204,24 @@ class ExtensionTests(unittest.TestCase):
         page = self.command("/work", args={})["result"]["page"]
         self.assertTrue(any(row["text"] == "write the release notes" for row in page["glance"]["rows"]))
 
+    def test_work_command_is_scoped_to_each_workspace(self):
+        workspaces = [self.app.root / "work-one", self.app.root / "work-two"]
+        for workspace in workspaces:
+            workspace.mkdir()
+        sessions = [self.app.session(workspace) for workspace in workspaces]
+
+        def invoke(session, args):
+            return self.post(f"/sessions/{session}/commands", {"name": "/work", "args": args})
+
+        invoke(sessions[0], {"action": "add", "details": "first workspace item"})
+        first_page = invoke(sessions[0], {})
+        second_page = invoke(sessions[1], {})
+        self.assertIn("first workspace item", json.dumps(first_page))
+        self.assertNotIn("first workspace item", json.dumps(second_page))
+        invoke(sessions[1], {"action": "add", "details": "second workspace item"})
+        self.assertNotIn("second workspace item", json.dumps(invoke(sessions[0], {})))
+        self.assertIn("second workspace item", json.dumps(invoke(sessions[1], {})))
+
     def test_manual_compaction_keeps_tree_and_reuses_summary(self):
         self.turn("first turn")
         self.turn("second turn")

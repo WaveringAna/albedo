@@ -58,7 +58,8 @@ pub fn main() {
         )
       let start = now()
       let result = run(client, request, host, session, 1, 0)
-      let ledger = work.list(runtime.ledger(host), 0, 50) |> result.unwrap([])
+      let ledger =
+        work.list(runtime.ledger(host), workspace, 0, 50) |> result.unwrap([])
       log([
         #("event", json.string("summary")),
         #("elapsed_ms", json.int(now() - start)),

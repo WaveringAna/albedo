@@ -6,7 +6,7 @@ import gleam/json
 import gleam/option.{None}
 import gleam/result
 
-pub fn handle(store: work.Store, request: String) -> String {
+pub fn handle(store: work.Store, cwd: String, request: String) -> String {
   let decoder = {
     use method <- decode.field("method", decode.string)
     use args <- decode.field("args", decode.dynamic)
@@ -17,7 +17,7 @@ pub fn handle(store: work.Store, request: String) -> String {
       json.parse(request, decoder)
       |> result.replace_error(work.Invalid("invalid host request")),
     )
-    dispatch(store, method, args)
+    dispatch(store, cwd, method, args)
   }
   case answer {
     Ok(value) -> json.object([#("ok", json.bool(True)), #("value", value)])
@@ -46,7 +46,7 @@ fn parse(args, decoder) {
   |> result.replace_error(work.Invalid("invalid work arguments"))
 }
 
-fn dispatch(store, method, args) {
+fn dispatch(store, cwd, method, args) {
   case method {
     "work.list" -> {
       let decoder = {
@@ -55,14 +55,15 @@ fn dispatch(store, method, args) {
         decode.success(#(after, limit))
       }
       use #(after, limit) <- result.try(parse(args, decoder))
-      work.list(store, after, limit) |> result.map(json.array(_, work.to_json))
+      work.list(store, cwd, after, limit)
+      |> result.map(json.array(_, work.to_json))
     }
     "work.get" -> {
       use id <- result.try(parse(
         args,
         decode.field("id", decode.int, decode.success),
       ))
-      work.get(store, id) |> result.map(work.to_json)
+      work.get(store, cwd, id) |> result.map(work.to_json)
     }
     "work.create" -> {
       let decoder = {
@@ -76,14 +77,14 @@ fn dispatch(store, method, args) {
         decode.success(#(title, notes, parent))
       }
       use #(title, notes, parent) <- result.try(parse(args, decoder))
-      work.create(store, title, notes, parent) |> result.map(work.to_json)
+      work.create(store, cwd, title, notes, parent) |> result.map(work.to_json)
     }
     "work.update" -> {
       use id <- result.try(parse(
         args,
         decode.field("id", decode.int, decode.success),
       ))
-      use current <- result.try(work.get(store, id))
+      use current <- result.try(work.get(store, cwd, id))
       let decoder = {
         use revision <- decode.field("revision", decode.int)
         use title <- decode.optional_field(
@@ -120,6 +121,7 @@ fn dispatch(store, method, args) {
       use status <- result.try(work.parse_status(status))
       work.update(
         store,
+        cwd,
         work.Item(
           ..current,
           revision: revision,
@@ -139,7 +141,7 @@ fn dispatch(store, method, args) {
         decode.success(#(id, revision))
       }
       use #(id, revision) <- result.try(parse(args, decoder))
-      work.delete(store, id, revision) |> result.map(work.to_json)
+      work.delete(store, cwd, id, revision) |> result.map(work.to_json)
     }
     _ -> Error(work.Invalid("unknown host operation"))
   }

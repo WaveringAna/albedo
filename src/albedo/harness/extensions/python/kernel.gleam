@@ -52,7 +52,7 @@ pub fn start(
     executable,
     script,
     cwd,
-    rpc.handle(store, _),
+    rpc.handle(store, cwd, _),
     ["run", "work"],
   )
 }

@@ -15,7 +15,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 
-pub fn command(store: work.Store) -> Command {
+pub fn command(store: work.Store, cwd: String) -> Command {
   Command(
     "/work",
     "Show the shared work ledger, or change it: add <title>, edit <id> <title>, status <id> <status>, remove <id>. The agent is told about every change.",
@@ -38,17 +38,17 @@ pub fn command(store: work.Store) -> Command {
       let details =
         dict.get(args, "details") |> result.unwrap("") |> string.trim
       case action, caller {
-        "", _ -> listing(store)
-        _, UserCall -> change(store, ctx, action, details)
+        "", _ -> listing(store, cwd)
+        _, UserCall -> change(store, cwd, ctx, action, details)
         _, _ -> Error("only a user changes the ledger through /work")
       }
     },
   )
 }
 
-fn listing(store: work.Store) -> Result(command.Outcome, String) {
+fn listing(store: work.Store, cwd: String) -> Result(command.Outcome, String) {
   use items <- result.try(
-    work.list(store, 0, 200) |> result.map_error(describe),
+    work.list(store, cwd, 0, 200) |> result.map_error(describe),
   )
   let ordered = list.sort(items, fn(a, b) { int.compare(rank(a), rank(b)) })
   let rows = list.map(ordered, row)
@@ -132,33 +132,34 @@ fn summary(items: List(work.Item)) -> String {
 
 fn change(
   store: work.Store,
+  cwd: String,
   ctx: Context,
   action: String,
   details: String,
 ) -> Result(command.Outcome, String) {
   use #(verb, item) <- result.try(case action {
     "add" ->
-      work.create(store, details, "", None)
+      work.create(store, cwd, details, "", None)
       |> result.map(fn(item) { #("added", item) })
       |> result.map_error(describe)
     "edit" -> {
-      use #(current, title) <- result.try(target(store, details))
-      work.update(store, work.Item(..current, title: title))
+      use #(current, title) <- result.try(target(store, cwd, details))
+      work.update(store, cwd, work.Item(..current, title: title))
       |> result.map(fn(item) { #("renamed", item) })
       |> result.map_error(describe)
     }
     "status" -> {
-      use #(current, name) <- result.try(target(store, details))
+      use #(current, name) <- result.try(target(store, cwd, details))
       use status <- result.try(
         work.parse_status(name) |> result.map_error(describe),
       )
-      work.update(store, work.Item(..current, status: status))
+      work.update(store, cwd, work.Item(..current, status: status))
       |> result.map(fn(item) { #("marked " <> name, item) })
       |> result.map_error(describe)
     }
     "remove" -> {
-      use #(current, _) <- result.try(target(store, details))
-      work.delete(store, current.id, current.revision)
+      use #(current, _) <- result.try(target(store, cwd, details))
+      work.delete(store, cwd, current.id, current.revision)
       |> result.map(fn(item) { #("removed", item) })
       |> result.map_error(describe)
     }
@@ -202,6 +203,7 @@ fn change(
 /// `<id> [rest]`: the current item and whatever follows its id.
 fn target(
   store: work.Store,
+  cwd: String,
   details: String,
 ) -> Result(#(work.Item, String), String) {
   let #(first, rest) =
@@ -210,7 +212,7 @@ fn target(
     int.parse(string.replace(first, "#", ""))
     |> result.replace_error("expected a work item id, got " <> first),
   )
-  use item <- result.try(work.get(store, id) |> result.map_error(describe))
+  use item <- result.try(work.get(store, cwd, id) |> result.map_error(describe))
   Ok(#(item, string.trim(rest)))
 }
 
