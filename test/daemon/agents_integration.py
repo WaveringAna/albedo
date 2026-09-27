@@ -252,6 +252,14 @@ def run(endpoint):
             listed = [s["id"] for s in api("/sessions")]
             assert lead not in listed and coder not in listed, listed
 
+            # Moving a renamed session keeps its name, and its children hear
+            # from it by that name.
+            api(f"/sessions/{radio}", {"name": "radio desk"}, method="PATCH")
+            moved = workspace.parent / "moved"
+            moved.mkdir()
+            assert api(f"/sessions/{radio}/workspace", {"workspace": str(moved)})["title"] == "radio desk"
+            assert [s["title"] for s in api("/sessions") if s["id"] == radio] == ["radio desk"]
+
             # A child can use a different configured provider without changing its parent.
             try:
                 api(f"/sessions/{radio}/children",
@@ -267,6 +275,9 @@ def run(endpoint):
                 assert child["session"]["model"] == "fixture-beta", child
                 assert child["member"]["parent"] == radio, child
                 settle(child["session"]["id"])
+            assert len(asked('kind="task">\ncross-provider')) == 2
+            assert all('from="radio desk"' in task for task in asked('kind="task">\ncross-provider')), \
+                asked("cross-provider task")
             assert sum("/beta/" in path for path in Provider.paths) >= 2, Provider.paths
             print("spawn, renaming, cross-provider routing, forwarded answers, mail, and deletion hold")
         finally:

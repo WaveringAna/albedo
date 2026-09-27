@@ -79,8 +79,10 @@ type Message {
   Fork(String, Int, Subject(Result(conversation.Info, String)))
   DeleteSession(String, Subject(Result(Nil, String)))
   Rename(String, String, Subject(Result(conversation.Info, String)))
-  /// A session's info changed; the session itself already knows.
-  Remember(String, conversation.Info)
+  /// A session's info changed; the session itself already knows. The stored
+  /// row is re-read, since the session's own copy keeps the title it started
+  /// with rather than a later message's title or a name it was given.
+  Remember(String, Subject(Result(conversation.Info, String)))
   WorkerDown(process.Down)
   Sweep
   ScheduleTick
@@ -223,17 +225,20 @@ fn handle(state: State, message: Message) {
       process.send(reply, found)
       actor.continue(state)
     }
-    Remember(id, info) ->
-      case dict.get(state.sessions, id) {
-        Ok(#(_, worker)) ->
+    Remember(id, reply) -> {
+      let stored = conversation.get(runtime.ledger(state.host), id)
+      process.send(reply, stored)
+      case stored, dict.get(state.sessions, id) {
+        Ok(info), Ok(#(_, worker)) ->
           actor.continue(
             State(
               ..state,
               sessions: dict.insert(state.sessions, id, #(info, worker)),
             ),
           )
-        Error(_) -> actor.continue(state)
+        _, _ -> actor.continue(state)
       }
+    }
     List(reply) -> {
       let db = runtime.ledger(state.host)
       let children =
@@ -1923,9 +1928,8 @@ fn daemon_route(
                     )
                     // The session answers here, off the registry.
                     |> result.try(session.set_workspace(worker, _))
-                    |> result.map(fn(info) {
-                      process.send(registry, Remember(id, info))
-                      info
+                    |> result.try(fn(_) {
+                      actor.call(registry, 5000, Remember(id, _))
                     })
                   {
                     Ok(info) -> reply(200, info_json(info))
