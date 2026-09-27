@@ -61,7 +61,7 @@ func TestChatClientSendReconnectsAfterDaemonRestart(t *testing.T) {
 	if _, err := client.Send(context.Background(), prompt1, nil); err != nil {
 		t.Fatalf("first send: %v", err)
 	}
-	waitIdle(t, id)
+	waitIdle(t, id, profile, 1)
 
 	oldSnap := shared.Snapshot()
 	snap := restartDaemon(t)
@@ -71,7 +71,7 @@ func TestChatClientSendReconnectsAfterDaemonRestart(t *testing.T) {
 	if err != nil || sent == nil || !sent.OK {
 		t.Fatalf("second send through the same client after the restart: ok=%v err=%v", sent != nil && sent.OK, err)
 	}
-	waitIdle(t, id)
+	waitIdle(t, id, profile, 2)
 
 	// The shared connection must now describe the restarted daemon, not the
 	// one it was built on.

@@ -74,7 +74,7 @@ func TestSendTurnReachesProviderAndTranscript(t *testing.T) {
 		t.Fatalf("albedo send: ok=%v err=%v", sent.OK, err)
 	}
 
-	waitIdle(t, id)
+	waitIdle(t, id, profile, 1)
 	reply := strings.Join(eventText(streamSnapshot(t, id), "message"), "\n")
 	if !strings.Contains(reply, "echo: "+prompt) {
 		t.Fatalf("assistant reply is missing from the transcript; got:\n%s", reply)
@@ -146,7 +146,7 @@ func TestChatClientTurnStreamsAndSettles(t *testing.T) {
 		t.Fatalf("streamed reply %q does not carry the scripted echo", reply)
 	}
 
-	waitIdle(t, id)
+	waitIdle(t, id, profile, 1)
 	status, err := client.GetStatus(context.Background())
 	if err != nil {
 		t.Fatalf("chat client status: %v", err)

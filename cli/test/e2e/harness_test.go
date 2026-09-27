@@ -470,8 +470,9 @@ func providerRoute(t *testing.T, reply func(map[string]any) string) string {
 	return t.Name()
 }
 
-// waitIdle polls the session status until its turn settles.
-func waitIdle(t *testing.T, session string) {
+// waitIdle waits for the turn to reach the provider before accepting idle:
+// a newly submitted turn can be queued while its kernel boots.
+func waitIdle(t *testing.T, session, profile string, wantRequests int) {
 	t.Helper()
 	connection := conn(t)
 	deadline := time.Now().Add(60 * time.Second)
@@ -482,11 +483,13 @@ func waitIdle(t *testing.T, session string) {
 		if err != nil {
 			t.Fatalf("status of %s: %v", session, err)
 		}
-		if !status.Running {
+		seen := len(suite.provider.requests(profile))
+		if !status.Running && seen >= wantRequests {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("session %s never settled", session)
+			t.Fatalf("session %s never settled after %d provider requests (got %d)",
+				session, wantRequests, seen)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
