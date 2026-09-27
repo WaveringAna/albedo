@@ -1635,6 +1635,8 @@ func (m *ChatModel) submitInput(input string, cmds *[]tea.Cmd) {
 	}
 
 	m.ClearNotices()
+	m.TurnFailed = false
+	m.Stopped = false
 
 	cmd := m.sendCmd(".", nil, true)
 	if input != "." {

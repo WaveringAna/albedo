@@ -61,3 +61,53 @@ func TestDotContinueErrorDoesNotCorruptPendingUsers(t *testing.T) {
 		t.Fatalf("text area was overwritten with dot: %q", um.TextArea.Value())
 	}
 }
+
+func TestMessageSubmitClearsTurnFailed(t *testing.T) {
+	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m.Client = daemon.NewChatClient(daemon.ChatClientOptions{BaseURL: "http://127.0.0.1:1", AgentID: "s"})
+	m.SetSize(80, 30)
+	m.TurnFailed = true
+	m.Stopped = true
+
+	if status := m.statusLine(); status != "turn failed · see error above" {
+		t.Fatalf("expected initial status to be turn failed, got: %q", status)
+	}
+
+	var cmds []tea.Cmd
+	m.submitInput("retry prompt", &cmds)
+
+	if m.TurnFailed {
+		t.Fatal("expected TurnFailed to be false after submitting input")
+	}
+	if m.Stopped {
+		t.Fatal("expected Stopped to be false after submitting input")
+	}
+	if status := m.statusLine(); status == "turn failed · see error above" {
+		t.Fatalf("expected statusLine to not report failure after submit, got: %q", status)
+	}
+	if status := m.statusLine(); status != "preparing" {
+		t.Fatalf("expected statusLine to be preparing, got: %q", status)
+	}
+}
+
+func TestDotContinueClearsTurnFailed(t *testing.T) {
+	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m.Client = daemon.NewChatClient(daemon.ChatClientOptions{BaseURL: "http://127.0.0.1:1", AgentID: "s"})
+	m.SetSize(80, 30)
+	m.TurnFailed = true
+	m.Stopped = true
+
+	var cmds []tea.Cmd
+	m.submitInput(".", &cmds)
+
+	if m.TurnFailed {
+		t.Fatal("expected TurnFailed to be false after submitting dot continue")
+	}
+	if m.Stopped {
+		t.Fatal("expected Stopped to be false after submitting dot continue")
+	}
+	if status := m.statusLine(); status == "turn failed · see error above" {
+		t.Fatalf("expected statusLine to not report failure after dot continue, got: %q", status)
+	}
+}
+
