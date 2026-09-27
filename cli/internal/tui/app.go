@@ -231,6 +231,18 @@ func (m AppModel) loadSessionsCmd(gen int) tea.Cmd {
 	}
 }
 
+func (m AppModel) renameSessionCmd(rename SessionRenameMsg) tea.Cmd {
+	conn := m.Conn
+	return func() tea.Msg {
+		if conn == nil {
+			return sessionRenamedMsg{SessionRenameMsg: rename, Err: errors.New("daemon connection unavailable")}
+		}
+		path := "/sessions/" + url.PathEscape(rename.ID)
+		s, err := daemon.RequestMethod[daemon.Session](context.Background(), conn, http.MethodPatch, path, map[string]string{"name": rename.Name})
+		return sessionRenamedMsg{SessionRenameMsg: rename, Session: s, Err: err}
+	}
+}
+
 func (m AppModel) deleteSessionCmd(id string) tea.Cmd {
 	conn := m.Conn
 	return func() tea.Msg {
@@ -681,6 +693,32 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.ClearNotices()
 		return m, nil
+
+	case SessionRenameMsg:
+		return m, m.renameSessionCmd(msg)
+
+	// Every screen listing the session hears the answer; the agents view
+	// also gets the new name from the daemon's agents stream.
+	case sessionRenamedMsg:
+		var cmd tea.Cmd
+		if m.State == AppStateAgents {
+			m.Agents, cmd = m.Agents.Update(msg)
+		}
+		if msg.Err != nil {
+			m.SessionPicker.notice = "could not rename: " + msg.Err.Error()
+			return m, cmd
+		}
+		for i := range m.Sessions {
+			if m.Sessions[i].ID == msg.ID {
+				m.Sessions[i] = msg.Session
+			}
+		}
+		if m.ActiveSession != nil && m.ActiveSession.ID == msg.ID {
+			m.ActiveSession.Title = msg.Session.Title
+		}
+		m.SessionPicker.notice = ""
+		m.SessionPicker.Renamed(msg.Session)
+		return m, cmd
 
 	case SessionDeleteMsg:
 		if m.State != AppStateSessionPicker || !m.SessionPicker.ArchiveView || m.ActiveSession != nil && m.ActiveSession.ID == msg.ID {

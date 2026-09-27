@@ -220,7 +220,7 @@ pub fn fork(
           |> result.map_error(fn(error) { error.message }),
         )
         let written = {
-          use source <- result.try(read_info(db, source_id))
+          use source <- result.try(conversation.read_info(db, source_id))
           use rows <- result.try(read_prefix(db, source_id, checkpoint))
           use _ <- result.try(case list.last(rows) {
             Ok(row) if row.seq == checkpoint -> Ok(Nil)
@@ -348,19 +348,6 @@ fn safe_preview(text: String) -> String {
     "new session" -> "[empty]"
     preview -> preview
   }
-}
-
-fn read_info(db, id: String) -> Result(conversation.Info, String) {
-  sqlight.query(
-    "SELECT id,COALESCE(NULLIF(title,''),'new session'),cwd,COALESCE(provider,''),model,protocol,stage,last_assistant_at,effort FROM sessions WHERE id=?",
-    db,
-    [sqlight.text(id)],
-    conversation.info_decoder(),
-  )
-  |> result.map_error(fn(error) { error.message })
-  |> result.try(fn(rows) {
-    list.first(rows) |> result.replace_error("session not found")
-  })
 }
 
 fn read_prefix(db, id: String, checkpoint: Int) -> Result(List(Row), String) {

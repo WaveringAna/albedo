@@ -142,6 +142,7 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
         [
           #("pinned_instructions", "TEXT"),
           #("pinned_context", "BLOB"),
+          #("name", "TEXT"),
         ],
         fn(column) {
           case list.contains(columns, column.0) {
@@ -291,7 +292,11 @@ pub fn assign_session_provider(
   })
 }
 
-/// Decodes the `id,title,cwd,provider,model,protocol,stage,last_assistant_at` columns.
+/// What `info_decoder` reads. A name someone gave the session outranks the
+/// title its latest message suggests.
+pub const info_columns = "id,COALESCE(NULLIF(name,''),NULLIF(title,''),'new session'),cwd,COALESCE(provider,''),model,protocol,stage,last_assistant_at,effort"
+
+/// Decodes `info_columns`.
 pub fn info_decoder() -> decode.Decoder(Info) {
   use id <- decode.field(0, decode.string)
   use title <- decode.field(1, decode.string)
@@ -321,13 +326,73 @@ pub fn info_decoder() -> decode.Decoder(Info) {
 pub fn list(store: store.Store) -> Result(List(Info), String) {
   store.query(store, fn(db) {
     sqlight.query(
-      "SELECT id,COALESCE(NULLIF(title,''),'new session'),cwd,COALESCE(provider,''),model,protocol,stage,last_assistant_at,effort FROM sessions ORDER BY activity_seq DESC,rowid DESC",
+      "SELECT "
+        <> info_columns
+        <> " FROM sessions ORDER BY activity_seq DESC,rowid DESC",
       db,
       [],
       info_decoder(),
     )
     |> result.map_error(fn(e) { e.message })
   })
+}
+
+pub fn get(store: store.Store, id: String) -> Result(Info, String) {
+  store.query(store, read_info(_, id))
+}
+
+/// `get` inside a query the caller already holds.
+pub fn read_info(db, id: String) -> Result(Info, String) {
+  sqlight.query(
+    "SELECT " <> info_columns <> " FROM sessions WHERE id=?",
+    db,
+    [sqlight.text(id)],
+    info_decoder(),
+  )
+  |> result.map_error(fn(e) { e.message })
+  |> result.try(fn(rows) {
+    list.first(rows) |> result.replace_error("session not found")
+  })
+}
+
+/// Give a session a name that its messages no longer retitle. A blank name
+/// hands the title back to the latest message. Activity order is untouched.
+pub fn rename(
+  store: store.Store,
+  id: String,
+  name: String,
+) -> Result(Info, String) {
+  let name = case excerpt(name, 80) {
+    "" -> None
+    clean -> Some(clean)
+  }
+  store.query(store, fn(db) {
+    use _ <- result.try(
+      sqlight.query(
+        "UPDATE sessions SET name=? WHERE id=?",
+        db,
+        [sqlight.nullable(sqlight.text, name), sqlight.text(id)],
+        decode.dynamic,
+      )
+      |> result.map_error(fn(e) { e.message }),
+    )
+    read_info(db, id)
+  })
+}
+
+/// The name someone gave `id`, if any.
+pub fn given_name(store: store.Store, id: String) -> Option(String) {
+  store.query(store, fn(db) {
+    sqlight.query(
+      "SELECT name FROM sessions WHERE id=? AND name<>''",
+      db,
+      [sqlight.text(id)],
+      decode.field(0, decode.string, decode.success),
+    )
+  })
+  |> result.unwrap([])
+  |> list.first
+  |> option.from_result
 }
 
 /// Permanently remove a session and its dependent records in one transaction.

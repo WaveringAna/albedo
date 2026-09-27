@@ -210,6 +210,40 @@ pub fn list_orders_sessions_by_latest_activity_test() {
   cleanup(path)
 }
 
+pub fn a_given_name_outlasts_new_messages_until_cleared_test() {
+  let path = temporary_database()
+  let assert Ok(host) = runtime.start(path)
+  let ledger = runtime.ledger(host)
+  let assert Ok(_) = conversation.initialise(ledger)
+  let assert Ok(_) = conversation.create(ledger, session("named"))
+  let assert Ok(_) = conversation.create(ledger, session("newer"))
+  let assert Ok(renamed) =
+    conversation.rename(ledger, "named", "  auth\nrewrite  ")
+  renamed.title |> should.equal("auth rewrite")
+  conversation.given_name(ledger, "named") |> should.equal(Some("auth rewrite"))
+  // Renaming is not activity.
+  let assert Ok([first, _]) = conversation.list(ledger)
+  first.id |> should.equal("newer")
+
+  let assert Ok(_) =
+    conversation.commit(
+      ledger,
+      "named",
+      [types.User("fix the login bug")],
+      conversation.Model,
+    )
+  let assert Ok(info) = conversation.get(ledger, "named")
+  info.title |> should.equal("auth rewrite")
+
+  let assert Ok(cleared) = conversation.rename(ledger, "named", " \t ")
+  cleared.title |> should.equal("fix the login bug")
+  conversation.given_name(ledger, "named") |> should.equal(None)
+  conversation.rename(ledger, "missing", "x")
+  |> should.equal(Error("session not found"))
+  runtime.stop(host)
+  cleanup(path)
+}
+
 pub fn migration_recovers_placeholder_titles_and_activity_order_test() {
   let path = temporary_database()
   let assert Ok(host) = runtime.start(path)

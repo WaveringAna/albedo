@@ -193,6 +193,24 @@ def run(endpoint):
                         ("running", lead), ("text", coder)}
             wait_for(lambda: expected <= kinds(), f"bus events {expected - kinds()}", timeout=10)
 
+            # A rename relabels a session for people; its family still mails it
+            # by the name it was spawned with.
+            renamed = api(f"/sessions/{coder}", {"name": "  wake path\naudit "}, method="PATCH")
+            assert renamed["title"] == "wake path audit", renamed
+            assert api(f"/sessions/{lead}", {"name": "orchestration"}, method="PATCH")["title"] == "orchestration"
+            assert [s["title"] for s in api("/sessions") if s["id"] == lead] == ["orchestration"]
+            nodes = {n["session"]["id"]: n for n in api(f"/agents?session={lead}")["nodes"]}
+            assert (nodes[lead]["name"], nodes[lead]["address"]) == ("orchestration", None), nodes
+            assert (nodes[coder]["name"], nodes[coder]["address"]) == ("wake path audit", "coder"), nodes
+            wait_for(lambda: any(e["type"] == "renamed" and e["session"] == coder
+                                 and e["name"] == "wake path audit" for e in list(heard)),
+                     "the rename on the agents stream", timeout=10)
+            try:
+                api("/sessions/no-such-session", {"name": "x"}, method="PATCH")
+                raise AssertionError("renamed a missing session")
+            except urllib.error.HTTPError as error:
+                assert error.code == 409, error.code
+
             # A follow-up by name, then an explicit reply by "parent".
             receipt = api(f"/sessions/{lead}/mail", {"to": "coder", "body": "also cover schedules"})
             assert receipt["to"] == coder and receipt["name"] == "coder", receipt
@@ -250,7 +268,7 @@ def run(endpoint):
                 assert child["member"]["parent"] == radio, child
                 settle(child["session"]["id"])
             assert sum("/beta/" in path for path in Provider.paths) >= 2, Provider.paths
-            print("spawn, cross-provider routing, forwarded answers, mail, and deletion hold")
+            print("spawn, renaming, cross-provider routing, forwarded answers, mail, and deletion hold")
         finally:
             if connection:
                 with contextlib.suppress(Exception):

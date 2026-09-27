@@ -213,9 +213,12 @@ func (m SessionViewer) footer(width int, now time.Time) string {
 	if m.HasActive {
 		esc = "back"
 	}
-	left := " " + keyHints(hint{"↑↓", "move"}, hint{"tab", "switch"}, hint{"enter", "open"}, hint{"^s", "pin"}, hint{"^a", "archive"}, hint{"esc", esc})
-	if m.ArchiveView {
-		left = " " + keyHints(hint{"↑↓", "move"}, hint{"enter", "open"}, hint{"^a", "restore"}, hint{"^d", "delete"}, hint{"esc", "back"})
+	left := " " + keyHints(hint{"↑↓", "move"}, hint{"tab", "switch"}, hint{"enter", "open"}, hint{"^r", "rename"}, hint{"^s", "pin"}, hint{"^a", "archive"}, hint{"esc", esc})
+	switch {
+	case m.rename.active():
+		left = " " + renameHints("restores the automatic title")
+	case m.ArchiveView:
+		left = " " + keyHints(hint{"↑↓", "move"}, hint{"enter", "open"}, hint{"^r", "rename"}, hint{"^a", "restore"}, hint{"^d", "delete"}, hint{"esc", "back"})
 	}
 	if m.ConfirmDelete != "" {
 		return " " + DefaultStyles.Error.Render("Permanently delete session and its data? y to confirm · any other key cancels")
@@ -322,6 +325,10 @@ func scrollWindow(all []string, selectedAt, width, height int) []string {
 }
 
 func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected bool, width int, cols svColumns, now time.Time) string {
+	// A row being renamed drops the selection surface and takes the prompt's
+	// color, so it reads as a place to type rather than a highlight.
+	editing := m.rename.id == item.ID
+	selected = selected && !editing
 	st := func(style lipgloss.Style) lipgloss.Style {
 		if selected {
 			return style.Inherit(DefaultStyles.Selected)
@@ -359,6 +366,8 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 	recent := s.LastAssistantAt != nil && now.Sub(time.Unix(*s.LastAssistantAt, 0)) < time.Hour
 	glyph, iconStyle := "· ", DefaultStyles.Faint
 	switch {
+	case editing:
+		bar, glyph, iconStyle = DefaultStyles.Prompt.Render("▌"), "✎ ", DefaultStyles.Prompt
 	case selected:
 		glyph, iconStyle = "◆ ", DefaultStyles.Agent
 	case sec == secPinned:
@@ -367,7 +376,11 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 		glyph, iconStyle = "● ", DefaultStyles.Success
 	}
 	gap := st(lipgloss.NewStyle()).Render("  ")
-	line := bar + st(iconStyle).Render(glyph) + st(lipgloss.NewStyle()).Render(" ") + st(titleStyle).Render(svCell(item.Label, cols.title, false))
+	title := st(titleStyle).Render(svCell(item.Label, cols.title, false))
+	if editing {
+		title = m.rename.view(cols.title)
+	}
+	line := bar + st(iconStyle).Render(glyph) + st(lipgloss.NewStyle()).Render(" ") + title
 	if cols.model > 0 {
 		model := sessionText(s.Model)
 		if model == "" {

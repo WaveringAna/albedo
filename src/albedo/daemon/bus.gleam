@@ -81,6 +81,11 @@ pub fn spawned(member: family.Member, model: String) -> Nil {
   )
 }
 
+/// A session's name changed; `name` is what the agents view calls it now.
+pub fn renamed(session: String, name: String) -> Nil {
+  publish(event_json(session, "renamed", [#("name", json.string(name))]))
+}
+
 /// A child was closed: its work stays, its kernel goes.
 pub fn closed(session: String) -> Nil {
   publish(event_json(session, "closed", []))

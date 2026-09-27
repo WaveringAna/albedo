@@ -69,6 +69,7 @@ type agentWire struct {
 	Running bool           `json:"running"`
 	Parent  *string        `json:"parent"`
 	Name    string         `json:"name"`
+	Address *string        `json:"address"`
 	Depth   int            `json:"depth"`
 	Closed  bool           `json:"closed"`
 }
@@ -82,6 +83,7 @@ type agentMail struct {
 
 type agentNode struct {
 	id, parent, name, model string
+	address                 string // how its family mails it; a rename leaves it
 	depth                   int
 	running, closed         bool
 	peer                    bool // reached by mail, outside the tree
@@ -156,6 +158,7 @@ type AgentsViewModel struct {
 	err      error
 	input    textinput.Model
 	confirm  string // the agent waiting for y to delete it
+	rename   renameField
 	cancel   context.CancelFunc
 	events   chan []map[string]any
 }
@@ -318,6 +321,9 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 			n.running = wire.Running
 			n.closed = wire.Closed
 			n.peer = false
+			if wire.Address != nil {
+				n.address = *wire.Address
+			}
 			if wire.Parent != nil {
 				n.parent = *wire.Parent
 			}
@@ -399,6 +405,16 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		}
 		return m, nil
 
+	case sessionRenamedMsg:
+		if msg.Err != nil {
+			m.say("could not rename: " + msg.Err.Error())
+		} else if msg.Name == "" {
+			m.say("name cleared")
+		} else {
+			m.say("renamed to " + msg.Name)
+		}
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.key(msg)
 	}
@@ -411,6 +427,9 @@ type agentsReconnectMsg struct{ Gen int }
 
 func (m AgentsViewModel) key(msg tea.KeyPressMsg) (AgentsViewModel, tea.Cmd) {
 	empty := m.input.Value() == ""
+	if m.rename.active() {
+		return m, m.rename.key(msg)
+	}
 	if m.confirm != "" {
 		id := m.confirm
 		m.confirm = ""
@@ -419,6 +438,12 @@ func (m AgentsViewModel) key(msg tea.KeyPressMsg) (AgentsViewModel, tea.Cmd) {
 			return m, m.deleteCmd(id)
 		}
 		m.say("kept")
+		return m, nil
+	}
+	if msg.String() == "ctrl+r" {
+		if n := m.nodes[m.selected]; n != nil && n.id != agentsYou {
+			m.rename.open(n.id, n.name, "name this agent")
+		}
 		return m, nil
 	}
 	if msg.String() == "ctrl+x" {
@@ -544,6 +569,14 @@ func (m AgentsViewModel) spawnCmd(parent, name, task string) tea.Cmd {
 	}
 }
 
+// renameBlank is what an agent is called once its given name is cleared.
+func renameBlank(n *agentNode) string {
+	if n.address != "" {
+		return n.address
+	}
+	return "its latest message's title"
+}
+
 func (m *AgentsViewModel) say(text string) {
 	m.notice = text
 	m.noticeT = 3
@@ -621,6 +654,9 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 	case "gone":
 		if _, ok := m.nodes[id]; ok {
 			delete(m.nodes, id)
+			if m.rename.id == id {
+				m.rename = renameField{}
+			}
 			if m.selected == id {
 				m.selected = m.root
 			}
@@ -723,6 +759,8 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 		m.flushLine(n)
 		m.pushTail(n, tailMeta, "» "+str(event, "text"))
 		n.flash = 0.6
+	case "renamed":
+		n.name = str(event, "name")
 	case "closed":
 		n.closed = true
 		n.running = false
@@ -1398,6 +1436,11 @@ func (m AgentsViewModel) View() string {
 
 	status := ""
 	switch {
+	case m.rename.active():
+		status = DefaultStyles.Muted.Render("rename ") + DefaultStyles.Bold.Render(m.label(m.rename.id, ""))
+		if n := m.nodes[m.rename.id]; n != nil && n.address != "" {
+			status += DefaultStyles.Faint.Render(" · its family still mails it as ") + DefaultStyles.Muted.Render(n.address)
+		}
 	case m.confirm != "":
 		what := m.label(m.confirm, "")
 		switch below := m.below(m.confirm); below {
@@ -1423,7 +1466,12 @@ func (m AgentsViewModel) View() string {
 	if m.input.Value() == "" {
 		input = DefaultStyles.Faint.Render("message " + target + "…  or /spawn <name> <task>")
 	}
+	if n := m.nodes[m.rename.id]; n != nil && m.rename.active() {
+		out = append(out, DefaultStyles.Prompt.Render("✎ ")+m.rename.view(m.Width-promptMarkWidth))
+		out = append(out, renameHints("restores "+renameBlank(n)))
+		return strings.Join(out, "\n")
+	}
 	out = append(out, promptLead()+input)
-	out = append(out, keyHints(hint{"tab", "next agent"}, hint{"enter", "open or send"}, hint{"ctrl+x", "delete"}, hint{"esc", "back"}))
+	out = append(out, keyHints(hint{"tab", "next agent"}, hint{"enter", "open or send"}, hint{"ctrl+r", "rename"}, hint{"ctrl+x", "delete"}, hint{"esc", "back"}))
 	return strings.Join(out, "\n")
 }

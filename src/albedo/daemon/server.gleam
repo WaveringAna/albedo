@@ -22,7 +22,7 @@ import gleam/bytes_tree
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
-import gleam/http.{Delete, Get, Post}
+import gleam/http.{Delete, Get, Patch, Post}
 import gleam/http/request
 import gleam/http/response
 import gleam/int
@@ -78,6 +78,7 @@ type Message {
   ReadHistory(String, Option(Int), Int, Subject(Result(String, String)))
   Fork(String, Int, Subject(Result(conversation.Info, String)))
   DeleteSession(String, Subject(Result(Nil, String)))
+  Rename(String, String, Subject(Result(conversation.Info, String)))
   /// A session's info changed; the session itself already knows.
   Remember(String, conversation.Info)
   WorkerDown(process.Down)
@@ -111,6 +112,7 @@ type AgentNode {
   AgentNode(
     info: conversation.Info,
     member: Option(family.Member),
+    name: String,
     running: Bool,
   )
 }
@@ -317,6 +319,30 @@ fn handle(state: State, message: Message) {
           bus.gone(id)
           actor.continue(
             State(..state, sessions: dict.delete(state.sessions, id)),
+          )
+        }
+        Error(_) -> actor.continue(state)
+      }
+    }
+    Rename(id, name, reply) -> {
+      let db = runtime.ledger(state.host)
+      let renamed =
+        dict.get(state.sessions, id)
+        |> result.replace_error("session not found")
+        |> result.try(fn(pair) {
+          conversation.rename(db, id, name)
+          |> result.map(fn(info) { #(info, pair.1) })
+        })
+      process.send(reply, renamed |> result.map(fn(pair) { pair.0 }))
+      case renamed {
+        Ok(#(info, worker)) -> {
+          let member = family.get(db, id) |> result.unwrap(None)
+          bus.renamed(id, agent_name(db, info, member))
+          actor.continue(
+            State(
+              ..state,
+              sessions: dict.insert(state.sessions, id, #(info, worker)),
+            ),
           )
         }
         Error(_) -> actor.continue(state)
@@ -1055,7 +1081,10 @@ fn descendants(
 ) -> List(AgentNode) {
   case dict.get(state.sessions, id) {
     Error(_) -> []
-    Ok(#(info, worker)) -> {
+    Ok(#(cached, worker)) -> {
+      // The cache keeps the title a session started with; its row has the
+      // latest message's title or the name it was given.
+      let info = conversation.get(db, id) |> result.unwrap(cached)
       let running = case worker {
         Some(_) -> bus.is_running(id)
         None -> False
@@ -1066,28 +1095,45 @@ fn descendants(
         |> list.flat_map(fn(child) {
           descendants(state, db, child.session, Some(child))
         })
-      [AgentNode(info, member, running), ..below]
+      [AgentNode(info, member, agent_name(db, info, member), running), ..below]
     }
   }
 }
 
+/// What the agents view calls a session: the name someone gave it, else a
+/// child's family name, else a root's title.
+fn agent_name(
+  db: store.Store,
+  info: conversation.Info,
+  member: Option(family.Member),
+) -> String {
+  case member {
+    None -> info.title
+    Some(member) ->
+      conversation.given_name(db, info.id) |> option.unwrap(member.name)
+  }
+}
+
+/// `name` is for display; `address` is how agents mail a child, which a
+/// rename leaves alone.
 fn agent_json(node: AgentNode) -> json.Json {
   let family_fields = case node.member {
     Some(member) -> [
       #("parent", json.string(member.parent)),
-      #("name", json.string(member.name)),
+      #("address", json.string(member.name)),
       #("depth", json.int(member.depth)),
       #("closed", json.bool(member.closed)),
     ]
     None -> [
       #("parent", json.null()),
-      #("name", json.string(node.info.title)),
+      #("address", json.null()),
       #("depth", json.int(0)),
       #("closed", json.bool(False)),
     ]
   }
   json.object([
     #("session", info_json(node.info)),
+    #("name", json.string(node.name)),
     #("running", json.bool(node.running)),
     ..family_fields
   ])
@@ -1540,6 +1586,17 @@ fn daemon_route(
           let _ = process.send_after(registry, 100, Shutdown)
           reply(200, json.object([#("ok", json.bool(True))]))
         }
+        // A blank name hands the title back to the latest message.
+        Patch, ["sessions", id] ->
+          case
+            body(req, decode.field("name", decode.string, decode.success))
+            |> result.try(fn(name) {
+              actor.call(registry, 5000, Rename(id, name, _))
+            })
+          {
+            Ok(info) -> reply(200, info_json(info))
+            Error(e) -> error(409, e)
+          }
         // With ?tree=1, the session and every agent below it, deepest first.
         Delete, ["sessions", id] -> {
           let tree =

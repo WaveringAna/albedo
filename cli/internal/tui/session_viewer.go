@@ -72,6 +72,7 @@ type SessionViewer struct {
 	HasActive     bool
 	ArchiveView   bool
 	ConfirmDelete string
+	rename        renameField
 
 	// PrefsPath stores picker and chat preferences; empty keeps them in memory only.
 	PrefsPath string
@@ -270,10 +271,12 @@ func (m *SessionViewer) rebuild() {
 	m.applyFilter()
 }
 
+const untitled = "Untitled session"
+
 func sessionTitle(s daemon.Session) string {
 	title := strings.TrimSpace(sessionText(s.Title))
 	if title == "" || title == "new session" {
-		return "Untitled session"
+		return untitled
 	}
 	return title
 }
@@ -365,6 +368,37 @@ func (m *SessionViewer) savePrefs() {
 
 type SessionDeleteMsg struct{ ID string }
 
+// startRename opens the highlighted session's name for editing, starting
+// from the title it shows now.
+func (m *SessionViewer) startRename() {
+	item, ok := m.Highlighted()
+	s, isSession := m.session(item.ID)
+	if !ok || !isSession {
+		return
+	}
+	current := sessionTitle(s)
+	if current == untitled {
+		current = ""
+	}
+	m.rename.open(s.ID, current, "name this session")
+}
+
+// Renamed takes a session's new listing from the daemon.
+func (m *SessionViewer) Renamed(s daemon.Session) {
+	for i := range m.raw {
+		if m.raw[i].ID == s.ID {
+			m.raw[i] = s
+		}
+	}
+	if m.active != nil && m.active.ID == s.ID {
+		active := s
+		m.active = &active
+	}
+	item, _ := m.Highlighted()
+	m.rebuild()
+	m.focus(item.ID)
+}
+
 func (m *SessionViewer) toggleArchive() {
 	item, ok := m.Highlighted()
 	if !ok || m.section[item.ID] == secAction {
@@ -426,6 +460,9 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyPressMsg:
+		if m.rename.active() {
+			return m, m.rename.key(msg)
+		}
 		if m.ConfirmDelete != "" {
 			id := m.ConfirmDelete
 			m.ConfirmDelete = ""
@@ -451,6 +488,9 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 			return m, nil
 		case "ctrl+s":
 			m.togglePin()
+			return m, nil
+		case "ctrl+r":
+			m.startRename()
 			return m, nil
 		case "tab", "shift+tab":
 			m.switchGroup()

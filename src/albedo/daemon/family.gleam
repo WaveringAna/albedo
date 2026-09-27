@@ -228,7 +228,7 @@ pub fn resolve(
     }
     use by_id <- result.try(
       sqlight.query(
-        "SELECT s.id,COALESCE(f.name,s.title) FROM sessions s LEFT JOIN session_family f ON f.session=s.id WHERE s.id=?",
+        "SELECT s.id,COALESCE(f.name,NULLIF(s.name,''),s.title) FROM sessions s LEFT JOIN session_family f ON f.session=s.id WHERE s.id=?",
         connection,
         [sqlight.text(to)],
         {
@@ -291,17 +291,17 @@ pub fn resolve(
   })
 }
 
-/// How other agents address `session`: its family name, or its title when it
-/// is a root.
+/// How other agents address `session`: its family name, or when it is a root
+/// the name it was given or its title.
 pub fn name_of(db: store.Store, session: String) -> String {
   store.query(db, fn(connection) { parent_name(connection, session) })
 }
 
-/// A parent's name as its children say it: its own family name, or its title
-/// when it is a root.
+/// A parent's name as its children say it: its own family name, or when it
+/// is a root the name it was given or its title.
 fn parent_name(connection, id: String) -> String {
   sqlight.query(
-    "SELECT COALESCE(f.name,s.title) FROM sessions s LEFT JOIN session_family f ON f.session=s.id WHERE s.id=?",
+    "SELECT COALESCE(f.name,NULLIF(s.name,''),s.title) FROM sessions s LEFT JOIN session_family f ON f.session=s.id WHERE s.id=?",
     connection,
     [sqlight.text(id)],
     decode.field(0, decode.string, decode.success),
