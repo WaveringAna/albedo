@@ -1,8 +1,40 @@
 """Transcript paging and what the transcript keeps, through the real daemon."""
+from dataclasses import dataclass
+import http.server
 import json
+import threading
 import unittest
 
 from harness import Albedo, Provider, Reply, exclusive, text
+
+
+@dataclass
+class HeldCatalog:
+    url: str
+    release: callable
+
+
+def held_catalog():
+    """A local models catalog whose every request waits until it is released."""
+    released = threading.Event()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            released.wait()
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def release():
+        released.set()
+        server.shutdown()
+        server.server_close()
+
+    return HeldCatalog(f"http://127.0.0.1:{server.server_port}/api.json", release)
 
 
 class DaemonTest(unittest.TestCase):
@@ -43,15 +75,19 @@ class DaemonTest(unittest.TestCase):
         # Shutdown closes the store before the VM halts, and the supervisor
         # may restart the registry inside that window; its init used to panic
         # on the closed store ten times before the supervisor gave up. What
-        # holds the VM open long enough to lose the race is the models
-        # catalog refresh, so the restart runs with it enabled; the fixture
-        # config itself stays, so later fixtures keep their provider.
+        # holds the VM open long enough to lose the race is a models catalog
+        # fetch still in flight, so the restart runs against a local catalog
+        # that never answers; the fixture config itself stays, so later
+        # fixtures keep their provider.
         provider = Provider(lambda _request: text("answer"))
         self.addCleanup(provider.close)
+        catalog = held_catalog()
+        self.addCleanup(catalog.release)
         with Albedo(provider) as app:
             settings = json.loads((app.home / "extensions.json").read_text())
-            settings.pop("models", None)
+            settings["models"] = {"url": catalog.url}
             (app.home / "extensions.json").write_text(json.dumps(settings))
+            (app.home / "models.json").unlink(missing_ok=True)
             log = app.home / "daemon.log"
             before = log.stat().st_size if log.exists() else 0
             app.restart()
