@@ -8,8 +8,10 @@ import albedo/harness/command.{
 import albedo/harness/extension
 import albedo/harness/extensions/models/extension as models
 import gleam/dict
+import gleam/dynamic/decode
 import gleam/int
 import gleam/json
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 
@@ -24,6 +26,7 @@ pub fn extension() -> extension.Extension {
         reload(),
         context_inspect(),
         compact(),
+        raise_cap(),
         effort(),
       ]),
       extension.ToolPlugin("", [], ["commands"], []),
@@ -204,6 +207,74 @@ fn compact() -> Command {
         UserCall ->
           ctx.state(Compact(option.from_result(dict.get(args, "strategy"))))
           |> result.map(Data)
+      }
+    },
+  )
+}
+
+/// Raises a model's context cap to the provider's maximum window, or restores
+/// its default window. The choice is global: every session on the model uses
+/// it from its next request.
+fn raise_cap() -> Command {
+  Command(
+    "/raise-cap",
+    "Raise the model's context window to the provider's maximum, or restore its default. Models degrade over long contexts, so the default window stays unless you raise it. Applies to every session on the model from its next request.",
+    [
+      Argument(
+        "state",
+        "on raises the cap, off restores the default window; omit to toggle",
+        False,
+        ["on", "off"],
+      ),
+      Argument("model", "model id; omit for this session's model", False, []),
+    ],
+    False,
+    False,
+    False,
+    fn(ctx: Context, caller, args) {
+      case caller {
+        ModelCall ->
+          Error(
+            "the context cap is the user's choice; ask the user to run /raise-cap",
+          )
+        UserCall -> {
+          use model <- result.try(case dict.get(args, "model") {
+            Ok(model) -> Ok(model)
+            Error(_) ->
+              ctx.state(ModelGet)
+              |> result.try(fn(value) {
+                json.parse(
+                  json.to_string(value),
+                  decode.field("model", decode.string, decode.success),
+                )
+                |> result.replace_error("could not read this session's model")
+              })
+          })
+          let raised = list.contains(extension.raised_caps(), model)
+          use raise <- result.try(case dict.get(args, "state") {
+            Ok("on") -> Ok(True)
+            Ok("off") -> Ok(False)
+            Ok(other) -> Error("state must be on or off, not " <> other)
+            Error(_) -> Ok(!raised)
+          })
+          use _ <- result.try(extension.raise_cap(model, raise))
+          let message = case raise {
+            True ->
+              "Raised the context cap for "
+              <> model
+              <> ": sessions on it use the provider's maximum window from their next request. /context shows the window."
+            False -> "Restored the default context window for " <> model <> "."
+          }
+          Ok(
+            Data(
+              json.object([
+                #("model", json.string(model)),
+                #("raised", json.bool(raise)),
+                #("message", json.string(message)),
+              ]),
+            ),
+          )
+        }
       }
     },
   )

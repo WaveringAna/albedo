@@ -1134,21 +1134,17 @@ fn capacity(
   model: String,
   endpoint: String,
 ) -> Option(compaction.Capacity) {
-  case model_info(session, model, endpoint) {
-    Some(extension.ModelInfo(
-      context_tokens: Some(tokens),
-      provider: provider,
-      source: source,
-      ..,
-    )) ->
-      Some(
-        compaction.Capacity(tokens, case provider {
-          "" -> source
-          _ -> provider <> " " <> source
-        }),
-      )
-    _ -> None
+  use info <- option.then(model_info(session, model, endpoint))
+  use tokens <- option.map(extension.window(info))
+  let source = case info.provider {
+    "" -> info.source
+    provider -> provider <> " " <> info.source
   }
+  let source = case Some(tokens) == info.context_tokens {
+    True -> source
+    False -> source <> "; cap raised"
+  }
+  compaction.Capacity(tokens, source)
 }
 
 fn reader(

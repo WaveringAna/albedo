@@ -1162,6 +1162,20 @@ fn listed_model_json(model: runtime.ListedModel) -> json.Json {
       "context",
       json.nullable(fact(fn(info) { info.context_tokens }), json.int),
     ),
+    // A window the user can raise to, and whether they have.
+    #(
+      "maxContext",
+      json.nullable(fact(fn(info) { info.max_context_tokens }), json.int),
+    ),
+    #(
+      "raised",
+      json.bool(case model.info {
+        Some(info) ->
+          info.max_context_tokens != None
+          && extension.window(info) == info.max_context_tokens
+        None -> False
+      }),
+    ),
     #(
       "output",
       json.nullable(fact(fn(info) { info.max_output_tokens }), json.int),

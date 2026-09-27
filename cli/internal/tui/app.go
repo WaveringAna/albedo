@@ -315,7 +315,7 @@ func (m AppModel) loadCommandCatalogCmd(gen int) tea.Cmd {
 	}
 }
 
-func (m AppModel) changeModelCmd(model, provider, effort string, gen int) tea.Cmd {
+func (m AppModel) changeModelCmd(model, provider, effort string, raiseCap *bool, gen int) tea.Cmd {
 	return func() tea.Msg {
 		if m.Conn == nil || m.ActiveSession == nil {
 			return modelChangedMsg{Err: errors.New("no active session or connection"), Gen: gen}
@@ -358,6 +358,17 @@ func (m AppModel) changeModelCmd(model, provider, effort string, gen int) tea.Cm
 		res, err := daemon.Request[map[string]any](context.Background(), m.Conn, path, body)
 		if err != nil {
 			return modelChangedMsg{Err: err, Gen: gen}
+		}
+		// The cap follows the switch, so a failed switch changes nothing.
+		if raiseCap != nil {
+			state := "off"
+			if *raiseCap {
+				state = "on"
+			}
+			capBody := map[string]any{"name": "/raise-cap", "args": map[string]string{"state": state, "model": model}}
+			if _, err := daemon.Request[map[string]any](context.Background(), m.Conn, path, capBody); err != nil {
+				return modelChangedMsg{Err: fmt.Errorf("switched model, but the context cap was not saved: %w", err), Gen: gen}
+			}
 		}
 
 		newModel := model
@@ -872,7 +883,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ModelPicker.Saving = true
 		m.ModelPicker.Error = ""
 		m.ModelGen++
-		return m, m.changeModelCmd(msg.Model, msg.Provider, msg.Effort, m.ModelGen)
+		return m, m.changeModelCmd(msg.Model, msg.Provider, msg.Effort, msg.RaiseCap, m.ModelGen)
 
 	case ModelPickerCancelMsg:
 		m.State = AppStateChat
@@ -1051,7 +1062,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(previous, m.Login.Init())
 		case msg.Name == "/model" && msg.Args != "":
 			m.ModelGen++
-			return m, m.changeModelCmd(msg.Args, "", "", m.ModelGen)
+			return m, m.changeModelCmd(msg.Args, "", "", nil, m.ModelGen)
 		case msg.Name == "/model":
 			if m.ActiveSession != nil {
 				m.ModelPicker = NewModelPickerModel(m.Conn, m.Profiles, m.ActiveSession.Model, m.ActiveSession.Provider, m.ActiveSession.Effort)

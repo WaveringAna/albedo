@@ -27,6 +27,9 @@ type ModelPickerSelectMsg struct {
 	Provider string
 	// Effort is the chosen reasoning level. Empty lets the daemon choose.
 	Effort string
+	// RaiseCap is set when you changed the model's context cap here: true
+	// raises it to the provider's maximum, false restores the default window.
+	RaiseCap *bool
 }
 
 type ModelPickerCancelMsg struct{}
@@ -79,7 +82,10 @@ type ModelPickerModel struct {
 	// effort even while a search is typed.
 	browsing bool
 	efforts  map[string]string
-	search   textinput.Model
+	// caps are cap choices made here, by model id: the cap is per model, so
+	// the same model under two profiles shares it.
+	caps   map[string]bool
+	search textinput.Model
 }
 
 func NewModelPickerModel(conn *daemon.Connection, profiles config.Profiles, model, profile, effort string) ModelPickerModel {
@@ -126,6 +132,7 @@ func NewModelPickerModel(conn *daemon.Connection, profiles config.Profiles, mode
 		Effort:   effort,
 		catalogs: catalogs,
 		efforts:  map[string]string{},
+		caps:     map[string]bool{},
 		search:   search,
 	}
 	m.refilter(true)
@@ -372,6 +379,27 @@ func (m *ModelPickerModel) stepEffort(by int) bool {
 	return true
 }
 
+// raisable reports whether a model's provider offers a window past its default.
+func raisable(model daemon.Model) bool {
+	return model.MaxContext > model.Context && model.Context > 0
+}
+
+// raised is the cap a row would switch with: your choice here, else the saved one.
+func (m ModelPickerModel) raised(r modelRow) bool {
+	if raised, ok := m.caps[r.model.ID]; ok {
+		return raised
+	}
+	return r.model.Raised
+}
+
+// window is the context a row would switch with.
+func (m ModelPickerModel) window(r modelRow) int {
+	if raisable(r.model) && m.raised(r) {
+		return r.model.MaxContext
+	}
+	return r.model.Context
+}
+
 func (m *ModelPickerModel) move(by int) {
 	if len(m.rows) > 0 {
 		m.cursor = min(max(m.cursor+by, 0), len(m.rows)-1)
@@ -415,6 +443,9 @@ func (m ModelPickerModel) Update(msg tea.Msg) (ModelPickerModel, tea.Cmd) {
 			}
 			m.Error = ""
 			choice := ModelPickerSelectMsg{Model: r.model.ID, Provider: r.profile, Effort: m.effort(r)}
+			if raised, changed := m.caps[r.model.ID]; changed && raised != r.model.Raised {
+				choice.RaiseCap = &raised
+			}
 			return m, func() tea.Msg { return choice }
 		case "up", "ctrl+p":
 			m.move(-1)
@@ -428,6 +459,11 @@ func (m ModelPickerModel) Update(msg tea.Msg) (ModelPickerModel, tea.Cmd) {
 		case "pgdown":
 			m.move(max(1, m.Height/2))
 			return m, nil
+		case "tab":
+			if r, ok := m.highlighted(); ok && raisable(r.model) {
+				m.caps[r.model.ID] = !m.raised(r)
+				return m, nil
+			}
 		case "left", "right":
 			// Arrows edit a typed search until you move into the list.
 			by := map[string]int{"left": -1, "right": 1}[msg.String()]
@@ -721,7 +757,16 @@ func (m ModelPickerModel) ladder(r modelRow, selected bool, cols modelColumns) s
 func (m ModelPickerModel) facts(r modelRow) [][2]string {
 	var facts [][2]string
 	if r.model.Context > 0 {
-		facts = append(facts, [2]string{"context", compactTokens(r.model.Context) + " tokens"})
+		facts = append(facts, [2]string{"context", compactTokens(m.window(r)) + " tokens"})
+	}
+	if raisable(r.model) {
+		state := DefaultStyles.Faint.Render("default") + DefaultStyles.Decor.Render(" · ") +
+			DefaultStyles.Faint.Render("tab raises to "+compactTokens(r.model.MaxContext))
+		if m.raised(r) {
+			state = brandInk(1).Bold(true).Render("raised") + DefaultStyles.Decor.Render(" · ") +
+				DefaultStyles.Faint.Render("tab restores "+compactTokens(r.model.Context))
+		}
+		facts = append(facts, [2]string{"cap", state})
 	}
 	if r.model.Output > 0 {
 		facts = append(facts, [2]string{"output", compactTokens(r.model.Output) + " tokens"})
@@ -750,7 +795,10 @@ func (m ModelPickerModel) summary(r modelRow) string {
 	}
 	var parts []string
 	if r.model.Context > 0 {
-		parts = append(parts, compactTokens(r.model.Context)+" context")
+		parts = append(parts, compactTokens(m.window(r))+" context")
+	}
+	if raisable(r.model) && m.raised(r) {
+		parts = append(parts, "cap raised")
 	}
 	if r.model.Output > 0 {
 		parts = append(parts, compactTokens(r.model.Output)+" output")
@@ -831,7 +879,11 @@ func (m ModelPickerModel) details(width, height int) []string {
 }
 
 func (m ModelPickerModel) footer(width int) string {
-	left := " " + keyHints(hint{"↑↓", "move"}, hint{"←→", "effort"}, hint{"enter", "switch"}, hint{"esc", "back"})
+	hints := []hint{{"↑↓", "move"}, {"←→", "effort"}}
+	if r, ok := m.highlighted(); ok && raisable(r.model) {
+		hints = append(hints, hint{"tab", "cap"})
+	}
+	left := " " + keyHints(append(hints, hint{"enter", "switch"}, hint{"esc", "back"})...)
 	loading := 0
 	models := 0
 	for _, c := range m.catalogs {

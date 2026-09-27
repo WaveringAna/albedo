@@ -46,6 +46,7 @@ fn lookup(id: String, at: String) -> Option(extension.ModelInfo) {
       model: id,
       provider: "alibaba",
       context_tokens: None,
+      max_context_tokens: None,
       max_output_tokens: None,
       input_modalities: [],
       endpoint: Some(target_endpoint),

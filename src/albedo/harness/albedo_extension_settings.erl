@@ -1,6 +1,6 @@
 -module(albedo_extension_settings).
 -include_lib("kernel/include/file.hrl").
--export([home/0, read/1, set_enabled/3]).
+-export([home/0, read/1, set_enabled/3, set_entry/4, remove_entry/3]).
 
 -define(MAX_BYTES, 1048576).
 
@@ -38,10 +38,17 @@ bounded_read(Path) ->
         _ -> {error, <<"could not read extensions.json">>}
     end.
 
-%% Records a global extension default in the `enabled` section, keeping every
-%% other section as written. The rename is the commit, so readers never see a
-%% partly written file.
+%% Records a global extension default in the `enabled` section.
 set_enabled(Home, Name, Enabled) ->
+    set_entry(Home, <<"enabled">>, Name, Enabled).
+
+remove_entry(Home, Section, Key) ->
+    set_entry(Home, Section, Key, null).
+
+%% Sets one key of one section, keeping every other section and key as
+%% written; `null` removes the key. The rename is the commit, so readers never
+%% see a partly written file.
+set_entry(Home, Section, Key, Value) ->
     try
         {ok, Bytes} = read(Home),
         Sections = case Bytes of
@@ -49,11 +56,14 @@ set_enabled(Home, Name, Enabled) ->
             _ -> json:decode(Bytes)
         end,
         true = is_map(Sections),
-        Chosen = case maps:get(<<"enabled">>, Sections, #{}) of
+        Entries = case maps:get(Section, Sections, #{}) of
             Map when is_map(Map) -> Map;
             _ -> #{}
         end,
-        Updated = Sections#{<<"enabled">> => Chosen#{Name => Enabled}},
+        Updated = case Value of
+            null -> Sections#{Section => maps:remove(Key, Entries)};
+            _ -> Sections#{Section => Entries#{Key => Value}}
+        end,
         Path = filename:join(Home, <<"extensions.json">>),
         Temporary = <<Path/binary, ".tmp.", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
         ok = filelib:ensure_dir(Path),

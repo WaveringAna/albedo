@@ -2,15 +2,16 @@
 
 import albedo/daemon/store
 import albedo/harness/extension
+import albedo/harness/extensions/codex/catalog
 import albedo/harness/extensions/models/extension as models
 import albedo/harness/oauth
 import albedo/harness/rotation
+import albedo/harness/settings
 import albedo/openai_api
 import albedo/openai_api/types
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
-import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -34,36 +35,38 @@ pub fn extension() -> extension.Extension {
     [
       extension.ModelProviderPlugin(extension.ModelProvider("codex", resolve)),
       extension.LoginPlugin(login()),
-      extension.ModelsPlugin(extension.ModelCatalog(
-        fn(_, _) { None },
-        list_models,
-      )),
+      extension.ModelsPlugin(extension.ModelCatalog(lookup, list_models)),
     ],
     initialise,
   )
 }
 
-fn list_models(provider: String, _endpoint: String) -> List(String) {
-  case provider {
-    "codex" -> {
-      models.refresh()
-      available_models(models.path())
-    }
-    _ -> []
+/// What the ChatGPT backend reports about a model a Codex session uses;
+/// models.dev fills in what it leaves out, such as the output limit.
+fn lookup(model: String, endpoint: String) -> Option(extension.ModelInfo) {
+  case string.starts_with(endpoint, base_url) {
+    True ->
+      catalog.lookup(settings.home(), endpoint, model)
+      |> option.map(models.complete_model(_, endpoint))
+    False -> None
   }
 }
 
-/// Codex has its own picker policy; generic OpenAI profiles keep the full
-/// models.dev OpenAI list. Availability and model facts still come from the cache.
-pub fn available_models(catalog: String) -> List(String) {
-  models.list_at(catalog, "openai", "")
-  |> list.filter(fn(id) {
-    id == "gpt-5.6"
-    || string.starts_with(id, "gpt-5.6-")
-    || id == "gpt-6"
-    || string.starts_with(id, "gpt-6-")
-    || string.starts_with(id, "gpt-6.")
-  })
+/// The models the ChatGPT backend offers the selected account, refreshed
+/// first when stale. Without a sign-in or a reachable backend, the last list
+/// stays; with neither, the picker shows only the profile's own model.
+fn list_models(provider: String, _endpoint: String) -> List(String) {
+  case provider {
+    "codex" -> {
+      let home = settings.home()
+      let _ = case account(home, "") {
+        Ok(access) -> catalog.refresh(home, access.token, access.account_id)
+        Error(error) -> Error(error)
+      }
+      catalog.listed(home)
+    }
+    _ -> []
+  }
 }
 
 /// The Codex CLI browser flow. OpenAI allowlists the exact localhost:1455
@@ -131,15 +134,19 @@ fn resolve(
   }
 }
 
-/// The session's current account as a client.
+/// The session's current account as a client. Its model list refreshes in
+/// the background, so a new model shows up without a picker visit.
 fn connect(home: String, session: String) -> Result(types.Client, String) {
+  use access <- result.map(account(home, session))
+  catalog.refresh_later(home, access.token, access.account_id)
+  openai_api.codex_client(base_url, access.token, access.account_id, session)
+}
+
+fn account(home: String, session: String) -> Result(Access, String) {
   native_access(home, session)
   |> result.try(fn(encoded) {
     json.parse(encoded, access_decoder())
     |> result.map_error(fn(_) { "invalid Codex credential response" })
-  })
-  |> result.map(fn(access) {
-    openai_api.codex_client(base_url, access.token, access.account_id, session)
   })
 }
 

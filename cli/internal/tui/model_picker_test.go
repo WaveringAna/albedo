@@ -330,3 +330,55 @@ func TestModelPickerListsWithDetailsAndSwitchesWithTheChosenEffort(t *testing.T)
 		t.Fatalf("state %v effort %q after the switch", app.State, app.ActiveSession.Effort)
 	}
 }
+
+// A model whose provider offers a window past its default shows a cap toggle;
+// tab flips it, and enter sends the change only when it differs from the saved
+// cap.
+func TestModelPickerTabRaisesAModelsContextCap(t *testing.T) {
+	m := NewModelPickerModel(nil, pickerProfiles, "gpt-5-codex", "codex", "")
+	m.SetSize(140, 30)
+	m, _ = m.Update(modelCatalogLoadedMsg{Profile: "codex", Models: []daemon.Model{
+		{ID: "gpt-6-astra", Context: 272_000, MaxContext: 872_000, Efforts: reasoning},
+		{ID: "gpt-6-sol", Context: 272_000, MaxContext: 872_000, Raised: true},
+		{ID: "gpt-5.5", Context: 272_000},
+	}})
+	m = pickerKey(m, typed("astra"))
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "tab raises to 872k") || !strings.Contains(view, "272k tokens") {
+		t.Fatalf("astra should offer to raise its cap:\n%s", view)
+	}
+	m = pickerKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "872k tokens") || !strings.Contains(view, "tab restores 272k") {
+		t.Fatalf("a raised cap should show the larger window:\n%s", view)
+	}
+	if got := chosen(t, m).RaiseCap; got == nil || !*got {
+		t.Fatalf("enter should raise astra's cap, got %v", got)
+	}
+	// Flipping back leaves the saved cap alone.
+	m = pickerKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if got := chosen(t, m).RaiseCap; got != nil {
+		t.Fatalf("an unchanged cap should send nothing, got %v", *got)
+	}
+
+	// A saved raise shows as raised, and tab restores the default.
+	sol := pickerKey(m, tea.KeyPressMsg{Code: tea.KeyBackspace}, tea.KeyPressMsg{Code: tea.KeyBackspace},
+		tea.KeyPressMsg{Code: tea.KeyBackspace}, tea.KeyPressMsg{Code: tea.KeyBackspace},
+		tea.KeyPressMsg{Code: tea.KeyBackspace}, typed("6-sol"))
+	if view := ansi.Strip(sol.View()); !strings.Contains(view, "tab restores 272k") {
+		t.Fatalf("sol's saved raise should show:\n%s", view)
+	}
+	sol = pickerKey(sol, tea.KeyPressMsg{Code: tea.KeyTab})
+	if got := chosen(t, sol).RaiseCap; got == nil || *got {
+		t.Fatalf("tab should restore sol's default window, got %v", got)
+	}
+
+	// Nothing to raise, nothing to toggle.
+	older := pickerKey(sol, tea.KeyPressMsg{Code: tea.KeyBackspace}, tea.KeyPressMsg{Code: tea.KeyBackspace},
+		tea.KeyPressMsg{Code: tea.KeyBackspace}, tea.KeyPressMsg{Code: tea.KeyBackspace},
+		tea.KeyPressMsg{Code: tea.KeyBackspace}, typed("5.5"), tea.KeyPressMsg{Code: tea.KeyTab})
+	if view := ansi.Strip(older.View()); strings.Contains(view, "tab raises") || strings.Contains(view, "tab cap") {
+		t.Fatalf("gpt-5.5 has no cap to raise:\n%s", view)
+	}
+	if got := chosen(t, older).RaiseCap; got != nil {
+		t.Fatalf("gpt-5.5 should send no cap, got %v", *got)
+	}
+}

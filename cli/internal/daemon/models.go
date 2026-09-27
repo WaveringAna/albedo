@@ -14,8 +14,12 @@ type Model struct {
 	// Efforts are the reasoning levels a session accepts, lowest first.
 	Efforts []string `json:"efforts,omitempty"`
 	Context int      `json:"context,omitempty"`
-	Output  int      `json:"output,omitempty"`
-	Input   []string `json:"input,omitempty"`
+	// MaxContext is the window a raised cap gives, when the provider offers
+	// more than Context; Raised says the user raised it.
+	MaxContext int      `json:"maxContext,omitempty"`
+	Raised     bool     `json:"raised,omitempty"`
+	Output     int      `json:"output,omitempty"`
+	Input      []string `json:"input,omitempty"`
 }
 
 func (m *Model) UnmarshalJSON(data []byte) error {

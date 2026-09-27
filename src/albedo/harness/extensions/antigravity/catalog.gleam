@@ -301,6 +301,7 @@ fn lookup(id: String, at: String) -> Option(extension.ModelInfo) {
           base_id,
           "antigravity",
           Some(variant.context_tokens),
+          None,
           Some(variant.max_output_tokens),
           case variant.images {
             True -> ["text", "image"]

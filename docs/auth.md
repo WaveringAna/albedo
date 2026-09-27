@@ -8,7 +8,7 @@ The enabled-by-default `openai` extension requires `models`. It handles existing
 
 ## chatgpt codex oauth
 
-The enabled-by-default `codex` extension requires `openai`, so it reuses the OpenAI Responses encoder, SSE transport, replay format, and model metadata. Its picker shows only models.dev-listed GPT-5.6 and GPT-6 series; API-key OpenAI profiles still show the full OpenAI catalog. Catalog presence does not guarantee that a ChatGPT subscription can use every listed model. `/login` can add ChatGPT Plus/Pro accounts. A fresh install can enter `codex` as the provider name; an existing install can choose **add chatgpt codex account**.
+The enabled-by-default `codex` extension requires `openai`, so it reuses the OpenAI Responses encoder, SSE transport, replay format, and model metadata. Its picker shows the models the ChatGPT backend offers the signed-in account (see [codex models](models.md#codex-models)); API-key OpenAI profiles still show the full OpenAI catalog. `/login` can add ChatGPT Plus/Pro accounts. A fresh install can enter `codex` as the provider name; an existing install can choose **add chatgpt codex account**.
 
 The daemon runs the login (see [sign-in api](#sign-in-api)) with the Codex CLI browser flow: PKCE S256, the allowlisted `http://localhost:1455/auth/callback`, state validation, and a manual callback-url/code input that races the local callback. The token exchange uses OpenAI's public Codex client id and stores access, rotating refresh, expiry, ChatGPT workspace id, seat id when present, and email when present.
 

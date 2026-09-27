@@ -119,6 +119,7 @@ pub fn lookup_at(
             "models",
             None,
             None,
+            None,
             [],
             None,
             [],
@@ -207,6 +208,7 @@ fn info_decoder(catalog: String) {
     model,
     provider,
     context,
+    None,
     output,
     modalities,
     api,
@@ -295,6 +297,10 @@ fn fill_info(
     context_tokens: case base.context_tokens {
       Some(_) -> base.context_tokens
       None -> found.context_tokens
+    },
+    max_context_tokens: case base.max_context_tokens {
+      Some(_) -> base.max_context_tokens
+      None -> found.max_context_tokens
     },
     max_output_tokens: case base.max_output_tokens {
       Some(_) -> base.max_output_tokens

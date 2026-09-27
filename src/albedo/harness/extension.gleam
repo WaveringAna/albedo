@@ -71,7 +71,11 @@ pub type ModelInfo {
   ModelInfo(
     model: String,
     provider: String,
+    /// The window a session gets unless its cap is raised.
     context_tokens: Option(Int),
+    /// The largest window the provider allows once the user raises the cap;
+    /// `None` when it offers nothing past `context_tokens`.
+    max_context_tokens: Option(Int),
     max_output_tokens: Option(Int),
     input_modalities: List(String),
     endpoint: Option(String),
@@ -390,6 +394,60 @@ fn resolved_defaults(
     False -> defaults
   }
 }
+
+/// Models whose context cap the user raised, from the `raisedCaps` section
+/// of extensions.json. An unreadable file raises nothing.
+pub fn raised_caps() -> List(String) {
+  settings.load(
+    "raisedCaps",
+    decode.dict(decode.string, decode.bool),
+    dict.new(),
+  )
+  |> result.unwrap(dict.new())
+  |> dict.to_list
+  |> list.filter_map(fn(pair) {
+    case pair.1 {
+      True -> Ok(pair.0)
+      False -> Error(Nil)
+    }
+  })
+}
+
+/// Raises or restores a model's context cap for every session.
+pub fn raise_cap(model: String, raised: Bool) -> Result(Nil, String) {
+  case raised {
+    True -> set_entry(settings.home(), "raisedCaps", model, True)
+    False -> remove_entry(settings.home(), "raisedCaps", model)
+  }
+}
+
+/// The window a session on this model gets: the provider's maximum once the
+/// user raised the cap, its default window otherwise.
+pub fn window(info: ModelInfo) -> Option(Int) {
+  case info.max_context_tokens {
+    Some(max) ->
+      case list.contains(raised_caps(), info.model) {
+        True -> Some(max)
+        False -> info.context_tokens
+      }
+    None -> info.context_tokens
+  }
+}
+
+@external(erlang, "albedo_extension_settings", "set_entry")
+fn set_entry(
+  home: String,
+  section: String,
+  key: String,
+  value: Bool,
+) -> Result(Nil, String)
+
+@external(erlang, "albedo_extension_settings", "remove_entry")
+fn remove_entry(
+  home: String,
+  section: String,
+  key: String,
+) -> Result(Nil, String)
 
 /// How a user changes which extensions a session runs. `SetSession` records a
 /// choice for one session; `SetGlobal` changes the default every session
