@@ -2,7 +2,7 @@
 import json
 import unittest
 
-from harness import Albedo, Provider, Reply, text
+from harness import Albedo, Provider, Reply, exclusive, text
 
 
 class DaemonTest(unittest.TestCase):
@@ -37,6 +37,28 @@ class DaemonTest(unittest.TestCase):
                 [["newest prompt"], ["middle prompt"], ["oldest prompt"]],
             )
             self.assertFalse(pages[-1]["more"])
+
+    @exclusive
+    def test_a_clean_restart_leaves_no_registry_crash_loop(self):
+        # Shutdown closes the store before the VM halts, and the supervisor
+        # may restart the registry inside that window; its init used to panic
+        # on the closed store ten times before the supervisor gave up. What
+        # holds the VM open long enough to lose the race is the models
+        # catalog refresh, so the restart runs with it enabled; the fixture
+        # config itself stays, so later fixtures keep their provider.
+        provider = Provider(lambda _request: text("answer"))
+        self.addCleanup(provider.close)
+        with Albedo(provider) as app:
+            settings = json.loads((app.home / "extensions.json").read_text())
+            settings.pop("models", None)
+            (app.home / "extensions.json").write_text(json.dumps(settings))
+            log = app.home / "daemon.log"
+            before = log.stat().st_size if log.exists() else 0
+            app.restart()
+            app.restart()
+            tail = log.read_text(errors="replace")[before:]
+            for marker in ("Noproc", "reached_max_restart_intensity", "callee exited"):
+                self.assertNotIn(marker, tail)
 
     def test_a_thoughts_duration_is_kept_with_the_transcript(self):
         # summarized thinking streams once it is written: here the response

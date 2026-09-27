@@ -151,8 +151,12 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
   use _ <- result.try(
     supervisor.new(supervisor.OneForOne)
     |> supervisor.restart_tolerance(intensity: 10, period: 60)
+    // Transient: the registry's own Shutdown path exits normally, and a
+    // normal exit must not be restarted - a replacement would race the
+    // halting VM and crash on the store the shutdown just closed.
     |> supervisor.add(
-      supervision.worker(fn() { start_registry(config, host, name) }),
+      supervision.worker(fn() { start_registry(config, host, name) })
+      |> supervision.restart(supervision.Transient),
     )
     |> supervisor.start
     |> result.map_error(string.inspect),
@@ -542,7 +546,17 @@ fn start_registry(
   name: process.Name(Message),
 ) {
   actor.new_with_initialiser(30_000, fn(self) {
-    use saved <- result.try(conversation.list(runtime.ledger(host)))
+    // The supervisor marks this child transient, so the normal exit on
+    // shutdown is not restarted. This guard covers the pathological case
+    // where the store died while the VM lives on: come up empty, arm none
+    // of the store-backed timers below, and answer Lookups from nothing
+    // instead of panicking in init.
+    let ledger = runtime.ledger(host)
+    let open = process.is_alive(store.owner(ledger))
+    use saved <- result.try(case open {
+      True -> conversation.list(ledger)
+      False -> Ok([])
+    })
     let sessions =
       list.map(saved, fn(info) {
         let worker = case
@@ -573,13 +587,18 @@ fn start_registry(
         }
         #(info.id, #(info, worker))
       })
-    let _ = process.send_after(self, sweep_interval(config), Sweep)
-    let _ = process.send_after(self, config.tick_ms, ScheduleTick)
-    // Agents start and stop other sessions from kernel host routes.
-    agents.register(fn(op) { actor.call(self, 60_000, AgentOp(op, _)) })
-    mail.on_waiting(fn() { process.send(self, MailWaiting) })
-    // Letters left from before a restart go out now, not a tick later.
-    process.send(self, MailWaiting)
+    case open {
+      True -> {
+        let _ = process.send_after(self, sweep_interval(config), Sweep)
+        let _ = process.send_after(self, config.tick_ms, ScheduleTick)
+        // Letters left from before a restart go out now, not a tick later.
+        process.send(self, MailWaiting)
+        // Agents start and stop other sessions from kernel host routes.
+        agents.register(fn(op) { actor.call(self, 60_000, AgentOp(op, _)) })
+        mail.on_waiting(fn() { process.send(self, MailWaiting) })
+      }
+      False -> Nil
+    }
     Ok(
       actor.initialised(State(
         host,
