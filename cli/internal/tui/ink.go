@@ -85,22 +85,31 @@ func apca(text, bg rgb) float64 {
 	return (math.Abs(s) - 0.027) * 100
 }
 
+// bisect narrows [0, 1] to the boundary where still stops holding, over 24
+// halvings. Both mix searches are monotone in the fraction. It returns the
+// last fraction where still holds and the first where it does not; callers
+// pick the side that meets their target.
+func bisect(still func(t float64) bool) (lo, hi float64) {
+	lo, hi = 0.0, 1.0
+	for range 24 {
+		mid := (lo + hi) / 2
+		if still(mid) {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	return lo, hi
+}
+
 // toward mixes from into bg until it reaches the target contrast. A color
 // already under the target stays as it is.
 func toward(from, bg rgb, target float64) rgb {
 	if apca(from, bg) <= target {
 		return from
 	}
-	lo, hi := 0.0, 1.0
-	for range 24 {
-		mid := (lo + hi) / 2
-		if apca(from.mix(bg, mid), bg) > target {
-			lo = mid
-		} else {
-			hi = mid
-		}
-	}
-	return from.mix(bg, lo)
+	t, _ := bisect(func(t float64) bool { return apca(from.mix(bg, t), bg) > target })
+	return from.mix(bg, t)
 }
 
 // luminance is relative luminance as the WCAG contrast ratio defines it.
@@ -126,16 +135,9 @@ func step(bg, to rgb, target float64) rgb {
 	if ratio(bg, to) <= target {
 		return to
 	}
-	lo, hi := 0.0, 1.0
-	for range 24 {
-		mid := (lo + hi) / 2
-		if ratio(bg, bg.mix(to, mid)) < target {
-			lo = mid
-		} else {
-			hi = mid
-		}
-	}
-	return bg.mix(to, hi)
+	// hi is the first fraction that meets the ratio; lo only approaches it.
+	_, t := bisect(func(t float64) bool { return ratio(bg, bg.mix(to, t)) < target })
+	return bg.mix(to, t)
 }
 
 // termColors is what the terminal reported. A missing color is nil, and
@@ -171,17 +173,16 @@ func mixInk(c termColors) (ink, bool) {
 		code:      toward(fg, bg, codeLc).hex(),
 		secondary: toward(fg, bg, secondaryLc).hex(),
 		decor:     toward(fg, bg, decorLc).hex(),
+		surface:   step(bg, fg, surfaceRatio).hex(),
 	}
-	out.surface = step(bg, fg, surfaceRatio).hex()
 	blue, hasBlue := c.palette[ansiBlue]
-	switch {
-	case luminance(bg) > luminance(fg):
-		out.codeBg = step(bg, fg, lightCodeBgRatio).hex()
-	case hasBlue:
-		out.codeBg = step(bg, blue, darkCodeBgRatio).hex()
-	default:
-		out.codeBg = step(bg, fg, darkCodeBgRatio).hex()
+	codeTarget, codeRatio := fg, darkCodeBgRatio
+	if luminance(bg) > luminance(fg) {
+		codeRatio = lightCodeBgRatio
+	} else if hasBlue {
+		codeTarget = blue
 	}
+	out.codeBg = step(bg, codeTarget, codeRatio).hex()
 	if magenta, ok := c.palette[ansiMagenta]; ok && apca(magenta, bg) >= busyLc {
 		out.busy = toward(magenta, bg, busyLc).hex()
 	}

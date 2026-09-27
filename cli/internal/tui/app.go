@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -157,20 +158,15 @@ func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
 }
 
 func (m AppModel) newChatClient(sessionID string) *daemon.ChatClient {
-	return daemon.NewChatClient(daemon.ChatClientOptions{
-		AgentID: sessionID,
-		Conn:    m.Conn,
-	})
+	return daemon.NewChatClient(daemon.ChatClientOptions{AgentID: sessionID, Conn: m.Conn})
 }
 
 func NewAppModel(conn *daemon.Connection, profiles config.Profiles, initialSession *daemon.Session, workspace string, needsLogin bool) AppModel {
+	if conn == nil {
+		conn, _ = daemon.Existing(config.HomeDir())
+	}
 	if conn != nil && conn.HomeDir() == "" {
 		conn.SetHomeDir(config.HomeDir())
-	}
-	if conn == nil {
-		if existing, _ := daemon.Existing(config.HomeDir()); existing != nil {
-			conn = existing
-		}
 	}
 	m := AppModel{
 		Conn:          conn,
@@ -202,21 +198,14 @@ func (m AppModel) Init() tea.Cmd {
 	m.Login.BrowserOpener = m.BrowserOpener
 	switch m.State {
 	case AppStateChat:
-		return tea.Batch(
-			m.Chat.Init(),
-			m.loadCommandCatalogCmd(m.CatalogGen),
-		)
+		return tea.Batch(m.Chat.Init(), m.loadCommandCatalogCmd(m.CatalogGen))
 	case AppStateLogin:
-		m.Login.BrowserOpener = m.BrowserOpener
 		if !m.StandaloneLogin && m.ActiveSession == nil {
 			return tea.Batch(m.Login.Init(), m.loadSessionsCmd(m.SessionGen))
 		}
 		return m.Login.Init()
 	case AppStateSessionPicker:
-		return tea.Batch(
-			m.SessionPicker.Init(),
-			m.loadSessionsCmd(m.SessionGen),
-		)
+		return tea.Batch(m.SessionPicker.Init(), m.loadSessionsCmd(m.SessionGen))
 	}
 	return nil
 }
@@ -267,22 +256,15 @@ func (m AppModel) createSessionCmd(gen int) tea.Cmd {
 		if m.Conn == nil {
 			return sessionCreatedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		body := map[string]string{"workspace": m.Workspace}
-		s, err := daemon.Request[daemon.Session](context.Background(), m.Conn, "/sessions", body)
+		s, err := daemon.Request[daemon.Session](context.Background(), m.Conn, "/sessions", map[string]string{"workspace": m.Workspace})
 		return sessionCreatedMsg{Session: s, Err: err, Gen: gen}
 	}
 }
 
 func (m AppModel) loadProfilesCmd(provider string, gen int) tea.Cmd {
 	return func() tea.Msg {
-		home := config.HomeDir()
-		p, err := config.LoadProfiles(home)
-		return profilesLoadedMsg{
-			Profiles: p,
-			Provider: provider,
-			Err:      err,
-			Gen:      gen,
-		}
+		p, err := config.LoadProfiles(config.HomeDir())
+		return profilesLoadedMsg{Profiles: p, Provider: provider, Err: err, Gen: gen}
 	}
 }
 
@@ -292,37 +274,17 @@ func (m AppModel) loadCommandCatalogCmd(gen int) tea.Cmd {
 			return commandCatalogLoadedMsg{Gen: gen}
 		}
 
-		health, err := daemon.Request[struct {
-			Capabilities []string `json:"capabilities"`
-		}](context.Background(), m.Conn, "/health", nil)
-		if err == nil {
-			hasCap := false
-			for _, c := range health.Capabilities {
-				if c == "session_commands" {
-					hasCap = true
-					break
-				}
-			}
-			if !hasCap {
-				return commandCatalogLoadedMsg{
-					Err: errors.New("daemon upgrade needed for the command menu; when ready, run albedo daemon --stop, then albedo (this clears python variables)"),
-					Gen: gen,
-				}
-			}
+		if err := daemon.CheckCapability(context.Background(), m.Conn, "session_commands", "for the command menu"); err != nil {
+			return commandCatalogLoadedMsg{Err: err, Gen: gen}
 		}
 
 		path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(m.ActiveSession.ID))
-		raw, err := daemon.Request[any](context.Background(), m.Conn, path, nil)
+		raw, err := daemon.Request[json.RawMessage](context.Background(), m.Conn, path, nil)
 		if err != nil {
 			return commandCatalogLoadedMsg{Err: err, Gen: gen}
 		}
 
-		rawBytes, err := json.Marshal(raw)
-		if err != nil {
-			return commandCatalogLoadedMsg{Err: err, Gen: gen}
-		}
-
-		cmds, err := daemon.ParseCommandCatalog(rawBytes)
+		cmds, err := daemon.ParseCommandCatalog(raw)
 		return commandCatalogLoadedMsg{Commands: cmds, Err: err, Gen: gen}
 	}
 }
@@ -334,23 +296,8 @@ func (m AppModel) changeModelCmd(model, provider, effort string, raiseCap *bool,
 		}
 
 		if provider != "" && provider != m.ActiveSession.Provider {
-			health, err := daemon.Request[struct {
-				Capabilities []string `json:"capabilities"`
-			}](context.Background(), m.Conn, "/health", nil)
-			if err == nil {
-				hasCap := false
-				for _, c := range health.Capabilities {
-					if c == "session_provider" {
-						hasCap = true
-						break
-					}
-				}
-				if !hasCap {
-					return modelChangedMsg{
-						Err: errors.New("daemon upgrade needed to switch providers; when ready, run albedo daemon --stop, then albedo (this clears python variables)"),
-						Gen: gen,
-					}
-				}
+			if err := daemon.CheckCapability(context.Background(), m.Conn, "session_provider", "to switch providers"); err != nil {
+				return modelChangedMsg{Err: err, Gen: gen}
 			}
 		}
 
@@ -373,33 +320,28 @@ func (m AppModel) changeModelCmd(model, provider, effort string, raiseCap *bool,
 		}
 		// The cap follows the switch, so a failed switch changes nothing.
 		if raiseCap != nil {
-			state := "off"
-			if *raiseCap {
-				state = "on"
-			}
+			state := pick(*raiseCap, "on", "off")
 			capBody := map[string]any{"name": "/raise-cap", "args": map[string]string{"state": state, "model": model}}
 			if _, err := daemon.Request[map[string]any](context.Background(), m.Conn, path, capBody); err != nil {
 				return modelChangedMsg{Err: fmt.Errorf("switched model, but the context cap was not saved: %w", err), Gen: gen}
 			}
 		}
 
-		newModel := model
-		newProvider := provider
-		var newProtocol string
-		var newEffort string
+		newModel, newProvider := model, provider
+		var newProtocol, newEffort string
 
 		if r, ok := res["result"].(map[string]any); ok {
-			if mVal, ok := r["model"].(string); ok && mVal != "" {
-				newModel = mVal
+			if s, _ := r["model"].(string); s != "" {
+				newModel = s
 			}
-			if pVal, ok := r["provider"].(string); ok && pVal != "" {
-				newProvider = pVal
+			if s, _ := r["provider"].(string); s != "" {
+				newProvider = s
 			}
-			if protoVal, ok := r["protocol"].(string); ok && protoVal != "" {
-				newProtocol = protoVal
+			if s, _ := r["protocol"].(string); s != "" {
+				newProtocol = s
 			}
-			if eVal, ok := r["effort"].(string); ok {
-				newEffort = eVal
+			if s, ok := r["effort"].(string); ok {
+				newEffort = s
 			}
 		}
 
@@ -420,9 +362,7 @@ func (m AppModel) executeCommandCmd(name, args string, gen int) tea.Cmd {
 		}
 
 		path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(m.ActiveSession.ID))
-		body := map[string]any{
-			"name": name,
-		}
+		body := map[string]any{"name": name}
 		if args != "" {
 			body["arguments"] = args
 		}
@@ -449,14 +389,14 @@ func (m AppModel) executeCommandCmd(name, args string, gen int) tea.Cmd {
 				if len(available) > 0 {
 					return commandExecutedMsg{Name: name, Available: available, SessionID: m.ActiveSession.ID, Gen: gen}
 				}
-				if eStr, ok := r["effort"].(string); ok {
-					newEffort = eStr
+				if s, _ := r["effort"].(string); s != "" {
+					newEffort = s
 				}
-				if mStr, ok := r["message"].(string); ok && mStr != "" {
-					msg = mStr
+				if s, _ := r["message"].(string); s != "" {
+					msg = s
 				}
-			} else if mStr, ok := res["message"].(string); ok && mStr != "" {
-				msg = mStr
+			} else if s, _ := res["message"].(string); s != "" {
+				msg = s
 			}
 		}
 
@@ -465,20 +405,14 @@ func (m AppModel) executeCommandCmd(name, args string, gen int) tea.Cmd {
 }
 
 func (m AppModel) hasPageCommands() bool {
-	for _, cmd := range m.CommandCatalog {
-		if cmd.Page != nil && *cmd.Page {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(m.CommandCatalog, func(cmd daemon.SessionCommand) bool {
+		return cmd.Page != nil && *cmd.Page
+	})
 }
 
 func glancePollTickCmd(sessionID string, gen int) tea.Cmd {
-	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-		return glancePollTickMsg{
-			SessionID: sessionID,
-			Gen:       gen,
-		}
+	return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+		return glancePollTickMsg{SessionID: sessionID, Gen: gen}
 	})
 }
 
@@ -488,30 +422,23 @@ func (m AppModel) pollGlancesCmd(gen int) tea.Cmd {
 			return glancesPolledMsg{Gen: gen}
 		}
 
-		var pageCmds []string
-		for _, cmd := range m.CommandCatalog {
-			if cmd.Page != nil && *cmd.Page {
-				pageCmds = append(pageCmds, cmd.Name)
-			}
-		}
-		if len(pageCmds) == 0 {
-			return glancesPolledMsg{Gen: gen}
-		}
-
+		path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(m.ActiveSession.ID))
 		var glances []PageGlance
-		for _, name := range pageCmds {
-			path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(m.ActiveSession.ID))
-			body := map[string]any{"name": name, "args": map[string]string{}}
+		for _, cmd := range m.CommandCatalog {
+			if cmd.Page == nil || !*cmd.Page {
+				continue
+			}
+			body := map[string]any{"name": cmd.Name, "args": map[string]string{}}
 			res, err := daemon.Request[map[string]any](context.Background(), m.Conn, path, body)
-			if err == nil {
-				var target any = res
-				if r, ok := res["result"]; ok && r != nil {
-					target = r
-				}
-				doc, err := parsePageDocument(target)
-				if err == nil && doc != nil && doc.Glance != nil {
-					glances = append(glances, *doc.Glance)
-				}
+			if err != nil {
+				continue
+			}
+			target := any(res)
+			if r, ok := res["result"]; ok && r != nil {
+				target = r
+			}
+			if doc, err := parsePageDocument(target); err == nil && doc != nil && doc.Glance != nil {
+				glances = append(glances, *doc.Glance)
 			}
 		}
 
@@ -519,26 +446,103 @@ func (m AppModel) pollGlancesCmd(gen int) tea.Cmd {
 	}
 }
 
+func (m *AppModel) pollGlances() tea.Cmd {
+	m.GlanceGen++
+	cmds := []tea.Cmd{m.pollGlancesCmd(m.GlanceGen)}
+	if m.ActiveSession != nil && m.hasPageCommands() {
+		cmds = append(cmds, glancePollTickCmd(m.ActiveSession.ID, m.GlanceGen))
+	}
+	return tea.Batch(cmds...)
+}
+
 func (m *AppModel) updateSessionPickerItems() {
 	m.SessionPicker.SetSessions(m.Sessions, m.ActiveSession)
+}
+
+func (m *AppModel) setChatSession(s daemon.Session, prepend bool) tea.Cmd {
+	m.Chat.Close()
+	session := s
+	m.ActiveSession = &session
+	if prepend {
+		m.Sessions = append([]daemon.Session{s}, m.Sessions...)
+	}
+	m.Chat = m.newChatModel(&session)
+	m.Chat.SetSize(m.Width, m.Height)
+	m.State = AppStateChat
+	m.CatalogGen++
+	return tea.Batch(m.Chat.Init(), m.loadCommandCatalogCmd(m.CatalogGen))
 }
 
 // openSession makes session the chat on screen.
 func (m *AppModel) openSession(s daemon.Session) tea.Cmd {
 	m.SessionPicker.RecordOpen(s.ID)
-	m.Chat.Close()
-	session := s
-	m.ActiveSession = &session
-	m.Chat = m.newChatModel(&session)
-	m.Chat.SetSize(m.Width, m.Height)
 	m.ClearNotices()
-	m.State = AppStateChat
-	m.CatalogGen++
 	m.GlanceGen++
-	return tea.Batch(
-		m.Chat.Init(),
-		m.loadCommandCatalogCmd(m.CatalogGen),
-	)
+	return m.setChatSession(s, false)
+}
+
+func (m *AppModel) openLogin(name string) tea.Cmd {
+	previous := m.Login.Close()
+	m.Login = NewLoginModel(m.Conn, name)
+	m.Login.BrowserOpener = m.BrowserOpener
+	m.Login.SetSize(m.Width, m.Height)
+	m.State = AppStateLogin
+	return tea.Batch(previous, m.Login.Init())
+}
+
+func (m *AppModel) openSessions() tea.Cmd {
+	m.State = AppStateSessionPicker
+	m.SessionGen++
+	m.GlanceGen++
+	return tea.Batch(m.SessionPicker.Init(), m.loadSessionsCmd(m.SessionGen))
+}
+
+func (m *AppModel) newSessionCmd() tea.Cmd {
+	m.SessionGen++
+	return m.createSessionCmd(m.SessionGen)
+}
+
+type screen interface {
+	SetSize(int, int)
+	Init() tea.Cmd
+}
+
+func (m *AppModel) openScreen(state AppState, s screen) tea.Cmd {
+	s.SetSize(m.Width, m.Height)
+	m.State = state
+	return s.Init()
+}
+
+func (m *AppModel) openModelPicker() tea.Cmd {
+	if m.ActiveSession == nil {
+		return nil
+	}
+	m.ModelPicker = NewModelPickerModel(m.Conn, m.Profiles, m.ActiveSession.Model, m.ActiveSession.Provider, m.ActiveSession.Effort)
+	return m.openScreen(AppStateModelPicker, &m.ModelPicker)
+}
+
+func (m *AppModel) openExtensionPicker() tea.Cmd {
+	if m.ActiveSession == nil {
+		return nil
+	}
+	m.ExtensionPicker = NewExtensionPickerModel(m.Conn, m.ActiveSession.ID)
+	return m.openScreen(AppStateExtensionPicker, &m.ExtensionPicker)
+}
+
+func (m *AppModel) openTreePicker() tea.Cmd {
+	if m.ActiveSession == nil {
+		return nil
+	}
+	m.TreePicker = NewTreePickerModel(m.Conn, m.ActiveSession.ID)
+	return m.openScreen(AppStateTreePicker, &m.TreePicker)
+}
+
+func (m *AppModel) openContextInspector() tea.Cmd {
+	if m.ActiveSession == nil {
+		return nil
+	}
+	m.ContextInspector = NewContextInspectorModel(m.Conn, m.ActiveSession.ID)
+	return m.openScreen(AppStateContextInspector, &m.ContextInspector)
 }
 
 func (m *AppModel) AddNotice(message string) {
@@ -566,71 +570,40 @@ func (m *AppModel) ClearNotices() {
 
 func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// First: forward chat lifecycle messages even while a modal is open.
-	switch streamMsg := msg.(type) {
+	var sid string
+	var forward bool
+	switch sm := msg.(type) {
 	case ChatEditorFinishedMsg:
-		var cmd tea.Cmd
-		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
-			m.Chat, cmd = m.Chat.Update(msg)
-		}
-		return m, cmd
+		sid, forward = sm.SessionID, true
 	case ChatClearCopyStatusMsg:
-		var cmd tea.Cmd
-		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
-			m.Chat, cmd = m.Chat.Update(msg)
-		}
-		return m, cmd
+		sid, forward = sm.SessionID, true
 	case ChatStatusPollMsg:
-		var cmd tea.Cmd
-		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
-			m.Chat, cmd = m.Chat.Update(msg)
-		}
-		return m, cmd
+		sid, forward = sm.SessionID, true
 	case ChatProgressTickMsg:
 		// a tick dropped under a modal would leave the face frozen for good
-		var cmd tea.Cmd
-		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
-			m.Chat, cmd = m.Chat.Update(msg)
-		}
-		return m, cmd
+		sid, forward = sm.SessionID, true
 	case ChatStatusMsg:
-		var cmd tea.Cmd
-		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
-			m.Chat, cmd = m.Chat.Update(msg)
-		}
-		return m, cmd
-	case ChatStreamEventMsg:
-		var cmd tea.Cmd
-		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
-			if streamMsg.Event.Type == daemon.EventUser && !streamMsg.Event.Replayed {
-				m.ClearNotices()
-			}
-			m.Chat, cmd = m.Chat.Update(msg)
-		}
-		return m, cmd
+		sid, forward = sm.SessionID, true
 	case ChatStreamClosedMsg:
-		var cmd tea.Cmd
-		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
-			m.Chat, cmd = m.Chat.Update(msg)
-		}
-		return m, cmd
-	case ChatTurnSentMsg:
-		var cmd tea.Cmd
-		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
-			if streamMsg.Err == nil {
-				m.ClearNotices()
-			}
-			m.Chat, cmd = m.Chat.Update(msg)
-		}
-		return m, cmd
+		sid, forward = sm.SessionID, true
 	case ChatInterruptMsg:
-		var cmd tea.Cmd
-		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
-			m.Chat, cmd = m.Chat.Update(msg)
-		}
-		return m, cmd
+		sid, forward = sm.SessionID, true
 	case ClipboardImagePastedMsg:
+		sid, forward = sm.SessionID, true
+	case ChatStreamEventMsg:
+		sid, forward = sm.SessionID, true
+		if m.ActiveSession != nil && sid == m.ActiveSession.ID && sm.Event.Type == daemon.EventUser && !sm.Event.Replayed {
+			m.ClearNotices()
+		}
+	case ChatTurnSentMsg:
+		sid, forward = sm.SessionID, true
+		if m.ActiveSession != nil && sid == m.ActiveSession.ID && sm.Err == nil {
+			m.ClearNotices()
+		}
+	}
+	if forward {
 		var cmd tea.Cmd
-		if m.ActiveSession != nil && streamMsg.SessionID == m.ActiveSession.ID {
+		if m.ActiveSession != nil && sid == m.ActiveSession.ID {
 			m.Chat, cmd = m.Chat.Update(msg)
 		}
 		return m, cmd
@@ -670,11 +643,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.ActiveSession != nil && (msg.SessionID == "" || msg.SessionID == m.ActiveSession.ID) {
 			m.ActiveSession.Workspace = msg.Workspace
 			m.Workspace = msg.Workspace
-			for i := range m.Sessions {
-				if m.Sessions[i].ID == m.ActiveSession.ID {
-					m.Sessions[i].Workspace = msg.Workspace
-					break
-				}
+			if i := slices.IndexFunc(m.Sessions, func(s daemon.Session) bool { return s.ID == m.ActiveSession.ID }); i >= 0 {
+				m.Sessions[i].Workspace = msg.Workspace
 			}
 		}
 		return m, nil
@@ -685,12 +655,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.SessionPicker.Removed(msg.ID)
-		for i, session := range m.Sessions {
-			if session.ID == msg.ID {
-				m.Sessions = append(m.Sessions[:i], m.Sessions[i+1:]...)
-				break
-			}
-		}
+		m.Sessions = slices.DeleteFunc(m.Sessions, func(s daemon.Session) bool { return s.ID == msg.ID })
 		m.ClearNotices()
 		return m, nil
 
@@ -708,10 +673,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.SessionPicker.notice = "could not rename: " + msg.Err.Error()
 			return m, cmd
 		}
-		for i := range m.Sessions {
-			if m.Sessions[i].ID == msg.ID {
-				m.Sessions[i] = msg.Session
-			}
+		if i := slices.IndexFunc(m.Sessions, func(s daemon.Session) bool { return s.ID == msg.ID }); i >= 0 {
+			m.Sessions[i] = msg.Session
 		}
 		if m.ActiveSession != nil && m.ActiveSession.ID == msg.ID {
 			m.ActiveSession.Title = msg.Session.Title
@@ -733,14 +696,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.SessionPicker.Loading = false
 			m.AddError("Error: " + msg.Err.Error())
-		} else {
-			m.Sessions = msg.Sessions
-			m.ClearNotices()
-			m.SessionPicker.Prune(msg.Sessions)
-			m.updateSessionPickerItems()
-			return m, m.SessionPicker.PreviewCmd()
+			return m, nil
 		}
-		return m, nil
+		m.Sessions = msg.Sessions
+		m.ClearNotices()
+		m.SessionPicker.Prune(msg.Sessions)
+		m.updateSessionPickerItems()
+		return m, m.SessionPicker.PreviewCmd()
 
 	case sessionCreatedMsg:
 		if msg.Gen != m.SessionGen {
@@ -750,18 +712,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.AddError("Error: " + msg.Err.Error())
 			return m, nil
 		}
-		m.Chat.Close()
-		s := msg.Session
-		m.ActiveSession = &s
-		m.Sessions = append([]daemon.Session{s}, m.Sessions...)
-		m.Chat = m.newChatModel(&s)
-		m.Chat.SetSize(m.Width, m.Height)
-		m.State = AppStateChat
-		m.CatalogGen++
-		return m, tea.Batch(
-			m.Chat.Init(),
-			m.loadCommandCatalogCmd(m.CatalogGen),
-		)
+		return m, m.setChatSession(msg.Session, true)
 
 	case commandCatalogLoadedMsg:
 		if msg.Gen != m.CatalogGen {
@@ -770,27 +721,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			if strings.Contains(msg.Err.Error(), "daemon upgrade") {
 				m.AddError("Error: " + msg.Err.Error())
-				if m.ActiveSession != nil {
-				}
 			}
-		} else {
-			m.CommandCatalog = msg.Commands
-			m.Chat.CommandMenu.Catalog = msg.Commands
-			m.GlanceGen++
-			var cmds []tea.Cmd
-			cmds = append(cmds, m.pollGlancesCmd(m.GlanceGen))
-			if m.ActiveSession != nil && m.hasPageCommands() {
-				cmds = append(cmds, glancePollTickCmd(m.ActiveSession.ID, m.GlanceGen))
-			}
-			return m, tea.Batch(cmds...)
+			return m, nil
 		}
-		return m, nil
+		m.CommandCatalog = msg.Commands
+		m.Chat.CommandMenu.Catalog = msg.Commands
+		return m, m.pollGlances()
 
 	case glancePollTickMsg:
-		if m.ActiveSession == nil || msg.SessionID != m.ActiveSession.ID || msg.Gen != m.GlanceGen {
-			return m, nil // Obsolete tick dropped
-		}
-		if !m.hasPageCommands() {
+		if m.ActiveSession == nil || msg.SessionID != m.ActiveSession.ID || msg.Gen != m.GlanceGen || !m.hasPageCommands() {
 			return m, nil
 		}
 		return m, tea.Batch(
@@ -842,20 +781,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.Err != nil {
 			m.AddError("Error: " + msg.Err.Error())
-		} else {
-			m.AddNotice(msg.Message)
-			if msg.Effort != "" && m.ActiveSession != nil {
-				m.ActiveSession.Effort = msg.Effort
-				m.Chat.Effort = msg.Effort
-			}
+			return m, nil
+		}
+		m.AddNotice(msg.Message)
+		if msg.Effort != "" && m.ActiveSession != nil {
+			m.ActiveSession.Effort = msg.Effort
+			m.Chat.Effort = msg.Effort
 		}
 		return m, nil
 
 	case glancesPolledMsg:
-		if msg.Gen != m.GlanceGen {
-			return m, nil
-		}
-		if msg.Err == nil {
+		if msg.Gen == m.GlanceGen && msg.Err == nil {
 			m.Glances = msg.Glances
 			m.Chat.Glances = msg.Glances
 			m.Chat.SetSize(m.Width, m.Height)
@@ -881,8 +817,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		if msg.Err == nil && m.ActiveSession == nil && len(m.Sessions) == 0 {
-			m.SessionGen++
-			return m, m.createSessionCmd(m.SessionGen)
+			return m, m.newSessionCmd()
 		}
 		if m.ActiveSession == nil {
 			m.State = AppStateSessionPicker
@@ -897,25 +832,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case ChatBackToSessionsMsg:
-		m.State = AppStateSessionPicker
-		m.SessionGen++
-		m.GlanceGen++ // Cancels pending glance poll ticks
-		return m, tea.Batch(
-			m.SessionPicker.Init(),
-			m.loadSessionsCmd(m.SessionGen),
-		)
+		return m, m.openSessions()
 
 	case ChatNewSessionMsg:
-		m.SessionGen++
-		return m, m.createSessionCmd(m.SessionGen)
+		return m, m.newSessionCmd()
 
 	case ChatOpenModelPickerMsg:
-		if m.ActiveSession != nil {
-			m.ModelPicker = NewModelPickerModel(m.Conn, m.Profiles, m.ActiveSession.Model, m.ActiveSession.Provider, m.ActiveSession.Effort)
-			m.ModelPicker.SetSize(m.Width, m.Height)
-			m.State = AppStateModelPicker
-			return m, m.ModelPicker.Init()
-		}
+		return m, m.openModelPicker()
 
 	case ModelPickerSelectMsg:
 		m.ModelPicker.Saving = true
@@ -923,37 +846,20 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ModelGen++
 		return m, m.changeModelCmd(msg.Model, msg.Provider, msg.Effort, msg.RaiseCap, m.ModelGen)
 
-	case ModelPickerCancelMsg:
-		m.State = AppStateChat
-		return m, nil
-
 	case ChatOpenExtensionPickerMsg:
-		if m.ActiveSession != nil {
-			m.ExtensionPicker = NewExtensionPickerModel(m.Conn, m.ActiveSession.ID)
-			m.ExtensionPicker.SetSize(m.Width, m.Height)
-			m.State = AppStateExtensionPicker
-			return m, m.ExtensionPicker.Init()
-		}
+		return m, m.openExtensionPicker()
 
 	case ChatOpenWebhooksPageMsg:
 		if m.ActiveSession != nil {
 			m.WebhooksPage = NewWebhooksPageModel(m.Conn, m.ActiveSession.ID)
-			m.WebhooksPage.SetSize(m.Width, m.Height)
-			m.State = AppStateWebhooksPage
-			return m, m.WebhooksPage.Init()
+			return m, m.openScreen(AppStateWebhooksPage, &m.WebhooksPage)
 		}
-
-	case WebhooksPageDoneMsg:
-		m.State = AppStateChat
-		return m, nil
 
 	case ChatOpenAgentsMsg:
 		if m.ActiveSession != nil {
 			m.Agents.Close()
 			m.Agents = NewAgentsViewModel(m.Conn, m.ActiveSession.ID)
-			m.Agents.SetSize(m.Width, m.Height)
-			m.State = AppStateAgents
-			return m, m.Agents.Init()
+			return m, m.openScreen(AppStateAgents, &m.Agents)
 		}
 
 	case AgentsDoneMsg:
@@ -964,14 +870,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AgentsAttachMsg:
 		m.Agents.Close()
 		session := msg.Session
-		for _, listed := range m.Sessions {
-			if listed.ID == session.ID {
-				session = listed
-			}
+		if i := slices.IndexFunc(m.Sessions, func(s daemon.Session) bool { return s.ID == session.ID }); i >= 0 {
+			session = m.Sessions[i]
 		}
 		return m, m.openSession(session)
 
-	case ExtensionPickerDoneMsg:
+	case ModelPickerCancelMsg, WebhooksPageDoneMsg, ExtensionPickerDoneMsg,
+		TreeCancelMsg, ContextDoneMsg, CapabilityPageDoneMsg, PageCancelMsg:
 		m.State = AppStateChat
 		return m, nil
 
@@ -980,89 +885,37 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.CatalogGen++
 		return m, m.loadCommandCatalogCmd(m.CatalogGen)
 
-	case ChatOpenTreePickerMsg:
-		if m.ActiveSession != nil {
-			m.TreePicker = NewTreePickerModel(m.Conn, m.ActiveSession.ID)
-			m.TreePicker.SetSize(m.Width, m.Height)
-			m.State = AppStateTreePicker
-			return m, m.TreePicker.Init()
-		}
-
-	case TreeCancelMsg:
-		m.State = AppStateChat
-		return m, nil
-
-	case TreeForkSuccessMsg:
-		m.Chat.Close()
-		branch := msg.Session
-		m.ActiveSession = &branch
-		m.Sessions = append([]daemon.Session{branch}, m.Sessions...)
-		m.Chat = m.newChatModel(&branch)
-		m.Chat.SetSize(m.Width, m.Height)
-		m.State = AppStateChat
-		m.CatalogGen++
-		return m, tea.Batch(
-			m.Chat.Init(),
-			m.loadCommandCatalogCmd(m.CatalogGen),
-		)
-
-	case ChatOpenContextInspectorMsg:
-		if m.ActiveSession != nil {
-			m.ContextInspector = NewContextInspectorModel(m.Conn, m.ActiveSession.ID)
-			m.ContextInspector.SetSize(m.Width, m.Height)
-			m.State = AppStateContextInspector
-			return m, m.ContextInspector.Init()
-		}
-
-	case ContextDoneMsg:
-		m.State = AppStateChat
-		return m, nil
-
-	case ChatOpenCapabilityPageMsg:
-		if m.ActiveSession != nil {
-			m.CapabilityPage = NewCapabilityPageModel(m.Conn, m.ActiveSession.ID, m.ActiveSession.Workspace, msg.Kind)
-			m.CapabilityPage.SetSize(m.Width, m.Height)
-			m.State = AppStateCapabilityPage
-			return m, m.CapabilityPage.Init()
-		}
-
-	case CapabilityPageDoneMsg:
-		m.State = AppStateChat
-		return m, nil
-
 	case CapabilityPageChangedMsg:
 		m.CatalogGen++
 		return m, m.loadCommandCatalogCmd(m.CatalogGen)
 
+	case ChatOpenTreePickerMsg:
+		return m, m.openTreePicker()
+
+	case TreeForkSuccessMsg:
+		return m, m.setChatSession(msg.Session, true)
+
+	case ChatOpenContextInspectorMsg:
+		return m, m.openContextInspector()
+
+	case ChatOpenCapabilityPageMsg:
+		if m.ActiveSession != nil {
+			m.CapabilityPage = NewCapabilityPageModel(m.Conn, m.ActiveSession.ID, m.ActiveSession.Workspace, msg.Kind)
+			return m, m.openScreen(AppStateCapabilityPage, &m.CapabilityPage)
+		}
+
 	case ChatOpenPageMsg:
 		if m.ActiveSession != nil {
 			m.PageView = NewPageViewModel(m.Conn, m.ActiveSession.ID, msg.Command)
-			m.PageView.SetSize(m.Width, m.Height)
-			m.State = AppStatePageView
-			return m, m.PageView.Init()
+			return m, m.openScreen(AppStatePageView, &m.PageView)
 		}
-
-	case PageCancelMsg:
-		m.State = AppStateChat
-		return m, nil
 
 	case PageViewChangedMsg:
 		m.GlanceRevision++
-		m.GlanceGen++
-		var cmds []tea.Cmd
-		cmds = append(cmds, m.pollGlancesCmd(m.GlanceGen))
-		if m.ActiveSession != nil && m.hasPageCommands() {
-			cmds = append(cmds, glancePollTickCmd(m.ActiveSession.ID, m.GlanceGen))
-		}
-		return m, tea.Batch(cmds...)
+		return m, m.pollGlances()
 
 	case ChatOpenLoginMsg:
-		previous := m.Login.Close()
-		m.Login = NewLoginModel(m.Conn, msg.Name)
-		m.Login.BrowserOpener = m.BrowserOpener
-		m.Login.SetSize(m.Width, m.Height)
-		m.State = AppStateLogin
-		return m, tea.Batch(previous, m.Login.Init())
+		return m, m.openLogin(msg.Name)
 
 	case LoginCancelMsg:
 		m.ProfileGen++
@@ -1090,55 +943,27 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadProfilesCmd(msg.Name, m.ProfileGen)
 
 	case ChatExecuteCommandMsg:
-		switch {
-		case msg.Name == "/login":
-			previous := m.Login.Close()
-			m.Login = NewLoginModel(m.Conn, msg.Args)
-			m.Login.BrowserOpener = m.BrowserOpener
-			m.Login.SetSize(m.Width, m.Height)
-			m.State = AppStateLogin
-			return m, tea.Batch(previous, m.Login.Init())
-		case msg.Name == "/model" && msg.Args != "":
-			m.ModelGen++
-			return m, m.changeModelCmd(msg.Args, "", "", nil, m.ModelGen)
-		case msg.Name == "/model":
-			if m.ActiveSession != nil {
-				m.ModelPicker = NewModelPickerModel(m.Conn, m.Profiles, m.ActiveSession.Model, m.ActiveSession.Provider, m.ActiveSession.Effort)
-				m.ModelPicker.SetSize(m.Width, m.Height)
-				m.State = AppStateModelPicker
-				return m, m.ModelPicker.Init()
+		switch msg.Name {
+		case "/login":
+			return m, m.openLogin(msg.Args)
+		case "/model":
+			if msg.Args != "" {
+				m.ModelGen++
+				return m, m.changeModelCmd(msg.Args, "", "", nil, m.ModelGen)
 			}
-		case msg.Name == "/new":
-			m.SessionGen++
-			return m, m.createSessionCmd(m.SessionGen)
-		case msg.Name == "/agents":
+			return m, m.openModelPicker()
+		case "/new":
+			return m, m.newSessionCmd()
+		case "/agents":
 			return m, func() tea.Msg { return ChatOpenAgentsMsg{} }
-		case msg.Name == "/sessions" || msg.Name == "/a":
-			m.State = AppStateSessionPicker
-			m.SessionGen++
-			m.GlanceGen++
-			return m, tea.Batch(m.SessionPicker.Init(), m.loadSessionsCmd(m.SessionGen))
-		case msg.Name == "/extensions" || msg.Name == "/plugins":
-			if m.ActiveSession != nil {
-				m.ExtensionPicker = NewExtensionPickerModel(m.Conn, m.ActiveSession.ID)
-				m.ExtensionPicker.SetSize(m.Width, m.Height)
-				m.State = AppStateExtensionPicker
-				return m, m.ExtensionPicker.Init()
-			}
-		case msg.Name == "/tree":
-			if m.ActiveSession != nil {
-				m.TreePicker = NewTreePickerModel(m.Conn, m.ActiveSession.ID)
-				m.TreePicker.SetSize(m.Width, m.Height)
-				m.State = AppStateTreePicker
-				return m, m.TreePicker.Init()
-			}
-		case msg.Name == "/context":
-			if m.ActiveSession != nil {
-				m.ContextInspector = NewContextInspectorModel(m.Conn, m.ActiveSession.ID)
-				m.ContextInspector.SetSize(m.Width, m.Height)
-				m.State = AppStateContextInspector
-				return m, m.ContextInspector.Init()
-			}
+		case "/sessions", "/a":
+			return m, m.openSessions()
+		case "/extensions", "/plugins":
+			return m, m.openExtensionPicker()
+		case "/tree":
+			return m, m.openTreePicker()
+		case "/context":
+			return m, m.openContextInspector()
 		default:
 			m.CommandGen++
 			return m, m.executeCommandCmd(msg.Name, msg.Args, m.CommandGen)
@@ -1146,39 +971,22 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case PickerSelectMsg:
 		if m.State == AppStateSessionPicker {
-			if msg.ID == "new" {
-				m.SessionGen++
-				return m, m.createSessionCmd(m.SessionGen)
-			}
-			if msg.ID == "archive" {
+			switch msg.ID {
+			case "new":
+				return m, m.newSessionCmd()
+			case "archive":
 				m.SessionPicker.OpenArchive()
 				return m, nil
-			}
-			if msg.ID == "login" {
-				previous := m.Login.Close()
-				m.Login = NewLoginModel(m.Conn, "")
-				m.Login.BrowserOpener = m.BrowserOpener
-				m.Login.SetSize(m.Width, m.Height)
-				m.State = AppStateLogin
-				return m, tea.Batch(previous, m.Login.Init())
-			}
-			// The active session may not yet appear in the daemon's recent list.
-			listed := m.Sessions
-			if m.ActiveSession != nil {
-				found := false
-				for _, s := range listed {
-					if s.ID == m.ActiveSession.ID {
-						found = true
-						break
-					}
-				}
-				if !found {
+			case "login":
+				return m, m.openLogin("")
+			default:
+				// The active session may not yet appear in the daemon's recent list.
+				listed := m.Sessions
+				if m.ActiveSession != nil && !slices.ContainsFunc(m.Sessions, func(s daemon.Session) bool { return s.ID == m.ActiveSession.ID }) {
 					listed = append([]daemon.Session{*m.ActiveSession}, listed...)
 				}
-			}
-			for _, s := range listed {
-				if s.ID == msg.ID {
-					return m, m.openSession(s)
+				if i := slices.IndexFunc(listed, func(s daemon.Session) bool { return s.ID == msg.ID }); i >= 0 {
+					return m, m.openSession(listed[i])
 				}
 			}
 		}
@@ -1244,52 +1052,40 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // other screen leaves it to the terminal.
 func (m AppModel) View() tea.View {
 	v := tea.NewView(m.content())
-	if m.State == AppStateChat {
-		v.MouseMode = tea.MouseModeCellMotion
-	}
+	v.MouseMode = pick(m.State == AppStateChat, tea.MouseModeCellMotion, tea.MouseModeNone)
 	return v
 }
 
 func (m AppModel) content() string {
-	var prefix strings.Builder
-	if m.State == AppStateSessionPicker {
-		for _, n := range m.Notices {
-			if n.Error {
-				prefix.WriteString(DefaultStyles.Error.Render(n.Message) + "\n")
-			} else {
-				prefix.WriteString(DefaultStyles.Faint.Render(n.Message) + "\n")
-			}
-		}
-	}
-
-	var content string
 	switch m.State {
 	case AppStateChat:
-		content = m.Chat.View()
+		return m.Chat.View()
 	case AppStateSessionPicker:
-		content = m.SessionPicker.View()
+		var b strings.Builder
+		for _, n := range m.Notices {
+			style := pick(n.Error, DefaultStyles.Error, DefaultStyles.Faint)
+			b.WriteString(style.Render(n.Message) + "\n")
+		}
+		return b.String() + m.SessionPicker.View()
 	case AppStateModelPicker:
-		content = m.ModelPicker.View()
+		return m.ModelPicker.View()
 	case AppStateExtensionPicker:
-		content = m.ExtensionPicker.View()
+		return m.ExtensionPicker.View()
 	case AppStateTreePicker:
-		content = m.TreePicker.View()
+		return m.TreePicker.View()
 	case AppStateContextInspector:
-		content = m.ContextInspector.View()
+		return m.ContextInspector.View()
 	case AppStatePageView:
-		content = m.PageView.View()
+		return m.PageView.View()
 	case AppStateCapabilityPage:
-		content = m.CapabilityPage.View()
+		return m.CapabilityPage.View()
 	case AppStateWebhooksPage:
-		content = m.WebhooksPage.View()
+		return m.WebhooksPage.View()
 	case AppStateAgents:
-		content = m.Agents.View()
+		return m.Agents.View()
 	case AppStateLogin:
-		content = m.Login.View()
+		return m.Login.View()
+	default:
+		return ""
 	}
-
-	if prefix.Len() > 0 {
-		return prefix.String() + content
-	}
-	return content
 }

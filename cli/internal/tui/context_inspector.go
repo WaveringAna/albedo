@@ -2,11 +2,13 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"math"
 	"net/url"
+	"slices"
 	"strings"
 	"unicode/utf16"
 
@@ -119,6 +121,18 @@ func (m ContextInspectorModel) Init() tea.Cmd {
 
 func jsLength(s string) int { return len(utf16.Encode([]rune(s))) }
 
+func isNeg(p *int) bool { return p != nil && *p < 0 }
+
+var (
+	validKinds         = []string{"instructions", "extension_context", "history", "tools", "other"}
+	compactionStatuses = map[string]string{
+		"not_configured": "not configured",
+		"not_needed":     "not needed",
+		"compacted":      "applied",
+		"unknown":        "state unavailable",
+	}
+)
+
 func validContextSnapshot(s ContextSnapshot) error {
 	if s.State == "pending" {
 		if jsLength(s.Reason) <= 500 {
@@ -127,24 +141,22 @@ func validContextSnapshot(s ContextSnapshot) error {
 		return errors.New("daemon returned invalid context metadata")
 	}
 	if s.State != "ready" || jsLength(s.Model) > 512 || s.Sections == nil || len(s.Sections) > 1000 ||
-		jsLength(s.Provider) > 512 || jsLength(s.Protocol) > 512 || s.CapturedAt != nil && *s.CapturedAt < 0 ||
-		s.ContextWindowTokens != nil && *s.ContextWindowTokens < 0 {
+		jsLength(s.Provider) > 512 || jsLength(s.Protocol) > 512 || (s.CapturedAt != nil && *s.CapturedAt < 0) ||
+		isNeg(s.ContextWindowTokens) {
 		return errors.New("daemon returned invalid context metadata")
 	}
-	kinds := map[string]bool{"instructions": true, "extension_context": true, "history": true, "tools": true, "other": true}
 	for _, sec := range s.Sections {
-		if sec.ID == "" || jsLength(sec.ID) > 200 || sec.Label == "" || jsLength(sec.Label) > 200 || !kinds[sec.Kind] ||
+		if sec.ID == "" || jsLength(sec.ID) > 200 || sec.Label == "" || jsLength(sec.Label) > 200 || !slices.Contains(validKinds, sec.Kind) ||
 			jsLength(sec.Source) > 500 || sec.ItemCount < 0 || sec.ByteCount < 0 || jsLength(sec.Preview) > 2000 || sec.Pages < 0 || sec.Pages > 10000 {
 			return errors.New("daemon returned invalid context section metadata")
 		}
 	}
 	c := s.Compaction
-	statuses := map[string]bool{"not_configured": true, "not_needed": true, "compacted": true, "unknown": true}
-	if !statuses[c.Status] || jsLength(c.Strategy) > 200 || jsLength(c.Source) > 500 || jsLength(c.EstimateMethod) > 500 ||
-		c.TriggerFreePercent != nil && (math.IsNaN(*c.TriggerFreePercent) || math.IsInf(*c.TriggerFreePercent, 0) || *c.TriggerFreePercent < 0 || *c.TriggerFreePercent > 100) ||
-		c.InputLimitTokens != nil && *c.InputLimitTokens < 0 || c.EstimatedInputTokens != nil && *c.EstimatedInputTokens < 0 ||
-		c.ProviderInputTokens != nil && *c.ProviderInputTokens < 0 || c.ProviderCachedInputTokens != nil && *c.ProviderCachedInputTokens < 0 ||
-		c.BeforeItems != nil && *c.BeforeItems < 0 || c.AfterItems != nil && *c.AfterItems < 0 {
+	badPct := c.TriggerFreePercent != nil && (math.IsNaN(*c.TriggerFreePercent) || math.IsInf(*c.TriggerFreePercent, 0) || *c.TriggerFreePercent < 0 || *c.TriggerFreePercent > 100)
+	if compactionStatuses[c.Status] == "" || jsLength(c.Strategy) > 200 || jsLength(c.Source) > 500 || jsLength(c.EstimateMethod) > 500 ||
+		badPct || isNeg(c.InputLimitTokens) || isNeg(c.EstimatedInputTokens) ||
+		isNeg(c.ProviderInputTokens) || isNeg(c.ProviderCachedInputTokens) ||
+		isNeg(c.BeforeItems) || isNeg(c.AfterItems) {
 		return errors.New("daemon returned invalid compaction metadata")
 	}
 	return nil
@@ -163,31 +175,16 @@ func (m ContextInspectorModel) loadSnapshotCmd(gen int) tea.Cmd {
 			return contextSnapshotLoadedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
 
-		health, err := daemon.Request[struct {
-			Capabilities []string `json:"capabilities"`
-		}](context.Background(), m.Conn, "/health", nil)
-		if err == nil {
-			hasCap := false
-			for _, c := range health.Capabilities {
-				if c == "session_context" {
-					hasCap = true
-					break
-				}
-			}
-			if !hasCap {
-				return contextSnapshotLoadedMsg{
-					Err: errors.New("daemon upgrade needed for /context; when ready, run albedo daemon --stop, then albedo (this clears python variables)"),
-					Gen: gen,
-				}
-			}
+		if err := daemon.CheckCapability(context.Background(), m.Conn, "session_context", "for /context"); err != nil {
+			return contextSnapshotLoadedMsg{Err: err, Gen: gen}
 		}
 
 		path := fmt.Sprintf("/sessions/%s/context", url.PathEscape(m.SessionID))
 		snapshot, err := daemon.Request[ContextSnapshot](context.Background(), m.Conn, path, nil)
-		if err != nil {
-			return contextSnapshotLoadedMsg{Err: err, Gen: gen}
+		if err == nil {
+			err = validContextSnapshot(snapshot)
 		}
-		if err := validContextSnapshot(snapshot); err != nil {
+		if err != nil {
 			return contextSnapshotLoadedMsg{Err: err, Gen: gen}
 		}
 		return contextSnapshotLoadedMsg{Snapshot: &snapshot, Gen: gen}
@@ -201,10 +198,10 @@ func (m ContextInspectorModel) loadPageCmd(sectionID string, page int, gen int) 
 		}
 		path := fmt.Sprintf("/sessions/%s/context/%s/%d", url.PathEscape(m.SessionID), url.PathEscape(sectionID), page)
 		data, err := daemon.Request[ContextPage](context.Background(), m.Conn, path, nil)
-		if err != nil {
-			return contextPageLoadedMsg{SectionID: sectionID, Page: page, Err: err, Gen: gen}
+		if err == nil {
+			err = validContextPage(data, sectionID)
 		}
-		if err := validContextPage(data, sectionID); err != nil {
+		if err != nil {
 			return contextPageLoadedMsg{SectionID: sectionID, Page: page, Err: err, Gen: gen}
 		}
 		return contextPageLoadedMsg{SectionID: sectionID, Page: page, Data: &data, Gen: gen}
@@ -222,8 +219,7 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 			m.Error = msg.Err.Error()
 			return m, nil
 		}
-		m.Snapshot = msg.Snapshot
-		m.Error = ""
+		m.Snapshot, m.Error = msg.Snapshot, ""
 		if m.Snapshot != nil && m.Cursor >= len(m.Snapshot.Sections) {
 			m.Cursor = max(0, len(m.Snapshot.Sections)-1)
 		}
@@ -236,13 +232,13 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 		if msg.Err != nil {
 			m.Detail.Error = msg.Err.Error()
 		} else {
-			m.Detail.Value = msg.Data
-			m.Detail.Error = ""
+			m.Detail.Value, m.Detail.Error = msg.Data, ""
 		}
 		return m, nil
 
 	case tea.KeyPressMsg:
-		if msg.String() == "esc" || msg.String() == "ctrl+c" || msg.String() == "ctrl+d" {
+		switch msg.String() {
+		case "esc", "ctrl+c", "ctrl+d":
 			if m.Detail != nil {
 				m.Detail = nil
 				m.Generation++
@@ -260,21 +256,10 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 			maxScroll := max(0, len(lines)-visibleRows)
 
 			switch msg.String() {
-			case "left":
-				if m.Detail.Page > 0 {
-					m.Detail.Page--
-					m.Detail.Value = nil
-					m.Detail.Scroll = 0
-					m.Detail.Error = ""
-					m.Generation++
-					return m, m.loadPageCmd(m.Detail.Section.ID, m.Detail.Page, m.Generation)
-				}
-			case "right":
-				if m.Detail.Page+1 < m.Detail.Section.Pages {
-					m.Detail.Page++
-					m.Detail.Value = nil
-					m.Detail.Scroll = 0
-					m.Detail.Error = ""
+			case "left", "right":
+				page := pick(msg.String() == "right", m.Detail.Page+1, m.Detail.Page-1)
+				if page >= 0 && page < m.Detail.Section.Pages {
+					m.Detail.Page, m.Detail.Value, m.Detail.Scroll, m.Detail.Error = page, nil, 0, ""
 					m.Generation++
 					return m, m.loadPageCmd(m.Detail.Section.ID, m.Detail.Page, m.Generation)
 				}
@@ -294,11 +279,8 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 			return m, nil
 		}
 
-		if strings.ToLower(msg.String()) == "r" {
-			m.Loading = true
-			m.Snapshot = nil
-			m.Detail = nil
-			m.Error = ""
+		if strings.EqualFold(msg.String(), "r") {
+			m.Loading, m.Snapshot, m.Detail, m.Error = true, nil, nil, ""
 			m.Generation++
 			return m, m.loadSnapshotCmd(m.Generation)
 		}
@@ -316,11 +298,7 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 			if m.Snapshot != nil && len(m.Snapshot.Sections) > m.Cursor {
 				sec := m.Snapshot.Sections[m.Cursor]
 				if sec.Pages > 0 {
-					m.Detail = &ContextDetail{
-						Section: sec,
-						Page:    0,
-						Scroll:  0,
-					}
+					m.Detail = &ContextDetail{Section: sec}
 					m.Generation++
 					return m, m.loadPageCmd(sec.ID, 0, m.Generation)
 				}
@@ -332,18 +310,13 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 }
 
 func wrapContextContent(content string, width int) []string {
-	if width <= 1 {
-		width = 76
-	}
-	return strings.Split(ansi.Wrap(content, width, " "), "\n")
+	return strings.Split(ansi.Wrap(content, pick(width <= 1, 76, width), " "), "\n")
 }
 
+var englishPrinter = message.NewPrinter(language.English)
+
 func contextCount(n int, unit string) string {
-	value := message.NewPrinter(language.English).Sprintf("%d", n)
-	if n != 1 {
-		unit += "s"
-	}
-	return value + " " + unit
+	return englishPrinter.Sprintf("%d", n) + " " + pick(n != 1, unit+"s", unit)
 }
 
 func (m ContextInspectorModel) View() string {
@@ -364,10 +337,7 @@ func (m ContextInspectorModel) View() string {
 			}
 			line("")
 			rows := wrapContextContent(d.Value.Content, m.Width-4)
-			visible := max(1, m.Height-7)
-			if m.Height <= 0 {
-				visible = 17
-			}
+			visible := pick(m.Height > 0, max(1, m.Height-7), 17)
 			for _, row := range rows[min(d.Scroll, len(rows)):min(len(rows), d.Scroll+visible)] {
 				line(row)
 			}
@@ -390,10 +360,7 @@ func (m ContextInspectorModel) View() string {
 		line(keyHints(hint{"r", "refresh"}, hint{"esc", "return to chat"}))
 	} else {
 		snap := m.Snapshot
-		label := snap.Model
-		if snap.Provider != "" {
-			label = snap.Provider + " · " + label
-		}
+		label := pick(snap.Provider != "", snap.Provider+" · "+snap.Model, snap.Model)
 		if snap.Protocol != "" {
 			label += " · " + snap.Protocol
 		}
@@ -403,11 +370,8 @@ func (m ContextInspectorModel) View() string {
 			window = contextCount(*snap.ContextWindowTokens, "token") + " (configured)"
 		}
 		faint(inkWrap("context window: "+window, m.Width))
-		status := map[string]string{"not_configured": "not configured", "not_needed": "not needed", "compacted": "applied", "unknown": "state unavailable"}[snap.Compaction.Status]
-		strategy := snap.Compaction.Strategy
-		if strategy == "" {
-			strategy = "none"
-		}
+		status := compactionStatuses[snap.Compaction.Status]
+		strategy := cmp.Or(snap.Compaction.Strategy, "none")
 		faint("compaction: " + strategy + " · " + status)
 		if snap.Compaction.TriggerFreePercent != nil {
 			faint(fmt.Sprintf("trigger: keep %g%% free", *snap.Compaction.TriggerFreePercent))
@@ -419,33 +383,21 @@ func (m ContextInspectorModel) View() string {
 			}
 			faint(measured)
 		} else if snap.Compaction.EstimatedInputTokens != nil {
-			method := snap.Compaction.EstimateMethod
-			if method == "" {
-				method = "method not reported"
-			}
+			method := cmp.Or(snap.Compaction.EstimateMethod, "method not reported")
 			faint("estimated input: " + contextCount(*snap.Compaction.EstimatedInputTokens, "token") + " · " + method)
 		}
 		line("")
-		capacity := max(1, (m.Height-9)/3)
-		if m.Height <= 0 {
-			capacity = 5
-		}
+		capacity := pick(m.Height > 0, max(1, (m.Height-9)/3), 5)
 		first := min(max(0, m.Cursor-capacity/2), max(0, len(snap.Sections)-capacity))
 		for i := first; i < min(len(snap.Sections), first+capacity); i++ {
 			sec := snap.Sections[i]
-			marker := " "
-			if i == m.Cursor {
-				marker = selectBar()
-			}
+			marker := pick(i == m.Cursor, selectBar(), " ")
 			label := fmt.Sprintf("%s %d. %s ", marker, i+1, sec.Label) + DefaultStyles.Faint.Render("· "+sec.Source)
 			if i == m.Cursor {
 				label = selectedLine(label, m.Width)
 			}
 			line(label)
-			available := "content unavailable"
-			if sec.Pages > 0 {
-				available = contextCount(sec.Pages, "page")
-			}
+			available := pick(sec.Pages > 0, contextCount(sec.Pages, "page"), "content unavailable")
 			faint("  " + contextCount(sec.ItemCount, "item") + " · " + contextCount(sec.ByteCount, "measured byte") + " · " + available)
 			if i == m.Cursor && sec.Preview != "" {
 				line("  " + sec.Preview)

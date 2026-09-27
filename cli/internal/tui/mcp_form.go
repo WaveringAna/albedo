@@ -3,10 +3,11 @@ package tui
 import (
 	"albedo/cli/internal/config"
 	"errors"
+	"maps"
 	"net/url"
 	"path"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -42,30 +43,18 @@ const (
 	fieldEnv       = "env"
 )
 
+// mcpFieldLabels renames the fields whose key is not the words a person
+// reads; the rest label themselves.
 var mcpFieldLabels = map[string]string{
-	fieldTransport: "transport",
-	fieldURL:       "url",
-	fieldCommand:   "command",
-	fieldName:      "name",
-	fieldToken:     "bearer token",
-	fieldHeader:    "header",
-	fieldValue:     "header value",
-	fieldEnv:       "env",
+	fieldToken: "bearer token",
+	fieldValue: "header value",
 }
 
 func newMCPForm(editing string, server config.MCPServer, stored config.MCPServerSecrets) *mcpForm {
-	f := &mcpForm{Editing: editing, Transport: "http", Base: server, Stored: stored, Inputs: map[string]*textinput.Model{}}
-	if server.Type == "stdio" {
-		f.Transport = "stdio"
-	}
+	transport := pick(server.Type == "stdio", "stdio", "http")
+	f := &mcpForm{Editing: editing, Transport: transport, Base: server, Stored: stored, Inputs: map[string]*textinput.Model{}}
 	for _, key := range []string{fieldURL, fieldCommand, fieldName, fieldToken, fieldHeader, fieldValue, fieldEnv} {
-		input := newTextInput()
-		input.Prompt = ""
-		input.CharLimit = 4096
-		switch key {
-		case fieldToken, fieldValue, fieldEnv:
-			input.EchoMode = textinput.EchoPassword
-		}
+		input := newFormInput(key == fieldToken || key == fieldValue || key == fieldEnv)
 		f.Inputs[key] = &input
 	}
 	f.Inputs[fieldURL].SetValue(server.URL)
@@ -78,14 +67,55 @@ func newMCPForm(editing string, server config.MCPServer, stored config.MCPServer
 	if len(stored.Headers) > 0 {
 		f.Inputs[fieldHeader].Placeholder = strings.Join(sortedKeys(stored.Headers), ", ") + " stored · add or replace one"
 	}
+	f.Inputs[fieldEnv].Placeholder = "KEY=value KEY2=value (optional)"
 	if len(stored.Env) > 0 {
 		f.Inputs[fieldEnv].Placeholder = strings.Join(sortedKeys(stored.Env), ", ") + " stored · KEY=value adds or replaces"
-	} else {
-		f.Inputs[fieldEnv].Placeholder = "KEY=value KEY2=value (optional)"
 	}
 	f.Focus = 1 // the address: transport already defaults to http
-	f.focus()
+	focusInputs(f.Inputs, f.current())
 	return f
+}
+
+// newFormInput is a text field with no prompt and a generous length limit,
+// optionally masked, shared by both forms.
+func newFormInput(masked bool) textinput.Model {
+	input := newTextInput()
+	input.Prompt = ""
+	input.CharLimit = 4096
+	input.EchoMode = pick(masked, textinput.EchoPassword, textinput.EchoNormal)
+	return input
+}
+
+// focusInputs focuses the field named current and blurs the rest.
+func focusInputs(inputs map[string]*textinput.Model, current string) {
+	for key, input := range inputs {
+		if key == current {
+			input.Focus()
+		} else {
+			input.Blur()
+		}
+	}
+}
+
+// formKey classifies the movement keys every form shares: submit reports that
+// the form should be saved, delta is the field step a movement key takes.
+func formKey(key string, focus, last int) (submit bool, delta int, handled bool) {
+	switch key {
+	case "tab", "down":
+		return false, 1, true
+	case "shift+tab", "up":
+		return false, -1, true
+	case "ctrl+s":
+		return true, 0, true
+	case "enter":
+		return focus == last, 1, true
+	}
+	return false, 0, false
+}
+
+// formHints are the keys both forms offer under every field.
+func formHints() []hint {
+	return []hint{{"tab/↑↓", "move"}, {"enter", "next"}, {"ctrl+s", "save"}, {"esc", "cancel"}}
 }
 
 // fields lists the rows for the current transport, in order.
@@ -101,54 +131,33 @@ func (f *mcpForm) current() string {
 	return fields[min(f.Focus, len(fields)-1)]
 }
 
-func (f *mcpForm) focus() {
-	for key, input := range f.Inputs {
-		if key == f.current() {
-			input.Focus()
-		} else {
-			input.Blur()
-		}
-	}
-}
-
 func (f *mcpForm) move(delta int) {
 	n := len(f.fields())
 	f.Focus = (f.Focus + delta + n) % n
-	f.focus()
+	focusInputs(f.Inputs, f.current())
 }
 
 // update handles one key or paste; submit reports that the form should be saved.
 func (f *mcpForm) update(msg tea.Msg) (submit bool, cmd tea.Cmd) {
 	if key, ok := msg.(tea.KeyPressMsg); ok {
-		switch key.String() {
-		case "tab", "down":
-			f.move(1)
-			return false, nil
-		case "shift+tab", "up":
-			f.move(-1)
-			return false, nil
-		case "ctrl+s":
-			return true, nil
-		case "enter":
-			if f.Focus == len(f.fields())-1 {
+		if submit, delta, handled := formKey(key.String(), f.Focus, len(f.fields())-1); handled {
+			if submit {
 				return true, nil
 			}
-			f.move(1)
+			f.move(delta)
 			return false, nil
 		}
 	}
 	if f.current() == fieldTransport {
-		if key, ok := msg.(tea.KeyPressMsg); ok {
+		if key, ok := msg.(tea.KeyPressMsg); ok && f.Editing == "" {
 			switch key.String() {
 			case "left", "right", "space":
-				if f.Editing == "" {
-					if f.Transport == "http" {
-						f.Transport = "stdio"
-					} else {
-						f.Transport = "http"
-					}
-					f.suggestName()
+				if f.Transport == "http" {
+					f.Transport = "stdio"
+				} else {
+					f.Transport = "http"
 				}
+				f.suggestName()
 			}
 		}
 		return false, nil
@@ -196,12 +205,8 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 	if !mcpName.MatchString(name) {
 		return mcpSubmission{}, errors.New("name: use 1–64 letters, digits, _ or -")
 	}
-	if f.Editing == "" {
-		for _, item := range existing {
-			if item.ID == name && !item.Draft {
-				return mcpSubmission{}, errors.New("name: a server called " + name + " already exists")
-			}
-		}
+	if f.Editing == "" && slices.ContainsFunc(existing, func(item capabilityItem) bool { return item.ID == name && !item.Draft }) {
+		return mcpSubmission{}, errors.New("name: a server called " + name + " already exists")
 	}
 	server := f.Base
 	server.Type = f.Transport
@@ -213,11 +218,9 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 			return mcpSubmission{}, errors.New("url: enter an http:// or https:// address")
 		}
 		server.URL, server.Command, server.Args, server.CWD = raw, "", nil, ""
-		switch token := strings.TrimSpace(f.Inputs[fieldToken].Value()); token {
-		case "":
-		case "-":
+		if token := strings.TrimSpace(f.Inputs[fieldToken].Value()); token == "-" {
 			secrets.BearerToken = ""
-		default:
+		} else if token != "" {
 			secrets.BearerToken = token
 		}
 		header := strings.TrimSpace(f.Inputs[fieldHeader].Value())
@@ -267,25 +270,15 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 }
 
 func (f *mcpForm) view(width int) []string {
-	title := "add MCP server"
-	if f.Editing != "" {
-		title = "edit " + f.Editing
-	}
+	title := pick(f.Editing != "", "edit "+f.Editing, "add MCP server")
 	fitInputs(f.Inputs, width-16)
 	rows := []string{DefaultStyles.Bold.Render(title)}
 	for i, key := range f.fields() {
-		mark := "  "
-		if i == f.Focus {
-			mark = promptLead()
-		}
+		mark := pick(i == f.Focus, promptLead(), "  ")
 		var value string
 		if key == fieldTransport {
-			http, stdio := " http ", " stdio "
-			if f.Transport == "http" {
-				http = "‹http›"
-			} else {
-				stdio = "‹stdio›"
-			}
+			http := pick(f.Transport == "http", "‹http›", " http ")
+			stdio := pick(f.Transport == "http", " stdio ", "‹stdio›")
 			value = http + " " + stdio
 			if f.Editing != "" {
 				value = f.Transport
@@ -293,9 +286,13 @@ func (f *mcpForm) view(width int) []string {
 		} else {
 			value = f.Inputs[key].View()
 		}
-		rows = append(rows, ansi.Truncate(mark+padRight(mcpFieldLabels[key], 13)+value, width, "…"))
+		label := key
+		if renamed, ok := mcpFieldLabels[key]; ok {
+			label = renamed
+		}
+		rows = append(rows, ansi.Truncate(mark+padRight(label, 13)+value, width, "…"))
 	}
-	keys := []hint{{"tab/↑↓", "move"}, {"enter", "next"}, {"ctrl+s", "save"}, {"esc", "cancel"}}
+	keys := formHints()
 	note := ""
 	switch f.current() {
 	case fieldTransport:
@@ -441,18 +438,9 @@ func copyMap(in map[string]string) map[string]string {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
+	return maps.Clone(in)
 }
 
 func sortedKeys(in map[string]string) []string {
-	keys := make([]string, 0, len(in))
-	for k := range in {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(in))
 }

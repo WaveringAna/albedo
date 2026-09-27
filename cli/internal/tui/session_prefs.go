@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -69,21 +70,13 @@ func (p *sessionPrefs) recordOpen(id string) {
 // without bound.
 func (p *sessionPrefs) forget(known map[string]bool) bool {
 	changed := false
-	p.Pinned = slices.DeleteFunc(p.Pinned, func(id string) bool {
+	drop := func(id string) bool {
 		gone := !known[id]
 		changed = changed || gone
 		return gone
-	})
-	p.Archived = slices.DeleteFunc(p.Archived, func(id string) bool {
-		gone := !known[id]
-		changed = changed || gone
-		return gone
-	})
-	for id := range p.Opens {
-		if !known[id] {
-			delete(p.Opens, id)
-			changed = true
-		}
 	}
+	p.Pinned = slices.DeleteFunc(p.Pinned, drop)
+	p.Archived = slices.DeleteFunc(p.Archived, drop)
+	maps.DeleteFunc(p.Opens, func(id string, _ int) bool { return drop(id) })
 	return changed
 }

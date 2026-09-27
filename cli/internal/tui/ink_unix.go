@@ -40,7 +40,7 @@ func queryColors() string {
 	for {
 		left := time.Until(deadline)
 		if left <= 0 {
-			return reply.String()
+			break
 		}
 		tv := unix.NsecToTimeval(int64(left))
 		var ready unix.FdSet
@@ -50,15 +50,17 @@ func queryColors() string {
 			continue
 		}
 		if err != nil || n == 0 {
-			return reply.String()
+			break
 		}
 		n, err = tty.Read(buf)
 		if err != nil {
-			return reply.String()
+			break
 		}
 		reply.Write(buf[:n])
+		// The device-attributes answer every terminal sends closes the read.
 		if da := strings.Index(reply.String(), "\x1b[?"); da >= 0 && strings.Contains(reply.String()[da:], "c") {
-			return reply.String()
+			break
 		}
 	}
+	return reply.String()
 }

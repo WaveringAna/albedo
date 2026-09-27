@@ -83,35 +83,36 @@ func ClipboardHasImage() bool {
 	switch runtime.GOOS {
 	case "darwin":
 		if _, err := exec.LookPath("pngpaste"); err == nil {
-			out, err := CurrentExecutor(ctx, "pngpaste", "-b")
-			if err == nil && len(out) == 0 {
+			if out, err := CurrentExecutor(ctx, "pngpaste", "-b"); err == nil && len(out) == 0 {
 				return true
 			}
 		}
 		out, err := CurrentExecutor(ctx, "osascript", "-e", "clipboard info")
-		if err == nil {
-			s := string(out)
-			if strings.Contains(s, "«class PNGf»") || strings.Contains(s, "JPEG picture") || strings.Contains(s, "TIFF picture") {
-				return true
-			}
+		if err != nil {
+			return false
 		}
-		return false
+		s := string(out)
+		return strings.Contains(s, "«class PNGf»") || strings.Contains(s, "JPEG picture") || strings.Contains(s, "TIFF picture")
 
 	case "linux":
-		if os.Getenv("WAYLAND_DISPLAY") != "" {
-			if _, err := exec.LookPath("wl-paste"); err == nil {
-				out, err := CurrentExecutor(ctx, "wl-paste", "--list-types")
-				if err == nil && strings.Contains(string(out), "image/") {
-					return true
-				}
-			}
+		// Wayland first: under a compositor both may be set.
+		probes := []struct {
+			env, tool string
+			args      []string
+		}{
+			{"WAYLAND_DISPLAY", "wl-paste", []string{"--list-types"}},
+			{"DISPLAY", "xclip", []string{"-selection", "clipboard", "-t", "TARGETS", "-o"}},
 		}
-		if os.Getenv("DISPLAY") != "" {
-			if _, err := exec.LookPath("xclip"); err == nil {
-				out, err := CurrentExecutor(ctx, "xclip", "-selection", "clipboard", "-t", "TARGETS", "-o")
-				if err == nil && strings.Contains(string(out), "image/") {
-					return true
-				}
+		for _, probe := range probes {
+			if os.Getenv(probe.env) == "" {
+				continue
+			}
+			if _, err := exec.LookPath(probe.tool); err != nil {
+				continue
+			}
+			out, err := CurrentExecutor(ctx, probe.tool, probe.args...)
+			if err == nil && strings.Contains(string(out), "image/") {
+				return true
 			}
 		}
 		return false
@@ -121,22 +122,20 @@ func ClipboardHasImage() bool {
 }
 
 func parseAppleScriptHex(out []byte) ([]byte, error) {
-	s := strings.TrimSpace(string(out))
-	if !strings.HasPrefix(s, "«data ") || !strings.HasSuffix(s, "»") {
+	s, ok1 := strings.CutPrefix(strings.TrimSpace(string(out)), "«data ")
+	s, ok2 := strings.CutSuffix(s, "»")
+	if !ok1 || !ok2 {
 		return nil, errors.New("not an AppleScript hex payload")
 	}
-	content := strings.TrimSuffix(strings.TrimPrefix(s, "«data "), "»")
-	parts := strings.Fields(content)
-	if len(parts) == 0 {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
 		return nil, errors.New("empty AppleScript data")
 	}
-	hexPart := parts[0]
 	// Skip the 4-char ostype code (e.g. PNGf, JPEG)
-	if len(hexPart) <= 4 {
+	if len(fields[0]) <= 4 {
 		return nil, errors.New("missing hex payload in AppleScript data")
 	}
-	rawHex := hexPart[4:]
-	return hex.DecodeString(rawHex)
+	return hex.DecodeString(fields[0][4:])
 }
 
 func ReadClipboardImage() (*daemon.ImageAttachment, error) {
@@ -155,8 +154,7 @@ func ReadClipboardImage() (*daemon.ImageAttachment, error) {
 		if _, errPath := exec.LookPath("pngpaste"); errPath == nil {
 			data, err = CurrentExecutor(ctx, "pngpaste", "-")
 		} else {
-			script := "get the clipboard as «class PNGf»"
-			rawOut, errCmd := CurrentExecutor(ctx, "osascript", "-e", script)
+			rawOut, errCmd := CurrentExecutor(ctx, "osascript", "-e", "get the clipboard as «class PNGf»")
 			if errCmd != nil {
 				return nil, errCmd
 			}
@@ -203,14 +201,12 @@ func ReadClipboardImage() (*daemon.ImageAttachment, error) {
 		return nil, fmt.Errorf("image dimensions too large: %dx%d (max edge %d)", cfg.Width, cfg.Height, MaxClipboardImageEdge)
 	}
 
-	var mime daemon.ImageMimeType
+	mime := daemon.ImagePNG
 	switch format {
 	case "jpeg", "jpg":
 		mime = daemon.ImageJPEG
 	case "webp":
 		mime = daemon.ImageWEBP
-	default:
-		mime = daemon.ImagePNG
 	}
 
 	encoded := base64.StdEncoding.EncodeToString(data)
@@ -234,19 +230,11 @@ type ClipboardImagePastedMsg struct {
 
 func PasteClipboardImageCmd(sessionID string, gen int64) tea.Cmd {
 	return func() tea.Msg {
-		if !ClipboardHasImage() {
-			return ClipboardImagePastedMsg{
-				SessionID:  sessionID,
-				Generation: gen,
-				Err:        errors.New("no image in clipboard"),
-			}
+		var img *daemon.ImageAttachment
+		err := errors.New("no image in clipboard")
+		if ClipboardHasImage() {
+			img, err = ReadClipboardImage()
 		}
-		img, err := ReadClipboardImage()
-		return ClipboardImagePastedMsg{
-			SessionID:  sessionID,
-			Generation: gen,
-			Image:      img,
-			Err:        err,
-		}
+		return ClipboardImagePastedMsg{SessionID: sessionID, Generation: gen, Image: img, Err: err}
 	}
 }

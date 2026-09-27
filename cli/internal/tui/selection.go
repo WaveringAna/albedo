@@ -2,6 +2,7 @@ package tui
 
 import (
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
@@ -28,27 +29,18 @@ func chrome(s string) string {
 
 // wrapJoiner is what goes between a row and the row above it continues.
 func wrapJoiner(line string) (string, bool) {
-	switch {
-	case strings.Contains(line, markWrap):
+	if strings.Contains(line, markWrap) {
 		return " ", true
-	case strings.Contains(line, markSplit):
-		return "", true
 	}
-	return "", false
+	return "", strings.Contains(line, markSplit)
 }
 
 // markChunks marks the rows line wrapped into as continuing the one before,
 // and gives them the line's chrome.
 func markChunks(line string, chunks []string) []string {
-	carried := ""
-	if strings.Contains(line, markChrome) {
-		carried = markChrome
-	}
+	carried := pick(strings.Contains(line, markChrome), markChrome, "")
 	for i := 1; i < len(chunks); i++ {
-		mark := markSplit
-		if strings.HasSuffix(ansi.Strip(chunks[i-1]), " ") {
-			mark = markWrap
-		}
+		mark := pick(strings.HasSuffix(ansi.Strip(chunks[i-1]), " "), markWrap, markSplit)
 		chunks[i] = carried + mark + chunks[i]
 	}
 	return chunks
@@ -69,11 +61,7 @@ func markWraps(wrapped, flat string) string {
 	for i, row := range rows {
 		text := rowText(row)
 		if cont := strings.TrimLeft(text, " "); rest != "" && cont != "" && strings.HasPrefix(rest, cont) {
-			mark := markSplit
-			if spaced {
-				mark = markWrap
-			}
-			rows[i] = mark + row
+			rows[i] = pick(spaced, markWrap, markSplit) + row
 			rest, spaced = spell(rest, cont)
 			continue
 		}
@@ -100,7 +88,7 @@ func spell(line, text string) (string, bool) {
 
 // rowText is what a row says: its plain text without quote bars or padding.
 func rowText(line string) string {
-	_, _, text, _ := selectedRange(line, 0, math.MaxInt, quoteColumns(line))
+	_, text, _ := selectedRange(line, 0, math.MaxInt, quoteColumns(line))
 	return strings.TrimRight(text, " ")
 }
 
@@ -126,8 +114,8 @@ func (s Selection) Normalized() (Point, Point) {
 
 // selectedRange splits line around the columns from to to. Columns in skip
 // are left out of the selection.
-func selectedRange(line string, from, to int, skip map[int]bool) (plain string, before string, selected string, after string) {
-	plain = ansi.Strip(line)
+func selectedRange(line string, from, to int, skip map[int]bool) (before, selected, after string) {
+	plain := ansi.Strip(line)
 	var chosen, prefix, suffix strings.Builder
 	col := 0
 	for len(plain) > 0 {
@@ -146,7 +134,19 @@ func selectedRange(line string, from, to int, skip map[int]bool) (plain string, 
 		plain = rest
 		col += width
 	}
-	return ansi.Strip(line), prefix.String(), chosen.String(), suffix.String()
+	return prefix.String(), chosen.String(), suffix.String()
+}
+
+// selBounds is the column range of sel on one row of lines.
+func selBounds(line string, sel Selection, start, end Point, row int) (int, int) {
+	from, to := sel.Gutter, ansi.StringWidth(line)
+	if row == start.Row {
+		from = max(from, start.Col)
+	}
+	if row == end.Row {
+		to = end.Col
+	}
+	return from, to
 }
 
 // SelectedText is the text under sel: what the rows say, without what the
@@ -158,9 +158,6 @@ func SelectedText(lines []string, sel Selection) string {
 		return ""
 	}
 	start, end := sel.Normalized()
-	if start.Row >= len(lines) {
-		return ""
-	}
 	type piece struct {
 		text          string
 		chrome, joins bool
@@ -179,14 +176,8 @@ func SelectedText(lines []string, sel Selection) string {
 			picked = append(picked, piece{})
 			continue
 		}
-		from, to := sel.Gutter, ansi.StringWidth(line)
-		if row == start.Row {
-			from = max(from, start.Col)
-		}
-		if row == end.Row {
-			to = end.Col
-		}
-		_, _, text, _ := selectedRange(line, from, to, quoteColumns(line))
+		from, to := selBounds(line, sel, start, end, row)
+		_, text, _ := selectedRange(line, from, to, quoteColumns(line))
 		// rows are padded out to the viewport's width
 		p := piece{text: strings.TrimRight(text, " "), chrome: strings.Contains(line, markChrome)}
 		if row > start.Row {
@@ -242,16 +233,10 @@ func HighlightSelection(lines []string, sel Selection) []string {
 		return lines
 	}
 	start, end := sel.Normalized()
-	out := append([]string(nil), lines...)
+	out := slices.Clone(lines)
 	for row := max(0, start.Row); row <= end.Row && row < len(out); row++ {
-		from, to := sel.Gutter, ansi.StringWidth(out[row])
-		if row == start.Row {
-			from = max(from, start.Col)
-		}
-		if row == end.Row {
-			to = end.Col
-		}
-		_, before, text, after := selectedRange(out[row], from, to, nil)
+		from, to := selBounds(out[row], sel, start, end, row)
+		before, text, after := selectedRange(out[row], from, to, nil)
 		if text != "" {
 			out[row] = before + DefaultStyles.Cursor.Render(text) + after
 		}

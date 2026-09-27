@@ -3,12 +3,14 @@ package tui
 import (
 	"albedo/cli/internal/daemon"
 	"charm.land/lipgloss/v2"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"github.com/charmbracelet/x/ansi"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -42,15 +44,14 @@ func formatClock(timestamp int64) string {
 
 // speaker names who wrote a chat entry, or "" for tool and status rows.
 func speaker(entry HistoryEntry) string {
-	switch {
-	case entry.Kind == EntryUser && entry.Speaker == "":
-		return "You"
-	case entry.Kind == EntryAssistant && entry.Speaker == "":
-		return "albedo"
-	case entry.Kind == EntryUser || entry.Kind == EntryAssistant:
-		return entry.Speaker
+	switch entry.Kind {
+	case EntryUser:
+		return cmp.Or(entry.Speaker, "You")
+	case EntryAssistant:
+		return cmp.Or(entry.Speaker, "albedo")
+	default:
+		return ""
 	}
-	return ""
 }
 
 // prior is what a new entry follows: the newest chat author, and when the
@@ -82,10 +83,7 @@ func (r TranscriptRenderer) nameplate(entry HistoryEntry, flags DisplayFlags, be
 	if !flags.Tools && who == before.speaker {
 		return ""
 	}
-	style := r.Styles.Agent
-	if entry.Kind == EntryUser {
-		style = r.Styles.You
-	}
+	style := pick(entry.Kind == EntryUser, r.Styles.You, r.Styles.Agent)
 	var meta []string
 	if clock := formatClock(entry.Timestamp); flags.Tools && clock != "" {
 		meta = append(meta, clock)
@@ -126,7 +124,8 @@ func (r TranscriptRenderer) signoff(entry HistoryEntry) string {
 		meta = append(meta, formatElapsed(entry.ElapsedMs))
 	}
 	if entry.Tools > 0 {
-		meta = append(meta, fmt.Sprintf("%d %s", entry.Tools, map[bool]string{true: "tool", false: "tools"}[entry.Tools == 1]))
+		unit := pick(entry.Tools == 1, "tool", "tools")
+		meta = append(meta, fmt.Sprintf("%d %s", entry.Tools, unit))
 	}
 	row := markChrome + style.Render(entry.Mood.face(entry.Timestamp))
 	if len(meta) > 0 {
@@ -136,6 +135,12 @@ func (r TranscriptRenderer) signoff(entry HistoryEntry) string {
 }
 
 var diffHunk = regexp.MustCompile(`^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
+
+// diffLanguages names the highlighter for a changed file's extension.
+var diffLanguages = map[string]string{
+	"ts": "typescript", "tsx": "typescript", "js": "javascript", "jsx": "javascript",
+	"py": "python", "rs": "rust", "sh": "bash",
+}
 
 func (r TranscriptRenderer) RenderDiff(diff string, width int) string {
 	return r.renderDiffPath(diff, "", width)
@@ -147,25 +152,10 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 	}
 	var rows []string
 	oldLine, newLine := 0, 0
-	lang := "text"
-	switch path[strings.LastIndex(path, ".")+1:] {
-	case "ts", "tsx":
-		lang = "typescript"
-	case "js", "jsx":
-		lang = "javascript"
-	case "py":
-		lang = "python"
-	case "rs":
-		lang = "rust"
-	case "sh":
-		lang = "bash"
-	}
+	lang := cmp.Or(diffLanguages[path[strings.LastIndex(path, ".")+1:]], "text")
 	clean := func(text string) string {
 		return strings.Map(func(ch rune) rune {
-			if ch == '\t' {
-				return ' '
-			}
-			if ch < 32 || ch == 127 {
+			if ch == '\t' || ch < 32 || ch == 127 {
 				return ' '
 			}
 			return ch
@@ -177,10 +167,7 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 			body = keepBackground(HighlightCode(content, lang))
 		}
 		for i, part := range strings.Split(ansi.Hardwrap(body, max(1, width-ansi.StringWidth(gutter)), true), "\n") {
-			prefix := gutter
-			if i > 0 {
-				prefix = strings.Repeat(" ", ansi.StringWidth(gutter))
-			}
+			prefix := pick(i > 0, strings.Repeat(" ", ansi.StringWidth(gutter)), gutter)
 			cell := prefix + part
 			rows = append(rows, bg+cell+strings.Repeat(" ", max(0, width-ansi.StringWidth(cell)))+ansiReset)
 		}
@@ -246,12 +233,8 @@ func toolSummary(entry HistoryEntry) string {
 		return "python · " + firstLine(arg("code"))
 	case "shell":
 		return "$ " + firstLine(arg("command"))
-	case "read_file":
-		return "read " + arg("path")
-	case "write_file":
-		return "write " + arg("path")
-	case "edit_file":
-		return "edit " + arg("path")
+	case "read_file", "write_file", "edit_file":
+		return strings.TrimSuffix(entry.ToolName, "_file") + " " + arg("path")
 	default:
 		return entry.ToolName
 	}
@@ -284,6 +267,15 @@ func oneLine(text string) string {
 		}
 		return r
 	}, text)), " ")
+}
+
+// pick is cond ? a : b. Both arms are evaluated, so neither may panic,
+// mutate, or cost anything worth avoiding.
+func pick[T any](cond bool, a, b T) T {
+	if cond {
+		return a
+	}
+	return b
 }
 
 // fit truncates head so the row fits width, keeping tail whole when there is
@@ -398,10 +390,7 @@ func toolRowParts(entry HistoryEntry, failed bool, clock string) (string, string
 	if clock != "" {
 		tail = append(tail, clock)
 	}
-	suffix := ""
-	if len(tail) > 0 {
-		suffix = " · " + strings.Join(tail, " · ")
-	}
+	suffix := pick(len(tail) > 0, " · "+strings.Join(tail, " · "), "")
 	return oneLine(toolSummary(entry)), suffix
 }
 
@@ -413,79 +402,42 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 	if trace == nil {
 		return ""
 	}
-	var rows []string
-	if !flags.Tools {
-		edited := map[string]bool{}
-		for _, change := range trace.Changes {
-			edited[change.Path] = true
-		}
-		for _, activity := range trace.Activities {
-			if activity.Kind == "read" && edited[activity.Target] {
-				continue
-			}
-			label := activity.Kind
-			if activity.Failed {
-				label += " failed"
-			}
-			style := r.Styles.Faint
-			if activity.Failed {
-				style = r.Styles.Error
-			}
-			rows = append(rows, style.Render(r.traceLine(label, activity.Target, isPath(activity), width)))
-		}
-		for _, change := range trace.Changes {
-			label := "edited"
-			for _, activity := range trace.Activities {
-				if activity.Kind == "read" && activity.Target == change.Path {
-					label = "read + " + label
-					break
-				}
-			}
-			counts := ""
-			if change.Kind == "diff" {
-				counts = "  " + r.diffCounts(change)
-			}
-			line := r.traceLine(label, change.Path, true, width-ansi.StringWidth(counts))
-			rows = append(rows, fit(r.Styles.Faint.Render(line), counts, width))
-			if flags.Diffs {
-				if change.Kind == "diff" {
-					rows = append(rows, r.renderDiffPath(change.Diff, change.Path, width))
-				} else {
-					rows = append(rows, r.Styles.Faint.Render(change.Reason))
-				}
-			}
-		}
-		if trace.Truncated {
-			rows = append(rows, r.Styles.Faint.Render("activity capture limited · /v expand"))
-		}
-		return strings.Join(rows, "\n")
+	// Normal mode folds the read of an edited file into its edit row.
+	reads := func(path string) bool {
+		return slices.ContainsFunc(trace.Activities, func(a daemon.ToolActivity) bool { return a.Kind == "read" && a.Target == path })
 	}
-	if len(trace.Activities) > 0 {
+	edits := func(path string) bool {
+		return slices.ContainsFunc(trace.Changes, func(c daemon.FileChange) bool { return c.Path == path })
+	}
+	var rows []string
+	if flags.Tools && len(trace.Activities) > 0 {
 		verb := "explored"
-		for _, act := range trace.Activities {
-			if act.Kind == "run" {
-				verb = "executed"
-				break
-			}
+		if slices.ContainsFunc(trace.Activities, func(a daemon.ToolActivity) bool { return a.Kind == "run" }) {
+			verb = "executed"
 		}
 		rows = append(rows, r.Styles.Bold.Render(verb))
-		for _, act := range trace.Activities {
-			style := r.Styles.Faint
-			label := act.Kind
-			if act.Failed {
-				style = r.Styles.Error
-				label += " failed"
-			}
+	}
+	for _, act := range trace.Activities {
+		if !flags.Tools && act.Kind == "read" && edits(act.Target) {
+			continue
+		}
+		label, style := act.Kind, r.Styles.Faint
+		if act.Failed {
+			label += " failed"
+			style = r.Styles.Error
+		}
+		if flags.Tools {
 			rows = append(rows, "  "+r.traceLine(style.Render(label), act.Target, isPath(act), width-2))
+		} else {
+			rows = append(rows, style.Render(r.traceLine(label, act.Target, isPath(act), width)))
 		}
 	}
+	changeStyle := pick(flags.Tools, r.Styles.Bold, r.Styles.Faint)
 	for _, change := range trace.Changes {
-		counts := ""
-		if change.Kind == "diff" {
-			counts = "  " + r.diffCounts(change)
-		}
-		line := r.traceLine("edited", change.Path, true, width-ansi.StringWidth(counts))
-		rows = append(rows, fit(r.Styles.Bold.Render(line), counts, width))
+		label := pick(!flags.Tools && reads(change.Path), "read + edited", "edited")
+		counts := pick(change.Kind == "diff", "  "+r.diffCounts(change), "")
+		line := r.traceLine(label, change.Path, true, width-ansi.StringWidth(counts))
+		rows = append(rows, fit(changeStyle.Render(line), counts, width))
 		if flags.Diffs {
 			if change.Kind == "diff" {
 				rows = append(rows, r.renderDiffPath(change.Diff, change.Path, width))
@@ -495,7 +447,8 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 		}
 	}
 	if trace.Truncated {
-		rows = append(rows, r.Styles.Faint.Render("activity capture limited; some operations are not shown"))
+		notice := pick(flags.Tools, "activity capture limited; some operations are not shown", "activity capture limited · /v expand")
+		rows = append(rows, r.Styles.Faint.Render(notice))
 	}
 	return strings.Join(rows, "\n")
 }
@@ -546,10 +499,7 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 			rows = append(rows, r.faintMarkdownRows(entry.Text, width)...)
 			break
 		}
-		render := renderCopyable
-		if entry.Live {
-			render = RenderMarkdownAnsi
-		}
+		render := pick(entry.Live, RenderMarkdownAnsi, renderCopyable)
 		rows = append(rows, render(entry.Text, width))
 	case EntryThinking:
 		rows = []string{markChrome + r.Styles.Faint.Render("thinking")}
@@ -563,15 +513,13 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 		if !hasTrace || flags.Tools || failed {
 			// a glance in normal mode, read in full in verbose mode
 			style := r.Styles.Faint
+			clock := ""
 			if flags.Tools {
 				style = lipgloss.NewStyle()
+				clock = formatClock(entry.Timestamp)
 			}
 			if failed {
 				style = r.Styles.Error
-			}
-			clock := ""
-			if flags.Tools {
-				clock = formatClock(entry.Timestamp)
 			}
 			rows = append(rows, markChrome+style.Render(toolRow(entry, failed, clock, width)))
 		}
@@ -581,17 +529,13 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 				break
 			}
 		}
-		if flags.Tools && entry.ToolName == "python" {
-			if code, ok := entry.ToolArgs["code"].(string); ok {
-				rows = append(rows, renderCopyable("```python\n"+code+"\n```", width))
-			}
-		}
 		if flags.Tools {
-			output := toolOutput(entry)
-			if output == "" {
-				output = "(no output)"
+			if entry.ToolName == "python" {
+				if code, ok := entry.ToolArgs["code"].(string); ok {
+					rows = append(rows, renderCopyable("```python\n"+code+"\n```", width))
+				}
 			}
-			rows = append(rows, strings.Split(output, "\n")...)
+			rows = append(rows, strings.Split(cmp.Or(toolOutput(entry), "(no output)"), "\n")...)
 		}
 	case EntryTurnEnd:
 		rows = []string{r.signoff(entry)}
@@ -600,10 +544,7 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 	case EntryError:
 		rows = []string{r.errorRow(entry.Text)}
 	case EntryCompacted:
-		action := "view"
-		if flags.Compaction {
-			action = "hide"
-		}
+		action := pick(flags.Compaction, "hide", "view")
 		verb, noun := compactionWords(entry.Strategy)
 		rows = []string{markChrome + r.Styles.Faint.Render(fmt.Sprintf("compaction done · %d items %s · ctrl+k %s %s", entry.Evicted, verb, action, noun))}
 		if flags.Compaction {

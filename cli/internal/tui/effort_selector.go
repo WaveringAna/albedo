@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -9,14 +10,8 @@ import (
 
 // Effort choices come from the active model, not the command catalog's examples.
 func (m *ChatModel) openEffortSelector(levels []string) {
-	m.effortOptions = append([]string(nil), levels...)
-	m.effortSelected = 0
-	for i, level := range levels {
-		if level == m.Effort {
-			m.effortSelected = i
-			break
-		}
-	}
+	m.effortOptions = slices.Clone(levels)
+	m.effortSelected = max(0, slices.Index(levels, m.Effort))
 	m.TextArea.Reset()
 	m.syncLayout()
 }
@@ -40,14 +35,7 @@ func (m ChatModel) effortSelectorView() string {
 		for i := left; i < right; i++ {
 			parts = append(parts, label(i))
 		}
-		prefix, suffix := "", ""
-		if left > 0 {
-			prefix += "‹ "
-		}
-		if right < len(m.effortOptions) {
-			suffix = " ›"
-		}
-		return prefix + strings.Join(parts, " ─ ") + suffix
+		return pick(left > 0, "‹ ", "") + strings.Join(parts, " ─ ") + pick(right < len(m.effortOptions), " ›", "")
 	}
 	for ansi.StringWidth(plain()) > width && right-left > 1 {
 		if selected-left > right-1-selected {
@@ -64,15 +52,10 @@ func (m ChatModel) effortSelectorView() string {
 		}
 		parts = append(parts, style.Render(label(i)))
 	}
-	prefix := ""
-	if left > 0 {
-		prefix += m.Styles.Decor.Render("‹ ")
-	}
-	suffix := ""
-	if right < len(m.effortOptions) {
-		suffix = m.Styles.Decor.Render(" ›")
-	}
-	return ansi.Truncate(prefix+strings.Join(parts, m.Styles.Decor.Render(" ─ "))+suffix, width, "")
+	decor := m.Styles.Decor.Render
+	prefix := pick(left > 0, decor("‹ "), "")
+	suffix := pick(right < len(m.effortOptions), decor(" ›"), "")
+	return ansi.Truncate(prefix+strings.Join(parts, decor(" ─ "))+suffix, width, "")
 }
 
 func (m ChatModel) effortTierStyle(level string) lipgloss.Style {

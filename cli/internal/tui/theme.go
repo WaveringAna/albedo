@@ -182,9 +182,10 @@ func gradientText(s string, bold bool) string {
 	return ramp(rampKey{text: s, bold: bold}, func() string {
 		runes := []rune(s)
 		var b strings.Builder
+		st := lipgloss.NewStyle().Bold(bold)
 		for i, r := range runes {
 			t := float64(i) / float64(max(1, len(runes)-1))
-			b.WriteString(lipgloss.NewStyle().Foreground(gradient(t)).Bold(bold).Render(string(r)))
+			b.WriteString(st.Foreground(gradient(t)).Render(string(r)))
 		}
 		return b.String()
 	})
@@ -233,9 +234,7 @@ func brand(name string) string { return gradientText("✦ "+name, true) }
 // titleRule heads a screen: left, a rule that fades from the brand's end
 // into Decor, then right.
 func titleRule(width int, left, right string) string {
-	if right != "" {
-		right = " " + right
-	}
+	right = pick(right != "", " "+right, "")
 	n := width - ansi.StringWidth(left) - ansi.StringWidth(right) - 1
 	if n < 3 {
 		return left
@@ -272,18 +271,16 @@ type hint struct{ key, does string }
 // keyHints lists keys in Muted and what they do in Faint. A hint without a
 // key is a plain note.
 func keyHints(hints ...hint) string {
-	parts := make([]string, 0, len(hints))
-	for _, h := range hints {
-		var part string
+	parts := make([]string, len(hints))
+	for i, h := range hints {
 		switch {
 		case h.key == "":
-			part = DefaultStyles.Faint.Render(h.does)
+			parts[i] = DefaultStyles.Faint.Render(h.does)
 		case h.does == "":
-			part = DefaultStyles.Muted.Render(h.key)
+			parts[i] = DefaultStyles.Muted.Render(h.key)
 		default:
-			part = DefaultStyles.Muted.Render(h.key) + " " + DefaultStyles.Faint.Render(h.does)
+			parts[i] = DefaultStyles.Muted.Render(h.key) + " " + DefaultStyles.Faint.Render(h.does)
 		}
-		parts = append(parts, part)
 	}
 	return strings.Join(parts, DefaultStyles.Decor.Render(" · "))
 }
@@ -338,22 +335,22 @@ type agentPalette struct {
 }
 
 func agentColors() agentPalette {
-	hex := func(value, fallback string) rgb {
-		if c := parseHex(value); c != nil {
+	hex := func(val, fallback string) rgb {
+		if c := parseHex(val); c != nil {
 			return *c
 		}
 		return *parseHex(fallback)
 	}
-	var hues []rgb
-	for _, h := range []string{"#e08cf5", "#6fd1c4", "#f28fb8", "#f0c674", "#b6e37a", "#b9a6f5", "#80aaf9", "#f5a97f"} {
-		hues = append(hues, *parseHex(h))
+	hues := make([]rgb, 8)
+	for i, h := range []string{"#e08cf5", "#6fd1c4", "#f28fb8", "#f0c674", "#b6e37a", "#b9a6f5", "#80aaf9", "#f5a97f"} {
+		hues[i] = *parseHex(h)
 	}
 	return agentPalette{
 		hues:  hues,
-		you:   hex("", "#7fd8e6"),
-		mail:  hex("", "#f0c674"),
+		you:   *parseHex("#7fd8e6"),
+		mail:  *parseHex("#f0c674"),
 		faint: hex(transcriptInk.secondary, "#6a6378"),
 		decor: hex(transcriptInk.decor, "#3a3448"),
-		hi:    hex("", "#ffffff"),
+		hi:    *parseHex("#ffffff"),
 	}
 }

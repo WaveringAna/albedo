@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -75,42 +75,45 @@ func (m CapabilityPageModel) loadCmd(gen int) tea.Cmd {
 		case "instructions":
 			items = discoverInstructions(home, workspace)
 		case "mcp":
-			var servers map[string]config.MCPServer
-			servers, err = config.ReadMCPServers(home)
-			if err == nil {
-				var credentials config.MCPCredentials
-				credentials, err = config.ReadMCPCredentials(home)
-				if err == nil {
-					for name, server := range servers {
-						secret := credentials.Servers[name]
-						address := server.URL
-						if server.Type == "stdio" {
-							address = server.Command
-						}
-						items = append(items, capabilityItem{ID: name, Title: name, Detail: server.Type + " · " + address, Server: server, HasSecret: secret.BearerToken != "" || len(secret.Env) > 0 || len(secret.Headers) > 0})
-					}
-				}
-			}
+			items, err = mcpItems(home)
 		default:
 			err = errors.New("unknown capability page")
 		}
-		sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+		slices.SortFunc(items, func(a, b capabilityItem) int { return strings.Compare(a.ID, b.ID) })
 		enabled := true
 		if err == nil && m.Conn != nil {
 			path := fmt.Sprintf("/sessions/%s/extensions", url.PathEscape(m.SessionID))
 			var extensions []ExtensionItem
 			extensions, err = daemon.Request[[]ExtensionItem](context.Background(), m.Conn, path, nil)
-			if err == nil {
-				for _, ext := range extensions {
-					if ext.Name == kind {
-						enabled = ext.Enabled
-						break
-					}
-				}
+			if i := slices.IndexFunc(extensions, func(ext ExtensionItem) bool { return ext.Name == kind }); err == nil && i >= 0 {
+				enabled = extensions[i].Enabled
 			}
 		}
 		return capabilityLoadedMsg{Items: items, Prefs: prefs, ExtensionEnabled: enabled, Gen: gen, Err: err}
 	}
+}
+
+// mcpItems lists the configured servers with whether credentials are stored
+// for them (never their contents).
+func mcpItems(home string) ([]capabilityItem, error) {
+	servers, err := config.ReadMCPServers(home)
+	if err != nil {
+		return nil, err
+	}
+	credentials, err := config.ReadMCPCredentials(home)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]capabilityItem, 0, len(servers))
+	for name, server := range servers {
+		secret := credentials.Servers[name]
+		address := pick(server.Type == "stdio", server.Command, server.URL)
+		items = append(items, capabilityItem{
+			ID: name, Title: name, Detail: server.Type + " · " + address, Server: server,
+			HasSecret: secret.BearerToken != "" || len(secret.Env) > 0 || len(secret.Headers) > 0,
+		})
+	}
+	return items, nil
 }
 
 // Discovery mirrors the daemon's root ordering. Disabled entries remain listed;
@@ -146,28 +149,22 @@ func discoverSkills(home, workspace string) ([]capabilityItem, error) {
 }
 func discoverInstructions(home, workspace string) []capabilityItem {
 	var items []capabilityItem
-	rootNames := []string{"AGENTS.md", "CLAUDE.md"}
 	entries, _ := os.ReadDir(workspace)
 	for _, e := range entries {
-		for _, wanted := range rootNames {
-			if strings.EqualFold(e.Name(), wanted) && e.Type().IsRegular() {
-				items = append(items, capabilityItem{ID: "project:" + e.Name(), Title: e.Name(), Detail: filepath.Join(workspace, e.Name())})
-			}
+		if e.Type().IsRegular() && (strings.EqualFold(e.Name(), "AGENTS.md") || strings.EqualFold(e.Name(), "CLAUDE.md")) {
+			items = append(items, capabilityItem{ID: "project:" + e.Name(), Title: e.Name(), Detail: filepath.Join(workspace, e.Name())})
 		}
 	}
 	userHome, _ := os.UserHomeDir()
 	for _, group := range []struct{ scope, base string }{{"project", workspace}, {"global", userHome}} {
 		for _, folder := range []string{".agents", ".albedo"} {
 			path := filepath.Join(group.base, folder)
-			entries, _ := os.ReadDir(path)
-			for _, e := range entries {
+			subEntries, _ := os.ReadDir(path)
+			for _, e := range subEntries {
 				if !e.Type().IsRegular() || !strings.EqualFold(filepath.Ext(e.Name()), ".md") {
 					continue
 				}
-				display := filepath.Join(folder, e.Name())
-				if group.scope == "global" {
-					display = filepath.Join("~", folder, e.Name())
-				}
+				display := pick(group.scope == "global", filepath.Join("~", folder, e.Name()), filepath.Join(folder, e.Name()))
 				items = append(items, capabilityItem{ID: group.scope + ":" + display, Title: display, Detail: filepath.Join(path, e.Name())})
 			}
 		}
@@ -217,18 +214,18 @@ func (m CapabilityPageModel) toggleCmd(item capabilityItem, gen int) tea.Cmd {
 		if err != nil {
 			return capabilitySavedMsg{Gen: gen, Err: err}
 		}
-		var old bool
-		var had bool
-		next := !before.Enabled(m.SessionID, m.Kind, item.ID)
+		var old, had bool
+		next := false
 		if m.Global {
 			old, had = before.Global[m.Kind][item.ID]
+			// The first global toggle writes an explicit off; after that the
+			// stored value flips. A session override must not leak into it.
 			if had {
 				next = !old
-			} else {
-				next = false
 			}
 		} else {
 			old, had = before.Sessions[m.SessionID][m.Kind][item.ID]
+			next = !before.Enabled(m.SessionID, m.Kind, item.ID)
 		}
 		if err = config.SetCapability(m.Home, m.SessionID, m.Kind, item.ID, m.Global, next); err != nil {
 			return capabilitySavedMsg{Gen: gen, Err: err}
@@ -286,15 +283,13 @@ func (m CapabilityPageModel) replaceMCP(name string, server *config.MCPServer, s
 	if err = config.SetMCPServerSecrets(m.Home, name, secrets); err != nil {
 		return err
 	}
-	if err = config.PutMCPServer(m.Home, name, server); err != nil {
-		restore()
-		return err
+	if err = config.PutMCPServer(m.Home, name, server); err == nil {
+		err = m.reload()
 	}
-	if err = m.reload(); err != nil {
+	if err != nil {
 		restore()
-		return err
 	}
-	return nil
+	return err
 }
 
 var mcpName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
@@ -316,6 +311,12 @@ func (m *CapabilityPageModel) openForm(edit bool) {
 	m.Form = newMCPForm(item.ID, item.Server, credentials.Servers[item.ID])
 }
 
+func (m CapabilityPageModel) save(cmd func(int) tea.Cmd) (CapabilityPageModel, tea.Cmd) {
+	m.Saving = true
+	m.Generation++
+	return m, cmd(m.Generation)
+}
+
 func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case capabilityLoadedMsg:
@@ -331,19 +332,11 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 		if m.Cursor < len(m.Items) {
 			selected = m.Items[m.Cursor].ID
 		}
-		m.Items = msg.Items
-		m.Prefs = msg.Prefs
-		m.ExtensionEnabled = msg.ExtensionEnabled
-		m.Error = ""
-		for i, item := range m.Items {
-			if item.ID == selected {
-				m.Cursor = i
-				break
-			}
+		m.Items, m.Prefs, m.ExtensionEnabled, m.Error = msg.Items, msg.Prefs, msg.ExtensionEnabled, ""
+		if i := slices.IndexFunc(m.Items, func(item capabilityItem) bool { return item.ID == selected }); i >= 0 {
+			m.Cursor = i
 		}
-		if m.Cursor >= len(m.Items) {
-			m.Cursor = max(0, len(m.Items)-1)
-		}
+		m.Cursor = min(m.Cursor, max(0, len(m.Items)-1))
 		return m, nil
 	case capabilitySavedMsg:
 		if msg.Gen != m.Generation {
@@ -370,15 +363,12 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 			return m, nil
 		}
 		if m.ConfirmExtension {
-			if msg.String() == "esc" {
+			switch msg.String() {
+			case "esc":
 				m.ConfirmExtension = false
-				return m, nil
-			}
-			if msg.String() == "enter" {
+			case "enter":
 				m.ConfirmExtension = false
-				m.Saving = true
-				m.Generation++
-				return m, m.enableExtensionCmd(m.Generation)
+				return m.save(m.enableExtensionCmd)
 			}
 			return m, nil
 		}
@@ -398,16 +388,12 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 				return m, nil
 			}
 			m.Error = ""
-			m.Saving = true
-			m.Generation++
-			return m, m.saveMCPCmd(sub, m.Generation)
+			return m.save(func(gen int) tea.Cmd { return m.saveMCPCmd(sub, gen) })
 		}
 		if m.ConfirmDelete {
 			m.ConfirmDelete = false
 			if msg.String() == "enter" && len(m.Items) > 0 {
-				m.Saving = true
-				m.Generation++
-				return m, m.deleteMCPCmd(m.Items[m.Cursor].ID, m.Generation)
+				return m.save(func(gen int) tea.Cmd { return m.deleteMCPCmd(m.Items[m.Cursor].ID, gen) })
 			}
 			return m, nil
 		}
@@ -417,59 +403,56 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 		if m.Loading {
 			return m, nil
 		}
+		mcp := m.Kind == "mcp"
+		hasItems := len(m.Items) > 0
 		switch msg.String() {
 		case "up":
-			if m.Cursor > 0 {
-				m.Cursor--
-			}
+			m.Cursor = max(0, m.Cursor-1)
 		case "down":
-			if m.Cursor < len(m.Items)-1 {
-				m.Cursor++
+			if hasItems {
+				m.Cursor = min(len(m.Items)-1, m.Cursor+1)
 			}
 		case "r":
 			m.Loading = true
 			m.Generation++
 			return m, m.loadCmd(m.Generation)
-		case "g":
-			m.Global = true
-		case "s":
-			m.Global = false
+		case "g", "s":
+			m.Global = msg.String() == "g"
 		case "E":
 			if !m.ExtensionEnabled {
 				m.ConfirmExtension = true
 			}
 		case "n":
-			if m.Kind == "mcp" {
+			if mcp {
 				m.openForm(false)
 			}
 		case "d":
-			if m.Kind == "mcp" && len(m.Items) > 0 {
+			if mcp && hasItems {
 				m.ConfirmDelete = true
 			}
 		case "e":
 			// Re-enables a server switched off in extensions.json.
-			if m.Kind == "mcp" && len(m.Items) > 0 && m.Items[m.Cursor].Server.Enabled != nil && !*m.Items[m.Cursor].Server.Enabled {
-				item := m.Items[m.Cursor]
-				server := item.Server
-				server.Enabled = nil
-				credentials, err := config.ReadMCPCredentials(m.Home)
-				if err != nil {
-					m.Error = err.Error()
-					return m, nil
+			if mcp && hasItems {
+				if item := m.Items[m.Cursor]; item.Server.Enabled != nil && !*item.Server.Enabled {
+					server := item.Server
+					server.Enabled = nil
+					credentials, err := config.ReadMCPCredentials(m.Home)
+					if err != nil {
+						m.Error = err.Error()
+						return m, nil
+					}
+					return m.save(func(gen int) tea.Cmd {
+						return m.saveMCPCmd(mcpSubmission{Name: item.ID, Server: server, Secrets: credentials.Servers[item.ID]}, gen)
+					})
 				}
-				m.Saving = true
-				m.Generation++
-				return m, m.saveMCPCmd(mcpSubmission{Name: item.ID, Server: server, Secrets: credentials.Servers[item.ID]}, m.Generation)
 			}
 		case "enter":
-			if m.Kind == "mcp" && len(m.Items) > 0 {
+			if mcp && hasItems {
 				m.openForm(true)
 			}
 		case "space":
-			if len(m.Items) > 0 {
-				m.Saving = true
-				m.Generation++
-				return m, m.toggleCmd(m.Items[m.Cursor], m.Generation)
+			if hasItems {
+				return m.save(func(gen int) tea.Cmd { return m.toggleCmd(m.Items[m.Cursor], gen) })
 			}
 		}
 	}
@@ -487,11 +470,9 @@ func (m CapabilityPageModel) selectedEnabled(item capabilityItem) bool {
 
 func (m CapabilityPageModel) View() string {
 	width := max(1, m.Width)
+	mcp := m.Kind == "mcp"
 	heading := map[string]string{"skills": "Skills", "instructions": "Instruction files", "mcp": "MCP servers"}[m.Kind]
-	scope := "this session"
-	if m.Global {
-		scope = "global default"
-	}
+	scope := pick(m.Global, "global default", "this session")
 	rows := []string{titleRule(width, brand("albedo")+" "+DefaultStyles.Muted.Render("/"+m.Kind), DefaultStyles.Faint.Render(scope)), ""}
 	if m.Error != "" {
 		rows = append(rows, DefaultStyles.Error.Render(ansi.Truncate(m.Error, width, "…")))
@@ -514,44 +495,36 @@ func (m CapabilityPageModel) View() string {
 	for i := start; i < min(len(m.Items), start+listRows); i++ {
 		item := m.Items[i]
 		label := DefaultStyles.Success.Render("on ")
-		if !m.selectedEnabled(item) || m.Kind == "mcp" && item.Server.Enabled != nil && !*item.Server.Enabled {
+		if !m.selectedEnabled(item) || (mcp && item.Server.Enabled != nil && !*item.Server.Enabled) {
 			label = DefaultStyles.Faint.Render("off")
 		}
-		mark := "  "
-		if i == m.Cursor {
-			mark = selectBar() + " "
-		}
-		detail := ""
-		if m.Kind == "mcp" {
-			detail = DefaultStyles.Faint.Render(" · " + item.Detail)
-		}
+		mark := pick(i == m.Cursor, selectBar()+" ", "  ")
+		detail := pick(mcp, DefaultStyles.Faint.Render(" · "+item.Detail), "")
 		row := ansi.Truncate(mark+label+"  "+item.Title+detail, width, "…")
 		if i == m.Cursor {
 			row = selectedLine(row, width)
 		}
 		rows = append(rows, row)
 	}
-	if m.Form != nil {
+	switch {
+	case m.Form != nil:
 		rows = append(rows, "")
 		rows = append(rows, m.Form.view(width)...)
 		if m.Saving {
 			rows = append(rows, "connecting and reloading…")
 		}
-	} else if m.ConfirmExtension {
+	case m.ConfirmExtension:
 		rows = append(rows, "", DefaultStyles.Warning.Render("enable extension and reload workers?")+" "+keyHints(hint{"enter", "confirm"}, hint{"esc", "cancel"}))
-	} else if m.ConfirmDelete && len(m.Items) > 0 {
+	case m.ConfirmDelete && len(m.Items) > 0:
 		rows = append(rows, "", DefaultStyles.Warning.Render("delete MCP server "+m.Items[m.Cursor].ID+" and its stored credentials?")+" "+keyHints(hint{"enter", "confirm"}, hint{"any other key", "cancels"}))
-	} else if m.Saving {
+	case m.Saving:
 		rows = append(rows, "saving and reloading…")
-	} else {
+	default:
 		if len(m.Items) > 0 {
 			selected := m.Items[m.Cursor]
 			detail := selected.Detail
-			if m.Kind == "mcp" {
-				auth := "no credentials"
-				if selected.HasSecret {
-					auth = "credentials stored privately"
-				}
+			if mcp {
+				auth := pick(selected.HasSecret, "credentials stored privately", "no credentials")
 				detail += " · " + auth
 				if selected.Server.Enabled != nil && !*selected.Server.Enabled {
 					detail += " · disabled in extensions.json · e enable"
@@ -560,7 +533,7 @@ func (m CapabilityPageModel) View() string {
 			rows = append(rows, "", DefaultStyles.Faint.Render(ansi.Truncate(detail, width, "…")))
 		}
 		rows = append(rows, "", keyHints(hint{"↑↓", "select"}, hint{"space", "toggle"}, hint{"s", "session"}, hint{"g", "global"}, hint{"r", "refresh"}, hint{"esc", "back"}))
-		if m.Kind == "mcp" {
+		if mcp {
 			rows = append(rows, keyHints(hint{"n", "add server"}, hint{"enter", "edit"}, hint{"d", "delete"}))
 		}
 	}

@@ -3,10 +3,12 @@ package tui
 import (
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
+	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"net/url"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -70,15 +72,6 @@ var customProviders = []customProvider{
 func customProviderByID(id string) (customProvider, bool) {
 	for _, p := range customProviders {
 		if p.ID == id {
-			return p, true
-		}
-	}
-	return customProvider{}, false
-}
-
-func customProviderByExtension(ext string) (customProvider, bool) {
-	for _, p := range customProviders {
-		if p.Extension == ext {
 			return p, true
 		}
 	}
@@ -171,16 +164,12 @@ type LoginModel struct {
 
 func (m LoginModel) openBrowserCmd(urlStr string) tea.Cmd {
 	return func() tea.Msg {
-		m.openBrowser(urlStr)
+		// Fail-closed: a nil opener does not launch a browser.
+		if m.BrowserOpener != nil {
+			m.BrowserOpener(urlStr)
+		}
 		return nil
 	}
-}
-
-func (m LoginModel) openBrowser(urlStr string) {
-	if m.BrowserOpener != nil {
-		m.BrowserOpener(urlStr)
-	}
-	// Fail-closed by default: nil opener does NOT launch a browser.
 }
 
 func NewLoginModel(conn *daemon.Connection, nameHint string) LoginModel {
@@ -207,32 +196,55 @@ func NewLoginModel(conn *daemon.Connection, nameHint string) LoginModel {
 
 func (m LoginModel) inputWidth() int {
 	// Ink includes its cursor cell in width; Bubbles tracks the cursor separately.
-	if m.Step == StepOAuth {
-		return max(8, m.Width-25)
-	}
-	return max(8, m.Width-19)
+	return pick(m.Step == StepOAuth, max(8, m.Width-25), max(8, m.Width-19))
 }
 
-func (m *LoginModel) resetInput() {
+// promptInput re-arms the text input for the next question and reports the
+// blink command that shows its cursor. The placeholder is left as the
+// previous step left it.
+func (m *LoginModel) promptInput(value string, secret bool) tea.Cmd {
 	m.TextInput.Reset()
-	m.TextInput.EchoMode = textinput.EchoNormal
+	m.TextInput.EchoMode = pick(secret, textinput.EchoPassword, textinput.EchoNormal)
 	m.TextInput.SetWidth(m.inputWidth())
+	if value != "" {
+		m.TextInput.SetValue(value)
+	}
+	m.TextInput.Focus()
+	return textinput.Blink
+}
+
+// pickerFor returns the picker the current step drives.
+func (m *LoginModel) pickerFor() *PickerModel {
+	switch m.Step {
+	case StepProtocol:
+		return &m.ProtocolPicker
+	case StepRemove:
+		return &m.ConfirmPicker
+	case StepModels, StepOAuthModels:
+		return &m.ModelPicker
+	}
+	return &m.ChoosePicker
+}
+
+// fail shows an error on the current step and keeps waiting for input.
+func (m LoginModel) fail(err string) (LoginModel, tea.Cmd) {
+	m.Error = err
+	return m, nil
 }
 
 func (m *LoginModel) SetSize(width, height int) {
-	m.Width = width
-	m.Height = height
+	m.Width, m.Height = width, height
 	m.TextInput.SetWidth(m.inputWidth())
 	m.TextInput.SetValue(m.TextInput.Value())
-	m.ChoosePicker.SetSize(width, height)
-	m.ProtocolPicker.SetSize(width, height)
-	m.ModelPicker.SetSize(width, height)
-	m.ConfirmPicker.SetSize(width, height)
+	for _, p := range []*PickerModel{&m.ChoosePicker, &m.ProtocolPicker, &m.ModelPicker, &m.ConfirmPicker} {
+		p.SetSize(width, height)
+	}
 }
 
 func (m LoginModel) isFixedProtocol() bool {
-	p, ok := customProviderByExtension(m.Draft.Extension)
-	return ok && p.FixedProtocol != ""
+	return slices.ContainsFunc(customProviders, func(p customProvider) bool {
+		return p.Extension == m.Draft.Extension && p.FixedProtocol != ""
+	})
 }
 
 func (m *LoginModel) advanceToModels() tea.Cmd {
@@ -245,26 +257,29 @@ func (m *LoginModel) advanceToModels() tea.Cmd {
 
 func (m *LoginModel) startCustomProvider(p customProvider) tea.Cmd {
 	m.Name = p.DefaultName
-	proto := p.FixedProtocol
-	if proto == "" {
-		proto = "responses"
-	}
-	m.Draft = config.Settings{Extension: p.Extension, BaseURL: p.DefaultURL, Protocol: proto}
+	m.Draft = config.Settings{Extension: p.Extension, BaseURL: p.DefaultURL, Protocol: cmp.Or(p.FixedProtocol, "responses")}
 	m.Step = StepName
-	m.resetInput()
 	m.TextInput.Placeholder = p.DefaultName
-	m.TextInput.Focus()
-	return textinput.Blink
+	return m.promptInput("", false)
+}
+
+// useProfile re-selects a saved profile: a sign-in provider with no accounts
+// left cannot run, so it signs in first.
+func (m *LoginModel) useProfile(name string, settings config.Settings) tea.Cmd {
+	if login, ok := m.signInFor(settings.Extension); ok && m.signedOut(settings.Extension) {
+		return m.startSignIn(login)
+	}
+	m.Step = StepSaving
+	return m.saveProviderCmd(name, settings)
 }
 
 // signInFor finds the daemon sign-in a profile extension or provider name uses.
 func (m LoginModel) signInFor(provider string) (daemon.SignIn, bool) {
-	for _, login := range m.SignIns {
-		if login.Provider == provider {
-			return login, true
-		}
+	i := slices.IndexFunc(m.SignIns, func(login daemon.SignIn) bool { return login.Provider == provider })
+	if i < 0 {
+		return daemon.SignIn{}, false
 	}
-	return daemon.SignIn{}, false
+	return m.SignIns[i], true
 }
 
 // signedOut reports a sign-in provider with no stored account, which cannot run
@@ -273,12 +288,7 @@ func (m LoginModel) signedOut(provider string) bool {
 	if _, known := m.signInFor(provider); !known {
 		return false
 	}
-	for _, account := range m.Accounts {
-		if account.Provider == provider {
-			return false
-		}
-	}
-	return true
+	return !slices.ContainsFunc(m.Accounts, func(account daemon.Account) bool { return account.Provider == provider })
 }
 
 // accountAt resolves a chooser row back to the account it lists.
@@ -292,17 +302,12 @@ func (m LoginModel) accountAt(id string) (daemon.Account, bool) {
 
 func (m *LoginModel) buildChoosePicker() {
 	var items []PickerItem
-	names := make([]string, 0, len(m.Profiles.Providers))
-	for name := range m.Profiles.Providers {
-		names = append(names, name)
+	add := func(id, label, detail string) {
+		items = append(items, PickerItem{ID: id, Label: label, Detail: detail})
 	}
-	sort.Strings(names)
-	for _, name := range names {
+	for _, name := range slices.Sorted(maps.Keys(m.Profiles.Providers)) {
 		settings := m.Profiles.Providers[name]
-		extension := settings.Extension
-		if extension == "" {
-			extension = "openai"
-		}
+		extension := cmp.Or(settings.Extension, "openai")
 		detail := fmt.Sprintf("%s · %s", settings.Model, extension)
 		if m.signedOut(extension) {
 			detail += " · signed out"
@@ -310,36 +315,19 @@ func (m *LoginModel) buildChoosePicker() {
 		if name == m.Profiles.Active {
 			detail += " · active"
 		}
-		items = append(items, PickerItem{
-			ID:     "use:" + name,
-			Label:  name,
-			Detail: detail,
-		})
+		add("use:"+name, name, detail)
 	}
 	for index, account := range m.Accounts {
-		items = append(items, PickerItem{
-			ID:     "account:" + strconv.Itoa(index),
-			Label:  account.Label,
-			Detail: account.Detail,
-		})
+		add("account:"+strconv.Itoa(index), account.Label, account.Detail)
 	}
 	for _, p := range customProviders {
-		items = append(items, PickerItem{
-			ID:     p.ID,
-			Label:  p.Label,
-			Detail: p.Detail,
-		})
+		add(p.ID, p.Label, p.Detail)
 	}
 	for _, login := range m.SignIns {
-		items = append(items, PickerItem{
-			ID:     "signin:" + login.Provider,
-			Label:  login.Label,
-			Detail: login.Detail,
-		})
+		add("signin:"+login.Provider, login.Label, login.Detail)
 	}
 
-	initialSel := "use:" + m.Profiles.Active
-	m.ChoosePicker = NewPickerModel("provider for new sessions", items, false, initialSel)
+	m.ChoosePicker = NewPickerModel("provider for new sessions", items, false, "use:"+m.Profiles.Active)
 	m.ChoosePicker.SetSize(m.Width, m.Height)
 }
 
@@ -357,10 +345,7 @@ func (m LoginModel) removalFor(id string) (removal, bool) {
 }
 
 func (m *LoginModel) confirmRemoval(target removal) tea.Cmd {
-	detail := "deletes it from config.json"
-	if target.Kind == "account" {
-		detail = "deletes its tokens from auth.json"
-	}
+	detail := pick(target.Kind == "account", "deletes its tokens from auth.json", "deletes it from config.json")
 	m.Removing = target
 	m.Step = StepRemove
 	items := []PickerItem{
@@ -410,13 +395,6 @@ func (m *LoginModel) backToChoose() tea.Cmd {
 	return m.ChoosePicker.Init()
 }
 
-func (m LoginModel) loadSignInsCmd(gen int) tea.Cmd {
-	return func() tea.Msg {
-		listed, err := daemon.SignInList(context.Background(), m.Conn)
-		return signInsLoadedMsg{Listed: listed, Err: err, Gen: gen}
-	}
-}
-
 // startSignIn hands the provider to the daemon, which owns the PKCE pair, the
 // callback listener, and the token exchange.
 func (m *LoginModel) startSignIn(login daemon.SignIn) tea.Cmd {
@@ -427,16 +405,13 @@ func (m *LoginModel) startSignIn(login daemon.SignIn) tea.Cmd {
 		m.Draft.Model = saved.Model
 	}
 	m.Step = StepOAuth
-	m.resetInput()
-	m.TextInput.Placeholder = ""
-	m.TextInput.Focus()
 	m.Generation++
-	return m.startSignInCmd(login.Provider, m.Generation)
-}
-
-func (m LoginModel) startSignInCmd(provider string, gen int) tea.Cmd {
+	// The cursor stays steady here; only the daemon's sign-in command runs.
+	m.TextInput.Placeholder = ""
+	m.promptInput("", false)
+	gen := m.Generation
 	return func() tea.Msg {
-		started, err := daemon.StartSignIn(context.Background(), m.Conn, provider)
+		started, err := daemon.StartSignIn(context.Background(), m.Conn, login.Provider)
 		return signInStartedMsg{ID: started.ID, URL: started.URL, Err: err, Gen: gen}
 	}
 }
@@ -503,21 +478,14 @@ func (m *LoginModel) applyHint() tea.Cmd {
 	}
 	m.Name = name
 	if saved, ok := m.Profiles.Providers[name]; ok {
-		if login, ok := m.signInFor(saved.Extension); ok && m.signedOut(saved.Extension) {
-			return m.startSignIn(login)
-		}
 		m.Draft = saved
-		m.Step = StepSaving
-		return m.saveProviderCmd(name, saved)
+		return m.useProfile(name, saved)
 	}
 	if login, ok := m.signInFor(name); ok {
 		return m.startSignIn(login)
 	}
 	m.Step = StepBaseURL
-	m.resetInput()
-	m.TextInput.SetValue(m.Draft.BaseURL)
-	m.TextInput.Focus()
-	return textinput.Blink
+	return m.promptInput(m.Draft.BaseURL, false)
 }
 
 func (m *LoginModel) buildProtocolPicker() {
@@ -530,49 +498,35 @@ func (m *LoginModel) buildProtocolPicker() {
 }
 
 func (m *LoginModel) buildModelPicker() {
-	var items []PickerItem
+	items := make([]PickerItem, 0, len(m.Catalog)+1)
 	for _, name := range m.Catalog {
-		items = append(items, PickerItem{
-			ID:     "model:" + name,
-			Label:  name,
-			Detail: "",
-		})
+		items = append(items, PickerItem{ID: "model:" + name, Label: name})
 	}
-	items = append(items, PickerItem{
-		ID:     "manual",
-		Label:  "enter model id manually",
-		Detail: "",
-	})
+	items = append(items, PickerItem{ID: "manual", Label: "enter model id manually"})
 
-	initialSel := "model:" + m.Draft.Model
-	m.ModelPicker = NewPickerModel("model", items, true, initialSel)
+	m.ModelPicker = NewPickerModel("model", items, true, "model:"+m.Draft.Model)
 	m.ModelPicker.SetSize(m.Width, m.Height)
 }
 
 func (m LoginModel) Init() tea.Cmd {
-	return m.loadSignInsCmd(m.Generation)
+	gen := m.Generation
+	return func() tea.Msg {
+		listed, err := daemon.SignInList(context.Background(), m.Conn)
+		return signInsLoadedMsg{Listed: listed, Err: err, Gen: gen}
+	}
 }
 
 func (m LoginModel) fetchCatalogCmd(ext, endpoint string, gen int) tea.Cmd {
 	return func() tea.Msg {
+		note := "could not read the models.dev catalog; enter a model id"
 		if m.Conn == nil {
-			return loginModelsLoadedMsg{
-				Note: "could not read the models.dev catalog; enter a model id",
-				Gen:  gen,
-			}
+			return loginModelsLoadedMsg{Note: note, Gen: gen}
 		}
-
 		path := fmt.Sprintf("/models/%s?endpoint=%s", url.PathEscape(ext), url.QueryEscape(endpoint))
 		names, err := daemon.Request[[]string](context.Background(), m.Conn, path, nil)
 		if err != nil {
-			return loginModelsLoadedMsg{
-				Models: nil,
-				Note:   "could not read the models.dev catalog; enter a model id",
-				Err:    err,
-				Gen:    gen,
-			}
+			return loginModelsLoadedMsg{Err: err, Note: note, Gen: gen}
 		}
-		var note string
 		if len(names) == 0 {
 			note = "models.dev has no matching models; enter a model id"
 		}
@@ -582,11 +536,8 @@ func (m LoginModel) fetchCatalogCmd(ext, endpoint string, gen int) tea.Cmd {
 
 func (m LoginModel) saveProviderCmd(name string, settings config.Settings) tea.Cmd {
 	return func() tea.Msg {
-		home := config.HomeDir()
-		if err := config.SaveProvider(home, name, settings); err != nil {
-			return providerSavedMsg{Name: name, Settings: settings, Err: err}
-		}
-		return providerSavedMsg{Name: name, Settings: settings}
+		err := config.SaveProvider(config.HomeDir(), name, settings)
+		return providerSavedMsg{Name: name, Settings: settings, Err: err}
 	}
 }
 
@@ -621,10 +572,8 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		}
 		if len(m.Profiles.Providers) == 0 && len(m.Accounts) == 0 {
 			m.Step = StepName
-			m.resetInput()
 			m.TextInput.Placeholder = ""
-			m.TextInput.Focus()
-			return m, textinput.Blink
+			return m, m.promptInput("", false)
 		}
 		return m, m.ChoosePicker.Init()
 
@@ -693,16 +642,15 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 	case providerSavedMsg:
 		if msg.Err != nil {
 			m.Error = msg.Err.Error()
-			m.Step = StepChoose
-			m.buildChoosePicker()
-			return m, m.ChoosePicker.Init()
+			return m, m.backToChoose()
 		}
 		return m, func() tea.Msg {
 			return LoginDoneMsg{Name: msg.Name, Settings: msg.Settings}
 		}
 
 	case tea.KeyPressMsg:
-		if m.Step == StepChoose && (msg.String() == "delete" || msg.String() == "d") {
+		key := msg.String()
+		if m.Step == StepChoose && (key == "delete" || key == "d") {
 			if item, ok := m.ChoosePicker.Highlighted(); ok {
 				if target, ok := m.removalFor(item.ID); ok {
 					return m, m.confirmRemoval(target)
@@ -710,9 +658,9 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if msg.String() == "esc" || msg.String() == "ctrl+c" || msg.String() == "ctrl+d" {
+		if key == "esc" || key == "ctrl+c" || key == "ctrl+d" {
 			pickerStep := m.Step == StepChoose || m.Step == StepProtocol || m.Step == StepModels || m.Step == StepOAuthModels || m.Step == StepRemove
-			if !pickerStep || msg.String() == "ctrl+d" {
+			if !pickerStep || key == "ctrl+d" {
 				cancel := m.Close()
 				m.Generation++
 				return m, tea.Batch(cancel, func() tea.Msg { return LoginCancelMsg{} })
@@ -735,15 +683,9 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 				m.Step = StepSaving
 				return m, m.selectAccountCmd(account)
 			}
-			if strings.HasPrefix(msg.ID, "use:") {
-				name := strings.TrimPrefix(msg.ID, "use:")
+			if name, ok := strings.CutPrefix(msg.ID, "use:"); ok {
 				if s, ok := m.Profiles.Providers[name]; ok {
-					// A sign-in provider with no accounts left cannot run; sign in first.
-					if login, ok := m.signInFor(s.Extension); ok && m.signedOut(s.Extension) {
-						return m, m.startSignIn(login)
-					}
-					m.Step = StepSaving
-					return m, m.saveProviderCmd(name, s)
+					return m, m.useProfile(name, s)
 				}
 			}
 
@@ -761,10 +703,8 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		case StepModels, StepOAuthModels:
 			if msg.ID == "manual" {
 				m.Step = StepModel
-				m.resetInput()
 				m.TextInput.Placeholder = ""
-				m.TextInput.Focus()
-				return m, textinput.Blink
+				return m, m.promptInput("", false)
 			}
 			if modelName, ok := strings.CutPrefix(msg.ID, "model:"); ok {
 				m.Draft.Model = modelName
@@ -774,70 +714,41 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		}
 
 	case PickerCancelMsg:
-		if m.Step == StepChoose {
+		switch m.Step {
+		case StepChoose, StepOAuthModels:
 			return m, func() tea.Msg { return LoginCancelMsg{} }
-		}
-		if m.Step == StepProtocol {
+		case StepProtocol:
 			m.Step = StepAPIKey
-			m.resetInput()
-			m.TextInput.EchoMode = textinput.EchoPassword
-			m.TextInput.Focus()
-			return m, textinput.Blink
-		}
-		if m.Step == StepModels {
+			return m, m.promptInput("", true)
+		case StepModels:
 			m.Generation++
 			if m.isFixedProtocol() {
 				m.Step = StepAPIKey
-				m.resetInput()
-				m.TextInput.EchoMode = textinput.EchoPassword
-				m.TextInput.SetValue(m.Draft.APIKey)
-				m.TextInput.Focus()
-				return m, textinput.Blink
+				return m, m.promptInput(m.Draft.APIKey, true)
 			}
 			m.Step = StepBaseURL
-			m.resetInput()
-			m.TextInput.SetValue(m.Draft.BaseURL)
-			m.TextInput.Focus()
-			return m, textinput.Blink
-		}
-		if m.Step == StepOAuthModels {
-			return m, func() tea.Msg { return LoginCancelMsg{} }
-		}
-		if m.Step == StepRemove {
+			return m, m.promptInput(m.Draft.BaseURL, false)
+		case StepRemove:
 			return m, m.backToChoose()
 		}
 	}
 
-	// Handle input submissions per step
+	// A picker step routes everything to its picker; the rest to the input.
 	switch m.Step {
-	case StepChoose:
+	case StepChoose, StepProtocol, StepRemove, StepModels, StepOAuthModels:
+		p := m.pickerFor()
 		var cmd tea.Cmd
-		m.ChoosePicker, cmd = m.ChoosePicker.Update(msg)
+		*p, cmd = p.Update(msg)
 		return m, cmd
+	}
 
-	case StepProtocol:
-		var cmd tea.Cmd
-		m.ProtocolPicker, cmd = m.ProtocolPicker.Update(msg)
-		return m, cmd
-
-	case StepRemove:
-		var cmd tea.Cmd
-		m.ConfirmPicker, cmd = m.ConfirmPicker.Update(msg)
-		return m, cmd
-
-	case StepModels, StepOAuthModels:
-		var cmd tea.Cmd
-		m.ModelPicker, cmd = m.ModelPicker.Update(msg)
-		return m, cmd
-
-	case StepName:
-		if keyMsg, ok := msg.(tea.KeyPressMsg); ok && keyMsg.String() == "enter" {
-			val := strings.TrimSpace(m.TextInput.Value())
+	if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == "enter" {
+		switch m.Step {
+		case StepName:
 			m.TextInput.SetCursor(0)
-			name, err := config.ValidateProviderName(val)
+			name, err := config.ValidateProviderName(strings.TrimSpace(m.TextInput.Value()))
 			if err != nil {
-				m.Error = err.Error()
-				return m, nil
+				return m.fail(err.Error())
 			}
 			m.Name = name
 			m.Error = ""
@@ -852,25 +763,15 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			if login, ok := m.signInFor(extension); ok {
 				return m, m.startSignIn(login)
 			}
-
 			m.Step = StepBaseURL
-			m.resetInput()
-			m.TextInput.SetValue(m.Draft.BaseURL)
-			m.TextInput.Focus()
-			return m, textinput.Blink
-		}
+			return m, m.promptInput(m.Draft.BaseURL, false)
 
-	case StepBaseURL:
-		if keyMsg, ok := msg.(tea.KeyPressMsg); ok && keyMsg.String() == "enter" {
-			val := strings.TrimSpace(m.TextInput.Value())
+		case StepBaseURL:
 			m.TextInput.SetCursor(0)
-			if val == "" {
-				val = m.Draft.BaseURL
-			}
+			val := cmp.Or(strings.TrimSpace(m.TextInput.Value()), m.Draft.BaseURL)
 			endpoint, err := config.ValidateEndpoint(val)
 			if err != nil {
-				m.Error = err.Error()
-				return m, nil
+				return m.fail(err.Error())
 			}
 			if endpoint != m.Draft.BaseURL {
 				m.Draft.APIKey = ""
@@ -878,29 +779,14 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			m.Draft.BaseURL = endpoint
 			m.Error = ""
 			m.Step = StepAPIKey
-			m.resetInput()
-			m.TextInput.EchoMode = textinput.EchoPassword
 			m.TextInput.Placeholder = ""
-			m.TextInput.Focus()
-			return m, textinput.Blink
-		}
+			return m, m.promptInput("", true)
 
-	case StepAPIKey:
-		if keyMsg, ok := msg.(tea.KeyPressMsg); ok && keyMsg.String() == "enter" {
-			val := m.TextInput.Value()
+		case StepAPIKey:
 			m.TextInput.SetCursor(0)
-			if val == "" && m.Draft.APIKey != "" {
-				val = m.Draft.APIKey
-			}
-			if val == "" {
-				m.Error = "enter an api key without spaces or control characters"
-				return m, nil
-			}
-			for _, r := range val {
-				if r <= 0x20 || r == 0x7f {
-					m.Error = "enter an api key without spaces or control characters"
-					return m, nil
-				}
+			val := cmp.Or(m.TextInput.Value(), m.Draft.APIKey)
+			if val == "" || strings.ContainsFunc(val, func(r rune) bool { return r <= 0x20 || r == 0x7f }) {
+				return m.fail("enter an api key without spaces or control characters")
 			}
 			m.Draft.APIKey = val
 			m.Error = ""
@@ -910,25 +796,20 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			m.Step = StepProtocol
 			m.buildProtocolPicker()
 			return m, m.ProtocolPicker.Init()
-		}
 
-	case StepOAuth:
-		if keyMsg, ok := msg.(tea.KeyPressMsg); ok && keyMsg.String() == "enter" {
+		case StepOAuth:
 			val := strings.TrimSpace(m.TextInput.Value())
 			if val != "" && m.LoginID != "" {
 				m.Status = "exchanging authorization code…"
 				m.Error = ""
 				return m, m.inputSignInCmd(m.LoginID, val, m.Generation)
 			}
-		}
 
-	case StepModel:
-		if keyMsg, ok := msg.(tea.KeyPressMsg); ok && keyMsg.String() == "enter" {
-			val := strings.TrimSpace(m.TextInput.Value())
+		case StepModel:
 			m.TextInput.SetCursor(0)
+			val := strings.TrimSpace(m.TextInput.Value())
 			if err := validateModelID(val); err != nil {
-				m.Error = err.Error()
-				return m, nil
+				return m.fail(err.Error())
 			}
 			m.Draft.Model = val
 			m.Error = ""
@@ -944,23 +825,23 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 
 func (m LoginModel) View() string {
 	var b strings.Builder
-	b.WriteString(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/login"), m.Styles.Faint.Render(m.Name)))
-	b.WriteByte('\n')
+	line := func(s string) {
+		b.WriteString(s)
+		b.WriteByte('\n')
+	}
+	line(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/login"), m.Styles.Faint.Render(m.Name)))
 	location := "model auth extensions · saved in " + config.HomeDir()
 	if m.Width > 0 && ansi.StringWidth(location) > m.Width && ansi.StringWidth(config.HomeDir()) <= m.Width {
 		location = "model auth extensions · saved in\n" + config.HomeDir()
 	}
-	b.WriteString(m.Styles.Faint.Render(ansi.Wrap(location, m.Width, "")))
-	b.WriteByte('\n')
+	line(m.Styles.Faint.Render(ansi.Wrap(location, m.Width, "")))
 	if m.Error != "" {
-		b.WriteString(m.Styles.Error.Render(ansi.Wrap(m.Error, m.Width, "")))
-		b.WriteByte('\n')
+		line(m.Styles.Error.Render(ansi.Wrap(m.Error, m.Width, "")))
 	}
 
 	switch m.Step {
 	case StepChoose:
-		b.WriteString(m.ChoosePicker.View())
-		b.WriteByte('\n')
+		line(m.ChoosePicker.View())
 		b.WriteString(ansi.Wrap(keyHints(hint{"enter", "select"}, hint{"d", "remove"}, hint{"esc", "cancel"}), m.Width, ""))
 	case StepProtocol:
 		b.WriteString(m.ProtocolPicker.View())
@@ -972,39 +853,26 @@ func (m LoginModel) View() string {
 			break
 		}
 		if m.CatalogNote != "" {
-			b.WriteString(m.Styles.Faint.Render(m.CatalogNote))
-			b.WriteByte('\n')
+			line(m.Styles.Faint.Render(m.CatalogNote))
 		}
 		b.WriteString(m.ModelPicker.View())
 	case StepOAuth:
-		status := m.Status
-		if status == "" {
-			status = "starting sign-in…"
-		}
-		b.WriteString(status)
-		b.WriteByte('\n')
+		line(cmp.Or(m.Status, "starting sign-in…"))
 		if m.SignInURL != "" {
-			b.WriteString(m.Styles.Faint.Render(ansi.Hardwrap(m.SignInURL, m.Width, true)))
-			b.WriteByte('\n')
+			line(m.Styles.Faint.Render(ansi.Hardwrap(m.SignInURL, m.Width, true)))
 		}
 		b.WriteString("callback url or code: ")
-		b.WriteString(m.TextInput.View())
-		b.WriteByte('\n')
+		line(m.TextInput.View())
 		b.WriteString(ansi.Wrap(m.Styles.Faint.Render("browser callback completes automatically")+m.Styles.Decor.Render(" · ")+keyHints(hint{"enter", "pastes manually"}, hint{"esc", "cancel"}), m.Width, ""))
 	case StepSaving:
-		if m.Removing.Kind != "" {
-			b.WriteString(m.Styles.Faint.Render("removing " + m.Removing.Kind + "…"))
-			break
-		}
-		b.WriteString(m.Styles.Faint.Render("saving provider…"))
+		state := pick(m.Removing.Kind != "", "removing "+m.Removing.Kind+"…", "saving provider…")
+		b.WriteString(m.Styles.Faint.Render(state))
 	default:
 		stepLabels := map[LoginStep]string{
 			StepName: "provider name", StepBaseURL: "api base url",
 			StepAPIKey: "api key", StepModel: "model id",
 		}
-		b.WriteString(stepLabels[m.Step] + ": ")
-		b.WriteString(m.TextInput.View())
-		b.WriteByte('\n')
+		line(stepLabels[m.Step] + ": " + m.TextInput.View())
 		var hints []hint
 		if m.Step == StepAPIKey && m.Draft.APIKey != "" {
 			hints = append(hints, hint{"enter", "keeps the saved key"})

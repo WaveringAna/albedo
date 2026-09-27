@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,7 +10,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -63,6 +64,17 @@ type agentsSentMsg struct {
 	Notice string
 	Err    error
 }
+type agentsReconnectMsg struct{ Gen int }
+
+type agentsGenMsg interface{ gen() int }
+
+func (m agentsSnapshotMsg) gen() int     { return m.Gen }
+func (m agentsSeedMsg) gen() int         { return m.Gen }
+func (m agentsEventsMsg) gen() int       { return m.Gen }
+func (m agentsStreamClosedMsg) gen() int { return m.Gen }
+func (m agentsReconnectMsg) gen() int    { return m.Gen }
+func (m agentsFrameMsg) gen() int        { return m.Gen }
+func (m agentsSentMsg) gen() int         { return m.Gen }
 
 type agentWire struct {
 	Session daemon.Session `json:"session"`
@@ -78,7 +90,6 @@ type agentMail struct {
 	incoming bool
 	who      string
 	kind     string
-	text     string
 }
 
 type agentNode struct {
@@ -163,14 +174,14 @@ type AgentsViewModel struct {
 	events   chan []map[string]any
 }
 
-const agentsYou = "you"
-
-var (
-	agentsBars    = []rune("▁▂▃▄▅▆▇█")
+const (
+	agentsYou     = "you"
 	agentsFrame   = 70 * time.Millisecond
 	agentsSlotW   = 16
 	agentsLevelGp = 2
 )
+
+var agentsBars = []rune("▁▂▃▄▅▆▇█")
 
 func NewAgentsViewModel(conn *daemon.Connection, sessionID string) AgentsViewModel {
 	input := newTextInput()
@@ -302,17 +313,16 @@ func (m AgentsViewModel) Update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 }
 
 func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
+	if g, ok := msg.(agentsGenMsg); ok && g.gen() != m.Gen {
+		return m, nil
+	}
 	switch msg := msg.(type) {
 	case agentsSnapshotMsg:
-		if msg.Gen != m.Gen {
-			return m, nil
-		}
 		if msg.Err != nil {
 			m.err = msg.Err
 			return m, nil
 		}
-		m.err = nil
-		m.root = msg.Root
+		m.err, m.root = nil, msg.Root
 		for _, wire := range msg.Nodes {
 			n := m.node(wire.Session.ID, wire.Name)
 			n.session = wire.Session
@@ -332,9 +342,6 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		return m, m.seedCmd()
 
 	case agentsSeedMsg:
-		if msg.Gen != m.Gen {
-			return m, nil
-		}
 		n := m.nodes[msg.ID]
 		if n == nil {
 			return m, nil
@@ -342,10 +349,9 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		var seeded []tailLine
 		for _, item := range msg.Items {
 			switch item.Type {
-			case "user":
-				seeded = append(seeded, tailLine{tailMeta, "← " + firstLine(item.Preview)})
-			case "tool":
-				seeded = append(seeded, tailLine{tailMeta, "▸ " + firstLine(item.Preview)})
+			case "user", "tool":
+				prefix := pick(item.Type == "tool", "▸ ", "← ")
+				seeded = append(seeded, tailLine{tailMeta, prefix + firstLine(item.Preview)})
 			default:
 				for _, line := range strings.Split(item.Preview, "\n") {
 					seeded = append(seeded, tailLine{tailText, line})
@@ -356,14 +362,9 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		return m, nil
 
 	case agentsEventsMsg:
-		if msg.Gen != m.Gen {
-			return m, nil
-		}
 		relayout := false
 		for _, event := range msg.Events {
-			if m.apply(event) {
-				relayout = true
-			}
+			relayout = m.apply(event) || relayout
 		}
 		if relayout {
 			m.layout()
@@ -371,23 +372,13 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		return m, waitAgents(m.events, m.Gen)
 
 	case agentsStreamClosedMsg:
-		if msg.Gen != m.Gen {
-			return m, nil
-		}
 		// The daemon restarted or the connection dropped: reconnect shortly.
-		gen := m.Gen
-		return m, tea.Tick(time.Second, func(time.Time) tea.Msg { return agentsReconnectMsg{Gen: gen} })
+		return m, tea.Tick(time.Second, func(time.Time) tea.Msg { return agentsReconnectMsg(msg) })
 
 	case agentsReconnectMsg:
-		if msg.Gen != m.Gen {
-			return m, nil
-		}
 		return m, tea.Batch(m.snapshotCmd(m.Gen), m.startStream(m.Gen))
 
 	case agentsFrameMsg:
-		if msg.Gen != m.Gen {
-			return m, nil
-		}
 		m.step()
 		if m.ticking = m.moving(); !m.ticking {
 			return m, nil
@@ -395,9 +386,6 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		return m, m.frameCmd(m.Gen)
 
 	case agentsSentMsg:
-		if msg.Gen != m.Gen {
-			return m, nil
-		}
 		if msg.Err != nil {
 			m.say("could not send: " + msg.Err.Error())
 		} else if msg.Notice != "" {
@@ -406,11 +394,12 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		return m, nil
 
 	case sessionRenamedMsg:
-		if msg.Err != nil {
+		switch {
+		case msg.Err != nil:
 			m.say("could not rename: " + msg.Err.Error())
-		} else if msg.Name == "" {
+		case msg.Name == "":
 			m.say("name cleared")
-		} else {
+		default:
 			m.say("renamed to " + msg.Name)
 		}
 		return m, nil
@@ -423,32 +412,29 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 	return m, cmd
 }
 
-type agentsReconnectMsg struct{ Gen int }
-
 func (m AgentsViewModel) key(msg tea.KeyPressMsg) (AgentsViewModel, tea.Cmd) {
-	empty := m.input.Value() == ""
+	s, empty := msg.String(), m.input.Value() == ""
 	if m.rename.active() {
 		return m, m.rename.key(msg)
 	}
 	if m.confirm != "" {
 		id := m.confirm
 		m.confirm = ""
-		if msg.String() == "y" {
+		if s == "y" {
 			m.say("deleting " + m.label(id, "") + "…")
 			return m, m.deleteCmd(id)
 		}
 		m.say("kept")
 		return m, nil
 	}
-	if msg.String() == "ctrl+r" {
+	switch {
+	case s == "ctrl+r":
 		if n := m.nodes[m.selected]; n != nil && n.id != agentsYou {
 			m.rename.open(n.id, n.name, "name this agent")
 		}
 		return m, nil
-	}
-	if msg.String() == "ctrl+x" {
-		n := m.nodes[m.selected]
-		switch {
+	case s == "ctrl+x":
+		switch n := m.nodes[m.selected]; {
 		case n == nil || n.id == agentsYou:
 		case n.id == m.SessionID:
 			m.say("this is the session you opened the view from; delete it from the session browser")
@@ -456,32 +442,30 @@ func (m AgentsViewModel) key(msg tea.KeyPressMsg) (AgentsViewModel, tea.Cmd) {
 			m.confirm = n.id
 		}
 		return m, nil
-	}
-	switch {
-	case msg.String() == "esc" || msg.String() == "ctrl+c" || msg.String() == "ctrl+o":
-		if !empty && msg.String() == "esc" {
+	case s == "esc" || s == "ctrl+c" || s == "ctrl+o":
+		if !empty && s == "esc" {
 			m.input.SetValue("")
 			return m, nil
 		}
 		return m, func() tea.Msg { return AgentsDoneMsg{} }
-	case msg.String() == "tab", empty && (msg.String() == "right" || msg.String() == "down"):
+	case s == "tab" || (empty && (s == "right" || s == "down")):
 		m.cycle(1)
 		return m, m.seedCmd()
-	case msg.String() == "shift+tab", empty && (msg.String() == "left" || msg.String() == "up"):
+	case s == "shift+tab" || (empty && (s == "left" || s == "up")):
 		m.cycle(-1)
 		return m, m.seedCmd()
-	case msg.String() == "enter":
-		text := strings.TrimSpace(m.input.Value())
+	case s == "enter":
 		n := m.nodes[m.selected]
 		if n == nil {
 			return m, nil
 		}
+		text := strings.TrimSpace(m.input.Value())
 		if text == "" {
 			if n.session.ID == "" {
 				n.session = daemon.Session{ID: n.id, Title: n.name, Model: n.model}
 			}
-			session := n.session
-			return m, func() tea.Msg { return AgentsAttachMsg{Session: session} }
+			sess := n.session
+			return m, func() tea.Msg { return AgentsAttachMsg{Session: sess} }
 		}
 		m.input.SetValue("")
 		if rest, ok := strings.CutPrefix(text, "/spawn "); ok {
@@ -518,7 +502,7 @@ func (m *AgentsViewModel) seedCmd() tea.Cmd {
 func (m AgentsViewModel) below(id string) int {
 	count := 0
 	for _, n := range m.nodes {
-		for p := n.parent; p != ""; p = m.nodes[p].parent {
+		for p := n.parent; p != ""; {
 			if p == id {
 				count++
 				break
@@ -526,6 +510,7 @@ func (m AgentsViewModel) below(id string) int {
 			if m.nodes[p] == nil {
 				break
 			}
+			p = m.nodes[p].parent
 		}
 	}
 	return count
@@ -571,10 +556,7 @@ func (m AgentsViewModel) spawnCmd(parent, name, task string) tea.Cmd {
 
 // renameBlank is what an agent is called once its given name is cleared.
 func renameBlank(n *agentNode) string {
-	if n.address != "" {
-		return n.address
-	}
-	return "its latest message's title"
+	return cmp.Or(n.address, "its latest message's title")
 }
 
 func (m *AgentsViewModel) say(text string) {
@@ -583,16 +565,10 @@ func (m *AgentsViewModel) say(text string) {
 }
 
 func (m *AgentsViewModel) cycle(d int) {
-	if len(m.order) == 0 {
-		return
+	if n := len(m.order); n > 0 {
+		i := max(0, slices.Index(m.order, m.selected))
+		m.selected = m.order[(i+d+n)%n]
 	}
-	i := 0
-	for j, id := range m.order {
-		if id == m.selected {
-			i = j
-		}
-	}
-	m.selected = m.order[(i+d+len(m.order))%len(m.order)]
 }
 
 // node finds or makes the dot for a session.
@@ -612,10 +588,7 @@ func (m *AgentsViewModel) node(id, name string) *agentNode {
 }
 
 func shortID(id string) string {
-	if len(id) > 8 {
-		return id[:8]
-	}
-	return id
+	return id[:min(len(id), 8)]
 }
 
 func hashOf(s string) uint32 {
@@ -645,53 +618,48 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 			return false
 		}
 		n := m.node(id, str(event, "name"))
-		n.parent = parent
-		n.depth = int(num(event, "depth"))
-		n.model = str(event, "model")
-		n.peer = false
-		n.flash = 1
+		n.parent, n.model, n.depth = parent, str(event, "model"), int(num(event, "depth"))
+		n.peer, n.flash = false, 1
 		return true
 	case "gone":
-		if _, ok := m.nodes[id]; ok {
-			delete(m.nodes, id)
-			if m.rename.id == id {
-				m.rename = renameField{}
-			}
-			if m.selected == id {
-				m.selected = m.root
-			}
-			return true
+		if _, ok := m.nodes[id]; !ok {
+			return false
 		}
-		return false
+		delete(m.nodes, id)
+		if m.rename.id == id {
+			m.rename = renameField{}
+		}
+		if m.selected == id {
+			m.selected = m.root
+		}
+		return true
 	case "mail":
-		from, _ := event["from"].(string)
-		to := str(event, "to")
+		from, to := str(event, "from"), str(event, "to")
 		fromName := str(event, "fromName")
 		changed := false
-		if _, ok := m.nodes[to]; !ok {
-			m.node(to, "").peer = true
-			changed = true
-		}
-		source := agentsYou
-		if from != "" {
-			if _, ok := m.nodes[from]; !ok {
-				m.node(from, fromName).peer = true
+		ensure := func(nodeID, name string) {
+			if _, ok := m.nodes[nodeID]; !ok {
+				m.node(nodeID, name).peer = true
 				changed = true
 			}
+		}
+		ensure(to, "")
+		source := agentsYou
+		if from != "" {
+			ensure(from, fromName)
 			source = from
 		}
 		if changed {
 			m.layout()
 		}
-		bytes := int(num(event, "bytes"))
-		mailKind := str(event, "kind")
-		label := mailKind
-		if n := m.nodes[to]; n != nil {
-			n.mail = appendMail(n.mail, agentMail{incoming: true, who: m.label(source, fromName), kind: label})
+		bytes, label := int(num(event, "bytes")), str(event, "kind")
+		addMail := func(nodeID string, incoming bool, who string) {
+			if n := m.nodes[nodeID]; n != nil {
+				n.mail = capped(append(n.mail, agentMail{incoming: incoming, who: who, kind: label}), 12)
+			}
 		}
-		if n := m.nodes[source]; n != nil {
-			n.mail = appendMail(n.mail, agentMail{incoming: false, who: m.label(to, ""), kind: label})
-		}
+		addMail(to, true, m.label(source, fromName))
+		addMail(source, false, m.label(to, ""))
 		m.send(source, to, max(1, bytes/4))
 		return false
 	}
@@ -701,20 +669,15 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 	}
 	switch kind {
 	case "running":
-		running, _ := event["running"].(bool)
-		n.running = running
-		if !running {
+		if n.running, _ = event["running"].(bool); !n.running {
 			m.flushLine(n)
 		}
 	case "text", "thinking":
 		text := str(event, "text")
 		n.chars += utf8.RuneCountInString(text)
 		n.rate += float64(len(text))
-		kind := tailText
-		if str(event, "type") == "thinking" {
-			kind = tailThinking
-		}
-		m.stream(n, kind, text)
+		tail := pick(kind == "thinking", tailThinking, tailText)
+		m.stream(n, tail, text)
 	case "arguments_delta":
 		text := str(event, "text")
 		n.chars += utf8.RuneCountInString(text)
@@ -739,11 +702,12 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 			}
 		}
 	case "user":
+		text := str(event, "text")
 		m.flushLine(n)
-		m.pushTail(n, tailMeta, "← "+firstLine(str(event, "text")))
+		m.pushTail(n, tailMeta, "← "+firstLine(text))
 		// Mail already travelled as a packet; a person typing is new.
 		if str(event, "source") == "chat" {
-			m.send(agentsYou, id, max(1, len(str(event, "text"))/4))
+			m.send(agentsYou, id, max(1, len(text)/4))
 		}
 	case "message":
 		// A root's answer goes back to you.
@@ -762,8 +726,7 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 	case "renamed":
 		n.name = str(event, "name")
 	case "closed":
-		n.closed = true
-		n.running = false
+		n.closed, n.running = true, false
 	}
 	return false
 }
@@ -775,16 +738,13 @@ func (m *AgentsViewModel) label(id, fallback string) string {
 	if n := m.nodes[id]; n != nil {
 		return n.name
 	}
-	if fallback != "" {
-		return fallback
-	}
-	return shortID(id)
+	return cmp.Or(fallback, shortID(id))
 }
 
-func appendMail(list []agentMail, mail agentMail) []agentMail {
-	list = append(list, mail)
-	if len(list) > 12 {
-		list = list[len(list)-12:]
+// capped keeps only the newest keep entries of a growing slice.
+func capped[S ~[]E, E any](list S, keep int) S {
+	if len(list) > keep {
+		return list[len(list)-keep:]
 	}
 	return list
 }
@@ -828,10 +788,7 @@ func (m *AgentsViewModel) flushLine(n *agentNode) {
 }
 
 func (m *AgentsViewModel) pushTail(n *agentNode, kind tailKind, line string) {
-	n.tail = append(n.tail, tailLine{kind, strings.TrimRight(line, " ")})
-	if len(n.tail) > 120 {
-		n.tail = n.tail[len(n.tail)-120:]
-	}
+	n.tail = capped(append(n.tail, tailLine{kind, strings.TrimRight(line, " ")}), 120)
 }
 
 // codeLines reads the code out of a tool call's JSON arguments while they are
@@ -873,17 +830,12 @@ func codeLines(raw string) []string {
 // ─── layout ───
 
 func (m *AgentsViewModel) dagWidth() int {
-	if m.Width >= 96 {
-		return m.Width - m.paneWidth() - 1
-	}
-	return m.Width
+	w := m.paneWidth()
+	return pick(w > 0, m.Width-w-1, m.Width)
 }
 
 func (m *AgentsViewModel) paneWidth() int {
-	if m.Width < 96 {
-		return 0
-	}
-	return min(46, max(34, m.Width/3))
+	return pick(m.Width < 96, 0, min(46, max(34, m.Width/3)))
 }
 
 // layout places dots by depth, each depth wrapped into rows that fit the
@@ -909,10 +861,10 @@ func (m *AgentsViewModel) layout() {
 		}
 	}
 	for _, list := range children {
-		sort.Strings(list)
+		slices.Sort(list)
 	}
-	sort.Strings(roots)
-	sort.Strings(peers)
+	slices.Sort(roots)
+	slices.Sort(peers)
 	levels := [][]string{append(roots, peers...)}
 	for {
 		var next []string
@@ -952,9 +904,7 @@ func (m *AgentsViewModel) layout() {
 func route(a, b *agentNode) [][2]int {
 	if b.y < a.y {
 		cells := route(b, a)
-		for i, j := 0, len(cells)-1; i < j; i, j = i+1, j-1 {
-			cells[i], cells[j] = cells[j], cells[i]
-		}
+		slices.Reverse(cells)
 		return cells
 	}
 	var cells [][2]int
@@ -966,10 +916,7 @@ func route(a, b *agentNode) [][2]int {
 	for r := a.y + 1; r <= channel; r++ {
 		cells = append(cells, [2]int{a.x, r})
 	}
-	step := 1
-	if b.x < a.x {
-		step = -1
-	}
+	step := pick(b.x < a.x, -1, 1)
 	for c := a.x + step; c != b.x+step; c += step {
 		cells = append(cells, [2]int{c, channel})
 	}
@@ -988,12 +935,7 @@ func (m *AgentsViewModel) send(from, to string, tokens int) {
 		return
 	}
 	blocks := max(1, min(5, int(math.Round(math.Log2(float64(tokens)/200+1)))))
-	key := edgeKey(from, to)
-	if b.parent == from {
-		key = edgeKey(from, to)
-	} else if a.parent == to {
-		key = edgeKey(to, from)
-	}
+	key := pick(a.parent == to, edgeKey(to, from), edgeKey(from, to))
 	m.packets = append(m.packets, agentPacket{path: path, pos: -float64(blocks), blocks: blocks, hue: a.hue, to: to, tokens: tokens, edge: key})
 	m.heat[key] = 1
 }
@@ -1020,20 +962,15 @@ func (m *AgentsViewModel) step() {
 	}
 	m.packets = live
 	for key, h := range m.heat {
-		busy := false
-		for _, p := range m.packets {
-			if p.edge == key {
-				busy = true
-			}
+		if slices.ContainsFunc(m.packets, func(p agentPacket) bool { return p.edge == key }) {
+			continue
 		}
-		if !busy {
-			h -= dt * 0.8
-			if h <= 0 {
-				delete(m.heat, key)
-				continue
-			}
-			m.heat[key] = h
+		h -= dt * 0.8
+		if h <= 0 {
+			delete(m.heat, key)
+			continue
 		}
+		m.heat[key] = h
 	}
 	floats := m.floats[:0]
 	for _, f := range m.floats {
@@ -1064,10 +1001,7 @@ func (m AgentsViewModel) moving() bool {
 }
 
 func compactCount(n int) string {
-	if n >= 1000 {
-		return fmt.Sprintf("%.1fk", float64(n)/1000)
-	}
-	return fmt.Sprintf("%d", n)
+	return pick(n >= 1000, fmt.Sprintf("%.1fk", float64(n)/1000), fmt.Sprintf("%d", n))
 }
 
 // ─── drawing ───
@@ -1094,9 +1028,9 @@ func newCanvas(w, h int) *agentCanvas {
 }
 
 func (c *agentCanvas) put(x, y int, s string, hue rgb) {
+	h := hue
 	for _, r := range s {
 		if x >= 0 && x < c.w && y >= 0 && y < c.h {
-			h := hue
 			c.cells[y][x] = agentCell{r: r, hue: &h}
 		}
 		x++
@@ -1105,19 +1039,23 @@ func (c *agentCanvas) put(x, y int, s string, hue rgb) {
 
 var sgrCache = map[string]string{}
 
+// sgrCached memoizes the escape sequence for one hex color.
+func sgrCached(hex string) string {
+	seq, ok := sgrCache[hex]
+	if !ok {
+		seq = sgr(hex, "")
+		sgrCache[hex] = seq
+	}
+	return seq
+}
+
 func (c *agentCanvas) line(y int) string {
 	var b strings.Builder
 	current := ""
 	for _, cell := range c.cells[y] {
 		seq := ""
 		if cell.hue != nil && cell.r != ' ' {
-			hex := cell.hue.hex()
-			if cached, ok := sgrCache[hex]; ok {
-				seq = cached
-			} else {
-				seq = sgr(hex, "")
-				sgrCache[hex] = seq
-			}
+			seq = sgrCached(cell.hue.hex())
 		}
 		if seq != current {
 			if current != "" {
@@ -1144,34 +1082,33 @@ func (m *AgentsViewModel) drawEdges(c *agentCanvas) {
 		dotted bool
 	}
 	marks := map[[2]int]*mark{}
+	// dir is one bit per compass direction; a cell's mask names the arms meeting in it.
+	dir := func(dx, dy int) int {
+		switch {
+		case dy < 0:
+			return 1
+		case dy > 0:
+			return 4
+		case dx > 0:
+			return 2
+		default:
+			return 8
+		}
+	}
 	draw := func(from, to *agentNode, heat float64, dotted bool) {
 		cells := append([][2]int{{from.x, from.y}}, route(from, to)...)
 		for i := 1; i < len(cells); i++ {
 			cell, prev := cells[i], cells[i-1]
-			dir := func(dx, dy int) int {
-				switch {
-				case dy < 0:
-					return 1
-				case dy > 0:
-					return 4
-				case dx > 0:
-					return 2
-				default:
-					return 8
-				}
-			}
 			mk := marks[cell]
 			if mk == nil {
 				mk = &mark{hue: from.hue}
 				marks[cell] = mk
 			}
-			mk.mask |= dir(prev[0]-cell[0], prev[1]-cell[1])
+			next := [2]int{to.x, to.y}
 			if i+1 < len(cells) {
-				next := cells[i+1]
-				mk.mask |= dir(next[0]-cell[0], next[1]-cell[1])
-			} else {
-				mk.mask |= dir(to.x-cell[0], to.y-cell[1])
+				next = cells[i+1]
 			}
+			mk.mask |= dir(prev[0]-cell[0], prev[1]-cell[1]) | dir(next[0]-cell[0], next[1]-cell[1])
 			if heat >= mk.heat {
 				mk.heat, mk.hue = heat, from.hue
 			}
@@ -1201,9 +1138,10 @@ func (m *AgentsViewModel) drawEdges(c *agentCanvas) {
 		}
 		draw(a, b, heat, true)
 	}
+	decor := agentColors().decor
 	for cell, mk := range marks {
-		g, ok := agentGlyphs[mk.mask]
-		if !ok {
+		g := agentGlyphs[mk.mask]
+		if g == 0 {
 			g = '·'
 		}
 		if mk.dotted {
@@ -1214,41 +1152,39 @@ func (m *AgentsViewModel) drawEdges(c *agentCanvas) {
 				g = '┄'
 			}
 		}
-		c.put(cell[0], cell[1], string(g), agentColors().decor.mix(mk.hue, math.Min(1, mk.heat*1.1)))
+		c.put(cell[0], cell[1], string(g), decor.mix(mk.hue, math.Min(1, mk.heat*1.1)))
 	}
 }
 
 func (m *AgentsViewModel) drawNodes(c *agentCanvas) {
-	t := m.clock
+	t, colors := m.clock, agentColors()
 	for id, n := range m.nodes {
-		glyph, hue := "●", n.hue
+		glyph := "●"
+		var hue rgb
 		switch {
 		case id == agentsYou:
-			glyph, hue = "◆", agentColors().you
+			glyph, hue = "◆", colors.you
 		case n.running:
 			p := 0.5 + 0.5*math.Sin(t*5+n.phase)
-			if p > 0.55 {
-				glyph = "◉"
-			}
-			hue = n.hue.mix(agentColors().faint, 0.2).mix(n.hue, p)
+			glyph = pick(p > 0.55, "◉", "●")
+			hue = n.hue.mix(colors.faint, 0.2).mix(n.hue, p)
 		case n.closed:
-			glyph, hue = "✓", n.hue.mix(agentColors().faint, 0.5)
-		case n.peer:
-			glyph, hue = "◇", n.hue.mix(agentColors().faint, 0.3)
+			glyph, hue = "✓", n.hue.mix(colors.faint, 0.5)
 		default:
-			glyph, hue = "○", n.hue.mix(agentColors().faint, 0.3)
+			glyph = pick(n.peer, "◇", "○")
+			hue = n.hue.mix(colors.faint, 0.3)
 		}
 		if n.flash > 0 {
-			hue = hue.mix(agentColors().hi, n.flash*0.7)
+			hue = hue.mix(colors.hi, n.flash*0.7)
 		}
 		c.put(n.x, n.y, glyph, hue)
 		name := n.name
 		if w := agentsSlotW - 4; utf8.RuneCountInString(name) > w {
 			name = string([]rune(name)[:w-1]) + "…"
 		}
-		label := n.hue.mix(agentColors().hi, 0.35)
+		label := n.hue.mix(colors.hi, 0.35)
 		if id == m.selected {
-			label = agentColors().hi
+			label = colors.hi
 			c.put(n.x-1, n.y, "[", n.hue)
 			c.put(n.x+2+utf8.RuneCountInString(name), n.y, "]", n.hue)
 		}
@@ -1266,13 +1202,10 @@ func (m *AgentsViewModel) drawNodes(c *agentCanvas) {
 			}
 			bars.WriteRune(agentsBars[max(0, min(7, int(math.Round(v*7))))])
 		}
-		barHue := agentColors().decor
-		if n.running {
-			barHue = n.hue
-		}
+		barHue := pick(n.running, n.hue, colors.decor)
 		c.put(n.x+2, n.y+1, bars.String(), barHue)
 		if n.chars > 0 {
-			c.put(n.x+8, n.y+1, compactCount(n.chars/4), agentColors().faint)
+			c.put(n.x+8, n.y+1, compactCount(n.chars/4), colors.faint)
 		}
 	}
 	for _, p := range m.packets {
@@ -1284,14 +1217,14 @@ func (m *AgentsViewModel) drawNodes(c *agentCanvas) {
 			}
 			glyph, hue := "▪", p.hue
 			if i == 0 {
-				glyph, hue = "■", p.hue.mix(agentColors().hi, 0.35)
+				glyph, hue = "■", p.hue.mix(colors.hi, 0.35)
 			}
 			c.put(p.path[idx][0], p.path[idx][1], glyph, hue)
 		}
 	}
 	for _, f := range m.floats {
 		rise := min(2, int(f.t*2.2))
-		c.put(f.x, f.y-rise, f.text, f.hue.mix(agentColors().decor, math.Min(1, f.t/1.4)))
+		c.put(f.x, f.y-rise, f.text, f.hue.mix(colors.decor, math.Min(1, f.t/1.4)))
 	}
 }
 
@@ -1303,6 +1236,7 @@ func (m AgentsViewModel) pane(height int) []string {
 	if n == nil || width == 0 {
 		return rows
 	}
+	colors := agentColors()
 	styled := func(hue rgb, s string) string { return sgr(hue.hex(), "") + s + ansiReset }
 	state := "idle"
 	switch {
@@ -1330,10 +1264,7 @@ func (m AgentsViewModel) pane(height int) []string {
 	if len(n.mail) > 0 {
 		rows = append(rows, DefaultStyles.Muted.Render("mail"))
 		for _, mail := range n.mail[max(0, len(n.mail)-5):] {
-			arrow := DefaultStyles.Faint.Render("→ ")
-			if mail.incoming {
-				arrow = styled(agentColors().mail, "← ")
-			}
+			arrow := pick(mail.incoming, styled(colors.mail, "← "), DefaultStyles.Faint.Render("→ "))
 			rows = append(rows, ansi.Truncate(arrow+mail.who+" "+DefaultStyles.Faint.Render(mail.kind), width, "…"))
 		}
 		rows = append(rows, "")
@@ -1343,7 +1274,7 @@ func (m AgentsViewModel) pane(height int) []string {
 		live += " " + styled(n.hue, "●") + DefaultStyles.Faint.Render(" live")
 	}
 	rows = append(rows, live)
-	lines := append([]tailLine{}, n.tail...)
+	lines := slices.Clone(n.tail)
 	if n.lineKind == tailCode {
 		for _, line := range codeLines(n.args) {
 			lines = append(lines, tailLine{tailCode, line})
@@ -1359,36 +1290,31 @@ func (m AgentsViewModel) pane(height int) []string {
 	if room > 0 && len(wrapped) > room {
 		wrapped = wrapped[len(wrapped)-room:]
 	}
-	rows = append(rows, wrapped...)
 	if len(wrapped) == 0 {
 		rows = append(rows, DefaultStyles.Faint.Render("nothing yet"))
+	} else {
+		rows = append(rows, wrapped...)
 	}
 	return rows
 }
 
 // drawTail wraps one tail line to width and styles it by kind.
 func drawTail(line tailLine, width int) []string {
-	gutter, body := "", line.text
-	style := func(s string) string { return s }
+	gutter, inner := "", width
+	format := func(s ...string) string { return strings.Join(s, "") }
 	switch line.kind {
 	case tailThinking:
-		style = func(s string) string { return DefaultStyles.Faint.Render(ansiItalic + s) }
+		format = func(s ...string) string { return DefaultStyles.Faint.Render(ansiItalic + s[0]) }
 	case tailCode:
-		gutter = DefaultStyles.Decor.Render("│ ")
-		style = func(s string) string { return DefaultStyles.Muted.Render(s) }
+		gutter, inner, format = DefaultStyles.Decor.Render("│ "), width-2, DefaultStyles.Muted.Render
 	case tailOutput:
-		gutter = DefaultStyles.Decor.Render("⎿ ")
-		style = func(s string) string { return DefaultStyles.Faint.Render(s) }
+		gutter, inner, format = DefaultStyles.Decor.Render("⎿ "), width-2, DefaultStyles.Faint.Render
 	case tailMeta:
-		style = func(s string) string { return DefaultStyles.Faint.Render(s) }
-	}
-	inner := width
-	if gutter != "" {
-		inner = width - 2
+		format = DefaultStyles.Faint.Render
 	}
 	var out []string
-	for _, part := range strings.Split(ansi.Hardwrap(body, max(8, inner), true), "\n") {
-		out = append(out, gutter+style(part))
+	for _, part := range strings.Split(ansi.Hardwrap(line.text, max(8, inner), true), "\n") {
+		out = append(out, gutter+format(part))
 	}
 	return out
 }
@@ -1422,14 +1348,15 @@ func (m AgentsViewModel) View() string {
 	m.drawNodes(canvas)
 	pane := m.pane(bodyH)
 	divider := DefaultStyles.Decor.Render("│")
+	pw := m.paneWidth()
 	for y := range bodyH {
 		row := canvas.line(y + offset)
-		if m.paneWidth() > 0 {
+		if pw > 0 {
 			side := ""
 			if y < len(pane) {
 				side = pane[y]
 			}
-			row += divider + " " + ansi.Truncate(side, m.paneWidth()-1, "…")
+			row += divider + " " + ansi.Truncate(side, pw-1, "…")
 		}
 		out = append(out, row)
 	}
@@ -1443,11 +1370,9 @@ func (m AgentsViewModel) View() string {
 		}
 	case m.confirm != "":
 		what := m.label(m.confirm, "")
-		switch below := m.below(m.confirm); below {
-		case 0:
-		case 1:
+		if below := m.below(m.confirm); below == 1 {
 			what += " and the agent below it"
-		default:
+		} else if below > 1 {
 			what += fmt.Sprintf(" and the %d agents below it", below)
 		}
 		status = DefaultStyles.Warning.Render("delete "+what+"? their transcripts and work go too") +
@@ -1458,20 +1383,15 @@ func (m AgentsViewModel) View() string {
 		status = DefaultStyles.Muted.Render(m.notice)
 	}
 	out = append(out, status)
-	target := "agent"
-	if n := m.nodes[m.selected]; n != nil {
-		target = n.name
-	}
+	target := m.label(m.selected, "agent")
 	input := m.input.View()
 	if m.input.Value() == "" {
 		input = DefaultStyles.Faint.Render("message " + target + "…  or /spawn <name> <task>")
 	}
 	if n := m.nodes[m.rename.id]; n != nil && m.rename.active() {
-		out = append(out, DefaultStyles.Prompt.Render("✎ ")+m.rename.view(m.Width-promptMarkWidth))
-		out = append(out, renameHints("restores "+renameBlank(n)))
-		return strings.Join(out, "\n")
+		out = append(out, DefaultStyles.Prompt.Render("✎ ")+m.rename.view(m.Width-promptMarkWidth), renameHints("restores "+renameBlank(n)))
+	} else {
+		out = append(out, promptLead()+input, keyHints(hint{"tab", "next agent"}, hint{"enter", "open or send"}, hint{"ctrl+r", "rename"}, hint{"ctrl+x", "delete"}, hint{"esc", "back"}))
 	}
-	out = append(out, promptLead()+input)
-	out = append(out, keyHints(hint{"tab", "next agent"}, hint{"enter", "open or send"}, hint{"ctrl+r", "rename"}, hint{"ctrl+x", "delete"}, hint{"esc", "back"}))
 	return strings.Join(out, "\n")
 }

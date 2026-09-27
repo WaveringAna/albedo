@@ -92,12 +92,7 @@ func NewModelPickerModel(conn *daemon.Connection, profiles config.Profiles, mode
 	if profile == "" {
 		profile = profiles.Active
 	}
-	lead := func(name string) int {
-		if name == profile {
-			return 0
-		}
-		return 1
-	}
+	lead := func(name string) int { return pick(name == profile, 0, 1) }
 	names := slices.Sorted(maps.Keys(profiles.Providers))
 	slices.SortStableFunc(names, func(a, b string) int { return cmp.Compare(lead(a), lead(b)) })
 
@@ -120,8 +115,7 @@ func NewModelPickerModel(conn *daemon.Connection, profiles config.Profiles, mode
 	search.Prompt = ""
 	search.Placeholder = "search models, or type an id"
 	st := search.Styles()
-	st.Focused.Placeholder = DefaultStyles.Faint
-	st.Blurred.Placeholder = DefaultStyles.Faint
+	st.Focused.Placeholder, st.Blurred.Placeholder = DefaultStyles.Faint, DefaultStyles.Faint
 	search.SetStyles(st)
 	search.Focus()
 
@@ -150,21 +144,21 @@ func mergeModels(seeds []string, listed []daemon.Model) []daemon.Model {
 	}
 	seen := map[string]bool{"": true}
 	var out []daemon.Model
-	for _, id := range seeds {
-		if !seen[id] {
-			seen[id] = true
-			model, ok := byID[id]
-			if !ok {
-				model = daemon.Model{ID: id}
-			}
-			out = append(out, model)
-		}
-	}
-	for _, m := range listed {
+	add := func(m daemon.Model) {
 		if !seen[m.ID] {
 			seen[m.ID] = true
 			out = append(out, m)
 		}
+	}
+	for _, id := range seeds {
+		m, ok := byID[id]
+		if !ok {
+			m = daemon.Model{ID: id}
+		}
+		add(m)
+	}
+	for _, m := range listed {
+		add(m)
 	}
 	return out
 }
@@ -200,13 +194,8 @@ func (m ModelPickerModel) listCmd(c profileCatalog) tea.Cmd {
 
 func validateModelID(m string) error {
 	m = strings.TrimSpace(m)
-	if m == "" || jsLength(m) > 512 {
+	if m == "" || jsLength(m) > 512 || strings.ContainsFunc(m, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 		return errors.New("enter a model id of 1–512 characters")
-	}
-	for _, r := range m {
-		if r < 0x20 || r == 0x7f {
-			return errors.New("enter a model id of 1–512 characters")
-		}
 	}
 	return nil
 }
@@ -291,6 +280,7 @@ func (m *ModelPickerModel) refilter(reset bool) {
 	}
 	var groups [][]scored
 	var typed []modelRow
+	canType := query != "" && !strings.ContainsFunc(query, unicode.IsSpace) && validateModelID(query) == nil
 	for _, c := range m.catalogs {
 		var group []scored
 		for _, model := range c.models {
@@ -303,8 +293,7 @@ func (m *ModelPickerModel) refilter(reset bool) {
 			groups = append(groups, group)
 		}
 		// An id has no spaces, so a search of several words offers none.
-		listed := slices.ContainsFunc(c.models, func(model daemon.Model) bool { return model.ID == query })
-		if !listed && query != "" && !strings.ContainsFunc(query, unicode.IsSpace) && validateModelID(query) == nil {
+		if canType && !slices.ContainsFunc(c.models, func(model daemon.Model) bool { return model.ID == query }) {
 			typed = append(typed, modelRow{profile: c.name, model: daemon.Model{ID: query}, typed: true})
 		}
 	}
@@ -327,11 +316,10 @@ func (m ModelPickerModel) highlighted() (modelRow, bool) {
 }
 
 func (m ModelPickerModel) catalog(profile string) profileCatalog {
-	i := slices.IndexFunc(m.catalogs, func(c profileCatalog) bool { return c.name == profile })
-	if i < 0 {
-		return profileCatalog{}
+	if i := slices.IndexFunc(m.catalogs, func(c profileCatalog) bool { return c.name == profile }); i >= 0 {
+		return m.catalogs[i]
 	}
-	return m.catalogs[i]
+	return profileCatalog{}
 }
 
 // effort is the level a row would switch with: your pick, else the session's
@@ -447,17 +435,8 @@ func (m ModelPickerModel) Update(msg tea.Msg) (ModelPickerModel, tea.Cmd) {
 				choice.RaiseCap = &raised
 			}
 			return m, func() tea.Msg { return choice }
-		case "up", "ctrl+p":
-			m.move(-1)
-			return m, nil
-		case "down", "ctrl+n":
-			m.move(1)
-			return m, nil
-		case "pgup":
-			m.move(-max(1, m.Height/2))
-			return m, nil
-		case "pgdown":
-			m.move(max(1, m.Height/2))
+		case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown":
+			m.move(map[string]int{"up": -1, "ctrl+p": -1, "down": 1, "ctrl+n": 1, "pgup": -max(1, m.Height/2), "pgdown": max(1, m.Height/2)}[msg.String()])
 			return m, nil
 		case "tab":
 			if r, ok := m.highlighted(); ok && raisable(r.model) {
@@ -566,13 +545,14 @@ func (m ModelPickerModel) View() string {
 	}
 
 	paned := width >= 96 && height >= 14
-	tail := []string{m.footer(width)}
-	if r, ok := m.highlighted(); ok && !paned && height >= 16 {
-		tail = append([]string{" " + m.summary(r)}, tail...)
-	}
+	var tail []string
 	if roomy {
-		tail = append([]string{""}, tail...)
+		tail = append(tail, "")
 	}
+	if r, ok := m.highlighted(); ok && !paned && height >= 16 {
+		tail = append(tail, " "+m.summary(r))
+	}
+	tail = append(tail, m.footer(width))
 	body := max(1, height-len(lines)-len(tail))
 
 	if paned {
@@ -666,10 +646,7 @@ func (m ModelPickerModel) row(r modelRow, selected bool, width int, cols modelCo
 			line += "  " + m.ladder(r, selected, cols)
 		}
 		if tag := m.tag(r); tag != "" {
-			style := DefaultStyles.Faint
-			if tag == "current" {
-				style = DefaultStyles.Success
-			}
+			style := pick(tag == "current", DefaultStyles.Success, DefaultStyles.Faint)
 			line += strings.Repeat(" ", max(2, width-ansi.StringWidth(line)-ansi.StringWidth(tag)-1)) + style.Render(tag)
 		}
 	}
@@ -695,7 +672,8 @@ func markedCell(s string, hits []int, width int, base lipgloss.Style) string {
 	run, marked := "", false
 	flush := func() {
 		if run != "" {
-			b.WriteString(map[bool]lipgloss.Style{false: base, true: hit}[marked].Render(run))
+			style := pick(marked, hit, base)
+			b.WriteString(style.Render(run))
 		}
 	}
 	for i, r := range plain {
@@ -733,10 +711,10 @@ func (m ModelPickerModel) ladder(r modelRow, selected bool, cols modelColumns) s
 		}
 	}
 	arrow := func(glyph string, open bool) string {
-		switch {
-		case !selected:
+		if !selected {
 			return " "
-		case open:
+		}
+		if open {
 			return DefaultStyles.Muted.Render(glyph)
 		}
 		return DefaultStyles.Decor.Render(glyph)
@@ -744,10 +722,7 @@ func (m ModelPickerModel) ladder(r modelRow, selected bool, cols modelColumns) s
 	at := slices.Index(levels, effort)
 	out := arrow("‹", at > 0) + " " + squares.String() + " " + arrow("›", at < len(levels)-1)
 	if cols.label > 0 {
-		label := DefaultStyles.Faint
-		if selected {
-			label = lipgloss.NewStyle()
-		}
+		label := pick(selected, lipgloss.NewStyle(), DefaultStyles.Faint)
 		out += " " + label.Render(svCell(effort, cols.label, false))
 	}
 	return out
@@ -815,67 +790,53 @@ func (m ModelPickerModel) summary(r modelRow) string {
 // details renders the highlighted row's pane at exactly width × height.
 func (m ModelPickerModel) details(width, height int) []string {
 	inner := max(1, width-2)
-	var lines []string
 	r, ok := m.highlighted()
 	if !ok {
-		lines = []string{"", DefaultStyles.Muted.Render("nothing matches"), DefaultStyles.Faint.Render("type a model id to use it as is")}
+		return paneBox([]string{"", DefaultStyles.Muted.Render("nothing matches"), DefaultStyles.Faint.Render("type a model id to use it as is")}, inner, width, height)
+	}
+	var lines []string
+	for _, l := range svWrap(r.model.ID, inner, 2) {
+		lines = append(lines, DefaultStyles.Bold.Render(l))
+	}
+	meta := []string{DefaultStyles.Muted.Render(r.profile)}
+	if protocol := m.catalog(r.profile).settings.Protocol; protocol != "" {
+		meta = append(meta, DefaultStyles.Faint.Render(protocol))
+	}
+	if tag := m.tag(r); tag != "" {
+		meta = append(meta, pick(tag == "current", DefaultStyles.Success, DefaultStyles.Faint).Render(tag))
+	}
+	lines = append(lines, strings.Join(meta, DefaultStyles.Decor.Render(" · ")), DefaultStyles.Decor.Render(strings.Repeat("─", inner)))
+
+	note := func(text string) {
+		for _, l := range svWrap(text, inner, 3) {
+			lines = append(lines, DefaultStyles.Faint.Render(l))
+		}
+	}
+	if r.typed {
+		note(r.profile + " does not list this id, so it is sent as typed and the daemon picks the effort.")
 	} else {
-		for _, l := range svWrap(r.model.ID, inner, 2) {
-			lines = append(lines, DefaultStyles.Bold.Render(l))
-		}
-		meta := []string{DefaultStyles.Muted.Render(r.profile)}
-		if protocol := m.catalog(r.profile).settings.Protocol; protocol != "" {
-			meta = append(meta, DefaultStyles.Faint.Render(protocol))
-		}
-		if tag := m.tag(r); tag == "current" {
-			meta = append(meta, DefaultStyles.Success.Render(tag))
-		} else if tag != "" {
-			meta = append(meta, DefaultStyles.Faint.Render(tag))
-		}
-		lines = append(lines, strings.Join(meta, DefaultStyles.Decor.Render(" · ")), DefaultStyles.Decor.Render(strings.Repeat("─", inner)))
-
-		note := func(text string) {
-			for _, l := range svWrap(text, inner, 3) {
-				lines = append(lines, DefaultStyles.Faint.Render(l))
-			}
-		}
-		if r.typed {
-			note(r.profile + " does not list this id, so it is sent as typed and the daemon picks the effort.")
-		} else {
-			facts := m.facts(r)
-			if levels := r.model.Efforts; len(levels) > 0 {
-				chosen := m.effort(r)
-				marks := make([]string, len(levels))
-				for i, level := range levels {
-					marks[i] = DefaultStyles.Faint.Render(level)
-					if level == chosen {
-						marks[i] = brandInk(1).Bold(true).Render(level)
-					}
+		facts := m.facts(r)
+		if levels := r.model.Efforts; len(levels) > 0 {
+			chosen := m.effort(r)
+			marks := make([]string, len(levels))
+			for i, level := range levels {
+				marks[i] = DefaultStyles.Faint.Render(level)
+				if level == chosen {
+					marks[i] = brandInk(1).Bold(true).Render(level)
 				}
-				facts = append(facts, [2]string{"effort", strings.Join(marks, DefaultStyles.Decor.Render(" · "))})
 			}
-			for _, f := range facts {
-				lines = append(lines, DefaultStyles.Muted.Render(svCell(f[0], 9, false))+f[1])
-			}
-			if len(facts) == 0 {
-				note("the catalog knows nothing else about this model.")
-			}
+			facts = append(facts, [2]string{"effort", strings.Join(marks, DefaultStyles.Decor.Render(" · "))})
 		}
-		lines = append(lines, "")
-		note("enter switches this session and makes it the default for new sessions.")
-	}
-
-	out := make([]string, 0, height)
-	for _, l := range lines {
-		if len(out) == height {
-			break
+		for _, f := range facts {
+			lines = append(lines, DefaultStyles.Muted.Render(svCell(f[0], 9, false))+f[1])
 		}
-		out = append(out, " "+svFit(l, inner)+" ")
+		if len(facts) == 0 {
+			note("the catalog knows nothing else about this model.")
+		}
 	}
-	for len(out) < height {
-		out = append(out, strings.Repeat(" ", width))
-	}
-	return out
+	lines = append(lines, "")
+	note("enter switches this session and makes it the default for new sessions.")
+	return paneBox(lines, inner, width, height)
 }
 
 func (m ModelPickerModel) footer(width int) string {
@@ -884,8 +845,7 @@ func (m ModelPickerModel) footer(width int) string {
 		hints = append(hints, hint{"tab", "cap"})
 	}
 	left := " " + keyHints(append(hints, hint{"enter", "switch"}, hint{"esc", "back"})...)
-	loading := 0
-	models := 0
+	loading, models := 0, 0
 	for _, c := range m.catalogs {
 		if c.loading {
 			loading++
@@ -905,18 +865,15 @@ func (m ModelPickerModel) footer(width int) string {
 			DefaultStyles.Faint.Render(counted(len(m.catalogs), "profile"))
 	}
 	gap := width - ansi.StringWidth(left) - ansi.StringWidth(right) - 1
-	switch {
-	case gap >= 3:
+	if gap >= 3 {
 		return left + strings.Repeat(" ", gap) + right
-	case m.Error != "":
+	}
+	if m.Error != "" {
 		return " " + right
 	}
 	return left
 }
 
 func counted(n int, noun string) string {
-	if n == 1 {
-		return "1 " + noun
-	}
-	return fmt.Sprintf("%d %ss", n, noun)
+	return pick(n == 1, "1 "+noun, fmt.Sprintf("%d %ss", n, noun))
 }

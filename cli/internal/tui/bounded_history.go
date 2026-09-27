@@ -63,16 +63,14 @@ const (
 
 func (e *HistoryEntry) ComputeSize() int64 {
 	size := int64(len(e.Speaker) + len(e.Text) + len(e.ClientID) + len(e.ToolName) + len(e.ToolResult) + 64)
-	if e.ToolArgs != nil {
-		for k, v := range e.ToolArgs {
-			size += int64(len(k) + 16)
-			switch val := v.(type) {
-			case string:
-				size += int64(len(val))
-			default:
-				data, _ := json.Marshal(val)
-				size += int64(len(data))
-			}
+	for k, v := range e.ToolArgs {
+		size += int64(len(k) + 16)
+		switch val := v.(type) {
+		case string:
+			size += int64(len(val))
+		default:
+			data, _ := json.Marshal(val)
+			size += int64(len(data))
 		}
 	}
 	if e.ToolTrace != nil {
@@ -100,38 +98,18 @@ type BoundedHistory struct {
 }
 
 func NewBoundedHistory(maxEntries int, maxBytes int64) *BoundedHistory {
-	if maxEntries <= 0 {
-		maxEntries = 500
-	}
-	if maxBytes <= 0 {
-		maxBytes = 2 * 1024 * 1024 // 2MB default
-	}
 	return &BoundedHistory{
-		MaxEntries: maxEntries,
-		MaxBytes:   maxBytes,
+		MaxEntries: pick(maxEntries <= 0, 500, maxEntries),
+		MaxBytes:   pick(maxBytes <= 0, 2*1024*1024, maxBytes),
 		entries:    make([]HistoryEntry, 0, 128),
 	}
 }
 
-func (h *BoundedHistory) Len() int {
-	return len(h.entries)
-}
-
-func (h *BoundedHistory) TotalBytes() int64 {
-	return h.totalBytes
-}
-
-func (h *BoundedHistory) EvictedCount() int {
-	return h.evictedEntries
-}
-
-func (h *BoundedHistory) EvictedBytes() int64 {
-	return h.evictedBytes
-}
-
-func (h *BoundedHistory) Entries() []HistoryEntry {
-	return h.entries
-}
+func (h *BoundedHistory) Len() int                { return len(h.entries) }
+func (h *BoundedHistory) TotalBytes() int64       { return h.totalBytes }
+func (h *BoundedHistory) EvictedCount() int       { return h.evictedEntries }
+func (h *BoundedHistory) EvictedBytes() int64     { return h.evictedBytes }
+func (h *BoundedHistory) Entries() []HistoryEntry { return h.entries }
 
 func (h *BoundedHistory) TruncationNotice() string {
 	if h.evictedEntries > 0 {
@@ -161,7 +139,7 @@ func (h *BoundedHistory) Prepend(older []HistoryEntry) {
 	for i := range older {
 		h.totalBytes += older[i].ComputeSize()
 	}
-	h.entries = append(slices.Clone(older), h.entries...)
+	h.entries = slices.Concat(older, h.entries)
 	h.evictedThrough = 0
 }
 
@@ -180,10 +158,7 @@ func (h *BoundedHistory) evictFirst() {
 	removed := h.entries[0]
 	h.entries[0] = HistoryEntry{} // Explicitly zero out evicted slot to drop GC references
 	h.entries = h.entries[1:]
-	h.totalBytes -= removed.SizeBytes
-	if h.totalBytes < 0 {
-		h.totalBytes = 0
-	}
+	h.totalBytes = max(0, h.totalBytes-removed.SizeBytes)
 	h.evictedEntries++
 	h.evictedBytes += removed.SizeBytes
 	h.evictedThrough = max(h.evictedThrough, removed.Seq)
@@ -201,11 +176,10 @@ func (h *BoundedHistory) AppendToLast(chunk string) {
 		h.Append(HistoryEntry{Kind: EntryAssistant, Text: chunk})
 		return
 	}
-	lastIdx := len(h.entries) - 1
-	oldSize := h.entries[lastIdx].SizeBytes
-	h.entries[lastIdx].Text += chunk
-	newSize := h.entries[lastIdx].ComputeSize()
-	h.totalBytes += (newSize - oldSize)
+	last := &h.entries[len(h.entries)-1]
+	oldSize := last.SizeBytes
+	last.Text += chunk
+	h.totalBytes += last.ComputeSize() - oldSize
 	h.enforceBounds()
 }
 
@@ -214,21 +188,13 @@ func (h *BoundedHistory) ReplaceLast(entry HistoryEntry) {
 		h.Append(entry)
 		return
 	}
-	lastIdx := len(h.entries) - 1
-	oldSize := h.entries[lastIdx].SizeBytes
-	entry.ComputeSize()
-	h.entries[lastIdx] = entry
-	h.totalBytes += (entry.SizeBytes - oldSize)
+	last := &h.entries[len(h.entries)-1]
+	h.totalBytes += entry.ComputeSize() - last.SizeBytes
+	*last = entry
 	h.enforceBounds()
 }
 
 func (h *BoundedHistory) Clear() {
-	for i := range h.entries {
-		h.entries[i] = HistoryEntry{} // Zero out all slots to prevent retaining pointers
-	}
-	h.entries = h.entries[:0]
-	h.totalBytes = 0
-	h.evictedEntries = 0
-	h.evictedBytes = 0
-	h.evictedThrough = 0
+	clear(h.entries)
+	*h = BoundedHistory{MaxEntries: h.MaxEntries, MaxBytes: h.MaxBytes, entries: h.entries[:0]}
 }

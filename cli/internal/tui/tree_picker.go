@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -92,31 +93,24 @@ func (m TreePickerModel) Init() tea.Cmd {
 	return m.loadTreeCmd(0, m.Generation)
 }
 
+func (m TreePickerModel) loadPage(after int) (TreePickerModel, tea.Cmd) {
+	m.Loading, m.Error = true, ""
+	m.Generation++
+	return m, m.loadTreeCmd(after, m.Generation)
+}
+
 func (m TreePickerModel) loadTreeCmd(after int, gen int) tea.Cmd {
 	return func() tea.Msg {
 		if m.Conn == nil {
 			return treeLoadedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
 
-		// Check capability
-		health, err := daemon.Request[struct {
-			Capabilities []string `json:"capabilities"`
-		}](context.Background(), m.Conn, "/health", nil)
+		caps, err := daemon.Capabilities(context.Background(), m.Conn)
+		if err == nil && !slices.Contains(caps, "session_tree") {
+			err = daemon.UpgradeNeeded("for /tree")
+		}
 		if err != nil {
 			return treeLoadedMsg{Err: err, Gen: gen}
-		}
-		hasCap := false
-		for _, c := range health.Capabilities {
-			if c == "session_tree" {
-				hasCap = true
-				break
-			}
-		}
-		if !hasCap {
-			return treeLoadedMsg{
-				Err: errors.New("daemon upgrade needed for /tree; when ready, run albedo daemon --stop, then albedo (this clears python variables)"),
-				Gen: gen,
-			}
 		}
 
 		type treeResp struct {
@@ -161,13 +155,9 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 			m.Error = msg.Err.Error()
 			return m, nil
 		}
-		m.Checkpoints = msg.Items
-		m.NextCursor = msg.NextCursor
-		m.HasMore = msg.HasMore
-		m.Cursor = 0
-		m.Confirming = false
-		m.ForkError = ""
-		m.Error = ""
+		m.Checkpoints, m.NextCursor, m.HasMore = msg.Items, msg.NextCursor, msg.HasMore
+		m.Cursor, m.Confirming = 0, false
+		m.ForkError, m.Error = "", ""
 		return m, nil
 
 	case treeForkedMsg:
@@ -179,16 +169,12 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 			m.ForkError = msg.Err.Error()
 			return m, nil
 		}
-		branch := msg.Session
-		return m, func() tea.Msg {
-			return TreeForkSuccessMsg{Session: branch}
-		}
+		return m, func() tea.Msg { return TreeForkSuccessMsg{Session: msg.Session} }
 
 	case tea.KeyPressMsg:
 		if msg.String() == "esc" || msg.String() == "ctrl+c" || msg.String() == "ctrl+d" {
 			if m.Confirming {
-				m.Confirming = false
-				m.Error = ""
+				m.Confirming, m.Error = false, ""
 				return m, nil
 			}
 			return m, func() tea.Msg { return TreeCancelMsg{} }
@@ -202,8 +188,7 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 			if msg.String() == "enter" && len(m.Checkpoints) > m.Cursor {
 				cp := m.Checkpoints[m.Cursor]
 				m.Forking = true
-				m.ForkError = ""
-				m.Error = ""
+				m.ForkError, m.Error = "", ""
 				m.Generation++
 				return m, m.forkCmd(cp.ID, m.Generation)
 			}
@@ -222,20 +207,14 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 		case "left", "pgup":
 			if m.PageIndex > 0 {
 				m.PageIndex--
-				m.Loading = true
-				m.Error = ""
-				m.Generation++
-				return m, m.loadTreeCmd(m.Cursors[m.PageIndex], m.Generation)
+				return m.loadPage(m.Cursors[m.PageIndex])
 			}
 		case "right", "pgdown":
 			if m.HasMore && m.NextCursor != nil {
 				next := *m.NextCursor
 				m.Cursors = append(m.Cursors[:m.PageIndex+1], next)
 				m.PageIndex++
-				m.Loading = true
-				m.Error = ""
-				m.Generation++
-				return m, m.loadTreeCmd(next, m.Generation)
+				return m.loadPage(next)
 			}
 		case "enter":
 			if len(m.Checkpoints) > 0 && m.Cursor < len(m.Checkpoints) {
@@ -250,23 +229,16 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 func (m TreePickerModel) View() string {
 	var b strings.Builder
 
-	b.WriteString(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/tree"), m.Styles.Faint.Render("branch history")))
-	b.WriteString("\n")
-	b.WriteString(m.Styles.Faint.Render(inkWrap("choose the checkpoint the new session should end after", m.Width)))
-	b.WriteString("\n")
+	b.WriteString(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/tree"), m.Styles.Faint.Render("branch history")) + "\n")
+	b.WriteString(m.Styles.Faint.Render(inkWrap("choose the checkpoint the new session should end after", m.Width)) + "\n")
 
 	if m.Error != "" {
-		b.WriteString(DefaultStyles.Error.Render("error:") + " " + m.Error)
-		b.WriteByte('\n')
+		b.WriteString(DefaultStyles.Error.Render("error:") + " " + m.Error + "\n")
 	}
 	if m.Loading || len(m.Checkpoints) == 0 {
-		if m.Error == "" && !m.Loading {
-			b.WriteString(m.Styles.Faint.Render("no branchable history in this session"))
-			b.WriteByte('\n')
-		}
-		if m.Error == "" && m.Loading {
-			b.WriteString(m.Styles.Faint.Render("loading history…"))
-			b.WriteByte('\n')
+		if m.Error == "" {
+			msg := pick(m.Loading, "loading history…", "no branchable history in this session")
+			b.WriteString(m.Styles.Faint.Render(msg) + "\n")
 		}
 		b.WriteString(keyHints(hint{"enter", "confirm"}, hint{"esc", "cancel"}))
 		return b.String()
@@ -276,28 +248,21 @@ func (m TreePickerModel) View() string {
 	for i, cp := range m.Checkpoints {
 		lines[i] = DefaultStyles.Faint.Render(fmt.Sprintf("%-9s", cp.Type)) + " " + readablePreview(cp.Preview)
 	}
-	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles))
-	b.WriteByte('\n')
+	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles) + "\n")
 
 	if m.Confirming && m.Cursor < len(m.Checkpoints) {
 		current := m.Checkpoints[m.Cursor]
-		b.WriteString("\n")
-		b.WriteString(DefaultStyles.Warning.Render(fmt.Sprintf("branch after %s · %s?", current.Type, readablePreview(current.Preview))))
-		b.WriteString("\n")
+		b.WriteString("\n" + DefaultStyles.Warning.Render(fmt.Sprintf("branch after %s · %s?", current.Type, readablePreview(current.Preview))) + "\n")
 		b.WriteString(m.Styles.Faint.Render("new session · fresh python namespace · workspace files stay unchanged") + "\n")
 		if m.ForkError != "" {
-			b.WriteString(DefaultStyles.Error.Render(m.ForkError))
-			b.WriteByte('\n')
+			b.WriteString(DefaultStyles.Error.Render(m.ForkError) + "\n")
 		}
 	}
 
 	if m.Forking {
 		b.WriteString(m.Styles.Faint.Render("creating branch…"))
 	} else if m.Confirming {
-		confirm := hint{"enter", "confirm"}
-		if m.ForkError != "" {
-			confirm = hint{"enter", "retry"}
-		}
+		confirm := pick(m.ForkError != "", hint{"enter", "retry"}, hint{"enter", "confirm"})
 		b.WriteString(keyHints(confirm, hint{"esc", "cancel"}))
 	} else {
 		b.WriteString(inkWrap(keyHints(hint{"↑↓", "select"}, hint{"←→/pgup/pgdn", "page"}, hint{"enter", "branch"}, hint{"esc", "return to chat"}), m.Width))

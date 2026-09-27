@@ -2,8 +2,8 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"cmp"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -92,8 +92,7 @@ func NewSessionViewer(workspace string) SessionViewer {
 	p := NewPickerModel("", sessionViewerActions(workspace), true, "new")
 	p.SearchInput.Placeholder = "search sessions, models, folders…"
 	st := p.SearchInput.Styles()
-	st.Focused.Placeholder = DefaultStyles.Faint
-	st.Blurred.Placeholder = DefaultStyles.Faint
+	st.Focused.Placeholder, st.Blurred.Placeholder = DefaultStyles.Faint, DefaultStyles.Faint
 	p.SearchInput.SetStyles(st)
 	return SessionViewer{
 		PickerModel: p,
@@ -162,13 +161,8 @@ func (m *SessionViewer) SetSessions(sessions []daemon.Session, active *daemon.Se
 		target = active.ID
 	} else if ok && m.section[previous.ID] != secAction {
 		target = previous.ID
-	} else {
-		for _, s := range m.Sessions {
-			if m.section[s.ID] >= secToday {
-				target = s.ID
-				break
-			}
-		}
+	} else if i := slices.IndexFunc(m.Sessions, func(s daemon.Session) bool { return m.section[s.ID] >= secToday }); i >= 0 {
+		target = m.Sessions[i].ID
 	}
 	m.focus(target)
 }
@@ -214,8 +208,8 @@ func (m *SessionViewer) rebuild() {
 			frequent = append(frequent, s)
 		}
 	}
-	sort.SliceStable(frequent, func(i, j int) bool {
-		return m.prefs.Opens[frequent[i].ID] > m.prefs.Opens[frequent[j].ID]
+	slices.SortStableFunc(frequent, func(a, b daemon.Session) int {
+		return cmp.Compare(m.prefs.Opens[b.ID], m.prefs.Opens[a.ID])
 	})
 	for _, s := range frequent[:min(len(frequent), frequentLimit)] {
 		m.section[s.ID] = secFrequent
@@ -232,7 +226,7 @@ func (m *SessionViewer) rebuild() {
 		}
 		dated[i] = older
 	}
-	var rest []daemon.Session
+	var rest, active []daemon.Session
 	for i, s := range listed {
 		if m.prefs.archived(s.ID) {
 			m.section[s.ID] = secArchived
@@ -244,28 +238,26 @@ func (m *SessionViewer) rebuild() {
 		m.section[s.ID] = dated[i]
 		if m.active != nil && s.ID == m.active.ID {
 			m.section[s.ID] = secToday
-			rest = append([]daemon.Session{s}, rest...)
+			active = []daemon.Session{s}
 			continue
 		}
 		rest = append(rest, s)
 	}
 	// Navigation follows the grouping; the daemon's order holds within a day group.
-	sort.SliceStable(rest, func(i, j int) bool { return m.section[rest[i].ID] < m.section[rest[j].ID] })
-	m.Sessions = append(ordered, rest...)
+	slices.SortStableFunc(rest, func(a, b daemon.Session) int { return cmp.Compare(m.section[a.ID], m.section[b.ID]) })
+	m.Sessions = slices.Concat(ordered, active, rest)
 
-	items := sessionViewerActions(m.Workspace)
-	if m.ArchiveView {
-		items = nil
-	}
+	var items []PickerItem
 	visible := m.Sessions
 	if m.ArchiveView {
 		visible = listed
+	} else {
+		items = sessionViewerActions(m.Workspace)
 	}
 	for _, s := range visible {
-		if m.ArchiveView != m.prefs.archived(s.ID) {
-			continue
+		if m.ArchiveView == m.prefs.archived(s.ID) {
+			items = append(items, PickerItem{ID: s.ID, Label: sessionTitle(s), Detail: sessionText(s.Workspace + " " + s.Model + " " + s.Provider)})
 		}
-		items = append(items, PickerItem{ID: s.ID, Label: sessionTitle(s), Detail: sessionText(s.Workspace + " " + s.Model + " " + s.Provider)})
 	}
 	m.Items = items
 	m.applyFilter()
@@ -275,27 +267,16 @@ const untitled = "Untitled session"
 
 func sessionTitle(s daemon.Session) string {
 	title := strings.TrimSpace(sessionText(s.Title))
-	if title == "" || title == "new session" {
-		return untitled
-	}
-	return title
+	return pick(title == "" || title == "new session", untitled, title)
 }
 
 func containsSession(sessions []daemon.Session, id string) bool {
-	for _, s := range sessions {
-		if s.ID == id {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(sessions, func(s daemon.Session) bool { return s.ID == id })
 }
 
 func (m *SessionViewer) focus(id string) {
-	for i, item := range m.Filtered {
-		if item.ID == id {
-			m.Cursor = i
-			return
-		}
+	if i := slices.IndexFunc(m.Filtered, func(item PickerItem) bool { return item.ID == id }); i >= 0 {
+		m.Cursor = i
 	}
 }
 
@@ -377,10 +358,7 @@ func (m *SessionViewer) startRename() {
 		return
 	}
 	current := sessionTitle(s)
-	if current == untitled {
-		current = ""
-	}
-	m.rename.open(s.ID, current, "name this session")
+	m.rename.open(s.ID, pick(current == untitled, "", current), "name this session")
 }
 
 // Renamed takes a session's new listing from the daemon.
@@ -391,8 +369,7 @@ func (m *SessionViewer) Renamed(s daemon.Session) {
 		}
 	}
 	if m.active != nil && m.active.ID == s.ID {
-		active := s
-		m.active = &active
+		m.active = &s
 	}
 	item, _ := m.Highlighted()
 	m.rebuild()
@@ -415,20 +392,21 @@ func (m *SessionViewer) toggleArchive() {
 	m.Cursor = min(index, max(0, len(m.Filtered)-1))
 }
 
-func (m *SessionViewer) OpenArchive() {
-	m.ArchiveView = true
+func (m *SessionViewer) OpenArchive() { m.setArchive(true) }
+
+func (m *SessionViewer) CloseArchive() { m.setArchive(false) }
+
+// setArchive enters or leaves the archive view, which always drops the
+// delete confirmation and the search.
+func (m *SessionViewer) setArchive(open bool) {
+	m.ArchiveView = open
 	m.ConfirmDelete = ""
 	m.SearchInput.SetValue("")
 	m.rebuild()
 	m.Cursor = 0
-}
-
-func (m *SessionViewer) CloseArchive() {
-	m.ArchiveView = false
-	m.ConfirmDelete = ""
-	m.SearchInput.SetValue("")
-	m.rebuild()
-	m.focus("archive")
+	if !open {
+		m.focus("archive")
+	}
 }
 
 func (m *SessionViewer) Removed(id string) {
@@ -447,9 +425,8 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 	switch msg := msg.(type) {
 	case SessionPreviewMsg:
 		if c := m.previews[msg.ID]; c != nil {
-			c.loading = false
-			c.err = msg.Err != nil
-			if msg.Err == nil {
+			c.loading, c.err = false, msg.Err != nil
+			if !c.err {
 				c.SessionPreview = msg.Preview
 			}
 		}
@@ -475,32 +452,24 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 			m.CloseArchive()
 			return m, nil
 		}
-		switch msg.String() {
-		case "ctrl+d":
-			if m.ArchiveView {
-				if item, ok := m.Highlighted(); ok {
-					m.ConfirmDelete = item.ID
-				}
+		switch key := msg.String(); {
+		case key == "ctrl+d":
+			if item, ok := m.Highlighted(); m.ArchiveView && ok {
+				m.ConfirmDelete = item.ID
 			}
 			return m, nil
-		case "ctrl+a":
+		case key == "ctrl+a":
 			m.toggleArchive()
 			return m, nil
-		case "ctrl+s":
+		case key == "ctrl+s":
 			m.togglePin()
 			return m, nil
-		case "ctrl+r":
+		case key == "ctrl+r":
 			m.startRename()
 			return m, nil
-		case "tab", "shift+tab":
+		case key == "tab" || key == "shift+tab" || ((key == "left" || key == "right") && m.SearchInput.Value() == ""):
 			m.switchGroup()
 			return m, m.previewAfter(before.ID)
-		case "left", "right":
-			// Arrows edit the query once there is one.
-			if m.SearchInput.Value() == "" {
-				m.switchGroup()
-				return m, m.previewAfter(before.ID)
-			}
 		}
 	}
 	picker, cmd := m.PickerModel.Update(msg)

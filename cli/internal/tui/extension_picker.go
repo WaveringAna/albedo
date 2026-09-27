@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -88,28 +89,12 @@ func (m ExtensionPickerModel) loadExtensionsCmd(gen int) tea.Cmd {
 			return extensionsLoadedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
 
-		// Check capability
-		health, err := daemon.Request[struct {
-			Capabilities []string `json:"capabilities"`
-		}](context.Background(), m.Conn, "/health", nil)
 		noGlobal := false
-		if err == nil {
-			hasCap := false
-			noGlobal = true
-			for _, c := range health.Capabilities {
-				if c == "session_extensions" {
-					hasCap = true
-				}
-				if c == "global_extensions" {
-					noGlobal = false
-				}
+		if caps, err := daemon.Capabilities(context.Background(), m.Conn); err == nil {
+			if !slices.Contains(caps, "session_extensions") {
+				return extensionsLoadedMsg{Err: daemon.UpgradeNeeded("for /extensions"), Gen: gen}
 			}
-			if !hasCap {
-				return extensionsLoadedMsg{
-					Err: errors.New("daemon upgrade needed for /extensions; when ready, run albedo daemon --stop, then albedo (this clears python variables)"),
-					Gen: gen,
-				}
-			}
+			noGlobal = !slices.Contains(caps, "global_extensions")
 		}
 
 		path := fmt.Sprintf("/sessions/%s/extensions", m.SessionID)
@@ -189,23 +174,17 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 			name = m.Extensions[m.Cursor].Name
 		}
 		m.Extensions = msg.Extensions
-		for i, ext := range m.Extensions {
-			if ext.Name == name {
-				m.Cursor = i
-				break
-			}
+		if idx := slices.IndexFunc(m.Extensions, func(e ExtensionItem) bool { return e.Name == name }); idx >= 0 {
+			m.Cursor = idx
 		}
-		m.Confirming = false
-		m.Inheriting = false
-		m.Error = ""
+		m.Confirming, m.Inheriting, m.Error = false, false, ""
 		return m, func() tea.Msg { return ExtensionPickerChangedMsg{} }
 
 	case tea.KeyPressMsg:
-		if msg.String() == "esc" || msg.String() == "ctrl+c" || msg.String() == "ctrl+d" {
+		switch msg.String() {
+		case "esc", "ctrl+c", "ctrl+d":
 			if m.Confirming {
-				m.Confirming = false
-				m.Inheriting = false
-				m.Error = ""
+				m.Confirming, m.Inheriting, m.Error = false, false, ""
 				return m, nil
 			}
 			return m, func() tea.Msg { return ExtensionPickerDoneMsg{} }
@@ -216,9 +195,8 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		}
 
 		if len(m.Extensions) == 0 && m.Error != "" {
-			if strings.ToLower(msg.String()) == "r" {
-				m.Loading = true
-				m.Error = ""
+			if strings.EqualFold(msg.String(), "r") {
+				m.Loading, m.Error = true, ""
 				m.Generation++
 				return m, m.loadExtensionsCmd(m.Generation)
 			}
@@ -228,17 +206,15 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		if m.Confirming {
 			if msg.String() == "enter" && len(m.Extensions) > m.Cursor {
 				ext := m.Extensions[m.Cursor]
-				m.Saving = true
-				m.Error = ""
+				m.Saving, m.Error = true, ""
 				m.Generation++
-				switch {
-				case m.Inheriting:
-					return m, m.changeExtensionCmd(ext.Name, "inherit", false, m.Generation)
-				case m.Session:
-					return m, m.changeExtensionCmd(ext.Name, "session", !ext.Enabled, m.Generation)
-				default:
-					return m, m.changeExtensionCmd(ext.Name, "global", !ext.GlobalEnabled, m.Generation)
+				scope, val := "global", !ext.GlobalEnabled
+				if m.Inheriting {
+					scope, val = "inherit", false
+				} else if m.Session {
+					scope, val = "session", !ext.Enabled
 				}
+				return m, m.changeExtensionCmd(ext.Name, scope, val, m.Generation)
 			}
 			return m, nil
 		}
@@ -270,8 +246,7 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		case "x":
 			if m.Session && !m.NoGlobal && m.Cursor < len(m.Extensions) && m.Extensions[m.Cursor].Overridden {
 				m.Error = ""
-				m.Confirming = true
-				m.Inheriting = true
+				m.Confirming, m.Inheriting = true, true
 			}
 		}
 	}
@@ -281,27 +256,19 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 func (m ExtensionPickerModel) View() string {
 	var b strings.Builder
 
-	head := func(scope string) string {
-		return titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/extensions"), m.Styles.Faint.Render(scope)) + "\n"
-	}
+	scope, note := "global defaults", "every session without its own choice follows these · s this session only"
 	if m.Session {
-		b.WriteString(head("this session"))
-		hint := "choices here apply to this session only · g global defaults"
+		scope, note = "this session", "choices here apply to this session only · g global defaults"
 		if m.NoGlobal {
-			hint = "this daemon only supports per-session choices; restart it for global defaults"
+			note = "this daemon only supports per-session choices; restart it for global defaults"
 		}
-		b.WriteString(m.Styles.Faint.Render(inkWrap(hint, m.Width)))
-	} else {
-		b.WriteString(head("global defaults"))
-		b.WriteString(m.Styles.Faint.Render(inkWrap("every session without its own choice follows these · s this session only", m.Width)))
 	}
-	b.WriteString("\n")
-	b.WriteString(DefaultStyles.Warning.Render(ansi.Wrap("changes reload workers and available plugins, bust prompt-cache reuse, and may reset unsavable python variables", max(1, m.Width), " ")))
-	b.WriteString("\n")
+	b.WriteString(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/extensions"), m.Styles.Faint.Render(scope)) + "\n")
+	b.WriteString(m.Styles.Faint.Render(inkWrap(note, m.Width)) + "\n")
+	b.WriteString(DefaultStyles.Warning.Render(ansi.Wrap("changes reload workers and available plugins, bust prompt-cache reuse, and may reset unsavable python variables", max(1, m.Width), " ")) + "\n")
 
 	if m.Error != "" {
-		b.WriteString(DefaultStyles.Error.Render(m.Error))
-		b.WriteString("\n")
+		b.WriteString(DefaultStyles.Error.Render(m.Error) + "\n")
 	}
 
 	if m.Loading {
@@ -313,7 +280,8 @@ func (m ExtensionPickerModel) View() string {
 		if m.Error != "" {
 			b.WriteString(keyHints(hint{"r", "retry"}, hint{"esc", "return to chat"}) + "\n")
 		} else {
-			b.WriteString(m.Styles.Faint.Render("no matches\nno extensions installed for this session") + "\n" + inkWrap(keyHints(hint{"↑↓", "select"}, hint{"enter/space", "toggle"}, hint{"esc", "return to chat"}), m.Width))
+			b.WriteString(m.Styles.Faint.Render("no matches\nno extensions installed for this session") + "\n" +
+				inkWrap(keyHints(hint{"↑↓", "select"}, hint{"enter/space", "toggle"}, hint{"esc", "return to chat"}), m.Width))
 		}
 		return b.String()
 	}
@@ -327,68 +295,37 @@ func (m ExtensionPickerModel) View() string {
 				scope = "  this session"
 			}
 		} else if ext.Overridden {
-			state := "off"
-			if ext.Enabled {
-				state = "on"
-			}
+			state := pick(ext.Enabled, "on", "off")
 			scope = "  this session: " + state
 		}
-		status := m.Styles.Faint.Render("off")
-		if on {
-			status = DefaultStyles.Success.Render("on ")
-		}
-		lines[i] = status + "  " + ext.Name + m.Styles.Faint.Render(scope)
+		status := pick(on, DefaultStyles.Success.Render("on "), m.Styles.Faint.Render("off"))
+		line := status + "  " + ext.Name + m.Styles.Faint.Render(scope)
 		if ext.Description != "" {
-			lines[i] += DefaultStyles.Faint.Render("  " + ext.Description)
+			line += DefaultStyles.Faint.Render("  " + ext.Description)
 		}
+		lines[i] = line
 	}
-	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles))
-	b.WriteByte('\n')
+	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles) + "\n")
 
 	// Current item details
 	if m.Cursor < len(m.Extensions) {
 		current := m.Extensions[m.Cursor]
-		b.WriteString("\n")
+		b.WriteByte('\n')
 		if current.Description != "" {
-			b.WriteString(current.Description)
-			b.WriteString("\n")
+			b.WriteString(current.Description + "\n")
 		}
 
-		pluginsStr := "not reported"
-		if len(current.Plugins) > 0 {
-			pluginsStr = strings.Join(current.Plugins, ", ")
+		joinOr := func(items []string, sep, empty string) string {
+			return pick(len(items) == 0, empty, strings.Join(items, sep))
 		}
-		b.WriteString(m.Styles.Faint.Render("plugins: " + pluginsStr))
-		b.WriteString("\n")
-
-		caps := m.capabilitiesList(current)
-		capsStr := "not reported"
-		if len(caps) > 0 {
-			capsStr = strings.Join(caps, " · ")
-		}
-		b.WriteString(m.Styles.Faint.Render("capabilities: " + capsStr))
-		b.WriteString("\n")
-
-		reqStr := "none"
-		if len(current.Requires) > 0 {
-			reqStr = strings.Join(current.Requires, ", ")
-		}
-		b.WriteString(m.Styles.Faint.Render("requires: " + reqStr))
-		b.WriteString("\n")
+		b.WriteString(m.Styles.Faint.Render("plugins: "+joinOr(current.Plugins, ", ", "not reported")) + "\n")
+		b.WriteString(m.Styles.Faint.Render("capabilities: "+joinOr(m.capabilitiesList(current), " · ", "not reported")) + "\n")
+		b.WriteString(m.Styles.Faint.Render("requires: "+joinOr(current.Requires, ", ", "none")) + "\n")
 
 		if m.Confirming {
-			on := current.GlobalEnabled
-			if m.Session {
-				on = current.Enabled
-			}
-			actionWord := "enable"
-			if on {
-				actionWord = "disable"
-			}
-			choice := hint{"enter", "confirm"}
-			if m.Error != "" {
-				choice = hint{"enter", "retry"}
-			}
+			on := pick(m.Session, current.Enabled, current.GlobalEnabled)
+			actionWord := pick(on, "disable", "enable")
+			choice := pick(m.Error != "", hint{"enter", "retry"}, hint{"enter", "confirm"})
 			var confirmMsg string
 			switch {
 			case m.Inheriting:
@@ -398,8 +335,7 @@ func (m ExtensionPickerModel) View() string {
 			default:
 				confirmMsg = fmt.Sprintf("%s %s for every session that follows the global default?", actionWord, current.Name)
 			}
-			b.WriteString(DefaultStyles.Warning.Render(confirmMsg) + " " + keyHints(choice, hint{"esc", "cancel"}))
-			b.WriteString("\n")
+			b.WriteString(DefaultStyles.Warning.Render(confirmMsg) + " " + keyHints(choice, hint{"esc", "cancel"}) + "\n")
 		}
 	}
 
@@ -412,13 +348,13 @@ func (m ExtensionPickerModel) View() string {
 	} else if m.Confirming {
 		b.WriteString(m.Styles.Faint.Render("waiting for confirmation"))
 	} else {
-		keys := []hint{{"↑↓", "select"}, {"enter/space", "toggle"}, {"s", "this session"}, {"esc", "return to chat"}}
-		if m.Session {
-			keys = []hint{{"↑↓", "select"}, {"enter/space", "toggle"}, {"x", "follow global"}, {"g", "global defaults"}, {"esc", "return to chat"}}
-			if m.NoGlobal {
-				keys = []hint{{"↑↓", "select"}, {"enter/space", "toggle"}, {"esc", "return to chat"}}
-			}
+		keys := []hint{{"↑↓", "select"}, {"enter/space", "toggle"}}
+		if !m.Session {
+			keys = append(keys, hint{"s", "this session"})
+		} else if !m.NoGlobal {
+			keys = append(keys, hint{"x", "follow global"}, hint{"g", "global defaults"})
 		}
+		keys = append(keys, hint{"esc", "return to chat"})
 		if m.Cursor < len(m.Extensions) && m.Extensions[m.Cursor].Name == "webhooks" && m.Extensions[m.Cursor].Enabled {
 			keys = append(keys, hint{"o", "open webhooks"})
 		}

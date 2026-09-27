@@ -15,10 +15,10 @@ import (
 )
 
 // hashComments are the languages whose line comments start with "#".
-var hashComments = map[string]bool{
-	"python": true, "py": true, "sh": true, "bash": true, "zsh": true, "shell": true, "nu": true,
-	"nix": true, "toml": true, "yaml": true, "yml": true, "ruby": true, "rb": true, "elixir": true,
-}
+var hashComments = wordSet(
+	"python", "py", "sh", "bash", "zsh", "shell", "nu",
+	"nix", "toml", "yaml", "yml", "ruby", "rb", "elixir",
+)
 
 // HighlightCode marks only comments. Every other token keeps the code's own
 // ink: highlighting has shown little measured benefit for comprehension, and
@@ -102,11 +102,9 @@ func codeTheme(colors ink) string {
 
 func markdownStyle() ansi.StyleConfig {
 	style := styles.NoTTYStyleConfig
-	zero := uint(0)
-	bold := true
+	zero, bold := uint(0), true
 	style.Document.Margin = &zero
-	style.Document.BlockPrefix = ""
-	style.Document.BlockSuffix = ""
+	style.Document.BlockPrefix, style.Document.BlockSuffix = "", ""
 	style.Heading.BlockSuffix = ""
 	for _, heading := range []*ansi.StyleBlock{&style.H1, &style.H2, &style.H3, &style.H4, &style.H5, &style.H6} {
 		heading.Prefix = ""
@@ -131,10 +129,7 @@ func markdownStyle() ansi.StyleConfig {
 // the one before it and no further, so a finished block renders once and a
 // reply streaming in re-renders only its last block.
 func RenderMarkdownAnsi(text string, width int) string {
-	if width <= 0 {
-		width = 80
-	}
-	return renderBlocks(text, width)
+	return renderBlocks(text, pick(width <= 0, 80, width))
 }
 
 // renderCopyable renders text to width with its wrapped rows marked, so a
@@ -191,8 +186,8 @@ func renderMarkdown(text string, width int) string {
 		return text
 	}
 	markdownThemes.Lock()
+	defer markdownThemes.Unlock()
 	rendered, err := renderer.Render(text)
-	markdownThemes.Unlock()
 	if err != nil {
 		return text
 	}
@@ -213,10 +208,8 @@ func markdownBlocks(text string) []string {
 	var blocks []string
 	start, fence, blank := 0, "", false
 	for pos := 0; pos < len(text); {
-		end := len(text)
-		if i := strings.IndexByte(text[pos:], '\n'); i >= 0 {
-			end = pos + i + 1
-		}
+		i := strings.IndexByte(text[pos:], '\n')
+		end := pick(i >= 0, pos+i+1, len(text))
 		line := strings.TrimRight(text[pos:end], "\r\n")
 		if fence == "" && spansBlocks.MatchString(line) {
 			return []string{text}
@@ -239,7 +232,7 @@ func opensBlock(line string) bool {
 // fenceAfter is the code fence open after line, given the one open before.
 func fenceAfter(open, line string) string {
 	trimmed := strings.TrimLeft(line, " ")
-	if len(line)-len(trimmed) > 3 || trimmed == "" || trimmed[0] != '`' && trimmed[0] != '~' {
+	if len(line)-len(trimmed) > 3 || trimmed == "" || (trimmed[0] != '`' && trimmed[0] != '~') {
 		return open
 	}
 	run := trimmed[:len(trimmed)-len(strings.TrimLeft(trimmed, trimmed[:1]))]

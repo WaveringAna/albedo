@@ -1,11 +1,12 @@
 package tui
 
 import (
-	"github.com/charmbracelet/x/ansi"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type PickerItem struct {
@@ -48,11 +49,8 @@ func NewPickerModel(title string, items []PickerItem, withSearch bool, initialSe
 	m.applyFilter()
 
 	if initialSelection != "" {
-		for i, item := range m.Filtered {
-			if item.ID == initialSelection {
-				m.Cursor = i
-				break
-			}
+		if i := slices.IndexFunc(m.Filtered, func(it PickerItem) bool { return it.ID == initialSelection }); i >= 0 {
+			m.Cursor = i
 		}
 	}
 
@@ -61,10 +59,10 @@ func NewPickerModel(title string, items []PickerItem, withSearch bool, initialSe
 
 // Highlighted returns the item under the cursor.
 func (m PickerModel) Highlighted() (PickerItem, bool) {
-	if m.Cursor < 0 || m.Cursor >= len(m.Filtered) {
-		return PickerItem{}, false
+	if m.Cursor >= 0 && m.Cursor < len(m.Filtered) {
+		return m.Filtered[m.Cursor], true
 	}
-	return m.Filtered[m.Cursor], true
+	return PickerItem{}, false
 }
 
 func (m *PickerModel) SetSize(width, height int) {
@@ -74,32 +72,24 @@ func (m *PickerModel) SetSize(width, height int) {
 }
 
 func (m *PickerModel) applyFilter() {
-	old := ""
-	if m.Cursor >= 0 && m.Cursor < len(m.Filtered) {
-		old = m.Filtered[m.Cursor].ID
-	}
+	item, ok := m.Highlighted()
+	old := pick(ok, item.ID, "")
 	tokens := strings.Fields(strings.ToLower(m.SearchInput.Value()))
 	m.Filtered = nil
 	for _, item := range m.Items {
 		haystack := strings.ToLower(item.ID + " " + item.Label + " " + item.Detail)
-		found := true
+		match := true
 		for _, token := range tokens {
 			if !strings.Contains(haystack, token) {
-				found = false
+				match = false
 				break
 			}
 		}
-		if found {
+		if match {
 			m.Filtered = append(m.Filtered, item)
 		}
 	}
-	m.Cursor = 0
-	for i, item := range m.Filtered {
-		if item.ID == old {
-			m.Cursor = i
-			break
-		}
-	}
+	m.Cursor = max(0, slices.IndexFunc(m.Filtered, func(item PickerItem) bool { return item.ID == old }))
 }
 
 // selectableRows is a bottom-anchored list window with the selected row on
@@ -124,12 +114,9 @@ func selectableRows(lines []string, selected, height, limit, width int, styles S
 		return styles.Faint.Render("no matches")
 	}
 	var b strings.Builder
+	bar := selectBar() + " "
 	for i := first; i < min(len(lines), first+available); i++ {
-		prefix := "  "
-		if i == selected {
-			prefix = selectBar() + " "
-		}
-		line := prefix + lines[i]
+		line := pick(i == selected, bar, "  ") + lines[i]
 		if width > 0 {
 			line = ansi.Truncate(line, width, "…")
 		}
@@ -153,10 +140,7 @@ func pickerRow(item PickerItem, styles Styles) string {
 }
 
 func (m PickerModel) Init() tea.Cmd {
-	if m.WithSearch {
-		return textinput.Blink
-	}
-	return nil
+	return pick(m.WithSearch, textinput.Blink, nil)
 }
 
 func (m PickerModel) Update(msg tea.Msg) (PickerModel, tea.Cmd) {
@@ -168,9 +152,8 @@ func (m PickerModel) Update(msg tea.Msg) (PickerModel, tea.Cmd) {
 		case "esc", "ctrl+c", "ctrl+d":
 			return m, func() tea.Msg { return PickerCancelMsg{} }
 		case "enter":
-			if len(m.Filtered) > 0 && m.Cursor < len(m.Filtered) {
-				selectedID := m.Filtered[m.Cursor].ID
-				return m, func() tea.Msg { return PickerSelectMsg{ID: selectedID} }
+			if item, ok := m.Highlighted(); ok {
+				return m, func() tea.Msg { return PickerSelectMsg{ID: item.ID} }
 			}
 			return m, nil
 		case "up", "ctrl+p":
@@ -199,20 +182,16 @@ func (m PickerModel) Update(msg tea.Msg) (PickerModel, tea.Cmd) {
 func (m PickerModel) View() string {
 	var b strings.Builder
 	if m.Title != "" {
-		b.WriteString(m.Title)
-		b.WriteByte('\n')
+		b.WriteString(m.Title + "\n")
 	}
 	lines := make([]string, len(m.Filtered))
 	for i, item := range m.Filtered {
 		lines[i] = pickerRow(item, m.Styles)
 	}
-	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles))
-	b.WriteByte('\n')
+	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles) + "\n")
 	if m.WithSearch {
-		b.WriteString(promptLead())
-		b.WriteString(m.SearchInput.View())
+		b.WriteString(promptLead() + m.SearchInput.View())
 	}
-	b.WriteByte('\n')
-	b.WriteString(keyHints(hint{"↑↓", "select"}, hint{"enter", "choose"}, hint{"esc", "cancel"}))
+	b.WriteString("\n" + keyHints(hint{"↑↓", "select"}, hint{"enter", "choose"}, hint{"esc", "cancel"}))
 	return b.String()
 }

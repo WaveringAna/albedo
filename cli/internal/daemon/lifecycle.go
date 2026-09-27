@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -711,6 +712,29 @@ func Request[T any](ctx context.Context, conn *Connection, path string, body any
 		method = http.MethodPost
 	}
 	return RequestMethod[T](ctx, conn, method, path, body)
+}
+
+// Capabilities lists what the daemon at conn says it supports.
+func Capabilities(ctx context.Context, conn *Connection) ([]string, error) {
+	health, err := Request[struct {
+		Capabilities []string `json:"capabilities"`
+	}](ctx, conn, "/health", nil)
+	return health.Capabilities, err
+}
+
+// CheckCapability is UpgradeNeeded(feature) when the daemon answers /health
+// without capability. A /health that fails is left to the request after it.
+func CheckCapability(ctx context.Context, conn *Connection, capability, feature string) error {
+	if caps, err := Capabilities(ctx, conn); err == nil && !slices.Contains(caps, capability) {
+		return UpgradeNeeded(feature)
+	}
+	return nil
+}
+
+// UpgradeNeeded is the error for a feature the running daemon predates;
+// feature finishes the sentence, as in "for /tree" or "to switch providers".
+func UpgradeNeeded(feature string) error {
+	return errors.New("daemon upgrade needed " + feature + "; when ready, run albedo daemon --stop, then albedo (this clears python variables)")
 }
 
 func RequestMethod[T any](ctx context.Context, conn *Connection, method, path string, body any) (T, error) {

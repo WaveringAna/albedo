@@ -136,11 +136,7 @@ func factsOf(entry HistoryEntry) entryFacts {
 	}
 	switch entry.ToolName {
 	case "python":
-		if label := pyLabel(arg("code")); label != "" {
-			f.py = append(f.py, label)
-		} else {
-			f.py = append(f.py, "cell")
-		}
+		f.py = append(f.py, cmp.Or(pyLabel(arg("code")), "cell"))
 	case "shell", "bash":
 		f.ran = append(f.ran, cmp.Or(commandName(arg("command")), entry.ToolName))
 	case "read_file":
@@ -221,10 +217,7 @@ type clause struct {
 
 func (c clause) String() string {
 	if c.shown == 0 {
-		noun := c.noun
-		if c.n == 1 {
-			noun = strings.TrimSuffix(noun, "s")
-		}
+		noun := pick(c.n == 1, strings.TrimSuffix(c.noun, "s"), c.noun)
 		return fmt.Sprintf("%s %d %s", c.verb, c.n, noun)
 	}
 	text := c.verb + " " + strings.Join(c.items[:c.shown], ", ")
@@ -239,28 +232,16 @@ func (c clause) String() string {
 func (r TranscriptRenderer) summary(b burst, width int, n namer) string {
 	var head []string
 	if b.thoughts > 0 {
-		thought := "thought"
-		if !b.untimed && b.thoughtMs >= 1000 {
-			thought += " " + formatElapsed(b.thoughtMs)
-		}
+		thought := pick(!b.untimed && b.thoughtMs >= 1000, "thought "+formatElapsed(b.thoughtMs), "thought")
 		head = append(head, thought)
 	}
 	// naming can make two recorded paths the same ("cli/a.go" and the absolute
 	// form), so lists dedupe after naming, and reads defer to edits in that
 	// same named space
 	edited := dedup(n.all(b.edited.keys))
-	editedSet := make(map[string]bool, len(edited))
-	for _, p := range edited {
-		editedSet[p] = true
-	}
-	var reads []string
-	for _, p := range dedup(n.all(b.read.keys)) {
-		if !editedSet[p] {
-			reads = append(reads, p)
-		}
-	}
+	reads := slices.DeleteFunc(dedup(n.all(b.read.keys)), func(p string) bool { return slices.Contains(edited, p) })
 	var clauses []*clause
-	for _, c := range []clause{
+	for _, c := range []*clause{
 		{verb: "read", noun: "files", n: len(reads), items: pathGroups(reads)},
 		{verb: "searched", noun: "patterns", n: len(b.searched.keys), items: dedup(n.all(b.searched.keys))},
 		{verb: "edited", noun: "files", n: len(edited), items: pathGroups(edited)},
@@ -270,7 +251,7 @@ func (r TranscriptRenderer) summary(b burst, width int, n namer) string {
 	} {
 		if len(c.items) > 0 {
 			c.shown = len(c.items)
-			clauses = append(clauses, &c)
+			clauses = append(clauses, c)
 		}
 	}
 	line := func() string {
@@ -362,10 +343,7 @@ func pathGroups(paths []string) []string {
 	}
 	for i, dir := range dirs {
 		parent := parentName(dir)
-		if parents[parent] > 1 {
-			parent = dir // distinguish same-named folders in different subtrees
-		}
-		labels[i] = parent + braced(names[dir])
+		labels[i] = pick(parents[parent] > 1, dir, parent) + braced(names[dir])
 	}
 	return labels
 }
@@ -375,10 +353,7 @@ func parentName(dir string) string {
 	if dir = strings.TrimSuffix(dir, "/"); dir == "" {
 		return ""
 	}
-	if strings.HasPrefix(dir, "/") {
-		return "/" + path.Base(dir) + "/"
-	}
-	return path.Base(dir) + "/"
+	return pick(strings.HasPrefix(dir, "/"), "/", "") + path.Base(dir) + "/"
 }
 
 // braced joins names in braces, a shared extension outside them.
@@ -428,10 +403,7 @@ func commandName(command string) string {
 		if len(fields) == 0 || preamble[fields[0]] {
 			continue
 		}
-		name := fields[0]
-		if strings.HasPrefix(name, "/") {
-			name = path.Base(name)
-		}
+		name := pick(strings.HasPrefix(fields[0], "/"), path.Base(fields[0]), fields[0])
 		if len(fields) > 1 && subcommanded[name] && subcommand.MatchString(fields[1]) {
 			name += " " + fields[1]
 		}

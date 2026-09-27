@@ -2,9 +2,11 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -124,14 +126,8 @@ func (m PageViewModel) Init() tea.Cmd {
 }
 
 func parsePageDocument(result any) (*PageDocument, error) {
-	response, ok := result.(map[string]any)
-	if !ok {
-		return nil, errors.New("command did not answer a page")
-	}
-	page, ok := response["page"].(map[string]any)
-	if !ok {
-		return nil, errors.New("command did not answer a page")
-	}
+	response, _ := result.(map[string]any)
+	page, _ := response["page"].(map[string]any)
 	title, ok := page["title"].(string)
 	if !ok {
 		return nil, errors.New("command did not answer a page")
@@ -158,7 +154,9 @@ func parsePageDocument(result any) (*PageDocument, error) {
 				continue
 			}
 			tone, _ := obj["tone"].(string)
-			if tone != "plain" && tone != "active" && tone != "warning" && tone != "muted" {
+			switch tone {
+			case "active", "warning", "muted":
+			default:
 				tone = "plain"
 			}
 			result = append(result, PageRow{ID: id, Text: text, Badge: badge, Tone: PageTone(tone)})
@@ -182,36 +180,34 @@ func parsePageDocument(result any) (*PageDocument, error) {
 			kind, _ := obj["input"].(string)
 			switch kind {
 			case "text", "secret":
-				action.Input = kind
-				action.Prompt = label
+				action.Input, action.Prompt = kind, label
 				if prompt, ok := obj["prompt"].(string); ok {
 					action.Prompt = prompt
 				}
 				action.Prefill = obj["prefill"] == true
 			case "choice":
-				choices, ok := obj["options"].([]any)
-				if !ok || len(choices) == 0 {
+				choices, _ := obj["options"].([]any)
+				if len(choices) == 0 {
 					continue
 				}
-				action.Input = "choice"
+				var opts []string
 				for _, raw := range choices {
 					value, ok := raw.(string)
 					if !ok {
-						action.Options = nil
 						break
 					}
-					action.Options = append(action.Options, value)
+					opts = append(opts, value)
 				}
-				if len(action.Options) != len(choices) {
+				if len(opts) != len(choices) {
 					continue
 				}
+				action.Input, action.Options = "choice", opts
 			case "value":
 				value, ok := obj["value"].(string)
 				if !ok {
 					continue
 				}
-				action.Input = "value"
-				action.Value = value
+				action.Input, action.Value = "value", value
 			}
 			doc.Actions = append(doc.Actions, action)
 		}
@@ -236,10 +232,7 @@ func (m PageViewModel) loadPageCmd(gen int) tea.Cmd {
 			return pageLoadedMsg{Err: err, Gen: gen}
 		}
 
-		var targetObj any = res
-		if r, ok := res["result"]; ok && r != nil {
-			targetObj = r
-		}
+		targetObj := pick(res["result"] != nil, res["result"], any(res))
 		doc, err := parsePageDocument(targetObj)
 		if err != nil {
 			err = fmt.Errorf("%s did not answer a page", m.Command)
@@ -254,26 +247,21 @@ func (m PageViewModel) executeActionCmd(act PageAction, row *PageRow, entered st
 			return pageActionExecutedMsg{Action: act, Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
 
-		val := entered
-		if act.Input == "value" {
-			val = act.Value
-		}
-
-		var detailsParts []string
+		val := pick(act.Input == "value", act.Value, entered)
+		var details []string
 		if act.Row && row != nil {
-			detailsParts = append(detailsParts, row.ID)
+			details = append(details, row.ID)
 		}
 		if val != "" {
-			detailsParts = append(detailsParts, val)
+			details = append(details, val)
 		}
-		details := strings.Join(detailsParts, " ")
 
 		path := fmt.Sprintf("/sessions/%s/commands", m.SessionID)
 		body := map[string]any{
 			"name": m.Command,
 			"args": map[string]string{
 				"action":  act.Run,
-				"details": details,
+				"details": strings.Join(details, " "),
 			},
 		}
 
@@ -286,24 +274,56 @@ func (m PageViewModel) currentRow() *PageRow {
 	if m.Doc == nil || len(m.Doc.Rows) == 0 {
 		return nil
 	}
-	for i := range m.Doc.Rows {
-		if m.Doc.Rows[i].ID == m.SelectedID {
-			return &m.Doc.Rows[i]
-		}
-	}
-	return &m.Doc.Rows[0]
+	return &m.Doc.Rows[m.currentIndex()]
 }
 
 func (m PageViewModel) currentIndex() int {
-	if m.Doc == nil || len(m.Doc.Rows) == 0 {
-		return 0
-	}
-	for i := range m.Doc.Rows {
-		if m.Doc.Rows[i].ID == m.SelectedID {
+	if m.Doc != nil {
+		if i := slices.IndexFunc(m.Doc.Rows, func(r PageRow) bool { return r.ID == m.SelectedID }); i >= 0 {
 			return i
 		}
 	}
 	return 0
+}
+
+// runAction marks the page busy and asks the daemon to run act.
+func (m *PageViewModel) runAction(act PageAction, entered string) tea.Cmd {
+	m.Mode, m.CurrentAction = modeBrowse, nil
+	m.Busy, m.Error, m.Notice = true, "", ""
+	m.Generation++
+	return m.executeActionCmd(act, m.currentRow(), entered, m.Generation)
+}
+
+// beginAction opens the interaction act needs: Update asks for a
+// confirmation first, then come text entry or a choice, or the action runs
+// at once. fresh clears a stale notice and error, as acting from the row
+// list does.
+func (m *PageViewModel) beginAction(act PageAction, fresh bool) tea.Cmd {
+	if fresh {
+		m.Notice, m.Error = "", ""
+	}
+	m.CurrentAction = &act
+	switch act.Input {
+	case "text", "secret":
+		m.Mode = modeText
+		m.TextInput.Reset()
+		m.TextInput.EchoMode = pick(act.Input == "secret", textinput.EchoPassword, textinput.EchoNormal)
+		if act.Prefill && m.currentRow() != nil {
+			m.TextInput.SetValue(m.currentRow().Text)
+		}
+		m.TextInput.Focus()
+		return textinput.Blink
+	case "choice":
+		m.Mode = modeChoice
+		m.ChoiceIndex = 0
+		if row := m.currentRow(); row != nil {
+			if i := slices.Index(act.Options, row.Badge); i >= 0 {
+				m.ChoiceIndex = i
+			}
+		}
+		return nil
+	}
+	return m.runAction(act, "")
 }
 
 func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
@@ -319,8 +339,8 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 		}
 		m.Doc = msg.Doc
 		m.Error = ""
-		if m.currentRow() != nil {
-			m.SelectedID = m.currentRow().ID
+		if row := m.currentRow(); row != nil {
+			m.SelectedID = row.ID
 		}
 		return m, nil
 
@@ -333,22 +353,8 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 			m.Error = msg.Err.Error()
 			return m, nil
 		}
-
-		// Notice from result or action label
-		notice := fmt.Sprintf("%s done", msg.Action.Label)
-		if msg.Result != nil {
-			if r, ok := msg.Result["result"].(map[string]any); ok {
-				if msgStr, ok := r["message"].(string); ok && msgStr != "" {
-					notice = msgStr
-				}
-			} else if msgStr, ok := msg.Result["message"].(string); ok && msgStr != "" {
-				notice = msgStr
-			}
-		}
-		m.Notice = notice
+		m.Notice = pageNotice(msg)
 		m.Error = ""
-
-		// Reload page and notify changed
 		m.Busy = true
 		m.Generation++
 		return m, tea.Batch(
@@ -365,11 +371,9 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 			m.CurrentAction = nil
 			return m, nil
 		}
-
 		if m.Busy {
 			return m, nil
 		}
-
 		if m.Doc == nil {
 			if strings.ToLower(msg.String()) == "r" {
 				m.Busy = true
@@ -379,94 +383,37 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 			}
 			return m, nil
 		}
-
 		switch m.Mode {
 		case modeConfirm:
 			if msg.String() == "enter" && m.CurrentAction != nil {
 				act := *m.CurrentAction
 				m.CurrentAction = nil
 				m.Mode = modeBrowse
-				// If action still needs text or choice, collect it
-				switch act.Input {
-				case "text", "secret":
-					m.Mode = modeText
-					m.CurrentAction = &act
-					m.TextInput.Reset()
-					m.TextInput.EchoMode = textinput.EchoNormal
-					if act.Input == "secret" {
-						m.TextInput.EchoMode = textinput.EchoPassword
-					}
-					if act.Prefill && m.currentRow() != nil {
-						m.TextInput.SetValue(m.currentRow().Text)
-					}
-					m.TextInput.Focus()
-					return m, textinput.Blink
-				case "choice":
-					m.Mode = modeChoice
-					m.CurrentAction = &act
-					m.ChoiceIndex = 0
-					if row := m.currentRow(); row != nil {
-						for i, opt := range act.Options {
-							if opt == row.Badge {
-								m.ChoiceIndex = i
-								break
-							}
-						}
-					}
-					return m, nil
-				default:
-					m.Busy = true
-					m.Error = ""
-					m.Notice = ""
-					m.Generation++
-					return m, m.executeActionCmd(act, m.currentRow(), "", m.Generation)
-				}
+				return m, m.beginAction(act, false)
 			}
-			return m, nil
-
 		case modeChoice:
 			if m.CurrentAction != nil && len(m.CurrentAction.Options) > 0 {
-				numOpts := len(m.CurrentAction.Options)
+				opts := m.CurrentAction.Options
 				switch msg.String() {
 				case "left", "up":
-					m.ChoiceIndex = (m.ChoiceIndex - 1 + numOpts) % numOpts
+					m.ChoiceIndex = (m.ChoiceIndex - 1 + len(opts)) % len(opts)
 				case "right", "down":
-					m.ChoiceIndex = (m.ChoiceIndex + 1) % numOpts
+					m.ChoiceIndex = (m.ChoiceIndex + 1) % len(opts)
 				case "enter":
-					act := *m.CurrentAction
-					chosenOpt := act.Options[m.ChoiceIndex]
-					m.CurrentAction = nil
-					m.Mode = modeBrowse
-					m.Busy = true
-					m.Error = ""
-					m.Notice = ""
-					m.Generation++
-					return m, m.executeActionCmd(act, m.currentRow(), chosenOpt, m.Generation)
+					return m, m.runAction(*m.CurrentAction, opts[m.ChoiceIndex])
 				}
 			}
-			return m, nil
-
 		case modeText:
-			switch msg.String() {
-			case "enter":
-				val := strings.TrimSpace(m.TextInput.Value())
-				if val != "" && m.CurrentAction != nil {
-					act := *m.CurrentAction
-					m.CurrentAction = nil
-					m.Mode = modeBrowse
-					m.TextInput.Reset()
-					m.Busy = true
-					m.Error = ""
-					m.Notice = ""
-					m.Generation++
-					return m, m.executeActionCmd(act, m.currentRow(), val, m.Generation)
-				}
-				return m, nil
+			if msg.String() != "enter" {
+				var cmd tea.Cmd
+				m.TextInput, cmd = m.TextInput.Update(msg)
+				return m, cmd
 			}
-			var cmd tea.Cmd
-			m.TextInput, cmd = m.TextInput.Update(msg)
-			return m, cmd
-
+			if val := strings.TrimSpace(m.TextInput.Value()); val != "" && m.CurrentAction != nil {
+				act := *m.CurrentAction
+				m.TextInput.Reset()
+				return m, m.runAction(act, val)
+			}
 		case modeBrowse:
 			idx := m.currentIndex()
 			switch msg.String() {
@@ -479,61 +426,42 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 					m.SelectedID = m.Doc.Rows[idx+1].ID
 				}
 			default:
-				// Match action key
-				keyStr := msg.String()
 				for _, act := range m.Doc.Actions {
-					if act.Key == keyStr {
-						actionCopy := act
-						if actionCopy.Row && m.currentRow() == nil {
-							continue
-						}
-						m.Notice = ""
-						m.Error = ""
-
-						if actionCopy.Confirm {
-							m.Mode = modeConfirm
-							m.CurrentAction = &actionCopy
-							return m, nil
-						}
-
-						switch actionCopy.Input {
-						case "text", "secret":
-							m.Mode = modeText
-							m.CurrentAction = &actionCopy
-							m.TextInput.Reset()
-							m.TextInput.EchoMode = textinput.EchoNormal
-							if actionCopy.Input == "secret" {
-								m.TextInput.EchoMode = textinput.EchoPassword
-							}
-							if actionCopy.Prefill && m.currentRow() != nil {
-								m.TextInput.SetValue(m.currentRow().Text)
-							}
-							m.TextInput.Focus()
-							return m, textinput.Blink
-						case "choice":
-							m.Mode = modeChoice
-							m.CurrentAction = &actionCopy
-							m.ChoiceIndex = 0
-							if m.currentRow() != nil {
-								for optIdx, opt := range actionCopy.Options {
-									if opt == m.currentRow().Badge {
-										m.ChoiceIndex = optIdx
-										break
-									}
-								}
-							}
-							return m, nil
-						default:
-							m.Busy = true
-							m.Generation++
-							return m, m.executeActionCmd(actionCopy, m.currentRow(), "", m.Generation)
-						}
+					if act.Key != msg.String() {
+						continue
 					}
+					if act.Row && m.currentRow() == nil {
+						continue
+					}
+					if act.Confirm {
+						m.Notice, m.Error = "", ""
+						m.Mode = modeConfirm
+						m.CurrentAction = &act
+						return m, nil
+					}
+					return m, m.beginAction(act, true)
 				}
 			}
 		}
 	}
 	return m, nil
+}
+
+// pageNotice picks the wording for a finished action: the daemon's message
+// when it sent one, else the action's label.
+func pageNotice(msg pageActionExecutedMsg) string {
+	notice := fmt.Sprintf("%s done", msg.Action.Label)
+	if msg.Result == nil {
+		return notice
+	}
+	r, _ := msg.Result["result"].(map[string]any)
+	if r == nil {
+		r = msg.Result
+	}
+	if s, ok := r["message"].(string); ok && s != "" {
+		return s
+	}
+	return notice
 }
 
 func (m PageViewModel) View() string {
@@ -552,11 +480,7 @@ func (m PageViewModel) View() string {
 		line(m.Styles.Faint.Render(m.Notice))
 	}
 	if m.Doc == nil {
-		if m.Error != "" {
-			faint("r retry · esc return to chat")
-		} else {
-			faint("loading " + m.Command + "…")
-		}
+		faint(pick(m.Error != "", "r retry · esc return to chat", "loading "+m.Command+"…"))
 		return strings.TrimSuffix(b.String(), "\n")
 	}
 	row := m.currentRow()
@@ -565,7 +489,7 @@ func (m PageViewModel) View() string {
 	} else {
 		rows := make([]string, len(m.Doc.Rows))
 		for i, item := range m.Doc.Rows {
-			var style lipgloss.Style
+			style := lipgloss.NewStyle()
 			switch item.Tone {
 			case ToneActive:
 				style = DefaultStyles.Success
@@ -573,8 +497,6 @@ func (m PageViewModel) View() string {
 				style = DefaultStyles.Warning
 			case ToneMuted:
 				style = m.Styles.Faint
-			default:
-				style = lipgloss.NewStyle()
 			}
 			rows[i] = style.Render(fmt.Sprintf("%-9s", item.Badge)) + " " + item.Text
 			if item.ID != item.Text {
@@ -585,18 +507,14 @@ func (m PageViewModel) View() string {
 	}
 	target := ""
 	if row != nil {
-		if row.ID == row.Text {
-			target = " " + row.Text
-		} else {
-			target = fmt.Sprintf(" #%s %s", row.ID, row.Text)
+		target = " " + row.Text
+		if row.ID != row.Text {
+			target = " #" + row.ID + " " + row.Text
 		}
 	}
 	if m.CurrentAction != nil {
 		act := m.CurrentAction
-		actionTarget := ""
-		if act.Row {
-			actionTarget = target
-		}
+		actionTarget := pick(act.Row, target, "")
 		switch m.Mode {
 		case modeConfirm:
 			line(DefaultStyles.Warning.Render(act.Label + actionTarget + "? enter confirm · esc cancel"))
@@ -612,10 +530,7 @@ func (m PageViewModel) View() string {
 			}
 			line(choice.String())
 		case modeText:
-			prompt := act.Prompt
-			if prompt == "" {
-				prompt = act.Label
-			}
+			prompt := cmp.Or(act.Prompt, act.Label)
 			b.WriteString(m.Styles.Prompt.Render(act.Label+actionTarget+" · "+prompt) + " " + promptLead())
 			line(m.TextInput.View())
 		}

@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -303,15 +304,8 @@ func (c *ChatClient) ReplaceWorkspace(ctx context.Context, workspace string) (*W
 		return nil, errors.New("daemon returned invalid session metadata")
 	}
 
-	hasWorkspaceCap := false
-	for _, cap := range health.Capabilities {
-		if cap == "session_workspace" {
-			hasWorkspaceCap = true
-			break
-		}
-	}
-	if !hasWorkspaceCap {
-		return nil, errors.New("daemon upgrade needed to change this workspace; when ready, run albedo daemon --stop, then albedo (this clears python variables)")
+	if !slices.Contains(health.Capabilities, "session_workspace") {
+		return nil, UpgradeNeeded("to change this workspace")
 	}
 
 	payload := map[string]string{
