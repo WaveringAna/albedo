@@ -11,7 +11,6 @@ import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/erlang/process.{type Subject}
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 
 pub type Messages(message) {
   Messages(
@@ -90,6 +89,63 @@ pub fn publish_fn(
   }
 }
 
+/// The calls whose replies the turn cannot go on without. None is retried: a
+/// timed-out request may already be applied, and a second commit would write
+/// its inputs twice. Either miss ends the turn with an error, as a stopped
+/// worker does; after a stall the session still applies the pending request
+/// once it catches up, then records the turn as interrupted.
+fn confirm(
+  owner: Subject(message),
+  what: String,
+  waiting timeout: Int,
+  sending make_request: fn(Subject(Result(reply, String))) -> message,
+) -> Result(reply, String) {
+  case try_call(owner, timeout, make_request) {
+    Ok(reply) -> reply
+    Error(TimedOut) ->
+      Error(what <> " unconfirmed after a session stall; it may still be saved")
+    Error(CalleeDown) -> Error(what <> " unconfirmed: the session stopped")
+  }
+}
+
+pub fn commit_fn(
+  owner: Subject(message),
+  run_id: String,
+  messages: Messages(message),
+  waiting timeout: Int,
+) -> fn(List(types.Input), conversation.Stage, Option(Int)) ->
+  Result(Int, String) {
+  fn(inputs, stage, thought_ms) {
+    confirm(owner, "commit", timeout, messages.commit(
+      run_id,
+      inputs,
+      stage,
+      thought_ms,
+      _,
+    ))
+  }
+}
+
+pub fn usage_fn(
+  owner: Subject(message),
+  run_id: String,
+  messages: Messages(message),
+  waiting timeout: Int,
+) -> fn(usage.Metadata) -> Result(Nil, String) {
+  fn(metadata) {
+    confirm(owner, "usage", timeout, messages.usage(run_id, metadata, _))
+  }
+}
+
+pub fn drain_fn(
+  owner: Subject(message),
+  run_id: String,
+  messages: Messages(message),
+  waiting timeout: Int,
+) -> fn() -> Result(List(types.Input), String) {
+  fn() { confirm(owner, "steering", timeout, messages.drain(run_id, _)) }
+}
+
 @external(erlang, "albedo_native", "new_id")
 fn new_id() -> String
 
@@ -120,15 +176,7 @@ pub fn start(
       state.pin,
       client,
       publish_fn(owner, run_id, messages, 30_000),
-      fn(inputs, stage, thought_ms) {
-        actor.call(owner, 10_000, messages.commit(
-          run_id,
-          inputs,
-          stage,
-          thought_ms,
-          _,
-        ))
-      },
+      commit_fn(owner, run_id, messages, 10_000),
       fn(request, observation) {
         let snapshot =
           context_snapshot.from_request(
@@ -144,10 +192,8 @@ pub fn start(
         let _ = try_call(owner, 5000, messages.context(run_id, snapshot, _))
         Nil
       },
-      fn(metadata) {
-        actor.call(owner, 10_000, messages.usage(run_id, metadata, _))
-      },
-      fn() { actor.call(owner, 10_000, messages.drain(run_id, _)) },
+      usage_fn(owner, run_id, messages, 10_000),
+      drain_fn(owner, run_id, messages, 10_000),
       fn(head) {
         // Same as the context snapshot: the pin report is bookkeeping.
         let _ = try_call(owner, 5000, messages.pin(run_id, head, _))

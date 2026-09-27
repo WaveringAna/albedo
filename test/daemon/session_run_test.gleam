@@ -1,8 +1,11 @@
 //// The worker's tolerant calls: a stalled or dead session actor is an answer,
 //// not a crash. E2E cannot stall the session actor on cue.
 
+import albedo/daemon/conversation
 import albedo/daemon/session_run
+import albedo/daemon/usage
 import gleam/erlang/process.{type Subject}
+import gleam/option.{None}
 import gleam/otp/actor
 import gleeunit/should
 
@@ -76,13 +79,15 @@ pub fn a_reply_that_races_the_callee_exit_still_arrives_test() {
 /// A stand-in for the session actor's protocol.
 type Owner {
   Publish(reply: Subject(Bool))
+  Commit(reply: Subject(Result(Int, String)))
+  Commits(reply: Subject(Int))
   Unused
 }
 
 fn messages() -> session_run.Messages(Owner) {
   session_run.Messages(
     publish: fn(_, _, reply) { Publish(reply) },
-    commit: fn(_, _, _, _, _) { Unused },
+    commit: fn(_, _, _, _, reply) { Commit(reply) },
     context: fn(_, _, _) { Unused },
     usage: fn(_, _, _) { Unused },
     drain: fn(_, _) { Unused },
@@ -101,7 +106,7 @@ pub fn publish_passes_the_owner_answer_through_test() {
     server(fn(message) {
       case message {
         Publish(reply) -> process.send(reply, keep_going)
-        Unused -> Nil
+        _ -> Nil
       }
       actor.continue(Nil)
     })
@@ -120,4 +125,48 @@ pub fn publish_stops_the_stream_when_the_owner_dies_test() {
   server(fn(_) { actor.stop() })
   |> publish
   |> should.be_false
+}
+
+fn commit(owner: Subject(Owner)) -> Result(Int, String) {
+  session_run.commit_fn(owner, "run", messages(), waiting: 20)(
+    [],
+    conversation.Tool,
+    None,
+  )
+}
+
+pub fn a_dead_owner_ends_the_turn_instead_of_the_worker_test() {
+  let dies = fn() { server(fn(_) { actor.stop() }) }
+  commit(dies())
+  |> should.equal(Error("commit unconfirmed: the session stopped"))
+  session_run.usage_fn(dies(), "run", messages(), waiting: 20)(usage.Metadata(
+    "model",
+    0,
+    None,
+  ))
+  |> should.equal(Error("usage unconfirmed: the session stopped"))
+  session_run.drain_fn(dies(), "run", messages(), waiting: 20)()
+  |> should.equal(Error("steering unconfirmed: the session stopped"))
+}
+
+/// A stalled commit may still land, so it must be sent exactly once.
+pub fn a_stalled_commit_ends_the_turn_without_a_retry_test() {
+  let assert Ok(started) =
+    actor.new(0)
+    |> actor.on_message(fn(commits, message) {
+      case message {
+        Commit(_) -> actor.continue(commits + 1)
+        Commits(reply) -> {
+          process.send(reply, commits)
+          actor.continue(commits)
+        }
+        _ -> actor.continue(commits)
+      }
+    })
+    |> actor.start
+  commit(started.data)
+  |> should.equal(Error(
+    "commit unconfirmed after a session stall; it may still be saved",
+  ))
+  actor.call(started.data, 1000, Commits) |> should.equal(1)
 }
