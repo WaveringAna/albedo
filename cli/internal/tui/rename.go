@@ -26,6 +26,9 @@ type sessionRenamedMsg struct {
 type renameField struct {
 	id, was string
 	input   textinput.Model
+	// selected holds until the first key: typing replaces the opening
+	// draft, which a message title can fill to the limit; other keys edit it.
+	selected bool
 }
 
 // renameLimit matches the daemon, which keeps 80 characters of a name.
@@ -44,7 +47,7 @@ func (f *renameField) open(id, current, placeholder string) {
 	in.SetValue(current)
 	in.CursorEnd()
 	in.Focus()
-	f.id, f.was, f.input = id, current, in
+	f.id, f.was, f.input, f.selected = id, current, in, current != ""
 }
 
 func (f renameField) active() bool { return f.id != "" }
@@ -64,6 +67,10 @@ func (f *renameField) key(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		return func() tea.Msg { return SessionRenameMsg{ID: id, Name: name} }
 	}
+	if f.selected && msg.Text != "" {
+		f.input.SetValue("")
+	}
+	f.selected = false
 	var cmd tea.Cmd
 	f.input, cmd = f.input.Update(msg)
 	return cmd
@@ -72,6 +79,11 @@ func (f *renameField) key(msg tea.KeyPressMsg) tea.Cmd {
 // view is the draft in exactly width cells.
 func (f renameField) view(width int) string {
 	f.input.SetWidth(max(1, width-1))
+	if f.selected {
+		st := f.input.Styles()
+		st.Focused.Text = DefaultStyles.Cursor
+		f.input.SetStyles(st)
+	}
 	return svFit(f.input.View(), width)
 }
 

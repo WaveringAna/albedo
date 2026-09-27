@@ -91,6 +91,24 @@ func TestSessionViewerRenamesInPlace(t *testing.T) {
 	}
 }
 
+// A title taken from a message can fill the whole limit, so typing first
+// replaces the opening draft rather than being refused past it.
+func TestRenameTypingReplacesTheOpeningDraft(t *testing.T) {
+	long := strings.Repeat("x", renameLimit-1)
+	m := NewSessionViewer("/work")
+	m.SetSize(100, 20)
+	m.SetSessions([]daemon.Session{{ID: "one", Title: long}}, nil)
+	m.focus("one")
+	m, _ = m.Update(ctrlR)
+	for _, k := range keysOf("short") {
+		m, _ = m.Update(k)
+	}
+	m, cmd := m.Update(enterKey)
+	if got := renameRequest(t, cmd); got != (SessionRenameMsg{ID: "one", Name: "short"}) {
+		t.Fatalf("request %+v", got)
+	}
+}
+
 func TestSessionViewerDoesNotRenameActions(t *testing.T) {
 	m := NewSessionViewer("/work")
 	m.SetSize(100, 20)
