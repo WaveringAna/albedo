@@ -58,6 +58,12 @@ type agentsSeedMsg struct {
 		Preview string `json:"preview"`
 	}
 }
+type agentsSeedErrMsg struct {
+	Gen int
+	ID  string
+	Err error
+}
+
 type agentsFrameMsg struct{ Gen int }
 type agentsSentMsg struct {
 	Gen    int
@@ -70,6 +76,7 @@ type agentsGenMsg interface{ gen() int }
 
 func (m agentsSnapshotMsg) gen() int     { return m.Gen }
 func (m agentsSeedMsg) gen() int         { return m.Gen }
+func (m agentsSeedErrMsg) gen() int      { return m.Gen }
 func (m agentsEventsMsg) gen() int       { return m.Gen }
 func (m agentsStreamClosedMsg) gen() int { return m.Gen }
 func (m agentsReconnectMsg) gen() int    { return m.Gen }
@@ -361,6 +368,14 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		n.tail = append(seeded, n.tail...)
 		return m, nil
 
+	case agentsSeedErrMsg:
+		// The seed died; unseed its node so the next selection tries again.
+		if n := m.nodes[msg.ID]; n != nil {
+			n.seeded = false
+			m.say("could not load history: " + msg.Err.Error())
+		}
+		return m, nil
+
 	case agentsEventsMsg:
 		relayout := false
 		for _, event := range msg.Events {
@@ -479,7 +494,7 @@ func (m AgentsViewModel) key(msg tea.KeyPressMsg) (AgentsViewModel, tea.Cmd) {
 	return m, cmd
 }
 
-// seedCmd loads the selected agent's recent history once.
+// seedCmd loads the selected agent's recent history once; failures retry.
 func (m *AgentsViewModel) seedCmd() tea.Cmd {
 	n := m.nodes[m.selected]
 	if n == nil || n.seeded || n.id == agentsYou || m.Conn == nil {
@@ -491,7 +506,7 @@ func (m *AgentsViewModel) seedCmd() tea.Cmd {
 		path := fmt.Sprintf("/sessions/%s/preview?limit=10", url.PathEscape(id))
 		res, err := daemon.Request[agentsSeedMsg](context.Background(), conn, path, nil)
 		if err != nil {
-			return nil
+			return agentsSeedErrMsg{Gen: gen, ID: id, Err: err}
 		}
 		res.Gen, res.ID = gen, id
 		return res

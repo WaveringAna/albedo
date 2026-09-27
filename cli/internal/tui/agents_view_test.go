@@ -2,6 +2,12 @@
 package tui
 
 import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -207,5 +213,68 @@ func TestAgentsDeleteAsksFirstAndSparesTheOpenSession(t *testing.T) {
 	_, cmd = m.key(tea.KeyPressMsg{Code: 'y', Text: "y"})
 	if cmd == nil {
 		t.Fatal("y should delete")
+	}
+}
+
+// A seed that fails must not lock the node out of history: the next selection
+// retries, and only the failure's own generation may unseed the node.
+func TestFailedSeedRetriesOnTheNextSelection(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			http.Error(w, `{"error":"history is gone"}`, http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]string{
+			{"type": "user", "preview": "fan out three scouts"},
+		}})
+	}))
+	defer server.Close()
+	address, _ := url.Parse(server.URL)
+	port, _ := strconv.Atoi(address.Port())
+
+	m := agentsFixture(t)
+	m.Conn = daemon.NewConnection(daemon.ConnectionSnapshot{Port: port, Token: "t", Version: 2}, "")
+	m.selected = "coder"
+
+	cmd := m.seedCmd()
+	if cmd == nil {
+		t.Fatal("an unseeded agent should ask for history")
+	}
+	msg := cmd()
+	failure, ok := msg.(agentsSeedErrMsg)
+	if !ok || failure.Err == nil {
+		t.Fatalf("the failed request should report itself, got %T", msg)
+	}
+	m, _ = m.Update(failure)
+	if m.nodes["coder"].seeded {
+		t.Fatal("a failed seed left the node marked seeded")
+	}
+	if !strings.Contains(m.notice, "could not load history: history is gone") {
+		t.Fatalf("the notice should carry the failure, got %q", m.notice)
+	}
+
+	cmd = m.seedCmd()
+	if cmd == nil {
+		t.Fatal("the next selection should retry after a failed seed")
+	}
+	msg = cmd()
+	seed, ok := msg.(agentsSeedMsg)
+	if !ok {
+		t.Fatalf("the retry should answer with history, got %T", msg)
+	}
+	m, _ = m.Update(seed)
+	if !strings.Contains(ansi.Strip(m.View()), "← fan out three scouts") {
+		t.Fatalf("the retried seed should fill the tail:\n%s", ansi.Strip(m.View()))
+	}
+
+	// An error from an earlier generation may not unseed the live node.
+	m, _ = m.Update(agentsSeedErrMsg{Gen: m.Gen - 1, ID: "coder", Err: errors.New("late")})
+	if !m.nodes["coder"].seeded {
+		t.Fatal("a stale seed error unseeded the live node")
+	}
+	if cmd := m.seedCmd(); cmd != nil {
+		t.Fatal("a seeded node should not fetch again")
 	}
 }
