@@ -307,9 +307,10 @@ type ChatModel struct {
 	// burstRenders counts frame builds; tests watch it to catch a cache that
 	// redraws every refresh or misses an invalidation.
 	burstRenders int
-	// toolIntent says the action row names what the call did (read a file,
-	// ran a command) rather than the call itself.
-	toolIntent      bool
+	// inFlight is the last progress of the call the action row follows. It
+	// outlives Progress, which the result clears, so the row can still say
+	// what the call did once it ends.
+	inFlight        *daemon.ToolProgress
 	Progress        *daemon.ToolProgress
 	ProgressFrame   int
 	animationActive bool
@@ -706,7 +707,7 @@ func (m *ChatModel) trimSettledLines() {
 // clearAction drops the live action row; the next action starts a new one.
 func (m *ChatModel) clearAction() {
 	m.ToolProgressText = ""
-	m.toolIntent = false
+	m.inFlight = nil
 	m.ThoughtProgressText = ""
 }
 
@@ -2018,8 +2019,8 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			m.Status.Idle = false
 			phase := daemon.PhaseTool
 			m.Status.Phase = &phase
-			m.ToolProgressText = progressLabel(*evt.Progress)
-			m.toolIntent = evt.Progress.Intent != nil
+			m.inFlight = evt.Progress
+			m.ToolProgressText = actionLabel(evt.Progress, nil)
 		}
 
 	case daemon.EventTool:
@@ -2037,17 +2038,12 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			Timestamp:  time.Now().UnixMilli(),
 		}
 		m.appendSettledEntry(entry)
-		switch {
-		case evt.Replayed:
+		if evt.Replayed {
 			m.ToolProgressText = ""
-		case m.toolIntent:
-			m.ToolProgressText = finishedProgress(m.ToolProgressText, evt.ToolName, toolFailed(entry))
-		default:
-			// the call itself, as its collapsed tool row names it
-			head, tail := toolRowParts(entry, toolFailed(entry), "")
-			m.ToolProgressText = head + tail
+		} else {
+			m.ToolProgressText = actionLabel(m.inFlight, &entry)
 		}
-		m.toolIntent = false
+		m.inFlight = nil
 		if m.turn == nil {
 			ts := time.Now().UnixMilli()
 			m.turn = &openTurn{start: ts, last: ts}
@@ -2277,45 +2273,42 @@ func (m ChatModel) sidebarWidth() int {
 	return 0
 }
 
-// The live action row becomes a completed label, rather than disappearing
-// between the tool result and the next action.
-func finishedProgress(label, name string, failed bool) string {
-	completed := ""
-	for _, pair := range [][2]string{
-		{"reading ", "read "}, {"writing ", "wrote "}, {"editing ", "edited "},
-		{"running ", "ran "}, {"preparing ", "ran "},
-	} {
-		if target, ok := strings.CutPrefix(label, pair[0]); ok {
-			completed = pair[1] + target
-			break
-		}
-	}
-	if completed == "" {
-		if name == "" {
-			name = "tool"
-		}
-		completed = "used " + name
-	}
-	if failed {
-		completed += " · failed"
-	}
-	return completed
+// intentVerbs name an intent while its call is written, while it runs, and
+// once it ran.
+var intentVerbs = map[string]struct{ generating, running, done string }{
+	"read":  {"reading", "reading", "read"},
+	"write": {"writing", "writing", "wrote"},
+	"edit":  {"editing", "editing", "edited"},
+	"run":   {"preparing", "running", "ran"},
 }
 
-func progressLabel(progress daemon.ToolProgress) string {
-	if intent := progress.Intent; intent != nil {
-		verbs := map[string]string{"write": "writing", "edit": "editing", "read": "reading", "run": "running"}
-		verb := verbs[intent.Kind]
-		if intent.Kind == "run" && progress.Phase == "generating" {
-			verb = "preparing"
+// actionLabel is the action row for a call, live from its progress and then
+// from its result, so the row holds the last action until the next begins.
+// A call that said what it does (read a file, ran a command) is named by
+// that; any other is named by the call itself, as its settled tool row is.
+func actionLabel(progress *daemon.ToolProgress, result *HistoryEntry) string {
+	if progress != nil && progress.Intent != nil {
+		verbs := intentVerbs[progress.Intent.Kind]
+		verb := verbs.running
+		switch {
+		case result != nil:
+			verb = verbs.done
+		case progress.Phase == "generating":
+			verb = verbs.generating
 		}
-		return verb + " " + intent.Target
+		label := verb + " " + progress.Intent.Target
+		if result != nil && toolFailed(*result) {
+			label += " · failed"
+		}
+		return label
 	}
-	if progress.Phase == "generating" {
+	switch {
+	case result != nil:
+		head, tail := toolRowParts(*result, toolFailed(*result), "")
+		return head + tail
+	case progress.Phase == "generating":
 		return "making a " + progress.Name + " call"
-	}
-	if progress.Code != nil && progress.Code.Text != "" {
-		// the head of the row the call settles into
+	case progress.Code != nil && progress.Code.Text != "":
 		return toolSummary(HistoryEntry{ToolName: progress.Name, ToolArgs: map[string]any{"code": progress.Code.Text}})
 	}
 	return "running " + progress.Name
