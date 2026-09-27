@@ -99,7 +99,7 @@ pub fn stream_reduces_thoughts_text_and_calls_test() {
     types.ThinkingDelta("weigh"),
     types.ThinkingDelta("ing"),
     types.TextDelta(0, 0, "looking"),
-    types.ArgumentsDelta(0, arguments),
+    types.ArgumentsDelta(0, "bash", arguments),
   ] = events
   assert arguments == "{\"command\":\"ls\"}"
   assert turn.finish == types.ToolCalls

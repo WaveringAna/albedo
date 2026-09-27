@@ -36,6 +36,17 @@ pub fn responses_provider_failures_and_malformed_fields_are_typed_test() {
     ))
 }
 
+pub fn responses_argument_deltas_name_the_tool_their_item_opened_with_test() {
+  let added =
+    "{\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"c\",\"name\":\"web_search\",\"arguments\":\"\"}}"
+  let assert Ok(#(state, [], None)) =
+    send(stream.new(types.Responses), "response.output_item.added", added)
+  let delta =
+    "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"{\\\"q\"}"
+  let assert Ok(#(_, [types.ArgumentsDelta(1, "web_search", "{\"q")], None)) =
+    send(state, "response.function_call_arguments.delta", delta)
+}
+
 pub fn chat_accumulates_interleaved_tools_usage_and_native_replay_test() {
   let state = stream.new(types.ChatCompletions)
   let first =
@@ -53,7 +64,10 @@ pub fn chat_accumulates_interleaved_tools_usage_and_native_replay_test() {
     "{\"id\":\"chat_1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"beta\",\"arguments\":\"{\\\"b\\\":\"}},{\"index\":0,\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"alpha\",\"arguments\":\"{\\\"a\\\":\"}}]},\"finish_reason\":null}]}"
   let assert Ok(#(
     state,
-    [types.ArgumentsDelta(1, "{\"b\":"), types.ArgumentsDelta(0, "{\"a\":")],
+    [
+      types.ArgumentsDelta(1, "beta", "{\"b\":"),
+      types.ArgumentsDelta(0, "alpha", "{\"a\":"),
+    ],
     None,
   )) = send(state, "", one)
   let two =
@@ -63,8 +77,8 @@ pub fn chat_accumulates_interleaved_tools_usage_and_native_replay_test() {
     == [
       types.ThinkingDelta("carefully"),
       types.TextDelta(0, 0, "lo"),
-      types.ArgumentsDelta(0, "1}"),
-      types.ArgumentsDelta(1, "2}"),
+      types.ArgumentsDelta(0, "alpha", "1}"),
+      types.ArgumentsDelta(1, "beta", "2}"),
     ]
   let usage =
     "{\"id\":\"chat_1\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":8,\"total_tokens\":13,\"prompt_tokens_details\":{\"cached_tokens\":0}}}"

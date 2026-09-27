@@ -180,7 +180,7 @@ fn update(
     [Tool(i, id, name, chunks), ..rest]
       if i == index && kind == "input_json_delta"
     -> #([Tool(i, id, name, [text, ..chunks]), ..rest], [
-      types.ArgumentsDelta(i, text),
+      types.ArgumentsDelta(i, name, text),
     ])
     [head, ..rest] -> {
       let #(rest, events) = update(rest, index, kind, text)

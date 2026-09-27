@@ -111,8 +111,8 @@ func TestAgentsTailStreamsCodeThinkingAndOutput(t *testing.T) {
 	m := agentsFixture(t)
 	events := []map[string]any{
 		{"type": "thinking", "session": "lead", "text": "the scouts need a brief"},
-		{"type": "arguments_delta", "session": "lead", "callId": "c1", "text": `{"code": "kid = await agents.self`},
-		{"type": "arguments_delta", "session": "lead", "callId": "c1", "text": `.spawn(\"map\", name=\"scout\")\nprint(kid`},
+		{"type": "arguments_delta", "session": "lead", "name": "python", "callId": "c1", "text": `{"code": "kid = await agents.self`},
+		{"type": "arguments_delta", "session": "lead", "name": "python", "callId": "c1", "text": `.spawn(\"map\", name=\"scout\")\nprint(kid`},
 	}
 	m, _ = m.Update(agentsEventsMsg{Gen: 1, Events: events})
 	live := ansi.Strip(m.View())

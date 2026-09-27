@@ -1,4 +1,5 @@
 import albedo/openai_api/types
+import gleam/dict.{type Dict}
 import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/int
@@ -14,6 +15,9 @@ pub opaque type State {
     response_id: Option(String),
     streamed_output: List(#(Int, dynamic.Dynamic)),
     terminal: Bool,
+    /// Each streaming call's tool name, by output index, from when it was
+    /// added; its argument deltas carry only the index.
+    call_names: Dict(Int, String),
   )
 }
 
@@ -31,14 +35,14 @@ type Response {
 }
 
 pub fn new() -> State {
-  State(None, [], False)
+  State(None, [], False, dict.new())
 }
 
 pub fn feed(
   state: State,
   data: String,
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
-  let State(_, _, terminal) = state
+  let State(terminal:, ..) = state
   case terminal {
     True -> Error(types.InvalidEvent("response event after terminal event"))
     False -> {
@@ -74,6 +78,7 @@ fn dispatch(
       reasoning_delta(state, value, "response.reasoning_summary_text.delta")
     "response.reasoning_text.delta" ->
       reasoning_delta(state, value, "response.reasoning_text.delta")
+    "response.output_item.added" -> output_item_added(state, value)
     "response.function_call_arguments.delta" -> arguments_delta(state, value)
     "response.output_item.done" -> output_item_done(state, value)
     "response.completed" -> completed(state, value)
@@ -126,14 +131,43 @@ fn arguments_delta(
   let decoder = {
     use output_index <- decode.field("output_index", decode.int)
     use delta <- decode.field("delta", decode.string)
-    decode.success(types.ArgumentsDelta(output_index, delta))
+    decode.success(#(output_index, delta))
   }
-  use event <- result.try(run(
+  use #(index, delta) <- result.try(run(
     value,
     decoder,
     "response.function_call_arguments.delta",
   ))
-  Ok(#(state, [event], None))
+  let name = dict.get(state.call_names, index) |> result.unwrap("")
+  Ok(#(state, [types.ArgumentsDelta(index, name, delta)], None))
+}
+
+/// A function call's item opens with its name, before any of its arguments.
+fn output_item_added(
+  state: State,
+  value: dynamic.Dynamic,
+) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
+  let decoder = {
+    use index <- decode.field("output_index", decode.int)
+    use #(kind, name) <- decode.field("item", {
+      use kind <- decode.field("type", decode.string)
+      use name <- decode.optional_field("name", "", decode.string)
+      decode.success(#(kind, name))
+    })
+    decode.success(#(index, kind, name))
+  }
+  use #(index, kind, name) <- result.try(run(
+    value,
+    decoder,
+    "response.output_item.added",
+  ))
+  case kind, name {
+    "function_call", name if name != "" -> {
+      let call_names = dict.insert(state.call_names, index, name)
+      Ok(#(State(..state, call_names:), [], None))
+    }
+    _, _ -> Ok(#(state, [], None))
+  }
 }
 
 fn output_item_done(
@@ -146,8 +180,8 @@ fn output_item_done(
     decode.success(#(index, item))
   }
   use item <- result.try(run(value, decoder, "response.output_item.done"))
-  let State(id, output, terminal) = state
-  Ok(#(State(id, put_output(output, item), terminal), [], None))
+  let output = put_output(state.streamed_output, item)
+  Ok(#(State(..state, streamed_output: output), [], None))
 }
 
 fn put_output(
@@ -209,7 +243,7 @@ fn completed(
     "response.completed",
   ))
   use #(state, started) <- result.try(record_id(state, response.id))
-  let State(_, streamed, _) = state
+  let State(streamed_output: streamed, ..) = state
   let authoritative = case response.output {
     [] -> list.map(streamed, fn(item) { item.1 })
     output -> output
@@ -220,11 +254,10 @@ fn completed(
     [] -> types.Complete
     _ -> types.ToolCalls
   }
-  let State(id, streamed, _) = state
   Ok(#(
-    State(id, streamed, True),
+    State(..state, terminal: True),
     started,
-    Some(types.Turn(id, output, tools, response.usage, finish)),
+    Some(types.Turn(state.response_id, output, tools, response.usage, finish)),
   ))
 }
 
@@ -245,11 +278,10 @@ fn incomplete(
     Some(reason) -> types.OtherFinish(reason)
     None -> types.OtherFinish("incomplete")
   }
-  let State(id, streamed, _) = state
   Ok(#(
-    State(id, streamed, True),
+    State(..state, terminal: True),
     started,
-    Some(types.Turn(id, output, [], response.usage, finish)),
+    Some(types.Turn(state.response_id, output, [], response.usage, finish)),
   ))
 }
 
@@ -360,10 +392,9 @@ fn record_id(
   state: State,
   incoming: Option(String),
 ) -> Result(#(State, List(types.Event)), types.Error) {
-  let State(current, output, terminal) = state
-  case current, incoming {
+  case state.response_id, incoming {
     None, Some(id) ->
-      Ok(#(State(Some(id), output, terminal), [types.Started(id)]))
+      Ok(#(State(..state, response_id: Some(id)), [types.Started(id)]))
     Some(current), Some(incoming) if current != incoming ->
       Error(types.InvalidEvent("Responses response id changed"))
     _, _ -> Ok(#(state, []))

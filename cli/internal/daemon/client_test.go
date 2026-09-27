@@ -32,13 +32,13 @@ func TestCompletedCallPreviewsReleaseState(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		if count == 1 {
 			_, _ = w.Write([]byte(formatPage(1, []any{
-				map[string]any{"type": "arguments_delta", "callId": "a", "text": a},
-				map[string]any{"type": "arguments_delta", "callId": "b", "text": b[:15]},
+				map[string]any{"type": "arguments_delta", "name": "python", "callId": "a", "text": a},
+				map[string]any{"type": "arguments_delta", "name": "python", "callId": "b", "text": b[:15]},
 				map[string]any{"type": "tool", "callId": "a", "name": "python", "args": a, "result": "done"},
 			})))
 		} else {
 			_, _ = w.Write([]byte(formatPage(2, []any{
-				map[string]any{"type": "arguments_delta", "callId": "b", "text": b[15:]},
+				map[string]any{"type": "arguments_delta", "name": "python", "callId": "b", "text": b[15:]},
 				map[string]any{"type": "tool_progress", "progress": map[string]any{"callId": "b", "name": "python", "phase": "running"}},
 				map[string]any{"type": "tool", "callId": "b", "name": "python", "args": b, "result": "done"},
 			})))
@@ -102,7 +102,7 @@ func TestUnfinishedArgumentsBounded(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		if count <= 33 {
 			_, _ = w.Write([]byte(formatPage(int(count), []any{
-				map[string]any{"type": "arguments_delta", "callId": fmt.Sprintf("call-%d", count), "text": `{"code":"`},
+				map[string]any{"type": "arguments_delta", "name": "python", "callId": fmt.Sprintf("call-%d", count), "text": `{"code":"`},
 			})))
 		} else {
 			_, _ = w.Write([]byte(formatPage(int(count), []any{
@@ -153,7 +153,7 @@ func TestDetachingDropsArgumentPreviews(t *testing.T) {
 		raw, _ := json.Marshal(map[string]any{"code": code})
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(formatPage(len(requestedURLs), []any{
-			map[string]any{"type": "arguments_delta", "callId": "same", "text": string(raw)},
+			map[string]any{"type": "arguments_delta", "name": "python", "callId": "same", "text": string(raw)},
 		})))
 	}))
 	defer server.Close()

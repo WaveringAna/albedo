@@ -925,6 +925,7 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 							}
 							if itemType == "arguments_delta" {
 								callID, _ := evMap["callId"].(string)
+								name, _ := evMap["name"].(string)
 								text, _ := evMap["text"].(string)
 								if callID != "" && text != "" {
 									c.mu.Lock()
@@ -957,7 +958,7 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 									call := &ToolCallAssembly{
 										ID: callID,
 									}
-									call.Function.Name = "python"
+									call.Function.Name = name
 									call.Function.Arguments = args
 									if err := reporter.Report(call, "generating"); err != nil {
 										return err

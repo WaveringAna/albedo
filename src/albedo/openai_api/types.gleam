@@ -256,7 +256,9 @@ pub type Event {
   TextDelta(output_index: Int, content_index: Int, text: String)
   /// Reasoning text, streamed separately from the user-visible answer.
   ThinkingDelta(text: String)
-  ArgumentsDelta(output_index: Int, text: String)
+  /// A fragment of a call's arguments; name is the tool it calls, or empty
+  /// until the provider has said.
+  ArgumentsDelta(output_index: Int, name: String, text: String)
 }
 
 pub type Control {

@@ -291,6 +291,7 @@ fn apply_chunk(
             content_delta,
             reasoning.stream_text(reasoning_delta),
             fragments,
+            tools,
           ),
         ))
       }
@@ -317,7 +318,8 @@ fn apply_chunk(
 fn delta_events(
   content: Option(String),
   reasoning: String,
-  tools: List(ToolFragment),
+  fragments: List(ToolFragment),
+  tools: Dict(Int, ToolBuilder),
 ) -> List(types.Event) {
   let thinking = case reasoning {
     "" -> []
@@ -328,11 +330,16 @@ fn delta_events(
     None -> []
   }
   let arguments =
-    tools
+    fragments
     |> list.filter_map(fn(fragment) {
       let ToolFragment(index, _, _, arguments) = fragment
+      // the name so far: it arrives with the call's first fragments
+      let name = case dict.get(tools, index) {
+        Ok(ToolBuilder(_, Some(name), _)) -> name
+        _ -> ""
+      }
       case arguments {
-        Some(arguments) -> Ok(types.ArgumentsDelta(index, arguments))
+        Some(arguments) -> Ok(types.ArgumentsDelta(index, name, arguments))
         None -> Error(Nil)
       }
     })

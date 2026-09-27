@@ -32,8 +32,8 @@ pub fn stream_event(
     types.TextDelta(_, _, value) -> Some(text("text", value))
     types.ThinkingDelta("") -> None
     types.ThinkingDelta(value) -> Some(text("thinking", value))
-    types.ArgumentsDelta(_, "") -> None
-    types.ArgumentsDelta(index, value) ->
+    types.ArgumentsDelta(_, _, "") -> None
+    types.ArgumentsDelta(index, name, value) ->
       Some(
         event("arguments_delta", [
           #(
@@ -42,6 +42,7 @@ pub fn stream_event(
               id <> ":" <> int.to_string(step) <> ":" <> int.to_string(index),
             ),
           ),
+          #("name", json.string(name)),
           #("text", json.string(value)),
         ]),
       )

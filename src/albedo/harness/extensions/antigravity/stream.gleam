@@ -132,7 +132,7 @@ fn add(blocks: List(Block), part: Part) -> #(List(Block), List(types.Event)) {
       let args = wire.encode_value(args)
       let arguments = json.to_string(args)
       #([Call(types.ToolCall(id, name, arguments), args, signature), ..blocks], [
-        types.ArgumentsDelta(list.length(calls), arguments),
+        types.ArgumentsDelta(list.length(calls), name, arguments),
       ])
     }
     Part(text: "", signature: Some(signature), ..) -> #(
