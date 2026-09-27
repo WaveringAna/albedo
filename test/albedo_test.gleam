@@ -1,9 +1,10 @@
-import gleeunit
-
 pub fn main() -> Nil {
   isolate_home()
-  gleeunit.main()
+  run()
 }
 
 @external(erlang, "albedo_test_home", "isolate")
 fn isolate_home() -> Nil
+
+@external(erlang, "albedo_test_runner", "main")
+fn run() -> Nil
