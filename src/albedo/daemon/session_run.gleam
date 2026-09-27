@@ -70,16 +70,23 @@ pub fn try_call(
   }
 }
 
-/// What a missing publish reply means for the stream. A timeout only says the
-/// session actor is busy: keep streaming, the durable commit lands once it
-/// catches up, and an interrupt that landed during the stall is still backed
-/// by the Abort timer and the kernel interrupt. A dead session actor ends the
-/// stream, so no tool starts without an owner to record its result.
-pub fn keep_streaming(outcome: Result(Bool, CallError)) -> Bool {
-  case outcome {
-    Ok(keep_going) -> keep_going
-    Error(TimedOut) -> True
-    Error(CalleeDown) -> False
+/// The worker's publish, which also gates every tool call. A timeout only
+/// says the session actor is busy: keep streaming, the durable commit lands
+/// once it catches up, and an interrupt that landed during the stall is still
+/// backed by the Abort timer and the kernel interrupt. A dead session actor
+/// ends the stream, so no tool starts without an owner to record its result.
+pub fn publish_fn(
+  owner: Subject(message),
+  run_id: String,
+  messages: Messages(message),
+  waiting timeout: Int,
+) -> fn(String) -> Bool {
+  fn(event) {
+    case try_call(owner, timeout, messages.publish(run_id, event, _)) {
+      Ok(keep_going) -> keep_going
+      Error(TimedOut) -> True
+      Error(CalleeDown) -> False
+    }
   }
 }
 
@@ -112,11 +119,7 @@ pub fn start(
       kernel,
       state.pin,
       client,
-      fn(event) {
-        keep_streaming(
-          try_call(owner, 30_000, messages.publish(run_id, event, _)),
-        )
-      },
+      publish_fn(owner, run_id, messages, 30_000),
       fn(inputs, stage, thought_ms) {
         actor.call(owner, 10_000, messages.commit(
           run_id,
