@@ -12,7 +12,7 @@ pub fn responses_incomplete_never_exposes_executable_calls_test() {
   let assert Ok(#(
     _,
     [],
-    Some(types.Turn(None, [_], [], None, types.LengthLimit)),
+    Some(types.Turn(None, [_], [], None, types.LengthLimit, None)),
   )) = send(stream.new(types.Responses), "response.incomplete", data)
 }
 
@@ -95,6 +95,7 @@ pub fn chat_accumulates_interleaved_tools_usage_and_native_replay_test() {
       ],
       Some(types.Usage(5, 8, Some(0), None)),
       types.ToolCalls,
+      None,
     )),
   )) = send(state, "", "[DONE]")
   let decoder = {
@@ -120,7 +121,7 @@ pub fn cache_usage_details_tolerate_null_and_reject_malformed_values_test() {
   let assert Ok(#(
     _,
     [],
-    Some(types.Turn(_, [], [], Some(types.Usage(3, 2, None, None)), _)),
+    Some(types.Turn(_, [], [], Some(types.Usage(3, 2, None, None)), _, None)),
   )) = send(stream.new(types.Responses), "", responses_null)
 
   let chat_null =
@@ -130,7 +131,7 @@ pub fn cache_usage_details_tolerate_null_and_reject_malformed_values_test() {
   let assert Ok(#(
     _,
     [],
-    Some(types.Turn(_, _, [], Some(types.Usage(3, 2, None, None)), _)),
+    Some(types.Turn(_, _, [], Some(types.Usage(3, 2, None, None)), _, None)),
   )) = send(state, "", "[DONE]")
 
   let responses_malformed =
@@ -177,7 +178,7 @@ pub fn chat_requires_finish_and_suppresses_partial_tools_on_limits_test() {
   let assert Ok(#(
     _,
     [],
-    Some(types.Turn(None, [message], [], None, types.LengthLimit)),
+    Some(types.Turn(None, [message], [], None, types.LengthLimit, None)),
   )) = send(state, "", "[DONE]")
   let decoder = {
     use calls <- decode.optional_field(
@@ -200,8 +201,11 @@ pub fn malformed_json_and_content_filter_finish_are_typed_test() {
     "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"safe prefix\"},\"finish_reason\":\"content_filter\"}]}"
   let assert Ok(#(state, _, None)) =
     send(stream.new(types.ChatCompletions), "", filtered)
-  let assert Ok(#(_, [], Some(types.Turn(_, _, [], _, types.ContentFiltered)))) =
-    send(state, "", "[DONE]")
+  let assert Ok(#(
+    _,
+    [],
+    Some(types.Turn(_, _, [], _, types.ContentFiltered, None)),
+  )) = send(state, "", "[DONE]")
 }
 
 pub fn chat_assembles_name_fragments_and_encodes_tool_only_content_as_null_test() {
@@ -303,6 +307,7 @@ pub fn responses_uses_streamed_done_items_when_terminal_output_is_empty_test() {
       [types.ToolCall("call_1", "python", arguments)],
       _,
       types.ToolCalls,
+      None,
     )),
   )) = send(state, "", completed)
   assert arguments == "{\"code\":\"20 + 22\",\"timeout_ms\":1000}"

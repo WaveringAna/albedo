@@ -123,6 +123,7 @@ pub type Message {
     String,
     List(types.Input),
     conversation.Stage,
+    Option(Int),
     Subject(Result(Int, String)),
   )
   RecordContext(String, context_snapshot.Snapshot, Subject(Nil))
@@ -650,22 +651,29 @@ fn handle(state: State, message: Message) {
           actor.continue(state)
         }
       }
-    Commit(id, inputs, stage, reply) ->
+    Commit(id, inputs, stage, thought_ms, reply) ->
       case turn.owner(state.activity, id) {
         Some(_) -> {
           // Completed tool results are saved even when cancellation was requested.
           let written =
-            conversation.commit_from(
+            conversation.commit_response(
               runtime.ledger(state.host),
               state.info.id,
               inputs,
               stage,
               Some(state.info.provider),
+              thought_ms,
             )
           process.send(reply, written)
           case written {
             Ok(timestamp) -> {
-              let state = session_history.remember(state, inputs, timestamp)
+              let state =
+                session_history.remember_response(
+                  state,
+                  inputs,
+                  timestamp,
+                  thought_ms,
+                )
               actor.continue(
                 session_state.State(
                   ..state,

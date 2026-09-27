@@ -154,6 +154,8 @@ type StreamEvent struct {
 	ToolResult  string         `json:"result,omitempty"`
 	ToolTrace   *ToolTrace     `json:"trace,omitempty"`
 	Usage       *Usage         `json:"usage,omitempty"`
+	// ElapsedMs is how long a replayed thought took, when the daemon timed it.
+	ElapsedMs int64 `json:"elapsedMs,omitempty"`
 	// Seq is the newest transcript row an EventCommitted covers.
 	Seq int64 `json:"seq,omitempty"`
 	// Before and More describe the history a reset or page carried: Before is

@@ -163,7 +163,13 @@ pub fn exchange(
         False, _ -> http_error(connection, status, final, [], 0)
         True, True -> Error(types.UnexpectedEnd)
         True, False ->
-          pump(connection, sse.new(exchange.max_event_bytes), reducer, on_event)
+          pump(
+            connection,
+            sse.new(exchange.max_event_bytes),
+            reducer,
+            Thinking(0, None),
+            on_event,
+          )
       }
     }
     transport.Headers(status, _, final) ->
@@ -233,28 +239,42 @@ fn pump(
   connection: transport.Connection,
   parser: sse.Parser,
   state: reducer.Reducer,
+  thinking: Thinking,
   on_event: fn(Event) -> Control,
 ) -> Result(Turn, Error) {
   use message <- result.try(receive(connection))
   case message {
     transport.Data(bytes, final) -> {
+      let now = monotonic_time(Millisecond)
       use #(parser, events) <- result.try(
         sse.feed(parser, bytes) |> result.map_error(sse_error),
       )
-      use #(state, turn) <- result.try(deliver(state, events, on_event))
+      use #(state, thinking, turn) <- result.try(deliver(
+        state,
+        thinking,
+        now,
+        events,
+        on_event,
+      ))
       case turn, final {
-        Some(turn), _ -> Ok(turn)
+        Some(turn), _ -> Ok(timed(turn, thinking, now))
         None, True -> {
           use events <- result.try(
             sse.finish(parser) |> result.map_error(sse_error),
           )
-          use #(state, turn) <- result.try(deliver(state, events, on_event))
+          use #(state, thinking, turn) <- result.try(deliver(
+            state,
+            thinking,
+            now,
+            events,
+            on_event,
+          ))
           case turn {
-            Some(turn) -> Ok(turn)
-            None -> state.finish()
+            Some(turn) -> Ok(timed(turn, thinking, now))
+            None -> state.finish() |> result.map(timed(_, thinking, now))
           }
         }
-        None, False -> pump(connection, parser, state, on_event)
+        None, False -> pump(connection, parser, state, thinking, on_event)
       }
     }
     _ -> Error(types.InvalidEvent("unexpected HTTP headers inside stream"))
@@ -263,17 +283,23 @@ fn pump(
 
 fn deliver(
   state: reducer.Reducer,
+  thinking: Thinking,
+  now: Int,
   events: List(sse.Event),
   on_event: fn(Event) -> Control,
-) -> Result(#(reducer.Reducer, Option(Turn)), Error) {
+) -> Result(#(reducer.Reducer, Thinking, Option(Turn)), Error) {
   case events {
-    [] -> Ok(#(state, None))
+    [] -> Ok(#(state, thinking, None))
     [event, ..rest] -> {
       use #(state, updates, turn) <- result.try(state.feed(event.data))
       use _ <- result.try(notify(updates, on_event))
+      let thinking =
+        list.fold(updates, thinking, fn(thinking, event) {
+          think(thinking, event, now)
+        })
       case turn {
-        Some(_) -> Ok(#(state, turn))
-        None -> deliver(state, rest, on_event)
+        Some(_) -> Ok(#(state, thinking, turn))
+        None -> deliver(state, thinking, now, rest, on_event)
       }
     }
   }
@@ -290,6 +316,40 @@ fn notify(
     }
   })
 }
+
+/// Time spent thinking so far, and when the spell under way began.
+type Thinking {
+  Thinking(total: Int, since: Option(Int))
+}
+
+/// A spell runs from its first thinking delta to the next other event.
+fn think(thinking: Thinking, event: Event, now: Int) -> Thinking {
+  case event, thinking.since {
+    types.ThinkingDelta(_), None -> Thinking(..thinking, since: Some(now))
+    types.ThinkingDelta(_), Some(_) -> thinking
+    _, Some(since) -> Thinking(thinking.total + now - since, None)
+    _, None -> thinking
+  }
+}
+
+/// A turn that ends while it is still thinking thought until its end.
+fn timed(turn: Turn, thinking: Thinking, now: Int) -> Turn {
+  let total = case thinking.since {
+    Some(since) -> thinking.total + now - since
+    None -> thinking.total
+  }
+  case total {
+    0 -> turn
+    total -> types.Turn(..turn, thought_ms: Some(total))
+  }
+}
+
+type TimeUnit {
+  Millisecond
+}
+
+@external(erlang, "erlang", "monotonic_time")
+fn monotonic_time(unit: TimeUnit) -> Int
 
 fn receive(
   connection: transport.Connection,

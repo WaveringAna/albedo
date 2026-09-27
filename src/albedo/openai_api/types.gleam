@@ -248,6 +248,9 @@ pub type Turn {
     tool_calls: List(ToolCall),
     usage: Option(Usage),
     finish: Finish,
+    /// How long the model spent thinking before it answered, when it did:
+    /// each spell runs from its first thinking delta to the next event.
+    thought_ms: Option(Int),
   )
 }
 

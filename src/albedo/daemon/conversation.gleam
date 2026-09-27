@@ -68,7 +68,7 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
   store.query(store, fn(db) {
     use _ <- result.try(
       sqlight.exec(
-        "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER,usage_cache_creation_tokens INTEGER,effort TEXT); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);"
+        "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER,usage_cache_creation_tokens INTEGER,effort TEXT); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT,thought_ms INTEGER); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);"
           <> images.schema,
         db,
       )
@@ -179,6 +179,12 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
       True -> Ok(Nil)
       False ->
         sqlight.exec("ALTER TABLE transcript ADD COLUMN provider TEXT", db)
+        |> result.map_error(fn(e) { e.message })
+    })
+    use _ <- result.try(case list.contains(transcript_columns, "thought_ms") {
+      True -> Ok(Nil)
+      False ->
+        sqlight.exec("ALTER TABLE transcript ADD COLUMN thought_ms INTEGER", db)
         |> result.map_error(fn(e) { e.message })
     })
     use _ <- result.try(recover_sessions(db))
@@ -627,7 +633,7 @@ fn load_source_pages(
     store.query(store, fn(db) {
       use rows <- result.try(
         sqlight.query(
-          "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
+          "SELECT seq,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
           db,
           [
             sqlight.text(id),
@@ -635,13 +641,7 @@ fn load_source_pages(
             sqlight.int(upper),
             sqlight.int(load_page_rows),
           ],
-          {
-            use seq <- decode.field(0, decode.int)
-            use payload <- decode.field(1, decode.bit_array)
-            use timestamp <- decode.field(2, decode.optional(decode.int))
-            use provider <- decode.field(3, decode.optional(decode.string))
-            decode.success(#(seq, payload, timestamp, provider))
-          },
+          source_row(),
         )
         |> result.map_error(fn(e) { e.message }),
       )
@@ -653,7 +653,7 @@ fn load_source_pages(
           )
           Ok(transcript.SourcedEntry(
             transcript.SourceRef(id, row.0),
-            transcript.Entry(input, row.2, row.3),
+            transcript.Entry(input, row.2, row.3, row.4),
           ))
         }),
       )
@@ -670,6 +670,19 @@ fn load_source_pages(
     Ok(#(entries, Error(_))) ->
       Ok(list.flatten(list.reverse([entries, ..pages])))
   }
+}
+
+/// A transcript row as the reads select it: seq, payload, timestamp,
+/// provider, thought_ms.
+fn source_row() -> decode.Decoder(
+  #(Int, BitArray, Option(Int), Option(String), Option(Int)),
+) {
+  use seq <- decode.field(0, decode.int)
+  use payload <- decode.field(1, decode.bit_array)
+  use timestamp <- decode.field(2, decode.optional(decode.int))
+  use provider <- decode.field(3, decode.optional(decode.string))
+  use thought_ms <- decode.field(4, decode.optional(decode.int))
+  decode.success(#(seq, payload, timestamp, provider, thought_ms))
 }
 
 /// Rows read per step when a tail that starts on a tool result is widened.
@@ -766,16 +779,10 @@ fn read_before(
   store.query(store, fn(db) {
     use rows <- result.try(
       sqlight.query(
-        "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? AND seq<? ORDER BY seq DESC LIMIT ?",
+        "SELECT seq,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq<? ORDER BY seq DESC LIMIT ?",
         db,
         [sqlight.text(id), sqlight.int(upper), sqlight.int(limit)],
-        {
-          use seq <- decode.field(0, decode.int)
-          use payload <- decode.field(1, decode.bit_array)
-          use timestamp <- decode.field(2, decode.optional(decode.int))
-          use provider <- decode.field(3, decode.optional(decode.string))
-          decode.success(#(seq, payload, timestamp, provider))
-        },
+        source_row(),
       )
       |> result.map_error(fn(e) { e.message }),
     )
@@ -787,7 +794,7 @@ fn read_before(
         )
         Ok(transcript.SourcedEntry(
           transcript.SourceRef(id, row.0),
-          transcript.Entry(input, row.2, row.3),
+          transcript.Entry(input, row.2, row.3, row.4),
         ))
       }),
     )
@@ -822,24 +829,21 @@ pub fn source(
   store.query(store, fn(db) {
     use rows <- result.try(
       sqlight.query(
-        "SELECT payload,timestamp,provider FROM transcript WHERE session=? AND seq=?",
+        "SELECT seq,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq=?",
         db,
         [sqlight.text(session), sqlight.int(seq)],
-        {
-          use payload <- decode.field(0, decode.bit_array)
-          use timestamp <- decode.field(1, decode.optional(decode.int))
-          use provider <- decode.field(2, decode.optional(decode.string))
-          decode.success(#(payload, timestamp, provider))
-        },
+        source_row(),
       )
       |> result.map_error(fn(e) { e.message }),
     )
     case rows {
       [] -> Ok(None)
       [row] ->
-        unpack(row.0, read)
+        unpack(row.1, read)
         |> result.replace_error("invalid saved transcript item")
-        |> result.map(fn(input) { Some(transcript.Entry(input, row.1, row.2)) })
+        |> result.map(fn(input) {
+          Some(transcript.Entry(input, row.2, row.3, row.4))
+        })
       _ -> Error("duplicate transcript source reference")
     }
   })
@@ -965,6 +969,29 @@ pub fn clear_prompt_pin(store: store.Store, id: String) -> Result(Nil, String) {
   })
 }
 
+/// The entries inputs committed together become. A response's thinking time
+/// goes on its first input that shows the thinking, so it is counted once.
+pub fn entries(
+  inputs: List(types.Input),
+  timestamp: Option(Int),
+  provider: Option(String),
+  thought_ms: Option(Int),
+) -> List(transcript.Entry) {
+  let #(_, entries) =
+    list.map_fold(inputs, thought_ms, fn(thought_ms, input) {
+      let entry = transcript.Entry(input, timestamp, provider, _)
+      case input {
+        types.Replay(item) if thought_ms != None ->
+          case events.thinking_text(item) {
+            "" -> #(thought_ms, entry(None))
+            _ -> #(None, entry(thought_ms))
+          }
+        _ -> #(thought_ms, entry(None))
+      }
+    })
+  entries
+}
+
 /// Atomically appends transcript inputs and returns their shared daemon time.
 /// Empty commits still update the session stage and return the operation time.
 pub fn commit(
@@ -985,7 +1012,20 @@ pub fn commit_from(
   stage: Stage,
   provider: Option(String),
 ) -> Result(Int, String) {
-  commit_with_letters(store, id, inputs, stage, provider, [])
+  commit_with_letters(store, id, inputs, stage, provider, None, [])
+}
+
+/// Appends a model response's inputs; `thought_ms`, how long the model
+/// thought before it, is kept on the first that shows the thinking.
+pub fn commit_response(
+  store: store.Store,
+  id: String,
+  inputs: List(types.Input),
+  stage: Stage,
+  provider: Option(String),
+  thought_ms: Option(Int),
+) -> Result(Int, String) {
+  commit_with_letters(store, id, inputs, stage, provider, thought_ms, [])
 }
 
 /// Letters and the inputs that carry them commit together, so a letter retried
@@ -998,7 +1038,7 @@ pub fn commit_letters(
   provider: Option(String),
   letters: List(String),
 ) -> Result(Int, String) {
-  commit_with_letters(store, id, inputs, stage, provider, letters)
+  commit_with_letters(store, id, inputs, stage, provider, None, letters)
 }
 
 fn commit_with_letters(
@@ -1007,6 +1047,7 @@ fn commit_with_letters(
   inputs: List(types.Input),
   stage: Stage,
   provider: Option(String),
+  thought_ms: Option(Int),
   letters: List(String),
 ) -> Result(Int, String) {
   let timestamp = usage.now()
@@ -1023,16 +1064,18 @@ fn commit_with_letters(
         False -> 0
       }
       use _ <- result.try(
-        list.try_each(inputs, fn(input) {
-          use input <- result.try(images.externalize(db, input, read))
+        entries(inputs, Some(timestamp), provider, thought_ms)
+        |> list.try_each(fn(entry) {
+          use input <- result.try(images.externalize(db, entry.input, read))
           sqlight.query(
-            "INSERT INTO transcript(session,payload,timestamp,provider) VALUES(?,?,?,?)",
+            "INSERT INTO transcript(session,payload,timestamp,provider,thought_ms) VALUES(?,?,?,?,?)",
             db,
             [
               sqlight.text(id),
               sqlight.blob(pack(input)),
               sqlight.int(timestamp),
               sqlight.nullable(sqlight.text, provider),
+              sqlight.nullable(sqlight.int, entry.thought_ms),
             ],
             decode.dynamic,
           )

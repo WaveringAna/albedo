@@ -23,7 +23,10 @@ pub type Loop {
     pin: Pin,
     upstream: extension.Upstream,
     publish: fn(String) -> Bool,
-    commit: fn(List(types.Input), conversation.Stage) -> Result(Int, String),
+    /// Commits inputs at a stage; a model response passes how long the
+    /// model thought before it.
+    commit: fn(List(types.Input), conversation.Stage, Option(Int)) ->
+      Result(Int, String),
     record_context: fn(types.Request, Option(compaction.Observation)) -> Nil,
     record_usage: fn(usage.Metadata) -> Result(Nil, String),
     drain_steering: fn() -> Result(List(types.Input), String),
@@ -94,12 +97,14 @@ pub fn run(
   let completed_usage =
     usage.from_completion(state.model, turn.usage, usage.now())
   let replay = list.map(turn.output, types.Replay)
-  use timestamp <- result.try(
-    state.commit(replay, case turn.tool_calls {
+  use timestamp <- result.try(state.commit(
+    replay,
+    case turn.tool_calls {
       [] -> conversation.Idle
       _ -> conversation.Tool
-    }),
-  )
+    },
+    turn.thought_ms,
+  ))
   list.each(replay, fn(input) {
     view.assistant_message(input, Some(timestamp))
     |> list.each(fn(event) {
@@ -141,7 +146,11 @@ pub fn run(
                 state.kernel,
                 call,
               ))
-              use _ <- result.try(state.commit([output], conversation.Tool))
+              use _ <- result.try(state.commit(
+                [output],
+                conversation.Tool,
+                None,
+              ))
               let _ = case output {
                 types.ToolOutput(_, body, images) ->
                   state.publish(view.tool(
@@ -158,7 +167,7 @@ pub fn run(
         }),
       )
       use steering <- result.try(state.drain_steering())
-      use _ <- result.try(state.commit([], conversation.Model))
+      use _ <- result.try(state.commit([], conversation.Model, None))
       run(
         state,
         id,

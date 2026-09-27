@@ -3,8 +3,15 @@ import gleam/option.{type Option}
 
 /// A durable transcript item and the daemon time when it was accepted.
 /// Legacy rows have no timestamp; unknown time is never reconstructed.
+/// `thought_ms` is how long the model thought before a response, kept on its
+/// first item that shows the thinking.
 pub type Entry {
-  Entry(input: types.Input, timestamp: Option(Int), provider: Option(String))
+  Entry(
+    input: types.Input,
+    timestamp: Option(Int),
+    provider: Option(String),
+    thought_ms: Option(Int),
+  )
 }
 
 /// A durable position in one session's append-only transcript. Forks copy

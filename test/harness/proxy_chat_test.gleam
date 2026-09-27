@@ -128,6 +128,7 @@ fn responses_turn() -> types.Turn {
     ],
     None,
     types.ToolCalls,
+    None,
   )
 }
 

@@ -276,7 +276,7 @@ fn system(role: String) -> Bool {
 fn input(message: Message) -> Result(List(transcript.Entry), String) {
   let Message(role, parts, calls, call_id) = message
   let portable = fn(inputs) {
-    list.map(inputs, transcript.Entry(_, None, None))
+    list.map(inputs, transcript.Entry(_, None, None, None))
   }
   case role {
     "user" -> user(parts) |> result.map(portable)
@@ -379,7 +379,7 @@ fn carried(id: String) -> Result(List(transcript.Entry), Nil) {
     )
     decode.success(
       list.map(output, fn(item) {
-        transcript.Entry(types.Replay(item), None, Some(profile))
+        transcript.Entry(types.Replay(item), None, Some(profile), None)
       }),
     )
   }

@@ -212,7 +212,7 @@ fn finish(state: State) -> Result(types.Turn, types.Error) {
           types.InvalidEvent("could not build the Antigravity replay message")
         }),
       )
-      types.Turn(state.response_id, [item], calls, state.usage, finish)
+      types.Turn(state.response_id, [item], calls, state.usage, finish, None)
     }
   }
 }

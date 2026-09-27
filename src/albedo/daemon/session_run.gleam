@@ -20,6 +20,7 @@ pub type Messages(message) {
       String,
       List(types.Input),
       conversation.Stage,
+      Option(Int),
       Subject(Result(Int, String)),
     ) -> message,
     context: fn(String, context_snapshot.Snapshot, Subject(Nil)) -> message,
@@ -61,8 +62,14 @@ pub fn start(
       state.pin,
       client,
       fn(event) { actor.call(owner, 5000, messages.publish(run_id, event, _)) },
-      fn(inputs, stage) {
-        actor.call(owner, 10_000, messages.commit(run_id, inputs, stage, _))
+      fn(inputs, stage, thought_ms) {
+        actor.call(owner, 10_000, messages.commit(
+          run_id,
+          inputs,
+          stage,
+          thought_ms,
+          _,
+        ))
       },
       fn(request, observation) {
         let snapshot =

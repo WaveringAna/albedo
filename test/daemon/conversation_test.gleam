@@ -146,13 +146,15 @@ pub fn transcript_timestamps_migrate_without_invention_and_roundtrip_test() {
   let assert Ok(_) =
     store.query(ledger, fn(db) {
       sqlight.exec(
-        "ALTER TABLE transcript DROP COLUMN timestamp; ALTER TABLE transcript DROP COLUMN provider",
+        "ALTER TABLE transcript DROP COLUMN timestamp; ALTER TABLE transcript DROP COLUMN provider; ALTER TABLE transcript DROP COLUMN thought_ms",
         db,
       )
     })
   let assert Ok(_) = conversation.initialise(ledger)
   conversation.load_entries(ledger, "timestamped")
-  |> should.equal(Ok([transcript.Entry(types.User("legacy"), None, None)]))
+  |> should.equal(
+    Ok([transcript.Entry(types.User("legacy"), None, None, None)]),
+  )
 
   let new_inputs = [types.User("current"), types.Assistant("answer")]
   let assert Ok(timestamp) =
@@ -161,9 +163,9 @@ pub fn transcript_timestamps_migrate_without_invention_and_roundtrip_test() {
   let assert Ok(entries) = conversation.load_entries(ledger, "timestamped")
   entries
   |> should.equal([
-    transcript.Entry(types.User("legacy"), None, None),
-    transcript.Entry(types.User("current"), Some(timestamp), None),
-    transcript.Entry(types.Assistant("answer"), Some(timestamp), None),
+    transcript.Entry(types.User("legacy"), None, None, None),
+    transcript.Entry(types.User("current"), Some(timestamp), None, None),
+    transcript.Entry(types.Assistant("answer"), Some(timestamp), None, None),
   ])
   conversation.load(ledger, "timestamped")
   |> should.equal(Ok([types.User("legacy"), ..new_inputs]))

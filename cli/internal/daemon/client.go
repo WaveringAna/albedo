@@ -678,7 +678,7 @@ func parseStreamEvent(raw map[string]any) *StreamEvent {
 
 	case "thinking":
 		txt, _ := raw["text"].(string)
-		return &StreamEvent{Type: EventThinking, Text: txt}
+		return &StreamEvent{Type: EventThinking, Text: txt, ElapsedMs: int64Field(raw, "elapsedMs")}
 
 	case "error":
 		txt, _ := raw["text"].(string)

@@ -426,7 +426,7 @@ fn copy_prefix(
   checkpoint: Int,
 ) -> Result(Nil, String) {
   sqlight.query(
-    "INSERT INTO transcript(session,payload,timestamp,provider) SELECT ?,payload,timestamp,provider FROM transcript WHERE session=? AND seq<=? ORDER BY seq",
+    "INSERT INTO transcript(session,payload,timestamp,provider,thought_ms) SELECT ?,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq<=? ORDER BY seq",
     db,
     [
       sqlight.text(branch_id),

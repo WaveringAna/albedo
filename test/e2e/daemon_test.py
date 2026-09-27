@@ -1,4 +1,4 @@
-"""Transcript paging across turns through the real daemon."""
+"""Transcript paging and what the transcript keeps, through the real daemon."""
 import json
 import unittest
 
@@ -37,6 +37,21 @@ class DaemonTest(unittest.TestCase):
                 [["newest prompt"], ["middle prompt"], ["oldest prompt"]],
             )
             self.assertFalse(pages[-1]["more"])
+
+    def test_a_thoughts_duration_is_kept_with_the_transcript(self):
+        # the reply streams a chunk every 0.2s, so the thought runs that long
+        # before the answer's first chunk ends it
+        provider = Provider(lambda _request: text("answer", reasoning="weighing it", delay=0.2))
+        self.addCleanup(provider.close)
+        with Albedo(provider) as app:
+            session = app.session()
+            app.prompt(session, "think first").close()
+            app.idle(session)
+
+            for source, events in (("stream", app.events(session)), ("history", app.history(session)["events"])):
+                thoughts = [event for event in events if event["type"] == "thinking"]
+                self.assertEqual([event["text"] for event in thoughts], ["weighing it"], source)
+                self.assertGreaterEqual(thoughts[0].get("elapsedMs", 0), 150, source)
 
 
 if __name__ == "__main__":

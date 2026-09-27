@@ -294,7 +294,7 @@ fn finish(state: State) -> Result(types.Turn, types.Error) {
       }
     Some(other) -> types.OtherFinish(other)
   }
-  Ok(types.Turn(state.id, [item], calls, state.usage, finish))
+  Ok(types.Turn(state.id, [item], calls, state.usage, finish, None))
 }
 
 fn native_block(block: Block) -> Result(Json, Nil) {

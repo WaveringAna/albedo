@@ -257,7 +257,14 @@ fn completed(
   Ok(#(
     State(..state, terminal: True),
     started,
-    Some(types.Turn(state.response_id, output, tools, response.usage, finish)),
+    Some(types.Turn(
+      state.response_id,
+      output,
+      tools,
+      response.usage,
+      finish,
+      None,
+    )),
   ))
 }
 
@@ -281,7 +288,7 @@ fn incomplete(
   Ok(#(
     State(..state, terminal: True),
     started,
-    Some(types.Turn(state.response_id, output, [], response.usage, finish)),
+    Some(types.Turn(state.response_id, output, [], response.usage, finish, None)),
   ))
 }
 

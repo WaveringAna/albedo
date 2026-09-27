@@ -483,7 +483,7 @@ fn finish(
       True,
     ),
     [],
-    Some(types.Turn(id, output, tools, usage, finish)),
+    Some(types.Turn(id, output, tools, usage, finish, None)),
   ))
 }
 

@@ -335,9 +335,10 @@ type ChatModel struct {
 
 	activeKind ActiveStreamKind
 	activeText string
-	// thinkingSince is when a thought this client watched began; replayed
-	// thoughts have no start, so no duration.
+	// thinkingSince is when a thought this client watched began; a replayed
+	// thought instead carries how long it took, when the daemon timed it.
 	thinkingSince time.Time
+	thoughtMs     int64
 
 	streamedHash uint64
 	streamedLen  int64
@@ -725,7 +726,7 @@ func (m *ChatModel) settleActiveStream() {
 	if m.activeKind == StreamKindNone || m.activeText == "" {
 		m.activeKind = StreamKindNone
 		m.activeText = ""
-		m.thinkingSince = time.Time{}
+		m.thinkingSince, m.thoughtMs = time.Time{}, 0
 		return
 	}
 	var kind EntryKind = EntryAssistant
@@ -738,17 +739,20 @@ func (m *ChatModel) settleActiveStream() {
 		Text:      m.activeText,
 		Timestamp: time.Now().UnixMilli(),
 	}
-	if kind == EntryThinking && !m.thinkingSince.IsZero() {
-		entry.ElapsedMs = time.Since(m.thinkingSince).Milliseconds()
-		m.ThoughtProgressText = thinkingLine(entry.Text)
-		if m.ThoughtProgressText == "" {
-			m.ThoughtProgressText = "thought"
+	if kind == EntryThinking {
+		entry.ElapsedMs = m.thoughtMs
+		if !m.thinkingSince.IsZero() {
+			entry.ElapsedMs = time.Since(m.thinkingSince).Milliseconds()
+			m.ThoughtProgressText = thinkingLine(entry.Text)
+			if m.ThoughtProgressText == "" {
+				m.ThoughtProgressText = "thought"
+			}
 		}
 	}
 	m.appendSettledEntry(entry)
 	m.activeKind = StreamKindNone
 	m.activeText = ""
-	m.thinkingSince = time.Time{}
+	m.thinkingSince, m.thoughtMs = time.Time{}, 0
 }
 
 func (m *ChatModel) streamDelta(kind ActiveStreamKind, text string) {
@@ -2004,6 +2008,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 				m.thinkingSince = time.Now()
 			}
 		}
+		m.thoughtMs += evt.ElapsedMs
 		m.streamDelta(StreamKindThinking, evt.Text)
 
 	case daemon.EventToolProgress:

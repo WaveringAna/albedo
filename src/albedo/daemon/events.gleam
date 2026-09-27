@@ -124,6 +124,14 @@ pub fn visible_assistant_text(input: types.Input) -> Option(String) {
   }
 }
 
+/// How long a replayed thought took, when the daemon timed it.
+fn elapsed_field(thought_ms: Option(Int)) -> List(#(String, json.Json)) {
+  case thought_ms {
+    Some(ms) -> [#("elapsedMs", json.int(ms))]
+    None -> []
+  }
+}
+
 fn timestamp_field(timestamp: Option(Int)) -> List(#(String, json.Json)) {
   case timestamp {
     Some(value) -> [#("timestamp", json.int(value))]
@@ -289,7 +297,12 @@ fn render(
       list.append(
         case thinking {
           "" -> []
-          _ -> [event("thinking", [#("text", json.string(thinking))])]
+          _ -> [
+            event("thinking", [
+              #("text", json.string(thinking)),
+              ..elapsed_field(entry.thought_ms)
+            ]),
+          ]
         },
         assistant_message(entry.input, entry.timestamp),
       )

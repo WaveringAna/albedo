@@ -89,10 +89,23 @@ pub fn remember(
   inputs: List(types.Input),
   timestamp: Int,
 ) -> session_state.State(message) {
+  remember_response(state, inputs, timestamp, None)
+}
+
+/// Remembers committed inputs as `conversation.commit_response` wrote them.
+pub fn remember_response(
+  state: session_state.State(message),
+  inputs: List(types.Input),
+  timestamp: Int,
+  thought_ms: Option(Int),
+) -> session_state.State(message) {
   let entries =
-    list.map(inputs, fn(input) {
-      transcript.Entry(input, Some(timestamp), Some(state.info.provider))
-    })
+    conversation.entries(
+      inputs,
+      Some(timestamp),
+      Some(state.info.provider),
+      thought_ms,
+    )
   // An unloaded transcript stays unloaded: the entries are already durable and
   // the next load reads them. Starting a list here would pass a transcript of
   // only these entries off as the whole conversation.
