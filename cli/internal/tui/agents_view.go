@@ -629,6 +629,9 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 		if m.rename.id == id {
 			m.rename = renameField{}
 		}
+		if m.confirm == id {
+			m.confirm = ""
+		}
 		if m.selected == id {
 			m.selected = m.root
 		}

@@ -164,6 +164,29 @@ func TestCodeLinesReadsPartialJSON(t *testing.T) {
 	}
 }
 
+func TestAgentsDeleteConfirmDropsWithTheAgent(t *testing.T) {
+	m := agentsFixture(t)
+	m.selected = "coder"
+	m, _ = m.key(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	if m.confirm != "coder" {
+		t.Fatal("ctrl+x should ask before deleting coder")
+	}
+	m, _ = m.Update(agentsEventsMsg{Gen: 1, Events: []map[string]any{
+		{"type": "gone", "session": "coder"},
+	}})
+	if m.confirm != "" {
+		t.Fatalf("the confirm prompt outlived the agent it named:\n%s", ansi.Strip(m.View()))
+	}
+	if strings.Contains(ansi.Strip(m.View()), "delete coder") {
+		t.Fatal("the view still offers to delete a vanished agent")
+	}
+	m.selected = "tests"
+	m, _ = m.key(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	if m.confirm != "tests" {
+		t.Fatal("ctrl+x stopped working after the prompt was dropped")
+	}
+}
+
 func TestAgentsDeleteAsksFirstAndSparesTheOpenSession(t *testing.T) {
 	m := agentsFixture(t)
 	m, _ = m.key(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
