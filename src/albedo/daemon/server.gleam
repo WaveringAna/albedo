@@ -86,7 +86,7 @@ type Message {
   ReadAgents(String, Subject(Result(#(String, List(AgentNode)), String)))
   List(Subject(List(conversation.Info)))
   Logins(Subject(List(oauth.Login)))
-  Host(Subject(runtime.Runtime))
+  Host(Subject(Result(runtime.Runtime, String)))
   ReadTree(String, Int, Int, Subject(Result(history.Page, String)))
   ReadRecent(String, Int, Subject(Result(history.Recent, String)))
   ReadHistory(String, Option(Int), Int, Subject(Result(String, String)))
@@ -116,8 +116,23 @@ type State {
     scheduling: Option(process.Pid),
     /// Mail arrived while a dispatcher ran; read the inbox again after it.
     mail_waiting: Bool,
+    stage: Stage,
   )
 }
+
+/// Whether the registry serves from the store. Once it does not, every
+/// request is refused in its handler's error shape rather than reaching a
+/// store that is closing or gone.
+type Stage {
+  Open
+  /// Shutdown is closing sessions and then the store; the VM halts after.
+  Closing
+  /// The store died while the VM lives on.
+  Orphaned
+}
+
+/// Why a registry that is not open refuses.
+const closed = "daemon is shutting down"
 
 type Stream {
   Tick
@@ -151,12 +166,8 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
   use _ <- result.try(
     supervisor.new(supervisor.OneForOne)
     |> supervisor.restart_tolerance(intensity: 10, period: 60)
-    // Transient: the registry's own Shutdown path exits normally, and a
-    // normal exit must not be restarted - a replacement would race the
-    // halting VM and crash on the store the shutdown just closed.
     |> supervisor.add(
-      supervision.worker(fn() { start_registry(config, host, name) })
-      |> supervision.restart(supervision.Transient),
+      supervision.worker(fn() { start_registry(config, host, name) }),
     )
     |> supervisor.start
     |> result.map_error(string.inspect),
@@ -177,6 +188,22 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
 }
 
 fn handle(state: State, message: Message) {
+  case state.stage, message {
+    Open, _ -> serve(state, message)
+    // A second shutdown while the first drains must not cut it short.
+    Closing, Shutdown -> actor.continue(state)
+    Orphaned, Shutdown -> {
+      shutdown()
+      actor.continue(state)
+    }
+    _, _ -> {
+      refuse(state, message)
+      actor.continue(state)
+    }
+  }
+}
+
+fn serve(state: State, message: Message) {
   case message {
     Create(cwd, provider, model, reply) -> {
       let created = {
@@ -283,7 +310,7 @@ fn handle(state: State, message: Message) {
       actor.continue(state)
     }
     Host(reply) -> {
-      process.send(reply, state.host)
+      process.send(reply, Ok(state.host))
       actor.continue(state)
     }
     ReadTree(id, after, limit, reply) -> {
@@ -449,14 +476,7 @@ fn handle(state: State, message: Message) {
     Sweep -> {
       // Off the registry: saving Python state and dropping reloadable history
       // must not make API calls wait behind filesystem or database work.
-      let workers =
-        dict.values(state.sessions)
-        |> list.filter_map(fn(pair) {
-          case pair.1 {
-            Some(worker) -> Ok(worker)
-            None -> Error(Nil)
-          }
-        })
+      let workers = workers(state)
       let config = state.config
       let _ = process.spawn_unlinked(fn() { reap(workers, config) })
       let _ =
@@ -464,17 +484,47 @@ fn handle(state: State, message: Message) {
       actor.continue(state)
     }
     Shutdown -> {
-      dict.each(state.sessions, fn(_, pair) {
-        case pair.1 {
-          Some(worker) -> session.close(worker)
-          None -> Nil
-        }
+      // Off the registry, which stays up refusing until the VM halts, so a
+      // caller queued behind the drain gets an answer, not a dead callee.
+      // Linked: a drain that crashes takes the registry with it and the
+      // daemon keeps serving, as when the registry drained itself.
+      let workers = workers(state)
+      let host = state.host
+      process.spawn(fn() {
+        list.each(workers, session.close)
+        runtime.stop(host)
+        shutdown()
       })
-      runtime.stop(state.host)
-      shutdown()
-      actor.stop()
+      actor.continue(State(..state, stage: Closing))
     }
   }
+}
+
+/// A registry that is not open answers without the store, which may be gone.
+fn refuse(state: State, message: Message) -> Nil {
+  case message {
+    Create(_, _, _, reply) -> process.send(reply, Error(closed))
+    CreateChild(_, _, _, _, reply) -> process.send(reply, Error(closed))
+    Lookup(_, reply) -> process.send(reply, Error(closed))
+    AgentOp(_, reply) -> process.send(reply, Error(closed))
+    ReadAgents(_, reply) -> process.send(reply, Error(closed))
+    List(reply) -> process.send(reply, [])
+    Logins(reply) -> process.send(reply, runtime.logins(state.host))
+    Host(reply) -> process.send(reply, Error(closed))
+    ReadTree(_, _, _, reply) -> process.send(reply, Error(closed))
+    ReadRecent(_, _, reply) -> process.send(reply, Error(closed))
+    ReadHistory(_, _, _, reply) -> process.send(reply, Error(closed))
+    Fork(_, _, reply) -> process.send(reply, Error(closed))
+    DeleteSession(_, reply) -> process.send(reply, Error(closed))
+    Rename(_, _, reply) -> process.send(reply, Error(closed))
+    Remember(_, reply) -> process.send(reply, Error(closed))
+    WorkerDown(_) | Sweep | ScheduleTick | MailWaiting | Shutdown -> Nil
+  }
+}
+
+fn workers(state: State) -> List(session.Session) {
+  dict.values(state.sessions)
+  |> list.filter_map(fn(pair) { option.to_result(pair.1, Nil) })
 }
 
 /// Delete a session that is not running a turn.
@@ -546,16 +596,16 @@ fn start_registry(
   name: process.Name(Message),
 ) {
   actor.new_with_initialiser(30_000, fn(self) {
-    // The supervisor marks this child transient, so the normal exit on
-    // shutdown is not restarted. This guard covers the pathological case
-    // where the store died while the VM lives on: come up empty, arm none
-    // of the store-backed timers below, and answer Lookups from nothing
-    // instead of panicking in init.
+    // A store that died while the VM lives on leaves nothing to serve: come
+    // up empty and refusing, with none of the store-backed timers below.
     let ledger = runtime.ledger(host)
-    let open = process.is_alive(store.owner(ledger))
-    use saved <- result.try(case open {
-      True -> conversation.list(ledger)
-      False -> Ok([])
+    let stage = case process.is_alive(store.owner(ledger)) {
+      True -> Open
+      False -> Orphaned
+    }
+    use saved <- result.try(case stage {
+      Open -> conversation.list(ledger)
+      _ -> Ok([])
     })
     let sessions =
       list.map(saved, fn(info) {
@@ -587,8 +637,8 @@ fn start_registry(
         }
         #(info.id, #(info, worker))
       })
-    case open {
-      True -> {
+    case stage {
+      Open -> {
         let _ = process.send_after(self, sweep_interval(config), Sweep)
         let _ = process.send_after(self, config.tick_ms, ScheduleTick)
         // Letters left from before a restart go out now, not a tick later.
@@ -597,7 +647,7 @@ fn start_registry(
         agents.register(fn(op) { actor.call(self, 60_000, AgentOp(op, _)) })
         mail.on_waiting(fn() { process.send(self, MailWaiting) })
       }
-      False -> Nil
+      _ -> Nil
     }
     Ok(
       actor.initialised(State(
@@ -607,6 +657,7 @@ fn start_registry(
         self,
         None,
         False,
+        stage,
       ))
       |> actor.returning(self)
       |> actor.selecting(
@@ -668,6 +719,8 @@ fn dispatch_mail(db: store.Store, registry: Subject(Message)) -> Nil {
           })
         case outcome {
           Error("") | Ok(_) -> Nil
+          // Refused by a closing registry: it goes out after the restart.
+          Error(reason) if reason == closed -> Nil
           Error(reason) -> {
             let _ = mail.record_failure(db, letter.id, reason)
             Nil
@@ -831,7 +884,8 @@ fn info_json(info: conversation.Info) -> json.Json {
 /// is interrupted and given a few seconds to stop; one that will not stop
 /// ends the walk with what was deleted so far still deleted.
 fn delete_tree(registry: Subject(Message), id: String) -> Result(Int, String) {
-  let db = runtime.ledger(actor.call(registry, 5000, Host))
+  use host <- result.try(actor.call(registry, 5000, Host))
+  let db = runtime.ledger(host)
   subtree(db, id, family.max_depth + 1)
   |> list.try_fold(0, fn(deleted, session_id) {
     case actor.call(registry, 10_000, Lookup(session_id, _)) {
@@ -1492,7 +1546,7 @@ fn route(
       case list.contains(daemon_routes, name) {
         True -> daemon_route(config, registry, req)
         False -> {
-          let host = actor.call(registry, 5000, Host)
+          use host <- with_host(registry)
           case
             runtime.global(host)
             |> result.replace_error(Nil)
@@ -1511,6 +1565,17 @@ fn route(
         }
       }
     [] -> daemon_route(config, registry, req)
+  }
+}
+
+/// The runtime, or 503 once the registry has stopped serving from the store.
+fn with_host(
+  registry: Subject(Message),
+  next: fn(runtime.Runtime) -> response.Response(mist.ResponseData),
+) -> response.Response(mist.ResponseData) {
+  case actor.call(registry, 5000, Host) {
+    Ok(host) -> next(host)
+    Error(e) -> error(503, e)
   }
 }
 
@@ -1603,7 +1668,7 @@ fn daemon_route(
         Get, ["models", provider] -> {
           let query = request.get_query(req) |> result.unwrap([])
           let endpoint = list.key_find(query, "endpoint") |> result.unwrap("")
-          let host = actor.call(registry, 5000, Host)
+          use host <- with_host(registry)
           let efforts_at = session_provider.effort_endpoint(provider)
           let facts_at = case endpoint {
             "" -> efforts_at
@@ -1807,16 +1872,13 @@ fn daemon_route(
             Error(e) -> error(409, e)
           }
         }
-        Get, ["sessions", id, "children"] ->
-          case
-            family.children(
-              runtime.ledger(actor.call(registry, 5000, Host)),
-              id,
-            )
-          {
+        Get, ["sessions", id, "children"] -> {
+          use host <- with_host(registry)
+          case family.children(runtime.ledger(host), id) {
             Ok(members) -> reply(200, json.array(members, member_json))
             Error(e) -> error(400, e)
           }
+        }
         // Mail written as session `id`: the daemon token is the user's, who may
         // speak for any of their sessions.
         Post, ["sessions", id, "mail"] -> {
@@ -1828,12 +1890,8 @@ fn daemon_route(
           case
             body(req, decoder)
             |> result.try(fn(fields) {
-              mail.send(
-                runtime.ledger(actor.call(registry, 5000, Host)),
-                id,
-                fields.0,
-                fields.1,
-              )
+              use host <- result.try(actor.call(registry, 5000, Host))
+              mail.send(runtime.ledger(host), id, fields.0, fields.1)
             })
           {
             Ok(receipt) ->
