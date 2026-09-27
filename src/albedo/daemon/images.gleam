@@ -164,6 +164,125 @@ pub fn migrate(ledger: store.Store, backup: String) -> Result(Int, String) {
   }
 }
 
+/// Drops the images of tool outputs a committed compaction left out of the
+/// prepared request: the row and its Python cell keep their text plus a
+/// marker, and payloads nothing else names are released. User uploads stay;
+/// their hashes are part of the saved compaction cut.
+pub fn elide_evicted(
+  ledger: store.Store,
+  session: String,
+  retained_calls: List(String),
+) -> Result(Int, String) {
+  store.query(ledger, fn(db) {
+    use _ <- result.try(
+      sqlight.exec("BEGIN IMMEDIATE", db)
+      |> result.map_error(fn(e) { e.message }),
+    )
+    case elide_rows(db, session, retained_calls) {
+      Ok(count) ->
+        sqlight.exec("COMMIT", db)
+        |> result.replace(count)
+        |> result.map_error(fn(e) { e.message })
+      Error(e) -> {
+        let _ = sqlight.exec("ROLLBACK", db)
+        Error(e)
+      }
+    }
+  })
+}
+
+fn elide_rows(
+  db: sqlight.Connection,
+  session: String,
+  retained_calls: List(String),
+) -> Result(Int, String) {
+  use rows <- result.try(
+    sqlight.query(
+      "SELECT seq,payload FROM transcript WHERE session=? AND instr(payload,CAST('tool_output' AS BLOB))>0",
+      db,
+      [sqlight.text(session)],
+      {
+        use seq <- decode.field(0, decode.int)
+        use payload <- decode.field(1, decode.bit_array)
+        decode.success(#(seq, payload))
+      },
+    )
+    |> result.map_error(fn(e) { e.message }),
+  )
+  let evicted =
+    list.filter_map(rows, fn(row) {
+      case elide_tool_images(row.1) {
+        Ok(#(call, payload, hashes)) ->
+          case list.contains(retained_calls, call) {
+            True -> Error(Nil)
+            False -> Ok(#(row.0, session <> "/" <> call, payload, hashes))
+          }
+        Error(_) -> Error(Nil)
+      }
+    })
+  use _ <- result.try(
+    list.try_each(evicted, fn(row) {
+      use _ <- result.try(write(
+        db,
+        "transcript",
+        "seq",
+        sqlight.int(row.0),
+        row.2,
+      ))
+      elide_cell(db, row.1)
+    }),
+  )
+  use _ <- result.try(release(
+    db,
+    list.flat_map(evicted, fn(row) { row.3 }) |> list.unique,
+  ))
+  Ok(list.length(evicted))
+}
+
+/// A journaled cell holds its own inline copy of each image.
+fn elide_cell(db: sqlight.Connection, id: String) -> Result(Nil, String) {
+  case
+    sqlight.query(
+      "SELECT payload FROM cells WHERE id=? AND payload IS NOT NULL",
+      db,
+      [sqlight.text(id)],
+      decode.field(0, decode.bit_array, decode.success),
+    )
+  {
+    Ok([payload]) ->
+      case elide_cell_images(payload) {
+        Ok(elided) -> write(db, "cells", "id", sqlight.text(id), elided)
+        Error(_) -> Ok(Nil)
+      }
+    _ -> Ok(Nil)
+  }
+}
+
+fn write(
+  db: sqlight.Connection,
+  table: String,
+  key: String,
+  value: sqlight.Value,
+  payload: BitArray,
+) -> Result(Nil, String) {
+  sqlight.query(
+    "UPDATE " <> table <> " SET payload=? WHERE " <> key <> "=?",
+    db,
+    [sqlight.blob(payload), value],
+    decode.dynamic,
+  )
+  |> result.replace(Nil)
+  |> result.map_error(fn(e) { e.message })
+}
+
+@external(erlang, "albedo_conversation", "elide_tool_images")
+fn elide_tool_images(
+  payload: BitArray,
+) -> Result(#(String, BitArray, List(String)), Nil)
+
+@external(erlang, "albedo_native", "elide_cell_images")
+fn elide_cell_images(payload: BitArray) -> Result(BitArray, Nil)
+
 /// Rows per migration transaction; a page of screenshot rows is tens of MB.
 const migrate_page_rows = 16
 

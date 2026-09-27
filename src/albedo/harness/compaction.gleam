@@ -101,7 +101,13 @@ pub fn compose_prior(
 /// What a strategy prepared for one request. The observation describes this
 /// exact preparation, so inspectors do not need to query strategy-owned state.
 pub type Prepared {
-  Prepared(inputs: List(types.Input), observation: Option(Observation))
+  Prepared(
+    inputs: List(types.Input),
+    observation: Option(Observation),
+    /// True only when this preparation committed a new compaction, not when
+    /// it reused a saved projection. Triggers post-compaction cleanup.
+    compacted: Bool,
+  )
 }
 
 /// Strategy-neutral facts for the request inspector. A strategy may add more

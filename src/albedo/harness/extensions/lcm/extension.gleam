@@ -198,6 +198,7 @@ fn prepare(
             history,
           ))
         False -> {
+          let previous_frontier = frontier
           use latest_user <- result.try(latest_user_seq(sources))
           let eligible =
             list.filter(sources, fn(item) {
@@ -255,17 +256,24 @@ fn prepare(
                 "LCM summaries and the newest conversation/tool unit do not fit the context window",
               )
           })
-          Ok(prepared(
-            next,
-            frontier,
-            "compacted",
-            "estimated from source-backed summary nodes; window from "
-              <> capacity_source,
-            Some(capacity),
-            next_estimated,
-            config,
-            history,
-          ))
+          let prepared =
+            prepared(
+              next,
+              frontier,
+              "compacted",
+              "estimated from source-backed summary nodes; window from "
+                <> capacity_source,
+              Some(capacity),
+              next_estimated,
+              config,
+              history,
+            )
+          Ok(
+            compaction.Prepared(
+              ..prepared,
+              compacted: frontier != previous_frontier,
+            ),
+          )
         }
       }
     }
@@ -300,6 +308,7 @@ fn prepared(
       Some(list.length(original)),
       Some(list.length(inputs)),
     )),
+    False,
   )
 }
 

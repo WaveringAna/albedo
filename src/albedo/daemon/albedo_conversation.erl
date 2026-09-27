@@ -1,5 +1,5 @@
 -module(albedo_conversation).
--export([pack/1,unpack/2,unpack_trace/1,pack_list/1,unpack_list/2,row_atoms/0]).
+-export([pack/1,unpack/2,unpack_trace/1,pack_list/1,unpack_list/2,row_atoms/0,elide_tool_images/1,elision_marker/1]).
 pack(Input) -> term_to_binary({1,albedo_images:pack(Input)}).
 
 %% binary_to_term/2 with `safe` rejects atoms that do not exist yet; a stored
@@ -42,3 +42,15 @@ unpack_list(Bytes,Read) -> try binary_to_term(Bytes,[safe]) of
     end;
   _ -> {error,nil}
 catch _:_ -> {error,nil} end.
+
+%% A packed tool output without its images: {Id, Row, Hashes}, the marker
+%% appended to its text. {error, nil} when the row holds no image.
+elide_tool_images(Bytes) ->
+  try binary_to_term(Bytes, [safe]) of
+    {1, {tool_output, Id, Text, [_ | _]}} when is_binary(Id), is_binary(Text) ->
+      Row = term_to_binary({1, {tool_output, Id, elision_marker(Text), []}}),
+      {ok, {Id, Row, albedo_images:hashes(Bytes)}};
+    _ -> {error, nil}
+  catch _:_ -> {error, nil} end.
+
+elision_marker(Text) -> <<Text/binary, "\n[image elided and is no longer available]">>.

@@ -1217,7 +1217,7 @@ pub fn prepare_view_scoped(
   let enabled = extension.extensions(session.composition)
   case extension.compaction(enabled) {
     None if force -> Error("no compaction strategy is enabled")
-    None -> Ok(compaction.Prepared(history, None))
+    None -> Ok(compaction.Prepared(history, None, False))
     Some(strategy) ->
       strategy.prepare(
         compaction.Context(

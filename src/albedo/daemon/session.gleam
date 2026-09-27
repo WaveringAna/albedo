@@ -6,6 +6,7 @@ import albedo/daemon/conversation
 import albedo/daemon/event_buffer
 import albedo/daemon/events as view
 import albedo/daemon/family
+import albedo/daemon/images
 import albedo/daemon/mail
 import albedo/daemon/session_extensions
 import albedo/daemon/session_history
@@ -126,7 +127,7 @@ pub type Message {
     Option(Int),
     Subject(Result(Int, String)),
   )
-  RecordContext(String, context_snapshot.Snapshot, Subject(Nil))
+  RecordContext(String, context_snapshot.Snapshot, Bool, Subject(Nil))
   RecordUsage(String, usage.Metadata, Subject(Result(Nil, String)))
   ReportPin(String, Option(Int), Subject(Nil))
   Compact(Option(String), Subject(Result(json.Json, String)))
@@ -779,12 +780,19 @@ fn handle(state: State, message: Message) {
         _, _, _ -> actor.continue(state)
       }
     }
-    RecordContext(id, snapshot, reply) -> {
-      process.send(reply, Nil)
-      case turn.live(state.activity, id) {
-        True -> actor.continue(session_state.State(..state, context: snapshot))
-        False -> actor.continue(state)
+    RecordContext(id, snapshot, compacted, reply) -> {
+      let state = case turn.live(state.activity, id) {
+        True -> {
+          let state = session_state.State(..state, context: snapshot)
+          case compacted {
+            True -> elide_compacted_images(state)
+            False -> state
+          }
+        }
+        False -> state
       }
+      process.send(reply, Nil)
+      actor.continue(state)
     }
     ReadContext(reply) -> {
       process.send(reply, context_snapshot.summary(state.context))
@@ -1461,6 +1469,25 @@ fn resume(state: State) -> State {
           }
       }
     }
+  }
+}
+
+/// The plugin has committed its new projection. Clean up before the next
+/// provider request, while the session actor serializes transcript writes.
+fn elide_compacted_images(state: State) -> State {
+  let elided = case context_snapshot.retained_tool_calls(state.context) {
+    Some(calls) ->
+      images.elide_evicted(runtime.ledger(state.host), state.info.id, calls)
+    None -> Ok(0)
+  }
+  case elided {
+    Ok(0) -> state
+    Ok(_) -> session_state.State(..state, history: None)
+    Error(error) ->
+      session_state.emit(
+        state,
+        view.text("error", "image cleanup skipped: " <> error),
+      )
   }
 }
 

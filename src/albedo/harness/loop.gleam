@@ -27,7 +27,8 @@ pub type Loop {
     /// model thought before it.
     commit: fn(List(types.Input), conversation.Stage, Option(Int)) ->
       Result(Int, String),
-    record_context: fn(types.Request, Option(compaction.Observation)) -> Nil,
+    record_context: fn(types.Request, Option(compaction.Observation), Bool) ->
+      Nil,
     record_usage: fn(usage.Metadata) -> Result(Nil, String),
     drain_steering: fn() -> Result(List(types.Input), String),
     /// Reports the pin's compaction baseline (`Some`) or that compaction
@@ -87,7 +88,7 @@ pub fn run(
       None,
       types.Options(..types.defaults, effort: state.effort),
     )
-  state.record_context(request, prepared.observation)
+  state.record_context(request, prepared.observation, prepared.compacted)
   use turn <- result.try(
     stream_with_retries(state.upstream, request, state.publish, fn(event) {
       case view.stream_event(id, step, event) {
@@ -261,6 +262,7 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
       types.defaults,
     ),
     prepared.observation,
+    prepared.compacted,
   )
   Ok(Nil)
 }

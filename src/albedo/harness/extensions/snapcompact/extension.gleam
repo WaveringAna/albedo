@@ -428,6 +428,7 @@ fn visual_view(
       Ok(compaction.Prepared(
         list.append(folds, current),
         observe(status, current),
+        False,
       ))
     True, #(newly_evicted, tail) -> {
       let archive = extend(shape, limit, previous, evicted, newly_evicted)
@@ -436,6 +437,7 @@ fn visual_view(
       Ok(compaction.Prepared(
         list.append(folds, prepared),
         observe(status, prepared),
+        True,
       ))
     }
   }

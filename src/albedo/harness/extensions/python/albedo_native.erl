@@ -1,11 +1,20 @@
 -module(albedo_native).
--export([new_id/0, pack_cell/1, unpack_cell/1]).
+-export([new_id/0, pack_cell/1, unpack_cell/1, elide_cell_images/1]).
 new_id() -> binary:encode_hex(crypto:strong_rand_bytes(16), lowercase).
 %% Images are journaled in the transcript row shape (albedo_images:pack_image/1).
 pack_cell({ok, {outcome, Id, Status, Output, Value, Truncated, Images, Errors}}) ->
     Packed = [albedo_images:pack_image(I) || I <- Images],
     term_to_binary({1, {ok, {outcome, Id, Status, Output, Value, Truncated, Packed, Errors}}});
 pack_cell(Value) -> term_to_binary({1, Value}).
+%% A finished cell without its images, the elision marker after its output.
+elide_cell_images(Binary) ->
+    case unpack_cell(Binary) of
+        {ok, {ok, {outcome, Id, Status, Output, Value, Truncated, [_ | _], Errors}}} ->
+            Marked = albedo_conversation:elision_marker(Output),
+            {ok, pack_cell({ok, {outcome, Id, Status, Marked, Value, Truncated, [], Errors}})};
+        _ -> {error, nil}
+    end.
+
 unpack_cell(Binary) ->
     try binary_to_term(Binary, [safe]) of
         %% Cells journaled before images carry neither image field.

@@ -72,6 +72,7 @@ pub opaque type Snapshot {
     context_window_tokens: Option(Int),
     compaction: Compaction,
     sections: List(Section),
+    retained_tool_calls: List(String),
   )
 }
 
@@ -176,7 +177,7 @@ pub fn with_usage(snapshot: Snapshot, metadata: usage.Metadata) -> Snapshot {
 pub fn estimate(snapshot: Snapshot) -> Option(Int) {
   case snapshot {
     Pending(_) -> None
-    Ready(_, _, _, _, _, compaction, _) -> compaction.estimated_input_tokens
+    Ready(compaction: compaction, ..) -> compaction.estimated_input_tokens
   }
 }
 
@@ -201,6 +202,7 @@ pub fn ready(
     non_negative(context_window_tokens),
     compaction,
     sections,
+    [],
   )
 }
 
@@ -269,15 +271,35 @@ pub fn from_request(
       ..sections
     ]
   }
-  ready(
-    captured_at,
-    Some(provider),
-    request.model,
-    Some(protocol_name),
-    observation_capacity(observation),
-    observation_compaction(observation),
-    sections,
-  )
+  let calls =
+    list.filter_map(history, fn(input) {
+      case input {
+        types.ToolOutput(id, _, _) -> Ok(id)
+        _ -> Error(Nil)
+      }
+    })
+  case
+    ready(
+      captured_at,
+      Some(provider),
+      request.model,
+      Some(protocol_name),
+      observation_capacity(observation),
+      observation_compaction(observation),
+      sections,
+    )
+  {
+    Ready(..) as snapshot -> Ready(..snapshot, retained_tool_calls: calls)
+    pending -> pending
+  }
+}
+
+/// Tool calls in the exact prepared request, not in the durable history.
+pub fn retained_tool_calls(snapshot: Snapshot) -> Option(List(String)) {
+  case snapshot {
+    Pending(_) -> None
+    Ready(retained_tool_calls: calls, ..) -> Some(calls)
+  }
 }
 
 fn render_inputs(inputs: List(types.Input)) -> String {
@@ -408,6 +430,7 @@ pub fn summary(snapshot: Snapshot) -> json.Json {
       context_window_tokens,
       compacted,
       sections,
+      _,
     ) ->
       json.object(
         [

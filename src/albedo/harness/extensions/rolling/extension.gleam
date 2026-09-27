@@ -148,7 +148,7 @@ fn prepare_view(
   use compaction.Prior(folds, rest) <- result.try(context.prior(history))
   let folded = list.append(folds, rest)
   let carries_folds = folds != []
-  use inputs <- result.try(prepare(config, context, folded))
+  use #(inputs, compacted) <- result.try(prepare(config, context, folded))
   // Diagnostics must not fail a request after its projection was committed.
   let recorded =
     observation(context.store, context.session) |> result.unwrap(None)
@@ -177,7 +177,7 @@ fn prepare_view(
       ))
     None -> None
   }
-  Ok(compaction.Prepared(inputs, observed))
+  Ok(compaction.Prepared(inputs, observed, compacted))
 }
 
 fn validate_config(config: Config) -> Result(Config, String) {
@@ -297,7 +297,7 @@ fn prepare(
   config: Config,
   context: compaction.Context,
   history: List(types.Input),
-) -> Result(List(types.Input), String) {
+) -> Result(#(List(types.Input), Bool), String) {
   let compaction.Context(
     ledger,
     session,
@@ -364,7 +364,7 @@ fn prepare(
           current.2,
         ),
       ))
-      Ok(current.3)
+      Ok(#(current.3, False))
     }
     Some(compaction.Capacity(capacity, capacity_source)) -> {
       let estimated = pinned_tokens + compaction.estimate_inputs(current.3)
@@ -416,7 +416,7 @@ fn prepare(
               current.2,
             ),
           ))
-          Ok(current.3)
+          Ok(#(current.3, False))
         }
         False -> {
           let #(previous_summary, evicted, rest) = case resumed {
@@ -485,7 +485,7 @@ fn prepare(
             next_state,
             observation,
           ))
-          Ok(next.3)
+          Ok(#(next.3, True))
         }
       }
     }

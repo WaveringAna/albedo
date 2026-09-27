@@ -22,7 +22,8 @@ pub type Messages(message) {
       Option(Int),
       Subject(Result(Int, String)),
     ) -> message,
-    context: fn(String, context_snapshot.Snapshot, Subject(Nil)) -> message,
+    context: fn(String, context_snapshot.Snapshot, Bool, Subject(Nil)) ->
+      message,
     usage: fn(String, usage.Metadata, Subject(Result(Nil, String))) -> message,
     drain: fn(String, Subject(Result(List(types.Input), String))) -> message,
     pin: fn(String, Option(Int), Subject(Nil)) -> message,
@@ -181,7 +182,7 @@ pub fn start(
       client,
       publish_fn(owner, run_id, messages, stop, 30_000),
       commit_fn(owner, run_id, messages, 10_000),
-      fn(request, observation) {
+      fn(request, observation, compacted) {
         let snapshot =
           context_snapshot.from_request(
             Some(usage.now()),
@@ -191,9 +192,10 @@ pub fn start(
             request,
             observation,
           )
-        // The snapshot only feeds the live view, so a stalled session actor
-        // must not kill the turn over it; fire and forget after the bound.
-        let _ = try_call(owner, 5000, messages.context(run_id, snapshot, _))
+        // Inspection and post-compaction cleanup must not kill the turn if
+        // the session actor stalls; leave the message queued after the bound.
+        let _ =
+          try_call(owner, 5000, messages.context(run_id, snapshot, compacted, _))
         Nil
       },
       usage_fn(owner, run_id, messages, 10_000),
