@@ -384,6 +384,13 @@ fn handle(state: State, message: Message) {
     Abort(id) ->
       case turn.owner(state.activity, id) {
         Some(run) if run.cancelled -> {
+          // The Cancel-time interrupt may have landed on an idle kernel,
+          // before the turn reached a tool; a stalled actor can delay this
+          // Abort past a tool gate, so interrupt whatever runs now too.
+          case state.kernel {
+            Some(kernel) -> runtime.interrupt(kernel)
+            None -> Nil
+          }
           kill(run.pid)
           handle(state, Finished(id, Error("cancelled")))
         }
