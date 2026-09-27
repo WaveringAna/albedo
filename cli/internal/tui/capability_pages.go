@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -52,9 +53,14 @@ type CapabilityPageChangedMsg struct{}
 
 type ChatOpenCapabilityPageMsg struct{ Kind string }
 
+// Commands outlive closed pages; globally unique generations reject their replies.
+var capabilityGen atomic.Int64
+
+func nextCapabilityGen() int { return int(capabilityGen.Add(1)) }
+
 func NewCapabilityPageModel(conn *daemon.Connection, sessionID, workspace, kind string) CapabilityPageModel {
 	// Pages open on the global defaults; s scopes changes to this session.
-	return CapabilityPageModel{Conn: conn, SessionID: sessionID, Workspace: workspace, Kind: kind, Home: config.HomeDir(), Loading: true, Global: true}
+	return CapabilityPageModel{Conn: conn, SessionID: sessionID, Workspace: workspace, Kind: kind, Home: config.HomeDir(), Loading: true, Global: true, Generation: nextCapabilityGen()}
 }
 func (m *CapabilityPageModel) SetSize(w, h int) {
 	m.Width = w
@@ -313,7 +319,7 @@ func (m *CapabilityPageModel) openForm(edit bool) {
 
 func (m CapabilityPageModel) save(cmd func(int) tea.Cmd) (CapabilityPageModel, tea.Cmd) {
 	m.Saving = true
-	m.Generation++
+	m.Generation = nextCapabilityGen()
 	return m, cmd(m.Generation)
 }
 
@@ -350,7 +356,7 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 		m.Form = nil
 		m.ConfirmDelete = false
 		m.Notice = "saved · session reloaded"
-		m.Loading = true
+		m.Loading, m.Generation = true, nextCapabilityGen()
 		return m, tea.Batch(m.loadCmd(m.Generation), func() tea.Msg { return CapabilityPageChangedMsg{} })
 	case tea.PasteMsg:
 		if m.Form == nil || m.Saving {
@@ -414,7 +420,7 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 			}
 		case "r":
 			m.Loading = true
-			m.Generation++
+			m.Generation = nextCapabilityGen()
 			return m, m.loadCmd(m.Generation)
 		case "g", "s":
 			m.Global = msg.String() == "g"
