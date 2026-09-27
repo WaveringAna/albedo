@@ -805,6 +805,9 @@ fn handle(state: State, message: Message) {
             )
           let state = session_state.State(..state, activity: turn.Resting)
           bus.running(state.info.id, False)
+          // A webhook or wake refused while this run held the session can
+          // be admitted now.
+          mail.waiting()
           let state = case run.cancelled, outcome, persisted {
             True, _, _ ->
               session_state.emit(state, view.event("interrupted", []))

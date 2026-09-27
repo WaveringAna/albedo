@@ -29,15 +29,4 @@ python3 test/harness/remote_plugin_test.py
 # the daemon suites drive the CLI through this binary
 go -C cli build -o bin/albedo ./cmd/albedo
 
-python3 test/daemon/integration.py
-python3 test/daemon/extensions_integration.py
-python3 test/daemon/proxy_integration.py
-python3 test/daemon/webhooks_integration.py
-python3 test/daemon/mcp_integration.py
-python3 test/daemon/context_integration.py
-python3 test/daemon/kernel_reset_integration.py
-python3 test/daemon/idle_reap_integration.py
-python3 test/daemon/job_wake_integration.py
-python3 test/daemon/agents_integration.py
-python3 test/daemon/agents_python_integration.py
-python3 test/daemon/agents_swarm_integration.py
+python3 test/e2e/run.py

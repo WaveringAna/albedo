@@ -8,7 +8,7 @@
 %% session is not an error the sender must handle: the letter is durable, and
 %% the dispatcher delivers it once the session is running.
 -module(albedo_mailbox).
--export([register/2, forget/1, deliver/2]).
+-export([register/2, forget/1, deliver/2, on_waiting/1, waiting/0]).
 
 -define(TABLE, albedo_mailbox).
 
@@ -23,4 +23,14 @@ deliver(Id, Letter) ->
             catch _:_ -> {error, <<"session unavailable">>}
             end;
         undefined -> {error, <<"session unavailable">>}
+    end.
+
+%% The daemon's dispatcher: woken when a stored letter was not taken, instead
+%% of waiting for its next tick.
+on_waiting(Wake) -> persistent_term:put({?MODULE, dispatcher}, Wake), nil.
+
+waiting() ->
+    case persistent_term:get({?MODULE, dispatcher}, undefined) of
+        undefined -> nil;
+        Wake -> Wake(), nil
     end.

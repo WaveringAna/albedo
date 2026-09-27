@@ -31,6 +31,7 @@ When a behaviour matters and isn't covered end to end, move it into an E2E scena
 ## Conventions
 
 - Start each test module with a docstring that says which bug it catches and why E2E can't.
+- The whole E2E run shares one daemon. Never start a daemon per test or per file. Isolate tests with their own session, workspace, and provider route; restore any global state you change; and restart the shared daemon only when the behaviour under test is a restart.
 - One area per E2E file, and one behaviour per test method, with a name that states the behaviour.
 - No live network or credentials. Anything that needs them belongs in `test/manual`, which is opt-in.
 - Every check that must pass is listed in `test.sh`. Add new suites there, and run the affected suite and report real results before calling the work done.

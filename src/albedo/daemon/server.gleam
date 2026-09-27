@@ -42,7 +42,14 @@ import mist
 import sqlight
 
 pub type Config {
-  Config(home: String, token: String, idle_ms: Int, budget_kb: Int)
+  Config(
+    home: String,
+    token: String,
+    idle_ms: Int,
+    budget_kb: Int,
+    /// How often schedules fire and letters left undelivered are retried.
+    tick_ms: Int,
+  )
 }
 
 /// How long without a word from any client counts as detached. An attached
@@ -55,7 +62,14 @@ fn sweep_interval(config: Config) -> Int {
 }
 
 type Message {
-  Create(String, String, Subject(Result(conversation.Info, String)))
+  /// A session in a workspace, on a named provider or the active one, with a
+  /// model or "" for the provider's.
+  Create(
+    String,
+    Option(String),
+    String,
+    Subject(Result(conversation.Info, String)),
+  )
   /// A child of the first session: its name among its siblings, its task, and
   /// a model, or "" for the parent's.
   CreateChild(
@@ -86,6 +100,10 @@ type Message {
   WorkerDown(process.Down)
   Sweep
   ScheduleTick
+  /// A stored letter may be deliverable now: it was posted while its recipient
+  /// was not running, or a recipient that refused it while busy has come to
+  /// rest.
+  MailWaiting
   Shutdown
 }
 
@@ -96,6 +114,8 @@ type State {
     sessions: Dict(String, #(conversation.Info, Option(session.Session))),
     self: Subject(Message),
     scheduling: Option(process.Pid),
+    /// Mail arrived while a dispatcher ran; read the inbox again after it.
+    mail_waiting: Bool,
   )
 }
 
@@ -154,9 +174,12 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
 
 fn handle(state: State, message: Message) {
   case message {
-    Create(cwd, model, reply) -> {
+    Create(cwd, provider, model, reply) -> {
       let created = {
-        use provider <- result.try(configuration.active(state.config.home))
+        use provider <- result.try(case provider {
+          Some(name) -> configuration.named(state.config.home, name)
+          None -> configuration.active(state.config.home)
+        })
         let model = case model {
           "" -> provider.model
           _ -> model
@@ -355,7 +378,13 @@ fn handle(state: State, message: Message) {
     }
     WorkerDown(process.ProcessDown(_, pid, _))
       if state.scheduling == Some(pid)
-    -> actor.continue(State(..state, scheduling: None))
+    -> {
+      let state = State(..state, scheduling: None)
+      case state.mail_waiting {
+        True -> actor.continue(dispatch(state, False))
+        False -> actor.continue(state)
+      }
+    }
     WorkerDown(process.ProcessDown(_, pid, _)) -> {
       let entry =
         dict.values(state.sessions)
@@ -402,22 +431,17 @@ fn handle(state: State, message: Message) {
     }
     WorkerDown(_) -> actor.continue(state)
     ScheduleTick -> {
-      let _ = process.send_after(state.self, 15_000, ScheduleTick)
+      let _ = process.send_after(state.self, state.config.tick_ms, ScheduleTick)
       case state.scheduling {
         Some(_) -> actor.continue(state)
-        None -> {
-          let db = runtime.ledger(state.host)
-          let registry = state.self
-          let worker =
-            process.spawn_unlinked(fn() {
-              dispatch_schedules(db, registry)
-              dispatch_mail(db, registry)
-            })
-          let _ = process.monitor(worker)
-          actor.continue(State(..state, scheduling: Some(worker)))
-        }
+        None -> actor.continue(dispatch(state, True))
       }
     }
+    MailWaiting ->
+      case state.scheduling {
+        Some(_) -> actor.continue(State(..state, mail_waiting: True))
+        None -> actor.continue(dispatch(state, False))
+      }
     Sweep -> {
       // Off the registry: saving Python state and dropping reloadable history
       // must not make API calls wait behind filesystem or database work.
@@ -550,9 +574,12 @@ fn start_registry(
         #(info.id, #(info, worker))
       })
     let _ = process.send_after(self, sweep_interval(config), Sweep)
-    let _ = process.send_after(self, 15_000, ScheduleTick)
+    let _ = process.send_after(self, config.tick_ms, ScheduleTick)
     // Agents start and stop other sessions from kernel host routes.
     agents.register(fn(op) { actor.call(self, 60_000, AgentOp(op, _)) })
+    mail.on_waiting(fn() { process.send(self, MailWaiting) })
+    // Letters left from before a restart go out now, not a tick later.
+    process.send(self, MailWaiting)
     Ok(
       actor.initialised(State(
         host,
@@ -560,6 +587,7 @@ fn start_registry(
         dict.from_list(sessions),
         self,
         None,
+        False,
       ))
       |> actor.returning(self)
       |> actor.selecting(
@@ -572,6 +600,23 @@ fn start_registry(
   |> actor.named(name)
   |> actor.on_message(handle)
   |> actor.start
+}
+
+/// One dispatcher at a time, off the registry: due schedules on a tick, then
+/// the inbox.
+fn dispatch(state: State, schedules: Bool) -> State {
+  let db = runtime.ledger(state.host)
+  let registry = state.self
+  let worker =
+    process.spawn_unlinked(fn() {
+      case schedules {
+        True -> dispatch_schedules(db, registry)
+        False -> Nil
+      }
+      dispatch_mail(db, registry)
+    })
+  let _ = process.monitor(worker)
+  State(..state, scheduling: Some(worker), mail_waiting: False)
 }
 
 fn dispatch_schedules(db: store.Store, registry: Subject(Message)) -> Nil {
@@ -1145,7 +1190,8 @@ fn agent_json(node: AgentNode) -> json.Json {
 }
 
 /// Every bus event, batched every 100 ms so a hundred streaming agents cost the
-/// client ten frames a second, not thousands of writes.
+/// client ten frames a second, not thousands of writes. The first frame goes
+/// out on the first tick even when empty, so a client knows it is subscribed.
 fn agents_stream(req) {
   mist.server_sent_events(
     req,
@@ -1157,7 +1203,7 @@ fn agents_stream(req) {
         Error(_) -> Nil
       }
       process.send(self, Flush)
-      #(self, [], 0, 0)
+      #(self, [], 0, 50)
     },
     fn(state, message, connection) {
       let #(self, buffered, count, quiet) = state
@@ -1574,13 +1620,19 @@ fn daemon_route(
         Post, ["sessions"] -> {
           let decoder = {
             use cwd <- decode.field("workspace", decode.string)
+            use provider <- decode.optional_field(
+              "provider",
+              None,
+              decode.map(decode.string, Some),
+            )
             use model <- decode.optional_field("model", "", decode.string)
-            decode.success(#(cwd, model))
+            decode.success(#(cwd, provider, model))
           }
           case
             body(req, decoder)
-            |> result.try(fn(pair) {
-              actor.call(registry, 15_000, Create(pair.0, pair.1, _))
+            |> result.try(fn(fields) {
+              let #(cwd, provider, model) = fields
+              actor.call(registry, 15_000, Create(cwd, provider, model, _))
             })
           {
             Ok(info) -> reply(201, info_json(info))
@@ -2075,6 +2127,7 @@ pub fn main() -> Nil {
       token,
       setting("ALBEDO_IDLE_SECONDS", 31 * 60, 10, 604_800) * 1000,
       setting("ALBEDO_KERNEL_BUDGET_MB", 2048, 64, 1_048_576) * 1024,
+      setting("ALBEDO_SCHEDULE_TICK_MS", 15_000, 50, 60_000),
     )
   let assert True = string.byte_size(token) >= 32 && home != ""
     as "start albedo through its CLI"

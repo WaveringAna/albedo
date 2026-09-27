@@ -1,3 +1,4 @@
+import albedo/daemon/mail
 import albedo/harness/extension
 import albedo/harness/extensions/webhooks/ledger
 import gleam/bytes_tree
@@ -28,7 +29,8 @@ pub fn handle(
         ledger.accept(daemon.ledger, id, req.headers, raw.body, event_key)
       }
       case accepted {
-        Ok(delivery) ->
+        Ok(delivery) -> {
+          mail.waiting()
           respond(
             202,
             json.object([
@@ -36,6 +38,7 @@ pub fn handle(
               #("deliveryId", json.string(delivery)),
             ]),
           )
+        }
         Error(ledger.NotFound) -> respond(404, message("hook not found"))
         Error(ledger.Unauthorized) -> respond(401, message("invalid signature"))
         Error(ledger.Overloaded) -> respond(429, message("webhook queue full"))

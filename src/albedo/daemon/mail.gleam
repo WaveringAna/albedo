@@ -416,10 +416,32 @@ pub fn send(
 
 /// Hand a stored letter to its recipient's actor now. Ok(True) means it waits
 /// in the recipient's queue behind a running turn. An error leaves the letter
-/// for the dispatcher, so senders do not need to retry.
+/// for the dispatcher, woken at once, so senders do not need to retry.
 pub fn deliver(letter: Letter) -> Result(Bool, String) {
-  mailbox_deliver(letter.recipient, letter)
+  let delivered = mailbox_deliver(letter.recipient, letter)
+  case delivered {
+    Ok(_) -> Nil
+    Error(_) -> waiting()
+  }
+  delivered
 }
+
+/// Wake the dispatcher: a stored letter was not taken, or a recipient that
+/// refused one while busy has come to rest.
+pub fn waiting() -> Nil {
+  mailbox_waiting()
+}
+
+/// The daemon's dispatcher, called by `waiting`. `wake` must only send.
+pub fn on_waiting(wake: fn() -> Nil) -> Nil {
+  mailbox_on_waiting(wake)
+}
+
+@external(erlang, "albedo_mailbox", "waiting")
+fn mailbox_waiting() -> Nil
+
+@external(erlang, "albedo_mailbox", "on_waiting")
+fn mailbox_on_waiting(wake: fn() -> Nil) -> Nil
 
 @external(erlang, "albedo_mailbox", "deliver")
 fn mailbox_deliver(session: String, letter: Letter) -> Result(Bool, String)
