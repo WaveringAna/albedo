@@ -104,14 +104,6 @@ func newTextInput() textinput.Model {
 	return ti
 }
 
-// fitInputs sizes form fields to the columns their rows leave for a value.
-// A textinput without a width shows only the first rune of its placeholder.
-func fitInputs(inputs map[string]*textinput.Model, width int) {
-	for _, input := range inputs {
-		input.SetWidth(max(1, width))
-	}
-}
-
 const (
 	ansiReset  = "\x1b[0m"
 	ansiItalic = "\x1b[3m"

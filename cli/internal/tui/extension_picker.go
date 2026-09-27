@@ -48,7 +48,6 @@ type ExtensionPickerModel struct {
 	Conn       *daemon.Connection
 	SessionID  string
 	Extensions []ExtensionItem
-	Cursor     int
 	// Session scopes changes to this session; the page opens on the global
 	// defaults, so a session only diverges once a change is made here.
 	Session    bool
@@ -56,27 +55,17 @@ type ExtensionPickerModel struct {
 	Confirming bool
 	// Inheriting confirms dropping this session's choice instead of a toggle.
 	Inheriting bool
-	Saving     bool
-	Loading    bool
-	Error      string
-	Generation int
-	Width      int
-	Height     int
 	Styles     Styles
+	page
 }
 
 func NewExtensionPickerModel(conn *daemon.Connection, sessionID string) ExtensionPickerModel {
 	return ExtensionPickerModel{
 		Conn:      conn,
 		SessionID: sessionID,
-		Loading:   true,
+		page:      page{Loading: true},
 		Styles:    DefaultStyles,
 	}
-}
-
-func (m *ExtensionPickerModel) SetSize(width, height int) {
-	m.Width = width
-	m.Height = height
 }
 
 func (m ExtensionPickerModel) Init() tea.Cmd {
@@ -141,12 +130,7 @@ func (m ExtensionPickerModel) capabilitiesList(ext ExtensionItem) []string {
 func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case extensionsLoadedMsg:
-		if msg.Gen != m.Generation {
-			return m, nil
-		}
-		m.Loading = false
-		if msg.Err != nil {
-			m.Error = msg.Err.Error()
+		if !m.settle(msg.Gen, msg.Err, &m.Loading) {
 			return m, nil
 		}
 		m.Extensions = msg.Extensions
@@ -161,12 +145,7 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		return m, nil
 
 	case extensionToggledMsg:
-		if msg.Gen != m.Generation {
-			return m, nil
-		}
-		m.Saving = false
-		if msg.Err != nil {
-			m.Error = msg.Err.Error()
+		if !m.settle(msg.Gen, msg.Err, &m.Saving) {
 			return m, nil
 		}
 		name := ""
@@ -219,15 +198,10 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 			return m, nil
 		}
 
+		if m.step(msg.String(), len(m.Extensions)) {
+			return m, nil
+		}
 		switch msg.String() {
-		case "up", "ctrl+p":
-			if m.Cursor > 0 {
-				m.Cursor--
-			}
-		case "down", "ctrl+n":
-			if m.Cursor < len(m.Extensions)-1 {
-				m.Cursor++
-			}
 		case "space", "enter":
 			if len(m.Extensions) > 0 && m.Cursor < len(m.Extensions) {
 				m.Error = ""

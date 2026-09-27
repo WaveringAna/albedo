@@ -21,15 +21,14 @@ import (
 // CapabilityPageModel owns a dedicated session page for one source of agent
 // context. MCP servers are added and edited through one form (mcp_form.go).
 type CapabilityPageModel struct {
-	Conn                                                        *daemon.Connection
-	SessionID, Workspace, Kind, Home                            string
-	Items                                                       []capabilityItem
-	Prefs                                                       config.CapabilityPrefs
-	Cursor, Width, Height, Generation                           int
-	Global, Loading, Saving, ExtensionEnabled, ConfirmExtension bool
-	ConfirmDelete                                               bool
-	Form                                                        *mcpForm
-	Error, Notice                                               string
+	Conn                                       *daemon.Connection
+	SessionID, Workspace, Kind, Home           string
+	Items                                      []capabilityItem
+	Prefs                                      config.CapabilityPrefs
+	Global, ExtensionEnabled, ConfirmExtension bool
+	ConfirmDelete                              bool
+	Form                                       *mcpForm
+	page
 }
 type capabilityItem struct {
 	ID, Title, Detail string
@@ -60,11 +59,7 @@ func nextCapabilityGen() int { return int(capabilityGen.Add(1)) }
 
 func NewCapabilityPageModel(conn *daemon.Connection, sessionID, workspace, kind string) CapabilityPageModel {
 	// Pages open on the global defaults; s scopes changes to this session.
-	return CapabilityPageModel{Conn: conn, SessionID: sessionID, Workspace: workspace, Kind: kind, Home: config.HomeDir(), Loading: true, Global: true, Generation: nextCapabilityGen()}
-}
-func (m *CapabilityPageModel) SetSize(w, h int) {
-	m.Width = w
-	m.Height = h
+	return CapabilityPageModel{Conn: conn, SessionID: sessionID, Workspace: workspace, Kind: kind, Home: config.HomeDir(), Global: true, page: page{Loading: true, Generation: nextCapabilityGen()}}
 }
 func (m CapabilityPageModel) Init() tea.Cmd { return m.loadCmd(m.Generation) }
 func (m CapabilityPageModel) loadCmd(gen int) tea.Cmd {
@@ -326,31 +321,14 @@ func (m CapabilityPageModel) save(cmd func(int) tea.Cmd) (CapabilityPageModel, t
 func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case capabilityLoadedMsg:
-		if msg.Gen != m.Generation {
+		if !m.settle(msg.Gen, msg.Err, &m.Loading) {
 			return m, nil
 		}
-		m.Loading = false
-		if msg.Err != nil {
-			m.Error = msg.Err.Error()
-			return m, nil
-		}
-		selected := ""
-		if m.Cursor < len(m.Items) {
-			selected = m.Items[m.Cursor].ID
-		}
+		m.Cursor = reselect(m.Cursor, m.Items, msg.Items, func(item capabilityItem) string { return item.ID })
 		m.Items, m.Prefs, m.ExtensionEnabled, m.Error = msg.Items, msg.Prefs, msg.ExtensionEnabled, ""
-		if i := slices.IndexFunc(m.Items, func(item capabilityItem) bool { return item.ID == selected }); i >= 0 {
-			m.Cursor = i
-		}
-		m.Cursor = min(m.Cursor, max(0, len(m.Items)-1))
 		return m, nil
 	case capabilitySavedMsg:
-		if msg.Gen != m.Generation {
-			return m, nil
-		}
-		m.Saving = false
-		if msg.Err != nil {
-			m.Error = msg.Err.Error()
+		if !m.settle(msg.Gen, msg.Err, &m.Saving) {
 			return m, nil
 		}
 		m.Form = nil
@@ -409,15 +387,12 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 		if m.Loading {
 			return m, nil
 		}
+		if m.step(msg.String(), len(m.Items)) {
+			return m, nil
+		}
 		mcp := m.Kind == "mcp"
 		hasItems := len(m.Items) > 0
 		switch msg.String() {
-		case "up":
-			m.Cursor = max(0, m.Cursor-1)
-		case "down":
-			if hasItems {
-				m.Cursor = min(len(m.Items)-1, m.Cursor+1)
-			}
 		case "r":
 			m.Loading = true
 			m.Generation = nextCapabilityGen()
@@ -479,13 +454,7 @@ func (m CapabilityPageModel) View() string {
 	mcp := m.Kind == "mcp"
 	heading := map[string]string{"skills": "Skills", "instructions": "Instruction files", "mcp": "MCP servers"}[m.Kind]
 	scope := pick(m.Global, "global default", "this session")
-	rows := []string{titleRule(width, brand("albedo")+" "+DefaultStyles.Muted.Render("/"+m.Kind), DefaultStyles.Faint.Render(scope)), ""}
-	if m.Error != "" {
-		rows = append(rows, DefaultStyles.Error.Render(ansi.Truncate(m.Error, width, "…")))
-	}
-	if m.Notice != "" {
-		rows = append(rows, DefaultStyles.Faint.Render(m.Notice))
-	}
+	rows := m.header("/"+m.Kind, scope)
 	if m.Loading {
 		rows = append(rows, DefaultStyles.Faint.Render("loading "+heading+"…"))
 		return strings.Join(rows, "\n")
@@ -496,22 +465,16 @@ func (m CapabilityPageModel) View() string {
 	if len(m.Items) == 0 {
 		rows = append(rows, DefaultStyles.Faint.Render("no "+strings.ToLower(heading)+" found"))
 	}
-	listRows := max(1, m.Height-12)
-	start := max(0, m.Cursor-listRows+1)
-	for i := start; i < min(len(m.Items), start+listRows); i++ {
-		item := m.Items[i]
+	list := make([]string, len(m.Items))
+	for i, item := range m.Items {
 		label := DefaultStyles.Success.Render("on ")
 		if !m.selectedEnabled(item) || (mcp && item.Server.Enabled != nil && !*item.Server.Enabled) {
 			label = DefaultStyles.Faint.Render("off")
 		}
-		mark := pick(i == m.Cursor, selectBar()+" ", "  ")
 		detail := pick(mcp, DefaultStyles.Faint.Render(" · "+item.Detail), "")
-		row := ansi.Truncate(mark+label+"  "+item.Title+detail, width, "…")
-		if i == m.Cursor {
-			row = selectedLine(row, width)
-		}
-		rows = append(rows, row)
+		list[i] = listRow(i == m.Cursor, label+"  "+item.Title+detail, width)
 	}
+	rows = append(rows, scrolled(list, m.Cursor, max(1, m.Height-12))...)
 	switch {
 	case m.Form != nil:
 		rows = append(rows, "")
@@ -543,8 +506,5 @@ func (m CapabilityPageModel) View() string {
 			rows = append(rows, keyHints(hint{"n", "add server"}, hint{"enter", "edit"}, hint{"d", "delete"}))
 		}
 	}
-	if m.Height > 0 && len(rows) > m.Height {
-		rows = append(rows[:max(1, m.Height-1)], rows[len(rows)-1])
-	}
-	return strings.Join(rows, "\n")
+	return m.fit(rows)
 }

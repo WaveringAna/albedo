@@ -61,16 +61,11 @@ type TreePickerModel struct {
 	Checkpoints []TreeCheckpoint
 	NextCursor  *int
 	HasMore     bool
-	Cursor      int
 	Confirming  bool
 	Forking     bool
-	Loading     bool
-	Error       string
 	ForkError   string
-	Generation  int
-	Width       int
-	Height      int
 	Styles      Styles
+	page
 }
 
 func NewTreePickerModel(conn *daemon.Connection, sessionID string) TreePickerModel {
@@ -79,14 +74,9 @@ func NewTreePickerModel(conn *daemon.Connection, sessionID string) TreePickerMod
 		SessionID: sessionID,
 		Cursors:   []int{0},
 		PageIndex: 0,
-		Loading:   true,
+		page:      page{Loading: true},
 		Styles:    DefaultStyles,
 	}
-}
-
-func (m *TreePickerModel) SetSize(width, height int) {
-	m.Width = width
-	m.Height = height
 }
 
 func (m TreePickerModel) Init() tea.Cmd {
@@ -147,12 +137,7 @@ func (m TreePickerModel) forkCmd(checkpointID int, gen int) tea.Cmd {
 func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case treeLoadedMsg:
-		if msg.Gen != m.Generation {
-			return m, nil
-		}
-		m.Loading = false
-		if msg.Err != nil {
-			m.Error = msg.Err.Error()
+		if !m.settle(msg.Gen, msg.Err, &m.Loading) {
 			return m, nil
 		}
 		m.Checkpoints, m.NextCursor, m.HasMore = msg.Items, msg.NextCursor, msg.HasMore
@@ -195,15 +180,10 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 			return m, nil
 		}
 
+		if m.step(msg.String(), len(m.Checkpoints)) {
+			return m, nil
+		}
 		switch msg.String() {
-		case "up", "ctrl+p":
-			if m.Cursor > 0 {
-				m.Cursor--
-			}
-		case "down", "ctrl+n":
-			if m.Cursor < len(m.Checkpoints)-1 {
-				m.Cursor++
-			}
 		case "left", "pgup":
 			if m.PageIndex > 0 {
 				m.PageIndex--

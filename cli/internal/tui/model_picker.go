@@ -111,8 +111,7 @@ func NewModelPickerModel(conn *daemon.Connection, profiles config.Profiles, mode
 		})
 	}
 
-	search := newTextInput()
-	search.Prompt = ""
+	search := newField()
 	search.Placeholder = "search models, or type an id"
 	st := search.Styles()
 	st.Focused.Placeholder, st.Blurred.Placeholder = DefaultStyles.Faint, DefaultStyles.Faint

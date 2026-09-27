@@ -191,8 +191,7 @@ const (
 var agentsBars = []rune("▁▂▃▄▅▆▇█")
 
 func NewAgentsViewModel(conn *daemon.Connection, sessionID string) AgentsViewModel {
-	input := newTextInput()
-	input.Prompt = ""
+	input := newField()
 	input.CharLimit = 4000
 	input.Focus()
 	return AgentsViewModel{

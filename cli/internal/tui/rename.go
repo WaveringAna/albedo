@@ -36,8 +36,7 @@ const renameLimit = 80
 
 // open starts a draft of current, prompting with placeholder once emptied.
 func (f *renameField) open(id, current, placeholder string) {
-	in := newTextInput()
-	in.Prompt = ""
+	in := newField()
 	in.CharLimit = renameLimit
 	in.Placeholder = placeholder
 	st := in.Styles()

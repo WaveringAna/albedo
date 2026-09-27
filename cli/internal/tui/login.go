@@ -175,16 +175,13 @@ func (m LoginModel) openBrowserCmd(urlStr string) tea.Cmd {
 func NewLoginModel(conn *daemon.Connection, nameHint string) LoginModel {
 	profiles, loadErr := config.LoadProfiles(config.HomeDir())
 
-	ti := newTextInput()
-	ti.Prompt = ""
-
 	m := LoginModel{
 		Conn:      conn,
 		Step:      StepChoose,
 		Profiles:  profiles,
 		Hint:      strings.TrimSpace(nameHint),
 		Draft:     config.Settings{Extension: "openai", BaseURL: "https://api.openai.com/v1", Protocol: "responses"},
-		TextInput: ti,
+		TextInput: newField(),
 		Styles:    DefaultStyles,
 	}
 	if loadErr != nil {
@@ -203,14 +200,8 @@ func (m LoginModel) inputWidth() int {
 // blink command that shows its cursor. The placeholder is left as the
 // previous step left it.
 func (m *LoginModel) promptInput(value string, secret bool) tea.Cmd {
-	m.TextInput.Reset()
-	m.TextInput.EchoMode = pick(secret, textinput.EchoPassword, textinput.EchoNormal)
 	m.TextInput.SetWidth(m.inputWidth())
-	if value != "" {
-		m.TextInput.SetValue(value)
-	}
-	m.TextInput.Focus()
-	return textinput.Blink
+	return ask(&m.TextInput, value, secret)
 }
 
 // pickerFor returns the picker the current step drives.

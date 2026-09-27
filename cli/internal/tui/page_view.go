@@ -94,22 +94,16 @@ type PageViewModel struct {
 	ChoiceIndex   int
 	TextInput     textinput.Model
 	Busy          bool
-	Notice        string
-	Error         string
-	Generation    int
-	Width         int
-	Height        int
 	Styles        Styles
+	page
 }
 
 func NewPageViewModel(conn *daemon.Connection, sessionID, command string) PageViewModel {
-	ti := newTextInput()
-	ti.Prompt = ""
 	return PageViewModel{
 		Conn:      conn,
 		SessionID: sessionID,
 		Command:   command,
-		TextInput: ti,
+		TextInput: newField(),
 		Busy:      true,
 		Styles:    DefaultStyles,
 	}
@@ -306,13 +300,11 @@ func (m *PageViewModel) beginAction(act PageAction, fresh bool) tea.Cmd {
 	switch act.Input {
 	case "text", "secret":
 		m.Mode = modeText
-		m.TextInput.Reset()
-		m.TextInput.EchoMode = pick(act.Input == "secret", textinput.EchoPassword, textinput.EchoNormal)
+		value := ""
 		if act.Prefill && m.currentRow() != nil {
-			m.TextInput.SetValue(m.currentRow().Text)
+			value = m.currentRow().Text
 		}
-		m.TextInput.Focus()
-		return textinput.Blink
+		return ask(&m.TextInput, value, act.Input == "secret")
 	case "choice":
 		m.Mode = modeChoice
 		m.ChoiceIndex = 0
@@ -329,12 +321,7 @@ func (m *PageViewModel) beginAction(act PageAction, fresh bool) tea.Cmd {
 func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case pageLoadedMsg:
-		if msg.Gen != m.Generation {
-			return m, nil
-		}
-		m.Busy = false
-		if msg.Err != nil {
-			m.Error = msg.Err.Error()
+		if !m.settle(msg.Gen, msg.Err, &m.Busy) {
 			return m, nil
 		}
 		m.Doc = msg.Doc
@@ -345,12 +332,7 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 		return m, nil
 
 	case pageActionExecutedMsg:
-		if msg.Gen != m.Generation {
-			return m, nil
-		}
-		m.Busy = false
-		if msg.Err != nil {
-			m.Error = msg.Err.Error()
+		if !m.settle(msg.Gen, msg.Err, &m.Busy) {
 			return m, nil
 		}
 		m.Notice = pageNotice(msg)

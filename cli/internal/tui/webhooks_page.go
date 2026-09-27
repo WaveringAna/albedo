@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strings"
 
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -29,15 +28,14 @@ type WebhooksPageModel struct {
 	AgentManagement bool
 	// Mounted reports whether the extension is on globally; the daemon only
 	// listens for deliveries then.
-	Mounted                           bool
-	Cursor, Width, Height, Generation int
-	Loaded, Loading, Saving           bool
-	Confirm                           string // "delete" or "rotate"
-	Form                              *webhookForm
+	Mounted bool
+	Loaded  bool
+	Confirm string // "delete" or "rotate"
+	Form    *webhookForm
 	// Reveal holds a generated secret until it is dismissed; it is never
 	// fetched again.
-	Reveal        *webhookSecret
-	Error, Notice string
+	Reveal *webhookSecret
+	page
 }
 
 type webhookEntry struct {
@@ -79,12 +77,7 @@ const (
 )
 
 func NewWebhooksPageModel(conn *daemon.Connection, sessionID string) WebhooksPageModel {
-	return WebhooksPageModel{Conn: conn, SessionID: sessionID, Loading: true, Mounted: true}
-}
-
-func (m *WebhooksPageModel) SetSize(w, h int) {
-	m.Width = w
-	m.Height = h
+	return WebhooksPageModel{Conn: conn, SessionID: sessionID, Mounted: true, page: page{Loading: true}}
 }
 
 func (m WebhooksPageModel) Init() tea.Cmd { return m.loadCmd(m.Generation) }
@@ -249,24 +242,12 @@ func (m WebhooksPageModel) begin(notice string, steps ...[2]string) (WebhooksPag
 func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case webhooksLoadedMsg:
-		if msg.Gen != m.Generation {
+		if !m.settle(msg.Gen, msg.Err, &m.Loading) {
 			return m, nil
-		}
-		m.Loading = false
-		if msg.Err != nil {
-			m.Error = msg.Err.Error()
-			return m, nil
-		}
-		selected := ""
-		if hook := m.selected(); hook != nil {
-			selected = hook.ID
 		}
 		m.Loaded = true
+		m.Cursor = reselect(m.Cursor, m.Hooks, msg.Hooks, func(hook webhookEntry) string { return hook.ID })
 		m.Sessions, m.Hooks, m.AgentManagement, m.Mounted = msg.Sessions, msg.Hooks, msg.Agent, msg.Mounted
-		if i := slices.IndexFunc(m.Hooks, func(hook webhookEntry) bool { return hook.ID == selected }); i >= 0 {
-			m.Cursor = i
-		}
-		m.Cursor = max(0, min(m.Cursor, len(m.Hooks)-1))
 		return m, nil
 	case webhooksSavedMsg:
 		if msg.Gen != m.Generation {
@@ -345,12 +326,11 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 		if !m.Loaded {
 			return m, nil
 		}
+		if m.step(key, len(m.Hooks)) {
+			return m, nil
+		}
 		hook := m.selected()
 		switch key {
-		case "up", "ctrl+p":
-			m.Cursor = max(0, m.Cursor-1)
-		case "down", "ctrl+n":
-			m.Cursor = min(max(0, len(m.Hooks)-1), m.Cursor+1)
 		case "enter":
 			if hook != nil {
 				m.Error, m.Notice = "", ""
@@ -399,13 +379,7 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 
 func (m WebhooksPageModel) View() string {
 	width := max(1, m.Width)
-	rows := []string{titleRule(width, brand("albedo")+" "+DefaultStyles.Muted.Render("/webhooks"), DefaultStyles.Faint.Render("all sessions")), ""}
-	if m.Error != "" {
-		rows = append(rows, DefaultStyles.Error.Render(ansi.Truncate(m.Error, width, "…")))
-	}
-	if m.Notice != "" {
-		rows = append(rows, DefaultStyles.Faint.Render(ansi.Truncate(m.Notice, width, "…")))
-	}
+	rows := m.header("/webhooks", "all sessions")
 	if m.Loading && !m.Loaded {
 		rows = append(rows, DefaultStyles.Faint.Render("loading webhooks…"))
 		return strings.Join(rows, "\n")
@@ -444,21 +418,16 @@ func (m WebhooksPageModel) View() string {
 			list = append(list, sectionRule(ansi.Truncate(sessionLabel(m.Sessions, hook.Session, m.SessionID), max(8, width-12), "…"), counts[hook.Session], width))
 		}
 		label := pick(hook.Enabled, DefaultStyles.Success.Render("on "), DefaultStyles.Faint.Render("off"))
-		mark := pick(i == m.Cursor, selectBar()+" ", "  ")
-		row := mark + label + "  " + padRight(hook.Name, nameWidth+1) + DefaultStyles.Faint.Render(hook.URL)
+		row := label + "  " + padRight(hook.Name, nameWidth+1) + DefaultStyles.Faint.Render(hook.URL)
 		if hook.Queued > 0 {
 			row += DefaultStyles.Decor.Render(" · ") + DefaultStyles.Warning.Render(fmt.Sprintf("%d queued", hook.Queued))
 		}
-		row = ansi.Truncate(row, width, "…")
 		if i == m.Cursor {
-			row = selectedLine(row, width)
 			cursorLine = len(list)
 		}
-		list = append(list, row)
+		list = append(list, listRow(i == m.Cursor, row, width))
 	}
-	listRows := max(2, m.Height-17)
-	start := max(0, cursorLine-listRows+1)
-	rows = append(rows, list[start:min(len(list), start+listRows)]...)
+	rows = append(rows, scrolled(list, cursorLine, max(2, m.Height-17))...)
 
 	switch {
 	case m.Reveal != nil:
@@ -492,10 +461,7 @@ func (m WebhooksPageModel) View() string {
 		}
 		rows = append(rows, "", keyHints(browse...), keyHints(keys...))
 	}
-	if m.Height > 0 && len(rows) > m.Height {
-		rows = append(rows[:max(1, m.Height-1)], rows[len(rows)-1])
-	}
-	return strings.Join(rows, "\n")
+	return m.fit(rows)
 }
 
 // detail explains the selected hook: where to send, how to sign, and what is
@@ -528,8 +494,7 @@ func (m WebhooksPageModel) detail(hook webhookEntry, width int) []string {
 type webhookForm struct {
 	// Editing is the hook being edited; nil for a new hook.
 	Editing *webhookEntry
-	Focus   int
-	Inputs  map[string]*textinput.Model
+	form
 	// Sessions are offered in order; Chosen starts at Current, the session
 	// the screen was opened from.
 	Sessions        []daemon.Session
@@ -555,11 +520,7 @@ var (
 )
 
 func newWebhookForm(editing *webhookEntry, sessions []daemon.Session, current string) *webhookForm {
-	f := &webhookForm{Inputs: map[string]*textinput.Model{}, Sessions: sessions, Current: current, Chosen: current}
-	for _, key := range hookFields {
-		input := newFormInput(key == hookFieldSecret)
-		f.Inputs[key] = &input
-	}
+	f := &webhookForm{form: newForm(hookFields, hookFieldSecret), Sessions: sessions, Current: current, Chosen: current}
 	f.Inputs[hookFieldSession].Placeholder = "type to filter"
 	f.Inputs[hookFieldName].Placeholder = "github-deploys"
 	f.Inputs[hookFieldHeader].SetValue(defaultSignatureHeader)
@@ -574,18 +535,11 @@ func newWebhookForm(editing *webhookEntry, sessions []daemon.Session, current st
 		f.Inputs[hookFieldPrefix].SetValue(hook.Prefix)
 		f.Inputs[hookFieldSecret].Placeholder = "stored · blank keeps it"
 	}
-	focusInputs(f.Inputs, f.current())
+	f.focus(f.current())
 	return f
 }
 
 func (f *webhookForm) current() string { return hookFields[f.Focus] }
-
-func (f *webhookForm) move(delta int) {
-	first := pick(f.Editing != nil, 2, 0)
-	n := len(hookFields) - first
-	f.Focus = first + (f.Focus-first+delta+n)%n
-	focusInputs(f.Inputs, f.current())
-}
 
 // matches are the sessions the picker's filter leaves, in order.
 func (f *webhookForm) matches() []daemon.Session {
@@ -605,14 +559,10 @@ func (f *webhookForm) chosenIndex(matches []daemon.Session) int {
 
 // update handles one key or paste; submit reports that the form should be saved.
 func (f *webhookForm) update(msg tea.Msg) (submit bool, cmd tea.Cmd) {
+	if submit, handled := f.key(msg, hookFields, pick(f.Editing != nil, 2, 0)); handled {
+		return submit, nil
+	}
 	if key, ok := msg.(tea.KeyPressMsg); ok {
-		if submit, delta, handled := formKey(key.String(), f.Focus, len(hookFields)-1); handled {
-			if submit {
-				return true, nil
-			}
-			f.move(delta)
-			return false, nil
-		}
 		if f.current() == hookFieldSession && (key.String() == "left" || key.String() == "right") {
 			if matches := f.matches(); len(matches) > 0 {
 				i := f.chosenIndex(matches)
@@ -641,8 +591,7 @@ func (f *webhookForm) update(msg tea.Msg) (submit bool, cmd tea.Cmd) {
 // steps turns the form into /webhooks calls, after checking what the daemon
 // would otherwise reject one step in.
 func (f *webhookForm) steps() ([][2]string, string, error) {
-	value := func(key string) string { return strings.TrimSpace(f.Inputs[key].Value()) }
-	name, secret, header, prefix := value(hookFieldName), value(hookFieldSecret), value(hookFieldHeader), value(hookFieldPrefix)
+	name, secret, header, prefix := f.value(hookFieldName), f.value(hookFieldSecret), f.value(hookFieldHeader), f.value(hookFieldPrefix)
 	switch {
 	case f.Editing == nil && f.Chosen == "":
 		return nil, "", errors.New("session: choose the session this hook wakes")
@@ -680,11 +629,10 @@ func (f *webhookForm) view(width int) []string {
 	if f.Editing != nil {
 		title = "edit " + f.Editing.Name
 	}
-	fitInputs(f.Inputs, width-14)
+	f.fit(width - 14)
 	rows := []string{DefaultStyles.Bold.Render(title)}
 	indent := strings.Repeat(" ", 13)
 	for i, key := range hookFields {
-		mark := pick(i == f.Focus, promptLead(), "  ")
 		value := f.Inputs[key].View()
 		switch {
 		case key == hookFieldSession && f.Editing != nil:
@@ -694,31 +642,26 @@ func (f *webhookForm) view(width int) []string {
 		case key == hookFieldName && f.Editing != nil:
 			value = DefaultStyles.Faint.Render(f.Editing.Name)
 		}
-		rows = append(rows, ansi.Truncate(mark+padRight(key, 11)+value, width, "…"))
+		rows = append(rows, formRow(i == f.Focus, key, 11, value, width))
 		if key == hookFieldSession && i == f.Focus {
 			rows = append(rows, f.pickerRows(indent, width)...)
 		}
 	}
+	var own []hint
 	var note string
-	keys := formHints()
 	switch f.current() {
 	case hookFieldSession:
-		note = "which session deliveries wake"
-		keys = append([]hint{{"←→", "choose"}}, keys...)
+		note, own = "which session deliveries wake", []hint{{"←→", "choose"}}
 	case hookFieldName:
 		note = "letters, digits, _ or -"
 	case hookFieldSecret:
-		note = "16+ bytes from the sender, or blank to generate one"
-		if f.Editing != nil {
-			note = "enter a new secret to replace the stored one"
-		}
+		note = pick(f.Editing != nil, "enter a new secret to replace the stored one", "16+ bytes from the sender, or blank to generate one")
 	case hookFieldHeader:
 		note = "the header the sender signs with · GitHub uses x-hub-signature-256"
 	case hookFieldPrefix:
 		note = "text before the hex digest · blank for none"
 	}
-	line := DefaultStyles.Faint.Render(note) + DefaultStyles.Decor.Render(" · ") + keyHints(keys...)
-	return append(rows, "", ansi.Truncate(line, width, "…"))
+	return append(rows, "", formFooter(note, width, own...))
 }
 
 // pickerRows lists the matching sessions around the chosen one.

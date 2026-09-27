@@ -88,31 +88,21 @@ type contextPageLoadedMsg struct {
 }
 
 type ContextInspectorModel struct {
-	Conn       *daemon.Connection
-	SessionID  string
-	Snapshot   *ContextSnapshot
-	Cursor     int
-	Detail     *ContextDetail
-	Loading    bool
-	Error      string
-	Generation int
-	Width      int
-	Height     int
-	Styles     Styles
+	Conn      *daemon.Connection
+	SessionID string
+	Snapshot  *ContextSnapshot
+	Detail    *ContextDetail
+	Styles    Styles
+	page
 }
 
 func NewContextInspectorModel(conn *daemon.Connection, sessionID string) ContextInspectorModel {
 	return ContextInspectorModel{
 		Conn:      conn,
 		SessionID: sessionID,
-		Loading:   true,
+		page:      page{Loading: true},
 		Styles:    DefaultStyles,
 	}
-}
-
-func (m *ContextInspectorModel) SetSize(width, height int) {
-	m.Width = width
-	m.Height = height
 }
 
 func (m ContextInspectorModel) Init() tea.Cmd {
@@ -211,12 +201,7 @@ func (m ContextInspectorModel) loadPageCmd(sectionID string, page int, gen int) 
 func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case contextSnapshotLoadedMsg:
-		if msg.Gen != m.Generation {
-			return m, nil
-		}
-		m.Loading = false
-		if msg.Err != nil {
-			m.Error = msg.Err.Error()
+		if !m.settle(msg.Gen, msg.Err, &m.Loading) {
 			return m, nil
 		}
 		m.Snapshot, m.Error = msg.Snapshot, ""

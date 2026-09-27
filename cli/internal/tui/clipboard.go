@@ -64,10 +64,6 @@ func CopyText(text string) tea.Cmd {
 	})
 }
 
-func ReadClipboardText() (string, error) {
-	return clipboard.ReadAll()
-}
-
 func isRemote() bool {
 	return os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_CLIENT") != "" || os.Getenv("MOSH_CONNECTION") != ""
 }
