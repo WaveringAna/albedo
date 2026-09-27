@@ -234,6 +234,9 @@ class SupervisionTest(unittest.TestCase):
             f"import sys; sys.path.insert(0, {os.path.dirname(helper)!r})\n"
             "import ctypes, runpy, signal, albedo_proc\n"
             "signal.signal(signal.SIGALRM, signal.SIG_IGN)\n"
+            # the helper's alarm, fired sooner: it still has to arm it and
+            # restore the default action, or the sleep outlasts the timeout
+            "signal.alarm = lambda seconds: signal.setitimer(signal.ITIMER_REAL, 0.2)\n"
             "async def stuck(*args, **kwargs):\n    ctypes.PyDLL(None).sleep(30)\n"
             "albedo_proc.terminate = stuck\n"
             "sys.argv = ['helper', '{\"targets\": []}']\n"

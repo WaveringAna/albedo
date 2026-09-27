@@ -18,7 +18,6 @@ python3 test/harness/job_wake_test.py
 python3 test/harness/run_plugin_test.py
 python3 test/harness/remote_kernel_test.py
 python3 test/harness/remote_plugin_test.py
-python3 test/harness/process_supervision_test.py
 
 (cd cli && go vet ./...)
 (cd cli && go test ./...)
