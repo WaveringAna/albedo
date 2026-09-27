@@ -67,9 +67,8 @@ class McpTests(unittest.TestCase):
         self.assertEqual(enabled["plugins"], ["managed"])
         requests = self.turn("use the mcp server")
         self.assertEqual(len(requests), 2)
-        context = "\n".join(item["content"] for item in requests[0]["input"]
-                            if isinstance(item.get("content"), str)
-                            and item["content"].startswith("<extension-context"))
+        context = requests[0]["instructions"]
+        self.assertNotIn("<extension-context", json.dumps(requests[0]["input"]))
         self.assertIn('name="mcp"', context)
         self.assertIn("echo", context)
         advertised = [tool["name"] for tool in requests[0]["tools"]

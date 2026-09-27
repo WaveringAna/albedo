@@ -42,7 +42,7 @@ The `lcm` section in `$ALBEDO_HOME/extensions.json` accepts the same setting nam
 
 `rolling` projects history as four parts, in order:
 
-1. the system prompt and enabled extension context, which are never compacted
+1. the system prompt (including enabled extension context), which is never compacted
 2. one incremental summary of the older conversation it has already evicted
 3. a short recap built from recent user messages, quoted verbatim and bounded
 4. the newest conversation tail, unchanged

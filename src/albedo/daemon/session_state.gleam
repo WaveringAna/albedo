@@ -30,6 +30,9 @@ pub type State(message) {
     notice: Option(String),
     context: context_snapshot.Snapshot,
     pin: loop.Pin,
+    /// Inputs evicted by the last prepared projection; the next live reload
+    /// starts its pin at this baseline, even if its first turn compacts.
+    prepared_head: Option(Int),
     last_touch: Int,
     /// While the kernel boots: boot attempts so far, and the work waiting for
     /// it, re-sent to the actor once the kernel is ready.

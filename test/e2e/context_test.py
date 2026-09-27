@@ -81,9 +81,9 @@ class ContextTest(unittest.TestCase):
         self.assertIn("fixture-cloud", compaction["source"])
         self.assertIn("models.dev catalog", compaction["source"])
         labels = [section["label"] for section in snapshot["sections"]]
-        self.assertEqual(labels[0], "system instructions")
-        self.assertEqual(labels[-2:], ["prepared conversation", "tool schemas"])
-        self.assertTrue(all(label.startswith("extension context · ") for label in labels[1:-2]))
+        self.assertEqual(labels, ["system instructions", "prepared conversation", "tool schemas"])
+        self.assertIn("<extension-context", sent["instructions"])
+        self.assertNotIn("<extension-context", json.dumps(sent["input"]))
         self.assertTrue(all(section["preview"] and len(section["preview"]) <= 180
                             for section in snapshot["sections"]))
         self.assertNotIn(SECRET, json.dumps(snapshot))

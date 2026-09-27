@@ -18,6 +18,11 @@ pub fn change(
   case turn.running(state.activity) {
     Some(_) -> #(state, Error("session must be idle to reload extensions"))
     None -> {
+      let previous = runtime.peek_prompt(state.host, state.info.id)
+      let previous_tools = case state.kernel {
+        Some(kernel) -> Some(runtime.tools(kernel))
+        None -> None
+      }
       let saved = case state.kernel {
         Some(kernel) ->
           session_namespace.save_state_within(
@@ -27,11 +32,6 @@ pub fn change(
             session_namespace.close_state_timeout,
           )
         None -> Error("no active python namespace")
-      }
-      let previous = runtime.peek_prompt(state.host, state.info.id)
-      let previous_tools = case state.kernel {
-        Some(kernel) -> Some(runtime.tools(kernel))
-        None -> None
       }
       case
         runtime.change_extension(
@@ -67,23 +67,22 @@ pub fn change(
               kernel: Some(kernel),
               context: session_state.unprepared(),
             )
-          // A prompt-only change can retain the cached prefix until compaction.
           let state = case previous_tools == Some(runtime.tools(kernel)) {
             True ->
               case session_prompt.pin_changed_prompt(state, previous) {
-                Ok(#(state, note)) ->
+                Ok(#(state, detail)) ->
                   session_state.emit(
                     state,
                     view.text(
                       "note",
-                      "extensions reloaded; " <> namespace <> note,
+                      "extensions reloaded; " <> namespace <> detail,
                     ),
                   )
                 Error(error) ->
                   session_prompt.reset_prompt_cache(state, namespace)
                   |> session_state.emit(view.text(
                     "error",
-                    "extensions reloaded but the context update could not be saved: "
+                    "extensions reloaded but the capability notice could not be saved: "
                       <> error,
                   ))
               }
@@ -111,16 +110,15 @@ pub fn refresh(
               session_state.State(
                 ..state,
                 kernel: Some(kernel),
-                latest_usage: None,
                 context: session_state.unprepared(),
               )
             None -> state
           }
           case session_prompt.pin_changed_prompt(state, previous) {
-            Ok(#(state, note)) -> #(
+            Ok(#(state, detail)) -> #(
               session_state.emit(
                 state,
-                view.text("note", "session data reloaded from disk" <> note),
+                view.text("note", "session data reloaded from disk" <> detail),
               ),
               Ok(
                 json.object([
@@ -129,16 +127,19 @@ pub fn refresh(
                     "message",
                     json.string(
                       "Extension context, skills catalog, and session commands rescanned from disk."
-                      <> note,
+                      <> detail,
                     ),
                   ),
                 ]),
               ),
             )
             Error(error) -> #(
-              state,
+              session_prompt.reset_prompt_cache(
+                state,
+                "session data reloaded from disk",
+              ),
               Error(
-                "session data reloaded, but its context update could not be saved: "
+                "session data reloaded, but its capability notice could not be saved: "
                 <> error,
               ),
             )

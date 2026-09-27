@@ -268,9 +268,8 @@ pub fn refresh_session(
   actor.call(runtime.subject, 30_000, Refresh(id, _))
 }
 
-/// The prompt prefix this session's composition contributes, as its system
-/// instructions and leading context inputs, if the session already has one.
-/// Reads no files and never opens a kernel.
+/// The current composition's instructions and context blocks, without booting
+/// a kernel. A live reload pins this prefix until history is compacted.
 pub fn peek_prompt(
   runtime: Runtime,
   id: String,
@@ -278,15 +277,9 @@ pub fn peek_prompt(
   actor.call(runtime.subject, 10_000, PeekPrompt(id, _))
 }
 
-/// The extension context that leads this session's model input.
+/// Extension context blocks included in this session's system instructions.
 pub fn context(session: Session) -> List(types.Input) {
   session.context
-}
-
-/// The same session with a different leading context, for a request that
-/// must reuse the context its prompt cache was built with.
-pub fn with_context(session: Session, context: List(types.Input)) -> Session {
-  Session(..session, context: context)
 }
 
 pub fn extension_summaries(
@@ -406,8 +399,8 @@ fn build_cached(
   Ok(Cached(cwd, composition, context_inputs(composition)))
 }
 
-/// Each context block, plus the aggregate command catalog, wrapped as one
-/// marked user input.
+/// Each context block and the aggregate command catalog, retained as
+/// separate blocks for system-prompt assembly.
 fn context_inputs(composition: extension.Composition) -> List(types.Input) {
   extension.context(composition)
   |> list.append([
@@ -977,8 +970,8 @@ pub fn host_request(
   ))
 }
 
-/// Compaction sees only durable conversation. Ephemeral extension context is then
-/// prefixed to the request so neither compaction nor transcript persistence can erase it.
+/// Compaction sees only durable conversation. Extension context belongs to the
+/// system instructions, not the request history or durable transcript.
 /// Compatibility preparation for embedders whose strategies do not summarize.
 pub fn prepare_history(
   runtime: Runtime,
@@ -1220,10 +1213,9 @@ pub fn prepare_view_scoped(
   force: Bool,
 ) -> Result(compaction.Prepared, String) {
   use _ <- result.try(owned_by(runtime, session))
-  let pinned_tokens =
-    compaction.estimate_pinned(instructions, session.context, tools(session))
+  let pinned_tokens = compaction.estimate_pinned(instructions, tools(session))
   let enabled = extension.extensions(session.composition)
-  let prepared = case extension.compaction(enabled) {
+  case extension.compaction(enabled) {
     None if force -> Error("no compaction strategy is enabled")
     None -> Ok(compaction.Prepared(history, None))
     Some(strategy) ->
@@ -1253,13 +1245,6 @@ pub fn prepare_view_scoped(
         "compaction " <> strategy.name <> ": " <> error
       })
   }
-  prepared
-  |> result.map(fn(view) {
-    compaction.Prepared(
-      list.append(session.context, view.inputs),
-      view.observation,
-    )
-  })
 }
 
 @external(erlang, "albedo_inspect", "label")

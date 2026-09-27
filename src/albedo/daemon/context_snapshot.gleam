@@ -18,7 +18,6 @@ const preview_characters = 180
 
 pub type SectionKind {
   Instructions
-  ExtensionContext
   History
   Tools
   Other
@@ -216,7 +215,7 @@ pub fn from_request(
   request: types.Request,
   observation: Option(context_size.Observation),
 ) -> Snapshot {
-  let #(extension_inputs, history) = split_context(request.input, [])
+  let history = request.input
   let sections = []
   let sections = case request.tools {
     [] -> sections
@@ -254,7 +253,6 @@ pub fn from_request(
       ..sections
     ]
   }
-  let sections = list.append(context_sections(extension_inputs, 0), sections)
   let sections = case request.instructions {
     None -> sections
     Some(instructions) -> [
@@ -280,52 +278,6 @@ pub fn from_request(
     observation_compaction(observation),
     sections,
   )
-}
-
-fn context_sections(inputs: List(types.Input), index: Int) -> List(Section) {
-  case inputs {
-    [] -> []
-    [input, ..rest] -> {
-      let name = case input {
-        types.User(text) -> context_name(text)
-        _ -> "enabled extension"
-      }
-      [
-        section(
-          "extension-" <> int.to_string(index),
-          "extension context · " <> name,
-          ExtensionContext,
-          name <> " context plugin loaded when the runtime session opened",
-          1,
-          context_size.input_bytes(input),
-          render_input(input),
-          input_omission([input]),
-        ),
-        ..context_sections(rest, index + 1)
-      ]
-    }
-  }
-}
-
-fn context_name(content: String) -> String {
-  case string.split(content, "\"") {
-    [_, name, ..] if name != "" -> name
-    _ -> "enabled extension"
-  }
-}
-
-fn split_context(
-  remaining: List(types.Input),
-  context: List(types.Input),
-) -> #(List(types.Input), List(types.Input)) {
-  case remaining {
-    [types.User(text) as input, ..rest] ->
-      case string.starts_with(text, "<extension-context ") {
-        True -> split_context(rest, [input, ..context])
-        False -> #(list.reverse(context), remaining)
-      }
-    history -> #(list.reverse(context), history)
-  }
 }
 
 fn render_inputs(inputs: List(types.Input)) -> String {
@@ -577,7 +529,6 @@ fn page_count(content: String) -> Int {
 fn kind_name(kind: SectionKind) -> String {
   case kind {
     Instructions -> "instructions"
-    ExtensionContext -> "extension_context"
     History -> "history"
     Tools -> "tools"
     Other -> "other"

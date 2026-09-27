@@ -205,15 +205,8 @@ pub fn estimate_tools(tools: List(types.Tool)) -> Int {
   })
 }
 
-pub fn estimate_pinned(
-  instructions: String,
-  context: List(types.Input),
-  tools: List(types.Tool),
-) -> Int {
-  16
-  + estimate_text(instructions)
-  + estimate_inputs(context)
-  + estimate_tools(tools)
+pub fn estimate_pinned(instructions: String, tools: List(types.Tool)) -> Int {
+  16 + estimate_text(instructions) + estimate_tools(tools)
 }
 
 /// Where a saved compaction splits history: after `users` user messages. Each

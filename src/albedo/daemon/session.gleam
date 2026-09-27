@@ -209,9 +209,10 @@ pub fn start(
         None,
         session_state.unprepared(),
         case pinned {
-          Some(prompt) -> loop.Pinned(prompt, None)
+          Some(#(prompt, head)) -> loop.Pinned(prompt, Some(head))
           None -> loop.Unpinned
         },
+        None,
         now_ms(),
         None,
       )
@@ -733,7 +734,15 @@ fn handle(state: State, message: Message) {
       case turn.live(state.activity, id), head, state.pin {
         True, Some(head), loop.Pinned(prompt, _) ->
           actor.continue(
-            session_state.State(..state, pin: loop.Pinned(prompt, Some(head))),
+            session_state.State(
+              ..state,
+              pin: loop.Pinned(prompt, Some(head)),
+              prepared_head: Some(head),
+            ),
+          )
+        True, Some(head), loop.Unpinned ->
+          actor.continue(
+            session_state.State(..state, prepared_head: Some(head)),
           )
         True, None, loop.Pinned(..) ->
           case
@@ -743,7 +752,13 @@ fn handle(state: State, message: Message) {
             )
           {
             Ok(_) ->
-              actor.continue(session_state.State(..state, pin: loop.Unpinned))
+              actor.continue(
+                session_state.State(
+                  ..state,
+                  pin: loop.Unpinned,
+                  prepared_head: None,
+                ),
+              )
             Error(error) ->
               actor.continue(session_state.emit(
                 state,

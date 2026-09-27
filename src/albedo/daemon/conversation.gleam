@@ -142,6 +142,7 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
         [
           #("pinned_instructions", "TEXT"),
           #("pinned_context", "BLOB"),
+          #("pinned_head", "INTEGER"),
           #("name", "TEXT"),
         ],
         fn(column) {
@@ -858,18 +859,18 @@ pub fn load(
 }
 
 /// A prompt prefix a live session keeps while it is cached: the system
-/// instructions and the extension context that leads the input.
+/// instructions and extension context blocks included in the system prompt.
 pub type PinnedPrompt {
   PinnedPrompt(instructions: String, context: List(types.Input))
 }
 
-/// Records a capability change for a live session: its cached prompt stays
-/// pinned (an existing pin is kept) and the change is appended as a durable
-/// user-role update, atomically. Returns the update's daemon time.
+/// Atomically retain the old prompt prefix and append a short capability
+/// notice to history. An existing pin wins across subsequent reloads.
 pub fn append_capability_update(
   store: store.Store,
   id: String,
   pinned: PinnedPrompt,
+  head: Int,
   update: String,
 ) -> Result(Int, String) {
   let timestamp = usage.now()
@@ -879,16 +880,16 @@ pub fn append_capability_update(
       |> result.map_error(fn(e) { e.message }),
     )
     let written = {
-      // SET expressions all read the row as it was, so both columns switch
-      // together and an existing pin wins.
       use _ <- result.try(
         sqlight.query(
           "UPDATE sessions SET "
             <> "pinned_context=CASE WHEN pinned_instructions IS NULL THEN ? ELSE pinned_context END, "
+            <> "pinned_head=CASE WHEN pinned_instructions IS NULL THEN ? ELSE pinned_head END, "
             <> "pinned_instructions=COALESCE(pinned_instructions, ?) WHERE id=?",
           db,
           [
             sqlight.blob(pack_list(pinned.context)),
+            sqlight.int(head),
             sqlight.text(pinned.instructions),
             sqlight.text(id),
           ],
@@ -928,26 +929,29 @@ pub fn append_capability_update(
 pub fn prompt_pin(
   store: store.Store,
   id: String,
-) -> Result(Option(PinnedPrompt), String) {
+) -> Result(Option(#(PinnedPrompt, Int)), String) {
   store.query(store, fn(db) {
     use rows <- result.try(
       sqlight.query(
-        "SELECT pinned_instructions, pinned_context FROM sessions WHERE id=?",
+        "SELECT pinned_instructions, pinned_context, COALESCE(pinned_head, 0) FROM sessions WHERE id=?",
         db,
         [sqlight.text(id)],
         {
           use instructions <- decode.field(0, decode.optional(decode.string))
           use context <- decode.field(1, decode.optional(decode.bit_array))
-          decode.success(#(instructions, context))
+          use head <- decode.field(2, decode.int)
+          decode.success(#(instructions, context, head))
         },
       )
       |> result.map_error(fn(e) { e.message }),
     )
     case rows {
-      [#(Some(instructions), Some(context))] ->
+      [#(Some(instructions), Some(context), head)] ->
         Ok(
           unpack_list(context, images.reader(store))
-          |> result.map(PinnedPrompt(instructions, _))
+          |> result.map(fn(context) {
+            #(PinnedPrompt(instructions, context), head)
+          })
           |> option.from_result,
         )
       [_] -> Ok(None)
@@ -959,7 +963,7 @@ pub fn prompt_pin(
 pub fn clear_prompt_pin(store: store.Store, id: String) -> Result(Nil, String) {
   store.query(store, fn(db) {
     sqlight.query(
-      "UPDATE sessions SET pinned_instructions=NULL, pinned_context=NULL WHERE id=?",
+      "UPDATE sessions SET pinned_instructions=NULL, pinned_context=NULL, pinned_head=NULL WHERE id=?",
       db,
       [sqlight.text(id)],
       decode.dynamic,

@@ -111,12 +111,11 @@ class ExtensionTests(unittest.TestCase):
         names = {item["name"] for item in installed if item["enabled"]}
         self.assertTrue({"python", "run", "work", "files", "skills"} <= names)
         request, = self.turn("first turn")
-        context = json.dumps(request["input"])
+        context = request["instructions"]
         self.assertIn("catalog-only fixture description", context)
         self.assertIn(str(self.skill.resolve()), context)
         self.assertNotIn("BODY_MUST_NOT_AUTOLOAD", json.dumps(request))
-        self.assertNotIn("catalog-only fixture description", request.get("instructions", ""))
-        self.assertLess(context.index("catalog-only fixture description"), context.index("first turn"))
+        self.assertNotIn("catalog-only fixture description", json.dumps(request["input"]))
         self.assertIn("returning {content, next_offset, size, truncated}", context)
         skills = next(item for item in self.get(self.route) if item["name"] == "skills")
         self.assertEqual(skills["requires"], ["python", "commands"])
@@ -229,7 +228,8 @@ class ExtensionTests(unittest.TestCase):
         history = self.get(f"/sessions/{self.sid}/context/history/0")["content"]
         self.assertIn("older conversation summary", history)
 
-    def test_reload_updates_catalog_and_live_kernel_without_changing_cached_prefix(self):
+    @exclusive
+    def test_reload_pins_system_prompt_until_compaction(self):
         self.turn("first turn")
         late = self.app.workspace / ".agents/skills/late/SKILL.md"
         late.parent.mkdir(parents=True)
@@ -242,28 +242,63 @@ class ExtensionTests(unittest.TestCase):
         self.assertEqual(reloaded["result"]["reloaded"], "session")
         self.assertIn("/late", {c["name"] for c in self.get(f"/sessions/{self.sid}/commands")})
         request, = self.turn("after session reload")
-        self.assertIn("added after the session opened", json.dumps(request["input"]))
         self.assertEqual(request["instructions"], cached["instructions"])
-        self.assertEqual(request["input"][0], cached["input"][0])
-        self.assertNotIn("added after the session opened", json.dumps(request["input"][0]))
+        self.assertNotIn("added after the session opened", json.dumps(request["input"]))
         updates = [item["content"] for item in request["input"] if item.get("role") == "user"
                    and str(item.get("content", "")).startswith("<system-note")
-                   and "[albedo] This session's extensions changed" in item["content"]]
+                   and "capabilities changed" in item["content"]]
         self.assertEqual(len(updates), 1)
-        self.assertIn("added after the session opened", updates[0])
-        self.assertTrue(updates[0].endswith("</system-note>"))
+        self.assertIn("commands.catalog()", updates[0])
+        self.assertNotIn("/late", updates[0])
         requests = self.turn("hot probe after reload", expected=2)
         self.assertIn("AFTER_RELOAD_OK", self.output(requests[-1]))
-        self.assertEqual(requests[-1]["input"][0], cached["input"][0])
-        self.turn("another turn before compaction")
+        newer = self.app.workspace / ".agents/skills/newer/SKILL.md"
+        newer.parent.mkdir(parents=True)
+        newer.write_text("---\nname: newer\ndescription: another live skill\n---\nNEWER_BODY\n")
+        self.command("/reload", args={"target": "session"})
+        request, = self.turn("after second reload")
+        self.assertEqual(request["instructions"], cached["instructions"])
+        self.assertNotIn("another live skill", json.dumps(request["input"]))
+        self.assertEqual(sum("capabilities changed" in str(item.get("content", ""))
+                             for item in request["input"] if item.get("role") == "user"), 2)
+        self.restart()
+        request, = self.turn("reload pin survives restart")
+        self.assertEqual(request["instructions"], cached["instructions"])
         self.turn("one more turn before compaction")
         self.command("/compact")
         self.compacted()
         self.app.idle(self.sid)
+        first = self.get(f"/sessions/{self.sid}/context/instructions/0")
+        snapshot = "".join(self.get(f"/sessions/{self.sid}/context/instructions/{page}")["content"]
+                           for page in range(first["pages"]))
+        self.assertIn("added after the session opened", snapshot)
+        self.assertIn("another live skill", snapshot)
         request, = self.turn("after compaction following reload")
-        self.assertIn("added after the session opened", json.dumps(request["input"][0]))
+        self.assertIn("added after the session opened", request["instructions"])
         request, = self.turn("pin stays released")
-        self.assertIn("added after the session opened", json.dumps(request["input"][0]))
+        self.assertIn("added after the session opened", request["instructions"])
+
+    @exclusive
+    def test_auto_compaction_releases_pin_on_first_turn_after_restart(self):
+        for index in range(4):
+            self.turn(f"older turn {index}: " + "history " * 8000)
+        self.skill.write_text(SKILL.replace(
+            "catalog-only fixture description", "reloaded skill description"))
+        self.command("/reload", args={"target": "session"})
+        settings_path = self.app.home / "extensions.json"
+        settings = json.loads(settings_path.read_text())
+        settings["rolling"] = {"contextWindowTokens": 50000}
+        settings_path.write_text(json.dumps(settings))
+        self.restart()
+        before = len(self.provider.requests)
+        self.app.prompt(self.sid, "first turn after restart").close()
+        self.app.idle(self.sid)
+        requests = [entry["request"] for entry in self.provider.requests[before:]]
+        self.assertGreater(len(requests), 1, "expected automatic summarization")
+        self.assertIn("reloaded skill description", requests[-1]["instructions"])
+        self.assertNotIn("catalog-only fixture description",
+                         requests[-1]["instructions"])
+        self.assertIn("older conversation summary", json.dumps(requests[-1]["input"]))
 
     @exclusive
     def test_live_toggles_guard_dependencies_busy_turns_and_persist(self):
@@ -277,13 +312,9 @@ class ExtensionTests(unittest.TestCase):
         self.rejected(f"/sessions/{self.sid}/commands", {"name": "/demo", "arguments": "must not run"})
         pid = self.app.connection["pid"]
         request, = self.turn("extension disabled")
-        update = next(item["content"] for item in reversed(request["input"])
-                      if item.get("role") == "user" and str(item.get("content", "")).startswith("<system-note")
-                      and "[albedo] This session's extensions changed" in item["content"])
-        self.assertIn("Removed context:\n- skills", update)
-        self.assertNotIn("<available_skills>", update)
-        self.assertNotIn("Current extension instructions", update)
-        self.assertLess(len(update), 4000)
+        self.assertIn("<available_skills>", request["instructions"])
+        self.assertIn("capabilities changed", json.dumps(request["input"]))
+        self.assertNotIn("<available_skills>", json.dumps(request["input"]))
         self.assertNotIn("skills", {module for item in disabled if item["enabled"]
                                     for module in item["python_modules"]})
         self.assertFalse({"skills_read", "skills_list"} & {tool["name"] for tool in request["tools"]})
@@ -306,10 +337,8 @@ class ExtensionTests(unittest.TestCase):
         self.skill.write_text(SKILL.replace("catalog-only fixture description", "refreshed catalog description"))
         self.post(self.route, {"name": "skills", "enabled": True})
         request, = self.turn("extension reloaded")
-        self.assertIn("refreshed catalog description", json.dumps(request))
-        context = request["input"][0]["content"]
-        self.assertNotIn("catalog-only fixture description", context)
-        self.assertNotIn("BODY_MUST_NOT_AUTOLOAD", context)
+        self.assertIn("refreshed catalog description", request["instructions"])
+        self.assertNotIn("BODY_MUST_NOT_AUTOLOAD", request["instructions"])
 
     @exclusive
     def test_compaction_strategies_preserve_lcm_folds_across_switch_and_restart(self):

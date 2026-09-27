@@ -60,7 +60,7 @@ pub fn run(
   let pinned_instructions = request_instructions(state)
   use prepared <- result.try(runtime.prepare_view_scoped(
     state.host,
-    request_kernel(state),
+    state.kernel,
     state.model,
     request_source(state.upstream, state.model),
     state.upstream.endpoint,
@@ -70,6 +70,13 @@ pub fn run(
     False,
   ))
   let #(state, history) = settle_pin(state, original, prepared.inputs)
+  case state.pin {
+    Unpinned ->
+      state.report_pin(Some(
+        list.length(original) - common_suffix(original, history),
+      ))
+    Pinned(..) -> Nil
+  }
   let current_instructions = request_instructions(state)
   let request =
     types.Request(
@@ -196,7 +203,7 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
   let original = list.reverse(inputs)
   use prepared <- result.try(runtime.prepare_view_scoped(
     state.host,
-    request_kernel(state),
+    state.kernel,
     state.model,
     request_source(state.upstream, state.model),
     state.upstream.endpoint,
@@ -206,17 +213,6 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
     True,
   ))
   let history = prepared.inputs
-  state.record_context(
-    types.Request(
-      state.model,
-      Some(request_instructions),
-      history,
-      runtime.tools(state.kernel),
-      None,
-      types.defaults,
-    ),
-    prepared.observation,
-  )
   // The projection keeps a verbatim tail, so everything before the shared
   // suffix is what the strategy's replacement stands in for.
   let suffix = common_suffix(original, history)
@@ -251,6 +247,21 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
         "history already fits; nothing new to compact",
       ))
   }
+  state.report_pin(Some(evicted))
+  state.record_context(
+    types.Request(
+      state.model,
+      Some(case evicted > 0 {
+        True -> current_instructions(state)
+        False -> request_instructions
+      }),
+      history,
+      runtime.tools(state.kernel),
+      None,
+      types.defaults,
+    ),
+    prepared.observation,
+  )
   Ok(Nil)
 }
 
@@ -321,27 +332,39 @@ pub fn retry_stream(
 }
 
 fn request_instructions(state: Loop) -> String {
-  instructions
-  <> case state.pin {
-    Pinned(prompt, _) -> prompt.instructions
-    Unpinned -> runtime.instructions(state.kernel)
+  case state.pin {
+    Pinned(prompt, _) ->
+      instructions <> prompt.instructions <> context_text(prompt.context)
+    Unpinned -> current_instructions(state)
   }
 }
 
-/// The kernel view a request is prepared with: a pinned session keeps the
-/// leading context its prompt cache was built with.
-fn request_kernel(state: Loop) -> runtime.Session {
-  case state.pin {
-    Pinned(prompt, _) -> runtime.with_context(state.kernel, prompt.context)
-    Unpinned -> state.kernel
+fn current_instructions(state: Loop) -> String {
+  instructions
+  <> runtime.instructions(state.kernel)
+  <> context_text(runtime.context(state.kernel))
+}
+
+fn context_text(context: List(types.Input)) -> String {
+  context
+  |> list.filter_map(fn(input) {
+    case input {
+      types.User(text) -> Ok(text)
+      _ -> Error(Nil)
+    }
+  })
+  |> string.join("\n\n")
+  |> fn(text) {
+    case text {
+      "" -> ""
+      _ -> "\n\n" <> text
+    }
   }
 }
 
 /// Keeps the pin while compaction has replaced no further inputs. More
 /// replaced inputs mean compaction rewrote history, so the cached prompt is
-/// already lost:
-/// the pin is dropped and this request's leading context, prepared from the
-/// pin, is swapped for the session's current one.
+/// already lost: the pin is dropped and the current system prompt is used.
 fn settle_pin(
   state: Loop,
   original: List(types.Input),
@@ -350,11 +373,9 @@ fn settle_pin(
   case state.pin {
     Unpinned -> #(state, history)
     Pinned(prompt, baseline) -> {
-      let pinned = list.length(prompt.context)
-      let projected = list.drop(history, pinned)
       // Strategies may rebuild recap text every request, but the count of
       // original inputs they stand in for only grows when compaction runs.
-      let head = list.length(original) - common_suffix(original, projected)
+      let head = list.length(original) - common_suffix(original, history)
       case baseline {
         None -> {
           state.report_pin(Some(head))
@@ -363,10 +384,7 @@ fn settle_pin(
         Some(previous) if previous == head -> #(state, history)
         Some(_) -> {
           state.report_pin(None)
-          #(
-            Loop(..state, pin: Unpinned),
-            list.append(runtime.context(state.kernel), projected),
-          )
+          #(Loop(..state, pin: Unpinned), history)
         }
       }
     }
