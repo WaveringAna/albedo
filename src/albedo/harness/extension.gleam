@@ -157,6 +157,8 @@ pub type Plugin {
   /// Session commands shared by the CLI menu and the kernel's `commands` object.
   CommandPlugin(commands: List(command.Command))
   CompactionPlugin(strategy: compaction.Strategy)
+  /// Stored folds any compaction strategy can read through its context.
+  FoldPlugin(folds: compaction.Folds)
   /// A catalog answers only for models and providers it actually lists.
   ModelsPlugin(catalog: ModelCatalog)
   /// A provider turns one tagged saved profile into its upstream.
@@ -289,7 +291,8 @@ pub fn enabled(
   session: String,
 ) -> Result(List(Extension), String) {
   use overrides <- result.try(overrides(ledger, session))
-  let selected = select(installed, global_defaults(default_enabled), overrides)
+  let selected =
+    select(installed, resolved_defaults(installed, default_enabled), overrides)
   use _ <- result.try(validate_selection(selected))
   Ok(selected)
 }
@@ -313,28 +316,36 @@ fn overrides(
   })
 }
 
+/// A compaction strategy the session enabled by name displaces one that only
+/// the defaults enable, as with a default strategy installed after the choice.
 fn select(
   installed: List(Extension),
   defaults: List(String),
   overrides: List(#(String, Bool)),
 ) -> List(Extension) {
-  list.filter(installed, fn(extension) {
-    list.key_find(overrides, extension.name)
-    |> result.unwrap(list.contains(defaults, extension.name))
-  })
+  let selected =
+    list.filter(installed, fn(extension) {
+      list.key_find(overrides, extension.name)
+      |> result.unwrap(list.contains(defaults, extension.name))
+    })
+  let chosen = fn(extension: Extension) {
+    list.key_find(overrides, extension.name) == Ok(True)
+  }
+  let compactions = list.filter(selected, is_compaction)
+  case list.length(compactions) > 1 && list.any(compactions, chosen) {
+    True ->
+      list.filter(selected, fn(extension) {
+        !is_compaction(extension) || chosen(extension)
+      })
+    False -> selected
+  }
 }
 
 /// The built-in defaults with the user's global choices from the `enabled`
 /// section of extensions.json applied. An unreadable file keeps the built-in
 /// defaults so a bad edit cannot make every session fail to open.
 pub fn global_defaults(built_in: List(String)) -> List(String) {
-  let chosen =
-    settings.load(
-      "enabled",
-      decode.dict(decode.string, decode.bool),
-      dict.new(),
-    )
-    |> result.unwrap(dict.new())
+  let chosen = global_choices()
   let kept =
     list.filter(built_in, fn(name) { dict.get(chosen, name) != Ok(False) })
   let added =
@@ -346,6 +357,38 @@ pub fn global_defaults(built_in: List(String)) -> List(String) {
       }
     })
   list.append(kept, added)
+}
+
+fn global_choices() -> dict.Dict(String, Bool) {
+  settings.load("enabled", decode.dict(decode.string, decode.bool), dict.new())
+  |> result.unwrap(dict.new())
+}
+
+/// The global defaults with one compaction strategy: a strategy the user
+/// enabled by name displaces a built-in default one, so installing a new
+/// default strategy cannot break an older explicit choice.
+fn resolved_defaults(
+  installed: List(Extension),
+  built_in: List(String),
+) -> List(String) {
+  let defaults = global_defaults(built_in)
+  let chosen = global_choices()
+  let compactions =
+    list.filter(defaults, fn(name) {
+      list.any(installed, fn(extension) {
+        extension.name == name && is_compaction(extension)
+      })
+    })
+  case
+    list.length(compactions) > 1
+    && list.any(compactions, fn(name) { dict.get(chosen, name) == Ok(True) })
+  {
+    True ->
+      list.filter(defaults, fn(name) {
+        !list.contains(compactions, name) || dict.get(chosen, name) == Ok(True)
+      })
+    False -> defaults
+  }
 }
 
 /// How a user changes which extensions a session runs. `SetSession` records a
@@ -379,7 +422,7 @@ pub fn propose(
     |> result.replace_error("unknown extension: " <> name),
   )
   use current <- result.try(overrides(ledger, session))
-  let defaults = global_defaults(default_enabled)
+  let defaults = resolved_defaults(installed, default_enabled)
   use _ <- result.try(case change {
     SetSession(name, False) ->
       case list.find(installed, fn(item) { item.name == name }) {
@@ -816,7 +859,7 @@ pub fn summaries(
     session,
   ))
   use chosen <- result.try(overrides(ledger, session))
-  let defaults = global_defaults(default_enabled)
+  let defaults = resolved_defaults(installed, default_enabled)
   let names = list.map(selected, fn(extension) { extension.name })
   let managed = case composition {
     Some(composition) -> composition.managed
@@ -855,6 +898,7 @@ pub fn summaries(
             ManagedPlugin(_) -> "managed"
             CommandPlugin(_) -> "commands"
             CompactionPlugin(_) -> "compaction"
+            FoldPlugin(_) -> "folds"
             ModelsPlugin(_) -> "models"
             ModelProviderPlugin(_) -> "model_provider"
             LoginPlugin(_) -> "login"
@@ -970,6 +1014,19 @@ pub fn compaction(installed: List(Extension)) -> Option(compaction.Strategy) {
   })
   |> list.first
   |> option.from_result
+}
+
+/// Every enabled fold provider, in registry order.
+pub fn folds(installed: List(Extension)) -> List(compaction.Folds) {
+  installed
+  |> list.flat_map(fn(extension) {
+    list.filter_map(extension.plugins, fn(plugin) {
+      case plugin {
+        FoldPlugin(value) -> Ok(value)
+        _ -> Error(Nil)
+      }
+    })
+  })
 }
 
 /// The first enabled catalog that knows this model answers.

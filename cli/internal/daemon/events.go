@@ -147,6 +147,7 @@ type StreamEvent struct {
 	Image       *ImageMetadata `json:"image,omitempty"`
 	Evicted     int            `json:"evicted,omitempty"`
 	Summary     string         `json:"summary,omitempty"`
+	Strategy    string         `json:"strategy,omitempty"`
 	Progress    *ToolProgress  `json:"progress,omitempty"`
 	ToolName    string         `json:"name,omitempty"`
 	ToolArgs    map[string]any `json:"args,omitempty"`

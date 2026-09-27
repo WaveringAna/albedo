@@ -8,8 +8,8 @@
 import albedo/daemon/store
 import albedo/harness/compaction
 import albedo/harness/extension
-import albedo/harness/extensions/lcm/extension as lcm
 import albedo/harness/extensions/rolling/extension as rolling
+import albedo/harness/extensions/snapcompact/transcript
 import albedo/harness/settings
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
@@ -31,14 +31,19 @@ const default_tail_percent = 10
 /// The archive's share of the window, at the estimated cost of a full frame.
 const default_archive_percent = 20
 
-/// Frames per request for a stack with a known image policy. Anthropic rejects
-/// a request past 100 images, and gateways fail opaquely once a request
-/// carries a few MB of base64 (a frame is about 50 KB), so 60 leaves room for
-/// the images tool results carry.
-const stack_frames = 60
+/// Frames the archive keeps at most. oh-my-pi sizes this to ~400k tokens of
+/// high-res frames under Anthropic's 100-image request cap.
+const max_frames = 80
 
-/// Frames per request for a stack whose image limits are unmeasured.
-const unknown_stack_frames = 20
+/// Inline base64 frame data one request may carry: gateways fail opaquely
+/// once a request carries a few MB. A frame is about 50 KB. The Claude
+/// provider uploads images through the files API, so it is exempt.
+const frame_data_budget = 3_000_000
+
+const frame_data_estimate = 50_000
+
+/// Characters per archive page handed to another strategy as a text fold.
+const fold_page_cells = 6000
 
 const result_chars = 1600
 
@@ -217,10 +222,67 @@ pub fn extension() -> extension.Extension {
   extension.Extension(
     "snapcompact",
     "History archived as rendered bitmap frames the vision stack reads directly",
-    [],
+    ["snapcompact-memory"],
     compaction_plugins(),
     initialise,
   )
+}
+
+/// The saved archive and the transcript tools stay available after a switch
+/// to another strategy, which reads the archive as text folds.
+pub fn memory() -> extension.Extension {
+  extension.Extension(
+    "snapcompact-memory",
+    "Read the snapcompact archive and the transcript rows it covers",
+    [],
+    [
+      extension.ToolPlugin(
+        "Earlier conversation may be archived as rendered frames or serialized text. transcript_grep finds a literal term in this session's full durable transcript; transcript_read reads bounded pages of its original rows.",
+        transcript.definitions(),
+        [],
+        [],
+      ),
+      extension.FoldPlugin(compaction.Folds(
+        "snapcompact",
+        "snapcompact",
+        stored_prior,
+      )),
+    ],
+    initialise,
+  )
+}
+
+/// The archive as folds for another strategy: readable text pages, oldest
+/// first, and the history after the archive's cut.
+pub fn stored_prior(
+  ledger: store.Store,
+  session: String,
+  history: List(types.Input),
+) -> Result(compaction.Prior, String) {
+  use saved <- result.try(load_archive(ledger, session))
+  case
+    option.map(saved, fn(archive) {
+      #(archive, compaction.resume(history, archive.cut))
+    })
+  {
+    Some(#(archive, Ok(#(_, rest)))) -> {
+      let pages = paginate_ffi(archive.text, fold_page_cells)
+      let total = int.to_string(list.length(pages))
+      let folds =
+        list.index_map(pages, fn(page, index) {
+          types.User(
+            "[snapcompact archive page "
+            <> int.to_string(index + 1)
+            <> " of "
+            <> total
+            <> "; earlier conversation, serialized; transcript_grep and transcript_read reach the original rows]\n"
+            <> string.replace(page, newline_cell, "\n"),
+          )
+        })
+      Ok(compaction.Prior(folds, rest))
+    }
+    _ -> compaction.no_prior(history)
+  }
 }
 
 fn compaction_plugins() -> List(extension.Plugin) {
@@ -278,7 +340,7 @@ fn prepare_view(
   context: compaction.Context,
   history: List(types.Input),
 ) -> Result(compaction.Prepared, String) {
-  case context.images {
+  case compaction.reads_images(context) {
     Some(False) -> text_view(context, history)
     _ -> visual_view(config, context, history)
   }
@@ -311,11 +373,9 @@ fn visual_view(
   context: compaction.Context,
   history: List(types.Input),
 ) -> Result(compaction.Prepared, String) {
-  use folded <- result.try(lcm.stored_view(
-    context.store,
-    context.session,
-    history,
-  ))
+  // Other strategies' folds are already summaries: they stay as text ahead
+  // of the archive, so the frame budget only ever drops raw rows.
+  use compaction.Prior(folds, folded) <- result.try(context.prior(history))
   use saved <- result.try(load_archive(context.store, context.session))
   let resumed =
     option.then(saved, fn(archive) {
@@ -332,13 +392,16 @@ fn visual_view(
     Some(compaction.Capacity(tokens, _)) -> Some(tokens)
     None -> config.context_window_tokens
   }
-  let limit = frame_budget(config, shape, context.model, capacity)
+  let limit = frame_budget(config, shape, context.reader, capacity)
   let #(current, status) = case resumed {
-    None -> #(folded, "idle")
+    None -> #(folded, "not_needed")
     Some(#(archive, _, tail)) ->
       view(context.store, shape, limit, archive, tail)
   }
-  let estimated = context.pinned_tokens + compaction.estimate_inputs(current)
+  let estimated =
+    context.pinned_tokens
+    + compaction.estimate_inputs(folds)
+    + compaction.estimate_inputs(current)
   let triggered =
     context.force
     || case capacity {
@@ -349,19 +412,31 @@ fn visual_view(
     Some(#(archive, evicted, tail)) -> #(Some(archive), evicted, tail)
     None -> #(None, [], folded)
   }
-  let tail_budget = case capacity {
-    Some(tokens) -> tokens * config.tail_percent / 100
-    None -> int.max(estimated / 4, 1000)
+  // A forced compaction keeps its share of what the request holds now, as
+  // rolling does, so `/compact` archives even far below a large window.
+  let tail_budget = case capacity, context.force {
+    Some(tokens), True -> int.min(tokens, estimated) * config.tail_percent / 100
+    Some(tokens), False -> tokens * config.tail_percent / 100
+    None, _ -> int.max(estimated / 4, 1000)
+  }
+  let observe = fn(status, prepared) {
+    observation(status, config, capacity, folds, folded, prepared)
   }
   case triggered, compaction.split_tail(rest, tail_budget) {
     // Only a whole unit remains, or nothing is due: keep the saved cut.
     False, _ | True, #([], _) ->
-      Ok(compaction.Prepared(current, observation(status, folded, current)))
+      Ok(compaction.Prepared(
+        list.append(folds, current),
+        observe(status, current),
+      ))
     True, #(newly_evicted, tail) -> {
       let archive = extend(shape, limit, previous, evicted, newly_evicted)
       use _ <- result.try(save_archive(context.store, context.session, archive))
       let #(prepared, status) = view(context.store, shape, limit, archive, tail)
-      Ok(compaction.Prepared(prepared, observation(status, folded, prepared)))
+      Ok(compaction.Prepared(
+        list.append(folds, prepared),
+        observe(status, prepared),
+      ))
     }
   }
 }
@@ -409,15 +484,16 @@ fn view(
   }
 }
 
-/// Frames per request: the stack's image cap, and at most `archivePercent`
-/// of the window at the estimated cost of a full frame.
+/// Frames per request: the provider's image budget, the inline byte budget,
+/// and at most `archivePercent` of the window at the estimated cost of a
+/// full frame. `maxFrames` replaces the provider caps.
 pub fn frame_budget(
   config: Config,
   shape: Shape,
-  model: String,
+  reader: Option(compaction.Reader),
   capacity: Option(Int),
 ) -> Int {
-  let cap = option.unwrap(config.max_frames, stack_budget(model))
+  let cap = option.lazy_unwrap(config.max_frames, fn() { provider_cap(reader) })
   let cost = compaction.image_tokens(shape.width, shape.rows * shape.pitch)
   case capacity {
     Some(tokens) ->
@@ -426,37 +502,58 @@ pub fn frame_budget(
   }
 }
 
-/// Stacks whose image limits are known to allow a full archive. Qwen on
-/// Model Studio bounds images by tokens only.
-fn stack_budget(model: String) -> Int {
-  let name = string.lowercase(model)
-  case
-    list.any(
-      [
-        "claude", "anthropic", "gemini", "google", "gpt", "codex", "o3", "o4",
-        "qwen",
-      ],
-      string.contains(name, _),
-    )
-  {
-    True -> stack_frames
-    False -> unknown_stack_frames
+/// The frames a provider's requests may carry, from oh-my-pi's per-request
+/// image budgets: policy caps under the vendor limits (Anthropic 100, OpenAI
+/// 500, Gemini ~2500). albedo's `claude` and `antigravity` providers take
+/// Anthropic's, since antigravity also serves Claude models.
+pub fn provider_cap(reader: Option(compaction.Reader)) -> Int {
+  let provider = option.map(reader, fn(reader) { reader.provider })
+  let images = case provider {
+    Some("anthropic")
+    | Some("amazon-bedrock")
+    | Some("openrouter")
+    | Some("claude")
+    | Some("antigravity") -> 90
+    Some("openai")
+    | Some("openai-codex")
+    | Some("google")
+    | Some("google-vertex")
+    | Some("google-gemini-cli") -> 200
+    Some("umans") -> 10
+    // oh-my-pi's floor for unmeasured providers; the strictest seen is ~5.
+    _ -> 5
   }
+  let bytes = case provider {
+    Some("claude") -> max_frames
+    _ -> frame_data_budget / frame_data_estimate
+  }
+  images |> int.min(bytes) |> int.min(max_frames)
 }
 
 fn observation(
   status: String,
+  config: Config,
+  capacity: Option(Int),
+  folds: List(types.Input),
   before: List(types.Input),
   after: List(types.Input),
 ) -> Option(compaction.Observation) {
+  let source = case status, folds {
+    "not_needed", [] -> "durable transcript"
+    "not_needed", _ -> "durable transcript through stored folds"
+    _, [] ->
+      "durable transcript through rendered bitmap frames and a verbatim tail"
+    _, _ ->
+      "durable transcript through stored folds, rendered bitmap frames, and a verbatim tail"
+  }
   Some(compaction.Observation(
     "snapcompact",
     status,
-    "durable transcript through rendered bitmap frames and a verbatim tail",
-    "durable transcript through rendered bitmap frames and a verbatim tail",
-    None,
-    None,
-    Some(compaction.estimate_inputs(after)),
+    source,
+    source,
+    Some(100 - config.trigger_percent),
+    capacity,
+    Some(compaction.estimate_inputs(folds) + compaction.estimate_inputs(after)),
     Some("local byte-based estimate; not provider token usage"),
     Some(list.length(before)),
     Some(list.length(after)),
@@ -815,7 +912,7 @@ fn archive_prompt(dropped: Int) -> String {
     _ ->
       " About "
       <> int.to_string(dropped)
-      <> " characters of older history between the first image and the second were dropped to fit the archive budget; re-derive anything you need from them from the workspace."
+      <> " characters of older history between the first image and the second were dropped to fit the archive budget; transcript_grep and transcript_read reach the original rows."
   }
   "The images below archive this session's earlier conversation verbatim, as dense fixed-width text a vision model reads directly. Read them like a transcript: each event starts after a solid black block cell, marked ¶user:, ¶ai:, ¶out, or ¶turn:; `[image h w]` notes where a picture was shown. Text wraps at the frame edge."
   <> omitted

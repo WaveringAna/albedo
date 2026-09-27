@@ -5,7 +5,7 @@ import albedo/harness/extensions/python/kernel
 import albedo/openai_api/types
 import gleam/json
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -33,11 +33,69 @@ pub type Context {
     source: String,
     pinned_tokens: Int,
     capacity: Option(Capacity),
-    /// Whether the model reads image input: `None` when no catalog says.
-    images: Option(Bool),
     force: Bool,
     summarize: fn(SummaryRequest) -> Result(String, String),
+    /// History with folds stored by other strategies applied; see `Prior`.
+    prior: fn(List(types.Input)) -> Result(Prior, String),
+    /// Who reads the request, when a models catalog knows the model.
+    reader: Option(Reader),
   )
+}
+
+/// The provider carrying a request and the input kinds its model accepts, as
+/// a models catalog reported them. An empty `input_modalities` means the
+/// catalog did not say.
+pub type Reader {
+  Reader(provider: String, input_modalities: List(String))
+}
+
+/// Whether the model reads image input: `None` when no catalog says.
+pub fn reads_images(context: Context) -> Option(Bool) {
+  case context.reader {
+    Some(Reader(_, [_, ..] as modalities)) ->
+      Some(list.contains(modalities, "image"))
+    _ -> None
+  }
+}
+
+/// Chronological history split at the point stored folds cover. `folds` are
+/// summaries another strategy already wrote, oldest first; `rest` is the
+/// history they do not cover. Without stored folds, `folds` is empty and
+/// `rest` is the history unchanged.
+pub type Prior {
+  Prior(folds: List(types.Input), rest: List(types.Input))
+}
+
+/// Supplies stored folds for one session's history. The extension that owns
+/// the storage registers it, so strategies need not import each other.
+pub type Folds {
+  Folds(
+    name: String,
+    /// The strategy that writes these folds. It reads its own state directly,
+    /// so the runtime leaves this provider out while that strategy is active.
+    owner: String,
+    apply: fn(store.Store, String, List(types.Input)) -> Result(Prior, String),
+  )
+}
+
+/// The history a strategy sees when no fold provider is enabled.
+pub fn no_prior(history: List(types.Input)) -> Result(Prior, String) {
+  Ok(Prior([], history))
+}
+
+/// Applies providers in order; each later one sees only what earlier ones
+/// left uncovered.
+pub fn compose_prior(
+  providers: List(Folds),
+  ledger: store.Store,
+  session: String,
+) -> fn(List(types.Input)) -> Result(Prior, String) {
+  fn(history) {
+    list.try_fold(providers, Prior([], history), fn(prior, provider) {
+      use next <- result.try(provider.apply(ledger, session, prior.rest))
+      Ok(Prior(list.append(prior.folds, next.folds), next.rest))
+    })
+  }
 }
 
 /// What a strategy prepared for one request. The observation describes this

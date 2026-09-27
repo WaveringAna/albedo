@@ -55,6 +55,8 @@ pub fn defaults() -> Config {
       snapcompact.extension(),
       rolling.extension(),
       lcm_memory.extension(),
+      // After lcm-memory: the archive covers history past LCM's folds.
+      snapcompact.memory(),
       lcm.extension(),
       mcp.configured_extension(),
       remote.extension(),
@@ -65,7 +67,8 @@ pub fn defaults() -> Config {
     [
       "python", "run", "work", "mail", "agents", "schedule", "files",
       "instructions", "commands", "skills", "models", "openai", "codex",
-      "antigravity", "alibaba", "claude", "rolling", "lcm-memory", "remote",
+      "antigravity", "alibaba", "claude", "rolling", "snapcompact-memory",
+      "lcm-memory", "remote",
     ],
   )
 }

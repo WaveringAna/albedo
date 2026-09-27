@@ -70,25 +70,25 @@ fn bundle(
   )
 }
 
-/// Reuse durable LCM folds as rolling's source history after a strategy change.
-/// The graph stays fixed while LCM is inactive, so rolling's source hashes
-/// continue to refer to the same folded prefix as new turns arrive.
-pub fn stored_view(
+/// Stored LCM folds for another strategy's source history after a strategy
+/// change. The graph stays fixed while LCM is inactive, so a strategy's source
+/// hashes continue to refer to the same folded prefix as new turns arrive.
+pub fn stored_prior(
   ledger: store.Store,
   session: String,
   history: List(types.Input),
-) -> Result(List(types.Input), String) {
+) -> Result(compaction.Prior, String) {
   use available <- result.try(graph.storage_available(ledger))
   case available {
-    False -> Ok(history)
+    False -> compaction.no_prior(history)
     True -> {
       use frontier <- result.try(graph.frontier(ledger, session))
       case frontier {
-        [] -> Ok(history)
+        [] -> compaction.no_prior(history)
         _ -> {
           use covered <- result.try(graph.last_seq(ledger, session))
           use sources <- result.try(conversation.load_sources(ledger, session))
-          Ok(projection(frontier, history, sources, covered, None, 0))
+          Ok(split(frontier, history, sources, covered, None, 0))
         }
       }
     }
@@ -326,8 +326,21 @@ fn projection(
   tail_budget: Option(Int),
   minimum_tail_units: Int,
 ) -> List(types.Input) {
+  let compaction.Prior(folds, rest) =
+    split(frontier, history, sources, covered, tail_budget, minimum_tail_units)
+  list.append(folds, rest)
+}
+
+fn split(
+  frontier: List(graph.Node),
+  history: List(types.Input),
+  sources: List(transcript.SourcedEntry),
+  covered: Int,
+  tail_budget: Option(Int),
+  minimum_tail_units: Int,
+) -> compaction.Prior {
   case frontier {
-    [] -> history
+    [] -> compaction.Prior([], history)
     nodes -> {
       let unsummarized =
         list.filter(sources, fn(item) { item.source.seq > covered })
@@ -349,7 +362,7 @@ fn projection(
       }
       let tail =
         retain_tail(history, int.max(minimum, unsummarized_users), tail_budget)
-      list.append(list.map(nodes, node_input), tail)
+      compaction.Prior(list.map(nodes, node_input), tail)
     }
   }
 }

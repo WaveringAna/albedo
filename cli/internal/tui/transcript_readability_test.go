@@ -143,3 +143,21 @@ func TestMarkWrapsLeavesTablesAlone(t *testing.T) {
 		t.Fatalf("joined table rows: %q", got)
 	}
 }
+
+// A compaction notice says what its strategy did: snapcompact archives frames
+// and has no summary to show, while rolling (or an older daemon that names no
+// strategy) summarizes.
+func TestCompactionNoticeNamesWhatTheStrategyDid(t *testing.T) {
+	r := NewTranscriptRenderer()
+	for strategy, want := range map[string]string{
+		"snapcompact": "17 items archived as frames · ctrl+k view archive",
+		"lcm":         "17 items folded · ctrl+k view folds",
+		"rolling":     "17 items summarized · ctrl+k view summary",
+		"":            "17 items summarized · ctrl+k view summary",
+	} {
+		entry := HistoryEntry{Kind: EntryCompacted, Evicted: 17, Strategy: strategy}
+		if got := r.RenderEntry(entry, DisplayFlags{}, 120); !strings.Contains(got, want) {
+			t.Errorf("strategy %q: want %q in %q", strategy, want, got)
+		}
+	}
+}

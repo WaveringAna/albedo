@@ -2,7 +2,7 @@
 
 Compaction changes only what a request shows the model. The durable transcript, `/tree`, and forks always keep the full conversation.
 
-The default session uses `rolling`. Selecting another strategy (`snapcompact` or `lcm`) through `/extensions` disables the current one in the same reload. A session with the built-in extensions keeps one compaction strategy enabled. The registry also permits a custom host with no compaction strategy installed.
+The default session uses `rolling`. Selecting another strategy (`snapcompact` or `lcm`) through `/extensions` disables the current one in the same reload. A strategy enabled by name, for a session or globally, displaces a default one it did not choose, so a new default strategy cannot break an older choice. A session with the built-in extensions keeps one compaction strategy enabled. The registry also permits a custom host with no compaction strategy installed.
 
 `/compact` compacts now with the session's strategy. `/compact <strategy>` first makes the named strategy the session's own, as `/extensions` would, then compacts with it. Later requests read the projection that strategy saved. For example, `/compact rolling` before switching to a model without image input leaves a text summary that the new model can read.
 
@@ -17,6 +17,10 @@ Provider projection can combine several durable rows into one model input, split
 `lcm` uses durable source rows for summary ranges and plain model inputs for its verbatim tail. It preserves every unsummarized user unit and the latest whole user/tool unit. Source references on live projected inputs would let future strategies cut history within those unit boundaries.
 
 Live source references need the sequence IDs from the transaction that commits inputs. The session coordinator can then project those identified entries before preparing a request. Its current commit callback returns only a timestamp, and its in-memory entries have no sequence field. Callers that do not need references can keep the plain-input path. Text or list positions cannot identify rows reliably because messages can repeat and provider projection can change item counts. An excursion marker belongs to its parent session. The branch has different row references, so returning its outcome requires an explicit link to the parent marker.
+
+## stored folds
+
+A strategy reads folds another strategy stored through `context.prior(history)`, never by importing that strategy. It returns `Prior(folds, rest)`: the stored summaries, oldest first, and the history they do not cover. Without stored folds, `folds` is empty and `rest` is the history unchanged. The extension that owns the storage registers a `FoldPlugin`; the runtime applies every enabled provider in registry order, except a provider owned by the active strategy, which reads its own state. `lcm-memory` provides LCM's folds and `snapcompact-memory` the snapcompact archive, so each stays visible after a switch away. `lcm-memory` comes first, so the archive covers history past LCM's folds. `lcm` ignores `prior`.
 
 ## lcm
 
@@ -57,7 +61,16 @@ After a switch from `lcm` to `rolling`, rolling reads the stored LCM summary nod
 
 The saved archive is the normalized text of everything before the cut, stored in `snapcompact_archive` with a user-message cut like rolling's. Frames are re-derived from that text for each request, so after a model switch the same archive renders in the new model's frame shape. Recompaction appends newly evicted history to the saved text. Unchanged leading frames keep their cache keys, so the request prefix stays stable.
 
-The archive keeps at most a frame budget: the model family's image cap (60 frames for Anthropic, OpenAI, Google, and Qwen models, 20 for others), and no more than `archivePercent` of the window at the estimated cost of one full frame. When the archive exceeds the budget, whole frames between the first frame and the newest are dropped. The first image's caption then states how many characters were dropped.
+The archive keeps at most a frame budget, the smallest of:
+
+- the provider's image budget, from oh-my-pi: 90 for `anthropic`, `amazon-bedrock`, and `openrouter`, 200 for `openai`, `openai-codex`, and the Google providers, 10 for `umans`, and 5 for any other provider or a model no catalog knows. albedo's `claude` and `antigravity` providers take 90, since antigravity also serves Claude models.
+- 60 frames of inline image data (3 MB at about 50 KB a frame), except on `claude`, which uploads images through the files API
+- 80 frames
+- `archivePercent` of the window at the estimated cost of one full frame
+
+When the archive exceeds the budget, whole frames between the first frame and the newest are dropped. The first image's caption then states how many characters were dropped.
+
+Other strategies' stored folds stay as text ahead of the frames, so the budget only drops raw rows. `snapcompact` requires `snapcompact-memory`, which keeps the archive readable after a switch: another strategy receives it as text pages through `context.prior`, and the pages stand in for exactly the history the archive's cut covers. `snapcompact-memory` also provides `transcript_grep` and `transcript_read`, which search and page the session's full durable transcript, including history a frame renders illegibly or the budget dropped.
 
 When the catalog reports that the current model reads no image input, `snapcompact` uses rolling's text compaction for that model. The frame archive stays saved for a later model that reads images. A model without catalog modalities is treated as vision-capable.
 
@@ -65,7 +78,7 @@ When the catalog reports that the current model reads no image input, `snapcompa
 { "snapcompact": { "contextWindowTokens": 200000, "triggerPercent": 90, "tailPercent": 10, "archivePercent": 20, "maxFrames": 60 } }
 ```
 
-`contextWindowTokens` and `maxFrames` are optional. `maxFrames` replaces the model family's frame cap.
+`contextWindowTokens` and `maxFrames` are optional. `maxFrames` replaces the provider caps.
 
 ## configure
 

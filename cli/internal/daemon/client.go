@@ -736,10 +736,12 @@ func parseStreamEvent(raw map[string]any) *StreamEvent {
 		evicted, hasEv := raw["evicted"].(float64)
 		summary, hasSum := raw["summary"].(string)
 		if hasEv && hasSum && evicted >= 0 && evicted <= 1000000 && len(summary) <= 60000 {
+			strategy, _ := raw["strategy"].(string)
 			return &StreamEvent{
-				Type:    EventCompacted,
-				Evicted: int(evicted),
-				Summary: summary,
+				Type:     EventCompacted,
+				Evicted:  int(evicted),
+				Summary:  summary,
+				Strategy: strategy,
 			}
 		}
 		return nil

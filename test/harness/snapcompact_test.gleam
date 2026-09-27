@@ -501,20 +501,28 @@ pub fn text_model_falls_back_to_a_text_summary_test() {
   runtime.stop(host)
 }
 
-pub fn frame_budget_fits_the_window_and_the_stack_test() {
+pub fn frame_budget_fits_the_window_and_the_provider_test() {
   let config = snapcompact.default_config()
   let shape = snapcompact.shape("claude-opus-5-5")
-  // 20% of 200k at ~1.4k tokens a frame, under the stack's cap.
-  snapcompact.frame_budget(config, shape, "claude-opus-5-5", Some(200_000))
+  let reader = fn(provider) { Some(compaction.Reader(provider, [])) }
+  // 20% of 200k at ~1.4k tokens a frame, under the provider's cap.
+  snapcompact.frame_budget(config, shape, reader("claude"), Some(200_000))
   |> should.equal(27)
-  snapcompact.frame_budget(config, shape, "claude-opus-5-5", Some(1_000_000))
+  // Claude uploads frames through the files API: only the image budget and
+  // the archive's own cap apply.
+  snapcompact.frame_budget(config, shape, reader("claude"), Some(1_000_000))
+  |> should.equal(80)
+  // Inline providers also carry the 3 MB frame-data budget.
+  snapcompact.frame_budget(config, shape, reader("anthropic"), Some(1_000_000))
   |> should.equal(60)
-  snapcompact.frame_budget(config, shape, "mystery-model", None)
-  |> should.equal(20)
+  snapcompact.frame_budget(config, shape, reader("umans"), None)
+  |> should.equal(10)
+  snapcompact.frame_budget(config, shape, None, None)
+  |> should.equal(5)
   snapcompact.frame_budget(
     snapcompact.Config(..config, max_frames: Some(5)),
     shape,
-    "qwen3.8-max",
+    reader("alibaba"),
     Some(1_000_000),
   )
   |> should.equal(5)

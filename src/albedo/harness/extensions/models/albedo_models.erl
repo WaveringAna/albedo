@@ -335,31 +335,63 @@ add(Index, Key, Entry) ->
 resolve(#{index := Index, providers := Providers}, Model, Host) ->
     case maps:get(Model, Index, []) of
         [] -> {error, <<"model is not in the cached catalog">>};
-        Candidates ->
-            case select(Candidates, Providers, Host) of
-                {ok, Entry, Matched} -> {ok, encode(Entry, Providers, Matched)};
-                error -> {error, <<"model id is ambiguous across catalog providers">>}
-            end
+        Candidates -> {ok, select(Candidates, Providers, Host)}
     end.
 
 %% The configured endpoint decides between providers that publish one model id.
-%% Without a host match, agreeing candidates still answer and conflicting ones do not.
 %% Codex subscription models use OpenAI's metadata, even though models.dev
-%% does not publish the ChatGPT endpoint (or an API URL for OpenAI).
-select(Candidates, _Providers, <<"chatgpt.com">>) ->
+%% does not publish the ChatGPT endpoint (or an API URL for OpenAI). Without a
+%% match, the model id alone answers for no provider in particular.
+select(Candidates, Providers, <<"chatgpt.com">>) ->
     case [E || {<<"openai">>, _} = E <- Candidates] of
-        [Entry | _] -> {ok, Entry, <<"provider identity">>};
-        [] -> error
+        [Entry | _] -> encode(Entry, Providers, <<"provider identity">>);
+        [] -> unattributed(Candidates)
     end;
 select(Candidates, Providers, Host) ->
     case [E || {Name, _} = E <- Candidates, Host =/= <<>>,
                element(1, maps:get(Name, Providers)) =:= Host] of
-        [Entry | _] -> {ok, Entry, <<"provider endpoint">>};
-        [] ->
-            case lists:usort([{Context, Output} || {_, {_, Context, Output, _, _}} <- Candidates]) of
-                [_] -> {ok, hd(lists:sort(Candidates)), <<"model id">>};
-                _ -> error
-            end
+        [Entry | _] -> encode(Entry, Providers, <<"provider endpoint">>);
+        [] -> unattributed(Candidates)
+    end.
+
+%% A model id served through a gateway the catalog does not list. Its provider,
+%% API, and environment would be a guess, so they stay empty. Input kinds and
+%% efforts are those every candidate reports, and where candidates disagree
+%% on limits the smallest stand: the cost is compacting or capping output a
+%% little early, never overrunning the real window.
+unattributed(Candidates) ->
+    Models = [Model || {_, Model} <- lists:sort(Candidates)],
+    {Id, _, _, _, _} = hd(Models),
+    Limits = lists:usort([{Context, Output} || {_, Context, Output, _, _} <- Models]),
+    Matched = case Limits of
+        [_] -> <<"model id">>;
+        _ ->
+            iolist_to_binary([<<"model id; smallest limits of ">>,
+                              integer_to_binary(length(Models)), <<" providers">>])
+    end,
+    iolist_to_binary(json:encode(#{
+        <<"model">> => Id,
+        <<"provider">> => <<>>,
+        <<"context">> => smallest([C || {_, C, _, _, _} <- Models]),
+        <<"output">> => smallest([O || {_, _, O, _, _} <- Models]),
+        <<"input_modalities">> => shared([I || {_, _, _, I, _} <- Models]),
+        <<"api">> => null,
+        <<"env">> => [],
+        <<"matched">> => Matched,
+        <<"efforts">> => shared([E || {_, _, _, _, E} <- Models])
+    })).
+
+smallest(Values) ->
+    case [V || V <- Values, is_integer(V), V > 0] of
+        [] -> null;
+        Known -> lists:min(Known)
+    end.
+
+%% What every candidate that reports a list agrees on, in the first one's order.
+shared(Lists) ->
+    case [L || L <- Lists, L =/= []] of
+        [] -> [];
+        [First | Rest] -> [V || V <- First, lists:all(fun(L) -> lists:member(V, L) end, Rest)]
     end.
 
 encode({Name, {Id, Context, Output, Inputs, Efforts}}, Providers, Matched) ->

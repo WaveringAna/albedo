@@ -36,6 +36,8 @@ type HistoryEntry struct {
 	Mood       mood
 	ElapsedMs  int64
 	Tools      int
+	// Strategy is the compaction strategy that produced a compacted entry.
+	Strategy string
 	// Pending is a message of yours the daemon has not echoed back yet.
 	Pending pending
 	// Seq is the newest transcript row this entry came from; 0 until a

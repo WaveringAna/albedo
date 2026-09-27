@@ -1140,21 +1140,26 @@ fn capacity(
       provider: provider,
       source: source,
       ..,
-    )) -> Some(compaction.Capacity(tokens, provider <> " " <> source))
+    )) ->
+      Some(
+        compaction.Capacity(tokens, case provider {
+          "" -> source
+          _ -> provider <> " " <> source
+        }),
+      )
     _ -> None
   }
 }
 
-fn reads_images(
+fn reader(
   session: Session,
   model: String,
   endpoint: String,
-) -> Option(Bool) {
-  case model_info(session, model, endpoint) {
-    Some(extension.ModelInfo(input_modalities: [_, ..] as modalities, ..)) ->
-      Some(list.contains(modalities, "image"))
-    _ -> None
-  }
+) -> Option(compaction.Reader) {
+  model_info(session, model, endpoint)
+  |> option.map(fn(info) {
+    compaction.Reader(info.provider, info.input_modalities)
+  })
 }
 
 pub fn prepare_history_scoped(
@@ -1221,9 +1226,8 @@ pub fn prepare_view_scoped(
   use _ <- result.try(owned_by(runtime, session))
   let pinned_tokens =
     compaction.estimate_pinned(instructions, session.context, tools(session))
-  let prepared = case
-    extension.compaction(extension.extensions(session.composition))
-  {
+  let enabled = extension.extensions(session.composition)
+  let prepared = case extension.compaction(enabled) {
     None if force -> Error("no compaction strategy is enabled")
     None -> Ok(compaction.Prepared(history, None))
     Some(strategy) ->
@@ -1236,9 +1240,16 @@ pub fn prepare_view_scoped(
           source,
           pinned_tokens,
           capacity(session, model, endpoint),
-          reads_images(session, model, endpoint),
           force,
           summarize,
+          compaction.compose_prior(
+            list.filter(extension.folds(enabled), fn(folds) {
+              folds.owner != strategy.name
+            }),
+            runtime.work,
+            session.id,
+          ),
+          reader(session, model, endpoint),
         ),
         history,
       )

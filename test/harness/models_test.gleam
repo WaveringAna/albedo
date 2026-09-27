@@ -19,6 +19,33 @@ pub fn endpoint_selects_between_providers_publishing_one_model_test() {
   let assert Some(agreed) = models.lookup_at(file, "shared-model", "")
   agreed.context_tokens |> should.equal(Some(400_000))
   string.contains(agreed.source, "model id") |> should.be_true
+  // No endpoint names who serves it, so no provider is guessed.
+  agreed.provider |> should.equal("")
+  agreed.endpoint |> should.equal(None)
+  // A provider that reports no input kinds does not veto the others'.
+  agreed.input_modalities |> should.equal(["text", "image"])
+
+  cleanup(root)
+}
+
+/// A gateway the catalog does not list serves a model several providers
+/// publish with different limits: the smallest limits and the input kinds
+/// every provider reports answer.
+pub fn disputed_limits_answer_with_the_smallest_test() {
+  let #(root, _, home) = fixture()
+  let file = write(home, "models.json", catalog)
+
+  let assert Some(disputed) =
+    models.lookup_at(file, "disputed", "https://gateway.example.com/v1")
+  disputed.provider |> should.equal("")
+  disputed.context_tokens |> should.equal(Some(8000))
+  string.contains(disputed.source, "smallest limits of 2 providers")
+  |> should.be_true
+  // An endpoint that names a provider still takes that provider's limits.
+  let assert Some(other) =
+    models.lookup_at(file, "disputed", "https://other.example.com/v1")
+  other.provider |> should.equal("other")
+  other.context_tokens |> should.equal(Some(16_000))
 
   cleanup(root)
 }
@@ -37,12 +64,10 @@ pub fn provider_scoped_lookup_keeps_metadata_with_its_provider_test() {
   cleanup(root)
 }
 
-pub fn unknown_disputed_and_missing_catalogs_stay_unknown_test() {
+pub fn unknown_and_missing_catalogs_stay_unknown_test() {
   let #(root, _, home) = fixture()
   let file = write(home, "models.json", catalog)
 
-  // Two providers disagree about the same id and no endpoint decides it.
-  models.lookup_at(file, "disputed", "") |> should.equal(None)
   models.lookup_at(file, "absent-model", "") |> should.equal(None)
   models.lookup_at(home <> "/missing.json", "shared-model", "")
   |> should.equal(None)
@@ -105,7 +130,8 @@ pub fn a_full_catalog_is_trimmed_in_place_without_changing_answers_test() {
   let assert Some(again) =
     models.lookup_at(file, "shared-model", "https://mirror.example.com/v1")
   again |> should.equal(info)
-  models.lookup_at(file, "disputed", "") |> should.equal(None)
+  let assert Some(disputed) = models.lookup_at(file, "disputed", "")
+  disputed.context_tokens |> should.equal(Some(8000))
   models.list_at(file, "openai", "")
   |> should.equal(["only-openai", "shared-model"])
 

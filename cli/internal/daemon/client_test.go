@@ -56,7 +56,7 @@ func TestSendQueuedState(t *testing.T) {
 
 func TestStreamCompacted(t *testing.T) {
 	page := formatPage(1, []any{
-		map[string]any{"type": "compacted", "evicted": 12, "summary": "facts"},
+		map[string]any{"type": "compacted", "evicted": 12, "summary": "facts", "strategy": "snapcompact"},
 		map[string]any{"type": "compacted", "evicted": -1, "summary": "no"},
 		map[string]any{"type": "compacted", "evicted": 5, "summary": strings.Repeat("x", 60001)},
 	})
@@ -86,7 +86,7 @@ func TestStreamCompacted(t *testing.T) {
 	if len(compacted) != 1 {
 		t.Fatalf("expected 1 compacted event, got %d", len(compacted))
 	}
-	if compacted[0].Evicted != 12 || compacted[0].Summary != "facts" {
+	if compacted[0].Evicted != 12 || compacted[0].Summary != "facts" || compacted[0].Strategy != "snapcompact" {
 		t.Fatalf("unexpected compacted event: %+v", compacted[0])
 	}
 }

@@ -42,7 +42,7 @@ A command that tells the agent about a user's change uses the `Note(origin, disp
 
 `ServicePlugin(Service(handle))` serves HTTP from the daemon while its extension is enabled globally (sessions do not select services). Requests to `/<extension>/...` go to `handle(daemon, path, request)` with the path below the mount. The daemon token does not apply there, so a service owns its own authentication; requests carrying an `Origin` header are still refused, so a web page cannot reach a local service that spends your credentials. The daemon's own routes (`health`, `sessions`, `models`, `auth`, `shutdown`) always win. `extension.Daemon` gives the service `home`, `upstream(profile, model, session)` to resolve a saved profile outside any session, catalog `models`, and the daemon's `sessions`. Set `ALBEDO_PORT` in the daemon's environment to pin its port so a service has a stable base url; the default is a free port chosen at start. Built-in dependencies keep these layers explicit: `codex -> openai -> models`. See [models](models.md) and [model authentication](auth.md).
 
-`CompactionPlugin` supplies a history strategy; see [compaction](compaction.md). one enabled compaction strategy owns the request-history view in a built-in session. a strategy receives chronological history and must preserve tool call/result associations; it must not replace the durable transcript.
+`CompactionPlugin` supplies a history strategy; `FoldPlugin` supplies stored folds any strategy reads through `context.prior`; see [compaction](compaction.md). one enabled compaction strategy owns the request-history view in a built-in session. a strategy receives chronological history and must preserve tool call/result associations; it must not replace the durable transcript.
 
 ## extension settings
 
@@ -137,6 +137,10 @@ see [the skills extension](skills.md) for discovery paths, metadata-only startup
 ## rolling compaction
 
 `rolling` is the enabled-by-default compaction strategy: summary, recent-user recap, then a verbatim tail, triggered by remaining context. see [compaction](compaction.md) for its contract, settings, and state handling.
+
+## snapcompact
+
+`snapcompact` is an alternative compaction strategy: evicted history as rendered bitmap frames under per-provider image budgets. it requires `snapcompact-memory`, which is enabled by default, keeps the archive readable as text folds after a switch, and provides `transcript_grep` and `transcript_read`. see [compaction](compaction.md).
 
 ## lcm compaction
 

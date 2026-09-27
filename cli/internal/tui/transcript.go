@@ -604,12 +604,27 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 		if flags.Compaction {
 			action = "hide"
 		}
-		rows = []string{markChrome + r.Styles.Faint.Render(fmt.Sprintf("compaction done · %d items summarized · ctrl+k %s summary", entry.Evicted, action))}
+		verb, noun := compactionWords(entry.Strategy)
+		rows = []string{markChrome + r.Styles.Faint.Render(fmt.Sprintf("compaction done · %d items %s · ctrl+k %s %s", entry.Evicted, verb, action, noun))}
 		if flags.Compaction {
 			rows = append(rows, r.faintMarkdownRows(entry.Text, width)...)
 		}
 	}
 	return strings.Join(rows, "\n")
+}
+
+// compactionWords names what a strategy did with the evicted items and what
+// ctrl+k shows: snapcompact archives them as rendered frames, lcm folds them
+// into summary nodes, and rolling (or an unnamed strategy) summarizes them.
+func compactionWords(strategy string) (verb, noun string) {
+	switch strategy {
+	case "snapcompact":
+		return "archived as frames", "archive"
+	case "lcm":
+		return "folded", "folds"
+	default:
+		return "summarized", "summary"
+	}
 }
 
 // Compact entries are one-line summaries. A run of them stacks without blank

@@ -2128,6 +2128,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			Kind:      EntryCompacted,
 			Text:      evt.Summary,
 			Evicted:   evt.Evicted,
+			Strategy:  evt.Strategy,
 			Timestamp: time.Now().UnixMilli(),
 		}
 		m.appendSettledEntry(entry)

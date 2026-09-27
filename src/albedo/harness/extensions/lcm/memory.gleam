@@ -1,6 +1,8 @@
 //// Durable LCM fold retrieval remains available across strategy changes.
 
+import albedo/harness/compaction
 import albedo/harness/extension
+import albedo/harness/extensions/lcm/extension as lcm
 import albedo/harness/extensions/lcm/graph
 import albedo/harness/extensions/lcm/tools
 
@@ -16,6 +18,8 @@ pub fn extension() -> extension.Extension {
         [],
         [],
       ),
+      // Other strategies see stored folds through their compaction context.
+      extension.FoldPlugin(compaction.Folds("lcm", "lcm", lcm.stored_prior)),
     ],
     graph.initialise,
   )

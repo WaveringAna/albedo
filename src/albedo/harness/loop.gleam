@@ -222,6 +222,11 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
       state.publish(
         view.event("compacted", [
           #("evicted", json.int(evicted)),
+          // Clients word the notice by strategy: a summary, folds, frames.
+          #("strategy", case prepared.observation {
+            Some(observation) -> json.string(observation.strategy)
+            None -> json.null()
+          }),
           #(
             "summary",
             json.string(
@@ -234,7 +239,7 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
     False ->
       state.publish(view.text(
         "note",
-        "history already fits; nothing new to summarize",
+        "history already fits; nothing new to compact",
       ))
   }
   Ok(Nil)
@@ -257,8 +262,7 @@ fn display_text(items: List(types.Input)) -> String {
     |> list.map(fn(input) {
       case input {
         types.User(text) -> text
-        types.UserImage(text, _) ->
-          text <> "\n[image omitted from summary view]"
+        types.UserImage(text, _) -> text <> "\n[image omitted from this view]"
         types.ToolOutput(id, _, _) -> "[tool output " <> id <> " omitted]"
         input ->
           option.unwrap(
