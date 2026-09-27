@@ -1,6 +1,6 @@
 -module(albedo_claude_auth).
 
--export([exchange/4, account/1, access/2, profile/2, expire/2]).
+-export([exchange/4, account/1, access/2, profile/2, expire/2, token/1]).
 
 -define(KEY, <<"anthropic">>).
 -define(CLIENT_ID, <<"9d1c250a-e61b-44d9-88ed-5944d1962f5e">>).
@@ -16,6 +16,18 @@ exchange(Code, State, Verifier, Redirect) ->
                  <<"code_verifier">> => Verifier}, exchange).
 
 post_token(Params, Kind) ->
+    case token_request(Params, Kind) of
+        {ok, Response} -> token(Response);
+        Error -> Error
+    end.
+
+post_token_map(Params, Kind) ->
+    case token_request(Params, Kind) of
+        {ok, Response} -> token_map(Response);
+        Error -> Error
+    end.
+
+token_request(Params, Kind) ->
     Body = json:encode(Params),
     _ = application:ensure_all_started(inets),
     _ = application:ensure_all_started(ssl),
@@ -23,7 +35,7 @@ post_token(Params, Kind) ->
     Options = [{timeout, ?HTTP_TIMEOUT_MS}, {connect_timeout, 10000},
                {ssl, albedo_credentials:tls_options("platform.claude.com")}],
     case httpc:request(post, Request, Options, [{body_format, binary}]) of
-        {ok, {{_, 200, _}, _, Response}} -> token(Response);
+        {ok, {{_, 200, _}, _, Response}} -> {ok, Response};
         {ok, {{_, Status, _}, _, Response}} ->
             Detail = binary:part(Response, 0, min(byte_size(Response), 2048)),
             {error, iolist_to_binary(io_lib:format("Anthropic ~s failed (~B): ~s",
@@ -31,7 +43,7 @@ post_token(Params, Kind) ->
         _ -> {error, <<"Anthropic token request failed">>}
     end.
 
-token(Response) ->
+token_map(Response) ->
     try json:decode(Response) of
         #{<<"access_token">> := Access, <<"refresh_token">> := Refresh,
           <<"expires_in">> := In} when is_binary(Access), byte_size(Access) > 0,
@@ -41,9 +53,23 @@ token(Response) ->
                 <<"refresh">> => Refresh,
                 <<"expires">> => erlang:system_time(millisecond) + round(In * 1000) - ?EXPIRY_MARGIN_MS,
                 <<"accountId">> => token_id(Refresh)},
-            {ok, json:encode(Credential)};
+            {ok, Credential};
         _ -> {error, <<"Anthropic token response is incomplete">>}
     catch _:_ -> {error, <<"Anthropic token response is invalid">>} end.
+
+%% token/1 keeps its shape for callers: response in, storable binary out.
+token(Response) ->
+    case token_map(Response) of
+        {ok, Credential} -> encode_credential(Credential);
+        Error -> Error
+    end.
+
+%% json:encode builds each map member as `[comma, key, colon | value]', and a
+%% number value encodes to a bare binary, leaving an improper tail: legal
+%% iodata for iolist_to_binary, but json:decode rejects any list. Encoding is
+%% centralized here so no caller ever sees the tree.
+encode_credential(Credential) ->
+    {ok, iolist_to_binary(json:encode(Credential))}.
 
 account(Credential) when is_map(Credential) ->
     Id = identity(Credential),
@@ -138,10 +164,9 @@ refresh(Path, Id) ->
     end.
 
 refresh_current(Path, Data, Current) ->
-    case post_token(#{<<"grant_type">> => <<"refresh_token">>, <<"client_id">> => ?CLIENT_ID,
-                      <<"refresh_token">> => maps:get(<<"refresh">>, Current)}, refresh) of
-        {ok, Encoded} ->
-            Token = json:decode(Encoded),
+    case post_token_map(#{<<"grant_type">> => <<"refresh_token">>, <<"client_id">> => ?CLIENT_ID,
+                          <<"refresh_token">> => maps:get(<<"refresh">>, Current)}, refresh) of
+        {ok, Token} ->
             New = (maps:merge(Current, Token))#{<<"accountId">> => identity(Current)},
             Stored = maps:get(?KEY, Data),
             Values = case Stored of L when is_list(L) -> L; V -> [V] end,

@@ -380,6 +380,25 @@ pub fn claude_first_user_surrogates_do_not_crash_the_billing_sample_test() {
   assert hash == billing_hash(unsigned)
 }
 
+pub fn claude_token_encodes_to_a_decodable_binary_test() {
+  // OTP's json:encode leaves `colon | value' unflattened, and a number value
+  // encodes to a bare binary, so the encoded credential is an improper list
+  // that json:decode rejects; token/1 must hand back a flat binary. This
+  // crashed the session actor on every token refresh.
+  let assert Ok(credential) =
+    claude_token(
+      "{\"access_token\":\"tok\",\"refresh_token\":\"r\",\"expires_in\":86400}",
+    )
+  let assert Ok(value) = json.parse(credential, decode.dynamic)
+  let assert Ok("oauth") = decode.run(value, decode.at(["type"], decode.string))
+  let assert Ok("tok") = decode.run(value, decode.at(["access"], decode.string))
+  let assert Ok(expires) = decode.run(value, decode.at(["expires"], decode.int))
+  assert expires > 0
+  let assert Ok(account) =
+    decode.run(value, decode.at(["accountId"], decode.string))
+  assert string.byte_size(account) == 16
+}
+
 pub fn claude_billing_hash_matches_reference_vectors_test() {
   assert billing_hash("cch=00000") == "a47f7"
   assert billing_hash("{\"messages\":[],\"cch=00000\",\"x\":1}") == "3073d"
@@ -396,6 +415,9 @@ pub fn claude_billing_hash_matches_reference_vectors_test() {
   assert billing_hash(string.repeat("d", 65)) == "92299"
   assert billing_hash(string.repeat("0123456789", 100)) == "827e8"
 }
+
+@external(erlang, "albedo_claude_auth", "token")
+fn claude_token(response: String) -> Result(String, String)
 
 @external(erlang, "albedo_claude_billing", "hash")
 fn billing_hash(body: String) -> String
