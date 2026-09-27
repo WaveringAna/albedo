@@ -1,1 +1,31 @@
-Legacy rows are preserved under the reserved `__albedo_legacy__` cwd and are not visible in a workspace automatically. To recover selected rows, stop Albedo and back up its SQLite database. Inspect `SELECT id,title,parent FROM work WHERE cwd='__albedo_legacy__'`. In a transaction, move the chosen rows—including any parent and children that belong together—to the intended absolute workspace path, for example `UPDATE work SET cwd='/absolute/workspace' WHERE id IN (12,13);`; verify the rows and commit. Restart Albedo. No automatic workspace mapping is possible because legacy rows have no workspace identity. Startup adds `cwd` before creating its index.
+# Recovering legacy work items
+
+The workspace-scoped ledger keeps rows created by older versions under the reserved
+`__albedo_legacy__` scope. No workspace sees these rows automatically: the old
+schema did not record which workspace owned them.
+
+1. Stop Albedo and back up `$ALBEDO_HOME/albedo.sqlite` before editing it. For
+   example, use `sqlite3 "$ALBEDO_HOME/albedo.sqlite" ".backup '/safe/path/work.sqlite'"`.
+2. Inspect the old items and their parent relationships:
+
+   ```sql
+   SELECT id, title, parent FROM work WHERE cwd = '__albedo_legacy__';
+   ```
+
+3. Choose an existing workspace's **absolute canonical path**. Move only items
+   you can attribute to it; move parents and children together. In SQLite,
+   verify the IDs and the destination before committing:
+
+   ```sql
+   BEGIN IMMEDIATE;
+   UPDATE work SET cwd = '/absolute/workspace' WHERE id IN (12, 13);
+   SELECT id, cwd, parent FROM work WHERE id IN (12, 13);
+   COMMIT;
+   ```
+
+4. Restart Albedo and use `/work` in that workspace to verify visibility.
+   Restore the backup if the mapping was wrong. Leave uncertain rows in the
+   legacy scope; never assign every old row to every workspace.
+
+Startup adds the `cwd` column before creating its index on an older database;
+restarting alone does not reassign legacy items.
