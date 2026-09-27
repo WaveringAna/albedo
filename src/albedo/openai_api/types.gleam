@@ -249,7 +249,7 @@ pub type Turn {
     usage: Option(Usage),
     finish: Finish,
     /// How long the model spent thinking before it answered, when it did:
-    /// each spell runs from its first thinking delta to the next event.
+    /// each spell runs from the event before its thinking to the one after.
     thought_ms: Option(Int),
   )
 }

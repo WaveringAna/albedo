@@ -2,6 +2,7 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -339,6 +340,9 @@ type ChatModel struct {
 	// thought instead carries how long it took, when the daemon timed it.
 	thinkingSince time.Time
 	thoughtMs     int64
+	// lastEvent is when the last live event other than thinking came; a
+	// thought began then, since summarized thinking streams only once written.
+	lastEvent time.Time
 
 	streamedHash uint64
 	streamedLen  int64
@@ -1912,6 +1916,10 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	if evt.Type != daemon.EventToolProgress {
 		m.Progress = nil
 	}
+	thoughtStart := cmp.Or(m.lastEvent, time.Now())
+	if !evt.Replayed && evt.Type != daemon.EventThinking {
+		m.lastEvent = time.Now()
+	}
 	switch evt.Type {
 	case daemon.EventReset:
 		m.settleActiveStream()
@@ -2005,7 +2013,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			m.settleActiveStream()
 			m.activeKind = StreamKindThinking
 			if !evt.Replayed {
-				m.thinkingSince = time.Now()
+				m.thinkingSince = thoughtStart
 			}
 		}
 		m.thoughtMs += evt.ElapsedMs
@@ -2217,7 +2225,7 @@ func (m *ChatModel) closeTurn(stopped bool) {
 	if t == nil {
 		return
 	}
-	m.turn = nil
+	m.turn, m.lastEvent = nil, time.Time{}
 	end := t.last
 	if t.live {
 		end = max(end, time.Now().UnixMilli())

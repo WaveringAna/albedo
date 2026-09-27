@@ -146,6 +146,7 @@ pub fn exchange(
   reducer: reducer.Reducer,
   on_event: fn(Event) -> Control,
 ) -> Result(Turn, Error) {
+  let sent = monotonic_time(Millisecond)
   use connection <- result.try(
     transport.open(
       exchange.url,
@@ -167,7 +168,7 @@ pub fn exchange(
             connection,
             sse.new(exchange.max_event_bytes),
             reducer,
-            Thinking(0, None),
+            Thinking(0, sent, None),
             on_event,
           )
       }
@@ -317,18 +318,22 @@ fn notify(
   })
 }
 
-/// Time spent thinking so far, and when the spell under way began.
+/// Time spent thinking so far, when the last other event came (the request
+/// itself, at first), and when the spell under way began.
 type Thinking {
-  Thinking(total: Int, since: Option(Int))
+  Thinking(total: Int, last: Int, since: Option(Int))
 }
 
-/// A spell runs from its first thinking delta to the next other event.
+/// A spell runs from the event before its first thinking delta to the next
+/// other event: summarized thinking streams only once it is written, so the
+/// thought began before its first delta did.
 fn think(thinking: Thinking, event: Event, now: Int) -> Thinking {
   case event, thinking.since {
-    types.ThinkingDelta(_), None -> Thinking(..thinking, since: Some(now))
+    types.ThinkingDelta(_), None ->
+      Thinking(..thinking, since: Some(thinking.last))
     types.ThinkingDelta(_), Some(_) -> thinking
-    _, Some(since) -> Thinking(thinking.total + now - since, None)
-    _, None -> thinking
+    _, Some(since) -> Thinking(thinking.total + now - since, now, None)
+    _, None -> Thinking(..thinking, last: now)
   }
 }
 
