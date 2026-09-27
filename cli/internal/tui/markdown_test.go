@@ -1,3 +1,4 @@
+// Streaming Markdown block rendering must match its settled result even at partial boundaries.
 package tui
 
 import (

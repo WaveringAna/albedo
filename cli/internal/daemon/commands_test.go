@@ -1,3 +1,4 @@
+// Command catalog choices and invocation parsing power the interactive menu, which the non-TTY E2E CLI cannot drive.
 package daemon
 
 import (

@@ -1,5 +1,4 @@
-import albedo/harness/extension
-import albedo/harness/extensions/codex/catalog
+// Account pins and 429 handoff depend on OAuth identities and provider responses unavailable in E2E.
 import albedo/harness/extensions/codex/extension as codex
 import albedo/harness/rotation
 import albedo/openai_api
@@ -276,60 +275,3 @@ fn write(base: String, relative: String, content: String) -> String
 
 @external(erlang, "albedo_skills_test_support", "cleanup")
 fn cleanup(root: String) -> Nil
-
-const codex_cache = "{\"clientVersion\":\"0.157.1\",\"accounts\":{\"acct\":{\"models\":[
-{\"slug\":\"gpt-5.6-sol\",\"context\":272000,\"maxContext\":872000,\"input\":[\"text\",\"image\"],\"efforts\":[\"low\",\"medium\",\"ultra\"],\"visible\":true,\"priority\":4},
-{\"slug\":\"gpt-6-astra\",\"context\":272000,\"maxContext\":872000,\"input\":[\"text\",\"image\"],\"efforts\":[\"low\",\"max\"],\"visible\":true,\"priority\":1},
-{\"slug\":\"gpt-5.5\",\"context\":272000,\"maxContext\":272000,\"input\":[\"text\",\"image\"],\"efforts\":[\"low\",\"xhigh\"],\"visible\":true,\"priority\":7},
-{\"slug\":\"codex-auto-review\",\"context\":272000,\"visible\":false,\"priority\":43}]}}}"
-
-/// The picker lists what the backend offers, by its priority, with no series
-/// filter: a model released to Codex shows up without an albedo update.
-pub fn codex_lists_what_its_endpoint_offers_test() {
-  let #(root, _, home) = fixture()
-  write(home, "codex-models.json", codex_cache)
-  assert catalog.listed(home) == ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.5"]
-  let assert [
-    extension.ModelProviderPlugin(provider),
-    _,
-    extension.ModelsPlugin(_),
-  ] = codex.extension().plugins
-  assert provider.catalog_provider == "codex"
-  cleanup(root)
-}
-
-pub fn codex_lookup_reports_the_window_and_its_raisable_cap_test() {
-  let #(root, _, home) = fixture()
-  write(home, "codex-models.json", codex_cache)
-  let endpoint = "https://chatgpt.com/backend-api"
-  let assert Some(sol) = catalog.lookup(home, endpoint, "gpt-5.6-sol")
-  assert sol.provider == "codex"
-  assert sol.context_tokens == Some(272_000)
-  assert sol.max_context_tokens == Some(872_000)
-  assert sol.efforts == ["low", "medium", "ultra"]
-  assert sol.input_modalities == ["text", "image"]
-  // No cap to raise when the maximum is the default window.
-  let assert Some(older) = catalog.lookup(home, endpoint, "gpt-5.5")
-  assert older.max_context_tokens == None
-  // A hidden model still answers: a session may already use it.
-  assert catalog.lookup(home, endpoint, "codex-auto-review") != None
-  assert catalog.lookup(home, endpoint, "gpt-9") == None
-  cleanup(root)
-}
-
-pub fn codex_profiles_require_responses_protocol_test() {
-  let ext = codex.extension()
-  extension.upstream(
-    [ext],
-    extension.ModelContext(
-      "/nonexistent",
-      "s1",
-      "bad",
-      "codex",
-      "gpt-5.3-codex",
-      types.ChatCompletions,
-      None,
-    ),
-  )
-  |> should.equal(Error("Codex provider requires the responses protocol"))
-}

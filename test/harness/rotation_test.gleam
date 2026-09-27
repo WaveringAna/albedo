@@ -1,3 +1,4 @@
+// Account quota and capacity routing are stateful provider failures not exercised by scripted E2E responses.
 import albedo/harness/extensions/alibaba/extension as alibaba
 import albedo/harness/extensions/antigravity/extension as antigravity
 import albedo/harness/oauth

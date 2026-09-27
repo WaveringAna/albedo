@@ -1,3 +1,4 @@
+//// Subprocess supervision regressions require OS-level child lifecycle probes.
 //// The Python-side harnesses run with the rest of the suite; they own no build lock.
 
 import gleeunit/should

@@ -1,3 +1,4 @@
+// External model catalogs can mix bare IDs and detailed records; our synthetic E2E catalog does not.
 package daemon
 
 import (

@@ -1,144 +1,16 @@
-//// Images a cell returns reach the model beside its tool result.
+//// Kernel image wire decoding and old journal records must survive format
+//// changes; synthetic corrupted and legacy records cannot arise in E2E.
 
-import albedo/harness/extensions
 import albedo/harness/extensions/python/kernel as python
-import albedo/harness/loop
-import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/dynamic
-import gleam/dynamic/decode
 import gleam/erlang/atom
 import gleam/json
 import gleam/list
-import gleam/string
 import gleeunit/should
 
 /// A PNG signature and IHDR header for a 2x3 image: enough for albedo to read.
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD"
-
-fn call(id: String, code: String) -> types.ToolCall {
-  let arguments =
-    json.object([
-      #("code", json.string(code)),
-      #("timeout_ms", json.int(5000)),
-    ])
-    |> json.to_string
-  types.ToolCall(id, "python", arguments)
-}
-
-fn field(output: String, name: String) -> String {
-  let assert Ok(value) =
-    json.parse(output, decode.field(name, decode.string, decode.success))
-  value
-}
-
-pub fn a_shown_image_returns_with_the_result_and_survives_recovery_test() {
-  let assert Ok(host) = runtime.start(":memory:")
-  let assert Ok(session) = runtime.open_session(host, "a", "/tmp")
-  let shown =
-    call(
-      "shown",
-      "import base64\nshow_image(base64.b64decode('" <> png <> "'))",
-    )
-  let assert Ok(types.ToolOutput("shown", text, [image])) =
-    runtime.invoke(host, session, shown)
-  field(text, "value") |> should.equal("'attached image/png, 24 bytes'")
-  types.image_meta(image) |> should.equal(#("image/png", 2, 3, 24))
-  types.image_data(image) |> should.equal(types.InlineData(png))
-  // A result lost in flight is rebuilt from the journal with its image.
-  runtime.recover(host, session, shown)
-  |> should.equal(types.ToolOutput("shown", text, [image]))
-  runtime.stop(host)
-}
-
-pub fn view_code_returns_rendered_pages_as_images_test() {
-  let defaults = extensions.defaults()
-  let assert Ok(host) =
-    runtime.start_with_config(
-      ":memory:",
-      extensions.Config(..defaults, default_enabled: [
-        "view",
-        ..defaults.default_enabled
-      ]),
-    )
-  let assert Ok(session) = runtime.open_session(host, "a", "/tmp")
-  let code =
-    "import os, tempfile\n"
-    <> "sample = tempfile.NamedTemporaryFile('w', suffix='.py', delete=False)\n"
-    <> "sample.write('def answer():\\n    return 42\\n')\n"
-    <> "sample.close()\n"
-    <> "shown = await view_code(sample.name, 1, 2)\n"
-    <> "os.unlink(sample.name)\n"
-    <> "shown"
-  let assert Ok(types.ToolOutput(_, text, [page])) =
-    runtime.invoke(host, session, call("view", code))
-  let #(mime, width, height, _) = types.image_meta(page)
-  #(mime, width > height) |> should.equal(#("image/png", True))
-  field(text, "value") |> string.contains("(python)") |> should.be_true
-  field(text, "value")
-  |> string.contains("image 1: lines 1-2, ")
-  |> should.be_true
-  runtime.stop(host)
-}
-
-pub fn view_is_installed_but_off_until_a_session_enables_it_test() {
-  let defaults = extensions.defaults()
-  let installed =
-    list.map(defaults.extensions, fn(extension) { extension.name })
-  #(
-    list.contains(installed, "view"),
-    list.contains(defaults.default_enabled, "view"),
-  )
-  |> should.equal(#(True, False))
-}
-
-pub fn an_unreadable_image_is_reported_in_the_text_not_sent_test() {
-  let assert Ok(host) = runtime.start(":memory:")
-  let assert Ok(session) = runtime.open_session(host, "a", "/tmp")
-  let code = "show_image(b'\\x89PNG\\r\\n\\x1a\\nnot a header')"
-  let assert Ok(types.ToolOutput(_, text, [])) =
-    runtime.invoke(host, session, call("bad", code))
-  let assert Ok([error]) =
-    json.parse(
-      text,
-      decode.field("image_errors", decode.list(decode.string), decode.success),
-    )
-  error |> string.starts_with("image 1: ") |> should.be_true
-  runtime.stop(host)
-}
-
-pub fn images_attach_only_to_the_running_cell_within_limits_test() {
-  let assert Ok(host) = runtime.start(":memory:")
-  let assert Ok(session) = runtime.open_session(host, "a", "/tmp")
-  let setup =
-    "import asyncio, base64\n"
-    <> "image = base64.b64decode('"
-    <> png
-    <> "')\n"
-    <> "gate = asyncio.Event()\n"
-    <> "async def later():\n"
-    <> "    await gate.wait()\n"
-    <> "    show_image(image)\n"
-    <> "task = asyncio.ensure_future(later())"
-  let assert Ok(types.ToolOutput(_, _, [])) =
-    runtime.invoke(host, session, call("setup", setup))
-  // The task still carries the finished cell's context, not this one's.
-  let assert Ok(types.ToolOutput(_, late, [])) =
-    runtime.invoke(host, session, call("late", "gate.set()\nawait task"))
-  field(late, "output")
-  |> string.contains("images attach to a running cell")
-  |> should.be_true
-  let assert Ok(types.ToolOutput(_, many, [_, _, _, _])) =
-    runtime.invoke(
-      host,
-      session,
-      call("many", "for _ in range(5):\n    show_image(image)"),
-    )
-  field(many, "output")
-  |> string.contains("a cell returns at most 4 images")
-  |> should.be_true
-  runtime.stop(host)
-}
 
 pub fn the_kernel_decoder_reads_images_at_the_boundary_test() {
   let frame = fn(images) {
@@ -178,18 +50,6 @@ pub fn the_kernel_decoder_reads_images_at_the_boundary_test() {
       frame([#("images", json.array([1], json.int))]),
       python.outcome_decoder(),
     )
-}
-
-pub fn summaries_describe_images_without_their_payload_test() {
-  let assert Ok(image) = types.image("image/png", png, 2, 3, 24)
-  loop.render_summary_input(types.UserImage("look", image))
-  |> should.equal(
-    "[user with image image/png 2x3, 24 bytes; binary omitted]\nlook",
-  )
-  loop.render_summary_input(types.ToolOutput("call", "{}", [image]))
-  |> should.equal(
-    "[tool output call]\n{}\n[image image/png 2x3, 24 bytes; binary omitted]",
-  )
 }
 
 /// The record shapes albedo stored before tool results carried images.

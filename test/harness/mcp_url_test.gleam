@@ -1,3 +1,4 @@
+// MCP URL validation blocks embedded credentials and unsupported schemes even on trusted networks.
 import gleeunit/should
 
 @external(erlang, "albedo_mcp", "url_allowed")

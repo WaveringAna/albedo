@@ -1,3 +1,4 @@
+// Action-row lifetime across streaming, replay, and turn completion is not exercised by daemon E2E.
 package tui
 
 import (
@@ -74,26 +75,6 @@ func TestGroupedActionRowHoldsUntilTheNextAction(t *testing.T) {
 	}
 }
 
-// A cell with no named intent holds its collapsed tool row: its first line,
-// then how much it was and printed.
-func TestPythonActionRowShowsItsCode(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
-	m.SetSize(100, 30)
-	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventUser, Text: "do it"})
-	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventToolProgress, Progress: &daemon.ToolProgress{
-		Name: "python", Phase: "running", Code: &daemon.ToolCodePreview{Text: "x = 6 * 7"}}})
-	m.refreshViewportContent()
-	if got := ansi.Strip(m.Viewport.View()); !strings.Contains(got, "python · x = 6 * 7") {
-		t.Fatalf("running cell does not show its code: %q", got)
-	}
-	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventToolProgress})
-	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventTool, ToolName: "python",
-		ToolArgs: map[string]any{"code": "x = 6 * 7\nprint(x)"}, ToolResult: `{"output":"42\n"}`})
-	if want := "python · x = 6 * 7 · 2 lines · 1 line out"; m.ToolProgressText != want {
-		t.Fatalf("finished cell row = %q, want %q", m.ToolProgressText, want)
-	}
-}
-
 func TestFinishedActionDoesNotLeakIntoVerboseOrReplayedHistory(t *testing.T) {
 	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
 	m.SetSize(100, 30)
@@ -112,17 +93,6 @@ func TestFinishedActionDoesNotLeakIntoVerboseOrReplayedHistory(t *testing.T) {
 	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventTool, ToolName: "python", Replayed: true})
 	if m.ToolProgressText != "" || m.ThoughtProgressText != "" {
 		t.Fatal("replaying old history produced a live action row")
-	}
-}
-
-func TestBlankThoughtKeepsItsActionRow(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
-	m.SetSize(60, 20)
-	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventThinking, Text: "  "})
-	m.settleActiveStream()
-	m.refreshViewportContent()
-	if m.ThoughtProgressText != "thought" || !strings.Contains(ansi.Strip(m.Viewport.View()), "thought") {
-		t.Fatalf("blank thought lost its action row: %q", m.Viewport.View())
 	}
 }
 

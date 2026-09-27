@@ -1,53 +1,10 @@
+// OpenAI streaming wire-format errors and partial tool calls must never become executable output.
 import albedo/openai_api/sse
 import albedo/openai_api/stream
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{type Option, None, Some}
-
-pub fn responses_normalizes_deltas_and_preserves_authoritative_output_test() {
-  let state = stream.new(types.Responses)
-  let assert Ok(#(state, [types.Started("resp_1")], None)) =
-    send(
-      state,
-      "response.created",
-      "{\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}",
-    )
-  let assert Ok(#(state, [], None)) =
-    send(state, "future.event", "{\"type\":\"future.event\",\"opaque\":true}")
-  let assert Ok(#(state, [types.TextDelta(1, 2, "hello")], None)) =
-    send(
-      state,
-      "response.output_text.delta",
-      "{\"type\":\"response.output_text.delta\",\"output_index\":1,\"content_index\":2,\"delta\":\"hello\"}",
-    )
-  let assert Ok(#(state, [types.ArgumentsDelta(2, "{\"x\":")], None)) =
-    send(
-      state,
-      "response.function_call_arguments.delta",
-      "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":2,\"delta\":\"{\\\"x\\\":\"}",
-    )
-  let completed =
-    "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"ciphertext\",\"phase\":\"analysis\",\"summary\":[]},{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\",\"annotations\":[]}]},{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"lookup\",\"arguments\":\"{\\\"x\\\":1}\",\"status\":\"completed\"}],\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"input_tokens_details\":{\"cached_tokens\":4}}}}"
-  let assert Ok(#(
-    _,
-    [],
-    Some(types.Turn(
-      Some("resp_1"),
-      [reasoning, _, _],
-      [types.ToolCall("call_1", "lookup", "{\"x\":1}")],
-      Some(types.Usage(11, 7, Some(4), None)),
-      types.ToolCalls,
-    )),
-  )) = send(state, "response.completed", completed)
-  let decoder = {
-    use encrypted <- decode.field("encrypted_content", decode.string)
-    use phase <- decode.field("phase", decode.string)
-    decode.success(#(encrypted, phase))
-  }
-  assert types.inspect_item(reasoning, decoder)
-    == Ok(#("ciphertext", "analysis"))
-}
 
 pub fn responses_incomplete_never_exposes_executable_calls_test() {
   let data =
@@ -173,22 +130,6 @@ pub fn cache_usage_details_tolerate_null_and_reject_malformed_values_test() {
     send(stream.new(types.ChatCompletions), "", chat_malformed)
 }
 
-pub fn responses_streams_reasoning_apart_from_the_answer_test() {
-  let state = stream.new(types.Responses)
-  let assert Ok(#(state, [types.ThinkingDelta("weigh ")], None)) =
-    send(
-      state,
-      "",
-      "{\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":0,\"summary_index\":0,\"delta\":\"weigh \"}",
-    )
-  let assert Ok(#(_state, [types.ThinkingDelta("options")], None)) =
-    send(
-      state,
-      "",
-      "{\"type\":\"response.reasoning_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"options\"}",
-    )
-}
-
 pub fn responses_separates_reasoning_summary_parts_test() {
   let part = fn(index) {
     "{\"type\":\"response.reasoning_summary_part.added\",\"output_index\":0,\"summary_index\":"
@@ -199,30 +140,6 @@ pub fn responses_separates_reasoning_summary_parts_test() {
   let assert Ok(#(state, [], None)) = send(state, "", part("0"))
   let assert Ok(#(_state, [types.ThinkingDelta("\n\n")], None)) =
     send(state, "", part("1"))
-}
-
-pub fn chat_streams_one_thinking_event_per_delta_test() {
-  let chunk =
-    "{\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"r1\",\"reasoning_content\":\"c1\"}}]}"
-  let assert Ok(#(_state, events, None)) =
-    send(stream.new(types.ChatCompletions), "", chunk)
-  assert events == [types.ThinkingDelta("c1")]
-}
-
-pub fn chat_suppresses_empty_content_delta_during_thinking_test() {
-  let chunk =
-    "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"reasoning_content\":\"c1\"}}]}"
-  let assert Ok(#(_state, events, None)) =
-    send(stream.new(types.ChatCompletions), "", chunk)
-  assert events == [types.ThinkingDelta("c1")]
-}
-
-pub fn chat_suppresses_empty_reasoning_delta_during_content_test() {
-  let chunk =
-    "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\",\"reasoning_content\":\"\"}}]}"
-  let assert Ok(#(_state, events, None)) =
-    send(stream.new(types.ChatCompletions), "", chunk)
-  assert events == [types.TextDelta(0, 0, "hello")]
 }
 
 pub fn chat_rejects_multiple_choices_and_nonempty_unknown_semantics_test() {
@@ -273,26 +190,6 @@ pub fn malformed_json_and_content_filter_finish_are_typed_test() {
     send(state, "", "[DONE]")
 }
 
-pub fn chat_preserves_other_finish_reason_test() {
-  let chunk =
-    "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"},\"finish_reason\":\"model_shutdown\"}]}"
-  let assert Ok(#(state, _, None)) =
-    send(stream.new(types.ChatCompletions), "", chunk)
-  let assert Ok(#(
-    _,
-    [],
-    Some(types.Turn(_, _, [], _, types.OtherFinish("model_shutdown"))),
-  )) = send(state, "", "[DONE]")
-}
-
-fn send(
-  state: stream.State,
-  name: String,
-  data: String,
-) -> Result(#(stream.State, List(types.Event), Option(types.Turn)), types.Error) {
-  stream.feed(state, sse.Event(name, data))
-}
-
 pub fn chat_assembles_name_fragments_and_encodes_tool_only_content_as_null_test() {
   let first =
     "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call1\",\"function\":{\"name\":\"read_\",\"arguments\":\"{\"}}]}}]}"
@@ -320,31 +217,6 @@ pub fn chat_rejects_data_after_finish_reason_test() {
   let assert Ok(#(state, _, None)) =
     send(stream.new(types.ChatCompletions), "", first)
   let assert Error(types.InvalidEvent(_)) = send(state, "", late)
-}
-
-pub fn responses_keeps_refusal_in_final_item_test() {
-  let delta =
-    "{\"type\":\"response.refusal.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"no\"}"
-  let final =
-    "{\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"refusal\",\"refusal\":\"no\"}]}]}}"
-  let assert Ok(#(state, _, None)) =
-    send(stream.new(types.Responses), "", delta)
-  let assert Ok(#(_, _, Some(turn))) = send(state, "", final)
-  let assert [item] = turn.output
-  assert types.inspect_item(
-      item,
-      decode.at(["content"], decode.list(decode.at(["refusal"], decode.string))),
-    )
-    == Ok(["no"])
-}
-
-pub fn chat_streamed_provider_error_is_reported_test() {
-  assert send(
-      stream.new(types.ChatCompletions),
-      "",
-      "{\"error\":{\"message\":\"rate limited\"}}",
-    )
-    == Error(types.ProviderError("rate limited"))
 }
 
 pub fn responses_rejects_incomplete_call_in_completed_response_test() {
@@ -420,4 +292,12 @@ pub fn responses_uses_streamed_done_items_when_terminal_output_is_empty_test() {
     )),
   )) = send(state, "", completed)
   assert arguments == "{\"code\":\"20 + 22\",\"timeout_ms\":1000}"
+}
+
+fn send(
+  state: stream.State,
+  name: String,
+  data: String,
+) -> Result(#(stream.State, List(types.Event), Option(types.Turn)), types.Error) {
+  stream.feed(state, sse.Event(name, data))
 }

@@ -1,3 +1,4 @@
+// Keyboard, paste, grapheme, and terminal editor flows can lose user input without TUI tests.
 package tui
 
 import (

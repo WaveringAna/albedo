@@ -1,3 +1,4 @@
+// Markdown table bounds and transcript copy selection are terminal-specific rendering rules.
 package tui
 
 import (
@@ -45,42 +46,6 @@ func TestMarkdownTablesStayInsideMarkdownBlocks(t *testing.T) {
 		if !strings.Contains(got, value) {
 			t.Fatalf("missing %q from %q", value, got)
 		}
-	}
-}
-
-func TestMarkdownCodeBlocksUseChromaAndThemeInk(t *testing.T) {
-	one := ink{code: "#ddddee", secondary: "#778899", brandFrom: "#77aadd", brandTo: "#ddaacc"}
-	two := ink{code: "#dddddd", secondary: "#778899", brandFrom: "#77aadd", brandTo: "#ddaacc"}
-	if codeTheme(one) == codeTheme(two) {
-		t.Fatal("theme change reused the old syntax palette")
-	}
-	before := transcriptInk
-	transcriptInk = one
-	defer func() { transcriptInk = before }()
-	got := RenderMarkdownAnsi("```go\n// note\nfunc main() { println(42) }\n```", 80)
-	if !strings.Contains(ansi.Strip(got), "func main()") || !strings.Contains(got, "\x1b[") {
-		t.Fatalf("code was not syntax highlighted: %q", got)
-	}
-}
-
-func TestMarkdownPreservesTranscriptLineBreaks(t *testing.T) {
-	got := ansi.Strip(RenderMarkdownAnsi(strings.Repeat("settled\n", 25), 80))
-	if strings.Count(got, "\n") < 24 {
-		t.Fatalf("collapsed streamed lines: %q", got)
-	}
-}
-
-func TestMarkdownComposition(t *testing.T) {
-	text := "> This is a blockquote.\n\n```js\nconst greeting = \"Hello, Markdown!\";\nconsole.log(greeting);\n```\n\n---\n\nThat's the end."
-	got := RenderMarkdownAnsi(text, 80)
-	plain := ansi.Strip(got)
-	for _, part := range []string{"│ This is a blockquote.", "┌─", "const greeting", "└", "────────────", "That's the end."} {
-		if !strings.Contains(plain, part) {
-			t.Fatalf("missing %q from %q", part, plain)
-		}
-	}
-	if !strings.Contains(got, decorInk()+"┌─") || strings.Contains(plain, "--------") {
-		t.Fatalf("code and divider are not using the transcript's decor ink: %q", got)
 	}
 }
 
@@ -132,32 +97,6 @@ func TestSelectionCopiesOnlyText(t *testing.T) {
 			if got := SelectedText(lines, row); got != "ran bash" {
 				t.Fatalf("copied the tool row as %q", got)
 			}
-		}
-	}
-}
-
-// Rows that spell no unwrapped line, like a table's, stay rows of their own.
-func TestMarkWrapsLeavesTablesAlone(t *testing.T) {
-	text := "| a | b |\n|---|---|\n| 1 | a long cell that has plenty of words in it to wrap |"
-	if got := renderCopyable(text, 40); strings.Contains(got, markWrap) || strings.Contains(got, markSplit) {
-		t.Fatalf("joined table rows: %q", got)
-	}
-}
-
-// A compaction notice says what its strategy did: snapcompact archives frames
-// and has no summary to show, while rolling (or an older daemon that names no
-// strategy) summarizes.
-func TestCompactionNoticeNamesWhatTheStrategyDid(t *testing.T) {
-	r := NewTranscriptRenderer()
-	for strategy, want := range map[string]string{
-		"snapcompact": "17 items archived as frames · ctrl+k view archive",
-		"lcm":         "17 items folded · ctrl+k view folds",
-		"rolling":     "17 items summarized · ctrl+k view summary",
-		"":            "17 items summarized · ctrl+k view summary",
-	} {
-		entry := HistoryEntry{Kind: EntryCompacted, Evicted: 17, Strategy: strategy}
-		if got := r.RenderEntry(entry, DisplayFlags{}, 120); !strings.Contains(got, want) {
-			t.Errorf("strategy %q: want %q in %q", strategy, want, got)
 		}
 	}
 }

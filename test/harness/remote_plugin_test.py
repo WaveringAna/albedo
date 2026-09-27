@@ -1,4 +1,4 @@
-"""The remote plugin: loopback kernel, references, relay, and degradation."""
+"""A loopback SSH transport checks remote relay, streaming jobs and degraded boot without live SSH credentials."""
 import asyncio
 import contextlib
 import io
@@ -99,15 +99,6 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
     async def connect(self, **kwargs):
         return await self.remote.connect(**kwargs)
 
-    def test_setup_binds_the_namespace_object(self):
-        self.assertIs(self.namespace.get("remote") or self.remote, self.remote)
-
-    def test_resolve_names_every_source_when_no_target_exists(self):
-        with patch.dict(os.environ, {"ALBEDO_SSH": ""}):
-            os.environ.pop("ALBEDO_SSH", None)
-            with self.assertRaises(remote.RemoteError) as raised:
-                remote.resolve()
-        self.assertIn("$ALBEDO_SSH", str(raised.exception))
 
     async def test_connect_boots_the_kernel_and_answers_every_tool(self):
         rem = await self.connect()
@@ -137,26 +128,6 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         ending = await job.stop                  # awaiting an uncalled method runs it
         self.assertTrue(ending.gone)
 
-    def test_control_sockets_always_live_under_a_short_temp_path(self):
-        self.fake_ssh.stop()
-        try:
-            argv = remote.ssh_base()
-        finally:
-            self.fake_ssh.start()
-        control = [arg for arg in argv if arg.startswith("ControlPath=")][0].split("=", 1)[1]
-        self.assertLessEqual(len(control) + 42, 104)
-        self.assertIn("albedo-ssh-cm", control)
-
-    async def test_typed_results_rebuild_as_real_local_objects(self):
-        rem = await self.connect()
-        self.addCleanup(rem.close)
-        Path(self.workspace, "note.txt").write_text("needle one\nplain\nneedle two\n")
-        rows = await rem.files.find("needle", ".")
-        self.assertEqual(type(rows).__name__, "RemoteRef")
-        self.assertEqual(type(rows._value).__name__, "Rows")
-        self.assertEqual(type(rows[0]).__name__, "Match")
-        self.assertTrue(repr(rows).startswith("./note.txt:1:"))
-        self.assertEqual(rows[0].to_dict()["line"], 1)  # local method, no round trip
 
     async def test_session_tools_relay_to_this_daemon(self):
         rem = await self.connect()
@@ -167,11 +138,6 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
             await rem.work.get(99)
         self.assertEqual(raised.exception.ename, "WorkError")
 
-    async def test_ssh_conveniences_work_over_the_control_connection(self):
-        rem = await self.connect()
-        self.addCleanup(rem.close)
-        await rem.write("greeting.txt", "hola")
-        self.assertEqual(await rem.read("greeting.txt"), "hola")
 
     async def test_remote_jobs_pipe_and_read_lines_like_local_ones(self):
         rem = await self.connect()
@@ -183,24 +149,6 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job.tail(lines=1).split(), ["2", "b"])
         self.assertEqual((await job.head(lines=1)).split(), ["1", "a"])
 
-    async def test_references_passed_back_stay_references(self):
-        rem = await self.connect()
-        self.addCleanup(rem.close)
-        job = await rem.run("echo", "roundtrip")
-        encoded = remote._encode_arg(job)
-        self.assertEqual(encoded, {"__ref__": job._handle})
-        # a call still in flight passes its pending identity, not a copy
-        racing = rem.run("echo", "still-pending")
-        self.assertEqual(remote._encode_arg(racing), {"pending": racing._call_id})
-        await racing
-
-    async def test_shell_is_not_available_when_the_remote_kernel_boots(self):
-        rem = await self.connect()
-        self.addCleanup(rem.close)
-        with self.assertRaisesRegex(AttributeError, "only available in degraded"):
-            rem.shell("echo no")
-        job = await rem.run("echo", "normal")
-        self.assertEqual(job.tail(), "normal\n")
 
     async def test_a_kernel_that_cannot_boot_degrades_with_a_warning(self):
         warning = io.StringIO()
@@ -234,21 +182,6 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("degraded to ssh command mode", str(raised.exception))
         tools = await rem.tools()
         self.assertIn("degraded", tools)
-
-    async def test_an_unreachable_host_fails_connect_without_degrading(self):
-        async def unreachable(target, script, *, timeout, stdin=None):
-            return 255, b"", "ssh: connect to host nosuchhost: no route to host"
-
-        with patch.object(remote, "ssh_run", unreachable):
-            with self.assertRaises(remote.RemoteError) as raised:
-                await self.connect(host="nosuchhost")
-        self.assertIn("unreachable", str(raised.exception))
-
-    async def test_close_all_ends_every_connection(self):
-        rem = await self.connect()
-        await remote.Remote.close_all()
-        self.assertTrue(rem.closed)
-        self.assertEqual(remote.connections, [])
 
 
 if __name__ == "__main__":

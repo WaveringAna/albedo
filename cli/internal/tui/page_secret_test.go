@@ -1,3 +1,4 @@
+// Typed secrets must never be visible in the terminal form.
 package tui
 
 import (

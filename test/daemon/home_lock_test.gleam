@@ -1,3 +1,4 @@
+/// Concurrent ownership of one home conflicts with the one-daemon E2E harness.
 import albedo/daemon/server
 import gleam/erlang/process
 import gleeunit/should

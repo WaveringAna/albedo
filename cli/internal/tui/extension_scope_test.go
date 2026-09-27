@@ -1,3 +1,4 @@
+// Extension scope selection changes only when the TUI requests a session scope.
 package tui
 
 import (

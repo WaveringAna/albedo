@@ -1,9 +1,7 @@
+//// Clock-dependent schedule advancement must not emit duplicate due turns.
+
 import albedo/daemon/store
-import albedo/harness/command.{Data, ModelCall, UserCall}
-import albedo/harness/extensions/schedule/extension as schedule
 import albedo/harness/extensions/schedule/ledger
-import gleam/dict
-import gleam/int
 import gleam/option.{None, Some}
 import gleeunit/should
 import sqlight
@@ -35,75 +33,6 @@ pub fn schedules_are_session_scoped_and_advance_once_test() {
     )
   })
   |> should.be_ok
-  ledger.list(db, "a") |> should.equal(Ok([]))
-  store.close(db)
-}
-
-pub fn both_callers_can_manage_heartbeats_test() {
-  let assert Ok(db) =
-    store.start(
-      ":memory:",
-      "CREATE TABLE sessions(id TEXT PRIMARY KEY); INSERT INTO sessions VALUES('a');",
-    )
-  let assert Ok(_) = ledger.initialise(db)
-  let cmd = schedule.command(db, "a")
-  let context =
-    command.Context(fn(_) { panic as "schedule must not submit a turn" })
-  let assert Ok(Data(_)) =
-    command.call(
-      [cmd],
-      context,
-      ModelCall,
-      "kernel",
-      "/schedule",
-      dict.new(),
-      "heartbeat every:300 review the work",
-    )
-  let assert Ok([heartbeat]) = ledger.list(db, "a")
-  heartbeat.kind |> should.equal("heartbeat")
-  let assert Ok(Data(_)) =
-    command.call(
-      [cmd],
-      context,
-      UserCall,
-      "cli",
-      "/schedule",
-      dict.new(),
-      "edit " <> int.to_string(heartbeat.id) <> " every:600 check again",
-    )
-  let assert Ok(updated) = ledger.get(db, "a", heartbeat.id)
-  updated.kind |> should.equal("heartbeat")
-  updated.every |> should.equal(Some(600))
-  let assert Error(_) =
-    command.call(
-      [cmd],
-      context,
-      ModelCall,
-      "kernel",
-      "/schedule",
-      dict.new(),
-      "heartbeat in:60 no",
-    )
-  let assert Error(_) =
-    command.call(
-      [cmd],
-      context,
-      ModelCall,
-      "kernel",
-      "/schedule",
-      dict.new(),
-      "add every:1 too fast",
-    )
-  let assert Ok(Data(_)) =
-    command.call(
-      [cmd],
-      context,
-      ModelCall,
-      "kernel",
-      "/schedule",
-      dict.new(),
-      "delete " <> int.to_string(heartbeat.id),
-    )
   ledger.list(db, "a") |> should.equal(Ok([]))
   store.close(db)
 }

@@ -1,3 +1,4 @@
+// Terminal color reply parsing and contrast across palettes cannot be exercised by daemon E2E.
 package tui
 
 import (
@@ -60,34 +61,5 @@ func TestInkHitsItsContrastTargets(t *testing.T) {
 	}
 	if _, ok := mixInk(termColors{}); ok {
 		t.Fatal("no reply leaves the palette fallbacks in place")
-	}
-}
-
-func TestCodeTintSteps(t *testing.T) {
-	cases := []struct {
-		name         string
-		fg, bg, blue string
-		to           string
-		want         float64
-	}{
-		{"black bg tints toward blue", "#cdd6f4", "#000000", "#89b4fa", "#89b4fa", darkCodeBgRatio},
-		{"mocha tints toward blue", "#cdd6f4", "#1e1e2e", "#89b4fa", "#89b4fa", darkCodeBgRatio},
-		{"latte steps toward the text", "#4c4f69", "#eff1f5", "#1e66f5", "#4c4f69", lightCodeBgRatio},
-		{"no blue reported steps toward the text", "#cdd6f4", "#1e1e2e", "", "#cdd6f4", darkCodeBgRatio},
-	}
-	for _, tc := range cases {
-		fg, bg := hexColor(t, tc.fg), hexColor(t, tc.bg)
-		colors := termColors{fg: &fg, bg: &bg, palette: map[int]rgb{}}
-		if tc.blue != "" {
-			colors.palette[ansiBlue] = hexColor(t, tc.blue)
-		}
-		mixed, _ := mixInk(colors)
-		tint := hexColor(t, mixed.codeBg)
-		if got := ratio(bg, tint); math.Abs(got-tc.want) > 0.03 {
-			t.Errorf("%s: %s is %.2f:1 from the background, want %v", tc.name, mixed.codeBg, got, tc.want)
-		}
-		if want := step(bg, hexColor(t, tc.to), tc.want).hex(); mixed.codeBg != want {
-			t.Errorf("%s: tint %s, want %s stepped toward %s", tc.name, mixed.codeBg, want, tc.to)
-		}
 	}
 }

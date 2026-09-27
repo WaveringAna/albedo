@@ -1,3 +1,4 @@
+// MCP form focus and secret retention after failed connection are TUI-only flows.
 package tui
 
 import (

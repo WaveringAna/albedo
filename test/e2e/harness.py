@@ -35,6 +35,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -316,6 +317,10 @@ class Albedo:
         with _config_lock:
             global _shared
             if _shared is None:
+                if not hasattr(sys.modules["__main__"], "__file__"):
+                    # A daemon lives until the process that booted it exits,
+                    # which a long-lived interpreter or agent kernel never does.
+                    raise RuntimeError("run E2E tests through test/e2e/run.py, not an interactive interpreter")
                 self.temp = tempfile.TemporaryDirectory(prefix="albedo-e2e-")
                 self.root = Path(self.temp.name)
                 self.home = self.root / "home"

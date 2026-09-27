@@ -1,3 +1,5 @@
+//// Shared admission enforces concurrent local job limits across sessions.
+
 import gleeunit/should
 
 @external(erlang, "albedo_job_slots_test_support", "check")

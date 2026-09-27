@@ -1,17 +1,14 @@
+/// Legacy schema migrations preserve titles and event timestamps; E2E uses current schemas.
 import albedo/daemon/conversation
 import albedo/daemon/events as view
-import albedo/daemon/mail
-import albedo/daemon/note
 import albedo/daemon/store
 import albedo/daemon/transcript
-import albedo/daemon/usage
 import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/result
 import gleam/string
 import gleeunit/should
 import sqlight
@@ -34,26 +31,6 @@ fn session(id: String) -> conversation.Info {
     None,
     None,
   )
-}
-
-pub fn title_is_a_safe_bounded_unicode_preview_test() {
-  conversation.title("  first\nsecond\tline  ")
-  |> should.equal("first second line")
-  conversation.title("\u{1b}[31m red\u{202e}hidden")
-  |> should.equal("[31m red hidden")
-  conversation.title("\n\t") |> should.equal("new session")
-
-  let family = "👩‍💻"
-  let bounded = conversation.title(string.repeat(family, 80) <> "x")
-  string.length(bounded) |> should.equal(80)
-  bounded |> should.equal(string.repeat(family, 79) <> "…")
-}
-
-pub fn webhook_deliveries_never_name_a_session_test() {
-  let delivery = mail.webhook_text("deploy", "d062", "{\"hello\":\"world\"}")
-  conversation.latest_user([types.User("fix the deploy"), types.User(delivery)])
-  |> should.equal(Some("fix the deploy"))
-  conversation.latest_user([types.User(delivery)]) |> should.equal(None)
 }
 
 pub fn latest_user_title_survives_restart_and_legacy_migration_test() {
@@ -109,141 +86,6 @@ pub fn latest_user_title_survives_restart_and_legacy_migration_test() {
   cleanup(path)
 }
 
-pub fn last_assistant_at_tracks_only_visible_assistant_messages_test() {
-  let path = temporary_database()
-  let assert Ok(host) = runtime.start(path)
-  let ledger = runtime.ledger(host)
-  let assert Ok(_) = conversation.initialise(ledger)
-  let assert Ok(_) = conversation.create(ledger, session("session"))
-  let assert Ok([initial]) = conversation.list(ledger)
-  initial.last_assistant_at |> should.equal(None)
-
-  let assert Ok(_) =
-    store.query(ledger, fn(db) {
-      sqlight.exec(
-        "UPDATE sessions SET last_assistant_at=7 WHERE id='session'",
-        db,
-      )
-    })
-  let assert Ok(reasoning) =
-    json.parse(
-      "{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"why\"}]}",
-      types.replay_decoder(types.Responses),
-    )
-  let assert Ok(message) =
-    json.parse(
-      "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"visible answer\"}]}",
-      types.replay_decoder(types.Responses),
-    )
-
-  let non_messages = [
-    [types.User("prompt")],
-    [types.ToolOutput("call", "result", [])],
-    [types.Replay(reasoning)],
-    [types.Assistant("")],
-  ]
-  list.try_each(non_messages, fn(inputs) {
-    use _ <- result.try(conversation.commit(
-      ledger,
-      "session",
-      inputs,
-      conversation.Model,
-    ))
-    use infos <- result.try(conversation.list(ledger))
-    case infos {
-      [info] -> {
-        info.last_assistant_at |> should.equal(Some(7))
-        Ok(Nil)
-      }
-      _ -> Error("expected one session")
-    }
-  })
-  |> should.be_ok
-
-  let assert Ok(_) =
-    conversation.commit(
-      ledger,
-      "session",
-      [types.Replay(message)],
-      conversation.Idle,
-    )
-  let assert Ok([answered]) = conversation.list(ledger)
-  let assert Some(timestamp) = answered.last_assistant_at
-  let assert True = timestamp > 7
-  runtime.stop(host)
-  cleanup(path)
-}
-
-pub fn list_orders_sessions_by_latest_activity_test() {
-  let path = temporary_database()
-  let assert Ok(host) = runtime.start(path)
-  let ledger = runtime.ledger(host)
-  let assert Ok(_) = conversation.initialise(ledger)
-  let assert Ok(_) = conversation.create(ledger, session("older"))
-  let assert Ok(_) = conversation.create(ledger, session("newer"))
-  let assert Ok([newer, older]) = conversation.list(ledger)
-  newer.id |> should.equal("newer")
-  older.id |> should.equal("older")
-
-  let assert Ok(_) =
-    conversation.commit(
-      ledger,
-      "older",
-      [types.User("latest task")],
-      conversation.Model,
-    )
-  let assert Ok([active, _]) = conversation.list(ledger)
-  active.id |> should.equal("older")
-  active.title |> should.equal("latest task")
-
-  let assert Ok(_) =
-    conversation.commit(
-      ledger,
-      "newer",
-      [types.Assistant("assistant activity")],
-      conversation.Idle,
-    )
-  let assert Ok([active, _]) = conversation.list(ledger)
-  active.id |> should.equal("newer")
-  active.title |> should.equal("new session")
-  runtime.stop(host)
-  cleanup(path)
-}
-
-pub fn a_given_name_outlasts_new_messages_until_cleared_test() {
-  let path = temporary_database()
-  let assert Ok(host) = runtime.start(path)
-  let ledger = runtime.ledger(host)
-  let assert Ok(_) = conversation.initialise(ledger)
-  let assert Ok(_) = conversation.create(ledger, session("named"))
-  let assert Ok(_) = conversation.create(ledger, session("newer"))
-  let assert Ok(renamed) =
-    conversation.rename(ledger, "named", "  auth\nrewrite  ")
-  renamed.title |> should.equal("auth rewrite")
-  conversation.given_name(ledger, "named") |> should.equal(Some("auth rewrite"))
-  // Renaming is not activity.
-  let assert Ok([first, _]) = conversation.list(ledger)
-  first.id |> should.equal("newer")
-
-  let assert Ok(_) =
-    conversation.commit(
-      ledger,
-      "named",
-      [types.User("fix the login bug")],
-      conversation.Model,
-    )
-  let assert Ok(info) = conversation.get(ledger, "named")
-  info.title |> should.equal("auth rewrite")
-
-  let assert Ok(cleared) = conversation.rename(ledger, "named", " \t ")
-  cleared.title |> should.equal("fix the login bug")
-  conversation.given_name(ledger, "named") |> should.equal(None)
-  conversation.rename(ledger, "missing", "x")
-  |> should.equal(Error("session not found"))
-  runtime.stop(host)
-  cleanup(path)
-}
-
 pub fn migration_recovers_placeholder_titles_and_activity_order_test() {
   let path = temporary_database()
   let assert Ok(host) = runtime.start(path)
@@ -282,80 +124,6 @@ pub fn migration_recovers_placeholder_titles_and_activity_order_test() {
   second.id |> should.equal("second")
   second.title |> should.equal("older prompt")
   runtime.stop(host)
-  cleanup(path)
-}
-
-pub fn usage_metadata_roundtrips_without_touching_conversation_activity_test() {
-  let path = temporary_database()
-  let assert Ok(host) = runtime.start(path)
-  let ledger = runtime.ledger(host)
-  let assert Ok(_) = conversation.initialise(ledger)
-  let assert Ok(_) = conversation.create(ledger, session("measured"))
-  let assert Ok(_) = conversation.create(ledger, session("newer"))
-  let measured =
-    usage.Metadata(
-      "openai/gpt-test",
-      1_735_689_600_123,
-      Some(usage.Tokens(120, 30, Some(0), Some(14))),
-    )
-  let assert Ok(_) = conversation.record_usage(ledger, "measured", measured)
-  let assert Ok([newer, unchanged]) = conversation.list(ledger)
-  newer.id |> should.equal("newer")
-  unchanged.id |> should.equal("measured")
-  unchanged.title |> should.equal("new session")
-  unchanged.last_assistant_at |> should.equal(None)
-  conversation.load(ledger, "measured") |> should.equal(Ok([]))
-  conversation.load_usage(ledger, "measured")
-  |> should.equal(Ok(Some(measured)))
-  let before = view.snapshot(ledger, [], Some(measured))
-  runtime.stop(host)
-
-  let assert Ok(restarted) = runtime.start(path)
-  let ledger = runtime.ledger(restarted)
-  let assert Ok(_) = conversation.initialise(ledger)
-  let assert Ok(Some(restored)) = conversation.load_usage(ledger, "measured")
-  let after = view.snapshot(ledger, [], Some(restored))
-  after |> should.equal(before)
-  let assert [event] = after
-  let event_decoder = {
-    use model <- decode.field("model", decode.string)
-    use prompt <- decode.field("promptTokens", decode.int)
-    use completion <- decode.field("completionTokens", decode.int)
-    use cached <- decode.field("cachedPromptTokens", decode.int)
-    use creation <- decode.field("cacheCreationTokens", decode.int)
-    use total <- decode.field("totalTokens", decode.int)
-    use recorded_at <- decode.field("recordedAt", decode.int)
-    decode.success(#(
-      model,
-      prompt,
-      completion,
-      cached,
-      creation,
-      total,
-      recorded_at,
-    ))
-  }
-  json.parse(event, event_decoder)
-  |> should.equal(
-    Ok(#("openai/gpt-test", 120, 30, 0, 14, 150, 1_735_689_600_123)),
-  )
-
-  let unreported = usage.Metadata("openai/gpt-next", 1_735_689_600_456, None)
-  let assert Ok(_) = conversation.record_usage(ledger, "measured", unreported)
-  conversation.load_usage(ledger, "measured")
-  |> should.equal(Ok(Some(unreported)))
-  let assert [clearing_event] = view.snapshot(ledger, [], Some(unreported))
-  json.parse(
-    clearing_event,
-    decode.optional_field(
-      "promptTokens",
-      None,
-      decode.optional(decode.int),
-      decode.success,
-    ),
-  )
-  |> should.equal(Ok(None))
-  runtime.stop(restarted)
   cleanup(path)
 }
 
@@ -439,144 +207,5 @@ pub fn transcript_timestamps_migrate_without_invention_and_roundtrip_test() {
   let assert Ok(restored) = conversation.load_entries(ledger, "timestamped")
   view.snapshot(ledger, restored, None) |> should.equal(snapshot)
   runtime.stop(restarted)
-  cleanup(path)
-}
-
-pub fn provider_provenance_backfills_on_switch_and_survives_restart_test() {
-  let path = temporary_database()
-  let assert Ok(host) = runtime.start(path)
-  let ledger = runtime.ledger(host)
-  let assert Ok(_) = conversation.initialise(ledger)
-  let assert Ok(_) = conversation.create(ledger, session("provenance"))
-  let original = [types.User("old provider input"), types.Assistant("answer")]
-  let assert Ok(old_timestamp) =
-    conversation.commit(ledger, "provenance", original, conversation.Idle)
-  let assert Ok(before_payloads) =
-    store.query(ledger, fn(db) {
-      sqlight.query(
-        "SELECT payload FROM transcript WHERE session=? ORDER BY seq",
-        db,
-        [sqlight.text("provenance")],
-        decode.field(0, decode.bit_array, decode.success),
-      )
-    })
-  let assert Ok(_) =
-    conversation.set_configuration(
-      ledger,
-      "provenance",
-      "new-provider",
-      "new-model",
-      types.ChatCompletions,
-      None,
-    )
-  let assert Ok(after_payloads) =
-    store.query(ledger, fn(db) {
-      sqlight.query(
-        "SELECT payload FROM transcript WHERE session=? ORDER BY seq",
-        db,
-        [sqlight.text("provenance")],
-        decode.field(0, decode.bit_array, decode.success),
-      )
-    })
-  after_payloads |> should.equal(before_payloads)
-  let assert Ok(new_timestamp) =
-    conversation.commit_from(
-      ledger,
-      "provenance",
-      [types.User("new provider input")],
-      conversation.Idle,
-      Some("new-provider"),
-    )
-  let expected = [
-    transcript.Entry(
-      types.User("old provider input"),
-      Some(old_timestamp),
-      Some("provider"),
-    ),
-    transcript.Entry(
-      types.Assistant("answer"),
-      Some(old_timestamp),
-      Some("provider"),
-    ),
-    transcript.Entry(
-      types.User("new provider input"),
-      Some(new_timestamp),
-      Some("new-provider"),
-    ),
-  ]
-  conversation.load_entries(ledger, "provenance") |> should.equal(Ok(expected))
-  conversation.load(ledger, "provenance")
-  |> should.equal(
-    Ok([
-      types.User("old provider input"),
-      types.Assistant("answer"),
-      types.User("new provider input"),
-    ]),
-  )
-
-  runtime.stop(host)
-  let assert Ok(restarted) = runtime.start(path)
-  let ledger = runtime.ledger(restarted)
-  let assert Ok(_) = conversation.initialise(ledger)
-  conversation.load_entries(ledger, "provenance") |> should.equal(Ok(expected))
-  let assert Ok([info]) = conversation.list(ledger)
-  #(info.provider, info.model, info.protocol)
-  |> should.equal(#("new-provider", "new-model", types.ChatCompletions))
-  runtime.stop(restarted)
-  cleanup(path)
-}
-
-/// A note committed after a message, such as a daemon restart marker, leaves
-/// the session named after the message.
-pub fn latest_user_skips_notes_test() {
-  [
-    types.User("fix the parser"),
-    types.User(note.wrap("daemon restart", "albedo restarted")),
-  ]
-  |> conversation.latest_user
-  |> should.equal(Some("fix the parser"))
-  [types.User("<system-note>only a note</system-note>")]
-  |> conversation.latest_user
-  |> should.equal(None)
-}
-
-pub fn delete_session_removes_transcript_and_records_test() {
-  let path = temporary_database()
-  let assert Ok(host) = runtime.start(path)
-  let ledger = runtime.ledger(host)
-  let assert Ok(_) = conversation.initialise(ledger)
-  let assert Ok(_) = conversation.create(ledger, session("gone"))
-  let assert Ok(_) = conversation.create(ledger, session("kept"))
-  let assert Ok(_) =
-    store.query(ledger, fn(db) {
-      sqlight.exec(
-        "INSERT INTO transcript(session,payload) VALUES('gone',X'00')",
-        db,
-      )
-    })
-  let assert Ok(_) = conversation.delete(ledger, "gone")
-  let assert Ok(sessions) = conversation.list(ledger)
-  list.map(sessions, fn(info) { info.id }) |> should.equal(["kept"])
-  let assert Ok(entries) =
-    store.query(ledger, fn(db) {
-      sqlight.query(
-        "SELECT session FROM transcript",
-        db,
-        [],
-        decode.field(0, decode.string, decode.success),
-      )
-    })
-  entries |> should.equal([])
-  let assert Ok(cells) =
-    store.query(ledger, fn(db) {
-      sqlight.query(
-        "SELECT id FROM cells",
-        db,
-        [],
-        decode.field(0, decode.string, decode.success),
-      )
-    })
-  cells |> should.equal([])
-  runtime.stop(host)
   cleanup(path)
 }

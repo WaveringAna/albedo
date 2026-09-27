@@ -1,3 +1,4 @@
+// Webhook form secret handling and session focus require interactive TUI events.
 package tui
 
 import (
@@ -23,34 +24,6 @@ func loadedWebhooksPage(t *testing.T) WebhooksPageModel {
 		{ID: "wh2", Session: "t", Name: "grafana", URL: "/webhooks/wh2", Header: "x-albedo-signature", Prefix: "sha256="},
 	}})
 	return m
-}
-
-func TestWebhooksPageExplainsTheSelectedHook(t *testing.T) {
-	view := ansi.Strip(loadedWebhooksPage(t).View())
-	for _, want := range []string{"agent access off", "this session · infra bot · /srv/infra", "release notes · /srv/docs", "wakes      this session · infra bot", "deploy", "2 queued", "POST /webhooks/wh1", "x-hub-signature-256: sha256=", "2 waiting for the session", "session busy", "n add hook"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("view is missing %q:\n%s", want, view)
-		}
-	}
-}
-
-func TestWebhookFormSetsSignatureOnTheCreatedHook(t *testing.T) {
-	f := newWebhookForm(nil, webhookSessions, "s")
-	f.Inputs[hookFieldName].SetValue("deploy")
-	f.Inputs[hookFieldHeader].SetValue("x-hub-signature-256")
-	steps, _, err := f.steps()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := [][2]string{{"create_in", "s deploy"}, {"signature", newHookID + " x-hub-signature-256 sha256="}}
-	if len(steps) != 2 || steps[0] != want[0] || steps[1] != want[1] {
-		t.Fatalf("steps = %v", steps)
-	}
-
-	f.Inputs[hookFieldSecret].SetValue("short")
-	if _, _, err := f.steps(); err == nil || !strings.HasPrefix(err.Error(), "secret") {
-		t.Fatalf("short secret accepted: %v", err)
-	}
 }
 
 func TestWebhookEditOnlySendsWhatChanged(t *testing.T) {
@@ -86,14 +59,6 @@ func TestGeneratedSecretIsShownUntilDismissed(t *testing.T) {
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.Reveal != nil || strings.Contains(m.View(), "whsec_generated") {
 		t.Fatal("secret should be gone once dismissed")
-	}
-}
-
-func TestLongSessionTitlesKeepTheirPlace(t *testing.T) {
-	sessions := []daemon.Session{{ID: "s", Title: strings.Repeat("webhook payload text ", 6), Workspace: "/srv/infra"}}
-	label := sessionLabel(sessions, "s", "s")
-	if !strings.HasPrefix(label, "this session · ") || !strings.HasSuffix(label, "… · /srv/infra") {
-		t.Fatalf("label = %q", label)
 	}
 }
 

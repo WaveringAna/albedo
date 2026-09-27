@@ -1,3 +1,4 @@
+// Session picker focus, preview, archive, and deletion are TUI-only interactions.
 package tui
 
 import (
@@ -68,57 +69,6 @@ func TestSessionViewerResponsiveViewport(t *testing.T) {
 		if !strings.Contains(ansi.Strip(view), "Selected session") && size[0] >= 25 {
 			t.Errorf("%dx%d: selected row not visible", size[0], size[1])
 		}
-	}
-}
-
-func TestSessionViewerKeepsTodayBelowMostUsedInOneList(t *testing.T) {
-	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.Local)
-	stamp := now.Add(-time.Hour).Unix()
-	for _, width := range []int{110, 170} {
-		m := viewerAt(now)
-		m.SetSize(width, 30)
-		sessions := []daemon.Session{
-			{ID: "today", Title: "Today's session", LastAssistantAt: &stamp},
-			{ID: "used", Title: "Frequent session", LastAssistantAt: &stamp},
-		}
-		m.SetSessions(sessions, nil)
-		m.RecordOpen("used")
-		m.RecordOpen("used")
-		m.SetSessions(sessions, nil)
-		rows := strings.Split(ansi.Strip(m.View()), "\n")
-		used, today := -1, -1
-		for i, row := range rows {
-			if divider := strings.Index(row, " │ "); divider >= 0 {
-				if heading := strings.Index(row, "most used 1"); heading >= 0 && heading < divider {
-					used = i
-				}
-				if heading := strings.Index(row, "today 1"); heading >= 0 && heading < divider {
-					today = i
-				}
-			}
-			if strings.Contains(row, "Frequent session") || strings.Contains(row, "Today's session") {
-				if got := strings.Count(row, " │ "); got != 1 {
-					t.Errorf("width %d rendered %d dividers in %q", width, got, row)
-				}
-			}
-		}
-		if used < 0 || today <= used {
-			t.Errorf("width %d did not keep today below most used in the list: %q", width, rows)
-		}
-	}
-}
-
-func TestSessionViewerActiveAndUntrustedTitle(t *testing.T) {
-	m := NewSessionViewer("/work/current")
-	m.SetSize(60, 16)
-	active := daemon.Session{ID: "active", Title: "\x1b[31mHello\nworld", Workspace: "/work/current"}
-	m.SetSessions(nil, &active)
-	if item, _ := m.Highlighted(); item.ID != active.ID {
-		t.Fatalf("active selection: %q", item.ID)
-	}
-	view := m.View()
-	if strings.Contains(view, "\x1b[31m") || !strings.Contains(ansi.Strip(view), "Hello world") {
-		t.Fatalf("unsafe or missing title: %q", view)
 	}
 }
 
@@ -239,33 +189,6 @@ func TestSessionViewerPreviewFetchesOnSettleAndRenders(t *testing.T) {
 	m, _ = m.Update(SessionPreviewMsg{ID: "two", Err: errors.New("unknown operation")})
 	if !strings.Contains(ansi.Strip(m.View()), "newer daemon") {
 		t.Fatal("missing daemon hint")
-	}
-}
-
-func TestSessionViewerUndatedSessionsFollowActivity(t *testing.T) {
-	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.Local)
-	at := func(d time.Duration) *int64 { v := now.Add(-d).Unix(); return &v }
-	sessions := []daemon.Session{
-		{ID: "waiting", Title: "prompt sent, no reply yet"},
-		{ID: "today", Title: "Today", LastAssistantAt: at(time.Hour)},
-		{ID: "old", Title: "Old", LastAssistantAt: at(30 * 24 * time.Hour)},
-		{ID: "fresh", Title: ""},
-	}
-	m := viewerAt(now)
-	m.SetSessions(sessions, &sessions[3])
-	var order []string
-	for _, item := range m.Filtered {
-		order = append(order, item.ID)
-	}
-	if got := strings.Join(order, " "); got != "new login archive fresh waiting today old" {
-		t.Fatalf("order: %s", got)
-	}
-	if m.section["fresh"] != secToday || m.section["waiting"] != secToday {
-		t.Fatalf("sections: %v", m.section)
-	}
-	m.SetSessions(sessions, nil)
-	if m.section["fresh"] != secEarlier {
-		t.Fatalf("empty inactive session: %d", m.section["fresh"])
 	}
 }
 

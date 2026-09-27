@@ -1,3 +1,4 @@
+// Rename keyboard actions must target only the selected session or agent.
 package tui
 
 import (

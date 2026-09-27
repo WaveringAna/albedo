@@ -1,3 +1,4 @@
+//// Process-group termination must clean up descendants and races beyond normal E2E teardown.
 //// Kernel-level supervision: owned process groups, quota accounting, verified stops.
 
 import albedo/harness/extensions/python/kernel as python
@@ -25,32 +26,6 @@ const waits_on_a_sleeper = "program = 'import subprocess; child = subprocess.Pop
 const library_spawn = "library = {}\nexec(compile('import subprocess\\ndef spawn(*args, **kwargs):\\n    return subprocess.Popen(*args, **kwargs)', 'fixture_library.py', 'exec'), library)\nspawn = library['spawn']\n"
 
 const leaves_a_sleeper = "program = 'import subprocess; child = subprocess.Popen([\"sleep\", \"30\"]); print(child.pid, flush=True)'\n"
-
-pub fn completed_jobs_do_not_consume_the_running_quota_test() {
-  let assert Ok(store) = work.start(":memory:")
-  let assert Ok(kernel) = python.local(store, "/tmp")
-  let assert Ok(first) =
-    python.execute(
-      kernel,
-      "a",
-      "job = run('printf', 'first')\nawait job\n(job.poll(), job.tail())",
-      5000,
-    )
-  first.value |> should.equal("(0, 'first')")
-  let assert Ok(many) =
-    python.execute(
-      kernel,
-      "b",
-      "for _ in range(70):\n    await run('true')\n(len(jobs), job.poll(), job.tail())",
-      60_000,
-    )
-  many.status |> should.equal(python.Succeeded)
-  // 70 finished jobs start, the addressable index stays bounded, and the oldest
-  // handle still answers although newer completions displaced it from `jobs`.
-  many.value |> should.equal("(64, 0, 'first')")
-  let assert Ok(_) = python.stop(kernel)
-  work.close(store)
-}
 
 pub fn deadline_ends_the_group_and_reports_it_test() {
   let assert Ok(store) = work.start(":memory:")

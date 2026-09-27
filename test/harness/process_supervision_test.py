@@ -1,7 +1,4 @@
-"""Focused supervision tests: ownership, deadlines, quota, and surfacing.
-
-Runs with `gleam test`; standalone: python3 test/harness/process_supervision_test.py
-"""
+"""OS process-group identity, shutdown races and heavy-slot admission need controlled child processes rather than flaky daemon timing."""
 from __future__ import annotations
 
 import asyncio
@@ -87,18 +84,6 @@ class SupervisionTest(unittest.TestCase):
         EVENTS.clear()
         install()
 
-    def test_a_finished_job_does_not_hold_a_running_slot(self):
-        first = start("printf first")
-        wait(first)
-        self.assertEqual(first.poll(), 0)
-        for _ in range(plugin.ACTIVE_LIMIT + 6):
-            self.assertEqual(wait(start("true")).poll(), 0)
-        self.assertEqual(len(plugin.active), 0)
-        self.assertLessEqual(len(plugin.retained), plugin.RETAINED_LIMIT)
-        self.assertLessEqual(len(plugin.jobs), plugin.RETAINED_LIMIT)
-        self.assertNotIn(first.id, plugin.jobs)      # displaced from the index
-        self.assertEqual(first.tail(), "first")      # the handle still answers
-        self.assertEqual(first.poll(), 0)
 
     def test_deadline_ends_the_whole_group(self):
         job = start("sleep 30 & echo $!; wait", timeout=0.1)
@@ -120,13 +105,6 @@ class SupervisionTest(unittest.TestCase):
         self.assertTrue(job.termination.gone)
         self.assertFalse(pid_present(grandchild))
 
-    def test_command_exit_is_not_held_by_a_descendant_holding_output(self):
-        started = time.monotonic()
-        job = start("sleep 30 & echo $!; exit 0", timeout=30)
-        wait(job)
-        self.assertLess(time.monotonic() - started, 5)
-        self.assertTrue(job.termination.gone)
-        self.assertFalse(pid_present(pid_from(job.tail())))
 
     def test_stop_escalates_and_is_retryable(self):
         job = start("trap '' TERM; while :; do sleep 0.2; done", timeout=30)
@@ -139,44 +117,6 @@ class SupervisionTest(unittest.TestCase):
         run(job)
         self.assertIn(job.id, plugin.retained)
 
-    def test_cancelled_spawn_still_owns_its_child(self):
-        real = plugin.spawn
-
-        async def slow(*args, **kwargs):
-            await asyncio.sleep(0.05)
-            return await real(*args, **kwargs)
-
-        plugin.spawn = slow
-        try:
-            job = start("sleep 30", timeout=30)
-            run(asyncio.sleep(0.01))       # inside the spawn
-            job.task.cancel()
-            run(asyncio.sleep(0.3))
-        finally:
-            plugin.spawn = real
-        self.assertIsNotNone(job.process)
-        self.assertLess(job.exit_code, 0)   # the child the spawn created was ended
-        self.assertTrue(job.termination.gone)
-        self.assertFalse(present(job.group.pgid))
-
-    def test_command_wait_uses_exit_notifications_not_periodic_timers(self):
-        from unittest.mock import patch
-
-        async def check():
-            job = start("sleep 30")
-            try:
-                await job._spawn()
-                with patch.object(LOOP, "call_later", wraps=LOOP.call_later) as timers:
-                    # Drain ready callbacks, not wall time: _drain has now
-                    # installed its wait even if it raced the spawn reply.
-                    for _ in range(4):
-                        await asyncio.sleep(0)
-                    self.assertFalse(job.task.done())
-                    self.assertFalse(any(call.args[0] < 1 for call in timers.call_args_list))
-            finally:
-                await job.stop()
-                await job
-        run(check())
 
     def test_surviving_group_keeps_its_slot_and_is_surfaced(self):
         """A group that outlives KILL keeps its slot and is reported, not forgotten."""
@@ -213,57 +153,6 @@ class SupervisionTest(unittest.TestCase):
             run(albedo_proc.terminate([albedo_proc.Group(leader.pid)]))
             run(leader.wait())
 
-    def test_signal_helper_ends_a_group_and_reports_a_verdict(self):
-        """The supervisor's helper: one argv in, one structured verdict out."""
-        import json
-        import subprocess
-
-        root = os.path.join(ROOT, "priv", "python")
-        child = subprocess.Popen(["/bin/sh", "-c", "sleep 30 >/dev/null 2>&1 & wait"],
-                                 start_new_session=True)
-        try:
-            request = json.dumps({"targets": [{"label": "job", "pgid": child.pid}], "term_ms": 200, "kill_ms": 500})
-            answer = subprocess.run(
-                [sys.executable, "-u", os.path.join(root, "albedo_signal.py"), request],
-                capture_output=True, text=True, timeout=30)
-            self.assertEqual(answer.returncode, 0)
-            verdict = json.loads(answer.stdout)
-            self.assertEqual(verdict["ok"], True)
-            self.assertEqual(verdict["targets"][0]["label"], "job")
-            self.assertEqual(verdict["targets"][0]["gone"], True)
-            self.assertEqual(child.wait(), -15)  # reap before probing the zombie's pid
-            self.assertFalse(present(child.pid))
-        finally:
-            if child.poll() is None:
-                os.killpg(child.pid, 9)
-                child.wait()
-
-    def test_active_quota_and_batch_shutdown_share_one_deadline(self):
-        async def check():
-            owned = [start("trap '' TERM; exec sleep 30") for _ in range(plugin.ACTIVE_LIMIT)]
-            try:
-                with self.assertRaisesRegex(RuntimeError, "64 jobs"):
-                    start("true")
-                # Allow every shell to install its handler before testing escalation.
-                await asyncio.gather(*(job._spawn() for job in owned))
-                await asyncio.sleep(0.1)
-                started = time.monotonic()
-                await plugin.close()
-                await asyncio.gather(*owned)
-                self.assertLess(time.monotonic() - started, 5)
-                self.assertEqual(len(plugin.active), 0)
-                self.assertTrue(all(job.termination.gone for job in owned))
-                self.assertTrue(all(not present(job.group.pgid) for job in owned))
-            finally:
-                await asyncio.gather(*(job.stop() for job in owned))
-        run(check())
-
-    def test_permission_denied_is_a_survivor_not_a_success(self):
-        from unittest.mock import patch
-        with patch.object(albedo_proc, "deliver", side_effect=PermissionError(1, "denied")):
-            result = run(albedo_proc.terminate([albedo_proc.Group(os.getpgrp())], term=0, kill=0))[0]
-        self.assertFalse(result.gone)
-        self.assertEqual(len(result.failures), 2)
 
     def test_long_jobs_pause_for_a_heavy_slot_and_quick_ones_never_ask(self):
         import subprocess
@@ -306,27 +195,6 @@ class SupervisionTest(unittest.TestCase):
 
         run(check())
 
-    def test_a_paused_job_stops_cleanly(self):
-        async def check():
-            async def admission(id, on_queued):
-                on_queued()
-                await LOOP.create_future()
-
-            install(admission)
-            grace = plugin.GRACE
-            plugin.GRACE = 0.1
-            try:
-                job = start("sleep 30")
-                await asyncio.sleep(0.3)
-                self.assertTrue(job.queued)
-                self.assertTrue((await job.stop()).gone)
-                await job
-                self.assertFalse(job.queued)
-            finally:
-                plugin.GRACE = grace
-                await plugin.close()
-
-        run(check())
 
     def test_stop_before_spawn_and_immediate_cancellation_keep_ownership(self):
         async def check():

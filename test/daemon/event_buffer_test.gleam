@@ -1,3 +1,4 @@
+/// Unicode eviction and replay gaps are impractical on the shared E2E event stream.
 import albedo/daemon/event_buffer as buffer
 import gleam/int
 import gleam/list

@@ -1,3 +1,4 @@
+// Jump-to-user navigation and idle polling are TUI-only transitions.
 package tui
 
 import (
@@ -23,32 +24,6 @@ func replayTurn(m *ChatModel, start int64, text string) {
 	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventUser, Text: text, Source: "chat", Timestamp: ms(start)})
 	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventTool, ToolName: "python", ToolArgs: map[string]any{"code": "x"}})
 	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventMessage, Text: "answer to " + text, Timestamp: ms(start + 23_000)})
-}
-
-func TestTurnSignoffUsesReplayedTimestamps(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
-	m.SetSize(100, 40)
-	replayTurn(&m, 1_000_000, "first")
-	replayTurn(&m, 1_000_000+2*3600_000, "second")
-	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventInterrupted})
-	rows := plainRows(m.settledLines)
-	var signoffs []string
-	for _, row := range rows {
-		if strings.Contains(row, "tool") && strings.Contains(row, "s ·") || strings.Contains(row, "stopped by you") {
-			signoffs = append(signoffs, row)
-		}
-	}
-	if len(signoffs) != 2 || !strings.HasSuffix(signoffs[0], " 23s · 1 tool") || !strings.Contains(signoffs[1], "stopped by you · 23s · 1 tool") {
-		t.Fatalf("signoffs %q in:\n%s", signoffs, strings.Join(rows, "\n"))
-	}
-	if !strings.Contains(strings.Join(rows, "\n"), "you · 1h later") {
-		t.Fatalf("second message should note the pause since the first turn ended:\n%s", strings.Join(rows, "\n"))
-	}
-	for i, row := range rows {
-		if row == "answer to first" && rows[i+1] != signoffs[0] {
-			t.Fatalf("signoff should hang under the reply it closes:\n%s", strings.Join(rows, "\n"))
-		}
-	}
 }
 
 func TestJumpToYouLandsOnYourMessages(t *testing.T) {

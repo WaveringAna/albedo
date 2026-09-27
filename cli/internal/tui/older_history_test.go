@@ -1,3 +1,4 @@
+// Scrollback fetching must preserve position and resume after eviction in the TUI.
 package tui
 
 import (

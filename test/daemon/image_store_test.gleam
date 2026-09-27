@@ -1,17 +1,13 @@
+/// Image deduplication and legacy migration need database fixtures absent from E2E.
 import albedo/daemon/conversation
 import albedo/daemon/image
 import albedo/daemon/images
 import albedo/daemon/store
 import albedo/harness/runtime
-import albedo/openai_api
-import albedo/openai_api/request
-import albedo/openai_api/transport
 import albedo/openai_api/types
-import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/list
 import gleam/option.{None}
-import gleam/string_tree
 import gleeunit/should
 import sqlight
 
@@ -37,24 +33,6 @@ fn fingerprint(value: a) -> String
 
 @external(erlang, "albedo_rolling", "legacy_fingerprint")
 fn legacy_fingerprint(value: a) -> Result(String, Nil)
-
-type Fixture
-
-type Mode {
-  Stream
-}
-
-@external(erlang, "albedo_openai_transport_test_server", "start")
-fn start_server(mode: Mode) -> Fixture
-
-@external(erlang, "albedo_openai_transport_test_server", "url")
-fn url(fixture: Fixture) -> String
-
-@external(erlang, "albedo_openai_transport_test_server", "await_body")
-fn await_body(fixture: Fixture) -> BitArray
-
-@external(erlang, "albedo_openai_transport_test_server", "stop")
-fn stop(fixture: Fixture) -> Nil
 
 fn test_image() -> types.Image {
   let assert Ok(value) = image.validate("image/png", png, 2, 3, 24)
@@ -124,49 +102,6 @@ pub fn commit_keeps_one_payload_and_rows_load_references_test() {
   size |> should.equal(24 + 8)
   read() |> should.equal(Ok(png))
   types.image_meta(first) |> should.equal(#("image/png", 2, 3, 24))
-  cleanup(path)
-}
-
-pub fn stored_images_stream_the_same_request_bytes_test() {
-  let #(path, ledger) = ledger()
-  let assert Ok(_) = conversation.create(ledger, session("s"))
-  let assert Ok(_) =
-    conversation.commit(ledger, "s", inputs(), conversation.Idle)
-  let assert Ok(inline) =
-    request.encode(types.Responses, openai_api.request("m", inputs()))
-  let assert Ok(stored) =
-    request.encode(
-      types.Responses,
-      openai_api.request("m", loaded(ledger, "s")),
-    )
-
-  let fixture = start_server(Stream)
-  let assert Ok(connection) = transport.open(url(fixture), [], stored, 1000)
-  let body = await_body(fixture)
-  transport.close(connection)
-  stop(fixture)
-
-  body |> should.equal(bit_array.from_string(string_tree.to_string(inline)))
-  cleanup(path)
-}
-
-pub fn a_missing_payload_fails_the_request_test() {
-  let #(path, ledger) = ledger()
-  let assert Ok(_) = conversation.create(ledger, session("s"))
-  let assert Ok(_) =
-    conversation.commit(ledger, "s", inputs(), conversation.Idle)
-  let assert Ok(body) =
-    request.encode(
-      types.Responses,
-      openai_api.request("m", loaded(ledger, "s")),
-    )
-  let assert Ok(_) =
-    store.query(ledger, fn(db) { sqlight.exec("DELETE FROM images", db) })
-
-  let fixture = start_server(Stream)
-  let assert Error(transport.TransportError(_)) =
-    transport.open(url(fixture), [], body, 1000)
-  stop(fixture)
   cleanup(path)
 }
 

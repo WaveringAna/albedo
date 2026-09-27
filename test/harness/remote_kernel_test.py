@@ -1,4 +1,4 @@
-"""The owner protocol: one invoke verb, references, and the wire value format."""
+"""The remote control-frame protocol must preserve pending call races, live references and typed values without requiring an SSH server."""
 import asyncio
 import json
 import os
@@ -80,45 +80,6 @@ class KernelInvokeTest(unittest.TestCase):
         ready = self.channel.recv()
         self.assertEqual(ready["type"], "ready")
 
-    def test_a_plain_value_crosses_without_a_handle(self):
-        reply = self.channel.invoke("i1", name="files.read", args=["/etc/hosts"])
-        self.assertTrue(reply["ok"])
-        self.assertNotIn("handle", reply)
-        self.assertIsInstance(reply["value"], str)
-
-    def test_a_registered_handle_class_stays_a_live_reference(self):
-        reply = self.channel.invoke("i2", name="run", args=python(
-            "import time; print('owner-echo', flush=True); time.sleep(0.2); print('done')"))
-        self.assertTrue(reply["ok"])
-        self.assertIn("handle", reply)
-        self.assertNotIn("value", reply)
-        handle = reply["handle"]
-
-        mid = self.channel.invoke("i3", target={"handle": handle}, name="tail")
-        self.assertEqual(mid["value"], "")
-
-        done = self.channel.invoke("i4", target={"handle": handle}, **{"await": True})
-        self.assertEqual(done["handle"], handle)
-        tail = self.channel.invoke("i5", target={"handle": handle}, name="tail")
-        self.assertEqual(tail["value"], "owner-echo\ndone\n")
-        poll = self.channel.invoke("i6", target={"handle": handle}, name="poll")
-        self.assertEqual(poll["value"], 0)
-
-    def test_the_same_object_keeps_one_identity_stable_handle(self):
-        first = self.channel.invoke("i1", name="run", args=["true"])
-        second = self.channel.invoke("i2", target={"handle": first["handle"]}, **{"await": True})
-        self.assertEqual(first["handle"], second["handle"])
-
-    def test_an_awaited_object_reports_its_final_state(self):
-        reply = self.channel.invoke("i1", name="run", args=["echo", "state-echo"])
-        handle = reply["handle"]
-        done = self.channel.invoke("i2", target={"handle": handle}, **{"await": True})
-        state = done.get("state")
-        self.assertEqual(state["exit_code"], 0)
-        self.assertEqual(state["tail"], "state-echo\n")
-        self.assertIsNotNone(state["job"])
-        self.assertIsNotNone(state["duration"])
-        self.assertFalse(state["timed_out"])
 
     def test_pending_targets_resolve_calls_raced_ahead_of_their_reply(self):
         self.channel.send({"type": "invoke", "id": "r1", "name": "run", "args": python(
@@ -132,13 +93,6 @@ class KernelInvokeTest(unittest.TestCase):
         done = self.channel.invoke("r3", target={"handle": reply["handle"]}, **{"await": True})
         self.assertEqual(done["state"]["tail"], "raced\ndone\n")
 
-    def test_the_owner_receives_mirrored_output_tails(self):
-        reply = self.channel.invoke("i1", name="run", args=["echo", "mirror-echo"])
-        handle = reply["handle"]
-        frame = self.channel.wait_for(
-            lambda f: f.get("type") == "mirror" and f.get("handle") == handle)
-        self.assertEqual(frame["tail"], "mirror-echo\n")
-        self.assertEqual(frame["exit_code"], 0)
 
     def test_a_failing_pending_call_propagates_its_error(self):
         self.channel.send({"type": "invoke", "id": "f1", "name": "nope"})
@@ -169,13 +123,6 @@ class KernelInvokeTest(unittest.TestCase):
         self.assertFalse(answered["ok"])
         self.assertNotEqual(answered["error"]["ename"], "LookupError")
 
-    def test_unknown_bindings_and_stale_references_are_typed_errors(self):
-        missing = self.channel.invoke("i1", name="nope")
-        self.assertFalse(missing["ok"])
-        self.assertIn("no remote binding", missing["error"]["evalue"])
-        stale = self.channel.invoke("i2", target={"handle": "zzz"}, name="tail")
-        self.assertFalse(stale["ok"])
-        self.assertIn("gone", stale["error"]["evalue"])
 
     def test_release_forgets_the_reference(self):
         reply = self.channel.invoke("i1", name="run", args=["true"])
@@ -183,13 +130,6 @@ class KernelInvokeTest(unittest.TestCase):
         self.channel.send({"type": "release", "handle": handle})
         gone = self.channel.invoke("i2", target={"handle": handle}, name="poll")
         self.assertFalse(gone["ok"])
-
-    def test_introspect_names_the_namespace_and_keeps_handle_reprs(self):
-        self.channel.send({"type": "introspect", "id": "i1"})
-        frame = self.channel.recv_reply("i1")
-        for name in ("run", "files", "cells", "output", "jobs"):
-            self.assertIn(name, frame["names"])
-        self.assertEqual(frame["handles"], [])
 
 
 if __name__ == "__main__":

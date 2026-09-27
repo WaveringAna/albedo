@@ -1,3 +1,4 @@
+// Interactive sign-in, account removal, and cancellation are TUI-only keyboard flows.
 package tui
 
 import (

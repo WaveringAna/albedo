@@ -1,3 +1,4 @@
+// Effort selector focus, cancellation, and narrow-terminal navigation need keyboard events.
 package tui
 
 import (

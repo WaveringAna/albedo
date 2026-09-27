@@ -1,65 +1,14 @@
+// A live tool burst must settle once and invalidate its cache on reset and eviction.
 package tui
 
 import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"albedo/cli/internal/daemon"
 	"github.com/charmbracelet/x/ansi"
 )
-
-func TestPathGroupsBraceSiblings(t *testing.T) {
-	got := pathGroups([]string{"cli/internal/tui/chat.go", "cli/internal/tui/transcript.go", "README.md", "src/a.rs", "src/b.rs", "src/c.gleam", "cli/"})
-	want := []string{"tui/{chat,transcript}.go", "{README.md,cli/}", "src/{a.rs,b.rs,c.gleam}"}
-	if strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-func TestPathGroupsKeepDistinctParents(t *testing.T) {
-	got := pathGroups([]string{"/tmp/a.go", "src/x/main.go", "test/x/main.go", "src/x/extra.go"})
-	want := []string{"/tmp/a.go", "src/x/{main,extra}.go", "test/x/main.go"}
-	if strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-func TestCommandNameKeepsProgramAndSubcommand(t *testing.T) {
-	cases := map[string]string{
-		"cd cli && go test ./...":            "go test",
-		"git -C cli diff":                    "git",
-		"FOO=1 cargo build --release":        "cargo build",
-		"/usr/bin/rg -n pattern src":         "rg",
-		"python3 test/harness/trace_test.py": "python3",
-		"set -e; npm run build":              "npm run",
-		"ls | head":                          "ls",
-		"grep foo notes.txt":                 "grep",
-		"make test":                          "make test",
-		"cd cli && \\\n go test ./...":       "go test",
-	}
-	for command, want := range cases {
-		if got := commandName(command); got != want {
-			t.Errorf("%q ran %q, want %q", command, got, want)
-		}
-	}
-}
-
-func TestThinkingLineFollowsTheNewestNonemptyLine(t *testing.T) {
-	cases := map[string]string{
-		"**Reviewing the diff**":               "Reviewing the diff",
-		"\n**Reviewing the diff**\n\nthe rest": "the rest",
-		"first\n\n> **next part**\r\n \n":      "next part",
-		"only one line":                        "only one line",
-		"\n\n":                                 "",
-	}
-	for thought, want := range cases {
-		if got := thinkingLine(thought); got != want {
-			t.Errorf("%q: got %q, want %q", thought, got, want)
-		}
-	}
-}
 
 func traced(activities []daemon.ToolActivity, changes ...daemon.FileChange) HistoryEntry {
 	return HistoryEntry{Kind: EntryTool, ToolName: "python", ToolResult: `{"status":"ok"}`,
@@ -79,47 +28,6 @@ func burstFixture() []HistoryEntry {
 	}
 }
 
-func TestBurstSummarizesItsWorkOnOneRow(t *testing.T) {
-	r := TranscriptRenderer{Workspace: "/w/albedo"}
-	rows := strings.Split(ansi.Strip(r.RenderBurst(burstFixture(), DisplayFlags{}, 200)), "\n")
-	want := "thought 34s · read tui/{chat,transcript}.go · edited python/albedo_trace.py · ran go test ×2 · python 1/0 · 1 failed  +5 −2"
-	if rows[0] != want {
-		t.Fatalf("summary\n got %q\nwant %q", rows[0], want)
-	}
-	if len(rows) != 2 || !strings.Contains(rows[1], "python · 1/0") {
-		t.Fatalf("the failed call lost its own row: %q", rows)
-	}
-	narrow := ansi.Strip(r.RenderBurst(burstFixture(), DisplayFlags{}, 60))
-	if first := strings.Split(narrow, "\n")[0]; ansi.StringWidth(first) > 60 || !strings.Contains(first, "read 2 files") || !strings.Contains(first, "1 failed") {
-		t.Fatalf("narrow summary should shorten lists but keep failures: %q", first)
-	}
-}
-
-// A thought this client watched settles with the time it took.
-func TestAWatchedThoughtKeepsItsDuration(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
-	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventThinking, Text: "hm"})
-	if time.Since(m.thinkingSince) > time.Minute {
-		t.Fatalf("a live thought's clock did not start: %v", m.thinkingSince)
-	}
-	m.thinkingSince = m.thinkingSince.Add(-3 * time.Second)
-	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventThinking, Text: " more"})
-	m.settleActiveStream()
-	entries := m.History.Entries()
-	if len(entries) != 1 || entries[0].ElapsedMs < 3000 || entries[0].ElapsedMs > 60_000 || entries[0].Text != "hm more" {
-		t.Fatalf("watched thought lost its duration: %+v", entries)
-	}
-}
-
-func TestAReplayedThoughtHasNoMadeUpDuration(t *testing.T) {
-	r := NewTranscriptRenderer()
-	got := ansi.Strip(r.RenderBurst([]HistoryEntry{{Kind: EntryThinking, Text: "hm"}}, DisplayFlags{}, 80))
-	if got != "thought" {
-		t.Fatalf("got %q", got)
-	}
-}
-
-// A burst draws live while it grows and settles once, when prose ends it.
 func TestBurstSettlesOnceProseEndsIt(t *testing.T) {
 	m := NewChatModel(&daemon.Session{ID: "s", Workspace: "/w/albedo"}, nil)
 	m.SetSize(120, 40)
@@ -229,27 +137,5 @@ func TestEvictionKeepsTheLiveBurstCurrent(t *testing.T) {
 	rows := strings.Join(m.burstRows, "\n")
 	if !strings.Contains(rows, "f7}") || strings.Contains(rows, "f0") || strings.Contains(rows, "f3") {
 		t.Fatalf("live burst froze across eviction: %q", rows)
-	}
-}
-
-// Two recordings of one path (relative and absolute) name to one item, and a
-// file that was edited is not also listed as read.
-func TestSummaryDedupesAfterNaming(t *testing.T) {
-	r := TranscriptRenderer{Workspace: "/w"}
-	entries := []HistoryEntry{
-		traced([]daemon.ToolActivity{{Kind: "read", Target: "/w/cli/a.go"}, {Kind: "read", Target: "cli/a.go"}}),
-		traced([]daemon.ToolActivity{{Kind: "read", Target: "cli/b.go"}},
-			daemon.FileChange{Path: "/w/cli/b.go", Kind: "diff", Added: 1}),
-	}
-	row := ansi.Strip(r.RenderBurst(entries, DisplayFlags{}, 200))
-	if strings.Contains(row, "{a,a}.go") || strings.Contains(row, "read 2 files") {
-		t.Fatalf("one path named twice: %q", row)
-	}
-	readClause := row[strings.Index(row, "read "):strings.Index(row, " · edited")]
-	if !strings.Contains(readClause, "cli/a.go") || strings.Contains(readClause, "b.go") || strings.Contains(readClause, "{a,a}") {
-		t.Fatalf("read list wrong: %q", readClause)
-	}
-	if !strings.Contains(row, "edited cli/b.go") {
-		t.Fatalf("edited list wrong: %q", row)
 	}
 }

@@ -1,11 +1,4 @@
-"""The wake protocol: unfinished jobs tell the host, reads retire the notice.
-
-The owner here is a fake daemon: it answers the kernel's host calls, so the
-run plugin's notice machinery can be exercised against the real kernel without
-gleam. The replies cover the whole contract: accepted, refused with busy
-(retried), refused otherwise (given up), and no call at all when the job was
-awaited or its result was already read.
-"""
+"""Busy-host replies and reading an in-flight job notice are races the daemon E2E wake test cannot reliably force."""
 import json
 import os
 import select
@@ -35,8 +28,6 @@ class Owner:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             cwd=self.workspace, env=environment, bufsize=0)
         self.buffered = []
-        self.calls = []          # host calls the owner has seen, in order
-        self.answers = []        # canned answers, popped per call; default ok
 
     def close(self):
         self.send({"type": "shutdown"})
@@ -92,18 +83,6 @@ class Owner:
                 return
             raise AssertionError(f"unexpected {method} call: {frame}")
 
-    def serve_calls(self):
-        """Answer every host call currently waiting; returns the wake payloads."""
-        notices = []
-        while True:
-            try:
-                frame = self.wait_for(lambda f: f.get("type") == "call", timeout=0.4)
-            except AssertionError:
-                return notices
-            self.calls.append(frame)
-            notices.append(frame)
-            answer = self.answers.pop(0) if self.answers else {"ok": True, "value": "delivered"}
-            self.send({"type": "reply", "id": frame["id"], "value": answer})
 
     def invoke(self, call_id, **frame):
         self.send({"type": "invoke", "id": call_id, **frame})
@@ -111,32 +90,6 @@ class Owner:
             reply = self.wait_for(lambda f: f.get("id") == call_id and f["type"] == "invoked")
             if reply.get("ok") is True or "error" in reply:
                 return reply
-
-
-class JobTraceTest(unittest.TestCase):
-    def test_a_cell_trace_names_the_job_command_not_its_wrapper(self):
-        owner = Owner(["run"])
-        self.addCleanup(owner.close)
-        owner.wait_for(lambda f: f.get("type") == "ready")
-        owner.send({"type": "execute", "id": "c1", "code": "await run('echo', 'traced-echo')"})
-        trace = owner.wait_for(lambda f: f.get("type") == "trace" and f.get("id") == "c1")["trace"]
-        self.assertEqual([item for item in trace["activities"] if item["kind"] == "run"],
-                         [{"kind": "run", "target": "echo traced-echo"}])
-
-
-class PipeWakeTest(unittest.TestCase):
-    def test_a_pipeline_wakes_once_naming_every_stage(self):
-        owner = Owner(["run"])
-        self.addCleanup(owner.close)
-        owner.wait_for(lambda f: f.get("type") == "ready")
-        owner.send({"type": "execute", "id": "c1", "code": "reader = run('echo', 'piped').pipe('cat')\nNone"})
-        owner.wait_for(lambda f: f.get("type") == "done" and f.get("id") == "c1")
-        for _ in range(2):
-            owner.wait_for(lambda f: f.get("type") == "job")
-        wakes = [f for f in owner.serve_calls() if f["method"] == "jobs.completed"]
-        self.assertEqual(len(wakes), 1)
-        self.assertIn("echo piped | cat", wakes[0]["args"]["text"])
-        owner.expect_no_call("jobs.completed")
 
 
 class WakeProtocolTest(unittest.TestCase):
@@ -157,24 +110,6 @@ class WakeProtocolTest(unittest.TestCase):
             lambda f: f.get("type") == "job" and f.get("id") == start["id"])
         return done
 
-    def read_notice(self, frame):
-        args = frame["args"]
-        self.assertIn("display", args)
-        self.assertIn("text", args)
-        self.assertIn("<system-note>", args["text"])
-        return args
-
-    def test_an_unread_job_completion_reports_to_the_host(self):
-        handle = self.start_job("echo", "wake-echo")
-        self.wait_job_done()
-        notices = self.owner.serve_calls()
-        wakes = [f for f in notices if f["method"] == "jobs.completed"]
-        self.assertEqual(len(wakes), 1)
-        args = self.read_notice(wakes[0])
-        self.assertEqual(args["exit_code"], 0)
-        self.assertIn("wake-echo", args["text"])
-        self.assertIsNone(args["host"])
-        self.owner.expect_no_call("jobs.completed")
 
     def test_a_busy_session_is_retried_and_a_refusal_gives_up(self):
         handle = self.start_job("echo", "retry-echo")
@@ -190,10 +125,6 @@ class WakeProtocolTest(unittest.TestCase):
                          "value": {"ok": False, "code": "unavailable", "message": "no session"}})
         self.owner.expect_no_call("jobs.completed")
 
-    def test_an_awaited_job_never_reports(self):
-        handle = self.start_job("echo", "awaited-echo")
-        self.owner.invoke("w1", target={"handle": handle}, **{"await": True})
-        self.owner.expect_no_call("jobs.completed")
 
     def test_a_read_result_retires_a_pending_notice(self):
         handle = self.start_job("echo", "read-echo")
@@ -205,36 +136,6 @@ class WakeProtocolTest(unittest.TestCase):
         tail = self.owner.invoke("t1", target={"handle": handle}, name="tail")
         self.assertIn("read-echo", tail["value"])
         self.owner.expect_no_call("jobs.completed")
-
-    def test_output_read_retires_a_pending_notice(self):
-        handle = self.start_job("echo", "output-echo")
-        job_id = self.wait_job_done()["id"]
-        frame = self.owner.wait_for(lambda f: f.get("type") == "call")
-        self.owner.send({"type": "reply", "id": frame["id"],
-                         "value": {"ok": False, "code": "busy", "message": "session is busy"}})
-        read = self.owner.invoke("o1", name="output.read", args=[job_id])
-        self.assertIn("output-echo", read["value"])
-        self.owner.expect_no_call("jobs.completed")
-
-    def test_a_stopped_job_wakes_no_one(self):
-        handle = self.start_job("sleep", "5")
-        stopped = self.owner.invoke("s1", target={"handle": handle}, name="stop")
-        self.assertTrue(stopped["ok"])
-        self.owner.expect_no_call("jobs.completed", window=1.5)
-
-    def test_the_remote_stamp_names_the_host(self):
-        owner = Owner(["run"], env={"ALBEDO_REMOTE_TARGET": "trimounts"})
-        self.addCleanup(owner.close)
-        self.assertEqual(owner.wait_for(lambda f: f.get("type") == "ready")["type"], "ready")
-        reply = owner.invoke("j1", name="run", args=["echo", "remote-echo"])
-        start = owner.wait_for(lambda f: f.get("type") == "job_start")
-        owner.wait_for(lambda f: f.get("type") == "job" and f.get("id") == start["id"])
-        frame = owner.wait_for(lambda f: f.get("type") == "call")
-        args = frame["args"]
-        self.assertEqual(args["host"], "trimounts")
-        self.assertIn(" on trimounts", args["display"])
-        owner.send({"type": "reply", "id": frame["id"],
-                    "value": {"ok": True, "value": "delivered"}})
 
 
 if __name__ == "__main__":

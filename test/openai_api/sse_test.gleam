@@ -1,3 +1,4 @@
+// Incremental SSE parsing must handle byte splits, UTF-8 boundaries, limits, and EOF independently of HTTP chunking.
 import albedo/openai_api/sse
 import gleam/list
 import gleam/result

@@ -1,3 +1,4 @@
+// Private regular-file validation guards symlink and permissions attacks on MCP credentials.
 import gleam/dynamic
 import gleeunit/should
 

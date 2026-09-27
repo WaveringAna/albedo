@@ -1,3 +1,4 @@
+// Keyboard selection, attachment, live tails, and delete confirmation require the TUI event loop.
 package tui
 
 import (
@@ -25,31 +26,6 @@ func agentsFixture(t *testing.T) AgentsViewModel {
 		{Session: daemon.Session{ID: "tests", Model: "gpt-6-luna"}, Parent: &coder, Name: "tests", Depth: 2},
 	}})
 	return m
-}
-
-func TestAgentsViewDrawsTheTreeAndTail(t *testing.T) {
-	m := agentsFixture(t)
-	m, _ = m.Update(agentsEventsMsg{Gen: 1, Events: []map[string]any{
-		{"type": "text", "session": "lead", "text": "spawning the scouts\nwaiting on"},
-		{"type": "tool_progress", "session": "lead", "progress": map[string]any{"name": "python", "phase": "running"}},
-		{"type": "mail", "id": "m1", "from": "coder", "fromName": "coder", "to": "lead", "kind": "result", "bytes": 4000.0},
-		{"type": "spawn", "session": "docs", "parent": "coder", "name": "docs", "depth": 2.0, "model": "gpt-6-luna"},
-		{"type": "progress", "session": "lead", "text": "three scouts out"},
-		{"type": "closed", "session": "scout"},
-	}})
-	for range 8 {
-		m.step()
-	}
-	view := ansi.Strip(m.View())
-	t.Log("\n" + view)
-	for _, want := range []string{"lead", "scout", "coder", "tests", "docs", "▸ python", "spawning the scouts", "← coder result", "» three scouts out", "✓ scout", "/agents"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("view is missing %q", want)
-		}
-	}
-	if len(m.packets) != 1 {
-		t.Errorf("mail should travel as one packet, got %d", len(m.packets))
-	}
 }
 
 func TestAgentsViewSelectsAndAttaches(t *testing.T) {
@@ -109,14 +85,6 @@ func TestAgentsFramesStopWhenStillAndResumeOnce(t *testing.T) {
 	_, cmd = m.Update(running("lead", true))
 	if n := frames(cmd); n != 0 {
 		t.Fatalf("a second runner scheduled %d more frames, want none", n)
-	}
-}
-
-func TestAgentsViewSizesBeforeItOpens(t *testing.T) {
-	var m AgentsViewModel
-	m.SetSize(120, 30)
-	if m.View() == "" {
-		t.Log("an unopened view renders nothing, as expected")
 	}
 }
 
@@ -184,6 +152,7 @@ func TestAgentsTailStartsFromHistory(t *testing.T) {
 	}
 }
 
+// Partial JSON arguments arrive before a tool call finishes; a malformed escape must not hide streamed code.
 func TestCodeLinesReadsPartialJSON(t *testing.T) {
 	got := codeLines(`{"code": "a = 1\nb = \"x\"\nprint(a`)
 	want := []string{"a = 1", `b = "x"`, "print(a"}

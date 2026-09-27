@@ -1,3 +1,4 @@
+// Disabled capability navigation must keep keyboard cursor visible.
 package tui
 
 import (

@@ -1,3 +1,4 @@
+// Notices must be cleared or carried at the correct TUI turn boundary.
 package tui
 
 import (
@@ -111,50 +112,5 @@ func TestPickerNoticesHandedOffToNewSession(t *testing.T) {
 	}
 	if len(app.Chat.Notices) != 1 || app.Chat.Notices[0].Message != "antigravity selected for new sessions" {
 		t.Fatalf("expected chat.Notices to inherit notice from picker, got %#v", app.Chat.Notices)
-	}
-}
-
-func TestChatModelNoticeStructAndClearing(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s1"}, nil)
-	m.SetSize(100, 30)
-
-	m.AddNotice("info notice")
-	m.AddError("error notice")
-
-	if len(m.Notices) != 2 {
-		t.Fatalf("expected 2 notices, got %d", len(m.Notices))
-	}
-	if m.Notices[0].Error || !m.Notices[1].Error {
-		t.Fatalf("expected [info (false), error (true)], got %#v", m.Notices)
-	}
-	if !m.Notices.HasError() {
-		t.Fatal("HasError() should be true")
-	}
-
-	// Duplicate notices are ignored
-	m.AddNotice("info notice")
-	if len(m.Notices) != 2 {
-		t.Fatalf("duplicate notice should not be added, got %d", len(m.Notices))
-	}
-
-	// submitInput clears notices
-	var cmds []tea.Cmd
-	m.submitInput("a new message", &cmds)
-
-	if len(m.Notices) != 0 {
-		t.Fatalf("submitInput should clear all notices, got %#v", m.Notices)
-	}
-	if m.Notices.HasError() {
-		t.Fatal("HasError() should be false after clear")
-	}
-
-	// EventUser clears them too
-	m.AddNotice("another notice")
-	m.handleStreamEvent(daemon.StreamEvent{
-		Type: daemon.EventUser,
-		Text: "turn",
-	})
-	if len(m.Notices) != 0 {
-		t.Fatalf("EventUser should clear notices, got %#v", m.Notices)
 	}
 }

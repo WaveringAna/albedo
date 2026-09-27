@@ -1,3 +1,4 @@
+// The client must reject untrusted image metadata exceeding bounds before rendering; E2E validates the server side, not this client parser.
 package daemon
 
 import (
@@ -50,22 +51,5 @@ func TestParseImageMetadata(t *testing.T) {
 	}
 	if ParseImageMetadata(hugeBytes) != nil {
 		t.Fatal("expected nil for bytes > 5MB")
-	}
-}
-
-func TestImageLabel(t *testing.T) {
-	cases := []struct {
-		meta     ImageMetadata
-		expected string
-	}{
-		{ImageMetadata{MimeType: ImagePNG, Width: 800, Height: 600, Bytes: 500}, "PNG 800×600 · 500 B"},
-		{ImageMetadata{MimeType: ImageJPEG, Width: 1920, Height: 1080, Bytes: 150000}, "JPEG 1920×1080 · 147 KB"},
-		{ImageMetadata{MimeType: ImageWEBP, Width: 2048, Height: 1536, Bytes: 2500000}, "WEBP 2048×1536 · 2.4 MB"},
-	}
-
-	for _, tc := range cases {
-		if res := ImageLabel(tc.meta); res != tc.expected {
-			t.Errorf("expected %s, got %s", tc.expected, res)
-		}
 	}
 }

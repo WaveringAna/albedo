@@ -1,3 +1,4 @@
+// Available effort levels constrain commands sent through the TUI.
 package tui
 
 import (

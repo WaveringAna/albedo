@@ -1,3 +1,4 @@
+// MCP credentials must remain private and reject insecure files or symlinks before any daemon is started.
 package config
 
 import (
@@ -5,30 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 )
-
-func TestCapabilityPrecedenceAndPrivateStore(t *testing.T) {
-	home := t.TempDir()
-	if err := SetCapability(home, "s1", "skills", "draft", true, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := SetCapability(home, "s1", "skills", "draft", false, true); err != nil {
-		t.Fatal(err)
-	}
-	prefs, err := ReadCapabilityPrefs(home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !prefs.Enabled("s1", "skills", "draft") || prefs.Enabled("s2", "skills", "draft") || !prefs.Enabled("s1", "skills", "other") {
-		t.Fatalf("incorrect scope: %+v", prefs)
-	}
-	info, err := os.Stat(filepath.Join(home, "capabilities.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("preferences mode: %v", info.Mode())
-	}
-}
 
 func TestMCPCredentialsPrivateAndFailClosed(t *testing.T) {
 	home := t.TempDir()

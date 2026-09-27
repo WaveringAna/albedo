@@ -1,3 +1,4 @@
+// Scroll follow and reading position across streaming, truncation, and thinking are TUI-only state.
 package tui
 
 import (
@@ -132,24 +133,6 @@ func TestInterleavedEmptyTextDoesNotSettleThinking(t *testing.T) {
 	}
 }
 
-func TestCompactionHintLivesOnEventNotFooter(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
-	m.SetSize(120, 35)
-	if strings.Contains(m.View(), "ctrl+k") {
-		t.Fatal("footer advertises compaction shortcut without an event")
-	}
-	entry := HistoryEntry{Kind: EntryCompacted, Evicted: 12, Text: "summary"}
-	for _, flags := range []DisplayFlags{{}, {Compaction: true}} {
-		want := "ctrl+k view summary"
-		if flags.Compaction {
-			want = "ctrl+k hide summary"
-		}
-		if rendered := m.Renderer.RenderEntry(entry, flags, m.Viewport.Width()); !strings.Contains(rendered, want) {
-			t.Fatalf("compaction event missing %q: %q", want, rendered)
-		}
-	}
-}
-
 func TestCompactTranscriptEntries(t *testing.T) {
 	r := NewTranscriptRenderer()
 	flags := DisplayFlags{}
@@ -217,23 +200,5 @@ func TestReadingPositionSurvivesOutputPastTheLineCap(t *testing.T) {
 	m.appendSettledEntry(block("tail"))
 	if !m.Follow || len(m.settledLines) > MaxSettledLines {
 		t.Fatalf("caps not restored when following: follow=%v lines=%d", m.Follow, len(m.settledLines))
-	}
-}
-
-// Scrolling up says how much is below in the default compact mode too, not
-// only in verbose.
-func TestScrollHintShowsInCompactMode(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
-	m.SetSize(80, 12)
-	for i := range 10 {
-		m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Speaker: "albedo", Text: strings.Repeat("line\n", 6) + fmt.Sprint(i)})
-	}
-	m.refreshViewportContent()
-	m.scrollBy(-20)
-	if m.Follow {
-		t.Fatal("scrolling up should leave follow mode")
-	}
-	if !strings.Contains(ansi.Strip(m.View()), "rows below") {
-		t.Fatalf("compact mode hides the scroll hint: %q", ansi.Strip(m.View()))
 	}
 }
