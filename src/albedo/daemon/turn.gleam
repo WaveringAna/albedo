@@ -1,12 +1,13 @@
 //// A session's run bookkeeping as plain values: what a submission may do,
 //// whether a late worker message still belongs to the active run, and which
 //// stage a finished run leaves behind. The session actor performs every
-//// effect; these functions only decide, so the rules are testable without a
-//// kernel, a provider, or an actor.
+//// effect but the cancel latch; these functions only decide, so the rules
+//// are testable without a kernel, a provider, or an actor.
 
 import albedo/daemon/conversation
 import albedo/daemon/mail
 import albedo/openai_api/types
+import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -51,8 +52,37 @@ pub type Run {
     pid: process.Pid,
     monitor: process.Monitor,
     cancelled: Bool,
+    /// The worker's copy of `cancelled`, raised with it.
+    stop: Latch,
     work: Work,
   )
+}
+
+/// A flag the session raises once and a worker reads without asking. A call
+/// to a stalled session actor gets no answer at all, so a worker that must
+/// not start a tool after a cancel cannot learn of it from a reply.
+pub type Latch
+
+@external(erlang, "atomics", "new")
+fn new_atomics(size: Int, options: List(Nil)) -> Latch
+
+@external(erlang, "atomics", "put")
+fn put(latch: Latch, index: Int, value: Int) -> Dynamic
+
+@external(erlang, "atomics", "get")
+fn get(latch: Latch, index: Int) -> Int
+
+pub fn latch() -> Latch {
+  new_atomics(1, [])
+}
+
+pub fn raise(latch: Latch) -> Nil {
+  let _ = put(latch, 1, 1)
+  Nil
+}
+
+pub fn raised(latch: Latch) -> Bool {
+  get(latch, 1) == 1
 }
 
 pub type Activity {
@@ -173,9 +203,13 @@ pub fn live(activity: Activity, id: String) -> Bool {
   }
 }
 
+/// Also raises the worker's latch, so the two copies cannot disagree.
 pub fn cancel(activity: Activity) -> Activity {
   case activity {
-    Running(run) -> Running(Run(..run, cancelled: True))
+    Running(run) -> {
+      raise(run.stop)
+      Running(Run(..run, cancelled: True))
+    }
     other -> other
   }
 }

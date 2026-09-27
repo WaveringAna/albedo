@@ -6,7 +6,7 @@ import gleeunit/should
 
 fn run(id: String, work: turn.Work) -> turn.Run {
   let pid = process.spawn(fn() { Nil })
-  turn.Run(id, pid, process.monitor(pid), False, work)
+  turn.Run(id, pid, process.monitor(pid), False, turn.latch(), work)
 }
 
 fn running(id: String) -> turn.Activity {

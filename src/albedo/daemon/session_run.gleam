@@ -71,19 +71,22 @@ pub fn try_call(
 
 /// The worker's publish, which also gates every tool call. A timeout only
 /// says the session actor is busy: keep streaming, the durable commit lands
-/// once it catches up, and an interrupt that landed during the stall is still
-/// backed by the Abort timer and the kernel interrupt. A dead session actor
-/// ends the stream, so no tool starts without an owner to record its result.
+/// once it catches up. Once the session has cancelled the run, though, a
+/// timeout stops it: the kernel interrupt that backs a late-started tool
+/// cannot reach a tool outside the kernel, such as an MCP call. A dead session
+/// actor ends the stream, so no tool starts without an owner to record its
+/// result.
 pub fn publish_fn(
   owner: Subject(message),
   run_id: String,
   messages: Messages(message),
+  stop: turn.Latch,
   waiting timeout: Int,
 ) -> fn(String) -> Bool {
   fn(event) {
     case try_call(owner, timeout, messages.publish(run_id, event, _)) {
       Ok(keep_going) -> keep_going
-      Error(TimedOut) -> True
+      Error(TimedOut) -> !turn.raised(stop)
       Error(CalleeDown) -> False
     }
   }
@@ -162,6 +165,7 @@ pub fn start(
 ) -> session_state.State(message) {
   let run_id = new_id()
   let owner = state.self
+  let stop = turn.latch()
   // The worker's closures must capture these fields, never `state`: a spawn
   // copies everything its closure references, and the session state carries
   // the loaded transcript.
@@ -175,7 +179,7 @@ pub fn start(
       kernel,
       state.pin,
       client,
-      publish_fn(owner, run_id, messages, 30_000),
+      publish_fn(owner, run_id, messages, stop, 30_000),
       commit_fn(owner, run_id, messages, 10_000),
       fn(request, observation) {
         let snapshot =
@@ -211,7 +215,7 @@ pub fn start(
         }),
       )
     })
-  let run = turn.Run(run_id, pid, process.monitor(pid), False, work)
+  let run = turn.Run(run_id, pid, process.monitor(pid), False, stop, work)
   // The worker holds the projected history it runs on; the session's copy is
   // released until the next load, since every commit is durable first.
   process.send(owner, messages.collect)

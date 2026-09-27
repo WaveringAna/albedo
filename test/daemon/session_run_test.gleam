@@ -3,6 +3,7 @@
 
 import albedo/daemon/conversation
 import albedo/daemon/session_run
+import albedo/daemon/turn
 import albedo/daemon/usage
 import gleam/erlang/process.{type Subject}
 import gleam/option.{None}
@@ -98,7 +99,11 @@ fn messages() -> session_run.Messages(Owner) {
 }
 
 fn publish(owner: Subject(Owner)) -> Bool {
-  session_run.publish_fn(owner, "run", messages(), waiting: 20)("event")
+  publish_after(owner, turn.latch())
+}
+
+fn publish_after(owner: Subject(Owner), stop: turn.Latch) -> Bool {
+  session_run.publish_fn(owner, "run", messages(), stop, waiting: 20)("event")
 }
 
 pub fn publish_passes_the_owner_answer_through_test() {
@@ -119,6 +124,25 @@ pub fn publish_keeps_streaming_through_a_stalled_owner_test() {
   server(fn(_) { actor.continue(Nil) })
   |> publish
   |> should.be_true
+}
+
+/// A cancelled session actor that stalls must not let a tool gate open: the
+/// kernel interrupt cannot stop a tool outside the kernel.
+pub fn publish_fails_closed_on_a_stall_once_cancelled_test() {
+  let pid = process.spawn(fn() { Nil })
+  let assert turn.Running(run) =
+    turn.Running(turn.Run(
+      "run",
+      pid,
+      process.monitor(pid),
+      False,
+      turn.latch(),
+      turn.Turn(None),
+    ))
+    |> turn.cancel
+  server(fn(_) { actor.continue(Nil) })
+  |> publish_after(run.stop)
+  |> should.be_false
 }
 
 pub fn publish_stops_the_stream_when_the_owner_dies_test() {
