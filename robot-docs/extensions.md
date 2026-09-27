@@ -26,7 +26,7 @@ extension.Extension(
 )
 ```
 
-`ContextPlugin.load(workspace)` returns `Result(String, String)`. its request-only content is loaded for the current workspace and included in the system instructions, after core and extension instructions. it is not appended to the durable transcript. model requests keep extension context out of history compaction. Live reloads keep the cached system prefix and add only a short discovery notice to history; the updated system instructions replace that prefix when compaction rewrites history. A changed tool schema necessarily changes the provider tool registry immediately.
+`ContextPlugin.load(workspace)` returns `Result(String, String)`. its request-only content is loaded for the current workspace and included in the system instructions, after core and extension instructions. it is not appended to the durable transcript. model requests keep extension context out of history compaction. Live reloads keep the cached system prefix and add a concise capability-change notice to history, providing replacement named context blocks (including command and skill metadata) and explicit removal notices relative to the previous live context; unchanged blocks are not replayed. The updated system instructions replace that prefix when compaction rewrites history. A changed tool schema necessarily changes the provider tool registry immediately.
 
 `ToolPlugin` supplies model-facing tools, python modules, host routes, and tool instructions. model tools declare a definition, an invocation callback, and a recovery callback. recovery must report a stored result or unknown outcome, not replay a potentially side-effecting operation.
 

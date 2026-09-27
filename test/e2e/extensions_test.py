@@ -234,6 +234,7 @@ class ExtensionTests(unittest.TestCase):
         late = self.app.workspace / ".agents/skills/late/SKILL.md"
         late.parent.mkdir(parents=True)
         late.write_text("---\nname: late\ndescription: added after the session opened\n---\nLATE_BODY\n")
+        self.skill.write_text(SKILL.replace("catalog-only fixture description", "updated demo description"))
         self.assertNotIn("/late", {c["name"] for c in self.get(f"/sessions/{self.sid}/commands")})
         requests = self.turn("hot probe before reload", expected=2)
         self.assertIn("BEFORE_RELOAD_OK", self.output(requests[-1]))
@@ -243,22 +244,36 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("/late", {c["name"] for c in self.get(f"/sessions/{self.sid}/commands")})
         request, = self.turn("after session reload")
         self.assertEqual(request["instructions"], cached["instructions"])
-        self.assertNotIn("added after the session opened", json.dumps(request["input"]))
         updates = [item["content"] for item in request["input"] if item.get("role") == "user"
                    and str(item.get("content", "")).startswith("<system-note")
                    and "capabilities changed" in item["content"]]
         self.assertEqual(len(updates), 1)
         self.assertIn("commands.catalog()", updates[0])
-        self.assertNotIn("/late", updates[0])
+        self.assertIn("updated demo description", updates[0])
+        self.assertIn("<name>demo</name>", updates[0])
+        self.assertIn("/late", updates[0])
+        self.assertNotIn("catalog-only fixture description", updates[0])
+        self.assertNotIn("LATE_BODY", updates[0])
+        self.assertNotIn("BODY_MUST_NOT_AUTOLOAD", updates[0])
         requests = self.turn("hot probe after reload", expected=2)
         self.assertIn("AFTER_RELOAD_OK", self.output(requests[-1]))
         newer = self.app.workspace / ".agents/skills/newer/SKILL.md"
         newer.parent.mkdir(parents=True)
         newer.write_text("---\nname: newer\ndescription: another live skill\n---\nNEWER_BODY\n")
+        late.unlink()
         self.command("/reload", args={"target": "session"})
         request, = self.turn("after second reload")
         self.assertEqual(request["instructions"], cached["instructions"])
-        self.assertNotIn("another live skill", json.dumps(request["input"]))
+        update = next(item["content"] for item in reversed(request["input"])
+                      if item.get("role") == "user"
+                      and "capabilities changed" in str(item.get("content", "")))
+        self.assertIn("another live skill", update)
+        self.assertIn("supersedes any earlier version", update)
+        self.assertNotIn("<command>/late</command>", update)
+        self.assertNotIn("  /late ", update)
+        self.assertNotIn("catalog-only fixture description", update)
+        self.assertNotIn("NEWER_BODY", update)
+        self.assertIn("/newer", update)
         self.assertEqual(sum("capabilities changed" in str(item.get("content", ""))
                              for item in request["input"] if item.get("role") == "user"), 2)
         self.restart()
@@ -271,12 +286,15 @@ class ExtensionTests(unittest.TestCase):
         first = self.get(f"/sessions/{self.sid}/context/instructions/0")
         snapshot = "".join(self.get(f"/sessions/{self.sid}/context/instructions/{page}")["content"]
                            for page in range(first["pages"]))
-        self.assertIn("added after the session opened", snapshot)
+        self.assertNotIn("added after the session opened", snapshot)
+        self.assertIn("updated demo description", snapshot)
         self.assertIn("another live skill", snapshot)
         request, = self.turn("after compaction following reload")
-        self.assertIn("added after the session opened", request["instructions"])
+        self.assertNotIn("added after the session opened", request["instructions"])
+        self.assertIn("updated demo description", request["instructions"])
+        self.assertIn("another live skill", request["instructions"])
         request, = self.turn("pin stays released")
-        self.assertIn("added after the session opened", request["instructions"])
+        self.assertIn("another live skill", request["instructions"])
 
     @exclusive
     def test_auto_compaction_releases_pin_on_first_turn_after_restart(self):
@@ -313,8 +331,7 @@ class ExtensionTests(unittest.TestCase):
         pid = self.app.connection["pid"]
         request, = self.turn("extension disabled")
         self.assertIn("<available_skills>", request["instructions"])
-        self.assertIn("capabilities changed", json.dumps(request["input"]))
-        self.assertNotIn("<available_skills>", json.dumps(request["input"]))
+        self.assertIn("Context removed: skills", json.dumps(request["input"]))
         self.assertNotIn("skills", {module for item in disabled if item["enabled"]
                                     for module in item["python_modules"]})
         self.assertFalse({"skills_read", "skills_list"} & {tool["name"] for tool in request["tools"]})

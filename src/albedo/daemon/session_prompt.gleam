@@ -8,8 +8,10 @@ import albedo/daemon/session_state
 import albedo/harness/loop
 import albedo/harness/runtime
 import albedo/openai_api/types
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 
 /// A changed prompt invalidates the provider's cached prefix, so the next
 /// request uses the current prompt: any pin is released and cached-usage
@@ -56,9 +58,60 @@ pub fn reset_prompt_cache(
   }
 }
 
-/// Keep the provider's cached system prefix across a live context change.
-/// Only a small discovery notice enters history; the full new catalog and
-/// workspace context move into the system prompt when compaction replaces history.
+fn context_blocks(context: List(types.Input)) -> List(#(String, String)) {
+  list.filter_map(context, fn(input) {
+    case input {
+      types.User(text) -> {
+        use rest <- result.try(string.split_once(
+          text,
+          "<extension-context name=\"",
+        ))
+        use named <- result.try(string.split_once(rest.1, "\""))
+        Ok(#(named.0, text))
+      }
+      _ -> Error(Nil)
+    }
+  })
+}
+
+fn context_changes(
+  previous: List(types.Input),
+  current: List(types.Input),
+) -> String {
+  let before = context_blocks(previous)
+  let after = context_blocks(current)
+  let replaced =
+    after
+    |> list.filter(fn(block) { !list.contains(before, block) })
+    |> list.map(fn(block) {
+      "Current context for "
+      <> block.0
+      <> " (supersedes any earlier version):\n"
+      <> block.1
+    })
+  let names = list.map(after, fn(block) { block.0 })
+  let removed =
+    before
+    |> list.filter(fn(block) { !list.contains(names, block.0) })
+    |> list.map(fn(block) {
+      "Context removed: "
+      <> block.0
+      <> ". Its earlier instructions and catalog no longer apply."
+    })
+  list.append(replaced, removed) |> string.join("\n\n")
+}
+
+fn changes(previous: String, current: String) -> String {
+  case previous == current {
+    True -> ""
+    False ->
+      "Current extension instructions (supersede earlier extension instructions):\n"
+      <> current
+      <> "\n\n"
+  }
+}
+
+/// Pin the old prompt until compaction, while reporting live capability changes.
 pub fn pin_changed_prompt(
   state: session_state.State(message),
   previous: Option(#(String, List(types.Input))),
@@ -85,9 +138,10 @@ pub fn pin_changed_prompt(
           let update =
             note.wrap(
               "capabilities changed",
-              "\nSession capabilities changed. The cached system prompt remains in use until compaction. "
-                <> "Call commands.catalog() to discover current commands and skills; "
-                <> "tool schemas reflect currently enabled tools.\n",
+              "\nSession capabilities changed. The cached system prompt remains in use until compaction.\n"
+                <> changes(old_instructions, instructions)
+                <> context_changes(old_context, context)
+                <> "\nCall commands.catalog() for the current command and skill catalog.\n",
             )
           use timestamp <- result.try(conversation.append_capability_update(
             runtime.ledger(state.host),
