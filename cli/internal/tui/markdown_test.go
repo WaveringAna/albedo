@@ -1,4 +1,6 @@
-// Streaming Markdown block rendering must match its settled result even at partial boundaries.
+// Streaming Markdown must render every partial reply exactly as its settled
+// form: the daemon e2e sees committed transcript text only, never the live
+// view, so it cannot sample the streaming boundaries this sweep does.
 package tui
 
 import (
@@ -89,13 +91,24 @@ para
 tail`,
 }
 
-// Block by block, every prefix of a streaming reply renders exactly as the
-// whole prefix does, so the live reply matches the one that settles.
+// Block by block, every prefix renders exactly as the whole prefix does, and
+// no block boundary falls inside a code fence: a split fence renders the same
+// text but re-renders the whole tail on every streaming chunk.
 func TestMarkdownRendersTheSameBlockByBlock(t *testing.T) {
 	for _, width := range []int{40, 98} {
 		for i, sample := range markdownSamples {
-			if len(markdownBlocks(sample)) < 2 {
+			blocks := markdownBlocks(sample)
+			if len(blocks) < 2 {
 				t.Fatalf("sample %d is one block, so it tests nothing", i)
+			}
+			fence := ""
+			for _, block := range blocks {
+				if fence != "" {
+					t.Fatalf("sample %d splits a code fence between blocks", i)
+				}
+				for _, line := range strings.Split(block, "\n") {
+					fence = fenceAfter(fence, line)
+				}
 			}
 			for end := 1; end <= len(sample); end += 7 {
 				text := sample[:end]
@@ -104,20 +117,5 @@ func TestMarkdownRendersTheSameBlockByBlock(t *testing.T) {
 				}
 			}
 		}
-	}
-}
-
-func TestMarkdownBlocksKeepFencesAndListsWhole(t *testing.T) {
-	text := "a\n\n```\nx\n\ny\n```\n\n- one\n\n- two\n\n  more\n\nb"
-	got := markdownBlocks(text)
-	want := []string{"a\n\n", "```\nx\n\ny\n```\n\n- one\n\n- two\n\n  more\n\n", "b"}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("blocks %q, want %q", got, want)
-	}
-	if blocks := markdownBlocks("see [x]\n\n[x]: https://example.com"); len(blocks) != 1 {
-		t.Fatalf("a link definition must keep the text whole, got %q", blocks)
-	}
-	if blocks := markdownBlocks("a\n\n```md\n[x]: https://example.com\n```\n\nb"); len(blocks) != 3 {
-		t.Fatalf("a link definition shown in a fence must not keep the text whole, got %q", blocks)
 	}
 }

@@ -1,4 +1,7 @@
-// Markdown table bounds and transcript copy selection are terminal-specific rendering rules.
+// Markdown table bounds and transcript copy selection live in the terminal
+// rendering path: the daemon e2e sees only committed text, never rendered
+// rows, and no harness can drive a mouse selection, so these regressions are
+// invisible outside the TUI.
 package tui
 
 import (
@@ -9,42 +12,45 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-func TestMarkdownTablesFitTranscript(t *testing.T) {
-	text := "| Tool | Logged median | Warm in-kernel benchmark |\n" +
-		"|:---|---:|---:|\n" +
-		"| `files.read` | 3 ms | 0.07 ms |\n" +
-		"| `files.paths` | too few isolated calls | 12.7 ms |"
-	for _, width := range []int{38, 80} {
-		got := RenderMarkdownAnsi(text, width)
-		values := []string{"Tool", "files.read", "12.7 ms"}
-		if width >= 80 {
-			values = append(values, "files.paths")
-		} else {
-			values = append(values, "files.path")
-		}
-		for _, value := range values {
-			if !strings.Contains(ansi.Strip(got), value) {
-				t.Fatalf("width %d lost %q: %q", width, value, got)
+const tableTranscript = "| Tool | Logged median | Warm in-kernel benchmark |\n" +
+	"|:---|---:|---:|\n" +
+	"| `files.read` | 3 ms | 0.07 ms |\n" +
+	"| `files.paths` | too few isolated calls | 12.7 ms |"
+
+// Tables render inside the transcript's width: every cell that fits survives,
+// a narrow table truncates its columns rather than its rows or its syntax,
+// and escaped pipes and fenced literal tables are never parsed as tables.
+func TestMarkdownTablesRenderWithinTheirBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		text   string
+		width  int
+		want   []string
+		absent string
+	}{
+		{"keeps every column it fits", tableTranscript, 80,
+			[]string{"Tool", "files.read", "files.paths", "12.7 ms"}, "|:---"},
+		{"narrow truncates columns, not rows or the syntax", tableTranscript, 38,
+			[]string{"Tool", "files.read", "files.path", "12.7 ms"}, "|:---"},
+		{"escaped pipes and fenced rows stay literal",
+			"Intro\n\n| Name | Value |\n| --- | --- |\n| a\\|b | `x\\|y` |\n\n" +
+				"```text\n| literal | row |\n| --- | --- |\n```\nOutro",
+			72,
+			[]string{"Intro", "a|b", "x|y", "| literal | row |", "| --- | --- |", "Outro"}, ""},
+	} {
+		got := ansi.Strip(RenderMarkdownAnsi(tc.text, tc.width))
+		for _, value := range tc.want {
+			if !strings.Contains(got, value) {
+				t.Fatalf("%s: width %d lost %q:\n%s", tc.name, tc.width, value, got)
 			}
 		}
-		if strings.Contains(got, "|:---") {
-			t.Fatalf("width %d exposed Markdown delimiter: %q", width, got)
+		if tc.absent != "" && strings.Contains(got, tc.absent) {
+			t.Fatalf("%s: width %d exposed %q:\n%s", tc.name, tc.width, tc.absent, got)
 		}
 		for _, row := range strings.Split(got, "\n") {
-			if ansi.StringWidth(row) > width {
-				t.Fatalf("width %d produced %d-cell row: %q", width, ansi.StringWidth(row), row)
+			if w := ansi.StringWidth(row); w > tc.width {
+				t.Fatalf("%s: width %d produced a %d-cell row: %q", tc.name, tc.width, w, row)
 			}
-		}
-	}
-}
-
-func TestMarkdownTablesStayInsideMarkdownBlocks(t *testing.T) {
-	text := "Intro\n\n| Name | Value |\n| --- | --- |\n| a\\|b | `x\\|y` |\n\n" +
-		"```text\n| literal | row |\n| --- | --- |\n```\nOutro"
-	got := ansi.Strip(RenderMarkdownAnsi(text, 72))
-	for _, value := range []string{"Intro", "a|b", "x|y", "| literal | row |", "| --- | --- |", "Outro"} {
-		if !strings.Contains(got, value) {
-			t.Fatalf("missing %q from %q", value, got)
 		}
 	}
 }

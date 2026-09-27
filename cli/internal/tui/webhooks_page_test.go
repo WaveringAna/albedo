@@ -1,4 +1,6 @@
-// Webhook form secret handling and session focus require interactive TUI events.
+// Webhook form differential updates, ephemeral secret protection, and session picker filtering.
+// Differential step generation and modal reveal dismissal guards operate inside unexported
+// form state; daemon E2E only sees executed RPCs and cannot verify zero-command emission.
 package tui
 
 import (

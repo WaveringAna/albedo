@@ -1,4 +1,7 @@
-// Theme token ownership and ANSI background continuity are cross-screen visual invariants.
+// Theme token ownership and ANSI background continuity are cross-screen
+// visual invariants. Both fail silently in a real terminal — a screen that
+// drifts from the palette, a selection tint cut short by a reset — and no
+// daemon e2e observes terminal rendering.
 package tui
 
 import (

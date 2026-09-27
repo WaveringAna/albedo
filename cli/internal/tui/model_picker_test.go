@@ -1,4 +1,6 @@
-// Asynchronous catalog arrival, search, keyboard selection, and cap toggles require TUI state.
+// The picker's keyboard state machine (search versus browsing, per-row effort
+// picks, cap toggles) needs catalog shapes the e2e fake provider cannot serve,
+// so these tests check what enter sends for each state.
 package tui
 
 import (
@@ -68,16 +70,6 @@ func rowIDs(m ModelPickerModel) []string {
 		}
 	}
 	return ids
-}
-
-func TestModelPickerKeepsTheCursorWhenAListingArrives(t *testing.T) {
-	m := NewModelPickerModel(nil, pickerProfiles, "gpt-5", "work", "")
-	m = pickerKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
-	before, _ := m.highlighted()
-	m, _ = m.Update(modelCatalogLoadedMsg{Profile: "work", Models: []daemon.Model{{ID: "a"}, {ID: "b"}}})
-	if after, _ := m.highlighted(); after.key() != before.key() {
-		t.Fatalf("cursor moved from %s to %s", before.key(), after.key())
-	}
 }
 
 func TestModelPickerArrowsStepEffortAndEnterSendsIt(t *testing.T) {

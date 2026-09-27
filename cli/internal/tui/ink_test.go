@@ -1,4 +1,6 @@
-// Terminal color reply parsing and contrast across palettes cannot be exercised by daemon E2E.
+// Terminal color reply parsing and contrast across palettes cannot be
+// exercised by daemon E2E: they need a terminal that answers OSC queries, and
+// the e2e harness has no PTY.
 package tui
 
 import (

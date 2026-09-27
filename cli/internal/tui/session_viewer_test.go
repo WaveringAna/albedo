@@ -1,10 +1,18 @@
-// Session picker focus, preview, archive, and deletion are TUI-only interactions.
+// Two invariants the e2e suite cannot reach, because each lives inside the
+// tui package or only shows up mid-flight:
+//
+//   - layout: at every terminal size the viewer must fit its rows and columns
+//     and keep the highlighted session visible — no daemon run observes a
+//     given width/height pair;
+//   - preview timing: a debounce, a stale tick for a row no longer
+//     highlighted, and the cache stamp that decides when a new reply
+//     invalidates a preview are race-dependent state a scripted scenario
+//     reaches only flakily.
 package tui
 
 import (
 	"albedo/cli/internal/daemon"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,39 +20,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
-
-func TestSessionViewerSearchAndRefresh(t *testing.T) {
-	m := NewSessionViewer("/work/current")
-	m.SetSize(70, 20)
-	sessions := []daemon.Session{
-		{ID: "first", Title: "Fix tests", Workspace: "/work/alpha", Model: "sonnet"},
-		{ID: "second", Title: "Ship UI", Workspace: "/work/beta", Model: "opus"},
-	}
-	m.SetSessions(sessions, nil)
-	if item, _ := m.Highlighted(); item.ID != "first" {
-		t.Fatalf("initial selection: %q", item.ID)
-	}
-	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-	if item, _ := m.Highlighted(); item.ID != "second" {
-		t.Fatalf("navigation: %q", item.ID)
-	}
-	m.SetSessions(sessions, nil)
-	if item, _ := m.Highlighted(); item.ID != "second" {
-		t.Fatalf("refresh lost selection: %q", item.ID)
-	}
-	m.SearchInput.SetValue("beta opus")
-	m.applyFilter()
-	if len(m.Filtered) != 1 || m.Filtered[0].ID != "second" {
-		t.Fatalf("filtered: %+v", m.Filtered)
-	}
-	m.SetSessions(sessions, nil)
-	if m.SearchInput.Value() != "beta opus" || len(m.Filtered) != 1 {
-		t.Fatal("refresh lost search")
-	}
-	if !strings.Contains(ansi.Strip(m.View()), "Ship UI") {
-		t.Fatal("session title missing")
-	}
-}
 
 func TestSessionViewerResponsiveViewport(t *testing.T) {
 	for _, size := range [][2]int{{170, 34}, {110, 28}, {80, 24}, {46, 10}, {25, 7}, {12, 5}} {
@@ -76,67 +51,6 @@ func viewerAt(now time.Time) SessionViewer {
 	m := NewSessionViewer("/work/current")
 	m.now = func() time.Time { return now }
 	return m
-}
-
-func TestSessionViewerFavouritesColumnAndPins(t *testing.T) {
-	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.Local)
-	at := func(d time.Duration) *int64 { v := now.Add(-d).Unix(); return &v }
-	sessions := []daemon.Session{
-		{ID: "old", Title: "Old", LastAssistantAt: at(30 * 24 * time.Hour)},
-		{ID: "today", Title: "Today", LastAssistantAt: at(time.Hour)},
-		{ID: "busy", Title: "Busy", LastAssistantAt: at(3 * 24 * time.Hour)},
-		{ID: "pin", Title: "Pinned", LastAssistantAt: at(40 * 24 * time.Hour)},
-	}
-	path := filepath.Join(t.TempDir(), "picker.json")
-	if err := (sessionPrefs{Pinned: []string{"pin", "gone"}, Opens: map[string]int{"busy": 3, "old": 1}}).save(path); err != nil {
-		t.Fatal(err)
-	}
-	m := viewerAt(now)
-	m.LoadPrefs(path)
-	m.SetSize(170, 30)
-	m.SetSessions(sessions, nil)
-
-	var order []string
-	for _, item := range m.Filtered {
-		order = append(order, item.ID)
-	}
-	if got := strings.Join(order, " "); got != "new login archive pin busy today old" {
-		t.Fatalf("order: %s", got)
-	}
-	if item, _ := m.Highlighted(); item.ID != "today" {
-		t.Fatalf("initial highlight: %s", item.ID)
-	}
-	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	if item, _ := m.Highlighted(); item.ID != "pin" {
-		t.Fatalf("tab to favourites: %s", item.ID)
-	}
-	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
-	if item, _ := m.Highlighted(); item.ID != "today" {
-		t.Fatalf("right to recent: %s", item.ID)
-	}
-
-	m, _ = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if m.section["today"] != secPinned {
-		t.Fatal("ctrl+s did not pin")
-	}
-	if item, _ := m.Highlighted(); item.ID != "today" {
-		t.Fatalf("pin moved the cursor to %s", item.ID)
-	}
-	m.Prune(sessions)
-	saved := loadSessionPrefs(path)
-	if strings.Join(saved.Pinned, " ") != "pin today" {
-		t.Fatalf("saved pins: %v", saved.Pinned)
-	}
-	if !strings.Contains(ansi.Strip(m.View()), "pinned 2") {
-		t.Fatal("pinned heading missing")
-	}
-
-	// Opens promote a session once it passes the threshold.
-	m.RecordOpen("old")
-	m.SetSessions(sessions, nil)
-	if m.section["old"] != secFrequent {
-		t.Fatalf("old section %d after two opens", m.section["old"])
-	}
 }
 
 func TestSessionViewerPreviewFetchesOnSettleAndRenders(t *testing.T) {
@@ -189,64 +103,5 @@ func TestSessionViewerPreviewFetchesOnSettleAndRenders(t *testing.T) {
 	m, _ = m.Update(SessionPreviewMsg{ID: "two", Err: errors.New("unknown operation")})
 	if !strings.Contains(ansi.Strip(m.View()), "newer daemon") {
 		t.Fatal("missing daemon hint")
-	}
-}
-
-func TestSessionViewerArchiveRestoreAndDeleteConfirmation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "picker.json")
-	m := NewSessionViewer("/work")
-	m.LoadPrefs(path)
-	m.SetSessions([]daemon.Session{{ID: "one", Title: "Keep me"}, {ID: "two", Title: "Archive me"}}, nil)
-	m.focus("two")
-	m, _ = m.Update(tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl})
-	if item, _ := m.Highlighted(); item.ID != "one" {
-		t.Fatalf("archiving jumped to %q instead of neighboring session", item.ID)
-	}
-	if containsSession(m.Sessions, "two") || !m.prefs.archived("two") {
-		t.Fatal("archive must hide, not delete")
-	}
-	reloaded := NewSessionViewer("/work")
-	reloaded.LoadPrefs(path)
-	reloaded.SetSessions(m.raw, nil)
-	reloaded.OpenArchive()
-	if len(reloaded.Filtered) != 1 || reloaded.Filtered[0].ID != "two" {
-		t.Fatalf("archive: %+v", reloaded.Filtered)
-	}
-	reloaded, _ = reloaded.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
-	if reloaded.ConfirmDelete != "two" {
-		t.Fatal("deletion must request confirmation")
-	}
-	reloaded, cmd := reloaded.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
-	if cmd != nil || reloaded.ConfirmDelete != "" {
-		t.Fatal("cancellation deleted session")
-	}
-	reloaded, _ = reloaded.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
-	reloaded, cmd = reloaded.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
-	if msg, ok := cmd().(SessionDeleteMsg); !ok || msg.ID != "two" {
-		t.Fatalf("confirmation: %v", msg)
-	}
-	reloaded, _ = reloaded.Update(tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl})
-	if reloaded.prefs.archived("two") || len(reloaded.Filtered) != 0 {
-		t.Fatal("restore should remove from archive")
-	}
-	reloaded.CloseArchive()
-	if !containsSession(reloaded.Sessions, "two") {
-		t.Fatal("restored session missing")
-	}
-}
-
-func TestSessionViewerArchiveKeepsNearbySelection(t *testing.T) {
-	m := NewSessionViewer("/work")
-	m.SetSessions([]daemon.Session{{ID: "one"}, {ID: "two"}, {ID: "three"}}, nil)
-	m.focus("two")
-	index := m.Cursor
-	m, _ = m.Update(tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl})
-	if item, _ := m.Highlighted(); item.ID != "three" || m.Cursor != index {
-		t.Fatalf("expected next session at index %d, got %+v at %d", index, item, m.Cursor)
-	}
-	m.OpenArchive()
-	m, _ = m.Update(tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl})
-	if len(m.Filtered) != 0 || m.Cursor != 0 {
-		t.Fatalf("empty archive cursor: %d", m.Cursor)
 	}
 }

@@ -1,4 +1,4 @@
-// Jump-to-user navigation and idle polling are TUI-only transitions.
+// Jump-to-user keyboard navigation is interactive viewport state; headless daemon E2E has no PTY to drive shift+up/down.
 package tui
 
 import (
@@ -9,8 +9,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-func ms(v int64) *int64 { return &v }
-
 func plainRows(lines []string) []string {
 	var rows []string
 	for _, row := range lines {
@@ -18,12 +16,6 @@ func plainRows(lines []string) []string {
 		rows = append(rows, string(plain[min(railWidth, len(plain)):]))
 	}
 	return rows
-}
-
-func replayTurn(m *ChatModel, start int64, text string) {
-	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventUser, Text: text, Source: "chat", Timestamp: ms(start)})
-	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventTool, ToolName: "python", ToolArgs: map[string]any{"code": "x"}})
-	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventMessage, Text: "answer to " + text, Timestamp: ms(start + 23_000)})
 }
 
 func TestJumpToYouLandsOnYourMessages(t *testing.T) {
@@ -49,26 +41,5 @@ func TestJumpToYouLandsOnYourMessages(t *testing.T) {
 	}
 	if !m.Follow {
 		t.Fatal("jumping forward past your newest message should follow the live transcript")
-	}
-}
-
-// An idle status poll with nothing live leaves the transcript as it is, and
-// one that ends a live tool row settles it.
-func TestIdleStatusPollRefreshesOnlyToSettle(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
-	m.SetSize(100, 40)
-	idle := daemon.AgentStatus{Idle: true}
-	poll := func() {
-		m, _ = m.Update(ChatStatusMsg{SessionID: m.SessionID, Generation: m.Generation, Revision: m.statusRevision, Status: &idle})
-	}
-	m.Viewport.SetContent("untouched")
-	poll()
-	if !strings.Contains(m.Viewport.View(), "untouched") {
-		t.Fatal("an idle poll with nothing live rendered the transcript again")
-	}
-	m.ToolProgressText = "running python"
-	poll()
-	if strings.Contains(m.Viewport.View(), "untouched") || m.ToolProgressText != "" {
-		t.Fatal("an idle poll should settle the live tool row")
 	}
 }

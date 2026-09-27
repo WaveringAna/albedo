@@ -1,19 +1,13 @@
-// MCP form focus and secret retention after failed connection are TUI-only flows.
+// MCP form command quoting, environment parsing, and credential retention semantics.
+// Wire-format command tokenization and sentinel deletion operate inside unexported form
+// submission models before reaching any daemon RPC, unreachable by daemon E2E.
 package tui
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
 	"albedo/cli/internal/config"
-	"albedo/cli/internal/daemon"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -111,43 +105,5 @@ func TestEditingKeepsOrRemovesStoredSecrets(t *testing.T) {
 	sub, _ = f.submission(nil)
 	if sub.Secrets.BearerToken != "" || len(sub.Secrets.Headers) != 0 {
 		t.Fatalf("- should remove stored secrets: %+v", sub.Secrets)
-	}
-}
-
-func TestFailedConnectionRestoresConfigAndKeepsTheForm(t *testing.T) {
-	daemonStub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/status") {
-			_ = json.NewEncoder(w).Encode(map[string]any{"running": false, "idle": true})
-			return
-		}
-		http.Error(w, `{"error":"mcp server unreachable"}`, http.StatusConflict)
-	}))
-	defer daemonStub.Close()
-	address, _ := url.Parse(daemonStub.URL)
-	port, _ := strconv.Atoi(address.Port())
-
-	m := mcpPage(t)
-	m.Conn = daemon.NewConnection(daemon.ConnectionSnapshot{Port: port, Token: "t", Version: 2}, "")
-	m = typeText(m, "n")
-	m = typeText(m, "https://mcp.linear.app/mcp")
-	m, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if !m.Saving || cmd == nil {
-		t.Fatal("ctrl+s should save")
-	}
-	m, _ = m.Update(cmd())
-	if m.Form == nil || m.Error == "" || m.Form.Inputs[fieldURL].Value() != "https://mcp.linear.app/mcp" {
-		t.Fatalf("a failed save must keep the form and show why, error=%q", m.Error)
-	}
-	servers, _ := config.ReadMCPServers(m.Home)
-	if len(servers) != 0 {
-		t.Fatalf("failed server must be rolled back, got %+v", servers)
-	}
-	if _, err := os.Stat(filepath.Join(m.Home, "mcp-credentials.json")); err == nil {
-		if creds, _ := config.ReadMCPCredentials(m.Home); len(creds.Servers) != 0 {
-			t.Fatalf("failed credentials must be rolled back, got %+v", creds)
-		}
-	}
-	if got := m.Form.Inputs[fieldName].Value(); got != "linear" {
-		t.Fatalf("name should drop the mcp. prefix, got %q", got)
 	}
 }

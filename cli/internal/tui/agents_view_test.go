@@ -1,4 +1,13 @@
-// Keyboard selection, attachment, live tails, and delete confirmation require the TUI event loop.
+// Four invariants the e2e suite cannot reach, because each lives inside the
+// tui package or needs a failure the daemon never produces:
+//
+//   - frame pacing: an idle graph must not keep scheduling animation frames,
+//     a running one must resume them exactly once (wasted CPU, double speed);
+//   - codeLines must reveal streamed code from incomplete JSON arguments,
+//     which a real stream only ever shows mid-flight;
+//   - a pending delete confirm must not outlive the agent it names;
+//   - a failed history seed must retry on the next selection, and a late
+//     error from an older generation must not unseed the live node.
 package tui
 
 import (
@@ -32,24 +41,6 @@ func agentsFixture(t *testing.T) AgentsViewModel {
 		{Session: daemon.Session{ID: "tests", Model: "gpt-6-luna"}, Parent: &coder, Name: "tests", Depth: 2},
 	}})
 	return m
-}
-
-func TestAgentsViewSelectsAndAttaches(t *testing.T) {
-	m := agentsFixture(t)
-	if m.selected != "lead" {
-		t.Fatalf("selected %q, want the active session", m.selected)
-	}
-	m.cycle(1)
-	if m.selected == "lead" {
-		t.Fatal("tab did not move the selection")
-	}
-	_, cmd := m.key(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("enter on an empty input should attach")
-	}
-	if _, ok := cmd().(AgentsAttachMsg); !ok {
-		t.Fatal("enter on an empty input should attach")
-	}
 }
 
 // frames runs cmd and counts the frame ticks it schedules.
@@ -94,51 +85,6 @@ func TestAgentsFramesStopWhenStillAndResumeOnce(t *testing.T) {
 	}
 }
 
-func TestAgentsOpenFromTheCommandAndCtrlO(t *testing.T) {
-	m := AppModel{State: AppStateChat, ActiveSession: &daemon.Session{ID: "lead"}}
-	_, cmd := m.Update(ChatExecuteCommandMsg{Name: "/agents"})
-	if cmd == nil {
-		t.Fatal("/agents did nothing")
-	}
-	if _, ok := cmd().(ChatOpenAgentsMsg); !ok {
-		t.Fatal("/agents should open the agents view, not the session browser")
-	}
-	chat := NewChatModel(&daemon.Session{ID: "lead"}, nil)
-	_, cmd = chat.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	if cmd == nil {
-		t.Fatal("ctrl+o did nothing")
-	}
-	if _, ok := cmd().(ChatOpenAgentsMsg); !ok {
-		t.Fatal("ctrl+o should open the agents view")
-	}
-}
-
-func TestAgentsTailStreamsCodeThinkingAndOutput(t *testing.T) {
-	m := agentsFixture(t)
-	events := []map[string]any{
-		{"type": "thinking", "session": "lead", "text": "the scouts need a brief"},
-		{"type": "arguments_delta", "session": "lead", "name": "python", "callId": "c1", "text": `{"code": "kid = await agents.self`},
-		{"type": "arguments_delta", "session": "lead", "name": "python", "callId": "c1", "text": `.spawn(\"map\", name=\"scout\")\nprint(kid`},
-	}
-	m, _ = m.Update(agentsEventsMsg{Gen: 1, Events: events})
-	live := ansi.Strip(m.View())
-	for _, want := range []string{"the scouts need a brief", "│ kid = await agents.self", `name="scout")`, "│ print(kid", "● live"} {
-		if !strings.Contains(live, want) {
-			t.Errorf("mid-stream view is missing %q\n%s", want, live)
-		}
-	}
-	m, _ = m.Update(agentsEventsMsg{Gen: 1, Events: []map[string]any{
-		{"type": "tool_progress", "session": "lead", "progress": map[string]any{"name": "python", "phase": "running"}},
-		{"type": "tool", "session": "lead", "name": "python", "output": "scout\nspawned"},
-	}})
-	done := ansi.Strip(m.View())
-	for _, want := range []string{"│ print(kid", "▸ python", "⎿ scout", "⎿ spawned"} {
-		if !strings.Contains(done, want) {
-			t.Errorf("settled view is missing %q\n%s", want, done)
-		}
-	}
-}
-
 // Partial JSON arguments arrive before a tool call finishes; a malformed escape must not hide streamed code.
 func TestCodeLinesReadsPartialJSON(t *testing.T) {
 	got := codeLines(`{"code": "a = 1\nb = \"x\"\nprint(a`)
@@ -171,29 +117,6 @@ func TestAgentsDeleteConfirmDropsWithTheAgent(t *testing.T) {
 	m, _ = m.key(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
 	if m.confirm != "tests" {
 		t.Fatal("ctrl+x stopped working after the prompt was dropped")
-	}
-}
-
-func TestAgentsDeleteAsksFirstAndSparesTheOpenSession(t *testing.T) {
-	m := agentsFixture(t)
-	m, _ = m.key(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
-	if m.confirm != "" || !strings.Contains(ansi.Strip(m.View()), "session browser") {
-		t.Fatal("the session the view opened from must not be deletable here")
-	}
-	m.selected = "coder"
-	m, _ = m.key(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
-	view := ansi.Strip(m.View())
-	if m.confirm != "coder" || !strings.Contains(view, "delete coder and the agent below it?") {
-		t.Fatalf("ctrl+x should ask first:\n%s", view)
-	}
-	m, cmd := m.key(tea.KeyPressMsg{Code: 'n', Text: "n"})
-	if m.confirm != "" || cmd != nil {
-		t.Fatal("any key but y keeps the agent")
-	}
-	m, _ = m.key(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
-	_, cmd = m.key(tea.KeyPressMsg{Code: 'y', Text: "y"})
-	if cmd == nil {
-		t.Fatal("y should delete")
 	}
 }
 

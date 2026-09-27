@@ -1,4 +1,6 @@
-// Transcript re-rendering on width changes, not height changes, prevents expensive UI refreshes.
+// Transcript re-rendering on width changes, not height changes, prevents
+// expensive UI refreshes. The cost is invisible outside the process: the
+// rendered text is identical either way, so no e2e can catch a regression.
 package tui
 
 import (

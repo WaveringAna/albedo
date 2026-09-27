@@ -1,4 +1,6 @@
-// Extension scope selection changes only when the TUI requests a session scope.
+// Extension scope toggling guards global defaults against accidental deletion and confirms inheritance.
+// Confirmation and scope navigation states live in unexported picker model fields;
+// E2E lacks a PTY harness to observe modal prompts before dispatch.
 package tui
 
 import (

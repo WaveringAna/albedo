@@ -1,4 +1,6 @@
-// Typed secrets must never be visible in the terminal form.
+// Page secret actions must mask typed input with EchoPassword and never leak plaintext in views.
+// Echo masking and view rendering live purely inside Bubble Tea models;
+// E2E lacks a PTY harness to observe unsubmitted keystroke echo.
 package tui
 
 import (
