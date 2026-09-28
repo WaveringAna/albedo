@@ -36,7 +36,7 @@ exactly the request the turn actually sent: same instructions, tools, inputs, op
 
 ping at `min(0.9 × ttl, ttl − 10)` seconds after the previous send — from the send's start when the entry's clock is `request` (Anthropic counts lifetime from request start), else from its finish.
 
-each ping costs about `read × cached` input; letting the cache go cold costs one rewrite of about `write × cached` — `write` the matching tier's write multiplier (default 1.0), `read` the entry's read multiplier (default 0.1). so at most `floor(write / read)` consecutive pings per idle stretch, then it stops and lets the cache go cold: ski rental, with the break-even at Claude's 5-minute tier at 1.25 / 0.1 = 12 pings ≈ 54 minutes. a new turn resets the budget.
+a warm cache bills the next turn about `read × cached` input, a cold one about `write × cached` — `write` the matching tier's write multiplier (default 1.0), `read` the entry's read multiplier (default 0.1) — and each ping costs another `read × cached`. `n` pings pay for themselves while `(n + 1) × read ≤ write`, so at most `floor(write / read) − 1` consecutive pings per idle stretch, then it stops and lets the cache go cold: ski rental, with the break-even at Claude's 5-minute tier at 1.25 / 0.1 − 1 = 11 pings, one every 270 s, keeping the cache for about 54 minutes. a write priced under twice the read means no warming. a new turn resets the budget.
 
 warming also stops when:
 

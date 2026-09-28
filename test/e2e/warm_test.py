@@ -38,12 +38,12 @@ def reply(request):
 
 
 # A local cache-table override matching the fixture host: a 3s refresh TTL
-# bought at 1.0x and read at 0.4x, so pings come ~2.7s apart and at most
-# floor(1.0 / 0.4) = 2 of them pay for themselves.
+# bought at 1.0x and read at 0.3x, so pings come ~2.7s apart and at most
+# floor(1.0 / 0.3) - 1 = 2 of them pay for themselves.
 CACHE_TTL = {"version": 1, "entries": [
     {"id": "fixture", "match": {"host": "127.0.0.1"}, "policy": "refresh",
      "clock": "request", "tiers": [{"seconds": 3, "write": 1.0}],
-     "read": 0.4, "evidence": "measured"}]}
+     "read": 0.3, "evidence": "measured"}]}
 
 
 def wait_for(predicate, timeout=30):

@@ -354,15 +354,13 @@ fn interval_ms(ttl_seconds: Int) -> Int {
   }
 }
 
-/// Ski rental: each ping costs about `read × cached` input, letting the cache
-/// go cold costs one rewrite of about `write × cached`, so at most
-/// `floor(write / read)` consecutive pings pay for themselves. Reading costs
-/// at least as much as writing means warming never does.
+/// Ski rental: a warm cache bills the next turn about `read × cached` input,
+/// a cold one about `write × cached`, and each ping costs another
+/// `read × cached`. So `n` pings pay for themselves while
+/// `(n + 1) × read ≤ write`: at most `floor(write / read) − 1` of them. A
+/// write priced under twice the read means warming never does.
 fn cap(write: Float, read: Float) -> Int {
-  case write >=. read {
-    False -> 0
-    True -> float.floor(write /. read) |> float.truncate
-  }
+  int.max(0, float.truncate(float.floor(write /. read)) - 1)
 }
 
 /// Tokens the last turn found in the cache: what it read plus what it wrote.
