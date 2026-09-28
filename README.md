@@ -47,6 +47,19 @@ images for a final review pass. needs cargo.
 native/render/install.sh   # then enable `view` in /extensions
 ```
 
+formatting (Gleam and Python)
+
+```sh
+pre-commit install              # once per checkout; available in `nix develop`
+pre-commit run --all-files      # format the whole repository
+gleam format src test           # fix Gleam formatting
+ruff format priv/python test    # fix Python formatting
+```
+
+The commit hook formats staged Gleam and Python files (and asks you to re-stage
+any changes). It requires `gleam` on PATH; pre-commit installs the pinned Ruff
+hook in its own environment.
+
 tests
 
 ```sh
