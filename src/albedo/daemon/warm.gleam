@@ -7,13 +7,13 @@
 ////
 //// Every decision here is a plain value, so the stop rules and their
 //// arithmetic can hold without a kernel, a provider, or an actor. Each ping
-//// also measures one TTL for free: its ledger row's `cachedInputTokens` says
+//// also measures one TTL for free: its request row's `cachedInputTokens` says
 //// whether the cache was still there.
 
 import albedo/daemon/bus
 import albedo/daemon/configuration
 import albedo/daemon/family
-import albedo/daemon/ledger
+import albedo/daemon/requests
 import albedo/daemon/store
 import albedo/harness/cache_ttl
 import albedo/harness/settings
@@ -35,11 +35,11 @@ pub type Settings {
 pub type Sent {
   Sent(
     request: types.Request,
-    prefix: ledger.Prefix,
+    prefix: requests.Prefix,
     /// The usage that call reported: its cached tokens are how big the warm
     /// prefix is.
     usage: Option(types.Usage),
-    /// Where the request asked the provider to cache, as the call's ledger
+    /// Where the request asked the provider to cache, as the call's request
     /// row recorded them: a ping repeats them.
     marks: List(types.CacheMark),
     /// The endpoint the call went to, for cache-table lookups.
@@ -352,7 +352,7 @@ fn delay(sent: Sent, plan: Plan, now_ms: Int) -> Int {
 /// Whether and when the next ping is due after one came back: the budget or
 /// the cache itself can be gone, a cancelled or failed ping ends the stretch,
 /// and a cold ping that should have been warm ends it because the TTL model
-/// was wrong — the ledger keeps the evidence.
+/// was wrong — its request row keeps the evidence.
 pub fn reschedule(
   warming: Warming,
   cancelled: Bool,

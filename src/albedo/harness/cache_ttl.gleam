@@ -1,5 +1,5 @@
 //// The prompt-cache TTL table: the prior phase 2's cache-warmth estimate
-//// runs on until a session's request ledger has measured the real thing.
+//// runs on until a session's provider requests have measured the real thing.
 ////
 //// Three layers merge by id — the shipped `priv/cache-ttl.json`, an optional
 //// remote copy configured in extensions.json, and a local override in

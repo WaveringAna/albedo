@@ -226,7 +226,7 @@ pub fn start(
           _,
         ))
       },
-      // The request ledger's identity for this session's provider calls.
+      // Who this session's provider requests are recorded under.
       state.info.id,
       state.info.provider,
     )

@@ -1,9 +1,9 @@
 import albedo/daemon/events
 import albedo/daemon/images
-import albedo/daemon/ledger
 import albedo/daemon/mail
 import albedo/daemon/note
 import albedo/daemon/notice
+import albedo/daemon/requests
 import albedo/daemon/store
 import albedo/daemon/transcript
 import albedo/daemon/usage
@@ -71,7 +71,7 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
       db,
       "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER,usage_cache_creation_tokens INTEGER,effort TEXT); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT,thought_ms INTEGER); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);"
         <> images.schema
-        <> ledger.schema,
+        <> requests.schema,
     ))
     use _ <- result.try(
       store.add_columns(db, "sessions", [
@@ -296,7 +296,7 @@ pub fn delete(store: store.Store, id: String) -> Result(Nil, String) {
         list.try_each(
           [
             "transcript",
-            "request_ledger",
+            "provider_requests",
             "schedules",
             "session_extensions",
             "rolling_compaction_state",

@@ -1,7 +1,7 @@
-"""The request ledger: one durable row per provider call, recording what cache
+"""Provider requests: one durable row per attempt albedo sends, recording what cache
 and quota analysis cannot recover from the transcript.
 
-Catches: usage counts that never reach the ledger (cache reads, TTL-split
+Catches: usage counts that never reach a request row (cache reads, TTL-split
 writes, reasoning), the account/provider identity of each call, the prefix
 identity that distinguishes a warm append from a compaction rewrite, an HTTP
 failure recorded as a quota reading, and the seq link to the transcript. None
@@ -51,9 +51,9 @@ def reply(request):
     return text("first reply", usage=FIRST)
 
 
-class LedgerTest(unittest.TestCase):
+class ProviderRequestsTest(unittest.TestCase):
     def rows(self, app, session, query=""):
-        with app.api(f"/sessions/{session}/ledger{query}") as response:
+        with app.api(f"/sessions/{session}/requests{query}") as response:
             return json.load(response)
 
     def tree(self, app, session):

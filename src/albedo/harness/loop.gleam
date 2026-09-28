@@ -2,7 +2,7 @@
 
 import albedo/daemon/conversation
 import albedo/daemon/events as view
-import albedo/daemon/ledger
+import albedo/daemon/requests
 import albedo/daemon/usage
 import albedo/harness/compaction
 import albedo/harness/extension
@@ -27,7 +27,7 @@ pub type Loop {
     publish: fn(String) -> Bool,
     /// Commits inputs at a stage; a model response passes how long the
     /// model thought before it. Answers the shared daemon time and the seq
-    /// of the commit's first assistant row, which the call's ledger row
+    /// of the commit's first assistant row, which the call's request row
     /// links to.
     commit: fn(List(types.Input), conversation.Stage, Option(Int)) ->
       Result(#(Int, Option(Int)), String),
@@ -43,13 +43,13 @@ pub type Loop {
     /// cache-warming ping.
     report_turn: fn(
       types.Request,
-      ledger.Prefix,
+      requests.Prefix,
       List(types.CacheMark),
       Option(types.Usage),
       Int,
       Int,
     ) -> Nil,
-    /// The session whose provider calls the request ledger records.
+    /// The session whose provider requests are recorded.
     session: String,
     /// The saved profile those calls went through.
     profile: String,
@@ -105,7 +105,7 @@ pub fn run(
   use #(row, turn) <- result.try(
     call(
       state,
-      ledger.Turn,
+      requests.Turn,
       request,
       request_prefix(request, history, original, prepared.observation),
       state.publish,
@@ -230,7 +230,7 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
 pub fn warm(
   state: Loop,
   request: types.Request,
-  prefix: ledger.Prefix,
+  prefix: requests.Prefix,
 ) -> Result(Option(types.Usage), String) {
   let ping =
     types.Request(
@@ -239,7 +239,7 @@ pub fn warm(
     )
   call(
     state,
-    ledger.Warm,
+    requests.Warm,
     ping,
     prefix,
     // A retry is silent: a ping must never show on the session's stream.
@@ -348,24 +348,24 @@ fn bounded(text: String, limit: Int, note: String) -> String {
   }
 }
 
-/// Streams one provider call, writing a request-ledger row per attempt: what
+/// Streams one provider call, recording one provider request per attempt: what
 /// it cost, how it ended, and the prefix identity it went out with. The row
 /// id of the attempt that succeeded is answered so its transcript seq can be
 /// attached once committed. A row that cannot be written is logged and
 /// skipped, never a failed turn.
 fn call(
   state: Loop,
-  kind: ledger.Kind,
+  kind: requests.Kind,
   request: types.Request,
-  prefix: ledger.Prefix,
+  prefix: requests.Prefix,
   publish: fn(String) -> Bool,
   on_event: fn(types.Event) -> types.Control,
 ) -> Result(#(Option(Int), types.Turn), types.Error) {
   retry_stream(
     fn() {
-      let started = ledger.now()
+      let started = requests.now()
       let outcome = state.upstream.stream(request, on_event)
-      let finished = ledger.now()
+      let finished = requests.now()
       let usage = case outcome {
         Ok(turn) -> turn.usage
         Error(_) -> None
@@ -374,9 +374,9 @@ fn call(
       // The account label is read after the attempt: rotation records which
       // account served while the request streams.
       let row =
-        ledger.record(
+        requests.record(
           runtime.ledger(state.host),
-          ledger.Call(
+          requests.Call(
             state.session,
             kind,
             state.profile,
@@ -385,7 +385,7 @@ fn call(
             request.model,
             started,
             finished,
-            ledger.outcome(outcome),
+            requests.outcome(outcome),
             usage,
             prefix,
             marks,
@@ -395,7 +395,7 @@ fn call(
         Ok(id) -> Some(id)
         Error(error) -> {
           io.println_error(
-            "request ledger write failed for session "
+            "provider request record failed for session "
             <> state.session
             <> ": "
             <> error,
@@ -406,7 +406,7 @@ fn call(
       // A turn call that succeeded is what a cache-warming ping would repeat,
       // so the session keeps its request as sent, never a rebuilt one.
       case kind, outcome {
-        ledger.Turn, Ok(_) ->
+        requests.Turn, Ok(_) ->
           state.report_turn(request, prefix, marks, usage, started, finished)
         _, _ -> Nil
       }
@@ -426,11 +426,11 @@ fn call(
 fn attach(state: Loop, row: Option(Int), seq: Option(Int)) -> Nil {
   case row, seq {
     Some(id), Some(seq) ->
-      case ledger.attach(runtime.ledger(state.host), state.session, id, seq) {
+      case requests.attach(runtime.ledger(state.host), state.session, id, seq) {
         Ok(_) -> Nil
         Error(error) ->
           io.println_error(
-            "request ledger seq attach failed for session "
+            "provider request seq attach failed for session "
             <> state.session
             <> ": "
             <> error,
@@ -452,8 +452,8 @@ fn request_prefix(
   history: List(types.Input),
   original: List(types.Input),
   observation: Option(compaction.Observation),
-) -> ledger.Prefix {
-  ledger.prefix(
+) -> requests.Prefix {
+  requests.prefix(
     option.unwrap(request.instructions, ""),
     request.tools,
     history,
@@ -606,10 +606,10 @@ fn summarize(
   use #(_, turn) <- result.try(
     call(
       state,
-      ledger.Summarizer,
+      requests.Summarizer,
       summary_request,
       // The summarizer's history is exactly what it says; nothing replaced.
-      ledger.direct_prefix(summary_instructions, [], [types.User(prompt)]),
+      requests.direct_prefix(summary_instructions, [], [types.User(prompt)]),
       state.publish,
       fn(_) { types.Continue },
     )

@@ -1,8 +1,8 @@
-# Usage ledger
+# Provider requests
 
-Every provider call the daemon makes leaves one row in `request_ledger`, a durable account of what the transcript cannot say later: what the request cost, which account served it, how it ended, and what its prefix looked like. This is the recording half of cache- and quota-aware compaction; the analysis (a meter estimator and λ) is derived from these rows on demand, so nothing beyond them is stored.
+Every provider call the daemon makes leaves one row in `provider_requests`, a durable account of what the transcript cannot say later: what the request cost, which account served it, how it ended, and what its prefix looked like. This is the recording half of cache- and quota-aware compaction; the analysis (a meter estimator and λ) is derived from these rows on demand, so nothing beyond them is stored.
 
-Rows are written by the worker that streams the call, one per upstream attempt: a turn retried after a gateway hiccup leaves the failed attempt and the successful one as separate rows. Recording must never fail a turn — a ledger write error is logged and swallowed, and the call proceeds.
+Rows are written by the worker that streams the call, one per upstream attempt: a turn retried after a gateway hiccup leaves the failed attempt and the successful one as separate rows. Recording must never fail a turn — a failed row write is logged and swallowed, and the call proceeds.
 
 ## What a row holds
 
@@ -29,7 +29,7 @@ Within one projection the request is append-only, so equal head hash plus equal 
 
 ## Local API
 
-`GET /sessions/:id/ledger` answers rows oldest first, read-only straight from the store:
+`GET /sessions/:id/requests` answers rows oldest first, read-only straight from the store:
 
 - `?after=<id>` continues from the last row id of the previous page.
 - `?limit=<n>` bounds the page (1–500, default 100).

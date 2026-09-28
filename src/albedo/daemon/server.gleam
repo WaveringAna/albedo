@@ -6,10 +6,10 @@ import albedo/daemon/family
 import albedo/daemon/history
 import albedo/daemon/image
 import albedo/daemon/images
-import albedo/daemon/ledger
 import albedo/daemon/mail
 import albedo/daemon/quota
 import albedo/daemon/reaper
+import albedo/daemon/requests
 import albedo/daemon/session
 import albedo/daemon/session_provider
 import albedo/daemon/store
@@ -1833,21 +1833,21 @@ fn daemon_route(
             400,
           )
         }
-        // The session's recorded provider calls, oldest first, for tests and
-        // the quota inspector: `after` is the last row id to continue from.
-        Get, ["sessions", id, "ledger"] -> {
+        // The session's provider requests, oldest first, for tests and the
+        // quota inspector: `after` is the last row id to continue from.
+        Get, ["sessions", id, "requests"] -> {
           let after = query_int(req, "after", 0)
           let limit =
-            query_int(req, "limit", ledger.page_rows)
+            query_int(req, "limit", requests.page_rows)
             |> int.clamp(1, 500)
           use host <- with_host(registry)
-          ledger.page(runtime.ledger(host), id, after, limit)
+          requests.page(runtime.ledger(host), id, after, limit)
           |> answered(
             200,
             fn(page) {
               json.object([
                 #("session", json.string(id)),
-                #("rows", json.array(page.0, ledger.row_json)),
+                #("rows", json.array(page.0, requests.row_json)),
                 #("after", json.int(page.1)),
               ])
             },

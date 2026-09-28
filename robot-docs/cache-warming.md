@@ -29,13 +29,13 @@ each ping costs about `read × cached` input; letting the cache go cold costs on
 
 warming also stops when:
 
-- a ping comes back with no cached input tokens although the turn it repeats read or wrote cache — the TTL model was wrong, and the ledger keeps the evidence.
+- a ping comes back with no cached input tokens although the turn it repeats read or wrote cache — the TTL model was wrong, and its request row keeps the evidence.
 - the kernel was released, or the ping failed or was cancelled.
 - settings say `enabled: false`.
 
-## the ledger kind
+## the request kind
 
-every ping is a ledger row of kind `warm`, with the same prefix identity (`headHash`, `inputs`, `replaced`, `projectionHash`) and `cacheMarks` as the turn it repeats, and its own usage. its `cachedInputTokens` says whether the cache was still there, which makes every ping a free TTL measurement for phase 2. a ping never attaches a seq, never commits to the transcript, and never publishes stream events; the agents bus does not flap for it (robot-docs/usage-ledger.md).
+every ping is a provider request row of kind `warm`, with the same prefix identity (`headHash`, `inputs`, `replaced`, `projectionHash`) and `cacheMarks` as the turn it repeats, and its own usage. its `cachedInputTokens` says whether the cache was still there, which makes every ping a free TTL measurement for phase 2. a ping never attaches a seq, never commits to the transcript, and never publishes stream events; the agents bus does not flap for it (robot-docs/provider-requests.md).
 
 ## settings
 

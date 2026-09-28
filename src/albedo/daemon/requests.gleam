@@ -1,4 +1,4 @@
-//// One durable row per provider call.
+//// One durable row per provider request: every attempt albedo sends.
 ////
 //// The transcript keeps what a turn said; it cannot say what the request
 //// looked like when the provider saw it. Each row records what later cache
@@ -23,7 +23,7 @@ import gleam/result
 import gleam/string
 import sqlight
 
-pub const schema = "CREATE TABLE IF NOT EXISTS request_ledger(id INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),seq INTEGER,kind TEXT NOT NULL,profile TEXT NOT NULL,provider TEXT NOT NULL,account TEXT,model TEXT NOT NULL,started_ms INTEGER NOT NULL,finished_ms INTEGER NOT NULL,outcome TEXT NOT NULL,status INTEGER,error TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,cache_creation_tokens INTEGER,cache_write_5m_tokens INTEGER,cache_write_1h_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,head_hash TEXT NOT NULL,inputs INTEGER NOT NULL,replaced INTEGER,projection_hash TEXT,strategy TEXT,cache_marks TEXT NOT NULL DEFAULT '[]'); CREATE INDEX IF NOT EXISTS request_ledger_session ON request_ledger(session,id);"
+pub const schema = "CREATE TABLE IF NOT EXISTS provider_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),seq INTEGER,kind TEXT NOT NULL,profile TEXT NOT NULL,provider TEXT NOT NULL,account TEXT,model TEXT NOT NULL,started_ms INTEGER NOT NULL,finished_ms INTEGER NOT NULL,outcome TEXT NOT NULL,status INTEGER,error TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,cache_creation_tokens INTEGER,cache_write_5m_tokens INTEGER,cache_write_1h_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,head_hash TEXT NOT NULL,inputs INTEGER NOT NULL,replaced INTEGER,projection_hash TEXT,strategy TEXT,cache_marks TEXT NOT NULL DEFAULT '[]'); CREATE INDEX IF NOT EXISTS provider_requests_session ON provider_requests(session,id);"
 
 /// What the call was for. A turn is the model loop; a summarizer is the
 /// compaction summary call `loop.summarize` makes; a warm is a cache-warming
@@ -58,7 +58,7 @@ pub fn outcome(result: Result(a, types.Error)) -> Outcome {
   }
 }
 
-/// Error bodies are truncated so one huge response cannot bloat the ledger.
+/// Error bodies are truncated so one huge response cannot bloat the table.
 const detail_limit = 2000
 
 fn bounded(text: String) -> String {
@@ -146,7 +146,7 @@ pub fn head_hash(instructions: String, tools: List(types.Tool)) -> String {
   |> hash
 }
 
-/// The hash of a run of inputs, as the ledger identities them.
+/// The hash of a run of inputs, as request rows identify them.
 pub fn inputs_hash(inputs: List(types.Input)) -> String {
   inputs
   |> list.map(input_identity)
@@ -212,21 +212,21 @@ pub type Call {
 
 /// Writes one row and answers its id, so the caller can attach the transcript
 /// seq the call produced once it is committed.
-pub fn record(ledger: store.Store, call: Call) -> Result(Int, String) {
-  store.query(ledger, fn(db) {
+pub fn record(database: store.Store, call: Call) -> Result(Int, String) {
+  store.query(database, fn(db) {
     use _ <- result.try(store.run(db, insert, values(call)))
     store.one(
       db,
       "SELECT last_insert_rowid()",
       [],
       decode.field(0, decode.int, decode.success),
-      "request ledger row id",
+      "provider request row id",
     )
   })
 }
 
 // `seq` starts null and is attached after the call's transcript row commits.
-const insert = "INSERT INTO request_ledger(session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks) VALUES(?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+const insert = "INSERT INTO provider_requests(session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks) VALUES(?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 
 fn values(call: Call) -> List(sqlight.Value) {
   let Call(
@@ -303,14 +303,14 @@ fn values(call: Call) -> List(sqlight.Value) {
 
 /// Attaches the transcript row a recorded call produced.
 pub fn attach(
-  ledger: store.Store,
+  database: store.Store,
   session: String,
   row: Int,
   seq: Int,
 ) -> Result(Nil, String) {
   store.write(
-    ledger,
-    "UPDATE request_ledger SET seq=? WHERE id=? AND session=?",
+    database,
+    "UPDATE provider_requests SET seq=? WHERE id=? AND session=?",
     [sqlight.int(seq), sqlight.int(row), sqlight.text(session)],
   )
 }
@@ -349,17 +349,17 @@ pub type Row {
 
 /// Rows after `after`, oldest first, at most `limit`; the id to continue from.
 pub fn page(
-  ledger: store.Store,
+  database: store.Store,
   session: String,
   after: Int,
   limit: Int,
 ) -> Result(#(List(Row), Int), String) {
-  store.query(ledger, fn(db) {
+  store.query(database, fn(db) {
     use rows <- result.try(store.rows(
       db,
       "SELECT "
         <> columns
-        <> " FROM request_ledger WHERE session=? AND id>? ORDER BY id LIMIT ?",
+        <> " FROM provider_requests WHERE session=? AND id>? ORDER BY id LIMIT ?",
       [sqlight.text(session), sqlight.int(after), sqlight.int(limit)],
       row_decoder(),
     ))
@@ -500,7 +500,7 @@ fn marks_decoder(stored: String) -> decode.Decoder(List(types.CacheMark)) {
   }
 }
 
-/// The ms clock the ledger timestamps rows with.
+/// The ms clock request rows are timestamped with.
 @external(erlang, "erlang", "system_time")
 fn system_time(unit: TimeUnit) -> Int
 

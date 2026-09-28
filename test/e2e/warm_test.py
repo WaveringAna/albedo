@@ -3,12 +3,12 @@ its last request with a tiny output budget before the provider cache would
 expire.
 
 Catches: pings that rebuild the request instead of repeating the one the turn
-sent (which would compact or summarize), ping ledger rows that do not carry
+sent (which would compact or summarize), ping request rows that do not carry
 the turn's prefix identity, pings that commit or publish anything, warming
 that never stops at its budget, warming that continues after the waking work
 finished, and a submit that cannot get through while a ping holds the session.
 None of this is observable from the transcript alone; the provider and the
-ledger are the witnesses.
+request rows are the witnesses.
 """
 import json
 import threading
@@ -105,7 +105,7 @@ class WarmTest(unittest.TestCase):
                 if "max_output_tokens" in request]
 
     def rows(self, session):
-        with self.app.api(f"/sessions/{session}/ledger") as response:
+        with self.app.api(f"/sessions/{session}/requests") as response:
             return json.load(response)["rows"]
 
     def tree(self, session):
@@ -146,7 +146,7 @@ class WarmTest(unittest.TestCase):
             # budget lowered — the Responses protocol's minimum.
             self.assertEqual(ping, {**turn, "max_output_tokens": 16})
 
-        # The ledger rows carry the same prefix identity and cache marks as
+        # The request rows carry the same prefix identity and cache marks as
         # the turn they repeat, and never a transcript row of their own.
         rows = self.rows(parent)
         self.assertEqual([row["kind"] for row in rows], ["turn", "warm", "warm"])

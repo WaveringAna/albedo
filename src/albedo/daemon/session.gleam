@@ -7,8 +7,8 @@ import albedo/daemon/event_buffer
 import albedo/daemon/events as view
 import albedo/daemon/family
 import albedo/daemon/images
-import albedo/daemon/ledger
 import albedo/daemon/mail
+import albedo/daemon/requests
 import albedo/daemon/session_extensions
 import albedo/daemon/session_history
 import albedo/daemon/session_namespace
@@ -358,7 +358,7 @@ pub fn release(session: Session) -> Bool {
 }
 
 /// Drop an idle actor's reloadable transcript cache without touching its event
-/// cursor or durable ledger. Active runs always retain their prepared history.
+/// cursor or durable requests. Active runs always retain their prepared history.
 pub fn evict_history(session: Session) -> Bool {
   actor.call(session, 5000, EvictHistory)
 }
@@ -1633,7 +1633,7 @@ fn warm_tick(state: State) -> State {
           case kernel, session_provider.configured_client(with_kernel) {
             // A released kernel ends warming: a restart simply stops it.
             Some(live), Ok(#(primed, client)) -> {
-              let started = ledger.now()
+              let started = requests.now()
               session_state.State(
                 ..session_run.start_warm(
                   primed,
@@ -1662,7 +1662,7 @@ fn warm_finish(
   outcome: Result(Option(types.Usage), String),
 ) -> actor.Next(State, Message) {
   process.demonitor_process(run.monitor)
-  let now = ledger.now()
+  let now = requests.now()
   // The next ping is decided from the run that just ended, before the state
   // records that no ping is in flight any more.
   let again = warm.reschedule(state.warm, run.cancelled, outcome, now, now)
@@ -1698,7 +1698,7 @@ fn warm_after_run(state: State, run: turn.Run) -> State {
           state.info.model,
           state.warm,
           warm.wanted(runtime.ledger(state.host), state.info.id),
-          ledger.now(),
+          requests.now(),
         )
       {
         Some(#(delay, generation)) -> {

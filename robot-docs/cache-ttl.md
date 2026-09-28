@@ -1,6 +1,6 @@
 # cache TTL table
 
-The prompt-cache TTL table is the prior the cache-warmth estimate starts from: how long each provider keeps a cached prefix, what a write costs, and whether a hit restarts the clock. It answers `lookup(extension, host, model)` in `src/albedo/harness/cache_ttl.gleam` until a session's request ledger has measured the real thing (robot-docs/usage-ledger.md); after that the ledger wins.
+The prompt-cache TTL table is the prior the cache-warmth estimate starts from: how long each provider keeps a cached prefix, what a write costs, and whether a hit restarts the clock. It answers `lookup(extension, host, model)` in `src/albedo/harness/cache_ttl.gleam` until a session's provider requests have measured the real thing (robot-docs/provider-requests.md); after that the measurements win.
 
 The table is data, not code: `priv/cache-ttl.json` ships with the daemon, and nothing about a provider is hardcoded anywhere else.
 
@@ -20,7 +20,7 @@ A file is `{"version": 1, "entries": [...]}`. One entry:
 
 Unknown fields are ignored, so a newer file stays readable. A bad entry — missing `id`, `match`, `policy` or `evidence`, or a value that does not decode — is skipped with a logged reason and never fails the table.
 
-**Values marked `folklore` or `unknown` are placeholders.** They are the shape of the answer, not the answer: phase 2 replaces them with what the session's own ledger rows measure.
+**Values marked `folklore` or `unknown` are placeholders.** They are the shape of the answer, not the answer: phase 2 replaces them with what the session's own request rows measure.
 
 ## layers
 
