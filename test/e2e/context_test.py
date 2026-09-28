@@ -28,6 +28,7 @@ class ContextTest(unittest.TestCase):
         self.addCleanup(self.provider.close)
 
         def prepare(app):
+            (app.home / "models.json").unlink(missing_ok=True)
             (app.home / "extensions.json").write_text(json.dumps({"models": {
                 "url": self.provider.url + "/models.json", "refreshHours": 24,
             }}))
