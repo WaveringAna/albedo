@@ -117,10 +117,10 @@ pub fn read_settings(home: String) -> Settings {
   |> result.unwrap(defaults)
 }
 
-const defaults = Settings(True, 1024)
+const defaults = Settings(False, 1024)
 
 fn settings_decoder() -> decode.Decoder(Settings) {
-  use enabled <- decode.optional_field("enabled", True, decode.bool)
+  use enabled <- decode.optional_field("enabled", False, decode.bool)
   use min_cached <- decode.optional_field("minCachedTokens", 1024, decode.int)
   decode.success(Settings(enabled, min_cached))
 }

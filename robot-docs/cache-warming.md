@@ -39,10 +39,10 @@ every ping is a provider request row of kind `warm`, with the same prefix identi
 
 ## settings
 
-`$ALBEDO_HOME/extensions.json` under `"warm"`, re-read each time a ping is scheduled:
+`$ALBEDO_HOME/extensions.json` under `"warm"`, re-read each time a ping is scheduled. Warming is off by default; opt in with:
 
 ```json
 { "warm": { "enabled": true, "minCachedTokens": 1024 } }
 ```
 
-malformed settings fall back to these defaults. the cache table itself (its layers, refresh, local override) is documented in robot-docs/cache-ttl.md.
+when unset or malformed, `enabled` defaults to `false` and `minCachedTokens` to 1024. the cache table itself (its layers, refresh, local override) is documented in robot-docs/cache-ttl.md.

@@ -131,6 +131,16 @@ class WarmTest(unittest.TestCase):
         return parent, child
 
     @exclusive
+    def test_unconfigured_warmer_does_not_ping_an_idle_parent(self):
+        settings = json.loads((self.app.home / "extensions.json").read_text())
+        del settings["warm"]
+        (self.app.home / "extensions.json").write_text(json.dumps(settings))
+        parent, _child = self.swarm()
+        time.sleep(4)  # The fixture TTL would have scheduled a ping at 2.7s.
+        self.assertEqual(len(self.requests("/parent/")), 1)
+        self.assertEqual([row["kind"] for row in self.rows(parent)], ["turn"])
+
+    @exclusive
     def test_pings_repeat_the_last_request_and_stop_at_the_budget(self):
         parent, child = self.swarm()
         before = self.tree(parent)
