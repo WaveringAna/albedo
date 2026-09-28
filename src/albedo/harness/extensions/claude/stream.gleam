@@ -26,11 +26,12 @@ type State {
     blocks: List(Block),
     usage: Option(types.Usage),
     reason: Option(String),
+    detail: Option(String),
   )
 }
 
 pub fn reducer(model: String, tools: List(types.Tool)) -> Reducer {
-  stream.wrap(State(model, tools, None, [], None, None), step, fn(_) {
+  stream.wrap(State(model, tools, None, [], None, None, None), step, fn(_) {
     Error(types.UnexpectedEnd)
   })
 }
@@ -86,6 +87,7 @@ fn apply(
           decode.at(["delta", "stop_reason"], decode.optional(decode.string)),
         )
         |> result.unwrap(None)
+      let detail = refusal_detail(value)
       let output =
         decode.run(value, decode.at(["usage", "output_tokens"], decode.int))
         |> option.from_result
@@ -95,7 +97,12 @@ fn apply(
         _, None -> state.usage
       }
       emit(
-        State(..state, usage: usage, reason: option.or(reason, state.reason)),
+        State(
+          ..state,
+          usage: usage,
+          reason: option.or(reason, state.reason),
+          detail: option.or(detail, state.detail),
+        ),
         [],
       )
     }
@@ -250,7 +257,7 @@ fn finish(state: State) -> Result(types.Turn, types.Error) {
   let finish = case state.reason {
     Some("tool_use") -> types.ToolCalls
     Some("max_tokens") -> types.LengthLimit
-    Some("refusal") -> types.ContentFiltered
+    Some("refusal") -> types.OtherFinish(option.unwrap(state.detail, "refusal"))
     Some("end_turn") | Some("stop_sequence") | None ->
       case calls {
         [] -> types.Complete
@@ -325,6 +332,25 @@ fn arguments(chunks: List(String)) -> String {
 
 fn flat(chunks: List(String)) -> String {
   chunks |> list.reverse |> string.concat
+}
+
+fn refusal_detail(value: Dynamic) -> Option(String) {
+  case field(value, ["delta", "stop_details", "type"]) {
+    "refusal" -> {
+      let category = field(value, ["delta", "stop_details", "category"])
+      let explanation =
+        string.trim(field(value, ["delta", "stop_details", "explanation"]))
+      let label = case category {
+        "" -> "refusal"
+        category -> "refusal (" <> category <> ")"
+      }
+      Some(case explanation {
+        "" -> label
+        explanation -> label <> ": " <> explanation
+      })
+    }
+    _ -> None
+  }
 }
 
 fn field(value: Dynamic, path: List(String)) -> String {

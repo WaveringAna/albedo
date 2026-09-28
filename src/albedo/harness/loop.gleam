@@ -47,6 +47,22 @@ pub type Pin {
   Pinned(prompt: conversation.PinnedPrompt, head: Option(Int))
 }
 
+pub fn stopped_message(
+  finish: types.Finish,
+  output: List(types.ReplayItem),
+) -> String {
+  let failure = "model stopped: " <> string.inspect(finish)
+  let response =
+    output
+    |> list.map(view.output_text)
+    |> list.filter(fn(text) { text != "" })
+    |> string.join("\n\n")
+  case response {
+    "" -> failure
+    response -> failure <> "\n\n" <> response
+  }
+}
+
 pub fn run(
   state: Loop,
   id: String,
@@ -107,7 +123,7 @@ pub fn run(
             _ -> run(state, id, unshift(inputs, [replay, steering]), step + 1)
           }
         }
-        _ -> Error("model stopped: " <> string.inspect(turn.finish))
+        _ -> Error(stopped_message(turn.finish, turn.output))
       }
     calls -> {
       use results <- result.try(list.try_map(calls, run_tool(state, _)))

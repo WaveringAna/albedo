@@ -2,6 +2,7 @@
 import albedo/daemon/events
 import albedo/harness/extensions/claude/stream
 import albedo/harness/extensions/claude/wire
+import albedo/harness/loop
 import albedo/openai_api
 import albedo/openai_api/stream as reducer
 import albedo/openai_api/transport
@@ -166,6 +167,20 @@ pub fn claude_stream_preserves_tool_calls_and_replay_test() {
   assert string.contains(encoded, "tool_result")
   assert string.contains(encoded, "tool_use")
   assert string.contains(encoded, "hello")
+}
+
+pub fn claude_refusal_details_and_text_reach_failure_message_test() {
+  let assert Ok(turn) =
+    feed_all(stream.reducer("claude-opus-5-5", []), [
+      "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_refusal\"}}",
+      "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+      "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"I can’t help with that request.\"}}",
+      "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\",\"stop_details\":{\"type\":\"refusal\",\"category\":\"policy\",\"explanation\":\"private credentials\"}}}",
+      "{\"type\":\"message_stop\"}",
+    ])
+  let failure = loop.stopped_message(turn.finish, turn.output)
+  assert string.contains(failure, "refusal (policy): private credentials")
+  assert string.contains(failure, "I can’t help with that request.")
 }
 
 pub fn claude_stream_shows_thinking_and_replays_it_signed_test() {
