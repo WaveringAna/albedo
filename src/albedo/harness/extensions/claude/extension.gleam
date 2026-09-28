@@ -3,11 +3,13 @@
 
 import albedo/daemon/configuration
 import albedo/harness/extension
+import albedo/harness/extensions/claude/catalog
 import albedo/harness/extensions/claude/stream
 import albedo/harness/extensions/claude/wire
 import albedo/harness/extensions/models/extension as models
 import albedo/harness/oauth
 import albedo/harness/rotation
+import albedo/harness/settings
 import albedo/openai_api
 import albedo/openai_api/types
 import gleam/bool
@@ -24,13 +26,6 @@ const client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
 const scope = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
 
-/// Picker policy, not model metadata: only show requested current and fallback
-/// tiers that models.dev actually lists for Anthropic.
-const preferred = [
-  "claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5", "claude-opus-5",
-  "claude-opus-4-8", "claude-haiku-4-5",
-]
-
 pub fn extension() -> extension.Extension {
   extension.Extension(
     "claude",
@@ -38,8 +33,11 @@ pub fn extension() -> extension.Extension {
     ["models"],
     [
       extension.LoginPlugin(login()),
-      // models.dev is the list: its own catalog reloads it.
-      extension.ModelsPlugin(extension.ModelCatalog(lookup, list_models, None)),
+      extension.ModelsPlugin(extension.ModelCatalog(
+        lookup,
+        list_models,
+        Some(fn() { catalog.reload(settings.home()) }),
+      )),
       extension.ModelProviderPlugin(extension.ModelProvider(
         "anthropic",
         resolve,
@@ -152,36 +150,60 @@ fn authenticate(context: extension.ModelContext) -> Result(wire.Auth, String) {
   }
 }
 
+/// Every model the Anthropic API lists for this account, newest first. The
+/// first listing waits for the fetch; until one lands, models.dev's list.
 fn list_models(provider: String, _endpoint: String) -> List(String) {
   case provider {
     "anthropic" -> {
-      models.refresh()
-      available_models(models.path())
+      let home = settings.home()
+      case catalog.models(home) {
+        [] -> catalog.reload(home) |> result.unwrap(Nil)
+        _ -> catalog.refresh_later(home)
+      }
+      case catalog.models(home) {
+        [] -> models.list("anthropic", "")
+        listed -> list.map(listed, fn(model) { model.id })
+      }
     }
     _ -> []
   }
 }
 
-pub fn available_models(catalog: String) -> List(String) {
-  let listed = models.list_at(catalog, "anthropic", "")
-  list.filter(preferred, fn(id) { list.contains(listed, id) })
-}
-
 fn lookup(id: String, at: String) -> Option(extension.ModelInfo) {
-  models.refresh()
-  model_at(models.path(), id, at)
+  use <- bool.guard(at != "" && at != endpoint, None)
+  let home = settings.home()
+  case list.find(catalog.models(home), fn(model) { model.id == id }) {
+    Ok(model) -> Some(listed_info(home, model))
+    Error(_) -> unlisted_info(id)
+  }
 }
 
-pub fn model_at(
-  catalog: String,
-  id: String,
-  at: String,
-) -> Option(extension.ModelInfo) {
-  use <- bool.guard(
-    !list.contains(preferred, id) || at != "" && at != endpoint,
-    None,
+/// The API's own facts; models.dev fills in only a limit it leaves out. Its
+/// efforts stand as listed, since none means the model takes no effort.
+fn listed_info(home: String, model: catalog.Model) -> extension.ModelInfo {
+  let info =
+    extension.ModelInfo(
+      ..extension.blank_model(model.id, "claude"),
+      context_tokens: model.context,
+      max_output_tokens: model.output,
+      input_modalities: case model.images {
+        True -> ["text", "image"]
+        False -> ["text"]
+      },
+      endpoint: Some(endpoint),
+      source: "Anthropic models API cached in " <> home,
+    )
+  extension.ModelInfo(
+    ..models.complete_model(info, endpoint),
+    environment: [],
+    efforts: model.efforts,
   )
-  use found <- option.map(models.lookup_provider_at(catalog, "anthropic", id))
+}
+
+/// What models.dev knows of a model the API list does not name, such as an
+/// alias a session picked before the list was fetched.
+fn unlisted_info(id: String) -> Option(extension.ModelInfo) {
+  use found <- option.map(models.lookup_provider("anthropic", id))
   extension.ModelInfo(
     ..found,
     provider: "claude",

@@ -184,8 +184,13 @@ pub fn encode(
     ]
     _ -> fields
   }
-  let fields = case request.options.effort {
-    Some(effort) if request.model != "claude-haiku-4-5" -> [
+  // Haiku 4.5 rejects effort under its alias and its dated id alike.
+  let effort = case string.starts_with(request.model, "claude-haiku-4-5") {
+    True -> None
+    False -> request.options.effort
+  }
+  let fields = case effort {
+    Some(effort) -> [
       // Newer models omit thinking text unless asked for a summary.
       #(
         "thinking",
@@ -242,9 +247,9 @@ pub fn encode(
           "mid-conversation-tool-changes-2026-07-01",
         ]
       },
-      case request.options.effort {
-        Some(_) if request.model != "claude-haiku-4-5" -> ["effort-2025-11-24"]
-        _ -> []
+      case effort {
+        Some(_) -> ["effort-2025-11-24"]
+        None -> []
       },
       ["extended-cache-ttl-2025-04-11"],
     ])
