@@ -5,6 +5,7 @@ import albedo/daemon/conversation
 import albedo/daemon/session_state
 import albedo/daemon/turn
 import albedo/daemon/usage
+import albedo/daemon/warm
 import albedo/harness/extension
 import albedo/harness/loop
 import albedo/harness/runtime
@@ -27,6 +28,7 @@ pub type Messages(message) {
     usage: fn(String, usage.Metadata, Subject(Result(Nil, String))) -> message,
     drain: fn(String, Subject(Result(List(types.Input), String))) -> message,
     pin: fn(String, Option(Int), Subject(Nil)) -> message,
+    sent: fn(String, warm.Sent, Subject(Nil)) -> message,
     finished: fn(String, Result(Nil, String)) -> message,
     collect: message,
   )
@@ -209,6 +211,21 @@ pub fn start(
       usage_fn(owner, run_id, messages, 10_000),
       drain_fn(owner, run_id, messages, 10_000),
       fn(head) { report(owner, messages.pin(run_id, head, _)) },
+      fn(request, prefix, marks, usage, started, finished) {
+        report(owner, messages.sent(
+          run_id,
+          warm.Sent(
+            request,
+            prefix,
+            usage,
+            marks,
+            client.endpoint,
+            started,
+            finished,
+          ),
+          _,
+        ))
+      },
       // The request ledger's identity for this session's provider calls.
       state.info.id,
       state.info.provider,
@@ -221,6 +238,8 @@ pub fn start(
         messages.finished(run_id, case work {
           turn.Compaction -> loop.compact(worker, model_history)
           turn.Turn(_) -> loop.run(worker, run_id, model_history, 0)
+          // A ping never starts here; start_warm owns its worker.
+          turn.Warm -> Error("warm pings run through start_warm")
         }),
       )
     })
@@ -233,8 +252,65 @@ pub fn start(
     history: None,
     activity: turn.Running(run),
     context: case work {
-      turn.Compaction -> state.context
+      turn.Compaction | turn.Warm -> state.context
       turn.Turn(_) -> session_state.unprepared()
     },
+  )
+}
+
+/// One cache-warming ping: `sent`'s request re-sent with a tiny output
+/// budget. It commits nothing and publishes nothing, so its worker carries
+/// no history and answers only its own outcome and usage; the session queues
+/// submissions behind it as it does for a compaction run. The run never
+/// announces itself on the agents bus: an idle session stays idle.
+pub fn start_warm(
+  state: session_state.State(message),
+  kernel: runtime.Session,
+  client: extension.Upstream,
+  sent: warm.Sent,
+  finished: fn(String, Result(Option(types.Usage), String)) -> message,
+) -> session_state.State(message) {
+  let run_id = new_id()
+  let owner = state.self
+  // The worker's closures must capture these fields, never `state`: the
+  // session state carries the loaded transcript.
+  let worker =
+    loop.Loop(
+      state.info.model,
+      state.info.effort,
+      state.host,
+      kernel,
+      state.pin,
+      client,
+      // A ping must never show on the session's stream, and must never
+      // block on it either.
+      fn(_event) { True },
+      fn(_inputs, _stage, _thought) { Error("a warm ping never commits") },
+      fn(_request, _observation, _compacted) { Nil },
+      fn(_metadata) { Ok(Nil) },
+      fn() { Ok([]) },
+      fn(_head) { Nil },
+      fn(_request, _prefix, _marks, _usage, _started, _finished) { Nil },
+      state.info.id,
+      state.info.provider,
+    )
+  let pid =
+    process.spawn_unlinked(fn() {
+      label("albedo_warm", run_id)
+      process.send(
+        owner,
+        finished(run_id, loop.warm(worker, sent.request, sent.prefix)),
+      )
+    })
+  session_state.State(
+    ..state,
+    activity: turn.Running(turn.Run(
+      run_id,
+      pid,
+      process.monitor(pid),
+      False,
+      turn.latch(),
+      turn.Warm,
+    )),
   )
 }

@@ -7,6 +7,7 @@ import albedo/daemon/event_buffer
 import albedo/daemon/events as view
 import albedo/daemon/family
 import albedo/daemon/images
+import albedo/daemon/ledger
 import albedo/daemon/mail
 import albedo/daemon/session_extensions
 import albedo/daemon/session_history
@@ -17,6 +18,7 @@ import albedo/daemon/session_state
 import albedo/daemon/session_submission
 import albedo/daemon/turn.{type Submission, Submission}
 import albedo/daemon/usage
+import albedo/daemon/warm
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/python/kernel as python
@@ -130,6 +132,13 @@ pub type Message {
   RecordContext(String, context_snapshot.Snapshot, Bool, Subject(Nil))
   RecordUsage(String, usage.Metadata, Subject(Result(Nil, String)))
   ReportPin(String, Option(Int), Subject(Nil))
+  /// The worker's turn call succeeded; its request is what a warm ping
+  /// repeats. Fire-and-forget, like the pin report.
+  ReportSent(String, warm.Sent, Subject(Nil))
+  /// A scheduled warm ping is due, under the generation it was scheduled at.
+  WarmTick(Int)
+  /// A warm ping finished: its usage says whether the cache was still there.
+  WarmFinished(String, Result(Option(types.Usage), String))
   Compact(Option(String), Subject(Result(json.Json, String)))
   RefreshData(Subject(Result(json.Json, String)))
   DrainSteering(String, Subject(Result(List(types.Input), String)))
@@ -216,6 +225,7 @@ pub fn start(
         None,
         now_ms(),
         None,
+        warm.fresh(),
       )
     // Background jobs wake this session through the kernel's jobs route; the
     // registered closure lands a completion notice as an ordinary submit, so
@@ -494,6 +504,7 @@ fn handle(state: State, message: Message) {
         }
       }
     ChangeWorkspace(cwd, reply) -> {
+      let state = stirred(state)
       let changed = case turn.running(state.activity), directory(cwd) {
         Some(_), _ -> Error("session must be idle to change workspace")
         None, False -> Error("workspace must be an existing absolute directory")
@@ -536,10 +547,10 @@ fn handle(state: State, message: Message) {
         runtime.extension_summaries(state.host, state.info.id),
       )
     ChangeExtension(change, reply) ->
-      transition(reply, session_extensions.change(state, change))
+      transition(reply, session_extensions.change(stirred(state), change))
     ChangeModel(model, provider_name, effort, reply) -> {
       let #(state, outcome) =
-        session_provider.select(state, model, provider_name, effort)
+        session_provider.select(stirred(state), model, provider_name, effort)
       answer(
         state,
         reply,
@@ -550,7 +561,7 @@ fn handle(state: State, message: Message) {
     ReadEffort(reply) ->
       answer(state, reply, session_provider.read_effort(state))
     ChangeEffort(level, reply) ->
-      transition(reply, session_provider.change_effort(state, level))
+      transition(reply, session_provider.change_effort(stirred(state), level))
 
     RefreshData(reply) -> transition(reply, session_extensions.refresh(state))
     Compact(strategy, reply) ->
@@ -753,6 +764,30 @@ fn handle(state: State, message: Message) {
         _, _, _ -> actor.continue(state)
       }
     }
+    ReportSent(id, sent, reply) -> {
+      process.send(reply, Nil)
+      case turn.live(state.activity, id) {
+        True ->
+          actor.continue(
+            session_state.State(..state, warm: warm.captured(state.warm, sent)),
+          )
+        False -> actor.continue(state)
+      }
+    }
+    WarmTick(generation) ->
+      case generation == state.warm.generation, turn.running(state.activity) {
+        False, _ | True, Some(_) -> actor.continue(state)
+        True, None -> actor.continue(warm_tick(state))
+      }
+    WarmFinished(id, outcome) ->
+      case turn.owner(state.activity, id) {
+        Some(run) ->
+          case run.work {
+            turn.Warm -> warm_finish(state, run, outcome)
+            _ -> actor.continue(state)
+          }
+        None -> actor.continue(state)
+      }
     RecordContext(id, snapshot, compacted, reply) ->
       answer(
         case turn.live(state.activity, id) {
@@ -805,11 +840,16 @@ fn handle(state: State, message: Message) {
     Down(process.ProcessDown(_, pid, _)) ->
       case turn.running(state.activity) {
         Some(run) if run.pid == pid ->
-          finish_run(
-            state,
-            run,
-            Error("worker stopped; execution may have had effects"),
-          )
+          case run.work {
+            turn.Warm ->
+              warm_finish(state, run, Error("warm ping worker stopped"))
+            _ ->
+              finish_run(
+                state,
+                run,
+                Error("worker stopped; execution may have had effects"),
+              )
+          }
         _ -> actor.continue(state)
       }
     Down(_) -> actor.continue(state)
@@ -1292,6 +1332,9 @@ fn admit(
   submission: Submission,
   reply: Subject(Result(Bool, SubmissionError)),
 ) -> actor.Next(State, Message) {
+  // Anything a client submits counts as attention: a pending warm ping is
+  // cancelled, and the turn that follows re-captures the request to repeat.
+  let state = stirred(state)
   case turn.admit(state.activity, submission, list.length(state.steering)) {
     turn.Reject(turn.Busy) -> answer(state, reply, Error(Busy))
     turn.Reject(turn.Oversized) ->
@@ -1506,6 +1549,19 @@ fn finish_run(
   run: turn.Run,
   outcome: Result(Nil, String),
 ) -> actor.Next(State, Message) {
+  case run.work {
+    // A ping holds the session like a compaction run does, but commits
+    // nothing and never reaches the transcript.
+    turn.Warm -> warm_finish(state, run, result.replace(outcome, None))
+    _ -> finish_turn(state, run, outcome)
+  }
+}
+
+fn finish_turn(
+  state: State,
+  run: turn.Run,
+  outcome: Result(Nil, String),
+) -> actor.Next(State, Message) {
   process.demonitor_process(run.monitor)
   let persisted =
     conversation.commit_from(
@@ -1550,8 +1606,119 @@ fn finish_run(
     turn.Turn(_), False -> answer_parent(state, outcome)
     _, _ -> state
   }
+  let state = warm_after_run(state, run)
   process.send(state.self, Collect)
   actor.continue(start_queued(state))
+}
+
+/// A scheduled ping is due under the current generation: start it, or stop
+/// warming for this idle stretch. Settings are re-read here, so an edit to
+/// extensions.json takes effect without a restart.
+fn warm_tick(state: State) -> State {
+  case state.warm.sent {
+    None -> state
+    Some(sent) -> {
+      let decision =
+        warm.decision(state.home, state.info.provider, state.info.model, sent)
+      case
+        warm.next(
+          decision,
+          warm.wanted(runtime.ledger(state.host), state.info.id),
+          state.warm.pings,
+        )
+      {
+        None -> state
+        Some(plan) -> {
+          let #(with_kernel, kernel) = session_namespace.ready(state)
+          case kernel, session_provider.configured_client(with_kernel) {
+            // A released kernel ends warming: a restart simply stops it.
+            Some(live), Ok(#(primed, client)) -> {
+              let started = ledger.now()
+              session_state.State(
+                ..session_run.start_warm(
+                  primed,
+                  live,
+                  client,
+                  sent,
+                  WarmFinished,
+                ),
+                warm: warm.pinging(state.warm, started, plan),
+              )
+            }
+            _, _ -> state
+          }
+        }
+      }
+    }
+  }
+}
+
+/// A warm ping ended. It never touched the transcript, so nothing commits and
+/// nothing is announced; the submissions it held back start now, and the next
+/// ping is scheduled only while the idle stretch still holds.
+fn warm_finish(
+  state: State,
+  run: turn.Run,
+  outcome: Result(Option(types.Usage), String),
+) -> actor.Next(State, Message) {
+  process.demonitor_process(run.monitor)
+  let now = ledger.now()
+  // The next ping is decided from the run that just ended, before the state
+  // records that no ping is in flight any more.
+  let again = warm.reschedule(state.warm, run.cancelled, outcome, now, now)
+  let state =
+    session_state.State(
+      ..state,
+      activity: turn.Resting,
+      warm: warm.settled(state.warm),
+    )
+  // A webhook or wake refused while the ping held the session can be
+  // admitted now.
+  mail.waiting()
+  case again {
+    Some(#(delay, generation)) -> {
+      let _ = process.send_after(state.self, delay, WarmTick(generation))
+      Nil
+    }
+    None -> Nil
+  }
+  actor.continue(start_queued(state))
+}
+
+/// A run that held the session ended: a turn's request is what the next idle
+/// stretch can warm, while a compaction rewrote the prefix, so nothing is
+/// warmable until the next turn captures a request again.
+fn warm_after_run(state: State, run: turn.Run) -> State {
+  case run.work, run.cancelled {
+    turn.Turn(_), False -> {
+      case
+        warm.first_ping(
+          state.home,
+          state.info.provider,
+          state.info.model,
+          state.warm,
+          warm.wanted(runtime.ledger(state.host), state.info.id),
+          ledger.now(),
+        )
+      {
+        Some(#(delay, generation)) -> {
+          let _ = process.send_after(state.self, delay, WarmTick(generation))
+          Nil
+        }
+        None -> Nil
+      }
+      state
+    }
+    turn.Compaction, _ ->
+      session_state.State(..state, warm: warm.reset(state.warm))
+    _, _ -> state
+  }
+}
+
+/// Any new activity: a pending warm tick scheduled under an older generation
+/// is dropped when it arrives.
+fn stirred(state: State) -> State {
+  session_state.State(..state, warm: warm.stirred(state.warm))
 }
 
 fn start_queued(state: State) -> State {
@@ -1603,6 +1770,7 @@ fn start_worker(
   work: turn.Work,
 ) -> State {
   bus.running(state.info.id, True)
+  let state = stirred(state)
   session_run.start(
     state,
     kernel,
@@ -1616,6 +1784,7 @@ fn start_worker(
       RecordUsage,
       DrainSteering,
       ReportPin,
+      ReportSent,
       Finished,
       Collect,
     ),

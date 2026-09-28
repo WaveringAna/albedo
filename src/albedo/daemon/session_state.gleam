@@ -7,6 +7,7 @@ import albedo/daemon/event_buffer
 import albedo/daemon/transcript
 import albedo/daemon/turn.{type Submission}
 import albedo/daemon/usage
+import albedo/daemon/warm
 import albedo/harness/loop
 import albedo/harness/runtime
 import gleam/erlang/process.{type Subject}
@@ -37,6 +38,8 @@ pub type State(message) {
     /// While the kernel boots: boot attempts so far, and the work waiting for
     /// it, re-sent to the actor once the kernel is ready.
     booting: Option(#(Int, List(message))),
+    /// The prompt-cache warmer's view: the last sent request, and its budget.
+    warm: warm.Warming,
   )
 }
 

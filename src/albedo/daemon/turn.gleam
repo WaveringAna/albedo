@@ -42,6 +42,8 @@ pub type Submission {
 
 pub type Work {
   Compaction
+  /// A cache-warming ping: commits nothing and publishes nothing.
+  Warm
   /// `stage` is None until the turn's first commit.
   Turn(stage: Option(conversation.Stage))
 }
@@ -253,6 +255,7 @@ pub fn phase(activity: Activity) -> String {
     Resting -> "resting"
     Interrupted -> "interrupted"
     Running(Run(work: Compaction, ..)) -> "compacting"
+    Running(Run(work: Warm, ..)) -> "warming"
     Running(Run(work: Turn(None), ..)) -> "preparing"
     Running(Run(work: Turn(Some(stage)), ..)) -> conversation.stage_name(stage)
   }

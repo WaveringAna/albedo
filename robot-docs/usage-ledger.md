@@ -7,7 +7,7 @@ Rows are written by the worker that streams the call, one per upstream attempt: 
 ## What a row holds
 
 - `session`, `seq` — the conversation, and the transcript row the call produced: the first assistant row of the response that turn committed (for a tool-call turn, the row carrying the call itself, not the tool output after it). `seq` is null when the call produced no transcript row: a failed call, or a compaction summary, which writes strategy state instead of the transcript.
-- `kind` — `turn` for the model/tool loop, `summarizer` for the compaction summary call.
+- `kind` — `turn` for the model/tool loop, `summarizer` for the compaction summary call, `warm` for a cache-warming ping that repeats the last turn's request with a tiny output budget. A `warm` row never attaches a seq: pings commit nothing.
 - `profile`, `provider`, `account`, `model` — the saved profile the request went through, `protocol:endpoint` as it was reached, the non-secret label of the account that served (an account id, email, or short key hash; null when the provider has no account pool), and the model.
 - `startedMs`, `finishedMs` — when the attempt ran.
 - `outcome`, `status`, `error` — `ok`, or `error` with the HTTP status and a truncated error body, so a 429 is a quota reading.

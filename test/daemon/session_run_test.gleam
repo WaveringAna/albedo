@@ -93,6 +93,7 @@ fn messages() -> session_run.Messages(Owner) {
     usage: fn(_, _, _) { Unused },
     drain: fn(_, _) { Unused },
     pin: fn(_, _, _) { Unused },
+    sent: fn(_, _, _) { Unused },
     finished: fn(_, _) { Unused },
     collect: Unused,
   )
