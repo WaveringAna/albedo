@@ -93,13 +93,17 @@ pub type Table {
   Table(entries: List(Entry), layers: List(Layer))
 }
 
-/// The remote layer's configuration in extensions.json: absent `url` means
-/// no fetch, `refreshHours: 0` disables the background refresh.
+/// The remote layer's configuration in extensions.json: `url: null` disables
+/// fetching; `refreshHours: 0` disables the background refresh.
 pub type Config {
   Config(url: Option(String), refresh_hours: Int)
 }
 
 const remote_file = "cache-ttl-remote.json"
+
+const default_url = "https://api.next.tangled.org/xrpc/org.tangled.temp.git.getBlob?repo=did%3Aplc%3Al7hhzcbqqvpcquau5waryzdu&ref=main&path=priv%2Fcache-ttl.json"
+
+const defaults = Config(Some(default_url), 24)
 
 /// The merged table: all layers, entries tagged with where they came from.
 /// Triggers a background refresh of a stale remote copy, like the models
@@ -128,7 +132,7 @@ pub fn lookup(extension: String, host: String, model: String) -> Option(Entry) {
 /// explicit `/reload` never claims stale data was refreshed. A failed fetch
 /// keeps the previous copy; no configured url is nothing to do.
 pub fn reload() -> Result(Nil, String) {
-  case settings.load("cacheTtl", config_decoder(), Config(None, 24)) {
+  case settings.load("cacheTtl", config_decoder(), defaults) {
     Ok(Config(url: None, ..)) -> Ok(Nil)
     Ok(Config(url: Some(url), ..)) -> native_reload(remote_path(), url)
     Error(reason) -> Error(reason)
@@ -136,7 +140,7 @@ pub fn reload() -> Result(Nil, String) {
 }
 
 fn refresh() -> Nil {
-  case settings.load("cacheTtl", config_decoder(), Config(None, 24)) {
+  case settings.load("cacheTtl", config_decoder(), defaults) {
     Ok(Config(url: Some(url), refresh_hours: hours)) ->
       case hours > 0 {
         True -> native_refresh(remote_path(), url, hours * 3_600_000)
@@ -151,7 +155,11 @@ pub fn remote_path() -> String {
 }
 
 fn config_decoder() -> decode.Decoder(Config) {
-  use url <- decode.optional_field("url", None, decode.optional(decode.string))
+  use url <- decode.optional_field(
+    "url",
+    Some(default_url),
+    decode.optional(decode.string),
+  )
   use hours <- decode.optional_field("refreshHours", 24, decode.int)
   decode.success(Config(url, hours))
 }

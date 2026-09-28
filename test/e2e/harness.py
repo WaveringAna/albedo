@@ -525,7 +525,8 @@ class Albedo:
                 self.prepare(self)
             if not (self.home / "extensions.json").exists():
                 (self.home / "extensions.json").write_text(
-                    json.dumps({"models": {"refreshHours": 0}})
+                    json.dumps({"models": {"refreshHours": 0},
+                                "cacheTtl": {"url": None}})
                 )
             default_name = (
                 f"fixture-{self.provider.route}" if self._concurrent else "fixture"

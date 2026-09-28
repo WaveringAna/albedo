@@ -27,11 +27,7 @@ Unknown fields are ignored, so a newer file stays readable. A bad entry — miss
 Three layers merge by id:
 
 1. `default` — the shipped `priv/cache-ttl.json`.
-2. `remote` — a copy fetched from a url, cached at `$ALBEDO_HOME/cache-ttl-remote.json`:
-   ```json
-   { "cacheTtl": { "url": "https://example.com/cache-ttl.json", "refreshHours": 24 } }
-   ```
-   in `$ALBEDO_HOME/extensions.json`. Absent `url` means no fetch; `refreshHours: 0` disables the background refresh. Only `https`, or `http` on the loopback host, is fetched, the response is capped at 1 MiB, and the write is a rename — a failed fetch keeps the previous copy.
+2. `remote` — a copy fetched by default from [this repo's `priv/cache-ttl.json` on `main`](https://api.next.tangled.org/xrpc/org.tangled.temp.git.getBlob?repo=did%3Aplc%3Al7hhzcbqqvpcquau5waryzdu&ref=main&path=priv%2Fcache-ttl.json), cached at `$ALBEDO_HOME/cache-ttl-remote.json`. In `$ALBEDO_HOME/extensions.json`, set `cacheTtl.url` to another JSON file to override it, or `null` to disable remote fetching. `refreshHours` defaults to 24; `0` disables the background refresh (but not explicit `/reload`). Only `https`, or `http` on the loopback host, is fetched, the response is capped at 1 MiB, and the write is a rename — a failed fetch keeps the previous copy.
 3. `local` — `$ALBEDO_HOME/cache-ttl.json`, for hand edits.
 
 A later layer replaces an entry with the same id in place, and puts entries with new ids **before** all earlier-layer entries, so a local override can shadow a general default while the shipped specific-to-general order survives underneath. Within the merged table, **first match wins** a lookup: the files list specific entries before general ones, and that order is the precedence.
