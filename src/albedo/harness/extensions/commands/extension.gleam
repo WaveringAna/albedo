@@ -1,5 +1,6 @@
 //// The built-in session commands and the Python kernel's `commands` object.
 
+import albedo/harness/cache_ttl
 import albedo/harness/command.{
   type Command, type Context, Argument, Command, Compact, ContextPage,
   ContextSummary, Data, EffortGet, EffortSelect, ModelCall, ModelGet,
@@ -121,7 +122,7 @@ fn model() -> Command {
 fn reload() -> Command {
   Command(
     "/reload",
-    "Reload cached runtime data: the models.dev catalog, the session's skills catalog and extension context, or both. A session reload rescans in place — the kernel, its Python namespace, and the prompt cache keep running.",
+    "Reload cached runtime data: the models.dev catalog, the session's skills catalog and extension context, or both. A session reload rescans in place — the kernel, its Python namespace, and the prompt cache keep running. The cache TTL table's remote copy is re-fetched with the models catalog.",
     [
       Argument(
         "target",
@@ -143,11 +144,12 @@ fn reload() -> Command {
           )
         Error(_) -> {
           use _ <- result.try(models.reload())
+          use _ <- result.try(cache_ttl.reload())
           use _ <- result.try(ctx.state(Refresh))
           Ok(
             reloaded(
               "models+session",
-              "Models catalog reloaded; extension context, skills catalog, and session commands rescanned.",
+              "Models catalog and cache TTL table reloaded; extension context, skills catalog, and session commands rescanned.",
               [],
             ),
           )

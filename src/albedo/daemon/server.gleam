@@ -14,6 +14,7 @@ import albedo/daemon/session
 import albedo/daemon/session_provider
 import albedo/daemon/store
 import albedo/daemon/usage
+import albedo/harness/cache_ttl
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/schedule/ledger as schedule
@@ -1561,6 +1562,7 @@ fn uri_decode(segment: String) -> String {
 /// The daemon's own top-level routes; a service never shadows them.
 const daemon_routes = [
   "health", "sessions", "models", "auth", "shutdown", "agents", "quota",
+  "cache-ttl",
 ]
 
 fn route(
@@ -1700,6 +1702,32 @@ fn daemon_route(
             Error(_) ->
               quota.latest_json(database)
               |> answered(200, fn(value) { value }, 400)
+          }
+        }
+        // The prompt-cache TTL table, read-only: every merged entry with the
+        // layer it came from, or with `extension`, `host` and `model`, the
+        // single resolved entry (or null).
+        Get, ["cache-ttl"] -> {
+          let parameters = query(req)
+          let asked = fn(key) {
+            parameters |> list.key_find(key) |> result.unwrap("")
+          }
+          case asked("extension"), asked("host"), asked("model") {
+            "", "", "" -> reply(200, cache_ttl.table_json(cache_ttl.table()))
+            _, _, _ ->
+              reply(
+                200,
+                case
+                  cache_ttl.lookup(
+                    asked("extension"),
+                    asked("host"),
+                    asked("model"),
+                  )
+                {
+                  Some(entry) -> cache_ttl.entry_json(entry)
+                  None -> json.null()
+                },
+              )
           }
         }
         // `details` lists objects with catalog facts. Without it, plain ids.

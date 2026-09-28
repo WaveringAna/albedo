@@ -1,0 +1,306 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "claude-subscription",
+      "match": {
+        "extension": "claude"
+      },
+      "policy": "refresh",
+      "clock": "request",
+      "tiers": [
+        {
+          "seconds": 300,
+          "write": 1.25
+        },
+        {
+          "seconds": 3600,
+          "write": 2.0
+        }
+      ],
+      "read": 0.1,
+      "evidence": "documented",
+      "source": "https://code.claude.com/docs/en/prompt-caching",
+      "note": "Claude OAuth. Claude Code writes the main conversation at 1h on a subscription and 5m once on usage credits; albedo's own marks are in each ledger row. Lifetime counts from request start, so streaming time uses it up.",
+      "checked": "2026-09-28"
+    },
+    {
+      "id": "anthropic-api",
+      "match": {
+        "host": "api.anthropic.com"
+      },
+      "policy": "refresh",
+      "clock": "request",
+      "tiers": [
+        {
+          "seconds": 300,
+          "write": 1.25
+        },
+        {
+          "seconds": 3600,
+          "write": 2.0
+        }
+      ],
+      "read": 0.1,
+      "evidence": "documented",
+      "source": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching",
+      "note": "Every hit refreshes for free. 1h entries must precede 5m entries in one request. Minimum prefix is model-dependent (512-4096 tokens).",
+      "checked": "2026-09-28"
+    },
+    {
+      "id": "bedrock-claude",
+      "match": {
+        "host": "bedrock-runtime.*.amazonaws.com",
+        "model": "*claude*"
+      },
+      "policy": "refresh",
+      "clock": "request",
+      "tiers": [
+        {
+          "seconds": 300,
+          "write": 1.25
+        },
+        {
+          "seconds": 3600,
+          "write": 2.0
+        }
+      ],
+      "read": 0.1,
+      "evidence": "documented",
+      "source": "https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html",
+      "note": "Resets with each successful hit. Cross-region inference can route to a cold region and force extra writes.",
+      "checked": "2026-09-28"
+    },
+    {
+      "id": "codex-subscription",
+      "match": {
+        "extension": "codex"
+      },
+      "policy": "evict",
+      "survival": {
+        "typical": 1800,
+        "max": 86400
+      },
+      "evidence": "folklore",
+      "source": "https://developers.openai.com/api/docs/guides/prompt-caching",
+      "note": "ChatGPT/Codex OAuth: nothing published. Codex CLI sends only prompt_cache_key. Observed informally at about 30 minutes, which matches the API's GPT-5.6+ and 24h-retention behaviour.",
+      "checked": "2026-09-28"
+    },
+    {
+      "id": "openai-5.6",
+      "match": {
+        "host": "api.openai.com",
+        "model": [
+          "gpt-5.6*",
+          "gpt-6*"
+        ]
+      },
+      "policy": "refresh",
+      "tiers": [
+        {
+          "seconds": 1800,
+          "write": 1.25
+        }
+      ],
+      "read": 0.1,
+      "evidence": "documented",
+      "source": "https://developers.openai.com/api/docs/guides/prompt-caching",
+      "note": "prompt_cache_options.ttl \"30m\" is the only value and the default; a minimum, OpenAI may retain longer. Minimum prefix 1024 tokens.",
+      "checked": "2026-09-28"
+    },
+    {
+      "id": "openai",
+      "match": {
+        "host": "api.openai.com"
+      },
+      "policy": "evict",
+      "survival": {
+        "typical": 450,
+        "max": 3600
+      },
+      "evidence": "documented",
+      "source": "https://developers.openai.com/api/docs/guides/prompt-caching",
+      "note": "Earlier models, prompt_cache_retention in_memory (albedo sends none): about 5-10 minutes idle, at most an hour. With \"24h\" retention: typically about 30 minutes, at most 24 hours.",
+      "checked": "2026-09-28"
+    },
+    {
+      "id": "gemini-implicit",
+      "match": {
+        "host": [
+          "generativelanguage.googleapis.com",
+          "*aiplatform.googleapis.com"
+        ]
+      },
+      "policy": "evict",
+      "survival": {
+        "typical": 240,
+        "max": 86400
+      },
+      "evidence": "folklore",
+      "source": "https://ai.google.dev/gemini-api/docs/caching",
+      "note": "Google publishes no implicit TTL. OpenRouter reports 3-5 minutes on average; Vertex says implicit entries are cleared within 24 hours.",
+      "checked": "2026-09-28"
+    },
+    {
+      "id": "antigravity",
+      "match": {
+        "extension": "antigravity"
+      },
+      "policy": "unknown",
+      "survival": {
+        "typical": 240,
+        "max": 86400
+      },
+      "evidence": "unknown",
+      "source": "https://ai.google.dev/gemini-api/docs/caching",
+      "note": "Cloud Code Assist: no docs. Assumed to behave like Gemini implicit caching until measured.",
+      "checked": "2026-09-28"
+    },
+    {
+      "id": "deepseek",
+      "match": {
+        "host": "api.deepseek.com"
+      },
+      "policy": "evict",
+      "survival": {
+        "typical": 14400,
+        "max": 259200
+      },
+      "evidence": "documented",
+      "source": "https://api-docs.deepseek.com/guides/kv_cache",
+      "note": "Disk cache, on by default; unused entries are cleared \"usually within a few hours to a few days\". Matches whole cache units only.",
+      "checked": "2026-09-28"
+    },
+    {
+      "id": "alibaba",
+      "match": {
+        "extension": "alibaba"
+      },
+      "policy": "evict",
+      "survival": {
+        "typical": 300,
+        "max": 3600
+      },
+      "read": 0.2,
+      "evidence": "documented",
+      "source": "https://www.alibabacloud.com/help/en/model-studio/context-cache",
+      "note": "Implicit cache (albedo sends no cache_control): validity \"indeterminate\", periodically cleared; hits 20%, writes 100%. Explicit markers would give a 5m refresh-on-hit clock at 1.25x write, 0.1x read. The typical and max are placeholders.",
+      "checked": "2026-09-28"
+    },
+    {
+      "id": "zai",
+      "match": {
+        "host": [
+          "api.z.ai",
+          "open.bigmodel.cn"
+        ]
+      },
+      "policy": "unknown",
+      "survival": {
+        "typical": 300,
+        "max": 3600
+      },
+      "evidence": "unknown",
+      "source": "https://docs.z.ai/guides/capabilities/cache",
+      "note": "Implicit only; docs give no validity period.",
+      "checked": "2026-09-28"
+    },
+    {
+      "id": "kimi-coding",
+      "match": {
+        "host": "api.kimi.com"
+      },
+      "policy": "evict",
+      "survival": {
+        "typical": 300,
+        "max": 1800
+      },
+      "evidence": "measured",
+      "source": "https://github.com/Leechael/pi-provider-kimi-code/blob/main/docs/caching.md",
+      "note": "kimi-for-coding endpoint: probes hit at 60s and 300s and missed at 1800s and beyond; markers are ignored and caching works in 256-token chunks.",
+      "checked": "2026-09-28"
+    },
+    {
+      "id": "kimi-api",
+      "match": {
+        "host": [
+          "api.moonshot.ai",
+          "api.moonshot.cn"
+        ]
+      },
+      "policy": "refresh",
+      "tiers": [
+        {
+          "seconds": 300
+        },
+        {
+          "seconds": 3600
+        }
+      ],
+      "evidence": "documented",
+      "source": "https://platform.kimi.ai/docs/guide/context-caching",
+      "note": "5m unless prompt_cache_options.ttl asks for 1h; each hit renews under the TTL locked at first write. Organisation-scoped.",
+      "checked": "2026-09-28"
+    },
+    {
+      "id": "xai",
+      "match": {
+        "host": "api.x.ai"
+      },
+      "policy": "evict",
+      "survival": {
+        "typical": 300
+      },
+      "evidence": "documented",
+      "source": "https://docs.x.ai/developers/advanced-api-usage/prompt-caching/best-practices",
+      "note": "No TTL: entries \"can be evicted at any time due to server load or restarts\". x-grok-conv-id keeps requests on one cache. The typical is a placeholder.",
+      "checked": "2026-09-28"
+    },
+    {
+      "id": "groq",
+      "match": {
+        "host": "api.groq.com"
+      },
+      "policy": "refresh",
+      "tiers": [
+        {
+          "seconds": 7200
+        }
+      ],
+      "evidence": "documented",
+      "source": "https://console.groq.com/docs/prompt-caching",
+      "note": "Expires after 2 hours without use.",
+      "checked": "2026-09-28"
+    },
+    {
+      "id": "openrouter",
+      "match": {
+        "host": "openrouter.ai"
+      },
+      "policy": "unknown",
+      "survival": {
+        "typical": 300,
+        "max": 3600
+      },
+      "evidence": "documented",
+      "source": "https://openrouter.ai/docs/guides/best-practices/prompt-caching",
+      "note": "No cache of its own: the upstream's rules apply, and TTL syntax is not translated between providers. Sticky routing to one upstream lapses after 10 minutes idle. Several reports of no Anthropic caching through it.",
+      "checked": "2026-09-28"
+    },
+    {
+      "id": "hyper",
+      "match": {
+        "host": "hyper.charm.land"
+      },
+      "policy": "unknown",
+      "survival": {
+        "typical": 300,
+        "max": 3600
+      },
+      "evidence": "unknown",
+      "source": "https://hyper.charm.land/docs/models.html",
+      "note": "Gateway with no caching docs. Placeholder until measured.",
+      "checked": "2026-09-28"
+    }
+  ]
+}

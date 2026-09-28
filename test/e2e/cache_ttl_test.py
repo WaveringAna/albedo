@@ -1,0 +1,211 @@
+"""The reloadable prompt-cache TTL table: layers, merge precedence, live reload.
+
+The table is daemon-wide state read from files, so this is where its behaviour
+is visible: the shipped default served with every entry, lookups resolving
+through match order, a local override replacing an entry by id and winning
+with a new more-specific one — without a restart — and a malformed file
+keeping the last good table. It touches extensions.json and cache-ttl.json in
+the shared test home (the warmer suite writes its own override there), so the
+class is exclusive and restores every file it wrote.
+
+The remote layer's fetch is background (like the models catalog's), so the
+fixture provider serves the remote table on a loopback URL and the test waits
+for it to land; `/reload` fetches it synchronously. No live network is reached.
+"""
+import json
+import time
+import unittest
+import urllib.error
+import urllib.request
+
+from harness import ROOT, Albedo, Provider, exclusive, text
+
+SHIPPED = json.loads((ROOT / "priv" / "cache-ttl.json").read_text())
+
+# `/reload` fetches the models catalog before the TTL table, so it needs a
+# fixture url too — the default would reach the live models.dev.
+MODELS_CATALOG = {"fixture": {
+    "id": "fixture", "name": "Fixture",
+    "models": {"fixture-model": {"id": "fixture-model",
+                                 "limit": {"context": 8000}}},
+}}
+
+REMOTE_TABLE = {
+    "version": 1,
+    "entries": [
+        # Replaces the shipped deepseek entry by id, in place.
+        {"id": "deepseek", "match": {"host": "api.deepseek.com"},
+         "policy": "fixed", "clock": "response", "evidence": "measured",
+         "source": "fixture", "note": "remote override"},
+        # A new id, which goes before every default entry.
+        {"id": "fixture-gateway", "match": {"host": "gateway.fixture"},
+         "policy": "evict", "survival": {"typical": 600}, "evidence": "measured",
+         "source": "fixture", "note": "new remote entry"},
+    ],
+}
+
+LOCAL_OVERRIDE = {
+    "version": 1,
+    "entries": [
+        # Replaces the remote or default deepseek entry by id, in place.
+        {"id": "deepseek", "match": {"host": "api.deepseek.com"},
+         "policy": "fixed", "clock": "request", "evidence": "measured",
+         "source": "local", "note": "local override"},
+        # A new id, more specific than anything shipped, which must win.
+        {"id": "laptop-gateway", "match": {"host": "gateway.laptop"},
+         "policy": "refresh", "tiers": [{"seconds": 600, "write": 1.5}],
+         "evidence": "measured", "source": "local", "note": "new local entry"},
+    ],
+}
+
+
+def write_atomic(path, payload):
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload))
+    temporary.replace(path)
+
+
+@exclusive
+class CacheTtlTests(unittest.TestCase):
+    def setUp(self):
+        self.provider = Provider(lambda _request: text("ok"), catalog=REMOTE_TABLE)
+        self.addCleanup(self.provider.close)
+        self.catalog = Provider(lambda _request: text("ok"), catalog=MODELS_CATALOG)
+        self.addCleanup(self.catalog.close)
+
+        def prepare(app):
+            (app.home / "cache-ttl.json").unlink(missing_ok=True)
+            (app.home / "cache-ttl-remote.json").unlink(missing_ok=True)
+            (app.home / "extensions.json").write_text(json.dumps({
+                "models": {"url": self.catalog.url + "/models.json",
+                           "refreshHours": 0},
+                "cacheTtl": {"url": self.provider.url + "/cache-ttl.json",
+                             "refreshHours": 24},
+            }))
+
+        self.app = Albedo(self.provider, prepare=prepare, providers={
+            "fixture": {"baseUrl": self.provider.url, "apiKey": "fixture-key",
+                        "model": "fixture-model", "protocol": "chat_completions"},
+        })
+        self.app.__enter__()
+        self.addCleanup(self.restore_home)
+        self.addCleanup(self.app.__exit__, None, None, None)
+
+    def restore_home(self):
+        (self.app.home / "cache-ttl.json").unlink(missing_ok=True)
+        (self.app.home / "cache-ttl-remote.json").unlink(missing_ok=True)
+
+    def table(self):
+        with self.app.api("/cache-ttl") as response:
+            return json.load(response)
+
+    def resolved(self, query):
+        with self.app.api("/cache-ttl" + query) as response:
+            return json.load(response)
+
+    def layers(self, table):
+        return {layer["name"]: layer for layer in table["layers"]}
+
+    def entries(self, table):
+        return {entry["id"]: entry for entry in table["entries"]}
+
+    def test_default_table_is_served_and_lookups_resolve(self):
+        table = self.table()
+        self.assertTrue(self.layers(table)["default"]["loaded"])
+        self.assertIn("priv/cache-ttl.json", self.layers(table)["default"]["path"])
+        self.assertFalse(self.layers(table)["local"]["loaded"])
+        # Every shipped entry, each tagged with the layer it came from.
+        self.assertEqual(set(self.entries(table)), {e["id"] for e in SHIPPED["entries"]})
+        for entry in table["entries"]:
+            self.assertEqual(entry["layer"], "default")
+        # First match in table order: the subscription entry shadows nothing,
+        # but a specific model glob beats the general host entry after it.
+        claude = self.resolved("?extension=claude")
+        self.assertEqual(claude["id"], "claude-subscription")
+        self.assertEqual(claude["policy"], "refresh")
+        self.assertEqual(claude["clock"], "request")
+        self.assertEqual([t["seconds"] for t in claude["tiers"]], [300, 3600])
+        self.assertEqual(claude["read"], 0.1)
+        deepseek = self.resolved("?host=api.deepseek.com")
+        self.assertEqual(deepseek["id"], "deepseek")
+        self.assertEqual(deepseek["policy"], "evict")
+        self.assertEqual(deepseek["survival"]["typical"], 14400)
+        # Matching is case-insensitive.
+        self.assertEqual(self.resolved("?host=API.DEEPSEEK.COM")["id"], "deepseek")
+        # A model glob within a list of patterns, ahead of the plain host rule.
+        self.assertEqual(
+            self.resolved("?host=api.openai.com&model=gpt-5.6-turbo")["id"], "openai-5.6")
+        self.assertEqual(self.resolved("?host=api.openai.com&model=gpt-4o")["id"], "openai")
+        self.assertIsNone(self.resolved("?extension=never-heard-of-it"))
+
+    def test_local_override_replaces_and_adds_without_restart(self):
+        write_atomic(self.app.home / "cache-ttl.json", LOCAL_OVERRIDE)
+        table = self.table()
+        local = self.layers(table)["local"]
+        self.assertTrue(local["loaded"])
+        self.assertEqual(local["path"], str(self.app.home / "cache-ttl.json"))
+        entries = self.entries(table)
+        # Replaced by id: same entry, now from the local layer.
+        self.assertEqual(entries["deepseek"]["layer"], "local")
+        self.assertEqual(entries["deepseek"]["note"], "local override")
+        self.assertEqual(entries["deepseek"]["clock"], "request")
+        # New ids go before all earlier-layer entries and win the lookup.
+        self.assertEqual(table["entries"][0]["id"], "laptop-gateway")
+        self.assertEqual(self.resolved("?host=gateway.laptop")["id"], "laptop-gateway")
+        # The replaced default keeps answering, with the override's values.
+        self.assertEqual(self.resolved("?host=api.deepseek.com")["note"], "local override")
+        # Untouched defaults still resolve.
+        self.assertEqual(self.resolved("?extension=claude")["id"], "claude-subscription")
+
+    def test_malformed_local_file_keeps_the_last_good_table(self):
+        write_atomic(self.app.home / "cache-ttl.json", LOCAL_OVERRIDE)
+        self.assertTrue(self.layers(self.table())["local"]["loaded"])
+        (self.app.home / "cache-ttl.json").write_text("{ this is not json")
+        table = self.table()
+        local = self.layers(table)["local"]
+        self.assertFalse(local["loaded"])
+        self.assertIn("not valid JSON", local["error"])
+        entries = self.entries(table)
+        self.assertEqual(entries["deepseek"]["layer"], "local")
+        self.assertEqual(entries["deepseek"]["note"], "local override")
+        self.assertEqual(self.resolved("?host=gateway.laptop")["id"], "laptop-gateway")
+        # Fixing the file is picked up live, without a restart.
+        write_atomic(self.app.home / "cache-ttl.json", LOCAL_OVERRIDE)
+        self.assertTrue(self.layers(self.table())["local"]["loaded"])
+
+    def test_remote_url_is_fetched_and_merged(self):
+        deadline = time.monotonic() + 20
+        table = self.table()
+        while not self.layers(table)["remote"]["loaded"] and time.monotonic() < deadline:
+            time.sleep(0.1)
+            table = self.table()
+        remote = self.layers(table)["remote"]
+        self.assertTrue(remote["loaded"])
+        self.assertEqual(remote["path"], str(self.app.home / "cache-ttl-remote.json"))
+        entries = self.entries(table)
+        # Replaced by id, in the default entry's place, ahead of general rules.
+        ids = [entry["id"] for entry in table["entries"]]
+        self.assertEqual(entries["deepseek"]["layer"], "remote")
+        self.assertEqual(entries["deepseek"]["note"], "remote override")
+        self.assertEqual(entries["deepseek"]["policy"], "fixed")
+        self.assertLess(ids.index("claude-subscription"), ids.index("deepseek"))
+        # The remote layer's new id sits in front of the default entries.
+        self.assertEqual(ids[0], "fixture-gateway")
+        self.assertEqual(self.resolved("?host=gateway.fixture")["id"], "fixture-gateway")
+
+    def test_session_reload_refetches_the_remote_copy(self):
+        session = self.app.session()
+        self.assertFalse((self.app.home / "cache-ttl-remote.json").exists())
+        with self.app.api(f"/sessions/{session}/commands",
+                          {"name": "/reload", "args": {}}) as response:
+            outcome = json.load(response)["result"]
+        self.assertEqual(outcome["reloaded"], "models+session")
+        table = self.table()
+        self.assertTrue(self.layers(table)["remote"]["loaded"])
+        self.assertEqual(self.entries(table)["deepseek"]["note"], "remote override")
+
+    def test_route_requires_authentication(self):
+        request = urllib.request.Request(self.app.base + "/cache-ttl")
+        with self.assertRaises(urllib.error.HTTPError) as refused:
+            urllib.request.urlopen(request, timeout=20)
+        self.assertEqual(refused.exception.code, 403)

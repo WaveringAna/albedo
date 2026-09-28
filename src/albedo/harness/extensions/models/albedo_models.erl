@@ -6,61 +6,26 @@
 -export([refresh/3, reload/2, lookup/3, lookup_provider/3, list/3]).
 
 -define(MAX_BYTES, 33554432).
--define(FETCH_TIMEOUT_MS, 30000).
 -define(REFRESH_PROCESS, albedo_models_refresh).
 
-refresh(Catalog0, Url0, MaxAgeMs) ->
-    Catalog = text(Catalog0),
-    Url = unicode:characters_to_binary(Url0),
-    case albedo_credentials:stale(Catalog, MaxAgeMs) andalso safe_url(Url) of
-        false -> nil;
-        true ->
-            Pid = spawn(fun() -> fetch(Catalog, Url) end),
-            try register(?REFRESH_PROCESS, Pid) of
-                true -> nil
-            catch
-                _:_ ->
-                    exit(Pid, kill),
-                    nil
-            end
-    end.
+%% Every error the shared fetch reports on this cache's behalf keeps this
+%% catalog's name, so the wording stays this module's own.
+-define(WHAT, <<"models catalog">>).
 
-reload(Catalog0, Url0) ->
-    Catalog = text(Catalog0),
-    Url = unicode:characters_to_binary(Url0),
-    try
-        case safe_url(Url) of
-            true -> isolated(fun() -> fetch(Catalog, Url) end);
-            false -> {error, <<"models catalog URL must use https or loopback http">>}
-        end
-    catch
-        _:_ -> {error, <<"models catalog URL is invalid">>}
-    end.
+refresh(Catalog, Url, MaxAgeMs) ->
+    albedo_cached_fetch:refresh(Catalog, Url, MaxAgeMs, ?REFRESH_PROCESS,
+                                ?WHAT, fun accept/1, fun after_write/1).
 
-%% https anywhere; plain http only on loopback, which keeps tests local.
-safe_url(Url) ->
-    Parsed = uri_string:parse(Url),
-    Scheme = maps:get(scheme, Parsed, undefined),
-    Host = string:lowercase(maps:get(host, Parsed, <<>>)),
-    Scheme =:= <<"https">> orelse
-        (Scheme =:= <<"http">> andalso
-         lists:member(Host, [<<"localhost">>, <<"127.0.0.1">>, <<"::1">>])).
+reload(Catalog, Url) ->
+    albedo_cached_fetch:reload(Catalog, Url, ?WHAT, fun accept/1, fun after_write/1).
 
-fetch(Catalog, Url) ->
-    Headers = [{"user-agent", "albedo"}, {"accept", "application/json"}],
-    case albedo_http:get(Url, Headers, ?FETCH_TIMEOUT_MS, 10000) of
-        {ok, {200, _, Body}} when byte_size(Body) =< ?MAX_BYTES ->
-            case compact(Body) of
-                {ok, Trimmed} -> store(Catalog, Trimmed);
-                error -> {error, <<"models catalog response is not valid">>}
-            end;
-        {ok, {200, _, _}} ->
-            {error, <<"models catalog response is too large">>};
-        {ok, {Status, _, _}} ->
-            {error, iolist_to_binary(io_lib:format("models catalog returned HTTP ~B", [Status]))};
-        {error, _} ->
-            {error, <<"models catalog request failed">>}
-    end.
+accept(Body) when byte_size(Body) =< ?MAX_BYTES ->
+    case compact(Body) of
+        {ok, Trimmed} -> {ok, Trimmed};
+        error -> {error, <<"models catalog response is not valid">>}
+    end;
+accept(_) ->
+    {error, <<"models catalog response is too large">>}.
 
 %% A valid catalog re-encoded with only what provider/3 and model/1 read. Every
 %% provider stays: lookup falls back to matching a model id across all of them,
@@ -105,28 +70,13 @@ trim_model(_, _) -> false.
 nonempty(_, Value, Map) when map_size(Value) =:= 0 -> Map;
 nonempty(Key, Value, Map) -> Map#{Key => Value}.
 
-%% Runs Fun in a fresh process so a large decode's garbage dies with it instead
-%% of growing the caller's heap for the rest of its life. Fun's result crosses
-%% back as an exit reason, so it must be small.
-isolated(Fun) ->
-    {Pid, Ref} = spawn_monitor(fun() -> exit({done, Fun()}) end),
-    receive
-        {'DOWN', Ref, process, Pid, {done, Result}} -> Result;
-        {'DOWN', Ref, process, Pid, _} -> {error, <<"models catalog could not be read">>}
-    end.
-
-%% A partly written catalog must never be readable, so the rename is the commit.
-store(Catalog, Body) ->
-    case albedo_credentials:write(Catalog, Body) of
-        ok ->
-            _ = persistent_term:erase({?MODULE, Catalog}),
-            _ = file:delete(index_path(Catalog)),
-            {ok, nil};
-        {error, {rename, _}} ->
-            {error, <<"models catalog cache could not be replaced">>};
-        _ ->
-            {error, <<"models catalog cache could not be written">>}
-    end.
+%% Once a catalog is replaced, its parse index and revision cache are stale;
+%% both self-heal on the next parse, but dropping them keeps the next lookup
+%% from trusting the old revision first.
+after_write(Catalog) ->
+    _ = persistent_term:erase({?MODULE, Catalog}),
+    _ = file:delete(index_path(Catalog)),
+    nil.
 
 lookup(Catalog0, Model0, Endpoint0) ->
     Catalog = text(Catalog0),
@@ -185,7 +135,7 @@ load(Catalog, Revision) ->
         case persistent_term:get({?MODULE, Catalog}, undefined) of
             {Revision, Index} -> {ok, Index};
             _ ->
-                case isolated(fun() -> from_index(Catalog, Revision) end) of
+                case albedo_cached_fetch:isolated(?WHAT, fun() -> from_index(Catalog, Revision) end) of
                     ok -> {ok, element(2, persistent_term:get({?MODULE, Catalog}))};
                     Error -> Error
                 end
@@ -239,7 +189,7 @@ retrim(Catalog, Decoded, {_, Modified} = Revision) ->
     case trimmed(Decoded) of
         true -> Revision;
         false ->
-            case store(Catalog, trim(Decoded)) of
+            case albedo_cached_fetch:commit(Catalog, trim(Decoded), ?WHAT, fun after_write/1) of
                 {ok, nil} ->
                     _ = file:write_file_info(Catalog, #file_info{mtime = Modified}, [{time, posix}]),
                     case file:read_file_info(Catalog, [{time, posix}]) of
