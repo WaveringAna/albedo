@@ -159,7 +159,9 @@ osc(<<27, _, R/binary>>, A) -> norm(R, A);
 osc(<<_, R/binary>>, A) -> osc(R, A);
 osc(<<>>, A) -> lists:reverse(A).
 
-%% Chunks the text into frames of PerFrame cells each.
+%% Chunks the text into frames of PerFrame cells each. Continuation bytes
+%% (2#10xxxxxx) cost no cell and stay with their lead byte, so a frame never
+%% ends inside a UTF-8 sequence.
 paginate(Text, PerFrame) ->
     chunk(Text, PerFrame, PerFrame, [], []).
 
@@ -168,6 +170,8 @@ chunk(<<>>, _Per, _N, Cur, Chunks) ->
         [] -> lists:reverse(Chunks);
         _ -> lists:reverse([flush(Cur) | Chunks])
     end;
+chunk(<<C, R/binary>>, Per, 0, Cur, Chunks) when C >= 128, C < 192 ->
+    chunk(R, Per, 0, [C | Cur], Chunks);
 chunk(Bin, Per, 0, Cur, Chunks) ->
     chunk(Bin, Per, Per, [], [flush(Cur) | Chunks]);
 chunk(<<C, R/binary>>, Per, N, Cur, Chunks) when C < 128; C >= 192 ->

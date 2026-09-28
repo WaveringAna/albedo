@@ -15,6 +15,7 @@ import albedo/openai_api/types
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/int
+import gleam/io
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -487,7 +488,12 @@ fn view(
       list.append(archive_inputs(images, archive.dropped + trimmed), tail),
       "compacted",
     )
-    Error(_) -> #([types.User(truncation_note), ..tail], "fallback")
+    Error(reason) -> {
+      io.println_error(
+        "snapcompact: archive withheld, frames failed: " <> reason,
+      )
+      #([types.User(truncation_note), ..tail], "fallback")
+    }
   }
 }
 

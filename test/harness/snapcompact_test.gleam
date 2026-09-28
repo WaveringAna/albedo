@@ -29,6 +29,15 @@ pub fn bound_keeps_the_first_and_newest_frames_test() {
   |> should.equal(#(string.concat(pages), 0))
 }
 
+pub fn paginate_never_splits_a_multibyte_cell_test() {
+  let shape = snapcompact.Shape(11, 16, 256, 1)
+  // The 23rd cell, which fills the first frame, is the 3-byte newline cell.
+  let first = string.repeat("a", 22) <> "\u{2588}"
+  let second = string.repeat("b", 23)
+  snapcompact.paginate(shape, first <> second)
+  |> should.equal([first, second])
+}
+
 pub fn split_tail_keeps_whole_units_within_budget_test() {
   let history = [
     types.User("first"),
