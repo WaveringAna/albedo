@@ -22,6 +22,13 @@ const png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD"
 
 const no_files_home = "/nonexistent"
 
+const subscription = wire.Subscription(
+  "token",
+  "11111111-2222-4333-8444-555555555555",
+  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+)
+
 pub fn claude_tool_schemas_flatten_only_top_level_combiners_test() {
   let assert Ok(schema) =
     json.parse(
@@ -45,14 +52,7 @@ pub fn claude_tool_schemas_flatten_only_top_level_combiners_test() {
       types.defaults,
     )
   let assert Ok(openai_api.Exchange(body: body, ..)) =
-    wire.encode(
-      no_files_home,
-      "token",
-      "11111111-2222-4333-8444-555555555555",
-      string.repeat("a", 64),
-      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-      request,
-    )
+    wire.encode(no_files_home, subscription, request)
   let assert Ok(value) = json.parse(sent(body), decode.dynamic)
   let assert Ok([tool]) =
     decode.run(value, decode.at(["tools"], decode.list(decode.dynamic)))
@@ -148,14 +148,7 @@ pub fn claude_stream_preserves_tool_calls_and_replay_test() {
       types.defaults,
     )
   let assert Ok(openai_api.Exchange(body: body, ..)) =
-    wire.encode(
-      no_files_home,
-      "token",
-      "11111111-2222-4333-8444-555555555555",
-      string.repeat("a", 64),
-      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-      request,
-    )
+    wire.encode(no_files_home, subscription, request)
   let assert Ok(value) = json.parse(sent(body), decode.dynamic)
   let assert Ok(names) =
     decode.run(
@@ -210,14 +203,7 @@ pub fn claude_stream_shows_thinking_and_replays_it_signed_test() {
       types.defaults,
     )
   let assert Ok(openai_api.Exchange(body: body, ..)) =
-    wire.encode(
-      no_files_home,
-      "token",
-      "11111111-2222-4333-8444-555555555555",
-      string.repeat("a", 64),
-      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-      request,
-    )
+    wire.encode(no_files_home, subscription, request)
   let assert Ok(value) = json.parse(sent(body), decode.dynamic)
   let block = fn(name) {
     decode.at(
@@ -335,14 +321,7 @@ pub fn claude_attested_body_streams_through_the_transport_test() {
       types.defaults,
     )
   let assert Ok(openai_api.Exchange(body: body, ..)) =
-    wire.encode(
-      no_files_home,
-      "token",
-      "11111111-2222-4333-8444-555555555555",
-      string.repeat("a", 64),
-      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-      request,
-    )
+    wire.encode(no_files_home, subscription, request)
   let assert Ok(connection) = transport.open(url(fixture), [], body, 2000)
   let received = await_body(fixture)
   transport.close(connection)
@@ -373,15 +352,7 @@ pub fn claude_first_user_surrogates_do_not_crash_the_billing_sample_test() {
       None,
       types.defaults,
     )
-  let assert Ok(exchange) =
-    wire.encode(
-      no_files_home,
-      "token",
-      "11111111-2222-4333-8444-555555555555",
-      string.repeat("a", 64),
-      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-      request,
-    )
+  let assert Ok(exchange) = wire.encode(no_files_home, subscription, request)
   let text = sent(exchange.body)
   let assert Ok(value) = json.parse(text, decode.dynamic)
   let assert Ok([billing, _]) =
@@ -458,16 +429,11 @@ pub fn claude_cache_marks_match_the_encoded_markers_test() {
       types.defaults,
     ),
   ]
-  list.each(requests, fn(request) {
+  use request <- list.each(requests)
+  use auth <- list.each([subscription, wire.ApiKey("sk-ant-test")])
+  {
     let assert Ok(openai_api.Exchange(body: body, ..)) =
-      wire.encode(
-        no_files_home,
-        "token",
-        "11111111-2222-4333-8444-555555555555",
-        string.repeat("a", 64),
-        "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-        request,
-      )
+      wire.encode(no_files_home, auth, request)
     let assert Ok(value) = json.parse(sent(body), decode.dynamic)
     // A request without tools sends no tools field at all.
     let markers = fn(field) {
@@ -519,7 +485,7 @@ pub fn claude_cache_marks_match_the_encoded_markers_test() {
       wire.cache_marks(request)
       |> list.map(fn(mark) { #(mark.through, mark.ttl_seconds) })
     assert declared == encoded
-  })
+  }
 }
 
 /// A block's cache_control TTL in seconds, when it carries one.
@@ -537,6 +503,44 @@ fn marker_decoder() -> decode.Decoder(option.Option(Int)) {
     decode.optional(ttl),
     decode.success,
   )
+}
+
+/// A Console key bills per token, so it drops the subscription's billing
+/// block, metadata and OAuth shape, but premium models answer a headerless 429
+/// unless the Claude Code identity still leads the system prompt.
+pub fn claude_api_key_requests_keep_only_the_identity_test() {
+  let request =
+    types.Request(
+      "claude-opus-5-5",
+      None,
+      [types.User("hi")],
+      [],
+      None,
+      types.defaults,
+    )
+  let assert Ok(exchange) =
+    wire.encode(no_files_home, wire.ApiKey("sk-ant-test"), request)
+  let assert Ok("sk-ant-test") = list.key_find(exchange.headers, "x-api-key")
+  let assert Error(Nil) = list.key_find(exchange.headers, "authorization")
+  let assert Error(Nil) = list.key_find(exchange.headers, "x-app")
+  let assert Ok(betas) = list.key_find(exchange.headers, "anthropic-beta")
+  assert !string.contains(betas, "claude-code")
+  assert !string.contains(betas, "oauth")
+  let text = sent(exchange.body)
+  assert !string.contains(text, "cch=")
+  let assert Ok(value) = json.parse(text, decode.dynamic)
+  let absent = fn(field) {
+    decode.run(
+      value,
+      decode.optional_field(field, True, decode.success(False), decode.success),
+    )
+  }
+  let assert Ok(True) = absent("metadata")
+  let assert Ok(["You are Claude Code, Anthropic's official CLI for Claude."]) =
+    decode.run(
+      value,
+      decode.at(["system"], decode.list(decode.at(["text"], decode.string))),
+    )
 }
 
 @external(erlang, "albedo_claude_billing", "hash")

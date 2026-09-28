@@ -10,13 +10,14 @@
 -define(CONCURRENCY, 4).
 
 %% Upload and cache missing images in Request. Failures fall back inline.
-ensure(Home, Access, Account, Endpoint, {request, _, _, Input, _, _, _}) ->
+%% Auth is the {Name, Value} credential header Messages sends.
+ensure(Home, {_, Secret} = Auth, Account, Endpoint, {request, _, _, Input, _, _, _}) ->
     try
         Cache = maps:filter(fun(_, Entry) -> not expired(Entry) end,
                             account_cache(Home, Account)),
-        Cache1 = case quarantined(Account) orelse Access =:= <<>> of
+        Cache1 = case quarantined(Account) orelse Secret =:= <<>> of
             true -> Cache;
-            false -> upload_all(Endpoint, Access, missing(Input, Cache), Cache)
+            false -> upload_all(Endpoint, Auth, missing(Input, Cache), Cache)
         end,
         save(Home, Account, Cache1, Cache1 =/= Cache)
     catch _:_ -> nil
@@ -34,11 +35,11 @@ missing([{image, Mime, Data, _, _, _} | Rest], Cache, Seen) ->
     end;
 missing([], _, _) -> [].
 
-upload_all(_Endpoint, _Access, [], Cache) -> Cache;
-upload_all(Endpoint, Access, Missing, Cache) ->
+upload_all(_Endpoint, _Auth, [], Cache) -> Cache;
+upload_all(Endpoint, Auth, Missing, Cache) ->
     Entries = parallel(fun({Key, Mime, Data}) ->
         case image_bytes(Data) of
-            {ok, Bytes} -> {Key, upload(Endpoint, Access, Mime, Bytes)};
+            {ok, Bytes} -> {Key, upload(Endpoint, Auth, Mime, Bytes)};
             error -> {Key, {error, nil}}
         end
     end, Missing),
@@ -140,14 +141,14 @@ reject(Home, Account, Body) ->
     end,
     nil.
 
-upload(Endpoint, Access, Mime, Bytes) ->
+upload(Endpoint, Auth, Mime, Bytes) ->
     Url = <<(unicode:characters_to_binary(Endpoint))/binary, "/v1/files">>,
     Boundary = <<"albedo-", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
     Part = [<<"--">>, Boundary,
             <<"\r\ncontent-disposition: form-data; name=\"file\"; filename=\"">>,
             filename(Mime), <<"\"\r\ncontent-type: ">>, Mime, <<"\r\n\r\n">>,
             Bytes, <<"\r\n--">>, Boundary, <<"--\r\n">>],
-    Headers = [{"authorization", "Bearer " ++ unicode:characters_to_list(Access)},
+    Headers = [header(Auth),
                {"anthropic-version", binary_to_list(?VERSION)},
                {"anthropic-beta", binary_to_list(?BETA)},
                {"accept", "application/json"}],
@@ -165,13 +166,16 @@ upload(Endpoint, Access, Mime, Bytes) ->
         _ -> {error, <<"Anthropic file upload failed">>}
     end.
 
-delete(Endpoint, Access, Id) ->
+delete(Endpoint, Auth, Id) ->
     Url = <<(unicode:characters_to_binary(Endpoint))/binary, "/v1/files/", Id/binary>>,
-    Headers = [{"authorization", "Bearer " ++ unicode:characters_to_list(Access)},
+    Headers = [header(Auth),
                {"anthropic-version", binary_to_list(?VERSION)},
                {"anthropic-beta", binary_to_list(?BETA)}],
     _ = albedo_http:request(delete, Url, Headers, none, ?TIMEOUT_MS, 10000),
     nil.
+
+header({Name, Value}) ->
+    {unicode:characters_to_list(Name), unicode:characters_to_list(Value)}.
 
 filename(<<"image/jpeg">>) -> <<"image.jpg">>;
 filename(<<"image/webp">>) -> <<"image.webp">>;

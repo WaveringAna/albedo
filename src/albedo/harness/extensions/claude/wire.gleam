@@ -1,6 +1,7 @@
 //// Albedo chat history into Anthropic Messages. Replay preserves Claude's
 //// signed thinking blocks; foreign-model turns replay as text and tool calls.
 
+import albedo/harness/rotation
 import albedo/openai_api
 import albedo/openai_api/replay
 import albedo/openai_api/types
@@ -32,21 +33,44 @@ pub const blocks_detail = "claude.blocks"
 
 const claude_code_version = "2.1.283"
 
+/// How requests authenticate. A subscription token only serves requests that
+/// pass as Claude Code; a Console API key is billed per token, so it skips the
+/// billing block, metadata and Claude Code headers.
+pub type Auth {
+  Subscription(access: String, account: String, device: String, session: String)
+  ApiKey(key: String)
+}
+
+/// The credential header, shared by Messages and the Files API.
+pub fn auth_header(auth: Auth) -> #(String, String) {
+  case auth {
+    Subscription(access:, ..) -> #("authorization", "Bearer " <> access)
+    ApiKey(key) -> #("x-api-key", key)
+  }
+}
+
+/// The non-secret owner of requests and uploaded files: the OAuth account
+/// UUID, or a key's hash label.
+pub fn owner(auth: Auth) -> String {
+  case auth {
+    Subscription(account:, ..) -> account
+    ApiKey(key) -> rotation.key_label(key)
+  }
+}
+
 pub fn encode(
   home: String,
-  access: String,
-  account: String,
-  device: String,
-  session: String,
+  auth: Auth,
   request: types.Request,
 ) -> Result(openai_api.Exchange, types.Error) {
+  let #(_, secret) = auth_header(auth)
   use <- bool.guard(
-    access == ""
-      || string.contains(access, "\r")
-      || string.contains(access, "\n"),
-    Error(types.InvalidRequest("invalid Claude access token")),
+    secret == ""
+      || string.contains(secret, "\r")
+      || string.contains(secret, "\n"),
+    Error(types.InvalidRequest("invalid Claude credential")),
   )
-  let files = Files(home, account)
+  let files = Files(home, owner(auth))
   use history <- result.try(
     list.try_fold(
       mark_last(request.input, fn(input, last) { #(input, last) }),
@@ -72,47 +96,60 @@ pub fn encode(
       }
     })
     |> result.unwrap("")
-  let fields = [
-    #("model", json.string(request.model)),
-    #("messages", json.preprocessed_array(messages)),
-    #("max_tokens", json.int(option.unwrap(request.max_output_tokens, 8192))),
-    #("stream", json.bool(True)),
-    #(
-      "metadata",
-      json.object([
-        #(
-          "user_id",
-          json.string(
-            json.to_string(
-              json.object([
-                #("device_id", json.string(device)),
-                #("account_uuid", json.string(account)),
-                #("session_id", json.string(session)),
-              ]),
+  let metadata = case auth {
+    Subscription(account:, device:, session:, ..) -> [
+      #(
+        "metadata",
+        json.object([
+          #(
+            "user_id",
+            json.string(
+              json.to_string(
+                json.object([
+                  #("device_id", json.string(device)),
+                  #("account_uuid", json.string(account)),
+                  #("session_id", json.string(session)),
+                ]),
+              ),
             ),
           ),
-        ),
-      ]),
-    ),
-    #(
-      "context_management",
-      json.object([
-        #(
-          "edits",
-          json.preprocessed_array([
-            json.object([
-              #("type", json.string("clear_thinking_20251015")),
-              #("keep", json.string("all")),
-            ]),
+        ]),
+      ),
+    ]
+    ApiKey(_) -> []
+  }
+  let context_management =
+    json.object([
+      #(
+        "edits",
+        json.preprocessed_array([
+          json.object([
+            #("type", json.string("clear_thinking_20251015")),
+            #("keep", json.string("all")),
           ]),
+        ]),
+      ),
+    ])
+  let fields =
+    list.flatten([
+      [
+        #("model", json.string(request.model)),
+        #("messages", json.preprocessed_array(messages)),
+        #(
+          "max_tokens",
+          json.int(option.unwrap(request.max_output_tokens, 8192)),
         ),
-      ]),
-    ),
-    #(
-      "system",
-      json.array(system_blocks(request, first_user), fn(block) { block }),
-    ),
-  ]
+        #("stream", json.bool(True)),
+      ],
+      metadata,
+      [
+        #("context_management", context_management),
+        #(
+          "system",
+          json.preprocessed_array(system_blocks(auth, request, first_user)),
+        ),
+      ],
+    ])
   let fields = case request.tools {
     [] -> fields
     tools -> [
@@ -162,10 +199,33 @@ pub fn encode(
     ]
     _ -> fields
   }
+  let #(identity_betas, identity_headers) = case auth {
+    Subscription(session:, ..) -> #(
+      ["claude-code-20250219", "oauth-2025-04-20"],
+      [
+        #(
+          "user-agent",
+          "claude-cli/" <> claude_code_version <> " (external, cli)",
+        ),
+        #("x-app", "cli"),
+        #("x-stainless-lang", "js"),
+        #("x-stainless-runtime", "node"),
+        #("x-stainless-package-version", "0.112.1"),
+        #("x-stainless-retry-count", "0"),
+        #("x-stainless-timeout", "600"),
+        #("x-stainless-arch", "arm64"),
+        #("x-stainless-os", "MacOS"),
+        #("x-stainless-runtime-version", "v26.3.0"),
+        #("x-claude-code-session-id", session),
+        #("anthropic-dangerous-direct-browser-access", "true"),
+      ],
+    )
+    ApiKey(_) -> #([], [])
+  }
   let betas =
     list.flatten([
+      identity_betas,
       [
-        "claude-code-20250219", "oauth-2025-04-20",
         "interleaved-thinking-2025-05-14", "thinking-token-count-2026-05-13",
         "context-management-2025-06-27", "prompt-caching-scope-2026-01-05",
       ],
@@ -194,28 +254,15 @@ pub fn encode(
   )
   Ok(openai_api.Exchange(
     "https://api.anthropic.com/v1/messages",
-    [
-      #("authorization", "Bearer " <> access),
-      #("anthropic-version", "2023-06-01"),
-      #("anthropic-beta", string.join(betas, ",")),
-      #(
-        "user-agent",
-        "claude-cli/" <> claude_code_version <> " (external, cli)",
-      ),
-      #("x-app", "cli"),
-      #("x-stainless-lang", "js"),
-      #("x-stainless-runtime", "node"),
-      #("x-stainless-package-version", "0.112.1"),
-      #("x-stainless-retry-count", "0"),
-      #("x-stainless-timeout", "600"),
-      #("x-stainless-arch", "arm64"),
-      #("x-stainless-os", "MacOS"),
-      #("x-stainless-runtime-version", "v26.3.0"),
-      #("x-claude-code-session-id", session),
-      #("anthropic-dangerous-direct-browser-access", "true"),
-      #("content-type", "application/json"),
-      #("accept", "application/json"),
-    ],
+    list.flatten([
+      [
+        auth_header(auth),
+        #("anthropic-version", "2023-06-01"),
+        #("anthropic-beta", string.join(betas, ",")),
+      ],
+      identity_headers,
+      [#("content-type", "application/json"), #("accept", "application/json")],
+    ]),
     json.to_string_tree(json.object(fields)),
     120_000,
     8 * 1024 * 1024,
@@ -362,15 +409,22 @@ fn push(history: History, role: String, blocks: List(Json)) -> History {
   }
 }
 
-fn system_blocks(request: types.Request, first_user: String) -> List(Json) {
+/// Premium models answer a headerless 429 unless the identity leads the
+/// system prompt, Console keys included; only subscriptions carry billing.
+fn system_blocks(
+  auth: Auth,
+  request: types.Request,
+  first_user: String,
+) -> List(Json) {
   let identity = "You are Claude Code, Anthropic's official CLI for Claude."
-  [
-    billing_block(claude_code_version, first_user),
-    ..case request.instructions {
-      Some(text) -> [text_block(identity, False), cached_text_block(text)]
-      None -> [cached_text_block(identity)]
-    }
-  ]
+  let billing = case auth {
+    Subscription(..) -> [billing_block(claude_code_version, first_user)]
+    ApiKey(_) -> []
+  }
+  list.append(billing, case request.instructions {
+    Some(text) -> [text_block(identity, False), cached_text_block(text)]
+    None -> [cached_text_block(identity)]
+  })
 }
 
 fn cached_text_block(text: String) -> Json {

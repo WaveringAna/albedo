@@ -1,5 +1,7 @@
-//// Claude subscription OAuth, using the Claude Code Messages API identity.
+//// Claude over Anthropic Messages: a subscription through Claude Code OAuth,
+//// or a Console API key set as the profile's `apiKey`.
 
+import albedo/daemon/configuration
 import albedo/harness/extension
 import albedo/harness/extensions/claude/stream
 import albedo/harness/extensions/claude/wire
@@ -10,6 +12,7 @@ import albedo/openai_api
 import albedo/openai_api/types
 import gleam/bool
 import gleam/dynamic.{type Dynamic}
+import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -31,7 +34,7 @@ const preferred = [
 pub fn extension() -> extension.Extension {
   extension.Extension(
     "claude",
-    "Claude Pro/Max via Claude Code OAuth and Anthropic Messages",
+    "Claude Pro/Max via Claude Code OAuth, or a Console API key, over Anthropic Messages",
     ["models"],
     [
       extension.LoginPlugin(login()),
@@ -81,24 +84,20 @@ fn resolve(
     "Claude",
     types.ChatCompletions,
   )
-  use access <- result.try(native_access(context.home, context.session))
-  use #(account, device, session) <- result.try(native_profile(
-    access,
-    context.session,
-  ))
+  use auth <- result.try(authenticate(context))
+  let owner = wire.owner(auth)
   Ok(extension.Upstream(
     endpoint,
     types.ChatCompletions,
     fn(request, on_event) {
-      ensure_files(context.home, access, account, endpoint, request)
-      use exchange <- result.try(wire.encode(
+      ensure_files(
         context.home,
-        access,
-        account,
-        device,
-        session,
+        wire.auth_header(auth),
+        owner,
+        endpoint,
         request,
-      ))
+      )
+      use exchange <- result.try(wire.encode(context.home, auth, request))
       let outcome =
         openai_api.exchange(
           exchange,
@@ -108,27 +107,48 @@ fn resolve(
       case outcome {
         // Drop cached file handles on 4xx so next turn heals inline.
         Error(types.HttpError(status, body)) if status >= 400 && status < 500 -> {
-          reject_files(context.home, account, body)
+          reject_files(context.home, owner, body)
           outcome
         }
         _ -> outcome
       }
     },
     fn(error) {
-      case error {
-        types.HttpError(401, _) -> {
+      case error, auth {
+        types.HttpError(401, _), wire.Subscription(access:, ..) -> {
           native_expire(context.home, access)
           Some(
             "Claude rejected this access token; send your message again to refresh it, or run /login",
           )
         }
-        _ -> None
+        types.HttpError(401, _), wire.ApiKey(_) ->
+          Some(
+            "Anthropic rejected this API key; check the profile's apiKey in config.json",
+          )
+        _, _ -> None
       }
     },
-    // The OAuth profile's account UUID, not a credential.
-    fn() { Some(account) },
+    fn() { Some(owner) },
     wire.cache_marks,
   ))
+}
+
+/// A profile's `apiKey` bills the Anthropic Console; without one, the signed-in
+/// Claude subscription serves the session.
+fn authenticate(context: extension.ModelContext) -> Result(wire.Auth, String) {
+  let api_key =
+    decode.optional_field("apiKey", "", decode.string, decode.success)
+  case configuration.settings(context.home, context.profile, api_key) {
+    Ok(key) if key != "" -> Ok(wire.ApiKey(key))
+    _ -> {
+      use access <- result.try(native_access(context.home, context.session))
+      use #(account, device, session) <- result.map(native_profile(
+        access,
+        context.session,
+      ))
+      wire.Subscription(access, account, device, session)
+    }
+  }
 }
 
 fn list_models(provider: String, _endpoint: String) -> List(String) {
@@ -175,14 +195,14 @@ pub fn model_at(
 @external(erlang, "albedo_claude_files", "ensure")
 fn ensure_files(
   home: String,
-  access: String,
-  account: String,
+  auth: #(String, String),
+  owner: String,
   endpoint: String,
   request: types.Request,
 ) -> Nil
 
 @external(erlang, "albedo_claude_files", "reject")
-fn reject_files(home: String, account: String, body: String) -> Nil
+fn reject_files(home: String, owner: String, body: String) -> Nil
 
 @external(erlang, "albedo_claude_auth", "exchange")
 fn native_exchange(

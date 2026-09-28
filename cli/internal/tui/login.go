@@ -49,6 +49,8 @@ type customProvider struct {
 	DefaultName   string
 	DefaultURL    string
 	FixedProtocol string
+	// FixedEndpoint skips the base url: the extension knows where it sends.
+	FixedEndpoint bool
 }
 
 var customProviders = []customProvider{
@@ -60,6 +62,15 @@ var customProviders = []customProvider{
 		DefaultName:   "alibaba",
 		DefaultURL:    "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
 		FixedProtocol: "chat_completions",
+	},
+	{
+		ID:            "add-anthropic",
+		Label:         "add or update anthropic api key",
+		Detail:        "console billing · claude models",
+		Extension:     "claude",
+		DefaultName:   "anthropic",
+		FixedProtocol: "chat_completions",
+		FixedEndpoint: true,
 	},
 	{
 		ID:         "add-openai",
@@ -232,10 +243,30 @@ func (m *LoginModel) SetSize(width, height int) {
 	}
 }
 
+// custom finds the api-key provider the draft's extension belongs to.
+func (m LoginModel) custom() (customProvider, bool) {
+	i := slices.IndexFunc(customProviders, func(p customProvider) bool { return p.Extension == m.Draft.Extension })
+	if i < 0 {
+		return customProvider{}, false
+	}
+	return customProviders[i], true
+}
+
 func (m LoginModel) isFixedProtocol() bool {
-	return slices.ContainsFunc(customProviders, func(p customProvider) bool {
-		return p.Extension == m.Draft.Extension && p.FixedProtocol != ""
-	})
+	p, ok := m.custom()
+	return ok && p.FixedProtocol != ""
+}
+
+// askEndpoint asks for the base url, or straight for the api key when the
+// extension has a fixed endpoint.
+func (m *LoginModel) askEndpoint() tea.Cmd {
+	if p, ok := m.custom(); ok && p.FixedEndpoint {
+		m.Step = StepAPIKey
+		m.TextInput.Placeholder = ""
+		return m.promptInput("", true)
+	}
+	m.Step = StepBaseURL
+	return m.promptInput(m.Draft.BaseURL, false)
 }
 
 func (m *LoginModel) advanceToModels() tea.Cmd {
@@ -255,9 +286,9 @@ func (m *LoginModel) startCustomProvider(p customProvider) tea.Cmd {
 }
 
 // useProfile re-selects a saved profile: a sign-in provider with no accounts
-// left cannot run, so it signs in first.
+// left cannot run without an api key, so it signs in first.
 func (m *LoginModel) useProfile(name string, settings config.Settings) tea.Cmd {
-	if login, ok := m.signInFor(settings.Extension); ok && m.signedOut(settings.Extension) {
+	if login, ok := m.signInFor(settings.Extension); ok && settings.APIKey == "" && m.signedOut(settings.Extension) {
 		return m.startSignIn(login)
 	}
 	m.Step = StepSaving
@@ -300,7 +331,9 @@ func (m *LoginModel) buildChoosePicker() {
 		settings := m.Profiles.Providers[name]
 		extension := cmp.Or(settings.Extension, "openai")
 		detail := fmt.Sprintf("%s · %s", settings.Model, extension)
-		if m.signedOut(extension) {
+		if _, signIn := m.signInFor(extension); signIn && settings.APIKey != "" {
+			detail += " · api key"
+		} else if m.signedOut(extension) {
 			detail += " · signed out"
 		}
 		if name == m.Profiles.Active {
@@ -475,8 +508,7 @@ func (m *LoginModel) applyHint() tea.Cmd {
 	if login, ok := m.signInFor(name); ok {
 		return m.startSignIn(login)
 	}
-	m.Step = StepBaseURL
-	return m.promptInput(m.Draft.BaseURL, false)
+	return m.askEndpoint()
 }
 
 func (m *LoginModel) buildProtocolPicker() {
@@ -745,17 +777,18 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			m.Error = ""
 
 			// A name that is a sign-in provider — or a saved profile for one —
-			// signs in instead of asking for an api key.
+			// signs in instead of asking for an api key, unless the profile
+			// keeps a key or this is that extension's api-key flow.
+			flow := m.Draft.Extension
 			extension := name
 			if saved, known := m.Profiles.Providers[name]; known {
 				extension = saved.Extension
 				m.Draft = saved
 			}
-			if login, ok := m.signInFor(extension); ok {
+			if login, ok := m.signInFor(extension); ok && m.Draft.APIKey == "" && extension != flow {
 				return m, m.startSignIn(login)
 			}
-			m.Step = StepBaseURL
-			return m, m.promptInput(m.Draft.BaseURL, false)
+			return m, m.askEndpoint()
 
 		case StepBaseURL:
 			m.TextInput.SetCursor(0)

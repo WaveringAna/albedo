@@ -6,10 +6,12 @@ package e2e
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"albedo/cli/internal/config"
+	"albedo/cli/internal/daemon"
 	"albedo/cli/internal/tui"
 
 	tea "charm.land/bubbletea/v2"
@@ -99,5 +101,66 @@ func TestTUILoginAddsAManualProviderThroughTheDaemon(t *testing.T) {
 	}
 	if profiles.Active != name {
 		t.Fatalf("config.json kept %q active, not %q", profiles.Active, name)
+	}
+}
+
+// An Anthropic API key rides the claude extension that otherwise signs in,
+// so the wizard must ask for the key instead of starting a sign-in, and a
+// saved key profile must stay usable with no Claude account signed in.
+func TestTUILoginSavesAnAnthropicAPIKeyProfile(t *testing.T) {
+	// Naming the profile after the sign-in provider is the hardest case.
+	name, key, model := "claude", "sk-ant-fixture", "claude-fixture"
+	providerRoute(t, echoReply)
+	t.Setenv("ALBEDO_HOME", suite.home)
+	configPath := filepath.Join(suite.home, "config.json")
+	saved, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.WriteFile(configPath, saved, 0o600) })
+	d := newTUIDriver(t)
+	expect := func(want tui.LoginStep) {
+		t.Helper()
+		if d.App.Login.Step != want {
+			t.Fatalf("the wizard is on step %v, want %v\n%s", d.App.Login.Step, want, d.View())
+		}
+	}
+
+	d.App.Chat.TextArea.SetValue("/login")
+	d.Dispatch(d.Key(tea.KeyEnter))
+	expect(tui.StepChoose)
+	if !slices.ContainsFunc(d.App.Login.SignIns, func(s daemon.SignIn) bool { return s.Provider == "claude" }) {
+		t.Fatalf("the daemon offers no claude sign-in to route around: %+v", d.App.Login.SignIns)
+	}
+	d.Dispatch(tui.PickerSelectMsg{ID: "add-anthropic"})
+	expect(tui.StepName)
+	d.App.Login.TextInput.SetValue(name)
+	d.Key(tea.KeyEnter)
+	// The extension owns its endpoint, so no base url is asked.
+	expect(tui.StepAPIKey)
+	d.App.Login.TextInput.SetValue(key)
+	d.Dispatch(d.Key(tea.KeyEnter))
+	expect(tui.StepModels)
+	d.Dispatch(tui.PickerSelectMsg{ID: "manual"})
+	expect(tui.StepModel)
+	d.App.Login.TextInput.SetValue(model)
+	d.Dispatch(d.Key(tea.KeyEnter))
+	if d.App.State != tui.AppStateChat || d.App.Profiles.Active != name {
+		t.Fatalf("the app did not return to chat with %q active: state=%v active=%q\n%s", name, d.App.State, d.App.Profiles.Active, d.View())
+	}
+	profiles, err := config.LoadProfiles(suite.home)
+	if err != nil {
+		t.Fatalf("saved config: %v", err)
+	}
+	want := config.Settings{Extension: "claude", APIKey: key, Model: model, Protocol: "chat_completions"}
+	if got := profiles.Providers[name]; got != want {
+		t.Fatalf("config.json kept %+v, want %+v", got, want)
+	}
+
+	// Re-selecting the key profile saves at once rather than signing in.
+	d.App.Chat.TextArea.SetValue("/login " + name)
+	d.Dispatch(d.Key(tea.KeyEnter))
+	if d.App.State != tui.AppStateChat || d.App.Profiles.Active != name {
+		t.Fatalf("re-selecting %q left state=%v step=%v\n%s", name, d.App.State, d.App.Login.Step, d.View())
 	}
 }
