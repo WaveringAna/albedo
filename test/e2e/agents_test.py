@@ -39,7 +39,15 @@ class AgentsTests(unittest.TestCase):
                       "model": f"fixture-{name}-{self.provider.route}", "protocol": "chat_completions"}
             for profile, name in ((self.alpha, "alpha"), (self.beta, "beta"))
         }
-        self.app = Albedo(self.provider, providers=providers)
+
+        # The cached catalog lists a model for the fixture endpoint that no profile names.
+        def prepare(app):
+            (app.home / "models.json").write_text(json.dumps({"fixture-gateway": {
+                "api": "http://127.0.0.1/v1", "env": [],
+                "models": {"fixture-listed": {"id": "fixture-listed"}},
+            }}))
+
+        self.app = Albedo(self.provider, providers=providers, prepare=prepare)
         self.app.__enter__()
         self.addCleanup(self.provider.close)
         self.addCleanup(self.app.__exit__, None, None, None)
@@ -206,6 +214,13 @@ class AgentsTests(unittest.TestCase):
                          if len(self.asked('kind="task">\ncross-provider')) == 2 else None)
         self.assertTrue(all('from="radio desk"' in task for task in tasks))
         self.assertGreaterEqual(sum("/beta/" in r["path"] for r in self.provider.requests), 2)
+
+    def test_generic_profile_lists_its_endpoints_catalog_models(self):
+        parent = self.app.session()
+        made = self.spawn(parent, "listed", "catalog task", f"{self.beta}/fixture-listed")
+        self.assertEqual((made["session"]["provider"], made["session"]["model"]),
+                         (self.beta, "fixture-listed"))
+        self.app.idle(made["session"]["id"])
 
 
 if __name__ == "__main__":

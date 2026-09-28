@@ -894,12 +894,21 @@ fn wait_stopped(id: String, polls: Int) -> Nil {
 }
 
 fn provider_models(
-  host: runtime.Runtime,
+  state: State,
   provider: configuration.Provider,
 ) -> List(String) {
+  // A generic extension (openai) serves many gateways; the profile's endpoint
+  // names which catalog provider's models it lists.
+  let endpoint =
+    configuration.settings(
+      state.config.home,
+      provider.name,
+      decode.optional_field("baseUrl", "", decode.string, decode.success),
+    )
+    |> result.unwrap("")
   list.unique([
     provider.model,
-    ..runtime.model_names(host, provider.extension, "")
+    ..runtime.model_names(state.host, provider.extension, endpoint)
   ])
 }
 
@@ -911,7 +920,7 @@ fn child_model(
   use profiles <- result.try(configuration.providers(state.config.home))
   let models =
     list.map(profiles, fn(profile) {
-      #(profile, provider_models(state.host, profile))
+      #(profile, provider_models(state, profile))
     })
   let qualified =
     list.find_map(models, fn(pair) {
@@ -942,7 +951,7 @@ fn child_model(
         "" -> parent.model
         _ -> requested
       }
-      case list.contains(provider_models(state.host, current), model) {
+      case list.contains(provider_models(state, current), model) {
         True -> Ok(#(current, model))
         False -> {
           let matches =
@@ -1114,10 +1123,10 @@ fn agent_op(
             list.partition(profiles, fn(profile) {
               profile.name == info.provider
             })
-          let same_models = list.flat_map(same, provider_models(state.host, _))
+          let same_models = list.flat_map(same, provider_models(state, _))
           let other_models =
             list.flat_map(other, fn(profile) {
-              provider_models(state.host, profile)
+              provider_models(state, profile)
               |> list.map(fn(model) { profile.name <> "/" <> model })
             })
           list.unique([info.model, ..list.append(same_models, other_models)])
