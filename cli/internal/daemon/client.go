@@ -12,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,10 +42,6 @@ type AgentStatus struct {
 	Running bool        `json:"running"`
 	Idle    bool        `json:"idle"`
 	Phase   *AgentPhase `json:"phase,omitempty"`
-}
-
-type WorkspaceUpdate struct {
-	Workspace string `json:"workspace"`
 }
 
 type WorkspaceMissingError struct {
@@ -264,90 +259,6 @@ func (c *ChatClient) Continue(ctx context.Context) (*SendResult, error) {
 	return c.submitPayload(ctx, map[string]any{
 		"type": "continue",
 	})
-}
-
-func (c *ChatClient) ReplaceWorkspace(ctx context.Context, workspace string) (*WorkspaceUpdate, error) {
-	if c.agentID == "" {
-		return nil, errors.New("cannot replace workspace without agent ID")
-	}
-
-	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-
-	healthReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.BaseURL()+"/health", nil)
-	if err != nil {
-		return nil, err
-	}
-	if token := c.Token(); token != "" {
-		healthReq.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	healthRes, err := c.httpClient.Do(healthReq)
-	if err != nil {
-		return nil, err
-	}
-	defer healthRes.Body.Close()
-
-	if healthRes.StatusCode != http.StatusOK {
-		return nil, c.parseResponseError(healthRes)
-	}
-
-	healthBody, err := readBounded(healthRes.Body, 64*1024)
-	if err != nil {
-		return nil, err
-	}
-
-	var health struct {
-		Capabilities []string `json:"capabilities"`
-	}
-	if err := json.Unmarshal(healthBody, &health); err != nil {
-		return nil, errors.New("daemon returned invalid session metadata")
-	}
-
-	if !slices.Contains(health.Capabilities, "session_workspace") {
-		return nil, UpgradeNeeded("to change this workspace")
-	}
-
-	payload := map[string]string{
-		"workspace": workspace,
-	}
-	bodyData, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.agentURL("/workspace"), bytes.NewReader(bodyData))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if token := c.Token(); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	res, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		return nil, c.parseResponseError(res)
-	}
-
-	wsBody, err := readBounded(res.Body, 64*1024)
-	if err != nil {
-		return nil, err
-	}
-
-	var data struct {
-		Workspace string `json:"workspace"`
-	}
-	if err := json.Unmarshal(wsBody, &data); err != nil || data.Workspace == "" {
-		return nil, errors.New("daemon returned invalid session metadata")
-	}
-
-	return &WorkspaceUpdate{Workspace: data.Workspace}, nil
 }
 
 func (c *ChatClient) Interrupt(ctx context.Context) (bool, error) {

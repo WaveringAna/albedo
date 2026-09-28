@@ -6,6 +6,8 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+
+	"github.com/lucasb-eyer/go-colorful"
 )
 
 // ink is the transcript's brightness ramp. Each step is mixed from the
@@ -29,6 +31,8 @@ type ink struct {
 	added, removed string
 	// brandFrom and brandTo are the ends of the brand gradient.
 	brandFrom, brandTo string
+	// bg is the terminal's background, which language colors adapt to.
+	bg string
 }
 
 // APCA contrast targets (Lc) for each step: about 60 suits content text,
@@ -140,6 +144,26 @@ func step(bg, to rgb, target float64) rgb {
 	return bg.mix(to, t)
 }
 
+// legible moves c's OKLCH lightness away from bg, up on a dark background
+// and down on a light one, until its APCA contrast reaches target. Hue and
+// chroma stay, so a language keeps its color on every theme.
+func legible(c, bg rgb, target float64) rgb {
+	if apca(c, bg) >= target {
+		return c
+	}
+	l, chroma, hue := colorful.Color{R: c.r, G: c.g, B: c.b}.OkLch()
+	end := 1.0
+	if bgL, _, _ := (colorful.Color{R: bg.r, G: bg.g, B: bg.b}).OkLch(); bgL > 0.6 {
+		end = 0
+	}
+	at := func(t float64) rgb {
+		v := colorful.OkLch(l+(end-l)*t, chroma, hue).Clamped()
+		return rgb{v.R, v.G, v.B}
+	}
+	_, t := bisect(func(t float64) bool { return apca(at(t), bg) < target })
+	return at(t)
+}
+
 // termColors is what the terminal reported. A missing color is nil, and
 // palette holds only the entries that were reported.
 type termColors struct {
@@ -174,6 +198,7 @@ func mixInk(c termColors) (ink, bool) {
 		secondary: toward(fg, bg, secondaryLc).hex(),
 		decor:     toward(fg, bg, decorLc).hex(),
 		surface:   step(bg, fg, surfaceRatio).hex(),
+		bg:        bg.hex(),
 	}
 	blue, hasBlue := c.palette[ansiBlue]
 	codeTarget, codeRatio := fg, darkCodeBgRatio

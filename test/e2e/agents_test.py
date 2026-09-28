@@ -1,11 +1,13 @@
 """Agent families: spawn, forwarding, addressing, snapshots, and routing."""
 
 import json
+import tempfile
 import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from harness import Albedo, Provider, exclusive, text
 
@@ -276,6 +278,67 @@ class AgentsTests(unittest.TestCase):
         self.assertEqual(
             [s["title"] for s in self.api("/sessions") if s["id"] == radio],
             ["radio desk"],
+        )
+
+    def test_children_follow_a_workspace_move(self):
+        release = threading.Event()
+        answer = self.provider.script
+
+        def held(request):
+            if "hold this turn" in user_message(request):
+                release.wait(30)
+            return answer(request)
+
+        self.provider.script = held
+        parent = self.app.session()
+        still = self.spawn(parent, "still")["session"]["id"]
+        away = self.spawn(parent, "away")["session"]["id"]
+
+        # Both answers can reach the parent in one request.
+        def heard():
+            return " ".join(
+                event.get("text", "") for event in self.app.history(parent)["events"]
+            )
+
+        wait_for(lambda: 'from="still"' in heard() and 'from="away"' in heard())
+        for session in (still, away, parent):
+            self.app.idle(session)
+        elsewhere = Path(tempfile.mkdtemp(prefix="elsewhere-", dir=self.app.root))
+        self.api(f"/sessions/{away}/workspace", {"workspace": str(elsewhere)})
+        busy = self.spawn(parent, "busy", "hold this turn")["session"]["id"]
+        wait_for(lambda: self.asked("hold this turn"))
+        moved = Path(tempfile.mkdtemp(prefix="moved-", dir=self.app.root))
+        self.assertEqual(
+            self.api(f"/sessions/{parent}/workspace", {"workspace": str(moved)})[
+                "workspace"
+            ],
+            str(moved),
+        )
+
+        def workspaces():
+            return {
+                node["session"]["id"]: node["session"]["workspace"]
+                for node in self.api(f"/agents?session={parent}")["nodes"]
+            }
+
+        self.assertEqual(
+            workspaces(),
+            {
+                parent: str(moved),
+                still: str(moved),
+                away: str(elsewhere),
+                busy: str(self.app.workspace),
+            },
+        )
+        release.set()
+        self.app.idle(busy)
+        self.assertEqual(workspaces()[busy], str(moved))
+        with self.app.api(f"/sessions/{busy}/stream?after_seq=0") as response:
+            frame = next(line for line in response if line.startswith(b"data: "))
+        self.assertIn(
+            "workspace moved with parent; python variables were cleared, "
+            "the transcript is intact",
+            [event.get("text") for event in json.loads(frame[6:])["events"]],
         )
 
     def test_qualified_and_inferred_cross_provider_models(self):

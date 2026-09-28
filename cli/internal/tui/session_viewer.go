@@ -349,6 +349,9 @@ func (m *SessionViewer) savePrefs() {
 
 type SessionDeleteMsg struct{ ID string }
 
+// SessionFoldersMsg browses sessions by folder, starting from Query.
+type SessionFoldersMsg struct{ Query string }
+
 // startRename opens the highlighted session's name for editing, starting
 // from the title it shows now.
 func (m *SessionViewer) startRename() {
@@ -467,6 +470,10 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 		case key == "ctrl+r":
 			m.startRename()
 			return m, nil
+		case !m.ArchiveView && (key == "ctrl+f" || (m.SearchInput.Value() == "" && (msg.Text == "~" || msg.Text == "/"))):
+			// A path typed into an empty search means a folder.
+			query := msg.Text
+			return m, func() tea.Msg { return SessionFoldersMsg{Query: query} }
 		case key == "tab" || key == "shift+tab" || ((key == "left" || key == "right") && m.SearchInput.Value() == ""):
 			m.switchGroup()
 			return m, m.previewAfter(before.ID)

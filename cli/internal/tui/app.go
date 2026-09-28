@@ -31,6 +31,7 @@ const (
 	AppStateCapabilityPage
 	AppStateWebhooksPage
 	AppStateAgents
+	AppStateFolderPicker
 )
 
 type sessionsLoadedMsg struct {
@@ -73,11 +74,6 @@ type commandExecutedMsg struct {
 	SessionID string
 	Err       error
 	Gen       int
-}
-
-type ChatWorkspaceChangedMsg struct {
-	SessionID string
-	Workspace string
 }
 
 type glancesPolledMsg struct {
@@ -138,6 +134,9 @@ type AppModel struct {
 	CapabilityPage   CapabilityPageModel
 	WebhooksPage     WebhooksPageModel
 	Agents           AgentsViewModel
+	FolderPicker     FolderPicker
+	// folderReturn is the screen the folder picker goes back to.
+	folderReturn AppState
 }
 
 // LoadPrefs applies the same display choices to the initial and future chats.
@@ -251,12 +250,12 @@ func (m AppModel) sessionPreviewCmd(id string) tea.Cmd {
 	}
 }
 
-func (m AppModel) createSessionCmd(gen int) tea.Cmd {
+func (m AppModel) createSessionCmd(gen int, workspace string) tea.Cmd {
 	return func() tea.Msg {
 		if m.Conn == nil {
 			return sessionCreatedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		s, err := daemon.Request[daemon.Session](context.Background(), m.Conn, "/sessions", map[string]string{"workspace": m.Workspace})
+		s, err := daemon.Request[daemon.Session](context.Background(), m.Conn, "/sessions", map[string]string{"workspace": workspace})
 		return sessionCreatedMsg{Session: s, Err: err, Gen: gen}
 	}
 }
@@ -499,7 +498,7 @@ func (m *AppModel) openSessions() tea.Cmd {
 
 func (m *AppModel) newSessionCmd() tea.Cmd {
 	m.SessionGen++
-	return m.createSessionCmd(m.SessionGen)
+	return m.createSessionCmd(m.SessionGen, m.Workspace)
 }
 
 type screen interface {
@@ -543,6 +542,45 @@ func (m *AppModel) openContextInspector() tea.Cmd {
 	}
 	m.ContextInspector = NewContextInspectorModel(m.Conn, m.ActiveSession.ID)
 	return m.openScreen(AppStateContextInspector, &m.ContextInspector)
+}
+
+// openFolderPicker offers the session another folder; a retry is the turn
+// its missing folder refused.
+func (m *AppModel) openFolderPicker(retry *WorkspaceRetry) tea.Cmd {
+	if m.ActiveSession == nil {
+		return nil
+	}
+	m.FolderPicker = NewFolderPicker(daemonFolders{m.Conn}, *m.ActiveSession, retry)
+	m.folderReturn = AppStateChat
+	return m.openScreen(AppStateFolderPicker, &m.FolderPicker)
+}
+
+// openFolderBrowser lists sessions by folder, from the sessions view.
+func (m *AppModel) openFolderBrowser(query string) tea.Cmd {
+	m.FolderPicker = NewFolderBrowser(daemonFolders{m.Conn}, m.Workspace, query)
+	m.folderReturn = AppStateSessionPicker
+	return m.openScreen(AppStateFolderPicker, &m.FolderPicker)
+}
+
+// moved takes the daemon's answer to moving the session on screen.
+func (m *AppModel) moved(msg FolderMovedMsg) tea.Cmd {
+	if m.ActiveSession == nil || msg.SessionID != m.ActiveSession.ID {
+		return nil
+	}
+	if msg.Err != nil {
+		if m.State == AppStateFolderPicker {
+			m.FolderPicker.Refused(msg.Err)
+		} else {
+			m.AddError("could not move: " + msg.Err.Error())
+		}
+		return nil
+	}
+	m.ActiveSession.Workspace, m.Workspace = msg.Workspace, msg.Workspace
+	if i := slices.IndexFunc(m.Sessions, func(s daemon.Session) bool { return s.ID == msg.SessionID }); i >= 0 {
+		m.Sessions[i].Workspace = msg.Workspace
+	}
+	m.State = AppStateChat
+	return m.Chat.Moved(msg.Workspace, msg.Retry)
 }
 
 func (m *AppModel) AddNotice(message string) {
@@ -625,6 +663,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.CapabilityPage.SetSize(msg.Width, msg.Height)
 		m.WebhooksPage.SetSize(msg.Width, msg.Height)
 		m.Agents.SetSize(msg.Width, msg.Height)
+		m.FolderPicker.SetSize(msg.Width, msg.Height)
 		m.Login.SetSize(msg.Width, msg.Height)
 		return m, nil
 
@@ -635,16 +674,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case ansi.ModeReset, ansi.ModeSet, ansi.ModePermanentlySet:
 				m.Graphemes = true
 				m.Chat.graphemes = true
-			}
-		}
-		return m, nil
-
-	case ChatWorkspaceChangedMsg:
-		if m.ActiveSession != nil && (msg.SessionID == "" || msg.SessionID == m.ActiveSession.ID) {
-			m.ActiveSession.Workspace = msg.Workspace
-			m.Workspace = msg.Workspace
-			if i := slices.IndexFunc(m.Sessions, func(s daemon.Session) bool { return s.ID == m.ActiveSession.ID }); i >= 0 {
-				m.Sessions[i].Workspace = msg.Workspace
 			}
 		}
 		return m, nil
@@ -706,6 +735,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionCreatedMsg:
 		if msg.Gen != m.SessionGen {
+			return m, nil
+		}
+		if msg.Err != nil && m.State == AppStateFolderPicker {
+			m.FolderPicker.Refused(msg.Err)
 			return m, nil
 		}
 		if msg.Err != nil {
@@ -862,6 +895,26 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.openScreen(AppStateAgents, &m.Agents)
 		}
 
+	case ChatOpenFolderPickerMsg:
+		return m, m.openFolderPicker(msg.Retry)
+
+	case FolderMovedMsg:
+		return m, m.moved(msg)
+
+	case FolderPickerCancelMsg:
+		m.State = m.folderReturn
+		return m, nil
+
+	case SessionFoldersMsg:
+		return m, m.openFolderBrowser(msg.Query)
+
+	case FolderOpenSessionMsg:
+		return m, m.openSession(msg.Session)
+
+	case FolderNewSessionMsg:
+		m.SessionGen++
+		return m, m.createSessionCmd(m.SessionGen, msg.Workspace)
+
 	case AgentsDoneMsg:
 		m.Agents.Close()
 		m.State = AppStateChat
@@ -962,6 +1015,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.openExtensionPicker()
 		case "/tree":
 			return m, m.openTreePicker()
+		case "/cd":
+			if msg.Args == "" || m.ActiveSession == nil {
+				return m, m.openFolderPicker(nil)
+			}
+			return m, moveCmd(daemonFolders{m.Conn}, m.ActiveSession.ID, m.ActiveSession.Workspace, msg.Args, nil)
 		case "/context":
 			return m, m.openContextInspector()
 		default:
@@ -1041,6 +1099,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.WebhooksPage, cmd = m.WebhooksPage.Update(msg)
 	case AppStateAgents:
 		m.Agents, cmd = m.Agents.Update(msg)
+	case AppStateFolderPicker:
+		m.FolderPicker, cmd = m.FolderPicker.Update(msg)
 	case AppStateLogin:
 		m.Login, cmd = m.Login.Update(msg)
 	}
@@ -1083,6 +1143,8 @@ func (m AppModel) content() string {
 		return m.WebhooksPage.View()
 	case AppStateAgents:
 		return m.Agents.View()
+	case AppStateFolderPicker:
+		return m.FolderPicker.View()
 	case AppStateLogin:
 		return m.Login.View()
 	default:

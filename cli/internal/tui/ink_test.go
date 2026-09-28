@@ -65,3 +65,23 @@ func TestInkHitsItsContrastTargets(t *testing.T) {
 		t.Fatal("no reply leaves the palette fallbacks in place")
 	}
 }
+
+func TestLanguageColorsReachTheirContrastOnEveryTheme(t *testing.T) {
+	colors := []string{"#00ADD8", "#3572A5", "#000080", "#f1e05a", "#555555", "#ffaff3"}
+	for _, hex := range languageHues {
+		colors = append(colors, hex)
+	}
+	for _, bgHex := range []string{"#1e1e2e", "#eff1f5", "#000000", "#ffffff"} {
+		bg := hexColor(t, bgHex)
+		for _, hex := range colors {
+			c := hexColor(t, hex)
+			got := legible(c, bg, languageLc)
+			if lc := apca(got, bg); lc < languageLc-1 {
+				t.Errorf("%s on %s became %s with Lc %.1f, want %d", hex, bgHex, got.hex(), lc, languageLc)
+			}
+			if apca(c, bg) >= languageLc && got != c {
+				t.Errorf("%s is legible on %s and should stay, got %s", hex, bgHex, got.hex())
+			}
+		}
+	}
+}

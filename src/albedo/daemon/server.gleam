@@ -3,6 +3,7 @@ import albedo/daemon/bus
 import albedo/daemon/configuration
 import albedo/daemon/conversation
 import albedo/daemon/family
+import albedo/daemon/folders
 import albedo/daemon/history
 import albedo/daemon/image
 import albedo/daemon/images
@@ -97,10 +98,16 @@ type Message {
   Fork(String, Int, Subject(Result(conversation.Info, String)))
   DeleteSession(String, Subject(Result(Nil, String)))
   Rename(String, String, Subject(Result(conversation.Info, String)))
-  /// A session's info changed; the session itself already knows. The stored
-  /// row is re-read, since the session's own copy keeps the title it started
-  /// with rather than a later message's title or a name it was given.
-  Remember(String, Subject(Result(conversation.Info, String)))
+  /// The first session has left the second workspace and knows it already.
+  /// The stored row is re-read, since the session's own copy keeps the title
+  /// it started with rather than a later message's title or a name it was
+  /// given. Answers the row and the live descendants, which decide for
+  /// themselves whether to follow.
+  Moved(
+    String,
+    String,
+    Subject(Result(#(conversation.Info, List(session.Session)), String)),
+  )
   WorkerDown(process.Down)
   Sweep
   ScheduleTick
@@ -284,14 +291,22 @@ fn serve(state: State, message: Message) {
       process.send(reply, found)
       actor.continue(state)
     }
-    Remember(id, reply) -> {
-      let stored = conversation.get(runtime.ledger(state.host), id)
-      process.send(reply, stored)
-      case stored, dict.get(state.sessions, id) {
-        Ok(info), Ok(#(_, worker)) ->
-          actor.continue(holding(state, id, #(info, worker)))
-        _, _ -> actor.continue(state)
+    Moved(id, previous, reply) -> {
+      let #(state, moved) = case
+        conversation.get(runtime.ledger(state.host), id),
+        dict.get(state.sessions, id)
+      {
+        Ok(info), Ok(#(_, worker)) -> {
+          let #(state, live) =
+            holding(state, id, #(info, worker))
+            |> move_descendants(id, previous, info.cwd, [])
+          #(state, Ok(#(info, live)))
+        }
+        Ok(_), Error(_) -> #(state, Error("session not found"))
+        Error(error), _ -> #(state, Error(error))
       }
+      process.send(reply, moved)
+      actor.continue(state)
     }
     List(reply) -> {
       let db = runtime.ledger(state.host)
@@ -492,7 +507,7 @@ fn refuse(state: State, message: Message) -> Nil {
     Fork(_, _, reply) -> process.send(reply, Error(closed))
     DeleteSession(_, reply) -> process.send(reply, Error(closed))
     Rename(_, _, reply) -> process.send(reply, Error(closed))
-    Remember(_, reply) -> process.send(reply, Error(closed))
+    Moved(_, _, reply) -> process.send(reply, Error(closed))
     WorkerDown(_) | Sweep | ScheduleTick | MailWaiting | Shutdown -> Nil
   }
 }
@@ -995,10 +1010,15 @@ fn create_child(
 ) -> #(State, Result(#(conversation.Info, family.Member), String)) {
   let db = runtime.ledger(state.host)
   let created = {
-    use #(above, _) <- result.try(
+    use #(cached, _) <- result.try(
       dict.get(state.sessions, parent)
       |> result.replace_error("session not found"),
     )
+    // A parent that followed its own parent after a turn moved only its row.
+    let above = case conversation.get(db, parent) {
+      Ok(row) -> conversation.Info(..cached, cwd: row.cwd)
+      Error(_) -> cached
+    }
     use _ <- result.try(family.valid_name(name))
     use #(provider, selected_model) <- result.try(child_model(
       state,
@@ -1194,6 +1214,50 @@ fn descendants(
         })
       [AgentNode(info, member, agent_name(db, info, member), running), ..below]
     }
+  }
+}
+
+/// Every descendant of `id` that was in `from` follows it to `to`. A session
+/// without an actor has only its row and this cache to change; live ones are
+/// collected into `live`, since a running turn defers its own move.
+fn move_descendants(
+  state: State,
+  id: String,
+  from: String,
+  to: String,
+  live: List(session.Session),
+) -> #(State, List(session.Session)) {
+  family.children(runtime.ledger(state.host), id)
+  |> result.unwrap([])
+  |> list.fold(#(state, live), fn(acc, child) {
+    let #(state, live) = acc
+    let acc = case dict.get(state.sessions, child.session) {
+      Error(_) -> acc
+      Ok(#(cached, worker)) ->
+        case option.or(worker, session.live(child.session)) {
+          Some(worker) -> #(state, [worker, ..live])
+          None -> #(move_row(state, cached, from, to), live)
+        }
+    }
+    move_descendants(acc.0, child.session, from, to, acc.1)
+  })
+}
+
+/// A session with no actor that was in `from`: its row and cache move to `to`.
+fn move_row(
+  state: State,
+  cached: conversation.Info,
+  from: String,
+  to: String,
+) -> State {
+  let db = runtime.ledger(state.host)
+  let info = conversation.get(db, cached.id) |> result.unwrap(cached)
+  case
+    info.cwd == from
+    && result.is_ok(conversation.set_workspace(db, info.id, to))
+  {
+    True -> holding(state, info.id, #(conversation.Info(..info, cwd: to), None))
+    False -> state
   }
 }
 
@@ -1412,6 +1476,18 @@ fn answered(
   }
 }
 
+/// A folder browser answer for the request's `path`.
+fn browsed(
+  req,
+  view: fn(String) -> Result(json.Json, folders.Failure),
+) -> response.Response(mist.ResponseData) {
+  let path = query(req) |> list.key_find("path") |> result.unwrap("")
+  case view(path) {
+    Ok(value) -> reply(200, value)
+    Error(#(status, message)) -> error(status, message)
+  }
+}
+
 /// The `{"ok": true}` envelope, with any further fields beside it.
 fn acknowledged(fields: List(#(String, json.Json))) -> json.Json {
   json.object([#("ok", json.bool(True)), ..fields])
@@ -1562,7 +1638,7 @@ fn uri_decode(segment: String) -> String {
 /// The daemon's own top-level routes; a service never shadows them.
 const daemon_routes = [
   "health", "sessions", "models", "auth", "shutdown", "agents", "quota",
-  "cache-ttl",
+  "cache-ttl", "fs",
 ]
 
 fn route(
@@ -1662,6 +1738,7 @@ fn daemon_route(
                     "session_tree",
                     "session_context",
                     "session_commands",
+                    "workspace_browser",
                   ],
                   json.string,
                 ),
@@ -1686,6 +1763,10 @@ fn daemon_route(
           )
         }
         Get, ["agents", "stream"] -> agents_stream(req)
+        // The workspace picker's folder browser; robot-docs/workspaces.md.
+        Get, ["fs", "list"] -> browsed(req, folders.list)
+        Get, ["fs", "repo"] -> browsed(req, folders.repo)
+        Get, ["fs", "preview"] -> browsed(req, folders.preview)
         // Quota readings, read-only: the latest per account and limit, or
         // with `?history=<id>` the raw samples after that row, newest first.
         Get, ["quota"] -> {
@@ -2053,8 +2134,12 @@ fn daemon_route(
                   )
                   // The session answers here, off the registry.
                   |> result.try(session.set_workspace(worker, _))
-                  |> result.try(fn(_) {
-                    actor.call(registry, 5000, Remember(id, _))
+                  |> result.try(fn(previous) {
+                    use #(info, live) <- result.map(
+                      actor.call(registry, 5000, Moved(id, previous, _)),
+                    )
+                    list.each(live, session.follow(_, previous, info.cwd))
+                    info
                   })
                   |> answered(200, info_json, 409)
                 }

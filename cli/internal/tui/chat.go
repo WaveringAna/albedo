@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/textarea"
-	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -121,25 +120,9 @@ type ChatInterruptMsg struct {
 	Err         error
 }
 
-type ChatReplaceWorkspaceMsg struct {
-	SessionID  string
-	Generation int64
-	Workspace  string
-	Err        error
-}
-
-type WorkspaceRecoveryState struct {
-	Missing     string
-	Replacement string
-	Prompt      string
-	Image       *daemon.ImageAttachment
-	Saving      bool
-	Error       string
-}
-
-func (s *WorkspaceRecoveryState) Rows() int {
-	return pick(s == nil, 0, 3) // missing warning, input field, and help/status
-}
+// ChatOpenFolderPickerMsg asks for the folder picker; Retry is the turn a
+// missing workspace refused.
+type ChatOpenFolderPickerMsg struct{ Retry *WorkspaceRetry }
 
 type ActiveStreamKind string
 
@@ -354,9 +337,6 @@ type ChatModel struct {
 	interruptDeferred bool
 	sentHere          bool
 
-	WorkspaceRecovery *WorkspaceRecoveryState
-	RecoveryInput     textinput.Model
-
 	dragAnchor *Point
 	dragHead   Point
 
@@ -488,9 +468,6 @@ func (m ChatModel) wordBackwardAtStart() bool {
 }
 
 func (m ChatModel) promptLines() int {
-	if m.WorkspaceRecovery != nil {
-		return 0
-	}
 	lineCount := m.TextArea.LineCount()
 	if lineCount <= 1 {
 		return max(1, m.TextArea.LineInfo().Height)
@@ -521,16 +498,10 @@ func (m ChatModel) maxPromptHeight() int {
 }
 
 func (m ChatModel) promptHeight() int {
-	if m.WorkspaceRecovery != nil {
-		return 0
-	}
 	return min(m.promptLines(), m.maxPromptHeight())
 }
 
 func (m ChatModel) inputRows() int {
-	if m.WorkspaceRecovery != nil {
-		return m.WorkspaceRecovery.Rows()
-	}
 	if len(m.effortOptions) > 0 {
 		return 4 // breathing room, title, choices, keyboard hint; no composer
 	}
@@ -563,7 +534,6 @@ func (m *ChatModel) SetSize(width, height int) {
 	m.Viewport.SetWidth(transcriptWidth)
 	m.TextArea.SetWidth(available)
 	m.TextArea.SetHeight(m.maxPromptHeight())
-	m.RecoveryInput.SetWidth(max(1, available-16))
 	m.Viewport.SetHeight(max(1, m.Height-6-m.chromeRows()))
 
 	// settled rows are rendered at the body width alone, so only a new body
@@ -1074,36 +1044,6 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		if m.WorkspaceRecovery != nil {
-			if msg.String() == "esc" {
-				prompt := m.WorkspaceRecovery.Prompt
-				img := m.WorkspaceRecovery.Image
-				m.WorkspaceRecovery = nil
-				if m.TextArea.Value() == "" {
-					m.TextArea.SetValue(prompt)
-				}
-				if m.AttachedImage == nil && img != nil {
-					m.AttachedImage = img
-				}
-				m.refreshViewportContent()
-				return m, nil
-			}
-			if msg.String() == "enter" {
-				m.RecoveryInput.CursorStart()
-				replacement := strings.TrimSpace(m.RecoveryInput.Value())
-				if replacement != "" && !m.WorkspaceRecovery.Saving {
-					m.WorkspaceRecovery.Saving = true
-					m.WorkspaceRecovery.Replacement = replacement
-					m.WorkspaceRecovery.Error = ""
-					return m, m.replaceWorkspaceCmd(replacement)
-				}
-				return m, nil
-			}
-			var riCmd tea.Cmd
-			m.RecoveryInput, riCmd = m.RecoveryInput.Update(msg)
-			return m, riCmd
-		}
-
 		// The selector owns keys while open, before chat navigation or composer input.
 		if len(m.effortOptions) > 0 {
 			switch msg.String() {
@@ -1380,21 +1320,8 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			var wsErr *daemon.WorkspaceMissingError
 			if errors.As(msg.Err, &wsErr) {
 				m.Status.Running, m.Status.Idle = false, true
-				ti := newTextInput()
-				ti.SetValue(wsErr.Workspace)
-				ti.Focus()
-				ti.Prompt = "new workspace › "
-				st := ti.Styles()
-				st.Focused.Prompt, st.Blurred.Prompt = m.Styles.Prompt, m.Styles.Prompt
-				ti.SetStyles(st)
-				m.RecoveryInput = ti
-				recoveryPrompt := pick(msg.Continue, "", msg.Prompt)
-				m.WorkspaceRecovery = &WorkspaceRecoveryState{
-					Missing:     wsErr.Workspace,
-					Replacement: wsErr.Workspace,
-					Prompt:      recoveryPrompt,
-					Image:       msg.Image,
-				}
+				retry := &WorkspaceRetry{Missing: wsErr.Workspace, Prompt: msg.Prompt, Continue: msg.Continue, Image: msg.Image}
+				cmds = append(cmds, func() tea.Msg { return ChatOpenFolderPickerMsg{Retry: retry} })
 			} else {
 				m.AddError(fmt.Sprintf("send failed: %v", msg.Err))
 				errText := msg.Err.Error()
@@ -1404,7 +1331,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				m.appendSettledEntry(HistoryEntry{Kind: EntryError, Text: errText})
 			}
 			m.refreshViewportContent()
-			return m, nil
+			return m, tea.Batch(cmds...)
 		}
 
 		if msg.Queued {
@@ -1423,34 +1350,6 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				cmds = append(cmds, m.interruptCmd())
 			}
 		}
-		return m, tea.Batch(cmds...)
-
-	case ChatReplaceWorkspaceMsg:
-		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || m.WorkspaceRecovery == nil {
-			return m, nil
-		}
-		if msg.Err != nil {
-			m.WorkspaceRecovery.Saving = false
-			m.WorkspaceRecovery.Error = msg.Err.Error()
-			return m, nil
-		}
-		m.Workspace = msg.Workspace
-		m.Renderer.Workspace = msg.Workspace
-		m.rebuildSettledLines() // settled rows name paths from the old workspace
-		prompt := m.WorkspaceRecovery.Prompt
-		img := m.WorkspaceRecovery.Image
-		m.WorkspaceRecovery = nil
-
-		cmds = append(cmds, func() tea.Msg {
-			return ChatWorkspaceChangedMsg{Workspace: msg.Workspace}
-		})
-		// Set original image BEFORE submitInput so submitInput captures and sends it!
-		if img != nil && m.AttachedImage == nil {
-			m.AttachedImage = img
-		}
-		m.TextArea.Reset()
-		m.syncLayout()
-		m.submitInput(prompt, &cmds)
 		return m, tea.Batch(cmds...)
 
 	case ChatEditorFinishedMsg:
@@ -1494,21 +1393,24 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m *ChatModel) replaceWorkspaceCmd(newWorkspace string) tea.Cmd {
-	client := m.Client
-	sessID := m.SessionID
-	gen := m.Generation
-
-	return func() tea.Msg {
-		if client == nil {
-			return ChatReplaceWorkspaceMsg{SessionID: sessID, Generation: gen, Err: fmt.Errorf("no client available")}
-		}
-		upd, err := client.ReplaceWorkspace(context.Background(), newWorkspace)
-		if err != nil {
-			return ChatReplaceWorkspaceMsg{SessionID: sessID, Generation: gen, Err: err}
-		}
-		return ChatReplaceWorkspaceMsg{SessionID: sessID, Generation: gen, Workspace: upd.Workspace}
+// Moved takes the session's new folder, then sends again the turn a
+// missing folder refused.
+func (m *ChatModel) Moved(workspace string, retry *WorkspaceRetry) tea.Cmd {
+	m.Workspace = workspace
+	m.Renderer.Workspace = workspace
+	m.rebuildSettledLines() // settled rows name paths from the old workspace
+	m.refreshViewportContent()
+	if retry == nil {
+		return nil
 	}
+	if retry.Image != nil && m.AttachedImage == nil {
+		m.AttachedImage = retry.Image
+	}
+	m.TextArea.Reset()
+	m.syncLayout()
+	var cmds []tea.Cmd
+	m.submitInput(pick(retry.Continue, ".", retry.Prompt), &cmds)
+	return tea.Batch(cmds...)
 }
 
 func (m ChatModel) openEditorCmd() tea.Cmd {
@@ -1614,7 +1516,7 @@ func (m *ChatModel) isRecognizedCommand(input string) bool {
 	switch token {
 	case "/a", "/agents", "/sessions", "/q", "/quit", "/exit", "/new", "/model", "/extensions",
 		"/plugins", "/tree", "/context", "/t", "/thinking", "/v", "/verbose",
-		"/status", "/login", "/mouse", "/skills", "/instructions", "/mcp":
+		"/status", "/login", "/mouse", "/skills", "/instructions", "/mcp", "/cd":
 		return true
 	}
 	return slices.ContainsFunc(m.CommandMenu.Catalog, func(cmd daemon.SessionCommand) bool {
@@ -2251,16 +2153,7 @@ func (m ChatModel) View() string {
 	statusStyle := pick(m.TurnFailed || m.Notices.HasError(), m.Styles.Error, m.Styles.Faint)
 	rows = append(rows, statusStyle.Render(status))
 	rows = append(rows, m.Styles.Decor.Render(strings.Repeat("─", width)))
-	if m.WorkspaceRecovery != nil {
-		help, style := "enter confirms and retries · esc cancels", m.Styles.Faint
-		if m.WorkspaceRecovery.Saving {
-			help = "updating workspace…"
-		}
-		if m.WorkspaceRecovery.Error != "" {
-			help, style = m.WorkspaceRecovery.Error, m.Styles.Error
-		}
-		rows = append(rows, m.Styles.Warning.Render("workspace not found: "+m.WorkspaceRecovery.Missing), m.RecoveryInput.View(), style.Render(help))
-	} else if len(m.effortOptions) > 0 {
+	if len(m.effortOptions) > 0 {
 		rows = append(rows, "", m.Styles.Bold.Render(ansi.Truncate("Reasoning effort", width, "")), m.effortSelectorView(), m.Styles.Faint.Render(ansi.Truncate("← → choose  ·  enter apply  ·  esc cancel", width, "")))
 	} else {
 		rows = append(rows, strings.Split(strings.TrimSuffix(m.composerView(), "\n"), "\n")...)
@@ -2294,7 +2187,7 @@ func (m ChatModel) composerView() string {
 // waitingForInput reports an opened session with no turn in flight, so an
 // empty composer reads as the agent's cue rather than a stalled turn.
 func (m ChatModel) waitingForInput() bool {
-	return m.Status.Phase != nil && !m.animating() && m.WorkspaceRecovery == nil
+	return m.Status.Phase != nil && !m.animating()
 }
 
 func (m ChatModel) renderGlances() string {

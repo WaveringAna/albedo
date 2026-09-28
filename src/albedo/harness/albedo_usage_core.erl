@@ -6,7 +6,7 @@
 %% carries is ever logged: both can hold credentials.
 -module(albedo_usage_core).
 
--export([advance/1, http_request/4, run_command/4]).
+-export([advance/1, http_request/4, run_command/4, command_env/0, kill/1]).
 
 -define(ADVANCE_TIMEOUT_MS, 15000).
 -define(COMMAND_TIMEOUT_MS, 15000).

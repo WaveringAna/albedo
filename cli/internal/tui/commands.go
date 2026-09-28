@@ -31,6 +31,7 @@ var AppCommands = []ChatCommand{
 	{Name: "/instructions", Description: "manage AGENTS.md and other instruction files"},
 	{Name: "/mcp", Description: "manage MCP servers and authentication"},
 	{Name: "/tree", Description: "branch this session from a history checkpoint"},
+	{Name: "/cd", Description: "move this session to another folder"},
 }
 
 type CommandMenuModel struct {

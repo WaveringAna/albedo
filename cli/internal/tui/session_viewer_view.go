@@ -201,7 +201,7 @@ func (m SessionViewer) footer(width int, now time.Time) string {
 		return " " + DefaultStyles.Error.Render("Permanently delete session and its data? y to confirm · any other key cancels")
 	}
 	esc := pick(m.HasActive, "back", "quit")
-	left := " " + keyHints(hint{"↑↓", "move"}, hint{"tab", "switch"}, hint{"enter", "open"}, hint{"^r", "rename"}, hint{"^s", "pin"}, hint{"^a", "archive"}, hint{"esc", esc})
+	left := " " + keyHints(hint{"↑↓", "move"}, hint{"tab", "switch"}, hint{"enter", "open"}, hint{"^r", "rename"}, hint{"^s", "pin"}, hint{"^a", "archive"}, hint{"^f", "folders"}, hint{"esc", esc})
 	switch {
 	case m.rename.active():
 		left = " " + renameHints("restores the automatic title")

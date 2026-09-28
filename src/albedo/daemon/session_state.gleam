@@ -37,6 +37,9 @@ pub type State(message) {
     /// While the kernel boots: boot attempts so far, and the work waiting for
     /// it, re-sent to the actor once the kernel is ready.
     booting: Option(#(Int, List(message))),
+    /// Where an ancestor's move sent this session while it was busy; taken
+    /// when the run ends. Not persisted: a restart forgets it.
+    following: Option(String),
   )
 }
 

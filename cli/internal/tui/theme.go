@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"cmp"
 	"fmt"
 	"image/color"
 	"os"
@@ -307,15 +308,53 @@ func selectedLine(line string, width int) string {
 
 // homePath shortens a path under your home directory to start with ~.
 func homePath(p string) string {
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		if p == home {
-			return "~"
-		}
-		if strings.HasPrefix(p, home+string(filepath.Separator)) {
-			return "~" + p[len(home):]
-		}
+	home, _ := os.UserHomeDir()
+	return underHome(p, home)
+}
+
+// underHome shortens p under home to start with ~.
+func underHome(p, home string) string {
+	rest, ok := strings.CutPrefix(p, home)
+	if home == "" || !ok || rest != "" && rest[0] != filepath.Separator {
+		return p
 	}
-	return p
+	return "~" + rest
+}
+
+// languageHues are our own colors for common languages, by linguist name.
+// Each starts from linguist's hue, softened to a pastel and nudged so
+// languages that often share a repository stay apart.
+var languageHues = map[string]string{
+	"Go":         "#6fd1c4",
+	"Nix":        "#b9a6f5",
+	"TypeScript": "#80aaf9",
+	"Gleam":      "#f28fb8",
+	"Erlang":     "#ef7a85",
+	"Python":     "#f0c674",
+	"Markdown":   "#b6e37a",
+	"Rust":       "#f5a97f",
+	"JavaScript": "#e9e48a",
+	"Shell":      "#8fdc9a",
+	"C":          "#a3b4c8",
+	"Elixir":     "#d4a0d8",
+	"Java":       "#dcb68a",
+}
+
+// languageLc is the contrast a language's color keeps with the background:
+// file names are read, so about what content text gets.
+const languageLc = 60
+
+// languageStyle colors a language: our hue for it, else linguist's, adapted
+// to the terminal. A language with neither steps back like other metadata.
+func languageStyle(name, linguist string) lipgloss.Style {
+	c := parseHex(cmp.Or(languageHues[name], linguist))
+	if c == nil {
+		return DefaultStyles.Muted
+	}
+	if bg := parseHex(transcriptInk.bg); bg != nil {
+		*c = legible(*c, *bg, languageLc)
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(c.hex()))
 }
 
 // agentPalette colors the orchestrator view. Each agent keeps one identity

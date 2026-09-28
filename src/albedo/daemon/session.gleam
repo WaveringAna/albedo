@@ -102,7 +102,9 @@ pub type Message {
     Subject(Result(#(List(command.Command), command.Context), String)),
   )
   ReadSelection(Subject(ModelSelection))
-  ChangeWorkspace(String, Subject(Result(conversation.Info, String)))
+  ChangeWorkspace(String, Subject(Result(String, String)))
+  /// An ancestor left the first workspace for the second.
+  Follow(String, String, Subject(Nil))
   ReadExtensions(Subject(Result(List(extension.Summary), String)))
   ChangeExtension(
     extension.Change,
@@ -227,6 +229,7 @@ pub fn start(
         },
         None,
         now_ms(),
+        None,
         None,
       )
     // Background jobs wake this session through the kernel's jobs route; the
@@ -433,6 +436,9 @@ fn handle(state: State, message: Message) {
     | ChangeExtension(..) -> session_state.State(..state, last_touch: now_ms())
     _ -> state
   }
+  // Runs end in finish_turn and background_finish, which follow at once; this
+  // catches a turn that never started, such as one whose kernel failed to boot.
+  let state = settle(state)
   case message {
     Resume ->
       case kernel_or_park(state, Resume) {
@@ -507,41 +513,24 @@ fn handle(state: State, message: Message) {
       }
     ChangeWorkspace(cwd, reply) -> {
       let state = stirred(state)
-      let changed = case turn.running(state.activity), directory(cwd) {
+      let previous = state.info.cwd
+      let moved = case turn.running(state.activity), directory(cwd) {
         Some(_), _ -> Error("session must be idle to change workspace")
         None, False -> Error("workspace must be an existing absolute directory")
-        None, True ->
-          conversation.set_workspace(
-            runtime.ledger(state.host),
-            state.info.id,
-            cwd,
-          )
+        None, True -> relocate(state, cwd, "workspace changed")
       }
-      case changed {
+      case moved {
         Error(error) -> answer(state, reply, Error(error))
-        Ok(_) -> {
-          let state = case cwd == state.info.cwd {
-            True -> state
-            False -> {
-              runtime.forget_session(state.host, state.info.id)
-              discard_state(state.home, state.info.id)
-              session_state.State(
-                ..state,
-                kernel: None,
-                info: conversation.Info(..state.info, cwd: cwd),
-                notice: Some(session_namespace.lost_notice),
-                context: session_state.unprepared(),
-              )
-              |> session_state.emit(view.text(
-                "note",
-                "workspace changed; python variables were cleared, the transcript is intact",
-              ))
-            }
-          }
-          answer(state, reply, Ok(state.info))
-        }
+        Ok(state) -> answer(state, reply, Ok(previous))
       }
     }
+    // A later move replaces an earlier one a busy session has not made yet.
+    Follow(from, to, reply) ->
+      case option.unwrap(state.following, state.info.cwd) == from {
+        False -> state
+        True -> settle(session_state.State(..state, following: Some(to)))
+      }
+      |> answer(reply, Nil)
     ReadExtensions(reply) ->
       answer(
         state,
@@ -1607,7 +1596,7 @@ fn finish_turn(
   }
   report_end(state, run)
   process.send(state.self, Collect)
-  actor.continue(start_queued(state))
+  actor.continue(start_queued(follow_up(state)))
 }
 
 /// An extension's background call starts only while nothing else holds the
@@ -1661,7 +1650,7 @@ fn background_finish(
   // A webhook or wake refused while the call held the session can be
   // admitted now.
   mail.waiting()
-  actor.continue(start_queued(state))
+  actor.continue(start_queued(follow_up(state)))
 }
 
 /// A run that held the session ended: its extensions hear that a turn
@@ -1788,11 +1777,72 @@ fn projected_inputs(state: State) -> Result(List(types.Input), String) {
   |> result.map_error(fn(error) { "cannot prepare model history: " <> error })
 }
 
-pub fn set_workspace(
-  session: Session,
-  cwd: String,
-) -> Result(conversation.Info, String) {
+/// Move an idle session to `cwd`; answers the workspace it left.
+pub fn set_workspace(session: Session, cwd: String) -> Result(String, String) {
   actor.call(session, 20_000, ChangeWorkspace(cwd, _))
+}
+
+/// An ancestor left `from` for `to`; a session that was in `from` follows.
+pub fn follow(session: Session, from: String, to: String) -> Nil {
+  actor.call(session, 20_000, Follow(from, to, _))
+}
+
+/// Store the new workspace and, when it differs, drop the kernel, which
+/// runs in the old one; `what` begins the note that says so.
+fn relocate(state: State, cwd: String, what: String) -> Result(State, String) {
+  use _ <- result.map(conversation.set_workspace(
+    runtime.ledger(state.host),
+    state.info.id,
+    cwd,
+  ))
+  case cwd == state.info.cwd {
+    True -> state
+    False -> {
+      runtime.forget_session(state.host, state.info.id)
+      discard_state(state.home, state.info.id)
+      session_state.State(
+        ..state,
+        kernel: None,
+        info: conversation.Info(..state.info, cwd: cwd),
+        notice: Some(session_namespace.lost_notice),
+        context: session_state.unprepared(),
+      )
+      |> session_state.emit(view.text(
+        "note",
+        what <> "; python variables were cleared, the transcript is intact",
+      ))
+    }
+  }
+}
+
+/// A busy session makes the move it owes an ancestor when its run ends.
+fn settle(state: State) -> State {
+  case busy(state) {
+    True -> state
+    False -> follow_up(state)
+  }
+}
+
+/// Make the move an ancestor asked for. A folder gone by then is left alone.
+fn follow_up(state: State) -> State {
+  case state.following {
+    None -> state
+    Some(cwd) -> {
+      let state = session_state.State(..state, following: None)
+      let moved = case directory(cwd) {
+        False -> Error(cwd <> " no longer exists")
+        True -> relocate(state, cwd, "workspace moved with parent")
+      }
+      case moved {
+        Ok(state) -> state
+        Error(error) ->
+          session_state.emit(
+            state,
+            view.text("note", "workspace did not move with parent: " <> error),
+          )
+      }
+    }
+  }
 }
 
 pub fn extensions(session: Session) -> Result(List(extension.Summary), String) {
