@@ -18,7 +18,20 @@
     },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "usage-core": "usage-core"
+      }
+    },
+    "usage-core": {
+      "flake": false,
+      "locked": {
+        "narHash": "sha256-UVsepzVfYIDXUsoAH4KRdAWkeFPylUurWWXFw2Ereqc=",
+        "type": "file",
+        "url": "https://api.next.tangled.org/xrpc/org.tangled.temp.git.getArchive?format=tar.gz&prefix=provide-usage-main&ref=1a4bff9&repo=did:plc:2lf7buutfnfcucljnmaypf7u"
+      },
+      "original": {
+        "type": "file",
+        "url": "https://api.next.tangled.org/xrpc/org.tangled.temp.git.getArchive?format=tar.gz&prefix=provide-usage-main&ref=1a4bff9&repo=did:plc:2lf7buutfnfcucljnmaypf7u"
       }
     }
   },

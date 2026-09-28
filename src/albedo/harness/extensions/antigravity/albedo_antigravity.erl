@@ -4,7 +4,7 @@
 -include_lib("kernel/include/file.hrl").
 -export([access/1, access/2, limited/3, encode/1, normalize_schema/1, session_number/1, uuid/1,
          call_id/0, now_ms/0, user_agent/1, discovered/1, refresh/1, reload/1, expire/2,
-         exchange/4, discover/3, account/1, client_id/0]).
+         exchange/4, discover/3, account/1, client_id/0, accounts/1]).
 
 -define(KEY, <<"google-antigravity">>).
 -define(CLIENT_ID, <<"MTA3MTAwNjA2MDU5MS10bWhzc2luMmgyMWxjcmUyMzV2dG9sb2poNGc0MDNlcC5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbQ==">>).
@@ -64,6 +64,46 @@ first_usable([Credential | Rest], Path, Session) ->
 
 credentials(Data) ->
     albedo_credentials:oauth(Data, ?KEY).
+
+%% Every Google account for the quota poller, each refreshed the way a request
+%% refreshes it: `label` is the account's non-secret identity, the rest are
+%% the provide-usage credential fields, projectId included. The refresh
+%% token stays home: albedo refreshes, and the core never reads it. A refresh
+%% that fails keeps the stored credential, so the poll records the auth failure as
+%% a reading instead of silently dropping the account.
+accounts(Home) ->
+    Path = albedo_credentials:auth_path(Home),
+    case albedo_credentials:read(Path) of
+        {ok, Data} ->
+            [entry(refreshed_account(Path, V)) || V <- credentials(Data), account_id(V) =/= <<>>];
+        _ -> []
+    end.
+
+refreshed_account(Path, Credential) ->
+    case usable(Credential) of
+        fresh -> Credential;
+        stale ->
+            case albedo_credentials:with_lock(Path,
+                    fun() -> refresh_current(Path, identity(Credential)) end,
+                    fun() -> {error, busy} end) of
+                {ok, Updated} -> Updated;
+                _ -> Credential
+            end;
+        invalid -> Credential
+    end.
+
+entry(Value) ->
+    maps:merge(#{<<"label">> => account_id(Value)}, fields(Value)).
+
+fields(Value) ->
+    maps:from_list([{K, field(Value, K)}
+                    || K <- [<<"access">>, <<"email">>, <<"projectId">>]]).
+
+field(Value, Key) ->
+    case maps:get(Key, Value, <<>>) of
+        Text when is_binary(Text) -> Text;
+        _ -> <<>>
+    end.
 
 usable(Credential) ->
     Valid = fun(Key) -> case maps:get(Key, Credential, <<>>) of <<_, _/binary>> -> true; _ -> false end end,

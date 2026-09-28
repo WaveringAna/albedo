@@ -93,7 +93,7 @@ pub fn chat_accumulates_interleaved_tools_usage_and_native_replay_test() {
         types.ToolCall("call_a", "alpha", "{\"a\":1}"),
         types.ToolCall("call_b", "beta", "{\"b\":2}"),
       ],
-      Some(types.Usage(5, 8, Some(0), None)),
+      Some(types.Usage(5, 8, Some(0), None, None, None, None)),
       types.ToolCalls,
       None,
     )),
@@ -121,7 +121,14 @@ pub fn cache_usage_details_tolerate_null_and_reject_malformed_values_test() {
   let assert Ok(#(
     _,
     [],
-    Some(types.Turn(_, [], [], Some(types.Usage(3, 2, None, None)), _, None)),
+    Some(types.Turn(
+      _,
+      [],
+      [],
+      Some(types.Usage(3, 2, None, None, None, None, None)),
+      _,
+      None,
+    )),
   )) = send(stream.new(types.Responses), "", responses_null)
 
   let chat_null =
@@ -131,7 +138,14 @@ pub fn cache_usage_details_tolerate_null_and_reject_malformed_values_test() {
   let assert Ok(#(
     _,
     [],
-    Some(types.Turn(_, _, [], Some(types.Usage(3, 2, None, None)), _, None)),
+    Some(types.Turn(
+      _,
+      _,
+      [],
+      Some(types.Usage(3, 2, None, None, None, None, None)),
+      _,
+      None,
+    )),
   )) = send(state, "", "[DONE]")
 
   let responses_malformed =

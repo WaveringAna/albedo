@@ -10,11 +10,14 @@
 
 import albedo/harness/extension
 import albedo/openai_api/types
+import gleam/bit_array
+import gleam/crypto
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 
 /// What a 429 said about the account that received it.
 pub type Limit {
@@ -113,12 +116,25 @@ pub fn same_client(a: types.Client, b: types.Client) -> Bool {
 }
 
 /// An upstream for an OpenAI-compatible client rotating through pool.
+/// `label` names an account without naming its credential.
 pub fn client_upstream(
   pool: Pool(types.Client),
   first: types.Client,
   explain: fn(types.Client, types.Error) -> Option(String),
+  label: fn(types.Client) -> String,
 ) -> extension.Upstream {
-  upstream(first.base_url, first.protocol, pool, first, explain)
+  upstream(first.base_url, first.protocol, pool, first, explain, label)
+}
+
+/// A non-secret account label for a key-authenticated client: the first
+/// eight hex characters of the key's SHA-256, enough to tell siblings apart.
+pub fn key_label(key: String) -> String {
+  key
+  |> bit_array.from_string
+  |> crypto.hash(crypto.Sha256, _)
+  |> bit_array.base16_encode
+  |> string.slice(0, 8)
+  |> string.lowercase
 }
 
 pub type Pool(account) {
@@ -151,13 +167,15 @@ pub fn budget() -> Budget {
 const waits = [4000, 8000, 15_000, 30_000]
 
 /// An upstream that rotates through `pool` starting from `first`. `explain`
-/// is given the account the failing attempt went to, not necessarily `first`.
+/// is given the account the failing attempt went to, not necessarily `first`;
+/// `label` names the account that served, without naming its credential.
 pub fn upstream(
   endpoint: String,
   protocol: types.Protocol,
   pool: Pool(account),
   first: account,
   explain: fn(account, types.Error) -> Option(String),
+  label: fn(account) -> String,
 ) -> extension.Upstream {
   let slot = new_slot()
   extension.Upstream(
@@ -170,6 +188,12 @@ pub fn upstream(
       })
     },
     fn(error) { explain(last_served(slot, first), error) },
+    fn() {
+      case string.trim(label(last_served(slot, first))) {
+        "" -> None
+        account -> Some(account)
+      }
+    },
   )
 }
 

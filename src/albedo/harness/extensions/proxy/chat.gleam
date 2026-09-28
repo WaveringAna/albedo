@@ -587,17 +587,25 @@ fn finish(finish: types.Finish) -> String {
 }
 
 fn usage(usage: Option(types.Usage)) -> Json {
-  let types.Usage(input, output, cached, ..) =
-    option.unwrap(usage, types.Usage(0, 0, None, None))
-  json.object([
-    #("prompt_tokens", json.int(input)),
-    #("completion_tokens", json.int(output)),
-    #("total_tokens", json.int(input + output)),
-    #(
-      "prompt_tokens_details",
-      json.object([#("cached_tokens", json.int(option.unwrap(cached, 0)))]),
-    ),
-  ])
+  let types.Usage(input, output, cached, reasoning, ..) =
+    option.unwrap(usage, types.Usage(0, 0, None, None, None, None, None))
+  json.object(
+    [
+      #("prompt_tokens", json.int(input)),
+      #("completion_tokens", json.int(output)),
+      #("total_tokens", json.int(input + output)),
+      #(
+        "prompt_tokens_details",
+        json.object([#("cached_tokens", json.int(option.unwrap(cached, 0)))]),
+      ),
+    ]
+    |> when(option.is_some(reasoning), #(
+      "completion_tokens_details",
+      json.object([
+        #("reasoning_tokens", json.int(option.unwrap(reasoning, 0))),
+      ]),
+    )),
+  )
 }
 
 fn when(

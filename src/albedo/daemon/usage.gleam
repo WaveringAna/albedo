@@ -16,6 +16,9 @@ pub type Tokens {
     completion_tokens: Int,
     cached_prompt_tokens: Option(Int),
     cache_creation_tokens: Option(Int),
+    cache_write_5m_tokens: Option(Int),
+    cache_write_1h_tokens: Option(Int),
+    reasoning_tokens: Option(Int),
   )
 }
 
@@ -25,8 +28,24 @@ pub fn from_completion(
   recorded_at: Int,
 ) -> Metadata {
   let tokens = case provider_usage {
-    Some(types.Usage(prompt, completion, cached, creation)) ->
-      Some(Tokens(prompt, completion, cached, creation))
+    Some(types.Usage(
+      prompt,
+      completion,
+      cached,
+      creation,
+      write_5m,
+      write_1h,
+      reasoning,
+    )) ->
+      Some(Tokens(
+        prompt,
+        completion,
+        cached,
+        creation,
+        write_5m,
+        write_1h,
+        reasoning,
+      ))
     None -> None
   }
   Metadata(model, recorded_at, tokens)
@@ -37,7 +56,15 @@ pub fn from_completion(
 pub fn event(metadata: Metadata) -> String {
   let Metadata(model, recorded_at, tokens) = metadata
   let token_fields = case tokens {
-    Some(Tokens(prompt, completion, cached, creation)) ->
+    Some(Tokens(
+      prompt,
+      completion,
+      cached,
+      creation,
+      write_5m,
+      write_1h,
+      reasoning,
+    )) ->
       [
         #("promptTokens", json.int(prompt)),
         #("completionTokens", json.int(completion)),
@@ -45,6 +72,9 @@ pub fn event(metadata: Metadata) -> String {
       ]
       |> opt_field("cacheCreationTokens", creation)
       |> opt_field("cachedPromptTokens", cached)
+      |> opt_field("cacheWrite5mTokens", write_5m)
+      |> opt_field("cacheWrite1hTokens", write_1h)
+      |> opt_field("reasoningTokens", reasoning)
     None -> []
   }
   json.object([

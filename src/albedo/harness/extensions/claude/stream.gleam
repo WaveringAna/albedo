@@ -93,7 +93,7 @@ fn apply(
         |> option.from_result
       let usage = case state.usage, output {
         Some(old), Some(n) -> Some(types.Usage(..old, output_tokens: n))
-        None, Some(n) -> Some(types.Usage(0, n, None, None))
+        None, Some(n) -> Some(types.Usage(0, n, None, None, None, None, None))
         _, None -> state.usage
       }
       emit(
@@ -304,6 +304,12 @@ fn usage_decoder() -> decode.Decoder(types.Usage) {
     None,
     decode.optional(decode.int),
   )
+  // The same writes split by how long the entry lives.
+  use writes <- decode.optional_field(
+    "cache_creation",
+    None,
+    decode.optional(cache_creation_decoder()),
+  )
   // Anthropic reports input_tokens without cached reads or writes; the
   // harness counts the whole input context so cached is a subset of input.
   decode.success(types.Usage(
@@ -311,7 +317,28 @@ fn usage_decoder() -> decode.Decoder(types.Usage) {
     output,
     cache,
     creation,
+    option.then(writes, fn(split) { split.write_5m }),
+    option.then(writes, fn(split) { split.write_1h }),
+    None,
   ))
+}
+
+type CacheWrites {
+  CacheWrites(write_5m: Option(Int), write_1h: Option(Int))
+}
+
+fn cache_creation_decoder() -> decode.Decoder(CacheWrites) {
+  use write_5m <- decode.optional_field(
+    "ephemeral_5m_input_tokens",
+    None,
+    decode.optional(decode.int),
+  )
+  use write_1h <- decode.optional_field(
+    "ephemeral_1h_input_tokens",
+    None,
+    decode.optional(decode.int),
+  )
+  decode.success(CacheWrites(write_5m, write_1h))
 }
 
 fn original_name(name: String, tools: List(types.Tool)) -> String {

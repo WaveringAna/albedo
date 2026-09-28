@@ -105,7 +105,16 @@ fn resolve(
     pool(context.home, context.session, openai_api.stream),
     client,
     fn(client, error) { account_failure(context.home, client, error) },
+    account_label,
   )
+}
+
+/// The ChatGPT account a client speaks for, or a hash of its key.
+fn account_label(client: types.Client) -> String {
+  case client.policy {
+    types.Codex(account_id, _) -> account_id
+    _ -> rotation.key_label(client.api_key)
+  }
 }
 
 /// The session's current account as a client. Its model list refreshes in

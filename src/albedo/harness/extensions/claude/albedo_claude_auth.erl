@@ -1,6 +1,6 @@
 -module(albedo_claude_auth).
 
--export([exchange/4, account/1, access/2, profile/2, expire/2, token/1]).
+-export([exchange/4, account/1, access/2, profile/2, expire/2, token/1, accounts/1]).
 
 -define(KEY, <<"anthropic">>).
 -define(CLIENT_ID, <<"9d1c250a-e61b-44d9-88ed-5944d1962f5e">>).
@@ -102,6 +102,47 @@ session_uuid(Session) ->
 
 credentials(Data) ->
     albedo_credentials:oauth(Data, ?KEY).
+
+%% Every Claude account for the quota poller, each with a fresh access token:
+%% `label` is the account's non-secret identity, the rest are the
+%% provide-usage credential fields. The refresh token stays home: albedo
+%% refreshes, and the core never reads it. A refresh that fails keeps the stored
+%% credential, so the poll records the auth failure as a reading instead of
+%% silently dropping the account.
+accounts(Home0) ->
+    Path = albedo_credentials:auth_path(Home0),
+    case albedo_credentials:read(Path) of
+        {ok, Data} ->
+            [entry(refreshed(Path, V)) || V <- credentials(Data), identity(V) =/= <<>>];
+        _ -> []
+    end.
+
+refreshed(Path, Value) ->
+    Expires = maps:get(<<"expires">>, Value, 0),
+    case is_integer(Expires) andalso
+         Expires > erlang:system_time(millisecond) + ?REFRESH_SKEW_MS of
+        true -> Value;
+        false ->
+            case albedo_credentials:with_lock(Path,
+                    fun() -> refresh(Path, identity(Value)) end,
+                    fun() -> {error, busy} end) of
+                {ok, Updated} -> Updated;
+                _ -> Value
+            end
+    end.
+
+entry(Value) ->
+    maps:merge(#{<<"label">> => identity(Value)}, fields(Value)).
+
+fields(Value) ->
+    maps:from_list([{K, field(Value, K)}
+                    || K <- [<<"access">>, <<"accountId">>, <<"email">>]]).
+
+field(Value, Key) ->
+    case maps:get(Key, Value, <<>>) of
+        Text when is_binary(Text) -> Text;
+        _ -> <<>>
+    end.
 
 first_access([], _, _) -> {error, <<"Claude is not authenticated; run /login and add a Claude account">>};
 first_access([C | Rest], Path, Session) ->

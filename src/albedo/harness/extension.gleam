@@ -138,6 +138,9 @@ pub type Upstream {
     stream: fn(types.Request, fn(types.Event) -> types.Control) ->
       Result(types.Turn, types.Error),
     explain: fn(types.Error) -> Option(String),
+    /// The non-secret label of the account that served the most recent
+    /// request, when the provider has an account pool to name one from.
+    account: fn() -> Option(String),
   )
 }
 

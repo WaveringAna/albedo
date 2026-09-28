@@ -125,7 +125,7 @@ pub type Message {
     List(types.Input),
     conversation.Stage,
     Option(Int),
-    Subject(Result(Int, String)),
+    Subject(Result(#(Int, Option(Int)), String)),
   )
   RecordContext(String, context_snapshot.Snapshot, Bool, Subject(Nil))
   RecordUsage(String, usage.Metadata, Subject(Result(Nil, String)))
@@ -658,7 +658,7 @@ fn handle(state: State, message: Message) {
               thought_ms,
             )
           case written {
-            Ok(timestamp) ->
+            Ok(#(timestamp, _)) ->
               answer(
                 session_state.State(
                   ..session_history.remember_response(
@@ -1533,7 +1533,7 @@ fn finish_run(
             usage.Metadata(
               state.info.model,
               usage.now(),
-              Some(usage.Tokens(tokens, 0, None, None)),
+              Some(usage.Tokens(tokens, 0, None, None, None, None, None)),
             )
           session_state.emit(
             session_state.State(..state, latest_usage: Some(metadata)),

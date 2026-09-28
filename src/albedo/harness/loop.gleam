@@ -2,12 +2,14 @@
 
 import albedo/daemon/conversation
 import albedo/daemon/events as view
+import albedo/daemon/ledger
 import albedo/daemon/usage
 import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/int
+import gleam/io
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -24,9 +26,11 @@ pub type Loop {
     upstream: extension.Upstream,
     publish: fn(String) -> Bool,
     /// Commits inputs at a stage; a model response passes how long the
-    /// model thought before it.
+    /// model thought before it. Answers the shared daemon time and the seq
+    /// of the commit's first assistant row, which the call's ledger row
+    /// links to.
     commit: fn(List(types.Input), conversation.Stage, Option(Int)) ->
-      Result(Int, String),
+      Result(#(Int, Option(Int)), String),
     record_context: fn(types.Request, Option(compaction.Observation), Bool) ->
       Nil,
     record_usage: fn(usage.Metadata) -> Result(Nil, String),
@@ -34,6 +38,10 @@ pub type Loop {
     /// Reports the pin's compaction baseline (`Some`) or that compaction
     /// replaced the history the pinned prompt was cached with (`None`).
     report_pin: fn(Option(Int)) -> Nil,
+    /// The session whose provider calls the request ledger records.
+    session: String,
+    /// The saved profile those calls went through.
+    profile: String,
   )
 }
 
@@ -76,30 +84,37 @@ pub fn run(
   case state.pin {
     Unpinned ->
       state.report_pin(Some(
-        list.length(original) - common_suffix(original, history),
+        list.length(original) - compaction.common_suffix(original, history),
       ))
     Pinned(..) -> Nil
   }
   let current_instructions = request_instructions(state)
   let request = request(state, current_instructions, history)
   state.record_context(request, prepared.observation, prepared.compacted)
-  use turn <- result.try(
-    stream_with_retries(state.upstream, request, state.publish, fn(event) {
-      case view.stream_event(id, step, event) {
-        Some(serialized) ->
-          case state.publish(serialized) {
-            True -> types.Continue
-            False -> types.Stop
-          }
-        None -> types.Continue
-      }
-    })
+  use #(row, turn) <- result.try(
+    call(
+      state,
+      ledger.Turn,
+      request,
+      request_prefix(request, history, original, prepared.observation),
+      state.publish,
+      fn(event) {
+        case view.stream_event(id, step, event) {
+          Some(serialized) ->
+            case state.publish(serialized) {
+              True -> types.Continue
+              False -> types.Stop
+            }
+          None -> types.Continue
+        }
+      },
+    )
     |> result.map_error(describe(state.upstream, _)),
   )
   let completed_usage =
     usage.from_completion(state.model, turn.usage, usage.now())
   let replay = list.map(turn.output, types.Replay)
-  use timestamp <- result.try(state.commit(
+  use #(timestamp, seq) <- result.try(state.commit(
     replay,
     case turn.tool_calls {
       [] -> conversation.Idle
@@ -107,6 +122,7 @@ pub fn run(
     },
     turn.thought_ms,
   ))
+  attach(state, row, seq)
   list.each(replay, fn(input) {
     let _ =
       list.each(view.assistant_message(input, Some(timestamp)), state.publish)
@@ -144,7 +160,7 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
   let history = prepared.inputs
   // The projection keeps a verbatim tail, so everything before the shared
   // suffix is what the strategy's replacement stands in for.
-  let suffix = common_suffix(original, history)
+  let suffix = compaction.common_suffix(original, history)
   let evicted = list.length(inputs) - suffix
   let _ = case evicted > 0 {
     True -> {
@@ -252,17 +268,6 @@ fn unshift(
   })
 }
 
-fn common_suffix(a: List(types.Input), b: List(types.Input)) -> Int {
-  suffix_length(list.reverse(a), list.reverse(b), 0)
-}
-
-fn suffix_length(a: List(types.Input), b: List(types.Input), n: Int) -> Int {
-  case a, b {
-    [x, ..xs], [y, ..ys] if x == y -> suffix_length(xs, ys, n + 1)
-    _, _ -> n
-  }
-}
-
 fn display_text(items: List(types.Input)) -> String {
   items
   |> list.map(fn(input) {
@@ -293,22 +298,117 @@ fn bounded(text: String, limit: Int, note: String) -> String {
   }
 }
 
-/// Reissue transient transport and gateway failures. A failed attempt has no committed output
-/// or tool effects; discard its live previews before forwarding the next attempt.
-fn stream_with_retries(
-  upstream: extension.Upstream,
+/// Streams one provider call, writing a request-ledger row per attempt: what
+/// it cost, how it ended, and the prefix identity it went out with. The row
+/// id of the attempt that succeeded is answered so its transcript seq can be
+/// attached once committed. A row that cannot be written is logged and
+/// skipped, never a failed turn.
+fn call(
+  state: Loop,
+  kind: ledger.Kind,
   request: types.Request,
+  prefix: ledger.Prefix,
   publish: fn(String) -> Bool,
   on_event: fn(types.Event) -> types.Control,
-) -> Result(types.Turn, types.Error) {
-  retry_stream(fn() { upstream.stream(request, on_event) }, publish, 1)
+) -> Result(#(Option(Int), types.Turn), types.Error) {
+  retry_stream(
+    fn() {
+      let started = ledger.now()
+      let outcome = state.upstream.stream(request, on_event)
+      let usage = case outcome {
+        Ok(turn) -> turn.usage
+        Error(_) -> None
+      }
+      // The account label is read after the attempt: rotation records which
+      // account served while the request streams.
+      let row =
+        ledger.record(
+          runtime.ledger(state.host),
+          ledger.Call(
+            state.session,
+            kind,
+            state.profile,
+            provider_label(state),
+            state.upstream.account(),
+            request.model,
+            started,
+            ledger.now(),
+            ledger.outcome(outcome),
+            usage,
+            prefix,
+          ),
+        )
+      let row = case row {
+        Ok(id) -> Some(id)
+        Error(error) -> {
+          io.println_error(
+            "request ledger write failed for session "
+            <> state.session
+            <> ": "
+            <> error,
+          )
+          None
+        }
+      }
+      case outcome {
+        Ok(turn) -> Ok(#(row, turn))
+        Error(error) -> Error(error)
+      }
+    },
+    publish,
+    1,
+  )
 }
 
+/// Attaches the transcript row a recorded call produced — the first
+/// assistant row of its response commit. A commit with no assistant row, or
+/// a failed update, is logged and skipped, never a failed turn.
+fn attach(state: Loop, row: Option(Int), seq: Option(Int)) -> Nil {
+  case row, seq {
+    Some(id), Some(seq) ->
+      case ledger.attach(runtime.ledger(state.host), state.session, id, seq) {
+        Ok(_) -> Nil
+        Error(error) ->
+          io.println_error(
+            "request ledger seq attach failed for session "
+            <> state.session
+            <> ": "
+            <> error,
+          )
+      }
+    _, _ -> Nil
+  }
+}
+
+/// How a call reached its provider: the protocol over the endpoint.
+fn provider_label(state: Loop) -> String {
+  types.protocol_name(state.upstream.protocol) <> ":" <> state.upstream.endpoint
+}
+
+/// The request's prefix identity: its head, and the projection that stands in
+/// for the history compaction replaced.
+fn request_prefix(
+  request: types.Request,
+  history: List(types.Input),
+  original: List(types.Input),
+  observation: Option(compaction.Observation),
+) -> ledger.Prefix {
+  ledger.prefix(
+    option.unwrap(request.instructions, ""),
+    request.tools,
+    history,
+    original,
+    option.map(observation, fn(observation) { observation.strategy }),
+  )
+}
+
+/// Reissue transient transport and gateway failures. A failed attempt has no committed output
+/// or tool effects; discard its live previews before forwarding the next attempt.
 fn retry_stream(
-  run: fn() -> Result(types.Turn, types.Error),
+  run: fn() -> Result(a, types.Error),
   publish: fn(String) -> Bool,
   attempt: Int,
-) -> Result(types.Turn, types.Error) {
+) -> Result(a, types.Error) {
   case run() {
     Error(error) ->
       case attempt < 3 && retryable(error) {
@@ -385,7 +485,8 @@ fn settle_pin(
     Pinned(prompt, baseline) -> {
       // Strategies may rebuild recap text every request, but the count of
       // original inputs they stand in for only grows when compaction runs.
-      let head = list.length(original) - common_suffix(original, history)
+      let head =
+        list.length(original) - compaction.common_suffix(original, history)
       case baseline {
         None -> {
           state.report_pin(Some(head))
@@ -442,10 +543,16 @@ fn summarize(
       Some(max_output_tokens),
       types.defaults,
     )
-  use turn <- result.try(
-    stream_with_retries(state.upstream, summary_request, state.publish, fn(_) {
-      types.Continue
-    })
+  use #(_, turn) <- result.try(
+    call(
+      state,
+      ledger.Summarizer,
+      summary_request,
+      // The summarizer's history is exactly what it says; nothing replaced.
+      ledger.direct_prefix(summary_instructions, [], [types.User(prompt)]),
+      state.publish,
+      fn(_) { types.Continue },
+    )
     |> result.map_error(fn(error) {
       "summarizer provider request failed: " <> describe(state.upstream, error)
     }),

@@ -1,7 +1,7 @@
 -module(albedo_openai_auth).
 %% Codex sign-in, multi-account credential selection, and refresh.
 
--export([codex_access/2, codex_revoke/2, codex_limited/3, codex_exchange/3, codex_account/1]).
+-export([codex_access/2, codex_revoke/2, codex_limited/3, codex_exchange/3, codex_account/1, accounts/1]).
 
 -define(SCOPE, <<"codex">>).
 -define(STORE, <<"openai-codex">>).
@@ -166,6 +166,51 @@ usable(_) -> error.
 
 credentials(Data) when is_map(Data) -> albedo_credentials:oauth(Data, ?STORE);
 credentials(_) -> [].
+
+%% Every stored ChatGPT account for the quota poller, each refreshed the way a
+%% request refreshes it: `label` is the account's non-secret identity, the rest
+%% are the provide-usage credential fields. The refresh token stays home:
+%% albedo refreshes, and the core never reads it. A refresh that fails keeps the
+%% stored credential, so the poll records the auth failure as a reading
+%% instead of silently dropping the account.
+accounts(Home0) ->
+    Path = albedo_credentials:auth_path(text(Home0)),
+    case albedo_credentials:read(Path) of
+        {ok, Data} ->
+            [entry(V) || V <- [refreshed(Path, C) || C <- credentials(Data)], label(V) =/= <<>>];
+        _ -> []
+    end.
+
+refreshed(Path, Credential) ->
+    case usable(Credential) of
+        {ok, Ready} -> Ready;
+        refresh ->
+            case refresh_locked(Path, identity(Credential)) of
+                {ok, Updated} -> Updated;
+                _ -> Credential
+            end;
+        error -> Credential
+    end.
+
+label(Credential) ->
+    first([email(Credential), account_id(Credential), short_hash(maps:get(<<"refresh">>, Credential, <<>>))]).
+
+entry(Value) ->
+    maps:merge(#{<<"label">> => label(Value)}, fields(Value)).
+
+fields(Value) ->
+    maps:from_list([{K, field(Value, K)}
+                    || K <- [<<"access">>, <<"accountId">>, <<"email">>]]).
+
+field(Value, Key) ->
+    case maps:get(Key, Value, <<>>) of
+        Text when is_binary(Text) -> Text;
+        _ -> <<>>
+    end.
+
+short_hash(Token) when is_binary(Token), byte_size(Token) > 0 ->
+    binary:encode_hex(binary:part(crypto:hash(sha256, Token), 0, 8), lowercase);
+short_hash(_) -> <<>>.
 
 selected(Credential) -> maps:get(<<"selected">>, Credential, false) =:= true.
 

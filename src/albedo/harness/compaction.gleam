@@ -419,5 +419,18 @@ pub fn is_user(input: types.Input) -> Bool {
   }
 }
 
+/// How many inputs two histories share at their end, oldest first: the tail a
+/// projection kept verbatim, so what precedes it is what it replaced.
+pub fn common_suffix(a: List(types.Input), b: List(types.Input)) -> Int {
+  suffix_length(list.reverse(a), list.reverse(b), 0)
+}
+
+fn suffix_length(a: List(types.Input), b: List(types.Input), n: Int) -> Int {
+  case a, b {
+    [x, ..xs], [y, ..ys] if x == y -> suffix_length(xs, ys, n + 1)
+    _, _ -> n
+  }
+}
+
 @external(erlang, "albedo_compaction", "fingerprint")
 pub fn fingerprint(value: a) -> String

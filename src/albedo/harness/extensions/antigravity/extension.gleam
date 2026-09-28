@@ -139,6 +139,8 @@ pub fn upstream(
     }),
     access,
     fn(access, error) { explain(home, access, error) },
+    // The Google account's email; blank credentials report no account.
+    fn(access) { access.email },
   )
 }
 

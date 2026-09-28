@@ -125,6 +125,8 @@ fn resolve(
         _ -> None
       }
     },
+    // The OAuth profile's account UUID, not a credential.
+    fn() { Some(account) },
   ))
 }
 

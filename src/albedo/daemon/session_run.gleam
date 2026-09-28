@@ -20,7 +20,7 @@ pub type Messages(message) {
       List(types.Input),
       conversation.Stage,
       Option(Int),
-      Subject(Result(Int, String)),
+      Subject(Result(#(Int, Option(Int)), String)),
     ) -> message,
     context: fn(String, context_snapshot.Snapshot, Bool, Subject(Nil)) ->
       message,
@@ -112,13 +112,16 @@ fn confirm(
   }
 }
 
+/// The worker's commit answers the daemon time and the seq of the commit's
+/// first assistant row, so the loop can link a recorded provider call to the
+/// transcript row it produced.
 pub fn commit_fn(
   owner: Subject(message),
   run_id: String,
   messages: Messages(message),
   waiting timeout: Int,
 ) -> fn(List(types.Input), conversation.Stage, Option(Int)) ->
-  Result(Int, String) {
+  Result(#(Int, Option(Int)), String) {
   fn(inputs, stage, thought_ms) {
     confirm(owner, "commit", timeout, messages.commit(
       run_id,
@@ -206,6 +209,9 @@ pub fn start(
       usage_fn(owner, run_id, messages, 10_000),
       drain_fn(owner, run_id, messages, 10_000),
       fn(head) { report(owner, messages.pin(run_id, head, _)) },
+      // The request ledger's identity for this session's provider calls.
+      state.info.id,
+      state.info.provider,
     )
   let pid =
     process.spawn_unlinked(fn() {

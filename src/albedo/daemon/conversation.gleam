@@ -1,5 +1,6 @@
 import albedo/daemon/events
 import albedo/daemon/images
+import albedo/daemon/ledger
 import albedo/daemon/mail
 import albedo/daemon/note
 import albedo/daemon/notice
@@ -69,7 +70,8 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
     use _ <- result.try(store.exec(
       db,
       "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER,usage_cache_creation_tokens INTEGER,effort TEXT); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT,thought_ms INTEGER); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);"
-        <> images.schema,
+        <> images.schema
+        <> ledger.schema,
     ))
     use _ <- result.try(
       store.add_columns(db, "sessions", [
@@ -83,6 +85,9 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
         #("usage_completion_tokens", "INTEGER"),
         #("usage_cached_prompt_tokens", "INTEGER"),
         #("usage_cache_creation_tokens", "INTEGER"),
+        #("usage_cache_write_5m_tokens", "INTEGER"),
+        #("usage_cache_write_1h_tokens", "INTEGER"),
+        #("usage_reasoning_tokens", "INTEGER"),
         #("effort", "TEXT"),
         #("pinned_instructions", "TEXT"),
         #("pinned_context", "BLOB"),
@@ -291,6 +296,7 @@ pub fn delete(store: store.Store, id: String) -> Result(Nil, String) {
         list.try_each(
           [
             "transcript",
+            "request_ledger",
             "schedules",
             "session_extensions",
             "rolling_compaction_state",
@@ -394,6 +400,16 @@ fn has_visible_assistant(inputs: List(types.Input)) -> Bool {
   list.any(inputs, fn(input) {
     option.is_some(events.visible_assistant_text(input))
   })
+}
+
+/// Whether one committed input is a row the model itself produced: an
+/// assistant message or a replayed provider item, including a tool call. The
+/// first such row of a commit is the transcript row that commit links to.
+fn is_assistant_row(input: types.Input) -> Bool {
+  case input {
+    types.Replay(_) | types.Assistant(_) -> True
+    _ -> False
+  }
 }
 
 /// The newest message a person wrote. Notes are the daemon talking and mail
@@ -803,10 +819,14 @@ pub fn commit_from(
   provider: Option(String),
 ) -> Result(Int, String) {
   commit_with_letters(store, id, inputs, stage, provider, None, [])
+  |> result.map(fn(committed) { committed.0 })
 }
 
 /// Appends a model response's inputs; `thought_ms`, how long the model
-/// thought before it, is kept on the first that shows the thinking.
+/// thought before it, is kept on the first that shows the thinking. Answers
+/// the shared daemon time and the seq of the response's first assistant row,
+/// so a recorded provider call can link to the transcript row it produced;
+/// a commit with no assistant row links nothing.
 pub fn commit_response(
   store: store.Store,
   id: String,
@@ -814,7 +834,7 @@ pub fn commit_response(
   stage: Stage,
   provider: Option(String),
   thought_ms: Option(Int),
-) -> Result(Int, String) {
+) -> Result(#(Int, Option(Int)), String) {
   commit_with_letters(store, id, inputs, stage, provider, thought_ms, [])
 }
 
@@ -829,6 +849,7 @@ pub fn commit_letters(
   letters: List(String),
 ) -> Result(Int, String) {
   commit_with_letters(store, id, inputs, stage, provider, None, letters)
+  |> result.map(fn(committed) { committed.0 })
 }
 
 fn commit_with_letters(
@@ -839,7 +860,7 @@ fn commit_with_letters(
   provider: Option(String),
   thought_ms: Option(Int),
   letters: List(String),
-) -> Result(Int, String) {
+) -> Result(#(Int, Option(Int)), String) {
   let timestamp = usage.now()
   let read = images.reader(store)
   store.query(store, fn(db) {
@@ -849,21 +870,37 @@ fn commit_with_letters(
         True -> 1
         False -> 0
       }
-      use _ <- result.try(
+      // The first assistant row of the commit, so a caller that recorded the
+      // provider call behind it can link to the transcript row it produced.
+      use linked <- result.try(
         entries(inputs, Some(timestamp), provider, thought_ms)
-        |> list.try_each(fn(entry) {
+        |> list.try_fold(None, fn(linked, entry) {
           use input <- result.try(images.externalize(db, entry.input, read))
-          store.run(
-            db,
-            "INSERT INTO transcript(session,payload,timestamp,provider,thought_ms) VALUES(?,?,?,?,?)",
-            [
-              sqlight.text(id),
-              sqlight.blob(pack(input)),
-              sqlight.int(timestamp),
-              sqlight.nullable(sqlight.text, provider),
-              sqlight.nullable(sqlight.int, entry.thought_ms),
-            ],
+          use _ <- result.try(
+            store.run(
+              db,
+              "INSERT INTO transcript(session,payload,timestamp,provider,thought_ms) VALUES(?,?,?,?,?)",
+              [
+                sqlight.text(id),
+                sqlight.blob(pack(input)),
+                sqlight.int(timestamp),
+                sqlight.nullable(sqlight.text, provider),
+                sqlight.nullable(sqlight.int, entry.thought_ms),
+              ],
+            ),
           )
+          case linked, is_assistant_row(input) {
+            None, True ->
+              store.one(
+                db,
+                "SELECT last_insert_rowid()",
+                [],
+                decode.field(0, decode.int, decode.success),
+                "committed row sequence",
+              )
+              |> result.map(Some)
+            _, _ -> Ok(linked)
+          }
         }),
       )
       // COALESCE keeps the old title when no new user message suggests one.
@@ -877,8 +914,9 @@ fn commit_with_letters(
           sqlight.text(id),
         ],
       )
+      |> result.replace(linked)
     })
-    |> result.replace(timestamp)
+    |> result.map(fn(linked) { #(timestamp, linked) })
   })
 }
 
@@ -889,6 +927,9 @@ fn usage_decoder() {
   use completion <- decode.field(3, decode.optional(decode.int))
   use cached <- decode.field(4, decode.optional(decode.int))
   use creation <- decode.field(5, decode.optional(decode.int))
+  use write_5m <- decode.field(6, decode.optional(decode.int))
+  use write_1h <- decode.field(7, decode.optional(decode.int))
+  use reasoning <- decode.field(8, decode.optional(decode.int))
   case model, recorded_at, prompt, completion {
     None, None, None, None -> decode.success(None)
     Some(model), Some(recorded_at), None, None ->
@@ -898,7 +939,15 @@ fn usage_decoder() {
         Some(usage.Metadata(
           model,
           recorded_at,
-          Some(usage.Tokens(prompt, completion, cached, creation)),
+          Some(usage.Tokens(
+            prompt,
+            completion,
+            cached,
+            creation,
+            write_5m,
+            write_1h,
+            reasoning,
+          )),
         )),
       )
     _, _, _, _ -> decode.failure(None, "consistent saved usage metadata")
@@ -912,7 +961,7 @@ pub fn load_usage(
   store.query(store, fn(db) {
     store.one(
       db,
-      "SELECT usage_model,usage_recorded_at,usage_prompt_tokens,usage_completion_tokens,usage_cached_prompt_tokens,usage_cache_creation_tokens FROM sessions WHERE id=?",
+      "SELECT usage_model,usage_recorded_at,usage_prompt_tokens,usage_completion_tokens,usage_cached_prompt_tokens,usage_cache_creation_tokens,usage_cache_write_5m_tokens,usage_cache_write_1h_tokens,usage_reasoning_tokens FROM sessions WHERE id=?",
       [sqlight.text(id)],
       usage_decoder(),
       "session not found",
@@ -923,7 +972,7 @@ pub fn load_usage(
 pub fn clear_usage(store: store.Store, id: String) -> Result(Nil, String) {
   store.write(
     store,
-    "UPDATE sessions SET usage_model=NULL,usage_recorded_at=NULL,usage_prompt_tokens=NULL,usage_completion_tokens=NULL,usage_cached_prompt_tokens=NULL,usage_cache_creation_tokens=NULL WHERE id=?",
+    "UPDATE sessions SET usage_model=NULL,usage_recorded_at=NULL,usage_prompt_tokens=NULL,usage_completion_tokens=NULL,usage_cached_prompt_tokens=NULL,usage_cache_creation_tokens=NULL,usage_cache_write_5m_tokens=NULL,usage_cache_write_1h_tokens=NULL,usage_reasoning_tokens=NULL WHERE id=?",
     [sqlight.text(id)],
   )
 }
@@ -934,18 +983,31 @@ pub fn record_usage(
   metadata: usage.Metadata,
 ) -> Result(Nil, String) {
   let usage.Metadata(model, recorded_at, tokens) = metadata
-  let #(prompt, completion, cached, creation) = case tokens {
-    Some(usage.Tokens(prompt, completion, cached, creation)) -> #(
+  let #(prompt, completion, cached, creation, write_5m, write_1h, reasoning) = case
+    tokens
+  {
+    Some(usage.Tokens(
+      prompt,
+      completion,
+      cached,
+      creation,
+      write_5m,
+      write_1h,
+      reasoning,
+    )) -> #(
       Some(prompt),
       Some(completion),
       cached,
       creation,
+      write_5m,
+      write_1h,
+      reasoning,
     )
-    None -> #(None, None, None, None)
+    None -> #(None, None, None, None, None, None, None)
   }
   store.write(
     store,
-    "UPDATE sessions SET usage_model=?,usage_recorded_at=?,usage_prompt_tokens=?,usage_completion_tokens=?,usage_cached_prompt_tokens=?,usage_cache_creation_tokens=? WHERE id=?",
+    "UPDATE sessions SET usage_model=?,usage_recorded_at=?,usage_prompt_tokens=?,usage_completion_tokens=?,usage_cached_prompt_tokens=?,usage_cache_creation_tokens=?,usage_cache_write_5m_tokens=?,usage_cache_write_1h_tokens=?,usage_reasoning_tokens=? WHERE id=?",
     [
       sqlight.text(model),
       sqlight.int(recorded_at),
@@ -953,6 +1015,9 @@ pub fn record_usage(
       sqlight.nullable(sqlight.int, completion),
       sqlight.nullable(sqlight.int, cached),
       sqlight.nullable(sqlight.int, creation),
+      sqlight.nullable(sqlight.int, write_5m),
+      sqlight.nullable(sqlight.int, write_1h),
+      sqlight.nullable(sqlight.int, reasoning),
       sqlight.text(id),
     ],
   )

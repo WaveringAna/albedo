@@ -263,6 +263,13 @@ pub type Usage {
     output_tokens: Int,
     cached_input_tokens: Option(Int),
     cache_creation_tokens: Option(Int),
+    /// Cache writes the provider splits by TTL, when it reports the split.
+    cache_write_5m_tokens: Option(Int),
+    cache_write_1h_tokens: Option(Int),
+    /// Tokens the provider names as reasoning, separate from its output
+    /// count when it does. Antigravity folds thoughts into output and also
+    /// reports the thought count here.
+    reasoning_tokens: Option(Int),
   )
 }
 
@@ -272,6 +279,7 @@ pub fn usage_decoder(
   input_tokens: String,
   output_tokens: String,
   input_tokens_details: String,
+  output_tokens_details: String,
 ) -> decode.Decoder(Usage) {
   use input <- decode.field(input_tokens, decode.int)
   use output <- decode.field(output_tokens, decode.int)
@@ -280,12 +288,34 @@ pub fn usage_decoder(
     None,
     decode.optional(cached_tokens_decoder()),
   )
-  decode.success(Usage(input, output, option.flatten(details), None))
+  use reasoning <- decode.optional_field(
+    output_tokens_details,
+    None,
+    decode.optional(reasoning_tokens_decoder()),
+  )
+  decode.success(Usage(
+    input,
+    output,
+    option.flatten(details),
+    None,
+    None,
+    None,
+    option.flatten(reasoning),
+  ))
 }
 
 fn cached_tokens_decoder() -> decode.Decoder(Option(Int)) {
   decode.optional_field(
     "cached_tokens",
+    None,
+    decode.optional(decode.int),
+    decode.success,
+  )
+}
+
+fn reasoning_tokens_decoder() -> decode.Decoder(Option(Int)) {
+  decode.optional_field(
+    "reasoning_tokens",
     None,
     decode.optional(decode.int),
     decode.success,

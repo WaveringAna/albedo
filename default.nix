@@ -1,4 +1,5 @@
-{ lib, stdenv, rustPlatform, buildGoModule, fetchurl, gleam, beamPackages, python3, bash, coreutils, makeWrapper }:
+{ lib, stdenv, rustPlatform, buildGoModule, fetchurl, gleam, beamPackages, python3, bash, coreutils
+, makeWrapper, zig, usage-core }:
 let
   erlang = beamPackages.erlang;
   # esqlite loads the pc plugin during its Rebar3 build, which cannot fetch
@@ -44,6 +45,42 @@ let
       platforms = lib.platforms.unix;
     };
   };
+  # The provide-usage CLI: a pure Zig core the daemon drives one round at a
+  # time (see robot-docs/usage-feed.md). Pinned by the flake input, built with
+  # the toolchain its build.zig.zon demands.
+  usageCore = stdenv.mkDerivation {
+    pname = "usage-core";
+    version = "0.1.0";
+    src = usage-core;
+    # The knot serves the archive with a query string, so the store path has
+    # no extension for unpackPhase to sniff: one explicit tar it is.
+    unpackPhase = ''
+      runHook preUnpack
+      tar -xzf $src
+      runHook postUnpack
+    '';
+    sourceRoot = "provide-usage-main";
+    nativeBuildInputs = [ zig ];
+    # The build.zig ranlib step hardcodes zig-out, so the default prefix it is
+    # (no --prefix): artifacts are copied out in installPhase instead.
+    buildPhase = ''
+      runHook preBuild
+      export HOME="$TMPDIR/home"
+      zig build --cache-dir "$TMPDIR/zig-cache" --global-cache-dir "$TMPDIR/zig-global-cache"
+      runHook postBuild
+    '';
+    installPhase = ''
+      runHook preInstall
+      mkdir -p $out/bin
+      cp zig-out/bin/usage $out/bin/usage
+      runHook postInstall
+    '';
+    meta = {
+      description = "stateless provider usage and quota core with a CLI";
+      mainProgram = "usage";
+      platforms = lib.platforms.unix;
+    };
+  };
   daemon = stdenv.mkDerivation {
     pname = "albedo-daemon";
     version = "1.0.0";
@@ -69,6 +106,7 @@ let
       cp -R build/erlang-shipment/. $out/lib/albedo/
       mkdir -p $out/lib/albedo/albedo/priv/bin
       ln -s ${render}/bin/albedo-render $out/lib/albedo/albedo/priv/bin/albedo-render
+      ln -s ${usageCore}/bin/usage $out/lib/albedo/albedo/priv/bin/usage
       makeWrapper $out/lib/albedo/entrypoint.sh $out/bin/albedo-daemon \
         --add-flags run \
         --prefix PATH : ${lib.makeBinPath [ erlang python3 bash coreutils render ]}
@@ -88,7 +126,7 @@ in buildGoModule {
     wrapProgram $out/bin/albedo \
       --set-default ALBEDO_DAEMON ${daemon}/bin/albedo-daemon
   '';
-  passthru = { inherit daemon render; };
+  passthru = { inherit daemon render usageCore; };
   meta = {
     description = "coding agent daemon with a Charm terminal client";
     license = lib.licenses.wtfpl;

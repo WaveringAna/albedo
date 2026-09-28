@@ -6,7 +6,9 @@ import albedo/daemon/family
 import albedo/daemon/history
 import albedo/daemon/image
 import albedo/daemon/images
+import albedo/daemon/ledger
 import albedo/daemon/mail
+import albedo/daemon/quota
 import albedo/daemon/reaper
 import albedo/daemon/session
 import albedo/daemon/session_provider
@@ -17,6 +19,7 @@ import albedo/harness/extension
 import albedo/harness/extensions/schedule/ledger as schedule
 import albedo/harness/oauth
 import albedo/harness/runtime
+import albedo/harness/usage_feed
 import albedo/openai_api/types
 import gleam/bytes_tree
 import gleam/dict.{type Dict}
@@ -168,6 +171,13 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
     |> supervisor.restart_tolerance(intensity: 10, period: 60)
     |> supervisor.add(
       supervision.worker(fn() { start_registry(config, host, name) }),
+    )
+    // One daemon-wide quota poller: every account it can see, on its own
+    // cadence, recorded as raw readings.
+    |> supervisor.add(
+      supervision.worker(fn() {
+        quota.start(config.home, runtime.ledger(host), usage_feed.fetch)
+      }),
     )
     |> supervisor.start
     |> result.map_error(string.inspect),
@@ -526,6 +536,7 @@ fn prepare_storage(
   host: runtime.Runtime,
 ) -> Result(Nil, String) {
   use _ <- result.try(conversation.initialise(runtime.ledger(host)))
+  use _ <- result.try(quota.initialise(runtime.ledger(host)))
   use _ <- result.try(mail.initialise(runtime.ledger(host)))
   use _ <- result.try(family.initialise(runtime.ledger(host)))
   use moved <- result.try(images.migrate(
@@ -1549,7 +1560,7 @@ fn uri_decode(segment: String) -> String {
 
 /// The daemon's own top-level routes; a service never shadows them.
 const daemon_routes = [
-  "health", "sessions", "models", "auth", "shutdown", "agents",
+  "health", "sessions", "models", "auth", "shutdown", "agents", "quota",
 ]
 
 fn route(
@@ -1673,6 +1684,24 @@ fn daemon_route(
           )
         }
         Get, ["agents", "stream"] -> agents_stream(req)
+        // Quota readings, read-only: the latest per account and limit, or
+        // with `?history=<id>` the raw samples after that row, newest first.
+        Get, ["quota"] -> {
+          use host <- with_host(registry)
+          let database = runtime.ledger(host)
+          case list.key_find(query(req), "history") {
+            Ok(cursor) ->
+              quota.page_json(
+                database,
+                int.parse(cursor) |> result.unwrap(0),
+                query_int(req, "limit", 50) |> int.clamp(1, 200),
+              )
+              |> answered(200, fn(value) { value }, 400)
+            Error(_) ->
+              quota.latest_json(database)
+              |> answered(200, fn(value) { value }, 400)
+          }
+        }
         // `details` lists objects with catalog facts. Without it, plain ids.
         // Efforts come from where sessions of this extension look them up,
         // and facts from the endpoint, or there when none is given.
@@ -1771,6 +1800,27 @@ fn daemon_route(
               json.object([
                 #("items", json.array(recent.items, tree_item_json)),
                 #("total", json.int(recent.total)),
+              ])
+            },
+            400,
+          )
+        }
+        // The session's recorded provider calls, oldest first, for tests and
+        // the quota inspector: `after` is the last row id to continue from.
+        Get, ["sessions", id, "ledger"] -> {
+          let after = query_int(req, "after", 0)
+          let limit =
+            query_int(req, "limit", ledger.page_rows)
+            |> int.clamp(1, 500)
+          use host <- with_host(registry)
+          ledger.page(runtime.ledger(host), id, after, limit)
+          |> answered(
+            200,
+            fn(page) {
+              json.object([
+                #("session", json.string(id)),
+                #("rows", json.array(page.0, ledger.row_json)),
+                #("after", json.int(page.1)),
               ])
             },
             400,

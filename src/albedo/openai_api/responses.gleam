@@ -316,6 +316,7 @@ fn response_decoder(incomplete: Bool) -> decode.Decoder(Response) {
       "input_tokens",
       "output_tokens",
       "input_tokens_details",
+      "output_tokens_details",
     )),
   )
   use details <- decode.optional_field(

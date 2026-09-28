@@ -80,7 +80,7 @@ pub fn a_reply_that_races_the_callee_exit_still_arrives_test() {
 /// A stand-in for the session actor's protocol.
 type Owner {
   Publish(reply: Subject(Bool))
-  Commit(reply: Subject(Result(Int, String)))
+  Commit(reply: Subject(Result(#(Int, option.Option(Int)), String)))
   Commits(reply: Subject(Int))
   Unused
 }
@@ -151,7 +151,7 @@ pub fn publish_stops_the_stream_when_the_owner_dies_test() {
   |> should.be_false
 }
 
-fn commit(owner: Subject(Owner)) -> Result(Int, String) {
+fn commit(owner: Subject(Owner)) -> Result(#(Int, option.Option(Int)), String) {
   session_run.commit_fn(owner, "run", messages(), waiting: 20)(
     [],
     conversation.Tool,

@@ -102,6 +102,7 @@ fn chunk_decoder() -> decode.Decoder(Chunk) {
       "prompt_tokens",
       "completion_tokens",
       "prompt_tokens_details",
+      "completion_tokens_details",
     )),
   )
   decode.success(Chunk(id, choices, usage))

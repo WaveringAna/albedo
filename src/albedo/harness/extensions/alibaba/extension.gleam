@@ -41,9 +41,14 @@ fn resolve(
   )
   let pool = pool(context.home, context.profile, context.session)
   use client <- result.map(pool.current())
-  rotation.client_upstream(pool, client, fn(client, error) {
-    explain_key(context.home, context.profile, client, error)
-  })
+  rotation.client_upstream(
+    pool,
+    client,
+    fn(client, error) {
+      explain_key(context.home, context.profile, client, error)
+    },
+    fn(client) { rotation.key_label(client.api_key) },
+  )
 }
 
 /// Every Alibaba key albedo can see, as a rotation pool: the profile's own key

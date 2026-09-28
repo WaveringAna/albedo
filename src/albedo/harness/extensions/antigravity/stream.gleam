@@ -357,7 +357,17 @@ fn chunk_decoder() -> decode.Decoder(Chunk) {
       None,
       decode.optional(decode.int),
     )
-    decode.success(types.Usage(input, output + thoughts, cached, None))
+    // Output keeps folding thoughts in; the thought count is also reported
+    // as reasoning so usage can tell the two apart.
+    decode.success(types.Usage(
+      input,
+      output + thoughts,
+      cached,
+      None,
+      None,
+      None,
+      Some(thoughts),
+    ))
   }
   let response = {
     use response_id <- decode.optional_field(
