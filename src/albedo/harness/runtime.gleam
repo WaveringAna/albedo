@@ -8,6 +8,7 @@ import albedo/harness/extensions
 import albedo/harness/extensions/python/cells as journal
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/work/ledger as work
+import albedo/harness/instruction_files
 import albedo/harness/oauth
 import albedo/harness/rpc
 import albedo/openai_api/types
@@ -15,10 +16,12 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/io
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option, None, Some, unwrap}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
+
+const base_instructions = "You are a coding agent operating inside albedo, a coding agent harness; working in the session workspace. Use the tools enabled for this session. Run tests and report real results.\n"
 
 pub opaque type Runtime {
   Runtime(
@@ -36,6 +39,7 @@ pub opaque type Session {
     kernel: python.Kernel,
     owner: work.Store,
     composition: extension.Composition,
+    instructions: String,
     context: List(types.Input),
   )
 }
@@ -47,6 +51,7 @@ type Cached {
   Cached(
     cwd: String,
     composition: extension.Composition,
+    instructions: String,
     context: List(types.Input),
   )
 }
@@ -410,16 +415,77 @@ fn build_cached(
       extension.enabled(state.work, state.extensions, state.default_enabled, id)
   })
   use composition <- result.try(extension.compose(selected, state.work, id, cwd))
-  Ok(Cached(cwd, composition, context_inputs(composition)))
+  let prompts = {
+    let home = instruction_files.home()
+    use replacement <- result.try(instruction_files.named(
+      cwd,
+      home,
+      "SYSTEM.md",
+      instruction_files.First,
+    ))
+    use appended <- result.try(instruction_files.named(
+      cwd,
+      home,
+      "APPEND_SYSTEM.md",
+      instruction_files.All,
+    ))
+    Ok(#(replacement, appended))
+  }
+  case prompts {
+    Ok(#(replacement, appended)) ->
+      Ok(Cached(
+        cwd,
+        composition,
+        system_instructions(replacement, composition),
+        context_inputs(composition, appended),
+      ))
+    Error(error) -> {
+      extension.close(composition)
+      Error(error)
+    }
+  }
 }
 
-/// Each context block and the aggregate command catalog, retained as
-/// separate blocks for system-prompt assembly.
-fn context_inputs(composition: extension.Composition) -> List(types.Input) {
-  extension.context(composition)
-  |> list.append([
-    #("commands", command.context_block(extension.commands(composition))),
-  ])
+fn system_instructions(
+  replacement: Option(String),
+  composition: extension.Composition,
+) -> String {
+  let base = unwrap(replacement, base_instructions)
+  let extensions = extension.instructions(composition)
+  case replacement, extensions {
+    Some(_), "" -> base
+    Some(_), _ -> base <> "\n" <> extensions
+    None, _ -> base <> extensions
+  }
+}
+
+/// Extension context and tool catalog precede APPEND_SYSTEM.md; the
+/// autoloaded project conventions follow it at the end of the system prompt.
+fn context_inputs(
+  composition: extension.Composition,
+  appended: Option(String),
+) -> List(types.Input) {
+  let blocks = extension.context(composition)
+  let agents = list.filter(blocks, fn(block) { block.0 == "instructions" })
+  let others = list.filter(blocks, fn(block) { block.0 != "instructions" })
+  let before =
+    list.append(others, [
+      #("commands", command.context_block(extension.commands(composition))),
+    ])
+  let append = case appended {
+    Some(text) ->
+      case string.trim(text) {
+        "" -> []
+        _ -> [types.User(text)]
+      }
+    None -> []
+  }
+  list.append(context_blocks(before), append)
+  |> list.append(context_blocks(agents))
+}
+
+fn context_blocks(blocks: List(#(String, String))) -> List(types.Input) {
+  blocks
   |> list.filter(fn(item) { string.trim(item.1) != "" })
   |> list.map(fn(item) {
     types.User(
@@ -489,6 +555,7 @@ fn refresh_cached(
           Session(
             ..session,
             composition: fresh.composition,
+            instructions: fresh.instructions,
             context: fresh.context,
           ),
         )
@@ -549,7 +616,15 @@ fn open_kernel(
     extension.python_modules(cached.composition),
   )
   |> result.map(fn(kernel) {
-    Session(id, cached.cwd, kernel, owner, cached.composition, cached.context)
+    Session(
+      id,
+      cached.cwd,
+      kernel,
+      owner,
+      cached.composition,
+      cached.instructions,
+      cached.context,
+    )
   })
 }
 
@@ -821,7 +896,7 @@ fn handle(state: State, message: Message) {
         reply,
         dict.get(state.compositions, id)
           |> result.map(fn(cached) {
-            Some(#(extension.instructions(cached.composition), cached.context))
+            Some(#(cached.instructions, cached.context))
           })
           |> result.unwrap(None),
       )
@@ -956,7 +1031,7 @@ pub fn recover(
 }
 
 pub fn instructions(session: Session) -> String {
-  extension.instructions(session.composition)
+  session.instructions
 }
 
 /// This session's commands: the exact list and run callbacks the kernel

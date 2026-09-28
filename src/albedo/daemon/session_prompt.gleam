@@ -99,14 +99,40 @@ fn context_changes(
       <> block.0
       <> ". Its earlier instructions and catalog no longer apply."
     })
-  list.append(replaced, removed) |> string.join("\n\n")
+  let appendix = fn(context) {
+    list.filter_map(context, fn(input) {
+      case input {
+        types.User(text) ->
+          case string.starts_with(text, "<extension-context name=\"") {
+            True -> Error(Nil)
+            False -> Ok(text)
+          }
+        _ -> Error(Nil)
+      }
+    })
+  }
+  let before_append = appendix(previous)
+  let after_append = appendix(current)
+  let append_change = case before_append == after_append {
+    True -> []
+    False ->
+      case after_append {
+        [] -> ["APPEND_SYSTEM.md no longer applies."]
+        _ -> [
+          "Current APPEND_SYSTEM.md (supersedes earlier contents):\n"
+          <> string.join(after_append, "\n\n"),
+        ]
+      }
+  }
+  list.append(list.append(replaced, removed), append_change)
+  |> string.join("\n\n")
 }
 
 fn changes(previous: String, current: String) -> String {
   case previous == current {
     True -> ""
     False ->
-      "Current extension instructions (supersede earlier extension instructions):\n"
+      "Current system instructions (supersede earlier system instructions):\n"
       <> current
       <> "\n\n"
   }

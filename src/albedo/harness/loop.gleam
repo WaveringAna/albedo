@@ -312,8 +312,7 @@ fn retry_stream(
 
 fn request_instructions(state: Loop) -> String {
   case state.pin {
-    Pinned(prompt, _) ->
-      instructions <> prompt.instructions <> context_text(prompt.context)
+    Pinned(prompt, _) -> prompt.instructions <> context_text(prompt.context)
     Unpinned -> current_instructions(state)
   }
 }
@@ -336,8 +335,7 @@ fn request(
 }
 
 fn current_instructions(state: Loop) -> String {
-  instructions
-  <> runtime.instructions(state.kernel)
+  runtime.instructions(state.kernel)
   <> context_text(runtime.context(state.kernel))
 }
 
@@ -403,8 +401,6 @@ fn retryable(error: types.Error) -> Bool {
 
 @external(erlang, "albedo_retry", "sleep")
 fn sleep_retry(milliseconds: Int) -> Nil
-
-const instructions = "You are a coding agent operating inside albedo, a coding agent harness; working in the session workspace. Use the tools enabled for this session. Run tests and report real results.\n"
 
 fn summarize(
   state: Loop,

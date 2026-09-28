@@ -105,6 +105,74 @@ class ExtensionTests(unittest.TestCase):
         return next(item["output"] for item in reversed(request["input"])
                     if item.get("type") == "function_call_output")
 
+    def test_workspace_system_files_replace_base_and_append_before_project_instructions(self):
+        (self.app.workspace / "SYSTEM.md").write_text("CUSTOM_BASE_ONLY")
+        (self.app.workspace / "APPEND_SYSTEM.md").write_text("CUSTOM_APPEND_ONLY")
+        (self.app.workspace / "AGENTS.md").write_text("PROJECT_CONVENTION_ONLY")
+        request, = self.turn("inspect system files")
+        prompt = request["instructions"]
+        self.assertTrue(prompt.startswith("CUSTOM_BASE_ONLY\n"))
+        self.assertNotIn("You are a coding agent operating inside albedo", prompt)
+        self.assertLess(prompt.index("Local workspace context supplied by an enabled extension"),
+                        prompt.index("CUSTOM_APPEND_ONLY"))
+        self.assertLess(prompt.index('name="commands"'), prompt.index("CUSTOM_APPEND_ONLY"))
+        self.assertLess(prompt.index("CUSTOM_APPEND_ONLY"), prompt.index("PROJECT_CONVENTION_ONLY"))
+        self.assertNotIn("CUSTOM_APPEND_ONLY", json.dumps(request["input"]))
+        (self.app.workspace / "SYSTEM.md").write_text("NEW_BASE_ONLY")
+        (self.app.workspace / "APPEND_SYSTEM.md").write_text("NEW_APPEND_ONLY")
+        self.command("/reload", args={"target": "session"})
+        pinned, = self.turn("after system file reload")
+        self.assertEqual(pinned["instructions"], prompt)
+        self.assertIn("NEW_BASE_ONLY", json.dumps(pinned["input"]))
+        self.assertIn("NEW_APPEND_ONLY", json.dumps(pinned["input"]))
+        self.command("/compact")
+        self.compacted()
+        current, = self.turn("after prompt compaction")
+        self.assertTrue(current["instructions"].startswith("NEW_BASE_ONLY\n"))
+        self.assertIn("NEW_APPEND_ONLY", current["instructions"])
+        self.assertNotIn("CUSTOM_APPEND_ONLY", current["instructions"])
+
+    @exclusive
+    def test_system_files_share_instruction_discovery_paths(self):
+        home = self.app.root / "user-home"
+        locations = [self.app.workspace, self.app.workspace / ".agents",
+                     self.app.workspace / ".albedo", home / ".agents", home / ".albedo"]
+        system = []
+        for i, directory in enumerate(locations):
+            directory.mkdir(exist_ok=True)
+            base = directory / "SYSTEM.md"
+            append = directory / "APPEND_SYSTEM.md"
+            if i:
+                base.write_text(f"BASE_{i}")
+                system.append(base)
+                self.addCleanup(base.unlink, missing_ok=True)
+            append.write_text(f"APPEND_{i}")
+            self.addCleanup(append.unlink, missing_ok=True)
+        (self.app.workspace / "AGENTS.md").write_text("AGENT_CONVENTIONS")
+        request, = self.turn("discover all prompt paths")
+        prompt = request["instructions"]
+        self.assertTrue(prompt.startswith("BASE_1\n"))
+        self.assertEqual([prompt.count(f"APPEND_{i}") for i in range(5)], [1] * 5)
+        self.assertEqual([prompt.count(f"BASE_{i}") for i in range(1, 5)], [1, 0, 0, 0])
+        positions = [prompt.index(f"APPEND_{i}") for i in range(5)]
+        self.assertEqual(positions, sorted(positions))
+        self.assertLess(positions[-1], prompt.index("AGENT_CONVENTIONS"))
+
+        root = locations[0] / "SYSTEM.md"
+        root.write_text("BASE_0")
+        self.addCleanup(root.unlink, missing_ok=True)
+        for expected, removed in [(0, root), (1, system[0]), (2, system[1]),
+                                  (3, system[2]), (4, system[3])]:
+            session = self.app.session()
+            next_request, = self.turn(f"system priority {expected}", session)
+            self.assertTrue(next_request["instructions"].startswith(f"BASE_{expected}\n"))
+            removed.unlink()
+
+    def test_workspace_system_files_are_optional(self):
+        request, = self.turn("no custom system files")
+        self.assertTrue(request["instructions"].startswith(
+            "You are a coding agent operating inside albedo"))
+
     def test_catalog_is_lazy_and_activation_submits_one_turn(self):
         self.assertIn("session_extensions", self.get("/health")["capabilities"])
         installed = self.get(self.route)

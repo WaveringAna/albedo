@@ -47,6 +47,20 @@ images for a final review pass. needs cargo.
 native/render/install.sh   # then enable `view` in /extensions
 ```
 
+workspace system prompts
+
+Both files are discovered in this order: workspace root, workspace `.agents/`,
+workspace `.albedo/`, `~/.agents/`, then `~/.albedo/`. The first `SYSTEM.md`
+replaces albedo's built-in opening instructions; every `APPEND_SYSTEM.md` is
+concatenated in that order after extension context (including tool and command
+descriptions) and before autoloaded project instructions (`AGENTS.md`,
+`CLAUDE.md`, and other Markdown files in those directories). Prompt files do
+not also load as project instructions. They must be UTF-8 text of at most
+1 MiB each.
+Their contents are system prompt text, not user messages. Like other session
+context, they are snapshotted when the session opens; `/reload session` detects
+changes, but an existing prompt remains pinned until compaction.
+
 tests
 
 ```sh
