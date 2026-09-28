@@ -66,134 +66,42 @@ pub fn resumable(stage: Stage) -> Bool {
 
 pub fn initialise(store: store.Store) -> Result(Nil, String) {
   store.query(store, fn(db) {
+    use _ <- result.try(store.exec(
+      db,
+      "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER,usage_cache_creation_tokens INTEGER,effort TEXT); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT,thought_ms INTEGER); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);"
+        <> images.schema,
+    ))
     use _ <- result.try(
-      sqlight.exec(
-        "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER,usage_cache_creation_tokens INTEGER,effort TEXT); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT,thought_ms INTEGER); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);"
-          <> images.schema,
-        db,
-      )
-      |> result.map_error(fn(e) { e.message }),
-    )
-    use columns <- result.try(
-      sqlight.query(
-        "PRAGMA table_info(sessions)",
-        db,
-        [],
-        decode.field(1, decode.string, decode.success),
-      )
-      |> result.map_error(fn(e) { e.message }),
-    )
-    use _ <- result.try(case list.contains(columns, "provider") {
-      True -> Ok(Nil)
-      False ->
-        sqlight.exec("ALTER TABLE sessions ADD COLUMN provider TEXT", db)
-        |> result.map_error(fn(e) { e.message })
-    })
-    use _ <- result.try(case list.contains(columns, "title") {
-      True -> Ok(Nil)
-      False ->
-        sqlight.exec("ALTER TABLE sessions ADD COLUMN title TEXT", db)
-        |> result.map_error(fn(e) { e.message })
-    })
-    use _ <- result.try(case list.contains(columns, "activity_seq") {
-      True -> Ok(Nil)
-      False ->
-        sqlight.exec("ALTER TABLE sessions ADD COLUMN activity_seq INTEGER", db)
-        |> result.map_error(fn(e) { e.message })
-    })
-    use _ <- result.try(case list.contains(columns, "last_assistant_at") {
-      True -> Ok(Nil)
-      False ->
-        sqlight.exec(
-          "ALTER TABLE sessions ADD COLUMN last_assistant_at INTEGER",
-          db,
-        )
-        |> result.map_error(fn(e) { e.message })
-    })
-    use _ <- result.try(
-      [
+      store.add_columns(db, "sessions", [
+        #("provider", "TEXT"),
+        #("title", "TEXT"),
+        #("activity_seq", "INTEGER"),
+        #("last_assistant_at", "INTEGER"),
         #("usage_model", "TEXT"),
         #("usage_recorded_at", "INTEGER"),
         #("usage_prompt_tokens", "INTEGER"),
         #("usage_completion_tokens", "INTEGER"),
         #("usage_cached_prompt_tokens", "INTEGER"),
         #("usage_cache_creation_tokens", "INTEGER"),
-      ]
-      |> list.try_each(fn(column) {
-        case list.contains(columns, column.0) {
-          True -> Ok(Nil)
-          False ->
-            sqlight.exec(
-              "ALTER TABLE sessions ADD COLUMN " <> column.0 <> " " <> column.1,
-              db,
-            )
-            |> result.map_error(fn(e) { e.message })
-        }
-      }),
+        #("effort", "TEXT"),
+        #("pinned_instructions", "TEXT"),
+        #("pinned_context", "BLOB"),
+        #("pinned_head", "INTEGER"),
+        #("name", "TEXT"),
+      ]),
     )
-    use _ <- result.try(case list.contains(columns, "effort") {
-      True -> Ok(Nil)
-      False ->
-        sqlight.exec("ALTER TABLE sessions ADD COLUMN effort TEXT", db)
-        |> result.map_error(fn(e) { e.message })
-    })
     use _ <- result.try(
-      list.try_each(
-        [
-          #("pinned_instructions", "TEXT"),
-          #("pinned_context", "BLOB"),
-          #("pinned_head", "INTEGER"),
-          #("name", "TEXT"),
-        ],
-        fn(column) {
-          case list.contains(columns, column.0) {
-            True -> Ok(Nil)
-            False ->
-              sqlight.exec(
-                "ALTER TABLE sessions ADD COLUMN "
-                  <> column.0
-                  <> " "
-                  <> column.1,
-                db,
-              )
-              |> result.map_error(fn(e) { e.message })
-          }
-        },
-      ),
+      store.add_columns(db, "transcript", [
+        #("timestamp", "INTEGER"),
+        #("provider", "TEXT"),
+        #("thought_ms", "INTEGER"),
+      ]),
     )
-    use transcript_columns <- result.try(
-      sqlight.query(
-        "PRAGMA table_info(transcript)",
-        db,
-        [],
-        decode.field(1, decode.string, decode.success),
-      )
-      |> result.map_error(fn(e) { e.message }),
-    )
-    use _ <- result.try(case list.contains(transcript_columns, "timestamp") {
-      True -> Ok(Nil)
-      False ->
-        sqlight.exec("ALTER TABLE transcript ADD COLUMN timestamp INTEGER", db)
-        |> result.map_error(fn(e) { e.message })
-    })
-    use _ <- result.try(case list.contains(transcript_columns, "provider") {
-      True -> Ok(Nil)
-      False ->
-        sqlight.exec("ALTER TABLE transcript ADD COLUMN provider TEXT", db)
-        |> result.map_error(fn(e) { e.message })
-    })
-    use _ <- result.try(case list.contains(transcript_columns, "thought_ms") {
-      True -> Ok(Nil)
-      False ->
-        sqlight.exec("ALTER TABLE transcript ADD COLUMN thought_ms INTEGER", db)
-        |> result.map_error(fn(e) { e.message })
-    })
     use _ <- result.try(recover_sessions(db))
-    sqlight.exec(
-      "CREATE INDEX IF NOT EXISTS sessions_activity ON sessions(activity_seq DESC)",
+    store.exec(
       db,
+      "CREATE INDEX IF NOT EXISTS sessions_activity ON sessions(activity_seq DESC)",
     )
-    |> result.map_error(fn(e) { e.message })
   })
 }
 
@@ -205,30 +113,21 @@ fn recovery_decoder() {
 }
 
 fn recover_sessions(db) -> Result(Nil, String) {
-  use sessions <- result.try(
-    sqlight.query(
-      "SELECT id,COALESCE(title,''),COALESCE(activity_seq,-1) FROM sessions WHERE activity_seq IS NULL OR title IS NULL OR title=''",
-      db,
-      [],
-      recovery_decoder(),
-    )
-    |> result.map_error(fn(e) { e.message }),
-  )
+  use sessions <- result.try(store.rows(
+    db,
+    "SELECT id,COALESCE(title,''),COALESCE(activity_seq,-1) FROM sessions WHERE activity_seq IS NULL OR title IS NULL OR title=''",
+    [],
+    recovery_decoder(),
+  ))
   list.try_each(sessions, fn(session) {
     let #(id, saved_title, activity_seq) = session
-    use last_seq <- result.try(
-      sqlight.query(
-        "SELECT COALESCE(MAX(seq),0) FROM transcript WHERE session=?",
-        db,
-        [sqlight.text(id)],
-        decode.field(0, decode.int, decode.success),
-      )
-      |> result.map_error(fn(e) { e.message })
-      |> result.try(fn(rows) {
-        list.first(rows)
-        |> result.replace_error("could not recover session activity")
-      }),
-    )
+    use last_seq <- result.try(store.one(
+      db,
+      "SELECT COALESCE(MAX(seq),0) FROM transcript WHERE session=?",
+      [sqlight.text(id)],
+      decode.field(0, decode.int, decode.success),
+      "could not recover session activity",
+    ))
     use recovered_title <- result.try(
       case
         saved_title == ""
@@ -236,13 +135,12 @@ fn recover_sessions(db) -> Result(Nil, String) {
       {
         False -> Ok(saved_title)
         True ->
-          sqlight.query(
-            "SELECT payload FROM transcript WHERE session=? ORDER BY seq",
+          store.rows(
             db,
+            "SELECT payload FROM transcript WHERE session=? ORDER BY seq",
             [sqlight.text(id)],
             decode.field(0, decode.bit_array, decode.success),
           )
-          |> result.map_error(fn(e) { e.message })
           |> result.map(fn(rows) {
             rows
             |> list.filter_map(unpack(_, unread))
@@ -251,18 +149,15 @@ fn recover_sessions(db) -> Result(Nil, String) {
           })
       },
     )
-    sqlight.query(
-      "UPDATE sessions SET title=?,activity_seq=CASE WHEN activity_seq IS NULL THEN ? ELSE activity_seq END WHERE id=?",
+    store.run(
       db,
+      "UPDATE sessions SET title=?,activity_seq=CASE WHEN activity_seq IS NULL THEN ? ELSE activity_seq END WHERE id=?",
       [
         sqlight.text(recovered_title),
         sqlight.int(last_seq),
         sqlight.text(id),
       ],
-      decode.dynamic,
     )
-    |> result.replace(Nil)
-    |> result.map_error(fn(e) { e.message })
   })
 }
 
@@ -270,16 +165,11 @@ pub fn assign_provider(
   store: store.Store,
   provider: String,
 ) -> Result(Nil, String) {
-  store.query(store, fn(db) {
-    sqlight.query(
-      "UPDATE sessions SET provider=? WHERE provider IS NULL OR provider=''",
-      db,
-      [sqlight.text(provider)],
-      decode.dynamic,
-    )
-    |> result.replace(Nil)
-    |> result.map_error(fn(e) { e.message })
-  })
+  store.write(
+    store,
+    "UPDATE sessions SET provider=? WHERE provider IS NULL OR provider=''",
+    [sqlight.text(provider)],
+  )
 }
 
 pub fn assign_session_provider(
@@ -287,16 +177,11 @@ pub fn assign_session_provider(
   id: String,
   provider: String,
 ) -> Result(Nil, String) {
-  store.query(store, fn(db) {
-    sqlight.query(
-      "UPDATE sessions SET provider=? WHERE id=? AND (provider IS NULL OR provider='')",
-      db,
-      [sqlight.text(provider), sqlight.text(id)],
-      decode.dynamic,
-    )
-    |> result.replace(Nil)
-    |> result.map_error(fn(e) { e.message })
-  })
+  store.write(
+    store,
+    "UPDATE sessions SET provider=? WHERE id=? AND (provider IS NULL OR provider='')",
+    [sqlight.text(provider), sqlight.text(id)],
+  )
 }
 
 /// What `info_decoder` reads. A name someone gave the session outranks the
@@ -331,17 +216,14 @@ pub fn info_decoder() -> decode.Decoder(Info) {
 }
 
 pub fn list(store: store.Store) -> Result(List(Info), String) {
-  store.query(store, fn(db) {
-    sqlight.query(
-      "SELECT "
-        <> info_columns
-        <> " FROM sessions ORDER BY activity_seq DESC,rowid DESC",
-      db,
-      [],
-      info_decoder(),
-    )
-    |> result.map_error(fn(e) { e.message })
-  })
+  store.read(
+    store,
+    "SELECT "
+      <> info_columns
+      <> " FROM sessions ORDER BY activity_seq DESC,rowid DESC",
+    [],
+    info_decoder(),
+  )
 }
 
 pub fn get(store: store.Store, id: String) -> Result(Info, String) {
@@ -350,16 +232,13 @@ pub fn get(store: store.Store, id: String) -> Result(Info, String) {
 
 /// `get` inside a query the caller already holds.
 pub fn read_info(db, id: String) -> Result(Info, String) {
-  sqlight.query(
-    "SELECT " <> info_columns <> " FROM sessions WHERE id=?",
+  store.one(
     db,
+    "SELECT " <> info_columns <> " FROM sessions WHERE id=?",
     [sqlight.text(id)],
     info_decoder(),
+    "session not found",
   )
-  |> result.map_error(fn(e) { e.message })
-  |> result.try(fn(rows) {
-    list.first(rows) |> result.replace_error("session not found")
-  })
 }
 
 /// Give a session a name that its messages no longer retitle. A blank name
@@ -375,13 +254,10 @@ pub fn rename(
   }
   store.query(store, fn(db) {
     use _ <- result.try(
-      sqlight.query(
-        "UPDATE sessions SET name=? WHERE id=?",
-        db,
-        [sqlight.nullable(sqlight.text, name), sqlight.text(id)],
-        decode.dynamic,
-      )
-      |> result.map_error(fn(e) { e.message }),
+      store.run(db, "UPDATE sessions SET name=? WHERE id=?", [
+        sqlight.nullable(sqlight.text, name),
+        sqlight.text(id),
+      ]),
     )
     read_info(db, id)
   })
@@ -389,14 +265,12 @@ pub fn rename(
 
 /// The name someone gave `id`, if any.
 pub fn given_name(store: store.Store, id: String) -> Option(String) {
-  store.query(store, fn(db) {
-    sqlight.query(
-      "SELECT name FROM sessions WHERE id=? AND name<>''",
-      db,
-      [sqlight.text(id)],
-      decode.field(0, decode.string, decode.success),
-    )
-  })
+  store.read(
+    store,
+    "SELECT name FROM sessions WHERE id=? AND name<>''",
+    [sqlight.text(id)],
+    decode.field(0, decode.string, decode.success),
+  )
   |> result.unwrap([])
   |> list.first
   |> option.from_result
@@ -405,21 +279,14 @@ pub fn given_name(store: store.Store, id: String) -> Option(String) {
 /// Permanently remove a session and its dependent records in one transaction.
 pub fn delete(store: store.Store, id: String) -> Result(Nil, String) {
   store.query(store, fn(db) {
-    use _ <- result.try(
-      sqlight.exec("BEGIN IMMEDIATE", db)
-      |> result.map_error(fn(e) { e.message }),
-    )
-    let deleted = {
+    store.transaction(db, fn() {
       use hashes <- result.try(images.session_hashes(db, id))
-      use tables <- result.try(
-        sqlight.query(
-          "SELECT name FROM sqlite_master WHERE type='table'",
-          db,
-          [],
-          decode.field(0, decode.string, decode.success),
-        )
-        |> result.map_error(fn(e) { e.message }),
-      )
+      use tables <- result.try(store.rows(
+        db,
+        "SELECT name FROM sqlite_master WHERE type='table'",
+        [],
+        decode.field(0, decode.string, decode.success),
+      ))
       use _ <- result.try(
         list.try_each(
           [
@@ -437,78 +304,48 @@ pub fn delete(store: store.Store, id: String) -> Result(Nil, String) {
               True -> {
                 use _ <- result.try(case table {
                   "cells" ->
-                    sqlight.query(
-                      "DELETE FROM cell_traces WHERE id IN (SELECT id FROM cells WHERE session=?)",
+                    store.run(
                       db,
+                      "DELETE FROM cell_traces WHERE id IN (SELECT id FROM cells WHERE session=?)",
                       [sqlight.text(id)],
-                      decode.dynamic,
                     )
-                    |> result.replace(Nil)
-                    |> result.map_error(fn(e) { e.message })
                   _ -> Ok(Nil)
                 })
-                sqlight.query(
-                  "DELETE FROM " <> table <> " WHERE session=?",
-                  db,
-                  [sqlight.text(id)],
-                  decode.dynamic,
-                )
-                |> result.replace(Nil)
-                |> result.map_error(fn(e) { e.message })
+                store.run(db, "DELETE FROM " <> table <> " WHERE session=?", [
+                  sqlight.text(id),
+                ])
               }
             }
           },
         ),
       )
       use _ <- result.try(
-        sqlight.query(
-          "DELETE FROM sessions WHERE id=?",
-          db,
-          [sqlight.text(id)],
-          decode.dynamic,
-        )
-        |> result.map_error(fn(e) { e.message }),
+        store.run(db, "DELETE FROM sessions WHERE id=?", [sqlight.text(id)]),
       )
       images.release(db, hashes)
-    }
-    case deleted {
-      Ok(_) ->
-        sqlight.exec("COMMIT", db) |> result.map_error(fn(e) { e.message })
-      Error(e) -> {
-        let _ = sqlight.exec("ROLLBACK", db)
-        Error(e)
-      }
-    }
+    })
   })
 }
 
 pub fn create(store: store.Store, info: Info) -> Result(Nil, String) {
-  store.query(store, fn(db) {
-    sqlight.query(
-      "INSERT INTO sessions(id,title,cwd,provider,model,protocol,activity_seq,last_assistant_at,effort) SELECT ?,?,?,?,?,?,COALESCE(MAX(activity_seq),0)+1,?,? FROM sessions",
-      db,
-      [
-        sqlight.text(info.id),
-        sqlight.text(info.title),
-        sqlight.text(info.cwd),
-        sqlight.text(info.provider),
-        sqlight.text(info.model),
-        sqlight.text(protocol(info.protocol)),
-        sqlight.nullable(sqlight.int, info.last_assistant_at),
-        sqlight.nullable(sqlight.text, info.effort),
-      ],
-      decode.dynamic,
-    )
-    |> result.replace(Nil)
-    |> result.map_error(fn(e) { e.message })
-  })
+  store.write(
+    store,
+    "INSERT INTO sessions(id,title,cwd,provider,model,protocol,activity_seq,last_assistant_at,effort) SELECT ?,?,?,?,?,?,COALESCE(MAX(activity_seq),0)+1,?,? FROM sessions",
+    [
+      sqlight.text(info.id),
+      sqlight.text(info.title),
+      sqlight.text(info.cwd),
+      sqlight.text(info.provider),
+      sqlight.text(info.model),
+      sqlight.text(protocol(info.protocol)),
+      sqlight.nullable(sqlight.int, info.last_assistant_at),
+      sqlight.nullable(sqlight.text, info.effort),
+    ],
+  )
 }
 
 pub fn protocol(protocol: types.Protocol) -> String {
-  case protocol {
-    types.Responses -> "responses"
-    types.ChatCompletions -> "chat_completions"
-  }
+  types.protocol_name(protocol)
 }
 
 pub fn title(text: String) -> String {
@@ -555,15 +392,10 @@ pub fn excerpt(text: String, limit: Int) -> String {
 
 fn has_visible_assistant(inputs: List(types.Input)) -> Bool {
   list.any(inputs, fn(input) {
-    case events.visible_assistant_text(input) {
-      Some(_) -> True
-      None -> False
-    }
+    option.is_some(events.visible_assistant_text(input))
   })
 }
 
-/// A webhook delivery as the session reads it: a header naming the hook and
-/// delivery, then a bounded preview of the payload.
 /// The newest message a person wrote. Notes are the daemon talking and mail
 /// comes from other agents or outside, so neither names a session.
 pub fn latest_user(inputs: List(types.Input)) -> Option(String) {
@@ -579,7 +411,8 @@ pub fn latest_user(inputs: List(types.Input)) -> Option(String) {
   })
 }
 
-fn title_or_default(user: Option(String)) -> String {
+/// The title `latest_user` suggests: its text, or the default title.
+pub fn title_or_default(user: Option(String)) -> String {
   case user {
     Some(text) -> title(text)
     None -> "new session"
@@ -601,16 +434,12 @@ pub fn load_sources(
 ) -> Result(List(transcript.SourcedEntry), String) {
   use upper <- result.try(
     store.query(store, fn(db) {
-      sqlight.query(
-        "SELECT COALESCE(MAX(seq),-1) FROM transcript WHERE session=?",
+      store.rows(
         db,
+        "SELECT COALESCE(MAX(seq),-1) FROM transcript WHERE session=?",
         [sqlight.text(id)],
-        {
-          use count <- decode.field(0, decode.int)
-          decode.success(count)
-        },
+        decode.field(0, decode.int, decode.success),
       )
-      |> result.map_error(fn(error) { error.message })
       |> result.map(fn(rows) { list.first(rows) |> result.unwrap(-1) })
     }),
   )
@@ -632,32 +461,18 @@ fn load_source_pages(
   let read = images.reader(store)
   let page =
     store.query(store, fn(db) {
-      use rows <- result.try(
-        sqlight.query(
-          "SELECT seq,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
-          db,
-          [
-            sqlight.text(id),
-            sqlight.int(after),
-            sqlight.int(upper),
-            sqlight.int(load_page_rows),
-          ],
-          source_row(),
-        )
-        |> result.map_error(fn(e) { e.message }),
-      )
-      use entries <- result.try(
-        list.try_map(rows, fn(row) {
-          use input <- result.try(
-            unpack(row.1, read)
-            |> result.replace_error("invalid saved transcript item"),
-          )
-          Ok(transcript.SourcedEntry(
-            transcript.SourceRef(id, row.0),
-            transcript.Entry(input, row.2, row.3, row.4),
-          ))
-        }),
-      )
+      use rows <- result.try(store.rows(
+        db,
+        "SELECT seq,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
+        [
+          sqlight.text(id),
+          sqlight.int(after),
+          sqlight.int(upper),
+          sqlight.int(load_page_rows),
+        ],
+        source_row(),
+      ))
+      use entries <- result.try(list.try_map(rows, sourced_entry(id, _, read)))
       Ok(#(entries, list.last(rows) |> result.map(fn(row) { row.0 })))
     })
   // New rows may land between pages; the captured upper bound keeps one view.
@@ -684,6 +499,23 @@ fn source_row() -> decode.Decoder(
   use provider <- decode.field(3, decode.optional(decode.string))
   use thought_ms <- decode.field(4, decode.optional(decode.int))
   decode.success(#(seq, payload, timestamp, provider, thought_ms))
+}
+
+/// One selected transcript row as its entry, keeping the row's source
+/// reference and metadata. An undecodable payload is an invalid saved item.
+fn sourced_entry(
+  session: String,
+  row: #(Int, BitArray, Option(Int), Option(String), Option(Int)),
+  read: fn(String) -> Result(String, Nil),
+) -> Result(transcript.SourcedEntry, String) {
+  use input <- result.try(
+    unpack(row.1, read)
+    |> result.replace_error("invalid saved transcript item"),
+  )
+  Ok(transcript.SourcedEntry(
+    transcript.SourceRef(session, row.0),
+    transcript.Entry(input, row.2, row.3, row.4),
+  ))
 }
 
 /// Rows read per step when a tail that starts on a tool result is widened.
@@ -778,26 +610,14 @@ fn read_before(
 ) -> Result(#(List(transcript.SourcedEntry), Bool), String) {
   let read = images.reader(store)
   store.query(store, fn(db) {
-    use rows <- result.try(
-      sqlight.query(
-        "SELECT seq,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq<? ORDER BY seq DESC LIMIT ?",
-        db,
-        [sqlight.text(id), sqlight.int(upper), sqlight.int(limit)],
-        source_row(),
-      )
-      |> result.map_error(fn(e) { e.message }),
-    )
+    use rows <- result.try(store.rows(
+      db,
+      "SELECT seq,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq<? ORDER BY seq DESC LIMIT ?",
+      [sqlight.text(id), sqlight.int(upper), sqlight.int(limit)],
+      source_row(),
+    ))
     use entries <- result.try(
-      list.try_map(list.reverse(rows), fn(row) {
-        use input <- result.try(
-          unpack(row.1, read)
-          |> result.replace_error("invalid saved transcript item"),
-        )
-        Ok(transcript.SourcedEntry(
-          transcript.SourceRef(id, row.0),
-          transcript.Entry(input, row.2, row.3, row.4),
-        ))
-      }),
+      list.try_map(list.reverse(rows), sourced_entry(id, _, read)),
     )
     Ok(#(entries, list.length(rows) == limit))
   })
@@ -806,16 +626,13 @@ fn read_before(
 /// The session's newest transcript sequence, or 0 when it has none.
 pub fn last_seq(store: store.Store, id: String) -> Result(Int, String) {
   store.query(store, fn(db) {
-    sqlight.query(
-      "SELECT COALESCE(MAX(seq),0) FROM transcript WHERE session=?",
+    store.one(
       db,
+      "SELECT COALESCE(MAX(seq),0) FROM transcript WHERE session=?",
       [sqlight.text(id)],
       decode.field(0, decode.int, decode.success),
+      "session not found",
     )
-    |> result.map_error(fn(e) { e.message })
-    |> result.try(fn(rows) {
-      list.first(rows) |> result.replace_error("session not found")
-    })
   })
 }
 
@@ -828,23 +645,17 @@ pub fn source(
   let transcript.SourceRef(session, seq) = reference
   let read = images.reader(store)
   store.query(store, fn(db) {
-    use rows <- result.try(
-      sqlight.query(
-        "SELECT seq,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq=?",
-        db,
-        [sqlight.text(session), sqlight.int(seq)],
-        source_row(),
-      )
-      |> result.map_error(fn(e) { e.message }),
-    )
+    use rows <- result.try(store.rows(
+      db,
+      "SELECT seq,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq=?",
+      [sqlight.text(session), sqlight.int(seq)],
+      source_row(),
+    ))
     case rows {
       [] -> Ok(None)
       [row] ->
-        unpack(row.1, read)
-        |> result.replace_error("invalid saved transcript item")
-        |> result.map(fn(input) {
-          Some(transcript.Entry(input, row.2, row.3, row.4))
-        })
+        sourced_entry(session, row, read)
+        |> result.map(fn(entry) { Some(entry.entry) })
       _ -> Error("duplicate transcript source reference")
     }
   })
@@ -875,52 +686,33 @@ pub fn append_capability_update(
 ) -> Result(Int, String) {
   let timestamp = usage.now()
   store.query(store, fn(db) {
-    use _ <- result.try(
-      sqlight.exec("BEGIN IMMEDIATE", db)
-      |> result.map_error(fn(e) { e.message }),
-    )
-    let written = {
+    store.transaction(db, fn() {
       use _ <- result.try(
-        sqlight.query(
+        store.run(
+          db,
           "UPDATE sessions SET "
             <> "pinned_context=CASE WHEN pinned_instructions IS NULL THEN ? ELSE pinned_context END, "
             <> "pinned_head=CASE WHEN pinned_instructions IS NULL THEN ? ELSE pinned_head END, "
             <> "pinned_instructions=COALESCE(pinned_instructions, ?) WHERE id=?",
-          db,
           [
             sqlight.blob(pack_list(pinned.context)),
             sqlight.int(head),
             sqlight.text(pinned.instructions),
             sqlight.text(id),
           ],
-          decode.dynamic,
-        )
-        |> result.replace(Nil)
-        |> result.map_error(fn(e) { e.message }),
+        ),
       )
-      sqlight.query(
-        "INSERT INTO transcript(session,payload,timestamp) VALUES(?,?,?)",
+      store.run(
         db,
+        "INSERT INTO transcript(session,payload,timestamp) VALUES(?,?,?)",
         [
           sqlight.text(id),
           sqlight.blob(pack(types.User(update))),
           sqlight.int(timestamp),
         ],
-        decode.dynamic,
       )
       |> result.replace(timestamp)
-      |> result.map_error(fn(e) { e.message })
-    }
-    case written {
-      Ok(value) ->
-        sqlight.exec("COMMIT", db)
-        |> result.replace(value)
-        |> result.map_error(fn(e) { e.message })
-      Error(error) -> {
-        let _ = sqlight.exec("ROLLBACK", db)
-        Error(error)
-      }
-    }
+    })
   })
 }
 
@@ -932,9 +724,9 @@ pub fn prompt_pin(
 ) -> Result(Option(#(PinnedPrompt, Int)), String) {
   store.query(store, fn(db) {
     use rows <- result.try(
-      sqlight.query(
-        "SELECT pinned_instructions, pinned_context, COALESCE(pinned_head, 0) FROM sessions WHERE id=?",
+      store.rows(
         db,
+        "SELECT pinned_instructions, pinned_context, COALESCE(pinned_head, 0) FROM sessions WHERE id=?",
         [sqlight.text(id)],
         {
           use instructions <- decode.field(0, decode.optional(decode.string))
@@ -942,8 +734,7 @@ pub fn prompt_pin(
           use head <- decode.field(2, decode.int)
           decode.success(#(instructions, context, head))
         },
-      )
-      |> result.map_error(fn(e) { e.message }),
+      ),
     )
     case rows {
       [#(Some(instructions), Some(context), head)] ->
@@ -961,16 +752,11 @@ pub fn prompt_pin(
 }
 
 pub fn clear_prompt_pin(store: store.Store, id: String) -> Result(Nil, String) {
-  store.query(store, fn(db) {
-    sqlight.query(
-      "UPDATE sessions SET pinned_instructions=NULL, pinned_context=NULL, pinned_head=NULL WHERE id=?",
-      db,
-      [sqlight.text(id)],
-      decode.dynamic,
-    )
-    |> result.replace(Nil)
-    |> result.map_error(fn(e) { e.message })
-  })
+  store.write(
+    store,
+    "UPDATE sessions SET pinned_instructions=NULL, pinned_context=NULL, pinned_head=NULL WHERE id=?",
+    [sqlight.text(id)],
+  )
 }
 
 /// The entries inputs committed together become. A response's thinking time
@@ -1057,11 +843,7 @@ fn commit_with_letters(
   let timestamp = usage.now()
   let read = images.reader(store)
   store.query(store, fn(db) {
-    use _ <- result.try(
-      sqlight.exec("BEGIN IMMEDIATE", db)
-      |> result.map_error(fn(e) { e.message }),
-    )
-    let written = {
+    store.transaction(db, fn() {
       use _ <- result.try(mail.receive(db, id, letters))
       let advances_assistant = case has_visible_assistant(inputs) {
         True -> 1
@@ -1071,9 +853,9 @@ fn commit_with_letters(
         entries(inputs, Some(timestamp), provider, thought_ms)
         |> list.try_each(fn(entry) {
           use input <- result.try(images.externalize(db, entry.input, read))
-          sqlight.query(
-            "INSERT INTO transcript(session,payload,timestamp,provider,thought_ms) VALUES(?,?,?,?,?)",
+          store.run(
             db,
+            "INSERT INTO transcript(session,payload,timestamp,provider,thought_ms) VALUES(?,?,?,?,?)",
             [
               sqlight.text(id),
               sqlight.blob(pack(input)),
@@ -1081,50 +863,22 @@ fn commit_with_letters(
               sqlight.nullable(sqlight.text, provider),
               sqlight.nullable(sqlight.int, entry.thought_ms),
             ],
-            decode.dynamic,
           )
-          |> result.replace(Nil)
-          |> result.map_error(fn(e) { e.message })
         }),
       )
-      case latest_user(inputs) {
-        Some(text) ->
-          sqlight.query(
-            "UPDATE sessions SET stage=?,title=?,activity_seq=(SELECT COALESCE(MAX(activity_seq),0)+1 FROM sessions),last_assistant_at=CASE WHEN ?=1 THEN unixepoch() ELSE last_assistant_at END WHERE id=?",
-            db,
-            [
-              sqlight.text(stage_name(stage)),
-              sqlight.text(title(text)),
-              sqlight.int(advances_assistant),
-              sqlight.text(id),
-            ],
-            decode.dynamic,
-          )
-        None ->
-          sqlight.query(
-            "UPDATE sessions SET stage=?,activity_seq=(SELECT COALESCE(MAX(activity_seq),0)+1 FROM sessions),last_assistant_at=CASE WHEN ?=1 THEN unixepoch() ELSE last_assistant_at END WHERE id=?",
-            db,
-            [
-              sqlight.text(stage_name(stage)),
-              sqlight.int(advances_assistant),
-              sqlight.text(id),
-            ],
-            decode.dynamic,
-          )
-      }
-      |> result.replace(Nil)
-      |> result.map_error(fn(e) { e.message })
-    }
-    case written {
-      Ok(_) ->
-        sqlight.exec("COMMIT", db)
-        |> result.map(fn(_) { timestamp })
-        |> result.map_error(fn(e) { e.message })
-      Error(e) -> {
-        let _ = sqlight.exec("ROLLBACK", db)
-        Error(e)
-      }
-    }
+      // COALESCE keeps the old title when no new user message suggests one.
+      store.run(
+        db,
+        "UPDATE sessions SET stage=?,title=COALESCE(?,title),activity_seq=(SELECT COALESCE(MAX(activity_seq),0)+1 FROM sessions),last_assistant_at=CASE WHEN ?=1 THEN unixepoch() ELSE last_assistant_at END WHERE id=?",
+        [
+          sqlight.text(stage_name(stage)),
+          sqlight.nullable(sqlight.text, option.map(latest_user(inputs), title)),
+          sqlight.int(advances_assistant),
+          sqlight.text(id),
+        ],
+      )
+    })
+    |> result.replace(timestamp)
   })
 }
 
@@ -1156,30 +910,22 @@ pub fn load_usage(
   id: String,
 ) -> Result(Option(usage.Metadata), String) {
   store.query(store, fn(db) {
-    sqlight.query(
-      "SELECT usage_model,usage_recorded_at,usage_prompt_tokens,usage_completion_tokens,usage_cached_prompt_tokens,usage_cache_creation_tokens FROM sessions WHERE id=?",
+    store.one(
       db,
+      "SELECT usage_model,usage_recorded_at,usage_prompt_tokens,usage_completion_tokens,usage_cached_prompt_tokens,usage_cache_creation_tokens FROM sessions WHERE id=?",
       [sqlight.text(id)],
       usage_decoder(),
+      "session not found",
     )
-    |> result.map_error(fn(e) { e.message })
-    |> result.try(fn(rows) {
-      list.first(rows) |> result.replace_error("session not found")
-    })
   })
 }
 
 pub fn clear_usage(store: store.Store, id: String) -> Result(Nil, String) {
-  store.query(store, fn(db) {
-    sqlight.query(
-      "UPDATE sessions SET usage_model=NULL,usage_recorded_at=NULL,usage_prompt_tokens=NULL,usage_completion_tokens=NULL,usage_cached_prompt_tokens=NULL,usage_cache_creation_tokens=NULL WHERE id=?",
-      db,
-      [sqlight.text(id)],
-      decode.dynamic,
-    )
-    |> result.replace(Nil)
-    |> result.map_error(fn(error) { error.message })
-  })
+  store.write(
+    store,
+    "UPDATE sessions SET usage_model=NULL,usage_recorded_at=NULL,usage_prompt_tokens=NULL,usage_completion_tokens=NULL,usage_cached_prompt_tokens=NULL,usage_cache_creation_tokens=NULL WHERE id=?",
+    [sqlight.text(id)],
+  )
 }
 
 pub fn record_usage(
@@ -1197,24 +943,19 @@ pub fn record_usage(
     )
     None -> #(None, None, None, None)
   }
-  store.query(store, fn(db) {
-    sqlight.query(
-      "UPDATE sessions SET usage_model=?,usage_recorded_at=?,usage_prompt_tokens=?,usage_completion_tokens=?,usage_cached_prompt_tokens=?,usage_cache_creation_tokens=? WHERE id=?",
-      db,
-      [
-        sqlight.text(model),
-        sqlight.int(recorded_at),
-        sqlight.nullable(sqlight.int, prompt),
-        sqlight.nullable(sqlight.int, completion),
-        sqlight.nullable(sqlight.int, cached),
-        sqlight.nullable(sqlight.int, creation),
-        sqlight.text(id),
-      ],
-      decode.dynamic,
-    )
-    |> result.replace(Nil)
-    |> result.map_error(fn(e) { e.message })
-  })
+  store.write(
+    store,
+    "UPDATE sessions SET usage_model=?,usage_recorded_at=?,usage_prompt_tokens=?,usage_completion_tokens=?,usage_cached_prompt_tokens=?,usage_cache_creation_tokens=? WHERE id=?",
+    [
+      sqlight.text(model),
+      sqlight.int(recorded_at),
+      sqlight.nullable(sqlight.int, prompt),
+      sqlight.nullable(sqlight.int, completion),
+      sqlight.nullable(sqlight.int, cached),
+      sqlight.nullable(sqlight.int, creation),
+      sqlight.text(id),
+    ],
+  )
 }
 
 @external(erlang, "albedo_conversation", "pack")
@@ -1246,16 +987,10 @@ pub fn set_effort(
   id: String,
   effort: Option(String),
 ) -> Result(Nil, String) {
-  store.query(store, fn(db) {
-    sqlight.query(
-      "UPDATE sessions SET effort=? WHERE id=?",
-      db,
-      [sqlight.nullable(sqlight.text, effort), sqlight.text(id)],
-      decode.dynamic,
-    )
-    |> result.replace(Nil)
-    |> result.map_error(fn(e) { e.message })
-  })
+  store.write(store, "UPDATE sessions SET effort=? WHERE id=?", [
+    sqlight.nullable(sqlight.text, effort),
+    sqlight.text(id),
+  ])
 }
 
 pub fn set_configuration(
@@ -1267,24 +1002,17 @@ pub fn set_configuration(
   effort: Option(String),
 ) -> Result(Nil, String) {
   store.query(store, fn(db) {
-    use _ <- result.try(
-      sqlight.exec("BEGIN IMMEDIATE", db)
-      |> result.map_error(fn(e) { e.message }),
-    )
-    let written = {
+    store.transaction(db, fn() {
       use _ <- result.try(
-        sqlight.query(
-          "UPDATE transcript SET provider=(SELECT provider FROM sessions WHERE id=?) WHERE session=? AND provider IS NULL",
+        store.run(
           db,
+          "UPDATE transcript SET provider=(SELECT provider FROM sessions WHERE id=?) WHERE session=? AND provider IS NULL",
           [sqlight.text(id), sqlight.text(id)],
-          decode.dynamic,
-        )
-        |> result.replace(Nil)
-        |> result.map_error(fn(e) { e.message }),
+        ),
       )
-      sqlight.query(
-        "UPDATE sessions SET provider=?,model=?,protocol=?,effort=? WHERE id=?",
+      store.run(
         db,
+        "UPDATE sessions SET provider=?,model=?,protocol=?,effort=? WHERE id=?",
         [
           sqlight.text(provider),
           sqlight.text(model),
@@ -1292,21 +1020,8 @@ pub fn set_configuration(
           sqlight.nullable(sqlight.text, effort),
           sqlight.text(id),
         ],
-        decode.dynamic,
       )
-      |> result.replace(Nil)
-      |> result.map_error(fn(e) { e.message })
-    }
-    case written {
-      Ok(_) ->
-        sqlight.exec("COMMIT", db)
-        |> result.replace(Nil)
-        |> result.map_error(fn(e) { e.message })
-      Error(error) -> {
-        let _ = sqlight.exec("ROLLBACK", db)
-        Error(error)
-      }
-    }
+    })
   })
 }
 
@@ -1316,14 +1031,8 @@ pub fn set_workspace(
   id: String,
   cwd: String,
 ) -> Result(Nil, String) {
-  store.query(store, fn(db) {
-    sqlight.query(
-      "UPDATE sessions SET cwd=? WHERE id=?",
-      db,
-      [sqlight.text(cwd), sqlight.text(id)],
-      decode.dynamic,
-    )
-    |> result.replace(Nil)
-    |> result.map_error(fn(error) { error.message })
-  })
+  store.write(store, "UPDATE sessions SET cwd=? WHERE id=?", [
+    sqlight.text(cwd),
+    sqlight.text(id),
+  ])
 }

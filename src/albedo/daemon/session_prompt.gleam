@@ -25,17 +25,18 @@ pub fn reset_prompt_cache(
     loop.Pinned(..) -> conversation.clear_prompt_pin(ledger, state.info.id)
     loop.Unpinned -> Ok(Nil)
   }
-  let state = case released {
-    Ok(_) ->
-      session_state.State(
-        ..state,
-        pin: loop.Unpinned,
-        prepared_head: None,
-        latest_usage: None,
-      )
-    Error(_) ->
-      session_state.State(..state, prepared_head: None, latest_usage: None)
+  // A failed release keeps the pin; the metadata it described is stale either way.
+  let pin = case released {
+    Ok(_) -> loop.Unpinned
+    Error(_) -> state.pin
   }
+  let state =
+    session_state.State(
+      ..state,
+      pin: pin,
+      prepared_head: None,
+      latest_usage: None,
+    )
   let state =
     session_state.emit(
       state,
@@ -131,10 +132,7 @@ pub fn pin_changed_prompt(
               state.prepared_head,
             )
           }
-          let baseline = case head {
-            Some(head) -> head
-            None -> 0
-          }
+          let baseline = option.unwrap(head, 0)
           let update =
             note.wrap(
               "capabilities changed",

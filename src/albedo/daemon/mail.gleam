@@ -15,6 +15,7 @@ import albedo/daemon/family
 import albedo/daemon/store
 import albedo/daemon/usage
 import gleam/dynamic/decode
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -72,9 +73,7 @@ CREATE INDEX IF NOT EXISTS mail_conversation ON mail(recipient,sender,created_at
 "
 
 pub fn initialise(db: store.Store) -> Result(Nil, String) {
-  store.query(db, fn(connection) {
-    sqlight.exec(schema, connection) |> result.map_error(fn(e) { e.message })
-  })
+  store.query(db, fn(connection) { store.exec(connection, schema) })
 }
 
 pub fn kind_name(kind: Kind) -> String {
@@ -138,17 +137,14 @@ pub fn post(
   kind: Kind,
   body: String,
 ) -> Result(Letter, String) {
-  use _ <- result.try(
-    case string.trim(body) == "", string.byte_size(body) > body_limit {
-      True, _ -> Error("mail body is empty")
-      _, True ->
-        Error("mail body is over 1 MiB; write it to a file and send the path")
-      False, False -> Ok(Nil)
-    },
-  )
-  use _ <- result.try(case sender == Some(recipient) {
-    True -> Error("an agent cannot mail itself")
-    False -> Ok(Nil)
+  let empty = string.trim(body) == ""
+  let oversize = string.byte_size(body) > body_limit
+  use _ <- result.try(case empty, oversize, sender == Some(recipient) {
+    True, _, _ -> Error("mail body is empty")
+    _, True, _ ->
+      Error("mail body is over 1 MiB; write it to a file and send the path")
+    _, _, True -> Error("an agent cannot mail itself")
+    False, False, False -> Ok(Nil)
   })
   let letter =
     Letter(id, recipient, sender, sender_name, kind, body, usage.now())
@@ -171,7 +167,9 @@ pub fn insert(
   let Letter(id, recipient, sender, sender_name, kind, body, created_at) =
     letter
   sqlight.query(
-    "INSERT INTO mail(id,recipient,sender,sender_name,kind,body,created_at) SELECT ?,?,?,?,?,?,? WHERE (SELECT count(*) FROM mail WHERE recipient=? AND delivered_at IS NULL) < ? RETURNING id",
+    "INSERT INTO mail("
+      <> columns
+      <> ") SELECT ?,?,?,?,?,?,? WHERE (SELECT count(*) FROM mail WHERE recipient=? AND delivered_at IS NULL) < ? RETURNING id",
     connection,
     [
       sqlight.text(id),
@@ -212,31 +210,26 @@ pub fn insert(
 
 /// The oldest undelivered letters across every recipient.
 pub fn pending(db: store.Store, limit: Int) -> Result(List(Letter), String) {
-  store.query(db, fn(connection) {
-    sqlight.query(
-      "SELECT "
-        <> columns
-        <> " FROM mail WHERE delivered_at IS NULL ORDER BY created_at,id LIMIT ?",
-      connection,
-      [sqlight.int(limit)],
-      decoder(),
-    )
-    |> result.map_error(fn(e) { e.message })
-  })
+  store.read(
+    db,
+    "SELECT "
+      <> columns
+      <> " FROM mail WHERE delivered_at IS NULL ORDER BY created_at,id LIMIT ?",
+    [sqlight.int(limit)],
+    decoder(),
+  )
 }
 
 /// Whether a letter still waits for its recipient. The session actor asks
 /// before admitting one, so a retry of a letter it already committed is
 /// dropped instead of written twice.
 pub fn undelivered(db: store.Store, id: String) -> Bool {
-  store.query(db, fn(connection) {
-    sqlight.query(
-      "SELECT 1 FROM mail WHERE id=? AND delivered_at IS NULL",
-      connection,
-      [sqlight.text(id)],
-      decode.field(0, decode.int, decode.success),
-    )
-  })
+  store.read(
+    db,
+    "SELECT 1 FROM mail WHERE id=? AND delivered_at IS NULL",
+    [sqlight.text(id)],
+    decode.field(0, decode.int, decode.success),
+  )
   == Ok([1])
 }
 
@@ -245,16 +238,11 @@ pub fn record_failure(
   id: String,
   reason: String,
 ) -> Result(Nil, String) {
-  store.query(db, fn(connection) {
-    sqlight.query(
-      "UPDATE mail SET attempts=attempts+1,last_error=? WHERE id=? AND delivered_at IS NULL",
-      connection,
-      [sqlight.text(string.slice(reason, 0, 500)), sqlight.text(id)],
-      decode.dynamic,
-    )
-    |> result.replace(Nil)
-    |> result.map_error(fn(e) { e.message })
-  })
+  store.write(
+    db,
+    "UPDATE mail SET attempts=attempts+1,last_error=? WHERE id=? AND delivered_at IS NULL",
+    [sqlight.text(string.slice(reason, 0, 500)), sqlight.text(id)],
+  )
 }
 
 /// Mark letters delivered inside the caller's transaction. A letter already
@@ -266,13 +254,12 @@ pub fn receive(
 ) -> Result(Nil, String) {
   let now = usage.now()
   list.try_each(ids, fn(id) {
-    sqlight.query(
-      "UPDATE mail SET delivered_at=? WHERE id=? AND recipient=? AND delivered_at IS NULL RETURNING id",
+    store.rows(
       connection,
+      "UPDATE mail SET delivered_at=? WHERE id=? AND recipient=? AND delivered_at IS NULL RETURNING id",
       [sqlight.int(now), sqlight.text(id), sqlight.text(recipient)],
       decode.field(0, decode.string, decode.success),
     )
-    |> result.map_error(fn(e) { e.message })
     |> result.try(fn(rows) {
       case rows {
         [_] -> Ok(Nil)
@@ -289,19 +276,16 @@ pub fn owes_reply(
   child: String,
   parent: String,
 ) -> Result(Bool, String) {
-  store.query(db, fn(connection) {
-    sqlight.query(
-      "SELECT (SELECT max(delivered_at) FROM mail WHERE recipient=?1 AND sender=?2 AND kind IN ('task','message')), (SELECT max(created_at) FROM mail WHERE recipient=?2 AND sender=?1)",
-      connection,
-      [sqlight.text(child), sqlight.text(parent)],
-      {
-        use asked <- decode.field(0, decode.optional(decode.int))
-        use answered <- decode.field(1, decode.optional(decode.int))
-        decode.success(#(asked, answered))
-      },
-    )
-    |> result.map_error(fn(e) { e.message })
-  })
+  store.read(
+    db,
+    "SELECT (SELECT max(delivered_at) FROM mail WHERE recipient=?1 AND sender=?2 AND kind IN ('task','message')), (SELECT max(created_at) FROM mail WHERE recipient=?2 AND sender=?1)",
+    [sqlight.text(child), sqlight.text(parent)],
+    {
+      use asked <- decode.field(0, decode.optional(decode.int))
+      use answered <- decode.field(1, decode.optional(decode.int))
+      decode.success(#(asked, answered))
+    },
+  )
   |> result.map(fn(rows) {
     case rows {
       [#(Some(asked), Some(answered))] -> answered < asked
@@ -385,6 +369,16 @@ fn is_webhook(text: String) -> Bool {
 
 pub type Receipt {
   Receipt(id: String, recipient: String, name: String, status: String)
+}
+
+/// A receipt as both the HTTP route and the python tool report it.
+pub fn receipt_json(receipt: Receipt) -> json.Json {
+  json.object([
+    #("id", json.string(receipt.id)),
+    #("to", json.string(receipt.recipient)),
+    #("name", json.string(receipt.name)),
+    #("status", json.string(receipt.status)),
+  ])
 }
 
 /// One agent writes to another: `to` is "parent", a session id, or a name in

@@ -8,6 +8,7 @@
 //// against the actor it is running in.
 
 import albedo/daemon/store
+import albedo/harness/rpc
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/int
@@ -182,31 +183,33 @@ fn take_arguments(
   case arguments, raw {
     [], "" -> Ok(list.reverse(taken))
     [], _ -> Error("usage: command takes no arguments")
-    [argument], _ -> {
-      let value = string.trim(raw)
-      case value, argument.required {
-        "", True -> missing(argument)
-        "", False -> Ok(list.reverse(taken))
-        _, _ -> Ok(list.reverse([#(argument.name, value), ..taken]))
-      }
-    }
+    // The last declared argument takes the rest of the raw text, trimmed at
+    // the edges and exact inside.
+    [argument], _ ->
+      take(argument, string.trim(raw), taken) |> result.map(list.reverse)
     [argument, ..rest], _ -> {
       let #(token, remainder) = case string.split_once(raw, " ") {
         Ok(#(token, remainder)) -> #(string.trim(token), string.trim(remainder))
         Error(_) -> #(string.trim(raw), "")
       }
-      case token, argument.required {
-        "", True -> missing(argument)
-        "", False -> take_arguments(rest, remainder, taken)
-        _, _ ->
-          take_arguments(rest, remainder, [#(argument.name, token), ..taken])
-      }
+      use taken <- result.try(take(argument, token, taken))
+      take_arguments(rest, remainder, taken)
     }
   }
 }
 
-fn missing(argument: Argument) -> Result(List(#(String, String)), String) {
-  Error("missing argument <" <> argument.name <> ">")
+/// One argument's value: the pair onto `taken`, or the usage error an empty
+/// required argument answers. `taken` stays newest-first.
+fn take(
+  argument: Argument,
+  value: String,
+  taken: List(#(String, String)),
+) -> Result(List(#(String, String)), String) {
+  case value, argument.required {
+    "", True -> Error("missing argument <" <> argument.name <> ">")
+    "", False -> Ok(taken)
+    _, _ -> Ok([#(argument.name, value), ..taken])
+  }
 }
 
 /// One command's invocation shape: `/model [model] [provider]`.
@@ -276,21 +279,19 @@ pub fn call(
     text, 0 -> parse_arguments(command, text)
     _, _ -> Error("pass either arguments or args, not both")
   })
-  dispatch(commands, context, caller, client, name, args)
+  run(command, context, caller, client, args)
 }
 
-/// Run one command and apply the caller policy. A user invocation of a
+/// Runs one command and applies the caller policy. A user invocation of a
 /// `user_turn` command submits its turn through state and otherwise returns
 /// data; a model invocation may never submit a turn.
-pub fn dispatch(
-  commands: List(Command),
+fn run(
+  command: Command,
   context: Context,
   caller: Caller,
   client: String,
-  name: String,
   args: Dict(String, String),
 ) -> Result(Outcome, String) {
-  use command <- result.try(find(commands, name))
   use args <- result.try(check_arguments(command, args))
   use _ <- result.try(case caller, command.model_callable {
     ModelCall, False -> Error(command.name <> " is not callable from the model")
@@ -344,14 +345,15 @@ pub fn command_json(command: Command, method: String) -> json.Json {
   ])
 }
 
+fn method_for(methods: Dict(String, String), command: Command) -> String {
+  dict.get(methods, command.name)
+  |> result.unwrap(method_name(command.name))
+}
+
 pub fn catalog_json(commands: List(Command)) -> json.Json {
   let methods = method_names(commands)
   json.array(commands, fn(command) {
-    command_json(
-      command,
-      dict.get(methods, command.name)
-        |> result.unwrap(method_name(command.name)),
-    )
+    command_json(command, method_for(methods, command))
   })
 }
 
@@ -366,31 +368,11 @@ pub fn context_block(commands: List(Command)) -> String {
       let rows =
         commands
         |> list.map(fn(command) {
-          let arguments =
-            command.arguments
-            |> list.map(fn(argument) {
-              case argument.required {
-                True -> "<" <> argument.name <> ">"
-                False -> "[" <> argument.name <> "]"
-              }
-            })
           "  "
-          <> command.name
-          <> {
-            case arguments {
-              [] -> ""
-              values -> " " <> string.join(values, " ")
-            }
-          }
+          <> usage(command)
           <> {
             case command.model_callable {
-              True ->
-                " (method: "
-                <> {
-                  dict.get(methods, command.name)
-                  |> result.unwrap(method_name(command.name))
-                }
-                <> ")"
+              True -> " (method: " <> method_for(methods, command) <> ")"
               False -> " (user only)"
             }
           }
@@ -430,19 +412,11 @@ fn respond(
   session: String,
   request: String,
 ) -> String {
-  let decoder = {
-    use method <- decode.field("method", decode.string)
-    use args <- decode.field("args", decode.dynamic)
-    decode.success(#(method, args))
-  }
-  case json.parse(request, decoder) {
-    Error(_) -> failed("invalid", "invalid commands host request")
-    Ok(#(method, args)) ->
-      case method {
-        "commands.list" -> answered(catalog_json(commands))
-        "commands.run" -> run_request(commands, session, args)
-        _ -> failed("commands", "unknown commands operation")
-      }
+  case rpc.decode(request) {
+    Ok(#("commands.list", _)) -> rpc.reply(Ok(catalog_json(commands)))
+    Ok(#("commands.run", args)) -> run_request(commands, session, args)
+    Ok(_) -> rpc.refuse("commands", "unknown commands operation")
+    Error(_) -> rpc.refuse("invalid", "invalid commands host request")
   }
 }
 
@@ -452,7 +426,7 @@ fn run_request(
   args: decode.Dynamic,
 ) -> String {
   case decode_run(["name", "args", "arguments"], args) {
-    Error(message) -> failed("commands", message)
+    Error(message) -> rpc.refuse("commands", message)
     Ok(#(name, supplied, raw, _)) ->
       case
         call(
@@ -465,10 +439,10 @@ fn run_request(
           raw,
         )
       {
-        Ok(Data(value)) -> answered(value)
+        Ok(Data(value)) -> rpc.reply(Ok(value))
         Ok(Turn(_, _)) ->
-          failed("commands", "command submitted a turn from the model")
-        Error(message) -> failed("commands", message)
+          rpc.refuse("commands", "command submitted a turn from the model")
+        Error(message) -> rpc.refuse("commands", message)
       }
   }
 }
@@ -497,15 +471,12 @@ pub fn decode_run(
     })
     decode.success(#(name, supplied, raw, client))
   }
-  case decode.run(args, decoder) {
-    Ok(values) -> Ok(values)
-    Error(errors) ->
-      Error(
-        list.first(errors)
-        |> result.map(fn(error) { error.expected })
-        |> result.unwrap("invalid commands run request"),
-      )
-  }
+  decode.run(args, decoder)
+  |> result.map_error(fn(errors) {
+    list.first(errors)
+    |> result.map(fn(error) { error.expected })
+    |> result.unwrap("invalid commands run request")
+  })
 }
 
 fn unknown_fields(
@@ -516,17 +487,4 @@ fn unknown_fields(
   |> dict.keys
   |> list.filter(fn(key) { !list.contains(allowed, key) })
   |> list.sort(string.compare)
-}
-
-fn answered(value: json.Json) -> String {
-  json.object([#("ok", json.bool(True)), #("value", value)]) |> json.to_string
-}
-
-fn failed(code: String, message: String) -> String {
-  json.object([
-    #("ok", json.bool(False)),
-    #("code", json.string(code)),
-    #("message", json.string(message)),
-  ])
-  |> json.to_string
 }

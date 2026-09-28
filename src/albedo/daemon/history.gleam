@@ -36,13 +36,7 @@ pub type Page {
 }
 
 type Row {
-  Row(
-    seq: Int,
-    payload: BitArray,
-    input: types.Input,
-    timestamp: Option(Int),
-    provider: Option(String),
-  )
+  Row(seq: Int, input: types.Input, timestamp: Option(Int))
 }
 
 /// Read one bounded page directly from the durable transcript. `after` is an
@@ -54,32 +48,24 @@ pub fn page(
   after: Int,
   requested_limit: Int,
 ) -> Result(Page, String) {
-  let limit = case requested_limit <= 0 {
-    True -> default_page_size
-    False -> int.min(requested_limit, max_page_size)
-  }
+  let limit = clamp_limit(requested_limit, default_page_size)
   store.query(ledger, fn(db) {
-    use rows <- result.try(
-      sqlight.query(
-        "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? AND seq>? ORDER BY seq LIMIT ?",
-        db,
-        [
-          sqlight.text(session_id),
-          sqlight.int(int.max(after, 0)),
-          sqlight.int(limit + 1),
-        ],
-        row_decoder(),
-      )
-      |> result.map_error(fn(error) { error.message }),
-    )
+    use rows <- result.try(store.rows(
+      db,
+      "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? AND seq>? ORDER BY seq LIMIT ?",
+      [
+        sqlight.text(session_id),
+        sqlight.int(int.max(after, 0)),
+        sqlight.int(limit + 1),
+      ],
+      row_decoder(),
+    ))
     use decoded <- result.try(list.try_map(rows, decode_row))
     let has_more = list.length(decoded) > limit
     let visible = list.take(decoded, limit)
     let items = list.map(visible, row_item)
-    let next_cursor = case list.last(items) {
-      Ok(item) -> Some(item.id)
-      Error(_) -> None
-    }
+    let next_cursor =
+      option.map(option.from_result(list.last(items)), fn(item) { item.id })
     Ok(Page(items, next_cursor, has_more))
   })
 }
@@ -125,31 +111,22 @@ pub fn recent(
   session_id: String,
   requested_limit: Int,
 ) -> Result(Recent, String) {
-  let limit = case requested_limit <= 0 {
-    True -> 12
-    False -> int.min(requested_limit, max_page_size)
-  }
+  let limit = clamp_limit(requested_limit, 12)
   store.query(ledger, fn(db) {
-    use total <- result.try(
-      sqlight.query(
-        "SELECT COUNT(*) FROM transcript WHERE session=?",
-        db,
-        [sqlight.text(session_id)],
-        decode.field(0, decode.int, decode.success),
-      )
-      |> result.map_error(fn(error) { error.message }),
-    )
+    use total <- result.try(store.rows(
+      db,
+      "SELECT COUNT(*) FROM transcript WHERE session=?",
+      [sqlight.text(session_id)],
+      decode.field(0, decode.int, decode.success),
+    ))
     // Reasoning-only rows are dropped below, so read past the limit to keep
     // the pane full.
-    use rows <- result.try(
-      sqlight.query(
-        "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? ORDER BY seq DESC LIMIT ?",
-        db,
-        [sqlight.text(session_id), sqlight.int(limit * 4)],
-        row_decoder(),
-      )
-      |> result.map_error(fn(error) { error.message }),
-    )
+    use rows <- result.try(store.rows(
+      db,
+      "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? ORDER BY seq DESC LIMIT ?",
+      [sqlight.text(session_id), sqlight.int(limit * 4)],
+      row_decoder(),
+    ))
     use decoded <- result.try(list.try_map(rows, decode_row))
     let items =
       decoded
@@ -181,18 +158,11 @@ fn recent_item(row: Row) -> Result(Item, Nil) {
     types.Assistant(text) -> item(Assistant, text, recent_excerpt)
     types.ToolOutput(_, _, _) -> Error(Nil)
     types.Replay(replay) ->
-      case events.calls(types.Replay(replay)) {
-        [] ->
-          case events.visible_assistant_text(types.Replay(replay)) {
-            Some(text) -> item(Assistant, text, recent_excerpt)
-            None -> Error(Nil)
-          }
-        calls ->
-          item(
-            Tool,
-            list.map(calls, fn(call) { call.name }) |> string.join(", "),
-            recent_tool_excerpt,
-          )
+      case preview_of(replay) {
+        Answer(text) -> item(Assistant, text, recent_excerpt)
+        Calls(names) ->
+          item(Tool, string.join(names, ", "), recent_tool_excerpt)
+        Bare -> Error(Nil)
       }
   }
 }
@@ -215,11 +185,7 @@ pub fn fork(
     False -> Error("invalid branch checkpoint or session id")
     True ->
       store.query(ledger, fn(db) {
-        use _ <- result.try(
-          sqlight.exec("BEGIN IMMEDIATE", db)
-          |> result.map_error(fn(error) { error.message }),
-        )
-        let written = {
+        store.transaction(db, fn() {
           use source <- result.try(conversation.read_info(db, source_id))
           use rows <- result.try(read_prefix(db, source_id, checkpoint))
           use _ <- result.try(case list.last(rows) {
@@ -255,17 +221,7 @@ pub fn fork(
             None,
             source.effort,
           ))
-        }
-        case written {
-          Ok(info) ->
-            sqlight.exec("COMMIT", db)
-            |> result.replace(info)
-            |> result.map_error(fn(error) { error.message })
-          Error(error) -> {
-            let _ = sqlight.exec("ROLLBACK", db)
-            Error(error)
-          }
-        }
+        })
       })
   }
 }
@@ -282,17 +238,24 @@ fn row_decoder() {
   use seq <- decode.field(0, decode.int)
   use payload <- decode.field(1, decode.bit_array)
   use timestamp <- decode.field(2, decode.optional(decode.int))
-  use provider <- decode.field(3, decode.optional(decode.string))
-  decode.success(#(seq, payload, timestamp, provider))
+  decode.success(#(seq, payload, timestamp))
 }
 
 fn decode_row(row) -> Result(Row, String) {
-  let #(seq, payload, timestamp, provider) = row
+  let #(seq, payload, timestamp) = row
   use input <- result.try(
     unpack(payload, unread)
     |> result.replace_error("invalid saved transcript item"),
   )
-  Ok(Row(seq, payload, input, timestamp, provider))
+  Ok(Row(seq, input, timestamp))
+}
+
+/// A page's size: a non-positive request falls back to `default`.
+fn clamp_limit(requested: Int, default: Int) -> Int {
+  case requested <= 0 {
+    True -> default
+    False -> int.min(requested, max_page_size)
+  }
 }
 
 fn row_item(row: Row) -> Item {
@@ -320,25 +283,31 @@ fn image_label(image: types.Image) -> String {
   <> "]"
 }
 
+/// What a provider item previews as: the names of its calls, its answer
+/// text, or neither.
+type Preview {
+  Calls(names: List(String))
+  Answer(String)
+  Bare
+}
+
+fn preview_of(item: types.ReplayItem) -> Preview {
+  let names = list.map(events.calls(types.Replay(item)), fn(call) { call.name })
+  case names, events.visible_assistant_text(types.Replay(item)) {
+    [_, ..], _ -> Calls(names)
+    [], Some(text) -> Answer(text)
+    [], None -> Bare
+  }
+}
+
 fn replay_preview(item: types.ReplayItem) -> #(Kind, String) {
-  case events.calls(types.Replay(item)) {
-    [call, ..rest] -> {
-      let names =
-        [call, ..rest]
-        |> list.map(fn(call) { call.name })
-        |> string.join(", ")
-      #(Tool, "call " <> names)
-    }
-    [] ->
-      case events.visible_assistant_text(types.Replay(item)) {
-        Some(text) -> #(Assistant, text)
-        None -> {
-          let reasoning = events.thinking_text(item)
-          case reasoning {
-            "" -> #(Assistant, "[provider item]")
-            text -> #(Assistant, "[reasoning] " <> text)
-          }
-        }
+  case preview_of(item) {
+    Calls(names) -> #(Tool, "call " <> string.join(names, ", "))
+    Answer(text) -> #(Assistant, text)
+    Bare ->
+      case events.thinking_text(item) {
+        "" -> #(Assistant, "[provider item]")
+        text -> #(Assistant, "[reasoning] " <> text)
       }
   }
 }
@@ -351,36 +320,27 @@ fn safe_preview(text: String) -> String {
 }
 
 fn read_prefix(db, id: String, checkpoint: Int) -> Result(List(Row), String) {
-  sqlight.query(
-    "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? AND seq<=? ORDER BY seq",
+  use rows <- result.try(store.rows(
     db,
+    "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? AND seq<=? ORDER BY seq",
     [sqlight.text(id), sqlight.int(checkpoint)],
     row_decoder(),
-  )
-  |> result.map_error(fn(error) { error.message })
-  |> result.try(fn(rows) { list.try_map(rows, decode_row) })
+  ))
+  list.try_map(rows, decode_row)
 }
 
 fn prefix_title(rows: List(Row)) -> String {
   rows
   |> list.map(fn(row) { row.input })
   |> conversation.latest_user
-  |> fn(latest) {
-    case latest {
-      Some(text) -> conversation.title(text)
-      None -> "new session"
-    }
-  }
+  |> conversation.title_or_default
 }
 
 fn unmatched_calls(rows: List(Row)) -> Result(List(String), String) {
-  list.fold(rows, Ok([]), fn(state, row) {
-    use pending <- result.try(state)
+  list.try_fold(rows, [], fn(pending, row) {
     case row.input {
       types.Replay(_) ->
-        events.calls(row.input)
-        |> list.fold(Ok(pending), fn(state, call) {
-          use pending <- result.try(state)
+        list.try_fold(events.calls(row.input), pending, fn(pending, call) {
           case list.contains(pending, call.id) {
             True -> Error("duplicate tool call id before checkpoint")
             False -> Ok(list.append(pending, [call.id]))
@@ -402,9 +362,9 @@ fn insert_session(
   id: String,
   title: String,
 ) -> Result(Nil, String) {
-  sqlight.query(
-    "INSERT INTO sessions(id,title,cwd,provider,model,protocol,stage,activity_seq,last_assistant_at) SELECT ?,?,?,?,?,?,'idle',COALESCE(MAX(activity_seq),0)+1,NULL FROM sessions",
+  store.run(
     db,
+    "INSERT INTO sessions(id,title,cwd,provider,model,protocol,stage,activity_seq,last_assistant_at) SELECT ?,?,?,?,?,?,'idle',COALESCE(MAX(activity_seq),0)+1,NULL FROM sessions",
     [
       sqlight.text(id),
       sqlight.text(title),
@@ -413,10 +373,7 @@ fn insert_session(
       sqlight.text(source.model),
       sqlight.text(conversation.protocol(source.protocol)),
     ],
-    decode.dynamic,
   )
-  |> result.replace(Nil)
-  |> result.map_error(fn(error) { error.message })
 }
 
 fn copy_prefix(
@@ -425,18 +382,11 @@ fn copy_prefix(
   branch_id: String,
   checkpoint: Int,
 ) -> Result(Nil, String) {
-  sqlight.query(
-    "INSERT INTO transcript(session,payload,timestamp,provider,thought_ms) SELECT ?,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq<=? ORDER BY seq",
+  store.run(
     db,
-    [
-      sqlight.text(branch_id),
-      sqlight.text(source_id),
-      sqlight.int(checkpoint),
-    ],
-    decode.dynamic,
+    "INSERT INTO transcript(session,payload,timestamp,provider,thought_ms) SELECT ?,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq<=? ORDER BY seq",
+    [sqlight.text(branch_id), sqlight.text(source_id), sqlight.int(checkpoint)],
   )
-  |> result.replace(Nil)
-  |> result.map_error(fn(error) { error.message })
 }
 
 fn copy_extension_overrides(
@@ -444,14 +394,11 @@ fn copy_extension_overrides(
   source_id: String,
   branch_id: String,
 ) -> Result(Nil, String) {
-  sqlight.query(
-    "INSERT INTO session_extensions(session,name,enabled) SELECT ?,name,enabled FROM session_extensions WHERE session=?",
+  store.run(
     db,
+    "INSERT INTO session_extensions(session,name,enabled) SELECT ?,name,enabled FROM session_extensions WHERE session=?",
     [sqlight.text(branch_id), sqlight.text(source_id)],
-    decode.dynamic,
   )
-  |> result.replace(Nil)
-  |> result.map_error(fn(error) { error.message })
 }
 
 fn append_incomplete_results(
@@ -461,9 +408,9 @@ fn append_incomplete_results(
   pending: List(String),
 ) -> Result(Nil, String) {
   list.try_each(pending, fn(call_id) {
-    sqlight.query(
-      "INSERT INTO transcript(session,payload,timestamp,provider) VALUES(?,?,NULL,?)",
+    store.run(
       db,
+      "INSERT INTO transcript(session,payload,timestamp,provider) VALUES(?,?,NULL,?)",
       [
         sqlight.text(branch_id),
         sqlight.blob(
@@ -471,10 +418,7 @@ fn append_incomplete_results(
         ),
         sqlight.text(provider),
       ],
-      decode.dynamic,
     )
-    |> result.replace(Nil)
-    |> result.map_error(fn(error) { error.message })
   })
 }
 

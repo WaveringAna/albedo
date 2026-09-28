@@ -253,7 +253,8 @@ pub fn submit_mail(
   session: Session,
   letter: mail.Letter,
 ) -> Result(Bool, SubmissionError) {
-  actor.call(session, 10_000, Submit(
+  call_submit(
+    session,
     Submission(
       mail.display(letter),
       mail.text(letter),
@@ -261,8 +262,7 @@ pub fn submit_mail(
       turn.Mail(letter.id, letter.kind),
       None,
     ),
-    _,
-  ))
+  )
 }
 
 pub fn submit(
@@ -271,20 +271,17 @@ pub fn submit(
   client_id: String,
   image: Option(types.Image),
 ) -> Result(Bool, SubmissionError) {
-  actor.call(session, 10_000, Submit(
-    Submission(text, text, client_id, turn.Chat, image),
-    _,
-  ))
+  call_submit(session, Submission(text, text, client_id, turn.Chat, image))
 }
 
 pub fn submit_continue(
   session: Session,
   client_id: String,
 ) -> Result(Bool, SubmissionError) {
-  actor.call(session, 10_000, Submit(
+  call_submit(
+    session,
     Submission("", continue_prompt, client_id, turn.Continue, None),
-    _,
-  ))
+  )
 }
 
 /// This session's materialized command catalog and the context that runs them.
@@ -356,6 +353,56 @@ pub fn evict_history(session: Session) -> Bool {
   actor.call(session, 5000, EvictHistory)
 }
 
+fn answer(
+  state: State,
+  reply: Subject(a),
+  value: a,
+) -> actor.Next(State, Message) {
+  process.send(reply, value)
+  actor.continue(state)
+}
+
+fn transition(
+  reply: Subject(a),
+  transition: #(State, a),
+) -> actor.Next(State, Message) {
+  process.send(reply, transition.1)
+  actor.continue(transition.0)
+}
+
+/// Interrupt the live kernel, if there is one.
+fn interrupt_kernel(state: State) -> Nil {
+  case state.kernel {
+    Some(kernel) -> runtime.interrupt(kernel)
+    None -> Nil
+  }
+}
+
+fn call_submit(
+  session: Session,
+  submission: Submission,
+) -> Result(Bool, SubmissionError) {
+  actor.call(session, 10_000, Submit(submission, _))
+}
+
+fn transcript_error_events(error: String) -> List(String) {
+  [
+    view.event("reset", []),
+    view.text("error", "could not load transcript: " <> error),
+  ]
+}
+
+fn transcript_error(sequence: Int, error: String) -> Page {
+  Page(sequence, True, transcript_error_events(error))
+}
+
+fn cleanup_registrations(id: String) -> Nil {
+  wakes_forget(id)
+  commands_forget(id)
+  mailbox_forget(id)
+  live_forget(id)
+}
+
 fn handle(state: State, message: Message) {
   // Anything a client sends counts as attention; a detached session goes quiet.
   let state = case message {
@@ -388,12 +435,9 @@ fn handle(state: State, message: Message) {
           // The Cancel-time interrupt may have landed on an idle kernel,
           // before the turn reached a tool; a stalled actor can delay this
           // Abort past a tool gate, so interrupt whatever runs now too.
-          case state.kernel {
-            Some(kernel) -> runtime.interrupt(kernel)
-            None -> Nil
-          }
+          interrupt_kernel(state)
           kill(run.pid)
-          handle(state, Finished(id, Error("cancelled")))
+          finish_run(state, run, Error("cancelled"))
         }
         _ -> actor.continue(state)
       }
@@ -404,35 +448,24 @@ fn handle(state: State, message: Message) {
         turn.holds_letter(state.steering, id),
         mail.undelivered(runtime.ledger(state.host), id)
       {
-        True, _ -> {
-          process.send(reply, Ok(True))
-          actor.continue(state)
-        }
-        False, False -> {
-          process.send(reply, Ok(False))
-          actor.continue(state)
-        }
+        True, _ -> answer(state, reply, Ok(True))
+        False, False -> answer(state, reply, Ok(False))
         False, True -> admit(state, submission, reply)
       }
     Submit(submission, reply) -> admit(state, submission, reply)
-    ReadCommands(reply) -> {
-      process.send(
+    ReadCommands(reply) ->
+      answer(
+        state,
         reply,
         runtime.peek_commands(state.host, state.info.id, state.info.cwd),
       )
-      actor.continue(state)
-    }
-    ReadSelection(reply) -> {
-      process.send(reply, model_selection(state.info))
-      actor.continue(state)
-    }
+    ReadSelection(reply) -> answer(state, reply, model_selection(state.info))
     Interrupt(reply) ->
       case turn.running(state.activity), waiting_turn(state) {
         // A turn still waiting for its kernel: drop it. Letters it held stay
         // undelivered, so the dispatcher offers them again later.
-        None, True -> {
-          process.send(reply, True)
-          actor.continue(
+        None, True ->
+          answer(
             session_state.State(
               ..state,
               steering: [],
@@ -445,22 +478,18 @@ fn handle(state: State, message: Message) {
                 )
               }),
             )
-            |> session_state.emit(view.event("interrupted", [])),
+              |> session_state.emit(view.event("interrupted", [])),
+            reply,
+            True,
           )
-        }
-        None, False -> {
-          process.send(reply, False)
-          actor.continue(state)
-        }
+        None, False -> answer(state, reply, False)
         Some(run), _ -> {
-          case state.kernel {
-            Some(kernel) -> runtime.interrupt(kernel)
-            None -> Nil
-          }
+          interrupt_kernel(state)
           let _ = process.send_after(state.self, 2500, Abort(run.id))
-          process.send(reply, True)
-          actor.continue(
+          answer(
             session_state.State(..state, activity: turn.cancel(state.activity)),
+            reply,
+            True,
           )
         }
       }
@@ -476,19 +505,13 @@ fn handle(state: State, message: Message) {
           )
       }
       case changed {
-        Error(error) -> {
-          process.send(reply, Error(error))
-          actor.continue(state)
-        }
+        Error(error) -> answer(state, reply, Error(error))
         Ok(_) -> {
           let state = case cwd == state.info.cwd {
             True -> state
             False -> {
               runtime.forget_session(state.host, state.info.id)
-              case session_namespace.state_path(state.home, state.info.id) {
-                Some(path) -> discard(path)
-                None -> Nil
-              }
+              discard_state(state.home, state.info.id)
               session_state.State(
                 ..state,
                 kernel: None,
@@ -502,48 +525,34 @@ fn handle(state: State, message: Message) {
               ))
             }
           }
-          process.send(reply, Ok(state.info))
-          actor.continue(state)
+          answer(state, reply, Ok(state.info))
         }
       }
     }
-    ReadExtensions(reply) -> {
-      process.send(
+    ReadExtensions(reply) ->
+      answer(
+        state,
         reply,
         runtime.extension_summaries(state.host, state.info.id),
       )
-      actor.continue(state)
-    }
-    ChangeExtension(change, reply) -> {
-      let #(state, outcome) = session_extensions.change(state, change)
-      process.send(reply, outcome)
-      actor.continue(state)
-    }
+    ChangeExtension(change, reply) ->
+      transition(reply, session_extensions.change(state, change))
     ChangeModel(model, provider_name, effort, reply) -> {
       let #(state, outcome) =
         session_provider.select(state, model, provider_name, effort)
-      process.send(
+      answer(
+        state,
         reply,
         result.map(outcome, fn(_) { model_selection(state.info) }),
       )
-      actor.continue(state)
     }
 
-    ReadEffort(reply) -> {
-      process.send(reply, session_provider.read_effort(state))
-      actor.continue(state)
-    }
-    ChangeEffort(level, reply) -> {
-      let #(state, outcome) = session_provider.change_effort(state, level)
-      process.send(reply, outcome)
-      actor.continue(state)
-    }
+    ReadEffort(reply) ->
+      answer(state, reply, session_provider.read_effort(state))
+    ChangeEffort(level, reply) ->
+      transition(reply, session_provider.change_effort(state, level))
 
-    RefreshData(reply) -> {
-      let #(state, outcome) = session_extensions.refresh(state)
-      process.send(reply, outcome)
-      actor.continue(state)
-    }
+    RefreshData(reply) -> transition(reply, session_extensions.refresh(state))
     Compact(strategy, reply) ->
       case
         turn.running(state.activity),
@@ -552,8 +561,9 @@ fn handle(state: State, message: Message) {
         None, Error(state) -> actor.continue(state)
         _, Ok(state) | Some(_), Error(state) -> compact(state, strategy, reply)
       }
-    Status(reply) -> {
-      process.send(
+    Status(reply) ->
+      answer(
+        state,
         reply,
         json.object([
           // A turn waiting for its kernel is already on its way.
@@ -569,8 +579,6 @@ fn handle(state: State, message: Message) {
         ])
           |> json.to_string,
       )
-      actor.continue(state)
-    }
     Watch(owner, notify) ->
       actor.continue(
         session_state.State(..state, watchers: [
@@ -582,10 +590,7 @@ fn handle(state: State, message: Message) {
       )
     Read(after, tail, reply) -> {
       case event_buffer.since(state.events, after, state.sequence) {
-        Ok(events) -> {
-          process.send(reply, Page(state.sequence, False, events))
-          actor.continue(state)
-        }
+        Ok(events) -> answer(state, reply, Page(state.sequence, False, events))
         Error(_) if tail != None -> {
           let rows = option.unwrap(tail, 0)
           let events = case
@@ -596,39 +601,29 @@ fn handle(state: State, message: Message) {
               rows,
             )
           {
-            Error(error) -> [
-              view.event("reset", []),
-              view.text("error", "could not load transcript: " <> error),
-            ]
+            Error(error) -> transcript_error_events(error)
             Ok(#(entries, more)) -> [
               view.event("reset", view.page_fields(entries, more)),
               ..list.append(
                 view.rows(runtime.ledger(state.host), entries),
-                case state.latest_usage {
-                  Some(metadata) -> [usage.event(metadata)]
-                  None -> []
-                },
+                option.values([option.map(state.latest_usage, usage.event)]),
               )
             ]
           }
-          process.send(reply, Page(state.sequence, True, events))
-          actor.continue(state)
+          answer(state, reply, Page(state.sequence, True, events))
         }
         Error(_) ->
           case session_history.ensure_history(state) {
-            Error(error) -> {
-              process.send(
-                reply,
-                Page(state.sequence, True, [
-                  view.event("reset", []),
-                  view.text("error", "could not load transcript: " <> error),
-                ]),
-              )
-              actor.continue(state)
-            }
+            Error(error) ->
+              answer(state, reply, transcript_error(state.sequence, error))
             Ok(state) -> {
               let history = state.history |> option.unwrap([]) |> list.reverse
-              process.send(
+              // A reset renders the transcript once for the client; keeping it
+              // afterwards would hold every attached session's conversation in
+              // memory between turns. The next turn reads it again.
+              process.send(state.self, Collect)
+              answer(
+                session_state.State(..state, history: None),
                 reply,
                 Page(state.sequence, True, [
                   view.event("reset", []),
@@ -639,11 +634,6 @@ fn handle(state: State, message: Message) {
                   )
                 ]),
               )
-              // A reset renders the transcript once for the client; keeping it
-              // afterwards would hold every attached session's conversation in
-              // memory between turns. The next turn reads it again.
-              process.send(state.self, Collect)
-              actor.continue(session_state.State(..state, history: None))
             }
           }
       }
@@ -651,14 +641,8 @@ fn handle(state: State, message: Message) {
 
     Publish(id, event, reply) ->
       case turn.live(state.activity, id) {
-        True -> {
-          process.send(reply, True)
-          actor.continue(session_state.emit(state, event))
-        }
-        False -> {
-          process.send(reply, False)
-          actor.continue(state)
-        }
+        True -> answer(session_state.emit(state, event), reply, True)
+        False -> answer(state, reply, False)
       }
     Commit(id, inputs, stage, thought_ms, reply) ->
       case turn.owner(state.activity, id) {
@@ -673,41 +657,30 @@ fn handle(state: State, message: Message) {
               Some(state.info.provider),
               thought_ms,
             )
-          process.send(reply, written)
           case written {
-            Ok(timestamp) -> {
-              let state =
-                session_history.remember_response(
-                  state,
-                  inputs,
-                  timestamp,
-                  thought_ms,
-                )
-              actor.continue(
+            Ok(timestamp) ->
+              answer(
                 session_state.State(
-                  ..state,
+                  ..session_history.remember_response(
+                    state,
+                    inputs,
+                    timestamp,
+                    thought_ms,
+                  ),
                   activity: turn.committed(state.activity, id, stage),
                 ),
+                reply,
+                written,
               )
-            }
-            Error(_) -> actor.continue(state)
+            Error(_) -> answer(state, reply, written)
           }
         }
-        _ -> {
-          process.send(reply, Error("stale run"))
-          actor.continue(state)
-        }
+        _ -> answer(state, reply, Error("stale run"))
       }
     DrainSteering(id, reply) ->
       case turn.live(state.activity, id), state.steering {
-        False, _ -> {
-          process.send(reply, Error("cancelled"))
-          actor.continue(state)
-        }
-        True, [] -> {
-          process.send(reply, Ok([]))
-          actor.continue(state)
-        }
+        False, _ -> answer(state, reply, Error("cancelled"))
+        True, [] -> answer(state, reply, Ok([]))
         True, queued -> {
           let inputs = list.map(queued, session_submission.input)
           case
@@ -720,10 +693,7 @@ fn handle(state: State, message: Message) {
               turn.letters(queued),
             )
           {
-            Error(error) -> {
-              process.send(reply, Error(error))
-              actor.continue(state)
-            }
+            Error(error) -> answer(state, reply, Error(error))
             Ok(timestamp) -> {
               let state =
                 session_submission.emit(
@@ -731,8 +701,11 @@ fn handle(state: State, message: Message) {
                   queued,
                   timestamp,
                 )
-              process.send(reply, Ok(inputs))
-              actor.continue(session_state.State(..state, steering: []))
+              answer(
+                session_state.State(..state, steering: []),
+                reply,
+                Ok(inputs),
+              )
             }
           }
         }
@@ -780,28 +753,25 @@ fn handle(state: State, message: Message) {
         _, _, _ -> actor.continue(state)
       }
     }
-    RecordContext(id, snapshot, compacted, reply) -> {
-      let state = case turn.live(state.activity, id) {
-        True -> {
-          let state = session_state.State(..state, context: snapshot)
-          case compacted {
-            True -> elide_compacted_images(state)
-            False -> state
+    RecordContext(id, snapshot, compacted, reply) ->
+      answer(
+        case turn.live(state.activity, id) {
+          True -> {
+            let state = session_state.State(..state, context: snapshot)
+            case compacted {
+              True -> elide_compacted_images(state)
+              False -> state
+            }
           }
-        }
-        False -> state
-      }
-      process.send(reply, Nil)
-      actor.continue(state)
-    }
-    ReadContext(reply) -> {
-      process.send(reply, context_snapshot.summary(state.context))
-      actor.continue(state)
-    }
-    ReadContextPage(section, page, reply) -> {
-      process.send(reply, context_snapshot.page(state.context, section, page))
-      actor.continue(state)
-    }
+          False -> state
+        },
+        reply,
+        Nil,
+      )
+    ReadContext(reply) ->
+      answer(state, reply, context_snapshot.summary(state.context))
+    ReadContextPage(section, page, reply) ->
+      answer(state, reply, context_snapshot.page(state.context, section, page))
     RecordUsage(id, metadata, reply) ->
       case turn.owner(state.activity, id) {
         Some(_) -> {
@@ -811,104 +781,50 @@ fn handle(state: State, message: Message) {
               state.info.id,
               metadata,
             )
-          process.send(reply, written)
           case written {
             Ok(_) ->
-              actor.continue(
+              answer(
                 session_state.State(
                   ..state,
                   latest_usage: Some(metadata),
                   context: context_snapshot.with_usage(state.context, metadata),
                 ),
+                reply,
+                written,
               )
-            Error(_) -> actor.continue(state)
+            Error(_) -> answer(state, reply, written)
           }
         }
-        _ -> {
-          process.send(reply, Error("stale run"))
-          actor.continue(state)
-        }
+        _ -> answer(state, reply, Error("stale run"))
       }
     Finished(id, outcome) ->
       case turn.owner(state.activity, id) {
-        Some(run) -> {
-          process.demonitor_process(run.monitor)
-          let persisted =
-            conversation.commit_from(
-              runtime.ledger(state.host),
-              state.info.id,
-              [],
-              turn.final_stage(run, outcome),
-              Some(state.info.provider),
-            )
-          let state = session_state.State(..state, activity: turn.Resting)
-          bus.running(state.info.id, False)
-          // A webhook or wake refused while this run held the session can
-          // be admitted now.
-          mail.waiting()
-          let state = case run.cancelled, outcome, persisted {
-            True, _, _ ->
-              session_state.emit(state, view.event("interrupted", []))
-            _, Error(error), _ ->
-              session_state.emit(state, view.text("error", error))
-            _, _, Error(error) ->
-              session_state.emit(state, view.text("error", error))
-            // Compaction makes no provider request, so the footer's last real
-            // usage is stale; the strategy's own estimate replaces it.
-            _, Ok(_), Ok(_) if run.work == turn.Compaction -> {
-              let state = case context_snapshot.estimate(state.context) {
-                Some(tokens) -> {
-                  let metadata =
-                    usage.Metadata(
-                      state.info.model,
-                      usage.now(),
-                      Some(usage.Tokens(tokens, 0, None, None)),
-                    )
-                  session_state.emit(
-                    session_state.State(..state, latest_usage: Some(metadata)),
-                    usage.event(metadata),
-                  )
-                }
-                None -> state
-              }
-              state
-            }
-            _, _, _ -> state
-          }
-          let state = case run.work, run.cancelled {
-            turn.Turn(_), False -> answer_parent(state, outcome)
-            _, _ -> state
-          }
-          process.send(state.self, Collect)
-          actor.continue(start_queued(state))
-        }
+        Some(run) -> finish_run(state, run, outcome)
         _ -> actor.continue(state)
       }
     Down(process.ProcessDown(_, pid, _)) ->
       case turn.running(state.activity) {
         Some(run) if run.pid == pid ->
-          handle(
+          finish_run(
             state,
-            Finished(
-              run.id,
-              Error("worker stopped; execution may have had effects"),
-            ),
+            run,
+            Error("worker stopped; execution may have had effects"),
           )
         _ -> actor.continue(state)
       }
     Down(_) -> actor.continue(state)
     Idle(reply) -> {
-      let kernel = case state.kernel {
-        Some(kernel) -> option.from_result(runtime.kernel_pid(kernel))
-        None -> None
+      let #(kernel, jobs) = case state.kernel {
+        Some(kernel) -> #(
+          option.from_result(runtime.kernel_pid(kernel)),
+          runtime.job_count(kernel),
+        )
+        None -> #(None, 0)
       }
       // Live background jobs keep their kernel: releasing it would kill work
       // the session still owes a wake for, so the reaper counts them.
-      let jobs = case state.kernel {
-        Some(kernel) -> runtime.job_count(kernel)
-        None -> 0
-      }
-      process.send(
+      answer(
+        state,
         reply,
         Report(
           turn.running(state.activity) != None,
@@ -918,7 +834,6 @@ fn handle(state: State, message: Message) {
           jobs,
         ),
       )
-      actor.continue(state)
     }
     Release(reply) ->
       case state.kernel, turn.running(state.activity) {
@@ -926,36 +841,30 @@ fn handle(state: State, message: Message) {
           let saved =
             session_namespace.save_state(state.home, state.info.id, kernel)
           runtime.reset_session(state.host, state.info.id)
-          process.send(reply, True)
           process.send(state.self, Collect)
-          actor.continue(
+          answer(
             session_state.State(
               ..state,
               kernel: None,
               context: session_state.unprepared(),
             )
-            |> session_state.emit(view.text(
-              "note",
-              session_namespace.released_text(saved, "nothing was attached"),
-            )),
+              |> session_state.emit(view.text(
+                "note",
+                session_namespace.released_text(saved, "nothing was attached"),
+              )),
+            reply,
+            True,
           )
         }
-        _, _ -> {
-          process.send(reply, False)
-          actor.continue(state)
-        }
+        _, _ -> answer(state, reply, False)
       }
     EvictHistory(reply) ->
       case turn.running(state.activity) {
-        Some(_) -> {
-          process.send(reply, False)
-          actor.continue(state)
-        }
+        Some(_) -> answer(state, reply, False)
         None -> {
           let evicted = state.history != None
-          process.send(reply, evicted)
           process.send(state.self, Collect)
-          actor.continue(session_state.State(..state, history: None))
+          answer(session_state.State(..state, history: None), reply, evicted)
         }
       }
     Collect -> {
@@ -963,30 +872,29 @@ fn handle(state: State, message: Message) {
       actor.continue(state)
     }
     Close(reply) -> {
-      case turn.running(state.activity), state.kernel {
-        Some(run), Some(kernel) -> {
-          runtime.interrupt(kernel)
+      case turn.running(state.activity) {
+        Some(run) -> {
+          interrupt_kernel(state)
           kill(run.pid)
         }
-        Some(run), None -> kill(run.pid)
         // A clean shutdown is the other moment variables are worth keeping.
-        None, Some(kernel) -> {
-          let _ =
-            session_namespace.save_state_within(
-              state.home,
-              state.info.id,
-              kernel,
-              session_namespace.close_state_timeout,
-            )
-          Nil
-        }
-        None, None -> Nil
+        None ->
+          case state.kernel {
+            Some(kernel) -> {
+              let _ =
+                session_namespace.save_state_within(
+                  state.home,
+                  state.info.id,
+                  kernel,
+                  session_namespace.close_state_timeout,
+                )
+              Nil
+            }
+            None -> Nil
+          }
       }
       runtime.forget_session(state.host, state.info.id)
-      wakes_forget(state.info.id)
-      commands_forget(state.info.id)
-      mailbox_forget(state.info.id)
-      live_forget(state.info.id)
+      cleanup_registrations(state.info.id)
       process.send(reply, Nil)
       actor.stop()
     }
@@ -1019,20 +927,30 @@ fn command_op(
     command.ContextPage(section, page) ->
       actor.call(session, 5000, ReadContextPage(section, page, _))
     command.Submit(display, text, client) ->
-      actor.call(session, 10_000, Submit(
+      submitted(
+        session,
         Submission(display, text, client, turn.Chat, None),
-        _,
-      ))
-      |> result.map_error(submission_error)
-      |> result.replace(json.object([#("submitted", json.bool(True))]))
+        "submitted",
+      )
     command.Note(origin, display, text) ->
-      actor.call(session, 10_000, Submit(
+      submitted(
+        session,
         Submission(display, text, "", turn.Note(origin), None),
-        _,
-      ))
-      |> result.map_error(submission_error)
-      |> result.replace(json.object([#("queued", json.bool(True))]))
+        "queued",
+      )
   }
+}
+
+/// One command-routed submission: admitted like any other, reported as
+/// `{"<key>": true}` when it lands.
+fn submitted(
+  session: Session,
+  submission: Submission,
+  key: String,
+) -> Result(json.Json, String) {
+  actor.call(session, 10_000, Submit(submission, _))
+  |> result.map_error(submission_error)
+  |> result.replace(json.object([#(key, json.bool(True))]))
 }
 
 fn model_selection(info: conversation.Info) -> ModelSelection {
@@ -1044,10 +962,7 @@ fn selection_json(selection: ModelSelection) -> json.Json {
     #("provider", json.string(selection.provider)),
     #("model", json.string(selection.model)),
     #("protocol", json.string(conversation.protocol(selection.protocol))),
-    #("effort", case selection.effort {
-      Some(e) -> json.string(e)
-      None -> json.null()
-    }),
+    #("effort", json.nullable(selection.effort, json.string)),
   ])
 }
 
@@ -1102,17 +1017,20 @@ fn live_forget(session: String) -> Nil
 @external(erlang, "albedo_sessions", "find")
 fn live_find(session: String) -> Result(Session, Nil)
 
+fn owner_alive(session: Session) -> Bool {
+  case process.subject_owner(session) {
+    Ok(pid) -> process.is_alive(pid)
+    Error(_) -> False
+  }
+}
+
 /// The session's actor when one is already running, so nobody starts another.
 pub fn live(id: String) -> Option(Session) {
   case live_find(id) {
     Ok(session) ->
-      case process.subject_owner(session) {
-        Ok(pid) ->
-          case process.is_alive(pid) {
-            True -> Some(session)
-            False -> None
-          }
-        Error(_) -> None
+      case owner_alive(session) {
+        True -> Some(session)
+        False -> None
       }
     Error(_) -> None
   }
@@ -1151,6 +1069,8 @@ fn kernel_or_park(state: State, work: Message) -> Result(State, State) {
 
 /// The kernel's notice (variables restored or lost) rides on the newest user
 /// message, where the model reads it; the transcript keeps the message as sent.
+/// The kernel notice reaches the model but not the ledger, as it does for a
+/// chat message. Projection is newest-first: the head is this submission.
 fn with_notice(
   history: List(types.Input),
   notice: Option(String),
@@ -1284,8 +1204,6 @@ fn kernel_opened(
   }
 }
 
-/// The kernel opens on first use. A session with history had a namespace the
-/// model still believes in, so its saved variables are revived and the gap named.
 fn failed_queued(state: State, error: String) -> State {
   session_state.emit(
     session_state.State(..state, steering: []),
@@ -1371,104 +1289,52 @@ fn admit(
   reply: Subject(Result(Bool, SubmissionError)),
 ) -> actor.Next(State, Message) {
   case turn.admit(state.activity, submission, list.length(state.steering)) {
-    turn.Reject(turn.Busy) -> {
-      process.send(reply, Error(Busy))
-      actor.continue(state)
-    }
-    turn.Reject(turn.Oversized) -> {
-      process.send(
+    turn.Reject(turn.Busy) -> answer(state, reply, Error(Busy))
+    turn.Reject(turn.Oversized) ->
+      answer(
+        state,
         reply,
         Error(Rejected("prompt or activation exceeds its bounded size")),
       )
-      actor.continue(state)
-    }
-    turn.Queue -> {
-      process.send(reply, Ok(True))
-      actor.continue(
+    turn.Queue ->
+      answer(
         session_state.State(
           ..state,
           steering: list.append(state.steering, [submission]),
         ),
+        reply,
+        Ok(True),
       )
-    }
     turn.Start ->
       case directory(state.info.cwd), session_namespace.ready(state) {
-        False, _ -> {
-          process.send(reply, Error(WorkspaceMissing(state.info.cwd)))
-          actor.continue(state)
-        }
+        False, _ ->
+          answer(state, reply, Error(WorkspaceMissing(state.info.cwd)))
         // It starts once the kernel boots, not behind another turn, so to
         // the caller it is not queued; the actor keeps answering meanwhile.
-        True, #(state, None) -> {
-          process.send(reply, Ok(False))
-          actor.continue(park(
-            session_state.State(
-              ..state,
-              steering: list.append(state.steering, [submission]),
+        True, #(state, None) ->
+          answer(
+            park(
+              session_state.State(
+                ..state,
+                steering: list.append(state.steering, [submission]),
+              ),
+              StartQueued,
             ),
-            StartQueued,
-          ))
-        }
+            reply,
+            Ok(False),
+          )
         True, #(state, Some(_)) -> start_now(state, submission, reply)
       }
   }
 }
 
 fn resume(state: State) -> State {
-  case prepare_submission(state) {
-    Error(error) ->
+  case prepare_turn_pipeline(state, [restart_note]) {
+    Error(#(state, err)) ->
       session_state.State(..state, activity: turn.Resting)
-      |> session_state.emit(view.text("error", submission_error(error)))
-    Ok(#(state, kernel, client)) -> {
-      let recovered =
-        list.append(
-          session_history.recover_pending(state.host, state.history, kernel),
-          [
-            session_submission.input(restart_note),
-          ],
-        )
-      let candidate = session_history.remember(state, recovered, 0)
-      case projected_inputs(candidate) {
-        Error(error) ->
-          session_state.State(..state, activity: turn.Resting)
-          |> session_state.emit(view.text("error", error))
-        Ok(model_history) ->
-          case
-            conversation.commit_from(
-              runtime.ledger(state.host),
-              state.info.id,
-              recovered,
-              conversation.Model,
-              Some(state.info.provider),
-            )
-          {
-            Error(error) -> session_state.emit(state, view.text("error", error))
-            Ok(timestamp) -> {
-              // The kernel notice reaches the model but not the ledger,
-              // as it does for a chat message.
-              let model_history = case state.notice, model_history {
-                Some(notice), [types.User(text), ..rest] -> [
-                  types.User(text <> notice),
-                  ..rest
-                ]
-                _, _ -> model_history
-              }
-              let state =
-                session_history.remember(state, recovered, timestamp)
-                |> session_state.emit(session_submission.event(
-                  restart_note,
-                  timestamp,
-                ))
-              start_run(
-                session_state.State(..state, notice: None),
-                kernel,
-                client,
-                model_history,
-              )
-            }
-          }
-      }
-    }
+      |> session_state.emit(view.text("error", submission_error(err)))
+    Ok(#(state, kernel, client, history)) ->
+      start_run(state, kernel, client, history)
   }
 }
 
@@ -1520,13 +1386,10 @@ fn compact(
     Ok(#(state, kernel, client, strategy, history))
   }
   case prepared {
-    Error(error) -> {
-      process.send(reply, Error(error))
-      actor.continue(state)
-    }
-    Ok(#(state, kernel, client, strategy, history)) -> {
-      let state = start_worker(state, kernel, client, history, turn.Compaction)
-      process.send(
+    Error(error) -> answer(state, reply, Error(error))
+    Ok(#(state, kernel, client, strategy, history)) ->
+      answer(
+        start_worker(state, kernel, client, history, turn.Compaction),
         reply,
         Ok(
           json.object([
@@ -1536,8 +1399,6 @@ fn compact(
           ]),
         ),
       )
-      actor.continue(state)
-    }
   }
 }
 
@@ -1585,133 +1446,120 @@ fn select_strategy(
   }
 }
 
+fn prepare_turn_pipeline(
+  state: State,
+  submissions: List(Submission),
+) -> Result(
+  #(State, runtime.Session, extension.Upstream, List(types.Input)),
+  #(State, SubmissionError),
+) {
+  use #(state, kernel, client) <- result.try(
+    prepare_submission(state) |> result.map_error(fn(err) { #(state, err) }),
+  )
+  let accepted =
+    list.append(
+      session_history.recover_pending(state.host, state.history, kernel),
+      list.map(submissions, session_submission.input),
+    )
+  use history <- result.try(
+    projected_inputs(session_history.remember(state, accepted, 0))
+    |> result.map_error(fn(err) { #(state, Rejected(err)) }),
+  )
+  use timestamp <- result.try(
+    conversation.commit_letters(
+      runtime.ledger(state.host),
+      state.info.id,
+      accepted,
+      conversation.Model,
+      Some(state.info.provider),
+      turn.letters(submissions),
+    )
+    |> result.map_error(fn(err) { #(state, Rejected(err)) }),
+  )
+  let history = with_notice(history, state.notice)
+  let state =
+    session_history.remember(state, accepted, timestamp)
+    |> session_submission.emit(submissions, timestamp)
+    |> fn(state) { session_state.State(..state, notice: None, steering: []) }
+  Ok(#(state, kernel, client, history))
+}
+
 fn start_now(
   state: State,
   submission: Submission,
   reply: Subject(Result(Bool, SubmissionError)),
 ) -> actor.Next(State, Message) {
-  case prepare_submission(state) {
-    Error(error) -> {
-      process.send(reply, Error(error))
-      actor.continue(state)
-    }
-    Ok(#(state, kernel, client)) -> {
-      // Notes queued while idle ride along ahead of this message.
-      let notes = state.steering
-      let accepted =
-        list.flatten([
-          session_history.recover_pending(state.host, state.history, kernel),
-          list.map(notes, session_submission.input),
-          [session_submission.input(submission)],
-        ])
-      case projected_inputs(session_history.remember(state, accepted, 0)) {
-        Error(error) -> {
-          process.send(reply, Error(Rejected(error)))
-          actor.continue(state)
-        }
-        Ok(history) -> {
-          // Projection is newest-first: the head is this submission.
-          let model_history = case state.notice {
-            None -> history
-            Some(notice) ->
-              case history {
-                [types.User(_), ..rest] -> [
-                  types.User(submission.text <> notice),
-                  ..rest
-                ]
-                [types.UserImage(_, image), ..rest] -> [
-                  types.UserImage(submission.text <> notice, image),
-                  ..rest
-                ]
-                _ -> history
-              }
-          }
-          case
-            conversation.commit_letters(
-              runtime.ledger(state.host),
-              state.info.id,
-              accepted,
-              conversation.Model,
-              Some(state.info.provider),
-              turn.letters([submission, ..notes]),
-            )
-          {
-            Error(error) -> {
-              process.send(reply, Error(Rejected(error)))
-              actor.continue(state)
-            }
-            Ok(timestamp) -> {
-              let state =
-                session_history.remember(state, accepted, timestamp)
-                |> session_submission.emit(notes, timestamp)
-                |> fn(state) {
-                  session_state.State(..state, notice: None, steering: [])
-                }
-                |> start_run(kernel, client, model_history)
-              process.send(reply, Ok(False))
-              actor.continue(case submission.source {
-                turn.Continue -> state
-                _ ->
-                  session_state.emit(
-                    state,
-                    session_submission.event(submission, timestamp),
-                  )
-              })
-            }
-          }
-        }
-      }
-    }
+  // Notes queued while idle ride along ahead of this message.
+  case prepare_turn_pipeline(state, list.append(state.steering, [submission])) {
+    Error(#(state, err)) -> answer(state, reply, Error(err))
+    Ok(#(state, kernel, client, history)) ->
+      answer(start_run(state, kernel, client, history), reply, Ok(False))
   }
+}
+
+fn finish_run(
+  state: State,
+  run: turn.Run,
+  outcome: Result(Nil, String),
+) -> actor.Next(State, Message) {
+  process.demonitor_process(run.monitor)
+  let persisted =
+    conversation.commit_from(
+      runtime.ledger(state.host),
+      state.info.id,
+      [],
+      turn.final_stage(run, outcome),
+      Some(state.info.provider),
+    )
+  let state = session_state.State(..state, activity: turn.Resting)
+  bus.running(state.info.id, False)
+  // A webhook or wake refused while this run held the session can
+  // be admitted now.
+  mail.waiting()
+  let state = case run.cancelled, outcome, persisted {
+    True, _, _ -> session_state.emit(state, view.event("interrupted", []))
+    _, Error(error), _ -> session_state.emit(state, view.text("error", error))
+    _, _, Error(error) -> session_state.emit(state, view.text("error", error))
+    // Compaction makes no provider request, so the footer's last real
+    // usage is stale; the strategy's own estimate replaces it.
+    _, Ok(_), Ok(_) if run.work == turn.Compaction -> {
+      let state = case context_snapshot.estimate(state.context) {
+        Some(tokens) -> {
+          let metadata =
+            usage.Metadata(
+              state.info.model,
+              usage.now(),
+              Some(usage.Tokens(tokens, 0, None, None)),
+            )
+          session_state.emit(
+            session_state.State(..state, latest_usage: Some(metadata)),
+            usage.event(metadata),
+          )
+        }
+        None -> state
+      }
+      state
+    }
+    _, _, _ -> state
+  }
+  let state = case run.work, run.cancelled {
+    turn.Turn(_), False -> answer_parent(state, outcome)
+    _, _ -> state
+  }
+  process.send(state.self, Collect)
+  actor.continue(start_queued(state))
 }
 
 fn start_queued(state: State) -> State {
   case turn.starts_turn(state.steering), kernel_or_park(state, StartQueued) {
     False, _ -> state
     True, Error(state) -> state
-    True, Ok(state) -> {
-      let queued = state.steering
-      case prepare_submission(state) {
-        Error(error) -> failed_queued(state, submission_error(error))
-        Ok(#(state, kernel, client)) -> {
-          let accepted =
-            list.append(
-              session_history.recover_pending(state.host, state.history, kernel),
-              list.map(queued, session_submission.input),
-            )
-          case projected_inputs(session_history.remember(state, accepted, 0)) {
-            Error(error) -> failed_queued(state, error)
-            Ok(history) ->
-              case
-                conversation.commit_letters(
-                  runtime.ledger(state.host),
-                  state.info.id,
-                  accepted,
-                  conversation.Model,
-                  Some(state.info.provider),
-                  turn.letters(queued),
-                )
-              {
-                Error(error) -> failed_queued(state, error)
-                Ok(timestamp) -> {
-                  let state =
-                    session_submission.emit(
-                      session_history.remember(state, accepted, timestamp),
-                      queued,
-                      timestamp,
-                    )
-                  start_run(
-                    session_state.State(..state, steering: [], notice: None),
-                    kernel,
-                    client,
-                    with_notice(history, state.notice),
-                  )
-                }
-              }
-          }
-        }
+    True, Ok(state) ->
+      case prepare_turn_pipeline(state, state.steering) {
+        Error(#(state, err)) -> failed_queued(state, submission_error(err))
+        Ok(#(state, kernel, client, history)) ->
+          start_run(state, kernel, client, history)
       }
-    }
   }
 }
 
@@ -1720,21 +1568,17 @@ fn start_queued(state: State) -> State {
 /// timeout would crash the route: an owner too occupied to answer is busy and
 /// the kernel retries; only a stopped owner is unavailable.
 fn wake(session: Session, submission: Submission) -> run.Wake {
-  case process.subject_owner(session) {
-    Error(_) -> run.Unavailable("session stopped")
-    Ok(owner) ->
-      case process.is_alive(owner) {
-        False -> run.Unavailable("session stopped")
-        True -> {
-          let reply = process.new_subject()
-          process.send(session, Submit(submission, reply))
-          case process.receive(reply, 10_000) {
-            Ok(Ok(_)) -> run.Delivered
-            Ok(Error(Busy)) | Error(Nil) -> run.Busy
-            Ok(Error(error)) -> run.Unavailable(submission_error(error))
-          }
-        }
+  case owner_alive(session) {
+    False -> run.Unavailable("session stopped")
+    True -> {
+      let reply = process.new_subject()
+      process.send(session, Submit(submission, reply))
+      case process.receive(reply, 10_000) {
+        Ok(Ok(_)) -> run.Delivered
+        Ok(Error(Busy)) | Error(Nil) -> run.Busy
+        Ok(Error(error)) -> run.Unavailable(submission_error(error))
       }
+    }
   }
 }
 

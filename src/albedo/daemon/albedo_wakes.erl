@@ -16,10 +16,6 @@ forget(Id) -> albedo_registry:forget(?TABLE, Id).
 
 %% The session's answer to one wake; a missing or crashed session is unavailable.
 deliver(Id, Display, Text) ->
-    case albedo_registry:fetch(?TABLE, Id, 2) of
-        {ok, Fun} ->
-            try Fun(Display, Text)
-            catch _:_ -> {unavailable, <<"session unavailable">>}
-            end;
-        undefined -> {unavailable, <<"session unavailable">>}
-    end.
+    albedo_registry:call(?TABLE, Id, 2, [Display, Text],
+                         {unavailable, <<"session unavailable">>},
+                         {unavailable, <<"session unavailable">>}).

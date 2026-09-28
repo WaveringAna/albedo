@@ -52,13 +52,6 @@ pub fn close(store: Store) -> Nil {
   storage.close(store)
 }
 
-fn query(
-  store: Store,
-  run: fn(sqlight.Connection) -> Result(List(Item), Error),
-) {
-  storage.query(store, run)
-}
-
 const schema = "
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=FULL;
@@ -139,12 +132,22 @@ fn decoder() {
 }
 
 fn rows(db, sql, args) {
-  sqlight.query(sql, db, args, decoder())
-  |> result.map_error(fn(e) { Storage(e.message) })
+  storage.rows(db, sql, args, decoder()) |> result.map_error(Storage)
+}
+
+fn find(db, cwd: String, id: Int) {
+  rows(db, "SELECT " <> columns <> " FROM work WHERE cwd=? AND id=?", [
+    sqlight.text(cwd),
+    sqlight.int(id),
+  ])
 }
 
 fn one(items: List(Item)) -> Result(Item, Error) {
   items |> list.first |> result.replace_error(NotFound)
+}
+
+fn one_or_conflict(items: List(Item)) -> Result(Item, Error) {
+  items |> list.first |> result.replace_error(Conflict)
 }
 
 /// Keyset pagination. No unbounded ledger dumps into a model context.
@@ -158,7 +161,7 @@ pub fn list(
   case after < 0 || limit < 1 || limit > 200 {
     True -> Error(Invalid("after >= 0 and 1 <= limit <= 200 required"))
     False ->
-      query(store, fn(db) {
+      storage.query(store, fn(db) {
         rows(
           db,
           "SELECT "
@@ -172,15 +175,7 @@ pub fn list(
 
 pub fn get(store: Store, cwd: String, id: Int) -> Result(Item, Error) {
   use _ <- result.try(valid_cwd(cwd))
-  use items <- result.try(
-    query(store, fn(db) {
-      rows(db, "SELECT " <> columns <> " FROM work WHERE cwd=? AND id = ?", [
-        sqlight.text(cwd),
-        sqlight.int(id),
-      ])
-    }),
-  )
-  one(items)
+  storage.query(store, find(_, cwd, id)) |> result.try(one)
 }
 
 pub fn create(
@@ -192,80 +187,58 @@ pub fn create(
 ) -> Result(Item, Error) {
   use _ <- result.try(valid_cwd(cwd))
   use _ <- result.try(validate(title, notes, None, None))
-  use items <- result.try(
-    query(store, fn(db) {
-      use _ <- result.try(case parent {
-        None -> Ok(Nil)
-        Some(parent_id) ->
-          case
-            rows(db, "SELECT " <> columns <> " FROM work WHERE cwd=? AND id=?", [
-              sqlight.text(cwd),
-              sqlight.int(parent_id),
-            ])
-          {
-            Error(error) -> Error(error)
-            Ok([]) -> Error(NotFound)
-            Ok(_) -> Ok(Nil)
-          }
-      })
-      rows(
-        db,
-        "INSERT INTO work(cwd,title,notes,parent) VALUES(?,?,?,?) RETURNING "
-          <> columns,
-        [
-          sqlight.text(cwd),
-          sqlight.text(title),
-          sqlight.text(notes),
-          sqlight.nullable(sqlight.int, parent),
-        ],
-      )
-    }),
-  )
-  one(items)
+  storage.query(store, fn(db) {
+    use _ <- result.try(case parent {
+      None -> Ok(Nil)
+      Some(parent_id) ->
+        find(db, cwd, parent_id) |> result.try(one) |> result.replace(Nil)
+    })
+    rows(
+      db,
+      "INSERT INTO work(cwd,title,notes,parent) VALUES(?,?,?,?) RETURNING "
+        <> columns,
+      [
+        sqlight.text(cwd),
+        sqlight.text(title),
+        sqlight.text(notes),
+        sqlight.nullable(sqlight.int, parent),
+      ],
+    )
+  })
+  |> result.try(one)
 }
 
 pub fn update(store: Store, cwd: String, item: Item) -> Result(Item, Error) {
   use _ <- result.try(valid_cwd(cwd))
   use _ <- result.try(validate(item.title, item.notes, item.session, item.run))
-  use items <- result.try(
-    query(store, fn(db) {
-      use existing <- result.try(
-        rows(db, "SELECT " <> columns <> " FROM work WHERE cwd=? AND id=?", [
-          sqlight.text(cwd),
-          sqlight.int(item.id),
-        ]),
-      )
-      case existing {
-        [] -> Error(NotFound)
-        [current, ..] if current.parent != item.parent ->
-          Error(Invalid("parent cannot change"))
-        _ -> {
-          use changed <- result.try(
-            rows(
-              db,
-              "UPDATE work SET title=?,notes=?,status=?,session=?,run=?,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cwd=? AND id=? AND revision=? RETURNING "
-                <> columns,
-              [
-                sqlight.text(item.title),
-                sqlight.text(item.notes),
-                sqlight.text(status_name(item.status)),
-                sqlight.nullable(sqlight.text, item.session),
-                sqlight.nullable(sqlight.text, item.run),
-                sqlight.text(cwd),
-                sqlight.int(item.id),
-                sqlight.int(item.revision),
-              ],
-            ),
-          )
-          case changed {
-            [] -> Error(Conflict)
-            _ -> Ok(changed)
-          }
-        }
+  storage.query(store, fn(db) {
+    use existing <- result.try(find(db, cwd, item.id))
+    case existing {
+      [] -> Error(NotFound)
+      [current, ..] if current.parent != item.parent ->
+        Error(Invalid("parent cannot change"))
+      _ -> {
+        use changed <- result.try(
+          rows(
+            db,
+            "UPDATE work SET title=?,notes=?,status=?,session=?,run=?,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cwd=? AND id=? AND revision=? RETURNING "
+              <> columns,
+            [
+              sqlight.text(item.title),
+              sqlight.text(item.notes),
+              sqlight.text(status_name(item.status)),
+              sqlight.nullable(sqlight.text, item.session),
+              sqlight.nullable(sqlight.text, item.run),
+              sqlight.text(cwd),
+              sqlight.int(item.id),
+              sqlight.int(item.revision),
+            ],
+          ),
+        )
+        one_or_conflict(changed)
       }
-    }),
-  )
-  one(items)
+    }
+  })
 }
 
 /// Remove one item at the revision the caller last saw. An item with children
@@ -277,39 +250,32 @@ pub fn delete(
   revision: Int,
 ) -> Result(Item, Error) {
   use _ <- result.try(valid_cwd(cwd))
-  use items <- result.try(
-    query(store, fn(db) {
-      use existing <- result.try(
-        rows(db, "SELECT " <> columns <> " FROM work WHERE cwd=? AND id=?", [
+  storage.query(store, fn(db) {
+    use existing <- result.try(find(db, cwd, id))
+    use children <- result.try(
+      rows(
+        db,
+        "SELECT " <> columns <> " FROM work WHERE cwd=? AND parent=? LIMIT 1",
+        [
           sqlight.text(cwd),
           sqlight.int(id),
-        ]),
-      )
-      use children <- result.try(
+        ],
+      ),
+    )
+    case existing, children {
+      [], _ -> Error(NotFound)
+      _, [_, ..] -> Error(Invalid("remove its sub-items first"))
+      [current, ..], [] if current.revision != revision -> Error(Conflict)
+      _, [] ->
         rows(
           db,
-          "SELECT " <> columns <> " FROM work WHERE cwd=? AND parent=? LIMIT 1",
-          [
-            sqlight.text(cwd),
-            sqlight.int(id),
-          ],
-        ),
-      )
-      case existing, children {
-        [], _ -> Error(NotFound)
-        _, [_, ..] -> Error(Invalid("remove its sub-items first"))
-        [current, ..], [] if current.revision != revision -> Error(Conflict)
-        _, [] ->
-          rows(
-            db,
-            "DELETE FROM work WHERE cwd=? AND id=? AND revision=? RETURNING "
-              <> columns,
-            [sqlight.text(cwd), sqlight.int(id), sqlight.int(revision)],
-          )
-      }
-    }),
-  )
-  items |> list.first |> result.replace_error(Conflict)
+          "DELETE FROM work WHERE cwd=? AND id=? AND revision=? RETURNING "
+            <> columns,
+          [sqlight.text(cwd), sqlight.int(id), sqlight.int(revision)],
+        )
+        |> result.try(one_or_conflict)
+    }
+  })
 }
 
 fn validate(title, notes, session, run) {
@@ -345,9 +311,7 @@ pub fn to_json(item: Item) -> json.Json {
 
 pub fn initialise(store: Store) -> Result(Nil, String) {
   storage.query(store, fn(db) {
-    use _ <- result.try(
-      sqlight.exec(schema, db) |> result.map_error(fn(e) { e.message }),
-    )
+    use _ <- result.try(storage.exec(db, schema))
     use columns <- result.try(
       sqlight.query(
         "PRAGMA table_info(work)",
@@ -360,13 +324,11 @@ pub fn initialise(store: Store) -> Result(Nil, String) {
     use _ <- result.try(case list.contains(columns, "cwd") {
       True -> Ok(Nil)
       False ->
-        sqlight.exec(
-          "ALTER TABLE work ADD COLUMN cwd TEXT NOT NULL DEFAULT '__albedo_legacy__'",
+        storage.exec(
           db,
+          "ALTER TABLE work ADD COLUMN cwd TEXT NOT NULL DEFAULT '__albedo_legacy__'",
         )
-        |> result.map_error(fn(e) { e.message })
     })
-    sqlight.exec("CREATE INDEX IF NOT EXISTS work_cwd_id ON work(cwd,id)", db)
-    |> result.map_error(fn(e) { e.message })
+    storage.exec(db, "CREATE INDEX IF NOT EXISTS work_cwd_id ON work(cwd,id)")
   })
 }

@@ -66,10 +66,14 @@ fn initialise(_ledger: store.Store) -> Result(Nil, String) {
   Ok(Nil)
 }
 
+fn load_config() -> Result(Config, String) {
+  settings.load("models", config_decoder(), default_config())
+}
+
 /// Refresh the cache in the background when it is missing or older than the
 /// configured window. A failed fetch keeps the previous cache.
 pub fn refresh() -> Nil {
-  case settings.load("models", config_decoder(), default_config()) {
+  case load_config() {
     Ok(Config(url, hours)) if hours > 0 ->
       native_refresh(path(), url, hours * 3_600_000)
     _ -> Nil
@@ -80,11 +84,7 @@ pub fn refresh() -> Nil {
 /// Unlike the opportunistic background refresh, this reports fetch failures so
 /// an explicit `/reload models` never claims stale data was refreshed.
 pub fn reload() -> Result(Nil, String) {
-  use Config(url, _) <- result.try(settings.load(
-    "models",
-    config_decoder(),
-    default_config(),
-  ))
+  use Config(url, _) <- result.try(load_config())
   reload_at(path(), url)
 }
 
@@ -114,18 +114,13 @@ pub fn lookup_at(
       case efforts {
         [] -> None
         _ ->
-          Some(extension.ModelInfo(
-            model,
-            "models",
-            None,
-            None,
-            None,
-            [],
-            None,
-            [],
-            "inferred reasoning model",
-            efforts,
-          ))
+          Some(
+            extension.ModelInfo(
+              ..extension.blank_model(model, "models"),
+              source: "inferred reasoning model",
+              efforts: efforts,
+            ),
+          )
       }
     }
     Ok(encoded) ->
@@ -167,10 +162,9 @@ pub fn list_at(
   endpoint: String,
 ) -> List(String) {
   case native_list(catalog, provider, endpoint) {
-    Error(_) -> []
     Ok(encoded) ->
-      json.parse(encoded, decode.list(decode.string))
-      |> result.unwrap([])
+      json.parse(encoded, decode.list(decode.string)) |> result.unwrap([])
+    Error(_) -> []
   }
 }
 
@@ -254,7 +248,7 @@ pub fn complete_model(
   endpoint: String,
 ) -> extension.ModelInfo {
   case complete_models([info], endpoint) {
-    [completed, ..] -> completed
+    [completed] -> completed
     _ -> info
   }
 }
@@ -289,39 +283,34 @@ fn fill_info(
   found: extension.ModelInfo,
 ) -> extension.ModelInfo {
   extension.ModelInfo(
-    model: base.model,
+    ..base,
     provider: case base.provider {
       "" -> found.provider
       p -> p
     },
-    context_tokens: case base.context_tokens {
-      Some(_) -> base.context_tokens
-      None -> found.context_tokens
-    },
-    max_context_tokens: case base.max_context_tokens {
-      Some(_) -> base.max_context_tokens
-      None -> found.max_context_tokens
-    },
-    max_output_tokens: case base.max_output_tokens {
-      Some(_) -> base.max_output_tokens
-      None -> found.max_output_tokens
-    },
-    input_modalities: case base.input_modalities {
-      [] -> found.input_modalities
-      mods -> mods
-    },
-    endpoint: case base.endpoint {
-      Some(_) -> base.endpoint
-      None -> found.endpoint
-    },
-    environment: case base.environment {
-      [] -> found.environment
-      env -> env
-    },
+    context_tokens: option.or(base.context_tokens, found.context_tokens),
+    max_context_tokens: option.or(
+      base.max_context_tokens,
+      found.max_context_tokens,
+    ),
+    max_output_tokens: option.or(
+      base.max_output_tokens,
+      found.max_output_tokens,
+    ),
+    input_modalities: fallback_list(
+      base.input_modalities,
+      found.input_modalities,
+    ),
+    endpoint: option.or(base.endpoint, found.endpoint),
+    environment: fallback_list(base.environment, found.environment),
     source: base.source <> "; enriched from " <> found.source,
-    efforts: case base.efforts {
-      [] -> found.efforts
-      eff -> eff
-    },
+    efforts: fallback_list(base.efforts, found.efforts),
   )
+}
+
+fn fallback_list(base: List(a), fallback: List(a)) -> List(a) {
+  case base {
+    [] -> fallback
+    _ -> base
+  }
 }

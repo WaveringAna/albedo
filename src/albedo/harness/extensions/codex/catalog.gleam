@@ -10,6 +10,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order
 import gleam/result
 import gleam/string
 
@@ -86,10 +87,10 @@ pub fn listed(home: String) -> List(String) {
   models(home)
   |> list.filter(fn(model) { model.visible })
   |> list.sort(fn(a, b) {
-    case a.priority == b.priority {
-      True -> string.compare(a.slug, b.slug)
-      False -> int.compare(a.priority, b.priority)
-    }
+    order.break_tie(
+      int.compare(a.priority, b.priority),
+      string.compare(a.slug, b.slug),
+    )
   })
   |> list.map(fn(model) { model.slug })
 }
@@ -101,50 +102,50 @@ pub fn lookup(
   endpoint: String,
   model: String,
 ) -> Option(extension.ModelInfo) {
+  use cached <- option.then(cache(home) |> option.from_result)
   use found <- option.then(
-    models(home)
+    cached.accounts
+    |> list.flatten
     |> list.find(fn(item) { item.slug == model })
     |> option.from_result,
   )
-  let version = cache(home) |> result.map(fn(c) { c.client_version })
-  Some(extension.ModelInfo(
-    model: found.slug,
-    provider: "codex",
-    context_tokens: found.context,
-    max_context_tokens: case found.context, found.max_context {
-      Some(context), Some(max) if max > context -> Some(max)
-      None, Some(max) -> Some(max)
-      _, _ -> None
-    },
-    max_output_tokens: None,
-    input_modalities: found.input,
-    endpoint: Some(endpoint),
-    environment: [],
-    source: "Codex models endpoint for the signed-in ChatGPT accounts"
-      <> case version {
-      Ok(version) -> " (client " <> version <> ")"
-      Error(_) -> ""
-    },
-    efforts: found.efforts,
-  ))
+  Some(
+    extension.ModelInfo(
+      ..extension.blank_model(found.slug, "codex"),
+      context_tokens: found.context,
+      max_context_tokens: case found.context, found.max_context {
+        Some(context), Some(max) if max > context -> Some(max)
+        None, Some(max) -> Some(max)
+        _, _ -> None
+      },
+      input_modalities: found.input,
+      endpoint: Some(endpoint),
+      source: "Codex models endpoint for the signed-in ChatGPT accounts"
+        <> case cached.client_version {
+          "" -> ""
+          version -> " (client " <> version <> ")"
+        },
+      efforts: found.efforts,
+    ),
+  )
 }
 
 /// Every account's models, the first account's first, each slug once.
 fn models(home: String) -> List(Model) {
   case cache(home) {
-    Ok(Cache(_, accounts)) ->
-      accounts
-      |> list.flatten
-      |> list.fold(#([], []), fn(state, model) {
-        let #(seen, kept) = state
-        case list.contains(seen, model.slug) {
-          True -> state
-          False -> #([model.slug, ..seen], [model, ..kept])
-        }
-      })
-      |> fn(state) { list.reverse(state.1) }
+    Ok(Cache(_, accounts)) -> unique_models(accounts)
     Error(_) -> []
   }
+}
+
+fn unique_models(accounts: List(List(Model))) -> List(Model) {
+  list.fold(list.flatten(accounts), #([], []), fn(state, model) {
+    case list.contains(state.1, model.slug) {
+      True -> state
+      False -> #([model, ..state.0], [model.slug, ..state.1])
+    }
+  }).0
+  |> list.reverse
 }
 
 fn cache(home: String) -> Result(Cache, Nil) {

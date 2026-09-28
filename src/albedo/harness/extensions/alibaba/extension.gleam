@@ -1,6 +1,5 @@
 //// Alibaba Model Studio provider over the OpenAI-compatible Chat Completions API.
 
-import albedo/daemon/store
 import albedo/harness/extension
 import albedo/harness/extensions/alibaba/catalog
 import albedo/harness/rotation
@@ -27,39 +26,24 @@ pub fn extension() -> extension.Extension {
         resolve,
       )),
     ],
-    initialise,
+    extension.no_initialise,
   )
-}
-
-fn initialise(_ledger: store.Store) -> Result(Nil, String) {
-  Ok(Nil)
 }
 
 fn resolve(
   context: extension.ModelContext,
 ) -> Option(Result(extension.Upstream, String)) {
-  case context.provider {
-    "alibaba" ->
-      case context.protocol {
-        types.ChatCompletions ->
-          Some({
-            let pool = pool(context.home, context.profile, context.session)
-            use client <- result.map(pool.current())
-            rotation.upstream(
-              client.base_url,
-              client.protocol,
-              pool,
-              client,
-              fn(client, error) {
-                explain_key(context.home, context.profile, client, error)
-              },
-            )
-          })
-        _ ->
-          Some(Error("Alibaba provider requires the chat_completions protocol"))
-      }
-    _ -> None
-  }
+  use <- rotation.require_provider(
+    context,
+    "alibaba",
+    "Alibaba",
+    types.ChatCompletions,
+  )
+  let pool = pool(context.home, context.profile, context.session)
+  use client <- result.map(pool.current())
+  rotation.client_upstream(pool, client, fn(client, error) {
+    explain_key(context.home, context.profile, client, error)
+  })
 }
 
 /// Every Alibaba key albedo can see, as a rotation pool: the profile's own key
@@ -72,13 +56,9 @@ pub fn pool(
   rotation.Pool(
     current: fn() { connect(home, profile, session) },
     mark: fn(client, body) {
-      limited(home, profile, client, body)
-      |> option.from_result
-      |> option.map(fn(limit) {
-        rotation.marked(limit.lasting, limit.next != "")
-      })
+      limited(home, profile, client, body) |> rotation.mark_limit
     },
-    same: fn(a: types.Client, b: types.Client) { a.api_key == b.api_key },
+    same: rotation.same_client,
     stream: openai_api.stream,
   )
 }
@@ -102,27 +82,15 @@ fn connect(
   }
 }
 
-type Limited {
-  Limited(until: String, next: String, lasting: Bool)
-}
-
 fn limited(
   home: String,
   profile: String,
   client: types.Client,
   body: String,
-) -> Result(Limited, Nil) {
-  let decoder = {
-    use until <- decode.field("until", decode.string)
-    use next <- decode.field("next", decode.string)
-    use lasting <- decode.field("lasting", decode.bool)
-    decode.success(Limited(until, next, lasting))
-  }
+) -> Result(rotation.Limited, Nil) {
   native_limited(home, profile, client.api_key, body)
   |> result.replace_error(Nil)
-  |> result.try(fn(encoded) {
-    json.parse(encoded, decoder) |> result.replace_error(Nil)
-  })
+  |> result.try(rotation.decode_limited)
 }
 
 /// A 429 reaching here has already been tried on every sibling key with room.
@@ -135,14 +103,11 @@ fn explain_key(
   case error {
     types.HttpError(429, body) ->
       case limited(home, profile, client, body) {
-        Ok(Limited(until, next, _)) if next != "" ->
-          Some(
-            "Alibaba Model Studio limit reached until "
-            <> until
-            <> "; the next turn will use "
-            <> next
-            <> ". Send your message again to continue",
-          )
+        Ok(limit) if limit.next != "" ->
+          Some(rotation.next_turn_message(
+            "Alibaba Model Studio limit reached until " <> limit.until,
+            limit.next,
+          ))
         _ -> explain(error)
       }
     _ -> explain(error)
@@ -160,22 +125,18 @@ pub fn explain(error: types.Error) -> Option(String) {
         True ->
           "Alibaba Model Studio rate limit (TPM/TPS) exceeded; wait a few seconds and retry"
         False ->
-          "Alibaba Model Studio request limit reached: " <> error_message(body)
+          "Alibaba Model Studio request limit reached: "
+          <> rotation.error_message(body)
       })
     types.HttpError(status, body) ->
       Some(
         "Alibaba Model Studio error ("
         <> int.to_string(status)
         <> "): "
-        <> error_message(body),
+        <> rotation.error_message(body),
       )
     _ -> None
   }
-}
-
-fn error_message(body: String) -> String {
-  json.parse(body, decode.at(["error", "message"], decode.string))
-  |> result.unwrap(body)
 }
 
 @external(erlang, "albedo_alibaba", "access")

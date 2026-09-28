@@ -5,7 +5,9 @@
 import gleam/option.{type Option, None, Some}
 import gleam/string
 
-const close = "</system-note>"
+pub const open = "<system-note>"
+
+pub const close = "</system-note>"
 
 /// `text` as a note from `origin`. Text that is already a note keeps its tag.
 pub fn wrap(origin: String, text: String) -> String {
@@ -24,8 +26,9 @@ pub fn wrap(origin: String, text: String) -> String {
 pub fn parse(text: String) -> Option(#(String, String)) {
   case string.ends_with(text, close) {
     False -> None
-    True ->
-      case string.split_once(string.drop_end(text, string.length(close)), ">") {
+    True -> {
+      let inner = string.drop_end(text, string.length(close))
+      case string.split_once(inner, ">") {
         Ok(#("<system-note", body)) -> Some(#("note", body))
         Ok(#("<system-note origin=\"" <> origin, body)) ->
           case string.ends_with(origin, "\"") {
@@ -34,5 +37,6 @@ pub fn parse(text: String) -> Option(#(String, String)) {
           }
         _ -> None
       }
+    }
   }
 }

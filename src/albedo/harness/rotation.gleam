@@ -10,8 +10,11 @@
 
 import albedo/harness/extension
 import albedo/openai_api/types
+import gleam/dynamic/decode
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 
 /// What a 429 said about the account that received it.
 pub type Limit {
@@ -35,6 +38,87 @@ pub fn marked(lasting: Bool, room: Bool) -> Marked {
     True -> Marked(Lasting, room)
     False -> Marked(Brief, room)
   }
+}
+
+/// A rate or usage limit parsed from an account provider's 429 response.
+pub type Limited {
+  Limited(account: String, until: String, next: String, lasting: Bool)
+}
+
+/// Parses a provider's limit JSON describing when an account resets and its sibling.
+pub fn decode_limited(encoded: String) -> Result(Limited, Nil) {
+  let decoder = {
+    use account <- decode.optional_field("account", "", decode.string)
+    use until <- decode.field("until", decode.string)
+    use next <- decode.field("next", decode.string)
+    use lasting <- decode.optional_field("lasting", True, decode.bool)
+    decode.success(Limited(account, until, next, lasting))
+  }
+  json.parse(encoded, decoder) |> result.replace_error(Nil)
+}
+
+/// Marks a successful limit decode against its lasting duration and sibling availability.
+pub fn mark_limit(result: Result(Limited, a)) -> Option(Marked) {
+  result
+  |> result.map(fn(limit) { marked(limit.lasting, limit.next != "") })
+  |> option.from_result
+}
+
+/// Formats a user-facing rate-limit or quota-exhausted explanation.
+pub fn limit_message(head: String, next: String, none_left: String) -> String {
+  case next {
+    "" -> head <> "; " <> none_left
+    _ -> next_turn_message(head, next)
+  }
+}
+
+/// Explains that a request limit was hit and names the sibling account used next.
+pub fn next_turn_message(head: String, next: String) -> String {
+  head
+  <> "; the next turn will use "
+  <> next
+  <> ". Send your message again to continue"
+}
+
+/// Extracts an error message from an API error response body, or falls back to the body.
+pub fn error_message(body: String) -> String {
+  json.parse(body, decode.at(["error", "message"], decode.string))
+  |> result.unwrap(body)
+}
+
+/// Guards upstream resolution against mismatched provider names and protocol requirements.
+pub fn require_provider(
+  context: extension.ModelContext,
+  provider: String,
+  label: String,
+  protocol: types.Protocol,
+  build: fn() -> Result(extension.Upstream, String),
+) -> Option(Result(extension.Upstream, String)) {
+  case context.provider == provider, context.protocol == protocol {
+    False, _ -> None
+    True, True -> Some(build())
+    True, False ->
+      Some(Error(
+        label
+        <> " provider requires the "
+        <> types.protocol_name(protocol)
+        <> " protocol",
+      ))
+  }
+}
+
+/// Tests whether two OpenAI client configurations share the same API key.
+pub fn same_client(a: types.Client, b: types.Client) -> Bool {
+  a.api_key == b.api_key
+}
+
+/// An upstream for an OpenAI-compatible client rotating through pool.
+pub fn client_upstream(
+  pool: Pool(types.Client),
+  first: types.Client,
+  explain: fn(types.Client, types.Error) -> Option(String),
+) -> extension.Upstream {
+  upstream(first.base_url, first.protocol, pool, first, explain)
 }
 
 pub type Pool(account) {

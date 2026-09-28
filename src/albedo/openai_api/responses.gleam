@@ -1,3 +1,4 @@
+import albedo/openai_api/replay
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
 import gleam/dynamic
@@ -6,14 +7,13 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/order
 import gleam/result
 import gleam/string
 
 pub opaque type State {
   State(
     response_id: Option(String),
-    streamed_output: List(#(Int, dynamic.Dynamic)),
+    streamed_output: Dict(Int, dynamic.Dynamic),
     terminal: Bool,
     /// Each streaming call's tool name, by output index, from when it was
     /// added; its argument deltas carry only the index.
@@ -35,7 +35,7 @@ type Response {
 }
 
 pub fn new() -> State {
-  State(None, [], False, dict.new())
+  State(None, dict.new(), False, dict.new())
 }
 
 pub fn feed(
@@ -97,17 +97,19 @@ fn created(
   state: State,
   value: dynamic.Dynamic,
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
-  let decoder = {
-    use response <- decode.field("response", created_response_decoder())
-    decode.success(response)
-  }
+  let decoder =
+    decode.at(
+      ["response"],
+      decode.optional_field(
+        "id",
+        None,
+        decode.optional(decode.string),
+        decode.success,
+      ),
+    )
   use id <- result.try(run(value, decoder, "response.created"))
-  merge_id(state, id)
-}
-
-fn created_response_decoder() -> decode.Decoder(Option(String)) {
-  use id <- decode.optional_field("id", None, decode.optional(decode.string))
-  decode.success(id)
+  use #(state, events) <- result.try(record_id(state, id))
+  Ok(#(state, events, None))
 }
 
 fn text_delta(
@@ -179,27 +181,13 @@ fn output_item_done(
     use item <- decode.field("item", decode.dynamic)
     decode.success(#(index, item))
   }
-  use item <- result.try(run(value, decoder, "response.output_item.done"))
-  let output = put_output(state.streamed_output, item)
-  Ok(#(State(..state, streamed_output: output), [], None))
-}
-
-fn put_output(
-  output: List(#(Int, dynamic.Dynamic)),
-  item: #(Int, dynamic.Dynamic),
-) -> List(#(Int, dynamic.Dynamic)) {
-  let #(index, _) = item
-  case output {
-    [] -> [item]
-    [first, ..rest] -> {
-      let #(first_index, _) = first
-      case int.compare(index, first_index) {
-        order.Lt -> [item, first, ..rest]
-        order.Eq -> [item, ..rest]
-        order.Gt -> [first, ..put_output(rest, item)]
-      }
-    }
-  }
+  use #(index, item) <- result.try(run(
+    value,
+    decoder,
+    "response.output_item.done",
+  ))
+  let streamed_output = dict.insert(state.streamed_output, index, item)
+  Ok(#(State(..state, streamed_output: streamed_output), [], None))
 }
 
 /// Summary parts arrive as separate paragraphs with no separator in their
@@ -208,10 +196,9 @@ fn summary_part_added(
   state: State,
   value: dynamic.Dynamic,
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
-  let decoder = decode.field("summary_index", decode.int, decode.success)
   use index <- result.try(run(
     value,
-    decoder,
+    decode.at(["summary_index"], decode.int),
     "response.reasoning_summary_part.added",
   ))
   case index > 0 {
@@ -239,13 +226,16 @@ fn completed(
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
   use response <- result.try(run(
     value,
-    field_decoder("response", response_decoder(False)),
+    decode.at(["response"], response_decoder(False)),
     "response.completed",
   ))
   use #(state, started) <- result.try(record_id(state, response.id))
-  let State(streamed_output: streamed, ..) = state
   let authoritative = case response.output {
-    [] -> list.map(streamed, fn(item) { item.1 })
+    [] ->
+      state.streamed_output
+      |> dict.to_list
+      |> list.sort(fn(a, b) { int.compare(a.0, b.0) })
+      |> list.map(fn(entry) { entry.1 })
     output -> output
   }
   use output <- result.try(replay_output(authoritative))
@@ -274,7 +264,7 @@ fn incomplete(
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
   use response <- result.try(run(
     value,
-    field_decoder("response", response_decoder(True)),
+    decode.at(["response"], response_decoder(True)),
     "response.incomplete",
   ))
   use #(state, started) <- result.try(record_id(state, response.id))
@@ -293,13 +283,15 @@ fn incomplete(
 }
 
 fn failed(value: dynamic.Dynamic) -> Result(a, types.Error) {
-  let decoder =
-    subfield_decoder(["response", "error", "message"], decode.string)
-  provider_failure(value, decoder, "response.failed")
+  provider_failure(
+    value,
+    decode.at(["response", "error", "message"], decode.string),
+    "response.failed",
+  )
 }
 
 fn provider_error(value: dynamic.Dynamic) -> Result(a, types.Error) {
-  provider_failure(value, field_decoder("message", decode.string), "error")
+  provider_failure(value, decode.at(["message"], decode.string), "error")
 }
 
 fn provider_failure(
@@ -307,13 +299,11 @@ fn provider_failure(
   decoder: decode.Decoder(String),
   context: String,
 ) -> Result(a, types.Error) {
-  case decode.run(value, decoder) {
-    Ok(message) -> Error(types.ProviderError(message))
-    Error(error) ->
-      Error(types.ProviderError(
-        "malformed " <> context <> ": " <> string.inspect(error),
-      ))
+  let message = case decode.run(value, decoder) {
+    Ok(message) -> message
+    Error(error) -> "malformed " <> context <> ": " <> string.inspect(error)
   }
+  Error(types.ProviderError(message))
 }
 
 fn response_decoder(incomplete: Bool) -> decode.Decoder(Response) {
@@ -322,58 +312,22 @@ fn response_decoder(incomplete: Bool) -> decode.Decoder(Response) {
   use usage <- decode.optional_field(
     "usage",
     None,
-    decode.optional(usage_decoder()),
+    decode.optional(types.usage_decoder(
+      "input_tokens",
+      "output_tokens",
+      "input_tokens_details",
+    )),
   )
   use details <- decode.optional_field(
     "incomplete_details",
     None,
-    decode.optional(incomplete_details_decoder()),
+    decode.optional(decode.at(["reason"], decode.string)),
   )
   case incomplete, details {
     True, None ->
       decode.failure(Response(id, output, usage, details), "incomplete_details")
     _, _ -> decode.success(Response(id, output, usage, details))
   }
-}
-
-fn usage_decoder() -> decode.Decoder(types.Usage) {
-  use input <- decode.field("input_tokens", decode.int)
-  use output <- decode.field("output_tokens", decode.int)
-  use details <- decode.optional_field(
-    "input_tokens_details",
-    None,
-    decode.optional(cached_tokens_decoder()),
-  )
-  decode.success(types.Usage(input, output, option.flatten(details), None))
-}
-
-fn cached_tokens_decoder() -> decode.Decoder(Option(Int)) {
-  use cached <- decode.optional_field(
-    "cached_tokens",
-    None,
-    decode.optional(decode.int),
-  )
-  decode.success(cached)
-}
-
-fn incomplete_details_decoder() -> decode.Decoder(String) {
-  field_decoder("reason", decode.string)
-}
-
-fn field_decoder(
-  name: String,
-  decoder: decode.Decoder(a),
-) -> decode.Decoder(a) {
-  use value <- decode.field(name, decoder)
-  decode.success(value)
-}
-
-fn subfield_decoder(
-  path: List(String),
-  decoder: decode.Decoder(a),
-) -> decode.Decoder(a) {
-  use value <- decode.subfield(path, decoder)
-  decode.success(value)
 }
 
 fn run(
@@ -387,39 +341,26 @@ fn run(
   })
 }
 
-fn merge_id(
-  state: State,
-  incoming: Option(String),
-) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
-  use #(state, events) <- result.try(record_id(state, incoming))
-  Ok(#(state, events, None))
-}
-
 fn record_id(
   state: State,
   incoming: Option(String),
 ) -> Result(#(State, List(types.Event)), types.Error) {
-  case state.response_id, incoming {
-    None, Some(id) ->
-      Ok(#(State(..state, response_id: Some(id)), [types.Started(id)]))
-    Some(current), Some(incoming) if current != incoming ->
-      Error(types.InvalidEvent("Responses response id changed"))
-    _, _ -> Ok(#(state, []))
-  }
+  use #(id, events) <- result.try(types.merge_response_id(
+    state.response_id,
+    incoming,
+    "Responses response id changed",
+  ))
+  Ok(#(State(..state, response_id: id), events))
 }
 
 fn replay_output(
   values: List(dynamic.Dynamic),
 ) -> Result(List(types.ReplayItem), types.Error) {
-  values
-  |> list.try_map(fn(value) {
-    decode.run(value, types.replay_decoder(types.Responses))
-    |> result.map_error(fn(error) {
-      types.InvalidEvent(
-        "invalid response output item: " <> string.inspect(error),
-      )
-    })
-  })
+  list.try_map(values, run(
+    _,
+    types.replay_decoder(types.Responses),
+    "invalid response output item",
+  ))
 }
 
 fn function_calls(
@@ -428,14 +369,14 @@ fn function_calls(
   list.try_fold(values, [], fn(calls, value) {
     use kind <- result.try(run(
       value,
-      field_decoder("type", decode.string),
+      decode.at(["type"], decode.string),
       "response output item",
     ))
     case kind {
       "function_call" -> {
         use call <- result.try(run(
           value,
-          function_call_decoder(),
+          replay.function_call_decoder(),
           "function_call output item",
         ))
         Ok([call, ..calls])
@@ -444,19 +385,4 @@ fn function_calls(
     }
   })
   |> result.map(list.reverse)
-}
-
-fn function_call_decoder() -> decode.Decoder(types.ToolCall) {
-  use id <- decode.field("call_id", decode.string)
-  use name <- decode.field("name", decode.string)
-  use arguments <- decode.field("arguments", decode.string)
-  use status <- decode.optional_field("status", "completed", decode.string)
-  case id != "" && name != "" && status == "completed" {
-    True -> decode.success(types.ToolCall(id, name, arguments))
-    False ->
-      decode.failure(
-        types.ToolCall(id, name, arguments),
-        "completed function call with identity",
-      )
-  }
 }

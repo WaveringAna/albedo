@@ -1,6 +1,7 @@
 //// Bounded, read-only observations of an already prepared provider request.
 //// This module never prepares history, invokes tools, or calls a provider.
 
+import albedo/daemon/events
 import albedo/daemon/usage
 import albedo/harness/compaction as context_size
 import albedo/openai_api/request as provider_request
@@ -217,62 +218,15 @@ pub fn from_request(
   request: types.Request,
   observation: Option(context_size.Observation),
 ) -> Snapshot {
-  let history = request.input
-  let sections = []
-  let sections = case request.tools {
-    [] -> sections
-    tools -> {
-      let content =
-        provider_request.encode_tools(protocol, tools) |> json.to_string
-      [
-        section(
-          "tools",
-          "tool schemas",
-          Tools,
-          "enabled extension tool registry; exact provider encoding",
-          list.length(tools),
-          string.byte_size(content),
-          content,
-          None,
-        ),
-        ..sections
-      ]
-    }
-  }
-  let sections = case history {
-    [] -> sections
-    history -> [
-      lazy_section(
-        "history",
-        "prepared conversation",
-        History,
-        history_source(observation),
-        list.length(history),
-        context_size.inputs_bytes(history),
-        fn() { render_inputs(history) },
-        input_omission(history),
-      ),
-      ..sections
+  let sections =
+    [
+      instructions_section(request.instructions),
+      history_section(request.input, observation),
+      tools_section(protocol, request.tools),
     ]
-  }
-  let sections = case request.instructions {
-    None -> sections
-    Some(instructions) -> [
-      section(
-        "instructions",
-        "system instructions",
-        Instructions,
-        "albedo core + enabled extension instructions",
-        1,
-        string.byte_size(instructions),
-        instructions,
-        None,
-      ),
-      ..sections
-    ]
-  }
+    |> list.filter_map(option.to_result(_, Nil))
   let calls =
-    list.filter_map(history, fn(input) {
+    list.filter_map(request.input, fn(input) {
       case input {
         types.ToolOutput(id, _, _) -> Ok(id)
         _ -> Error(Nil)
@@ -291,6 +245,66 @@ pub fn from_request(
   {
     Ready(..) as snapshot -> Ready(..snapshot, retained_tool_calls: calls)
     pending -> pending
+  }
+}
+
+fn tools_section(
+  protocol: types.Protocol,
+  tools: List(types.Tool),
+) -> Option(Section) {
+  case tools {
+    [] -> None
+    tools -> {
+      let content =
+        provider_request.encode_tools(protocol, tools) |> json.to_string
+      Some(section(
+        "tools",
+        "tool schemas",
+        Tools,
+        "enabled extension tool registry; exact provider encoding",
+        list.length(tools),
+        string.byte_size(content),
+        content,
+        None,
+      ))
+    }
+  }
+}
+
+fn history_section(
+  history: List(types.Input),
+  observation: Option(context_size.Observation),
+) -> Option(Section) {
+  case history {
+    [] -> None
+    history ->
+      Some(lazy_section(
+        "history",
+        "prepared conversation",
+        History,
+        history_source(observation),
+        list.length(history),
+        context_size.inputs_bytes(history),
+        fn() { render_inputs(history) },
+        input_omission(history),
+      ))
+  }
+}
+
+fn instructions_section(instructions: Option(String)) -> Option(Section) {
+  case instructions {
+    None -> None
+    Some(instructions) ->
+      Some(section(
+        "instructions",
+        "system instructions",
+        Instructions,
+        "albedo core + enabled extension instructions",
+        1,
+        string.byte_size(instructions),
+        instructions,
+        None,
+      ))
   }
 }
 
@@ -364,10 +378,7 @@ fn input_omission(inputs: List(types.Input)) -> Option(String) {
 fn observation_capacity(
   observation: Option(context_size.Observation),
 ) -> Option(Int) {
-  case observation {
-    Some(context_size.Observation(input_limit_tokens: capacity, ..)) -> capacity
-    None -> None
-  }
+  option.then(observation, fn(obs) { obs.input_limit_tokens })
 }
 
 fn observation_compaction(
@@ -376,32 +387,21 @@ fn observation_compaction(
   case observation {
     None ->
       compaction(None, NotConfigured, None, None, None, None, None, None, None)
-    Some(context_size.Observation(
-      strategy: strategy,
-      status: status,
-      source: source,
-      input_limit_tokens: capacity,
-      estimated_input_tokens: estimated,
-      trigger_free_percent: trigger,
-      estimate_method: method,
-      before_items: before,
-      after_items: after,
-      ..,
-    )) ->
+    Some(obs) ->
       compaction(
-        Some(strategy),
-        case status {
+        Some(obs.strategy),
+        case obs.status {
           "not_needed" -> NotNeeded
           "compacted" -> Compacted
           _ -> Unknown
         },
-        Some(source),
-        trigger,
-        capacity,
-        estimated,
-        method,
-        before,
-        after,
+        Some(obs.source),
+        obs.trigger_free_percent,
+        obs.input_limit_tokens,
+        obs.estimated_input_tokens,
+        obs.estimate_method,
+        obs.before_items,
+        obs.after_items,
       )
   }
 }
@@ -432,17 +432,20 @@ pub fn summary(snapshot: Snapshot) -> json.Json {
       sections,
       _,
     ) ->
+      // Optional detail fields lead the wire order; absent ones are omitted.
       json.object(
-        [
-          #("state", json.string("ready")),
-          #("model", json.string(model)),
-          #("compaction", compaction_json(compacted)),
-          #("sections", json.array(sections, section_json)),
-        ]
-        |> optional("captured_at", captured_at, json.int)
-        |> optional("provider", provider, json.string)
-        |> optional("protocol", protocol, json.string)
-        |> optional("context_window_tokens", context_window_tokens, json.int),
+        list.flatten([
+          events.opt("context_window_tokens", context_window_tokens, json.int),
+          events.opt("protocol", protocol, json.string),
+          events.opt("provider", provider, json.string),
+          events.opt("captured_at", captured_at, json.int),
+          [
+            #("state", json.string("ready")),
+            #("model", json.string(model)),
+            #("compaction", compaction_json(compacted)),
+            #("sections", json.array(sections, section_json)),
+          ],
+        ]),
       )
   }
 }
@@ -480,12 +483,12 @@ pub fn page(
             ),
           ]
           Ok(
-            json.object(optional(
-              fields,
-              "omitted",
-              section.omitted,
-              json.string,
-            )),
+            json.object(
+              list.flatten([
+                events.opt("omitted", section.omitted, json.string),
+                fields,
+              ]),
+            ),
           )
         }
       }
@@ -508,23 +511,29 @@ fn section_json(section: Section) -> json.Json {
 }
 
 fn compaction_json(value: Compaction) -> json.Json {
-  let fields = [#("status", json.string(status_name(value.status)))]
-  fields
-  |> optional("strategy", value.strategy, json.string)
-  |> optional("source", value.source, json.string)
-  |> optional("trigger_free_percent", value.trigger_free_percent, json.int)
-  |> optional("input_limit_tokens", value.input_limit_tokens, json.int)
-  |> optional("estimated_input_tokens", value.estimated_input_tokens, json.int)
-  |> optional("provider_input_tokens", value.provider_input_tokens, json.int)
-  |> optional(
-    "provider_cached_input_tokens",
-    value.provider_cached_input_tokens,
-    json.int,
+  json.object(
+    list.flatten([
+      events.opt("after_items", value.after_items, json.int),
+      events.opt("before_items", value.before_items, json.int),
+      events.opt("estimate_method", value.estimate_method, json.string),
+      events.opt(
+        "provider_cached_input_tokens",
+        value.provider_cached_input_tokens,
+        json.int,
+      ),
+      events.opt("provider_input_tokens", value.provider_input_tokens, json.int),
+      events.opt(
+        "estimated_input_tokens",
+        value.estimated_input_tokens,
+        json.int,
+      ),
+      events.opt("input_limit_tokens", value.input_limit_tokens, json.int),
+      events.opt("trigger_free_percent", value.trigger_free_percent, json.int),
+      events.opt("source", value.source, json.string),
+      events.opt("strategy", value.strategy, json.string),
+      [#("status", json.string(status_name(value.status)))],
+    ]),
   )
-  |> optional("estimate_method", value.estimate_method, json.string)
-  |> optional("before_items", value.before_items, json.int)
-  |> optional("after_items", value.after_items, json.int)
-  |> json.object
 }
 
 fn preview(content: String) -> String {
@@ -575,20 +584,8 @@ fn non_negative(value: Option(Int)) -> Option(Int) {
 }
 
 fn clamp_percent(value: Option(Int)) -> Option(Int) {
-  case value {
-    Some(value) if value >= 0 && value <= 100 -> Some(value)
+  case non_negative(value) {
+    Some(value) if value <= 100 -> Some(value)
     _ -> None
-  }
-}
-
-fn optional(
-  fields: List(#(String, json.Json)),
-  key: String,
-  value: Option(a),
-  encode: fn(a) -> json.Json,
-) -> List(#(String, json.Json)) {
-  case value {
-    Some(value) -> [#(key, encode(value)), ..fields]
-    None -> fields
   }
 }

@@ -19,7 +19,7 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
         Ok(harness_extension.Managed(context, "", [], [], [], [], fn() { Nil }))
       }),
     ],
-    fn(_) { Ok(Nil) },
+    harness_extension.no_initialise,
   )
 }
 

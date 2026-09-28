@@ -93,9 +93,7 @@ CREATE INDEX IF NOT EXISTS webhook_pending ON webhook_deliveries(received_at) WH
 pub fn initialise(db: store.Store) -> Result(Nil, String) {
   use _ <- result.try(mail.initialise(db))
   store.query(db, fn(connection) {
-    use _ <- result.try(
-      sqlight.exec(schema, connection) |> result.map_error(fn(e) { e.message }),
-    )
+    use _ <- result.try(store.exec(connection, schema))
     move_inbox(connection)
   })
 }
@@ -104,15 +102,12 @@ pub fn initialise(db: store.Store) -> Result(Nil, String) {
 /// table; each becomes the letter it would have been. Later deliveries write
 /// their letter in `accept`, so they are never missing one.
 fn move_inbox(connection: sqlight.Connection) -> Result(Nil, String) {
-  use waiting <- result.try(
-    sqlight.query(
-      "SELECT id,hook,name,session,body FROM webhook_deliveries d WHERE delivered_at IS NULL AND NOT EXISTS(SELECT 1 FROM mail m WHERE m.id=d.id)",
-      connection,
-      [],
-      delivery_decoder(),
-    )
-    |> result.map_error(fn(e) { e.message }),
-  )
+  use waiting <- result.try(store.rows(
+    connection,
+    "SELECT id,hook,name,session,body FROM webhook_deliveries d WHERE delivered_at IS NULL AND NOT EXISTS(SELECT 1 FROM mail m WHERE m.id=d.id)",
+    [],
+    delivery_decoder(),
+  ))
   list.try_each(waiting, fn(delivery) {
     mail.insert(connection, letter(delivery)) |> result.replace(Nil)
   })
@@ -150,13 +145,46 @@ fn decoder() {
   decode.success(Hook(id, session, name, enabled == 1, header, prefix, revision))
 }
 
-fn rows(db, sql, args) -> Result(List(Hook), Error) {
-  sqlight.query(sql, db, args, decoder())
-  |> result.map_error(fn(e) { Storage(e.message) })
+fn query(
+  db: sqlight.Connection,
+  sql: String,
+  args: List(sqlight.Value),
+  row_decoder: decode.Decoder(a),
+) -> Result(List(a), Error) {
+  store.rows(db, sql, args, row_decoder) |> result.map_error(Storage)
+}
+
+fn exec(db: sqlight.Connection, sql: String) -> Result(Nil, Error) {
+  store.exec(db, sql) |> result.map_error(Storage)
+}
+
+fn rows(
+  db: sqlight.Connection,
+  sql: String,
+  args: List(sqlight.Value),
+) -> Result(List(Hook), Error) {
+  query(db, sql, args, decoder())
 }
 
 fn one(hooks: List(Hook)) -> Result(Hook, Error) {
   list.first(hooks) |> result.replace_error(NotFound)
+}
+
+fn one_or_conflict(hooks: List(a)) -> Result(a, Error) {
+  list.first(hooks) |> result.replace_error(Conflict)
+}
+
+fn agent_manage(
+  db: sqlight.Connection,
+  session: String,
+) -> Result(Bool, Error) {
+  query(
+    db,
+    "SELECT agent_manage FROM webhook_permissions WHERE session=?",
+    [sqlight.text(session)],
+    decode.field(0, decode.int, decode.success),
+  )
+  |> result.map(fn(rows) { rows == [1] })
 }
 
 fn permitted(
@@ -168,18 +196,10 @@ fn permitted(
     Human -> Ok(Nil)
     Agent(owner) if owner != session -> Error(Denied)
     Agent(_) -> {
-      use allowed <- result.try(
-        sqlight.query(
-          "SELECT agent_manage FROM webhook_permissions WHERE session=?",
-          db,
-          [sqlight.text(session)],
-          decode.field(0, decode.int, decode.success),
-        )
-        |> result.map_error(fn(e) { Storage(e.message) }),
-      )
+      use allowed <- result.try(agent_manage(db, session))
       case allowed {
-        [1] -> Ok(Nil)
-        _ -> Error(Denied)
+        True -> Ok(Nil)
+        False -> Error(Denied)
       }
     }
   }
@@ -189,16 +209,7 @@ pub fn agent_management(
   db: store.Store,
   session: String,
 ) -> Result(Bool, Error) {
-  store.query(db, fn(connection) {
-    sqlight.query(
-      "SELECT agent_manage FROM webhook_permissions WHERE session=?",
-      connection,
-      [sqlight.text(session)],
-      decode.field(0, decode.int, decode.success),
-    )
-    |> result.map_error(fn(e) { Storage(e.message) })
-    |> result.map(fn(rows) { rows == [1] })
-  })
+  store.query(db, agent_manage(_, session))
 }
 
 /// Only the human-facing management path may grant agent self-management.
@@ -208,20 +219,12 @@ pub fn allow_agent(
   enabled: Bool,
 ) -> Result(Nil, Error) {
   store.query(db, fn(connection) {
-    sqlight.query(
-      "INSERT INTO webhook_permissions(session,agent_manage) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET agent_manage=excluded.agent_manage RETURNING agent_manage",
+    store.run(
       connection,
-      [
-        sqlight.text(session),
-        sqlight.int(case enabled {
-          True -> 1
-          False -> 0
-        }),
-      ],
-      decode.field(0, decode.int, decode.success),
+      "INSERT INTO webhook_permissions(session,agent_manage) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET agent_manage=excluded.agent_manage",
+      [sqlight.text(session), sqlight.bool(enabled)],
     )
-    |> result.map_error(fn(e) { Storage(e.message) })
-    |> result.map(fn(_) { Nil })
+    |> result.map_error(Storage)
   })
 }
 
@@ -232,13 +235,12 @@ pub fn last_failure(
   id: String,
 ) -> Result(Option(String), Error) {
   store.query(db, fn(connection) {
-    sqlight.query(
-      "SELECT m.last_error FROM webhook_deliveries d JOIN mail m ON m.id=d.id WHERE d.session=? AND d.hook=? AND m.delivered_at IS NULL AND m.last_error IS NOT NULL ORDER BY m.created_at DESC,m.id DESC LIMIT 1",
+    query(
       connection,
+      "SELECT m.last_error FROM webhook_deliveries d JOIN mail m ON m.id=d.id WHERE d.session=? AND d.hook=? AND m.delivered_at IS NULL AND m.last_error IS NOT NULL ORDER BY m.created_at DESC,m.id DESC LIMIT 1",
       [sqlight.text(session), sqlight.text(id)],
       decode.field(0, decode.string, decode.success),
     )
-    |> result.map_error(fn(e) { Storage(e.message) })
     |> result.map(fn(errors) { list.first(errors) |> option.from_result })
   })
 }
@@ -249,13 +251,12 @@ pub fn pending_count(
   id: String,
 ) -> Result(Int, Error) {
   store.query(db, fn(connection) {
-    sqlight.query(
-      "SELECT count(*) FROM webhook_deliveries d JOIN mail m ON m.id=d.id WHERE d.session=? AND d.hook=? AND m.delivered_at IS NULL",
+    query(
       connection,
+      "SELECT count(*) FROM webhook_deliveries d JOIN mail m ON m.id=d.id WHERE d.session=? AND d.hook=? AND m.delivered_at IS NULL",
       [sqlight.text(session), sqlight.text(id)],
       decode.field(0, decode.int, decode.success),
     )
-    |> result.map_error(fn(e) { Storage(e.message) })
     |> result.map(fn(counts) { list.first(counts) |> result.unwrap(0) })
   })
 }
@@ -279,24 +280,26 @@ pub fn list(
 
 /// Every session's hooks, for the human's Webhooks screen.
 pub fn list_all(db: store.Store) -> Result(List(Hook), Error) {
-  store.query(db, fn(connection) {
+  store.query(
+    db,
     rows(
-      connection,
+      _,
       "SELECT " <> columns <> " FROM webhook_hooks ORDER BY session,name",
       [],
-    )
-  })
+    ),
+  )
 }
 
 /// A hook by id in whichever session it targets. Only the human path uses
 /// this; the agent's lookups stay scoped to its own session.
 pub fn find(db: store.Store, id: String) -> Result(Hook, Error) {
-  store.query(db, fn(connection) {
-    rows(connection, "SELECT " <> columns <> " FROM webhook_hooks WHERE id=?", [
+  store.query(
+    db,
+    rows(_, "SELECT " <> columns <> " FROM webhook_hooks WHERE id=?", [
       sqlight.text(id),
-    ])
-    |> result.try(one)
-  })
+    ]),
+  )
+  |> result.try(one)
 }
 
 fn find_owned(
@@ -306,14 +309,27 @@ fn find_owned(
   id: String,
 ) -> Result(Hook, Error) {
   use _ <- result.try(permitted(db, actor, session))
-  use hooks <- result.try(
-    rows(
-      db,
-      "SELECT " <> columns <> " FROM webhook_hooks WHERE id=? AND session=?",
-      [sqlight.text(id), sqlight.text(session)],
-    ),
+  rows(
+    db,
+    "SELECT " <> columns <> " FROM webhook_hooks WHERE id=? AND session=?",
+    [sqlight.text(id), sqlight.text(session)],
   )
-  one(hooks)
+  |> result.try(one)
+}
+
+fn mutate_owned(
+  db: store.Store,
+  actor: Actor,
+  session: String,
+  id: String,
+  sql: String,
+  args: List(sqlight.Value),
+) -> Result(Hook, Error) {
+  store.query(db, fn(connection) {
+    use _ <- result.try(find_owned(connection, actor, session, id))
+    use changed <- result.try(rows(connection, sql, args))
+    one_or_conflict(changed)
+  })
 }
 
 pub fn get(
@@ -322,7 +338,7 @@ pub fn get(
   session: String,
   id: String,
 ) -> Result(Hook, Error) {
-  store.query(db, fn(connection) { find_owned(connection, actor, session, id) })
+  store.query(db, find_owned(_, actor, session, id))
 }
 
 pub fn to_json(hook: Hook) -> json.Json {
@@ -358,26 +374,21 @@ pub fn create(
     )
     case existing {
       [_, ..] -> Error(Conflict)
-      [] -> {
-        use hooks <- result.try(
-          rows(
-            connection,
-            "INSERT INTO webhook_hooks(id,session,name,secret) SELECT ?,?,?,? WHERE (SELECT count(*) FROM webhook_hooks WHERE session=?) < 32 RETURNING "
-              <> columns,
-            [
-              sqlight.text(new_id()),
-              sqlight.text(session),
-              sqlight.text(name),
-              sqlight.text(secret),
-              sqlight.text(session),
-            ],
-          ),
+      [] ->
+        rows(
+          connection,
+          "INSERT INTO webhook_hooks(id,session,name,secret) SELECT ?,?,?,? WHERE (SELECT count(*) FROM webhook_hooks WHERE session=?) < 32 RETURNING "
+            <> columns,
+          [
+            sqlight.text(new_id()),
+            sqlight.text(session),
+            sqlight.text(name),
+            sqlight.text(secret),
+            sqlight.text(session),
+          ],
         )
-        case hooks {
-          [] -> Error(Conflict)
-          [hook, ..] -> Ok(Provisioned(hook, secret))
-        }
-      }
+        |> result.try(one_or_conflict)
+        |> result.map(Provisioned(_, secret))
     }
   })
 }
@@ -392,26 +403,21 @@ pub fn rotate(
   supplied_secret: Option(String),
 ) -> Result(Provisioned, Error) {
   use secret <- result.try(secret_value(supplied_secret))
-  store.query(db, fn(connection) {
-    use _ <- result.try(find_owned(connection, actor, session, id))
-    use changed <- result.try(
-      rows(
-        connection,
-        "UPDATE webhook_hooks SET secret=?,revision=revision+1 WHERE id=? AND session=? AND revision=? RETURNING "
-          <> columns,
-        [
-          sqlight.text(secret),
-          sqlight.text(id),
-          sqlight.text(session),
-          sqlight.int(revision),
-        ],
-      ),
-    )
-    case changed {
-      [] -> Error(Conflict)
-      [hook, ..] -> Ok(Provisioned(hook, secret))
-    }
-  })
+  mutate_owned(
+    db,
+    actor,
+    session,
+    id,
+    "UPDATE webhook_hooks SET secret=?,revision=revision+1 WHERE id=? AND session=? AND revision=? RETURNING "
+      <> columns,
+    [
+      sqlight.text(secret),
+      sqlight.text(id),
+      sqlight.text(session),
+      sqlight.int(revision),
+    ],
+  )
+  |> result.map(Provisioned(_, secret))
 }
 
 fn secret_value(supplied: Option(String)) -> Result(String, Error) {
@@ -436,44 +442,50 @@ pub fn configure(
 ) -> Result(Hook, Error) {
   use _ <- result.try(validate_header(header))
   use _ <- result.try(validate_prefix(prefix))
-  store.query(db, fn(connection) {
-    use _ <- result.try(find_owned(connection, actor, session, id))
-    use changed <- result.try(
-      rows(
-        connection,
-        "UPDATE webhook_hooks SET signature_header=?,signature_prefix=?,revision=revision+1 WHERE id=? AND session=? AND revision=? RETURNING "
-          <> columns,
-        [
-          sqlight.text(string.lowercase(header)),
-          sqlight.text(prefix),
-          sqlight.text(id),
-          sqlight.text(session),
-          sqlight.int(revision),
-        ],
-      ),
-    )
-    case changed {
-      [] -> Error(Conflict)
-      [hook, ..] -> Ok(hook)
-    }
-  })
+  mutate_owned(
+    db,
+    actor,
+    session,
+    id,
+    "UPDATE webhook_hooks SET signature_header=?,signature_prefix=?,revision=revision+1 WHERE id=? AND session=? AND revision=? RETURNING "
+      <> columns,
+    [
+      sqlight.text(string.lowercase(header)),
+      sqlight.text(prefix),
+      sqlight.text(id),
+      sqlight.text(session),
+      sqlight.int(revision),
+    ],
+  )
+}
+
+fn ascii_charset(text: String, allowed: String) -> Bool {
+  text
+  |> string.to_graphemes
+  |> list.all(string.contains(allowed, _))
+}
+
+fn validate_ascii(
+  text: String,
+  allowed: String,
+  error: String,
+) -> Result(Nil, Error) {
+  case
+    string.byte_size(text) > 0
+    && string.byte_size(text) <= 64
+    && ascii_charset(text, allowed)
+  {
+    True -> Ok(Nil)
+    False -> Error(Invalid(error))
+  }
 }
 
 fn validate_header(header: String) -> Result(Nil, Error) {
-  let valid =
-    header
-    |> string.to_graphemes
-    |> list.all(fn(char) {
-      string.contains(
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-",
-        char,
-      )
-    })
-  case string.byte_size(header) > 0 && string.byte_size(header) <= 64 && valid {
-    True -> Ok(Nil)
-    False ->
-      Error(Invalid("signature header must be 1–64 ASCII letters, digits or -"))
-  }
+  validate_ascii(
+    header,
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-",
+    "signature header must be 1–64 ASCII letters, digits or -",
+  )
 }
 
 fn validate_prefix(prefix: String) -> Result(Nil, Error) {
@@ -498,29 +510,20 @@ pub fn set_enabled(
   revision: Int,
   enabled: Bool,
 ) -> Result(Hook, Error) {
-  store.query(db, fn(connection) {
-    use _ <- result.try(find_owned(connection, actor, session, id))
-    use hooks <- result.try(
-      rows(
-        connection,
-        "UPDATE webhook_hooks SET enabled=?,revision=revision+1 WHERE id=? AND session=? AND revision=? RETURNING "
-          <> columns,
-        [
-          sqlight.int(case enabled {
-            True -> 1
-            False -> 0
-          }),
-          sqlight.text(id),
-          sqlight.text(session),
-          sqlight.int(revision),
-        ],
-      ),
-    )
-    case hooks {
-      [] -> Error(Conflict)
-      [hook, ..] -> Ok(hook)
-    }
-  })
+  mutate_owned(
+    db,
+    actor,
+    session,
+    id,
+    "UPDATE webhook_hooks SET enabled=?,revision=revision+1 WHERE id=? AND session=? AND revision=? RETURNING "
+      <> columns,
+    [
+      sqlight.bool(enabled),
+      sqlight.text(id),
+      sqlight.text(session),
+      sqlight.int(revision),
+    ],
+  )
 }
 
 pub fn delete(
@@ -530,21 +533,15 @@ pub fn delete(
   id: String,
   revision: Int,
 ) -> Result(Hook, Error) {
-  store.query(db, fn(connection) {
-    use _ <- result.try(find_owned(connection, actor, session, id))
-    use hooks <- result.try(
-      rows(
-        connection,
-        "DELETE FROM webhook_hooks WHERE id=? AND session=? AND revision=? RETURNING "
-          <> columns,
-        [sqlight.text(id), sqlight.text(session), sqlight.int(revision)],
-      ),
-    )
-    case hooks {
-      [] -> Error(Conflict)
-      [hook, ..] -> Ok(hook)
-    }
-  })
+  mutate_owned(
+    db,
+    actor,
+    session,
+    id,
+    "DELETE FROM webhook_hooks WHERE id=? AND session=? AND revision=? RETURNING "
+      <> columns,
+    [sqlight.text(id), sqlight.text(session), sqlight.int(revision)],
+  )
 }
 
 /// Ingress and enqueue are one serialized store operation. Never return a signing
@@ -561,68 +558,59 @@ pub fn accept(
     _, True -> Error(Invalid("event id must be 1–128 bytes with no newlines"))
     False, False ->
       store.query(db, fn(connection) {
-        use credentials <- result.try(
-          sqlight.query(
-            "SELECT session,name,secret,signature_header,signature_prefix FROM webhook_hooks WHERE id=? AND enabled=1",
-            connection,
-            [sqlight.text(id)],
-            {
-              use session <- decode.field(0, decode.string)
-              use name <- decode.field(1, decode.string)
-              use secret <- decode.field(2, decode.string)
-              use header <- decode.field(3, decode.string)
-              use prefix <- decode.field(4, decode.string)
-              decode.success(#(session, name, secret, header, prefix))
-            },
-          )
-          |> result.map_error(fn(e) { Storage(e.message) }),
+        let cred_decoder = {
+          use session <- decode.field(0, decode.string)
+          use name <- decode.field(1, decode.string)
+          use secret <- decode.field(2, decode.string)
+          use header <- decode.field(3, decode.string)
+          use prefix <- decode.field(4, decode.string)
+          decode.success(#(session, name, secret, header, prefix))
+        }
+        use credentials <- result.try(query(
+          connection,
+          "SELECT session,name,secret,signature_header,signature_prefix FROM webhook_hooks WHERE id=? AND enabled=1",
+          [sqlight.text(id)],
+          cred_decoder,
+        ))
+        use #(session, name, secret, header, prefix) <- result.try(
+          list.first(credentials) |> result.replace_error(NotFound),
         )
-        case credentials {
-          [] -> Error(NotFound)
-          [#(session, name, secret, header, prefix), ..] -> {
-            let signature = list.key_find(headers, header) |> result.unwrap("")
-            case verify(body, signature, secret, prefix) {
-              False -> Error(Unauthorized)
-              True -> {
-                let delivery_id = new_id()
-                let digest = fingerprint(body)
-                use inserted <- result.try(enqueue(
-                  connection,
-                  Delivery(delivery_id, id, name, session, body),
-                  digest,
-                  event_key,
-                ))
-                case inserted {
-                  [] ->
-                    case event_key {
-                      None -> Error(Overloaded)
-                      Some(key) ->
-                        sqlight.query(
-                          "SELECT id,body_sha256 FROM webhook_deliveries WHERE hook=? AND event_key=?",
-                          connection,
-                          [sqlight.text(id), sqlight.text(key)],
-                          {
-                            use existing_id <- decode.field(0, decode.string)
-                            use existing_digest <- decode.field(
-                              1,
-                              decode.string,
-                            )
-                            decode.success(#(existing_id, existing_digest))
-                          },
-                        )
-                        |> result.map_error(fn(e) { Storage(e.message) })
-                        |> result.try(fn(found) {
-                          case found {
-                            [] -> Error(Overloaded)
-                            [#(existing, saved), ..] if saved == digest ->
-                              Ok(existing)
-                            _ -> Error(Conflict)
-                          }
-                        })
+        let signature = list.key_find(headers, header) |> result.unwrap("")
+        case verify(body, signature, secret, prefix) {
+          False -> Error(Unauthorized)
+          True -> {
+            let delivery_id = new_id()
+            let digest = fingerprint(body)
+            use inserted <- result.try(enqueue(
+              connection,
+              Delivery(delivery_id, id, name, session, body),
+              digest,
+              event_key,
+            ))
+            case inserted {
+              [delivery_id, ..] -> Ok(delivery_id)
+              [] ->
+                case event_key {
+                  None -> Error(Overloaded)
+                  Some(key) -> {
+                    let decoder = {
+                      use existing_id <- decode.field(0, decode.string)
+                      use existing_digest <- decode.field(1, decode.string)
+                      decode.success(#(existing_id, existing_digest))
                     }
-                  [id, ..] -> Ok(id)
+                    use found <- result.try(query(
+                      connection,
+                      "SELECT id,body_sha256 FROM webhook_deliveries WHERE hook=? AND event_key=?",
+                      [sqlight.text(id), sqlight.text(key)],
+                      decoder,
+                    ))
+                    case found {
+                      [#(existing, saved), ..] if saved == digest -> Ok(existing)
+                      [_, ..] -> Error(Conflict)
+                      [] -> Error(Overloaded)
+                    }
+                  }
                 }
-              }
             }
           }
         }
@@ -638,29 +626,22 @@ fn enqueue(
   digest: String,
   event_key: Option(String),
 ) -> Result(List(String), Error) {
-  let storage = fn(e: sqlight.Error) { Storage(e.message) }
-  use _ <- result.try(
-    sqlight.exec("SAVEPOINT webhook_accept", connection)
-    |> result.map_error(storage),
-  )
+  use _ <- result.try(exec(connection, "SAVEPOINT webhook_accept"))
   let written = {
-    use inserted <- result.try(
-      sqlight.query(
-        "INSERT INTO webhook_deliveries(id,hook,name,session,body,body_sha256,event_key) VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING RETURNING id",
-        connection,
-        [
-          sqlight.text(delivery.id),
-          sqlight.text(delivery.hook),
-          sqlight.text(delivery.name),
-          sqlight.text(delivery.session),
-          sqlight.blob(delivery.body),
-          sqlight.text(digest),
-          sqlight.nullable(sqlight.text, event_key),
-        ],
-        decode.field(0, decode.string, decode.success),
-      )
-      |> result.map_error(storage),
-    )
+    use inserted <- result.try(query(
+      connection,
+      "INSERT INTO webhook_deliveries(id,hook,name,session,body,body_sha256,event_key) VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING RETURNING id",
+      [
+        sqlight.text(delivery.id),
+        sqlight.text(delivery.hook),
+        sqlight.text(delivery.name),
+        sqlight.text(delivery.session),
+        sqlight.blob(delivery.body),
+        sqlight.text(digest),
+        sqlight.nullable(sqlight.text, event_key),
+      ],
+      decode.field(0, decode.string, decode.success),
+    ))
     case inserted {
       [] -> Ok([])
       _ ->
@@ -673,12 +654,11 @@ fn enqueue(
   }
   case written {
     Ok(rows) ->
-      sqlight.exec("RELEASE webhook_accept", connection)
-      |> result.map_error(storage)
+      exec(connection, "RELEASE webhook_accept")
       |> result.replace(rows)
     Error(error) -> {
-      let _ = sqlight.exec("ROLLBACK TO webhook_accept", connection)
-      let _ = sqlight.exec("RELEASE webhook_accept", connection)
+      let _ = store.exec(connection, "ROLLBACK TO webhook_accept")
+      let _ = store.exec(connection, "RELEASE webhook_accept")
       Error(error)
     }
   }
@@ -712,13 +692,12 @@ pub fn delivery(
   id: String,
 ) -> Result(Delivery, Error) {
   store.query(db, fn(connection) {
-    sqlight.query(
-      "SELECT id,hook,name,session,body FROM webhook_deliveries WHERE id=? AND session=?",
+    query(
       connection,
+      "SELECT id,hook,name,session,body FROM webhook_deliveries WHERE id=? AND session=?",
       [sqlight.text(id), sqlight.text(session)],
       delivery_decoder(),
     )
-    |> result.map_error(fn(e) { Storage(e.message) })
     |> result.try(fn(rows) {
       list.first(rows) |> result.replace_error(NotFound)
     })
@@ -726,22 +705,11 @@ pub fn delivery(
 }
 
 fn validate_name(name: String) -> Result(Nil, Error) {
-  let valid_chars =
-    name
-    |> string.to_graphemes
-    |> list.all(fn(char) {
-      string.contains(
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-",
-        char,
-      )
-    })
-  case
-    string.byte_size(name) > 0 && string.byte_size(name) <= 64 && valid_chars
-  {
-    True -> Ok(Nil)
-    False ->
-      Error(Invalid("name must contain 1–64 ASCII letters, digits, _ or -"))
-  }
+  validate_ascii(
+    name,
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-",
+    "name must contain 1–64 ASCII letters, digits, _ or -",
+  )
 }
 
 @external(erlang, "albedo_webhooks", "fingerprint")

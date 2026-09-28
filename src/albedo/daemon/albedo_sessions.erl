@@ -11,11 +11,7 @@ register(Id, Subject) -> albedo_registry:register(?TABLE, Id, Subject).
 forget(Id) -> albedo_registry:forget(?TABLE, Id).
 
 find(Id) ->
-    case ets:whereis(?TABLE) of
-        undefined -> {error, nil};
-        _ ->
-            case ets:lookup(?TABLE, Id) of
-                [{_, Subject}] -> {ok, Subject};
-                [] -> {error, nil}
-            end
+    case albedo_registry:lookup(?TABLE, Id) of
+        {ok, _} = Ok -> Ok;
+        undefined -> {error, nil}
     end.

@@ -13,7 +13,7 @@ pub fn validate(
 ) -> Result(types.Image, String) {
   use image <- result.try(
     types.image(mime_type, data, width, height, bytes)
-    |> result.map_error(fn(error) { string.inspect(error) }),
+    |> result.map_error(string.inspect),
   )
   use inspected <- result.try(
     inspect(data)

@@ -16,27 +16,15 @@ exchange(Code, State, Verifier, Redirect) ->
                  <<"code_verifier">> => Verifier}, exchange).
 
 post_token(Params, Kind) ->
-    case token_request(Params, Kind) of
-        {ok, Response} -> token(Response);
+    case post_token_map(Params, Kind) of
+        {ok, Credential} -> encode_credential(Credential);
         Error -> Error
     end.
 
 post_token_map(Params, Kind) ->
-    case token_request(Params, Kind) of
-        {ok, Response} -> token_map(Response);
-        Error -> Error
-    end.
-
-token_request(Params, Kind) ->
-    Body = json:encode(Params),
-    _ = application:ensure_all_started(inets),
-    _ = application:ensure_all_started(ssl),
-    Request = {?TOKEN_URL, [{"accept", "application/json"}], "application/json", Body},
-    Options = [{timeout, ?HTTP_TIMEOUT_MS}, {connect_timeout, 10000},
-               {ssl, albedo_credentials:tls_options("platform.claude.com")}],
-    case httpc:request(post, Request, Options, [{body_format, binary}]) of
-        {ok, {{_, 200, _}, _, Response}} -> {ok, Response};
-        {ok, {{_, Status, _}, _, Response}} ->
+    case albedo_http:post(?TOKEN_URL, [{"accept", "application/json"}], "application/json", json:encode(Params), ?HTTP_TIMEOUT_MS, 10000) of
+        {ok, {200, _, Response}} -> token_map(Response);
+        {ok, {Status, _, Response}} ->
             Detail = binary:part(Response, 0, min(byte_size(Response), 2048)),
             {error, iolist_to_binary(io_lib:format("Anthropic ~s failed (~B): ~s",
                 [atom_to_list(Kind), Status, Detail]))};
@@ -49,11 +37,10 @@ token_map(Response) ->
           <<"expires_in">> := In} when is_binary(Access), byte_size(Access) > 0,
                                         is_binary(Refresh), byte_size(Refresh) > 0,
                                         is_number(In), In > 0 ->
-            Credential = #{<<"type">> => <<"oauth">>, <<"access">> => Access,
-                <<"refresh">> => Refresh,
-                <<"expires">> => erlang:system_time(millisecond) + round(In * 1000) - ?EXPIRY_MARGIN_MS,
-                <<"accountId">> => token_id(Refresh)},
-            {ok, Credential};
+            {ok, #{<<"type">> => <<"oauth">>, <<"access">> => Access,
+                   <<"refresh">> => Refresh,
+                   <<"expires">> => erlang:system_time(millisecond) + round(In * 1000) - ?EXPIRY_MARGIN_MS,
+                   <<"accountId">> => token_id(Refresh)}};
         _ -> {error, <<"Anthropic token response is incomplete">>}
     catch _:_ -> {error, <<"Anthropic token response is invalid">>} end.
 
@@ -72,11 +59,9 @@ encode_credential(Credential) ->
     {ok, iolist_to_binary(json:encode(Credential))}.
 
 account(Credential) when is_map(Credential) ->
-    Id = identity(Credential),
     Selected = maps:get(<<"selected">>, Credential, false) =:= true,
-    Label = <<"Claude Pro/Max">>,
     Detail = case Selected of true -> <<"Claude account · selected">>; false -> <<"Claude account">> end,
-    {account, Id, Label, Detail, Selected};
+    {account, identity(Credential), <<"Claude Pro/Max">>, Detail, Selected};
 account(_) -> {account, <<>>, <<"invalid Claude account">>, <<>>, false}.
 
 identity(Credential) -> maps:get(<<"accountId">>, Credential,
@@ -86,7 +71,7 @@ token_id(Token) ->
     binary:encode_hex(binary:part(crypto:hash(sha256, Token), 0, 8), lowercase).
 
 access(Home0, Session0) ->
-    Path = filename:join(unicode:characters_to_list(Home0), "auth.json"),
+    Path = albedo_credentials:auth_path(Home0),
     Session = unicode:characters_to_binary(Session0),
     case albedo_credentials:read(Path) of
         {ok, Data} ->
@@ -99,15 +84,10 @@ access(Home0, Session0) ->
 %% A session-stable device and UUID must accompany the OAuth account identity.
 %% Resolve the account from the token, never from a claimed client header.
 profile(Access, Session) ->
-    _ = application:ensure_all_started(inets),
-    _ = application:ensure_all_started(ssl),
-    Request = {"https://api.anthropic.com/api/oauth/profile",
-               [{"authorization", "Bearer " ++ unicode:characters_to_list(Access)},
-                {"accept", "application/json"}]},
-    Options = [{timeout, ?HTTP_TIMEOUT_MS}, {connect_timeout, 10000},
-               {ssl, albedo_credentials:tls_options("api.anthropic.com")}],
-    case httpc:request(get, Request, Options, [{body_format, binary}]) of
-        {ok, {{_, 200, _}, _, Body}} ->
+    Headers = [{"authorization", "Bearer " ++ unicode:characters_to_list(Access)},
+               {"accept", "application/json"}],
+    case albedo_http:get("https://api.anthropic.com/api/oauth/profile", Headers, ?HTTP_TIMEOUT_MS, 10000) of
+        {ok, {200, _, Body}} ->
             try json:decode(Body) of
                 #{<<"account">> := #{<<"uuid">> := UUID}} when is_binary(UUID), byte_size(UUID) =:= 36 ->
                     Device = binary:encode_hex(crypto:hash(sha256, <<"albedo:claude-device:", UUID/binary>>), lowercase),
@@ -118,16 +98,10 @@ profile(Access, Session) ->
     end.
 
 session_uuid(Session) ->
-    <<A:32, B:16, _:4, C:12, _:2, D:14, E:48, _/binary>> = crypto:hash(sha256, Session),
-    iolist_to_binary(io_lib:format("~8.16.0b-~4.16.0b-4~3.16.0b-~4.16.0b-~12.16.0b",
-        [A, B, C, 16#8000 bor D, E])).
+    albedo_antigravity:uuid(Session).
 
 credentials(Data) ->
-    case maps:get(?KEY, Data, []) of
-        List when is_list(List) -> [V || V <- List, is_map(V), maps:get(<<"type">>, V, <<>>) =:= <<"oauth">>];
-        V when is_map(V) -> case maps:get(<<"type">>, V, <<>>) of <<"oauth">> -> [V]; _ -> [] end;
-        _ -> []
-    end.
+    albedo_credentials:oauth(Data, ?KEY).
 
 first_access([], _, _) -> {error, <<"Claude is not authenticated; run /login and add a Claude account">>};
 first_access([C | Rest], Path, Session) ->
@@ -168,29 +142,14 @@ refresh_current(Path, Data, Current) ->
                           <<"refresh_token">> => maps:get(<<"refresh">>, Current)}, refresh) of
         {ok, Token} ->
             New = (maps:merge(Current, Token))#{<<"accountId">> => identity(Current)},
-            Stored = maps:get(?KEY, Data),
-            Values = case Stored of L when is_list(L) -> L; V -> [V] end,
-            Updated = [case is_map(V) andalso identity(V) =:= identity(Current) of true -> New; false -> V end || V <- Values],
-            Saved = case Stored of StoredList when is_list(StoredList) -> Updated; _ -> hd(Updated) end,
-            case albedo_credentials:write(Path, Data#{?KEY => Saved}) of
-                ok -> {ok, New}; _ -> {error, <<"could not save refreshed Claude credential">>}
+            Values = albedo_credentials:values(Data, ?KEY),
+            Updated = [case identity(V) =:= identity(Current) of true -> New; false -> V end || V <- Values],
+            case albedo_credentials:write(Path, albedo_credentials:put_values(Data, ?KEY, Updated)) of
+                ok -> {ok, New};
+                _ -> {error, <<"could not save refreshed Claude credential">>}
             end;
         Error -> Error
     end.
 
 expire(Home0, Access) ->
-    Path = filename:join(unicode:characters_to_list(Home0), "auth.json"),
-    albedo_credentials:with_lock(Path, fun() ->
-        case albedo_credentials:read(Path) of
-            {ok, #{?KEY := Stored} = Data} ->
-                Expire = fun(#{<<"access">> := A} = V) when A =:= Access -> V#{<<"expires">> => 0};
-                            (V) -> V
-                         end,
-                Updated = case Stored of L when is_list(L) -> lists:map(Expire, L); V -> Expire(V) end,
-                case Updated =:= Stored of
-                    true -> nil;
-                    false -> _ = albedo_credentials:write(Path, Data#{?KEY => Updated}), nil
-                end;
-            _ -> nil
-        end
-    end, fun() -> nil end).
+    albedo_credentials:expire_access(albedo_credentials:auth_path(Home0), ?KEY, Access).

@@ -4,6 +4,7 @@
 import albedo/daemon/mail
 import albedo/daemon/store
 import albedo/harness/extension
+import albedo/harness/rpc
 import gleam/dynamic/decode
 import gleam/json
 import gleam/result
@@ -35,28 +36,12 @@ fn handle(db: store.Store, session: String, request: String) -> String {
   case json.parse(request, decoder) {
     Ok(#("mail.submit", to, body)) ->
       mail.send(db, session, to, body)
-      |> result.map(fn(receipt) {
-        json.object([
-          #("id", json.string(receipt.id)),
-          #("to", json.string(receipt.recipient)),
-          #("name", json.string(receipt.name)),
-          #("status", json.string(receipt.status)),
-        ])
-      })
+      |> result.map(mail.receipt_json)
       |> answer
     _ -> answer(Error("mail.submit(to, body) takes two strings"))
   }
 }
 
 pub fn answer(result: Result(json.Json, String)) -> String {
-  case result {
-    Ok(value) -> json.object([#("ok", json.bool(True)), #("value", value)])
-    Error(message) ->
-      json.object([
-        #("ok", json.bool(False)),
-        #("code", json.string("invalid")),
-        #("message", json.string(message)),
-      ])
-  }
-  |> json.to_string
+  rpc.reply(result |> result.map_error(fn(m) { #("invalid", m) }))
 }

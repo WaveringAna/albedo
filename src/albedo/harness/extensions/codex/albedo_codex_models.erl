@@ -80,18 +80,13 @@ version(Cache, Now) ->
     end.
 
 fetch_version() ->
-    case get(?VERSION_URL, [{"accept", "application/json"}]) of
-        {ok, 200, _, Body} ->
-            case json:decode(Body) of
-                #{<<"version">> := Version} when is_binary(Version) ->
-                    case re:run(Version, <<"^[0-9]+\\.[0-9]+\\.[0-9]+$">>) of
-                        {match, _} -> {ok, Version};
-                        nomatch -> error
-                    end;
-                _ -> error
-            end;
-        _ -> error
-    end.
+    try
+        {ok, 200, _, Body} = get(?VERSION_URL, [{"accept", "application/json"}]),
+        #{<<"version">> := Version} = json:decode(Body),
+        true = is_binary(Version),
+        {match, _} = re:run(Version, <<"^[0-9]+\\.[0-9]+\\.[0-9]+$">>),
+        {ok, Version}
+    catch _:_ -> error end.
 
 fetch_models(Access, Account, Version, Entry) ->
     Url = ?MODELS_URL ++ "?client_version=" ++ binary_to_list(Version),
@@ -130,57 +125,35 @@ trim(#{<<"slug">> := Slug} = Model) when is_binary(Slug), Slug =/= <<>> ->
       <<"input">> => [I || I <- list(maps:get(<<"input_modalities">>, Model, [])), is_binary(I)],
       <<"efforts">> => Levels,
       <<"visible">> => maps:get(<<"visibility">>, Model, <<"list">>) =:= <<"list">>,
-      <<"priority">> => case maps:get(<<"priority">>, Model, null) of
+      <<"priority">> => case maps:get(<<"priority">>, Model, 1000000) of
                             P when is_integer(P) -> P;
                             _ -> 1000000
                         end};
 trim(_) -> skip.
 
 get(Url, Headers) ->
-    _ = application:ensure_all_started(inets),
-    _ = application:ensure_all_started(ssl),
-    Options = [{timeout, ?TIMEOUT_MS}, {connect_timeout, 10000}, {ssl, tls_options(Url)}],
-    case httpc:request(get, {Url, [{"user-agent", "albedo"} | Headers]}, Options,
-                       [{body_format, binary}]) of
-        {ok, {{_, Status, _}, ResponseHeaders, Body}} when byte_size(Body) =< ?MAX_BYTES ->
+    case albedo_http:get(Url, [{"user-agent", "albedo"} | Headers], ?TIMEOUT_MS, 10000) of
+        {ok, {Status, ResponseHeaders, Body}} when byte_size(Body) =< ?MAX_BYTES ->
             {ok, Status, ResponseHeaders, Body};
         _ -> error
     end.
 
-tls_options(Url) ->
-    Host = binary_to_list(maps:get(host, uri_string:parse(list_to_binary(Url)), <<>>)),
-    [{verify, verify_peer}, {cacerts, public_key:cacerts_get()}, {depth, 5},
-     {server_name_indication, Host},
-     {customize_hostname_check, [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}].
-
 header(Name, Headers) ->
     case lists:keyfind(Name, 1, Headers) of
         {_, Value} -> unicode:characters_to_binary(Value);
-        false -> <<>>
+        _ -> <<>>
     end.
 
 load(Home) ->
-    case file:read_file(filename:join(Home, "codex-models.json")) of
-        {ok, Bytes} ->
-            try json:decode(Bytes) of
-                Map when is_map(Map) -> Map;
-                _ -> #{}
-            catch
-                _:_ -> #{}
-            end;
+    case albedo_credentials:read_json(filename:join(Home, "codex-models.json")) of
+        {ok, Map} when is_map(Map) -> Map;
         _ -> #{}
     end.
 
 store(Home, Cache) ->
     Path = filename:join(Home, "codex-models.json"),
-    Temporary = Path ++ ".tmp." ++ integer_to_list(erlang:unique_integer([positive])),
-    ok = filelib:ensure_dir(Path),
-    case file:write_file(Temporary, json:encode(Cache)) of
-        ok ->
-            case file:rename(Temporary, Path) of
-                ok -> {ok, nil};
-                _ -> _ = file:delete(Temporary), {error, <<"Codex model cache could not be written">>}
-            end;
+    case albedo_credentials:write(Path, Cache) of
+        ok -> {ok, nil};
         _ -> {error, <<"Codex model cache could not be written">>}
     end.
 

@@ -45,20 +45,17 @@ init([]) ->
            catch _:_ -> Cores end,
     %% The load average comes from os_mon; without it the base stands alone.
     %% ALBEDO_JOB_LOAD=0 turns the adjustment off, for a fixed count.
+    %% Only the load average is wanted: no disk or memory monitors and their alarms.
     Load = os:getenv("ALBEDO_JOB_LOAD") =/= "0" andalso
-           try only_cpu_sup(), application:ensure_all_started(os_mon, temporary) of
-               {ok, _} -> true;
-               _ -> false
+           try
+               _ = application:load(os_mon),
+               [application:set_env(os_mon, K, false)
+                || K <- [start_disksup, start_memsup, start_os_sup]],
+               {ok, _} = application:ensure_all_started(os_mon, temporary),
+               true
            catch _:_ -> false
            end,
     {ok, #state{base = Base, load = Load}}.
-
-%% Only the load average is wanted: no disk or memory monitors and their alarms.
-only_cpu_sup() ->
-    _ = application:load(os_mon),
-    [application:set_env(os_mon, Key, false)
-     || Key <- [start_disksup, start_memsup, start_os_sup]],
-    ok.
 
 handle_call(limit, _, S) -> {reply, effective(S), S};
 handle_call(_, _, S) -> {reply, {error, unsupported}, S}.
@@ -83,37 +80,29 @@ handle_cast({acquire, Owner, Id}, S = #state{entries = Entries}) ->
     end;
 handle_cast({release, Key}, S) -> {noreply, drain(drop(Key, S))};
 handle_cast({release_owner, Owner}, S) ->
-    Keys = [Key || Key = {Pid, _} <- maps:keys(S#state.entries), Pid =:= Owner],
-    {noreply, drain(lists:foldl(fun drop/2, S, Keys))}.
+    {noreply, drop_keys([K || {P, _} = K := _ <- S#state.entries, P =:= Owner], S)}.
 
 handle_info(tick, S) ->
     {noreply, tick(drain(S#state{ticking = false}))};
 handle_info({'DOWN', Mon, process, Owner, _}, S) ->
     %% A waiting request owns no running work; active ones need cleanup proof.
-    Keys = [Key || {Key = {Pid, _}, {waiting, Ref}} <- maps:to_list(S#state.entries),
-                   Pid =:= Owner, Ref =:= Mon],
-    {noreply, drain(lists:foldl(fun drop/2, S, Keys))};
+    {noreply, drop_keys([K || {P, _} = K := {waiting, Ref} <- S#state.entries,
+                              P =:= Owner, Ref =:= Mon], S)};
 handle_info(_, S) -> {noreply, S}.
 
+drop_keys(Keys, S) -> drain(lists:foldl(fun drop/2, S, Keys)).
+
 %% While anything waits, look again now and then: the load may have fallen.
-tick(S = #state{waiting = [], ticking = _}) -> S;
-tick(S = #state{ticking = true}) -> S;
-tick(S) ->
+tick(S = #state{waiting = [_ | _], ticking = false}) ->
     erlang:send_after(?TICK_MS, self(), tick),
-    S#state{ticking = true}.
+    S#state{ticking = true};
+tick(S) -> S.
 
 effective(#state{base = Base, load = false}) -> Base;
 effective(#state{base = Base}) ->
-    Load = try cpu_sup:avg1() of
-               N when is_integer(N) -> N / 256;
-               _ -> 0.0
-           catch _:_ -> 0.0
-           end,
+    Load = try cpu_sup:avg1() / 256 catch _:_ -> 0.0 end,
     Excess = Load - Base * ?OVERLOAD,
-    case Excess > 0 of
-        true -> max(1, Base - ceil(Excess));
-        false -> Base
-    end.
+    if Excess > 0 -> max(1, Base - ceil(Excess)); true -> Base end.
 
 drop(Key, S = #state{entries = Entries, running = Running, waiting = Waiting}) ->
     case maps:take(Key, Entries) of

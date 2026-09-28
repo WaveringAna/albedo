@@ -1,9 +1,7 @@
 -module(albedo_proxy).
--export([encode/1, conversation/1, now/0, unique/0, pack/1, unpack/1]).
+-export([conversation/1, now/0, unique/0, pack/1, unpack/1]).
 
 -define(MAX_STATE, 4194304).
-
-encode(Value) -> json:encode(Value).
 
 %% Names one client conversation for upstream identity without storing it.
 conversation(Seed) ->
@@ -36,8 +34,7 @@ bounded(Z, {continue, Chunk}, Acc) ->
         false -> bounded(Z, zlib:safeInflate(Z, []), [Acc, Chunk])
     end;
 bounded(_, {finished, Chunk}, Acc) ->
-    Out = iolist_to_binary([Acc, Chunk]),
-    case byte_size(Out) > ?MAX_STATE of
+    case iolist_size([Acc, Chunk]) > ?MAX_STATE of
         true -> {error, nil};
-        false -> {ok, Out}
+        false -> {ok, iolist_to_binary([Acc, Chunk])}
     end.

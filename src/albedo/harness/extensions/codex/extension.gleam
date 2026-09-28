@@ -1,6 +1,5 @@
 //// ChatGPT Codex subscription provider layered on the OpenAI transport.
 
-import albedo/daemon/store
 import albedo/harness/extension
 import albedo/harness/extensions/codex/catalog
 import albedo/harness/extensions/models/extension as models
@@ -9,13 +8,13 @@ import albedo/harness/rotation
 import albedo/harness/settings
 import albedo/openai_api
 import albedo/openai_api/types
+import gleam/bool
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import gleam/uri
 
 const base_url = "https://chatgpt.com/backend-api"
 
@@ -37,19 +36,16 @@ pub fn extension() -> extension.Extension {
       extension.LoginPlugin(login()),
       extension.ModelsPlugin(extension.ModelCatalog(lookup, list_models)),
     ],
-    initialise,
+    extension.no_initialise,
   )
 }
 
 /// What the ChatGPT backend reports about a model a Codex session uses;
 /// models.dev fills in what it leaves out, such as the output limit.
 fn lookup(model: String, endpoint: String) -> Option(extension.ModelInfo) {
-  case string.starts_with(endpoint, base_url) {
-    True ->
-      catalog.lookup(settings.home(), endpoint, model)
-      |> option.map(models.complete_model(_, endpoint))
-    False -> None
-  }
+  use <- bool.guard(!string.starts_with(endpoint, base_url), None)
+  catalog.lookup(settings.home(), endpoint, model)
+  |> option.map(models.complete_model(_, endpoint))
 }
 
 /// The models the ChatGPT backend offers the selected account, refreshed
@@ -59,10 +55,10 @@ fn list_models(provider: String, _endpoint: String) -> List(String) {
   case provider {
     "codex" -> {
       let home = settings.home()
-      let _ = case account(home, "") {
-        Ok(access) -> catalog.refresh(home, access.token, access.account_id)
-        Error(error) -> Error(error)
-      }
+      let _ =
+        result.map(account(home, ""), fn(a) {
+          catalog.refresh(home, a.token, a.account_id)
+        })
       catalog.listed(home)
     }
     _ -> []
@@ -79,7 +75,20 @@ pub fn login() -> oauth.Login {
     types.Responses,
     "openai-codex",
     oauth.Callback("localhost", 1455, "/auth/callback", True),
-    authorize,
+    fn(grant) {
+      oauth.authorize_url("https://auth.openai.com/api/accounts/authorize", [
+        #("response_type", "code"),
+        #("client_id", client_id),
+        #("redirect_uri", grant.redirect),
+        #("scope", scope),
+        #("code_challenge", grant.challenge),
+        #("code_challenge_method", "S256"),
+        #("state", grant.state),
+        #("id_token_add_organizations", "true"),
+        #("codex_cli_simplified_flow", "true"),
+        #("originator", "albedo"),
+      ])
+    },
     fn(grant, code, _progress) {
       native_exchange(code, grant.verifier, grant.redirect)
     },
@@ -87,51 +96,16 @@ pub fn login() -> oauth.Login {
   )
 }
 
-fn authorize(grant: oauth.Grant) -> String {
-  "https://auth.openai.com/api/accounts/authorize?"
-  <> uri.query_to_string([
-    #("response_type", "code"),
-    #("client_id", client_id),
-    #("redirect_uri", grant.redirect),
-    #("scope", scope),
-    #("code_challenge", grant.challenge),
-    #("code_challenge_method", "S256"),
-    #("state", grant.state),
-    #("id_token_add_organizations", "true"),
-    #("codex_cli_simplified_flow", "true"),
-    #("originator", "albedo"),
-  ])
-}
-
-fn initialise(_ledger: store.Store) -> Result(Nil, String) {
-  Ok(Nil)
-}
-
 fn resolve(
   context: extension.ModelContext,
 ) -> Option(Result(extension.Upstream, String)) {
-  case context.provider {
-    "codex" ->
-      case context.protocol {
-        types.Responses ->
-          Some(
-            connect(context.home, context.session)
-            |> result.map(fn(client) {
-              rotation.upstream(
-                client.base_url,
-                client.protocol,
-                pool(context.home, context.session, openai_api.stream),
-                client,
-                fn(client, error) {
-                  account_failure(context.home, client, error)
-                },
-              )
-            }),
-          )
-        _ -> Some(Error("Codex provider requires the responses protocol"))
-      }
-    _ -> None
-  }
+  use <- rotation.require_provider(context, "codex", "Codex", types.Responses)
+  use client <- result.map(connect(context.home, context.session))
+  rotation.client_upstream(
+    pool(context.home, context.session, openai_api.stream),
+    client,
+    fn(client, error) { account_failure(context.home, client, error) },
+  )
 }
 
 /// The session's current account as a client. Its model list refreshes in
@@ -143,11 +117,9 @@ fn connect(home: String, session: String) -> Result(types.Client, String) {
 }
 
 fn account(home: String, session: String) -> Result(Access, String) {
-  native_access(home, session)
-  |> result.try(fn(encoded) {
-    json.parse(encoded, access_decoder())
-    |> result.map_error(fn(_) { "invalid Codex credential response" })
-  })
+  use encoded <- result.try(native_access(home, session))
+  json.parse(encoded, access_decoder())
+  |> result.replace_error("invalid Codex credential response")
 }
 
 /// The ChatGPT accounts in auth.json as a rotation pool. A usage limit is
@@ -161,19 +133,11 @@ pub fn pool(
   rotation.Pool(
     current: fn() { connect(home, session) },
     mark: fn(client, body) {
-      limited(home, client, body)
-      |> option.from_result
-      |> option.map(fn(limit) {
-        rotation.marked(limit.lasting, limit.next != "")
-      })
+      limited(home, client, body) |> rotation.mark_limit
     },
-    same: fn(a: types.Client, b: types.Client) { a.api_key == b.api_key },
+    same: rotation.same_client,
     stream: stream,
   )
-}
-
-type Limited {
-  Limited(account: String, until: String, next: String, lasting: Bool)
 }
 
 /// Records the limit a 429 reports against this client's account.
@@ -181,12 +145,10 @@ fn limited(
   home: String,
   client: types.Client,
   body: String,
-) -> Result(Limited, Nil) {
+) -> Result(rotation.Limited, Nil) {
   native_limited(home, client.api_key, body)
   |> result.replace_error(Nil)
-  |> result.try(fn(encoded) {
-    json.parse(encoded, limit_decoder()) |> result.replace_error(Nil)
-  })
+  |> result.try(rotation.decode_limited)
 }
 
 /// Explains a Codex failure that changes which account should be used.
@@ -223,7 +185,7 @@ pub fn account_failure(
   }
 }
 
-fn limit_message(limit: Limited) -> String {
+fn limit_message(limit: rotation.Limited) -> String {
   let account = case limit.account {
     "" -> "this ChatGPT account"
     account -> account
@@ -232,26 +194,11 @@ fn limit_message(limit: Limited) -> String {
     True -> "usage limit"
     False -> "rate limit"
   }
-  let head =
-    "ChatGPT " <> kind <> " reached for " <> account <> " until " <> limit.until
-  case limit.next {
-    "" ->
-      head
-      <> "; no other ChatGPT account has usage left. Add one with /login or wait for the reset"
-    next ->
-      head
-      <> "; the next turn will use "
-      <> next
-      <> ". Send your message again to continue"
-  }
-}
-
-fn limit_decoder() {
-  use account <- decode.field("account", decode.string)
-  use until <- decode.field("until", decode.string)
-  use next <- decode.field("next", decode.string)
-  use lasting <- decode.optional_field("lasting", True, decode.bool)
-  decode.success(Limited(account, until, next, lasting))
+  rotation.limit_message(
+    "ChatGPT " <> kind <> " reached for " <> account <> " until " <> limit.until,
+    limit.next,
+    "no other ChatGPT account has usage left. Add one with /login or wait for the reset",
+  )
 }
 
 fn access_decoder() {

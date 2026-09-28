@@ -14,12 +14,8 @@ unpack(Bytes,Read) ->
     %% Tool outputs saved before tool images carry no image list.
     {1,{tool_output,Id,Text}} when is_binary(Id),is_binary(Text) -> {ok,{tool_output,Id,Text,[]}};
     {1,{tool_output,Id,Text,Images}=Input} when is_binary(Id),is_binary(Text),is_list(Images) -> attached(Input,Read);
-    {1,{replay,{replay_item,Protocol,Value}}=Input} when is_map(Value), (Protocol=:=responses orelse Protocol=:=chat_completions) ->
-      case {Protocol,Value} of
-        {responses,#{<<"type">> := Type}} when is_binary(Type) -> {ok,Input};
-        {chat_completions,#{<<"role">> := <<"assistant">>}} -> {ok,Input};
-        _ -> {error,nil}
-      end;
+    {1,{replay,{replay_item,responses,#{<<"type">> := Type}}}=Input} when is_binary(Type) -> {ok,Input};
+    {1,{replay,{replay_item,chat_completions,#{<<"role">> := <<"assistant">>}}}=Input} -> {ok,Input};
     _ -> {error,nil}
   catch _:_ -> {error,nil} end.
 
@@ -35,10 +31,9 @@ catch _:_ -> {error,nil} end.
 pack_list(Inputs) -> term_to_binary({1,[pack(I) || I <- Inputs]}).
 unpack_list(Bytes,Read) -> try binary_to_term(Bytes,[safe]) of
   {1,Packed} when is_list(Packed) ->
-    Inputs = [unpack(P,Read) || P <- Packed],
-    case lists:all(fun({ok,_}) -> true; (_) -> false end, Inputs) of
-      true -> {ok,[I || {ok,I} <- Inputs]};
-      false -> {error,nil}
+    case albedo_images:results([unpack(P,Read) || P <- Packed]) of
+      {ok,_}=Ok -> Ok;
+      error -> {error,nil}
     end;
   _ -> {error,nil}
 catch _:_ -> {error,nil} end.

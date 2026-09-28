@@ -73,15 +73,11 @@ codex_account(Credential) when is_map(Credential) ->
 codex_account(_) -> {account, <<>>, <<"invalid chatgpt account">>, <<>>, false}.
 
 post_token(Body) ->
-    _ = application:ensure_all_started(inets),
-    _ = application:ensure_all_started(ssl),
-    Request = {?TOKEN_URL, [{"accept", "application/json"}],
-               "application/x-www-form-urlencoded", binary_to_list(Body)},
-    Options = [{timeout, ?HTTP_TIMEOUT_MS}, {connect_timeout, 10000},
-               {ssl, albedo_credentials:tls_options("auth.openai.com")}],
-    case httpc:request(post, Request, Options, [{body_format, binary}]) of
-        {ok, {{_, 200, _}, _, Response}} -> {ok, Response};
-        {ok, {{_, Status, _}, _, Response}} ->
+    case albedo_http:post(?TOKEN_URL, [{"accept", "application/json"}],
+                          "application/x-www-form-urlencoded", binary_to_list(Body),
+                          ?HTTP_TIMEOUT_MS, 10000) of
+        {ok, {200, _, Response}} -> {ok, Response};
+        {ok, {Status, _, Response}} ->
             Detail = case string:trim(binary:part(Response, 0, min(byte_size(Response), 4096))) of
                 <<>> -> <<>>;
                 Text -> <<": ", Text/binary>>
@@ -93,8 +89,8 @@ post_token(Body) ->
 codex_access(Home0, Session0) ->
     Home = text(Home0),
     Session = unicode:characters_to_binary(Session0),
-    Path = filename:join(Home, "auth.json"),
-    case read_auth(Path) of
+    Path = albedo_credentials:auth_path(Home),
+    case albedo_credentials:read(Path) of
         {ok, Data} ->
             Credentials = credentials(Data),
             select(albedo_accounts:order(?SCOPE, Credentials, Session, fun identity/1), Path, Session);
@@ -103,31 +99,29 @@ codex_access(Home0, Session0) ->
 
 select([], _, _) -> {error, <<"Codex is not authenticated; run /login and add a ChatGPT account">>};
 select([Credential | Rest], Path, Session) ->
-    case usable(Credential) of
+    Outcome = case usable(Credential) of
+        {ok, Ready} -> {ok, Ready};
+        refresh -> refresh_locked(Path, identity(Credential));
+        error -> {error, invalid}
+    end,
+    case Outcome of
         {ok, Access} ->
             remember(Session, Access),
             encode_access(Access);
-        refresh ->
-            case refresh_locked(Path, identity(Credential)) of
-                {ok, Access} ->
-                    remember(Session, Access),
-                    encode_access(Access);
-                {error, _} -> select(Rest, Path, Session)
-            end;
-        error -> select(Rest, Path, Session)
+        _ -> select(Rest, Path, Session)
     end.
 
 %% Drops the account whose access token the server rejected, so the next turn
 %% picks a sibling or asks for /login instead of replaying a revoked token.
 %% Returns the removed account's email, or <<>> when none is recorded.
 codex_revoke(Home0, Access) ->
-    Path = filename:join(text(Home0), "auth.json"),
+    Path = albedo_credentials:auth_path(Home0),
     Identity = identity(#{<<"access">> => Access}),
     albedo_credentials:with_lock(Path, fun() -> remove_identity(Path, Access, Identity) end,
                                  fun() -> {error, <<"credential store is busy">>} end).
 
 remove_identity(Path, Access, Identity) ->
-    case read_auth(Path) of
+    case albedo_credentials:read(Path) of
         {ok, Data} ->
             Values = credentials(Data),
             Revoked = fun(Value) ->
@@ -137,11 +131,7 @@ remove_identity(Path, Access, Identity) ->
             case lists:partition(Revoked, Values) of
                 {[], _} -> {ok, <<>>};
                 {[Removed | _], Kept} ->
-                    Updated = case Kept of
-                        [] -> maps:remove(?STORE, Data);
-                        _ -> set_credentials(Data, Kept)
-                    end,
-                    case write_auth(Path, Updated) of
+                    case albedo_credentials:write(Path, albedo_credentials:put_values(Data, ?STORE, Kept)) of
                         ok -> {ok, email(Removed)};
                         {error, _} -> {error, <<"could not remove revoked Codex credential">>}
                     end
@@ -174,13 +164,7 @@ usable(Credential) when is_map(Credential) ->
     end;
 usable(_) -> error.
 
-credentials(Data) when is_map(Data) ->
-    case maps:get(?STORE, Data, []) of
-        Values when is_list(Values) -> [V || V <- Values, is_map(V), maps:get(<<"type">>, V, <<>>) =:= <<"oauth">>];
-        Value when is_map(Value) ->
-            case maps:get(<<"type">>, Value, <<>>) of <<"oauth">> -> [Value]; _ -> [] end;
-        _ -> []
-    end;
+credentials(Data) when is_map(Data) -> albedo_credentials:oauth(Data, ?STORE);
 credentials(_) -> [].
 
 selected(Credential) -> maps:get(<<"selected">>, Credential, false) =:= true.
@@ -191,7 +175,7 @@ selected(Credential) -> maps:get(<<"selected">>, Credential, false) =:= true.
 codex_limited(Home0, Access, Body) ->
     case usage_limit(Body) of
         {ok, Until, Lasting} ->
-            Path = filename:join(text(Home0), "auth.json"),
+            Path = albedo_credentials:auth_path(Home0),
             Identity = identity(#{<<"access">> => Access}),
             Hit = fun(V) -> maps:get(<<"access">>, V, <<>>) =:= Access orelse
                             (Identity =/= <<>> andalso identity(V) =:= Identity) end,
@@ -265,7 +249,7 @@ refresh_locked(Path, Identity) ->
                                  fun() -> refreshed_after_wait(Path, Identity) end).
 
 refreshed_after_wait(Path, Identity) ->
-    case read_auth(Path) of
+    case albedo_credentials:read(Path) of
         {ok, Data} ->
             case find_identity(credentials(Data), Identity) of
                 undefined -> {error, <<"credential changed during refresh">>};
@@ -279,7 +263,7 @@ refreshed_after_wait(Path, Identity) ->
     end.
 
 refresh_current(Path, Identity) ->
-    case read_auth(Path) of
+    case albedo_credentials:read(Path) of
         {ok, Data} ->
             Values = credentials(Data),
             case find_identity(Values, Identity) of
@@ -291,7 +275,7 @@ refresh_current(Path, Identity) ->
                             case refresh_token(Current) of
                                 {ok, Updated} ->
                                     UpdatedValues = replace_identity(Values, Identity, Updated),
-                                    case write_auth(Path, set_credentials(Data, UpdatedValues)) of
+                                    case albedo_credentials:write(Path, albedo_credentials:put_values(Data, ?STORE, UpdatedValues)) of
                                         ok -> {ok, Updated};
                                         {error, _} -> {error, <<"could not persist refreshed Codex credential">>}
                                     end;
@@ -303,18 +287,14 @@ refresh_current(Path, Identity) ->
         Error -> Error
     end.
 
-find_identity([], _) -> undefined;
-find_identity([Credential | Rest], Identity) ->
-    case identity(Credential) =:= Identity of
-        true -> Credential;
-        false -> find_identity(Rest, Identity)
+find_identity(Values, Identity) ->
+    case [C || C <- Values, identity(C) =:= Identity] of
+        [Found | _] -> Found;
+        [] -> undefined
     end.
 
 replace_identity(Values, Identity, Updated) ->
     [case identity(Value) =:= Identity of true -> Updated; false -> Value end || Value <- Values].
-
-set_credentials(Data, [Only]) -> maps:put(?STORE, Only, Data);
-set_credentials(Data, Values) -> maps:put(?STORE, Values, Data).
 
 refresh_token(Credential) ->
     Body = uri_string:compose_query([
@@ -363,12 +343,9 @@ parse_refresh(Response, Previous) ->
     end.
 
 preserve_identity(Credential, Claims) ->
-    lists:foldl(fun(Key, Acc) ->
-        case maps:get(Key, Claims, undefined) of
-            Value when is_binary(Value), Value =/= <<>> -> maps:put(Key, Value, Acc);
-            _ -> Acc
-        end
-    end, Credential, [<<"accountId">>, <<"accountUserId">>, <<"email">>]).
+    Valid = maps:filter(fun(_, V) -> is_binary(V) andalso V =/= <<>> end,
+                        maps:with([<<"accountId">>, <<"accountUserId">>, <<"email">>], Claims)),
+    maps:merge(Credential, Valid).
 
 identity(Credential) ->
     Claims = token_identity(maps:get(<<"access">>, Credential, <<>>)),
@@ -401,9 +378,7 @@ token_identity(_) -> #{}.
 
 decode_claims(Payload) ->
     try
-        Padded = pad64(binary:replace(binary:replace(Payload, <<"-">>, <<"+">>, [global]),
-                                      <<"_">>, <<"/">>, [global])),
-        Claims = json:decode(base64:decode(Padded)),
+        Claims = json:decode(base64:decode(Payload, #{mode => urlsafe, padding => false})),
         Auth = maps:get(<<"https://api.openai.com/auth">>, Claims, #{}),
         Profile = maps:get(<<"https://api.openai.com/profile">>, Claims, #{}),
         maps:filter(fun(_, V) -> is_binary(V) andalso V =/= <<>> end, #{
@@ -415,17 +390,5 @@ decode_claims(Payload) ->
     catch
         _:_ -> #{}
     end.
-
-pad64(Value) ->
-    case byte_size(Value) rem 4 of
-        0 -> Value;
-        2 -> <<Value/binary, "==">>;
-        3 -> <<Value/binary, "=">>;
-        _ -> Value
-    end.
-
-read_auth(Path) -> albedo_credentials:read(Path).
-
-write_auth(Path, Data) -> albedo_credentials:write(Path, Data).
 
 text(Value) -> unicode:characters_to_list(Value).

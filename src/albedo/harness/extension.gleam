@@ -85,6 +85,12 @@ pub type ModelInfo {
   )
 }
 
+/// A ModelInfo with only identity filled in: the base a catalog constructor
+/// record-updates per model rather than passing dummy values for every field.
+pub fn blank_model(model: String, provider: String) -> ModelInfo {
+  ModelInfo(model, provider, None, None, None, [], None, [], "", [])
+}
+
 /// Picks the default reasoning effort: "medium" when supported, otherwise the
 /// first available tier above medium (e.g. "high", "xhigh", "max"), or the
 /// highest tier available. Models without reasoning return `None`.
@@ -92,18 +98,12 @@ pub fn default_effort(efforts: List(String)) -> Option(String) {
   case efforts {
     [] -> None
     _ ->
-      case list.contains(efforts, "medium") {
-        True -> Some("medium")
-        False ->
-          case
-            list.find(efforts, fn(e) {
-              e == "high" || e == "xhigh" || e == "max"
-            })
-          {
-            Ok(e) -> Some(e)
-            Error(_) -> list.last(efforts) |> option.from_result
-          }
-      }
+      list.find(efforts, fn(e) { e == "medium" })
+      |> result.lazy_or(fn() {
+        list.find(efforts, fn(e) { e == "high" || e == "xhigh" || e == "max" })
+      })
+      |> result.lazy_or(fn() { list.last(efforts) })
+      |> option.from_result
   }
 }
 
@@ -227,6 +227,11 @@ pub type Summary {
   )
 }
 
+/// The initialiser of an extension that keeps no tables.
+pub fn no_initialise(_ledger: store.Store) -> Result(Nil, String) {
+  Ok(Nil)
+}
+
 pub fn python_module(
   name: String,
   description: String,
@@ -239,7 +244,7 @@ pub fn python_module(
     description,
     requires,
     [ToolPlugin(instructions, [], [module], [])],
-    fn(_) { Ok(Nil) },
+    no_initialise,
   )
 }
 
@@ -258,12 +263,10 @@ pub fn install(
   use _ <- result.try(validate_selection(defaults))
   use _ <- result.try(
     store.query(ledger, fn(db) {
-      sqlight.exec(
-        "CREATE TABLE IF NOT EXISTS session_extensions(session TEXT NOT NULL,name TEXT NOT NULL,enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),PRIMARY KEY(session,name));",
+      store.exec(
         db,
+        "CREATE TABLE IF NOT EXISTS session_extensions(session TEXT NOT NULL,name TEXT NOT NULL,enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),PRIMARY KEY(session,name));",
       )
-      |> result.replace(Nil)
-      |> result.map_error(fn(error) { error.message })
     }),
   )
   list.try_each(installed, fn(extension) { extension.initialise(ledger) })
@@ -306,9 +309,9 @@ fn overrides(
   session: String,
 ) -> Result(List(#(String, Bool)), String) {
   store.query(ledger, fn(db) {
-    sqlight.query(
-      "SELECT name,enabled FROM session_extensions WHERE session=?",
+    store.rows(
       db,
+      "SELECT name,enabled FROM session_extensions WHERE session=?",
       [sqlight.text(session)],
       {
         use name <- decode.field(0, decode.string)
@@ -316,7 +319,6 @@ fn overrides(
         decode.success(#(name, enabled == 1))
       },
     )
-    |> result.map_error(fn(error) { error.message })
   })
 }
 
@@ -335,13 +337,20 @@ fn select(
   let chosen = fn(extension: Extension) {
     list.key_find(overrides, extension.name) == Ok(True)
   }
-  let compactions = list.filter(selected, is_compaction)
-  case list.length(compactions) > 1 && list.any(compactions, chosen) {
-    True ->
-      list.filter(selected, fn(extension) {
-        !is_compaction(extension) || chosen(extension)
-      })
-    False -> selected
+  exclusive(selected, is_compaction, chosen)
+}
+
+/// At most one compaction strategy runs: when several are enabled and one of
+/// them is explicitly chosen, the others are dropped.
+fn exclusive(
+  items: List(a),
+  strategy: fn(a) -> Bool,
+  chosen: fn(a) -> Bool,
+) -> List(a) {
+  let strategies = list.filter(items, strategy)
+  case list.length(strategies) > 1 && list.any(strategies, chosen) {
+    True -> list.filter(items, fn(item) { !strategy(item) || chosen(item) })
+    False -> items
   }
 }
 
@@ -353,19 +362,30 @@ pub fn global_defaults(built_in: List(String)) -> List(String) {
   let kept =
     list.filter(built_in, fn(name) { dict.get(chosen, name) != Ok(False) })
   let added =
-    dict.to_list(chosen)
-    |> list.filter_map(fn(pair) {
-      case pair.1 && !list.contains(kept, pair.0) {
-        True -> Ok(pair.0)
-        False -> Error(Nil)
-      }
-    })
+    true_keys(chosen) |> list.filter(fn(name) { !list.contains(kept, name) })
   list.append(kept, added)
 }
 
 fn global_choices() -> dict.Dict(String, Bool) {
-  settings.load("enabled", decode.dict(decode.string, decode.bool), dict.new())
+  bool_section("enabled")
+}
+
+/// One boolean section of extensions.json, empty when it cannot be read.
+fn bool_section(section: String) -> dict.Dict(String, Bool) {
+  settings.load(section, decode.dict(decode.string, decode.bool), dict.new())
   |> result.unwrap(dict.new())
+}
+
+/// The keys a boolean section sets to true.
+fn true_keys(section: dict.Dict(String, Bool)) -> List(String) {
+  section
+  |> dict.to_list
+  |> list.filter_map(fn(pair) {
+    case pair.1 {
+      True -> Ok(pair.0)
+      False -> Error(Nil)
+    }
+  })
 }
 
 /// The global defaults with one compaction strategy: a strategy the user
@@ -375,42 +395,16 @@ fn resolved_defaults(
   installed: List(Extension),
   built_in: List(String),
 ) -> List(String) {
-  let defaults = global_defaults(built_in)
   let chosen = global_choices()
-  let compactions =
-    list.filter(defaults, fn(name) {
-      list.any(installed, fn(extension) {
-        extension.name == name && is_compaction(extension)
-      })
-    })
-  case
-    list.length(compactions) > 1
-    && list.any(compactions, fn(name) { dict.get(chosen, name) == Ok(True) })
-  {
-    True ->
-      list.filter(defaults, fn(name) {
-        !list.contains(compactions, name) || dict.get(chosen, name) == Ok(True)
-      })
-    False -> defaults
-  }
+  exclusive(global_defaults(built_in), compaction_named(installed, _), fn(name) {
+    dict.get(chosen, name) == Ok(True)
+  })
 }
 
 /// Models whose context cap the user raised, from the `raisedCaps` section
 /// of extensions.json. An unreadable file raises nothing.
 pub fn raised_caps() -> List(String) {
-  settings.load(
-    "raisedCaps",
-    decode.dict(decode.string, decode.bool),
-    dict.new(),
-  )
-  |> result.unwrap(dict.new())
-  |> dict.to_list
-  |> list.filter_map(fn(pair) {
-    case pair.1 {
-      True -> Ok(pair.0)
-      False -> Error(Nil)
-    }
-  })
+  true_keys(bool_section("raisedCaps"))
 }
 
 /// Raises or restores a model's context cap for every session.
@@ -424,13 +418,9 @@ pub fn raise_cap(model: String, raised: Bool) -> Result(Nil, String) {
 /// The window a session on this model gets: the provider's maximum once the
 /// user raised the cap, its default window otherwise.
 pub fn window(info: ModelInfo) -> Option(Int) {
-  case info.max_context_tokens {
-    Some(max) ->
-      case list.contains(raised_caps(), info.model) {
-        True -> Some(max)
-        False -> info.context_tokens
-      }
-    None -> info.context_tokens
+  case info.max_context_tokens, list.contains(raised_caps(), info.model) {
+    Some(max), True -> Some(max)
+    _, _ -> info.context_tokens
   }
 }
 
@@ -476,71 +466,43 @@ pub fn propose(
 ) -> Result(List(Extension), String) {
   let name = change_name(change)
   use _ <- result.try(
-    list.find(installed, fn(extension) { extension.name == name })
+    named(installed, name)
     |> result.replace_error("unknown extension: " <> name),
   )
   use current <- result.try(overrides(ledger, session))
   let defaults = resolved_defaults(installed, default_enabled)
   use _ <- result.try(case change {
     SetSession(name, False) ->
-      case list.find(installed, fn(item) { item.name == name }) {
-        Ok(item) ->
-          case
-            is_compaction(item)
-            && list.any(select(installed, defaults, current), fn(active) {
-              active.name == name
-            })
-          {
-            True ->
-              Error("select another compaction strategy to replace " <> name)
-            False -> Ok(Nil)
-          }
-        Error(_) -> Ok(Nil)
+      case
+        compaction_named(installed, name)
+        && list.any(select(installed, defaults, current), fn(active) {
+          active.name == name
+        })
+      {
+        True -> Error("select another compaction strategy to replace " <> name)
+        False -> Ok(Nil)
       }
     _ -> Ok(Nil)
   })
-  let target = list.find(installed, fn(extension) { extension.name == name })
-  let switching = case change, target {
-    SetSession(_, True), Ok(extension) | SetGlobal(_, True), Ok(extension) ->
-      is_compaction(extension)
-    _, _ -> False
+  let switching = case change {
+    SetSession(_, True) | SetGlobal(_, True) ->
+      compaction_named(installed, name)
+    _ -> False
   }
-  let without_other_compactions = fn(names: List(String)) {
-    list.filter(names, fn(other) {
-      other == name
-      || !list.any(installed, fn(extension) {
-        extension.name == other && is_compaction(extension)
-      })
-    })
+  let survives = fn(other: String) -> Bool {
+    other != name && { !switching || !compaction_named(installed, other) }
   }
   let #(defaults, current) = case change {
     SetSession(name, value) -> #(defaults, [
       #(name, value),
-      ..list.filter(current, fn(pair) {
-        pair.0 != name
-        && {
-          !switching
-          || !list.any(installed, fn(extension) {
-            extension.name == pair.0 && is_compaction(extension)
-          })
-        }
-      })
+      ..list.filter(current, fn(pair) { survives(pair.0) })
     ])
     Inherit(name) -> #(
       defaults,
       list.filter(current, fn(pair) { pair.0 != name }),
     )
     SetGlobal(name, True) -> #(
-      [
-        name,
-        ..list.filter(
-          case switching {
-            True -> without_other_compactions(defaults)
-            False -> defaults
-          },
-          fn(other) { other != name },
-        )
-      ],
+      [name, ..list.filter(defaults, survives)],
       current,
     )
     SetGlobal(name, False) -> #(
@@ -572,6 +534,8 @@ pub fn propose(
   Ok(selected)
 }
 
+/// Whether another override or default keeps its place beside a compaction
+/// switch: sibling strategies are displaced, everything else stays.
 /// Persists a change `propose` accepted.
 pub fn record(
   ledger: store.Store,
@@ -582,16 +546,11 @@ pub fn record(
     SetSession(name, value) -> set_enabled(ledger, session, name, value)
     SetGlobal(name, value) -> set_global(settings.home(), name, value)
     Inherit(name) ->
-      store.query(ledger, fn(db) {
-        sqlight.query(
-          "DELETE FROM session_extensions WHERE session=? AND name=?",
-          db,
-          [sqlight.text(session), sqlight.text(name)],
-          decode.dynamic,
-        )
-        |> result.replace(Nil)
-        |> result.map_error(fn(error) { error.message })
-      })
+      store.write(
+        ledger,
+        "DELETE FROM session_extensions WHERE session=? AND name=?",
+        [sqlight.text(session), sqlight.text(name)],
+      )
   }
 }
 
@@ -618,6 +577,33 @@ fn is_compaction(extension: Extension) -> Bool {
       CompactionPlugin(_) -> True
       _ -> False
     }
+  })
+}
+
+/// The installed extension named `name`, if there is one.
+fn named(installed: List(Extension), name: String) -> Result(Extension, Nil) {
+  list.find(installed, fn(extension) { extension.name == name })
+}
+
+/// Whether `name` names a compaction strategy extension. First match is the
+/// only match: `validate_registry` rejects duplicate names.
+fn compaction_named(installed: List(Extension), name: String) -> Bool {
+  case named(installed, name) {
+    Ok(extension) -> is_compaction(extension)
+    Error(_) -> False
+  }
+}
+
+/// Every plugin payload `pick` accepts across these extensions, in registry
+/// order, with the owning extension's name.
+fn plugin_values(
+  installed: List(Extension),
+  pick: fn(String, Plugin) -> Result(a, Nil),
+) -> List(a) {
+  installed
+  |> list.flat_map(fn(extension) {
+    extension.plugins
+    |> list.filter_map(fn(plugin) { pick(extension.name, plugin) })
   })
 }
 
@@ -650,43 +636,33 @@ pub fn record_selected(
   selected: List(Extension),
   installed: List(Extension),
 ) -> Result(Nil, String) {
-  case change {
-    SetSession(name, True) ->
-      case list.find(installed, fn(item) { item.name == name }) {
-        Ok(item) ->
-          case is_compaction(item) {
-            True ->
-              set_selection_with(
-                ledger,
-                session,
-                previous,
-                selected,
-                Some(#(name, True)),
-              )
-            False -> record(ledger, session, change)
+  let name = change_name(change)
+  let replacing = case change {
+    SetSession(_, True) | SetGlobal(_, True) ->
+      compaction_named(installed, name)
+    _ -> False
+  }
+  case change, replacing {
+    SetSession(..), True ->
+      set_selection_with(
+        ledger,
+        session,
+        previous,
+        selected,
+        Some(#(name, True)),
+      )
+    SetGlobal(..), True -> {
+      use _ <- result.try(
+        list.try_each(installed, fn(other) {
+          case other.name != name && is_compaction(other) {
+            True -> set_global(settings.home(), other.name, False)
+            False -> Ok(Nil)
           }
-        _ -> record(ledger, session, change)
-      }
-    SetGlobal(name, True) ->
-      case list.find(installed, fn(item) { item.name == name }) {
-        Ok(item) ->
-          case is_compaction(item) {
-            True -> {
-              use _ <- result.try(
-                list.try_each(installed, fn(other) {
-                  case other.name != name && is_compaction(other) {
-                    True -> set_global(settings.home(), other.name, False)
-                    False -> Ok(Nil)
-                  }
-                }),
-              )
-              record(ledger, session, change)
-            }
-            False -> record(ledger, session, change)
-          }
-        _ -> record(ledger, session, change)
-      }
-    _ -> record(ledger, session, change)
+        }),
+      )
+      record(ledger, session, change)
+    }
+    _, _ -> record(ledger, session, change)
   }
 }
 
@@ -699,21 +675,26 @@ fn set_selection_with(
 ) -> Result(Nil, String) {
   let changes =
     list.append(
-      selected
-        |> list.filter(fn(item) {
-          !list.any(previous, fn(old) { old.name == item.name })
-        })
-        |> list.map(fn(item) { #(item.name, True) }),
-      previous
-        |> list.filter(fn(item) {
-          !list.any(selected, fn(next) { next.name == item.name })
-        })
-        |> list.map(fn(item) { #(item.name, False) }),
+      entered(selected, previous, True),
+      entered(previous, selected, False),
     )
   write_changes(ledger, session, case explicit {
     Some(choice) -> [choice, ..changes]
     None -> changes
   })
+}
+
+/// The extensions `side` runs and `other` does not, as (name, value) pairs.
+fn entered(
+  side: List(Extension),
+  other: List(Extension),
+  value: Bool,
+) -> List(#(String, Bool)) {
+  side
+  |> list.filter(fn(item) {
+    !list.any(other, fn(old) { old.name == item.name })
+  })
+  |> list.map(fn(item) { #(item.name, value) })
 }
 
 fn write_changes(
@@ -722,39 +703,19 @@ fn write_changes(
   changes: List(#(String, Bool)),
 ) -> Result(Nil, String) {
   store.query(ledger, fn(db) {
-    use _ <- result.try(
-      sqlight.exec("BEGIN IMMEDIATE", db)
-      |> result.replace(Nil)
-      |> result.map_error(fn(error) { error.message }),
-    )
-    let written =
+    store.transaction(db, fn() {
       list.try_each(changes, fn(change) {
-        sqlight.query(
-          "INSERT INTO session_extensions(session,name,enabled) VALUES(?,?,?) ON CONFLICT(session,name) DO UPDATE SET enabled=excluded.enabled",
+        store.run(
           db,
+          "INSERT INTO session_extensions(session,name,enabled) VALUES(?,?,?) ON CONFLICT(session,name) DO UPDATE SET enabled=excluded.enabled",
           [
             sqlight.text(session),
             sqlight.text(change.0),
-            sqlight.int(case change.1 {
-              True -> 1
-              False -> 0
-            }),
+            sqlight.bool(change.1),
           ],
-          decode.dynamic,
         )
-        |> result.replace(Nil)
-        |> result.map_error(fn(error) { error.message })
       })
-    case written {
-      Ok(_) ->
-        sqlight.exec("COMMIT", db)
-        |> result.replace(Nil)
-        |> result.map_error(fn(error) { error.message })
-      Error(error) -> {
-        let _ = sqlight.exec("ROLLBACK", db)
-        Error(error)
-      }
-    }
+    })
   })
 }
 
@@ -776,18 +737,16 @@ fn validate_selection(selected: List(Extension)) -> Result(Nil, String) {
       }
     }),
   )
-  let compactions =
-    list.flat_map(selected, fn(extension) {
-      list.filter(extension.plugins, fn(plugin) {
-        case plugin {
-          CompactionPlugin(_) -> True
-          _ -> False
-        }
-      })
+  let strategies =
+    plugin_values(selected, fn(_, plugin) {
+      case plugin {
+        CompactionPlugin(strategy) -> Ok(strategy)
+        _ -> Error(Nil)
+      }
     })
   case
     duplicate_capabilities(list.flat_map(selected, declared))
-    || list.length(compactions) > 1
+    || list.length(strategies) > 1
   {
     True ->
       Error(
@@ -910,14 +869,10 @@ pub fn summaries(
   session: String,
   composition: Option(Composition),
 ) -> Result(List(Summary), String) {
-  use selected <- result.try(enabled(
-    ledger,
-    installed,
-    default_enabled,
-    session,
-  ))
   use chosen <- result.try(overrides(ledger, session))
   let defaults = resolved_defaults(installed, default_enabled)
+  let selected = select(installed, defaults, chosen)
+  use _ <- result.try(validate_selection(selected))
   let names = list.map(selected, fn(extension) { extension.name })
   let managed = case composition {
     Some(composition) -> composition.managed
@@ -1032,14 +987,11 @@ fn prepare(
   session: String,
   workspace: String,
 ) -> Result(List(Prepared), String) {
-  installed
-  |> list.flat_map(fn(extension) {
-    list.filter_map(extension.plugins, fn(plugin) {
-      case plugin {
-        ManagedPlugin(run) -> Ok(#(extension.name, run))
-        _ -> Error(Nil)
-      }
-    })
+  plugin_values(installed, fn(name, plugin) {
+    case plugin {
+      ManagedPlugin(run) -> Ok(#(name, run))
+      _ -> Error(Nil)
+    }
   })
   |> list.try_fold([], fn(prepared, item) {
     let #(name, run) = item
@@ -1061,14 +1013,11 @@ fn close_prepared(prepared: List(Prepared)) -> Nil {
 }
 
 pub fn compaction(installed: List(Extension)) -> Option(compaction.Strategy) {
-  installed
-  |> list.flat_map(fn(extension) {
-    list.filter_map(extension.plugins, fn(plugin) {
-      case plugin {
-        CompactionPlugin(value) -> Ok(value)
-        _ -> Error(Nil)
-      }
-    })
+  plugin_values(installed, fn(_, plugin) {
+    case plugin {
+      CompactionPlugin(value) -> Ok(value)
+      _ -> Error(Nil)
+    }
   })
   |> list.first
   |> option.from_result
@@ -1076,14 +1025,21 @@ pub fn compaction(installed: List(Extension)) -> Option(compaction.Strategy) {
 
 /// Every enabled fold provider, in registry order.
 pub fn folds(installed: List(Extension)) -> List(compaction.Folds) {
-  installed
-  |> list.flat_map(fn(extension) {
-    list.filter_map(extension.plugins, fn(plugin) {
-      case plugin {
-        FoldPlugin(value) -> Ok(value)
-        _ -> Error(Nil)
-      }
-    })
+  plugin_values(installed, fn(_, plugin) {
+    case plugin {
+      FoldPlugin(value) -> Ok(value)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+/// The enabled models catalogs, in registry order.
+fn catalogs(installed: List(Extension)) -> List(ModelCatalog) {
+  plugin_values(installed, fn(_, plugin) {
+    case plugin {
+      ModelsPlugin(catalog) -> Ok(catalog)
+      _ -> Error(Nil)
+    }
   })
 }
 
@@ -1093,17 +1049,9 @@ pub fn model_info(
   model: String,
   endpoint: String,
 ) -> Option(ModelInfo) {
-  installed
-  |> list.flat_map(fn(extension) {
-    list.filter_map(extension.plugins, fn(plugin) {
-      case plugin {
-        ModelsPlugin(catalog) -> Ok(catalog.lookup)
-        _ -> Error(Nil)
-      }
-    })
-  })
-  |> list.fold_until(None, fn(_, lookup) {
-    case lookup(model, endpoint) {
+  catalogs(installed)
+  |> list.fold_until(None, fn(_, catalog) {
+    case catalog.lookup(model, endpoint) {
       Some(info) -> list.Stop(Some(info))
       None -> list.Continue(None)
     }
@@ -1116,21 +1064,23 @@ pub fn model_names(
   provider: String,
   endpoint: String,
 ) -> List(String) {
-  installed
-  |> list.flat_map(fn(extension) {
-    list.filter_map(extension.plugins, fn(plugin) {
-      case plugin {
-        ModelsPlugin(catalog) -> Ok(catalog.list)
-        _ -> Error(Nil)
-      }
-    })
-  })
-  |> list.fold_until([], fn(_, list_models) {
-    case list_models(provider, endpoint) {
+  catalogs(installed)
+  |> list.fold_until([], fn(_, catalog) {
+    case catalog.list(provider, endpoint) {
       [] -> list.Continue([])
       names -> list.Stop(names)
     }
   })
+}
+
+/// The first plugin payload `pick` accepts in the extension named `name`.
+fn plugin_payload(
+  installed: List(Extension),
+  name: String,
+  pick: fn(Plugin) -> Result(a, Nil),
+) -> Result(a, Nil) {
+  named(installed, name)
+  |> result.try(fn(extension) { list.find_map(extension.plugins, pick) })
 }
 
 /// The first provider plugin claiming the saved profile owns its upstream.
@@ -1140,16 +1090,11 @@ pub fn provider_model_names(
   provider: String,
   endpoint: String,
 ) -> List(String) {
-  installed
-  |> list.find(fn(item) { item.name == provider })
-  |> result.try(fn(item) {
-    item.plugins
-    |> list.find_map(fn(plugin) {
-      case plugin {
-        ModelProviderPlugin(value) -> Ok(value.catalog_provider)
-        _ -> Error(Nil)
-      }
-    })
+  plugin_payload(installed, provider, fn(plugin) {
+    case plugin {
+      ModelProviderPlugin(value) -> Ok(value.catalog_provider)
+      _ -> Error(Nil)
+    }
   })
   |> result.map(fn(catalog_provider) {
     model_names(installed, catalog_provider, endpoint)
@@ -1162,26 +1107,20 @@ pub fn service(
   selected: List(Extension),
   name: String,
 ) -> Result(Service, Nil) {
-  selected
-  |> list.find(fn(extension) { extension.name == name })
-  |> result.try(fn(extension) {
-    list.find_map(extension.plugins, fn(plugin) {
-      case plugin {
-        ServicePlugin(service) -> Ok(service)
-        _ -> Error(Nil)
-      }
-    })
+  plugin_payload(selected, name, fn(plugin) {
+    case plugin {
+      ServicePlugin(service) -> Ok(service)
+      _ -> Error(Nil)
+    }
   })
 }
 
 pub fn logins(installed: List(Extension)) -> List(oauth.Login) {
-  list.flat_map(installed, fn(extension) {
-    list.filter_map(extension.plugins, fn(plugin) {
-      case plugin {
-        LoginPlugin(login) -> Ok(login)
-        _ -> Error(Nil)
-      }
-    })
+  plugin_values(installed, fn(_, plugin) {
+    case plugin {
+      LoginPlugin(login) -> Ok(login)
+      _ -> Error(Nil)
+    }
   })
 }
 
@@ -1189,14 +1128,11 @@ pub fn upstream(
   installed: List(Extension),
   context: ModelContext,
 ) -> Result(Upstream, String) {
-  installed
-  |> list.flat_map(fn(extension) {
-    list.filter_map(extension.plugins, fn(plugin) {
-      case plugin {
-        ModelProviderPlugin(provider) -> Ok(provider.resolve)
-        _ -> Error(Nil)
-      }
-    })
+  plugin_values(installed, fn(_, plugin) {
+    case plugin {
+      ModelProviderPlugin(provider) -> Ok(provider.resolve)
+      _ -> Error(Nil)
+    }
   })
   |> list.fold_until(
     Error("no enabled model provider extension handles this profile"),

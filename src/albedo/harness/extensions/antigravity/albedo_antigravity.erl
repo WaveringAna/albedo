@@ -37,7 +37,7 @@ access(Home) -> access(Home, <<>>).
 %% with accounts inside a reported limit last.
 access(Home, Session0) ->
     Session = unicode:characters_to_binary(Session0),
-    Path = filename:join(unicode:characters_to_list(Home), "auth.json"),
+    Path = albedo_credentials:auth_path(Home),
     case albedo_credentials:read(Path) of
         {ok, Data} ->
             Ordered = albedo_accounts:order(?SCOPE, credentials(Data), Session, fun account_id/1),
@@ -63,25 +63,16 @@ first_usable([Credential | Rest], Path, Session) ->
     end.
 
 credentials(Data) ->
-    Values = case maps:get(?KEY, Data, []) of
-        List when is_list(List) -> List;
-        One -> [One]
-    end,
-    [V || V <- Values, is_map(V), maps:get(<<"type">>, V, <<>>) =:= <<"oauth">>].
+    albedo_credentials:oauth(Data, ?KEY).
 
 usable(Credential) ->
-    Present = fun(Key) -> case maps:get(Key, Credential, <<>>) of
-                              <<_, _/binary>> -> true;
-                              _ -> false
-                          end end,
+    Valid = fun(Key) -> case maps:get(Key, Credential, <<>>) of <<_, _/binary>> -> true; _ -> false end end,
     Expires = maps:get(<<"expires">>, Credential, 0),
-    case lists:all(Present, [<<"access">>, <<"refresh">>, <<"projectId">>]) andalso is_integer(Expires) of
+    Now = erlang:system_time(millisecond),
+    case lists:all(Valid, [<<"access">>, <<"refresh">>, <<"projectId">>]) andalso is_integer(Expires) of
         false -> invalid;
-        true ->
-            case Expires > erlang:system_time(millisecond) + ?REFRESH_SKEW_MS of
-                true -> fresh;
-                false -> stale
-            end
+        true when Expires > Now + ?REFRESH_SKEW_MS -> fresh;
+        true -> stale
     end.
 
 identity(Credential) ->
@@ -96,7 +87,7 @@ identity(Credential) ->
 limited(Home, Access, Body) ->
     case limit(Body) of
         {ok, Until, Lasting} ->
-            Path = filename:join(unicode:characters_to_list(Home), "auth.json"),
+            Path = albedo_credentials:auth_path(Home),
             Hit = fun(V) -> maps:get(<<"access">>, V, <<>>) =:= Access end,
             case albedo_accounts:mark(Path, ?KEY, Hit, Until) of
                 {ok, Updated} ->
@@ -150,9 +141,7 @@ limit(Body) ->
     catch _:_ -> error
     end.
 
-first_reset([]) -> undefined;
-first_reset([In | _]) when is_integer(In), In > 0 -> In;
-first_reset([_ | Rest]) -> first_reset(Rest).
+first_reset(List) -> hd([In || In <- List, is_integer(In), In > 0] ++ [undefined]).
 
 reset_at(Stamp, Now) when is_binary(Stamp) ->
     try calendar:rfc3339_to_system_time(binary_to_list(Stamp), [{unit, millisecond}]) - Now
@@ -186,24 +175,7 @@ account_id(Credential) ->
 %% After a 401 the stored token is marked expired, so the next turn refreshes
 %% it; a revoked refresh token then leaves the account signed out.
 expire(Home, Access) ->
-    Path = filename:join(unicode:characters_to_list(Home), "auth.json"),
-    albedo_credentials:with_lock(Path, fun() ->
-        case albedo_credentials:read(Path) of
-            {ok, #{?KEY := Stored} = Data} ->
-                Expire = fun(#{<<"access">> := A} = V) when A =:= Access -> V#{<<"expires">> => 0};
-                            (V) -> V
-                         end,
-                Updated = case Stored of
-                    List when is_list(List) -> lists:map(Expire, List);
-                    One -> Expire(One)
-                end,
-                case Updated =:= Stored of
-                    true -> nil;
-                    false -> _ = albedo_credentials:write(Path, Data#{?KEY => Updated}), nil
-                end;
-            _ -> nil
-        end
-    end, fun() -> nil end).
+    albedo_credentials:expire_access(albedo_credentials:auth_path(Home), ?KEY, Access).
 
 %% Re-read under the lock: a concurrent session may already have refreshed.
 refresh_current(Path, Identity) ->
@@ -239,20 +211,16 @@ refresh_current(Path, Identity) ->
 
 refresh_token(Credential) ->
     Body = uri_string:compose_query([
-        {<<"client_id">>, base64:decode(?CLIENT_ID)},
-        {<<"client_secret">>, base64:decode(?CLIENT_SECRET)},
+        {<<"client_id">>, client_id()},
+        {<<"client_secret">>, client_secret()},
         {<<"refresh_token">>, maps:get(<<"refresh">>, Credential)},
         {<<"grant_type">>, <<"refresh_token">>}
     ]),
-    _ = application:ensure_all_started(inets),
-    _ = application:ensure_all_started(ssl),
-    Request = {?TOKEN_URL, [{"accept", "application/json"}],
-               "application/x-www-form-urlencoded", binary_to_list(Body)},
-    Options = [{timeout, ?HTTP_TIMEOUT_MS}, {connect_timeout, 10000},
-               {ssl, albedo_credentials:tls_options("oauth2.googleapis.com")}],
-    case httpc:request(post, Request, Options, [{body_format, binary}]) of
-        {ok, {{_, 200, _}, _, Response}} -> refreshed(Response, Credential);
-        {ok, {{_, Status, _}, _, _}} ->
+    case albedo_http:post(?TOKEN_URL, [{"accept", "application/json"}],
+                          "application/x-www-form-urlencoded", binary_to_list(Body),
+                          ?HTTP_TIMEOUT_MS, 10000) of
+        {ok, {200, _, Response}} -> refreshed(Response, Credential);
+        {ok, {Status, _, _}} ->
             {error, iolist_to_binary(io_lib:format("Antigravity token refresh failed (~B)", [Status]))};
         _ -> {error, <<"Antigravity token refresh failed">>}
     end.
@@ -278,6 +246,7 @@ refreshed(Response, Previous) ->
 %% ---- sign-in ------------------------------------------------------------
 
 client_id() -> base64:decode(?CLIENT_ID).
+client_secret() -> base64:decode(?CLIENT_SECRET).
 
 -define(FREE_TIER, <<"free-tier">>).
 -define(ONBOARD_BUDGET_MS, 30000).
@@ -286,8 +255,8 @@ client_id() -> base64:decode(?CLIENT_ID).
 %% Endpoints is the Gleam record {endpoints, TokenUrl, UserinfoUrl, CloudCodeUrl}.
 exchange(Code, Redirect, Progress, {endpoints, TokenUrl, UserinfoUrl, _} = Endpoints) ->
     Form = uri_string:compose_query([
-        {<<"client_id">>, base64:decode(?CLIENT_ID)},
-        {<<"client_secret">>, base64:decode(?CLIENT_SECRET)},
+        {<<"client_id">>, client_id()},
+        {<<"client_secret">>, client_secret()},
         {<<"code">>, Code},
         {<<"grant_type">>, <<"authorization_code">>},
         {<<"redirect_uri">>, Redirect}
@@ -431,22 +400,12 @@ verification(Reason, Email) ->
     end.
 
 http(Method, Url0, Headers, Body) ->
-    _ = application:ensure_all_started(inets),
-    _ = application:ensure_all_started(ssl),
-    Url = unicode:characters_to_list(Url0),
-    Host = unicode:characters_to_list(maps:get(host, uri_string:parse(Url), "")),
-    Request = case Body of
-        none -> {Url, Headers};
-        {Type, Payload} -> {Url, Headers, Type, iolist_to_binary(Payload)}
-    end,
-    Tls = case uri_string:parse(Url) of
-        #{scheme := "https"} -> [{ssl, albedo_credentials:tls_options(Host)}];
-        _ -> []
-    end,
-    case httpc:request(Method, Request, [{timeout, 30000}, {connect_timeout, 10000} | Tls],
-                       [{body_format, binary}]) of
-        {ok, {{_, Status, _}, _, Response}} -> {ok, Status, Response};
-        {error, _} -> {error, <<"could not reach ", (unicode:characters_to_binary(Host))/binary>>}
+    case albedo_http:request(Method, Url0, Headers, Body, 30000, 10000) of
+        {ok, {Status, _, Response}} -> {ok, Status, Response};
+        {error, _} ->
+            Url = unicode:characters_to_list(Url0),
+            Host = unicode:characters_to_binary(maps:get(host, uri_string:parse(Url), "")),
+            {error, <<"could not reach ", Host/binary>>}
     end.
 
 %% How /login lists a stored Antigravity account.
@@ -492,25 +451,20 @@ now_ms() -> erlang:system_time(millisecond).
 %% The backend gates newer models on this client version; os and arch are
 %% pinned to the reference darwin/arm64 build regardless of the host.
 user_agent(Home) ->
-    Version = case os:getenv("ALBEDO_ANTIGRAVITY_VERSION") of
-        Pinned when is_list(Pinned), Pinned =/= "" -> unicode:characters_to_binary(Pinned);
-        _ -> cached_version(Home)
-    end,
-    user_agent_for(Version).
+    user_agent_for(effective_version(cached_version(Home))).
 
 sign_in_user_agent() ->
+    user_agent_for(effective_version(?DEFAULT_VERSION)).
+
+effective_version(Fallback) ->
     case os:getenv("ALBEDO_ANTIGRAVITY_VERSION") of
-        Pinned when is_list(Pinned), Pinned =/= "" -> user_agent_for(unicode:characters_to_binary(Pinned));
-        _ -> user_agent_for(?DEFAULT_VERSION)
+        Pinned when is_list(Pinned), Pinned =/= "" -> unicode:characters_to_binary(Pinned);
+        _ -> Fallback
     end.
 
 cached_version(Home) ->
-    case discovered(Home) of
-        {ok, Bytes} ->
-            try json:decode(Bytes) of
-                #{<<"version">> := <<_, _/binary>> = Version} -> Version;
-                _ -> ?DEFAULT_VERSION
-            catch _:_ -> ?DEFAULT_VERSION end;
+    case albedo_credentials:read_json(catalog_path(Home)) of
+        {ok, #{<<"version">> := <<_, _/binary>> = Version}} -> Version;
         _ -> ?DEFAULT_VERSION
     end.
 
@@ -524,12 +478,7 @@ catalog_path(Home) -> filename:join(unicode:characters_to_list(Home), ?CATALOG).
 
 refresh(Home) ->
     Path = catalog_path(Home),
-    Stale = case file:read_file_info(Path, [{time, posix}]) of
-        {ok, #file_info{type = regular, mtime = Modified}} ->
-            erlang:system_time(millisecond) - Modified * 1000 > ?CATALOG_MAX_AGE_MS;
-        _ -> true
-    end,
-    case Stale of
+    case albedo_credentials:stale(Path, ?CATALOG_MAX_AGE_MS) of
         false -> nil;
         true ->
             Pid = spawn(fun() -> reload(Home) end),
@@ -557,29 +506,20 @@ reload(Home) ->
     end.
 
 manifest_version() ->
-    _ = application:ensure_all_started(inets),
-    _ = application:ensure_all_started(ssl),
-    Request = {?MANIFEST_URL, [{"user-agent", "electron-builder"}, {"cache-control", "no-cache"}]},
-    Options = [{timeout, 5000}, {connect_timeout, 5000},
-               {ssl, albedo_credentials:tls_options("antigravity-hub-auto-updater-974169037036.us-central1.run.app")}],
-    case httpc:request(get, Request, Options, [{body_format, binary}]) of
-        {ok, {{_, 200, _}, _, Body}} ->
-            case re:run(Body, <<"^\\s*version\\s*:\\s*['\"]?(\\d+\\.\\d+\\.\\d+)">>,
-                        [multiline, {capture, all_but_first, binary}]) of
-                {match, [Version]} -> Version;
-                _ -> ?DEFAULT_VERSION
-            end;
-        _ -> ?DEFAULT_VERSION
-    end.
+    Headers = [{"user-agent", "electron-builder"}, {"cache-control", "no-cache"}],
+    try
+        {ok, {200, _, Body}} = albedo_http:get(?MANIFEST_URL, Headers, 5000, 5000),
+        {match, [Version]} = re:run(Body, <<"^\\s*version\\s*:\\s*['\"]?(\\d+\\.\\d+\\.\\d+)">>,
+                                    [multiline, {capture, all_but_first, binary}]),
+        Version
+    catch _:_ -> ?DEFAULT_VERSION end.
 
 fetch_models(Token, Version) ->
     Headers = [{"authorization", "Bearer " ++ binary_to_list(Token)},
                {"user-agent", binary_to_list(user_agent_for(Version))}],
-    Request = {?ENDPOINT "/v1internal:fetchAvailableModels", Headers, "application/json", <<"{}">>},
-    Options = [{timeout, 15000}, {connect_timeout, 10000},
-               {ssl, albedo_credentials:tls_options("daily-cloudcode-pa.googleapis.com")}],
-    case httpc:request(post, Request, Options, [{body_format, binary}]) of
-        {ok, {{_, 200, _}, _, Body}} ->
+    case albedo_http:post(?ENDPOINT "/v1internal:fetchAvailableModels", Headers,
+                          "application/json", <<"{}">>, 15000, 10000) of
+        {ok, {200, _, Body}} ->
             case json:decode(Body) of
                 #{<<"models">> := Models} = Response when is_map(Models) ->
                     Renamed = maps:fold(fun
@@ -598,7 +538,7 @@ fetch_models(Token, Version) ->
                      Renamed};
                 _ -> {error, <<"Antigravity model discovery response is invalid">>}
             end;
-        {ok, {{_, Status, _}, _, _}} ->
+        {ok, {Status, _, _}} ->
             {error, iolist_to_binary(io_lib:format("Antigravity model discovery failed (~B)", [Status]))};
         _ -> {error, <<"Antigravity model discovery failed">>}
     end.
@@ -619,7 +559,7 @@ offered({Id, #{<<"displayName">> := <<_, _/binary>> = Name, <<"maxTokens">> := C
          lists:member(Id, [<<"chat_20706">>, <<"chat_23310">>]) of
         true -> false;
         false ->
-            Output = case maps:get(<<"maxOutputTokens">>, Model, undefined) of
+            Output = case maps:get(<<"maxOutputTokens">>, Model, 64000) of
                 N when is_integer(N), N > 0 -> N;
                 _ -> 64000
             end,
@@ -634,14 +574,9 @@ offered({Id, #{<<"displayName">> := <<_, _/binary>> = Name, <<"maxTokens">> := C
 offered(_) -> false.
 
 store(Path, Data) ->
-    Temporary = Path ++ ".fetch." ++ integer_to_list(erlang:unique_integer([positive])),
-    _ = filelib:ensure_dir(Path),
-    case file:write_file(Temporary, json:encode(Data)) of
-        ok ->
-            case file:rename(Temporary, Path) of
-                ok -> {ok, nil};
-                _ -> _ = file:delete(Temporary), {error, <<"Antigravity model cache could not be replaced">>}
-            end;
+    case albedo_credentials:write(Path, Data) of
+        ok -> {ok, nil};
+        {error, {rename, _}} -> {error, <<"Antigravity model cache could not be replaced">>};
         _ -> {error, <<"Antigravity model cache could not be written">>}
     end.
 
@@ -660,10 +595,7 @@ normalize_schema(Json) ->
     json:encode(Schema).
 
 defs(Root, Key) when is_map(Root) ->
-    case maps:get(Key, Root, #{}) of
-        Map when is_map(Map) -> Map;
-        _ -> #{}
-    end;
+    case maps:get(Key, Root, #{}) of Map when is_map(Map) -> Map; _ -> #{} end;
 defs(_, _) -> #{}.
 
 -define(KEPT, [<<"type">>, <<"description">>, <<"enum">>, <<"items">>,
@@ -736,7 +668,7 @@ merge(Branch, Into) ->
             Acc#{<<"properties">> => maps:merge(Props, maps:get(<<"properties">>, Acc, #{}))};
         (<<"required">>, Names, Acc) when is_list(Names) ->
             Acc#{<<"required">> => lists:usort(Names ++ maps:get(<<"required">>, Acc, []))};
-        (Key, Value, Acc) -> maps:merge(#{Key => Value}, Acc)
+        (Key, Value, Acc) -> Acc#{Key => Value}
     end, Into, Branch).
 
 finish(Node0, Defs, Depth) ->
@@ -744,19 +676,17 @@ finish(Node0, Defs, Depth) ->
         undefined -> Node0;
         Const -> Node0#{<<"enum">> => [Const]}
     end,
-    Type = scalar_type(Node1),
-    Spilled = [{K, V} || K <- ?SPILLED, V <- [maps:get(K, Node1, undefined)], V =/= undefined],
-    Node2 = maps:with(?KEPT, Node1),
-    Node3 = case Spilled of
-        [] -> Node2;
-        _ -> describe(Node2, <<>>, lists:join(<<", ">>,
-                 [[K, <<": ">>, json:encode(V)] || {K, V} <- Spilled]))
+    Spilled = [{K, maps:get(K, Node1)} || K <- ?SPILLED, maps:is_key(K, Node1)],
+    Base = maps:with(?KEPT, Node1),
+    Described = case Spilled of
+        [] -> Base;
+        _ -> describe(Base, <<>>, lists:join(<<", ">>, [[K, <<": ">>, json:encode(V)] || {K, V} <- Spilled]))
     end,
-    Node4 = case Type of
-        undefined -> maps:remove(<<"type">>, Node3);
-        _ -> Node3#{<<"type">> => Type}
+    Typed = case scalar_type(Node1) of
+        undefined -> maps:remove(<<"type">>, Described);
+        Type -> Described#{<<"type">> => Type}
     end,
-    children(enum(Node4), Defs, Depth).
+    children(enum(Typed), Defs, Depth).
 
 %% A type union keeps its first non-null member.
 scalar_type(Node) ->
@@ -804,7 +734,7 @@ children(#{<<"type">> := <<"object">>} = Node, Defs, Depth) ->
     end;
 children(#{<<"type">> := <<"array">>} = Node, Defs, Depth) ->
     Items = case maps:get(<<"items">>, Node, #{}) of
-        List when is_list(List) -> case List of [I | _] -> I; [] -> #{} end;
+        List when is_list(List) -> hd(List ++ [#{}]);
         I -> I
     end,
     maps:remove(<<"required">>, Node#{<<"items">> => schema(Items, Defs, Depth + 1)});

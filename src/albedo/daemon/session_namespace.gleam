@@ -12,6 +12,8 @@ import gleam/string
 
 pub const lost_notice = "<system-note>The python kernel got reset and all variables are lost</system-note>"
 
+const lost_text = "python kernel restarted; earlier variables are gone, the transcript is intact"
+
 /// An idle release can use the full budget; shutdown must not wait on a large namespace.
 pub const state_timeout = 30_000
 
@@ -116,6 +118,18 @@ pub fn ready(
   }
 }
 
+/// The kernel now owned, its notice recorded for the next message and the
+/// restart reported to the stream.
+fn adopted(
+  state: session_state.State(message),
+  kernel: runtime.Session,
+  notice: String,
+  text: String,
+) -> session_state.State(message) {
+  session_state.State(..state, kernel: Some(kernel), notice: Some(notice))
+  |> session_state.emit(view.text("note", text))
+}
+
 /// Take a kernel the runtime just opened. A session with history had a
 /// namespace the model still believes in, so its saved variables are revived
 /// and the gap named.
@@ -132,26 +146,11 @@ pub fn adopt(
         Some(path) -> runtime.load_state(kernel, path, state_timeout)
         None -> Error(python.Invalid("session has no state file"))
       }
-      let state = case revived {
+      case revived {
         Ok(python.Saved([_, ..], _, _) as saved) ->
-          session_state.State(
-            ..state,
-            kernel: Some(kernel),
-            notice: Some(restored_notice(saved)),
-          )
-          |> session_state.emit(view.text("note", restored_text(saved)))
-        _ ->
-          session_state.State(
-            ..state,
-            kernel: Some(kernel),
-            notice: Some(lost_notice),
-          )
-          |> session_state.emit(view.text(
-            "note",
-            "python kernel restarted; earlier variables are gone, the transcript is intact",
-          ))
+          adopted(state, kernel, restored_notice(saved), restored_text(saved))
+        _ -> adopted(state, kernel, lost_notice, lost_text)
       }
-      state
     }
   }
 }

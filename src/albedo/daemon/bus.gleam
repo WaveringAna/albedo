@@ -21,7 +21,8 @@ pub fn activity(session: String, event: String) -> Nil {
 }
 
 fn publish_activity(session: String, event: String) -> Nil {
-  case kind(event) {
+  let kind = kind(event)
+  case kind {
     // Deltas and progress are small and frequent: tag them and pass them on.
     "text"
     | "thinking"
@@ -34,7 +35,7 @@ fn publish_activity(session: String, event: String) -> Nil {
       )
     "user" | "message" | "error" | "note" ->
       publish(
-        event_json(session, kind(event), [
+        event_json(session, kind, [
           #("text", json.string(field(event, "text") |> string.slice(0, 240))),
           #("source", json.string(field(event, "source"))),
         ]),
@@ -59,15 +60,11 @@ pub fn running(session: String, running: Bool) -> Nil {
 }
 
 /// Whether `session` was running a turn when it last said.
-pub fn is_running(session: String) -> Bool {
-  lookup_running(session)
-}
-
 @external(erlang, "albedo_bus", "mark_running")
 fn mark_running(session: String, running: Bool) -> Nil
 
 @external(erlang, "albedo_bus", "running")
-fn lookup_running(session: String) -> Bool
+pub fn is_running(session: String) -> Bool
 
 /// A child session joined the tree.
 pub fn spawned(member: family.Member, model: String) -> Nil {
@@ -128,9 +125,8 @@ pub fn mailed(
 }
 
 /// Receive every bus event while `owner` lives. `deliver` must only send.
-pub fn subscribe(owner: process.Pid, deliver: fn(String) -> Nil) -> Nil {
-  bus_subscribe(owner, deliver)
-}
+@external(erlang, "albedo_bus", "subscribe")
+pub fn subscribe(owner: process.Pid, deliver: fn(String) -> Nil) -> Nil
 
 fn event_json(
   session: String,
@@ -182,6 +178,3 @@ fn publish(event: String) -> Nil
 
 @external(erlang, "albedo_bus", "has_subscribers")
 fn has_subscribers() -> Bool
-
-@external(erlang, "albedo_bus", "subscribe")
-fn bus_subscribe(owner: process.Pid, deliver: fn(String) -> Nil) -> Nil

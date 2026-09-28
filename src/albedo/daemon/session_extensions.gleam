@@ -11,6 +11,19 @@ import albedo/harness/runtime
 import gleam/json
 import gleam/option.{None, Some}
 
+/// The state once a fresh kernel replaces the old one: the next provider
+/// request has not been prepared against it.
+fn with_kernel(
+  state: session_state.State(message),
+  kernel: runtime.Session,
+) -> session_state.State(message) {
+  session_state.State(
+    ..state,
+    kernel: Some(kernel),
+    context: session_state.unprepared(),
+  )
+}
+
 pub fn change(
   state: session_state.State(message),
   change: extension.Change,
@@ -19,19 +32,17 @@ pub fn change(
     Some(_) -> #(state, Error("session must be idle to reload extensions"))
     None -> {
       let previous = runtime.peek_prompt(state.host, state.info.id)
-      let previous_tools = case state.kernel {
-        Some(kernel) -> Some(runtime.tools(kernel))
-        None -> None
-      }
-      let saved = case state.kernel {
-        Some(kernel) ->
+      let #(previous_tools, saved) = case state.kernel {
+        Some(kernel) -> #(
+          Some(runtime.tools(kernel)),
           session_namespace.save_state_within(
             state.home,
             state.info.id,
             kernel,
             session_namespace.close_state_timeout,
-          )
-        None -> Error("no active python namespace")
+          ),
+        )
+        None -> #(None, Error("no active python namespace"))
       }
       case
         runtime.change_extension(
@@ -61,12 +72,7 @@ pub fn change(
             _, Ok(saved) -> session_namespace.restored_text(saved)
             _, Error(_) -> "python namespace reset; unsaved variables were lost"
           }
-          let state =
-            session_state.State(
-              ..state,
-              kernel: Some(kernel),
-              context: session_state.unprepared(),
-            )
+          let state = with_kernel(state, kernel)
           let state = case previous_tools == Some(runtime.tools(kernel)) {
             True ->
               case session_prompt.pin_changed_prompt(state, previous) {
@@ -106,12 +112,7 @@ pub fn refresh(
         Error(error) -> #(state, Error(error))
         Ok(update) -> {
           let state = case update {
-            Some(kernel) ->
-              session_state.State(
-                ..state,
-                kernel: Some(kernel),
-                context: session_state.unprepared(),
-              )
+            Some(kernel) -> with_kernel(state, kernel)
             None -> state
           }
           case session_prompt.pin_changed_prompt(state, previous) {

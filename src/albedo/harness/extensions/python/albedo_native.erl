@@ -34,9 +34,8 @@ unpack_outcome({outcome, Id, Status, Output, Value, Truncated, Images, Errors})
        (Status =:= succeeded orelse Status =:= failed orelse Status =:= interrupted) ->
     %% A journaled image is always inline, so nothing here reads a payload.
     Loaded = [albedo_images:load(I, fun(_) -> {error, nil} end) || I <- Images],
-    case lists:all(fun({ok, _}) -> true; (_) -> false end, Loaded)
-         andalso lists:all(fun erlang:is_binary/1, Errors) of
-        true -> {ok, {ok, {outcome, Id, Status, Output, Value, Truncated, [I || {ok, I} <- Loaded], Errors}}};
-        false -> {error, nil}
+    case {albedo_images:results(Loaded), lists:all(fun erlang:is_binary/1, Errors)} of
+        {{ok, Images1}, true} -> {ok, {ok, {outcome, Id, Status, Output, Value, Truncated, Images1, Errors}}};
+        _ -> {error, nil}
     end;
 unpack_outcome(_) -> {error, nil}.

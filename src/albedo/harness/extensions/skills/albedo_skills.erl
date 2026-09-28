@@ -2,7 +2,7 @@
 
 -include_lib("kernel/include/file.hrl").
 
--export([home/0, catalog/2, activate_selected/1, list_selected/1, read_selected/4, list_resources/3, read_resource/6, xml_escape/1]).
+-export([home/0, catalog/2, activate_selected/1, list_selected/1, read_selected/4, list_resources/3, xml_escape/1]).
 
 -define(MAX_SKILLS, 128).
 -define(MAX_DIAGNOSTICS, 64).
@@ -35,27 +35,15 @@ xml_codepoint(Codepoint)
     unicode:characters_to_binary([Codepoint]);
 xml_codepoint(_) -> <<16#EF, 16#BF, 16#BD>>.
 
-home() ->
-    case os:getenv("HOME") of
-        false -> <<>>;
-        Value -> unicode:characters_to_binary(Value)
-    end.
+home() -> albedo_daemon:env(<<"HOME">>).
 
 catalog(Workspace0, Home0) ->
     try
-        Workspace = text_list(Workspace0),
-        Home = text_list(Home0),
-        Roots = roots(Workspace, Home),
+        Roots = roots(text_list(Workspace0), text_list(Home0)),
         {Selected, Diagnostics0, Count, Limited} =
             scan_roots(Roots, #{}, [], 0, false),
-        Diagnostics1 = case Limited of
-            true -> [<<"skill discovery limit reached; remaining entries ignored">>
-                     | Diagnostics0];
-            false -> Diagnostics0
-        end,
-        Skills = lists:sort(
-            fun({A, _, _}, {B, _, _}) -> A =< B end,
-            maps:values(Selected)),
+        Diagnostics1 = [<<"skill discovery limit reached; remaining entries ignored">> || Limited] ++ Diagnostics0,
+        Skills = lists:sort(maps:values(Selected)),
         {ok, {Skills, limit_diagnostics(lists:reverse(Diagnostics1)), Count}}
     catch
         _:_ -> {error, <<"skill discovery failed">>}
@@ -63,11 +51,12 @@ catalog(Workspace0, Home0) ->
 
 activate_selected(SkillFile0) ->
     try
-        SkillFile = text_list(SkillFile0),
-        case valid_selected_skill(SkillFile) of
+        case valid_selected_skill(text_list(SkillFile0)) of
             {ok, {Name, Description, Canonical}} ->
                 case file:read_file(Canonical) of
-                    {ok, Instructions} when byte_size(Instructions) =< ?MAX_SKILL_BYTES ->
+                    {ok, Instructions} when byte_size(Instructions) > ?MAX_SKILL_BYTES ->
+                        {error, <<"SKILL.md exceeds 1048576 bytes">>};
+                    {ok, Instructions} ->
                         case unicode:characters_to_binary(Instructions, utf8, utf8) of
                             Instructions ->
                                 {ok, {Name, Description,
@@ -75,13 +64,28 @@ activate_selected(SkillFile0) ->
                                       Instructions}};
                             _ -> {error, <<"SKILL.md must be UTF-8 text">>}
                         end;
-                    {ok, _} -> {error, <<"SKILL.md exceeds 1048576 bytes">>};
                     {error, _} -> {error, <<"SKILL.md cannot be read">>}
                 end;
             Error -> Error
         end
     catch
         _:_ -> {error, <<"skill activation failed">>}
+    end.
+
+%% Resolve the current catalog identity before listing; unlike list_selected/1,
+%% callers of this API supply a workspace and catalog path, not a selected file.
+list_resources(Workspace, Home, Identity) ->
+    try
+        case catalog(Workspace, Home) of
+            {ok, {Skills, _Diagnostics, _Count}} ->
+                case lists:keyfind(unicode:characters_to_binary(Identity), 3, Skills) of
+                    false -> {error, <<"unknown skill path; use a path from the current catalog">>};
+                    {_Name, _Description, SkillFile} -> list_selected(SkillFile)
+                end;
+            Error -> Error
+        end
+    catch
+        _:_ -> {error, <<"resource listing failed">>}
     end.
 
 list_selected(SkillFile0) ->
@@ -99,21 +103,20 @@ list_selected(SkillFile0) ->
         _:_ -> {error, <<"resource listing failed">>}
     end.
 
-read_selected(SkillFile0, Relative0, Offset, Limit) ->
+read_selected(SkillFile0, Relative0, Offset, Limit)
+  when is_integer(Offset), Offset >= 0, is_integer(Limit), Limit >= 1, Limit =< ?MAX_READ_BYTES ->
     try
-        case valid_window(Offset, Limit) of
-            false -> {error, <<"offset must be nonnegative and limit must be 1..65536">>};
-            true ->
-                case valid_selected_skill(text_list(SkillFile0)) of
-                    {ok, {_Name, _Description, Canonical}} ->
-                        read_selected_resource(filename:dirname(Canonical),
-                                               text_list(Relative0), Offset, Limit);
-                    Error -> Error
-                end
+        case valid_selected_skill(text_list(SkillFile0)) of
+            {ok, {_Name, _Description, Canonical}} ->
+                read_selected_resource(filename:dirname(Canonical),
+                                       text_list(Relative0), Offset, Limit);
+            Error -> Error
         end
     catch
         _:_ -> {error, <<"resource read failed">>}
-    end.
+    end;
+read_selected(_SkillFile0, _Relative0, _Offset, _Limit) ->
+    {error, <<"offset must be nonnegative and limit must be 1..65536">>}.
 
 valid_selected_skill(SkillFile0) ->
     Selected = filename:absname(SkillFile0),
@@ -121,57 +124,24 @@ valid_selected_skill(SkillFile0) ->
         {ok, Canonical} when Canonical =/= Selected ->
             {error, <<"selected SKILL.md identity changed; reload the skills extension">>};
         {ok, Canonical} ->
-            case filename:basename(Canonical) =:= "SKILL.md" of
-                false -> {error, <<"selected path is not SKILL.md">>};
-                true ->
+            case filename:basename(Canonical) of
+                "SKILL.md" ->
                     case file:read_file_info(Canonical) of
                         {ok, #file_info{type = regular, size = Size}}
-                          when Size =< ?MAX_SKILL_BYTES ->
+                          when Size > ?MAX_SKILL_BYTES ->
+                            {error, <<"SKILL.md exceeds 1048576 bytes">>};
+                        {ok, #file_info{type = regular}} ->
                             case frontmatter(Canonical) of
                                 {ok, Name, Description} ->
                                     {ok, {Name, Description, Canonical}};
                                 {error, Message} ->
                                     {error, unicode:characters_to_binary(Message)}
                             end;
-                        {ok, #file_info{type = regular}} ->
-                            {error, <<"SKILL.md exceeds 1048576 bytes">>};
                         _ -> {error, <<"selected SKILL.md is unavailable">>}
-                    end
+                    end;
+                _ -> {error, <<"selected path is not SKILL.md">>}
             end;
         {error, _} -> {error, <<"selected SKILL.md is unavailable">>}
-    end.
-
-list_resources(Workspace0, Home0, Identity0) ->
-    try
-        case selected_skill(Workspace0, Home0, Identity0) of
-            {ok, {_Name, _Description, SkillFile}} ->
-                Root = filename:dirname(text_list(SkillFile)),
-                {Files0, Diagnostics0, _Seen, _Entries, Truncated} =
-                    walk_resources(Root, Root, "", 0, [], [], #{}, 0, false),
-                Files = lists:sort(Files0),
-                {ok, {Files, Truncated,
-                      limit_diagnostics(lists:reverse(Diagnostics0))}};
-            Error -> Error
-        end
-    catch
-        _:_ -> {error, <<"resource listing failed">>}
-    end.
-
-read_resource(Workspace0, Home0, Identity0, Relative0, Offset, Limit) ->
-    try
-        case valid_window(Offset, Limit) of
-            false -> {error, <<"offset must be nonnegative and limit must be 1..65536">>};
-            true ->
-                case selected_skill(Workspace0, Home0, Identity0) of
-                    {ok, {_Name, _Description, SkillFile}} ->
-                        Root = filename:dirname(text_list(SkillFile)),
-                        Relative = text_list(Relative0),
-                        read_selected_resource(Root, Relative, Offset, Limit);
-                    Error -> Error
-                end
-        end
-    catch
-        _:_ -> {error, <<"resource read failed">>}
     end.
 
 roots(Workspace, Home) ->
@@ -183,92 +153,84 @@ roots(Workspace, Home) ->
               filename:join([Home, ".agents", "skills"]),
               filename:join([Home, ".prime", "agent", "skills"])]
     end,
-    [{project, R} || R <- Project] ++ [{user, R} || R <- User].
+    Project ++ User.
 
 scan_roots([], Selected, Diagnostics, Count, Limited) ->
     {Selected, Diagnostics, Count, Limited};
 scan_roots([_ | Rest], Selected, Diagnostics, Count, _Limited)
   when Count >= ?MAX_SKILLS ->
     scan_roots(Rest, Selected, Diagnostics, Count, true);
-scan_roots([{Scope, Root0} | Rest], Selected, Diagnostics, Count, Limited) ->
+scan_roots([Root0 | Rest], Selected, Diagnostics, Count, Limited) ->
+    case root_entries(Root0) of
+        {ok, Root, Entries} ->
+            {Selected1, Diagnostics1, Count1, Limited1} =
+                scan_entries(Entries, Root, Selected, Diagnostics, Count, Limited),
+            scan_roots(Rest, Selected1, Diagnostics1, Count1, Limited1);
+        {error, Msg} ->
+            scan_roots(Rest, Selected,
+                       [diagnostic(Root0, Msg) | Diagnostics],
+                       Count, Limited);
+        ignore ->
+            scan_roots(Rest, Selected, Diagnostics, Count, Limited)
+    end.
+
+root_entries(Root0) ->
     case realpath(Root0) of
         {ok, Root} ->
             case file:list_dir(Root) of
-                {ok, Entries0} ->
-                    Entries = lists:sort(Entries0),
-                    {Selected1, Diagnostics1, Count1, Limited1} =
-                        scan_entries(Entries, Scope, Root, Selected,
-                                     Diagnostics, Count, Limited),
-                    scan_roots(Rest, Selected1, Diagnostics1, Count1, Limited1);
-                {error, enoent} ->
-                    scan_roots(Rest, Selected, Diagnostics, Count, Limited);
-                {error, enotdir} ->
-                    scan_roots(Rest, Selected,
-                               [diagnostic(Root0, "is not a directory") | Diagnostics],
-                               Count, Limited);
-                {error, _} ->
-                    scan_roots(Rest, Selected,
-                               [diagnostic(Root0, "cannot be listed") | Diagnostics],
-                               Count, Limited)
+                {ok, Entries} -> {ok, Root, lists:sort(Entries)};
+                {error, enoent} -> ignore;
+                {error, enotdir} -> {error, "is not a directory"};
+                {error, _} -> {error, "cannot be listed"}
             end;
-        {error, enoent} ->
-            scan_roots(Rest, Selected, Diagnostics, Count, Limited);
-        {error, _} ->
-            scan_roots(Rest, Selected,
-                       [diagnostic(Root0, "cannot be resolved") | Diagnostics],
-                       Count, Limited)
+        {error, enoent} -> ignore;
+        {error, _} -> {error, "cannot be resolved"}
     end.
 
-scan_entries([], _Scope, _Root, Selected, Diagnostics, Count, Limited) ->
+scan_entries([], _Root, Selected, Diagnostics, Count, Limited) ->
     {Selected, Diagnostics, Count, Limited};
-scan_entries(_Entries, _Scope, _Root, Selected, Diagnostics, Count, _Limited)
+scan_entries(_Entries, _Root, Selected, Diagnostics, Count, _Limited)
   when Count >= ?MAX_SKILLS ->
     {Selected, Diagnostics, Count, true};
-scan_entries([Entry | Rest], Scope, Root, Selected, Diagnostics, Count, Limited) ->
+scan_entries([Entry | Rest], Root, Selected, Diagnostics, Count, Limited) ->
     Candidate = filename:join(Root, Entry),
-    case candidate(Scope, Root, Candidate, Entry) of
+    case candidate(Root, Candidate, Entry) of
         skip ->
-            scan_entries(Rest, Scope, Root, Selected, Diagnostics, Count, Limited);
+            scan_entries(Rest, Root, Selected, Diagnostics, Count, Limited);
         {error, Message} ->
-            scan_entries(Rest, Scope, Root, Selected,
+            scan_entries(Rest, Root, Selected,
                          [diagnostic(Candidate, Message) | Diagnostics],
                          Count + 1, Limited);
         {ok, {Name, _Description, SkillFile} = Skill} ->
-            case maps:find(Name, Selected) of
+            {Selected1, Diagnostics1} = case maps:find(Name, Selected) of
                 error ->
-                    scan_entries(Rest, Scope, Root, maps:put(Name, Skill, Selected),
-                                 Diagnostics, Count + 1, Limited);
+                    {maps:put(Name, Skill, Selected), Diagnostics};
                 {ok, {_OldName, _OldDescription, Winner}} ->
                     Message = iolist_to_binary([
                         <<"duplicate skill ">>, Name, <<" ignored; using ">>, Winner]),
-                    scan_entries(Rest, Scope, Root, Selected,
-                                 [diagnostic(SkillFile, Message) | Diagnostics],
-                                 Count + 1, Limited)
-            end
+                    {Selected, [diagnostic(SkillFile, Message) | Diagnostics]}
+            end,
+            scan_entries(Rest, Root, Selected1, Diagnostics1, Count + 1, Limited)
     end.
 
-candidate(_Scope, Root, Candidate, Entry) ->
+candidate(Root, Candidate, Entry) ->
     case file:read_link_info(Candidate) of
-        {ok, #file_info{type = directory}} -> parse_candidate(Root, Candidate, Entry);
-        {ok, #file_info{type = symlink}} -> parse_candidate(Root, Candidate, Entry);
+        {ok, #file_info{type = Type}} when Type =:= directory; Type =:= symlink ->
+            case realpath(Candidate) of
+                {ok, Directory} ->
+                    case within(Directory, Root) of
+                        false -> {error, "skill directory symlink escapes discovery root"};
+                        true ->
+                            case file:read_file_info(Directory) of
+                                {ok, #file_info{type = directory}} ->
+                                    parse_skill(Root, Directory, filename:join(Directory, "SKILL.md"), Entry);
+                                _ -> skip
+                            end
+                    end;
+                {error, _} -> {error, "skill directory cannot be resolved"}
+            end;
         {ok, _} -> skip;
         {error, _} -> {error, "cannot be inspected"}
-    end.
-
-parse_candidate(Root, Candidate, Entry) ->
-    case realpath(Candidate) of
-        {ok, Directory} ->
-            case within(Directory, Root) of
-                false -> {error, "skill directory symlink escapes discovery root"};
-                true ->
-                    case file:read_file_info(Directory) of
-                        {ok, #file_info{type = directory}} ->
-                            Skill0 = filename:join(Directory, "SKILL.md"),
-                            parse_skill(Root, Directory, Skill0, Entry);
-                        _ -> skip
-                    end
-            end;
-        {error, _} -> {error, "skill directory cannot be resolved"}
     end.
 
 parse_skill(Root, Directory, Skill0, Entry) ->
@@ -279,19 +241,18 @@ parse_skill(Root, Directory, Skill0, Entry) ->
                 true ->
                     case file:read_file_info(SkillFile) of
                         {ok, #file_info{type = regular, size = Size}}
-                          when Size =< ?MAX_SKILL_BYTES ->
+                          when Size > ?MAX_SKILL_BYTES ->
+                            {error, "SKILL.md exceeds 1048576 bytes"};
+                        {ok, #file_info{type = regular}} ->
                             case frontmatter(SkillFile) of
                                 {ok, Name, Description} ->
-                                    EntryBin = unicode:characters_to_binary(Entry),
-                                    case Name =:= EntryBin of
+                                    case Name =:= unicode:characters_to_binary(Entry) of
                                         true -> {ok, {Name, Description,
                                                       unicode:characters_to_binary(SkillFile)}};
                                         false -> {error, "frontmatter name must match directory name"}
                                     end;
                                 Error -> Error
                             end;
-                        {ok, #file_info{type = regular}} ->
-                            {error, "SKILL.md exceeds 1048576 bytes"};
                         {ok, _} -> {error, "SKILL.md is not a regular file"};
                         {error, _} -> {error, "SKILL.md cannot be inspected"}
                     end
@@ -314,7 +275,8 @@ frontmatter(Path) ->
     end.
 
 extract_frontmatter(Data) ->
-    Lines = binary:split(Data, <<"\n">>, [global]),
+    Lines = binary:split(Data, <<"
+">>, [global]),
     case Lines of
         [First | Rest] ->
             case strip_cr(First) of
@@ -326,15 +288,14 @@ extract_frontmatter(Data) ->
 
 find_frontmatter_end([], _Acc, _Bytes) ->
     {error, "YAML frontmatter is not closed within 65536 bytes"};
+find_frontmatter_end([Line | _Rest], _Acc, Bytes)
+  when Bytes + byte_size(Line) + 1 > ?MAX_FRONTMATTER_BYTES ->
+    {error, "YAML frontmatter exceeds 65536 bytes"};
 find_frontmatter_end([Line | Rest], Acc, Bytes) ->
-    NewBytes = Bytes + byte_size(Line) + 1,
-    case NewBytes > ?MAX_FRONTMATTER_BYTES of
-        true -> {error, "YAML frontmatter exceeds 65536 bytes"};
-        false ->
-            case strip_cr(Line) of
-                <<"---">> -> parse_yaml(iolist_to_binary(lists:join(<<"\n">>, lists:reverse(Acc))));
-                _ -> find_frontmatter_end(Rest, [Line | Acc], NewBytes)
-            end
+    case strip_cr(Line) of
+        <<"---">> -> parse_yaml(iolist_to_binary(lists:join(<<"
+">>, lists:reverse(Acc))));
+        _ -> find_frontmatter_end(Rest, [Line | Acc], Bytes + byte_size(Line) + 1)
     end.
 
 parse_yaml(Yaml) ->
@@ -352,13 +313,11 @@ parse_yaml(Yaml) ->
     end.
 
 metadata(Document) ->
-    case lists:all(fun(E) -> is_tuple(E) andalso tuple_size(E) =:= 2 end,
-                   Document) of
+    case lists:all(fun({_, _}) -> true; (_) -> false end, Document) of
         false -> {error, "frontmatter must be a YAML mapping"};
         true ->
-            Names = values("name", Document),
-            Descriptions = values("description", Document),
-            case {Names, Descriptions} of
+            case {proplists:get_all_values("name", Document),
+                  proplists:get_all_values("description", Document)} of
                 {[Name0], [Description0]} when is_list(Name0), is_list(Description0) ->
                     validate_metadata(Name0, Description0);
                 {[], _} -> {error, "frontmatter is missing name"};
@@ -367,9 +326,6 @@ metadata(Document) ->
                 _ -> {error, "frontmatter has duplicate name or description fields"}
             end
     end.
-
-values(Key, Document) ->
-    [Value || {Candidate, Value} <- Document, Candidate =:= Key].
 
 validate_metadata(Name0, Description0) ->
     try
@@ -387,17 +343,6 @@ validate_metadata(Name0, Description0) ->
         end
     catch
         _:_ -> {error, "frontmatter strings must be valid UTF-8"}
-    end.
-
-selected_skill(Workspace0, Home0, Identity0) ->
-    Identity = text_binary(Identity0),
-    case catalog(Workspace0, Home0) of
-        {ok, {Skills, _Diagnostics, _Count}} ->
-            case lists:keyfind(Identity, 3, Skills) of
-                false -> {error, <<"unknown skill path; use a path from the current catalog">>};
-                Skill -> {ok, Skill}
-            end;
-        {error, _} = Error -> Error
     end.
 
 walk_resources(_Root, _Directory, _Relative, _Depth, Files, Diagnostics,
@@ -436,49 +381,38 @@ walk_entries(_Names, _Root, _Directory, _Relative, _Depth, Files, Diagnostics,
 walk_entries([Name | Rest], Root, Directory, Relative, Depth, Files,
              Diagnostics, Seen, Entries, Truncated) ->
     Lexical = filename:join(Directory, Name),
-    Rel = case Relative of
-        "" -> Name;
-        _ -> filename:join(Relative, Name)
-    end,
-    case realpath(Lexical) of
+    Rel = case Relative of "" -> Name; _ -> filename:join(Relative, Name) end,
+    {Files1, Diagnostics1, Seen1, Entries1, Truncated1} = case realpath(Lexical) of
         {ok, Actual} ->
             case within(Actual, Root) of
                 false ->
-                    walk_entries(Rest, Root, Directory, Relative, Depth, Files,
-                                 [diagnostic(Rel, "resource symlink escapes skill root")
-                                  | Diagnostics], Seen, Entries + 1, Truncated);
+                    {Files, [diagnostic(Rel, "resource symlink escapes skill root")
+                             | Diagnostics], Seen, Entries + 1, Truncated};
                 true ->
                     case file:read_file_info(Actual) of
                         {ok, #file_info{type = directory}} ->
-                            {Files1, Diagnostics1, Seen1, Entries1, Truncated1} =
-                                walk_resources(Root, Actual, Rel, Depth + 1, Files,
-                                               Diagnostics, Seen, Entries + 1,
-                                               Truncated),
-                            walk_entries(Rest, Root, Directory, Relative, Depth,
-                                         Files1, Diagnostics1, Seen1, Entries1,
-                                         Truncated1);
+                            walk_resources(Root, Actual, Rel, Depth + 1, Files,
+                                           Diagnostics, Seen, Entries + 1,
+                                           Truncated);
                         {ok, #file_info{type = regular, size = Size}}
                           when Size =< ?MAX_RESOURCE_BYTES ->
-                            walk_entries(Rest, Root, Directory, Relative, Depth,
-                                         [unicode:characters_to_binary(Rel) | Files],
-                                         Diagnostics, Seen, Entries + 1, Truncated);
+                            {[unicode:characters_to_binary(Rel) | Files],
+                             Diagnostics, Seen, Entries + 1, Truncated};
                         {ok, #file_info{type = regular}} ->
-                            walk_entries(Rest, Root, Directory, Relative, Depth,
-                                         Files,
-                                         [diagnostic(Rel, "resource exceeds 16777216 bytes")
-                                          | Diagnostics], Seen, Entries + 1,
-                                         Truncated);
+                            {Files,
+                             [diagnostic(Rel, "resource exceeds 16777216 bytes")
+                              | Diagnostics], Seen, Entries + 1, Truncated};
                         _ ->
-                            walk_entries(Rest, Root, Directory, Relative, Depth,
-                                         Files, Diagnostics, Seen, Entries + 1,
-                                         Truncated)
+                            {Files, Diagnostics, Seen, Entries + 1, Truncated}
                     end
             end;
         {error, _} ->
-            walk_entries(Rest, Root, Directory, Relative, Depth, Files,
-                         [diagnostic(Rel, "resource cannot be resolved") | Diagnostics],
-                         Seen, Entries + 1, Truncated)
-    end.
+            {Files,
+             [diagnostic(Rel, "resource cannot be resolved") | Diagnostics],
+             Seen, Entries + 1, Truncated}
+    end,
+    walk_entries(Rest, Root, Directory, Relative, Depth, Files1, Diagnostics1,
+                 Seen1, Entries1, Truncated1).
 
 read_selected_resource(Root, Relative, Offset, Limit) ->
     case valid_relative(Relative) of
@@ -499,25 +433,24 @@ read_selected_resource(Root, Relative, Offset, Limit) ->
 read_file_page(Path, Offset, Limit) ->
     case file:read_file_info(Path) of
         {ok, #file_info{type = regular, size = Size}}
-          when Size =< ?MAX_RESOURCE_BYTES ->
-            case Offset =< Size of
-                false -> {error, <<"offset exceeds resource size">>};
-                true ->
-                    case file:open(Path, [read, binary, raw]) of
-                        {ok, Io} ->
-                            Read = file:pread(Io, Offset, Limit),
-                            ok = file:close(Io),
-                            Chunk = case Read of eof -> <<>>; {ok, Bytes} -> Bytes end,
-                            Next = Offset + byte_size(Chunk),
-                            Truncated = Next < Size,
-                            {Encoding, Content} = encode_chunk(Chunk),
-                            {ok, {Encoding, Content, Next, Truncated, Size,
-                                  unicode:characters_to_binary(Path)}};
-                        {error, _} -> {error, <<"resource cannot be read">>}
-                    end
-            end;
-        {ok, #file_info{type = regular}} ->
+          when Size > ?MAX_RESOURCE_BYTES ->
             {error, <<"resource exceeds 16777216 bytes">>};
+        {ok, #file_info{type = regular, size = Size}}
+          when Offset > Size ->
+            {error, <<"offset exceeds resource size">>};
+        {ok, #file_info{type = regular, size = Size}} ->
+            case file:open(Path, [read, binary, raw]) of
+                {ok, Io} ->
+                    Read = file:pread(Io, Offset, Limit),
+                    ok = file:close(Io),
+                    Chunk = case Read of eof -> <<>>; {ok, Bytes} -> Bytes end,
+                    Next = Offset + byte_size(Chunk),
+                    Truncated = Next < Size,
+                    {Encoding, Content} = encode_chunk(Chunk),
+                    {ok, {Encoding, Content, Next, Truncated, Size,
+                          unicode:characters_to_binary(Path)}};
+                {error, _} -> {error, <<"resource cannot be read">>}
+            end;
         {ok, _} -> {error, <<"resource is not a regular file">>};
         {error, _} -> {error, <<"resource cannot be inspected">>}
     end.
@@ -527,10 +460,6 @@ encode_chunk(Chunk) ->
         Chunk -> {<<"utf-8">>, Chunk};
         _ -> {<<"base64">>, base64:encode(Chunk)}
     end.
-
-valid_window(Offset, Limit) ->
-    is_integer(Offset) andalso Offset >= 0 andalso is_integer(Limit)
-        andalso Limit >= 1 andalso Limit =< ?MAX_READ_BYTES.
 
 valid_relative([]) -> false;
 valid_relative(Relative) ->
@@ -574,11 +503,7 @@ resolve_link(Link, Rest, Depth) ->
                 absolute -> Target;
                 _ -> filename:join(filename:dirname(Link), Target)
             end,
-            Continued = case Rest of
-                [] -> Base;
-                _ -> filename:join(Base, filename:join(Rest))
-            end,
-            resolve_path(Continued, Depth + 1);
+            resolve_path(filename:join([Base | Rest]), Depth + 1);
         {error, Reason} -> {error, Reason}
     end.
 
@@ -598,7 +523,6 @@ strip_cr(Line) ->
     end.
 
 text_list(Value) -> unicode:characters_to_list(Value).
-text_binary(Value) -> unicode:characters_to_binary(Value).
 
 diagnostic(Path, Message) ->
     iolist_to_binary([unicode:characters_to_binary(Path), <<": ">>,

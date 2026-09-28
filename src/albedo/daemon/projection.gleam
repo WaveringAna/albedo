@@ -2,6 +2,7 @@
 //// Raw replay remains untouched only for the provider/protocol that produced it.
 
 import albedo/daemon/transcript
+import albedo/openai_api/replay
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
 import gleam/dynamic
@@ -50,113 +51,58 @@ fn project(
 ) -> Result(List(SourcedInput), String) {
   case entries {
     [] -> flush_chat(projected, pending_chat)
-    [#(entry, sources), ..rest] ->
+    [#(entry, sources), ..rest] -> {
+      // Both continuations capture this row's position in the walk.
+      let ahead = fn(inputs: List(types.Input)) {
+        use projected <- result.try(flush_chat(projected, pending_chat))
+        project(
+          rest,
+          provider,
+          protocol,
+          list.append(
+            list.map(list.reverse(inputs), fn(input) {
+              SourcedInput(input, sources)
+            }),
+            projected,
+          ),
+          empty_chat(),
+        )
+      }
+      let carry = fn(chat: ChatSemantic) {
+        project(rest, provider, protocol, projected, chat)
+      }
       case entry.input {
         types.Replay(item) ->
           case
             types.replay_protocol(item) == protocol
             && entry.provider == Some(provider)
           {
-            True -> {
-              use projected <- result.try(flush_chat(projected, pending_chat))
-              project(
-                rest,
-                provider,
-                protocol,
-                [SourcedInput(entry.input, sources), ..projected],
-                empty_chat(),
-              )
-            }
+            True -> ahead([entry.input])
             False ->
               case types.replay_protocol(item), protocol {
                 types.Responses, types.ChatCompletions ->
                   case response_semantics(item) {
-                    Ok(ResponseReasoning) ->
-                      project(rest, provider, protocol, projected, pending_chat)
-                    Ok(ResponseCall(call)) -> {
-                      let ChatSemantic(text, calls, pending_sources) =
-                        pending_chat
-                      project(
-                        rest,
-                        provider,
-                        protocol,
-                        projected,
-                        ChatSemantic(
-                          text,
-                          [call, ..calls],
-                          list.append(pending_sources, sources),
-                        ),
-                      )
-                    }
-                    Ok(ResponseText(text)) -> {
-                      let ChatSemantic(texts, calls, pending_sources) =
-                        pending_chat
-                      project(
-                        rest,
-                        provider,
-                        protocol,
-                        projected,
-                        ChatSemantic(
-                          [text, ..texts],
-                          calls,
-                          list.append(pending_sources, sources),
-                        ),
-                      )
-                    }
+                    Ok(ResponseReasoning) -> carry(pending_chat)
+                    Ok(ResponseCall(call)) ->
+                      carry(add_call(pending_chat, call, sources))
+                    Ok(ResponseText(text)) ->
+                      carry(add_text(pending_chat, text, sources))
                     Error(error) -> Error(error)
                   }
                 types.Responses, types.Responses -> {
-                  use projected <- result.try(flush_chat(
-                    projected,
-                    pending_chat,
-                  ))
                   use inputs <- result.try(canonical_response(item))
-                  project(
-                    rest,
-                    provider,
-                    protocol,
-                    list.append(
-                      list.map(list.reverse(inputs), fn(input) {
-                        SourcedInput(input, sources)
-                      }),
-                      projected,
-                    ),
-                    empty_chat(),
-                  )
+                  ahead(inputs)
                 }
                 types.ChatCompletions, target -> {
-                  use projected <- result.try(flush_chat(
-                    projected,
-                    pending_chat,
-                  ))
                   use semantics <- result.try(chat_semantics(item))
                   use inputs <- result.try(chat_inputs(semantics, target))
-                  project(
-                    rest,
-                    provider,
-                    protocol,
-                    list.append(
-                      list.map(list.reverse(inputs), fn(input) {
-                        SourcedInput(input, sources)
-                      }),
-                      projected,
-                    ),
-                    empty_chat(),
-                  )
+                  ahead(inputs)
                 }
               }
           }
-        input -> {
-          use projected <- result.try(flush_chat(projected, pending_chat))
-          project(
-            rest,
-            provider,
-            protocol,
-            [SourcedInput(input, sources), ..projected],
-            empty_chat(),
-          )
-        }
+        input -> ahead([input])
       }
+    }
   }
 }
 
@@ -230,21 +176,7 @@ fn response_part_decoder() -> decode.Decoder(String) {
 fn response_call_semantics(
   item: types.ReplayItem,
 ) -> Result(types.ToolCall, String) {
-  let decoder = {
-    use id <- decode.field("call_id", decode.string)
-    use name <- decode.field("name", decode.string)
-    use arguments <- decode.field("arguments", decode.string)
-    use status <- decode.optional_field("status", "completed", decode.string)
-    case id != "" && name != "" && status == "completed" {
-      True -> decode.success(types.ToolCall(id, name, arguments))
-      False ->
-        decode.failure(
-          types.ToolCall(id, name, arguments),
-          "completed function call with identity",
-        )
-    }
-  }
-  inspect(item, decoder, "Responses function call")
+  inspect(item, replay.function_call_decoder(), "Responses function call")
 }
 
 type ChatSemantic {
@@ -289,19 +221,10 @@ fn chat_semantics(item: types.ReplayItem) -> Result(ChatSemantic, String) {
 fn reject_chat_semantics(
   fields: Dict(String, dynamic.Dynamic),
 ) -> decode.Decoder(Nil) {
-  let portable_or_metadata = [
-    "role",
-    "content",
-    "refusal",
-    "tool_calls",
-    "reasoning_content",
-    "reasoning",
-    "reasoning_details",
-  ]
   case
     fields
     |> dict.keys
-    |> list.find(fn(name) { !list.contains(portable_or_metadata, name) })
+    |> list.find(fn(name) { !list.contains(replay.portable_fields, name) })
   {
     Ok(name) ->
       decode.failure(Nil, "known portable assistant field, got " <> name)
@@ -329,6 +252,26 @@ fn chat_call_decoder() -> decode.Decoder(types.ToolCall) {
 
 fn empty_chat() -> ChatSemantic {
   ChatSemantic([], [], [])
+}
+
+/// A call joins the message being assembled, carrying its row's sources.
+fn add_call(
+  chat: ChatSemantic,
+  call: types.ToolCall,
+  sources: List(transcript.SourceRef),
+) -> ChatSemantic {
+  let ChatSemantic(text, calls, pending) = chat
+  ChatSemantic(text, [call, ..calls], list.append(pending, sources))
+}
+
+/// Answer text joins the message being assembled, carrying its row's sources.
+fn add_text(
+  chat: ChatSemantic,
+  text: String,
+  sources: List(transcript.SourceRef),
+) -> ChatSemantic {
+  let ChatSemantic(texts, calls, pending) = chat
+  ChatSemantic([text, ..texts], calls, list.append(pending, sources))
 }
 
 fn chat_inputs(
@@ -376,38 +319,22 @@ fn chat_message(
   text: List(String),
   calls: List(types.ToolCall),
 ) -> Result(types.ReplayItem, String) {
-  let fields = [
-    #("role", json.string("assistant")),
-    #("content", case text {
-      [] -> json.null()
-      text -> json.string(string.concat(text))
-    }),
-  ]
-  let fields = case calls {
-    [] -> fields
-    calls -> {
-      let tools =
-        list.map(calls, fn(call) {
-          json.object([
-            #("id", json.string(call.id)),
-            #("type", json.string("function")),
-            #(
-              "function",
-              json.object([
-                #("name", json.string(call.name)),
-                #("arguments", json.string(call.arguments)),
-              ]),
-            ),
-          ])
-        })
-      [#("tool_calls", json.array(tools, fn(tool) { tool })), ..fields]
-    }
-  }
-  replay(types.ChatCompletions, json.object(fields))
+  replay_item(
+    types.ChatCompletions,
+    replay.message(
+      case text {
+        [] -> json.null()
+        text -> json.string(string.concat(text))
+      },
+      "",
+      None,
+      calls,
+    ),
+  )
 }
 
 fn response_call(call: types.ToolCall) -> Result(types.ReplayItem, String) {
-  replay(
+  replay_item(
     types.Responses,
     json.object([
       #("type", json.string("function_call")),
@@ -419,7 +346,7 @@ fn response_call(call: types.ToolCall) -> Result(types.ReplayItem, String) {
   )
 }
 
-fn replay(
+fn replay_item(
   protocol: types.Protocol,
   value: json.Json,
 ) -> Result(types.ReplayItem, String) {

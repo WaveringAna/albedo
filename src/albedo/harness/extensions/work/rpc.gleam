@@ -1,49 +1,39 @@
 //// The same ledger operations used by the Python tool and other clients.
 
 import albedo/harness/extensions/work/ledger as work
+import albedo/harness/rpc
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{None}
 import gleam/result
 
 pub fn handle(store: work.Store, cwd: String, request: String) -> String {
-  let decoder = {
-    use method <- decode.field("method", decode.string)
-    use args <- decode.field("args", decode.dynamic)
-    decode.success(#(method, args))
-  }
-  let answer = {
-    use #(method, args) <- result.try(
-      json.parse(request, decoder)
-      |> result.replace_error(work.Invalid("invalid host request")),
+  rpc.serve(
+    request,
+    work.Invalid("invalid host request"),
+    fn(method, args) { dispatch(store, cwd, method, args) },
+    describe,
+  )
+}
+
+fn describe(error: work.Error) -> #(String, String) {
+  case error {
+    work.Invalid(message) -> #("invalid", message)
+    work.NotFound -> #("not_found", "work item not found")
+    work.Conflict -> #(
+      "conflict",
+      "work item changed; read it again before editing",
     )
-    dispatch(store, cwd, method, args)
+    work.Storage(message) -> #("storage", message)
   }
-  case answer {
-    Ok(value) -> json.object([#("ok", json.bool(True)), #("value", value)])
-    Error(error) -> {
-      let #(code, message) = case error {
-        work.Invalid(message) -> #("invalid", message)
-        work.NotFound -> #("not_found", "work item not found")
-        work.Conflict -> #(
-          "conflict",
-          "work item changed; read it again before editing",
-        )
-        work.Storage(message) -> #("storage", message)
-      }
-      json.object([
-        #("ok", json.bool(False)),
-        #("code", json.string(code)),
-        #("message", json.string(message)),
-      ])
-    }
-  }
-  |> json.to_string
 }
 
 fn parse(args, decoder) {
-  decode.run(args, decoder)
-  |> result.replace_error(work.Invalid("invalid work arguments"))
+  rpc.args(args, decoder, work.Invalid("invalid work arguments"))
+}
+
+fn id_decoder() {
+  decode.field("id", decode.int, decode.success)
 }
 
 fn dispatch(store, cwd, method, args) {
@@ -59,10 +49,7 @@ fn dispatch(store, cwd, method, args) {
       |> result.map(json.array(_, work.to_json))
     }
     "work.get" -> {
-      use id <- result.try(parse(
-        args,
-        decode.field("id", decode.int, decode.success),
-      ))
+      use id <- result.try(parse(args, id_decoder()))
       work.get(store, cwd, id) |> result.map(work.to_json)
     }
     "work.create" -> {
@@ -80,10 +67,7 @@ fn dispatch(store, cwd, method, args) {
       work.create(store, cwd, title, notes, parent) |> result.map(work.to_json)
     }
     "work.update" -> {
-      use id <- result.try(parse(
-        args,
-        decode.field("id", decode.int, decode.success),
-      ))
+      use id <- result.try(parse(args, id_decoder()))
       use current <- result.try(work.get(store, cwd, id))
       let decoder = {
         use revision <- decode.field("revision", decode.int)
@@ -135,12 +119,13 @@ fn dispatch(store, cwd, method, args) {
       |> result.map(work.to_json)
     }
     "work.delete" -> {
-      let decoder = {
-        use id <- decode.field("id", decode.int)
-        use revision <- decode.field("revision", decode.int)
-        decode.success(#(id, revision))
-      }
-      use #(id, revision) <- result.try(parse(args, decoder))
+      use #(id, revision) <- result.try(
+        parse(args, {
+          use id <- decode.field("id", decode.int)
+          use revision <- decode.field("revision", decode.int)
+          decode.success(#(id, revision))
+        }),
+      )
       work.delete(store, cwd, id, revision) |> result.map(work.to_json)
     }
     _ -> Error(work.Invalid("unknown host operation"))

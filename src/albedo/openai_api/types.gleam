@@ -1,12 +1,32 @@
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json.{type Json}
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 
 pub type Protocol {
   Responses
   ChatCompletions
+}
+
+/// The protocol's saved-name form, as profiles and carried proxy state spell it.
+pub fn protocol_name(protocol: Protocol) -> String {
+  case protocol {
+    Responses -> "responses"
+    ChatCompletions -> "chat_completions"
+  }
+}
+
+pub fn protocol_decoder() -> decode.Decoder(Protocol) {
+  decode.string
+  |> decode.then(fn(name) {
+    case name {
+      "responses" -> decode.success(Responses)
+      "chat_completions" -> decode.success(ChatCompletions)
+      _ -> decode.failure(Responses, "protocol")
+    }
+  })
 }
 
 pub type ProviderPolicy {
@@ -54,11 +74,30 @@ pub fn image(
   height: Int,
   bytes: Int,
 ) -> Result(Image, Error) {
+  use _ <- result.try(image_error(
+    mime_type,
+    string.byte_size(data) > 0 && string.byte_size(data) <= 6_990_508,
+    width,
+    height,
+    bytes,
+  ))
+  Ok(Image(mime_type, InlineData(data), width, height, bytes))
+}
+
+/// The validity contract of `image` and `stored_image`: an allowed MIME type,
+/// a nonempty bounded payload, bounded dimensions, and a bounded byte count.
+fn image_error(
+  mime_type: String,
+  payload: Bool,
+  width: Int,
+  height: Int,
+  bytes: Int,
+) -> Result(Nil, Error) {
   case
     mime_type == "image/png"
     || mime_type == "image/jpeg"
     || mime_type == "image/webp",
-    string.byte_size(data) > 0 && string.byte_size(data) <= 6_990_508,
+    payload,
     width > 0
     && height > 0
     && width <= max_image_edge
@@ -70,8 +109,7 @@ pub fn image(
     _, False, _, _ -> Error(InvalidRequest("invalid image payload size"))
     _, _, False, _ -> Error(InvalidRequest("invalid image dimensions"))
     _, _, _, False -> Error(InvalidRequest("invalid decoded image size"))
-    True, True, True, True ->
-      Ok(Image(mime_type, InlineData(data), width, height, bytes))
+    True, True, True, True -> Ok(Nil)
   }
 }
 
@@ -86,25 +124,14 @@ pub fn stored_image(
   height: Int,
   bytes: Int,
 ) -> Result(Image, Error) {
-  case
-    mime_type == "image/png"
-    || mime_type == "image/jpeg"
-    || mime_type == "image/webp",
+  use _ <- result.try(image_error(
+    mime_type,
     size > 0 && size <= max_image_bytes,
-    width > 0
-    && height > 0
-    && width <= max_image_edge
-    && height <= max_image_edge
-    && width * height <= max_image_pixels,
-    bytes > 0 && bytes <= max_image_bytes
-  {
-    False, _, _, _ -> Error(InvalidRequest("image must be PNG, JPEG, or WebP"))
-    _, False, _, _ -> Error(InvalidRequest("invalid image payload size"))
-    _, _, False, _ -> Error(InvalidRequest("invalid image dimensions"))
-    _, _, _, False -> Error(InvalidRequest("invalid decoded image size"))
-    True, True, True, True ->
-      Ok(Image(mime_type, StoredData(hash, size, read), width, height, bytes))
-  }
+    width,
+    height,
+    bytes,
+  ))
+  Ok(Image(mime_type, StoredData(hash, size, read), width, height, bytes))
 }
 
 /// MIME type, width, height, and decoded byte count.
@@ -216,8 +243,14 @@ pub fn inspect_item(
   decode.run(item.value, decoder)
 }
 
+/// A decoded JSON value re-encoded, unchanged, for the adapters that decode
+/// with `decode.dynamic` and must emit exactly what they read.
 @external(erlang, "albedo_openai_json", "encode")
-fn encode_value(value: Dynamic) -> Json
+pub fn encode_value(value: Dynamic) -> Json
+
+/// A base64 image payload as a JSON string; a stored payload reads lazily.
+@external(erlang, "albedo_openai_json", "base64_string")
+pub fn base64_string(data: ImageData) -> Json
 
 pub type ToolCall {
   ToolCall(id: String, name: String, arguments: String)
@@ -230,6 +263,32 @@ pub type Usage {
     output_tokens: Int,
     cached_input_tokens: Option(Int),
     cache_creation_tokens: Option(Int),
+  )
+}
+
+/// Usage as a provider reports it, with cached reads when it names them.
+/// Chat Completions and the Responses API name the same fields differently.
+pub fn usage_decoder(
+  input_tokens: String,
+  output_tokens: String,
+  input_tokens_details: String,
+) -> decode.Decoder(Usage) {
+  use input <- decode.field(input_tokens, decode.int)
+  use output <- decode.field(output_tokens, decode.int)
+  use details <- decode.optional_field(
+    input_tokens_details,
+    None,
+    decode.optional(cached_tokens_decoder()),
+  )
+  decode.success(Usage(input, output, option.flatten(details), None))
+}
+
+fn cached_tokens_decoder() -> decode.Decoder(Option(Int)) {
+  decode.optional_field(
+    "cached_tokens",
+    None,
+    decode.optional(decode.int),
+    decode.success,
   )
 }
 
@@ -262,6 +321,21 @@ pub type Event {
   /// A fragment of a call's arguments; name is the tool it calls, or empty
   /// until the provider has said.
   ArgumentsDelta(output_index: Int, name: String, text: String)
+}
+
+/// The first response id starts the turn; one that changes mid-stream is a
+/// broken stream, not a new turn.
+pub fn merge_response_id(
+  current: Option(String),
+  incoming: Option(String),
+  changed: String,
+) -> Result(#(Option(String), List(Event)), Error) {
+  case current, incoming {
+    None, Some(id) -> Ok(#(Some(id), [Started(id)]))
+    Some(current), Some(incoming) if current != incoming ->
+      Error(InvalidEvent(changed))
+    _, _ -> Ok(#(current, []))
+  }
 }
 
 pub type Control {

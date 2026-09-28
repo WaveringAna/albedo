@@ -250,13 +250,7 @@ fn serve(state: State, message: Message) {
       }
       process.send(reply, created)
       case created {
-        Ok(info) ->
-          actor.continue(
-            State(
-              ..state,
-              sessions: dict.insert(state.sessions, info.id, #(info, None)),
-            ),
-          )
+        Ok(info) -> actor.continue(holding(state, info.id, #(info, None)))
         Error(_) -> actor.continue(state)
       }
     }
@@ -284,12 +278,7 @@ fn serve(state: State, message: Message) {
       process.send(reply, stored)
       case stored, dict.get(state.sessions, id) {
         Ok(info), Ok(#(_, worker)) ->
-          actor.continue(
-            State(
-              ..state,
-              sessions: dict.insert(state.sessions, id, #(info, worker)),
-            ),
-          )
+          actor.continue(holding(state, id, #(info, worker)))
         _, _ -> actor.continue(state)
       }
     }
@@ -336,13 +325,7 @@ fn serve(state: State, message: Message) {
         history.fork(runtime.ledger(state.host), id, new_id(), checkpoint)
       process.send(reply, forked)
       case forked {
-        Ok(info) ->
-          actor.continue(
-            State(
-              ..state,
-              sessions: dict.insert(state.sessions, info.id, #(info, None)),
-            ),
-          )
+        Ok(info) -> actor.continue(holding(state, info.id, #(info, None)))
         Error(_) -> actor.continue(state)
       }
     }
@@ -397,12 +380,7 @@ fn serve(state: State, message: Message) {
         Ok(#(info, worker)) -> {
           let member = family.get(db, id) |> result.unwrap(None)
           bus.renamed(id, agent_name(db, info, member))
-          actor.continue(
-            State(
-              ..state,
-              sessions: dict.insert(state.sessions, id, #(info, worker)),
-            ),
-          )
+          actor.continue(holding(state, id, #(info, worker)))
         }
         Error(_) -> actor.continue(state)
       }
@@ -439,23 +417,9 @@ fn serve(state: State, message: Message) {
           case session.start(state.host, info, state.config.home) {
             Ok(worker) -> {
               watch(worker)
-              actor.continue(
-                State(
-                  ..state,
-                  sessions: dict.insert(state.sessions, info.id, #(
-                    info,
-                    Some(worker),
-                  )),
-                ),
-              )
+              actor.continue(holding(state, info.id, #(info, Some(worker))))
             }
-            Error(_) ->
-              actor.continue(
-                State(
-                  ..state,
-                  sessions: dict.insert(state.sessions, info.id, #(info, None)),
-                ),
-              )
+            Error(_) -> actor.continue(holding(state, info.id, #(info, None)))
           }
         }
       }
@@ -742,22 +706,18 @@ fn dispatch_schedule(
       let delivered = case job.kind == "heartbeat" && busy {
         True -> True
         False ->
-          case
-            session.submit(
-              worker,
-              "[scheduled "
-                <> job.kind
-                <> " #"
-                <> int.to_string(job.id)
-                <> "] "
-                <> job.prompt,
-              "schedule",
-              None,
-            )
-          {
-            Ok(_) -> True
-            Error(_) -> False
-          }
+          session.submit(
+            worker,
+            "[scheduled "
+              <> job.kind
+              <> " #"
+              <> int.to_string(job.id)
+              <> "] "
+              <> job.prompt,
+            "schedule",
+            None,
+          )
+          |> result.is_ok
       }
       case delivered {
         True -> {
@@ -868,15 +828,9 @@ fn info_json(info: conversation.Info) -> json.Json {
     #("workspace", json.string(info.cwd)),
     #("provider", json.string(info.provider)),
     #("model", json.string(info.model)),
-    #("effort", case info.effort {
-      Some(effort) -> json.string(effort)
-      None -> json.null()
-    }),
+    #("effort", json.nullable(info.effort, json.string)),
     #("protocol", json.string(conversation.protocol(info.protocol))),
-    #("last_assistant_at", case info.last_assistant_at {
-      Some(timestamp) -> json.int(timestamp)
-      None -> json.null()
-    }),
+    #("last_assistant_at", json.nullable(info.last_assistant_at, json.int)),
   ])
 }
 
@@ -1156,18 +1110,17 @@ fn agent_op(
           let profiles =
             configuration.providers(state.config.home)
             |> result.unwrap([])
-          let same =
-            profiles
-            |> list.filter(fn(profile) { profile.name == info.provider })
-            |> list.flat_map(provider_models(state.host, _))
-          let other =
-            profiles
-            |> list.filter(fn(profile) { profile.name != info.provider })
-            |> list.flat_map(fn(profile) {
+          let #(same, other) =
+            list.partition(profiles, fn(profile) {
+              profile.name == info.provider
+            })
+          let same_models = list.flat_map(same, provider_models(state.host, _))
+          let other_models =
+            list.flat_map(other, fn(profile) {
               provider_models(state.host, profile)
               |> list.map(fn(model) { profile.name <> "/" <> model })
             })
-          list.unique([info.model, ..list.append(same, other)])
+          list.unique([info.model, ..list.append(same_models, other_models)])
         }
       }
       #(state, Ok(json.array(listed, json.string)))
@@ -1262,6 +1215,19 @@ fn agent_json(node: AgentNode) -> json.Json {
   ])
 }
 
+/// One server-sent data frame: the prefix up to the event list, the events
+/// comma-joined, and the closing bracket.
+fn event_frame(
+  prefix: string_tree.StringTree,
+  events: List(String),
+) -> string_tree.StringTree {
+  prefix
+  |> string_tree.append_tree(
+    events |> list.map(string_tree.from_string) |> string_tree.join(","),
+  )
+  |> string_tree.append("]}")
+}
+
 /// Every bus event, batched every 100 ms so a hundred streaming agents cost the
 /// client ten frames a second, not thousands of writes. The first frame goes
 /// out on the first tick even when empty, so a client knows it is subscribed.
@@ -1294,13 +1260,10 @@ fn agents_stream(req) {
             [], False -> actor.continue(#(self, [], 0, quiet + 1))
             _, _ -> {
               let body =
-                string_tree.from_string("{\"events\":[")
-                |> string_tree.append_tree(
-                  list.reverse(buffered)
-                  |> list.map(string_tree.from_string)
-                  |> string_tree.join(","),
+                event_frame(
+                  string_tree.from_string("{\"events\":["),
+                  list.reverse(buffered),
                 )
-                |> string_tree.append("]}")
               case mist.send_event(connection, mist.event(body)) {
                 Error(_) -> actor.stop()
                 Ok(_) -> actor.continue(#(self, [], 0, 0))
@@ -1365,22 +1328,20 @@ fn tree_item_json(item: history.Item) -> json.Json {
     #("id", json.int(item.id)),
     #("type", json.string(history.kind_name(item.kind))),
     #("preview", json.string(item.preview)),
-    #("timestamp", case item.timestamp {
-      Some(timestamp) -> json.int(timestamp)
-      None -> json.null()
-    }),
+    #("timestamp", json.nullable(item.timestamp, json.int)),
   ])
 }
 
 fn tree_page_json(page: history.Page) -> json.Json {
   json.object([
     #("items", json.array(page.items, tree_item_json)),
-    #("nextCursor", case page.next_cursor {
-      Some(cursor) -> json.int(cursor)
-      None -> json.null()
-    }),
+    #("nextCursor", json.nullable(page.next_cursor, json.int)),
     #("hasMore", json.bool(page.has_more)),
   ])
+}
+
+fn extensions_json(summaries: List(extension.Summary)) -> json.Json {
+  json.array(summaries, extension_json)
 }
 
 fn extension_json(summary: extension.Summary) -> json.Json {
@@ -1408,6 +1369,58 @@ fn reply(status: Int, value: json.Json) {
 
 fn error(status: Int, message: String) {
   reply(status, json.object([#("error", json.string(message))]))
+}
+
+/// A response whose body is already-encoded JSON.
+fn raw(status: Int, body: String) {
+  response.new(status)
+  |> response.set_header("content-type", "application/json")
+  |> response.set_body(mist.Bytes(bytes_tree.from_string(body)))
+}
+
+/// One answered request as a response: the value, or the failure's message.
+fn answered(
+  outcome: Result(a, String),
+  status: Int,
+  value: fn(a) -> json.Json,
+  failure: Int,
+) -> response.Response(mist.ResponseData) {
+  case outcome {
+    Ok(answer) -> reply(status, value(answer))
+    Error(e) -> error(failure, e)
+  }
+}
+
+/// The `{"ok": true}` envelope, with any further fields beside it.
+fn acknowledged(fields: List(#(String, json.Json))) -> json.Json {
+  json.object([#("ok", json.bool(True)), ..fields])
+}
+
+/// The request's query parameters, however malformed.
+fn query(req) -> List(#(String, String)) {
+  request.get_query(req) |> result.unwrap([])
+}
+
+/// Query parameter `key` as an integer, when present and valid.
+fn query_optional_int(req, key: String) -> Option(Int) {
+  query(req)
+  |> list.key_find(key)
+  |> result.try(int.parse)
+  |> option.from_result
+}
+
+/// Query parameter `key` as an integer, or `default` when absent or invalid.
+fn query_int(req, key: String, default: Int) -> Int {
+  query_optional_int(req, key) |> option.unwrap(default)
+}
+
+/// The registry remembering a session, live or not.
+fn holding(
+  state: State,
+  id: String,
+  pair: #(conversation.Info, Option(session.Session)),
+) -> State {
+  State(..state, sessions: dict.insert(state.sessions, id, pair))
 }
 
 type SubmittedImage {
@@ -1462,10 +1475,7 @@ fn auth(
     |> result.replace_error("no enabled sign-in for " <> provider)
   }
   let done = fn(outcome) {
-    case outcome {
-      Ok(Nil) -> reply(200, json.object([#("ok", json.bool(True))]))
-      Error(e) -> error(400, e)
-    }
+    outcome |> answered(200, fn(_) { acknowledged([]) }, 400)
   }
   case req.method, list.map(path, uri_decode) {
     Get, [] ->
@@ -1495,10 +1505,7 @@ fn auth(
         Error(e) -> error(400, e)
       }
     Get, ["logins", id] ->
-      case oauth.status(id) {
-        Ok(status) -> reply(200, oauth.status_json(status))
-        Error(e) -> error(404, e)
-      }
+      oauth.status(id) |> answered(200, oauth.status_json, 404)
     Post, ["logins", id] ->
       body(req, decode.field("input", decode.string, decode.success))
       |> result.try(oauth.input(id, _))
@@ -1620,8 +1627,7 @@ fn daemon_route(
         Get, ["health"] ->
           reply(
             200,
-            json.object([
-              #("ok", json.bool(True)),
+            acknowledged([
               #("version", json.int(2)),
               #(
                 "capabilities",
@@ -1644,37 +1650,33 @@ fn daemon_route(
           reply(200, json.array(actor.call(registry, 5000, List), info_json))
         // The tree the given session belongs to, for the orchestrator view.
         Get, ["agents"] -> {
-          let id =
-            request.get_query(req)
-            |> result.unwrap([])
-            |> list.key_find("session")
-            |> result.unwrap("")
-          case actor.call(registry, 10_000, ReadAgents(id, _)) {
-            Ok(#(root, nodes)) ->
-              reply(
-                200,
-                json.object([
-                  #("root", json.string(root)),
-                  #("nodes", json.array(nodes, agent_json)),
-                ]),
-              )
-            Error(e) -> error(404, e)
-          }
+          let id = query(req) |> list.key_find("session") |> result.unwrap("")
+          actor.call(registry, 10_000, ReadAgents(id, _))
+          |> answered(
+            200,
+            fn(tree) {
+              json.object([
+                #("root", json.string(tree.0)),
+                #("nodes", json.array(tree.1, agent_json)),
+              ])
+            },
+            404,
+          )
         }
         Get, ["agents", "stream"] -> agents_stream(req)
         // `details` lists objects with catalog facts. Without it, plain ids.
         // Efforts come from where sessions of this extension look them up,
         // and facts from the endpoint, or there when none is given.
         Get, ["models", provider] -> {
-          let query = request.get_query(req) |> result.unwrap([])
-          let endpoint = list.key_find(query, "endpoint") |> result.unwrap("")
+          let endpoint =
+            query(req) |> list.key_find("endpoint") |> result.unwrap("")
           use host <- with_host(registry)
           let efforts_at = session_provider.effort_endpoint(provider)
           let facts_at = case endpoint {
             "" -> efforts_at
             _ -> endpoint
           }
-          case list.key_find(query, "details") {
+          case list.key_find(query(req), "details") {
             Ok(_) ->
               reply(
                 200,
@@ -1712,139 +1714,84 @@ fn daemon_route(
             use model <- decode.optional_field("model", "", decode.string)
             decode.success(#(cwd, provider, model))
           }
-          case
-            body(req, decoder)
-            |> result.try(fn(fields) {
-              let #(cwd, provider, model) = fields
-              actor.call(registry, 15_000, Create(cwd, provider, model, _))
-            })
-          {
-            Ok(info) -> reply(201, info_json(info))
-            Error(e) -> error(400, e)
-          }
+          body(req, decoder)
+          |> result.try(fn(fields) {
+            let #(cwd, provider, model) = fields
+            actor.call(registry, 15_000, Create(cwd, provider, model, _))
+          })
+          |> answered(201, info_json, 400)
         }
         Post, ["shutdown"] -> {
           let _ = process.send_after(registry, 100, Shutdown)
-          reply(200, json.object([#("ok", json.bool(True))]))
+          reply(200, acknowledged([]))
         }
         // A blank name hands the title back to the latest message.
         Patch, ["sessions", id] ->
-          case
-            body(req, decode.field("name", decode.string, decode.success))
-            |> result.try(fn(name) {
-              actor.call(registry, 5000, Rename(id, name, _))
-            })
-          {
-            Ok(info) -> reply(200, info_json(info))
-            Error(e) -> error(409, e)
-          }
+          body(req, decode.field("name", decode.string, decode.success))
+          |> result.try(fn(name) {
+            actor.call(registry, 5000, Rename(id, name, _))
+          })
+          |> answered(200, info_json, 409)
         // With ?tree=1, the session and every agent below it, deepest first.
         Delete, ["sessions", id] -> {
-          let tree =
-            request.get_query(req)
-            |> result.unwrap([])
-            |> list.key_find("tree")
-            == Ok("1")
+          let tree = list.key_find(query(req), "tree") == Ok("1")
           case tree {
             False ->
               actor.call(registry, 40_000, DeleteSession(id, _))
               |> result.replace(1)
             True -> delete_tree(registry, id)
           }
-          |> fn(deleted) {
-            case deleted {
-              Ok(count) ->
-                reply(
-                  200,
-                  json.object([
-                    #("ok", json.bool(True)),
-                    #("deleted", json.int(count)),
-                  ]),
-                )
-              Error(e) -> error(409, e)
-            }
-          }
+          |> answered(
+            200,
+            fn(count) { acknowledged([#("deleted", json.int(count))]) },
+            409,
+          )
         }
         Get, ["sessions", id, "tree"] -> {
-          let query = request.get_query(req) |> result.unwrap([])
-          let after =
-            query
-            |> list.key_find("after")
-            |> result.try(int.parse)
-            |> result.unwrap(0)
-          let limit =
-            query
-            |> list.key_find("limit")
-            |> result.try(int.parse)
-            |> result.unwrap(50)
-          case actor.call(registry, 10_000, ReadTree(id, after, limit, _)) {
-            Ok(page) -> reply(200, tree_page_json(page))
-            Error(e) -> error(400, e)
-          }
+          let after = query_int(req, "after", 0)
+          let limit = query_int(req, "limit", 50)
+          actor.call(registry, 10_000, ReadTree(id, after, limit, _))
+          |> answered(200, tree_page_json, 400)
         }
         Get, ["sessions", id, "preview"] -> {
-          let limit =
-            request.get_query(req)
-            |> result.unwrap([])
-            |> list.key_find("limit")
-            |> result.try(int.parse)
-            |> result.unwrap(12)
-          case actor.call(registry, 10_000, ReadRecent(id, limit, _)) {
-            Ok(recent) ->
-              reply(
-                200,
-                json.object([
-                  #("items", json.array(recent.items, tree_item_json)),
-                  #("total", json.int(recent.total)),
-                ]),
-              )
-            Error(e) -> error(400, e)
-          }
+          let limit = query_int(req, "limit", 12)
+          actor.call(registry, 10_000, ReadRecent(id, limit, _))
+          |> answered(
+            200,
+            fn(recent) {
+              json.object([
+                #("items", json.array(recent.items, tree_item_json)),
+                #("total", json.int(recent.total)),
+              ])
+            },
+            400,
+          )
         }
         // Older transcript as rendered events, for a client scrolled past what
         // its reset carried: `before` is the `before` of the page it holds.
         Get, ["sessions", id, "history"] -> {
-          let query = request.get_query(req) |> result.unwrap([])
-          let before =
-            list.key_find(query, "before")
-            |> result.try(int.parse)
-            |> option.from_result
+          let before = query_optional_int(req, "before")
           let rows =
-            list.key_find(query, "rows")
-            |> result.try(int.parse)
-            |> result.unwrap(history_page_rows)
-            |> int.clamp(1, 400)
+            query_int(req, "rows", history_page_rows) |> int.clamp(1, 400)
           case actor.call(registry, 10_000, ReadHistory(id, before, rows, _)) {
-            Ok(body) ->
-              response.new(200)
-              |> response.set_header("content-type", "application/json")
-              |> response.set_body(mist.Bytes(bytes_tree.from_string(body)))
+            Ok(rendered) -> raw(200, rendered)
             Error(e) -> error(400, e)
           }
         }
         Get, ["sessions", id, "context", section, page] ->
-          case
-            int.parse(page)
-            |> result.replace_error("invalid context page")
-            |> result.try(fn(page) {
-              actor.call(registry, 5000, Lookup(id, _))
-              |> result.try(session.context_page(_, section, page))
-            })
-          {
-            Ok(content) -> reply(200, content)
-            Error(e) -> error(404, e)
-          }
+          int.parse(page)
+          |> result.replace_error("invalid context page")
+          |> result.try(fn(page) {
+            actor.call(registry, 5000, Lookup(id, _))
+            |> result.try(session.context_page(_, section, page))
+          })
+          |> answered(200, fn(content) { content }, 404)
         Post, ["sessions", id, "fork"] -> {
-          let decoder = decode.field("checkpoint", decode.int, decode.success)
-          case
-            body(req, decoder)
-            |> result.try(fn(checkpoint) {
-              actor.call(registry, 15_000, Fork(id, checkpoint, _))
-            })
-          {
-            Ok(info) -> reply(201, info_json(info))
-            Error(e) -> error(409, e)
-          }
+          body(req, decode.field("checkpoint", decode.int, decode.success))
+          |> result.try(fn(checkpoint) {
+            actor.call(registry, 15_000, Fork(id, checkpoint, _))
+          })
+          |> answered(201, info_json, 409)
         }
         // A child session the user starts by hand; agents use the same path.
         Post, ["sessions", id, "children"] -> {
@@ -1854,30 +1801,30 @@ fn daemon_route(
             use model <- decode.optional_field("model", "", decode.string)
             decode.success(#(name, task, model))
           }
-          case
-            body(req, decoder)
-            |> result.try(fn(fields) {
-              let #(name, task, model) = fields
-              actor.call(registry, 15_000, CreateChild(id, name, task, model, _))
-            })
-          {
-            Ok(#(info, member)) ->
-              reply(
-                201,
-                json.object([
-                  #("session", info_json(info)),
-                  #("member", member_json(member)),
-                ]),
-              )
-            Error(e) -> error(409, e)
-          }
+          body(req, decoder)
+          |> result.try(fn(fields) {
+            let #(name, task, model) = fields
+            actor.call(registry, 15_000, CreateChild(id, name, task, model, _))
+          })
+          |> answered(
+            201,
+            fn(pair) {
+              json.object([
+                #("session", info_json(pair.0)),
+                #("member", member_json(pair.1)),
+              ])
+            },
+            409,
+          )
         }
         Get, ["sessions", id, "children"] -> {
           use host <- with_host(registry)
-          case family.children(runtime.ledger(host), id) {
-            Ok(members) -> reply(200, json.array(members, member_json))
-            Error(e) -> error(400, e)
-          }
+          family.children(runtime.ledger(host), id)
+          |> answered(
+            200,
+            fn(members) { json.array(members, member_json) },
+            400,
+          )
         }
         // Mail written as session `id`: the daemon token is the user's, who may
         // speak for any of their sessions.
@@ -1887,25 +1834,12 @@ fn daemon_route(
             use text <- decode.field("body", decode.string)
             decode.success(#(to, text))
           }
-          case
-            body(req, decoder)
-            |> result.try(fn(fields) {
-              use host <- result.try(actor.call(registry, 5000, Host))
-              mail.send(runtime.ledger(host), id, fields.0, fields.1)
-            })
-          {
-            Ok(receipt) ->
-              reply(
-                202,
-                json.object([
-                  #("id", json.string(receipt.id)),
-                  #("to", json.string(receipt.recipient)),
-                  #("name", json.string(receipt.name)),
-                  #("status", json.string(receipt.status)),
-                ]),
-              )
-            Error(e) -> error(409, e)
-          }
+          body(req, decoder)
+          |> result.try(fn(fields) {
+            use host <- result.try(actor.call(registry, 5000, Host))
+            mail.send(runtime.ledger(host), id, fields.0, fields.1)
+          })
+          |> answered(202, mail.receipt_json, 409)
         }
         _, ["sessions", id, operation] ->
           case actor.call(registry, 5000, Lookup(id, _)) {
@@ -1914,17 +1848,15 @@ fn daemon_route(
               case req.method, operation {
                 Get, "context" -> reply(200, session.context(worker))
                 Get, "commands" ->
-                  case session.commands(worker) {
-                    Ok(#(commands, _)) ->
-                      reply(200, command.catalog_json(commands))
-                    Error(e) -> error(409, e)
-                  }
+                  session.commands(worker)
+                  |> answered(
+                    200,
+                    fn(found) { command.catalog_json(found.0) },
+                    409,
+                  )
                 Get, "extensions" ->
-                  case session.extensions(worker) {
-                    Ok(summaries) ->
-                      reply(200, json.array(summaries, extension_json))
-                    Error(e) -> error(409, e)
-                  }
+                  session.extensions(worker)
+                  |> answered(200, extensions_json, 409)
                 Post, "extensions" -> {
                   // `scope` "global" changes the default every session
                   // without its own choice follows; "inherit" drops this
@@ -1954,44 +1886,28 @@ fn daemon_route(
                         )
                     }
                   }
-                  case
-                    body(req, decoder)
-                    |> result.try(session.set_extension(worker, _))
-                  {
-                    Ok(summaries) ->
-                      reply(200, json.array(summaries, extension_json))
-                    Error(e) -> error(409, e)
-                  }
+                  body(req, decoder)
+                  |> result.try(session.set_extension(worker, _))
+                  |> answered(200, extensions_json, 409)
                 }
-                Get, "status" ->
-                  response.new(200)
-                  |> response.set_header("content-type", "application/json")
-                  |> response.set_body(
-                    mist.Bytes(bytes_tree.from_string(session.status(worker))),
-                  )
+                Get, "status" -> raw(200, session.status(worker))
                 Post, "events" -> {
                   let decoder = {
+                    use client_id <- decode.optional_field(
+                      "clientId",
+                      "",
+                      decode.string,
+                    )
                     use kind <- decode.optional_field(
                       "type",
                       "user",
                       decode.string,
                     )
                     case kind {
-                      "continue" | "resume" -> {
-                        use client_id <- decode.optional_field(
-                          "clientId",
-                          "",
-                          decode.string,
-                        )
+                      "continue" | "resume" ->
                         decode.success(#(True, "", client_id, None))
-                      }
                       _ -> {
                         use text <- decode.field("content", decode.string)
-                        use client_id <- decode.optional_field(
-                          "clientId",
-                          "",
-                          decode.string,
-                        )
                         use submitted_image <- decode.optional_field(
                           "image",
                           None,
@@ -2025,13 +1941,7 @@ fn daemon_route(
                     })
                   {
                     Ok(queued) ->
-                      reply(
-                        202,
-                        json.object([
-                          #("ok", json.bool(True)),
-                          #("queued", json.bool(queued)),
-                        ]),
-                      )
+                      reply(202, acknowledged([#("queued", json.bool(queued))]))
                     Error(session.Rejected(e)) -> error(409, e)
                     Error(session.Busy) ->
                       error(409, "session is busy or message queue is full")
@@ -2050,20 +1960,16 @@ fn daemon_route(
                   }
                 }
                 Post, "workspace" -> {
-                  case
-                    body(
-                      req,
-                      decode.field("workspace", decode.string, decode.success),
-                    )
-                    // The session answers here, off the registry.
-                    |> result.try(session.set_workspace(worker, _))
-                    |> result.try(fn(_) {
-                      actor.call(registry, 5000, Remember(id, _))
-                    })
-                  {
-                    Ok(info) -> reply(200, info_json(info))
-                    Error(e) -> error(409, e)
-                  }
+                  body(
+                    req,
+                    decode.field("workspace", decode.string, decode.success),
+                  )
+                  // The session answers here, off the registry.
+                  |> result.try(session.set_workspace(worker, _))
+                  |> result.try(fn(_) {
+                    actor.call(registry, 5000, Remember(id, _))
+                  })
+                  |> answered(200, info_json, 409)
                 }
                 Post, "commands" -> {
                   case
@@ -2130,18 +2036,10 @@ fn when_running(
 const history_page_rows = 120
 
 fn stream(req, worker) {
-  let query = request.get_query(req) |> result.unwrap([])
-  let after =
-    list.key_find(query, "after_seq")
-    |> result.try(int.parse)
-    |> result.unwrap(-1)
+  let after = query_int(req, "after_seq", -1)
   // With `tail`, a reset replays only the newest rows; older ones are paged
   // from /sessions/:id/history. Without it, the whole transcript as before.
-  let tail =
-    list.key_find(query, "tail")
-    |> result.try(int.parse)
-    |> option.from_result
-    |> option.map(int.clamp(_, 1, 400))
+  let tail = query_optional_int(req, "tail") |> option.map(int.clamp(_, 1, 400))
   mist.server_sent_events(
     req,
     response.new(200),
@@ -2165,17 +2063,14 @@ fn stream(req, worker) {
         Wake, [] -> actor.continue(state)
         _, _ -> {
           let events =
-            string_tree.from_strings([
-              "{\"cursor\":",
-              int.to_string(page.cursor),
-              ",\"events\":[",
-            ])
-            |> string_tree.append_tree(
-              page.events
-              |> list.map(string_tree.from_string)
-              |> string_tree.join(","),
+            event_frame(
+              string_tree.from_strings([
+                "{\"cursor\":",
+                int.to_string(page.cursor),
+                ",\"events\":[",
+              ]),
+              page.events,
             )
-            |> string_tree.append("]}")
           case mist.send_event(connection, mist.event(events)) {
             Error(_) -> actor.stop()
             Ok(_) -> {

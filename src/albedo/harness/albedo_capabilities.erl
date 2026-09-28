@@ -1,5 +1,5 @@
 -module(albedo_capabilities).
--export([enabled/4]).
+-export([enabled/4, optional/4]).
 
 %% A session override wins over a global default. Malformed preferences never
 %% silently change the model's capabilities; composition fails and keeps the old one.
@@ -10,10 +10,8 @@ enabled(Home, Session, Kind, Name) ->
         {ok, Bytes} when byte_size(Bytes) =< 1048576 ->
             try
                 Config = json:decode(Bytes),
-                Sessions = maps:get(<<"sessions">>, Config, #{}),
-                Scoped = maps:get(Session, Sessions, #{}),
-                Global = maps:get(<<"global">>, Config, #{}),
-                Default = lookup(Global, Kind, Name, true),
+                Scoped = maps:get(Session, maps:get(<<"sessions">>, Config, #{}), #{}),
+                Default = lookup(maps:get(<<"global">>, Config, #{}), Kind, Name, true),
                 {ok, lookup(Scoped, Kind, Name, Default)}
             catch _:_ -> {error, <<"invalid capabilities.json">>} end;
         _ -> {error, <<"could not read capabilities.json">>}
@@ -25,3 +23,8 @@ lookup(Scope, Kind, Name, Default) ->
         error -> Default;
         _ -> erlang:error(invalid_preference)
     end.
+
+%% A capability check only a selected session performs: an unscoped reader is
+%% enabled unconditionally.
+optional(undefined, _Home, _Kind, _Name) -> {ok, true};
+optional(Session, Home, Kind, Name) -> enabled(Home, Session, Kind, Name).

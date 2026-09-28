@@ -48,25 +48,22 @@ collect_frames(Output, Frames) ->
     case binary:split(Output, <<"\n">>) of
         [Line, Rest] ->
             case parse_image_line(Line) of
-                {ok, Path, W, H} ->
-                    case file:read_file(Path) of
-                        {ok, Png} ->
-                            collect_frames(Rest, [{W, H, byte_size(Png), base64:encode(Png)} | Frames]);
-                        _ -> {error, <<"the renderer produced no frame file">>}
-                    end;
+                {ok, Path, W, H} -> read_frame(Path, W, H, Rest, Frames);
                 error -> {error, <<"unparseable renderer output">>}
             end;
         [Line] ->
             case parse_image_line(Line) of
-                {ok, Path, W, H} ->
-                    case file:read_file(Path) of
-                        {ok, Png} ->
-                            collect_frames(<<>>, [{W, H, byte_size(Png), base64:encode(Png)} | Frames]);
-                        _ -> {error, <<"the renderer produced no frame file">>}
-                    end;
+                {ok, Path, W, H} -> read_frame(Path, W, H, <<>>, Frames);
                 skip -> collect_frames(<<>>, Frames);
                 error -> {error, <<"unparseable renderer output">>}
             end
+    end.
+
+read_frame(Path, W, H, Rest, Frames) ->
+    case file:read_file(Path) of
+        {ok, Png} ->
+            collect_frames(Rest, [{W, H, byte_size(Png), base64:encode(Png)} | Frames]);
+        _ -> {error, <<"the renderer produced no frame file">>}
     end.
 
 parse_image_line(<<"image ", Rest/binary>>) ->

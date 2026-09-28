@@ -26,11 +26,11 @@ ensure(Home, Access, Account, Endpoint, {request, _, _, Input, _, _, _}) ->
 missing(Input, Cache) ->
     missing([Image || Item <- Input, Image <- input_images(Item)], Cache, #{}).
 
-missing([{image, Mime, Data, _, _, _} = Image | Rest], Cache, Seen) ->
+missing([{image, Mime, Data, _, _, _} | Rest], Cache, Seen) ->
     Key = image_key(Data),
     case maps:is_key(Key, Cache) orelse maps:is_key(Key, Seen) of
         true -> missing(Rest, Cache, Seen);
-        false -> [{Key, Mime, Data} | missing(Rest, Cache, Seen#{Key => Image})]
+        false -> [{Key, Mime, Data} | missing(Rest, Cache, Seen#{Key => true})]
     end;
 missing([], _, _) -> [].
 
@@ -64,7 +64,7 @@ parallel(F, Items) ->
         end
     end,
     Monitors = [erlang:monitor(process, Pid)
-                || Pid <- [spawn(fun() -> Loop() end)
+                || Pid <- [spawn(Loop)
                            || _ <- lists:seq(1, min(?CONCURRENCY, Count))]],
     collect(Ref, Monitors, Count, Count, []).
 
@@ -130,9 +130,7 @@ file_source(Home, Account, Data) ->
 reject(Home, Account, Body) ->
     try
         Text = unicode:characters_to_binary(Body),
-        Named = binary:match(Text, <<"file_id">>) =/= nomatch,
-        Quoted = binary:match(Text, <<"file_0">>) =/= nomatch,
-        case Named orelse Quoted of
+        case binary:match(Text, [<<"file_id">>, <<"file_0">>]) =/= nomatch of
             true ->
                 put({?MODULE, quarantined, Account}, true),
                 save(Home, Account, #{}, true);
@@ -143,29 +141,24 @@ reject(Home, Account, Body) ->
     nil.
 
 upload(Endpoint, Access, Mime, Bytes) ->
-    _ = application:ensure_all_started(inets),
-    _ = application:ensure_all_started(ssl),
     Url = <<(unicode:characters_to_binary(Endpoint))/binary, "/v1/files">>,
     Boundary = <<"albedo-", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
     Part = [<<"--">>, Boundary,
             <<"\r\ncontent-disposition: form-data; name=\"file\"; filename=\"">>,
             filename(Mime), <<"\"\r\ncontent-type: ">>, Mime, <<"\r\n\r\n">>,
             Bytes, <<"\r\n--">>, Boundary, <<"--\r\n">>],
-    Request = {Url,
-               [{"authorization", "Bearer " ++ unicode:characters_to_list(Access)},
-                {"anthropic-version", binary_to_list(?VERSION)},
-                {"anthropic-beta", binary_to_list(?BETA)},
-                {"accept", "application/json"}],
-               "multipart/form-data; boundary=" ++ binary_to_list(Boundary),
-               iolist_to_binary(Part)},
-    Options = [{timeout, ?TIMEOUT_MS}, {connect_timeout, 10000} | tls(Url)],
-    case httpc:request(post, Request, Options, [{body_format, binary}]) of
-        {ok, {{_, 200, _}, _, Response}} ->
+    Headers = [{"authorization", "Bearer " ++ unicode:characters_to_list(Access)},
+               {"anthropic-version", binary_to_list(?VERSION)},
+               {"anthropic-beta", binary_to_list(?BETA)},
+               {"accept", "application/json"}],
+    Type = "multipart/form-data; boundary=" ++ binary_to_list(Boundary),
+    case albedo_http:post(Url, Headers, Type, Part, ?TIMEOUT_MS, 10000) of
+        {ok, {200, _, Response}} ->
             case metadata(Response, byte_size(Bytes)) of
                 {ok, Entry} -> {ok, Entry};
                 error -> {error, <<"Anthropic file upload returned invalid metadata">>}
             end;
-        {ok, {{_, Status, _}, _, Response}} ->
+        {ok, {Status, _, Response}} ->
             Detail = binary:part(Response, 0, min(byte_size(Response), 2048)),
             {error, iolist_to_binary(io_lib:format("Anthropic file upload failed (~B): ~s",
                                                    [Status, Detail]))};
@@ -173,28 +166,12 @@ upload(Endpoint, Access, Mime, Bytes) ->
     end.
 
 delete(Endpoint, Access, Id) ->
-    _ = application:ensure_all_started(inets),
-    _ = application:ensure_all_started(ssl),
     Url = <<(unicode:characters_to_binary(Endpoint))/binary, "/v1/files/", Id/binary>>,
-    Request = {Url,
-               [{"authorization", "Bearer " ++ unicode:characters_to_list(Access)},
-                {"anthropic-version", binary_to_list(?VERSION)},
-                {"anthropic-beta", binary_to_list(?BETA)}]},
-    Options = [{timeout, ?TIMEOUT_MS}, {connect_timeout, 10000} | tls(Url)],
-    _ = httpc:request(delete, Request, Options, [{body_format, binary}]),
+    Headers = [{"authorization", "Bearer " ++ unicode:characters_to_list(Access)},
+               {"anthropic-version", binary_to_list(?VERSION)},
+               {"anthropic-beta", binary_to_list(?BETA)}],
+    _ = albedo_http:request(delete, Url, Headers, none, ?TIMEOUT_MS, 10000),
     nil.
-
-tls(Url) ->
-    case string:prefix(unicode:characters_to_list(Url), "https") of
-        nomatch -> [];
-        _ -> [{ssl, albedo_credentials:tls_options(host_of(Url))}]
-    end.
-
-host_of(Url) ->
-    try maps:get(host, uri_string:parse(unicode:characters_to_list(Url))) of
-        Host -> Host
-    catch _:_ -> "api.anthropic.com"
-    end.
 
 filename(<<"image/jpeg">>) -> <<"image.jpg">>;
 filename(<<"image/webp">>) -> <<"image.webp">>;
@@ -225,14 +202,10 @@ account_cache(Home, Account) ->
     maps:get(Account, state(Home), #{}).
 
 save(Home, Account, Cache, true) ->
-    State = maps:put(Account, Cache, reload(Home)),
+    State = (reload(Home))#{Account => Cache},
     put({?MODULE, Home}, State),
-    Temporary = path(Home) ++ ".write." ++ integer_to_list(erlang:unique_integer([positive])),
-    _ = filelib:ensure_dir(path(Home)),
-    case file:write_file(Temporary, json:encode(State)) of
-        ok -> _ = file:rename(Temporary, path(Home));
-        _ -> _ = file:delete(Temporary)
-    end;
+    _ = albedo_credentials:write(path(Home), State),
+    nil;
 save(_, _, _, _) -> nil.
 
 state(Home) ->
@@ -244,12 +217,8 @@ state(Home) ->
 %% Sibling sessions share the handle file, so ensure reads it fresh instead of
 %% trusting this process's earlier turns.
 reload(Home) ->
-    State = case file:read_file(path(Home)) of
-        {ok, Binary} ->
-            try json:decode(Binary) of
-                Map when is_map(Map) -> Map;
-                _ -> #{}
-            catch _:_ -> #{} end;
+    State = case albedo_credentials:read_json(path(Home)) of
+        {ok, Map} when is_map(Map) -> Map;
         _ -> #{}
     end,
     put({?MODULE, Home}, State),

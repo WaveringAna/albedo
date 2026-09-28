@@ -2,7 +2,7 @@ import albedo/daemon/store
 import albedo/harness/command.{Argument, Command, Data}
 import albedo/harness/extension
 import albedo/harness/extensions/schedule/ledger
-import gleam/dict
+import albedo/harness/page
 import gleam/int
 import gleam/json
 import gleam/option.{type Option, None, Some}
@@ -39,8 +39,7 @@ pub fn command(db: store.Store, session: String) -> command.Command {
     False,
     False,
     fn(_, _, args) {
-      let action = dict.get(args, "action") |> result.unwrap("list")
-      let details = dict.get(args, "details") |> result.unwrap("")
+      let #(action, details) = page.args(args, "list")
       use value <- result.try(case action {
         "list" ->
           ledger.list(db, session)
@@ -61,7 +60,7 @@ pub fn command(db: store.Store, session: String) -> command.Command {
           |> result.map(ledger.to_json)
         }
         "edit" -> {
-          let #(id_text, rest) = split(details)
+          let #(id_text, rest) = page.split(details)
           use id <- result.try(parse_id(id_text))
           use current <- result.try(ledger.get(db, session, id))
           use #(kind, delay, every, prompt) <- result.try(parse(
@@ -78,21 +77,16 @@ pub fn command(db: store.Store, session: String) -> command.Command {
   )
 }
 
-fn split(text: String) -> #(String, String) {
-  string.split_once(string.trim(text), " ")
-  |> result.unwrap(#(string.trim(text), ""))
-}
-
 fn parse_id(text: String) -> Result(Int, String) {
   int.parse(string.trim(text))
-  |> result.map_error(fn(_) { "expected a schedule id" })
+  |> result.replace_error("expected a schedule id")
 }
 
 fn parse(
   text: String,
   heartbeat: Bool,
 ) -> Result(#(String, Int, Option(Int), String), String) {
-  let #(timing, prompt) = split(text)
+  let #(timing, prompt) = page.split(text)
   use #(mode, seconds_text) <- result.try(
     string.split_once(timing, ":")
     |> result.replace_error("expected in:seconds or every:seconds"),
@@ -106,8 +100,8 @@ fn parse(
     False ->
       case mode, heartbeat {
         "in", False -> Ok(#("once", seconds, None, prompt))
-        "every", False -> Ok(#("recurring", seconds, Some(seconds), prompt))
         "every", True -> Ok(#("heartbeat", seconds, Some(seconds), prompt))
+        "every", False -> Ok(#("recurring", seconds, Some(seconds), prompt))
         _, _ ->
           Error(
             "use in:seconds or every:seconds; heartbeat requires every:seconds",

@@ -17,13 +17,9 @@ register(Id, Fun) -> albedo_registry:register(?TABLE, Id, Fun).
 forget(Id) -> albedo_registry:forget(?TABLE, Id).
 
 deliver(Id, Letter) ->
-    case albedo_registry:fetch(?TABLE, Id, 1) of
-        {ok, Fun} ->
-            try Fun(Letter)
-            catch _:_ -> {error, <<"session unavailable">>}
-            end;
-        undefined -> {error, <<"session unavailable">>}
-    end.
+    albedo_registry:call(?TABLE, Id, 1, [Letter],
+                         {error, <<"session unavailable">>},
+                         {error, <<"session unavailable">>}).
 
 %% The daemon's dispatcher: woken when a stored letter was not taken, instead
 %% of waiting for its next tick.

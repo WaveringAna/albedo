@@ -4,6 +4,7 @@ import albedo/daemon/store
 import albedo/daemon/transcript
 import albedo/daemon/usage
 import albedo/harness/extensions/python/cells as journal
+import albedo/openai_api/replay
 import albedo/openai_api/types
 import gleam/dict
 import gleam/dynamic/decode
@@ -99,10 +100,7 @@ pub fn tool(
     #("name", json.string(call.name)),
     #("args", json.string(call.arguments)),
     #("result", json.string(output)),
-    #("trace", case trace {
-      Some(value) -> value
-      None -> json.null()
-    }),
+    #("trace", json.nullable(trace, fn(value) { value })),
     #("images", json.array(images, image_metadata)),
   ])
 }
@@ -124,17 +122,15 @@ pub fn visible_assistant_text(input: types.Input) -> Option(String) {
   }
 }
 
-/// How long a replayed thought took, when the daemon timed it.
-fn elapsed_field(thought_ms: Option(Int)) -> List(#(String, json.Json)) {
-  case thought_ms {
-    Some(ms) -> [#("elapsedMs", json.int(ms))]
-    None -> []
-  }
-}
-
-fn timestamp_field(timestamp: Option(Int)) -> List(#(String, json.Json)) {
-  case timestamp {
-    Some(value) -> [#("timestamp", json.int(value))]
+/// The fields for `key` when `value` is present: absent optional fields are
+/// omitted from objects, not sent null.
+pub fn opt(
+  key: String,
+  value: Option(a),
+  encode: fn(a) -> json.Json,
+) -> List(#(String, json.Json)) {
+  case value {
+    Some(val) -> [#(key, encode(val))]
     None -> []
   }
 }
@@ -146,18 +142,15 @@ fn user_event(
   timestamp: Option(Int),
   fields: List(#(String, json.Json)),
 ) -> String {
-  let client_fields = case client_id {
-    Some(value) -> [#("clientId", json.string(value))]
-    None -> []
-  }
   event("user", [
     #("text", json.string(text)),
     #("source", json.string(source)),
     #("triggeredAt", json.string("")),
-    ..list.append(
+    ..list.flatten([
       fields,
-      list.append(client_fields, timestamp_field(timestamp)),
-    )
+      opt("clientId", client_id, json.string),
+      opt("timestamp", timestamp, json.int),
+    ])
   ])
 }
 
@@ -204,7 +197,7 @@ pub fn assistant_message(
       event("message", [
         #("role", json.string("assistant")),
         #("text", json.string(value)),
-        ..timestamp_field(timestamp)
+        ..opt("timestamp", timestamp, json.int)
       ]),
     ]
     None -> []
@@ -300,7 +293,7 @@ fn render(
           _ -> [
             event("thinking", [
               #("text", json.string(thinking)),
-              ..elapsed_field(entry.thought_ms)
+              ..opt("elapsedMs", entry.thought_ms, json.int)
             ]),
           ]
         },
@@ -318,12 +311,7 @@ pub fn output_text(item: types.ReplayItem) -> String {
         decode.field("content", decode.optional(decode.string), decode.success),
       )
       |> result.unwrap(None)
-      |> fn(value) {
-        case value {
-          Some(text) -> text
-          None -> ""
-        }
-      }
+      |> option.unwrap("")
     types.Responses -> {
       let part = decode.field("text", decode.string, decode.success)
       types.inspect_item(
@@ -335,7 +323,7 @@ pub fn output_text(item: types.ReplayItem) -> String {
         ),
       )
       |> result.unwrap([])
-      |> list.fold("", fn(a, b) { a <> b })
+      |> string.concat
     }
   }
 }
@@ -419,18 +407,16 @@ pub fn calls(input: types.Input) -> List(types.ToolCall) {
             Error(_) -> []
           }
         }
-        types.ChatCompletions -> {
-          let decoder = {
-            use id <- decode.field("id", decode.string)
-            use pair <- decode.field("function", function)
-            decode.success(types.ToolCall(id, pair.0, pair.1))
-          }
+        types.ChatCompletions ->
           types.inspect_item(
             item,
-            decode.field("tool_calls", decode.list(decoder), decode.success),
+            decode.field(
+              "tool_calls",
+              decode.list(replay.tool_call_decoder()),
+              decode.success,
+            ),
           )
           |> result.unwrap([])
-        }
       }
     _ -> []
   }

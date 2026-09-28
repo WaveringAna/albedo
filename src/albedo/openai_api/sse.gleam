@@ -34,10 +34,7 @@ pub fn feed(
   chunk: BitArray,
 ) -> Result(#(Parser, List(Event)), Error) {
   ssevents.push(parser, chunk)
-  |> result.map(fn(pair) {
-    let #(parser, items) = pair
-    #(parser, events(items))
-  })
+  |> result.map(fn(pair) { #(pair.0, events(pair.1)) })
   |> result.map_error(map_error)
 }
 
@@ -53,7 +50,7 @@ fn events(items: List(ssevents.Item)) -> List(Event) {
   items
   |> ssevents.events_of
   |> list.map(fn(event) {
-    Event(ssevents.name_of(event) |> option.unwrap(""), ssevents.data_of(event))
+    Event(option.unwrap(ssevents.name_of(event), ""), ssevents.data_of(event))
   })
 }
 

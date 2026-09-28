@@ -12,7 +12,7 @@
 refresh(Catalog0, Url0, MaxAgeMs) ->
     Catalog = text(Catalog0),
     Url = unicode:characters_to_binary(Url0),
-    case stale(Catalog, MaxAgeMs) andalso safe_url(Url) of
+    case albedo_credentials:stale(Catalog, MaxAgeMs) andalso safe_url(Url) of
         false -> nil;
         true ->
             Pid = spawn(fun() -> fetch(Catalog, Url) end),
@@ -37,13 +37,6 @@ reload(Catalog0, Url0) ->
         _:_ -> {error, <<"models catalog URL is invalid">>}
     end.
 
-stale(Catalog, MaxAgeMs) ->
-    case file:read_file_info(Catalog, [{time, posix}]) of
-        {ok, #file_info{type = regular, mtime = Modified}} ->
-            erlang:system_time(millisecond) - Modified * 1000 > MaxAgeMs;
-        _ -> true
-    end.
-
 %% https anywhere; plain http only on loopback, which keeps tests local.
 safe_url(Url) ->
     Parsed = uri_string:parse(Url),
@@ -54,29 +47,20 @@ safe_url(Url) ->
          lists:member(Host, [<<"localhost">>, <<"127.0.0.1">>, <<"::1">>])).
 
 fetch(Catalog, Url) ->
-    _ = application:ensure_all_started(inets),
-    _ = application:ensure_all_started(ssl),
-    Request = {binary_to_list(Url), [{"user-agent", "albedo"}, {"accept", "application/json"}]},
-    Options = [{timeout, ?FETCH_TIMEOUT_MS}, {connect_timeout, 10000}, {ssl, tls_options(Url)}],
-    case httpc:request(get, Request, Options, [{body_format, binary}]) of
-        {ok, {{_, 200, _}, _, Body}} when byte_size(Body) =< ?MAX_BYTES ->
+    Headers = [{"user-agent", "albedo"}, {"accept", "application/json"}],
+    case albedo_http:get(Url, Headers, ?FETCH_TIMEOUT_MS, 10000) of
+        {ok, {200, _, Body}} when byte_size(Body) =< ?MAX_BYTES ->
             case compact(Body) of
                 {ok, Trimmed} -> store(Catalog, Trimmed);
                 error -> {error, <<"models catalog response is not valid">>}
             end;
-        {ok, {{_, 200, _}, _, _}} ->
+        {ok, {200, _, _}} ->
             {error, <<"models catalog response is too large">>};
-        {ok, {{_, Status, _}, _, _}} ->
+        {ok, {Status, _, _}} ->
             {error, iolist_to_binary(io_lib:format("models catalog returned HTTP ~B", [Status]))};
         {error, _} ->
             {error, <<"models catalog request failed">>}
     end.
-
-tls_options(Url) ->
-    Host = binary_to_list(maps:get(host, uri_string:parse(Url), <<>>)),
-    [{verify, verify_peer}, {cacerts, public_key:cacerts_get()}, {depth, 5},
-     {server_name_indication, Host},
-     {customize_hostname_check, [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}].
 
 %% A valid catalog re-encoded with only what provider/3 and model/1 read. Every
 %% provider stays: lookup falls back to matching a model id across all of them,
@@ -133,20 +117,15 @@ isolated(Fun) ->
 
 %% A partly written catalog must never be readable, so the rename is the commit.
 store(Catalog, Body) ->
-    Temporary = Catalog ++ ".fetch." ++ integer_to_list(erlang:unique_integer([positive])),
-    _ = filelib:ensure_dir(Catalog),
-    case file:write_file(Temporary, Body) of
+    case albedo_credentials:write(Catalog, Body) of
         ok ->
-            case file:rename(Temporary, Catalog) of
-                ok ->
-                    _ = persistent_term:erase({?MODULE, Catalog}),
-                    _ = file:delete(index_path(Catalog)),
-                    {ok, nil};
-                _ ->
-                    _ = file:delete(Temporary),
-                    {error, <<"models catalog cache could not be replaced">>}
-            end;
-        _ -> {error, <<"models catalog cache could not be written">>}
+            _ = persistent_term:erase({?MODULE, Catalog}),
+            _ = file:delete(index_path(Catalog)),
+            {ok, nil};
+        {error, {rename, _}} ->
+            {error, <<"models catalog cache could not be replaced">>};
+        _ ->
+            {error, <<"models catalog cache could not be written">>}
     end.
 
 lookup(Catalog0, Model0, Endpoint0) ->
@@ -156,7 +135,7 @@ lookup(Catalog0, Model0, Endpoint0) ->
     try
         case catalog(Catalog) of
             {ok, CatalogData} -> resolve(CatalogData, Model, host(Endpoint));
-            {error, Reason} -> {error, Reason}
+            Error -> Error
         end
     catch
         _:_ -> {error, <<"models catalog lookup failed">>}
@@ -175,7 +154,7 @@ lookup_provider(Catalog0, Provider0, Model0) ->
                     [Entry | _] -> {ok, encode(Entry, Providers, <<"provider name">>)};
                     [] -> {error, <<"model is not listed by this provider">>}
                 end;
-            {error, Reason} -> {error, Reason}
+            Error -> Error
         end
     catch
         _:_ -> {error, <<"models catalog lookup failed">>}
@@ -233,35 +212,24 @@ from_index(Catalog, Revision) ->
 index_path(Catalog) -> Catalog ++ ".index".
 
 parse(Catalog, Revision) ->
-    case file:read_file(Catalog) of
-        {ok, Body} ->
-            try json:decode(Body) of
-                Decoded when is_map(Decoded) ->
-                    {Providers, Index} = maps:fold(fun provider/3, {#{}, #{}}, Decoded),
-                    CatalogData = #{index => Index, providers => Providers},
-                    Current = retrim(Catalog, Decoded, Revision),
-                    save_index(Catalog, Current, CatalogData),
-                    persistent_term:put({?MODULE, Catalog}, {Current, CatalogData}),
-                    ok;
-                _ -> {error, <<"models catalog is not a provider object">>}
-            catch
-                _:_ -> {error, <<"models catalog is not valid JSON">>}
-            end;
+    case albedo_credentials:read_json(Catalog) of
+        {ok, Decoded} when is_map(Decoded) ->
+            {Providers, Index} = maps:fold(fun provider/3, {#{}, #{}}, Decoded),
+            CatalogData = #{index => Index, providers => Providers},
+            Current = retrim(Catalog, Decoded, Revision),
+            save_index(Catalog, Current, CatalogData),
+            persistent_term:put({?MODULE, Catalog}, {Current, CatalogData}),
+            ok;
+        {ok, _} -> {error, <<"models catalog is not a provider object">>};
+        {error, invalid} -> {error, <<"models catalog is not valid JSON">>};
         _ -> {error, <<"models catalog could not be read">>}
     end.
 
 %% Best effort: without an index the next start parses the catalog again.
 save_index(Catalog, Revision, CatalogData) ->
-    Path = index_path(Catalog),
-    Temporary = Path ++ "." ++ integer_to_list(erlang:unique_integer([positive])),
-    case file:write_file(Temporary, term_to_binary({2, Revision, CatalogData}, [{compressed, 1}])) of
-        ok ->
-            case file:rename(Temporary, Path) of
-                ok -> ok;
-                _ -> file:delete(Temporary)
-            end;
-        _ -> file:delete(Temporary)
-    end.
+    _ = albedo_credentials:write(index_path(Catalog),
+        term_to_binary({2, Revision, CatalogData}, [{compressed, 1}])),
+    ok.
 
 %% A catalog cached before trimming existed is trimmed in place on first parse,
 %% keeping its mtime so the refresh schedule is unchanged. Answers the revision
@@ -304,14 +272,9 @@ model_id(_, _) -> <<>>.
 model(Model) when is_map(Model) ->
     Limit = field(<<"limit">>, Model),
     Id = case maps:get(<<"id">>, Model, <<>>) of I when is_binary(I) -> I; _ -> <<>> end,
-    Efforts = case maps:get(<<"reasoning_options">>, Model, []) of
-        Opts when is_list(Opts) ->
-            lists:foldl(fun(#{<<"type">> := <<"effort">>, <<"values">> := Vals}, _) when is_list(Vals) ->
-                            [V || V <- Vals, is_binary(V)];
-                           (_, Acc) -> Acc
-                        end, [], Opts);
-        _ -> []
-    end,
+    Efforts = hd([[V || V <- Vals, is_binary(V)]
+                  || #{<<"type">> := <<"effort">>, <<"values">> := Vals} <- maps:get(<<"reasoning_options">>, Model, []),
+                     is_list(Vals)] ++ [[]]),
     {Id, maps:get(<<"context">>, Limit, null), maps:get(<<"output">>, Limit, null),
      strings(maps:get(<<"input">>, field(<<"modalities">>, Model), [])),
      Efforts};
@@ -414,9 +377,7 @@ integer_or_null(_) -> null.
 strings(Values) when is_list(Values) -> [V || V <- Values, is_binary(V)];
 strings(_) -> [].
 
-host(null) -> <<>>;
-host(<<>>) -> <<>>;
-host(Url) when is_binary(Url) ->
+host(Url) when is_binary(Url), Url =/= <<>> ->
     case uri_string:parse(Url) of
         #{host := Host} -> string:lowercase(Host);
         _ -> <<>>
@@ -430,7 +391,7 @@ list(Catalog0, Provider0, Endpoint0) ->
     try
         case catalog(Catalog) of
             {ok, CatalogData} -> list_provider(maps:get(providers, CatalogData), Provider, host(Endpoint));
-            {error, Reason} -> {error, Reason}
+            Error -> Error
         end
     catch
         _:_ -> {error, <<"models catalog listing failed">>}

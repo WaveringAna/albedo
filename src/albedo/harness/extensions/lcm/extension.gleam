@@ -7,6 +7,7 @@ import albedo/daemon/transcript
 import albedo/harness/compaction
 import albedo/harness/extension as harness_extension
 import albedo/harness/extensions/lcm/graph
+import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/settings
 import albedo/openai_api/types
 import gleam/dynamic/decode
@@ -26,10 +27,6 @@ pub type Config {
     trigger_percent: Int,
     tail_percent: Int,
   )
-}
-
-type SourceUnit {
-  SourceUnit(items: List(transcript.SourcedEntry), tokens: Int)
 }
 
 type ModelUnit {
@@ -79,18 +76,16 @@ pub fn stored_prior(
   history: List(types.Input),
 ) -> Result(compaction.Prior, String) {
   use available <- result.try(graph.storage_available(ledger))
-  case available {
-    False -> compaction.no_prior(history)
-    True -> {
-      use frontier <- result.try(graph.frontier(ledger, session))
-      case frontier {
-        [] -> compaction.no_prior(history)
-        _ -> {
-          use covered <- result.try(graph.last_seq(ledger, session))
-          use sources <- result.try(conversation.load_sources(ledger, session))
-          Ok(split(frontier, history, sources, covered, None, 0))
-        }
-      }
+  use frontier <- result.try(case available {
+    False -> Ok([])
+    True -> graph.frontier(ledger, session)
+  })
+  case frontier {
+    [] -> compaction.no_prior(history)
+    _ -> {
+      use covered <- result.try(graph.last_seq(ledger, session))
+      use sources <- result.try(conversation.load_sources(ledger, session))
+      Ok(split(frontier, history, sources, covered, None, 0))
     }
   }
 }
@@ -107,23 +102,13 @@ fn decoder() {
 }
 
 fn validate(config: Config) -> Result(Config, String) {
-  case config.context_window_tokens {
-    Some(value) if value <= 0 ->
-      Error("lcm contextWindowTokens must be positive")
-    _ ->
-      case
-        config.trigger_percent > 0
-        && config.trigger_percent < 100
-        && config.tail_percent > 0
-        && config.tail_percent < config.trigger_percent
-      {
-        True -> Ok(config)
-        False ->
-          Error(
-            "lcm percentages must satisfy 0 < tailPercent < triggerPercent < 100",
-          )
-      }
-  }
+  rolling.validate_window(
+    "lcm",
+    config.context_window_tokens,
+    config.trigger_percent,
+    config.tail_percent,
+  )
+  |> result.replace(config)
 }
 
 fn prepare(
@@ -137,26 +122,10 @@ fn prepare(
   ))
   use covered <- result.try(graph.last_seq(context.store, context.session))
   use frontier <- result.try(graph.frontier(context.store, context.session))
-  let window = case
-    config.context_window_tokens,
-    context.capacity,
-    context.force
-  {
-    Some(tokens), _, _ ->
-      Some(compaction.Capacity(tokens, "configured contextWindowTokens"))
-    None, Some(capacity), _ -> Some(capacity)
-    None, None, True ->
-      Some(compaction.Capacity(
-        context.pinned_tokens + compaction.estimate_inputs(history),
-        "estimated for manual compaction",
-      ))
-    None, None, False -> None
-  }
-  let tail_budget = case window {
-    Some(compaction.Capacity(tokens: tokens, ..)) ->
-      Some(tokens * config.tail_percent / 100)
-    None -> None
-  }
+  let window =
+    rolling.effective_window(config.context_window_tokens, context, history)
+  let tail_budget =
+    option.map(window, fn(window) { window.tokens * config.tail_percent / 100 })
   let current = projection(frontier, history, sources, covered, tail_budget, 1)
   let estimated = context.pinned_tokens + compaction.estimate_inputs(current)
   case window {
@@ -172,17 +141,19 @@ fn prepare(
         history,
       ))
     Some(compaction.Capacity(tokens: capacity, source: capacity_source)) -> {
-      use _ <- result.try(case context.pinned_tokens < capacity {
-        True -> Ok(Nil)
-        False ->
-          Error(
-            "context window is not large enough for pinned system, extension context, and tool schemas",
-          )
-      })
+      use _ <- result.try(compaction.require(
+        context.pinned_tokens < capacity,
+        "context window is not large enough for pinned system, extension context, and tool schemas",
+      ))
       case
-        !context.force && estimated * 100 < capacity * config.trigger_percent
+        compaction.triggered(
+          context.force,
+          estimated,
+          Some(capacity),
+          config.trigger_percent,
+        )
       {
-        True ->
+        False ->
           Ok(prepared(
             current,
             frontier,
@@ -197,20 +168,17 @@ fn prepare(
             config,
             history,
           ))
-        False -> {
+        True -> {
           let previous_frontier = frontier
           use latest_user <- result.try(latest_user_seq(sources))
           let eligible =
             list.filter(sources, fn(item) {
               item.source.seq > covered && item.source.seq < latest_user
             })
-          use _ <- result.try(case eligible, frontier {
-            [], [] ->
-              Error(
-                "cannot compact without an older complete conversation unit",
-              )
-            _, _ -> Ok(Nil)
-          })
+          use _ <- result.try(compaction.require(
+            eligible != [] || frontier != [],
+            "cannot compact without an older complete conversation unit",
+          ))
           let summary_limit =
             int.min(
               summary_tokens,
@@ -249,13 +217,10 @@ fn prepare(
             projection(frontier, history, sources, covered, tail_budget, 1)
           let next_estimated =
             context.pinned_tokens + compaction.estimate_inputs(next)
-          use _ <- result.try(case next_estimated < capacity || context.force {
-            True -> Ok(Nil)
-            False ->
-              Error(
-                "LCM summaries and the newest conversation/tool unit do not fit the context window",
-              )
-          })
+          use _ <- result.try(compaction.require(
+            next_estimated < capacity || context.force,
+            "LCM summaries and the newest conversation/tool unit do not fit the context window",
+          ))
           let prepared =
             prepared(
               next,
@@ -292,7 +257,7 @@ fn prepared(
 ) -> compaction.Prepared {
   compaction.Prepared(
     inputs,
-    Some(compaction.Observation(
+    Some(compaction.observation(
       "lcm",
       status,
       source,
@@ -301,12 +266,11 @@ fn prepared(
         _ ->
           "durable transcript through source-backed LCM nodes + verbatim tail"
       },
-      Some(100 - config.trigger_percent),
+      config.trigger_percent,
       capacity,
-      Some(estimated),
-      Some("local byte-based estimate; not provider token usage"),
-      Some(list.length(original)),
-      Some(list.length(inputs)),
+      estimated,
+      list.length(original),
+      list.length(inputs),
     )),
     False,
   )
@@ -317,12 +281,7 @@ fn latest_user_seq(
 ) -> Result(Int, String) {
   sources
   |> list.reverse
-  |> list.find(fn(item) {
-    case item.entry.input {
-      types.User(_) | types.UserImage(_, _) -> True
-      _ -> False
-    }
-  })
+  |> list.find(fn(item) { compaction.is_user(item.entry.input) })
   |> result.map(fn(item) { item.source.seq })
   |> result.map_error(fn(_) { "LCM needs a user message to retain as its tail" })
 }
@@ -354,14 +313,9 @@ fn split(
       let unsummarized =
         list.filter(sources, fn(item) { item.source.seq > covered })
       let unsummarized_users =
-        unsummarized
-        |> list.filter(fn(item) {
-          case item.entry.input {
-            types.User(_) | types.UserImage(_, _) -> True
-            _ -> False
-          }
+        list.count(unsummarized, fn(item) {
+          compaction.is_user(item.entry.input)
         })
-        |> list.length
       // An assistant or tool result can follow the cursor without a user row.
       // Retain its whole projected unit until live source references permit
       // a narrower cut.
@@ -397,119 +351,35 @@ fn summarize_leaves(
   eligible: List(transcript.SourcedEntry),
   summary_limit: Int,
 ) -> Result(List(graph.Leaf), String) {
-  let units = source_units(eligible)
-  let chunks = chunk_units(units, [], 0, [])
-  list.try_map(chunks, fn(chunk) {
-    let assert [first, ..] = chunk
-    let assert Ok(last) = list.last(chunk)
-    let inputs = list.map(chunk, fn(item) { item.entry.input })
-    use summary <- result.try(summarize_bounded(context, inputs, summary_limit))
-    Ok(graph.Leaf(first.source.seq, last.source.seq, summary))
+  let chunks = rolling.chunk_units(source_units(eligible), leaf_budget)
+  use chunk <- list.try_map(chunks)
+  let assert [first, ..] = chunk
+  let assert Ok(last) = list.last(chunk)
+  let inputs = list.map(chunk, fn(item) { item.entry.input })
+  use summary <- result.try(summarize_bounded(context, inputs, summary_limit))
+  Ok(graph.Leaf(first.source.seq, last.source.seq, summary))
+}
+
+/// Source rows grouped into conversation units, each with its token cost.
+fn source_units(
+  sources: List(transcript.SourcedEntry),
+) -> List(#(List(transcript.SourcedEntry), Int)) {
+  compaction.split_starts(sources, fn(item) {
+    compaction.is_user(item.entry.input)
+  })
+  |> list.map(fn(items) {
+    #(
+      items,
+      items
+        |> list.map(fn(item) { item.entry.input })
+        |> compaction.estimate_inputs,
+    )
   })
 }
 
-fn source_units(sources: List(transcript.SourcedEntry)) -> List(SourceUnit) {
-  split_source_units(sources, [], [])
-}
-
-fn split_source_units(
-  remaining: List(transcript.SourcedEntry),
-  current: List(transcript.SourcedEntry),
-  complete: List(SourceUnit),
-) -> List(SourceUnit) {
-  case remaining {
-    [] ->
-      case current {
-        [] -> list.reverse(complete)
-        _ -> list.reverse([make_source_unit(list.reverse(current)), ..complete])
-      }
-    [item, ..rest] -> {
-      let starts = case item.entry.input {
-        types.User(_) | types.UserImage(_, _) -> True
-        _ -> False
-      }
-      case starts && current != [] {
-        True ->
-          split_source_units(rest, [item], [
-            make_source_unit(list.reverse(current)),
-            ..complete
-          ])
-        False -> split_source_units(rest, [item, ..current], complete)
-      }
-    }
-  }
-}
-
-fn make_source_unit(items: List(transcript.SourcedEntry)) -> SourceUnit {
-  SourceUnit(
-    items,
-    items
-      |> list.map(fn(item) { item.entry.input })
-      |> compaction.estimate_inputs,
-  )
-}
-
-fn chunk_units(
-  remaining: List(SourceUnit),
-  current: List(transcript.SourcedEntry),
-  tokens: Int,
-  complete: List(List(transcript.SourcedEntry)),
-) -> List(List(transcript.SourcedEntry)) {
-  case remaining {
-    [] ->
-      case current {
-        [] -> list.reverse(complete)
-        _ -> list.reverse([current, ..complete])
-      }
-    [unit, ..rest] ->
-      case current != [] && tokens + unit.tokens > leaf_budget {
-        True ->
-          chunk_units(rest, unit.items, unit.tokens, [current, ..complete])
-        False ->
-          chunk_units(
-            rest,
-            list.append(current, unit.items),
-            tokens + unit.tokens,
-            complete,
-          )
-      }
-  }
-}
-
 fn model_units(history: List(types.Input)) -> List(ModelUnit) {
-  split_model_units(history, [], [])
-}
-
-fn split_model_units(
-  remaining: List(types.Input),
-  current: List(types.Input),
-  complete: List(ModelUnit),
-) -> List(ModelUnit) {
-  case remaining {
-    [] ->
-      case current {
-        [] -> list.reverse(complete)
-        _ -> list.reverse([make_model_unit(list.reverse(current)), ..complete])
-      }
-    [input, ..rest] -> {
-      let starts = case input {
-        types.User(_) | types.UserImage(_, _) -> True
-        _ -> False
-      }
-      case starts && current != [] {
-        True ->
-          split_model_units(rest, [input], [
-            make_model_unit(list.reverse(current)),
-            ..complete
-          ])
-        False -> split_model_units(rest, [input, ..current], complete)
-      }
-    }
-  }
-}
-
-fn make_model_unit(items: List(types.Input)) -> ModelUnit {
-  ModelUnit(items, compaction.estimate_inputs(items))
+  compaction.split_starts(history, compaction.is_user)
+  |> list.map(fn(items) { ModelUnit(items, compaction.estimate_inputs(items)) })
 }
 
 fn retain_tail(
@@ -519,35 +389,8 @@ fn retain_tail(
 ) -> List(types.Input) {
   model_units(history)
   |> list.reverse
-  |> take_tail(required_units, budget, 0, 0, [])
-  |> list.flatten
-}
-
-fn take_tail(
-  newest_first: List(ModelUnit),
-  required: Int,
-  budget: Option(Int),
-  kept: Int,
-  tokens: Int,
-  selected: List(List(types.Input)),
-) -> List(List(types.Input)) {
-  case newest_first {
-    [] -> selected
-    [unit, ..rest] -> {
-      let within_budget = case budget {
-        Some(limit) -> tokens + unit.tokens <= limit
-        None -> False
-      }
-      case kept < required || within_budget {
-        True ->
-          take_tail(rest, required, budget, kept + 1, tokens + unit.tokens, [
-            unit.items,
-            ..selected
-          ])
-        False -> selected
-      }
-    }
-  }
+  |> compaction.keep_tail(required_units, budget, fn(unit) { unit.tokens })
+  |> list.flat_map(fn(unit) { unit.items })
 }
 
 fn condense_until_fit(
@@ -563,41 +406,31 @@ fn condense_until_fit(
 ) -> Result(List(graph.Node), String) {
   let view = projection(frontier, history, sources, covered, tail_budget, 1)
   let estimated = context.pinned_tokens + compaction.estimate_inputs(view)
-  case estimated < capacity || attempts >= 16 {
-    True -> Ok(frontier)
-    False ->
-      case frontier {
-        [_, _, ..] -> {
-          let group = list.take(frontier, 4)
-          let input =
-            group
-            |> list.map(node_input)
-          use summary <- result.try(summarize_bounded(
-            context,
-            input,
-            summary_limit,
-          ))
-          use _ <- result.try(graph.save_parent(
-            context.store,
-            context.session,
-            group,
-            summary,
-          ))
-          use next <- result.try(graph.frontier(context.store, context.session))
-          condense_until_fit(
-            context,
-            next,
-            history,
-            sources,
-            covered,
-            tail_budget,
-            capacity,
-            summary_limit,
-            attempts + 1,
-          )
-        }
-        _ -> Ok(frontier)
-      }
+  case estimated < capacity || attempts >= 16, frontier {
+    False, [_, _, ..] -> {
+      let group = list.take(frontier, 4)
+      let input = list.map(group, node_input)
+      use summary <- result.try(summarize_bounded(context, input, summary_limit))
+      use _ <- result.try(graph.save_parent(
+        context.store,
+        context.session,
+        group,
+        summary,
+      ))
+      use next <- result.try(graph.frontier(context.store, context.session))
+      condense_until_fit(
+        context,
+        next,
+        history,
+        sources,
+        covered,
+        tail_budget,
+        capacity,
+        summary_limit,
+        attempts + 1,
+      )
+    }
+    _, _ -> Ok(frontier)
   }
 }
 
@@ -610,7 +443,27 @@ fn summarize_bounded(
   limit: Int,
 ) -> Result(String, String) {
   let original = compaction.estimate_inputs(inputs)
-  use first <- result.try(
+  use first <- result.try(attempt_summary(context, inputs, limit))
+  case fits_summary(first, original, limit) {
+    True -> Ok(first)
+    False ->
+      attempt_summary(context, inputs, int.max(32, limit / 3))
+      |> result.map(fn(second) {
+        case fits_summary(second, original, limit) {
+          True -> second
+          False -> "Summary exceeded its source; inspect the linked rows."
+        }
+      })
+  }
+}
+
+/// One summarizer call: trimmed, non-empty, bounded by `limit` output tokens.
+fn attempt_summary(
+  context: compaction.Context,
+  inputs: List(types.Input),
+  limit: Int,
+) -> Result(String, String) {
+  use summary <- result.try(
     context.summarize(compaction.SummaryRequest(
       context.model,
       None,
@@ -618,37 +471,15 @@ fn summarize_bounded(
       limit,
     )),
   )
-  let first = string.trim(first)
-  use _ <- result.try(case first != "" {
-    True -> Ok(Nil)
-    False -> Error("LCM summarizer returned an empty summary")
-  })
-  case
-    compaction.estimate_inputs([types.User(first)]) < original
-    && compaction.estimate_inputs([types.User(first)]) <= limit
-  {
-    True -> Ok(first)
-    False -> {
-      use second <- result.try(
-        context.summarize(compaction.SummaryRequest(
-          context.model,
-          None,
-          inputs,
-          int.max(32, limit / 3),
-        )),
-      )
-      let second = string.trim(second)
-      use _ <- result.try(case second != "" {
-        True -> Ok(Nil)
-        False -> Error("LCM summarizer returned an empty summary")
-      })
-      case
-        compaction.estimate_inputs([types.User(second)]) < original
-        && compaction.estimate_inputs([types.User(second)]) <= limit
-      {
-        True -> Ok(second)
-        False -> Ok("Summary exceeded its source; inspect the linked rows.")
-      }
-    }
-  }
+  let summary = string.trim(summary)
+  use _ <- result.try(compaction.require(
+    summary != "",
+    "LCM summarizer returned an empty summary",
+  ))
+  Ok(summary)
+}
+
+fn fits_summary(summary: String, original: Int, limit: Int) -> Bool {
+  let tokens = compaction.estimate_inputs([types.User(summary)])
+  tokens < original && tokens <= limit
 }

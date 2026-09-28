@@ -63,6 +63,8 @@ const archive_schema = "CREATE TABLE IF NOT EXISTS snapcompact_archive(session T
 
 const truncation_note = "The conversation above this message was truncated; its earlier history could not be archived."
 
+const description = "History archived as rendered bitmap frames the vision stack reads directly"
+
 /// U+2588 FULL BLOCK: the cell that stands for a newline in the archive.
 const newline_cell = "\u{2588}"
 
@@ -173,23 +175,22 @@ pub fn config_decoder() {
   decode.success(Config(capacity, trigger, tail, archive, frames, enabled))
 }
 
-pub fn load_config() -> Result(Config, String) {
-  use config <- result.try(settings.load(
-    "snapcompact",
-    config_decoder(),
-    default_config(),
-  ))
+fn validated(loaded: Result(Config, String)) -> Result(Config, String) {
+  use config <- result.try(loaded)
   validate_config(config)
 }
 
+pub fn load_config() -> Result(Config, String) {
+  validated(settings.load("snapcompact", config_decoder(), default_config()))
+}
+
 pub fn load_config_at(home: String) -> Result(Config, String) {
-  use config <- result.try(settings.load_at(
+  validated(settings.load_at(
     home,
     "snapcompact",
     config_decoder(),
     default_config(),
   ))
-  validate_config(config)
 }
 
 fn validate_config(config: Config) -> Result(Config, String) {
@@ -221,7 +222,7 @@ fn validate_config(config: Config) -> Result(Config, String) {
 pub fn extension() -> extension.Extension {
   extension.Extension(
     "snapcompact",
-    "History archived as rendered bitmap frames the vision stack reads directly",
+    description,
     ["snapcompact-memory"],
     compaction_plugins(),
     initialise,
@@ -261,11 +262,13 @@ pub fn stored_prior(
 ) -> Result(compaction.Prior, String) {
   use saved <- result.try(load_archive(ledger, session))
   case
-    option.map(saved, fn(archive) {
-      #(archive, compaction.resume(history, archive.cut))
+    option.then(saved, fn(archive) {
+      compaction.resume(history, archive.cut)
+      |> result.map(fn(split) { #(archive, split.1) })
+      |> option.from_result
     })
   {
-    Some(#(archive, Ok(#(_, rest)))) -> {
+    Some(#(archive, rest)) -> {
       let pages = paginate_ffi(archive.text, fold_page_cells)
       let total = int.to_string(list.length(pages))
       let folds =
@@ -298,7 +301,7 @@ fn compaction_plugins() -> List(extension.Plugin) {
 pub fn configured_extension(config: Config) -> extension.Extension {
   extension.Extension(
     "snapcompact",
-    "History archived as rendered bitmap frames the vision stack reads directly",
+    description,
     [],
     [extension.CompactionPlugin(strategy_with(fn() { Ok(config) }))],
     initialise,
@@ -319,19 +322,15 @@ fn strategy_with(
 pub fn initialise(ledger: store.Store) -> Result(Nil, String) {
   use _ <- result.try(rolling.initialise(ledger))
   store.query(ledger, fn(db) {
-    case sqlight.exec(frame_schema <> archive_schema, db) {
-      Ok(_) -> {
-        // A failed prune only costs disk space, never a turn.
-        let _ =
-          sqlight.exec(
-            "DELETE FROM snapcompact_frames WHERE created_at < "
-              <> int.to_string(now_ms() - frame_retention_ms),
-            db,
-          )
-        Ok(Nil)
-      }
-      Error(e) -> Error(e.message)
-    }
+    use _ <- result.try(store.exec(db, frame_schema <> archive_schema))
+    // A failed prune only costs disk space, never a turn.
+    let _ =
+      store.exec(
+        db,
+        "DELETE FROM snapcompact_frames WHERE created_at < "
+          <> int.to_string(now_ms() - frame_retention_ms),
+      )
+    Ok(Nil)
   })
 }
 
@@ -393,54 +392,60 @@ fn visual_view(
     None -> config.context_window_tokens
   }
   let limit = frame_budget(config, shape, context.reader, capacity)
-  let #(current, status) = case resumed {
-    None -> #(folded, "not_needed")
-    Some(#(archive, _, tail)) ->
-      view(context.store, shape, limit, archive, tail)
+  let #(previous, evicted, rest, current, status) = case resumed {
+    None -> #(None, [], folded, folded, "not_needed")
+    Some(#(archive, evicted, tail)) -> {
+      let #(viewed, status) = view(context.store, shape, limit, archive, tail)
+      #(Some(archive), evicted, tail, viewed, status)
+    }
   }
   let estimated =
     context.pinned_tokens
     + compaction.estimate_inputs(folds)
     + compaction.estimate_inputs(current)
   let triggered =
-    context.force
-    || case capacity {
-      Some(tokens) -> estimated * 100 >= tokens * config.trigger_percent
-      None -> False
-    }
-  let #(previous, evicted, rest) = case resumed {
-    Some(#(archive, evicted, tail)) -> #(Some(archive), evicted, tail)
-    None -> #(None, [], folded)
-  }
-  // A forced compaction keeps its share of what the request holds now, as
-  // rolling does, so `/compact` archives even far below a large window.
-  let tail_budget = case capacity, context.force {
-    Some(tokens), True -> int.min(tokens, estimated) * config.tail_percent / 100
-    Some(tokens), False -> tokens * config.tail_percent / 100
-    None, _ -> int.max(estimated / 4, 1000)
+    compaction.triggered(
+      context.force,
+      estimated,
+      capacity,
+      config.trigger_percent,
+    )
+  // Without a window the tail budget is a share of what the request holds.
+  let tail_budget = case capacity {
+    Some(tokens) ->
+      compaction.tail_budget(
+        tokens,
+        estimated,
+        context.force,
+        config.tail_percent,
+      )
+    None -> int.max(estimated / 4, 1000)
   }
   let observe = fn(status, prepared) {
     observation(status, config, capacity, folds, folded, prepared)
   }
-  case triggered, compaction.split_tail(rest, tail_budget) {
-    // Only a whole unit remains, or nothing is due: keep the saved cut.
-    False, _ | True, #([], _) ->
-      Ok(compaction.Prepared(
-        list.append(folds, current),
-        observe(status, current),
-        False,
-      ))
-    True, #(newly_evicted, tail) -> {
-      let archive = extend(shape, limit, previous, evicted, newly_evicted)
-      use _ <- result.try(save_archive(context.store, context.session, archive))
-      let #(prepared, status) = view(context.store, shape, limit, archive, tail)
-      Ok(compaction.Prepared(
-        list.append(folds, prepared),
-        observe(status, prepared),
-        True,
-      ))
-    }
-  }
+  use #(prepared, status, compacted) <- result.try(
+    case triggered, compaction.split_tail(rest, tail_budget) {
+      // Only a whole unit remains, or nothing is due: keep the saved cut.
+      True, #([_, ..] as newly_evicted, tail) -> {
+        let archive = extend(shape, limit, previous, evicted, newly_evicted)
+        use _ <- result.try(save_archive(
+          context.store,
+          context.session,
+          archive,
+        ))
+        let #(prepared, status) =
+          view(context.store, shape, limit, archive, tail)
+        Ok(#(prepared, status, True))
+      }
+      _, _ -> Ok(#(current, status, False))
+    },
+  )
+  Ok(compaction.Prepared(
+    list.append(folds, prepared),
+    observe(status, prepared),
+    compacted,
+  ))
 }
 
 /// The archive after `newly_evicted` ages into it: the previous kept text,
@@ -548,17 +553,16 @@ fn observation(
     _, _ ->
       "durable transcript through stored folds, rendered bitmap frames, and a verbatim tail"
   }
-  Some(compaction.Observation(
+  Some(compaction.observation(
     "snapcompact",
     status,
     source,
     source,
-    Some(100 - config.trigger_percent),
+    config.trigger_percent,
     capacity,
-    Some(compaction.estimate_inputs(folds) + compaction.estimate_inputs(after)),
-    Some("local byte-based estimate; not provider token usage"),
-    Some(list.length(before)),
-    Some(list.length(after)),
+    compaction.estimate_inputs(folds) + compaction.estimate_inputs(after),
+    list.length(before),
+    list.length(after),
   ))
 }
 
@@ -592,15 +596,12 @@ fn serialize_input(input: types.Input) -> String {
     types.Assistant(text) -> "¶ai: " <> cap(text, message_chars)
     types.UserImage(text, image) ->
       "¶user: " <> cap(text, message_chars) <> " " <> image_note(image)
-    types.ToolOutput(id, output, []) ->
-      "¶out " <> cap(id, 80) <> ": " <> cap(output, result_chars)
     types.ToolOutput(id, output, images) ->
       "¶out "
       <> cap(id, 80)
       <> ": "
       <> cap(output, result_chars)
-      <> " "
-      <> string.join(list.map(images, image_note), " ")
+      <> image_notes(images)
     types.Replay(item) -> serialize_replay(item)
   }
 }
@@ -610,31 +611,27 @@ fn serialize_input(input: types.Input) -> String {
 /// code instead of escaped JSON. Only the chat-completions shape is decoded;
 /// anything else falls back to the raw JSON so no tool call is lost.
 fn serialize_replay(item: types.ReplayItem) -> String {
-  case types.replay_protocol(item) {
-    types.ChatCompletions ->
-      case types.inspect_item(item, replay_parts_decoder()) {
-        Ok(#(text, calls)) -> {
-          let head = case text {
-            "" -> "¶ai:"
-            _ -> "¶ai: " <> cap(text, message_chars)
-          }
-          let calls =
-            calls
-            |> list.map(fn(call) {
-              "  → "
-              <> call.name
-              <> "("
-              <> cap(
-                format_args(cap(call.arguments, args_bytes)),
-                call_args_chars,
-              )
-              <> ")"
-            })
-          string.join([head, ..calls], "\n")
-        }
-        Error(_) -> replay_fallback(item)
+  let decoded = case types.replay_protocol(item) {
+    types.ChatCompletions -> types.inspect_item(item, replay_parts_decoder())
+    types.Responses -> Error([])
+  }
+  case decoded {
+    Ok(#(text, calls)) -> {
+      let head = case text {
+        "" -> "¶ai:"
+        _ -> "¶ai: " <> cap(text, message_chars)
       }
-    types.Responses -> replay_fallback(item)
+      let calls =
+        list.map(calls, fn(call) {
+          "  → "
+          <> call.name
+          <> "("
+          <> cap(format_args(cap(call.arguments, args_bytes)), call_args_chars)
+          <> ")"
+        })
+      string.join([head, ..calls], "\n")
+    }
+    Error(_) -> replay_fallback(item)
   }
 }
 
@@ -661,6 +658,13 @@ fn call_decoder() -> decode.Decoder(types.ToolCall) {
   use name <- decode.subfield(["function", "name"], decode.string)
   use args <- decode.subfield(["function", "arguments"], decode.string)
   decode.success(types.ToolCall(id, name, args))
+}
+
+fn image_notes(images: List(types.Image)) -> String {
+  case images {
+    [] -> ""
+    _ -> " " <> string.join(list.map(images, image_note), " ")
+  }
 }
 
 fn image_note(image: types.Image) -> String {
@@ -755,69 +759,44 @@ pub fn frames(
   let fresh =
     list.map2(missing, rendered, fn(kv, frame) {
       let #(width, height, bytes, data) = frame
-      FrameRow(kv.0, sha256(data), width, height, bytes)
+      #(FrameRow(kv.0, sha256(data), width, height, bytes), data)
     })
   // A failed cache write only costs a re-render next request.
   let _ =
     store.query(ledger, fn(db) {
-      list.each(fresh, fn(row: FrameRow) {
-        insert_row(
-          db,
-          row,
-          dict.get(rendered_by_key(missing, rendered), row.key),
-        )
+      list.each(fresh, fn(cached) {
+        let #(row, data) = cached
+        let _ =
+          store.run(
+            db,
+            "INSERT OR IGNORE INTO snapcompact_frames(key,hash,data,width,height,bytes,created_at) VALUES(?,?,?,?,?,?,?)",
+            [
+              sqlight.text(row.key),
+              sqlight.text(row.hash),
+              sqlight.text(data),
+              sqlight.int(row.width),
+              sqlight.int(row.height),
+              sqlight.int(row.bytes),
+              sqlight.int(now_ms()),
+            ],
+          )
+        Nil
       })
       Nil
     })
-  let rows = dict.merge(known, rows_by_key(fresh))
-  list.try_map(keyed, fn(kv) {
-    case dict.get(rows, kv.0) {
-      Ok(row) -> frame_image(ledger)(row)
-      Error(Nil) -> Error("frame row missing after render")
-    }
-  })
+  let rows =
+    dict.merge(known, rows_by_key(list.map(fresh, fn(cached) { cached.0 })))
+  use kv <- list.try_map(keyed)
+  use row <- result.try(
+    dict.get(rows, kv.0)
+    |> result.replace_error("frame row missing after render"),
+  )
+  frame_image(ledger, row)
 }
 
 fn rows_by_key(rows: List(FrameRow)) -> Dict(String, FrameRow) {
-  list.fold(rows, dict.new(), fn(acc, row: FrameRow) {
-    dict.insert(acc, row.key, row)
-  })
-}
-
-fn rendered_by_key(
-  missing: List(#(String, String)),
-  rendered: List(#(Int, Int, Int, String)),
-) -> Dict(String, String) {
-  list.map2(missing, rendered, fn(kv, frame) { #(kv.0, frame.3) })
-  |> list.fold(dict.new(), fn(acc, kv) { dict.insert(acc, kv.0, kv.1) })
-}
-
-fn insert_row(
-  db: sqlight.Connection,
-  row: FrameRow,
-  data: Result(String, Nil),
-) -> Nil {
-  case data {
-    Ok(data) -> {
-      let _ =
-        sqlight.query(
-          "INSERT OR IGNORE INTO snapcompact_frames(key,hash,data,width,height,bytes,created_at) VALUES(?,?,?,?,?,?,?)",
-          db,
-          [
-            sqlight.text(row.key),
-            sqlight.text(row.hash),
-            sqlight.text(data),
-            sqlight.int(row.width),
-            sqlight.int(row.height),
-            sqlight.int(row.bytes),
-            sqlight.int(now_ms()),
-          ],
-          decode.dynamic,
-        )
-      Nil
-    }
-    Error(Nil) -> Nil
-  }
+  list.map(rows, fn(row) { #(row.key, row) })
+  |> dict.from_list
 }
 
 fn chunk_key(shape: Shape, chunk: String) -> String {
@@ -838,18 +817,15 @@ fn known_rows(
 ) -> Dict(String, FrameRow) {
   keys
   |> list.filter_map(fn(key) {
-    sqlight.query(
-      "SELECT key,hash,width,height,bytes FROM snapcompact_frames WHERE key=?",
+    store.one(
       db,
+      "SELECT key,hash,width,height,bytes FROM snapcompact_frames WHERE key=?",
       [sqlight.text(key)],
       frame_row_decoder(),
+      "frame row missing",
     )
-    |> result.replace_error(Nil)
-    |> result.try(fn(rows) { result.replace_error(list.first(rows), Nil) })
   })
-  |> list.fold(dict.new(), fn(acc, row: FrameRow) {
-    dict.insert(acc, row.key, row)
-  })
+  |> rows_by_key
 }
 
 fn frame_row_decoder() -> decode.Decoder(FrameRow) {
@@ -863,34 +839,30 @@ fn frame_row_decoder() -> decode.Decoder(FrameRow) {
 
 fn frame_image(
   ledger: store.Store,
-) -> fn(FrameRow) -> Result(types.Image, String) {
-  fn(row: FrameRow) -> Result(types.Image, String) {
-    types.stored_image(
-      "image/png",
-      row.hash,
-      // Padded base64 length derived from the decoded byte count.
-      { row.bytes + 2 } / 3 * 4,
-      fn() { store.query(ledger, fn(db) { read_data(db, row.key) }) },
-      row.width,
-      row.height,
-      row.bytes,
-    )
-    |> result.map_error(fn(error) { string.inspect(error) })
-  }
+  row: FrameRow,
+) -> Result(types.Image, String) {
+  types.stored_image(
+    "image/png",
+    row.hash,
+    // Padded base64 length derived from the decoded byte count.
+    { row.bytes + 2 } / 3 * 4,
+    fn() { store.query(ledger, fn(db) { read_data(db, row.key) }) },
+    row.width,
+    row.height,
+    row.bytes,
+  )
+  |> result.map_error(fn(error) { string.inspect(error) })
 }
 
 fn read_data(db: sqlight.Connection, key: String) -> Result(String, Nil) {
-  case
-    sqlight.query(
-      "SELECT data FROM snapcompact_frames WHERE key=?",
-      db,
-      [sqlight.text(key)],
-      decode.field(0, decode.string, decode.success),
-    )
-  {
-    Ok([data]) -> Ok(data)
-    _ -> Error(Nil)
-  }
+  store.one(
+    db,
+    "SELECT data FROM snapcompact_frames WHERE key=?",
+    [sqlight.text(key)],
+    decode.field(0, decode.string, decode.success),
+    "frame data missing",
+  )
+  |> result.replace_error(Nil)
 }
 
 fn archive_inputs(
@@ -925,26 +897,19 @@ pub fn load_archive(
   ledger: store.Store,
   session: String,
 ) -> Result(Option(Archive), String) {
-  store.query(ledger, fn(db) {
-    sqlight.query(
-      "SELECT users,fingerprint,text,dropped FROM snapcompact_archive WHERE session=?",
-      db,
-      [sqlight.text(session)],
-      {
-        use users <- decode.field(0, decode.int)
-        use fingerprint <- decode.field(1, decode.string)
-        use text <- decode.field(2, decode.string)
-        use dropped <- decode.field(3, decode.int)
-        decode.success(Archive(
-          compaction.Cut(users, fingerprint),
-          text,
-          dropped,
-        ))
-      },
-    )
-    |> result.map(fn(rows) { list.first(rows) |> option.from_result })
-    |> result.map_error(fn(error) { error.message })
-  })
+  store.read(
+    ledger,
+    "SELECT users,fingerprint,text,dropped FROM snapcompact_archive WHERE session=?",
+    [sqlight.text(session)],
+    {
+      use users <- decode.field(0, decode.int)
+      use fingerprint <- decode.field(1, decode.string)
+      use text <- decode.field(2, decode.string)
+      use dropped <- decode.field(3, decode.int)
+      decode.success(Archive(compaction.Cut(users, fingerprint), text, dropped))
+    },
+  )
+  |> result.map(fn(rows) { list.first(rows) |> option.from_result })
 }
 
 fn save_archive(
@@ -952,33 +917,21 @@ fn save_archive(
   session: String,
   archive: Archive,
 ) -> Result(Nil, String) {
-  store.query(ledger, fn(db) {
-    sqlight.query(
-      "INSERT INTO snapcompact_archive(session,users,fingerprint,text,dropped) VALUES(?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET users=excluded.users,fingerprint=excluded.fingerprint,text=excluded.text,dropped=excluded.dropped",
-      db,
-      [
-        sqlight.text(session),
-        sqlight.int(archive.cut.users),
-        sqlight.text(archive.cut.fingerprint),
-        sqlight.text(archive.text),
-        sqlight.int(archive.dropped),
-      ],
-      decode.dynamic,
-    )
-    |> result.replace(Nil)
-    |> result.map_error(fn(error) { error.message })
-  })
+  store.write(
+    ledger,
+    "INSERT INTO snapcompact_archive(session,users,fingerprint,text,dropped) VALUES(?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET users=excluded.users,fingerprint=excluded.fingerprint,text=excluded.text,dropped=excluded.dropped",
+    [
+      sqlight.text(session),
+      sqlight.int(archive.cut.users),
+      sqlight.text(archive.cut.fingerprint),
+      sqlight.text(archive.text),
+      sqlight.int(archive.dropped),
+    ],
+  )
 }
 
 fn delete_archive(ledger: store.Store, session: String) -> Result(Nil, String) {
-  store.query(ledger, fn(db) {
-    sqlight.query(
-      "DELETE FROM snapcompact_archive WHERE session=?",
-      db,
-      [sqlight.text(session)],
-      decode.dynamic,
-    )
-    |> result.replace(Nil)
-    |> result.map_error(fn(error) { error.message })
-  })
+  store.write(ledger, "DELETE FROM snapcompact_archive WHERE session=?", [
+    sqlight.text(session),
+  ])
 }

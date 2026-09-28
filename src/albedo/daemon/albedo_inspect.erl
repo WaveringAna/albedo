@@ -18,9 +18,7 @@
 
 start(Home) ->
     case os:getenv("ALBEDO_INSPECT") of
-        false -> nil;
-        "" -> nil;
-        "0" -> nil;
+        V when V =:= false; V =:= ""; V =:= "0" -> nil;
         _ ->
             Cookie = cookie(filename:join(Home, <<"inspect.cookie">>)),
             _ = os:cmd("epmd -daemon"),
@@ -42,14 +40,14 @@ start(Home) ->
     end.
 
 cookie(Path) ->
-    case file:read_file(Path) of
-        {ok, <<Existing:32/binary, _/binary>>} -> binary_to_atom(Existing);
+    binary_to_atom(case file:read_file(Path) of
+        {ok, <<Existing:32/binary, _/binary>>} -> Existing;
         _ ->
             Fresh = binary:encode_hex(crypto:strong_rand_bytes(16), lowercase),
             ok = file:write_file(Path, Fresh),
             ok = file:change_mode(Path, 8#600),
-            binary_to_atom(Fresh)
-    end.
+            Fresh
+    end).
 
 periodic(Log, Every) ->
     receive after Every -> ok end,
@@ -68,9 +66,9 @@ report(Top) ->
               [{_, Kb}] -> Kb * 1024;
               _ -> 0
           end,
-    Procs = [P || P <- [info(Pid) || Pid <- erlang:processes()], P =/= undefined],
+    Procs = [P || Pid <- erlang:processes(), P <- [info(Pid)], P =/= undefined],
     Sorted = lists:reverse(lists:keysort(2, Procs)),
-    AllBins = lists:usort(lists:append([B || {_, _, _, _, _, B} <- Procs])),
+    AllBins = lists:usort([Bin || {_, _, _, _, _, B} <- Procs, Bin <- B]),
     Labelled = [{L, Pid} || {Pid, _, L, _, _, _} <- Procs, is_tuple(L)],
     iolist_to_binary([
         "memory\n",
@@ -95,8 +93,7 @@ report(Top) ->
     ]).
 
 allocators() ->
-    Rows = [{A, sizes(A)} || A <- erlang:system_info(alloc_util_allocators)],
-    lists:reverse(lists:keysort(2, [{A, C, B} || {A, {C, B}} <- Rows])).
+    lists:reverse(lists:keysort(2, [{A, C, B} || A <- erlang:system_info(alloc_util_allocators), {C, B} <- [sizes(A)]])).
 
 sizes(A) ->
     case erlang:system_info({allocator_sizes, A}) of
@@ -113,13 +110,12 @@ sizes(A) ->
 
 total(Key, L) ->
     case lists:keyfind(Key, 1, L) of
-        {_, Now, _, _} -> Now;
-        {_, Now} -> Now;
+        T when is_tuple(T) -> element(2, T);
         false ->
             %% OTP 23+ reports blocks per allocator type under `blocks`.
             case lists:keyfind(blocks, 1, L) of
                 {blocks, Types} when Key =:= blocks_size ->
-                    lists:sum([element(2, lists:keyfind(size, 1, T)) || {_, T} <- Types, is_list(T), lists:keymember(size, 1, T)]);
+                    lists:sum([Sz || {_, T} <- Types, is_list(T), {size, Sz} <- [lists:keyfind(size, 1, T)]]);
                 _ -> 0
             end
     end.
@@ -138,10 +134,7 @@ name(Pid, Label) -> io_lib:format("~p ~0p", [Pid, Label]).
 initial(Pid) ->
     case erlang:process_info(Pid, [current_function, dictionary]) of
         [{current_function, Fun}, {dictionary, Dict}] ->
-            case proplists:get_value('$initial_call', Dict) of
-                undefined -> Fun;
-                Initial -> Initial
-            end;
+            proplists:get_value('$initial_call', Dict, Fun);
         _ -> dead
     end.
 
@@ -183,22 +176,23 @@ heap(Term) -> erts_debug:size(Term) * ?WORD.
 
 %% Bytes of distinct binaries reachable from Term, excluding funs' environments
 %% (which are walked too, since a captured closure keeps its terms alive).
-binaries(Term) -> lists:sum(maps:values(walk(Term, #{}))).
+binaries(Term) -> lists:sum(maps:values(fold(Term, #{}, fun shared/2))).
 
-walk(B, Acc) when is_binary(B) ->
-    case byte_size(B) > 64 of
-        true -> Acc#{binary:referenced_byte_size(B) + erlang:phash2(B) => byte_size(B)};
-        false -> Acc
-    end;
-walk(T, Acc) when is_tuple(T) -> walk(tuple_to_list(T), Acc);
-walk([H | T], Acc) -> walk(T, walk(H, Acc));
-walk(M, Acc) when is_map(M) -> walk(maps:to_list(M), Acc);
-walk(F, Acc) when is_function(F) ->
+shared(B, Acc) -> Acc#{binary:referenced_byte_size(B) + erlang:phash2(B) => byte_size(B)}.
+
+%% Structural fold over a term: Leaf sees every binary over 64 bytes, and a
+%% captured closure's environment is walked too, since it keeps its terms
+%% alive.
+fold(B, Acc, Leaf) when is_binary(B), byte_size(B) > 64 -> Leaf(B, Acc);
+fold(T, Acc, Leaf) when is_tuple(T) -> fold(tuple_to_list(T), Acc, Leaf);
+fold([H | T], Acc, Leaf) -> fold(T, fold(H, Acc, Leaf), Leaf);
+fold(M, Acc, Leaf) when is_map(M) -> fold(maps:to_list(M), Acc, Leaf);
+fold(F, Acc, Leaf) when is_function(F) ->
     case erlang:fun_info(F, env) of
-        {env, Env} -> walk(Env, Acc);
+        {env, Env} -> fold(Env, Acc, Leaf);
         _ -> Acc
     end;
-walk(_, Acc) -> Acc.
+fold(_, Acc, _) -> Acc.
 
 %% Samples for Ms milliseconds and reports the high-water mark: VM totals and,
 %% for every process that crossed 1 MB, its largest size and the frames it was
@@ -284,10 +278,6 @@ sharing() ->
 
 %% Content key -> size for distinct binaries over 64 bytes reachable from Term,
 %% counted once per actor state.
-contents(B, Acc) when is_binary(B), byte_size(B) > 64 -> Acc#{{byte_size(B), erlang:phash2(B)} => byte_size(B)};
-contents(T, Acc) when is_tuple(T) -> contents(tuple_to_list(T), Acc);
-contents([H | T], Acc) -> contents(T, contents(H, Acc));
-contents(M, Acc) when is_map(M) -> contents(maps:to_list(M), Acc);
-contents(F, Acc) when is_function(F) ->
-    case erlang:fun_info(F, env) of {env, E} -> contents(E, Acc); _ -> Acc end;
-contents(_, Acc) -> Acc.
+contents(Term, Acc) -> fold(Term, Acc, fun distinct/2).
+
+distinct(B, Acc) -> Acc#{{byte_size(B), erlang:phash2(B)} => byte_size(B)}.

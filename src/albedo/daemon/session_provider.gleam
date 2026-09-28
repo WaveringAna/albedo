@@ -207,14 +207,7 @@ pub fn select(
               option.None -> {
                 let efforts =
                   model_efforts(state.host, state.home, provider, model)
-                Ok(case state.info.effort {
-                  option.Some(current) ->
-                    case list.contains(efforts, current) {
-                      True -> option.Some(current)
-                      False -> extension.default_effort(efforts)
-                    }
-                  option.None -> extension.default_effort(efforts)
-                })
+                Ok(resolve_effort(efforts, state.info.effort))
               }
             })
             use _ <- result.try(
@@ -262,5 +255,19 @@ pub fn select(
           }
         }
       }
+  }
+}
+
+pub fn resolve_effort(
+  efforts: List(String),
+  current: option.Option(String),
+) -> option.Option(String) {
+  case current {
+    option.Some(level) ->
+      case list.contains(efforts, level) {
+        True -> option.Some(level)
+        False -> extension.default_effort(efforts)
+      }
+    option.None -> extension.default_effort(efforts)
   }
 }

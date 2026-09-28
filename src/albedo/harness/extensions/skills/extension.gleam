@@ -28,21 +28,20 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
     [
       harness_extension.ManagedPlugin(fn(_, session, workspace) {
         use discovered <- result.try(catalog.scan_at(workspace, home))
-        use selected <- result.try(
-          list.try_map(discovered.skills, fn(skill) {
+        use names <- result.try(
+          list.try_fold(discovered.skills, [], fn(acc, skill) {
             use enabled <- result.try(item_enabled(
               settings.home(),
               session,
               "skills",
               skill.name,
             ))
-            Ok(#(skill.name, enabled))
+            Ok(case enabled {
+              True -> [skill.name, ..acc]
+              False -> acc
+            })
           }),
         )
-        let names =
-          selected
-          |> list.filter(fn(pair) { pair.1 })
-          |> list.map(fn(pair) { pair.0 })
         let snapshot = catalog.only(discovered, names)
         Ok(
           harness_extension.Managed(
@@ -57,7 +56,7 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
         )
       }),
     ],
-    fn(_) { Ok(Nil) },
+    harness_extension.no_initialise,
   )
 }
 

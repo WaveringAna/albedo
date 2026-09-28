@@ -1,19 +1,19 @@
 //// Claude subscription OAuth, using the Claude Code Messages API identity.
 
-import albedo/daemon/store
 import albedo/harness/extension
 import albedo/harness/extensions/claude/stream
 import albedo/harness/extensions/claude/wire
 import albedo/harness/extensions/models/extension as models
 import albedo/harness/oauth
+import albedo/harness/rotation
 import albedo/openai_api
 import albedo/openai_api/types
+import gleam/bool
 import gleam/dynamic.{type Dynamic}
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/uri
 
 pub const endpoint = "https://api.anthropic.com"
 
@@ -41,7 +41,7 @@ pub fn extension() -> extension.Extension {
         resolve,
       )),
     ],
-    fn(_store: store.Store) { Ok(Nil) },
+    extension.no_initialise,
   )
 }
 
@@ -54,8 +54,7 @@ pub fn login() -> oauth.Login {
     "anthropic",
     oauth.Callback("localhost", 53_692, "/callback", True),
     fn(grant) {
-      "https://claude.ai/oauth/authorize?"
-      <> uri.query_to_string([
+      oauth.authorize_url("https://claude.ai/oauth/authorize", [
         #("code", "true"),
         #("client_id", client_id),
         #("response_type", "code"),
@@ -76,68 +75,57 @@ pub fn login() -> oauth.Login {
 fn resolve(
   context: extension.ModelContext,
 ) -> Option(Result(extension.Upstream, String)) {
-  case context.provider {
-    "claude" ->
-      case context.protocol {
-        types.ChatCompletions ->
-          Some({
-            use access <- result.try(native_access(
-              context.home,
-              context.session,
-            ))
-            use #(account, device, session) <- result.try(native_profile(
-              access,
-              context.session,
-            ))
-            Ok(extension.Upstream(
-              endpoint,
-              types.ChatCompletions,
-              fn(request, on_event) {
-                ensure_files(context.home, access, account, endpoint, request)
-                use exchange <- result.try(wire.encode(
-                  context.home,
-                  access,
-                  account,
-                  device,
-                  session,
-                  request,
-                ))
-                case
-                  openai_api.exchange(
-                    exchange,
-                    stream.reducer(request.model, request.tools),
-                    on_event,
-                  )
-                {
-                  Ok(turn) -> Ok(turn)
-                  // Drop cached file handles on 4xx so next turn heals inline.
-                  Error(types.HttpError(status, body))
-                    if status >= 400 && status < 500
-                  -> {
-                    reject_files(context.home, account, body)
-                    Error(types.HttpError(status, body))
-                  }
-                  Error(other) -> Error(other)
-                }
-              },
-              fn(error) {
-                case error {
-                  types.HttpError(401, _) -> {
-                    native_expire(context.home, access)
-                    Some(
-                      "Claude rejected this access token; send your message again to refresh it, or run /login",
-                    )
-                  }
-                  _ -> None
-                }
-              },
-            ))
-          })
-        _ ->
-          Some(Error("Claude provider requires the chat_completions protocol"))
+  use <- rotation.require_provider(
+    context,
+    "claude",
+    "Claude",
+    types.ChatCompletions,
+  )
+  use access <- result.try(native_access(context.home, context.session))
+  use #(account, device, session) <- result.try(native_profile(
+    access,
+    context.session,
+  ))
+  Ok(extension.Upstream(
+    endpoint,
+    types.ChatCompletions,
+    fn(request, on_event) {
+      ensure_files(context.home, access, account, endpoint, request)
+      use exchange <- result.try(wire.encode(
+        context.home,
+        access,
+        account,
+        device,
+        session,
+        request,
+      ))
+      let outcome =
+        openai_api.exchange(
+          exchange,
+          stream.reducer(request.model, request.tools),
+          on_event,
+        )
+      case outcome {
+        // Drop cached file handles on 4xx so next turn heals inline.
+        Error(types.HttpError(status, body)) if status >= 400 && status < 500 -> {
+          reject_files(context.home, account, body)
+          outcome
+        }
+        _ -> outcome
       }
-    _ -> None
-  }
+    },
+    fn(error) {
+      case error {
+        types.HttpError(401, _) -> {
+          native_expire(context.home, access)
+          Some(
+            "Claude rejected this access token; send your message again to refresh it, or run /login",
+          )
+        }
+        _ -> None
+      }
+    },
+  ))
 }
 
 fn list_models(provider: String, _endpoint: String) -> List(String) {
@@ -165,22 +153,20 @@ pub fn model_at(
   id: String,
   at: String,
 ) -> Option(extension.ModelInfo) {
-  case list.contains(preferred, id) && { at == "" || at == endpoint } {
-    False -> None
-    True ->
-      models.lookup_provider_at(catalog, "anthropic", id)
-      |> option.map(fn(found) {
-        extension.ModelInfo(
-          ..found,
-          provider: "claude",
-          input_modalities: list.filter(found.input_modalities, fn(mode) {
-            mode == "text" || mode == "image"
-          }),
-          endpoint: Some(endpoint),
-          environment: [],
-        )
-      })
-  }
+  use <- bool.guard(
+    !list.contains(preferred, id) || at != "" && at != endpoint,
+    None,
+  )
+  use found <- option.map(models.lookup_provider_at(catalog, "anthropic", id))
+  extension.ModelInfo(
+    ..found,
+    provider: "claude",
+    input_modalities: list.filter(found.input_modalities, fn(mode) {
+      mode == "text" || mode == "image"
+    }),
+    endpoint: Some(endpoint),
+    environment: [],
+  )
 }
 
 @external(erlang, "albedo_claude_files", "ensure")

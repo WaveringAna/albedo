@@ -10,6 +10,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/result
+import gleam/string
 
 pub type Kernel
 
@@ -24,6 +25,15 @@ pub type Status {
   Succeeded
   Failed
   Interrupted
+}
+
+/// The wire name of a cell's end state.
+pub fn status_name(status: Status) -> String {
+  case status {
+    Succeeded -> "ok"
+    Failed -> "error"
+    Interrupted -> "interrupted"
+  }
 }
 
 pub type Outcome {
@@ -93,7 +103,8 @@ fn run(
   timeout_ms: Int,
   durable: Bool,
 ) -> Result(Outcome, Error) {
-  case timeout_ms < 1 || timeout_ms > 3_600_000 || byte_size(code) > 1_048_576 {
+  let size = string.byte_size(code)
+  case timeout_ms < 1 || timeout_ms > 3_600_000 || size > 1_048_576 {
     True ->
       Error(Invalid("cell must be <= 1 MiB; timeout must be 1..3600000 ms"))
     False -> {
@@ -111,9 +122,6 @@ fn run(
     }
   }
 }
-
-@external(erlang, "erlang", "byte_size")
-fn byte_size(value: String) -> Int
 
 @external(erlang, "albedo_python", "execute")
 fn execute_native(
@@ -159,11 +167,9 @@ fn state(
     ])
     |> json.to_string
   use response <- result.try(execute_native(kernel, command, timeout_ms))
-  use saved <- result.try(
-    json.parse(response, decode.field("state", saved_decoder(), decode.success))
-    |> result.replace_error(Unavailable("invalid kernel response")),
-  )
-  saved
+  json.parse(response, decode.field("state", saved_decoder(), decode.success))
+  |> result.replace_error(Unavailable("invalid kernel response"))
+  |> result.flatten
 }
 
 fn saved_decoder() -> decode.Decoder(Result(Saved, Error)) {
@@ -256,24 +262,11 @@ fn read_images(encoded: List(String)) -> #(List(types.Image), List(String)) {
 
 /// Start with python3 from PATH and albedo's packaged kernel script.
 pub fn local(store: work.Store, cwd: String) -> Result(Kernel, Error) {
-  use #(executable, script) <- result.try(local_paths())
-  start(store, executable, script, cwd)
+  local_with_plugins(store, cwd, rpc.handle(store, cwd, _), ["run", "work"])
 }
 
 @external(erlang, "albedo_python", "local_paths")
 fn local_paths() -> Result(#(String, String), Error)
-
-pub fn local_with_host(
-  store: work.Store,
-  cwd: String,
-  host: fn(String) -> String,
-) -> Result(Kernel, Error) {
-  use #(executable, script) <- result.try(local_paths())
-  start_native(work.owner(store), executable, script, cwd, host, [
-    "run",
-    "work",
-  ])
-}
 
 pub fn local_with_plugins(
   store: work.Store,

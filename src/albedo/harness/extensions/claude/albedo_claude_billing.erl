@@ -30,20 +30,16 @@ escaped(Text) ->
     binary:part(Encoded, 1, byte_size(Encoded) - 2).
 
 at(Units, Index) ->
-    case length(Units) > Index of
-        true ->
-            case lists:nth(Index + 1, Units) of
-                Unit when Unit >= 16#D800, Unit =< 16#DFFF -> $0;
-                Unit -> Unit
-            end;
-        false -> $0
+    try lists:nth(Index + 1, Units) of
+        Unit when Unit >= 16#D800, Unit =< 16#DFFF -> $0;
+        Unit -> Unit
+    catch _:_ -> $0
     end.
 
 hash(Data) -> digits(xxh_final(xx_update(xxh_init(), Data))).
 
 hash_streamed(Chunks) ->
-    cch_emit(lists:foldl(fun(Data, State) -> xx_update(State, Data) end,
-                         xxh_init(), Chunks)).
+    cch_emit(lists:foldl(fun absorb/2, xxh_init(), Chunks)).
 
 xxh_init() ->
     {u(?SEED + ?P1 + ?P2), u(?SEED + ?P2), ?SEED, u(?SEED - ?P1), <<>>, 0}.

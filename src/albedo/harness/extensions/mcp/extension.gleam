@@ -5,7 +5,6 @@ import albedo/harness/extension
 import albedo/harness/settings
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
-import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json.{type Json}
 import gleam/list
@@ -148,7 +147,7 @@ fn bundle(resolve: fn() -> Result(Config, String)) -> extension.Extension {
         prepare(config, ledger, session, workspace)
       }),
     ],
-    fn(_) { Ok(Nil) },
+    extension.no_initialise,
   )
 }
 
@@ -202,7 +201,7 @@ fn definition_decoder() {
   use name <- decode.field("name", decode.string)
   use description <- decode.field("description", decode.string)
   use parameters <- decode.field("parameters", decode.dynamic)
-  decode.success(Definition(name, description, dynamic_json(parameters)))
+  decode.success(Definition(name, description, types.encode_value(parameters)))
 }
 
 fn encode_config(config: Config) -> String {
@@ -262,9 +261,6 @@ fn encode_refs(values: Dict(String, EnvRef)) -> Json {
   })
   |> json.object
 }
-
-@external(erlang, "albedo_openai_json", "encode")
-fn dynamic_json(value: Dynamic) -> Json
 
 @external(erlang, "albedo_mcp", "prepare")
 fn native_prepare(config: String, session: String) -> Result(Handle, String)

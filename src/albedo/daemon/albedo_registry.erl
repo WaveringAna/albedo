@@ -3,7 +3,7 @@
 %% its own module: albedo_wakes carries turn submissions, albedo_mailbox
 %% carries letters, albedo_commands carries session state operations.
 -module(albedo_registry).
--export([register/3, forget/2, fetch/3]).
+-export([register/3, forget/2, lookup/2, call/6]).
 
 register(Table, Id, Fun) ->
     ensure_table(Table),
@@ -11,19 +11,26 @@ register(Table, Id, Fun) ->
     nil.
 
 forget(Table, Id) ->
-    case ets:whereis(Table) of
-        undefined -> nil;
-        _ -> ets:delete(Table, Id), nil
-    end.
+    try ets:delete(Table, Id) catch error:badarg -> ok end,
+    nil.
 
-fetch(Table, Id, Arity) ->
-    case ets:whereis(Table) of
-        undefined -> undefined;
-        _ ->
-            case ets:lookup(Table, Id) of
-                [{_, Fun}] when is_function(Fun, Arity) -> {ok, Fun};
-                _ -> undefined
-            end
+%% The stored value, or undefined when the table or the entry is gone.
+lookup(Table, Id) ->
+    try ets:lookup(Table, Id) of
+        [{_, Value}] -> {ok, Value};
+        _ -> undefined
+    catch error:badarg -> undefined end.
+
+%% Runs a registered closure and answers Missing when it is not registered and
+%% Crashed when it dies mid-call: the caller runs outside the session actor,
+%% so a dead closure must still produce an answer, not an exception.
+call(Table, Id, Arity, Args, Missing, Crashed) ->
+    case lookup(Table, Id) of
+        {ok, Fun} when is_function(Fun, Arity) ->
+            try apply(Fun, Args)
+            catch _:_ -> Crashed
+            end;
+        _ -> Missing
     end.
 
 ensure_table(Table) ->

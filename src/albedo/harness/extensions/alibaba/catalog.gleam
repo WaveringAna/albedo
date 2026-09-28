@@ -7,6 +7,7 @@ import albedo/harness/settings
 import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 
 pub const default_base_url = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
@@ -26,10 +27,7 @@ fn lookup(id: String, at: String) -> Option(extension.ModelInfo) {
 
   let lower = string.lowercase(id)
   let home = settings.home()
-  let cached_ids = case models(home, at) {
-    Ok(ids) -> ids
-    _ -> []
-  }
+  let cached_ids = models(home, at) |> result.unwrap([])
   let is_cached = list.contains(cached_ids, id)
   let is_ali_pattern =
     string.starts_with(lower, "qwen")
@@ -43,29 +41,17 @@ fn lookup(id: String, at: String) -> Option(extension.ModelInfo) {
   }
   let base =
     extension.ModelInfo(
-      model: id,
-      provider: "alibaba",
-      context_tokens: None,
-      max_context_tokens: None,
-      max_output_tokens: None,
-      input_modalities: [],
+      ..extension.blank_model(id, "alibaba"),
       endpoint: Some(target_endpoint),
       environment: ["ALIBABA_API_KEY", "DASHSCOPE_API_KEY"],
       source: "Alibaba Model Studio catalog",
-      efforts: [],
     )
   Some(models.complete_model(base, target_endpoint))
 }
 
 fn list_models(provider: String, endpoint: String) -> List(String) {
   case provider {
-    "alibaba" -> {
-      let home = settings.home()
-      case models(home, endpoint) {
-        Ok(ids) -> ids
-        _ -> []
-      }
-    }
+    "alibaba" -> models(settings.home(), endpoint) |> result.unwrap([])
     _ -> []
   }
 }

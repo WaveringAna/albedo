@@ -1,5 +1,6 @@
 import albedo/daemon/store
 import albedo/harness/extensions/webhooks/ledger as hooks
+import albedo/harness/rpc
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/json
@@ -7,43 +8,34 @@ import gleam/option.{None}
 import gleam/result
 
 pub fn handle(db: store.Store, session: String, request: String) -> String {
-  let decoder = {
-    use method <- decode.field("method", decode.string)
-    use args <- decode.field("args", decode.dynamic)
-    decode.success(#(method, args))
+  rpc.serve(
+    request,
+    hooks.Invalid("invalid request"),
+    fn(method, args) { dispatch(db, session, method, args) },
+    describe,
+  )
+}
+
+fn describe(error: hooks.Error) -> #(String, String) {
+  case error {
+    hooks.Invalid(message) -> #("invalid", message)
+    hooks.Denied -> #("denied", "agent webhook management is disabled")
+    hooks.NotFound -> #("not_found", "hook or delivery not found")
+    hooks.Conflict -> #("conflict", "hook changed; list and retry")
+    hooks.Unauthorized -> #("unauthorized", "invalid signature")
+    hooks.Overloaded -> #("overloaded", "inbox full")
+    hooks.Storage(message) -> #("storage", message)
   }
-  let answer = {
-    use #(method, args) <- result.try(
-      json.parse(request, decoder)
-      |> result.replace_error(hooks.Invalid("invalid request")),
-    )
-    dispatch(db, session, method, args)
-  }
-  case answer {
-    Ok(value) -> json.object([#("ok", json.bool(True)), #("value", value)])
-    Error(error) -> {
-      let #(code, message) = case error {
-        hooks.Invalid(message) -> #("invalid", message)
-        hooks.Denied -> #("denied", "agent webhook management is disabled")
-        hooks.NotFound -> #("not_found", "hook or delivery not found")
-        hooks.Conflict -> #("conflict", "hook changed; list and retry")
-        hooks.Unauthorized -> #("unauthorized", "invalid signature")
-        hooks.Overloaded -> #("overloaded", "inbox full")
-        hooks.Storage(message) -> #("storage", message)
-      }
-      json.object([
-        #("ok", json.bool(False)),
-        #("code", json.string(code)),
-        #("message", json.string(message)),
-      ])
-    }
-  }
-  |> json.to_string
 }
 
 fn parse(args, decoder) {
-  decode.run(args, decoder)
-  |> result.replace_error(hooks.Invalid("invalid webhook arguments"))
+  rpc.args(args, decoder, hooks.Invalid("invalid webhook arguments"))
+}
+
+fn id_revision_decoder() {
+  use id <- decode.field("id", decode.string)
+  use revision <- decode.field("revision", decode.int)
+  decode.success(#(id, revision))
 }
 
 fn dispatch(db, session, method, args) {
@@ -84,8 +76,7 @@ fn dispatch(db, session, method, args) {
     }
     "webhooks.rotate" -> {
       let decoder = {
-        use id <- decode.field("id", decode.string)
-        use revision <- decode.field("revision", decode.int)
+        use #(id, revision) <- decode.then(id_revision_decoder())
         use secret <- decode.optional_field(
           "secret",
           None,
@@ -94,18 +85,12 @@ fn dispatch(db, session, method, args) {
         decode.success(#(id, revision, secret))
       }
       use #(id, revision, secret) <- result.try(parse(args, decoder))
-      use hook <- result.try(hooks.get(db, actor, session, id))
-      case hook.revision == revision {
-        False -> Error(hooks.Conflict)
-        True ->
-          hooks.rotate(db, actor, session, id, revision, secret)
-          |> result.map(provisioned)
-      }
+      hooks.rotate(db, actor, session, id, revision, secret)
+      |> result.map(provisioned)
     }
     "webhooks.configure" -> {
       let decoder = {
-        use id <- decode.field("id", decode.string)
-        use revision <- decode.field("revision", decode.int)
+        use #(id, revision) <- decode.then(id_revision_decoder())
         use header <- decode.field("header", decode.string)
         use prefix <- decode.field("prefix", decode.string)
         decode.success(#(id, revision, header, prefix))
@@ -115,13 +100,8 @@ fn dispatch(db, session, method, args) {
       |> result.map(hooks.to_json)
     }
     "webhooks.enable" | "webhooks.disable" | "webhooks.delete" -> {
-      let decoder = {
-        use id <- decode.field("id", decode.string)
-        use revision <- decode.field("revision", decode.int)
-        decode.success(#(id, revision))
-      }
-      use #(id, revision) <- result.try(parse(args, decoder))
-      let changed = case method {
+      use #(id, revision) <- result.try(parse(args, id_revision_decoder()))
+      case method {
         "webhooks.delete" -> hooks.delete(db, actor, session, id, revision)
         _ ->
           hooks.set_enabled(
@@ -133,7 +113,7 @@ fn dispatch(db, session, method, args) {
             method == "webhooks.enable",
           )
       }
-      changed |> result.map(hooks.to_json)
+      |> result.map(hooks.to_json)
     }
     _ -> Error(hooks.Invalid("unknown webhook method"))
   }

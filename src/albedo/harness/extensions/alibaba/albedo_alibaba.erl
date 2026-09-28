@@ -21,49 +21,35 @@
 %% or fetches live from the endpoint and caches to disk.
 models(Home0, Endpoint0) ->
     Home = text(Home0),
-    Endpoint = binary(Endpoint0),
     CachePath = filename:join(Home, ?CATALOG_FILE),
-    case is_cache_fresh(CachePath) of
-        true ->
-            case read_cache(CachePath) of
-                {ok, Ids} when Ids =/= [] -> {ok, Ids};
-                _ -> refresh_or_default(Home, Endpoint, CachePath)
-            end;
-        false ->
-            refresh_or_default(Home, Endpoint, CachePath)
+    case is_cache_fresh(CachePath) andalso read_cache(CachePath) of
+        {ok, Ids} when Ids =/= [] -> {ok, Ids};
+        _ -> refresh_or_default(Home, binary(Endpoint0), CachePath)
     end.
 
 %% Force a live reload of the model list from the endpoint.
 reload(Home0, Endpoint0) ->
     Home = text(Home0),
-    Endpoint = binary(Endpoint0),
     CachePath = filename:join(Home, ?CATALOG_FILE),
-    BaseUrl = resolve_base_url(Endpoint),
+    fetch_live(Home, binary(Endpoint0), CachePath).
+
+refresh_or_default(Home, Endpoint, CachePath) ->
+    case fetch_live(Home, Endpoint, CachePath) of
+        {ok, Ids} -> {ok, Ids};
+        {error, _} -> fallback_cache_or_default(CachePath)
+    end.
+
+fetch_live(Home, Endpoint, CachePath) ->
     case find_api_key(Home) of
         {ok, ApiKey} ->
-            case fetch_models(BaseUrl, ApiKey) of
+            case fetch_models(resolve_base_url(Endpoint), ApiKey) of
                 {ok, Ids} ->
                     _ = write_cache(CachePath, Ids),
                     {ok, Ids};
-                {error, Reason} -> {error, Reason}
+                Error -> Error
             end;
         {error, _} ->
             {error, <<"no Alibaba API key found">>}
-    end.
-
-refresh_or_default(Home, Endpoint, CachePath) ->
-    BaseUrl = resolve_base_url(Endpoint),
-    case find_api_key(Home) of
-        {ok, ApiKey} ->
-            case fetch_models(BaseUrl, ApiKey) of
-                {ok, Ids} ->
-                    _ = write_cache(CachePath, Ids),
-                    {ok, Ids};
-                {error, _} ->
-                    fallback_cache_or_default(CachePath)
-            end;
-        {error, _} ->
-            fallback_cache_or_default(CachePath)
     end.
 
 fallback_cache_or_default(CachePath) ->
@@ -77,23 +63,13 @@ fetch_models(BaseUrl0, ApiKey0) ->
     BaseUrl = text(BaseUrl0),
     ApiKey = text(ApiKey0),
     Url = string:trim(BaseUrl, trailing, "/") ++ "/models",
-    Parsed = uri_string:parse(Url),
-    Host = maps:get(host, Parsed, ""),
     Headers = [
         {"authorization", "Bearer " ++ ApiKey},
         {"accept", "application/json"},
         {"user-agent", "albedo"}
     ],
-    Tls = case maps:get(scheme, Parsed, "") of
-        "https" -> [{ssl, albedo_credentials:tls_options(Host)}];
-        _ -> []
-    end,
-    _ = application:ensure_all_started(inets),
-    _ = application:ensure_all_started(ssl),
-    Request = {Url, Headers},
-    HttpOptions = [{timeout, ?FETCH_TIMEOUT_MS}, {connect_timeout, 5000} | Tls],
-    case httpc:request(get, Request, HttpOptions, [{body_format, binary}]) of
-        {ok, {{_, 200, _}, _, Body}} ->
+    case albedo_http:get(Url, Headers, ?FETCH_TIMEOUT_MS, 5000) of
+        {ok, {200, _, Body}} ->
             try json:decode(Body) of
                 #{<<"data">> := List} when is_list(List) ->
                     Ids = [Id || #{<<"id">> := Id} <- List, is_binary(Id), is_chat_model(Id)],
@@ -101,7 +77,7 @@ fetch_models(BaseUrl0, ApiKey0) ->
                 _ -> {error, <<"unexpected /models response shape">>}
             catch _:_ -> {error, <<"invalid JSON from /models">>}
             end;
-        {ok, {{_, Status, _}, _, _}} ->
+        {ok, {Status, _, _}} ->
             {error, iolist_to_binary(io_lib:format("endpoint returned HTTP ~B", [Status]))};
         {error, Reason} ->
             {error, iolist_to_binary(io_lib:format("could not reach endpoint: ~p", [Reason]))}
@@ -125,34 +101,18 @@ is_chat_model(Id) when is_binary(Id) ->
 is_chat_model(_) -> false.
 
 is_cache_fresh(Path) ->
-    case file:read_file_info(Path, [{time, posix}]) of
-        {ok, #file_info{type = regular, mtime = Mtime}} ->
-            erlang:system_time(millisecond) - Mtime * 1000 < ?CACHE_MAX_AGE_MS;
-        _ -> false
-    end.
+    albedo_credentials:fresh(Path, ?CACHE_MAX_AGE_MS).
 
 read_cache(Path) ->
-    case file:read_file(Path) of
-        {ok, Bytes} ->
-            try json:decode(Bytes) of
-                List when is_list(List) ->
-                    {ok, [Id || Id <- List, is_binary(Id)]};
-                _ -> {error, invalid}
-            catch _:_ -> {error, invalid} end;
+    case albedo_credentials:read_json(Path) of
+        {ok, List} when is_list(List) ->
+            {ok, [Id || Id <- List, is_binary(Id)]};
+        {ok, _} -> {error, invalid};
         Error -> Error
     end.
 
 write_cache(Path, Ids) ->
-    Temp = Path ++ ".tmp." ++ integer_to_list(erlang:unique_integer([positive])),
-    _ = filelib:ensure_dir(Path),
-    case file:write_file(Temp, json:encode(Ids)) of
-        ok ->
-            _ = file:rename(Temp, Path),
-            ok;
-        Error ->
-            _ = file:delete(Temp),
-            Error
-    end.
+    albedo_credentials:write(Path, Ids).
 
 %% ---- key pool -----------------------------------------------------------
 
@@ -202,7 +162,7 @@ pool(Home, Profile) ->
     end,
     Siblings = [{Name, case U of <<>> -> BaseUrl; _ -> U end, K}
                 || {Name, U, K} <- alibaba_profiles(Home), Name =/= Profile]
-        ++ [{<<"auth.json">>, BaseUrl, K} || K <- auth_keys(filename:join(Home, "auth.json"))]
+        ++ [{<<"auth.json">>, BaseUrl, K} || K <- auth_keys(albedo_credentials:auth_path(Home))]
         ++ [{list_to_binary(Var), BaseUrl, unicode:characters_to_binary(K)}
             || Var <- ["ALIBABA_API_KEY", "DASHSCOPE_API_KEY"],
                K <- [os:getenv(Var)], is_list(K), K =/= ""],
@@ -219,26 +179,18 @@ id(#{<<"apiKey">> := Key}) ->
     binary:encode_hex(binary:part(crypto:hash(sha256, Key), 0, 8), lowercase).
 
 alibaba_profiles(Home) ->
-    case file:read_file(filename:join(Home, "config.json")) of
-        {ok, Bytes} ->
-            try json:decode(Bytes) of
-                #{<<"providers">> := Providers} when is_map(Providers) ->
-                    [{Name, maps:get(<<"baseUrl">>, P, <<>>), Key}
-                     || {Name, #{<<"extension">> := <<"alibaba">>, <<"apiKey">> := <<_, _/binary>> = Key} = P}
-                            <- lists:sort(maps:to_list(Providers))];
-                _ -> []
-            catch _:_ -> [] end;
+    case albedo_credentials:read_json(filename:join(Home, "config.json")) of
+        {ok, #{<<"providers">> := Providers}} when is_map(Providers) ->
+            [{Name, maps:get(<<"baseUrl">>, P, <<>>), Key}
+             || {Name, #{<<"extension">> := <<"alibaba">>, <<"apiKey">> := <<_, _/binary>> = Key} = P}
+                    <- lists:sort(maps:to_list(Providers))];
         _ -> []
     end.
 
 auth_keys(Path) ->
-    case file:read_file(Path) of
-        {ok, Bytes} ->
-            try json:decode(Bytes) of
-                #{<<"alibaba">> := List} when is_list(List) -> lists:filtermap(fun auth_key/1, List);
-                #{<<"alibaba">> := One} -> lists:filtermap(fun auth_key/1, [One]);
-                _ -> []
-            catch _:_ -> [] end;
+    case albedo_credentials:read(Path) of
+        {ok, #{<<"alibaba">> := List}} when is_list(List) -> lists:filtermap(fun auth_key/1, List);
+        {ok, #{<<"alibaba">> := One}} -> lists:filtermap(fun auth_key/1, [One]);
         _ -> []
     end.
 
@@ -250,46 +202,29 @@ auth_key(_) -> false.
 
 resolve_base_url(<<>>) ->
     case os:getenv("ALIBABA_BASE_URL") of
-        false -> ?DEFAULT_BASE_URL;
-        "" -> ?DEFAULT_BASE_URL;
-        Url -> unicode:characters_to_binary(string:trim(Url, trailing, "/"))
+        Url when is_list(Url), Url =/= "" -> unicode:characters_to_binary(string:trim(Url, trailing, "/"));
+        _ -> ?DEFAULT_BASE_URL
     end;
 resolve_base_url(Url) when is_binary(Url) ->
     string:trim(Url, trailing, "/").
 
 profile_settings(Home, Profile) ->
-    ConfigPath = filename:join(Home, "config.json"),
-    case file:read_file(ConfigPath) of
-        {ok, Bytes} ->
-            try json:decode(Bytes) of
-                #{<<"providers">> := Providers} when is_map(Providers) ->
-                    case maps:get(Profile, Providers, undefined) of
-                        #{<<"baseUrl">> := B, <<"apiKey">> := K} when is_binary(B), is_binary(K) ->
-                            {B, K};
-                        #{<<"baseUrl">> := B} when is_binary(B) ->
-                            {B, <<>>};
-                        #{<<"apiKey">> := K} when is_binary(K) ->
-                            {<<>>, K};
-                        _ -> {<<>>, <<>>}
-                    end;
-                _ -> {<<>>, <<>>}
-            catch _:_ -> {<<>>, <<>>} end;
+    case albedo_credentials:read_json(filename:join(Home, "config.json")) of
+        {ok, #{<<"providers">> := #{Profile := P}}} when is_map(P) ->
+            Bin = fun(K) -> case maps:get(K, P, <<>>) of B when is_binary(B) -> B; _ -> <<>> end end,
+            {Bin(<<"baseUrl">>), Bin(<<"apiKey">>)};
         _ -> {<<>>, <<>>}
     end.
 
 find_api_key(Home) ->
-    case key_from_auth_file(filename:join(Home, "auth.json")) of
+    case key_from_auth_file(albedo_credentials:auth_path(Home)) of
         {ok, Key} -> {ok, Key};
         _ ->
-            case os:getenv("ALIBABA_API_KEY") of
-                false ->
-                    case os:getenv("DASHSCOPE_API_KEY") of
-                        false -> {error, <<"no Alibaba API key found">>};
-                        "" -> {error, <<"no Alibaba API key found">>};
-                        Key -> {ok, unicode:characters_to_binary(Key)}
-                    end;
-                "" -> {error, <<"no Alibaba API key found">>};
-                Key -> {ok, unicode:characters_to_binary(Key)}
+            EnvKey = hd([K || Var <- ["ALIBABA_API_KEY", "DASHSCOPE_API_KEY"],
+                              K <- [os:getenv(Var)], is_list(K), K =/= ""] ++ [none]),
+            case EnvKey of
+                none -> {error, <<"no Alibaba API key found">>};
+                Val -> {ok, unicode:characters_to_binary(Val)}
             end
     end.
 

@@ -226,18 +226,14 @@ maybe_replenish(nofin, Pid, Stream) ->
 maybe_replenish(fin, _, _) ->
     ok.
 
-close(Connection = {connection, Owner, _Pid, _Stream, _Monitor, _Timeout})
-        when Owner =:= self() ->
-    close_owned(Connection);
-close({connection, _, Pid, _, _, _}) ->
-    ignore_failure(fun() -> gun:close(Pid) end),
-    nil.
-
-close_owned({connection, _Owner, Pid, Stream, Monitor, _Timeout}) ->
-    ignore_failure(fun() -> gun:cancel(Pid, Stream) end),
-    ignore_failure(fun() -> gun:close(Pid) end),
-    erlang:demonitor(Monitor, [flush]),
-    gun:flush(Pid),
+close({connection, Owner, Pid, Stream, Monitor, _Timeout}) ->
+    case Owner =:= self() of
+        true ->
+            ignore_failure(fun() -> gun:cancel(Pid, Stream) end),
+            cleanup(Pid, Monitor);
+        false ->
+            ignore_failure(fun() -> gun:close(Pid) end)
+    end,
     nil.
 
 with_connection(Connection, Run) ->
@@ -275,15 +271,19 @@ parse_url(URL) ->
 validate_url(URI) ->
     Scheme = lowercase(maps:get(scheme, URI, <<>>)),
     Host = maps:get(host, URI, <<>>),
-    case {transport(Scheme), valid_host(Host), forbidden_parts(URI), valid_port(URI)} of
-        {{ok, Transport, DefaultPort, Protocols}, true, false, {ok, Port}} ->
-            {ok, #{
-                host => binary_to_list(Host),
-                port => choose_port(Port, DefaultPort),
-                protocols => Protocols,
-                target => request_target(URI),
-                transport => Transport
-            }};
+    case {transport(Scheme), valid_host(Host), forbidden_parts(URI)} of
+        {{ok, Transport, DefaultPort, Protocols}, true, false} ->
+            case valid_port(URI, DefaultPort) of
+                {ok, Port} ->
+                    {ok, #{
+                        host => binary_to_list(Host),
+                        port => Port,
+                        protocols => Protocols,
+                        target => request_target(URI),
+                        transport => Transport
+                    }};
+                error -> error
+            end;
         _ ->
             error
     end.
@@ -297,15 +297,11 @@ valid_host(Host) -> is_binary(Host) andalso byte_size(Host) > 0.
 forbidden_parts(URI) ->
     maps:is_key(userinfo, URI) orelse maps:is_key(fragment, URI).
 
-valid_port(URI) ->
-    case maps:get(port, URI, undefined) of
-        undefined -> {ok, undefined};
+valid_port(URI, Default) ->
+    case maps:get(port, URI, Default) of
         Port when is_integer(Port), Port > 0, Port =< 65535 -> {ok, Port};
         _ -> error
     end.
-
-choose_port(undefined, Default) -> Default;
-choose_port(Port, _) -> Port.
 
 request_target(URI) ->
     Path = case maps:get(path, URI, <<>>) of

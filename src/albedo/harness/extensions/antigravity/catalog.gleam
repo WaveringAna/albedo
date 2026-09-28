@@ -10,6 +10,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/pair
 import gleam/result
 import gleam/string
 
@@ -77,6 +78,14 @@ pub fn models(home: String) -> List(Model) {
   discovered(home)
 }
 
+fn decode_discovered(
+  home: String,
+  decoder: decode.Decoder(a),
+) -> Result(a, Nil) {
+  use bytes <- result.try(native_discovered(home))
+  json.parse_bits(bytes, decoder) |> result.replace_error(Nil)
+}
+
 fn discovered(home: String) -> List(Model) {
   let entry = {
     use id <- decode.field("id", decode.string)
@@ -101,11 +110,7 @@ fn discovered(home: String) -> List(Model) {
       hint.pinned_output,
     ))
   }
-  native_discovered(home)
-  |> result.try(fn(bytes) {
-    json.parse_bits(bytes, decode.at(["models"], decode.list(entry)))
-    |> result.replace_error(Nil)
-  })
+  decode_discovered(home, decode.at(["models"], decode.list(entry)))
   |> result.unwrap([])
 }
 
@@ -122,18 +127,14 @@ pub fn split_id(id: String) -> #(String, Option(String)) {
   case id {
     "gemini-pro-agent" -> #("gemini-3.1-pro", Some("high"))
     _ ->
-      case
-        list.find_map(effort_suffixes, fn(pair) {
-          case string.ends_with(id, pair.0) {
-            True ->
-              Ok(#(string.drop_end(id, string.length(pair.0)), Some(pair.1)))
-            False -> Error(Nil)
-          }
-        })
-      {
-        Ok(res) -> res
-        Error(Nil) -> #(id, None)
-      }
+      list.find_map(effort_suffixes, fn(pair) {
+        case string.ends_with(id, pair.0) {
+          True ->
+            Ok(#(string.drop_end(id, string.length(pair.0)), Some(pair.1)))
+          False -> Error(Nil)
+        }
+      })
+      |> result.unwrap(#(id, None))
   }
 }
 
@@ -160,7 +161,7 @@ pub fn available_efforts(home: String, id: String) -> List(String) {
   |> list.filter_map(fn(m) {
     let #(b, e) = split_id(m.id)
     case b == base_id {
-      True -> e |> option.to_result(Nil)
+      True -> option.to_result(e, Nil)
       False -> Error(Nil)
     }
   })
@@ -185,10 +186,7 @@ pub fn resolve_variant(
   let all = models(home)
   let ren = renamed(home, id)
   let #(base_id, id_effort) = split_id(ren)
-  let target_effort = case effort {
-    Some(e) -> Some(e)
-    None -> id_effort
-  }
+  let target_effort = option.or(effort, id_effort)
   let variants =
     list.filter_map(all, fn(m) {
       let #(b, e) = split_id(m.id)
@@ -206,29 +204,16 @@ pub fn resolve_variant(
     _ -> {
       let eff = case target_effort {
         Some(e) -> e
-        None -> {
-          let available =
-            list.filter_map(variants, fn(p) { option.to_result(p.0, Nil) })
-          extension.default_effort(available)
+        None ->
+          variants
+          |> list.filter_map(fn(p) { option.to_result(p.0, Nil) })
+          |> extension.default_effort
           |> option.unwrap("medium")
-        }
       }
-      case list.find(variants, fn(p) { p.0 == Some(eff) }) {
-        Ok(#(_, m)) -> m
-        Error(_) ->
-          case list.find(variants, fn(p) { p.0 == Some("medium") }) {
-            Ok(#(_, m)) -> m
-            Error(_) ->
-              case list.find(variants, fn(p) { p.0 == Some("high") }) {
-                Ok(#(_, m)) -> m
-                Error(_) ->
-                  case list.first(variants) {
-                    Ok(#(_, m)) -> m
-                    Error(_) -> hint(ren)
-                  }
-              }
-          }
-      }
+      [Some(eff), Some("medium"), Some("high")]
+      |> list.find_map(list.key_find(variants, _))
+      |> result.lazy_or(fn() { list.first(variants) |> result.map(pair.second) })
+      |> result.unwrap(hint(ren))
     }
   }
 }
@@ -240,11 +225,7 @@ pub fn model(home: String, id: String, effort: Option(String)) -> Model {
 }
 
 fn renamed(home: String, id: String) -> String {
-  native_discovered(home)
-  |> result.try(fn(bytes) {
-    json.parse_bits(bytes, decode.at(["renamed", id], decode.string))
-    |> result.replace_error(Nil)
-  })
+  decode_discovered(home, decode.at(["renamed", id], decode.string))
   |> result.unwrap(id)
 }
 
@@ -291,30 +272,23 @@ fn lookup(id: String, at: String) -> Option(extension.ModelInfo) {
   let all = models(home)
   let matches_base = list.any(all, fn(m) { split_id(m.id).0 == base_id })
   let matches_raw = list.any(all, fn(m) { m.id == id || m.id == ren })
-  case matches_base || matches_raw {
-    False -> None
-    True -> {
-      let efforts = available_efforts(home, base_id)
-      let variant = resolve_variant(home, id, extension.default_effort(efforts))
-      let info =
-        extension.ModelInfo(
-          base_id,
-          "antigravity",
-          Some(variant.context_tokens),
-          None,
-          Some(variant.max_output_tokens),
-          case variant.images {
-            True -> ["text", "image"]
-            False -> ["text"]
-          },
-          Some(endpoint),
-          [],
-          "antigravity model discovery cached in " <> home,
-          efforts,
-        )
-      Some(models.complete_model(info, at))
-    }
-  }
+  use <- bool.guard(!matches_base && !matches_raw, None)
+  let efforts = available_efforts(home, base_id)
+  let variant = resolve_variant(home, id, extension.default_effort(efforts))
+  let info =
+    extension.ModelInfo(
+      ..extension.blank_model(base_id, "antigravity"),
+      context_tokens: Some(variant.context_tokens),
+      max_output_tokens: Some(variant.max_output_tokens),
+      input_modalities: case variant.images {
+        True -> ["text", "image"]
+        False -> ["text"]
+      },
+      endpoint: Some(endpoint),
+      source: "antigravity model discovery cached in " <> home,
+      efforts: efforts,
+    )
+  Some(models.complete_model(info, at))
 }
 
 /// The first listing after sign-in waits for discovery, so /login never
@@ -326,10 +300,11 @@ fn list_models(provider: String, _endpoint: String) -> List(String) {
       case discovered(home) {
         [] -> {
           let _ = native_reload(home)
-          base_model_ids(home)
+          Nil
         }
-        _ -> base_model_ids(home)
+        _ -> Nil
       }
+      base_model_ids(home)
     }
     _ -> []
   }

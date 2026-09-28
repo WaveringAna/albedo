@@ -5,6 +5,7 @@
 import albedo/daemon/events
 import albedo/daemon/image
 import albedo/daemon/transcript
+import albedo/openai_api/replay
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/int
@@ -85,21 +86,17 @@ fn request_decoder() {
         #("type", json.string("object")),
         #("properties", json.object([])),
       ]),
-      decode.dynamic |> decode.map(encode),
+      decode.dynamic |> decode.map(types.encode_value),
     ))
     use strict <- decode.then(decode.optionally_at(
       ["function", "strict"],
       False,
       decode.bool,
     ))
+    let tool = types.Tool(name, description, parameters, strict)
     case kind {
-      "function" ->
-        decode.success(types.Tool(name, description, parameters, strict))
-      _ ->
-        decode.failure(
-          types.Tool(name, description, parameters, strict),
-          "function tool",
-        )
+      "function" -> decode.success(tool)
+      _ -> decode.failure(tool, "function tool")
     }
   }
   use model <- decode.field("model", decode.string)
@@ -168,7 +165,7 @@ fn options_decoder() -> decode.Decoder(types.Options) {
         use name <- decode.subfield(["json_schema", "name"], decode.string)
         use schema <- decode.subfield(
           ["json_schema", "schema"],
-          decode.dynamic |> decode.map(encode),
+          decode.dynamic |> decode.map(types.encode_value),
         )
         use strict <- decode.then(decode.optionally_at(
           ["json_schema", "strict"],
@@ -219,9 +216,7 @@ fn message_decoder() -> decode.Decoder(Message) {
     use kind <- decode.field("type", decode.string)
     case kind {
       "text" | "input_text" ->
-        decode.field("text", decode.string, fn(text) {
-          decode.success(Text(text))
-        })
+        decode.at(["text"], decode.string) |> decode.map(Text)
       "image_url" -> {
         use url <- decode.field(
           "image_url",
@@ -237,18 +232,13 @@ fn message_decoder() -> decode.Decoder(Message) {
       decode.list(part),
       decode.optional(decode.string) |> decode.map(fn(_) { [] }),
     ])
-  let call = {
-    use id <- decode.field("id", decode.string)
-    use name <- decode.subfield(["function", "name"], decode.string)
-    use arguments <- decode.subfield(["function", "arguments"], decode.string)
-    decode.success(types.ToolCall(id, name, arguments))
-  }
   use role <- decode.field("role", decode.string)
   use parts <- decode.optional_field("content", [], content)
   use calls <- decode.optional_field(
     "tool_calls",
     [],
-    decode.optional(decode.list(call)) |> decode.map(option.unwrap(_, [])),
+    decode.optional(decode.list(replay.tool_call_decoder()))
+      |> decode.map(option.unwrap(_, [])),
   )
   use call_id <- decode.optional_field("tool_call_id", "", decode.string)
   decode.success(Message(role, parts, calls, call_id))
@@ -327,13 +317,7 @@ pub fn carry(
       let state =
         json.object([
           #("profile", json.string(profile)),
-          #(
-            "protocol",
-            json.string(case protocol {
-              types.Responses -> "responses"
-              types.ChatCompletions -> "chat_completions"
-            }),
-          ),
+          #("protocol", json.string(types.protocol_name(protocol))),
           #("output", json.array(turn.output, types.replay_json)),
         ])
         |> json.to_string
@@ -362,17 +346,7 @@ fn carried(id: String) -> Result(List(transcript.Entry), Nil) {
   use state <- result.try(unpack(state))
   let decoder = {
     use profile <- decode.field("profile", decode.string)
-    use protocol <- decode.field(
-      "protocol",
-      decode.string
-        |> decode.then(fn(name) {
-          case name {
-            "responses" -> decode.success(types.Responses)
-            "chat_completions" -> decode.success(types.ChatCompletions)
-            _ -> decode.failure(types.Responses, "protocol")
-          }
-        }),
-    )
+    use protocol <- decode.field("protocol", types.protocol_decoder())
     use output <- decode.field(
       "output",
       decode.list(types.replay_decoder(protocol)),
@@ -413,32 +387,22 @@ fn data_image(url: String) -> Result(types.Image, String) {
   }
 }
 
+/// OpenAI writes empty assistant content as JSON null, not "".
+fn content_json(content: String) -> Json {
+  case content {
+    "" -> json.null()
+    _ -> json.string(content)
+  }
+}
+
 fn assistant(
   content: String,
   calls: List(types.ToolCall),
 ) -> Result(types.Input, String) {
   json.object([
     #("role", json.string("assistant")),
-    #("content", case content {
-      "" -> json.null()
-      text -> json.string(text)
-    }),
-    #(
-      "tool_calls",
-      json.array(calls, fn(call) {
-        json.object([
-          #("id", json.string(call.id)),
-          #("type", json.string("function")),
-          #(
-            "function",
-            json.object([
-              #("name", json.string(call.name)),
-              #("arguments", json.string(call.arguments)),
-            ]),
-          ),
-        ])
-      }),
-    ),
+    #("content", content_json(content)),
+    #("tool_calls", json.array(calls, replay.tool_call)),
   ])
   |> json.to_string
   |> json.parse(types.replay_decoder(types.ChatCompletions))
@@ -476,22 +440,17 @@ pub fn completion(reply: Reply, turn: types.Turn) -> Json {
   let message =
     [
       #("role", json.string("assistant")),
-      #("content", case content {
-        "" -> json.null()
-        text -> json.string(text)
-      }),
+      #("content", content_json(content)),
     ]
     |> when(thinking != "", #("reasoning_content", json.string(thinking)))
     |> when(turn.tool_calls != [], #(
       "tool_calls",
       json.array(turn.tool_calls, call_json(None, _)),
     ))
-  json.object(
+  envelope(
+    reply,
+    "chat.completion",
     [
-      #("id", json.string(reply.id)),
-      #("object", json.string("chat.completion")),
-      #("created", json.int(reply.created)),
-      #("model", json.string(reply.model)),
       #(
         "choices",
         json.preprocessed_array([
@@ -503,7 +462,7 @@ pub fn completion(reply: Reply, turn: types.Turn) -> Json {
         ]),
       ),
     ]
-    |> when(turn.usage != None, #("usage", usage(turn.usage))),
+      |> when(turn.usage != None, #("usage", usage(turn.usage))),
   )
 }
 
@@ -556,11 +515,7 @@ pub fn closing(
   let usage = case include_usage {
     False -> []
     True -> [
-      json.object([
-        #("id", json.string(reply.id)),
-        #("object", json.string("chat.completion.chunk")),
-        #("created", json.int(reply.created)),
-        #("model", json.string(reply.model)),
+      envelope(reply, "chat.completion.chunk", [
         #("choices", json.preprocessed_array([])),
         #("usage", usage(turn.usage)),
       ]),
@@ -581,16 +536,26 @@ pub fn error(message: String) -> Json {
   ])
 }
 
+fn envelope(
+  reply: Reply,
+  object: String,
+  fields: List(#(String, Json)),
+) -> Json {
+  json.object([
+    #("id", json.string(reply.id)),
+    #("object", json.string(object)),
+    #("created", json.int(reply.created)),
+    #("model", json.string(reply.model)),
+    ..fields
+  ])
+}
+
 fn chunk(
   reply: Reply,
   delta: List(#(String, Json)),
   finish: Option(String),
 ) -> Json {
-  json.object([
-    #("id", json.string(reply.id)),
-    #("object", json.string("chat.completion.chunk")),
-    #("created", json.int(reply.created)),
-    #("model", json.string(reply.model)),
+  envelope(reply, "chat.completion.chunk", [
     #(
       "choices",
       json.preprocessed_array([
@@ -605,24 +570,11 @@ fn chunk(
 }
 
 fn call_json(index: Option(Int), call: types.ToolCall) -> Json {
-  [
-    #("id", json.string(call.id)),
-    #("type", json.string("function")),
-    #(
-      "function",
-      json.object([
-        #("name", json.string(call.name)),
-        #("arguments", json.string(call.arguments)),
-      ]),
-    ),
-  ]
-  |> fn(fields) {
-    case index {
-      Some(index) -> [#("index", json.int(index)), ..fields]
-      None -> fields
-    }
+  case index {
+    Some(index) ->
+      json.object([#("index", json.int(index)), ..replay.tool_call_fields(call)])
+    None -> replay.tool_call(call)
   }
-  |> json.object
 }
 
 fn finish(finish: types.Finish) -> String {
@@ -668,6 +620,3 @@ fn pack(json: String) -> String
 
 @external(erlang, "albedo_proxy", "unpack")
 fn unpack(state: String) -> Result(BitArray, Nil)
-
-@external(erlang, "albedo_proxy", "encode")
-fn encode(value: decode.Dynamic) -> Json

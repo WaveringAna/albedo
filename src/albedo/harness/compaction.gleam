@@ -3,6 +3,7 @@
 import albedo/daemon/store
 import albedo/harness/extensions/python/kernel
 import albedo/openai_api/types
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -78,6 +79,15 @@ pub type Folds {
   )
 }
 
+/// `Ok(Nil)` when `condition` holds, else `Error(message)`: the guard every
+/// strategy and retrieval tool states as a boolean with one error string.
+pub fn require(condition: Bool, message: String) -> Result(Nil, String) {
+  case condition {
+    True -> Ok(Nil)
+    False -> Error(message)
+  }
+}
+
 /// The history a strategy sees when no fold provider is enabled.
 pub fn no_prior(history: List(types.Input)) -> Result(Prior, String) {
   Ok(Prior([], history))
@@ -127,6 +137,63 @@ pub type Observation {
   )
 }
 
+/// The observation every strategy reports: the trigger's free share, a local
+/// estimate, and item counts, around the strategy's own provenance strings.
+pub fn observation(
+  strategy: String,
+  status: String,
+  source: String,
+  history_source: String,
+  trigger_percent: Int,
+  capacity: Option(Int),
+  estimated: Int,
+  before: Int,
+  after: Int,
+) -> Observation {
+  Observation(
+    strategy,
+    status,
+    source,
+    history_source,
+    Some(100 - trigger_percent),
+    capacity,
+    Some(estimated),
+    Some("local byte-based estimate; not provider token usage"),
+    Some(before),
+    Some(after),
+  )
+}
+
+/// Whether this request reached the configured share of the window. Integer
+/// arithmetic keeps the threshold stable without floats.
+pub fn triggered(
+  forced: Bool,
+  estimated: Int,
+  capacity: Option(Int),
+  trigger_percent: Int,
+) -> Bool {
+  case forced, capacity {
+    True, _ -> True
+    False, Some(tokens) -> estimated * 100 >= tokens * trigger_percent
+    False, None -> False
+  }
+}
+
+/// A compaction's tail budget: its share of the window, or of what the
+/// request holds now when forced, so `/compact` still compacts far below
+/// a large window.
+pub fn tail_budget(
+  capacity: Int,
+  size: Int,
+  forced: Bool,
+  tail_percent: Int,
+) -> Int {
+  case forced {
+    True -> int.min(capacity, size) * tail_percent / 100
+    False -> capacity * tail_percent / 100
+  }
+}
+
 /// Receives chronological history before each model request. Implementations
 /// own their summaries/state and must preserve valid tool call/result pairs.
 /// Failure stops the turn; the full durable transcript is never replaced.
@@ -152,16 +219,19 @@ pub fn input_bytes(input: types.Input) -> Int {
     types.ToolOutput(id, output, images) ->
       string.byte_size(id)
       + string.byte_size(output)
-      + list.fold(images, 0, fn(total, image) {
-        total + types.image_size(image)
-      })
+      + fold_cost(images, types.image_size)
     types.Replay(item) ->
       types.replay_json(item) |> json.to_string |> string.byte_size
   }
 }
 
 pub fn inputs_bytes(inputs: List(types.Input)) -> Int {
-  inputs |> list.fold(0, fn(total, input) { total + input_bytes(input) })
+  fold_cost(inputs, input_bytes)
+}
+
+/// The total of `cost` over `items`.
+fn fold_cost(items: List(a), cost: fn(a) -> Int) -> Int {
+  list.fold(items, 0, fn(total, item) { total + cost(item) })
 }
 
 pub fn estimate_input(input: types.Input) -> Int {
@@ -173,9 +243,7 @@ pub fn estimate_input(input: types.Input) -> Int {
       estimate_text(text) + estimate_image(image) + 20
     types.ToolOutput(id, output, [_, ..] as images) ->
       estimate_text(id <> output)
-      + list.fold(images, 0, fn(total, image) {
-        total + estimate_image(image) + 20
-      })
+      + fold_cost(images, fn(image) { estimate_image(image) + 20 })
       + 12
     _ -> { input_bytes(input) + 3 } / 4 + 12
   }
@@ -197,14 +265,12 @@ fn ceiling_div(value: Int, divisor: Int) -> Int {
 }
 
 pub fn estimate_inputs(inputs: List(types.Input)) -> Int {
-  inputs |> list.fold(0, fn(total, input) { total + estimate_input(input) })
+  fold_cost(inputs, estimate_input)
 }
 
 pub fn estimate_tools(tools: List(types.Tool)) -> Int {
-  tools
-  |> list.fold(0, fn(total, tool) {
-    total
-    + estimate_text(tool.name)
+  fold_cost(tools, fn(tool) {
+    estimate_text(tool.name)
     + estimate_text(tool.description)
     + estimate_text(json.to_string(tool.parameters))
     + 20
@@ -268,42 +334,81 @@ pub fn split_tail(
   history: List(types.Input),
   budget: Int,
 ) -> #(List(types.Input), List(types.Input)) {
-  let kept = keep_units(list.reverse(units(history, [], [])), budget, 0, 0)
+  let kept =
+    keep_tail(
+      list.reverse(split_starts(history, is_user)),
+      1,
+      Some(budget),
+      estimate_inputs,
+    )
+    |> list.flatten
+    |> list.length
   list.split(history, list.length(history) - kept)
 }
 
-fn keep_units(
-  newest_first: List(List(types.Input)),
-  budget: Int,
+/// The newest whole units a projection keeps, in conversation order: at
+/// least `required` of them, then more while `budget` estimated tokens
+/// admits each unit `cost` prices.
+pub fn keep_tail(
+  newest_first: List(a),
+  required: Int,
+  budget: Option(Int),
+  cost: fn(a) -> Int,
+) -> List(a) {
+  keep_admitted(newest_first, required, budget, cost, 0, 0, [])
+}
+
+fn keep_admitted(
+  remaining: List(a),
+  required: Int,
+  budget: Option(Int),
+  cost: fn(a) -> Int,
+  kept: Int,
   tokens: Int,
-  items: Int,
-) -> Int {
-  case newest_first {
-    [] -> items
+  selected: List(a),
+) -> List(a) {
+  case remaining {
+    [] -> selected
     [unit, ..rest] -> {
-      let spent = tokens + estimate_inputs(unit)
-      case items == 0 || spent <= budget {
-        True -> keep_units(rest, budget, spent, items + list.length(unit))
-        False -> items
+      let price = cost(unit)
+      let within_budget = case budget {
+        Some(limit) -> tokens + price <= limit
+        None -> False
+      }
+      case kept < required || within_budget {
+        True ->
+          keep_admitted(rest, required, budget, cost, kept + 1, tokens + price, [
+            unit,
+            ..selected
+          ])
+        False -> selected
       }
     }
   }
 }
 
-fn units(
-  remaining: List(types.Input),
-  current: List(types.Input),
-  complete: List(List(types.Input)),
-) -> List(List(types.Input)) {
+/// Splits `items` into runs that each start where `starts` reports a boundary:
+/// the run shape both a projection's source rows and its model inputs share.
+pub fn split_starts(items: List(a), starts: fn(a) -> Bool) -> List(List(a)) {
+  split_runs(items, [], starts, [])
+}
+
+fn split_runs(
+  remaining: List(a),
+  current: List(a),
+  starts: fn(a) -> Bool,
+  complete: List(List(a)),
+) -> List(List(a)) {
   case remaining, current {
     [], [] -> list.reverse(complete)
     [], _ -> list.reverse([list.reverse(current), ..complete])
-    [input, ..rest], [_, ..] ->
-      case is_user(input) {
-        True -> units(rest, [input], [list.reverse(current), ..complete])
-        False -> units(rest, [input, ..current], complete)
+    [item, ..rest], [_, ..] ->
+      case starts(item) {
+        True ->
+          split_runs(rest, [item], starts, [list.reverse(current), ..complete])
+        False -> split_runs(rest, [item, ..current], starts, complete)
       }
-    [input, ..rest], [] -> units(rest, [input], complete)
+    [item, ..rest], [] -> split_runs(rest, [item], starts, complete)
   }
 }
 

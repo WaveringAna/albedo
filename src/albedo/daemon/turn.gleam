@@ -117,19 +117,31 @@ pub fn source_name(source: Source) -> String {
   }
 }
 
+type SourceRule {
+  StartsTurn
+  SteersOnly
+  RefusedWhenBusy
+}
+
+fn source_rule(source: Source) -> SourceRule {
+  case source {
+    JobWake | Mail(_, mail.Webhook) -> RefusedWhenBusy
+    Note(_) -> SteersOnly
+    _ -> StartsTurn
+  }
+}
+
 pub fn admit(
   activity: Activity,
   submission: Submission,
   queued: Int,
 ) -> Admission {
-  case activity, bounded(submission), submission.source {
-    _, False, _ -> Reject(Oversized)
-    _, True, Note(_) -> room(queued)
-    Running(_), True, Chat | Running(_), True, Continue -> room(queued)
-    Running(_), True, Mail(_, mail.Webhook) -> Reject(Busy)
-    Running(_), True, Mail(..) -> room(queued)
-    Running(_), True, JobWake -> Reject(Busy)
-    Resting, True, _ | Interrupted, True, _ -> Start
+  case bounded(submission), source_rule(submission.source), activity {
+    False, _, _ -> Reject(Oversized)
+    True, SteersOnly, _ -> room(queued)
+    True, RefusedWhenBusy, Running(_) -> Reject(Busy)
+    True, StartsTurn, Running(_) -> room(queued)
+    True, _, _ -> Start
   }
 }
 
@@ -205,12 +217,12 @@ pub fn live(activity: Activity, id: String) -> Bool {
 
 /// Also raises the worker's latch, so the two copies cannot disagree.
 pub fn cancel(activity: Activity) -> Activity {
-  case activity {
-    Running(run) -> {
+  case running(activity) {
+    Some(run) -> {
       raise(run.stop)
       Running(Run(..run, cancelled: True))
     }
-    other -> other
+    None -> activity
   }
 }
 
@@ -220,10 +232,10 @@ pub fn committed(
   id: String,
   stage: conversation.Stage,
 ) -> Activity {
-  case activity {
-    Running(Run(work: Turn(_), ..) as run) if run.id == id ->
+  case owner(activity, id) {
+    Some(Run(work: Turn(_), ..) as run) ->
       Running(Run(..run, work: Turn(Some(stage))))
-    other -> other
+    _ -> activity
   }
 }
 

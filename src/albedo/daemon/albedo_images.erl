@@ -6,8 +6,9 @@
 %% that fetches the payload (see types.ImageData). A packed row stores
 %% {stored_data, Hash, Size} (no fun), or the legacy bare Base64 binary.
 -module(albedo_images).
--export([externalize/2, attach/2, pack/1, pack_image/1, load/2, canonical/1, legacy/1, hashes/1, migrate/2, clean/1, ensure_dir/1]).
+-export([externalize/2, attach/2, pack/1, pack_image/1, load/2, canonical/1, legacy/1, results/1, hashes/1, migrate/2, ensure_dir/1]).
 
+%% The same data-size limit albedo_image guards with; a guard needs the macro.
 -define(MAX_DATA_BYTES, 6990508).
 
 %% Moves the inline images of one input into Blobs [{Hash, Base64}], returning
@@ -43,22 +44,19 @@ attach({user_image, Text, Image}, Read) ->
         error -> error
     end;
 attach({tool_output, Id, Text, Images}, Read) ->
-    Loaded = [load(Image, Read) || Image <- Images],
-    case lists:all(fun({ok, _}) -> true; (_) -> false end, Loaded) of
-        true -> {ok, {tool_output, Id, Text, [I || {ok, I} <- Loaded]}};
-        false -> error
+    case results([load(Image, Read) || Image <- Images]) of
+        {ok, Loaded} -> {ok, {tool_output, Id, Text, Loaded}};
+        error -> error
     end;
 attach(Input, _) -> {ok, Input}.
 
 load({image, Mime, {stored_data, Hash, Size}, W, H, Bytes}, Read)
         when is_binary(Mime), is_binary(Hash), byte_size(Hash) =:= 64,
              is_integer(Size), Size > 0, Size =< ?MAX_DATA_BYTES,
-             is_integer(W), is_integer(H), is_integer(Bytes), Bytes > 0 ->
+             is_integer(W), is_integer(H), is_integer(Bytes), Bytes > 0,
+             Size =:= 4 * ((Bytes + 2) div 3) ->
     %% A stored payload was validated as canonical base64 on insert.
-    case Size =:= 4 * ((Bytes + 2) div 3) of
-        true -> {ok, {image, Mime, stored(Hash, Size, Read), W, H, Bytes}};
-        false -> error
-    end;
+    {ok, {image, Mime, stored(Hash, Size, Read), W, H, Bytes}};
 load({image, Mime, Data, W, H, Bytes} = Legacy, _) when is_binary(Data) ->
     case albedo_image:valid(Legacy) of
         true -> {ok, {image, Mime, {inline_data, Data}, W, H, Bytes}};
@@ -80,65 +78,70 @@ pack_image(Image) -> Image.
 %% Any term with every image's payload replaced by its content hash, so equal
 %% content fingerprints equally whether it is inline or stored. Terms without
 %% images are returned unchanged.
-canonical({image, Mime, {inline_data, Data}, W, H, Bytes}) when is_binary(Mime) ->
-    {image, Mime, {sha256, hash(Data)}, W, H, Bytes};
-canonical({image, Mime, {stored_data, Hash, _, _}, W, H, Bytes}) when is_binary(Mime) ->
-    {image, Mime, {sha256, Hash}, W, H, Bytes};
-canonical(T) when is_tuple(T) -> list_to_tuple(canonical(tuple_to_list(T)));
-canonical([H | T]) -> [canonical(H) | canonical(T)];
-canonical(M) when is_map(M) -> maps:from_list(canonical(maps:to_list(M)));
-canonical(Other) -> Other.
+canonical(Term) -> transform(Term, fun hash_payload/1).
+
+hash_payload({image, Mime, Payload, W, H, Bytes}) ->
+    Hash = case Payload of
+        {inline_data, Data} -> hash(Data);
+        {stored_data, Hsh, _, _} -> Hsh
+    end,
+    {image, Mime, {sha256, Hash}, W, H, Bytes}.
 
 %% The term as it was before images were stored: payloads inline as bare
 %% binaries. Reads every stored payload; {error, nil} if one is missing.
 legacy(Term) ->
-    try {ok, legacy_term(Term)}
+    try {ok, transform(Term, fun inline_payload/1)}
     catch throw:missing -> {error, nil}
     end.
 
-legacy_term({image, Mime, {inline_data, Data}, W, H, Bytes}) when is_binary(Mime) ->
+inline_payload({image, Mime, {inline_data, Data}, W, H, Bytes}) ->
     {image, Mime, Data, W, H, Bytes};
-legacy_term({image, Mime, {stored_data, _, _, Read}, W, H, Bytes}) when is_binary(Mime) ->
+inline_payload({image, Mime, {stored_data, _, _, Read}, W, H, Bytes}) ->
     case Read() of
         {ok, Data} -> {image, Mime, Data, W, H, Bytes};
         _ -> throw(missing)
-    end;
-legacy_term(T) when is_tuple(T) -> list_to_tuple(legacy_term(tuple_to_list(T)));
-legacy_term([H | T]) -> [legacy_term(H) | legacy_term(T)];
-legacy_term(M) when is_map(M) -> maps:from_list(legacy_term(maps:to_list(M)));
-legacy_term(Other) -> Other.
+    end.
+
+%% Rebuilds a term with every image payload mapped through Replace; everything
+%% else keeps its structure. An image tuple whose payload is neither inline
+%% nor stored is walked like any other tuple.
+transform({image, Mime, {inline_data, _}, _, _, _} = Image, Replace) when is_binary(Mime) -> Replace(Image);
+transform({image, Mime, {stored_data, _, _, _}, _, _, _} = Image, Replace) when is_binary(Mime) -> Replace(Image);
+transform(T, Replace) when is_tuple(T) -> list_to_tuple(transform(tuple_to_list(T), Replace));
+transform([H | T], Replace) -> [transform(H, Replace) | transform(T, Replace)];
+transform(M, Replace) when is_map(M) -> maps:from_list(transform(maps:to_list(M), Replace));
+transform(Other, _) -> Other.
+
+%% Every attempt's value, or error when one failed.
+results(Attempts) ->
+    case lists:all(fun({ok, _}) -> true; (_) -> false end, Attempts) of
+        true -> {ok, [Value || {ok, Value} <- Attempts]};
+        false -> error
+    end.
 
 %% Hashes a packed row references, without attaching or validating.
 hashes(Payload) ->
     try binary_to_term(Payload, [safe]) of
-        {1, {user_image, _, Image}} -> ref(Image);
-        {1, {tool_output, _, _, Images}} when is_list(Images) -> lists:append([ref(I) || I <- Images]);
+        {1, {user_image, _, {image, _, {stored_data, Hash, _}, _, _, _}}} -> [Hash];
+        {1, {tool_output, _, _, Images}} when is_list(Images) ->
+            [Hash || {image, _, {stored_data, Hash, _}, _, _, _} <- Images];
         _ -> []
     catch _:_ -> []
     end.
-
-ref({image, _, {stored_data, Hash, _}, _, _, _}) -> [Hash];
-ref(_) -> [].
 
 %% One legacy row, rewritten: {rewrite, Payload, Blobs} when it held inline images
 %% that moved to the image table, keep otherwise (including rows that do not
 %% decode, which are left for the loader to report).
 migrate(Payload, Read) ->
-    case albedo_conversation:unpack(Payload, Read) of
-        {ok, Input} ->
-            case externalize(Input, Read) of
-                {_, []} -> keep;
-                {Stored, Blobs} -> {rewrite, albedo_conversation:pack(Stored), Blobs}
-            end;
+    maybe
+        {ok, Input} ?= albedo_conversation:unpack(Payload, Read),
+        {Stored, [_ | _] = Blobs} ?= externalize(Input, Read),
+        {rewrite, albedo_conversation:pack(Stored), Blobs}
+    else
         _ -> keep
     end.
 
 %% Canonical base64 needs no JSON escaping; anything else stays inline.
-clean(<<C, Rest/binary>>)
-        when (C >= $A andalso C =< $Z); (C >= $a andalso C =< $z);
-             (C >= $0 andalso C =< $9); C =:= $+; C =:= $/; C =:= $= ->
-    clean(Rest);
-clean(<<>>) -> true;
-clean(_) -> false.
+clean(Value) -> albedo_image:charset(Value, true).
 
 ensure_dir(Path) -> _ = filelib:ensure_dir(Path), nil.

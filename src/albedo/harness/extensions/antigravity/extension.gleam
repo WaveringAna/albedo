@@ -2,7 +2,6 @@
 //// albedo requests and replay to Gemini's wire format over the OpenAI
 //// transport, so history, projection, and tools stay provider-neutral.
 
-import albedo/daemon/store
 import albedo/harness/extension
 import albedo/harness/extensions/antigravity/catalog
 import albedo/harness/extensions/antigravity/stream
@@ -19,7 +18,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import gleam/uri
 
 pub type Access {
   Access(token: String, project: String, email: String)
@@ -38,7 +36,7 @@ pub fn extension() -> extension.Extension {
         resolve,
       )),
     ],
-    initialise,
+    extension.no_initialise,
   )
 }
 
@@ -62,25 +60,22 @@ pub fn login(endpoints: Endpoints) -> oauth.Login {
     types.ChatCompletions,
     "google-antigravity",
     oauth.Callback("127.0.0.1", 51_121, "/oauth-callback", False),
-    authorize,
+    fn(grant) {
+      oauth.authorize_url("https://accounts.google.com/o/oauth2/v2/auth", [
+        #("client_id", client_id()),
+        #("response_type", "code"),
+        #("redirect_uri", grant.redirect),
+        #("scope", string.join(scopes, " ")),
+        #("state", grant.state),
+        #("access_type", "offline"),
+        #("prompt", "consent"),
+      ])
+    },
     fn(grant, code, progress) {
       native_exchange(code, grant.redirect, progress, endpoints)
     },
     native_account,
   )
-}
-
-fn authorize(grant: oauth.Grant) -> String {
-  "https://accounts.google.com/o/oauth2/v2/auth?"
-  <> uri.query_to_string([
-    #("client_id", client_id()),
-    #("response_type", "code"),
-    #("redirect_uri", grant.redirect),
-    #("scope", string.join(scopes, " ")),
-    #("state", grant.state),
-    #("access_type", "offline"),
-    #("prompt", "consent"),
-  ])
 }
 
 const scopes = [
@@ -91,34 +86,23 @@ const scopes = [
   "https://www.googleapis.com/auth/experimentsandconfigs",
 ]
 
-fn initialise(_ledger: store.Store) -> Result(Nil, String) {
-  Ok(Nil)
-}
-
 fn resolve(
   context: extension.ModelContext,
 ) -> Option(Result(extension.Upstream, String)) {
-  case context.provider {
-    "antigravity" ->
-      case context.protocol {
-        types.ChatCompletions ->
-          Some({
-            use access <- result.map(connect(context.home, context.session))
-            upstream(
-              context.home,
-              access,
-              context.session,
-              catalog.model(context.home, context.model, context.effort),
-              user_agent(context.home),
-            )
-          })
-        _ ->
-          Some(Error(
-            "Antigravity provider requires the chat_completions protocol",
-          ))
-      }
-    _ -> None
-  }
+  use <- rotation.require_provider(
+    context,
+    "antigravity",
+    "Antigravity",
+    types.ChatCompletions,
+  )
+  use access <- result.map(connect(context.home, context.session))
+  upstream(
+    context.home,
+    access,
+    context.session,
+    catalog.model(context.home, context.model, context.effort),
+    user_agent(context.home),
+  )
 }
 
 /// The session's current account.
@@ -170,34 +154,21 @@ pub fn pool(
   rotation.Pool(
     current: fn() { connect(home, session) },
     mark: fn(access, body) {
-      limited(home, access, body)
-      |> option.from_result
-      |> option.map(fn(limit) {
-        rotation.marked(limit.lasting, limit.next != "")
-      })
+      limited(home, access, body) |> rotation.mark_limit
     },
-    same: fn(a: Access, b: Access) { a.token == b.token },
+    same: fn(a, b) { a.token == b.token },
     stream: stream,
   )
 }
 
-type Limited {
-  Limited(account: String, until: String, next: String, lasting: Bool)
-}
-
-fn limited(home: String, access: Access, body: String) -> Result(Limited, Nil) {
-  let decoder = {
-    use account <- decode.field("account", decode.string)
-    use until <- decode.field("until", decode.string)
-    use next <- decode.field("next", decode.string)
-    use lasting <- decode.field("lasting", decode.bool)
-    decode.success(Limited(account, until, next, lasting))
-  }
+fn limited(
+  home: String,
+  access: Access,
+  body: String,
+) -> Result(rotation.Limited, Nil) {
   native_limited(home, access.token, body)
   |> result.replace_error(Nil)
-  |> result.try(fn(encoded) {
-    json.parse(encoded, decoder) |> result.replace_error(Nil)
-  })
+  |> result.try(rotation.decode_limited)
 }
 
 pub fn explain(
@@ -221,7 +192,11 @@ pub fn explain(
     types.HttpError(429, body) ->
       case limited(home, access, body) {
         Ok(limit) -> Some(limit_message(account, limit))
-        Error(_) -> Some("Cloud Code Assist API error (429): " <> message(body))
+        Error(_) ->
+          Some(
+            "Cloud Code Assist API error (429): "
+            <> rotation.error_message(body),
+          )
       }
     types.HttpError(status, body) ->
       Some(case validation_url(body) {
@@ -235,7 +210,7 @@ pub fn explain(
           "Cloud Code Assist API error ("
           <> int.to_string(status)
           <> "): "
-          <> message(body)
+          <> rotation.error_message(body)
       })
     _ -> None
   }
@@ -243,28 +218,16 @@ pub fn explain(
 
 /// By the time this explains a limit, the rotation has already tried every
 /// sibling with room.
-fn limit_message(account: String, limit: Limited) -> String {
+fn limit_message(account: String, limit: rotation.Limited) -> String {
   let kind = case limit.lasting {
     True -> "quota exhausted"
     False -> "rate limited"
   }
-  let head =
-    "Antigravity " <> kind <> " for " <> account <> " until " <> limit.until
-  case limit.next {
-    "" ->
-      head
-      <> "; no other Google account has room. Add one with /login or wait for the reset"
-    next ->
-      head
-      <> "; the next turn will use "
-      <> next
-      <> ". Send your message again to continue"
-  }
-}
-
-fn message(body: String) -> String {
-  json.parse(body, decode.at(["error", "message"], decode.string))
-  |> result.unwrap(body)
+  rotation.limit_message(
+    "Antigravity " <> kind <> " for " <> account <> " until " <> limit.until,
+    limit.next,
+    "no other Google account has room. Add one with /login or wait for the reset",
+  )
 }
 
 fn validation_url(body: String) -> Result(String, Nil) {
@@ -277,16 +240,16 @@ fn validation_url(body: String) -> Result(String, Nil) {
     )
     decode.success(#(reason, url))
   }
-  json.parse(body, decode.at(["error", "details"], decode.list(detail)))
-  |> result.replace_error(Nil)
-  |> result.try(
-    list.find_map(_, fn(detail) {
-      case detail {
-        #("VALIDATION_REQUIRED", url) if url != "" -> Ok(url)
-        _ -> Error(Nil)
-      }
-    }),
+  use details <- result.try(
+    json.parse(body, decode.at(["error", "details"], decode.list(detail)))
+    |> result.replace_error(Nil),
   )
+  list.find_map(details, fn(detail) {
+    case detail {
+      #("VALIDATION_REQUIRED", url) if url != "" -> Ok(url)
+      _ -> Error(Nil)
+    }
+  })
 }
 
 fn access_decoder() -> decode.Decoder(Access) {

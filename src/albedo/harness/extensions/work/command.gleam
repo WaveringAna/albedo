@@ -7,7 +7,6 @@ import albedo/harness/command.{
 }
 import albedo/harness/extensions/work/ledger as work
 import albedo/harness/page
-import gleam/dict
 import gleam/int
 import gleam/json
 import gleam/list
@@ -34,9 +33,7 @@ pub fn command(store: work.Store, cwd: String) -> Command {
     False,
     True,
     fn(ctx, caller, args) {
-      let action = dict.get(args, "action") |> result.unwrap("")
-      let details =
-        dict.get(args, "details") |> result.unwrap("") |> string.trim
+      let #(action, details) = page.args(args, "")
       case action, caller {
         "", _ -> listing(store, cwd)
         _, UserCall -> change(store, cwd, ctx, action, details)
@@ -94,15 +91,19 @@ fn listing(store: work.Store, cwd: String) -> Result(command.Outcome, String) {
   )
 }
 
-/// Active work first, then blocked, open, and finished items last.
-fn rank(item: work.Item) -> Int {
-  case item.status {
-    work.Active -> 0
-    work.Blocked -> 1
-    work.Open -> 2
-    work.Done -> 3
-    work.Cancelled -> 4
+/// Rank and tone: active work first, then blocked, open, and finished items last.
+fn status_style(status: work.Status) -> #(Int, page.Tone) {
+  case status {
+    work.Active -> #(0, page.Active)
+    work.Blocked -> #(1, page.Warning)
+    work.Open -> #(2, page.Plain)
+    work.Done -> #(3, page.Muted)
+    work.Cancelled -> #(4, page.Muted)
   }
+}
+
+fn rank(item: work.Item) -> Int {
+  status_style(item.status).0
 }
 
 fn row(item: work.Item) -> page.Row {
@@ -110,12 +111,7 @@ fn row(item: work.Item) -> page.Row {
     int.to_string(item.id),
     item.title,
     work.status_name(item.status),
-    case item.status {
-      work.Active -> page.Active
-      work.Blocked -> page.Warning
-      work.Open -> page.Plain
-      work.Done | work.Cancelled -> page.Muted
-    },
+    status_style(item.status).1,
   )
 }
 
@@ -130,6 +126,13 @@ fn summary(items: List(work.Item)) -> String {
   |> string.join(" · ")
 }
 
+fn applied(
+  verb: String,
+  op: Result(work.Item, work.Error),
+) -> Result(#(String, work.Item), String) {
+  op |> result.map(fn(item) { #(verb, item) }) |> result.map_error(describe)
+}
+
 fn change(
   store: work.Store,
   cwd: String,
@@ -138,30 +141,27 @@ fn change(
   details: String,
 ) -> Result(command.Outcome, String) {
   use #(verb, item) <- result.try(case action {
-    "add" ->
-      work.create(store, cwd, details, "", None)
-      |> result.map(fn(item) { #("added", item) })
-      |> result.map_error(describe)
+    "add" -> applied("added", work.create(store, cwd, details, "", None))
     "edit" -> {
       use #(current, title) <- result.try(target(store, cwd, details))
-      work.update(store, cwd, work.Item(..current, title: title))
-      |> result.map(fn(item) { #("renamed", item) })
-      |> result.map_error(describe)
+      applied(
+        "renamed",
+        work.update(store, cwd, work.Item(..current, title: title)),
+      )
     }
     "status" -> {
       use #(current, name) <- result.try(target(store, cwd, details))
       use status <- result.try(
         work.parse_status(name) |> result.map_error(describe),
       )
-      work.update(store, cwd, work.Item(..current, status: status))
-      |> result.map(fn(item) { #("marked " <> name, item) })
-      |> result.map_error(describe)
+      applied(
+        "marked " <> name,
+        work.update(store, cwd, work.Item(..current, status: status)),
+      )
     }
     "remove" -> {
       use #(current, _) <- result.try(target(store, cwd, details))
-      work.delete(store, cwd, current.id, current.revision)
-      |> result.map(fn(item) { #("removed", item) })
-      |> result.map_error(describe)
+      applied("removed", work.delete(store, cwd, current.id, current.revision))
     }
     _ ->
       Error("unknown action " <> action <> "; use add, edit, status, or remove")
@@ -206,8 +206,7 @@ fn target(
   cwd: String,
   details: String,
 ) -> Result(#(work.Item, String), String) {
-  let #(first, rest) =
-    string.split_once(details, " ") |> result.unwrap(#(details, ""))
+  let #(first, rest) = page.split(details)
   use id <- result.try(
     int.parse(string.replace(first, "#", ""))
     |> result.replace_error("expected a work item id, got " <> first),

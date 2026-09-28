@@ -44,13 +44,10 @@ pub fn handle(
         Error(ledger.Overloaded) -> respond(429, message("webhook queue full"))
         Error(ledger.Conflict) ->
           respond(409, message("event id already used for a different body"))
-        Error(ledger.Invalid(reason)) ->
-          case reason {
-            "webhook body exceeds 64 KiB"
-            | "body unreadable or exceeds 64 KiB" ->
-              respond(413, message(reason))
-            _ -> respond(400, message(reason))
-          }
+        Error(ledger.Invalid("webhook body exceeds 64 KiB" as reason))
+        | Error(ledger.Invalid("body unreadable or exceeds 64 KiB" as reason)) ->
+          respond(413, message(reason))
+        Error(ledger.Invalid(reason)) -> respond(400, message(reason))
         Error(_) -> respond(503, message("webhook unavailable"))
       }
     }

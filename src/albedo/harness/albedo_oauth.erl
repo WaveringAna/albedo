@@ -37,9 +37,9 @@ owner() ->
     case whereis(?OWNER) of
         undefined ->
             Pid = spawn(fun() -> owner_loop(#{}) end),
-            try register(?OWNER, Pid) of
-                true -> Pid
-            catch _:_ -> exit(Pid, kill), whereis(?OWNER)
+            case catch register(?OWNER, Pid) of
+                true -> Pid;
+                _ -> exit(Pid, kill), whereis(?OWNER)
             end;
         Pid -> Pid
     end.
@@ -147,13 +147,12 @@ flow(Owner, Id, Home, {login, Provider, _, _, _, Store, {callback, Host, Port, P
 
 listen(Port, Fixed) ->
     Options = [binary, {active, false}, {ip, {127, 0, 0, 1}}, {reuseaddr, true}, {packet, http_bin}],
-    case gen_tcp:listen(Port, Options) of
+    Result = case gen_tcp:listen(Port, Options) of
+        {error, eaddrinuse} when not Fixed -> gen_tcp:listen(0, Options);
+        Other -> Other
+    end,
+    case Result of
         {ok, Socket} -> {ok, Socket, bound(Socket)};
-        {error, eaddrinuse} when not Fixed ->
-            case gen_tcp:listen(0, Options) of
-                {ok, Socket} -> {ok, Socket, bound(Socket)};
-                Error -> Error
-            end;
         Error -> Error
     end.
 
@@ -228,36 +227,24 @@ page(Socket, Status, Text) ->
 %% A pasted redirect url, `code#state`, a query string, or a bare code.
 parse_input(Text0) ->
     Text = string:trim(unicode:characters_to_binary(Text0)),
-    Parsed = uri_string:parse(Text),
-    case Parsed of
-        #{scheme := _, host := _, query := Q} -> pair(maps:from_list(uri_string:dissect_query(Q)));
+    case uri_string:parse(Text) of
+        #{scheme := _, host := _, query := Q} -> query_pair(Q);
         _ ->
             case binary:split(Text, <<"#">>) of
                 [Code, State] -> {Code, State};
                 [_] ->
                     case binary:match(Text, <<"code=">>) of
                         nomatch -> {Text, <<>>};
-                        _ -> pair(maps:from_list(uri_string:dissect_query(string:trim(Text, leading, "?#"))))
+                        _ -> query_pair(string:trim(Text, leading, "?#"))
                     end
             end
     end.
 
-pair(Query) -> {maps:get(<<"code">>, Query, <<>>), maps:get(<<"state">>, Query, <<>>)}.
+query_pair(Q) ->
+    Query = maps:from_list(uri_string:dissect_query(Q)),
+    {maps:get(<<"code">>, Query, <<>>), maps:get(<<"state">>, Query, <<>>)}.
 
 %% ---- auth.json accounts -------------------------------------------------
-
-path(Home) -> filename:join(unicode:characters_to_list(Home), "auth.json").
-
-stored(Data, Store) ->
-    case maps:get(Store, Data, []) of
-        List when is_list(List) -> [V || V <- List, is_map(V)];
-        One when is_map(One) -> [One];
-        _ -> []
-    end.
-
-put(Data, Store, []) -> maps:remove(Store, Data);
-put(Data, Store, [One]) -> Data#{Store => One};
-put(Data, Store, Many) -> Data#{Store => Many}.
 
 id(Account, Credential) -> element(2, Account(Credential)).
 
@@ -273,27 +260,25 @@ store(Home, Store, Json, Account) ->
     end, fun(_) -> {ok, element(3, Account(Credential))} end).
 
 update(Home, Store, Change, Reply) ->
-    Path = path(Home),
+    Path = albedo_credentials:auth_path(Home),
     albedo_credentials:with_lock(Path, fun() ->
-        Data = case albedo_credentials:read(Path) of
-            {ok, D} -> {ok, D};
-            {error, enoent} -> {ok, #{}};
+        case albedo_credentials:read(Path) of
+            {error, enoent} -> update_data(Path, #{}, Store, Change, Reply);
+            {ok, Current} -> update_data(Path, Current, Store, Change, Reply);
             {error, _} -> {error, <<"auth.json is unreadable; repair it before signing in">>}
-        end,
-        case Data of
-            {ok, Current} ->
-                Values = Change(stored(Current, Store)),
-                case albedo_credentials:write(Path, put(Current, Store, Values)) of
-                    ok -> Reply(Values);
-                    {error, _} -> {error, <<"could not write auth.json">>}
-                end;
-            Error -> Error
         end
     end, fun() -> {error, <<"credential store is busy">>} end).
 
+update_data(Path, Current, Store, Change, Reply) ->
+    Values = Change(albedo_credentials:values(Current, Store)),
+    case albedo_credentials:write(Path, albedo_credentials:put_values(Current, Store, Values)) of
+        ok -> Reply(Values);
+        {error, _} -> {error, <<"could not write auth.json">>}
+    end.
+
 accounts(Home, {login, _, _, _, _, Store, _, _, _, Account}) ->
-    case albedo_credentials:read(path(Home)) of
-        {ok, Data} -> [Account(V) || V <- stored(Data, Store)];
+    case albedo_credentials:read(albedo_credentials:auth_path(Home)) of
+        {ok, Data} -> [Account(V) || V <- albedo_credentials:values(Data, Store)];
         _ -> []
     end.
 

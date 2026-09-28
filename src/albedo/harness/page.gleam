@@ -6,9 +6,28 @@
 //// space. The client re-runs the page command afterwards, so the document is
 //// always rebuilt from the extension's own state rather than patched locally.
 
+import gleam/dict.{type Dict}
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
+import gleam/string
+
+/// Extracts action and details from command arguments, using default_action
+/// when action is omitted.
+pub fn args(
+  args: Dict(String, String),
+  default_action: String,
+) -> #(String, String) {
+  let action = dict.get(args, "action") |> result.unwrap(default_action)
+  let details = dict.get(args, "details") |> result.unwrap("") |> string.trim
+  #(action, details)
+}
+
+/// Splits a string at the first space into the first token and the remainder.
+pub fn split(text: String) -> #(String, String) {
+  string.split_once(text, " ") |> result.unwrap(#(text, ""))
+}
 
 pub type Tone {
   Plain

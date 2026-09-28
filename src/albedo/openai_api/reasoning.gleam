@@ -45,12 +45,7 @@ pub fn decoder() -> decode.Decoder(Delta) {
     "reasoning_details",
     [],
     decode.optional(decode.list(detail_decoder()))
-      |> decode.map(fn(value) {
-        case value {
-          Some(items) -> items
-          None -> []
-        }
-      }),
+      |> decode.map(option.unwrap(_, [])),
   )
   decode.success(Delta(text, details))
 }
@@ -62,13 +57,10 @@ fn detail_decoder() -> decode.Decoder(DetailDelta) {
   use fragments <- decode.then(
     strings(["text", "summary", "data", "signature"]),
   )
+  let delta = DetailDelta(index, kind, fields, fragments)
   case index >= 0 {
-    True -> decode.success(DetailDelta(index, kind, fields, fragments))
-    False ->
-      decode.failure(
-        DetailDelta(index, kind, fields, fragments),
-        "nonnegative reasoning index",
-      )
+    True -> decode.success(delta)
+    False -> decode.failure(delta, "nonnegative reasoning index")
   }
 }
 
@@ -147,9 +139,12 @@ pub fn fields(state: State) -> List(#(Dynamic, Dynamic)) {
         |> list.map(fn(entry) {
           let detail = entry.1
           let fields =
-            dict.fold(detail.fragments, detail.fields, fn(fields, key, chunks) {
-              dict.insert(fields, key, flatten(chunks))
-            })
+            dict.merge(
+              detail.fields,
+              dict.map_values(detail.fragments, fn(_, chunks) {
+                flatten(chunks)
+              }),
+            )
           fields
           |> dict.to_list
           |> list.map(fn(pair) { #(dynamic.string(pair.0), pair.1) })
@@ -181,14 +176,9 @@ fn canonical(text: Dict(String, String)) -> String {
 fn detail_text(details: List(DetailDelta)) -> String {
   details
   |> list.map(fn(detail) {
-    case
-      dict.get(detail.fragments, "text"),
-      dict.get(detail.fragments, "summary")
-    {
-      Ok(value), _ -> value
-      Error(_), Ok(value) -> value
-      Error(_), Error(_) -> ""
-    }
+    dict.get(detail.fragments, "text")
+    |> result.or(dict.get(detail.fragments, "summary"))
+    |> result.unwrap("")
   })
   |> string.concat
 }

@@ -17,21 +17,17 @@ write_default(Home, Provider, Model) ->
             {ok, Bytes} ->
               try
                 Config = json:decode(Bytes),
-                Named = case maps:find(<<"providers">>, Config) of
-                  {ok, _} -> Config;
-                  error -> #{<<"active">> => <<"default">>, <<"providers">> => #{<<"default">> => Config}}
+                Named = case Config of
+                  #{<<"providers">> := _} -> Config;
+                  _ -> #{<<"active">> => <<"default">>, <<"providers">> => #{<<"default">> => Config}}
                 end,
                 Providers = maps:get(<<"providers">>, Named),
                 Selected = maps:get(Provider, Providers),
                 Updated = Named#{<<"active">> => Provider,
                                  <<"providers">> => Providers#{Provider => Selected#{<<"model">> => Model}}},
                 Temp = <<File/binary, ".tmp">>,
-                case file:open(Temp, [write, exclusive, binary]) of
-                  {ok, Handle} ->
-                    try
-                      ok = file:write(Handle, json:encode(Updated)),
-                      ok = file:sync(Handle)
-                    after file:close(Handle) end,
+                case file:write_file(Temp, json:encode(Updated), [write, sync, exclusive]) of
+                  ok ->
                     ok = file:change_mode(Temp, 8#600),
                     case file:rename(Temp, File) of
                       ok -> {ok, nil};
@@ -64,7 +60,6 @@ hold(Connection) -> put(albedo_home_lock, Connection), nil.
 
 %% Stop when the process named by Parent exits, so a killed test runner cannot leave
 %% its detached daemon behind. The sh loop also ends if this VM dies first.
-watch_parent(<<>>) -> nil;
 watch_parent(Parent) ->
     case string:to_integer(Parent) of
         {Pid, <<>>} when Pid > 0 ->

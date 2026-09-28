@@ -4,28 +4,25 @@
 -export([normalize/1]).
 
 normalize(Json) ->
-    Root = json:decode(iolist_to_binary(Json)),
-    case is_map(Root) of
-        true -> json:encode(flatten(Root));
-        false -> json:encode(#{<<"type">> => <<"object">>, <<"properties">> => #{}})
+    case json:decode(iolist_to_binary(Json)) of
+        Root when is_map(Root) -> json:encode(flatten(Root));
+        _ -> json:encode(#{<<"type">> => <<"object">>, <<"properties">> => #{}})
     end.
 
 flatten(Root) ->
-    All = branches(Root, <<"allOf">>),
-    Unions = branches(Root, <<"oneOf">>) ++ branches(Root, <<"anyOf">>),
-    case lists:any(fun(K) -> maps:is_key(K, Root) end,
-                   [<<"allOf">>, <<"oneOf">>, <<"anyOf">>]) of
+    Keys = [<<"allOf">>, <<"oneOf">>, <<"anyOf">>],
+    case lists:any(fun(K) -> maps:is_key(K, Root) end, Keys) of
         false -> Root;
         true ->
-            Base = maps:without([<<"allOf">>, <<"oneOf">>, <<"anyOf">>], Root),
+            All = branches(Root, <<"allOf">>),
+            Unions = branches(Root, <<"oneOf">>) ++ branches(Root, <<"anyOf">>),
+            Base = maps:without(Keys, Root),
             Props = lists:foldl(fun(B, P) -> maps:merge(properties(B), P) end,
                                 properties(Base), All ++ Unions),
-            Shared = common_required(Unions),
             Required = lists:usort(required(Base) ++
-                lists:append([required(B) || B <- All]) ++ Shared),
-            Object = Base#{<<"type">> => <<"object">>, <<"properties">> => Props,
-                           <<"required">> => Required},
-            describe_union(Object, Root)
+                lists:append([required(B) || B <- All]) ++ common_required(Unions)),
+            describe_union(Base#{<<"type">> => <<"object">>, <<"properties">> => Props,
+                                 <<"required">> => Required}, Root)
     end.
 
 branches(Root, Key) ->
@@ -59,7 +56,7 @@ describe_union(Object, Root) ->
             _ -> false
         end
     end, [{<<"oneOf">>, <<"Exactly one of: ">>},
-           {<<"anyOf">>, <<"At least one of: ">>}]),
+          {<<"anyOf">>, <<"At least one of: ">>}]),
     case Guidance of
         [] -> Object;
         _ ->

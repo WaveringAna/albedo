@@ -96,10 +96,6 @@ pub fn extension() -> extension.Extension {
   )
 }
 
-pub fn plugin() -> extension.Extension {
-  extension()
-}
-
 /// The cell's JSON result with its images beside it.
 fn outcome_output(
   id: String,
@@ -120,14 +116,7 @@ fn outcome_json(
     Ok(outcome) ->
       json.object([
         #("cell_id", json.string(id)),
-        #(
-          "status",
-          json.string(case outcome.status {
-            python.Succeeded -> "ok"
-            python.Failed -> "error"
-            python.Interrupted -> "interrupted"
-          }),
-        ),
+        #("status", json.string(python.status_name(outcome.status))),
         #("output", json.string(outcome.output)),
         #("value", json.string(outcome.value)),
         #("truncated", json.bool(outcome.truncated)),
@@ -136,23 +125,29 @@ fn outcome_json(
           errors -> [#("image_errors", json.array(errors, json.string))]
         }
       ])
-    Error(error) ->
-      json.object([
-        #("cell_id", json.string(id)),
-        #(
-          "error",
-          json.string(case error {
-            python.Busy -> "session is already executing a cell"
-            python.Lost ->
-              "kernel lost; namespace unavailable; inspect side effects before resetting"
-            python.Unavailable(message) | python.Invalid(message) -> message
-          }),
-        ),
-      ])
+    Error(error) -> failure(id, reason(error))
+  }
+}
+
+/// The cell id and why it could not run, as the tool reports a failure.
+fn failure(id: String, message: String) -> json.Json {
+  json.object([
+    #("cell_id", json.string(id)),
+    #("error", json.string(message)),
+  ])
+}
+
+fn reason(error: python.Error) -> String {
+  case error {
+    python.Busy -> "session is already executing a cell"
+    python.Lost ->
+      "kernel lost; namespace unavailable; inspect side effects before resetting"
+    python.Unavailable(message) | python.Invalid(message) -> message
   }
 }
 
 fn recover(context: extension.Context) {
+  // The id invoke saved the cell under: begin_call's session <> "/" <> call_id.
   let id = context.session <> "/" <> context.call_id
   let outcome = case journal.get(context.store, id) {
     Ok(cell) -> cell.outcome
@@ -161,15 +156,10 @@ fn recover(context: extension.Context) {
   Some(case outcome {
     Some(outcome) -> outcome_output(id, outcome)
     None ->
-      json.object([
-        #("cell_id", json.string(id)),
-        #(
-          "error",
-          json.string(
-            "interrupted; outcome unknown. Inspect saved cell and side effects before retrying.",
-          ),
-        ),
-      ])
+      failure(
+        id,
+        "interrupted; outcome unknown. Inspect saved cell and side effects before retrying.",
+      )
       |> json.to_string
       |> extension.text
   })

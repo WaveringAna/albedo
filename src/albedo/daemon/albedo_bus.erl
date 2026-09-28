@@ -37,13 +37,9 @@ mark_running(Session, Running) ->
     albedo_registry:register(albedo_running, Session, Running).
 
 running(Session) ->
-    case ets:whereis(albedo_running) of
-        undefined -> false;
-        _ ->
-            case ets:lookup(albedo_running, Session) of
-                [{_, true}] -> true;
-                _ -> false
-            end
+    case albedo_registry:lookup(albedo_running, Session) of
+        {ok, true} -> true;
+        _ -> false
     end.
 
 forget(Session) -> albedo_registry:forget(albedo_running, Session).

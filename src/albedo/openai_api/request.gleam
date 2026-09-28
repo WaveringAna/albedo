@@ -32,24 +32,18 @@ pub fn encode_with_policy(
   ]
   let fields = case protocol {
     Responses -> {
-      let fields = [
+      let max_tokens = case policy {
+        OpenAI -> request.max_output_tokens
+        Codex(_, _) -> None
+      }
+      [
         #("input", json.preprocessed_array(input)),
         #("store", json.bool(False)),
         #("include", json.array(["reasoning.encrypted_content"], json.string)),
         ..fields
       ]
-      let fields =
-        optional(fields, "instructions", request.instructions, json.string)
-      case policy {
-        OpenAI ->
-          optional(
-            fields,
-            "max_output_tokens",
-            request.max_output_tokens,
-            json.int,
-          )
-        Codex(_, _) -> fields
-      }
+      |> optional("instructions", request.instructions, json.string)
+      |> optional("max_output_tokens", max_tokens, json.int)
     }
     ChatCompletions -> {
       let messages = case request.instructions {
@@ -104,43 +98,42 @@ pub fn encode_with_policy(
       #("prompt_cache_key", json.string(session_id)),
       ..fields
     ]
-    _, Responses ->
-      fields
-      |> sampling(options)
-      |> optional("tool_choice", options.tool_choice, tool_choice(protocol, _))
-      |> optional(
-        "parallel_tool_calls",
-        when_tools(tools, options.parallel_tool_calls),
-        json.bool,
-      )
-      |> optional("reasoning", options.effort, fn(effort) {
-        json.object([#("effort", json.string(effort))])
-      })
-      |> optional("text", options.format, fn(format) {
-        json.object([#("format", response_format(protocol, format))])
-      })
-    _, ChatCompletions ->
-      fields
-      |> sampling(options)
-      |> optional(
-        "stop",
-        case options.stop {
-          [] -> None
-          stop -> Some(stop)
-        },
-        json.array(_, json.string),
-      )
-      |> optional("tool_choice", options.tool_choice, tool_choice(protocol, _))
-      |> optional(
-        "parallel_tool_calls",
-        when_tools(tools, options.parallel_tool_calls),
-        json.bool,
-      )
-      |> optional("reasoning_effort", options.effort, json.string)
-      |> optional("response_format", options.format, response_format(
-        protocol,
-        _,
-      ))
+    _, _ -> {
+      let fields =
+        fields
+        |> sampling(options)
+        |> optional("tool_choice", options.tool_choice, tool_choice(protocol, _))
+        |> optional(
+          "parallel_tool_calls",
+          when_tools(tools, options.parallel_tool_calls),
+          json.bool,
+        )
+      case protocol {
+        Responses ->
+          fields
+          |> optional("reasoning", options.effort, fn(effort) {
+            json.object([#("effort", json.string(effort))])
+          })
+          |> optional("text", options.format, fn(format) {
+            json.object([#("format", response_format(protocol, format))])
+          })
+        ChatCompletions ->
+          fields
+          |> optional(
+            "stop",
+            case options.stop {
+              [] -> None
+              stop -> Some(stop)
+            },
+            json.array(_, json.string),
+          )
+          |> optional("reasoning_effort", options.effort, json.string)
+          |> optional("response_format", options.format, response_format(
+            protocol,
+            _,
+          ))
+      }
+    }
   }
   Ok(json.to_string_tree(json.object(fields)))
 }
@@ -150,20 +143,19 @@ fn validate(request: Request) -> Result(Nil, Error) {
     True, _ -> Error(InvalidRequest("model must not be empty"))
     _, Some(n) if n <= 0 ->
       Error(InvalidRequest("max_output_tokens must be positive"))
-    _, _ -> validate_tools(request.tools, [])
+    _, _ -> validate_tools(request.tools)
   }
 }
 
-fn validate_tools(tools: List(Tool), seen: List(String)) -> Result(Nil, Error) {
-  case tools {
-    [] -> Ok(Nil)
-    [tool, ..rest] ->
-      case string.is_empty(tool.name), list.contains(seen, tool.name) {
-        True, _ -> Error(InvalidRequest("tool name must not be empty"))
-        _, True -> Error(InvalidRequest("duplicate tool name: " <> tool.name))
-        _, _ -> validate_tools(rest, [tool.name, ..seen])
-      }
-  }
+fn validate_tools(tools: List(Tool)) -> Result(Nil, Error) {
+  list.try_fold(tools, [], fn(seen, tool) {
+    case string.is_empty(tool.name), list.contains(seen, tool.name) {
+      True, _ -> Error(InvalidRequest("tool name must not be empty"))
+      _, True -> Error(InvalidRequest("duplicate tool name: " <> tool.name))
+      _, _ -> Ok([tool.name, ..seen])
+    }
+  })
+  |> result.replace(Nil)
 }
 
 fn encode_inputs(
@@ -206,12 +198,7 @@ fn chat_tool_run(
 ) -> #(List(Json), List(Json), List(Input)) {
   case inputs {
     [ToolOutput(id, text, attached), ..rest] -> {
-      let tool =
-        json.object([
-          #("role", json.string("tool")),
-          #("tool_call_id", json.string(id)),
-          #("content", json.string(tool_text(text, attached))),
-        ])
+      let tool = chat_tool_message(id, text, attached)
       let images = case attached {
         [] -> images
         _ ->
@@ -225,6 +212,18 @@ fn chat_tool_run(
     }
     rest -> #(encoded, images, rest)
   }
+}
+
+fn chat_tool_message(
+  id: String,
+  text: String,
+  images: List(types.Image),
+) -> Json {
+  json.object([
+    #("role", json.string("tool")),
+    #("tool_call_id", json.string(id)),
+    #("content", json.string(tool_text(text, images))),
+  ])
 }
 
 /// Some providers reject an empty tool result even when images accompany it.
@@ -248,22 +247,16 @@ fn encode_input(protocol: Protocol, input: Input) -> Result(Json, Error) {
             #("call_id", json.string(id)),
             #("output", case images {
               [] -> json.string(text)
-              _ ->
+              _ -> {
+                let parts = list.map(images, image_part(Responses, _))
                 json.preprocessed_array(case text {
-                  "" -> list.map(images, image_part(Responses, _))
-                  _ -> [
-                    text_part(Responses, text),
-                    ..list.map(images, image_part(Responses, _))
-                  ]
+                  "" -> parts
+                  _ -> [text_part(Responses, text), ..parts]
                 })
+              }
             }),
           ])
-        ChatCompletions ->
-          json.object([
-            #("role", json.string("tool")),
-            #("tool_call_id", json.string(id)),
-            #("content", json.string(tool_text(text, images))),
-          ])
+        ChatCompletions -> chat_tool_message(id, text, images)
       })
     Replay(item) ->
       case types.replay_protocol(item) == protocol {
@@ -280,9 +273,10 @@ fn message(role: String, content: String) -> Json {
 fn image_message(protocol: Protocol, text: String, image: types.Image) -> Json {
   // An empty text part is rejected by some endpoints, and frame archives
   // attach images with no text by design.
+  let img = image_part(protocol, image)
   let parts = case text {
-    "" -> [image_part(protocol, image)]
-    _ -> [text_part(protocol, text), image_part(protocol, image)]
+    "" -> [img]
+    _ -> [text_part(protocol, text), img]
   }
   json.object([
     #("role", json.string("user")),
@@ -379,27 +373,22 @@ fn tool_choice(protocol: Protocol, choice: types.ToolChoice) -> Json {
 /// Chat Completions nests a schema under `json_schema`; Responses flattens it
 /// into `text.format`.
 fn response_format(protocol: Protocol, format: types.Format) -> Json {
-  case format, protocol {
-    types.JsonObject, _ -> json.object([#("type", json.string("json_object"))])
-    types.JsonSchema(name, schema, strict), Responses ->
-      json.object([
-        #("type", json.string("json_schema")),
+  case format {
+    types.JsonObject -> json.object([#("type", json.string("json_object"))])
+    types.JsonSchema(name, schema, strict) -> {
+      let fields = [
         #("name", json.string(name)),
         #("schema", schema),
         #("strict", json.bool(strict)),
-      ])
-    types.JsonSchema(name, schema, strict), ChatCompletions ->
-      json.object([
-        #("type", json.string("json_schema")),
-        #(
-          "json_schema",
-          json.object([
-            #("name", json.string(name)),
-            #("schema", schema),
-            #("strict", json.bool(strict)),
-          ]),
-        ),
-      ])
+      ]
+      json.object(case protocol {
+        Responses -> [#("type", json.string("json_schema")), ..fields]
+        ChatCompletions -> [
+          #("type", json.string("json_schema")),
+          #("json_schema", json.object(fields)),
+        ]
+      })
+    }
   }
 }
 

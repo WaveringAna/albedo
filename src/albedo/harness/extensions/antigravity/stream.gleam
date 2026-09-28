@@ -3,6 +3,7 @@
 
 import albedo/harness/extensions/antigravity/catalog.{type Model}
 import albedo/harness/extensions/antigravity/wire
+import albedo/openai_api/replay
 import albedo/openai_api/stream as reducer
 import albedo/openai_api/types
 import gleam/dynamic.{type Dynamic}
@@ -50,17 +51,15 @@ type Part {
 }
 
 pub fn reducer(model: Model) -> reducer.Reducer {
-  wrap(State(model, None, [], None, None))
+  reducer.wrap(State(model, None, [], None, None), step, finish)
 }
 
-fn wrap(state: State) -> reducer.Reducer {
-  reducer.Reducer(
-    feed: fn(data) {
-      use #(state, events) <- result.map(feed(state, data))
-      #(wrap(state), events, None)
-    },
-    finish: fn() { finish(state) },
-  )
+fn step(
+  state: State,
+  data: String,
+) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
+  use #(state, events) <- result.map(feed(state, data))
+  #(state, events, None)
 }
 
 fn feed(
@@ -75,17 +74,14 @@ fn feed(
   )
   case decode.run(value, decode.at(["error"], error_decoder())) {
     Ok(message) -> Error(types.ProviderError(message))
-    Error(_) -> {
-      use chunk <- result.try(
-        decode.run(value, chunk_decoder())
-        |> result.map_error(fn(error) {
-          types.InvalidEvent(
-            "invalid Cloud Code Assist chunk: " <> string.inspect(error),
-          )
-        }),
-      )
-      apply(state, chunk)
-    }
+    Error(_) ->
+      decode.run(value, chunk_decoder())
+      |> result.map_error(fn(e) {
+        types.InvalidEvent(
+          "invalid Cloud Code Assist chunk: " <> string.inspect(e),
+        )
+      })
+      |> result.try(apply(state, _))
   }
 }
 
@@ -103,9 +99,8 @@ fn apply(
       }
       let #(blocks, events) =
         list.fold(chunk.parts, #(state.blocks, []), fn(acc, part) {
-          let #(blocks, events) = acc
-          let #(blocks, new) = add(blocks, part)
-          #(blocks, list.append(events, new))
+          let #(blocks, new) = add(acc.0, part)
+          #(blocks, list.append(acc.1, new))
         })
       Ok(#(
         State(
@@ -190,18 +185,20 @@ fn finish(state: State) -> Result(types.Turn, types.Error) {
     // An empty body is a failed attempt the loop may retry, not an answer.
     [], None -> Error(types.UnexpectedEnd)
     _, _ -> {
-      let finish = case calls, state.finish {
-        [_, ..], _ -> types.ToolCalls
-        [], None | [], Some("STOP") -> types.Complete
-        [], Some("MAX_TOKENS") -> types.LengthLimit
-        [], Some("SAFETY")
-        | [], Some("RECITATION")
-        | [], Some("PROHIBITED_CONTENT")
-        | [], Some("BLOCKLIST")
-        | [], Some("SPII")
-        | [], Some("IMAGE_SAFETY")
-        -> types.ContentFiltered
-        [], Some(other) -> types.OtherFinish(other)
+      let finish = case calls {
+        [_, ..] -> types.ToolCalls
+        [] ->
+          case state.finish {
+            None | Some("STOP") -> types.Complete
+            Some("MAX_TOKENS") -> types.LengthLimit
+            Some("SAFETY")
+            | Some("RECITATION")
+            | Some("PROHIBITED_CONTENT")
+            | Some("BLOCKLIST")
+            | Some("SPII")
+            | Some("IMAGE_SAFETY") -> types.ContentFiltered
+            Some(other) -> types.OtherFinish(other)
+          }
       }
       use item <- result.map(
         json.parse(
@@ -237,23 +234,10 @@ fn message(
         _ -> Error(Nil)
       }
     })
-  let parts = list.filter_map(blocks, part(_, model))
-  let fields = [
-    #("role", json.string("assistant")),
-    #("content", case text {
-      "" -> json.null()
-      text -> json.string(text)
-    }),
-  ]
-  let fields = case thinking {
-    "" -> fields
-    thinking -> [#("reasoning_content", json.string(thinking)), ..fields]
-  }
-  let fields = case parts {
-    [] -> fields
-    parts -> [
-      #(
-        "reasoning_details",
+  let details = case list.filter_map(blocks, part(_, model)) {
+    [] -> None
+    parts ->
+      Some(
         json.preprocessed_array([
           json.object([
             #("type", json.string(wire.parts_detail)),
@@ -262,33 +246,17 @@ fn message(
             #("parts", json.preprocessed_array(parts)),
           ]),
         ]),
-      ),
-      ..fields
-    ]
+      )
   }
-  case calls {
-    [] -> fields
-    calls -> [
-      #(
-        "tool_calls",
-        json.array(calls, fn(call) {
-          json.object([
-            #("id", json.string(call.id)),
-            #("type", json.string("function")),
-            #(
-              "function",
-              json.object([
-                #("name", json.string(call.name)),
-                #("arguments", json.string(call.arguments)),
-              ]),
-            ),
-          ])
-        }),
-      ),
-      ..fields
-    ]
-  }
-  |> json.object
+  replay.message(
+    case text {
+      "" -> json.null()
+      text -> json.string(text)
+    },
+    thinking,
+    details,
+    calls,
+  )
 }
 
 /// The Gemini part this block replays as, for this same model only.

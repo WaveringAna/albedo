@@ -2,10 +2,12 @@
 
 import albedo/harness/extensions/antigravity/catalog.{type Model}
 import albedo/openai_api
+import albedo/openai_api/replay
 import albedo/openai_api/types.{
   type Error, type Input, type Request, Assistant, InvalidRequest, Replay,
   ToolOutput, User, UserImage,
 }
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -48,8 +50,8 @@ pub fn encode(
 ) -> Result(openai_api.Exchange, Error) {
   let model = context.model
   use history <- result.try(
-    list.try_fold(request.input, History([], dict.new()), fn(history, input) {
-      add(history, input, model)
+    list.try_fold(request.input, History([], dict.new()), fn(h, i) {
+      add(h, i, model)
     }),
   )
   let history = case request.tools, forced(model, request.options.tool_choice) {
@@ -182,11 +184,10 @@ fn add(history: History, input: Input, model: Model) -> Result(History, Error) {
       })
     }
     Replay(item) -> {
-      use _ <- result.try(case types.replay_protocol(item) {
-        types.ChatCompletions -> Ok(Nil)
-        types.Responses ->
-          Error(InvalidRequest("cannot replay output across protocols"))
-      })
+      use <- bool.guard(
+        types.replay_protocol(item) == types.Responses,
+        Error(InvalidRequest("cannot replay output across protocols")),
+      )
       use message <- result.try(
         types.inspect_item(item, message_decoder())
         |> result.replace_error(InvalidRequest(
@@ -215,12 +216,6 @@ type Message {
 }
 
 fn message_decoder() -> decode.Decoder(Message) {
-  let call = {
-    use id <- decode.field("id", decode.string)
-    use name <- decode.subfield(["function", "name"], decode.string)
-    use arguments <- decode.subfield(["function", "arguments"], decode.string)
-    decode.success(types.ToolCall(id, name, arguments))
-  }
   let detail = {
     use kind <- decode.field("type", decode.string)
     use model <- decode.optional_field("model", "", decode.string)
@@ -230,25 +225,11 @@ fn message_decoder() -> decode.Decoder(Message) {
       False -> None
     })
   }
-  use text <- decode.optional_field(
-    "content",
-    None,
-    decode.optional(decode.string),
-  )
-  use calls <- decode.optional_field(
-    "tool_calls",
-    [],
-    decode.optional(decode.list(call)) |> decode.map(option.unwrap(_, [])),
-  )
-  use details <- decode.optional_field(
-    "reasoning_details",
-    [],
-    decode.optional(decode.list(detail)) |> decode.map(option.unwrap(_, [])),
-  )
+  use message <- decode.then(replay.message_decoder(detail))
   decode.success(Message(
-    option.unwrap(text, ""),
-    calls,
-    details |> option.values |> list.first |> option.from_result,
+    message.text,
+    message.calls,
+    list.first(message.details) |> option.from_result,
   ))
 }
 
@@ -310,7 +291,7 @@ fn inline(image: types.Image) -> Json {
       "inlineData",
       json.object([
         #("mimeType", json.string(mime_type)),
-        #("data", base64_string(types.image_data(image))),
+        #("data", types.base64_string(types.image_data(image))),
       ]),
     ),
   ])
@@ -486,9 +467,6 @@ fn optional(
     None -> fields
   }
 }
-
-@external(erlang, "albedo_openai_json", "base64_string")
-fn base64_string(data: types.ImageData) -> Json
 
 @external(erlang, "albedo_antigravity", "encode")
 pub fn encode_value(value: Dynamic) -> Json

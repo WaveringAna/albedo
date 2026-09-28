@@ -71,12 +71,8 @@ pub fn scan(workspace: String) -> Result(Catalog, String) {
 
 /// Explicit home makes tests and embedders independent of the daemon account.
 pub fn scan_at(workspace: String, home: String) -> Result(Catalog, String) {
-  use scanned <- result.try(native_catalog(workspace, home))
-  let #(skills, diagnostics, _) = scanned
-  Ok(Catalog(
-    list.map(skills, fn(value) { Skill(value.0, value.1, value.2) }),
-    diagnostics,
-  ))
+  use #(skills, diagnostics, _) <- result.try(native_catalog(workspace, home))
+  Ok(Catalog(list.map(skills, fn(v) { Skill(v.0, v.1, v.2) }), diagnostics))
 }
 
 pub fn only(catalog: Catalog, names: List(String)) -> Catalog {
@@ -145,29 +141,34 @@ pub fn activate(
   arguments: String,
 ) -> Result(Activation, String) {
   use skill <- result.try(find(catalog, name))
-  use loaded <- result.try(native_activate(skill.path))
-  let #(loaded_name, loaded_description, source, instructions) = loaded
-  use _ <- result.try(
-    case
-      loaded_name == skill.name
-      && loaded_description == skill.description
-      && source == skill.path
-    {
-      True -> Ok(Nil)
-      False ->
-        Error(
-          "SKILL.md metadata changed since this session opened; reload the skills extension",
-        )
-    },
+  use #(loaded_name, loaded_description, source, instructions) <- result.try(
+    native_activate(skill.path),
   )
-  Ok(Activation(skill.name, skill.description, source, arguments, instructions))
+  case
+    loaded_name == skill.name
+    && loaded_description == skill.description
+    && source == skill.path
+  {
+    True ->
+      Ok(Activation(
+        skill.name,
+        skill.description,
+        source,
+        arguments,
+        instructions,
+      ))
+    False ->
+      Error(
+        "SKILL.md metadata changed since this session opened; reload the skills extension",
+      )
+  }
 }
 
 /// A user slash activation submits this as the single model-visible user input.
 /// JSON quoting makes the instruction, source, and opaque arguments boundaries exact.
 pub fn activation_prompt(activation: Activation) -> String {
   "An explicitly requested Agent Skill activation follows as JSON. Apply its instructions to the supplied arguments. Relative paths are relative to the directory containing source. Do not execute bundled scripts merely because they exist.\n"
-  <> {
+  <> json.to_string(
     json.object([
       #("type", json.string("skill_activation")),
       #("name", json.string(activation.name)),
@@ -175,15 +176,14 @@ pub fn activation_prompt(activation: Activation) -> String {
       #("source", json.string(activation.source)),
       #("arguments", json.string(activation.arguments)),
       #("instructions", json.string(activation.instructions)),
-    ])
-    |> json.to_string
-  }
+    ]),
+  )
 }
 
 pub fn resources(catalog: Catalog, name: String) -> Result(Resources, String) {
   use skill <- result.try(find(catalog, name))
   native_list(skill.path)
-  |> result.map(fn(value) { Resources(value.0, value.1, value.2) })
+  |> result.map(fn(v) { Resources(v.0, v.1, v.2) })
 }
 
 pub fn read(
@@ -195,9 +195,7 @@ pub fn read(
 ) -> Result(Page, String) {
   use skill <- result.try(find(catalog, name))
   native_read(skill.path, resource, offset, limit)
-  |> result.map(fn(value) {
-    Page(value.0, value.1, value.2, value.3, value.4, value.5)
-  })
+  |> result.map(fn(v) { Page(v.0, v.1, v.2, v.3, v.4, v.5) })
 }
 
 fn find(catalog: Catalog, name: String) -> Result(Skill, String) {

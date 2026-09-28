@@ -2,9 +2,10 @@
 
 import albedo/daemon/conversation
 import albedo/daemon/store
+import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/harness/extensions/lcm/graph
-import albedo/openai_api/types
+import albedo/harness/tool
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -15,154 +16,92 @@ import gleam/string
 
 pub fn definitions() -> List(extension.Tool) {
   [
-    extension.Tool(
-      types.Tool(
-        "lcm_list",
-        "List every stored LCM fold in this session, including folds absent from the current request. Results are paged.",
-        json.object([
-          #("type", json.string("object")),
-          #("additionalProperties", json.bool(False)),
-          #("required", json.array([], json.string)),
-          #(
-            "properties",
-            json.object([
-              #("limit", json.object([#("type", json.string("integer"))])),
-              #("offset", json.object([#("type", json.string("integer"))])),
-            ]),
-          ),
-        ]),
-        False,
-      ),
-      fn(context, arguments) {
-        let decoder = {
-          use limit <- decode.optional_field("limit", 20, decode.int)
-          use offset <- decode.optional_field("offset", 0, decode.int)
-          decode.success(#(limit, offset))
-        }
-        case json.parse(arguments, decoder) {
-          Ok(#(limit, offset)) ->
-            list_folds(context.store, context.session, limit, offset)
-            |> result.map(extension.text)
-          Error(_) -> Ok(extension.text("expected optional limit and offset"))
-        }
+    tool.text(
+      "lcm_list",
+      "List every stored LCM fold in this session, including folds absent from the current request. Results are paged.",
+      False,
+      [],
+      [
+        #("limit", "integer"),
+        #("offset", "integer"),
+      ],
+      {
+        use limit <- decode.optional_field("limit", 20, decode.int)
+        use offset <- decode.optional_field("offset", 0, decode.int)
+        decode.success(#(limit, offset))
       },
-      fn(_) { None },
+      "expected optional limit and offset",
+      fn(context, arguments) {
+        let #(limit, offset) = arguments
+        list_folds(context.store, context.session, limit, offset)
+      },
     ),
-    extension.Tool(
-      types.Tool(
-        "lcm_grep",
-        "Find a case-insensitive literal term in this session's durable conversation and LCM summaries. Results are paged; source matches name their covering summary node.",
-        json.object([
-          #("type", json.string("object")),
-          #("additionalProperties", json.bool(False)),
-          #("required", json.array(["pattern"], json.string)),
-          #(
-            "properties",
-            json.object([
-              #("pattern", json.object([#("type", json.string("string"))])),
-              #("limit", json.object([#("type", json.string("integer"))])),
-              #("offset", json.object([#("type", json.string("integer"))])),
-              #("summary_id", json.object([#("type", json.string("integer"))])),
-            ]),
-          ),
-        ]),
-        False,
-      ),
-      fn(context, arguments) {
-        let decoder = {
-          use pattern <- decode.field("pattern", decode.string)
-          use limit <- decode.optional_field("limit", 10, decode.int)
-          use offset <- decode.optional_field("offset", 0, decode.int)
-          use summary_id <- decode.optional_field(
-            "summary_id",
-            None,
-            decode.optional(decode.int),
-          )
-          decode.success(#(pattern, limit, offset, summary_id))
-        }
-        case json.parse(arguments, decoder) {
-          Ok(#(pattern, limit, offset, summary_id)) ->
-            grep_page(
-              context.store,
-              context.session,
-              pattern,
-              limit,
-              offset,
-              summary_id,
-            )
-            |> result.map(extension.text)
-          Error(_) ->
-            Ok(extension.text(
-              "expected pattern and optional limit, offset, summary_id",
-            ))
-        }
+    tool.text(
+      "lcm_grep",
+      "Find a case-insensitive literal term in this session's durable conversation and LCM summaries. Results are paged; source matches name their covering summary node.",
+      False,
+      ["pattern"],
+      [
+        #("pattern", "string"),
+        #("limit", "integer"),
+        #("offset", "integer"),
+        #("summary_id", "integer"),
+      ],
+      {
+        use pattern <- decode.field("pattern", decode.string)
+        use limit <- decode.optional_field("limit", 10, decode.int)
+        use offset <- decode.optional_field("offset", 0, decode.int)
+        use summary_id <- decode.optional_field(
+          "summary_id",
+          None,
+          decode.optional(decode.int),
+        )
+        decode.success(#(pattern, limit, offset, summary_id))
       },
-      fn(_) { None },
+      "expected pattern and optional limit, offset, summary_id",
+      fn(context, arguments) {
+        let #(pattern, limit, offset, summary_id) = arguments
+        grep_page(
+          context.store,
+          context.session,
+          pattern,
+          limit,
+          offset,
+          summary_id,
+        )
+      },
     ),
-    extension.Tool(
-      types.Tool(
-        "lcm_describe",
-        "Inspect one LCM summary node, its durable source range, and child nodes.",
-        json.object([
-          #("type", json.string("object")),
-          #("additionalProperties", json.bool(False)),
-          #("required", json.array(["id"], json.string)),
-          #(
-            "properties",
-            json.object([
-              #("id", json.object([#("type", json.string("integer"))])),
-            ]),
-          ),
-        ]),
-        True,
-      ),
-      fn(context, arguments) {
-        case
-          json.parse(arguments, decode.field("id", decode.int, decode.success))
-        {
-          Ok(id) ->
-            describe(context.store, context.session, id)
-            |> result.map(extension.text)
-          Error(_) -> Ok(extension.text("expected integer node id"))
-        }
-      },
-      fn(_) { None },
+    tool.text(
+      "lcm_describe",
+      "Inspect one LCM summary node, its durable source range, and child nodes.",
+      True,
+      ["id"],
+      [#("id", "integer")],
+      decode.field("id", decode.int, decode.success),
+      "expected integer node id",
+      fn(context, id) { describe(context.store, context.session, id) },
     ),
-    extension.Tool(
-      types.Tool(
-        "lcm_expand",
-        "Read a bounded page of the original transcript rows covered by one LCM node. Use next_offset to continue; image payloads remain in the durable transcript.",
-        json.object([
-          #("type", json.string("object")),
-          #("additionalProperties", json.bool(False)),
-          #("required", json.array(["id"], json.string)),
-          #(
-            "properties",
-            json.object([
-              #("id", json.object([#("type", json.string("integer"))])),
-              #("offset", json.object([#("type", json.string("integer"))])),
-              #("limit", json.object([#("type", json.string("integer"))])),
-            ]),
-          ),
-        ]),
-        False,
-      ),
-      fn(context, arguments) {
-        let decoder = {
-          use id <- decode.field("id", decode.int)
-          use offset <- decode.optional_field("offset", 0, decode.int)
-          use limit <- decode.optional_field("limit", 4000, decode.int)
-          decode.success(#(id, offset, limit))
-        }
-        case json.parse(arguments, decoder) {
-          Ok(#(id, offset, limit)) ->
-            expand(context.store, context.session, id, offset, limit)
-            |> result.map(extension.text)
-          Error(_) ->
-            Ok(extension.text("expected id, optional offset and limit"))
-        }
+    tool.text(
+      "lcm_expand",
+      "Read a bounded page of the original transcript rows covered by one LCM node. Use next_offset to continue; image payloads remain in the durable transcript.",
+      False,
+      ["id"],
+      [
+        #("id", "integer"),
+        #("offset", "integer"),
+        #("limit", "integer"),
+      ],
+      {
+        use id <- decode.field("id", decode.int)
+        use offset <- decode.optional_field("offset", 0, decode.int)
+        use limit <- decode.optional_field("limit", 4000, decode.int)
+        decode.success(#(id, offset, limit))
       },
-      fn(_) { None },
+      "expected id, optional offset and limit",
+      fn(context, arguments) {
+        let #(id, offset, limit) = arguments
+        expand(context.store, context.session, id, offset, limit)
+      },
     ),
   ]
 }
@@ -173,21 +112,18 @@ pub fn list_folds(
   limit: Int,
   offset: Int,
 ) -> Result(String, String) {
-  use _ <- result.try(case offset >= 0 {
-    True -> Ok(Nil)
-    False -> Error("LCM list offset must be nonnegative")
-  })
+  use _ <- result.try(compaction.require(
+    offset >= 0,
+    "LCM list offset must be nonnegative",
+  ))
   use nodes <- result.try(graph.all_nodes(ledger, session))
   use frontier <- result.try(graph.frontier(ledger, session))
-  let limit = int.min(20, int.max(1, limit))
+  let limit = int.clamp(limit, 1, 20)
   let next = offset + limit
   json.object([
     #("total", json.int(list.length(nodes))),
     #("offset", json.int(offset)),
-    #("next_offset", case next < list.length(nodes) {
-      True -> json.int(next)
-      False -> json.null()
-    }),
+    #("next_offset", tool.next_offset(next, next < list.length(nodes))),
     #(
       "folds",
       json.array(list.take(list.drop(nodes, offset), limit), fn(node) {
@@ -200,7 +136,7 @@ pub fn list_folds(
             "frontier",
             json.bool(list.any(frontier, fn(item) { item.id == node.id })),
           ),
-          #("preview", json.string(excerpt(node.summary, 200))),
+          #("preview", json.string(tool.excerpt(node.summary, 200))),
         ])
       }),
     ),
@@ -209,6 +145,7 @@ pub fn list_folds(
   |> Ok
 }
 
+/// Search the first page of matching transcript rows and LCM summaries.
 pub fn grep(
   ledger: store.Store,
   session: String,
@@ -227,14 +164,14 @@ pub fn grep_page(
   summary_id: Option(Int),
 ) -> Result(String, String) {
   let pattern = string.trim(pattern)
-  use _ <- result.try(case pattern != "" && string.length(pattern) <= 200 {
-    True -> Ok(Nil)
-    False -> Error("LCM search pattern must be 1..200 characters")
-  })
-  use _ <- result.try(case offset >= 0 {
-    True -> Ok(Nil)
-    False -> Error("LCM search offset must be nonnegative")
-  })
+  use _ <- result.try(compaction.require(
+    pattern != "" && string.length(pattern) <= 200,
+    "LCM search pattern must be 1..200 characters",
+  ))
+  use _ <- result.try(compaction.require(
+    offset >= 0,
+    "LCM search offset must be nonnegative",
+  ))
   use sources <- result.try(conversation.load_sources(ledger, session))
   use nodes <- result.try(graph.all_nodes(ledger, session))
   use frontier <- result.try(graph.frontier(ledger, session))
@@ -248,7 +185,7 @@ pub fn grep_page(
     |> list.filter(fn(item) {
       in_scope(item.source.seq, scope)
       && string.contains(
-        string.lowercase(source_text(item.entry.input)),
+        string.lowercase(tool.row_text(item.entry.input)),
         needle,
       )
     })
@@ -262,7 +199,7 @@ pub fn grep_page(
       }
       && string.contains(string.lowercase(node.summary), needle)
     })
-  let limit = int.min(20, int.max(1, limit))
+  let limit = int.clamp(limit, 1, 20)
   let next = offset + limit
   json.object([
     #("pattern", json.string(pattern)),
@@ -271,10 +208,10 @@ pub fn grep_page(
     #("node_count", json.int(list.length(summaries))),
     #(
       "next_offset",
-      case next < list.length(matches) || next < list.length(summaries) {
-        True -> json.int(next)
-        False -> json.null()
-      },
+      tool.next_offset(
+        next,
+        next < list.length(matches) || next < list.length(summaries),
+      ),
     ),
     #(
       "sources",
@@ -285,7 +222,10 @@ pub fn grep_page(
             Some(node) -> json.int(node.id)
             None -> json.null()
           }),
-          #("preview", json.string(excerpt(source_text(item.entry.input), 400))),
+          #(
+            "preview",
+            json.string(tool.excerpt(tool.row_text(item.entry.input), 400)),
+          ),
         ])
       }),
     ),
@@ -294,7 +234,7 @@ pub fn grep_page(
       json.array(list.take(list.drop(summaries, offset), limit), fn(node) {
         json.object([
           #("id", json.int(node.id)),
-          #("preview", json.string(excerpt(node.summary, 400))),
+          #("preview", json.string(tool.excerpt(node.summary, 400))),
         ])
       }),
     ),
@@ -303,18 +243,21 @@ pub fn grep_page(
   |> Ok
 }
 
+/// Whether `node`'s durable source range contains `seq`.
+fn covers(node: graph.Node, seq: Int) -> Bool {
+  seq >= node.first_seq && seq <= node.last_seq
+}
+
 fn in_scope(seq: Int, scope: Option(graph.Node)) -> Bool {
   case scope {
-    Some(node) -> seq >= node.first_seq && seq <= node.last_seq
+    Some(node) -> covers(node, seq)
     None -> True
   }
 }
 
 fn covering_node(frontier: List(graph.Node), seq: Int) -> Option(graph.Node) {
-  frontier
-  |> list.find(fn(node) { seq >= node.first_seq && seq <= node.last_seq })
-  |> result.map(Some)
-  |> result.unwrap(None)
+  list.find(frontier, fn(node) { covers(node, seq) })
+  |> option.from_result
 }
 
 pub fn describe(
@@ -343,35 +286,28 @@ pub fn expand(
   offset: Int,
   limit: Int,
 ) -> Result(String, String) {
-  use _ <- result.try(case offset >= 0 {
-    True -> Ok(Nil)
-    False -> Error("LCM expansion offset must be nonnegative")
-  })
+  use _ <- result.try(compaction.require(
+    offset >= 0,
+    "LCM expansion offset must be nonnegative",
+  ))
   use node <- result.try(required_node(ledger, session, id))
   use sources <- result.try(conversation.load_sources(ledger, session))
   let rendered =
     sources
-    |> list.filter(fn(item) {
-      item.source.seq >= node.first_seq && item.source.seq <= node.last_seq
-    })
+    |> list.filter(fn(item) { covers(node, item.source.seq) })
     |> list.map(fn(item) {
       "[source #"
       <> int.to_string(item.source.seq)
       <> "]\n"
-      <> source_text(item.entry.input)
+      <> tool.row_text(item.entry.input)
     })
     |> string.join("\n\n")
-  let limit = int.min(8000, int.max(1, limit))
-  let page = string.slice(rendered, offset, limit)
-  let next = offset + string.length(page)
+  let #(page, next) = tool.text_page(rendered, offset, limit)
   json.object([
     #("id", json.int(id)),
     #("offset", json.int(offset)),
     #("content", json.string(page)),
-    #("next_offset", case next < string.length(rendered) {
-      True -> json.int(next)
-      False -> json.null()
-    }),
+    #("next_offset", tool.next_offset(next, next < string.length(rendered))),
     #(
       "image_payloads",
       json.string("retained in transcript; text page shows metadata only"),
@@ -387,39 +323,5 @@ fn required_node(
   id: Int,
 ) -> Result(graph.Node, String) {
   use found <- result.try(graph.node(ledger, session, id))
-  case found {
-    Some(node) -> Ok(node)
-    None -> Error("LCM node not found in this session")
-  }
-}
-
-fn source_text(input: types.Input) -> String {
-  case input {
-    types.User(text) -> "[user]\n" <> text
-    types.UserImage(text, image) ->
-      "[user with " <> image_description(image) <> "]\n" <> text
-    types.Assistant(text) -> "[assistant]\n" <> text
-    types.ToolOutput(id, output, images) ->
-      "[tool "
-      <> id
-      <> "]\n"
-      <> output
-      <> string.concat(
-        list.map(images, fn(image) { "\n[" <> image_description(image) <> "]" }),
-      )
-    types.Replay(item) ->
-      "[provider output]\n" <> json.to_string(types.replay_json(item))
-  }
-}
-
-fn image_description(image: types.Image) -> String {
-  let #(mime, width, height, _) = types.image_meta(image)
-  mime <> " " <> int.to_string(width) <> "x" <> int.to_string(height)
-}
-
-fn excerpt(value: String, maximum: Int) -> String {
-  case string.length(value) > maximum {
-    True -> string.slice(value, 0, maximum) <> "…"
-    False -> value
-  }
+  option.to_result(found, "LCM node not found in this session")
 }

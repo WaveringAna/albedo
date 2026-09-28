@@ -4,7 +4,6 @@
 
 import albedo/daemon/configuration
 import albedo/daemon/projection
-import albedo/daemon/store
 import albedo/harness/extension
 import albedo/harness/extensions/proxy/chat
 import albedo/openai_api/types
@@ -29,12 +28,8 @@ pub fn extension() -> extension.Extension {
     "OpenAI-compatible Chat Completions at /proxy/v1 for every saved provider profile",
     [],
     [extension.ServicePlugin(extension.Service(handle))],
-    initialise,
+    extension.no_initialise,
   )
-}
-
-fn initialise(_ledger: store.Store) -> Result(Nil, String) {
-  Ok(Nil)
 }
 
 fn handle(
@@ -74,13 +69,13 @@ fn models(daemon: extension.Daemon) -> Json {
   }
   let ids =
     list.flat_map(profiles, fn(profile) {
-      case endpoint(daemon, profile) {
-        "" ->
-          case daemon.models(profile.extension, "") {
-            [] -> [profile.model]
-            catalog -> catalog
-          }
-        _ -> [profile.model]
+      let catalog = case endpoint(daemon, profile) {
+        "" -> daemon.models(profile.extension, "")
+        _ -> []
+      }
+      case catalog {
+        [] -> [profile.model]
+        models -> models
       }
       |> list.map(fn(model) {
         #(profile.name <> "/" <> model, profile.extension)
@@ -121,12 +116,12 @@ fn endpoint(
   daemon: extension.Daemon,
   profile: configuration.Provider,
 ) -> String {
-  configuration.settings(daemon.home, profile.name, decode_field("baseUrl"))
+  configuration.settings(
+    daemon.home,
+    profile.name,
+    decode.optional_field("baseUrl", "", decode.string, decode.success),
+  )
   |> result.unwrap("")
-}
-
-fn decode_field(name: String) -> decode.Decoder(String) {
-  decode.optional_field(name, "", decode.string, decode.success)
 }
 
 fn complete(
@@ -242,7 +237,9 @@ fn stream(
     fn(state, message, connection) {
       case message {
         Chunk(value) ->
-          case mist.send_event(connection, event(json.to_string_tree(value))) {
+          case
+            mist.send_event(connection, mist.event(json.to_string_tree(value)))
+          {
             Ok(_) -> actor.continue(state)
             Error(_) -> actor.stop()
           }
@@ -250,17 +247,13 @@ fn stream(
           let _ =
             mist.send_event(
               connection,
-              event(string_tree.from_string("[DONE]")),
+              mist.event(string_tree.from_string("[DONE]")),
             )
           actor.stop()
         }
       }
     },
   )
-}
-
-fn event(data: string_tree.StringTree) {
-  mist.event(data)
 }
 
 fn describe(upstream: extension.Upstream, error: types.Error) -> String {

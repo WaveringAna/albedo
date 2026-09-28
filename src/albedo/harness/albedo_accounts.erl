@@ -38,11 +38,8 @@ selected(V) -> maps:get(<<"selected">>, V, false) =:= true.
 
 limited(V, Now) -> until_of(V) > Now.
 
-until_of(V) ->
-    case maps:get(<<"limitedUntil">>, V, 0) of
-        Until when is_integer(Until) -> Until;
-        _ -> 0
-    end.
+until_of(#{<<"limitedUntil">> := Until}) when is_integer(Until) -> Until;
+until_of(_) -> 0.
 
 %% Records Until on the auth.json accounts under Key that Hit matches, and
 %% returns every account there, updated. A single stored object stays single.
@@ -87,12 +84,12 @@ last_served(Slot, First) ->
     end.
 
 local_time(Ms) ->
-    {{_, _, _} = Date, {H, M, _}} = calendar:system_time_to_local_time(Ms, millisecond),
+    {{Y, Mo, D} = Date, {H, M, _}} = calendar:system_time_to_local_time(Ms, millisecond),
     {Today, _} = calendar:local_time(),
     Clock = io_lib:format("~2..0B:~2..0B", [H, M]),
     iolist_to_binary(case Date =:= Today of
         true -> Clock;
-        false -> {Y, Mo, D} = Date, io_lib:format("~4..0B-~2..0B-~2..0B ~s", [Y, Mo, D, Clock])
+        false -> io_lib:format("~4..0B-~2..0B-~2..0B ~s", [Y, Mo, D, Clock])
     end).
 
 fnv1a(Bytes) ->

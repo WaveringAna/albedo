@@ -126,44 +126,33 @@ pub fn start_with_config(
       )
       |> result.replace_error("could not open storage"),
     )
-    case extension.install(installed, default_enabled, ledger) {
-      Error(error) -> {
+    // A failed install still owns the ledger: close it before the error escapes.
+    use _ <- result.try(
+      extension.install(installed, default_enabled, ledger)
+      |> result.map_error(fn(error) {
         work.close(ledger)
-        Error(error)
-      }
-      Ok(_) ->
-        Ok(
-          actor.initialised(
-            State(
-              ledger,
-              dict.new(),
-              dict.new(),
-              installed,
-              default_enabled,
-              subject,
-              dict.new(),
-              [],
-            ),
-          )
-          |> actor.returning(Runtime(
-            subject,
-            ledger,
-            installed,
-            default_enabled,
-          )),
-        )
-    }
+        error
+      }),
+    )
+    Ok(
+      actor.initialised(
+        State(
+          ledger,
+          dict.new(),
+          dict.new(),
+          installed,
+          default_enabled,
+          subject,
+          dict.new(),
+          [],
+        ),
+      )
+      |> actor.returning(Runtime(subject, ledger, installed, default_enabled)),
+    )
   })
   |> actor.on_message(handle)
   |> actor.start
   |> result.map(fn(started) { started.data })
-}
-
-fn supervise_stop(context: String, kernel: python.Kernel) -> Nil {
-  case python.stop(kernel) {
-    Ok(_) -> Nil
-    Error(report) -> io.println_error(context <> ": " <> report)
-  }
 }
 
 fn stop_session(context: String, session: Session) -> Nil {
@@ -174,11 +163,44 @@ fn stop_session(context: String, session: Session) -> Nil {
 /// End the kernel process only: the prepared composition, and any managed
 /// resources it holds, stay ready for the next open.
 fn drop_kernel(context: String, session: Session) -> Nil {
-  supervise_stop(context, session.kernel)
+  case python.stop(session.kernel) {
+    Ok(_) -> Nil
+    Error(report) -> io.println_error(context <> ": " <> report)
+  }
+}
+
+fn drop_kernel_at(state: State, id: String, context: String) -> Nil {
+  case dict.get(state.sessions, id) {
+    Ok(session) -> drop_kernel(context, session)
+    Error(_) -> Nil
+  }
+}
+
+fn close_cached_at(state: State, id: String) -> Nil {
+  case dict.get(state.compositions, id) {
+    Ok(cached) -> extension.close(cached.composition)
+    Error(_) -> Nil
+  }
+}
+
+fn holding(state: State, id: String, session: Session) -> State {
+  State(..state, sessions: dict.insert(state.sessions, id, session))
+}
+
+fn without_session(state: State, id: String) -> State {
+  State(..state, sessions: dict.delete(state.sessions, id))
 }
 
 pub fn ledger(runtime: Runtime) -> work.Store {
   runtime.work
+}
+
+fn checked_id(id: String) -> Result(String, python.Error) {
+  case string.trim(id) == "" || string.byte_size(id) > 256 {
+    True ->
+      Error(python.Invalid("session id must be nonempty and <= 256 bytes"))
+    False -> Ok(id)
+  }
 }
 
 pub fn open_session(
@@ -186,19 +208,14 @@ pub fn open_session(
   id: String,
   cwd: String,
 ) -> Result(Session, python.Error) {
-  case string.trim(id) == "" || string.byte_size(id) > 256 {
-    True ->
-      Error(python.Invalid("session id must be nonempty and <= 256 bytes"))
-    False -> {
-      let reply = process.new_subject()
-      open_session_async(runtime, id, cwd, process.send(reply, _))
-      process.receive(reply, 180_000)
-      |> result.replace_error(python.Unavailable(
-        "the kernel did not start in time; other sessions may be starting theirs",
-      ))
-      |> result.flatten
-    }
-  }
+  use id <- result.try(checked_id(id))
+  let reply = process.new_subject()
+  open_session_async(runtime, id, cwd, process.send(reply, _))
+  process.receive(reply, 180_000)
+  |> result.replace_error(python.Unavailable(
+    "the kernel did not start in time; other sessions may be starting theirs",
+  ))
+  |> result.flatten
 }
 
 /// Ask for a session's kernel; `answer` runs once it is ready or has failed.
@@ -209,12 +226,9 @@ pub fn open_session_async(
   cwd: String,
   answer: fn(Result(Session, python.Error)) -> Nil,
 ) -> Nil {
-  case string.trim(id) == "" || string.byte_size(id) > 256 {
-    True ->
-      answer(
-        Error(python.Invalid("session id must be nonempty and <= 256 bytes")),
-      )
-    False -> process.send(runtime.subject, Open(id, cwd, answer))
+  case checked_id(id) {
+    Ok(id) -> process.send(runtime.subject, Open(id, cwd, answer))
+    Error(invalid) -> answer(Error(invalid))
   }
 }
 
@@ -243,7 +257,7 @@ pub fn reload_extension(
 
 /// Applies an extension change for one session. A change that leaves this
 /// session's selection as it was is only recorded and answers `None`;
-/// otherwise the session gets a replacement kernel, as `reload_extension`.
+/// otherwise the session gets a replacement kernel prepared and swapped in.
 pub fn change_extension(
   runtime: Runtime,
   id: String,
@@ -257,8 +271,8 @@ pub fn change_extension(
 /// live kernel: static context, every managed plugin (the skills catalog among
 /// them), and the aggregate command catalog. The kernel keeps its process and
 /// Python namespace; only its host route closure is rebound. The persisted
-/// selection is untouched — enablement changes go through `reload_extension`,
-/// which replaces the kernel. Answers the refreshed session while its kernel is
+/// selection is untouched — enablement changes replace the kernel through
+/// `change_extension`. Answers the refreshed session while its kernel is
 /// open, or `None` when there was nothing live to rebind (a closed session's
 /// next open picks the refreshed composition up anyway).
 pub fn refresh_session(
@@ -432,7 +446,7 @@ fn kernel_routes(
 
 /// Compose the cached selection again from scratch and swap it into the live
 /// kernel. The kernel is not replaced, so the module set must be unchanged —
-/// those install at boot; a changed set needs `reload_extension`. A failed
+/// those install at boot; a changed set needs a session reload. A failed
 /// refresh keeps the previous composition: the new one is closed before the
 /// error escapes, and the old routes stay bound in the kernel.
 fn refresh_cached(
@@ -583,8 +597,7 @@ fn booted(
     Ok(waiters), _ -> {
       let state = State(..state, booting: dict.delete(state.booting, id))
       let state = case result {
-        Ok(session) ->
-          State(..state, sessions: dict.insert(state.sessions, id, session))
+        Ok(session) -> holding(state, id, session)
         Error(_) -> state
       }
       list.each(list.reverse(waiters), fn(answer) { answer(result) })
@@ -614,6 +627,150 @@ fn abandon(state: State, id: String) -> State {
 
 @external(erlang, "albedo_protect", "run")
 fn protect(run: fn() -> a) -> Result(a, String)
+
+/// Reload one session's extension selection. The choice is persisted before
+/// the live session is touched; a change that alters the running set opens a
+/// replacement kernel alongside the old one first.
+fn reload(
+  state: State,
+  id: String,
+  cwd: String,
+  change: extension.Change,
+  reply: Subject(Result(Option(Session), String)),
+) -> State {
+  let proposed =
+    extension.propose(
+      state.work,
+      state.extensions,
+      state.default_enabled,
+      id,
+      change,
+    )
+  let current =
+    extension.enabled(state.work, state.extensions, state.default_enabled, id)
+  // Extensions carry function fields, so the running set compares by name.
+  let names = fn(selected: List(extension.Extension)) {
+    list.map(selected, fn(extension) { extension.name })
+  }
+  let unchanged = case proposed, current {
+    Ok(selected), Ok(running) -> names(selected) == names(running)
+    _, _ -> False
+  }
+  let persist = fn(selected) {
+    use previous <- result.try(current)
+    extension.record_selected(
+      state.work,
+      id,
+      change,
+      previous,
+      selected,
+      state.extensions,
+    )
+  }
+  case proposed, unchanged {
+    // Nothing this session runs changes: record the choice and keep the
+    // live kernel, its namespace, and its prompt cache.
+    Ok(selected), True -> {
+      process.send(reply, persist(selected) |> result.replace(None))
+      state
+    }
+    Error(error), _ -> {
+      process.send(reply, Error(error))
+      state
+    }
+    Ok(selected), False -> reopen(state, id, cwd, selected, persist, reply)
+  }
+}
+
+/// The change alters the running set: the new composition and kernel are
+/// prepared alongside the old one; only the loser's resources are released,
+/// and only after the selection is persisted, so a rollback leaves the live
+/// session untouched.
+fn reopen(
+  state: State,
+  id: String,
+  cwd: String,
+  selected: List(extension.Extension),
+  persist: fn(List(extension.Extension)) -> Result(Nil, String),
+  reply: Subject(Result(Option(Session), String)),
+) -> State {
+  let previous = dict.get(state.sessions, id)
+  let workspace = case previous {
+    Ok(session) -> session.cwd
+    Error(_) -> cwd
+  }
+  let opened = {
+    use cached <- result.try(
+      build_cached(state, id, workspace, Some(selected))
+      |> result.map_error(fn(error) { "could not reload extensions: " <> error }),
+    )
+    open_kernel(state.work, id, cached)
+    |> result.map(fn(replacement) { #(cached, replacement) })
+    |> result.map_error(fn(error) {
+      "could not reload extensions: " <> string.inspect(error)
+    })
+  }
+  case opened {
+    Error(error) -> {
+      process.send(reply, Error(error))
+      state
+    }
+    Ok(#(cached, replacement)) ->
+      case persist(selected) {
+        Error(error) -> {
+          stop_session("extension reload rollback", replacement)
+          process.send(reply, Error(error))
+          state
+        }
+        Ok(_) -> {
+          case previous {
+            Ok(session) -> drop_kernel("extension reload", session)
+            Error(_) -> Nil
+          }
+          close_cached_at(state, id)
+          process.send(reply, Ok(Some(replacement)))
+          State(
+            ..holding(state, id, replacement),
+            compositions: dict.insert(state.compositions, id, cached),
+          )
+        }
+      }
+  }
+}
+
+/// Re-prepare one session's cached composition and swap it in. `refresh_cached`
+/// does the work; this answers its caller and stores the fresh cache.
+fn refresh(
+  state: State,
+  id: String,
+  reply: Subject(Result(Option(Session), String)),
+) -> State {
+  case dict.get(state.compositions, id) {
+    // Nothing cached to refresh; the next open scans from scratch anyway.
+    Error(_) -> {
+      process.send(reply, Ok(None))
+      state
+    }
+    Ok(cached) ->
+      case refresh_cached(state, id, cached) {
+        Error(error) -> {
+          process.send(reply, Error(error))
+          state
+        }
+        Ok(#(fresh, update)) -> {
+          let state = case update {
+            Some(session) -> holding(state, id, session)
+            None -> state
+          }
+          process.send(reply, Ok(update))
+          State(
+            ..state,
+            compositions: dict.insert(state.compositions, id, fresh),
+          )
+        }
+      }
+  }
+}
 
 fn handle(state: State, message: Message) {
   case message {
@@ -656,139 +813,9 @@ fn handle(state: State, message: Message) {
           }
       }
     Booted(id, result) -> actor.continue(booted(state, id, result) |> boot_next)
-    Reload(id, cwd, change, reply) -> {
-      let proposed =
-        extension.propose(
-          state.work,
-          state.extensions,
-          state.default_enabled,
-          id,
-          change,
-        )
-      let current =
-        extension.enabled(
-          state.work,
-          state.extensions,
-          state.default_enabled,
-          id,
-        )
-      let names = fn(selected: List(extension.Extension)) {
-        list.map(selected, fn(extension) { extension.name })
-      }
-      let unchanged = case proposed, current {
-        Ok(selected), Ok(running) -> names(selected) == names(running)
-        _, _ -> False
-      }
-      let persist = fn(selected) {
-        use previous <- result.try(current)
-        extension.record_selected(
-          state.work,
-          id,
-          change,
-          previous,
-          selected,
-          state.extensions,
-        )
-      }
-      case proposed {
-        Error(error) -> {
-          process.send(reply, Error(error))
-          actor.continue(state)
-        }
-        // Nothing this session runs changes: record the choice and keep the
-        // live kernel, its namespace, and its prompt cache.
-        Ok(selected) if unchanged -> {
-          process.send(reply, persist(selected) |> result.replace(None))
-          actor.continue(state)
-        }
-        Ok(selected) -> {
-          let previous = dict.get(state.sessions, id)
-          let previous_cached = dict.get(state.compositions, id)
-          let workspace = case previous {
-            Ok(session) -> session.cwd
-            Error(_) -> cwd
-          }
-          // The new composition is prepared alongside the old one; only the
-          // loser's resources are released, and only after the selection is
-          // persisted, so a rollback leaves the live session untouched.
-          let opened = {
-            use cached <- result.try(
-              build_cached(state, id, workspace, Some(selected))
-              |> result.map_error(fn(error) {
-                "could not reload extensions: " <> error
-              }),
-            )
-            open_kernel(state.work, id, cached)
-            |> result.map(fn(replacement) { #(cached, replacement) })
-            |> result.map_error(fn(error) {
-              "could not reload extensions: " <> string.inspect(error)
-            })
-          }
-          case opened {
-            Error(error) -> {
-              process.send(reply, Error(error))
-              actor.continue(state)
-            }
-            Ok(#(cached, replacement)) ->
-              case persist(selected) {
-                Error(error) -> {
-                  stop_session("extension reload rollback", replacement)
-                  process.send(reply, Error(error))
-                  actor.continue(state)
-                }
-                Ok(_) -> {
-                  case previous {
-                    Ok(session) -> drop_kernel("extension reload", session)
-                    Error(_) -> Nil
-                  }
-                  case previous_cached {
-                    Ok(prior) -> extension.close(prior.composition)
-                    Error(_) -> Nil
-                  }
-                  process.send(reply, Ok(Some(replacement)))
-                  actor.continue(
-                    State(
-                      ..state,
-                      sessions: dict.insert(state.sessions, id, replacement),
-                      compositions: dict.insert(state.compositions, id, cached),
-                    ),
-                  )
-                }
-              }
-          }
-        }
-      }
-    }
-    Refresh(id, reply) -> {
-      case dict.get(state.compositions, id) {
-        // Nothing cached to refresh; the next open scans from scratch anyway.
-        Error(_) -> {
-          process.send(reply, Ok(None))
-          actor.continue(state)
-        }
-        Ok(cached) ->
-          case refresh_cached(state, id, cached) {
-            Error(error) -> {
-              process.send(reply, Error(error))
-              actor.continue(state)
-            }
-            Ok(#(fresh, update)) -> {
-              let sessions = case update {
-                Some(session) -> dict.insert(state.sessions, id, session)
-                None -> state.sessions
-              }
-              process.send(reply, Ok(update))
-              actor.continue(
-                State(
-                  ..state,
-                  sessions: sessions,
-                  compositions: dict.insert(state.compositions, id, fresh),
-                ),
-              )
-            }
-          }
-      }
-    }
+    Reload(id, cwd, change, reply) ->
+      actor.continue(reload(state, id, cwd, change, reply))
+    Refresh(id, reply) -> actor.continue(refresh(state, id, reply))
     PeekPrompt(id, reply) -> {
       process.send(
         reply,
@@ -836,28 +863,18 @@ fn handle(state: State, message: Message) {
         }
       }
     Reset(id, reply) -> {
-      case dict.get(state.sessions, id) {
-        Ok(session) -> drop_kernel("session reset", session)
-        Error(_) -> Nil
-      }
+      drop_kernel_at(state, id, "session reset")
       process.send(reply, Nil)
-      actor.continue(State(..state, sessions: dict.delete(state.sessions, id)))
+      actor.continue(without_session(state, id))
     }
     Forget(id, reply) -> {
       let state = abandon(state, id)
-      case dict.get(state.sessions, id) {
-        Ok(session) -> drop_kernel("session forgotten", session)
-        Error(_) -> Nil
-      }
-      case dict.get(state.compositions, id) {
-        Ok(cached) -> extension.close(cached.composition)
-        Error(_) -> Nil
-      }
+      drop_kernel_at(state, id, "session forgotten")
+      close_cached_at(state, id)
       process.send(reply, Nil)
       actor.continue(
         State(
-          ..state,
-          sessions: dict.delete(state.sessions, id),
+          ..without_session(state, id),
           compositions: dict.delete(state.compositions, id),
         ),
       )
@@ -972,23 +989,6 @@ pub fn host_request(
 
 /// Compaction sees only durable conversation. Extension context belongs to the
 /// system instructions, not the request history or durable transcript.
-/// Compatibility preparation for embedders whose strategies do not summarize.
-pub fn prepare_history(
-  runtime: Runtime,
-  session: Session,
-  model: String,
-  history: List(types.Input),
-) -> Result(List(types.Input), String) {
-  prepare_history_with(
-    runtime,
-    session,
-    model,
-    "",
-    fn(_) { Error("this request owner does not provide model summarization") },
-    history,
-  )
-}
-
 pub fn prepare_history_with(
   runtime: Runtime,
   session: Session,
@@ -997,7 +997,7 @@ pub fn prepare_history_with(
   summarize: fn(compaction.SummaryRequest) -> Result(String, String),
   history: List(types.Input),
 ) -> Result(List(types.Input), String) {
-  prepare_history_scoped(
+  prepare_view_scoped(
     runtime,
     session,
     model,
@@ -1006,7 +1006,9 @@ pub fn prepare_history_with(
     instructions,
     summarize,
     history,
+    False,
   )
+  |> result.map(fn(prepared) { prepared.inputs })
 }
 
 /// Only a catalog answer becomes a capacity; an unknown model stays unknown.
@@ -1077,9 +1079,7 @@ pub fn model_efforts(
   model: String,
   endpoint: String,
 ) -> List(String) {
-  global(runtime)
-  |> result.map(efforts_in(_, model, endpoint))
-  |> result.unwrap([])
+  efforts_in(global(runtime) |> result.unwrap([]), model, endpoint)
 }
 
 fn efforts_in(
@@ -1122,12 +1122,8 @@ pub fn upstream(
   )
 }
 
-fn capacity(
-  session: Session,
-  model: String,
-  endpoint: String,
-) -> Option(compaction.Capacity) {
-  use info <- option.then(model_info(session, model, endpoint))
+fn capacity(info: Option(extension.ModelInfo)) -> Option(compaction.Capacity) {
+  use info <- option.then(info)
   use tokens <- option.map(extension.window(info))
   let source = case info.provider {
     "" -> info.source
@@ -1140,39 +1136,10 @@ fn capacity(
   compaction.Capacity(tokens, source)
 }
 
-fn reader(
-  session: Session,
-  model: String,
-  endpoint: String,
-) -> Option(compaction.Reader) {
-  model_info(session, model, endpoint)
-  |> option.map(fn(info) {
+fn reader(info: Option(extension.ModelInfo)) -> Option(compaction.Reader) {
+  option.map(info, fn(info) {
     compaction.Reader(info.provider, info.input_modalities)
   })
-}
-
-pub fn prepare_history_scoped(
-  runtime: Runtime,
-  session: Session,
-  model: String,
-  source: String,
-  endpoint: String,
-  instructions: String,
-  summarize: fn(compaction.SummaryRequest) -> Result(String, String),
-  history: List(types.Input),
-) -> Result(List(types.Input), String) {
-  prepare_view_scoped(
-    runtime,
-    session,
-    model,
-    source,
-    endpoint,
-    instructions,
-    summarize,
-    history,
-    False,
-  )
-  |> result.map(fn(prepared) { prepared.inputs })
 }
 
 /// Run the active strategy now, independent of its automatic threshold.
@@ -1215,6 +1182,7 @@ pub fn prepare_view_scoped(
   use _ <- result.try(owned_by(runtime, session))
   let pinned_tokens = compaction.estimate_pinned(instructions, tools(session))
   let enabled = extension.extensions(session.composition)
+  let info = model_info(session, model, endpoint)
   case extension.compaction(enabled) {
     None if force -> Error("no compaction strategy is enabled")
     None -> Ok(compaction.Prepared(history, None, False))
@@ -1227,7 +1195,7 @@ pub fn prepare_view_scoped(
           model,
           source,
           pinned_tokens,
-          capacity(session, model, endpoint),
+          capacity(info),
           force,
           summarize,
           compaction.compose_prior(
@@ -1237,7 +1205,7 @@ pub fn prepare_view_scoped(
             runtime.work,
             session.id,
           ),
-          reader(session, model, endpoint),
+          reader(info),
         ),
         history,
       )

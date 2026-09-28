@@ -7,11 +7,7 @@
 -define(MAX_FILE_BYTES, 1048576).
 -define(MAX_FILES, 128).
 
-home() ->
-    case os:getenv("HOME") of
-        false -> <<>>;
-        Value -> unicode:characters_to_binary(Value)
-    end.
+home() -> albedo_daemon:env(<<"HOME">>).
 
 load(Workspace0, Home0) -> load_impl(Workspace0, Home0, undefined).
 
@@ -20,8 +16,8 @@ load_selected(Workspace0, Home0, Session) ->
 
 load_impl(Workspace0, Home0, Selection) ->
     try
-        Workspace = text_list(Workspace0),
-        Home = text_list(Home0),
+        Workspace = unicode:characters_to_list(Workspace0),
+        Home = unicode:characters_to_list(Home0),
         Project = root_files(Workspace) ++ directory_files(project, Workspace, ".agents")
                   ++ directory_files(project, Workspace, ".albedo"),
         Global = case Home of
@@ -33,13 +29,10 @@ load_impl(Workspace0, Home0, Selection) ->
         case length(Files) =< ?MAX_FILES of
             false -> {error, <<"more than 128 instruction files were discovered">>};
             true ->
-                case select_files(Files, Selection, []) of
-                    {ok, Selected} ->
-                        case read_all(Selected, []) of
-                            {ok, Loaded} -> {ok, render(Loaded)};
-                            Error -> Error
-                        end;
-                    Error -> Error
+                maybe
+                    {ok, Selected} ?= select_files(Files, Selection, []),
+                    {ok, Loaded} ?= read_all(Selected, []),
+                    {ok, render(Loaded)}
                 end
         end
     catch
@@ -52,7 +45,7 @@ select_files([File = {Scope, Display, _} | Rest], Selection, Selected) ->
         undefined -> {ok, true};
         {Home, Session} ->
             Name = <<(atom_to_binary(Scope))/binary, ":", Display/binary>>,
-            albedo_capabilities:enabled(Home, Session, <<"instructions">>, Name)
+            albedo_capabilities:optional(Session, Home, <<"instructions">>, Name)
     end,
     case Enabled of
         {ok, true} -> select_files(Rest, Selection, [File | Selected]);
@@ -61,38 +54,32 @@ select_files([File = {Scope, Display, _} | Rest], Selection, Selected) ->
     end.
 
 root_files(Workspace) ->
-    case file:list_dir(Workspace) of
-        {ok, Entries} ->
-            [{project, root_display(Name), filename:join(Workspace, Name)}
-             || Name <- lists:sort(Entries), instruction_name(Name),
-                regular_file(filename:join(Workspace, Name))];
-        {error, _} -> []
-    end.
+    listed(project, Workspace, fun unicode:characters_to_binary/1, fun instruction_name/1).
 
 instruction_name(Name) ->
     Lower = string:lowercase(Name),
     Lower =:= "agents.md" orelse Lower =:= "claude.md".
 
 directory_files(Scope, Base, Directory) ->
-    Root = filename:join(Base, Directory),
+    listed(Scope, filename:join(Base, Directory),
+           fun(Entry) -> directory_display(Scope, Directory, Entry) end,
+           fun markdown/1).
+
+%% Sorted regular files of one directory that satisfy Keep, tagged with their
+%% discovery scope and shown as Display names.
+listed(Scope, Root, Display, Keep) ->
     case file:list_dir(Root) of
         {ok, Entries} ->
-            [{Scope, directory_display(Scope, Directory, Entry), filename:join(Root, Entry)}
-             || Entry <- lists:sort(Entries), markdown(Entry),
-                regular_file(filename:join(Root, Entry))];
+            [{Scope, Display(Entry), Path}
+             || Entry <- lists:sort(Entries), Keep(Entry),
+                Path <- [filename:join(Root, Entry)],
+                filelib:is_regular(Path)];
         {error, _} -> []
-    end.
-
-regular_file(Path) ->
-    case file:read_file_info(Path) of
-        {ok, #file_info{type = regular}} -> true;
-        _ -> false
     end.
 
 markdown(Name) ->
     string:lowercase(filename:extension(Name)) =:= ".md".
 
-root_display(Name) -> unicode:characters_to_binary(Name).
 directory_display(project, Directory, Entry) ->
     unicode:characters_to_binary(filename:join(Directory, Entry));
 directory_display(global, Directory, Entry) ->
@@ -132,25 +119,21 @@ render(Loaded) ->
           "project-specific work, follow the project-level convention. Files at the same "
           "level are concatenated rather than overriding one another.
 ">>,
-        render_group(project, Project),
-        render_group(global, Global)
-    ]).
-
-render_group(_, []) -> [];
-render_group(project, Files) ->
-    [<<"
+        render_group(<<"
 ## Project-level conventions
 
 Use these for project-level conventions.
-">>,
-     [render_file(File) || File <- Files]];
-render_group(global, Files) ->
-    [<<"
+">>, Project),
+        render_group(<<"
 ## Global user preferences
 
 Use these for acting in the user's preferences.
-">>,
-     [render_file(File) || File <- Files]].
+">>, Global)
+    ]).
+
+render_group(_, []) -> [];
+render_group(Header, Files) ->
+    [Header, [render_file(File) || File <- Files]].
 
 render_file({_Scope, Display, Contents}) ->
     [<<"
@@ -158,6 +141,3 @@ render_file({_Scope, Display, Contents}) ->
 
 ">>, Contents, <<"
 ">>].
-
-text_list(Value) when is_binary(Value) -> unicode:characters_to_list(Value);
-text_list(Value) when is_list(Value) -> Value.

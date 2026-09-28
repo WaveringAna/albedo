@@ -2,8 +2,10 @@
 //// signed thinking blocks; foreign-model turns replay as text and tool calls.
 
 import albedo/openai_api
+import albedo/openai_api/replay
 import albedo/openai_api/types
 import gleam/bit_array
+import gleam/bool
 import gleam/crypto.{Sha256}
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
@@ -38,31 +40,18 @@ pub fn encode(
   session: String,
   request: types.Request,
 ) -> Result(openai_api.Exchange, types.Error) {
-  use _ <- result.try(
-    case
-      access != ""
-      && !string.contains(access, "\r")
-      && !string.contains(access, "\n")
-    {
-      True -> Ok(Nil)
-      False -> Error(types.InvalidRequest("invalid Claude access token"))
-    },
+  use <- bool.guard(
+    access == ""
+      || string.contains(access, "\r")
+      || string.contains(access, "\n"),
+    Error(types.InvalidRequest("invalid Claude access token")),
   )
   let files = Files(home, account)
-  let input_count = list.length(request.input)
   use history <- result.try(
     list.try_fold(
-      list.index_map(request.input, fn(input, index) { #(input, index) }),
+      mark_last(request.input, fn(input, last) { #(input, last) }),
       History([], dict.new()),
-      fn(history, indexed) {
-        add(
-          history,
-          indexed.0,
-          request.model,
-          files,
-          indexed.1 + 1 == input_count,
-        )
-      },
+      fn(history, pair) { add(history, pair.0, request.model, files, pair.1) },
     ),
   )
   let messages =
@@ -199,40 +188,39 @@ pub fn encode(
       },
       ["extended-cache-ttl-2025-04-11"],
     ])
-  case request.model == "" || request.max_output_tokens == Some(0) {
-    True ->
-      Error(types.InvalidRequest("invalid Claude model or output token limit"))
-    False ->
-      Ok(openai_api.Exchange(
-        "https://api.anthropic.com/v1/messages",
-        [
-          #("authorization", "Bearer " <> access),
-          #("anthropic-version", "2023-06-01"),
-          #("anthropic-beta", string.join(betas, ",")),
-          #(
-            "user-agent",
-            "claude-cli/" <> claude_code_version <> " (external, cli)",
-          ),
-          #("x-app", "cli"),
-          #("x-stainless-lang", "js"),
-          #("x-stainless-runtime", "node"),
-          #("x-stainless-package-version", "0.112.1"),
-          #("x-stainless-retry-count", "0"),
-          #("x-stainless-timeout", "600"),
-          #("x-stainless-arch", "arm64"),
-          #("x-stainless-os", "MacOS"),
-          #("x-stainless-runtime-version", "v26.3.0"),
-          #("x-claude-code-session-id", session),
-          #("anthropic-dangerous-direct-browser-access", "true"),
-          #("content-type", "application/json"),
-          #("accept", "application/json"),
-        ],
-        json.to_string_tree(json.object(fields)),
-        120_000,
-        8 * 1024 * 1024,
-        True,
-      ))
-  }
+  use <- bool.guard(
+    request.model == "" || request.max_output_tokens == Some(0),
+    Error(types.InvalidRequest("invalid Claude model or output token limit")),
+  )
+  Ok(openai_api.Exchange(
+    "https://api.anthropic.com/v1/messages",
+    [
+      #("authorization", "Bearer " <> access),
+      #("anthropic-version", "2023-06-01"),
+      #("anthropic-beta", string.join(betas, ",")),
+      #(
+        "user-agent",
+        "claude-cli/" <> claude_code_version <> " (external, cli)",
+      ),
+      #("x-app", "cli"),
+      #("x-stainless-lang", "js"),
+      #("x-stainless-runtime", "node"),
+      #("x-stainless-package-version", "0.112.1"),
+      #("x-stainless-retry-count", "0"),
+      #("x-stainless-timeout", "600"),
+      #("x-stainless-arch", "arm64"),
+      #("x-stainless-os", "MacOS"),
+      #("x-stainless-runtime-version", "v26.3.0"),
+      #("x-claude-code-session-id", session),
+      #("anthropic-dangerous-direct-browser-access", "true"),
+      #("content-type", "application/json"),
+      #("accept", "application/json"),
+    ],
+    json.to_string_tree(json.object(fields)),
+    120_000,
+    8 * 1024 * 1024,
+    True,
+  ))
 }
 
 fn add(
@@ -276,10 +264,7 @@ fn add(
             #("type", json.string("tool_result")),
             #("tool_use_id", json.string(id)),
             #("content", content),
-            ..case last {
-              True -> [tail_cache()]
-              False -> []
-            }
+            ..cache_field(last)
           ]),
         ]),
       )
@@ -317,12 +302,6 @@ type Replay {
 }
 
 fn replay_decoder() -> decode.Decoder(Replay) {
-  let call = {
-    use id <- decode.field("id", decode.string)
-    use name <- decode.subfield(["function", "name"], decode.string)
-    use args <- decode.subfield(["function", "arguments"], decode.string)
-    decode.success(types.ToolCall(id, name, args))
-  }
   let detail = {
     use kind <- decode.field("type", decode.string)
     use model <- decode.optional_field("model", "", decode.string)
@@ -336,36 +315,25 @@ fn replay_decoder() -> decode.Decoder(Replay) {
       False -> None
     })
   }
-  use text <- decode.optional_field(
-    "content",
-    None,
-    decode.optional(decode.string),
-  )
-  use calls <- decode.optional_field(
-    "tool_calls",
-    [],
-    decode.optional(decode.list(call)) |> decode.map(option.unwrap(_, [])),
-  )
-  use details <- decode.optional_field(
-    "reasoning_details",
-    [],
-    decode.optional(decode.list(detail)) |> decode.map(option.unwrap(_, [])),
-  )
-  let original =
-    details
-    |> list.filter_map(fn(x) {
-      case x {
-        Some(v) -> Ok(v)
-        None -> Error(Nil)
-      }
-    })
-    |> list.first
-    |> option.from_result
-  let #(model, blocks) = case original {
-    Some(#(model, blocks)) -> #(model, Some(blocks))
-    None -> #("", None)
+  use message <- decode.then(replay.message_decoder(detail))
+  let #(model, blocks) = case list.first(message.details) {
+    Ok(#(model, blocks)) -> #(model, Some(blocks))
+    _ -> #("", None)
   }
-  decode.success(Replay(option.unwrap(text, ""), calls, model, blocks))
+  decode.success(Replay(message.text, message.calls, model, blocks))
+}
+
+pub fn tool_use_block(id: String, name: String, arguments: String) -> Json {
+  let input =
+    json.parse(arguments, decode.dynamic)
+    |> result.map(encode_value)
+    |> result.unwrap(json.object([]))
+  json.object([
+    #("type", json.string("tool_use")),
+    #("id", json.string(id)),
+    #("name", json.string(claude_name(name))),
+    #("input", input),
+  ])
 }
 
 fn portable_blocks(message: Replay) -> List(Json) {
@@ -376,16 +344,7 @@ fn portable_blocks(message: Replay) -> List(Json) {
   list.append(
     text,
     list.map(message.calls, fn(call) {
-      let input =
-        json.parse(call.arguments, decode.dynamic)
-        |> result.map(encode_value)
-        |> result.unwrap(json.object([]))
-      json.object([
-        #("type", json.string("tool_use")),
-        #("id", json.string(call.id)),
-        #("name", json.string(claude_name(call.name))),
-        #("input", input),
-      ])
+      tool_use_block(call.id, call.name, call.arguments)
     }),
   )
 }
@@ -422,14 +381,18 @@ fn cached_text_block(text: String) -> Json {
   ])
 }
 
+fn cache_field(cache: Bool) -> List(#(String, Json)) {
+  case cache {
+    True -> [tail_cache()]
+    False -> []
+  }
+}
+
 fn text_block(text: String, cache: Bool) -> Json {
   json.object([
     #("type", json.string("text")),
     #("text", json.string(text)),
-    ..case cache {
-      True -> [tail_cache()]
-      False -> []
-    }
+    ..cache_field(cache)
   ])
 }
 
@@ -457,14 +420,11 @@ fn image_block(files: Files, image: types.Image, cache: Bool) -> Json {
           json.object([
             #("type", json.string("base64")),
             #("media_type", json.string(mime)),
-            #("data", base64_string(types.image_data(image))),
+            #("data", types.base64_string(types.image_data(image))),
           ])
       },
     ),
-    ..case cache {
-      True -> [tail_cache()]
-      False -> []
-    }
+    ..cache_field(cache)
   ])
 }
 
@@ -548,9 +508,6 @@ fn file_source(
   account: String,
   data: types.ImageData,
 ) -> Result(Json, Nil)
-
-@external(erlang, "albedo_openai_json", "base64_string")
-fn base64_string(data: types.ImageData) -> Json
 
 @external(erlang, "albedo_antigravity", "encode")
 pub fn encode_value(value: Dynamic) -> Json

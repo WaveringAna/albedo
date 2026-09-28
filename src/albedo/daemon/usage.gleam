@@ -37,21 +37,14 @@ pub fn from_completion(
 pub fn event(metadata: Metadata) -> String {
   let Metadata(model, recorded_at, tokens) = metadata
   let token_fields = case tokens {
-    Some(Tokens(prompt, completion, cached, creation)) -> {
-      let fields = [
+    Some(Tokens(prompt, completion, cached, creation)) ->
+      [
         #("promptTokens", json.int(prompt)),
         #("completionTokens", json.int(completion)),
         #("totalTokens", json.int(prompt + completion)),
       ]
-      let fields = case creation {
-        Some(value) -> [#("cacheCreationTokens", json.int(value)), ..fields]
-        None -> fields
-      }
-      case cached {
-        Some(value) -> [#("cachedPromptTokens", json.int(value)), ..fields]
-        None -> fields
-      }
-    }
+      |> opt_field("cacheCreationTokens", creation)
+      |> opt_field("cachedPromptTokens", cached)
     None -> []
   }
   json.object([
@@ -61,6 +54,17 @@ pub fn event(metadata: Metadata) -> String {
     ..token_fields
   ])
   |> json.to_string
+}
+
+fn opt_field(
+  fields: List(#(String, json.Json)),
+  key: String,
+  value: Option(Int),
+) -> List(#(String, json.Json)) {
+  case value {
+    Some(val) -> [#(key, json.int(val)), ..fields]
+    None -> fields
+  }
 }
 
 type TimeUnit {

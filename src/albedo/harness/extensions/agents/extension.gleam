@@ -8,7 +8,7 @@ import albedo/daemon/bus
 import albedo/daemon/family
 import albedo/daemon/store
 import albedo/harness/extension
-import albedo/harness/extensions/mail/extension as mail_extension
+import albedo/harness/rpc
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -54,21 +54,20 @@ fn doctrine(db: store.Store, session: String) -> String {
 }
 
 fn handle(db: store.Store, session: String, request: String) -> String {
-  let decoder = {
-    use method <- decode.field("method", decode.string)
-    use args <- decode.field("args", decode.dynamic)
-    decode.success(#(method, args))
-  }
-  case json.parse(request, decoder) {
-    Error(_) -> mail_extension.answer(Error("invalid agents request"))
-    Ok(#(method, args)) ->
-      dispatch(db, session, method, args) |> mail_extension.answer
-  }
+  rpc.serve(
+    request,
+    "invalid agents request",
+    fn(method, args) { dispatch(db, session, method, args) },
+    fn(message) { #("invalid", message) },
+  )
 }
 
 fn text(args, name: String) -> Result(String, String) {
-  decode.run(args, decode.field(name, decode.string, decode.success))
-  |> result.replace_error(name <> " must be a string")
+  rpc.args(
+    args,
+    decode.field(name, decode.string, decode.success),
+    name <> " must be a string",
+  )
 }
 
 fn dispatch(db, session, method, args) -> Result(json.Json, String) {
@@ -101,26 +100,23 @@ fn dispatch(db, session, method, args) -> Result(json.Json, String) {
       use members <- result.try(family.children(db, session))
       Ok(json.array(members, status_json(db, _)))
     }
-    "agents.siblings" -> {
-      use me <- result.try(family.get(db, session))
-      case me {
-        None -> Ok(json.array([], json.string))
-        Some(me) -> {
+    "agents.siblings" ->
+      case family.get(db, session) {
+        Ok(Some(me)) -> {
           use members <- result.try(family.children(db, me.parent))
           members
           |> list.filter(fn(member) { member.session != session })
           |> json.array(status_json(db, _))
           |> Ok
         }
+        _ -> Ok(json.array([], json.string))
       }
-    }
-    "agents.cancel" -> {
+    "agents.cancel" | "agents.close" -> {
       use child <- result.try(own_child(db, session, args))
-      agents.call(agents.Stop(child.session))
-    }
-    "agents.close" -> {
-      use child <- result.try(own_child(db, session, args))
-      agents.call(agents.Close(child.session))
+      agents.call(case method {
+        "agents.cancel" -> agents.Stop(child.session)
+        _ -> agents.Close(child.session)
+      })
     }
     "agents.delete" ->
       Error(
@@ -150,6 +146,14 @@ fn own_child(db, session, args) -> Result(family.Member, String) {
   }
 }
 
+fn parent_json(db: store.Store, id: String, depth: Int) -> json.Json {
+  json.object([
+    #("id", json.string(id)),
+    #("name", json.string(family.name_of(db, id))),
+    #("depth", json.int(depth - 1)),
+  ])
+}
+
 fn handle_json(
   db: store.Store,
   session: String,
@@ -163,38 +167,20 @@ fn handle_json(
     #("id", json.string(session)),
     #("name", json.string(name)),
     #("depth", json.int(depth)),
-    #(
-      "parent",
-      json.nullable(parent, fn(id) {
-        json.object([
-          #("id", json.string(id)),
-          #("name", json.string(family.name_of(db, id))),
-          #("depth", json.int(depth - 1)),
-        ])
-      }),
-    ),
+    #("parent", json.nullable(parent, parent_json(db, _, depth))),
   ])
 }
 
 fn status_json(db: store.Store, member: family.Member) -> json.Json {
-  let running =
-    agents.call(agents.Running(member.session))
-    |> result.try(fn(value) {
-      read(value, decode.bool) |> result.replace_error("")
-    })
-    |> result.unwrap(False)
+  let running = case agents.call(agents.Running(member.session)) {
+    Ok(value) -> read(value, decode.bool) |> result.unwrap(False)
+    Error(_) -> False
+  }
   json.object([
     #("id", json.string(member.session)),
     #("name", json.string(member.name)),
     #("depth", json.int(member.depth)),
-    #(
-      "parent",
-      json.object([
-        #("id", json.string(member.parent)),
-        #("name", json.string(family.name_of(db, member.parent))),
-        #("depth", json.int(member.depth - 1)),
-      ]),
-    ),
+    #("parent", parent_json(db, member.parent, member.depth)),
     #("running", json.bool(running)),
     #("closed", json.bool(member.closed)),
   ])

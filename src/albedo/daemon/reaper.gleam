@@ -17,33 +17,32 @@ pub type Limits {
   Limits(idle_ms: Int, budget_kb: Int, detached_ms: Int)
 }
 
+fn sum_kb(candidates: List(Candidate)) -> Int {
+  list.fold(candidates, 0, fn(sum, one) { sum + one.kilobytes })
+}
+
 /// Kernels to release, in the order to release them: those idle past the limit,
 /// then, while the pool is still over budget, the ones unattended longest.
 pub fn victims(candidates: List(Candidate), limits: Limits) -> List(Candidate) {
   // A limit shorter than the detachment grace must still be honourable.
   let grace = int.min(limits.detached_ms, limits.idle_ms)
-  let idle =
-    list.filter(candidates, fn(one) {
+  let #(expired, resident) =
+    candidates
+    |> list.filter(fn(one) {
       !one.running && one.jobs == 0 && one.idle_ms >= grace
     })
-  let #(expired, resident) =
-    list.partition(idle, fn(one) { one.idle_ms >= limits.idle_ms })
-  let total = list.fold(candidates, 0, fn(sum, one) { sum + one.kilobytes })
-  let freed = list.fold(expired, 0, fn(sum, one) { sum + one.kilobytes })
+    |> list.partition(fn(one) { one.idle_ms >= limits.idle_ms })
+  let over = sum_kb(candidates) - sum_kb(expired) - limits.budget_kb
   let crowded =
     resident
     |> list.sort(fn(a, b) { int.compare(b.idle_ms, a.idle_ms) })
-    |> trim(total - freed, limits.budget_kb)
+    |> trim(over)
   list.append(expired, crowded)
 }
 
-fn trim(
-  candidates: List(Candidate),
-  total: Int,
-  budget: Int,
-) -> List(Candidate) {
-  case candidates, total > budget {
-    [one, ..rest], True -> [one, ..trim(rest, total - one.kilobytes, budget)]
-    _, _ -> []
+fn trim(candidates: List(Candidate), over: Int) -> List(Candidate) {
+  case candidates {
+    [one, ..rest] if over > 0 -> [one, ..trim(rest, over - one.kilobytes)]
+    _ -> []
   }
 }

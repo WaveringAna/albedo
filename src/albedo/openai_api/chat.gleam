@@ -1,4 +1,5 @@
 import albedo/openai_api/reasoning
+import albedo/openai_api/replay
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
 import gleam/dynamic
@@ -97,7 +98,11 @@ fn chunk_decoder() -> decode.Decoder(Chunk) {
   use usage <- decode.optional_field(
     "usage",
     None,
-    decode.optional(usage_decoder()),
+    decode.optional(types.usage_decoder(
+      "prompt_tokens",
+      "completion_tokens",
+      "prompt_tokens_details",
+    )),
   )
   decode.success(Chunk(id, choices, usage))
 }
@@ -134,7 +139,7 @@ fn delta_decoder() -> decode.Decoder(Delta) {
         "tool_calls",
         [],
         decode.optional(decode.list(tool_fragment_decoder()))
-          |> decode.map(fn(value) { option_list(value) }),
+          |> decode.map(option.unwrap(_, [])),
       )
       case role {
         Some(role) if role != "assistant" ->
@@ -171,12 +176,11 @@ fn tool_fragment_decoder() -> decode.Decoder(ToolFragment) {
     None,
     decode.optional(function_fragment_decoder()),
   )
-  case kind, function {
-    Some(kind), _ if kind != "function" ->
+  let #(name, arguments) = option.unwrap(function, #(None, None))
+  case kind {
+    Some(kind) if kind != "function" ->
       decode.failure(ToolFragment(index, id, None, None), "function tool call")
-    _, Some(#(name, arguments)) ->
-      decode.success(ToolFragment(index, id, name, arguments))
-    _, None -> decode.success(ToolFragment(index, id, None, None))
+    _ -> decode.success(ToolFragment(index, id, name, arguments))
   }
 }
 
@@ -188,77 +192,30 @@ fn function_fragment_decoder() -> decode.Decoder(
   decode.success(#(name, arguments))
 }
 
-fn usage_decoder() -> decode.Decoder(types.Usage) {
-  use input <- decode.field("prompt_tokens", decode.int)
-  use output <- decode.field("completion_tokens", decode.int)
-  use details <- decode.optional_field(
-    "prompt_tokens_details",
-    None,
-    decode.optional(cached_tokens_decoder()),
-  )
-  decode.success(types.Usage(input, output, option.flatten(details), None))
-}
-
-fn cached_tokens_decoder() -> decode.Decoder(Option(Int)) {
-  use cached <- decode.optional_field(
-    "cached_tokens",
-    None,
-    decode.optional(decode.int),
-  )
-  decode.success(cached)
-}
-
-fn option_list(value: Option(List(a))) -> List(a) {
-  case value {
-    Some(value) -> value
-    None -> []
-  }
-}
-
 fn unsupported_field(fields: Dict(String, dynamic.Dynamic)) -> Option(String) {
-  case
-    fields
-    |> dict.to_list
-    |> list.find_map(fn(entry) {
-      case entry.0 {
-        "role"
-        | "content"
-        | "refusal"
-        | "reasoning_content"
-        | "reasoning"
-        | "reasoning_details"
-        | "tool_calls" -> Error(Nil)
-        field ->
-          case semantically_empty(entry.1) {
-            True -> Error(Nil)
-            False -> Ok(field)
-          }
-      }
-    })
-  {
-    Ok(field) -> Some(field)
-    Error(_) -> None
-  }
+  fields
+  |> dict.to_list
+  |> list.find_map(fn(entry) {
+    case
+      list.contains(replay.portable_fields, entry.0)
+      || semantically_empty(entry.1)
+    {
+      True -> Error(Nil)
+      False -> Ok(entry.0)
+    }
+  })
+  |> option.from_result
 }
 
 fn semantically_empty(value: dynamic.Dynamic) -> Bool {
   case decode.run(value, decode.optional(decode.dynamic)) {
     Ok(None) -> True
     _ ->
-      case decode.run(value, decode.string) {
-        Ok("") -> True
-        _ ->
-          case decode.run(value, decode.list(decode.dynamic)) {
-            Ok([]) -> True
-            _ ->
-              case
-                decode.run(value, decode.dict(decode.dynamic, decode.dynamic))
-              {
-                Ok(fields) -> dict.is_empty(fields)
-                _ -> False
-              }
-          }
-      }
+      decode.run(value, decode.string) == Ok("")
+      || decode.run(value, decode.list(decode.dynamic)) == Ok([])
+      || decode.run(value, decode.dict(decode.dynamic, decode.dynamic))
+      |> result.map(dict.is_empty)
+      |> result.unwrap(False)
   }
 }
 
@@ -266,24 +223,39 @@ fn apply_chunk(
   state: State,
   chunk: Chunk,
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
-  let State(id, content, refusal, reasoning, tools, usage, finish, terminal) =
-    state
   let Chunk(chunk_id, choices, chunk_usage) = chunk
-  use #(id, started) <- result.try(merge_id(id, chunk_id))
+  use #(id, started) <- result.try(types.merge_response_id(
+    state.response_id,
+    chunk_id,
+    "chat completion response id changed",
+  ))
   use #(content, refusal, reasoning, tools, finish, delta_events) <- result.try(
     case choices {
-      [] -> Ok(#(content, refusal, reasoning, tools, finish, []))
-      [Choice(0, _, _)] if finish != None ->
+      [] ->
+        Ok(
+          #(
+            state.content,
+            state.refusal,
+            state.reasoning,
+            state.tools,
+            state.finish,
+            [],
+          ),
+        )
+      [Choice(0, _, _)] if state.finish != None ->
         Error(types.InvalidEvent("chat choice after finish reason"))
       [Choice(0, delta, choice_finish)] -> {
         let Delta(_, content_delta, refusal_delta, reasoning_delta, fragments) =
           delta
-        use reasoning <- result.try(reasoning.append(reasoning, reasoning_delta))
-        use tools <- result.try(merge_fragments(tools, fragments))
-        use finish <- result.try(merge_finish(finish, choice_finish))
+        use reasoning <- result.try(reasoning.append(
+          state.reasoning,
+          reasoning_delta,
+        ))
+        use tools <- result.try(merge_fragments(state.tools, fragments))
+        use finish <- result.try(merge_finish(state.finish, choice_finish))
         Ok(#(
-          append_optional(content, content_delta),
-          append_optional(refusal, refusal_delta),
+          append_optional(state.content, content_delta),
+          append_optional(state.refusal, refusal_delta),
           reasoning,
           tools,
           finish,
@@ -304,12 +276,17 @@ fn apply_chunk(
       _ -> Error(types.Unsupported("multiple chat completion choices"))
     },
   )
-  let usage = case chunk_usage {
-    Some(value) -> Some(value)
-    None -> usage
-  }
   Ok(#(
-    State(id, content, refusal, reasoning, tools, usage, finish, terminal),
+    State(
+      ..state,
+      response_id: id,
+      content:,
+      refusal:,
+      reasoning:,
+      tools:,
+      finish:,
+      usage: option.or(chunk_usage, state.usage),
+    ),
     list.append(started, delta_events),
     None,
   ))
@@ -332,40 +309,28 @@ fn delta_events(
   let arguments =
     fragments
     |> list.filter_map(fn(fragment) {
-      let ToolFragment(index, _, _, arguments) = fragment
-      // the name so far: it arrives with the call's first fragments
-      let name = case dict.get(tools, index) {
-        Ok(ToolBuilder(_, Some(name), _)) -> name
-        _ -> ""
-      }
-      case arguments {
-        Some(arguments) -> Ok(types.ArgumentsDelta(index, name, arguments))
+      case fragment.arguments {
+        Some(arguments) -> {
+          // the name so far: it arrives with the call's first fragments
+          let name = case dict.get(tools, fragment.index) {
+            Ok(ToolBuilder(_, Some(name), _)) -> name
+            _ -> ""
+          }
+          Ok(types.ArgumentsDelta(fragment.index, name, arguments))
+        }
         None -> Error(Nil)
       }
     })
-  list.append(thinking, list.append(text, arguments))
-}
-
-fn merge_id(
-  current: Option(String),
-  incoming: Option(String),
-) -> Result(#(Option(String), List(types.Event)), types.Error) {
-  case current, incoming {
-    None, Some(id) -> Ok(#(Some(id), [types.Started(id)]))
-    Some(current), Some(incoming) if current != incoming ->
-      Error(types.InvalidEvent("chat completion response id changed"))
-    _, _ -> Ok(#(current, []))
-  }
+  list.flatten([thinking, text, arguments])
 }
 
 fn append_optional(
   accumulated: Option(List(String)),
   fragment: Option(String),
 ) -> Option(List(String)) {
-  case accumulated, fragment {
-    value, None -> value
-    None, Some(value) -> Some([value])
-    Some(values), Some(fragment) -> Some([fragment, ..values])
+  case fragment {
+    None -> accumulated
+    Some(f) -> Some([f, ..option.unwrap(accumulated, [])])
   }
 }
 
@@ -405,11 +370,9 @@ fn merge_fragments(
       True -> Error(types.InvalidEvent("negative tool call index"))
       False -> Ok(Nil)
     })
-    let existing = dict.get(tools, index)
-    let builder = case existing {
-      Error(_) -> ToolBuilder(None, None, [])
-      Ok(builder) -> builder
-    }
+    let builder =
+      dict.get(tools, index)
+      |> result.unwrap(ToolBuilder(None, None, []))
     let ToolBuilder(old_id, old_name, old_arguments) = builder
     use id <- result.try(merge_identity(old_id, id, "tool call id"))
     let name = case old_name, name {
@@ -441,26 +404,20 @@ fn merge_identity(
 fn finish(
   state: State,
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
-  let State(id, content, refusal, reasoning, builders, usage, finish, _) = state
-  use finish <- result.try(case finish {
-    Some(value) -> Ok(value)
-    None -> Error(types.InvalidEvent("[DONE] before chat finish reason"))
+  use finish <- result.try(
+    state.finish
+    |> option.to_result(types.InvalidEvent("[DONE] before chat finish reason")),
+  )
+  use tools <- result.try(case finish {
+    types.ToolCalls -> complete_tools(state.tools)
+    _ -> Ok([])
   })
-  let expose_tools = finish == types.ToolCalls
-  use tools <- result.try(case expose_tools {
-    True -> complete_tools(builders)
-    False -> Ok([])
-  })
-  let replay_tools = case expose_tools {
-    True -> tools
-    False -> []
-  }
   let message =
     assistant_message(
-      option.map(content, flatten),
-      option.map(refusal, flatten),
-      reasoning,
-      replay_tools,
+      option.map(state.content, flatten),
+      option.map(state.refusal, flatten),
+      state.reasoning,
+      tools,
     )
   use output <- result.try(
     decode.run(message, types.replay_decoder(types.ChatCompletions))
@@ -473,17 +430,16 @@ fn finish(
   )
   Ok(#(
     State(
-      id,
-      None,
-      None,
-      reasoning.new(),
-      dict.new(),
-      usage,
-      Some(finish),
-      True,
+      ..state,
+      content: None,
+      refusal: None,
+      reasoning: reasoning.new(),
+      tools: dict.new(),
+      finish: Some(finish),
+      terminal: True,
     ),
     [],
-    Some(types.Turn(id, output, tools, usage, finish, None)),
+    Some(types.Turn(state.response_id, output, tools, state.usage, finish, None)),
   ))
 }
 
@@ -519,7 +475,13 @@ fn assistant_message(
       None -> json_null()
     }),
   ]
-  let fields = put_optional(fields, "refusal", refusal)
+  let fields = case refusal {
+    Some(refusal) -> [
+      #(dynamic.string("refusal"), dynamic.string(refusal)),
+      ..fields
+    ]
+    None -> fields
+  }
   let fields = list.append(reasoning.fields(reasoning), fields)
   let fields = case tools {
     [] -> fields
@@ -532,17 +494,6 @@ fn assistant_message(
     ]
   }
   dynamic.properties(fields)
-}
-
-fn put_optional(
-  fields: List(#(dynamic.Dynamic, dynamic.Dynamic)),
-  key: String,
-  value: Option(String),
-) -> List(#(dynamic.Dynamic, dynamic.Dynamic)) {
-  case value {
-    Some(value) -> [#(dynamic.string(key), dynamic.string(value)), ..fields]
-    None -> fields
-  }
 }
 
 fn tool_dynamic(call: types.ToolCall) -> dynamic.Dynamic {

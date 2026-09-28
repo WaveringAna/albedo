@@ -44,12 +44,15 @@ CREATE INDEX IF NOT EXISTS session_family_parent ON session_family(parent);
 "
 
 pub fn initialise(db: store.Store) -> Result(Nil, String) {
-  store.query(db, fn(connection) {
-    sqlight.exec(schema, connection) |> result.map_error(fn(e) { e.message })
-  })
+  store.query(db, fn(connection) { store.exec(connection, schema) })
 }
 
 const columns = "session,parent,name,depth,closed_at IS NOT NULL"
+
+/// Every member query: the shared column list, with the given filter.
+fn members(filter: String) -> String {
+  "SELECT " <> columns <> " FROM session_family " <> filter
+}
 
 fn decoder() {
   use session <- decode.field(0, decode.string)
@@ -61,8 +64,7 @@ fn decoder() {
 }
 
 fn rows(connection, sql, args) -> Result(List(Member), String) {
-  sqlight.query(sql, connection, args, decoder())
-  |> result.map_error(fn(e) { e.message })
+  store.rows(connection, sql, args, decoder())
 }
 
 /// A name siblings can say: short, lowercase, and not a reserved address.
@@ -83,43 +85,31 @@ pub fn valid_name(name: String) -> Result(Nil, String) {
 }
 
 pub fn get(db: store.Store, session: String) -> Result(Option(Member), String) {
-  store.query(db, fn(connection) {
-    rows(
-      connection,
-      "SELECT " <> columns <> " FROM session_family WHERE session=?",
-      [sqlight.text(session)],
-    )
-  })
+  store.read(db, members("WHERE session=?"), [sqlight.text(session)], decoder())
   |> result.map(fn(found) { list.first(found) |> option.from_result })
 }
 
 /// Every session that has a parent. Session lists leave these out: a child is
 /// reached through its parent's agents view.
 pub fn descendants(db: store.Store) -> Result(List(String), String) {
-  store.query(db, fn(connection) {
-    sqlight.query(
-      "SELECT session FROM session_family",
-      connection,
-      [],
-      decode.field(0, decode.string, decode.success),
-    )
-    |> result.map_error(fn(e) { e.message })
-  })
+  store.read(
+    db,
+    "SELECT session FROM session_family",
+    [],
+    decode.field(0, decode.string, decode.success),
+  )
 }
 
 pub fn children(
   db: store.Store,
   parent: String,
 ) -> Result(List(Member), String) {
-  store.query(db, fn(connection) {
-    rows(
-      connection,
-      "SELECT "
-        <> columns
-        <> " FROM session_family WHERE parent=? ORDER BY created_at",
-      [sqlight.text(parent)],
-    )
-  })
+  store.read(
+    db,
+    members("WHERE parent=? ORDER BY created_at"),
+    [sqlight.text(parent)],
+    decoder(),
+  )
 }
 
 /// Record `child` as `parent`'s child named `name`. The child's session row
@@ -133,22 +123,14 @@ pub fn link(
   use _ <- result.try(valid_name(name))
   store.query(db, fn(connection) {
     use above <- result.try(
-      rows(
-        connection,
-        "SELECT " <> columns <> " FROM session_family WHERE session=?",
-        [sqlight.text(parent)],
-      ),
+      rows(connection, members("WHERE session=?"), [sqlight.text(parent)]),
     )
     let depth = case above {
       [member] -> member.depth + 1
       _ -> 1
     }
     use siblings <- result.try(
-      rows(
-        connection,
-        "SELECT " <> columns <> " FROM session_family WHERE parent=?",
-        [sqlight.text(parent)],
-      ),
+      rows(connection, members("WHERE parent=?"), [sqlight.text(parent)]),
     )
     let open = list.filter(siblings, fn(member) { !member.closed })
     use _ <- result.try(
@@ -173,9 +155,9 @@ pub fn link(
         False, False, False -> Ok(Nil)
       },
     )
-    sqlight.query(
-      "INSERT INTO session_family(session,parent,name,depth,created_at) VALUES(?,?,?,?,?)",
+    store.run(
       connection,
+      "INSERT INTO session_family(session,parent,name,depth,created_at) VALUES(?,?,?,?,?)",
       [
         sqlight.text(child),
         sqlight.text(parent),
@@ -183,24 +165,17 @@ pub fn link(
         sqlight.int(depth),
         sqlight.int(usage.now()),
       ],
-      decode.dynamic,
     )
-    |> result.map_error(fn(e) { e.message })
     |> result.replace(Member(child, parent, name, depth, False))
   })
 }
 
 pub fn close(db: store.Store, session: String) -> Result(Nil, String) {
-  store.query(db, fn(connection) {
-    sqlight.query(
-      "UPDATE session_family SET closed_at=COALESCE(closed_at,?) WHERE session=?",
-      connection,
-      [sqlight.int(usage.now()), sqlight.text(session)],
-      decode.dynamic,
-    )
-    |> result.replace(Nil)
-    |> result.map_error(fn(e) { e.message })
-  })
+  store.write(
+    db,
+    "UPDATE session_family SET closed_at=COALESCE(closed_at,?) WHERE session=?",
+    [sqlight.int(usage.now()), sqlight.text(session)],
+  )
 }
 
 pub type Address {
@@ -216,28 +191,23 @@ pub fn resolve(
 ) -> Result(Address, String) {
   store.query(db, fn(connection) {
     use me <- result.try(
-      rows(
-        connection,
-        "SELECT " <> columns <> " FROM session_family WHERE session=?",
-        [sqlight.text(caller)],
-      ),
+      rows(connection, members("WHERE session=?"), [sqlight.text(caller)]),
     )
     let parent = case me {
       [member] -> Some(member.parent)
       _ -> None
     }
     use by_id <- result.try(
-      sqlight.query(
-        "SELECT s.id,COALESCE(f.name,NULLIF(s.name,''),s.title) FROM sessions s LEFT JOIN session_family f ON f.session=s.id WHERE s.id=?",
+      store.rows(
         connection,
+        "SELECT s.id,COALESCE(f.name,NULLIF(s.name,''),s.title) FROM sessions s LEFT JOIN session_family f ON f.session=s.id WHERE s.id=?",
         [sqlight.text(to)],
         {
           use id <- decode.field(0, decode.string)
           use name <- decode.field(1, decode.string)
           decode.success(Address(id, name))
         },
-      )
-      |> result.map_error(fn(e) { e.message }),
+      ),
     )
     case to, parent, by_id {
       "parent", None, _ -> Error("this session has no parent; it is a root")
@@ -245,22 +215,17 @@ pub fn resolve(
       _, _, [address] -> Ok(address)
       _, _, _ -> {
         use children <- result.try(
-          rows(
-            connection,
-            "SELECT "
-              <> columns
-              <> " FROM session_family WHERE parent=? AND name=?",
-            [sqlight.text(caller), sqlight.text(to)],
-          ),
+          rows(connection, members("WHERE parent=? AND name=?"), [
+            sqlight.text(caller),
+            sqlight.text(to),
+          ]),
         )
         use siblings <- result.try(case parent {
           None -> Ok([])
           Some(id) ->
             rows(
               connection,
-              "SELECT "
-                <> columns
-                <> " FROM session_family WHERE parent=? AND name=? AND session<>?",
+              members("WHERE parent=? AND name=? AND session<>?"),
               [sqlight.text(id), sqlight.text(to), sqlight.text(caller)],
             )
         })
@@ -300,9 +265,9 @@ pub fn name_of(db: store.Store, session: String) -> String {
 /// A parent's name as its children say it: its own family name, or when it
 /// is a root the name it was given or its title.
 fn parent_name(connection, id: String) -> String {
-  sqlight.query(
-    "SELECT COALESCE(f.name,NULLIF(s.name,''),s.title) FROM sessions s LEFT JOIN session_family f ON f.session=s.id WHERE s.id=?",
+  store.rows(
     connection,
+    "SELECT COALESCE(f.name,NULLIF(s.name,''),s.title) FROM sessions s LEFT JOIN session_family f ON f.session=s.id WHERE s.id=?",
     [sqlight.text(id)],
     decode.field(0, decode.string, decode.success),
   )

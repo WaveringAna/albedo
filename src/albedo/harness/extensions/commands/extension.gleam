@@ -31,8 +31,12 @@ pub fn extension() -> extension.Extension {
       ]),
       extension.ToolPlugin("", [], ["commands"], []),
     ],
-    fn(_) { Ok(Nil) },
+    extension.no_initialise,
   )
+}
+
+fn user_action(what: String, command: String) -> String {
+  what <> " is a user action between turns; ask the user to run " <> command
 }
 
 fn effort() -> Command {
@@ -52,10 +56,7 @@ fn effort() -> Command {
     False,
     fn(ctx: Context, caller, args) {
       use value <- result.try(case caller, dict.get(args, "level") {
-        ModelCall, Ok(_) ->
-          Error(
-            "switching effort is a user action between turns; ask the user to run /effort",
-          )
+        ModelCall, Ok(_) -> Error(user_action("switching effort", "/effort"))
         _, Error(_) -> ctx.state(EffortGet)
         UserCall, Ok(level) -> ctx.state(EffortSelect(level))
       })
@@ -101,10 +102,7 @@ fn model() -> Command {
       }
       let provider = given("provider")
       use value <- result.try(case caller, dict.get(args, "model") {
-        ModelCall, Ok(_) ->
-          Error(
-            "switching models is a user action between turns; ask the user to run /model",
-          )
+        ModelCall, Ok(_) -> Error(user_action("switching models", "/model"))
         _, Error(_) ->
           case provider, given("effort") {
             None, None -> ctx.state(ModelGet)
@@ -147,16 +145,10 @@ fn reload() -> Command {
           use _ <- result.try(models.reload())
           use _ <- result.try(ctx.state(Refresh))
           Ok(
-            Data(
-              json.object([
-                #("reloaded", json.string("models+session")),
-                #(
-                  "message",
-                  json.string(
-                    "Models catalog reloaded; extension context, skills catalog, and session commands rescanned.",
-                  ),
-                ),
-              ]),
+            reloaded(
+              "models+session",
+              "Models catalog reloaded; extension context, skills catalog, and session commands rescanned.",
+              [],
             ),
           )
         }
@@ -165,20 +157,27 @@ fn reload() -> Command {
   )
 }
 
+fn reloaded(
+  scope: String,
+  message: String,
+  extra: List(#(String, json.Json)),
+) -> command.Outcome {
+  Data(
+    json.object([
+      #("reloaded", json.string(scope)),
+      #("message", json.string(message)),
+      ..extra
+    ]),
+  )
+}
+
 fn models_reload() -> Result(command.Outcome, String) {
   use _ <- result.try(models.reload())
   Ok(
-    Data(
-      json.object([
-        #("reloaded", json.string("models")),
-        #(
-          "message",
-          json.string(
-            "Models catalog reloaded. /model now shows the latest list.",
-          ),
-        ),
-        #("catalog", json.string(models.path())),
-      ]),
+    reloaded(
+      "models",
+      "Models catalog reloaded. /model now shows the latest list.",
+      [#("catalog", json.string(models.path()))],
     ),
   )
 }
@@ -200,10 +199,7 @@ fn compact() -> Command {
     False,
     fn(ctx: Context, caller, args) {
       case caller {
-        ModelCall ->
-          Error(
-            "compaction is a user action between turns; ask the user to run /compact",
-          )
+        ModelCall -> Error(user_action("compaction", "/compact"))
         UserCall ->
           ctx.state(Compact(option.from_result(dict.get(args, "strategy"))))
           |> result.map(Data)
@@ -240,15 +236,14 @@ fn raise_cap() -> Command {
         UserCall -> {
           use model <- result.try(case dict.get(args, "model") {
             Ok(model) -> Ok(model)
-            Error(_) ->
-              ctx.state(ModelGet)
-              |> result.try(fn(value) {
-                json.parse(
-                  json.to_string(value),
-                  decode.field("model", decode.string, decode.success),
-                )
-                |> result.replace_error("could not read this session's model")
-              })
+            Error(_) -> {
+              use value <- result.try(ctx.state(ModelGet))
+              json.parse(
+                json.to_string(value),
+                decode.field("model", decode.string, decode.success),
+              )
+              |> result.replace_error("could not read this session's model")
+            }
           })
           let raised = list.contains(extension.raised_caps(), model)
           use raise <- result.try(case dict.get(args, "state") {

@@ -1,33 +1,22 @@
 //// Session-scoped Python RPC over one immutable skills catalog snapshot.
 
 import albedo/harness/extensions/skills/catalog
+import albedo/harness/rpc
 import gleam/dynamic/decode
 import gleam/json
 import gleam/result
 
 pub fn handle(snapshot: catalog.Catalog, request: String) -> String {
-  let decoder = {
-    use method <- decode.field("method", decode.string)
-    use args <- decode.field("args", decode.dynamic)
-    decode.success(#(method, args))
-  }
-  let answer = {
-    use #(method, args) <- result.try(
-      json.parse(request, decoder)
-      |> result.replace_error("invalid skills host request"),
-    )
-    dispatch(snapshot, method, args)
-  }
-  case answer {
-    Ok(value) -> json.object([#("ok", json.bool(True)), #("value", value)])
-    Error(message) ->
-      json.object([
-        #("ok", json.bool(False)),
-        #("code", json.string("skills")),
-        #("message", json.string(message)),
-      ])
-  }
-  |> json.to_string
+  rpc.serve(
+    request,
+    "invalid skills host request",
+    fn(method, args) { dispatch(snapshot, method, args) },
+    fn(message) { #("skills", message) },
+  )
+}
+
+fn parse(args, decoder) {
+  rpc.args(args, decoder, "invalid skills arguments")
 }
 
 fn dispatch(snapshot, method, args) {
@@ -51,17 +40,12 @@ fn dispatch(snapshot, method, args) {
         use limit <- decode.optional_field("limit", 16_384, decode.int)
         decode.success(#(name, resource, offset, limit))
       }
-      use values <- result.try(parse(args, decoder))
-      catalog.read(snapshot, values.0, values.1, values.2, values.3)
+      use #(name, resource, offset, limit) <- result.try(parse(args, decoder))
+      catalog.read(snapshot, name, resource, offset, limit)
       |> result.map(page_json)
     }
     _ -> Error("unknown skills host operation")
   }
-}
-
-fn parse(args, decoder) {
-  decode.run(args, decoder)
-  |> result.replace_error("invalid skills arguments")
 }
 
 pub fn activation_json(activation: catalog.Activation) -> json.Json {

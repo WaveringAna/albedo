@@ -5,6 +5,7 @@ import albedo/daemon/store
 import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/harness/settings
+import albedo/harness/tool
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/int
@@ -15,6 +16,8 @@ import gleam/string
 import sqlight
 
 const recap_messages = 3
+
+const empty_summary = "summarizer returned an empty summary"
 
 const recap_chars_per_message = 400
 
@@ -28,7 +31,6 @@ pub type Config {
 
 pub type Observation {
   Observation(
-    strategy: String,
     status: String,
     source: String,
     capacity_tokens: Option(Int),
@@ -49,6 +51,16 @@ pub type Observation {
 
 type State {
   State(summary: String, cut: compaction.Cut)
+}
+
+/// The parts of a rolling projection and the request they build.
+type View {
+  View(
+    summary: List(types.Input),
+    recap: List(types.Input),
+    tail: List(types.Input),
+    inputs: List(types.Input),
+  )
 }
 
 /// A saved row. With `cut_prefix` on `cut_hash`, `cutoff` counts user
@@ -79,48 +91,40 @@ pub fn config_decoder() {
   decode.success(Config(capacity, trigger, tail))
 }
 
-pub fn load_config() -> Result(Config, String) {
-  use config <- result.try(settings.load(
-    "rolling",
-    config_decoder(),
-    default_config(),
-  ))
+fn validated(loaded: Result(Config, String)) -> Result(Config, String) {
+  use config <- result.try(loaded)
   validate_config(config)
 }
 
+pub fn load_config() -> Result(Config, String) {
+  validated(settings.load("rolling", config_decoder(), default_config()))
+}
+
 pub fn load_config_at(home: String) -> Result(Config, String) {
-  use config <- result.try(settings.load_at(
+  validated(settings.load_at(
     home,
     "rolling",
     config_decoder(),
     default_config(),
   ))
-  validate_config(config)
+}
+
+fn bundle(strategy: compaction.Strategy) -> extension.Extension {
+  extension.Extension(
+    "rolling",
+    "Incremental summary, recent-user recap, and verbatim conversation tail",
+    [],
+    [extension.CompactionPlugin(strategy)],
+    initialise,
+  )
 }
 
 pub fn configured_extension(config: Config) -> extension.Extension {
-  extension.Extension(
-    "rolling",
-    "Incremental summary, recent-user recap, and verbatim conversation tail",
-    [],
-    [extension.CompactionPlugin(strategy(config))],
-    initialise,
-  )
+  bundle(strategy(config))
 }
 
 pub fn extension() -> extension.Extension {
-  extension.Extension(
-    "rolling",
-    "Incremental summary, recent-user recap, and verbatim conversation tail",
-    [],
-    [
-      extension.CompactionPlugin(compaction.Strategy(
-        "rolling",
-        prepare_with_settings,
-      )),
-    ],
-    initialise,
-  )
+  bundle(compaction.Strategy("rolling", prepare_with_settings))
 }
 
 /// The rolling projection under the saved settings, for a strategy that falls
@@ -152,9 +156,9 @@ fn prepare_view(
   // Diagnostics must not fail a request after its projection was committed.
   let recorded =
     observation(context.store, context.session) |> result.unwrap(None)
-  let observed = case recorded {
-    Some(recorded) ->
-      Some(compaction.Observation(
+  let observed =
+    option.map(recorded, fn(recorded) {
+      compaction.observation(
         "rolling",
         recorded.status,
         recorded.source,
@@ -168,70 +172,102 @@ fn prepare_view(
           _, False ->
             "durable transcript; rolling compaction observation attached"
         },
-        Some(100 - recorded.trigger_percent),
+        recorded.trigger_percent,
         recorded.capacity_tokens,
-        Some(recorded.estimated_tokens),
-        Some("local byte-based estimate; not provider token usage"),
-        Some(recorded.original_items),
-        Some(recorded.prepared_items),
-      ))
-    None -> None
-  }
+        recorded.estimated_tokens,
+        recorded.original_items,
+        recorded.prepared_items,
+      )
+    })
   Ok(compaction.Prepared(inputs, observed, compacted))
 }
 
-fn validate_config(config: Config) -> Result(Config, String) {
-  case config.context_window_tokens {
+/// The config shape the compaction strategies share: an optional positive
+/// window and tail/trigger percentages ordered inside (0, 100), reported
+/// under the strategy's own name.
+pub fn validate_window(
+  name: String,
+  context_window_tokens: Option(Int),
+  trigger_percent: Int,
+  tail_percent: Int,
+) -> Result(Nil, String) {
+  case context_window_tokens {
     Some(capacity) if capacity <= 0 ->
-      Error("rolling contextWindowTokens must be positive")
+      Error(name <> " contextWindowTokens must be positive")
     _ ->
-      case
-        config.trigger_percent > 0
-        && config.trigger_percent < 100
-        && config.tail_percent > 0
-        && config.tail_percent < config.trigger_percent
-      {
-        True -> Ok(config)
-        False ->
-          Error(
-            "rolling percentages must satisfy 0 < tailPercent < triggerPercent < 100",
-          )
-      }
+      compaction.require(
+        trigger_percent > 0
+          && trigger_percent < 100
+          && tail_percent > 0
+          && tail_percent < trigger_percent,
+        name
+          <> " percentages must satisfy 0 < tailPercent < triggerPercent < 100",
+      )
   }
+}
+
+/// The window a strategy compacts against. Configuration overrides a
+/// catalog; neither one is guessed from the model id. A forced compaction
+/// without either still compacts, against an estimate of the request.
+pub fn effective_window(
+  context_window_tokens: Option(Int),
+  context: compaction.Context,
+  history: List(types.Input),
+) -> Option(compaction.Capacity) {
+  case context_window_tokens, context.capacity, context.force {
+    Some(tokens), _, _ ->
+      Some(compaction.Capacity(tokens, "configured contextWindowTokens"))
+    None, Some(capacity), _ -> Some(capacity)
+    None, None, True ->
+      Some(compaction.Capacity(
+        context.pinned_tokens + compaction.estimate_inputs(history),
+        "estimated for manual compaction",
+      ))
+    None, None, False -> None
+  }
+}
+
+fn validate_config(config: Config) -> Result(Config, String) {
+  validate_window(
+    "rolling",
+    config.context_window_tokens,
+    config.trigger_percent,
+    config.tail_percent,
+  )
+  |> result.replace(config)
 }
 
 pub fn initialise(ledger: store.Store) -> Result(Nil, String) {
   store.query(ledger, fn(db) {
-    sqlight.exec(
-      "CREATE TABLE IF NOT EXISTS rolling_compaction_state(session TEXT PRIMARY KEY,summary TEXT NOT NULL,cutoff_count INTEGER NOT NULL CHECK(cutoff_count >= 0),source_hash TEXT NOT NULL); CREATE TABLE IF NOT EXISTS rolling_compaction_observation(session TEXT PRIMARY KEY,status TEXT NOT NULL,source TEXT NOT NULL,capacity_tokens INTEGER,estimated_tokens INTEGER NOT NULL,trigger_percent INTEGER NOT NULL,original_items INTEGER NOT NULL,original_bytes INTEGER NOT NULL,summary_items INTEGER NOT NULL,summary_bytes INTEGER NOT NULL,recap_items INTEGER NOT NULL,recap_bytes INTEGER NOT NULL,tail_items INTEGER NOT NULL,tail_bytes INTEGER NOT NULL,prepared_items INTEGER NOT NULL,prepared_bytes INTEGER NOT NULL);",
+    store.exec(
       db,
+      "CREATE TABLE IF NOT EXISTS rolling_compaction_state(session TEXT PRIMARY KEY,summary TEXT NOT NULL,cutoff_count INTEGER NOT NULL CHECK(cutoff_count >= 0),source_hash TEXT NOT NULL); CREATE TABLE IF NOT EXISTS rolling_compaction_observation(session TEXT PRIMARY KEY,status TEXT NOT NULL,source TEXT NOT NULL,capacity_tokens INTEGER,estimated_tokens INTEGER NOT NULL,trigger_percent INTEGER NOT NULL,original_items INTEGER NOT NULL,original_bytes INTEGER NOT NULL,summary_items INTEGER NOT NULL,summary_bytes INTEGER NOT NULL,recap_items INTEGER NOT NULL,recap_bytes INTEGER NOT NULL,tail_items INTEGER NOT NULL,tail_bytes INTEGER NOT NULL,prepared_items INTEGER NOT NULL,prepared_bytes INTEGER NOT NULL);",
     )
-    |> result.replace(Nil)
-    |> result.map_error(fn(error) { error.message })
   })
+}
+
+/// Reads the one row per session these tables keep, where no row yet is a
+/// normal answer rather than an error. (`store.one` reports it as one.)
+fn read_one(
+  ledger: store.Store,
+  sql: String,
+  arguments: List(sqlight.Value),
+  decoder: decode.Decoder(a),
+) -> Result(Option(a), String) {
+  store.read(ledger, sql, arguments, decoder)
+  |> result.map(fn(rows) { list.first(rows) |> option.from_result })
 }
 
 pub fn observation(
   ledger: store.Store,
   session: String,
 ) -> Result(Option(Observation), String) {
-  store.query(ledger, fn(db) {
-    sqlight.query(
-      "SELECT status,source,capacity_tokens,estimated_tokens,trigger_percent,original_items,original_bytes,summary_items,summary_bytes,recap_items,recap_bytes,tail_items,tail_bytes,prepared_items,prepared_bytes FROM rolling_compaction_observation WHERE session=?",
-      db,
-      [sqlight.text(session)],
-      observation_decoder(),
-    )
-    |> result.map_error(fn(error) { error.message })
-    |> result.map(fn(rows) { list.first(rows) |> option_from_result })
-  })
-}
-
-fn option_from_result(value: Result(a, Nil)) -> Option(a) {
-  case value {
-    Ok(item) -> Some(item)
-    Error(_) -> None
-  }
+  read_one(
+    ledger,
+    "SELECT status,source,capacity_tokens,estimated_tokens,trigger_percent,original_items,original_bytes,summary_items,summary_bytes,recap_items,recap_bytes,tail_items,tail_bytes,prepared_items,prepared_bytes FROM rolling_compaction_observation WHERE session=?",
+    [sqlight.text(session)],
+    observation_decoder(),
+  )
 }
 
 fn observation_decoder() {
@@ -251,7 +287,6 @@ fn observation_decoder() {
   use prepared_items <- decode.field(13, decode.int)
   use prepared_bytes <- decode.field(14, decode.int)
   decode.success(Observation(
-    "rolling",
     status,
     source,
     capacity,
@@ -281,16 +316,12 @@ fn load_state(
   ledger: store.Store,
   session: String,
 ) -> Result(Option(Row), String) {
-  store.query(ledger, fn(db) {
-    sqlight.query(
-      "SELECT summary,cutoff_count,source_hash FROM rolling_compaction_state WHERE session=?",
-      db,
-      [sqlight.text(session)],
-      row_decoder(),
-    )
-    |> result.map_error(fn(error) { error.message })
-    |> result.map(fn(rows) { list.first(rows) |> option_from_result })
-  })
+  read_one(
+    ledger,
+    "SELECT summary,cutoff_count,source_hash FROM rolling_compaction_state WHERE session=?",
+    [sqlight.text(session)],
+    row_decoder(),
+  )
 }
 
 fn prepare(
@@ -299,34 +330,16 @@ fn prepare(
   history: List(types.Input),
 ) -> Result(#(List(types.Input), Bool), String) {
   let compaction.Context(
-    ledger,
-    session,
-    _,
-    model,
-    source,
-    pinned_tokens,
-    catalogued,
-    force,
-    summarize,
-    _,
-    _,
+    store: ledger,
+    session:,
+    model:,
+    source:,
+    pinned_tokens:,
+    force:,
+    summarize:,
+    ..,
   ) = context
-  let original_items = list.length(history)
-  let original_bytes = compaction.inputs_bytes(history)
-  // Configuration overrides a catalog; neither one is guessed from the model id.
-  let window = case config.context_window_tokens {
-    Some(tokens) ->
-      Some(compaction.Capacity(tokens, "configured contextWindowTokens"))
-    None ->
-      case catalogued, force {
-        None, True ->
-          Some(compaction.Capacity(
-            pinned_tokens + compaction.estimate_inputs(history),
-            "estimated for manual compaction",
-          ))
-        _, _ -> catalogued
-      }
-  }
+  let window = effective_window(config.context_window_tokens, context, history)
   use saved <- result.try(load_state(ledger, session))
   use #(resumed, invalidated) <- result.try(resume(
     ledger,
@@ -340,153 +353,154 @@ fn prepare(
     False -> Ok(Nil)
   })
   let current = projection(resumed, history)
+  // A saved projection this history still matches is already a compaction;
+  // each branch names what to report when there is none.
+  let status_of = fn(when_absent) {
+    case resumed {
+      Some(_) -> "compacted"
+      None -> when_absent
+    }
+  }
+  // The observation's shape is fixed; only the status, window facts, and the
+  // projection it describes vary per branch.
+  let observe = fn(status, provenance, capacity, tokens, view: View) {
+    observation_for(
+      status,
+      provenance,
+      capacity,
+      tokens,
+      config.trigger_percent,
+      history,
+      view,
+    )
+  }
+  // A branch that sends the projection as it stands records what it observed.
+  let report = fn(status, provenance, capacity, tokens, view: View) {
+    use _ <- result.try(save_observation(
+      ledger,
+      session,
+      observe(status, provenance, capacity, tokens, view),
+    ))
+    Ok(#(view.inputs, False))
+  }
   case window {
-    None -> {
+    None ->
       // Without a window there is no threshold to compare, but a saved
       // projection is still the user's standing instruction: honor it.
-      let status = case resumed {
-        Some(_) -> "compacted"
-        None -> "unknown"
-      }
-      use _ <- result.try(save_observation(
-        ledger,
-        session,
-        observation_for(
-          status,
-          "estimated; no configured or catalogued context window",
-          None,
-          pinned_tokens + compaction.estimate_inputs(current.3),
-          config,
-          original_items,
-          original_bytes,
-          current.0,
-          current.1,
-          current.2,
-        ),
-      ))
-      Ok(#(current.3, False))
-    }
+      report(
+        status_of("unknown"),
+        "estimated; no configured or catalogued context window",
+        None,
+        pinned_tokens + compaction.estimate_inputs(current.inputs),
+        current,
+      )
     Some(compaction.Capacity(capacity, capacity_source)) -> {
-      let estimated = pinned_tokens + compaction.estimate_inputs(current.3)
+      let estimated = pinned_tokens + compaction.estimate_inputs(current.inputs)
       case pinned_tokens >= capacity {
         True -> {
-          let observation =
-            observation_for(
+          let _ =
+            report(
               "limitation",
               "estimated pinned system, extension context, and tool schemas; window from "
                 <> capacity_source,
               Some(capacity),
               estimated,
-              config,
-              original_items,
-              original_bytes,
-              current.0,
-              current.1,
-              current.2,
+              current,
             )
-          let _ = save_observation(ledger, session, observation)
           Error(
             "context window is not large enough for pinned system, extension context, and tool schemas",
           )
         }
-        False if !force && estimated * 100 < capacity * config.trigger_percent -> {
-          let status = case resumed {
-            Some(_) -> "compacted"
-            None -> "not_needed"
-          }
-          let source = case invalidated {
-            True ->
-              "estimated after the transcript changed under the saved cut; saved projection reset"
-            False -> "estimated from current request projection"
-          }
-          let source = source <> "; window from " <> capacity_source
-          use _ <- result.try(save_observation(
-            ledger,
-            session,
-            observation_for(
-              status,
-              source,
-              Some(capacity),
+        False ->
+          case
+            compaction.triggered(
+              force,
               estimated,
-              config,
-              original_items,
-              original_bytes,
-              current.0,
-              current.1,
-              current.2,
-            ),
-          ))
-          Ok(#(current.3, False))
-        }
-        False -> {
-          let #(previous_summary, evicted, rest) = case resumed {
-            Some(Resumed(state, evicted, tail)) -> #(
-              Some(state.summary),
-              evicted,
-              tail,
-            )
-            None -> #(None, [], history)
-          }
-          let tail_budget = case force {
-            True ->
-              int.min(capacity, compaction.estimate_inputs(history))
-              * config.tail_percent
-              / 100
-            False -> capacity * config.tail_percent / 100
-          }
-          let #(newly_evicted, tail) = compaction.split_tail(rest, tail_budget)
-          use _ <- result.try(case history, newly_evicted {
-            [], _ -> Error("cannot compact an empty conversation")
-            _, [] ->
-              Error(
-                "cannot compact further without splitting the newest conversation/tool unit",
-              )
-            _, _ -> Ok(Nil)
-          })
-          use summary <- result.try(summarize_chunks(
-            summarize,
-            model,
-            previous_summary,
-            chunks(newly_evicted, int.max(1000, capacity / 2), 0, [], []),
-            int.min(2048, int.max(128, capacity / 10)),
-          ))
-          let evicted = list.append(evicted, newly_evicted)
-          let next_state = State(summary, compaction.cut_of(evicted))
-          let next =
-            projection(Some(Resumed(next_state, evicted, tail)), history)
-          let next_estimated =
-            pinned_tokens + compaction.estimate_inputs(next.3)
-          // The fit guarantee belongs to a real window; a forced compaction's
-          // synthetic window is a tail budget, so the projection always saves.
-          use _ <- result.try(case next_estimated < capacity || force {
-            True -> Ok(Nil)
-            False ->
-              Error(
-                "summary, recap, and indivisible recent tail do not fit the context window",
-              )
-          })
-          let observation =
-            observation_for(
-              "compacted",
-              "estimated from current request projection; window from "
-                <> capacity_source,
               Some(capacity),
-              next_estimated,
-              config,
-              original_items,
-              original_bytes,
-              next.0,
-              next.1,
-              next.2,
+              config.trigger_percent,
             )
-          use _ <- result.try(save_compaction(
-            ledger,
-            session,
-            next_state,
-            observation,
-          ))
-          Ok(#(next.3, True))
-        }
+          {
+            False -> {
+              let source = case invalidated {
+                True ->
+                  "estimated after the transcript changed under the saved cut; saved projection reset"
+                False -> "estimated from current request projection"
+              }
+              report(
+                status_of("not_needed"),
+                source <> "; window from " <> capacity_source,
+                Some(capacity),
+                estimated,
+                current,
+              )
+            }
+            True -> {
+              let #(previous_summary, evicted, rest) = case resumed {
+                Some(Resumed(state, evicted, tail)) -> #(
+                  Some(state.summary),
+                  evicted,
+                  tail,
+                )
+                None -> #(None, [], history)
+              }
+              let tail_budget =
+                compaction.tail_budget(
+                  capacity,
+                  compaction.estimate_inputs(history),
+                  force,
+                  config.tail_percent,
+                )
+              let #(newly_evicted, tail) =
+                compaction.split_tail(rest, tail_budget)
+              use _ <- result.try(compaction.require(
+                history != [],
+                "cannot compact an empty conversation",
+              ))
+              use _ <- result.try(compaction.require(
+                newly_evicted != [],
+                "cannot compact further without splitting the newest conversation/tool unit",
+              ))
+              use summary <- result.try(summarize_chunks(
+                summarize,
+                model,
+                previous_summary,
+                chunk_units(
+                  list.map(newly_evicted, fn(item) {
+                    #([item], compaction.estimate_input(item))
+                  }),
+                  int.max(1000, capacity / 2),
+                ),
+                int.min(2048, int.max(128, capacity / 10)),
+              ))
+              let evicted = list.append(evicted, newly_evicted)
+              let next_state = State(summary, compaction.cut_of(evicted))
+              let next = view_of(summary, tail, history)
+              let next_estimated =
+                pinned_tokens + compaction.estimate_inputs(next.inputs)
+              // The fit guarantee belongs to a real window; a forced compaction's
+              // synthetic window is a tail budget, so the projection always saves.
+              use _ <- result.try(compaction.require(
+                next_estimated < capacity || force,
+                "summary, recap, and indivisible recent tail do not fit the context window",
+              ))
+              let observation =
+                observe(
+                  "compacted",
+                  "estimated from current request projection; window from "
+                    <> capacity_source,
+                  Some(capacity),
+                  next_estimated,
+                  next,
+                )
+              use _ <- result.try(save_compaction(
+                ledger,
+                session,
+                next_state,
+                observation,
+              ))
+              Ok(#(next.inputs, True))
+            }
+          }
       }
     }
   }
@@ -512,62 +526,72 @@ fn summarize_chunks(
       ))
       |> result.map(string.trim)
       |> result.try(fn(value) {
-        case value == "" {
-          True -> Error("summarizer returned an empty summary")
-          False -> Ok(Some(value))
-        }
+        use _ <- result.try(compaction.require(value != "", empty_summary))
+        Ok(Some(value))
       })
     }),
   )
-  option.to_result(summary, "summarizer returned an empty summary")
+  option.to_result(summary, empty_summary)
 }
 
-fn chunks(
-  items: List(types.Input),
+/// Groups `units`, each with its items and estimated token cost, into chunks
+/// that each stay under `budget`: the unit shape both a summarizer's chunked
+/// requests and an LCM leaf's source rows share.
+pub fn chunk_units(units: List(#(List(a), Int)), budget: Int) -> List(List(a)) {
+  chunk_runs(units, budget, [], 0, [])
+}
+
+fn chunk_runs(
+  units: List(#(List(a), Int)),
   budget: Int,
+  current: List(a),
   tokens: Int,
-  current: List(types.Input),
-  complete: List(List(types.Input)),
-) -> List(List(types.Input)) {
-  case items, current {
-    [], [] -> list.reverse(complete)
-    [], _ -> list.reverse([list.reverse(current), ..complete])
-    [item, ..rest], _ -> {
-      let cost = compaction.estimate_input(item)
-      case current != [] && tokens + cost > budget {
-        True ->
-          chunks(rest, budget, cost, [item], [list.reverse(current), ..complete])
-        False ->
-          chunks(rest, budget, tokens + cost, [item, ..current], complete)
+  complete: List(List(a)),
+) -> List(List(a)) {
+  case units {
+    [] ->
+      case current {
+        [] -> list.reverse(complete)
+        _ -> list.reverse([current, ..complete])
       }
-    }
+    [unit, ..rest] ->
+      case current != [] && tokens + unit.1 > budget {
+        True -> chunk_runs(rest, budget, unit.0, unit.1, [current, ..complete])
+        False ->
+          chunk_runs(
+            rest,
+            budget,
+            list.append(current, unit.0),
+            tokens + unit.1,
+            complete,
+          )
+      }
   }
 }
 
-/// #(summary inputs, recap inputs, tail inputs, complete projection)
-fn projection(
-  resumed: Option(Resumed),
-  history: List(types.Input),
-) -> #(
-  List(types.Input),
-  List(types.Input),
-  List(types.Input),
-  List(types.Input),
-) {
+fn projection(resumed: Option(Resumed), history: List(types.Input)) -> View {
   case resumed {
-    None -> #([], [], history, history)
-    Some(Resumed(state, _, tail)) -> {
-      let summary = [
-        types.User(
-          "[older conversation summary; model-generated]\n"
-          <> state.summary
-          <> "\n[end older conversation summary]",
-        ),
-      ]
-      let recap = recap(history)
-      #(summary, recap, tail, list.append(summary, list.append(recap, tail)))
-    }
+    None -> View([], [], history, history)
+    Some(Resumed(State(summary, _), _, tail)) -> view_of(summary, tail, history)
   }
+}
+
+/// The saved summary as a model input, the recent user recap, and the
+/// verbatim tail they sit before.
+fn view_of(
+  summary: String,
+  tail: List(types.Input),
+  history: List(types.Input),
+) -> View {
+  let folded = [
+    types.User(
+      "[older conversation summary; model-generated]\n"
+      <> summary
+      <> "\n[end older conversation summary]",
+    ),
+  ]
+  let recap = recap(history)
+  View(folded, recap, tail, list.append(folded, list.append(recap, tail)))
 }
 
 fn recap(history: List(types.Input)) -> List(types.Input) {
@@ -575,9 +599,12 @@ fn recap(history: List(types.Input)) -> List(types.Input) {
     history
     |> list.filter_map(fn(input) {
       case input {
-        types.User(text) -> Ok(bounded_excerpt(text))
+        types.User(text) -> Ok(tool.excerpt(text, recap_chars_per_message))
         types.UserImage(text, _) ->
-          Ok(bounded_excerpt(text) <> "\n[image omitted from recap]")
+          Ok(
+            tool.excerpt(text, recap_chars_per_message)
+            <> "\n[image omitted from recap]",
+          )
         _ -> Error(Nil)
       }
     })
@@ -593,13 +620,6 @@ fn recap(history: List(types.Input)) -> List(types.Input) {
         <> "\n[end recent user excerpts]",
       ),
     ]
-  }
-}
-
-fn bounded_excerpt(text: String) -> String {
-  case string.length(text) > recap_chars_per_message {
-    True -> string.slice(text, 0, recap_chars_per_message) <> "…"
-    False -> text
   }
 }
 
@@ -630,7 +650,7 @@ fn resume(
           let matches =
             list.length(evicted) == cutoff
             && {
-              source_fingerprint(source, evicted) == cut_hash
+              compaction.fingerprint(#(source, evicted)) == cut_hash
               // A hash saved before images were stored covered their
               // payload bytes; checking it reads them once.
               || has_images(evicted)
@@ -664,20 +684,15 @@ fn save_cut(
   session: String,
   cut: compaction.Cut,
 ) -> Result(Nil, String) {
-  store.query(ledger, fn(db) {
-    sqlight.query(
-      "UPDATE rolling_compaction_state SET cutoff_count=?,source_hash=? WHERE session=?",
-      db,
-      [
-        sqlight.int(cut.users),
-        sqlight.text(cut_prefix <> cut.fingerprint),
-        sqlight.text(session),
-      ],
-      decode.dynamic,
-    )
-    |> result.replace(Nil)
-    |> result.map_error(fn(error) { error.message })
-  })
+  store.write(
+    ledger,
+    "UPDATE rolling_compaction_state SET cutoff_count=?,source_hash=? WHERE session=?",
+    [
+      sqlight.int(cut.users),
+      sqlight.text(cut_prefix <> cut.fingerprint),
+      sqlight.text(session),
+    ],
+  )
 }
 
 fn observation_for(
@@ -685,32 +700,33 @@ fn observation_for(
   source: String,
   capacity: Option(Int),
   estimated: Int,
-  config: Config,
-  original_items: Int,
-  original_bytes: Int,
-  summary: List(types.Input),
-  recap: List(types.Input),
-  tail: List(types.Input),
+  trigger_percent: Int,
+  original: List(types.Input),
+  view: View,
 ) -> Observation {
+  let measure = fn(inputs) {
+    #(list.length(inputs), compaction.inputs_bytes(inputs))
+  }
+  let #(original_items, original_bytes) = measure(original)
+  let #(summary_items, summary_bytes) = measure(view.summary)
+  let #(recap_items, recap_bytes) = measure(view.recap)
+  let #(tail_items, tail_bytes) = measure(view.tail)
   Observation(
-    "rolling",
     status,
     source,
     capacity,
     estimated,
-    config.trigger_percent,
+    trigger_percent,
     original_items,
     original_bytes,
-    list.length(summary),
-    compaction.inputs_bytes(summary),
-    list.length(recap),
-    compaction.inputs_bytes(recap),
-    list.length(tail),
-    compaction.inputs_bytes(tail),
-    list.length(summary) + list.length(recap) + list.length(tail),
-    compaction.inputs_bytes(summary)
-      + compaction.inputs_bytes(recap)
-      + compaction.inputs_bytes(tail),
+    summary_items,
+    summary_bytes,
+    recap_items,
+    recap_bytes,
+    tail_items,
+    tail_bytes,
+    summary_items + recap_items + tail_items,
+    summary_bytes + recap_bytes + tail_bytes,
   )
 }
 
@@ -729,38 +745,21 @@ fn save_compaction(
   observation: Observation,
 ) -> Result(Nil, String) {
   store.query(ledger, fn(db) {
-    use _ <- result.try(
-      sqlight.exec("BEGIN IMMEDIATE", db)
-      |> result.map_error(fn(error) { error.message }),
-    )
-    let written = {
+    store.transaction(db, fn() {
       use _ <- result.try(
-        sqlight.query(
-          "INSERT INTO rolling_compaction_state(session,summary,cutoff_count,source_hash) VALUES(?,?,?,?) ON CONFLICT(session) DO UPDATE SET summary=excluded.summary,cutoff_count=excluded.cutoff_count,source_hash=excluded.source_hash",
+        store.run(
           db,
+          "INSERT INTO rolling_compaction_state(session,summary,cutoff_count,source_hash) VALUES(?,?,?,?) ON CONFLICT(session) DO UPDATE SET summary=excluded.summary,cutoff_count=excluded.cutoff_count,source_hash=excluded.source_hash",
           [
             sqlight.text(session),
             sqlight.text(state.summary),
             sqlight.int(state.cut.users),
             sqlight.text(cut_prefix <> state.cut.fingerprint),
           ],
-          decode.dynamic,
-        )
-        |> result.replace(Nil)
-        |> result.map_error(fn(error) { error.message }),
+        ),
       )
       write_observation(db, session, observation)
-    }
-    case written {
-      Ok(_) ->
-        sqlight.exec("COMMIT", db)
-        |> result.replace(Nil)
-        |> result.map_error(fn(error) { error.message })
-      Error(error) -> {
-        let _ = sqlight.exec("ROLLBACK", db)
-        Error(error)
-      }
-    }
+    })
   })
 }
 
@@ -769,9 +768,9 @@ fn write_observation(
   session: String,
   observation: Observation,
 ) -> Result(Nil, String) {
-  sqlight.query(
-    "INSERT INTO rolling_compaction_observation(session,status,source,capacity_tokens,estimated_tokens,trigger_percent,original_items,original_bytes,summary_items,summary_bytes,recap_items,recap_bytes,tail_items,tail_bytes,prepared_items,prepared_bytes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET status=excluded.status,source=excluded.source,capacity_tokens=excluded.capacity_tokens,estimated_tokens=excluded.estimated_tokens,trigger_percent=excluded.trigger_percent,original_items=excluded.original_items,original_bytes=excluded.original_bytes,summary_items=excluded.summary_items,summary_bytes=excluded.summary_bytes,recap_items=excluded.recap_items,recap_bytes=excluded.recap_bytes,tail_items=excluded.tail_items,tail_bytes=excluded.tail_bytes,prepared_items=excluded.prepared_items,prepared_bytes=excluded.prepared_bytes",
+  store.run(
     db,
+    "INSERT INTO rolling_compaction_observation(session,status,source,capacity_tokens,estimated_tokens,trigger_percent,original_items,original_bytes,summary_items,summary_bytes,recap_items,recap_bytes,tail_items,tail_bytes,prepared_items,prepared_bytes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET status=excluded.status,source=excluded.source,capacity_tokens=excluded.capacity_tokens,estimated_tokens=excluded.estimated_tokens,trigger_percent=excluded.trigger_percent,original_items=excluded.original_items,original_bytes=excluded.original_bytes,summary_items=excluded.summary_items,summary_bytes=excluded.summary_bytes,recap_items=excluded.recap_items,recap_bytes=excluded.recap_bytes,tail_items=excluded.tail_items,tail_bytes=excluded.tail_bytes,prepared_items=excluded.prepared_items,prepared_bytes=excluded.prepared_bytes",
     [
       sqlight.text(session),
       sqlight.text(observation.status),
@@ -790,27 +789,13 @@ fn write_observation(
       sqlight.int(observation.prepared_items),
       sqlight.int(observation.prepared_bytes),
     ],
-    decode.dynamic,
   )
-  |> result.replace(Nil)
-  |> result.map_error(fn(error) { error.message })
 }
 
 fn delete_state(ledger: store.Store, session: String) -> Result(Nil, String) {
-  store.query(ledger, fn(db) {
-    sqlight.query(
-      "DELETE FROM rolling_compaction_state WHERE session=?",
-      db,
-      [sqlight.text(session)],
-      decode.dynamic,
-    )
-    |> result.replace(Nil)
-    |> result.map_error(fn(error) { error.message })
-  })
-}
-
-fn source_fingerprint(source: String, inputs: List(types.Input)) -> String {
-  compaction.fingerprint(#(source, inputs))
+  store.write(ledger, "DELETE FROM rolling_compaction_state WHERE session=?", [
+    sqlight.text(session),
+  ])
 }
 
 @external(erlang, "albedo_rolling", "legacy_fingerprint")

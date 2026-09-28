@@ -32,17 +32,11 @@ CREATE INDEX IF NOT EXISTS schedules_due ON schedules(next_at);
 "
 
 pub fn initialise(db: store.Store) -> Result(Nil, String) {
-  store.query(db, fn(connection) {
-    sqlight.exec(schema, connection) |> result.map_error(fn(e) { e.message })
-  })
-}
-
-pub fn now() -> Int {
-  clock()
+  store.query(db, store.exec(_, schema))
 }
 
 @external(erlang, "albedo_schedule", "now")
-fn clock() -> Int
+pub fn now() -> Int
 
 fn decoder() {
   use id <- decode.field(0, decode.int)
@@ -56,46 +50,41 @@ fn decoder() {
 
 const columns = "id,session,kind,prompt,next_at,every_seconds"
 
-fn rows(db, sql, args) -> Result(List(Job), String) {
-  sqlight.query(sql, db, args, decoder())
-  |> result.map_error(fn(e) { e.message })
+pub fn list(db: store.Store, session: String) -> Result(List(Job), String) {
+  store.read(
+    db,
+    "SELECT "
+      <> columns
+      <> " FROM schedules WHERE session=? ORDER BY next_at LIMIT 200",
+    [sqlight.text(session)],
+    decoder(),
+  )
 }
 
-pub fn list(db: store.Store, session: String) -> Result(List(Job), String) {
-  store.query(db, fn(connection) {
-    rows(
-      connection,
-      "SELECT "
-        <> columns
-        <> " FROM schedules WHERE session=? ORDER BY next_at LIMIT 200",
-      [sqlight.text(session)],
-    )
-  })
+fn one(
+  db: store.Store,
+  sql: String,
+  args: List(sqlight.Value),
+) -> Result(Job, String) {
+  store.query(db, store.one(_, sql, args, decoder(), "schedule not found"))
 }
 
 pub fn get(db: store.Store, session: String, id: Int) -> Result(Job, String) {
-  store.query(db, fn(connection) {
-    rows(
-      connection,
-      "SELECT " <> columns <> " FROM schedules WHERE id=? AND session=?",
-      [sqlight.int(id), sqlight.text(session)],
-    )
-  })
-  |> result.try(fn(jobs) {
-    list.first(jobs) |> result.replace_error("schedule not found")
-  })
+  one(db, "SELECT " <> columns <> " FROM schedules WHERE id=? AND session=?", [
+    sqlight.int(id),
+    sqlight.text(session),
+  ])
 }
 
 pub fn due(db: store.Store, time: Int) -> Result(List(Job), String) {
-  store.query(db, fn(connection) {
-    rows(
-      connection,
-      "SELECT "
-        <> columns
-        <> " FROM schedules WHERE next_at<=? ORDER BY next_at LIMIT 25",
-      [sqlight.int(time)],
-    )
-  })
+  store.read(
+    db,
+    "SELECT "
+      <> columns
+      <> " FROM schedules WHERE next_at<=? ORDER BY next_at LIMIT 25",
+    [sqlight.int(time)],
+    decoder(),
+  )
 }
 
 pub fn save(
@@ -134,10 +123,7 @@ pub fn save(
           list.append(args, [sqlight.int(id), sqlight.text(session)]),
         )
       }
-      store.query(db, fn(connection) { rows(connection, sql, values) })
-      |> result.try(fn(jobs) {
-        list.first(jobs) |> result.replace_error("schedule not found")
-      })
+      one(db, sql, values)
     }
   }
 }
@@ -147,39 +133,30 @@ pub fn delete(
   session: String,
   id: Int,
 ) -> Result(Bool, String) {
-  store.query(db, fn(connection) {
-    rows(
-      connection,
-      "DELETE FROM schedules WHERE id=? AND session=? RETURNING " <> columns,
-      [sqlight.int(id), sqlight.text(session)],
-    )
-  })
+  store.read(
+    db,
+    "DELETE FROM schedules WHERE id=? AND session=? RETURNING 1",
+    [sqlight.int(id), sqlight.text(session)],
+    decode.dynamic,
+  )
   |> result.map(fn(found) { !list.is_empty(found) })
 }
 
 /// Advance only the occurrence actually delivered. Downtime skips missed intervals.
 pub fn advance(db: store.Store, job: Job, time: Int) -> Result(Nil, String) {
-  store.query(db, fn(connection) {
-    case job.every {
-      None ->
-        rows(
-          connection,
-          "DELETE FROM schedules WHERE id=? AND next_at=? RETURNING " <> columns,
-          [sqlight.int(job.id), sqlight.int(job.next_at)],
-        )
-      Some(seconds) -> {
-        let elapsed = int.max(time - job.next_at, 0)
-        let next = job.next_at + { elapsed / seconds + 1 } * seconds
-        rows(
-          connection,
-          "UPDATE schedules SET next_at=? WHERE id=? AND next_at=? RETURNING "
-            <> columns,
-          [sqlight.int(next), sqlight.int(job.id), sqlight.int(job.next_at)],
-        )
-      }
+  let key = [sqlight.int(job.id), sqlight.int(job.next_at)]
+  let #(sql, args) = case job.every {
+    None -> #("DELETE FROM schedules WHERE id=? AND next_at=?", key)
+    Some(seconds) -> {
+      let elapsed = int.max(time - job.next_at, 0)
+      let next = job.next_at + { elapsed / seconds + 1 } * seconds
+      #("UPDATE schedules SET next_at=? WHERE id=? AND next_at=?", [
+        sqlight.int(next),
+        ..key
+      ])
     }
-  })
-  |> result.map(fn(_) { Nil })
+  }
+  store.write(db, sql, args)
 }
 
 pub fn to_json(job: Job) -> json.Json {

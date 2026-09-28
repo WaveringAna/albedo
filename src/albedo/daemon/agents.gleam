@@ -19,16 +19,8 @@ pub type Op {
   Models(session: String)
 }
 
-pub fn call(op: Op) -> Result(json.Json, String) {
-  registry_call(op)
-}
-
-pub fn register(handler: fn(Op) -> Result(json.Json, String)) -> Nil {
-  registry_register(handler)
-}
-
 @external(erlang, "albedo_agents", "call")
-fn registry_call(op: Op) -> Result(json.Json, String)
+pub fn call(op: Op) -> Result(json.Json, String)
 
 @external(erlang, "albedo_agents", "register")
-fn registry_register(handler: fn(Op) -> Result(json.Json, String)) -> Nil
+pub fn register(handler: fn(Op) -> Result(json.Json, String)) -> Nil

@@ -150,6 +150,13 @@ pub fn drain_fn(
   fn() { confirm(owner, "steering", timeout, messages.drain(run_id, _)) }
 }
 
+/// Bookkeeping the turn can go on without: a stalled session actor must not
+/// kill the turn over it; fire and forget after the bound.
+fn report(owner: Subject(message), make: fn(Subject(Nil)) -> message) -> Nil {
+  let _ = try_call(owner, 5000, make)
+  Nil
+}
+
 @external(erlang, "albedo_native", "new_id")
 fn new_id() -> String
 
@@ -194,17 +201,11 @@ pub fn start(
           )
         // Inspection and post-compaction cleanup must not kill the turn if
         // the session actor stalls; leave the message queued after the bound.
-        let _ =
-          try_call(owner, 5000, messages.context(run_id, snapshot, compacted, _))
-        Nil
+        report(owner, messages.context(run_id, snapshot, compacted, _))
       },
       usage_fn(owner, run_id, messages, 10_000),
       drain_fn(owner, run_id, messages, 10_000),
-      fn(head) {
-        // Same as the context snapshot: the pin report is bookkeeping.
-        let _ = try_call(owner, 5000, messages.pin(run_id, head, _))
-        Nil
-      },
+      fn(head) { report(owner, messages.pin(run_id, head, _)) },
     )
   let pid =
     process.spawn_unlinked(fn() {

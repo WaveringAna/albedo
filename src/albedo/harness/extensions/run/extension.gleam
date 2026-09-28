@@ -2,6 +2,7 @@
 
 import albedo/daemon/store
 import albedo/harness/extension as harness_extension
+import albedo/harness/rpc
 import gleam/dynamic/decode
 import gleam/json
 
@@ -17,7 +18,7 @@ pub fn extension() -> harness_extension.Extension {
         #("jobs", route),
       ]),
     ],
-    fn(_) { Ok(Nil) },
+    harness_extension.no_initialise,
   )
 }
 
@@ -37,51 +38,27 @@ pub type Wake {
 /// user turn, so the model never polls for completion. The reply's code is the
 /// kernel's retry signal: "busy" retries, anything else gives up.
 pub fn route(_store: store.Store, session: String, request: String) -> String {
-  case json.parse(request, request_decoder()) {
+  case rpc.decode(request) {
     Ok(#("jobs.completed", args)) ->
-      case decode.run(args, notice_decoder()) {
-        Ok(notice) ->
-          case deliver(session, notice.display, notice.text) {
-            Delivered ->
-              json.to_string(
-                json.object([
-                  #("ok", json.bool(True)),
-                  #("value", json.string("delivered")),
-                ]),
-              )
-            Busy -> refused("busy", "session is busy")
-            Unavailable(reason) -> refused("unavailable", reason)
+      case rpc.args(args, notice_decoder(), Nil) {
+        Ok(#(display, text)) ->
+          case deliver(session, display, text) {
+            Delivered -> Ok(json.string("delivered"))
+            Busy -> Error(#("busy", "session is busy"))
+            Unavailable(reason) -> Error(#("unavailable", reason))
           }
-        Error(_) -> refused("invalid", "invalid jobs notice")
+        Error(_) -> Error(#("invalid", "invalid jobs notice"))
       }
-    _ -> refused("invalid", "unknown jobs operation")
+    _ -> Error(#("invalid", "unknown jobs operation"))
   }
+  |> rpc.reply
 }
 
-fn request_decoder() -> decode.Decoder(#(String, decode.Dynamic)) {
-  use method <- decode.field("method", decode.string)
-  use args <- decode.field("args", decode.dynamic)
-  decode.success(#(method, args))
-}
-
-type Notice {
-  Notice(display: String, text: String)
-}
-
-fn notice_decoder() -> decode.Decoder(Notice) {
+fn notice_decoder() {
   use display <- decode.field("display", decode.string)
   use text <- decode.field("text", decode.string)
-  decode.success(Notice(display, text))
+  decode.success(#(display, text))
 }
 
 @external(erlang, "albedo_wakes", "deliver")
 fn deliver(session: String, display: String, text: String) -> Wake
-
-fn refused(code: String, message: String) -> String {
-  json.object([
-    #("ok", json.bool(False)),
-    #("code", json.string(code)),
-    #("message", json.string(message)),
-  ])
-  |> json.to_string
-}

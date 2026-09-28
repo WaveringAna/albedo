@@ -19,10 +19,6 @@ forget(Id) -> albedo_registry:forget(?TABLE, Id).
 
 %% The registered closure's Result, or an error when the session is not here.
 call(Id, Op) ->
-    case albedo_registry:fetch(?TABLE, Id, 1) of
-        {ok, Fun} ->
-            try Fun(Op)
-            catch _:_ -> {error, <<"session state call failed; outcome unknown">>}
-            end;
-        undefined -> {error, <<"session unavailable">>}
-    end.
+    albedo_registry:call(?TABLE, Id, 1, [Op],
+                         {error, <<"session unavailable">>},
+                         {error, <<"session state call failed; outcome unknown">>}).

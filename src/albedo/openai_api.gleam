@@ -180,19 +180,17 @@ pub fn exchange(
 }
 
 fn validate_client(client: Client) -> Result(Nil, Error) {
-  case client.timeout_ms <= 0 || client.max_event_bytes <= 0 {
-    True ->
+  case
+    client.timeout_ms <= 0 || client.max_event_bytes <= 0,
+    string.contains(client.api_key, "\r")
+    || string.contains(client.api_key, "\n")
+    || string.contains(client.base_url, "?")
+    || string.contains(client.base_url, "#")
+  {
+    True, _ ->
       Error(types.InvalidRequest("timeouts and event limits must be positive"))
-    False ->
-      case
-        string.contains(client.api_key, "\r")
-        || string.contains(client.api_key, "\n")
-        || string.contains(client.base_url, "?")
-        || string.contains(client.base_url, "#")
-      {
-        True -> Error(types.InvalidRequest("invalid API key or base URL"))
-        False -> Ok(Nil)
-      }
+    _, True -> Error(types.InvalidRequest("invalid API key or base URL"))
+    _, _ -> Ok(Nil)
   }
 }
 
@@ -205,10 +203,9 @@ fn validate_policy(
     types.Codex(account_id, session_id) ->
       case
         unsafe_header(model)
-        || string.trim(account_id) == ""
-        || unsafe_header(account_id)
-        || string.trim(session_id) == ""
-        || unsafe_header(session_id)
+        || list.any([account_id, session_id], fn(id) {
+          string.trim(id) == "" || unsafe_header(id)
+        })
       {
         True -> Error(types.InvalidRequest("invalid Codex request identity"))
         False -> Ok(Nil)
@@ -271,9 +268,10 @@ fn pump(
             on_event,
           ))
           case turn {
-            Some(turn) -> Ok(timed(turn, thinking, now))
-            None -> state.finish() |> result.map(timed(_, thinking, now))
+            Some(turn) -> Ok(turn)
+            None -> state.finish()
           }
+          |> result.map(timed(_, thinking, now))
         }
         None, False -> pump(connection, parser, state, thinking, on_event)
       }
@@ -294,10 +292,7 @@ fn deliver(
     [event, ..rest] -> {
       use #(state, updates, turn) <- result.try(state.feed(event.data))
       use _ <- result.try(notify(updates, on_event))
-      let thinking =
-        list.fold(updates, thinking, fn(thinking, event) {
-          think(thinking, event, now)
-        })
+      let thinking = list.fold(updates, thinking, fn(t, e) { think(t, e, now) })
       case turn {
         Some(_) -> Ok(#(state, thinking, turn))
         None -> deliver(state, thinking, now, rest, on_event)
@@ -332,20 +327,24 @@ fn think(thinking: Thinking, event: Event, now: Int) -> Thinking {
     types.ThinkingDelta(_), None ->
       Thinking(..thinking, since: Some(thinking.last))
     types.ThinkingDelta(_), Some(_) -> thinking
-    _, Some(since) -> Thinking(thinking.total + now - since, now, None)
+    _, Some(_) -> Thinking(elapsed(thinking, now), now, None)
     _, None -> Thinking(..thinking, last: now)
   }
 }
 
 /// A turn that ends while it is still thinking thought until its end.
 fn timed(turn: Turn, thinking: Thinking, now: Int) -> Turn {
-  let total = case thinking.since {
-    Some(since) -> thinking.total + now - since
-    None -> thinking.total
-  }
-  case total {
+  case elapsed(thinking, now) {
     0 -> turn
     total -> types.Turn(..turn, thought_ms: Some(total))
+  }
+}
+
+/// Thinking time so far, closing the spell under way if there is one.
+fn elapsed(thinking: Thinking, now: Int) -> Int {
+  case thinking.since {
+    Some(since) -> thinking.total + now - since
+    None -> thinking.total
   }
 }
 

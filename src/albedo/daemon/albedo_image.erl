@@ -1,21 +1,17 @@
 -module(albedo_image).
--export([inspect/1, valid/1]).
+-export([inspect/1, valid/1, charset/2]).
 
+%% The same data-size limit albedo_images guards with; a guard needs the macro.
 -define(MAX_DATA_BYTES, 6990508).
 -define(MAX_IMAGE_BYTES, 5242880).
 
 inspect(Data) when is_binary(Data), byte_size(Data) > 0, byte_size(Data) =< ?MAX_DATA_BYTES ->
-  try base64:decode(Data) of
-    Bytes when byte_size(Bytes) > 0, byte_size(Bytes) =< ?MAX_IMAGE_BYTES ->
-      case base64:encode(Bytes) =:= Data of
-        true ->
-          case dimensions(Bytes) of
-            {ok, Mime, Width, Height} -> {ok, {Mime, Width, Height, byte_size(Bytes)}};
-            error -> {error, nil}
-          end;
-        false -> {error, nil}
-      end;
-    _ -> {error, nil}
+  try
+    Bytes = base64:decode(Data),
+    true = byte_size(Bytes) > 0 andalso byte_size(Bytes) =< ?MAX_IMAGE_BYTES,
+    true = base64:encode(Bytes) =:= Data,
+    {ok, Mime, Width, Height} = dimensions(Bytes),
+    {ok, {Mime, Width, Height, byte_size(Bytes)}}
   catch _:_ -> {error, nil} end;
 inspect(_) -> {error, nil}.
 
@@ -37,12 +33,10 @@ valid(_) -> false.
 %% whose frame header lies beyond them is decoded whole, as before.
 -define(HEADER_CHARS, 65536).
 
-header_dimensions(Data) when byte_size(Data) =< ?HEADER_CHARS -> dimensions(base64:decode(Data));
 header_dimensions(Data) ->
-  case dimensions(base64:decode(binary:part(Data, 0, ?HEADER_CHARS))) of
-    {ok, <<"image/webp">>, _, _} -> dimensions(base64:decode(Data));  %% RIFF size covers the whole file
-    {ok, _, _, _} = Found -> Found;
-    error -> dimensions(base64:decode(Data))
+  case byte_size(Data) > ?HEADER_CHARS andalso dimensions(base64:decode(binary:part(Data, 0, ?HEADER_CHARS))) of
+    {ok, Mime, _, _} = Found when Mime =/= <<"image/webp">> -> Found;
+    _ -> dimensions(base64:decode(Data))  %% RIFF size covers the whole file; large JPEGs decoded whole
   end.
 
 %% The decoded size of canonical, padded base64 (what base64:encode/1 emits),
@@ -55,33 +49,32 @@ canonical_size(Data) when byte_size(Data) >= 4, byte_size(Data) rem 4 =:= 0 ->
   case alphabet(Head) of
     true ->
       case Last of
-        <<A, B, $=, $=>> -> quad_tail(A, B, 16#0F, 1, Body);
-        <<A, B, C, $=>> -> quad_tail3(A, B, C, Body);
-        <<A, B, C, D>> ->
-          case alphabet(<<A, B, C, D>>) of true -> Body div 4 * 3 + 3; false -> error end;
+        <<A, B, $=, $=>> -> quad_tail(<<A, B>>, B, 16#0F, 1, Body);
+        <<A, B, C, $=>> -> quad_tail(<<A, B, C>>, C, 16#03, 2, Body);
+        <<_, _, _, D>> -> quad_tail(Last, D, 0, 3, Body);
         _ -> error
       end;
     false -> error
   end;
 canonical_size(_) -> error.
 
-quad_tail(A, B, Mask, Extra, Body) ->
-  case alphabet(<<A, B>>) andalso value(B) band Mask =:= 0 of
+quad_tail(Prefix, Last, Mask, Extra, Body) ->
+  case alphabet(Prefix) andalso value(Last) band Mask =:= 0 of
     true -> Body div 4 * 3 + Extra;
     false -> error
   end.
 
-quad_tail3(A, B, C, Body) ->
-  case alphabet(<<A, B, C>>) andalso value(C) band 16#03 =:= 0 of
-    true -> Body div 4 * 3 + 2;
-    false -> error
-  end.
+%% One base64 table for both users: albedo_images also accepts '=', which
+%% JSON never needs escaped, so a payload may carry it anywhere and still
+%% store clean.
+alphabet(Value) -> charset(Value, false).
 
-alphabet(<<C, Rest/binary>>)
+charset(<<C, Rest/binary>>, Padding)
     when (C >= $A andalso C =< $Z); (C >= $a andalso C =< $z);
-         (C >= $0 andalso C =< $9); C =:= $+; C =:= $/ -> alphabet(Rest);
-alphabet(<<>>) -> true;
-alphabet(_) -> false.
+         (C >= $0 andalso C =< $9); C =:= $+; C =:= $/ -> charset(Rest, Padding);
+charset(<<$=, Rest/binary>>, true) -> charset(Rest, true);
+charset(<<>>, _) -> true;
+charset(_, _) -> false.
 
 value(C) when C >= $A, C =< $Z -> C - $A;
 value(C) when C >= $a, C =< $z -> C - $a + 26;
@@ -103,10 +96,7 @@ jpeg(<<>>) -> error.
 jpeg_marker(<<16#FF, Rest/binary>>) -> jpeg_marker(Rest);
 jpeg_marker(<<Marker, Rest/binary>>) when Marker =:= 16#D8; Marker =:= 16#01;
     (Marker >= 16#D0 andalso Marker =< 16#D7) -> jpeg(Rest);
-jpeg_marker(<<Marker, Length:16/big, Segment/binary>>)
-    when Length >= 2, byte_size(Segment) >= Length - 2 ->
-  PayloadSize = Length - 2,
-  <<Payload:PayloadSize/binary, Tail/binary>> = Segment,
+jpeg_marker(<<Marker, Length:16/big, Payload:(Length - 2)/binary, Tail/binary>>) when Length >= 2 ->
   case is_sof(Marker) of
     true ->
       case Payload of
@@ -136,10 +126,6 @@ webp(<<"VP8 ", Size:32/little, _FrameTag:24/little, 16#9D, 16#01, 16#2A,
     true -> {ok, <<"image/webp">>, Width, Height};
     false -> error
   end;
-webp(<<_Kind:4/binary, Size:32/little, Rest/binary>>) when byte_size(Rest) >= Size ->
-  Padding = Size rem 2,
-  case Rest of
-    <<_Payload:Size/binary, _Pad:Padding/binary, Tail/binary>> -> webp(Tail);
-    _ -> error
-  end;
+webp(<<_:4/binary, Size:32/little, _:Size/binary, _:(Size rem 2)/binary, Tail/binary>>) ->
+  webp(Tail);
 webp(_) -> error.

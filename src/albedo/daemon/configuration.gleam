@@ -6,6 +6,10 @@ import gleam/list
 import gleam/result
 import gleam/string
 
+const not_configured = "provider is not configured; run /login"
+
+const invalid_config = "provider configuration is invalid; run /login"
+
 pub type Provider {
   Provider(
     name: String,
@@ -53,9 +57,9 @@ pub fn profiles(
 // A migrated flat config remains "default" even if login selected a new provider.
 pub fn legacy(home: String) -> Result(Provider, String) {
   use config <- result.try(load(home))
-  case dict.get(config.providers, "default") {
-    Ok(_) -> configured(config, "default")
-    Error(_) -> configured(config, config.active)
+  case dict.has_key(config.providers, "default") {
+    True -> configured(config, "default")
+    False -> configured(config, config.active)
   }
 }
 
@@ -66,14 +70,14 @@ fn configured(config: Configuration, name: String) -> Result(Provider, String) {
   )
   use provider <- result.try(
     provider
-    |> result.replace_error("provider configuration is invalid; run /login"),
+    |> result.replace_error(invalid_config),
   )
   case
     string.trim(name) == ""
     || string.trim(provider.extension) == ""
     || string.trim(provider.model) == ""
   {
-    True -> Error("provider configuration is invalid; run /login")
+    True -> Error(invalid_config)
     False -> Ok(Provider(..provider, name: name))
   }
 }
@@ -81,10 +85,10 @@ fn configured(config: Configuration, name: String) -> Result(Provider, String) {
 fn load(home: String) -> Result(Configuration, String) {
   use bytes <- result.try(
     read_config(home)
-    |> result.replace_error("provider is not configured; run /login"),
+    |> result.replace_error(not_configured),
   )
   json.parse_bits(bytes, configuration_decoder())
-  |> result.replace_error("provider configuration is invalid; run /login")
+  |> result.replace_error(invalid_config)
 }
 
 fn configuration_decoder() {
@@ -120,7 +124,7 @@ fn provider_decoder() {
     decode.string,
   )
   use model <- decode.field("model", decode.string)
-  use protocol <- decode.field("protocol", protocol_decoder())
+  use protocol <- decode.field("protocol", types.protocol_decoder())
   decode.success(Provider("", provider_extension, model, protocol))
 }
 
@@ -133,54 +137,32 @@ pub fn settings(
 ) -> Result(a, String) {
   use bytes <- result.try(
     read_config(home)
-    |> result.replace_error("provider is not configured; run /login"),
+    |> result.replace_error(not_configured),
   )
   use root <- result.try(
     json.parse_bits(bytes, decode.dict(decode.string, decode.dynamic))
-    |> result.replace_error("provider configuration is invalid; run /login"),
+    |> result.replace_error(invalid_config),
   )
   let value = case dict.get(root, "providers") {
     Ok(providers) ->
       decode.run(providers, decode.dict(decode.string, decode.dynamic))
-      |> result.replace_error("provider configuration is invalid; run /login")
+      |> result.replace_error(invalid_config)
       |> result.try(fn(providers) {
         dict.get(providers, name)
-        |> result.replace_error("provider is not configured; run /login")
+        |> result.replace_error(not_configured)
       })
     Error(_) if name == "default" ->
       json.parse_bits(bytes, decode.dynamic)
-      |> result.replace_error("provider configuration is invalid; run /login")
-    Error(_) -> Error("provider is not configured; run /login")
+      |> result.replace_error(invalid_config)
+    Error(_) -> Error(not_configured)
   }
-  use value <- result.try(
-    value
-    |> result.replace_error("provider is not configured; run /login"),
-  )
+  use value <- result.try(value |> result.replace_error(not_configured))
   decode.run(value, decoder)
-  |> result.replace_error("provider configuration is invalid; run /login")
-}
-
-fn protocol_decoder() {
-  decode.string
-  |> decode.then(fn(value) {
-    case value {
-      "responses" -> decode.success(types.Responses)
-      "chat_completions" -> decode.success(types.ChatCompletions)
-      _ -> decode.failure(types.Responses, "provider protocol")
-    }
-  })
-}
-
-pub fn select_default(
-  home: String,
-  provider: String,
-  model: String,
-) -> Result(Nil, String) {
-  write_default(home, provider, model)
+  |> result.replace_error(invalid_config)
 }
 
 @external(erlang, "albedo_daemon", "write_default")
-fn write_default(
+pub fn select_default(
   home: String,
   provider: String,
   model: String,

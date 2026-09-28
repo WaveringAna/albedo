@@ -10,10 +10,6 @@
 register(Fun) -> albedo_registry:register(?TABLE, handler, Fun).
 
 call(Op) ->
-    case albedo_registry:fetch(?TABLE, handler, 1) of
-        {ok, Fun} ->
-            try Fun(Op)
-            catch _:_ -> {error, <<"agents are unavailable; outcome unknown">>}
-            end;
-        undefined -> {error, <<"agents are unavailable">>}
-    end.
+    albedo_registry:call(?TABLE, handler, 1, [Op],
+                         {error, <<"agents are unavailable">>},
+                         {error, <<"agents are unavailable; outcome unknown">>}).

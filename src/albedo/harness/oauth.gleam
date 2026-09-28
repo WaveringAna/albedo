@@ -5,6 +5,7 @@
 import albedo/openai_api/types
 import gleam/dynamic.{type Dynamic}
 import gleam/json.{type Json}
+import gleam/uri
 
 pub type Login {
   Login(
@@ -84,13 +85,7 @@ pub fn login_json(login: Login) -> Json {
     #("provider", json.string(login.provider)),
     #("label", json.string(login.label)),
     #("detail", json.string(login.detail)),
-    #(
-      "protocol",
-      json.string(case login.protocol {
-        types.Responses -> "responses"
-        types.ChatCompletions -> "chat_completions"
-      }),
-    ),
+    #("protocol", json.string(types.protocol_name(login.protocol))),
   ])
 }
 
@@ -102,4 +97,8 @@ pub fn account_json(provider: String, account: Account) -> Json {
     #("detail", json.string(account.detail)),
     #("selected", json.bool(account.selected)),
   ])
+}
+
+pub fn authorize_url(base: String, query: List(#(String, String))) -> String {
+  base <> "?" <> uri.query_to_string(query)
 }

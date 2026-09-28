@@ -55,24 +55,25 @@ startup(S = #{port := Port, host := Host}, Parent, Ref, Deadline) ->
                     Parent ! {Ref, {ok, self()}},
                     loop(S#{target => target_of(Ready)});
                 #{<<"type">> := <<"startup_error">>, <<"message">> := Message} when is_binary(Message) ->
-                    reap_start(S), Parent ! {Ref, {error, {unavailable, Message}}};
+                    startup_fail(S, Parent, Ref, {unavailable, Message});
                 #{<<"type">> := <<"call">>, <<"id">> := Id} = Message ->
                     spawn(fun() ->
-                        Reply = try json:decode(Host(iolist_to_binary(json:encode(Message))))
-                                catch _:_ -> #{ok => false, code => <<"unavailable">>, message => <<"runtime unavailable">>} end,
-                        _ = try port_command(Port, json:encode(#{type => <<"reply">>, id => Id, value => Reply})) catch _:_ -> ok end
+                        send(Port, #{type => <<"reply">>, id => Id, value => host_call(Host, Message)})
                     end),
                     startup(S, Parent, Ref, Deadline);
                 #{<<"type">> := <<"job_acquire">>, <<"id">> := Id} when is_binary(Id) ->
                     startup(acquire_slot(Id, S), Parent, Ref, Deadline);
-                _ -> startup(track_cleanup(Data, S), Parent, Ref, Deadline)
+                Message -> startup(track(Message, S), Parent, Ref, Deadline)
             end;
         {job_slot, Id, Result} -> startup(slot_reply(Id, Result, S), Parent, Ref, Deadline);
-        {Port, {data, _}} -> reap_start(S), Parent ! {Ref, {error, {unavailable, <<"invalid kernel handshake">>}}};
-        {Port, {exit_status, _}} -> reap_start(S), Parent ! {Ref, {error, {unavailable, <<"python exited at startup">>}}};
-        {'DOWN', _, process, _, _} -> reap_start(S), Parent ! {Ref, {error, lost}}
-    after After -> reap_start(S), Parent ! {Ref, {error, {unavailable, <<"python startup timed out">>}}}
+        {Port, {data, _}} -> startup_fail(S, Parent, Ref, {unavailable, <<"invalid kernel handshake">>});
+        {Port, {exit_status, _}} -> startup_fail(S, Parent, Ref, {unavailable, <<"python exited at startup">>});
+        {'DOWN', _, process, _, _} -> startup_fail(S, Parent, Ref, lost)
+    after After -> startup_fail(S, Parent, Ref, {unavailable, <<"python startup timed out">>})
     end.
+
+startup_fail(S, Parent, Ref, Error) ->
+    reap_start(S), Parent ! {Ref, {error, Error}}.
 
 execute(Pid, Data, Timeout) -> call(Pid, {execute, Data, Timeout}).
 
@@ -157,14 +158,13 @@ loop(S = #{port := Port, active := Active}) ->
                 _ -> loop(S)
             end;
         {Port, {data, Data}} when byte_size(Data) =< 8388608 ->
-            Decoded = try {ok, json:decode(Data)} catch _:_ -> error end,
-            case Decoded of
-                {ok, Message} -> handle(Message, Data, S);
-                error -> abandon(S)
+            case try json:decode(Data) catch _:_ -> error end of
+                error -> abandon(S);
+                Message -> handle(Message, Data, S)
             end;
         {Port, {data, _}} -> abandon(S);
         {host_reply, Id, Reply} ->
-            port_command(Port, json:encode(#{type => <<"reply">>, id => Id, value => Reply})), loop(S);
+            send(Port, #{type => <<"reply">>, id => Id, value => Reply}), loop(S);
         {job_slot, Id, Result} -> loop(slot_reply(Id, Result, S));
         {Port, {exit_status, _}} -> abandon(S#{exited => true});
         {'EXIT', Port, _} -> abandon(S#{exited => true});
@@ -179,48 +179,29 @@ loop(S = #{port := Port, active := Active}) ->
 handle(#{<<"type">> := <<"done">>}, Data, S = #{active := {From, Ref, Timer, Caller, _}}) ->
     erlang:cancel_timer(Timer), demonitor(Caller, [flush]),
     From ! {Ref, {ok, Data}}, loop(S#{active => none});
-handle(#{<<"type">> := <<"call">>, <<"id">> := Id} = Message, _, S) ->
-    Host = maps:get(host, S), Parent = self(),
+handle(#{<<"type">> := <<"call">>, <<"id">> := Id} = Message, _, S = #{host := Host}) ->
+    Parent = self(),
     %% Work requests never block interrupt/timeout handling of the kernel.
     spawn(fun() ->
-        Reply = try json:decode(Host(iolist_to_binary(json:encode(Message))))
-                catch _:_ -> #{ok => false, code => <<"unavailable">>, message => <<"runtime unavailable">>} end,
-        Parent ! {host_reply, Id, Reply}
+        Parent ! {host_reply, Id, host_call(Host, Message)}
     end), loop(S);
 handle(#{<<"type">> := <<"job_acquire">>, <<"id">> := Id}, _, S) when is_binary(Id) ->
     loop(acquire_slot(Id, S));
-handle(#{<<"type">> := <<"job_cancel">>, <<"id">> := Id}, _, S) ->
-    loop(release_slot(Id, S));
-handle(#{<<"type">> := <<"job_start">>, <<"id">> := Id, <<"pgid">> := Pgid} = Message, _, S)
-        when is_integer(Pgid), Pgid > 1 ->
-    loop(S#{groups => maps:put(Id, group_of(Message), maps:get(groups, S))});
-handle(#{<<"type">> := <<"job">>, <<"id">> := Id} = Message, Data, S) ->
-    %% A job keeps its entry while its group survives, so cleanup failures stay owned.
-    Groups = case maps:get(<<"cleanup">>, Message, none) of
-                 #{<<"gone">> := true} -> maps:remove(Id, maps:get(groups, S));
-                 none -> maps:get(groups, S);   %% unverified: keep owning the group
-                 Cleanup -> log({job_cleanup_failed, Id, Cleanup}), maps:get(groups, S)
-             end,
-    Next = case maps:get(<<"cleanup">>, Message, none) of
-               #{<<"gone">> := true} -> release_slot(Id, S);
-               _ -> S
-           end,
-    loop(Next#{events => lists:sublist([Data | maps:get(events, S)], 100), groups => Groups});
+handle(#{<<"type">> := <<"job">>} = Message, Data, S) ->
+    loop(journal(Data, track(Message, S)));
 handle(#{<<"type">> := <<"jobs">>, <<"live">> := Live}, _, S)
         when is_integer(Live), Live >= 0 ->
     loop(S#{external => Live});
 handle(#{<<"type">> := <<"trace">>}, Data, S) ->
-    loop(S#{events => lists:sublist([Data | maps:get(events, S)],100)});
-handle(#{<<"type">> := <<"cleanup">>, <<"failures">> := Failures}, _, S) ->
-    log({kernel_cleanup_failed, Failures}), loop(S);
-handle(_, _, S) -> loop(S).
+    loop(journal(Data, S));
+handle(Message, _, S) -> loop(track(Message, S)).
 
-acquire_slot(Id, S) ->
-    albedo_job_slots:acquire(maps:get(pool, S), Id),
-    S#{slots => maps:put(Id, true, maps:get(slots, S))}.
+acquire_slot(Id, S = #{pool := Pool, slots := Slots}) ->
+    albedo_job_slots:acquire(Pool, Id),
+    S#{slots => Slots#{Id => true}}.
 
-slot_reply(Id, Result, S) ->
-    case maps:is_key(Id, maps:get(slots, S)) of
+slot_reply(Id, Result, S = #{port := Port, slots := Slots}) ->
+    case maps:is_key(Id, Slots) of
         false -> S;  %% cancelled before the grant reached us
         true ->
             Reply = case Result of
@@ -229,23 +210,45 @@ slot_reply(Id, Result, S) ->
                         queued -> #{ok => false, queued => true};
                         {error, Why} -> #{ok => false, message => Why}
                     end,
-            port_command(maps:get(port, S), json:encode(Reply#{type => <<"job_slot">>, id => Id})),
+            send(Port, Reply#{type => <<"job_slot">>, id => Id}),
             case Result of {error, _} -> release_slot(Id, S); _ -> S end
     end.
 
-release_slot(Id, S) ->
-    albedo_job_slots:release(maps:get(pool, S), Id),
-    S#{slots => maps:remove(Id, maps:get(slots, S))}.
+release_slot(Id, S = #{pool := Pool, slots := Slots}) ->
+    albedo_job_slots:release(Pool, Id),
+    S#{slots => maps:remove(Id, Slots)}.
+
+%% One host call's decoded reply, with the fixed fallback when the host itself
+%% fails to answer.
+host_call(Host, Message) ->
+    try json:decode(Host(iolist_to_binary(json:encode(Message))))
+    catch _:_ -> #{ok => false, code => <<"unavailable">>, message => <<"runtime unavailable">>} end.
+
+%% Job ownership bookkeeping shared by the main loop and the startup and
+%% shutdown drains: a started job's group is recorded; a job proven gone
+%% releases its slot and its group.
+start_job(Message, Id, S = #{groups := Groups}) ->
+    S#{groups => Groups#{Id => group_of(Message)}}.
+
+gone(Id, S = #{groups := Groups}) ->
+    (release_slot(Id, S))#{groups => maps:remove(Id, Groups)}.
+
+%% The newest 100 job and trace frames, what events/1 hands out.
+journal(Data, S = #{events := Events}) ->
+    S#{events => lists:sublist([Data | Events], 100)}.
+
+send(Port, Msg) ->
+    _ = try port_command(Port, json:encode(Msg)) catch _:_ -> ok end.
 
 interrupt_active(#{active := none}, _) -> ok;
 interrupt_active(#{port := Port, active := {_, Ref, _, _, Id}}, Reason) ->
-    port_command(Port, json:encode(#{type => <<"interrupt">>, id => Id, reason => Reason})),
+    send(Port, #{type => <<"interrupt">>, id => Id, reason => Reason}),
     erlang:send_after(2000, self(), {kill, Ref}).
 
 %% Ask the kernel to clean up, wait, then end whatever it left behind. The job
 %% groups live in their own sessions, so the kernel's death never reaps them.
 shutdown(S = #{port := Port, target := Target}, TermMs, KillMs) ->
-    _ = try port_command(Port, json:encode(#{type => <<"shutdown">>})) catch _:_ -> ok end,
+    send(Port, #{type => <<"shutdown">>}),
     Settled = case maps:get(exited, S, false) of
         true -> S;
         false -> await_exit(S, erlang:monotonic_time(millisecond) + ?SHUTDOWN_GRACE)
@@ -253,10 +256,7 @@ shutdown(S = #{port := Port, target := Target}, TermMs, KillMs) ->
     %% The leader exiting does not prove its group empty: plain subprocesses
     %% from a cell inherit the kernel group and can outlive it.
     Targets = [target_spec(<<"kernel">>, Target) | job_specs(maps:get(groups, Settled))],
-    Result = verdict(supervise(Targets, TermMs, KillMs)),
-    close_port(Port),
-    case Result of ok -> albedo_job_slots:release_owner(maps:get(pool, S)); _ -> ok end,
-    Result.
+    reap_finish(Settled, verdict(supervise(Targets, TermMs, KillMs))).
 
 abandon(S) -> report(owner_lost, shutdown(S, ?TERM_MS, ?KILL_MS)).
 
@@ -271,23 +271,30 @@ await_exit(S = #{port := Port}, Deadline) ->
                 {Port, {exit_status, _}} -> S;
                 {'EXIT', Port, _} -> S;
                 {Port, {data, Data}} ->
-                    await_exit(track_cleanup(Data, S), Deadline)
+                    await_exit(track(Data, S), Deadline)
             after min(50, Deadline - Now) -> await_exit(S, Deadline)
             end
     end.
 
-track_cleanup(Data, S = #{groups := Groups}) ->
+track(Data, S) when is_binary(Data) ->
     case try json:decode(Data) catch _:_ -> none end of
-        #{<<"type">> := <<"job_start">>, <<"id">> := Id, <<"pgid">> := Pgid} = Message
-            when is_integer(Pgid), Pgid > 1 ->
-                S#{groups => maps:put(Id, group_of(Message), Groups)};
-        #{<<"type">> := <<"job">>, <<"id">> := Id, <<"cleanup">> := #{<<"gone">> := true}} ->
-            (release_slot(Id, S))#{groups => maps:remove(Id, Groups)};
-        #{<<"type">> := <<"job_cancel">>, <<"id">> := Id} -> release_slot(Id, S);
-        #{<<"type">> := <<"cleanup">>, <<"failures">> := Failures} ->
-            log({kernel_cleanup_failed, Failures}), S;
+        Message when is_map(Message) -> track(Message, S);
         _ -> S
-    end.
+    end;
+track(#{<<"type">> := <<"job_start">>, <<"id">> := Id, <<"pgid">> := Pgid} = Message, S)
+        when is_integer(Pgid), Pgid > 1 ->
+    start_job(Message, Id, S);
+track(#{<<"type">> := <<"job">>, <<"id">> := Id} = Message, S) ->
+    %% A job keeps its entry while its group survives, so cleanup failures stay owned.
+    case maps:get(<<"cleanup">>, Message, none) of
+        #{<<"gone">> := true} -> gone(Id, S);
+        none -> S;   %% unverified: keep owning the group
+        Cleanup -> log({job_cleanup_failed, Id, Cleanup}), S
+    end;
+track(#{<<"type">> := <<"job_cancel">>, <<"id">> := Id}, S) -> release_slot(Id, S);
+track(#{<<"type">> := <<"cleanup">>, <<"failures">> := Failures}, S) ->
+    log({kernel_cleanup_failed, Failures}), S;
+track(_, S) -> S.
 
 %% One checked helper process ends every target and returns its verdicts.
 supervise(Targets, TermMs, KillMs) ->
@@ -356,15 +363,10 @@ detail_text(Detail) -> io_lib:format(" (~ts)", [Detail]).
 
 %% Identity the kernel declared for itself; a port's os_pid is trustworthy only
 %% while that port is alive.
-target_of(Ready) ->
-    #{pid => maps:get(<<"pid">>, Ready, nil),
-      pgid => maps:get(<<"pgid">>, Ready, nil),
-      leader => maps:get(<<"leader">>, Ready, nil)}.
-
-group_of(Message) ->
-    #{pid => maps:get(<<"pgid">>, Message, nil),
-      pgid => maps:get(<<"pgid">>, Message, nil),
-      leader => maps:get(<<"leader">>, Message, nil)}.
+target_of(M) -> proc_spec(maps:get(<<"pid">>, M, nil), M).
+group_of(M)  -> proc_spec(maps:get(<<"pgid">>, M, nil), M).
+proc_spec(Pid, M) ->
+    #{pid => Pid, pgid => maps:get(<<"pgid">>, M, nil), leader => maps:get(<<"leader">>, M, nil)}.
 
 target_spec(Label, #{pid := Pid, pgid := Pgid, leader := Leader}) ->
     Base = #{label => iolist_to_binary(Label), pid => Pid, pgid => Pgid},
@@ -373,7 +375,7 @@ target_spec(Label, #{pid := Pid, pgid := Pgid, leader := Leader}) ->
     case Leader of nil -> Base; _ -> Base#{leader => Leader} end.
 
 job_specs(Groups) ->
-    [target_spec(<<"job ", Id/binary>>, Spec) || {Id, Spec} <- maps:to_list(Groups)].
+    [target_spec(<<"job ", Id/binary>>, Spec) || Id := Spec <- Groups].
 
 %% Before the handshake the helper checks whether this still-owned process
 %% already leads a group. Never assume startup has not reached setsid yet.
@@ -384,9 +386,12 @@ reap_start(S = #{port := Port}) ->
                  _ -> []
              end,
     Result = verdict(supervise(Target ++ job_specs(maps:get(groups, S)), ?TERM_MS, ?KILL_MS)),
-    report(startup_reaped, Result),
-    case Result of ok -> albedo_job_slots:release_owner(maps:get(pool, S)); _ -> ok end,
-    close_port(Port).
+    report(startup_reaped, reap_finish(S, Result)).
+
+reap_finish(#{pool := Pool, port := Port}, Result) ->
+    close_port(Port),
+    case Result of ok -> albedo_job_slots:release_owner(Pool); _ -> ok end,
+    Result.
 
 close_port(Port) -> _ = try port_close(Port) catch _:_ -> ok end, ok.
 

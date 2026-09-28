@@ -19,74 +19,71 @@ pub type Leaf {
 
 pub fn initialise(ledger: store.Store) -> Result(Nil, String) {
   store.query(ledger, fn(db) {
-    sqlight.exec(
-      "CREATE TABLE IF NOT EXISTS lcm_compaction_state(session TEXT PRIMARY KEY REFERENCES sessions(id),last_seq INTEGER NOT NULL CHECK(last_seq >= 0)); CREATE TABLE IF NOT EXISTS lcm_compaction_node(id INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),depth INTEGER NOT NULL CHECK(depth >= 0),first_seq INTEGER NOT NULL,last_seq INTEGER NOT NULL,summary TEXT NOT NULL); CREATE INDEX IF NOT EXISTS lcm_compaction_node_session ON lcm_compaction_node(session,first_seq); CREATE TABLE IF NOT EXISTS lcm_compaction_edge(child INTEGER PRIMARY KEY REFERENCES lcm_compaction_node(id),parent INTEGER NOT NULL REFERENCES lcm_compaction_node(id),position INTEGER NOT NULL CHECK(position >= 0)); CREATE INDEX IF NOT EXISTS lcm_compaction_edge_parent ON lcm_compaction_edge(parent,position);",
+    store.exec(
       db,
+      "CREATE TABLE IF NOT EXISTS lcm_compaction_state(session TEXT PRIMARY KEY REFERENCES sessions(id),last_seq INTEGER NOT NULL CHECK(last_seq >= 0)); CREATE TABLE IF NOT EXISTS lcm_compaction_node(id INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),depth INTEGER NOT NULL CHECK(depth >= 0),first_seq INTEGER NOT NULL,last_seq INTEGER NOT NULL,summary TEXT NOT NULL); CREATE INDEX IF NOT EXISTS lcm_compaction_node_session ON lcm_compaction_node(session,first_seq); CREATE TABLE IF NOT EXISTS lcm_compaction_edge(child INTEGER PRIMARY KEY REFERENCES lcm_compaction_node(id),parent INTEGER NOT NULL REFERENCES lcm_compaction_node(id),position INTEGER NOT NULL CHECK(position >= 0)); CREATE INDEX IF NOT EXISTS lcm_compaction_edge_parent ON lcm_compaction_edge(parent,position);",
     )
-    |> result.replace(Nil)
-    |> result.map_error(fn(error) { error.message })
+  })
+}
+
+/// The single row `sql` answers, or `None` when it answers none.
+fn one_row(
+  ledger: store.Store,
+  sql: String,
+  arguments: List(sqlight.Value),
+  decoder: decode.Decoder(a),
+) -> Result(Option(a), String) {
+  store.read(ledger, sql, arguments, decoder)
+  |> result.map(fn(rows) {
+    case rows {
+      [value] -> Some(value)
+      _ -> None
+    }
   })
 }
 
 pub fn storage_available(ledger: store.Store) -> Result(Bool, String) {
-  store.query(ledger, fn(db) {
-    sqlight.query(
-      "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lcm_compaction_node'",
-      db,
-      [],
-      decode.field(0, decode.int, decode.success),
-    )
-    |> result.map_error(fn(error) { error.message })
-    |> result.map(fn(rows) { rows == [1] })
-  })
+  one_row(
+    ledger,
+    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lcm_compaction_node'",
+    [],
+    decode.field(0, decode.int, decode.success),
+  )
+  |> result.map(fn(count) { count == Some(1) })
 }
 
 pub fn last_seq(ledger: store.Store, session: String) -> Result(Int, String) {
-  store.query(ledger, fn(db) {
-    sqlight.query(
-      "SELECT last_seq FROM lcm_compaction_state WHERE session=?",
-      db,
-      [sqlight.text(session)],
-      decode.field(0, decode.int, decode.success),
-    )
-    |> result.map_error(fn(error) { error.message })
-    |> result.map(fn(rows) {
-      case rows {
-        [value] -> value
-        _ -> 0
-      }
-    })
-  })
+  one_row(
+    ledger,
+    "SELECT last_seq FROM lcm_compaction_state WHERE session=?",
+    [sqlight.text(session)],
+    decode.field(0, decode.int, decode.success),
+  )
+  |> result.map(fn(value) { option.unwrap(value, 0) })
 }
 
 pub fn frontier(
   ledger: store.Store,
   session: String,
 ) -> Result(List(Node), String) {
-  store.query(ledger, fn(db) {
-    sqlight.query(
-      "SELECT n.id,n.depth,n.first_seq,n.last_seq,n.summary FROM lcm_compaction_node n LEFT JOIN lcm_compaction_edge e ON e.child=n.id WHERE n.session=? AND e.child IS NULL ORDER BY n.first_seq,n.id",
-      db,
-      [sqlight.text(session)],
-      node_decoder(),
-    )
-    |> result.map_error(fn(error) { error.message })
-  })
+  store.read(
+    ledger,
+    "SELECT n.id,n.depth,n.first_seq,n.last_seq,n.summary FROM lcm_compaction_node n LEFT JOIN lcm_compaction_edge e ON e.child=n.id WHERE n.session=? AND e.child IS NULL ORDER BY n.first_seq,n.id",
+    [sqlight.text(session)],
+    node_decoder(),
+  )
 }
 
 pub fn all_nodes(
   ledger: store.Store,
   session: String,
 ) -> Result(List(Node), String) {
-  store.query(ledger, fn(db) {
-    sqlight.query(
-      "SELECT id,depth,first_seq,last_seq,summary FROM lcm_compaction_node WHERE session=? ORDER BY id",
-      db,
-      [sqlight.text(session)],
-      node_decoder(),
-    )
-    |> result.map_error(fn(error) { error.message })
-  })
+  store.read(
+    ledger,
+    "SELECT id,depth,first_seq,last_seq,summary FROM lcm_compaction_node WHERE session=? ORDER BY id",
+    [sqlight.text(session)],
+    node_decoder(),
+  )
 }
 
 pub fn node(
@@ -94,33 +91,21 @@ pub fn node(
   session: String,
   id: Int,
 ) -> Result(Option(Node), String) {
-  store.query(ledger, fn(db) {
-    sqlight.query(
-      "SELECT id,depth,first_seq,last_seq,summary FROM lcm_compaction_node WHERE session=? AND id=?",
-      db,
-      [sqlight.text(session), sqlight.int(id)],
-      node_decoder(),
-    )
-    |> result.map_error(fn(error) { error.message })
-    |> result.map(fn(rows) {
-      case rows {
-        [value] -> Some(value)
-        _ -> None
-      }
-    })
-  })
+  one_row(
+    ledger,
+    "SELECT id,depth,first_seq,last_seq,summary FROM lcm_compaction_node WHERE session=? AND id=?",
+    [sqlight.text(session), sqlight.int(id)],
+    node_decoder(),
+  )
 }
 
 pub fn children(ledger: store.Store, parent: Int) -> Result(List(Int), String) {
-  store.query(ledger, fn(db) {
-    sqlight.query(
-      "SELECT child FROM lcm_compaction_edge WHERE parent=? ORDER BY position",
-      db,
-      [sqlight.int(parent)],
-      decode.field(0, decode.int, decode.success),
-    )
-    |> result.map_error(fn(error) { error.message })
-  })
+  store.read(
+    ledger,
+    "SELECT child FROM lcm_compaction_edge WHERE parent=? ORDER BY position",
+    [sqlight.int(parent)],
+    decode.field(0, decode.int, decode.success),
+  )
 }
 
 /// Copy only summary nodes whose complete source span survives a transcript
@@ -134,33 +119,26 @@ pub fn inherit_fork_prefix(
   checkpoint: Int,
   source_seqs: List(Int),
 ) -> Result(Nil, String) {
-  use installed <- result.try(
-    sqlight.query(
-      "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lcm_compaction_node'",
-      db,
-      [],
-      decode.field(0, decode.int, decode.success),
-    )
-    |> result.map_error(fn(error) { error.message }),
-  )
-  case installed {
-    [0] -> Ok(Nil)
-    [1] -> {
-      use nodes <- result.try(
-        sqlight.query(
-          "SELECT id,depth,first_seq,last_seq,summary FROM lcm_compaction_node WHERE session=? AND last_seq<=? ORDER BY id",
-          db,
-          [sqlight.text(source), sqlight.int(checkpoint)],
-          node_decoder(),
-        )
-        |> result.map_error(fn(error) { error.message }),
+  use installed <- result.try(store.rows(
+    db,
+    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lcm_compaction_node'",
+    [],
+    decode.field(0, decode.int, decode.success),
+  ))
+  use nodes <- result.try(case installed {
+    [0] -> Ok([])
+    [1] ->
+      store.rows(
+        db,
+        "SELECT id,depth,first_seq,last_seq,summary FROM lcm_compaction_node WHERE session=? AND last_seq<=? ORDER BY id",
+        [sqlight.text(source), sqlight.int(checkpoint)],
+        node_decoder(),
       )
-      case nodes {
-        [] -> Ok(Nil)
-        _ -> inherit_nodes(db, source, branch, checkpoint, source_seqs, nodes)
-      }
-    }
     _ -> Error("could not inspect installed LCM storage")
+  })
+  case nodes {
+    [] -> Ok(Nil)
+    _ -> inherit_nodes(db, source, branch, checkpoint, source_seqs, nodes)
   }
 }
 
@@ -172,19 +150,19 @@ fn inherit_nodes(
   source_seqs: List(Int),
   nodes: List(Node),
 ) -> Result(Nil, String) {
-  use branch_seqs <- result.try(
-    sqlight.query(
-      "SELECT seq FROM transcript WHERE session=? ORDER BY seq",
-      db,
-      [sqlight.text(branch)],
-      decode.field(0, decode.int, decode.success),
-    )
-    |> result.map_error(fn(error) { error.message }),
+  use branch_seqs <- result.try(store.rows(
+    db,
+    "SELECT seq FROM transcript WHERE session=? ORDER BY seq",
+    [sqlight.text(branch)],
+    decode.field(0, decode.int, decode.success),
+  ))
+  use seq_map <- result.try(
+    list.strict_zip(source_seqs, branch_seqs)
+    |> result.map(dict.from_list)
+    |> result.replace_error("fork transcript copy changed its source row count"),
   )
-  use seq_map <- result.try(pair_sequences(source_seqs, branch_seqs, dict.new()))
   use node_map <- result.try(
-    list.fold(nodes, Ok(dict.new()), fn(state, node) {
-      use state <- result.try(state)
+    list.try_fold(nodes, dict.new(), fn(node_map, node) {
       use first <- result.try(mapped(seq_map, node.first_seq))
       use last <- result.try(mapped(seq_map, node.last_seq))
       use id <- result.try(insert_node(
@@ -195,13 +173,13 @@ fn inherit_nodes(
         last,
         node.summary,
       ))
-      Ok(dict.insert(state, node.id, id))
+      Ok(dict.insert(node_map, node.id, id))
     }),
   )
   use edges <- result.try(
-    sqlight.query(
-      "SELECT e.child,e.parent,e.position FROM lcm_compaction_edge e JOIN lcm_compaction_node p ON p.id=e.parent WHERE p.session=? AND p.last_seq<=? ORDER BY e.parent,e.position",
+    store.rows(
       db,
+      "SELECT e.child,e.parent,e.position FROM lcm_compaction_edge e JOIN lcm_compaction_node p ON p.id=e.parent WHERE p.session=? AND p.last_seq<=? ORDER BY e.parent,e.position",
       [sqlight.text(source), sqlight.int(checkpoint)],
       {
         use child <- decode.field(0, decode.int)
@@ -209,21 +187,17 @@ fn inherit_nodes(
         use position <- decode.field(2, decode.int)
         decode.success(#(child, parent, position))
       },
-    )
-    |> result.map_error(fn(error) { error.message }),
+    ),
   )
   use _ <- result.try(
     list.try_each(edges, fn(edge) {
       use child <- result.try(mapped(node_map, edge.0))
       use parent <- result.try(mapped(node_map, edge.1))
-      sqlight.query(
-        "INSERT INTO lcm_compaction_edge(child,parent,position) VALUES(?,?,?)",
+      store.run(
         db,
+        "INSERT INTO lcm_compaction_edge(child,parent,position) VALUES(?,?,?)",
         [sqlight.int(child), sqlight.int(parent), sqlight.int(edge.2)],
-        decode.dynamic,
       )
-      |> result.replace(Nil)
-      |> result.map_error(fn(error) { error.message })
     }),
   )
   let covered =
@@ -237,28 +211,12 @@ fn inherit_nodes(
     0 -> Ok(Nil)
     covered -> {
       use remapped <- result.try(mapped(seq_map, covered))
-      sqlight.query(
-        "INSERT INTO lcm_compaction_state(session,last_seq) VALUES(?,?)",
+      store.run(
         db,
+        "INSERT INTO lcm_compaction_state(session,last_seq) VALUES(?,?)",
         [sqlight.text(branch), sqlight.int(remapped)],
-        decode.dynamic,
       )
-      |> result.replace(Nil)
-      |> result.map_error(fn(error) { error.message })
     }
-  }
-}
-
-fn pair_sequences(
-  source: List(Int),
-  branch: List(Int),
-  pairs: Dict(Int, Int),
-) -> Result(Dict(Int, Int), String) {
-  case source, branch {
-    [], [] -> Ok(pairs)
-    [old, ..old_rest], [new, ..new_rest] ->
-      pair_sequences(old_rest, new_rest, dict.insert(pairs, old, new))
-    _, _ -> Error("fork transcript copy changed its source row count")
   }
 }
 
@@ -278,8 +236,7 @@ pub fn save_leaves(
     Error(_) -> Ok(Nil)
     Ok(last) ->
       store.query(ledger, fn(db) {
-        use _ <- result.try(begin(db))
-        let written = {
+        store.transaction(db, fn() {
           use _ <- result.try(
             list.try_each(leaves, fn(leaf) {
               insert_node(
@@ -293,16 +250,12 @@ pub fn save_leaves(
               |> result.replace(Nil)
             }),
           )
-          sqlight.query(
-            "INSERT INTO lcm_compaction_state(session,last_seq) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET last_seq=excluded.last_seq",
+          store.run(
             db,
+            "INSERT INTO lcm_compaction_state(session,last_seq) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET last_seq=excluded.last_seq",
             [sqlight.text(session), sqlight.int(last.last_seq)],
-            decode.dynamic,
           )
-          |> result.replace(Nil)
-          |> result.map_error(fn(error) { error.message })
-        }
-        finish(db, written)
+        })
       })
   }
 }
@@ -315,48 +268,39 @@ pub fn save_parent(
   children: List(Node),
   summary: String,
 ) -> Result(Nil, String) {
-  case children {
-    [first, _, ..] ->
-      case list.last(children) {
-        Error(_) -> Error("LCM cannot condense an empty node group")
-        Ok(last) ->
-          store.query(ledger, fn(db) {
-            use _ <- result.try(begin(db))
-            let written = {
-              let depth =
-                1
-                + list.fold(children, 0, fn(highest, child) {
-                  int.max(highest, child.depth)
-                })
-              use parent <- result.try(insert_node(
-                db,
-                session,
-                depth,
-                first.first_seq,
-                last.last_seq,
-                summary,
-              ))
-              children
-              |> list.index_map(fn(child, position) { #(child.id, position) })
-              |> list.try_each(fn(item) {
-                sqlight.query(
-                  "INSERT INTO lcm_compaction_edge(child,parent,position) VALUES(?,?,?)",
-                  db,
-                  [
-                    sqlight.int(item.0),
-                    sqlight.int(parent),
-                    sqlight.int(item.1),
-                  ],
-                  decode.dynamic,
-                )
-                |> result.replace(Nil)
-                |> result.map_error(fn(error) { error.message })
-              })
-            }
-            finish(db, written)
+  case children, list.last(children) {
+    [first, _, ..], Ok(last) ->
+      store.query(ledger, fn(db) {
+        store.transaction(db, fn() {
+          let depth =
+            1
+            + list.fold(children, 0, fn(highest, child) {
+              int.max(highest, child.depth)
+            })
+          use parent <- result.try(insert_node(
+            db,
+            session,
+            depth,
+            first.first_seq,
+            last.last_seq,
+            summary,
+          ))
+          children
+          |> list.index_map(fn(child, position) { #(child.id, position) })
+          |> list.try_each(fn(item) {
+            store.run(
+              db,
+              "INSERT INTO lcm_compaction_edge(child,parent,position) VALUES(?,?,?)",
+              [
+                sqlight.int(item.0),
+                sqlight.int(parent),
+                sqlight.int(item.1),
+              ],
+            )
           })
-      }
-    _ -> Error("LCM needs at least two nodes to condense")
+        })
+      })
+    _, _ -> Error("LCM needs at least two nodes to condense")
   }
 }
 
@@ -377,9 +321,9 @@ fn insert_node(
   last: Int,
   summary: String,
 ) -> Result(Int, String) {
-  sqlight.query(
-    "INSERT INTO lcm_compaction_node(session,depth,first_seq,last_seq,summary) VALUES(?,?,?,?,?) RETURNING id",
+  use rows <- result.try(store.rows(
     db,
+    "INSERT INTO lcm_compaction_node(session,depth,first_seq,last_seq,summary) VALUES(?,?,?,?,?) RETURNING id",
     [
       sqlight.text(session),
       sqlight.int(depth),
@@ -388,31 +332,9 @@ fn insert_node(
       sqlight.text(summary),
     ],
     decode.field(0, decode.int, decode.success),
-  )
-  |> result.map_error(fn(error) { error.message })
-  |> result.try(fn(rows) {
-    case rows {
-      [id] -> Ok(id)
-      _ -> Error("LCM node insert returned no identity")
-    }
-  })
-}
-
-fn begin(db) -> Result(Nil, String) {
-  sqlight.exec("BEGIN IMMEDIATE", db)
-  |> result.replace(Nil)
-  |> result.map_error(fn(error) { error.message })
-}
-
-fn finish(db, written: Result(Nil, String)) -> Result(Nil, String) {
-  case written {
-    Ok(_) ->
-      sqlight.exec("COMMIT", db)
-      |> result.replace(Nil)
-      |> result.map_error(fn(error) { error.message })
-    Error(error) -> {
-      let _ = sqlight.exec("ROLLBACK", db)
-      Error(error)
-    }
+  ))
+  case rows {
+    [id] -> Ok(id)
+    _ -> Error("LCM node insert returned no identity")
   }
 }

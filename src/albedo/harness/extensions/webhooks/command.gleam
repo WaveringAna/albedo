@@ -2,10 +2,10 @@ import albedo/harness/command.{
   type Command, Argument, Command, Data, ModelCall, UserCall,
 }
 import albedo/harness/extensions/webhooks/ledger as hooks
-import gleam/dict
+import albedo/harness/page
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -31,62 +31,45 @@ pub fn command(db: hooks.Store, session: String) -> Command {
     False,
     False,
     fn(_, caller, args) {
-      let action = dict.get(args, "action") |> result.unwrap("")
-      let details =
-        dict.get(args, "details") |> result.unwrap("") |> string.trim
+      let #(action, details) = page.args(args, "")
       let actor = case caller {
         UserCall -> hooks.Human
         ModelCall -> hooks.Agent(session)
       }
       case action, caller {
-        "", UserCall -> listing(db, session)
+        "", UserCall | "list", UserCall -> listing(db, session)
         "", ModelCall | "list", ModelCall ->
-          hooks.list(db, actor, session)
+          check(hooks.list(db, actor, session))
           |> result.map(fn(items) { Data(json.array(items, hooks.to_json)) })
-          |> result.map_error(describe)
-        "list", UserCall -> listing(db, session)
         "agent_on", UserCall | "agent_off", UserCall -> {
-          hooks.allow_agent(db, session, action == "agent_on")
-          |> result.map(fn(_) {
-            done("Agent webhook management " <> if_on(action == "agent_on"))
-          })
-          |> result.map_error(describe)
+          let on = action == "agent_on"
+          check(hooks.allow_agent(db, session, on))
+          |> result.map(fn(_) { done("Agent webhook management " <> if_on(on)) })
         }
         "agent_on", ModelCall | "agent_off", ModelCall ->
           Error("only a human can change the agent permission")
         "create", _ | "create_with_secret", _ -> {
-          let #(name, supplied) = case action {
-            "create_with_secret" -> split(details)
-            _ -> #(details, "")
-          }
-          let secret = case action {
-            "create_with_secret" -> Some(supplied)
-            _ -> None
-          }
-          hooks.create(db, actor, session, name, secret)
-          |> result.map(fn(provisioned) {
-            receipt(provisioned, action == "create")
-          })
-          |> result.map_error(describe)
+          let #(name, secret) = secret_args(action, details)
+          check(hooks.create(db, actor, session, name, secret))
+          |> result.map(fn(p) { receipt(p, secret == None) })
         }
         "create_in", UserCall -> {
-          let #(target_session, rest) = split(details)
-          let #(name, supplied) = split(rest)
+          let #(target_session, rest) = page.split(details)
+          let #(name, supplied) = page.split(rest)
           let secret = case supplied {
             "" -> None
             _ -> Some(supplied)
           }
-          hooks.create(db, actor, target_session, name, secret)
-          |> result.map(fn(provisioned) { receipt(provisioned, secret == None) })
-          |> result.map_error(describe)
+          check(hooks.create(db, actor, target_session, name, secret))
+          |> result.map(fn(p) { receipt(p, secret == None) })
         }
         "create_in", ModelCall ->
           Error("an agent can only create hooks for its own session")
         "signature", _ -> {
-          let #(id, setting) = split(details)
-          let #(header, prefix) = split(setting)
+          let #(id, setting) = page.split(details)
+          let #(header, prefix) = page.split(setting)
           use hook <- result.try(target(db, actor, session, id))
-          hooks.configure(
+          check(hooks.configure(
             db,
             actor,
             hook.session,
@@ -94,26 +77,18 @@ pub fn command(db: hooks.Store, session: String) -> Command {
             hook.revision,
             header,
             prefix,
-          )
+          ))
           |> result.map(fn(updated) { Data(hooks.to_json(updated)) })
-          |> result.map_error(describe)
         }
         "rotate", _ | "rotate_with_secret", _ -> {
-          let #(id, supplied) = split(details)
-          let secret = case action {
-            "rotate_with_secret" -> Some(supplied)
-            _ -> None
-          }
+          let #(id, secret) = secret_args(action, details)
           use hook <- result.try(target(db, actor, session, id))
-          hooks.rotate(db, actor, hook.session, id, hook.revision, secret)
-          |> result.map(fn(provisioned) {
-            receipt(provisioned, action == "rotate")
-          })
-          |> result.map_error(describe)
+          check(hooks.rotate(db, actor, hook.session, id, hook.revision, secret))
+          |> result.map(fn(p) { receipt(p, secret == None) })
         }
         "enable", _ | "disable", _ | "delete", _ -> {
           use hook <- result.try(target(db, actor, session, details))
-          let result = case action {
+          case action {
             "delete" ->
               hooks.delete(db, actor, hook.session, details, hook.revision)
             _ ->
@@ -126,9 +101,8 @@ pub fn command(db: hooks.Store, session: String) -> Command {
                 action == "enable",
               )
           }
-          result
+          |> check
           |> result.map(fn(updated) { Data(hooks.to_json(updated)) })
-          |> result.map_error(describe)
         }
         _, _ -> Error("unknown webhook action")
       }
@@ -148,11 +122,21 @@ fn target(
     hooks.Human -> hooks.find(db, id)
     hooks.Agent(_) -> hooks.get(db, actor, session, id)
   }
-  |> result.map_error(describe)
+  |> check
 }
 
-fn split(text: String) -> #(String, String) {
-  string.split_once(text, " ") |> result.unwrap(#(text, ""))
+fn with_secret(action: String) -> Bool {
+  string.ends_with(action, "_with_secret")
+}
+
+fn secret_args(action: String, details: String) -> #(String, Option(String)) {
+  case with_secret(action) {
+    True -> {
+      let #(item, supplied) = page.split(details)
+      #(item, Some(supplied))
+    }
+    False -> #(details, None)
+  }
 }
 
 fn if_on(enabled: Bool) -> String {
@@ -196,19 +180,15 @@ fn listing(
   db: hooks.Store,
   session: String,
 ) -> Result(command.Outcome, String) {
-  use items <- result.try(hooks.list_all(db) |> result.map_error(describe))
-  use agent <- result.try(
-    hooks.agent_management(db, session) |> result.map_error(describe),
-  )
+  use items <- result.try(check(hooks.list_all(db)))
+  use agent <- result.try(check(hooks.agent_management(db, session)))
   use entries <- result.try(
     list.try_map(items, fn(hook) {
       use queued <- result.try(
-        hooks.pending_count(db, hook.session, hook.id)
-        |> result.map_error(describe),
+        check(hooks.pending_count(db, hook.session, hook.id)),
       )
       use failure <- result.try(
-        hooks.last_failure(db, hook.session, hook.id)
-        |> result.map_error(describe),
+        check(hooks.last_failure(db, hook.session, hook.id)),
       )
       Ok(
         json.object([
@@ -228,6 +208,10 @@ fn listing(
       ]),
     ),
   )
+}
+
+fn check(op: Result(a, hooks.Error)) -> Result(a, String) {
+  result.map_error(op, describe)
 }
 
 fn describe(error: hooks.Error) -> String {
