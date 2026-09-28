@@ -446,6 +446,11 @@ fn request_prefix(
   )
 }
 
+/// Attempts per provider call. Waits double from 250ms, so the last retry
+/// comes about 32s after the first failure: long enough to outlast a network
+/// handoff or a host whose ephemeral ports sit in TIME_WAIT.
+const attempts = 8
+
 /// Reissue transient transport and gateway failures. A failed attempt has no committed output
 /// or tool effects; discard its live previews before forwarding the next attempt.
 fn retry_stream(
@@ -455,13 +460,13 @@ fn retry_stream(
 ) -> Result(a, types.Error) {
   case run() {
     Error(error) ->
-      case attempt < 3 && retryable(error) {
+      case attempt < attempts && retryable(error) {
         False -> Error(error)
         True ->
           case publish(view.event("retry", [])) {
             False -> Error(types.Cancelled)
             True -> {
-              sleep_retry(attempt * 250)
+              sleep_retry(int.bitwise_shift_left(250, attempt - 1))
               retry_stream(run, publish, attempt + 1)
             }
           }

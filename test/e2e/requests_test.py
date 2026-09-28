@@ -177,6 +177,35 @@ class ProviderRequestsTest(unittest.TestCase):
         finally:
             provider.close()
 
+    def test_a_failing_gateway_is_retried_with_doubling_waits(self):
+        failures = []
+
+        def script(request):
+            if len(failures) < 4:
+                failures.append(1)
+                return Reply("error", "gateway down", status=503)
+            return text("recovered")
+
+        provider = Provider(script)
+        try:
+            with Albedo(provider, protocol="responses") as app:
+                session = app.session()
+                app.prompt(session, "hello").close()
+                app.idle(session, timeout=60)
+                rows = self.rows(app, session)["rows"]
+                self.assertEqual([row["outcome"] for row in rows],
+                                 ["error"] * 4 + ["ok"])
+                self.assertEqual({row["status"] for row in rows[:4]}, {503})
+                self.assertIsNotNone(rows[4]["seq"])
+                # Each wait doubles from 250ms, measured from the failed
+                # attempt's end to the next one's start.
+                gaps = [after["startedMs"] - before["finishedMs"]
+                        for before, after in zip(rows, rows[1:])]
+                for gap, wait in zip(gaps, (250, 500, 1000, 2000)):
+                    self.assertGreaterEqual(gap, wait)
+        finally:
+            provider.close()
+
 
 if __name__ == "__main__":
     unittest.main()

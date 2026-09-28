@@ -1,12 +1,12 @@
 """Transcript paging and what the transcript keeps, through the real daemon."""
 
 from dataclasses import dataclass
+import http.client
 import http.server
 import json
 import threading
 import unittest
-import urllib.error
-import urllib.request
+import urllib.parse
 
 from harness import Albedo, Provider, Reply, exclusive, python, text
 
@@ -140,22 +140,33 @@ class DaemonTest(unittest.TestCase):
                     ("PATCH", f"/sessions/{session}", {"name": ""}),
                 ]
 
+            # One kept-alive connection per worker, reopened only when the
+            # daemon drops it: a fresh socket per request exhausts the host's
+            # ephemeral ports within seconds, which fails every other
+            # connection on the machine, live sessions included.
             def hammer(base, token):
+                address = urllib.parse.urlsplit(base)
+                headers = {
+                    "Authorization": "Bearer " + token,
+                    "Content-Type": "application/json",
+                }
+                connection = None
                 while not stop.is_set():
                     for method, path, body in paths:
-                        request = urllib.request.Request(
-                            base + path,
-                            method=method,
-                            data=None if body is None else json.dumps(body).encode(),
-                            headers={
-                                "Authorization": "Bearer " + token,
-                                "Content-Type": "application/json",
-                            },
-                        )
                         try:
-                            urllib.request.urlopen(request, timeout=20).close()
-                        except (urllib.error.URLError, OSError):
-                            pass
+                            connection = connection or http.client.HTTPConnection(
+                                address.hostname, address.port, timeout=20
+                            )
+                            payload = None if body is None else json.dumps(body)
+                            connection.request(method, path, payload, headers)
+                            connection.getresponse().read()
+                        except (http.client.HTTPException, OSError):
+                            if connection:
+                                connection.close()
+                            connection = None
+                            stop.wait(0.01)
+                if connection:
+                    connection.close()
 
             workers = [
                 threading.Thread(

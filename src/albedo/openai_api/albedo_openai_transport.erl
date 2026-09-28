@@ -46,6 +46,12 @@ await_connection(Pid, Monitor, Target, Headers, Body, Timeout) ->
         {error, timeout} ->
             cleanup(Pid, Monitor),
             {error, timed_out};
+        %% gun exits badarg when connect/4 answers einval or eaddrnotavail.
+        {error, {down, badarg}} ->
+            cleanup(Pid, Monitor),
+            {error, {transport_error, <<"connection failed: this machine could not open "
+                "a local socket (EADDRNOTAVAIL or EINVAL); its ephemeral ports may be "
+                "exhausted by another program's connections">>}};
         {error, Reason} ->
             cleanup(Pid, Monitor),
             transport_error(<<"connection failed">>, Reason)
