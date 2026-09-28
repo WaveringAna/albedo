@@ -20,6 +20,7 @@ pub fn extension() -> extension.Extension {
             ["webhooks"],
             [#("webhooks", rpc.handle)],
             [command.command(db, session)],
+            [],
             fn() { Nil },
           ),
         )

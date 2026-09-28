@@ -16,12 +16,16 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
     [],
     [
       harness_extension.ManagedPlugin(fn(_, session, workspace) {
-        use context <- result.try(instruction_files.load_selected(
+        use #(context, warnings) <- result.try(instruction_files.load_selected(
           workspace,
           home,
           session,
         ))
-        Ok(harness_extension.Managed(context, "", [], [], [], [], fn() { Nil }))
+        Ok(
+          harness_extension.Managed(context, "", [], [], [], [], warnings, fn() {
+            Nil
+          }),
+        )
       }),
     ],
     harness_extension.no_initialise,

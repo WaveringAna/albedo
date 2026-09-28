@@ -51,6 +51,7 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
             ["skills"],
             [#("skills", fn(_, _, request) { rpc.handle(snapshot, request) })],
             list.map(catalog.commands(snapshot), skill_command(snapshot, _)),
+            [],
             fn() { Nil },
           ),
         )

@@ -1161,6 +1161,10 @@ fn kernel_opened(
     }
     Some(#(_, parked)), Ok(kernel) -> {
       let state = adopt(session_state.State(..state, booting: None), kernel)
+      let state =
+        list.fold(runtime.warnings(kernel), state, fn(state, warning) {
+          session_state.emit(state, view.text("note", "Warning: " <> warning))
+        })
       // Turns start here and now, so no status read can fall between the
       // kernel arriving and its turn starting; work that answers a caller is
       // handled as a message again.

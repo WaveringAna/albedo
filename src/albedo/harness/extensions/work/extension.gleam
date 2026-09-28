@@ -35,6 +35,7 @@ pub fn extension() -> harness_extension.Extension {
             [],
             [],
             [work_command.command(store, workspace)],
+            [],
             fn() { Nil },
           ),
         )

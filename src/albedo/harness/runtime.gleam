@@ -341,6 +341,10 @@ pub fn interrupt(session: Session) -> Nil {
   python.interrupt(session.kernel)
 }
 
+pub fn warnings(session: Session) -> List(String) {
+  extension.warnings(session.composition)
+}
+
 pub fn events(session: Session) -> List(String) {
   python.events(session.kernel)
 }

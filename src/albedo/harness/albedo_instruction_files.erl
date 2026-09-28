@@ -24,9 +24,9 @@ named(Workspace0, Home0, Name, Mode) ->
                     {first, []} -> [];
                     {all, _} -> Files
                 end,
-                case read_all(Chosen, []) of
-                    {ok, []} -> {ok, none};
-                    {ok, Loaded} ->
+                case read_all(Chosen, [], [], unlimited) of
+                    {ok, {[], _}} -> {ok, none};
+                    {ok, {Loaded, _}} ->
                         {ok, {some, iolist_to_binary(lists:join(<<"\n\n">>,
                             [Text || {_, _, Text} <- Loaded]))}};
                     Error -> Error
@@ -36,7 +36,11 @@ named(Workspace0, Home0, Name, Mode) ->
         _:_ -> {error, <<"prompt file discovery failed">>}
     end.
 
-load(Workspace0, Home0) -> load_impl(Workspace0, Home0, undefined).
+load(Workspace0, Home0) ->
+    case load_impl(Workspace0, Home0, undefined) of
+        {ok, {Context, _Warnings}} -> {ok, Context};
+        Error -> Error
+    end.
 
 load_selected(Workspace0, Home0, Session) ->
     load_impl(Workspace0, Home0, {albedo_extension_settings:home(), Session}).
@@ -51,8 +55,8 @@ load_impl(Workspace0, Home0, Selection) ->
             true ->
                 maybe
                     {ok, Selected} ?= select_files(Files, Selection, []),
-                    {ok, Loaded} ?= read_all(Selected, []),
-                    {ok, render(Loaded)}
+                    {ok, {Loaded, Warnings}} ?= read_all(Selected, [], [], ?MAX_FILE_BYTES),
+                    {ok, {render(Loaded), Warnings}}
                 end
         end
     catch
@@ -118,16 +122,20 @@ directory_display(project, Directory, Entry) ->
 directory_display(global, Directory, Entry) ->
     unicode:characters_to_binary(filename:join(["~", Directory, Entry])).
 
-read_all([], Loaded) -> {ok, lists:reverse(Loaded)};
-read_all([{Scope, Display, Path} | Rest], Loaded) ->
-    case read_text(Path, Display) of
-        {ok, Text} -> read_all(Rest, [{Scope, Display, Text} | Loaded]);
+read_all([], Loaded, Warnings, _) ->
+    {ok, {lists:reverse(Loaded), lists:reverse(Warnings)}};
+read_all([{Scope, Display, Path} | Rest], Loaded, Warnings, Limit) ->
+    case read_text(Path, Display, Limit) of
+        {ok, Text} ->
+            read_all(Rest, [{Scope, Display, Text} | Loaded], Warnings, Limit);
+        {skip, Warning} -> read_all(Rest, Loaded, [Warning | Warnings], Limit);
         Error -> Error
     end.
 
-read_text(Path, Display) ->
+read_text(Path, Display, Limit) ->
     case file:read_file_info(Path) of
-        {ok, #file_info{type = regular, size = Size}} when Size =< ?MAX_FILE_BYTES ->
+        {ok, #file_info{type = regular, size = Size}}
+          when Limit =:= unlimited; Size =< Limit ->
             case file:read_file(Path) of
                 {ok, Contents} ->
                     case unicode:characters_to_binary(Contents, utf8, utf8) of
@@ -137,7 +145,8 @@ read_text(Path, Display) ->
                 {error, _} -> file_error(Display, <<"cannot be read">>)
             end;
         {ok, #file_info{type = regular}} ->
-            file_error(Display, <<"exceeds 1048576 bytes">>);
+            {skip, iolist_to_binary([Display,
+                <<" exceeds 1 MiB and was not loaded">>])};
         _ -> file_error(Display, <<"is no longer a regular file">>)
     end.
 

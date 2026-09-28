@@ -168,6 +168,20 @@ class ExtensionTests(unittest.TestCase):
             self.assertTrue(next_request["instructions"].startswith(f"BASE_{expected}\n"))
             removed.unlink()
 
+    def test_oversized_agent_instructions_warn_and_allow_turns(self):
+        (self.app.workspace / "AGENTS.md").write_text("X" * (1024 * 1024 + 1))
+        (self.app.workspace / "CLAUDE.md").write_text("USABLE_CONVENTION")
+        request, = self.turn("continue without oversized instructions")
+        self.assertIn("USABLE_CONVENTION", request["instructions"])
+        self.assertNotIn("X" * 128, request["instructions"])
+        with self.app.api(f"/sessions/{self.sid}/stream?after_seq=0") as stream:
+            events = json.loads(next(line[6:] for line in stream
+                                     if line.startswith(b"data: ")))["events"]
+        warnings = [event["text"] for event in events if event.get("type") == "note"
+                    and "AGENTS.md" in event.get("text", "")]
+        self.assertEqual(warnings, ["Warning: AGENTS.md exceeds 1 MiB and was not loaded"])
+        self.turn("next turn still works")
+
     def test_workspace_system_files_are_optional(self):
         request, = self.turn("no custom system files")
         self.assertTrue(request["instructions"].startswith(

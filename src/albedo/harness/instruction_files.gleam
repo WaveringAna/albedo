@@ -1,4 +1,4 @@
-//// Shared workspace instruction discovery and bounded UTF-8 loading.
+//// Shared workspace instruction discovery and UTF-8 loading.
 
 import gleam/option.{type Option}
 
@@ -9,7 +9,8 @@ pub type Selection {
 
 /// Project root, project .agents/, project .albedo/, then the two home
 /// directories, in that order. `First` selects the highest-priority match;
-/// `All` concatenates matches. Missing files return `None`.
+/// `All` concatenates matches. Missing files return `None`. Named prompt files
+/// have no size limit; ordinary instruction files retain their 1 MiB limit.
 pub fn named(
   workspace: String,
   home: String,
@@ -31,12 +32,14 @@ fn native_named(
 pub fn home() -> String
 
 /// Autoloaded AGENTS.md, CLAUDE.md, and agent-directory Markdown other than prompt files.
+/// Files larger than 1 MiB are skipped.
 @external(erlang, "albedo_instruction_files", "load")
 pub fn load(workspace: String, home: String) -> Result(String, String)
 
+/// The selected files' context and any warnings about skipped files.
 @external(erlang, "albedo_instruction_files", "load_selected")
 pub fn load_selected(
   workspace: String,
   home: String,
   session: String,
-) -> Result(String, String)
+) -> Result(#(String, List(String)), String)

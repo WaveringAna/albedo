@@ -58,6 +58,7 @@ pub type Managed {
     python_modules: List(String),
     routes: List(Route),
     commands: List(command.Command),
+    warnings: List(String),
     close: fn() -> Nil,
   )
 }
@@ -827,6 +828,10 @@ pub fn context(composition: Composition) -> List(#(String, String)) {
   |> list.map(fn(item) { #(item.extension, item.value.context) })
 }
 
+pub fn warnings(composition: Composition) -> List(String) {
+  list.flat_map(composition.contributions, fn(item) { item.value.warnings })
+}
+
 pub fn instructions(composition: Composition) -> String {
   composition.contributions
   |> list.map(fn(item) { item.value.instructions })
@@ -924,7 +929,7 @@ pub fn summaries(
 }
 
 fn empty() -> Managed {
-  Managed("", "", [], [], [], [], fn() { Nil })
+  Managed("", "", [], [], [], [], [], fn() { Nil })
 }
 
 /// A static plugin's contribution, known without loading or preparing it.

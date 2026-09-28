@@ -17,9 +17,16 @@ pub fn extension() -> extension.Extension {
     [
       extension.ManagedPlugin(fn(db, session, _) {
         Ok(
-          extension.Managed("", "", [], [], [], [command(db, session)], fn() {
-            Nil
-          }),
+          extension.Managed(
+            "",
+            "",
+            [],
+            [],
+            [],
+            [command(db, session)],
+            [],
+            fn() { Nil },
+          ),
         )
       }),
     ],
