@@ -1,5 +1,7 @@
-"""Python agent API: spawn, family identity, refusals, progress, and explicit mail."""
+"""Python agent API: spawn, family identity, refusals, progress, explicit mail,
+agents.get, and reading messages across sessions."""
 
+import re
 import time
 import unittest
 
@@ -12,7 +14,7 @@ try:
     await agents.self.spawn('again', name='scout2', model='')
 except TypeError as error:
     print('EMPTY_MODEL', error)
-print('SPAWNED', kid.name, kid.depth, kid.parent.name)
+print('SPAWNED', kid.name, kid.depth, kid.parent.name, 'KID=' + kid.id)
 """
 CHILD = """me = agents.self
 print('ME', me.name, me.depth, me.parent.name)
@@ -21,12 +23,39 @@ try:
     await me.parent.cancel()
 except AgentsError as error:
     print('REFUSED', error)
+page = await me.parent.messages()
+print('PARENT_READ', 'spawn a scout' in page.content)
+up = await agents.get('parent')
+print('GOT', up.id == me.parent.id, up.depth, up.parent, up.closed)
 try:
     await me.parent.delete()
 except AgentsError as error:
     print('ASK', error)
 receipt = await mail.submit('parent', 'three')
 print('SENT', receipt.status, receipt.name)
+"""
+
+READ = """kid = (await agents.self.children())[0]
+page = await kid.messages()
+print('TASK_SEEN', 'count to three' in page.content)
+hits = await kid.search_messages('COUNT TO THREE')
+seq = hits.rows[0]['seq']
+row = await kid.messages(seq=seq, limit=200)
+print('FOUND', hits.count, row.content.startswith(f'[row #{seq}]'), 'count to three' in row.content)
+"""
+
+PEEK = """kid = await agents.get({kid!r})
+print('PEEK', kid.name, kid.depth, kid.closed)
+page = await kid.messages()
+print('PEEK_READ', 'count to three' in page.content)
+try:
+    await kid.cancel()
+except AgentsError as error:
+    print('PEEK_REFUSED', error)
+try:
+    await agents.get('nobody')
+except AgentsError as error:
+    print('PEEK_MISSING', error)
 """
 
 
@@ -56,10 +85,15 @@ class AgentsPythonTests(unittest.TestCase):
         def script(request):
             last = request["messages"][-1]
             user = user_text(request)
+            peek = re.search(r"peek ([0-9a-f]+)", user)
+            if last.get("role") == "user" and peek:
+                return python(PEEK.format(kid=peek.group(1)))
             if last.get("role") == "user" and "spawn a scout" in user:
                 return python(LEAD)
             if last.get("role") == "user" and 'kind="task"' in user:
                 return python(CHILD)
+            if last.get("role") == "user" and 'kind="message"' in user:
+                return python(READ)
             return text("ok")
 
         provider = Provider(script)
@@ -111,6 +145,8 @@ class AgentsPythonTests(unittest.TestCase):
                 self.assertIn("PROGRESS True", child)
                 self.assertIn("REFUSED", child)
                 self.assertIn("own children", child)
+                self.assertIn("PARENT_READ True", child)
+                self.assertIn("GOT True 0 None False", child)
                 self.assertIn("ASK", child)
                 self.assertIn("only the user deletes", child)
                 self.assertTrue(
@@ -125,6 +161,26 @@ class AgentsPythonTests(unittest.TestCase):
                         for r in observed()
                     )
                 )
+                read = wait_for(
+                    lambda: next(
+                        (r["tool"] for r in observed() if "FOUND" in r["tool"]), None
+                    )
+                )
+                self.assertIn("TASK_SEEN True", read)
+                self.assertRegex(read, r"FOUND [1-9]\d* True True")
+                kid = re.search(r"KID=([0-9a-f]+)", spawned).group(1)
+                outsider = app.session()
+                app.prompt(outsider, f"peek {kid}").close()
+                peeked = wait_for(
+                    lambda: next(
+                        (r["tool"] for r in observed() if "PEEK_MISSING" in r["tool"]),
+                        None,
+                    )
+                )
+                self.assertIn("PEEK scout 1 False", peeked)
+                self.assertIn("PEEK_READ True", peeked)
+                self.assertIn("PEEK_REFUSED you can only cancel or close", peeked)
+                self.assertIn("no agent named 'nobody'", peeked)
                 app.idle(lead)
                 time.sleep(1)
                 self.assertFalse(

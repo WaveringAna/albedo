@@ -1,7 +1,8 @@
-//// Agents for the model: spawn children, look at family, stop and close your
-//// own children, and post progress. Talking is `mail.submit`, from the mail
-//// extension this one requires. Every permission is checked here against the
-//// calling session, which the daemon supplies; python never names itself.
+//// Agents for the model: spawn children, look up any session and read its
+//// messages, stop and close your own children, and post progress. Talking is
+//// `mail.submit`, from the mail extension this one requires. Every permission
+//// is checked here against the calling session, which the daemon supplies;
+//// python never names itself.
 
 import albedo/daemon/agents
 import albedo/daemon/bus
@@ -9,6 +10,7 @@ import albedo/daemon/family
 import albedo/daemon/store
 import albedo/harness/extension
 import albedo/harness/rpc
+import albedo/harness/tool
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -16,7 +18,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
-const instructions = "Agents are sessions you spawn to work in parallel; every call is async. agents.self is your handle (id, name, depth, parent). Call await agents.models() once before spawning; other providers appear as provider/model, and selecting one routes the child through that provider. Then child = await agents.self.spawn(task, name=\"scout\", model=<one of models()>, deliverable=None, evidence_bar=None, falsifier=None): it returns as soon as the child exists, never with its answer. Answers arrive later as <mail> in your conversation and start your next turn, so spawn independent children back to back and end your turn instead of waiting; never sleep or poll. Talk with await mail.submit(child, text). await agents.self.children() and siblings() return live snapshots (running, closed). await child.cancel() stops its turn; await child.close() when you are done with it keeps its transcript and files and frees its kernel. Only the user deletes agents: if one should go, ask them. Children nest at most 3 deep and 12 open per parent; mail any session by id instead of nesting to reach it. Children share your workspace, so give two children the same files only if one only reads."
+const instructions = "Agents are sessions you spawn to work in parallel; every call is async. agents.self is your handle (id, name, depth, parent). Call await agents.models() once before spawning; other providers appear as provider/model, and selecting one routes the child through that provider. Then child = await agents.self.spawn(task, name=\"scout\", model=<one of models()>, deliverable=None, evidence_bar=None, falsifier=None): it returns as soon as the child exists, never with its answer. Answers arrive later as <mail> in your conversation and start your next turn, so spawn independent children back to back and end your turn instead of waiting; never sleep or poll. Talk with await mail.submit(child, text). await agents.self.children() and siblings() return live snapshots (running, closed). await child.cancel() stops its turn; await child.close() when you are done with it keeps its messages and files and frees its kernel. await agents.get(to) returns a live handle for \"parent\", a family name, or any session id. On any handle, await h.messages(seq=0, offset=0, limit=4000) reads a page of that session's messages from row seq on (content, next_offset) and await h.search_messages(pattern) finds rows by seq: any session may read any other, so you can see what a child or another session did without waiting for mail. Only the user deletes agents: if one should go, ask them. Children nest at most 3 deep and 12 open per parent; mail any session by id instead of nesting to reach it. Children share your workspace, so give two children the same files only if one only reads."
 
 pub fn extension() -> extension.Extension {
   extension.Extension(
@@ -94,9 +96,15 @@ fn dispatch(db, session, method, args) -> Result(json.Json, String) {
       use member <- result.try(family.get(db, child))
       Ok(handle_json(db, child, member))
     }
+    "agents.get" -> {
+      use to <- result.try(text(args, "to"))
+      use address <- result.try(family.resolve(db, session, to))
+      use member <- result.try(family.get(db, address.session))
+      Ok(status_json(db, address.session, member))
+    }
     "agents.children" -> {
       use members <- result.try(family.children(db, session))
-      Ok(json.array(members, status_json(db, _)))
+      Ok(json.array(members, member_status(db, _)))
     }
     "agents.siblings" ->
       case family.get(db, session) {
@@ -104,7 +112,7 @@ fn dispatch(db, session, method, args) -> Result(json.Json, String) {
           use members <- result.try(family.children(db, me.parent))
           members
           |> list.filter(fn(member) { member.session != session })
-          |> json.array(status_json(db, _))
+          |> json.array(member_status(db, _))
           |> Ok
         }
         _ -> Ok(json.array([], json.string))
@@ -115,6 +123,34 @@ fn dispatch(db, session, method, args) -> Result(json.Json, String) {
         "agents.cancel" -> agents.Stop(child.session)
         _ -> agents.Close(child.session)
       })
+    }
+    "agents.messages" -> {
+      use target <- result.try(addressed(db, session, args))
+      use #(seq, offset, limit) <- result.try(rpc.args(
+        args,
+        {
+          use seq <- decode.field("seq", decode.int)
+          use offset <- decode.field("offset", decode.int)
+          use limit <- decode.field("limit", decode.int)
+          decode.success(#(seq, offset, limit))
+        },
+        "seq, offset and limit must be integers",
+      ))
+      tool.transcript_read(db, target, seq, offset, limit)
+    }
+    "agents.search_messages" -> {
+      use target <- result.try(addressed(db, session, args))
+      use #(pattern, limit, offset) <- result.try(rpc.args(
+        args,
+        {
+          use pattern <- decode.field("pattern", decode.string)
+          use limit <- decode.field("limit", decode.int)
+          use offset <- decode.field("offset", decode.int)
+          decode.success(#(pattern, limit, offset))
+        },
+        "pattern must be a string; limit and offset integers",
+      ))
+      tool.transcript_grep(db, target, pattern, limit, offset)
     }
     "agents.delete" ->
       Error(
@@ -144,6 +180,13 @@ fn own_child(db, session, args) -> Result(family.Member, String) {
   }
 }
 
+/// The session `args.id` names, as mail would resolve it. Reading is open to
+/// every session: families only narrow who may stop whom.
+fn addressed(db, session, args) -> Result(String, String) {
+  use id <- result.try(text(args, "id"))
+  family.resolve(db, session, id) |> result.map(fn(address) { address.session })
+}
+
 fn parent_json(db: store.Store, id: String, depth: Int) -> json.Json {
   json.object([
     #("id", json.string(id)),
@@ -157,31 +200,48 @@ fn handle_json(
   session: String,
   member: Option(family.Member),
 ) -> json.Json {
+  json.object(handle_fields(db, session, member))
+}
+
+fn handle_fields(
+  db: store.Store,
+  session: String,
+  member: Option(family.Member),
+) -> List(#(String, json.Json)) {
   let #(name, depth, parent) = case member {
     Some(member) -> #(member.name, member.depth, Some(member.parent))
     None -> #(family.name_of(db, session), 0, None)
   }
-  json.object([
+  [
     #("id", json.string(session)),
     #("name", json.string(name)),
     #("depth", json.int(depth)),
     #("parent", json.nullable(parent, parent_json(db, _, depth))),
-  ])
+  ]
 }
 
-fn status_json(db: store.Store, member: family.Member) -> json.Json {
-  let running = case agents.call(agents.Running(member.session)) {
+/// A handle with its live state; a root is never closed.
+fn status_json(
+  db: store.Store,
+  session: String,
+  member: Option(family.Member),
+) -> json.Json {
+  let running = case agents.call(agents.Running(session)) {
     Ok(value) -> read(value, decode.bool) |> result.unwrap(False)
     Error(_) -> False
   }
-  json.object([
-    #("id", json.string(member.session)),
-    #("name", json.string(member.name)),
-    #("depth", json.int(member.depth)),
-    #("parent", parent_json(db, member.parent, member.depth)),
-    #("running", json.bool(running)),
-    #("closed", json.bool(member.closed)),
-  ])
+  let closed =
+    option.map(member, fn(member) { member.closed }) |> option.unwrap(False)
+  json.object(
+    list.append(handle_fields(db, session, member), [
+      #("running", json.bool(running)),
+      #("closed", json.bool(closed)),
+    ]),
+  )
+}
+
+fn member_status(db: store.Store, member: family.Member) -> json.Json {
+  status_json(db, member.session, Some(member))
 }
 
 /// A seam answer read back as data.

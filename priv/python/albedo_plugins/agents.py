@@ -1,4 +1,5 @@
-"""agents: spawn children, look at family, cancel or close your own children.
+"""agents: spawn children, look up any session and read its messages, cancel
+or close your own children.
 Talking is mail.submit. Spawn returns once the child exists; its answer
 arrives later as mail and starts your next turn."""
 
@@ -8,17 +9,36 @@ import time
 from dataclasses import dataclass
 from typing import cast
 
-from albedo_api import Host, PythonApi
+from albedo_api import Host, PythonApi, Record
 
 host: Host
 _models_seen = False
 _last_progress = 0.0
 
 
+class MessagePage(Record):
+    """page.content and page["content"] both work; next_offset is None at the end."""
+
+    seq: int
+    offset: int
+    content: str
+    next_offset: int | None
+
+
+class MessageMatches(Record):
+    """matches.rows is a list of {seq, preview}; read one with messages(seq=...)."""
+
+    pattern: str
+    offset: int
+    count: int
+    next_offset: int | None
+    rows: list[dict]
+
+
 @dataclass(frozen=True)
 class Agent:
     """A handle to one agent. `running` and `closed` are set on snapshots
-    from children() and siblings(); None on handles that were not looked up."""
+    from get(), children(), and siblings(); None on handles that were not looked up."""
 
     id: str
     name: str
@@ -84,8 +104,37 @@ class Agent:
         return bool(await host("agents.cancel", {"id": self.id}))
 
     async def close(self) -> bool:
-        """Done with this child: stop it, keep its transcript and files, free its kernel."""
+        """Done with this child: stop it, keep its messages and files, free its kernel."""
         return bool(await host("agents.close", {"id": self.id}))
+
+    async def messages(
+        self, seq: int = 0, *, offset: int = 0, limit: int = 4000
+    ) -> MessagePage:
+        """A page of this session's messages from row `seq` on (at most 8000 chars).
+        Any session may read any other."""
+        return MessagePage(
+            cast(
+                dict,
+                await host(
+                    "agents.messages",
+                    {"id": self.id, "seq": seq, "offset": offset, "limit": limit},
+                ),
+            )
+        )
+
+    async def search_messages(
+        self, pattern: str, *, limit: int = 10, offset: int = 0
+    ) -> MessageMatches:
+        """This session's message rows containing `pattern`, case-insensitively."""
+        return MessageMatches(
+            cast(
+                dict,
+                await host(
+                    "agents.search_messages",
+                    {"id": self.id, "pattern": pattern, "limit": limit, "offset": offset},
+                ),
+            )
+        )
 
     async def delete(self) -> None:
         await host("agents.delete", {"id": self.id})
@@ -147,6 +196,16 @@ class Agents:
             return False
         _last_progress = now
         return bool(await host("agents.progress", {"text": text.strip()}))
+
+    async def get(self, to: object) -> Agent:
+        """A live snapshot of "parent", a child or sibling by name, an agent
+        handle, or any session id, resolved the way mail.submit resolves it."""
+        target = getattr(to, "id", to)
+        if not isinstance(target, str) or not target.strip():
+            raise TypeError(
+                'agents.get(to): to is "parent", a name, a session id, or an agent handle'
+            )
+        return _agent(cast(dict, await host("agents.get", {"to": target.strip()})))
 
     def spawn(self, *_: object, **__: object) -> None:
         raise AttributeError(
