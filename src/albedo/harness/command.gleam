@@ -54,6 +54,9 @@ pub type StateOp {
   ContextPage(section: String, page: Int)
   Submit(display: String, text: String, client: String)
   Refresh
+  /// Refetch every enabled model catalog's own list, answering which ones
+  /// reloaded and why the rest kept their previous list.
+  ReloadCatalogs
   /// Tell the agent something without starting a turn: the note waits in the
   /// session's queue and reaches the model at its next step or next turn.
   /// `origin` labels it in the transcript.

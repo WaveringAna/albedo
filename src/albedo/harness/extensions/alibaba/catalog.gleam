@@ -13,7 +13,11 @@ import gleam/string
 pub const default_base_url = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
 
 pub fn catalog() -> extension.ModelCatalog {
-  extension.ModelCatalog(lookup, list_models)
+  extension.ModelCatalog(
+    lookup,
+    list_models,
+    Some(fn() { reload(settings.home()) }),
+  )
 }
 
 fn lookup(id: String, at: String) -> Option(extension.ModelInfo) {
@@ -60,4 +64,4 @@ fn list_models(provider: String, endpoint: String) -> List(String) {
 pub fn models(home: String, endpoint: String) -> Result(List(String), String)
 
 @external(erlang, "albedo_alibaba", "reload")
-pub fn reload(home: String, endpoint: String) -> Result(List(String), String)
+fn reload(home: String) -> Result(Nil, String)

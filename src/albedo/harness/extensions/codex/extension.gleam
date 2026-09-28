@@ -34,7 +34,11 @@ pub fn extension() -> extension.Extension {
     [
       extension.ModelProviderPlugin(extension.ModelProvider("codex", resolve)),
       extension.LoginPlugin(login()),
-      extension.ModelsPlugin(extension.ModelCatalog(lookup, list_models)),
+      extension.ModelsPlugin(extension.ModelCatalog(
+        lookup,
+        list_models,
+        Some(reload_models),
+      )),
     ],
     extension.no_initialise,
   )
@@ -63,6 +67,13 @@ fn list_models(provider: String, _endpoint: String) -> List(String) {
     }
     _ -> []
   }
+}
+
+/// Refetches the list `list_models` shows, for the same account.
+fn reload_models() -> Result(Nil, String) {
+  let home = settings.home()
+  use a <- result.try(account(home, ""))
+  catalog.reload(home, a.token, a.account_id)
 }
 
 /// The Codex CLI browser flow. OpenAI allowlists the exact localhost:1455

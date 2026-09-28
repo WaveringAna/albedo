@@ -4,10 +4,9 @@ import albedo/harness/cache_ttl
 import albedo/harness/command.{
   type Command, type Context, Argument, Command, Compact, ContextPage,
   ContextSummary, Data, EffortGet, EffortSelect, ModelCall, ModelGet,
-  ModelSelect, Refresh, UserCall,
+  ModelSelect, Refresh, ReloadCatalogs, UserCall,
 }
 import albedo/harness/extension
-import albedo/harness/extensions/models/extension as models
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/int
@@ -15,6 +14,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
+import gleam/string
 
 pub fn extension() -> extension.Extension {
   extension.Extension(
@@ -122,11 +122,11 @@ fn model() -> Command {
 fn reload() -> Command {
   Command(
     "/reload",
-    "Reload cached runtime data: the models.dev catalog, the session's skills catalog and extension context, or both. A session reload rescans in place — the kernel, its Python namespace, and the prompt cache keep running. The cache TTL table's remote copy is re-fetched with the models catalog.",
+    "Reload cached runtime data: the model catalogs (models.dev and each enabled provider's own list, such as Antigravity, Alibaba, or Codex), the session's skills catalog and extension context, or both. A catalog that cannot be fetched keeps its previous list and is named in the result. A session reload rescans in place — the kernel, its Python namespace, and the prompt cache keep running. The cache TTL table's remote copy is re-fetched with the models catalog.",
     [
       Argument(
         "target",
-        "models, session (skills, context, and commands), or omit for both",
+        "models (every model catalog), session (skills, context, and commands), or omit for both",
         False,
         ["models", "session"],
       ),
@@ -136,21 +136,29 @@ fn reload() -> Command {
     False,
     fn(ctx: Context, _caller, args) {
       case dict.get(args, "target") {
-        Ok("models") -> models_reload()
+        Ok("models") -> {
+          use #(notice, catalogs) <- result.try(catalogs_reload(ctx))
+          Ok(
+            reloaded("models", notice <> " /model now shows the latest lists.", [
+              #("catalogs", catalogs),
+            ]),
+          )
+        }
         Ok("session") -> ctx.state(Refresh) |> result.map(Data)
         Ok(target) ->
           Error(
             "unknown reload target " <> target <> "; available: models, session",
           )
         Error(_) -> {
-          use _ <- result.try(models.reload())
+          use #(notice, catalogs) <- result.try(catalogs_reload(ctx))
           use _ <- result.try(cache_ttl.reload())
           use _ <- result.try(ctx.state(Refresh))
           Ok(
             reloaded(
               "models+session",
-              "Models catalog and cache TTL table reloaded; extension context, skills catalog, and session commands rescanned.",
-              [],
+              notice
+                <> " Cache TTL table reloaded; extension context, skills catalog, and session commands rescanned.",
+              [#("catalogs", catalogs)],
             ),
           )
         }
@@ -173,15 +181,38 @@ fn reloaded(
   )
 }
 
-fn models_reload() -> Result(command.Outcome, String) {
-  use _ <- result.try(models.reload())
-  Ok(
-    reloaded(
-      "models",
-      "Models catalog reloaded. /model now shows the latest list.",
-      [#("catalog", json.string(models.path()))],
-    ),
+/// Reloads every enabled model catalog. One that fails keeps its previous
+/// list, and the notice names it rather than claiming it was refreshed.
+fn catalogs_reload(ctx: Context) -> Result(#(String, json.Json), String) {
+  use value <- result.try(ctx.state(ReloadCatalogs))
+  use #(done, failed) <- result.map(
+    json.parse(json.to_string(value), {
+      use done <- decode.field("reloaded", decode.list(decode.string))
+      use failed <- decode.field(
+        "failed",
+        decode.dict(decode.string, decode.string),
+      )
+      decode.success(#(done, dict.to_list(failed)))
+    })
+    |> result.replace_error("could not read the reloaded model catalogs"),
   )
+  let kept =
+    failed
+    |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+    |> list.map(fn(item) { item.0 <> " (" <> item.1 <> ")" })
+  let notice = case done, kept {
+    [], [] -> "No enabled model catalog to reload."
+    _, [] -> "Reloaded model catalogs: " <> string.join(done, ", ") <> "."
+    [], _ ->
+      "No model catalog reloaded; kept " <> string.join(kept, "; ") <> "."
+    _, _ ->
+      "Reloaded model catalogs: "
+      <> string.join(done, ", ")
+      <> "; kept the previous list for "
+      <> string.join(kept, "; ")
+      <> "."
+  }
+  #(notice, value)
 }
 
 fn compact() -> Command {

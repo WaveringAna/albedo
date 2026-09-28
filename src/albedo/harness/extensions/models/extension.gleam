@@ -56,7 +56,7 @@ pub fn extension() -> extension.Extension {
     "models",
     "models.dev catalog of model context limits, modalities, and provider endpoints",
     [],
-    [extension.ModelsPlugin(extension.ModelCatalog(lookup, list))],
+    [extension.ModelsPlugin(extension.ModelCatalog(lookup, list, Some(reload)))],
     initialise,
   )
 }

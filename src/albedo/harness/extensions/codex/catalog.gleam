@@ -71,6 +71,15 @@ pub fn refresh(
   native_refresh(home, access, account, max_age_ms, system_time(Millisecond))
 }
 
+/// Refetches one account's list whatever its age, waiting for the network.
+pub fn reload(
+  home: String,
+  access: String,
+  account: String,
+) -> Result(Nil, String) {
+  native_refresh(home, access, account, 0, system_time(Millisecond))
+}
+
 /// Brings one account's list up to date without waiting.
 pub fn refresh_later(home: String, access: String, account: String) -> Nil {
   native_refresh_async(

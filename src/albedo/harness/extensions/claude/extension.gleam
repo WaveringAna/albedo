@@ -38,7 +38,8 @@ pub fn extension() -> extension.Extension {
     ["models"],
     [
       extension.LoginPlugin(login()),
-      extension.ModelsPlugin(extension.ModelCatalog(lookup, list_models)),
+      // models.dev is the list: its own catalog reloads it.
+      extension.ModelsPlugin(extension.ModelCatalog(lookup, list_models, None)),
       extension.ModelProviderPlugin(extension.ModelProvider(
         "anthropic",
         resolve,

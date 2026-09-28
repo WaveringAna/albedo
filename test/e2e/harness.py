@@ -47,6 +47,9 @@ ROOT = Path(__file__).resolve().parents[2]
 # A test daemon needs two schedulers, and busy-waiting ones make every boot
 # pin all cores of the machine.
 TEST_VM_FLAGS = "+S 2:2 +SDcpu 2:2 +sbwt none +sbwtdcpu none +sbwtdio none"
+# Credentials a provider reads from the environment. The daemon must not see
+# the developer's, or a catalog reload reaches the live provider.
+PROVIDER_ENVIRONMENT = ("ALIBABA_API_KEY", "DASHSCOPE_API_KEY", "ALIBABA_BASE_URL")
 
 
 @dataclass
@@ -487,7 +490,11 @@ class Albedo:
                 self.home.mkdir()
                 (self.root / "user-home").mkdir()
                 self.env = dict(
-                    os.environ,
+                    {
+                        name: value
+                        for name, value in os.environ.items()
+                        if name not in PROVIDER_ENVIRONMENT
+                    },
                     HOME=str(self.root / "user-home"),
                     ALBEDO_HOME=str(self.home),
                     ALBEDO_PARENT_PID=str(os.getpid()),

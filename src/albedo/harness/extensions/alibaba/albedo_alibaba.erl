@@ -3,7 +3,7 @@
 %% non-chat entitlement filtering, and key/endpoint resolution.
 
 -include_lib("kernel/include/file.hrl").
--export([models/2, reload/2, fetch_models/2, access/3, limited/4]).
+-export([models/2, reload/1, fetch_models/2, access/3, limited/4]).
 
 -define(DEFAULT_BASE_URL, <<"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1">>).
 -define(CATALOG_FILE, "alibaba-models.json").
@@ -27,11 +27,14 @@ models(Home0, Endpoint0) ->
         _ -> refresh_or_default(Home, binary(Endpoint0), CachePath)
     end.
 
-%% Force a live reload of the model list from the endpoint.
-reload(Home0, Endpoint0) ->
+%% Force a live reload of the model list with the first key albedo can see,
+%% at that key's own endpoint.
+reload(Home0) ->
     Home = text(Home0),
-    CachePath = filename:join(Home, ?CATALOG_FILE),
-    fetch_live(Home, binary(Endpoint0), CachePath).
+    case fetch_live(Home, <<>>, filename:join(Home, ?CATALOG_FILE)) of
+        {ok, _} -> {ok, nil};
+        Error -> Error
+    end.
 
 refresh_or_default(Home, Endpoint, CachePath) ->
     case fetch_live(Home, Endpoint, CachePath) of
@@ -39,17 +42,26 @@ refresh_or_default(Home, Endpoint, CachePath) ->
         {error, _} -> fallback_cache_or_default(CachePath)
     end.
 
-fetch_live(Home, Endpoint, CachePath) ->
-    case find_api_key(Home) of
-        {ok, ApiKey} ->
-            case fetch_models(resolve_base_url(Endpoint), ApiKey) of
+%% Any pooled key may list models: one configured at Endpoint first, else the
+%% first key albedo can see. An empty Endpoint means that key's own.
+fetch_live(Home, Endpoint0, CachePath) ->
+    Endpoint = string:trim(Endpoint0, trailing, "/"),
+    Keys = pool(Home, <<>>),
+    At = [Key || #{<<"baseUrl">> := Url} = Key <- Keys,
+                 string:trim(Url, trailing, "/") =:= Endpoint],
+    case At ++ Keys of
+        [#{<<"baseUrl">> := BaseUrl, <<"apiKey">> := ApiKey} | _] ->
+            Url = case Endpoint of
+                <<>> -> BaseUrl;
+                _ -> Endpoint
+            end,
+            case fetch_models(Url, ApiKey) of
                 {ok, Ids} ->
                     _ = write_cache(CachePath, Ids),
                     {ok, Ids};
                 Error -> Error
             end;
-        {error, _} ->
-            {error, <<"no Alibaba API key found">>}
+        [] -> {error, <<"no Alibaba API key found">>}
     end.
 
 fallback_cache_or_default(CachePath) ->
@@ -111,8 +123,9 @@ read_cache(Path) ->
         Error -> Error
     end.
 
+%% Encoded here: `write` takes any list for iodata, which would glue the ids.
 write_cache(Path, Ids) ->
-    albedo_credentials:write(Path, Ids).
+    albedo_credentials:write(Path, json:encode(Ids)).
 
 %% ---- key pool -----------------------------------------------------------
 

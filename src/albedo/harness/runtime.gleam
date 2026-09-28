@@ -1124,6 +1124,20 @@ pub fn global(runtime: Runtime) -> Result(List(extension.Extension), String) {
   )
 }
 
+/// Refetch the model catalogs this session enables, on the caller's process.
+pub fn reload_catalogs(
+  runtime: Runtime,
+  id: String,
+) -> Result(List(#(String, Result(Nil, String))), String) {
+  extension.enabled(
+    runtime.work,
+    runtime.extensions,
+    runtime.default_enabled,
+    id,
+  )
+  |> result.map(extension.reload_catalogs)
+}
+
 pub fn logins(runtime: Runtime) -> List(oauth.Login) {
   extension.logins(runtime.extensions)
 }

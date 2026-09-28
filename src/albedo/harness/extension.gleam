@@ -9,10 +9,12 @@ import albedo/harness/extensions/python/kernel as python
 import albedo/harness/oauth
 import albedo/harness/settings
 import albedo/openai_api/types
-import gleam/dict
+import gleam/dict.{type Dict}
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/http/request
 import gleam/http/response
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -161,6 +163,9 @@ pub type ModelCatalog {
   ModelCatalog(
     lookup: fn(String, String) -> Option(ModelInfo),
     list: fn(String, String) -> List(String),
+    /// Refetches the list this catalog caches, whatever its age, and reports
+    /// a failed fetch; `None` for a catalog that caches nothing of its own.
+    reload: Option(fn() -> Result(Nil, String)),
   )
 }
 
@@ -1110,6 +1115,68 @@ fn catalogs(installed: List(Extension)) -> List(ModelCatalog) {
     }
   })
 }
+
+/// How long every catalog together may take to reload.
+const reload_timeout_ms = 60_000
+
+/// Reload every enabled catalog that caches its own list, all at once. The
+/// outcomes come back in registry order, each named by the extension that
+/// owns the catalog; one still fetching at the deadline is reported as such.
+pub fn reload_catalogs(
+  installed: List(Extension),
+) -> List(#(String, Result(Nil, String))) {
+  let reloads =
+    plugin_values(installed, fn(name, plugin) {
+      case plugin {
+        ModelsPlugin(ModelCatalog(reload: Some(reload), ..)) ->
+          Ok(#(name, reload))
+        _ -> Error(Nil)
+      }
+    })
+  let answers = process.new_subject()
+  list.each(reloads, fn(item) {
+    let #(name, reload) = item
+    process.spawn_unlinked(fn() {
+      process.send(answers, #(name, result.flatten(protect(reload))))
+    })
+  })
+  let expired = process.new_subject()
+  let timer = process.send_after(expired, reload_timeout_ms, Nil)
+  let received =
+    process.new_selector()
+    |> process.select_map(answers, Some)
+    |> process.select_map(expired, fn(_) { None })
+    |> gather(list.length(reloads), dict.new())
+  process.cancel_timer(timer)
+  list.map(reloads, fn(item) {
+    let late =
+      Error(
+        "still fetching after "
+        <> int.to_string(reload_timeout_ms / 1000)
+        <> "s",
+      )
+    #(item.0, dict.get(received, item.0) |> result.unwrap(late))
+  })
+}
+
+fn gather(
+  selector: process.Selector(Option(#(String, a))),
+  left: Int,
+  received: Dict(String, a),
+) -> Dict(String, a) {
+  case left {
+    0 -> received
+    _ ->
+      case process.selector_receive_forever(selector) {
+        Some(#(name, outcome)) ->
+          gather(selector, left - 1, dict.insert(received, name, outcome))
+        None -> received
+      }
+  }
+}
+
+@external(erlang, "albedo_protect", "run")
+fn protect(run: fn() -> a) -> Result(a, String)
 
 /// The first enabled catalog that knows this model answers.
 pub fn model_info(

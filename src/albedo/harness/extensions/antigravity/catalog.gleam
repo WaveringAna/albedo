@@ -259,7 +259,11 @@ fn infer_thinking(id: String) -> Thinking {
 }
 
 pub fn catalog() -> extension.ModelCatalog {
-  extension.ModelCatalog(lookup, list_models)
+  extension.ModelCatalog(
+    lookup,
+    list_models,
+    Some(fn() { native_reload(settings.home()) }),
+  )
 }
 
 /// Answers only for the Antigravity endpoint, so models.dev keeps every

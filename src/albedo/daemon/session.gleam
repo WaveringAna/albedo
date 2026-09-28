@@ -238,7 +238,7 @@ pub fn start(
     wakes_register(info.id, fn(display, text) {
       wake(self, Submission(display, text, "job", turn.JobWake, None))
     })
-    commands_register(info.id, fn(op) { command_op(self, op) })
+    commands_register(info.id, fn(op) { command_op(self, host, info.id, op) })
     live_register(info.id, self)
     mailbox_register(info.id, fn(letter) {
       submit_mail(self, letter) |> result.map_error(submission_error)
@@ -932,10 +932,13 @@ fn handle(state: State, message: Message) {
 /// The registered command state seam: one operation in, session state out.
 ///
 /// Runs on whichever process invoked the command (the kernel's host-call
-/// process or an HTTP request process), so every branch is one actor call that
-/// reuses the ordinary message handlers instead of duplicating their logic.
+/// process or an HTTP request process), so every branch that reads session
+/// state is one actor call that reuses the ordinary message handlers instead
+/// of duplicating their logic.
 fn command_op(
   session: Session,
+  host: runtime.Runtime,
+  id: String,
   op: command.StateOp,
 ) -> Result(json.Json, String) {
   case op {
@@ -952,6 +955,9 @@ fn command_op(
     command.Compact(strategy) ->
       actor.call(session, 60_000, Compact(strategy, _))
     command.Refresh -> actor.call(session, 30_000, RefreshData)
+    // Catalog fetches read no session state, so they stay off the actor.
+    command.ReloadCatalogs ->
+      runtime.reload_catalogs(host, id) |> result.map(catalogs_json)
     command.ContextPage(section, page) ->
       actor.call(session, 5000, ReadContextPage(section, page, _))
     command.Submit(display, text, client) ->
@@ -979,6 +985,21 @@ fn submitted(
   actor.call(session, 10_000, Submit(submission, _))
   |> result.map_error(submission_error)
   |> result.replace(json.object([#(key, json.bool(True))]))
+}
+
+/// `{"reloaded": [catalog, ..], "failed": {catalog: error, ..}}`.
+fn catalogs_json(outcomes: List(#(String, Result(Nil, String)))) -> json.Json {
+  let #(reloaded, failed) =
+    list.fold_right(outcomes, #([], []), fn(acc, outcome) {
+      case outcome {
+        #(name, Ok(_)) -> #([json.string(name), ..acc.0], acc.1)
+        #(name, Error(error)) -> #(acc.0, [#(name, json.string(error)), ..acc.1])
+      }
+    })
+  json.object([
+    #("reloaded", json.preprocessed_array(reloaded)),
+    #("failed", json.object(failed)),
+  ])
 }
 
 fn model_selection(info: conversation.Info) -> ModelSelection {
