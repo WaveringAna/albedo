@@ -9,6 +9,21 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 
+/// Session metadata is requested by plugins at boot, not injected into the kernel environment.
+pub fn session(cwd: String, request: String) -> String {
+  rpc.serve(
+    request,
+    "unknown session operation",
+    fn(method, _) {
+      case method {
+        "session.cwd" -> Ok(json.string(cwd))
+        _ -> Error("unknown session operation")
+      }
+    },
+    fn(message) { #("session", message) },
+  )
+}
+
 pub fn handle(store: work.Store, session: String, request: String) -> String {
   rpc.serve(
     request,

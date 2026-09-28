@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Albedo memory — how it works</title>
+  <style>
+    :root { color-scheme: light; font: 16px/1.5 system-ui, sans-serif; color: #20252b; background: #f7f8fa; }
+    * { box-sizing: border-box; }
+    body { max-width: 960px; margin: 0 auto; padding: 40px 24px 72px; }
+    h1 { font-size: clamp(1.7rem, 4vw, 2.3rem); line-height: 1.2; margin: 0 0 8px; }
+    h2 { font-size: 1.1rem; margin: 0 0 18px; }
+    p { margin: 0; }
+    .intro { color: #53606c; margin-bottom: 32px; }
+    .lanes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+    section { min-width: 0; }
+    .flow { list-style: none; padding: 0; margin: 0; }
+    .flow li { position: relative; border: 1px solid #d8dee5; background: #fff; border-radius: 8px; padding: 15px 17px; margin-bottom: 28px; }
+    .flow li:not(:last-child)::after { content: "↓"; position: absolute; left: 50%; bottom: -28px; transform: translateX(-50%); color: #58768c; font-size: 20px; line-height: 26px; }
+    .flow strong { display: block; font-weight: 650; margin-bottom: 4px; }
+    .flow p, .note { color: #53606c; font-size: .9rem; }
+    code { font: .87em/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #edf2f6; border-radius: 3px; padding: 1px 4px; overflow-wrap: anywhere; }
+    .storage { margin-top: 12px; border-top: 1px solid #d8dee5; padding-top: 24px; }
+    .storage p + p { margin-top: 9px; }
+    .note { margin-top: 18px; }
+    @media (max-width: 660px) { body { padding: 28px 18px 50px; } .lanes { grid-template-columns: 1fr; gap: 8px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>How project memory works</h1>
+    <p class="intro">Two paths share the same Markdown files: a session-start read and agent-initiated reads or writes.</p>
+    <div class="lanes">
+      <section aria-labelledby="model-heading">
+        <h2 id="model-heading">What the model sees</h2>
+        <ol class="flow">
+          <li><strong>New session</strong><p>Albedo includes up to 8,000 characters of <code>memory.md</code> in extension context, labeled as untrusted notes.</p></li>
+          <li><strong>Tool instructions</strong><p>The prompt describes <code>memory.read()</code>, <code>append(text)</code>, <code>save(text)</code>, <code>journal(text)</code>, <code>grep(term)</code>, and <code>search(query)</code>.</p></li>
+          <li><strong>During a turn</strong><p>The model calls those methods through its Python tool. <code>read()</code> fetches the current file; the initial context snapshot does not update mid-session.</p></li>
+          <li><strong>Result</strong><p>Paths, matching lines, or FTS snippets return to the model as ordinary Python output. Memory is recall, not a rule source.</p></li>
+        </ol>
+      </section>
+      <section aria-labelledby="code-heading">
+        <h2 id="code-heading">What the code does</h2>
+        <ol class="flow">
+          <li><strong>Resolve workspace</strong><p>The prompt loader receives the session workspace. At kernel boot, the memory plugin asks the daemon for that same path through <code>session.cwd</code>.</p></li>
+          <li><strong>Prepare prompt</strong><p><code>extension.gleam</code> loads a bounded UTF-8 preview via <code>albedo_memory.erl</code> when the session is prepared. No file means no preview.</p></li>
+          <li><strong>Handle Python calls</strong><p><code>albedo_plugins/memory.py</code> uses a file lock for writes. <code>save</code> atomically replaces the file; <code>append</code> and <code>journal</code> add text.</p></li>
+          <li><strong>Search on demand</strong><p><code>grep</code> checks lines literally. <code>search</code> builds a temporary SQLite FTS5 index from Markdown paragraphs, then returns ranked snippets.</p></li>
+        </ol>
+      </section>
+    </div>
+    <section class="storage" aria-labelledby="storage-heading">
+      <h2 id="storage-heading">On disk</h2>
+      <p><code>~/.albedo/memories/-Users-Regent-Developer-albedo/memory.md</code> — curated, durable notes</p>
+      <p><code>~/.albedo/memories/-Users-Regent-Developer-albedo/journal/YYYY-MM-DD.md</code> — dated entries</p>
+      <p class="note">Required project instructions belong in <code>AGENTS.md</code>. Memory content can be stale; verify facts that may have changed.</p>
+    </section>
+  </main>
+</body>
+</html>

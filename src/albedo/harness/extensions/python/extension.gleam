@@ -91,6 +91,24 @@ pub fn extension() -> extension.Extension {
         [],
         [#("cells", cells.handle)],
       ),
+      extension.ManagedPlugin(fn(_, _, workspace) {
+        Ok(
+          extension.Managed(
+            "",
+            "",
+            [],
+            [],
+            [
+              #("session", fn(_, _, request) {
+                cells.session(workspace, request)
+              }),
+            ],
+            [],
+            [],
+            fn() { Nil },
+          ),
+        )
+      }),
     ],
     journal.initialise,
   )
