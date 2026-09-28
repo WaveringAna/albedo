@@ -28,7 +28,9 @@ class MemoryTests(unittest.TestCase):
         provider = Provider(script)
         self.addCleanup(provider.close)
         with Albedo(provider, protocol="responses") as app:
-            first = app.session()
+            workspace = app.root / "MiXeD-workspace"
+            workspace.mkdir()
+            first = app.session(workspace)
             app.prompt(first, "save notes").close()
             app.idle(first)
             output = next(
@@ -39,14 +41,15 @@ class MemoryTests(unittest.TestCase):
             self.assertIn("memory.md:3:", output)
             self.assertRegex(output, r"journal/\d{4}-\d{2}-\d{2}\.md:1:")
             self.assertIn("VioletStore supports durable receipts", output)
-            slug = re.sub(r"[^A-Za-z0-9]", "-", str(app.workspace))
+            slug = re.sub(r"[^A-Za-z0-9]", "-", str(workspace))
             root = app.home / "memories" / slug
+            self.assertIn(slug, [entry.name for entry in root.parent.iterdir()])
             self.assertEqual(
                 (root / "memory.md").read_text(),
                 "Prefer narrow adapters for VioletStore.\n\n"
                 "VioletStore supports durable receipts\n",
             )
-            second = app.session()
+            second = app.session(workspace)
             app.prompt(second, "what do we know?").close()
             app.idle(second)
             instructions = provider.requests[-1]["request"]["instructions"]
