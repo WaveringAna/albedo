@@ -7,7 +7,7 @@ import unittest
 import urllib.error
 import urllib.request
 
-from harness import Albedo, Provider, text
+from harness import Albedo, Provider, exclusive, text
 
 
 def user_message(request):
@@ -52,6 +52,7 @@ class AgentsTests(unittest.TestCase):
         }
 
         # The cached catalog lists a model for the fixture endpoint that no profile names.
+        # models.json is daemon-wide, so only the exclusive catalog test writes it.
         def prepare(app):
             (app.home / "models.json").write_text(
                 json.dumps(
@@ -65,7 +66,8 @@ class AgentsTests(unittest.TestCase):
                 )
             )
 
-        self.app = Albedo(self.provider, providers=providers, prepare=prepare)
+        catalog = self._testMethodName == "test_generic_profile_lists_its_endpoints_catalog_models"
+        self.app = Albedo(self.provider, providers=providers, prepare=prepare if catalog else None)
         self.app.__enter__()
         self.addCleanup(self.provider.close)
         self.addCleanup(self.app.__exit__, None, None, None)
@@ -305,6 +307,7 @@ class AgentsTests(unittest.TestCase):
             sum("/beta/" in r["path"] for r in self.provider.requests), 2
         )
 
+    @exclusive
     def test_generic_profile_lists_its_endpoints_catalog_models(self):
         parent = self.app.session()
         made = self.spawn(
