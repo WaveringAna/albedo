@@ -1,4 +1,5 @@
 """Project memories survive sessions and can be recalled without scanning the workspace."""
+
 import json
 import re
 import unittest
@@ -7,17 +8,21 @@ from harness import Albedo, Provider, python, text
 
 
 class MemoryTests(unittest.TestCase):
-    def test_project_memory_and_journal_are_searchable_and_loaded_into_new_sessions(self):
+    def test_project_memory_and_journal_are_searchable_and_loaded_into_new_sessions(
+        self,
+    ):
         def script(request):
             last = request["input"][-1]
             if last.get("role") == "user" and "save notes" in str(last.get("content")):
-                return python("memory.save('Prefer narrow adapters for VioletStore.\\n')\n"
-                              "memory.append('VioletStore supports durable receipts')\n"
-                              "memory.journal('Fixed VioletStore receipt replay')\n"
-                              "print(memory.read())\n"
-                              "print(memory.grep('receipt'))\n"
-                              "print(memory.search('receipts'))\n"
-                              "print(memory.search('replay'))")
+                return python(
+                    "memory.save('Prefer narrow adapters for VioletStore.\\n')\n"
+                    "memory.append('VioletStore supports durable receipts')\n"
+                    "memory.journal('Fixed VioletStore receipt replay')\n"
+                    "print(memory.read())\n"
+                    "print(memory.grep('receipt'))\n"
+                    "print(memory.search('receipts'))\n"
+                    "print(memory.search('replay'))"
+                )
             return text("done")
 
         provider = Provider(script)
@@ -26,8 +31,11 @@ class MemoryTests(unittest.TestCase):
             first = app.session()
             app.prompt(first, "save notes").close()
             app.idle(first)
-            output = next(json.loads(event["result"])["output"] for event in app.events(first)
-                          if event.get("type") == "tool" and event.get("name") == "python")
+            output = next(
+                json.loads(event["result"])["output"]
+                for event in app.events(first)
+                if event.get("type") == "tool" and event.get("name") == "python"
+            )
             self.assertIn("memory.md:3:", output)
             self.assertRegex(output, r"journal/\d{4}-\d{2}-\d{2}\.md:1:")
             self.assertIn("VioletStore supports durable receipts", output)

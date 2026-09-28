@@ -23,6 +23,7 @@ Example::
     finally:
         provider.close()
 """
+
 from __future__ import annotations
 
 import atexit
@@ -56,7 +57,9 @@ class Reply:
     value: str = ""
     status: int = 200
     reasoning: str | None = None
-    usage: dict = field(default_factory=lambda: {"input_tokens": 10, "output_tokens": 20})
+    usage: dict = field(
+        default_factory=lambda: {"input_tokens": 10, "output_tokens": 20}
+    )
     delay: float = 0
     hang: bool = False
     tool_name: str = "python"
@@ -64,12 +67,27 @@ class Reply:
     events: list[dict] | None = None
 
 
-def text(value: str, *, reasoning: str | None = None, usage: dict | None = None,
-         delay: float = 0, hang: bool = False) -> Reply:
-    return Reply("text", value, reasoning=reasoning, usage=usage or {"input_tokens": 10, "output_tokens": 20}, delay=delay, hang=hang)
+def text(
+    value: str,
+    *,
+    reasoning: str | None = None,
+    usage: dict | None = None,
+    delay: float = 0,
+    hang: bool = False,
+) -> Reply:
+    return Reply(
+        "text",
+        value,
+        reasoning=reasoning,
+        usage=usage or {"input_tokens": 10, "output_tokens": 20},
+        delay=delay,
+        hang=hang,
+    )
 
 
-def python(code: str, *, reasoning: str | None = None, tool_name: str = "python") -> Reply:
+def python(
+    code: str, *, reasoning: str | None = None, tool_name: str = "python"
+) -> Reply:
     return Reply("python", code, reasoning=reasoning, tool_name=tool_name)
 
 
@@ -82,7 +100,9 @@ def _content_text(item):
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return " ".join(part.get("text", "") for part in content if isinstance(part, dict))
+        return " ".join(
+            part.get("text", "") for part in content if isinstance(part, dict)
+        )
     return ""
 
 
@@ -96,6 +116,7 @@ def exclusive(target):
     target._e2e_exclusive = True
     return target
 
+
 _providers = {}
 _provider_ids = itertools.count(1)
 _server = None
@@ -104,6 +125,7 @@ _server = None
 def _provider_server():
     global _server
     if _server is None:
+
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_args):
                 pass
@@ -147,8 +169,12 @@ class Provider:
 
     def _post(owner, self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        record = {"path": self.path, "authorization": self.headers.get("Authorization"),
-                  "model": request.get("model"), "request": request}
+        record = {
+            "path": self.path,
+            "authorization": self.headers.get("Authorization"),
+            "model": request.get("model"),
+            "request": request,
+        }
         with owner._lock:
             owner.requests.append(record)
             index = len(owner.requests) - 1
@@ -184,46 +210,169 @@ class Provider:
                 return
             chat = self.path.endswith("chat/completions")
             call_id = f"fixture-call-{index + 1}"
-            arguments = json.dumps(reply.tool_arguments if reply.tool_arguments is not None else
-                                   {"pattern": reply.value} if reply.tool_name == "lcm_grep" else
-                                   {"code": reply.value, "timeout_ms": 60000})
+            arguments = json.dumps(
+                reply.tool_arguments
+                if reply.tool_arguments is not None
+                else {"pattern": reply.value}
+                if reply.tool_name == "lcm_grep"
+                else {"code": reply.value, "timeout_ms": 60000}
+            )
             if chat:
                 if reply.reasoning:
-                    emit({"id": "fixture", "choices": [{"index": 0, "delta": {"reasoning_content": reply.reasoning}, "finish_reason": None}]})
+                    emit(
+                        {
+                            "id": "fixture",
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"reasoning_content": reply.reasoning},
+                                    "finish_reason": None,
+                                }
+                            ],
+                        }
+                    )
                 if reply.kind == "python":
                     for offset in range(0, len(arguments), owner.chunk_size):
-                        delta = {"tool_calls": [{"index": 0, "function": {"arguments": arguments[offset:offset + owner.chunk_size]}}]}
+                        delta = {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "arguments": arguments[
+                                            offset : offset + owner.chunk_size
+                                        ]
+                                    },
+                                }
+                            ]
+                        }
                         if offset == 0:
-                            delta["tool_calls"][0].update({"id": call_id, "type": "function", "function": {"name": reply.tool_name, "arguments": arguments[:owner.chunk_size]}})
-                        emit({"id": "fixture", "choices": [{"index": 0, "delta": delta, "finish_reason": None}]})
-                    emit({"id": "fixture", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]})
+                            delta["tool_calls"][0].update(
+                                {
+                                    "id": call_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": reply.tool_name,
+                                        "arguments": arguments[: owner.chunk_size],
+                                    },
+                                }
+                            )
+                        emit(
+                            {
+                                "id": "fixture",
+                                "choices": [
+                                    {"index": 0, "delta": delta, "finish_reason": None}
+                                ],
+                            }
+                        )
+                    emit(
+                        {
+                            "id": "fixture",
+                            "choices": [
+                                {"index": 0, "delta": {}, "finish_reason": "tool_calls"}
+                            ],
+                        }
+                    )
                 else:
                     for offset in range(0, len(reply.value), owner.chunk_size):
-                        emit({"id": "fixture", "choices": [{"index": 0, "delta": {"content": reply.value[offset:offset + owner.chunk_size]}, "finish_reason": None}]})
-                    emit({"id": "fixture", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+                        emit(
+                            {
+                                "id": "fixture",
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {
+                                            "content": reply.value[
+                                                offset : offset + owner.chunk_size
+                                            ]
+                                        },
+                                        "finish_reason": None,
+                                    }
+                                ],
+                            }
+                        )
+                    emit(
+                        {
+                            "id": "fixture",
+                            "choices": [
+                                {"index": 0, "delta": {}, "finish_reason": "stop"}
+                            ],
+                        }
+                    )
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
             else:
                 emit({"type": "response.created", "response": {"id": "fixture"}})
                 output = []
                 if reply.reasoning:
-                    emit({"type": "response.reasoning_summary_text.delta", "output_index": 0, "summary_index": 0, "delta": reply.reasoning})
-                    output.append({"id": "reasoning", "type": "reasoning", "summary": [{"type": "summary_text", "text": reply.reasoning}]})
+                    emit(
+                        {
+                            "type": "response.reasoning_summary_text.delta",
+                            "output_index": 0,
+                            "summary_index": 0,
+                            "delta": reply.reasoning,
+                        }
+                    )
+                    output.append(
+                        {
+                            "id": "reasoning",
+                            "type": "reasoning",
+                            "summary": [
+                                {"type": "summary_text", "text": reply.reasoning}
+                            ],
+                        }
+                    )
                 if reply.kind == "python":
                     for offset in range(0, len(arguments), owner.chunk_size):
-                        emit({"type": "response.function_call_arguments.delta", "output_index": 0, "delta": arguments[offset:offset + owner.chunk_size]})
-                    output.append({"id": "call", "type": "function_call", "call_id": call_id, "name": reply.tool_name, "arguments": arguments, "status": "completed"})
+                        emit(
+                            {
+                                "type": "response.function_call_arguments.delta",
+                                "output_index": 0,
+                                "delta": arguments[offset : offset + owner.chunk_size],
+                            }
+                        )
+                    output.append(
+                        {
+                            "id": "call",
+                            "type": "function_call",
+                            "call_id": call_id,
+                            "name": reply.tool_name,
+                            "arguments": arguments,
+                            "status": "completed",
+                        }
+                    )
                 else:
                     for offset in range(0, len(reply.value), owner.chunk_size):
-                        emit({"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": reply.value[offset:offset + owner.chunk_size]})
-                    output.append({"id": "message", "type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": reply.value, "annotations": []}]})
+                        emit(
+                            {
+                                "type": "response.output_text.delta",
+                                "output_index": 0,
+                                "content_index": 0,
+                                "delta": reply.value[
+                                    offset : offset + owner.chunk_size
+                                ],
+                            }
+                        )
+                    output.append(
+                        {
+                            "id": "message",
+                            "type": "message",
+                            "role": "assistant",
+                            "status": "completed",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": reply.value,
+                                    "annotations": [],
+                                }
+                            ],
+                        }
+                    )
                 completed = {"id": "fixture", "status": "completed", "output": output}
                 if reply.usage is not None:
                     completed["usage"] = reply.usage
                 emit({"type": "response.completed", "response": completed})
         except (BrokenPipeError, ConnectionResetError):
             pass
-
 
     def close(self):
         # Sessions can finish background turns after their test returns. Keep
@@ -259,7 +408,7 @@ def shutdown():
                 os.kill(pid, 0)
             except ProcessLookupError:
                 break
-            time.sleep(.05)
+            time.sleep(0.05)
         else:
             os.kill(pid, signal.SIGKILL)
     if app.process.poll() is None:
@@ -289,8 +438,10 @@ def enable_parallel_features():
     settings.setdefault("enabled", {})["proxy"] = True
     (app.home / "extensions.json").write_text(json.dumps(settings))
     session = app.session()
-    app.api(f"/sessions/{session}/extensions",
-            {"name": "webhooks", "scope": "global", "enabled": True}).close()
+    app.api(
+        f"/sessions/{session}/extensions",
+        {"name": "webhooks", "scope": "global", "enabled": True},
+    ).close()
 
 
 atexit.register(shutdown)
@@ -306,7 +457,14 @@ def _write_config(path, value):
 class Albedo:
     """Per-test workspace and provider profile over one process-wide daemon."""
 
-    def __init__(self, provider: Provider | None = None, *, protocol="chat_completions", providers=None, prepare=None):
+    def __init__(
+        self,
+        provider: Provider | None = None,
+        *,
+        protocol="chat_completions",
+        providers=None,
+        prepare=None,
+    ):
         self.provider = provider or Provider(lambda _request: text("ok"))
         self._owns_provider = provider is None
         self.protocol = protocol
@@ -320,52 +478,103 @@ class Albedo:
                 if not hasattr(sys.modules["__main__"], "__file__"):
                     # A daemon lives until the process that booted it exits,
                     # which a long-lived interpreter or agent kernel never does.
-                    raise RuntimeError("run E2E tests through test/e2e/run.py, not an interactive interpreter")
+                    raise RuntimeError(
+                        "run E2E tests through test/e2e/run.py, not an interactive interpreter"
+                    )
                 self.temp = tempfile.TemporaryDirectory(prefix="albedo-e2e-")
                 self.root = Path(self.temp.name)
                 self.home = self.root / "home"
                 self.home.mkdir()
                 (self.root / "user-home").mkdir()
-                self.env = dict(os.environ, HOME=str(self.root / "user-home"),
-                                ALBEDO_HOME=str(self.home), ALBEDO_PARENT_PID=str(os.getpid()),
-                                ERL_FLAGS=TEST_VM_FLAGS, ALBEDO_IDLE_SECONDS="10",
-                                ALBEDO_MCP_SECRET="configured-secret",
-                                ALBEDO_MCP_CLOSED=str(self.root / "closed"),
-                                ALBEDO_MCP_AMBIENT="must-not-reach-the-server")
+                self.env = dict(
+                    os.environ,
+                    HOME=str(self.root / "user-home"),
+                    ALBEDO_HOME=str(self.home),
+                    ALBEDO_PARENT_PID=str(os.getpid()),
+                    ERL_FLAGS=TEST_VM_FLAGS,
+                    ALBEDO_IDLE_SECONDS="10",
+                    ALBEDO_MCP_SECRET="configured-secret",
+                    ALBEDO_MCP_CLOSED=str(self.root / "closed"),
+                    ALBEDO_MCP_AMBIENT="must-not-reach-the-server",
+                )
                 _shared = self
                 first = True
             else:
                 first = False
                 shared = _shared
-                self.temp, self.root, self.home, self.env = shared.temp, shared.root, shared.home, shared.env
+                self.temp, self.root, self.home, self.env = (
+                    shared.temp,
+                    shared.root,
+                    shared.home,
+                    shared.env,
+                )
             self.workspace = Path(tempfile.mkdtemp(prefix="workspace-", dir=self.root))
             self._concurrent = getattr(_parallel, "enabled", False)
-            self._saved = {name: (self.home / name).read_bytes() if (self.home / name).exists() else None
-                           for name in ("config.json", "extensions.json", "mcp-credentials.json", "models.json")}
+            self._saved = {
+                name: (self.home / name).read_bytes()
+                if (self.home / name).exists()
+                else None
+                for name in (
+                    "config.json",
+                    "extensions.json",
+                    "mcp-credentials.json",
+                    "models.json",
+                )
+            }
             if self.prepare:
                 self.prepare(self)
             if not (self.home / "extensions.json").exists():
-                (self.home / "extensions.json").write_text(json.dumps({"models": {"refreshHours": 0}}))
-            default_name = f"fixture-{self.provider.route}" if self._concurrent else "fixture"
-            configured = self.providers if self.providers is not None else {
-                default_name: {"baseUrl": self.provider.url, "apiKey": "fixture-key",
-                               "model": "fixture-model", "protocol": self.protocol}}
+                (self.home / "extensions.json").write_text(
+                    json.dumps({"models": {"refreshHours": 0}})
+                )
+            default_name = (
+                f"fixture-{self.provider.route}" if self._concurrent else "fixture"
+            )
+            configured = (
+                self.providers
+                if self.providers is not None
+                else {
+                    default_name: {
+                        "baseUrl": self.provider.url,
+                        "apiKey": "fixture-key",
+                        "model": "fixture-model",
+                        "protocol": self.protocol,
+                    }
+                }
+            )
             self.profile = next(iter(configured), None)
             if configured:
-                current = json.loads((self.home / "config.json").read_text()) if self._concurrent and (self.home / "config.json").exists() else {"providers": {}}
+                current = (
+                    json.loads((self.home / "config.json").read_text())
+                    if self._concurrent and (self.home / "config.json").exists()
+                    else {"providers": {}}
+                )
                 current["providers"].update(configured)
-                current["active"] = current.get("active", self.profile) if self._concurrent else self.profile
+                current["active"] = (
+                    current.get("active", self.profile)
+                    if self._concurrent
+                    else self.profile
+                )
                 _write_config(self.home / "config.json", current)
             elif not self._concurrent and (self.home / "config.json").exists():
                 (self.home / "config.json").unlink()
             if first:
-                self.process = subprocess.Popen([str(ROOT / "cli/bin/albedo"), "sessions"], cwd=ROOT,
-                                                env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.process = subprocess.Popen(
+                    [str(ROOT / "cli/bin/albedo"), "sessions"],
+                    cwd=ROOT,
+                    env=self.env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
                 deadline = time.monotonic() + 30
-                while not (self.home / "daemon.json").exists() and time.monotonic() < deadline:
+                while (
+                    not (self.home / "daemon.json").exists()
+                    and time.monotonic() < deadline
+                ):
                     if self.process.poll() is not None:
                         self._fail("daemon exited during startup")
-                    time.sleep(.05)
+                    time.sleep(0.05)
                 if not (self.home / "daemon.json").exists():
                     self._fail("daemon did not start")
             else:
@@ -402,7 +611,7 @@ class Albedo:
                     os.kill(self.connection["pid"], 0)
                 except ProcessLookupError:
                     break
-                time.sleep(.05)
+                time.sleep(0.05)
             else:
                 self._fail("daemon did not stop")
         self.cli("sessions")
@@ -414,19 +623,36 @@ class Albedo:
         raise AssertionError(message + ("\n" + log.read_text() if log.exists() else ""))
 
     def api(self, path, body=None, *, method=None):
-        request = urllib.request.Request(self.base + path, data=None if body is None else json.dumps(body).encode(), method=method,
-            headers={"Authorization": "Bearer " + self.connection["token"], "Content-Type": "application/json"})
+        request = urllib.request.Request(
+            self.base + path,
+            data=None if body is None else json.dumps(body).encode(),
+            method=method,
+            headers={
+                "Authorization": "Bearer " + self.connection["token"],
+                "Content-Type": "application/json",
+            },
+        )
         try:
             return urllib.request.urlopen(request, timeout=20)
         except urllib.error.HTTPError as failure:
             payload = failure.read()
             raise urllib.error.HTTPError(
-                failure.url, failure.code,
+                failure.url,
+                failure.code,
                 failure.msg + ": " + payload.decode(errors="replace"),
-                failure.headers, io.BytesIO(payload)) from failure
+                failure.headers,
+                io.BytesIO(payload),
+            ) from failure
 
     def cli(self, *args):
-        result = subprocess.run([str(ROOT / "cli/bin/albedo"), *args], cwd=ROOT, env=self.env, text=True, capture_output=True, timeout=45)
+        result = subprocess.run(
+            [str(ROOT / "cli/bin/albedo"), *args],
+            cwd=ROOT,
+            env=self.env,
+            text=True,
+            capture_output=True,
+            timeout=45,
+        )
         if result.returncode:
             self._fail(result.stdout + result.stderr)
         return result.stdout
@@ -434,12 +660,19 @@ class Albedo:
     def session(self, workspace=None):
         with _config_lock:
             if self._concurrent:
-                with self.api("/sessions", {"workspace": str(workspace or self.workspace),
-                                            "provider": self.profile}) as response:
+                with self.api(
+                    "/sessions",
+                    {
+                        "workspace": str(workspace or self.workspace),
+                        "provider": self.profile,
+                    },
+                ) as response:
                     created = json.load(response)
                 assert created["provider"] == self.profile, created
                 return created["id"]
-            return json.loads(self.cli("new", str(workspace or self.workspace)))["session"]
+            return json.loads(self.cli("new", str(workspace or self.workspace)))[
+                "session"
+            ]
 
     def prompt(self, session_id, content):
         return self.api(f"/sessions/{session_id}/events", {"content": content})
@@ -451,7 +684,7 @@ class Albedo:
                 status = json.load(response)
             if not status["running"]:
                 return status
-            time.sleep(.05)
+            time.sleep(0.05)
         self._fail(f"session did not settle: {status}")
 
     def events(self, session_id):

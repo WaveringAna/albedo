@@ -12,6 +12,7 @@ switch, the skills command with exact argument round-trip, the served command
 catalog, and a user-mode model switch that the next real request actually
 uses.
 """
+
 import contextlib
 import glob
 import json
@@ -23,14 +24,15 @@ import time
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
-AUTH_PATH = os.environ.get("ALBEDO_TEST_AUTH",
-                           os.path.expanduser("~/.prime/agent/auth.json"))
+AUTH_PATH = os.environ.get(
+    "ALBEDO_TEST_AUTH", os.path.expanduser("~/.prime/agent/auth.json")
+)
 AUTH = json.load(open(AUTH_PATH))
 KEY = AUTH["deepseek"]["key"]
 MODEL = "deepseek-chat"
 SKILL_BODY = "LIVE_SKILL_BODY_7391"
 
-CELL_ONE = '''
+CELL_ONE = """
 import inspect
 print("NAMES", sorted(n for n in vars(type(commands)) if not n.startswith("_")))
 print("SIG", inspect.signature(commands.model))
@@ -45,11 +47,10 @@ try:
     print("SWITCH-BUG")
 except CommandsError as e:
     print("REFUSED", e)
-'''
+"""
 PROMPT_ONE = (
     "use the python tool to run exactly this one cell and nothing else, then "
-    "end your turn with the single word done:\n"
-    + CELL_ONE
+    "end your turn with the single word done:\n" + CELL_ONE
 )
 
 PROMPT_TWO = (
@@ -67,33 +68,60 @@ def main():
             path.mkdir(mode=0o700)
         skill = workspace / ".albedo" / "skills" / "probe" / "SKILL.md"
         skill.parent.mkdir(parents=True)
-        skill.write_text("---\nname: probe\ndescription: live probe skill\n---\n"
-                         + SKILL_BODY + "\n")
-        (home / "config.json").write_text(json.dumps({
-            "active": "deepseek",
-            "providers": {"deepseek": {
-                "baseUrl": "https://api.deepseek.com/v1",
-                "apiKey": KEY,
-                "model": MODEL,
-                "protocol": "chat_completions"}}}))
-        (home / "extensions.json").write_text(json.dumps({"models": {"refreshHours": 0}}))
-        env = dict(os.environ, HOME=str(user_home), ALBEDO_HOME=str(home),
-                   ALBEDO_IDLE_SECONDS="600")
-        toolchain = ":".join(glob.glob("/nix/store/*gleam*/bin")
-                             + glob.glob("/nix/store/*erlang*/bin"))
+        skill.write_text(
+            "---\nname: probe\ndescription: live probe skill\n---\n" + SKILL_BODY + "\n"
+        )
+        (home / "config.json").write_text(
+            json.dumps(
+                {
+                    "active": "deepseek",
+                    "providers": {
+                        "deepseek": {
+                            "baseUrl": "https://api.deepseek.com/v1",
+                            "apiKey": KEY,
+                            "model": MODEL,
+                            "protocol": "chat_completions",
+                        }
+                    },
+                }
+            )
+        )
+        (home / "extensions.json").write_text(
+            json.dumps({"models": {"refreshHours": 0}})
+        )
+        env = dict(
+            os.environ,
+            HOME=str(user_home),
+            ALBEDO_HOME=str(home),
+            ALBEDO_IDLE_SECONDS="600",
+        )
+        toolchain = ":".join(
+            glob.glob("/nix/store/*gleam*/bin") + glob.glob("/nix/store/*erlang*/bin")
+        )
         if toolchain:
             env["PATH"] = toolchain + ":" + env["PATH"]
-        first = subprocess.run([str(ROOT / "cli/bin/albedo"), "sessions"], cwd=ROOT,
-                               env=env, text=True, capture_output=True, timeout=120)
+        first = subprocess.run(
+            [str(ROOT / "cli/bin/albedo"), "sessions"],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=120,
+        )
         assert first.returncode == 0, first.stdout + first.stderr
         connection = json.loads((home / "daemon.json").read_text())
         base = f"http://127.0.0.1:{connection['port']}"
-        headers = {"Authorization": "Bearer " + connection["token"],
-                   "Content-Type": "application/json"}
+        headers = {
+            "Authorization": "Bearer " + connection["token"],
+            "Content-Type": "application/json",
+        }
 
         def api(path, body=None):
-            request = urllib.request.Request(base + path, headers=headers,
-                                             data=None if body is None else json.dumps(body).encode())
+            request = urllib.request.Request(
+                base + path,
+                headers=headers,
+                data=None if body is None else json.dumps(body).encode(),
+            )
             return urllib.request.urlopen(request, timeout=60)
 
         def ready(session, timeout=180):
@@ -117,19 +145,35 @@ def main():
                     if line.startswith(b"data: "):
                         return json.loads(line[6:])["events"]
 
-        created = json.loads(subprocess.run(
-            [str(ROOT / "cli/bin/albedo"), "new", str(workspace)], cwd=ROOT, env=env,
-            text=True, capture_output=True, timeout=120, check=True).stdout)
+        created = json.loads(
+            subprocess.run(
+                [str(ROOT / "cli/bin/albedo"), "new", str(workspace)],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=120,
+                check=True,
+            ).stdout
+        )
         session = created["session"]
         print("session", session)
 
         with api(f"/sessions/{session}/commands") as response:
             catalog = json.load(response)
         by_name = {c["name"]: c for c in catalog}
-        assert "/model" in by_name and "/context" in by_name and "/probe" in by_name, by_name.keys()
-        assert by_name["/model"]["usage"] == "/model [model] [provider]", by_name["/model"]
-        assert by_name["/probe"]["method"] == "probe" and by_name["/probe"]["userTurn"], by_name["/probe"]
-        print("PASS catalog serves /model /context /probe with usage and mintable methods")
+        assert "/model" in by_name and "/context" in by_name and "/probe" in by_name, (
+            by_name.keys()
+        )
+        assert by_name["/model"]["usage"] == "/model [model] [provider]", by_name[
+            "/model"
+        ]
+        assert (
+            by_name["/probe"]["method"] == "probe" and by_name["/probe"]["userTurn"]
+        ), by_name["/probe"]
+        print(
+            "PASS catalog serves /model /context /probe with usage and mintable methods"
+        )
 
         print("turn 1 submitted", flush=True)
         with api(f"/sessions/{session}/events", {"content": PROMPT_ONE}) as response:
@@ -139,7 +183,16 @@ def main():
         tools = [e for e in outputs(session) if e.get("type") == "tool"]
         text = json.dumps([e.get("result", "") for e in tools])
         print("turn 1 tool outputs:", len(tools), flush=True)
-        for marker in ("NAMES", "SIG", "DOC", "SEL", "CAT", "ACT", "INVOKED", "REFUSED"):
+        for marker in (
+            "NAMES",
+            "SIG",
+            "DOC",
+            "SEL",
+            "CAT",
+            "ACT",
+            "INVOKED",
+            "REFUSED",
+        ):
             assert marker in text, (marker, text[-2000:])
         assert "['context', 'model', 'probe']" in text, text[-2000:]
         assert "INVOKED raw text" in text, text[-2000:]
@@ -147,18 +200,29 @@ def main():
         assert "Usage: /model [model] [provider]" in text, text[-2000:]
         assert f"'{MODEL}'" in text, text[-2000:]
         assert "'/model', 'model', '/model [model] [provider]'" in text, text[-2000:]
-        assert "'one  two' True" in text, ("exact arguments + skill body round-trip", text[-2000:])
-        assert "SWITCH-BUG" not in text and "user action between turns" in text, text[-2000:]
+        assert "'one  two' True" in text, (
+            "exact arguments + skill body round-trip",
+            text[-2000:],
+        )
+        assert "SWITCH-BUG" not in text and "user action between turns" in text, text[
+            -2000:
+        ]
         print("PASS real model used the typed bindings: help/signature, read, catalog,")
         print("     skill with exact args, and the model-mode switch refusal")
 
         switch_to = MODEL
         try:
-            with urllib.request.urlopen(urllib.request.Request(
+            with urllib.request.urlopen(
+                urllib.request.Request(
                     "https://api.deepseek.com/models",
-                    headers={"Authorization": "Bearer " + KEY}), timeout=15) as response:
+                    headers={"Authorization": "Bearer " + KEY},
+                ),
+                timeout=15,
+            ) as response:
                 listed = [m["id"] for m in json.load(response)["data"]]
-            candidates = [m for m in listed if m != MODEL and "reasoner" not in m] or [m for m in listed if m != MODEL]
+            candidates = [m for m in listed if m != MODEL and "reasoner" not in m] or [
+                m for m in listed if m != MODEL
+            ]
             if candidates:
                 switch_to = candidates[0]
         except Exception as probe_error:
@@ -166,12 +230,16 @@ def main():
         if switch_to == MODEL:
             print("SKIP switch: no second deepseek model to switch to")
         else:
-            with api(f"/sessions/{session}/commands",
-                     {"name": "/model", "args": {"model": switch_to}}) as response:
+            with api(
+                f"/sessions/{session}/commands",
+                {"name": "/model", "args": {"model": switch_to}},
+            ) as response:
                 selection = json.load(response)
             assert selection["result"]["model"] == switch_to, selection
             assert selection["result"]["provider"] == "deepseek", selection
-            with api(f"/sessions/{session}/events", {"content": PROMPT_TWO}) as response:
+            with api(
+                f"/sessions/{session}/events", {"content": PROMPT_TWO}
+            ) as response:
                 response.read()
             ready(session)
             tools = [e for e in outputs(session) if e.get("type") == "tool"]

@@ -5,6 +5,7 @@
 Exercises staging, kernel boot, tool calls, relay, degradation is NOT tested
 here (that needs a broken target), and control-master reuse across calls.
 """
+
 import asyncio
 import os
 import sys
@@ -34,9 +35,18 @@ async def main(host: str) -> int:
     async def daemon_host(method, args):
         return [{"relay": True, "method": method}]
 
-    api = PythonApi(loop, daemon_host, RuntimeError, FakeCapture, 65536,
-                    lambda event: None, lambda close: None, lambda cls: None,
-                    2, ["run", "files", "work", "skills", "remote"])
+    api = PythonApi(
+        loop,
+        daemon_host,
+        RuntimeError,
+        FakeCapture,
+        65536,
+        lambda event: None,
+        lambda close: None,
+        lambda cls: None,
+        2,
+        ["run", "files", "work", "skills", "remote"],
+    )
     namespace = remote.setup(api)
     rem_mod = namespace["remote"]
     rem = await rem_mod.connect(host=host)
@@ -56,6 +66,7 @@ async def main(host: str) -> int:
     print("relay answer:", relay[0])
 
     import time
+
     started = time.monotonic()
     again = rem.run("true")
     await again
@@ -67,5 +78,7 @@ async def main(host: str) -> int:
 
 
 if __name__ == "__main__":
-    target = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("ALBEDO_SSH", "localhost")
+    target = (
+        sys.argv[1] if len(sys.argv) > 1 else os.environ.get("ALBEDO_SSH", "localhost")
+    )
     raise SystemExit(asyncio.run(main(target)))

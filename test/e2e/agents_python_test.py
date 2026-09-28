@@ -1,4 +1,5 @@
 """Python agent API: spawn, family identity, refusals, progress, and explicit mail."""
+
 import time
 import unittest
 
@@ -30,8 +31,14 @@ print('SENT', receipt.status, receipt.name)
 
 
 def user_text(request):
-    return next((item.get("content", "") for item in reversed(request["messages"])
-                 if item.get("role") == "user"), "")
+    return next(
+        (
+            item.get("content", "")
+            for item in reversed(request["messages"])
+            if item.get("role") == "user"
+        ),
+        "",
+    )
 
 
 def wait_for(predicate):
@@ -56,9 +63,15 @@ class AgentsPythonTests(unittest.TestCase):
             return text("ok")
 
         provider = Provider(script)
-        providers = {name: {"baseUrl": provider.url + f"/{name}/v1", "apiKey": "key",
-                            "model": f"fixture-{name}", "protocol": "chat_completions"}
-                     for name in ("alpha", "beta")}
+        providers = {
+            name: {
+                "baseUrl": provider.url + f"/{name}/v1",
+                "apiKey": "key",
+                "model": f"fixture-{name}",
+                "protocol": "chat_completions",
+            }
+            for name in ("alpha", "beta")
+        }
         try:
             with Albedo(provider, providers=providers) as app:
                 lead = app.session()
@@ -69,32 +82,54 @@ class AgentsPythonTests(unittest.TestCase):
                     for item in provider.requests:
                         messages = item["request"]["messages"]
                         last = messages[-1]
-                        records.append({"user": user_text(item["request"]),
-                                        "context": " ".join(str(m.get("content", "")) for m in messages),
-                                        "tool": str(last.get("content", "")) if last.get("role") == "tool" else ""})
+                        records.append(
+                            {
+                                "user": user_text(item["request"]),
+                                "context": " ".join(
+                                    str(m.get("content", "")) for m in messages
+                                ),
+                                "tool": str(last.get("content", ""))
+                                if last.get("role") == "tool"
+                                else "",
+                            }
+                        )
                     return records
 
-                spawned = wait_for(lambda: next((r["tool"] for r in observed()
-                                                  if "SPAWNED" in r["tool"]), None))
+                spawned = wait_for(
+                    lambda: next(
+                        (r["tool"] for r in observed() if "SPAWNED" in r["tool"]), None
+                    )
+                )
                 self.assertIn("SPAWNED scout 1", spawned)
                 self.assertIn("EMPTY_MODEL", spawned)
-                child = wait_for(lambda: next((r["tool"] for r in observed()
-                                                if "SENT" in r["tool"]), None))
+                child = wait_for(
+                    lambda: next(
+                        (r["tool"] for r in observed() if "SENT" in r["tool"]), None
+                    )
+                )
                 self.assertIn("ME scout 1", child)
                 self.assertIn("PROGRESS True", child)
                 self.assertIn("REFUSED", child)
                 self.assertIn("own children", child)
                 self.assertIn("ASK", child)
                 self.assertIn("only the user deletes", child)
-                self.assertTrue("SENT delivered spawn a scout" in child or
-                                "SENT queued spawn a scout" in child)
+                self.assertTrue(
+                    "SENT delivered spawn a scout" in child
+                    or "SENT queued spawn a scout" in child
+                )
                 task = next(r for r in observed() if 'kind="task"' in r["user"])
                 self.assertIn('You are child agent "scout"', task["context"])
-                wait_for(lambda: any('kind="message"' in r["user"] and "three" in r["user"]
-                                     for r in observed()))
+                wait_for(
+                    lambda: any(
+                        'kind="message"' in r["user"] and "three" in r["user"]
+                        for r in observed()
+                    )
+                )
                 app.idle(lead)
                 time.sleep(1)
-                self.assertFalse(any('kind="unreviewed"' in r["user"] for r in observed()))
+                self.assertFalse(
+                    any('kind="unreviewed"' in r["user"] for r in observed())
+                )
         finally:
             provider.close()
 

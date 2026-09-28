@@ -1,6 +1,7 @@
 """agents: spawn children, look at family, cancel or close your own children.
 Talking is mail.submit. Spawn returns once the child exists; its answer
 arrives later as mail and starts your next turn."""
+
 from __future__ import annotations
 
 import time
@@ -18,6 +19,7 @@ _last_progress = 0.0
 class Agent:
     """A handle to one agent. `running` and `closed` are set on snapshots
     from children() and siblings(); None on handles that were not looked up."""
+
     id: str
     name: str
     depth: int
@@ -25,27 +27,56 @@ class Agent:
     running: bool | None = None
     closed: bool | None = None
 
-    async def spawn(self, task: str, *, name: str, model: str, deliverable: str | None = None,
-                    evidence_bar: str | None = None, falsifier: str | None = None) -> "Agent":
+    async def spawn(
+        self,
+        task: str,
+        *,
+        name: str,
+        model: str,
+        deliverable: str | None = None,
+        evidence_bar: str | None = None,
+        falsifier: str | None = None,
+    ) -> "Agent":
         """Start a child with `task`. Returns at once; its answer comes as mail."""
         if self.id != agents.self.id:
-            raise PermissionError("only agents.self.spawn(...) starts children: you spawn your own")
+            raise PermissionError(
+                "only agents.self.spawn(...) starts children: you spawn your own"
+            )
         if not _models_seen:
-            raise RuntimeError("call await agents.models() first and pick a model from it")
+            raise RuntimeError(
+                "call await agents.models() first and pick a model from it"
+            )
         for label, value in (("task", task), ("name", name), ("model", model)):
             if not isinstance(value, str) or not value.strip():
                 raise TypeError(f"{label} must be a non-empty str")
-        brief = _brief(task, name=name, deliverable=deliverable, evidence_bar=evidence_bar, falsifier=falsifier)
-        return _agent(cast(dict, await host("agents.spawn", {"task": brief, "name": name, "model": model})))
+        brief = _brief(
+            task,
+            name=name,
+            deliverable=deliverable,
+            evidence_bar=evidence_bar,
+            falsifier=falsifier,
+        )
+        return _agent(
+            cast(
+                dict,
+                await host(
+                    "agents.spawn", {"task": brief, "name": name, "model": model}
+                ),
+            )
+        )
 
     async def children(self) -> list["Agent"]:
         if self.id != agents.self.id:
-            raise PermissionError("children() lists your own: use agents.self.children()")
+            raise PermissionError(
+                "children() lists your own: use agents.self.children()"
+            )
         return [_agent(item) for item in cast(list, await host("agents.children", {}))]
 
     async def siblings(self) -> list["Agent"]:
         if self.id != agents.self.id:
-            raise PermissionError("siblings() lists your own: use agents.self.siblings()")
+            raise PermissionError(
+                "siblings() lists your own: use agents.self.siblings()"
+            )
         return [_agent(item) for item in cast(list, await host("agents.siblings", {}))]
 
     async def cancel(self) -> bool:
@@ -63,23 +94,36 @@ class Agent:
 def _agent(raw: dict) -> Agent:
     parent = raw.get("parent")
     return Agent(
-        id=raw["id"], name=raw["name"], depth=raw["depth"],
+        id=raw["id"],
+        name=raw["name"],
+        depth=raw["depth"],
         parent=_agent(parent) if isinstance(parent, dict) else None,
-        running=raw.get("running"), closed=raw.get("closed"),
+        running=raw.get("running"),
+        closed=raw.get("closed"),
     )
 
 
-def _brief(task: str, *, name: str, deliverable: str | None, evidence_bar: str | None,
-           falsifier: str | None) -> str:
+def _brief(
+    task: str,
+    *,
+    name: str,
+    deliverable: str | None,
+    evidence_bar: str | None,
+    falsifier: str | None,
+) -> str:
     parts = [f"TASK:\n{task.strip()}"]
     if deliverable:
-        parts.append(f"DELIVERABLE: {deliverable.strip()}\nWrite it to {deliverable.strip()}.partial and rename it "
-                     "into place when finished, so a reader never sees half of it.")
+        parts.append(
+            f"DELIVERABLE: {deliverable.strip()}\nWrite it to {deliverable.strip()}.partial and rename it "
+            "into place when finished, so a reader never sees half of it."
+        )
     if evidence_bar:
         parts.append(f"EVIDENCE BAR:\n{evidence_bar.strip()}")
     if falsifier:
         parts.append(f"FALSIFIER:\n{falsifier.strip()}")
-    parts.append('WHEN DONE: await mail.submit("parent", <short summary, with paths to anything large>).')
+    parts.append(
+        'WHEN DONE: await mail.submit("parent", <short summary, with paths to anything large>).'
+    )
     return "\n\n".join(parts)
 
 
@@ -105,7 +149,9 @@ class Agents:
         return bool(await host("agents.progress", {"text": text.strip()}))
 
     def spawn(self, *_: object, **__: object) -> None:
-        raise AttributeError("spawn lives on your handle: await agents.self.spawn(task, name=..., model=...)")
+        raise AttributeError(
+            "spawn lives on your handle: await agents.self.spawn(task, name=..., model=...)"
+        )
 
 
 agents = Agents()

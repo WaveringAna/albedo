@@ -1,13 +1,19 @@
 """Minimal line-delimited JSON-RPC MCP server used by mcp_integration.py."""
+
 import json, os, sys
 from pathlib import Path
 
-TOOLS = [{
-    "name": "echo",
-    "description": "Echo one message back",
-    "inputSchema": {"type": "object", "required": ["message"],
-                    "properties": {"message": {"type": "string"}}},
-}]
+TOOLS = [
+    {
+        "name": "echo",
+        "description": "Echo one message back",
+        "inputSchema": {
+            "type": "object",
+            "required": ["message"],
+            "properties": {"message": {"type": "string"}},
+        },
+    }
+]
 
 
 def reply(id, result=None, error=None):
@@ -23,17 +29,35 @@ for line in sys.stdin:
     if id is None:
         continue
     if method == "initialize":
-        reply(id, {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
-                   "serverInfo": {"name": "fake", "version": "1"}})
+        reply(
+            id,
+            {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "fake", "version": "1"},
+            },
+        )
     elif method == "tools/list":
         reply(id, {"tools": TOOLS})
     elif method == "tools/call":
         arguments = message["params"].get("arguments", {})
-        reply(id, {"content": [{"type": "text", "text": json.dumps({
-            "echoed": arguments.get("message"),
-            "secret": os.environ.get("FAKE_SECRET"),
-            "ambient": os.environ.get("ALBEDO_MCP_AMBIENT"),
-        })}]})
+        reply(
+            id,
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                "echoed": arguments.get("message"),
+                                "secret": os.environ.get("FAKE_SECRET"),
+                                "ambient": os.environ.get("ALBEDO_MCP_AMBIENT"),
+                            }
+                        ),
+                    }
+                ]
+            },
+        )
     elif method == "ping":
         reply(id, {})
     else:

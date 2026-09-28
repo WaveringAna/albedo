@@ -1,4 +1,5 @@
 """Run all E2E unittest suites, one file, or one test by dotted identifier."""
+
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import io
@@ -27,14 +28,20 @@ def suite_for(path, test_name=None):
 
 
 def migration_suite():
-    return suite_for(SUITE_DIR / "integration_test.py",
-                     "IntegrationTest.test_unconfigured_startup_and_legacy_provider_migration")
+    return suite_for(
+        SUITE_DIR / "integration_test.py",
+        "IntegrationTest.test_unconfigured_startup_and_legacy_provider_migration",
+    )
 
 
 def without_migration(suite):
-    return unittest.TestSuite(test for group in suite for test in group
-                              if test._testMethodName !=
-                              "test_unconfigured_startup_and_legacy_provider_migration")
+    return unittest.TestSuite(
+        test
+        for group in suite
+        for test in group
+        if test._testMethodName
+        != "test_unconfigured_startup_and_legacy_provider_migration"
+    )
 
 
 def cases(suite):
@@ -58,11 +65,21 @@ def execute(test, concurrent=False):
 
 def run_suite(suite, workers):
     selected = list(cases(suite))
-    first = [test for test in selected if "test_unconfigured_startup_and_legacy_provider_migration" in test.id()]
-    parallel = [test for test in selected if test not in first and
-                not getattr(getattr(test, test._testMethodName), "_e2e_exclusive", False) and
-                not getattr(type(test), "_e2e_exclusive", False)]
-    exclusive = [test for test in selected if test not in first and test not in parallel]
+    first = [
+        test
+        for test in selected
+        if "test_unconfigured_startup_and_legacy_provider_migration" in test.id()
+    ]
+    parallel = [
+        test
+        for test in selected
+        if test not in first
+        and not getattr(getattr(test, test._testMethodName), "_e2e_exclusive", False)
+        and not getattr(type(test), "_e2e_exclusive", False)
+    ]
+    exclusive = [
+        test for test in selected if test not in first and test not in parallel
+    ]
     outcomes = [execute(test) for test in first]
     if parallel:
         harness.enable_parallel_features()
@@ -77,26 +94,37 @@ def run_suite(suite, workers):
         for _case, traceback in result.failures + result.errors:
             print(f"\n{test.id()}:\n{traceback}", file=sys.stderr)
     print("slowest tests:", file=sys.stderr)
-    for test, _result, duration, _output in sorted(outcomes, key=lambda value: -value[2])[:10]:
+    for test, _result, duration, _output in sorted(
+        outcomes, key=lambda value: -value[2]
+    )[:10]:
         print(f"  {duration:.1f}s {test.id()}", file=sys.stderr)
-    print(f"Ran {len(outcomes)} tests; {sum(not result.wasSuccessful() for _, result, _, _ in outcomes)} failing", file=sys.stderr)
+    print(
+        f"Ran {len(outcomes)} tests; {sum(not result.wasSuccessful() for _, result, _, _ in outcomes)} failing",
+        file=sys.stderr,
+    )
     return all(result.wasSuccessful() for _, result, _, _ in outcomes)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("target", nargs="?", help="file.py or TestCase.test_method")
-    parser.add_argument("-j", "--jobs", type=int, default=8, help="concurrent non-exclusive tests")
+    parser.add_argument(
+        "-j", "--jobs", type=int, default=8, help="concurrent non-exclusive tests"
+    )
     args = parser.parse_args()
     if args.target:
         path = SUITE_DIR / args.target
         if path.is_file():
             suite = suite_for(path)
             if path.name == "integration_test.py":
-                suite = unittest.TestSuite([migration_suite(), without_migration(suite)])
+                suite = unittest.TestSuite(
+                    [migration_suite(), without_migration(suite)]
+                )
         else:
             file_part, _, test_name = args.target.partition(":")
-            path = SUITE_DIR / (file_part if file_part.endswith(".py") else file_part + "_test.py")
+            path = SUITE_DIR / (
+                file_part if file_part.endswith(".py") else file_part + "_test.py"
+            )
             suite = suite_for(path, test_name)
     else:
         paths = sorted(SUITE_DIR.glob("*_test.py"))
@@ -115,7 +143,10 @@ def main():
             successful = run_suite(suite, max(1, args.jobs))
         finally:
             harness.shutdown()
-            print(f"daemon boots: {harness.daemon_boots}; restart time: {harness.restart_seconds:.1f}s; wall time: {time.monotonic() - started:.1f}s", flush=True)
+            print(
+                f"daemon boots: {harness.daemon_boots}; restart time: {harness.restart_seconds:.1f}s; wall time: {time.monotonic() - started:.1f}s",
+                flush=True,
+            )
     return 0 if successful else 1
 
 

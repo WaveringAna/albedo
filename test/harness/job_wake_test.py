@@ -1,4 +1,5 @@
 """Busy-host replies and reading an in-flight job notice are races the daemon E2E wake test cannot reliably force."""
+
 import json
 import os
 import select
@@ -25,8 +26,13 @@ class Owner:
         environment.update(env or {})
         self.process = subprocess.Popen(
             [sys.executable, "-u", str(KERNEL), json.dumps(modules)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            cwd=self.workspace, env=environment, bufsize=0)
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=self.workspace,
+            env=environment,
+            bufsize=0,
+        )
         self.buffered = []
 
     def close(self):
@@ -69,8 +75,9 @@ class Owner:
             frame = self.recv(timeout=max(0.05, deadline - time.monotonic()))
             if frame is not None:
                 self.buffered.append(frame)
-        raise AssertionError(f"no matching frame; buffered: "
-                             f"{[f.get('type') for f in self.buffered]}")
+        raise AssertionError(
+            f"no matching frame; buffered: {[f.get('type') for f in self.buffered]}"
+        )
 
     def expect_no_call(self, method, window=RETRY_WINDOW):
         deadline = time.monotonic() + window
@@ -78,16 +85,18 @@ class Owner:
             try:
                 frame = self.wait_for(
                     lambda f: f.get("type") == "call" and f.get("method") == method,
-                    timeout=max(0.05, deadline - time.monotonic()))
+                    timeout=max(0.05, deadline - time.monotonic()),
+                )
             except AssertionError:
                 return
             raise AssertionError(f"unexpected {method} call: {frame}")
 
-
     def invoke(self, call_id, **frame):
         self.send({"type": "invoke", "id": call_id, **frame})
         while True:
-            reply = self.wait_for(lambda f: f.get("id") == call_id and f["type"] == "invoked")
+            reply = self.wait_for(
+                lambda f: f.get("id") == call_id and f["type"] == "invoked"
+            )
             if reply.get("ok") is True or "error" in reply:
                 return reply
 
@@ -96,7 +105,9 @@ class WakeProtocolTest(unittest.TestCase):
     def setUp(self):
         self.owner = Owner(["run"])
         self.addCleanup(self.owner.close)
-        self.assertEqual(self.owner.wait_for(lambda f: f.get("type") == "ready")["type"], "ready")
+        self.assertEqual(
+            self.owner.wait_for(lambda f: f.get("type") == "ready")["type"], "ready"
+        )
 
     def start_job(self, *argv):
         reply = self.owner.invoke("j1", name="run", args=list(argv))
@@ -107,32 +118,47 @@ class WakeProtocolTest(unittest.TestCase):
         """Wait on the raw completion frame; awaiting the job would retire the wake."""
         start = self.owner.wait_for(lambda f: f.get("type") == "job_start")
         done = self.owner.wait_for(
-            lambda f: f.get("type") == "job" and f.get("id") == start["id"])
+            lambda f: f.get("type") == "job" and f.get("id") == start["id"]
+        )
         return done
-
 
     def test_a_busy_session_is_retried_and_a_refusal_gives_up(self):
         handle = self.start_job("echo", "retry-echo")
         self.wait_job_done()
         # Busy is retried, not dropped; a permanent refusal ends the attempts.
         frame = self.owner.wait_for(lambda f: f.get("type") == "call")
-        self.owner.send({"type": "reply", "id": frame["id"],
-                         "value": {"ok": False, "code": "busy", "message": "session is busy"}})
+        self.owner.send(
+            {
+                "type": "reply",
+                "id": frame["id"],
+                "value": {"ok": False, "code": "busy", "message": "session is busy"},
+            }
+        )
         retry = self.owner.wait_for(
             lambda f: f.get("type") == "call" and f.get("method") == "jobs.completed",
-            timeout=RETRY_WINDOW)
-        self.owner.send({"type": "reply", "id": retry["id"],
-                         "value": {"ok": False, "code": "unavailable", "message": "no session"}})
+            timeout=RETRY_WINDOW,
+        )
+        self.owner.send(
+            {
+                "type": "reply",
+                "id": retry["id"],
+                "value": {"ok": False, "code": "unavailable", "message": "no session"},
+            }
+        )
         self.owner.expect_no_call("jobs.completed")
-
 
     def test_a_read_result_retires_a_pending_notice(self):
         handle = self.start_job("echo", "read-echo")
         self.wait_job_done()
         # The notice is in flight (busy) when the result is read; the retry must stop.
         frame = self.owner.wait_for(lambda f: f.get("type") == "call")
-        self.owner.send({"type": "reply", "id": frame["id"],
-                         "value": {"ok": False, "code": "busy", "message": "session is busy"}})
+        self.owner.send(
+            {
+                "type": "reply",
+                "id": frame["id"],
+                "value": {"ok": False, "code": "busy", "message": "session is busy"},
+            }
+        )
         tail = self.owner.invoke("t1", target={"handle": handle}, name="tail")
         self.assertIn("read-echo", tail["value"])
         self.owner.expect_no_call("jobs.completed")

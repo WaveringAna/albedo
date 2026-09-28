@@ -1,4 +1,5 @@
 """A loopback SSH transport checks remote relay, streaming jobs and degraded boot without live SSH credentials."""
+
 import asyncio
 import contextlib
 import io
@@ -37,7 +38,7 @@ class FakeCapture:
         del self.tail_data[:-65536]
 
     def read(self, offset=0, limit=4000):
-        return bytes(self.data[offset:offset + limit]).decode(errors="ignore")
+        return bytes(self.data[offset : offset + limit]).decode(errors="ignore")
 
 
 def fake_ssh_path() -> str:
@@ -46,13 +47,14 @@ def fake_ssh_path() -> str:
     script.write_text(
         "#!/bin/sh\n"
         "while [ $# -gt 0 ]; do\n"
-        "  case \"$1\" in\n"
+        '  case "$1" in\n'
         "    -*) shift 2 ;;\n"
         "    *) break ;;\n"
         "  esac\n"
         "done\n"
         "shift\n"
-        "exec sh -c \"$*\"\n")
+        'exec sh -c "$*"\n'
+    )
     script.chmod(0o755)
     return str(script)
 
@@ -62,8 +64,18 @@ FAKE_SSH = fake_ssh_path()
 
 async def daemon_host(method, args):
     if method == "work.list":
-        return [{"id": 1, "title": "from-the-daemon", "notes": "", "status": "open",
-                 "parent": None, "session": None, "run": None, "revision": 1}]
+        return [
+            {
+                "id": 1,
+                "title": "from-the-daemon",
+                "notes": "",
+                "status": "open",
+                "parent": None,
+                "session": None,
+                "run": None,
+                "revision": 1,
+            }
+        ]
     if method == "work.get":
         raise FakeHostError("missing", f"no work item {args['id']}")
     return {}
@@ -76,10 +88,14 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         self.home = tempfile.mkdtemp(prefix="albedo-remote-home-")
         self.workspace = tempfile.mkdtemp(prefix="albedo-remote-ws-")
         os.chdir(self.workspace)
-        self.environment = patch.dict(os.environ, {
-            "HOME": self.home,
-            "ALBEDO_HOME": os.path.join(self.home, ".albedo"),
-            "ALBEDO_SSH": "loopback"})
+        self.environment = patch.dict(
+            os.environ,
+            {
+                "HOME": self.home,
+                "ALBEDO_HOME": os.path.join(self.home, ".albedo"),
+                "ALBEDO_SSH": "loopback",
+            },
+        )
         self.environment.start()
         self.addCleanup(self.environment.stop)
         self.addCleanup(os.chdir, ROOT)
@@ -89,16 +105,23 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.loop = asyncio.get_running_loop()
-        self.api = PythonApi(self.loop, daemon_host, FakeHostError, FakeCapture,
-                             64 * 1024, lambda event: None, lambda close: None,
-                             lambda cls: None, 2,
-                             ["run", "files", "work", "skills", "remote"])
+        self.api = PythonApi(
+            self.loop,
+            daemon_host,
+            FakeHostError,
+            FakeCapture,
+            64 * 1024,
+            lambda event: None,
+            lambda close: None,
+            lambda cls: None,
+            2,
+            ["run", "files", "work", "skills", "remote"],
+        )
         self.namespace = {}
         self.remote = remote.setup(self.api)["remote"]
 
     async def connect(self, **kwargs):
         return await self.remote.connect(**kwargs)
-
 
     async def test_connect_boots_the_kernel_and_answers_every_tool(self):
         rem = await self.connect()
@@ -110,7 +133,11 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(text, str)
 
         # The call is synchronous like local run; the reference settles on await.
-        job = rem.run(sys.executable, "-c", "import time; print('loopback-echo', flush=True); time.sleep(0.2)")
+        job = rem.run(
+            sys.executable,
+            "-c",
+            "import time; print('loopback-echo', flush=True); time.sleep(0.2)",
+        )
         self.assertIn("pending", repr(job))
         self.assertIsNone(job.poll())
         self.assertEqual(job.tail(), "")
@@ -124,10 +151,9 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(job.duration, 0.2)
         self.assertEqual(job.tail(), "loopback-echo\n")
         self.assertIsNotNone(job.id)
-        self.assertIn("tail", dir(job))          # dir() mixes local and mirrored names
-        ending = await job.stop                  # awaiting an uncalled method runs it
+        self.assertIn("tail", dir(job))  # dir() mixes local and mirrored names
+        ending = await job.stop  # awaiting an uncalled method runs it
         self.assertTrue(ending.gone)
-
 
     async def test_session_tools_relay_to_this_daemon(self):
         rem = await self.connect()
@@ -138,17 +164,17 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
             await rem.work.get(99)
         self.assertEqual(raised.exception.ename, "WorkError")
 
-
     async def test_remote_jobs_pipe_and_read_lines_like_local_ones(self):
         rem = await self.connect()
         self.addCleanup(rem.close)
         Path(self.workspace, "sub").mkdir()
         Path(self.workspace, "sub", "notes.txt").write_text("b\na\nb\n")
-        job = await rem.run("cat", "notes.txt", cwd="sub").pipe("sort").pipe("uniq", "-c")
+        job = (
+            await rem.run("cat", "notes.txt", cwd="sub").pipe("sort").pipe("uniq", "-c")
+        )
         self.assertEqual(job.exit_code, 0)
         self.assertEqual(job.tail(lines=1).split(), ["2", "b"])
         self.assertEqual((await job.head(lines=1)).split(), ["1", "a"])
-
 
     async def test_a_kernel_that_cannot_boot_degrades_with_a_warning(self):
         warning = io.StringIO()
@@ -156,11 +182,19 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
             rem = await self.connect(modules=["definitely-not-a-module"])
         self.addCleanup(rem.close)
         self.assertIn("degraded", repr(rem))
-        self.assertIn("for pipes or shell syntax use rem.shell('git log --oneline | rg fix')", warning.getvalue())
+        self.assertIn(
+            "for pipes or shell syntax use rem.shell('git log --oneline | rg fix')",
+            warning.getvalue(),
+        )
         Path(self.workspace, "sub").mkdir()
         parity = rem.run(
-            sys.executable, "-c", "import os, sys; print(os.path.basename(os.getcwd()), os.environ['WHO'], sys.stdin.read())",
-            cwd="sub", env={"WHO": "me"}, stdin="fed")
+            sys.executable,
+            "-c",
+            "import os, sys; print(os.path.basename(os.getcwd()), os.environ['WHO'], sys.stdin.read())",
+            cwd="sub",
+            env={"WHO": "me"},
+            stdin="fed",
+        )
         await parity
         self.assertEqual(parity.tail(), "sub me fed\n")
         self.assertEqual(parity.head(lines=1), "sub me fed\n")

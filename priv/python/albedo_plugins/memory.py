@@ -1,4 +1,5 @@
 """Project-scoped Markdown memory with literal and full-text recall."""
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -27,7 +28,11 @@ class Memory:
         if not 0 < max_chars <= 200_000:
             raise ValueError("0 < max_chars <= 200000")
         content = self.path.read_text() if self.path.exists() else ""
-        suffix = "\n[truncated; raise max_chars to read more]" if len(content) > max_chars else ""
+        suffix = (
+            "\n[truncated; raise max_chars to read more]"
+            if len(content) > max_chars
+            else ""
+        )
         return Text(content[:max_chars] + suffix)
 
     @contextmanager
@@ -86,7 +91,9 @@ class Memory:
         for path in self._documents():
             for number, line in enumerate(path.read_text().splitlines(), 1):
                 if term.casefold() in line.casefold():
-                    matches.append(f"{path.relative_to(self.root)}:{number}: {line[:500]}")
+                    matches.append(
+                        f"{path.relative_to(self.root)}:{number}: {line[:500]}"
+                    )
                     if len(matches) == limit:
                         return Rows(matches, truncated=True)
         return Rows(matches)
@@ -96,14 +103,22 @@ class Memory:
         if not query.strip() or not 1 <= limit <= 100:
             raise ValueError("query must be nonempty and 1 <= limit <= 100")
         with sqlite3.connect(":memory:") as db:
-            db.execute("CREATE VIRTUAL TABLE notes USING fts5(path UNINDEXED, line UNINDEXED, body)")
+            db.execute(
+                "CREATE VIRTUAL TABLE notes USING fts5(path UNINDEXED, line UNINDEXED, body)"
+            )
             for path in self._documents():
                 content = path.read_text()
-                for match in re.finditer(r"(?s)\S.*?(?=\n[ \t]*\n|\s*\Z)", content, re.S):
+                for match in re.finditer(
+                    r"(?s)\S.*?(?=\n[ \t]*\n|\s*\Z)", content, re.S
+                ):
                     line = content.count("\n", 0, match.start()) + 1
                     db.execute(
                         "INSERT INTO notes VALUES (?, ?, ?)",
-                        (str(path.relative_to(self.root)), line, match.group()[:100_000]),
+                        (
+                            str(path.relative_to(self.root)),
+                            line,
+                            match.group()[:100_000],
+                        ),
                     )
             try:
                 rows = db.execute(

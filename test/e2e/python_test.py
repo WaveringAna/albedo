@@ -1,4 +1,5 @@
 """File editing and search are exercised through the daemon's real Python tool."""
+
 import json
 import unittest
 
@@ -23,8 +24,11 @@ class PythonToolsTests(unittest.TestCase):
         session = self.app.session()
         self.app.prompt(session, "use the Python tools").close()
         self.app.idle(session)
-        results = [json.loads(event["result"]) for event in self.app.events(session)
-                   if event.get("type") == "tool" and event.get("name") == "python"]
+        results = [
+            json.loads(event["result"])
+            for event in self.app.events(session)
+            if event.get("type") == "tool" and event.get("name") == "python"
+        ]
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["status"], "ok", results[0])
         return results[0]["output"]
@@ -36,7 +40,8 @@ class PythonToolsTests(unittest.TestCase):
             "try:\n    files.edit('note.txt', 'same', 'changed')\n"
             "except Exception as exc:\n    print('ambiguous:', exc)\n"
             "files.edit('note.txt', 'same', 'changed', line_hint=3)\n"
-            "print(files.read('note.txt'))")
+            "print(files.read('note.txt'))"
+        )
         self.assertEqual(note.read_text(), "same\nother\nchanged\n")
         self.assertIn("ambiguous:", output)
         self.assertIn("same", output)
@@ -46,7 +51,8 @@ class PythonToolsTests(unittest.TestCase):
         (self.app.workspace / "note.txt").write_text("before\nneedle\nafter\n")
         output = self.execute(
             "rows = await files.find('needle', '.', context=1)\n"
-            "print(rows)\nprint(files.read('note.txt', start_line=2, end_line=2))")
+            "print(rows)\nprint(files.read('note.txt', start_line=2, end_line=2))"
+        )
         self.assertIn("note.txt", output)
         self.assertIn("needle", output)
         self.assertIn("before", output)

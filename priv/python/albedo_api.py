@@ -1,4 +1,5 @@
 """Python plugin boundary; imported without starting a kernel."""
+
 from __future__ import annotations
 
 import asyncio
@@ -50,7 +51,8 @@ class Record(dict):
             return self[name]
         except KeyError:
             raise AttributeError(
-                f"{type(self).__name__} has no field {name!r}; its fields are {', '.join(self) or 'none'}") from None
+                f"{type(self).__name__} has no field {name!r}; its fields are {', '.join(self) or 'none'}"
+            ) from None
 
     def __await__(self):
         return _ready(self)
@@ -67,11 +69,11 @@ def excerpt(text: str, chars: int, lines: int | None, *, end: bool) -> str:
 
 
 class OutputCapture(Protocol):
-    data: bytearray       # the retained start of the output
-    raw_data: bytearray   # original bytes from a job, for a late pipe reader
-    raw_seen: int         # original bytes written by that job
+    data: bytearray  # the retained start of the output
+    raw_data: bytearray  # original bytes from a job, for a late pipe reader
+    raw_seen: int  # original bytes written by that job
     tail_data: bytearray  # its latest end
-    seen: int             # bytes written, retained or not
+    seen: int  # bytes written, retained or not
 
     def write(self, text: str) -> None: ...
 
@@ -161,6 +163,7 @@ class Invoke(TypedDict):
     A `wait: true` frame (spelled "await" on the wire, a JSON key TypedDict
     cannot express) awaits the live reference instead of calling a method.
     """
+
     type: Literal["invoke"]
     id: str
     name: NotRequired[str]
@@ -181,12 +184,23 @@ class Release(TypedDict):
 
 class State(TypedDict):
     """Save the namespace to disk, or revive it from an earlier save."""
+
     type: Literal["snapshot", "restore"]
     id: str
     path: str
 
 
-Incoming = Execute | Reply | Interrupt | Shutdown | Invoke | Introspect | Release | State | JobSlot
+Incoming = (
+    Execute
+    | Reply
+    | Interrupt
+    | Shutdown
+    | Invoke
+    | Introspect
+    | Release
+    | State
+    | JobSlot
+)
 
 
 class SavedCell(TypedDict):
@@ -198,10 +212,14 @@ class SavedCell(TypedDict):
 
 
 class PythonPlugin(Protocol):
-    def setup(self, api: PythonApi) -> "dict[str, object] | Awaitable[dict[str, object]]": ...
+    def setup(
+        self, api: PythonApi
+    ) -> "dict[str, object] | Awaitable[dict[str, object]]": ...
 
 
-async def load_plugins(names: Sequence[str], api: PythonApi, namespace: dict[str, object]) -> None:
+async def load_plugins(
+    names: Sequence[str], api: PythonApi, namespace: dict[str, object]
+) -> None:
     """Load explicitly trusted modules before the workspace enters sys.path.
 
     setup(api) returns public REPL bindings, or an awaitable that resolves them,
@@ -212,7 +230,10 @@ async def load_plugins(names: Sequence[str], api: PythonApi, namespace: dict[str
     """
     modules: list[str] = []
     for name in names:
-        if not isinstance(name, str) or not all(part.isidentifier() and not keyword.iskeyword(part) for part in name.split(".")):
+        if not isinstance(name, str) or not all(
+            part.isidentifier() and not keyword.iskeyword(part)
+            for part in name.split(".")
+        ):
             raise ValueError(f"invalid Python plugin module: {name!r}")
         module = name if "." in name else "albedo_plugins." + name
         if module in modules:
@@ -225,13 +246,20 @@ async def load_plugins(names: Sequence[str], api: PythonApi, namespace: dict[str
             if inspect.isawaitable(exports):
                 exports = await cast(Awaitable[dict[str, object]], exports)
             if not isinstance(exports, dict) or not all(
-                isinstance(name, str) and name.isidentifier() and not name.startswith("_")
-                and not keyword.iskeyword(name) for name in exports
+                isinstance(name, str)
+                and name.isidentifier()
+                and not name.startswith("_")
+                and not keyword.iskeyword(name)
+                for name in exports
             ):
-                raise ValueError("setup(api) must return a dict of public Python bindings")
+                raise ValueError(
+                    "setup(api) must return a dict of public Python bindings"
+                )
             collisions = namespace.keys() & exports.keys()
             if collisions:
-                raise ValueError(f"duplicate or reserved bindings: {', '.join(sorted(collisions))}")
+                raise ValueError(
+                    f"duplicate or reserved bindings: {', '.join(sorted(collisions))}"
+                )
             namespace.update(exports)
         except Exception as error:
             raise RuntimeError(f"Python plugin {module}: {error}") from error

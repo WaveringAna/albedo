@@ -1,4 +1,5 @@
 """Transcript paging and what the transcript keeps, through the real daemon."""
+
 from dataclasses import dataclass
 import http.server
 import json
@@ -107,7 +108,9 @@ class DaemonTest(unittest.TestCase):
         # held catalog fetch keeps the VM up past the store, and a second
         # shutdown must not start a second drain.
         def script(request):
-            called = any(message.get("role") == "tool" for message in request["messages"])
+            called = any(
+                message.get("role") == "tool" for message in request["messages"]
+            )
             return text("done") if called else python("x = 1")
 
         provider = Provider(script)
@@ -130,26 +133,36 @@ class DaemonTest(unittest.TestCase):
             stop = threading.Event()
             paths = [("GET", "/sessions", None), ("GET", "/models/fixture", None)]
             for session in sessions:
-                paths += [("GET", f"/sessions/{session}/status", None),
-                          ("GET", f"/sessions/{session}/tree", None),
-                          ("GET", f"/sessions/{session}/children", None),
-                          ("PATCH", f"/sessions/{session}", {"name": ""})]
+                paths += [
+                    ("GET", f"/sessions/{session}/status", None),
+                    ("GET", f"/sessions/{session}/tree", None),
+                    ("GET", f"/sessions/{session}/children", None),
+                    ("PATCH", f"/sessions/{session}", {"name": ""}),
+                ]
 
             def hammer(base, token):
                 while not stop.is_set():
                     for method, path, body in paths:
                         request = urllib.request.Request(
-                            base + path, method=method,
+                            base + path,
+                            method=method,
                             data=None if body is None else json.dumps(body).encode(),
-                            headers={"Authorization": "Bearer " + token,
-                                     "Content-Type": "application/json"})
+                            headers={
+                                "Authorization": "Bearer " + token,
+                                "Content-Type": "application/json",
+                            },
+                        )
                         try:
                             urllib.request.urlopen(request, timeout=20).close()
                         except (urllib.error.URLError, OSError):
                             pass
 
-            workers = [threading.Thread(target=hammer, args=(app.base, app.connection["token"]))
-                       for _ in range(6)]
+            workers = [
+                threading.Thread(
+                    target=hammer, args=(app.base, app.connection["token"])
+                )
+                for _ in range(6)
+            ]
             for worker in workers:
                 worker.start()
             try:
@@ -161,22 +174,32 @@ class DaemonTest(unittest.TestCase):
                 for worker in workers:
                     worker.join()
             tail = log.read_text(errors="replace")[before:]
-            for marker in ("Noproc", "callee exited", "Callee subject had no owner",
-                           "reached_max_restart_intensity"):
+            for marker in (
+                "Noproc",
+                "callee exited",
+                "Callee subject had no owner",
+                "reached_max_restart_intensity",
+            ):
                 self.assertNotIn(marker, tail)
 
     def test_a_thoughts_duration_is_kept_with_the_transcript(self):
         # summarized thinking streams once it is written: here the response
         # opens, thinks 0.6s, and its summary comes 0.3s before the answer,
         # so the thought is timed from the opening, not the summary
-        chunk = lambda delta, finish=None: {"id": "fixture", "choices": [
-            {"index": 0, "delta": delta, "finish_reason": finish}]}
-        reply = Reply("text", delay=0.3, events=[
-            chunk({"role": "assistant"}),
-            chunk({"reasoning_content": "weighing it"}),
-            chunk({"content": "answer"}),
-            chunk({}, "stop"),
-        ])
+        chunk = lambda delta, finish=None: {
+            "id": "fixture",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        }
+        reply = Reply(
+            "text",
+            delay=0.3,
+            events=[
+                chunk({"role": "assistant"}),
+                chunk({"reasoning_content": "weighing it"}),
+                chunk({"content": "answer"}),
+                chunk({}, "stop"),
+            ],
+        )
         provider = Provider(lambda _request: reply)
         self.addCleanup(provider.close)
         with Albedo(provider) as app:
@@ -184,9 +207,14 @@ class DaemonTest(unittest.TestCase):
             app.prompt(session, "think first").close()
             app.idle(session)
 
-            for source, events in (("stream", app.events(session)), ("history", app.history(session)["events"])):
+            for source, events in (
+                ("stream", app.events(session)),
+                ("history", app.history(session)["events"]),
+            ):
                 thoughts = [event for event in events if event["type"] == "thinking"]
-                self.assertEqual([event["text"] for event in thoughts], ["weighing it"], source)
+                self.assertEqual(
+                    [event["text"] for event in thoughts], ["weighing it"], source
+                )
                 self.assertGreaterEqual(thoughts[0].get("elapsedMs", 0), 500, source)
 
 

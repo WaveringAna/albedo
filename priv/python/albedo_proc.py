@@ -5,6 +5,7 @@ this ladder, so the two layers agree on what "terminated" means. A group is live
 only while it holds a member we can still signal; a reaped leader or a group of
 non-running (zombie) members is not work.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
@@ -16,8 +17,8 @@ import signal
 import subprocess
 import sys
 
-TERM_GRACE = 0.25     # seconds a group gets to honour TERM
-KILL_GRACE = 2.0      # seconds a group gets to die after KILL
+TERM_GRACE = 0.25  # seconds a group gets to honour TERM
+KILL_GRACE = 2.0  # seconds a group gets to die after KILL
 PROBE_INTERVAL = 0.02
 
 
@@ -30,13 +31,24 @@ def reap_stopped_safely(loop: asyncio.AbstractEventLoop) -> None:
     The replacement reaps in its thread with a waitpid that ignores stops, as
     3.13 did. Linux uses pidfds, which only wake on exit, and needs nothing.
     """
-    threaded: Any = getattr(getattr(asyncio, "unix_events", None), "_ThreadedChildWatcher", None)
-    if sys.platform != "darwin" or threaded is None or not isinstance(getattr(loop, "_watcher", None), threaded):
+    threaded: Any = getattr(
+        getattr(asyncio, "unix_events", None), "_ThreadedChildWatcher", None
+    )
+    if (
+        sys.platform != "darwin"
+        or threaded is None
+        or not isinstance(getattr(loop, "_watcher", None), threaded)
+    ):
         return
 
     class ExitWatcher(threaded):
-        def _do_waitpid(self, loop: asyncio.AbstractEventLoop, expected_pid: int,
-                        callback: Callable[..., object], args: tuple[object, ...]) -> None:
+        def _do_waitpid(
+            self,
+            loop: asyncio.AbstractEventLoop,
+            expected_pid: int,
+            callback: Callable[..., object],
+            args: tuple[object, ...],
+        ) -> None:
             try:
                 returncode = os.waitstatus_to_exitcode(os.waitpid(expected_pid, 0)[1])
             except ChildProcessError:
@@ -73,15 +85,26 @@ class Termination:
     note: str = ""
 
     def report(self) -> str:
-        where = "no process group" if self.pgid is None else f"process group {self.pgid}"
+        where = (
+            "no process group" if self.pgid is None else f"process group {self.pgid}"
+        )
         outcome = "terminated" if self.gone else "SURVIVED"
         sent = "+".join(self.signals) if self.signals else "no signal"
-        detail = "; ".join((*self.failures, self.note)) if self.note else "; ".join(self.failures)
+        detail = (
+            "; ".join((*self.failures, self.note))
+            if self.note
+            else "; ".join(self.failures)
+        )
         return f"{where} {outcome} after {sent}" + (f": {detail}" if detail else "")
 
     def as_json(self) -> dict[str, object]:
-        return {"pgid": self.pgid, "signals": list(self.signals), "gone": self.gone,
-                "failures": list(self.failures), "note": self.note}
+        return {
+            "pgid": self.pgid,
+            "signals": list(self.signals),
+            "gone": self.gone,
+            "failures": list(self.failures),
+            "note": self.note,
+        }
 
 
 def start_token(stat: bytes) -> str | None:
@@ -110,10 +133,19 @@ def live_members(pgid: int) -> list[int] | None:
             return None
         # Darwin has no /proc. Ask its process table; EPERM alone never means dead.
         try:
-            result = subprocess.run(["/bin/ps", "-A", "-o", "pid=", "-o", "pgid=", "-o", "stat="],
-                                    capture_output=True, text=True, timeout=0.5, check=True)
+            result = subprocess.run(
+                ["/bin/ps", "-A", "-o", "pid=", "-o", "pgid=", "-o", "stat="],
+                capture_output=True,
+                text=True,
+                timeout=0.5,
+                check=True,
+            )
             rows = [line.split() for line in result.stdout.splitlines()]
-            return [int(pid) for pid, group, state in rows if int(group) == pgid and not state.startswith("Z")]
+            return [
+                int(pid)
+                for pid, group, state in rows
+                if int(group) == pgid and not state.startswith("Z")
+            ]
         except (OSError, subprocess.SubprocessError, ValueError):
             return None
     members = []
@@ -205,5 +237,9 @@ async def terminate(
         surviving, note = pgid in live, ""
         if surviving and not current(group):
             surviving, note = False, "only non-running members remained"
-        endings.append(Termination(pgid, tuple(signals), not surviving, tuple(failures.get(pgid, [])), note))
+        endings.append(
+            Termination(
+                pgid, tuple(signals), not surviving, tuple(failures.get(pgid, [])), note
+            )
+        )
     return endings

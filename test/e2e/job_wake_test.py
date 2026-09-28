@@ -1,4 +1,5 @@
 """Unread background job results wake idle sessions once, even across idle reaping."""
+
 import json
 import os
 import time
@@ -9,8 +10,14 @@ from harness import Albedo, Provider, python, text
 
 
 def user_text(request):
-    return next((item.get("content", "") for item in reversed(request["messages"])
-                 if item.get("role") == "user"), "")
+    return next(
+        (
+            item.get("content", "")
+            for item in reversed(request["messages"])
+            if item.get("role") == "user"
+        ),
+        "",
+    )
 
 
 def wait_for(predicate, timeout=40):
@@ -30,8 +37,10 @@ class JobWakeTests(unittest.TestCase):
             user = user_text(request)
             if last.get("role") == "user" and "start a slow job" in user:
                 seconds = 20 if "detached" in user else 1.2
-                code = ("import sys\njob = run(sys.executable, '-c', "
-                        f'"import time; time.sleep({seconds}); print(\'wake-done\')")\njob.id')
+                code = (
+                    "import sys\njob = run(sys.executable, '-c', "
+                    f"\"import time; time.sleep({seconds}); print('wake-done')\")\njob.id"
+                )
                 return python(code)
             return text("finished")
 
@@ -61,14 +70,20 @@ class JobWakeTests(unittest.TestCase):
         self.assertIn("jobs[", wake)
         self.assertIn("output.read", wake)
         live = self.stream(session, f"?after_seq={before['cursor']}")["events"]
-        notices = [event for event in live if event.get("type") == "user" and
-                   "job finished" in event.get("text", "")]
+        notices = [
+            event
+            for event in live
+            if event.get("type") == "user" and "job finished" in event.get("text", "")
+        ]
         self.assertEqual(len(notices), 1)
         self.assertEqual(notices[0]["source"], "job")
         self.assertEqual(notices[0]["clientId"], "job")
         self.assertIn("exit_code=0", notices[0]["text"])
-        durable = [event for event in self.stream(session, "?after_seq=-1")["events"]
-                   if event.get("type") == "user" and "job finished" in event.get("text", "")]
+        durable = [
+            event
+            for event in self.stream(session, "?after_seq=-1")["events"]
+            if event.get("type") == "user" and "job finished" in event.get("text", "")
+        ]
         self.assertEqual(len(durable), 1)
         time.sleep(2.5)
         self.assertEqual(len(self.users()), 3)

@@ -50,16 +50,26 @@ def get_environment_info(go_bin: str) -> dict:
         "go_version": "unknown",
         "chat_go_sha256": sha256_file(CLI_DIR / "internal" / "tui" / "chat.go"),
         "app_go_sha256": sha256_file(CLI_DIR / "internal" / "tui" / "app.go"),
-        "memory_profile_test_go_sha256": sha256_file(CLI_DIR / "internal" / "tui" / "memory_profile_test.go"),
+        "memory_profile_test_go_sha256": sha256_file(
+            CLI_DIR / "internal" / "tui" / "memory_profile_test.go"
+        ),
     }
     try:
-        res = subprocess.run([go_bin, "version"], capture_output=True, text=True, check=True)
+        res = subprocess.run(
+            [go_bin, "version"], capture_output=True, text=True, check=True
+        )
         info["go_version"] = res.stdout.strip()
     except Exception as e:
         info["go_version_error"] = str(e)
 
     try:
-        res = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True, check=True)
+        res = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
         info["git_commit"] = res.stdout.strip()
     except Exception:
         info["git_commit"] = "unknown"
@@ -68,17 +78,29 @@ def get_environment_info(go_bin: str) -> dict:
 
 
 def run_memory_tests(go_bin: str, timeout: int = 120) -> tuple[int, str, str]:
-    cmd = [go_bin, "test", "-count=1", "-v", "-run", "TestMemoryProfile_", "./internal/tui"]
+    cmd = [
+        go_bin,
+        "test",
+        "-count=1",
+        "-v",
+        "-run",
+        "TestMemoryProfile_",
+        "./internal/tui",
+    ]
     env = {
         **os.environ,
         "ALBEDO_MEM_PROFILE": "1",
         "ALBEDO_NO_BROWSER": "1",
     }
-    res = subprocess.run(cmd, cwd=CLI_DIR, env=env, capture_output=True, text=True, timeout=timeout)
+    res = subprocess.run(
+        cmd, cwd=CLI_DIR, env=env, capture_output=True, text=True, timeout=timeout
+    )
     return res.returncode, res.stdout, res.stderr
 
 
-def run_pprof_top(go_bin: str, pb_path: Path, sample_index: str = "inuse_space", limit: int = 10) -> list[dict]:
+def run_pprof_top(
+    go_bin: str, pb_path: Path, sample_index: str = "inuse_space", limit: int = 10
+) -> list[dict]:
     cmd = [go_bin, "tool", "pprof", "-top", f"-{sample_index}", str(pb_path)]
     res = subprocess.run(cmd, cwd=CLI_DIR, capture_output=True, text=True)
     if res.returncode != 0:
@@ -113,28 +135,38 @@ def format_bytes(b: int | float) -> str:
     if b < 1024:
         return f"{b} B"
     elif b < 1024 * 1024:
-        return f"{b/1024:.1f} KB"
+        return f"{b / 1024:.1f} KB"
     else:
-        return f"{b/(1024*1024):.2f} MB"
+        return f"{b / (1024 * 1024):.2f} MB"
 
 
-def generate_markdown_report(env_info: dict, phases: list[dict], pprof_analyses: dict) -> str:
+def generate_markdown_report(
+    env_info: dict, phases: list[dict], pprof_analyses: dict
+) -> str:
     md = []
     md.append("# Albedo TUI Memory Attribution & Profile Report")
     md.append("")
-    md.append(f"**Execution Timestamp:** `{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}`  ")
+    md.append(
+        f"**Execution Timestamp:** `{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}`  "
+    )
     md.append(f"**Git Commit:** `{env_info.get('git_commit', 'unknown')}`  ")
     md.append(f"**Go Toolchain:** `{env_info.get('go_version', 'unknown')}`  ")
     md.append(f"**chat.go SHA-256:** `{env_info.get('chat_go_sha256', 'unknown')}`  ")
-    md.append(f"**memory_profile_test.go SHA-256:** `{env_info.get('memory_profile_test_go_sha256', 'unknown')}`  ")
-    md.append(f"**Methodology Note:** Instrumented test-runner harness approximation. All measurements are empirical from identical execution phases.")
+    md.append(
+        f"**memory_profile_test.go SHA-256:** `{env_info.get('memory_profile_test_go_sha256', 'unknown')}`  "
+    )
+    md.append(
+        f"**Methodology Note:** Instrumented test-runner harness approximation. All measurements are empirical from identical execution phases."
+    )
     md.append("")
     md.append("---")
     md.append("")
 
     md.append("## 1. Executive Memory Summary by Phase")
     md.append("")
-    md.append("| Metric / Layer | Phase 1: Fresh Picker Idle | Phase 2: Post-Stream Natural Idle | Phase 3: Post-Stream Diagnostic Forced-GC + FreeOSMemory |")
+    md.append(
+        "| Metric / Layer | Phase 1: Fresh Picker Idle | Phase 2: Post-Stream Natural Idle | Phase 3: Post-Stream Diagnostic Forced-GC + FreeOSMemory |"
+    )
     md.append("| :--- | :--- | :--- | :--- |")
 
     p1 = phases[0] if len(phases) > 0 else {}
@@ -149,47 +181,75 @@ def generate_markdown_report(env_info: dict, phases: list[dict], pprof_analyses:
     p1_rss = p1.get("os_memory", {}).get("rss_bytes", 0)
     p2_rss = p2.get("os_memory", {}).get("rss_bytes", 0)
     p3_rss = p3.get("os_memory", {}).get("rss_bytes", 0)
-    md.append(f"| **OS Process RSS** (`ps -o rss=`) | **{format_bytes(p1_rss)}** | **{format_bytes(p2_rss)}** | **{format_bytes(p3_rss)}** |")
+    md.append(
+        f"| **OS Process RSS** (`ps -o rss=`) | **{format_bytes(p1_rss)}** | **{format_bytes(p2_rss)}** | **{format_bytes(p3_rss)}** |"
+    )
 
     p1_vm = p1.get("os_memory", {}).get("vmmap_footprint_mb", 0)
     p2_vm = p2.get("os_memory", {}).get("vmmap_footprint_mb", 0)
     p3_vm = p3.get("os_memory", {}).get("vmmap_footprint_mb", 0)
-    md.append(f"| **OS Mach Footprint** (`vmmap -summary`) | {p1_vm:.1f} MB | {p2_vm:.1f} MB | {p3_vm:.1f} MB |")
+    md.append(
+        f"| **OS Mach Footprint** (`vmmap -summary`) | {p1_vm:.1f} MB | {p2_vm:.1f} MB | {p3_vm:.1f} MB |"
+    )
 
     # HeapAlloc
-    md.append(f"| **HeapAlloc (Allocated Objects)** | {get_val(p1, 'heap_alloc_bytes')} | {get_val(p2, 'heap_alloc_bytes')} *(pre-GC)* | {get_val(p3, 'heap_alloc_bytes')} *(true live)* |")
+    md.append(
+        f"| **HeapAlloc (Allocated Objects)** | {get_val(p1, 'heap_alloc_bytes')} | {get_val(p2, 'heap_alloc_bytes')} *(pre-GC)* | {get_val(p3, 'heap_alloc_bytes')} *(true live)* |"
+    )
 
     # HeapInuse
-    md.append(f"| **HeapInuse (Spans with Objects)** | {get_val(p1, 'heap_inuse_bytes')} | {get_val(p2, 'heap_inuse_bytes')} | {get_val(p3, 'heap_inuse_bytes')} |")
+    md.append(
+        f"| **HeapInuse (Spans with Objects)** | {get_val(p1, 'heap_inuse_bytes')} | {get_val(p2, 'heap_inuse_bytes')} | {get_val(p3, 'heap_inuse_bytes')} |"
+    )
 
     # HeapIdle
-    md.append(f"| **HeapIdle (Unused Pages)** | {get_val(p1, 'heap_idle_bytes')} | {get_val(p2, 'heap_idle_bytes')} | {get_val(p3, 'heap_idle_bytes')} |")
+    md.append(
+        f"| **HeapIdle (Unused Pages)** | {get_val(p1, 'heap_idle_bytes')} | {get_val(p2, 'heap_idle_bytes')} | {get_val(p3, 'heap_idle_bytes')} |"
+    )
 
     # HeapReleased
-    md.append(f"| **HeapReleased (Returned to OS)** | {get_val(p1, 'heap_released_bytes')} | {get_val(p2, 'heap_released_bytes')} | {get_val(p3, 'heap_released_bytes')} |")
+    md.append(
+        f"| **HeapReleased (Returned to OS)** | {get_val(p1, 'heap_released_bytes')} | {get_val(p2, 'heap_released_bytes')} | {get_val(p3, 'heap_released_bytes')} |"
+    )
 
     # StackInuse
-    md.append(f"| **StackInuse (Goroutine Stacks)** | {get_val(p1, 'stack_inuse_bytes')} | {get_val(p2, 'stack_inuse_bytes')} | {get_val(p3, 'stack_inuse_bytes')} |")
+    md.append(
+        f"| **StackInuse (Goroutine Stacks)** | {get_val(p1, 'stack_inuse_bytes')} | {get_val(p2, 'stack_inuse_bytes')} | {get_val(p3, 'stack_inuse_bytes')} |"
+    )
 
     # MSpan & MCache
     mspan1 = p1.get("mspan_inuse_bytes", 0) + p1.get("mcache_inuse_bytes", 0)
     mspan2 = p2.get("mspan_inuse_bytes", 0) + p2.get("mcache_inuse_bytes", 0)
     mspan3 = p3.get("mspan_inuse_bytes", 0) + p3.get("mcache_inuse_bytes", 0)
-    md.append(f"| **MSpan + MCache (Metadata)** | {format_bytes(mspan1)} | {format_bytes(mspan2)} | {format_bytes(mspan3)} |")
+    md.append(
+        f"| **MSpan + MCache (Metadata)** | {format_bytes(mspan1)} | {format_bytes(mspan2)} | {format_bytes(mspan3)} |"
+    )
 
     # OtherSys
-    md.append(f"| **OtherSys (Runtime Profiler/GC)** | {get_val(p1, 'other_sys_bytes')} | {get_val(p2, 'other_sys_bytes')} | {get_val(p3, 'other_sys_bytes')} |")
+    md.append(
+        f"| **OtherSys (Runtime Profiler/GC)** | {get_val(p1, 'other_sys_bytes')} | {get_val(p2, 'other_sys_bytes')} | {get_val(p3, 'other_sys_bytes')} |"
+    )
 
     # Go Sys
-    md.append(f"| **Go Sys (Virtual Address Space)** | {get_val(p1, 'sys_bytes')} | {get_val(p2, 'sys_bytes')} | {get_val(p3, 'sys_bytes')} |")
+    md.append(
+        f"| **Go Sys (Virtual Address Space)** | {get_val(p1, 'sys_bytes')} | {get_val(p2, 'sys_bytes')} | {get_val(p3, 'sys_bytes')} |"
+    )
 
     # NumGC
-    md.append(f"| **GC Cycle Count** | {p1.get('num_gc', 0)} | {p2.get('num_gc', 0)} | {p3.get('num_gc', 0)} |")
+    md.append(
+        f"| **GC Cycle Count** | {p1.get('num_gc', 0)} | {p2.get('num_gc', 0)} | {p3.get('num_gc', 0)} |"
+    )
 
     # Model Transcript Invariants
-    md.append(f"| **Model Retained Entries** | — | {p2.get('model_retained_entries', 0)} entries | {p3.get('model_retained_entries', 0)} entries |")
-    md.append(f"| **Model Retained Bytes** | — | {format_bytes(p2.get('model_retained_bytes', 0))} | {format_bytes(p3.get('model_retained_bytes', 0))} |")
-    md.append(f"| **Model Dropped Lines** | — | {p2.get('model_dropped_lines', 0)} dropped | {p3.get('model_dropped_lines', 0)} dropped |")
+    md.append(
+        f"| **Model Retained Entries** | — | {p2.get('model_retained_entries', 0)} entries | {p3.get('model_retained_entries', 0)} entries |"
+    )
+    md.append(
+        f"| **Model Retained Bytes** | — | {format_bytes(p2.get('model_retained_bytes', 0))} | {format_bytes(p3.get('model_retained_bytes', 0))} |"
+    )
+    md.append(
+        f"| **Model Dropped Lines** | — | {p2.get('model_dropped_lines', 0)} dropped | {p3.get('model_dropped_lines', 0)} dropped |"
+    )
 
     md.append("")
     md.append("---")
@@ -198,13 +258,27 @@ def generate_markdown_report(env_info: dict, phases: list[dict], pprof_analyses:
     md.append("## 2. Rigorous Accounting & Layer Attribution")
     md.append("")
     md.append("### Understanding the Memory Layers (Avoiding Misleading Arithmetic)")
-    md.append("1. **OS Process RSS (`ps -o rss=`):** Total physical RAM pages mapped into the process (dirty private pages + resident shared libraries + executable code). Subprocess invocation of diagnostic tools (`ps`/`vmmap`) introduces slight OS-level page fault perturbation, but does not alter Go allocator structures.")
-    md.append("2. **OS Mach Physical Footprint (`vmmap -summary`):** macOS kernel definition of dirty memory that cannot be reclaimed without termination.")
-    md.append("3. **Go Sys (`runtime.MemStats.Sys`):** Total virtual memory mapped from the OS by the Go allocator. Includes reserved, mapped-but-uncommitted, and madvised (`HeapReleased`) pages. **Sys does NOT equal RSS**, and `RSS - Sys` is not binary overhead.")
-    md.append("4. **HeapAlloc vs HeapInuse:** `HeapAlloc` is the byte count of allocated heap objects. `HeapInuse` is the virtual span volume containing at least one object. The gap (`HeapInuse - HeapAlloc`) represents allocator internal fragmentation and free slots within active spans.")
-    md.append("5. **Pre-Profiler Capture Order:** `runtime.ReadMemStats` and OS memory are captured *before* invoking `pprof.WriteHeapProfile` to ensure gzip buffers and profiler serialization allocations do not inflate `HeapAlloc`.")
-    md.append("6. **Natural Idle vs Diagnostic Forced-GC + FreeOSMemory:** In Phase 2 (Natural Idle), `HeapAlloc` reflects uncollected floating garbage awaiting the next periodic GC cycle. In Phase 3, explicit `runtime.GC()` and `debug.FreeOSMemory()` are executed to sweep dead allocations and force immediate OS page return (madvise), revealing true live retained model memory. This is a diagnostic perturbation, not natural background scavenging.")
-    md.append("7. **pprof Sampling Rate Discrepancy:** Go's runtime profiler samples heap allocations probabilistically based on `MemProfileRate` (default: 512 KB), then scales sample weights. Consequently, pprof `inuse_space` reports an extrapolated estimate (~3.6 MB) with ~512KB quantization steps, whereas `runtime.MemStats.HeapAlloc` (~1.2 - 1.4 MB) is the exact byte counter. The pprof profile provides relative call-site attribution, not an exact accounting ledger.")
+    md.append(
+        "1. **OS Process RSS (`ps -o rss=`):** Total physical RAM pages mapped into the process (dirty private pages + resident shared libraries + executable code). Subprocess invocation of diagnostic tools (`ps`/`vmmap`) introduces slight OS-level page fault perturbation, but does not alter Go allocator structures."
+    )
+    md.append(
+        "2. **OS Mach Physical Footprint (`vmmap -summary`):** macOS kernel definition of dirty memory that cannot be reclaimed without termination."
+    )
+    md.append(
+        "3. **Go Sys (`runtime.MemStats.Sys`):** Total virtual memory mapped from the OS by the Go allocator. Includes reserved, mapped-but-uncommitted, and madvised (`HeapReleased`) pages. **Sys does NOT equal RSS**, and `RSS - Sys` is not binary overhead."
+    )
+    md.append(
+        "4. **HeapAlloc vs HeapInuse:** `HeapAlloc` is the byte count of allocated heap objects. `HeapInuse` is the virtual span volume containing at least one object. The gap (`HeapInuse - HeapAlloc`) represents allocator internal fragmentation and free slots within active spans."
+    )
+    md.append(
+        "5. **Pre-Profiler Capture Order:** `runtime.ReadMemStats` and OS memory are captured *before* invoking `pprof.WriteHeapProfile` to ensure gzip buffers and profiler serialization allocations do not inflate `HeapAlloc`."
+    )
+    md.append(
+        "6. **Natural Idle vs Diagnostic Forced-GC + FreeOSMemory:** In Phase 2 (Natural Idle), `HeapAlloc` reflects uncollected floating garbage awaiting the next periodic GC cycle. In Phase 3, explicit `runtime.GC()` and `debug.FreeOSMemory()` are executed to sweep dead allocations and force immediate OS page return (madvise), revealing true live retained model memory. This is a diagnostic perturbation, not natural background scavenging."
+    )
+    md.append(
+        "7. **pprof Sampling Rate Discrepancy:** Go's runtime profiler samples heap allocations probabilistically based on `MemProfileRate` (default: 512 KB), then scales sample weights. Consequently, pprof `inuse_space` reports an extrapolated estimate (~3.6 MB) with ~512KB quantization steps, whereas `runtime.MemStats.HeapAlloc` (~1.2 - 1.4 MB) is the exact byte counter. The pprof profile provides relative call-site attribution, not an exact accounting ledger."
+    )
     md.append("")
     md.append("---")
     md.append("")
@@ -215,7 +289,10 @@ def generate_markdown_report(env_info: dict, phases: list[dict], pprof_analyses:
     for phase_key, title in [
         ("fresh_picker", "Phase 1: Fresh App Picker Idle"),
         ("post_stream_natural", "Phase 2: Post-Stream Natural Idle (inuse_space)"),
-        ("post_stream_diagnostic", "Phase 3: Post-Stream Diagnostic Forced-GC (inuse_space - True Live Objects)"),
+        (
+            "post_stream_diagnostic",
+            "Phase 3: Post-Stream Diagnostic Forced-GC (inuse_space - True Live Objects)",
+        ),
     ]:
         md.append(f"### {title}")
         md.append("")
@@ -226,7 +303,9 @@ def generate_markdown_report(env_info: dict, phases: list[dict], pprof_analyses:
             md.append("| Flat | Flat % | Cum | Cum % | Call Site / Allocator |")
             md.append("| :--- | :--- | :--- | :--- | :--- |")
             for e in entries:
-                md.append(f"| `{e['flat']}` | {e['flat_pct']} | `{e['cum']}` | {e['cum_pct']} | `{e['name']}` |")
+                md.append(
+                    f"| `{e['flat']}` | {e['flat_pct']} | `{e['cum']}` | {e['cum_pct']} | `{e['name']}` |"
+                )
         md.append("")
 
     md.append("---")
@@ -234,10 +313,18 @@ def generate_markdown_report(env_info: dict, phases: list[dict], pprof_analyses:
 
     md.append("## 4. Key Takeaways & Findings")
     md.append("")
-    md.append("1. **Fresh Idle Footprint:** The fresh Session Picker allocates `1.30 MB` heap (`~1.0 MB` pprof live space, predominantly regexp/syntax compilation and runtime thread initialization in Bubble Tea).")
-    md.append("2. **300KB Stream Retention Bounds:** Streaming 1,200 chunks (`>300 KB`) yields a true live retained heap of only `1.16 MB` (`2.12 MB` HeapInuse active spans; pprof sampled `inuse_space: 3.2 MB`).")
-    md.append("3. **BoundedHistory & Transcript Slicing:** The settled transcript is capped strictly by `BoundedHistory` and `trimSettledLines` (`1000 lines, 256KB`). Older lines are evicted and zeroed out to drop GC references.")
-    md.append("4. **Allocator Reclamation:** Upon explicit GC and memory scavenge, `HeapReleased` reaches `> 11 MB`, confirming that the Go runtime releases freed stream buffers back to the OS.")
+    md.append(
+        "1. **Fresh Idle Footprint:** The fresh Session Picker allocates `1.30 MB` heap (`~1.0 MB` pprof live space, predominantly regexp/syntax compilation and runtime thread initialization in Bubble Tea)."
+    )
+    md.append(
+        "2. **300KB Stream Retention Bounds:** Streaming 1,200 chunks (`>300 KB`) yields a true live retained heap of only `1.16 MB` (`2.12 MB` HeapInuse active spans; pprof sampled `inuse_space: 3.2 MB`)."
+    )
+    md.append(
+        "3. **BoundedHistory & Transcript Slicing:** The settled transcript is capped strictly by `BoundedHistory` and `trimSettledLines` (`1000 lines, 256KB`). Older lines are evicted and zeroed out to drop GC references."
+    )
+    md.append(
+        "4. **Allocator Reclamation:** Upon explicit GC and memory scavenge, `HeapReleased` reaches `> 11 MB`, confirming that the Go runtime releases freed stream buffers back to the OS."
+    )
     md.append("")
 
     return "\n".join(md)
@@ -245,9 +332,15 @@ def generate_markdown_report(env_info: dict, phases: list[dict], pprof_analyses:
 
 def main():
     parser = argparse.ArgumentParser(description="Albedo Memory Attribution Benchmark")
-    parser.add_argument("--go-bin", default=DEFAULT_GO_BIN, help="Path to Go compiler binary")
-    parser.add_argument("--report", default=str(REPORT_MD_PATH), help="Path to output markdown report")
-    parser.add_argument("--json-out", default=str(REPORT_JSON_PATH), help="Path to output summary json")
+    parser.add_argument(
+        "--go-bin", default=DEFAULT_GO_BIN, help="Path to Go compiler binary"
+    )
+    parser.add_argument(
+        "--report", default=str(REPORT_MD_PATH), help="Path to output markdown report"
+    )
+    parser.add_argument(
+        "--json-out", default=str(REPORT_JSON_PATH), help="Path to output summary json"
+    )
     args = parser.parse_args()
 
     print("=" * 70)
@@ -304,7 +397,9 @@ def main():
     pprof_analyses = {}
     for key, path in pprof_files.items():
         if path.exists():
-            top_entries = run_pprof_top(args.go_bin, path, sample_index="inuse_space", limit=10)
+            top_entries = run_pprof_top(
+                args.go_bin, path, sample_index="inuse_space", limit=10
+            )
             pprof_analyses[key] = top_entries
             print(f"  Analyzed {key}: {len(top_entries)} top allocators extracted.")
 
@@ -330,7 +425,9 @@ def main():
         h_alloc = p.get("heap_alloc_bytes", 0)
         h_inuse = p.get("heap_inuse_bytes", 0)
         sys_b = p.get("sys_bytes", 0)
-        print(f"  {name:<32} | RSS: {format_bytes(rss):>8} | HeapAlloc: {format_bytes(h_alloc):>8} | HeapInuse: {format_bytes(h_inuse):>8} | Sys: {format_bytes(sys_b):>8}")
+        print(
+            f"  {name:<32} | RSS: {format_bytes(rss):>8} | HeapAlloc: {format_bytes(h_alloc):>8} | HeapInuse: {format_bytes(h_inuse):>8} | Sys: {format_bytes(sys_b):>8}"
+        )
     print("=" * 70)
     print("Memory attribution analysis complete.")
 

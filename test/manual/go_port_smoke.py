@@ -10,6 +10,7 @@ Scenarios tested:
 
 Durable evidence is saved to /tmp/albedo-smoke-evidence/.
 """
+
 import argparse
 import fcntl
 import http.server
@@ -31,7 +32,15 @@ COMPLETION_TOKEN = "FINAL_ASSISTANT_STREAM_CONFIRMED_PARITY_CHECK_TOKEN_774910"
 
 
 class StrictMockDaemon:
-    def __init__(self, home_dir, token="fixture-token", version=2, sessions=None, configured=True, is_stress=False):
+    def __init__(
+        self,
+        home_dir,
+        token="fixture-token",
+        version=2,
+        sessions=None,
+        configured=True,
+        is_stress=False,
+    ):
         self.home_dir = Path(home_dir)
         self.token = token
         self.version = version
@@ -43,7 +52,7 @@ class StrictMockDaemon:
                 "workspace": "/tmp/workspace1",
                 "model": "gpt-4o",
                 "protocol": "responses",
-                "provider": "openai"
+                "provider": "openai",
             },
             {
                 "id": "cafebabe87654321",
@@ -52,8 +61,8 @@ class StrictMockDaemon:
                 "workspace": "/tmp/workspace2",
                 "model": "claude-3-5-sonnet",
                 "protocol": "responses",
-                "provider": "anthropic"
-            }
+                "provider": "anthropic",
+            },
         ]
         self.configured = configured
         self.is_stress = is_stress
@@ -70,7 +79,8 @@ class StrictMockDaemon:
         parent = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *_): pass
+            def log_message(self, *_):
+                pass
 
             def check_auth(self):
                 auth = self.headers.get("Authorization")
@@ -98,8 +108,8 @@ class StrictMockDaemon:
                             "session_extensions",
                             "session_tree",
                             "session_context",
-                            "session_commands"
-                        ]
+                            "session_commands",
+                        ],
                     }
                     self.wfile.write(json.dumps(payload).encode())
                     return
@@ -115,7 +125,11 @@ class StrictMockDaemon:
                     self.send_response(200)
                     self.send_header("content-type", "application/json")
                     self.end_headers()
-                    self.wfile.write(json.dumps({"running": False, "idle": True, "phase": "resting"}).encode())
+                    self.wfile.write(
+                        json.dumps(
+                            {"running": False, "idle": True, "phase": "resting"}
+                        ).encode()
+                    )
                     return
 
                 if "/commands" in self.path:
@@ -123,8 +137,22 @@ class StrictMockDaemon:
                     self.send_header("content-type", "application/json")
                     self.end_headers()
                     catalog = [
-                        {"name": "/review", "description": "review recent changes", "method": "review", "arguments": [], "modelCallable": True, "userTurn": True},
-                        {"name": "/compact", "description": "compact history", "method": "compact", "arguments": [], "modelCallable": False, "userTurn": True}
+                        {
+                            "name": "/review",
+                            "description": "review recent changes",
+                            "method": "review",
+                            "arguments": [],
+                            "modelCallable": True,
+                            "userTurn": True,
+                        },
+                        {
+                            "name": "/compact",
+                            "description": "compact history",
+                            "method": "compact",
+                            "arguments": [],
+                            "modelCallable": False,
+                            "userTurn": True,
+                        },
                     ]
                     self.wfile.write(json.dumps(catalog).encode())
                     return
@@ -136,7 +164,11 @@ class StrictMockDaemon:
                     self.end_headers()
 
                     def send_chunk(events, cursor):
-                        payload = "data: " + json.dumps({"cursor": cursor, "events": events}) + "\n\n"
+                        payload = (
+                            "data: "
+                            + json.dumps({"cursor": cursor, "events": events})
+                            + "\n\n"
+                        )
                         self.wfile.write(payload.encode())
                         self.wfile.flush()
                         parent.total_events_sent += len(events)
@@ -146,7 +178,17 @@ class StrictMockDaemon:
                         send_chunk([{"type": "reset"}], cursor)
                         cursor += 1
 
-                        send_chunk([{"type": "user", "text": "streaming benchmark test turn", "source": "chat", "triggeredAt": "smoke"}], cursor)
+                        send_chunk(
+                            [
+                                {
+                                    "type": "user",
+                                    "text": "streaming benchmark test turn",
+                                    "source": "chat",
+                                    "triggeredAt": "smoke",
+                                }
+                            ],
+                            cursor,
+                        )
                         cursor += 1
                         parent.ready_event.set()
 
@@ -171,40 +213,91 @@ class StrictMockDaemon:
 
                             # Canonical EventMessage
                             assembled = "".join(full_text_acc)
-                            send_chunk([{"type": "message", "role": "assistant", "text": assembled, "timestamp": int(time.time() * 1000)}], cursor)
+                            send_chunk(
+                                [
+                                    {
+                                        "type": "message",
+                                        "role": "assistant",
+                                        "text": assembled,
+                                        "timestamp": int(time.time() * 1000),
+                                    }
+                                ],
+                                cursor,
+                            )
                             cursor += 1
 
-                            send_chunk([{"type": "usage", "completionTokens": cursor, "totalTokens": cursor + 500}], cursor)
+                            send_chunk(
+                                [
+                                    {
+                                        "type": "usage",
+                                        "completionTokens": cursor,
+                                        "totalTokens": cursor + 500,
+                                    }
+                                ],
+                                cursor,
+                            )
                             cursor += 1
                             parent.ended_event.set()
                         else:
                             # Standard test stream with thinking, text, and tools
-                            send_chunk([{"type": "thinking", "text": "analyzing workspace structure\n"}], cursor)
+                            send_chunk(
+                                [
+                                    {
+                                        "type": "thinking",
+                                        "text": "analyzing workspace structure\n",
+                                    }
+                                ],
+                                cursor,
+                            )
                             cursor += 1
 
                             text_parts = [
                                 "I have verified the project configuration.\n\n",
-                                "```go\nfunc main() {\n    fmt.Println(\"Albedo Native Go CLI\")\n}\n```\n",
-                                f"Everything is verified. {COMPLETION_TOKEN}\n"
+                                '```go\nfunc main() {\n    fmt.Println("Albedo Native Go CLI")\n}\n```\n',
+                                f"Everything is verified. {COMPLETION_TOKEN}\n",
                             ]
                             for t in text_parts:
                                 send_chunk([{"type": "text", "text": t}], cursor)
                                 cursor += 1
                                 time.sleep(0.01)
 
-                            send_chunk([{
-                                "type": "tool",
-                                "name": "edit",
-                                "args": {"path": "cli/cmd/albedo/main.go"},
-                                "result": "success",
-                                "trace": {
-                                    "activities": [{"kind": "read", "target": "main.go"}],
-                                    "changes": [{"path": "main.go", "kind": "diff", "diff": "@@ -1,3 +1,3 @@\n-old\n+new", "added": 1, "removed": 1}]
-                                }
-                            }], cursor)
+                            send_chunk(
+                                [
+                                    {
+                                        "type": "tool",
+                                        "name": "edit",
+                                        "args": {"path": "cli/cmd/albedo/main.go"},
+                                        "result": "success",
+                                        "trace": {
+                                            "activities": [
+                                                {"kind": "read", "target": "main.go"}
+                                            ],
+                                            "changes": [
+                                                {
+                                                    "path": "main.go",
+                                                    "kind": "diff",
+                                                    "diff": "@@ -1,3 +1,3 @@\n-old\n+new",
+                                                    "added": 1,
+                                                    "removed": 1,
+                                                }
+                                            ],
+                                        },
+                                    }
+                                ],
+                                cursor,
+                            )
                             cursor += 1
 
-                            send_chunk([{"type": "usage", "completionTokens": 50, "totalTokens": 150}], cursor)
+                            send_chunk(
+                                [
+                                    {
+                                        "type": "usage",
+                                        "completionTokens": 50,
+                                        "totalTokens": 150,
+                                    }
+                                ],
+                                cursor,
+                            )
                             cursor += 1
                             parent.ended_event.set()
 
@@ -251,7 +344,7 @@ class StrictMockDaemon:
                         "workspace": parsed.get("workspace", "/tmp"),
                         "model": "gpt-4o",
                         "protocol": "responses",
-                        "provider": "openai"
+                        "provider": "openai",
                     }
                     self.send_response(201)
                     self.send_header("content-type", "application/json")
@@ -277,22 +370,31 @@ class StrictMockDaemon:
 
         self.home_dir.mkdir(parents=True, exist_ok=True)
         (self.home_dir / "daemon.json").write_text(
-            json.dumps({"port": self.server.server_port, "token": self.token, "pid": os.getpid(), "version": self.version})
+            json.dumps(
+                {
+                    "port": self.server.server_port,
+                    "token": self.token,
+                    "pid": os.getpid(),
+                    "version": self.version,
+                }
+            )
         )
         if self.configured:
             (self.home_dir / "config.json").write_text(
-                json.dumps({
-                    "active": "fixture",
-                    "providers": {
-                        "fixture": {
-                            "extension": "openai",
-                            "baseUrl": f"http://127.0.0.1:{self.server.server_port}",
-                            "apiKey": "fixture-key",
-                            "model": "gpt-4o",
-                            "protocol": "responses"
-                        }
+                json.dumps(
+                    {
+                        "active": "fixture",
+                        "providers": {
+                            "fixture": {
+                                "extension": "openai",
+                                "baseUrl": f"http://127.0.0.1:{self.server.server_port}",
+                                "apiKey": "fixture-key",
+                                "model": "gpt-4o",
+                                "protocol": "responses",
+                            }
+                        },
                     }
-                })
+                )
             )
         else:
             (self.home_dir / "config.json").write_text(json.dumps({"providers": {}}))
@@ -307,13 +409,13 @@ class StrictMockDaemon:
 def clean_ansi(raw_bytes):
     text = raw_bytes.decode("utf-8", errors="replace")
     # Replace cursor movement/addressing ([H, [9;H, etc.) with newline
-    text = re.sub(r'\x1b\[[0-9;]*[Hf]', '\n', text)
+    text = re.sub(r"\x1b\[[0-9;]*[Hf]", "\n", text)
     # Strip remaining CSI escape sequences
-    text = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]', '', text)
+    text = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", text)
     # Strip OSC sequences
-    text = re.sub(r'\x1b\][^\x1b]*(\x07|\x1b\\)', '', text)
+    text = re.sub(r"\x1b\][^\x1b]*(\x07|\x1b\\)", "", text)
     # Normalize carriage returns and line endings
-    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     return text
 
 
@@ -321,7 +423,12 @@ def run_pty_scenario(binary, home_dir, args, rows, cols, duration=2.5, input_key
     raw_output = bytearray()
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-    env = {**os.environ, "ALBEDO_HOME": str(home_dir), "TERM": "xterm-256color", "ALBEDO_NO_BROWSER": "1"}
+    env = {
+        **os.environ,
+        "ALBEDO_HOME": str(home_dir),
+        "TERM": "xterm-256color",
+        "ALBEDO_NO_BROWSER": "1",
+    }
 
     child = subprocess.Popen(
         [str(binary)] + args,
@@ -329,7 +436,7 @@ def run_pty_scenario(binary, home_dir, args, rows, cols, duration=2.5, input_key
         stdin=slave,
         stdout=slave,
         stderr=slave,
-        start_new_session=True
+        start_new_session=True,
     )
     os.close(slave)
     os.set_blocking(master, False)
@@ -394,41 +501,71 @@ def test_noninteractive(binary, out_dir):
     mock.start()
     env = {**os.environ, "ALBEDO_HOME": str(home)}
     try:
-        p = subprocess.run([str(binary), "sessions"], env=env, capture_output=True, text=True, timeout=10)
+        p = subprocess.run(
+            [str(binary), "sessions"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
         assert p.returncode == 0, f"sessions error: {p.stderr}"
         assert "Albedo Refactor Session" in p.stdout
         assert "[deadbeef]" in p.stdout
         print("  [PASS] albedo sessions")
 
-        p = subprocess.run([str(binary), "sessions", "--json"], env=env, capture_output=True, text=True, timeout=10)
+        p = subprocess.run(
+            [str(binary), "sessions", "--json"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
         assert p.returncode == 0, f"sessions --json error: {p.stderr}"
         data = json.loads(p.stdout)
         assert len(data) == 2
         assert data[0]["id"] == "deadbeef12345678"
         print("  [PASS] albedo sessions --json")
 
-        p = subprocess.run([str(binary), "send", "deadbeef12345678", "hello albedo"], env=env, capture_output=True, text=True, timeout=10)
+        p = subprocess.run(
+            [str(binary), "send", "deadbeef12345678", "hello albedo"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
         assert p.returncode == 0, f"send error: {p.stderr}"
         assert len(mock.received_events) == 1
         assert mock.received_events[0]["content"] == "hello albedo"
         print("  [PASS] albedo send")
 
-        p = subprocess.run([str(binary), "stop", "deadbeef12345678"], env=env, capture_output=True, text=True, timeout=10)
+        p = subprocess.run(
+            [str(binary), "stop", "deadbeef12345678"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
         assert p.returncode == 0, f"stop error: {p.stderr}"
         assert len(mock.received_interrupts) == 1
         print("  [PASS] albedo stop")
 
-        p = subprocess.run([str(binary), "daemon"], env=env, capture_output=True, text=True, timeout=10)
+        p = subprocess.run(
+            [str(binary), "daemon"], env=env, capture_output=True, text=True, timeout=10
+        )
         assert p.returncode == 0, f"daemon error: {p.stderr}"
         assert f"127.0.0.1:{mock.server.server_port}" in p.stdout
         print("  [PASS] albedo daemon")
 
-        p = subprocess.run([str(binary), "login"], env=env, capture_output=True, text=True, timeout=10)
+        p = subprocess.run(
+            [str(binary), "login"], env=env, capture_output=True, text=True, timeout=10
+        )
         assert p.returncode != 0
         assert "login requires a terminal" in (p.stderr + p.stdout)
         print("  [PASS] albedo login (non-TTY rejection)")
 
-        p = subprocess.run([str(binary), "foobar"], env=env, capture_output=True, text=True, timeout=10)
+        p = subprocess.run(
+            [str(binary), "foobar"], env=env, capture_output=True, text=True, timeout=10
+        )
         assert p.returncode != 0
         assert "unknown command" in (p.stderr + p.stdout)
         print("  [PASS] unknown command rejection")
@@ -443,26 +580,41 @@ def test_pty_resume(binary, out_dir):
     mock.start()
     try:
         raw, cleaned, code = run_pty_scenario(
-            binary, home, ["resume", "deadbeef12345678"], rows=40, cols=120, duration=2.5
+            binary,
+            home,
+            ["resume", "deadbeef12345678"],
+            rows=40,
+            cols=120,
+            duration=2.5,
         )
         (out_dir / "pty_resume_120x40.raw").write_bytes(raw)
         (out_dir / "pty_resume_120x40.txt").write_text(cleaned)
 
         assert code == 0, f"Expected clean exit 0, got {code}"
-        assert b"\x1b[?1049h" not in raw, "Inline TUI unexpectedly entered the alternate screen"
+        assert b"\x1b[?1049h" not in raw, (
+            "Inline TUI unexpectedly entered the alternate screen"
+        )
         assert b"\x1b[?25h" in raw, "Cursor show sequence not emitted"
         for mode in (1002, 1006):
             enabled = f"\x1b[?{mode}h".encode()
             disabled = f"\x1b[?{mode}l".encode()
             assert enabled in raw, f"Chat mouse mode {mode} was not enabled"
-            assert raw.rfind(disabled) > raw.rfind(enabled), f"Chat mouse mode {mode} was not disabled on exit"
+            assert raw.rfind(disabled) > raw.rfind(enabled), (
+                f"Chat mouse mode {mode} was not disabled on exit"
+            )
 
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
-        assert any("streaming benchmark test turn" in l for l in lines), "User prompt not rendered"
+        assert any("streaming benchmark test turn" in l for l in lines), (
+            "User prompt not rendered"
+        )
         assert any("gpt-4o" in l for l in lines), "Status footer model not rendered"
-        assert any(COMPLETION_TOKEN in l for l in lines), "Completion token not rendered in viewport"
+        assert any(COMPLETION_TOKEN in l for l in lines), (
+            "Completion token not rendered in viewport"
+        )
 
-        print(f"  [PASS] Rendered transcript, model status, and exit code 0. Terminal restored.")
+        print(
+            f"  [PASS] Rendered transcript, model status, and exit code 0. Terminal restored."
+        )
     finally:
         mock.stop()
 
@@ -481,7 +633,9 @@ def test_pty_session_picker(binary, out_dir):
 
         assert code == 0, f"Expected clean exit 0, got {code}"
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
-        has_picker = any("sessions" in l or "Albedo Refactor Session" in l for l in lines)
+        has_picker = any(
+            "sessions" in l or "Albedo Refactor Session" in l for l in lines
+        )
         assert has_picker, f"Session picker not rendered. Output: {cleaned}"
         print(f"  [PASS] Session Picker rendered cleanly. Code: {code}")
     finally:
@@ -509,7 +663,6 @@ def test_pty_unconfigured_login(binary, out_dir):
         mock.stop()
 
 
-
 def test_pty_standalone_login_cancel(binary, out_dir):
     print("=== Standalone albedo login [Cancel -> Exit 0 to Shell] ===")
     home = out_dir / "home_login_cancel"
@@ -517,16 +670,28 @@ def test_pty_standalone_login_cancel(binary, out_dir):
     mock.start()
     try:
         raw, cleaned, code = run_pty_scenario(
-            binary, home, ["login"], rows=30, cols=100, duration=1.5, input_keys=[b"\x1b"]
+            binary,
+            home,
+            ["login"],
+            rows=30,
+            cols=100,
+            duration=1.5,
+            input_keys=[b"\x1b"],
         )
         (out_dir / "pty_standalone_login_cancel.txt").write_text(cleaned)
 
-        assert code == 0, f"Expected clean exit 0 on standalone login cancel, got {code}"
+        assert code == 0, (
+            f"Expected clean exit 0 on standalone login cancel, got {code}"
+        )
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
         assert any("login" in l for l in lines), "Login view not rendered"
         # Must not enter session picker or chat
-        assert not any("albedo  sessions" in l for l in lines), "Standalone login cancel opened session picker!"
-        assert not any("type a message" in l or "› type" in l for l in lines), "Standalone login cancel opened chat!"
+        assert not any("albedo  sessions" in l for l in lines), (
+            "Standalone login cancel opened session picker!"
+        )
+        assert not any("type a message" in l or "› type" in l for l in lines), (
+            "Standalone login cancel opened chat!"
+        )
         print("  [PASS] Standalone login cancel exited cleanly to shell (code 0)")
     finally:
         mock.stop()
@@ -547,7 +712,7 @@ def test_pty_standalone_login_save_flow(binary, out_dir):
                 "baseUrl": f"http://127.0.0.1:{mock.server.server_port}",
                 "apiKey": "test-key",
                 "model": "gpt-4o",
-                "protocol": "responses"
+                "protocol": "responses",
             }
         }
     }
@@ -564,13 +729,21 @@ def test_pty_standalone_login_save_flow(binary, out_dir):
 
         # Verify config.json was updated with active = testprov
         saved_cfg = json.loads((home / "config.json").read_text())
-        assert saved_cfg.get("active") == "testprov", f"Expected active: testprov, got: {saved_cfg}"
+        assert saved_cfg.get("active") == "testprov", (
+            f"Expected active: testprov, got: {saved_cfg}"
+        )
 
         # Verify it did not launch chat or session picker
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
-        assert not any("albedo  sessions" in l for l in lines), "Standalone login save opened session picker!"
-        assert not any("type a message" in l for l in lines), "Standalone login save opened chat!"
-        print("  [PASS] Standalone login saved active provider and exited directly to shell (code 0)")
+        assert not any("albedo  sessions" in l for l in lines), (
+            "Standalone login save opened session picker!"
+        )
+        assert not any("type a message" in l for l in lines), (
+            "Standalone login save opened chat!"
+        )
+        print(
+            "  [PASS] Standalone login saved active provider and exited directly to shell (code 0)"
+        )
     finally:
         mock.stop()
 
@@ -591,12 +764,18 @@ def test_pty_tiny_terminal(binary, out_dir):
         lines = cleaned.splitlines()
         # Behavioral layout check: every rendered line must fit within 40 columns
         for line in lines:
-            assert len(line) <= 40, f"Line exceeded tiny terminal width 40: {len(line)} chars: {line!r}"
+            assert len(line) <= 40, (
+                f"Line exceeded tiny terminal width 40: {len(line)} chars: {line!r}"
+            )
 
         nonempty = [l.strip() for l in lines if l.strip()]
         assert len(nonempty) > 0, "No content rendered in tiny terminal"
-        assert any("gpt-4o" in l or "reasoning" in l or "streaming" in l for l in nonempty), "No expected session content in tiny view"
-        print(f"  [PASS] Tiny terminal (40x10) respected max column bounds on all {len(lines)} lines without panic. Code: {code}")
+        assert any(
+            "gpt-4o" in l or "reasoning" in l or "streaming" in l for l in nonempty
+        ), "No expected session content in tiny view"
+        print(
+            f"  [PASS] Tiny terminal (40x10) respected max column bounds on all {len(lines)} lines without panic. Code: {code}"
+        )
     finally:
         mock.stop()
 
@@ -610,7 +789,12 @@ def test_sse_retention_and_memory(binary, out_dir):
     raw_output = bytearray()
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-    env = {**os.environ, "ALBEDO_HOME": str(home), "TERM": "xterm-256color", "ALBEDO_NO_BROWSER": "1"}
+    env = {
+        **os.environ,
+        "ALBEDO_HOME": str(home),
+        "TERM": "xterm-256color",
+        "ALBEDO_NO_BROWSER": "1",
+    }
 
     child = subprocess.Popen(
         [str(binary), "resume", "deadbeef12345678"],
@@ -618,7 +802,7 @@ def test_sse_retention_and_memory(binary, out_dir):
         stdin=slave,
         stdout=slave,
         stderr=slave,
-        start_new_session=True
+        start_new_session=True,
     )
     os.close(slave)
     os.set_blocking(master, False)
@@ -641,7 +825,11 @@ def test_sse_retention_and_memory(binary, out_dir):
                     pass
 
             try:
-                out = subprocess.check_output(["ps", "-o", "rss=", "-p", str(child.pid)]).decode().strip()
+                out = (
+                    subprocess.check_output(["ps", "-o", "rss=", "-p", str(child.pid)])
+                    .decode()
+                    .strip()
+                )
                 if out:
                     rss_kb_samples.append(int(out))
             except Exception:
@@ -686,11 +874,15 @@ def test_sse_retention_and_memory(binary, out_dir):
 
     # 1. Assertions on Stream Completion
     assert mock.ended_event.is_set(), "Server stream did not complete"
-    assert mock.total_events_sent >= 1200, f"Expected >=1200 events, sent: {mock.total_events_sent}"
+    assert mock.total_events_sent >= 1200, (
+        f"Expected >=1200 events, sent: {mock.total_events_sent}"
+    )
     assert child.returncode == 0, f"Expected clean child exit 0, got {child.returncode}"
 
     # 2. Strict UI Consumption Assertion: token must be present in captured UI output
-    assert token_seen_in_ui, f"UI did not consume/display the ending marker {COMPLETION_TOKEN} before exit!"
+    assert token_seen_in_ui, (
+        f"UI did not consume/display the ending marker {COMPLETION_TOKEN} before exit!"
+    )
     assert COMPLETION_TOKEN in cleaned, f"Cleaned output missing {COMPLETION_TOKEN}!"
 
     # 3. Assertions on Memory
@@ -699,28 +891,49 @@ def test_sse_retention_and_memory(binary, out_dir):
     assert peak_rss_mib > 0.0, "Peak RSS recorded was 0"
     assert peak_rss_mib < 150.0, f"Peak memory exceeded budget: {peak_rss_mib:.2f} MiB"
 
-    (out_dir / "memory_samples.json").write_text(json.dumps({
-        "samples_count": len(rss_kb_samples),
-        "peak_rss_mib": round(peak_rss_mib, 2),
-        "total_events": mock.total_events_sent,
-        "token_confirmed": True,
-        "all_rss_kb": rss_kb_samples
-    }, indent=2))
+    (out_dir / "memory_samples.json").write_text(
+        json.dumps(
+            {
+                "samples_count": len(rss_kb_samples),
+                "peak_rss_mib": round(peak_rss_mib, 2),
+                "total_events": mock.total_events_sent,
+                "token_confirmed": True,
+                "all_rss_kb": rss_kb_samples,
+            },
+            indent=2,
+        )
+    )
 
     print(f"  [PASS] Streamed {mock.total_events_sent} uninterrupted events (>300KB).")
-    print(f"  [PASS] Confirmed UI consumed and displayed ending token: {COMPLETION_TOKEN}.")
-    print(f"  [PASS] Peak RSS: {peak_rss_mib:.2f} MiB across {len(rss_kb_samples)} samples. Exit code: {child.returncode}.")
+    print(
+        f"  [PASS] Confirmed UI consumed and displayed ending token: {COMPLETION_TOKEN}."
+    )
+    print(
+        f"  [PASS] Peak RSS: {peak_rss_mib:.2f} MiB across {len(rss_kb_samples)} samples. Exit code: {child.returncode}."
+    )
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Albedo Go Port Comprehensive Smoke Suite")
-    parser.add_argument("--binary", default=str(ROOT / "cli/bin/albedo"), help="Path to albedo executable")
-    parser.add_argument("--outdir", default=str(EVIDENCE_DIR), help="Directory for durable evidence files")
+    parser = argparse.ArgumentParser(
+        description="Albedo Go Port Comprehensive Smoke Suite"
+    )
+    parser.add_argument(
+        "--binary",
+        default=str(ROOT / "cli/bin/albedo"),
+        help="Path to albedo executable",
+    )
+    parser.add_argument(
+        "--outdir",
+        default=str(EVIDENCE_DIR),
+        help="Directory for durable evidence files",
+    )
     args = parser.parse_args()
 
     binary = Path(args.binary).resolve()
     if not binary.exists():
-        print(f"Error: binary {binary} not found. Run go -C cli build -o bin/albedo ./cmd/albedo first.")
+        print(
+            f"Error: binary {binary} not found. Run go -C cli build -o bin/albedo ./cmd/albedo first."
+        )
         return 1
 
     out_dir = Path(args.outdir).resolve()
@@ -754,12 +967,14 @@ def main():
             "pty_bare_picker",
             "pty_unconfigured_login",
             "pty_tiny_40x10_width_bounds",
-            "sse_stream_retention_memory_completion_token"
-        ]
+            "sse_stream_retention_memory_completion_token",
+        ],
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     print("\n=======================================================")
-    print("ALL COMPREHENSIVE INTEGRATION & SMOKE CHECKS PASSED! (\u3063\u02d8\u25e1\u02d8)\u3063")
+    print(
+        "ALL COMPREHENSIVE INTEGRATION & SMOKE CHECKS PASSED! (\u3063\u02d8\u25e1\u02d8)\u3063"
+    )
     print(f"Durable evidence captured in: {out_dir}")
     print("=======================================================\n")
     return 0
@@ -767,4 +982,5 @@ def main():
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

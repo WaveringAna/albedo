@@ -5,6 +5,7 @@ A shell line or a raw process API from a cell is refused with the run() call
 it means when the line is simple enough to read, so the refusal teaches by
 example. This is guidance, not a sandbox: libraries and plugins still spawn.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -16,12 +17,20 @@ import sysconfig
 
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "nu"}
 CELL_PREFIX = "<albedo:"  # the filename every cell compiles under
-SPAWN_EVENTS = {"subprocess.Popen", "os.system", "os.posix_spawn", "os.exec", "os.spawn"}
+SPAWN_EVENTS = {
+    "subprocess.Popen",
+    "os.system",
+    "os.posix_spawn",
+    "os.exec",
+    "os.spawn",
+}
 # stdlib frames sit between a cell and the spawn it asked for; site-packages do not
 STDLIB = tuple({sysconfig.get_paths()[key] for key in ("stdlib", "platstdlib")})
-HINTS = ("cd dir && … → cwd=, NAME=value → env=, a | b → run(a…).pipe(b…), "
-         "| tail -n N → .tail(lines=N), | head -n N → .head(lines=N), 2>&1 is implied, "
-         "and chains, loops, and globs are Python over the job's output.")
+HINTS = (
+    "cd dir && … → cwd=, NAME=value → env=, a | b → run(a…).pipe(b…), "
+    "| tail -n N → .tail(lines=N), | head -n N → .head(lines=N), 2>&1 is implied, "
+    "and chains, loops, and globs are Python over the job's output."
+)
 
 
 class Refused(PermissionError):
@@ -51,11 +60,15 @@ def words(items: Sequence[object]) -> list[str]:
         elif isinstance(item, (int, float)) and not isinstance(item, bool):
             argv.append(str(item))
         else:
-            raise TypeError(f"run() arguments are text, paths, or numbers, not {type(item).__name__}")
+            raise TypeError(
+                f"run() arguments are text, paths, or numbers, not {type(item).__name__}"
+            )
     return argv
 
 
-def call(argv: Sequence[str], cwd: str | None = None, env: dict[str, str] | None = None) -> str:
+def call(
+    argv: Sequence[str], cwd: str | None = None, env: dict[str, str] | None = None
+) -> str:
     """argv as the run() call that starts it."""
     parts = [repr(arg) for arg in argv]
     if cwd:
@@ -93,7 +106,7 @@ def _split(text: str, plain: str, separator: str) -> list[tuple[str, str]]:
     """text, and its unquoted form, cut where separator stands outside quotes."""
     parts, start = [], 0
     for match in re.finditer(separator, plain):
-        parts.append((text[start:match.start()], plain[start:match.start()]))
+        parts.append((text[start : match.start()], plain[start : match.start()]))
         start = match.end()
     parts.append((text[start:], plain[start:]))
     return [part for part in parts if part[0].strip()]
@@ -117,9 +130,12 @@ def translate(script: str) -> str | None:
     `job.tail(lines=5)`, and each other `|` is a .pipe(...)."""
     plain = _unquoted(script)
     for match in re.finditer(r"2>&1", plain):  # stderr joins stdout anyway
-        script = script[:match.start()] + "    " + script[match.end():]
+        script = script[: match.start()] + "    " + script[match.end() :]
     plain = plain.replace("2>&1", "    ")
-    if re.search(r"[$`*?<>(){}&]|(?:^|\s)~", plain.replace("&&", "  ")) or "||" in plain:
+    if (
+        re.search(r"[$`*?<>(){}&]|(?:^|\s)~", plain.replace("&&", "  "))
+        or "||" in plain
+    ):
         return None
     cwd, stages = None, None
     try:
@@ -142,25 +158,46 @@ def translate(script: str) -> str | None:
             words, env = _stage(stage)
             inner = shell_script(words)
             if inner is not None:  # a shell inside the line: read what it runs
-                return translate(inner) if len(stages) == 1 and limit is None and not env else None
+                return (
+                    translate(inner)
+                    if len(stages) == 1 and limit is None and not env
+                    else None
+                )
             call_text = call(words, cwd, env)
-            calls.append(call_text if index == 0 else ".pipe" + call_text.removeprefix("run"))
+            calls.append(
+                call_text if index == 0 else ".pipe" + call_text.removeprefix("run")
+            )
     except ValueError:
         return None
-    read = "tail()" if limit is None else f"{limit.group(1)}(lines={limit.group(2) or limit.group(3) or 10})"
+    read = (
+        "tail()"
+        if limit is None
+        else f"{limit.group(1)}(lines={limit.group(2) or limit.group(3) or 10})"
+    )
     return f"job = await {''.join(calls)}\njob.{read}"
 
 
-def refusal(what: str, script: str | None = None, argv: Sequence[str] | None = None,
-            cwd: str | None = None) -> Refused:
+def refusal(
+    what: str,
+    script: str | None = None,
+    argv: Sequence[str] | None = None,
+    cwd: str | None = None,
+) -> Refused:
     """Why `what` is refused, with the run() call it means when there is one."""
-    suggestion = translate(script) if script is not None else (
-        f"job = await {call(argv, cwd)}\njob.tail()" if argv else None)
+    suggestion = (
+        translate(script)
+        if script is not None
+        else (f"job = await {call(argv, cwd)}\njob.tail()" if argv else None)
+    )
     if suggestion:
-        return Refused(f"{what} is refused here; run() starts programs without a shell. this one is:\n"
-                       + "".join(f"    {line}\n" for line in suggestion.splitlines()))
-    return Refused(f"{what} is refused here; run() starts one program without a shell: "
-                   f"run('git', 'status', cwd='cli'). {HINTS}")
+        return Refused(
+            f"{what} is refused here; run() starts programs without a shell. this one is:\n"
+            + "".join(f"    {line}\n" for line in suggestion.splitlines())
+        )
+    return Refused(
+        f"{what} is refused here; run() starts one program without a shell: "
+        f"run('git', 'status', cwd='cli'). {HINTS}"
+    )
 
 
 installed = False
@@ -178,7 +215,9 @@ def _from_cell(skip: int) -> bool:
         name = frame.f_code.co_filename
         if name.startswith(CELL_PREFIX):
             return True
-        stdlib = name.startswith("<frozen") or (name.startswith(STDLIB) and "-packages" not in name)
+        stdlib = name.startswith("<frozen") or (
+            name.startswith(STDLIB) and "-packages" not in name
+        )
         if not stdlib:
             return False
         frame = frame.f_back
@@ -189,7 +228,10 @@ def _strings(args: object) -> list[str]:
     if isinstance(args, (str, bytes, os.PathLike)):
         return [os.fsdecode(args)]
     if isinstance(args, (list, tuple)):
-        return [os.fsdecode(arg) if isinstance(arg, (str, bytes, os.PathLike)) else str(arg) for arg in args]
+        return [
+            os.fsdecode(arg) if isinstance(arg, (str, bytes, os.PathLike)) else str(arg)
+            for arg in args
+        ]
     return []
 
 
@@ -200,10 +242,18 @@ def guard(event: str, args: tuple[object, ...]) -> None:
     if event == "os.system":
         raise refusal("os.system", script=_strings(args[0])[0])
     argv = _strings(args[2] if event == "os.spawn" else args[1])
-    cwd = _strings(args[2])[0] if event == "subprocess.Popen" and args[2] is not None else None
+    cwd = (
+        _strings(args[2])[0]
+        if event == "subprocess.Popen" and args[2] is not None
+        else None
+    )
     script = shell_script(argv)
     what = "subprocess" if event == "subprocess.Popen" else event
-    raise refusal(what, script=script) if script is not None else refusal(what, argv=argv, cwd=cwd)
+    raise (
+        refusal(what, script=script)
+        if script is not None
+        else refusal(what, argv=argv, cwd=cwd)
+    )
 
 
 def install() -> None:

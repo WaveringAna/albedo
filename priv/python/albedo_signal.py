@@ -5,6 +5,7 @@ the kernel cannot (a native cell holding the GIL, a wedged interpreter), and so
 the supervisor never parses kill(1) error text or guesses an exit status. One
 argv carries the request; one JSON object on stdout carries the verdict.
 """
+
 from __future__ import annotations
 
 import signal
@@ -17,13 +18,17 @@ import sys
 import albedo_proc
 
 TERM_MS = 250
-KILL_MS = 1000   # the supervisor's remaining budget is short: this is the last resort
+KILL_MS = 1000  # the supervisor's remaining budget is short: this is the last resort
 
 
 def budget(request: dict, name: str, default: int) -> float:
     """Seconds for one ladder step, clamped to something a caller can wait for."""
     value = request.get(name, default)
-    return min(max(value, 10), default) / 1000 if isinstance(value, int) else default / 1000
+    return (
+        min(max(value, 10), default) / 1000
+        if isinstance(value, int)
+        else default / 1000
+    )
 
 
 def target(spec: object) -> albedo_proc.Group:
@@ -41,7 +46,9 @@ def target(spec: object) -> albedo_proc.Group:
             whole = os.getpgid(operand) == operand
         except (ProcessLookupError, PermissionError):
             pass
-    return albedo_proc.Group(operand, leader if isinstance(leader, str) else None, whole)
+    return albedo_proc.Group(
+        operand, leader if isinstance(leader, str) else None, whole
+    )
 
 
 def supervise(request: object) -> dict[str, object]:
@@ -51,10 +58,19 @@ def supervise(request: object) -> dict[str, object]:
     if not isinstance(specs, list):
         raise ValueError("request needs a target list")
     targets = [target(spec) for spec in specs]
-    endings = asyncio.run(albedo_proc.terminate(
-        targets, term=budget(request, "term_ms", TERM_MS), kill=budget(request, "kill_ms", KILL_MS)))
-    return {"targets": [{**ending.as_json(), "label": spec.get("label")}
-                        for spec, ending in zip(specs, endings)]}
+    endings = asyncio.run(
+        albedo_proc.terminate(
+            targets,
+            term=budget(request, "term_ms", TERM_MS),
+            kill=budget(request, "kill_ms", KILL_MS),
+        )
+    )
+    return {
+        "targets": [
+            {**ending.as_json(), "label": spec.get("label")}
+            for spec, ending in zip(specs, endings)
+        ]
+    }
 
 
 def main(request: str) -> int:

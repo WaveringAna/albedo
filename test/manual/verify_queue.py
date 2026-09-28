@@ -1,4 +1,5 @@
 """Independent contract checks for the attached benchmark's generated queue."""
+
 import importlib
 import json
 from pathlib import Path
@@ -49,7 +50,9 @@ class Contract(unittest.TestCase):
         self.assertFalse(self.q.heartbeat(job, first["token"], now=12))
         self.assertIsNone(self.q.claim("three", now=14))
         self.assertEqual(self.q.get(job)["state"], "dead")
-        self.assertEqual(self.q.stats(), {"ready": 0, "leased": 0, "done": 0, "dead": 1})
+        self.assertEqual(
+            self.q.stats(), {"ready": 0, "leased": 0, "done": 0, "dead": 1}
+        )
 
     def test_retry_delay_heartbeat_and_reopen(self):
         job = self.q.enqueue([1, "payload"])
@@ -82,10 +85,17 @@ class Contract(unittest.TestCase):
             self.assertTrue(self.q.ack(expected, lease["token"], now=0))
 
     def test_validation_does_not_insert_bad_jobs(self):
-        for args in [{"max_attempts": 0}, {"available_at": float("nan")}, {"available_at": float("inf")}]:
+        for args in [
+            {"max_attempts": 0},
+            {"available_at": float("nan")},
+            {"available_at": float("inf")},
+        ]:
             with self.assertRaises((ValueError, TypeError)):
                 self.q.enqueue("invalid", **args)
-        for args in [{"owner": "", "now": 0}, {"owner": "a", "now": 0, "lease_seconds": 0}]:
+        for args in [
+            {"owner": "", "now": 0},
+            {"owner": "a", "now": 0, "lease_seconds": 0},
+        ]:
             with self.assertRaises((ValueError, TypeError)):
                 self.q.claim(**args)
         self.assertEqual(sum(self.q.stats().values()), 0)
@@ -93,7 +103,14 @@ class Contract(unittest.TestCase):
     def test_claim_survives_abrupt_process_exit(self):
         job = self.q.enqueue("survives", max_attempts=2)
         source = "import json,os,sys;from durable_queue import Queue;q=Queue(sys.argv[1]);print(json.dumps(q.claim('dead-worker',now=0,lease_seconds=1)),flush=True);os._exit(0)"
-        result = subprocess.run([sys.executable, "-c", source, self.path], cwd=sys.path[0], capture_output=True, text=True, check=True, timeout=20)
+        result = subprocess.run(
+            [sys.executable, "-c", source, self.path],
+            cwd=sys.path[0],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=20,
+        )
         token = json.loads(result.stdout)["token"]
         lease = self.q.claim("new-worker", now=1)
         self.assertEqual(lease["id"], job)

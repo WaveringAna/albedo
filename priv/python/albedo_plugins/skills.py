@@ -5,6 +5,7 @@ from albedo_api import Host, PythonApi, Record
 
 class SkillResources(Record):
     """resources.resources and resources["resources"] both work."""
+
     resources: list[str]
     truncated: bool
     diagnostics: list[str]
@@ -12,6 +13,7 @@ class SkillResources(Record):
 
 class SkillPage(Record):
     """page.content and page["content"] both work."""
+
     path: str
     encoding: str
     content: str
@@ -26,7 +28,9 @@ host: Host
 class Skills:
     async def resources(self, name: str) -> SkillResources:
         """List resource names without reading or executing their contents."""
-        return SkillResources(cast(dict, await host("skills.resources", {"name": name})))
+        return SkillResources(
+            cast(dict, await host("skills.resources", {"name": name}))
+        )
 
     async def read(
         self,
@@ -37,18 +41,20 @@ class Skills:
         limit: int = 16_384,
     ) -> SkillPage:
         """Read one bounded page from a cataloged skill resource."""
-        return SkillPage(cast(
-            dict,
-            await host(
-                "skills.read",
-                {
-                    "name": name,
-                    "resource": resource,
-                    "offset": offset,
-                    "limit": limit,
-                },
-            ),
-        ))
+        return SkillPage(
+            cast(
+                dict,
+                await host(
+                    "skills.read",
+                    {
+                        "name": name,
+                        "resource": resource,
+                        "offset": offset,
+                        "limit": limit,
+                    },
+                ),
+            )
+        )
 
 
 def setup(api: PythonApi) -> dict[str, object]:

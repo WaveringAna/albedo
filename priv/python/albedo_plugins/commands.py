@@ -7,6 +7,7 @@ read the live catalog, so a session /reload reaches them without a kernel
 restart; a command whose method name is reserved, invalid, taken, or added
 after boot stays callable through commands.invoke().
 """
+
 from __future__ import annotations
 
 import inspect
@@ -38,10 +39,14 @@ def _wire_value(value: object, name: str) -> str:
     return value if isinstance(value, str) else str(value)
 
 
-def _bind(spec: list[CommandArgument], args: tuple[object, ...], kwargs: dict[str, object]) -> dict[str, str]:
+def _bind(
+    spec: list[CommandArgument], args: tuple[object, ...], kwargs: dict[str, object]
+) -> dict[str, str]:
     declared = [argument["name"] for argument in spec]
     if len(args) > len(declared):
-        raise TypeError(f"expected at most {len(declared)} positional arguments, got {len(args)}")
+        raise TypeError(
+            f"expected at most {len(declared)} positional arguments, got {len(args)}"
+        )
     unknown = sorted(set(kwargs) - set(declared))
     if unknown:
         raise TypeError(f"unexpected arguments: {', '.join(unknown)}")
@@ -64,7 +69,9 @@ def _docstring(summary: CommandSummary) -> str:
             kind = "required" if argument["required"] else "optional"
             lines.append(f"    {argument['name']}: {argument['description']} ({kind})")
     lines.append("")
-    lines.append("Returns the command's JSON result as a Python value; never submits a turn.")
+    lines.append(
+        "Returns the command's JSON result as a Python value; never submits a turn."
+    )
     return "\n".join(lines)
 
 
@@ -83,8 +90,11 @@ def _signature(spec: list[CommandArgument]) -> inspect.Signature | None:
         else:
             defaulted = True
             default = None
-        parameters.append(inspect.Parameter(
-            name, inspect.Parameter.POSITIONAL_OR_KEYWORD, default=default))
+        parameters.append(
+            inspect.Parameter(
+                name, inspect.Parameter.POSITIONAL_OR_KEYWORD, default=default
+            )
+        )
     return inspect.Signature(parameters)
 
 
@@ -116,7 +126,9 @@ class Commands:
         """This session's current command catalog, including reloaded ones."""
         return cast(list[CommandSummary], await self._host("commands.list", {}))
 
-    async def invoke(self, name: str, arguments: str | dict[str, object] = "") -> object:
+    async def invoke(
+        self, name: str, arguments: str | dict[str, object] = ""
+    ) -> object:
         """Run any model-callable command by slash name or method name.
 
         The arguments are either the raw invocation text or a dict of declared
@@ -128,13 +140,21 @@ class Commands:
             if summary["name"] == target or summary["method"] == name:
                 break
         else:
-            raise LookupError(f"unknown command {name!r}; commands.catalog() lists them")
+            raise LookupError(
+                f"unknown command {name!r}; commands.catalog() lists them"
+            )
         wire: dict[str, object]
         if isinstance(arguments, str):
             wire = {"name": summary["name"], "arguments": arguments}
         else:
-            wire = {"name": summary["name"],
-                    "args": {key: _wire_value(value, key) for key, value in arguments.items() if value is not None}}
+            wire = {
+                "name": summary["name"],
+                "args": {
+                    key: _wire_value(value, key)
+                    for key, value in arguments.items()
+                    if value is not None
+                },
+            }
         return await self._host("commands.run", wire)
 
 
@@ -147,8 +167,13 @@ async def setup(api: PythonApi) -> dict[str, object]:
     bindings: dict[str, object] = {}
     for summary in catalog:
         method = summary["method"]
-        if (not summary["modelCallable"] or method in RESERVED or method in bindings
-                or not method.isidentifier() or keyword.iskeyword(method)):
+        if (
+            not summary["modelCallable"]
+            or method in RESERVED
+            or method in bindings
+            or not method.isidentifier()
+            or keyword.iskeyword(method)
+        ):
             continue
         bindings[method] = staticmethod(_method(api.host, summary))
     session_commands = type("SessionCommands", (Commands,), bindings)

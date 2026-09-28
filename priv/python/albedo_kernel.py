@@ -30,7 +30,9 @@ import traceback
 import uuid
 
 MAX_FRAME = 8 * 1024 * 1024
-CLEANUP_DEADLINE = 1.5  # seconds: plugins must finish cleanup inside the supervisor's patience
+CLEANUP_DEADLINE = (
+    1.5  # seconds: plugins must finish cleanup inside the supervisor's patience
+)
 PREVIEW = 64 * 1024
 RETAIN = albedo_api.RAW_RETAIN
 LIMITS = {"cell": 16, "job": 64, "native": 1}  # retained captures per kind
@@ -38,7 +40,9 @@ MAX_IMAGES = 4  # images one cell may return to the model
 # Decoded bytes across one cell's images. Base64 grows this by 4/3, and the done
 # frame must stay under the 8 MiB guard with its output preview alongside.
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
-CELL: contextvars.ContextVar[Capture | None] = contextvars.ContextVar("cell", default=None)
+CELL: contextvars.ContextVar[Capture | None] = contextvars.ContextVar(
+    "cell", default=None
+)
 CONTROL_IN = os.fdopen(os.dup(0), "rb", buffering=0)
 CONTROL_OUT = os.fdopen(os.dup(1), "wb", buffering=0)
 SEND_LOCK = threading.Lock()
@@ -52,9 +56,13 @@ JOB_SLOTS: dict[str, tuple[asyncio.Future[None], Callable[[], None]]] = {}
 HOST_SLOTS = asyncio.Semaphore(32)
 OWNER_CALLS = asyncio.Semaphore(32)  # concurrent tool calls from the connection owner
 OWNER_TASKS: dict[str, asyncio.Task[object]] = {}  # interruptable by invoke id
-LIVE: collections.OrderedDict[str, object] = collections.OrderedDict()  # remote references
+LIVE: collections.OrderedDict[str, object] = (
+    collections.OrderedDict()
+)  # remote references
 LIVE_LIMIT = 64  # live references retained for the owner; LRU beyond that
-PENDING_OBJECTS: collections.OrderedDict[str, asyncio.Future[object]] = collections.OrderedDict()
+PENDING_OBJECTS: collections.OrderedDict[str, asyncio.Future[object]] = (
+    collections.OrderedDict()
+)
 MIRROR_INTERVAL = 0.15  # seconds between output-tail mirror frames while data flows
 MIRROR_TAIL = 16 * 1024  # bytes of tail a mirror frame carries
 active: asyncio.Task[object] | None = None
@@ -70,7 +78,11 @@ REPR.maxdict = REPR.maxlist = REPR.maxtuple = 50
 
 
 def show(value: object) -> str:
-    return REPR.repr(value).encode("utf-8", errors="replace")[:PREVIEW].decode("utf-8", errors="ignore")
+    return (
+        REPR.repr(value)
+        .encode("utf-8", errors="replace")[:PREVIEW]
+        .decode("utf-8", errors="ignore")
+    )
 
 
 def send(value: dict[str, object]) -> None:
@@ -78,7 +90,7 @@ def send(value: dict[str, object]) -> None:
     with SEND_LOCK:
         remaining = memoryview(struct.pack(">I", len(data)) + data)
         while remaining:
-            remaining = remaining[CONTROL_OUT.write(remaining):]
+            remaining = remaining[CONTROL_OUT.write(remaining) :]
 
 
 def read_exact(size: int) -> bytes:
@@ -100,8 +112,13 @@ async def cleanup() -> None:
                 await result
         except BaseException as error:
             try:
-                send({"type": "cleanup", "module": getattr(close, "__module__", "plugin"),
-                      "failures": [f"{type(error).__name__}: {error}"]})
+                send(
+                    {
+                        "type": "cleanup",
+                        "module": getattr(close, "__module__", "plugin"),
+                        "failures": [f"{type(error).__name__}: {error}"],
+                    }
+                )
             except (OSError, ValueError):
                 pass  # a disconnected owner must not prevent other cleanup callbacks
 
@@ -119,8 +136,15 @@ def die() -> None:
             LOOP.run_until_complete(asyncio.wait_for(cleanup(), CLEANUP_DEADLINE))
     except BaseException as error:
         try:
-            send({"type": "cleanup", "module": "kernel",
-                  "failures": [f"cleanup incomplete: {type(error).__name__}: {error}"]})
+            send(
+                {
+                    "type": "cleanup",
+                    "module": "kernel",
+                    "failures": [
+                        f"cleanup incomplete: {type(error).__name__}: {error}"
+                    ],
+                }
+            )
         except (OSError, ValueError):
             pass  # the owner disconnected; it independently tracks our groups
     # The interpreter and its subprocesses own a separate process group.
@@ -164,7 +188,9 @@ def deliver(message: dict[str, object]) -> None:
             elif message.get("queued") is True:
                 on_queued()
             else:
-                slot.set_exception(RuntimeError(str(message.get("message", "job admission failed"))))
+                slot.set_exception(
+                    RuntimeError(str(message.get("message", "job admission failed")))
+                )
     elif kind == "reply":
         future = PENDING.pop(message["id"], None)
         if future is not None and not future.done():
@@ -172,10 +198,20 @@ def deliver(message: dict[str, object]) -> None:
     elif kind == "invoke":
         _ = LOOP.create_task(serve_invoke(cast(dict[str, object], message)))
     elif kind == "introspect":
-        send({"type": "introspected", "id": message["id"],
-              "names": sorted(name for name in NAMESPACE
-                              if name.isidentifier() and not name.startswith("_")),
-              "handles": [{"id": key, "repr": show(value)} for key, value in LIVE.items()]})
+        send(
+            {
+                "type": "introspected",
+                "id": message["id"],
+                "names": sorted(
+                    name
+                    for name in NAMESPACE
+                    if name.isidentifier() and not name.startswith("_")
+                ),
+                "handles": [
+                    {"id": key, "repr": show(value)} for key, value in LIVE.items()
+                ],
+            }
+        )
     elif kind == "release":
         LIVE.pop(message.get("handle", ""), None)
     else:
@@ -222,14 +258,14 @@ async def _host(method: str, args: dict[str, object]) -> object:
     raise WorkError(answer["code"], answer["message"])
 
 
-
-
 class Capture:
     def __init__(self, id: str, kind: str = "cell") -> None:
         self.id: str = id
         self.kind: str = kind
         self.data: bytearray = bytearray()
-        self.raw_data: bytearray = bytearray()  # bytes before UTF-8 replacement, for late pipe readers
+        self.raw_data: bytearray = (
+            bytearray()
+        )  # bytes before UTF-8 replacement, for late pipe readers
         self.raw_seen: int = 0
         self.tail_data: bytearray = bytearray()
         self.seen: int = 0
@@ -246,7 +282,9 @@ class Capture:
         del self.tail_data[:-PREVIEW]
 
     def read(self, offset: int = 0, limit: int = 4000) -> str:
-        return bytes(self.data[max(0, offset):max(0, offset) + min(max(0, limit), PREVIEW)]).decode("utf-8", errors="ignore")
+        return bytes(
+            self.data[max(0, offset) : max(0, offset) + min(max(0, limit), PREVIEW)]
+        ).decode("utf-8", errors="ignore")
 
     def preview(self, status: str = "ok") -> str:
         if status == "ok":
@@ -261,8 +299,10 @@ class Capture:
         if len(self.images) >= MAX_IMAGES:
             raise ValueError(f"a cell returns at most {MAX_IMAGES} images")
         if sum(map(len, self.images)) + len(data) > MAX_IMAGE_BYTES:
-            raise ValueError(f"a cell's images total at most {MAX_IMAGE_BYTES} bytes; "
-                             f"this {len(data)}-byte image does not fit")
+            raise ValueError(
+                f"a cell's images total at most {MAX_IMAGE_BYTES} bytes; "
+                f"this {len(data)}-byte image does not fit"
+            )
         self.images.append(data)
         return f"{mime}, {len(data)} bytes"
 
@@ -286,11 +326,15 @@ def attach_image(data: bytes) -> str:
     # A task spawned by a finished cell still carries that cell's context; only
     # the capture currently receiving output belongs to a result not yet sent.
     if capture is None or capture.kind != "cell" or capture is not sink:
-        raise RuntimeError("images attach to a running cell; background work has no result to carry them")
+        raise RuntimeError(
+            "images attach to a running cell; background work has no result to carry them"
+        )
     return capture.attach(bytes(data))
 
 
-def show_image(source: bytes | bytearray | memoryview | str | os.PathLike[str]) -> albedo_api.Text:
+def show_image(
+    source: bytes | bytearray | memoryview | str | os.PathLike[str],
+) -> albedo_api.Text:
     """Return an image to yourself with this cell's result. `source` is PNG,
     JPEG, or WebP bytes, or a path to such a file. At most 4 images and 5 MiB
     per cell; the image arrives after the cell finishes, not mid-cell."""
@@ -300,7 +344,9 @@ def show_image(source: bytes | bytearray | memoryview | str | os.PathLike[str]) 
         with open(source, "rb") as file:
             data = file.read(MAX_IMAGE_BYTES + 1)
     else:
-        raise TypeError(f"show_image takes image bytes or a path, not {type(source).__name__}")
+        raise TypeError(
+            f"show_image takes image bytes or a path, not {type(source).__name__}"
+        )
     return albedo_api.Text("attached " + attach_image(data))
 
 
@@ -317,7 +363,8 @@ def retained(id: str) -> Capture:
         raise LookupError(
             f"no retained output for {id!r}: only the 16 most recent cells and 64 most recent jobs "
             f"keep output, so it may have rolled out; output.list() names what is kept, and a "
-            f"background job keeps its own output on its handle: jobs[{id!r}].tail()")
+            f"background job keeps its own output on its handle: jobs[{id!r}].tail()"
+        )
     return capture
 
 
@@ -349,7 +396,9 @@ class Output:
         cell's subprocesses write land in that cell's own output instead.
         """
         return albedo_api.ReadyList(
-            {"id": c.id, "kind": c.kind, "bytes": c.seen, "retained": len(c.data)} for c in ARCHIVES.values())
+            {"id": c.id, "kind": c.kind, "bytes": c.seen, "retained": len(c.data)}
+            for c in ARCHIVES.values()
+        )
 
 
 class Stream(io.TextIOBase):
@@ -401,8 +450,6 @@ def native_output(fd: int) -> None:
         return
 
 
-
-
 def interrupt(_signal: int, _frame: FrameType | None) -> None:
     if active_capture is not None and active_capture is interrupt_capture:
         raise KeyboardInterrupt()
@@ -416,8 +463,17 @@ def compile_cell(source: str, filename: str) -> tuple[CodeType, CodeType | None]
     if isinstance(last, ast.Expr):
         _ = tree.body.pop()
         trailing = ast.Expression(last.value)
-    prefix = cast(CodeType, compile(tree, filename, "exec", ast.PyCF_ALLOW_TOP_LEVEL_AWAIT))
-    suffix = cast(CodeType, compile(trailing, filename, "eval", ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)) if trailing else None
+    prefix = cast(
+        CodeType, compile(tree, filename, "exec", ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+    )
+    suffix = (
+        cast(
+            CodeType,
+            compile(trailing, filename, "eval", ast.PyCF_ALLOW_TOP_LEVEL_AWAIT),
+        )
+        if trailing
+        else None
+    )
     return prefix, suffix
 
 
@@ -446,33 +502,55 @@ async def evaluate(source: str, cell_id: str, durable: bool = False) -> object:
 
 class Cells:
     """Immutable saved source. Repairs never automatically repeat side effects."""
+
     last_id: str | None = None
 
-    async def read(self, id: str, *, start_line: object = 1, end_line: object = None, limit: object = 8000) -> str:
+    async def read(
+        self,
+        id: str,
+        *,
+        start_line: object = 1,
+        end_line: object = None,
+        limit: object = 8000,
+    ) -> str:
         """Return source lines, capped at `limit` bytes. Narrow with start_line/end_line."""
-        if not isinstance(start_line, int) or start_line < 1 or (end_line is not None and (not isinstance(end_line, int) or end_line < start_line)):
+        if (
+            not isinstance(start_line, int)
+            or start_line < 1
+            or (
+                end_line is not None
+                and (not isinstance(end_line, int) or end_line < start_line)
+            )
+        ):
             raise ValueError("expected positive inclusive line numbers")
         if not isinstance(limit, int) or limit < 1:
             raise ValueError("limit must be a positive byte count")
         cell = cast(albedo_api.SavedCell, await host("cells.read", {"id": id}))
         lines = cell["source"].splitlines(keepends=True)
-        data = "".join(lines[start_line - 1:end_line]).encode("utf-8", errors="replace")
+        data = "".join(lines[start_line - 1 : end_line]).encode(
+            "utf-8", errors="replace"
+        )
         if len(data) <= limit:
             return data.decode("utf-8", errors="ignore")
         return data[:limit].decode("utf-8", errors="ignore") + (
             f"\n[{limit} of {len(data)} bytes; the cell has {len(lines)} lines; "
-            f"narrow with start_line/end_line or raise limit]")
+            f"narrow with start_line/end_line or raise limit]"
+        )
 
     async def info(self, id: str) -> albedo_api.Record:
         """Status (ok, error, interrupted, started, saved, lost, unavailable),
         parentage and whether the cell started, without its source."""
         cell = cast(albedo_api.SavedCell, await host("cells.read", {"id": id}))
-        return albedo_api.Record((key, value) for key, value in cell.items() if key != "source")
+        return albedo_api.Record(
+            (key, value) for key, value in cell.items() if key != "source"
+        )
 
     async def list(self, limit: int = 20) -> albedo_api.ReadyList:
         """This session's cells, newest first: id, status, parent, and first line.
         Unlike output.list(), it reaches cells whose output has rolled out."""
-        cells = cast(list[dict[str, object]], await host("cells.list", {"limit": limit}))
+        cells = cast(
+            list[dict[str, object]], await host("cells.list", {"limit": limit})
+        )
         return albedo_api.ReadyList(albedo_api.Record(cell) for cell in cells)
 
     async def trace(self, id: str) -> dict[str, object]:
@@ -482,7 +560,14 @@ class Cells:
         """
         return cast(dict[str, object], await host("cells.trace", {"id": id}))
 
-    async def run(self, id: str, replacements: Iterable[Sequence[object]] = (), *, allow_partial: bool = False, check: bool = False) -> object:
+    async def run(
+        self,
+        id: str,
+        replacements: Iterable[Sequence[object]] = (),
+        *,
+        allow_partial: bool = False,
+        check: bool = False,
+    ) -> object:
         """Repair exact unique text and execute a new saved copy.
 
         check=True compiles the rewrite and returns its compile error, or None when
@@ -495,13 +580,23 @@ class Cells:
             if len(pair) != 2 or not all(isinstance(s, str) for s in pair):
                 raise ValueError("replacements must be (old, new) string pairs")
         if check:
-            source = cast(str, await host("cells.draft", {"id": id, "replacements": pairs}))
+            source = cast(
+                str, await host("cells.draft", {"id": id, "replacements": pairs})
+            )
             try:
                 _ = compile_cell(source, "<albedo:" + id + ":check>")
             except (SyntaxError, ValueError) as error:
-                return "".join(traceback.format_exception_only(type(error), error)).strip()
+                return "".join(
+                    traceback.format_exception_only(type(error), error)
+                ).strip()
             return None
-        cell = cast(albedo_api.SavedCell, await host("cells.prepare", {"id": id, "replacements": pairs, "allow_partial": allow_partial}))
+        cell = cast(
+            albedo_api.SavedCell,
+            await host(
+                "cells.prepare",
+                {"id": id, "replacements": pairs, "allow_partial": allow_partial},
+            ),
+        )
         self.last_id = cell["id"]
         capture = Capture(cell["id"])
         remember(capture)
@@ -516,7 +611,11 @@ class Cells:
             text = "" if value is None else show(value)
         except BaseException as failure:
             error = failure
-            status = "interrupted" if isinstance(failure, (KeyboardInterrupt, asyncio.CancelledError)) else "error"
+            status = (
+                "interrupted"
+                if isinstance(failure, (KeyboardInterrupt, asyncio.CancelledError))
+                else "error"
+            )
             capture.write(traceback.format_exc())
             text = ""
         finally:
@@ -529,11 +628,23 @@ class Cells:
                     try:
                         _ = outer.attach(image)
                     except ValueError as dropped:
-                        outer.write(f"[image from cell {cell['id']} dropped: {dropped}]\n")
-        _ = await host("cells.finish", {"id": cell["id"], "outcome": {
-            "id": cell["id"], "status": status, "output": capture.preview(status),
-            "value": text, "truncated": capture.seen > PREVIEW,
-            "images": capture.encoded_images()}})
+                        outer.write(
+                            f"[image from cell {cell['id']} dropped: {dropped}]\n"
+                        )
+        _ = await host(
+            "cells.finish",
+            {
+                "id": cell["id"],
+                "outcome": {
+                    "id": cell["id"],
+                    "status": status,
+                    "output": capture.preview(status),
+                    "value": text,
+                    "truncated": capture.seen > PREVIEW,
+                    "images": capture.encoded_images(),
+                },
+            },
+        )
         if error is not None:
             raise error
         return value
@@ -550,6 +661,7 @@ def engine() -> tuple[object, str]:
     """dill when it is installed; pickle keeps plain data working without it."""
     try:
         import dill
+
         dill.settings["recurse"] = True
         return dill, "dill"
     except ImportError:
@@ -565,16 +677,25 @@ def save_state(path: str) -> dict[str, object]:
     for name in list(NAMESPACE.keys()):
         if name.startswith("_") or name in INJECTED:
             continue
-        value = NAMESPACE.get(name, INJECTED)  # a background thread may delete it mid-walk
+        value = NAMESPACE.get(
+            name, INJECTED
+        )  # a background thread may delete it mid-walk
         if value is INJECTED:
             continue
         try:
             blob = cast(bytes, serialiser.dumps(value))
         except BaseException as error:
-            skipped.append({"name": name, "reason": f"{type(error).__name__}: {error}"[:200]})
+            skipped.append(
+                {"name": name, "reason": f"{type(error).__name__}: {error}"[:200]}
+            )
             continue
         if len(blob) > STATE_MAX_VALUE:
-            skipped.append({"name": name, "reason": f"{len(blob)} bytes exceeds the per-variable cap"})
+            skipped.append(
+                {
+                    "name": name,
+                    "reason": f"{len(blob)} bytes exceeds the per-variable cap",
+                }
+            )
         elif total + len(blob) > STATE_MAX:
             skipped.append({"name": name, "reason": "saved state is full"})
         else:
@@ -582,7 +703,9 @@ def save_state(path: str) -> dict[str, object]:
             total += len(blob)
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        handle, temporary = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=os.path.basename(path) + ".")
+        handle, temporary = tempfile.mkstemp(
+            dir=os.path.dirname(path) or ".", prefix=os.path.basename(path) + "."
+        )
         try:
             with os.fdopen(handle, "wb") as file:
                 pickle.dump({"cwd": os.getcwd(), "names": payload}, file)
@@ -592,7 +715,12 @@ def save_state(path: str) -> dict[str, object]:
             raise
     except OSError as error:
         return {"error": f"could not write saved state: {error}"}
-    return {"saved": sorted(payload), "skipped": skipped, "bytes": total, "engine": kind}
+    return {
+        "saved": sorted(payload),
+        "skipped": skipped,
+        "bytes": total,
+        "engine": kind,
+    }
 
 
 def load_state(path: str) -> dict[str, object]:
@@ -603,7 +731,11 @@ def load_state(path: str) -> dict[str, object]:
     except FileNotFoundError:
         return {"restored": [], "failed": [], "error": "no saved state"}
     except BaseException as error:
-        return {"restored": [], "failed": [], "error": f"unreadable saved state: {type(error).__name__}"}
+        return {
+            "restored": [],
+            "failed": [],
+            "error": f"unreadable saved state: {type(error).__name__}",
+        }
     serialiser, kind = cast("Any", engine())
     restored: list[str] = []
     failed: list[dict[str, str]] = []
@@ -611,7 +743,9 @@ def load_state(path: str) -> dict[str, object]:
         try:
             NAMESPACE[name] = cast(object, serialiser.loads(blob))
         except BaseException as error:
-            failed.append({"name": name, "reason": f"{type(error).__name__}: {error}"[:200]})
+            failed.append(
+                {"name": name, "reason": f"{type(error).__name__}: {error}"[:200]}
+            )
         else:
             restored.append(name)
     directory = saved.get("cwd")
@@ -645,12 +779,25 @@ def remember(capture: Capture) -> None:
 
 
 def state_reply(message: albedo_api.State) -> dict[str, object]:
-    state = save_state(message["path"]) if message["type"] == "snapshot" else load_state(message["path"])
-    return {"type": "done", "id": message["id"], "status": "error" if "error" in state else "ok",
-            "output": "", "value": "", "truncated": False, "state": state}
+    state = (
+        save_state(message["path"])
+        if message["type"] == "snapshot"
+        else load_state(message["path"])
+    )
+    return {
+        "type": "done",
+        "id": message["id"],
+        "status": "error" if "error" in state else "ok",
+        "output": "",
+        "value": "",
+        "truncated": False,
+        "state": state,
+    }
 
 
-MAX_RESULT_BYTES = 4 * 1024 * 1024  # one invoke reply ceiling, below the 8 MiB frame guard
+MAX_RESULT_BYTES = (
+    4 * 1024 * 1024
+)  # one invoke reply ceiling, below the 8 MiB frame guard
 
 
 class Unencodable(Exception):
@@ -673,14 +820,20 @@ def _wire_encode(value: object, depth: int = 0) -> object:
         return {str(key): _wire_encode(item, depth + 1) for key, item in value.items()}
     if isinstance(value, albedo_api.Record):
         cls = type(value)
-        return {"__record__": cls.__module__ + "." + cls.__qualname__,
-                "fields": {str(key): _wire_encode(item, depth + 1) for key, item in value.items()}}
+        return {
+            "__record__": cls.__module__ + "." + cls.__qualname__,
+            "fields": {
+                str(key): _wire_encode(item, depth + 1) for key, item in value.items()
+            },
+        }
     if isinstance(value, (list, tuple)):
         try:
             if type(value) is not list:
                 cls = type(value)
-                return {"__list__": cls.__module__ + "." + cls.__qualname__,
-                        "items": [_wire_encode(item, depth + 1) for item in value]}
+                return {
+                    "__list__": cls.__module__ + "." + cls.__qualname__,
+                    "items": [_wire_encode(item, depth + 1) for item in value],
+                }
         except Unencodable:
             raise
         except (TypeError, ValueError):
@@ -689,9 +842,13 @@ def _wire_encode(value: object, depth: int = 0) -> object:
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         cls = type(value)
         try:
-            return {"__class__": cls.__module__ + "." + cls.__qualname__,
-                    "fields": {field.name: _wire_encode(getattr(value, field.name), depth + 1)
-                               for field in dataclasses.fields(value)}}
+            return {
+                "__class__": cls.__module__ + "." + cls.__qualname__,
+                "fields": {
+                    field.name: _wire_encode(getattr(value, field.name), depth + 1)
+                    for field in dataclasses.fields(value)
+                },
+            }
         except (TypeError, ValueError, AttributeError):
             raise Unencodable from None
     raise Unencodable
@@ -717,11 +874,16 @@ def retain(value: object) -> str:
 def _mirror_state(obj: object) -> dict[str, object]:
     """One snapshot of a captured object: what the owner's tail() and poll() answer from."""
     capture = cast(Capture, getattr(obj, "capture"))
-    return {"job": getattr(obj, "id", None), "seen": capture.seen,
-            "tail": bytes(capture.tail_data[-MIRROR_TAIL:]).decode("utf-8", errors="replace"),
-            "exit_code": getattr(obj, "exit_code", None),
-            "timed_out": getattr(obj, "timed_out", False),
-            "duration": getattr(obj, "duration", None)}
+    return {
+        "job": getattr(obj, "id", None),
+        "seen": capture.seen,
+        "tail": bytes(capture.tail_data[-MIRROR_TAIL:]).decode(
+            "utf-8", errors="replace"
+        ),
+        "exit_code": getattr(obj, "exit_code", None),
+        "timed_out": getattr(obj, "timed_out", False),
+        "duration": getattr(obj, "duration", None),
+    }
 
 
 async def _mirror(key: str, obj: object, capture: Capture) -> None:
@@ -745,8 +907,9 @@ async def _mirror(key: str, obj: object, capture: Capture) -> None:
             return
 
 
-def _invoke_reply(call_id: str, result: object,
-                  state: dict[str, object] | None = None) -> dict[str, object]:
+def _invoke_reply(
+    call_id: str, result: object, state: dict[str, object] | None = None
+) -> dict[str, object]:
     """One reference per result: inline the value when it can cross, retain it live.
 
     Typed composites (dataclasses, list subclasses) get both, so the owner can
@@ -759,25 +922,49 @@ def _invoke_reply(call_id: str, result: object,
         wire = _wire_encode(result)
         encoded = json.dumps(wire, ensure_ascii=True)
     except (Unencodable, TypeError, ValueError, RecursionError):
-        reply: dict[str, object] = {"type": "invoked", "id": call_id, "ok": True,
-                                    "handle": retain(result)}
+        reply: dict[str, object] = {
+            "type": "invoked",
+            "id": call_id,
+            "ok": True,
+            "handle": retain(result),
+        }
         if state is not None:
             reply["state"] = state
         return reply
     if len(encoded) > MAX_RESULT_BYTES:
-        return {"type": "invoked", "id": call_id, "ok": False,
-                "error": {"ename": "RemoteValueError",
-                          "evalue": f"result is {len(encoded)} bytes, over the "
-                                    f"{MAX_RESULT_BYTES}-byte ceiling",
-                          "traceback": []}}
-    typed = isinstance(result, list) and type(result) is not list \
-        or dataclasses.is_dataclass(result) and not isinstance(result, type)
+        return {
+            "type": "invoked",
+            "id": call_id,
+            "ok": False,
+            "error": {
+                "ename": "RemoteValueError",
+                "evalue": f"result is {len(encoded)} bytes, over the "
+                f"{MAX_RESULT_BYTES}-byte ceiling",
+                "traceback": [],
+            },
+        }
+    typed = (
+        isinstance(result, list)
+        and type(result) is not list
+        or dataclasses.is_dataclass(result)
+        and not isinstance(result, type)
+    )
     if typed:
-        return {"type": "invoked", "id": call_id, "ok": True,
-                "handle": retain(result), "value": wire}
+        return {
+            "type": "invoked",
+            "id": call_id,
+            "ok": True,
+            "handle": retain(result),
+            "value": wire,
+        }
     if state is not None:
-        return {"type": "invoked", "id": call_id, "ok": True,
-                "handle": retain(result), "state": state}
+        return {
+            "type": "invoked",
+            "id": call_id,
+            "ok": True,
+            "handle": retain(result),
+            "state": state,
+        }
     return {"type": "invoked", "id": call_id, "ok": True, "value": wire}
 
 
@@ -802,8 +989,11 @@ def _resolve(name: str) -> object:
         raise ValueError(f"unaddressable owner invoke: {name!r}")
     obj = NAMESPACE.get(parts[0]) if parts else None
     if obj is None:
-        raise LookupError("no remote binding " + repr(parts[0] if parts else name)
-                          + "; rem.tools() lists what exists")
+        raise LookupError(
+            "no remote binding "
+            + repr(parts[0] if parts else name)
+            + "; rem.tools() lists what exists"
+        )
     for part in parts[1:]:
         obj = getattr(obj, part)
     return obj
@@ -864,44 +1054,71 @@ async def serve_invoke(message: dict[str, object]) -> None:
                 if base is None:
                     raise ValueError("await needs a live or pending reference target")
                 result = await cast(Awaitable[object], base)
-                state = _mirror_state(result) if getattr(result, "capture", None) else None
+                state = (
+                    _mirror_state(result) if getattr(result, "capture", None) else None
+                )
             else:
                 name = cast(str, message.get("name", ""))
                 if base is None:
                     call = _resolve(name)
                 else:
                     parts = name.split(".") if name else []
-                    if not all(part.isidentifier() and not part.startswith("_") for part in parts):
+                    if not all(
+                        part.isidentifier() and not part.startswith("_")
+                        for part in parts
+                    ):
                         raise ValueError(f"unaddressable owner invoke: {name!r}")
                     call = base
                     for part in parts:
                         call = getattr(call, part)
                 args = [_owner_args(item) for item in message.get("args", ())]
-                kwargs = {key: _owner_args(item)
-                          for key, item in cast(dict[str, object], message.get("kwargs", {})).items()}
+                kwargs = {
+                    key: _owner_args(item)
+                    for key, item in cast(
+                        dict[str, object], message.get("kwargs", {})
+                    ).items()
+                }
                 result = call(*args, **kwargs)
-                if inspect.isawaitable(result) and not isinstance(result, tuple(HANDLES)):
+                if inspect.isawaitable(result) and not isinstance(
+                    result, tuple(HANDLES)
+                ):
                     result = await cast(Awaitable[object], result)
     except asyncio.CancelledError as error:
         failure = error
         # The owner cancelled its wait; the remote effect may continue, and the
         # live reference (a running job, for instance) stays addressable.
-        reply = {"type": "invoked", "id": call_id, "ok": False, "cancelled": True,
-                 "error": {"ename": "CancelledError",
-                           "evalue": "the owner cancelled this wait; the remote effect "
-                                     "may continue and its reference stays addressable",
-                           "traceback": []}}
+        reply = {
+            "type": "invoked",
+            "id": call_id,
+            "ok": False,
+            "cancelled": True,
+            "error": {
+                "ename": "CancelledError",
+                "evalue": "the owner cancelled this wait; the remote effect "
+                "may continue and its reference stays addressable",
+                "traceback": [],
+            },
+        }
     except BaseException as error:
         failure = error
-        reply = {"type": "invoked", "id": call_id, "ok": False,
-                 "error": {"ename": type(error).__name__, "evalue": str(error)[:8192],
-                           "traceback": traceback.format_exc().splitlines()[-8:]}}
+        reply = {
+            "type": "invoked",
+            "id": call_id,
+            "ok": False,
+            "error": {
+                "ename": type(error).__name__,
+                "evalue": str(error)[:8192],
+                "traceback": traceback.format_exc().splitlines()[-8:],
+            },
+        }
     else:
         reply = _invoke_reply(call_id, result, state)
     finally:
         OWNER_TASKS.pop(call_id, None)
         if not future.done():
-            future.set_result((failure is None, failure if failure is not None else result))
+            future.set_result(
+                (failure is None, failure if failure is not None else result)
+            )
     send(reply)
 
 
@@ -917,7 +1134,9 @@ async def serve():
         token = CELL.set(capture)
         _ = swap_sink(capture)
         status, value = "ok", ""
-        task = active = LOOP.create_task(evaluate(message["code"], capture.id, message.get("durable", False)))
+        task = active = LOOP.create_task(
+            evaluate(message["code"], capture.id, message.get("durable", False))
+        )
         try:
             active_capture = capture
             result = await task
@@ -934,17 +1153,29 @@ async def serve():
             failed_id = cast(str, getattr(error, "_albedo_cell_id", capture.id))
             capture.write(traceback.format_exc())
             if message.get("durable", False):
-                capture.write(f"\n[cell {failed_id} retained; inspect with await cells.read({failed_id!r}); repair with await cells.run({failed_id!r}, replacements=[(old, new)])]\n")
+                capture.write(
+                    f"\n[cell {failed_id} retained; inspect with await cells.read({failed_id!r}); repair with await cells.run({failed_id!r}, replacements=[(old, new)])]\n"
+                )
         finally:
-            _ = drain()  # a subprocess that already wrote belongs to this cell, not the next
+            _ = (
+                drain()
+            )  # a subprocess that already wrote belongs to this cell, not the next
             _ = swap_sink(None)
             active = None
             active_capture = None
             CELL.reset(token)
         send({"type": "trace", "id": capture.id, "trace": capture.trace.finish()})
-        send({"type": "done", "id": capture.id, "status": status,
-              "output": capture.preview(status), "value": value,
-              "truncated": capture.seen > PREVIEW, "images": capture.encoded_images()})
+        send(
+            {
+                "type": "done",
+                "id": capture.id,
+                "status": status,
+                "output": capture.preview(status),
+                "value": value,
+                "truncated": capture.seen > PREVIEW,
+                "images": capture.encoded_images(),
+            }
+        )
 
 
 def main():
@@ -967,13 +1198,25 @@ def main():
     albedo_shell.install()  # refusals precede observational audit hooks
     albedo_trace.install(CELL.get)
     modules = cast(list[str], json.loads(sys.argv[1]))
-    api = albedo_api.PythonApi(version=2, loop=LOOP, host=host, HostError=WorkError,
+    api = albedo_api.PythonApi(
+        version=2,
+        loop=LOOP,
+        host=host,
+        HostError=WorkError,
         forget_output=lambda id: ARCHIVES.pop(id, None) and None,
-        capture=background_capture, preview=PREVIEW, send=send, on_shutdown=CLEANUP.append,
-        background_handle=HANDLES.append, modules=modules, watch_output=watch_output,
+        capture=background_capture,
+        preview=PREVIEW,
+        send=send,
+        on_shutdown=CLEANUP.append,
+        background_handle=HANDLES.append,
+        modules=modules,
+        watch_output=watch_output,
         attach_image=attach_image,
-        job_slot=job_slot if os.environ.get("ALBEDO_JOB_ADMISSION") == "1"
-                 and not os.environ.get("ALBEDO_REMOTE_TARGET") else None)
+        job_slot=job_slot
+        if os.environ.get("ALBEDO_JOB_ADMISSION") == "1"
+        and not os.environ.get("ALBEDO_REMOTE_TARGET")
+        else None,
+    )
     NAMESPACE.update(cells=Cells(), output=Output(), show_image=show_image)
     try:
         LOOP.run_until_complete(albedo_api.load_plugins(modules, api, NAMESPACE))
@@ -987,8 +1230,14 @@ def main():
     INJECTED.update(NAMESPACE)
     # Declare our own process group; a group we do not lead is never the supervisor's target.
     pgid = os.getpgid(0)
-    send({"type": "ready", "pid": os.getpid(), "pgid": pgid if pgid == os.getpid() else None,
-          "leader": albedo_proc.leader_token(os.getpid())})
+    send(
+        {
+            "type": "ready",
+            "pid": os.getpid(),
+            "pgid": pgid if pgid == os.getpid() else None,
+            "leader": albedo_proc.leader_token(os.getpid()),
+        }
+    )
     task = LOOP.create_task(serve())
     while not task.done():
         try:

@@ -2,6 +2,7 @@
 
 This is observation, not a sandbox. External processes and native writes may bypass it.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
@@ -17,6 +18,7 @@ import sys
 GUARD = contextvars.ContextVar("albedo_trace_guard", default=False)
 LIMIT = 128 * 1024
 
+
 @contextlib.contextmanager
 def unobserved() -> Iterator[None]:
     """Harness bookkeeping inside this block, and tasks created in it, stay out of the trace."""
@@ -26,8 +28,14 @@ def unobserved() -> Iterator[None]:
     finally:
         GUARD.reset(token)
 
+
 def text(value: object) -> str:
-    return os.fsdecode(value) if isinstance(value, (str, bytes, os.PathLike)) else str(value)
+    return (
+        os.fsdecode(value)
+        if isinstance(value, (str, bytes, os.PathLike))
+        else str(value)
+    )
+
 
 def command(args: object) -> str:
     """The command as a person would type it: no `sh -c` wrapper, no store path on argv[0]."""
@@ -41,6 +49,7 @@ def command(args: object) -> str:
         return script
     name = os.path.basename(argv[0]) if os.path.isabs(argv[0]) else argv[0]
     return shlex.join([name, *argv[1:]])
+
 
 class Trace:
     def __init__(self):
@@ -79,15 +88,45 @@ class Trace:
                 if before == after:
                     continue
                 if before is None or after is None:
-                    changes.append({"path": path[:1000], "kind": "unavailable", "reason": "binary, unreadable, or larger than 128 KiB"})
+                    changes.append(
+                        {
+                            "path": path[:1000],
+                            "kind": "unavailable",
+                            "reason": "binary, unreadable, or larger than 128 KiB",
+                        }
+                    )
                     continue
-                lines = list(difflib.unified_diff(before.splitlines(True), after.splitlines(True), fromfile=path, tofile=path))
+                lines = list(
+                    difflib.unified_diff(
+                        before.splitlines(True),
+                        after.splitlines(True),
+                        fromfile=path,
+                        tofile=path,
+                    )
+                )
                 diff = "".join(lines)
                 self.truncated |= len(diff) > 16000
-                changes.append({"path": path[:1000], "kind": "diff", "diff": diff[:16000],
-                    "added": sum(line.startswith("+") and not line.startswith("+++") for line in lines),
-                    "removed": sum(line.startswith("-") and not line.startswith("---") for line in lines)})
-            return {"activities": list(self.activities.values()), "changes": changes, "truncated": self.truncated}
+                changes.append(
+                    {
+                        "path": path[:1000],
+                        "kind": "diff",
+                        "diff": diff[:16000],
+                        "added": sum(
+                            line.startswith("+") and not line.startswith("+++")
+                            for line in lines
+                        ),
+                        "removed": sum(
+                            line.startswith("-") and not line.startswith("---")
+                            for line in lines
+                        ),
+                    }
+                )
+            return {
+                "activities": list(self.activities.values()),
+                "changes": changes,
+                "truncated": self.truncated,
+            }
+
 
 def snapshot(path: str) -> str | None:
     try:
@@ -97,14 +136,21 @@ def snapshot(path: str) -> str | None:
             return None
         with open(path, "rb") as file:
             value = file.read(LIMIT + 1)
-        return value.decode("utf-8") if len(value) <= LIMIT and b"\0" not in value else None
+        return (
+            value.decode("utf-8")
+            if len(value) <= LIMIT and b"\0" not in value
+            else None
+        )
     except (OSError, UnicodeError):
         return None
+
 
 class TracedCapture(Protocol):
     trace: Trace
 
+
 current: Callable[[], TracedCapture | None] = lambda: None
+
 
 def note(kind: str, target: str) -> None:
     """Record what a harness tool did for the running cell, as it was asked
@@ -113,9 +159,11 @@ def note(kind: str, target: str) -> None:
     if capture is not None:
         capture.trace.activity(kind, target)
 
+
 def install(get_capture: Callable[[], TracedCapture | None]) -> None:
     global current
     current = get_capture
+
     def audit(event: str, args: tuple[object, ...]) -> None:
         capture = get_capture()
         if capture is None or GUARD.get():
@@ -129,12 +177,16 @@ def install(get_capture: Callable[[], TracedCapture | None]) -> None:
                 flags = args[2]
                 if not isinstance(flags, int):
                     raise TypeError("invalid open flags")
-                if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
+                if flags & (
+                    os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+                ):
                     capture.trace.writing(path)
                 else:
                     capture.trace.activity("read", path)
             elif event in ("os.rename", "os.replace") and len(args) >= 2:
-                source, destination = (os.path.abspath(os.fsdecode(path)) for path in args[:2])
+                source, destination = (
+                    os.path.abspath(os.fsdecode(path)) for path in args[:2]
+                )
                 capture.trace.renamed(source, destination)
             elif event in ("os.listdir", "os.scandir"):
                 path = os.fsdecode(args[0]) if args else "."
@@ -146,4 +198,5 @@ def install(get_capture: Callable[[], TracedCapture | None]) -> None:
             capture.trace.truncated = True
         finally:
             GUARD.reset(token)
+
     sys.addaudithook(audit)
