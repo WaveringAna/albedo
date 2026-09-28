@@ -28,9 +28,7 @@ pub fn extension() -> extension.Extension {
       // A child learns who it is and how to answer; a root needs no context.
       extension.ManagedPlugin(fn(db, session, _) {
         Ok(
-          extension.Managed(doctrine(db, session), "", [], [], [], [], [], fn() {
-            Nil
-          }),
+          extension.Managed(..extension.empty(), context: doctrine(db, session)),
         )
       }),
     ],

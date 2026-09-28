@@ -1044,6 +1044,17 @@ pub fn commands(session: Session) -> List(command.Command) {
   extension.commands(session.composition)
 }
 
+/// Tells every extension this session composed about one of its events.
+pub fn observe(
+  session: Session,
+  handle: extension.Session,
+  event: extension.SessionEvent,
+) -> Nil {
+  list.each(extension.observers(session.composition), fn(observe) {
+    observe(handle, event)
+  })
+}
+
 pub fn compaction_name(session: Session) -> Option(String) {
   extension.compaction(extension.extensions(session.composition))
   |> option.map(fn(strategy) { strategy.name })

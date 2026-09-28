@@ -22,9 +22,11 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
           session,
         ))
         Ok(
-          harness_extension.Managed(context, "", [], [], [], [], warnings, fn() {
-            Nil
-          }),
+          harness_extension.Managed(
+            ..harness_extension.empty(),
+            context: context,
+            warnings: warnings,
+          ),
         )
       }),
     ],

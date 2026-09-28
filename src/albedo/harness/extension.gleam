@@ -1,6 +1,7 @@
 //// Extensions are ordered bundles of model context, tools, REPL modules, RPC routes, and request policies.
 
 import albedo/daemon/conversation
+import albedo/daemon/requests
 import albedo/daemon/store
 import albedo/harness/command
 import albedo/harness/compaction
@@ -59,7 +60,55 @@ pub type Managed {
     routes: List(Route),
     commands: List(command.Command),
     warnings: List(String),
+    /// Hears the session's events; see `SessionEvent`.
+    observe: fn(Session, SessionEvent) -> Nil,
     close: fn() -> Nil,
+  )
+}
+
+/// What a session reports to its managed extensions as it works, in order.
+/// `observe` runs inside the session actor, so it must only send and return.
+pub type SessionEvent {
+  /// A provider call of a turn succeeded.
+  CallSent(call: SentCall)
+  /// A turn ended; a cancelled one was stopped before it finished.
+  TurnEnded(cancelled: Bool)
+  /// A forced compaction rewrote the history the next turn sends.
+  Compacted
+  /// Something new reached the session: a submit, a note, a wake, or a
+  /// change of model, effort, workspace, or extensions.
+  Stirred
+}
+
+/// One successful provider call, as it went out.
+pub type SentCall {
+  SentCall(
+    request: types.Request,
+    /// The prefix identity its request row carries.
+    prefix: requests.Prefix,
+    usage: Option(types.Usage),
+    /// Where the request asked the provider to cache.
+    marks: List(types.CacheMark),
+    /// The saved profile, endpoint, and protocol it was sent through.
+    profile: String,
+    endpoint: String,
+    protocol: types.Protocol,
+    started_ms: Int,
+    finished_ms: Int,
+  )
+}
+
+/// What a managed extension can ask of the session reporting to it.
+pub type Session {
+  Session(
+    id: String,
+    /// Sends `request` on the session's upstream as exclusive work that
+    /// never reaches the transcript or the stream; its provider request row
+    /// carries `prefix` and the kind `background`. Blocks until the call
+    /// ends and answers its usage; fails at once while another run holds
+    /// the session or its kernel is released.
+    call: fn(types.Request, requests.Prefix) ->
+      Result(Option(types.Usage), String),
   )
 }
 
@@ -823,6 +872,13 @@ pub fn close(composition: Composition) -> Nil {
   close_prepared(composition.managed)
 }
 
+/// Every contribution's observer, in registry order.
+pub fn observers(
+  composition: Composition,
+) -> List(fn(Session, SessionEvent) -> Nil) {
+  list.map(composition.contributions, fn(item) { item.value.observe })
+}
+
 pub fn extensions(composition: Composition) -> List(Extension) {
   composition.extensions
 }
@@ -934,8 +990,9 @@ pub fn summaries(
   )
 }
 
-fn empty() -> Managed {
-  Managed("", "", [], [], [], [], [], fn() { Nil })
+/// A managed contribution with nothing in it, for record updates.
+pub fn empty() -> Managed {
+  Managed("", "", [], [], [], [], [], fn(_, _) { Nil }, fn() { Nil })
 }
 
 /// A static plugin's contribution, known without loading or preparing it.

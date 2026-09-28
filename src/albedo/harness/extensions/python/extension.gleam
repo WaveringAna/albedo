@@ -93,20 +93,9 @@ pub fn extension() -> extension.Extension {
       ),
       extension.ManagedPlugin(fn(_, _, workspace) {
         Ok(
-          extension.Managed(
-            "",
-            "",
-            [],
-            [],
-            [
-              #("session", fn(_, _, request) {
-                cells.session(workspace, request)
-              }),
-            ],
-            [],
-            [],
-            fn() { Nil },
-          ),
+          extension.Managed(..extension.empty(), routes: [
+            #("session", fn(_, _, request) { cells.session(workspace, request) }),
+          ]),
         )
       }),
     ],

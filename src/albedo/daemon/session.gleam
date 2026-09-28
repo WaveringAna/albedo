@@ -18,7 +18,6 @@ import albedo/daemon/session_state
 import albedo/daemon/session_submission
 import albedo/daemon/turn.{type Submission, Submission}
 import albedo/daemon/usage
-import albedo/daemon/warm
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/python/kernel as python
@@ -132,13 +131,17 @@ pub type Message {
   RecordContext(String, context_snapshot.Snapshot, Bool, Subject(Nil))
   RecordUsage(String, usage.Metadata, Subject(Result(Nil, String)))
   ReportPin(String, Option(Int), Subject(Nil))
-  /// The worker's turn call succeeded; its request is what a warm ping
-  /// repeats. Fire-and-forget, like the pin report.
-  ReportSent(String, warm.Sent, Subject(Nil))
-  /// A scheduled warm ping is due, under the generation it was scheduled at.
-  WarmTick(Int)
-  /// A warm ping finished: its usage says whether the cache was still there.
-  WarmFinished(String, Result(Option(types.Usage), String))
+  /// The worker's turn call succeeded; the session's extensions hear it.
+  /// Fire-and-forget, like the pin report.
+  ReportSent(String, extension.SentCall, Subject(Nil))
+  /// An extension asks for a background call; see `extension.Session`.
+  CallInBackground(
+    types.Request,
+    requests.Prefix,
+    Subject(Result(Option(types.Usage), String)),
+  )
+  /// A background call's worker finished.
+  BackgroundFinished(String, Result(Option(types.Usage), String))
   Compact(Option(String), Subject(Result(json.Json, String)))
   RefreshData(Subject(Result(json.Json, String)))
   DrainSteering(String, Subject(Result(List(types.Input), String)))
@@ -225,7 +228,6 @@ pub fn start(
         None,
         now_ms(),
         None,
-        warm.fresh(),
       )
     // Background jobs wake this session through the kernel's jobs route; the
     // registered closure lands a completion notice as an ordinary submit, so
@@ -764,29 +766,21 @@ fn handle(state: State, message: Message) {
         _, _, _ -> actor.continue(state)
       }
     }
-    ReportSent(id, sent, reply) -> {
+    ReportSent(id, call, reply) -> {
       process.send(reply, Nil)
       case turn.live(state.activity, id) {
-        True ->
-          actor.continue(
-            session_state.State(..state, warm: warm.captured(state.warm, sent)),
-          )
-        False -> actor.continue(state)
+        True -> observe(state, extension.CallSent(call))
+        False -> Nil
       }
+      actor.continue(state)
     }
-    WarmTick(generation) ->
-      case generation == state.warm.generation, turn.running(state.activity) {
-        False, _ | True, Some(_) -> actor.continue(state)
-        True, None -> actor.continue(warm_tick(state))
-      }
-    WarmFinished(id, outcome) ->
+    CallInBackground(request, prefix, reply) ->
+      actor.continue(start_background(state, request, prefix, reply))
+    BackgroundFinished(id, outcome) ->
       case turn.owner(state.activity, id) {
-        Some(run) ->
-          case run.work {
-            turn.Warm -> warm_finish(state, run, outcome)
-            _ -> actor.continue(state)
-          }
-        None -> actor.continue(state)
+        Some(turn.Run(work: turn.Background(reply), ..) as run) ->
+          background_finish(state, run, reply, outcome)
+        _ -> actor.continue(state)
       }
     RecordContext(id, snapshot, compacted, reply) ->
       answer(
@@ -841,8 +835,13 @@ fn handle(state: State, message: Message) {
       case turn.running(state.activity) {
         Some(run) if run.pid == pid ->
           case run.work {
-            turn.Warm ->
-              warm_finish(state, run, Error("warm ping worker stopped"))
+            turn.Background(reply) ->
+              background_finish(
+                state,
+                run,
+                reply,
+                Error("background call worker stopped"),
+              )
             _ ->
               finish_run(
                 state,
@@ -1332,8 +1331,7 @@ fn admit(
   submission: Submission,
   reply: Subject(Result(Bool, SubmissionError)),
 ) -> actor.Next(State, Message) {
-  // Anything a client submits counts as attention: a pending warm ping is
-  // cancelled, and the turn that follows re-captures the request to repeat.
+  // Anything a client submits counts as attention.
   let state = stirred(state)
   case turn.admit(state.activity, submission, list.length(state.steering)) {
     turn.Reject(turn.Busy) -> answer(state, reply, Error(Busy))
@@ -1550,9 +1548,10 @@ fn finish_run(
   outcome: Result(Nil, String),
 ) -> actor.Next(State, Message) {
   case run.work {
-    // A ping holds the session like a compaction run does, but commits
-    // nothing and never reaches the transcript.
-    turn.Warm -> warm_finish(state, run, result.replace(outcome, None))
+    // A background call holds the session like a compaction run does, but
+    // commits nothing and never reaches the transcript.
+    turn.Background(reply) ->
+      background_finish(state, run, reply, result.replace(outcome, None))
     _ -> finish_turn(state, run, outcome)
   }
 }
@@ -1606,119 +1605,108 @@ fn finish_turn(
     turn.Turn(_), False -> answer_parent(state, outcome)
     _, _ -> state
   }
-  let state = warm_after_run(state, run)
+  report_end(state, run)
   process.send(state.self, Collect)
   actor.continue(start_queued(state))
 }
 
-/// A scheduled ping is due under the current generation: start it, or stop
-/// warming for this idle stretch. Settings are re-read here, so an edit to
-/// extensions.json takes effect without a restart.
-fn warm_tick(state: State) -> State {
-  case state.warm.sent {
-    None -> state
-    Some(sent) -> {
-      let decision =
-        warm.decision(state.home, state.info.provider, state.info.model, sent)
-      case
-        warm.next(
-          decision,
-          warm.wanted(runtime.ledger(state.host), state.info.id),
-          state.warm.pings,
-        )
-      {
-        None -> state
-        Some(plan) -> {
-          let #(with_kernel, kernel) = session_namespace.ready(state)
-          case kernel, session_provider.configured_client(with_kernel) {
-            // A released kernel ends warming: a restart simply stops it.
-            Some(live), Ok(#(primed, client)) -> {
-              let started = requests.now()
-              session_state.State(
-                ..session_run.start_warm(
-                  primed,
-                  live,
-                  client,
-                  sent,
-                  WarmFinished,
-                ),
-                warm: warm.pinging(state.warm, started, plan),
-              )
-            }
-            _, _ -> state
-          }
-        }
+/// An extension's background call starts only while nothing else holds the
+/// session and a live kernel can carry it; otherwise the caller hears why.
+fn start_background(
+  state: State,
+  request: types.Request,
+  prefix: requests.Prefix,
+  reply: Subject(Result(Option(types.Usage), String)),
+) -> State {
+  let #(state, kernel) = session_namespace.ready(state)
+  let refused = fn(state, reason) {
+    process.send(reply, Error(reason))
+    state
+  }
+  case turn.running(state.activity), kernel {
+    Some(_), _ -> refused(state, "the session is busy")
+    None, None -> refused(state, "the session has no live kernel")
+    None, Some(live) ->
+      case session_provider.configured_client(state) {
+        Ok(#(primed, client)) ->
+          session_run.start_background(
+            primed,
+            live,
+            client,
+            request,
+            prefix,
+            reply,
+            BackgroundFinished,
+          )
+        Error(error) -> refused(state, error)
       }
-    }
   }
 }
 
-/// A warm ping ended. It never touched the transcript, so nothing commits and
-/// nothing is announced; the submissions it held back start now, and the next
-/// ping is scheduled only while the idle stretch still holds.
-fn warm_finish(
+/// A background call ended. It never touched the transcript, so nothing
+/// commits and nothing is announced; its caller gets the outcome, and the
+/// submissions it held back start now.
+fn background_finish(
   state: State,
   run: turn.Run,
+  reply: Subject(Result(Option(types.Usage), String)),
   outcome: Result(Option(types.Usage), String),
 ) -> actor.Next(State, Message) {
   process.demonitor_process(run.monitor)
-  let now = requests.now()
-  // The next ping is decided from the run that just ended, before the state
-  // records that no ping is in flight any more.
-  let again = warm.reschedule(state.warm, run.cancelled, outcome, now, now)
-  let state =
-    session_state.State(
-      ..state,
-      activity: turn.Resting,
-      warm: warm.settled(state.warm),
-    )
-  // A webhook or wake refused while the ping held the session can be
+  process.send(reply, case run.cancelled {
+    True -> Error("cancelled")
+    False -> outcome
+  })
+  let state = session_state.State(..state, activity: turn.Resting)
+  // A webhook or wake refused while the call held the session can be
   // admitted now.
   mail.waiting()
-  case again {
-    Some(#(delay, generation)) -> {
-      let _ = process.send_after(state.self, delay, WarmTick(generation))
-      Nil
-    }
-    None -> Nil
-  }
   actor.continue(start_queued(state))
 }
 
-/// A run that held the session ended: a turn's request is what the next idle
-/// stretch can warm, while a compaction rewrote the prefix, so nothing is
-/// warmable until the next turn captures a request again.
-fn warm_after_run(state: State, run: turn.Run) -> State {
-  case run.work, run.cancelled {
-    turn.Turn(_), False -> {
-      case
-        warm.first_ping(
-          state.home,
-          state.info.provider,
-          state.info.model,
-          state.warm,
-          warm.wanted(runtime.ledger(state.host), state.info.id),
-          requests.now(),
-        )
-      {
-        Some(#(delay, generation)) -> {
-          let _ = process.send_after(state.self, delay, WarmTick(generation))
-          Nil
-        }
-        None -> Nil
-      }
-      state
-    }
-    turn.Compaction, _ ->
-      session_state.State(..state, warm: warm.reset(state.warm))
-    _, _ -> state
+/// A run that held the session ended: its extensions hear that a turn
+/// ended, or that a compaction rewrote the history.
+fn report_end(state: State, run: turn.Run) -> Nil {
+  case run.work {
+    turn.Turn(_) -> observe(state, extension.TurnEnded(run.cancelled))
+    turn.Compaction -> observe(state, extension.Compacted)
+    turn.Background(_) -> Nil
   }
 }
 
-/// Any new activity: a pending warm tick scheduled under an older generation
-/// is dropped when it arrives.
+/// Any new activity, which the session's extensions hear.
 fn stirred(state: State) -> State {
-  session_state.State(..state, warm: warm.stirred(state.warm))
+  observe(state, extension.Stirred)
+  state
+}
+
+/// Tells the extensions this session composed about one of its events. A
+/// released kernel's session reports nothing: it cannot run anything either.
+fn observe(state: State, event: extension.SessionEvent) -> Nil {
+  case state.kernel {
+    Some(kernel) ->
+      runtime.observe(
+        kernel,
+        background_handle(state.info.id, state.self),
+        event,
+      )
+    None -> Nil
+  }
+}
+
+/// What an observer may ask of this session. It travels to the observer, so
+/// it captures the actor's subject, never the state and its transcript.
+fn background_handle(id: String, self: Session) -> extension.Session {
+  extension.Session(id, fn(request, prefix) {
+    case
+      session_run.try_call(self, 600_000, CallInBackground(request, prefix, _))
+    {
+      Ok(outcome) -> outcome
+      Error(session_run.TimedOut) ->
+        Error("the background call went unanswered for ten minutes")
+      Error(session_run.CalleeDown) -> Error("the session stopped")
+    }
+  })
 }
 
 fn start_queued(state: State) -> State {

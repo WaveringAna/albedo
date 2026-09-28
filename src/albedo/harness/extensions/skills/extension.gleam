@@ -45,14 +45,17 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
         let snapshot = catalog.only(discovered, names)
         Ok(
           harness_extension.Managed(
-            catalog.context(snapshot),
-            instructions,
-            [],
-            ["skills"],
-            [#("skills", fn(_, _, request) { rpc.handle(snapshot, request) })],
-            list.map(catalog.commands(snapshot), skill_command(snapshot, _)),
-            [],
-            fn() { Nil },
+            ..harness_extension.empty(),
+            context: catalog.context(snapshot),
+            instructions: instructions,
+            python_modules: ["skills"],
+            routes: [
+              #("skills", fn(_, _, request) { rpc.handle(snapshot, request) }),
+            ],
+            commands: list.map(catalog.commands(snapshot), skill_command(
+              snapshot,
+              _,
+            )),
           ),
         )
       }),

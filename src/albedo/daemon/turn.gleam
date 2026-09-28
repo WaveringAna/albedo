@@ -42,8 +42,9 @@ pub type Submission {
 
 pub type Work {
   Compaction
-  /// A cache-warming ping: commits nothing and publishes nothing.
-  Warm
+  /// An extension's background call: commits nothing and publishes
+  /// nothing; its outcome goes back to `reply`.
+  Background(reply: process.Subject(Result(Option(types.Usage), String)))
   /// `stage` is None until the turn's first commit.
   Turn(stage: Option(conversation.Stage))
 }
@@ -255,7 +256,7 @@ pub fn phase(activity: Activity) -> String {
     Resting -> "resting"
     Interrupted -> "interrupted"
     Running(Run(work: Compaction, ..)) -> "compacting"
-    Running(Run(work: Warm, ..)) -> "warming"
+    Running(Run(work: Background(_), ..)) -> "background"
     Running(Run(work: Turn(None), ..)) -> "preparing"
     Running(Run(work: Turn(Some(stage)), ..)) -> conversation.stage_name(stage)
   }

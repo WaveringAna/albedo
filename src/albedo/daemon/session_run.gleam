@@ -2,10 +2,10 @@
 
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
+import albedo/daemon/requests
 import albedo/daemon/session_state
 import albedo/daemon/turn
 import albedo/daemon/usage
-import albedo/daemon/warm
 import albedo/harness/extension
 import albedo/harness/loop
 import albedo/harness/runtime
@@ -28,7 +28,7 @@ pub type Messages(message) {
     usage: fn(String, usage.Metadata, Subject(Result(Nil, String))) -> message,
     drain: fn(String, Subject(Result(List(types.Input), String))) -> message,
     pin: fn(String, Option(Int), Subject(Nil)) -> message,
-    sent: fn(String, warm.Sent, Subject(Nil)) -> message,
+    sent: fn(String, extension.SentCall, Subject(Nil)) -> message,
     finished: fn(String, Result(Nil, String)) -> message,
     collect: message,
   )
@@ -211,21 +211,7 @@ pub fn start(
       usage_fn(owner, run_id, messages, 10_000),
       drain_fn(owner, run_id, messages, 10_000),
       fn(head) { report(owner, messages.pin(run_id, head, _)) },
-      fn(request, prefix, marks, usage, started, finished) {
-        report(owner, messages.sent(
-          run_id,
-          warm.Sent(
-            request,
-            prefix,
-            usage,
-            marks,
-            client.endpoint,
-            started,
-            finished,
-          ),
-          _,
-        ))
-      },
+      fn(call) { report(owner, messages.sent(run_id, call, _)) },
       // Who this session's provider requests are recorded under.
       state.info.id,
       state.info.provider,
@@ -238,8 +224,9 @@ pub fn start(
         messages.finished(run_id, case work {
           turn.Compaction -> loop.compact(worker, model_history)
           turn.Turn(_) -> loop.run(worker, run_id, model_history, 0)
-          // A ping never starts here; start_warm owns its worker.
-          turn.Warm -> Error("warm pings run through start_warm")
+          // A background call never starts here; start_background owns it.
+          turn.Background(_) ->
+            Error("background calls run through start_background")
         }),
       )
     })
@@ -252,22 +239,24 @@ pub fn start(
     history: None,
     activity: turn.Running(run),
     context: case work {
-      turn.Compaction | turn.Warm -> state.context
+      turn.Compaction | turn.Background(_) -> state.context
       turn.Turn(_) -> session_state.unprepared()
     },
   )
 }
 
-/// One cache-warming ping: `sent`'s request re-sent with a tiny output
-/// budget. It commits nothing and publishes nothing, so its worker carries
-/// no history and answers only its own outcome and usage; the session queues
-/// submissions behind it as it does for a compaction run. The run never
-/// announces itself on the agents bus: an idle session stays idle.
-pub fn start_warm(
+/// One background call an extension asked for. It commits nothing and
+/// publishes nothing, so its worker carries no history and answers only its
+/// own outcome and usage, which the session passes on to `reply`; the session
+/// queues submissions behind it as it does for a compaction run. The run
+/// never announces itself on the agents bus: an idle session stays idle.
+pub fn start_background(
   state: session_state.State(message),
   kernel: runtime.Session,
   client: extension.Upstream,
-  sent: warm.Sent,
+  request: types.Request,
+  prefix: requests.Prefix,
+  reply: Subject(Result(Option(types.Usage), String)),
   finished: fn(String, Result(Option(types.Usage), String)) -> message,
 ) -> session_state.State(message) {
   let run_id = new_id()
@@ -282,24 +271,24 @@ pub fn start_warm(
       kernel,
       state.pin,
       client,
-      // A ping must never show on the session's stream, and must never
-      // block on it either.
+      // A background call must never show on the session's stream, and must
+      // never block on it either.
       fn(_event) { True },
-      fn(_inputs, _stage, _thought) { Error("a warm ping never commits") },
+      fn(_inputs, _stage, _thought) { Error("a background call never commits") },
       fn(_request, _observation, _compacted) { Nil },
       fn(_metadata) { Ok(Nil) },
       fn() { Ok([]) },
       fn(_head) { Nil },
-      fn(_request, _prefix, _marks, _usage, _started, _finished) { Nil },
+      fn(_call) { Nil },
       state.info.id,
       state.info.provider,
     )
   let pid =
     process.spawn_unlinked(fn() {
-      label("albedo_warm", run_id)
+      label("albedo_background", run_id)
       process.send(
         owner,
-        finished(run_id, loop.warm(worker, sent.request, sent.prefix)),
+        finished(run_id, loop.background(worker, request, prefix)),
       )
     })
   session_state.State(
@@ -310,7 +299,7 @@ pub fn start_warm(
       process.monitor(pid),
       False,
       turn.latch(),
-      turn.Warm,
+      turn.Background(reply),
     )),
   )
 }

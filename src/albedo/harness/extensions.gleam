@@ -23,6 +23,7 @@ import albedo/harness/extensions/schedule/extension as schedule
 import albedo/harness/extensions/skills/extension as skills
 import albedo/harness/extensions/snapcompact/extension as snapcompact
 import albedo/harness/extensions/view/extension as view
+import albedo/harness/extensions/warm/extension as warm
 import albedo/harness/extensions/webhooks/extension as webhooks
 import albedo/harness/extensions/work/extension as work
 
@@ -65,6 +66,8 @@ pub fn defaults() -> Config {
       view.extension(),
       proxy.extension(),
       webhooks.extension(),
+      // Off unless enabled: a ping spends tokens on the session's account.
+      warm.extension(),
     ],
     [
       "python", "run", "work", "mail", "agents", "schedule", "files", "memory",

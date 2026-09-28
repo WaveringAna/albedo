@@ -26,19 +26,19 @@ import sqlight
 pub const schema = "CREATE TABLE IF NOT EXISTS provider_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),seq INTEGER,kind TEXT NOT NULL,profile TEXT NOT NULL,provider TEXT NOT NULL,account TEXT,model TEXT NOT NULL,started_ms INTEGER NOT NULL,finished_ms INTEGER NOT NULL,outcome TEXT NOT NULL,status INTEGER,error TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,cache_creation_tokens INTEGER,cache_write_5m_tokens INTEGER,cache_write_1h_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,head_hash TEXT NOT NULL,inputs INTEGER NOT NULL,replaced INTEGER,projection_hash TEXT,strategy TEXT,cache_marks TEXT NOT NULL DEFAULT '[]'); CREATE INDEX IF NOT EXISTS provider_requests_session ON provider_requests(session,id);"
 
 /// What the call was for. A turn is the model loop; a summarizer is the
-/// compaction summary call `loop.summarize` makes; a warm is a cache-warming
-/// ping that repeats the last turn's request with a tiny output budget.
+/// compaction summary call `loop.summarize` makes; a background call is one
+/// an extension sent on the idle session, such as a cache-warming ping.
 pub type Kind {
   Turn
   Summarizer
-  Warm
+  Background
 }
 
 fn kind_name(kind: Kind) -> String {
   case kind {
     Turn -> "turn"
     Summarizer -> "summarizer"
-    Warm -> "warm"
+    Background -> "background"
   }
 }
 

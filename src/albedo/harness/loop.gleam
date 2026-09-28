@@ -38,17 +38,9 @@ pub type Loop {
     /// Reports the pin's compaction baseline (`Some`) or that compaction
     /// replaced the history the pinned prompt was cached with (`None`).
     report_pin: fn(Option(Int)) -> Nil,
-    /// Reports a successful turn call's request, prefix identity, cache
-    /// marks, usage and timing, so the session can repeat it as a
-    /// cache-warming ping.
-    report_turn: fn(
-      types.Request,
-      requests.Prefix,
-      List(types.CacheMark),
-      Option(types.Usage),
-      Int,
-      Int,
-    ) -> Nil,
+    /// Reports each successful turn call as it went out, for the session's
+    /// extensions to hear.
+    report_call: fn(extension.SentCall) -> Nil,
     /// The session whose provider requests are recorded.
     session: String,
     /// The saved profile those calls went through.
@@ -220,43 +212,26 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
   Ok(Nil)
 }
 
-/// One cache-warming ping: re-send a captured request with the smallest
-/// output budget the protocol accepts, so the provider refreshes the cached
-/// prefix. The request is exactly the one the turn sent — never rebuilt
-/// through `prepare`, which could compact or call the summarizer — with only
-/// its output budget lowered. A ping commits nothing and publishes nothing;
-/// it answers the ping's usage, whose cached tokens say whether the cache was
-/// still there.
-pub fn warm(
+/// One background call: `request` sent exactly as given — never rebuilt
+/// through `prepare`, which could compact or call the summarizer — and
+/// recorded under `prefix`. It commits nothing and publishes nothing; it
+/// answers the call's usage.
+pub fn background(
   state: Loop,
   request: types.Request,
   prefix: requests.Prefix,
 ) -> Result(Option(types.Usage), String) {
-  let ping =
-    types.Request(
-      ..request,
-      max_output_tokens: Some(ping_budget(state.upstream.protocol)),
-    )
   call(
     state,
-    requests.Warm,
-    ping,
+    requests.Background,
+    request,
     prefix,
-    // A retry is silent: a ping must never show on the session's stream.
+    // A retry is silent: a background call never shows on the stream.
     fn(_event) { True },
     fn(_event) { types.Continue },
   )
   |> result.map(fn(attempt) { attempt.1.usage })
   |> result.map_error(describe(state.upstream, _))
-}
-
-/// The smallest output budget a ping may ask for: 1, or 16 on the Responses
-/// protocol, whose minimum is higher.
-fn ping_budget(protocol: types.Protocol) -> Int {
-  case protocol {
-    types.Responses -> 16
-    types.ChatCompletions -> 1
-  }
 }
 
 /// One tool call, committed before its transcript event; a client refusal
@@ -403,11 +378,20 @@ fn call(
           None
         }
       }
-      // A turn call that succeeded is what a cache-warming ping would repeat,
-      // so the session keeps its request as sent, never a rebuilt one.
+      // Extensions hear a turn's call as sent, never a rebuilt one.
       case kind, outcome {
         requests.Turn, Ok(_) ->
-          state.report_turn(request, prefix, marks, usage, started, finished)
+          state.report_call(extension.SentCall(
+            request,
+            prefix,
+            usage,
+            marks,
+            state.profile,
+            state.upstream.endpoint,
+            state.upstream.protocol,
+            started,
+            finished,
+          ))
         _, _ -> Nil
       }
       case outcome {

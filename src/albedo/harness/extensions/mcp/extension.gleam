@@ -166,9 +166,10 @@ fn prepare(
     Ok(definitions) ->
       Ok(
         extension.Managed(
-          native_context(handle),
-          "MCP tool calls may have side effects. Never retry a failed or interrupted MCP call without first inspecting its effects; transport loss means the outcome is unknown.",
-          list.map(definitions, fn(definition) {
+          ..extension.empty(),
+          context: native_context(handle),
+          instructions: "MCP tool calls may have side effects. Never retry a failed or interrupted MCP call without first inspecting its effects; transport loss means the outcome is unknown.",
+          tools: list.map(definitions, fn(definition) {
             extension.Tool(
               types.Tool(
                 definition.name,
@@ -183,11 +184,7 @@ fn prepare(
               fn(_) { None },
             )
           }),
-          [],
-          [],
-          [],
-          [],
-          fn() { native_close(handle) },
+          close: fn() { native_close(handle) },
         ),
       )
   }

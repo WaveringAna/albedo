@@ -76,7 +76,8 @@ class WarmTest(unittest.TestCase):
         self.addCleanup(self.restore_ttl)
         (self.app.home / "cache-ttl.json").write_text(json.dumps(CACHE_TTL))
         settings = json.loads((self.app.home / "extensions.json").read_text())
-        settings["warm"] = {"enabled": True, "minCachedTokens": 1024}
+        settings.setdefault("enabled", {})["warm"] = True
+        settings["warm"] = {"minCachedTokens": 1024}
         (self.app.home / "extensions.json").write_text(json.dumps(settings))
         GATE.clear()
 
@@ -119,9 +120,9 @@ class WarmTest(unittest.TestCase):
                 return items
             after = page["nextCursor"]
 
-    def swarm(self):
+    def swarm(self, parent=None):
         """A parent whose turn has run while its scout is still working."""
-        parent = self.app.session()
+        parent = parent or self.app.session()
         made = self.api(f"/sessions/{parent}/children",
                         {"name": "scout", "task": TASK, "model": "scout/scout-model"})
         child = made["member"]["session"]
@@ -130,15 +131,31 @@ class WarmTest(unittest.TestCase):
         self.app.idle(parent)
         return parent, child
 
-    @exclusive
-    def test_unconfigured_warmer_does_not_ping_an_idle_parent(self):
-        settings = json.loads((self.app.home / "extensions.json").read_text())
-        del settings["warm"]
-        (self.app.home / "extensions.json").write_text(json.dumps(settings))
-        parent, _child = self.swarm()
+    def assert_no_pings(self, parent, child):
         time.sleep(4)  # The fixture TTL would have scheduled a ping at 2.7s.
         self.assertEqual(len(self.requests("/parent/")), 1)
         self.assertEqual([row["kind"] for row in self.rows(parent)], ["turn"])
+        # The scout's answer wakes the parent: let it land here, not in a
+        # later test whose fixture the shared profiles then point at.
+        GATE.set()
+        self.app.idle(child)
+        self.app.idle(parent)
+
+    @exclusive
+    def test_the_warmer_is_off_unless_enabled(self):
+        settings = json.loads((self.app.home / "extensions.json").read_text())
+        del settings["enabled"]["warm"]
+        (self.app.home / "extensions.json").write_text(json.dumps(settings))
+        self.assert_no_pings(*self.swarm())
+
+    @exclusive
+    def test_a_session_that_disables_the_warmer_is_not_pinged(self):
+        parent = self.app.session()
+        extensions = self.api(f"/sessions/{parent}/extensions",
+                              {"name": "warm", "enabled": False})
+        self.assertFalse(next(item["enabled"] for item in extensions
+                              if item["name"] == "warm"))
+        self.assert_no_pings(*self.swarm(parent))
 
     @exclusive
     def test_pings_repeat_the_last_request_and_stop_at_the_budget(self):
@@ -159,7 +176,8 @@ class WarmTest(unittest.TestCase):
         # The request rows carry the same prefix identity and cache marks as
         # the turn they repeat, and never a transcript row of their own.
         rows = self.rows(parent)
-        self.assertEqual([row["kind"] for row in rows], ["turn", "warm", "warm"])
+        self.assertEqual([row["kind"] for row in rows],
+                         ["turn", "background", "background"])
         head = rows[0]
         for row in rows[1:]:
             self.assertEqual(row["headHash"], head["headHash"])

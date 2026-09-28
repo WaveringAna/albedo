@@ -1,6 +1,6 @@
 # extensions
 
-an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, or compaction plugins. `python`, `run`, `work`, `schedule`, `files`, `instructions`, `commands`, `skills`, `rolling`, `lcm-memory`, and `remote` are enabled by default; `mcp`, `view`, [`proxy`](proxy.md), and `lcm` are installed and disabled until enabled. plugin contributions compose inside them.
+an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, or compaction plugins. `python`, `run`, `work`, `schedule`, `files`, `instructions`, `commands`, `skills`, `rolling`, `lcm-memory`, and `remote` are enabled by default; `mcp`, `view`, [`proxy`](proxy.md), `lcm`, and [`warm`](cache-warming.md) are installed and disabled until enabled. plugin contributions compose inside them.
 
 ## select extensions
 
@@ -37,6 +37,8 @@ A command may also be an extension's own **page**: set `page: True` and, run wit
 A command that tells the agent about a user's change uses the `Note(origin, display, text)` state operation: the note waits in the session's queue, reaches the model at its next step if a run is active or ahead of the user's next message if not, and never starts a turn by itself.
 
 `ManagedPlugin` prepares session-owned contributions together: context, tool instructions, tools, python modules, host routes, and commands. preparation returns a close callback. a failed replacement releases its prepared resources and leaves the old selection active; successful replacement releases the old resources after the swap. use this for connections or an immutable catalog shared by context and tools.
+
+a managed contribution also hears its session through `observe(session, event)`, which runs inside the session actor and so must only send and return. events arrive in order: `CallSent` for each successful turn call as it went out (request, prefix identity, usage, cache marks, profile, endpoint, protocol, timing), `TurnEnded(cancelled)`, `Compacted` after a forced compaction, and `Stirred` for any new activity. the `extension.Session` handle it comes with names the session and offers `call(request, prefix)`: any `types.Request`, sent on the session's upstream as exclusive work that queues submissions behind it, records a provider request row of kind `background` under `prefix`, and never reaches the transcript or the stream. it blocks its caller until the call ends and fails at once while another run holds the session or its kernel is released. `extension.empty()` is the contribution with nothing in it, for record updates; [`warm`](cache-warming.md) is built on these two seams alone.
 
 `ModelsPlugin` supplies catalogued model facts and provider model lists. `ModelProviderPlugin` declares its models.dev namespace and resolves a tagged saved profile into an `Upstream`: a `stream` function over albedo's request, event, and turn types, plus the endpoint, replay protocol, and an `explain` for failures. A provider with its own wire format encodes an `openai_api.Exchange` and passes it with its own `stream.Reducer` to `openai_api.exchange`, which keeps HTTP, SSE framing, limits, and callbacks shared; `antigravity` does this. `LoginPlugin` supplies a browser sign-in that the daemon runs for every client; see [model authentication](auth.md#sign-in-api).
 
