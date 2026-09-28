@@ -127,6 +127,7 @@ fn resolve(
     },
     // The OAuth profile's account UUID, not a credential.
     fn() { Some(account) },
+    wire.cache_marks,
   ))
 }
 

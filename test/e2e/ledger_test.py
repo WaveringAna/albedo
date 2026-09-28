@@ -108,6 +108,8 @@ class LedgerTest(unittest.TestCase):
                     self.assertEqual(row["model"], "fixture-model")
                     self.assertTrue(row["provider"].startswith("responses:"))
                     self.assertLessEqual(row["startedMs"], row["finishedMs"])
+                    # An OpenAI-protocol provider caches on its own; albedo marks nothing.
+                    self.assertEqual(row["cacheMarks"], [])
 
                 for row in rows[:4] + [rows[6]]:
                     self.assertEqual(row["outcome"], "ok")

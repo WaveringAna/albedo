@@ -141,6 +141,9 @@ pub type Upstream {
     /// The non-secret label of the account that served the most recent
     /// request, when the provider has an account pool to name one from.
     account: fn() -> Option(String),
+    /// Where this upstream marks a request's cached prefixes; empty when the
+    /// provider decides what to cache on its own.
+    cache_marks: fn(types.Request) -> List(types.CacheMark),
   )
 }
 

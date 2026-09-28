@@ -23,6 +23,7 @@ What makes cache analysis possible without storing requests. Each row records:
 - `inputs` — how many projected inputs the request carried.
 - `replaced` and `projectionHash` — the projection identity. The loop knows how many original inputs the projection replaced (`original length − shared suffix with the projection`); the row carries that count and a hash of the replacement part that stands in for them.
 - `strategy` — the active compaction strategy name, when one prepared the request.
+- `cacheMarks` — where the request asked the provider to end a cached prefix, and for how long, in prefix order: `{"through": "tools" | "system" | "input", "index"?, "ttlSeconds"}`, where `index` is the projected input the prefix runs through. Claude requests mark the last tool and the system prompt for an hour and the last input (unless it is a replayed assistant turn) for Anthropic's default five minutes. Usage splits cache writes by TTL but not reads; with the marks, a read's TTL follows from which marked prefix it covers. Providers that cache on their own (the OpenAI protocols) get `[]`.
 
 Within one projection the request is append-only, so equal head hash plus equal projection identity means a warm prefix; a changed projection identity means a rewrite that invalidated the cache. A summarizer call carries its own head hash with `replaced` and `projectionHash` null: its history is exactly what it says.
 

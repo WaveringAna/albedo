@@ -428,7 +428,36 @@ fn image_block(files: Files, image: types.Image, cache: Bool) -> Json {
   ])
 }
 
-// 1-hour TTL for stable head (tools, system); tail uses default 5m.
+/// The stable head (tools, system) is cached for an hour; the moving tail
+/// takes Anthropic's default five minutes.
+const head_ttl_seconds = 3600
+
+const tail_ttl_seconds = 300
+
+/// The prefixes `encode` marks for caching: through the last tool, through
+/// the system prompt, and through the last input unless it is a replayed
+/// assistant turn, which carries no mark.
+pub fn cache_marks(request: types.Request) -> List(types.CacheMark) {
+  let tools = case request.tools {
+    [] -> []
+    _ -> [types.CacheMark(types.ToolsSpan, head_ttl_seconds)]
+  }
+  let tail = case list.last(request.input) {
+    Ok(types.Replay(_)) | Error(Nil) -> []
+    Ok(_) -> [
+      types.CacheMark(
+        types.InputSpan(list.length(request.input) - 1),
+        tail_ttl_seconds,
+      ),
+    ]
+  }
+  list.flatten([
+    tools,
+    [types.CacheMark(types.SystemSpan, head_ttl_seconds)],
+    tail,
+  ])
+}
+
 fn head_cache() -> #(String, Json) {
   #(
     "cache_control",

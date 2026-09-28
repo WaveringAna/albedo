@@ -336,6 +336,7 @@ fn call(
             ledger.outcome(outcome),
             usage,
             prefix,
+            state.upstream.cache_marks(request),
           ),
         )
       let row = case row {

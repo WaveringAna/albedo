@@ -60,6 +60,7 @@ pub fn upstream(
     fn(request, on_event) { openai_api.stream(client, request, on_event) },
     explain,
     fn() { None },
+    fn(_) { [] },
   )
 }
 

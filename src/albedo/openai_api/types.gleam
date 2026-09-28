@@ -256,6 +256,20 @@ pub type ToolCall {
   ToolCall(id: String, name: String, arguments: String)
 }
 
+/// Where a request asks its provider to end a cached prefix, and how long
+/// that entry should live. Providers that cache on their own get none.
+pub type CacheMark {
+  CacheMark(through: CacheSpan, ttl_seconds: Int)
+}
+
+/// The part of a request a cached prefix runs through, in prefix order.
+pub type CacheSpan {
+  ToolsSpan
+  SystemSpan
+  /// Through the projected input at this index.
+  InputSpan(index: Int)
+}
+
 pub type Usage {
   Usage(
     /// Whole input context: cached reads and new cache writes included.

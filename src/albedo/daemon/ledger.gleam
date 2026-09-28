@@ -23,7 +23,7 @@ import gleam/result
 import gleam/string
 import sqlight
 
-pub const schema = "CREATE TABLE IF NOT EXISTS request_ledger(id INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),seq INTEGER,kind TEXT NOT NULL,profile TEXT NOT NULL,provider TEXT NOT NULL,account TEXT,model TEXT NOT NULL,started_ms INTEGER NOT NULL,finished_ms INTEGER NOT NULL,outcome TEXT NOT NULL,status INTEGER,error TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,cache_creation_tokens INTEGER,cache_write_5m_tokens INTEGER,cache_write_1h_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,head_hash TEXT NOT NULL,inputs INTEGER NOT NULL,replaced INTEGER,projection_hash TEXT,strategy TEXT); CREATE INDEX IF NOT EXISTS request_ledger_session ON request_ledger(session,id);"
+pub const schema = "CREATE TABLE IF NOT EXISTS request_ledger(id INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),seq INTEGER,kind TEXT NOT NULL,profile TEXT NOT NULL,provider TEXT NOT NULL,account TEXT,model TEXT NOT NULL,started_ms INTEGER NOT NULL,finished_ms INTEGER NOT NULL,outcome TEXT NOT NULL,status INTEGER,error TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,cache_creation_tokens INTEGER,cache_write_5m_tokens INTEGER,cache_write_1h_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,head_hash TEXT NOT NULL,inputs INTEGER NOT NULL,replaced INTEGER,projection_hash TEXT,strategy TEXT,cache_marks TEXT NOT NULL DEFAULT '[]'); CREATE INDEX IF NOT EXISTS request_ledger_session ON request_ledger(session,id);"
 
 /// What the call was for. A turn is the model loop; a summarizer is the
 /// compaction summary call `loop.summarize` makes.
@@ -202,6 +202,8 @@ pub type Call {
     outcome: Outcome,
     usage: Option(types.Usage),
     prefix: Prefix,
+    /// Where the request asked the provider to cache, and for how long.
+    cache_marks: List(types.CacheMark),
   )
 }
 
@@ -221,7 +223,7 @@ pub fn record(ledger: store.Store, call: Call) -> Result(Int, String) {
 }
 
 // `seq` starts null and is attached after the call's transcript row commits.
-const insert = "INSERT INTO request_ledger(session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy) VALUES(?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+const insert = "INSERT INTO request_ledger(session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks) VALUES(?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 
 fn values(call: Call) -> List(sqlight.Value) {
   let Call(
@@ -236,6 +238,7 @@ fn values(call: Call) -> List(sqlight.Value) {
     outcome,
     usage,
     prefix,
+    cache_marks,
   ) = call
   let Prefix(head_hash, inputs, replaced, projection_hash, strategy) = prefix
   let #(status, error) = case outcome {
@@ -291,6 +294,7 @@ fn values(call: Call) -> List(sqlight.Value) {
     sqlight.nullable(sqlight.int, replaced),
     sqlight.nullable(sqlight.text, projection_hash),
     sqlight.nullable(sqlight.text, strategy),
+    sqlight.text(json.array(cache_marks, cache_mark_json) |> json.to_string),
   ]
 }
 
@@ -336,6 +340,7 @@ pub type Row {
     replaced: Option(Int),
     projection_hash: Option(String),
     strategy: Option(String),
+    cache_marks: List(types.CacheMark),
   )
 }
 
@@ -365,7 +370,7 @@ pub fn page(
 }
 
 // Named, in decoder order, so a column added later cannot shift a read.
-const columns = "id,session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy"
+const columns = "id,session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks"
 
 fn row_decoder() -> decode.Decoder(Row) {
   use id <- decode.field(0, decode.int)
@@ -393,6 +398,7 @@ fn row_decoder() -> decode.Decoder(Row) {
   use replaced <- decode.field(22, decode.optional(decode.int))
   use projection_hash <- decode.field(23, decode.optional(decode.string))
   use strategy <- decode.field(24, decode.optional(decode.string))
+  use cache_marks <- decode.field(25, decode.then(decode.string, marks_decoder))
   decode.success(Row(
     id,
     session,
@@ -419,6 +425,7 @@ fn row_decoder() -> decode.Decoder(Row) {
     replaced,
     projection_hash,
     strategy,
+    cache_marks,
   ))
 }
 
@@ -451,7 +458,43 @@ pub fn row_json(row: Row) -> Json {
     #("replaced", json.nullable(row.replaced, json.int)),
     #("projectionHash", json.nullable(row.projection_hash, json.string)),
     #("strategy", json.nullable(row.strategy, json.string)),
+    #("cacheMarks", json.array(row.cache_marks, cache_mark_json)),
   ])
+}
+
+/// A mark as stored and served: `{"through":"tools"|"system"|"input",
+/// "index"?, "ttlSeconds"}`.
+fn cache_mark_json(mark: types.CacheMark) -> Json {
+  let through = case mark.through {
+    types.ToolsSpan -> [#("through", json.string("tools"))]
+    types.SystemSpan -> [#("through", json.string("system"))]
+    types.InputSpan(index) -> [
+      #("through", json.string("input")),
+      #("index", json.int(index)),
+    ]
+  }
+  json.object(
+    list.append(through, [#("ttlSeconds", json.int(mark.ttl_seconds))]),
+  )
+}
+
+fn marks_decoder(stored: String) -> decode.Decoder(List(types.CacheMark)) {
+  let mark = {
+    use through <- decode.field("through", decode.string)
+    use index <- decode.optional_field("index", 0, decode.int)
+    use ttl_seconds <- decode.field("ttlSeconds", decode.int)
+    case through {
+      "tools" -> decode.success(types.ToolsSpan)
+      "system" -> decode.success(types.SystemSpan)
+      "input" -> decode.success(types.InputSpan(index))
+      _ -> decode.failure(types.SystemSpan, "a cache mark span")
+    }
+    |> decode.map(types.CacheMark(_, ttl_seconds))
+  }
+  case json.parse(stored, decode.list(mark)) {
+    Ok(marks) -> decode.success(marks)
+    Error(_) -> decode.failure([], "stored cache marks")
+  }
 }
 
 /// The ms clock the ledger timestamps rows with.

@@ -434,6 +434,111 @@ pub fn claude_billing_hash_matches_reference_vectors_test() {
 @external(erlang, "albedo_claude_auth", "token")
 fn claude_token(response: String) -> Result(String, String)
 
+/// The ledger records `wire.cache_marks` as what a Claude request asked to
+/// cache; it must name exactly the cache_control markers `encode` sends.
+pub fn claude_cache_marks_match_the_encoded_markers_test() {
+  let requests = [
+    types.Request(
+      "claude-opus-5-5",
+      Some("be brief"),
+      [types.User("a"), types.Assistant("b"), types.User("c")],
+      [
+        types.Tool("read", "read", json.object([]), False),
+        types.Tool("bash", "run", json.object([]), False),
+      ],
+      None,
+      types.defaults,
+    ),
+    types.Request(
+      "claude-opus-5-5",
+      None,
+      [types.User("hi")],
+      [],
+      None,
+      types.defaults,
+    ),
+  ]
+  list.each(requests, fn(request) {
+    let assert Ok(openai_api.Exchange(body: body, ..)) =
+      wire.encode(
+        no_files_home,
+        "token",
+        "11111111-2222-4333-8444-555555555555",
+        string.repeat("a", 64),
+        "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        request,
+      )
+    let assert Ok(value) = json.parse(sent(body), decode.dynamic)
+    // A request without tools sends no tools field at all.
+    let markers = fn(field) {
+      let assert Ok(blocks) =
+        decode.run(
+          value,
+          decode.optional_field(
+            field,
+            [],
+            decode.list(marker_decoder()),
+            decode.success,
+          ),
+        )
+      option.values(blocks)
+    }
+    let assert Ok(messages) =
+      decode.run(
+        value,
+        decode.at(
+          ["messages"],
+          decode.list(decode.at(["content"], decode.list(marker_decoder()))),
+        ),
+      )
+    let last_message = list.length(messages) - 1
+    let input =
+      messages
+      |> list.index_map(fn(blocks, at) {
+        let last_block = list.length(blocks) - 1
+        list.index_map(blocks, fn(ttl, block) {
+          case ttl, at == last_message && block == last_block {
+            Some(ttl), True -> [
+              #(types.InputSpan(list.length(request.input) - 1), ttl),
+            ]
+            // A marker anywhere but the final block matches no declared mark.
+            Some(ttl), False -> [#(types.InputSpan(-1), ttl)]
+            None, _ -> []
+          }
+        })
+      })
+      |> list.flatten
+      |> list.flatten
+    let encoded =
+      list.flatten([
+        list.map(markers("tools"), fn(ttl) { #(types.ToolsSpan, ttl) }),
+        list.map(markers("system"), fn(ttl) { #(types.SystemSpan, ttl) }),
+        input,
+      ])
+    let declared =
+      wire.cache_marks(request)
+      |> list.map(fn(mark) { #(mark.through, mark.ttl_seconds) })
+    assert declared == encoded
+  })
+}
+
+/// A block's cache_control TTL in seconds, when it carries one.
+fn marker_decoder() -> decode.Decoder(option.Option(Int)) {
+  let ttl = {
+    use ttl <- decode.optional_field("ttl", "5m", decode.string)
+    decode.success(case ttl {
+      "1h" -> 3600
+      _ -> 300
+    })
+  }
+  decode.optional_field(
+    "cache_control",
+    None,
+    decode.optional(ttl),
+    decode.success,
+  )
+}
+
 @external(erlang, "albedo_claude_billing", "hash")
 fn billing_hash(body: String) -> String
 
