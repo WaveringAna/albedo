@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"albedo/cli/internal/config"
@@ -121,6 +122,17 @@ func (d *tuiDriver) results(cmd tea.Cmd) []tea.Msg {
 			return nil
 		}
 		return []tea.Msg{msg}
+	}
+}
+
+// connected answers the chat's status poll once, as the event loop would
+// before the composer lets a message through.
+func (d *tuiDriver) connected() {
+	d.t.Helper()
+	chat := d.App.Chat
+	d.Update(d.Update(tui.ChatStatusPollMsg{SessionID: chat.SessionID, Generation: chat.Generation})())
+	if view := d.View(); strings.Contains(view, "connecting…") {
+		d.t.Fatalf("the session still reads as connecting after its status answered:\n%s", view)
 	}
 }
 

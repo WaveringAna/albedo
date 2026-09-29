@@ -79,6 +79,7 @@ func TestTUIMissingWorkspaceSendsTheTurnFromThePickedFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	d.connected()
 	d.App.Chat.TextArea.SetValue("hello from nowhere")
 	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if view := d.View(); d.App.State != tui.AppStateFolderPicker || !strings.Contains(view, "not found") {

@@ -24,6 +24,7 @@ func TestTUINoticeMovesToANewSessionAndClearsOnSend(t *testing.T) {
 		t.Fatalf("notice did not follow the real new session:\n%s", d.View())
 	}
 
+	d.connected()
 	// Enter batches the send with the spinner; only the send reaches the
 	// daemon.
 	d.App.Chat.TextArea.SetValue("clear the notice")

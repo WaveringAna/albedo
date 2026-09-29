@@ -57,6 +57,15 @@ func TestPromptMultilineWrapsScrollsAndSubmits(t *testing.T) {
 	altEnter := tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt}
 	m := composer(t, width, height)
 
+	// enter while connecting keeps the draft instead of sending it.
+	m = typePrompt(m, "too early")
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.TextArea.Value() != "too early" || len(m.pendingUsers) != 0 {
+		t.Fatalf("enter while connecting sent %q (pending %d), want the draft kept", m.TextArea.Value(), len(m.pendingUsers))
+	}
+	m.TextArea.Reset()
+	m.Status.Phase = &phaseResting
+
 	if m.promptHeight() != 1 {
 		t.Fatalf("initial promptHeight %d, want 1", m.promptHeight())
 	}

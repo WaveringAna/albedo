@@ -1168,7 +1168,12 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				return m, cmd
 			}
 		case "enter":
-			if trimmed := strings.TrimSpace(m.TextArea.Value()); trimmed != "" {
+			trimmed := strings.TrimSpace(m.TextArea.Value())
+			// a draft typed while connecting waits in the composer
+			if m.connecting() && !(strings.HasPrefix(trimmed, "/") && m.isRecognizedCommand(trimmed)) {
+				return m, nil
+			}
+			if trimmed != "" {
 				m.TextArea.Reset()
 				m.syncLayout()
 				m.submitInput(trimmed, &cmds)
@@ -2051,10 +2056,14 @@ func (m ChatModel) statusLine() string {
 		}
 		return "thinking"
 	}
-	if m.Status.Phase == nil {
+	if m.connecting() {
 		return pick(m.Client != nil, "connecting…", "opening session…")
 	}
 	return pick(m.Flags.Tools, "ready", "")
+}
+
+func (m ChatModel) connecting() bool {
+	return m.Status.Phase == nil && !(m.Status.Running && !m.Status.Idle)
 }
 
 // phaseMood is the face class for the phase statusLine names.
