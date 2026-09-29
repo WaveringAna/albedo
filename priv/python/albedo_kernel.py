@@ -119,7 +119,7 @@ async def cleanup() -> None:
                         "failures": [f"{type(error).__name__}: {error}"],
                     }
                 )
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 pass  # a disconnected owner must not prevent other cleanup callbacks
 
 
@@ -145,7 +145,7 @@ def die() -> None:
                     ],
                 }
             )
-        except (OSError, ValueError):
+        except OSError, ValueError:
             pass  # the owner disconnected; it independently tracks our groups
     # The interpreter and its subprocesses own a separate process group.
     os.killpg(os.getpid(), signal.SIGKILL)
@@ -173,7 +173,7 @@ def reader():
                         LOOP.call_soon_threadsafe(task.cancel)
             else:
                 _ = LOOP.call_soon_threadsafe(deliver, message)
-    except (EOFError, OSError, ValueError, KeyError):
+    except EOFError, OSError, ValueError, KeyError:
         die()
 
 
@@ -839,7 +839,7 @@ def _wire_encode(value: object, depth: int = 0) -> object:
                 }
         except Unencodable:
             raise
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             raise Unencodable from None
         return [_wire_encode(item, depth + 1) for item in value]
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
@@ -852,7 +852,7 @@ def _wire_encode(value: object, depth: int = 0) -> object:
                     for field in dataclasses.fields(value)
                 },
             }
-        except (TypeError, ValueError, AttributeError):
+        except TypeError, ValueError, AttributeError:
             raise Unencodable from None
     raise Unencodable
 
@@ -925,7 +925,7 @@ def _invoke_reply(
     try:
         wire = _wire_encode(result)
         encoded = json.dumps(wire, ensure_ascii=True)
-    except (Unencodable, TypeError, ValueError, RecursionError):
+    except Unencodable, TypeError, ValueError, RecursionError:
         reply: dict[str, object] = {
             "type": "invoked",
             "id": call_id,
@@ -1147,7 +1147,7 @@ async def serve():
             result = await task
             if result is not None:
                 value = show(result)
-        except (KeyboardInterrupt, asyncio.CancelledError):
+        except KeyboardInterrupt, asyncio.CancelledError:
             status = "interrupted"
             if capture.interruption == "deadline":
                 capture.write("\n[cell deadline exceeded; execution interrupted]\n")

@@ -68,7 +68,9 @@ class CredentialsTest(unittest.TestCase):
             with app.api("/auth/credentials/migration", {}) as response:
                 self.assertEqual(json.load(response)["moved"], expected)
         # Not even their owner reads them without a chmod first.
-        self.assertEqual({stat.S_IMODE(path.stat().st_mode) for path in self.backups(app)}, {0})
+        self.assertEqual(
+            {stat.S_IMODE(path.stat().st_mode) for path in self.backups(app)}, {0}
+        )
         # The moved key still reaches the provider.
         self.assertEqual(self.authorization(app), "Bearer fixture-key")
 
@@ -79,12 +81,16 @@ class CredentialsTest(unittest.TestCase):
         del config["providers"][app.profile]["apiKey"]
         (app.home / "config.json").write_text(json.dumps(config))
         app.api(
-            f"/auth/credentials/providers/{app.profile}", {"apiKey": "rotated-key"}, method="PUT"
+            f"/auth/credentials/providers/{app.profile}",
+            {"apiKey": "rotated-key"},
+            method="PUT",
         ).close()
         self.assertEqual(self.authorization(app), "Bearer rotated-key")
 
         def patch(body):
-            with app.api("/auth/credentials/mcp/docs", body, method="PATCH") as response:
+            with app.api(
+                "/auth/credentials/mcp/docs", body, method="PATCH"
+            ) as response:
                 return json.load(response)["undo"]
 
         patch({"bearerToken": "secret-token", "headers": {"X-Team": "secret-team"}})
@@ -101,7 +107,10 @@ class CredentialsTest(unittest.TestCase):
             {"bearerToken": True, "headers": ["X-Team"], "env": []},
         )
         self.assertFalse(
-            any(secret in summary for secret in ("rotated-key", "secret-", "fixture-key"))
+            any(
+                secret in summary
+                for secret in ("rotated-key", "secret-", "fixture-key")
+            )
         )
 
     def backups(self, app):

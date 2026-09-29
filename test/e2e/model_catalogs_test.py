@@ -12,6 +12,7 @@ update. Every list is served on loopback or seeded on disk, so no live network
 is reached. The class writes the shared home's list caches and models
 settings, so it is exclusive and removes the caches again.
 """
+
 import json
 import unittest
 import urllib.parse
@@ -20,19 +21,25 @@ from harness import Albedo, Provider, exclusive, text
 
 MODELS_CATALOG = {
     "fixture": {
-        "id": "fixture", "name": "Fixture",
-        "models": {"fixture-model": {"id": "fixture-model",
-                                     "limit": {"context": 8000}}},
+        "id": "fixture",
+        "name": "Fixture",
+        "models": {
+            "fixture-model": {"id": "fixture-model", "limit": {"context": 8000}}
+        },
     },
     # Claims efforts the Anthropic API says the model does not take.
     "anthropic": {
-        "id": "anthropic", "name": "Anthropic",
-        "models": {"claude-fixture-small": {
-            "id": "claude-fixture-small",
-            "limit": {"context": 200000, "output": 8000},
-            "reasoning_options": [{"type": "effort",
-                                   "values": ["low", "medium", "high"]}],
-        }},
+        "id": "anthropic",
+        "name": "Anthropic",
+        "models": {
+            "claude-fixture-small": {
+                "id": "claude-fixture-small",
+                "limit": {"context": 200000, "output": 8000},
+                "reasoning_options": [
+                    {"type": "effort", "values": ["low", "medium", "high"]}
+                ],
+            }
+        },
     },
 }
 
@@ -41,10 +48,20 @@ ALIBABA_MODELS = {"data": [{"id": "qwen-fresh"}, {"id": "qwen-tts-fresh"}]}
 # As the Anthropic Models API answered, newest first; neither id is one
 # albedo or models.dev knows.
 CLAUDE_MODELS = [
-    {"id": "claude-fixture-6", "context": 500000, "output": 32000,
-     "images": True, "efforts": ["low", "high"]},
-    {"id": "claude-fixture-small", "context": 200000, "output": 8000,
-     "images": False, "efforts": []},
+    {
+        "id": "claude-fixture-6",
+        "context": 500000,
+        "output": 32000,
+        "images": True,
+        "efforts": ["low", "high"],
+    },
+    {
+        "id": "claude-fixture-small",
+        "context": 200000,
+        "output": 8000,
+        "images": False,
+        "efforts": [],
+    },
 ]
 
 
@@ -63,19 +80,37 @@ class ModelCatalogReloadTests(unittest.TestCase):
             (app.home / "alibaba-models.json").write_text(json.dumps(["qwen-stale"]))
             (app.home / "claude-models.json").write_text(json.dumps(CLAUDE_MODELS))
             (app.home / "models.json").unlink(missing_ok=True)
-            (app.home / "extensions.json").write_text(json.dumps({
-                "models": {"url": self.catalog.url + "/models.json",
-                           "refreshHours": 0},
-                "cacheTtl": {"url": None},
-            }))
+            (app.home / "extensions.json").write_text(
+                json.dumps(
+                    {
+                        "models": {
+                            "url": self.catalog.url + "/models.json",
+                            "refreshHours": 0,
+                        },
+                        "cacheTtl": {"url": None},
+                    }
+                )
+            )
 
-        self.app = Albedo(self.provider, prepare=prepare, providers={
-            "fixture": {"baseUrl": self.provider.url, "apiKey": "fixture-key",
-                        "model": "fixture-model", "protocol": "chat_completions"},
-            "fixture-alibaba": {"extension": "alibaba", "baseUrl": self.alibaba.url,
-                                "apiKey": "fixture-alibaba-key", "model": "qwen-fresh",
-                                "protocol": "chat_completions"},
-        })
+        self.app = Albedo(
+            self.provider,
+            prepare=prepare,
+            providers={
+                "fixture": {
+                    "baseUrl": self.provider.url,
+                    "apiKey": "fixture-key",
+                    "model": "fixture-model",
+                    "protocol": "chat_completions",
+                },
+                "fixture-alibaba": {
+                    "extension": "alibaba",
+                    "baseUrl": self.alibaba.url,
+                    "apiKey": "fixture-alibaba-key",
+                    "model": "qwen-fresh",
+                    "protocol": "chat_completions",
+                },
+            },
+        )
         self.app.__enter__()
         for name in ("alibaba-models.json", "claude-models.json"):
             self.addCleanup((self.app.home / name).unlink, missing_ok=True)
@@ -87,8 +122,10 @@ class ModelCatalogReloadTests(unittest.TestCase):
 
     def reload(self, target):
         session = self.app.session()
-        with self.app.api(f"/sessions/{session}/commands",
-                          {"name": "/reload", "args": {"target": target}}) as response:
+        with self.app.api(
+            f"/sessions/{session}/commands",
+            {"name": "/reload", "args": {"target": target}},
+        ) as response:
             return json.load(response)["result"]
 
     def alibaba_listed(self):
@@ -106,15 +143,20 @@ class ModelCatalogReloadTests(unittest.TestCase):
         # The non-chat entitlement stays filtered, as on any other fetch.
         self.assertEqual(self.alibaba_listed(), ["qwen-fresh"])
         # A failed reload keeps the list it had.
-        self.assertEqual(self.listed("claude"), ["claude-fixture-6", "claude-fixture-small"])
+        self.assertEqual(
+            self.listed("claude"), ["claude-fixture-6", "claude-fixture-small"]
+        )
 
     def test_claude_picker_offers_the_api_list_with_its_facts(self):
         self.reload("models")
         newest, small = self.listed("claude", "?details=1")
-        self.assertEqual([newest["id"], small["id"]],
-                         ["claude-fixture-6", "claude-fixture-small"])
-        self.assertEqual((newest["context"], newest["output"], newest["efforts"]),
-                         (500000, 32000, ["low", "high"]))
+        self.assertEqual(
+            [newest["id"], small["id"]], ["claude-fixture-6", "claude-fixture-small"]
+        )
+        self.assertEqual(
+            (newest["context"], newest["output"], newest["efforts"]),
+            (500000, 32000, ["low", "high"]),
+        )
         # No effort listed means the model takes none, not a guessed default.
         self.assertEqual(small["efforts"], [])
 

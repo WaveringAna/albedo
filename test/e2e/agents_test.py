@@ -68,8 +68,13 @@ class AgentsTests(unittest.TestCase):
                 )
             )
 
-        catalog = self._testMethodName == "test_generic_profile_lists_its_endpoints_catalog_models"
-        self.app = Albedo(self.provider, providers=providers, prepare=prepare if catalog else None)
+        catalog = (
+            self._testMethodName
+            == "test_generic_profile_lists_its_endpoints_catalog_models"
+        )
+        self.app = Albedo(
+            self.provider, providers=providers, prepare=prepare if catalog else None
+        )
         self.app.__enter__()
         self.addCleanup(self.provider.close)
         self.addCleanup(self.app.__exit__, None, None, None)
@@ -361,9 +366,11 @@ class AgentsTests(unittest.TestCase):
             self.assertEqual(made["member"]["parent"], parent)
             self.app.idle(made["session"]["id"])
         tasks = wait_for(
-            lambda: self.asked('kind="task">\ncross-provider')
-            if len(self.asked('kind="task">\ncross-provider')) == 2
-            else None
+            lambda: (
+                self.asked('kind="task">\ncross-provider')
+                if len(self.asked('kind="task">\ncross-provider')) == 2
+                else None
+            )
         )
         self.assertTrue(all('from="radio desk"' in task for task in tasks))
         self.assertGreaterEqual(

@@ -66,8 +66,9 @@ class OwnerChannel:
 
     def recv_reply(self, call_id):
         return self.wait_for(
-            lambda f: f.get("id") == call_id
-            and f["type"] in ("invoked", "introspected")
+            lambda f: (
+                f.get("id") == call_id and f["type"] in ("invoked", "introspected")
+            )
         )
 
     def invoke(self, call_id, **frame):

@@ -138,7 +138,12 @@ class Agent:
                 dict,
                 await host(
                     "agents.search_messages",
-                    {"id": self.id, "pattern": pattern, "limit": limit, "offset": offset},
+                    {
+                        "id": self.id,
+                        "pattern": pattern,
+                        "limit": limit,
+                        "offset": offset,
+                    },
                 ),
             )
         )

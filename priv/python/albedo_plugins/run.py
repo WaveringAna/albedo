@@ -373,7 +373,7 @@ class Job:
         if group is not None:
             try:
                 os.killpg(group.pgid, signum)
-            except (ProcessLookupError, PermissionError):
+            except ProcessLookupError, PermissionError:
                 pass
 
     def _pause(self) -> None:
@@ -573,7 +573,9 @@ class Job:
             else "exit status unknown"
         )
         seconds = (
-            f"ran {self.duration:.1f}s" if self.duration is not None else "unknown duration"
+            f"ran {self.duration:.1f}s"
+            if self.duration is not None
+            else "unknown duration"
         )
         if self.waited:
             seconds += f", queued {self.waited:.1f}s"

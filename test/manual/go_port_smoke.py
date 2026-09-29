@@ -304,7 +304,7 @@ class StrictMockDaemon:
                         while not parent.stop_stream.wait(0.2):
                             self.wfile.write(b": keepalive\n\n")
                             self.wfile.flush()
-                    except (BrokenPipeError, ConnectionResetError):
+                    except BrokenPipeError, ConnectionResetError:
                         pass
                     return
 
@@ -454,7 +454,7 @@ def run_pty_scenario(binary, home_dir, args, rows, cols, duration=2.5, input_key
                     data = os.read(key.fd, 4096)
                     if data:
                         raw_output.extend(data)
-                except (BlockingIOError, OSError):
+                except BlockingIOError, OSError:
                     pass
 
             elapsed = time.monotonic() - started
@@ -481,7 +481,7 @@ def run_pty_scenario(binary, home_dir, args, rows, cols, duration=2.5, input_key
                 if not data:
                     break
                 raw_output.extend(data)
-            except (BlockingIOError, OSError):
+            except BlockingIOError, OSError:
                 break
     finally:
         if child.poll() is None:
@@ -821,7 +821,7 @@ def test_sse_retention_and_memory(binary, out_dir):
                     data = os.read(key.fd, 8192)
                     if data:
                         raw_output.extend(data)
-                except (BlockingIOError, OSError):
+                except BlockingIOError, OSError:
                     pass
 
             try:
@@ -858,7 +858,7 @@ def test_sse_retention_and_memory(binary, out_dir):
                 if not data:
                     break
                 raw_output.extend(data)
-            except (BlockingIOError, OSError):
+            except BlockingIOError, OSError:
                 break
     finally:
         if child.poll() is None:

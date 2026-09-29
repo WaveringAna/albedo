@@ -9,14 +9,16 @@ from harness import Albedo, Provider, python, text
 class WorkTests(unittest.TestCase):
     def test_python_work_is_scoped_to_session_workspace(self):
         provider = Provider(
-            lambda request: python(
-                "import os\n"
-                "name = os.path.basename(os.getcwd())\n"
-                "await work.create(title=name)\n"
-                "print([item['title'] for item in await work.list()])"
+            lambda request: (
+                python(
+                    "import os\n"
+                    "name = os.path.basename(os.getcwd())\n"
+                    "await work.create(title=name)\n"
+                    "print([item['title'] for item in await work.list()])"
+                )
+                if request["messages"][-1].get("role") == "user"
+                else text("done")
             )
-            if request["messages"][-1].get("role") == "user"
-            else text("done")
         )
         self.addCleanup(provider.close)
         with Albedo(provider) as app:

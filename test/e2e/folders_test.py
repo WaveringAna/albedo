@@ -6,6 +6,7 @@ a git repository (branch, changes, detached HEAD), a colocated jj repository
 (jj wins, bookmarks, and browsing never writes a jj operation), linguist
 shares, and path validation. The jj cases skip when jj is not installed.
 """
+
 import json
 import os
 from pathlib import Path
@@ -19,16 +20,23 @@ import urllib.parse
 from harness import Albedo
 
 GIT_ENV = {
-    "GIT_AUTHOR_NAME": "fixture", "GIT_AUTHOR_EMAIL": "fixture@example.com",
-    "GIT_COMMITTER_NAME": "fixture", "GIT_COMMITTER_EMAIL": "fixture@example.com",
-    "JJ_USER": "fixture", "JJ_EMAIL": "fixture@example.com",
+    "GIT_AUTHOR_NAME": "fixture",
+    "GIT_AUTHOR_EMAIL": "fixture@example.com",
+    "GIT_COMMITTER_NAME": "fixture",
+    "GIT_COMMITTER_EMAIL": "fixture@example.com",
+    "JJ_USER": "fixture",
+    "JJ_EMAIL": "fixture@example.com",
 }
 
 
 def sh(cwd, *args):
     return subprocess.run(
-        args, cwd=cwd, env=dict(os.environ, **GIT_ENV), check=True,
-        capture_output=True, text=True,
+        args,
+        cwd=cwd,
+        env=dict(os.environ, **GIT_ENV),
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout
 
 
@@ -71,11 +79,17 @@ class FoldersTest(unittest.TestCase):
         self.assertFalse(listed["truncated"])
         self.assertEqual(
             [(e["name"], e["hidden"], e["vcs"]) for e in listed["entries"]],
-            [(".hidden", True, None), ("Alpha", False, None), ("beta", False, None),
-             ("gamma", False, None), ("zeta", False, None)],
+            [
+                (".hidden", True, None),
+                ("Alpha", False, None),
+                ("beta", False, None),
+                ("gamma", False, None),
+                ("zeta", False, None),
+            ],
         )
         self.assertEqual(
-            listed["entries"][1]["modified"], int((self.root / "Alpha").stat().st_mtime))
+            listed["entries"][1]["modified"], int((self.root / "Alpha").stat().st_mtime)
+        )
 
         preview = self.get("preview", self.root)
         self.assertIsNone(preview["repo"])
@@ -83,12 +97,18 @@ class FoldersTest(unittest.TestCase):
         self.assertEqual(preview["more"], 0)
         self.assertEqual(
             [(e["name"], e["dir"]) for e in preview["tree"]],
-            [("Alpha", True), ("beta", True), ("gamma", True), ("zeta", True),
-             ("notes.txt", False)],
+            [
+                ("Alpha", True),
+                ("beta", True),
+                ("gamma", True),
+                ("zeta", True),
+                ("notes.txt", False),
+            ],
         )
         gamma = preview["tree"][2]
         self.assertEqual(
-            [c["name"] for c in gamma["children"]], ["one", "two", "a.py", "b.py"])
+            [c["name"] for c in gamma["children"]], ["one", "two", "a.py", "b.py"]
+        )
         self.assertEqual(gamma["more"], 4)
         self.assertNotIn("children", gamma["children"][0])
         self.assertEqual(gamma["children"][2]["language"], "Python")
@@ -112,10 +132,17 @@ class FoldersTest(unittest.TestCase):
 
         self.assertEqual(self.get("list", self.root)["entries"][0]["vcs"], "git")
         found = self.get("repo", repo / "src")["repo"]
-        self.assertEqual(found, {
-            "kind": "git", "root": str(repo), "branch": "trunk", "commit": commit,
-            "changed": 2, "touched": touched,
-        })
+        self.assertEqual(
+            found,
+            {
+                "kind": "git",
+                "root": str(repo),
+                "branch": "trunk",
+                "commit": commit,
+                "changed": 2,
+                "touched": touched,
+            },
+        )
 
         preview = self.get("preview", repo)
         self.assertEqual(preview["repo"], found)
@@ -130,7 +157,8 @@ class FoldersTest(unittest.TestCase):
         self.assertEqual(tree["src"]["changed"], 2)
         self.assertEqual(
             {c["name"]: c["changed"] for c in tree["src"]["children"]},
-            {"main.go": 1, "new.go": 1, "util.go": 0})
+            {"main.go": 1, "new.go": 1, "util.go": 0},
+        )
         self.assertEqual(tree["script.py"]["changed"], 0)
 
         sh(repo, "git", "checkout", "-q", "--detach")
@@ -141,10 +169,17 @@ class FoldersTest(unittest.TestCase):
         repo.mkdir()
         sh(repo, "git", "init", "-q", "-b", "main")
         (repo / "draft.md").write_text("# draft\n")
-        self.assertEqual(self.get("repo", repo)["repo"], {
-            "kind": "git", "root": str(repo), "branch": "main", "commit": None,
-            "changed": 1, "touched": None,
-        })
+        self.assertEqual(
+            self.get("repo", repo)["repo"],
+            {
+                "kind": "git",
+                "root": str(repo),
+                "branch": "main",
+                "commit": None,
+                "changed": 1,
+                "touched": None,
+            },
+        )
 
     @unittest.skipUnless(shutil.which("jj"), "jj is not installed")
     def test_colocated_jj_repository_wins_without_writing_an_operation(self):
@@ -158,8 +193,9 @@ class FoldersTest(unittest.TestCase):
         sh(repo, "jj", "commit", "-m", "two")
         write(repo / "lib" / "core.gleam", "pub fn main() { 1 }\n")
         sh(repo, "jj", "status")
-        change = sh(repo, "jj", "log", "-r", "@", "--no-graph", "-T",
-                    "change_id.shortest(4)").strip()
+        change = sh(
+            repo, "jj", "log", "-r", "@", "--no-graph", "-T", "change_id.shortest(4)"
+        ).strip()
         # Not yet snapshotted, so jj does not know it and the tree leaves it
         # out; a browse that snapshotted would record an operation.
         write(repo / "lib" / "later.gleam", "pub fn later() { Nil }\n")
@@ -177,31 +213,43 @@ class FoldersTest(unittest.TestCase):
         preview = self.get("preview", repo)
         self.assertEqual(preview["repo"], found)
         self.assertEqual(
-            [(l["name"], l["share"]) for l in preview["languages"]], [("Gleam", 1.0)])
+            [(l["name"], l["share"]) for l in preview["languages"]], [("Gleam", 1.0)]
+        )
         lib = preview["tree"][0]
         self.assertEqual((lib["name"], lib["changed"]), ("lib", 1))
         self.assertEqual(
             {c["name"]: c["changed"] for c in lib["children"]},
-            {"core.gleam": 1, "more.gleam": 0})
+            {"core.gleam": 1, "more.gleam": 0},
+        )
 
         self.assertEqual(self.operations(repo), operations)
 
         # A bookmark that moved on without @ still names @'s line of work,
         # rather than an older backup behind @.
-        log = lambda rev: sh(repo, "jj", "log", "-r", rev, "--no-graph", "-T",
-                             "change_id").strip()
+        log = lambda rev: sh(
+            repo, "jj", "log", "-r", rev, "--no-graph", "-T", "change_id"
+        ).strip()
         two, one = log("@-"), log("@--")
         sh(repo, "jj", "bookmark", "create", "backup/old", "-r", one)
         sh(repo, "jj", "new", two, "-m", "side")
         sh(repo, "jj", "bookmark", "set", "main", "-r", "@")
         sh(repo, "jj", "edit", change)
         self.assertEqual(
-            self.get("repo", repo)["repo"]["bookmark"], {"name": "main", "ahead": 1})
+            self.get("repo", repo)["repo"]["bookmark"], {"name": "main", "ahead": 1}
+        )
 
     @staticmethod
     def operations(repo):
-        return sh(repo, "jj", "op", "log", "--no-graph", "--ignore-working-copy",
-                  "-T", 'id ++ "\\n"')
+        return sh(
+            repo,
+            "jj",
+            "op",
+            "log",
+            "--no-graph",
+            "--ignore-working-copy",
+            "-T",
+            'id ++ "\\n"',
+        )
 
     def test_paths_expand_home_and_refuse_the_rest(self):
         home = self.app.root / "user-home"

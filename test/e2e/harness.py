@@ -376,7 +376,7 @@ class Provider:
                 if reply.usage is not None:
                     completed["usage"] = reply.usage
                 emit({"type": "response.completed", "response": completed})
-        except (BrokenPipeError, ConnectionResetError):
+        except BrokenPipeError, ConnectionResetError:
             pass
 
     def close(self):
@@ -534,8 +534,9 @@ class Albedo:
                 self.prepare(self)
             if not (self.home / "extensions.json").exists():
                 (self.home / "extensions.json").write_text(
-                    json.dumps({"models": {"refreshHours": 0},
-                                "cacheTtl": {"url": None}})
+                    json.dumps(
+                        {"models": {"refreshHours": 0}, "cacheTtl": {"url": None}}
+                    )
                 )
             default_name = (
                 f"fixture-{self.provider.route}" if self._concurrent else "fixture"

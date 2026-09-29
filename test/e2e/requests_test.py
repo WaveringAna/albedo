@@ -7,27 +7,43 @@ identity that distinguishes a warm append from a compaction rewrite, an HTTP
 failure recorded as a quota reading, and the seq link to the transcript. None
 of this is observable from events or history alone.
 """
+
 import json
 import unittest
 
 from harness import Albedo, Provider, Reply, text
 
-FIRST = {"input_tokens": 100, "output_tokens": 20,
-         "input_tokens_details": {"cached_tokens": 40},
-         "output_tokens_details": {"reasoning_tokens": 7}}
-TOOL = {"input_tokens": 200, "output_tokens": 30,
-        "input_tokens_details": {"cached_tokens": 80},
-        "output_tokens_details": {"reasoning_tokens": 11}}
-AFTER = {"input_tokens": 300, "output_tokens": 40,
-         "input_tokens_details": {"cached_tokens": 120},
-         "output_tokens_details": {"reasoning_tokens": 3}}
-THIRD = {"input_tokens": 400, "output_tokens": 50,
-         "input_tokens_details": {"cached_tokens": 160},
-         "output_tokens_details": {"reasoning_tokens": 5}}
+FIRST = {
+    "input_tokens": 100,
+    "output_tokens": 20,
+    "input_tokens_details": {"cached_tokens": 40},
+    "output_tokens_details": {"reasoning_tokens": 7},
+}
+TOOL = {
+    "input_tokens": 200,
+    "output_tokens": 30,
+    "input_tokens_details": {"cached_tokens": 80},
+    "output_tokens_details": {"reasoning_tokens": 11},
+}
+AFTER = {
+    "input_tokens": 300,
+    "output_tokens": 40,
+    "input_tokens_details": {"cached_tokens": 120},
+    "output_tokens_details": {"reasoning_tokens": 3},
+}
+THIRD = {
+    "input_tokens": 400,
+    "output_tokens": 50,
+    "input_tokens_details": {"cached_tokens": 160},
+    "output_tokens_details": {"reasoning_tokens": 5},
+}
 SUMMARY = {"input_tokens": 60, "output_tokens": 10}
-POST = {"input_tokens": 70, "output_tokens": 15,
-        "input_tokens_details": {"cached_tokens": 30},
-        "output_tokens_details": {"reasoning_tokens": 2}}
+POST = {
+    "input_tokens": 70,
+    "output_tokens": 15,
+    "input_tokens_details": {"cached_tokens": 30},
+    "output_tokens_details": {"reasoning_tokens": 2},
+}
 
 
 def reply(request):
@@ -36,8 +52,14 @@ def reply(request):
     # that asked for the tool, so it is told apart by input shape.
     if inputs[-1].get("type") == "function_call_output":
         return text("tool done", usage=AFTER)
-    user = next((str(item.get("content", "")) for item in reversed(inputs)
-                 if item.get("role") == "user"), "")
+    user = next(
+        (
+            str(item.get("content", ""))
+            for item in reversed(inputs)
+            if item.get("role") == "user"
+        ),
+        "",
+    )
     if "<newly-evicted-history>" in user:
         return text("older conversation summary", usage=SUMMARY)
     if user == "use the tool":
@@ -60,8 +82,9 @@ class ProviderRequestsTest(unittest.TestCase):
         """Every transcript row through the tree route, oldest first."""
         items, after = [], 0
         while True:
-            with app.api(f"/sessions/{session}/tree?after={after}&limit=100") \
-                    as response:
+            with app.api(
+                f"/sessions/{session}/tree?after={after}&limit=100"
+            ) as response:
                 page = json.load(response)
             items.extend(page["items"])
             if not page["hasMore"]:
@@ -76,8 +99,9 @@ class ProviderRequestsTest(unittest.TestCase):
                 for prompt in ("first", "use the tool", "third", "hit the limit"):
                     app.prompt(session, prompt).close()
                     app.idle(session)
-                with app.api(f"/sessions/{session}/commands",
-                             {"name": "/compact"}) as response:
+                with app.api(
+                    f"/sessions/{session}/commands", {"name": "/compact"}
+                ) as response:
                     self.assertTrue(json.load(response)["result"]["started"])
                 app.idle(session)
                 app.prompt(session, "after compaction").close()
@@ -85,17 +109,31 @@ class ProviderRequestsTest(unittest.TestCase):
 
                 page = self.rows(app, session)
                 rows = page["rows"]
-                self.assertEqual([row["kind"] for row in rows],
-                                 ["turn", "turn", "turn", "turn", "turn",
-                                  "summarizer", "turn"])
+                self.assertEqual(
+                    [row["kind"] for row in rows],
+                    ["turn", "turn", "turn", "turn", "turn", "summarizer", "turn"],
+                )
                 # Every call carries its own reported counts, split as sent.
-                self.assertEqual([(row["inputTokens"], row["outputTokens"],
-                                   row["cachedInputTokens"],
-                                   row["reasoningTokens"]) for row in rows],
-                                 [(100, 20, 40, 7), (200, 30, 80, 11),
-                                  (300, 40, 120, 3), (400, 50, 160, 5),
-                                  (None, None, None, None),
-                                  (60, 10, None, None), (70, 15, 30, 2)])
+                self.assertEqual(
+                    [
+                        (
+                            row["inputTokens"],
+                            row["outputTokens"],
+                            row["cachedInputTokens"],
+                            row["reasoningTokens"],
+                        )
+                        for row in rows
+                    ],
+                    [
+                        (100, 20, 40, 7),
+                        (200, 30, 80, 11),
+                        (300, 40, 120, 3),
+                        (400, 50, 160, 5),
+                        (None, None, None, None),
+                        (60, 10, None, None),
+                        (70, 15, 30, 2),
+                    ],
+                )
                 # The head (instructions and tools) never changed, so one hash.
                 heads = {row["headHash"] for row in rows if row["kind"] == "turn"}
                 self.assertEqual(len(heads), 1)
@@ -133,17 +171,18 @@ class ProviderRequestsTest(unittest.TestCase):
                 # found again through the tree route straight from the
                 # transcript.
                 tree = self.tree(app, session)
-                assistant = {item["preview"]: item["id"] for item in tree
-                             if item["type"] == "assistant"}
+                assistant = {
+                    item["preview"]: item["id"]
+                    for item in tree
+                    if item["type"] == "assistant"
+                }
                 self.assertEqual(rows[0]["seq"], assistant["first reply"])
                 self.assertEqual(rows[2]["seq"], assistant["tool done"])
                 self.assertEqual(rows[3]["seq"], assistant["third reply"])
-                self.assertEqual(rows[6]["seq"],
-                                 assistant["post compaction reply"])
+                self.assertEqual(rows[6]["seq"], assistant["post compaction reply"])
                 # The tool-call turn's row points at its own assistant row,
                 # the call it produced, not the tool output after it.
-                calls = [item for item in tree
-                         if item["preview"] == "call python"]
+                calls = [item for item in tree if item["preview"] == "call python"]
                 self.assertEqual(len(calls), 1)
                 self.assertEqual(rows[1]["seq"], calls[0]["id"])
                 tool_output = tree[tree.index(calls[0]) + 1]
@@ -169,10 +208,11 @@ class ProviderRequestsTest(unittest.TestCase):
                 self.assertTrue(after["strategy"])
 
                 # Paging: continue after the first row, bounded by limit.
-                second = self.rows(app, session,
-                                   f"?after={rows[0]['id']}&limit=2")
-                self.assertEqual([row["id"] for row in second["rows"]],
-                                 [row["id"] for row in rows[1:3]])
+                second = self.rows(app, session, f"?after={rows[0]['id']}&limit=2")
+                self.assertEqual(
+                    [row["id"] for row in second["rows"]],
+                    [row["id"] for row in rows[1:3]],
+                )
                 self.assertEqual(second["after"], rows[2]["id"])
         finally:
             provider.close()
@@ -193,14 +233,17 @@ class ProviderRequestsTest(unittest.TestCase):
                 app.prompt(session, "hello").close()
                 app.idle(session, timeout=60)
                 rows = self.rows(app, session)["rows"]
-                self.assertEqual([row["outcome"] for row in rows],
-                                 ["error"] * 4 + ["ok"])
+                self.assertEqual(
+                    [row["outcome"] for row in rows], ["error"] * 4 + ["ok"]
+                )
                 self.assertEqual({row["status"] for row in rows[:4]}, {503})
                 self.assertIsNotNone(rows[4]["seq"])
                 # Each wait doubles from 250ms, measured from the failed
                 # attempt's end to the next one's start.
-                gaps = [after["startedMs"] - before["finishedMs"]
-                        for before, after in zip(rows, rows[1:])]
+                gaps = [
+                    after["startedMs"] - before["finishedMs"]
+                    for before, after in zip(rows, rows[1:])
+                ]
                 for gap, wait in zip(gaps, (250, 500, 1000, 2000)):
                     self.assertGreaterEqual(gap, wait)
         finally:

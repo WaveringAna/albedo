@@ -160,7 +160,7 @@ class DaemonTest(unittest.TestCase):
                             payload = None if body is None else json.dumps(body)
                             connection.request(method, path, payload, headers)
                             connection.getresponse().read()
-                        except (http.client.HTTPException, OSError):
+                        except http.client.HTTPException, OSError:
                             if connection:
                                 connection.close()
                             connection = None

@@ -110,4 +110,3 @@ func TestDotContinueClearsTurnFailed(t *testing.T) {
 		t.Fatalf("expected statusLine to not report failure after dot continue, got: %q", status)
 	}
 }
-

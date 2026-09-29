@@ -13,6 +13,7 @@ a hyper poll arriving a second late was read as "the busy cadence did not kick
 in" when the schedule was exactly as configured. The intervals are what the
 poller actually kept.
 """
+
 import json
 import os
 import stat
@@ -82,26 +83,50 @@ class QuotaTests(unittest.TestCase):
         def prepare(app):
             # The poller resolves the core through the daemon's environment.
             app.env["ALBEDO_USAGE_CORE"] = self.usage
-            settings = {"models": {"refreshHours": 0}, "quota": {
-                "pollSeconds": POLL_SECONDS, "busyPollSeconds": BUSY_SECONDS}}
+            settings = {
+                "models": {"refreshHours": 0},
+                "quota": {"pollSeconds": POLL_SECONDS, "busyPollSeconds": BUSY_SECONDS},
+            }
             (app.home / "extensions.json").write_text(json.dumps(settings))
-            app.store_secrets("accounts", {"anthropic": [
-                {"type": "oauth", "access": "fixture-anthropic-access",
-                 "refresh": "fixture-anthropic-refresh",
-                 "expires": int(time.time() * 1000) + 3600000,
-                 "accountId": "fixture-account"}]})
+            app.store_secrets(
+                "accounts",
+                {
+                    "anthropic": [
+                        {
+                            "type": "oauth",
+                            "access": "fixture-anthropic-access",
+                            "refresh": "fixture-anthropic-refresh",
+                            "expires": int(time.time() * 1000) + 3600000,
+                            "accountId": "fixture-account",
+                        }
+                    ]
+                },
+            )
 
-        self.app = Albedo(self.provider, providers={
-            "fixture": {"baseUrl": self.provider.url, "apiKey": "fixture-key",
-                        "model": "fixture-model", "protocol": "chat_completions"},
-            "charm-hyper": {"baseUrl": "https://hyper.charm.land/v1",
-                            "apiKey": "fixture-hyper-key", "model": "fixture-model",
-                            "protocol": "chat_completions"},
-            "deepseek-fixture": {"baseUrl": "https://api.deepseek.com/v1",
-                                 "apiKey": "fixture-deepseek-key",
-                                 "model": "fixture-model",
-                                 "protocol": "chat_completions"},
-        }, prepare=prepare)
+        self.app = Albedo(
+            self.provider,
+            providers={
+                "fixture": {
+                    "baseUrl": self.provider.url,
+                    "apiKey": "fixture-key",
+                    "model": "fixture-model",
+                    "protocol": "chat_completions",
+                },
+                "charm-hyper": {
+                    "baseUrl": "https://hyper.charm.land/v1",
+                    "apiKey": "fixture-hyper-key",
+                    "model": "fixture-model",
+                    "protocol": "chat_completions",
+                },
+                "deepseek-fixture": {
+                    "baseUrl": "https://api.deepseek.com/v1",
+                    "apiKey": "fixture-deepseek-key",
+                    "model": "fixture-model",
+                    "protocol": "chat_completions",
+                },
+            },
+            prepare=prepare,
+        )
         self.app.__enter__()
         self.addCleanup(self.restore_home)
         self.addCleanup(self.app.__exit__, None, None, None)
@@ -134,8 +159,13 @@ class QuotaTests(unittest.TestCase):
 
     def observed(self, account):
         """One timestamp per poll of one account since the restart, oldest first."""
-        return sorted({row["observedAt"] for row in self.samples()
-                       if row["account"] == account and row["observedAt"] > self.since})
+        return sorted(
+            {
+                row["observedAt"]
+                for row in self.samples()
+                if row["account"] == account and row["observedAt"] > self.since
+            }
+        )
 
     def intervals(self, account):
         times = self.observed(account)
@@ -168,8 +198,11 @@ class QuotaTests(unittest.TestCase):
                 break
             time.sleep(0.25)
         else:
-            self.fail("quota readings did not land: "
-                      + json.dumps(self.readings()) + self.fake_errors())
+            self.fail(
+                "quota readings did not land: "
+                + json.dumps(self.readings())
+                + self.fake_errors()
+            )
         hyper = reading[("hyper", "primary")]
         self.assertEqual(hyper["account"], "charm-hyper")
         self.assertEqual(hyper["usedPercent"], 85.0)
@@ -194,15 +227,27 @@ class QuotaTests(unittest.TestCase):
         self.assertIsNone(deepseek["plan"])
 
         # Enough polls of each account to read a cadence off the intervals.
-        self.wait_for(lambda: len(self.observed("charm-hyper")) >= 6, 60,
-                      "the busy cadence never produced six polls: "
-                      + json.dumps(self.intervals("charm-hyper")) + self.fake_errors())
-        self.wait_for(lambda: len(self.observed("fixture-account")) >= 4, 60,
-                      "the ordinary cadence never produced four polls: "
-                      + json.dumps(self.intervals("fixture-account")) + self.fake_errors())
-        self.wait_for(lambda: len(self.observed("deepseek-fixture")) >= 3, 60,
-                      "the failure backoff never produced three polls: "
-                      + json.dumps(self.intervals("deepseek-fixture")) + self.fake_errors())
+        self.wait_for(
+            lambda: len(self.observed("charm-hyper")) >= 6,
+            60,
+            "the busy cadence never produced six polls: "
+            + json.dumps(self.intervals("charm-hyper"))
+            + self.fake_errors(),
+        )
+        self.wait_for(
+            lambda: len(self.observed("fixture-account")) >= 4,
+            60,
+            "the ordinary cadence never produced four polls: "
+            + json.dumps(self.intervals("fixture-account"))
+            + self.fake_errors(),
+        )
+        self.wait_for(
+            lambda: len(self.observed("deepseek-fixture")) >= 3,
+            60,
+            "the failure backoff never produced three polls: "
+            + json.dumps(self.intervals("deepseek-fixture"))
+            + self.fake_errors(),
+        )
 
         # The schedule as the poller kept it: one account's consecutive
         # readings are one poll duration plus its wait, so each cadence shows
@@ -217,24 +262,38 @@ class QuotaTests(unittest.TestCase):
         def median(values):
             return sorted(values)[len(values) // 2]
 
-        message = (f"busy {busy}, ordinary {ordinary}, backed off {backed_off}, "
-                   f"fake errors {self.fake_errors()!r}")
+        message = (
+            f"busy {busy}, ordinary {ordinary}, backed off {backed_off}, "
+            f"fake errors {self.fake_errors()!r}"
+        )
         self.assertGreaterEqual(median(busy), BUSY_SECONDS * 900, message)
-        self.assertLess(median(busy), BUSY_SECONDS * 2200,
-                        message + " — the busy account polled at the ordinary cadence")
+        self.assertLess(
+            median(busy),
+            BUSY_SECONDS * 2200,
+            message + " — the busy account polled at the ordinary cadence",
+        )
         self.assertGreaterEqual(median(ordinary), POLL_SECONDS * 900, message)
         self.assertLess(median(ordinary), POLL_SECONDS * 1700, message)
-        self.assertGreaterEqual(min(backed_off), POLL_SECONDS * 1800,
-                                message + " — failures did not back off")
-        self.assertTrue(all(later >= earlier for earlier, later in zip(backed_off, backed_off[1:])),
-                        message + " — the backoff did not grow")
+        self.assertGreaterEqual(
+            min(backed_off),
+            POLL_SECONDS * 1800,
+            message + " — failures did not back off",
+        )
+        self.assertTrue(
+            all(later >= earlier for earlier, later in zip(backed_off, backed_off[1:])),
+            message + " — the backoff did not grow",
+        )
 
         # The feed is the fake, so a driver failure ("usage is not built", the
         # CLI crashing, the feed not finishing) is a bug in the host half, not
         # weather. An exit-1 burst would surface here as readings carrying it.
-        failures = [row for row in self.samples()
-                    if row["observedAt"] > self.since
-                    and row["error"] and "usage" in row["error"]]
+        failures = [
+            row
+            for row in self.samples()
+            if row["observedAt"] > self.since
+            and row["error"]
+            and "usage" in row["error"]
+        ]
         self.assertEqual(failures, [], "the usage driver failed against the fake")
         self.assertEqual(self.fake_errors(), "")
 
@@ -245,16 +304,24 @@ class QuotaTests(unittest.TestCase):
             page = json.load(response)
         samples = page["items"]
         ids = [sample["id"] for sample in samples]
-        self.assertTrue(all(later < earlier for earlier, later in zip(ids, ids[1:])),
-                        f"history is not newest first: {ids}")
-        newest = max((s for s in samples if s["provider"] == "hyper"), key=lambda s: s["id"])
-        self.assertEqual(newest["observedAt"], latest[("hyper", "primary")]["observedAt"])
+        self.assertTrue(
+            all(later < earlier for earlier, later in zip(ids, ids[1:])),
+            f"history is not newest first: {ids}",
+        )
+        newest = max(
+            (s for s in samples if s["provider"] == "hyper"), key=lambda s: s["id"]
+        )
+        self.assertEqual(
+            newest["observedAt"], latest[("hyper", "primary")]["observedAt"]
+        )
         cursor = ids[len(ids) // 2]
         with self.app.api(f"/quota?history={cursor}") as response:
             older = json.load(response)
-        self.assertTrue(all(sample["id"] < cursor for sample in older["items"]),
-                        f"history after {cursor} reached newer rows: "
-                        f"{[s['id'] for s in older['items']]}")
+        self.assertTrue(
+            all(sample["id"] < cursor for sample in older["items"]),
+            f"history after {cursor} reached newer rows: "
+            f"{[s['id'] for s in older['items']]}",
+        )
 
 
 if __name__ == "__main__":

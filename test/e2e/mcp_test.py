@@ -38,7 +38,9 @@ class McpTests(unittest.TestCase):
                 ALBEDO_MCP_AMBIENT="must-not-reach-the-server",
             )
             self.configure(app, [str(SERVER)])
-            app.store_secrets("mcp", {"fake": {"env": {"FAKE_SECRET": "stored-secret"}}})
+            app.store_secrets(
+                "mcp", {"fake": {"env": {"FAKE_SECRET": "stored-secret"}}}
+            )
 
         self.app = Albedo(self.provider, protocol="responses", prepare=prepare)
         self.app.__enter__()

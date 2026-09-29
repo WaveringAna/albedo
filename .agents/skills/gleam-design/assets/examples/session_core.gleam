@@ -70,24 +70,21 @@ pub fn transition(model: Model, event: Event) -> #(Model, List(Effect)) {
 
     RequestCancel -> {
       case model.phase {
-        Running(run_id) -> #(
-          Model(..model, phase: Stopping(run_id)),
-          [AskJobToStop(run_id)],
-        )
+        Running(run_id) -> #(Model(..model, phase: Stopping(run_id)), [
+          AskJobToStop(run_id),
+        ])
         Idle | Stopping(_) -> #(model, [])
       }
     }
 
     WorkEnded(run_id, outcome) -> {
       case model.phase {
-        Running(active) if active == run_id -> #(
-          Model(..model, phase: Idle),
-          [ReportFinished(run_id, outcome)],
-        )
-        Stopping(active) if active == run_id -> #(
-          Model(..model, phase: Idle),
-          [ReportAbandoned(run_id)],
-        )
+        Running(active) if active == run_id -> #(Model(..model, phase: Idle), [
+          ReportFinished(run_id, outcome),
+        ])
+        Stopping(active) if active == run_id -> #(Model(..model, phase: Idle), [
+          ReportAbandoned(run_id),
+        ])
         Idle | Running(_) | Stopping(_) -> #(model, [])
       }
     }

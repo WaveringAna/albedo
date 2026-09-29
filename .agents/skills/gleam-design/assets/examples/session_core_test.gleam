@@ -145,7 +145,8 @@ pub fn failed_work_reports_its_outcome_and_releases_the_run_test() {
   let #(idle, effects) =
     core.transition(running, core.WorkEnded(id, core.Failed("unavailable")))
   let assert True = core.phase(idle) == core.Idle
-  let assert [core.ReportFinished(ended_id, core.Failed("unavailable"))] = effects
+  let assert [core.ReportFinished(ended_id, core.Failed("unavailable"))] =
+    effects
   let assert True = ended_id == id
   Nil
 }
