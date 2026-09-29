@@ -1,6 +1,7 @@
 //// Converts durable provider output into the portable model-input subset.
 //// Raw replay remains untouched only for the provider/protocol that produced it.
 
+import albedo/daemon/events
 import albedo/daemon/transcript
 import albedo/openai_api/replay
 import albedo/openai_api/types
@@ -14,7 +15,7 @@ import gleam/result
 import gleam/string
 
 /// One provider-facing input and the durable transcript rows that produced it.
-/// A transfer may combine several source rows or omit an opaque reasoning row.
+/// A transfer may combine several source rows or omit reasoning without a readable summary.
 pub type SourcedInput {
   SourcedInput(input: types.Input, sources: List(transcript.SourceRef))
 }
@@ -82,7 +83,16 @@ fn project(
               case types.replay_protocol(item), protocol {
                 types.Responses, types.ChatCompletions ->
                   case response_semantics(item) {
-                    Ok(ResponseReasoning) -> carry(pending_chat)
+                    Ok(ResponseReasoning(summary)) ->
+                      case summary {
+                        "" -> carry(pending_chat)
+                        _ ->
+                          carry(add_text(
+                            pending_chat,
+                            reasoning_summary(summary),
+                            sources,
+                          ))
+                      }
                     Ok(ResponseCall(call)) ->
                       carry(add_call(pending_chat, call, sources))
                     Ok(ResponseText(text)) ->
@@ -107,7 +117,7 @@ fn project(
 }
 
 type ResponseSemantic {
-  ResponseReasoning
+  ResponseReasoning(String)
   ResponseText(String)
   ResponseCall(types.ToolCall)
 }
@@ -117,7 +127,9 @@ fn canonical_response(
 ) -> Result(List(types.Input), String) {
   use semantic <- result.try(response_semantics(item))
   case semantic {
-    ResponseReasoning -> Ok([])
+    ResponseReasoning("") -> Ok([])
+    ResponseReasoning(summary) ->
+      Ok([types.Assistant(reasoning_summary(summary))])
     ResponseText(text) -> Ok([types.Assistant(text)])
     ResponseCall(call) ->
       response_call(call)
@@ -134,7 +146,7 @@ fn response_semantics(
     "Responses output item type",
   ))
   case kind {
-    "reasoning" -> Ok(ResponseReasoning)
+    "reasoning" -> Ok(ResponseReasoning(events.thinking_text(item)))
     "message" -> response_text(item) |> result.map(ResponseText)
     "function_call" -> response_call_semantics(item) |> result.map(ResponseCall)
     other ->
@@ -144,6 +156,10 @@ fn response_semantics(
         <> "; its semantics are not portable",
       )
   }
+}
+
+fn reasoning_summary(text: String) -> String {
+  "[Reasoning summary]\n" <> text
 }
 
 fn response_text(item: types.ReplayItem) -> Result(String, String) {
@@ -213,7 +229,11 @@ fn chat_semantics(item: types.ReplayItem) -> Result(ChatSemantic, String) {
           None -> Error(Nil)
         }
       })
-    decode.success(ChatSemantic(text, calls, []))
+    let summary = case events.thinking_text(item) {
+      "" -> []
+      text -> [reasoning_summary(text)]
+    }
+    decode.success(ChatSemantic(list.append(summary, text), calls, []))
   }
   inspect(item, decoder, "Chat Completions assistant message")
 }

@@ -1,9 +1,12 @@
 // Signed Claude SSE replay, schema unions, and billing hashes have edge cases absent from the fake E2E provider.
 import albedo/daemon/events
+import albedo/daemon/projection
+import albedo/daemon/transcript
 import albedo/harness/extensions/claude/stream
 import albedo/harness/extensions/claude/wire
 import albedo/harness/loop
 import albedo/openai_api
+import albedo/openai_api/request
 import albedo/openai_api/stream as reducer
 import albedo/openai_api/transport
 import albedo/openai_api/types
@@ -223,6 +226,68 @@ pub fn claude_stream_shows_thinking_and_replays_it_signed_test() {
   assert thinking == "weighing options"
   let assert Ok([_, [signature, _], _]) = decode.run(value, block("signature"))
   assert signature == "sig_1"
+
+  let entry = transcript.Entry(types.Replay(item), None, Some("claude"), None)
+  let assert Ok([types.Assistant("done"), types.Assistant(summary)]) =
+    projection.for_model([entry], "codex", types.Responses)
+  assert summary == "[Reasoning summary]\nweighing options"
+  let assert Ok(codex_body) =
+    request.encode(
+      types.Responses,
+      types.Request(
+        "gpt-5",
+        None,
+        [types.Assistant(summary)],
+        [],
+        None,
+        types.defaults,
+      ),
+    )
+  assert string.contains(sent(codex_body), "weighing options")
+
+  let changed =
+    types.Request(
+      "claude-sonnet-4-6",
+      None,
+      [types.Replay(item)],
+      [],
+      None,
+      types.defaults,
+    )
+  let assert Ok(openai_api.Exchange(body: switched, ..)) =
+    wire.encode(no_files_home, subscription, changed)
+  assert string.contains(sent(switched), "[Reasoning summary]")
+  assert !string.contains(sent(switched), "sig_1")
+}
+
+pub fn codex_reasoning_summary_survives_transfer_to_claude_test() {
+  let assert Ok(item) =
+    json.parse(
+      "{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"first\"},{\"type\":\"summary_text\",\"text\":\"second\"}],\"encrypted_content\":\"sealed-reasoning\"}",
+      types.replay_decoder(types.Responses),
+    )
+  let entry = transcript.Entry(types.Replay(item), None, Some("codex"), None)
+  let assert Ok([types.Assistant(summary)]) =
+    projection.for_model([entry], "other-codex", types.Responses)
+  assert summary == "[Reasoning summary]\nfirst\n\nsecond"
+  let assert Ok([types.Replay(projected)]) =
+    projection.for_model([entry], "claude", types.ChatCompletions)
+  let request =
+    types.Request(
+      "claude-opus-5-5",
+      None,
+      [types.Replay(projected)],
+      [],
+      None,
+      types.defaults,
+    )
+  let assert Ok(openai_api.Exchange(body: body, ..)) =
+    wire.encode(no_files_home, subscription, request)
+  let sent = sent(body)
+  assert string.contains(sent, "[Reasoning summary]")
+  assert string.contains(sent, "first")
+  assert string.contains(sent, "second")
+  assert !string.contains(sent, "sealed-reasoning")
 }
 
 /// Feeds every chunk and keeps the thinking deltas the stream emitted.

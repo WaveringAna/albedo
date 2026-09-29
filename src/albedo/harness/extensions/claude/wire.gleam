@@ -347,6 +347,7 @@ fn add(
 type Replay {
   Replay(
     text: String,
+    thinking: String,
     calls: List(types.ToolCall),
     original_model: String,
     original_blocks: Option(List(Json)),
@@ -368,11 +369,12 @@ fn replay_decoder() -> decode.Decoder(Replay) {
     })
   }
   use message <- decode.then(replay.message_decoder(detail))
+  use thinking <- decode.optional_field("reasoning_content", "", decode.string)
   let #(model, blocks) = case list.first(message.details) {
     Ok(#(model, blocks)) -> #(model, Some(blocks))
     _ -> #("", None)
   }
-  decode.success(Replay(message.text, message.calls, model, blocks))
+  decode.success(Replay(message.text, thinking, message.calls, model, blocks))
 }
 
 pub fn tool_use_block(id: String, name: String, arguments: String) -> Json {
@@ -389,10 +391,22 @@ pub fn tool_use_block(id: String, name: String, arguments: String) -> Json {
 }
 
 fn portable_blocks(message: Replay) -> List(Json) {
-  let text = case message.text {
-    "" -> []
-    text -> [text_block(text, False)]
-  }
+  let text =
+    list.filter_map(
+      [
+        case message.thinking {
+          "" -> ""
+          thinking -> "[Reasoning summary]\n" <> thinking
+        },
+        message.text,
+      ],
+      fn(text) {
+        case text {
+          "" -> Error(Nil)
+          _ -> Ok(text_block(text, False))
+        }
+      },
+    )
   list.append(
     text,
     list.map(message.calls, fn(call) {
