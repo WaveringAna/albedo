@@ -88,6 +88,9 @@ pub fn commit_keeps_one_payload_and_rows_load_references_test() {
     conversation.commit(ledger, "s", inputs(), conversation.Idle)
 
   count(ledger, "SELECT count(*) FROM images") |> should.equal(1)
+  count(ledger, "SELECT count(*) FROM images WHERE typeof(data)='blob'")
+  |> should.equal(1)
+  count(ledger, "SELECT length(data) FROM images") |> should.equal(24)
   count(
     ledger,
     "SELECT count(*) FROM transcript WHERE instr(payload,CAST('"
@@ -147,6 +150,60 @@ pub fn migration_moves_legacy_payloads_once_after_a_backup_test() {
   let assert types.StoredData(read: read, ..) = types.image_data(after)
   read() |> should.equal(Ok(png))
   images.migrate(ledger, backup) |> should.equal(Ok(0))
+  cleanup(path)
+}
+
+pub fn migration_converts_text_images_without_changing_references_test() {
+  let #(path, ledger) = ledger()
+  let assert Ok(_) = conversation.create(ledger, session("s"))
+  let assert Ok(_) =
+    conversation.commit(
+      ledger,
+      "s",
+      [types.UserImage("look", test_image())],
+      conversation.Idle,
+    )
+  let assert [types.UserImage(_, image)] = loaded(ledger, "s")
+  let assert types.StoredData(hash, _, _) = types.image_data(image)
+  let assert Ok(_) =
+    store.write(ledger, "UPDATE images SET data=? WHERE hash=?", [
+      sqlight.text(png),
+      sqlight.text(hash),
+    ])
+  count(ledger, "SELECT count(*) FROM images WHERE typeof(data)='text'")
+  |> should.equal(1)
+  images.reader(ledger)(hash) |> should.equal(Ok(png))
+
+  let backup = path <> ".backup/before-blob.sqlite"
+  images.migrate(ledger, backup) |> should.equal(Ok(0))
+  exists(backup) |> should.be_true
+  count(ledger, "SELECT count(*) FROM images WHERE typeof(data)='blob'")
+  |> should.equal(1)
+  count(ledger, "SELECT length(data) FROM images") |> should.equal(24)
+  let assert [types.UserImage(_, migrated)] = loaded(ledger, "s")
+  let assert types.StoredData(migrated_hash, _, read) =
+    types.image_data(migrated)
+  migrated_hash |> should.equal(hash)
+  read() |> should.equal(Ok(png))
+  images.migrate(ledger, backup) |> should.equal(Ok(0))
+  cleanup(path)
+}
+
+pub fn failed_backup_keeps_text_images_untouched_test() {
+  let #(path, ledger) = ledger()
+  let assert Ok(_) = conversation.create(ledger, session("s"))
+  let assert Ok(_) =
+    conversation.commit(
+      ledger,
+      "s",
+      [types.UserImage("look", test_image())],
+      conversation.Idle,
+    )
+  let assert Ok(_) =
+    store.write(ledger, "UPDATE images SET data=?", [sqlight.text(png)])
+  let assert Error(_) = images.migrate(ledger, path <> "/backup.sqlite")
+  count(ledger, "SELECT count(*) FROM images WHERE typeof(data)='text'")
+  |> should.equal(1)
   cleanup(path)
 }
 

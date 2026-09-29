@@ -129,6 +129,7 @@ Commands:
   send <session> <prompt>   send a prompt turn to a session
   stop <session>            interrupt an active session
   daemon [options]          inspect or manage daemon lifecycle
+  storage [options]         preview storage; explicitly prune selected data
   login [name]              configure an API provider in terminal
 `
 
@@ -373,6 +374,9 @@ func run(args []string) error {
 		data, _ := json.Marshal(res)
 		fmt.Println(string(data))
 		return nil
+
+	case "storage":
+		return storageCommand(subArgs)
 
 	case "daemon":
 		stop := false

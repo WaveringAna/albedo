@@ -118,7 +118,7 @@ class ImageToolOutputTest(unittest.TestCase):
                 app.idle(old)
                 converse(old, ["show", "second", "third", "fourth"])
                 self.assertEqual(rows(old, "transcript", shown), 0)
-                self.assertEqual(rows(old, "cells", SHOWN), 0)
+                self.assertEqual(rows(old, "cells", shown), 0)
                 self.assertEqual(rows(old, "transcript", MARKER), 1)
                 self.assertEqual(rows(old, "cells", MARKER), 1)
                 self.assertEqual(rows(old, "transcript", uploaded), 1)
@@ -136,7 +136,8 @@ class ImageToolOutputTest(unittest.TestCase):
                 recent = app.session()
                 converse(recent, ["first", "second", "third", "show"])
                 self.assertEqual(rows(recent, "transcript", shown), 1)
-                self.assertEqual(rows(recent, "cells", SHOWN), 1)
+                self.assertEqual(rows(recent, "cells", shown), 1)
+                self.assertEqual(rows(recent, "cells", SHOWN), 0)
         finally:
             provider.close()
 
@@ -202,7 +203,7 @@ class ImageToolOutputTest(unittest.TestCase):
                 app.prompt(session, "show").close()
                 app.idle(session)
                 self.assertEqual(rows("transcript", shown), 1)
-                self.assertEqual(rows("cells", SHOWN), 1)
+                self.assertEqual(rows("cells", shown), 1)
                 pad = "history " * 8000
                 for prompt in (pad, pad, pad):
                     app.prompt(session, prompt).close()
@@ -211,7 +212,7 @@ class ImageToolOutputTest(unittest.TestCase):
                     attempts, "the automatic trigger must attempt compaction"
                 )
                 self.assertEqual(rows("transcript", shown), 1)
-                self.assertEqual(rows("cells", SHOWN), 1)
+                self.assertEqual(rows("cells", shown), 1)
                 fail_summary = False
                 app.prompt(session, "retry compaction").close()
                 app.idle(session)
@@ -220,7 +221,7 @@ class ImageToolOutputTest(unittest.TestCase):
                 )
                 self.assertTrue(all(pair == (1, 1) for pair in cleaned_before_request))
                 self.assertEqual(rows("transcript", shown), 0)
-                self.assertEqual(rows("cells", SHOWN), 0)
+                self.assertEqual(rows("cells", shown), 0)
                 self.assertEqual(rows("transcript", MARKER), 1)
                 self.assertEqual(rows("cells", MARKER), 1)
                 summaries = len(attempts)

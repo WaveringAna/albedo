@@ -19,6 +19,7 @@ import albedo/harness/cache_ttl
 import albedo/harness/command
 import albedo/harness/credentials
 import albedo/harness/extension
+import albedo/harness/extensions/python/cells as journal
 import albedo/harness/extensions/schedule/ledger as schedule
 import albedo/harness/oauth
 import albedo/harness/runtime
@@ -556,13 +557,25 @@ fn prepare_storage(
   use _ <- result.try(quota.initialise(runtime.ledger(host)))
   use _ <- result.try(mail.initialise(runtime.ledger(host)))
   use _ <- result.try(family.initialise(runtime.ledger(host)))
-  use moved <- result.try(images.migrate(
-    runtime.ledger(host),
+  let backup =
     config.home
-      <> "/backups/albedo-before-image-store-"
-      <> int.to_string(usage.now())
-      <> ".sqlite",
+    <> "/backups/albedo-before-image-store-"
+    <> int.to_string(usage.now())
+    <> ".sqlite"
+  use moved <- result.try(images.migrate(runtime.ledger(host), backup))
+  use cells_moved <- result.try(journal.migrate_images(
+    runtime.ledger(host),
+    backup,
   ))
+  case cells_moved {
+    0 -> Nil
+    rows ->
+      io.println(
+        "image store: moved images out of "
+        <> int.to_string(rows)
+        <> " cell results",
+      )
+  }
   case moved {
     0 -> Nil
     rows ->

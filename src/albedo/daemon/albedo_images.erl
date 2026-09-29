@@ -1,12 +1,13 @@
 %% Image payloads live in the `images` table, keyed by the SHA-256 of their
-%% base64 text; transcript rows keep only that hash and the image metadata.
+%% base64 text; decoded bytes live in the table, while transcript rows keep
+%% only the original base64 hash and image metadata.
 %%
 %% In memory an image is {image, Mime, Data, Width, Height, Bytes} where Data is
 %% {inline_data, Base64} or {stored_data, Hash, Size, Read}, Read being a fun/0
 %% that fetches the payload (see types.ImageData). A packed row stores
 %% {stored_data, Hash, Size} (no fun), or the legacy bare Base64 binary.
 -module(albedo_images).
--export([externalize/2, attach/2, pack/1, pack_image/1, load/2, canonical/1, legacy/1, results/1, hashes/1, migrate/2, ensure_dir/1]).
+-export([externalize/2, attach/2, pack/1, pack_image/1, load/2, canonical/1, legacy/1, results/1, hashes/1, migrate/2, ensure_dir/1, backup_exists/1, decode_base64/1, decode_legacy_base64/1, encode_base64/1]).
 
 %% The same data-size limit albedo_image guards with; a guard needs the macro.
 -define(MAX_DATA_BYTES, 6990508).
@@ -145,3 +146,16 @@ migrate(Payload, Read) ->
 clean(Value) -> albedo_image:charset(Value, true).
 
 ensure_dir(Path) -> _ = filelib:ensure_dir(Path), nil.
+
+backup_exists(Path) -> filelib:is_regular(Path).
+
+%% A clean, canonical inline payload was validated before externalize/2.
+decode_base64(Data) -> base64:decode(Data).
+
+%% A damaged legacy row fails migration without discarding its original TEXT.
+decode_legacy_base64(Data) ->
+    try {ok, base64:decode(Data)}
+    catch error:_ -> {error, nil}
+    end.
+
+encode_base64(Data) -> base64:encode(Data).

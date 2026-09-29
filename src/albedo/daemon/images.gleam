@@ -1,6 +1,6 @@
 //// Image payloads stored once by content hash, out of transcript rows.
 ////
-//// A transcript row keeps an image's hash and metadata; its base64 text lives
+//// A transcript row keeps an image's hash and metadata; its decoded bytes live
 //// in `images`. Loading a session therefore reads references, and a payload is
 //// read only while a request body is written (albedo_openai_transport.erl).
 //// Rows are content-addressed, so forks and repeated screenshots share one copy.
@@ -12,7 +12,7 @@ import gleam/list
 import gleam/result
 import sqlight
 
-pub const schema = "CREATE TABLE IF NOT EXISTS images(hash TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS migrations(name TEXT PRIMARY KEY,applied_at INTEGER NOT NULL);"
+pub const schema = "CREATE TABLE IF NOT EXISTS images(hash TEXT PRIMARY KEY,data BLOB NOT NULL); CREATE TABLE IF NOT EXISTS migrations(name TEXT PRIMARY KEY,applied_at INTEGER NOT NULL);"
 
 /// Fetches a stored payload. Never call the result from inside `store.query`:
 /// the read is itself a store query, and the store runs one at a time.
@@ -21,15 +21,28 @@ pub fn reader(ledger: store.Store) -> fn(String) -> Result(String, Nil) {
 }
 
 fn read(db: sqlight.Connection, hash: String) -> Result(String, Nil) {
+  // Older databases can hold TEXT rows until their startup migration completes.
   case
     store.rows(
       db,
-      "SELECT data FROM images WHERE hash=?",
+      "SELECT data FROM images WHERE hash=? AND typeof(data)='text'",
       [sqlight.text(hash)],
       decode.field(0, decode.string, decode.success),
     )
   {
     Ok([data]) -> Ok(data)
+    Ok([]) ->
+      case
+        store.rows(
+          db,
+          "SELECT data FROM images WHERE hash=? AND typeof(data)='blob'",
+          [sqlight.text(hash)],
+          decode.field(0, decode.bit_array, decode.success),
+        )
+      {
+        Ok([data]) -> Ok(encode_base64(data))
+        _ -> Error(Nil)
+      }
     _ -> Error(Nil)
   }
 }
@@ -46,6 +59,19 @@ pub fn externalize(
   Ok(stored)
 }
 
+/// Stores a cell's inline images in the caller's transaction. The returned
+/// references acquire their live reader when the cell is loaded later.
+pub fn store_cell_images(
+  db: sqlight.Connection,
+  images: List(types.Image),
+) -> Result(List(types.Image), String) {
+  let #(stored, blobs) =
+    split(types.ToolOutput("", "", images), fn(_) { Error(Nil) })
+  use _ <- result.try(insert(db, blobs))
+  let assert types.ToolOutput(_, _, images) = stored
+  Ok(images)
+}
+
 fn insert(
   db: sqlight.Connection,
   blobs: List(#(String, String)),
@@ -53,7 +79,7 @@ fn insert(
   list.try_each(blobs, fn(blob) {
     store.run(db, "INSERT OR IGNORE INTO images(hash,data) VALUES(?,?)", [
       sqlight.text(blob.0),
-      sqlight.text(blob.1),
+      sqlight.blob(decode_base64(blob.1)),
     ])
   })
 }
@@ -73,16 +99,28 @@ pub fn session_hashes(
   |> result.map(fn(rows) { list.flat_map(rows, hashes) |> list.unique })
 }
 
-/// Deletes payloads no transcript row or pinned prompt still names. A packed
-/// reference holds the hash text verbatim, so a byte search finds every user.
+/// Deletes payloads no transcript row, pinned prompt, or cell still names.
+/// A packed reference holds the hash text verbatim, so a byte search finds it.
 pub fn release(
   db: sqlight.Connection,
   candidates: List(String),
 ) -> Result(Nil, String) {
+  use tables <- result.try(store.rows(
+    db,
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='cells'",
+    [],
+    decode.field(0, decode.string, decode.success),
+  ))
+  let cell_guard = case tables {
+    [] -> ""
+    _ ->
+      " AND NOT EXISTS(SELECT 1 FROM cells WHERE payload IS NOT NULL AND instr(payload,CAST(?1 AS BLOB))>0)"
+  }
   list.try_each(candidates, fn(hash) {
     store.run(
       db,
-      "DELETE FROM images WHERE hash=?1 AND NOT EXISTS(SELECT 1 FROM transcript WHERE instr(payload,CAST(?1 AS BLOB))>0) AND NOT EXISTS(SELECT 1 FROM sessions WHERE pinned_context IS NOT NULL AND instr(pinned_context,CAST(?1 AS BLOB))>0)",
+      "DELETE FROM images WHERE hash=?1 AND NOT EXISTS(SELECT 1 FROM transcript WHERE instr(payload,CAST(?1 AS BLOB))>0) AND NOT EXISTS(SELECT 1 FROM sessions WHERE pinned_context IS NOT NULL AND instr(pinned_context,CAST(?1 AS BLOB))>0)"
+        <> cell_guard,
       [sqlight.text(hash)],
     )
   })
@@ -93,6 +131,12 @@ pub fn release(
 /// are rewritten a page at a time, each page in its own transaction, so an
 /// interrupted run resumes where it stopped (a rewritten row has nothing inline).
 pub fn migrate(ledger: store.Store, backup: String) -> Result(Int, String) {
+  use moved <- result.try(migrate_legacy(ledger, backup))
+  use _ <- result.try(migrate_blobs(ledger, backup))
+  Ok(moved)
+}
+
+fn migrate_legacy(ledger: store.Store, backup: String) -> Result(Int, String) {
   let read = reader(ledger)
   use applied <- result.try(
     store.read(
@@ -115,11 +159,7 @@ pub fn migrate(ledger: store.Store, backup: String) -> Result(Int, String) {
       use _ <- result.try(case pending {
         [0] -> Ok(Nil)
         _ -> {
-          ensure_dir(backup)
-          store.query(ledger, fn(db) {
-            store.run(db, "VACUUM INTO ?", [sqlight.text(backup)])
-          })
-          |> result.map_error(fn(e) { "image store backup failed: " <> e })
+          backup_before_migration(ledger, backup)
         }
       })
       use moved <- result.try(migrate_pages(ledger, read, -1, 0))
@@ -132,6 +172,80 @@ pub fn migrate(ledger: store.Store, backup: String) -> Result(Int, String) {
       )
       Ok(moved)
     }
+  }
+}
+
+/// Existing installations used TEXT for the base64 data. Convert in bounded
+/// transactions after taking a copy of the database. SQLite's BLOB affinity
+/// does not convert an existing TEXT value on its own.
+fn migrate_blobs(ledger: store.Store, backup: String) -> Result(Nil, String) {
+  use pending <- result.try(store.read(
+    ledger,
+    "SELECT count(*) FROM images WHERE typeof(data)='text'",
+    [],
+    decode.field(0, decode.int, decode.success),
+  ))
+  case pending {
+    [0] -> Ok(Nil)
+    _ -> {
+      use _ <- result.try(backup_before_migration(ledger, backup))
+      migrate_blob_pages(ledger)
+    }
+  }
+}
+
+fn backup_before_migration(
+  ledger: store.Store,
+  backup: String,
+) -> Result(Nil, String) {
+  case backup_exists(backup) {
+    True -> Ok(Nil)
+    False -> {
+      ensure_dir(backup)
+      store.query(ledger, fn(db) {
+        store.run(db, "VACUUM INTO ?", [sqlight.text(backup)])
+      })
+      |> result.map_error(fn(e) { "image store backup failed: " <> e })
+    }
+  }
+}
+
+fn migrate_blob_pages(ledger: store.Store) -> Result(Nil, String) {
+  let page =
+    store.query(ledger, fn(db) {
+      use rows <- result.try(
+        store.rows(
+          db,
+          "SELECT hash,data FROM images WHERE typeof(data)='text' LIMIT ?",
+          [sqlight.int(migrate_page_rows)],
+          {
+            use hash <- decode.field(0, decode.string)
+            use data <- decode.field(1, decode.string)
+            decode.success(#(hash, data))
+          },
+        ),
+      )
+      use _ <- result.try(
+        store.transaction(db, fn() {
+          list.try_each(rows, fn(row) {
+            case decode_legacy_base64(row.1) {
+              Ok(bytes) ->
+                store.run(
+                  db,
+                  "UPDATE images SET data=? WHERE hash=? AND typeof(data)='text'",
+                  [sqlight.blob(bytes), sqlight.text(row.0)],
+                )
+              Error(_) -> Error("invalid base64 image at hash " <> row.0)
+            }
+          })
+        }),
+      )
+      Ok(list.length(rows))
+    })
+  case page {
+    Ok(0) -> Ok(Nil)
+    Ok(_) -> migrate_blob_pages(ledger)
+    Error(e) -> Error("image blob migration failed: " <> e)
   }
 }
 
@@ -210,7 +324,7 @@ fn elide_rows(
   Ok(list.length(evicted))
 }
 
-/// A journaled cell holds its own inline copy of each image.
+/// Remove image references from the cell when its tool output is evicted.
 fn elide_cell(db: sqlight.Connection, id: String) -> Result(Nil, String) {
   case
     sqlight.query(
@@ -325,3 +439,15 @@ fn migrate_row(
 
 @external(erlang, "albedo_images", "ensure_dir")
 fn ensure_dir(path: String) -> Nil
+
+@external(erlang, "albedo_images", "backup_exists")
+fn backup_exists(path: String) -> Bool
+
+@external(erlang, "albedo_images", "decode_base64")
+fn decode_base64(data: String) -> BitArray
+
+@external(erlang, "albedo_images", "decode_legacy_base64")
+fn decode_legacy_base64(data: String) -> Result(BitArray, Nil)
+
+@external(erlang, "albedo_images", "encode_base64")
+fn encode_base64(data: BitArray) -> String

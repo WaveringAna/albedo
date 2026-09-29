@@ -1,14 +1,19 @@
 //// Kernel image wire decoding and old journal records must survive format
 //// changes; synthetic corrupted and legacy records cannot arise in E2E.
 
+import albedo/daemon/images
+import albedo/daemon/store
+import albedo/harness/extensions/python/cells
 import albedo/harness/extensions/python/kernel as python
 import albedo/openai_api/types
 import gleam/dynamic
+import gleam/dynamic/decode
 import gleam/erlang/atom
 import gleam/json
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleeunit/should
+import sqlight
 
 /// A PNG signature and IHDR header for a 2x3 image: enough for albedo to read.
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD"
@@ -114,6 +119,45 @@ fn journaled_png(width: Int) -> BitArray {
     ])
   term_to_binary(#(1, Ok(outcome)))
 }
+
+/// Legacy cell records are not producible by the current daemon wire format.
+pub fn old_cell_images_migrate_without_losing_their_readers_test() {
+  let path = temporary_database()
+  let assert Ok(ledger) = store.start(path, images.schema)
+  cells.migrate_images(ledger, path <> ".missing-backup") |> should.equal(Ok(0))
+  let assert Ok(_) = cells.initialise(ledger)
+  let assert Ok(_) =
+    store.write(
+      ledger,
+      "INSERT INTO cells(id,session,source,status,payload) VALUES('cell','s','show_image(...)','finished',?)",
+      [sqlight.blob(journaled_png(2))],
+    )
+  let backup = path <> ".backup"
+  cells.migrate_images(ledger, backup) |> should.equal(Ok(1))
+  cells.migrate_images(ledger, backup) |> should.equal(Ok(0))
+  let assert Ok(cell) = cells.get(ledger, "cell")
+  let assert Some(Ok(outcome)) = cell.outcome
+  let assert [stored] = outcome.images
+  let assert types.StoredData(read: read, ..) = types.image_data(stored)
+  read() |> should.equal(Ok(png))
+  let assert Ok([kind]) =
+    store.read(
+      ledger,
+      "SELECT typeof(data) FROM images",
+      [],
+      decode.field(0, decode.string, decode.success),
+    )
+  kind |> should.equal("blob")
+  store.close(ledger)
+  cleanup(path)
+  cleanup(backup)
+}
+
+@external(erlang, "albedo_runtime_test_support", "temporary_database")
+fn temporary_database() -> String
+
+@external(erlang, "albedo_runtime_test_support", "cleanup")
+fn cleanup(path: String) -> Nil
 
 @external(erlang, "erlang", "term_to_binary")
 fn term_to_binary(value: a) -> BitArray

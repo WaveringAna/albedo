@@ -7,6 +7,7 @@ import albedo/daemon/requests
 import albedo/daemon/store
 import albedo/daemon/transcript
 import albedo/daemon/usage
+import albedo/harness/extensions/python/cells as journal
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/int
@@ -292,6 +293,10 @@ pub fn delete(store: store.Store, id: String) -> Result(Nil, String) {
         [],
         decode.field(0, decode.string, decode.success),
       ))
+      use cell_hashes <- result.try(case list.contains(tables, "cells") {
+        True -> journal.session_hashes(db, id)
+        False -> Ok([])
+      })
       use _ <- result.try(
         list.try_each(
           [
@@ -328,7 +333,7 @@ pub fn delete(store: store.Store, id: String) -> Result(Nil, String) {
       use _ <- result.try(
         store.run(db, "DELETE FROM sessions WHERE id=?", [sqlight.text(id)]),
       )
-      images.release(db, hashes)
+      images.release(db, list.append(hashes, cell_hashes) |> list.unique)
     })
   })
 }
