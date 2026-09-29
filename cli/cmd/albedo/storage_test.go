@@ -27,6 +27,9 @@ c.execute('INSERT INTO transcript VALUES(?,?)',('live',b'abcd'))
 c.execute('INSERT INTO images VALUES(?)',('abcd',))
 c.execute('INSERT INTO cells VALUES(?,?,?,?)',('cell','live','hello',b'xyz'))
 c.execute('INSERT INTO cell_traces VALUES(?,?)',('cell',b'trace'))
+c.execute('CREATE TABLE reclaim(data BLOB)')
+c.execute('INSERT INTO reclaim VALUES(zeroblob(262144))')
+c.execute('DELETE FROM reclaim')
 c.commit()
 c.close()`
 	if out, err := exec.Command("python3", "-c", setup, filepath.Join(home, "albedo.sqlite")).CombinedOutput(); err != nil {
@@ -42,8 +45,9 @@ c.close()`
 	orphan := filepath.Join(home, "kernels", "orphan.state")
 	recent := filepath.Join(home, "kernels", "recent.state")
 	backup := filepath.Join(home, "backups", "albedo-before-image-store-1.sqlite")
+	protected := filepath.Join(home, "backups", "albedo-before-image-store-2.sqlite")
 	unrelated := filepath.Join(home, "backups", "personal.sqlite")
-	for _, path := range []string{live, orphan, recent, backup, unrelated} {
+	for _, path := range []string{live, orphan, recent, backup, protected, unrelated} {
 		if err := os.WriteFile(path, []byte("data"), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -61,13 +65,16 @@ c.close()`
 	if len(p.DB.Sessions) != 1 || p.DB.Sessions[0].Bytes != 20 || p.DB.Images != 4 {
 		t.Fatalf("unexpected storage estimates: %+v", p.DB)
 	}
-	if len(p.OldKernels) != 1 || p.OldKernels[0].Path != orphan || len(p.OldBackups) != 1 || p.OldBackups[0].Path != backup {
-		t.Fatalf("unsafe candidates: %+v", p)
+	if len(p.OldKernels) != 1 || p.OldKernels[0].Path != orphan || len(p.OldBackups) != 1 || p.OldBackups[0].Path != backup || p.RecentBackupCount != 1 || p.RecentBackups != 4 || p.DB.FreePages == 0 {
+		t.Fatalf("unsafe candidates or missing free pages: %+v", p)
 	}
 	var summary bytes.Buffer
 	storagePrint(&summary, p, false)
-	if strings.Contains(summary.String(), "live") || !strings.Contains(summary.String(), "1 sessions") || !strings.Contains(summary.String(), "Cleanup: albedo storage prune --all") {
-		t.Fatalf("unreadable default preview: %s", summary.String())
+	if strings.Contains(summary.String(), "live") || !strings.Contains(summary.String(), "1 sessions") ||
+		!strings.Contains(summary.String(), "1 recent migration backups (4 B) protected for 30 days; --all skips them") ||
+		!strings.Contains(summary.String(), "freed pages reclaimable by VACUUM") ||
+		!strings.Contains(summary.String(), "retained single copies, not duplication") {
+		t.Fatalf("unclear default preview: %s", summary.String())
 	}
 	var detailed bytes.Buffer
 	storagePrint(&detailed, p, true)
@@ -94,13 +101,13 @@ c.close()`
 			t.Errorf("should remove %s: %v", path, err)
 		}
 	}
-	for _, path := range []string{live, recent, unrelated} {
+	for _, path := range []string{live, recent, protected, unrelated} {
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("should retain %s: %v", path, err)
 		}
 	}
-	if after, err := storageSnapshot(home, time.Now()); err != nil || len(after.DB.Sessions) != 1 {
-		t.Fatalf("--all deleted sessions: %+v, %v", after.DB.Sessions, err)
+	if after, err := storageSnapshot(home, time.Now()); err != nil || len(after.DB.Sessions) != 1 || after.Database >= p.Database || after.DB.FreePages != 0 {
+		t.Fatalf("--all did not safely reclaim SQLite pages: %+v, %v", after, err)
 	}
 }
 

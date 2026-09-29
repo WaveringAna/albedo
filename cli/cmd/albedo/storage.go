@@ -55,14 +55,16 @@ type storageFile struct {
 }
 
 type storagePreview struct {
-	Database   int64         `json:"database"`
-	WAL        int64         `json:"wal"`
-	Kernels    int64         `json:"kernels"`
-	Backups    int64         `json:"backups"`
-	Other      int64         `json:"other"`
-	DB         storageDB     `json:"db"`
-	OldKernels []storageFile `json:"old_kernels"`
-	OldBackups []storageFile `json:"old_backups"`
+	Database          int64         `json:"database"`
+	WAL               int64         `json:"wal"`
+	Kernels           int64         `json:"kernels"`
+	Backups           int64         `json:"backups"`
+	Other             int64         `json:"other"`
+	RecentBackups     int64         `json:"recent_backups"`
+	RecentBackupCount int           `json:"recent_backup_count"`
+	DB                storageDB     `json:"db"`
+	OldKernels        []storageFile `json:"old_kernels"`
+	OldBackups        []storageFile `json:"old_backups"`
 }
 
 // Use Python's bundled sqlite3 instead of introducing a second SQLite engine.
@@ -196,7 +198,15 @@ func storageSnapshot(home string, now time.Time) (storagePreview, error) {
 		return p, err
 	}
 	p.Backups, p.OldBackups, err = storageFiles(filepath.Join(home, "backups"), func(name string, info os.FileInfo) bool {
-		return strings.HasPrefix(name, "albedo-before-image-store-") && strings.HasSuffix(name, ".sqlite") && info.ModTime().Before(cutoff)
+		if !strings.HasPrefix(name, "albedo-before-image-store-") || !strings.HasSuffix(name, ".sqlite") {
+			return false
+		}
+		if info.ModTime().Before(cutoff) {
+			return true
+		}
+		p.RecentBackups += info.Size()
+		p.RecentBackupCount++
+		return false
 	})
 	if err != nil {
 		return p, err
@@ -235,9 +245,12 @@ func storageSize(bytes int64) string {
 }
 
 func storagePrint(w io.Writer, p storagePreview, sessions bool) {
-	fmt.Fprintf(w, "SQLite %s (shared images %s; free pages %s)\n", storageSize(p.Database), storageSize(p.DB.Images), storageSize(p.DB.FreePages*p.DB.PageSize))
-	fmt.Fprintf(w, "WAL/SHM %s · kernels %s · backups %s · other files %s\n", storageSize(p.WAL), storageSize(p.Kernels), storageSize(p.Backups), storageSize(p.Other))
-	fmt.Fprintf(w, "%d sessions (payload estimates exclude shared images)\n", len(p.DB.Sessions))
+	fmt.Fprintf(w, "SQLite %s · %s freed pages reclaimable by VACUUM\n", storageSize(p.Database), storageSize(p.DB.FreePages*p.DB.PageSize))
+	fmt.Fprintf(w, "Shared images %s (retained single copies, not duplication)\n", storageSize(p.DB.Images))
+	fmt.Fprintf(w, "Backups %s · %d recent migration backups (%s) protected for 30 days; --all skips them\n",
+		storageSize(p.Backups), p.RecentBackupCount, storageSize(p.RecentBackups))
+	fmt.Fprintf(w, "WAL/SHM %s · kernels %s · other files %s · %d sessions\n",
+		storageSize(p.WAL), storageSize(p.Kernels), storageSize(p.Other), len(p.DB.Sessions))
 	var kernels, backups int64
 	for _, f := range p.OldKernels {
 		kernels += f.Bytes
@@ -251,10 +264,12 @@ func storagePrint(w io.Writer, p storagePreview, sessions bool) {
 		for _, s := range p.DB.Sessions {
 			fmt.Fprintf(w, "  %s  %s\n", storageSize(s.Bytes), s.ID)
 		}
-	} else {
-		fmt.Fprintln(w, "Details: albedo storage --sessions | --json")
 	}
-	fmt.Fprintln(w, "Cleanup: albedo storage prune --all (stop daemon first; keeps sessions)")
+}
+
+func storageHint(w io.Writer) {
+	fmt.Fprintln(w, "Details: albedo storage --sessions | --json")
+	fmt.Fprintln(w, "Cleanup: stop the daemon, then albedo storage prune --all (never deletes sessions)")
 }
 
 func pruneFiles(files []storageFile) error {
@@ -295,6 +310,7 @@ func storageCommand(args []string) error {
 			fmt.Println(string(data))
 		} else {
 			storagePrint(os.Stdout, p, len(args) == 1 && args[0] == "--sessions")
+			storageHint(os.Stdout)
 		}
 		return nil
 	}
@@ -336,6 +352,18 @@ func storageCommand(args []string) error {
 	if err != nil {
 		return err
 	}
+	if len(sessions) == 0 {
+		if *kernels && p.Database == 0 {
+			return errors.New("cannot identify orphan snapshots without the SQLite database")
+		}
+		conn, err := daemon.Existing(home)
+		if err != nil {
+			return err
+		}
+		if conn != nil {
+			return errors.New("nothing pruned: stop daemon first with albedo daemon --stop")
+		}
+	}
 	storagePrint(os.Stdout, p, false)
 	if len(sessions) > 0 {
 		known := make(map[string]bool)
@@ -350,7 +378,8 @@ func storageCommand(args []string) error {
 		}
 	} else {
 		if *all {
-			fmt.Printf("REMOVE %d eligible orphan kernels and %d old backups (no sessions)\n", len(p.OldKernels), len(p.OldBackups))
+			fmt.Printf("Will remove %d eligible orphan kernels and %d old backups; retain %d recent migration backups and all sessions.\n",
+				len(p.OldKernels), len(p.OldBackups), p.RecentBackupCount)
 		} else {
 			if *kernels {
 				for _, f := range p.OldKernels {
@@ -364,17 +393,8 @@ func storageCommand(args []string) error {
 			}
 		}
 		if *vacuum {
-			fmt.Printf("VACUUM %s\n", filepath.Join(home, "albedo.sqlite"))
-		}
-		if *kernels && p.Database == 0 {
-			return errors.New("cannot identify orphan snapshots without the SQLite database")
-		}
-		conn, err := daemon.Existing(home)
-		if err != nil {
-			return err
-		}
-		if conn != nil {
-			return errors.New("stop daemon before offline storage cleanup: albedo daemon --stop")
+			fmt.Printf("Vacuum: up to %s of freed SQLite pages can be returned to disk.\n",
+				storageSize(p.DB.FreePages*p.DB.PageSize))
 		}
 	}
 	if !*yes {
@@ -435,9 +455,20 @@ func storageCommand(args []string) error {
 		if fresh.Database == 0 {
 			return errors.New("no SQLite database to vacuum")
 		}
-		out, err := exec.Command("python3", "-c", "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.execute('VACUUM'); db.close()", filepath.Join(home, "albedo.sqlite")).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("vacuum: %w: %s", err, strings.TrimSpace(string(out)))
+		if fresh.DB.FreePages == 0 {
+			fmt.Println("Vacuum skipped: SQLite has no free pages to reclaim.")
+		} else {
+			path := filepath.Join(home, "albedo.sqlite")
+			out, err := exec.Command("python3", "-c", "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.execute('VACUUM'); db.close()", path).CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("vacuum: %w: %s", err, strings.TrimSpace(string(out)))
+			}
+			final, err := regularSize(path)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Vacuum complete: SQLite %s → %s (%s reclaimed). Shared images remain stored once.\n",
+				storageSize(fresh.Database), storageSize(final), storageSize(max(0, fresh.Database-final)))
 		}
 	}
 	return nil
