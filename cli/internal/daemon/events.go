@@ -134,6 +134,16 @@ type Usage struct {
 	TotalTokens        *int     `json:"totalTokens,omitempty"`
 	ElapsedMs          *float64 `json:"elapsedMs,omitempty"`
 	TokensPerSecond    *float64 `json:"tokensPerSecond,omitempty"`
+	// CacheFade is how CachedPromptTokens fades once the session goes quiet,
+	// in time order.
+	CacheFade []CacheStep `json:"cacheFade,omitempty"`
+}
+
+// CacheStep says that from At (unix ms) on, a request would read Cached
+// tokens from the provider's cache; nil when that is no longer known.
+type CacheStep struct {
+	At     int64 `json:"at"`
+	Cached *int  `json:"cached,omitempty"`
 }
 
 type StreamEvent struct {

@@ -213,6 +213,34 @@ class WarmTest(unittest.TestCase):
         self.assertIn("scout finished", json.dumps(turns[1]))
 
     @exclusive
+    def test_a_ping_restarts_the_cached_counts_fade(self):
+        parent, child = self.swarm()
+
+        def fade():
+            usages = [event for event in self.app.events(parent)
+                      if event["type"] == "usage"]
+            return usages[-1]["cacheFade"]
+
+        # The fixture's clock counts 3s from the send's start; nothing is
+        # left after it.
+        turn = self.rows(parent)[0]
+        self.assertEqual(fade(), [{"at": turn["startedMs"] + 3000, "cached": 0}])
+
+        # A ping resends the prefix, so the provider's clock starts over from
+        # it: the fade moves to the ping's send, which the session times from
+        # just before the request row does.
+        ping = wait_for(lambda: next((row for row in self.rows(parent)
+                                      if row["kind"] == "background"), None))
+        moved = wait_for(lambda: next((step["at"] for step in fade()
+                                       if step["at"] != turn["startedMs"] + 3000),
+                                      None))
+        self.assertLessEqual(moved, ping["startedMs"] + 3000)
+        self.assertGreater(moved, ping["startedMs"] + 2000)
+        GATE.set()
+        self.app.idle(child)
+        self.app.idle(parent)
+
+    @exclusive
     def test_a_submit_during_warming_answers_and_warming_ends_with_the_children(self):
         parent, child = self.swarm()
 

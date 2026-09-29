@@ -617,6 +617,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sid, forward = sm.SessionID, true
 	case ChatStatusPollMsg:
 		sid, forward = sm.SessionID, true
+	case ChatCacheFadeMsg:
+		sid, forward = sm.SessionID, true
 	case ChatProgressTickMsg:
 		// a tick dropped under a modal would leave the face frozen for good
 		sid, forward = sm.SessionID, true

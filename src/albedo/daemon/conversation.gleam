@@ -7,10 +7,12 @@ import albedo/daemon/requests
 import albedo/daemon/store
 import albedo/daemon/transcript
 import albedo/daemon/usage
+import albedo/harness/cache_fade
 import albedo/harness/extensions/python/cells as journal
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -89,6 +91,7 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
         #("usage_cache_write_5m_tokens", "INTEGER"),
         #("usage_cache_write_1h_tokens", "INTEGER"),
         #("usage_reasoning_tokens", "INTEGER"),
+        #("usage_cache", "TEXT"),
         #("effort", "TEXT"),
         #("pinned_instructions", "TEXT"),
         #("pinned_context", "BLOB"),
@@ -1001,10 +1004,16 @@ fn usage_decoder() {
   use write_5m <- decode.field(6, decode.optional(decode.int))
   use write_1h <- decode.field(7, decode.optional(decode.int))
   use reasoning <- decode.field(8, decode.optional(decode.int))
+  use cache <- decode.field(9, decode.optional(decode.string))
+  // A fading that no longer parses only loses the footer's countdown.
+  let cache =
+    option.then(cache, fn(stored) {
+      json.parse(stored, cache_fade.decoder()) |> option.from_result
+    })
   case model, recorded_at, prompt, completion {
     None, None, None, None -> decode.success(None)
     Some(model), Some(recorded_at), None, None ->
-      decode.success(Some(usage.Metadata(model, recorded_at, None)))
+      decode.success(Some(usage.Metadata(model, recorded_at, None, cache)))
     Some(model), Some(recorded_at), Some(prompt), Some(completion) ->
       decode.success(
         Some(usage.Metadata(
@@ -1019,6 +1028,7 @@ fn usage_decoder() {
             write_1h,
             reasoning,
           )),
+          cache,
         )),
       )
     _, _, _, _ -> decode.failure(None, "consistent saved usage metadata")
@@ -1032,7 +1042,7 @@ pub fn load_usage(
   store.query(store, fn(db) {
     store.one(
       db,
-      "SELECT usage_model,usage_recorded_at,usage_prompt_tokens,usage_completion_tokens,usage_cached_prompt_tokens,usage_cache_creation_tokens,usage_cache_write_5m_tokens,usage_cache_write_1h_tokens,usage_reasoning_tokens FROM sessions WHERE id=?",
+      "SELECT usage_model,usage_recorded_at,usage_prompt_tokens,usage_completion_tokens,usage_cached_prompt_tokens,usage_cache_creation_tokens,usage_cache_write_5m_tokens,usage_cache_write_1h_tokens,usage_reasoning_tokens,usage_cache FROM sessions WHERE id=?",
       [sqlight.text(id)],
       usage_decoder(),
       "session not found",
@@ -1043,7 +1053,7 @@ pub fn load_usage(
 pub fn clear_usage(store: store.Store, id: String) -> Result(Nil, String) {
   store.write(
     store,
-    "UPDATE sessions SET usage_model=NULL,usage_recorded_at=NULL,usage_prompt_tokens=NULL,usage_completion_tokens=NULL,usage_cached_prompt_tokens=NULL,usage_cache_creation_tokens=NULL,usage_cache_write_5m_tokens=NULL,usage_cache_write_1h_tokens=NULL,usage_reasoning_tokens=NULL WHERE id=?",
+    "UPDATE sessions SET usage_model=NULL,usage_recorded_at=NULL,usage_prompt_tokens=NULL,usage_completion_tokens=NULL,usage_cached_prompt_tokens=NULL,usage_cache_creation_tokens=NULL,usage_cache_write_5m_tokens=NULL,usage_cache_write_1h_tokens=NULL,usage_reasoning_tokens=NULL,usage_cache=NULL WHERE id=?",
     [sqlight.text(id)],
   )
 }
@@ -1053,7 +1063,7 @@ pub fn record_usage(
   id: String,
   metadata: usage.Metadata,
 ) -> Result(Nil, String) {
-  let usage.Metadata(model, recorded_at, tokens) = metadata
+  let usage.Metadata(model, recorded_at, tokens, cache) = metadata
   let #(prompt, completion, cached, creation, write_5m, write_1h, reasoning) = case
     tokens
   {
@@ -1076,9 +1086,11 @@ pub fn record_usage(
     )
     None -> #(None, None, None, None, None, None, None)
   }
+  let cache =
+    option.map(cache, fn(fade) { json.to_string(cache_fade.to_json(fade)) })
   store.write(
     store,
-    "UPDATE sessions SET usage_model=?,usage_recorded_at=?,usage_prompt_tokens=?,usage_completion_tokens=?,usage_cached_prompt_tokens=?,usage_cache_creation_tokens=?,usage_cache_write_5m_tokens=?,usage_cache_write_1h_tokens=?,usage_reasoning_tokens=? WHERE id=?",
+    "UPDATE sessions SET usage_model=?,usage_recorded_at=?,usage_prompt_tokens=?,usage_completion_tokens=?,usage_cached_prompt_tokens=?,usage_cache_creation_tokens=?,usage_cache_write_5m_tokens=?,usage_cache_write_1h_tokens=?,usage_reasoning_tokens=?,usage_cache=? WHERE id=?",
     [
       sqlight.text(model),
       sqlight.int(recorded_at),
@@ -1089,6 +1101,7 @@ pub fn record_usage(
       sqlight.nullable(sqlight.int, write_5m),
       sqlight.nullable(sqlight.int, write_1h),
       sqlight.nullable(sqlight.int, reasoning),
+      sqlight.nullable(sqlight.text, cache),
       sqlight.text(id),
     ],
   )

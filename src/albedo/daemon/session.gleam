@@ -18,6 +18,7 @@ import albedo/daemon/session_state
 import albedo/daemon/session_submission
 import albedo/daemon/turn.{type Submission, Submission}
 import albedo/daemon/usage
+import albedo/harness/cache_fade
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/python/kernel as python
@@ -143,7 +144,7 @@ pub type Message {
     Subject(Result(Option(types.Usage), String)),
   )
   /// A background call's worker finished.
-  BackgroundFinished(String, Result(Option(types.Usage), String))
+  BackgroundFinished(String, Int, Result(Option(types.Usage), String))
   Compact(Option(String), Subject(Result(json.Json, String)))
   RefreshData(Subject(Result(json.Json, String)))
   DrainSteering(String, Subject(Result(List(types.Input), String)))
@@ -765,10 +766,15 @@ fn handle(state: State, message: Message) {
     }
     CallInBackground(request, prefix, reply) ->
       actor.continue(start_background(state, request, prefix, reply))
-    BackgroundFinished(id, outcome) ->
+    BackgroundFinished(id, started, outcome) ->
       case turn.owner(state.activity, id) {
-        Some(turn.Run(work: turn.Background(reply), ..) as run) ->
+        Some(turn.Run(work: turn.Background(reply), ..) as run) -> {
+          let state = case run.cancelled, outcome {
+            False, Ok(_) -> rewarmed(state, started)
+            _, _ -> state
+          }
           background_finish(state, run, reply, outcome)
+        }
         _ -> actor.continue(state)
       }
     RecordContext(id, snapshot, compacted, reply) ->
@@ -1599,6 +1605,7 @@ fn finish_turn(
               state.info.model,
               usage.now(),
               Some(usage.Tokens(tokens, 0, None, None, None, None, None)),
+              None,
             )
           session_state.emit(
             session_state.State(..state, latest_usage: Some(metadata)),
@@ -1672,6 +1679,33 @@ fn background_finish(
   // admitted now.
   mail.waiting()
   actor.continue(start_queued(follow_up(state)))
+}
+
+/// A background call repeats the session's last turn call, so the provider's
+/// cache clock starts over from it, warm or cold: the cached count fades from
+/// there now, and clients hear the moved steps.
+fn rewarmed(state: State, started: Int) -> State {
+  case state.latest_usage {
+    Some(usage.Metadata(cache: Some(fade), ..) as metadata) -> {
+      let fade = cache_fade.reanchor(fade, started, usage.now())
+      let metadata = usage.Metadata(..metadata, cache: Some(fade))
+      case
+        conversation.record_usage(
+          runtime.ledger(state.host),
+          state.info.id,
+          metadata,
+        )
+      {
+        Ok(_) ->
+          session_state.emit(
+            session_state.State(..state, latest_usage: Some(metadata)),
+            usage.event(metadata),
+          )
+        Error(_) -> state
+      }
+    }
+    _ -> state
+  }
 }
 
 /// A run that held the session ended: its extensions hear that a turn

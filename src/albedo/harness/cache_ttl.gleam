@@ -10,6 +10,7 @@
 //// replaces with measurements. The file I/O and revision cache live in
 //// `albedo_cache_ttl.erl`; this module owns the shapes and the matching.
 
+import albedo/daemon/configuration
 import albedo/harness/settings
 import gleam/dynamic/decode
 import gleam/int
@@ -19,6 +20,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/uri
 
 /// Whether a lifetime is restarted by every hit, counted from the write, or
 /// left to the provider's eviction with no clock at all.
@@ -126,6 +128,44 @@ pub fn lookup(extension: String, host: String, model: String) -> Option(Entry) {
   table().entries
   |> list.find(fn(entry) { matches(entry, extension, host, model) })
   |> option.from_result
+}
+
+/// The entry for a call sent through a saved profile: matched on the
+/// provider extension the profile resolves to, the endpoint's host, and the
+/// model.
+pub fn for_call(
+  profile: String,
+  endpoint: String,
+  model: String,
+) -> Option(Entry) {
+  let extension = case configuration.named(settings.home(), profile) {
+    Ok(configured) -> configured.extension
+    Error(_) -> ""
+  }
+  let host = case uri.parse(endpoint) {
+    Ok(uri.Uri(host: Some(host), ..)) -> host
+    _ -> ""
+  }
+  lookup(extension, host, model)
+}
+
+/// Whether the entry's lifetime counts from the send's start rather than
+/// its finish; with no entry, from the finish.
+pub fn from_start(entry: Option(Entry)) -> Bool {
+  case entry {
+    Some(entry) -> entry.clock == Request
+    None -> False
+  }
+}
+
+/// The lifetime of a prefix the provider caches on its own, when it has a
+/// clock at all: the first tier, while the policy is one every hit restarts
+/// or one counted from the write. Best-effort eviction has no clock.
+pub fn clock_tier(entry: Entry) -> Option(Tier) {
+  case entry.policy, entry.tiers {
+    Refresh, Some([tier, ..]) | Fixed, Some([tier, ..]) -> Some(tier)
+    _, _ -> None
+  }
 }
 
 /// Fetch and replace the remote copy now, regardless of its age, so an

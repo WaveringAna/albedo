@@ -12,7 +12,6 @@
 //// says whether the cache was still there.
 
 import albedo/daemon/bus
-import albedo/daemon/configuration
 import albedo/daemon/family
 import albedo/daemon/requests
 import albedo/daemon/store
@@ -27,7 +26,6 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/uri
 
 pub fn extension() -> extension.Extension {
   extension.Extension(
@@ -220,13 +218,9 @@ fn min_cached_tokens() -> Int {
 /// The plan for one call, from the cache-table entry of the provider its
 /// profile resolves to.
 fn plan_for(call: extension.SentCall) -> Option(Plan) {
-  let provider = case configuration.named(settings.home(), call.profile) {
-    Ok(configured) -> configured.extension
-    Error(_) -> ""
-  }
   plan(
     call,
-    cache_ttl.lookup(provider, host(call.endpoint), call.request.model),
+    cache_ttl.for_call(call.profile, call.endpoint, call.request.model),
     min_cached_tokens(),
   )
 }
@@ -273,10 +267,7 @@ fn resolution(
       |> option.unwrap(default_read)
     None -> default_read
   }
-  let from_start = case entry {
-    Some(entry) -> entry.clock == cache_ttl.Request
-    None -> False
-  }
+  let from_start = cache_ttl.from_start(entry)
   case marks_ttl(sent) {
     // The request asked for explicit cache entries: the shortest of them is
     // the clock, and its matching tier prices the write.
@@ -285,31 +276,18 @@ fn resolution(
       Some(#(ttl_seconds, write, read, from_start))
     }
     // No marks: the provider caches on its own, so only the table knows, and
-    // only while its policy is one a ping can extend.
+    // only while its policy has a clock a ping can push back.
     None ->
-      case entry {
-        Some(entry) ->
-          case extends(entry.policy), entry.tiers {
-            True, Some([tier, ..]) ->
-              Some(#(
-                tier.seconds,
-                option.unwrap(tier.write, default_write),
-                read,
-                from_start,
-              ))
-            _, _ -> None
-          }
-        None -> None
-      }
-  }
-}
-
-/// Whether a ping can push the entry's lifetime back: a fixed clock or one
-/// every hit restarts. Best-effort eviction has no clock to beat.
-fn extends(policy: cache_ttl.Policy) -> Bool {
-  case policy {
-    cache_ttl.Refresh | cache_ttl.Fixed -> True
-    cache_ttl.Evict | cache_ttl.Unknown -> False
+      entry
+      |> option.then(cache_ttl.clock_tier)
+      |> option.map(fn(tier) {
+        #(
+          tier.seconds,
+          option.unwrap(tier.write, default_write),
+          read,
+          from_start,
+        )
+      })
   }
 }
 
@@ -386,13 +364,5 @@ fn cache_lost(sent: extension.SentCall, ping: Option(types.Usage)) -> Bool {
   case hit > 0 {
     True -> False
     False -> cached_prefix(sent.usage) > 0
-  }
-}
-
-/// The host of an endpoint URL, as the cache table matches it.
-fn host(endpoint: String) -> String {
-  case uri.parse(endpoint) {
-    Ok(uri.Uri(host: Some(host), ..)) -> host
-    _ -> ""
   }
 }

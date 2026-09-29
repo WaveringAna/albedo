@@ -92,6 +92,13 @@ type ChatWindowMsg struct {
 	Err        error
 }
 
+// ChatCacheFadeMsg arrives when Usage's cached count reaches its next step.
+type ChatCacheFadeMsg struct {
+	SessionID  string
+	Generation int64
+	Usage      *daemon.Usage
+}
+
 type ChatStatusPollMsg struct {
 	SessionID  string
 	Generation int64
@@ -968,6 +975,23 @@ func (m ChatModel) windowCmd() tea.Cmd {
 	}
 }
 
+// cacheFadeCmd wakes the footer when the cached count reaches its next step.
+func (m ChatModel) cacheFadeCmd() tea.Cmd {
+	if m.Usage == nil {
+		return nil
+	}
+	now := time.Now().UnixMilli()
+	for _, step := range m.Usage.CacheFade {
+		if step.At > now {
+			id, generation, usage := m.SessionID, m.Generation, m.Usage
+			return tea.Tick(time.Duration(step.At-now)*time.Millisecond, func(time.Time) tea.Msg {
+				return ChatCacheFadeMsg{SessionID: id, Generation: generation, Usage: usage}
+			})
+		}
+	}
+	return nil
+}
+
 func (m ChatModel) statusPollCmd() tea.Cmd {
 	id, generation := m.SessionID, m.Generation
 	return tea.Tick(750*time.Millisecond, func(time.Time) tea.Msg { return ChatStatusPollMsg{SessionID: id, Generation: generation} })
@@ -1275,13 +1299,24 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		m.handleStreamEvent(msg.Event)
 		m.refreshViewportContent()
 
-		return m, tea.Batch(m.waitForNextEvent(), m.startAnimation(), m.windowCmd())
+		var fade tea.Cmd
+		if msg.Event.Type == daemon.EventUsage {
+			fade = m.cacheFadeCmd()
+		}
+		return m, tea.Batch(m.waitForNextEvent(), m.startAnimation(), m.windowCmd(), fade)
 
 	case ChatWindowMsg:
 		if msg.SessionID == m.SessionID && msg.Generation == m.Generation && msg.Err == nil {
 			m.window, m.windowModel = msg.Tokens, &msg.Model
 		}
 		return m, nil
+
+	case ChatCacheFadeMsg:
+		// newer usage has its own countdown
+		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || msg.Usage != m.Usage {
+			return m, nil
+		}
+		return m, m.cacheFadeCmd()
 
 	case ChatClearCopyStatusMsg:
 		if msg.SessionID == m.SessionID && msg.Generation == m.Generation && msg.Revision == m.copyStatusRevision {
@@ -2252,9 +2287,10 @@ func (m ChatModel) renderFooter() string {
 	return ansi.Truncate(keyHints(commands), width, "…")
 }
 
-// contextStat is how much of the prompt was cached and how full the context
-// is: "392k/396k cached (38%)", with a shorter form for narrow footers. The
-// share turns yellow near the window, where compaction starts.
+// contextStat is how much of the prompt was read from cache, fading as the
+// provider lets its cache go, and how full the context is: "392k/396k cached
+// (38%)", with a shorter form for narrow footers. The share turns yellow near
+// the window, where compaction starts.
 func (m ChatModel) contextStat() (full, short string) {
 	usage := m.Usage
 	if usage == nil || usage.Model != "" && m.Model != "" && usage.Model != m.Model {
@@ -2266,7 +2302,7 @@ func (m ChatModel) contextStat() (full, short string) {
 		}
 		return shortCount(*n)
 	}
-	ratio := m.Styles.Muted.Render(count(usage.CachedPromptTokens) + "/" + count(usage.PromptTokens))
+	ratio := m.Styles.Muted.Render(count(cachedNow(usage, time.Now())) + "/" + count(usage.PromptTokens))
 	share := ""
 	if total := contextTokens(usage); total != nil && m.window != nil && m.windowModel != nil && *m.windowModel == usage.Model {
 		pct := int(math.Round(100 * float64(*total) / float64(*m.window)))
@@ -2274,6 +2310,19 @@ func (m ChatModel) contextStat() (full, short string) {
 		share = " " + style.Render(fmt.Sprintf("(%d%%)", pct))
 	}
 	return ratio + m.Styles.Faint.Render(" cached") + share, ratio + share
+}
+
+// cachedNow is what a request would read from cache at now: the measured
+// count until the cache starts to fade, then each step it has reached.
+func cachedNow(u *daemon.Usage, now time.Time) *int {
+	cached := u.CachedPromptTokens
+	for _, step := range u.CacheFade {
+		if step.At > now.UnixMilli() {
+			break
+		}
+		cached = step.Cached
+	}
+	return cached
 }
 
 // contextTokens is what the context holds after a reply: the prompt and the

@@ -23,7 +23,7 @@ import gleam/result
 import gleam/string
 import sqlight
 
-pub const schema = "CREATE TABLE IF NOT EXISTS provider_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),seq INTEGER,kind TEXT NOT NULL,profile TEXT NOT NULL,provider TEXT NOT NULL,account TEXT,model TEXT NOT NULL,started_ms INTEGER NOT NULL,finished_ms INTEGER NOT NULL,outcome TEXT NOT NULL,status INTEGER,error TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,cache_creation_tokens INTEGER,cache_write_5m_tokens INTEGER,cache_write_1h_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,head_hash TEXT NOT NULL,inputs INTEGER NOT NULL,replaced INTEGER,projection_hash TEXT,strategy TEXT,cache_marks TEXT NOT NULL DEFAULT '[]'); CREATE INDEX IF NOT EXISTS provider_requests_session ON provider_requests(session,id);"
+pub const schema = "CREATE TABLE IF NOT EXISTS provider_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),seq INTEGER,kind TEXT NOT NULL,profile TEXT NOT NULL,provider TEXT NOT NULL,account TEXT,model TEXT NOT NULL,started_ms INTEGER NOT NULL,finished_ms INTEGER NOT NULL,outcome TEXT NOT NULL,status INTEGER,error TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,cache_creation_tokens INTEGER,cache_write_5m_tokens INTEGER,cache_write_1h_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,head_hash TEXT NOT NULL,inputs INTEGER NOT NULL,replaced INTEGER,projection_hash TEXT,strategy TEXT,cache_marks TEXT NOT NULL DEFAULT '[]'); CREATE INDEX IF NOT EXISTS provider_requests_session ON provider_requests(session,id); CREATE INDEX IF NOT EXISTS provider_requests_head ON provider_requests(head_hash,model,id);"
 
 /// What the call was for. A turn is the model loop; a summarizer is the
 /// compaction summary call `loop.summarize` makes; a background call is one
@@ -370,6 +370,29 @@ pub fn page(
       |> result.unwrap(after)
     Ok(#(rows, next))
   })
+}
+
+/// What a request head (its instructions and tools, under the hour-long
+/// cache marks) takes up, from the latest call through `profile` to `model`
+/// that wrote that head's hour-long entries: its read covered a prefix, and
+/// those writes the rest. Any session's call counts, since the head is the
+/// same whichever conversation follows it; `None` when none measured it.
+pub fn head_tokens(
+  database: store.Store,
+  profile: String,
+  model: String,
+  head_hash: String,
+) -> Option(Int) {
+  store.query(database, fn(db) {
+    store.rows(
+      db,
+      "SELECT COALESCE(cached_input_tokens,0)+cache_write_1h_tokens FROM provider_requests WHERE head_hash=? AND model=? AND profile=? AND cache_write_1h_tokens>0 ORDER BY id DESC LIMIT 1",
+      [sqlight.text(head_hash), sqlight.text(model), sqlight.text(profile)],
+      decode.field(0, decode.int, decode.success),
+    )
+  })
+  |> result.try(fn(rows) { list.first(rows) |> result.replace_error("") })
+  |> option.from_result
 }
 
 // Named, in decoder order, so a column added later cannot shift a read.

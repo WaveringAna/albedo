@@ -247,9 +247,10 @@ pub fn start(
 
 /// One background call an extension asked for. It commits nothing and
 /// publishes nothing, so its worker carries no history and answers only its
-/// own outcome and usage, which the session passes on to `reply`; the session
-/// queues submissions behind it as it does for a compaction run. The run
-/// never announces itself on the agents bus: an idle session stays idle.
+/// own outcome and usage, which the session passes on to `reply`, and when
+/// it started; the session queues submissions behind it as it does for a
+/// compaction run. The run never announces itself on the agents bus: an idle
+/// session stays idle.
 pub fn start_background(
   state: session_state.State(message),
   kernel: runtime.Session,
@@ -257,7 +258,7 @@ pub fn start_background(
   request: types.Request,
   prefix: requests.Prefix,
   reply: Subject(Result(Option(types.Usage), String)),
-  finished: fn(String, Result(Option(types.Usage), String)) -> message,
+  finished: fn(String, Int, Result(Option(types.Usage), String)) -> message,
 ) -> session_state.State(message) {
   let run_id = new_id()
   let owner = state.self
@@ -286,10 +287,9 @@ pub fn start_background(
   let pid =
     process.spawn_unlinked(fn() {
       label("albedo_background", run_id)
-      process.send(
-        owner,
-        finished(run_id, loop.background(worker, request, prefix)),
-      )
+      let started = usage.now()
+      let outcome = loop.background(worker, request, prefix)
+      process.send(owner, finished(run_id, started, outcome))
     })
   session_state.State(
     ..state,

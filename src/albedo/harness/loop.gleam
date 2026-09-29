@@ -4,6 +4,8 @@ import albedo/daemon/conversation
 import albedo/daemon/events as view
 import albedo/daemon/requests
 import albedo/daemon/usage
+import albedo/harness/cache_fade
+import albedo/harness/cache_ttl
 import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/harness/runtime
@@ -94,7 +96,7 @@ pub fn run(
   let current_instructions = request_instructions(state)
   let request = request(state, current_instructions, history)
   state.record_context(request, prepared.observation, prepared.compacted)
-  use #(row, turn) <- result.try(
+  use #(row, turn, sent) <- result.try(
     call(
       state,
       requests.Turn,
@@ -114,8 +116,9 @@ pub fn run(
     )
     |> result.map_error(describe(state.upstream, _)),
   )
+  let cache = fading(state, sent)
   let completed_usage =
-    usage.from_completion(state.model, turn.usage, usage.now())
+    usage.from_completion(state.model, turn.usage, usage.now(), cache)
   let replay = list.map(turn.output, types.Replay)
   use #(timestamp, seq) <- result.try(state.commit(
     replay,
@@ -326,8 +329,8 @@ fn bounded(text: String, limit: Int, note: String) -> String {
 /// Streams one provider call, recording one provider request per attempt: what
 /// it cost, how it ended, and the prefix identity it went out with. The row
 /// id of the attempt that succeeded is answered so its transcript seq can be
-/// attached once committed. A row that cannot be written is logged and
-/// skipped, never a failed turn.
+/// attached once committed, with the call as it went out. A row that cannot
+/// be written is logged and skipped, never a failed turn.
 fn call(
   state: Loop,
   kind: requests.Kind,
@@ -335,7 +338,7 @@ fn call(
   prefix: requests.Prefix,
   publish: fn(String) -> Bool,
   on_event: fn(types.Event) -> types.Control,
-) -> Result(#(Option(Int), types.Turn), types.Error) {
+) -> Result(#(Option(Int), types.Turn, extension.SentCall), types.Error) {
   retry_stream(
     fn() {
       let started = requests.now()
@@ -378,24 +381,25 @@ fn call(
           None
         }
       }
+      let sent =
+        extension.SentCall(
+          request,
+          prefix,
+          usage,
+          marks,
+          state.profile,
+          state.upstream.endpoint,
+          state.upstream.protocol,
+          started,
+          finished,
+        )
       // Extensions hear a turn's call as sent, never a rebuilt one.
       case kind, outcome {
-        requests.Turn, Ok(_) ->
-          state.report_call(extension.SentCall(
-            request,
-            prefix,
-            usage,
-            marks,
-            state.profile,
-            state.upstream.endpoint,
-            state.upstream.protocol,
-            started,
-            finished,
-          ))
+        requests.Turn, Ok(_) -> state.report_call(sent)
         _, _ -> Nil
       }
       case outcome {
-        Ok(turn) -> Ok(#(row, turn))
+        Ok(turn) -> Ok(#(row, turn, sent))
         Error(error) -> Error(error)
       }
     },
@@ -422,6 +426,26 @@ fn attach(state: Loop, row: Option(Int), seq: Option(Int)) -> Nil {
       }
     _, _ -> Nil
   }
+}
+
+/// How the cached count of a turn's call fades, by the cache table's entry
+/// for where it went and the request ledger's measure of its head.
+fn fading(state: Loop, sent: extension.SentCall) -> Option(cache_fade.Fade) {
+  cache_fade.fade(
+    cache_ttl.for_call(state.profile, sent.endpoint, sent.request.model),
+    sent.marks,
+    sent.usage,
+    fn() {
+      requests.head_tokens(
+        runtime.ledger(state.host),
+        state.profile,
+        sent.request.model,
+        sent.prefix.head_hash,
+      )
+    },
+    sent.started_ms,
+    sent.finished_ms,
+  )
 }
 
 /// How a call reached its provider: the protocol over the endpoint.
@@ -592,7 +616,7 @@ fn summarize(
       Some(max_output_tokens),
       types.defaults,
     )
-  use #(_, turn) <- result.try(
+  use #(_, turn, _) <- result.try(
     call(
       state,
       requests.Summarizer,

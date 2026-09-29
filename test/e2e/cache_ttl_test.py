@@ -4,7 +4,9 @@ The table is daemon-wide state read from files, so this is where its behaviour
 is visible: the shipped default served with every entry, lookups resolving
 through match order, a local override replacing an entry by id and winning
 with a new more-specific one — without a restart — and a malformed file
-keeping the last good table. It touches extensions.json and cache-ttl.json in
+keeping the last good table. A turn's usage carries the steps its cached
+count fades through by that table, which the chat footer counts down from and
+which must survive a restart. It touches extensions.json and cache-ttl.json in
 the shared test home (the warmer suite writes its own override there), so the
 class is exclusive and restores every file it wrote.
 
@@ -203,6 +205,32 @@ class CacheTtlTests(unittest.TestCase):
         table = self.table()
         self.assertTrue(self.layers(table)["remote"]["loaded"])
         self.assertEqual(self.entries(table)["deepseek"]["note"], "remote override")
+
+    def test_a_turns_usage_says_when_its_cache_fades_across_a_restart(self):
+        # A provider that only evicts: the count is unknown past typical
+        # survival and gone past the bound, counted from the response's end.
+        write_atomic(self.app.home / "cache-ttl.json", {"version": 1, "entries": [
+            {"id": "fixture-evict", "match": {"host": "127.0.0.1"},
+             "policy": "evict", "survival": {"typical": 600, "max": 3600},
+             "evidence": "measured"}]})
+        session = self.app.session()
+        self.app.prompt(session, "hello").close()
+        self.app.idle(session)
+        with self.app.api(f"/sessions/{session}/requests") as response:
+            finished = json.load(response)["rows"][0]["finishedMs"]
+        fading = [{"at": finished + 600_000},
+                  {"at": finished + 3_600_000, "cached": 0}]
+
+        def latest_fade():
+            usages = [event for event in self.app.events(session)
+                      if event["type"] == "usage"]
+            return usages[-1].get("cacheFade")
+
+        self.assertEqual(latest_fade(), fading)
+        # The steps are stored with the usage, so a client attaching to a
+        # restarted daemon still counts down from the same call.
+        self.app.restart()
+        self.assertEqual(latest_fade(), fading)
 
     def test_route_requires_authentication(self):
         request = urllib.request.Request(self.app.base + "/cache-ttl")
