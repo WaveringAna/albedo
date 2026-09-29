@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,16 +64,29 @@ c.close()`
 	if len(p.OldKernels) != 1 || p.OldKernels[0].Path != orphan || len(p.OldBackups) != 1 || p.OldBackups[0].Path != backup {
 		t.Fatalf("unsafe candidates: %+v", p)
 	}
+	var summary bytes.Buffer
+	storagePrint(&summary, p, false)
+	if strings.Contains(summary.String(), "live") || !strings.Contains(summary.String(), "1 sessions") || !strings.Contains(summary.String(), "Cleanup: albedo storage prune --all") {
+		t.Fatalf("unreadable default preview: %s", summary.String())
+	}
+	var detailed bytes.Buffer
+	storagePrint(&detailed, p, true)
+	if !strings.Contains(detailed.String(), "live") || storageSize(508272640) != "484.7 MiB" {
+		t.Fatalf("session detail or size formatting: %s", detailed.String())
+	}
 	if err := storageCommand(nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(orphan); err != nil {
 		t.Fatalf("preview deleted snapshot: %v", err)
 	}
-	if err := storageCommand([]string{"prune", "--old-kernels", "--backups"}); err == nil || !strings.Contains(err.Error(), "--yes") {
+	if err := storageCommand([]string{"prune", "--all"}); err == nil || !strings.Contains(err.Error(), "--yes") {
 		t.Fatalf("prune without confirmation: %v", err)
 	}
-	if err := storageCommand([]string{"prune", "--old-kernels", "--backups", "--yes"}); err != nil {
+	if err := storageCommand([]string{"prune", "--all", "--backups", "--yes"}); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("ambiguous --all accepted: %v", err)
+	}
+	if err := storageCommand([]string{"prune", "--all", "--yes"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{orphan, backup} {
@@ -84,6 +98,9 @@ c.close()`
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("should retain %s: %v", path, err)
 		}
+	}
+	if after, err := storageSnapshot(home, time.Now()); err != nil || len(after.DB.Sessions) != 1 {
+		t.Fatalf("--all deleted sessions: %+v, %v", after.DB.Sessions, err)
 	}
 }
 

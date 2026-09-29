@@ -15,22 +15,26 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
 
-const storageHelp = `Usage: albedo storage [--json]
+const storageHelp = `Usage: albedo storage [--sessions | --json]
+       albedo storage prune --all [--yes]
        albedo storage prune [--session ID ...] [--old-kernels]
                             [--backups] [--vacuum] [--yes]
 
-Preview is read-only. Prune previews again and requires confirmation (or --yes).
+Preview is read-only; --sessions lists per-session estimates, --json shows all data.
+Prune previews first and requires confirmation (or --yes).
+--all cleans eligible orphan kernels and old migration backups, then vacuums
+SQLite. It NEVER deletes sessions. Stop the daemon before offline cleanup.
 --session deletes exactly the selected session via the daemon. Delete child
 sessions first; parent sessions with children cannot be deleted directly.
-Other prune options require the daemon to be stopped.
 --old-kernels removes orphaned .state files older than 30 days.
 --backups removes migration .sqlite backups older than 30 days.
 --vacuum reclaims free SQLite pages; needs temporary space up to the DB size.
-Session byte counts are approximate payload sizes, not allocated disk pages.
+Session byte counts are approximate payload sizes, excluding shared images.
 `
 
 type storageSession struct {
@@ -216,18 +220,41 @@ func storageSnapshot(home string, now time.Time) (storagePreview, error) {
 	return p, nil
 }
 
-func storagePrint(w io.Writer, p storagePreview) {
-	fmt.Fprintf(w, "SQLite %d B (WAL/SHM %d B, free pages ~%d B); shared images ~%d B\n", p.Database, p.WAL, p.DB.FreePages*p.DB.PageSize, p.DB.Images)
-	fmt.Fprintf(w, "Kernel snapshots %d B; backups %d B; other top-level files %d B\n", p.Kernels, p.Backups, p.Other)
-	for _, s := range p.DB.Sessions {
-		fmt.Fprintf(w, "  session %s: ~%d B payload\n", s.ID, s.Bytes)
+func storageSize(bytes int64) string {
+	if bytes < 1024 {
+		return fmt.Sprintf("%d B", bytes)
 	}
+	value := float64(bytes)
+	for _, unit := range []string{"KiB", "MiB", "GiB", "TiB"} {
+		value /= 1024
+		if value < 1024 || unit == "TiB" {
+			return fmt.Sprintf("%.1f %s", value, unit)
+		}
+	}
+	return ""
+}
+
+func storagePrint(w io.Writer, p storagePreview, sessions bool) {
+	fmt.Fprintf(w, "SQLite %s (shared images %s; free pages %s)\n", storageSize(p.Database), storageSize(p.DB.Images), storageSize(p.DB.FreePages*p.DB.PageSize))
+	fmt.Fprintf(w, "WAL/SHM %s · kernels %s · backups %s · other files %s\n", storageSize(p.WAL), storageSize(p.Kernels), storageSize(p.Backups), storageSize(p.Other))
+	fmt.Fprintf(w, "%d sessions (payload estimates exclude shared images)\n", len(p.DB.Sessions))
+	var kernels, backups int64
 	for _, f := range p.OldKernels {
-		fmt.Fprintf(w, "  eligible orphan kernel %s: %d B\n", filepath.Base(f.Path), f.Bytes)
+		kernels += f.Bytes
 	}
 	for _, f := range p.OldBackups {
-		fmt.Fprintf(w, "  eligible backup %s: %d B\n", filepath.Base(f.Path), f.Bytes)
+		backups += f.Bytes
 	}
+	fmt.Fprintf(w, "Eligible: %d orphan kernels (%s), %d old backups (%s)\n", len(p.OldKernels), storageSize(kernels), len(p.OldBackups), storageSize(backups))
+	if sessions {
+		sort.Slice(p.DB.Sessions, func(i, j int) bool { return p.DB.Sessions[i].Bytes > p.DB.Sessions[j].Bytes })
+		for _, s := range p.DB.Sessions {
+			fmt.Fprintf(w, "  %s  %s\n", storageSize(s.Bytes), s.ID)
+		}
+	} else {
+		fmt.Fprintln(w, "Details: albedo storage --sessions | --json")
+	}
+	fmt.Fprintln(w, "Cleanup: albedo storage prune --all (stop daemon first; keeps sessions)")
 }
 
 func pruneFiles(files []storageFile) error {
@@ -252,22 +279,22 @@ func storageCommand(args []string) error {
 		fmt.Print(storageHelp)
 		return nil
 	}
-	if len(args) == 0 || args[0] == "--json" {
+	if len(args) == 0 || args[0] == "--json" || args[0] == "--sessions" {
 		if len(args) > 1 {
-			return errors.New("usage: albedo storage [--json]")
+			return errors.New("usage: albedo storage [--sessions | --json]")
 		}
 		p, err := storageSnapshot(home, time.Now())
 		if err != nil {
 			return err
 		}
-		if len(args) == 1 {
+		if len(args) == 1 && args[0] == "--json" {
 			data, err := json.MarshalIndent(p, "", "  ")
 			if err != nil {
 				return err
 			}
 			fmt.Println(string(data))
 		} else {
-			storagePrint(os.Stdout, p)
+			storagePrint(os.Stdout, p, len(args) == 1 && args[0] == "--sessions")
 		}
 		return nil
 	}
@@ -282,6 +309,7 @@ func storageCommand(args []string) error {
 	flags.SetOutput(io.Discard)
 	var sessions sessionIDs
 	flags.Var(&sessions, "session", "session ID to delete (repeatable)")
+	all := flags.Bool("all", false, "clean eligible files and vacuum, never delete sessions")
 	kernels := flags.Bool("old-kernels", false, "remove old orphan snapshots")
 	backups := flags.Bool("backups", false, "remove old migration backups")
 	vacuum := flags.Bool("vacuum", false, "reclaim SQLite pages")
@@ -292,8 +320,14 @@ func storageCommand(args []string) error {
 	if flags.NArg() != 0 {
 		return errors.New("unexpected positional argument to storage prune")
 	}
+	if *all {
+		if len(sessions) > 0 || *kernels || *backups || *vacuum {
+			return errors.New("--all cannot be combined with other prune selections")
+		}
+		*kernels, *backups, *vacuum = true, true, true
+	}
 	if len(sessions) == 0 && !*kernels && !*backups && !*vacuum {
-		return errors.New("select --session, --old-kernels, --backups or --vacuum")
+		return errors.New("select --all, --session, --old-kernels, --backups or --vacuum")
 	}
 	if len(sessions) > 0 && (*kernels || *backups || *vacuum) {
 		return errors.New("session pruning and offline cleanup require separate invocations")
@@ -302,7 +336,7 @@ func storageCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	storagePrint(os.Stdout, p)
+	storagePrint(os.Stdout, p, false)
 	if len(sessions) > 0 {
 		known := make(map[string]bool)
 		for _, s := range p.DB.Sessions {
@@ -315,14 +349,18 @@ func storageCommand(args []string) error {
 			fmt.Printf("DELETE session %s (permanently, via daemon)\n", id)
 		}
 	} else {
-		if *kernels {
-			for _, f := range p.OldKernels {
-				fmt.Printf("REMOVE %s\n", f.Path)
+		if *all {
+			fmt.Printf("REMOVE %d eligible orphan kernels and %d old backups (no sessions)\n", len(p.OldKernels), len(p.OldBackups))
+		} else {
+			if *kernels {
+				for _, f := range p.OldKernels {
+					fmt.Printf("REMOVE %s\n", f.Path)
+				}
 			}
-		}
-		if *backups {
-			for _, f := range p.OldBackups {
-				fmt.Printf("REMOVE %s\n", f.Path)
+			if *backups {
+				for _, f := range p.OldBackups {
+					fmt.Printf("REMOVE %s\n", f.Path)
+				}
 			}
 		}
 		if *vacuum {
