@@ -150,8 +150,7 @@ roots(Workspace, Home) ->
     User = case Home of
         [] -> [];
         _ -> [filename:join([Home, ".albedo", "skills"]),
-              filename:join([Home, ".agents", "skills"]),
-              filename:join([Home, ".prime", "agent", "skills"])]
+              filename:join([Home, ".agents", "skills"])]
     end,
     Project ++ User.
 

@@ -10,11 +10,10 @@ The extension scans immediate child directories in this order:
 2. `<workspace>/.agents/skills`
 3. `~/.albedo/skills`
 4. `~/.agents/skills`
-5. `~/.prime/agent/skills`
 
 A valid workspace skill wins over a user skill with the same frontmatter `name`. Earlier roots win within the same scope. Entries and the final catalog are sorted deterministically. Invalid metadata and collisions appear as bounded catalog diagnostics rather than disappearing silently.
 
-`.agents/skills` is the portable Agent Skills location. `.albedo/skills` is the Albedo-native location. `~/.prime/agent/skills` provides compatibility with skills already installed for Prime Agent.
+`.agents/skills` is the portable Agent Skills location. `.albedo/skills` is the Albedo-native location.
 
 Each immediate child must contain a regular `SKILL.md`. Its parent directory and frontmatter `name` must match. Albedo requires the specification's `name` and `description` fields and accepts the optional `license`, `compatibility`, `metadata`, and `allowed-tools` fields. Optional fields are not advertised eagerly. YAML folded and multiline descriptions are supported through `yamerl`'s failsafe schema.
 

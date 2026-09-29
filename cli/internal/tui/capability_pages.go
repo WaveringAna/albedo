@@ -121,7 +121,7 @@ func mcpItems(home string) ([]capabilityItem, error) {
 // the daemon's prepared catalog remains authoritative after a reload.
 func discoverSkills(home, workspace string) ([]capabilityItem, error) {
 	userHome, _ := os.UserHomeDir()
-	roots := []string{filepath.Join(workspace, ".albedo", "skills"), filepath.Join(workspace, ".agents", "skills"), filepath.Join(userHome, ".albedo", "skills"), filepath.Join(userHome, ".agents", "skills"), filepath.Join(userHome, ".prime", "agent", "skills")}
+	roots := []string{filepath.Join(workspace, ".albedo", "skills"), filepath.Join(workspace, ".agents", "skills"), filepath.Join(userHome, ".albedo", "skills"), filepath.Join(userHome, ".agents", "skills")}
 	seen := map[string]bool{}
 	var items []capabilityItem
 	for _, root := range roots {
