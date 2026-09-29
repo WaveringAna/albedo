@@ -5,6 +5,7 @@ import albedo/daemon/store
 import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/harness/extensions/lcm/graph
+import albedo/harness/search
 import albedo/harness/tool
 import gleam/dynamic/decode
 import gleam/int
@@ -163,32 +164,19 @@ pub fn grep_page(
   offset: Int,
   summary_id: Option(Int),
 ) -> Result(String, String) {
-  let pattern = string.trim(pattern)
-  use _ <- result.try(compaction.require(
-    pattern != "" && string.length(pattern) <= 200,
-    "LCM search pattern must be 1..200 characters",
-  ))
+  use needle <- result.try(search.needle(pattern))
   use _ <- result.try(compaction.require(
     offset >= 0,
     "LCM search offset must be nonnegative",
   ))
-  use sources <- result.try(conversation.load_sources(ledger, session))
+  use sources <- result.try(search.rows(ledger, search.Within(session), needle))
   use nodes <- result.try(graph.all_nodes(ledger, session))
   use frontier <- result.try(graph.frontier(ledger, session))
   use scope <- result.try(case summary_id {
     Some(id) -> required_node(ledger, session, id) |> result.map(Some)
     None -> Ok(None)
   })
-  let needle = string.lowercase(pattern)
-  let matches =
-    sources
-    |> list.filter(fn(item) {
-      in_scope(item.source.seq, scope)
-      && string.contains(
-        string.lowercase(tool.row_text(item.entry.input)),
-        needle,
-      )
-    })
+  let matches = list.filter(sources, fn(match) { in_scope(match.seq, scope) })
   let summaries =
     nodes
     |> list.filter(fn(node) {
@@ -202,7 +190,7 @@ pub fn grep_page(
   let limit = int.clamp(limit, 1, 20)
   let next = offset + limit
   json.object([
-    #("pattern", json.string(pattern)),
+    #("pattern", json.string(string.trim(pattern))),
     #("offset", json.int(offset)),
     #("source_count", json.int(list.length(matches))),
     #("node_count", json.int(list.length(summaries))),
@@ -215,17 +203,14 @@ pub fn grep_page(
     ),
     #(
       "sources",
-      json.array(list.take(list.drop(matches, offset), limit), fn(item) {
+      json.array(list.take(list.drop(matches, offset), limit), fn(match) {
         json.object([
-          #("seq", json.int(item.source.seq)),
-          #("node_id", case covering_node(frontier, item.source.seq) {
+          #("seq", json.int(match.seq)),
+          #("node_id", case covering_node(frontier, match.seq) {
             Some(node) -> json.int(node.id)
             None -> json.null()
           }),
-          #(
-            "preview",
-            json.string(tool.excerpt(tool.row_text(item.entry.input), 400)),
-          ),
+          #("preview", json.string(search.preview(match.text, needle))),
         ])
       }),
     ),
@@ -234,7 +219,7 @@ pub fn grep_page(
       json.array(list.take(list.drop(summaries, offset), limit), fn(node) {
         json.object([
           #("id", json.int(node.id)),
-          #("preview", json.string(tool.excerpt(node.summary, 400))),
+          #("preview", json.string(search.preview(node.summary, needle))),
         ])
       }),
     ),

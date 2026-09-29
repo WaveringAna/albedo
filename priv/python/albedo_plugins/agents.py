@@ -5,8 +5,9 @@ arrives later as mail and starts your next turn."""
 
 from __future__ import annotations
 
+import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
 
 from albedo_api import Host, PythonApi, Record
@@ -38,7 +39,9 @@ class MessageMatches(Record):
 @dataclass(frozen=True)
 class Agent:
     """A handle to one agent. `running` and `closed` are set on snapshots
-    from get(), children(), and siblings(); None on handles that were not looked up."""
+    from get(), children(), siblings(), and sessions(); None on handles that
+    were not looked up. `cwd`, `model`, `last_active` (unix seconds of its
+    last answer), and `matches` are set only on snapshots from sessions()."""
 
     id: str
     name: str
@@ -46,6 +49,10 @@ class Agent:
     parent: "Agent | None" = None
     running: bool | None = None
     closed: bool | None = None
+    cwd: str | None = None
+    model: str | None = None
+    last_active: int | None = None
+    matches: list[dict] | None = field(default=None, compare=False)
 
     async def spawn(
         self,
@@ -149,7 +156,16 @@ def _agent(raw: dict) -> Agent:
         parent=_agent(parent) if isinstance(parent, dict) else None,
         running=raw.get("running"),
         closed=raw.get("closed"),
+        cwd=raw.get("cwd"),
+        model=raw.get("model"),
+        last_active=raw.get("last_active"),
+        matches=raw.get("matches"),
     )
+
+
+def _directory(cwd: str | None) -> str:
+    """A cwd filter as sessions store it: absolute, or "" for every directory."""
+    return os.path.abspath(os.path.expanduser(cwd)) if cwd else ""
 
 
 def _brief(
@@ -206,6 +222,31 @@ class Agents:
                 'agents.get(to): to is "parent", a name, a session id, or an agent handle'
             )
         return _agent(cast(dict, await host("agents.get", {"to": target.strip()})))
+
+    async def sessions(
+        self,
+        query: str = "",
+        *,
+        cwd: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[Agent]:
+        """Every session, most recently active first (at most 100 per call).
+        A `query` keeps those whose title or name contains it, or whose
+        messages do, case-insensitively; each snapshot's `matches` then holds
+        up to 3 of its newest matching rows as {seq, preview}, to read with
+        messages(seq=...). Your own messages are not searched. With `cwd`,
+        only sessions opened in that directory."""
+        found = await host(
+            "agents.sessions",
+            {
+                "query": query,
+                "cwd": _directory(cwd),
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+        return [_agent(item) for item in cast(list, found)]
 
     def spawn(self, *_: object, **__: object) -> None:
         raise AttributeError(

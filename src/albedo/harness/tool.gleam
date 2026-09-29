@@ -1,6 +1,7 @@
 //// Shared ceremony for read-only retrieval tools: one place for the JSON
 //// argument schema, the decode-and-usage wrapper, and the transcript text
-//// rendering, search, and paging every such tool repeats.
+//// rendering and paging every such tool repeats. Searching lives in
+//// `albedo/harness/search`.
 
 import albedo/daemon/conversation
 import albedo/daemon/store
@@ -107,51 +108,6 @@ pub fn next_offset(next: Int, more: Bool) -> json.Json {
 pub fn text_page(rendered: String, offset: Int, limit: Int) -> #(String, Int) {
   let page = string.slice(rendered, offset, int.clamp(limit, 1, 8000))
   #(page, offset + string.length(page))
-}
-
-/// The rows of `session`'s durable transcript whose text contains `pattern`,
-/// case-insensitively: a page of at most 20 seqs with previews.
-pub fn transcript_grep(
-  ledger: store.Store,
-  session: String,
-  pattern: String,
-  limit: Int,
-  offset: Int,
-) -> Result(json.Json, String) {
-  let pattern = string.trim(pattern)
-  use _ <- result.try(compaction.require(
-    pattern != "" && string.length(pattern) <= 200,
-    "transcript search pattern must be 1..200 characters",
-  ))
-  use _ <- result.try(compaction.require(
-    offset >= 0,
-    "transcript search offset must be nonnegative",
-  ))
-  use sources <- result.try(conversation.load_sources(ledger, session))
-  let needle = string.lowercase(pattern)
-  let matches =
-    list.filter(sources, fn(item) {
-      string.contains(string.lowercase(row_text(item.entry.input)), needle)
-    })
-  let limit = int.clamp(limit, 1, 20)
-  let next = offset + limit
-  Ok(
-    json.object([
-      #("pattern", json.string(pattern)),
-      #("offset", json.int(offset)),
-      #("count", json.int(list.length(matches))),
-      #("next_offset", next_offset(next, next < list.length(matches))),
-      #(
-        "rows",
-        json.array(list.take(list.drop(matches, offset), limit), fn(item) {
-          json.object([
-            #("seq", json.int(item.source.seq)),
-            #("preview", json.string(excerpt(row_text(item.entry.input), 400))),
-          ])
-        }),
-      ),
-    ]),
-  )
 }
 
 /// One text page of `session`'s durable transcript rows from `seq` on.

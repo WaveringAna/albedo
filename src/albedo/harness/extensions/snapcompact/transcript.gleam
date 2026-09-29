@@ -2,6 +2,7 @@
 //// history an archive frame renders illegibly or its budget dropped.
 
 import albedo/harness/extension
+import albedo/harness/search
 import albedo/harness/tool
 import gleam/dynamic/decode
 import gleam/json
@@ -28,7 +29,7 @@ pub fn definitions() -> List(extension.Tool) {
       "expected pattern and optional limit, offset",
       fn(context, arguments) {
         let #(pattern, limit, offset) = arguments
-        tool.transcript_grep(
+        search.transcript_grep(
           context.store,
           context.session,
           pattern,

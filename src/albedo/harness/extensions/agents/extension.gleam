@@ -9,16 +9,19 @@ import albedo/daemon/bus
 import albedo/daemon/family
 import albedo/daemon/store
 import albedo/harness/extension
+import albedo/harness/extensions/agents/sessions
 import albedo/harness/rpc
+import albedo/harness/search
 import albedo/harness/tool
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
-const instructions = "Agents are sessions you spawn to work in parallel; every call is async. agents.self is your handle (id, name, depth, parent). Call await agents.models() once before spawning; other providers appear as provider/model, and selecting one routes the child through that provider. Then child = await agents.self.spawn(task, name=\"scout\", model=<one of models()>, deliverable=None, evidence_bar=None, falsifier=None): it returns as soon as the child exists, never with its answer. Answers arrive later as <mail> in your conversation and start your next turn, so spawn independent children back to back and end your turn instead of waiting; never sleep or poll. Talk with await mail.submit(child, text). await agents.self.children() and siblings() return live snapshots (running, closed). await child.cancel() stops its turn; await child.close() when you are done with it keeps its messages and files and frees its kernel. await agents.get(to) returns a live handle for \"parent\", a family name, or any session id. On any handle, await h.messages(seq=0, offset=0, limit=4000) reads a page of that session's messages from row seq on (content, next_offset) and await h.search_messages(pattern) finds rows by seq: any session may read any other, so you can see what a child or another session did without waiting for mail. Only the user deletes agents: if one should go, ask them. Children nest at most 3 deep and 12 open per parent; mail any session by id instead of nesting to reach it. Children share your workspace, so give two children the same files only if one only reads."
+const instructions = "Agents are sessions you spawn to work in parallel; every call is async. agents.self is your handle (id, name, depth, parent). Call await agents.models() once before spawning; other providers appear as provider/model, and selecting one routes the child through that provider. Then child = await agents.self.spawn(task, name=\"scout\", model=<one of models()>, deliverable=None, evidence_bar=None, falsifier=None): it returns as soon as the child exists, never with its answer. Answers arrive later as <mail> in your conversation and start your next turn, so spawn independent children back to back and end your turn instead of waiting; never sleep or poll. Talk with await mail.submit(child, text). await agents.self.children() and siblings() return live snapshots (running, closed). await child.cancel() stops its turn; await child.close() when you are done with it keeps its messages and files and frees its kernel. await agents.get(to) returns a live handle for \"parent\", a family name, or any session id. On any handle, await h.messages(seq=0, offset=0, limit=4000) reads a page of that session's messages from row seq on (content, next_offset) and await h.search_messages(pattern) finds rows by seq: any session may read any other, so you can see what a child or another session did without waiting for mail. await agents.sessions(query=\"\", cwd=None, limit=20, offset=0) lists every session, most recently active first, as snapshots that also carry cwd, model, last_active, and matches; with a query it keeps sessions whose title or name contains it or whose messages do, and matches holds up to 3 of each one's newest matching rows as {seq, preview} to read with messages(seq=...). cwd keeps one directory. Only the user deletes agents: if one should go, ask them. Children nest at most 3 deep and 12 open per parent; mail any session by id instead of nesting to reach it. Children share your workspace, so give two children the same files only if one only reads."
 
 pub fn extension() -> extension.Extension {
   extension.Extension(
@@ -150,7 +153,26 @@ fn dispatch(db, session, method, args) -> Result(json.Json, String) {
         },
         "pattern must be a string; limit and offset integers",
       ))
-      tool.transcript_grep(db, target, pattern, limit, offset)
+      search.transcript_grep(db, target, pattern, limit, offset)
+    }
+    "agents.sessions" -> {
+      use #(query, cwd, limit, offset) <- result.try(rpc.args(
+        args,
+        {
+          use query <- decode.field("query", decode.string)
+          use cwd <- decode.field("cwd", decode.string)
+          use limit <- decode.field("limit", decode.int)
+          use offset <- decode.field("offset", decode.int)
+          decode.success(#(query, cwd, limit, offset))
+        },
+        "query and cwd must be strings; limit and offset integers",
+      ))
+      use found <- result.try(sessions.find(db, session, query, cwd))
+      found
+      |> list.drop(int.max(offset, 0))
+      |> list.take(int.clamp(limit, 1, 100))
+      |> json.array(found_json(db, _))
+      |> Ok
     }
     "agents.delete" ->
       Error(
@@ -226,16 +248,45 @@ fn status_json(
   session: String,
   member: Option(family.Member),
 ) -> json.Json {
+  json.object(status_fields(db, session, member))
+}
+
+fn status_fields(
+  db: store.Store,
+  session: String,
+  member: Option(family.Member),
+) -> List(#(String, json.Json)) {
   let running = case agents.call(agents.Running(session)) {
     Ok(value) -> read(value, decode.bool) |> result.unwrap(False)
     Error(_) -> False
   }
   let closed =
     option.map(member, fn(member) { member.closed }) |> option.unwrap(False)
+  list.append(handle_fields(db, session, member), [
+    #("running", json.bool(running)),
+    #("closed", json.bool(closed)),
+  ])
+}
+
+/// A snapshot as `agents.sessions()` lists it: also where it works, on which
+/// model, when it last answered (unix seconds), and why a query matched it.
+fn found_json(db: store.Store, found: sessions.Found) -> json.Json {
+  let info = found.info
+  let member = family.get(db, info.id) |> result.unwrap(None)
   json.object(
-    list.append(handle_fields(db, session, member), [
-      #("running", json.bool(running)),
-      #("closed", json.bool(closed)),
+    list.append(status_fields(db, info.id, member), [
+      #("cwd", json.string(info.cwd)),
+      #("model", json.string(info.model)),
+      #("last_active", json.nullable(info.last_assistant_at, json.int)),
+      #(
+        "matches",
+        json.array(found.hits, fn(hit) {
+          json.object([
+            #("seq", json.int(hit.seq)),
+            #("preview", json.string(hit.preview)),
+          ])
+        }),
+      ),
     ]),
   )
 }

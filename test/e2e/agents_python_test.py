@@ -1,5 +1,5 @@
 """Python agent API: spawn, family identity, refusals, progress, explicit mail,
-agents.get, and reading messages across sessions."""
+agents.get, reading messages across sessions, and listing and searching them."""
 
 import re
 import time
@@ -19,6 +19,7 @@ print('SPAWNED', kid.name, kid.depth, kid.parent.name, 'KID=' + kid.id)
 CHILD = """me = agents.self
 print('ME', me.name, me.depth, me.parent.name)
 print('PROGRESS', await agents.progress('counting'))
+print('Café Ünïcode')
 try:
     await me.parent.cancel()
 except AgentsError as error:
@@ -52,6 +53,20 @@ try:
     await kid.cancel()
 except AgentsError as error:
     print('PEEK_REFUSED', error)
+listed = await agents.sessions()
+print('LISTED', {kid!r} in [s.id for s in listed], agents.self.id in [s.id for s in listed])
+scouts = await agents.sessions('SCOUT', cwd=listed[0].cwd)
+scout = next(s for s in scouts if s.id == {kid!r})
+print('BY_NAME', scout.name, scout.depth, scout.model, scout.cwd == listed[0].cwd)
+print('ELSEWHERE', await agents.sessions(cwd='/nowhere'))
+talked = await agents.sessions('COUNT TO THREE')
+said = next(s for s in talked if s.id == {kid!r})
+hit = said.matches[0]
+row = await said.messages(seq=hit['seq'], limit=200)
+print('SEARCHED', agents.self.id in [s.id for s in talked], 'count to three' in hit['preview'], 'count to three' in row.content)
+print('UNQUERIED', listed[0].matches)
+print('UNICODE', {kid!r} in [s.id for s in await agents.sessions('CAFÉ ÜNÏCODE')])
+print('NOTHING', await agents.sessions('never ' + 'said anywhere'))
 try:
     await agents.get('nobody')
 except AgentsError as error:
@@ -181,6 +196,13 @@ class AgentsPythonTests(unittest.TestCase):
                 self.assertIn("PEEK_READ True", peeked)
                 self.assertIn("PEEK_REFUSED you can only cancel or close", peeked)
                 self.assertIn("no agent named 'nobody'", peeked)
+                self.assertIn("LISTED True True", peeked)
+                self.assertIn("BY_NAME scout 1 fixture-alpha True", peeked)
+                self.assertIn("ELSEWHERE []", peeked)
+                self.assertIn("SEARCHED False True True", peeked)
+                self.assertIn("UNQUERIED []", peeked)
+                self.assertIn("UNICODE True", peeked)
+                self.assertIn("NOTHING []", peeked)
                 app.idle(lead)
                 time.sleep(1)
                 self.assertFalse(
