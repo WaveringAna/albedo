@@ -89,6 +89,7 @@ fn resolve(
     endpoint,
     types.ChatCompletions,
     fn(request, on_event) {
+      let request = with_output_limit(request)
       ensure_files(
         context.home,
         wire.auth_header(auth),
@@ -175,6 +176,20 @@ fn lookup(id: String, at: String) -> Option(extension.ModelInfo) {
   case list.find(catalog.models(home), fn(model) { model.id == id }) {
     Ok(model) -> Some(listed_info(home, model))
     Error(_) -> unlisted_info(id)
+  }
+}
+
+/// A turn that sets no output limit gets the model's own ceiling: Claude
+/// requires `max_tokens`, and adaptive thinking spends from the same budget.
+fn with_output_limit(request: types.Request) -> types.Request {
+  case request.max_output_tokens {
+    Some(_) -> request
+    None ->
+      types.Request(
+        ..request,
+        max_output_tokens: lookup(request.model, endpoint)
+          |> option.then(fn(info) { info.max_output_tokens }),
+      )
   }
 }
 
