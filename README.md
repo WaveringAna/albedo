@@ -47,18 +47,20 @@ images for a final review pass. needs cargo.
 native/render/install.sh   # then enable `view` in /extensions
 ```
 
-formatting (Gleam and Python)
+formatting
 
 ```sh
+nix fmt                         # treefmt: Nix, Gleam, Go, Python, and shell files
 pre-commit install              # once per checkout; available in `nix develop`
-pre-commit run --all-files      # format the whole repository
+pre-commit run --all-files      # run the Gleam and Python hooks
 gleam format src test           # fix Gleam formatting
 ruff format priv/python test    # fix Python formatting
 ```
 
 The commit hook formats staged Gleam and Python files (and asks you to re-stage
 any changes). It requires `gleam` on PATH; pre-commit installs the pinned Ruff
-hook in its own environment.
+hook in its own environment. Treefmt uses the Gleam and Ruff versions from
+nixpkgs; the pre-commit Ruff hook remains pinned separately.
 
 tests
 

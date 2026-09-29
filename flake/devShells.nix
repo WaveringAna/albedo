@@ -1,18 +1,25 @@
 _: {
-  perSystem = {pkgs, ...}: {
+  perSystem = {
+    config,
+    lib,
+    pkgs,
+    ...
+  }: {
     devShells.default = pkgs.mkShell {
-      packages = with pkgs; [
-        go
-        gopls
-        gleam
-        beamPackages.erlang
-        (beamPackages.rebar3WithPlugins {plugins = [beamPackages.pc];})
-        python3
-        pre-commit
-        ruff
-        cargo
-        rustc
-      ];
+      packages =
+        (with pkgs; [
+          go
+          gopls
+          gleam
+          beamPackages.erlang
+          (beamPackages.rebar3WithPlugins {plugins = [beamPackages.pc];})
+          python3
+          pre-commit
+          ruff
+          cargo
+          rustc
+        ])
+        ++ lib.attrValues config.treefmt.build.programs;
     };
   };
 }
