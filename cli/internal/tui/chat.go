@@ -2236,10 +2236,8 @@ func (m ChatModel) renderFooter() string {
 		left  []hint
 		right string
 	}{
-		{[]hint{commands, {"shift+↑↓", "turns"}, {"drag", "copy"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right},
-		{[]hint{commands, {"drag", "copy"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right},
+		{[]hint{commands, {"shift+↑↓", "turns"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right},
 		{[]hint{commands, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right},
-		{[]hint{commands, {"drag", "copy"}}, right},
 		{[]hint{commands, {"ctrl+o", "agents"}}, compact},
 		{[]hint{commands, {"ctrl+j", "diffs"}}, compact},
 		{[]hint{commands}, compact},
