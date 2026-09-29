@@ -241,8 +241,14 @@ func open(id, workspace string, fresh bool) error {
 		appModel.Login.BrowserOpener = config.OpenBrowser
 	}
 	p := tea.NewProgram(appModel, tea.WithFPS(120))
-	_, err = p.Run()
-	return err
+	final, err := p.Run()
+	if err != nil {
+		return err
+	}
+	if m, ok := final.(tui.AppModel); ok && m.ActiveSession != nil {
+		fmt.Printf("to resume, run albedo resume %s\n", m.ActiveSession.ID)
+	}
+	return nil
 }
 
 func main() {
