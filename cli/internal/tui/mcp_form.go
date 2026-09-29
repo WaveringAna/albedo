@@ -2,9 +2,9 @@ package tui
 
 import (
 	"albedo/cli/internal/config"
+	"albedo/cli/internal/daemon"
 	"cmp"
 	"errors"
-	"maps"
 	"net/url"
 	"path"
 	"regexp"
@@ -23,8 +23,8 @@ type mcpForm struct {
 	Transport string // "http" or "stdio"
 	// NameTouched stops the name following the URL or command once typed.
 	NameTouched bool
-	// Stored is what mcp-credentials.json already holds for this server.
-	Stored config.MCPServerSecrets
+	// Stored names the secrets the daemon already holds for this server.
+	Stored daemon.MCPSecretNames
 	// Base keeps fields the form does not edit (enabled, tools, timeouts).
 	Base config.MCPServer
 	form
@@ -48,7 +48,7 @@ var mcpFieldLabels = map[string]string{
 	fieldValue: "header value",
 }
 
-func newMCPForm(editing string, server config.MCPServer, stored config.MCPServerSecrets) *mcpForm {
+func newMCPForm(editing string, server config.MCPServer, stored daemon.MCPSecretNames) *mcpForm {
 	transport := pick(server.Type == "stdio", "stdio", "http")
 	keys := []string{fieldURL, fieldCommand, fieldName, fieldToken, fieldHeader, fieldValue, fieldEnv}
 	f := &mcpForm{Editing: editing, Transport: transport, Base: server, Stored: stored, form: newForm(keys, fieldToken, fieldValue, fieldEnv)}
@@ -56,15 +56,15 @@ func newMCPForm(editing string, server config.MCPServer, stored config.MCPServer
 	f.Inputs[fieldCommand].SetValue(joinCommand(server.Command, server.Args))
 	f.Inputs[fieldName].SetValue(editing)
 	f.NameTouched = editing != ""
-	if stored.BearerToken != "" {
+	if stored.BearerToken {
 		f.Inputs[fieldToken].Placeholder = "stored · blank keeps it · - removes it"
 	}
 	if len(stored.Headers) > 0 {
-		f.Inputs[fieldHeader].Placeholder = strings.Join(sortedKeys(stored.Headers), ", ") + " stored · add or replace one"
+		f.Inputs[fieldHeader].Placeholder = strings.Join(stored.Headers, ", ") + " stored · add or replace one"
 	}
 	f.Inputs[fieldEnv].Placeholder = "KEY=value KEY2=value (optional)"
 	if len(stored.Env) > 0 {
-		f.Inputs[fieldEnv].Placeholder = strings.Join(sortedKeys(stored.Env), ", ") + " stored · KEY=value adds or replaces"
+		f.Inputs[fieldEnv].Placeholder = strings.Join(stored.Env, ", ") + " stored · KEY=value adds or replaces"
 	}
 	f.Focus = 1 // the address: transport already defaults to http
 	f.focus(f.current())
@@ -134,11 +134,12 @@ func (f *mcpForm) suggestName() {
 	f.Inputs[fieldName].SetValue(name)
 }
 
-// mcpSubmission is a validated form: the server entry and its credentials.
+// mcpSubmission is a validated form: the server entry and the change to its
+// saved credentials.
 type mcpSubmission struct {
 	Name    string
 	Server  config.MCPServer
-	Secrets config.MCPServerSecrets
+	Secrets daemon.MCPSecretsPatch
 }
 
 func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
@@ -151,7 +152,7 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 	}
 	server := f.Base
 	server.Type = f.Transport
-	secrets := config.MCPServerSecrets{BearerToken: f.Stored.BearerToken, Headers: copyMap(f.Stored.Headers), Env: copyMap(f.Stored.Env)}
+	secrets := daemon.MCPSecretsPatch{}
 	if f.Transport == "http" {
 		raw := f.value(fieldURL)
 		parsed, err := url.Parse(raw)
@@ -160,9 +161,9 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 		}
 		server.URL, server.Command, server.Args, server.CWD = raw, "", nil, ""
 		if token := f.value(fieldToken); token == "-" {
-			secrets.BearerToken = ""
+			secrets["bearerToken"] = nil
 		} else if token != "" {
-			secrets.BearerToken = token
+			secrets["bearerToken"] = token
 		}
 		header, value := f.value(fieldHeader), f.value(fieldValue)
 		switch {
@@ -170,16 +171,13 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 		case !mcpHeaderName.MatchString(header):
 			return mcpSubmission{}, errors.New("header: enter a valid HTTP header name")
 		case value == "-":
-			delete(secrets.Headers, header)
+			secrets["headers"] = map[string]any{header: nil}
 		case value == "":
 			return mcpSubmission{}, errors.New("header value: enter a value, or - to remove " + header)
 		default:
-			if secrets.Headers == nil {
-				secrets.Headers = map[string]string{}
-			}
-			secrets.Headers[header] = value
+			secrets["headers"] = map[string]any{header: value}
 		}
-		secrets.Env = nil
+		secrets["env"] = nil
 	} else {
 		argv, err := splitCommand(f.Inputs[fieldCommand].Value())
 		if err != nil || len(argv) == 0 {
@@ -190,21 +188,25 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 		if err != nil {
 			return mcpSubmission{}, errors.New("env: " + err.Error())
 		}
+		var env map[string]any
 		for _, entry := range entries {
 			key, value, ok := strings.Cut(entry, "=")
 			if !ok || !mcpEnvName.MatchString(key) {
 				return mcpSubmission{}, errors.New("env: use KEY=value entries separated by spaces")
 			}
-			if secrets.Env == nil {
-				secrets.Env = map[string]string{}
+			if env == nil {
+				env = map[string]any{}
 			}
 			if value == "-" {
-				delete(secrets.Env, key)
+				env[key] = nil
 			} else {
-				secrets.Env[key] = value
+				env[key] = value
 			}
 		}
-		secrets.BearerToken, secrets.Headers = "", nil
+		if env != nil {
+			secrets["env"] = env
+		}
+		secrets["bearerToken"], secrets["headers"] = nil, nil
 	}
 	return mcpSubmission{Name: name, Server: server, Secrets: secrets}, nil
 }
@@ -351,15 +353,4 @@ func quoteArg(arg string) string {
 		return arg
 	}
 	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
-}
-
-func copyMap(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	return maps.Clone(in)
-}
-
-func sortedKeys(in map[string]string) []string {
-	return slices.Sorted(maps.Keys(in))
 }

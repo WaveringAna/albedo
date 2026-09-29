@@ -105,8 +105,10 @@ type loginModelsLoadedMsg struct {
 type signInsLoadedMsg struct {
 	Listed   daemon.SignIns
 	Profiles *config.Profiles
-	Err      error
-	Gen      int
+	// Keys are the profiles whose api key the daemon holds.
+	Keys []string
+	Err  error
+	Gen  int
 }
 
 type signInStartedMsg struct {
@@ -288,7 +290,7 @@ func (m *LoginModel) startCustomProvider(p customProvider) tea.Cmd {
 // useProfile re-selects a saved profile: a sign-in provider with no accounts
 // left cannot run without an api key, so it signs in first.
 func (m *LoginModel) useProfile(name string, settings config.Settings) tea.Cmd {
-	if login, ok := m.signInFor(settings.Extension); ok && settings.APIKey == "" && m.signedOut(settings.Extension) {
+	if login, ok := m.signInFor(settings.Extension); ok && !hasKey(settings) && m.signedOut(settings.Extension) {
 		return m.startSignIn(login)
 	}
 	m.Step = StepSaving
@@ -331,7 +333,7 @@ func (m *LoginModel) buildChoosePicker() {
 		settings := m.Profiles.Providers[name]
 		extension := cmp.Or(settings.Extension, "openai")
 		detail := fmt.Sprintf("%s · %s", settings.Model, extension)
-		if _, signIn := m.signInFor(extension); signIn && settings.APIKey != "" {
+		if _, signIn := m.signInFor(extension); signIn && hasKey(settings) {
 			detail += " · api key"
 		} else if m.signedOut(extension) {
 			detail += " · signed out"
@@ -369,7 +371,7 @@ func (m LoginModel) removalFor(id string) (removal, bool) {
 }
 
 func (m *LoginModel) confirmRemoval(target removal) tea.Cmd {
-	detail := pick(target.Kind == "account", "deletes its tokens from auth.json", "deletes it from config.json")
+	detail := pick(target.Kind == "account", "deletes its tokens from creds.json", "deletes it and its saved key")
 	m.Removing = target
 	m.Step = StepRemove
 	items := []PickerItem{
@@ -393,8 +395,9 @@ func (m LoginModel) reloadCmd(change func(context.Context) error) tea.Cmd {
 		if err != nil {
 			return signInsLoadedMsg{Err: err, Gen: m.Generation}
 		}
-		listed, err := daemon.SignInList(ctx, m.Conn)
-		return signInsLoadedMsg{Listed: listed, Profiles: &profiles, Err: err, Gen: m.Generation}
+		msg := m.listSignIns(ctx, m.Generation)
+		msg.Profiles = &profiles
+		return msg
 	}
 }
 
@@ -403,7 +406,10 @@ func (m LoginModel) removeCmd(target removal) tea.Cmd {
 		if target.Kind == "account" {
 			return daemon.RemoveAccount(ctx, m.Conn, target.Provider, target.ID)
 		}
-		return config.RemoveProvider(config.HomeDir(), target.ID)
+		if err := config.RemoveProvider(config.HomeDir(), target.ID); err != nil {
+			return err
+		}
+		return daemon.SetProviderKey(ctx, m.Conn, target.ID, "")
 	})
 }
 
@@ -533,10 +539,23 @@ func (m *LoginModel) buildModelPicker() {
 
 func (m LoginModel) Init() tea.Cmd {
 	gen := m.Generation
-	return func() tea.Msg {
-		listed, err := daemon.SignInList(context.Background(), m.Conn)
-		return signInsLoadedMsg{Listed: listed, Err: err, Gen: gen}
+	return func() tea.Msg { return m.listSignIns(context.Background(), gen) }
+}
+
+// listSignIns reads what the daemon can sign in with, the accounts it holds,
+// and which profiles it holds an api key for.
+func (m LoginModel) listSignIns(ctx context.Context, gen int) signInsLoadedMsg {
+	listed, err := daemon.SignInList(ctx, m.Conn)
+	if err != nil {
+		return signInsLoadedMsg{Err: err, Gen: gen}
 	}
+	credentials, err := daemon.SavedCredentials(ctx, m.Conn)
+	return signInsLoadedMsg{Listed: listed, Keys: credentials.Providers, Err: err, Gen: gen}
+}
+
+// hasKey reports a profile with an api key, entered now or held by the daemon.
+func hasKey(settings config.Settings) bool {
+	return settings.APIKey != "" || settings.HasKey
 }
 
 func (m LoginModel) fetchCatalogCmd(ext, endpoint string, gen int) tea.Cmd {
@@ -557,9 +576,20 @@ func (m LoginModel) fetchCatalogCmd(ext, endpoint string, gen int) tea.Cmd {
 	}
 }
 
+// saveProviderCmd hands a newly entered api key to the daemon, then saves the
+// profile, which config.json keeps without it.
 func (m LoginModel) saveProviderCmd(name string, settings config.Settings) tea.Cmd {
 	return func() tea.Msg {
-		err := config.SaveProvider(config.HomeDir(), name, settings)
+		if _, err := settings.Validate(); err != nil {
+			return providerSavedMsg{Name: name, Settings: settings, Err: err}
+		}
+		var err error
+		if settings.APIKey != "" {
+			err = daemon.SetProviderKey(context.Background(), m.Conn, name, settings.APIKey)
+		}
+		if err == nil {
+			err = config.SaveProvider(config.HomeDir(), name, settings)
+		}
 		return providerSavedMsg{Name: name, Settings: settings, Err: err}
 	}
 }
@@ -574,6 +604,12 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		m.Accounts = msg.Listed.Accounts
 		if msg.Profiles != nil {
 			m.Profiles = *msg.Profiles
+		}
+		for _, name := range msg.Keys {
+			if settings, ok := m.Profiles.Providers[name]; ok {
+				settings.HasKey = true
+				m.Profiles.Providers[name] = settings
+			}
 		}
 		if msg.Err != nil && m.Error == "" {
 			m.Error = msg.Err.Error()
@@ -785,7 +821,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 				extension = saved.Extension
 				m.Draft = saved
 			}
-			if login, ok := m.signInFor(extension); ok && m.Draft.APIKey == "" && extension != flow {
+			if login, ok := m.signInFor(extension); ok && !hasKey(m.Draft) && extension != flow {
 				return m, m.startSignIn(login)
 			}
 			return m, m.askEndpoint()
@@ -798,7 +834,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 				return m.fail(err.Error())
 			}
 			if endpoint != m.Draft.BaseURL {
-				m.Draft.APIKey = ""
+				m.Draft.APIKey, m.Draft.HasKey = "", false
 			}
 			m.Draft.BaseURL = endpoint
 			m.Error = ""
@@ -808,11 +844,14 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 
 		case StepAPIKey:
 			m.TextInput.SetCursor(0)
-			val := cmp.Or(m.TextInput.Value(), m.Draft.APIKey)
-			if val == "" || strings.ContainsFunc(val, func(r rune) bool { return r <= 0x20 || r == 0x7f }) {
+			switch val := cmp.Or(m.TextInput.Value(), m.Draft.APIKey); {
+			case val == "" && m.Draft.HasKey:
+				// Blank keeps the key the daemon holds.
+			case val == "" || strings.ContainsFunc(val, func(r rune) bool { return r <= 0x20 || r == 0x7f }):
 				return m.fail("enter an api key without spaces or control characters")
+			default:
+				m.Draft.APIKey = val
 			}
-			m.Draft.APIKey = val
 			m.Error = ""
 			if m.isFixedProtocol() {
 				return m, m.advanceToModels()

@@ -91,6 +91,20 @@ func replaceStale(s daemon.Stale) bool {
 	return confirmed(answer)
 }
 
+// announceMigration tells the user, once, that the daemon's start moved their
+// secrets into creds.json, and waits for enter so the TUI does not cover it.
+// The daemon answers only the first client that asks.
+func announceMigration(ctx context.Context, conn *daemon.Connection, homeDir string) {
+	moved, err := daemon.TakeMigration(ctx, conn)
+	if err != nil || len(moved) == 0 {
+		return
+	}
+	backups := filepath.Join(homeDir, "backups", "*-before-creds-*")
+	fmt.Printf("albedo moved the secrets in %s into %s.\n", strings.Join(moved, ", "), filepath.Join(homeDir, "creds.json"))
+	fmt.Printf("the old copies still hold them; once everything works, delete them:\n\n  rm -f %s\n\npress enter to continue ", backups)
+	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+}
+
 // confirmed reads a [y/N] answer. A late reply to the terminal's startup
 // queries can precede it.
 func confirmed(answer string) bool {
@@ -217,6 +231,7 @@ func open(id, workspace string, fresh bool) error {
 		return nil
 	}
 
+	announceMigration(ctx, conn, homeDir)
 	tui.DetectInk()
 	appModel := tui.NewAppModel(conn, profs, initial, absWorkspace, !configured)
 	appModel.LoadPrefs(filepath.Join(config.HomeDir(), "picker.json"))
@@ -412,6 +427,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
+		announceMigration(context.Background(), conn, homeDir)
 		tui.DetectInk()
 		appModel := tui.NewAppModel(conn, profs, nil, cwd, true)
 		appModel.StandaloneLogin = true

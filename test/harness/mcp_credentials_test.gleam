@@ -26,15 +26,15 @@ pub fn credentials_require_private_regular_file_test() {
   let _ =
     write(
       home,
-      "mcp-credentials.json",
-      "{\"servers\":{\"docs\":{\"bearerToken\":\"never-log\"}}}",
+      "creds.json",
+      "{\"mcp\":{\"docs\":{\"bearerToken\":\"never-log\"}}}",
     )
-  chmod(home, "mcp-credentials.json", 420)
+  chmod(home, "creds.json", 420)
   secret(home, "docs") |> should.be_error
-  chmod(home, "mcp-credentials.json", 384)
+  chmod(home, "creds.json", 384)
   secret(home, "docs") |> should.be_ok
   let _ = write(home, "replacement", "{}")
-  link(home, "replacement", "mcp-credentials.json")
+  link(home, "replacement", "creds.json")
   secret(home, "docs") |> should.be_error
   cleanup(root)
 }

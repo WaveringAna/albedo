@@ -1,9 +1,12 @@
 -module(albedo_daemon).
 -export([env/1,ready/3,read_config/1,write_default/3,directory/1,shutdown/0,rss/1,watch_parent/1,hold/1]).
 env(Name) -> case os:getenv(binary_to_list(Name)) of false -> <<>>; Value -> unicode:characters_to_binary(Value) end.
+%% config.json with each profile's saved apiKey filled in from creds.json. A
+%% file that is not a JSON object is passed on as it is, to fail decoding.
 read_config(Home) ->
-    case file:read_file(filename:join(Home,<<"config.json">>)) of
-      {ok,Data} -> {ok,Data};
+    case albedo_credentials:config(Home) of
+      {ok,Config} -> {ok,iolist_to_binary(json:encode(Config))};
+      {error,invalid} -> file:read_file(filename:join(Home,<<"config.json">>));
       {error,_} -> {error,nil}
     end.
 write_default(Home, Provider, Model) ->

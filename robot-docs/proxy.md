@@ -10,7 +10,7 @@ The proxy is a [service](extensions.md) mounted at `http://127.0.0.1:<port>/prox
 - The list only helps clients choose. Any `<profile>/<model>` is requested as given, listed or not, and a broken or signed-out profile fails only its own requests.
 - `POST /proxy/v1/chat/completions` accepts `model` as `<profile>/<model>`, or a bare `<profile>` for its saved model. Streaming (`stream`, `stream_options.include_usage`) and non-streaming replies are supported.
 
-There is no API key: the daemon binds only to loopback, and any local process can already read `auth.json`. Put an authenticating reverse proxy in front of it if you need one. Requests with an `Origin` header are refused, so web pages cannot call it.
+There is no API key: the daemon binds only to loopback, and any local process running as you can already read `creds.json`. Put an authenticating reverse proxy in front of it if you need one. Requests with an `Origin` header are refused, so web pages cannot call it.
 
 ## translation
 

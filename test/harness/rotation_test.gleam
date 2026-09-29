@@ -12,7 +12,7 @@ import gleam/option.{Some}
 import gleam/string
 import gleeunit/should
 
-const google_accounts = "{\"google-antigravity\":[{\"type\":\"oauth\",\"access\":\"a1\",\"refresh\":\"r1\",\"expires\":9999999999999,\"projectId\":\"p1\",\"email\":\"one@example.com\"},{\"type\":\"oauth\",\"access\":\"a2\",\"refresh\":\"r2\",\"expires\":9999999999999,\"projectId\":\"p2\",\"email\":\"two@example.com\"}]}"
+const google_accounts = "{\"accounts\":{\"google-antigravity\":[{\"type\":\"oauth\",\"access\":\"a1\",\"refresh\":\"r1\",\"expires\":9999999999999,\"projectId\":\"p1\",\"email\":\"one@example.com\"},{\"type\":\"oauth\",\"access\":\"a2\",\"refresh\":\"r2\",\"expires\":9999999999999,\"projectId\":\"p2\",\"email\":\"two@example.com\"}]}}"
 
 const quota = "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"You have exhausted your capacity on this model.\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"QUOTA_EXHAUSTED\",\"metadata\":{\"quotaResetDelay\":\"2h3m4.5s\"}},{\"@type\":\"type.googleapis.com/google.rpc.RetryInfo\",\"retryDelay\":\"7384.5s\"}]}}"
 
@@ -56,7 +56,7 @@ fn token(access: antigravity.Access) -> String {
 
 pub fn antigravity_sessions_spread_and_stick_test() {
   let #(root, _, home) = fixture()
-  let _ = write(home, "auth.json", google_accounts)
+  let _ = write(home, "creds.json", google_accounts)
   let pool = fn(session) {
     antigravity.pool(home, session, fn(_, _, _) { Error(types.Timeout) })
   }
@@ -70,7 +70,7 @@ pub fn antigravity_sessions_spread_and_stick_test() {
 
 pub fn antigravity_quota_moves_the_request_to_a_sibling_test() {
   let #(root, _, home) = fixture()
-  let _ = write(home, "auth.json", google_accounts)
+  let _ = write(home, "creds.json", google_accounts)
   let tried = process.new_subject()
   let pool =
     antigravity.pool(
@@ -106,7 +106,7 @@ pub fn antigravity_quota_moves_the_request_to_a_sibling_test() {
 
 pub fn antigravity_hands_off_when_one_account_is_spent_test() {
   let #(root, _, home) = fixture()
-  let _ = write(home, "auth.json", google_accounts)
+  let _ = write(home, "creds.json", google_accounts)
   let tried = process.new_subject()
   let pool =
     antigravity.pool(
@@ -140,7 +140,7 @@ pub fn antigravity_hands_off_when_one_account_is_spent_test() {
 
 pub fn antigravity_capacity_waits_without_moving_test() {
   let #(root, _, home) = fixture()
-  let _ = write(home, "auth.json", google_accounts)
+  let _ = write(home, "creds.json", google_accounts)
   let tried = process.new_subject()
   let paused = process.new_subject()
   let pool =

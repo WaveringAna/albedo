@@ -33,7 +33,7 @@ type CapabilityPageModel struct {
 type capabilityItem struct {
 	ID, Title, Detail string
 	Server            config.MCPServer
-	HasSecret         bool
+	Secrets           daemon.MCPSecretNames
 	Draft             bool
 }
 type capabilityLoadedMsg struct {
@@ -76,7 +76,7 @@ func (m CapabilityPageModel) loadCmd(gen int) tea.Cmd {
 		case "instructions":
 			items = discoverInstructions(home, workspace)
 		case "mcp":
-			items, err = mcpItems(home)
+			items, err = mcpItems(home, m.Conn)
 		default:
 			err = errors.New("unknown capability page")
 		}
@@ -94,24 +94,23 @@ func (m CapabilityPageModel) loadCmd(gen int) tea.Cmd {
 	}
 }
 
-// mcpItems lists the configured servers with whether credentials are stored
-// for them (never their contents).
-func mcpItems(home string) ([]capabilityItem, error) {
+// mcpItems lists the configured servers with the names of the secrets the
+// daemon holds for them (never their contents).
+func mcpItems(home string, conn *daemon.Connection) ([]capabilityItem, error) {
 	servers, err := config.ReadMCPServers(home)
 	if err != nil {
 		return nil, err
 	}
-	credentials, err := config.ReadMCPCredentials(home)
+	credentials, err := daemon.SavedCredentials(context.Background(), conn)
 	if err != nil {
 		return nil, err
 	}
 	items := make([]capabilityItem, 0, len(servers))
 	for name, server := range servers {
-		secret := credentials.Servers[name]
 		address := pick(server.Type == "stdio", server.Command, server.URL)
 		items = append(items, capabilityItem{
 			ID: name, Title: name, Detail: server.Type + " · " + address, Server: server,
-			HasSecret: secret.BearerToken != "" || len(secret.Env) > 0 || len(secret.Headers) > 0,
+			Secrets: credentials.MCP[name],
 		})
 	}
 	return items, nil
@@ -246,8 +245,8 @@ var mcpHeaderName = regexp.MustCompile(`^[!#$%&'*+.^_` + "`" + `|~0-9A-Za-z-]+$`
 var mcpEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z_0-9]*$`)
 
 // saveMCPCmd writes a server and its credentials together and reloads the
-// session once. If the reload fails (the server cannot connect), both files
-// are restored, so a half-configured server is never left behind.
+// session once. If the reload fails (the server cannot connect), both are
+// restored, so a half-configured server is never left behind.
 func (m CapabilityPageModel) saveMCPCmd(sub mcpSubmission, gen int) tea.Cmd {
 	return func() tea.Msg {
 		return capabilitySavedMsg{Gen: gen, Err: m.replaceMCP(sub.Name, &sub.Server, sub.Secrets)}
@@ -255,12 +254,13 @@ func (m CapabilityPageModel) saveMCPCmd(sub mcpSubmission, gen int) tea.Cmd {
 }
 
 func (m CapabilityPageModel) deleteMCPCmd(name string, gen int) tea.Cmd {
+	forget := daemon.MCPSecretsPatch{"bearerToken": nil, "headers": nil, "env": nil}
 	return func() tea.Msg {
-		return capabilitySavedMsg{Gen: gen, Err: m.replaceMCP(name, nil, config.MCPServerSecrets{})}
+		return capabilitySavedMsg{Gen: gen, Err: m.replaceMCP(name, nil, forget)}
 	}
 }
 
-func (m CapabilityPageModel) replaceMCP(name string, server *config.MCPServer, secrets config.MCPServerSecrets) error {
+func (m CapabilityPageModel) replaceMCP(name string, server *config.MCPServer, secrets daemon.MCPSecretsPatch) error {
 	if err := m.checkIdle(); err != nil {
 		return err
 	}
@@ -268,27 +268,21 @@ func (m CapabilityPageModel) replaceMCP(name string, server *config.MCPServer, s
 	if err != nil {
 		return err
 	}
-	credentials, err := config.ReadMCPCredentials(m.Home)
-	if err != nil {
-		return err
-	}
 	var previous *config.MCPServer
 	if prior, ok := servers[name]; ok {
 		previous = &prior
 	}
-	priorSecrets := credentials.Servers[name]
-	restore := func() {
-		_ = config.PutMCPServer(m.Home, name, previous)
-		_ = config.SetMCPServerSecrets(m.Home, name, priorSecrets)
-	}
-	if err = config.SetMCPServerSecrets(m.Home, name, secrets); err != nil {
+	ctx := context.Background()
+	undo, err := daemon.PatchMCPSecrets(ctx, m.Conn, name, secrets)
+	if err != nil {
 		return err
 	}
 	if err = config.PutMCPServer(m.Home, name, server); err == nil {
 		err = m.reload()
 	}
 	if err != nil {
-		restore()
+		_ = config.PutMCPServer(m.Home, name, previous)
+		_ = daemon.UndoMCPSecrets(ctx, m.Conn, name, undo)
 	}
 	return err
 }
@@ -300,16 +294,11 @@ var mcpName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 func (m *CapabilityPageModel) openForm(edit bool) {
 	m.Error, m.Notice = "", ""
 	if !edit {
-		m.Form = newMCPForm("", config.MCPServer{Type: "http"}, config.MCPServerSecrets{})
+		m.Form = newMCPForm("", config.MCPServer{Type: "http"}, daemon.MCPSecretNames{})
 		return
 	}
 	item := m.Items[m.Cursor]
-	credentials, err := config.ReadMCPCredentials(m.Home)
-	if err != nil {
-		m.Error = err.Error()
-		return
-	}
-	m.Form = newMCPForm(item.ID, item.Server, credentials.Servers[item.ID])
+	m.Form = newMCPForm(item.ID, item.Server, item.Secrets)
 }
 
 func (m CapabilityPageModel) save(cmd func(int) tea.Cmd) (CapabilityPageModel, tea.Cmd) {
@@ -417,13 +406,8 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 				if item := m.Items[m.Cursor]; item.Server.Enabled != nil && !*item.Server.Enabled {
 					server := item.Server
 					server.Enabled = nil
-					credentials, err := config.ReadMCPCredentials(m.Home)
-					if err != nil {
-						m.Error = err.Error()
-						return m, nil
-					}
 					return m.save(func(gen int) tea.Cmd {
-						return m.saveMCPCmd(mcpSubmission{Name: item.ID, Server: server, Secrets: credentials.Servers[item.ID]}, gen)
+						return m.saveMCPCmd(mcpSubmission{Name: item.ID, Server: server, Secrets: daemon.MCPSecretsPatch{}}, gen)
 					})
 				}
 			}
@@ -493,7 +477,7 @@ func (m CapabilityPageModel) View() string {
 			selected := m.Items[m.Cursor]
 			detail := selected.Detail
 			if mcp {
-				auth := pick(selected.HasSecret, "credentials stored privately", "no credentials")
+				auth := pick(selected.Secrets.Any(), "credentials stored privately", "no credentials")
 				detail += " · " + auth
 				if selected.Server.Enabled != nil && !*selected.Server.Enabled {
 					detail += " · disabled in extensions.json · e enable"

@@ -37,8 +37,8 @@ access(Home) -> access(Home, <<>>).
 %% with accounts inside a reported limit last.
 access(Home, Session0) ->
     Session = unicode:characters_to_binary(Session0),
-    Path = albedo_credentials:auth_path(Home),
-    case albedo_credentials:read(Path) of
+    Path = albedo_credentials:creds_path(Home),
+    case albedo_credentials:accounts(Path) of
         {ok, Data} ->
             Ordered = albedo_accounts:order(?SCOPE, credentials(Data), Session, fun account_id/1),
             first_usable(Ordered, Path, Session);
@@ -72,8 +72,8 @@ credentials(Data) ->
 %% that fails keeps the stored credential, so the poll records the auth failure as
 %% a reading instead of silently dropping the account.
 accounts(Home) ->
-    Path = albedo_credentials:auth_path(Home),
-    case albedo_credentials:read(Path) of
+    Path = albedo_credentials:creds_path(Home),
+    case albedo_credentials:accounts(Path) of
         {ok, Data} ->
             [entry(refreshed_account(Path, V)) || V <- credentials(Data), account_id(V) =/= <<>>];
         _ -> []
@@ -127,7 +127,7 @@ identity(Credential) ->
 limited(Home, Access, Body) ->
     case limit(Body) of
         {ok, Until, Lasting} ->
-            Path = albedo_credentials:auth_path(Home),
+            Path = albedo_credentials:creds_path(Home),
             Hit = fun(V) -> maps:get(<<"access">>, V, <<>>) =:= Access end,
             case albedo_accounts:mark(Path, ?KEY, Hit, Until) of
                 {ok, Updated} ->
@@ -215,11 +215,11 @@ account_id(Credential) ->
 %% After a 401 the stored token is marked expired, so the next turn refreshes
 %% it; a revoked refresh token then leaves the account signed out.
 expire(Home, Access) ->
-    albedo_credentials:expire_access(albedo_credentials:auth_path(Home), ?KEY, Access).
+    albedo_credentials:expire_access(albedo_credentials:creds_path(Home), ?KEY, Access).
 
 %% Re-read under the lock: a concurrent session may already have refreshed.
 refresh_current(Path, Identity) ->
-    case albedo_credentials:read(Path) of
+    case albedo_credentials:accounts(Path) of
         {ok, Data} ->
             Values = maps:get(?KEY, Data, []),
             Listed = is_list(Values),
@@ -238,7 +238,7 @@ refresh_current(Path, Identity) ->
                                                     false -> V
                                                 end || V <- All],
                                     Stored = case Listed of true -> Replaced; false -> hd(Replaced) end,
-                                    case albedo_credentials:write(Path, Data#{?KEY => Stored}) of
+                                    case albedo_credentials:put_accounts(Path, Data#{?KEY => Stored}) of
                                         ok -> {ok, Updated};
                                         {error, _} -> {error, <<"could not persist refreshed Antigravity credential">>}
                                     end;

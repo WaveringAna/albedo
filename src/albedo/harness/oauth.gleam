@@ -1,6 +1,6 @@
 //// Browser OAuth sign-ins that the daemon runs for every client. An extension
 //// describes its provider; `albedo_oauth` owns the callback listener, the
-//// race with a pasted code, and locked auth.json storage.
+//// race with a pasted code, and locked creds.json storage.
 
 import albedo/openai_api/types
 import gleam/dynamic.{type Dynamic}
@@ -15,7 +15,7 @@ pub type Login {
     detail: String,
     /// The protocol a profile for this provider is saved with.
     protocol: types.Protocol,
-    /// The auth.json key holding one account object or an array of them.
+    /// The creds.json accounts key holding one account object or an array of them.
     store: String,
     callback: Callback,
     authorize: fn(Grant) -> String,

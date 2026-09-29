@@ -144,7 +144,7 @@ pub fn upstream(
   )
 }
 
-/// The Google accounts in auth.json as a rotation pool. A spent quota is
+/// The Google accounts in creds.json as a rotation pool. A spent quota is
 /// lasting; a rate limit is brief. A model out of capacity for everyone is not
 /// an account's limit, so it waits without moving the session.
 pub fn pool(

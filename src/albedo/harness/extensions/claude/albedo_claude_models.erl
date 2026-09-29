@@ -52,7 +52,7 @@ refresh(Home, Reload) ->
 
 %% The Console key of the first claude profile that sets one.
 api_key(Home) ->
-    case albedo_credentials:read_json(filename:join(text(Home), "config.json")) of
+    case albedo_credentials:config(Home) of
         {ok, #{<<"providers">> := Providers}} when is_map(Providers) ->
             case [Key || {_, #{<<"extension">> := <<"claude">>, <<"apiKey">> := <<_, _/binary>> = Key}}
                              <- lists:sort(maps:to_list(Providers))] of

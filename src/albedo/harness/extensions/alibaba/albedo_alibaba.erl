@@ -130,13 +130,13 @@ write_cache(Path, Ids) ->
 %% ---- key pool -----------------------------------------------------------
 
 %% The session's key as {"baseUrl", "apiKey"} JSON. Every Alibaba key albedo
-%% can see is a sibling: other alibaba profiles in config.json, auth.json's
-%% "alibaba" entry or list, and the environment. The key this profile would
+%% can see is a sibling: other alibaba profiles, creds.json's "alibaba"
+%% account entry or list, and the environment. The key this profile would
 %% use on its own comes first; limited keys go last.
 access(Home0, Profile0, Session0) ->
     Session = binary(Session0),
     case pool(text(Home0), binary(Profile0)) of
-        [] -> {error, <<"Alibaba API key not found; set ALIBABA_API_KEY, add to auth.json, or configure in /login">>};
+        [] -> {error, <<"Alibaba API key not found; set ALIBABA_API_KEY or configure in /login">>};
         Keys ->
             [First | _] = albedo_accounts:order(?SCOPE, Keys, Session, fun id/1),
             albedo_accounts:remember(?SCOPE, Session, id(First)),
@@ -175,7 +175,7 @@ pool(Home, Profile) ->
     end,
     Siblings = [{Name, case U of <<>> -> BaseUrl; _ -> U end, K}
                 || {Name, U, K} <- alibaba_profiles(Home), Name =/= Profile]
-        ++ [{<<"auth.json">>, BaseUrl, K} || K <- auth_keys(albedo_credentials:auth_path(Home))]
+        ++ [{<<"creds.json">>, BaseUrl, K} || K <- account_keys(albedo_credentials:creds_path(Home))]
         ++ [{list_to_binary(Var), BaseUrl, unicode:characters_to_binary(K)}
             || Var <- ["ALIBABA_API_KEY", "DASHSCOPE_API_KEY"],
                K <- [os:getenv(Var)], is_list(K), K =/= ""],
@@ -192,7 +192,7 @@ id(#{<<"apiKey">> := Key}) ->
     binary:encode_hex(binary:part(crypto:hash(sha256, Key), 0, 8), lowercase).
 
 alibaba_profiles(Home) ->
-    case albedo_credentials:read_json(filename:join(Home, "config.json")) of
+    case albedo_credentials:config(Home) of
         {ok, #{<<"providers">> := Providers}} when is_map(Providers) ->
             [{Name, maps:get(<<"baseUrl">>, P, <<>>), Key}
              || {Name, #{<<"extension">> := <<"alibaba">>, <<"apiKey">> := <<_, _/binary>> = Key} = P}
@@ -200,18 +200,18 @@ alibaba_profiles(Home) ->
         _ -> []
     end.
 
-auth_keys(Path) ->
-    case albedo_credentials:read(Path) of
-        {ok, #{<<"alibaba">> := List}} when is_list(List) -> lists:filtermap(fun auth_key/1, List);
-        {ok, #{<<"alibaba">> := One}} -> lists:filtermap(fun auth_key/1, [One]);
+account_keys(Path) ->
+    case albedo_credentials:accounts(Path) of
+        {ok, #{<<"alibaba">> := List}} when is_list(List) -> lists:filtermap(fun account_key/1, List);
+        {ok, #{<<"alibaba">> := One}} -> lists:filtermap(fun account_key/1, [One]);
         _ -> []
     end.
 
-auth_key(<<_, _/binary>> = Key) -> {true, Key};
-auth_key(#{<<"key">> := <<_, _/binary>> = Key}) -> {true, Key};
-auth_key(#{<<"apiKey">> := <<_, _/binary>> = Key}) -> {true, Key};
-auth_key(#{<<"access">> := <<_, _/binary>> = Key}) -> {true, Key};
-auth_key(_) -> false.
+account_key(<<_, _/binary>> = Key) -> {true, Key};
+account_key(#{<<"key">> := <<_, _/binary>> = Key}) -> {true, Key};
+account_key(#{<<"apiKey">> := <<_, _/binary>> = Key}) -> {true, Key};
+account_key(#{<<"access">> := <<_, _/binary>> = Key}) -> {true, Key};
+account_key(_) -> false.
 
 resolve_base_url(<<>>) ->
     case os:getenv("ALIBABA_BASE_URL") of
@@ -222,7 +222,7 @@ resolve_base_url(Url) when is_binary(Url) ->
     string:trim(Url, trailing, "/").
 
 profile_settings(Home, Profile) ->
-    case albedo_credentials:read_json(filename:join(Home, "config.json")) of
+    case albedo_credentials:config(Home) of
         {ok, #{<<"providers">> := #{Profile := P}}} when is_map(P) ->
             Bin = fun(K) -> case maps:get(K, P, <<>>) of B when is_binary(B) -> B; _ -> <<>> end end,
             {Bin(<<"baseUrl">>), Bin(<<"apiKey">>)};
@@ -230,7 +230,7 @@ profile_settings(Home, Profile) ->
     end.
 
 find_api_key(Home) ->
-    case key_from_auth_file(albedo_credentials:auth_path(Home)) of
+    case key_from_accounts(albedo_credentials:creds_path(Home)) of
         {ok, Key} -> {ok, Key};
         _ ->
             EnvKey = hd([K || Var <- ["ALIBABA_API_KEY", "DASHSCOPE_API_KEY"],
@@ -241,8 +241,8 @@ find_api_key(Home) ->
             end
     end.
 
-key_from_auth_file(Path) ->
-    case auth_keys(Path) of
+key_from_accounts(Path) ->
+    case account_keys(Path) of
         [Key | _] -> {ok, Key};
         [] -> {error, not_found}
     end.

@@ -17,6 +17,7 @@ import albedo/daemon/store
 import albedo/daemon/usage
 import albedo/harness/cache_ttl
 import albedo/harness/command
+import albedo/harness/credentials
 import albedo/harness/extension
 import albedo/harness/extensions/schedule/ledger as schedule
 import albedo/harness/oauth
@@ -570,6 +571,16 @@ fn prepare_storage(
         <> int.to_string(rows)
         <> " transcript rows",
       )
+  }
+  case credentials.migrate(config.home, int.to_string(usage.now())) {
+    Ok([]) -> Nil
+    Ok(moved) ->
+      io.println(
+        "credentials: moved secrets from "
+        <> string.join(moved, ", ")
+        <> " into creds.json",
+      )
+    Error(reason) -> io.println("credentials: not migrated: " <> reason)
   }
   use _ <- result.try(case configuration.legacy(config.home) {
     Ok(provider) ->
@@ -1560,7 +1571,8 @@ fn body(req, decoder) {
 }
 
 /// Sign-ins run here so every client shares one OAuth implementation;
-/// clients render the url and poll the status.
+/// clients render the url and poll the status. Saved keys and MCP secrets
+/// change here too, so only the daemon ever touches creds.json.
 fn auth(
   home: String,
   logins: List(oauth.Login),
@@ -1612,8 +1624,57 @@ fn auth(
       login(provider) |> result.try(oauth.select(home, _, id)) |> done
     http.Delete, [provider, "accounts", id] ->
       login(provider) |> result.try(oauth.remove(home, _, id)) |> done
+    Get, ["credentials"] ->
+      credentials.summary(home) |> answered(200, summary_json, 500)
+    http.Put, ["credentials", "providers", profile] ->
+      body(req, decode.field("apiKey", decode.string, decode.success))
+      |> result.try(credentials.put_provider_key(home, profile, _))
+      |> done
+    http.Delete, ["credentials", "providers", profile] ->
+      credentials.put_provider_key(home, profile, "") |> done
+    Patch, ["credentials", "mcp", server] ->
+      body(req, decode.dynamic)
+      |> result.try(credentials.patch_mcp(home, server, _))
+      |> answered(
+        200,
+        fn(token) { json.object([#("undo", json.string(token))]) },
+        400,
+      )
+    Post, ["credentials", "migration"] ->
+      reply(
+        200,
+        json.object([
+          #("moved", json.array(credentials.take_migrated(), json.string)),
+        ]),
+      )
+    Post, ["credentials", "mcp", server, "undo"] ->
+      body(req, decode.field("token", decode.string, decode.success))
+      |> result.try(credentials.undo_mcp(home, server, _))
+      |> done
     _, _ -> error(404, "not found")
   }
+}
+
+/// Which secrets are saved, never what they are.
+fn summary_json(summary: credentials.Summary) -> json.Json {
+  json.object([
+    #("providers", json.array(summary.providers, json.string)),
+    #(
+      "mcp",
+      json.object(
+        list.map(summary.servers, fn(server) {
+          #(
+            server.name,
+            json.object([
+              #("bearerToken", json.bool(server.bearer_token)),
+              #("headers", json.array(server.headers, json.string)),
+              #("env", json.array(server.env, json.string)),
+            ]),
+          )
+        }),
+      ),
+    ),
+  ])
 }
 
 /// Accounts that share a label, such as one email on two plans, are told

@@ -71,9 +71,9 @@ token_id(Token) ->
     binary:encode_hex(binary:part(crypto:hash(sha256, Token), 0, 8), lowercase).
 
 access(Home0, Session0) ->
-    Path = albedo_credentials:auth_path(Home0),
+    Path = albedo_credentials:creds_path(Home0),
     Session = unicode:characters_to_binary(Session0),
-    case albedo_credentials:read(Path) of
+    case albedo_credentials:accounts(Path) of
         {ok, Data} ->
             Values = credentials(Data),
             Ordered = albedo_accounts:order(<<"claude">>, Values, Session, fun identity/1),
@@ -110,8 +110,8 @@ credentials(Data) ->
 %% credential, so the poll records the auth failure as a reading instead of
 %% silently dropping the account.
 accounts(Home0) ->
-    Path = albedo_credentials:auth_path(Home0),
-    case albedo_credentials:read(Path) of
+    Path = albedo_credentials:creds_path(Home0),
+    case albedo_credentials:accounts(Path) of
         {ok, Data} ->
             [entry(refreshed(Path, V)) || V <- credentials(Data), identity(V) =/= <<>>];
         _ -> []
@@ -164,7 +164,7 @@ first_access([C | Rest], Path, Session) ->
     end.
 
 refresh(Path, Id) ->
-    case albedo_credentials:read(Path) of
+    case albedo_credentials:accounts(Path) of
         {ok, Data} ->
             Values = credentials(Data),
             case lists:partition(fun(C) -> identity(C) =:= Id end, Values) of
@@ -185,7 +185,7 @@ refresh_current(Path, Data, Current) ->
             New = (maps:merge(Current, Token))#{<<"accountId">> => identity(Current)},
             Values = albedo_credentials:values(Data, ?KEY),
             Updated = [case identity(V) =:= identity(Current) of true -> New; false -> V end || V <- Values],
-            case albedo_credentials:write(Path, albedo_credentials:put_values(Data, ?KEY, Updated)) of
+            case albedo_credentials:put_accounts(Path, albedo_credentials:put_values(Data, ?KEY, Updated)) of
                 ok -> {ok, New};
                 _ -> {error, <<"could not save refreshed Claude credential">>}
             end;
@@ -193,4 +193,4 @@ refresh_current(Path, Data, Current) ->
     end.
 
 expire(Home0, Access) ->
-    albedo_credentials:expire_access(albedo_credentials:auth_path(Home0), ?KEY, Access).
+    albedo_credentials:expire_access(albedo_credentials:creds_path(Home0), ?KEY, Access).

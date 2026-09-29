@@ -41,11 +41,11 @@ limited(V, Now) -> until_of(V) > Now.
 until_of(#{<<"limitedUntil">> := Until}) when is_integer(Until) -> Until;
 until_of(_) -> 0.
 
-%% Records Until on the auth.json accounts under Key that Hit matches, and
+%% Records Until on the creds.json accounts under Key that Hit matches, and
 %% returns every account there, updated. A single stored object stays single.
 mark(Path, Key, Hit, Until) ->
     albedo_credentials:with_lock(Path, fun() ->
-        case albedo_credentials:read(Path) of
+        case albedo_credentials:accounts(Path) of
             {ok, Data} ->
                 Stored = maps:get(Key, Data, []),
                 Values = case Stored of L when is_list(L) -> L; One -> [One] end,
@@ -54,7 +54,7 @@ mark(Path, Key, Hit, Until) ->
                                false -> V
                            end || V <- Values],
                 Kept = case Stored of L2 when is_list(L2) -> Updated; _ -> hd(Updated) end,
-                case Updated =:= Values orelse albedo_credentials:write(Path, Data#{Key => Kept}) =:= ok of
+                case Updated =:= Values orelse albedo_credentials:put_accounts(Path, Data#{Key => Kept}) =:= ok of
                     true -> {ok, [V || V <- Updated, is_map(V)]};
                     false -> {error, <<"could not record the account limit">>}
                 end;
@@ -62,8 +62,8 @@ mark(Path, Key, Hit, Until) ->
         end
     end, fun() -> {error, <<"credential store is busy">>} end).
 
-%% Limits for accounts that do not live in auth.json, such as API keys from
-%% config.json or the environment. They last as long as the daemon, which
+%% Limits for accounts that do not live in creds.json's accounts, such as
+%% profile API keys or the environment. They last as long as the daemon, which
 %% outlives any limit short enough to wait on.
 note(Scope, Id, Until) ->
     Now = erlang:system_time(millisecond),

@@ -1,7 +1,7 @@
 -module(albedo_oauth).
 %% Browser OAuth sign-ins run by the daemon for its clients. One owner process
 %% tracks the flows; each flow owns its loopback callback listener and ends by
-%% storing the credential in auth.json under the provider's key.
+%% storing the credential in creds.json's accounts under the provider's key.
 
 -export([start/2, status/1, input/2, cancel/1, accounts/2, select/3, remove/3,
          parse_input/1]).
@@ -244,7 +244,7 @@ query_pair(Q) ->
     Query = maps:from_list(uri_string:dissect_query(Q)),
     {maps:get(<<"code">>, Query, <<>>), maps:get(<<"state">>, Query, <<>>)}.
 
-%% ---- auth.json accounts -------------------------------------------------
+%% ---- creds.json accounts ------------------------------------------------
 
 id(Account, Credential) -> element(2, Account(Credential)).
 
@@ -260,24 +260,24 @@ store(Home, Store, Json, Account) ->
     end, fun(_) -> {ok, element(3, Account(Credential))} end).
 
 update(Home, Store, Change, Reply) ->
-    Path = albedo_credentials:auth_path(Home),
+    Path = albedo_credentials:creds_path(Home),
     albedo_credentials:with_lock(Path, fun() ->
-        case albedo_credentials:read(Path) of
+        case albedo_credentials:accounts(Path) of
             {error, enoent} -> update_data(Path, #{}, Store, Change, Reply);
             {ok, Current} -> update_data(Path, Current, Store, Change, Reply);
-            {error, _} -> {error, <<"auth.json is unreadable; repair it before signing in">>}
+            {error, _} -> {error, <<"creds.json is unreadable; repair it before signing in">>}
         end
     end, fun() -> {error, <<"credential store is busy">>} end).
 
 update_data(Path, Current, Store, Change, Reply) ->
     Values = Change(albedo_credentials:values(Current, Store)),
-    case albedo_credentials:write(Path, albedo_credentials:put_values(Current, Store, Values)) of
+    case albedo_credentials:put_accounts(Path, albedo_credentials:put_values(Current, Store, Values)) of
         ok -> Reply(Values);
-        {error, _} -> {error, <<"could not write auth.json">>}
+        {error, _} -> {error, <<"could not write creds.json">>}
     end.
 
 accounts(Home, {login, _, _, _, _, Store, _, _, _, Account}) ->
-    case albedo_credentials:read(albedo_credentials:auth_path(Home)) of
+    case albedo_credentials:accounts(albedo_credentials:creds_path(Home)) of
         {ok, Data} -> [Account(V) || V <- albedo_credentials:values(Data, Store)];
         _ -> []
     end.

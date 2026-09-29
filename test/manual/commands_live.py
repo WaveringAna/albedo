@@ -2,7 +2,8 @@
 (deepseek by default): a real model drives the typed `commands` bindings
 through the real tool loop.
 
-Needs a real key: reads it from prime-agent's auth.json (or $ALBEDO_TEST_AUTH).
+Needs a real key: reads the deepseek profile's key from albedo's creds.json
+(or the file $ALBEDO_TEST_CREDS names).
 Not part of test.sh; run manually:
     python3 test/manual/commands_live.py
 
@@ -24,11 +25,10 @@ import time
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
-AUTH_PATH = os.environ.get(
-    "ALBEDO_TEST_AUTH", os.path.expanduser("~/.prime/agent/auth.json")
+CREDS_PATH = os.environ.get("ALBEDO_TEST_CREDS") or os.path.join(
+    os.environ.get("ALBEDO_HOME") or os.path.expanduser("~/.albedo"), "creds.json"
 )
-AUTH = json.load(open(AUTH_PATH))
-KEY = AUTH["deepseek"]["key"]
+KEY = json.load(open(CREDS_PATH))["providers"]["deepseek"]["apiKey"]
 MODEL = "deepseek-chat"
 SKILL_BODY = "LIVE_SKILL_BODY_7391"
 

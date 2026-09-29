@@ -49,7 +49,7 @@ func ReadMCPServers(home string) (map[string]MCPServer, error) {
 }
 
 // PutMCPServer retains unrelated extension settings and server fields. The
-// configuration contains no plaintext secrets; those live in mcp-credentials.json.
+// configuration contains no plaintext secrets; the daemon keeps those in creds.json.
 func PutMCPServer(home, name string, server *MCPServer) error {
 	if name == "" {
 		return errors.New("missing MCP server name")

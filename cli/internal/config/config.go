@@ -31,11 +31,14 @@ func HomeDir() string {
 	return filepath.Join(home, ".albedo")
 }
 
-// Settings represents a provider configuration.
+// Settings represents a provider configuration. Its api key lives in the
+// daemon's creds.json: APIKey carries one just entered, or one a hand edit
+// left in config.json, and HasKey says the daemon holds one.
 type Settings struct {
 	Extension string `json:"extension,omitempty"`
 	BaseURL   string `json:"baseUrl,omitempty"`
 	APIKey    string `json:"apiKey,omitempty"`
+	HasKey    bool   `json:"-"`
 	Model     string `json:"model"`
 	Protocol  string `json:"protocol"`
 }
@@ -77,25 +80,19 @@ func (s Settings) Validate() (Settings, error) {
 		}
 	}
 
-	// For openai, endpoint and api key are required.
-	if ext == "openai" {
-		if endpoint == "" || s.APIKey == "" {
-			return s, errors.New("openai provider needs an endpoint, api key, model and valid protocol")
-		}
+	if ext == "openai" && endpoint == "" {
+		return s, errors.New("openai provider needs an endpoint, model and valid protocol")
 	}
 
-	if s.APIKey != "" {
-		for _, r := range s.APIKey {
-			if unicode.IsSpace(r) || r < 0x20 || r == 0x7f {
-				return s, errors.New("openai provider needs an endpoint, api key, model and valid protocol")
-			}
-		}
+	if strings.ContainsFunc(s.APIKey, func(r rune) bool { return unicode.IsSpace(r) || r < 0x20 || r == 0x7f }) {
+		return s, errors.New("api key must not contain spaces or control characters")
 	}
 
 	return Settings{
 		Extension: ext,
 		BaseURL:   endpoint,
 		APIKey:    s.APIKey,
+		HasKey:    s.HasKey,
 		Model:     model,
 		Protocol:  s.Protocol,
 	}, nil
@@ -219,7 +216,7 @@ func LoadProfiles(directory string) (Profiles, error) {
 }
 
 // SaveProvider stores a named provider configuration in config.json and makes
-// it active.
+// it active. Its api key is not written: the daemon keeps keys in creds.json.
 func SaveProvider(directory, name string, s Settings) error {
 	validatedName, err := ValidateProviderName(name)
 	if err != nil {
@@ -229,6 +226,7 @@ func SaveProvider(directory, name string, s Settings) error {
 	if err != nil {
 		return err
 	}
+	validatedSettings.APIKey = ""
 	return updateProfiles(directory, func(profiles *Profiles) {
 		profiles.Active = validatedName
 		profiles.Providers[validatedName] = validatedSettings

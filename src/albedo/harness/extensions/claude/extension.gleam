@@ -122,7 +122,7 @@ fn resolve(
         }
         types.HttpError(401, _), wire.ApiKey(_) ->
           Some(
-            "Anthropic rejected this API key; check the profile's apiKey in config.json",
+            "Anthropic rejected this API key; check the profile's key in /login",
           )
         _, _ -> None
       }

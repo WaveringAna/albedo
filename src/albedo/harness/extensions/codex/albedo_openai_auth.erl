@@ -89,8 +89,8 @@ post_token(Body) ->
 codex_access(Home0, Session0) ->
     Home = text(Home0),
     Session = unicode:characters_to_binary(Session0),
-    Path = albedo_credentials:auth_path(Home),
-    case albedo_credentials:read(Path) of
+    Path = albedo_credentials:creds_path(Home),
+    case albedo_credentials:accounts(Path) of
         {ok, Data} ->
             Credentials = credentials(Data),
             select(albedo_accounts:order(?SCOPE, Credentials, Session, fun identity/1), Path, Session);
@@ -115,13 +115,13 @@ select([Credential | Rest], Path, Session) ->
 %% picks a sibling or asks for /login instead of replaying a revoked token.
 %% Returns the removed account's email, or <<>> when none is recorded.
 codex_revoke(Home0, Access) ->
-    Path = albedo_credentials:auth_path(Home0),
+    Path = albedo_credentials:creds_path(Home0),
     Identity = identity(#{<<"access">> => Access}),
     albedo_credentials:with_lock(Path, fun() -> remove_identity(Path, Access, Identity) end,
                                  fun() -> {error, <<"credential store is busy">>} end).
 
 remove_identity(Path, Access, Identity) ->
-    case albedo_credentials:read(Path) of
+    case albedo_credentials:accounts(Path) of
         {ok, Data} ->
             Values = credentials(Data),
             Revoked = fun(Value) ->
@@ -131,7 +131,7 @@ remove_identity(Path, Access, Identity) ->
             case lists:partition(Revoked, Values) of
                 {[], _} -> {ok, <<>>};
                 {[Removed | _], Kept} ->
-                    case albedo_credentials:write(Path, albedo_credentials:put_values(Data, ?STORE, Kept)) of
+                    case albedo_credentials:put_accounts(Path, albedo_credentials:put_values(Data, ?STORE, Kept)) of
                         ok -> {ok, email(Removed)};
                         {error, _} -> {error, <<"could not remove revoked Codex credential">>}
                     end
@@ -174,8 +174,8 @@ credentials(_) -> [].
 %% stored credential, so the poll records the auth failure as a reading
 %% instead of silently dropping the account.
 accounts(Home0) ->
-    Path = albedo_credentials:auth_path(text(Home0)),
-    case albedo_credentials:read(Path) of
+    Path = albedo_credentials:creds_path(text(Home0)),
+    case albedo_credentials:accounts(Path) of
         {ok, Data} ->
             [entry(V) || V <- [refreshed(Path, C) || C <- credentials(Data)], label(V) =/= <<>>];
         _ -> []
@@ -220,7 +220,7 @@ selected(Credential) -> maps:get(<<"selected">>, Credential, false) =:= true.
 codex_limited(Home0, Access, Body) ->
     case usage_limit(Body) of
         {ok, Until, Lasting} ->
-            Path = albedo_credentials:auth_path(Home0),
+            Path = albedo_credentials:creds_path(Home0),
             Identity = identity(#{<<"access">> => Access}),
             Hit = fun(V) -> maps:get(<<"access">>, V, <<>>) =:= Access orelse
                             (Identity =/= <<>> andalso identity(V) =:= Identity) end,
@@ -294,7 +294,7 @@ refresh_locked(Path, Identity) ->
                                  fun() -> refreshed_after_wait(Path, Identity) end).
 
 refreshed_after_wait(Path, Identity) ->
-    case albedo_credentials:read(Path) of
+    case albedo_credentials:accounts(Path) of
         {ok, Data} ->
             case find_identity(credentials(Data), Identity) of
                 undefined -> {error, <<"credential changed during refresh">>};
@@ -308,7 +308,7 @@ refreshed_after_wait(Path, Identity) ->
     end.
 
 refresh_current(Path, Identity) ->
-    case albedo_credentials:read(Path) of
+    case albedo_credentials:accounts(Path) of
         {ok, Data} ->
             Values = credentials(Data),
             case find_identity(Values, Identity) of
@@ -320,7 +320,7 @@ refresh_current(Path, Identity) ->
                             case refresh_token(Current) of
                                 {ok, Updated} ->
                                     UpdatedValues = replace_identity(Values, Identity, Updated),
-                                    case albedo_credentials:write(Path, albedo_credentials:put_values(Data, ?STORE, UpdatedValues)) of
+                                    case albedo_credentials:put_accounts(Path, albedo_credentials:put_values(Data, ?STORE, UpdatedValues)) of
                                         ok -> {ok, Updated};
                                         {error, _} -> {error, <<"could not persist refreshed Codex credential">>}
                                     end;

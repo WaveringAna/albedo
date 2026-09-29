@@ -38,13 +38,7 @@ class McpTests(unittest.TestCase):
                 ALBEDO_MCP_AMBIENT="must-not-reach-the-server",
             )
             self.configure(app, [str(SERVER)])
-            credentials = app.home / "mcp-credentials.json"
-            credentials.write_text(
-                json.dumps(
-                    {"servers": {"fake": {"env": {"FAKE_SECRET": "stored-secret"}}}}
-                )
-            )
-            credentials.chmod(0o600)
+            app.store_secrets("mcp", {"fake": {"env": {"FAKE_SECRET": "stored-secret"}}})
 
         self.app = Albedo(self.provider, protocol="responses", prepare=prepare)
         self.app.__enter__()
@@ -130,7 +124,7 @@ class McpTests(unittest.TestCase):
 
     @exclusive
     def test_insecure_credentials_and_unavailable_server_fail_closed(self):
-        credentials = self.app.home / "mcp-credentials.json"
+        credentials = self.app.home / "creds.json"
         credentials.chmod(0o644)
         with self.assertRaises(urllib.error.HTTPError) as rejected:
             self.extension({"name": "mcp", "enabled": True})

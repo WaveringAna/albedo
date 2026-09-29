@@ -7,6 +7,8 @@ a local models catalog. ``Albedo`` gives each fixture a separate workspace and
 provider route on one shared HTTP server and one shared CLI daemon. Pass
 ``prepare(app)`` to write fixtures before use; only the first fixture can
 prepare a pristine daemon home. ``providers={}`` leaves it unconfigured.
+``store_secrets(section, value)`` writes a creds.json section such as the
+OAuth ``accounts`` or ``mcp`` server secrets.
 A response ``Reply(..., usage=None)`` omits provider usage.
 
 Example::
@@ -524,7 +526,7 @@ class Albedo:
                 for name in (
                     "config.json",
                     "extensions.json",
-                    "mcp-credentials.json",
+                    "creds.json",
                     "models.json",
                 )
             }
@@ -651,6 +653,14 @@ class Albedo:
                 failure.headers,
                 io.BytesIO(payload),
             ) from failure
+
+    def store_secrets(self, section, value):
+        """Replaces one creds.json section, where the daemon keeps every secret."""
+        path = self.home / "creds.json"
+        creds = json.loads(path.read_text()) if path.exists() else {}
+        creds[section] = value
+        path.write_text(json.dumps(creds))
+        path.chmod(0o600)
 
     def cli(self, *args):
         result = subprocess.run(

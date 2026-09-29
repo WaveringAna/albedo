@@ -1,19 +1,305 @@
 -module(albedo_credentials).
-%% auth.json storage shared by OAuth provider extensions: atomic 0600 writes,
-%% one cross-process lock beside the file, verified TLS for token refresh, and
-%% account credential helpers.
+%% creds.json, the one file holding every secret albedo keeps, and the storage
+%% helpers around it: atomic 0600 writes, one lock the daemon's processes
+%% share, and account credential helpers. Only the daemon writes it. Sections:
+%% "accounts" holds OAuth accounts and keys by provider store key, one object
+%% or a list; "providers" holds a profile's apiKey by profile name; "mcp" holds
+%% an MCP server's bearerToken, headers and env by server name.
 
 -include_lib("kernel/include/file.hrl").
 
 -export([read/1, read_json/1, read_json/2, write/2, write/3, with_lock/3,
-         auth_path/1, values/2, oauth/2, put_values/3, expire_access/3,
-         stale/2, fresh/2]).
+         creds_path/1, accounts/1, put_accounts/2, provider_keys/1,
+         put_provider_key/3, mcp/1, patch_mcp/3, undo_mcp/3, summary/1, config/1,
+         migrate/2, take_migrated/0,
+         values/2, oauth/2, put_values/3, expire_access/3, stale/2, fresh/2]).
 
--define(LOCK_ATTEMPTS, 1000).
--define(LOCK_STALE_MS, 30000).
+%% global backs off a random 0-125ms, doubling to 0-8s: 8 retries wait at most
+%% 24s, about 12s on average.
+-define(LOCK_RETRIES, 8).
 
-auth_path(Home) ->
-    filename:join(unicode:characters_to_list(Home), "auth.json").
+creds_path(Home) ->
+    filename:join(unicode:characters_to_list(Home), "creds.json").
+
+%% The accounts by store key. A creds.json not yet written reads as enoent.
+accounts(Path) -> section(Path, <<"accounts">>).
+
+%% Replaces the accounts; the caller holds the lock.
+put_accounts(Path, Accounts) -> put_section(Path, <<"accounts">>, Accounts).
+
+%% Every profile's saved apiKey, by profile name.
+provider_keys(Home) ->
+    case section(creds_path(Home), <<"providers">>) of
+        {ok, Profiles} -> keys(Profiles);
+        _ -> #{}
+    end.
+
+keys(Profiles) ->
+    maps:from_list([{Name, Key} || {Name, #{<<"apiKey">> := <<_, _/binary>> = Key}}
+                                       <- maps:to_list(Profiles)]).
+
+%% Saves a profile's apiKey; an empty key removes it.
+put_provider_key(Home, Name, Key) ->
+    update_section(Home, <<"providers">>, fun(Profiles) ->
+        case Key of
+            <<>> -> maps:remove(Name, Profiles);
+            _ -> Profiles#{Name => #{<<"apiKey">> => Key}}
+        end
+    end).
+
+%% Every MCP server's secrets, by server name.
+mcp(Home) ->
+    case section(creds_path(Home), <<"mcp">>) of
+        {ok, Servers} -> {ok, maps:filter(fun(_, Secret) -> is_map(Secret) end, Servers)};
+        {error, enoent} -> {ok, #{}};
+        Error -> Error
+    end.
+
+%% Saves one MCP server's secrets; an empty map removes them.
+put_mcp(Home, Name, Secret) ->
+    update_section(Home, <<"mcp">>, fun(Servers) -> with_secret(Servers, Name, Secret) end).
+
+%% Changes one MCP server's secrets without a client ever reading them. An
+%% absent field keeps its value and null removes it; "headers" and "env" map
+%% names to a value or null. Returns a token that undo_mcp/3 takes to put back
+%% what the server held before, for a client whose save failed later on.
+patch_mcp(Home, Name, Patch) when is_map(Patch) ->
+    Token = binary:encode_hex(crypto:strong_rand_bytes(16), lowercase),
+    Changed = update_section(Home, <<"mcp">>, fun(Servers) ->
+        Prior = maps:get(Name, Servers, #{}),
+        persistent_term:put({?MODULE, undo, Name}, {Token, Prior}),
+        with_secret(Servers, Name, patched(Prior, Patch))
+    end),
+    case Changed of
+        {ok, nil} -> {ok, Token};
+        Error -> Error
+    end;
+patch_mcp(_, _, _) -> {error, <<"a secrets patch must be a JSON object">>}.
+
+undo_mcp(Home, Name, Token) ->
+    case persistent_term:get({?MODULE, undo, Name}, none) of
+        {Token, Prior} ->
+            _ = persistent_term:erase({?MODULE, undo, Name}),
+            put_mcp(Home, Name, Prior);
+        _ -> {error, <<"nothing to undo for this server">>}
+    end.
+
+with_secret(Servers, Name, Secret) when map_size(Secret) =:= 0 -> maps:remove(Name, Servers);
+with_secret(Servers, Name, Secret) -> Servers#{Name => Secret}.
+
+patched(Secret, Patch) ->
+    lists:foldl(fun({Field, Change}, Acc) ->
+        case {Change, maps:get(Field, Acc, #{})} of
+            {Gone, _} when Gone =:= null; Gone =:= <<>> -> maps:remove(Field, Acc);
+            {Value, _} when Field =:= <<"bearerToken">>, is_binary(Value) -> Acc#{Field => Value};
+            {Changes, Current} when is_map(Changes), is_map(Current) ->
+                Next = maps:fold(fun(Key, null, M) -> maps:remove(Key, M);
+                                    (Key, Value, M) when is_binary(Value) -> M#{Key => Value};
+                                    (_, _, M) -> M
+                                 end, Current, Changes),
+                case map_size(Next) of
+                    0 -> maps:remove(Field, Acc);
+                    _ -> Acc#{Field => Next}
+                end;
+            _ -> Acc
+        end
+    end, Secret, [{F, maps:get(F, Patch)} || F <- [<<"bearerToken">>, <<"headers">>, <<"env">>],
+                                            maps:is_key(F, Patch)]).
+
+%% What a client may know of the saved secrets: which profiles have a key, and
+%% for each MCP server whether it has a token and the names of its headers and
+%% env entries.
+summary(Home) ->
+    case mcp(Home) of
+        {ok, Servers} ->
+            Names = fun(Field, Secret) ->
+                case maps:get(Field, Secret, #{}) of
+                    Found when is_map(Found) -> lists:sort(maps:keys(Found));
+                    _ -> []
+                end
+            end,
+            {ok, {summary, lists:sort(maps:keys(provider_keys(Home))),
+                  [{server, Name, maps:get(<<"bearerToken">>, Secret, <<>>) =/= <<>>,
+                    Names(<<"headers">>, Secret), Names(<<"env">>, Secret)}
+                   || {Name, Secret} <- lists:sort(maps:to_list(Servers))]}};
+        {error, _} -> {error, <<"creds.json is unreadable; repair it first">>}
+    end.
+
+%% config.json with each profile's saved apiKey filled in. A key still written
+%% in config.json is a hand edit newer than the saved one, so it wins until the
+%% next boot moves it.
+config(Home) ->
+    case read(config_path(Home)) of
+        {ok, #{<<"providers">> := Profiles} = Config} when is_map(Profiles) ->
+            Keys = provider_keys(Home),
+            {ok, Config#{<<"providers">> := maps:map(fun(Name, Profile) ->
+                with_key(Profile, maps:get(Name, Keys, <<>>))
+            end, Profiles)}};
+        {ok, Flat} -> {ok, with_key(Flat, maps:get(<<"default">>, provider_keys(Home), <<>>))};
+        Error -> Error
+    end.
+
+with_key(#{<<"apiKey">> := <<_, _/binary>>} = Profile, _) -> Profile;
+with_key(Profile, <<>>) -> Profile;
+with_key(Profile, Key) when is_map(Profile) -> Profile#{<<"apiKey">> => Key};
+with_key(Profile, _) -> Profile.
+
+config_path(Home) ->
+    filename:join(unicode:characters_to_list(Home), "config.json").
+
+section(Path, Name) ->
+    case read(Path) of
+        {ok, Document} ->
+            case maps:get(Name, Document, #{}) of
+                Section when is_map(Section) -> {ok, Section};
+                _ -> {error, invalid}
+            end;
+        Error -> Error
+    end.
+
+%% Rewrites one section, keeping the others as they stand; an empty section
+%% is dropped. An unreadable file is left alone rather than replaced.
+put_section(Path, Name, Section) ->
+    Current = case read(Path) of
+        {ok, Document} -> {ok, Document};
+        {error, enoent} -> {ok, #{}};
+        Error -> Error
+    end,
+    case Current of
+        {ok, Found} when map_size(Section) =:= 0 -> write(Path, maps:remove(Name, Found));
+        {ok, Found} -> write(Path, Found#{Name => Section});
+        {error, _} -> {error, invalid}
+    end.
+
+update_section(Home, Name, Change) ->
+    Path = creds_path(Home),
+    with_lock(Path, fun() ->
+        Written = case section(Path, Name) of
+            {ok, Section} -> put_section(Path, Name, Change(Section));
+            {error, enoent} -> put_section(Path, Name, Change(#{}));
+            {error, _} -> {error, invalid}
+        end,
+        case Written of
+            ok -> {ok, nil};
+            {error, invalid} -> {error, <<"creds.json is unreadable; repair it first">>};
+            {error, _} -> {error, <<"could not write creds.json">>}
+        end
+    end, fun() -> {error, <<"credential store is busy">>} end).
+
+%% Moves every secret still kept elsewhere into creds.json: auth.json's
+%% accounts, mcp-credentials.json's servers, and each config.json profile's
+%% apiKey. creds.json is written before anything is removed, and the old files
+%% go to backups/ with Stamp in their names, so an interrupted run loses
+%% nothing and the next boot finishes it. Returns the files it moved from.
+migrate(Home, Stamp0) ->
+    Stamp = unicode:characters_to_list(Stamp0),
+    Path = creds_path(Home),
+    with_lock(Path, fun() ->
+        case read(Path) of
+            {error, enoent} -> migrate(Home, Stamp, #{});
+            {ok, Document} -> migrate(Home, Stamp, Document);
+            {error, _} -> {error, <<"creds.json is unreadable; repair it first">>}
+        end
+    end, fun() -> {error, <<"credential store is busy">>} end).
+
+migrate(Home, Stamp, Document) ->
+    Dir = unicode:characters_to_list(Home),
+    Legacy = [{File, Section, Found}
+              || {Name, Section} <- [{"auth.json", <<"accounts">>},
+                                     {"mcp-credentials.json", <<"mcp">>}],
+                 File <- [filename:join(Dir, Name)],
+                 {ok, Found} <- [read(File)]],
+    Config = case read(config_path(Home)) of
+        {ok, Found} -> Found;
+        _ -> #{}
+    end,
+    Keys = config_keys(Config),
+    case Legacy =:= [] andalso map_size(Keys) =:= 0 of
+        true -> {ok, []};
+        false ->
+            Sections = [{Section, legacy_section(Section, Found)} || {_, Section, Found} <- Legacy]
+                ++ [{<<"providers">>, maps:map(fun(_, Key) -> #{<<"apiKey">> => Key} end, Keys)}],
+            case write(creds_path(Home), lists:foldl(fun merge_section/2, Document, Sections)) of
+                ok -> retire(Home, Stamp, [File || {File, _, _} <- Legacy], Config, Keys);
+                {error, _} -> {error, <<"could not write creds.json">>}
+            end
+    end.
+
+legacy_section(<<"mcp">>, Found) -> maps:get(<<"servers">>, Found, #{});
+legacy_section(_, Found) -> Found.
+
+%% What the old file held wins over creds.json: it can only be newer.
+merge_section({Name, Found}, Document) when map_size(Found) > 0 ->
+    Current = case maps:get(Name, Document, #{}) of
+        Section when is_map(Section) -> Section;
+        _ -> #{}
+    end,
+    Document#{Name => maps:merge(Current, Found)};
+merge_section(_, Document) -> Document.
+
+%% Moves the old files into backups/ and strips config.json's keys, unless a
+%% login holds config.lock: its keys are saved already, and config.json's win
+%% until the next boot strips them.
+retire(Home, Stamp, Files, Config, Keys) ->
+    _ = filelib:ensure_path(filename:join(unicode:characters_to_list(Home), "backups")),
+    Backup = fun(File) -> backup(Home, filename:basename(File), Stamp) end,
+    Moved = [unicode:characters_to_binary(filename:basename(File))
+             || File <- Files, move(File, Backup(File))],
+    Stripped = map_size(Keys) > 0 andalso strip_keys(Home, Config, Backup("config.json")),
+    Retired = Moved ++ [<<"config.json">> || Stripped],
+    persistent_term:put({?MODULE, migrated}, Retired),
+    {ok, Retired}.
+
+%% The files this daemon's start moved secrets out of, once: the first client
+%% to ask tells the user, and later ones get nothing.
+take_migrated() ->
+    Moved = persistent_term:get({?MODULE, migrated}, []),
+    _ = persistent_term:erase({?MODULE, migrated}),
+    Moved.
+
+move(File, To) ->
+    case file:rename(File, To) of
+        ok -> seal(To);
+        {error, _} -> false
+    end.
+
+%% Clears every mode bit on a backup: even its owner must chmod it before
+%% reading, so tools and agents running as the user never read the secrets by
+%% accident. Deleting it needs only the folder, so rm -f still works.
+seal(Backup) ->
+    _ = file:change_mode(Backup, 0),
+    true.
+
+%% Where a migration keeps File's old copy: backups/<File>-before-creds-<Stamp>.
+backup(Home, File, Stamp) ->
+    filename:join([unicode:characters_to_list(Home), "backups", File ++ "-before-creds-" ++ Stamp]).
+
+strip_keys(Home, Config, Backup) ->
+    Lock = filename:join(unicode:characters_to_list(Home), "config.lock"),
+    case file:open(Lock, [write, exclusive]) of
+        {ok, Owner} ->
+            try
+                case file:copy(config_path(Home), Backup) of
+                    {ok, _} -> seal(Backup) andalso write(config_path(Home), without_keys(Config)) =:= ok;
+                    {error, _} -> false
+                end
+            after
+                file:close(Owner),
+                file:delete(Lock)
+            end;
+        {error, _} -> false
+    end.
+
+config_keys(#{<<"providers">> := Profiles}) when is_map(Profiles) -> keys(Profiles);
+config_keys(#{<<"apiKey">> := <<_, _/binary>> = Key}) -> #{<<"default">> => Key};
+config_keys(_) -> #{}.
+
+without_keys(#{<<"providers">> := Profiles} = Config) when is_map(Profiles) ->
+    Config#{<<"providers">> := maps:map(fun(_, Profile) when is_map(Profile) ->
+                                                 maps:remove(<<"apiKey">>, Profile);
+                                             (_, Profile) -> Profile
+                                         end, Profiles)};
+without_keys(Config) -> maps:remove(<<"apiKey">>, Config).
 
 read(Path) ->
     case read_json(Path) of
@@ -89,7 +375,7 @@ put_values(Data, Key, Many) -> Data#{Key => Many}.
 
 expire_access(Path, Key, Access) ->
     with_lock(Path, fun() ->
-        case read(Path) of
+        case accounts(Path) of
             {ok, #{Key := Stored} = Data} ->
                 Expire = fun(#{<<"access">> := A} = V) when A =:= Access -> V#{<<"expires">> => 0};
                             (V) -> V
@@ -98,62 +384,19 @@ expire_access(Path, Key, Access) ->
                     List when is_list(List) -> lists:map(Expire, List);
                     One -> Expire(One)
                 end,
-                (Updated =/= Stored) andalso write(Path, Data#{Key => Updated}),
+                (Updated =/= Stored) andalso put_accounts(Path, Data#{Key => Updated}),
                 nil;
             _ -> nil
         end
     end, fun() -> nil end).
 
-%% Runs Run() holding auth.lock beside Path, or Busy() when the lock stays taken.
+%% Runs Run() holding the daemon's lock on Path, or Busy() when it stays
+%% taken. Only this daemon writes creds.json (claim_home keeps it the only one
+%% on its home), so the lock guards its own processes; a holder that dies
+%% releases it.
 with_lock(Path, Run, Busy) ->
-    Lock = filename:join(filename:dirname(unicode:characters_to_list(Path)), "auth.lock"),
-    case acquire(Lock, ?LOCK_ATTEMPTS) of
-        {ok, Device} ->
-            try Run()
-            after
-                file:close(Device),
-                file:delete(Lock)
-            end;
-        {error, _} -> Busy()
-    end.
-
-acquire(_, 0) -> {error, timeout};
-acquire(Path, Attempts) ->
-    _ = filelib:ensure_dir(Path),
-    case file:open(Path, [write, exclusive, raw]) of
-        {ok, Device} ->
-            _ = file:change_mode(Path, 8#600),
-            _ = file:write(Device, term_to_binary({node(), self(), erlang:system_time(millisecond)})),
-            _ = file:sync(Device),
-            {ok, Device};
-        {error, eexist} ->
-            case stale_lock(Path) of
-                true ->
-                    _ = file:delete(Path),
-                    acquire(Path, Attempts);
-                false ->
-                    timer:sleep(20),
-                    acquire(Path, Attempts - 1)
-            end;
-        Error -> Error
-    end.
-
-stale_lock(Path) ->
-    try
-        {ok, Bytes} = file:read_file(Path),
-        {OwnerNode, Owner, Created} = binary_to_term(Bytes, [safe]),
-        true = is_pid(Owner) andalso is_integer(Created),
-        (OwnerNode =:= node() andalso not erlang:is_process_alive(Owner)) orelse
-            erlang:system_time(millisecond) - Created > ?LOCK_STALE_MS
-    catch _:_ ->
-        stale_mtime(Path)
-    end.
-
-stale_mtime(Path) ->
-    case filelib:last_modified(Path) of
-        0 -> false;
-        Modified ->
-            Now = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
-            Now - calendar:datetime_to_gregorian_seconds(Modified) > ?LOCK_STALE_MS div 1000
+    case global:trans({{?MODULE, Path}, self()}, Run, [node()], ?LOCK_RETRIES) of
+        aborted -> Busy();
+        Result -> Result
     end.
 

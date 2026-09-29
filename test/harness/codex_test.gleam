@@ -16,13 +16,13 @@ pub type Access {
   Access(token: String, account_id: String)
 }
 
-const credentials = "{\"openai-codex\":[{\"type\":\"oauth\",\"access\":\"h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJzZWF0LTEifX0.s\",\"refresh\":\"refresh-1\",\"expires\":9999999999999,\"accountId\":\"account-1\",\"accountUserId\":\"seat-1\"},{\"type\":\"oauth\",\"access\":\"h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0yIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJzZWF0LTIifX0.s\",\"refresh\":\"refresh-2\",\"expires\":9999999999999,\"accountId\":\"account-2\",\"accountUserId\":\"seat-2\"}]}"
+const credentials = "{\"accounts\":{\"openai-codex\":[{\"type\":\"oauth\",\"access\":\"h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJzZWF0LTEifX0.s\",\"refresh\":\"refresh-1\",\"expires\":9999999999999,\"accountId\":\"account-1\",\"accountUserId\":\"seat-1\"},{\"type\":\"oauth\",\"access\":\"h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0yIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJzZWF0LTIifX0.s\",\"refresh\":\"refresh-2\",\"expires\":9999999999999,\"accountId\":\"account-2\",\"accountUserId\":\"seat-2\"}]}}"
 
-const reversed_credentials = "{\"openai-codex\":[{\"type\":\"oauth\",\"access\":\"h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0yIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJzZWF0LTIifX0.s\",\"refresh\":\"refresh-2\",\"expires\":9999999999999,\"accountId\":\"account-2\",\"accountUserId\":\"seat-2\"},{\"type\":\"oauth\",\"access\":\"h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJzZWF0LTEifX0.s\",\"refresh\":\"refresh-1\",\"expires\":9999999999999,\"accountId\":\"account-1\",\"accountUserId\":\"seat-1\"}]}"
+const reversed_credentials = "{\"accounts\":{\"openai-codex\":[{\"type\":\"oauth\",\"access\":\"h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0yIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJzZWF0LTIifX0.s\",\"refresh\":\"refresh-2\",\"expires\":9999999999999,\"accountId\":\"account-2\",\"accountUserId\":\"seat-2\"},{\"type\":\"oauth\",\"access\":\"h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJzZWF0LTEifX0.s\",\"refresh\":\"refresh-1\",\"expires\":9999999999999,\"accountId\":\"account-1\",\"accountUserId\":\"seat-1\"}]}}"
 
 pub fn sessions_stick_to_and_distribute_across_codex_accounts_test() {
   let #(root, _, home) = fixture()
-  let _ = write(home, "auth.json", credentials)
+  let _ = write(home, "creds.json", credentials)
   let first = access(home, "session-1")
   access(home, "session-1") |> should.equal(first)
   let accounts =
@@ -34,16 +34,16 @@ pub fn sessions_stick_to_and_distribute_across_codex_accounts_test() {
 
 pub fn session_pin_survives_credential_reordering_test() {
   let #(root, _, home) = fixture()
-  let _ = write(home, "auth.json", credentials)
+  let _ = write(home, "creds.json", credentials)
   let selected = access(home, "durable-session")
-  let _ = write(home, "auth.json", reversed_credentials)
+  let _ = write(home, "creds.json", reversed_credentials)
   access(home, "durable-session") |> should.equal(selected)
   cleanup(root)
 }
 
 pub fn revoked_codex_account_is_removed_test() {
   let #(root, _, home) = fixture()
-  let _ = write(home, "auth.json", credentials)
+  let _ = write(home, "creds.json", credentials)
   let #(revoked, client) = codex_client(home, "revoked-session")
   let assert Some(message) =
     codex.account_failure(home, client, types.HttpError(401, "token_revoked"))
@@ -62,7 +62,7 @@ pub fn revoked_codex_account_is_removed_test() {
 
 pub fn usage_limit_moves_the_session_to_a_sibling_account_test() {
   let #(root, _, home) = fixture()
-  let _ = write(home, "auth.json", credentials)
+  let _ = write(home, "creds.json", credentials)
   let #(limited, client) = codex_client(home, "busy-session")
 
   // Ordinary rate limiting is transient and must not move the session.
@@ -125,7 +125,7 @@ fn drain(tried: process.Subject(String), found: List(String)) -> List(String) {
 
 pub fn a_limited_account_hands_the_same_request_to_the_next_test() {
   let #(root, _, home) = fixture()
-  let _ = write(home, "auth.json", credentials)
+  let _ = write(home, "creds.json", credentials)
   let #(_, first) = codex_client(home, "swarm-session")
   let tried = process.new_subject()
   let body =
@@ -148,7 +148,7 @@ pub fn a_limited_account_hands_the_same_request_to_the_next_test() {
 
 pub fn a_burst_rate_limit_body_rotates_test() {
   let #(root, _, home) = fixture()
-  let _ = write(home, "auth.json", credentials)
+  let _ = write(home, "creds.json", credentials)
   let #(_, first) = codex_client(home, "burst-session")
   let tried = process.new_subject()
   let request = openai_api.request("gpt-6-luna", [types.User("hi")])
@@ -171,7 +171,7 @@ pub fn a_burst_rate_limit_body_rotates_test() {
 
 pub fn a_rate_limit_rotates_too_and_stops_when_all_are_busy_test() {
   let #(root, _, home) = fixture()
-  let _ = write(home, "auth.json", credentials)
+  let _ = write(home, "creds.json", credentials)
   let #(_, first) = codex_client(home, "busy-swarm")
   let tried = process.new_subject()
   let body =
@@ -197,7 +197,7 @@ pub fn a_rate_limit_rotates_too_and_stops_when_all_are_busy_test() {
 
 pub fn a_usage_limit_on_every_account_does_not_wait_test() {
   let #(root, _, home) = fixture()
-  let _ = write(home, "auth.json", credentials)
+  let _ = write(home, "creds.json", credentials)
   let #(_, first) = codex_client(home, "spent-swarm")
   let #(_, second) = codex_client(home, "other-spent-swarm")
   let tried = process.new_subject()
@@ -219,7 +219,7 @@ pub fn a_usage_limit_on_every_account_does_not_wait_test() {
 
 pub fn selected_account_overrides_the_session_pin_test() {
   let #(root, _, home) = fixture()
-  let _ = write(home, "auth.json", credentials)
+  let _ = write(home, "creds.json", credentials)
   let pinned = access(home, "pinned-session")
   let other = case pinned {
     "account-1" -> "account-2"
@@ -228,7 +228,7 @@ pub fn selected_account_overrides_the_session_pin_test() {
   let _ =
     write(
       home,
-      "auth.json",
+      "creds.json",
       string.replace(
         credentials,
         "\"accountId\":\"" <> other <> "\"",

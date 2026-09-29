@@ -142,7 +142,7 @@ fn account(home: String, session: String) -> Result(Access, String) {
   |> result.replace_error("invalid Codex credential response")
 }
 
-/// The ChatGPT accounts in auth.json as a rotation pool. A usage limit is
+/// The ChatGPT accounts in creds.json as a rotation pool. A usage limit is
 /// lasting; a rate limit, including the edge's burst answer, is brief.
 pub fn pool(
   home: String,
@@ -174,7 +174,7 @@ fn limited(
 /// Explains a Codex failure that changes which account should be used.
 ///
 /// A 401 means the ChatGPT sign-in was revoked or expired server-side;
-/// refreshing cannot recover it. The account is removed from auth.json and the
+/// refreshing cannot recover it. The account is removed from creds.json and the
 /// message ends in "run /login", which clients treat as a prompt to sign in again.
 ///
 /// A limit 429 marks the account limited until its reset. By the time this

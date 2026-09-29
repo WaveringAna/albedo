@@ -52,7 +52,7 @@ fn resolve(
 }
 
 /// Every Alibaba key albedo can see, as a rotation pool: the profile's own key
-/// first, then other alibaba profiles, auth.json, and the environment.
+/// first, then other alibaba profiles, creds.json's accounts, and the environment.
 pub fn pool(
   home: String,
   profile: String,

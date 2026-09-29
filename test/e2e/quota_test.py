@@ -1,7 +1,7 @@
 """Quota readings land raw, each account keeps its own cadence, and failures back off.
 
 The daemon-wide poller maps every account it can see — an OAuth account from
-auth.json, an API-key profile whose base url names a feed — onto provide-usage
+creds.json, an API-key profile whose base url names a feed — onto provide-usage
 credentials and records each report as it came. This is the only place that
 wiring is visible from outside, so it is E2E: the usage core itself is a fake
 executable answering the `usage advance -` envelope (the real one needs
@@ -85,11 +85,11 @@ class QuotaTests(unittest.TestCase):
             settings = {"models": {"refreshHours": 0}, "quota": {
                 "pollSeconds": POLL_SECONDS, "busyPollSeconds": BUSY_SECONDS}}
             (app.home / "extensions.json").write_text(json.dumps(settings))
-            (app.home / "auth.json").write_text(json.dumps({"anthropic": [
+            app.store_secrets("accounts", {"anthropic": [
                 {"type": "oauth", "access": "fixture-anthropic-access",
                  "refresh": "fixture-anthropic-refresh",
                  "expires": int(time.time() * 1000) + 3600000,
-                 "accountId": "fixture-account"}]}))
+                 "accountId": "fixture-account"}]})
 
         self.app = Albedo(self.provider, providers={
             "fixture": {"baseUrl": self.provider.url, "apiKey": "fixture-key",
@@ -115,7 +115,6 @@ class QuotaTests(unittest.TestCase):
 
     def restore_home(self):
         self.app.env.pop("ALBEDO_USAGE_CORE", None)
-        (self.app.home / "auth.json").unlink(missing_ok=True)
 
     def readings(self):
         with self.app.api("/quota") as response:
@@ -158,7 +157,7 @@ class QuotaTests(unittest.TestCase):
         self.fail(message)
 
     def test_readings_land_and_each_account_keeps_its_cadence(self):
-        # Readings land for every account: the OAuth account from auth.json,
+        # Readings land for every account: the OAuth account from creds.json,
         # the hyper-charm profile, and the deepseek profile.
         wanted = {("anthropic", "weekly"), ("hyper", "primary"), ("deepseek", "")}
         reading = {}

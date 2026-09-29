@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"albedo/cli/internal/config"
+	"albedo/cli/internal/daemon"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -55,7 +56,7 @@ func TestAddingAnHTTPServerAsksForAuthBeforeSaving(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sub.Name != "mcp-100-64-0-19" || sub.Server.Type != "http" || sub.Server.URL != "http://100.64.0.19:8787/mcp" || sub.Secrets.BearerToken != "sensitive-token" {
+	if sub.Name != "mcp-100-64-0-19" || sub.Server.Type != "http" || sub.Server.URL != "http://100.64.0.19:8787/mcp" || sub.Secrets["bearerToken"] != "sensitive-token" {
 		t.Fatalf("unexpected submission %+v", sub)
 	}
 }
@@ -80,7 +81,8 @@ func TestStdioServerParsesItsCommandAndSuggestsAName(t *testing.T) {
 	if sub.Name != "filesystem" || sub.Server.Command != "npx" || strings.Join(sub.Server.Args, "|") != "-y|@modelcontextprotocol/server-filesystem|/tmp/my dir" {
 		t.Fatalf("unexpected stdio submission %+v", sub)
 	}
-	if sub.Secrets.Env["TOKEN"] != "abc" || sub.Secrets.Env["DEBUG"] != "1" || sub.Secrets.BearerToken != "" {
+	env, _ := sub.Secrets["env"].(map[string]any)
+	if token, kept := sub.Secrets["bearerToken"]; env["TOKEN"] != "abc" || env["DEBUG"] != "1" || !kept || token != nil {
 		t.Fatalf("env should be stored privately, got %+v", sub.Secrets)
 	}
 	if strings.Contains(ansi.Strip(m.View()), "abc") {
@@ -89,11 +91,13 @@ func TestStdioServerParsesItsCommandAndSuggestsAName(t *testing.T) {
 }
 
 func TestEditingKeepsOrRemovesStoredSecrets(t *testing.T) {
-	stored := config.MCPServerSecrets{BearerToken: "old", Headers: map[string]string{"X-Key": "k"}}
+	stored := daemon.MCPSecretNames{BearerToken: true, Headers: []string{"X-Key"}}
 	enabled := false
 	f := newMCPForm("docs", config.MCPServer{Type: "http", URL: "https://docs.example/mcp", Enabled: &enabled}, stored)
 	sub, err := f.submission([]capabilityItem{{ID: "docs"}})
-	if err != nil || sub.Secrets.BearerToken != "old" || sub.Secrets.Headers["X-Key"] != "k" || sub.Server.Enabled == nil {
+	_, token := sub.Secrets["bearerToken"]
+	_, headers := sub.Secrets["headers"]
+	if err != nil || token || headers || sub.Server.Enabled == nil {
 		t.Fatalf("a blank edit must keep stored secrets and other fields: %+v %v", sub, err)
 	}
 	if !strings.Contains(ansi.Strip(strings.Join(f.view(100), "\n")), "stored · blank keeps it") {
@@ -103,7 +107,9 @@ func TestEditingKeepsOrRemovesStoredSecrets(t *testing.T) {
 	f.Inputs[fieldHeader].SetValue("X-Key")
 	f.Inputs[fieldValue].SetValue("-")
 	sub, _ = f.submission(nil)
-	if sub.Secrets.BearerToken != "" || len(sub.Secrets.Headers) != 0 {
+	removed, _ := sub.Secrets["headers"].(map[string]any)
+	header, named := removed["X-Key"]
+	if token, ok := sub.Secrets["bearerToken"]; !ok || token != nil || !named || header != nil {
 		t.Fatalf("- should remove stored secrets: %+v", sub.Secrets)
 	}
 }

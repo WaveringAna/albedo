@@ -1,9 +1,11 @@
 // The manual openai-compatible provider wizard crosses the composer, the
-// daemon's sign-in and model-catalog answers, and config.json on disk. A
-// stubbed daemon cannot prove the real answers lead the wizard to that save.
+// daemon's sign-in and model-catalog answers, config.json on disk, and the
+// daemon's creds.json. A stubbed daemon cannot prove the real answers lead the
+// wizard to that save, or that the key it hands over is the one requests use.
 package e2e
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -30,6 +32,7 @@ func TestTUILoginAddsAManualProviderThroughTheDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.WriteFile(configPath, saved, 0o600) })
+	forgetKey(t, name)
 	before, err := config.LoadProfiles(suite.home)
 	if err != nil {
 		t.Fatalf("suite config: %v", err)
@@ -95,13 +98,27 @@ func TestTUILoginAddsAManualProviderThroughTheDaemon(t *testing.T) {
 		t.Fatalf("saved config: %v", err)
 	}
 	got := profiles.Providers[name]
-	want := config.Settings{Extension: "openai", BaseURL: baseURL, APIKey: key, Model: model, Protocol: "chat_completions"}
+	want := config.Settings{Extension: "openai", BaseURL: baseURL, Model: model, Protocol: "chat_completions"}
 	if got != want {
 		t.Fatalf("config.json kept %+v, want %+v", got, want)
 	}
 	if profiles.Active != name {
 		t.Fatalf("config.json kept %q active, not %q", profiles.Active, name)
 	}
+	// The key went to the daemon, which sends it with the profile's requests.
+	id := newSession(t, t.TempDir())
+	cli(t, "send", id, "which key")
+	waitIdle(t, id, t.Name(), 1)
+	if requests := suite.provider.requests(t.Name()); requests[len(requests)-1]["authorization"] != "Bearer "+key {
+		t.Fatalf("the provider saw authorization %v, not the saved key", requests[len(requests)-1]["authorization"])
+	}
+}
+
+// forgetKey removes the api key a scenario saves for profile, once it ends.
+func forgetKey(t *testing.T, profile string) {
+	t.Helper()
+	connection := conn(t)
+	t.Cleanup(func() { daemon.SetProviderKey(context.Background(), connection, profile, "") })
 }
 
 // An Anthropic API key rides the claude extension that otherwise signs in,
@@ -118,6 +135,7 @@ func TestTUILoginSavesAnAnthropicAPIKeyProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.WriteFile(configPath, saved, 0o600) })
+	forgetKey(t, name)
 	d := newTUIDriver(t)
 	expect := func(want tui.LoginStep) {
 		t.Helper()
@@ -152,9 +170,13 @@ func TestTUILoginSavesAnAnthropicAPIKeyProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("saved config: %v", err)
 	}
-	want := config.Settings{Extension: "claude", APIKey: key, Model: model, Protocol: "chat_completions"}
+	want := config.Settings{Extension: "claude", Model: model, Protocol: "chat_completions"}
 	if got := profiles.Providers[name]; got != want {
 		t.Fatalf("config.json kept %+v, want %+v", got, want)
+	}
+	held, err := daemon.SavedCredentials(context.Background(), conn(t))
+	if err != nil || !slices.Contains(held.Providers, name) {
+		t.Fatalf("the daemon holds no key for %q: %+v %v", name, held, err)
 	}
 
 	// Re-selecting the key profile saves at once rather than signing in.

@@ -1,6 +1,7 @@
 """Opt-in live wake check against a real provider (deepseek by default).
 
-Needs a real key: reads it from prime-agent's auth.json (or $ALBEDO_TEST_AUTH).
+Needs a real key: reads the deepseek profile's key from albedo's creds.json
+(or the file $ALBEDO_TEST_CREDS names).
 Not part of test.sh; run manually:
     python3 test/manual/job_wake_live.py
 
@@ -21,11 +22,10 @@ import time
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
-AUTH_PATH = os.environ.get(
-    "ALBEDO_TEST_AUTH", os.path.expanduser("~/.prime/agent/auth.json")
+CREDS_PATH = os.environ.get("ALBEDO_TEST_CREDS") or os.path.join(
+    os.environ.get("ALBEDO_HOME") or os.path.expanduser("~/.albedo"), "creds.json"
 )
-AUTH = json.load(open(AUTH_PATH))
-KEY = AUTH["deepseek"]["key"]
+KEY = json.load(open(CREDS_PATH))["providers"]["deepseek"]["apiKey"]
 PROMPT = (
     "use the python tool to run exactly this cell and nothing else: "
     "import sys; job = run(sys.executable, '-c', 'import time; time.sleep(25); print(\"WAKE-DONE-42\")'); print(job.id). "
