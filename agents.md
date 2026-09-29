@@ -29,7 +29,7 @@ Test placement (expanded rules in `.agents/skills/writing-tests/SKILL.md`): the 
 
 - **`src/albedo/daemon/`** — session actors and durable state: submission/run/turn plumbing (`session_*.gleam`), the append-only transcript and conversation store (SQLite via sqlight), the event bus, projections, the family (agents, mail, bus), folders, quota, usage, the reaper, the image store, and `server.gleam`, the HTTP entry point.
 - **`src/albedo/harness/`** — the model-facing half: `loop.gleam` (the tool loop), `tool.gleam`, `extension.gleam` and `extensions.gleam` (plugin interfaces and composition), `compaction.gleam`, `runtime.gleam` (boots the built-ins), plus credentials, oauth, rotation, settings, and the usage feed.
-- **`src/albedo/harness/extensions/`** — one directory per extension. Enabled by default: `python`, `run`, `work`, `mail`, `agents`, `schedule`, `files`, `memory`, `instructions`, `commands`, `skills`, `models`, `openai`, `codex`, `antigravity`, `alibaba`, `claude`, `rolling`, `snapcompact-memory`, `lcm-memory`, `remote`. Installed but off until enabled: `mcp`, `view`, `proxy`, `webhooks`, `warm`, `snapcompact`, `lcm`. The provider extensions are ordered before `models` on purpose (their own model lists win), and the memory/compaction pairs are ordered so archives cover past folds.
+- **`src/albedo/harness/extensions/`** — one directory per extension. Enabled by default: `python`, `run`, `work`, `mail`, `agents`, `schedule`, `paperclips`, `files`, `memory`, `instructions`, `commands`, `skills`, `models`, `openai`, `codex`, `antigravity`, `alibaba`, `claude`, `rolling`, `snapcompact-memory`, `lcm-memory`, `remote`. Installed but off until enabled: `mcp`, `view`, `proxy`, `webhooks`, `warm`, `snapcompact`, `lcm`. The provider extensions are ordered before `models` on purpose (their own model lists win), and the memory/compaction pairs are ordered so archives cover past folds.
 - **`src/albedo/openai_api/`** — the provider transport every extension shares: request/turn types, SSE framing, stream reducers, replay after restarts, chat/responses encodings. A provider with a foreign wire format encodes an `openai_api.Exchange` and supplies only its own reducer (antigravity does this); HTTP, retries, limits, and callbacks stay shared.
 
 The extension record is the core abstraction everything composes through:
@@ -63,7 +63,7 @@ An extension bundles plugins: context (system instructions), tool (model tools +
 
 ### robot-docs/
 
-`robot-docs/` is one model-facing doc per subsystem (agents, auth, cache-ttl, cache-warming, commands, compaction, context, extensions, files, mcp, models, provider-requests, proxy, quota, skills, usage-feed, webhooks, workspaces). This file is the map; those are the details. When you change a subsystem's behavior, update its doc in the same change; when you need to understand one, read it there first.
+`robot-docs/` is one model-facing doc per subsystem (agents, auth, cache-ttl, cache-warming, commands, compaction, context, extensions, files, mcp, models, paperclips, provider-requests, proxy, quota, skills, usage-feed, webhooks, workspaces). This file is the map; those are the details. When you change a subsystem's behavior, update its doc in the same change; when you need to understand one, read it there first.
 
 ### Other directories
 

@@ -53,7 +53,16 @@ def namespace() -> dict[str, object]:
         "output": kernel.Output(),
         "show_image": kernel.show_image,
     }
-    for name in ["run", "work", "files", "skills", "commands", "remote", "view"]:
+    for name in [
+        "run",
+        "work",
+        "paperclips",
+        "files",
+        "skills",
+        "commands",
+        "remote",
+        "view",
+    ]:
         result = importlib.import_module("albedo_plugins." + name).setup(api)
         bindings.update(
             loop.run_until_complete(result) if inspect.isawaitable(result) else result

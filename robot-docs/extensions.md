@@ -1,6 +1,6 @@
 # extensions
 
-an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, models, provider, login, service, compaction, or fold plugins. `python`, `run`, `work`, `mail`, `agents`, `schedule`, `files`, `memory`, `instructions`, `commands`, `skills`, `models`, `openai`, `codex`, `antigravity`, `alibaba`, `claude`, `rolling`, `snapcompact-memory`, `lcm-memory`, and `remote` are enabled by default; `mcp`, `view`, [`proxy`](proxy.md), `webhooks`, [`warm`](cache-warming.md), and the `snapcompact` and `lcm` compaction strategies are installed and disabled until enabled. plugin contributions compose inside them.
+an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, models, provider, login, service, compaction, or fold plugins. `python`, `run`, `work`, `mail`, `agents`, `schedule`, `paperclips`, `files`, `memory`, `instructions`, `commands`, `skills`, `models`, `openai`, `codex`, `antigravity`, `alibaba`, `claude`, `rolling`, `snapcompact-memory`, `lcm-memory`, and `remote` are enabled by default; `mcp`, `view`, [`proxy`](proxy.md), `webhooks`, [`warm`](cache-warming.md), and the `snapcompact` and `lcm` compaction strategies are installed and disabled until enabled. plugin contributions compose inside them.
 
 ## select extensions
 
