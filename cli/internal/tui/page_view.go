@@ -25,10 +25,11 @@ const (
 )
 
 type PageRow struct {
-	ID    string   `json:"id"`
-	Text  string   `json:"text"`
-	Badge string   `json:"badge"`
-	Tone  PageTone `json:"tone"`
+	ID     string   `json:"id"`
+	Text   string   `json:"text"`
+	Badge  string   `json:"badge"`
+	Tone   PageTone `json:"tone"`
+	Detail string   `json:"detail,omitempty"`
 }
 
 type PageAction struct {
@@ -153,7 +154,8 @@ func parsePageDocument(result any) (*PageDocument, error) {
 			default:
 				tone = "plain"
 			}
-			result = append(result, PageRow{ID: id, Text: text, Badge: badge, Tone: PageTone(tone)})
+			detail, _ := obj["detail"].(string)
+			result = append(result, PageRow{ID: id, Text: text, Badge: badge, Tone: PageTone(tone), Detail: detail})
 		}
 		return result
 	}
@@ -429,6 +431,41 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 	return m, nil
 }
 
+// panes splits the width the way the folder picker does: the detail beside
+// the list only when there is room and some row carries one.
+func (m PageViewModel) panes() (list, pane int) {
+	list = m.Width
+	if m.Width >= 96 && m.Height >= 14 && slices.ContainsFunc(m.Doc.Rows, func(r PageRow) bool { return r.Detail != "" }) {
+		list = m.Width / 2
+		pane = m.Width - list - ansi.StringWidth(svSep())
+	}
+	return list, pane
+}
+
+// detailPane draws the selected row's detail in exactly rows lines: the row
+// under a rule, then its detail wrapped to the pane.
+func (m PageViewModel) detailPane(width, rows int) []string {
+	if rows <= 0 {
+		return nil
+	}
+	filled := make([]string, rows)
+	row := m.currentRow()
+	if row == nil || row.Detail == "" {
+		return filled
+	}
+	lines := []string{plainRule("#"+row.ID+" · "+row.Badge, width), ""}
+	for _, paragraph := range strings.Split(row.Detail, "\n\n") {
+		if paragraph == "" {
+			continue
+		}
+		for _, wrapped := range wrapContextContent(paragraph, width-2) {
+			lines = append(lines, "  "+wrapped)
+		}
+		lines = append(lines, "")
+	}
+	return append(lines, make([]string, max(0, rows-len(lines)))...)[:rows]
+}
+
 // pageNotice picks the wording for a finished action: the daemon's message
 // when it sent one, else the action's label.
 func pageNotice(msg pageActionExecutedMsg) string {
@@ -485,7 +522,25 @@ func (m PageViewModel) View() string {
 				rows[i] += DefaultStyles.Faint.Render("  #" + item.ID)
 			}
 		}
-		line(selectableRows(rows, m.currentIndex(), m.Height, m.Height, m.Width, m.Styles))
+		listWidth, paneWidth := m.panes()
+		listed := selectableRows(rows, m.currentIndex(), m.Height, m.Height, listWidth, m.Styles)
+		if paneWidth == 0 {
+			line(listed)
+		} else {
+			// The pane fills the row window even when the list is shorter,
+			// the way the folder picker previews at full body height.
+			window := max(1, m.Height-8)
+			list := strings.Split(listed, "\n")
+			for len(list) < window {
+				list = append(list, "")
+			}
+			pane := m.detailPane(paneWidth-1, len(list))
+			for i := range list {
+				list[i] += svSep() + svFit(pane[i], paneWidth-1) + " "
+				list[i] = ansi.Truncate(list[i], m.Width, "…")
+			}
+			line(strings.Join(list, "\n"))
+		}
 	}
 	target := ""
 	if row != nil {

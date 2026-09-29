@@ -12,24 +12,27 @@ user something important in the normal reply.
 ## python
 
 ```python
-await vent(topic, message, suggestion="")   # file one complaint
-await vents(limit=20)                        # recent vents, newest first
+await vent(topic, message, suggestion="", title="")
+await vents(limit=20)   # recent vents, newest first
 ```
 
 `topic` is one of `harness`, `workflow`, `bug`, `user`, or `other`. a vent
 carries what happened, what it cost, and — in `suggestion` — what would fix
-it. rows return as dicts with `id`, `topic`, `message`, `suggestion`,
-`status`, `session`, and `created_at`. the model should list before filing so
-it does not report the same thing twice.
+it. the optional `title` is the short line the `/paperclips` list shows;
+without one the message stands in. rows return as dicts with `id`, `title`,
+`topic`, `message`, `suggestion`, `status`, `session`, and `created_at`. the
+model should list before filing so it does not report the same thing twice.
 
 ## review
 
-`/paperclips` lists the workspace's vents, open first. the user can
-acknowledge (`a`), reply (`n`), resolve (`r`), dismiss (`d`), or remove
-(`x`) one. a reply marks the vent acknowledged and queues its text as a note
-for the model, so an answer reaches it at its next turn without starting one
-ahead of the user's message. open vents also appear in the page's glance
-beside the conversation.
+`/paperclips` lists the workspace's vents, open first, one short title
+per row; a wide client shows the highlighted vent's full text, suggestion,
+and meta in a pane beside the list, the way the folder picker previews a
+folder. the user can acknowledge (`a`), reply (`n`), resolve (`r`), dismiss
+(`d`), or remove (`x`) one. a reply marks the vent acknowledged and queues
+its text as a note for the model, so an answer reaches it at its next turn
+without starting one ahead of the user's message. open vents also appear in
+the page's glance beside the conversation.
 
 ## storage
 

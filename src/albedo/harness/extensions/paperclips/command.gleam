@@ -10,7 +10,7 @@ import albedo/harness/page
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 
@@ -98,16 +98,52 @@ fn rank(vent: paperclips.Vent) -> Int {
 }
 
 fn row(vent: paperclips.Vent) -> page.Row {
-  let text = case vent.suggestion {
-    "" -> vent.message
-    suggestion -> vent.message <> " — " <> suggestion
-  }
-  page.Row(
+  page.detail_row(
     int.to_string(vent.id),
-    paperclips.topic_name(vent.topic) <> ": " <> text,
+    case vent.title {
+      "" -> short_title(vent.message)
+      title -> title
+    },
     paperclips.status_name(vent.status),
     status_style(vent.status).1,
+    detail(vent),
   )
+}
+
+/// The columns of the list a titleless vent's title may take.
+const title_columns = 64
+
+/// The list shows one short line per vent even when the model did not set
+/// a title; the full text belongs in the detail.
+fn short_title(message: String) -> String {
+  let flat = string.replace(message, "\n", " ")
+  case string.length(flat) <= title_columns {
+    True -> flat
+    False ->
+      flat
+      |> string.to_graphemes
+      |> list.take(title_columns)
+      |> string.concat
+      <> "…"
+  }
+}
+
+/// Everything the detail pane shows for one vent.
+fn detail(vent: paperclips.Vent) -> String {
+  [
+    vent.message,
+    case vent.suggestion {
+      "" -> ""
+      suggestion -> "\n\nsuggestion: " <> suggestion
+    },
+    "\n\nfiled "
+      <> vent.created_at
+      <> case vent.session {
+      Some(session) -> " by session " <> string.slice(session, 0, 8)
+      None -> ""
+    },
+  ]
+  |> string.concat
 }
 
 fn summary(vents: List(paperclips.Vent)) -> String {

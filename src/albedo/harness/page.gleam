@@ -40,7 +40,33 @@ pub type Tone {
 }
 
 pub type Row {
-  Row(id: String, text: String, badge: String, tone: Tone)
+  Row(
+    id: String,
+    /// The short title a list shows on one line.
+    text: String,
+    badge: String,
+    tone: Tone,
+    /// The full text a wide client shows beside the list, where `text` is
+    /// the short title. Empty when the row has nothing more to show.
+    detail: String,
+  )
+}
+
+/// A row with the full text a wide client shows beside the list, where
+/// `text` is the short title. `page.detail_row` fills it; `page.row` leaves
+/// the detail empty.
+pub fn row(id: String, text: String, badge: String, tone: Tone) -> Row {
+  Row(id, text, badge, tone, "")
+}
+
+pub fn detail_row(
+  id: String,
+  text: String,
+  badge: String,
+  tone: Tone,
+  detail: String,
+) -> Row {
+  Row(id, text, badge, tone, detail)
 }
 
 pub type Input {
@@ -110,6 +136,7 @@ fn row_json(row: Row) -> json.Json {
     #("id", json.string(row.id)),
     #("text", json.string(row.text)),
     #("badge", json.string(row.badge)),
+    #("detail", json.string(row.detail)),
     #(
       "tone",
       json.string(case row.tone {

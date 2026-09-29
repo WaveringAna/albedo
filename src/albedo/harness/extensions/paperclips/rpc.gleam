@@ -40,12 +40,24 @@ fn dispatch(store, cwd, session, method, args) {
       let decoder = {
         use topic <- decode.field("topic", decode.string)
         use message <- decode.field("message", decode.string)
+        use title <- decode.optional_field("title", "", decode.string)
         use suggestion <- decode.optional_field("suggestion", "", decode.string)
-        decode.success(#(topic, message, suggestion))
+        decode.success(#(topic, message, title, suggestion))
       }
-      use #(topic, message, suggestion) <- result.try(parse(args, decoder))
+      use #(topic, message, title, suggestion) <- result.try(parse(
+        args,
+        decoder,
+      ))
       use topic <- result.try(paperclips.parse_topic(topic))
-      paperclips.create(store, cwd, topic, message, suggestion, Some(session))
+      paperclips.create(
+        store,
+        cwd,
+        topic,
+        title,
+        message,
+        suggestion,
+        Some(session),
+      )
       |> result.map(paperclips.to_json)
     }
     "paperclips.list" -> {

@@ -107,11 +107,12 @@ fn rank(item: work.Item) -> Int {
 }
 
 fn row(item: work.Item) -> page.Row {
-  page.Row(
+  page.detail_row(
     int.to_string(item.id),
     item.title,
     work.status_name(item.status),
     status_style(item.status).1,
+    item.notes,
   )
 }
 

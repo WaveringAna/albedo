@@ -8,7 +8,7 @@ from harness import Albedo, Provider, python, text
 
 VENT_AND_LIST = (
     "await vent('harness', 'the build lock ate my afternoon',"
-    " suggestion='prebuild the cli in test.sh')\n"
+    " suggestion='prebuild the cli in test.sh', title='build lock stalls')\n"
     "print([(v['id'], v['topic'], v['status']) for v in await vents()])"
 )
 
@@ -72,7 +72,13 @@ class PaperclipsTests(unittest.TestCase):
                 )
             )["result"]["page"]
             self.assertEqual(len(page["rows"]), 1)
+            # the list shows the model's title; the detail carries the vent
+            self.assertEqual(page["rows"][0]["text"], "build lock stalls")
             self.assertEqual(page["rows"][0]["badge"], "open")
+            self.assertIn("the build lock ate my afternoon", page["rows"][0]["detail"])
+            self.assertIn(
+                "suggestion: prebuild the cli in test.sh", page["rows"][0]["detail"]
+            )
             self.assertEqual(len(page["glance"]["rows"]), 1)
 
             triage = f"/sessions/{session}/commands"
@@ -114,6 +120,26 @@ class PaperclipsTests(unittest.TestCase):
                     for message in request["request"]["messages"]
                 )
             )
+
+    def test_a_titleless_vent_takes_its_title_from_the_message(self):
+        provider = scripting(
+            ["await vent('bug', 'wires crossed somewhere deep in the stack')\n"]
+        )
+        self.addCleanup(provider.close)
+        with Albedo(provider) as app:
+            session = app.session()
+            app.prompt(session, "vent").close()
+            app.idle(session)
+            page = json.load(
+                app.api(
+                    f"/sessions/{session}/commands",
+                    {"name": "/paperclips", "args": {}},
+                )
+            )["result"]["page"]
+            self.assertEqual(
+                page["rows"][0]["text"], "wires crossed somewhere deep in the stack"
+            )
+            self.assertIn("wires crossed", page["rows"][0]["detail"])
 
     def test_a_vent_needs_a_known_topic_and_a_message(self):
         provider = scripting(

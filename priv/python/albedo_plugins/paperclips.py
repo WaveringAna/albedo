@@ -7,13 +7,18 @@ from albedo_api import Host, PythonApi
 host: Host
 
 
-async def vent(topic: str, message: str, suggestion: str = "") -> dict:
+async def vent(topic: str, message: str, suggestion: str = "", title: str = "") -> dict:
     """Record one complaint for the user to review in /paperclips."""
     return cast(
         dict,
         await host(
             "paperclips.vent",
-            {"topic": topic, "message": message, "suggestion": suggestion},
+            {
+                "topic": topic,
+                "message": message,
+                "suggestion": suggestion,
+                "title": title,
+            },
         ),
     )
 

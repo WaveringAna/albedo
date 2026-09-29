@@ -29,6 +29,7 @@ pub type Status {
 pub type Vent {
   Vent(
     id: Int,
+    title: String,
     topic: Topic,
     message: String,
     suggestion: String,
@@ -47,15 +48,22 @@ pub type Error {
 pub type Store =
   storage.Store
 
-/// Runs once at install against the shared ledger store.
+/// Runs once at install against the shared ledger store. `add_columns`
+/// carries tables installed before a column existed.
 pub fn initialise(ledger: Store) -> Result(Nil, String) {
-  storage.query(ledger, fn(db) { storage.exec(db, schema) })
+  storage.query(ledger, fn(db) {
+    use _ <- result.try(storage.exec(db, schema))
+    storage.add_columns(db, "paperclips", [
+      #("title", "TEXT NOT NULL DEFAULT ''"),
+    ])
+  })
 }
 
 const schema = "
 CREATE TABLE IF NOT EXISTS paperclips (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  topic TEXT NOT NULL CHECK(topic IN ('harness','workflow','bug','user','other')),
+ title TEXT NOT NULL DEFAULT '', 
  message TEXT NOT NULL CHECK(length(trim(message)) > 0),
  suggestion TEXT NOT NULL DEFAULT '',
  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','acknowledged','resolved','dismissed')),
@@ -67,7 +75,7 @@ CREATE TABLE IF NOT EXISTS paperclips (
 CREATE INDEX IF NOT EXISTS paperclips_cwd ON paperclips(cwd);
 "
 
-const columns = "id,topic,message,suggestion,status,session,created_at"
+const columns = "id,title,topic,message,suggestion,status,session,created_at"
 
 pub fn topic_name(topic: Topic) -> String {
   case topic {
@@ -137,14 +145,16 @@ fn status_decoder() {
 
 fn decoder() {
   use id <- decode.field(0, decode.int)
-  use topic <- decode.field(1, topic_decoder())
-  use message <- decode.field(2, decode.string)
-  use suggestion <- decode.field(3, decode.string)
-  use status <- decode.field(4, status_decoder())
-  use session <- decode.field(5, decode.optional(decode.string))
-  use created_at <- decode.field(6, decode.string)
+  use title <- decode.field(1, decode.string)
+  use topic <- decode.field(2, topic_decoder())
+  use message <- decode.field(3, decode.string)
+  use suggestion <- decode.field(4, decode.string)
+  use status <- decode.field(5, status_decoder())
+  use session <- decode.field(6, decode.optional(decode.string))
+  use created_at <- decode.field(7, decode.string)
   decode.success(Vent(
     id,
+    title,
     topic,
     message,
     suggestion,
@@ -157,6 +167,7 @@ fn decoder() {
 pub fn to_json(vent: Vent) -> json.Json {
   json.object([
     #("id", json.int(vent.id)),
+    #("title", json.string(vent.title)),
     #("topic", json.string(topic_name(vent.topic))),
     #("message", json.string(vent.message)),
     #("suggestion", json.string(vent.suggestion)),
@@ -174,11 +185,19 @@ fn one(items: List(Vent)) -> Result(Vent, Error) {
   items |> list.first |> result.replace_error(NotFound)
 }
 
-fn validate(message: String, suggestion: String) -> Result(Nil, Error) {
+fn validate(
+  title: String,
+  message: String,
+  suggestion: String,
+) -> Result(Nil, Error) {
   case string.trim(message) == "" {
     True -> Error(Invalid("a vent needs a message"))
     False ->
-      case string.length(suggestion) > 2000 || string.length(message) > 8000 {
+      case
+        string.length(title) > 200
+        || string.length(suggestion) > 2000
+        || string.length(message) > 8000
+      {
         True -> Error(Invalid("vent text is too long"))
         False -> Ok(Nil)
       }
@@ -190,18 +209,20 @@ pub fn create(
   store: Store,
   cwd: String,
   topic: Topic,
+  title: String,
   message: String,
   suggestion: String,
   session: Option(String),
 ) -> Result(Vent, Error) {
-  use _ <- result.try(validate(message, suggestion))
+  use _ <- result.try(validate(title, message, suggestion))
   storage.query(store, fn(db) {
     rows(
       db,
-      "INSERT INTO paperclips(cwd,topic,message,suggestion,session) VALUES(?,?,?,?,?) RETURNING "
+      "INSERT INTO paperclips(cwd,title,topic,message,suggestion,session) VALUES(?,?,?,?,?,?) RETURNING "
         <> columns,
       [
         sqlight.text(cwd),
+        sqlight.text(string.trim(title)),
         sqlight.text(topic_name(topic)),
         sqlight.text(message),
         sqlight.text(suggestion),
