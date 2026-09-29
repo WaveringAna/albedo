@@ -120,7 +120,7 @@ in buildGoModule {
   modRoot = "cli";
   subPackages = [ "cmd/albedo" ];
   vendorHash = "sha256-enSzYyW7Ku9JjLeRuzfBZsUgdAYb4P7vFGZkvPDZGSo=";
-  nativeBuildInputs = [ makeWrapper ];
+  nativeBuildInputs = [ makeWrapper python3 ];
   ALBEDO_NO_BROWSER = "1";
   postInstall = ''
     wrapProgram $out/bin/albedo \
