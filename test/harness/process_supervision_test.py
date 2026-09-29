@@ -220,6 +220,9 @@ class SupervisionTest(unittest.TestCase):
                 await slow
                 self.assertTrue(slow.timed_out)
                 self.assertTrue(slow.termination.gone)
+                # The pause is reported apart from the time the job ran.
+                self.assertGreaterEqual(slow.waited, 1.2)
+                self.assertAlmostEqual(slow.duration, 1.0, delta=0.4)
             finally:
                 plugin.GRACE = grace
                 await plugin.close()

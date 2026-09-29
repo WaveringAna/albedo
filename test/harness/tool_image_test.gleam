@@ -7,6 +7,7 @@ import gleam/dynamic
 import gleam/erlang/atom
 import gleam/json
 import gleam/list
+import gleam/option.{None}
 import gleeunit/should
 
 /// A PNG signature and IHDR header for a 2x3 image: enough for albedo to read.
@@ -68,13 +69,22 @@ pub fn records_saved_before_images_still_load_test() {
   let saved = Outcome("cell", python.Succeeded, "out", "'v'", False)
   let assert Ok(Ok(outcome)) = unpack_cell(term_to_binary(#(1, Ok(saved))))
   outcome
-  |> should.equal(
-    python.Outcome("cell", python.Succeeded, "out", "'v'", False, [], []),
-  )
+  |> should.equal(python.Outcome(
+    "cell",
+    python.Succeeded,
+    "out",
+    "'v'",
+    False,
+    [],
+    [],
+    None,
+  ))
 }
 
 pub fn a_journaled_image_is_checked_again_on_load_test() {
-  let assert Ok(Ok(_)) = unpack_cell(journaled_png(2))
+  // Journaled before cells were timed, so its duration is unknown.
+  let assert Ok(Ok(outcome)) = unpack_cell(journaled_png(2))
+  outcome.duration |> should.equal(None)
   // The payload is 2 pixels wide; a record claiming 9 was altered.
   unpack_cell(journaled_png(9)) |> should.equal(Error(Nil))
 }

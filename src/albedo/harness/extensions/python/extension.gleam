@@ -14,7 +14,7 @@ import gleam/result
 pub fn definition() -> types.Tool {
   types.Tool(
     "python",
-    "Execute Python in your persistent session. Always provide both JSON arguments: code (string) and timeout_ms (integer, 1–3600000), even for a one-line call. Top-level await works. Variables stay alive. Only printed output and the final expression return; truncated=true means the output passed the 64 KiB preview, and the rest (up to 1 MiB) is readable with output.read(cell_id, offset=65536) while the cell is among the 16 most recent; read it before running many more cells, or print less. Failed cells are retained: await cells.read(id) for bounded source, await cells.info(id) for its status (ok, error, interrupted, started, saved) without source, await cells.trace(id) for what the cell read, ran and changed. Repair exact unique text without resending the source with await cells.run(id, replacements=[(old,new)]), or pass check=True first to compile the rewrite and get the syntax error back without running anything. A cell that started requires allow_partial=True after checking side effects; never retry blindly.",
+    "Execute Python in your persistent session. Always provide both JSON arguments: code (string) and timeout_ms (integer, 1–3600000), even for a one-line call. Top-level await works. Variables stay alive. Only printed output and the final expression return; duration is the cell's wall seconds; truncated=true means the output passed the 64 KiB preview, and the rest (up to 1 MiB) is readable with output.read(cell_id, offset=65536) while the cell is among the 16 most recent; read it before running many more cells, or print less. Failed cells are retained: await cells.read(id) for bounded source, await cells.info(id) for its status (ok, error, interrupted, started, saved) without source, await cells.trace(id) for what the cell read, ran and changed. Repair exact unique text without resending the source with await cells.run(id, replacements=[(old,new)]), or pass check=True first to compile the rewrite and get the syntax error back without running anything. A cell that started requires allow_partial=True after checking side effects; never retry blindly.",
     json.object([
       #("type", json.string("object")),
       #("additionalProperties", json.bool(False)),
@@ -124,6 +124,7 @@ fn outcome_json(
       json.object([
         #("cell_id", json.string(id)),
         #("status", json.string(python.status_name(outcome.status))),
+        #("duration", json.nullable(outcome.duration, json.float)),
         #("output", json.string(outcome.output)),
         #("value", json.string(outcome.value)),
         #("truncated", json.bool(outcome.truncated)),

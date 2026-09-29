@@ -5,7 +5,7 @@ import albedo/harness/rpc
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -65,6 +65,7 @@ fn summary_json(cell: journal.Cell) -> json.Json {
     #("started", json.bool(cell.started)),
     #("parent", json.nullable(cell.parent, json.string)),
     #("finished", json.bool(cell.outcome != None)),
+    #("duration", json.nullable(duration(cell), json.float)),
     #("first_line", json.string(first_line(cell))),
   ])
 }
@@ -76,6 +77,14 @@ fn first_line(cell: journal.Cell) -> String {
   |> list.find(fn(line) { string.trim(line) != "" })
   |> result.unwrap("")
   |> string.slice(0, 120)
+}
+
+/// Wall seconds a finished cell ran, when its outcome recorded them.
+fn duration(cell: journal.Cell) -> Option(Float) {
+  case cell.outcome {
+    Some(Ok(outcome)) -> outcome.duration
+    _ -> None
+  }
 }
 
 /// ok, error, or interrupted once finished; lost or unavailable when the
@@ -160,5 +169,6 @@ fn to_json(cell: journal.Cell) -> json.Json {
     #("parent", json.nullable(cell.parent, json.string)),
     #("finished", json.bool(cell.outcome != None)),
     #("status", json.string(status(cell))),
+    #("duration", json.nullable(duration(cell), json.float)),
   ])
 }

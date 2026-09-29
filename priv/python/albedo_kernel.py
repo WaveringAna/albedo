@@ -539,7 +539,8 @@ class Cells:
 
     async def info(self, id: str) -> albedo_api.Record:
         """Status (ok, error, interrupted, started, saved, lost, unavailable),
-        parentage and whether the cell started, without its source."""
+        parentage, whether the cell started, and how long a finished cell
+        ran, without its source."""
         cell = cast(albedo_api.SavedCell, await host("cells.read", {"id": id}))
         return albedo_api.Record(
             (key, value) for key, value in cell.items() if key != "source"
@@ -603,6 +604,7 @@ class Cells:
         outer = CELL.get()
         token = CELL.set(capture)
         outer_sink = swap_sink(capture)
+        began = LOOP.time()
         value: object = None
         error: BaseException | None = None
         status = "ok"
@@ -638,6 +640,7 @@ class Cells:
                 "outcome": {
                     "id": cell["id"],
                     "status": status,
+                    "duration": round(LOOP.time() - began, 3),
                     "output": capture.preview(status),
                     "value": text,
                     "truncated": capture.seen > PREVIEW,
@@ -883,6 +886,7 @@ def _mirror_state(obj: object) -> dict[str, object]:
         "exit_code": getattr(obj, "exit_code", None),
         "timed_out": getattr(obj, "timed_out", False),
         "duration": getattr(obj, "duration", None),
+        "waited": getattr(obj, "waited", 0.0),
     }
 
 
@@ -1134,6 +1138,7 @@ async def serve():
         token = CELL.set(capture)
         _ = swap_sink(capture)
         status, value = "ok", ""
+        began = LOOP.time()
         task = active = LOOP.create_task(
             evaluate(message["code"], capture.id, message.get("durable", False))
         )
@@ -1164,12 +1169,14 @@ async def serve():
             active = None
             active_capture = None
             CELL.reset(token)
+        duration = round(LOOP.time() - began, 3)
         send({"type": "trace", "id": capture.id, "trace": capture.trace.finish()})
         send(
             {
                 "type": "done",
                 "id": capture.id,
                 "status": status,
+                "duration": duration,
                 "output": capture.preview(status),
                 "value": value,
                 "truncated": capture.seen > PREVIEW,

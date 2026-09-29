@@ -9,6 +9,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/json
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -47,6 +48,8 @@ pub type Outcome {
     images: List(types.Image),
     /// Why an image the kernel sent could not be read; it is never sent on.
     image_errors: List(String),
+    /// Wall seconds the cell ran; unknown for cells journaled before timing.
+    duration: Option(Float),
   )
 }
 
@@ -234,8 +237,22 @@ pub fn outcome_decoder() {
   use value <- decode.field("value", decode.string)
   use truncated <- decode.field("truncated", decode.bool)
   use encoded <- decode.optional_field("images", [], decode.list(decode.string))
+  use duration <- decode.optional_field(
+    "duration",
+    None,
+    decode.map(decode.float, Some),
+  )
   let #(images, image_errors) = read_images(encoded)
-  let outcome = Outcome(id, _, output, value, truncated, images, image_errors)
+  let outcome = Outcome(
+    id,
+    _,
+    output,
+    value,
+    truncated,
+    images,
+    image_errors,
+    duration,
+  )
   case status {
     "ok" -> decode.success(outcome(Succeeded))
     "error" -> decode.success(outcome(Failed))

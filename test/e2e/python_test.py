@@ -1,4 +1,4 @@
-"""File editing and search are exercised through the daemon's real Python tool."""
+"""File editing, search, and cell timing are exercised through the daemon's real Python tool."""
 
 import json
 import unittest
@@ -19,9 +19,9 @@ class PythonToolsTests(unittest.TestCase):
         self.app.__enter__()
         self.addCleanup(self.app.__exit__, None, None, None)
 
-    def execute(self, code):
+    def run_cell(self, code, session):
+        """The result of one prompt's cell, the latest in the session."""
         self.code = code
-        session = self.app.session()
         self.app.prompt(session, "use the Python tools").close()
         self.app.idle(session)
         results = [
@@ -29,9 +29,11 @@ class PythonToolsTests(unittest.TestCase):
             for event in self.app.events(session)
             if event.get("type") == "tool" and event.get("name") == "python"
         ]
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["status"], "ok", results[0])
-        return results[0]["output"]
+        self.assertEqual(results[-1]["status"], "ok", results[-1])
+        return results[-1]
+
+    def execute(self, code):
+        return self.run_cell(code, self.app.session())["output"]
 
     def test_ambiguous_edit_requires_a_hint_and_preserves_other_matches(self):
         note = self.app.workspace / "note.txt"
@@ -57,6 +59,17 @@ class PythonToolsTests(unittest.TestCase):
         self.assertIn("needle", output)
         self.assertIn("before", output)
         self.assertIn("after", output)
+
+    def test_a_cell_reports_how_long_it_ran(self):
+        session = self.app.session()
+        slept = self.run_cell("import asyncio\nawait asyncio.sleep(0.3)", session)
+        self.assertGreaterEqual(slept["duration"], 0.3)
+        self.assertLess(slept["duration"], 5)
+        # The journal keeps it, so cells.info reports it after the fact.
+        info = self.run_cell(
+            f"print((await cells.info({slept['cell_id']!r}))['duration'])", session
+        )
+        self.assertEqual(float(info["output"]), slept["duration"])
 
 
 if __name__ == "__main__":

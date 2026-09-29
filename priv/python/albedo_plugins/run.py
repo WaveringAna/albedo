@@ -273,7 +273,9 @@ class Job:
         self.exit_code: int | None = None
         self.timed_out: bool = False
         self.started: float = loop.time()
-        self.duration: float | None = None  # wall seconds once the command ended
+        self.duration: float | None = None  # seconds it ran, once it ended
+        self.waited: float = 0.0  # seconds it sat paused for a heavy slot
+        self._paused_at: float | None = None
         self.termination: albedo_proc.Termination | None = None
         self.capture: OutputCapture = capture_factory(self.id)
         self.ending: asyncio.Task[albedo_proc.Termination] | None = None
@@ -382,6 +384,7 @@ class Job:
         ):
             self._signal(signal.SIGSTOP)
             self._paused = True
+            self._paused_at = loop.time()
             self._resumed.clear()
             self._pausing.set()
 
@@ -389,6 +392,9 @@ class Job:
         if self._paused:
             self._signal(signal.SIGCONT)
             self._paused = False
+            if self._paused_at is not None:
+                self.waited += loop.time() - self._paused_at
+                self._paused_at = None
             self._pausing.clear()
             self._resumed.set()
 
@@ -442,7 +448,7 @@ class Job:
                 self.exit_code = await self._status(self.process)
             if self.process is not None and ending.gone:
                 self.process.transport.close()
-            self.duration = loop.time() - self.started
+            self.duration = loop.time() - self.started - self.waited
             if self.timed_out:
                 self.capture.write(
                     f"\n[deadline exceeded after {timeout:g}s; {ending.report()}]\n"
@@ -567,8 +573,10 @@ class Job:
             else "exit status unknown"
         )
         seconds = (
-            f"{self.duration:.1f}s" if self.duration is not None else "unknown duration"
+            f"ran {self.duration:.1f}s" if self.duration is not None else "unknown duration"
         )
+        if self.waited:
+            seconds += f", queued {self.waited:.1f}s"
         display = f"job finished{where} ({outcome}, {seconds}): {command}"
         text = (
             "<system-note>a background job finished with its result unread"
@@ -585,6 +593,7 @@ class Job:
             "exit_code": self.exit_code,
             "timed_out": self.timed_out,
             "duration": self.duration,
+            "waited": self.waited,
             "host": self._remote,
         }
 
@@ -644,7 +653,7 @@ class Job:
         return (
             f"Job(id={self.id!r}, queued={self.queued!r}, exit_code={self.exit_code!r}, "
             f"timed_out={self.timed_out!r}, duration={self.duration!r}, "
-            f"bytes={self.capture.seen})"
+            f"waited={self.waited!r}, bytes={self.capture.seen})"
         )
 
 
