@@ -151,6 +151,7 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX)
         started = time.monotonic()
         try:
+            harness.snapshot_daemon()
             successful = run_suite(
                 suite, max(1, args.jobs), max(1, args.exclusive_jobs)
             )

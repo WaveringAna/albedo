@@ -399,6 +399,8 @@ class Provider:
 
 
 _daemons: list[Daemon] = []
+# The launcher of this run's daemon build; see snapshot_daemon().
+_executable = None
 _daemons_lock = threading.RLock()
 _discarding: list[threading.Thread] = []
 _current = threading.local()
@@ -495,6 +497,8 @@ class Daemon:
             ALBEDO_MCP_CLOSED=str(self.root / "closed"),
             ALBEDO_MCP_AMBIENT="must-not-reach-the-server",
         )
+        if _executable:
+            self.env["ALBEDO_DAEMON"] = _executable
         self.connection = None
         self.base = None
         self._pid = None
@@ -664,6 +668,20 @@ def _alive(pid):
     except ProcessLookupError:
         return False
     return True
+
+
+def snapshot_daemon():
+    """Compile the daemon once for the run and boot every test daemon from a
+    copy, not through `gleam run` (see test/snapshot-daemon.sh)."""
+    global _executable
+    result = subprocess.run(
+        [str(ROOT / "test/snapshot-daemon.sh"), tempfile.mkdtemp(prefix="daemon-")],
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode:
+        raise RuntimeError("building the daemon failed:\n" + result.stderr)
+    _executable = result.stdout.strip()
 
 
 def current_daemon():

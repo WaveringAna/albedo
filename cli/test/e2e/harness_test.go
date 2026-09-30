@@ -101,8 +101,20 @@ func bootSuite() (func() (string, bool), error) {
 		return teardown, fmt.Errorf("building ./cmd/albedo: %w\n%s", err, out)
 	}
 
+	// The daemon boots from a snapshot of its compiled code rather than
+	// through `gleam run`; see test/snapshot-daemon.sh.
+	snapshot := exec.Command(filepath.Join(root, "test", "snapshot-daemon.sh"), filepath.Join(temp, "daemon"))
+	launcher, err := snapshot.Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return teardown, fmt.Errorf("snapshotting the daemon: %w\n%s", err, exit.Stderr)
+		}
+		return teardown, fmt.Errorf("snapshotting the daemon: %w", err)
+	}
+
 	suite.root, suite.home = root, home
-	suite.env = hermeticEnv(root, home, userHome, scratch)
+	suite.env = hermeticEnv(root, home, userHome, scratch, strings.TrimSpace(string(launcher)))
 	suite.provider = newFakeProvider()
 	// A models.dev refresh or the cache-TTL table's remote copy would reach
 	// the network from a test.
@@ -226,8 +238,8 @@ func repoRoot() (string, error) {
 
 // hermeticEnv builds the environment for every CLI invocation and the daemon
 // it spawns: no real home, no inherited albedo state, temporary files inside
-// the suite's tree, and the parent watcher.
-func hermeticEnv(root, home, userHome, scratch string) []string {
+// the suite's tree, the snapshot's launcher, and the parent watcher.
+func hermeticEnv(root, home, userHome, scratch, daemonExe string) []string {
 	var env []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
@@ -242,6 +254,7 @@ func hermeticEnv(root, home, userHome, scratch string) []string {
 		"ALBEDO_HOME="+home,
 		"ALBEDO_PARENT_PID="+strconv.Itoa(os.Getpid()),
 		"ALBEDO_ROOT="+root,
+		"ALBEDO_DAEMON="+daemonExe,
 		"ALBEDO_NO_BROWSER=1",
 		// Two schedulers keep a booting test VM from pinning every core.
 		"ERL_FLAGS=+S 2:2 +SDcpu 2:2 +sbwt none +sbwtdcpu none +sbwtdio none",
