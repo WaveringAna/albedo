@@ -1570,13 +1570,10 @@ fn validate_submitted_image(
   }
 }
 
-fn body(req, decoder) {
-  mist.read_body(req, 9_200_000)
-  |> result.replace_error("invalid request body")
-  |> result.try(fn(req) {
-    json.parse_bits(req.body, decoder)
-    |> result.replace_error("invalid request JSON")
-  })
+/// The request's JSON body; `routed` has already read the bytes off the wire.
+fn body(req: request.Request(BitArray), decoder) {
+  json.parse_bits(req.body, decoder)
+  |> result.replace_error("invalid request JSON")
 }
 
 /// Sign-ins run here so every client shares one OAuth implementation;
@@ -1585,7 +1582,7 @@ fn body(req, decoder) {
 fn auth(
   home: String,
   logins: List(oauth.Login),
-  req: request.Request(mist.Connection),
+  req: request.Request(BitArray),
   path: List(String),
 ) {
   let login = fn(provider) {
@@ -1719,7 +1716,7 @@ fn route(
   case request.path_segments(req) {
     [name, ..rest] ->
       case list.contains(daemon_routes, name) {
-        True -> daemon_route(config, registry, req)
+        True -> routed(config, registry, req)
         False -> {
           use host <- with_host(registry)
           case
@@ -1728,18 +1725,42 @@ fn route(
             |> result.try(extension.service(_, name))
           {
             // A browser page must not reach a local service that spends the
-            // user's credentials, so cross-origin requests stay refused.
+            // user's credentials, so cross-origin requests stay refused. The
+            // service never sees this request, so nothing of its own reads
+            // the body: drain it, or it kills the keep-alive connection.
             Ok(service) ->
               case request.get_header(req, "origin") {
-                Ok(_) -> error(403, "forbidden")
+                Ok(_) -> {
+                  let _ = mist.read_body(req, 9_200_000)
+                  error(403, "forbidden")
+                }
+                // A service owns its request's body: it reads what it answers
+                // from the live connection itself.
                 Error(_) ->
                   service.handle(daemon(config, registry, host), rest, req)
               }
-            Error(_) -> daemon_route(config, registry, req)
+            Error(_) -> routed(config, registry, req)
           }
         }
       }
-    [] -> daemon_route(config, registry, req)
+    [] -> routed(config, registry, req)
+  }
+}
+
+/// The daemon's own routes answer from a request whose body is already read:
+/// a handler that ignores its body would otherwise leave the bytes to mist's
+/// next-request parser, and a body arriving in a later TCP read than its
+/// headers is parsed there as a new request, which fails and closes the
+/// keep-alive connection without a response.
+fn routed(
+  config: Config,
+  registry: Subject(Message),
+  req: request.Request(mist.Connection),
+) -> response.Response(mist.ResponseData) {
+  case mist.read_body(req, 9_200_000) {
+    Ok(read) -> daemon_route(config, registry, read, req)
+    Error(mist.ExcessBody) -> error(413, "request body exceeds its limit")
+    Error(mist.MalformedBody) -> error(400, "invalid request body")
   }
 }
 
@@ -1783,7 +1804,8 @@ fn daemon(
 fn daemon_route(
   config: Config,
   registry: Subject(Message),
-  req: request.Request(mist.Connection),
+  req: request.Request(BitArray),
+  live: request.Request(mist.Connection),
 ) -> response.Response(mist.ResponseData) {
   let authorised =
     request.get_header(req, "authorization") == Ok("Bearer " <> config.token)
@@ -1896,7 +1918,7 @@ fn daemon_route(
             404,
           )
         }
-        Get, ["agents", "stream"] -> agents_stream(req)
+        Get, ["agents", "stream"] -> agents_stream(live)
         // The workspace picker's folder browser; robot-docs/workspaces.md.
         Get, ["fs", "list"] -> browsed(req, folders.list)
         Get, ["fs", "repo"] -> browsed(req, folders.repo)
@@ -2305,7 +2327,7 @@ fn daemon_route(
                       #("interrupted", json.bool(session.interrupt(worker))),
                     ]),
                   )
-                Get, "stream" -> stream(req, worker)
+                Get, "stream" -> stream(live, worker)
                 _, _ -> error(404, "unknown session operation")
               }
           }

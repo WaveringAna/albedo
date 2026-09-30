@@ -4,7 +4,9 @@ from dataclasses import dataclass
 import http.client
 import http.server
 import json
+import socket
 import threading
+import time
 import unittest
 import urllib.parse
 
@@ -38,6 +40,29 @@ def held_catalog():
         server.server_close()
 
     return HeldCatalog(f"http://127.0.0.1:{server.server_port}/api.json", release)
+
+
+def read_response(connection):
+    """One HTTP response off a keep-alive socket: its status code."""
+    head = b""
+    while b"\r\n\r\n" not in head:
+        chunk = connection.recv(65536)
+        if not chunk:
+            raise AssertionError("connection closed before a response")
+        head += chunk
+    lines = head.split(b"\r\n\r\n", 1)
+    body = lines[1] if len(lines) > 1 else b""
+    length = 0
+    for line in lines[0].split(b"\r\n")[1:]:
+        name, _, value = line.lower().partition(b":")
+        if name.strip() == b"content-length":
+            length = int(value.strip())
+    while len(body) < length:
+        chunk = connection.recv(65536)
+        if not chunk:
+            raise AssertionError("connection closed mid-body")
+        body += chunk
+    return int(lines[0].split(b" ")[1])
 
 
 class DaemonTest(unittest.TestCase):
@@ -192,6 +217,62 @@ class DaemonTest(unittest.TestCase):
                 "reached_max_restart_intensity",
             ):
                 self.assertNotIn(marker, tail)
+
+    def test_a_late_request_body_keeps_the_keep_alive_connection(self):
+        # mist parses every later TCP read as the next keep-alive request, so
+        # a route that answers without reading its request body leaves those
+        # bytes to that parser: a body arriving after its headers reads as a
+        # new request, fails, and the connection closes without a response,
+        # taking the client's next request with it. The router reads the body
+        # up front, so a split write cannot cost the connection.
+        provider = Provider(lambda _request: text("answer"))
+        self.addCleanup(provider.close)
+        with Albedo(provider) as app:
+            address = urllib.parse.urlsplit(app.base)
+            token = app.connection["token"]
+            session = app.session()
+            interrupt = f"/sessions/{session}/interrupt"
+
+            def sent(method, path, body):
+                # The headers and the body as two writes, so the route answers
+                # in between, before the body is read.
+                head = (
+                    f"{method} {path} HTTP/1.1\r\n"
+                    f"Host: {address.hostname}\r\n"
+                    f"Authorization: Bearer {token}\r\n"
+                    f"Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n\r\n"
+                ).encode()
+                connection = socket.create_connection(
+                    (address.hostname, address.port), timeout=20
+                )
+                try:
+                    connection.sendall(head)
+                    time.sleep(0.05)
+                    connection.sendall(body)
+                    first = read_response(connection)
+                    connection.sendall(
+                        (
+                            f"GET /health HTTP/1.1\r\n"
+                            f"Host: {address.hostname}\r\n"
+                            f"Authorization: Bearer {token}\r\n\r\n"
+                        ).encode()
+                    )
+                    return first, read_response(connection)
+                finally:
+                    connection.close()
+
+            # Every shape that answers without reading its body: a plain
+            # route, an ignored POST body, an unknown route, and a route that
+            # answers a session actor call.
+            for method, path, status in (
+                ("GET", "/health", 200),
+                ("POST", "/auth/credentials/migration", 200),
+                ("POST", "/nope", 404),
+                ("POST", interrupt, 200),
+            ):
+                with self.subTest(f"{method} {path}"):
+                    self.assertEqual(sent(method, path, b"{}"), (status, 200))
 
     def test_a_thoughts_duration_is_kept_with_the_transcript(self):
         # summarized thinking streams once it is written: here the response
