@@ -211,8 +211,13 @@ class WarmTest(unittest.TestCase):
             self.assertEqual(row["profile"], "orchestrator")
             self.assertEqual(row["model"], "fixture-model")
         # A ping paid 4096 cached tokens: the hit the TTL model predicted.
+        # Each ping is due an interval after the send before it, timed from
+        # the moment the warmer sent it, which its request row stamps a little
+        # later: rows apart from the turn's are bounded from the turn's.
+        interval = TTL_SECONDS * 900
+        self.assertGreaterEqual(rows[1]["startedMs"], rows[0]["startedMs"] + interval)
         self.assertGreaterEqual(
-            rows[2]["startedMs"], rows[1]["startedMs"] + TTL_SECONDS * 900
+            rows[2]["startedMs"], rows[0]["startedMs"] + 2 * interval
         )
 
         # The transcript is untouched by warming.
