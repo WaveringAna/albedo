@@ -161,11 +161,11 @@ func (m SessionViewer) View() string {
 	if width >= 96 && height >= 14 {
 		listW := width / 2
 		columns = [][]string{
-			m.column(m.Filtered, listW, body, now),
+			m.column(listW, body, now),
 			m.preview(width-listW-ansi.StringWidth(svSep()), body, now),
 		}
 	} else {
-		columns = [][]string{m.column(m.Filtered, width, body, now)}
+		columns = [][]string{m.column(width, body, now)}
 	}
 	for row := range body {
 		var b strings.Builder
@@ -252,40 +252,76 @@ func (m SessionViewer) footer(width int, now time.Time) string {
 
 // column renders items with section headings at exactly width × height,
 // scrolled to keep the cursor visible.
-func (m SessionViewer) column(items []PickerItem, width, height int, now time.Time) []string {
-	cols := svLayout(width)
-	counts := map[int]int{}
-	for _, item := range items {
-		counts[m.section[item.ID]]++
-	}
-	var all []string
-	selectedAt := -1
-	section := -1
-	for i, item := range items {
-		sec := m.section[item.ID]
-		if sec != section && sec != secAction {
-			if len(all) > 0 && height >= 10 {
-				all = append(all, "")
-			}
-			all = append(all, sectionRule(sectionTitles[sec], counts[sec], width))
+func (m SessionViewer) column(width, height int, now time.Time) []string {
+	if len(m.Filtered) == 0 {
+		message := "   No matching sessions"
+		switch {
+		case m.ArchiveView && m.SearchInput.Value() == "":
+			message = "   No archived sessions yet"
+		case m.Loading:
+			message = "   loading sessions…"
 		}
-		section = sec
-		if i == m.Cursor {
-			selectedAt = len(all)
-		}
-		s, _ := m.session(item.ID)
-		all = append(all, m.row(item, s, sec, i == m.Cursor, width, cols, now))
-	}
-	switch {
-	case len(items) == 0 && m.ArchiveView && m.SearchInput.Value() == "":
-		all = append(all, DefaultStyles.Faint.Render("   No archived sessions yet"))
-	case len(items) == 0 && m.Loading:
-		all = append(all, DefaultStyles.Faint.Render("   loading sessions…"))
-	case len(items) == 0:
-		all = append(all, DefaultStyles.Faint.Render("   No matching sessions"))
+		return scrollWindow([]string{DefaultStyles.Faint.Render(message)}, -1, width, height)
 	}
 
-	return scrollWindow(all, selectedAt, width, height)
+	selectedAt, total := -1, 0
+	for _, group := range m.groups {
+		if group.section != secAction {
+			if total > 0 && height >= 10 {
+				total++
+			}
+			total++
+		}
+		if m.Cursor >= group.first && m.Cursor < group.first+group.count {
+			selectedAt = total + m.Cursor - group.first
+		}
+		total += group.count
+	}
+	start := 0
+	if total > height {
+		start = min(max(0, selectedAt-height/2), total-height)
+	}
+	end := min(total, start+height)
+	out := make([]string, height)
+	blank := strings.Repeat(" ", width)
+	for i := range out {
+		out[i] = blank
+	}
+	// Overflow markers replace edge rows rather than adding to the window.
+	first, last := start, end
+	if total > height && height >= 3 {
+		more := svFit(DefaultStyles.Faint.Render("   ···"), width)
+		if start > 0 {
+			out[0] = more
+			first++
+		}
+		if end < total {
+			out[height-1] = more
+			last--
+		}
+	}
+
+	cols := svLayout(width)
+	position := 0
+	for _, group := range m.groups {
+		if group.section != secAction {
+			if position > 0 && height >= 10 {
+				position++
+			}
+			if position >= first && position < last {
+				out[position-start] = svFit(sectionRule(sectionTitles[group.section], m.sectionCounts[group.section], width), width)
+			}
+			position++
+		}
+		for offset := max(0, first-position); offset < min(group.count, last-position); offset++ {
+			index := group.first + offset
+			item := m.Filtered[index]
+			session, _ := m.session(item.ID)
+			out[position+offset-start] = svFit(m.row(item, session, group.section, index == m.Cursor, width, cols, now), width)
+		}
+		position += group.count
+	}
+	return out
 }
 
 // scrollWindow shows exactly width × height of lines, centred on selectedAt

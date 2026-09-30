@@ -62,6 +62,12 @@ type cachedPreview struct {
 	err     bool
 }
 
+type sessionGroup struct {
+	section int
+	first   int
+	count   int
+}
+
 // SessionViewer is the start screen: search over a grouped session list
 // beside a transcript preview of the highlighted session.
 type SessionViewer struct {
@@ -78,11 +84,13 @@ type SessionViewer struct {
 	notice        string
 	Sessions      []daemon.Session
 	raw           []daemon.Session
+	groups        []sessionGroup
 
 	prefs  sessionPrefs
 	rename renameField
 	PickerModel
-	Loading bool
+	sectionCounts [len(sectionTitles)]int
+	Loading       bool
 
 	HasActive   bool
 	ArchiveView bool
@@ -95,7 +103,7 @@ func NewSessionViewer(workspace string) SessionViewer {
 	st := p.SearchInput.Styles()
 	st.Focused.Placeholder, st.Blurred.Placeholder = DefaultStyles.Faint, DefaultStyles.Faint
 	p.SearchInput.SetStyles(st)
-	return SessionViewer{
+	m := SessionViewer{
 		PickerModel: p,
 		Workspace:   workspace,
 		Loading:     true,
@@ -103,6 +111,8 @@ func NewSessionViewer(workspace string) SessionViewer {
 		previews:    map[string]*cachedPreview{},
 		now:         time.Now,
 	}
+	m.rebuildGroups()
+	return m
 }
 
 func sessionViewerActions(workspace string) []PickerItem {
@@ -262,6 +272,22 @@ func (m *SessionViewer) rebuild() {
 	}
 	m.Items = items
 	m.applyFilter()
+	m.rebuildGroups()
+}
+
+// Group ranges index Filtered, so cursor movement and resizing can derive
+// physical rows without rebuilding or formatting the rest of the list.
+func (m *SessionViewer) rebuildGroups() {
+	m.groups = nil
+	clear(m.sectionCounts[:])
+	for i, item := range m.Filtered {
+		section := m.section[item.ID]
+		m.sectionCounts[section]++
+		if len(m.groups) == 0 || m.groups[len(m.groups)-1].section != section {
+			m.groups = append(m.groups, sessionGroup{section: section, first: i})
+		}
+		m.groups[len(m.groups)-1].count++
+	}
 }
 
 const untitled = "Untitled session"
@@ -462,8 +488,12 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 			return m, m.previewAfter(before.ID)
 		}
 	}
+	query := m.SearchInput.Value()
 	picker, cmd := m.PickerModel.Update(msg)
 	m.PickerModel = picker
+	if m.SearchInput.Value() != query {
+		m.rebuildGroups()
+	}
 	return m, tea.Batch(cmd, m.previewAfter(before.ID))
 }
 
