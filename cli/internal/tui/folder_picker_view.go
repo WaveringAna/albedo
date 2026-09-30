@@ -74,7 +74,12 @@ func (m FolderPicker) footer(width int) string {
 	left := " " + keyHints(m.hints()...)
 	room := width - ansi.StringWidth(left) - 4
 	if room < 24 {
-		left, room = "", width-2
+		left = ""
+		if m.sessionsError != "" {
+			// Keep recovery discoverable when the full navigation help cannot fit.
+			left = ansi.Truncate(" "+keyHints(hint{"ctrl+r", pick(m.sessionsLoading, "retrying…", "retry")}), max(0, width-1), "")
+		}
+		room = max(0, width-ansi.StringWidth(left)-2)
 	}
 	var right string
 	switch {
@@ -82,6 +87,8 @@ func (m FolderPicker) footer(width int) string {
 		right = DefaultStyles.Faint.Render("moving…")
 	case m.notice != "":
 		right = DefaultStyles.Warning.Render(tailFit(m.notice, room))
+	case m.sessionsError != "":
+		right = DefaultStyles.Warning.Render(ansi.Truncate("Recent sessions: "+m.sessionsError, room, "…"))
 	case m.retry != nil:
 		right = DefaultStyles.Warning.Render("Folder not found: ") + DefaultStyles.Muted.Render(tailFit(m.homed(m.retry.Missing), room-ansi.StringWidth("Folder not found: ")))
 	case m.browse: // nothing moves, so there is no "now in"
@@ -94,10 +101,14 @@ func (m FolderPicker) footer(width int) string {
 // hints are the footer's keys for where the cursor is; → shows only when
 // the highlighted folder has sessions to step into.
 func (m FolderPicker) hints() []hint {
-	if m.inSessions {
-		return []hint{{"↑↓", "move"}, {"enter", "open"}, {"←", "folders"}}
+	var hints []hint
+	if m.sessionsError != "" {
+		hints = append(hints, hint{"ctrl+r", pick(m.sessionsLoading, "retrying…", "retry sessions")})
 	}
-	hints := []hint{{"↑↓", "move"}, {"tab", "open"}, {"⇧tab", "up"}}
+	if m.inSessions {
+		return append(hints, hint{"↑↓", "move"}, hint{"enter", "open"}, hint{"←", "folders"})
+	}
+	hints = append(hints, hint{"↑↓", "move"}, hint{"tab", "open"}, hint{"⇧tab", "up"})
 	if row, ok := m.highlighted(); ok && len(m.sessionsIn(row.path)) > 0 {
 		hints = append(hints, hint{"→", "sessions"})
 	}

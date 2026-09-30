@@ -78,13 +78,14 @@ func (m ExtensionPickerModel) loadExtensionsCmd(gen int) tea.Cmd {
 			return extensionsLoadedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
 
-		noGlobal := false
-		if caps, err := daemon.Capabilities(context.Background(), m.Conn); err == nil {
-			if !slices.Contains(caps, "session_extensions") {
-				return extensionsLoadedMsg{Err: daemon.UpgradeNeeded("for /extensions"), Gen: gen}
-			}
-			noGlobal = !slices.Contains(caps, "global_extensions")
+		caps, err := daemon.Capabilities(context.Background(), m.Conn)
+		if err != nil {
+			return extensionsLoadedMsg{Err: err, Gen: gen}
 		}
+		if !slices.Contains(caps, "session_extensions") {
+			return extensionsLoadedMsg{Err: daemon.UpgradeNeeded("for /extensions"), Gen: gen}
+		}
+		noGlobal := !slices.Contains(caps, "global_extensions")
 
 		path := fmt.Sprintf("/sessions/%s/extensions", m.SessionID)
 		items, err := daemon.Request[[]ExtensionItem](context.Background(), m.Conn, path, nil)

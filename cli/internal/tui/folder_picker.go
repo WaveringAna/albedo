@@ -90,7 +90,11 @@ type folderPreviewMsg struct {
 
 type folderPreviewTickMsg struct{ Path string }
 
-type folderSessionsMsg struct{ Sessions []daemon.Session }
+type folderSessionsMsg struct {
+	Sessions []daemon.Session
+	Err      error
+	Gen      int64
+}
 
 // moveCmd moves session id to input: absolute, under ~, or relative to
 // the folder it is in now. The daemon names the folder a ~ or relative
@@ -233,6 +237,10 @@ type FolderPicker struct {
 	retry    *WorkspaceRetry
 	src      folderSource
 	sessions []daemon.Session
+	// Session failures survive query edits; a reopened picker rejects the old load.
+	sessionsError      string
+	sessionsLoading    bool
+	sessionsGeneration int64
 	// home is the daemon's home, which ~ names, once a listing reports it.
 	home string
 
@@ -262,14 +270,16 @@ func NewFolderPicker(src folderSource, session daemon.Session, retry *WorkspaceR
 	ti.SetStyles(st)
 	ti.Focus()
 	m := FolderPicker{
-		input:    ti,
-		session:  session,
-		retry:    retry,
-		src:      src,
-		listings: map[string]*folderListMsg{},
-		repos:    map[string]*daemon.Repo{},
-		asked:    map[string]bool{},
-		previews: map[string]*cachedFolderPreview{},
+		input:              ti,
+		session:            session,
+		retry:              retry,
+		src:                src,
+		listings:           map[string]*folderListMsg{},
+		repos:              map[string]*daemon.Repo{},
+		asked:              map[string]bool{},
+		previews:           map[string]*cachedFolderPreview{},
+		sessionsLoading:    true,
+		sessionsGeneration: time.Now().UnixNano(),
 	}
 	m.rebuild()
 	return m
@@ -290,11 +300,15 @@ func (m *FolderPicker) SetSize(width, height int) {
 }
 
 func (m FolderPicker) Init() tea.Cmd {
-	src := m.src
-	return tea.Batch(func() tea.Msg {
-		sessions, _ := src.Sessions()
-		return folderSessionsMsg{Sessions: sessions}
-	}, m.fetch(), m.previewCmd())
+	return tea.Batch(m.loadSessionsCmd(), m.fetch(), m.previewCmd())
+}
+
+func (m FolderPicker) loadSessionsCmd() tea.Cmd {
+	src, gen := m.src, m.sessionsGeneration
+	return func() tea.Msg {
+		sessions, err := src.Sessions()
+		return folderSessionsMsg{Sessions: sessions, Err: err, Gen: gen}
+	}
 }
 
 func (m FolderPicker) workspace() string { return m.session.Workspace }
@@ -371,6 +385,15 @@ func (m *FolderPicker) rebuild() {
 func (m FolderPicker) Update(msg tea.Msg) (FolderPicker, tea.Cmd) {
 	switch msg := msg.(type) {
 	case folderSessionsMsg:
+		if msg.Gen != m.sessionsGeneration {
+			return m, nil
+		}
+		m.sessionsLoading = false
+		if msg.Err != nil {
+			m.sessionsError = msg.Err.Error()
+			return m, nil
+		}
+		m.sessionsError = ""
 		m.sessions, m.inSessions = msg.Sessions, false
 		if _, _, listing := splitQuery(m.input.Value()); !listing {
 			m.cursor = -1 // nothing was there to pick yet
@@ -401,6 +424,13 @@ func (m FolderPicker) Update(msg tea.Msg) (FolderPicker, tea.Cmd) {
 	case tea.KeyPressMsg:
 		if m.moving {
 			return m, nil
+		}
+		if msg.String() == "ctrl+r" && m.sessionsError != "" {
+			if m.sessionsLoading {
+				return m, nil
+			}
+			m.sessionsLoading = true
+			return m, m.loadSessionsCmd()
 		}
 		if m.inSessions {
 			if cmd, done := m.sessionKey(msg); done {
