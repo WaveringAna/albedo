@@ -88,7 +88,8 @@ func switchModel(ctx context.Context, conn *daemon.Connection, sessionID string,
 }
 
 func modelsCommand(args []string) error {
-	for _, arg := range args {
+	if len(args) > 0 {
+		arg := args[0]
 		if arg == "-h" || arg == "--help" {
 			fmt.Println("Usage: albedo models\n\nLists provider/model for every configured provider; the first line is the active provider's default.")
 			return nil

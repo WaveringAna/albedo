@@ -30,9 +30,9 @@ func promptCommand(prompt, sessionID, cwd, model string, timeout time.Duration) 
 	}
 	var choice modelChoice
 	if model != "" {
-		profiles, err := daemon.ProviderProfiles(ctx, conn)
-		if err != nil {
-			return err
+		profiles, profileErr := daemon.ProviderProfiles(ctx, conn)
+		if profileErr != nil {
+			return profileErr
 		}
 		if choice, err = chooseModel(configuredModels(ctx, conn, profiles), profiles.Active, model); err != nil {
 			return err
@@ -43,14 +43,14 @@ func promptCommand(prompt, sessionID, cwd, model string, timeout time.Duration) 
 		if model != "" {
 			create["provider"], create["model"] = choice.provider, choice.model
 		}
-		session, err := daemon.Request[daemon.Session](ctx, conn, "/sessions", create)
-		if err != nil {
-			return err
+		session, createErr := daemon.Request[daemon.Session](ctx, conn, "/sessions", create)
+		if createErr != nil {
+			return createErr
 		}
 		sessionID = session.ID
 	} else if model != "" {
-		if err := switchModel(ctx, conn, sessionID, choice); err != nil {
-			return err
+		if switchErr := switchModel(ctx, conn, sessionID, choice); switchErr != nil {
+			return switchErr
 		}
 	}
 
