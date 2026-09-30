@@ -225,11 +225,11 @@ func brandInk(t float64) lipgloss.Style {
 func brand(name string) string { return gradientText("✦ "+name, true) }
 
 // titleRule heads a screen: left, a rule that fades from the brand's end
-// into Decor, then right.
+// into Decor, then right. Without room for one rule cell it is left alone.
 func titleRule(width int, left, right string) string {
 	right = pick(right != "", " "+right, "")
 	n := width - ansi.StringWidth(left) - ansi.StringWidth(right) - 1
-	if n < 3 {
+	if n < 1 {
 		return left
 	}
 	return left + " " + ramp(rampKey{rule: n}, func() string { return fadeRule(n) }) + right
@@ -310,6 +310,18 @@ func selectedLine(line string, width int) string {
 func homePath(p string) string {
 	home, _ := os.UserHomeDir()
 	return underHome(p, home)
+}
+
+// pathFolds shortens a path by folding its middle into "…" one more segment
+// at a time, keeping its root and its name: ~/a/b/c, ~/…/b/c, ~/…/c.
+func pathFolds(p string) []string {
+	sep := string(filepath.Separator)
+	parts := strings.Split(p, sep)
+	folds := []string{p}
+	for keep := len(parts) - 2; keep >= 1; keep-- {
+		folds = append(folds, strings.Join(append([]string{parts[0], "…"}, parts[len(parts)-keep:]...), sep))
+	}
+	return folds
 }
 
 // underHome shortens p under home to start with ~.

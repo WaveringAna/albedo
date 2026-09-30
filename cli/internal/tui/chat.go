@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -2142,31 +2143,48 @@ func (m ChatModel) phaseMood() mood {
 	return moodThinking
 }
 
-func truncateMiddle(text string, width int) string {
-	if width <= 0 {
-		return ""
+// header fits the workspace and the model on one rule without cutting either
+// short, shedding the least useful parts first: the middle of the path, the
+// brand, the glance counts from the last, then the path down to its name,
+// which alone may squeeze the rule to one cell.
+func (m ChatModel) header(width int) string {
+	workspace := homePath(cmp.Or(m.Workspace, "chat"))
+	model := pick(m.Effort != "", fmt.Sprintf("%s:%s", m.Model, m.Effort), m.Model)
+	counts := m.glanceCounts()
+	folds := pathFolds(workspace)
+	type layout struct {
+		brand  bool
+		place  string
+		counts int
+		rule   int
 	}
-	runes := []rune(text)
-	if len(runes) <= width {
-		return text
+	var layouts []layout
+	for _, place := range folds {
+		layouts = append(layouts, layout{true, place, len(counts), 3})
 	}
-	if width == 1 {
-		return "…"
+	for n := len(counts); n >= 0; n-- {
+		layouts = append(layouts, layout{false, folds[len(folds)-1], n, 3})
 	}
-	left := width / 2
-	return string(runes[:left]) + "…" + string(runes[len(runes)-(width-1-left):])
+	layouts = append(layouts, layout{false, filepath.Base(workspace), 0, 1})
+	for _, l := range layouts {
+		right := strings.Join(append(counts[:l.counts:l.counts], model), "  ")
+		left := pick(l.brand, "✦ "+m.AgentName+" on "+l.place, l.place)
+		if lipgloss.Width(left)+lipgloss.Width(right)+l.rule+2 > width {
+			continue
+		}
+		if l.brand {
+			return titleRule(width, located(m.AgentName, l.place), m.Styles.Faint.Render(right))
+		}
+		return titleRule(width, m.Styles.Muted.Render(l.place), m.Styles.Faint.Render(right))
+	}
+	return m.Styles.Faint.Render(ansi.Truncate(model, width, "…"))
 }
 
 func (m ChatModel) View() string {
 	width := m.chatWidth()
 	pad := strings.Repeat(" ", m.padding())
 	var rows []string
-	workspace := cmp.Or(m.Workspace, "chat")
-	model := pick(m.Effort != "", fmt.Sprintf("%s:%s", m.Model, m.Effort), m.Model)
-	right := strings.Join(append(m.glanceCounts(), model), "  ")
-	room := width - lipgloss.Width("✦ "+m.AgentName+" on ") - lipgloss.Width(right) - 5
-	header := titleRule(width, located(m.AgentName, truncateMiddle(homePath(workspace), max(1, room))), m.Styles.Faint.Render(right))
-	rows = append(rows, header, "")
+	rows = append(rows, m.header(width), "")
 	for _, n := range m.Notices {
 		rows = append(rows, pick(n.Error, m.Renderer.errorRow(n.Message), m.Styles.Faint.Render(n.Message)))
 	}
