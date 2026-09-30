@@ -21,7 +21,18 @@ ready(Home,Port,Token) ->
       ok -> ok=file:change_mode(Temp,8#600), file:rename(Temp,File), {ok,nil};
       {error,Reason} -> {error,atom_to_binary(Reason)}
     end.
-shutdown() -> init:stop(), nil.
+%% Called once the drain has closed every session, kernel and store. What
+%% init:stop() would still do is take the VM down application by application,
+%% and kernel's user_sup sleeps a flat second in terminate/2 so buffered
+%% output can drain. Only the logger buffers here (io requests answer once
+%% written), so flush its handlers and halt, which also flushes the ports.
+%% cpu_sup is stopped first, which tells its port program to quit: otherwise
+%% the program reports the VM's disappearance into the log.
+shutdown() ->
+    _ = catch supervisor:terminate_child(os_mon_sup, cpu_sup),
+    _ = [logger_std_h:filesync(Id)
+         || #{id := Id, module := logger_std_h} <- logger:get_handler_config()],
+    erlang:halt(0).
 
 %% Keeps the home lock connection reachable; a collected connection closes and
 %% releases the lock.
