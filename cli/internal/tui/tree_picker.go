@@ -27,10 +27,10 @@ func readablePreview(value string) string {
 }
 
 type TreeCheckpoint struct {
-	ID        int    `json:"id"`
+	Timestamp *int64 `json:"timestamp,omitempty"`
 	Type      string `json:"type"`
 	Preview   string `json:"preview"`
-	Timestamp *int64 `json:"timestamp,omitempty"`
+	ID        int    `json:"id"`
 }
 
 type TreeCancelMsg struct{}
@@ -40,32 +40,32 @@ type TreeForkSuccessMsg struct {
 }
 
 type treeLoadedMsg struct {
-	Items      []TreeCheckpoint
-	NextCursor *int
-	HasMore    bool
 	Err        error
+	NextCursor *int
+	Items      []TreeCheckpoint
 	Gen        int
+	HasMore    bool
 }
 
 type treeForkedMsg struct {
-	Session daemon.Session
 	Err     error
+	Session daemon.Session
 	Gen     int
 }
 
 type TreePickerModel struct {
-	Conn        *daemon.Connection
-	SessionID   string
-	Cursors     []int
-	PageIndex   int
-	Checkpoints []TreeCheckpoint
-	NextCursor  *int
-	HasMore     bool
-	Confirming  bool
-	Forking     bool
-	ForkError   string
 	Styles      Styles
+	Conn        *daemon.Connection
+	NextCursor  *int
+	SessionID   string
+	ForkError   string
+	Cursors     []int
+	Checkpoints []TreeCheckpoint
 	page
+	PageIndex  int
+	HasMore    bool
+	Confirming bool
+	Forking    bool
 }
 
 func NewTreePickerModel(conn *daemon.Connection, sessionID string) TreePickerModel {
@@ -104,8 +104,8 @@ func (m TreePickerModel) loadTreeCmd(after int, gen int) tea.Cmd {
 		}
 
 		type treeResp struct {
-			Items      []TreeCheckpoint `json:"items"`
 			NextCursor *int             `json:"nextCursor"`
+			Items      []TreeCheckpoint `json:"items"`
 			HasMore    bool             `json:"hasMore"`
 		}
 		path := fmt.Sprintf("/sessions/%s/tree?after=%d&limit=50", m.SessionID, after)

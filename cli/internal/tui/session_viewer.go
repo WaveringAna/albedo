@@ -48,9 +48,9 @@ type SessionPreview struct {
 
 // SessionPreviewMsg carries a fetched preview back to the viewer.
 type SessionPreviewMsg struct {
+	Err     error
 	ID      string
 	Preview SessionPreview
-	Err     error
 }
 
 type sessionPreviewTickMsg struct{ ID string }
@@ -65,26 +65,26 @@ type cachedPreview struct {
 // SessionViewer is the start screen: search over a grouped session list
 // beside a transcript preview of the highlighted session.
 type SessionViewer struct {
-	PickerModel
-	Sessions      []daemon.Session
-	Workspace     string
-	Loading       bool
-	HasActive     bool
-	ArchiveView   bool
-	ConfirmDelete string
-	rename        renameField
-
-	Saving bool
+	active *daemon.Session
 	// Fetch loads a preview; nil disables previews.
-	Fetch func(id string) tea.Cmd
+	Fetch         func(id string) tea.Cmd
+	now           func() time.Time
+	previews      map[string]*cachedPreview
+	section       map[string]int
+	Workspace     string
+	ConfirmDelete string
+	notice        string
+	Sessions      []daemon.Session
+	raw           []daemon.Session
 
-	prefs    sessionPrefs
-	raw      []daemon.Session
-	active   *daemon.Session
-	section  map[string]int
-	previews map[string]*cachedPreview
-	notice   string
-	now      func() time.Time
+	prefs  sessionPrefs
+	rename renameField
+	PickerModel
+	Loading bool
+
+	HasActive   bool
+	ArchiveView bool
+	Saving      bool
 }
 
 func NewSessionViewer(workspace string) SessionViewer {

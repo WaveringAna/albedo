@@ -12,8 +12,8 @@ import (
 // form is a column of text fields with one focused; the MCP and webhook
 // forms both build on it.
 type form struct {
-	Focus  int
 	Inputs map[string]*textinput.Model
+	Focus  int
 }
 
 // newField is a text input that follows a label instead of a prompt.

@@ -35,10 +35,10 @@ var AppCommands = []ChatCommand{
 }
 
 type CommandMenuModel struct {
+	Styles    Styles
+	Dismissed string
 	Catalog   []daemon.SessionCommand
 	Selected  int
-	Dismissed string
-	Styles    Styles
 }
 
 func NewCommandMenuModel() CommandMenuModel {

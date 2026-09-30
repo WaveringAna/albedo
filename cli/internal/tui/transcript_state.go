@@ -8,18 +8,18 @@ import (
 
 // transcriptState buffers streamed entries and tracks the turn in progress.
 type transcriptState struct {
-	activeKind ActiveStreamKind
-	activeText string
 	// Live thoughts are timed here; replayed thoughts carry daemon elapsed time.
 	thinkingSince time.Time
-	thoughtMs     int64
 	// Summarized thinking arrives after it is written, so its start is the last
 	// live event other than thinking rather than its first received delta.
-	lastEvent time.Time
+	lastEvent  time.Time
+	turn       *openTurn
+	activeKind ActiveStreamKind
+	activeText string
+	thoughtMs  int64
 
 	streamedHash uint64
 	streamedLen  int64
-	turn         *openTurn
 }
 
 func newTranscriptState() transcriptState {

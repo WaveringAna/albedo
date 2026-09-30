@@ -30,18 +30,18 @@ type ChatQuitMsg struct{}
 
 // ChatEditorFinishedMsg is sent after the external editor process exits.
 type ChatEditorFinishedMsg struct {
-	SessionID  string
-	Generation int64
-	Path       string
 	Err        error
+	SessionID  string
+	Path       string
+	Generation int64
 }
 
 // ChatOlderLoadedMsg carries a page of history from before what is shown.
 type ChatOlderLoadedMsg struct {
+	Err        error
+	Page       *daemon.HistoryPage
 	SessionID  string
 	Generation int64
-	Page       *daemon.HistoryPage
-	Err        error
 }
 type ChatNewSessionMsg struct{}
 type ChatOpenModelPickerMsg struct{}
@@ -61,8 +61,8 @@ type ChatExecuteCommandMsg struct {
 
 type ChatStreamEventMsg struct {
 	SessionID  string
-	Generation int64
 	Event      daemon.StreamEvent
+	Generation int64
 }
 
 type ChatProgressTickMsg struct {
@@ -77,27 +77,27 @@ type ChatClearCopyStatusMsg struct {
 }
 
 type ChatStatusMsg struct {
+	Err        error
+	Status     *daemon.AgentStatus
 	SessionID  string
 	Generation int64
 	Revision   uint64
-	Status     *daemon.AgentStatus
-	Err        error
 }
 
 // ChatWindowMsg carries the context window for the model a usage event named.
 type ChatWindowMsg struct {
-	SessionID  string
-	Generation int64
-	Model      string
-	Tokens     *int
 	Err        error
+	Tokens     *int
+	SessionID  string
+	Model      string
+	Generation int64
 }
 
 // ChatCacheFadeMsg arrives when Usage's cached count reaches its next step.
 type ChatCacheFadeMsg struct {
+	Usage      *daemon.Usage
 	SessionID  string
 	Generation int64
-	Usage      *daemon.Usage
 }
 
 type ChatStatusPollMsg struct {
@@ -111,21 +111,21 @@ type ChatStreamClosedMsg struct {
 }
 
 type ChatTurnSentMsg struct {
-	SessionID  string
-	Generation int64
-	Prompt     string
+	Err        error
 	Image      *daemon.ImageAttachment
+	SessionID  string
+	Prompt     string
+	Generation int64
 	Continue   bool
 	OK         bool
 	Queued     bool
-	Err        error
 }
 
 type ChatInterruptMsg struct {
+	Err         error
 	SessionID   string
 	Generation  int64
 	Interrupted bool
-	Err         error
 }
 
 // ChatOpenFolderPickerMsg asks for the folder picker; Retry is the turn a
@@ -141,10 +141,10 @@ const (
 )
 
 type PendingUserTurn struct {
-	Text   string
 	Image  *daemon.ImageAttachment
-	Queued bool
+	Text   string
 	At     int64
+	Queued bool
 }
 
 const (
@@ -246,114 +246,115 @@ func wrapOrChunkLine(line string, width int) []string {
 // head without changing the count), how wide they render, where paths are
 // named from, and which of them group at all.
 type burstRowsKey struct {
+	workspace string
 	entries   int
 	evicted   int
 	epoch     int
 	width     int
-	workspace string
 	flags     DisplayFlags
 }
 
 type ChatModel struct {
-	SessionID      string
-	Generation     int64
-	AgentName      string
-	Workspace      string
-	Model          string
-	Effort         string
-	Provider       string
-	client         *daemon.ChatClient
-	History        *BoundedHistory
-	Renderer       TranscriptRenderer
-	Viewport       viewport.Model
-	TextArea       textarea.Model
-	CommandMenu    CommandMenuModel
-	effortOptions  []string
-	effortSelected int
-	Flags          DisplayFlags
-	Follow         bool
-	TurnFailed     bool
-	Stopping       bool
-	Stopped        bool
-	Status         daemon.AgentStatus
-	Usage          *daemon.Usage
+	Styles Styles
+
+	streamCtx context.Context
+	Usage     *daemon.Usage
+	// inFlight is the last progress of the call the action row follows. It
+	// outlives Progress, which the result clears, so the row can still say
+	// what the call did once it ends.
+	inFlight      *daemon.ToolProgress
+	eventChan     chan daemon.StreamEvent
+	AttachedImage *daemon.ImageAttachment
 	// window is the context window of windowModel, read once per model so
 	// the footer can say how full the context is.
-	window      *int
-	windowModel *string
-	// stretch is the phase run the status face animates; moodSeed picks its
-	// animation.
+	window  *int
+	client  *daemon.ChatClient
+	History *BoundedHistory
+
+	// Selection coordinates use frameLines, the whole transcript as last
+	// drawn, so a selection can extend beyond the viewport.
+	dragAnchor   *Point
+	streamCancel context.CancelFunc
+	windowModel  *string
+	Progress     *daemon.ToolProgress
+	// stretch is the phase run the status face animates.
 	stretch             stretch
-	moodSeed            int64
-	Glances             []PageGlance
-	AttachedImage       *daemon.ImageAttachment
-	Notices             Notices
+	SessionID           string
+	Status              daemon.AgentStatus
+	AgentName           string
+	Workspace           string
+	Model               string
+	Effort              string
+	Provider            string
 	CopyStatus          string
-	copyStatusRevision  uint64
 	ToolProgressText    string
 	ThoughtProgressText string
+	Renderer            TranscriptRenderer
+
+	// userRows are the settled rows where user messages start.
+	userRows      []int
+	effortOptions []string
+
 	// burstRows is the rendered frame of the trailing run of compact entries.
 	// Its key names every input the rows depend on, so a refresh that changes
 	// nothing redraws nothing, and nothing can ask for a stale frame.
 	burstRows    []string
-	burstRowsKey burstRowsKey
-	burstEpoch   int
+	Notices      Notices
+	settledLines []string
+
+	pendingUsers []PendingUserTurn
+	Glances      []PageGlance
+	frameLines   []string
+	CommandMenu  CommandMenuModel
+	Viewport     viewport.Model
+
+	transcript         transcriptState
+	TextArea           textarea.Model
+	burstRowsKey       burstRowsKey
+	dragHead           Point
+	effortSelected     int
+	Generation         int64
+	copyStatusRevision uint64
+	burstEpoch         int
 	// burstRenders counts frame builds; tests watch it to catch a cache that
 	// redraws every refresh or misses an invalidation.
-	burstRenders int
-	// inFlight is the last progress of the call the action row follows. It
-	// outlives Progress, which the result clears, so the row can still say
-	// what the call did once it ends.
-	inFlight        *daemon.ToolProgress
-	Progress        *daemon.ToolProgress
-	ProgressFrame   int
-	animationActive bool
-	statusRevision  uint64
-	Width           int
-	Height          int
-	Styles          Styles
-
-	settledLines        []string
-	settledLinesBytes   int64
+	burstRenders  int
+	ProgressFrame int
+	Width         int
+	// moodSeed selects the status-face animation for the current stretch.
+	moodSeed            int64
+	Height              int
 	droppedSettledLines int
+	settledLinesBytes   int64
+	statusRevision      uint64
+	scrollOffset        int
+
+	scrollLimit int
+	dragDir     int
+	dragGen     int
+	// olderBefore is the first transcript row carried by the reset or last older page.
+	olderBefore int64
+	// settledOffset counts notice rows above the settled transcript.
+	settledOffset   int
+	Flags           DisplayFlags
+	Follow          bool
+	TurnFailed      bool
+	Stopping        bool
+	Stopped         bool
+	animationActive bool
 	// rebuilding defers trimming until a re-render has placed the reading position.
 	rebuilding bool
-	// olderBefore is the first transcript row the reset or the last older page
-	// carried; olderMore says rows before it exist. loadingOlder is a fetch in flight.
-	olderBefore  int64
-	olderMore    bool
-	loadingOlder bool
 
-	scrollOffset int
-	scrollLimit  int
-
-	transcript transcriptState
-
-	pendingUsers      []PendingUserTurn
+	// olderMore reports whether transcript rows precede olderBefore.
+	olderMore bool
+	// loadingOlder prevents overlapping history fetches.
+	loadingOlder      bool
 	isSending         bool
 	interruptDeferred bool
 	sentHere          bool
-
-	// the selection is in rows of frameLines, the whole transcript as last
-	// drawn, so it can reach past what the viewport shows
-	dragAnchor *Point
-	dragHead   Point
-	dragDir    int
-	dragGen    int
-	frameLines []string
-
 	// graphemes says the terminal measures grapheme clusters (mode 2027),
 	// which Bubble Tea turns off when it hands the terminal to the editor.
 	graphemes bool
-
-	// userRows are the settled rows where your messages start, and
-	// settledOffset is how many notice rows sit above the settled rows.
-	userRows      []int
-	settledOffset int
-
-	streamCtx    context.Context
-	streamCancel context.CancelFunc
-	eventChan    chan daemon.StreamEvent
 }
 
 // NewChatModel requires a session client. A nil client panics.
@@ -1940,10 +1941,10 @@ func (m ChatModel) header(width int) string {
 	counts := m.glanceCounts()
 	folds := pathFolds(workspace)
 	type layout struct {
-		brand  bool
 		place  string
 		counts int
 		rule   int
+		brand  bool
 	}
 	var layouts []layout
 	for _, place := range folds {
@@ -2122,8 +2123,8 @@ func (m ChatModel) renderFooter() string {
 	right, compact := m.contextStat()
 	commands := hint{"/", "commands"}
 	candidates := []struct {
-		left  []hint
 		right string
+		left  []hint
 	}{
 		{left: []hint{commands, {"shift+↑↓", "your messages"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
 		{left: []hint{commands, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},

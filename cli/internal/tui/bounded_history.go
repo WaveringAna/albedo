@@ -22,33 +22,33 @@ const (
 )
 
 type HistoryEntry struct {
-	Kind       EntryKind
+	ToolArgs map[string]any
+	// facts is what this entry contributes to a grouped row, computed once
+	// when the entry settles. Targets stay as recorded; naming is at render.
+	facts      *entryFacts
+	ToolTrace  *daemon.ToolTrace
 	Speaker    string
+	Mood       mood
 	Text       string
-	Timestamp  int64
 	ClientID   string
 	ToolName   string
-	ToolArgs   map[string]any
 	ToolResult string
-	ToolTrace  *daemon.ToolTrace
-	Evicted    int
-	SizeBytes  int64
-	Mood       mood
-	ElapsedMs  int64
-	Tools      int
 	// Strategy is the compaction strategy that produced a compacted entry.
-	Strategy string
+	Strategy  string
+	Kind      EntryKind
+	Timestamp int64
+	SizeBytes int64
+	Evicted   int
+	Tools     int
 	// Pending is a message of yours the daemon has not echoed back yet.
-	Pending pending
+	Pending   pending
+	ElapsedMs int64
 	// Seq is the newest transcript row this entry came from; 0 until a
 	// `committed` event says which rows cover it.
 	Seq int64
 	// Live is a reply still streaming in. It renders on every token, so it
 	// skips the second rendering that marks wraps for a copy until it settles.
 	Live bool
-	// facts is what this entry contributes to a grouped row, computed once
-	// when the entry settles. Targets stay as recorded; naming is at render.
-	facts *entryFacts
 }
 
 // pending is how far a message of yours has got: sent and waiting for the
@@ -86,9 +86,9 @@ func (e *HistoryEntry) ComputeSize() int64 {
 }
 
 type BoundedHistory struct {
+	entries        []HistoryEntry
 	MaxEntries     int
 	MaxBytes       int64
-	entries        []HistoryEntry
 	totalBytes     int64
 	evictedEntries int
 	evictedBytes   int64

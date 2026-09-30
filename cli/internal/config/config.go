@@ -37,9 +37,9 @@ type Settings struct {
 	Extension string `json:"extension,omitempty"`
 	BaseURL   string `json:"baseUrl,omitempty"`
 	APIKey    string `json:"apiKey,omitempty"`
-	HasKey    bool   `json:"hasKey,omitempty"`
 	Model     string `json:"model"`
 	Protocol  string `json:"protocol"`
+	HasKey    bool   `json:"hasKey,omitempty"`
 }
 
 func validateModel(value string) (string, error) {
@@ -118,6 +118,6 @@ func ValidateEndpoint(value string) (string, error) {
 
 // Profiles represents the stored provider configuration.
 type Profiles struct {
-	Active    string              `json:"active,omitempty"`
 	Providers map[string]Settings `json:"providers"`
+	Active    string              `json:"active,omitempty"`
 }

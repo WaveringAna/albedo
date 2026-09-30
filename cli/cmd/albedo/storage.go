@@ -63,6 +63,9 @@ type storageFile struct {
 }
 
 type storagePreview struct {
+	OldKernels        []storageFile `json:"old_kernels"`
+	OldBackups        []storageFile `json:"old_backups"`
+	DB                storageDB     `json:"db"`
 	Database          int64         `json:"database"`
 	WAL               int64         `json:"wal"`
 	Kernels           int64         `json:"kernels"`
@@ -70,9 +73,6 @@ type storagePreview struct {
 	Other             int64         `json:"other"`
 	RecentBackups     int64         `json:"recent_backups"`
 	RecentBackupCount int           `json:"recent_backup_count"`
-	DB                storageDB     `json:"db"`
-	OldKernels        []storageFile `json:"old_kernels"`
-	OldBackups        []storageFile `json:"old_backups"`
 }
 
 // Use Python's bundled sqlite3 instead of introducing a second SQLite engine.

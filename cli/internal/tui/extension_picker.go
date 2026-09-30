@@ -15,12 +15,12 @@ import (
 type ExtensionItem struct {
 	Name          string   `json:"name"`
 	Description   string   `json:"description"`
-	Enabled       bool     `json:"enabled"`
-	Context       bool     `json:"context"`
 	Tools         []string `json:"tools"`
 	PythonModules []string `json:"python_modules"`
 	Requires      []string `json:"requires"`
 	Plugins       []string `json:"plugins"`
+	Enabled       bool     `json:"enabled"`
+	Context       bool     `json:"context"`
 	// Overridden means this session has its own choice; otherwise it follows
 	// GlobalEnabled, the default for sessions without one.
 	Overridden    bool `json:"overridden"`
@@ -31,23 +31,25 @@ type ExtensionPickerDoneMsg struct{}
 type ExtensionPickerChangedMsg struct{}
 
 type extensionsLoadedMsg struct {
-	Extensions []ExtensionItem
 	Err        error
+	Extensions []ExtensionItem
 	Gen        int
 	// NoGlobal reports a daemon that predates global extension defaults.
 	NoGlobal bool
 }
 
 type extensionToggledMsg struct {
-	Extensions []ExtensionItem
 	Err        error
+	Extensions []ExtensionItem
 	Gen        int
 }
 
 type ExtensionPickerModel struct {
+	Styles     Styles
 	Conn       *daemon.Connection
 	SessionID  string
 	Extensions []ExtensionItem
+	page
 	// Session scopes changes to this session; the page opens on the global
 	// defaults, so a session only diverges once a change is made here.
 	Session    bool
@@ -55,8 +57,6 @@ type ExtensionPickerModel struct {
 	Confirming bool
 	// Inheriting confirms dropping this session's choice instead of a toggle.
 	Inheriting bool
-	Styles     Styles
-	page
 }
 
 func NewExtensionPickerModel(conn *daemon.Connection, sessionID string) ExtensionPickerModel {

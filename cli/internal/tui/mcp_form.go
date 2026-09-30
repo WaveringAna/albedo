@@ -19,16 +19,16 @@ import (
 // until the whole form is saved, so a server that needs credentials gets them
 // before its first connection attempt.
 type mcpForm struct {
+	form
 	// Editing names the server being edited; empty for a new server.
 	Editing   string
 	Transport string // "http" or "stdio"
-	// NameTouched stops the name following the URL or command once typed.
-	NameTouched bool
 	// Stored names the secrets the daemon already holds for this server.
 	Stored daemon.MCPSecretNames
 	// Base keeps fields the form does not edit (enabled, tools, timeouts).
 	Base config.MCPServer
-	form
+	// NameTouched stops the name following the URL or command once typed.
+	NameTouched bool
 }
 
 const (
@@ -141,9 +141,9 @@ func (f *mcpForm) suggestName() {
 // mcpSubmission is a validated form: the server entry and the change to its
 // saved credentials.
 type mcpSubmission struct {
+	Secrets daemon.MCPSecretsPatch
 	Name    string
 	Server  config.MCPServer
-	Secrets daemon.MCPSecretsPatch
 }
 
 func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {

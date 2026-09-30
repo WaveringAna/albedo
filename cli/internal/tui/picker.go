@@ -22,15 +22,15 @@ type PickerSelectMsg struct {
 type PickerCancelMsg struct{}
 
 type PickerModel struct {
+	Styles      Styles
 	Title       string
 	Items       []PickerItem
 	Filtered    []PickerItem
-	Cursor      int
 	SearchInput textinput.Model
-	WithSearch  bool
+	Cursor      int
 	Width       int
 	Height      int
-	Styles      Styles
+	WithSearch  bool
 }
 
 func NewPickerModel(title string, items []PickerItem, withSearch bool, initialSelection string) PickerModel {

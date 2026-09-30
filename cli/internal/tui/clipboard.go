@@ -221,10 +221,10 @@ func ReadClipboardImage() (*daemon.ImageAttachment, error) {
 }
 
 type ClipboardImagePastedMsg struct {
+	Err        error
+	Image      *daemon.ImageAttachment
 	SessionID  string
 	Generation int64
-	Image      *daemon.ImageAttachment
-	Err        error
 }
 
 func PasteClipboardImageCmd(sessionID string, gen int64) tea.Cmd {

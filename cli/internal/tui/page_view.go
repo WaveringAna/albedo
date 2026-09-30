@@ -36,13 +36,13 @@ type PageAction struct {
 	Key     string   `json:"key"`
 	Label   string   `json:"label"`
 	Run     string   `json:"run"`
-	Row     bool     `json:"row"`
-	Confirm bool     `json:"confirm"`
 	Input   string   `json:"input"` // "none" | "text" | "secret" | "choice" | "value"
 	Prompt  string   `json:"prompt,omitempty"`
-	Prefill bool     `json:"prefill,omitempty"`
-	Options []string `json:"options,omitempty"`
 	Value   string   `json:"value,omitempty"`
+	Options []string `json:"options,omitempty"`
+	Row     bool     `json:"row"`
+	Confirm bool     `json:"confirm"`
+	Prefill bool     `json:"prefill,omitempty"`
 }
 
 type PageGlance struct {
@@ -51,12 +51,12 @@ type PageGlance struct {
 }
 
 type PageDocument struct {
+	Glance  *PageGlance  `json:"glance,omitempty"`
 	Title   string       `json:"title"`
 	Summary string       `json:"summary"`
 	Empty   string       `json:"empty"`
 	Rows    []PageRow    `json:"rows"`
 	Actions []PageAction `json:"actions"`
-	Glance  *PageGlance  `json:"glance,omitempty"`
 }
 
 type PageCancelMsg struct{}
@@ -69,9 +69,9 @@ type pageLoadedMsg struct {
 }
 
 type pageActionExecutedMsg struct {
+	Err    error
 	Result map[string]any
 	Action PageAction
-	Err    error
 	Gen    int
 }
 
@@ -85,18 +85,18 @@ const (
 )
 
 type PageViewModel struct {
+	Styles        Styles
 	Conn          *daemon.Connection
+	Doc           *PageDocument
+	CurrentAction *PageAction
 	SessionID     string
 	Command       string
-	Doc           *PageDocument
 	SelectedID    string
-	Mode          pageModeKind
-	CurrentAction *PageAction
-	ChoiceIndex   int
 	TextInput     textinput.Model
-	Busy          bool
-	Styles        Styles
 	page
+	Mode        pageModeKind
+	ChoiceIndex int
+	Busy        bool
 }
 
 func NewPageViewModel(conn *daemon.Connection, sessionID, command string) PageViewModel {

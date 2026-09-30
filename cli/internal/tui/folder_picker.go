@@ -49,18 +49,18 @@ func (d daemonFolders) Move(id, workspace string) (daemon.Session, error) {
 // WorkspaceRetry is a turn refused because the session's folder had gone
 // missing; it goes out again once the session moves.
 type WorkspaceRetry struct {
+	Image    *daemon.ImageAttachment
 	Missing  string
 	Prompt   string
 	Continue bool
-	Image    *daemon.ImageAttachment
 }
 
 // FolderMovedMsg is the daemon's answer to moving a session.
 type FolderMovedMsg struct {
+	Err       error
+	Retry     *WorkspaceRetry
 	SessionID string
 	Workspace string
-	Retry     *WorkspaceRetry
-	Err       error
 }
 
 type FolderPickerCancelMsg struct{}
@@ -72,27 +72,27 @@ type FolderOpenSessionMsg struct{ Session daemon.Session }
 type FolderNewSessionMsg struct{ Workspace string }
 
 type folderListMsg struct {
+	Err  error
 	Path string
 	List daemon.FolderList
-	Err  error
 }
 
 type folderRepoMsg struct {
-	Path string
 	Repo *daemon.Repo
+	Path string
 }
 
 type folderPreviewMsg struct {
+	Err     error
 	Path    string
 	Preview daemon.FolderPreview
-	Err     error
 }
 
 type folderPreviewTickMsg struct{ Path string }
 
 type folderSessionsMsg struct {
-	Sessions []daemon.Session
 	Err      error
+	Sessions []daemon.Session
 	Gen      int64
 }
 
@@ -154,8 +154,8 @@ func frecency(last *int64, now time.Time) float64 {
 }
 
 type recentFolder struct {
-	path  string
 	last  *int64
+	path  string
 	score float64
 }
 
@@ -209,11 +209,11 @@ func fuzzyNames(segment string, names []string) []fuzzy.Match {
 
 // folderRow is one folder in the picker's list.
 type folderRow struct {
+	age        *int64
 	path, name string
+	matched    []int
 	// recent rows show where the folder is beside its name.
-	recent  bool
-	matched []int
-	age     *int64
+	recent bool
 	// repo says the folder may be in a repository worth asking about.
 	repo bool
 }
@@ -228,37 +228,37 @@ type cachedFolderPreview struct {
 // folder. Browsing, from the sessions view, it starts a session in the
 // folder instead. Either way → steps into the folder's sessions to open one.
 type FolderPicker struct {
-	Width, Height int
-	input         textinput.Model
+	src      folderSource
+	asked    map[string]bool
+	retry    *WorkspaceRetry
+	previews map[string]*cachedFolderPreview
+	repos    map[string]*daemon.Repo
+	listings map[string]*folderListMsg
 
 	// session is the one being moved; browsing, only its workspace is set.
-	session  daemon.Session
-	browse   bool
-	retry    *WorkspaceRetry
-	src      folderSource
-	sessions []daemon.Session
+	session daemon.Session
 	// Session failures survive query edits; a reopened picker rejects the old load.
-	sessionsError      string
-	sessionsLoading    bool
-	sessionsGeneration int64
+	sessionsError string
 	// home is the daemon's home, which ~ names, once a listing reports it.
-	home string
-
-	rows     []folderRow
-	cursor   int
+	home     string
 	section  string
 	listed   string
-	listings map[string]*folderListMsg
-	repos    map[string]*daemon.Repo
-	asked    map[string]bool
-	previews map[string]*cachedFolderPreview
+	notice   string
+	sessions []daemon.Session
 
-	moving bool
-	notice string
+	rows               []folderRow
+	input              textinput.Model
+	sessionsGeneration int64
+	Width, Height      int
+	cursor             int
+	sessionCursor      int
+	browse             bool
+
+	sessionsLoading bool
+	moving          bool
 
 	// inSessions moves the cursor through the highlighted folder's sessions.
-	inSessions    bool
-	sessionCursor int
+	inSessions bool
 }
 
 func NewFolderPicker(src folderSource, session daemon.Session, retry *WorkspaceRetry) FolderPicker {

@@ -20,52 +20,52 @@ import (
 // was opened from may manage its own. Every change runs /webhooks on the
 // daemon and then reloads, so the list is never patched locally.
 type WebhooksPageModel struct {
-	Conn      *daemon.Connection
+	Conn *daemon.Connection
+	Form *webhookForm
+	// Reveal holds a generated secret until it is dismissed; it is never
+	// fetched again.
+	Reveal    *webhookSecret
 	SessionID string
+	Confirm   string // "delete" or "rotate"
 	// Sessions are the ones a hook can target, the current one first.
-	Sessions        []daemon.Session
-	Hooks           []webhookEntry
+	Sessions []daemon.Session
+	Hooks    []webhookEntry
+	page
 	AgentManagement bool
 	// Mounted reports whether the extension is on globally; the daemon only
 	// listens for deliveries then.
 	Mounted bool
 	Loaded  bool
-	Confirm string // "delete" or "rotate"
-	Form    *webhookForm
-	// Reveal holds a generated secret until it is dismissed; it is never
-	// fetched again.
-	Reveal *webhookSecret
-	page
 }
 
 type webhookEntry struct {
 	ID       string
 	Session  string
 	Name     string
-	Enabled  bool
 	URL      string
 	Header   string
 	Prefix   string
-	Queued   int
 	Deferred string
+	Queued   int
+	Enabled  bool
 }
 
 type webhookSecret struct{ Hook, Session, Secret string }
 
 type webhooksLoadedMsg struct {
+	Err      error
 	Sessions []daemon.Session
 	Hooks    []webhookEntry
+	Gen      int
 	Agent    bool
 	Mounted  bool
-	Gen      int
-	Err      error
 }
 
 type webhooksSavedMsg struct {
-	Notice string
-	Reveal *webhookSecret
-	Gen    int
 	Err    error
+	Reveal *webhookSecret
+	Notice string
+	Gen    int
 }
 
 type WebhooksPageDoneMsg struct{}
@@ -507,13 +507,13 @@ func (m WebhooksPageModel) detail(hook webhookEntry, width int) []string {
 // wakes, its name, signing secret, and the header and prefix its sender signs
 // with. The session and name are fixed once the hook exists.
 type webhookForm struct {
-	// Editing is the hook being edited; nil for a new hook.
-	Editing *webhookEntry
 	form
+	// Editing is the hook being edited; nil for a new hook.
+	Editing         *webhookEntry
+	Current, Chosen string
 	// Sessions are offered in order; Chosen starts at Current, the session
 	// the screen was opened from.
-	Sessions        []daemon.Session
-	Current, Chosen string
+	Sessions []daemon.Session
 }
 
 const (

@@ -12,9 +12,9 @@ import (
 // carries the Generation it was started under; a reply under any other is
 // stale.
 type page struct {
+	Error, Notice                     string
 	Cursor, Width, Height, Generation int
 	Loading, Saving                   bool
-	Error, Notice                     string
 }
 
 func (p *page) SetSize(width, height int) { p.Width, p.Height = width, height }

@@ -25,10 +25,10 @@ type DisplayFlags struct {
 }
 
 type TranscriptRenderer struct {
-	Styles    Styles
-	BodyWidth int
+	Styles Styles
 	// Workspace roots the paths trace rows name.
 	Workspace string
+	BodyWidth int
 }
 
 func NewTranscriptRenderer() TranscriptRenderer {

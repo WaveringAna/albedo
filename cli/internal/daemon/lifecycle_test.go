@@ -61,8 +61,8 @@ func bundledDaemon(t *testing.T) string {
 func TestEnsureAsksOnlyAboutAnotherBundledBuild(t *testing.T) {
 	cases := []struct {
 		name    string
-		bundled bool
 		running string // "" = no build recorded, "same" = the bundled build
+		bundled bool
 		asked   bool
 	}{
 		{name: "source client", bundled: false, running: "/nix/store/old", asked: false},

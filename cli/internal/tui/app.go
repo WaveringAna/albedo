@@ -36,50 +36,50 @@ const (
 )
 
 type sessionsLoadedMsg struct {
-	Sessions []daemon.Session
 	Err      error
+	Sessions []daemon.Session
 	Gen      int
 }
 
 type sessionDeletedMsg struct {
-	ID  string
 	Err error
+	ID  string
 }
 
 type sessionCreatedMsg struct {
-	Session daemon.Session
 	Err     error
+	Session daemon.Session
 	Gen     int
 }
 
 type commandCatalogLoadedMsg struct {
-	Commands []daemon.SessionCommand
 	Err      error
+	Commands []daemon.SessionCommand
 	Gen      int
 }
 
 type modelChangedMsg struct {
+	Err      error
 	Model    string
 	Provider string
 	Protocol string
 	Effort   string
-	Err      error
 	Gen      int
 }
 
 type commandExecutedMsg struct {
+	Err       error
 	Name      string
 	Message   string
 	Effort    string
-	Available []string
 	SessionID string
-	Err       error
+	Available []string
 	Gen       int
 }
 
 type glancesPolledMsg struct {
-	Glances []PageGlance
 	Err     error
+	Glances []PageGlance
 	Gen     int
 }
 
@@ -90,56 +90,55 @@ type glancePollTickMsg struct {
 
 type profilesLoadedMsg struct {
 	Profiles config.Profiles
-	Provider string
 	Err      error
+	Provider string
 	Gen      int
 }
 
 type AppModel struct {
-	Conn              *daemon.Connection
+	ActiveSession    *daemon.Session
+	openBrowser      func(url string)
+	Conn             *daemon.Connection
+	Profiles         config.Profiles
+	Workspace        string
+	Sessions         []daemon.Session
+	Notices          Notices
+	CommandCatalog   []daemon.SessionCommand
+	Glances          []PageGlance
+	ExtensionPicker  ExtensionPickerModel
+	CapabilityPage   CapabilityPageModel
+	WebhooksPage     WebhooksPageModel
+	TreePicker       TreePickerModel
+	SessionPicker    SessionViewer
+	PageView         PageViewModel
+	ContextInspector ContextInspectorModel
+	Login            LoginModel
+	ModelPicker      ModelPickerModel
+	FolderPicker     FolderPicker
+	Agents           AgentsViewModel
+
+	Chat              ChatModel
 	SettingsGen       int
-	UISaving          bool
-	Profiles          config.Profiles
 	State             AppState
-	ActiveSession     *daemon.Session
-	Sessions          []daemon.Session
-	Workspace         string
 	Width             int
 	Height            int
-	Notices           Notices
-	CommandCatalog    []daemon.SessionCommand
-	Glances           []PageGlance
 	ExtensionRevision int
 	GlanceRevision    int
-	StandaloneLogin   bool
-	openBrowser       func(url string)
 
-	// Graphemes says the terminal measures grapheme clusters; see ChatModel.
-	Graphemes bool
-
-	// Independent generation counters for concurrent async tasks
+	// SessionGen invalidates earlier session-list and session-creation replies.
 	SessionGen int
 	CatalogGen int
 	ModelGen   int
 	CommandGen int
 	GlanceGen  int
 	ProfileGen int
-
-	// Sub-models
-	Chat             ChatModel
-	SessionPicker    SessionViewer
-	ModelPicker      ModelPickerModel
-	ExtensionPicker  ExtensionPickerModel
-	TreePicker       TreePickerModel
-	ContextInspector ContextInspectorModel
-	PageView         PageViewModel
-	Login            LoginModel
-	CapabilityPage   CapabilityPageModel
-	WebhooksPage     WebhooksPageModel
-	Agents           AgentsViewModel
-	FolderPicker     FolderPicker
 	// folderReturn is the screen the folder picker goes back to.
-	folderReturn AppState
+	folderReturn    AppState
+	UISaving        bool
+	StandaloneLogin bool
+
+	// Graphemes says the terminal measures grapheme clusters; see ChatModel.
+	Graphemes bool
 }
 
 // ApplyUI takes acknowledged shared preferences from the daemon.
@@ -1225,15 +1224,15 @@ func (m AppModel) content() string {
 }
 
 type settingsLoadedMsg struct {
+	Err      error
 	Settings daemon.Settings
 	Gen      int
-	Err      error
 }
 type uiSavedMsg struct {
+	Err   error
 	Prefs daemon.UIPreferences
 	Gen   int
 	Open  bool
-	Err   error
 }
 
 func (m AppModel) loadSettingsCmd(gen int) tea.Cmd {

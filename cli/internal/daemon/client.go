@@ -36,9 +36,9 @@ var validAgentPhases = map[AgentPhase]bool{
 }
 
 type AgentStatus struct {
+	Phase   *AgentPhase `json:"phase,omitempty"`
 	Running bool        `json:"running"`
 	Idle    bool        `json:"idle"`
-	Phase   *AgentPhase `json:"phase,omitempty"`
 }
 
 type WorkspaceMissingError struct {
@@ -56,11 +56,11 @@ type SendResult struct {
 
 type ChatClient struct {
 	conn            *Connection
+	argumentsByCall map[string]string
 	agentID         string
 	clientID        string
-	mu              sync.Mutex
 	afterSeq        int
-	argumentsByCall map[string]string
+	mu              sync.Mutex
 }
 
 // NewChatClient shares conn's HTTP transport. A nil connection panics.
@@ -284,9 +284,9 @@ func (c *ChatClient) GetStatus(ctx context.Context) (*AgentStatus, error) {
 	}
 
 	var data struct {
+		Phase   *string `json:"phase"`
 		Running bool    `json:"running"`
 		Idle    bool    `json:"idle"`
-		Phase   *string `json:"phase"`
 	}
 	if err := json.Unmarshal(body, &data); err != nil {
 		return nil, err

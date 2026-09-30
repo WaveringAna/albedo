@@ -16,9 +16,9 @@ type SessionRenameMsg struct{ ID, Name string }
 // sessionRenamedMsg is the daemon's answer to a SessionRenameMsg: the
 // session as it is now listed.
 type sessionRenamedMsg struct {
-	SessionRenameMsg
-	Session daemon.Session
 	Err     error
+	Session daemon.Session
+	SessionRenameMsg
 }
 
 // renameField edits one session's name in place. While it is open its owner

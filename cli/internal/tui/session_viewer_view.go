@@ -500,9 +500,9 @@ func (m SessionViewer) transcript(s daemon.Session, width, height int) []string 
 
 	// Consecutive tool calls collapse into one line of names with counts.
 	type block struct {
+		counts     map[string]int
 		kind, text string
 		tools      []string
-		counts     map[string]int
 	}
 	var blocks []*block
 	for _, it := range c.Items {

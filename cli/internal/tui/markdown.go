@@ -257,18 +257,18 @@ func fenceAfter(open, line string) string {
 }
 
 type pieceKey struct {
-	width       int
 	prev, block string
+	width       int
 }
 
 // pieceCache keeps rendered pieces in two generations: a hit moves a piece
 // into the fresh one, and the stale one is dropped once the fresh one fills,
 // so the pieces the transcript still shows stay cached.
 type pieceCache struct {
-	mu           sync.Mutex
-	ink          ink
 	fresh, stale map[pieceKey]string
+	ink          ink
 	bytes        int
+	mu           sync.Mutex
 }
 
 const maxPieceBytes = 1 << 20

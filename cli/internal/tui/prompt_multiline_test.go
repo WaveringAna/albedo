@@ -160,8 +160,8 @@ func TestPromptMultilineWrapsScrollsAndSubmits(t *testing.T) {
 // its escape sequences exercise this.
 func TestEditorProcessRestoresTerminal(t *testing.T) {
 	for _, tc := range []struct {
-		graphemes bool
 		want      string
+		graphemes bool
 	}{
 		{graphemes: false, want: "echoed reply\r"},
 		{graphemes: true, want: "echoed reply\r" + ansi.SetModeUnicodeCore},

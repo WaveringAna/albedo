@@ -22,51 +22,51 @@ type ContextSection struct {
 	Label     string `json:"label"`
 	Kind      string `json:"kind"` // "instructions" | "extension_context" | "history" | "tools" | "other"
 	Source    string `json:"source"`
+	Preview   string `json:"preview"`
 	ItemCount int    `json:"item_count"`
 	ByteCount int    `json:"byte_count"`
-	Preview   string `json:"preview"`
 	Pages     int    `json:"pages"`
 }
 
 type CompactionState struct {
-	Strategy                  string   `json:"strategy,omitempty"`
-	Status                    string   `json:"status"` // "not_configured" | "not_needed" | "compacted" | "unknown"
-	Source                    string   `json:"source,omitempty"`
 	TriggerFreePercent        *float64 `json:"trigger_free_percent,omitempty"`
 	InputLimitTokens          *int     `json:"input_limit_tokens,omitempty"`
 	EstimatedInputTokens      *int     `json:"estimated_input_tokens,omitempty"`
 	ProviderInputTokens       *int     `json:"provider_input_tokens,omitempty"`
 	ProviderCachedInputTokens *int     `json:"provider_cached_input_tokens,omitempty"`
-	EstimateMethod            string   `json:"estimate_method,omitempty"`
 	BeforeItems               *int     `json:"before_items,omitempty"`
 	AfterItems                *int     `json:"after_items,omitempty"`
+	Strategy                  string   `json:"strategy,omitempty"`
+	Status                    string   `json:"status"` // "not_configured" | "not_needed" | "compacted" | "unknown"
+	Source                    string   `json:"source,omitempty"`
+	EstimateMethod            string   `json:"estimate_method,omitempty"`
 }
 
 type ContextSnapshot struct {
+	Compaction          CompactionState  `json:"compaction"`
+	CapturedAt          *int64           `json:"captured_at,omitempty"`
+	ContextWindowTokens *int             `json:"context_window_tokens,omitempty"`
 	State               string           `json:"state"` // "pending" | "ready"
 	Reason              string           `json:"reason,omitempty"`
-	CapturedAt          *int64           `json:"captured_at,omitempty"`
 	Provider            string           `json:"provider,omitempty"`
 	Model               string           `json:"model,omitempty"`
 	Protocol            string           `json:"protocol,omitempty"`
-	ContextWindowTokens *int             `json:"context_window_tokens,omitempty"`
 	Sections            []ContextSection `json:"sections,omitempty"`
-	Compaction          CompactionState  `json:"compaction,omitempty"`
 }
 
 type ContextPage struct {
 	Section string `json:"section"`
-	Page    int    `json:"page"`
-	Pages   int    `json:"pages"`
 	Content string `json:"content"`
 	Omitted string `json:"omitted,omitempty"`
+	Page    int    `json:"page"`
+	Pages   int    `json:"pages"`
 }
 
 type ContextDetail struct {
-	Section ContextSection
-	Page    int
 	Value   *ContextPage
 	Error   string
+	Section ContextSection
+	Page    int
 	Scroll  int
 }
 
@@ -79,10 +79,10 @@ type contextSnapshotLoadedMsg struct {
 }
 
 type contextPageLoadedMsg struct {
+	Err       error
+	Data      *ContextPage
 	SectionID string
 	Page      int
-	Data      *ContextPage
-	Err       error
 	Gen       int
 }
 

@@ -170,8 +170,8 @@ func SelectedText(lines []string, sel Selection) string {
 	start, end := sel.Normalized()
 	type piece struct {
 		text          string
-		chrome, joins bool
 		joiner        string
+		chrome, joins bool
 	}
 	var picked []piece
 	onlyChrome := true

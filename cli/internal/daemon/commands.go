@@ -17,18 +17,18 @@ var (
 type CommandArgument struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
-	Required    bool     `json:"required"`
 	Choices     []string `json:"choices,omitempty"`
+	Required    bool     `json:"required"`
 }
 
 type SessionCommand struct {
+	Page          *bool             `json:"page,omitempty"`
 	Name          string            `json:"name"`
 	Description   string            `json:"description"`
 	Method        string            `json:"method"`
 	Arguments     []CommandArgument `json:"arguments"`
 	ModelCallable bool              `json:"modelCallable"`
 	UserTurn      bool              `json:"userTurn"`
-	Page          *bool             `json:"page,omitempty"`
 }
 
 type CommandMenuItem struct {

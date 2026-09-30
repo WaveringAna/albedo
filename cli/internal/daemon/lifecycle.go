@@ -36,19 +36,19 @@ const (
 )
 
 type ConnectionSnapshot struct {
-	Port    int    `json:"port"`
 	Token   string `json:"token"`
+	Build   string `json:"build,omitempty"`
+	Port    int    `json:"port"`
 	Pid     int    `json:"pid"`
 	Version int    `json:"version"`
-	Build   string `json:"build,omitempty"`
 }
 
 type Connection struct {
 	snapshot   atomic.Pointer[ConnectionSnapshot]
-	refreshMu  sync.Mutex
+	httpClient *http.Client
 	homeDir    string
 	httpOnce   sync.Once
-	httpClient *http.Client
+	refreshMu  sync.Mutex
 }
 
 // NewConnection binds a daemon snapshot to its discovery directory. An empty

@@ -21,31 +21,31 @@ import (
 // CapabilityPageModel owns a dedicated session page for one source of agent
 // context. MCP servers are added and edited through one form (mcp_form.go).
 type CapabilityPageModel struct {
-	Conn                                       *daemon.Connection
-	SessionID, Workspace, Kind                 string
-	Items                                      []capabilityItem
-	Prefs                                      config.CapabilityPrefs
+	Prefs                      config.CapabilityPrefs
+	Conn                       *daemon.Connection
+	Form                       *mcpForm
+	SessionID, Workspace, Kind string
+	Items                      []capabilityItem
+	page
 	Global, ExtensionEnabled, ConfirmExtension bool
 	ConfirmDelete                              bool
-	Form                                       *mcpForm
-	page
 }
 type capabilityItem struct {
 	ID, Title, Detail string
-	Server            config.MCPServer
 	Secrets           daemon.MCPSecretNames
+	Server            config.MCPServer
 	Draft             bool
 }
 type capabilityLoadedMsg struct {
-	Items            []capabilityItem
 	Prefs            config.CapabilityPrefs
-	ExtensionEnabled bool
-	Gen              int
 	Err              error
+	Items            []capabilityItem
+	Gen              int
+	ExtensionEnabled bool
 }
 type capabilitySavedMsg struct {
-	Gen int
 	Err error
+	Gen int
 }
 type CapabilityPageDoneMsg struct{}
 type CapabilityPageChangedMsg struct{}

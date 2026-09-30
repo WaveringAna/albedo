@@ -11,16 +11,16 @@ import (
 
 // Credentials names the saved secrets.
 type Credentials struct {
+	MCP map[string]MCPSecretNames `json:"mcp"`
 	// Providers are the profiles with a saved api key.
-	Providers []string                  `json:"providers"`
-	MCP       map[string]MCPSecretNames `json:"mcp"`
+	Providers []string `json:"providers"`
 }
 
 // MCPSecretNames is what an MCP server has saved, by name only.
 type MCPSecretNames struct {
-	BearerToken bool     `json:"bearerToken"`
 	Headers     []string `json:"headers"`
 	Env         []string `json:"env"`
+	BearerToken bool     `json:"bearerToken"`
 }
 
 // Any reports whether the server has any secret saved.

@@ -35,13 +35,13 @@ import (
 // suite is the process-wide fixture: one daemon, one provider server, one
 // hermetic home. A restart scenario must update daemonPID.
 var suite struct {
+	conn      *daemon.Connection
+	provider  *fakeProvider
 	root      string // the albedo repository
 	cli       string // the freshly built CLI binary
 	home      string // hermetic ALBEDO_HOME
 	env       []string
-	conn      *daemon.Connection
 	daemonPID int
-	provider  *fakeProvider
 }
 
 func TestMain(m *testing.M) {
@@ -284,20 +284,20 @@ func runCLI(args ...string) (string, string, error) {
 // route, so one shared httptest server isolates scenarios instead of a daemon
 // per test.
 type fakeProvider struct {
-	server *httptest.Server
-
-	mu      sync.Mutex
+	server  *httptest.Server
 	byName  map[string]*fakeRoute // by provider profile name
 	byRoute map[string]*fakeRoute // by path segment under /t/
 	seq     int
+
+	mu sync.Mutex
 }
 
 // fakeRoute is one scripted profile: a reply function and every request the
 // daemon sent to it.
 type fakeRoute struct {
-	mu       sync.Mutex
-	requests []map[string]any // {authorization, model, body}
 	reply    func(request map[string]any) string
+	requests []map[string]any // {authorization, model, body}
+	mu       sync.Mutex
 }
 
 func newFakeProvider() *fakeProvider {
@@ -534,8 +534,8 @@ func streamSnapshot(t *testing.T, session string) []map[string]any {
 			continue
 		}
 		var page struct {
-			Cursor int              `json:"cursor"`
 			Events []map[string]any `json:"events"`
+			Cursor int              `json:"cursor"`
 		}
 		if json.Unmarshal([]byte(line[len("data: "):]), &page) != nil {
 			continue

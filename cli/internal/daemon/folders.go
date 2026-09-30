@@ -10,29 +10,29 @@ import (
 type FolderList struct {
 	Path      string        `json:"path"`
 	Home      string        `json:"home"`
-	Truncated bool          `json:"truncated"`
 	Entries   []FolderEntry `json:"entries"`
+	Truncated bool          `json:"truncated"`
 }
 
 type FolderEntry struct {
-	Name     string `json:"name"`
+	Name string `json:"name"`
+	// VCS is "jj", "git", or empty when the folder is no repository root.
+	VCS      string `json:"vcs"`
 	Modified int64  `json:"modified"`
 	Hidden   bool   `json:"hidden"`
-	// VCS is "jj", "git", or empty when the folder is no repository root.
-	VCS string `json:"vcs"`
 }
 
 // Repo is the repository a folder is in. Fields whose command failed are
 // empty; Kind and Root are always there.
 type Repo struct {
+	Bookmark *Bookmark `json:"bookmark"`
+	Changed  *int      `json:"changed"`
+	Touched  *int64    `json:"touched"`
 	Kind     string    `json:"kind"`
 	Root     string    `json:"root"`
 	Branch   string    `json:"branch"`
 	Commit   string    `json:"commit"`
 	Change   string    `json:"change"`
-	Bookmark *Bookmark `json:"bookmark"`
-	Changed  *int      `json:"changed"`
-	Touched  *int64    `json:"touched"`
 }
 
 type Bookmark struct {
@@ -56,11 +56,11 @@ type LanguageShare struct {
 
 type FolderNode struct {
 	Name     string       `json:"name"`
-	Dir      bool         `json:"dir"`
 	Language string       `json:"language"`
+	Children []FolderNode `json:"children"`
 	Changed  int          `json:"changed"`
 	More     int          `json:"more"`
-	Children []FolderNode `json:"children"`
+	Dir      bool         `json:"dir"`
 }
 
 func ListFolders(ctx context.Context, conn *Connection, path string) (FolderList, error) {

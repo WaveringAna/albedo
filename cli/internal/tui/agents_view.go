@@ -34,15 +34,15 @@ type AgentsDoneMsg struct{}
 type AgentsAttachMsg struct{ Session daemon.Session }
 
 type agentsSnapshotMsg struct {
-	Gen   int
+	Err   error
 	Root  string
 	Nodes []agentWire
-	Err   error
+	Gen   int
 }
 
 type agentsEventsMsg struct {
-	Gen    int
 	Events []map[string]any
+	Gen    int
 }
 
 type agentsStreamClosedMsg struct{ Gen int }
@@ -50,25 +50,25 @@ type agentsStreamClosedMsg struct{ Gen int }
 // agentsSeedMsg is an agent's recent history, so its tail starts from where
 // it is rather than empty.
 type agentsSeedMsg struct {
-	Gen   int
 	ID    string
 	Items []struct {
 		Type    string `json:"type"`
 		Preview string `json:"preview"`
 	}
+	Gen int
 }
 type agentsSeedErrMsg struct {
-	Gen int
-	ID  string
 	Err error
+	ID  string
+	Gen int
 }
 
 type agentsFrameMsg struct{ Gen int }
 type agentsSentMsg struct {
-	Gen    int
+	Err    error
 	Action string
 	Notice string
-	Err    error
+	Gen    int
 }
 type agentsReconnectMsg struct{ Gen int }
 
@@ -84,41 +84,41 @@ func (m agentsFrameMsg) gen() int        { return m.Gen }
 func (m agentsSentMsg) gen() int         { return m.Gen }
 
 type agentWire struct {
-	Session daemon.Session `json:"session"`
-	Running bool           `json:"running"`
 	Parent  *string        `json:"parent"`
-	Name    string         `json:"name"`
 	Address *string        `json:"address"`
+	Session daemon.Session `json:"session"`
+	Name    string         `json:"name"`
 	Depth   int            `json:"depth"`
+	Running bool           `json:"running"`
 	Closed  bool           `json:"closed"`
 }
 
 type agentMail struct {
-	incoming bool
 	who      string
 	kind     string
+	incoming bool
 }
 
 type agentNode struct {
+	session                 daemon.Session
 	id, parent, name, model string
 	address                 string // how its family mails it; a rename leaves it
-	depth                   int
-	running, closed         bool
-	peer                    bool // reached by mail, outside the tree
-	session                 daemon.Session
-	chars                   int
+	line                    string
+	call                    string // the tool call whose arguments are streaming
+	args                    string // its raw JSON arguments so far
+	mail                    []agentMail
+	tail                    []tailLine
+	hue                     rgb
 	rate                    float64
 	flash                   float64
 	phase                   float64
-	tail                    []tailLine
-	line                    string
-	lineKind                tailKind
-	call                    string // the tool call whose arguments are streaming
-	args                    string // its raw JSON arguments so far
-	seeded                  bool
-	mail                    []agentMail
-	hue                     rgb
+	depth                   int
+	chars                   int
 	x, y                    int
+	lineKind                tailKind
+	running, closed         bool
+	peer                    bool // reached by mail, outside the tree
+	seeded                  bool
 }
 
 // What a tail line is, which decides how it is drawn.
@@ -133,52 +133,52 @@ const (
 )
 
 type tailLine struct {
-	kind tailKind
 	text string
+	kind tailKind
 }
 
 type agentPacket struct {
+	to     string
+	edge   string
 	path   [][2]int
+	hue    rgb
 	pos    float64
 	blocks int
-	hue    rgb
-	to     string
 	tokens int
-	edge   string
 }
 
 type agentFloat struct {
-	x, y int
-	t    float64
 	text string
 	hue  rgb
+	x, y int
+	t    float64
 }
 
 type AgentsViewModel struct {
+	last      time.Time
+	err       error
+	heat      map[string]float64
+	events    chan []map[string]any
+	cancel    context.CancelFunc
 	Conn      *daemon.Connection
+	nodes     map[string]*agentNode
 	SessionID string
-	Width     int
-	Height    int
-	Gen       int
+	root      string
+	selected  string
 
-	root     string
-	nodes    map[string]*agentNode
-	order    []string
-	selected string
-	packets  []agentPacket
-	floats   []agentFloat
-	heat     map[string]float64
-	clock    float64
-	last     time.Time
-	ticking  bool // a frame tick is in flight
-	notice   string
-	noticeT  float64
-	err      error
-	input    textinput.Model
-	confirm  string // the agent waiting for y to delete it
-	rename   renameField
-	cancel   context.CancelFunc
-	events   chan []map[string]any
+	notice  string
+	confirm string // the agent waiting for y to delete it
+	packets []agentPacket
+	floats  []agentFloat
+	order   []string
+	input   textinput.Model
+	rename  renameField
+	Width   int
+	clock   float64
+	Height  int
+	Gen     int
+	noticeT float64
+	ticking bool // a frame tick is in flight
 }
 
 const (
@@ -1025,13 +1025,13 @@ func compactCount(n int) string {
 // ─── drawing ───
 
 type agentCell struct {
-	r   rune
 	hue *rgb
+	r   rune
 }
 
 type agentCanvas struct {
-	w, h  int
 	cells [][]agentCell
+	w, h  int
 }
 
 func newCanvas(w, h int) *agentCanvas {

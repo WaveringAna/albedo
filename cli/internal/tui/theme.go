@@ -195,9 +195,9 @@ type rampKey struct {
 // ramps keeps renderings of the brand ramp. They change only with the
 // detected ink, and every frame's header asks for the same few again.
 var ramps struct {
-	sync.Mutex
-	ink   ink
 	byKey map[rampKey]string
+	ink   ink
+	sync.Mutex
 }
 
 func ramp(key rampKey, render func() string) string {

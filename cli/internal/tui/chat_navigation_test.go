@@ -22,8 +22,8 @@ func newTestChatModel(t *testing.T, session *daemon.Session) ChatModel {
 
 func TestScrollDoesNotResumeFollowBeforeEndOfLiveOutput(t *testing.T) {
 	for _, down := range []struct {
-		name string
 		msg  tea.Msg
+		name string
 		step int
 	}{
 		{name: "arrow", msg: tea.KeyPressMsg{Code: tea.KeyDown}, step: 1},
@@ -65,8 +65,8 @@ func TestScrollDoesNotResumeFollowBeforeEndOfLiveOutput(t *testing.T) {
 
 func TestReadingPositionSurvivesIncomingTranscript(t *testing.T) {
 	for _, scroll := range []struct {
-		name string
 		msg  tea.Msg
+		name string
 	}{
 		{name: "keyboard", msg: tea.KeyPressMsg{Code: tea.KeyPgUp}},
 		{name: "wheel", msg: tea.MouseWheelMsg{Button: tea.MouseWheelUp}},

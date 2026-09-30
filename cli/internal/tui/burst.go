@@ -28,8 +28,8 @@ func trailingBurst(entries []HistoryEntry, flags DisplayFlags) []HistoryEntry {
 
 // tally keeps labels in the order they first came, with how often each did.
 type tally struct {
-	keys   []string
 	counts map[string]int
+	keys   []string
 }
 
 func (t *tally) add(key string) {
@@ -80,17 +80,17 @@ func (t tally) counted() []string {
 // entry settles. Targets stay as the trace recorded them; naming them for the
 // workspace happens at render time, so a workspace change re-names old rows.
 type entryFacts struct {
-	thoughtMs int64
-	untimed   bool
 	read      []string
 	edited    []string
 	searched  []string
 	ran       []string
 	py        []string
 	used      []string
+	changes   []daemon.FileChange
+	thoughtMs int64
 	added     int
 	removed   int
-	changes   []daemon.FileChange
+	untimed   bool
 	failed    bool
 }
 
@@ -150,19 +150,19 @@ func factsOf(entry HistoryEntry) entryFacts {
 }
 
 type burst struct {
-	thoughts  int
-	thoughtMs int64
-	untimed   bool // a thought from before this client watched has no duration
 	read      tally
 	edited    tally
 	searched  tally
 	ran       tally
 	py        tally
 	used      tally
-	added     int
-	removed   int
 	changes   []daemon.FileChange
 	failed    []HistoryEntry
+	thoughtMs int64
+	thoughts  int
+	added     int
+	removed   int
+	untimed   bool // a thought from before this client watched has no duration
 }
 
 // merge folds one entry's facts into a burst.
@@ -210,8 +210,8 @@ func pyLabel(code string) string {
 // listed as items. shown items fit, the rest count; none shown is a count.
 type clause struct {
 	verb, noun string
-	n          int
 	items      []string
+	n          int
 	shown      int
 }
 

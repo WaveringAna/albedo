@@ -23,41 +23,41 @@ import (
 // profile, and lets each row carry a reasoning effort before you switch.
 
 type ModelPickerSelectMsg struct {
+	// RaiseCap is set when you changed the model's context cap here: true
+	// raises it to the provider's maximum, false restores the default window.
+	RaiseCap *bool
 	Model    string
 	Provider string
 	// Effort is the chosen reasoning level. Empty lets the daemon choose.
 	Effort string
-	// RaiseCap is set when you changed the model's context cap here: true
-	// raises it to the provider's maximum, false restores the default window.
-	RaiseCap *bool
 }
 
 type ModelPickerCancelMsg struct{}
 
 type modelCatalogLoadedMsg struct {
+	Err     error
 	Profile string
 	Models  []daemon.Model
-	Err     error
 }
 
 // profileCatalog is one profile's models: the ones the session and the
 // profile already use, then whatever the daemon lists.
 type profileCatalog struct {
-	name     string
 	settings config.Settings
+	name     string
+	models   []daemon.Model
 	loading  bool
 	failed   bool
-	models   []daemon.Model
 }
 
 // modelRow is a row you can pick: a profile's model, or the search text sent
 // to a profile as a model id.
 type modelRow struct {
 	profile string
-	model   daemon.Model
-	typed   bool
 	// hits are the byte offsets of the id's characters the search matched.
-	hits []int
+	hits  []int
+	model daemon.Model
+	typed bool
 }
 
 func (r modelRow) key() string {
@@ -69,23 +69,23 @@ func (r modelRow) key() string {
 
 type ModelPickerModel struct {
 	Conn *daemon.Connection
+	// caps are cap choices made here, by model id: the cap is per model, so
+	// the same model under two profiles shares it.
+	caps    map[string]bool
+	efforts map[string]string
 	// The session's selection when the picker opened.
 	Profile, Model, Effort string
-	Saving                 bool
 	Error                  string
-	Width, Height          int
+	rows                   []modelRow
 
-	catalogs []profileCatalog
-	rows     []modelRow
-	cursor   int
+	catalogs      []profileCatalog
+	search        textinput.Model
+	Width, Height int
+	cursor        int
+	Saving        bool
 	// browsing is set once you move through the list, so arrows change the
 	// effort even while a search is typed.
 	browsing bool
-	efforts  map[string]string
-	// caps are cap choices made here, by model id: the cap is per model, so
-	// the same model under two profiles shares it.
-	caps   map[string]bool
-	search textinput.Model
 }
 
 func NewModelPickerModel(conn *daemon.Connection, profiles config.Profiles, model, profile, effort string) ModelPickerModel {

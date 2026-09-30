@@ -24,9 +24,9 @@ func TestMarkdownTablesRenderWithinTheirBounds(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		text   string
-		width  int
-		want   []string
 		absent string
+		want   []string
+		width  int
 	}{
 		{name: "keeps every column it fits", text: tableTranscript, width: 80,
 			want: []string{"Tool", "files.read", "files.paths", "12.7 ms"}, absent: "|:---"},

@@ -17,9 +17,9 @@ type FileChange struct {
 	Path    string `json:"path"`
 	Kind    string `json:"kind"` // "diff" | "unavailable"
 	Diff    string `json:"diff,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 	Added   int    `json:"added,omitempty"`
 	Removed int    `json:"removed,omitempty"`
-	Reason  string `json:"reason,omitempty"`
 }
 
 type ToolTrace struct {
@@ -89,16 +89,16 @@ type ToolIntent struct {
 // ToolCodePreview is a window on a call's code: while it generates, the
 // newest end; once it runs, the first line.
 type ToolCodePreview struct {
-	Offset int    `json:"offset"`
 	Text   string `json:"text"`
+	Offset int    `json:"offset"`
 }
 
 type ToolProgress struct {
+	Intent *ToolIntent      `json:"intent,omitempty"`
+	Code   *ToolCodePreview `json:"code,omitempty"`
 	CallID string           `json:"callId"`
 	Name   string           `json:"name"`
 	Phase  string           `json:"phase"` // "generating" | "running"
-	Intent *ToolIntent      `json:"intent,omitempty"`
-	Code   *ToolCodePreview `json:"code,omitempty"`
 }
 
 type EventType string
@@ -139,28 +139,28 @@ type Usage struct {
 // CacheStep says that from At (unix ms) on, a request would read Cached
 // tokens from the provider's cache; nil when that is no longer known.
 type CacheStep struct {
-	At     int64 `json:"at"`
 	Cached *int  `json:"cached,omitempty"`
+	At     int64 `json:"at"`
 }
 
 type StreamEvent struct {
+	Image       *ImageMetadata `json:"image,omitempty"`
+	Usage       *Usage         `json:"usage,omitempty"`
+	ToolTrace   *ToolTrace     `json:"trace,omitempty"`
+	Timestamp   *int64         `json:"timestamp,omitempty"`
+	ToolArgs    map[string]any `json:"args,omitempty"`
+	Progress    *ToolProgress  `json:"progress,omitempty"`
 	Type        EventType      `json:"type"`
 	Text        string         `json:"text,omitempty"`
 	Role        string         `json:"role,omitempty"` // "assistant"
-	Timestamp   *int64         `json:"timestamp,omitempty"`
 	Source      string         `json:"source,omitempty"`
 	TriggeredAt string         `json:"triggeredAt,omitempty"`
 	ClientID    string         `json:"clientId,omitempty"`
-	Image       *ImageMetadata `json:"image,omitempty"`
-	Evicted     int            `json:"evicted,omitempty"`
 	Summary     string         `json:"summary,omitempty"`
 	Strategy    string         `json:"strategy,omitempty"`
-	Progress    *ToolProgress  `json:"progress,omitempty"`
 	ToolName    string         `json:"name,omitempty"`
-	ToolArgs    map[string]any `json:"args,omitempty"`
 	ToolResult  string         `json:"result,omitempty"`
-	ToolTrace   *ToolTrace     `json:"trace,omitempty"`
-	Usage       *Usage         `json:"usage,omitempty"`
+	Evicted     int            `json:"evicted,omitempty"`
 	// ElapsedMs is how long a replayed thought took, when the daemon timed it.
 	ElapsedMs int64 `json:"elapsedMs,omitempty"`
 	// Seq is the newest transcript row an EventCommitted covers.

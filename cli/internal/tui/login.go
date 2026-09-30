@@ -93,33 +93,33 @@ func customProviderByID(id string) (customProvider, bool) {
 const signInPollInterval = 300 * time.Millisecond
 
 type loginModelsLoadedMsg struct {
-	Models []string
-	Note   string
 	Err    error
+	Note   string
+	Models []string
 	Gen    int
 }
 
 // signInsLoadedMsg carries the daemon's sign-ins and accounts, after the first
 // read and after every change. Profiles comes from the same settings snapshot.
 type signInsLoadedMsg struct {
-	Listed   daemon.SignIns
-	Profiles *config.Profiles
 	Err      error
+	Profiles *config.Profiles
+	Listed   daemon.SignIns
 	Gen      int
 }
 
 type signInStartedMsg struct {
+	Err error
 	ID  string
 	URL string
-	Err error
 	Gen int
 }
 
 type signInStatusMsg struct {
+	Err     error
 	ID      string
 	State   string
 	Message string
-	Err     error
 	Gen     int
 }
 
@@ -138,38 +138,38 @@ type removal struct {
 }
 
 type providerSavedMsg struct {
+	Err      error
 	Name     string
 	Settings config.Settings
-	Err      error
 }
 
 type LoginModel struct {
+	Styles         Styles
 	Conn           *daemon.Connection
-	Step           LoginStep
+	openBrowser    func(url string)
+	Removing       removal
 	Profiles       config.Profiles
+	Hint           string
+	Name           string
+	Provider       string // sign-in provider in flight, or just finished
+	LoginID        string // daemon id of the sign-in in flight
+	SignInURL      string
+	Status         string // daemon progress line while a sign-in runs
+	CatalogNote    string
+	Error          string
+	Draft          config.Settings
 	SignIns        []daemon.SignIn
 	Accounts       []daemon.Account
-	Hint           string
-	Removing       removal
-	Name           string
-	Draft          config.Settings
+	Catalog        []string
 	TextInput      textinput.Model
 	ChoosePicker   PickerModel
 	ProtocolPicker PickerModel
 	ModelPicker    PickerModel
 	ConfirmPicker  PickerModel
-	openBrowser    func(url string)
-	Provider       string // sign-in provider in flight, or just finished
-	LoginID        string // daemon id of the sign-in in flight
-	SignInURL      string
-	Status         string // daemon progress line while a sign-in runs
-	Catalog        []string
-	CatalogNote    string
-	Error          string
 	Generation     int
 	Width          int
 	Height         int
-	Styles         Styles
+	Step           LoginStep
 }
 
 func (m LoginModel) openBrowserCmd(urlStr string) tea.Cmd {

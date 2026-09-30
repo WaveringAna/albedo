@@ -17,10 +17,10 @@ func (e *UpgradeRequiredError) Error() string {
 
 // APIError retains the HTTP status and daemon error code independently of copy.
 type APIError struct {
-	StatusCode int
+	Cause      error
 	Code       string
 	Message    string
-	Cause      error
+	StatusCode int
 }
 
 func (e *APIError) Error() string {

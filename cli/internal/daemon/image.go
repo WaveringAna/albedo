@@ -22,8 +22,8 @@ type ImageMetadata struct {
 }
 
 type ImageAttachment struct {
-	ImageMetadata
 	Data string `json:"data"`
+	ImageMetadata
 }
 
 var validMimeTypes = map[ImageMimeType]bool{
