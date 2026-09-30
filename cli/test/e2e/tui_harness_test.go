@@ -36,7 +36,7 @@ func driveTUI(t *testing.T, session *daemon.Session) *tuiDriver {
 	if session != nil {
 		workspace = session.Workspace
 	}
-	d := &tuiDriver{t: t, App: tui.NewAppModel(conn(t), config.Profiles{}, session, workspace, false)}
+	d := &tuiDriver{t: t, App: tui.NewAppModel(conn(t), config.Profiles{}, session, workspace, false, nil)}
 	d.Update(tea.WindowSizeMsg{Width: 80, Height: 22})
 	return d
 }

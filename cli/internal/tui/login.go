@@ -158,9 +158,9 @@ type LoginModel struct {
 	ProtocolPicker PickerModel
 	ModelPicker    PickerModel
 	ConfirmPicker  PickerModel
-	BrowserOpener  func(url string) // Fail-closed: nil means do not launch browser
-	Provider       string           // sign-in provider in flight, or just finished
-	LoginID        string           // daemon id of the sign-in in flight
+	openBrowser    func(url string)
+	Provider       string // sign-in provider in flight, or just finished
+	LoginID        string // daemon id of the sign-in in flight
 	SignInURL      string
 	Status         string // daemon progress line while a sign-in runs
 	Catalog        []string
@@ -174,25 +174,30 @@ type LoginModel struct {
 
 func (m LoginModel) openBrowserCmd(urlStr string) tea.Cmd {
 	return func() tea.Msg {
-		// Fail-closed: a nil opener does not launch a browser.
-		if m.BrowserOpener != nil {
-			m.BrowserOpener(urlStr)
+		if m.openBrowser != nil {
+			m.openBrowser(urlStr)
 		}
 		return nil
 	}
 }
 
-func NewLoginModel(conn *daemon.Connection, nameHint string) LoginModel {
+// NewLoginModel panics if conn is nil. A nil browser opener disables automatic
+// browser launches.
+func NewLoginModel(conn *daemon.Connection, nameHint string, openBrowser func(string)) LoginModel {
+	if conn == nil {
+		panic("tui.NewLoginModel requires a daemon connection")
+	}
 	profiles := config.Profiles{Providers: map[string]config.Settings{}}
 
 	m := LoginModel{
-		Conn:      conn,
-		Step:      StepChoose,
-		Profiles:  profiles,
-		Hint:      strings.TrimSpace(nameHint),
-		Draft:     config.Settings{Extension: "openai", BaseURL: "https://api.openai.com/v1", Protocol: "responses"},
-		TextInput: newField(),
-		Styles:    DefaultStyles,
+		Conn:        conn,
+		Step:        StepChoose,
+		Profiles:    profiles,
+		Hint:        strings.TrimSpace(nameHint),
+		Draft:       config.Settings{Extension: "openai", BaseURL: "https://api.openai.com/v1", Protocol: "responses"},
+		TextInput:   newField(),
+		Styles:      DefaultStyles,
+		openBrowser: openBrowser,
 	}
 	m.buildChoosePicker()
 	return m

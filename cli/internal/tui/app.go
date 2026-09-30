@@ -111,7 +111,7 @@ type AppModel struct {
 	ExtensionRevision int
 	GlanceRevision    int
 	StandaloneLogin   bool
-	BrowserOpener     func(url string)
+	openBrowser       func(url string)
 
 	// Graphemes says the terminal measures grapheme clusters; see ChatModel.
 	Graphemes bool
@@ -158,24 +158,22 @@ func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
 	return chat
 }
 
-func NewAppModel(conn *daemon.Connection, profiles config.Profiles, initialSession *daemon.Session, workspace string, needsLogin bool) AppModel {
+// NewAppModel requires an established daemon connection and panics if conn is nil.
+func NewAppModel(conn *daemon.Connection, profiles config.Profiles, initialSession *daemon.Session, workspace string, needsLogin bool, openBrowser func(string)) AppModel {
 	if conn == nil {
-		conn, _ = daemon.Existing(config.HomeDir())
-	}
-	if conn != nil && conn.HomeDir() == "" {
-		conn.SetHomeDir(config.HomeDir())
+		panic("tui.NewAppModel requires a daemon connection")
 	}
 	m := AppModel{
 		Conn:          conn,
 		Profiles:      profiles,
 		ActiveSession: initialSession,
 		Workspace:     workspace,
+		openBrowser:   openBrowser,
 	}
 
 	if needsLogin {
 		m.State = AppStateLogin
-		m.Login = NewLoginModel(conn, "")
-		m.Login.BrowserOpener = m.BrowserOpener
+		m.Login = NewLoginModel(conn, "", openBrowser)
 	} else if initialSession != nil {
 		m.State = AppStateChat
 		m.Chat = m.newChatModel(initialSession)
@@ -184,10 +182,17 @@ func NewAppModel(conn *daemon.Connection, profiles config.Profiles, initialSessi
 	}
 	// Built even when starting in a session so /sessions has a working search.
 	m.SessionPicker = NewSessionViewer(workspace)
-	if conn != nil {
-		m.SessionPicker.Fetch = m.sessionPreviewCmd
-	}
+	m.SessionPicker.Fetch = m.sessionPreviewCmd
 
+	return m
+}
+
+// NewLoginAppModel starts the standalone login flow, which exits when finished.
+func NewLoginAppModel(conn *daemon.Connection, profiles config.Profiles, workspace, nameHint string, openBrowser func(string)) AppModel {
+	m := NewAppModel(conn, profiles, nil, workspace, false, openBrowser)
+	m.State = AppStateLogin
+	m.StandaloneLogin = true
+	m.Login = NewLoginModel(conn, nameHint, openBrowser)
 	return m
 }
 
@@ -196,7 +201,6 @@ func (m AppModel) Init() tea.Cmd {
 }
 
 func (m AppModel) initScreen() tea.Cmd {
-	m.Login.BrowserOpener = m.BrowserOpener
 	switch m.State {
 	case AppStateChat:
 		return tea.Batch(m.Chat.Init(), m.loadCommandCatalogCmd(m.CatalogGen), m.recordOpenCmd(m.ActiveSession.ID))
@@ -481,10 +485,17 @@ func (m *AppModel) openSession(s daemon.Session) tea.Cmd {
 	return tea.Batch(m.setChatSession(s, false), m.recordOpenCmd(s.ID))
 }
 
+func (m *AppModel) returnToChat() tea.Cmd {
+	if m.Chat.SessionID != m.ActiveSession.ID {
+		return tea.Batch(m.setChatSession(*m.ActiveSession, false), m.recordOpenCmd(m.ActiveSession.ID))
+	}
+	m.State = AppStateChat
+	return nil
+}
+
 func (m *AppModel) openLogin(name string) tea.Cmd {
 	previous := m.Login.Close()
-	m.Login = NewLoginModel(m.Conn, name)
-	m.Login.BrowserOpener = m.BrowserOpener
+	m.Login = NewLoginModel(m.Conn, name, m.openBrowser)
 	m.Login.SetSize(m.Width, m.Height)
 	m.State = AppStateLogin
 	return tea.Batch(previous, m.Login.Init())
@@ -585,7 +596,7 @@ func (m *AppModel) moved(msg FolderMovedMsg) tea.Cmd {
 }
 
 func (m *AppModel) AddNotice(message string) {
-	if m.ActiveSession != nil {
+	if m.ActiveSession != nil && m.Chat.History != nil {
 		m.Chat.AddNotice(message)
 		return
 	}
@@ -593,7 +604,7 @@ func (m *AppModel) AddNotice(message string) {
 }
 
 func (m *AppModel) AddError(message string) {
-	if m.ActiveSession != nil {
+	if m.ActiveSession != nil && m.Chat.History != nil {
 		m.Chat.AddError(message)
 		return
 	}
@@ -602,7 +613,7 @@ func (m *AppModel) AddError(message string) {
 
 func (m *AppModel) ClearNotices() {
 	m.Notices.Clear()
-	if m.ActiveSession != nil {
+	if m.ActiveSession != nil && m.Chat.History != nil {
 		m.Chat.ClearNotices()
 	}
 }
@@ -904,8 +915,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateSessionPickerItems()
 			return m, nil
 		}
-		m.State = AppStateChat
-		return m, nil
+		return m, m.returnToChat()
 
 	case ChatQuitMsg:
 		m.Chat.Close()
@@ -1025,8 +1035,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		if m.ActiveSession != nil {
-			m.State = AppStateChat
-			return m, m.loadProfilesCmd("", m.ProfileGen)
+			return m, tea.Batch(m.returnToChat(), m.loadProfilesCmd("", m.ProfileGen))
 		}
 		m.State = AppStateSessionPicker
 		m.updateSessionPickerItems()

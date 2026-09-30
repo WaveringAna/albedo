@@ -101,12 +101,6 @@ func (c *Connection) HomeDir() string {
 	return c.homeDir
 }
 
-func (c *Connection) SetHomeDir(dir string) {
-	if c != nil {
-		c.homeDir = dir
-	}
-}
-
 func (c *Connection) Update(other *Connection) {
 	if c == nil || other == nil || c == other {
 		return

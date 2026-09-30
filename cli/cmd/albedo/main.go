@@ -133,7 +133,7 @@ Commands:
   login [name]              set up a model provider in a terminal
 `
 
-func open(id, workspace string, fresh bool) error {
+func open(id, workspace string, fresh bool, openBrowser func(string)) error {
 	ctx := context.Background()
 	homeDir := config.HomeDir()
 	projectRoot := findProjectRoot()
@@ -234,12 +234,7 @@ func open(id, workspace string, fresh bool) error {
 
 	announceMigration(ctx, conn, homeDir)
 	tui.DetectInk()
-	appModel := tui.NewAppModel(conn, profs, initial, absWorkspace, !configured)
-
-	if os.Getenv("ALBEDO_NO_BROWSER") == "" {
-		appModel.BrowserOpener = config.OpenBrowser
-		appModel.Login.BrowserOpener = config.OpenBrowser
-	}
+	appModel := tui.NewAppModel(conn, profs, initial, absWorkspace, !configured, openBrowser)
 	p := tea.NewProgram(appModel, tea.WithFPS(120))
 	final, err := p.Run()
 	if err != nil {
@@ -259,13 +254,18 @@ func main() {
 }
 
 func run(args []string) error {
+	var openBrowser func(string)
+	if os.Getenv("ALBEDO_NO_BROWSER") == "" {
+		openBrowser = config.OpenBrowser
+	}
+
 	cwd, err := os.Getwd()
 	if err != nil {
 		cwd = "."
 	}
 
 	if len(args) == 0 {
-		return open("", cwd, false)
+		return open("", cwd, false, openBrowser)
 	}
 
 	cmd := args[0]
@@ -288,7 +288,7 @@ func run(args []string) error {
 				break
 			}
 		}
-		return open("", workspace, true)
+		return open("", workspace, true, openBrowser)
 
 	case "resume":
 		if len(subArgs) == 0 || subArgs[0] == "-h" || subArgs[0] == "--help" {
@@ -298,7 +298,7 @@ func run(args []string) error {
 			}
 			return errors.New("Choose a session to reopen: albedo resume <session>")
 		}
-		return open(subArgs[0], cwd, false)
+		return open(subArgs[0], cwd, false, openBrowser)
 
 	case "sessions":
 		asJSON := false
@@ -439,18 +439,7 @@ func run(args []string) error {
 		}
 		announceMigration(context.Background(), conn, homeDir)
 		tui.DetectInk()
-		appModel := tui.NewAppModel(conn, profs, nil, cwd, true)
-		appModel.StandaloneLogin = true
-		if os.Getenv("ALBEDO_NO_BROWSER") == "" {
-			appModel.BrowserOpener = config.OpenBrowser
-			appModel.Login.BrowserOpener = config.OpenBrowser
-		}
-		if providerName != "" {
-			appModel.Login = tui.NewLoginModel(conn, providerName)
-			if os.Getenv("ALBEDO_NO_BROWSER") == "" {
-				appModel.Login.BrowserOpener = config.OpenBrowser
-			}
-		}
+		appModel := tui.NewLoginAppModel(conn, profs, cwd, providerName, openBrowser)
 		p := tea.NewProgram(appModel, tea.WithFPS(120))
 		_, err = p.Run()
 		return err
