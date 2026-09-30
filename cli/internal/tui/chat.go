@@ -2097,8 +2097,9 @@ func (m ChatModel) statusLine() string {
 	return pick(m.Flags.Tools, "ready", "")
 }
 
+// Phase is optional display metadata, not evidence of an unanswered status.
 func (m ChatModel) connecting() bool {
-	return m.Status.Phase == nil && !(m.Status.Running && !m.Status.Idle)
+	return m.Status.Phase == nil && !m.Status.Running && !m.Status.Idle
 }
 
 // phaseMood is the face class for the phase statusLine names.
@@ -2236,7 +2237,7 @@ func (m ChatModel) composerView() string {
 // waitingForInput reports an opened session with no turn in flight, so an
 // empty composer reads as the agent's cue rather than a stalled turn.
 func (m ChatModel) waitingForInput() bool {
-	return m.Status.Phase != nil && !m.animating()
+	return !m.connecting() && !m.animating()
 }
 
 func (m ChatModel) renderGlances() string {

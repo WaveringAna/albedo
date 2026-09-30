@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/tui"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // restartDaemon replaces the suite daemon under the same hermetic home and
@@ -106,5 +109,77 @@ func TestChatClientSendReconnectsAfterDaemonRestart(t *testing.T) {
 	reply := strings.Join(eventText(streamSnapshot(t, id), "message"), "\n")
 	if !strings.Contains(reply, "echo: "+prompt1) || !strings.Contains(reply, "echo: "+prompt2) {
 		t.Fatalf("transcript after the restart is missing a turn; got:\n%s", reply)
+	}
+}
+
+// A stopped turn survives a daemon restart as idle-but-interrupted. Reopening
+// it must accept ordinary input without a slash command changing its phase.
+func TestTUIReopensInterruptedSessionWithoutCompacting(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	profile := providerRoute(t, func(request map[string]any) string {
+		if lastUserText(request) == "stop this turn" {
+			close(entered)
+			<-release
+		}
+		return echoReply(request)
+	})
+	id := newSession(t, t.TempDir())
+	client := daemon.NewChatClient(daemon.ChatClientOptions{
+		Conn: conn(t), AgentID: id,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := client.Send(ctx, "stop this turn", nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("the turn never reached the provider")
+	}
+	if interrupted, err := client.Interrupt(ctx); err != nil || !interrupted {
+		t.Fatalf("interrupt: %v, %v", interrupted, err)
+	}
+	waitIdle(t, id, profile, 1)
+	restartDaemon(t)
+	status, err := daemon.Request[struct {
+		Phase string `json:"phase"`
+		Idle  bool   `json:"idle"`
+	}](ctx, conn(t), "/sessions/"+id+"/status", nil)
+	if err != nil || !status.Idle || status.Phase != "interrupted" {
+		t.Fatalf("reopened status: %+v, %v", status, err)
+	}
+
+	session := daemonSession(t, id)
+	d := driveTUI(t, &session)
+	defer d.App.Chat.Close()
+	page, err := d.App.Chat.Client.History(ctx, 0, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range page.Events {
+		d.Update(tui.ChatStreamEventMsg{
+			SessionID: id, Generation: d.App.Chat.Generation, Event: event,
+		})
+	}
+	if !strings.Contains(d.View(), "stop this turn") {
+		t.Fatal("the interrupted transcript did not load")
+	}
+	d.connected()
+	d.App.Chat.TextArea.SetValue("continue without compacting")
+	command := d.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("the composer refused the new prompt")
+	}
+	for _, msg := range d.results(command) {
+		if _, ok := msg.(tui.ChatTurnSentMsg); ok {
+			d.Update(msg)
+		}
+	}
+	waitIdle(t, id, profile, 2)
+	replies := strings.Join(eventText(streamSnapshot(t, id), "message"), "\n")
+	if !strings.Contains(replies, "echo: continue without compacting") {
+		t.Fatalf("the reopened session did not answer: %q", replies)
 	}
 }

@@ -2,7 +2,8 @@
 // and a real wrapping layout reveal: the daemon never sees a keystroke, and
 // the e2e harness drives the TUI in process with no PTY, so wrap boundaries,
 // scroll behavior, terminal handoff around the editor, and grapheme widths
-// cannot be observed there.
+// cannot be observed there. Async status ordering is controlled here because
+// real HTTP cannot deterministically deliver a superseded reply after a reset.
 package tui
 
 import (
@@ -193,5 +194,39 @@ func TestAppRemembersGraphemeTerminal(t *testing.T) {
 	}
 	if chat := app.newChatModel(&daemon.Session{ID: "s"}); !chat.graphemes {
 		t.Fatal("expected a new chat to inherit grapheme widths")
+	}
+}
+
+// The order of a reset and status replies is controlled here: real HTTP cannot
+// deterministically deliver a superseded status after a snapshot arrives.
+func TestComposerIgnoresStaleStatusAndAcceptsIdleWithoutPhase(t *testing.T) {
+	const draft = "keep this draft"
+	m := composer(t, 80, 22)
+	defer m.Close()
+	status := ChatStatusMsg{
+		SessionID: m.SessionID, Generation: m.Generation,
+		Revision: m.statusRevision, Status: &daemon.AgentStatus{Idle: true},
+	}
+	m, _ = m.Update(ChatStreamEventMsg{
+		SessionID: m.SessionID, Generation: m.Generation,
+		Event: daemon.StreamEvent{Type: daemon.EventReset},
+	})
+	m, _ = m.Update(status)
+	m = typePrompt(m, draft)
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.TextArea.Value() != draft || len(m.pendingUsers) != 0 {
+		t.Fatal("a stale status unblocked the composer")
+	}
+	status.Revision = m.statusRevision
+	m, _ = m.Update(status)
+	m.TextArea.Reset()
+	if !strings.Contains(ansi.Strip(m.View()), "ctrl+g editor") {
+		t.Fatal("an idle status without a phase did not restore the input cue")
+	}
+	m.TextArea.SetValue(draft)
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	pending := m.pendingUsers
+	if m.TextArea.Value() != "" || len(pending) != 1 || pending[0].Text != draft {
+		t.Fatal("an idle status without a phase refused the draft")
 	}
 }
