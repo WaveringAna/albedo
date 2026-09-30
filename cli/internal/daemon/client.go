@@ -12,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -158,10 +157,7 @@ func (c *ChatClient) Token() string {
 
 func (c *ChatClient) agentURL(path string) string {
 	base := c.BaseURL()
-	if c.agentID != "" {
-		return fmt.Sprintf("%s/sessions/%s%s", base, url.PathEscape(c.agentID), path)
-	}
-	return base + path
+	return fmt.Sprintf("%s/sessions/%s%s", base, url.PathEscape(c.agentID), path)
 }
 
 func (c *ChatClient) parseResponseError(res *http.Response) error {
@@ -186,12 +182,7 @@ func (c *ChatClient) submitPayload(ctx context.Context, payload map[string]any) 
 		return nil, err
 	}
 
-	route := "/trigger/chat"
-	if c.agentID != "" {
-		route = "/events"
-	}
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.agentURL(route), bytes.NewReader(bodyData))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.agentURL("/events"), bytes.NewReader(bodyData))
 	if err != nil {
 		return nil, err
 	}
@@ -247,12 +238,7 @@ func (c *ChatClient) Interrupt(ctx context.Context) (bool, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	route := "/awp/interrupt"
-	if c.agentID != "" {
-		route = "/interrupt"
-	}
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.agentURL(route), bytes.NewReader([]byte("{}")))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.agentURL("/interrupt"), bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return false, err
 	}
@@ -646,18 +632,9 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 	afterSeq := c.afterSeq
 	c.mu.Unlock()
 
-	var route string
-	if c.agentID != "" {
-		route = fmt.Sprintf("/stream?after_seq=%d", afterSeq)
-		if c.Tail > 0 {
-			route += fmt.Sprintf("&tail=%d", c.Tail)
-		}
-	} else {
-		if afterSeq > 0 {
-			route = fmt.Sprintf("/awp/stream?after_seq=%d", afterSeq)
-		} else {
-			route = "/awp/stream?tail=true"
-		}
+	route := fmt.Sprintf("/stream?after_seq=%d", afterSeq)
+	if c.Tail > 0 {
+		route += fmt.Sprintf("&tail=%d", c.Tail)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.agentURL(route), nil)
@@ -702,7 +679,6 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 	scanner.Buffer(buf, 10*1024*1024)
 
 	var eventType string
-	eventSeq := afterSeq
 
 	for scanner.Scan() {
 		select {
@@ -719,12 +695,6 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 
 		if strings.HasPrefix(line, "event:") {
 			eventType = strings.TrimSpace(line[6:])
-			continue
-		}
-		if strings.HasPrefix(line, "id:") {
-			if seq, err := strconv.Atoi(strings.TrimSpace(line[3:])); err == nil && seq > 0 {
-				eventSeq = seq
-			}
 			continue
 		}
 		if !strings.HasPrefix(line, "data:") {
@@ -869,38 +839,6 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 					}
 				}
 			}
-
-			var targetMap map[string]any = rawMap
-			if envType, ok := rawMap["type"].(string); ok {
-				if envType == "stream.event" {
-					if pMap, ok := rawMap["payload"].(map[string]any); ok {
-						targetMap = pMap
-					}
-				} else if envType == "conversation.message" {
-					if pMap, ok := rawMap["payload"].(map[string]any); ok {
-						role, _ := pMap["role"].(string)
-						content, _ := pMap["content"].(string)
-						if role == "assistant" && strings.TrimSpace(content) != "" {
-							targetMap = map[string]any{
-								"type": "message",
-								"role": "assistant",
-								"text": content,
-							}
-						}
-					}
-				}
-			}
-
-			if ev := parseStreamEvent(targetMap); ev != nil {
-				if err := onEvent(*ev); err != nil {
-					return err
-				}
-			}
-			c.mu.Lock()
-			if eventSeq > c.afterSeq {
-				c.afterSeq = eventSeq
-			}
-			c.mu.Unlock()
 		}
 	}
 
