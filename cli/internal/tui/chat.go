@@ -344,8 +344,13 @@ type ChatModel struct {
 	interruptDeferred bool
 	sentHere          bool
 
+	// the selection is in rows of frameLines, the whole transcript as last
+	// drawn, so it can reach past what the viewport shows
 	dragAnchor *Point
 	dragHead   Point
+	dragDir    int
+	dragGen    int
+	frameLines []string
 
 	// graphemes says the terminal measures grapheme clusters (mode 2027),
 	// which Bubble Tea turns off when it hands the terminal to the editor.
@@ -794,6 +799,7 @@ func (m *ChatModel) refreshViewportContent() int {
 		allLines = append(allLines, m.Renderer.rail(laneBusy)+action)
 	}
 	allLines = append(allLines, m.pendingRows()...)
+	m.frameLines = allLines
 
 	totalLines := len(allLines)
 	vpHeight := max(1, m.Viewport.Height())
@@ -1104,7 +1110,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			return m, func() tea.Msg { return ChatOpenAgentsMsg{} }
 		}
 		if msg.String() == "esc" && m.dragAnchor != nil {
-			m.dragAnchor = nil
+			m.dragAnchor, m.dragDir = nil, 0
 			return m, nil
 		}
 
@@ -1206,11 +1212,16 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			return m, nil
 		}
 
+	case dragScrollMsg:
+		cmd := m.dragScrolled(msg)
+		return m, cmd
+
 	case tea.MouseMsg:
 		firstRow := 2 + m.Notices.ChromeRows()
 		mouse := msg.Mouse()
 		point := func() Point {
-			return Point{Row: max(0, min(m.Viewport.Height()-1, mouse.Y-firstRow)), Col: max(0, min(m.Viewport.Width(), mouse.X-m.padding()))}
+			screen := max(0, min(m.Viewport.Height()-1, mouse.Y-firstRow))
+			return Point{Row: m.scrollOffset + screen, Col: max(0, min(m.Viewport.Width(), mouse.X-m.padding()))}
 		}
 		switch msg := msg.(type) {
 		case tea.MouseReleaseMsg:
@@ -1219,18 +1230,20 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			}
 			m.dragHead = point()
 			sel := Selection{Anchor: *m.dragAnchor, Head: m.dragHead, Gutter: railWidth}
-			m.dragAnchor = nil
-			if !sel.IsEmpty() {
-				lines := strings.Split(m.Viewport.View(), "\n")
-				if text := SelectedText(lines, sel); text != "" {
-					m.CopyStatus = "copied"
-					m.copyStatusRevision++
-					return m, tea.Batch(CopyText(text), m.clearCopyStatusCmd())
-				}
+			m.dragAnchor, m.dragDir = nil, 0
+			if sel.IsEmpty() {
+				cmd := m.actAt(sel.Head.Row)
+				return m, cmd
+			}
+			if text := SelectedText(m.frameLines, sel); text != "" {
+				cmd := m.copied(text)
+				return m, cmd
 			}
 		case tea.MouseMotionMsg:
 			if m.dragAnchor != nil {
 				m.dragHead = point()
+				cmd := m.steerDragScroll(mouse.Y - firstRow)
+				return m, cmd
 			}
 		case tea.MouseClickMsg:
 			if msg.Button == tea.MouseLeft && mouse.Y >= firstRow && mouse.Y < firstRow+m.Viewport.Height() {
@@ -1243,6 +1256,9 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				m.scrollBy(-3)
 			} else if msg.Button == tea.MouseWheelDown {
 				m.scrollBy(3)
+			}
+			if m.dragAnchor != nil {
+				m.dragHead = point()
 			}
 		}
 		return m, nil
@@ -2183,7 +2199,10 @@ func (m ChatModel) View() string {
 	}
 	content = content[:min(len(content), m.Viewport.Height())]
 	if m.dragAnchor != nil {
-		content = HighlightSelection(content, Selection{Anchor: *m.dragAnchor, Head: m.dragHead, Gutter: railWidth})
+		// the selection is in transcript rows; the viewport shows from scrollOffset
+		anchor, head := *m.dragAnchor, m.dragHead
+		anchor.Row, head.Row = anchor.Row-m.scrollOffset, head.Row-m.scrollOffset
+		content = HighlightSelection(content, Selection{Anchor: anchor, Head: head, Gutter: railWidth})
 	}
 	rows = append(rows, content...)
 	status := m.statusLine()

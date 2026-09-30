@@ -127,11 +127,12 @@ func (r TranscriptRenderer) signoff(entry HistoryEntry) string {
 		unit := pick(entry.Tools == 1, "tool", "tools")
 		meta = append(meta, fmt.Sprintf("%d %s", entry.Tools, unit))
 	}
-	row := markChrome + style.Render(entry.Mood.face(entry.Timestamp))
+	row := markChrome + rowAction{verbCopy, entryKey(entry)}.mark() + style.Render(entry.Mood.face(entry.Timestamp))
 	if len(meta) > 0 {
 		row += " " + r.Styles.Faint.Render(strings.Join(meta, " · "))
 	}
-	return row
+	// underlined and quiet: a link, not a label
+	return row + r.Styles.Faint.Render(" · ") + r.Styles.Muted.Underline(true).Render("copy reply")
 }
 
 var diffHunk = regexp.MustCompile(`^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
