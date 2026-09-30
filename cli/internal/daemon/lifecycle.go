@@ -125,7 +125,7 @@ func (c *Connection) Update(other *Connection) {
 
 func (c *Connection) Refresh(ctx context.Context) error {
 	if c == nil {
-		return errors.New("nil connection")
+		return errors.New("Not connected to Albedo.")
 	}
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
@@ -164,7 +164,7 @@ func (c *Connection) Refresh(ctx context.Context) error {
 	if lastErr != nil {
 		return lastErr
 	}
-	return fmt.Errorf("daemon restart failed or daemon not running at %s", homeDir)
+	return fmt.Errorf("Could not reconnect to Albedo. Check whether it is running with ALBEDO_HOME=%s.", homeDir)
 }
 
 func (c *Connection) HTTPClient() *http.Client {
@@ -205,7 +205,7 @@ func (s StaticEndpoint) AuthToken() string {
 }
 
 func (s StaticEndpoint) Refresh(ctx context.Context) error {
-	return errors.New("static endpoint cannot refresh")
+	return errors.New("Cannot reconnect automatically to a fixed server address.")
 }
 
 type ReconnectingTransport struct {
@@ -433,25 +433,25 @@ func Existing(homeDir string) (*Connection, error) {
 
 func checkCompatible(conn *Connection) (*Connection, error) {
 	if conn.Version() != 2 {
-		return nil, errors.New("an older daemon is running; when its work is finished, run albedo daemon --stop, then start albedo again")
+		return nil, errors.New("This client cannot connect to the copy of Albedo already running. After its work has finished, run albedo daemon --stop, then launch Albedo again.")
 	}
 	return conn, nil
 }
 
 func resolveDaemonExecutable(path string) (string, error) {
 	if !filepath.IsAbs(path) {
-		return "", fmt.Errorf("ALBEDO_DAEMON must be an absolute executable path: %q", path)
+		return "", fmt.Errorf("ALBEDO_DAEMON must point to an executable using its full path: %q", path)
 	}
 	resolved, err := exec.LookPath(path)
 	if err != nil {
-		return "", fmt.Errorf("invalid ALBEDO_DAEMON executable %q: %w", path, err)
+		return "", fmt.Errorf("Cannot run the executable specified by ALBEDO_DAEMON (%q): %w", path, err)
 	}
 	fi, err := os.Stat(resolved)
 	if err != nil {
-		return "", fmt.Errorf("invalid ALBEDO_DAEMON executable %q: %w", path, err)
+		return "", fmt.Errorf("Cannot run the executable specified by ALBEDO_DAEMON (%q): %w", path, err)
 	}
 	if fi.IsDir() {
-		return "", fmt.Errorf("invalid ALBEDO_DAEMON executable %q: is a directory", path)
+		return "", fmt.Errorf("ALBEDO_DAEMON points to a directory (%q). Set it to the executable file instead.", path)
 	}
 	return resolved, nil
 }
@@ -547,7 +547,7 @@ func stop(homeDir string, conn *Connection) error {
 		}
 		time.Sleep(pollInterval)
 	}
-	return fmt.Errorf("daemon %d did not exit; inspect %s/daemon.log", conn.Pid(), homeDir)
+	return fmt.Errorf("Albedo did not stop. Check %s for details. The running process ID is %d.", filepath.Join(homeDir, "daemon.log"), conn.Pid())
 }
 
 // Ensure connects to the running daemon or starts one. When this client bundles
@@ -599,7 +599,7 @@ func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
 				}
 				time.Sleep(pollInterval)
 			}
-			return nil, fmt.Errorf("daemon startup timed out; inspect %s/daemon.log; remove %s if its starter is no longer running", homeDir, lockPath)
+			return nil, fmt.Errorf("Albedo is taking too long to start. Check %s/daemon.log for details. Only remove %s if the process starting Albedo is no longer running.", homeDir, lockPath)
 		}
 		return nil, err
 	}
@@ -666,7 +666,7 @@ func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("daemon startup timed out; inspect %s/daemon.log", homeDir)
+	return nil, fmt.Errorf("Albedo is taking too long to start. Check %s/daemon.log for details.", homeDir)
 }
 
 // staleLock reports whether the startup lock was left by a starter that is no

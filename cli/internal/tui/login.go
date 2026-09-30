@@ -56,8 +56,8 @@ type customProvider struct {
 var customProviders = []customProvider{
 	{
 		ID:            "add-alibaba",
-		Label:         "add or update alibaba provider",
-		Detail:        "token plan · qwen, deepseek, glm",
+		Label:         "add or update an Alibaba provider",
+		Detail:        "token plan · Qwen, DeepSeek, GLM",
 		Extension:     "alibaba",
 		DefaultName:   "alibaba",
 		DefaultURL:    "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
@@ -65,8 +65,8 @@ var customProviders = []customProvider{
 	},
 	{
 		ID:            "add-anthropic",
-		Label:         "add or update anthropic api key",
-		Detail:        "console billing · claude models",
+		Label:         "add or update an Anthropic API key",
+		Detail:        "console billing · Claude models",
 		Extension:     "claude",
 		DefaultName:   "anthropic",
 		FixedProtocol: "chat_completions",
@@ -74,7 +74,7 @@ var customProviders = []customProvider{
 	},
 	{
 		ID:         "add-openai",
-		Label:      "add or update openai-compatible provider",
+		Label:      "add or update an OpenAI-compatible provider",
 		Extension:  "openai",
 		DefaultURL: "https://api.openai.com/v1",
 	},
@@ -334,7 +334,7 @@ func (m *LoginModel) buildChoosePicker() {
 		extension := cmp.Or(settings.Extension, "openai")
 		detail := fmt.Sprintf("%s · %s", settings.Model, extension)
 		if _, signIn := m.signInFor(extension); signIn && hasKey(settings) {
-			detail += " · api key"
+			detail += " · API key"
 		} else if m.signedOut(extension) {
 			detail += " · signed out"
 		}
@@ -353,7 +353,7 @@ func (m *LoginModel) buildChoosePicker() {
 		add("signin:"+login.Provider, login.Label, login.Detail)
 	}
 
-	m.ChoosePicker = NewPickerModel("provider for new sessions", items, false, "use:"+m.Profiles.Active)
+	m.ChoosePicker = NewPickerModel("Provider for new sessions", items, false, "use:"+m.Profiles.Active)
 	m.ChoosePicker.SetSize(m.Width, m.Height)
 }
 
@@ -371,14 +371,14 @@ func (m LoginModel) removalFor(id string) (removal, bool) {
 }
 
 func (m *LoginModel) confirmRemoval(target removal) tea.Cmd {
-	detail := pick(target.Kind == "account", "deletes its tokens from creds.json", "deletes it and its saved key")
+	detail := pick(target.Kind == "account", "This removes its saved tokens", "This removes the provider and its saved key")
 	m.Removing = target
 	m.Step = StepRemove
 	items := []PickerItem{
 		{ID: "keep", Label: "keep", Detail: ""},
 		{ID: "remove", Label: "remove", Detail: detail},
 	}
-	m.ConfirmPicker = NewPickerModel("remove "+target.Kind+" "+target.Label+"?", items, false, "keep")
+	m.ConfirmPicker = NewPickerModel(detail+". Remove "+target.Kind+" "+target.Label+"?", items, false, "keep")
 	m.ConfirmPicker.SetSize(m.Width, m.Height)
 	return m.ConfirmPicker.Init()
 }
@@ -519,7 +519,7 @@ func (m *LoginModel) applyHint() tea.Cmd {
 
 func (m *LoginModel) buildProtocolPicker() {
 	items := []PickerItem{
-		{ID: "responses", Label: "responses", Detail: "openai responses api"},
+		{ID: "responses", Label: "responses", Detail: "OpenAI Responses API"},
 		{ID: "chat_completions", Label: "chat completions", Detail: "widely supported by compatible endpoints"},
 	}
 	m.ProtocolPicker = NewPickerModel("api protocol", items, false, m.Draft.Protocol)
@@ -531,7 +531,7 @@ func (m *LoginModel) buildModelPicker() {
 	for _, name := range m.Catalog {
 		items = append(items, PickerItem{ID: "model:" + name, Label: name})
 	}
-	items = append(items, PickerItem{ID: "manual", Label: "enter model id manually"})
+	items = append(items, PickerItem{ID: "manual", Label: "enter a model ID manually"})
 
 	m.ModelPicker = NewPickerModel("model", items, true, "model:"+m.Draft.Model)
 	m.ModelPicker.SetSize(m.Width, m.Height)
@@ -560,7 +560,7 @@ func hasKey(settings config.Settings) bool {
 
 func (m LoginModel) fetchCatalogCmd(ext, endpoint string, gen int) tea.Cmd {
 	return func() tea.Msg {
-		note := "could not read the models.dev catalog; enter a model id"
+		note := "Could not load the models.dev catalog. Enter a model ID manually."
 		if m.Conn == nil {
 			return loginModelsLoadedMsg{Note: note, Gen: gen}
 		}
@@ -570,7 +570,7 @@ func (m LoginModel) fetchCatalogCmd(ext, endpoint string, gen int) tea.Cmd {
 			return loginModelsLoadedMsg{Err: err, Note: note, Gen: gen}
 		}
 		if len(names) == 0 {
-			note = "models.dev has no matching models; enter a model id"
+			note = "No matching models in models.dev. Enter a model ID manually."
 		}
 		return loginModelsLoadedMsg{Models: names, Note: note, Gen: gen}
 	}
@@ -848,7 +848,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			case val == "" && m.Draft.HasKey:
 				// Blank keeps the key the daemon holds.
 			case val == "" || strings.ContainsFunc(val, func(r rune) bool { return r <= 0x20 || r == 0x7f }):
-				return m.fail("enter an api key without spaces or control characters")
+				return m.fail("Enter an API key without spaces or control characters.")
 			default:
 				m.Draft.APIKey = val
 			}
@@ -893,9 +893,9 @@ func (m LoginModel) View() string {
 		b.WriteByte('\n')
 	}
 	line(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/login"), m.Styles.Faint.Render(m.Name)))
-	location := "model auth extensions · saved in " + config.HomeDir()
+	location := "Provider configuration stored in " + config.HomeDir()
 	if m.Width > 0 && ansi.StringWidth(location) > m.Width && ansi.StringWidth(config.HomeDir()) <= m.Width {
-		location = "model auth extensions · saved in\n" + config.HomeDir()
+		location = "Provider configuration stored in\n" + config.HomeDir()
 	}
 	line(m.Styles.Faint.Render(ansi.Wrap(location, m.Width, "")))
 	if m.Error != "" {
@@ -924,16 +924,16 @@ func (m LoginModel) View() string {
 		if m.SignInURL != "" {
 			line(m.Styles.Faint.Render(ansi.Hardwrap(m.SignInURL, m.Width, true)))
 		}
-		b.WriteString("callback url or code: ")
+		b.WriteString("Callback URL or code: ")
 		line(m.TextInput.View())
-		b.WriteString(ansi.Wrap(m.Styles.Faint.Render("browser callback completes automatically")+m.Styles.Decor.Render(" · ")+keyHints(hint{"enter", "pastes manually"}, hint{"esc", "cancel"}), m.Width, ""))
+		b.WriteString(ansi.Wrap(m.Styles.Faint.Render("Browser sign-in completes automatically")+m.Styles.Decor.Render(" · ")+keyHints(hint{"enter", "submit code"}, hint{"esc", "cancel"}), m.Width, ""))
 	case StepSaving:
 		state := pick(m.Removing.Kind != "", "removing "+m.Removing.Kind+"…", "saving provider…")
 		b.WriteString(m.Styles.Faint.Render(state))
 	default:
 		stepLabels := map[LoginStep]string{
-			StepName: "provider name", StepBaseURL: "api base url",
-			StepAPIKey: "api key", StepModel: "model id",
+			StepName: "provider name", StepBaseURL: "API base URL",
+			StepAPIKey: "API key", StepModel: "model ID",
 		}
 		line(stepLabels[m.Step] + ": " + m.TextInput.View())
 		var hints []hint

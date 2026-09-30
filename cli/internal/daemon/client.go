@@ -49,7 +49,7 @@ type WorkspaceMissingError struct {
 }
 
 func (e *WorkspaceMissingError) Error() string {
-	return "workspace not found: " + e.Workspace
+	return "Workspace folder not found: " + e.Workspace
 }
 
 type SendResult struct {
@@ -86,7 +86,7 @@ func readBounded(r io.Reader, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("response body exceeded limit of %d bytes", limit)
+		return nil, fmt.Errorf("Albedo returned more data than this client can read (limit: %d bytes).", limit)
 	}
 	return data, nil
 }
@@ -835,7 +835,7 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 										c.argumentsByCall = make(map[string]string)
 										c.afterSeq = -1
 										c.mu.Unlock()
-										return errors.New("tool argument previews exceed client limit")
+										return errors.New("Too many tool argument previews for this client to display.")
 									}
 
 									args := c.argumentsByCall[callID] + text

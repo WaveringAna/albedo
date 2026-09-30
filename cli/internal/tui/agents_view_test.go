@@ -156,7 +156,7 @@ func TestFailedSeedRetriesOnTheNextSelection(t *testing.T) {
 	if m.nodes["coder"].seeded {
 		t.Fatal("a failed seed left the node marked seeded")
 	}
-	if !strings.Contains(m.notice, "could not load history: history is gone") {
+	if !strings.Contains(m.notice, failure.Err.Error()) {
 		t.Fatalf("the notice should carry the failure, got %q", m.notice)
 	}
 

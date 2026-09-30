@@ -25,16 +25,23 @@ const storageHelp = `Usage: albedo storage [--sessions | --json]
        albedo storage prune [--session ID ...] [--old-kernels]
                             [--backups] [--vacuum] [--yes]
 
-Preview is read-only; --sessions lists per-session estimates, --json shows all data.
-Prune previews first and requires confirmation (or --yes).
---all cleans eligible orphan kernels and old migration backups, then vacuums
-SQLite. It NEVER deletes sessions. Stop the daemon before offline cleanup.
---session deletes exactly the selected session via the daemon. Delete child
-sessions first; parent sessions with children cannot be deleted directly.
---old-kernels removes orphaned .state files older than 30 days.
+Showing disk usage does not change any files. Use --sessions for estimates
+by session, or --json for the full report.
+
+Cleanup shows what it will change and asks for confirmation. Use --yes to
+confirm without a terminal.
+
+--all removes unused Python state files and migration backups older than
+30 days, then shrinks the database. It does not delete sessions.
+--session permanently deletes the selected session. Delete its child sessions
+first, if it has any. This option needs Albedo running in the background.
+--old-kernels removes .state files older than 30 days with no matching session.
 --backups removes migration .sqlite backups older than 30 days.
---vacuum reclaims free SQLite pages; needs temporary space up to the DB size.
-Session byte counts are approximate payload sizes, excluding shared images.
+--vacuum shrinks the SQLite database by reclaiming unused space. It may need
+additional temporary disk space equal to the size of the database.
+
+Stop Albedo before using --all, --old-kernels, --backups or --vacuum.
+Session sizes are estimates and do not include shared images.
 `
 
 type storageSession struct {
@@ -105,10 +112,10 @@ func sqliteStorage(path string) (storageDB, error) {
 	var db storageDB
 	out, err := exec.Command("python3", "-c", inspectStorage, path).CombinedOutput()
 	if err != nil {
-		return db, fmt.Errorf("inspect SQLite: %w: %s", err, strings.TrimSpace(string(out)))
+		return db, fmt.Errorf("Could not read disk usage from the database: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	if err := json.Unmarshal(out, &db); err != nil {
-		return db, fmt.Errorf("decode SQLite storage: %w", err)
+		return db, fmt.Errorf("Could not read the database disk usage report: %w", err)
 	}
 	return db, nil
 }
@@ -122,7 +129,7 @@ func regularSize(path string) (int64, error) {
 		return 0, err
 	}
 	if !info.Mode().IsRegular() {
-		return 0, fmt.Errorf("not a regular file: %s", path)
+		return 0, fmt.Errorf("Expected a file, but found a different kind of entry: %s", path)
 	}
 	return info.Size(), nil
 }
@@ -136,7 +143,7 @@ func storageFiles(dir string, eligible func(string, os.FileInfo) bool) (int64, [
 		return 0, nil, err
 	}
 	if !stat.IsDir() {
-		return 0, nil, fmt.Errorf("storage path is not a directory: %s", dir)
+		return 0, nil, fmt.Errorf("Expected a directory for storage: %s", dir)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -170,7 +177,7 @@ func storageSnapshot(home string, now time.Time) (storagePreview, error) {
 		return p, err
 	}
 	if !root.IsDir() {
-		return p, fmt.Errorf("storage home is not a directory: %s", home)
+		return p, fmt.Errorf("ALBEDO_HOME must be a directory: %s", home)
 	}
 	dbPath := filepath.Join(home, "albedo.sqlite")
 	if p.Database, err = regularSize(dbPath); err != nil {
@@ -245,11 +252,11 @@ func storageSize(bytes int64) string {
 }
 
 func storagePrint(w io.Writer, p storagePreview, sessions bool) {
-	fmt.Fprintf(w, "SQLite %s · %s freed pages reclaimable by VACUUM\n", storageSize(p.Database), storageSize(p.DB.FreePages*p.DB.PageSize))
-	fmt.Fprintf(w, "Shared images %s (retained single copies, not duplication)\n", storageSize(p.DB.Images))
-	fmt.Fprintf(w, "Backups %s · %d recent migration backups (%s) protected for 30 days; --all skips them\n",
+	fmt.Fprintf(w, "Database: %s · %s of unused space can be reclaimed with --vacuum\n", storageSize(p.Database), storageSize(p.DB.FreePages*p.DB.PageSize))
+	fmt.Fprintf(w, "Shared images: %s (each image is stored once)\n", storageSize(p.DB.Images))
+	fmt.Fprintf(w, "Backups: %s · %d recent migration backups (%s) are kept for 30 days, including with --all\n",
 		storageSize(p.Backups), p.RecentBackupCount, storageSize(p.RecentBackups))
-	fmt.Fprintf(w, "WAL/SHM %s · kernels %s · other files %s · %d sessions\n",
+	fmt.Fprintf(w, "Database working files: %s · Python state: %s · other files: %s · sessions: %d\n",
 		storageSize(p.WAL), storageSize(p.Kernels), storageSize(p.Other), len(p.DB.Sessions))
 	var kernels, backups int64
 	for _, f := range p.OldKernels {
@@ -258,7 +265,7 @@ func storagePrint(w io.Writer, p storagePreview, sessions bool) {
 	for _, f := range p.OldBackups {
 		backups += f.Bytes
 	}
-	fmt.Fprintf(w, "Eligible: %d orphan kernels (%s), %d old backups (%s)\n", len(p.OldKernels), storageSize(kernels), len(p.OldBackups), storageSize(backups))
+	fmt.Fprintf(w, "Available to clean up: %d unused Python state files (%s), %d old backups (%s)\n", len(p.OldKernels), storageSize(kernels), len(p.OldBackups), storageSize(backups))
 	if sessions {
 		sort.Slice(p.DB.Sessions, func(i, j int) bool { return p.DB.Sessions[i].Bytes > p.DB.Sessions[j].Bytes })
 		for _, s := range p.DB.Sessions {
@@ -268,8 +275,8 @@ func storagePrint(w io.Writer, p storagePreview, sessions bool) {
 }
 
 func storageHint(w io.Writer) {
-	fmt.Fprintln(w, "Details: albedo storage --sessions | --json")
-	fmt.Fprintln(w, "Cleanup: stop the daemon, then albedo storage prune --all (never deletes sessions)")
+	fmt.Fprintln(w, "For session sizes, run albedo storage --sessions. For JSON, run albedo storage --json.")
+	fmt.Fprintln(w, "To clean up, stop Albedo after its work has finished with albedo daemon --stop, then run albedo storage prune --all. This does not delete sessions.")
 }
 
 func pruneFiles(files []storageFile) error {
@@ -279,7 +286,7 @@ func pruneFiles(files []storageFile) error {
 			return err
 		}
 		if size != f.Bytes {
-			return fmt.Errorf("file changed since preview: %s", f.Path)
+			return fmt.Errorf("File changed after the preview. Cleanup stopped: %s", f.Path)
 		}
 		if err := os.Remove(f.Path); err != nil {
 			return err
@@ -296,7 +303,7 @@ func storageCommand(args []string) error {
 	}
 	if len(args) == 0 || args[0] == "--json" || args[0] == "--sessions" {
 		if len(args) > 1 {
-			return errors.New("usage: albedo storage [--sessions | --json]")
+			return errors.New("Usage: albedo storage [--sessions | --json]")
 		}
 		p, err := storageSnapshot(home, time.Now())
 		if err != nil {
@@ -315,7 +322,7 @@ func storageCommand(args []string) error {
 		return nil
 	}
 	if args[0] != "prune" {
-		return errors.New("usage: albedo storage [--json] | storage prune --help")
+		return errors.New("Run albedo storage to see disk usage, or albedo storage prune --help for cleanup options.")
 	}
 	if len(args) == 2 && (args[1] == "-h" || args[1] == "--help") {
 		fmt.Print(storageHelp)
@@ -334,19 +341,19 @@ func storageCommand(args []string) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return errors.New("unexpected positional argument to storage prune")
+		return errors.New("Cleanup only accepts options. Run albedo storage prune --help for examples.")
 	}
 	if *all {
 		if len(sessions) > 0 || *kernels || *backups || *vacuum {
-			return errors.New("--all cannot be combined with other prune selections")
+			return errors.New("--all cannot be combined with other cleanup options. Use --all on its own or choose individual options.")
 		}
 		*kernels, *backups, *vacuum = true, true, true
 	}
 	if len(sessions) == 0 && !*kernels && !*backups && !*vacuum {
-		return errors.New("select --all, --session, --old-kernels, --backups or --vacuum")
+		return errors.New("Choose what to clean up: --all, --session, --old-kernels, --backups or --vacuum.")
 	}
 	if len(sessions) > 0 && (*kernels || *backups || *vacuum) {
-		return errors.New("session pruning and offline cleanup require separate invocations")
+		return errors.New("Delete sessions and clean up local files in separate commands. Session deletion needs Albedo running; file cleanup needs it stopped.")
 	}
 	p, err := storageSnapshot(home, time.Now())
 	if err != nil {
@@ -354,14 +361,14 @@ func storageCommand(args []string) error {
 	}
 	if len(sessions) == 0 {
 		if *kernels && p.Database == 0 {
-			return errors.New("cannot identify orphan snapshots without the SQLite database")
+			return errors.New("Cannot identify unused Python state files without the SQLite database. No files have been removed.")
 		}
 		conn, err := daemon.Existing(home)
 		if err != nil {
 			return err
 		}
 		if conn != nil {
-			return errors.New("nothing pruned: stop daemon first with albedo daemon --stop")
+			return errors.New("Nothing has been removed. Cleanup needs Albedo stopped. When its work has finished, run albedo daemon --stop, then try again.")
 		}
 	}
 	storagePrint(os.Stdout, p, false)
@@ -372,36 +379,40 @@ func storageCommand(args []string) error {
 		}
 		for _, id := range sessions {
 			if !known[id] {
-				return fmt.Errorf("session not found: %s (use full ID)", id)
+				return fmt.Errorf("No session has the ID %s. Use the full ID from albedo sessions.", id)
 			}
-			fmt.Printf("DELETE session %s (permanently, via daemon)\n", id)
+			fmt.Printf("Permanently delete session %s\n", id)
 		}
 	} else {
 		if *all {
-			fmt.Printf("Will remove %d eligible orphan kernels and %d old backups; retain %d recent migration backups and all sessions.\n",
+			fmt.Printf("Remove %d unused Python state files and %d old backups. Keep %d recent migration backups and all sessions.\n",
 				len(p.OldKernels), len(p.OldBackups), p.RecentBackupCount)
 		} else {
 			if *kernels {
 				for _, f := range p.OldKernels {
-					fmt.Printf("REMOVE %s\n", f.Path)
+					fmt.Printf("Remove %s\n", f.Path)
 				}
 			}
 			if *backups {
 				for _, f := range p.OldBackups {
-					fmt.Printf("REMOVE %s\n", f.Path)
+					fmt.Printf("Remove %s\n", f.Path)
 				}
 			}
 		}
 		if *vacuum {
-			fmt.Printf("Vacuum: up to %s of freed SQLite pages can be returned to disk.\n",
+			fmt.Printf("Shrink the database to reclaim up to %s of unused disk space.\n",
 				storageSize(p.DB.FreePages*p.DB.PageSize))
 		}
 	}
 	if !*yes {
 		if !isTTY() {
-			return errors.New("prune requires a terminal confirmation or --yes")
+			return errors.New("Nothing has been removed. Run cleanup in a terminal to confirm, or add --yes to approve the changes shown above.")
 		}
-		fmt.Print("Proceed? [y/N] ")
+		if len(sessions) > 0 {
+			fmt.Print("Permanently delete the sessions listed above? [y/N] ")
+		} else {
+			fmt.Print("Apply the cleanup shown above? [y/N] ")
+		}
 		answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
 		if err != nil && !errors.Is(err, io.EOF) {
 			return err
@@ -429,7 +440,7 @@ func storageCommand(args []string) error {
 		return err
 	}
 	if conn != nil {
-		return errors.New("daemon started during confirmation; aborting")
+		return errors.New("Albedo started while you were confirming cleanup. Nothing has been removed. Stop Albedo and try again.")
 	}
 	fresh, err := storageSnapshot(home, time.Now())
 	if err != nil {
@@ -437,7 +448,7 @@ func storageCommand(args []string) error {
 	}
 	if *kernels {
 		if !reflect.DeepEqual(p.OldKernels, fresh.OldKernels) {
-			return errors.New("orphan snapshots changed since preview; aborting")
+			return errors.New("The unused Python state files changed after the preview. Nothing has been removed. Run cleanup again to review the new list.")
 		}
 		if err := pruneFiles(p.OldKernels); err != nil {
 			return err
@@ -445,7 +456,7 @@ func storageCommand(args []string) error {
 	}
 	if *backups {
 		if !reflect.DeepEqual(p.OldBackups, fresh.OldBackups) {
-			return errors.New("backups changed since preview; aborting")
+			return errors.New("The backups changed after the preview. No backups have been removed. Run cleanup again to review the new list.")
 		}
 		if err := pruneFiles(p.OldBackups); err != nil {
 			return err
@@ -453,21 +464,21 @@ func storageCommand(args []string) error {
 	}
 	if *vacuum {
 		if fresh.Database == 0 {
-			return errors.New("no SQLite database to vacuum")
+			return errors.New("There is no SQLite database to shrink.")
 		}
 		if fresh.DB.FreePages == 0 {
-			fmt.Println("Vacuum skipped: SQLite has no free pages to reclaim.")
+			fmt.Println("The database has no unused space to reclaim. Skipping --vacuum.")
 		} else {
 			path := filepath.Join(home, "albedo.sqlite")
 			out, err := exec.Command("python3", "-c", "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.execute('VACUUM'); db.close()", path).CombinedOutput()
 			if err != nil {
-				return fmt.Errorf("vacuum: %w: %s", err, strings.TrimSpace(string(out)))
+				return fmt.Errorf("Could not shrink the database: %w: %s", err, strings.TrimSpace(string(out)))
 			}
 			final, err := regularSize(path)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Vacuum complete: SQLite %s → %s (%s reclaimed). Shared images remain stored once.\n",
+			fmt.Printf("Database shrunk from %s to %s (%s reclaimed). Shared images are still stored once.\n",
 				storageSize(fresh.Database), storageSize(final), storageSize(max(0, fresh.Database-final)))
 		}
 	}
@@ -481,11 +492,11 @@ var storageID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 func (ids *sessionIDs) String() string { return strings.Join(*ids, ",") }
 func (ids *sessionIDs) Set(value string) error {
 	if !storageID.MatchString(value) {
-		return errors.New("session requires a full ID")
+		return errors.New("--session needs a full session ID. Find it with albedo sessions.")
 	}
 	for _, id := range *ids {
 		if id == value {
-			return fmt.Errorf("duplicate session %s", value)
+			return fmt.Errorf("Session %s was selected more than once.", value)
 		}
 	}
 	*ids = append(*ids, value)

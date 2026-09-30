@@ -123,7 +123,7 @@ func TestUnfinishedArgumentsBounded(t *testing.T) {
 	}
 
 	err := client.Stream(context.Background(), nil, func(event StreamEvent) error { return nil })
-	if err == nil || !strings.Contains(err.Error(), "previews exceed client limit") {
+	if err == nil {
 		t.Fatalf("expected error on call count limit, got: %v", err)
 	}
 

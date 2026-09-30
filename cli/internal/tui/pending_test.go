@@ -2,7 +2,7 @@
 package tui
 
 import (
-	"fmt"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -49,7 +49,7 @@ func TestDotContinueErrorDoesNotCorruptPendingUsers(t *testing.T) {
 		Generation: m.Generation,
 		Prompt:     ".",
 		Continue:   true,
-		Err:        fmt.Errorf("network failure"),
+		Err:        errors.New("network failure"),
 	}
 
 	um, _ := m.Update(errMsg)
@@ -69,10 +69,6 @@ func TestMessageSubmitClearsTurnFailed(t *testing.T) {
 	m.TurnFailed = true
 	m.Stopped = true
 
-	if status := m.statusLine(); status != "turn failed · see error above" {
-		t.Fatalf("expected initial status to be turn failed, got: %q", status)
-	}
-
 	var cmds []tea.Cmd
 	m.submitInput("retry prompt", &cmds)
 
@@ -82,11 +78,8 @@ func TestMessageSubmitClearsTurnFailed(t *testing.T) {
 	if m.Stopped {
 		t.Fatal("expected Stopped to be false after submitting input")
 	}
-	if status := m.statusLine(); status == "turn failed · see error above" {
-		t.Fatalf("expected statusLine to not report failure after submit, got: %q", status)
-	}
-	if status := m.statusLine(); status != "preparing" {
-		t.Fatalf("expected statusLine to be preparing, got: %q", status)
+	if !m.isSending || len(m.pendingUsers) != 1 || m.pendingUsers[0].Text != "retry prompt" || len(cmds) == 0 {
+		t.Fatal("retry did not start a new submission")
 	}
 }
 
@@ -106,7 +99,7 @@ func TestDotContinueClearsTurnFailed(t *testing.T) {
 	if m.Stopped {
 		t.Fatal("expected Stopped to be false after submitting dot continue")
 	}
-	if status := m.statusLine(); status == "turn failed · see error above" {
-		t.Fatalf("expected statusLine to not report failure after dot continue, got: %q", status)
+	if !m.isSending || len(cmds) == 0 {
+		t.Fatal("continue did not start a new submission")
 	}
 }

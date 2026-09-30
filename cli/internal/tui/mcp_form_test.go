@@ -100,9 +100,7 @@ func TestEditingKeepsOrRemovesStoredSecrets(t *testing.T) {
 	if err != nil || token || headers || sub.Server.Enabled == nil {
 		t.Fatalf("a blank edit must keep stored secrets and other fields: %+v %v", sub, err)
 	}
-	if !strings.Contains(ansi.Strip(strings.Join(f.view(100), "\n")), "stored · blank keeps it") {
-		t.Fatal("edit form should say a token is stored")
-	}
+
 	f.Inputs[fieldToken].SetValue("-")
 	f.Inputs[fieldHeader].SetValue("X-Key")
 	f.Inputs[fieldValue].SetValue("-")

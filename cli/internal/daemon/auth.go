@@ -89,7 +89,7 @@ func RemoveAccount(ctx context.Context, conn *Connection, provider, id string) e
 func authRequest[T any](ctx context.Context, conn *Connection, method, path string, body any) (T, error) {
 	var zero T
 	if conn == nil {
-		return zero, errors.New("daemon connection unavailable")
+		return zero, errors.New("Not connected to Albedo.")
 	}
 	return RequestMethod[T](ctx, conn, method, path, body)
 }

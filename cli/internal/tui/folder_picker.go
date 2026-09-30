@@ -256,7 +256,7 @@ type FolderPicker struct {
 func NewFolderPicker(src folderSource, session daemon.Session, retry *WorkspaceRetry) FolderPicker {
 	ti := newTextInput()
 	ti.Prompt = ""
-	ti.Placeholder = "type a path, or pick a folder"
+	ti.Placeholder = "Type a path or choose a folder"
 	st := ti.Styles()
 	st.Focused.Placeholder, st.Blurred.Placeholder = DefaultStyles.Faint, DefaultStyles.Faint
 	ti.SetStyles(st)

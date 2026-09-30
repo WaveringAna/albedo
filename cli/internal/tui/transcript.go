@@ -447,7 +447,7 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 		}
 	}
 	if trace.Truncated {
-		notice := pick(flags.Tools, "activity capture limited; some operations are not shown", "activity capture limited · /v expand")
+		notice := pick(flags.Tools, "Some activity was not captured; this list is incomplete", "Some activity was not captured · /v shows what is available")
 		rows = append(rows, r.Styles.Faint.Render(notice))
 	}
 	return strings.Join(rows, "\n")

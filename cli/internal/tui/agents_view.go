@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -67,6 +68,7 @@ type agentsSeedErrMsg struct {
 type agentsFrameMsg struct{ Gen int }
 type agentsSentMsg struct {
 	Gen    int
+	Action string
 	Notice string
 	Err    error
 }
@@ -230,7 +232,7 @@ func (m AgentsViewModel) snapshotCmd(gen int) tea.Cmd {
 	conn, id := m.Conn, m.SessionID
 	return func() tea.Msg {
 		if conn == nil {
-			return agentsSnapshotMsg{Gen: gen, Err: fmt.Errorf("daemon connection unavailable")}
+			return agentsSnapshotMsg{Gen: gen, Err: errors.New("daemon connection unavailable")}
 		}
 		tree, err := daemon.Request[struct {
 			Root  string      `json:"root"`
@@ -371,7 +373,7 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		// The seed died; unseed its node so the next selection tries again.
 		if n := m.nodes[msg.ID]; n != nil {
 			n.seeded = false
-			m.say("could not load history: " + msg.Err.Error())
+			m.say("Could not load recent messages for " + m.label(msg.ID, "this agent") + ". Select it again to retry: " + msg.Err.Error())
 		}
 		return m, nil
 
@@ -401,7 +403,7 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 
 	case agentsSentMsg:
 		if msg.Err != nil {
-			m.say("could not send: " + msg.Err.Error())
+			m.say("Could not " + msg.Action + ": " + msg.Err.Error())
 		} else if msg.Notice != "" {
 			m.say(msg.Notice)
 		}
@@ -410,7 +412,7 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 	case sessionRenamedMsg:
 		switch {
 		case msg.Err != nil:
-			m.say("could not rename: " + msg.Err.Error())
+			m.say("Could not rename the session. Try again: " + msg.Err.Error())
 		case msg.Name == "":
 			m.say("name cleared")
 		default:
@@ -538,18 +540,18 @@ func (m AgentsViewModel) deleteCmd(id string) tea.Cmd {
 			Deleted int `json:"deleted"`
 		}](context.Background(), conn, http.MethodDelete, path, nil)
 		if err != nil {
-			return agentsSentMsg{Gen: gen, Err: err}
+			return agentsSentMsg{Gen: gen, Action: "delete " + name, Err: err}
 		}
 		return agentsSentMsg{Gen: gen, Notice: fmt.Sprintf("deleted %s (%d sessions)", name, res.Deleted)}
 	}
 }
 
 func (m AgentsViewModel) sendCmd(id, text string) tea.Cmd {
-	conn, gen := m.Conn, m.Gen
+	conn, gen, target := m.Conn, m.Gen, m.label(id, "agent")
 	return func() tea.Msg {
 		path := fmt.Sprintf("/sessions/%s/events", url.PathEscape(id))
 		_, err := daemon.Request[map[string]any](context.Background(), conn, path, map[string]any{"content": text})
-		return agentsSentMsg{Gen: gen, Err: err}
+		return agentsSentMsg{Gen: gen, Action: "send a message to " + target, Err: err}
 	}
 }
 
@@ -557,12 +559,12 @@ func (m AgentsViewModel) spawnCmd(parent, name, task string) tea.Cmd {
 	conn, gen := m.Conn, m.Gen
 	return func() tea.Msg {
 		if name == "" || task == "" {
-			return agentsSentMsg{Gen: gen, Err: fmt.Errorf("type /spawn <name> <task>")}
+			return agentsSentMsg{Gen: gen, Action: "start an agent", Err: errors.New("use /spawn <name> <task>")}
 		}
 		path := fmt.Sprintf("/sessions/%s/children", url.PathEscape(parent))
 		_, err := daemon.Request[map[string]any](context.Background(), conn, path, map[string]any{"name": name, "task": task})
 		if err != nil {
-			return agentsSentMsg{Gen: gen, Err: err}
+			return agentsSentMsg{Gen: gen, Action: "start " + name, Err: err}
 		}
 		return agentsSentMsg{Gen: gen, Notice: "spawned " + name}
 	}

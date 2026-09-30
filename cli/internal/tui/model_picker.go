@@ -112,7 +112,7 @@ func NewModelPickerModel(conn *daemon.Connection, profiles config.Profiles, mode
 	}
 
 	search := newField()
-	search.Placeholder = "search models, or type an id"
+	search.Placeholder = "Search models or type a model ID"
 	st := search.Styles()
 	st.Focused.Placeholder, st.Blurred.Placeholder = DefaultStyles.Faint, DefaultStyles.Faint
 	search.SetStyles(st)
@@ -616,7 +616,7 @@ func (m ModelPickerModel) list(width, height int) []string {
 		case c.loading:
 			all = append(all, DefaultStyles.Faint.Render("  listing models…"))
 		case c.failed:
-			all = append(all, DefaultStyles.Faint.Render("  could not list models · type an id to use another"))
+			all = append(all, DefaultStyles.Faint.Render("  Could not list models. Type a model ID to continue."))
 		}
 	}
 	if i < len(m.rows) {
@@ -791,7 +791,7 @@ func (m ModelPickerModel) details(width, height int) []string {
 	inner := max(1, width-2)
 	r, ok := m.highlighted()
 	if !ok {
-		return paneBox([]string{"", DefaultStyles.Muted.Render("nothing matches"), DefaultStyles.Faint.Render("type a model id to use it as is")}, inner, width, height)
+		return paneBox([]string{"", DefaultStyles.Muted.Render("nothing matches"), DefaultStyles.Faint.Render("Type a model ID to use it as entered")}, inner, width, height)
 	}
 	var lines []string
 	for _, l := range svWrap(r.model.ID, inner, 2) {

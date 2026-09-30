@@ -702,7 +702,7 @@ func (m *ChatModel) settleActiveStream() {
 			entry.ElapsedMs = m.thoughtMs
 			if !m.thinkingSince.IsZero() {
 				entry.ElapsedMs = time.Since(m.thinkingSince).Milliseconds()
-				m.ThoughtProgressText = cmp.Or(thinkingLine(entry.Text), "thought")
+				m.ThoughtProgressText = cmp.Or(thinkingLine(entry.Text), "thinking")
 			}
 		}
 		m.appendSettledEntry(entry)
@@ -1045,7 +1045,7 @@ func (m *ChatModel) showOlder(msg ChatOlderLoadedMsg) ChatModel {
 	}
 	m.loadingOlder = false
 	if msg.Err != nil {
-		m.AddError(fmt.Sprintf("could not load earlier messages: %v", msg.Err))
+		m.AddError(fmt.Sprintf("Could not load earlier messages: %v", msg.Err))
 		return *m
 	}
 	// The page renders exactly as a reset would, in a scratch transcript.
@@ -1256,7 +1256,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.CopyStatus = ""
 			m.refreshViewportContent()
 		} else if msg.Err != nil && msg.Err.Error() != "no image in clipboard" {
-			m.AddError(fmt.Sprintf("image paste failed: %v", msg.Err))
+			m.AddError(fmt.Sprintf("Could not paste the image: %v", msg.Err))
 		}
 		return m, nil
 
@@ -1363,10 +1363,10 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				retry := &WorkspaceRetry{Missing: wsErr.Workspace, Prompt: msg.Prompt, Continue: msg.Continue, Image: msg.Image}
 				cmds = append(cmds, func() tea.Msg { return ChatOpenFolderPickerMsg{Retry: retry} })
 			} else {
-				m.AddError(fmt.Sprintf("send failed: %v", msg.Err))
+				m.AddError(fmt.Sprintf("Could not send the message: %v", msg.Err))
 				errText := msg.Err.Error()
 				if msg.Queued {
-					errText = "message not queued: " + errText
+					errText = "Message was not queued: " + errText
 				}
 				m.appendSettledEntry(HistoryEntry{Kind: EntryError, Text: errText})
 			}
@@ -1400,9 +1400,9 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Err != nil {
-			m.AddError("editor error: " + msg.Err.Error())
+			m.AddError("Could not open the editor: " + msg.Err.Error())
 		} else if data, err := os.ReadFile(msg.Path); err != nil {
-			m.AddError("could not read edited prompt: " + err.Error())
+			m.AddError("Could not read the edited prompt: " + err.Error())
 		} else {
 			m.TextArea.SetValue(strings.TrimRight(string(data), "\r\n"))
 			m.syncLayout()
@@ -1416,7 +1416,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if msg.Err != nil || !msg.Interrupted {
 			m.Stopping = false
 			if msg.Err != nil {
-				m.appendSettledEntry(HistoryEntry{Kind: EntryError, Text: "could not stop turn: " + msg.Err.Error()})
+				m.appendSettledEntry(HistoryEntry{Kind: EntryError, Text: "Could not stop the current reply: " + msg.Err.Error()})
 			}
 		}
 		return m, nil
@@ -1516,7 +1516,7 @@ func (m *ChatModel) sendCmd(prompt string, image *daemon.ImageAttachment, isCont
 	return func() tea.Msg {
 		msg := ChatTurnSentMsg{SessionID: id, Generation: gen, Prompt: prompt, Image: image, Continue: isCont}
 		if client == nil {
-			msg.Err = fmt.Errorf("no client available")
+			msg.Err = errors.New("no client available")
 			return msg
 		}
 		var (
@@ -1540,7 +1540,7 @@ func (m *ChatModel) interruptCmd() tea.Cmd {
 	client, id, gen := m.Client, m.SessionID, m.Generation
 	return func() tea.Msg {
 		if client == nil {
-			return ChatInterruptMsg{SessionID: id, Generation: gen, Err: fmt.Errorf("no client available")}
+			return ChatInterruptMsg{SessionID: id, Generation: gen, Err: errors.New("no client available")}
 		}
 		ok, err := client.Interrupt(context.Background())
 		return ChatInterruptMsg{SessionID: id, Generation: gen, Interrupted: ok, Err: err}
@@ -1571,7 +1571,7 @@ func (m *ChatModel) submitInput(input string, cmds *[]tea.Cmd) {
 	}
 
 	if len(m.pendingUsers) >= MaxPendingUsers {
-		m.AddError("too many pending turns; wait for current turn to complete")
+		m.AddError("Too many messages are waiting. Wait for the current reply to finish before sending another message.")
 		m.refreshViewportContent()
 		return
 	}
@@ -2059,7 +2059,7 @@ func (m ChatModel) renderThought() string {
 
 func (m ChatModel) statusLine() string {
 	if m.TurnFailed || m.Notices.HasError() {
-		return "turn failed · see error above"
+		return "Reply failed · see error above"
 	}
 	if m.Stopping {
 		return "stopping…"
@@ -2166,7 +2166,12 @@ func (m ChatModel) View() string {
 
 	view := m.Viewport.View()
 	if m.History.Len() == 0 && m.activeText == "" && m.ToolProgressText == "" {
-		view = m.Renderer.rail(laneNone) + m.Styles.Faint.Render("what are we working on?")
+		textWidth := max(1, min(m.Renderer.BodyWidth, m.Viewport.Width())-railWidth)
+		var emptyRows []string
+		for _, line := range wrapOrChunkLine("What would you like to work on?", textWidth) {
+			emptyRows = append(emptyRows, m.Renderer.rail(laneNone)+m.Styles.Faint.Render(line))
+		}
+		view = strings.Join(emptyRows, "\n")
 	}
 	if m.sidebarWidth() > 0 {
 		view = lipgloss.JoinHorizontal(lipgloss.Top, view, "  ", m.renderGlances())
@@ -2271,7 +2276,7 @@ func (m ChatModel) renderFooter() string {
 		left  []hint
 		right string
 	}{
-		{[]hint{commands, {"shift+↑↓", "turns"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right},
+		{[]hint{commands, {"shift+↑↓", "your messages"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right},
 		{[]hint{commands, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right},
 		{[]hint{commands, {"ctrl+o", "agents"}}, compact},
 		{[]hint{commands, {"ctrl+j", "diffs"}}, compact},

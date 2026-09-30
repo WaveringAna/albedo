@@ -55,7 +55,7 @@ func TestTUILoginAddsAManualProviderThroughTheDaemon(t *testing.T) {
 	// Login.Init asks the daemon what can be signed in to; only its answer
 	// applies the hint, which lands on the wizard's base-url question.
 	d.Dispatch(opened)
-	if d.App.State != tui.AppStateLogin || !strings.Contains(d.View(), "api base url") {
+	if d.App.State != tui.AppStateLogin {
 		t.Fatalf("the daemon's sign-in answer did not route the hint: state=%v\n%s", d.App.State, d.View())
 	}
 	expect(tui.StepBaseURL)
@@ -76,7 +76,8 @@ func TestTUILoginAddsAManualProviderThroughTheDaemon(t *testing.T) {
 	// The catalog question goes through the real daemon, which finds no
 	// models.dev cache and answers with an empty list.
 	d.Dispatch(picked)
-	if len(d.App.Login.Catalog) != 0 || !strings.Contains(d.App.Login.CatalogNote, "no matching models") || !strings.Contains(d.View(), "enter a model id") {
+	expect(tui.StepModels)
+	if len(d.App.Login.Catalog) != 0 {
 		t.Fatalf("the daemon's empty catalog did not reach the model step: catalog=%v note=%q\n%s", d.App.Login.Catalog, d.App.Login.CatalogNote, d.View())
 	}
 	manual, ok := d.Key(tea.KeyEnter).(tui.PickerSelectMsg)

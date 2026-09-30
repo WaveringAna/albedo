@@ -571,7 +571,7 @@ func (m *AppModel) moved(msg FolderMovedMsg) tea.Cmd {
 		if m.State == AppStateFolderPicker {
 			m.FolderPicker.Refused(msg.Err)
 		} else {
-			m.AddError("could not move: " + msg.Err.Error())
+			m.AddError("Could not move this session: " + msg.Err.Error())
 		}
 		return nil
 	}
@@ -682,7 +682,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionDeletedMsg:
 		if msg.Err != nil {
-			m.AddError("Could not delete session: " + msg.Err.Error())
+			m.AddError("Could not delete the session: " + msg.Err.Error())
 			return m, nil
 		}
 		m.SessionPicker.Removed(msg.ID)
@@ -701,7 +701,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Agents, cmd = m.Agents.Update(msg)
 		}
 		if msg.Err != nil {
-			m.SessionPicker.notice = "could not rename: " + msg.Err.Error()
+			m.SessionPicker.notice = "Could not rename the session: " + msg.Err.Error()
 			return m, cmd
 		}
 		if i := slices.IndexFunc(m.Sessions, func(s daemon.Session) bool { return s.ID == msg.ID }); i >= 0 {
@@ -726,7 +726,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.Err != nil {
 			m.SessionPicker.Loading = false
-			m.AddError("Error: " + msg.Err.Error())
+			m.AddError("Could not load sessions: " + msg.Err.Error())
 			return m, nil
 		}
 		m.Sessions = msg.Sessions
@@ -744,7 +744,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Err != nil {
-			m.AddError("Error: " + msg.Err.Error())
+			m.AddError("Could not create a session: " + msg.Err.Error())
 			return m, nil
 		}
 		return m, m.setChatSession(msg.Session, true)
@@ -782,7 +782,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ModelPicker.Saving = false
 				m.ModelPicker.Error = msg.Err.Error()
 			} else {
-				m.AddError("Error: " + msg.Err.Error())
+				m.AddError("Model settings error: " + msg.Err.Error())
 			}
 			return m, nil
 		}
@@ -816,7 +816,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Err != nil {
-			m.AddError("Error: " + msg.Err.Error())
+			m.AddError("Command error: " + msg.Err.Error())
 			return m, nil
 		}
 		m.AddNotice(msg.Message)
@@ -840,7 +840,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.ClearNotices()
 		if msg.Err != nil {
-			m.AddError("Error: " + msg.Err.Error())
+			m.AddError("Could not load providers: " + msg.Err.Error())
 		} else {
 			m.Profiles = msg.Profiles
 			notice := fmt.Sprintf("%s selected for new sessions", msg.Provider)

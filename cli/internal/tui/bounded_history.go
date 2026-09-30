@@ -113,7 +113,7 @@ func (h *BoundedHistory) Entries() []HistoryEntry { return h.entries }
 
 func (h *BoundedHistory) TruncationNotice() string {
 	if h.evictedEntries > 0 {
-		return fmt.Sprintf("[%d older messages truncated (%d KB); durable history is in daemon]", h.evictedEntries, h.evictedBytes/1024)
+		return fmt.Sprintf("[%d older messages hidden (%d KB); full history is saved by Albedo]", h.evictedEntries, h.evictedBytes/1024)
 	}
 	return ""
 }

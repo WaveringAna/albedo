@@ -340,7 +340,7 @@ func (m ContextInspectorModel) View() string {
 	} else if m.Snapshot == nil {
 		line(keyHints(hint{"r", "retry"}, hint{"esc", "return to chat"}))
 	} else if m.Snapshot.State == "pending" {
-		line(DefaultStyles.Warning.Render("pending · no request has been prepared for this runtime session"))
+		line(DefaultStyles.Warning.Render("No request has been prepared for this running session yet."))
 		faint(m.Snapshot.Reason)
 		line(keyHints(hint{"r", "refresh"}, hint{"esc", "return to chat"}))
 	} else {

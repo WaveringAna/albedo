@@ -83,10 +83,10 @@ func isTTY() bool {
 // terminal it keeps the running daemon.
 func replaceStale(s daemon.Stale) bool {
 	if !isTTY() {
-		fmt.Fprintf(os.Stderr, "albedo: daemon %d is from another build; run albedo daemon --stop to start this one\n", s.Running.Pid())
+		fmt.Fprintf(os.Stderr, "Albedo is already running (PID %d). Keeping that copy because there is no terminal to ask about restarting.\nStopping Albedo will interrupt work in all sessions.\nWhen you are ready to use the copy you just launched, run albedo daemon --stop, then launch Albedo again.\n", s.Running.Pid())
 		return false
 	}
-	fmt.Printf("daemon %d is from another albedo build. restart it with this one? running turns will stop. [y/N] ", s.Running.Pid())
+	fmt.Printf("Albedo is already running (PID %d). To use the copy you just launched,\nit needs to restart. This will interrupt work in all sessions.\n\nRestart Albedo? [y/N] ", s.Running.Pid())
 	answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	return confirmed(answer)
 }
@@ -100,8 +100,8 @@ func announceMigration(ctx context.Context, conn *daemon.Connection, homeDir str
 		return
 	}
 	backups := filepath.Join(homeDir, "backups", "*-before-creds-*")
-	fmt.Printf("albedo moved the secrets in %s into %s.\n", strings.Join(moved, ", "), filepath.Join(homeDir, "creds.json"))
-	fmt.Printf("the old copies still hold them; once everything works, delete them:\n\n  rm -f %s\n\npress enter to continue ", backups)
+	fmt.Printf("Your credentials have been moved from %s to %s.\n", strings.Join(moved, ", "), filepath.Join(homeDir, "creds.json"))
+	fmt.Printf("The backups still contain your credentials. Once you have checked that login works,\nyou can delete those backups with:\n\n  rm -f %s\n\nPress Enter to continue. ", backups)
 	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 }
 
@@ -120,17 +120,17 @@ const helpText = `Usage: albedo [options] [command]
 persistent coding sessions
 
 Options:
-  -h, --help                display help for command
+  -h, --help                show help
 
 Commands:
   new [workspace]           start a fresh session in the given workspace (defaults to current directory)
-  resume <session>          resume a session by id or prefix
-  sessions [options]        list active sessions
-  send <session> <prompt>   send a prompt turn to a session
-  stop <session>            interrupt an active session
-  daemon [options]          inspect or manage daemon lifecycle
-  storage [options]         preview storage; explicitly prune selected data
-  login [name]              configure an API provider in terminal
+  resume <session>          reopen a session using its ID or the start of its ID
+  sessions [options]        list sessions
+  send <session> <prompt>   send a message to a session
+  stop <session>            interrupt work in a session
+  daemon [options]          start Albedo in the background, or stop it with --stop
+  storage [options]         show disk usage or clean up selected data
+  login [name]              set up a model provider in a terminal
 `
 
 func open(id, workspace string, fresh bool) error {
@@ -169,10 +169,10 @@ func open(id, workspace string, fresh bool) error {
 			}
 		}
 		if len(matches) > 1 && !hasExact {
-			return errors.New("session prefix is ambiguous")
+			return fmt.Errorf("More than one session ID starts with %q. Use a longer ID or run albedo sessions to find it.", id)
 		}
 		if len(matches) == 0 {
-			return errors.New("session not found")
+			return fmt.Errorf("No session matches %q. Run albedo sessions to see the available sessions.", id)
 		}
 		for _, s := range matches {
 			if s.ID == id {
@@ -194,7 +194,7 @@ func open(id, workspace string, fresh bool) error {
 	configured := profs.Active != ""
 
 	if !configured && !isTTY() {
-		return errors.New("run albedo login in a terminal to save a provider")
+		return errors.New("No model provider is configured. Run albedo login in a terminal to set one up.")
 	}
 
 	var initial *daemon.Session
@@ -246,7 +246,7 @@ func open(id, workspace string, fresh bool) error {
 		return err
 	}
 	if m, ok := final.(tui.AppModel); ok && m.ActiveSession != nil {
-		fmt.Printf("to resume, run albedo resume %s\n", m.ActiveSession.ID)
+		fmt.Printf("To reopen this session, run albedo resume %s\n", m.ActiveSession.ID)
 	}
 	return nil
 }
@@ -296,7 +296,7 @@ func run(args []string) error {
 				fmt.Println("Usage: albedo resume <session>")
 				return nil
 			}
-			return errors.New("resume requires <session> argument")
+			return errors.New("Choose a session to reopen: albedo resume <session>")
 		}
 		return open(subArgs[0], cwd, false)
 
@@ -338,7 +338,7 @@ func run(args []string) error {
 			return nil
 		}
 		if len(subArgs) < 2 {
-			return errors.New("send requires <session> and <prompt> arguments")
+			return errors.New("Choose a session and a message to send: albedo send <session> <prompt>")
 		}
 		sessID := subArgs[0]
 		prompt := subArgs[1]
@@ -363,7 +363,7 @@ func run(args []string) error {
 			return nil
 		}
 		if len(subArgs) < 1 {
-			return errors.New("stop requires <session> argument")
+			return errors.New("Choose a session to interrupt: albedo stop <session>")
 		}
 		sessID := subArgs[0]
 		homeDir := config.HomeDir()
@@ -412,7 +412,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("albedo daemon running on 127.0.0.1:%d\n", current.Port())
+		fmt.Printf("Albedo is running in the background at 127.0.0.1:%d\n", current.Port())
 		return nil
 
 	case "login":
@@ -421,7 +421,7 @@ func run(args []string) error {
 			return nil
 		}
 		if !isTTY() {
-			return errors.New("login requires a terminal; keys are entered with hidden input")
+			return errors.New("Run albedo login in a terminal so you can enter your API key without displaying it.")
 		}
 		providerName := ""
 		if len(subArgs) > 0 {
@@ -456,6 +456,6 @@ func run(args []string) error {
 		return err
 
 	default:
-		return fmt.Errorf("unknown command %q", cmd)
+		return fmt.Errorf("Unknown command %q. Run albedo --help to see the available commands.", cmd)
 	}
 }

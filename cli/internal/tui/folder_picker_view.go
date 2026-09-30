@@ -83,7 +83,7 @@ func (m FolderPicker) footer(width int) string {
 	case m.notice != "":
 		right = DefaultStyles.Warning.Render(tailFit(m.notice, room))
 	case m.retry != nil:
-		right = DefaultStyles.Warning.Render("not found ") + DefaultStyles.Muted.Render(tailFit(m.homed(m.retry.Missing), room-10))
+		right = DefaultStyles.Warning.Render("Folder not found: ") + DefaultStyles.Muted.Render(tailFit(m.homed(m.retry.Missing), room-ansi.StringWidth("Folder not found: ")))
 	case m.browse: // nothing moves, so there is no "now in"
 	default:
 		right = DefaultStyles.Faint.Render("now in ") + DefaultStyles.Muted.Render(tailFit(m.homed(m.workspace()), room-7))
@@ -136,7 +136,7 @@ func (m FolderPicker) emptyNote() string {
 	case l.Err != nil:
 		return l.Err.Error()
 	case len(l.List.Entries) == 0:
-		return "no folders inside"
+		return "No folders here"
 	}
 	return "no matches"
 }
@@ -237,7 +237,7 @@ func (m FolderPicker) preview(width, height int) []string {
 	case c == nil || c.loading:
 		body = []string{DefaultStyles.Faint.Render("looking…")}
 	case c.err:
-		body = []string{DefaultStyles.Faint.Render("cannot look inside")}
+		body = []string{DefaultStyles.Faint.Render("Could not open this folder")}
 	default:
 		languages, tree = c.Languages, &c.FolderPreview
 		if c.Repo != nil {

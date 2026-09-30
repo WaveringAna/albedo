@@ -343,7 +343,7 @@ func (m *SessionViewer) togglePin() {
 func (m *SessionViewer) savePrefs() {
 	m.notice = ""
 	if err := m.prefs.save(m.PrefsPath); err != nil {
-		m.notice = "could not save session preferences: " + err.Error()
+		m.notice = "Could not save session preferences: " + err.Error()
 	}
 }
 
@@ -361,7 +361,7 @@ func (m *SessionViewer) startRename() {
 		return
 	}
 	current := sessionTitle(s)
-	m.rename.open(s.ID, pick(current == untitled, "", current), "name this session")
+	m.rename.open(s.ID, pick(current == untitled, "", current), "Name this session")
 }
 
 // Renamed takes a session's new listing from the daemon.

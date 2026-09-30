@@ -127,7 +127,7 @@ func parsePageDocument(result any) (*PageDocument, error) {
 	if !ok {
 		return nil, errors.New("command did not answer a page")
 	}
-	doc := &PageDocument{Title: title, Empty: "nothing here yet"}
+	doc := &PageDocument{Title: title, Empty: "Nothing here yet."}
 	if summary, ok := page["summary"].(string); ok {
 		doc.Summary = summary
 	}
@@ -231,7 +231,7 @@ func (m PageViewModel) loadPageCmd(gen int) tea.Cmd {
 		targetObj := pick(res["result"] != nil, res["result"], any(res))
 		doc, err := parsePageDocument(targetObj)
 		if err != nil {
-			err = fmt.Errorf("%s did not answer a page", m.Command)
+			err = fmt.Errorf("%s did not return a page", m.Command)
 		}
 		return pageLoadedMsg{Doc: doc, Err: err, Gen: gen}
 	}
@@ -469,7 +469,7 @@ func (m PageViewModel) detailPane(width, rows int) []string {
 // pageNotice picks the wording for a finished action: the daemon's message
 // when it sent one, else the action's label.
 func pageNotice(msg pageActionExecutedMsg) string {
-	notice := fmt.Sprintf("%s done", msg.Action.Label)
+	notice := fmt.Sprintf("%s completed", msg.Action.Label)
 	if msg.Result == nil {
 		return notice
 	}
@@ -554,7 +554,7 @@ func (m PageViewModel) View() string {
 		actionTarget := pick(act.Row, target, "")
 		switch m.Mode {
 		case modeConfirm:
-			line(DefaultStyles.Warning.Render(act.Label + actionTarget + "? enter confirm · esc cancel"))
+			line(DefaultStyles.Warning.Render(act.Label + actionTarget + "? Enter to confirm · Esc to cancel"))
 		case modeChoice:
 			var choice strings.Builder
 			choice.WriteString(m.Styles.Prompt.Render(act.Label+target) + " " + promptLead())

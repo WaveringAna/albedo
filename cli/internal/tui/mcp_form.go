@@ -58,7 +58,7 @@ func newMCPForm(editing string, server config.MCPServer, stored daemon.MCPSecret
 	f.Inputs[fieldName].SetValue(editing)
 	f.NameTouched = editing != ""
 	if stored.BearerToken {
-		f.Inputs[fieldToken].Placeholder = "stored · blank keeps it · - removes it"
+		f.Inputs[fieldToken].Placeholder = "stored · leave blank to keep it, or enter - to remove it"
 	}
 	if len(stored.Headers) > 0 {
 		f.Inputs[fieldHeader].Placeholder = strings.Join(stored.Headers, ", ") + " stored · add or replace one"
@@ -233,7 +233,7 @@ func (f *mcpForm) view(width int) []string {
 			own = []hint{{"←→", "http or stdio"}}
 		}
 	case fieldToken:
-		note = "optional · sent as Authorization: Bearer"
+		note = "optional · sent as an Authorization: Bearer header"
 	case fieldHeader, fieldValue:
 		note = "optional custom header, stored privately"
 	case fieldEnv:

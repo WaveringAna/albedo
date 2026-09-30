@@ -170,11 +170,11 @@ func ReadClipboardImage() (*daemon.ImageAttachment, error) {
 		}
 
 	default:
-		return nil, fmt.Errorf("unsupported platform for clipboard images: %s", runtime.GOOS)
+		return nil, fmt.Errorf("Clipboard images are not supported on %s", runtime.GOOS)
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to read clipboard image: %w", err)
+		return nil, fmt.Errorf("Could not read clipboard image: %w", err)
 	}
 
 	if len(data) == 0 {
@@ -188,7 +188,7 @@ func ReadClipboardImage() (*daemon.ImageAttachment, error) {
 	// Strictly validate config - rejects truncated or 0-dimension images
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("invalid or truncated image: %w", err)
+		return nil, fmt.Errorf("Clipboard image is invalid or incomplete: %w", err)
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 {
 		return nil, errors.New("invalid image dimensions: zero or negative")
