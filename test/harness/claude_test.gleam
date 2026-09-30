@@ -1,4 +1,4 @@
-// Signed Claude SSE replay, schema unions, and billing hashes have edge cases absent from the fake E2E provider.
+// Signed Claude SSE replay, schema unions, billing hashes, and stored-credential enumeration have edge cases absent from the fake E2E provider.
 import albedo/daemon/events
 import albedo/daemon/projection
 import albedo/daemon/transcript
@@ -12,6 +12,7 @@ import albedo/openai_api/transport
 import albedo/openai_api/types
 import gleam/bit_array
 import gleam/dict
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -652,4 +653,38 @@ fn feed_all(
 fn list_first(items: List(types.ReplayItem)) -> types.ReplayItem {
   let assert [first, ..] = items
   first
+}
+
+@external(erlang, "albedo_skills_test_support", "fixture")
+fn fixture() -> #(String, String, String)
+
+@external(erlang, "albedo_skills_test_support", "write")
+fn write(base: String, path: String, contents: String) -> String
+
+@external(erlang, "albedo_skills_test_support", "cleanup")
+fn cleanup(root: String) -> Nil
+
+@external(erlang, "albedo_claude_auth", "accounts")
+fn claude_accounts(home: String) -> List(Dynamic)
+
+// A legacy anthropic account stored without a refresh token crashed quota
+// enumeration with `bad key: <<"refresh">>` in refresh_current/3, taking out
+// every Claude account's readings; E2E only ever sees that crash as log noise
+// from a background spawn, so the direct call is the only clean reach. Such an
+// account is never refreshed and stays as stored, like a refresh that failed,
+// beside its healthy sibling.
+pub fn claude_accounts_without_a_refresh_token_stay_enumerable_test() {
+  let #(root, _, home) = fixture()
+  let _ =
+    write(
+      home,
+      "creds.json",
+      "{\"accounts\":{\"anthropic\":[{\"type\":\"oauth\",\"access\":\"legacy-access\"},"
+        <> "{\"type\":\"oauth\",\"access\":\"fresh-access\",\"refresh\":\"r\","
+        <> "\"expires\":4102444800000}]}}",
+    )
+  let access = decode.at(["access"], decode.string)
+  let assert [Ok("legacy-access"), Ok("fresh-access")] =
+    list.map(claude_accounts(home), decode.run(_, access))
+  cleanup(root)
 }

@@ -108,7 +108,8 @@ credentials(Data) ->
 %% provide-usage credential fields. The refresh token stays home: albedo
 %% refreshes, and the core never reads it. A refresh that fails keeps the stored
 %% credential, so the poll records the auth failure as a reading instead of
-%% silently dropping the account.
+%% silently dropping the account. An account stored without a refresh token is
+%% never refreshed at all and is kept the same way.
 accounts(Home0) ->
     Path = albedo_credentials:creds_path(Home0),
     case albedo_credentials:accounts(Path) of
@@ -123,12 +124,23 @@ refreshed(Path, Value) ->
          Expires > erlang:system_time(millisecond) + ?REFRESH_SKEW_MS of
         true -> Value;
         false ->
-            case albedo_settings_lock:with_lock(filename:dirname(Path),
-                    fun() -> refresh(Path, identity(Value)) end,
-                    fun() -> {error, busy} end) of
-                {ok, Updated} -> Updated;
-                _ -> Value
+            case refreshable(Value) of
+                false -> Value;
+                true ->
+                    case albedo_settings_lock:with_lock(filename:dirname(Path),
+                            fun() -> refresh(Path, identity(Value)) end,
+                            fun() -> {error, busy} end) of
+                        {ok, Updated} -> Updated;
+                        _ -> Value
+                    end
             end
+    end.
+
+%% An OAuth account with no usable refresh token can never be refreshed.
+refreshable(Value) ->
+    case maps:get(<<"refresh">>, Value, <<>>) of
+        Refresh when is_binary(Refresh), Refresh =/= <<>> -> true;
+        _ -> false
     end.
 
 entry(Value) ->
@@ -179,8 +191,17 @@ refresh(Path, Id) ->
     end.
 
 refresh_current(Path, Data, Current) ->
+    case maps:get(<<"refresh">>, Current, <<>>) of
+        %% A re-read under the lock can lose the refresh token; the account is
+        %% then never refreshable, which callers treat as a failed refresh.
+        Refresh when is_binary(Refresh), Refresh =/= <<>> ->
+            refresh_current(Path, Data, Current, Refresh);
+        _ -> {error, <<"stored Claude credential has no refresh token">>}
+    end.
+
+refresh_current(Path, Data, Current, Refresh) ->
     case post_token_map(#{<<"grant_type">> => <<"refresh_token">>, <<"client_id">> => ?CLIENT_ID,
-                          <<"refresh_token">> => maps:get(<<"refresh">>, Current)}, refresh) of
+                          <<"refresh_token">> => Refresh}, refresh) of
         {ok, Token} ->
             New = (maps:merge(Current, Token))#{<<"accountId">> => identity(Current)},
             Values = albedo_credentials:values(Data, ?KEY),
