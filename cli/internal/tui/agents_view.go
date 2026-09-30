@@ -103,11 +103,10 @@ type agentNode struct {
 	session                 daemon.Session
 	id, parent, name, model string
 	address                 string // how its family mails it; a rename leaves it
-	line                    string
 	call                    string // the tool call whose arguments are streaming
-	args                    string // its raw JSON arguments so far
 	mail                    []agentMail
-	tail                    []tailLine
+	tail                    agentTail
+	preview                 agentPreview
 	hue                     rgb
 	rate                    float64
 	flash                   float64
@@ -330,7 +329,7 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		if n == nil {
 			return m, nil
 		}
-		var seeded []tailLine
+		var seeded agentTail
 		for _, item := range msg.Items {
 			switch item.Type {
 			case "user", "tool":
@@ -338,14 +337,19 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 				if item.Type == "tool" {
 					prefix = "▸ "
 				}
-				seeded = append(seeded, tailLine{kind: tailMeta, text: prefix + firstLine(item.Preview)})
+				seeded.push(tailLine{kind: tailMeta, text: prefix + firstLine(item.Preview)})
 			default:
 				for line := range strings.SplitSeq(item.Preview, "\n") {
-					seeded = append(seeded, tailLine{kind: tailText, text: line})
+					seeded.push(tailLine{kind: tailText, text: line})
 				}
 			}
 		}
-		n.tail = append(seeded, n.tail...)
+		existing := slices.Collect(n.tail.newest(false))
+		for _, line := range slices.Backward(existing) {
+			seeded.push(line)
+		}
+		seeded.omitted = seeded.omitted || n.tail.omitted
+		n.tail = seeded
 		return m, nil
 
 	case agentsSeedErrMsg:
@@ -688,7 +692,7 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 			n.call = call
 		}
 		n.lineKind = tailCode
-		n.args += text
+		n.preview.appendArguments(text)
 	case "tool_progress":
 		progress, _ := event["progress"].(map[string]any)
 		if str(progress, "phase") == "running" {
@@ -763,7 +767,7 @@ func (m *AgentsViewModel) stream(n *agentNode, kind tailKind, text string) {
 	}
 	for {
 		head, rest, found := strings.Cut(text, "\n")
-		n.line += head
+		n.preview.lines.write(head, kind)
 		if !found {
 			return
 		}
@@ -777,55 +781,26 @@ func (m *AgentsViewModel) stream(n *agentNode, kind tailKind, text string) {
 // the code of a finished tool call.
 func (m *AgentsViewModel) flushLine(n *agentNode) {
 	if n.lineKind == tailCode {
-		for _, line := range codeLines(n.args) {
-			m.pushTail(n, tailCode, line)
+		n.preview.finish()
+		lines := slices.Collect(n.preview.lines.newest(true))
+		for _, line := range slices.Backward(lines) {
+			m.pushTail(n, tailCode, line.text)
 		}
-		n.args, n.call = "", ""
-	} else if strings.TrimSpace(n.line) != "" {
-		m.pushTail(n, n.lineKind, n.line)
+	} else {
+		for line := range n.preview.lines.newest(false) {
+			if strings.TrimSpace(line.text) != "" {
+				m.pushTail(n, n.lineKind, line.text)
+			}
+		}
 	}
-	n.line = ""
+	n.tail.omitted = n.tail.omitted || n.preview.lines.omitted
+	n.preview = agentPreview{}
+	n.call = ""
 	n.lineKind = tailText
 }
 
 func (m *AgentsViewModel) pushTail(n *agentNode, kind tailKind, line string) {
-	n.tail = capped(append(n.tail, tailLine{kind: kind, text: strings.TrimRight(line, " ")}), 120)
-}
-
-// codeLines reads the code out of a tool call's JSON arguments while they are
-// still arriving: the "code" string so far, unescaped, or the raw arguments
-// for a tool without one.
-func codeLines(raw string) []string {
-	body := raw
-	if _, rest, found := strings.Cut(raw, `"code"`); found {
-		rest = strings.TrimLeft(rest, " :")
-		if strings.HasPrefix(rest, `"`) {
-			var b strings.Builder
-			escaped := false
-			for _, r := range rest[1:] {
-				switch {
-				case escaped:
-					switch r {
-					case 'n':
-						b.WriteRune('\n')
-					case 't':
-						b.WriteString("    ")
-					default:
-						b.WriteRune(r)
-					}
-					escaped = false
-				case r == '\\':
-					escaped = true
-				case r == '"':
-					return strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
-				default:
-					b.WriteRune(r)
-				}
-			}
-			body = b.String()
-		}
-	}
-	return strings.Split(strings.TrimRight(body, "\n"), "\n")
+	n.tail.push(tailLine{kind: kind, text: line})
 }
 
 // ─── layout ───
@@ -1254,12 +1229,12 @@ func (m *AgentsViewModel) drawNodes(c *agentCanvas) {
 	}
 }
 
-func (m AgentsViewModel) pane(height int) []string {
+func (m AgentsViewModel) paneHeader() []string {
 	// One column goes to the space after the divider.
 	width := m.paneWidth() - 1
-	rows := make([]string, 0, height)
+	rows := make([]string, 0, 12)
 	n := m.nodes[m.selected]
-	if n == nil || width == 0 {
+	if n == nil || width <= 0 {
 		return rows
 	}
 	colors := agentColors()
@@ -1304,29 +1279,35 @@ func (m AgentsViewModel) pane(height int) []string {
 	if n.running {
 		live += " " + styled(n.hue, "●") + DefaultStyles.Faint.Render(" live")
 	}
-	rows = append(rows, live)
-	lines := slices.Clone(n.tail)
-	if n.lineKind == tailCode {
-		for _, line := range codeLines(n.args) {
-			lines = append(lines, tailLine{kind: tailCode, text: line})
+	if n.tail.omitted || n.preview.lines.omitted {
+		live += DefaultStyles.Faint.Render(" · earlier output omitted")
+	}
+	return append(rows, live)
+}
+
+func (m AgentsViewModel) pane(height int) []string {
+	rows := m.paneHeader()
+	room := max(0, height-len(rows))
+	if room == 0 || len(rows) == 0 {
+		return rows
+	}
+	node := m.nodes[m.selected]
+	lines := slices.Collect(node.tail.newest(false))
+	slices.Reverse(lines)
+	active := slices.Collect(node.preview.lines.newest(node.lineKind == tailCode))
+	for _, line := range slices.Backward(active) {
+		if node.lineKind == tailCode || line.text != "" {
+			lines = append(lines, line)
 		}
-	} else if n.line != "" {
-		lines = append(lines, tailLine{kind: n.lineKind, text: n.line})
 	}
 	var wrapped []string
 	for _, line := range lines {
-		wrapped = append(wrapped, drawTail(line, width)...)
-	}
-	room := height - len(rows)
-	if room > 0 && len(wrapped) > room {
-		wrapped = wrapped[len(wrapped)-room:]
+		wrapped = append(wrapped, drawTail(line, m.paneWidth()-1)...)
 	}
 	if len(wrapped) == 0 {
-		rows = append(rows, DefaultStyles.Faint.Render("nothing yet"))
-	} else {
-		rows = append(rows, wrapped...)
+		return append(rows, DefaultStyles.Faint.Render("nothing yet"))
 	}
-	return rows
+	return append(rows, wrapped[max(0, len(wrapped)-room):]...)
 }
 
 // drawTail wraps one tail line to width and styles it by kind.

@@ -3,7 +3,7 @@
 //
 //   - frame pacing: an idle graph must not keep scheduling animation frames,
 //     a running one must resume them exactly once (wasted CPU, double speed);
-//   - codeLines must reveal streamed code from incomplete JSON arguments,
+//   - the preview decoder must reveal streamed code from incomplete JSON arguments,
 //     which a real stream only ever shows mid-flight;
 //   - a pending delete confirm must not outlive the agent it names;
 //   - a failed history seed must retry on the next selection, and a late
@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -85,15 +86,24 @@ func TestAgentsFramesStopWhenStillAndResumeOnce(t *testing.T) {
 	}
 }
 
-// Partial JSON arguments arrive before a tool call finishes; a malformed escape must not hide streamed code.
-func TestCodeLinesReadsPartialJSON(t *testing.T) {
-	got := codeLines(`{"code": "a = 1\nb = \"x\"\nprint(a`)
-	want := []string{"a = 1", `b = "x"`, "print(a"}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("codeLines = %q, want %q", got, want)
+// Tool previews must expose code before the argument JSON is complete.
+func TestAgentsPreviewReadsPartialJSON(t *testing.T) {
+	var preview agentPreview
+	preview.appendArguments(`{"code": "a = 1\nb = \"x\"\nprint(a`)
+	var got []string
+	for line := range preview.lines.newest(true) {
+		got = append(got, line.text)
 	}
-	if got := codeLines(`{"code": "done\n", "timeout_ms": 5}`); strings.Join(got, "|") != "done" {
-		t.Fatalf("a closed string stops at its quote, got %q", got)
+	slices.Reverse(got)
+	want := []string{"a = 1", `b = "x"`, "print(a"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("preview = %q, want %q", got, want)
+	}
+	preview = agentPreview{}
+	preview.appendArguments(`{"code": "done\n", "timeout_ms": 5}`)
+	lines := slices.Collect(preview.lines.newest(true))
+	if len(lines) != 1 || lines[0].text != "done" {
+		t.Fatalf("a closed string stops at its quote, got %q", lines)
 	}
 }
 
