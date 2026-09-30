@@ -23,7 +23,9 @@ import unittest
 
 from harness import Albedo, Provider, exclusive, text
 
-POLL_SECONDS = 3
+# The failure backoff waits 2x then 4x the ordinary cadence, and the test
+# needs two of those waits, so the ordinary cadence sets its length.
+POLL_SECONDS = 2
 BUSY_SECONDS = 1
 
 FAKE_USAGE = """#!/usr/bin/env python3
@@ -264,7 +266,7 @@ class QuotaTests(unittest.TestCase):
         self.assertGreaterEqual(median(busy), BUSY_SECONDS * 900, message)
         self.assertLess(
             median(busy),
-            BUSY_SECONDS * 2200,
+            POLL_SECONDS * 900,
             message + " — the busy account polled at the ordinary cadence",
         )
         self.assertGreaterEqual(median(ordinary), POLL_SECONDS * 900, message)

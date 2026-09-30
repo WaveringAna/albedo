@@ -672,8 +672,12 @@ def _alive(pid):
 
 def snapshot_daemon():
     """Compile the daemon once for the run and boot every test daemon from a
-    copy, not through `gleam run` (see test/snapshot-daemon.sh)."""
+    copy, not through `gleam run` (see test/snapshot-daemon.sh). test.sh
+    snapshots once for every suite and passes it as ALBEDO_TEST_DAEMON."""
     global _executable
+    _executable = os.environ.get("ALBEDO_TEST_DAEMON")
+    if _executable:
+        return
     result = subprocess.run(
         [str(ROOT / "test/snapshot-daemon.sh"), tempfile.mkdtemp(prefix="daemon-")],
         text=True,

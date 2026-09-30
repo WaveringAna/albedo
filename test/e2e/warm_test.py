@@ -33,9 +33,13 @@ CHILD_USAGE = {
 TASK = "hold the fort until released"
 
 
-# A local cache-table override matching the fixture host: a 3s refresh TTL
-# bought at 1.0x and read at 0.3x, so pings come ~2.7s apart and at most
-# floor(1.0 / 0.3) - 1 = 2 of them pay for themselves.
+# A local cache-table override matching the fixture host: the shortest refresh
+# TTL the table can say, bought at 1.0x and read at 0.3x, so pings come 0.9s
+# apart and at most floor(1.0 / 0.3) - 1 = 2 of them pay for themselves.
+TTL_SECONDS = 1
+# Longer than a ping interval by more than a loaded machine's jitter: a ping
+# that was due would have gone out within it.
+QUIET_SECONDS = 2 * TTL_SECONDS
 CACHE_TTL = {
     "version": 1,
     "entries": [
@@ -44,7 +48,7 @@ CACHE_TTL = {
             "match": {"host": "127.0.0.1"},
             "policy": "refresh",
             "clock": "request",
-            "tiers": [{"seconds": 3, "write": 1.0}],
+            "tiers": [{"seconds": TTL_SECONDS, "write": 1.0}],
             "read": 0.3,
             "evidence": "measured",
         }
@@ -150,7 +154,7 @@ class WarmTest(unittest.TestCase):
         return parent, child
 
     def assert_no_pings(self, parent, child):
-        time.sleep(4)  # The fixture TTL would have scheduled a ping at 2.7s.
+        time.sleep(QUIET_SECONDS)
         self.assertEqual(len(self.requests("/parent/")), 1)
         self.assertEqual([row["kind"] for row in self.rows(parent)], ["turn"])
 
@@ -207,20 +211,22 @@ class WarmTest(unittest.TestCase):
             self.assertEqual(row["profile"], "orchestrator")
             self.assertEqual(row["model"], "fixture-model")
         # A ping paid 4096 cached tokens: the hit the TTL model predicted.
-        self.assertGreaterEqual(rows[2]["startedMs"], rows[1]["startedMs"] + 2700)
+        self.assertGreaterEqual(
+            rows[2]["startedMs"], rows[1]["startedMs"] + TTL_SECONDS * 900
+        )
 
         # The transcript is untouched by warming.
         self.assertEqual(self.tree(parent), before)
 
         # The budget is spent: no third ping past another interval.
-        time.sleep(4)
+        time.sleep(QUIET_SECONDS)
         self.assertEqual(len(self.pings(self.requests("/parent/"))), 2)
 
         # Once the scout finishes, nothing new is scheduled either.
         self.gate.set()
         self.app.idle(child)
         self.app.idle(parent)
-        time.sleep(4)
+        time.sleep(QUIET_SECONDS)
         self.assertEqual(len(self.pings(self.requests("/parent/"))), 2)
         # The scout's answer woke the parent with an ordinary turn.
         turns = [
@@ -235,16 +241,18 @@ class WarmTest(unittest.TestCase):
     def test_a_ping_restarts_the_cached_counts_fade(self):
         parent, child = self.swarm()
 
-        def fade():
-            usages = [
-                event for event in self.app.events(parent) if event["type"] == "usage"
+        def fades():
+            return [
+                event["cacheFade"]
+                for event in self.app.events(parent)
+                if event["type"] == "usage"
             ]
-            return usages[-1]["cacheFade"]
 
-        # The fixture's clock counts 3s from the send's start; nothing is
+        # The fixture's clock counts the TTL from the send's start; nothing is
         # left after it.
         turn = self.rows(parent)[0]
-        self.assertEqual(fade(), [{"at": turn["startedMs"] + 3000, "cached": 0}])
+        expires = turn["startedMs"] + TTL_SECONDS * 1000
+        self.assertEqual(fades()[0], [{"at": expires, "cached": 0}])
 
         # A ping resends the prefix, so the provider's clock starts over from
         # it: the fade moves to the ping's send, which the session times from
@@ -256,16 +264,11 @@ class WarmTest(unittest.TestCase):
         )
         moved = wait_for(
             lambda: next(
-                (
-                    step["at"]
-                    for step in fade()
-                    if step["at"] != turn["startedMs"] + 3000
-                ),
-                None,
+                (step["at"] for step in fades()[-1] if step["at"] != expires), None
             )
         )
-        self.assertLessEqual(moved, ping["startedMs"] + 3000)
-        self.assertGreater(moved, ping["startedMs"] + 2000)
+        self.assertLessEqual(moved, ping["startedMs"] + TTL_SECONDS * 1000)
+        self.assertGreater(moved, ping["startedMs"] + TTL_SECONDS * 1000 - 500)
         self.gate.set()
         self.app.idle(child)
         self.app.idle(parent)
@@ -290,7 +293,7 @@ class WarmTest(unittest.TestCase):
         self.app.idle(child)
         self.app.idle(parent)
         settled = len(self.pings(self.requests("/parent/")))
-        time.sleep(5)
+        time.sleep(QUIET_SECONDS)
         self.assertEqual(len(self.pings(self.requests("/parent/"))), settled)
         # Every ping that did go out repeated a turn's request, budget aside.
         turns = [

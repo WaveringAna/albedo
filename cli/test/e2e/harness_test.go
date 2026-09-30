@@ -101,20 +101,13 @@ func bootSuite() (func() (string, bool), error) {
 		return teardown, fmt.Errorf("building ./cmd/albedo: %w\n%s", err, out)
 	}
 
-	// The daemon boots from a snapshot of its compiled code rather than
-	// through `gleam run`; see test/snapshot-daemon.sh.
-	snapshot := exec.Command(filepath.Join(root, "test", "snapshot-daemon.sh"), filepath.Join(temp, "daemon"))
-	launcher, err := snapshot.Output()
+	launcher, err := snapshotDaemon(root, filepath.Join(temp, "daemon"))
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			return teardown, fmt.Errorf("snapshotting the daemon: %w\n%s", err, exit.Stderr)
-		}
-		return teardown, fmt.Errorf("snapshotting the daemon: %w", err)
+		return teardown, err
 	}
 
 	suite.root, suite.home = root, home
-	suite.env = hermeticEnv(root, home, userHome, scratch, strings.TrimSpace(string(launcher)))
+	suite.env = hermeticEnv(root, home, userHome, scratch, launcher)
 	suite.provider = newFakeProvider()
 	// A models.dev refresh or the cache-TTL table's remote copy would reach
 	// the network from a test.
@@ -234,6 +227,24 @@ func repoRoot() (string, error) {
 			return "", fmt.Errorf("no albedo repository above %s", filepath.Dir(file))
 		}
 	}
+}
+
+// snapshotDaemon returns the launcher the daemon boots from instead of
+// `gleam run`: test.sh's snapshot when it passes ALBEDO_TEST_DAEMON, else a
+// fresh one in out (see test/snapshot-daemon.sh).
+func snapshotDaemon(root, out string) (string, error) {
+	if launcher := os.Getenv("ALBEDO_TEST_DAEMON"); launcher != "" {
+		return launcher, nil
+	}
+	launcher, err := exec.Command(filepath.Join(root, "test", "snapshot-daemon.sh"), out).Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return "", fmt.Errorf("snapshotting the daemon: %w\n%s", err, exit.Stderr)
+		}
+		return "", fmt.Errorf("snapshotting the daemon: %w", err)
+	}
+	return strings.TrimSpace(string(launcher)), nil
 }
 
 // hermeticEnv builds the environment for every CLI invocation and the daemon
