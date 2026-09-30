@@ -1,5 +1,5 @@
 //// The vent operations the Python tool calls; the user's triage runs through
-//// the /paperclips command against the same ledger.
+//// the /paperclips command against the same global ledger.
 
 import albedo/harness/extensions/paperclips/ledger as paperclips
 import albedo/harness/rpc
@@ -66,7 +66,7 @@ fn dispatch(store, cwd, session, method, args) {
         decode.success(limit)
       }
       use limit <- result.try(parse(args, decoder))
-      paperclips.list(store, cwd, limit)
+      paperclips.list(store, limit)
       |> result.map(json.array(_, paperclips.to_json))
     }
     _ -> Error(paperclips.Invalid("unknown host operation"))

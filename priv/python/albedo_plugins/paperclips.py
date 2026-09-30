@@ -24,7 +24,7 @@ async def vent(topic: str, message: str, suggestion: str = "", title: str = "") 
 
 
 async def vents(limit: int = 20) -> list[dict]:
-    """Recent vents for this workspace, newest first."""
+    """Recent vents from every session, newest first."""
     return cast(list[dict], await host("paperclips.list", {"limit": limit}))
 
 

@@ -49,7 +49,7 @@ class MigrationsTest(unittest.TestCase):
                     "assert not items\n"
                     "item = await work.create('new scoped item')\n"
                     "assert (await work.get(item.id)).title == 'new scoped item'\n"
-                    "legacy = [v for v in await vents() if v['message'] == 'legacy vent']\n"
+                    "legacy = [v for v in await vents(200) if v['message'] == 'legacy vent']\n"
                     "assert len(legacy) == 1 and legacy[0]['title'] == ''\n"
                     "await vent('bug', 'new vent', title='new title')\n"
                     "assert any(v['title'] == 'new title' for v in await vents())\n"
@@ -83,6 +83,14 @@ class MigrationsTest(unittest.TestCase):
                         "INSERT INTO paperclips(topic,message,cwd) VALUES('bug','legacy vent',?)",
                         (str(app.workspace),),
                     )
+                    # the cwd-scoped era's index, which the scope migration drops
+                    db.execute(
+                        "CREATE INDEX IF NOT EXISTS paperclips_cwd ON paperclips(cwd)"
+                    )
+                    assert db.execute(
+                        "SELECT name FROM sqlite_master"
+                        " WHERE name='paperclips_cwd' AND type='index'"
+                    ).fetchone()
                 settings_path = app.home / "extensions.json"
                 settings = json.loads(settings_path.read_text())
                 settings.setdefault("enabled", {}).update(work=False, paperclips=False)
@@ -108,6 +116,11 @@ class MigrationsTest(unittest.TestCase):
                     self.assertIsNotNone(
                         db.execute(
                             "SELECT name FROM sqlite_master WHERE name='work_cwd_id' AND type='index'"
+                        ).fetchone()
+                    )
+                    self.assertIsNone(
+                        db.execute(
+                            "SELECT name FROM sqlite_master WHERE name='paperclips_cwd' AND type='index'"
                         ).fetchone()
                     )
                 for name in ("work", "paperclips"):

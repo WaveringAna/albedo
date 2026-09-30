@@ -1,8 +1,11 @@
 //// The vent ledger: what the model found worth complaining about, kept for
 //// the user to review. The model writes and lists; the user triages through
-//// /paperclips. Rows live in the shared ledger store under one table.
+//// /paperclips. Rows live in the shared ledger store under one global table:
+//// every session sees every vent, and each row records the session and
+//// workspace that filed it, plus the reply the user answered it with.
 
 import albedo/daemon/store as storage
+import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -33,8 +36,10 @@ pub type Vent {
     topic: Topic,
     message: String,
     suggestion: String,
+    reply: String,
     status: Status,
     session: Option(String),
+    cwd: String,
     created_at: String,
   )
 }
@@ -48,7 +53,7 @@ pub type Error {
 pub type Store =
   storage.Store
 
-/// Creates the table at install; the extension contributes its column upgrades.
+/// Creates the table at install; the extension contributes its upgrades.
 pub fn initialise(ledger: Store) -> Result(Nil, String) {
   storage.query(ledger, storage.exec(_, schema))
 }
@@ -57,19 +62,19 @@ const schema = "
 CREATE TABLE IF NOT EXISTS paperclips (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  topic TEXT NOT NULL CHECK(topic IN ('harness','workflow','bug','user','other')),
- title TEXT NOT NULL DEFAULT '', 
+ title TEXT NOT NULL DEFAULT '',
  message TEXT NOT NULL CHECK(length(trim(message)) > 0),
  suggestion TEXT NOT NULL DEFAULT '',
+ reply TEXT NOT NULL DEFAULT '',
  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','acknowledged','resolved','dismissed')),
  session TEXT,
  cwd TEXT NOT NULL,
  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
-CREATE INDEX IF NOT EXISTS paperclips_cwd ON paperclips(cwd);
 "
 
-const columns = "id,title,topic,message,suggestion,status,session,created_at"
+const columns = "id,title,topic,message,suggestion,reply,status,session,cwd,created_at"
 
 pub fn topic_name(topic: Topic) -> String {
   case topic {
@@ -143,17 +148,21 @@ fn decoder() {
   use topic <- decode.field(2, topic_decoder())
   use message <- decode.field(3, decode.string)
   use suggestion <- decode.field(4, decode.string)
-  use status <- decode.field(5, status_decoder())
-  use session <- decode.field(6, decode.optional(decode.string))
-  use created_at <- decode.field(7, decode.string)
+  use reply <- decode.field(5, decode.string)
+  use status <- decode.field(6, status_decoder())
+  use session <- decode.field(7, decode.optional(decode.string))
+  use cwd <- decode.field(8, decode.string)
+  use created_at <- decode.field(9, decode.string)
   decode.success(Vent(
     id,
     title,
     topic,
     message,
     suggestion,
+    reply,
     status,
     session,
+    cwd,
     created_at,
   ))
 }
@@ -165,8 +174,10 @@ pub fn to_json(vent: Vent) -> json.Json {
     #("topic", json.string(topic_name(vent.topic))),
     #("message", json.string(vent.message)),
     #("suggestion", json.string(vent.suggestion)),
+    #("reply", json.string(vent.reply)),
     #("status", json.string(status_name(vent.status))),
     #("session", json.nullable(vent.session, json.string)),
+    #("cwd", json.string(vent.cwd)),
     #("created_at", json.string(vent.created_at)),
   ])
 }
@@ -177,6 +188,13 @@ fn rows(db, sql, args) {
 
 fn one(items: List(Vent)) -> Result(Vent, Error) {
   items |> list.first |> result.replace_error(NotFound)
+}
+
+fn within(limit: Int) -> Result(Nil, Error) {
+  case limit < 1 || limit > 200 {
+    True -> Error(Invalid("1 <= limit <= 200 required"))
+    False -> Ok(Nil)
+  }
 }
 
 fn validate(
@@ -198,7 +216,8 @@ fn validate(
   }
 }
 
-/// Files one vent.
+/// Files one vent. `cwd` and `session` record where it came from; the
+/// ledger itself is global.
 pub fn create(
   store: Store,
   cwd: String,
@@ -227,66 +246,122 @@ pub fn create(
   |> result.try(one)
 }
 
-/// The most recent vents for one workspace, newest first, so review
-/// starts at the top.
-pub fn list(
+/// The most recent vents anywhere, newest first, so review starts at the top.
+pub fn list(store: Store, limit: Int) -> Result(List(Vent), Error) {
+  use _ <- result.try(within(limit))
+  storage.query(store, fn(db) {
+    rows(
+      db,
+      "SELECT " <> columns <> " FROM paperclips ORDER BY id DESC LIMIT ?",
+      [sqlight.int(limit)],
+    )
+  })
+}
+
+/// The review listing: open vents first, then acknowledged, then the quietly
+/// finished ones, newest within each rank — so an old open vent is never
+/// crowded out of triage by newer closed ones.
+pub fn review(store: Store, limit: Int) -> Result(List(Vent), Error) {
+  use _ <- result.try(within(limit))
+  storage.query(store, fn(db) {
+    rows(
+      db,
+      "SELECT "
+        <> columns
+        <> " FROM paperclips ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'acknowledged' THEN 1 WHEN 'resolved' THEN 2 ELSE 3 END, id DESC LIMIT ?",
+      [sqlight.int(limit)],
+    )
+  })
+}
+
+/// The display name for each of `ids`, one query for a whole listing: the
+/// name someone gave the session, else a child's family name, else its
+/// title — the same precedence the agents view uses. An unnamed session, or
+/// one whose row is already gone, is left out; the caller falls back to the
+/// id.
+pub fn session_labels(
   store: Store,
-  cwd: String,
-  limit: Int,
-) -> Result(List(Vent), Error) {
-  case limit < 1 || limit > 200 {
-    True -> Error(Invalid("1 <= limit <= 200 required"))
-    False ->
+  ids: List(String),
+) -> Result(Dict(String, String), Error) {
+  case ids {
+    [] -> Ok(dict.new())
+    _ -> {
+      let placeholders = ids |> list.map(fn(_) { "?" }) |> string.join(",")
       storage.query(store, fn(db) {
-        rows(
+        storage.rows(
           db,
-          "SELECT "
-            <> columns
-            <> " FROM paperclips WHERE cwd=? ORDER BY id DESC LIMIT ?",
-          [sqlight.text(cwd), sqlight.int(limit)],
+          "SELECT s.id, COALESCE(NULLIF(s.name,''), f.name, NULLIF(s.title,'new session'), '')"
+            <> " FROM sessions s LEFT JOIN session_family f ON f.session=s.id"
+            <> " WHERE s.id IN ("
+            <> placeholders
+            <> ")",
+          list.map(ids, sqlight.text),
+          label_decoder(),
         )
       })
+      |> result.map_error(Storage)
+      |> result.map(fn(pairs) {
+        pairs |> list.filter(fn(pair) { pair.1 != "" }) |> dict.from_list
+      })
+    }
   }
 }
 
-pub fn get(store: Store, cwd: String, id: Int) -> Result(Vent, Error) {
-  storage.query(store, find(_, cwd, id)) |> result.try(one)
+fn label_decoder() {
+  use id <- decode.field(0, decode.string)
+  use label <- decode.field(1, decode.string)
+  decode.success(#(id, label))
 }
 
-fn find(db, cwd: String, id: Int) {
-  rows(db, "SELECT " <> columns <> " FROM paperclips WHERE cwd=? AND id=?", [
-    sqlight.text(cwd),
-    sqlight.int(id),
-  ])
+pub fn get(store: Store, id: Int) -> Result(Vent, Error) {
+  storage.query(store, fn(db) {
+    rows(db, "SELECT " <> columns <> " FROM paperclips WHERE id=?", [
+      sqlight.int(id),
+    ])
+  })
+  |> result.try(one)
 }
 
 /// Moves one vent's status; nothing else about a filed vent changes.
 pub fn set_status(
   store: Store,
-  cwd: String,
   id: Int,
   status: Status,
 ) -> Result(Vent, Error) {
   storage.query(store, fn(db) {
-    use _ <- result.try(find(db, cwd, id) |> result.try(one))
     rows(
       db,
-      "UPDATE paperclips SET status=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cwd=? AND id=? RETURNING "
+      "UPDATE paperclips SET status=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? RETURNING "
         <> columns,
-      [sqlight.text(status_name(status)), sqlight.text(cwd), sqlight.int(id)],
+      [sqlight.text(status_name(status)), sqlight.int(id)],
     )
   })
   |> result.try(one)
 }
 
-pub fn delete(store: Store, cwd: String, id: Int) -> Result(Vent, Error) {
+/// Records the user's answer on the vent and acknowledges it: the reply is
+/// durable even when the session that filed the vent can no longer be told.
+pub fn answer(store: Store, id: Int, reply: String) -> Result(Vent, Error) {
+  case string.length(reply) > 8000 {
+    True -> Error(Invalid("vent text is too long"))
+    False ->
+      storage.query(store, fn(db) {
+        rows(
+          db,
+          "UPDATE paperclips SET status='acknowledged',reply=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? RETURNING "
+            <> columns,
+          [sqlight.text(reply), sqlight.int(id)],
+        )
+      })
+      |> result.try(one)
+  }
+}
+
+pub fn delete(store: Store, id: Int) -> Result(Vent, Error) {
   storage.query(store, fn(db) {
-    use _ <- result.try(find(db, cwd, id) |> result.try(one))
-    rows(
-      db,
-      "DELETE FROM paperclips WHERE cwd=? AND id=? RETURNING " <> columns,
-      [sqlight.text(cwd), sqlight.int(id)],
-    )
+    rows(db, "DELETE FROM paperclips WHERE id=? RETURNING " <> columns, [
+      sqlight.int(id),
+    ])
   })
   |> result.try(one)
 }

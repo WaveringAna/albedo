@@ -12,7 +12,7 @@ extension-specific migration modules.
 for each installed extension, `extension.install` first calls its table
 initialiser, then applies its contributed `SchemaMigration` callbacks on the
 store-owned SQLite connection, in plugin order. work contributes `cwd.apply`;
-paperclips contributes `title.apply`. their ledgers create tables but do not run
+paperclips contributes `title.apply`, `scope.apply`, and `reply.apply`. their ledgers create tables but do not run
 upgrades themselves. all installed owners upgrade, even when disabled for
 sessions; session selection and live reload never rerun migrations.
 
@@ -38,8 +38,12 @@ schema creation is still owned by each subsystem. `work/migrations/cwd.apply`
 checks `PRAGMA table_info(work)`, adds the existing reserved `__albedo_legacy__`
 cwd default when absent, then creates `work_cwd_id`;
 `paperclips/migrations/title.apply` adds the existing non-null empty-default title
-column. these upgrades run immediately after their owner's table creation, so
-later extension initialisers can use the upgraded schema. embedding hosts call
+column, `paperclips/migrations/scope.apply` drops the now-unused workspace
+index left from the cwd-scoped vent era, and
+`paperclips/migrations/reply.apply` adds the non-null empty-default reply
+column that makes a /paperclips answer durable. these upgrades run immediately
+after their owner's table creation, so later extension initialisers can use
+the upgraded schema. embedding hosts call
 `runtime.migrate` after preparing core storage and before opening sessions.
 
 ## compatibility and interruption
@@ -82,6 +86,8 @@ later extension initialisers can use the upgraded schema. embedding hosts call
 | `python/cells.backup_before_migration` | `python/migrations/cell_images.backup_before_migration` |
 | `work/ledger.initialise`: cwd alteration and index | `work/migrations/cwd.apply`, contributed by work |
 | `paperclips/ledger.initialise`: title addition | `paperclips/migrations/title.apply`, contributed by paperclips |
+| `paperclips/ledger.initialise`: `paperclips_cwd` index creation | dropped from the schema; `paperclips/migrations/scope.apply` removes it from existing stores |
+| `paperclips/ledger.initialise`: reply column | `paperclips/migrations/reply.apply`, added with the global ledger |
 
 `images.migrate` and `cells.migrate_images` are removed rather than wrapped:
 the migration implementations are separate from the live domain readers and
