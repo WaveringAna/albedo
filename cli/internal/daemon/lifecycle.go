@@ -26,9 +26,12 @@ var sanitizerRegex = regexp.MustCompile(`[\p{Cc}\x{202a}-\x{202e}\x{2066}-\x{206
 // SessionText replaces control characters and direction overrides in session metadata.
 func SessionText(s string) string { return sanitizerRegex.ReplaceAllString(s, " ") }
 
+// A starting daemon is looked for every 10ms, up to 30 seconds: until its
+// record exists each look is one stat, and it is ready in about a quarter
+// second.
 const (
-	pollInterval = 100 * time.Millisecond
-	pollAttempts = 300
+	pollInterval = 10 * time.Millisecond
+	pollAttempts = 3000
 )
 
 type ConnectionSnapshot struct {
