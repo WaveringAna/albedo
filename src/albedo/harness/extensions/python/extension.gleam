@@ -73,7 +73,7 @@ pub fn invoke(
             _ -> Ok(Nil)
           }
         })
-      Ok(outcome_output(id, outcome))
+      Ok(outcome_output(id, outcome, context.images))
     }
     Error(_) ->
       Ok(extension.text("{\"error\":\"expected code and timeout_ms\"}"))
@@ -108,11 +108,29 @@ pub fn extension() -> extension.Extension {
   )
 }
 
-/// The cell's JSON result with its images beside it.
+/// The cell's JSON result with its images beside it. An image the provider
+/// would refuse stays back and is reported with the unreadable ones, so the
+/// model can show a smaller one instead.
 fn outcome_output(
   id: String,
   outcome: Result(python.Outcome, python.Error),
+  limits: types.ImageLimits,
 ) -> extension.Output {
+  let outcome =
+    result.map(outcome, fn(outcome) {
+      let #(images, refusals) =
+        list.fold_right(outcome.images, #([], []), fn(kept, image) {
+          case types.image_refusal(limits, image) {
+            Some(reason) -> #(kept.0, [reason, ..kept.1])
+            None -> #([image, ..kept.0], kept.1)
+          }
+        })
+      python.Outcome(
+        ..outcome,
+        images: images,
+        image_errors: list.append(outcome.image_errors, refusals),
+      )
+    })
   let images = case outcome {
     Ok(outcome) -> outcome.images
     Error(_) -> []
@@ -173,7 +191,7 @@ fn recover(context: extension.Context) {
     Error(_) -> None
   }
   Some(case outcome {
-    Some(outcome) -> outcome_output(id, outcome)
+    Some(outcome) -> outcome_output(id, outcome, context.images)
     None ->
       failure(
         id,

@@ -130,8 +130,15 @@ fn resolve(
     },
     fn() { Some(owner) },
     wire.cache_marks,
+    images,
   ))
 }
+
+/// Anthropic takes an 8000px image alone, but once a request carries more
+/// than 20 images every one of them, old turns and tool results included,
+/// must fit in 2000px. A working session passes 20 quickly, so that is the
+/// bound an image is held to from the start.
+const images = types.ImageLimits(max_edge: 2000)
 
 /// A profile's `apiKey` bills the Anthropic Console; without one, the signed-in
 /// Claude subscription serves the session.

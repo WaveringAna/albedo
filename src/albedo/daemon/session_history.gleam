@@ -46,6 +46,7 @@ pub fn recover_pending(
   host: runtime.Runtime,
   history: Option(List(transcript.Entry)),
   kernel: runtime.Session,
+  images: types.ImageLimits,
 ) -> List(types.Input) {
   let inputs = case history {
     Some(history) -> history |> list.reverse |> raw_inputs
@@ -61,7 +62,7 @@ pub fn recover_pending(
   let pending =
     list.flat_map(inputs, view.calls)
     |> list.filter(fn(call) { !list.contains(completed, call.id) })
-  list.map(pending, runtime.recover(host, kernel, _))
+  list.map(pending, runtime.recover(host, kernel, _, images))
 }
 
 pub fn ensure_history(

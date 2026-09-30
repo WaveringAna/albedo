@@ -115,7 +115,12 @@ fn run(client, request, host, session, step, tools) {
                 #("id", json.string(call.id)),
                 #("arguments", json.string(call.arguments)),
               ])
-              use output <- result.try(runtime.invoke(host, session, call))
+              use output <- result.try(runtime.invoke(
+                host,
+                session,
+                call,
+                types.any_images,
+              ))
               case output {
                 types.ToolOutput(_, text, _) ->
                   log([

@@ -195,6 +195,7 @@ pub fn upstream(
       }
     },
     fn(_) { [] },
+    types.any_images,
   )
 }
 

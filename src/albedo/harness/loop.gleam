@@ -243,7 +243,12 @@ fn run_tool(state: Loop, call: types.ToolCall) -> Result(types.Input, String) {
   case state.publish(view.progress(call, "running")) {
     False -> Error("cancelled before tool execution")
     True -> {
-      use output <- result.try(runtime.invoke(state.host, state.kernel, call))
+      use output <- result.try(runtime.invoke(
+        state.host,
+        state.kernel,
+        call,
+        state.upstream.images,
+      ))
       use _ <- result.try(state.commit([output], conversation.Tool, None))
       let _ = case output {
         types.ToolOutput(_, body, images) ->

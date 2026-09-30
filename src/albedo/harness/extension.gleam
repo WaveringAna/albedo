@@ -29,6 +29,9 @@ pub type Context {
     kernel: python.Kernel,
     call_id: String,
     workspace: String,
+    /// What the session's provider takes, so a tool never hands the model
+    /// an image its next request would be refused for.
+    images: types.ImageLimits,
   )
 }
 
@@ -198,6 +201,7 @@ pub type Upstream {
     /// Where this upstream marks a request's cached prefixes; empty when the
     /// provider decides what to cache on its own.
     cache_marks: fn(types.Request) -> List(types.CacheMark),
+    images: types.ImageLimits,
   )
 }
 

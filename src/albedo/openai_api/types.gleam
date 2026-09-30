@@ -1,5 +1,6 @@
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json.{type Json}
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -50,6 +51,34 @@ pub const max_image_bytes = 5_242_880
 pub const max_image_edge = 16_384
 
 pub const max_image_pixels = 40_000_000
+
+/// The images a provider accepts. `max_edge` must hold for every image of
+/// every request the session will send, so it is the strictest bound the
+/// provider applies as a conversation grows, not the one for a lone image.
+pub type ImageLimits {
+  ImageLimits(max_edge: Int)
+}
+
+/// The bounds albedo itself validates images against, for a provider that
+/// states none of its own.
+pub const any_images = ImageLimits(max_image_edge)
+
+/// Why a provider held to `limits` refuses `image`, or `None` when it takes it.
+pub fn image_refusal(limits: ImageLimits, image: Image) -> Option(String) {
+  let #(_, width, height, _) = image_meta(image)
+  case width > limits.max_edge || height > limits.max_edge {
+    False -> None
+    True ->
+      Some(
+        int.to_string(width)
+        <> "x"
+        <> int.to_string(height)
+        <> " image is over this model's "
+        <> int.to_string(limits.max_edge)
+        <> "px edge limit",
+      )
+  }
+}
 
 /// A bounded, header-validated image. The daemon revalidates decoded bytes before
 /// constructing this value; dimensions are display metadata, not decode proof.

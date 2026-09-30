@@ -1357,6 +1357,38 @@ fn admit(
 ) -> actor.Next(State, Message) {
   // Anything a client submits counts as attention.
   let state = stirred(state)
+  case refused_image(state, submission) {
+    #(state, Some(reason)) -> answer(state, reply, Error(Rejected(reason)))
+    #(state, None) -> admit_within_limits(state, submission, reply)
+  }
+}
+
+/// Why the session's provider would refuse the submission's image, so it is
+/// turned away before the transcript keeps it rather than failing every
+/// request after.
+fn refused_image(
+  state: State,
+  submission: Submission,
+) -> #(State, Option(String)) {
+  case submission.image {
+    None -> #(state, None)
+    Some(image) ->
+      case session_provider.configured_client(state) {
+        // Without a provider the turn is refused on its own when it starts.
+        Error(_) -> #(state, None)
+        Ok(#(state, client)) -> #(
+          state,
+          types.image_refusal(client.images, image),
+        )
+      }
+  }
+}
+
+fn admit_within_limits(
+  state: State,
+  submission: Submission,
+  reply: Subject(Result(Bool, SubmissionError)),
+) -> actor.Next(State, Message) {
   case turn.admit(state.activity, submission, list.length(state.steering)) {
     turn.Reject(turn.Busy) -> answer(state, reply, Error(Busy))
     turn.Reject(turn.Oversized) ->
@@ -1527,7 +1559,12 @@ fn prepare_turn_pipeline(
   )
   let accepted =
     list.append(
-      session_history.recover_pending(state.host, state.history, kernel),
+      session_history.recover_pending(
+        state.host,
+        state.history,
+        kernel,
+        client.images,
+      ),
       list.map(submissions, session_submission.input),
     )
   use history <- result.try(

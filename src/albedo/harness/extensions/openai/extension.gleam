@@ -61,6 +61,7 @@ pub fn upstream(
     explain,
     fn() { None },
     fn(_) { [] },
+    types.any_images,
   )
 }
 

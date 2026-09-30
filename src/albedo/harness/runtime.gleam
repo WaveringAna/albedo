@@ -1020,6 +1020,7 @@ fn tool_call(
   runtime: Runtime,
   session: Session,
   call: types.ToolCall,
+  images: types.ImageLimits,
 ) -> Result(#(extension.Tool, extension.Context), Nil) {
   extension.tools(session.composition)
   |> list.find(fn(tool) { tool.definition.name == call.name })
@@ -1032,18 +1033,21 @@ fn tool_call(
         session.kernel,
         call.id,
         session.cwd,
+        images,
       ),
     )
   })
 }
 
+/// Runs `call`; `images` are what the provider its result goes to accepts.
 pub fn invoke(
   runtime: Runtime,
   session: Session,
   call: types.ToolCall,
+  images: types.ImageLimits,
 ) -> Result(types.Input, String) {
   use _ <- result.try(owned_by(runtime, session))
-  case tool_call(runtime, session, call) {
+  case tool_call(runtime, session, call, images) {
     Error(_) -> Ok(types.ToolOutput(call.id, "tool is not installed", []))
     Ok(#(tool, context)) ->
       tool.invoke(context, call.arguments)
@@ -1057,8 +1061,9 @@ pub fn recover(
   runtime: Runtime,
   session: Session,
   call: types.ToolCall,
+  images: types.ImageLimits,
 ) -> types.Input {
-  let saved = case tool_call(runtime, session, call) {
+  let saved = case tool_call(runtime, session, call, images) {
     Ok(#(tool, context)) -> tool.recover(context)
     Error(_) -> None
   }

@@ -99,7 +99,7 @@ packaged short names resolve to `albedo_plugins.*`; dotted names select installe
 
 ## images in tool results
 
-a cell returns images with `show_image(bytes_or_path)`, or a plugin with `api.attach_image(data)`: at most 4 images and 5 MiB per cell, and only while the cell runs. a background task a finished cell left behind has no result to carry one, so it gets an error. the harness reads each image's header again before sending it; one it cannot read is named under `image_errors` in the result text and not sent.
+a cell returns images with `show_image(bytes_or_path)`, or a plugin with `api.attach_image(data)`: at most 4 images and 5 MiB per cell, and only while the cell runs. a background task a finished cell left behind has no result to carry one, so it gets an error. the harness reads each image's header again before sending it; one it cannot read, or one larger than the session's provider accepts (see [models](models.md)), is named under `image_errors` in the result text and not sent.
 
 on the wire, responses sends the images inside `function_call_output.output`, after the text. chat completions tool messages take text only, so after a run of tool results one user message carries their images, each group labelled with its call id. history keeps the images on the tool result itself, so compaction never mistakes that message for a user turn. the model must accept image input; nothing checks that yet.
 
