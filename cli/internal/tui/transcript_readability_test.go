@@ -28,15 +28,15 @@ func TestMarkdownTablesRenderWithinTheirBounds(t *testing.T) {
 		want   []string
 		absent string
 	}{
-		{"keeps every column it fits", tableTranscript, 80,
-			[]string{"Tool", "files.read", "files.paths", "12.7 ms"}, "|:---"},
-		{"narrow truncates columns, not rows or the syntax", tableTranscript, 38,
-			[]string{"Tool", "files.read", "files.path", "12.7 ms"}, "|:---"},
-		{"escaped pipes and fenced rows stay literal",
-			"Intro\n\n| Name | Value |\n| --- | --- |\n| a\\|b | `x\\|y` |\n\n" +
+		{name: "keeps every column it fits", text: tableTranscript, width: 80,
+			want: []string{"Tool", "files.read", "files.paths", "12.7 ms"}, absent: "|:---"},
+		{name: "narrow truncates columns, not rows or the syntax", text: tableTranscript, width: 38,
+			want: []string{"Tool", "files.read", "files.path", "12.7 ms"}, absent: "|:---"},
+		{name: "escaped pipes and fenced rows stay literal",
+			text: "Intro\n\n| Name | Value |\n| --- | --- |\n| a\\|b | `x\\|y` |\n\n" +
 				"```text\n| literal | row |\n| --- | --- |\n```\nOutro",
-			72,
-			[]string{"Intro", "a|b", "x|y", "| literal | row |", "| --- | --- |", "Outro"}, ""},
+			width: 72,
+			want:  []string{"Intro", "a|b", "x|y", "| literal | row |", "| --- | --- |", "Outro"}, absent: ""},
 	} {
 		got := ansi.Strip(RenderMarkdownAnsi(tc.text, tc.width))
 		for _, value := range tc.want {
@@ -47,7 +47,7 @@ func TestMarkdownTablesRenderWithinTheirBounds(t *testing.T) {
 		if tc.absent != "" && strings.Contains(got, tc.absent) {
 			t.Fatalf("%s: width %d exposed %q:\n%s", tc.name, tc.width, tc.absent, got)
 		}
-		for _, row := range strings.Split(got, "\n") {
+		for row := range strings.SplitSeq(got, "\n") {
 			if w := ansi.StringWidth(row); w > tc.width {
 				t.Fatalf("%s: width %d produced a %d-cell row: %q", tc.name, tc.width, w, row)
 			}

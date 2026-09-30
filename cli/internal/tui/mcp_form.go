@@ -50,7 +50,10 @@ var mcpFieldLabels = map[string]string{
 }
 
 func newMCPForm(editing string, server config.MCPServer, stored daemon.MCPSecretNames) *mcpForm {
-	transport := pick(server.Type == "stdio", "stdio", "http")
+	transport := "http"
+	if server.Type == "stdio" {
+		transport = "stdio"
+	}
 	keys := []string{fieldURL, fieldCommand, fieldName, fieldToken, fieldHeader, fieldValue, fieldEnv}
 	f := &mcpForm{Editing: editing, Transport: transport, Base: server, Stored: stored, form: newForm(keys, fieldToken, fieldValue, fieldEnv)}
 	f.Inputs[fieldURL].SetValue(server.URL)
@@ -146,10 +149,10 @@ type mcpSubmission struct {
 func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 	name := f.value(fieldName)
 	if !mcpName.MatchString(name) {
-		return mcpSubmission{}, errors.New("Use 1–64 letters, digits, underscores, or hyphens for the server name.")
+		return mcpSubmission{}, errors.New("use 1–64 letters, digits, underscores, or hyphens for the server name")
 	}
 	if f.Editing == "" && slices.ContainsFunc(existing, func(item capabilityItem) bool { return item.ID == name && !item.Draft }) {
-		return mcpSubmission{}, fmt.Errorf("A server called %s already exists. Choose another name.", name)
+		return mcpSubmission{}, fmt.Errorf("a server called %s already exists; choose another name", name)
 	}
 	server := f.Base
 	server.Type = f.Transport
@@ -158,7 +161,7 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 		raw := f.value(fieldURL)
 		parsed, err := url.Parse(raw)
 		if raw == "" || err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-			return mcpSubmission{}, errors.New("Enter a server URL starting with http:// or https://.")
+			return mcpSubmission{}, errors.New("enter a server URL starting with http:// or https://")
 		}
 		server.URL, server.Command, server.Args, server.CWD = raw, "", nil, ""
 		if token := f.value(fieldToken); token == "-" {
@@ -170,11 +173,11 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 		switch {
 		case header == "" && value == "":
 		case !mcpHeaderName.MatchString(header):
-			return mcpSubmission{}, errors.New("Enter a valid HTTP header name.")
+			return mcpSubmission{}, errors.New("enter a valid HTTP header name")
 		case value == "-":
 			secrets["headers"] = map[string]any{header: nil}
 		case value == "":
-			return mcpSubmission{}, fmt.Errorf("Enter a value for %s, or - to remove it.", header)
+			return mcpSubmission{}, fmt.Errorf("enter a value for %s, or - to remove it", header)
 		default:
 			secrets["headers"] = map[string]any{header: value}
 		}
@@ -182,7 +185,7 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 	} else {
 		argv, err := splitCommand(f.Inputs[fieldCommand].Value())
 		if err != nil || len(argv) == 0 {
-			return mcpSubmission{}, errors.New("Enter the command that starts the server.")
+			return mcpSubmission{}, errors.New("enter the command that starts the server")
 		}
 		server.Command, server.Args, server.URL = argv[0], argv[1:], ""
 		entries, err := splitCommand(f.Inputs[fieldEnv].Value())
@@ -193,7 +196,7 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 		for _, entry := range entries {
 			key, value, ok := strings.Cut(entry, "=")
 			if !ok || !mcpEnvName.MatchString(key) {
-				return mcpSubmission{}, errors.New("Enter environment variables as KEY=value pairs separated by spaces.")
+				return mcpSubmission{}, errors.New("enter environment variables as KEY=value pairs separated by spaces")
 			}
 			if env == nil {
 				env = map[string]any{}
@@ -214,13 +217,20 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 
 func (f *mcpForm) view(width int) []string {
 	f.fit(width - 16)
-	rows := []string{DefaultStyles.Bold.Render(pick(f.Editing != "", "edit "+f.Editing, "add MCP server"))}
+	title := "add MCP server"
+	if f.Editing != "" {
+		title = "edit " + f.Editing
+	}
+	rows := []string{DefaultStyles.Bold.Render(title)}
 	for i, key := range f.fields() {
 		value := f.Transport
 		if key != fieldTransport {
 			value = f.Inputs[key].View()
 		} else if f.Editing == "" {
-			value = pick(f.Transport == "http", "‹http› ", " http  ") + pick(f.Transport == "http", " stdio ", "‹stdio›")
+			value = " http  ‹stdio›"
+			if f.Transport == "http" {
+				value = "‹http›  stdio "
+			}
 		}
 		label := cmp.Or(mcpFieldLabels[key], key)
 		rows = append(rows, formRow(i == f.Focus, label, 13, value, width))

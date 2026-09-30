@@ -8,7 +8,7 @@ import (
 
 func TestBoundedHistory_ByteLimit(t *testing.T) {
 	h := NewBoundedHistory(100, 500)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		h.Append(HistoryEntry{
 			Kind: EntryAssistant,
 			Text: strings.Repeat("x", 100),

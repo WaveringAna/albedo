@@ -478,7 +478,7 @@ func (m ChatModel) promptLines() int {
 		cp.CursorUp()
 	}
 	total := 0
-	for line := 0; line < lineCount; line++ {
+	for line := range lineCount {
 		total += cp.LineInfo().Height
 		if line < lineCount-1 {
 			curr := cp.Line()
@@ -495,7 +495,10 @@ func (m ChatModel) promptLines() int {
 }
 
 func (m ChatModel) maxPromptHeight() int {
-	return pick(m.Height > 0, max(1, min(6, (m.Height-8)/2)), 6)
+	if m.Height > 0 {
+		return max(1, min(6, (m.Height-8)/2))
+	}
+	return 6
 }
 
 func (m ChatModel) promptHeight() int {
@@ -703,7 +706,7 @@ func (m *ChatModel) refreshViewportContent() int {
 		last = laneOf(entries[len(entries)-1])
 		stacks = Compact(entries[len(entries)-1], m.Flags)
 		if burst := trailingBurst(entries, m.Flags); len(burst) > 0 {
-			key := burstRowsKey{len(entries), m.History.EvictedCount(), m.burstEpoch, m.Renderer.BodyWidth, m.Renderer.Workspace, m.Flags}
+			key := burstRowsKey{entries: len(entries), evicted: m.History.EvictedCount(), epoch: m.burstEpoch, width: m.Renderer.BodyWidth, workspace: m.Renderer.Workspace, flags: m.Flags}
 			if key != m.burstRowsKey {
 				m.burstRows = m.Renderer.BurstBlock(entries[:len(entries)-len(burst)], burst, m.Flags)
 				m.burstRowsKey = key
@@ -783,7 +786,10 @@ func (m ChatModel) pendingRows() []string {
 	}
 	var rows []string
 	for _, p := range m.pendingUsers {
-		state := pick(p.Queued, queued, sending)
+		state := sending
+		if p.Queued {
+			state = queued
+		}
 		entry := HistoryEntry{Kind: EntryUser, Speaker: "You", Text: p.Text, Timestamp: p.At, Pending: state}
 		block, _ := m.Renderer.Block(before, entry, m.Flags)
 		rows = append(rows, block...)
@@ -795,7 +801,10 @@ func (m ChatModel) pendingRows() []string {
 // jumpToYou scrolls to the start of your previous or next message. Past
 // your newest message it follows the live transcript again.
 func (m *ChatModel) jumpToYou(back bool) {
-	at := pick(m.Follow, m.scrollLimit, m.scrollOffset)
+	at := m.scrollOffset
+	if m.Follow {
+		at = m.scrollLimit
+	}
 	target := -1
 	for _, row := range m.userRows {
 		row += m.settledOffset
@@ -1130,7 +1139,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		case "enter":
 			trimmed := strings.TrimSpace(m.TextArea.Value())
 			// a draft typed while connecting waits in the composer
-			if m.connecting() && !(strings.HasPrefix(trimmed, "/") && m.isRecognizedCommand(trimmed)) {
+			if m.connecting() && (!strings.HasPrefix(trimmed, "/") || !m.isRecognizedCommand(trimmed)) {
 				return m, nil
 			}
 			if trimmed != "" {
@@ -1182,9 +1191,10 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				m.dragHead = pt
 			}
 		case tea.MouseWheelMsg:
-			if msg.Button == tea.MouseWheelUp {
+			switch msg.Button {
+			case tea.MouseWheelUp:
 				m.scrollBy(-3)
-			} else if msg.Button == tea.MouseWheelDown {
+			case tea.MouseWheelDown:
 				m.scrollBy(3)
 			}
 			if m.dragAnchor != nil {
@@ -1201,7 +1211,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.AttachedImage = msg.Image
 			m.CopyStatus = ""
 			m.refreshViewportContent()
-		} else if msg.Err != nil && msg.Err.Error() != "no image in clipboard" {
+		} else if msg.Err != nil {
 			m.AddError(fmt.Sprintf("Could not paste the image: %v", msg.Err))
 		}
 		return m, nil
@@ -1305,8 +1315,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			if m.AttachedImage == nil && msg.Image != nil {
 				m.AttachedImage = msg.Image
 			}
-			var wsErr *daemon.WorkspaceMissingError
-			if errors.As(msg.Err, &wsErr) {
+			if wsErr, ok := errors.AsType[*daemon.WorkspaceMissingError](msg.Err); ok {
 				m.Status.Running, m.Status.Idle = false, true
 				retry := &WorkspaceRetry{Missing: wsErr.Workspace, Prompt: msg.Prompt, Continue: msg.Continue, Image: msg.Image}
 				cmds = append(cmds, func() tea.Msg { return ChatOpenFolderPickerMsg{Retry: retry} })
@@ -1395,7 +1404,11 @@ func (m *ChatModel) Moved(workspace string, retry *WorkspaceRetry) tea.Cmd {
 	m.TextArea.Reset()
 	m.syncLayout()
 	var cmds []tea.Cmd
-	m.submitInput(pick(retry.Continue, ".", retry.Prompt), &cmds)
+	prompt := retry.Prompt
+	if retry.Continue {
+		prompt = "."
+	}
+	m.submitInput(prompt, &cmds)
 	return tea.Batch(cmds...)
 }
 
@@ -1750,7 +1763,10 @@ func formatTokens(val int) string {
 }
 
 func (m ChatModel) padding() int {
-	return pick(m.Width >= 50, 2, 1)
+	if m.Width >= 50 {
+		return 2
+	}
+	return 1
 }
 
 func (m ChatModel) chatWidth() int { return max(1, m.Width-2*m.padding()) }
@@ -1843,13 +1859,19 @@ func (m ChatModel) statusLine() string {
 	// an idle session says nothing unless verbose: the transcript already
 	// ends in the turn's signoff.
 	if m.Stopped {
-		return pick(m.Flags.Tools, "stopped", "")
+		if m.Flags.Tools {
+			return "stopped"
+		}
+		return ""
 	}
 	if m.isSending || len(m.pendingUsers) > 0 && !m.Status.Running {
 		return "preparing"
 	}
 	if m.Progress != nil {
-		return pick(m.Progress.Phase == "generating", "generating call", "running "+m.Progress.Name)
+		if m.Progress.Phase == "generating" {
+			return "generating call"
+		}
+		return "running " + m.Progress.Name
 	}
 	if m.Status.Running && !m.Status.Idle {
 		if m.transcript.activeKind == StreamKindText {
@@ -1870,7 +1892,10 @@ func (m ChatModel) statusLine() string {
 	if m.connecting() {
 		return "connecting…"
 	}
-	return pick(m.Flags.Tools, "ready", "")
+	if m.Flags.Tools {
+		return "ready"
+	}
+	return ""
 }
 
 // Phase is optional display metadata, not evidence of an unanswered status.
@@ -1908,7 +1933,10 @@ func (m ChatModel) phaseMood() mood {
 // which alone may squeeze the rule to one cell.
 func (m ChatModel) header(width int) string {
 	workspace := homePath(cmp.Or(m.Workspace, "chat"))
-	model := pick(m.Effort != "", fmt.Sprintf("%s:%s", m.Model, m.Effort), m.Model)
+	model := m.Model
+	if m.Effort != "" {
+		model += ":" + m.Effort
+	}
 	counts := m.glanceCounts()
 	folds := pathFolds(workspace)
 	type layout struct {
@@ -1919,15 +1947,18 @@ func (m ChatModel) header(width int) string {
 	}
 	var layouts []layout
 	for _, place := range folds {
-		layouts = append(layouts, layout{true, place, len(counts), 3})
+		layouts = append(layouts, layout{brand: true, place: place, counts: len(counts), rule: 3})
 	}
 	for n := len(counts); n >= 0; n-- {
-		layouts = append(layouts, layout{false, folds[len(folds)-1], n, 3})
+		layouts = append(layouts, layout{brand: false, place: folds[len(folds)-1], counts: n, rule: 3})
 	}
-	layouts = append(layouts, layout{false, filepath.Base(workspace), 0, 1})
+	layouts = append(layouts, layout{brand: false, place: filepath.Base(workspace), counts: 0, rule: 1})
 	for _, l := range layouts {
 		right := strings.Join(append(counts[:l.counts:l.counts], model), "  ")
-		left := pick(l.brand, "✦ "+m.AgentName+" on "+l.place, l.place)
+		left := l.place
+		if l.brand {
+			left = "✦ " + m.AgentName + " on " + l.place
+		}
 		if lipgloss.Width(left)+lipgloss.Width(right)+l.rule+2 > width {
 			continue
 		}
@@ -1945,7 +1976,11 @@ func (m ChatModel) View() string {
 	var rows []string
 	rows = append(rows, m.header(width), "")
 	for _, n := range m.Notices {
-		rows = append(rows, pick(n.Error, m.Renderer.errorRow(n.Message), m.Styles.Faint.Render(n.Message)))
+		if n.Error {
+			rows = append(rows, m.Renderer.errorRow(n.Message))
+		} else {
+			rows = append(rows, m.Styles.Faint.Render(n.Message))
+		}
 	}
 	if len(m.Notices) > 0 {
 		rows = append(rows, "")
@@ -1989,7 +2024,10 @@ func (m ChatModel) View() string {
 	if m.CopyStatus != "" {
 		status = m.CopyStatus
 	}
-	statusStyle := pick(m.TurnFailed || m.Notices.HasError(), m.Styles.Error, m.Styles.Faint)
+	statusStyle := m.Styles.Faint
+	if m.TurnFailed || m.Notices.HasError() {
+		statusStyle = m.Styles.Error
+	}
 	rows = append(rows, statusStyle.Render(status))
 	rows = append(rows, m.Styles.Decor.Render(strings.Repeat("─", width)))
 	if len(m.effortOptions) > 0 {
@@ -2050,7 +2088,10 @@ func (m ChatModel) renderGlances() string {
 			continue
 		}
 		room := max(0, min(m.Viewport.Height(), 12)-1)
-		shown := pick(len(g.Rows) > room, max(0, room-1), min(room, len(g.Rows)))
+		shown := min(room, len(g.Rows))
+		if len(g.Rows) > room {
+			shown = max(0, room-1)
+		}
 		rows := []string{m.Styles.Faint.Render(fmt.Sprintf("%s · %d", g.Title, len(g.Rows)))}
 		for _, item := range g.Rows[:shown] {
 			mark, style := "○", m.Styles.Faint
@@ -2062,7 +2103,10 @@ func (m ChatModel) renderGlances() string {
 			case ToneMuted:
 				mark = "✓"
 			}
-			label := pick(item.ID != "", "#"+item.ID+" "+item.Text, item.Text)
+			label := item.Text
+			if item.ID != "" {
+				label = "#" + item.ID + " " + item.Text
+			}
 			rows = append(rows, style.Render(mark)+" "+label)
 		}
 		if shown < len(g.Rows) {
@@ -2081,12 +2125,12 @@ func (m ChatModel) renderFooter() string {
 		left  []hint
 		right string
 	}{
-		{[]hint{commands, {"shift+↑↓", "your messages"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right},
-		{[]hint{commands, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right},
-		{[]hint{commands, {"ctrl+o", "agents"}}, compact},
-		{[]hint{commands, {"ctrl+j", "diffs"}}, compact},
-		{[]hint{commands}, compact},
-		{[]hint{{"/", ""}}, compact},
+		{left: []hint{commands, {"shift+↑↓", "your messages"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
+		{left: []hint{commands, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
+		{left: []hint{commands, {"ctrl+o", "agents"}}, right: compact},
+		{left: []hint{commands, {"ctrl+j", "diffs"}}, right: compact},
+		{left: []hint{commands}, right: compact},
+		{left: []hint{{"/", ""}}, right: compact},
 	}
 	for _, c := range candidates {
 		left := keyHints(c.left...)
@@ -2116,7 +2160,10 @@ func (m ChatModel) contextStat() (full, short string) {
 	share := ""
 	if total := contextTokens(usage); total != nil && m.window != nil && m.windowModel != nil && *m.windowModel == usage.Model {
 		pct := int(math.Round(100 * float64(*total) / float64(*m.window)))
-		style := pick(pct >= 90, m.Styles.Warning, m.Styles.Faint)
+		style := m.Styles.Faint
+		if pct >= 90 {
+			style = m.Styles.Warning
+		}
 		share = " " + style.Render(fmt.Sprintf("(%d%%)", pct))
 	}
 	return ratio + m.Styles.Faint.Render(" cached") + share, ratio + share

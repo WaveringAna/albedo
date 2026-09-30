@@ -257,7 +257,10 @@ const untitled = "Untitled session"
 
 func sessionTitle(s daemon.Session) string {
 	title := strings.TrimSpace(sessionText(s.Title))
-	return pick(title == "" || title == "new session", untitled, title)
+	if title == "" || title == "new session" {
+		return untitled
+	}
+	return title
 }
 
 func containsSession(sessions []daemon.Session, id string) bool {
@@ -340,7 +343,10 @@ func (m *SessionViewer) startRename() {
 		return
 	}
 	current := sessionTitle(s)
-	m.rename.open(s.ID, pick(current == untitled, "", current), "Name this session")
+	if current == untitled {
+		current = ""
+	}
+	m.rename.open(s.ID, current, "Name this session")
 }
 
 // Renamed takes a session's new listing from the daemon.

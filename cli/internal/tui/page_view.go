@@ -120,9 +120,8 @@ func (m PageViewModel) Init() tea.Cmd {
 	return m.loadPageCmd(m.Generation)
 }
 
-func parsePageDocument(result any) (*PageDocument, error) {
-	response, _ := result.(map[string]any)
-	page, _ := response["page"].(map[string]any)
+func parsePageDocument(result map[string]any) (*PageDocument, error) {
+	page, _ := result["page"].(map[string]any)
 	title, ok := page["title"].(string)
 	if !ok {
 		return nil, errors.New("command did not answer a page")
@@ -228,8 +227,11 @@ func (m PageViewModel) loadPageCmd(gen int) tea.Cmd {
 			return pageLoadedMsg{Err: err, Gen: gen}
 		}
 
-		targetObj := pick(res["result"] != nil, res["result"], any(res))
-		doc, err := parsePageDocument(targetObj)
+		target := res
+		if res["result"] != nil {
+			target, _ = res["result"].(map[string]any)
+		}
+		doc, err := parsePageDocument(target)
 		if err != nil {
 			err = fmt.Errorf("%s did not return a page", m.Command)
 		}
@@ -243,7 +245,10 @@ func (m PageViewModel) executeActionCmd(act PageAction, row *PageRow, entered st
 			return pageActionExecutedMsg{Action: act, Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
 
-		val := pick(act.Input == "value", act.Value, entered)
+		val := entered
+		if act.Input == "value" {
+			val = act.Value
+		}
 		var details []string
 		if act.Row && row != nil {
 			details = append(details, row.ID)
@@ -500,7 +505,10 @@ func (m PageViewModel) selectedAt(height int) int {
 	at := 0
 	for i, row := range m.Doc.Rows[:m.currentIndex()+1] {
 		if i == 0 || row.Badge != m.Doc.Rows[i-1].Badge {
-			at += pick(i > 0 && height >= 10, 2, 1)
+			at++
+			if i > 0 && height >= 10 {
+				at++
+			}
 		}
 		at++
 	}
@@ -508,7 +516,12 @@ func (m PageViewModel) selectedAt(height int) int {
 }
 
 // rowID is the quiet #id a row shows, unless its id is its text.
-func rowID(row PageRow) string { return pick(row.ID != row.Text, "#"+row.ID, "") }
+func rowID(row PageRow) string {
+	if row.ID != row.Text {
+		return "#" + row.ID
+	}
+	return ""
+}
 
 // row is one page row in the sessions view's grammar: bar, a glyph in the
 // row's tone, the title, then its id right-aligned in idW columns.
@@ -529,12 +542,23 @@ func (m PageViewModel) row(row PageRow, selected bool, width, idW int) string {
 	case row.Tone == ToneMuted:
 		textStyle = m.Styles.Faint
 	}
-	textW := max(1, width-4-pick(idW > 0, idW+2, 0))
-	line := pick(selected, selectBar(), " ") + glyphStyle.Render(glyph) + " " + textStyle.Render(svCell(row.Text, textW, false))
+	textW := width - 4
+	if idW > 0 {
+		textW -= idW + 2
+	}
+	textW = max(1, textW)
+	marker := " "
+	if selected {
+		marker = selectBar()
+	}
+	line := marker + glyphStyle.Render(glyph) + " " + textStyle.Render(svCell(row.Text, textW, false))
 	if idW > 0 {
 		line += "  " + m.Styles.Faint.Render(svCell(rowID(row), idW, true))
 	}
-	return pick(selected, selectedLine(line, width), line)
+	if selected {
+		return selectedLine(line, width)
+	}
+	return line
 }
 
 // detail is the selected row at exactly width × height: its title and badge
@@ -563,7 +587,7 @@ func (m PageViewModel) detailLines(width int) []string {
 		meta = append(meta, m.Styles.Faint.Render(id))
 	}
 	lines = append(lines, strings.Join(meta, DefaultStyles.Decor.Render(" · ")), DefaultStyles.Decor.Render(strings.Repeat("─", inner)))
-	for _, paragraph := range strings.Split(row.Detail, "\n\n") {
+	for paragraph := range strings.SplitSeq(row.Detail, "\n\n") {
 		if paragraph = strings.TrimSpace(paragraph); paragraph != "" {
 			lines = append(append(lines, ""), strings.Split(ansi.Wrap(paragraph, inner, " -"), "\n")...)
 		}
@@ -610,9 +634,12 @@ func (m PageViewModel) View() string {
 	lines := []string{" " + titleRule(width-1, brand("albedo")+" "+m.Styles.Muted.Render(m.Command), summary), ""}
 	tail := []string{m.prompt(), m.footer(width)}
 	body := max(1, height-len(lines)-len(tail))
-	switch {
-	case m.Doc == nil:
-		note := pick(m.Error != "", "r retry · esc back", "loading "+m.Command+"…")
+	switch m.Doc {
+	case nil:
+		note := "loading " + m.Command + "…"
+		if m.Error != "" {
+			note = "r retry · esc back"
+		}
 		lines = append(lines, " "+m.Styles.Faint.Render(note))
 		lines = append(lines, make([]string, max(0, body-1))...)
 	default:
@@ -649,16 +676,27 @@ func (m PageViewModel) prompt() string {
 	}
 	target := ""
 	if act.Row && row != nil {
-		target = " " + pick(rowID(*row) != "", rowID(*row)+" ", "") + row.Text
+		target = " "
+		if id := rowID(*row); id != "" {
+			target += id + " "
+		}
+		target += row.Text
 	}
 	switch m.Mode {
 	case modeConfirm:
 		return " " + DefaultStyles.Warning.Render(act.Label+target+"?")
 	case modeChoice:
 		var choice strings.Builder
-		choice.WriteString(" " + m.Styles.Prompt.Render(act.Label+target) + " " + promptLead())
+		choice.WriteByte(' ')
+		choice.WriteString(m.Styles.Prompt.Render(act.Label + target))
+		choice.WriteByte(' ')
+		choice.WriteString(promptLead())
 		for i, opt := range act.Options {
-			choice.WriteString(pick(i == m.ChoiceIndex, selectedLine(" "+opt+" ", 0), " "+opt+" "))
+			label := " " + opt + " "
+			if i == m.ChoiceIndex {
+				label = selectedLine(label, 0)
+			}
+			choice.WriteString(label)
 		}
 		return choice.String()
 	case modeText:
@@ -673,7 +711,10 @@ func (m PageViewModel) prompt() string {
 func fitHints(hints []hint, room int) string {
 	keysOnly := make([]hint, len(hints))
 	for i, h := range hints {
-		keysOnly[i] = hint{h.key, pick(h.key == "", h.does, "")}
+		keysOnly[i] = hint{key: h.key}
+		if h.key == "" {
+			keysOnly[i].does = h.does
+		}
 	}
 	still := slices.DeleteFunc(slices.Clone(hints), func(h hint) bool { return h.key == "↑↓" })
 	staying := slices.DeleteFunc(slices.Clone(still), func(h hint) bool { return h.key == "esc" })
@@ -718,7 +759,10 @@ func (m PageViewModel) footer(width int) string {
 	case m.Notice != "":
 		right = m.Styles.Faint.Render(m.Notice)
 	}
-	room := width - pick(right != "", ansi.StringWidth(right)+3, 1)
+	room := width - 1
+	if right != "" {
+		room = width - ansi.StringWidth(right) - 3
+	}
 	left := fitHints(hints, room)
 	if left == "" && right == "" {
 		left = " " + ansi.Truncate(keyHints(hints...), width-2, "…")

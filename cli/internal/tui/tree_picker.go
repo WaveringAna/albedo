@@ -209,16 +209,25 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 func (m TreePickerModel) View() string {
 	var b strings.Builder
 
-	b.WriteString(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/tree"), m.Styles.Faint.Render("branch history")) + "\n")
-	b.WriteString(m.Styles.Faint.Render(inkWrap("Choose where the new session should branch from.", m.Width)) + "\n")
+	b.WriteString(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/tree"), m.Styles.Faint.Render("branch history")))
+	b.WriteByte('\n')
+	b.WriteString(m.Styles.Faint.Render(inkWrap("Choose where the new session should branch from.", m.Width)))
+	b.WriteByte('\n')
 
 	if m.Error != "" {
-		b.WriteString(DefaultStyles.Error.Render("error:") + " " + m.Error + "\n")
+		b.WriteString(DefaultStyles.Error.Render("error:"))
+		b.WriteByte(' ')
+		b.WriteString(m.Error)
+		b.WriteByte('\n')
 	}
 	if m.Loading || len(m.Checkpoints) == 0 {
 		if m.Error == "" {
-			msg := pick(m.Loading, "loading history…", "No history checkpoints available to branch from.")
-			b.WriteString(m.Styles.Faint.Render(msg) + "\n")
+			msg := "No history checkpoints available to branch from."
+			if m.Loading {
+				msg = "loading history…"
+			}
+			b.WriteString(m.Styles.Faint.Render(msg))
+			b.WriteByte('\n')
 		}
 		b.WriteString(keyHints(hint{"enter", "confirm"}, hint{"esc", "cancel"}))
 		return b.String()
@@ -228,21 +237,29 @@ func (m TreePickerModel) View() string {
 	for i, cp := range m.Checkpoints {
 		lines[i] = DefaultStyles.Faint.Render(fmt.Sprintf("%-9s", cp.Type)) + " " + readablePreview(cp.Preview)
 	}
-	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles) + "\n")
+	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles))
+	b.WriteByte('\n')
 
 	if m.Confirming && m.Cursor < len(m.Checkpoints) {
 		current := m.Checkpoints[m.Cursor]
-		b.WriteString("\n" + m.Styles.Faint.Render(inkWrap("This creates a new session with a fresh Python namespace. Workspace files stay unchanged.", m.Width)) + "\n")
-		b.WriteString(DefaultStyles.Warning.Render(fmt.Sprintf("Branch after %s · %s?", current.Type, readablePreview(current.Preview))) + "\n")
+		b.WriteByte('\n')
+		b.WriteString(m.Styles.Faint.Render(inkWrap("This creates a new session with a fresh Python namespace. Workspace files stay unchanged.", m.Width)))
+		b.WriteByte('\n')
+		b.WriteString(DefaultStyles.Warning.Render(fmt.Sprintf("Branch after %s · %s?", current.Type, readablePreview(current.Preview))))
+		b.WriteByte('\n')
 		if m.ForkError != "" {
-			b.WriteString(DefaultStyles.Error.Render(m.ForkError) + "\n")
+			b.WriteString(DefaultStyles.Error.Render(m.ForkError))
+			b.WriteByte('\n')
 		}
 	}
 
 	if m.Forking {
 		b.WriteString(m.Styles.Faint.Render("Creating the new session…"))
 	} else if m.Confirming {
-		confirm := pick(m.ForkError != "", hint{"enter", "retry"}, hint{"enter", "confirm"})
+		confirm := hint{"enter", "confirm"}
+		if m.ForkError != "" {
+			confirm = hint{"enter", "retry"}
+		}
 		b.WriteString(keyHints(confirm, hint{"esc", "cancel"}))
 	} else {
 		b.WriteString(inkWrap(keyHints(hint{"↑↓", "select"}, hint{"←→/pgup/pgdn", "page"}, hint{"enter", "branch"}, hint{"esc", "return to chat"}), m.Width))

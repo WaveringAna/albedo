@@ -38,9 +38,15 @@ func wrapJoiner(line string) (string, bool) {
 // markChunks marks the rows line wrapped into as continuing the one before,
 // and gives them the line's chrome.
 func markChunks(line string, chunks []string) []string {
-	carried := pick(strings.Contains(line, markChrome), markChrome, "")
+	carried := ""
+	if strings.Contains(line, markChrome) {
+		carried = markChrome
+	}
 	for i := 1; i < len(chunks); i++ {
-		mark := pick(strings.HasSuffix(ansi.Strip(chunks[i-1]), " "), markWrap, markSplit)
+		mark := markSplit
+		if strings.HasSuffix(ansi.Strip(chunks[i-1]), " ") {
+			mark = markWrap
+		}
 		chunks[i] = carried + mark + chunks[i]
 	}
 	return chunks
@@ -53,7 +59,7 @@ func markChunks(line string, chunks []string) []string {
 func markWraps(wrapped, flat string) string {
 	rows := strings.Split(wrapped, "\n")
 	var lines []string
-	for _, line := range strings.Split(flat, "\n") {
+	for line := range strings.SplitSeq(flat, "\n") {
 		lines = append(lines, rowText(line))
 	}
 	// rest is what the line being spelled has left, after a space when spaced
@@ -61,7 +67,11 @@ func markWraps(wrapped, flat string) string {
 	for i, row := range rows {
 		text := rowText(row)
 		if cont := strings.TrimLeft(text, " "); rest != "" && cont != "" && strings.HasPrefix(rest, cont) {
-			rows[i] = pick(spaced, markWrap, markSplit) + row
+			mark := markSplit
+			if spaced {
+				mark = markWrap
+			}
+			rows[i] = mark + row
 			rest, spaced = spell(rest, cont)
 			continue
 		}

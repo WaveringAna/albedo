@@ -1,3 +1,4 @@
+// Package tui implements the interactive CLI and its terminal views.
 package tui
 
 import (
@@ -152,7 +153,7 @@ func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
 	chat := NewChatModel(session, daemon.NewChatClient(m.Conn, session.ID))
 	chat.Flags.Thinking = m.SessionPicker.prefs.Thinking
 	chat.Flags.Tools = m.SessionPicker.prefs.Tools
-	chat.Notices = append(Notices(nil), m.Notices...)
+	chat.Notices = slices.Clone(m.Notices)
 	chat.graphemes = m.Graphemes
 	m.Notices = nil
 	return chat
@@ -325,7 +326,10 @@ func (m AppModel) changeModelCmd(model, provider, effort string, raiseCap *bool,
 		}
 		// The cap follows the switch, so a failed switch changes nothing.
 		if raiseCap != nil {
-			state := pick(*raiseCap, "on", "off")
+			state := "off"
+			if *raiseCap {
+				state = "on"
+			}
 			capBody := map[string]any{"name": "/raise-cap", "args": map[string]string{"state": state, "model": model}}
 			if _, err := daemon.Request[map[string]any](context.Background(), m.Conn, path, capBody); err != nil {
 				return modelChangedMsg{Err: fmt.Errorf("switched model, but the context cap was not saved: %w", err), Gen: gen}
@@ -438,9 +442,9 @@ func (m AppModel) pollGlancesCmd(gen int) tea.Cmd {
 			if err != nil {
 				continue
 			}
-			target := any(res)
-			if r, ok := res["result"]; ok && r != nil {
-				target = r
+			target := res
+			if res["result"] != nil {
+				target, _ = res["result"].(map[string]any)
 			}
 			if doc, err := parsePageDocument(target); err == nil && doc != nil && doc.Glance != nil {
 				glances = append(glances, *doc.Glance)
@@ -809,8 +813,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Err != nil {
-			var upgradeErr *daemon.UpgradeRequiredError
-			if errors.As(msg.Err, &upgradeErr) {
+			if _, ok := errors.AsType[*daemon.UpgradeRequiredError](msg.Err); ok {
 				m.AddError("Could not load commands: " + msg.Err.Error())
 			}
 			return m, nil
@@ -1174,7 +1177,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // other screen leaves it to the terminal.
 func (m AppModel) View() tea.View {
 	v := tea.NewView(m.content())
-	v.MouseMode = pick(m.State == AppStateChat, tea.MouseModeCellMotion, tea.MouseModeNone)
+	v.MouseMode = tea.MouseModeNone
+	if m.State == AppStateChat {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	return v
 }
 
@@ -1185,8 +1191,12 @@ func (m AppModel) content() string {
 	case AppStateSessionPicker:
 		var b strings.Builder
 		for _, n := range m.Notices {
-			style := pick(n.Error, DefaultStyles.Error, DefaultStyles.Faint)
-			b.WriteString(style.Render(n.Message) + "\n")
+			style := DefaultStyles.Faint
+			if n.Error {
+				style = DefaultStyles.Error
+			}
+			b.WriteString(style.Render(n.Message))
+			b.WriteByte('\n')
 		}
 		return b.String() + m.SessionPicker.View()
 	case AppStateModelPicker:
@@ -1233,7 +1243,7 @@ func (m AppModel) loadSettingsCmd(gen int) tea.Cmd {
 	conn := m.Conn
 	return func() tea.Msg {
 		settings, err := daemon.GetSettings(context.Background(), conn)
-		return settingsLoadedMsg{settings, gen, err}
+		return settingsLoadedMsg{Settings: settings, Gen: gen, Err: err}
 	}
 }
 

@@ -77,7 +77,11 @@ func (m FolderPicker) footer(width int) string {
 		left = ""
 		if m.sessionsError != "" {
 			// Keep recovery discoverable when the full navigation help cannot fit.
-			left = ansi.Truncate(" "+keyHints(hint{"ctrl+r", pick(m.sessionsLoading, "retrying…", "retry")}), max(0, width-1), "")
+			action := "retry"
+			if m.sessionsLoading {
+				action = "retrying…"
+			}
+			left = ansi.Truncate(" "+keyHints(hint{"ctrl+r", action}), max(0, width-1), "")
 		}
 		room = max(0, width-ansi.StringWidth(left)-2)
 	}
@@ -103,7 +107,11 @@ func (m FolderPicker) footer(width int) string {
 func (m FolderPicker) hints() []hint {
 	var hints []hint
 	if m.sessionsError != "" {
-		hints = append(hints, hint{"ctrl+r", pick(m.sessionsLoading, "retrying…", "retry sessions")})
+		action := "retry sessions"
+		if m.sessionsLoading {
+			action = "retrying…"
+		}
+		hints = append(hints, hint{"ctrl+r", action})
 	}
 	if m.inSessions {
 		return append(hints, hint{"↑↓", "move"}, hint{"enter", "open"}, hint{"←", "folders"})
@@ -112,7 +120,11 @@ func (m FolderPicker) hints() []hint {
 	if row, ok := m.highlighted(); ok && len(m.sessionsIn(row.path)) > 0 {
 		hints = append(hints, hint{"→", "sessions"})
 	}
-	return append(hints, hint{"enter", pick(m.browse, "new session", "move here")}, hint{"esc", "back"})
+	action := "move here"
+	if m.browse {
+		action = "new session"
+	}
+	return append(hints, hint{"enter", action}, hint{"esc", "back"})
 }
 
 // tailFit keeps the end of plain text, where a path names its folder.
@@ -180,13 +192,22 @@ func (m FolderPicker) row(row folderRow, selected, here, latest bool, width int,
 		whereW = 16
 	}
 	nameW := min(18, max(4, width-4-(whereW+2)-(tagW+2)-(ageW+2)))
-	line := pick(selected, selectBar(), " ") + glyphStyle.Render(glyph) + " " + litName(row.name, row.matched, nameW, selected)
+	bar := " "
+	if selected {
+		bar = selectBar()
+	}
+	line := bar + glyphStyle.Render(glyph) + " " + litName(row.name, row.matched, nameW, selected)
 	if whereW > 0 {
 		line += "  " + DefaultStyles.Faint.Render(svCell(strings.Join(crumbParts(m.homed(path.Dir(row.path))), " › "), whereW, false))
 	}
 	line += "  " + DefaultStyles.Faint.Render(svCell(repoTag(m.repos[row.path]), tagW, false))
-	age := pick(here, "here", svCompactAge(row.age, now))
-	line += "  " + DefaultStyles.Faint.Render(svCell(pick(row.age == nil && !here, "", age), ageW, true))
+	age := ""
+	if here {
+		age = "here"
+	} else if row.age != nil {
+		age = svCompactAge(row.age, now)
+	}
+	line += "  " + DefaultStyles.Faint.Render(svCell(age, ageW, true))
 	if selected {
 		return selectedLine(line, width)
 	}
@@ -195,12 +216,19 @@ func (m FolderPicker) row(row folderRow, selected, here, latest bool, width int,
 
 // litName fits name into w columns with its fuzzy-matched letters lit.
 func litName(name string, matched []int, w int, selected bool) string {
-	base := pick(selected, DefaultStyles.Bold, lipgloss.NewStyle())
+	base := lipgloss.NewStyle()
+	if selected {
+		base = DefaultStyles.Bold
+	}
 	lit := DefaultStyles.Prompt.Bold(true).Underline(true)
 	fitted := ansi.Truncate(name, w, "…")
 	var b strings.Builder
 	for i, r := range fitted {
-		b.WriteString(pick(slices.Contains(matched, i), lit, base).Render(string(r)))
+		style := base
+		if slices.Contains(matched, i) {
+			style = lit
+		}
+		b.WriteString(style.Render(string(r)))
 	}
 	return b.String() + strings.Repeat(" ", max(0, w-ansi.StringWidth(fitted)))
 }
@@ -225,9 +253,15 @@ func repoTag(r *daemon.Repo) string {
 	case r.Kind == "jj" && r.Bookmark != nil:
 		return "⚑ " + r.Bookmark.Name
 	case r.Kind == "jj":
-		return pick(r.Change != "", "@ "+r.Change, "")
+		if r.Change != "" {
+			return "@ " + r.Change
+		}
+		return ""
 	}
-	return pick(r.Branch != "" || r.Commit != "", "⎇ "+cmp.Or(r.Branch, r.Commit), "")
+	if r.Branch != "" || r.Commit != "" {
+		return "⎇ " + cmp.Or(r.Branch, r.Commit)
+	}
+	return ""
 }
 
 // ── preview ────────────────────────────────────────────────────────────────
@@ -293,12 +327,21 @@ func (m FolderPicker) sessionBlock(sessions []daemon.Session, width, room int) [
 		case s.LastAssistantAt != nil && now.Sub(time.Unix(*s.LastAssistantAt, 0)) < time.Hour:
 			glyph, style = "● ", DefaultStyles.Success
 		}
-		title := pick(selected, DefaultStyles.Bold, DefaultStyles.Muted).Render(sessionTitle(s))
-		line := pick(selected, selectBar(), " ") + " " + style.Render(glyph) + title
+		titleStyle := DefaultStyles.Muted
+		bar := " "
+		if selected {
+			titleStyle = DefaultStyles.Bold
+			bar = selectBar()
+		}
+		title := titleStyle.Render(sessionTitle(s))
+		line := bar + " " + style.Render(glyph) + title
 		if s.LastAssistantAt != nil {
 			line += DefaultStyles.Faint.Render("  " + svCompactAge(s.LastAssistantAt, now))
 		}
-		rows[i] = pick(selected, selectedLine(line, width), line)
+		if selected {
+			line = selectedLine(line, width)
+		}
+		rows[i] = line
 	}
 	if len(rows) > room && !m.inSessions {
 		rows = append(rows[:room-1], DefaultStyles.Faint.Render(fmt.Sprintf("   … %d more", len(sessions)-room+1)))
@@ -406,7 +449,13 @@ func folderTree(p daemon.FolderPreview, children, top int) []string {
 	for _, l := range p.Languages {
 		colors[l.Name] = l.Color
 	}
-	branch := func(last bool) string { return DefaultStyles.Decor.Render(pick(last, "╰─ ", "├─ ")) }
+	branch := func(last bool) string {
+		text := "├─ "
+		if last {
+			text = "╰─ "
+		}
+		return DefaultStyles.Decor.Render(text)
+	}
 	more := func(n int) string { return DefaultStyles.Faint.Render(fmt.Sprintf("… %d more", n)) }
 	name := func(n daemon.FolderNode) string {
 		s := DefaultStyles.Muted.Render(n.Name) + DefaultStyles.Decor.Render("/")
@@ -426,7 +475,11 @@ func folderTree(p daemon.FolderPreview, children, top int) []string {
 		if children == 0 {
 			continue
 		}
-		indent := DefaultStyles.Decor.Render(pick(last, "   ", "│  "))
+		indentText := "│  "
+		if last {
+			indentText = "   "
+		}
+		indent := DefaultStyles.Decor.Render(indentText)
 		shown := entry.Children[:min(children, len(entry.Children))]
 		rest := entry.More + len(entry.Children) - len(shown)
 		for j, child := range shown {

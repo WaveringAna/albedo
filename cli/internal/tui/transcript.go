@@ -83,7 +83,10 @@ func (r TranscriptRenderer) nameplate(entry HistoryEntry, flags DisplayFlags, be
 	if !flags.Tools && who == before.speaker {
 		return ""
 	}
-	style := pick(entry.Kind == EntryUser, r.Styles.You, r.Styles.Agent)
+	style := r.Styles.Agent
+	if entry.Kind == EntryUser {
+		style = r.Styles.You
+	}
 	var meta []string
 	if clock := formatClock(entry.Timestamp); flags.Tools && clock != "" {
 		meta = append(meta, clock)
@@ -124,7 +127,10 @@ func (r TranscriptRenderer) signoff(entry HistoryEntry) string {
 		meta = append(meta, formatElapsed(entry.ElapsedMs))
 	}
 	if entry.Tools > 0 {
-		unit := pick(entry.Tools == 1, "tool", "tools")
+		unit := "tools"
+		if entry.Tools == 1 {
+			unit = "tool"
+		}
 		meta = append(meta, fmt.Sprintf("%d %s", entry.Tools, unit))
 	}
 	row := markChrome + rowAction{verbCopy, entryKey(entry)}.mark() + style.Render(entry.Mood.face(entry.Timestamp))
@@ -167,7 +173,10 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 			body = keepBackground(HighlightCode(content, lang))
 		}
 		for i, part := range strings.Split(ansi.Hardwrap(body, max(1, width-ansi.StringWidth(gutter)), true), "\n") {
-			prefix := pick(i > 0, strings.Repeat(" ", ansi.StringWidth(gutter)), gutter)
+			prefix := gutter
+			if i > 0 {
+				prefix = strings.Repeat(" ", ansi.StringWidth(gutter))
+			}
 			cell := prefix + part
 			rows = append(rows, bg+cell+strings.Repeat(" ", max(0, width-ansi.StringWidth(cell)))+ansiReset)
 		}
@@ -177,7 +186,7 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 		return keepBackground(style.Render(fmt.Sprintf("%4d %s ", n, sign)))
 	}
 	row(" ", clean(path), panel, false)
-	for _, line := range strings.Split(diff, "\n") {
+	for line := range strings.SplitSeq(diff, "\n") {
 		if line == "" || strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ") {
 			continue
 		}
@@ -213,7 +222,7 @@ func lineUnit(n int) string {
 }
 
 func firstLine(text string) string {
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		if line = strings.TrimSpace(line); line != "" {
 			return line
 		}
@@ -267,15 +276,6 @@ func oneLine(text string) string {
 		}
 		return r
 	}, text)), " ")
-}
-
-// pick is cond ? a : b. Both arms are evaluated, so neither may panic,
-// mutate, or cost anything worth avoiding.
-func pick[T any](cond bool, a, b T) T {
-	if cond {
-		return a
-	}
-	return b
 }
 
 // fit truncates head so the row fits width, keeping tail whole when there is
@@ -390,7 +390,10 @@ func toolRowParts(entry HistoryEntry, failed bool, clock string) (string, string
 	if clock != "" {
 		tail = append(tail, clock)
 	}
-	suffix := pick(len(tail) > 0, " · "+strings.Join(tail, " · "), "")
+	suffix := ""
+	if len(tail) > 0 {
+		suffix = " · " + strings.Join(tail, " · ")
+	}
 	return oneLine(toolSummary(entry)), suffix
 }
 
@@ -432,10 +435,19 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 			rows = append(rows, style.Render(r.traceLine(label, act.Target, isPath(act), width)))
 		}
 	}
-	changeStyle := pick(flags.Tools, r.Styles.Bold, r.Styles.Faint)
+	changeStyle := r.Styles.Faint
+	if flags.Tools {
+		changeStyle = r.Styles.Bold
+	}
 	for _, change := range trace.Changes {
-		label := pick(!flags.Tools && reads(change.Path), "read + edited", "edited")
-		counts := pick(change.Kind == "diff", "  "+r.diffCounts(change), "")
+		label := "edited"
+		if !flags.Tools && reads(change.Path) {
+			label = "read + edited"
+		}
+		counts := ""
+		if change.Kind == "diff" {
+			counts = "  " + r.diffCounts(change)
+		}
 		line := r.traceLine(label, change.Path, true, width-ansi.StringWidth(counts))
 		rows = append(rows, fit(changeStyle.Render(line), counts, width))
 		if flags.Diffs {
@@ -447,7 +459,10 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 		}
 	}
 	if trace.Truncated {
-		notice := pick(flags.Tools, "Some activity was not captured; this list is incomplete", "Some activity was not captured · /v shows what is available")
+		notice := "Some activity was not captured · /v shows what is available"
+		if flags.Tools {
+			notice = "Some activity was not captured; this list is incomplete"
+		}
 		rows = append(rows, r.Styles.Faint.Render(notice))
 	}
 	return strings.Join(rows, "\n")
@@ -473,7 +488,7 @@ var toolErrorLine = regexp.MustCompile(`(?im)^(?:error:|cancelled:|traceback \(m
 
 func (r TranscriptRenderer) faintMarkdownRows(text string, width int) []string {
 	var rows []string
-	for _, line := range strings.Split(RenderMarkdownAnsi(text, width), "\n") {
+	for line := range strings.SplitSeq(RenderMarkdownAnsi(text, width), "\n") {
 		for _, wrapped := range wrapOrChunkLine(line, width) {
 			rows = append(rows, r.Styles.Faint.Render(ansi.Strip(wrapped)))
 		}
@@ -499,7 +514,10 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 			rows = append(rows, r.faintMarkdownRows(entry.Text, width)...)
 			break
 		}
-		render := pick(entry.Live, RenderMarkdownAnsi, renderCopyable)
+		render := renderCopyable
+		if entry.Live {
+			render = RenderMarkdownAnsi
+		}
 		rows = append(rows, render(entry.Text, width))
 	case EntryThinking:
 		rows = []string{markChrome + r.Styles.Faint.Render("thinking")}
@@ -544,7 +562,10 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 	case EntryError:
 		rows = []string{r.errorRow(entry.Text)}
 	case EntryCompacted:
-		action := pick(flags.Compaction, "hide", "view")
+		action := "view"
+		if flags.Compaction {
+			action = "hide"
+		}
 		verb, noun := compactionWords(entry.Strategy)
 		rows = []string{markChrome + r.Styles.Faint.Render(fmt.Sprintf("compaction done · %d items %s · ctrl+k %s %s", entry.Evicted, verb, action, noun))}
 		if flags.Compaction {
@@ -583,7 +604,7 @@ func Compact(entry HistoryEntry, flags DisplayFlags) bool {
 // Separated reports whether a blank row belongs between two adjacent entries.
 // A turn's signoff hangs directly under the turn it closes.
 func Separated(prev *HistoryEntry, next HistoryEntry, flags DisplayFlags) bool {
-	return prev != nil && next.Kind != EntryTurnEnd && !(Compact(*prev, flags) && Compact(next, flags))
+	return prev != nil && next.Kind != EntryTurnEnd && (!Compact(*prev, flags) || !Compact(next, flags))
 }
 
 // railWidth is the rail and the space after it, at the start of every row.
@@ -669,7 +690,7 @@ func (r TranscriptRenderer) frame(before []HistoryEntry, first HistoryEntry, fla
 	head = len(rows)
 	width := max(1, r.BodyWidth-railWidth)
 	gutter := r.rail(own)
-	for _, line := range strings.Split(body(width), "\n") {
+	for line := range strings.SplitSeq(body(width), "\n") {
 		for _, chunk := range markChunks(line, wrapOrChunkLine(line, width)) {
 			rows = append(rows, gutter+chunk)
 		}

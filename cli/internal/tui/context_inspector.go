@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"unicode/utf16"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -109,7 +108,16 @@ func (m ContextInspectorModel) Init() tea.Cmd {
 	return m.loadSnapshotCmd(m.Generation)
 }
 
-func jsLength(s string) int { return len(utf16.Encode([]rune(s))) }
+func utf16Length(s string) int {
+	length := 0
+	for _, char := range s {
+		length++
+		if char > 0xffff {
+			length++
+		}
+	}
+	return length
+}
 
 func isNeg(p *int) bool { return p != nil && *p < 0 }
 
@@ -125,25 +133,25 @@ var (
 
 func validContextSnapshot(s ContextSnapshot) error {
 	if s.State == "pending" {
-		if jsLength(s.Reason) <= 500 {
+		if utf16Length(s.Reason) <= 500 {
 			return nil
 		}
 		return errors.New("daemon returned invalid context metadata")
 	}
-	if s.State != "ready" || jsLength(s.Model) > 512 || s.Sections == nil || len(s.Sections) > 1000 ||
-		jsLength(s.Provider) > 512 || jsLength(s.Protocol) > 512 || (s.CapturedAt != nil && *s.CapturedAt < 0) ||
+	if s.State != "ready" || utf16Length(s.Model) > 512 || s.Sections == nil || len(s.Sections) > 1000 ||
+		utf16Length(s.Provider) > 512 || utf16Length(s.Protocol) > 512 || (s.CapturedAt != nil && *s.CapturedAt < 0) ||
 		isNeg(s.ContextWindowTokens) {
 		return errors.New("daemon returned invalid context metadata")
 	}
 	for _, sec := range s.Sections {
-		if sec.ID == "" || jsLength(sec.ID) > 200 || sec.Label == "" || jsLength(sec.Label) > 200 || !slices.Contains(validKinds, sec.Kind) ||
-			jsLength(sec.Source) > 500 || sec.ItemCount < 0 || sec.ByteCount < 0 || jsLength(sec.Preview) > 2000 || sec.Pages < 0 || sec.Pages > 10000 {
+		if sec.ID == "" || utf16Length(sec.ID) > 200 || sec.Label == "" || utf16Length(sec.Label) > 200 || !slices.Contains(validKinds, sec.Kind) ||
+			utf16Length(sec.Source) > 500 || sec.ItemCount < 0 || sec.ByteCount < 0 || utf16Length(sec.Preview) > 2000 || sec.Pages < 0 || sec.Pages > 10000 {
 			return errors.New("daemon returned invalid context section metadata")
 		}
 	}
 	c := s.Compaction
 	badPct := c.TriggerFreePercent != nil && (math.IsNaN(*c.TriggerFreePercent) || math.IsInf(*c.TriggerFreePercent, 0) || *c.TriggerFreePercent < 0 || *c.TriggerFreePercent > 100)
-	if compactionStatuses[c.Status] == "" || jsLength(c.Strategy) > 200 || jsLength(c.Source) > 500 || jsLength(c.EstimateMethod) > 500 ||
+	if compactionStatuses[c.Status] == "" || utf16Length(c.Strategy) > 200 || utf16Length(c.Source) > 500 || utf16Length(c.EstimateMethod) > 500 ||
 		badPct || isNeg(c.InputLimitTokens) || isNeg(c.EstimatedInputTokens) ||
 		isNeg(c.ProviderInputTokens) || isNeg(c.ProviderCachedInputTokens) ||
 		isNeg(c.BeforeItems) || isNeg(c.AfterItems) {
@@ -153,7 +161,7 @@ func validContextSnapshot(s ContextSnapshot) error {
 }
 
 func validContextPage(p ContextPage, sectionID string) error {
-	if p.Section != sectionID || p.Page < 0 || p.Pages < 0 || p.Pages > 10000 || p.Page >= max(1, p.Pages) || jsLength(p.Content) > 65536 || jsLength(p.Omitted) > 1000 {
+	if p.Section != sectionID || p.Page < 0 || p.Pages < 0 || p.Pages > 10000 || p.Page >= max(1, p.Pages) || utf16Length(p.Content) > 65536 || utf16Length(p.Omitted) > 1000 {
 		return errors.New("daemon returned invalid context page")
 	}
 	return nil
@@ -242,7 +250,10 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 
 			switch msg.String() {
 			case "left", "right":
-				page := pick(msg.String() == "right", m.Detail.Page+1, m.Detail.Page-1)
+				page := m.Detail.Page - 1
+				if msg.String() == "right" {
+					page = m.Detail.Page + 1
+				}
 				if page >= 0 && page < m.Detail.Section.Pages {
 					m.Detail.Page, m.Detail.Value, m.Detail.Scroll, m.Detail.Error = page, nil, 0, ""
 					m.Generation++
@@ -295,13 +306,19 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 }
 
 func wrapContextContent(content string, width int) []string {
-	return strings.Split(ansi.Wrap(content, pick(width <= 1, 76, width), " "), "\n")
+	if width <= 1 {
+		width = 76
+	}
+	return strings.Split(ansi.Wrap(content, width, " "), "\n")
 }
 
 var englishPrinter = message.NewPrinter(language.English)
 
 func contextCount(n int, unit string) string {
-	return englishPrinter.Sprintf("%d", n) + " " + pick(n != 1, unit+"s", unit)
+	if n != 1 {
+		unit += "s"
+	}
+	return englishPrinter.Sprintf("%d", n) + " " + unit
 }
 
 func (m ContextInspectorModel) View() string {
@@ -322,7 +339,10 @@ func (m ContextInspectorModel) View() string {
 			}
 			line("")
 			rows := wrapContextContent(d.Value.Content, m.Width-4)
-			visible := pick(m.Height > 0, max(1, m.Height-7), 17)
+			visible := 17
+			if m.Height > 0 {
+				visible = max(1, m.Height-7)
+			}
 			for _, row := range rows[min(d.Scroll, len(rows)):min(len(rows), d.Scroll+visible)] {
 				line(row)
 			}
@@ -345,7 +365,10 @@ func (m ContextInspectorModel) View() string {
 		line(keyHints(hint{"r", "refresh"}, hint{"esc", "return to chat"}))
 	} else {
 		snap := m.Snapshot
-		label := pick(snap.Provider != "", snap.Provider+" · "+snap.Model, snap.Model)
+		label := snap.Model
+		if snap.Provider != "" {
+			label = snap.Provider + " · " + snap.Model
+		}
 		if snap.Protocol != "" {
 			label += " · " + snap.Protocol
 		}
@@ -372,17 +395,26 @@ func (m ContextInspectorModel) View() string {
 			faint("estimated input: " + contextCount(*snap.Compaction.EstimatedInputTokens, "token") + " · " + method)
 		}
 		line("")
-		capacity := pick(m.Height > 0, max(1, (m.Height-9)/3), 5)
+		capacity := 5
+		if m.Height > 0 {
+			capacity = max(1, (m.Height-9)/3)
+		}
 		first := min(max(0, m.Cursor-capacity/2), max(0, len(snap.Sections)-capacity))
 		for i := first; i < min(len(snap.Sections), first+capacity); i++ {
 			sec := snap.Sections[i]
-			marker := pick(i == m.Cursor, selectBar(), " ")
+			marker := " "
+			if i == m.Cursor {
+				marker = selectBar()
+			}
 			label := fmt.Sprintf("%s %d. %s ", marker, i+1, sec.Label) + DefaultStyles.Faint.Render("· "+sec.Source)
 			if i == m.Cursor {
 				label = selectedLine(label, m.Width)
 			}
 			line(label)
-			available := pick(sec.Pages > 0, contextCount(sec.Pages, "page"), "content unavailable")
+			available := "content unavailable"
+			if sec.Pages > 0 {
+				available = contextCount(sec.Pages, "page")
+			}
 			faint("  " + contextCount(sec.ItemCount, "item") + " · " + contextCount(sec.ByteCount, "measured byte") + " · " + available)
 			if i == m.Cursor && sec.Preview != "" {
 				line("  " + sec.Preview)

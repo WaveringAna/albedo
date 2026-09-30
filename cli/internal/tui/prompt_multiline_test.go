@@ -163,8 +163,8 @@ func TestEditorProcessRestoresTerminal(t *testing.T) {
 		graphemes bool
 		want      string
 	}{
-		{false, "echoed reply\r"},
-		{true, "echoed reply\r" + ansi.SetModeUnicodeCore},
+		{graphemes: false, want: "echoed reply\r"},
+		{graphemes: true, want: "echoed reply\r" + ansi.SetModeUnicodeCore},
 	} {
 		var out strings.Builder
 		p := editorProcess{exec.Command("sh", "-c", "printf 'echoed reply'"), tc.graphemes}

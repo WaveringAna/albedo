@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// The theme is the only place colors are chosen. Screens compose these
+// Styles defines the shared terminal palette. Screens compose these
 // styles and components, so the transcript, the session screen, and the
 // pickers cannot drift into their own palettes.
 //
@@ -227,7 +227,9 @@ func brand(name string) string { return gradientText("✦ "+name, true) }
 // titleRule heads a screen: left, a rule that fades from the brand's end
 // into Decor, then right. Without room for one rule cell it is left alone.
 func titleRule(width int, left, right string) string {
-	right = pick(right != "", " "+right, "")
+	if right != "" {
+		right = " " + right
+	}
 	n := width - ansi.StringWidth(left) - ansi.StringWidth(right) - 1
 	if n < 1 {
 		return left

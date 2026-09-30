@@ -205,7 +205,10 @@ func NewLoginModel(conn *daemon.Connection, nameHint string, openBrowser func(st
 
 func (m LoginModel) inputWidth() int {
 	// Ink includes its cursor cell in width; Bubbles tracks the cursor separately.
-	return pick(m.Step == StepOAuth, max(8, m.Width-25), max(8, m.Width-19))
+	if m.Step == StepOAuth {
+		return max(8, m.Width-25)
+	}
+	return max(8, m.Width-19)
 }
 
 // promptInput re-arms the text input for the next question and reports the
@@ -370,7 +373,10 @@ func (m LoginModel) removalFor(id string) (removal, bool) {
 }
 
 func (m *LoginModel) confirmRemoval(target removal) tea.Cmd {
-	detail := pick(target.Kind == "account", "This removes its saved tokens", "This removes the provider and its saved key")
+	detail := "This removes the provider and its saved key"
+	if target.Kind == "account" {
+		detail = "This removes its saved tokens"
+	}
 	m.Removing = target
 	m.Step = StepRemove
 	items := []PickerItem{
@@ -911,7 +917,10 @@ func (m LoginModel) View() string {
 		line(m.TextInput.View())
 		b.WriteString(ansi.Wrap(m.Styles.Faint.Render("Browser sign-in completes automatically")+m.Styles.Decor.Render(" · ")+keyHints(hint{"enter", "submit code"}, hint{"esc", "cancel"}), m.Width, ""))
 	case StepSaving:
-		state := pick(m.Removing.Kind != "", "removing "+m.Removing.Kind+"…", "saving provider…")
+		state := "saving provider…"
+		if m.Removing.Kind != "" {
+			state = "removing " + m.Removing.Kind + "…"
+		}
 		b.WriteString(m.Styles.Faint.Render(state))
 	default:
 		stepLabels := map[LoginStep]string{

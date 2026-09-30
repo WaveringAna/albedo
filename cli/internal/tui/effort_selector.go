@@ -35,7 +35,14 @@ func (m ChatModel) effortSelectorView() string {
 		for i := left; i < right; i++ {
 			parts = append(parts, label(i))
 		}
-		return pick(left > 0, "‹ ", "") + strings.Join(parts, " ─ ") + pick(right < len(m.effortOptions), " ›", "")
+		line := strings.Join(parts, " ─ ")
+		if left > 0 {
+			line = "‹ " + line
+		}
+		if right < len(m.effortOptions) {
+			line += " ›"
+		}
+		return line
 	}
 	for ansi.StringWidth(plain()) > width && right-left > 1 {
 		if selected-left > right-1-selected {
@@ -53,8 +60,13 @@ func (m ChatModel) effortSelectorView() string {
 		parts = append(parts, style.Render(label(i)))
 	}
 	decor := m.Styles.Decor.Render
-	prefix := pick(left > 0, decor("‹ "), "")
-	suffix := pick(right < len(m.effortOptions), decor(" ›"), "")
+	prefix, suffix := "", ""
+	if left > 0 {
+		prefix = decor("‹ ")
+	}
+	if right < len(m.effortOptions) {
+		suffix = decor(" ›")
+	}
 	return ansi.Truncate(prefix+strings.Join(parts, decor(" ─ "))+suffix, width, "")
 }
 

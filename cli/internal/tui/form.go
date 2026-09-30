@@ -34,7 +34,10 @@ func ask(input *textinput.Model, value string, secret bool) tea.Cmd {
 }
 
 func echo(secret bool) textinput.EchoMode {
-	return pick(secret, textinput.EchoPassword, textinput.EchoNormal)
+	if secret {
+		return textinput.EchoPassword
+	}
+	return textinput.EchoNormal
 }
 
 // newForm makes a field for each key, the masked ones echoing dots, with a
@@ -102,7 +105,11 @@ func (f form) fit(width int) {
 
 // formRow is one labelled field, marked when focused.
 func formRow(focused bool, label string, pad int, value string, width int) string {
-	return ansi.Truncate(pick(focused, promptLead(), "  ")+padRight(label, pad)+value, width, "…")
+	lead := "  "
+	if focused {
+		lead = promptLead()
+	}
+	return ansi.Truncate(lead+padRight(label, pad)+value, width, "…")
 }
 
 // formFooter explains the focused field, then offers the keys every form

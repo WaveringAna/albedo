@@ -26,9 +26,9 @@ func TestScrollDoesNotResumeFollowBeforeEndOfLiveOutput(t *testing.T) {
 		msg  tea.Msg
 		step int
 	}{
-		{"arrow", tea.KeyPressMsg{Code: tea.KeyDown}, 1},
-		{"page", tea.KeyPressMsg{Code: tea.KeyPgDown}, 13},
-		{"wheel", tea.MouseWheelMsg{Button: tea.MouseWheelDown}, 3},
+		{name: "arrow", msg: tea.KeyPressMsg{Code: tea.KeyDown}, step: 1},
+		{name: "page", msg: tea.KeyPressMsg{Code: tea.KeyPgDown}, step: 13},
+		{name: "wheel", msg: tea.MouseWheelMsg{Button: tea.MouseWheelDown}, step: 3},
 	} {
 		t.Run(down.name, func(t *testing.T) {
 			m := newTestChatModel(t, &daemon.Session{ID: "s"})
@@ -68,14 +68,14 @@ func TestReadingPositionSurvivesIncomingTranscript(t *testing.T) {
 		name string
 		msg  tea.Msg
 	}{
-		{"keyboard", tea.KeyPressMsg{Code: tea.KeyPgUp}},
-		{"wheel", tea.MouseWheelMsg{Button: tea.MouseWheelUp}},
+		{name: "keyboard", msg: tea.KeyPressMsg{Code: tea.KeyPgUp}},
+		{name: "wheel", msg: tea.MouseWheelMsg{Button: tea.MouseWheelUp}},
 	} {
 		t.Run(scroll.name, func(t *testing.T) {
 			m := newTestChatModel(t, &daemon.Session{ID: "s"})
 			m.SetSize(80, 20)
 			var text strings.Builder
-			for i := 0; i < MaxSettledLines+50; i++ {
+			for i := range MaxSettledLines + 50 {
 				fmt.Fprintf(&text, "row %d\n", i)
 			}
 			m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Text: text.String()})
@@ -85,10 +85,11 @@ func TestReadingPositionSurvivesIncomingTranscript(t *testing.T) {
 				t.Fatal("scrolling up did not pause following")
 			}
 			before := m.scrollOffset
-			visible := strings.Split(ansi.Strip(m.Viewport.View()), "\n")[0]
+			visible, _, _ := strings.Cut(ansi.Strip(m.Viewport.View()), "\n")
 			m.AddNotice("new activity")
 			m, _ = m.Update(ChatStreamEventMsg{SessionID: m.SessionID, Generation: m.Generation, Event: daemon.StreamEvent{Type: daemon.EventNote, Text: "a new line"}})
-			if m.Follow || strings.Split(ansi.Strip(m.Viewport.View()), "\n")[0] != visible {
+			after, _, _ := strings.Cut(ansi.Strip(m.Viewport.View()), "\n")
+			if m.Follow || after != visible {
 				t.Fatalf("reading position changed: offset %d -> %d, follow=%v", before, m.scrollOffset, m.Follow)
 			}
 		})

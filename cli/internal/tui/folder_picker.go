@@ -521,7 +521,10 @@ func (m FolderPicker) parentQuery() string {
 		}
 	}
 	up := m.homed(path.Dir(dir))
-	return pick(up == "/", "/", up+"/")
+	if up == "/" {
+		return "/"
+	}
+	return up + "/"
 }
 
 // target is the folder enter moves to: the highlighted row, or the typed

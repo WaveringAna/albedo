@@ -98,9 +98,15 @@ type BoundedHistory struct {
 }
 
 func NewBoundedHistory(maxEntries int, maxBytes int64) *BoundedHistory {
+	if maxEntries <= 0 {
+		maxEntries = 500
+	}
+	if maxBytes <= 0 {
+		maxBytes = 2 * 1024 * 1024
+	}
 	return &BoundedHistory{
-		MaxEntries: pick(maxEntries <= 0, 500, maxEntries),
-		MaxBytes:   pick(maxBytes <= 0, 2*1024*1024, maxBytes),
+		MaxEntries: maxEntries,
+		MaxBytes:   maxBytes,
 		entries:    make([]HistoryEntry, 0, 128),
 	}
 }

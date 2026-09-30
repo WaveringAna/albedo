@@ -238,12 +238,16 @@ func (m ExtensionPickerModel) View() string {
 			note = "This version only supports choices for this session. Restart Albedo to use global defaults."
 		}
 	}
-	b.WriteString(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/extensions"), m.Styles.Faint.Render(scope)) + "\n")
-	b.WriteString(m.Styles.Faint.Render(inkWrap(note, m.Width)) + "\n")
-	b.WriteString(DefaultStyles.Warning.Render(ansi.Wrap("Changes reload the affected sessions, prevent reuse of cached prompts, and may lose Python variables that cannot be saved.", max(1, m.Width), " ")) + "\n")
+	b.WriteString(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/extensions"), m.Styles.Faint.Render(scope)))
+	b.WriteByte('\n')
+	b.WriteString(m.Styles.Faint.Render(inkWrap(note, m.Width)))
+	b.WriteByte('\n')
+	b.WriteString(DefaultStyles.Warning.Render(ansi.Wrap("Changes reload the affected sessions, prevent reuse of cached prompts, and may lose Python variables that cannot be saved.", max(1, m.Width), " ")))
+	b.WriteByte('\n')
 
 	if m.Error != "" {
-		b.WriteString(DefaultStyles.Error.Render(m.Error) + "\n")
+		b.WriteString(DefaultStyles.Error.Render(m.Error))
+		b.WriteByte('\n')
 	}
 
 	if m.Loading {
@@ -253,19 +257,30 @@ func (m ExtensionPickerModel) View() string {
 
 	if len(m.Extensions) == 0 {
 		if m.Error != "" {
-			b.WriteString(keyHints(hint{"r", "retry"}, hint{"esc", "return to chat"}) + "\n")
+			b.WriteString(keyHints(hint{"r", "retry"}, hint{"esc", "return to chat"}))
+			b.WriteByte('\n')
 		} else {
-			b.WriteString(m.Styles.Faint.Render("No extensions are available for this session.") + "\n" +
-				inkWrap(keyHints(hint{"↑↓", "select"}, hint{"enter/space", "toggle"}, hint{"esc", "return to chat"}), m.Width))
+			b.WriteString(m.Styles.Faint.Render("No extensions are available for this session."))
+			b.WriteByte('\n')
+			b.WriteString(inkWrap(keyHints(hint{"↑↓", "select"}, hint{"enter/space", "toggle"}, hint{"esc", "return to chat"}), m.Width))
 		}
 		return b.String()
 	}
 
 	if !m.Saving && m.Confirming && m.Cursor < len(m.Extensions) {
 		current := m.Extensions[m.Cursor]
-		on := pick(m.Session, current.Enabled, current.GlobalEnabled)
-		actionWord := pick(on, "Disable", "Enable")
-		choice := pick(m.Error != "", hint{"enter", "retry"}, hint{"enter", "confirm"})
+		on := current.GlobalEnabled
+		if m.Session {
+			on = current.Enabled
+		}
+		actionWord := "Enable"
+		if on {
+			actionWord = "Disable"
+		}
+		choice := hint{"enter", "confirm"}
+		if m.Error != "" {
+			choice = hint{"enter", "retry"}
+		}
 		var confirmMsg string
 		switch {
 		case m.Inheriting:
@@ -275,10 +290,12 @@ func (m ExtensionPickerModel) View() string {
 		default:
 			confirmMsg = fmt.Sprintf("Sessions following global defaults will use this change. %s %s globally?", actionWord, current.Name)
 		}
-		for _, line := range strings.Split(ansi.Wrap(confirmMsg, max(1, m.Width), " "), "\n") {
-			b.WriteString(DefaultStyles.Warning.Render(line) + "\n")
+		for line := range strings.SplitSeq(ansi.Wrap(confirmMsg, max(1, m.Width), " "), "\n") {
+			b.WriteString(DefaultStyles.Warning.Render(line))
+			b.WriteByte('\n')
 		}
-		b.WriteString(inkWrap(keyHints(choice, hint{"esc", "cancel"}), m.Width) + "\n")
+		b.WriteString(inkWrap(keyHints(choice, hint{"esc", "cancel"}), m.Width))
+		b.WriteByte('\n')
 		return b.String()
 	}
 
@@ -291,32 +308,48 @@ func (m ExtensionPickerModel) View() string {
 				scope = "  this session"
 			}
 		} else if ext.Overridden {
-			state := pick(ext.Enabled, "on", "off")
+			state := "off"
+			if ext.Enabled {
+				state = "on"
+			}
 			scope = "  this session: " + state
 		}
-		status := pick(on, DefaultStyles.Success.Render("on "), m.Styles.Faint.Render("off"))
+		var status string
+		if on {
+			status = DefaultStyles.Success.Render("on ")
+		} else {
+			status = m.Styles.Faint.Render("off")
+		}
 		line := status + "  " + ext.Name + m.Styles.Faint.Render(scope)
 		if ext.Description != "" {
 			line += DefaultStyles.Faint.Render("  " + ext.Description)
 		}
 		lines[i] = line
 	}
-	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles) + "\n")
+	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles))
+	b.WriteByte('\n')
 
 	// Current item details
 	if m.Cursor < len(m.Extensions) {
 		current := m.Extensions[m.Cursor]
 		b.WriteByte('\n')
 		if current.Description != "" {
-			b.WriteString(current.Description + "\n")
+			b.WriteString(current.Description)
+			b.WriteByte('\n')
 		}
 
 		joinOr := func(items []string, sep, empty string) string {
-			return pick(len(items) == 0, empty, strings.Join(items, sep))
+			if len(items) == 0 {
+				return empty
+			}
+			return strings.Join(items, sep)
 		}
-		b.WriteString(m.Styles.Faint.Render("plugins: "+joinOr(current.Plugins, ", ", "not reported")) + "\n")
-		b.WriteString(m.Styles.Faint.Render("capabilities: "+joinOr(m.capabilitiesList(current), " · ", "not reported")) + "\n")
-		b.WriteString(m.Styles.Faint.Render("requires: "+joinOr(current.Requires, ", ", "none")) + "\n")
+		b.WriteString(m.Styles.Faint.Render("plugins: " + joinOr(current.Plugins, ", ", "not reported")))
+		b.WriteByte('\n')
+		b.WriteString(m.Styles.Faint.Render("capabilities: " + joinOr(m.capabilitiesList(current), " · ", "not reported")))
+		b.WriteByte('\n')
+		b.WriteString(m.Styles.Faint.Render("requires: " + joinOr(current.Requires, ", ", "none")))
+		b.WriteByte('\n')
 
 	}
 

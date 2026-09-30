@@ -334,11 +334,14 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		for _, item := range msg.Items {
 			switch item.Type {
 			case "user", "tool":
-				prefix := pick(item.Type == "tool", "▸ ", "← ")
-				seeded = append(seeded, tailLine{tailMeta, prefix + firstLine(item.Preview)})
+				prefix := "← "
+				if item.Type == "tool" {
+					prefix = "▸ "
+				}
+				seeded = append(seeded, tailLine{kind: tailMeta, text: prefix + firstLine(item.Preview)})
 			default:
-				for _, line := range strings.Split(item.Preview, "\n") {
-					seeded = append(seeded, tailLine{tailText, line})
+				for line := range strings.SplitSeq(item.Preview, "\n") {
+					seeded = append(seeded, tailLine{kind: tailText, text: line})
 				}
 			}
 		}
@@ -671,7 +674,10 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 		text := str(event, "text")
 		n.chars += utf8.RuneCountInString(text)
 		n.rate += float64(len(text))
-		tail := pick(kind == "thinking", tailThinking, tailText)
+		tail := tailText
+		if kind == "thinking" {
+			tail = tailThinking
+		}
 		m.stream(n, tail, text)
 	case "arguments_delta":
 		text := str(event, "text")
@@ -691,7 +697,7 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 		}
 	case "tool":
 		m.flushLine(n)
-		for _, line := range strings.Split(str(event, "output"), "\n") {
+		for line := range strings.SplitSeq(str(event, "output"), "\n") {
 			if strings.TrimSpace(line) != "" {
 				m.pushTail(n, tailOutput, line)
 			}
@@ -783,7 +789,7 @@ func (m *AgentsViewModel) flushLine(n *agentNode) {
 }
 
 func (m *AgentsViewModel) pushTail(n *agentNode, kind tailKind, line string) {
-	n.tail = capped(append(n.tail, tailLine{kind, strings.TrimRight(line, " ")}), 120)
+	n.tail = capped(append(n.tail, tailLine{kind: kind, text: strings.TrimRight(line, " ")}), 120)
 }
 
 // codeLines reads the code out of a tool call's JSON arguments while they are
@@ -791,8 +797,8 @@ func (m *AgentsViewModel) pushTail(n *agentNode, kind tailKind, line string) {
 // for a tool without one.
 func codeLines(raw string) []string {
 	body := raw
-	if i := strings.Index(raw, `"code"`); i >= 0 {
-		rest := strings.TrimLeft(raw[i+len(`"code"`):], " :")
+	if _, rest, found := strings.Cut(raw, `"code"`); found {
+		rest = strings.TrimLeft(rest, " :")
 		if strings.HasPrefix(rest, `"`) {
 			var b strings.Builder
 			escaped := false
@@ -826,11 +832,17 @@ func codeLines(raw string) []string {
 
 func (m *AgentsViewModel) dagWidth() int {
 	w := m.paneWidth()
-	return pick(w > 0, m.Width-w-1, m.Width)
+	if w > 0 {
+		return m.Width - w - 1
+	}
+	return m.Width
 }
 
 func (m *AgentsViewModel) paneWidth() int {
-	return pick(m.Width < 96, 0, min(46, max(34, m.Width/3)))
+	if m.Width < 96 {
+		return 0
+	}
+	return min(46, max(34, m.Width/3))
 }
 
 // layout places dots by depth, each depth wrapped into rows that fit the
@@ -911,7 +923,10 @@ func route(a, b *agentNode) [][2]int {
 	for r := a.y + 1; r <= channel; r++ {
 		cells = append(cells, [2]int{a.x, r})
 	}
-	step := pick(b.x < a.x, -1, 1)
+	step := 1
+	if b.x < a.x {
+		step = -1
+	}
 	for c := a.x + step; c != b.x+step; c += step {
 		cells = append(cells, [2]int{c, channel})
 	}
@@ -930,7 +945,12 @@ func (m *AgentsViewModel) send(from, to string, tokens int) {
 		return
 	}
 	blocks := max(1, min(5, int(math.Round(math.Log2(float64(tokens)/200+1)))))
-	key := pick(a.parent == to, edgeKey(to, from), edgeKey(from, to))
+	var key string
+	if a.parent == to {
+		key = edgeKey(to, from)
+	} else {
+		key = edgeKey(from, to)
+	}
 	m.packets = append(m.packets, agentPacket{path: path, pos: -float64(blocks), blocks: blocks, hue: a.hue, to: to, tokens: tokens, edge: key})
 	m.heat[key] = 1
 }
@@ -996,7 +1016,10 @@ func (m AgentsViewModel) moving() bool {
 }
 
 func compactCount(n int) string {
-	return pick(n >= 1000, fmt.Sprintf("%.1fk", float64(n)/1000), fmt.Sprintf("%d", n))
+	if n >= 1000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return fmt.Sprintf("%d", n)
 }
 
 // ─── drawing ───
@@ -1161,12 +1184,17 @@ func (m *AgentsViewModel) drawNodes(c *agentCanvas) {
 			glyph, hue = "◆", colors.you
 		case n.running:
 			p := 0.5 + 0.5*math.Sin(t*5+n.phase)
-			glyph = pick(p > 0.55, "◉", "●")
+			if p > 0.55 {
+				glyph = "◉"
+			}
 			hue = n.hue.mix(colors.faint, 0.2).mix(n.hue, p)
 		case n.closed:
 			glyph, hue = "✓", n.hue.mix(colors.faint, 0.5)
 		default:
-			glyph = pick(n.peer, "◇", "○")
+			glyph = "○"
+			if n.peer {
+				glyph = "◇"
+			}
 			hue = n.hue.mix(colors.faint, 0.3)
 		}
 		if n.flash > 0 {
@@ -1197,7 +1225,10 @@ func (m *AgentsViewModel) drawNodes(c *agentCanvas) {
 			}
 			bars.WriteRune(agentsBars[max(0, min(7, int(math.Round(v*7))))])
 		}
-		barHue := pick(n.running, n.hue, colors.decor)
+		barHue := colors.decor
+		if n.running {
+			barHue = n.hue
+		}
 		c.put(n.x+2, n.y+1, bars.String(), barHue)
 		if n.chars > 0 {
 			c.put(n.x+8, n.y+1, compactCount(n.chars/4), colors.faint)
@@ -1259,7 +1290,12 @@ func (m AgentsViewModel) pane(height int) []string {
 	if len(n.mail) > 0 {
 		rows = append(rows, DefaultStyles.Muted.Render("mail"))
 		for _, mail := range n.mail[max(0, len(n.mail)-5):] {
-			arrow := pick(mail.incoming, styled(colors.mail, "← "), DefaultStyles.Faint.Render("→ "))
+			var arrow string
+			if mail.incoming {
+				arrow = styled(colors.mail, "← ")
+			} else {
+				arrow = DefaultStyles.Faint.Render("→ ")
+			}
 			rows = append(rows, ansi.Truncate(arrow+mail.who+" "+DefaultStyles.Faint.Render(mail.kind), width, "…"))
 		}
 		rows = append(rows, "")
@@ -1272,10 +1308,10 @@ func (m AgentsViewModel) pane(height int) []string {
 	lines := slices.Clone(n.tail)
 	if n.lineKind == tailCode {
 		for _, line := range codeLines(n.args) {
-			lines = append(lines, tailLine{tailCode, line})
+			lines = append(lines, tailLine{kind: tailCode, text: line})
 		}
 	} else if n.line != "" {
-		lines = append(lines, tailLine{n.lineKind, n.line})
+		lines = append(lines, tailLine{kind: n.lineKind, text: n.line})
 	}
 	var wrapped []string
 	for _, line := range lines {
@@ -1308,7 +1344,7 @@ func drawTail(line tailLine, width int) []string {
 		format = DefaultStyles.Faint.Render
 	}
 	var out []string
-	for _, part := range strings.Split(ansi.Hardwrap(line.text, max(8, inner), true), "\n") {
+	for part := range strings.SplitSeq(ansi.Hardwrap(line.text, max(8, inner), true), "\n") {
 		out = append(out, gutter+format(part))
 	}
 	return out
@@ -1339,7 +1375,7 @@ func (m AgentsViewModel) View() string {
 		} else if below > 1 {
 			what += fmt.Sprintf(" and the %d agents below it", below)
 		}
-		for _, line := range strings.Split(ansi.Wrap("Their transcripts and work will also be deleted. Delete "+what+"?", max(1, m.Width), " "), "\n") {
+		for line := range strings.SplitSeq(ansi.Wrap("Their transcripts and work will also be deleted. Delete "+what+"?", max(1, m.Width), " "), "\n") {
 			confirmRows = append(confirmRows, DefaultStyles.Warning.Render(line))
 		}
 		confirmRows = append(confirmRows, keyHints(hint{"y", "delete"}, hint{"any key", "keep"}))

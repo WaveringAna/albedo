@@ -110,7 +110,7 @@ func (m WebhooksPageModel) loadCmd(gen int) tea.Cmd {
 			if i := slices.IndexFunc(extensions, func(ext ExtensionItem) bool { return ext.Name == "webhooks" }); i >= 0 {
 				mounted = extensions[i].GlobalEnabled
 				if !extensions[i].Enabled {
-					return webhooksLoadedMsg{Gen: gen, Err: errors.New("Webhooks are off for this session. Turn them on in /extensions.")}
+					return webhooksLoadedMsg{Gen: gen, Err: errors.New("webhooks are off for this session; turn them on in /extensions")}
 				}
 			}
 		}
@@ -308,7 +308,10 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 			if key != "enter" || hook == nil {
 				return m, nil
 			}
-			note := pick(action == "delete", "Deleted "+hook.Name, "New secret for "+hook.Name)
+			note := "New secret for " + hook.Name
+			if action == "delete" {
+				note = "Deleted " + hook.Name
+			}
 			return m.begin(note, [2]string{action, hook.ID})
 		}
 		if key == "esc" || key == "ctrl+c" {
@@ -394,7 +397,7 @@ func (m WebhooksPageModel) View() string {
 			question = "The sender must use the new secret. Replace the secret for " + m.selected().Name + "?"
 		}
 		rows = append(rows, "")
-		for _, line := range strings.Split(ansi.Wrap(question, width, " "), "\n") {
+		for line := range strings.SplitSeq(ansi.Wrap(question, width, " "), "\n") {
 			rows = append(rows, DefaultStyles.Warning.Render(line))
 		}
 		rows = append(rows, keyHints(hint{"enter", "confirm"}, hint{"any other key", "cancels"}))
@@ -430,7 +433,12 @@ func (m WebhooksPageModel) View() string {
 			}
 			list = append(list, sectionRule(ansi.Truncate(sessionLabel(m.Sessions, hook.Session, m.SessionID), max(8, width-12), "…"), counts[hook.Session], width))
 		}
-		label := pick(hook.Enabled, DefaultStyles.Success.Render("on "), DefaultStyles.Faint.Render("off"))
+		var label string
+		if hook.Enabled {
+			label = DefaultStyles.Success.Render("on ")
+		} else {
+			label = DefaultStyles.Faint.Render("off")
+		}
 		row := label + "  " + padRight(hook.Name, nameWidth+1) + DefaultStyles.Faint.Render(hook.URL)
 		if hook.Queued > 0 {
 			row += DefaultStyles.Decor.Render(" · ") + DefaultStyles.Warning.Render(fmt.Sprintf("%d queued", hook.Queued))
@@ -566,7 +574,11 @@ func (f *webhookForm) chosenIndex(matches []daemon.Session) int {
 
 // update handles one key or paste; submit reports that the form should be saved.
 func (f *webhookForm) update(msg tea.Msg) (submit bool, cmd tea.Cmd) {
-	if submit, handled := f.key(msg, hookFields, pick(f.Editing != nil, 2, 0)); handled {
+	firstField := 0
+	if f.Editing != nil {
+		firstField = 2
+	}
+	if submit, handled := f.key(msg, hookFields, firstField); handled {
 		return submit, nil
 	}
 	if key, ok := msg.(tea.KeyPressMsg); ok {
@@ -576,7 +588,10 @@ func (f *webhookForm) update(msg tea.Msg) (submit bool, cmd tea.Cmd) {
 				if i < 0 {
 					i = 0
 				} else {
-					step := pick(key.String() == "left", -1, 1)
+					step := 1
+					if key.String() == "left" {
+						step = -1
+					}
 					i = (i + step + len(matches)) % len(matches)
 				}
 				f.Chosen = matches[i].ID
@@ -601,23 +616,26 @@ func (f *webhookForm) steps() ([][2]string, string, error) {
 	name, secret, header, prefix := f.value(hookFieldName), f.value(hookFieldSecret), f.value(hookFieldHeader), f.value(hookFieldPrefix)
 	switch {
 	case f.Editing == nil && f.Chosen == "":
-		return nil, "", errors.New("Choose the session this webhook will wake.")
+		return nil, "", errors.New("choose the session this webhook will wake")
 	case f.Editing == nil && !hookName.MatchString(name):
-		return nil, "", errors.New("Use 1–64 letters, digits, underscores, or hyphens for the webhook name.")
+		return nil, "", errors.New("use 1–64 letters, digits, underscores, or hyphens for the webhook name")
 	case secret != "" && (len(secret) < 16 || len(secret) > 4096):
 		if f.Editing != nil {
-			return nil, "", errors.New("Use 16–4096 bytes for the secret, or leave it blank to keep the existing secret.")
+			return nil, "", errors.New("use 16–4096 bytes for the secret, or leave it blank to keep the existing secret")
 		}
-		return nil, "", errors.New("Use 16–4096 bytes for the secret, or leave it blank to generate one.")
+		return nil, "", errors.New("use 16–4096 bytes for the secret, or leave it blank to generate one")
 	case strings.ContainsAny(secret, " \t"):
-		return nil, "", errors.New("Remove spaces from the secret.")
+		return nil, "", errors.New("remove spaces from the secret")
 	case !hookHeader.MatchString(header):
-		return nil, "", errors.New("Use 1–64 letters, digits, or hyphens for the signature header.")
+		return nil, "", errors.New("use 1–64 letters, digits, or hyphens for the signature header")
 	case len(prefix) > 32 || strings.ContainsAny(prefix, " \t"):
-		return nil, "", errors.New("Use at most 32 characters without spaces for the signature prefix.")
+		return nil, "", errors.New("use at most 32 characters without spaces for the signature prefix")
 	}
 	if f.Editing == nil {
-		create := f.Chosen + " " + name + pick(secret != "", " "+secret, "")
+		create := f.Chosen + " " + name
+		if secret != "" {
+			create += " " + secret
+		}
 		steps := [][2]string{{"create_in", create}}
 		if !strings.EqualFold(header, defaultSignatureHeader) || prefix != defaultSignaturePrefix {
 			steps = append(steps, [2]string{"signature", newHookID + " " + header + " " + prefix})
@@ -665,7 +683,10 @@ func (f *webhookForm) view(width int) []string {
 	case hookFieldName:
 		note = "letters, digits, _ or -"
 	case hookFieldSecret:
-		note = pick(f.Editing != nil, "enter a new secret to replace the stored one", "16+ bytes from the sender, or blank to generate one")
+		note = "16+ bytes from the sender, or blank to generate one"
+		if f.Editing != nil {
+			note = "enter a new secret to replace the stored one"
+		}
 	case hookFieldHeader:
 		note = "the header the sender signs with · GitHub uses x-hub-signature-256"
 	case hookFieldPrefix:

@@ -99,7 +99,10 @@ func (m CapabilityPageModel) loadCmd(gen int) tea.Cmd {
 func mcpItems(settings daemon.Settings) []capabilityItem {
 	items := make([]capabilityItem, 0, len(settings.MCP))
 	for name, server := range settings.MCP {
-		address := pick(server.Type == "stdio", server.Command, server.URL)
+		address := server.URL
+		if server.Type == "stdio" {
+			address = server.Command
+		}
 		items = append(items, capabilityItem{ID: name, Title: name, Detail: server.Type + " · " + address, Server: server, Secrets: settings.Credentials.MCP[name]})
 	}
 	return items
@@ -153,7 +156,10 @@ func discoverInstructions(workspace string) []capabilityItem {
 				if !e.Type().IsRegular() || !strings.EqualFold(filepath.Ext(e.Name()), ".md") {
 					continue
 				}
-				display := pick(group.scope == "global", filepath.Join("~", folder, e.Name()), filepath.Join(folder, e.Name()))
+				display := filepath.Join(folder, e.Name())
+				if group.scope == "global" {
+					display = filepath.Join("~", folder, e.Name())
+				}
 				items = append(items, capabilityItem{ID: group.scope + ":" + display, Title: display, Detail: filepath.Join(path, e.Name())})
 			}
 		}
@@ -171,7 +177,10 @@ func (m CapabilityPageModel) enableExtensionCmd(gen int) tea.Cmd {
 
 func (m CapabilityPageModel) toggleCmd(item capabilityItem, gen int) tea.Cmd {
 	next := !m.selectedEnabled(item)
-	scope := pick(m.Global, "global", "session")
+	scope := "session"
+	if m.Global {
+		scope = "global"
+	}
 	return func() tea.Msg {
 		err := daemon.SetCapability(context.Background(), m.Conn, m.SessionID, m.Kind, item.ID, scope, &next)
 		return capabilitySavedMsg{Gen: gen, Err: err}
@@ -347,7 +356,10 @@ func (m CapabilityPageModel) View() string {
 	width := max(1, m.Width)
 	mcp := m.Kind == "mcp"
 	heading := map[string]string{"skills": "Skills", "instructions": "Instruction files", "mcp": "MCP servers"}[m.Kind]
-	scope := pick(m.Global, "global default", "this session")
+	scope := "this session"
+	if m.Global {
+		scope = "global default"
+	}
 	rows := m.header("/"+m.Kind, scope)
 	if m.Loading {
 		rows = append(rows, DefaultStyles.Faint.Render("loading "+heading+"…"))
@@ -359,7 +371,7 @@ func (m CapabilityPageModel) View() string {
 			question = "Its stored credentials will also be removed. Delete MCP server " + m.Items[m.Cursor].ID + "?"
 		}
 		rows = append(rows, "")
-		for _, line := range strings.Split(ansi.Wrap(question, width, " "), "\n") {
+		for line := range strings.SplitSeq(ansi.Wrap(question, width, " "), "\n") {
 			rows = append(rows, DefaultStyles.Warning.Render(line))
 		}
 		cancel := hint{"esc", "cancel"}
@@ -381,7 +393,10 @@ func (m CapabilityPageModel) View() string {
 		if !m.selectedEnabled(item) || (mcp && item.Server.Enabled != nil && !*item.Server.Enabled) {
 			label = DefaultStyles.Faint.Render("off")
 		}
-		detail := pick(mcp, DefaultStyles.Faint.Render(" · "+item.Detail), "")
+		detail := ""
+		if mcp {
+			detail = DefaultStyles.Faint.Render(" · " + item.Detail)
+		}
 		list[i] = listRow(i == m.Cursor, label+"  "+item.Title+detail, width)
 	}
 	rows = append(rows, scrolled(list, m.Cursor, max(1, m.Height-12))...)
@@ -399,7 +414,10 @@ func (m CapabilityPageModel) View() string {
 			selected := m.Items[m.Cursor]
 			detail := selected.Detail
 			if mcp {
-				auth := pick(selected.Secrets.Any(), "credentials stored privately", "no credentials")
+				auth := "no credentials"
+				if selected.Secrets.Any() {
+					auth = "credentials stored privately"
+				}
 				detail += " · " + auth
 				if selected.Server.Enabled != nil && !*selected.Server.Enabled {
 					detail += " · disabled in extensions.json · press e to enable"

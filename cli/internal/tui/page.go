@@ -71,7 +71,11 @@ func (p page) header(command, right string) []string {
 
 // listRow is one list entry, marked and highlighted under the cursor.
 func listRow(selected bool, row string, width int) string {
-	row = ansi.Truncate(pick(selected, selectBar()+" ", "  ")+row, width, "…")
+	prefix := "  "
+	if selected {
+		prefix = selectBar() + " "
+	}
+	row = ansi.Truncate(prefix+row, width, "…")
 	if selected {
 		return selectedLine(row, width)
 	}

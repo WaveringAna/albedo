@@ -92,9 +92,19 @@ func NewModelPickerModel(conn *daemon.Connection, profiles config.Profiles, mode
 	if profile == "" {
 		profile = profiles.Active
 	}
-	lead := func(name string) int { return pick(name == profile, 0, 1) }
 	names := slices.Sorted(maps.Keys(profiles.Providers))
-	slices.SortStableFunc(names, func(a, b string) int { return cmp.Compare(lead(a), lead(b)) })
+	slices.SortStableFunc(names, func(a, b string) int {
+		if a == b {
+			return 0
+		}
+		if a == profile {
+			return -1
+		}
+		if b == profile {
+			return 1
+		}
+		return 0
+	})
 
 	catalogs := make([]profileCatalog, 0, len(names))
 	for _, name := range names {
@@ -193,7 +203,7 @@ func (m ModelPickerModel) listCmd(c profileCatalog) tea.Cmd {
 
 func validateModelID(m string) error {
 	m = strings.TrimSpace(m)
-	if m == "" || jsLength(m) > 512 || strings.ContainsFunc(m, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+	if m == "" || utf16Length(m) > 512 || strings.ContainsFunc(m, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 		return errors.New("enter a model id of 1–512 characters")
 	}
 	return nil
@@ -265,7 +275,7 @@ func (m *ModelPickerModel) refilter(reset bool) {
 	}
 	query := strings.TrimSpace(m.search.Value())
 	var words []string
-	for _, field := range strings.Fields(query) {
+	for field := range strings.FieldsSeq(query) {
 		if word := searchKey(field); word != "" {
 			words = append(words, word)
 		}
@@ -645,7 +655,10 @@ func (m ModelPickerModel) row(r modelRow, selected bool, width int, cols modelCo
 			line += "  " + m.ladder(r, selected, cols)
 		}
 		if tag := m.tag(r); tag != "" {
-			style := pick(tag == "current", DefaultStyles.Success, DefaultStyles.Faint)
+			style := DefaultStyles.Faint
+			if tag == "current" {
+				style = DefaultStyles.Success
+			}
 			line += strings.Repeat(" ", max(2, width-ansi.StringWidth(line)-ansi.StringWidth(tag)-1)) + style.Render(tag)
 		}
 	}
@@ -671,7 +684,10 @@ func markedCell(s string, hits []int, width int, base lipgloss.Style) string {
 	run, marked := "", false
 	flush := func() {
 		if run != "" {
-			style := pick(marked, hit, base)
+			style := base
+			if marked {
+				style = hit
+			}
 			b.WriteString(style.Render(run))
 		}
 	}
@@ -721,7 +737,10 @@ func (m ModelPickerModel) ladder(r modelRow, selected bool, cols modelColumns) s
 	at := slices.Index(levels, effort)
 	out := arrow("‹", at > 0) + " " + squares.String() + " " + arrow("›", at < len(levels)-1)
 	if cols.label > 0 {
-		label := pick(selected, lipgloss.NewStyle(), DefaultStyles.Faint)
+		label := DefaultStyles.Faint
+		if selected {
+			label = lipgloss.NewStyle()
+		}
 		out += " " + label.Render(svCell(effort, cols.label, false))
 	}
 	return out
@@ -802,7 +821,11 @@ func (m ModelPickerModel) details(width, height int) []string {
 		meta = append(meta, DefaultStyles.Faint.Render(protocol))
 	}
 	if tag := m.tag(r); tag != "" {
-		meta = append(meta, pick(tag == "current", DefaultStyles.Success, DefaultStyles.Faint).Render(tag))
+		style := DefaultStyles.Faint
+		if tag == "current" {
+			style = DefaultStyles.Success
+		}
+		meta = append(meta, style.Render(tag))
 	}
 	lines = append(lines, strings.Join(meta, DefaultStyles.Decor.Render(" · ")), DefaultStyles.Decor.Render(strings.Repeat("─", inner)))
 
@@ -874,5 +897,8 @@ func (m ModelPickerModel) footer(width int) string {
 }
 
 func counted(n int, noun string) string {
-	return pick(n == 1, "1 "+noun, fmt.Sprintf("%d %ss", n, noun))
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }

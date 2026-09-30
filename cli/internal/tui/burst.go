@@ -217,7 +217,10 @@ type clause struct {
 
 func (c clause) String() string {
 	if c.shown == 0 {
-		noun := pick(c.n == 1, strings.TrimSuffix(c.noun, "s"), c.noun)
+		noun := c.noun
+		if c.n == 1 {
+			noun = strings.TrimSuffix(noun, "s")
+		}
 		return fmt.Sprintf("%s %d %s", c.verb, c.n, noun)
 	}
 	text := c.verb + " " + strings.Join(c.items[:c.shown], ", ")
@@ -232,7 +235,10 @@ func (c clause) String() string {
 func (r TranscriptRenderer) summary(b burst, width int, n namer) string {
 	var head []string
 	if b.thoughts > 0 {
-		thought := pick(!b.untimed && b.thoughtMs >= 1000, "thought "+formatElapsed(b.thoughtMs), "thought")
+		thought := "thought"
+		if !b.untimed && b.thoughtMs >= 1000 {
+			thought += " " + formatElapsed(b.thoughtMs)
+		}
 		head = append(head, thought)
 	}
 	// naming can make two recorded paths the same ("cli/a.go" and the absolute
@@ -343,7 +349,10 @@ func pathGroups(paths []string) []string {
 	}
 	for i, dir := range dirs {
 		parent := parentName(dir)
-		labels[i] = pick(parents[parent] > 1, dir, parent) + braced(names[dir])
+		if parents[parent] > 1 {
+			parent = dir
+		}
+		labels[i] = parent + braced(names[dir])
 	}
 	return labels
 }
@@ -353,7 +362,11 @@ func parentName(dir string) string {
 	if dir = strings.TrimSuffix(dir, "/"); dir == "" {
 		return ""
 	}
-	return pick(strings.HasPrefix(dir, "/"), "/", "") + path.Base(dir) + "/"
+	parent := path.Base(dir) + "/"
+	if strings.HasPrefix(dir, "/") {
+		parent = "/" + parent
+	}
+	return parent
 }
 
 // braced joins names in braces, a shared extension outside them.
@@ -403,7 +416,10 @@ func commandName(command string) string {
 		if len(fields) == 0 || preamble[fields[0]] {
 			continue
 		}
-		name := pick(strings.HasPrefix(fields[0], "/"), path.Base(fields[0]), fields[0])
+		name := fields[0]
+		if strings.HasPrefix(name, "/") {
+			name = path.Base(name)
+		}
 		if len(fields) > 1 && subcommanded[name] && subcommand.MatchString(fields[1]) {
 			name += " " + fields[1]
 		}

@@ -30,7 +30,7 @@ func TestGroupedActionRowHoldsUntilTheNextAction(t *testing.T) {
 	}
 	occupied := func() int {
 		n := 0
-		for _, row := range strings.Split(visible(), "\n") {
+		for row := range strings.SplitSeq(visible(), "\n") {
 			if strings.TrimSpace(row) != "" {
 				n++
 			}

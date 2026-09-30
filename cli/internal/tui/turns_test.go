@@ -21,7 +21,7 @@ func plainRows(lines []string) []string {
 func TestJumpToYouLandsOnYourMessages(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(100, 20)
-	for i := int64(0); i < 4; i++ {
+	for i := range int64(4) {
 		m.appendSettledEntry(HistoryEntry{Kind: EntryUser, Speaker: "You", Text: "question", Timestamp: 1 + i})
 		m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Speaker: "albedo", Text: strings.Repeat("line\n", 15), Timestamp: 1 + i})
 	}

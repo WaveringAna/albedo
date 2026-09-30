@@ -40,7 +40,10 @@ func HighlightCode(code string, lang string) string {
 			for j < len(chars) && chars[j] != '\n' {
 				j++
 			}
-			b.WriteString(comment + string(chars[i:j]) + ansiReset + codeInk())
+			b.WriteString(comment)
+			b.WriteString(string(chars[i:j]))
+			b.WriteString(ansiReset)
+			b.WriteString(codeInk())
 			i = j
 			continue
 		}
@@ -129,7 +132,10 @@ func markdownStyle() ansi.StyleConfig {
 // the one before it and no further, so a finished block renders once and a
 // reply streaming in re-renders only its last block.
 func RenderMarkdownAnsi(text string, width int) string {
-	return renderBlocks(text, pick(width <= 0, 80, width))
+	if width <= 0 {
+		width = 80
+	}
+	return renderBlocks(text, width)
 }
 
 // renderCopyable renders text to width with its wrapped rows marked, so a
@@ -160,7 +166,7 @@ func renderBlocks(text string, width int) string {
 // rendering prev on its own does not begin the rendering of both. Only a
 // finished block is kept: the last one may still be growing.
 func markdownPiece(prev, block string, width int, finished bool) (string, bool) {
-	key := pieceKey{width, prev, block}
+	key := pieceKey{width: width, prev: prev, block: block}
 	if piece, ok := pieces.get(key); ok {
 		return piece, true
 	}
@@ -209,7 +215,10 @@ func markdownBlocks(text string) []string {
 	start, fence, blank := 0, "", false
 	for pos := 0; pos < len(text); {
 		i := strings.IndexByte(text[pos:], '\n')
-		end := pick(i >= 0, pos+i+1, len(text))
+		end := len(text)
+		if i >= 0 {
+			end = pos + i + 1
+		}
 		line := strings.TrimRight(text[pos:end], "\r\n")
 		if fence == "" && spansBlocks.MatchString(line) {
 			return []string{text}

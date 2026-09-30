@@ -106,7 +106,7 @@ func TestMarkdownRendersTheSameBlockByBlock(t *testing.T) {
 				if fence != "" {
 					t.Fatalf("sample %d splits a code fence between blocks", i)
 				}
-				for _, line := range strings.Split(block, "\n") {
+				for line := range strings.SplitSeq(block, "\n") {
 					fence = fenceAfter(fence, line)
 				}
 			}

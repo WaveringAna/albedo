@@ -132,6 +132,9 @@ func (m *ChatModel) dragScrolled(msg dragScrollMsg) tea.Cmd {
 		m.dragDir = 0
 		return nil
 	}
-	m.dragHead.Row = m.scrollOffset + pick(m.dragDir < 0, 0, m.Viewport.Height()-1)
+	m.dragHead.Row = m.scrollOffset
+	if m.dragDir >= 0 {
+		m.dragHead.Row += m.Viewport.Height() - 1
+	}
 	return dragScrollTick(m.dragGen, dragScrollEvery)
 }

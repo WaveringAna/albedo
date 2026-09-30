@@ -32,7 +32,10 @@ func (t *transcriptState) resetStream() {
 }
 
 func (t transcriptState) activeEntryKind() EntryKind {
-	return pick(t.activeKind == StreamKindThinking, EntryThinking, EntryAssistant)
+	if t.activeKind == StreamKindThinking {
+		return EntryThinking
+	}
+	return EntryAssistant
 }
 
 func (t *transcriptState) settle(agentName string) []HistoryEntry {
@@ -100,7 +103,10 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		t.resetStream()
 	case daemon.EventUser:
 		entries = t.settle(agentName)
-		speaker := pick(evt.Source != "" && evt.Source != "chat", evt.Source, "You")
+		speaker := "You"
+		if evt.Source != "" && evt.Source != "chat" {
+			speaker = evt.Source
+		}
 		var ts int64
 		if evt.Timestamp != nil && *evt.Timestamp > 0 {
 			ts = *evt.Timestamp

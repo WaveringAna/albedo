@@ -27,11 +27,15 @@ func queryColors() string {
 		return ""
 	}
 	defer term.Restore(fd, state) //nolint:errcheck
-	query := "\x1b]10;?\x1b\\\x1b]11;?\x1b\\"
+	var query strings.Builder
+	query.WriteString("\x1b]10;?\x1b\\\x1b]11;?\x1b\\")
 	for _, i := range queriedPalette {
-		query += "\x1b]4;" + strconv.Itoa(i) + ";?\x1b\\"
+		query.WriteString("\x1b]4;")
+		query.WriteString(strconv.Itoa(i))
+		query.WriteString(";?\x1b\\")
 	}
-	if _, err := tty.WriteString(query + "\x1b[c"); err != nil {
+	query.WriteString("\x1b[c")
+	if _, err := tty.WriteString(query.String()); err != nil {
 		return ""
 	}
 	var reply strings.Builder

@@ -73,7 +73,10 @@ func (m *PickerModel) SetSize(width, height int) {
 
 func (m *PickerModel) applyFilter() {
 	item, ok := m.Highlighted()
-	old := pick(ok, item.ID, "")
+	old := ""
+	if ok {
+		old = item.ID
+	}
 	tokens := strings.Fields(strings.ToLower(m.SearchInput.Value()))
 	m.Filtered = nil
 	for _, item := range m.Items {
@@ -92,8 +95,6 @@ func (m *PickerModel) applyFilter() {
 	m.Cursor = max(0, slices.IndexFunc(m.Filtered, func(item PickerItem) bool { return item.ID == old }))
 }
 
-// selectableRows is a bottom-anchored list window with the selected row on
-// the selection surface.
 func inkWrap(text string, width int) string {
 	if width <= 0 {
 		return text
@@ -101,6 +102,8 @@ func inkWrap(text string, width int) string {
 	return ansi.Wrap(text, width, " ")
 }
 
+// selectableRows is a bottom-anchored list window with the selected row on
+// the selection surface.
 func selectableRows(lines []string, selected, height, limit, width int, styles Styles) string {
 	if height <= 0 {
 		height = 24
@@ -116,7 +119,11 @@ func selectableRows(lines []string, selected, height, limit, width int, styles S
 	var b strings.Builder
 	bar := selectBar() + " "
 	for i := first; i < min(len(lines), first+available); i++ {
-		line := pick(i == selected, bar, "  ") + lines[i]
+		lead := "  "
+		if i == selected {
+			lead = bar
+		}
+		line := lead + lines[i]
 		if width > 0 {
 			line = ansi.Truncate(line, width, "…")
 		}
@@ -131,7 +138,7 @@ func selectableRows(lines []string, selected, height, limit, width int, styles S
 	return b.String()
 }
 
-func pickerRow(item PickerItem, styles Styles) string {
+func pickerRow(item PickerItem) string {
 	line := item.Label
 	if item.Detail != "" {
 		line += DefaultStyles.Faint.Render("  " + item.Detail)
@@ -140,7 +147,10 @@ func pickerRow(item PickerItem, styles Styles) string {
 }
 
 func (m PickerModel) Init() tea.Cmd {
-	return pick(m.WithSearch, textinput.Blink, nil)
+	if m.WithSearch {
+		return textinput.Blink
+	}
+	return nil
 }
 
 func (m PickerModel) Update(msg tea.Msg) (PickerModel, tea.Cmd) {
@@ -182,16 +192,20 @@ func (m PickerModel) Update(msg tea.Msg) (PickerModel, tea.Cmd) {
 func (m PickerModel) View() string {
 	var b strings.Builder
 	if m.Title != "" {
-		b.WriteString(m.Title + "\n")
+		b.WriteString(m.Title)
+		b.WriteByte('\n')
 	}
 	lines := make([]string, len(m.Filtered))
 	for i, item := range m.Filtered {
-		lines[i] = pickerRow(item, m.Styles)
+		lines[i] = pickerRow(item)
 	}
-	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles) + "\n")
+	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles))
+	b.WriteByte('\n')
 	if m.WithSearch {
-		b.WriteString(promptLead() + m.SearchInput.View())
+		b.WriteString(promptLead())
+		b.WriteString(m.SearchInput.View())
 	}
-	b.WriteString("\n" + keyHints(hint{"↑↓", "select"}, hint{"enter", "choose"}, hint{"esc", "cancel"}))
+	b.WriteByte('\n')
+	b.WriteString(keyHints(hint{"↑↓", "select"}, hint{"enter", "choose"}, hint{"esc", "cancel"}))
 	return b.String()
 }

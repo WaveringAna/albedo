@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,9 +40,9 @@ func svLogo() []string {
 	rows := len(svLogoPixels) / 2
 	width := len(svLogoPixels[0])
 	lines := make([]string, rows)
-	for r := 0; r < rows; r++ {
+	for r := range rows {
 		var b strings.Builder
-		for c := 0; c < width; c++ {
+		for c := range width {
 			top := svLogoPixels[2*r][c] == '#'
 			bottom := svLogoPixels[2*r+1][c] == '#'
 			ch := " "
@@ -166,7 +167,7 @@ func (m SessionViewer) View() string {
 	} else {
 		columns = [][]string{m.column(m.Filtered, width, body, now)}
 	}
-	for row := 0; row < body; row++ {
+	for row := range body {
 		var b strings.Builder
 		for c, col := range columns {
 			if c > 0 {
@@ -192,7 +193,10 @@ func svFit(s string, w int) string { return svCell(s, w, false) }
 
 // titleRule is the brand at the workspace over a rule.
 func (m SessionViewer) titleRule(width int) string {
-	label := pick(m.ArchiveView, "albedo  archive", "albedo")
+	label := "albedo"
+	if m.ArchiveView {
+		label = "albedo  archive"
+	}
 	return " " + titleRule(width-1, located(label, sessionText(homePath(m.Workspace))), "")
 }
 
@@ -206,7 +210,10 @@ func (m SessionViewer) footer(width int, now time.Time) string {
 		}
 		return strings.Join(rows, "\n")
 	}
-	esc := pick(m.HasActive, "back", "quit")
+	esc := "quit"
+	if m.HasActive {
+		esc = "back"
+	}
 	left := " " + keyHints(hint{"↑↓", "move"}, hint{"tab", "switch"}, hint{"enter", "open"}, hint{"^r", "rename"}, hint{"^s", "pin"}, hint{"^a", "archive"}, hint{"^f", "folders"}, hint{"esc", esc})
 	switch {
 	case m.rename.active():
@@ -286,7 +293,7 @@ func (m SessionViewer) column(items []PickerItem, width, height int, now time.Ti
 func scrollWindow(all []string, selectedAt, width, height int) []string {
 	if len(all) > height {
 		start := min(max(0, selectedAt-height/2), len(all)-height)
-		window := append([]string(nil), all[start:start+height]...)
+		window := slices.Clone(all[start : start+height])
 		if height >= 3 {
 			more := DefaultStyles.Faint.Render("   ···")
 			if start > 0 {
@@ -324,7 +331,10 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 	if selected {
 		bar = st(DefaultStyles.Agent).Render("▌")
 	}
-	titleStyle := pick(selected, DefaultStyles.Bold, lipgloss.NewStyle())
+	titleStyle := lipgloss.NewStyle()
+	if selected {
+		titleStyle = DefaultStyles.Bold
+	}
 	fill := func(line string) string {
 		if pad := width - ansi.StringWidth(line); pad > 0 {
 			line += st(lipgloss.NewStyle()).Render(strings.Repeat(" ", pad))
@@ -334,9 +344,10 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 
 	if sec == secAction {
 		glyph, title, hint, fg := "✦ ", "New session", "in "+sessionText(filepath.Base(m.Workspace)), DefaultStyles.You
-		if item.ID == "archive" {
+		switch item.ID {
+		case "archive":
 			glyph, title, hint, fg = "▤ ", "Archive", fmt.Sprintf("%d sessions", len(m.prefs.Archived)), DefaultStyles.Muted
-		} else if item.ID == "login" {
+		case "login":
 			glyph, title, hint, fg = "◇ ", "Accounts", "providers", DefaultStyles.Muted
 		}
 		titleWidth := min(ansi.StringWidth(title), cols.title)
@@ -364,15 +375,24 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 	}
 	line := bar + st(iconStyle).Render(glyph) + st(lipgloss.NewStyle()).Render(" ") + title
 	if cols.model > 0 {
-		ms := pick(selected, lipgloss.NewStyle(), DefaultStyles.Muted)
+		ms := DefaultStyles.Muted
+		if selected {
+			ms = lipgloss.NewStyle()
+		}
 		line += gap + st(ms).Render(svCell(cmp.Or(sessionText(s.Model), "—"), cols.model, false))
 	}
 	if cols.workspace > 0 {
-		ws := pick(s.Workspace == m.Workspace, DefaultStyles.Faint, DefaultStyles.Muted)
+		ws := DefaultStyles.Muted
+		if s.Workspace == m.Workspace {
+			ws = DefaultStyles.Faint
+		}
 		line += gap + st(ws).Render(svCell(sessionText(filepath.Base(s.Workspace)), cols.workspace, false))
 	}
 	if cols.age > 0 {
-		as := pick(recent, DefaultStyles.Success, DefaultStyles.Faint)
+		as := DefaultStyles.Faint
+		if recent {
+			as = DefaultStyles.Success
+		}
 		line += gap + st(as).Render(svCell(svCompactAge(s.LastAssistantAt, now), cols.age, true))
 	}
 	return fill(line)
@@ -498,7 +518,7 @@ func (m SessionViewer) transcript(s daemon.Session, width, height int) []string 
 			blocks = append(blocks, &block{kind: "tool", counts: map[string]int{}})
 		}
 		b := blocks[len(blocks)-1]
-		for _, name := range strings.Split(text, ", ") {
+		for name := range strings.SplitSeq(text, ", ") {
 			if b.counts[name] == 0 {
 				b.tools = append(b.tools, name)
 			}

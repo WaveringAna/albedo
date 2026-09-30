@@ -26,5 +26,8 @@ func (ns Notices) HasError() bool {
 }
 
 func (ns Notices) ChromeRows() int {
-	return pick(len(ns) == 0, 0, len(ns)+1)
+	if len(ns) == 0 {
+		return 0
+	}
+	return len(ns) + 1
 }

@@ -47,16 +47,12 @@ func NewCommandMenuModel() CommandMenuModel {
 	}
 }
 
-func (m *CommandMenuModel) SetCatalog(catalog []daemon.SessionCommand) {
-	m.Catalog = catalog
-}
-
 func (m CommandMenuModel) Matches(input string) []ChatCommand {
 	if !strings.HasPrefix(input, "/") || strings.Contains(input, "\n") || input == m.Dismissed {
 		return nil
 	}
 
-	all := append([]ChatCommand(nil), AppCommands...)
+	all := slices.Clone(AppCommands)
 	for _, cmd := range m.Catalog {
 		all = append(all, ChatCommand{
 			Name:        cmd.Name,
@@ -68,8 +64,7 @@ func (m CommandMenuModel) Matches(input string) []ChatCommand {
 	// De-duplicate by name (last occurrence wins), placing exact match first.
 	seen := make(map[string]bool, len(all))
 	var direct, others []ChatCommand
-	for i := len(all) - 1; i >= 0; i-- {
-		cmd := all[i]
+	for _, cmd := range slices.Backward(all) {
 		if seen[cmd.Name] {
 			continue
 		}
@@ -132,7 +127,8 @@ func (m CommandMenuModel) View(input string) string {
 		if i == idx {
 			b.WriteString(selectedLine(selectBar()+" "+desc, 0))
 		} else {
-			b.WriteString("  " + desc)
+			b.WriteString("  ")
+			b.WriteString(desc)
 		}
 		b.WriteByte('\n')
 	}
