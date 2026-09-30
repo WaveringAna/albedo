@@ -1,32 +1,46 @@
 # existing storage migrations
 
-this is an organization of the migrations already shipped, not a new migration
-framework or schema version. the implementations live under
-`src/albedo/daemon/migrations/`; `src/albedo/daemon/migrations.gleam` is the
-explicit ordered entrypoint for startup data upgrades.
+this organizes migrations already shipped; it does not introduce a schema
+version. core implementations live under `src/albedo/daemon/migrations/`;
+extension implementations live under their own `migrations/` directories and
+contribute `MigrationPlugin` values. the host applies them, without importing
+extension-specific migration modules.
 
 ## startup order
 
-`server.prepare_storage` still runs before sessions start:
+`runtime.start` installs the extension registry before `server.prepare_storage`.
+for each installed extension, `extension.install` first calls its table
+initialiser, then applies its contributed `SchemaMigration` callbacks on the
+store-owned SQLite connection, in plugin order. work contributes `cwd.apply`;
+paperclips contributes `title.apply`. their ledgers create tables but do not run
+upgrades themselves. all installed owners upgrade, even when disabled for
+sessions; session selection and live reload never rerun migrations.
+
+`server.prepare_storage` then runs before sessions start:
 
 1. `conversation.initialise` creates the core tables, then calls
    `conversation_columns.apply`: the existing session columns first, transcript
    columns second. it then runs its existing domain-local session recovery
    (missing activity/title from transcript), then creates `sessions_activity`.
 2. quota, mail, and family initialise their tables, unchanged.
-3. `migrations.run(ledger, backup)` runs `image_store.run`, then
-   `cell_images.run`, returning `#(transcript_rows_moved, cell_results_moved)`
-   for the existing server log messages. `image_store.run` first externalizes
-   legacy transcript images, then converts image-table TEXT data to decoded BLOB.
+3. `migrations.run(ledger, backup)` runs the core `image_store.run`, which first
+   externalizes legacy transcript images, then converts image-table TEXT data
+   to decoded BLOB. `runtime.migrate(host, backup)` then collects installed
+   extensions' `DataMigration` callbacks in registry/plugin order and applies
+   them with the same backup path. python contributes `cell_images.run`, which
+   requires the core image and marker tables. callbacks report named row counts;
+   the server logs nonzero extension results as `migration <name>: <n> rows`.
+   a failed callback stops startup and prevents later migrations from running.
 4. the existing best-effort filesystem credential migration runs; then provider
    assignment from legacy configuration runs, unchanged.
 
-schema creation is still owned by each subsystem. work and paperclips upgrade
-only when their extension initialisers run, not unconditionally at core startup:
-`work_cwd.apply` checks `PRAGMA table_info(work)`, adds the existing reserved
-`__albedo_legacy__` cwd default when absent, then creates `work_cwd_id`;
-`paperclips_title.apply` adds the existing non-null empty-default title column.
-these calls remain after each owner's table creation.
+schema creation is still owned by each subsystem. `work/migrations/cwd.apply`
+checks `PRAGMA table_info(work)`, adds the existing reserved `__albedo_legacy__`
+cwd default when absent, then creates `work_cwd_id`;
+`paperclips/migrations/title.apply` adds the existing non-null empty-default title
+column. these upgrades run immediately after their owner's table creation, so
+later extension initialisers can use the upgraded schema. embedding hosts call
+`runtime.migrate` after preparing core storage and before opening sessions.
 
 ## compatibility and interruption
 
@@ -43,8 +57,8 @@ these calls remain after each owner's table creation.
   transaction helper. there is no new all-migrations transaction or transaction
   policy change. markers are written at the original completion points, and
   interrupted runs recheck remaining rows.
-- `backup.gleam` preserves the two existing backup call patterns: transcript
-  and BLOB migration check for an existing file before directory creation and
+- core `backup.gleam` and python's cell migration preserve the two existing
+  backup call patterns: transcript and BLOB migration check for an existing file before directory creation and
   `VACUUM INTO`, retaining the `image store backup failed: ` error prefix; cell
   migration ensures the directory first and copies on the first page containing
   inline images, outside its transaction. the server still supplies one shared
@@ -64,14 +78,15 @@ these calls remain after each owner's table creation.
 | `images.migrate` / `migrate_legacy` / transcript pages | `migrations/image_store.run` / `migrate_legacy` / transcript pages |
 | `images.migrate_blobs` / BLOB pages | `migrations/image_store.migrate_blobs` / BLOB pages |
 | `images.backup_before_migration` | `migrations/backup.image_store` |
-| `python/cells.migrate_images` / cell pages | `migrations/cell_images.run` / cell pages |
-| `python/cells.backup_before_migration` | `migrations/backup.cell_images` |
-| `work/ledger.initialise`: cwd alteration and index | `migrations/work_cwd.apply` |
-| `paperclips/ledger.initialise`: title addition | `migrations/paperclips_title.apply` |
+| `python/cells.migrate_images` / cell pages | `python/migrations/cell_images.run` / cell pages |
+| `python/cells.backup_before_migration` | `python/migrations/cell_images.backup_before_migration` |
+| `work/ledger.initialise`: cwd alteration and index | `work/migrations/cwd.apply`, contributed by work |
+| `paperclips/ledger.initialise`: title addition | `paperclips/migrations/title.apply`, contributed by paperclips |
 
 `images.migrate` and `cells.migrate_images` are removed rather than wrapped:
-wrappers would introduce import cycles between image/cell domain modules and
-migration modules. direct callers use the migration modules instead.
+the migration implementations are separate from the live domain readers and
+writers. startup discovers extension upgrades through plugins, not direct calls
+to their implementation modules.
 
 ## intentionally not extracted
 

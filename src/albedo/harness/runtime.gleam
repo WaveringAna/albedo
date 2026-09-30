@@ -200,6 +200,15 @@ pub fn ledger(runtime: Runtime) -> work.Store {
   runtime.work
 }
 
+/// Apply installed extensions' data upgrades after core storage is ready, before
+/// opening sessions. Embedding hosts supply their own pre-upgrade backup path.
+pub fn migrate(
+  runtime: Runtime,
+  backup: String,
+) -> Result(List(#(String, Int)), String) {
+  extension.migrate(runtime.extensions, runtime.work, backup)
+}
+
 fn checked_id(id: String) -> Result(String, python.Error) {
   case string.trim(id) == "" || string.byte_size(id) > 256 {
     True ->

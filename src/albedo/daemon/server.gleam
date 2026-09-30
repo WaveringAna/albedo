@@ -561,19 +561,17 @@ fn prepare_storage(
     <> "/backups/albedo-before-image-store-"
     <> int.to_string(usage.now())
     <> ".sqlite"
-  use #(moved, cells_moved) <- result.try(migrations.run(
-    runtime.ledger(host),
-    backup,
-  ))
-  case cells_moved {
-    0 -> Nil
-    rows ->
-      io.println(
-        "image store: moved images out of "
-        <> int.to_string(rows)
-        <> " cell results",
-      )
-  }
+  use moved <- result.try(migrations.run(runtime.ledger(host), backup))
+  use upgraded <- result.try(runtime.migrate(host, backup))
+  list.each(upgraded, fn(migration) {
+    case migration.1 {
+      0 -> Nil
+      rows ->
+        io.println(
+          "migration " <> migration.0 <> ": " <> int.to_string(rows) <> " rows",
+        )
+    }
+  })
   case moved {
     0 -> Nil
     rows ->

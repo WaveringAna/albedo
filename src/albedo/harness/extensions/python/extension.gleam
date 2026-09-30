@@ -3,6 +3,7 @@
 import albedo/harness/extension
 import albedo/harness/extensions/python/cells as journal
 import albedo/harness/extensions/python/kernel as python
+import albedo/harness/extensions/python/migrations/cell_images
 import albedo/harness/extensions/python/rpc as cells
 import albedo/openai_api/types
 import gleam/dynamic/decode
@@ -85,6 +86,10 @@ pub fn extension() -> extension.Extension {
     "A persistent Python namespace with saved cell recovery.",
     [],
     [
+      extension.MigrationPlugin(extension.DataMigration(
+        "cell_images",
+        cell_images.run,
+      )),
       extension.ToolPlugin(
         "Python has a persistent namespace, top-level await, cells.read/info/trace and cells.run for saved-source repair (all async), and output.read/output.list for bounded retained output (synchronous; awaiting them also works). cells.last_id is the id of the latest cell, and await cells.list(limit=20) lists this session's cells newest first with their status and first line, even after their output has rolled out. output.read(id, offset=0, limit=4000) returns up to limit characters. output.list() names every retained channel, which is also how to find earlier cells: cells, background jobs, and 'native' for bytes written to fd 1/2 while no cell was running. show_image(source) returns a PNG, JPEG, or WebP (bytes or a file path) to you with this cell's result, so you see it after the cell ends; at most 4 images and 5 MiB per cell.",
         [extension.Tool(definition(), invoke, recover)],

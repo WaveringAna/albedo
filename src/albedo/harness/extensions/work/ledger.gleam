@@ -1,4 +1,3 @@
-import albedo/daemon/migrations/work_cwd
 import albedo/daemon/store as storage
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -311,8 +310,5 @@ pub fn to_json(item: Item) -> json.Json {
 }
 
 pub fn initialise(store: Store) -> Result(Nil, String) {
-  storage.query(store, fn(db) {
-    use _ <- result.try(storage.exec(db, schema))
-    work_cwd.apply(db)
-  })
+  storage.query(store, storage.exec(_, schema))
 }

@@ -233,6 +233,19 @@ pub type Plugin {
   /// HTTP routes the daemon serves under `/<extension>/` while the extension
   /// is enabled globally.
   ServicePlugin(service: Service)
+  /// SQLite upgrades owned by this extension, applied by the host at startup.
+  MigrationPlugin(migration: Migration)
+}
+
+pub type Migration {
+  /// Applied immediately after the owning extension creates its tables.
+  SchemaMigration(apply: fn(sqlight.Connection) -> Result(Nil, String))
+  /// Applied after core data upgrades, with the same pre-upgrade backup path.
+  /// Returns the number of rows rewritten for startup reporting.
+  DataMigration(
+    name: String,
+    run: fn(store.Store, String) -> Result(Int, String),
+  )
 }
 
 /// Handles a request below the extension's mount point. The daemon token does
@@ -330,7 +343,34 @@ pub fn install(
       )
     }),
   )
-  list.try_each(installed, fn(extension) { extension.initialise(ledger) })
+  list.try_each(installed, fn(extension) {
+    use _ <- result.try(extension.initialise(ledger))
+    list.try_each(extension.plugins, fn(plugin) {
+      case plugin {
+        MigrationPlugin(SchemaMigration(apply)) -> store.query(ledger, apply)
+        _ -> Ok(Nil)
+      }
+    })
+  })
+}
+
+/// Installed extensions' data upgrades, in registry/plugin order, not session
+/// selection order. Each migration owns its markers and transaction boundaries.
+pub fn migrate(
+  installed: List(Extension),
+  ledger: store.Store,
+  backup: String,
+) -> Result(List(#(String, Int)), String) {
+  plugin_values(installed, fn(_, plugin) {
+    case plugin {
+      MigrationPlugin(DataMigration(name, run)) -> Ok(#(name, run))
+      _ -> Error(Nil)
+    }
+  })
+  |> list.try_map(fn(migration) {
+    migration.1(ledger, backup)
+    |> result.map(fn(count) { #(migration.0, count) })
+  })
 }
 
 fn validate_registry(
@@ -988,6 +1028,7 @@ pub fn summaries(
             ModelProviderPlugin(_) -> "model_provider"
             LoginPlugin(_) -> "login"
             ServicePlugin(_) -> "service"
+            MigrationPlugin(_) -> "migration"
           }
         }),
       )

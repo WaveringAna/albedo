@@ -2,10 +2,10 @@
 //// changes; synthetic corrupted and legacy records cannot arise in E2E.
 
 import albedo/daemon/images
-import albedo/daemon/migrations/cell_images
 import albedo/daemon/store
 import albedo/harness/extensions/python/cells
 import albedo/harness/extensions/python/kernel as python
+import albedo/harness/extensions/python/migrations/cell_images
 import albedo/openai_api/types
 import gleam/dynamic
 import gleam/dynamic/decode

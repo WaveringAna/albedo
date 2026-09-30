@@ -2,7 +2,6 @@
 //// the user to review. The model writes and lists; the user triages through
 //// /paperclips. Rows live in the shared ledger store under one table.
 
-import albedo/daemon/migrations/paperclips_title
 import albedo/daemon/store as storage
 import gleam/dynamic/decode
 import gleam/json
@@ -49,13 +48,9 @@ pub type Error {
 pub type Store =
   storage.Store
 
-/// Runs once at install against the shared ledger store. `add_columns`
-/// carries tables installed before a column existed.
+/// Creates the table at install; the extension contributes its column upgrades.
 pub fn initialise(ledger: Store) -> Result(Nil, String) {
-  storage.query(ledger, fn(db) {
-    use _ <- result.try(storage.exec(db, schema))
-    paperclips_title.apply(db)
-  })
+  storage.query(ledger, storage.exec(_, schema))
 }
 
 const schema = "

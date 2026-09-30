@@ -45,7 +45,7 @@ extension.Extension(
 )
 ```
 
-An extension bundles plugins: context (system instructions), tool (model tools + Python modules + host routes), command (one definition drives the CLI menu, user invocation, and the kernel's typed `commands` bindings), managed (stateful contributions that observe session events), models/model-provider (catalog, wire protocol, login), service (HTTP under `/<extension>/`), compaction, and fold. Selection is per session through `/extensions`; at most one compaction strategy may be enabled, and changes require an idle session.
+An extension bundles plugins: context (system instructions), tool (model tools + Python modules + host routes), command (one definition drives the CLI menu, user invocation, and the kernel's typed `commands` bindings), managed (stateful contributions that observe session events), models/model-provider (catalog, wire protocol, login), service (HTTP under `/<extension>/`), migration (extension-owned SQLite upgrades applied by the host), compaction, and fold. Selection is per session through `/extensions`; at most one compaction strategy may be enabled, and changes require an idle session.
 
 ### `cli/` — the terminal (Go)
 

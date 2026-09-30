@@ -1,6 +1,6 @@
 # extensions
 
-an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, models, provider, login, service, compaction, or fold plugins. `python`, `run`, `work`, `mail`, `agents`, `schedule`, `paperclips`, `files`, `memory`, `instructions`, `commands`, `skills`, `models`, `openai`, `codex`, `antigravity`, `alibaba`, `claude`, `rolling`, `snapcompact-memory`, `lcm-memory`, and `remote` are enabled by default; `mcp`, `view`, [`proxy`](proxy.md), `webhooks`, [`warm`](cache-warming.md), and the `snapcompact` and `lcm` compaction strategies are installed and disabled until enabled. plugin contributions compose inside them.
+an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, models, provider, login, service, migration, compaction, or fold plugins. `python`, `run`, `work`, `mail`, `agents`, `schedule`, `paperclips`, `files`, `memory`, `instructions`, `commands`, `skills`, `models`, `openai`, `codex`, `antigravity`, `alibaba`, `claude`, `rolling`, `snapcompact-memory`, `lcm-memory`, and `remote` are enabled by default; `mcp`, `view`, [`proxy`](proxy.md), `webhooks`, [`warm`](cache-warming.md), and the `snapcompact` and `lcm` compaction strategies are installed and disabled until enabled. plugin contributions compose inside them.
 
 ## select extensions
 
@@ -45,6 +45,30 @@ a managed contribution also hears its session through `observe(session, event)`,
 `ServicePlugin(Service(handle))` serves HTTP from the daemon while its extension is enabled globally (sessions do not select services). Requests to `/<extension>/...` go to `handle(daemon, path, request)` with the path below the mount. The daemon token does not apply there, so a service owns its own authentication; requests carrying an `Origin` header are still refused, so a web page cannot reach a local service that spends your credentials. The daemon's own routes (`health`, `sessions`, `models`, `auth`, `shutdown`) always win. `extension.Daemon` gives the service `home`, `upstream(profile, model, session)` to resolve a saved profile outside any session, catalog `models`, and the daemon's `sessions`. Set `ALBEDO_PORT` in the daemon's environment to pin its port so a service has a stable base url; the default is a free port chosen at start. Built-in dependencies keep these layers explicit: `codex -> openai -> models`. See [models](models.md) and [model authentication](auth.md).
 
 `CompactionPlugin` supplies a history strategy; `FoldPlugin` supplies stored folds any strategy reads through `context.prior`; see [compaction](compaction.md). one enabled compaction strategy owns the request-history view in a built-in session. a strategy receives chronological history and must preserve tool call/result associations; it must not replace the durable transcript.
+
+## sqlite migrations
+
+extensions own their tables and their SQLite migration implementations. contribute
+`MigrationPlugin(SchemaMigration(apply))` for column/index upgrades and
+`MigrationPlugin(DataMigration(name, run))` for data rewrites; keep the callbacks
+under the owning extension, not `daemon/migrations/`.
+
+`extension.install` calls each installed owner's `initialise(ledger)` to create
+its tables, then applies that owner's schema callbacks on the serialized store
+connection before proceeding to the next owner. `runtime.migrate(host, backup)`
+collects and applies data callbacks in registry/plugin order after the daemon's
+core data upgrades and before sessions start. `run(ledger, backup)` returns a
+rewritten-row count. installed-but-disabled extensions still upgrade their
+storage; session selection/reload does not apply migrations. failures stop the
+phase, and data callbacks own their idempotency markers, paging, and transactions.
+embedding hosts must prepare core storage and invoke `runtime.migrate` before
+opening sessions. see [migrations](migrations.md) for startup order and backups.
+
+```gleam
+plugins: [
+  extension.MigrationPlugin(extension.SchemaMigration(title.apply)),
+],
+```
 
 ## extension settings
 

@@ -1,6 +1,7 @@
 import albedo/harness/extension as harness_extension
 import albedo/harness/extensions/paperclips/command as paperclips_command
 import albedo/harness/extensions/paperclips/ledger as paperclips
+import albedo/harness/extensions/paperclips/migrations/title
 import albedo/harness/extensions/paperclips/rpc
 
 pub fn extension() -> harness_extension.Extension {
@@ -9,6 +10,9 @@ pub fn extension() -> harness_extension.Extension {
     "A vent channel: the model records friction, the user reviews it in /paperclips.",
     ["python"],
     [
+      harness_extension.MigrationPlugin(harness_extension.SchemaMigration(
+        title.apply,
+      )),
       harness_extension.ToolPlugin(vent_instructions, [], ["paperclips"], []),
       // The prepared workspace scopes both the Python route and /paperclips.
       harness_extension.ManagedPlugin(fn(store, _, workspace) {

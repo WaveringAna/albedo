@@ -17,17 +17,6 @@ pub fn image_store(ledger: store.Store, backup: String) -> Result(Nil, String) {
   }
 }
 
-pub fn cell_images(
-  db: sqlight.Connection,
-  path: String,
-) -> Result(Nil, String) {
-  ensure_dir(path)
-  case backup_exists(path) {
-    True -> Ok(Nil)
-    False -> store.run(db, "VACUUM INTO ?", [sqlight.text(path)])
-  }
-}
-
 @external(erlang, "albedo_images", "ensure_dir")
 fn ensure_dir(path: String) -> Nil
 

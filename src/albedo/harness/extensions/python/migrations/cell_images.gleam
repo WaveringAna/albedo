@@ -1,7 +1,6 @@
 //// Existing migration of inline cell screenshots into shared image payloads.
 
 import albedo/daemon/images
-import albedo/daemon/migrations/backup as snapshot
 import albedo/daemon/store
 import albedo/harness/extensions/python/kernel as python
 import gleam/dynamic/decode
@@ -74,7 +73,7 @@ fn migrate_image_pages(
             case
               moved == 0 && list.any(rows, fn(row) { has_inline_image(row.1) })
             {
-              True -> snapshot.cell_images(db, backup)
+              True -> backup_before_migration(db, backup)
               False -> Ok(Nil)
             },
           )
@@ -129,6 +128,23 @@ fn migrate_image_pages(
     Ok(#(_, None)) -> Ok(moved)
   }
 }
+
+fn backup_before_migration(
+  db: sqlight.Connection,
+  path: String,
+) -> Result(Nil, String) {
+  ensure_dir(path)
+  case backup_exists(path) {
+    True -> Ok(Nil)
+    False -> store.run(db, "VACUUM INTO ?", [sqlight.text(path)])
+  }
+}
+
+@external(erlang, "albedo_images", "ensure_dir")
+fn ensure_dir(path: String) -> Nil
+
+@external(erlang, "albedo_images", "backup_exists")
+fn backup_exists(path: String) -> Bool
 
 @external(erlang, "albedo_native", "pack_cell")
 fn pack(outcome: Result(python.Outcome, python.Error)) -> BitArray
