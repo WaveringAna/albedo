@@ -6,15 +6,17 @@ import (
 )
 
 // OpenBrowser opens a URL in the system's default browser.
-func OpenBrowser(urlStr string) {
+func OpenBrowser(url string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", urlStr)
+		cmd = exec.Command("open", url)
 	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", "", urlStr)
+		cmd = exec.Command("cmd", "/c", "start", "", url)
 	default:
-		cmd = exec.Command("xdg-open", urlStr)
+		cmd = exec.Command("xdg-open", url)
 	}
-	_ = cmd.Start()
+	if err := cmd.Start(); err == nil {
+		go func() { _ = cmd.Wait() }()
+	}
 }

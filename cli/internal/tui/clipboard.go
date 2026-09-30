@@ -27,30 +27,33 @@ const (
 	MaxClipboardImageEdge  = 16384
 )
 
-type CommandExecutor func(ctx context.Context, name string, args ...string) ([]byte, error)
-
-func defaultExec(ctx context.Context, name string, args ...string) ([]byte, error) {
+func execClipboardCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
 	}
-	if err := cmd.Start(); err != nil {
+	if err = cmd.Start(); err != nil {
 		return nil, err
 	}
 
-	// Bounded read: read up to MaxClipboardImageBytes + 1 so we never buffer unbounded subprocess output
+	// The extra byte detects oversized output without buffering the rest.
 	limited := io.LimitReader(stdout, MaxClipboardImageBytes+1)
 	buf, err := io.ReadAll(limited)
-	_ = cmd.Wait()
+	if err != nil || len(buf) > MaxClipboardImageBytes {
+		// Once reading stops, a child still writing to the pipe could block Wait.
+		_ = cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
 
 	if len(buf) > MaxClipboardImageBytes {
 		return nil, fmt.Errorf("clipboard image exceeds %d byte limit", MaxClipboardImageBytes)
 	}
-	return buf, err
+	if err != nil {
+		return buf, err
+	}
+	return buf, waitErr
 }
-
-var CurrentExecutor CommandExecutor = defaultExec
 
 // CopyText puts text on the clipboard of the machine albedo runs on and asks
 // the terminal to put it on its own with OSC 52. Those differ when you reach
@@ -79,11 +82,11 @@ func ClipboardHasImage() bool {
 	switch runtime.GOOS {
 	case "darwin":
 		if _, err := exec.LookPath("pngpaste"); err == nil {
-			if out, err := CurrentExecutor(ctx, "pngpaste", "-b"); err == nil && len(out) == 0 {
+			if out, err := execClipboardCommand(ctx, "pngpaste", "-b"); err == nil && len(out) == 0 {
 				return true
 			}
 		}
-		out, err := CurrentExecutor(ctx, "osascript", "-e", "clipboard info")
+		out, err := execClipboardCommand(ctx, "osascript", "-e", "clipboard info")
 		if err != nil {
 			return false
 		}
@@ -106,7 +109,7 @@ func ClipboardHasImage() bool {
 			if _, err := exec.LookPath(probe.tool); err != nil {
 				continue
 			}
-			out, err := CurrentExecutor(ctx, probe.tool, probe.args...)
+			out, err := execClipboardCommand(ctx, probe.tool, probe.args...)
 			if err == nil && strings.Contains(string(out), "image/") {
 				return true
 			}
@@ -148,9 +151,9 @@ func ReadClipboardImage() (*daemon.ImageAttachment, error) {
 	switch runtime.GOOS {
 	case "darwin":
 		if _, errPath := exec.LookPath("pngpaste"); errPath == nil {
-			data, err = CurrentExecutor(ctx, "pngpaste", "-")
+			data, err = execClipboardCommand(ctx, "pngpaste", "-")
 		} else {
-			rawOut, errCmd := CurrentExecutor(ctx, "osascript", "-e", "get the clipboard as «class PNGf»")
+			rawOut, errCmd := execClipboardCommand(ctx, "osascript", "-e", "get the clipboard as «class PNGf»")
 			if errCmd != nil {
 				return nil, errCmd
 			}
@@ -162,19 +165,19 @@ func ReadClipboardImage() (*daemon.ImageAttachment, error) {
 
 	case "linux":
 		if os.Getenv("WAYLAND_DISPLAY") != "" {
-			data, err = CurrentExecutor(ctx, "wl-paste", "-t", "image/png")
+			data, err = execClipboardCommand(ctx, "wl-paste", "-t", "image/png")
 		} else if os.Getenv("DISPLAY") != "" {
-			data, err = CurrentExecutor(ctx, "xclip", "-selection", "clipboard", "-t", "image/png", "-o")
+			data, err = execClipboardCommand(ctx, "xclip", "-selection", "clipboard", "-t", "image/png", "-o")
 		} else {
 			return nil, errors.New("no display or clipboard tool available")
 		}
 
 	default:
-		return nil, fmt.Errorf("Clipboard images are not supported on %s", runtime.GOOS)
+		return nil, fmt.Errorf("clipboard images are not supported on %s", runtime.GOOS)
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("Could not read clipboard image: %w", err)
+		return nil, fmt.Errorf("could not read clipboard image: %w", err)
 	}
 
 	if len(data) == 0 {
@@ -188,7 +191,7 @@ func ReadClipboardImage() (*daemon.ImageAttachment, error) {
 	// Strictly validate config - rejects truncated or 0-dimension images
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("Clipboard image is invalid or incomplete: %w", err)
+		return nil, fmt.Errorf("clipboard image is invalid or incomplete: %w", err)
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 {
 		return nil, errors.New("invalid image dimensions: zero or negative")
@@ -226,11 +229,10 @@ type ClipboardImagePastedMsg struct {
 
 func PasteClipboardImageCmd(sessionID string, gen int64) tea.Cmd {
 	return func() tea.Msg {
-		var img *daemon.ImageAttachment
-		err := errors.New("no image in clipboard")
-		if ClipboardHasImage() {
-			img, err = ReadClipboardImage()
+		if !ClipboardHasImage() {
+			return ClipboardImagePastedMsg{SessionID: sessionID, Generation: gen}
 		}
+		img, err := ReadClipboardImage()
 		return ClipboardImagePastedMsg{SessionID: sessionID, Generation: gen, Image: img, Err: err}
 	}
 }
