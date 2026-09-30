@@ -128,7 +128,7 @@ def main():
         "-x",
         "--exclusive-jobs",
         type=int,
-        default=4,
+        default=8,
         help="concurrent exclusive tests, each on a daemon of its own",
     )
     args = parser.parse_args()

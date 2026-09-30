@@ -66,7 +66,7 @@ const detached_ms = 30_000
 
 /// Examine idleness often enough to honour the limit, never more than once a minute.
 fn sweep_interval(config: Config) -> Int {
-  int.clamp(config.idle_ms / 4, 2000, 60_000)
+  int.clamp(config.idle_ms / 4, 250, 60_000)
 }
 
 type Message {
@@ -2393,7 +2393,7 @@ pub fn main() -> Nil {
     Config(
       home,
       token,
-      setting("ALBEDO_IDLE_SECONDS", 31 * 60, 10, 604_800) * 1000,
+      setting("ALBEDO_IDLE_SECONDS", 31 * 60, 1, 604_800) * 1000,
       setting("ALBEDO_KERNEL_BUDGET_MB", 2048, 64, 1_048_576) * 1024,
       setting("ALBEDO_SCHEDULE_TICK_MS", 15_000, 50, 60_000),
     )

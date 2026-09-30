@@ -20,7 +20,8 @@ def notes_for(app, session):
     return []
 
 
-IDLE_SECONDS = 10
+# Short enough that the test waits seconds, long enough to outlast a turn.
+IDLE_SECONDS = 2
 
 
 def latest_user(request):
@@ -90,7 +91,7 @@ class IdleReapTests(unittest.TestCase):
         self.assertEqual(len(set(kernels(daemon)) - existing), 1)
         deadline = time.monotonic() + IDLE_SECONDS * 4
         while time.monotonic() < deadline and set(kernels(daemon)) - existing:
-            time.sleep(0.5)
+            time.sleep(0.1)
         self.assertEqual(
             set(kernels(daemon)) - existing, set(), "idle kernel outlived its limit"
         )
