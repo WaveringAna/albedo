@@ -46,13 +46,13 @@ pub type Row {
     text: String,
     badge: String,
     tone: Tone,
-    /// The full text a wide client shows beside the list, where `text` is
+    /// The full text a client shows for the selected row, where `text` is
     /// the short title. Empty when the row has nothing more to show.
     detail: String,
   )
 }
 
-/// A row with the full text a wide client shows beside the list, where
+/// A row with the full text a client shows for the selected row, where
 /// `text` is the short title. `page.detail_row` fills it; `page.row` leaves
 /// the detail empty.
 pub fn row(id: String, text: String, badge: String, tone: Tone) -> Row {
