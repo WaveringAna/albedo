@@ -126,7 +126,7 @@ def _stage(text: str) -> tuple[list[str], dict[str, str]]:
 def translate(script: str) -> str | None:
     """The run() code a simple shell line means, or None when it does more than
     start programs: `cd cli && go test ./... | tail -5` is
-    `job = await run('go', 'test', './...', cwd='cli')` then
+    `job = run('go', 'test', './...', cwd='cli')`, `await job`, then
     `job.tail(lines=5)`, and each other `|` is a .pipe(...)."""
     plain = _unquoted(script)
     for match in re.finditer(r"2>&1", plain):  # stderr joins stdout anyway
@@ -174,7 +174,7 @@ def translate(script: str) -> str | None:
         if limit is None
         else f"{limit.group(1)}(lines={limit.group(2) or limit.group(3) or 10})"
     )
-    return f"job = await {''.join(calls)}\njob.{read}"
+    return f"job = {''.join(calls)}\nawait job\njob.{read}"
 
 
 def refusal(
