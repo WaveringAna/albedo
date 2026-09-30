@@ -196,6 +196,12 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
   // A name, not a pid: handlers keep reaching the registry across restarts.
   let registry = process.named_subject(name)
   let selected_port = process.new_subject()
+  // mist restarts a failed listener on the port it was built with, so port 0
+  // would bring it back somewhere daemon.json does not say: pick it once.
+  let port = case port {
+    0 -> free_port()
+    _ -> port
+  }
   use _ <- result.try(
     mist.new(route(config, registry, _))
     |> mist.bind("127.0.0.1")
@@ -2438,6 +2444,9 @@ fn setting(name: String, fallback: Int, low: Int, high: Int) -> Int {
     Error(_) -> fallback
   }
 }
+
+@external(erlang, "albedo_daemon", "free_port")
+fn free_port() -> Int
 
 @external(erlang, "albedo_daemon", "env")
 fn env(name: String) -> String

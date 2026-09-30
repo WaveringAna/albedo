@@ -1,6 +1,12 @@
 -module(albedo_daemon).
--export([env/1,ready/3,read_config/1,directory/1,shutdown/0,rss/1,watch_parent/1,hold/1]).
+-export([env/1,free_port/0,ready/3,read_config/1,directory/1,shutdown/0,rss/1,watch_parent/1,hold/1]).
 env(Name) -> case os:getenv(binary_to_list(Name)) of false -> <<>>; Value -> unicode:characters_to_binary(Value) end.
+%% A loopback port nothing listens on, which the OS just picked.
+free_port() ->
+    {ok, Socket} = gen_tcp:listen(0, [{ip, loopback}, {reuseaddr, true}]),
+    {ok, Port} = inet:port(Socket),
+    ok = gen_tcp:close(Socket),
+    Port.
 %% config.json with each profile's saved apiKey filled in from creds.json. A
 %% file that is not a JSON object is passed on as it is, to fail decoding.
 read_config(Home) ->

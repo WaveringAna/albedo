@@ -9,6 +9,8 @@ test. Tests share one daemon and keep to their own profile; an ``@exclusive``
 test, which may change global settings or restart the daemon, gets a fresh one
 that boots after its fixture's ``prepare(app)`` and is discarded afterwards, so
 it never restores what it changed. ``providers={}`` leaves it unconfigured.
+Setting ``app.daemon.open_files = (soft, hard)`` in ``prepare`` boots that
+daemon under an open-file limit.
 ``write_extensions(settings)`` replaces extensions.json without letting the
 daemon reach the network, and ``store_secrets(section, value)`` writes a
 creds.json section such as the OAuth ``accounts`` or ``mcp`` server secrets.
@@ -499,6 +501,9 @@ class Daemon:
         )
         if _executable:
             self.env["ALBEDO_DAEMON"] = _executable
+        # A (soft, hard) open-file limit the CLI, and so the daemon it boots,
+        # starts under; None passes on the test process's own.
+        self.open_files = None
         self.connection = None
         self.base = None
         self._pid = None
@@ -645,8 +650,17 @@ class Daemon:
         )
 
     def cli(self, *args):
+        command = [str(ROOT / "cli/bin/albedo"), *args]
+        if self.open_files:
+            command = [
+                sys.executable,
+                "-c",
+                _WITH_OPEN_FILES,
+                *map(str, self.open_files),
+                *command,
+            ]
         result = subprocess.run(
-            [str(ROOT / "cli/bin/albedo"), *args],
+            command,
             cwd=ROOT,
             env=self.env,
             text=True,
@@ -669,6 +683,13 @@ class Daemon:
             f"/sessions/{app.session()}/extensions",
             {"name": "webhooks", "scope": "global", "enabled": True},
         ).close()
+
+
+# Runs a command under a (soft, hard) open-file limit, as a shell started with
+# that `ulimit -n` would.
+_WITH_OPEN_FILES = """import os, resource, sys
+resource.setrlimit(resource.RLIMIT_NOFILE, (int(sys.argv[1]), int(sys.argv[2])))
+os.execv(sys.argv[3], sys.argv[3:])"""
 
 
 def _alive(pid):

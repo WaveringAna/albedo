@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import http.client
 import http.server
 import json
+import resource
 import socket
 import threading
 import time
@@ -11,6 +12,9 @@ import unittest
 import urllib.parse
 
 from harness import Albedo, Provider, Reply, exclusive, python, text
+
+# More client connections than a macOS shell's default open-file limit.
+CONNECTIONS = 300
 
 
 @dataclass
@@ -273,6 +277,57 @@ class DaemonTest(unittest.TestCase):
             ):
                 with self.subTest(f"{method} {path}"):
                     self.assertEqual(sent(method, path, b"{}"), (status, 200))
+
+    @exclusive
+    def test_a_listener_out_of_files_comes_back_on_the_daemons_port(self):
+        # Accepts past the open-file limit crash glisten's acceptors until mist
+        # restarts the whole listener, on the port it was built with. A port
+        # the OS picks at each start would bring it back somewhere daemon.json
+        # does not say, leaving a live daemon no client can reach.
+        def prepare(app):
+            app.daemon.open_files = (128, 128)
+
+        with Albedo(prepare=prepare) as app:
+            self.hold_files(CONNECTIONS + 64)
+            pid, port = app.connection["pid"], app.connection["port"]
+            flood = []
+            for _ in range(CONNECTIONS):
+                try:
+                    flood.append(
+                        socket.create_connection(("127.0.0.1", port), timeout=20)
+                    )
+                except OSError:
+                    pass
+            # Nothing the daemon sends ends these sockets: each one ends when
+            # the restarted listener's tree drops the connection it accepted,
+            # or resets the one still waiting in its old socket's backlog.
+            for connection in flood:
+                try:
+                    self.assertEqual(connection.recv(1), b"")
+                except ConnectionResetError:
+                    pass
+                connection.close()
+
+            record = json.loads((app.home / "daemon.json").read_text())
+            self.assertEqual((record["pid"], record["port"]), (pid, port))
+            deadline = time.monotonic() + 20
+            while True:
+                try:
+                    with app.api("/health") as response:
+                        self.assertEqual(response.status, 200)
+                    break
+                except OSError:
+                    self.assertLess(
+                        time.monotonic(), deadline, "the daemon's port stayed closed"
+                    )
+                    time.sleep(0.1)
+
+    def hold_files(self, count):
+        """Let this test process hold ``count`` open files until the test ends."""
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft < count:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (min(count, hard), hard))
+            self.addCleanup(resource.setrlimit, resource.RLIMIT_NOFILE, (soft, hard))
 
     def test_a_thoughts_duration_is_kept_with_the_transcript(self):
         # summarized thinking streams once it is written: here the response
