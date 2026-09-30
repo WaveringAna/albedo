@@ -947,12 +947,7 @@ fn provider_models(
   // A generic extension (openai) serves many gateways; the profile's endpoint
   // names which catalog provider's models it lists.
   let endpoint =
-    configuration.settings(
-      state.config.home,
-      provider.name,
-      decode.optional_field("baseUrl", "", decode.string, decode.success),
-    )
-    |> result.unwrap("")
+    session_provider.profile_endpoint(state.config.home, provider.name)
   list.unique([
     provider.model,
     ..runtime.model_names(state.host, provider.extension, endpoint)
@@ -1882,29 +1877,19 @@ fn daemon_route(
           }
         }
         // `details` lists objects with catalog facts. Without it, plain ids.
-        // Efforts come from where sessions of this extension look them up,
-        // and facts from the endpoint, or there when none is given.
         Get, ["models", provider] -> {
+          let query = query(req)
           let endpoint =
-            query(req) |> list.key_find("endpoint") |> result.unwrap("")
+            list.key_find(query, "endpoint")
+            |> result.unwrap("")
+            |> extension.clean_endpoint
           use host <- with_host(registry)
-          let efforts_at = session_provider.effort_endpoint(provider)
-          let facts_at = case endpoint {
-            "" -> efforts_at
-            _ -> endpoint
-          }
-          case list.key_find(query(req), "details") {
+          case list.key_find(query, "details") {
             Ok(_) ->
               reply(
                 200,
                 json.array(
-                  runtime.listed_models(
-                    host,
-                    provider,
-                    endpoint,
-                    facts_at:,
-                    efforts_at:,
-                  ),
+                  runtime.listed_models(host, provider, endpoint),
                   listed_model_json,
                 ),
               )

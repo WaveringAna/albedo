@@ -1,6 +1,6 @@
 // Disputed catalog model limits must resolve conservatively across providers with the same model ID.
 import albedo/harness/extensions/models/extension as models
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
 
@@ -11,16 +11,27 @@ pub fn disputed_limits_answer_with_the_smallest_test() {
   let file = write(home, "models.json", catalog)
 
   let assert Some(disputed) =
-    models.lookup_at(file, "disputed", "https://gateway.example.com/v1")
+    models.lookup_at(file, "disputed", Some("https://gateway.example.com/v1"))
   disputed.provider |> should.equal("")
   disputed.context_tokens |> should.equal(Some(8000))
   string.contains(disputed.source, "smallest limits of 2 providers")
   |> should.be_true
   // An endpoint that names a provider still takes that provider's limits.
   let assert Some(other) =
-    models.lookup_at(file, "disputed", "https://other.example.com/v1")
+    models.lookup_at(file, "disputed", Some("https://other.example.com/v1"))
   other.provider |> should.equal("other")
   other.context_tokens |> should.equal(Some(16_000))
+
+  cleanup(root)
+}
+
+pub fn lookup_with_none_endpoint_test() {
+  let #(root, _, home) = fixture()
+  let file = write(home, "models.json", catalog)
+
+  let assert Some(disputed) = models.lookup_at(file, "disputed", None)
+  disputed.provider |> should.equal("")
+  disputed.context_tokens |> should.equal(Some(8000))
 
   cleanup(root)
 }

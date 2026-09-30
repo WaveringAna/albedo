@@ -161,8 +161,8 @@ pub fn default_effort(efforts: List(String)) -> Option(String) {
 
 pub type ModelCatalog {
   ModelCatalog(
-    lookup: fn(String, String) -> Option(ModelInfo),
-    list: fn(String, String) -> List(String),
+    lookup: fn(String, Option(String)) -> Option(ModelInfo),
+    list: fn(String, Option(String)) -> List(String),
     /// Refetches the list this catalog caches, whatever its age, and reports
     /// a failed fetch; `None` for a catalog that caches nothing of its own.
     reload: Option(fn() -> Result(Nil, String)),
@@ -268,7 +268,7 @@ pub type Daemon {
     /// naming the conversation for providers that keep per-session identity.
     upstream: fn(String, String, String) -> Result(Upstream, String),
     /// Catalog model ids for a provider extension and endpoint.
-    models: fn(String, String) -> List(String),
+    models: fn(String, Option(String)) -> List(String),
     sessions: fn() -> List(conversation.Info),
   )
 }
@@ -1223,7 +1223,7 @@ fn protect(run: fn() -> a) -> Result(a, String)
 pub fn model_info(
   installed: List(Extension),
   model: String,
-  endpoint: String,
+  endpoint: Option(String),
 ) -> Option(ModelInfo) {
   catalogs(installed)
   |> list.fold_until(None, fn(_, catalog) {
@@ -1238,7 +1238,7 @@ pub fn model_info(
 pub fn model_names(
   installed: List(Extension),
   provider: String,
-  endpoint: String,
+  endpoint: Option(String),
 ) -> List(String) {
   catalogs(installed)
   |> list.fold_until([], fn(_, catalog) {
@@ -1264,7 +1264,7 @@ fn plugin_payload(
 pub fn provider_model_names(
   installed: List(Extension),
   provider: String,
-  endpoint: String,
+  endpoint: Option(String),
 ) -> List(String) {
   plugin_payload(installed, provider, fn(plugin) {
     case plugin {
@@ -1276,6 +1276,14 @@ pub fn provider_model_names(
     model_names(installed, catalog_provider, endpoint)
   })
   |> result.unwrap([])
+}
+
+/// Normalizes an endpoint url: empty or whitespace becomes `None`.
+pub fn clean_endpoint(endpoint: String) -> Option(String) {
+  case string.trim(endpoint) {
+    "" -> None
+    url -> Some(url)
+  }
 }
 
 /// The service an enabled extension mounts, if any.

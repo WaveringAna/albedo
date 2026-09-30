@@ -20,18 +20,20 @@ pub fn catalog() -> extension.ModelCatalog {
   )
 }
 
-fn lookup(id: String, at: String) -> Option(extension.ModelInfo) {
-  let is_ali_endpoint =
-    at == ""
-    || string.contains(at, "aliyuncs.com")
-    || string.contains(at, "dashscope")
-    || string.contains(at, "alibaba")
-    || string.remove_suffix(at, "/") == default_base_url
+fn lookup(id: String, at: Option(String)) -> Option(extension.ModelInfo) {
+  let is_ali_endpoint = case at {
+    None -> True
+    Some(url) ->
+      string.contains(url, "aliyuncs.com")
+      || string.contains(url, "dashscope")
+      || string.contains(url, "alibaba")
+      || string.remove_suffix(url, "/") == default_base_url
+  }
   use <- bool.guard(!is_ali_endpoint, None)
 
   let lower = string.lowercase(id)
   let home = settings.home()
-  let cached_ids = models(home, at) |> result.unwrap([])
+  let cached_ids = models(home, option.unwrap(at, "")) |> result.unwrap([])
   let is_cached = list.contains(cached_ids, id)
   let is_ali_pattern =
     string.starts_with(lower, "qwen")
@@ -39,10 +41,7 @@ fn lookup(id: String, at: String) -> Option(extension.ModelInfo) {
     || string.starts_with(lower, "glm-")
   use <- bool.guard(!is_cached && !is_ali_pattern, None)
 
-  let target_endpoint = case at {
-    "" -> default_base_url
-    url -> url
-  }
+  let target_endpoint = option.unwrap(at, default_base_url)
   let base =
     extension.ModelInfo(
       ..extension.blank_model(id, "alibaba"),
@@ -50,12 +49,14 @@ fn lookup(id: String, at: String) -> Option(extension.ModelInfo) {
       environment: ["ALIBABA_API_KEY", "DASHSCOPE_API_KEY"],
       source: "Alibaba Model Studio catalog",
     )
-  Some(models.complete_model(base, target_endpoint))
+  Some(models.complete_model(base, Some(target_endpoint)))
 }
 
-fn list_models(provider: String, endpoint: String) -> List(String) {
+fn list_models(provider: String, endpoint: Option(String)) -> List(String) {
   case provider {
-    "alibaba" -> models(settings.home(), endpoint) |> result.unwrap([])
+    "alibaba" ->
+      models(settings.home(), option.unwrap(endpoint, ""))
+      |> result.unwrap([])
     _ -> []
   }
 }

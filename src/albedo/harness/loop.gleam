@@ -277,7 +277,7 @@ fn prepare(
     state.kernel,
     state.model,
     request_source(state.upstream, state.model),
-    state.upstream.endpoint,
+    extension.clean_endpoint(state.upstream.endpoint),
     request_instructions(state),
     summarize(state, _),
     original,

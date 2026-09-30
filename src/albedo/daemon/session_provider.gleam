@@ -7,6 +7,7 @@ import albedo/daemon/session_state
 import albedo/daemon/turn
 import albedo/harness/extension
 import albedo/harness/runtime
+import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option
@@ -53,14 +54,18 @@ pub fn configured_client(
   Ok(#(state, client))
 }
 
-/// The endpoint a profile's reasoning efforts are looked up under. Codex
-/// subscriptions read OpenAI's metadata through the ChatGPT endpoint. Other
-/// extensions ignore the endpoint.
-pub fn effort_endpoint(extension: String) -> String {
-  case extension {
-    "codex" -> "https://chatgpt.com/backend-api"
-    _ -> ""
-  }
+/// The endpoint a profile is configured with, if any.
+pub fn profile_endpoint(
+  home: String,
+  provider: String,
+) -> option.Option(String) {
+  configuration.settings(
+    home,
+    provider,
+    decode.optional_field("baseUrl", "", decode.string, decode.success),
+  )
+  |> result.unwrap("")
+  |> extension.clean_endpoint
 }
 
 /// The reasoning efforts a session on `provider` accepts for `model`.
@@ -70,11 +75,8 @@ pub fn model_efforts(
   provider: String,
   model: String,
 ) -> List(String) {
-  let extension = case configuration.named(home, provider) {
-    Ok(configured) -> configured.extension
-    Error(_) -> ""
-  }
-  runtime.model_efforts(host, model, effort_endpoint(extension))
+  let endpoint = profile_endpoint(home, provider)
+  runtime.model_efforts(host, model, endpoint)
 }
 
 pub fn read_effort(

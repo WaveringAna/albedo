@@ -46,16 +46,20 @@ pub fn extension() -> extension.Extension {
 
 /// What the ChatGPT backend reports about a model a Codex session uses;
 /// models.dev fills in what it leaves out, such as the output limit.
-fn lookup(model: String, endpoint: String) -> Option(extension.ModelInfo) {
-  use <- bool.guard(!string.starts_with(endpoint, base_url), None)
-  catalog.lookup(settings.home(), endpoint, model)
-  |> option.map(models.complete_model(_, endpoint))
+fn lookup(
+  model: String,
+  endpoint: Option(String),
+) -> Option(extension.ModelInfo) {
+  let at = option.unwrap(endpoint, base_url)
+  use <- bool.guard(!string.starts_with(at, base_url), None)
+  catalog.lookup(settings.home(), at, model)
+  |> option.map(models.complete_model(_, Some(at)))
 }
 
 /// The models the ChatGPT backend offers the selected account, refreshed
 /// first when stale. Without a sign-in or a reachable backend, the last list
 /// stays; with neither, the picker shows only the profile's own model.
-fn list_models(provider: String, _endpoint: String) -> List(String) {
+fn list_models(provider: String, _endpoint: Option(String)) -> List(String) {
   case provider {
     "codex" -> {
       let home = settings.home()

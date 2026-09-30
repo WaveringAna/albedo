@@ -153,7 +153,7 @@ fn authenticate(context: extension.ModelContext) -> Result(wire.Auth, String) {
 
 /// Every model the Anthropic API lists for this account, newest first. The
 /// first listing waits for the fetch; until one lands, models.dev's list.
-fn list_models(provider: String, _endpoint: String) -> List(String) {
+fn list_models(provider: String, _endpoint: Option(String)) -> List(String) {
   case provider {
     "anthropic" -> {
       let home = settings.home()
@@ -162,7 +162,7 @@ fn list_models(provider: String, _endpoint: String) -> List(String) {
         _ -> catalog.refresh_later(home)
       }
       case catalog.models(home) {
-        [] -> models.list("anthropic", "")
+        [] -> models.list("anthropic", None)
         listed -> list.map(listed, fn(model) { model.id })
       }
     }
@@ -170,8 +170,14 @@ fn list_models(provider: String, _endpoint: String) -> List(String) {
   }
 }
 
-fn lookup(id: String, at: String) -> Option(extension.ModelInfo) {
-  use <- bool.guard(at != "" && at != endpoint, None)
+fn lookup(id: String, at: Option(String)) -> Option(extension.ModelInfo) {
+  use <- bool.guard(
+    case at {
+      Some(url) -> url != endpoint
+      None -> False
+    },
+    None,
+  )
   let home = settings.home()
   case list.find(catalog.models(home), fn(model) { model.id == id }) {
     Ok(model) -> Some(listed_info(home, model))
@@ -187,7 +193,7 @@ fn with_output_limit(request: types.Request) -> types.Request {
     None ->
       types.Request(
         ..request,
-        max_output_tokens: lookup(request.model, endpoint)
+        max_output_tokens: lookup(request.model, Some(endpoint))
           |> option.then(fn(info) { info.max_output_tokens }),
       )
   }
@@ -209,7 +215,7 @@ fn listed_info(home: String, model: catalog.Model) -> extension.ModelInfo {
       source: "Anthropic models API cached in " <> home,
     )
   extension.ModelInfo(
-    ..models.complete_model(info, endpoint),
+    ..models.complete_model(info, Some(endpoint)),
     environment: [],
     efforts: model.efforts,
   )

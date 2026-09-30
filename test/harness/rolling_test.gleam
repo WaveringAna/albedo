@@ -106,7 +106,7 @@ pub fn long_eviction_summarizes_in_chunks_test() {
       session,
       "model-a",
       "model-a",
-      "",
+      None,
       "",
       fn(request: compaction.SummaryRequest) {
         process.send(requests, request)

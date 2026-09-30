@@ -268,8 +268,14 @@ pub fn catalog() -> extension.ModelCatalog {
 
 /// Answers only for the Antigravity endpoint, so models.dev keeps every
 /// other provider's facts for a shared id such as claude-sonnet-4-6.
-fn lookup(id: String, at: String) -> Option(extension.ModelInfo) {
-  use <- bool.guard(at != "" && string.remove_suffix(at, "/") != endpoint, None)
+fn lookup(id: String, at: Option(String)) -> Option(extension.ModelInfo) {
+  use <- bool.guard(
+    case at {
+      Some(url) -> string.remove_suffix(url, "/") != endpoint
+      None -> False
+    },
+    None,
+  )
   let home = settings.home()
   let ren = renamed(home, id)
   let #(base_id, _) = split_id(ren)
@@ -297,7 +303,7 @@ fn lookup(id: String, at: String) -> Option(extension.ModelInfo) {
 
 /// The first listing after sign-in waits for discovery, so /login never
 /// offers ids the backend has already retired. Returns deduplicated base model ids.
-fn list_models(provider: String, _endpoint: String) -> List(String) {
+fn list_models(provider: String, _endpoint: Option(String)) -> List(String) {
   case provider {
     "antigravity" -> {
       let home = settings.home()

@@ -70,8 +70,8 @@ fn models(daemon: extension.Daemon) -> Json {
   let ids =
     list.flat_map(profiles, fn(profile) {
       let catalog = case endpoint(daemon, profile) {
-        "" -> daemon.models(profile.extension, "")
-        _ -> []
+        option.None -> daemon.models(profile.extension, option.None)
+        option.Some(_) -> []
       }
       case catalog {
         [] -> [profile.model]
@@ -115,13 +115,14 @@ fn models(daemon: extension.Daemon) -> Json {
 fn endpoint(
   daemon: extension.Daemon,
   profile: configuration.Provider,
-) -> String {
+) -> option.Option(String) {
   configuration.settings(
     daemon.home,
     profile.name,
     decode.optional_field("baseUrl", "", decode.string, decode.success),
   )
   |> result.unwrap("")
+  |> extension.clean_endpoint
 }
 
 fn complete(

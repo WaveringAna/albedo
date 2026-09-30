@@ -98,7 +98,10 @@ pub fn path() -> String {
 
 /// `endpoint` is the configured provider base url. It disambiguates a model id
 /// that several catalog providers publish.
-pub fn lookup(model: String, endpoint: String) -> Option(extension.ModelInfo) {
+pub fn lookup(
+  model: String,
+  endpoint: Option(String),
+) -> Option(extension.ModelInfo) {
   refresh()
   lookup_at(path(), model, endpoint)
 }
@@ -106,9 +109,9 @@ pub fn lookup(model: String, endpoint: String) -> Option(extension.ModelInfo) {
 pub fn lookup_at(
   catalog: String,
   model: String,
-  endpoint: String,
+  endpoint: Option(String),
 ) -> Option(extension.ModelInfo) {
-  case native_lookup(catalog, model, endpoint) {
+  case native_lookup(catalog, model, option.unwrap(endpoint, "")) {
     Error(_) -> {
       let efforts = infer_reasoning_efforts(model)
       case efforts {
@@ -151,7 +154,7 @@ pub fn lookup_provider_at(
   }
 }
 
-pub fn list(provider: String, endpoint: String) -> List(String) {
+pub fn list(provider: String, endpoint: Option(String)) -> List(String) {
   refresh()
   list_at(path(), provider, endpoint)
 }
@@ -159,9 +162,9 @@ pub fn list(provider: String, endpoint: String) -> List(String) {
 pub fn list_at(
   catalog: String,
   provider: String,
-  endpoint: String,
+  endpoint: Option(String),
 ) -> List(String) {
-  case native_list(catalog, provider, endpoint) {
+  case native_list(catalog, provider, option.unwrap(endpoint, "")) {
     Ok(encoded) ->
       json.parse(encoded, decode.list(decode.string)) |> result.unwrap([])
     Error(_) -> []
@@ -245,7 +248,7 @@ fn native_list(
 /// is returned unchanged.
 pub fn complete_model(
   info: extension.ModelInfo,
-  endpoint: String,
+  endpoint: Option(String),
 ) -> extension.ModelInfo {
   case complete_models([info], endpoint) {
     [completed] -> completed
@@ -258,7 +261,7 @@ pub fn complete_model(
 /// then resolves each model against the local index.
 pub fn complete_models(
   models: List(extension.ModelInfo),
-  endpoint: String,
+  endpoint: Option(String),
 ) -> List(extension.ModelInfo) {
   refresh()
   complete_models_at(path(), models, endpoint)
@@ -268,7 +271,7 @@ pub fn complete_models(
 pub fn complete_models_at(
   catalog_path: String,
   models: List(extension.ModelInfo),
-  endpoint: String,
+  endpoint: Option(String),
 ) -> List(extension.ModelInfo) {
   list.map(models, fn(item) {
     case lookup_at(catalog_path, item.model, endpoint) {

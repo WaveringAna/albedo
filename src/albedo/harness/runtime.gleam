@@ -1101,7 +1101,7 @@ pub fn prepare_history_with(
     session,
     model,
     model,
-    "",
+    None,
     instructions,
     summarize,
     history,
@@ -1114,7 +1114,7 @@ pub fn prepare_history_with(
 pub fn model_info(
   session: Session,
   model: String,
-  endpoint: String,
+  endpoint: Option(String),
 ) -> Option(extension.ModelInfo) {
   extension.model_info(
     extension.extensions(session.composition),
@@ -1154,7 +1154,7 @@ pub fn logins(runtime: Runtime) -> List(oauth.Login) {
 pub fn model_names(
   runtime: Runtime,
   provider: String,
-  endpoint: String,
+  endpoint: Option(String),
 ) -> List(String) {
   extension.provider_model_names(runtime.extensions, provider, endpoint)
 }
@@ -1171,18 +1171,17 @@ pub type ListedModel {
 pub fn listed_models(
   runtime: Runtime,
   provider: String,
-  endpoint: String,
-  facts_at facts_at: String,
-  efforts_at efforts_at: String,
+  endpoint: Option(String),
 ) -> List(ListedModel) {
   let enabled = global(runtime) |> result.unwrap([])
   model_names(runtime, provider, endpoint)
   |> list.map(fn(id) {
-    ListedModel(
-      id,
-      extension.model_info(enabled, id, facts_at),
-      efforts_in(enabled, id, efforts_at),
-    )
+    let info = extension.model_info(enabled, id, endpoint)
+    let efforts =
+      info
+      |> option.map(fn(i) { i.efforts })
+      |> option.unwrap([])
+    ListedModel(id, info, efforts)
   })
 }
 
@@ -1190,7 +1189,7 @@ pub fn listed_models(
 pub fn model_efforts(
   runtime: Runtime,
   model: String,
-  endpoint: String,
+  endpoint: Option(String),
 ) -> List(String) {
   efforts_in(global(runtime) |> result.unwrap([]), model, endpoint)
 }
@@ -1198,7 +1197,7 @@ pub fn model_efforts(
 fn efforts_in(
   enabled: List(extension.Extension),
   model: String,
-  endpoint: String,
+  endpoint: Option(String),
 ) -> List(String) {
   extension.model_info(enabled, model, endpoint)
   |> option.map(fn(info) { info.efforts })
@@ -1261,7 +1260,7 @@ pub fn compact_history_scoped(
   session: Session,
   model: String,
   source: String,
-  endpoint: String,
+  endpoint: Option(String),
   instructions: String,
   summarize: fn(compaction.SummaryRequest) -> Result(String, String),
   history: List(types.Input),
@@ -1286,7 +1285,7 @@ pub fn prepare_view_scoped(
   session: Session,
   model: String,
   source: String,
-  endpoint: String,
+  endpoint: Option(String),
   instructions: String,
   summarize: fn(compaction.SummaryRequest) -> Result(String, String),
   history: List(types.Input),
