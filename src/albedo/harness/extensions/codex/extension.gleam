@@ -115,10 +115,13 @@ fn resolve(
   context: extension.ModelContext,
 ) -> Option(Result(extension.Upstream, String)) {
   use <- rotation.require_provider(context, "codex", "Codex", types.Responses)
-  use client <- result.map(connect(context.home, context.session))
+  use access <- result.map(account(context.home, context.session))
+  // The list refreshes here, once per resolved session, and not in the rotation
+  // pool: a pool reconnect is not a reason to reach the network again.
+  catalog.refresh_later(context.home, access.token, access.account_id)
   rotation.client_upstream(
     pool(context.home, context.session, openai_api.stream),
-    client,
+    client_for(access, context.session),
     fn(client, error) { account_failure(context.home, client, error) },
     account_label,
   )
@@ -132,11 +135,12 @@ fn account_label(client: types.Client) -> String {
   }
 }
 
-/// The session's current account as a client. Its model list refreshes in
-/// the background, so a new model shows up without a picker visit.
+/// The session's current account as a client.
 fn connect(home: String, session: String) -> Result(types.Client, String) {
-  use access <- result.map(account(home, session))
-  catalog.refresh_later(home, access.token, access.account_id)
+  account(home, session) |> result.map(client_for(_, session))
+}
+
+fn client_for(access: Access, session: String) -> types.Client {
   openai_api.codex_client(base_url, access.token, access.account_id, session)
 }
 

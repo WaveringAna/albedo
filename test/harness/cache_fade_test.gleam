@@ -14,6 +14,9 @@ import gleeunit/should
 @external(erlang, "albedo_runtime_test_support", "temporary_database")
 fn temporary_database() -> String
 
+@external(erlang, "albedo_runtime_test_support", "cleanup")
+fn cleanup(path: String) -> Nil
+
 /// The marks Claude requests carry: the tools and system prompt for an
 /// hour, the moving tail for five minutes.
 const marks = [
@@ -87,7 +90,8 @@ pub fn a_call_that_writes_the_head_keeps_all_it_read_test() {
 }
 
 pub fn the_ledger_measures_a_head_across_sessions_test() {
-  let assert Ok(host) = runtime.start(temporary_database())
+  let path = temporary_database()
+  let assert Ok(host) = runtime.start(path)
   let ledger = runtime.ledger(host)
   let assert Ok(_) = conversation.initialise(ledger)
   let record = fn(session, profile, model, head, usage) {
@@ -131,6 +135,7 @@ pub fn the_ledger_measures_a_head_across_sessions_test() {
   requests.head_tokens(ledger, "anthropic-api", "opus", "head")
   |> should.equal(None)
   runtime.stop(host)
+  cleanup(path)
 }
 
 fn info(id: String) -> conversation.Info {

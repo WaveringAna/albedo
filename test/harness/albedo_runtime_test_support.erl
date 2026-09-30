@@ -4,7 +4,9 @@ temporary_database() ->
     unicode:characters_to_binary(filename:join("/tmp", "albedo-" ++ binary_to_list(albedo_native:new_id()) ++ ".sqlite" )).
 cleanup(Path) ->
     lists:foreach(fun(Suffix) -> file:delete(<<Path/binary, Suffix/binary>>) end,
-                  [<<>>, <<"-wal">>, <<"-shm">>]), nil.
+                  [<<>>, <<"-wal">>, <<"-shm">>]),
+    _ = file:del_dir_r(<<Path/binary, ".backup">>),
+    nil.
 
 %% Run a Python harness from the project root and return its combined output.
 run_python(Script, TimeoutMs) ->
