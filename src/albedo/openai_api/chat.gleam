@@ -450,17 +450,29 @@ fn complete_tools(
   builders
   |> dict.to_list
   |> list.sort(fn(a, b) { int.compare(a.0, b.0) })
-  |> list.try_map(fn(entry) {
+  |> list.try_fold(#([], []), fn(acc, entry) {
+    let #(seen, calls) = acc
     let ToolBuilder(id, name, arguments) = entry.1
     case id, name {
-      Some(id), Some(name) if id != "" && name != "" ->
-        Ok(types.ToolCall(id, name, flatten(arguments)))
+      Some(id), Some(name) if id != "" && name != "" -> {
+        let unique_id = case list.contains(seen, id) {
+          True -> id <> "_" <> int.to_string(entry.0)
+          False -> id
+        }
+        Ok(
+          #([id, ..seen], [
+            types.ToolCall(unique_id, name, flatten(arguments)),
+            ..calls
+          ]),
+        )
+      }
       _, _ ->
         Error(types.InvalidEvent(
           "incomplete tool call at index " <> int.to_string(entry.0),
         ))
     }
   })
+  |> result.map(fn(acc) { list.reverse(acc.1) })
 }
 
 fn assistant_message(

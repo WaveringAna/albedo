@@ -1,5 +1,6 @@
 //// Partially executed cells must not replay side effects without explicit permission.
 
+import albedo/harness/extensions/python/cells
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/runtime
 import gleam/string
@@ -56,5 +57,24 @@ pub fn ambiguous_repairs_and_compile_errors_do_not_execute_test() {
     runtime.execute(host, session, "'state' in globals()", 5000)
   let assert Ok(state) = state.result
   state.value |> should.equal("False")
+  runtime.stop(host)
+}
+
+pub fn reused_call_id_does_not_fail_unique_constraint_test() {
+  let assert Ok(host) = runtime.start(":memory:")
+  let storage = runtime.ledger(host)
+  let session = "test-session"
+  let assert Ok(first_id) =
+    cells.begin_call(storage, session, "call_0", "x = 1")
+  first_id |> should.equal(session <> "/call_0")
+
+  let assert Ok(second_id) =
+    cells.begin_call(storage, session, "call_0", "x = 2")
+  string.starts_with(second_id, session <> "/call_0-") |> should.be_true
+  { first_id != second_id } |> should.be_true
+
+  let assert Ok(found) = cells.find_call(storage, session <> "/call_0")
+  found.id |> should.equal(second_id)
+
   runtime.stop(host)
 }

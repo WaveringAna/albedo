@@ -192,19 +192,26 @@ fn elide_rows(
 
 /// Remove image references from the cell when its tool output is evicted.
 fn elide_cell(db: sqlight.Connection, id: String) -> Result(Nil, String) {
+  let decoder = {
+    use cell_id <- decode.field(0, decode.string)
+    use payload <- decode.field(1, decode.bit_array)
+    decode.success(#(cell_id, payload))
+  }
   case
     sqlight.query(
-      "SELECT payload FROM cells WHERE id=? AND payload IS NOT NULL",
+      "SELECT id, payload FROM cells WHERE (id=? OR id LIKE ?) AND payload IS NOT NULL",
       db,
-      [sqlight.text(id)],
-      decode.field(0, decode.bit_array, decode.success),
+      [sqlight.text(id), sqlight.text(id <> "-%")],
+      decoder,
     )
   {
-    Ok([payload]) ->
-      case elide_cell_images(payload) {
-        Ok(elided) -> write(db, "cells", "id", sqlight.text(id), elided)
-        Error(_) -> Ok(Nil)
-      }
+    Ok(rows) ->
+      list.try_each(rows, fn(row) {
+        case elide_cell_images(row.1) {
+          Ok(elided) -> write(db, "cells", "id", sqlight.text(row.0), elided)
+          Error(_) -> Ok(Nil)
+        }
+      })
     _ -> Ok(Nil)
   }
 }

@@ -160,9 +160,15 @@ fn reason(error: python.Error) -> String {
 }
 
 fn recover(context: extension.Context) {
-  // The id invoke saved the cell under: begin_call's session <> "/" <> call_id.
-  let id = context.session <> "/" <> context.call_id
-  let outcome = case journal.get(context.store, id) {
+  // The id invoke saved the cell under: begin_call's session <> "/" <> call_id,
+  // or qualified with a nonce when an upstream provider reuses call ids.
+  let base_id = context.session <> "/" <> context.call_id
+  let cell = journal.find_call(context.store, base_id)
+  let id = case cell {
+    Ok(cell) -> cell.id
+    Error(_) -> base_id
+  }
+  let outcome = case cell {
     Ok(cell) -> cell.outcome
     Error(_) -> None
   }

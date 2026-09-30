@@ -56,7 +56,27 @@ pub fn begin_call(
   call_id: String,
   code: String,
 ) -> Result(String, String) {
-  begin_named(storage, session <> "/" <> call_id, session, code)
+  let primary = session <> "/" <> call_id
+  let id = case exists(storage, primary) {
+    True -> primary <> "-" <> new_id()
+    False -> primary
+  }
+  begin_named(storage, id, session, code)
+}
+
+/// Whether a cell with this id already exists in storage.
+fn exists(storage: store.Store, id: String) -> Bool {
+  case
+    store.read(
+      storage,
+      "SELECT 1 FROM cells WHERE id=?",
+      [sqlight.text(id)],
+      decode.field(0, decode.int, decode.success),
+    )
+  {
+    Ok([_]) -> True
+    _ -> False
+  }
 }
 
 fn begin_named(
@@ -130,6 +150,24 @@ pub fn session_hashes(
     decode.field(0, decode.bit_array, decode.success),
   )
   |> result.map(fn(rows) { list.flat_map(rows, hashes) |> list.unique })
+}
+
+/// Finds the newest cell for a tool call: exact base id, or the newest
+/// suffixed cell when a provider reuses tool call ids across turns.
+pub fn find_call(
+  storage: store.Store,
+  base_id: String,
+) -> Result(Cell, String) {
+  use rows <- result.try(store.read(
+    storage,
+    "SELECT id FROM cells WHERE id=? OR id LIKE ? ORDER BY rowid DESC LIMIT 1",
+    [sqlight.text(base_id), sqlight.text(base_id <> "-%")],
+    decode.field(0, decode.string, decode.success),
+  ))
+  use id <- result.try(
+    list.first(rows) |> result.replace_error("cell not found"),
+  )
+  get(storage, id)
 }
 
 pub fn get(storage: store.Store, id: String) -> Result(Cell, String) {
