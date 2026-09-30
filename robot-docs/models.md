@@ -43,6 +43,10 @@ Codex asks the ChatGPT backend which models it offers each signed-in account: `G
 
 A Codex lookup answers for the ChatGPT endpoint with the backend's own facts: the default window (`context_window`), the maximum a raised cap gives (`max_context_window`, when larger), input kinds, and reasoning efforts, including levels models.dev does not list. models.dev's `openai` entry fills in what the backend leaves out, such as the output limit. A model the backend does not report falls back to that `openai` entry. `/effort`, session defaults, and model switches use this same selection.
 
+## choosing a model from the command line
+
+`albedo models` prints `provider/model` for every configured provider, the active provider first and each provider's default model first. `albedo -p <prompt> --model <model>` takes either spelling the agents' `spawn(model=...)` takes: `provider/model`, or a bare id, served by the active provider when it offers it and otherwise by the one provider that does. Only exact ids match; an id no provider lists, or one several list, is refused before a session is created. A new session starts on the model; with `--session`, `POST /sessions/:id/model` (`{model, provider}`, capability `session_model`) switches that session without making the model the default for new sessions, which `/model` does.
+
 ## raised caps
 
 A provider can report a larger window than a session uses by default; Codex reports 272k by default and 872k at most for GPT-5.6 and GPT-6. Models degrade over long contexts, and published long-context results differ by model, so albedo uses the default until you raise the cap. `/raise-cap` or tab in the `/model` picker raises it for one model, saved in `$ALBEDO_HOME/extensions.json`:

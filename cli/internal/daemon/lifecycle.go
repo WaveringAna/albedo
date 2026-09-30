@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"text/tabwriter"
 	"time"
 )
 
@@ -227,7 +228,9 @@ func SessionListing(sessions []Session, now time.Time) string {
 		return "no sessions"
 	}
 
-	lines := make([]string, 0, len(sessions))
+	var listing strings.Builder
+	writer := tabwriter.NewWriter(&listing, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(writer, "ID\tTITLE\tWORKSPACE\tLAST ASSISTANT")
 	for _, s := range sessions {
 		title := SessionText(s.Title)
 		title = strings.TrimSpace(title)
@@ -238,10 +241,14 @@ func SessionListing(sessions []Session, now time.Time) string {
 		if len(shortID) > 8 {
 			shortID = shortID[:8]
 		}
-		lines = append(lines, fmt.Sprintf("%s  [%s]\n  last assistant: %s", title, shortID, AssistantAge(s.LastAssistantAt, now)))
+		workspace := SessionText(strings.TrimSpace(s.Workspace))
+		if workspace == "" {
+			workspace = "—"
+		}
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", shortID, title, workspace, AssistantAge(s.LastAssistantAt, now))
 	}
-
-	return strings.Join(lines, "\n\n")
+	_ = writer.Flush()
+	return strings.TrimRight(listing.String(), "\n")
 }
 
 func Existing(homeDir string) (*Connection, error) {

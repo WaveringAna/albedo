@@ -173,11 +173,13 @@ pub fn change_effort(
 }
 
 /// Validate history against the new provider before persisting the selection.
+/// `remember` also makes it the default for new sessions.
 pub fn select(
   state: session_state.State(message),
   model: String,
   provider_name: option.Option(String),
   effort: option.Option(String),
+  remember: Bool,
 ) -> #(session_state.State(message), Result(Nil, String)) {
   case
     turn.running(state.activity) == option.None
@@ -219,11 +221,10 @@ pub fn select(
                 "cannot switch provider: " <> error
               }),
             )
-            use _ <- result.try(configuration.select_default(
-              state.home,
-              provider,
-              model,
-            ))
+            use _ <- result.try(case remember {
+              True -> configuration.select_default(state.home, provider, model)
+              False -> Ok(Nil)
+            })
             use _ <- result.try(conversation.set_configuration(
               runtime.ledger(state.host),
               state.info.id,

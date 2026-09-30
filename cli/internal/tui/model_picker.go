@@ -192,11 +192,7 @@ func (m ModelPickerModel) listCmd(c profileCatalog) tea.Cmd {
 		if conn == nil {
 			return modelCatalogLoadedMsg{Profile: c.name, Err: errors.New("daemon connection unavailable")}
 		}
-		extension, endpoint := cmp.Or(c.settings.Extension, "openai"), c.settings.BaseURL
-		if extension == "codex" {
-			endpoint = ""
-		}
-		models, err := daemon.ListModels(context.Background(), conn, extension, endpoint)
+		models, err := daemon.ListProfileModels(context.Background(), conn, c.settings)
 		return modelCatalogLoadedMsg{Profile: c.name, Models: models, Err: err}
 	}
 }

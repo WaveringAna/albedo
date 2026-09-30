@@ -116,10 +116,12 @@ pub type Message {
     Subject(Result(List(extension.Summary), String)),
   )
   Interrupt(Subject(Bool))
+  /// A model switch; the last flag also makes it the default for new sessions.
   ChangeModel(
     String,
     Option(String),
     Option(String),
+    Bool,
     Subject(Result(ModelSelection, String)),
   )
   ReadEffort(Subject(Result(json.Json, String)))
@@ -551,9 +553,15 @@ fn handle(state: State, message: Message) {
       )
     ChangeExtension(change, reply) ->
       transition(reply, session_extensions.change(stirred(state), change))
-    ChangeModel(model, provider_name, effort, reply) -> {
+    ChangeModel(model, provider_name, effort, remember, reply) -> {
       let #(state, outcome) =
-        session_provider.select(stirred(state), model, provider_name, effort)
+        session_provider.select(
+          stirred(state),
+          model,
+          provider_name,
+          effort,
+          remember,
+        )
       answer(
         state,
         reply,
@@ -993,7 +1001,7 @@ fn command_op(
     command.ModelGet ->
       Ok(selection_json(actor.call(session, 5000, ReadSelection)))
     command.ModelSelect(model, provider, effort) ->
-      actor.call(session, 5000, ChangeModel(model, provider, effort, _))
+      actor.call(session, 5000, ChangeModel(model, provider, effort, True, _))
       |> result.map(selection_json)
     command.EffortGet -> actor.call(session, 5000, ReadEffort)
     command.EffortSelect(level) ->
@@ -1910,6 +1918,17 @@ fn projected_inputs(state: State) -> Result(List(types.Input), String) {
     state.info.protocol,
   )
   |> result.map_error(fn(error) { "cannot prepare model history: " <> error })
+}
+
+/// Switch an idle session's model without changing the default for new
+/// sessions; answers the selection as `/model` does.
+pub fn set_model(
+  session: Session,
+  model: String,
+  provider: Option(String),
+) -> Result(json.Json, String) {
+  actor.call(session, 5000, ChangeModel(model, provider, None, False, _))
+  |> result.map(selection_json)
 }
 
 /// Move an idle session to `cwd`; answers the workspace it left.

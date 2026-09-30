@@ -1838,6 +1838,7 @@ fn daemon_route(
                     "session_commands",
                     "workspace_browser",
                     "settings_api",
+                    "session_model",
                   ],
                   json.string,
                 ),
@@ -2278,6 +2279,23 @@ fn daemon_route(
                         ]),
                       )
                   }
+                }
+                // Unlike `/model`, leaves the default for new sessions alone.
+                Post, "model" -> {
+                  let decoder = {
+                    use model <- decode.field("model", decode.string)
+                    use provider <- decode.optional_field(
+                      "provider",
+                      None,
+                      decode.map(decode.string, Some),
+                    )
+                    decode.success(#(model, provider))
+                  }
+                  body(req, decoder)
+                  |> result.try(fn(fields) {
+                    session.set_model(worker, fields.0, fields.1)
+                  })
+                  |> answered(200, fn(selection) { selection }, 409)
                 }
                 Post, "workspace" -> {
                   body(

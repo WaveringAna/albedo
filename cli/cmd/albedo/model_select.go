@@ -1,0 +1,113 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"maps"
+	"net/url"
+	"slices"
+	"strings"
+
+	"albedo/cli/internal/config"
+	"albedo/cli/internal/daemon"
+)
+
+// providerModels is one configured provider and the model ids it offers.
+type providerModels struct {
+	provider string
+	models   []string
+}
+
+// modelChoice is a model id and the provider that serves it.
+type modelChoice struct {
+	provider string
+	model    string
+}
+
+// configuredModels lists every provider's models, the active provider first.
+// A provider lists its default model first, even when its catalog cannot be
+// read, as the daemon does when it resolves an agent's model.
+func configuredModels(ctx context.Context, conn *daemon.Connection, profiles config.Profiles) []providerModels {
+	names := slices.Sorted(maps.Keys(profiles.Providers))
+	if i := slices.Index(names, profiles.Active); i > 0 {
+		names = append([]string{profiles.Active}, slices.Delete(names, i, i+1)...)
+	}
+	listed := make([]providerModels, 0, len(names))
+	for _, name := range names {
+		settings := profiles.Providers[name]
+		models := []string{settings.Model}
+		catalog, _ := daemon.ListProfileModels(ctx, conn, settings)
+		for _, model := range catalog {
+			if !slices.Contains(models, model.ID) {
+				models = append(models, model.ID)
+			}
+		}
+		listed = append(listed, providerModels{name, slices.DeleteFunc(models, func(id string) bool { return id == "" })})
+	}
+	return listed
+}
+
+// chooseModel resolves a model the way the daemon resolves an agent's model:
+// provider/model picks the provider, and a bare id comes from the active
+// provider, else from the one provider that offers it. Only exact ids match.
+func chooseModel(listed []providerModels, active, requested string) (modelChoice, error) {
+	for _, p := range listed {
+		if model, ok := strings.CutPrefix(requested, p.provider+"/"); ok {
+			if !slices.Contains(p.models, model) {
+				return modelChoice{}, fmt.Errorf("provider %s does not offer model %s; run albedo models to see the models you can use", p.provider, model)
+			}
+			return modelChoice{p.provider, model}, nil
+		}
+	}
+	var offering []string
+	for _, p := range listed {
+		if slices.Contains(p.models, requested) {
+			offering = append(offering, p.provider)
+		}
+	}
+	switch {
+	case len(offering) == 0:
+		return modelChoice{}, fmt.Errorf("no configured provider offers model %s; run albedo models to see the models you can use", requested)
+	case slices.Contains(offering, active):
+		return modelChoice{active, requested}, nil
+	case len(offering) == 1:
+		return modelChoice{offering[0], requested}, nil
+	}
+	return modelChoice{}, fmt.Errorf("model %s is offered by %s; choose one with provider/model", requested, strings.Join(offering, ", "))
+}
+
+// switchModel moves an idle session to the chosen model without making it the
+// default for new sessions.
+func switchModel(ctx context.Context, conn *daemon.Connection, sessionID string, choice modelChoice) error {
+	if err := daemon.CheckCapability(ctx, conn, "session_model", "to choose a model for an existing session"); err != nil {
+		return err
+	}
+	path := "/sessions/" + url.PathEscape(sessionID) + "/model"
+	_, err := daemon.Request[map[string]any](ctx, conn, path, map[string]string{"model": choice.model, "provider": choice.provider})
+	return err
+}
+
+func modelsCommand(args []string) error {
+	for _, arg := range args {
+		if arg == "-h" || arg == "--help" {
+			fmt.Println("Usage: albedo models\n\nLists provider/model for every configured provider; the first line is the active provider's default.")
+			return nil
+		}
+		return fmt.Errorf("unexpected models option %q", arg)
+	}
+	ctx := context.Background()
+	conn, err := daemon.Ensure(config.HomeDir(), findProjectRoot(), replaceStale)
+	if err != nil {
+		return err
+	}
+	profiles, err := daemon.ProviderProfiles(ctx, conn)
+	if err != nil {
+		return err
+	}
+	for _, p := range configuredModels(ctx, conn, profiles) {
+		for _, model := range p.models {
+			fmt.Println(p.provider + "/" + model)
+		}
+	}
+	return nil
+}

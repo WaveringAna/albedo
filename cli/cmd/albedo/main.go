@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -123,11 +124,16 @@ persistent coding sessions
 
 Options:
   -h, --help                show help
+  -p, --prompt <text>       create a session in cwd and wait for its reply
+      -s, --session <id>    send the prompt to an existing session
+      -m, --model <model>   use this model: an id, or provider/model to pick the provider
+      --timeout <time>      stop the turn and fail after this long (90s, 10m); no limit by default
 
 Commands:
   new [workspace]           start a fresh session in the given workspace (defaults to current directory)
   resume <session>          reopen a session using its ID or the start of its ID
   sessions [options]        list sessions
+  models                    list provider/model for every configured provider
   send <session> <prompt>   send a message to a session
   stop <session>            interrupt work in a session
   daemon [options]          start Albedo in the background, or stop it with --stop
@@ -263,6 +269,44 @@ func run(args []string) error {
 	cmd := args[0]
 	subArgs := args[1:]
 
+	if cmd == "-p" || cmd == "--prompt" {
+		if len(subArgs) == 0 || subArgs[0] == "-h" || subArgs[0] == "--help" {
+			fmt.Println("Usage: albedo -p|--prompt <prompt> [-s|--session <session>] [-m|--model <model>] [--timeout <time>]")
+			return nil
+		}
+		prompt, session, model := subArgs[0], "", ""
+		var timeout time.Duration
+		for i := 1; i < len(subArgs); i++ {
+			switch subArgs[i] {
+			case "-s", "--session":
+				if i+1 == len(subArgs) {
+					return errors.New("missing session ID after " + subArgs[i])
+				}
+				session = subArgs[i+1]
+				i++
+			case "-m", "--model":
+				if i+1 == len(subArgs) {
+					return errors.New("missing model after " + subArgs[i] + "; run albedo models to see the models you can use")
+				}
+				model = subArgs[i+1]
+				i++
+			case "--timeout":
+				if i+1 == len(subArgs) {
+					return errors.New("missing time after --timeout, such as 90s or 10m")
+				}
+				parsed, err := time.ParseDuration(subArgs[i+1])
+				if err != nil || parsed <= 0 {
+					return fmt.Errorf("--timeout takes a time such as 90s or 10m, not %q", subArgs[i+1])
+				}
+				timeout = parsed
+				i++
+			default:
+				return fmt.Errorf("unexpected prompt option %q", subArgs[i])
+			}
+		}
+		return promptCommand(prompt, session, cwd, model, timeout)
+	}
+
 	switch cmd {
 	case "-h", "--help", "help":
 		fmt.Print(helpText)
@@ -312,6 +356,14 @@ func run(args []string) error {
 		sessions, err := daemon.Request[[]daemon.Session](context.Background(), conn, "/sessions", nil)
 		if err != nil {
 			return err
+		}
+		// An older daemon keeps no archive; its sessions are all listed.
+		if settings, err := daemon.GetSettings(context.Background(), conn); err == nil {
+			sessions = slices.DeleteFunc(sessions, func(s daemon.Session) bool {
+				return slices.Contains(settings.UI.Archived, s.ID)
+			})
+		} else {
+			fmt.Fprintf(os.Stderr, "Showing archived sessions too: %v\n", err)
 		}
 		if asJSON {
 			data, err := json.MarshalIndent(sessions, "", "  ")
@@ -372,6 +424,9 @@ func run(args []string) error {
 		data, _ := json.Marshal(res)
 		fmt.Println(string(data))
 		return nil
+
+	case "models":
+		return modelsCommand(subArgs)
 
 	case "storage":
 		return storageCommand(subArgs)

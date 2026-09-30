@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"albedo/cli/internal/config"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -30,6 +32,16 @@ func (m *Model) UnmarshalJSON(data []byte) error {
 	}
 	type fields Model
 	return json.Unmarshal(data, (*fields)(m))
+}
+
+// ListProfileModels reads the models a saved provider profile offers. A codex
+// profile's catalog is its account's, whatever endpoint it names.
+func ListProfileModels(ctx context.Context, conn *Connection, profile config.Settings) ([]Model, error) {
+	extension, endpoint := cmp.Or(profile.Extension, "openai"), profile.BaseURL
+	if extension == "codex" {
+		endpoint = ""
+	}
+	return ListModels(ctx, conn, extension, endpoint)
 }
 
 // ListModels reads the models a provider extension lists for endpoint.
