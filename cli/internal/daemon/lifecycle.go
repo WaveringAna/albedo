@@ -512,6 +512,7 @@ func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	detach(cmd)
+	passFileLimit()
 
 	logStart, _ := logFile.Seek(0, io.SeekEnd)
 	if err := cmd.Start(); err != nil {

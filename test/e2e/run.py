@@ -13,6 +13,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import resource
 import sys
 import time
 import unittest
@@ -117,6 +118,11 @@ def report(outcomes):
 
 
 def main():
+    # Concurrent tests hold hundreds of connections between them, past the 256
+    # open files a macOS shell starts with. Like Go, lift the soft limit, to at
+    # most macOS's OPEN_MAX. Daemons boot on it unless a test pins their own.
+    _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 10240), hard))
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "target", nargs="?", help="file.py, file:TestCase.test_method, or area"

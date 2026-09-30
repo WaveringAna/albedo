@@ -279,6 +279,33 @@ class DaemonTest(unittest.TestCase):
                     self.assertEqual(sent(method, path, b"{}"), (status, 200))
 
     @exclusive
+    def test_a_daemon_started_from_a_macos_shell_answers_hundreds_of_connections(self):
+        # macOS starts a shell at a soft limit of 256 open files. The CLI, like
+        # any Go program, lifts its own limit but starts children on the
+        # original one, and a few hundred client connections would then run
+        # the daemon out of files and take its listener down mid-accept.
+        hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+
+        def prepare(app):
+            app.daemon.open_files = (256, hard)
+
+        with Albedo(prepare=prepare) as app:
+            headers = {"Authorization": "Bearer " + app.connection["token"]}
+            connections = []
+            for _ in range(CONNECTIONS):
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1", app.connection["port"], timeout=20
+                )
+                connection.connect()
+                self.addCleanup(connection.close)
+                connections.append(connection)
+            for connection in connections:
+                connection.request("GET", "/health", headers=headers)
+                response = connection.getresponse()
+                response.read()
+                self.assertEqual(response.status, 200)
+
+    @exclusive
     def test_a_listener_out_of_files_comes_back_on_the_daemons_port(self):
         # Accepts past the open-file limit crash glisten's acceptors until mist
         # restarts the whole listener, on the port it was built with. A port
@@ -288,7 +315,6 @@ class DaemonTest(unittest.TestCase):
             app.daemon.open_files = (128, 128)
 
         with Albedo(prepare=prepare) as app:
-            self.hold_files(CONNECTIONS + 64)
             pid, port = app.connection["pid"], app.connection["port"]
             flood = []
             for _ in range(CONNECTIONS):
@@ -321,13 +347,6 @@ class DaemonTest(unittest.TestCase):
                         time.monotonic(), deadline, "the daemon's port stayed closed"
                     )
                     time.sleep(0.1)
-
-    def hold_files(self, count):
-        """Let this test process hold ``count`` open files until the test ends."""
-        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        if soft < count:
-            resource.setrlimit(resource.RLIMIT_NOFILE, (min(count, hard), hard))
-            self.addCleanup(resource.setrlimit, resource.RLIMIT_NOFILE, (soft, hard))
 
     def test_a_thoughts_duration_is_kept_with_the_transcript(self):
         # summarized thinking streams once it is written: here the response
