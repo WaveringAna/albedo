@@ -29,6 +29,8 @@ def script(request):
     )
     if "continue from branch" in user:
         return text("finished")
+    if "no first token" in user:
+        return text("never streamed", hang=True)
     if "over 100 turns" in user:
         return text("finished") if tools >= 105 else python("1")
     if "workspace probe" in user:
@@ -762,6 +764,31 @@ class IntegrationTest(unittest.TestCase):
                 )
                 self.assertTrue(
                     any(e.get("type") == "message" for e in app.events(session))
+                )
+
+    def test_interrupt_before_first_token_settles_quickly(self):
+        for protocol in ("responses", "chat_completions"):
+            with self.subTest(protocol=protocol):
+                app = self.app_for(protocol)
+                session = app.session()
+                start = len(self.provider.requests)
+                app.prompt(session, "no first token").close()
+                self.wait_for_request(start)
+                before = time.monotonic()
+                app.api(f"/sessions/{session}/interrupt", {}).close()
+                app.idle(session)
+                # The provider holds the stream open without ever sending a
+                # token, so only the worker noticing the stop latch while it
+                # waits can settle the interrupt: the Abort backstop 2.5s in
+                # is the old path, and the provider answers after 60s.
+                self.assertLess(time.monotonic() - before, 1.0)
+                # The interrupted session takes a new turn and commits it.
+                self.send(app, session, "continue from branch")
+                self.assertTrue(
+                    any(
+                        e.get("type") == "message" and e.get("text") == "finished"
+                        for e in app.events(session)
+                    )
                 )
 
     def test_more_than_hundred_tool_turns_complete(self):

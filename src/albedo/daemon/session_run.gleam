@@ -176,6 +176,57 @@ fn report(owner: Subject(message), make: fn(Subject(Nil)) -> message) -> Nil {
   Nil
 }
 
+/// How often a worker waiting on the provider checks its run's stop latch.
+/// The check is one atomic read, so the cost is wakeups, and an interrupt
+/// settles within one interval of the latch going up.
+const stop_poll_ms = 25
+
+/// A provider call the session can stop between transport events. The real
+/// stream runs in a linked helper process while the worker waits on its
+/// answer, polling the stop latch: the transport only calls back per event,
+/// so a cancel that lands while none is in flight — above all the wait for a
+/// first token — would otherwise sit unobserved until the Abort backstop
+/// kills the run 2.5s later. A raised latch ends the call as
+/// Error(Cancelled), the outcome the transport already gives a stream the
+/// worker stopped mid-event, so the loop and the transcript treat it exactly
+/// like any other cancelled stream. The helper is linked, so its crash ends
+/// the worker the way the worker's own crash would, and its death with the
+/// worker's leaves no stream behind.
+fn stoppable(
+  upstream: extension.Upstream,
+  stop: turn.Latch,
+) -> extension.Upstream {
+  extension.Upstream(..upstream, stream: fn(request, on_event) {
+    let answer = process.new_subject()
+    let helper =
+      process.spawn(fn() {
+        process.send(answer, upstream.stream(request, on_event))
+      })
+    await_stream(helper, answer, stop)
+  })
+}
+
+fn await_stream(
+  helper: process.Pid,
+  answer: Subject(Result(types.Turn, types.Error)),
+  stop: turn.Latch,
+) -> Result(types.Turn, types.Error) {
+  case process.receive(answer, stop_poll_ms) {
+    Ok(outcome) -> outcome
+    Error(Nil) ->
+      case turn.raised(stop) {
+        True -> {
+          // Unlink first: this kill must not reach the worker through the
+          // link as a `killed` exit, the way the helper's own crash should.
+          process.unlink(helper)
+          process.kill(helper)
+          Error(types.Cancelled)
+        }
+        False -> await_stream(helper, answer, stop)
+      }
+  }
+}
+
 @external(erlang, "albedo_native", "new_id")
 fn new_id() -> String
 
@@ -193,6 +244,7 @@ pub fn start(
   let run_id = new_id()
   let owner = state.self
   let stop = turn.latch()
+  let client = stoppable(client, stop)
   // The worker's closures must capture these fields, never `state`: a spawn
   // copies everything its closure references, and the session state carries
   // the loaded transcript.
@@ -277,6 +329,8 @@ pub fn start_background(
 ) -> session_state.State(message) {
   let run_id = new_id()
   let owner = state.self
+  let stop = turn.latch()
+  let client = stoppable(client, stop)
   // The worker's closures must capture these fields, never `state`: the
   // session state carries the loaded transcript.
   let worker =
@@ -314,7 +368,7 @@ pub fn start_background(
       pid,
       process.monitor(pid),
       False,
-      turn.latch(),
+      stop,
       turn.Background(reply),
     )),
   )
