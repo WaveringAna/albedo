@@ -30,11 +30,13 @@ pub fn deadline_ends_the_group_and_reports_it_test() {
       kernel,
       "a",
       waits_on_a_sleeper
-        <> "import os, sys\njob = run(sys.executable, '-c', program, timeout=0.1)\nawait job\n"
+        // The deadline must outlast the parent's startup, or the job ends
+        // before the grandchild it is meant to take down exists.
+        <> "import os, sys\njob = run(sys.executable, '-c', program, timeout=1)\nawait job\n"
         <> "grandchild = int(job.tail().split()[0])\n"
         <> reaped_probe
         <> "(job.timed_out, job.termination.gone, state, job.poll() < 0, "
-        <> "'deadline exceeded after 0.1s' in job.tail(), 'terminated' in job.tail())",
+        <> "'deadline exceeded after 1s' in job.tail(), 'terminated' in job.tail())",
       10_000,
     )
   outcome.status |> should.equal(python.Succeeded)
