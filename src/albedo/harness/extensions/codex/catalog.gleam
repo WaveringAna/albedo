@@ -71,7 +71,8 @@ pub fn refresh(
   native_refresh(home, access, account, max_age_ms, system_time(Millisecond))
 }
 
-/// Refetches one account's list whatever its age, waiting for the network.
+/// Refetches one account's list whatever its age, rechecking the claimed
+/// client version too, waiting for the network.
 pub fn reload(
   home: String,
   access: String,

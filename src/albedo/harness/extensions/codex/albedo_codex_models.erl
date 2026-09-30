@@ -24,7 +24,7 @@ refresh(Home0, Access0, Account0, MaxAgeMs, Now) ->
         Cache = load(Home),
         Accounts = maps:get(<<"accounts">>, Cache, #{}),
         Entry = maps:get(Account, Accounts, #{}),
-        {Version, Cache1} = version(Cache, Now),
+        {Version, Cache1} = version(Cache, Now, MaxAgeMs),
         Fresh = Now - maps:get(<<"fetchedAt">>, Entry, 0) < MaxAgeMs
             andalso maps:get(<<"clientVersion">>, Entry, <<>>) =:= Version,
         case Fresh of
@@ -64,10 +64,14 @@ read(Home0) ->
         _ -> {error, nil}
     end.
 
-version(Cache, Now) ->
+%% The claimed client version is rechecked whenever the caller is already
+%% willing to refetch models, so a reload always rechecks npm and a released
+%% version unlocks its models the same visit; the daily cap still bounds how
+%% often npm is asked when only the list has gone stale.
+version(Cache, Now, MaxAgeMs) ->
     Cached = maps:get(<<"clientVersion">>, Cache, <<>>),
     Checked = maps:get(<<"versionCheckedAt">>, Cache, 0),
-    case Cached =/= <<>> andalso Now - Checked < ?VERSION_MAX_AGE_MS of
+    case Cached =/= <<>> andalso Now - Checked < version_max_age(MaxAgeMs) of
         true -> {Cached, Cache};
         false ->
             case fetch_version() of
@@ -78,6 +82,9 @@ version(Cache, Now) ->
                 error -> {?FALLBACK_VERSION, Cache}
             end
     end.
+
+version_max_age(MaxAgeMs) when MaxAgeMs < ?VERSION_MAX_AGE_MS -> MaxAgeMs;
+version_max_age(_) -> ?VERSION_MAX_AGE_MS.
 
 fetch_version() ->
     try
