@@ -155,35 +155,25 @@ func open(id, workspace string, fresh bool, openBrowser func(string)) error {
 
 	var selected *daemon.Session
 	if id != "" {
-		var matches []daemon.Session
-		for _, s := range sessions {
-			if s.ID == id || strings.HasPrefix(s.ID, id) {
-				matches = append(matches, s)
-			}
-		}
-		hasExact := false
-		for _, s := range matches {
-			if s.ID == id {
-				hasExact = true
+		selectedIndex, matchCount := -1, 0
+		for i := range sessions {
+			if sessions[i].ID == id {
+				selectedIndex, matchCount = i, 1
 				break
 			}
-		}
-		if len(matches) > 1 && !hasExact {
-			return fmt.Errorf("More than one session ID starts with %q. Use a longer ID or run albedo sessions to find it.", id)
-		}
-		if len(matches) == 0 {
-			return fmt.Errorf("No session matches %q. Run albedo sessions to see the available sessions.", id)
-		}
-		for _, s := range matches {
-			if s.ID == id {
-				session := s
-				selected = &session
-				break
+			if strings.HasPrefix(sessions[i].ID, id) {
+				selectedIndex = i
+				matchCount++
 			}
 		}
-		if selected == nil && len(matches) > 0 {
-			session := matches[0]
+		switch matchCount {
+		case 0:
+			return fmt.Errorf("no session matches %q; run albedo sessions to see the available sessions", id)
+		case 1:
+			session := sessions[selectedIndex]
 			selected = &session
+		default:
+			return fmt.Errorf("more than one session ID starts with %q; use a longer ID or run albedo sessions to find it", id)
 		}
 	}
 
