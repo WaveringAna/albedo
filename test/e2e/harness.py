@@ -575,6 +575,15 @@ class Daemon:
             if self in _daemons:
                 _daemons.remove(self)
 
+    def kill(self):
+        """SIGKILL the daemon without waiting for its lock, even mid-stop."""
+        pid = self._pid
+        if pid is not None:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
     def discard(self):
         """Shut the daemon down in the background; the test that used it is
         done, and nothing waits on its teardown until the run ends."""
@@ -710,6 +719,12 @@ def on_daemon(daemon):
 def shutdown():
     """Stop every daemon, then the provider server."""
     global _server
+    # The run is over and no test watches these daemons stop, so none is
+    # drained: a graceful stop sits out OTP's one-second pause for buffered
+    # output (user_sup:terminate/2), and the shared daemon's drain of every
+    # session takes longer still. Their kernels exit with them.
+    for daemon in list(_daemons):
+        daemon.kill()
     for thread in list(_discarding):
         thread.join()
     _discarding.clear()
