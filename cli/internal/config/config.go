@@ -1,3 +1,5 @@
+// Package config defines CLI settings and validates values before they are
+// submitted to the daemon. The daemon owns persistence and credentials.
 package config
 
 import (
@@ -10,9 +12,7 @@ import (
 	"unicode"
 )
 
-var (
-	providerNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
-)
+var providerNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
 
 // HomeDir returns the albedo configuration directory.
 func HomeDir() string {
@@ -44,13 +44,8 @@ type Settings struct {
 
 func validateModel(value string) (string, error) {
 	trimmed := strings.TrimSpace(value)
-	if trimmed == "" || len(trimmed) > 512 {
-		return "", errors.New("Model ID must be 1–512 characters and contain no control characters.")
-	}
-	for _, r := range trimmed {
-		if r < 0x20 || r == 0x7f {
-			return "", errors.New("Model ID must be 1–512 characters and contain no control characters.")
-		}
+	if trimmed == "" || len(trimmed) > 512 || strings.ContainsFunc(trimmed, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return "", errors.New("model ID must be 1–512 characters and contain no control characters")
 	}
 	return trimmed, nil
 }
@@ -58,7 +53,7 @@ func validateModel(value string) (string, error) {
 // Validate checks whether the Settings instance is valid.
 func (s Settings) Validate() (Settings, error) {
 	if s.Protocol != "responses" && s.Protocol != "chat_completions" {
-		return s, errors.New("Protocol must be responses or chat_completions.")
+		return s, errors.New("protocol must be responses or chat_completions")
 	}
 
 	model, err := validateModel(s.Model)
@@ -80,11 +75,11 @@ func (s Settings) Validate() (Settings, error) {
 	}
 
 	if ext == "openai" && endpoint == "" {
-		return s, errors.New("OpenAI provider needs an API base URL.")
+		return s, errors.New("OpenAI provider needs an API base URL")
 	}
 
 	if strings.ContainsFunc(s.APIKey, func(r rune) bool { return unicode.IsSpace(r) || r < 0x20 || r == 0x7f }) {
-		return s, errors.New("API key must not contain spaces or control characters.")
+		return s, errors.New("API key must not contain spaces or control characters")
 	}
 
 	return Settings{
@@ -101,7 +96,7 @@ func (s Settings) Validate() (Settings, error) {
 func ValidateProviderName(value string) (string, error) {
 	name := strings.TrimSpace(value)
 	if !providerNameRegex.MatchString(name) {
-		return "", errors.New("Provider name must start with a letter or number and use only letters, numbers, dots, underscores, or hyphens (1–64 characters).")
+		return "", errors.New("provider name must start with a letter or number and use only letters, numbers, dots, underscores, or hyphens (1–64 characters)")
 	}
 	return name, nil
 }
@@ -110,19 +105,15 @@ func ValidateProviderName(value string) (string, error) {
 func ValidateEndpoint(value string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(value))
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		return "", errors.New("Enter an HTTP or HTTPS API base URL.")
+		return "", errors.New("enter an HTTP or HTTPS API base URL")
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", errors.New("Enter an HTTP or HTTPS API base URL.")
+		return "", errors.New("enter an HTTP or HTTPS API base URL")
 	}
 	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return "", errors.New("Use an HTTP or HTTPS API base URL without credentials, a query, or a fragment.")
+		return "", errors.New("use an HTTP or HTTPS API base URL without credentials, a query, or a fragment")
 	}
-	res := u.String()
-	for strings.HasSuffix(res, "/") {
-		res = strings.TrimSuffix(res, "/")
-	}
-	return res, nil
+	return strings.TrimRight(u.String(), "/"), nil
 }
 
 // Profiles represents the stored provider configuration.

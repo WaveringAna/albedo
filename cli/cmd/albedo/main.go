@@ -1,9 +1,7 @@
+// Command albedo runs the terminal client and daemon management commands.
 package main
 
 import (
-	"albedo/cli/internal/config"
-	"albedo/cli/internal/daemon"
-	"albedo/cli/internal/tui"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -14,6 +12,10 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"albedo/cli/internal/config"
+	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/tui"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -184,22 +186,22 @@ func open(id, workspace string, fresh bool, openBrowser func(string)) error {
 	configured := profs.Active != ""
 
 	if !configured && !isTTY() {
-		return errors.New("No model provider is configured. Run albedo login in a terminal to set one up.")
+		return errors.New("no model provider is configured; run albedo login in a terminal to set one up")
 	}
 
 	var initial *daemon.Session
 	if selected != nil {
 		initial = selected
 	} else if configured && (fresh || len(sessions) == 0) {
-		created, err := daemon.Request[daemon.Session](ctx, conn, "/sessions", map[string]string{"workspace": absWorkspace})
-		if err != nil {
-			return err
+		created, createErr := daemon.Request[daemon.Session](ctx, conn, "/sessions", map[string]string{"workspace": absWorkspace})
+		if createErr != nil {
+			return createErr
 		}
 		initial = &created
 	}
 
 	if !isTTY() {
-		type NonTTYOutput struct {
+		type nonTTYOutput struct {
 			Session  *string          `json:"session,omitempty"`
 			Sessions []daemon.Session `json:"sessions"`
 		}
@@ -210,13 +212,13 @@ func open(id, workspace string, fresh bool, openBrowser func(string)) error {
 		if sessions == nil {
 			sessions = []daemon.Session{}
 		}
-		out := NonTTYOutput{
+		out := nonTTYOutput{
 			Session:  sessID,
 			Sessions: sessions,
 		}
-		data, err := json.Marshal(out)
-		if err != nil {
-			return err
+		data, marshalErr := json.Marshal(out)
+		if marshalErr != nil {
+			return marshalErr
 		}
 		fmt.Println(string(data))
 		return nil
@@ -268,13 +270,13 @@ func run(args []string) error {
 
 	case "new":
 		workspace := cwd
-		for i := 0; i < len(subArgs); i++ {
-			if subArgs[i] == "-h" || subArgs[i] == "--help" {
+		for _, arg := range subArgs {
+			if arg == "-h" || arg == "--help" {
 				fmt.Println("Usage: albedo new [workspace]")
 				return nil
 			}
-			if !strings.HasPrefix(subArgs[i], "-") {
-				workspace = subArgs[i]
+			if !strings.HasPrefix(arg, "-") {
+				workspace = arg
 				break
 			}
 		}
@@ -286,7 +288,7 @@ func run(args []string) error {
 				fmt.Println("Usage: albedo resume <session>")
 				return nil
 			}
-			return errors.New("Choose a session to reopen: albedo resume <session>")
+			return errors.New("choose a session to reopen: albedo resume <session>")
 		}
 		return open(subArgs[0], cwd, false, openBrowser)
 
@@ -328,7 +330,7 @@ func run(args []string) error {
 			return nil
 		}
 		if len(subArgs) < 2 {
-			return errors.New("Choose a session and a message to send: albedo send <session> <prompt>")
+			return errors.New("choose a session and a message to send: albedo send <session> <prompt>")
 		}
 		sessID := subArgs[0]
 		prompt := subArgs[1]
@@ -353,7 +355,7 @@ func run(args []string) error {
 			return nil
 		}
 		if len(subArgs) < 1 {
-			return errors.New("Choose a session to interrupt: albedo stop <session>")
+			return errors.New("choose a session to interrupt: albedo stop <session>")
 		}
 		sessID := subArgs[0]
 		homeDir := config.HomeDir()
@@ -411,7 +413,7 @@ func run(args []string) error {
 			return nil
 		}
 		if !isTTY() {
-			return errors.New("Run albedo login in a terminal so you can enter your API key without displaying it.")
+			return errors.New("run albedo login in a terminal so you can enter your API key without displaying it")
 		}
 		providerName := ""
 		if len(subArgs) > 0 {
@@ -435,6 +437,6 @@ func run(args []string) error {
 		return err
 
 	default:
-		return fmt.Errorf("Unknown command %q. Run albedo --help to see the available commands.", cmd)
+		return fmt.Errorf("unknown command %q; run albedo --help to see the available commands", cmd)
 	}
 }

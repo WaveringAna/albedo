@@ -46,7 +46,7 @@ type WorkspaceMissingError struct {
 }
 
 func (e *WorkspaceMissingError) Error() string {
-	return "Workspace folder not found: " + e.Workspace
+	return "workspace folder not found: " + e.Workspace
 }
 
 type SendResult struct {
@@ -175,9 +175,6 @@ func (c *ChatClient) Interrupt(ctx context.Context) (bool, error) {
 	return data.Interrupted, nil
 }
 
-// ContextWindow reads the model's context window from the session's last
-// prepared request. It is nil when neither a catalog nor the configuration
-// knows it, or when no request has been prepared yet.
 // HistoryPage is older transcript, rendered as the stream renders a reset.
 type HistoryPage struct {
 	Events []StreamEvent
@@ -228,6 +225,9 @@ func (c *ChatClient) History(ctx context.Context, before int64, rows int) (*Hist
 	return page, nil
 }
 
+// ContextWindow reads the model's context window from the session's last
+// prepared request. It is nil when neither a catalog nor the configuration
+// knows it, or when no request has been prepared yet.
 func (c *ChatClient) ContextWindow(ctx context.Context) (*int, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -698,7 +698,7 @@ func (c *ChatClient) Stream(ctx context.Context, tail int, onEvent func(StreamEv
 										c.argumentsByCall = make(map[string]string)
 										c.afterSeq = -1
 										c.mu.Unlock()
-										return errors.New("Too many tool argument previews for this client to display.")
+										return errors.New("too many tool argument previews for this client to display")
 									}
 
 									args := c.argumentsByCall[callID] + text

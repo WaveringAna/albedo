@@ -9,4 +9,4 @@ func detach(cmd *exec.Cmd) {}
 func passFileLimit() {}
 
 // processAlive cannot be checked portably here; assume the lock holder is live.
-func processAlive(pid int) bool { return true }
+func processAlive(int) bool { return true }

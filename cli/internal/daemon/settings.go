@@ -9,17 +9,17 @@ import (
 
 // Settings is a redacted snapshot of the daemon's shared persisted preferences.
 type Settings struct {
-	Profiles     config.Profiles             `json:"profiles"`
-	MCP          map[string]config.MCPServer `json:"mcp"`
-	Capabilities config.CapabilityPrefs      `json:"capabilities"`
-	UI           UIPreferences               `json:"ui"`
 	Credentials  Credentials                 `json:"credentials"`
+	Profiles     config.Profiles             `json:"profiles"`
+	Capabilities config.CapabilityPrefs      `json:"capabilities"`
+	MCP          map[string]config.MCPServer `json:"mcp"`
+	UI           UIPreferences               `json:"ui"`
 }
 
 type UIPreferences struct {
+	Opens    map[string]int `json:"opens,omitempty"`
 	Pinned   []string       `json:"pinned,omitempty"`
 	Archived []string       `json:"archived,omitempty"`
-	Opens    map[string]int `json:"opens,omitempty"`
 	Thinking bool           `json:"thinking"`
 	Tools    bool           `json:"tools"`
 }
@@ -48,11 +48,11 @@ func DeleteProvider(ctx context.Context, conn *Connection, name string) error {
 
 func SetCapability(ctx context.Context, conn *Connection, session, kind, name, scope string, enabled *bool) error {
 	_, err := RequestMethod[acknowledged](ctx, conn, http.MethodPost, "/sessions/"+url.PathEscape(session)+"/settings/capabilities", struct {
+		Enabled *bool  `json:"enabled"`
 		Kind    string `json:"kind"`
 		Name    string `json:"name"`
 		Scope   string `json:"scope"`
-		Enabled *bool  `json:"enabled"`
-	}{kind, name, scope, enabled})
+	}{Kind: kind, Name: name, Scope: scope, Enabled: enabled})
 	return err
 }
 

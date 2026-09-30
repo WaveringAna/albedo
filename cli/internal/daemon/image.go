@@ -3,7 +3,6 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"strings"
 )
 
@@ -75,17 +74,12 @@ func ImageLabel(meta ImageMetadata) string {
 	if meta.Bytes >= 1024*1024 {
 		size = fmt.Sprintf("%.1f MB", float64(meta.Bytes)/1024.0/1024.0)
 	} else if meta.Bytes >= 1024 {
-		size = fmt.Sprintf("%d KB", int(math.Ceil(float64(meta.Bytes)/1024.0)))
+		size = fmt.Sprintf("%d KB", (meta.Bytes+1023)/1024)
 	} else {
 		size = fmt.Sprintf("%d B", meta.Bytes)
 	}
 
-	prefix := ""
-	if strings.HasPrefix(string(meta.MimeType), "image/") {
-		prefix = strings.ToUpper(string(meta.MimeType)[6:])
-	} else {
-		prefix = strings.ToUpper(string(meta.MimeType))
-	}
+	prefix := strings.ToUpper(strings.TrimPrefix(string(meta.MimeType), "image/"))
 
 	return fmt.Sprintf("%s %d×%d · %s", prefix, meta.Width, meta.Height, size)
 }

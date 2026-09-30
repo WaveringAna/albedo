@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -34,8 +33,7 @@ func ParsePythonIntent(code string) *ToolIntent {
 	bindings := make(map[string]string)
 	var intents []ToolIntent
 
-	lines := strings.Split(code, "\n")
-	for _, rawLine := range lines {
+	for rawLine := range strings.SplitSeq(code, "\n") {
 		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -52,14 +50,14 @@ func ParsePythonIntent(code string) *ToolIntent {
 		}
 
 		if m := pathMethodRegex.FindStringSubmatch(line); m != nil {
-			pLit := m[1]
-			pVar := m[2]
+			pathLiteral := m[1]
+			pathVariable := m[2]
 			method := m[3]
 			args := m[4]
 
-			target := pLit
-			if target == "" && pVar != "" {
-				target = bindings[pVar]
+			target := pathLiteral
+			if target == "" && pathVariable != "" {
+				target = bindings[pathVariable]
 			}
 
 			if target != "" {
@@ -92,20 +90,20 @@ func ParsePythonIntent(code string) *ToolIntent {
 		}
 
 		if m := funcCallRegex.FindStringSubmatch(line); m != nil {
-			fnName := m[1]
+			functionName := m[1]
 			args := m[2]
 
 			if am := argExtractRegex.FindStringSubmatch(args); am != nil {
-				litVal := am[1]
-				varVal := am[2]
-				target := litVal
-				if target == "" && varVal != "" {
-					target = bindings[varVal]
+				literalValue := am[1]
+				variableName := am[2]
+				target := literalValue
+				if target == "" && variableName != "" {
+					target = bindings[variableName]
 				}
 
 				if target != "" {
 					label := cleanLabel(target)
-					switch fnName {
+					switch functionName {
 					case "edit":
 						intents = append(intents, ToolIntent{Kind: "edit", Target: label})
 					case "read":
@@ -147,15 +145,15 @@ func runWords(args string) []string {
 }
 
 func ExtractPartialJSONCode(s string) string {
-	idx := strings.Index(s, `"code"`)
-	if idx == -1 {
+	codeKeyIndex := strings.Index(s, `"code"`)
+	if codeKeyIndex == -1 {
 		return ""
 	}
-	colon := strings.Index(s[idx+6:], ":")
+	colon := strings.Index(s[codeKeyIndex+6:], ":")
 	if colon == -1 {
 		return ""
 	}
-	colon += idx + 6
+	colon += codeKeyIndex + 6
 
 	quote := strings.Index(s[colon+1:], `"`)
 	if quote == -1 {
@@ -163,56 +161,56 @@ func ExtractPartialJSONCode(s string) string {
 	}
 	start := colon + 1 + quote + 1
 
-	var sb strings.Builder
-	bytes := []byte(s[start:])
+	var decodedCode strings.Builder
+	code := s[start:]
 	i := 0
-	for i < len(bytes) {
-		b := bytes[i]
+	for i < len(code) {
+		b := code[i]
 		if b == '"' {
 			break
 		}
 		if b == '\\' {
-			if i+1 >= len(bytes) {
+			if i+1 >= len(code) {
 				break
 			}
-			nxt := bytes[i+1]
-			switch nxt {
+			escapedByte := code[i+1]
+			switch escapedByte {
 			case 'n':
-				sb.WriteByte('\n')
+				decodedCode.WriteByte('\n')
 				i += 2
 			case 'r':
-				sb.WriteByte('\r')
+				decodedCode.WriteByte('\r')
 				i += 2
 			case 't':
-				sb.WriteByte('\t')
+				decodedCode.WriteByte('\t')
 				i += 2
 			case '"':
-				sb.WriteByte('"')
+				decodedCode.WriteByte('"')
 				i += 2
 			case '\\':
-				sb.WriteByte('\\')
+				decodedCode.WriteByte('\\')
 				i += 2
 			case 'u':
-				if i+5 < len(bytes) {
-					hexVal := string(bytes[i+2 : i+6])
-					if cp, err := strconv.ParseInt(hexVal, 16, 32); err == nil {
-						sb.WriteRune(rune(cp))
+				if i+5 < len(code) {
+					hexDigits := code[i+2 : i+6]
+					if codePoint, err := strconv.ParseInt(hexDigits, 16, 32); err == nil {
+						decodedCode.WriteRune(rune(codePoint))
 						i += 6
 						continue
 					}
 				}
-				sb.WriteByte(nxt)
+				decodedCode.WriteByte(escapedByte)
 				i += 2
 			default:
-				sb.WriteByte(nxt)
+				decodedCode.WriteByte(escapedByte)
 				i += 2
 			}
 		} else {
-			sb.WriteByte(b)
+			decodedCode.WriteByte(b)
 			i++
 		}
 	}
-	return sb.String()
+	return decodedCode.String()
 }
 
 type ToolCallAssembly struct {
@@ -290,7 +288,7 @@ func (r *ToolProgressReporter) Report(call *ToolCallAssembly, phase string) erro
 	var preview *ToolCodePreview
 	if phase == "generating" && len(r.code) > 0 {
 		codeRunes := []rune(r.code)
-		offset := int(math.Max(0, float64(len(codeRunes)-512)))
+		offset := max(0, len(codeRunes)-512)
 		text := sanitizeControlRunes(string(codeRunes[offset:]))
 		preview = &ToolCodePreview{
 			Offset: offset,

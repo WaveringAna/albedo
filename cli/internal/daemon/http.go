@@ -89,8 +89,7 @@ func isConnectionError(err error) bool {
 		errors.Is(err, net.ErrClosed) {
 		return true
 	}
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
+	if _, ok := errors.AsType[*net.OpError](err); ok {
 		return true
 	}
 	msg := err.Error()
@@ -148,7 +147,7 @@ func readBounded(r io.Reader, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("Albedo returned more data than this client can read (limit: %d bytes).", limit)
+		return nil, fmt.Errorf("response exceeds this client's read limit (%d bytes)", limit)
 	}
 	return data, nil
 }
@@ -164,7 +163,7 @@ func Request[T any](ctx context.Context, conn *Connection, path string, body any
 func RequestMethod[T any](ctx context.Context, conn *Connection, method, path string, body any) (T, error) {
 	var zero T
 	if conn == nil {
-		return zero, errors.New("Not connected to Albedo.")
+		return zero, errors.New("not connected to Albedo")
 	}
 	if ctx == nil {
 		ctx = context.Background()

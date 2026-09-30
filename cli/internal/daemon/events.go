@@ -6,7 +6,7 @@ import (
 	"unicode"
 )
 
-// Display-only execution evidence, never appended to the model's tool output.
+// ToolActivity records display-only execution evidence, not model-facing tool output.
 type ToolActivity struct {
 	Kind   string `json:"kind"` // "read" | "search" | "list" | "run"
 	Target string `json:"target"`
@@ -26,10 +26,6 @@ type ToolTrace struct {
 	Activities []ToolActivity `json:"activities"`
 	Changes    []FileChange   `json:"changes"`
 	Truncated  bool           `json:"truncated,omitempty"`
-}
-
-func isSafeText(s string, limit int) bool {
-	return len(s) <= limit
 }
 
 // ParseToolTrace validates and extracts a ToolTrace from untyped data.
@@ -58,24 +54,25 @@ func ParseToolTrace(raw any) *ToolTrace {
 		default:
 			return nil
 		}
-		if !isSafeText(act.Target, 1000) {
+		if len(act.Target) > 1000 {
 			return nil
 		}
 	}
 
 	for _, ch := range trace.Changes {
-		if !isSafeText(ch.Path, 1000) {
+		if len(ch.Path) > 1000 {
 			return nil
 		}
-		if ch.Kind == "unavailable" {
-			if !isSafeText(ch.Reason, 1000) {
+		switch ch.Kind {
+		case "unavailable":
+			if len(ch.Reason) > 1000 {
 				return nil
 			}
-		} else if ch.Kind == "diff" {
-			if !isSafeText(ch.Diff, 16000) || ch.Added < 0 || ch.Removed < 0 {
+		case "diff":
+			if len(ch.Diff) > 16000 || ch.Added < 0 || ch.Removed < 0 {
 				return nil
 			}
-		} else {
+		default:
 			return nil
 		}
 	}

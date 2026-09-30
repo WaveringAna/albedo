@@ -1,3 +1,4 @@
+// Package daemon discovers and starts the local daemon and provides its typed HTTP API client.
 package daemon
 
 import (
@@ -114,21 +115,21 @@ func (c *Connection) Update(other *Connection) {
 
 func (c *Connection) Refresh(ctx context.Context) error {
 	if c == nil {
-		return errors.New("Not connected to Albedo.")
+		return errors.New("not connected to Albedo")
 	}
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
 
 	homeDir := c.HomeDir()
 	if homeDir == "" {
-		return errors.New("Cannot reconnect without a daemon home directory.")
+		return errors.New("cannot reconnect without a daemon home directory")
 	}
 
 	const attempts = 20
 	const interval = 100 * time.Millisecond
 
 	var lastErr error
-	for i := 0; i < attempts; i++ {
+	for i := range attempts {
 		if ctx != nil && ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -153,7 +154,7 @@ func (c *Connection) Refresh(ctx context.Context) error {
 	if lastErr != nil {
 		return lastErr
 	}
-	return fmt.Errorf("Could not reconnect to Albedo. Check whether it is running with ALBEDO_HOME=%s.", homeDir)
+	return fmt.Errorf("could not reconnect to Albedo; check whether it is running with ALBEDO_HOME=%s", homeDir)
 }
 
 // HTTPClient returns the reusable HTTP client owned by this Connection.
@@ -170,8 +171,8 @@ func (c *Connection) MarshalJSON() ([]byte, error) {
 
 func (c *Connection) UnmarshalJSON(data []byte) error {
 	var snap ConnectionSnapshot
-	if err := json.Unmarshal(data, &snap); err != nil {
-		return err
+	if decodeErr := json.Unmarshal(data, &snap); decodeErr != nil {
+		return decodeErr
 	}
 	c.snapshot.Store(&snap)
 	return nil
@@ -208,10 +209,7 @@ func AssistantAge(timestamp *int64, now time.Time) string {
 	if timestamp == nil {
 		return "time unknown"
 	}
-	sec := now.Unix() - *timestamp
-	if sec < 0 {
-		sec = 0
-	}
+	sec := max(0, now.Unix()-*timestamp)
 	if sec < 60 {
 		return "just now"
 	}
@@ -258,7 +256,7 @@ func Existing(homeDir string) (*Connection, error) {
 	}
 
 	var snap ConnectionSnapshot
-	if err := json.Unmarshal(data, &snap); err != nil {
+	if decodeErr := json.Unmarshal(data, &snap); decodeErr != nil {
 		return nil, nil
 	}
 
@@ -312,7 +310,7 @@ func Existing(homeDir string) (*Connection, error) {
 
 func checkCompatible(conn *Connection) (*Connection, error) {
 	if conn.Version() != 2 {
-		return nil, errors.New("This client cannot connect to the copy of Albedo already running. After its work has finished, run albedo daemon --stop, then launch Albedo again.")
+		return nil, errors.New("this client cannot connect to the copy of Albedo already running; after its work has finished, run albedo daemon --stop, then launch Albedo again")
 	}
 	return conn, nil
 }
@@ -323,14 +321,14 @@ func resolveDaemonExecutable(path string) (string, error) {
 	}
 	resolved, err := exec.LookPath(path)
 	if err != nil {
-		return "", fmt.Errorf("Cannot run the executable specified by ALBEDO_DAEMON (%q): %w", path, err)
+		return "", fmt.Errorf("cannot run the executable specified by ALBEDO_DAEMON (%q): %w", path, err)
 	}
 	fi, err := os.Stat(resolved)
 	if err != nil {
-		return "", fmt.Errorf("Cannot run the executable specified by ALBEDO_DAEMON (%q): %w", path, err)
+		return "", fmt.Errorf("cannot run the executable specified by ALBEDO_DAEMON (%q): %w", path, err)
 	}
 	if fi.IsDir() {
-		return "", fmt.Errorf("ALBEDO_DAEMON points to a directory (%q). Set it to the executable file instead.", path)
+		return "", fmt.Errorf("ALBEDO_DAEMON points to a directory (%q); set it to the executable file instead", path)
 	}
 	return resolved, nil
 }
@@ -360,19 +358,21 @@ func buildDaemonEnv(homeDir, tokenHex, build string) []string {
 		"ALBEDO_PROTOCOL": true,
 		"ALBEDO_BUILD":    true,
 	}
-	erlFlags := daemonErlFlags
+	var erlFlags strings.Builder
+	erlFlags.WriteString(daemonErlFlags)
 	for _, kv := range os.Environ() {
 		k, v, _ := strings.Cut(kv, "=")
 		if k == "ERL_FLAGS" {
 			// The operator's flags come last so they override the defaults.
-			erlFlags += " " + v
+			erlFlags.WriteByte(' ')
+			erlFlags.WriteString(v)
 			continue
 		}
 		if !filteredVars[k] {
 			env = append(env, kv)
 		}
 	}
-	env = append(env, "ERL_FLAGS="+erlFlags, "ALBEDO_HOME="+homeDir, "ALBEDO_TOKEN="+tokenHex)
+	env = append(env, "ERL_FLAGS="+erlFlags.String(), "ALBEDO_HOME="+homeDir, "ALBEDO_TOKEN="+tokenHex)
 	if build != "" {
 		env = append(env, "ALBEDO_BUILD="+build)
 	}
@@ -416,7 +416,7 @@ func daemonCommand(daemonExe, projectRoot string, env []string) (*exec.Cmd, erro
 // next daemon can take the home.
 func stop(homeDir string, conn *Connection) error {
 	_, _ = Request[any](context.Background(), conn, "/shutdown", map[string]any{})
-	for attempt := 0; attempt < pollAttempts; attempt++ {
+	for range pollAttempts {
 		running, err := Existing(homeDir)
 		if err != nil {
 			return err
@@ -426,7 +426,7 @@ func stop(homeDir string, conn *Connection) error {
 		}
 		time.Sleep(pollInterval)
 	}
-	return fmt.Errorf("Albedo did not stop. Check %s for details. The running process ID is %d.", filepath.Join(homeDir, "daemon.log"), conn.Pid())
+	return fmt.Errorf("daemon did not stop; check %s for details; the running process ID is %d", filepath.Join(homeDir, "daemon.log"), conn.Pid())
 }
 
 // Ensure connects to the running daemon or starts one. When this client bundles
@@ -444,19 +444,19 @@ func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
 		if build == "" || current.Build() == build || replace == nil || !replace(Stale{current, build}) {
 			return checkCompatible(current)
 		}
-		if err := stop(homeDir, current); err != nil {
-			return nil, err
+		if stopErr := stop(homeDir, current); stopErr != nil {
+			return nil, stopErr
 		}
 	}
 
 	if daemonExe != "" {
-		if _, err := resolveDaemonExecutable(daemonExe); err != nil {
-			return nil, err
+		if _, executableErr := resolveDaemonExecutable(daemonExe); executableErr != nil {
+			return nil, executableErr
 		}
 	}
 
-	if err := os.MkdirAll(homeDir, 0700); err != nil {
-		return nil, err
+	if mkdirErr := os.MkdirAll(homeDir, 0700); mkdirErr != nil {
+		return nil, mkdirErr
 	}
 	_ = os.Chmod(homeDir, 0700)
 
@@ -468,17 +468,17 @@ func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
 	}
 	if err != nil {
 		if os.IsExist(err) {
-			for attempt := 0; attempt < pollAttempts; attempt++ {
-				running, err := Existing(homeDir)
-				if err != nil {
-					return nil, err
+			for range pollAttempts {
+				running, discoveryErr := Existing(homeDir)
+				if discoveryErr != nil {
+					return nil, discoveryErr
 				}
 				if running != nil {
 					return checkCompatible(running)
 				}
 				time.Sleep(pollInterval)
 			}
-			return nil, fmt.Errorf("Albedo is taking too long to start. Check %s/daemon.log for details. Only remove %s if the process starting Albedo is no longer running.", homeDir, lockPath)
+			return nil, fmt.Errorf("timed out starting Albedo; check %s/daemon.log for details; only remove %s if the process starting Albedo is no longer running", homeDir, lockPath)
 		}
 		return nil, err
 	}
@@ -527,7 +527,7 @@ func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 
-	for attempt := 0; attempt < pollAttempts; attempt++ {
+	for range pollAttempts {
 		running, err := Existing(homeDir)
 		if err != nil {
 			return nil, err
@@ -546,7 +546,7 @@ func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("Albedo is taking too long to start. Check %s/daemon.log for details.", homeDir)
+	return nil, fmt.Errorf("timed out starting Albedo; check %s/daemon.log for details", homeDir)
 }
 
 // staleLock reports whether the startup lock was left by a starter that is no
@@ -567,7 +567,7 @@ func staleLock(lockPath string) bool {
 }
 
 func startupExitError(waitErr error, logPath string, logStart int64, projectRoot string) error {
-	msg := "Albedo stopped before it finished starting"
+	msg := "daemon stopped before it finished starting"
 
 	if f, err := os.Open(logPath); err == nil {
 		defer f.Close()
@@ -579,7 +579,7 @@ func startupExitError(waitErr error, logPath string, logStart int64, projectRoot
 		}
 	}
 	if projectRoot != "" {
-		msg += fmt.Sprintf("\nSource checkout: %s. If this is not your Albedo checkout, set ALBEDO_ROOT to its full path.", projectRoot)
+		msg += fmt.Sprintf("\nsource checkout: %s; if this is not your Albedo checkout, set ALBEDO_ROOT to its full path", projectRoot)
 	}
 	if waitErr != nil {
 		return fmt.Errorf("%s: %w", msg, waitErr)

@@ -12,7 +12,7 @@ type UpgradeRequiredError struct {
 }
 
 func (e *UpgradeRequiredError) Error() string {
-	return "The running copy of Albedo needs an update " + e.Feature + ". Restarting will interrupt work in all sessions and clear their Python variables. When you are ready, run albedo daemon --stop, then launch your updated copy of Albedo."
+	return "the running copy of Albedo needs an update " + e.Feature + "; restarting will interrupt work in all sessions and clear their Python variables; when you are ready, run albedo daemon --stop, then launch your updated copy of Albedo"
 }
 
 // APIError retains the HTTP status and daemon error code independently of copy.

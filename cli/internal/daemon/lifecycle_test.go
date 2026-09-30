@@ -65,10 +65,10 @@ func TestEnsureAsksOnlyAboutAnotherBundledBuild(t *testing.T) {
 		running string // "" = no build recorded, "same" = the bundled build
 		asked   bool
 	}{
-		{"source client", false, "/nix/store/old", false},
-		{"same build", true, "same", false},
-		{"other build", true, "/nix/store/old", true},
-		{"unrecorded build", true, "", true},
+		{name: "source client", bundled: false, running: "/nix/store/old", asked: false},
+		{name: "same build", bundled: true, running: "same", asked: false},
+		{name: "other build", bundled: true, running: "/nix/store/old", asked: true},
+		{name: "unrecorded build", bundled: true, running: "", asked: true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

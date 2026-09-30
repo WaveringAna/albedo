@@ -27,9 +27,9 @@ func TestCompletedCallPreviewsReleaseState(t *testing.T) {
 	a := string(aData)
 	b := string(bData)
 
-	var reqCount int32
+	var requestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		count := atomic.AddInt32(&reqCount, 1)
+		count := requestCount.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		if count == 1 {
 			_, _ = w.Write([]byte(formatPage(1, []any{
@@ -94,10 +94,10 @@ func TestCompletedCallPreviewsReleaseState(t *testing.T) {
 
 func TestUnfinishedArgumentsBounded(t *testing.T) {
 	var requestedURLs []string
-	var serverCallCount int32
+	var serverCallCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestedURLs = append(requestedURLs, r.URL.String())
-		count := atomic.AddInt32(&serverCallCount, 1)
+		count := serverCallCount.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		if count <= 33 {
 			_, _ = w.Write([]byte(formatPage(int(count), []any{
@@ -115,7 +115,7 @@ func TestUnfinishedArgumentsBounded(t *testing.T) {
 	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
 	client := NewChatClient(conn, "session")
 
-	for i := 1; i < 33; i++ {
+	for range 32 {
 		_ = client.Stream(context.Background(), 0, func(event StreamEvent) error { return nil })
 	}
 

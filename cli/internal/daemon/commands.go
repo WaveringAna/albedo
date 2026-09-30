@@ -82,15 +82,14 @@ func ParseCommandCatalog(data []byte) ([]SessionCommand, error) {
 	commands := make([]SessionCommand, 0, len(rawList))
 	for _, raw := range rawList {
 		var cmd SessionCommand
-		if err := json.Unmarshal(raw, &cmd); err == nil {
-			if isValidCommand(cmd) {
-				commands = append(commands, cmd)
-			}
+		if err := json.Unmarshal(raw, &cmd); err != nil || !isValidCommand(cmd) {
+			continue
 		}
+		commands = append(commands, cmd)
 	}
 
 	if len(rawList) > 0 && len(commands) == 0 {
-		return nil, errors.New("Albedo returned command details that this client could not read.")
+		return nil, errors.New("cannot read command details returned by Albedo")
 	}
 
 	return commands, nil
@@ -114,9 +113,6 @@ func ParseCommandInvocation(value string, catalog []SessionCommand) (name, args 
 		return "", "", false
 	}
 
-	rest := value[loc[1]:]
-	if strings.HasPrefix(rest, " ") {
-		rest = rest[1:]
-	}
+	rest := strings.TrimPrefix(value[loc[1]:], " ")
 	return matched.Name, rest, true
 }
