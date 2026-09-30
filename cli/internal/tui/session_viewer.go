@@ -71,6 +71,8 @@ type SessionViewer struct {
 	now           func() time.Time
 	previews      map[string]*cachedPreview
 	section       map[string]int
+	sessionIndex  map[string]int
+	archivedIDs   map[string]bool
 	Workspace     string
 	ConfirmDelete string
 	notice        string
@@ -149,7 +151,7 @@ func (m *SessionViewer) SetSessions(sessions []daemon.Session, active *daemon.Se
 	// Initial load favors the active or most recent session; later refreshes
 	// keep the cursor.
 	target := ""
-	if active != nil && !m.prefs.archived(active.ID) && !m.ArchiveView {
+	if active != nil && !m.archivedIDs[active.ID] && !m.ArchiveView {
 		target = active.ID
 	} else if ok && m.section[previous.ID] != secAction {
 		target = previous.ID
@@ -175,26 +177,35 @@ func (m *SessionViewer) rebuild() {
 	if m.section == nil {
 		m.section = map[string]int{}
 	}
+	// Session indexes refer to the daemon listing in raw.
+	m.sessionIndex = make(map[string]int, len(m.raw))
+	for i, session := range m.raw {
+		if _, exists := m.sessionIndex[session.ID]; !exists {
+			m.sessionIndex[session.ID] = i
+		}
+	}
+	m.archivedIDs = make(map[string]bool, len(m.prefs.Archived))
+	for _, id := range m.prefs.Archived {
+		m.archivedIDs[id] = true
+	}
 	listed := m.raw
-	if m.active != nil && !containsSession(listed, m.active.ID) {
-		listed = append([]daemon.Session{*m.active}, listed...)
+	if m.active != nil {
+		if _, exists := m.sessionIndex[m.active.ID]; !exists {
+			listed = append([]daemon.Session{*m.active}, listed...)
+		}
 	}
 	now := m.clock()
-	byID := make(map[string]daemon.Session, len(listed))
-	for _, s := range listed {
-		byID[s.ID] = s
-	}
 	clear(m.section)
 	var ordered []daemon.Session
 	for _, id := range m.prefs.Pinned {
-		if s, ok := byID[id]; ok && !m.prefs.archived(id) {
+		if s, ok := m.session(id); ok && !m.archivedIDs[id] {
 			m.section[id] = secPinned
 			ordered = append(ordered, s)
 		}
 	}
 	var frequent []daemon.Session
 	for _, s := range listed {
-		if _, taken := m.section[s.ID]; !taken && !m.prefs.archived(s.ID) && m.prefs.Opens[s.ID] >= frequentMinOpens {
+		if _, taken := m.section[s.ID]; !taken && !m.archivedIDs[s.ID] && m.prefs.Opens[s.ID] >= frequentMinOpens {
 			frequent = append(frequent, s)
 		}
 	}
@@ -218,7 +229,7 @@ func (m *SessionViewer) rebuild() {
 	}
 	var rest, active []daemon.Session
 	for i, s := range listed {
-		if m.prefs.archived(s.ID) {
+		if m.archivedIDs[s.ID] {
 			m.section[s.ID] = secArchived
 			continue
 		}
@@ -245,7 +256,7 @@ func (m *SessionViewer) rebuild() {
 		items = sessionViewerActions(m.Workspace)
 	}
 	for _, s := range visible {
-		if m.ArchiveView == m.prefs.archived(s.ID) {
+		if m.ArchiveView == m.archivedIDs[s.ID] {
 			items = append(items, PickerItem{ID: s.ID, Label: sessionTitle(s), Detail: sessionText(s.Workspace + " " + s.Model + " " + s.Provider)})
 		}
 	}
@@ -263,10 +274,6 @@ func sessionTitle(s daemon.Session) string {
 	return title
 }
 
-func containsSession(sessions []daemon.Session, id string) bool {
-	return slices.ContainsFunc(sessions, func(s daemon.Session) bool { return s.ID == id })
-}
-
 func (m *SessionViewer) focus(id string) {
 	if i := slices.IndexFunc(m.Filtered, func(item PickerItem) bool { return item.ID == id }); i >= 0 {
 		m.Cursor = i
@@ -274,10 +281,8 @@ func (m *SessionViewer) focus(id string) {
 }
 
 func (m SessionViewer) session(id string) (daemon.Session, bool) {
-	for _, s := range m.raw {
-		if s.ID == id {
-			return s, true
-		}
+	if index, ok := m.sessionIndex[id]; ok {
+		return m.raw[index], true
 	}
 	if m.active != nil && m.active.ID == id {
 		return *m.active, true
@@ -369,7 +374,7 @@ func (m *SessionViewer) toggleArchive() tea.Cmd {
 	if !ok || m.section[item.ID] == secAction || m.Saving {
 		return nil
 	}
-	value := !m.prefs.archived(item.ID)
+	value := !m.archivedIDs[item.ID]
 	m.Saving = true
 	return func() tea.Msg { return SessionPreferenceMsg{item.ID, "archived", value} }
 }
