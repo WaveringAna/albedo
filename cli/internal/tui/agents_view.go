@@ -107,6 +107,7 @@ type agentNode struct {
 	mail                    []agentMail
 	tail                    agentTail
 	preview                 agentPreview
+	revision                uint64
 	hue                     rgb
 	rate                    float64
 	flash                   float64
@@ -165,19 +166,20 @@ type AgentsViewModel struct {
 	root      string
 	selected  string
 
-	notice  string
-	confirm string // the agent waiting for y to delete it
-	packets []agentPacket
-	floats  []agentFloat
-	order   []string
-	input   textinput.Model
-	rename  renameField
-	Width   int
-	clock   float64
-	Height  int
-	Gen     int
-	noticeT float64
-	ticking bool // a frame tick is in flight
+	notice    string
+	confirm   string // the agent waiting for y to delete it
+	packets   []agentPacket
+	floats    []agentFloat
+	order     []string
+	input     textinput.Model
+	rename    renameField
+	tailCache agentTailCache
+	Width     int
+	clock     float64
+	Height    int
+	Gen       int
+	noticeT   float64
+	ticking   bool // a frame tick is in flight
 }
 
 const (
@@ -208,6 +210,7 @@ func (m *AgentsViewModel) SetSize(w, h int) {
 	m.Width = w
 	m.Height = h
 	m.layout()
+	m.refreshTail()
 }
 
 func (m *AgentsViewModel) Init() tea.Cmd {
@@ -288,6 +291,7 @@ func (m AgentsViewModel) frameCmd(gen int) tea.Cmd {
 // move while it was stopped.
 func (m AgentsViewModel) Update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 	m, cmd := m.update(msg)
+	m.refreshTail()
 	if m.ticking || !m.moving() {
 		return m, cmd
 	}
@@ -350,6 +354,7 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		}
 		seeded.omitted = seeded.omitted || n.tail.omitted
 		n.tail = seeded
+		n.revision++
 		return m, nil
 
 	case agentsSeedErrMsg:
@@ -692,7 +697,9 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 			n.call = call
 		}
 		n.lineKind = tailCode
-		n.preview.appendArguments(text)
+		if n.preview.appendArguments(text) {
+			n.revision++
+		}
 	case "tool_progress":
 		progress, _ := event["progress"].(map[string]any)
 		if str(progress, "phase") == "running" {
@@ -768,6 +775,7 @@ func (m *AgentsViewModel) stream(n *agentNode, kind tailKind, text string) {
 	for {
 		head, rest, found := strings.Cut(text, "\n")
 		n.preview.lines.write(head, kind)
+		n.revision++
 		if !found {
 			return
 		}
@@ -797,10 +805,12 @@ func (m *AgentsViewModel) flushLine(n *agentNode) {
 	n.preview = agentPreview{}
 	n.call = ""
 	n.lineKind = tailText
+	n.revision++
 }
 
 func (m *AgentsViewModel) pushTail(n *agentNode, kind tailKind, line string) {
 	n.tail.push(tailLine{kind: kind, text: line})
+	n.revision++
 }
 
 // ─── layout ───
@@ -1291,19 +1301,7 @@ func (m AgentsViewModel) pane(height int) []string {
 	if room == 0 || len(rows) == 0 {
 		return rows
 	}
-	node := m.nodes[m.selected]
-	lines := slices.Collect(node.tail.newest(false))
-	slices.Reverse(lines)
-	active := slices.Collect(node.preview.lines.newest(node.lineKind == tailCode))
-	for _, line := range slices.Backward(active) {
-		if node.lineKind == tailCode || line.text != "" {
-			lines = append(lines, line)
-		}
-	}
-	var wrapped []string
-	for _, line := range lines {
-		wrapped = append(wrapped, drawTail(line, m.paneWidth()-1)...)
-	}
+	wrapped := m.tailCache.rows
 	if len(wrapped) == 0 {
 		return append(rows, DefaultStyles.Faint.Render("nothing yet"))
 	}
@@ -1311,7 +1309,7 @@ func (m AgentsViewModel) pane(height int) []string {
 }
 
 // drawTail wraps one tail line to width and styles it by kind.
-func drawTail(line tailLine, width int) []string {
+func drawTail(line tailLine, width, limit int) []string {
 	gutter, inner := "", width
 	format := func(s ...string) string { return strings.Join(s, "") }
 	switch line.kind {
@@ -1324,9 +1322,23 @@ func drawTail(line tailLine, width int) []string {
 	case tailMeta:
 		format = DefaultStyles.Faint.Render
 	}
+	wrapped := ansi.Hardwrap(line.text, max(8, inner), true)
+	start := len(wrapped)
+	for range limit {
+		index := strings.LastIndexByte(wrapped[:start], '\n')
+		if index < 0 {
+			start = 0
+			break
+		}
+		start = index
+	}
+	if start > 0 {
+		start++
+	}
 	var out []string
-	for part := range strings.SplitSeq(ansi.Hardwrap(line.text, max(8, inner), true), "\n") {
-		out = append(out, gutter+format(part))
+	for part := range strings.SplitSeq(wrapped[start:], "\n") {
+		// A cached row must not retain the rest of a long wrapped line.
+		out = append(out, gutter+format(strings.Clone(part)))
 	}
 	return out
 }

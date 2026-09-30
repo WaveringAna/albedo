@@ -2,6 +2,7 @@ package tui
 
 import (
 	"iter"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -263,4 +264,53 @@ func (preview *agentPreview) finish() {
 		preview.length -= size
 		preview.appendCodeRune(char)
 	}
+}
+
+type agentTailCache struct {
+	node     *agentNode
+	ink      ink
+	rows     []string
+	revision uint64
+	width    int
+	height   int
+}
+
+// refreshTail runs after updates, never from View. Only the selected node
+// needs wrapped rows; animation-only frames reuse the previous result.
+func (m *AgentsViewModel) refreshTail() {
+	node := m.nodes[m.selected]
+	width, height := m.paneWidth()-1, max(0, m.Height)
+	cache := &m.tailCache
+	if node == nil || width <= 0 || height == 0 {
+		*cache = agentTailCache{}
+		return
+	}
+	if cache.node == node && cache.revision == node.revision && cache.width == width && cache.height == height && cache.ink == transcriptInk {
+		return
+	}
+	rows := make([]string, 0, height)
+	appendLine := func(line tailLine) bool {
+		wrapped := drawTail(line, width, height-len(rows))
+		for _, row := range slices.Backward(wrapped) {
+			rows = append(rows, row)
+		}
+		return len(rows) < height
+	}
+	for line := range node.preview.lines.newest(node.lineKind == tailCode) {
+		if line.text == "" && node.lineKind != tailCode {
+			continue
+		}
+		if !appendLine(line) {
+			break
+		}
+	}
+	if len(rows) < height {
+		for line := range node.tail.newest(false) {
+			if !appendLine(line) {
+				break
+			}
+		}
+	}
+	slices.Reverse(rows)
+	*cache = agentTailCache{node: node, rows: rows, ink: transcriptInk, revision: node.revision, width: width, height: height}
 }
