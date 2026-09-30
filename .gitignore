@@ -6,6 +6,8 @@ erl_crash.dump
 __pycache__/
 *.pyc
 /.albedo/
+# a loopback ssh stages remote bundles under a literal ~ in its cwd
+/~/
 .makima/
 
 .DS_Store
