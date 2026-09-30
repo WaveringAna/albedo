@@ -75,7 +75,7 @@ func TestSignoffCopiesTheTurnAsMarkdown(t *testing.T) {
 	m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Text: "**second**", Timestamp: 4})
 	m.appendSettledEntry(HistoryEntry{Kind: EntryTurnEnd, Mood: moodDone, Timestamp: 5})
 	m.refreshViewportContent()
-	row := rowWith(t, m.frameLines, "copy reply")
+	row := rowWith(t, m.frameLines, "⧉")
 	act, _ := actionOf(m.frameLines[row])
 	if cmd := m.actAt(row); cmd == nil || m.CopyStatus != "copied" {
 		t.Fatalf("the signoff did not copy: status %q", m.CopyStatus)

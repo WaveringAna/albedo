@@ -131,8 +131,7 @@ func (r TranscriptRenderer) signoff(entry HistoryEntry) string {
 	if len(meta) > 0 {
 		row += " " + r.Styles.Faint.Render(strings.Join(meta, " · "))
 	}
-	// underlined and quiet: a link, not a label
-	return row + r.Styles.Faint.Render(" · ") + r.Styles.Muted.Underline(true).Render("copy reply")
+	return row + r.Styles.Faint.Render(" · ") + r.Styles.Muted.Render("⧉")
 }
 
 var diffHunk = regexp.MustCompile(`^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
