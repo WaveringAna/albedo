@@ -15,6 +15,7 @@ main() ->
         {scale_timeouts, 10}
     ],
     Result = eunit:test({inparallel, Modules}, Options),
+    albedo_test_home:cleanup(),
     erlang:halt(case Result of ok -> 0; _ -> 1 end).
 
 module(Path) ->

@@ -13,6 +13,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 KERNEL = ROOT / "priv" / "python" / "albedo_kernel.py"
+
+sys.path.insert(0, str(ROOT / "test"))
+import scratch  # noqa: E402
+
+# Temporary workspaces and homes go under this run's scratch directory, which
+# is removed at exit.
+scratch.claim("harness")
 MAX_FRAME = 8 * 1024 * 1024
 
 

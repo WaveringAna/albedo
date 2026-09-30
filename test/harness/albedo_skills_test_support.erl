@@ -2,7 +2,7 @@
 -export([fixture/0, write/3, write_repeat/4, symlink/3, symlink_raw/3, replace_with_symlink/3, exists/2, serve_once/1, chmod/3, cleanup/1]).
 
 fixture() ->
-    Root = filename:join("/tmp", "albedo-skills-" ++ integer_to_list(erlang:system_time(nanosecond)) ++ "-" ++ integer_to_list(erlang:unique_integer([positive]))),
+    Root = filename:join(os:getenv("TMPDIR", "/tmp"), "albedo-skills-" ++ integer_to_list(erlang:system_time(nanosecond)) ++ "-" ++ integer_to_list(erlang:unique_integer([positive]))),
     Workspace = filename:join(Root, "workspace"),
     Home = filename:join(Root, "home"),
     ok = filelib:ensure_dir(filename:join(Workspace, "placeholder")),

@@ -16,6 +16,13 @@ sys.path.insert(0, str(ROOT / "priv" / "python"))
 from albedo_api import PythonApi
 from albedo_plugins import remote
 
+sys.path.insert(0, str(ROOT / "test"))
+import scratch  # noqa: E402
+
+# Temporary workspaces and homes go under this run's scratch directory, which
+# is removed at exit.
+scratch.claim("harness")
+
 
 class FakeHostError(Exception):
     def __init__(self, code, message):

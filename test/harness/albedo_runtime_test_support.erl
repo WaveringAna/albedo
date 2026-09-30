@@ -1,7 +1,7 @@
 -module(albedo_runtime_test_support).
 -export([temporary_database/0, cleanup/1, own_rss/0, missing_rss/0, kernel_memory/1]).
 temporary_database() ->
-    unicode:characters_to_binary(filename:join("/tmp", "albedo-" ++ binary_to_list(albedo_native:new_id()) ++ ".sqlite" )).
+    unicode:characters_to_binary(filename:join(os:getenv("TMPDIR", "/tmp"), "albedo-" ++ binary_to_list(albedo_native:new_id()) ++ ".sqlite" )).
 cleanup(Path) ->
     lists:foreach(fun(Suffix) -> file:delete(<<Path/binary, Suffix/binary>>) end,
                   [<<>>, <<"-wal">>, <<"-shm">>]),
