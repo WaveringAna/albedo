@@ -167,28 +167,10 @@ func (c *ChatClient) agentURL(path string) string {
 func (c *ChatClient) parseResponseError(res *http.Response) error {
 	body, err := readBounded(res.Body, 64*1024)
 	if err != nil {
-		return fmt.Errorf("%d %s: %w", res.StatusCode, res.Status, err)
+		return &APIError{StatusCode: res.StatusCode, Cause: err}
 	}
 
-	var data struct {
-		Code      string `json:"code"`
-		Error     string `json:"error"`
-		Workspace string `json:"workspace"`
-	}
-	if err := json.Unmarshal(body, &data); err == nil {
-		if data.Code == "workspace_missing" && data.Workspace != "" {
-			return &WorkspaceMissingError{Workspace: data.Workspace}
-		}
-		if data.Error != "" {
-			return errors.New(data.Error)
-		}
-	}
-
-	fallback := strings.TrimSpace(fmt.Sprintf("%d %s", res.StatusCode, res.Status))
-	if fallback == "" {
-		fallback = "request failed"
-	}
-	return errors.New(fallback)
+	return decodeAPIError(res.StatusCode, body)
 }
 
 func (c *ChatClient) submitPayload(ctx context.Context, payload map[string]any) (*SendResult, error) {

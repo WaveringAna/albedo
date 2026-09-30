@@ -5,6 +5,7 @@ import (
 	"albedo/cli/internal/daemon"
 	"cmp"
 	"errors"
+	"fmt"
 	"net/url"
 	"path"
 	"regexp"
@@ -145,10 +146,10 @@ type mcpSubmission struct {
 func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 	name := f.value(fieldName)
 	if !mcpName.MatchString(name) {
-		return mcpSubmission{}, errors.New("name: use 1–64 letters, digits, _ or -")
+		return mcpSubmission{}, errors.New("Use 1–64 letters, digits, underscores, or hyphens for the server name.")
 	}
 	if f.Editing == "" && slices.ContainsFunc(existing, func(item capabilityItem) bool { return item.ID == name && !item.Draft }) {
-		return mcpSubmission{}, errors.New("name: a server called " + name + " already exists")
+		return mcpSubmission{}, fmt.Errorf("A server called %s already exists. Choose another name.", name)
 	}
 	server := f.Base
 	server.Type = f.Transport
@@ -157,7 +158,7 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 		raw := f.value(fieldURL)
 		parsed, err := url.Parse(raw)
 		if raw == "" || err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-			return mcpSubmission{}, errors.New("url: enter an http:// or https:// address")
+			return mcpSubmission{}, errors.New("Enter a server URL starting with http:// or https://.")
 		}
 		server.URL, server.Command, server.Args, server.CWD = raw, "", nil, ""
 		if token := f.value(fieldToken); token == "-" {
@@ -169,11 +170,11 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 		switch {
 		case header == "" && value == "":
 		case !mcpHeaderName.MatchString(header):
-			return mcpSubmission{}, errors.New("header: enter a valid HTTP header name")
+			return mcpSubmission{}, errors.New("Enter a valid HTTP header name.")
 		case value == "-":
 			secrets["headers"] = map[string]any{header: nil}
 		case value == "":
-			return mcpSubmission{}, errors.New("header value: enter a value, or - to remove " + header)
+			return mcpSubmission{}, fmt.Errorf("Enter a value for %s, or - to remove it.", header)
 		default:
 			secrets["headers"] = map[string]any{header: value}
 		}
@@ -181,18 +182,18 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 	} else {
 		argv, err := splitCommand(f.Inputs[fieldCommand].Value())
 		if err != nil || len(argv) == 0 {
-			return mcpSubmission{}, errors.New("command: enter the command that starts the server")
+			return mcpSubmission{}, errors.New("Enter the command that starts the server.")
 		}
 		server.Command, server.Args, server.URL = argv[0], argv[1:], ""
 		entries, err := splitCommand(f.Inputs[fieldEnv].Value())
 		if err != nil {
-			return mcpSubmission{}, errors.New("env: " + err.Error())
+			return mcpSubmission{}, fmt.Errorf("check environment variables: %w", err)
 		}
 		var env map[string]any
 		for _, entry := range entries {
 			key, value, ok := strings.Cut(entry, "=")
 			if !ok || !mcpEnvName.MatchString(key) {
-				return mcpSubmission{}, errors.New("env: use KEY=value entries separated by spaces")
+				return mcpSubmission{}, errors.New("Enter environment variables as KEY=value pairs separated by spaces.")
 			}
 			if env == nil {
 				env = map[string]any{}

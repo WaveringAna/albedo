@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -46,11 +47,11 @@ type Settings struct {
 func validateModel(value string) (string, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" || len(trimmed) > 512 {
-		return "", errors.New("provider needs a model id of 1–512 characters")
+		return "", errors.New("Model ID must be 1–512 characters and contain no control characters.")
 	}
 	for _, r := range trimmed {
 		if r < 0x20 || r == 0x7f {
-			return "", errors.New("provider needs a model id of 1–512 characters")
+			return "", errors.New("Model ID must be 1–512 characters and contain no control characters.")
 		}
 	}
 	return trimmed, nil
@@ -59,7 +60,7 @@ func validateModel(value string) (string, error) {
 // Validate checks whether the Settings instance is valid.
 func (s Settings) Validate() (Settings, error) {
 	if s.Protocol != "responses" && s.Protocol != "chat_completions" {
-		return s, errors.New("provider protocol must be responses or chat_completions")
+		return s, errors.New("Protocol must be responses or chat_completions.")
 	}
 
 	model, err := validateModel(s.Model)
@@ -81,11 +82,11 @@ func (s Settings) Validate() (Settings, error) {
 	}
 
 	if ext == "openai" && endpoint == "" {
-		return s, errors.New("openai provider needs an endpoint, model and valid protocol")
+		return s, errors.New("OpenAI provider needs an API base URL.")
 	}
 
 	if strings.ContainsFunc(s.APIKey, func(r rune) bool { return unicode.IsSpace(r) || r < 0x20 || r == 0x7f }) {
-		return s, errors.New("api key must not contain spaces or control characters")
+		return s, errors.New("API key must not contain spaces or control characters.")
 	}
 
 	return Settings{
@@ -102,7 +103,7 @@ func (s Settings) Validate() (Settings, error) {
 func ValidateProviderName(value string) (string, error) {
 	name := strings.TrimSpace(value)
 	if !providerNameRegex.MatchString(name) {
-		return "", errors.New("name must be 1–64 letters, numbers, dots, underscores or hyphens")
+		return "", errors.New("Provider name must start with a letter or number and use only letters, numbers, dots, underscores, or hyphens (1–64 characters).")
 	}
 	return name, nil
 }
@@ -111,13 +112,13 @@ func ValidateProviderName(value string) (string, error) {
 func ValidateEndpoint(value string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(value))
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		return "", errors.New("enter an http or https api base url")
+		return "", errors.New("Enter an HTTP or HTTPS API base URL.")
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", errors.New("enter an http or https api base url")
+		return "", errors.New("Enter an HTTP or HTTPS API base URL.")
 	}
 	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return "", errors.New("use an http or https base url without credentials, query or fragment")
+		return "", errors.New("Use an HTTP or HTTPS API base URL without credentials, a query, or a fragment.")
 	}
 	res := u.String()
 	for strings.HasSuffix(res, "/") {
@@ -153,7 +154,7 @@ func LoadProfiles(directory string) (Profiles, error) {
 		return Profiles{}, err
 	}
 	if fi.Size() > 2*1024*1024 {
-		return Profiles{}, errors.New("invalid provider configuration in config.json; repair it before logging in")
+		return Profiles{}, fmt.Errorf("provider configuration in %s exceeds 2 MiB", configPath)
 	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -165,17 +166,17 @@ func LoadProfiles(directory string) (Profiles, error) {
 
 	var rawMap map[string]json.RawMessage
 	if err := json.Unmarshal(data, &rawMap); err != nil {
-		return Profiles{}, errors.New("invalid provider configuration in config.json; repair it before logging in")
+		return Profiles{}, fmt.Errorf("invalid provider configuration in %s: %w", configPath, err)
 	}
 
 	if _, hasProviders := rawMap["providers"]; !hasProviders {
 		var single Settings
 		if err := json.Unmarshal(data, &single); err != nil {
-			return Profiles{}, errors.New("invalid provider configuration in config.json; repair it before logging in")
+			return Profiles{}, fmt.Errorf("invalid provider configuration in %s: %w", configPath, err)
 		}
 		validated, err := single.Validate()
 		if err != nil {
-			return Profiles{}, errors.New("invalid provider configuration in config.json; repair it before logging in")
+			return Profiles{}, fmt.Errorf("invalid provider configuration in %s: %w", configPath, err)
 		}
 		return Profiles{
 			Active:    "default",
@@ -185,18 +186,18 @@ func LoadProfiles(directory string) (Profiles, error) {
 
 	var cfg rawConfigFile
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return Profiles{}, errors.New("invalid provider configuration in config.json; repair it before logging in")
+		return Profiles{}, fmt.Errorf("invalid provider configuration in %s: %w", configPath, err)
 	}
 
 	providers := make(map[string]Settings)
 	for k, v := range cfg.Providers {
 		name, err := ValidateProviderName(k)
 		if err != nil {
-			return Profiles{}, errors.New("invalid provider configuration in config.json; repair it before logging in")
+			return Profiles{}, fmt.Errorf("invalid provider name %q in %s: %w", k, configPath, err)
 		}
 		validated, err := v.Validate()
 		if err != nil {
-			return Profiles{}, errors.New("invalid provider configuration in config.json; repair it before logging in")
+			return Profiles{}, fmt.Errorf("invalid provider %q in %s: %w", name, configPath, err)
 		}
 		providers[name] = validated
 	}
@@ -205,7 +206,7 @@ func LoadProfiles(directory string) (Profiles, error) {
 	if cfg.Active != nil {
 		active = *cfg.Active
 		if _, ok := providers[active]; !ok {
-			return Profiles{}, errors.New("invalid provider configuration in config.json; repair it before logging in")
+			return Profiles{}, fmt.Errorf("active provider %q is not defined in %s", active, configPath)
 		}
 	}
 
@@ -265,7 +266,7 @@ func updateProfiles(directory string, update func(*Profiles)) error {
 		return writeJSONAtomic(directory, "config.json", saved)
 	})
 	if errors.Is(err, os.ErrExist) {
-		return errors.New("another login is saving; retry, or remove config.lock if that process has stopped")
+		return fmt.Errorf("another login is saving configuration; retry or remove config.lock if that process has stopped: %w", err)
 	}
 	return err
 }

@@ -25,10 +25,10 @@ func ReadCapabilityPrefs(home string) (CapabilityPrefs, error) {
 		return prefs, err
 	}
 	if len(data) > 1<<20 {
-		return prefs, errors.New("capabilities.json exceeds 1 MiB")
+		return prefs, errors.New("capabilities.json is larger than 1 MiB. Reduce its size and try again.")
 	}
 	if err = json.Unmarshal(data, &prefs); err != nil {
-		return CapabilityPrefs{}, errors.New("invalid capabilities.json")
+		return CapabilityPrefs{}, fmt.Errorf("invalid capabilities.json: %w", err)
 	}
 	return prefs, nil
 }
@@ -49,7 +49,7 @@ func (p CapabilityPrefs) Enabled(session, kind, name string) bool {
 // Session changes affect only one session; global changes become the default.
 func SetCapability(home, session, kind, name string, global, enabled bool) error {
 	if session == "" || name == "" || (kind != "skills" && kind != "instructions" && kind != "mcp") {
-		return errors.New("invalid capability selection")
+		return errors.New("Choose a session, capability type, and name.")
 	}
 	return lockedUpdate(home, "capabilities.lock", 50, func() error {
 		p, err := ReadCapabilityPrefs(home)
@@ -77,7 +77,7 @@ func SetCapability(home, session, kind, name string, global, enabled bool) error
 			p.Sessions[session][kind][name] = enabled
 		}
 		if err = writeJSONAtomic(home, "capabilities.json", p); err != nil {
-			return fmt.Errorf("save capability: %w", err)
+			return fmt.Errorf("Could not save the capability setting: %w", err)
 		}
 		return nil
 	})

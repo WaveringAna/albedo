@@ -226,10 +226,10 @@ func (t *ReconnectingTransport) RoundTrip(req *http.Request) (*http.Response, er
 	}
 
 	if t.Provider != nil && req.URL != nil && req.URL.Path != "/shutdown" && isStaleDaemon(err, status) {
-		if res != nil {
-			_ = res.Body.Close()
-		}
 		if refreshErr := t.Provider.Refresh(req.Context()); refreshErr == nil {
+			if res != nil {
+				_ = res.Body.Close()
+			}
 			newReq := req.Clone(req.Context())
 			newBase := t.Provider.BaseURL()
 			if parsed, parseErr := url.Parse(newBase); parseErr == nil && newReq.URL != nil {
@@ -687,10 +687,8 @@ func staleLock(lockPath string) bool {
 }
 
 func startupExitError(waitErr error, logPath string, logStart int64, projectRoot string) error {
-	msg := "daemon exited during startup"
-	if waitErr != nil {
-		msg = fmt.Sprintf("%s (%v)", msg, waitErr)
-	}
+	msg := "Albedo stopped before it finished starting"
+
 	if f, err := os.Open(logPath); err == nil {
 		defer f.Close()
 		if _, err := f.Seek(logStart, io.SeekStart); err == nil {
@@ -701,7 +699,10 @@ func startupExitError(waitErr error, logPath string, logStart int64, projectRoot
 		}
 	}
 	if projectRoot != "" {
-		msg += fmt.Sprintf("\n(project root: %s; set ALBEDO_ROOT or install with -ldflags \"-X main.buildRoot=...\")", projectRoot)
+		msg += fmt.Sprintf("\nSource checkout: %s. If this is not your Albedo checkout, set ALBEDO_ROOT to its full path.", projectRoot)
+	}
+	if waitErr != nil {
+		return fmt.Errorf("%s: %w", msg, waitErr)
 	}
 	return errors.New(msg)
 }
@@ -734,7 +735,7 @@ func CheckCapability(ctx context.Context, conn *Connection, capability, feature 
 // UpgradeNeeded is the error for a feature the running daemon predates;
 // feature finishes the sentence, as in "for /tree" or "to switch providers".
 func UpgradeNeeded(feature string) error {
-	return errors.New("daemon upgrade needed " + feature + "; when ready, run albedo daemon --stop, then albedo (this clears python variables)")
+	return &UpgradeRequiredError{Feature: feature}
 }
 
 func RequestMethod[T any](ctx context.Context, conn *Connection, method, path string, body any) (T, error) {
@@ -788,18 +789,14 @@ func RequestMethod[T any](ctx context.Context, conn *Connection, method, path st
 
 	respData, err := readBounded(res.Body, 50*1024*1024)
 	if err != nil {
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			return zero, &APIError{StatusCode: res.StatusCode, Cause: err}
+		}
 		return zero, err
 	}
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		var errResp struct {
-			Error string `json:"error"`
-		}
-		_ = json.Unmarshal(respData, &errResp)
-		if errResp.Error != "" {
-			return zero, errors.New(errResp.Error)
-		}
-		return zero, fmt.Errorf("HTTP %d", res.StatusCode)
+		return zero, decodeAPIError(res.StatusCode, respData)
 	}
 
 	var result T

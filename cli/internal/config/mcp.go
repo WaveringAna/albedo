@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -32,15 +33,15 @@ func ReadMCPServers(home string) (map[string]MCPServer, error) {
 		return nil, err
 	}
 	if len(data) > 1<<20 {
-		return nil, errors.New("extensions.json exceeds 1 MiB")
+		return nil, errors.New("extensions.json is larger than 1 MiB. Reduce its size and try again.")
 	}
 	var root struct {
 		MCP struct {
 			Servers map[string]MCPServer `json:"servers"`
 		} `json:"mcp"`
 	}
-	if json.Unmarshal(data, &root) != nil {
-		return nil, errors.New("invalid extensions.json")
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("invalid extensions.json: %w", err)
 	}
 	if root.MCP.Servers == nil {
 		return map[string]MCPServer{}, nil
@@ -52,7 +53,7 @@ func ReadMCPServers(home string) (map[string]MCPServer, error) {
 // configuration contains no plaintext secrets; the daemon keeps those in creds.json.
 func PutMCPServer(home, name string, server *MCPServer) error {
 	if name == "" {
-		return errors.New("missing MCP server name")
+		return errors.New("Enter an MCP server name.")
 	}
 	return lockedUpdate(home, "extensions.lock", 50, func() error {
 		path := filepath.Join(home, "extensions.json")
@@ -61,16 +62,22 @@ func PutMCPServer(home, name string, server *MCPServer) error {
 			return err
 		}
 		root := map[string]json.RawMessage{}
-		if len(data) > 0 && json.Unmarshal(data, &root) != nil {
-			return errors.New("invalid extensions.json")
+		if len(data) > 0 {
+			if err := json.Unmarshal(data, &root); err != nil {
+				return fmt.Errorf("invalid extensions.json: %w", err)
+			}
 		}
 		mcp := map[string]json.RawMessage{}
-		if len(root["mcp"]) > 0 && json.Unmarshal(root["mcp"], &mcp) != nil {
-			return errors.New("invalid MCP settings")
+		if len(root["mcp"]) > 0 {
+			if err := json.Unmarshal(root["mcp"], &mcp); err != nil {
+				return fmt.Errorf("invalid MCP settings in extensions.json: %w", err)
+			}
 		}
 		servers := map[string]json.RawMessage{}
-		if len(mcp["servers"]) > 0 && json.Unmarshal(mcp["servers"], &servers) != nil {
-			return errors.New("invalid MCP servers")
+		if len(mcp["servers"]) > 0 {
+			if err := json.Unmarshal(mcp["servers"], &servers); err != nil {
+				return fmt.Errorf("invalid MCP servers in extensions.json: %w", err)
+			}
 		}
 		if server == nil {
 			delete(servers, name)
@@ -81,8 +88,11 @@ func PutMCPServer(home, name string, server *MCPServer) error {
 			}
 			if len(servers[name]) > 0 {
 				old, patch := map[string]json.RawMessage{}, map[string]json.RawMessage{}
-				if json.Unmarshal(servers[name], &old) != nil || json.Unmarshal(next, &patch) != nil {
-					return errors.New("invalid MCP server configuration")
+				if err := json.Unmarshal(servers[name], &old); err != nil {
+					return fmt.Errorf("invalid MCP server %q in extensions.json: %w", name, err)
+				}
+				if err := json.Unmarshal(next, &patch); err != nil {
+					return fmt.Errorf("decode MCP server update: %w", err)
 				}
 				for key, value := range patch {
 					old[key] = value

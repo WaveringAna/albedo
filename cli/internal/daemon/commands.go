@@ -76,7 +76,7 @@ func isValidCommand(cmd SessionCommand) bool {
 func ParseCommandCatalog(data []byte) ([]SessionCommand, error) {
 	var rawList []json.RawMessage
 	if err := json.Unmarshal(data, &rawList); err != nil {
-		return nil, errors.New("daemon returned invalid command catalog")
+		return nil, fmt.Errorf("decode command catalog: %w", err)
 	}
 
 	commands := make([]SessionCommand, 0, len(rawList))
@@ -90,7 +90,7 @@ func ParseCommandCatalog(data []byte) ([]SessionCommand, error) {
 	}
 
 	if len(rawList) > 0 && len(commands) == 0 {
-		return nil, errors.New("daemon returned invalid command metadata")
+		return nil, errors.New("Albedo returned command details that this client could not read.")
 	}
 
 	return commands, nil

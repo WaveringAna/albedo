@@ -754,8 +754,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Err != nil {
-			if strings.Contains(msg.Err.Error(), "daemon upgrade") {
-				m.AddError("Error: " + msg.Err.Error())
+			var upgradeErr *daemon.UpgradeRequiredError
+			if errors.As(msg.Err, &upgradeErr) {
+				m.AddError("Could not load commands: " + msg.Err.Error())
 			}
 			return m, nil
 		}

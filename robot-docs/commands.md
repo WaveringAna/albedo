@@ -8,6 +8,8 @@ every session command is one definition with three faces: the CLI menu, user inv
 
 `POST /sessions/:id/commands` runs one command. the body is `{name, arguments}` with raw invocation text (`{"name": "/model", "arguments": "gpt-5 anthropic"}`) or `{name, args}` with declared names (`{"name": "/model", "args": {"model": "gpt-5"}}`); `clientId` labels a submitted turn. the answer is `{"result": ...}` with the command's JSON value or `{"submitted": true}` when a user invocation submitted its turn.
 
+The Go client returns `daemon.APIError` for HTTP failures, retaining the status, daemon error code, and message. Use `errors.As` to inspect it. Workspace failures also unwrap to `daemon.WorkspaceMissingError` so the chat can offer a replacement folder. Capability checks return `daemon.UpgradeRequiredError`; the TUI recognizes that type when displaying catalog upgrade failures. Error wording does not control this routing.
+
 ## contributing commands
 
 `CommandPlugin` in an extension declares static commands; a `ManagedPlugin` contributes dynamic ones through `Managed.commands` (this is how skills registers its slash commands). the type lives in [`command.gleam`](../src/albedo/harness/command.gleam):
