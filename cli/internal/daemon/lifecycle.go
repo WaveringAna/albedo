@@ -1,8 +1,6 @@
 package daemon
 
 import (
-	"albedo/cli/internal/config"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -10,9 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,7 +18,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -45,11 +40,15 @@ type ConnectionSnapshot struct {
 }
 
 type Connection struct {
-	snapshot  atomic.Pointer[ConnectionSnapshot]
-	refreshMu sync.Mutex
-	homeDir   string
+	snapshot   atomic.Pointer[ConnectionSnapshot]
+	refreshMu  sync.Mutex
+	homeDir    string
+	httpOnce   sync.Once
+	httpClient *http.Client
 }
 
+// NewConnection binds a daemon snapshot to its discovery directory. An empty
+// directory permits HTTP requests but disables automatic rediscovery.
 func NewConnection(snap ConnectionSnapshot, homeDir string) *Connection {
 	c := &Connection{homeDir: homeDir}
 	c.snapshot.Store(&snap)
@@ -132,7 +131,7 @@ func (c *Connection) Refresh(ctx context.Context) error {
 
 	homeDir := c.HomeDir()
 	if homeDir == "" {
-		homeDir = config.HomeDir()
+		return errors.New("Cannot reconnect without a daemon home directory.")
 	}
 
 	const attempts = 20
@@ -167,8 +166,11 @@ func (c *Connection) Refresh(ctx context.Context) error {
 	return fmt.Errorf("Could not reconnect to Albedo. Check whether it is running with ALBEDO_HOME=%s.", homeDir)
 }
 
+// HTTPClient returns the reusable HTTP client owned by this Connection.
+// Address and token updates retain the same client and pool.
 func (c *Connection) HTTPClient() *http.Client {
-	return NewReconnectingClient(c)
+	c.httpOnce.Do(func() { c.httpClient = NewReconnectingClient(c) })
+	return c.httpClient
 }
 
 func (c *Connection) MarshalJSON() ([]byte, error) {
@@ -185,125 +187,11 @@ func (c *Connection) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type EndpointProvider interface {
-	BaseURL() string
-	AuthToken() string
-	Refresh(ctx context.Context) error
-}
-
-type StaticEndpoint struct {
-	URL   string
-	Token string
-}
-
-func (s StaticEndpoint) BaseURL() string {
-	return strings.TrimRight(s.URL, "/")
-}
-
-func (s StaticEndpoint) AuthToken() string {
-	return s.Token
-}
-
-func (s StaticEndpoint) Refresh(ctx context.Context) error {
-	return errors.New("Cannot reconnect automatically to a fixed server address.")
-}
-
-type ReconnectingTransport struct {
-	Provider EndpointProvider
-	Base     http.RoundTripper
-}
-
-func (t *ReconnectingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	base := t.Base
-	if base == nil {
-		base = http.DefaultTransport
-	}
-
-	res, err := base.RoundTrip(req)
-	status := 0
-	if res != nil {
-		status = res.StatusCode
-	}
-
-	if t.Provider != nil && req.URL != nil && req.URL.Path != "/shutdown" && !strings.HasSuffix(req.URL.Path, "/open") && isStaleDaemon(err, status) {
-		if refreshErr := t.Provider.Refresh(req.Context()); refreshErr == nil {
-			if res != nil {
-				_ = res.Body.Close()
-			}
-			newReq := req.Clone(req.Context())
-			newBase := t.Provider.BaseURL()
-			if parsed, parseErr := url.Parse(newBase); parseErr == nil && newReq.URL != nil {
-				newReq.URL.Scheme = parsed.Scheme
-				newReq.URL.Host = parsed.Host
-				newReq.Host = parsed.Host
-			}
-			if token := t.Provider.AuthToken(); token != "" {
-				newReq.Header.Set("Authorization", "Bearer "+token)
-			}
-			if req.GetBody != nil {
-				body, bodyErr := req.GetBody()
-				if bodyErr != nil {
-					return nil, bodyErr
-				}
-				newReq.Body = body
-			}
-			return base.RoundTrip(newReq)
-		}
-	}
-	return res, err
-}
-
-func NewReconnectingClient(provider EndpointProvider) *http.Client {
-	return &http.Client{
-		Transport: &ReconnectingTransport{
-			Provider: provider,
-			Base: &http.Transport{
-				Proxy: http.ProxyFromEnvironment,
-			},
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-}
-
 func ctxDone(ctx context.Context) <-chan struct{} {
 	if ctx == nil {
 		return nil
 	}
 	return ctx.Done()
-}
-
-func isConnectionError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-	if errors.Is(err, io.EOF) ||
-		errors.Is(err, syscall.ECONNREFUSED) ||
-		errors.Is(err, syscall.ECONNRESET) ||
-		errors.Is(err, syscall.EPIPE) ||
-		errors.Is(err, net.ErrClosed) {
-		return true
-	}
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		return true
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "EOF")
-}
-
-func isStaleDaemon(err error, statusCode int) bool {
-	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
-		return true
-	}
-	return isConnectionError(err)
 }
 
 // Stale is a live daemon from a build other than the one this client bundles.
@@ -397,6 +285,7 @@ func Existing(homeDir string) (*Connection, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+snap.Token)
 
+	// Refresh calls Existing; a reconnecting health probe would recurse into Refresh.
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -707,14 +596,6 @@ func startupExitError(waitErr error, logPath string, logStart int64, projectRoot
 	return errors.New(msg)
 }
 
-func Request[T any](ctx context.Context, conn *Connection, path string, body any) (T, error) {
-	method := http.MethodGet
-	if body != nil {
-		method = http.MethodPost
-	}
-	return RequestMethod[T](ctx, conn, method, path, body)
-}
-
 // Capabilities lists what the daemon at conn says it supports.
 func Capabilities(ctx context.Context, conn *Connection) ([]string, error) {
 	health, err := Request[struct {
@@ -736,74 +617,4 @@ func CheckCapability(ctx context.Context, conn *Connection, capability, feature 
 // feature finishes the sentence, as in "for /tree" or "to switch providers".
 func UpgradeNeeded(feature string) error {
 	return &UpgradeRequiredError{Feature: feature}
-}
-
-func RequestMethod[T any](ctx context.Context, conn *Connection, method, path string, body any) (T, error) {
-	var zero T
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-
-	var bodyReader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			return zero, err
-		}
-		bodyReader = bytes.NewReader(encoded)
-	}
-
-	var client *http.Client
-	var baseURL, token string
-	if conn != nil {
-		client = conn.HTTPClient()
-		baseURL = conn.BaseURL()
-		token = conn.AuthToken()
-	} else {
-		client = &http.Client{
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		}
-		baseURL = "http://127.0.0.1:0"
-	}
-
-	reqURL := fmt.Sprintf("%s%s", baseURL, path)
-	req, err := http.NewRequestWithContext(reqCtx, method, reqURL, bodyReader)
-	if err != nil {
-		return zero, err
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	res, err := client.Do(req)
-	if err != nil {
-		return zero, err
-	}
-	defer res.Body.Close()
-
-	respData, err := readBounded(res.Body, 50*1024*1024)
-	if err != nil {
-		if res.StatusCode < 200 || res.StatusCode >= 300 {
-			return zero, &APIError{StatusCode: res.StatusCode, Cause: err}
-		}
-		return zero, err
-	}
-
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return zero, decodeAPIError(res.StatusCode, respData)
-	}
-
-	var result T
-	if len(respData) > 0 {
-		if err := json.Unmarshal(respData, &result); err != nil {
-			return zero, err
-		}
-	}
-	return result, nil
 }

@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/url"
 )
@@ -52,44 +51,36 @@ func accountPath(provider, id string) string {
 }
 
 func SignInList(ctx context.Context, conn *Connection) (SignIns, error) {
-	return authRequest[SignIns](ctx, conn, http.MethodGet, "/auth", nil)
+	return RequestMethod[SignIns](ctx, conn, http.MethodGet, "/auth", nil)
 }
 
 // StartSignIn begins a sign-in and returns the url the browser should open.
 func StartSignIn(ctx context.Context, conn *Connection, provider string) (StartedSignIn, error) {
-	return authRequest[StartedSignIn](ctx, conn, http.MethodPost, "/auth/"+url.PathEscape(provider), nil)
+	return RequestMethod[StartedSignIn](ctx, conn, http.MethodPost, "/auth/"+url.PathEscape(provider), nil)
 }
 
 func PollSignIn(ctx context.Context, conn *Connection, id string) (SignInStatus, error) {
-	return authRequest[SignInStatus](ctx, conn, http.MethodGet, "/auth/logins/"+url.PathEscape(id), nil)
+	return RequestMethod[SignInStatus](ctx, conn, http.MethodGet, "/auth/logins/"+url.PathEscape(id), nil)
 }
 
 // SignInInput delivers a pasted callback url, code#state, query string, or
 // bare code; the daemon parses and races it against the browser callback.
 func SignInInput(ctx context.Context, conn *Connection, id, input string) error {
-	_, err := authRequest[acknowledged](ctx, conn, http.MethodPost, "/auth/logins/"+url.PathEscape(id), map[string]string{"input": input})
+	_, err := RequestMethod[acknowledged](ctx, conn, http.MethodPost, "/auth/logins/"+url.PathEscape(id), map[string]string{"input": input})
 	return err
 }
 
 func CancelSignIn(ctx context.Context, conn *Connection, id string) error {
-	_, err := authRequest[acknowledged](ctx, conn, http.MethodDelete, "/auth/logins/"+url.PathEscape(id), nil)
+	_, err := RequestMethod[acknowledged](ctx, conn, http.MethodDelete, "/auth/logins/"+url.PathEscape(id), nil)
 	return err
 }
 
 func SelectAccount(ctx context.Context, conn *Connection, provider, id string) error {
-	_, err := authRequest[acknowledged](ctx, conn, http.MethodPost, accountPath(provider, id), nil)
+	_, err := RequestMethod[acknowledged](ctx, conn, http.MethodPost, accountPath(provider, id), nil)
 	return err
 }
 
 func RemoveAccount(ctx context.Context, conn *Connection, provider, id string) error {
-	_, err := authRequest[acknowledged](ctx, conn, http.MethodDelete, accountPath(provider, id), nil)
+	_, err := RequestMethod[acknowledged](ctx, conn, http.MethodDelete, accountPath(provider, id), nil)
 	return err
-}
-
-func authRequest[T any](ctx context.Context, conn *Connection, method, path string, body any) (T, error) {
-	var zero T
-	if conn == nil {
-		return zero, errors.New("Not connected to Albedo.")
-	}
-	return RequestMethod[T](ctx, conn, method, path, body)
 }

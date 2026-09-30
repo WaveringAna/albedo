@@ -31,10 +31,11 @@ func TestHTTPFailuresRetainIdentity(t *testing.T) {
 				_, _ = io.WriteString(w, tc.body)
 			}))
 			defer server.Close()
-			conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, t.TempDir())
+			// This fixed peer has no discovery directory; authentication errors stay local.
+			conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
 			_, requestErr := RequestMethod[any](context.Background(), conn, http.MethodGet, "/failure", nil)
-			client := NewChatClient(ChatClientOptions{})
-			chatErr := client.parseResponseError(&http.Response{StatusCode: tc.status, Body: io.NopCloser(strings.NewReader(tc.body))})
+			client := NewChatClient(ChatClientOptions{Conn: conn, AgentID: "session"})
+			_, chatErr := client.GetStatus(context.Background())
 			for _, err := range []error{requestErr, chatErr} {
 				err = fmt.Errorf("request context: %w", err)
 				var apiErr *APIError

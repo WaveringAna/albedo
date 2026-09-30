@@ -28,7 +28,7 @@ func GetSettings(ctx context.Context, conn *Connection) (Settings, error) {
 	if err := CheckCapability(ctx, conn, "settings_api", "for persisted settings; upgrade the CLI and daemon together"); err != nil {
 		return Settings{}, err
 	}
-	return authRequest[Settings](ctx, conn, http.MethodGet, "/settings", nil)
+	return RequestMethod[Settings](ctx, conn, http.MethodGet, "/settings", nil)
 }
 
 func ProviderProfiles(ctx context.Context, conn *Connection) (config.Profiles, error) {
@@ -37,17 +37,17 @@ func ProviderProfiles(ctx context.Context, conn *Connection) (config.Profiles, e
 }
 
 func SaveProvider(ctx context.Context, conn *Connection, name string, profile config.Settings) error {
-	_, err := authRequest[acknowledged](ctx, conn, http.MethodPut, "/settings/providers/"+url.PathEscape(name), profile)
+	_, err := RequestMethod[acknowledged](ctx, conn, http.MethodPut, "/settings/providers/"+url.PathEscape(name), profile)
 	return err
 }
 
 func DeleteProvider(ctx context.Context, conn *Connection, name string) error {
-	_, err := authRequest[acknowledged](ctx, conn, http.MethodDelete, "/settings/providers/"+url.PathEscape(name), nil)
+	_, err := RequestMethod[acknowledged](ctx, conn, http.MethodDelete, "/settings/providers/"+url.PathEscape(name), nil)
 	return err
 }
 
 func SetCapability(ctx context.Context, conn *Connection, session, kind, name, scope string, enabled *bool) error {
-	_, err := authRequest[acknowledged](ctx, conn, http.MethodPost, "/sessions/"+url.PathEscape(session)+"/settings/capabilities", struct {
+	_, err := RequestMethod[acknowledged](ctx, conn, http.MethodPost, "/sessions/"+url.PathEscape(session)+"/settings/capabilities", struct {
 		Kind    string `json:"kind"`
 		Name    string `json:"name"`
 		Scope   string `json:"scope"`
@@ -66,20 +66,20 @@ func SaveMCP(ctx context.Context, conn *Connection, session, name string, server
 	if server == nil {
 		method, body = http.MethodDelete, nil
 	}
-	_, err := authRequest[acknowledged](ctx, conn, method, path, body)
+	_, err := RequestMethod[acknowledged](ctx, conn, method, path, body)
 	return err
 }
 
 func PatchUI(ctx context.Context, conn *Connection, patch map[string]bool) (UIPreferences, error) {
-	return authRequest[UIPreferences](ctx, conn, http.MethodPatch, "/settings/ui", patch)
+	return RequestMethod[UIPreferences](ctx, conn, http.MethodPatch, "/settings/ui", patch)
 }
 
 func PatchSessionUI(ctx context.Context, conn *Connection, session string, patch map[string]bool) (UIPreferences, error) {
-	return authRequest[UIPreferences](ctx, conn, http.MethodPatch, "/settings/ui/sessions/"+url.PathEscape(session), patch)
+	return RequestMethod[UIPreferences](ctx, conn, http.MethodPatch, "/settings/ui/sessions/"+url.PathEscape(session), patch)
 }
 
 // RecordOpen is never replayed after transport loss. The server may have already
 // incremented the count even when its response did not reach us.
 func RecordOpen(ctx context.Context, conn *Connection, session string) (UIPreferences, error) {
-	return authRequest[UIPreferences](ctx, conn, http.MethodPost, "/settings/ui/sessions/"+url.PathEscape(session)+"/open", nil)
+	return RequestMethod[UIPreferences](ctx, conn, http.MethodPost, "/settings/ui/sessions/"+url.PathEscape(session)+"/open", nil)
 }

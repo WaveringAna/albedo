@@ -2,14 +2,12 @@ package daemon
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -79,17 +77,6 @@ type ChatClient struct {
 	Tail int
 }
 
-func readBounded(r io.Reader, limit int64) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(r, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("Albedo returned more data than this client can read (limit: %d bytes).", limit)
-	}
-	return data, nil
-}
-
 func NewChatClient(opts ChatClientOptions) *ChatClient {
 	var endpoint EndpointProvider
 	if opts.Conn != nil {
@@ -111,7 +98,11 @@ func NewChatClient(opts ChatClientOptions) *ChatClient {
 
 	var httpClient *http.Client
 	if opts.HTTPClient == nil {
-		httpClient = NewReconnectingClient(endpoint)
+		if opts.Conn != nil {
+			httpClient = opts.Conn.HTTPClient()
+		} else {
+			httpClient = NewReconnectingClient(endpoint)
+		}
 	} else {
 		base := opts.HTTPClient.Transport
 		if base == nil {
@@ -160,15 +151,6 @@ func (c *ChatClient) agentURL(path string) string {
 	return fmt.Sprintf("%s/sessions/%s%s", base, url.PathEscape(c.agentID), path)
 }
 
-func (c *ChatClient) parseResponseError(res *http.Response) error {
-	body, err := readBounded(res.Body, 64*1024)
-	if err != nil {
-		return &APIError{StatusCode: res.StatusCode, Cause: err}
-	}
-
-	return decodeAPIError(res.StatusCode, body)
-}
-
 func (c *ChatClient) submitPayload(ctx context.Context, payload map[string]any) (*SendResult, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -177,28 +159,19 @@ func (c *ChatClient) submitPayload(ctx context.Context, payload map[string]any) 
 		payload["clientId"] = c.clientID
 	}
 
-	bodyData, err := json.Marshal(payload)
+	req, err := newJSONRequest(reqCtx, http.MethodPost, c.agentURL("/events"), payload)
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.agentURL("/events"), bytes.NewReader(bodyData))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if token := c.Token(); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	res, err := c.httpClient.Do(req)
+	res, err := doAuthenticatedRequest(c.httpClient, c.Token(), req)
 	if err != nil {
 		return nil, err
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, c.parseResponseError(res)
+		return nil, readHTTPError(res, 64*1024)
 	}
 
 	body, err := readBounded(res.Body, 64*1024)
@@ -238,23 +211,19 @@ func (c *ChatClient) Interrupt(ctx context.Context) (bool, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.agentURL("/interrupt"), bytes.NewReader([]byte("{}")))
+	req, err := newJSONRequest(reqCtx, http.MethodPost, c.agentURL("/interrupt"), map[string]any{})
 	if err != nil {
 		return false, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if token := c.Token(); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
 
-	res, err := c.httpClient.Do(req)
+	res, err := doAuthenticatedRequest(c.httpClient, c.Token(), req)
 	if err != nil {
 		return false, err
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return false, c.parseResponseError(res)
+		return false, readHTTPError(res, 64*1024)
 	}
 
 	body, err := readBounded(res.Body, 64*1024)
@@ -288,20 +257,17 @@ func (c *ChatClient) History(ctx context.Context, before int64, rows int) (*Hist
 	if before > 0 {
 		route += fmt.Sprintf("&before=%d", before)
 	}
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.agentURL(route), nil)
+	req, err := newJSONRequest(reqCtx, http.MethodGet, c.agentURL(route), nil)
 	if err != nil {
 		return nil, err
 	}
-	if token := c.Token(); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	res, err := c.httpClient.Do(req)
+	res, err := doAuthenticatedRequest(c.httpClient, c.Token(), req)
 	if err != nil {
 		return nil, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return nil, c.parseResponseError(res)
+		return nil, readHTTPError(res, 64*1024)
 	}
 	body, err := readBounded(res.Body, 32*1024*1024)
 	if err != nil {
@@ -328,20 +294,17 @@ func (c *ChatClient) History(ctx context.Context, before int64, rows int) (*Hist
 func (c *ChatClient) ContextWindow(ctx context.Context) (*int, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.agentURL("/context"), nil)
+	req, err := newJSONRequest(reqCtx, http.MethodGet, c.agentURL("/context"), nil)
 	if err != nil {
 		return nil, err
 	}
-	if token := c.Token(); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	res, err := c.httpClient.Do(req)
+	res, err := doAuthenticatedRequest(c.httpClient, c.Token(), req)
 	if err != nil {
 		return nil, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return nil, c.parseResponseError(res)
+		return nil, readHTTPError(res, 64*1024)
 	}
 	body, err := readBounded(res.Body, 1024*1024)
 	if err != nil {
@@ -363,22 +326,19 @@ func (c *ChatClient) GetStatus(ctx context.Context) (*AgentStatus, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.agentURL("/status"), nil)
+	req, err := newJSONRequest(reqCtx, http.MethodGet, c.agentURL("/status"), nil)
 	if err != nil {
 		return nil, err
 	}
-	if token := c.Token(); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
 
-	res, err := c.httpClient.Do(req)
+	res, err := doAuthenticatedRequest(c.httpClient, c.Token(), req)
 	if err != nil {
 		return nil, err
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return nil, c.parseResponseError(res)
+		return nil, readHTTPError(res, 64*1024)
 	}
 
 	body, err := readBounded(res.Body, 64*1024)
@@ -627,6 +587,7 @@ func parseStreamEvent(raw map[string]any) *StreamEvent {
 	}
 }
 
+// Stream uses ctx for cancellation; onEvent must also honor ctx if it blocks.
 func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(StreamEvent) error) error {
 	c.mu.Lock()
 	afterSeq := c.afterSeq
@@ -637,23 +598,20 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 		route += fmt.Sprintf("&tail=%d", c.Tail)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.agentURL(route), nil)
+	req, err := newJSONRequest(ctx, http.MethodGet, c.agentURL(route), nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	if token := c.Token(); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
 
-	res, err := c.httpClient.Do(req)
+	res, err := doAuthenticatedRequest(c.httpClient, c.Token(), req)
 	if err != nil {
 		return err
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return c.parseResponseError(res)
+		return readHTTPError(res, 64*1024)
 	}
 
 	if onOpen != nil {
@@ -667,6 +625,8 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 	defer func() {
 		_ = reporter.Report(nil, "running")
 		if ctx.Err() != nil {
+			// Cancellation starts the next subscription from a fresh snapshot.
+			// Transient stream failures retain the cursor and partial tool previews.
 			c.mu.Lock()
 			c.afterSeq = -1
 			c.argumentsByCall = make(map[string]string)

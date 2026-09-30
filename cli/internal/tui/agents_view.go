@@ -1,10 +1,8 @@
 package tui
 
 import (
-	"bufio"
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -219,7 +217,8 @@ func (m *AgentsViewModel) Init() tea.Cmd {
 	return tea.Batch(m.snapshotCmd(m.Gen), m.startStream(m.Gen), m.frameCmd(m.Gen), textinput.Blink)
 }
 
-// Close stops the stream; the view is gone once the app leaves it.
+// Close stops the stream and invalidates batches, completions, and timers
+// already queued for this view.
 func (m *AgentsViewModel) Close() {
 	if m.cancel != nil {
 		m.cancel()
@@ -242,8 +241,6 @@ func (m AgentsViewModel) snapshotCmd(gen int) tea.Cmd {
 	}
 }
 
-// startStream reads the daemon's agents stream into a channel the view drains
-// one batch at a time.
 func (m *AgentsViewModel) startStream(gen int) tea.Cmd {
 	if m.Conn == nil {
 		return nil
@@ -258,39 +255,18 @@ func (m *AgentsViewModel) startStream(gen int) tea.Cmd {
 	conn := m.Conn
 	go func() {
 		defer close(events)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, conn.BaseURL()+"/agents/stream", nil)
-		if err != nil {
-			return
-		}
-		req.Header.Set("Accept", "text/event-stream")
-		req.Header.Set("Authorization", "Bearer "+conn.AuthToken())
-		res, err := conn.HTTPClient().Do(req)
-		if err != nil {
-			return
-		}
-		defer res.Body.Close()
-		if res.StatusCode != http.StatusOK {
-			return
-		}
-		scanner := bufio.NewScanner(res.Body)
-		scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data:") {
-				continue
-			}
-			var batch struct {
-				Events []map[string]any `json:"events"`
-			}
-			if json.Unmarshal([]byte(strings.TrimSpace(line[5:])), &batch) != nil || len(batch.Events) == 0 {
-				continue
-			}
+		// EOF and failures both reconnect through queue closure, so the view
+		// deliberately discards the transport error here.
+		_ = daemon.StreamAgents(ctx, conn, func(batch []map[string]any) error {
+			// Leaving the view stops its consumer. Cancellation must release a
+			// producer blocked on a full queue so it can close the HTTP body.
 			select {
-			case events <- batch.Events:
+			case events <- batch:
+				return nil
 			case <-ctx.Done():
-				return
+				return ctx.Err()
 			}
-		}
+		})
 	}()
 	return waitAgents(events, gen)
 }
