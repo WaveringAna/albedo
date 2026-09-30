@@ -150,7 +150,7 @@ func (m SessionViewer) View() string {
 	if height >= 9 {
 		lines = append(lines, "")
 	}
-	tail := []string{m.footer(width, now)}
+	tail := strings.Split(m.footer(width, now), "\n")
 	if roomy {
 		tail = append([]string{""}, tail...)
 	}
@@ -198,7 +198,13 @@ func (m SessionViewer) titleRule(width int) string {
 
 func (m SessionViewer) footer(width int, now time.Time) string {
 	if m.ConfirmDelete != "" {
-		return " " + DefaultStyles.Error.Render("Permanently delete session and its data? y to confirm · any other key cancels")
+		message := "This permanently deletes the session, its child sessions, and their history. Delete? y confirms · any other key cancels"
+		wrapped := ansi.Wrap(message, max(1, width-1), "")
+		rows := strings.Split(wrapped, "\n")
+		for i, row := range rows {
+			rows[i] = " " + DefaultStyles.Error.Render(row)
+		}
+		return strings.Join(rows, "\n")
 	}
 	esc := pick(m.HasActive, "back", "quit")
 	left := " " + keyHints(hint{"↑↓", "move"}, hint{"tab", "switch"}, hint{"enter", "open"}, hint{"^r", "rename"}, hint{"^s", "pin"}, hint{"^a", "archive"}, hint{"^f", "folders"}, hint{"esc", esc})
@@ -265,11 +271,11 @@ func (m SessionViewer) column(items []PickerItem, width, height int, now time.Ti
 	}
 	switch {
 	case len(items) == 0 && m.ArchiveView && m.SearchInput.Value() == "":
-		all = append(all, DefaultStyles.Faint.Render("   archive is empty"))
+		all = append(all, DefaultStyles.Faint.Render("   No archived sessions yet"))
 	case len(items) == 0 && m.Loading:
 		all = append(all, DefaultStyles.Faint.Render("   loading sessions…"))
 	case len(items) == 0:
-		all = append(all, DefaultStyles.Faint.Render("   no matches"))
+		all = append(all, DefaultStyles.Faint.Render("   No matching sessions"))
 	}
 
 	return scrollWindow(all, selectedAt, width, height)
@@ -394,7 +400,7 @@ func (m SessionViewer) preview(width, height int, now time.Time) []string {
 	s, isSession := m.session(item.ID)
 	switch {
 	case !ok:
-		return paneBox([]string{"", DefaultStyles.Muted.Render("nothing matches"), DefaultStyles.Faint.Render("try fewer words")}, inner, width, height)
+		return paneBox([]string{"", DefaultStyles.Muted.Render("No matching sessions"), DefaultStyles.Faint.Render("Try fewer search terms")}, inner, width, height)
 	case !isSession:
 		return paneBox(m.actionPreview(item.ID, inner, height), inner, width, height)
 	}
@@ -467,7 +473,7 @@ func (m SessionViewer) transcript(s daemon.Session, width, height int) []string 
 	case c == nil || c.loading:
 		return note("loading conversation…")
 	case c.err:
-		return note("preview needs a newer daemon —", "run albedo daemon --stop, then reopen albedo.")
+		return note("Could not load this preview.", "Open the session to read its messages.")
 	case len(c.Items) == 0:
 		return note("no messages yet")
 	}

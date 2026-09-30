@@ -190,7 +190,7 @@ func (m CapabilityPageModel) checkIdle() error {
 		return err
 	}
 	if status.Running && !status.Idle {
-		return errors.New("session must be idle to change capabilities")
+		return errors.New("Wait for this session to finish its current work before changing capabilities.")
 	}
 	return nil
 }
@@ -322,7 +322,7 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 		}
 		m.Form = nil
 		m.ConfirmDelete = false
-		m.Notice = "saved · session reloaded"
+		m.Notice = "Saved. Session reloaded."
 		m.Loading, m.Generation = true, nextCapabilityGen()
 		return m, tea.Batch(m.loadCmd(m.Generation), func() tea.Msg { return CapabilityPageChangedMsg{} })
 	case tea.PasteMsg:
@@ -443,11 +443,27 @@ func (m CapabilityPageModel) View() string {
 		rows = append(rows, DefaultStyles.Faint.Render("loading "+heading+"…"))
 		return strings.Join(rows, "\n")
 	}
+	if m.ConfirmExtension || (m.ConfirmDelete && len(m.Items) > 0) {
+		question := "This will reload this session. Enable the extension?"
+		if m.ConfirmDelete {
+			question = "Its stored credentials will also be removed. Delete MCP server " + m.Items[m.Cursor].ID + "?"
+		}
+		rows = append(rows, "")
+		for _, line := range strings.Split(ansi.Wrap(question, width, " "), "\n") {
+			rows = append(rows, DefaultStyles.Warning.Render(line))
+		}
+		cancel := hint{"esc", "cancel"}
+		if m.ConfirmDelete {
+			cancel = hint{"any other key", "cancels"}
+		}
+		rows = append(rows, keyHints(hint{"enter", "confirm"}, cancel))
+		return m.fit(rows)
+	}
 	if !m.ExtensionEnabled {
-		rows = append(rows, DefaultStyles.Warning.Render("extension off")+DefaultStyles.Decor.Render(" · ")+keyHints(hint{"E", "enable (restarts Python worker)"}))
+		rows = append(rows, DefaultStyles.Warning.Render("Extension is off")+DefaultStyles.Decor.Render(" · ")+keyHints(hint{"E", "enable (reloads this session)"}))
 	}
 	if len(m.Items) == 0 {
-		rows = append(rows, DefaultStyles.Faint.Render("no "+strings.ToLower(heading)+" found"))
+		rows = append(rows, DefaultStyles.Faint.Render("No "+strings.ToLower(heading)+" found."))
 	}
 	list := make([]string, len(m.Items))
 	for i, item := range m.Items {
@@ -466,10 +482,6 @@ func (m CapabilityPageModel) View() string {
 		if m.Saving {
 			rows = append(rows, "connecting and reloading…")
 		}
-	case m.ConfirmExtension:
-		rows = append(rows, "", DefaultStyles.Warning.Render("enable extension and reload workers?")+" "+keyHints(hint{"enter", "confirm"}, hint{"esc", "cancel"}))
-	case m.ConfirmDelete && len(m.Items) > 0:
-		rows = append(rows, "", DefaultStyles.Warning.Render("delete MCP server "+m.Items[m.Cursor].ID+" and its stored credentials?")+" "+keyHints(hint{"enter", "confirm"}, hint{"any other key", "cancels"}))
 	case m.Saving:
 		rows = append(rows, "saving and reloading…")
 	default:
@@ -480,7 +492,7 @@ func (m CapabilityPageModel) View() string {
 				auth := pick(selected.Secrets.Any(), "credentials stored privately", "no credentials")
 				detail += " · " + auth
 				if selected.Server.Enabled != nil && !*selected.Server.Enabled {
-					detail += " · disabled in extensions.json · e enable"
+					detail += " · disabled in extensions.json · press e to enable"
 				}
 			}
 			rows = append(rows, "", DefaultStyles.Faint.Render(ansi.Truncate(detail, width, "…")))

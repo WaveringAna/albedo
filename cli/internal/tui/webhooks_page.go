@@ -110,7 +110,7 @@ func (m WebhooksPageModel) loadCmd(gen int) tea.Cmd {
 			if i := slices.IndexFunc(extensions, func(ext ExtensionItem) bool { return ext.Name == "webhooks" }); i >= 0 {
 				mounted = extensions[i].GlobalEnabled
 				if !extensions[i].Enabled {
-					return webhooksLoadedMsg{Gen: gen, Err: errors.New("the webhooks extension is off for this session · turn it on in /extensions")}
+					return webhooksLoadedMsg{Gen: gen, Err: errors.New("Webhooks are off for this session. Turn them on in /extensions.")}
 				}
 			}
 		}
@@ -272,7 +272,7 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 		if m.Reveal != nil {
 			switch key {
 			case "c":
-				m.Error, m.Notice = "", "secret copied"
+				m.Error, m.Notice = "", "Secret copied."
 				return m, CopyText(m.Reveal.Secret)
 			case "enter", "esc":
 				m.Reveal = nil
@@ -296,7 +296,7 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 			}
 			if len(steps) == 0 {
 				m.Form = nil
-				m.Error, m.Notice = "", "nothing changed"
+				m.Error, m.Notice = "", "No changes made."
 				return m, nil
 			}
 			return m.begin(notice, steps...)
@@ -308,7 +308,7 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 			if key != "enter" || hook == nil {
 				return m, nil
 			}
-			note := pick(action == "delete", "deleted "+hook.Name, "new secret for "+hook.Name)
+			note := pick(action == "delete", "Deleted "+hook.Name, "New secret for "+hook.Name)
 			return m.begin(note, [2]string{action, hook.ID})
 		}
 		if key == "esc" || key == "ctrl+c" {
@@ -338,9 +338,9 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 			}
 		case "space":
 			if hook != nil {
-				action, note := "enable", hook.Name+" on"
+				action, note := "enable", hook.Name+" enabled."
 				if hook.Enabled {
-					action, note = "disable", hook.Name+" off · deliveries now answer 404"
+					action, note = "disable", hook.Name+" disabled. New deliveries will receive a 404 response."
 				}
 				return m.begin(note, [2]string{action, hook.ID})
 			}
@@ -348,9 +348,9 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 			m.Error, m.Notice = "", ""
 			m.Form = newWebhookForm(nil, m.Sessions, m.SessionID)
 		case "a":
-			action, note := "agent_on", "this session's agent can now manage its own hooks"
+			action, note := "agent_on", "This session’s agent can now manage its own webhooks."
 			if m.AgentManagement {
-				action, note = "agent_off", "this session's agent can no longer manage its hooks"
+				action, note = "agent_off", "This session’s agent can no longer manage its webhooks."
 			}
 			return m.begin(note, [2]string{action, ""})
 		case "d", "k":
@@ -363,7 +363,7 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 			}
 		case "y":
 			if hook != nil {
-				m.Error, m.Notice = "", "url copied"
+				m.Error, m.Notice = "", "URL copied."
 				return m, CopyText(m.address(*hook))
 			}
 		}
@@ -387,8 +387,21 @@ func (m WebhooksPageModel) View() string {
 	if !m.Loaded {
 		return strings.Join(append(rows, "", keyHints(hint{"r", "retry"}, hint{"esc", "back"})), "\n")
 	}
+	// Give the confirmation the screen instead of truncating its consequence or target.
+	if m.Confirm != "" && m.selected() != nil {
+		question := "Its URL will stop working; accepted deliveries stay in the inbox. Delete " + m.selected().Name + "?"
+		if m.Confirm == "rotate" {
+			question = "The sender must use the new secret. Replace the secret for " + m.selected().Name + "?"
+		}
+		rows = append(rows, "")
+		for _, line := range strings.Split(ansi.Wrap(question, width, " "), "\n") {
+			rows = append(rows, DefaultStyles.Warning.Render(line))
+		}
+		rows = append(rows, keyHints(hint{"enter", "confirm"}, hint{"any other key", "cancels"}))
+		return m.fit(rows)
+	}
 	if !m.Mounted {
-		rows = append(rows, DefaultStyles.Warning.Render("not listening")+DefaultStyles.Faint.Render(" · enable webhooks globally in /extensions to accept deliveries"))
+		rows = append(rows, DefaultStyles.Warning.Render("Webhooks are not listening")+DefaultStyles.Faint.Render(" · enable webhooks globally in /extensions to accept deliveries"))
 	}
 	agent := DefaultStyles.Faint.Render("off") + DefaultStyles.Faint.Render(" · this session's agent can't touch webhooks")
 	if m.AgentManagement {
@@ -397,7 +410,7 @@ func (m WebhooksPageModel) View() string {
 	rows = append(rows, ansi.Truncate(DefaultStyles.Muted.Render("agent access ")+agent, width, "…"), "")
 
 	if len(m.Hooks) == 0 {
-		rows = append(rows, DefaultStyles.Faint.Render("no webhooks yet · each one is a signed URL that wakes a session"))
+		rows = append(rows, DefaultStyles.Faint.Render("No webhooks yet. Add one to wake a session with a signed request."))
 	}
 	nameWidth := 4
 	for _, hook := range m.Hooks {
@@ -431,7 +444,7 @@ func (m WebhooksPageModel) View() string {
 
 	switch {
 	case m.Reveal != nil:
-		rows = append(rows, "", ansi.Truncate(DefaultStyles.Bold.Render("signing secret for "+m.Reveal.Hook)+DefaultStyles.Faint.Render(" → "+sessionLabel(m.Sessions, m.Reveal.Session, m.SessionID)+" · shown once, copy it now"), width, "…"))
+		rows = append(rows, "", ansi.Truncate(DefaultStyles.Bold.Render("signing secret for "+m.Reveal.Hook)+DefaultStyles.Faint.Render(" → "+sessionLabel(m.Sessions, m.Reveal.Session, m.SessionID)+" · shown only once; copy it now"), width, "…"))
 		rows = append(rows, "  "+DefaultStyles.Prompt.Render(m.Reveal.Secret), "")
 		rows = append(rows, keyHints(hint{"c", "copy"}, hint{"enter", "done"}))
 	case m.Form != nil:
@@ -440,12 +453,6 @@ func (m WebhooksPageModel) View() string {
 		if m.Saving {
 			rows = append(rows, DefaultStyles.Faint.Render("saving…"))
 		}
-	case m.Confirm != "" && m.selected() != nil:
-		question := "delete " + m.selected().Name + "? its URL stops working; accepted deliveries stay in the inbox"
-		if m.Confirm == "rotate" {
-			question = "replace the secret for " + m.selected().Name + "? the sender must be updated"
-		}
-		rows = append(rows, "", DefaultStyles.Warning.Render(ansi.Truncate(question, width, "…")), keyHints(hint{"enter", "confirm"}, hint{"any other key", "cancels"}))
 	case m.Saving:
 		rows = append(rows, "", DefaultStyles.Faint.Render("saving…"))
 	default:
@@ -525,7 +532,7 @@ func newWebhookForm(editing *webhookEntry, sessions []daemon.Session, current st
 	f.Inputs[hookFieldName].Placeholder = "github-deploys"
 	f.Inputs[hookFieldHeader].SetValue(defaultSignatureHeader)
 	f.Inputs[hookFieldPrefix].SetValue(defaultSignaturePrefix)
-	f.Inputs[hookFieldSecret].Placeholder = "blank generates one"
+	f.Inputs[hookFieldSecret].Placeholder = "leave blank to generate one"
 	f.Focus = 1 // the session already defaults to this one
 	if editing != nil {
 		hook := *editing
@@ -533,7 +540,7 @@ func newWebhookForm(editing *webhookEntry, sessions []daemon.Session, current st
 		f.Inputs[hookFieldName].SetValue(hook.Name)
 		f.Inputs[hookFieldHeader].SetValue(hook.Header)
 		f.Inputs[hookFieldPrefix].SetValue(hook.Prefix)
-		f.Inputs[hookFieldSecret].Placeholder = "stored · blank keeps it"
+		f.Inputs[hookFieldSecret].Placeholder = "stored · leave blank to keep it"
 	}
 	f.focus(f.current())
 	return f
@@ -594,17 +601,20 @@ func (f *webhookForm) steps() ([][2]string, string, error) {
 	name, secret, header, prefix := f.value(hookFieldName), f.value(hookFieldSecret), f.value(hookFieldHeader), f.value(hookFieldPrefix)
 	switch {
 	case f.Editing == nil && f.Chosen == "":
-		return nil, "", errors.New("session: choose the session this hook wakes")
+		return nil, "", errors.New("Choose the session this webhook will wake.")
 	case f.Editing == nil && !hookName.MatchString(name):
-		return nil, "", errors.New("name: use 1–64 letters, digits, _ or -")
+		return nil, "", errors.New("Use 1–64 letters, digits, underscores, or hyphens for the webhook name.")
 	case secret != "" && (len(secret) < 16 || len(secret) > 4096):
-		return nil, "", errors.New("secret: use 16–4096 bytes, or leave it blank")
+		if f.Editing != nil {
+			return nil, "", errors.New("Use 16–4096 bytes for the secret, or leave it blank to keep the existing secret.")
+		}
+		return nil, "", errors.New("Use 16–4096 bytes for the secret, or leave it blank to generate one.")
 	case strings.ContainsAny(secret, " \t"):
-		return nil, "", errors.New("secret: spaces are not allowed")
+		return nil, "", errors.New("Remove spaces from the secret.")
 	case !hookHeader.MatchString(header):
-		return nil, "", errors.New("header: use 1–64 letters, digits or -")
+		return nil, "", errors.New("Use 1–64 letters, digits, or hyphens for the signature header.")
 	case len(prefix) > 32 || strings.ContainsAny(prefix, " \t"):
-		return nil, "", errors.New("prefix: at most 32 characters, no spaces")
+		return nil, "", errors.New("Use at most 32 characters without spaces for the signature prefix.")
 	}
 	if f.Editing == nil {
 		create := f.Chosen + " " + name + pick(secret != "", " "+secret, "")
@@ -668,7 +678,7 @@ func (f *webhookForm) view(width int) []string {
 func (f *webhookForm) pickerRows(indent string, width int) []string {
 	matches := f.matches()
 	if len(matches) == 0 {
-		return []string{indent + DefaultStyles.Faint.Render("no session matches")}
+		return []string{indent + DefaultStyles.Faint.Render("No sessions match. Try another search.")}
 	}
 	chosen := max(0, f.chosenIndex(matches))
 	start := max(0, min(chosen-sessionChoices/2, len(matches)-sessionChoices))

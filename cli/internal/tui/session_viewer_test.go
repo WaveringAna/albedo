@@ -101,7 +101,7 @@ func TestSessionViewerPreviewFetchesOnSettleAndRenders(t *testing.T) {
 	}
 	m.fetchPreview("two")
 	m, _ = m.Update(SessionPreviewMsg{ID: "two", Err: errors.New("unknown operation")})
-	if !strings.Contains(ansi.Strip(m.View()), "newer daemon") {
-		t.Fatal("missing daemon hint")
+	if preview := m.previews["two"]; preview == nil || preview.loading || !preview.err {
+		t.Fatal("failed preview did not leave loading state")
 	}
 }

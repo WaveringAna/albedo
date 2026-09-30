@@ -1353,7 +1353,20 @@ func (m AgentsViewModel) View() string {
 	right := DefaultStyles.Faint.Render(fmt.Sprintf("%d agents · %d running · ▴%s tok", len(m.nodes)-1, live, compactCount(tokens)))
 	out := []string{titleRule(m.Width, brand("albedo")+" "+DefaultStyles.Muted.Render("/agents"), right)}
 
-	bodyH := max(3, m.Height-4)
+	var confirmRows []string
+	if m.confirm != "" {
+		what := m.label(m.confirm, "")
+		if below := m.below(m.confirm); below == 1 {
+			what += " and the agent below it"
+		} else if below > 1 {
+			what += fmt.Sprintf(" and the %d agents below it", below)
+		}
+		for _, line := range strings.Split(ansi.Wrap("Their transcripts and work will also be deleted. Delete "+what+"?", max(1, m.Width), " "), "\n") {
+			confirmRows = append(confirmRows, DefaultStyles.Warning.Render(line))
+		}
+		confirmRows = append(confirmRows, keyHints(hint{"y", "delete"}, hint{"any key", "keep"}))
+	}
+	bodyH := max(1, m.Height-3-max(1, len(confirmRows)))
 	dagW := m.dagWidth()
 	// Scroll so the selected dot stays in view on a tall swarm.
 	offset := 0
@@ -1383,23 +1396,18 @@ func (m AgentsViewModel) View() string {
 	case m.rename.active():
 		status = DefaultStyles.Muted.Render("rename ") + DefaultStyles.Bold.Render(m.label(m.rename.id, ""))
 		if n := m.nodes[m.rename.id]; n != nil && n.address != "" {
-			status += DefaultStyles.Faint.Render(" · its family still mails it as ") + DefaultStyles.Muted.Render(n.address)
+			status += DefaultStyles.Faint.Render(" · its family can still mail it at ") + DefaultStyles.Muted.Render(n.address)
 		}
-	case m.confirm != "":
-		what := m.label(m.confirm, "")
-		if below := m.below(m.confirm); below == 1 {
-			what += " and the agent below it"
-		} else if below > 1 {
-			what += fmt.Sprintf(" and the %d agents below it", below)
-		}
-		status = DefaultStyles.Warning.Render("delete "+what+"? their transcripts and work go too") +
-			"  " + keyHints(hint{"y", "delete"}, hint{"any key", "keep"})
 	case m.err != nil:
 		status = DefaultStyles.Error.Render(m.err.Error())
 	case m.noticeT > 0:
 		status = DefaultStyles.Muted.Render(m.notice)
 	}
-	out = append(out, status)
+	if len(confirmRows) > 0 {
+		out = append(out, confirmRows...)
+	} else {
+		out = append(out, status)
+	}
 	target := m.label(m.selected, "agent")
 	input := m.input.View()
 	if m.input.Value() == "" {

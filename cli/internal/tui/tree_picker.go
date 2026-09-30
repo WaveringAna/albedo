@@ -210,14 +210,14 @@ func (m TreePickerModel) View() string {
 	var b strings.Builder
 
 	b.WriteString(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/tree"), m.Styles.Faint.Render("branch history")) + "\n")
-	b.WriteString(m.Styles.Faint.Render(inkWrap("choose the checkpoint the new session should end after", m.Width)) + "\n")
+	b.WriteString(m.Styles.Faint.Render(inkWrap("Choose where the new session should branch from.", m.Width)) + "\n")
 
 	if m.Error != "" {
 		b.WriteString(DefaultStyles.Error.Render("error:") + " " + m.Error + "\n")
 	}
 	if m.Loading || len(m.Checkpoints) == 0 {
 		if m.Error == "" {
-			msg := pick(m.Loading, "loading history…", "no branchable history in this session")
+			msg := pick(m.Loading, "loading history…", "No history checkpoints available to branch from.")
 			b.WriteString(m.Styles.Faint.Render(msg) + "\n")
 		}
 		b.WriteString(keyHints(hint{"enter", "confirm"}, hint{"esc", "cancel"}))
@@ -232,15 +232,15 @@ func (m TreePickerModel) View() string {
 
 	if m.Confirming && m.Cursor < len(m.Checkpoints) {
 		current := m.Checkpoints[m.Cursor]
-		b.WriteString("\n" + DefaultStyles.Warning.Render(fmt.Sprintf("branch after %s · %s?", current.Type, readablePreview(current.Preview))) + "\n")
-		b.WriteString(m.Styles.Faint.Render("new session · fresh python namespace · workspace files stay unchanged") + "\n")
+		b.WriteString("\n" + m.Styles.Faint.Render(inkWrap("This creates a new session with a fresh Python namespace. Workspace files stay unchanged.", m.Width)) + "\n")
+		b.WriteString(DefaultStyles.Warning.Render(fmt.Sprintf("Branch after %s · %s?", current.Type, readablePreview(current.Preview))) + "\n")
 		if m.ForkError != "" {
 			b.WriteString(DefaultStyles.Error.Render(m.ForkError) + "\n")
 		}
 	}
 
 	if m.Forking {
-		b.WriteString(m.Styles.Faint.Render("creating branch…"))
+		b.WriteString(m.Styles.Faint.Render("Creating the new session…"))
 	} else if m.Confirming {
 		confirm := pick(m.ForkError != "", hint{"enter", "retry"}, hint{"enter", "confirm"})
 		b.WriteString(keyHints(confirm, hint{"esc", "cancel"}))

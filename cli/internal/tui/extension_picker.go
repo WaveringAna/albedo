@@ -230,16 +230,16 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 func (m ExtensionPickerModel) View() string {
 	var b strings.Builder
 
-	scope, note := "global defaults", "every session without its own choice follows these · s this session only"
+	scope, note := "global defaults", "Sessions without their own choice use these defaults · s to change this session only"
 	if m.Session {
-		scope, note = "this session", "choices here apply to this session only · g global defaults"
+		scope, note = "this session", "Changes here affect only this session · g to edit global defaults"
 		if m.NoGlobal {
-			note = "this daemon only supports per-session choices; restart it for global defaults"
+			note = "This version only supports choices for this session. Restart Albedo to use global defaults."
 		}
 	}
 	b.WriteString(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/extensions"), m.Styles.Faint.Render(scope)) + "\n")
 	b.WriteString(m.Styles.Faint.Render(inkWrap(note, m.Width)) + "\n")
-	b.WriteString(DefaultStyles.Warning.Render(ansi.Wrap("changes reload workers and available plugins, bust prompt-cache reuse, and may reset unsavable python variables", max(1, m.Width), " ")) + "\n")
+	b.WriteString(DefaultStyles.Warning.Render(ansi.Wrap("Changes reload the affected sessions, prevent reuse of cached prompts, and may lose Python variables that cannot be saved.", max(1, m.Width), " ")) + "\n")
 
 	if m.Error != "" {
 		b.WriteString(DefaultStyles.Error.Render(m.Error) + "\n")
@@ -254,9 +254,30 @@ func (m ExtensionPickerModel) View() string {
 		if m.Error != "" {
 			b.WriteString(keyHints(hint{"r", "retry"}, hint{"esc", "return to chat"}) + "\n")
 		} else {
-			b.WriteString(m.Styles.Faint.Render("no matches\nno extensions installed for this session") + "\n" +
+			b.WriteString(m.Styles.Faint.Render("No extensions are available for this session.") + "\n" +
 				inkWrap(keyHints(hint{"↑↓", "select"}, hint{"enter/space", "toggle"}, hint{"esc", "return to chat"}), m.Width))
 		}
+		return b.String()
+	}
+
+	if !m.Saving && m.Confirming && m.Cursor < len(m.Extensions) {
+		current := m.Extensions[m.Cursor]
+		on := pick(m.Session, current.Enabled, current.GlobalEnabled)
+		actionWord := pick(on, "Disable", "Enable")
+		choice := pick(m.Error != "", hint{"enter", "retry"}, hint{"enter", "confirm"})
+		var confirmMsg string
+		switch {
+		case m.Inheriting:
+			confirmMsg = fmt.Sprintf("This session will follow the global default for %s. Remove its own choice?", current.Name)
+		case m.Session:
+			confirmMsg = fmt.Sprintf("This will reload this session. %s %s for this session only?", actionWord, current.Name)
+		default:
+			confirmMsg = fmt.Sprintf("Sessions following global defaults will use this change. %s %s globally?", actionWord, current.Name)
+		}
+		for _, line := range strings.Split(ansi.Wrap(confirmMsg, max(1, m.Width), " "), "\n") {
+			b.WriteString(DefaultStyles.Warning.Render(line) + "\n")
+		}
+		b.WriteString(inkWrap(keyHints(choice, hint{"esc", "cancel"}), m.Width) + "\n")
 		return b.String()
 	}
 
@@ -296,21 +317,6 @@ func (m ExtensionPickerModel) View() string {
 		b.WriteString(m.Styles.Faint.Render("capabilities: "+joinOr(m.capabilitiesList(current), " · ", "not reported")) + "\n")
 		b.WriteString(m.Styles.Faint.Render("requires: "+joinOr(current.Requires, ", ", "none")) + "\n")
 
-		if m.Confirming {
-			on := pick(m.Session, current.Enabled, current.GlobalEnabled)
-			actionWord := pick(on, "disable", "enable")
-			choice := pick(m.Error != "", hint{"enter", "retry"}, hint{"enter", "confirm"})
-			var confirmMsg string
-			switch {
-			case m.Inheriting:
-				confirmMsg = fmt.Sprintf("drop this session's choice for %s and follow the global default?", current.Name)
-			case m.Session:
-				confirmMsg = fmt.Sprintf("%s %s for this session only and reload its workers?", actionWord, current.Name)
-			default:
-				confirmMsg = fmt.Sprintf("%s %s for every session that follows the global default?", actionWord, current.Name)
-			}
-			b.WriteString(DefaultStyles.Warning.Render(confirmMsg) + " " + keyHints(choice, hint{"esc", "cancel"}) + "\n")
-		}
 	}
 
 	if m.Saving {
@@ -318,7 +324,7 @@ func (m ExtensionPickerModel) View() string {
 		if m.Cursor < len(m.Extensions) {
 			currName = m.Extensions[m.Cursor].Name
 		}
-		b.WriteString(m.Styles.Faint.Render(fmt.Sprintf("reloading workers for %s…", currName)))
+		b.WriteString(m.Styles.Faint.Render(fmt.Sprintf("Reloading %s…", currName)))
 	} else if m.Confirming {
 		b.WriteString(m.Styles.Faint.Render("waiting for confirmation"))
 	} else {
