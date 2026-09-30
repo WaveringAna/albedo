@@ -8,7 +8,7 @@ In a checkout the CLI starts the daemon with `gleam run` (entry: `src/albedo.gle
 
 The package manager is gleam. Please when you want to add a package, which is never unless told to, do `gleam add ...` (dev deps: `gleam add --dev ...`), please do not try to edit `manifest.toml` yourself. Gleam generates it.
 
-PLEASE USE `gleam check` to type check and `gleam format src test` to format Gleam. Python is formatted with `ruff format priv/python test`. `pre-commit run --all-files` formats the whole repository, and the commit hook re-formats staged Gleam and Python files. There is no separate linter: the compilers are the linters.
+PLEASE USE `gleam check` to type check and `gleam format src test` to format Gleam. Python is formatted with `ruff format priv/python test`. `nix develop` puts ruff on PATH; outside it, install the version `.pre-commit-config.yaml` pins with `uv tool install ruff==0.13.3` (or run it once with `uvx ruff@0.13.3 format priv/python test`), since the hook's own copy lives inside pre-commit's cache and is not on PATH. `pre-commit run --all-files` formats the whole repository, and the commit hook re-formats staged Gleam and Python files. There is no separate linter: the compilers are the linters.
 
 - Gleam suites: `gleam test`
 - Go: `go -C cli vet ./...` and `go -C cli test ./...`
