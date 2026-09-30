@@ -287,6 +287,7 @@ fn prepare(
     summarize(state, _),
     original,
     force,
+    state.upstream.images,
   )
 }
 

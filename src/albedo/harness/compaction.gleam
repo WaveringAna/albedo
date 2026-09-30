@@ -40,6 +40,9 @@ pub type Context {
     prior: fn(List(types.Input)) -> Result(Prior, String),
     /// Who reads the request, when a models catalog knows the model.
     reader: Option(Reader),
+    /// The images the provider carrying the request accepts, so a strategy
+    /// that renders any makes them fit rather than be refused.
+    images: types.ImageLimits,
   )
 }
 

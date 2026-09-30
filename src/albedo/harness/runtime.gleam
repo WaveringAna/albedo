@@ -1141,6 +1141,7 @@ pub fn prepare_history_with(
     summarize,
     history,
     False,
+    types.any_images,
   )
   |> result.map(fn(prepared) { prepared.inputs })
 }
@@ -1310,6 +1311,7 @@ pub fn compact_history_scoped(
     summarize,
     history,
     True,
+    types.any_images,
   )
   |> result.map(fn(prepared) { prepared.inputs })
 }
@@ -1325,6 +1327,7 @@ pub fn prepare_view_scoped(
   summarize: fn(compaction.SummaryRequest) -> Result(String, String),
   history: List(types.Input),
   force: Bool,
+  images: types.ImageLimits,
 ) -> Result(compaction.Prepared, String) {
   use _ <- result.try(owned_by(runtime, session))
   let pinned_tokens = compaction.estimate_pinned(instructions, tools(session))
@@ -1353,6 +1356,7 @@ pub fn prepare_view_scoped(
             session.id,
           ),
           reader(info),
+          images,
         ),
         history,
       )

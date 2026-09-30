@@ -61,13 +61,13 @@ After a switch from `lcm` to `rolling`, rolling reads the stored LCM summary nod
 
 ## snapcompact
 
-`snapcompact` archives evicted history as rendered bitmap frames that a vision model reads directly, instead of a model-written summary. The frames are X11 8x13 pixel-font text drawn by the local `albedo-render` binary and cached in `snapcompact_frames` by geometry and content. The request contains the frames, then the verbatim tail.
+`snapcompact` archives evicted history as rendered bitmap frames that a vision model reads directly, instead of a model-written summary. The frames are X11 8x13 pixel-font text drawn by the local `albedo-render` binary and cached in `snapcompact_frames` by geometry and content. The request contains the frames, then the verbatim tail. Each model's geometry (glyph advance, row pitch, frame width, rows per frame) is clamped to the upstream's image edge, so a frame is rendered narrower or shorter to fit instead of being scaled or refused; the archive is stored as text, so a model switch simply renders frames for the new geometry.
 
 The saved archive is the normalized text of everything before the cut, stored in `snapcompact_archive` with a user-message cut like rolling's. Frames are re-derived from that text for each request, so after a model switch the same archive renders in the new model's frame shape. Recompaction appends newly evicted history to the saved text. Unchanged leading frames keep their cache keys, so the request prefix stays stable.
 
 The archive keeps at most a frame budget, the smallest of:
 
-- the provider's image budget, from oh-my-pi: 90 for `anthropic`, `amazon-bedrock`, and `openrouter`, 200 for `openai`, `openai-codex`, and the Google providers, 10 for `umans`, and 5 for any other provider or a model no catalog knows. albedo's `claude` and `antigravity` providers take 90, since antigravity also serves Claude models.
+- the provider's image budget: nine tenths of the images a request may carry when the session's upstream declares it (`claude` declares 100, so 90), else oh-my-pi's caps: 90 for `anthropic`, `amazon-bedrock`, `openrouter`, and `antigravity` (which also serves Claude models), 200 for `openai`, `openai-codex`, and the Google providers, 10 for `umans`, and 5 for any other provider or a model no catalog knows.
 - 60 frames of inline image data (3 MB at about 50 KB a frame), except on `claude`, which uploads images through the files API
 - 80 frames
 - `archivePercent` of the window at the estimated cost of one full frame

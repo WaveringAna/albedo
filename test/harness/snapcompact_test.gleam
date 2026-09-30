@@ -1,10 +1,13 @@
 //// Pure archive bounds and portable compaction cursors guard edge cases
 //// that require unrealistic provider history sizes or projections in E2E.
+//// Frames fitting a provider's edge needs a provider that declares one, and
+//// the E2E fake provider declares none.
 
 import albedo/harness/compaction
 import albedo/harness/extensions/snapcompact/extension as snapcompact
 import albedo/openai_api/types
 import gleam/list
+import gleam/option.{None}
 import gleam/string
 import gleeunit/should
 
@@ -27,6 +30,17 @@ pub fn bound_keeps_the_first_and_newest_frames_test() {
   dropped |> should.equal(6 * 23)
   snapcompact.bound(shape, 10, string.concat(pages))
   |> should.equal(#(string.concat(pages), 0))
+}
+
+pub fn a_full_frame_renders_inside_the_provider_edge_test() {
+  let limits = types.ImageLimits(max_edge: 1000, max_images: None)
+  use model <- list.each(["gemini-3-pro", "gpt-5", "claude-opus-5-5"])
+  let shape = snapcompact.fit(snapcompact.shape(model), limits)
+  let assert [page, ..] =
+    snapcompact.paginate(shape, string.repeat("x\u{2588}", 100_000))
+  let assert Ok(#(width, height, _)) =
+    snapcompact.render_frame_test(page, shape.advance, shape.pitch, shape.width)
+  { width <= 1000 && height <= 1000 } |> should.be_true
 }
 
 pub fn paginate_never_splits_a_multibyte_cell_test() {

@@ -55,13 +55,14 @@ pub const max_image_pixels = 40_000_000
 /// The images a provider accepts. `max_edge` must hold for every image of
 /// every request the session will send, so it is the strictest bound the
 /// provider applies as a conversation grows, not the one for a lone image.
+/// `max_images` is how many one request may carry, when the provider says.
 pub type ImageLimits {
-  ImageLimits(max_edge: Int)
+  ImageLimits(max_edge: Int, max_images: Option(Int))
 }
 
 /// The bounds albedo itself validates images against, for a provider that
 /// states none of its own.
-pub const any_images = ImageLimits(max_image_edge)
+pub const any_images = ImageLimits(max_image_edge, None)
 
 /// Why a provider held to `limits` refuses `image`, or `None` when it takes it.
 pub fn image_refusal(limits: ImageLimits, image: Image) -> Option(String) {

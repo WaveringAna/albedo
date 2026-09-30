@@ -387,12 +387,13 @@ fn visual_view(
     Some(_), None -> delete_archive(context.store, context.session)
     _, _ -> Ok(Nil)
   })
-  let shape = shape(context.model)
+  let shape = fit(shape(context.model), context.images)
   let capacity = case context.capacity {
     Some(compaction.Capacity(tokens, _)) -> Some(tokens)
     None -> config.context_window_tokens
   }
-  let limit = frame_budget(config, shape, context.reader, capacity)
+  let limit =
+    frame_budget(config, shape, context.reader, context.images, capacity)
   let #(previous, evicted, rest, current, status) = case resumed {
     None -> #(None, [], folded, folded, "not_needed")
     Some(#(archive, evicted, tail)) -> {
@@ -504,9 +505,11 @@ pub fn frame_budget(
   config: Config,
   shape: Shape,
   reader: Option(compaction.Reader),
+  images: types.ImageLimits,
   capacity: Option(Int),
 ) -> Int {
-  let cap = option.lazy_unwrap(config.max_frames, fn() { provider_cap(reader) })
+  let cap =
+    option.lazy_unwrap(config.max_frames, fn() { provider_cap(reader, images) })
   let cost = compaction.image_tokens(shape.width, shape.rows * shape.pitch)
   case capacity {
     Some(tokens) ->
@@ -515,17 +518,32 @@ pub fn frame_budget(
   }
 }
 
-/// The frames a provider's requests may carry, from oh-my-pi's per-request
-/// image budgets: policy caps under the vendor limits (Anthropic 100, OpenAI
-/// 500, Gemini ~2500). albedo's `claude` and `antigravity` providers take
-/// Anthropic's, since antigravity also serves Claude models.
-pub fn provider_cap(reader: Option(compaction.Reader)) -> Int {
+/// The frames a provider's requests may carry. A provider that states how
+/// many images a request takes keeps a tenth of them for the conversation's
+/// own; otherwise oh-my-pi's per-request image budgets apply: policy caps
+/// under the vendor limits (Anthropic 100, OpenAI 500, Gemini ~2500), with
+/// `antigravity` taking Anthropic's, since it also serves Claude models.
+pub fn provider_cap(
+  reader: Option(compaction.Reader),
+  limits: types.ImageLimits,
+) -> Int {
   let provider = option.map(reader, fn(reader) { reader.provider })
-  let images = case provider {
+  let images = case limits.max_images, provider {
+    Some(images), _ -> images - images / 10
+    None, provider -> known_cap(provider)
+  }
+  let bytes = case provider {
+    Some("claude") -> max_frames
+    _ -> frame_data_budget / frame_data_estimate
+  }
+  images |> int.min(bytes) |> int.min(max_frames)
+}
+
+fn known_cap(provider: Option(String)) -> Int {
+  case provider {
     Some("anthropic")
     | Some("amazon-bedrock")
     | Some("openrouter")
-    | Some("claude")
     | Some("antigravity") -> 90
     Some("openai")
     | Some("openai-codex")
@@ -536,11 +554,6 @@ pub fn provider_cap(reader: Option(compaction.Reader)) -> Int {
     // oh-my-pi's floor for unmeasured providers; the strictest seen is ~5.
     _ -> 5
   }
-  let bytes = case provider {
-    Some("claude") -> max_frames
-    _ -> frame_data_budget / frame_data_estimate
-  }
-  images |> int.min(bytes) |> int.min(max_frames)
 }
 
 fn observation(
@@ -570,6 +583,16 @@ fn observation(
     list.length(before),
     list.length(after),
   ))
+}
+
+/// `shape` held inside the provider's edge: a narrower frame, or fewer rows,
+/// so a frame is rendered to fit rather than scaled afterwards.
+pub fn fit(shape: Shape, limits: types.ImageLimits) -> Shape {
+  Shape(
+    ..shape,
+    width: int.min(shape.width, limits.max_edge),
+    rows: int.max(1, int.min(shape.rows, limits.max_edge / shape.pitch)),
+  )
 }
 
 /// Geometry per vision stack: billing mode and measured glyph legibility.
