@@ -3,7 +3,8 @@
 // boots one daemon under a hermetic ALBEDO_HOME and HOME, and shuts it down
 // before the process exits; the daemon also watches ALBEDO_PARENT_PID, so even
 // a crashed test binary cannot leave it behind. Every scenario shares that
-// daemon and isolates itself with its own provider route and workspace.
+// daemon and isolates itself with its own provider route and workspace, and
+// most run side by side (see providerRoute).
 //
 // These behaviours only exist when every layer runs together: CLI argument
 // handling and non-TTY output, provider plumbing from config.json to the
@@ -33,6 +34,7 @@ import (
 	"testing"
 	"time"
 
+	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
 )
 
@@ -318,9 +320,9 @@ func newFakeProvider() *fakeProvider {
 
 func (p *fakeProvider) close() { p.server.Close() }
 
-// addProfile registers a scripted route and publishes it as the active
-// provider in config.json; earlier profiles stay configured so their sessions
-// keep working.
+// addProfile registers a scripted route and saves it through the daemon,
+// which owns config.json and makes the saved profile active; earlier profiles
+// stay configured so their sessions keep working.
 func (p *fakeProvider) addProfile(name string, reply func(map[string]any) string) error {
 	p.mu.Lock()
 	p.seq++
@@ -329,7 +331,13 @@ func (p *fakeProvider) addProfile(name string, reply func(map[string]any) string
 	p.byName[name] = route
 	p.byRoute[segment] = route
 	p.mu.Unlock()
-	return writeProviderConfig(suite.home, name, p.server.URL+"/t/"+segment)
+	return daemon.SaveProvider(context.Background(), suite.conn, name, config.Settings{
+		Extension: "openai",
+		BaseURL:   p.server.URL + "/t/" + segment,
+		APIKey:    "fixture-key",
+		Model:     "fixture-model",
+		Protocol:  "chat_completions",
+	})
 }
 
 // requests returns what the daemon sent to the named profile.
@@ -415,40 +423,6 @@ func (r *fakeRoute) serveChat(w http.ResponseWriter, req *http.Request) {
 	fmt.Fprint(w, "data: [DONE]\n\n")
 }
 
-// writeProviderConfig adds one provider profile to config.json and selects it,
-// written atomically because the daemon reads the file per turn.
-func writeProviderConfig(home, name, baseURL string) error {
-	path := filepath.Join(home, "config.json")
-	config := map[string]any{}
-	if data, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(data, &config); err != nil {
-			return err
-		}
-	}
-	providers, _ := config["providers"].(map[string]any)
-	if providers == nil {
-		providers = map[string]any{}
-	}
-	providers[name] = map[string]any{
-		"extension": "openai",
-		"model":     "fixture-model",
-		"protocol":  "chat_completions",
-		"baseUrl":   baseURL,
-		"apiKey":    "fixture-key",
-	}
-	config["providers"] = providers
-	config["active"] = name
-	data, err := json.Marshal(config)
-	if err != nil {
-		return err
-	}
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(temporary, path)
-}
-
 // --- scenario helpers; new scenarios in this package build on these ---
 
 // conn returns the shared daemon connection and fails if the daemon under it
@@ -475,9 +449,21 @@ func cli(t *testing.T, args ...string) string {
 	return stdout
 }
 
-// newSession creates a session through the CLI, exactly as a user would, and
-// returns its id.
+// newSession creates a session on the test's own provider route, so tests
+// running side by side never depend on which profile is active.
 func newSession(t *testing.T, workspace string) string {
+	t.Helper()
+	created, err := daemon.Request[daemon.Session](context.Background(), conn(t), "/sessions",
+		map[string]string{"workspace": workspace, "provider": t.Name()})
+	if err != nil || created.ID == "" {
+		t.Fatalf("creating a session on %s: %v", t.Name(), err)
+	}
+	return created.ID
+}
+
+// cliSession creates a session through the CLI, exactly as a user would, on
+// whichever profile is active.
+func cliSession(t *testing.T, workspace string) string {
 	t.Helper()
 	var created struct {
 		Session string `json:"session"`
@@ -490,6 +476,10 @@ func newSession(t *testing.T, workspace string) string {
 
 // providerRoute registers a scripted provider profile for one scenario and
 // selects it, named after the test so failure output points at its owner.
+// Selecting is global: a scenario whose turns go to the active profile (on a
+// session the CLI or the TUI created), that saves a default, or that restarts
+// the daemon runs alone, and every other one calls t.Parallel(). Go runs the
+// parallel ones only after all the others have finished.
 func providerRoute(t *testing.T, reply func(map[string]any) string) string {
 	t.Helper()
 	if err := suite.provider.addProfile(t.Name(), reply); err != nil {

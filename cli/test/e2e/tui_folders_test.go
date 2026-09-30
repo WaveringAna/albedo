@@ -16,6 +16,7 @@ import (
 )
 
 func TestTUICdMovesTheSessionThroughThePicker(t *testing.T) {
+	t.Parallel()
 	providerRoute(t, echoReply)
 	d := newTUIDriver(t)
 	root := t.TempDir()
@@ -59,6 +60,7 @@ func TestTUICdMovesTheSessionThroughThePicker(t *testing.T) {
 }
 
 func TestTUIMissingWorkspaceSendsTheTurnFromThePickedFolder(t *testing.T) {
+	t.Parallel()
 	profile := providerRoute(t, echoReply)
 	root := t.TempDir()
 	gone, found := filepath.Join(root, "gone"), filepath.Join(root, "found")
@@ -109,6 +111,7 @@ func TestTUIMissingWorkspaceSendsTheTurnFromThePickedFolder(t *testing.T) {
 }
 
 func TestTUISessionsByFolderOpenAndStartSessions(t *testing.T) {
+	t.Parallel()
 	providerRoute(t, echoReply)
 	root := t.TempDir()
 	busy, empty, crowded := filepath.Join(root, "busy"), filepath.Join(root, "empty"), filepath.Join(root, "crowded")

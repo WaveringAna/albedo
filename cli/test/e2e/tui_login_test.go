@@ -106,7 +106,7 @@ func TestTUILoginAddsAManualProviderThroughTheDaemon(t *testing.T) {
 		t.Fatalf("config.json kept %q active, not %q", profiles.Active, name)
 	}
 	// The key went to the daemon, which sends it with the profile's requests.
-	id := newSession(t, t.TempDir())
+	id := cliSession(t, t.TempDir())
 	cli(t, "send", id, "which key")
 	waitIdle(t, id, t.Name(), 1)
 	if requests := suite.provider.requests(t.Name()); requests[len(requests)-1]["authorization"] != "Bearer "+key {

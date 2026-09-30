@@ -16,6 +16,7 @@ import (
 )
 
 func TestTUISessionPickerPinsRenamesArchivesAndDeletes(t *testing.T) {
+	t.Parallel()
 	providerRoute(t, echoReply)
 	d := newTUIDriver(t)
 	target := newSession(t, t.TempDir())

@@ -22,7 +22,7 @@ import (
 func TestNewSessionIsListedAndResumes(t *testing.T) {
 	profile := providerRoute(t, echoReply)
 	workspace := t.TempDir()
-	created := newSession(t, workspace)
+	created := cliSession(t, workspace)
 
 	listing := cli(t, "sessions", "--json")
 	var sessions []daemon.Session
@@ -64,6 +64,7 @@ func TestNewSessionIsListedAndResumes(t *testing.T) {
 // and the committed transcript records the reply. The provider's recorded
 // request is the proof the daemon actually called the model.
 func TestSendTurnReachesProviderAndTranscript(t *testing.T) {
+	t.Parallel()
 	profile := providerRoute(t, echoReply)
 	workspace := t.TempDir()
 	id := newSession(t, workspace)
@@ -102,6 +103,7 @@ func TestSendTurnReachesProviderAndTranscript(t *testing.T) {
 // the real client: agent-scoped routes, SSE replay, and status polling against
 // the live daemon.
 func TestChatClientTurnStreamsAndSettles(t *testing.T) {
+	t.Parallel()
 	profile := providerRoute(t, echoReply)
 	workspace := t.TempDir()
 	id := newSession(t, workspace)
@@ -162,6 +164,7 @@ func TestChatClientTurnStreamsAndSettles(t *testing.T) {
 // Sending to a session that does not exist must fail loudly rather than queue
 // a prompt into nothing.
 func TestSendToUnknownSessionFails(t *testing.T) {
+	t.Parallel()
 	stdout, stderr, err := runCLI("send", "e2e-no-such-session", "hello")
 	if err == nil {
 		t.Fatalf("albedo send to an unknown session exited 0: %s", stdout)
