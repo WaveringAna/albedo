@@ -6,12 +6,13 @@ import albedo/openai_api
 import albedo/openai_api/types
 import gleam/bool
 import gleam/dynamic/decode
+import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
 pub type Config {
-  Config(base_url: String, api_key: String)
+  Config(base_url: String, api_key: String, image_edge: Int)
 }
 
 pub fn extension() -> extension.Extension {
@@ -41,10 +42,19 @@ fn resolve(
       || string.contains(config.api_key, "\n")
     {
       True -> Error("OpenAI provider configuration is invalid; run /login")
-      False ->
-        openai_api.client(context.protocol, config.base_url, config.api_key)
-        |> upstream(fn(_) { None })
-        |> Ok
+      False if config.image_edge < 1 ->
+        Error("imageEdge in config.json must be a positive number of pixels")
+      False -> {
+        let upstream =
+          openai_api.client(context.protocol, config.base_url, config.api_key)
+          |> upstream(fn(_) { None })
+        let images =
+          types.ImageLimits(
+            int.min(config.image_edge, types.max_image_edge),
+            None,
+          )
+        Ok(extension.Upstream(..upstream, images:))
+      }
     }
   })
 }
@@ -68,5 +78,12 @@ pub fn upstream(
 fn config_decoder() {
   use base_url <- decode.field("baseUrl", decode.string)
   use api_key <- decode.field("apiKey", decode.string)
-  decode.success(Config(base_url, api_key))
+  // An endpoint that takes smaller images than albedo's own bound says so, and
+  // images over it are refused or scaled like they are for Claude.
+  use image_edge <- decode.optional_field(
+    "imageEdge",
+    types.max_image_edge,
+    decode.int,
+  )
+  decode.success(Config(base_url, api_key, image_edge))
 }
