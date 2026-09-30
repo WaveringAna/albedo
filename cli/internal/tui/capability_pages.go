@@ -22,7 +22,7 @@ import (
 // context. MCP servers are added and edited through one form (mcp_form.go).
 type CapabilityPageModel struct {
 	Conn                                       *daemon.Connection
-	SessionID, Workspace, Kind, Home           string
+	SessionID, Workspace, Kind                 string
 	Items                                      []capabilityItem
 	Prefs                                      config.CapabilityPrefs
 	Global, ExtensionEnabled, ConfirmExtension bool
@@ -59,24 +59,24 @@ func nextCapabilityGen() int { return int(capabilityGen.Add(1)) }
 
 func NewCapabilityPageModel(conn *daemon.Connection, sessionID, workspace, kind string) CapabilityPageModel {
 	// Pages open on the global defaults; s scopes changes to this session.
-	return CapabilityPageModel{Conn: conn, SessionID: sessionID, Workspace: workspace, Kind: kind, Home: config.HomeDir(), Global: true, page: page{Loading: true, Generation: nextCapabilityGen()}}
+	return CapabilityPageModel{Conn: conn, SessionID: sessionID, Workspace: workspace, Kind: kind, Global: true, page: page{Loading: true, Generation: nextCapabilityGen()}}
 }
 func (m CapabilityPageModel) Init() tea.Cmd { return m.loadCmd(m.Generation) }
 func (m CapabilityPageModel) loadCmd(gen int) tea.Cmd {
-	home, workspace, kind := m.Home, m.Workspace, m.Kind
+	workspace, kind := m.Workspace, m.Kind
 	return func() tea.Msg {
-		prefs, err := config.ReadCapabilityPrefs(home)
+		settings, err := daemon.GetSettings(context.Background(), m.Conn)
 		if err != nil {
 			return capabilityLoadedMsg{Gen: gen, Err: err}
 		}
 		var items []capabilityItem
 		switch kind {
 		case "skills":
-			items, err = discoverSkills(home, workspace)
+			items, err = discoverSkills(workspace)
 		case "instructions":
-			items = discoverInstructions(home, workspace)
+			items = discoverInstructions(workspace)
 		case "mcp":
-			items, err = mcpItems(home, m.Conn)
+			items = mcpItems(settings)
 		default:
 			err = errors.New("unknown capability page")
 		}
@@ -90,35 +90,24 @@ func (m CapabilityPageModel) loadCmd(gen int) tea.Cmd {
 				enabled = extensions[i].Enabled
 			}
 		}
-		return capabilityLoadedMsg{Items: items, Prefs: prefs, ExtensionEnabled: enabled, Gen: gen, Err: err}
+		return capabilityLoadedMsg{Items: items, Prefs: settings.Capabilities, ExtensionEnabled: enabled, Gen: gen, Err: err}
 	}
 }
 
 // mcpItems lists the configured servers with the names of the secrets the
 // daemon holds for them (never their contents).
-func mcpItems(home string, conn *daemon.Connection) ([]capabilityItem, error) {
-	servers, err := config.ReadMCPServers(home)
-	if err != nil {
-		return nil, err
-	}
-	credentials, err := daemon.SavedCredentials(context.Background(), conn)
-	if err != nil {
-		return nil, err
-	}
-	items := make([]capabilityItem, 0, len(servers))
-	for name, server := range servers {
+func mcpItems(settings daemon.Settings) []capabilityItem {
+	items := make([]capabilityItem, 0, len(settings.MCP))
+	for name, server := range settings.MCP {
 		address := pick(server.Type == "stdio", server.Command, server.URL)
-		items = append(items, capabilityItem{
-			ID: name, Title: name, Detail: server.Type + " · " + address, Server: server,
-			Secrets: credentials.MCP[name],
-		})
+		items = append(items, capabilityItem{ID: name, Title: name, Detail: server.Type + " · " + address, Server: server, Secrets: settings.Credentials.MCP[name]})
 	}
-	return items, nil
+	return items
 }
 
 // Discovery mirrors the daemon's root ordering. Disabled entries remain listed;
 // the daemon's prepared catalog remains authoritative after a reload.
-func discoverSkills(home, workspace string) ([]capabilityItem, error) {
+func discoverSkills(workspace string) ([]capabilityItem, error) {
 	userHome, _ := os.UserHomeDir()
 	roots := []string{filepath.Join(workspace, ".albedo", "skills"), filepath.Join(workspace, ".agents", "skills"), filepath.Join(userHome, ".albedo", "skills"), filepath.Join(userHome, ".agents", "skills")}
 	seen := map[string]bool{}
@@ -147,7 +136,7 @@ func discoverSkills(home, workspace string) ([]capabilityItem, error) {
 	}
 	return items, nil
 }
-func discoverInstructions(home, workspace string) []capabilityItem {
+func discoverInstructions(workspace string) []capabilityItem {
 	var items []capabilityItem
 	entries, _ := os.ReadDir(workspace)
 	for _, e := range entries {
@@ -172,33 +161,8 @@ func discoverInstructions(home, workspace string) []capabilityItem {
 	return items
 }
 
-func (m CapabilityPageModel) reload() error {
-	if m.Conn == nil {
-		return errors.New("daemon connection unavailable")
-	}
-	path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(m.SessionID))
-	_, err := daemon.Request[map[string]any](context.Background(), m.Conn, path, map[string]any{"name": "/reload", "args": map[string]string{"target": "session"}})
-	return err
-}
-func (m CapabilityPageModel) checkIdle() error {
-	if m.Conn == nil {
-		return errors.New("daemon connection unavailable")
-	}
-	path := fmt.Sprintf("/sessions/%s/status", url.PathEscape(m.SessionID))
-	status, err := daemon.Request[daemon.AgentStatus](context.Background(), m.Conn, path, nil)
-	if err != nil {
-		return err
-	}
-	if status.Running && !status.Idle {
-		return errors.New("Wait for this session to finish its current work before changing capabilities.")
-	}
-	return nil
-}
 func (m CapabilityPageModel) enableExtensionCmd(gen int) tea.Cmd {
 	return func() tea.Msg {
-		if err := m.checkIdle(); err != nil {
-			return capabilitySavedMsg{Gen: gen, Err: err}
-		}
 		path := fmt.Sprintf("/sessions/%s/extensions", url.PathEscape(m.SessionID))
 		_, err := daemon.Request[[]ExtensionItem](context.Background(), m.Conn, path, map[string]any{"name": m.Kind, "enabled": true})
 		return capabilitySavedMsg{Gen: gen, Err: err}
@@ -206,37 +170,10 @@ func (m CapabilityPageModel) enableExtensionCmd(gen int) tea.Cmd {
 }
 
 func (m CapabilityPageModel) toggleCmd(item capabilityItem, gen int) tea.Cmd {
+	next := !m.selectedEnabled(item)
+	scope := pick(m.Global, "global", "session")
 	return func() tea.Msg {
-		if err := m.checkIdle(); err != nil {
-			return capabilitySavedMsg{Gen: gen, Err: err}
-		}
-		before, err := config.ReadCapabilityPrefs(m.Home)
-		if err != nil {
-			return capabilitySavedMsg{Gen: gen, Err: err}
-		}
-		var old, had bool
-		next := false
-		if m.Global {
-			old, had = before.Global[m.Kind][item.ID]
-			// The first global toggle writes an explicit off; after that the
-			// stored value flips. A session override must not leak into it.
-			if had {
-				next = !old
-			}
-		} else {
-			old, had = before.Sessions[m.SessionID][m.Kind][item.ID]
-			next = !before.Enabled(m.SessionID, m.Kind, item.ID)
-		}
-		if err = config.SetCapability(m.Home, m.SessionID, m.Kind, item.ID, m.Global, next); err != nil {
-			return capabilitySavedMsg{Gen: gen, Err: err}
-		}
-		if err = m.reload(); err != nil {
-			if had {
-				_ = config.SetCapability(m.Home, m.SessionID, m.Kind, item.ID, m.Global, old)
-			} else {
-				_ = config.ClearCapability(m.Home, m.SessionID, m.Kind, item.ID, m.Global)
-			}
-		}
+		err := daemon.SetCapability(context.Background(), m.Conn, m.SessionID, m.Kind, item.ID, scope, &next)
 		return capabilitySavedMsg{Gen: gen, Err: err}
 	}
 }
@@ -249,42 +186,14 @@ var mcpEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z_0-9]*$`)
 // restored, so a half-configured server is never left behind.
 func (m CapabilityPageModel) saveMCPCmd(sub mcpSubmission, gen int) tea.Cmd {
 	return func() tea.Msg {
-		return capabilitySavedMsg{Gen: gen, Err: m.replaceMCP(sub.Name, &sub.Server, sub.Secrets)}
+		return capabilitySavedMsg{Gen: gen, Err: daemon.SaveMCP(context.Background(), m.Conn, m.SessionID, sub.Name, &sub.Server, sub.Secrets)}
 	}
 }
 
 func (m CapabilityPageModel) deleteMCPCmd(name string, gen int) tea.Cmd {
-	forget := daemon.MCPSecretsPatch{"bearerToken": nil, "headers": nil, "env": nil}
 	return func() tea.Msg {
-		return capabilitySavedMsg{Gen: gen, Err: m.replaceMCP(name, nil, forget)}
+		return capabilitySavedMsg{Gen: gen, Err: daemon.SaveMCP(context.Background(), m.Conn, m.SessionID, name, nil, nil)}
 	}
-}
-
-func (m CapabilityPageModel) replaceMCP(name string, server *config.MCPServer, secrets daemon.MCPSecretsPatch) error {
-	if err := m.checkIdle(); err != nil {
-		return err
-	}
-	servers, err := config.ReadMCPServers(m.Home)
-	if err != nil {
-		return err
-	}
-	var previous *config.MCPServer
-	if prior, ok := servers[name]; ok {
-		previous = &prior
-	}
-	ctx := context.Background()
-	undo, err := daemon.PatchMCPSecrets(ctx, m.Conn, name, secrets)
-	if err != nil {
-		return err
-	}
-	if err = config.PutMCPServer(m.Home, name, server); err == nil {
-		err = m.reload()
-	}
-	if err != nil {
-		_ = config.PutMCPServer(m.Home, name, previous)
-		_ = daemon.UndoMCPSecrets(ctx, m.Conn, name, undo)
-	}
-	return err
 }
 
 var mcpName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
@@ -405,7 +314,8 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 			if mcp && hasItems {
 				if item := m.Items[m.Cursor]; item.Server.Enabled != nil && !*item.Server.Enabled {
 					server := item.Server
-					server.Enabled = nil
+					enabled := true
+					server.Enabled = &enabled
 					return m.save(func(gen int) tea.Cmd {
 						return m.saveMCPCmd(mcpSubmission{Name: item.ID, Server: server, Secrets: daemon.MCPSecretsPatch{}}, gen)
 					})

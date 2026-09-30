@@ -4,8 +4,7 @@
 package e2e
 
 import (
-	"os"
-	"path/filepath"
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -20,8 +19,6 @@ func TestTUISessionPickerPinsRenamesArchivesAndDeletes(t *testing.T) {
 	providerRoute(t, echoReply)
 	d := newTUIDriver(t)
 	target := newSession(t, t.TempDir())
-	prefs := filepath.Join(t.TempDir(), "session_prefs.json")
-	d.App.LoadPrefs(prefs)
 	d.Dispatch(tui.ChatBackToSessionsMsg{})
 	// highlight puts the picker cursor on id; the actions themselves are keys.
 	highlight := func(id string) {
@@ -32,12 +29,13 @@ func TestTUISessionPickerPinsRenamesArchivesAndDeletes(t *testing.T) {
 		}
 		d.App.SessionPicker.Cursor = i
 	}
-	ctrl := func(code rune) { d.Update(tea.KeyPressMsg{Code: code, Mod: tea.ModCtrl}) }
+	ctrl := func(code rune) { d.Dispatch(tea.KeyPressMsg{Code: code, Mod: tea.ModCtrl}) }
 
 	highlight(target)
 	ctrl('s')
-	if saved, err := os.ReadFile(prefs); err != nil || !strings.Contains(string(saved), target) || !strings.Contains(d.View(), "pinned 1") {
-		t.Fatalf("ctrl+s did not pin %s (prefs %q, %v):\n%s", target, saved, err, d.View())
+	saved, err := daemon.GetSettings(context.Background(), conn(t))
+	if err != nil || !slices.Contains(saved.UI.Pinned, target) || !strings.Contains(d.View(), "pinned 1") {
+		t.Fatalf("ctrl+s did not pin %s (prefs %+v, %v):\n%s", target, saved.UI, err, d.View())
 	}
 
 	ctrl('r')

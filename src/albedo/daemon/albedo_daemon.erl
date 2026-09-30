@@ -1,5 +1,5 @@
 -module(albedo_daemon).
--export([env/1,ready/3,read_config/1,write_default/3,directory/1,shutdown/0,rss/1,watch_parent/1,hold/1]).
+-export([env/1,ready/3,read_config/1,directory/1,shutdown/0,rss/1,watch_parent/1,hold/1]).
 env(Name) -> case os:getenv(binary_to_list(Name)) of false -> <<>>; Value -> unicode:characters_to_binary(Value) end.
 %% config.json with each profile's saved apiKey filled in from creds.json. A
 %% file that is not a JSON object is passed on as it is, to fail decoding.
@@ -8,40 +8,6 @@ read_config(Home) ->
       {ok,Config} -> {ok,iolist_to_binary(json:encode(Config))};
       {error,invalid} -> file:read_file(filename:join(Home,<<"config.json">>));
       {error,_} -> {error,nil}
-    end.
-write_default(Home, Provider, Model) ->
-    File = filename:join(Home, <<"config.json">>),
-    Lock = filename:join(Home, <<"config.lock">>),
-    case file:open(Lock, [write, exclusive]) of
-      {error, _} -> {error, <<"provider configuration is being saved; retry">>};
-      {ok, Owner} ->
-        try
-          case file:read_file(File) of
-            {ok, Bytes} ->
-              try
-                Config = json:decode(Bytes),
-                Named = case Config of
-                  #{<<"providers">> := _} -> Config;
-                  _ -> #{<<"active">> => <<"default">>, <<"providers">> => #{<<"default">> => Config}}
-                end,
-                Providers = maps:get(<<"providers">>, Named),
-                Selected = maps:get(Provider, Providers),
-                Updated = Named#{<<"active">> => Provider,
-                                 <<"providers">> => Providers#{Provider => Selected#{<<"model">> => Model}}},
-                Temp = <<File/binary, ".tmp">>,
-                case file:write_file(Temp, json:encode(Updated), [write, sync, exclusive]) of
-                  ok ->
-                    ok = file:change_mode(Temp, 8#600),
-                    case file:rename(Temp, File) of
-                      ok -> {ok, nil};
-                      {error, Reason} -> {error, atom_to_binary(Reason)}
-                    end;
-                  {error, Reason} -> {error, atom_to_binary(Reason)}
-                end
-              catch _:_ -> {error, <<"could not save provider default">>} end;
-            {error, _} -> {error, <<"provider configuration is missing">>}
-          end
-        after file:delete(<<File/binary, ".tmp">>), file:close(Owner), file:delete(Lock) end
     end.
 directory(Path) -> filename:pathtype(Path) =:= absolute andalso filelib:is_dir(Path).
 ready(Home,Port,Token) ->

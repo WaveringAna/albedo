@@ -22,8 +22,7 @@ import (
 func TestTUILoginAddsAManualProviderThroughTheDaemon(t *testing.T) {
 	name, key, model := "wanderer", "sk-wanderer-fixture", "hermit-mini"
 	providerRoute(t, echoReply)
-	// The wizard reads and writes config.json in process; pointing it at the
-	// suite home puts the saved profile where the daemon reads it back.
+	// The wizard uses the suite daemon for profile persistence.
 	t.Setenv("ALBEDO_HOME", suite.home)
 	// The saved provider would change the next run's /login, so it is undone.
 	configPath := filepath.Join(suite.home, "config.json")
@@ -33,7 +32,7 @@ func TestTUILoginAddsAManualProviderThroughTheDaemon(t *testing.T) {
 	}
 	t.Cleanup(func() { os.WriteFile(configPath, saved, 0o600) })
 	forgetKey(t, name)
-	before, err := config.LoadProfiles(suite.home)
+	before, err := daemon.ProviderProfiles(context.Background(), conn(t))
 	if err != nil {
 		t.Fatalf("suite config: %v", err)
 	}
@@ -94,12 +93,12 @@ func TestTUILoginAddsAManualProviderThroughTheDaemon(t *testing.T) {
 		t.Fatalf("the app did not return to chat with %q active: state=%v active=%q\n%s", name, d.App.State, d.App.Profiles.Active, d.View())
 	}
 
-	profiles, err := config.LoadProfiles(suite.home)
+	profiles, err := daemon.ProviderProfiles(context.Background(), conn(t))
 	if err != nil {
 		t.Fatalf("saved config: %v", err)
 	}
 	got := profiles.Providers[name]
-	want := config.Settings{Extension: "openai", BaseURL: baseURL, Model: model, Protocol: "chat_completions"}
+	want := config.Settings{Extension: "openai", BaseURL: baseURL, Model: model, Protocol: "chat_completions", HasKey: true}
 	if got != want {
 		t.Fatalf("config.json kept %+v, want %+v", got, want)
 	}
@@ -119,7 +118,7 @@ func TestTUILoginAddsAManualProviderThroughTheDaemon(t *testing.T) {
 func forgetKey(t *testing.T, profile string) {
 	t.Helper()
 	connection := conn(t)
-	t.Cleanup(func() { daemon.SetProviderKey(context.Background(), connection, profile, "") })
+	t.Cleanup(func() { daemon.DeleteProvider(context.Background(), connection, profile) })
 }
 
 // An Anthropic API key rides the claude extension that otherwise signs in,
@@ -167,16 +166,16 @@ func TestTUILoginSavesAnAnthropicAPIKeyProfile(t *testing.T) {
 	if d.App.State != tui.AppStateChat || d.App.Profiles.Active != name {
 		t.Fatalf("the app did not return to chat with %q active: state=%v active=%q\n%s", name, d.App.State, d.App.Profiles.Active, d.View())
 	}
-	profiles, err := config.LoadProfiles(suite.home)
+	profiles, err := daemon.ProviderProfiles(context.Background(), conn(t))
 	if err != nil {
 		t.Fatalf("saved config: %v", err)
 	}
-	want := config.Settings{Extension: "claude", Model: model, Protocol: "chat_completions"}
+	want := config.Settings{Extension: "claude", Model: model, Protocol: "chat_completions", HasKey: true}
 	if got := profiles.Providers[name]; got != want {
 		t.Fatalf("config.json kept %+v, want %+v", got, want)
 	}
-	held, err := daemon.SavedCredentials(context.Background(), conn(t))
-	if err != nil || !slices.Contains(held.Providers, name) {
+	held, err := daemon.GetSettings(context.Background(), conn(t))
+	if err != nil || !slices.Contains(held.Credentials.Providers, name) {
 		t.Fatalf("the daemon holds no key for %q: %+v %v", name, held, err)
 	}
 

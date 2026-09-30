@@ -100,15 +100,12 @@ type loginModelsLoadedMsg struct {
 }
 
 // signInsLoadedMsg carries the daemon's sign-ins and accounts, after the first
-// read and after every change to them. Profiles is set when the change also
-// rewrote config.json.
+// read and after every change. Profiles comes from the same settings snapshot.
 type signInsLoadedMsg struct {
 	Listed   daemon.SignIns
 	Profiles *config.Profiles
-	// Keys are the profiles whose api key the daemon holds.
-	Keys []string
-	Err  error
-	Gen  int
+	Err      error
+	Gen      int
 }
 
 type signInStartedMsg struct {
@@ -186,7 +183,7 @@ func (m LoginModel) openBrowserCmd(urlStr string) tea.Cmd {
 }
 
 func NewLoginModel(conn *daemon.Connection, nameHint string) LoginModel {
-	profiles, loadErr := config.LoadProfiles(config.HomeDir())
+	profiles := config.Profiles{Providers: map[string]config.Settings{}}
 
 	m := LoginModel{
 		Conn:      conn,
@@ -196,9 +193,6 @@ func NewLoginModel(conn *daemon.Connection, nameHint string) LoginModel {
 		Draft:     config.Settings{Extension: "openai", BaseURL: "https://api.openai.com/v1", Protocol: "responses"},
 		TextInput: newField(),
 		Styles:    DefaultStyles,
-	}
-	if loadErr != nil {
-		m.Error = loadErr.Error()
 	}
 	m.buildChoosePicker()
 	return m
@@ -391,13 +385,7 @@ func (m LoginModel) reloadCmd(change func(context.Context) error) tea.Cmd {
 		if err := change(ctx); err != nil {
 			return signInsLoadedMsg{Err: err, Gen: m.Generation}
 		}
-		profiles, err := config.LoadProfiles(config.HomeDir())
-		if err != nil {
-			return signInsLoadedMsg{Err: err, Gen: m.Generation}
-		}
-		msg := m.listSignIns(ctx, m.Generation)
-		msg.Profiles = &profiles
-		return msg
+		return m.listSignIns(ctx, m.Generation)
 	}
 }
 
@@ -406,10 +394,7 @@ func (m LoginModel) removeCmd(target removal) tea.Cmd {
 		if target.Kind == "account" {
 			return daemon.RemoveAccount(ctx, m.Conn, target.Provider, target.ID)
 		}
-		if err := config.RemoveProvider(config.HomeDir(), target.ID); err != nil {
-			return err
-		}
-		return daemon.SetProviderKey(ctx, m.Conn, target.ID, "")
+		return daemon.DeleteProvider(ctx, m.Conn, target.ID)
 	})
 }
 
@@ -549,8 +534,8 @@ func (m LoginModel) listSignIns(ctx context.Context, gen int) signInsLoadedMsg {
 	if err != nil {
 		return signInsLoadedMsg{Err: err, Gen: gen}
 	}
-	credentials, err := daemon.SavedCredentials(ctx, m.Conn)
-	return signInsLoadedMsg{Listed: listed, Keys: credentials.Providers, Err: err, Gen: gen}
+	settings, err := daemon.GetSettings(ctx, m.Conn)
+	return signInsLoadedMsg{Listed: listed, Profiles: &settings.Profiles, Err: err, Gen: gen}
 }
 
 // hasKey reports a profile with an api key, entered now or held by the daemon.
@@ -576,21 +561,15 @@ func (m LoginModel) fetchCatalogCmd(ext, endpoint string, gen int) tea.Cmd {
 	}
 }
 
-// saveProviderCmd hands a newly entered api key to the daemon, then saves the
-// profile, which config.json keeps without it.
+// saveProviderCmd saves the profile and optional key through the daemon.
 func (m LoginModel) saveProviderCmd(name string, settings config.Settings) tea.Cmd {
 	return func() tea.Msg {
-		if _, err := settings.Validate(); err != nil {
+		validated, err := settings.Validate()
+		if err != nil {
 			return providerSavedMsg{Name: name, Settings: settings, Err: err}
 		}
-		var err error
-		if settings.APIKey != "" {
-			err = daemon.SetProviderKey(context.Background(), m.Conn, name, settings.APIKey)
-		}
-		if err == nil {
-			err = config.SaveProvider(config.HomeDir(), name, settings)
-		}
-		return providerSavedMsg{Name: name, Settings: settings, Err: err}
+		err = daemon.SaveProvider(context.Background(), m.Conn, name, validated)
+		return providerSavedMsg{Name: name, Settings: validated, Err: err}
 	}
 }
 
@@ -605,12 +584,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		if msg.Profiles != nil {
 			m.Profiles = *msg.Profiles
 		}
-		for _, name := range msg.Keys {
-			if settings, ok := m.Profiles.Providers[name]; ok {
-				settings.HasKey = true
-				m.Profiles.Providers[name] = settings
-			}
-		}
+
 		if msg.Err != nil && m.Error == "" {
 			m.Error = msg.Err.Error()
 		}
@@ -701,6 +675,10 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 	case providerSavedMsg:
 		if msg.Err != nil {
 			m.Error = msg.Err.Error()
+			if m.Name == msg.Name && m.Draft.Model != "" {
+				m.Step = StepModel
+				return m, m.promptInput(m.Draft.Model, false)
+			}
 			return m, m.backToChoose()
 		}
 		return m, func() tea.Msg {

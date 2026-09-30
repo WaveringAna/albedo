@@ -44,7 +44,7 @@ until_of(_) -> 0.
 %% Records Until on the creds.json accounts under Key that Hit matches, and
 %% returns every account there, updated. A single stored object stays single.
 mark(Path, Key, Hit, Until) ->
-    albedo_credentials:with_lock(Path, fun() ->
+    albedo_settings_lock:with_lock(filename:dirname(Path), fun() ->
         case albedo_credentials:accounts(Path) of
             {ok, Data} ->
                 Stored = maps:get(Key, Data, []),

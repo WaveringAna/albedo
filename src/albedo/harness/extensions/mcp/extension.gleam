@@ -278,3 +278,26 @@ fn native_call(
 
 @external(erlang, "albedo_mcp", "close")
 fn native_close(handle: Handle) -> Nil
+
+/// Validate a persisted server even when MCP is disabled in the session.
+pub fn validate_settings(
+  name: String,
+  server: Option(String),
+  secrets: String,
+) -> Result(Nil, String) {
+  use _ <- result.try(case server {
+    None -> Ok(Nil)
+    Some(value) ->
+      json.parse(value, server_decoder())
+      |> result.map(fn(_) { Nil })
+      |> result.replace_error("invalid MCP server settings")
+  })
+  validate_settings_native(name, server, secrets)
+}
+
+@external(erlang, "albedo_mcp", "validate_settings")
+fn validate_settings_native(
+  name: String,
+  server: Option(String),
+  secrets: String,
+) -> Result(Nil, String)

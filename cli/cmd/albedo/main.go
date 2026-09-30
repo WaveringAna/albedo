@@ -187,7 +187,7 @@ func open(id, workspace string, fresh bool) error {
 		}
 	}
 
-	profs, err := config.LoadProfiles(homeDir)
+	profs, err := daemon.ProviderProfiles(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -235,7 +235,7 @@ func open(id, workspace string, fresh bool) error {
 	announceMigration(ctx, conn, homeDir)
 	tui.DetectInk()
 	appModel := tui.NewAppModel(conn, profs, initial, absWorkspace, !configured)
-	appModel.LoadPrefs(filepath.Join(config.HomeDir(), "picker.json"))
+
 	if os.Getenv("ALBEDO_NO_BROWSER") == "" {
 		appModel.BrowserOpener = config.OpenBrowser
 		appModel.Login.BrowserOpener = config.OpenBrowser
@@ -433,7 +433,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		profs, err := config.LoadProfiles(homeDir)
+		profs, err := daemon.ProviderProfiles(context.Background(), conn)
 		if err != nil {
 			return err
 		}

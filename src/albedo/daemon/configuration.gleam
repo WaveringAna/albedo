@@ -161,7 +161,7 @@ pub fn settings(
   |> result.replace_error(invalid_config)
 }
 
-@external(erlang, "albedo_daemon", "write_default")
+@external(erlang, "albedo_settings", "write_default")
 pub fn select_default(
   home: String,
   provider: String,
@@ -170,3 +170,7 @@ pub fn select_default(
 
 @external(erlang, "albedo_daemon", "read_config")
 fn read_config(home: String) -> Result(BitArray, Nil)
+
+/// Validate profiles at the daemon boundary without reporting secret values.
+@external(erlang, "albedo_configuration", "validate_profile")
+pub fn validate_profile(name: String, profile: String) -> Result(String, String)

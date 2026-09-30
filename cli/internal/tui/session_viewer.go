@@ -74,8 +74,7 @@ type SessionViewer struct {
 	ConfirmDelete string
 	rename        renameField
 
-	// PrefsPath stores picker and chat preferences; empty keeps them in memory only.
-	PrefsPath string
+	Saving bool
 	// Fetch loads a preview; nil disables previews.
 	Fetch func(id string) tea.Cmd
 
@@ -110,13 +109,6 @@ func sessionViewerActions(workspace string) []PickerItem {
 		{ID: "login", Label: "Accounts", Detail: "add or select a provider"},
 		{ID: "archive", Label: "Archive", Detail: "browse archived sessions"},
 	}
-}
-
-// LoadPrefs reads picker and chat preferences from path.
-func (m *SessionViewer) LoadPrefs(path string) {
-	m.PrefsPath = path
-	m.prefs = loadSessionPrefs(path)
-	m.rebuild()
 }
 
 func (m *SessionViewer) SetSize(width, height int) {
@@ -174,9 +166,7 @@ func (m *SessionViewer) Prune(sessions []daemon.Session) {
 	for _, s := range sessions {
 		known[s.ID] = true
 	}
-	if m.prefs.forget(known) {
-		m.savePrefs()
-	}
+	m.prefs.forget(known)
 }
 
 // rebuild orders sessions into sections and refreshes the picker items,
@@ -320,31 +310,20 @@ func (m *SessionViewer) switchGroup() {
 	}
 }
 
-// RecordOpen counts an open for the most-used group.
-func (m *SessionViewer) RecordOpen(id string) {
-	if _, ok := m.session(id); !ok {
-		return
-	}
-	m.prefs.recordOpen(id)
-	m.savePrefs()
+// SessionPreferenceMsg requests a single explicit change; the root model owns I/O.
+type SessionPreferenceMsg struct {
+	ID, Field string
+	Value     bool
 }
 
-func (m *SessionViewer) togglePin() {
+func (m *SessionViewer) togglePin() tea.Cmd {
 	item, ok := m.Highlighted()
-	if !ok || m.section[item.ID] == secAction || m.ArchiveView {
-		return
+	if !ok || m.section[item.ID] == secAction || m.ArchiveView || m.Saving {
+		return nil
 	}
-	m.prefs.togglePin(item.ID)
-	m.savePrefs()
-	m.rebuild()
-	m.focus(item.ID)
-}
-
-func (m *SessionViewer) savePrefs() {
-	m.notice = ""
-	if err := m.prefs.save(m.PrefsPath); err != nil {
-		m.notice = "Could not save session preferences: " + err.Error()
-	}
+	value := !m.prefs.pinned(item.ID)
+	m.Saving = true
+	return func() tea.Msg { return SessionPreferenceMsg{item.ID, "pinned", value} }
 }
 
 type SessionDeleteMsg struct{ ID string }
@@ -379,20 +358,14 @@ func (m *SessionViewer) Renamed(s daemon.Session) {
 	m.focus(item.ID)
 }
 
-func (m *SessionViewer) toggleArchive() {
+func (m *SessionViewer) toggleArchive() tea.Cmd {
 	item, ok := m.Highlighted()
-	if !ok || m.section[item.ID] == secAction {
-		return
+	if !ok || m.section[item.ID] == secAction || m.Saving {
+		return nil
 	}
-	if m.prefs.archived(item.ID) {
-		m.prefs.Archived = slices.DeleteFunc(m.prefs.Archived, func(id string) bool { return id == item.ID })
-	} else {
-		m.prefs.Archived = append(m.prefs.Archived, item.ID)
-	}
-	index := m.Cursor
-	m.savePrefs()
-	m.rebuild()
-	m.Cursor = min(index, max(0, len(m.Filtered)-1))
+	value := !m.prefs.archived(item.ID)
+	m.Saving = true
+	return func() tea.Msg { return SessionPreferenceMsg{item.ID, "archived", value} }
 }
 
 func (m *SessionViewer) OpenArchive() { m.setArchive(true) }
@@ -419,7 +392,6 @@ func (m *SessionViewer) Removed(id string) {
 	delete(m.prefs.Opens, id)
 	delete(m.previews, id)
 	m.ConfirmDelete = ""
-	m.savePrefs()
 	m.rebuild()
 }
 
@@ -462,11 +434,11 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 			}
 			return m, nil
 		case key == "ctrl+a":
-			m.toggleArchive()
-			return m, nil
+			cmd := m.toggleArchive()
+			return m, cmd
 		case key == "ctrl+s":
-			m.togglePin()
-			return m, nil
+			cmd := m.togglePin()
+			return m, cmd
 		case key == "ctrl+r":
 			m.startRename()
 			return m, nil

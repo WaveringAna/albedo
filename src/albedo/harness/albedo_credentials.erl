@@ -1,22 +1,18 @@
 -module(albedo_credentials).
 %% creds.json, the one file holding every secret albedo keeps, and the storage
-%% helpers around it: atomic 0600 writes, one lock the daemon's processes
-%% share, and account credential helpers. Only the daemon writes it. Sections:
+%% helpers around it: atomic 0600 writes and account credential helpers.
+%% Mutations use the shared per-home settings lock. Sections:
 %% "accounts" holds OAuth accounts and keys by provider store key, one object
 %% or a list; "providers" holds a profile's apiKey by profile name; "mcp" holds
 %% an MCP server's bearerToken, headers and env by server name.
 
 -include_lib("kernel/include/file.hrl").
 
--export([read/1, read_json/1, read_json/2, write/2, write/3, with_lock/3,
+-export([read/1, read_json/1, read_json/2, write/2, write/3,
          creds_path/1, accounts/1, put_accounts/2, provider_keys/1,
-         put_provider_key/3, mcp/1, patch_mcp/3, undo_mcp/3, summary/1, config/1,
+         put_provider_key/3, mcp/1, patch_mcp/3, patch_mcp_settings/3, undo_mcp/3, summary/1, config/1,
          migrate/2, take_migrated/0,
          values/2, oauth/2, put_values/3, expire_access/3, stale/2, fresh/2]).
-
-%% global backs off a random 0-125ms, doubling to 0-8s: 8 retries wait at most
-%% 24s, about 12s on average.
--define(LOCK_RETRIES, 8).
 
 creds_path(Home) ->
     filename:join(unicode:characters_to_list(Home), "creds.json").
@@ -76,13 +72,21 @@ patch_mcp(Home, Name, Patch) when is_map(Patch) ->
     end;
 patch_mcp(_, _, _) -> {error, <<"a secrets patch must be a JSON object">>}.
 
+%% Settings transactions capture and restore the affected entry themselves.
+patch_mcp_settings(Home, Name, Patch) ->
+    update_section(Home, <<"mcp">>, fun(Servers) ->
+        with_secret(Servers, Name, patched(maps:get(Name, Servers, #{}), Patch))
+    end).
+
 undo_mcp(Home, Name, Token) ->
-    case persistent_term:get({?MODULE, undo, Name}, none) of
-        {Token, Prior} ->
-            _ = persistent_term:erase({?MODULE, undo, Name}),
-            put_mcp(Home, Name, Prior);
-        _ -> {error, <<"nothing to undo for this server">>}
-    end.
+    albedo_settings_lock:with_lock(Home, fun() ->
+        case persistent_term:get({?MODULE, undo, Name}, none) of
+            {Token, Prior} ->
+                _ = persistent_term:erase({?MODULE, undo, Name}),
+                put_mcp(Home, Name, Prior);
+            _ -> {error, <<"nothing to undo for this server">>}
+        end
+    end, fun() -> {error, <<"settings store is busy">>} end).
 
 with_secret(Servers, Name, Secret) when map_size(Secret) =:= 0 -> maps:remove(Name, Servers);
 with_secret(Servers, Name, Secret) -> Servers#{Name => Secret}.
@@ -173,7 +177,7 @@ put_section(Path, Name, Section) ->
 
 update_section(Home, Name, Change) ->
     Path = creds_path(Home),
-    with_lock(Path, fun() ->
+    albedo_settings_lock:with_lock(filename:dirname(Path), fun() ->
         Written = case section(Path, Name) of
             {ok, Section} -> put_section(Path, Name, Change(Section));
             {error, enoent} -> put_section(Path, Name, Change(#{}));
@@ -194,7 +198,7 @@ update_section(Home, Name, Change) ->
 migrate(Home, Stamp0) ->
     Stamp = unicode:characters_to_list(Stamp0),
     Path = creds_path(Home),
-    with_lock(Path, fun() ->
+    albedo_settings_lock:with_lock(filename:dirname(Path), fun() ->
         case read(Path) of
             {error, enoent} -> migrate(Home, Stamp, #{});
             {ok, Document} -> migrate(Home, Stamp, Document);
@@ -237,9 +241,7 @@ merge_section({Name, Found}, Document) when map_size(Found) > 0 ->
     Document#{Name => maps:merge(Current, Found)};
 merge_section(_, Document) -> Document.
 
-%% Moves the old files into backups/ and strips config.json's keys, unless a
-%% login holds config.lock: its keys are saved already, and config.json's win
-%% until the next boot strips them.
+%% Startup owns the home and holds its mutation lock while moving secrets.
 retire(Home, Stamp, Files, Config, Keys) ->
     _ = filelib:ensure_path(filename:join(unicode:characters_to_list(Home), "backups")),
     Backup = fun(File) -> backup(Home, filename:basename(File), Stamp) end,
@@ -275,18 +277,8 @@ backup(Home, File, Stamp) ->
     filename:join([unicode:characters_to_list(Home), "backups", File ++ "-before-creds-" ++ Stamp]).
 
 strip_keys(Home, Config, Backup) ->
-    Lock = filename:join(unicode:characters_to_list(Home), "config.lock"),
-    case file:open(Lock, [write, exclusive]) of
-        {ok, Owner} ->
-            try
-                case file:copy(config_path(Home), Backup) of
-                    {ok, _} -> seal(Backup) andalso write(config_path(Home), without_keys(Config)) =:= ok;
-                    {error, _} -> false
-                end
-            after
-                file:close(Owner),
-                file:delete(Lock)
-            end;
+    case file:copy(config_path(Home), Backup) of
+        {ok, _} -> seal(Backup) andalso write(config_path(Home), without_keys(Config)) =:= ok;
         {error, _} -> false
     end.
 
@@ -336,18 +328,28 @@ write(Path, Data, Options) ->
         L when is_list(L) -> iolist_to_binary(L);
         _ -> iolist_to_binary(json:encode(Data))
     end,
-    Modes = [binary | [sync || lists:member(sync, Options)]],
-    case file:write_file(Temporary, Bytes, Modes) of
-        ok ->
-            case proplists:get_value(mode, Options) of
-                undefined -> ok;
-                Mode -> _ = file:change_mode(Temporary, Mode)
-            end,
-            case file:rename(Temporary, PathList) of
-                ok -> ok;
-                Error -> _ = file:delete(Temporary), {error, {rename, Error}}
-            end;
-        Error -> {error, {write, Error}}
+    case file:open(Temporary, [write, binary, exclusive]) of
+        {ok, Device} ->
+            try
+                Sealed = case proplists:get_value(mode, Options) of
+                    undefined -> ok;
+                    Mode -> file:change_mode(Temporary, Mode)
+                end,
+                case Sealed of
+                    ok ->
+                        case file:write(Device, Bytes) of
+                            ok ->
+                                Synced = case lists:member(sync, Options) of true -> file:sync(Device); false -> ok end,
+                                case Synced of
+                                    ok -> file:rename(Temporary, PathList);
+                                    Error -> Error
+                                end;
+                            Error -> Error
+                        end;
+                    Error -> Error
+                end
+            after file:close(Device), file:delete(Temporary) end;
+        Error -> Error
     end.
 
 stale(Path, MaxAgeMs) -> not fresh(Path, MaxAgeMs).
@@ -374,7 +376,7 @@ put_values(Data, Key, [One]) -> Data#{Key => One};
 put_values(Data, Key, Many) -> Data#{Key => Many}.
 
 expire_access(Path, Key, Access) ->
-    with_lock(Path, fun() ->
+    albedo_settings_lock:with_lock(filename:dirname(Path), fun() ->
         case accounts(Path) of
             {ok, #{Key := Stored} = Data} ->
                 Expire = fun(#{<<"access">> := A} = V) when A =:= Access -> V#{<<"expires">> => 0};
@@ -389,14 +391,4 @@ expire_access(Path, Key, Access) ->
             _ -> nil
         end
     end, fun() -> nil end).
-
-%% Runs Run() holding the daemon's lock on Path, or Busy() when it stays
-%% taken. Only this daemon writes creds.json (claim_home keeps it the only one
-%% on its home), so the lock guards its own processes; a holder that dies
-%% releases it.
-with_lock(Path, Run, Busy) ->
-    case global:trans({{?MODULE, Path}, self()}, Run, [node()], ?LOCK_RETRIES) of
-        aborted -> Busy();
-        Result -> Result
-    end.
 

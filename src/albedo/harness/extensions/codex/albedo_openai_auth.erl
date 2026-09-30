@@ -117,7 +117,7 @@ select([Credential | Rest], Path, Session) ->
 codex_revoke(Home0, Access) ->
     Path = albedo_credentials:creds_path(Home0),
     Identity = identity(#{<<"access">> => Access}),
-    albedo_credentials:with_lock(Path, fun() -> remove_identity(Path, Access, Identity) end,
+    albedo_settings_lock:with_lock(filename:dirname(Path), fun() -> remove_identity(Path, Access, Identity) end,
                                  fun() -> {error, <<"credential store is busy">>} end).
 
 remove_identity(Path, Access, Identity) ->
@@ -290,7 +290,7 @@ remember(Session, Credential) ->
     albedo_accounts:remember(?SCOPE, Session, identity(Credential)).
 
 refresh_locked(Path, Identity) ->
-    albedo_credentials:with_lock(Path, fun() -> refresh_current(Path, Identity) end,
+    albedo_settings_lock:with_lock(filename:dirname(Path), fun() -> refresh_current(Path, Identity) end,
                                  fun() -> refreshed_after_wait(Path, Identity) end).
 
 refreshed_after_wait(Path, Identity) ->

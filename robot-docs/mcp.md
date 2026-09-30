@@ -1,5 +1,8 @@
 # MCP extension
 
+Persisted preferences are owned by the daemon and changed through the [settings API](settings.md). The CLI refreshes them on use and never writes settings files.
+
+
 Albedo's `mcp` extension connects one session to configured [Model Context Protocol](https://modelcontextprotocol.io) servers and advertises their discovered tools, resources, and prompts as ordinary model tools. It is installed but disabled by default: enable it from `/extensions`, for every session or (after `s`) just the current one.
 
 The client is [`barrel_mcp`](https://hex.pm/packages/barrel_mcp), so stdio and streamable HTTP transports, protocol negotiation, pagination, and cancellation come from a maintained MCP implementation. Albedo owns configuration, credential scope, naming, and lifecycle.

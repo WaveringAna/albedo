@@ -49,7 +49,7 @@ first_usable([], _, _) -> {error, ?SIGNED_OUT};
 first_usable([Credential | Rest], Path, Session) ->
     Outcome = case usable(Credential) of
         fresh -> {ok, Credential};
-        stale -> albedo_credentials:with_lock(Path,
+        stale -> albedo_settings_lock:with_lock(filename:dirname(Path),
                      fun() -> refresh_current(Path, identity(Credential)) end,
                      fun() -> {error, <<"credential store is busy">>} end);
         invalid -> {error, invalid}
@@ -83,7 +83,7 @@ refreshed_account(Path, Credential) ->
     case usable(Credential) of
         fresh -> Credential;
         stale ->
-            case albedo_credentials:with_lock(Path,
+            case albedo_settings_lock:with_lock(filename:dirname(Path),
                     fun() -> refresh_current(Path, identity(Credential)) end,
                     fun() -> {error, busy} end) of
                 {ok, Updated} -> Updated;

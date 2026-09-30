@@ -43,19 +43,21 @@ def legacy_cell(cell_id):
 class MigrationsTest(unittest.TestCase):
     def test_installed_extensions_upgrade_legacy_tables_before_their_routes_run(self):
         provider = Provider(
-            lambda request: python(
-                "items = await work.list()\n"
-                "assert not items\n"
-                "item = await work.create('new scoped item')\n"
-                "assert (await work.get(item.id)).title == 'new scoped item'\n"
-                "legacy = [v for v in await vents() if v['message'] == 'legacy vent']\n"
-                "assert len(legacy) == 1 and legacy[0]['title'] == ''\n"
-                "await vent('bug', 'new vent', title='new title')\n"
-                "assert any(v['title'] == 'new title' for v in await vents())\n"
-                "print('upgraded extension routes usable')"
+            lambda request: (
+                python(
+                    "items = await work.list()\n"
+                    "assert not items\n"
+                    "item = await work.create('new scoped item')\n"
+                    "assert (await work.get(item.id)).title == 'new scoped item'\n"
+                    "legacy = [v for v in await vents() if v['message'] == 'legacy vent']\n"
+                    "assert len(legacy) == 1 and legacy[0]['title'] == ''\n"
+                    "await vent('bug', 'new vent', title='new title')\n"
+                    "assert any(v['title'] == 'new title' for v in await vents())\n"
+                    "print('upgraded extension routes usable')"
+                )
+                if request["messages"][-1].get("role") == "user"
+                else text("done")
             )
-            if request["messages"][-1].get("role") == "user"
-            else text("done")
         )
         self.addCleanup(provider.close)
         with Albedo(provider) as app:

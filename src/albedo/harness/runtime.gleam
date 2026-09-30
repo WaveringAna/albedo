@@ -11,6 +11,7 @@ import albedo/harness/extensions/work/ledger as work
 import albedo/harness/instruction_files
 import albedo/harness/oauth
 import albedo/harness/rpc
+import albedo/harness/session_settings
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -89,6 +90,12 @@ type Message {
     String,
     String,
     extension.Change,
+    Subject(Result(Option(Session), String)),
+  )
+  SaveSettings(
+    String,
+    String,
+    session_settings.Change,
     Subject(Result(Option(Session), String)),
   )
   Refresh(String, Subject(Result(Option(Session), String)))
@@ -294,6 +301,17 @@ pub fn refresh_session(
   id: String,
 ) -> Result(Option(Session), String) {
   actor.call(runtime.subject, 30_000, Refresh(id, _))
+}
+
+/// Save and reload in the composition owner. No caller holds a settings lock
+/// while waiting for this actor, whose extension operations also persist choices.
+pub fn save_settings(
+  runtime: Runtime,
+  home: String,
+  id: String,
+  change: session_settings.Change,
+) -> Result(Option(Session), String) {
+  actor.call(runtime.subject, 60_000, SaveSettings(home, id, change, _))
 }
 
 /// The current composition's instructions and context blocks, without booting
@@ -826,37 +844,41 @@ fn reopen(
   }
 }
 
-/// Re-prepare one session's cached composition and swap it in. `refresh_cached`
-/// does the work; this answers its caller and stores the fresh cache.
-fn refresh(
+fn refresh_value(
   state: State,
   id: String,
-  reply: Subject(Result(Option(Session), String)),
-) -> State {
+) -> Result(#(State, Option(Session)), String) {
   case dict.get(state.compositions, id) {
-    // Nothing cached to refresh; the next open scans from scratch anyway.
-    Error(_) -> {
-      process.send(reply, Ok(None))
+    Error(_) -> Ok(#(state, None))
+    Ok(cached) -> {
+      use refreshed <- result.map(refresh_cached(state, id, cached))
+      let #(fresh, update) = refreshed
+      let state = case update {
+        Some(session) -> holding(state, id, session)
+        None -> state
+      }
+      #(
+        State(..state, compositions: dict.insert(state.compositions, id, fresh)),
+        update,
+      )
+    }
+  }
+}
+
+fn finish_refresh(
+  state: State,
+  reply: Subject(Result(Option(Session), String)),
+  changed: Result(#(State, Option(Session)), String),
+) -> State {
+  case changed {
+    Error(error) -> {
+      process.send(reply, Error(error))
       state
     }
-    Ok(cached) ->
-      case refresh_cached(state, id, cached) {
-        Error(error) -> {
-          process.send(reply, Error(error))
-          state
-        }
-        Ok(#(fresh, update)) -> {
-          let state = case update {
-            Some(session) -> holding(state, id, session)
-            None -> state
-          }
-          process.send(reply, Ok(update))
-          State(
-            ..state,
-            compositions: dict.insert(state.compositions, id, fresh),
-          )
-        }
-      }
+    Ok(#(fresh, update)) -> {
+      process.send(reply, Ok(update))
+      fresh
+    }
   }
 }
 
@@ -903,7 +925,15 @@ fn handle(state: State, message: Message) {
     Booted(id, result) -> actor.continue(booted(state, id, result) |> boot_next)
     Reload(id, cwd, change, reply) ->
       actor.continue(reload(state, id, cwd, change, reply))
-    Refresh(id, reply) -> actor.continue(refresh(state, id, reply))
+    SaveSettings(home, id, change, reply) -> {
+      let changed =
+        session_settings.mutate(home, id, change, fn() {
+          refresh_value(state, id)
+        })
+      actor.continue(finish_refresh(state, reply, changed))
+    }
+    Refresh(id, reply) ->
+      actor.continue(finish_refresh(state, reply, refresh_value(state, id)))
     PeekPrompt(id, reply) -> {
       process.send(
         reply,

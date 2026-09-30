@@ -123,7 +123,7 @@ refreshed(Path, Value) ->
          Expires > erlang:system_time(millisecond) + ?REFRESH_SKEW_MS of
         true -> Value;
         false ->
-            case albedo_credentials:with_lock(Path,
+            case albedo_settings_lock:with_lock(filename:dirname(Path),
                     fun() -> refresh(Path, identity(Value)) end,
                     fun() -> {error, busy} end) of
                 {ok, Updated} -> Updated;
@@ -155,7 +155,7 @@ first_access([C | Rest], Path, Session) ->
         true when is_integer(Expires), Expires > Now + ?REFRESH_SKEW_MS ->
             albedo_accounts:remember(<<"claude">>, Session, identity(C)), {ok, Access};
         true ->
-            case albedo_credentials:with_lock(Path, fun() -> refresh(Path, identity(C)) end,
+            case albedo_settings_lock:with_lock(filename:dirname(Path), fun() -> refresh(Path, identity(C)) end,
                     fun() -> {error, <<"credential store is busy">>} end) of
                 {ok, Updated} -> albedo_accounts:remember(<<"claude">>, Session, identity(Updated)),
                                  {ok, maps:get(<<"access">>, Updated)};

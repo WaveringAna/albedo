@@ -96,6 +96,8 @@ type profilesLoadedMsg struct {
 
 type AppModel struct {
 	Conn              *daemon.Connection
+	SettingsGen       int
+	UISaving          bool
 	Profiles          config.Profiles
 	State             AppState
 	ActiveSession     *daemon.Session
@@ -139,11 +141,11 @@ type AppModel struct {
 	folderReturn AppState
 }
 
-// LoadPrefs applies the same display choices to the initial and future chats.
-func (m *AppModel) LoadPrefs(path string) {
-	m.SessionPicker.LoadPrefs(path)
-	m.Chat.Flags.Thinking = m.SessionPicker.prefs.Thinking
-	m.Chat.Flags.Tools = m.SessionPicker.prefs.Tools
+// ApplyUI takes acknowledged shared preferences from the daemon.
+func (m *AppModel) ApplyUI(prefs daemon.UIPreferences) {
+	m.SessionPicker.prefs = sessionPrefs(prefs)
+	m.SessionPicker.rebuild()
+	m.Chat.Flags.Thinking, m.Chat.Flags.Tools = prefs.Thinking, prefs.Tools
 }
 
 func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
@@ -194,17 +196,21 @@ func NewAppModel(conn *daemon.Connection, profiles config.Profiles, initialSessi
 }
 
 func (m AppModel) Init() tea.Cmd {
+	return tea.Batch(m.initScreen(), m.loadSettingsCmd(m.SettingsGen))
+}
+
+func (m AppModel) initScreen() tea.Cmd {
 	m.Login.BrowserOpener = m.BrowserOpener
 	switch m.State {
 	case AppStateChat:
-		return tea.Batch(m.Chat.Init(), m.loadCommandCatalogCmd(m.CatalogGen))
+		return tea.Batch(m.Chat.Init(), m.loadCommandCatalogCmd(m.CatalogGen), m.recordOpenCmd(m.ActiveSession.ID))
 	case AppStateLogin:
 		if !m.StandaloneLogin && m.ActiveSession == nil {
 			return tea.Batch(m.Login.Init(), m.loadSessionsCmd(m.SessionGen))
 		}
 		return m.Login.Init()
 	case AppStateSessionPicker:
-		return tea.Batch(m.SessionPicker.Init(), m.loadSessionsCmd(m.SessionGen))
+		return tea.Batch(m.SessionPicker.Init(), m.loadSessionsCmd(m.SessionGen), m.loadSettingsCmd(m.SettingsGen))
 	}
 	return nil
 }
@@ -262,7 +268,7 @@ func (m AppModel) createSessionCmd(gen int, workspace string) tea.Cmd {
 
 func (m AppModel) loadProfilesCmd(provider string, gen int) tea.Cmd {
 	return func() tea.Msg {
-		p, err := config.LoadProfiles(config.HomeDir())
+		p, err := daemon.ProviderProfiles(context.Background(), m.Conn)
 		return profilesLoadedMsg{Profiles: p, Provider: provider, Err: err, Gen: gen}
 	}
 }
@@ -474,10 +480,9 @@ func (m *AppModel) setChatSession(s daemon.Session, prepend bool) tea.Cmd {
 
 // openSession makes session the chat on screen.
 func (m *AppModel) openSession(s daemon.Session) tea.Cmd {
-	m.SessionPicker.RecordOpen(s.ID)
 	m.ClearNotices()
 	m.GlanceGen++
-	return m.setChatSession(s, false)
+	return tea.Batch(m.setChatSession(s, false), m.recordOpenCmd(s.ID))
 }
 
 func (m *AppModel) openLogin(name string) tea.Cmd {
@@ -493,7 +498,7 @@ func (m *AppModel) openSessions() tea.Cmd {
 	m.State = AppStateSessionPicker
 	m.SessionGen++
 	m.GlanceGen++
-	return tea.Batch(m.SessionPicker.Init(), m.loadSessionsCmd(m.SessionGen))
+	return tea.Batch(m.SessionPicker.Init(), m.loadSessionsCmd(m.SessionGen), m.loadSettingsCmd(m.SettingsGen))
 }
 
 func (m *AppModel) newSessionCmd() tea.Cmd {
@@ -646,10 +651,53 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.ActiveSession != nil && sid == m.ActiveSession.ID {
 			m.Chat, cmd = m.Chat.Update(msg)
 		}
+		if event, ok := msg.(ChatStreamEventMsg); ok && event.Event.Type == daemon.EventReset {
+			cmd = tea.Batch(cmd, m.loadSettingsCmd(m.SettingsGen))
+		}
 		return m, cmd
 	}
 
 	switch msg := msg.(type) {
+	case settingsLoadedMsg:
+		if msg.Gen != m.SettingsGen {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.Chat.AddError(msg.Err.Error())
+			m.SessionPicker.notice = msg.Err.Error()
+			return m, nil
+		}
+		m.Profiles = msg.Settings.Profiles
+		m.ApplyUI(msg.Settings.UI)
+		return m, nil
+	case uiSavedMsg:
+		if msg.Open {
+			if msg.Err != nil {
+				m.Chat.AddError(msg.Err.Error())
+			}
+			return m, m.loadSettingsCmd(m.SettingsGen)
+		}
+		if msg.Gen != m.SettingsGen {
+			return m, nil
+		}
+		m.UISaving, m.SessionPicker.Saving = false, false
+		if msg.Err != nil {
+			m.Chat.AddError(msg.Err.Error())
+			m.SessionPicker.notice = msg.Err.Error()
+			return m, nil
+		}
+		m.SessionPicker.notice = ""
+		m.ApplyUI(msg.Prefs)
+		return m, nil
+	case SessionPreferenceMsg:
+		if m.UISaving {
+			m.SessionPicker.Saving = false
+			return m, nil
+		}
+		m.UISaving = true
+		m.SettingsGen++
+		return m, m.patchUICmd(msg.ID, map[string]bool{msg.Field: msg.Value}, m.SettingsGen)
+
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
@@ -976,15 +1024,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case LoginCancelMsg:
 		m.ProfileGen++
 		// /login may have removed providers even when it ends without a choice.
-		if profiles, err := config.LoadProfiles(config.HomeDir()); err == nil {
-			m.Profiles = profiles
-		}
+
 		if m.StandaloneLogin {
 			return m, tea.Quit
 		}
 		if m.ActiveSession != nil {
 			m.State = AppStateChat
-			return m, nil
+			return m, m.loadProfilesCmd("", m.ProfileGen)
 		}
 		m.State = AppStateSessionPicker
 		m.updateSessionPickerItems()
@@ -1077,11 +1123,19 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ClearNotices()
 		}
 		if m.Chat.Flags.Thinking != before.Thinking || m.Chat.Flags.Tools != before.Tools {
-			m.SessionPicker.prefs.Thinking = m.Chat.Flags.Thinking
-			m.SessionPicker.prefs.Tools = m.Chat.Flags.Tools
-			m.SessionPicker.savePrefs()
-			if m.SessionPicker.notice != "" {
-				m.Chat.AddError(m.SessionPicker.notice)
+			draft := m.Chat.Flags
+			m.Chat.Flags = before
+			if !m.UISaving {
+				m.UISaving = true
+				m.SettingsGen++
+				patch := map[string]bool{}
+				if draft.Thinking != before.Thinking {
+					patch["thinking"] = draft.Thinking
+				}
+				if draft.Tools != before.Tools {
+					patch["tools"] = draft.Tools
+				}
+				cmd = tea.Batch(cmd, m.patchUICmd("", patch, m.SettingsGen))
 			}
 		}
 	case AppStateSessionPicker:
@@ -1152,5 +1206,50 @@ func (m AppModel) content() string {
 		return m.Login.View()
 	default:
 		return ""
+	}
+}
+
+type settingsLoadedMsg struct {
+	Settings daemon.Settings
+	Gen      int
+	Err      error
+}
+type uiSavedMsg struct {
+	Prefs daemon.UIPreferences
+	Gen   int
+	Open  bool
+	Err   error
+}
+
+func (m AppModel) loadSettingsCmd(gen int) tea.Cmd {
+	if m.UISaving {
+		return nil
+	}
+	conn := m.Conn
+	return func() tea.Msg {
+		settings, err := daemon.GetSettings(context.Background(), conn)
+		return settingsLoadedMsg{settings, gen, err}
+	}
+}
+
+func (m AppModel) patchUICmd(session string, patch map[string]bool, gen int) tea.Cmd {
+	conn := m.Conn
+	return func() tea.Msg {
+		var prefs daemon.UIPreferences
+		var err error
+		if session == "" {
+			prefs, err = daemon.PatchUI(context.Background(), conn, patch)
+		} else {
+			prefs, err = daemon.PatchSessionUI(context.Background(), conn, session, patch)
+		}
+		return uiSavedMsg{Prefs: prefs, Gen: gen, Err: err}
+	}
+}
+
+func (m AppModel) recordOpenCmd(session string) tea.Cmd {
+	conn := m.Conn
+	return func() tea.Msg {
+		prefs, err := daemon.RecordOpen(context.Background(), conn, session)
+		return uiSavedMsg{Prefs: prefs, Open: true, Err: err}
 	}
 }

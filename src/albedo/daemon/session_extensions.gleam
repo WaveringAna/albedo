@@ -8,8 +8,9 @@ import albedo/daemon/turn
 import albedo/harness/extension
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/runtime
+import albedo/harness/session_settings
 import gleam/json
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 
 /// The state once a fresh kernel replaces the old one: the next provider
 /// request has not been prepared against it.
@@ -104,11 +105,20 @@ pub fn change(
 pub fn refresh(
   state: session_state.State(message),
 ) -> #(session_state.State(message), Result(json.Json, String)) {
+  refresh_with(state, fn() {
+    runtime.refresh_session(state.host, state.info.id)
+  })
+}
+
+fn refresh_with(
+  state: session_state.State(message),
+  reload: fn() -> Result(Option(runtime.Session), String),
+) -> #(session_state.State(message), Result(json.Json, String)) {
   case turn.running(state.activity) {
     Some(_) -> #(state, Error("session must be idle to reload"))
     None -> {
       let previous = runtime.peek_prompt(state.host, state.info.id)
-      case runtime.refresh_session(state.host, state.info.id) {
+      case reload() {
         Error(error) -> #(state, Error(error))
         Ok(update) -> {
           let state = case update {
@@ -139,9 +149,17 @@ pub fn refresh(
                 state,
                 "session data reloaded from disk",
               ),
-              Error(
-                "session data reloaded, but its capability notice could not be saved: "
-                <> error,
+              Ok(
+                json.object([
+                  #("reloaded", json.string("session")),
+                  #(
+                    "warning",
+                    json.string(
+                      "session data reloaded, but its capability notice could not be saved: "
+                      <> error,
+                    ),
+                  ),
+                ]),
               ),
             )
           }
@@ -149,4 +167,15 @@ pub fn refresh(
       }
     }
   }
+}
+
+/// The session actor checks idleness; the runtime actor owns the locked
+/// persistence/reload operation so no lock crosses the actor call.
+pub fn save_settings(
+  state: session_state.State(message),
+  change: session_settings.Change,
+) -> #(session_state.State(message), Result(json.Json, String)) {
+  refresh_with(state, fn() {
+    runtime.save_settings(state.host, state.home, state.info.id, change)
+  })
 }

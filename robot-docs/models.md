@@ -1,5 +1,8 @@
 # models catalog
 
+Persisted preferences are owned by the daemon and changed through the [settings API](settings.md). The CLI refreshes them on use and never writes settings files.
+
+
 The `models` extension keeps a local copy of the [models.dev](https://models.dev) catalog and answers one question for the rest of Albedo: what is actually known about this model and its provider. It never guesses a limit from a model name.
 
 It is enabled by default and contributes no model tools and no prompt context.

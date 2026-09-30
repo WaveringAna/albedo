@@ -25,6 +25,7 @@ import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/run/extension as run
 import albedo/harness/loop
 import albedo/harness/runtime
+import albedo/harness/session_settings
 import albedo/openai_api/types
 import gleam/erlang/process.{type Subject}
 import gleam/json
@@ -106,6 +107,7 @@ pub type Message {
   ChangeWorkspace(String, Subject(Result(String, String)))
   /// An ancestor left the first workspace for the second.
   Follow(String, String, Subject(Nil))
+  ChangeSettings(session_settings.Change, Subject(Result(json.Json, String)))
   ReadExtensions(Subject(Result(List(extension.Summary), String)))
   ChangeExtension(
     extension.Change,
@@ -434,7 +436,8 @@ fn handle(state: State, message: Message) {
     | RefreshData(..)
     | ChangeWorkspace(..)
     | ReadExtensions(..)
-    | ChangeExtension(..) -> session_state.State(..state, last_touch: now_ms())
+    | ChangeExtension(..)
+    | ChangeSettings(..) -> session_state.State(..state, last_touch: now_ms())
     _ -> state
   }
   // Runs end in finish_turn and background_finish, which follow at once; this
@@ -537,6 +540,11 @@ fn handle(state: State, message: Message) {
         state,
         reply,
         runtime.extension_summaries(state.host, state.info.id),
+      )
+    ChangeSettings(change, reply) ->
+      transition(
+        reply,
+        session_extensions.save_settings(stirred(state), change),
       )
     ChangeExtension(change, reply) ->
       transition(reply, session_extensions.change(stirred(state), change))
@@ -1909,4 +1917,11 @@ pub fn set_extension(
   change: extension.Change,
 ) -> Result(List(extension.Summary), String) {
   actor.call(session, 40_000, ChangeExtension(change, _))
+}
+
+pub fn save_settings(
+  session: Session,
+  change: session_settings.Change,
+) -> Result(json.Json, String) {
+  actor.call(session, 60_000, ChangeSettings(change, _))
 }

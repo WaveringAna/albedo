@@ -225,7 +225,7 @@ func (t *ReconnectingTransport) RoundTrip(req *http.Request) (*http.Response, er
 		status = res.StatusCode
 	}
 
-	if t.Provider != nil && req.URL != nil && req.URL.Path != "/shutdown" && isStaleDaemon(err, status) {
+	if t.Provider != nil && req.URL != nil && req.URL.Path != "/shutdown" && !strings.HasSuffix(req.URL.Path, "/open") && isStaleDaemon(err, status) {
 		if refreshErr := t.Provider.Refresh(req.Context()); refreshErr == nil {
 			if res != nil {
 				_ = res.Body.Close()

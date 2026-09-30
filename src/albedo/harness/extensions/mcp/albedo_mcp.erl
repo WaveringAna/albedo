@@ -1,6 +1,6 @@
 -module(albedo_mcp).
 
--export([prepare/1, prepare/2, definitions/1, context/1, call/3, close/1, url_allowed/1]).
+-export([prepare/1, prepare/2, definitions/1, context/1, call/3, close/1, url_allowed/1, validate_settings/3]).
 
 -define(DEFAULT_STARTUP_MS, 20000).
 -define(DEFAULT_CALL_MS, 60000).
@@ -125,7 +125,8 @@ set_header(Name, Value, Headers) when is_binary(Name), is_binary(Value) ->
 valid_header(Name) ->
     re:run(Name, <<"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$">>, [{capture, none}]) =:= match.
 contains_newline(Value) ->
-    binary:match(Value, [<<"">>, <<"
+    binary:match(Value, [<<"
+">>, <<"
 ">>]) =/= nomatch.
 
 scoped_env(Raw, Secrets) when is_map(Raw), is_map(Secrets) ->
@@ -431,3 +432,45 @@ optional_binary(Value) when is_binary(Value) -> Value;
 optional_binary(_) -> erlang:error(invalid_value).
 
 unavailable(Name) -> <<"MCP server '", Name/binary, "' is unavailable">>.
+
+%% Validate persisted transport references and secret patches without resolving
+%% environment variables or starting a client.
+validate_settings(Name, Server, SecretsJSON) ->
+    try
+        true = valid_name(Name),
+        case Server of
+            none -> ok;
+            {some, JSON} ->
+                Config = json:decode(JSON),
+                true = is_boolean(maps:get(<<"enabled">>, Config, true)),
+                lists:foreach(fun(Field) -> _ = positive_ms(maps:get(Field, Config, ?DEFAULT_CALL_MS)) end,
+                              [<<"startupTimeoutMs">>, <<"callTimeoutMs">>]),
+                lists:foreach(fun(Field) ->
+                    case maps:get(Field, Config, []) of null when Field =:= <<"enabledTools">> -> ok; Values -> _ = string_list(Values) end
+                end, [<<"args">>, <<"enabledTools">>, <<"disabledTools">>]),
+                case maps:get(<<"type">>, Config) of
+                    <<"http">> -> true = url_allowed(maps:get(<<"url">>, Config));
+                    <<"stdio">> -> Command = maps:get(<<"command">>, Config), true = is_binary(Command) andalso byte_size(Command) > 0
+                end,
+                lists:foreach(fun(Field) ->
+                    maps:foreach(fun(Target, Ref) ->
+                        true = case Field of <<"headers">> -> valid_header(Target); _ -> valid_env_name(Target) end,
+                        #{<<"env">> := EnvName} = Ref, true = map_size(Ref) =:= 1, true = valid_env_name(EnvName)
+                    end, maps:get(Field, Config, #{}))
+                end, [<<"headers">>, <<"env">>]),
+                case maps:get(<<"bearerTokenEnvVar">>, Config, null) of null -> ok; RefName -> true = valid_env_name(RefName) end
+        end,
+        Patch = json:decode(SecretsJSON), true = is_map(Patch),
+        maps:foreach(fun
+            (<<"bearerToken">>, null) -> ok;
+            (<<"bearerToken">>, Token) when is_binary(Token) -> false = contains_newline(Token);
+            (Field, null) when Field =:= <<"headers">>; Field =:= <<"env">> -> ok;
+            (Field, Changes) when Field =:= <<"headers">>; Field =:= <<"env">> ->
+                maps:foreach(fun(K, V) ->
+                    true = case Field of <<"headers">> -> valid_header(K); _ -> valid_env_name(K) end,
+                    true = V =:= null orelse is_binary(V),
+                    case {Field, V} of {<<"headers">>, Text} when is_binary(Text) -> false = contains_newline(Text); _ -> ok end
+                end, Changes)
+        end, Patch),
+        {ok, nil}
+    catch _:_ -> {error, <<"invalid MCP name, transport references, or credentials">>} end.

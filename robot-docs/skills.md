@@ -1,5 +1,8 @@
 # Skills extension
 
+Persisted preferences are owned by the daemon and changed through the [settings API](settings.md). The CLI refreshes them on use and never writes settings files.
+
+
 Albedo's `skills` extension implements progressive disclosure for the [Agent Skills specification](https://agentskills.io/specification). It advertises only each valid skill's `name`, `description`, actual local `SKILL.md` path, and slash command. The model or user loads a full skill only through explicit activation.
 
 ## Discovery

@@ -39,11 +39,16 @@ remove_entry(Home, Section, Key) ->
 %% written; `null` removes the key. The rename is the commit, so readers never
 %% see a partly written file.
 set_entry(Home, Section, Key, Value) ->
+    albedo_settings_lock:with_lock(Home,
+        fun() -> set_entry_locked(Home, Section, Key, Value) end,
+        fun() -> {error, <<"settings store is busy">>} end).
+
+set_entry_locked(Home, Section, Key, Value) ->
     try
         {ok, Bytes} = read(Home),
         Sections = case Bytes of <<>> -> #{}; _ -> json:decode(Bytes) end,
         true = is_map(Sections),
-        Entries = case maps:get(Section, Sections, #{}) of Map when is_map(Map) -> Map; _ -> #{} end,
+        Entries = case maps:get(Section, Sections, #{}) of Map when is_map(Map) -> Map; _ -> erlang:error(invalid_section) end,
         Updated = case Value of
             null -> Sections#{Section => maps:remove(Key, Entries)};
             _ -> Sections#{Section => Entries#{Key => Value}}

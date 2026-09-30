@@ -13,6 +13,7 @@ import albedo/daemon/reaper
 import albedo/daemon/requests
 import albedo/daemon/session
 import albedo/daemon/session_provider
+import albedo/daemon/settings
 import albedo/daemon/store
 import albedo/daemon/usage
 import albedo/harness/cache_ttl
@@ -22,13 +23,14 @@ import albedo/harness/extension
 import albedo/harness/extensions/schedule/ledger as schedule
 import albedo/harness/oauth
 import albedo/harness/runtime
+import albedo/harness/session_settings
 import albedo/harness/usage_feed
 import albedo/openai_api/types
 import gleam/bytes_tree
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
-import gleam/http.{Delete, Get, Patch, Post}
+import gleam/http.{Delete, Get, Patch, Post, Put}
 import gleam/http/request
 import gleam/http/response
 import gleam/int
@@ -531,7 +533,10 @@ fn delete_idle(
   }
   case busy {
     True -> Error("session is busy")
-    False -> conversation.delete(runtime.ledger(state.host), id)
+    False -> {
+      use _ <- result.try(settings.forget(state.config.home, id))
+      conversation.delete(runtime.ledger(state.host), id)
+    }
   }
 }
 
@@ -1702,8 +1707,8 @@ fn uri_decode(segment: String) -> String {
 
 /// The daemon's own top-level routes; a service never shadows them.
 const daemon_routes = [
-  "health", "sessions", "models", "auth", "shutdown", "agents", "quota",
-  "cache-ttl", "fs",
+  "settings", "health", "sessions", "models", "auth", "shutdown", "agents",
+  "quota", "cache-ttl", "fs",
 ]
 
 fn route(
@@ -1804,12 +1809,76 @@ fn daemon_route(
                     "session_context",
                     "session_commands",
                     "workspace_browser",
+                    "settings_api",
                   ],
                   json.string,
                 ),
               ),
             ]),
           )
+        Get, ["settings"] -> settings.snapshot(config.home) |> answered_settings
+        Put, ["settings", "providers", name] ->
+          body(req, decode.dynamic)
+          |> result.try(fn(value) {
+            settings.save_provider(config.home, name, settings.encode(value))
+          })
+          |> answered(200, fn(_) { acknowledged([]) }, 400)
+        Delete, ["settings", "providers", name] ->
+          settings.delete_provider(config.home, name)
+          |> answered(200, fn(_) { acknowledged([]) }, 400)
+        Patch, ["settings", "ui"] ->
+          body(req, decode.dynamic)
+          |> result.try(fn(value) {
+            settings.patch_ui(config.home, "", settings.encode(value))
+          })
+          |> answered_settings
+        Patch, ["settings", "ui", "sessions", id] ->
+          body(req, decode.dynamic)
+          |> result.try(fn(value) {
+            settings.patch_ui(config.home, id, settings.encode(value))
+          })
+          |> answered_settings
+        Post, ["settings", "ui", "sessions", id, "open"] ->
+          settings.record_open(config.home, id)
+          |> answered_settings
+        Post, ["sessions", id, "settings", "capabilities"] ->
+          body(req, settings.capability_decoder())
+          |> result.try(fn(change) {
+            actor.call(registry, 5000, Lookup(id, _))
+            |> result.try(session.save_settings(_, change))
+          })
+          |> answered(200, fn(value) { value }, 409)
+        Put, ["sessions", id, "settings", "mcp", name] -> {
+          let decoder = {
+            use server <- decode.field(
+              "server",
+              decode.map(decode.dynamic, settings.encode),
+            )
+            use secrets <- decode.optional_field(
+              "secrets",
+              "{}",
+              decode.map(decode.dynamic, settings.encode),
+            )
+            decode.success(session_settings.MCP(name, Some(server), secrets))
+          }
+          body(req, decoder)
+          |> result.try(fn(change) {
+            actor.call(registry, 5000, Lookup(id, _))
+            |> result.try(session.save_settings(_, change))
+          })
+          |> answered(200, fn(value) { value }, 409)
+        }
+        Delete, ["sessions", id, "settings", "mcp", name] ->
+          actor.call(registry, 5000, Lookup(id, _))
+          |> result.try(session.save_settings(
+            _,
+            session_settings.MCP(
+              name,
+              None,
+              "{\"bearerToken\":null,\"headers\":null,\"env\":null}",
+            ),
+          ))
+          |> answered(200, fn(value) { value }, 409)
         Get, ["sessions"] ->
           reply(200, json.array(actor.call(registry, 5000, List), info_json))
         // The tree the given session belongs to, for the orchestrator view.
@@ -2400,5 +2469,14 @@ fn watch(worker: session.Session) -> Nil {
       Nil
     }
     Error(_) -> Nil
+  }
+}
+
+fn answered_settings(
+  value: Result(String, String),
+) -> response.Response(mist.ResponseData) {
+  case value {
+    Ok(json) -> raw(200, json)
+    Error(message) -> error(400, message)
   }
 }

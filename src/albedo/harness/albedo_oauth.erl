@@ -261,7 +261,7 @@ store(Home, Store, Json, Account) ->
 
 update(Home, Store, Change, Reply) ->
     Path = albedo_credentials:creds_path(Home),
-    albedo_credentials:with_lock(Path, fun() ->
+    albedo_settings_lock:with_lock(filename:dirname(Path), fun() ->
         case albedo_credentials:accounts(Path) of
             {error, enoent} -> update_data(Path, #{}, Store, Change, Reply);
             {ok, Current} -> update_data(Path, Current, Store, Change, Reply);

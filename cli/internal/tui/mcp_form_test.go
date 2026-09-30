@@ -25,8 +25,8 @@ func key(m CapabilityPageModel, k rune) CapabilityPageModel {
 }
 
 func mcpPage(t *testing.T) CapabilityPageModel {
+	t.Helper()
 	m := NewCapabilityPageModel(nil, "s", "/workspace", "mcp")
-	m.Home = t.TempDir()
 	m.SetSize(100, 30)
 	m.Loading = false
 	m.ExtensionEnabled = true
