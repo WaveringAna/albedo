@@ -42,15 +42,13 @@ class ContextTest(unittest.TestCase):
 
         def prepare(app):
             (app.home / "models.json").unlink(missing_ok=True)
-            (app.home / "extensions.json").write_text(
-                json.dumps(
-                    {
-                        "models": {
-                            "url": self.provider.url + "/models.json",
-                            "refreshHours": 24,
-                        }
+            app.write_extensions(
+                {
+                    "models": {
+                        "url": self.provider.url + "/models.json",
+                        "refreshHours": 24,
                     }
-                )
+                }
             )
 
         self.app = Albedo(
@@ -183,7 +181,3 @@ class ContextTest(unittest.TestCase):
         unknown = self.read(self.route)
         self.assertNotIn("context_window_tokens", unknown)
         self.assertEqual(unknown["compaction"]["status"], "unknown")
-
-
-if __name__ == "__main__":
-    unittest.main()

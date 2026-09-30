@@ -80,17 +80,7 @@ class ModelCatalogReloadTests(unittest.TestCase):
             (app.home / "alibaba-models.json").write_text(json.dumps(["qwen-stale"]))
             (app.home / "claude-models.json").write_text(json.dumps(CLAUDE_MODELS))
             (app.home / "models.json").unlink(missing_ok=True)
-            (app.home / "extensions.json").write_text(
-                json.dumps(
-                    {
-                        "models": {
-                            "url": self.catalog.url + "/models.json",
-                            "refreshHours": 0,
-                        },
-                        "cacheTtl": {"url": None},
-                    }
-                )
-            )
+            app.write_extensions({"models": {"url": self.catalog.url + "/models.json"}})
 
         self.app = Albedo(
             self.provider,
@@ -159,7 +149,3 @@ class ModelCatalogReloadTests(unittest.TestCase):
         )
         # No effort listed means the model takes none, not a guessed default.
         self.assertEqual(small["efforts"], [])
-
-
-if __name__ == "__main__":
-    unittest.main()

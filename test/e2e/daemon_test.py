@@ -227,7 +227,3 @@ class DaemonTest(unittest.TestCase):
                     [event["text"] for event in thoughts], ["weighing it"], source
                 )
                 self.assertGreaterEqual(thoughts[0].get("elapsedMs", 0), 500, source)
-
-
-if __name__ == "__main__":
-    unittest.main()

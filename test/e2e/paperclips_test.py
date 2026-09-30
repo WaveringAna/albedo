@@ -372,7 +372,3 @@ class PaperclipsTests(unittest.TestCase):
             self.assertEqual(results[0]["output"].count("rejected:"), 2)
             # and neither left a vent in the global ledger
             self.assertTrue(results[0]["output"].strip().endswith("[]"))
-
-
-if __name__ == "__main__":
-    unittest.main()

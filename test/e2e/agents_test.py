@@ -388,7 +388,3 @@ class AgentsTests(unittest.TestCase):
             (self.beta, "fixture-listed"),
         )
         self.app.idle(made["session"]["id"])
-
-
-if __name__ == "__main__":
-    unittest.main()

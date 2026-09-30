@@ -40,7 +40,6 @@ class CredentialsTest(unittest.TestCase):
     @exclusive
     def test_a_boot_moves_every_secret_into_creds_json(self):
         app = self.app_for()
-        self.addCleanup(self.forget_backups, app)
         # Written while the daemon runs, so the restart below is what moves them.
         for name, content in {
             "auth.json": {"anthropic": [{"type": "oauth", "access": "old-access"}]},
@@ -76,10 +75,9 @@ class CredentialsTest(unittest.TestCase):
 
     @exclusive
     def test_clients_change_secrets_without_reading_them(self):
+        # The daemon booted after the fixture wrote its profile, so the key
+        # is already in creds.json, where a client rotates it.
         app = self.app_for()
-        config = json.loads((app.home / "config.json").read_text())
-        del config["providers"][app.profile]["apiKey"]
-        (app.home / "config.json").write_text(json.dumps(config))
         app.api(
             f"/auth/credentials/providers/{app.profile}",
             {"apiKey": "rotated-key"},
@@ -115,11 +113,3 @@ class CredentialsTest(unittest.TestCase):
 
     def backups(self, app):
         return list((app.home / "backups").glob("*-before-creds-*"))
-
-    def forget_backups(self, app):
-        for path in self.backups(app):
-            path.unlink()
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -211,7 +211,3 @@ class AgentsPythonTests(unittest.TestCase):
                 )
         finally:
             provider.close()
-
-
-if __name__ == "__main__":
-    unittest.main()

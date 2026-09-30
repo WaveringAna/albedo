@@ -1,14 +1,17 @@
-"""Shared fixtures for offline end-to-end tests.
+"""Shared fixtures for offline end-to-end tests, run through ``run.py``.
 
 A provider is a scripted model: its callback receives each decoded request and
 returns ``text(...)``, ``python(...)``, ``error(...)``, or a custom ``Reply``.
 Both OpenAI streaming protocols are served. ``Provider(catalog=...)`` also serves
 a local models catalog. ``Albedo`` gives each fixture a separate workspace and
-provider route on one shared HTTP server and one shared CLI daemon. Pass
-``prepare(app)`` to write fixtures before use; only the first fixture can
-prepare a pristine daemon home. ``providers={}`` leaves it unconfigured.
-``store_secrets(section, value)`` writes a creds.json section such as the
-OAuth ``accounts`` or ``mcp`` server secrets.
+provider route on one shared HTTP server, on the daemon the runner gave its
+test. Tests share one daemon and keep to their own profile; an ``@exclusive``
+test, which may change global settings or restart the daemon, gets a fresh one
+that boots after its fixture's ``prepare(app)`` and is discarded afterwards, so
+it never restores what it changed. ``providers={}`` leaves it unconfigured.
+``write_extensions(settings)`` replaces extensions.json without letting the
+daemon reach the network, and ``store_secrets(section, value)`` writes a
+creds.json section such as the OAuth ``accounts`` or ``mcp`` server secrets.
 A response ``Reply(..., usage=None)`` omits provider usage.
 
 Example::
@@ -29,29 +32,38 @@ Example::
 from __future__ import annotations
 
 import atexit
+import contextlib
 from dataclasses import dataclass, field
-import itertools
-import signal
+import http.client
 import http.server
 import io
+import itertools
 import json
 import os
 from pathlib import Path
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-import urllib.request
 import urllib.error
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "test"))
+import scratch  # noqa: E402
+
+scratch.claim("e2e")
 # A test daemon needs two schedulers, and busy-waiting ones make every boot
 # pin all cores of the machine.
 TEST_VM_FLAGS = "+S 2:2 +SDcpu 2:2 +sbwt none +sbwtdcpu none +sbwtdio none"
 # Credentials a provider reads from the environment. The daemon must not see
 # the developer's, or a catalog reload reaches the live provider.
 PROVIDER_ENVIRONMENT = ("ALIBABA_API_KEY", "DASHSCOPE_API_KEY", "ALIBABA_BASE_URL")
+# Extension settings that keep a daemon off the network: the models catalog
+# never refreshes by itself and the cache-TTL table fetches no remote copy.
+OFFLINE = {"models": {"refreshHours": 0}, "cacheTtl": {"url": None}}
 
 
 @dataclass
@@ -111,13 +123,14 @@ def _content_text(item):
     return ""
 
 
-# The concurrent phase uses distinct profiles and serializes every change to
-# the process-wide daemon configuration. Exclusive tests retain fixture names.
+# Guards the provider registry and the shared provider server.
 _config_lock = threading.RLock()
-_parallel = threading.local()
 
 
 def exclusive(target):
+    """Run the test, or every test of the class, on a daemon of its own that
+    boots after the fixture's prepare step and is discarded afterwards: it may
+    change global settings or restart the daemon."""
     target._e2e_exclusive = True
     return target
 
@@ -385,68 +398,307 @@ class Provider:
         pass
 
 
-_shared = None
-_daemon_pid = None
+_daemons: list[Daemon] = []
+_daemons_lock = threading.RLock()
+_discarding: list[threading.Thread] = []
+_current = threading.local()
 daemon_boots = 0
 restart_seconds = 0.0
-_suite_fixture = None
+# mist closes a keep-alive connection after 10 idle seconds; one idle for less
+# than this is reused, so a request never races the daemon closing it.
+KEEP_ALIVE_SECONDS = 5
+
+
+class _Connection(http.client.HTTPConnection):
+    """A daemon connection that notes when it can carry the next request."""
+
+    def __init__(self, port, token):
+        super().__init__("127.0.0.1", port, timeout=20)
+        self.token = token
+        self.response_class = _Response
+        self.used_at = time.monotonic()
+        self.reusable = True
+        self.response = None
+
+    def idle(self):
+        """Whether the next request may go out on this connection: its last
+        response is done with and the daemon has not dropped it yet."""
+        return (
+            self.sock is not None
+            and self.reusable
+            and (self.response is None or self.response.isclosed())
+            and time.monotonic() - self.used_at < KEEP_ALIVE_SECONDS
+        )
+
+
+class _Response(http.client.HTTPResponse):
+    """Closing drains a short unread body so the connection can be reused;
+    an event stream or a long body gives the connection up instead."""
+
+    connection = None
+
+    def close(self):
+        connection = self.connection
+        if connection is not None and not self.isclosed():
+            streaming = self.getheader("content-type", "").startswith(
+                "text/event-stream"
+            )
+            if streaming or self.length is None or self.length > 1 << 20:
+                connection.reusable = False
+            else:
+                try:
+                    self.read()
+                except OSError, http.client.HTTPException:
+                    connection.reusable = False
+        super().close()
+        if connection is not None:
+            connection.used_at = time.monotonic()
+            if self.will_close or not connection.reusable:
+                connection.close()
+
+
+class Daemon:
+    """One daemon and its hermetic home. A concurrent daemon is shared by
+    tests that each keep to their own provider profile; any other serves one
+    test, which may change its global state or restart it."""
+
+    def __init__(self, name, *, concurrent=False):
+        if not hasattr(sys.modules["__main__"], "__file__"):
+            # A daemon lives until the process that booted it exits, which a
+            # long-lived interpreter or agent kernel never does.
+            raise RuntimeError(
+                "run E2E tests through test/e2e/run.py, not an interactive interpreter"
+            )
+        self.concurrent = concurrent
+        self.lock = threading.RLock()
+        self.root = Path(tempfile.mkdtemp(prefix=f"{name}-"))
+        self.home = self.root / "home"
+        self.home.mkdir()
+        (self.root / "user-home").mkdir()
+        # Nothing of the developer's albedo setup reaches the daemon.
+        self.env = dict(
+            {
+                key: value
+                for key, value in os.environ.items()
+                if key not in PROVIDER_ENVIRONMENT
+                and key not in ("HOME", "ERL_FLAGS")
+                and not key.startswith("ALBEDO_")
+            },
+            HOME=str(self.root / "user-home"),
+            ALBEDO_HOME=str(self.home),
+            ALBEDO_ROOT=str(ROOT),
+            ALBEDO_NO_BROWSER="1",
+            ALBEDO_PARENT_PID=str(os.getpid()),
+            ERL_FLAGS=TEST_VM_FLAGS,
+            ALBEDO_IDLE_SECONDS="10",
+            ALBEDO_MCP_SECRET="configured-secret",
+            ALBEDO_MCP_CLOSED=str(self.root / "closed"),
+            ALBEDO_MCP_AMBIENT="must-not-reach-the-server",
+        )
+        self.connection = None
+        self.base = None
+        self._pid = None
+        self._local = threading.local()
+        with _daemons_lock:
+            _daemons.append(self)
+
+    @property
+    def booted(self):
+        return self._pid is not None
+
+    def boot(self):
+        """Start the daemon; the first fixture boots it after its prepare."""
+        extensions = self.home / "extensions.json"
+        if not extensions.exists():
+            extensions.write_text(json.dumps(OFFLINE))
+        self.cli("sessions")
+        self._refresh()
+
+    def _refresh(self):
+        global daemon_boots
+        self.connection = json.loads((self.home / "daemon.json").read_text())
+        self.base = f"http://127.0.0.1:{self.connection['port']}"
+        if self.connection["pid"] != self._pid:
+            # A new PID is valid only after the old daemon has exited.
+            if self._pid is not None and _alive(self._pid):
+                raise AssertionError(f"a second daemon started in {self.home}")
+            self._pid = self.connection["pid"]
+            with _daemons_lock:
+                daemon_boots += 1
+
+    def restart(self, *, crash=False, prepare=None):
+        """Replace the daemon under the same home, preparing storage between."""
+        global restart_seconds
+        started = time.monotonic()
+        if crash:
+            os.kill(self._pid, signal.SIGKILL)
+        elif not self._stop(timeout=15):
+            self._fail("daemon did not stop")
+        if prepare is not None:
+            prepare()
+        self.cli("sessions")
+        self._refresh()
+        with _daemons_lock:
+            restart_seconds += time.monotonic() - started
+
+    def _stop(self, timeout):
+        try:
+            self.api("/shutdown", {}).close()
+        except OSError, http.client.HTTPException:
+            pass
+        deadline = time.monotonic() + timeout
+        while _alive(self._pid):
+            if time.monotonic() > deadline:
+                return False
+            time.sleep(0.05)
+        return True
+
+    def shutdown(self):
+        """Stop the daemon, killing it if it will not stop, and drop the home."""
+        with self.lock:
+            if self.booted:
+                # The daemon's own record may be stale after a crash restart.
+                path = self.home / "daemon.json"
+                if path.exists():
+                    self.connection = json.loads(path.read_text())
+                    self.base = f"http://127.0.0.1:{self.connection['port']}"
+                    self._pid = self.connection["pid"]
+                if not self._stop(timeout=10):
+                    os.kill(self._pid, signal.SIGKILL)
+                self._pid = None
+            shutil.rmtree(self.root, ignore_errors=True)
+        with _daemons_lock:
+            if self in _daemons:
+                _daemons.remove(self)
+
+    def discard(self):
+        """Shut the daemon down in the background; the test that used it is
+        done, and nothing waits on its teardown until the run ends."""
+        thread = threading.Thread(target=self.shutdown)
+        thread.start()
+        with _daemons_lock:
+            _discarding.append(thread)
+
+    def _fail(self, message):
+        log = self.home / "daemon.log"
+        raise AssertionError(message + ("\n" + log.read_text() if log.exists() else ""))
+
+    def _connection(self):
+        connection = getattr(self._local, "connection", None)
+        port, token = self.connection["port"], self.connection["token"]
+        # A restarted daemon has a new token and may be back on the same port.
+        if connection is None or connection.token != token or not connection.idle():
+            if connection is not None:
+                # A response still being read, such as an event stream, keeps
+                # its socket; closing it gives the connection up.
+                connection.reusable = False
+                if connection.response is None or connection.response.isclosed():
+                    connection.close()
+            connection = self._local.connection = _Connection(port, token)
+        return connection
+
+    def api(self, path, body=None, *, method=None):
+        """One daemon request over this thread's kept-alive connection. A
+        socket per request, polled at test speed, leaves thousands of ports in
+        TIME_WAIT; the host runs out and unrelated connections fail."""
+        connection = self._connection()
+        connection.used_at = time.monotonic()
+        payload = None if body is None else json.dumps(body).encode()
+        try:
+            connection.request(
+                method or ("GET" if payload is None else "POST"),
+                path,
+                payload,
+                {
+                    "Authorization": "Bearer " + self.connection["token"],
+                    "Content-Type": "application/json",
+                },
+            )
+            response = connection.getresponse()
+        except BaseException:
+            connection.close()
+            raise
+        response.connection, connection.response = connection, response
+        if response.status < 400:
+            return response
+        payload = response.read()
+        response.close()
+        raise urllib.error.HTTPError(
+            self.base + path,
+            response.status,
+            response.reason + ": " + payload.decode(errors="replace"),
+            response.headers,
+            io.BytesIO(payload),
+        )
+
+    def cli(self, *args):
+        result = subprocess.run(
+            [str(ROOT / "cli/bin/albedo"), *args],
+            cwd=ROOT,
+            env=self.env,
+            text=True,
+            capture_output=True,
+            timeout=45,
+        )
+        if result.returncode:
+            self._fail(result.stdout + result.stderr)
+        return result.stdout
+
+    def install_shared_features(self):
+        """Enable the additive global gateways concurrent tests rely on, once,
+        before they start: none of them may change global state itself."""
+        with on_daemon(self):
+            app = Albedo().__enter__()
+        settings = json.loads((self.home / "extensions.json").read_text())
+        settings.setdefault("enabled", {})["proxy"] = True
+        (self.home / "extensions.json").write_text(json.dumps(settings))
+        self.api(
+            f"/sessions/{app.session()}/extensions",
+            {"name": "webhooks", "scope": "global", "enabled": True},
+        ).close()
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def current_daemon():
+    """The daemon the runner gave this thread."""
+    daemon = getattr(_current, "daemon", None)
+    if daemon is None:
+        raise RuntimeError("run E2E tests through test/e2e/run.py")
+    return daemon
+
+
+@contextlib.contextmanager
+def on_daemon(daemon):
+    """Run fixtures created on this thread against daemon."""
+    previous = getattr(_current, "daemon", None)
+    _current.daemon = daemon
+    try:
+        yield daemon
+    finally:
+        _current.daemon = previous
 
 
 def shutdown():
-    global _shared
-    if _shared is None:
-        return
-    app = _shared
-    # The first fixture's connection may be stale after a restart.
-    path = app.home / "daemon.json"
-    if path.exists():
-        app.connection = json.loads(path.read_text())
-        app.base = f"http://127.0.0.1:{app.connection['port']}"
-        pid = app.connection["pid"]
-        try:
-            app.api("/shutdown", {}).close()
-        except Exception:
-            pass
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                break
-            time.sleep(0.05)
-        else:
-            os.kill(pid, signal.SIGKILL)
-    if app.process.poll() is None:
-        app.process.terminate()
-        try:
-            app.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            app.process.kill()
-            app.process.wait()
-    app.temp.cleanup()
-    _shared = None
+    """Stop every daemon, then the provider server."""
+    global _server
+    for thread in list(_discarding):
+        thread.join()
+    _discarding.clear()
+    for daemon in list(_daemons):
+        daemon.shutdown()
     if _server is not None:
         _server.shutdown()
         _server.server_close()
+        _server = None
     with _config_lock:
         _providers.clear()
-
-
-def enable_parallel_features():
-    """Install additive global gateways once, before concurrent fixtures start."""
-    global _suite_fixture
-    if _suite_fixture is not None:
-        return
-    app = Albedo().__enter__()
-    _suite_fixture = app
-    settings = json.loads((app.home / "extensions.json").read_text())
-    settings.setdefault("enabled", {})["proxy"] = True
-    (app.home / "extensions.json").write_text(json.dumps(settings))
-    session = app.session()
-    app.api(
-        f"/sessions/{session}/extensions",
-        {"name": "webhooks", "scope": "global", "enabled": True},
-    ).close()
 
 
 atexit.register(shutdown)
@@ -460,7 +712,7 @@ def _write_config(path, value):
 
 
 class Albedo:
-    """Per-test workspace and provider profile over one process-wide daemon."""
+    """A test's workspace and provider profile on the daemon the runner gave it."""
 
     def __init__(
         self,
@@ -477,67 +729,15 @@ class Albedo:
         self.prepare = prepare
 
     def __enter__(self):
-        with _config_lock:
-            global _shared
-            if _shared is None:
-                if not hasattr(sys.modules["__main__"], "__file__"):
-                    # A daemon lives until the process that booted it exits,
-                    # which a long-lived interpreter or agent kernel never does.
-                    raise RuntimeError(
-                        "run E2E tests through test/e2e/run.py, not an interactive interpreter"
-                    )
-                self.temp = tempfile.TemporaryDirectory(prefix="albedo-e2e-")
-                self.root = Path(self.temp.name)
-                self.home = self.root / "home"
-                self.home.mkdir()
-                (self.root / "user-home").mkdir()
-                self.env = dict(
-                    {
-                        name: value
-                        for name, value in os.environ.items()
-                        if name not in PROVIDER_ENVIRONMENT
-                    },
-                    HOME=str(self.root / "user-home"),
-                    ALBEDO_HOME=str(self.home),
-                    ALBEDO_PARENT_PID=str(os.getpid()),
-                    ERL_FLAGS=TEST_VM_FLAGS,
-                    ALBEDO_IDLE_SECONDS="10",
-                    ALBEDO_MCP_SECRET="configured-secret",
-                    ALBEDO_MCP_CLOSED=str(self.root / "closed"),
-                    ALBEDO_MCP_AMBIENT="must-not-reach-the-server",
-                )
-                _shared = self
-                first = True
-            else:
-                first = False
-                shared = _shared
-                self.temp, self.root, self.home, self.env = (
-                    shared.temp,
-                    shared.root,
-                    shared.home,
-                    shared.env,
-                )
+        self.daemon = daemon = current_daemon()
+        with daemon.lock:
+            self.root, self.home, self.env = daemon.root, daemon.home, daemon.env
             self.workspace = Path(tempfile.mkdtemp(prefix="workspace-", dir=self.root))
-            self._concurrent = getattr(_parallel, "enabled", False)
-            self._saved = {
-                name: (self.home / name).read_bytes()
-                if (self.home / name).exists()
-                else None
-                for name in (
-                    "config.json",
-                    "extensions.json",
-                    "creds.json",
-                    "models.json",
-                )
-            }
+            self._concurrent = daemon.concurrent
             if self.prepare:
                 self.prepare(self)
             if not (self.home / "extensions.json").exists():
-                (self.home / "extensions.json").write_text(
-                    json.dumps(
-                        {"models": {"refreshHours": 0}, "cacheTtl": {"url": None}}
-                    )
-                )
+                self.write_extensions({})
             default_name = (
                 f"fixture-{self.provider.route}" if self._concurrent else "fixture"
             )
@@ -569,94 +769,43 @@ class Albedo:
                 _write_config(self.home / "config.json", current)
             elif not self._concurrent and (self.home / "config.json").exists():
                 (self.home / "config.json").unlink()
-            if first:
-                self.process = subprocess.Popen(
-                    [str(ROOT / "cli/bin/albedo"), "sessions"],
-                    cwd=ROOT,
-                    env=self.env,
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
-                deadline = time.monotonic() + 30
-                while (
-                    not (self.home / "daemon.json").exists()
-                    and time.monotonic() < deadline
-                ):
-                    if self.process.poll() is not None:
-                        self._fail("daemon exited during startup")
-                    time.sleep(0.05)
-                if not (self.home / "daemon.json").exists():
-                    self._fail("daemon did not start")
-            else:
-                self.process = _shared.process
-            self._connection_refresh()
+            if not daemon.booted:
+                daemon.boot()
             return self
 
-    def _connection_refresh(self):
-        global _daemon_pid, daemon_boots
-        self.connection = json.loads((self.home / "daemon.json").read_text())
-        self.base = f"http://127.0.0.1:{self.connection['port']}"
-        if self.connection["pid"] != _daemon_pid:
-            # A new PID is valid only after the old daemon has exited.
-            if _daemon_pid is not None:
-                try:
-                    os.kill(_daemon_pid, 0)
-                except ProcessLookupError:
-                    pass
-                else:
-                    raise AssertionError("second concurrent E2E daemon started")
-            _daemon_pid = self.connection["pid"]
-            daemon_boots += 1
+    @property
+    def connection(self):
+        return self.daemon.connection
+
+    @property
+    def base(self):
+        return self.daemon.base
 
     def restart(self, *, crash=False, prepare=None):
-        """Restart the shared daemon; optionally prepare offline storage fixtures."""
-        global restart_seconds
-        started = time.monotonic()
-        if crash:
-            os.kill(self.connection["pid"], signal.SIGKILL)
-        else:
-            self.api("/shutdown", {}).close()
-            deadline = time.monotonic() + 15
-            while time.monotonic() < deadline:
-                try:
-                    os.kill(self.connection["pid"], 0)
-                except ProcessLookupError:
-                    break
-                time.sleep(0.05)
-            else:
-                self._fail("daemon did not stop")
-        if prepare is not None:
-            prepare(self)
-        self.cli("sessions")
-        self._connection_refresh()
-        restart_seconds += time.monotonic() - started
+        """Restart the daemon; optionally prepare offline storage fixtures."""
+        self.daemon.restart(
+            crash=crash, prepare=None if prepare is None else lambda: prepare(self)
+        )
 
     def _fail(self, message):
-        log = self.home / "daemon.log"
-        raise AssertionError(message + ("\n" + log.read_text() if log.exists() else ""))
+        self.daemon._fail(message)
 
     def api(self, path, body=None, *, method=None):
-        request = urllib.request.Request(
-            self.base + path,
-            data=None if body is None else json.dumps(body).encode(),
-            method=method,
-            headers={
-                "Authorization": "Bearer " + self.connection["token"],
-                "Content-Type": "application/json",
-            },
-        )
-        try:
-            return urllib.request.urlopen(request, timeout=20)
-        except urllib.error.HTTPError as failure:
-            payload = failure.read()
-            raise urllib.error.HTTPError(
-                failure.url,
-                failure.code,
-                failure.msg + ": " + payload.decode(errors="replace"),
-                failure.headers,
-                io.BytesIO(payload),
-            ) from failure
+        return self.daemon.api(path, body, method=method)
+
+    def cli(self, *args):
+        return self.daemon.cli(*args)
+
+    def write_extensions(self, settings):
+        """Replace extensions.json, keeping the daemon offline in whatever
+        catalog settings leave out."""
+        merged = {
+            name: {**OFFLINE.get(name, {}), **value}
+            if name in OFFLINE and isinstance(value, dict)
+            else value
+            for name, value in {**OFFLINE, **settings}.items()
+        }
+        (self.home / "extensions.json").write_text(json.dumps(merged))
 
     def store_secrets(self, section, value):
         """Replaces one creds.json section, where the daemon keeps every secret."""
@@ -666,21 +815,8 @@ class Albedo:
         path.write_text(json.dumps(creds))
         path.chmod(0o600)
 
-    def cli(self, *args):
-        result = subprocess.run(
-            [str(ROOT / "cli/bin/albedo"), *args],
-            cwd=ROOT,
-            env=self.env,
-            text=True,
-            capture_output=True,
-            timeout=45,
-        )
-        if result.returncode:
-            self._fail(result.stdout + result.stderr)
-        return result.stdout
-
     def session(self, workspace=None):
-        with _config_lock:
+        with self.daemon.lock:
             if self._concurrent:
                 with self.api(
                     "/sessions",
@@ -721,13 +857,5 @@ class Albedo:
             return json.load(response)
 
     def __exit__(self, *_exc):
-        with _config_lock:
-            if not self._concurrent:
-                for name, content in self._saved.items():
-                    path = self.home / name
-                    if content is None:
-                        path.unlink(missing_ok=True)
-                    else:
-                        path.write_bytes(content)
-            if self._owns_provider:
-                self.provider.close()
+        if self._owns_provider:
+            self.provider.close()

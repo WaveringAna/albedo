@@ -780,7 +780,3 @@ class IntegrationTest(unittest.TestCase):
                         for e in events
                     )
                 )
-
-
-if __name__ == "__main__":
-    unittest.main()

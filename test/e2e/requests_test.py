@@ -248,7 +248,3 @@ class ProviderRequestsTest(unittest.TestCase):
                     self.assertGreaterEqual(gap, wait)
         finally:
             provider.close()
-
-
-if __name__ == "__main__":
-    unittest.main()

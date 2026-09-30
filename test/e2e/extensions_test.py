@@ -728,7 +728,3 @@ class ExtensionTests(unittest.TestCase):
         )
         (request,) = self.turn("folded after restart")
         self.assertIn("LCM summary node #", json.dumps(request["input"]))
-
-
-if __name__ == "__main__":
-    unittest.main()

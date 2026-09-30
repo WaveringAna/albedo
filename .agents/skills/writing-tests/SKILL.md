@@ -31,7 +31,7 @@ When a behaviour matters and isn't covered end to end, move it into an E2E scena
 ## Conventions
 
 - Start each test module with a docstring that says which bug it catches and why E2E can't.
-- The whole E2E run shares one daemon. Never start a daemon per test or per file. Isolate tests with their own session, workspace, and provider route; restore any global state you change; and restart the shared daemon only when the behaviour under test is a restart.
+- Tests share one daemon by default. Isolate them with their own session, workspace, and provider route. A test that changes global state (config.json, extensions.json, creds, the environment) or restarts the daemon is `@exclusive`: it gets a fresh daemon that boots after its fixture's `prepare`, is thrown away afterwards, and so never restores what it changed. Never boot a daemon yourself; the runner (`test/e2e/run.py`) hands them out. Every test may run beside any other, exclusive or not, so keep fixture state such as gates and scripted replies on the test instance, never in module globals.
 - One area per E2E file, and one behaviour per test method, with a name that states the behaviour.
 - No live network or credentials. Anything that needs them belongs in `test/manual`, which is opt-in.
 - Every check that must pass is listed in `test.sh`. Add new suites there, and run the affected suite and report real results before calling the work done.

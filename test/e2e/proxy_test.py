@@ -149,9 +149,7 @@ class ProxyTests(unittest.TestCase):
         return urllib.request.urlopen(self.base + "/models", timeout=10)
 
     def enable(self):
-        (self.app.home / "extensions.json").write_text(
-            json.dumps({"models": {"refreshHours": 0}, "enabled": {"proxy": True}})
-        )
+        self.app.write_extensions({"enabled": {"proxy": True}})
 
     def post(self, body, *, headers=None):
         request = urllib.request.Request(
@@ -167,9 +165,7 @@ class ProxyTests(unittest.TestCase):
 
     @exclusive
     def test_enablement_listing_and_profile_errors(self):
-        (self.app.home / "extensions.json").write_text(
-            json.dumps({"models": {"refreshHours": 0}, "enabled": {"proxy": False}})
-        )
+        self.app.write_extensions({"enabled": {"proxy": False}})
         with self.assertRaises(urllib.error.HTTPError) as rejected:
             self.get_models()
         self.assertEqual(rejected.exception.code, 403)
@@ -319,7 +315,3 @@ class ProxyTests(unittest.TestCase):
         self.assertNotIn("sealed-reasoning", json.dumps(sent))
         self.assertEqual(sent["messages"][1]["tool_calls"][0]["id"], "call_r1")
         self.assertEqual(sent["messages"][2]["tool_call_id"], "call_r1")
-
-
-if __name__ == "__main__":
-    unittest.main()

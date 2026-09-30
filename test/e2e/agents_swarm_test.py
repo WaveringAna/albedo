@@ -116,7 +116,3 @@ class AgentsSwarmTests(unittest.TestCase):
                 )
             )
         return counts
-
-
-if __name__ == "__main__":
-    unittest.main()

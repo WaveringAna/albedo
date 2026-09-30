@@ -270,7 +270,3 @@ finally:
                 self.assertEqual(widths(request), [10])
         finally:
             provider.close()
-
-
-if __name__ == "__main__":
-    unittest.main()

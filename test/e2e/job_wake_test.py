@@ -105,7 +105,3 @@ class JobWakeTests(unittest.TestCase):
                 if line.startswith(b"data: "):
                     return json.loads(line[6:])
         self.fail("no stream snapshot")
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -275,7 +275,3 @@ class MigrationsTest(unittest.TestCase):
             self.assertIn("legacy image", serialized)
             self.assertIn(PNG, serialized)
             self.assertIn("legacy cell readable", serialized)
-
-
-if __name__ == "__main__":
-    unittest.main()

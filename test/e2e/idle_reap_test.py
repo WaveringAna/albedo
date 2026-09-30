@@ -113,7 +113,3 @@ class IdleReapTests(unittest.TestCase):
         self.assertTrue(
             any("restored 2 variables from disk" in note for note in notes), notes
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

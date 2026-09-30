@@ -70,7 +70,3 @@ class PythonToolsTests(unittest.TestCase):
             f"print((await cells.info({slept['cell_id']!r}))['duration'])", session
         )
         self.assertEqual(float(info["output"]), slept["duration"])
-
-
-if __name__ == "__main__":
-    unittest.main()

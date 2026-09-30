@@ -24,10 +24,6 @@ class SettingsTest(unittest.TestCase):
         self.app = Albedo(self.provider)
         self.app.__enter__()
         self.addCleanup(self.app.__exit__, None, None, None)
-        for name in ("picker.json", "capabilities.json"):
-            path = self.app.home / name
-            prior = path.read_bytes() if path.exists() else None
-            self.addCleanup(self.restore, path, prior)
         self.session = self.app.session()
         self.route = f"/sessions/{self.session}/settings"
 
@@ -393,7 +389,3 @@ class SettingsTest(unittest.TestCase):
         finally:
             release.set()
             self.app.idle(self.session)
-
-
-if __name__ == "__main__":
-    unittest.main()

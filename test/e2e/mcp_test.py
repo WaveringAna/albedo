@@ -137,7 +137,3 @@ class McpTests(unittest.TestCase):
             self.extension({"name": "mcp", "enabled": True})
         self.assertEqual(rejected.exception.code, 409)
         self.assertFalse(self.extension()["enabled"])
-
-
-if __name__ == "__main__":
-    unittest.main()

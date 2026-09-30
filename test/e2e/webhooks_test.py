@@ -114,7 +114,3 @@ class WebhookTests(unittest.TestCase):
         self.assertTrue(
             any("WEBHOOK_BINDING_OK" in str(output) for output in outputs), outputs
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -1,20 +1,28 @@
-"""Run all E2E unittest suites, one file, or one test by dotted identifier."""
+"""Run all E2E unittest suites, one file, or one test by dotted identifier.
+
+Tests share one concurrent daemon; each ``@exclusive`` test gets a daemon of its
+own, discarded when it ends, and a few of them run at a time beside the shared
+ones. Both queues start with the tests that took longest last time, so the
+slowest never start last.
+"""
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import io
+from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import importlib.util
+import io
+import json
 from pathlib import Path
 import sys
-import tempfile
 import time
 import unittest
 
 import harness
+import scratch
 
 SUITE_DIR = Path(__file__).parent
 sys.path.insert(0, str(SUITE_DIR))
+DURATIONS = scratch.ROOT / "e2e-durations.json"
 
 
 def suite_for(path, test_name=None):
@@ -27,23 +35,6 @@ def suite_for(path, test_name=None):
     return loader.loadTestsFromModule(module)
 
 
-def migration_suite():
-    return suite_for(
-        SUITE_DIR / "integration_test.py",
-        "IntegrationTest.test_unconfigured_startup_and_legacy_provider_migration",
-    )
-
-
-def without_migration(suite):
-    return unittest.TestSuite(
-        test
-        for group in suite
-        for test in group
-        if test._testMethodName
-        != "test_unconfigured_startup_and_legacy_provider_migration"
-    )
-
-
 def cases(suite):
     for item in suite:
         if isinstance(item, unittest.TestSuite):
@@ -52,95 +43,117 @@ def cases(suite):
             yield item
 
 
-def execute(test, concurrent=False):
-    harness._parallel.enabled = concurrent
+def marked(test, mark):
+    method = getattr(test, test._testMethodName)
+    return getattr(method, mark, False) or getattr(type(test), mark, False)
+
+
+def execute(test, daemon):
+    log = daemon.home / "daemon.log"
+    offset = log.stat().st_size if log.exists() else 0
     stream = io.StringIO()
     started = time.monotonic()
-    try:
+    with harness.on_daemon(daemon):
         result = unittest.TextTestRunner(stream=stream, verbosity=2).run(test)
-        return test, result, time.monotonic() - started, stream.getvalue()
+    duration = time.monotonic() - started
+    if not result.wasSuccessful() and log.exists():
+        # The daemon's side of a failure; the shared daemon's log interleaves
+        # the tests that ran alongside this one.
+        with log.open("rb") as daemon_log:
+            daemon_log.seek(offset)
+            result.daemon_log = daemon_log.read()[-8000:].decode(errors="replace")
+    return test, result, duration
+
+
+def execute_alone(test):
+    daemon = harness.Daemon("exclusive")
+    try:
+        return execute(test, daemon)
     finally:
-        harness._parallel.enabled = False
+        daemon.discard()
 
 
-def run_suite(suite, workers):
-    selected = list(cases(suite))
-    first = [
-        test
-        for test in selected
-        if "test_unconfigured_startup_and_legacy_provider_migration" in test.id()
-    ]
-    parallel = [
-        test
-        for test in selected
-        if test not in first
-        and not getattr(getattr(test, test._testMethodName), "_e2e_exclusive", False)
-        and not getattr(type(test), "_e2e_exclusive", False)
-    ]
-    exclusive = [
-        test for test in selected if test not in first and test not in parallel
-    ]
-    outcomes = [execute(test) for test in first]
-    if parallel:
-        harness.enable_parallel_features()
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(execute, test, True) for test in parallel]
-        outcomes.extend(future.result() for future in as_completed(futures))
-    outcomes.extend(execute(test) for test in exclusive)
-    for test, result, duration, _output in outcomes:
+def run_suite(suite, jobs, exclusive_jobs):
+    try:
+        durations = json.loads(DURATIONS.read_text())
+    except OSError, ValueError:
+        durations = {}
+    selected = sorted(cases(suite), key=lambda test: -durations.get(test.id(), 0))
+    exclusive = [test for test in selected if marked(test, "_e2e_exclusive")]
+    shared = [test for test in selected if test not in exclusive]
+    daemon = harness.Daemon("shared", concurrent=True) if shared else None
+    if daemon:
+        daemon.boot()
+        daemon.install_shared_features()
+    with (
+        ThreadPoolExecutor(max_workers=exclusive_jobs) as exclusive_pool,
+        ThreadPoolExecutor(max_workers=jobs) as shared_pool,
+    ):
+        alone = [exclusive_pool.submit(execute_alone, test) for test in exclusive]
+        together = [shared_pool.submit(execute, test, daemon) for test in shared]
+        outcomes = [future.result() for future in together + alone]
+    report(outcomes)
+    durations.update({test.id(): duration for test, _, duration in outcomes})
+    DURATIONS.write_text(json.dumps(durations, indent=1, sort_keys=True))
+    return all(result.wasSuccessful() for _, result, _ in outcomes)
+
+
+def report(outcomes):
+    for test, result, duration in outcomes:
         status = "ok" if result.wasSuccessful() else "FAILED"
         print(f"{status:6} {test.id()} ({duration:.1f}s)", file=sys.stderr)
-    for test, result, _duration, _output in outcomes:
+    for test, result, _duration in outcomes:
         for _case, traceback in result.failures + result.errors:
             print(f"\n{test.id()}:\n{traceback}", file=sys.stderr)
+        if getattr(result, "daemon_log", ""):
+            print(
+                f"daemon log during {test.id()}:\n{result.daemon_log}", file=sys.stderr
+            )
     print("slowest tests:", file=sys.stderr)
-    for test, _result, duration, _output in sorted(
-        outcomes, key=lambda value: -value[2]
-    )[:10]:
+    for test, _result, duration in sorted(outcomes, key=lambda value: -value[2])[:10]:
         print(f"  {duration:.1f}s {test.id()}", file=sys.stderr)
-    print(
-        f"Ran {len(outcomes)} tests; {sum(not result.wasSuccessful() for _, result, _, _ in outcomes)} failing",
-        file=sys.stderr,
-    )
-    return all(result.wasSuccessful() for _, result, _, _ in outcomes)
+    failing = sum(not result.wasSuccessful() for _, result, _ in outcomes)
+    print(f"Ran {len(outcomes)} tests; {failing} failing", file=sys.stderr)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("target", nargs="?", help="file.py or TestCase.test_method")
     parser.add_argument(
-        "-j", "--jobs", type=int, default=8, help="concurrent non-exclusive tests"
+        "target", nargs="?", help="file.py, file:TestCase.test_method, or area"
+    )
+    parser.add_argument(
+        "-j", "--jobs", type=int, default=8, help="concurrent tests on the shared lane"
+    )
+    parser.add_argument(
+        "-x",
+        "--exclusive-jobs",
+        type=int,
+        default=4,
+        help="concurrent exclusive tests, each on a daemon of its own",
     )
     args = parser.parse_args()
     if args.target:
         path = SUITE_DIR / args.target
         if path.is_file():
             suite = suite_for(path)
-            if path.name == "integration_test.py":
-                suite = unittest.TestSuite(
-                    [migration_suite(), without_migration(suite)]
-                )
         else:
             file_part, _, test_name = args.target.partition(":")
             path = SUITE_DIR / (
                 file_part if file_part.endswith(".py") else file_part + "_test.py"
             )
-            suite = suite_for(path, test_name)
+            suite = suite_for(path, test_name or None)
     else:
-        paths = sorted(SUITE_DIR.glob("*_test.py"))
-        suites = [migration_suite()]
-        for path in paths:
-            tests = suite_for(path)
-            if path.name == "integration_test.py":
-                tests = without_migration(tests)
-            suites.append(tests)
-        suite = unittest.TestSuite(suites)
-    # Concurrent E2E runs compete for the daemon and kernels on this laptop.
-    with open(Path(tempfile.gettempdir()) / "albedo-e2e.lock", "w") as lock:
+        suite = unittest.TestSuite(
+            suite_for(path) for path in sorted(SUITE_DIR.glob("*_test.py"))
+        )
+    # Concurrent E2E runs compete for the daemons and kernels on this laptop.
+    with open(scratch.ROOT / "e2e.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         started = time.monotonic()
         try:
-            successful = run_suite(suite, max(1, args.jobs))
+            successful = run_suite(
+                suite, max(1, args.jobs), max(1, args.exclusive_jobs)
+            )
         finally:
             harness.shutdown()
             print(

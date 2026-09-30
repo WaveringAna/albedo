@@ -18,10 +18,6 @@ import unittest
 
 from harness import Albedo, Provider, exclusive, text
 
-# The child's turn blocks here until the test releases it, so the parent sits
-# idle on work that will wake it.
-GATE = threading.Event()
-
 # A prefix big enough to matter: 4096 cached tokens against the 1024 floor.
 PARENT_USAGE = {
     "input_tokens": 6000,
@@ -35,13 +31,6 @@ CHILD_USAGE = {
 }
 
 TASK = "hold the fort until released"
-
-
-def reply(request):
-    if TASK in json.dumps(request):
-        GATE.wait(timeout=90)
-        return text("scout finished", usage=CHILD_USAGE)
-    return text("orchestrator reply", usage=PARENT_USAGE)
 
 
 # A local cache-table override matching the fixture host: a 3s refresh TTL
@@ -75,7 +64,10 @@ def wait_for(predicate, timeout=30):
 
 class WarmTest(unittest.TestCase):
     def setUp(self):
-        self.provider = Provider(reply)
+        # The child's turn blocks here until the test releases it, so the
+        # parent sits idle on work that will wake it.
+        self.gate = threading.Event()
+        self.provider = Provider(self.reply)
         providers = {
             "orchestrator": {
                 "baseUrl": self.provider.url + "/parent/v1",
@@ -90,31 +82,27 @@ class WarmTest(unittest.TestCase):
                 "protocol": "responses",
             },
         }
-        self.app = Albedo(self.provider, protocol="responses", providers=providers)
+
+        def prepare(app):
+            (app.home / "cache-ttl.json").write_text(json.dumps(CACHE_TTL))
+            app.write_extensions(
+                {"enabled": {"warm": True}, "warm": {"minCachedTokens": 1024}}
+            )
+
+        self.app = Albedo(
+            self.provider, protocol="responses", providers=providers, prepare=prepare
+        )
         self.app.__enter__()
         self.addCleanup(self.provider.close)
         self.addCleanup(self.app.__exit__, None, None, None)
-        # cache-ttl.json is daemon-home state the harness does not restore.
-        self.saved_ttl = self.read_ttl()
-        self.addCleanup(self.restore_ttl)
-        (self.app.home / "cache-ttl.json").write_text(json.dumps(CACHE_TTL))
-        settings = json.loads((self.app.home / "extensions.json").read_text())
-        settings.setdefault("enabled", {})["warm"] = True
-        settings["warm"] = {"minCachedTokens": 1024}
-        (self.app.home / "extensions.json").write_text(json.dumps(settings))
-        GATE.clear()
+        # A failed test must not leave the scout's request blocked.
+        self.addCleanup(self.gate.set)
 
-    def read_ttl(self):
-        path = self.app.home / "cache-ttl.json"
-        return path.read_bytes() if path.exists() else None
-
-    def restore_ttl(self):
-        path = self.app.home / "cache-ttl.json"
-        if self.saved_ttl is None:
-            path.unlink(missing_ok=True)
-        else:
-            path.write_bytes(self.saved_ttl)
-        GATE.set()
+    def reply(self, request):
+        if TASK in json.dumps(request):
+            self.gate.wait(timeout=90)
+            return text("scout finished", usage=CHILD_USAGE)
+        return text("orchestrator reply", usage=PARENT_USAGE)
 
     def api(self, path, body=None, method=None):
         with self.app.api(path, body, method=method) as response:
@@ -165,11 +153,6 @@ class WarmTest(unittest.TestCase):
         time.sleep(4)  # The fixture TTL would have scheduled a ping at 2.7s.
         self.assertEqual(len(self.requests("/parent/")), 1)
         self.assertEqual([row["kind"] for row in self.rows(parent)], ["turn"])
-        # The scout's answer wakes the parent: let it land here, not in a
-        # later test whose fixture the shared profiles then point at.
-        GATE.set()
-        self.app.idle(child)
-        self.app.idle(parent)
 
     @exclusive
     def test_the_warmer_is_off_unless_enabled(self):
@@ -234,7 +217,7 @@ class WarmTest(unittest.TestCase):
         self.assertEqual(len(self.pings(self.requests("/parent/"))), 2)
 
         # Once the scout finishes, nothing new is scheduled either.
-        GATE.set()
+        self.gate.set()
         self.app.idle(child)
         self.app.idle(parent)
         time.sleep(4)
@@ -283,7 +266,7 @@ class WarmTest(unittest.TestCase):
         )
         self.assertLessEqual(moved, ping["startedMs"] + 3000)
         self.assertGreater(moved, ping["startedMs"] + 2000)
-        GATE.set()
+        self.gate.set()
         self.app.idle(child)
         self.app.idle(parent)
 
@@ -303,7 +286,7 @@ class WarmTest(unittest.TestCase):
         )
 
         # The work that kept the parent warm is done; warming ends with it.
-        GATE.set()
+        self.gate.set()
         self.app.idle(child)
         self.app.idle(parent)
         settled = len(self.pings(self.requests("/parent/")))
@@ -319,7 +302,3 @@ class WarmTest(unittest.TestCase):
             self.assertIn(
                 ping, [{**repeated, "max_output_tokens": 16} for repeated in turns]
             )
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -6,9 +6,8 @@ through match order, a local override replacing an entry by id and winning
 with a new more-specific one — without a restart — and a malformed file
 keeping the last good table. A turn's usage carries the steps its cached
 count fades through by that table, which the chat footer counts down from and
-which must survive a restart. It touches extensions.json and cache-ttl.json in
-the shared test home (the warmer suite writes its own override there), so the
-class is exclusive and restores every file it wrote.
+which must survive a restart. It writes extensions.json and cache-ttl.json, so
+every test is exclusive, on a home of its own.
 
 The remote layer's fetch is background (like the models catalog's), so the
 fixture provider serves the remote table on a loopback URL and the test waits
@@ -105,21 +104,14 @@ class CacheTtlTests(unittest.TestCase):
         self.addCleanup(self.catalog.close)
 
         def prepare(app):
-            (app.home / "cache-ttl.json").unlink(missing_ok=True)
-            (app.home / "cache-ttl-remote.json").unlink(missing_ok=True)
-            (app.home / "extensions.json").write_text(
-                json.dumps(
-                    {
-                        "models": {
-                            "url": self.catalog.url + "/models.json",
-                            "refreshHours": 0,
-                        },
-                        "cacheTtl": {
-                            "url": self.provider.url + "/cache-ttl.json",
-                            "refreshHours": 24,
-                        },
-                    }
-                )
+            app.write_extensions(
+                {
+                    "models": {"url": self.catalog.url + "/models.json"},
+                    "cacheTtl": {
+                        "url": self.provider.url + "/cache-ttl.json",
+                        "refreshHours": 24,
+                    },
+                }
             )
 
         self.app = Albedo(
@@ -135,12 +127,7 @@ class CacheTtlTests(unittest.TestCase):
             },
         )
         self.app.__enter__()
-        self.addCleanup(self.restore_home)
         self.addCleanup(self.app.__exit__, None, None, None)
-
-    def restore_home(self):
-        (self.app.home / "cache-ttl.json").unlink(missing_ok=True)
-        (self.app.home / "cache-ttl-remote.json").unlink(missing_ok=True)
 
     def table(self):
         with self.app.api("/cache-ttl") as response:

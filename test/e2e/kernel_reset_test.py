@@ -85,7 +85,3 @@ class KernelResetTests(unittest.TestCase):
         with app.api("/sessions") as response:
             info = next(item for item in json.load(response) if item["id"] == session)
         self.assertEqual(info["title"], "still alive")
-
-
-if __name__ == "__main__":
-    unittest.main()

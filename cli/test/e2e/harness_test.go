@@ -85,7 +85,8 @@ func bootSuite() (func() (string, bool), error) {
 
 	home := filepath.Join(temp, "home")
 	userHome := filepath.Join(temp, "user-home")
-	for _, dir := range []string{home, userHome} {
+	scratch := filepath.Join(temp, "tmp")
+	for _, dir := range []string{home, userHome, scratch} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return teardown, err
 		}
@@ -101,11 +102,12 @@ func bootSuite() (func() (string, bool), error) {
 	}
 
 	suite.root, suite.home = root, home
-	suite.env = hermeticEnv(root, home, userHome)
+	suite.env = hermeticEnv(root, home, userHome, scratch)
 	suite.provider = newFakeProvider()
-	// A stale models.dev refresh would reach the network from a test.
+	// A models.dev refresh or the cache-TTL table's remote copy would reach
+	// the network from a test.
 	if err := os.WriteFile(filepath.Join(home, "extensions.json"),
-		[]byte(`{"models": {"refreshHours": 0}}`), 0o600); err != nil {
+		[]byte(`{"models": {"refreshHours": 0}, "cacheTtl": {"url": null}}`), 0o600); err != nil {
 		return teardown, err
 	}
 
@@ -223,18 +225,20 @@ func repoRoot() (string, error) {
 }
 
 // hermeticEnv builds the environment for every CLI invocation and the daemon
-// it spawns: no real home, no inherited albedo state, and the parent watcher.
-func hermeticEnv(root, home, userHome string) []string {
+// it spawns: no real home, no inherited albedo state, temporary files inside
+// the suite's tree, and the parent watcher.
+func hermeticEnv(root, home, userHome, scratch string) []string {
 	var env []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
-		if name == "HOME" || name == "ERL_FLAGS" || strings.HasPrefix(name, "ALBEDO_") {
+		if name == "HOME" || name == "TMPDIR" || name == "ERL_FLAGS" || strings.HasPrefix(name, "ALBEDO_") {
 			continue
 		}
 		env = append(env, kv)
 	}
 	return append(env,
 		"HOME="+userHome,
+		"TMPDIR="+scratch,
 		"ALBEDO_HOME="+home,
 		"ALBEDO_PARENT_PID="+strconv.Itoa(os.Getpid()),
 		"ALBEDO_ROOT="+root,

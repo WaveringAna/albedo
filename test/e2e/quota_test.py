@@ -83,11 +83,14 @@ class QuotaTests(unittest.TestCase):
         def prepare(app):
             # The poller resolves the core through the daemon's environment.
             app.env["ALBEDO_USAGE_CORE"] = self.usage
-            settings = {
-                "models": {"refreshHours": 0},
-                "quota": {"pollSeconds": POLL_SECONDS, "busyPollSeconds": BUSY_SECONDS},
-            }
-            (app.home / "extensions.json").write_text(json.dumps(settings))
+            app.write_extensions(
+                {
+                    "quota": {
+                        "pollSeconds": POLL_SECONDS,
+                        "busyPollSeconds": BUSY_SECONDS,
+                    }
+                }
+            )
             app.store_secrets(
                 "accounts",
                 {
@@ -127,19 +130,11 @@ class QuotaTests(unittest.TestCase):
             },
             prepare=prepare,
         )
-        self.app.__enter__()
-        self.addCleanup(self.restore_home)
-        self.addCleanup(self.app.__exit__, None, None, None)
-        # A daemon booted before this fixture (the whole suite shares one) did
-        # not see ALBEDO_USAGE_CORE; one booted now does. Restarting makes both
-        # cases identical, and this test runs exclusively, after the rest.
-        self.app.restart()
-        # Readings from before the restart belong to a daemon that may not have
-        # had the fake; the cadence starts from the daemon under test.
+        # The daemon boots with the fake core once prepare has named it, so
+        # its cadence starts here.
         self.since = time.time() * 1000
-
-    def restore_home(self):
-        self.app.env.pop("ALBEDO_USAGE_CORE", None)
+        self.app.__enter__()
+        self.addCleanup(self.app.__exit__, None, None, None)
 
     def readings(self):
         with self.app.api("/quota") as response:
@@ -158,7 +153,7 @@ class QuotaTests(unittest.TestCase):
         return rows
 
     def observed(self, account):
-        """One timestamp per poll of one account since the restart, oldest first."""
+        """One timestamp per poll of one account since the boot, oldest first."""
         return sorted(
             {
                 row["observedAt"]
@@ -322,7 +317,3 @@ class QuotaTests(unittest.TestCase):
             f"history after {cursor} reached newer rows: "
             f"{[s['id'] for s in older['items']]}",
         )
-
-
-if __name__ == "__main__":
-    unittest.main()
