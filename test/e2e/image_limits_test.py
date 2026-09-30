@@ -31,6 +31,19 @@ def png(width, height):
     )
 
 
+# An ssh first on the kernel's PATH that runs the command right here, so
+# remote.connect boots, stages and talks to a real remote kernel.
+LOOPBACK_SSH = """#!/bin/sh
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -*) shift 2 ;;
+    *) break ;;
+  esac
+done
+shift
+exec sh -c "$*"
+"""
+
 WIDE = png(1200, 10)
 WIDE_DATA = base64.b64encode(WIDE).decode()
 NOTE = "An earlier image was scaled from 1200x10 to 1000x"
@@ -40,6 +53,15 @@ def widths(request):
     """The pixel width of every PNG the request carries."""
     found = re.findall(r"data:image/png;base64,([A-Za-z0-9+/=]+)", json.dumps(request))
     return [struct.unpack(">I", base64.b64decode(data)[16:20])[0] for data in found]
+
+
+def cell_result(output):
+    """The python tool's result: plain text, or the text part beside images."""
+    body = output["output"]
+    if isinstance(body, str):
+        return json.loads(body)
+    [text] = [part["text"] for part in body if part.get("type") == "input_text"]
+    return json.loads(text)
 
 
 class ImageLimitsTest(unittest.TestCase):
@@ -124,7 +146,7 @@ class ImageLimitsTest(unittest.TestCase):
                     if item.get("type") == "function_call_output"
                 )
                 # show_image refuses it at the call, so the cell fails there.
-                result = json.loads(output["output"])
+                result = cell_result(output)
                 self.assertEqual(result["status"], "error")
                 self.assertIn(
                     "ValueError: 1200x10 image is over this model's 1000px edge limit",
@@ -181,6 +203,71 @@ class ImageLimitsTest(unittest.TestCase):
                 [forked] = [r["request"] for r in provider.requests[start:]]
                 self.assertEqual(widths(forked), [1200])
                 self.assertNotIn(NOTE, json.dumps(forked))
+        finally:
+            provider.close()
+
+    def test_a_remote_image_is_shown_under_the_same_limits(self):
+        cell = (
+            """import os
+os.makedirs("bin", exist_ok=True)
+with open("bin/ssh", "w") as script:
+    script.write(%r)
+os.chmod("bin/ssh", 0o755)
+os.environ["PATH"] = os.path.abspath("bin") + os.pathsep + os.environ["PATH"]
+rem = await remote.connect("loopback")
+try:
+    print(await rem.show_image("small.png"))
+    await rem.show_image("wide.png")
+finally:
+    await rem.close()
+"""
+            % LOOPBACK_SSH
+        )
+
+        def reply(request):
+            if request["input"][-1].get("type") == "function_call_output":
+                return text("done")
+            return python(cell)
+
+        provider = Provider(reply)
+        profile = {
+            "baseUrl": provider.url,
+            "apiKey": "fixture-key",
+            "model": "fixture-model",
+            "protocol": "responses",
+            "imageEdge": 1000,
+        }
+        try:
+            with Albedo(
+                provider,
+                protocol="responses",
+                providers={f"strict-{provider.route}": profile},
+            ) as app:
+                (app.workspace / "small.png").write_bytes(png(10, 10))
+                (app.workspace / "wide.png").write_bytes(WIDE)
+                session = app.session()
+                app.prompt(session, "remote").close()
+                app.idle(session)
+                [request] = [
+                    r["request"]
+                    for r in provider.requests
+                    if r["request"]["input"][-1].get("type") == "function_call_output"
+                ]
+                output = next(
+                    item
+                    for item in request["input"]
+                    if item.get("type") == "function_call_output"
+                )
+                result = cell_result(output)
+                # The small image came over the connection and went on to the
+                # model; the wide one failed the cell at its call.
+                self.assertIn("attached image/png", result["output"])
+                self.assertEqual(result["status"], "error")
+                self.assertIn(
+                    "ValueError: 1200x10 image is over this model's 1000px edge limit",
+                    result["output"],
+                )
+                self.assertEqual(widths(request), [10])
         finally:
             provider.close()
 

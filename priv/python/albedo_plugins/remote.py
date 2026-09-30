@@ -40,12 +40,14 @@ INVOKE_TIMEOUT = 3600  # anti-wedge bound; the cell deadline is the real limit
 COMMAND_TIMEOUT = 120  # degraded-mode command default
 MAX_FRAME = 8 * 1024 * 1024  # control-frame ceiling, as in the kernel
 STDERR_TAIL = 65536  # bytes of ssh diagnostics kept for failures
+IMAGE_READ = 5 * 1024 * 1024 + 1  # one past a cell's image bytes, as local reads
 
 loop: asyncio.AbstractEventLoop
 host_call: Any
 HostErrorType: type[Exception]
 capture_factory: Any
 send_frame: Any
+attach_image: Any
 session_modules: list[str] = []
 _fallback_live: set[str] = set()  # degraded-mode jobs still running over ssh
 
@@ -846,12 +848,36 @@ class RemoteConnection:
     async def read(self, path: str, *, timeout: float = COMMAND_TIMEOUT) -> str:
         """A remote file's text over the control connection, not the kernel."""
         remote = _remote_path(self, path)
-        code, stdout, stderr = await ssh_run(
-            self.host, f"cat {shlex.quote(remote)}", timeout=timeout
-        )
+        data = await self._ssh(f"cat {shlex.quote(remote)}", timeout)
+        return data.decode(errors="replace")
+
+    async def show_image(
+        self,
+        source: bytes | str | os.PathLike[str],
+        *,
+        timeout: float = COMMAND_TIMEOUT,
+    ) -> str:
+        """Return a remote image to yourself with this cell's result, under the
+        same limits as local show_image. The remote kernel has no cell of its
+        own to carry one, so the bytes come here over the control connection."""
+        if attach_image is None:
+            raise RemoteError("this kernel cannot attach images")
+        if isinstance(source, (bytes, bytearray, memoryview)):
+            data = bytes(source)
+        elif isinstance(source, (str, os.PathLike)):
+            remote = shlex.quote(_remote_path(self, os.fspath(source)))
+            data = await self._ssh(f"head -c {IMAGE_READ} {remote}", timeout)
+        else:
+            raise TypeError(
+                f"show_image takes image bytes or a remote path, not {type(source).__name__}"
+            )
+        return "attached " + attach_image(data)
+
+    async def _ssh(self, script: str, timeout: float) -> bytes:
+        code, stdout, stderr = await ssh_run(self.host, script, timeout=timeout)
         if code != 0:
             raise RemoteError(f"SSH failed ({code}): {stderr.strip()}")
-        return stdout.decode(errors="replace")
+        return stdout
 
     async def write(
         self, path: str, content: str, *, timeout: float = COMMAND_TIMEOUT
@@ -859,13 +885,10 @@ class RemoteConnection:
         """Replace a remote file; bytes travel base64, never as shell text."""
         remote = _remote_path(self, path)
         encoded = base64.b64encode(content.encode()).decode()
-        code, _, stderr = await ssh_run(
-            self.host,
+        await self._ssh(
             f"printf %s {shlex.quote(encoded)} | base64 -d > {shlex.quote(remote)}",
-            timeout=timeout,
+            timeout,
         )
-        if code != 0:
-            raise RemoteError(f"SSH failed ({code}): {stderr.strip()}")
 
     # --- degraded mode ---
 
@@ -1259,7 +1282,8 @@ class Remote:
         `remote.configure` stored, then `$ALBEDO_SSH`, then the `remote`
         section of extensions.json. If the host is reachable but the kernel
         cannot boot, the connection still returns, prints a warning, and
-        answers `rem.run()`, degraded-only `rem.shell()`, `rem.read`, and `rem.write`.
+        answers `rem.run()`, degraded-only `rem.shell()`, `rem.read`, `rem.write`,
+        and `rem.show_image`.
         """
         target = resolve(host, remote_cwd, python)
         code, _, stderr = await ssh_run(
@@ -1315,10 +1339,11 @@ remote = Remote()
 
 def setup(api: PythonApi) -> dict[str, object]:
     global loop, host_call, HostErrorType, capture_factory, send_frame
-    global session_modules
+    global attach_image, session_modules
     loop, host_call = api.loop, api.host
     HostErrorType, capture_factory = api.HostError, api.capture
     send_frame = api.send
+    attach_image = api.attach_image
     session_modules = list(api.modules)
     api.on_shutdown(Remote.close_all)
     return {"remote": remote, "RemoteError": RemoteError}
