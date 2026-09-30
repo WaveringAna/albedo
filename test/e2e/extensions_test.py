@@ -2,6 +2,7 @@
 
 import json
 import os
+import threading
 import time
 import unittest
 import urllib.error
@@ -626,8 +627,16 @@ class ExtensionTests(unittest.TestCase):
         self.assertEqual(
             json.loads((self.app.home / "daemon.json").read_text())["pid"], pid
         )
-        # The delayed provider keeps this turn active while configuration changes are refused.
-        self.provider.script = lambda request: text("done", delay=2)
+        # The provider holds this turn active while configuration changes are
+        # refused, until the test releases it.
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def held(_request):
+            release.wait(30)
+            return text("done")
+
+        self.provider.script = held
         self.app.prompt(self.sid, "hold this turn").close()
         deadline = time.monotonic() + 10
         while len(self.provider.requests) < 3 and time.monotonic() < deadline:
@@ -640,6 +649,7 @@ class ExtensionTests(unittest.TestCase):
         )
         self.rejected(f"/sessions/{self.sid}/commands", {"name": "/compact"})
         self.assertEqual(self.get(self.route), disabled)
+        release.set()
         self.app.idle(self.sid)
         self.provider.script = scripted
         self.restart()
