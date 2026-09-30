@@ -1,9 +1,9 @@
-# albedo
+# Overview (pre-alpha)
+Albedo is an agentic coding harness that can act on your device and soon able to manage sessions on other devices with agents that can act remotely on different machines or within containers. Our hope is that it being built on BEAM allows it to maintain low memory usage while running many concurrent agents and subagents across devices.
 
-small gleam coding and (not yet) persistent agent daemon with a detachable cli
+It is daemonized with the CLI and (future) WebUI being clients of this daemon. This ensures the agents can be programatically created, controlled, and even stopped all while still providing an experience similar to other harnesses like Claude Code and Codex. Albedo provides a Python REPL for the agents to use as a scratchpad and data manipulation allowing them to experiment, reason, and play with code before actually writing it down. This is similar to what other harnesses call CodeMode, and is based on [prime-agent's](https://github.com/PrimeIntellect-ai/prime-agent/)'s Python REPL and design.
 
-- python repl and bash.
-- native go cli using charm (bubbletea, lipgloss, bubbles)
+The CLI is written in Go and uses the Charm stack. 
 
 ```sh
 # build native go cli
@@ -15,7 +15,7 @@ go -C cli install ./cmd/albedo
 albedo
 ```
 
-when installed globally outside the checkout, set `ALBEDO_ROOT` to the absolute repo path if the daemon needs to be started:
+When installed globally outside the checkout, set `ALBEDO_ROOT` to the absolute repo path if the daemon needs to be started:
 ```sh
 ALBEDO_ROOT=/path/to/albedo albedo
 ```
@@ -90,14 +90,14 @@ ALBEDO_NO_BROWSER=1 python3 test/manual/go_memory_profile.py
 todo
 - [] flesh out plugin system more
 - [] sdk and -p, command to print out most recent assistant message from session
-- [] compaction strategy plugins LCM and snapcompact
+- [✓] compaction strategy plugins LCM and snapcompact
 - [] compaction evaluations: old-fact recall, corrected instructions, tool pairing, images, restarts, and token/cost comparisons
-- [] subagents plugin
+- [✓] subagents plugin
 - [] social plugins like discord
-- [ish skills are done] plugins like heartbeat and skills
-- [] oauth that we shamelessly rip from omp
+- [✓] plugins like heartbeat and skills
+- [ish] oauth that we shamelessly rip from omp
 - [] ai powered approve for me (jev/llm)
 - [] improve verbose mode on tui
 - [] webui
 - [] connect to other albedos on tui/webui and manage sessions
-- [] ability to offload tools like python/bash onto other machines/containers
+- [ish we have remote but model opts into it, not yet able to have the model natively act in a different machine] ability to offload tools like python/bash onto other machines/containers
