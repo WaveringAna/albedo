@@ -4,6 +4,7 @@ import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
 import albedo/daemon/requests
 import albedo/daemon/session_state
+import albedo/daemon/transcript
 import albedo/daemon/turn
 import albedo/daemon/usage
 import albedo/harness/extension
@@ -23,6 +24,8 @@ pub type Messages(message) {
       Option(Int),
       Subject(Result(#(Int, Option(Int)), String)),
     ) -> message,
+    fits: fn(String, List(transcript.ImageFit), Subject(Result(Nil, String))) ->
+      message,
     context: fn(String, context_snapshot.Snapshot, Bool, Subject(Nil)) ->
       message,
     usage: fn(String, usage.Metadata, Subject(Result(Nil, String))) -> message,
@@ -135,6 +138,17 @@ pub fn commit_fn(
   }
 }
 
+pub fn fits_fn(
+  owner: Subject(message),
+  run_id: String,
+  messages: Messages(message),
+  waiting timeout: Int,
+) -> fn(List(transcript.ImageFit)) -> Result(Nil, String) {
+  fn(fits) {
+    confirm(owner, "image fit", timeout, messages.fits(run_id, fits, _))
+  }
+}
+
 pub fn usage_fn(
   owner: Subject(message),
   run_id: String,
@@ -194,6 +208,7 @@ pub fn start(
       client,
       publish_fn(owner, run_id, messages, stop, 30_000),
       commit_fn(owner, run_id, messages, 10_000),
+      fits_fn(owner, run_id, messages, 10_000),
       fn(request, observation, compacted) {
         let snapshot =
           context_snapshot.from_request(
@@ -276,6 +291,7 @@ pub fn start_background(
       // never block on it either.
       fn(_event) { True },
       fn(_inputs, _stage, _thought) { Error("a background call never commits") },
+      fn(_fits) { Error("a background call never commits") },
       fn(_request, _observation, _compacted) { Nil },
       fn(_metadata) { Ok(Nil) },
       fn() { Ok([]) },

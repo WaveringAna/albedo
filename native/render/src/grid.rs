@@ -44,13 +44,16 @@ fn parse_bdf(bytes: &[u8]) -> Result<Bdf, String> {
         let mut fields = line.split_whitespace();
         match fields.next() {
             Some("ENCODING") => {
-                encoding = fields.next().and_then(|n| n.parse::<i64>().ok()).and_then(|n| {
-                    if (0..=0x10FFFF).contains(&n) {
-                        Some(n as u32)
-                    } else {
-                        None
-                    }
-                });
+                encoding = fields
+                    .next()
+                    .and_then(|n| n.parse::<i64>().ok())
+                    .and_then(|n| {
+                        if (0..=0x10FFFF).contains(&n) {
+                            Some(n as u32)
+                        } else {
+                            None
+                        }
+                    });
             }
             Some("BBX") => {
                 let mut number = || fields.next().and_then(|n| n.parse::<i64>().ok());
@@ -67,10 +70,20 @@ fn parse_bdf(bytes: &[u8]) -> Result<Bdf, String> {
                 let _ = (w, x, y);
             }
             Some("ENDCHAR") => {
-                if let (Some(code), Some((w, h, x, y)), Some(rows)) = (encoding, box_, bitmap.take())
+                if let (Some(code), Some((w, h, x, y)), Some(rows)) =
+                    (encoding, box_, bitmap.take())
                 {
                     if rows.len() == h {
-                        glyphs.insert(code, Glyph { width: w, height: h, off_x: x, off_y: y, rows });
+                        glyphs.insert(
+                            code,
+                            Glyph {
+                                width: w,
+                                height: h,
+                                off_x: x,
+                                off_y: y,
+                                rows,
+                            },
+                        );
                     }
                 }
                 encoding = None;
@@ -203,9 +216,15 @@ fn encode(width: usize, height: usize, pixels: Vec<u8>) -> Result<Frame, String>
     encoder.set_depth(png::BitDepth::One);
     encoder.set_compression(png::Compression::High);
     let mut writer = encoder.write_header().expect("header fits in memory");
-    writer.write_image_data(&bits).expect("pixels match the header");
+    writer
+        .write_image_data(&bits)
+        .expect("pixels match the header");
     drop(writer);
-    Ok(Frame { width: width as u32, height: height as u32, png: out })
+    Ok(Frame {
+        width: width as u32,
+        height: height as u32,
+        png: out,
+    })
 }
 
 #[cfg(test)]
@@ -234,7 +253,9 @@ mod tests {
 
     #[test]
     fn every_ascii_glyph_leaves_ink() {
-        let text: String = (0x21u32..=0x7e).map(|c| char::from_u32(c).unwrap()).collect();
+        let text: String = (0x21u32..=0x7e)
+            .map(|c| char::from_u32(c).unwrap())
+            .collect();
         assert!(ink(&text) > 1000, "the printable ASCII range is covered");
     }
 }

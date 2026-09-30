@@ -1,4 +1,5 @@
-//! The binary end to end: a file in, PNG pages and a text report out.
+//! The binary end to end: a file in, PNG pages and a text report out, or an
+//! image in and the same image fitted to an edge out.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -172,4 +173,26 @@ fn without_line_numbers_the_gutter_keeps_only_wrap_marks() {
     // One digit or one wrap mark: the same width, without the numbers.
     assert_eq!(size(&bare), size(&numbered));
     assert_ne!(bare, numbered);
+}
+
+#[test]
+fn a_page_fits_inside_an_edge_and_keeps_its_aspect() {
+    let scratch = Scratch::new("fit");
+    let source: String = (1..=60).map(|n| format!("line {n}\n")).collect();
+    let file = scratch.file("sample.txt", source.as_bytes());
+    let pages = scratch.0.join("pages");
+    std::fs::create_dir_all(&pages).unwrap();
+    assert!(render(&file, &pages, &["--start", "1", "--end", "60"]).0);
+    let page = pages.join("view-1.png");
+    let (width, height) = png_size(&page);
+    let (ok, report, _) = render(&page, &scratch.0, &["--fit", "400"]);
+    assert!(ok);
+    let fitted = scratch.0.join("fit.png");
+    let (w, h) = png_size(&fitted);
+    assert_eq!(report, format!("image {} {w}x{h}\n", fitted.display()));
+    assert_eq!(w.max(h), 400);
+    let expected = width as f64 / height as f64;
+    assert!((w as f64 / h as f64 - expected).abs() < 0.02);
+    let (ok, _, error) = render(&file, &scratch.0, &["--fit", "400"]);
+    assert!(!ok && error.contains("PNG, JPEG, or WebP"));
 }

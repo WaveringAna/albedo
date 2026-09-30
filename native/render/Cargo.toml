@@ -2,7 +2,7 @@
 name = "albedo-render"
 version = "0.1.0"
 edition = "2024"
-description = "Renders a range of a source file as syntax-highlighted PNG pages"
+description = "Renders a range of a source file as syntax-highlighted PNG pages, and fits images to a size"
 license = "WTFPL"
 publish = false
 
@@ -10,6 +10,7 @@ publish = false
 arborium-highlight = "2.18.2"
 arborium-theme = "2.18.2"
 fontdue = "0.9.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 png = "0.18.1"
 unicode-width = "0.2.2"
 

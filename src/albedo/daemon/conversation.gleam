@@ -1,4 +1,5 @@
 import albedo/daemon/events
+import albedo/daemon/image_fit
 import albedo/daemon/images
 import albedo/daemon/mail
 import albedo/daemon/migrations/conversation_columns
@@ -442,6 +443,10 @@ pub fn load_sources(
   load_source_pages(store, id, -1, upper, [])
 }
 
+/// A loaded row, and the image fit it is when it is one.
+type LoadedRow =
+  #(transcript.SourcedEntry, Result(transcript.ImageFit, Nil))
+
 /// Rows per store round trip. A transcript is read a page at a time so the
 /// raw rows and their decoded entries are only ever live for one page, not
 /// the whole transcript at once.
@@ -452,7 +457,7 @@ fn load_source_pages(
   id: String,
   after: Int,
   upper: Int,
-  pages: List(List(transcript.SourcedEntry)),
+  pages: List(List(LoadedRow)),
 ) -> Result(List(transcript.SourcedEntry), String) {
   let read = images.reader(store)
   let page =
@@ -468,7 +473,12 @@ fn load_source_pages(
         ],
         source_row(),
       ))
-      use entries <- result.try(list.try_map(rows, sourced_entry(id, _, read)))
+      use entries <- result.try(
+        list.try_map(rows, fn(row) {
+          sourced_entry(id, row, read)
+          |> result.map(fn(entry) { #(entry, unpack_fit(row.1, read)) })
+        }),
+      )
       Ok(#(entries, list.last(rows) |> result.map(fn(row) { row.0 })))
     })
   // New rows may land between pages; the captured upper bound keeps one view.
@@ -477,11 +487,35 @@ fn load_source_pages(
     Ok(#(entries, Ok(last))) ->
       case list.length(entries) == load_page_rows {
         True -> load_source_pages(store, id, last, upper, [entries, ..pages])
-        False -> Ok(list.flatten(list.reverse([entries, ..pages])))
+        False -> Ok(fitted(list.flatten(list.reverse([entries, ..pages]))))
       }
     Ok(#(entries, Error(_))) ->
-      Ok(list.flatten(list.reverse([entries, ..pages])))
+      Ok(fitted(list.flatten(list.reverse([entries, ..pages]))))
   }
+}
+
+/// The entries with each image fit applied to every row before it, so a
+/// history read up to any row is what the model was sent at that point.
+fn fitted(rows: List(LoadedRow)) -> List(transcript.SourcedEntry) {
+  list.fold(rows, [], fn(earlier, row) {
+    let #(sourced, fit) = row
+    let earlier = case fit {
+      Error(_) -> earlier
+      Ok(fit) ->
+        list.map(earlier, fn(earlier: transcript.SourcedEntry) {
+          let entry = earlier.entry
+          transcript.SourcedEntry(
+            ..earlier,
+            entry: transcript.Entry(
+              ..entry,
+              input: image_fit.apply(entry.input, fit),
+            ),
+          )
+        })
+    }
+    [sourced, ..earlier]
+  })
+  |> list.reverse
 }
 
 /// A transcript row as the reads select it: seq, payload, timestamp,
@@ -844,6 +878,36 @@ pub fn entries(
   entries
 }
 
+/// Appends image fit rows (see transcript.ImageFit), storing each fitted
+/// payload, and returns their shared daemon time.
+pub fn commit_fits(
+  store: store.Store,
+  id: String,
+  fits: List(transcript.ImageFit),
+  provider: String,
+) -> Result(Int, String) {
+  let timestamp = usage.now()
+  store.query(store, fn(db) {
+    store.transaction(db, fn() {
+      list.try_each(fits, fn(fit) {
+        use stored <- result.try(images.store_images(db, [fit.image]))
+        let assert [image] = stored
+        store.run(
+          db,
+          "INSERT INTO transcript(session,payload,timestamp,provider) VALUES(?,?,?,?)",
+          [
+            sqlight.text(id),
+            sqlight.blob(pack_fit(fit.note, fit.source, image)),
+            sqlight.int(timestamp),
+            sqlight.text(provider),
+          ],
+        )
+      })
+      |> result.replace(timestamp)
+    })
+  })
+}
+
 /// Atomically appends transcript inputs and returns their shared daemon time.
 /// Empty commits still update the session stage and return the operation time.
 pub fn commit(
@@ -1081,6 +1145,15 @@ pub fn record_usage(
 
 @external(erlang, "albedo_conversation", "pack")
 fn pack(input: types.Input) -> BitArray
+
+@external(erlang, "albedo_conversation", "pack_fit")
+fn pack_fit(note: String, source: String, image: types.Image) -> BitArray
+
+@external(erlang, "albedo_conversation", "unpack_fit")
+fn unpack_fit(
+  bytes: BitArray,
+  read: fn(String) -> Result(String, Nil),
+) -> Result(transcript.ImageFit, Nil)
 
 @external(erlang, "albedo_conversation", "unpack")
 fn unpack(

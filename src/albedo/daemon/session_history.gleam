@@ -2,6 +2,7 @@
 
 import albedo/daemon/conversation
 import albedo/daemon/events as view
+import albedo/daemon/image_fit
 import albedo/daemon/projection
 import albedo/daemon/session_state
 import albedo/daemon/transcript
@@ -91,6 +92,26 @@ pub fn remember(
   timestamp: Int,
 ) -> session_state.State(message) {
   remember_response(state, inputs, timestamp, None)
+}
+
+/// Remembers image fits as `conversation.commit_fits` wrote them: the copies
+/// stand in for every earlier image, and each note follows.
+pub fn remember_fits(
+  state: session_state.State(message),
+  fits: List(transcript.ImageFit),
+  timestamp: Int,
+) -> session_state.State(message) {
+  let history =
+    option.map(state.history, fn(history) {
+      list.map(history, fn(entry) {
+        transcript.Entry(
+          ..entry,
+          input: list.fold(fits, entry.input, image_fit.apply),
+        )
+      })
+    })
+  session_state.State(..state, history:)
+  |> remember(list.map(fits, fn(fit) { types.User(fit.note) }), timestamp)
 }
 
 /// Remembers committed inputs as `conversation.commit_response` wrote them.

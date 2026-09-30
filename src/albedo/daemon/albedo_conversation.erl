@@ -1,5 +1,5 @@
 -module(albedo_conversation).
--export([pack/1,unpack/2,unpack_trace/1,pack_list/1,unpack_list/2,row_atoms/0,elide_tool_images/1,elision_marker/1]).
+-export([pack/1,pack_fit/3,unpack/2,unpack_fit/2,unpack_trace/1,pack_list/1,unpack_list/2,row_atoms/0,elide_tool_images/1,elision_marker/1]).
 pack(Input) -> term_to_binary({1,albedo_images:pack(Input)}).
 
 %% binary_to_term/2 with `safe` rejects atoms that do not exist yet; a stored
@@ -16,6 +16,25 @@ unpack(Bytes,Read) ->
     {1,{tool_output,Id,Text,Images}=Input} when is_binary(Id),is_binary(Text),is_list(Images) -> attached(Input,Read);
     {1,{replay,{replay_item,responses,#{<<"type">> := Type}}}=Input} when is_binary(Type) -> {ok,Input};
     {1,{replay,{replay_item,chat_completions,#{<<"role">> := <<"assistant">>}}}=Input} -> {ok,Input};
+    %% An image fit reads as its note everywhere but the history fold.
+    {1,{image_fit,{user,Text},Source,_}} when is_binary(Text),is_binary(Source) -> {ok,{user,Text}};
+    _ -> {error,nil}
+  catch _:_ -> {error,nil} end.
+
+%% An image fit row (see transcript.ImageFit): its note, the source payload
+%% hash, and the fitted image, already stored.
+pack_fit(Note,Source,Image) ->
+  term_to_binary({1,{image_fit,{user,Note},Source,albedo_images:pack_image(Image)}}).
+
+%% {ok, ImageFit} for an image fit row, with its image's reader attached;
+%% {error, nil} for any other row.
+unpack_fit(Bytes,Read) ->
+  try binary_to_term(Bytes,[safe]) of
+    {1,{image_fit,{user,Note},Source,Image}} when is_binary(Note),is_binary(Source) ->
+      case albedo_images:load(Image,Read) of
+        {ok,Loaded} -> {ok,{image_fit,Note,Source,Loaded}};
+        error -> {error,nil}
+      end;
     _ -> {error,nil}
   catch _:_ -> {error,nil} end.
 

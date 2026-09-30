@@ -16,7 +16,12 @@
 //! albedo-render --snapcompact[-dir] PATH --out DIR --advance N --pitch N
 //!     --width N: dense pixel-font frames, one `image PATH WxH` stdout line
 //!     per frame. Unknown glyphs render as '?'.
+//!
+//! albedo-render --fit EDGE IMAGE --out DIR: IMAGE (PNG, JPEG, or WebP)
+//!     scaled so neither edge passes EDGE, written to DIR/fit.png (or
+//!     fit.jpg for a JPEG), with one `image PATH WxH` stdout line.
 
+mod fit;
 mod grid;
 mod highlight;
 mod layout;
@@ -44,12 +49,15 @@ struct Request {
     advance: usize,
     pitch: usize,
     frame_width: usize,
+    fit: Option<u32>,
 }
 
 fn main() -> ExitCode {
     let parsed = parse(std::env::args().skip(1));
     match parsed.and_then(|request| {
-        if request.snapcompact && request.snapcompact_dir {
+        if let Some(edge) = request.fit {
+            run_fit(&request, edge)
+        } else if request.snapcompact && request.snapcompact_dir {
             run_snapcompact_dir(&request)
         } else if request.snapcompact {
             run_snapcompact(&request)
@@ -86,6 +94,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Request, String> {
         advance: 11,
         pitch: 16,
         frame_width: 1568,
+        fit: None,
     };
     let mut out = None;
     while let Some(arg) = args.next() {
@@ -116,6 +125,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Request, String> {
             "--advance" => request.advance = number(6, 24)?,
             "--pitch" => request.pitch = number(10, 64)?,
             "--width" => request.frame_width = number(256, 4096)?,
+            "--fit" => request.fit = Some(number(16, 16384)? as u32),
             "--out" => out = Some(PathBuf::from(value()?)),
             flag if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
             _ if file.is_none() => file = Some(PathBuf::from(arg)),
@@ -124,7 +134,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Request, String> {
     }
     request.file = file.ok_or("a file to render is required")?;
     request.out = out.ok_or("--out DIR is required")?;
-    if request.snapcompact {
+    if request.fit.is_some() || request.snapcompact {
         if !request.snapcompact_dir && !request.file.is_file() {
             return Err(format!("{}: not a file", request.file.display()));
         }
@@ -159,8 +169,7 @@ fn run_snapcompact_dir(request: &Request) -> Result<String, String> {
     }
     let mut report = String::new();
     for (index, path) in names.iter().enumerate() {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let frame = grid::render(&text, request.advance, request.pitch, request.frame_width)?;
         let out = request.out.join(format!("snap-{}.png", index + 1));
         std::fs::write(&out, &frame.png).map_err(|e| format!("{}: {e}", out.display()))?;
@@ -172,6 +181,20 @@ fn run_snapcompact_dir(request: &Request) -> Result<String, String> {
         ));
     }
     Ok(report)
+}
+
+fn run_fit(request: &Request, edge: u32) -> Result<String, String> {
+    let bytes =
+        std::fs::read(&request.file).map_err(|e| format!("{}: {e}", request.file.display()))?;
+    let fitted = fit::fit(&bytes, edge)?;
+    let path = request.out.join(format!("fit.{}", fitted.extension));
+    std::fs::write(&path, &fitted.bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(format!(
+        "image {} {}x{}\n",
+        path.display(),
+        fitted.width,
+        fitted.height
+    ))
 }
 
 fn run_snapcompact(request: &Request) -> Result<String, String> {

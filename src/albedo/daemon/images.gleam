@@ -60,9 +60,9 @@ pub fn externalize(
   Ok(stored)
 }
 
-/// Stores a cell's inline images in the caller's transaction. The returned
-/// references acquire their live reader when the cell is loaded later.
-pub fn store_cell_images(
+/// Stores inline images, such as a cell's, in the caller's transaction. The
+/// returned references acquire their live reader when their row is loaded.
+pub fn store_images(
   db: sqlight.Connection,
   images: List(types.Image),
 ) -> Result(List(types.Image), String) {

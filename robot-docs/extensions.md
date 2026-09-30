@@ -117,7 +117,7 @@ optional. `await view_code(path, start_line=1, end_line=None, *, columns=79)` re
 
 the whole file is highlighted, so a range starting inside a comment or string is colored correctly. lines wrap at `columns`, with an arrow in the gutter on each continuation row; tabs expand to 4, wide characters take two cells. up to 4 pages of at most 80 display rows, split evenly at line boundaries, so wrap-heavy code fits fewer source lines per page. the returned text names each page's lines and the call that continues. `view_diff` leaves out files git does not track and asks git for a repository first, so outside one it says so.
 
-rendering is `albedo-render`, a rust binary in `native/render` (arborium's tree-sitter grammars, bundled JetBrains Mono), run as a supervised `run` job. `native/render/install.sh` builds it into `priv/bin`; `PATH` also works. a language without a compiled-in grammar renders unhighlighted.
+rendering is `albedo-render`, a rust binary in `native/render` (arborium's tree-sitter grammars, bundled JetBrains Mono), run as a supervised `run` job. `native/render/install.sh` builds it into `priv/bin`; `PATH` also works. a language without a compiled-in grammar renders unhighlighted. the same binary renders snapcompact frames and fits oversized history images to a provider's edge (`--fit`, see [models](models.md)); every daemon call goes through `albedo_render.erl`.
 
 ## work
 

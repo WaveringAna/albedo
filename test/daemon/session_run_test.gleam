@@ -89,6 +89,7 @@ fn messages() -> session_run.Messages(Owner) {
   session_run.Messages(
     publish: fn(_, _, reply) { Publish(reply) },
     commit: fn(_, _, _, _, reply) { Commit(reply) },
+    fits: fn(_, _, _) { Unused },
     context: fn(_, _, _, _) { Unused },
     usage: fn(_, _, _) { Unused },
     drain: fn(_, _) { Unused },

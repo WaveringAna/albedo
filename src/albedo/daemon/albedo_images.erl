@@ -126,6 +126,7 @@ hashes(Payload) ->
         {1, {user_image, _, {image, _, {stored_data, Hash, _}, _, _, _}}} -> [Hash];
         {1, {tool_output, _, _, Images}} when is_list(Images) ->
             [Hash || {image, _, {stored_data, Hash, _}, _, _, _} <- Images];
+        {1, {image_fit, _, _, {image, _, {stored_data, Hash, _}, _, _, _}}} -> [Hash];
         _ -> []
     catch _:_ -> []
     end.

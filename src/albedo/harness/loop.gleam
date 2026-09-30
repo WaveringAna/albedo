@@ -2,7 +2,9 @@
 
 import albedo/daemon/conversation
 import albedo/daemon/events as view
+import albedo/daemon/image_fit
 import albedo/daemon/requests
+import albedo/daemon/transcript
 import albedo/daemon/usage
 import albedo/harness/cache_fade
 import albedo/harness/cache_ttl
@@ -33,6 +35,8 @@ pub type Loop {
     /// links to.
     commit: fn(List(types.Input), conversation.Stage, Option(Int)) ->
       Result(#(Int, Option(Int)), String),
+    /// Appends image fit rows ahead of the request that needs them.
+    commit_fits: fn(List(transcript.ImageFit)) -> Result(Nil, String),
     record_context: fn(types.Request, Option(compaction.Observation), Bool) ->
       Nil,
     record_usage: fn(usage.Metadata) -> Result(Nil, String),
@@ -83,6 +87,7 @@ pub fn run(
   step: Int,
 ) -> Result(Nil, String) {
   use _ <- result.try(checkpoint(state))
+  use inputs <- result.try(fit_history(state, inputs))
   let original = list.reverse(inputs)
   use prepared <- result.try(prepare(state, original, False))
   let #(state, history) = settle_pin(state, original, prepared.inputs)
@@ -152,6 +157,29 @@ pub fn run(
       use steering <- result.try(state.drain_steering())
       use _ <- result.try(state.commit([], conversation.Model, None))
       run(state, id, unshift(inputs, [replay, results, steering]), step + 1)
+    }
+  }
+}
+
+/// `inputs`, newest first, with the images the provider would refuse swapped
+/// for fitted copies. The fits are committed first, so a history loaded from
+/// the transcript carries the same copies.
+fn fit_history(
+  state: Loop,
+  inputs: List(types.Input),
+) -> Result(List(types.Input), String) {
+  use fits <- result.try(image_fit.needed(
+    state.upstream.images,
+    list.reverse(inputs),
+  ))
+  case fits {
+    [] -> Ok(inputs)
+    _ -> {
+      use _ <- result.try(state.commit_fits(fits))
+      let notes = list.map(fits, fn(fit) { types.User(fit.note) })
+      list.map(inputs, fn(input) { list.fold(fits, input, image_fit.apply) })
+      |> list.append(list.reverse(notes), _)
+      |> Ok
     }
   }
 }

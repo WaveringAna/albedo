@@ -8,6 +8,7 @@ import albedo/daemon/events as view
 import albedo/daemon/family
 import albedo/daemon/images
 import albedo/daemon/mail
+import albedo/daemon/note
 import albedo/daemon/requests
 import albedo/daemon/session_extensions
 import albedo/daemon/session_history
@@ -16,6 +17,7 @@ import albedo/daemon/session_provider
 import albedo/daemon/session_run
 import albedo/daemon/session_state
 import albedo/daemon/session_submission
+import albedo/daemon/transcript
 import albedo/daemon/turn.{type Submission, Submission}
 import albedo/daemon/usage
 import albedo/harness/cache_fade
@@ -133,6 +135,7 @@ pub type Message {
     Option(Int),
     Subject(Result(#(Int, Option(Int)), String)),
   )
+  CommitFits(String, List(transcript.ImageFit), Subject(Result(Nil, String)))
   RecordContext(String, context_snapshot.Snapshot, Bool, Subject(Nil))
   RecordUsage(String, usage.Metadata, Subject(Result(Nil, String)))
   ReportPin(String, Option(Int), Subject(Nil))
@@ -687,6 +690,37 @@ fn handle(state: State, message: Message) {
           }
         }
         _ -> answer(state, reply, Error("stale run"))
+      }
+    CommitFits(id, fits, reply) ->
+      case turn.owner(state.activity, id) {
+        Some(_) ->
+          case
+            conversation.commit_fits(
+              runtime.ledger(state.host),
+              state.info.id,
+              fits,
+              state.info.provider,
+            )
+          {
+            Ok(timestamp) -> {
+              let state =
+                list.fold(fits, state, fn(state, fit) {
+                  let #(origin, body) =
+                    note.parse(fit.note) |> option.unwrap(#("note", fit.note))
+                  session_state.emit(
+                    state,
+                    view.user(body, origin, None, Some(timestamp)),
+                  )
+                })
+              answer(
+                session_history.remember_fits(state, fits, timestamp),
+                reply,
+                Ok(Nil),
+              )
+            }
+            Error(error) -> answer(state, reply, Error(error))
+          }
+        None -> answer(state, reply, Error("stale run"))
       }
     DrainSteering(id, reply) ->
       case turn.live(state.activity, id), state.steering {
@@ -1857,6 +1891,7 @@ fn start_worker(
     session_run.Messages(
       Publish,
       Commit,
+      CommitFits,
       RecordContext,
       RecordUsage,
       DrainSteering,

@@ -23,3 +23,10 @@ pub type SourceRef {
 pub type SourcedEntry {
   SourcedEntry(source: SourceRef, entry: Entry)
 }
+
+/// A transcript row that swaps every earlier image whose payload hashes to
+/// `source` for `image`, a copy scaled to a provider's edge. Readers that
+/// only show rows see `note`, a user note that tells the model about it.
+pub type ImageFit {
+  ImageFit(note: String, source: String, image: types.Image)
+}

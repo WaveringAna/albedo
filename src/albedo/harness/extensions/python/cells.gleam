@@ -118,7 +118,7 @@ pub fn finish(
     store.transaction(db, fn() {
       use saved <- result.try(case outcome {
         Ok(finished) ->
-          images.store_cell_images(db, finished.images)
+          images.store_images(db, finished.images)
           |> result.map(fn(stored) {
             Ok(python.Outcome(..finished, images: stored))
           })

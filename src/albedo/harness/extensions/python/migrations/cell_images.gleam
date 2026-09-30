@@ -89,7 +89,7 @@ fn migrate_image_pages(
                     )
                     case decoded {
                       Ok(outcome) -> {
-                        use stored <- result.try(images.store_cell_images(
+                        use stored <- result.try(images.store_images(
                           db,
                           outcome.images,
                         ))
