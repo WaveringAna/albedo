@@ -327,18 +327,7 @@ type ChatModel struct {
 	scrollOffset int
 	scrollLimit  int
 
-	activeKind ActiveStreamKind
-	activeText string
-	// thinkingSince is when a thought this client watched began; a replayed
-	// thought instead carries how long it took, when the daemon timed it.
-	thinkingSince time.Time
-	thoughtMs     int64
-	// lastEvent is when the last live event other than thinking came; a
-	// thought began then, since summarized thinking streams only once written.
-	lastEvent time.Time
-
-	streamedHash uint64
-	streamedLen  int64
+	transcript transcriptState
 
 	pendingUsers      []PendingUserTurn
 	isSending         bool
@@ -357,7 +346,6 @@ type ChatModel struct {
 	// which Bubble Tea turns off when it hands the terminal to the editor.
 	graphemes bool
 
-	turn *openTurn
 	// userRows are the settled rows where your messages start, and
 	// settledOffset is how many notice rows sit above the settled rows.
 	userRows      []int
@@ -421,7 +409,7 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		Flags:        DisplayFlags{},
 		Follow:       true,
 		Styles:       DefaultStyles,
-		streamedHash: fnvOffset64,
+		transcript:   newTranscriptState(),
 		streamCtx:    ctx,
 		streamCancel: cancel,
 		eventChan:    make(chan daemon.StreamEvent, 16),
@@ -669,13 +657,6 @@ func (m *ChatModel) trimSettledLines() {
 	}
 }
 
-// resetStreamState drops the live stream and action, as a reset or retry does.
-func (m *ChatModel) resetStreamState() {
-	m.activeKind, m.activeText = StreamKindNone, ""
-	m.streamedHash, m.streamedLen = fnvOffset64, 0
-	m.clearAction()
-}
-
 // clearAction drops the live action row; the next action starts a new one.
 func (m *ChatModel) clearAction() {
 	m.ToolProgressText = ""
@@ -692,58 +673,15 @@ func (m *ChatModel) appendSettledEntry(entry HistoryEntry) {
 	m.History.Append(entry)
 }
 
-func (m ChatModel) activeEntryKind() EntryKind {
-	return pick(m.activeKind == StreamKindThinking, EntryThinking, EntryAssistant)
-}
-
+// settleActiveStream appends assembled text and retains a live thought's last
+// line as the compact action until the next action replaces it.
 func (m *ChatModel) settleActiveStream() {
-	if m.activeKind != StreamKindNone && m.activeText != "" {
-		entry := HistoryEntry{
-			Kind:      m.activeEntryKind(),
-			Speaker:   m.AgentName,
-			Text:      m.activeText,
-			Timestamp: time.Now().UnixMilli(),
-		}
-		if entry.Kind == EntryThinking {
-			entry.ElapsedMs = m.thoughtMs
-			if !m.thinkingSince.IsZero() {
-				entry.ElapsedMs = time.Since(m.thinkingSince).Milliseconds()
-				m.ThoughtProgressText = cmp.Or(thinkingLine(entry.Text), "thinking")
-			}
+	watched := !m.transcript.thinkingSince.IsZero()
+	for _, entry := range m.transcript.settle(m.AgentName) {
+		if watched && entry.Kind == EntryThinking {
+			m.ThoughtProgressText = cmp.Or(thinkingLine(entry.Text), "thinking")
 		}
 		m.appendSettledEntry(entry)
-	}
-	m.activeKind, m.activeText = StreamKindNone, ""
-	m.thinkingSince, m.thoughtMs = time.Time{}, 0
-}
-
-func (m *ChatModel) streamDelta(kind ActiveStreamKind, text string) {
-	if text == "" {
-		return
-	}
-	m.turnIsLive()
-	m.ToolProgressText = ""
-	m.Status.Running, m.Status.Idle, m.Status.Phase = true, false, &phaseReasoning
-
-	if m.activeKind != kind {
-		m.settleActiveStream()
-		m.activeKind = kind
-	}
-	m.ThoughtProgressText = ""
-	m.activeText += text
-	if kind == StreamKindText {
-		m.streamedHash = fnv1a(m.streamedHash, text)
-		m.streamedLen += int64(len(text))
-	}
-
-	if len(m.activeText) > MaxLiveStreamBytes {
-		// one long thought splits into entries, each timed from its own start
-		watched := !m.thinkingSince.IsZero()
-		m.settleActiveStream()
-		m.activeKind = kind
-		if watched {
-			m.thinkingSince = time.Now()
-		}
 	}
 }
 
@@ -774,9 +712,9 @@ func (m *ChatModel) refreshViewportContent() int {
 			allLines = append(allLines, m.burstRows...)
 		}
 	}
-	if m.activeKind != StreamKindNone && m.activeText != "" &&
-		(m.activeKind != StreamKindThinking || m.Flags.Thinking) {
-		activeEntry := HistoryEntry{Kind: m.activeEntryKind(), Speaker: m.AgentName, Text: m.activeText, Live: true}
+	if m.transcript.activeKind != StreamKindNone && m.transcript.activeText != "" &&
+		(m.transcript.activeKind != StreamKindThinking || m.Flags.Thinking) {
+		activeEntry := HistoryEntry{Kind: m.transcript.activeEntryKind(), Speaker: m.AgentName, Text: m.transcript.activeText, Live: true}
 		rows, _ := m.Renderer.Block(m.History.Entries(), activeEntry, m.Flags)
 		allLines = append(allLines, rows...)
 		last, stacks = laneOf(activeEntry), false
@@ -785,7 +723,7 @@ func (m *ChatModel) refreshViewportContent() int {
 	// One live-tail slot stays occupied by the last action until another begins.
 	action := ""
 	switch {
-	case m.activeKind == StreamKindThinking && m.activeText != "" && !m.Flags.Thinking:
+	case m.transcript.activeKind == StreamKindThinking && m.transcript.activeText != "" && !m.Flags.Thinking:
 		action = m.renderThought()
 	case m.ToolProgressText != "" && (m.Progress != nil || !m.Flags.Tools):
 		action = m.renderProgress()
@@ -835,8 +773,8 @@ func (m ChatModel) pendingRows() []string {
 		return nil
 	}
 	before := slices.Clone(m.History.Entries())
-	if m.activeKind != StreamKindNone && m.activeText != "" {
-		before = append(before, HistoryEntry{Kind: m.activeEntryKind(), Speaker: m.AgentName})
+	if m.transcript.activeKind != StreamKindNone && m.transcript.activeText != "" {
+		before = append(before, HistoryEntry{Kind: m.transcript.activeEntryKind(), Speaker: m.AgentName})
 	}
 	if m.ToolProgressText != "" && (m.Progress != nil || !m.Flags.Tools) {
 		before = append(before, HistoryEntry{Kind: EntryTool, Speaker: m.AgentName})
@@ -1049,16 +987,14 @@ func (m *ChatModel) showOlder(msg ChatOlderLoadedMsg) ChatModel {
 		m.AddError(fmt.Sprintf("Could not load earlier messages: %v", msg.Err))
 		return *m
 	}
-	// The page renders exactly as a reset would, in a scratch transcript.
-	scratch := NewChatModel(&daemon.Session{ID: m.SessionID}, m.client)
-	defer scratch.Close()
-	scratch.AgentName = m.AgentName
-	scratch.History = NewBoundedHistory(1<<30, 1<<40)
-	for _, evt := range msg.Page.Events {
-		scratch.handleStreamEvent(evt)
+	older := replayTranscript(msg.Page.Events, m.AgentName)
+	for i := range older {
+		if Compact(older[i], m.Flags) {
+			facts := factsOf(older[i])
+			older[i].facts = &facts
+		}
 	}
-	scratch.settleActiveStream()
-	m.History.Prepend(scratch.History.Entries())
+	m.History.Prepend(older)
 	m.olderBefore, m.olderMore = msg.Page.Before, msg.Page.More && msg.Page.Before > 0
 	m.rebuildSettledLines()
 	m.refreshViewportContent()
@@ -1284,14 +1220,16 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.Status = *msg.Status
 			defer m.reseedMood()
 			// most polls find the session idle with nothing live to settle
-			live := m.Progress != nil || m.ToolProgressText != "" || m.ThoughtProgressText != "" || m.activeKind != StreamKindNone || m.turn != nil && m.turn.begun()
+			live := m.Progress != nil || m.ToolProgressText != "" || m.ThoughtProgressText != "" || m.transcript.activeKind != StreamKindNone || m.transcript.turn != nil && m.transcript.turn.begun()
 			if live && (!m.Status.Running || m.Status.Idle) {
 				m.Progress = nil
 				m.settleActiveStream()
 				m.ToolProgressText = ""
 				m.ThoughtProgressText = ""
-				if m.turn != nil && m.turn.begun() {
-					m.closeTurn(false)
+				if m.transcript.turn != nil && m.transcript.turn.begun() {
+					for _, entry := range m.transcript.closeTurn(false) {
+						m.appendSettledEntry(entry)
+					}
 				}
 				m.refreshViewportContent()
 			}
@@ -1666,246 +1604,104 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	defer m.reseedMood()
 	if evt.Replayed {
-		// the snapshot rebuilds the transcript; whether albedo is working
-		// now is for /status to say, so reopening a session never flashes
-		// the phase its last turn ended in
+		// Replayed events do not describe current activity; preserve live status.
 		defer func(live daemon.AgentStatus) { m.Status = live }(m.Status)
 	}
 	if evt.Type != daemon.EventToolProgress {
 		m.Progress = nil
 	}
-	thoughtStart := cmp.Or(m.lastEvent, time.Now())
-	if !evt.Replayed && evt.Type != daemon.EventThinking {
-		m.lastEvent = time.Now()
+	watchedThought := !m.transcript.thinkingSince.IsZero()
+	entries := m.transcript.apply(evt, m.AgentName)
+	for _, entry := range entries {
+		m.appendSettledEntry(entry)
 	}
+
 	switch evt.Type {
 	case daemon.EventReset:
-		m.settleActiveStream()
 		m.History.Clear()
 		m.burstEpoch++
 		m.settledLines = nil
 		m.settledLinesBytes, m.droppedSettledLines = 0, 0
-		m.resetStreamState()
+		m.clearAction()
 		m.Usage = nil
 		m.ClearNotices()
 		m.TurnFailed, m.Stopping, m.Stopped = false, false, false
 		m.Follow, m.scrollOffset = true, 0
-		m.pendingUsers, m.turn = nil, nil
+		m.pendingUsers = nil
 		m.olderBefore, m.olderMore, m.loadingOlder = evt.Before, evt.More, false
-
 	case daemon.EventCommitted:
 		m.History.Stamp(evt.Seq)
-
 	case daemon.EventRetry:
-		m.resetStreamState()
-
+		m.clearAction()
 	case daemon.EventUser:
-		m.Stopped = false
-		m.TurnFailed = false
-		m.settleActiveStream()
+		m.Stopped, m.TurnFailed = false, false
 		m.clearAction()
 		if !evt.Replayed {
 			m.ClearNotices()
 		}
-
 		if evt.ClientID == m.client.ClientID() {
 			if i := slices.IndexFunc(m.pendingUsers, func(p PendingUserTurn) bool { return p.Text == evt.Text }); i >= 0 {
 				m.pendingUsers = slices.Delete(m.pendingUsers, i, i+1)
 			}
 		}
-
-		speaker := pick(evt.Source != "" && evt.Source != "chat", evt.Source, "You")
-		var ts int64
-		if evt.Timestamp != nil && *evt.Timestamp > 0 {
-			ts = *evt.Timestamp
-		} else if evt.TriggeredAt != "" {
-			if parsedT, err := time.Parse(time.RFC3339, evt.TriggeredAt); err == nil {
-				ts = parsedT.UnixMilli()
+	case daemon.EventText, daemon.EventThinking:
+		if evt.Text != "" {
+			m.ToolProgressText, m.ThoughtProgressText = "", ""
+			m.Status.Running, m.Status.Idle, m.Status.Phase = true, false, &phaseReasoning
+			// A thought flushed at the buffer cap keeps its last compact line
+			// until the next delta, just like an explicitly settled thought.
+			if evt.Type == daemon.EventThinking && m.transcript.activeText == "" && !m.transcript.thinkingSince.IsZero() {
+				for _, entry := range entries {
+					if entry.Kind == EntryThinking {
+						m.ThoughtProgressText = cmp.Or(thinkingLine(entry.Text), "thinking")
+					}
+				}
 			}
 		}
-		entry := HistoryEntry{
-			Kind:      EntryUser,
-			Speaker:   speaker,
-			Text:      evt.Text,
-			ClientID:  evt.ClientID,
-			Timestamp: ts,
-		}
-		// Your message starts a turn and closes the one before it. Another
-		// source only opens a turn when none is in flight.
-		opens := m.turn == nil || speaker == "You"
-		if opens {
-			m.closeTurn(false)
-		}
-		m.appendSettledEntry(entry)
-		if opens {
-			m.turn = newOpenTurn(ts)
-		}
-
-	case daemon.EventText:
-		m.streamDelta(StreamKindText, evt.Text)
-
-	case daemon.EventThinking:
-		if m.activeKind != StreamKindThinking {
-			m.settleActiveStream()
-			m.activeKind = StreamKindThinking
-			if !evt.Replayed {
-				m.thinkingSince = thoughtStart
-			}
-		}
-		m.thoughtMs += evt.ElapsedMs
-		m.streamDelta(StreamKindThinking, evt.Text)
-
 	case daemon.EventToolProgress:
 		if evt.Replayed {
-			break // a progress snapshot is not an action happening now
+			break // A progress snapshot is not an action happening now.
 		}
-		m.turnIsLive()
 		m.Progress = evt.Progress
 		if evt.Progress != nil {
-			m.settleActiveStream()
 			m.ThoughtProgressText = ""
 			m.Status.Running, m.Status.Idle, m.Status.Phase = true, false, &phaseTool
 			m.inFlight = evt.Progress
 			m.ToolProgressText = actionLabel(evt.Progress, nil)
 		}
-
 	case daemon.EventTool:
-		m.settleActiveStream()
 		m.ThoughtProgressText = ""
-		m.Status.Running = true
-		m.Status.Idle = false
-
-		entry := HistoryEntry{
-			Kind:       EntryTool,
-			ToolName:   evt.ToolName,
-			ToolArgs:   evt.ToolArgs,
-			ToolResult: evt.ToolResult,
-			ToolTrace:  evt.ToolTrace,
-			Timestamp:  time.Now().UnixMilli(),
-		}
-		m.appendSettledEntry(entry)
+		m.Status.Running, m.Status.Idle = true, false
 		m.ToolProgressText = ""
 		if !evt.Replayed {
-			m.ToolProgressText = actionLabel(m.inFlight, &entry)
+			for i := len(entries) - 1; i >= 0; i-- {
+				if entries[i].Kind == EntryTool {
+					m.ToolProgressText = actionLabel(m.inFlight, &entries[i])
+					break
+				}
+			}
 		}
 		m.inFlight = nil
-		if m.turn == nil {
-			m.turn = newOpenTurn(0)
-		}
-		m.turn.tools++
-		m.turn.touch(evt.Timestamp)
-
-	case daemon.EventMessage:
+	case daemon.EventMessage, daemon.EventNote, daemon.EventCompacted:
 		m.clearAction()
-
-		targetHash := fnv1a(fnvOffset64, evt.Text)
-		isDuplicate := (m.streamedLen == int64(len(evt.Text))) && (m.streamedHash == targetHash)
-		m.streamedHash = fnvOffset64
-		m.streamedLen = 0
-
-		m.settleActiveStream()
-		m.ThoughtProgressText = ""
-
-		if isDuplicate {
-			return
-		}
-
-		var ts int64
-		if evt.Timestamp != nil && *evt.Timestamp > 0 {
-			ts = *evt.Timestamp
-		}
-		entry := HistoryEntry{
-			Kind:      EntryAssistant,
-			Speaker:   m.AgentName,
-			Text:      evt.Text,
-			Timestamp: ts,
-		}
-		m.appendSettledEntry(entry)
-		if m.turn == nil {
-			m.turn = newOpenTurn(ts)
-		}
-		m.turn.touch(evt.Timestamp)
-
-	case daemon.EventNote:
-		m.settleActiveStream()
-		m.clearAction()
-		m.appendSettledEntry(HistoryEntry{Kind: EntryNote, Text: evt.Text, Timestamp: time.Now().UnixMilli()})
-
 	case daemon.EventError:
 		m.TurnFailed = true
-		m.settleActiveStream()
 		m.clearAction()
 		m.Status.Running, m.Status.Idle, m.Status.Phase = false, true, &phaseResting
-		m.appendSettledEntry(HistoryEntry{Kind: EntryError, Text: evt.Text, Timestamp: time.Now().UnixMilli()})
-		if m.turn != nil {
-			m.turn.failed = true
-			m.closeTurn(false)
-		}
-
-	case daemon.EventCompacted:
-		m.settleActiveStream()
-		m.clearAction()
-		m.appendSettledEntry(HistoryEntry{
-			Kind:      EntryCompacted,
-			Text:      evt.Summary,
-			Evicted:   evt.Evicted,
-			Strategy:  evt.Strategy,
-			Timestamp: time.Now().UnixMilli(),
-		})
-
 	case daemon.EventUsage:
-		m.settleActiveStream()
 		m.Usage = evt.Usage
-
+		if watchedThought {
+			for _, entry := range entries {
+				if entry.Kind == EntryThinking {
+					m.ThoughtProgressText = cmp.Or(thinkingLine(entry.Text), "thinking")
+				}
+			}
+		}
 	case daemon.EventInterrupted:
 		m.Stopping, m.Stopped, m.TurnFailed = false, true, false
-		m.settleActiveStream()
 		m.clearAction()
 		m.Status.Running, m.Status.Idle, m.Status.Phase = false, true, &phaseResting
-
-		if m.turn != nil {
-			m.closeTurn(true)
-			return
-		}
-		m.appendSettledEntry(HistoryEntry{Kind: EntryNote, Text: "stopped by you", Timestamp: time.Now().UnixMilli()})
 	}
-}
-
-// openTurn follows the turn in flight until its signoff.
-type openTurn struct {
-	// start and last are daemon timestamps in milliseconds.
-	start, last int64
-	tools       int
-	// live marks a turn streamed to this client, which ends now rather
-	// than at its last replayed event.
-	live   bool
-	failed bool
-}
-
-func newOpenTurn(ts int64) *openTurn {
-	if ts == 0 {
-		ts = time.Now().UnixMilli()
-	}
-	return &openTurn{start: ts, last: ts}
-}
-
-func (t *openTurn) touch(ts *int64) {
-	if ts != nil && *ts > t.last {
-		t.last = *ts
-	}
-}
-
-// begun reports whether the turn has done anything, so an idle status
-// that races its first event cannot sign it off early.
-func (t *openTurn) begun() bool {
-	return t.live || t.tools > 0 || t.last > t.start
-}
-
-func (m *ChatModel) turnIsLive() {
-	if m.turn == nil {
-		m.turn = newOpenTurn(0)
-	}
-	m.turn.live = true
 }
 
 // stretch is one run of a phase: a thinking or replying spell, or one tool
@@ -1925,27 +1721,6 @@ func (m *ChatModel) reseedMood() {
 	if now != m.stretch {
 		m.stretch, m.moodSeed = now, rand.Int64()
 	}
-}
-
-// closeTurn signs off the turn in flight, if there is one.
-func (m *ChatModel) closeTurn(stopped bool) {
-	t := m.turn
-	if t == nil {
-		return
-	}
-	m.turn, m.lastEvent = nil, time.Time{}
-	end := t.last
-	if t.live {
-		end = max(end, time.Now().UnixMilli())
-	}
-	elapsed := end - t.start
-	m.appendSettledEntry(HistoryEntry{
-		Kind:      EntryTurnEnd,
-		Mood:      outcome(t.failed, stopped, elapsed),
-		ElapsedMs: elapsed,
-		Tools:     t.tools,
-		Timestamp: end,
-	})
 }
 
 func formatUsage(u *daemon.Usage) string {
@@ -2053,7 +1828,7 @@ func (m ChatModel) renderProgress() string {
 
 // renderThought follows the newest line while the thought streams.
 func (m ChatModel) renderThought() string {
-	header := cmp.Or(thinkingLine(m.activeText), "thinking")
+	header := cmp.Or(thinkingLine(m.transcript.activeText), "thinking")
 	width := max(1, m.Renderer.BodyWidth-railWidth)
 	return markChrome + m.Styles.Faint.Render(ansi.Truncate(header+"…", width, "…"))
 }
@@ -2077,7 +1852,7 @@ func (m ChatModel) statusLine() string {
 		return pick(m.Progress.Phase == "generating", "generating call", "running "+m.Progress.Name)
 	}
 	if m.Status.Running && !m.Status.Idle {
-		if m.activeKind == StreamKindText {
+		if m.transcript.activeKind == StreamKindText {
 			return "responding"
 		}
 		if m.Status.Phase != nil {
@@ -2112,7 +1887,7 @@ func (m ChatModel) phaseMood() mood {
 		return moodPreparing
 	case m.Progress != nil:
 		return moodWorking
-	case m.activeKind == StreamKindText:
+	case m.transcript.activeKind == StreamKindText:
 		return moodResponding
 	case m.Status.Phase != nil:
 		switch *m.Status.Phase {
@@ -2177,7 +1952,7 @@ func (m ChatModel) View() string {
 	}
 
 	view := m.Viewport.View()
-	if m.History.Len() == 0 && m.activeText == "" && m.ToolProgressText == "" {
+	if m.History.Len() == 0 && m.transcript.activeText == "" && m.ToolProgressText == "" {
 		textWidth := max(1, min(m.Renderer.BodyWidth, m.Viewport.Width())-railWidth)
 		var emptyRows []string
 		for _, line := range wrapOrChunkLine("What would you like to work on?", textWidth) {

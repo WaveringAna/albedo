@@ -34,8 +34,8 @@ func TestScrollDoesNotResumeFollowBeforeEndOfLiveOutput(t *testing.T) {
 			m := newTestChatModel(t, &daemon.Session{ID: "s"})
 			m.SetSize(80, 20)
 			m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Text: strings.Repeat("settled\n", 25)})
-			m.activeKind = StreamKindText
-			m.activeText = strings.Repeat("live\n", 55)
+			m.transcript.activeKind = StreamKindText
+			m.transcript.activeText = strings.Repeat("live\n", 55)
 			m.refreshViewportContent()
 			bottom := m.scrollOffset
 			// This is beyond the end of settled lines, but far from the end of live output.
