@@ -1,3 +1,5 @@
+//go:build unix
+
 // /cd crosses the composer, the folder picker, the daemon's /fs routes and
 // its workspace move. A fake folder source cannot show the daemon listing a
 // real directory, resolving a relative path, or keeping the new workspace.

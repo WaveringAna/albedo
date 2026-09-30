@@ -1,3 +1,5 @@
+//go:build unix
+
 // Notices cross the session boundary and clear on a real submitted turn. A
 // unit test with fabricated lifecycle messages cannot prove either daemon
 // command.

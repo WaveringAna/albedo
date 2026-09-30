@@ -1,3 +1,5 @@
+//go:build unix
+
 // Pinning, renaming, archiving and deleting cross the session picker, the
 // prefs file and the daemon's PATCH and DELETE. A stubbed server cannot show
 // the daemon keeping the new title or dropping the deleted session.

@@ -1,3 +1,5 @@
+//go:build unix
+
 // CLI scenarios: the built binary, driven as a user would, against the suite's
 // one real daemon. Each scenario registers its own provider route and works in
 // its own workspace; assertions read what a user observes -- command output,
@@ -109,8 +111,7 @@ func TestChatClientTurnStreamsAndSettles(t *testing.T) {
 	id := newSession(t, workspace)
 
 	client := daemon.NewChatClient(conn(t), id)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	events := make(chan daemon.StreamEvent, 128)
 	streamErr := make(chan error, 1)

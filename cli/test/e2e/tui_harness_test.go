@@ -1,3 +1,5 @@
+//go:build unix
+
 // Real-daemon TUI fixture: drives an AppModel directly through Bubble Tea
 // update steps against the suite's shared daemon.
 package e2e

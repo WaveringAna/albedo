@@ -1,3 +1,5 @@
+//go:build unix
+
 // The manual openai-compatible provider wizard crosses the composer, the
 // daemon's sign-in and model-catalog answers, config.json on disk, and the
 // daemon's creds.json. A stubbed daemon cannot prove the real answers lead the

@@ -1,3 +1,5 @@
+//go:build unix
+
 // Effort selection crosses the composer, model registry, keyboard, and daemon
 // session. Stubbed command replies cannot catch a dropped request or commit.
 package e2e
@@ -48,7 +50,7 @@ func TestTUIEffortSelectorCommitsThroughTheDaemon(t *testing.T) {
 	// Even a narrow selector stays inside the terminal and Escape restores the
 	// composer without changing the daemon.
 	d.Update(tea.WindowSizeMsg{Width: 28, Height: 14})
-	for _, line := range strings.Split(d.View(), "\n") {
+	for line := range strings.SplitSeq(d.View(), "\n") {
 		if width := ansi.StringWidth(line); width > 28 {
 			t.Fatalf("effort selector rendered a %d-cell line at width 28: %q", width, line)
 		}

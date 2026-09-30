@@ -1,3 +1,5 @@
+//go:build unix
+
 // A ChatClient built before a real daemon restart must send another turn via
 // its refreshed connection without losing the first turn's transcript. A fake
 // daemon cannot exercise process lifetime or on-disk session persistence.

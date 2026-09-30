@@ -1,15 +1,8 @@
-// Go end-to-end tests: one real daemon, the real CLI binary, and a scripted
-// model provider. TestMain builds cli/cmd/albedo into a temporary directory,
-// boots one daemon under a hermetic ALBEDO_HOME and HOME, and shuts it down
-// before the process exits; the daemon also watches ALBEDO_PARENT_PID, so even
-// a crashed test binary cannot leave it behind. Every scenario shares that
-// daemon and isolates itself with its own provider route and workspace, and
-// most run side by side (see providerRoute).
-//
-// These behaviours only exist when every layer runs together: CLI argument
-// handling and non-TTY output, provider plumbing from config.json to the
-// daemon's upstream client, and a full turn from send to committed assistant
-// text. Unit tests fake the daemon or the network and cannot observe them.
+//go:build unix
+
+// Package e2e drives a real daemon through the CLI and TUI with a scripted
+// model provider. Scenarios isolate provider routes and workspaces; most run
+// in parallel. The suite uses Unix signals for daemon teardown and PID checks.
 package e2e
 
 import (
@@ -27,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -89,8 +83,8 @@ func bootSuite() (func() (string, bool), error) {
 	userHome := filepath.Join(temp, "user-home")
 	scratch := filepath.Join(temp, "tmp")
 	for _, dir := range []string{home, userHome, scratch} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return teardown, err
+		if mkdirErr := os.MkdirAll(dir, 0o700); mkdirErr != nil {
+			return teardown, mkdirErr
 		}
 	}
 
@@ -99,8 +93,8 @@ func bootSuite() (func() (string, bool), error) {
 	suite.cli = filepath.Join(temp, "bin", "albedo")
 	build := exec.Command("go", "build", "-o", suite.cli, "./cmd/albedo")
 	build.Dir = filepath.Join(root, "cli")
-	if out, err := build.CombinedOutput(); err != nil {
-		return teardown, fmt.Errorf("building ./cmd/albedo: %w\n%s", err, out)
+	if out, buildErr := build.CombinedOutput(); buildErr != nil {
+		return teardown, fmt.Errorf("building ./cmd/albedo: %w\n%s", buildErr, out)
 	}
 
 	launcher, err := snapshotDaemon(root, filepath.Join(temp, "daemon"))
@@ -113,13 +107,13 @@ func bootSuite() (func() (string, bool), error) {
 	suite.provider = newFakeProvider()
 	// A models.dev refresh or the cache-TTL table's remote copy would reach
 	// the network from a test.
-	if err := os.WriteFile(filepath.Join(home, "extensions.json"),
-		[]byte(`{"models": {"refreshHours": 0}, "cacheTtl": {"url": null}}`), 0o600); err != nil {
-		return teardown, err
+	if writeErr := os.WriteFile(filepath.Join(home, "extensions.json"),
+		[]byte(`{"models": {"refreshHours": 0}, "cacheTtl": {"url": null}}`), 0o600); writeErr != nil {
+		return teardown, writeErr
 	}
 
-	if _, stderr, err := runCLI("sessions"); err != nil {
-		return teardown, bootFailure(err, stderr)
+	if _, stderr, startupErr := runCLI("sessions"); startupErr != nil {
+		return teardown, bootFailure(startupErr, stderr)
 	}
 	snap, err := awaitDaemon(home)
 	if err != nil {
@@ -240,8 +234,7 @@ func snapshotDaemon(root, out string) (string, error) {
 	}
 	launcher, err := exec.Command(filepath.Join(root, "test", "snapshot-daemon.sh"), out).Output()
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 			return "", fmt.Errorf("snapshotting the daemon: %w\n%s", err, exit.Stderr)
 		}
 		return "", fmt.Errorf("snapshotting the daemon: %w", err)
@@ -350,7 +343,7 @@ func (p *fakeProvider) requests(name string) []map[string]any {
 	}
 	route.mu.Lock()
 	defer route.mu.Unlock()
-	return append([]map[string]any(nil), route.requests...)
+	return slices.Clone(route.requests)
 }
 
 func (p *fakeProvider) routeFor(path string) *fakeRoute {
@@ -551,6 +544,9 @@ func streamSnapshot(t *testing.T, session string) []map[string]any {
 			return page.Events
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("read stream of %s: %v", session, err)
+	}
 	t.Fatalf("stream of %s produced no event page", session)
 	return nil
 }
@@ -580,8 +576,8 @@ func echoReply(request map[string]any) string {
 // lastUserText finds the prompt the daemon forwarded.
 func lastUserText(request map[string]any) string {
 	messages, _ := request["messages"].([]any)
-	for i := len(messages) - 1; i >= 0; i-- {
-		message, _ := messages[i].(map[string]any)
+	for _, raw := range slices.Backward(messages) {
+		message, _ := raw.(map[string]any)
 		if message["role"] != "user" {
 			continue
 		}
