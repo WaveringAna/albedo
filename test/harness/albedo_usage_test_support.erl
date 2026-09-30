@@ -117,7 +117,11 @@ gone(Pid, N) ->
 
 %% Exit status of `kill -0 Pid`: 0 while the process exists.
 signal(Pid) ->
-    Port = open_port({spawn_executable, "/bin/kill"},
+    Kill = case os:find_executable("kill") of
+        false -> erlang:error({missing_test_dependency, "kill executable not found in PATH"});
+        Executable -> Executable
+    end,
+    Port = open_port({spawn_executable, Kill},
                      [{args, ["-0", integer_to_list(Pid)]}, exit_status, binary, hide]),
     receive
         {Port, {exit_status, Status}} -> Status

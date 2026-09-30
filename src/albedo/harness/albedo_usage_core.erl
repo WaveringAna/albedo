@@ -198,7 +198,11 @@ kill(Port) ->
     case Pid of
         false -> ok;
         _ ->
-            Killer = open_port({spawn_executable, "/bin/kill"},
+            Kill = case on_path("kill") of
+                false -> erlang:error({missing_executable, "kill executable not found in PATH"});
+                Executable -> Executable
+            end,
+            Killer = open_port({spawn_executable, Kill},
                                [{args, ["-KILL", integer_to_list(Pid)]},
                                 exit_status, binary, hide]),
             receive

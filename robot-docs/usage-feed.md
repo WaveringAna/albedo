@@ -24,6 +24,8 @@ a step asks for requests; each is answered with one `{"status", "body"}` object:
 
 ## packaging
 
+The driver's timeout cleanup requires a `kill` executable on `PATH`. It sends `KILL` to the child process because closing the Erlang port alone does not guarantee that the child exits.
+
 `usage-core` is a pinned tarball flake input (`flake = false`) on the knot, built in `default.nix` with nixpkgs' zig (its `build.zig.zon` demands 0.16.0, which nixpkgs-unstable carries). the CLI is linked into the daemon next to `albedo-render`:
 
 ```
