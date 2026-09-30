@@ -58,7 +58,7 @@ func TestChatClientSendReconnectsAfterDaemonRestart(t *testing.T) {
 	// The client exists before the restart and is the only thing this test
 	// uses afterwards; a client created after the reboot would prove nothing.
 	shared := conn(t)
-	client := daemon.NewChatClient(daemon.ChatClientOptions{Conn: shared, AgentID: id})
+	client := daemon.NewChatClient(shared, id)
 
 	prompt1 := "turn before the restart"
 	if _, err := client.Send(context.Background(), prompt1, nil); err != nil {
@@ -125,9 +125,7 @@ func TestTUIReopensInterruptedSessionWithoutCompacting(t *testing.T) {
 		return echoReply(request)
 	})
 	id := newSession(t, t.TempDir())
-	client := daemon.NewChatClient(daemon.ChatClientOptions{
-		Conn: conn(t), AgentID: id,
-	})
+	client := daemon.NewChatClient(conn(t), id)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := client.Send(ctx, "stop this turn", nil); err != nil {
@@ -154,7 +152,7 @@ func TestTUIReopensInterruptedSessionWithoutCompacting(t *testing.T) {
 	session := daemonSession(t, id)
 	d := driveTUI(t, &session)
 	defer d.App.Chat.Close()
-	page, err := d.App.Chat.Client.History(ctx, 0, 120)
+	page, err := client.History(ctx, 0, 120)
 	if err != nil {
 		t.Fatal(err)
 	}

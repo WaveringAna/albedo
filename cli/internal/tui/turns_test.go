@@ -19,7 +19,7 @@ func plainRows(lines []string) []string {
 }
 
 func TestJumpToYouLandsOnYourMessages(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(100, 20)
 	for i := int64(0); i < 4; i++ {
 		m.appendSettledEntry(HistoryEntry{Kind: EntryUser, Speaker: "You", Text: "question", Timestamp: 1 + i})

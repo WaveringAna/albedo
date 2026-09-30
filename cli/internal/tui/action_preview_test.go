@@ -10,7 +10,7 @@ import (
 )
 
 func TestGroupedActionRowHoldsUntilTheNextAction(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(100, 30)
 	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventUser, Text: "check it"})
 	progress := func(kind, target string) {
@@ -76,7 +76,7 @@ func TestGroupedActionRowHoldsUntilTheNextAction(t *testing.T) {
 }
 
 func TestFinishedActionDoesNotLeakIntoVerboseOrReplayedHistory(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(100, 30)
 	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventTool, ToolName: "python", ToolResult: `{"status":"ok"}`})
 	if m.ToolProgressText == "" {
@@ -97,7 +97,7 @@ func TestFinishedActionDoesNotLeakIntoVerboseOrReplayedHistory(t *testing.T) {
 }
 
 func TestTurnSignoffReplacesTheLastActionRow(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(100, 30)
 	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventUser, Text: "do it"})
 	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventToolProgress,

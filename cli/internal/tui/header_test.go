@@ -12,7 +12,7 @@ import (
 )
 
 func TestHeaderKeepsTheWorkspaceNameAndModelWhole(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.AgentName, m.Workspace, m.Model, m.Effort = "albedo", "/src/proj/tangled", "claude-opus-4-6", "high"
 	m.Glances = []PageGlance{
 		{Title: "pending work", Rows: []PageRow{{ID: "1", Text: "x"}}},

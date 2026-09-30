@@ -29,7 +29,7 @@ func burstFixture() []HistoryEntry {
 }
 
 func TestBurstSettlesOnceProseEndsIt(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s", Workspace: "/w/albedo"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s", Workspace: "/w/albedo"})
 	m.SetSize(120, 40)
 	m.appendSettledEntry(HistoryEntry{Kind: EntryUser, Text: "go"})
 	settled := len(m.settledLines)
@@ -59,7 +59,7 @@ func TestBurstSettlesOnceProseEndsIt(t *testing.T) {
 // renders, and is rebuilt only when one of the inputs in its key changes:
 // each step below mutates exactly one, and the render counter must move once.
 func TestCachedBurstMatchesCollectedBurst(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s", Workspace: "/w/albedo"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s", Workspace: "/w/albedo"})
 	m.SetSize(120, 30)
 	for _, entry := range burstFixture() {
 		m.appendSettledEntry(entry)
@@ -127,7 +127,7 @@ func TestCachedBurstMatchesCollectedBurst(t *testing.T) {
 // Eviction swaps the head of history without changing its length, so the
 // cached frame must key on evictions too or the live burst freezes.
 func TestEvictionKeepsTheLiveBurstCurrent(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s", Workspace: "/w"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s", Workspace: "/w"})
 	m.SetSize(120, 30)
 	m.History = NewBoundedHistory(4, 1<<20)
 	for i := range 8 {

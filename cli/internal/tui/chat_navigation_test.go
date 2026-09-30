@@ -11,6 +11,15 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+func newTestChatModel(t *testing.T, session *daemon.Session) ChatModel {
+	t.Helper()
+	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, "")
+	client := daemon.NewChatClient(conn, session.ID)
+	model := NewChatModel(session, client)
+	t.Cleanup(model.Close)
+	return model
+}
+
 func TestScrollDoesNotResumeFollowBeforeEndOfLiveOutput(t *testing.T) {
 	for _, down := range []struct {
 		name string
@@ -22,7 +31,7 @@ func TestScrollDoesNotResumeFollowBeforeEndOfLiveOutput(t *testing.T) {
 		{"wheel", tea.MouseWheelMsg{Button: tea.MouseWheelDown}, 3},
 	} {
 		t.Run(down.name, func(t *testing.T) {
-			m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+			m := newTestChatModel(t, &daemon.Session{ID: "s"})
 			m.SetSize(80, 20)
 			m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Text: strings.Repeat("settled\n", 25)})
 			m.activeKind = StreamKindText
@@ -63,7 +72,7 @@ func TestReadingPositionSurvivesIncomingTranscript(t *testing.T) {
 		{"wheel", tea.MouseWheelMsg{Button: tea.MouseWheelUp}},
 	} {
 		t.Run(scroll.name, func(t *testing.T) {
-			m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+			m := newTestChatModel(t, &daemon.Session{ID: "s"})
 			m.SetSize(80, 20)
 			var text strings.Builder
 			for i := 0; i < MaxSettledLines+50; i++ {
@@ -89,7 +98,7 @@ func TestReadingPositionSurvivesIncomingTranscript(t *testing.T) {
 // A collapsed thought follows its newest line and keeps it after settling,
 // until the next action replaces it; earlier lines stay hidden.
 func TestFragmentedThinkingStaysCollapsed(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 20)
 	for _, step := range []struct{ text, want, hidden string }{
 		{"**Preparing resize/status tests**", "Preparing resize/status tests…", "Verifying"},
@@ -112,7 +121,7 @@ func TestFragmentedThinkingStaysCollapsed(t *testing.T) {
 }
 
 func TestInterleavedEmptyTextDoesNotSettleThinking(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 20)
 	parts := []string{"First thinking token", " second thinking token", " third thinking token"}
 	for _, part := range parts {
@@ -172,7 +181,7 @@ func TestCompactTranscriptEntries(t *testing.T) {
 }
 
 func TestReadingPositionSurvivesOutputPastTheLineCap(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 20)
 	block := func(name string) HistoryEntry {
 		return HistoryEntry{Kind: EntryAssistant, Text: name + "\n" + strings.Repeat("line\n", 15)}

@@ -15,39 +15,13 @@ import (
 	"time"
 )
 
-type EndpointProvider interface {
-	BaseURL() string
-	AuthToken() string
-	Refresh(ctx context.Context) error
+type reconnectingTransport struct {
+	conn *Connection
+	base *http.Transport
 }
 
-type StaticEndpoint struct {
-	URL   string
-	Token string
-}
-
-func (s StaticEndpoint) BaseURL() string {
-	return strings.TrimRight(s.URL, "/")
-}
-
-func (s StaticEndpoint) AuthToken() string {
-	return s.Token
-}
-
-func (s StaticEndpoint) Refresh(ctx context.Context) error {
-	return errors.New("Cannot reconnect automatically to a fixed server address.")
-}
-
-type ReconnectingTransport struct {
-	Provider EndpointProvider
-	Base     http.RoundTripper
-}
-
-func (t *ReconnectingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	base := t.Base
-	if base == nil {
-		base = http.DefaultTransport
-	}
+func (t *reconnectingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
 
 	res, err := base.RoundTrip(req)
 	status := 0
@@ -55,19 +29,21 @@ func (t *ReconnectingTransport) RoundTrip(req *http.Request) (*http.Response, er
 		status = res.StatusCode
 	}
 
-	if t.Provider != nil && req.URL != nil && req.URL.Path != "/shutdown" && !strings.HasSuffix(req.URL.Path, "/open") && isStaleDaemon(err, status) {
-		if refreshErr := t.Provider.Refresh(req.Context()); refreshErr == nil {
+	// Retrying shutdown could stop a replacement daemon. The settings /open
+	// route increments an open count and its contract forbids automatic retries.
+	if req.URL != nil && req.URL.Path != "/shutdown" && !strings.HasSuffix(req.URL.Path, "/open") && isStaleDaemon(err, status) {
+		if refreshErr := t.conn.Refresh(req.Context()); refreshErr == nil {
 			if res != nil {
 				_ = res.Body.Close()
 			}
 			newReq := req.Clone(req.Context())
-			newBase := t.Provider.BaseURL()
+			newBase := t.conn.BaseURL()
 			if parsed, parseErr := url.Parse(newBase); parseErr == nil && newReq.URL != nil {
 				newReq.URL.Scheme = parsed.Scheme
 				newReq.URL.Host = parsed.Host
 				newReq.Host = parsed.Host
 			}
-			if token := t.Provider.AuthToken(); token != "" {
+			if token := t.conn.Token(); token != "" {
 				newReq.Header.Set("Authorization", "Bearer "+token)
 			}
 			if req.GetBody != nil {
@@ -83,13 +59,15 @@ func (t *ReconnectingTransport) RoundTrip(req *http.Request) (*http.Response, er
 	return res, err
 }
 
-func NewReconnectingClient(provider EndpointProvider) *http.Client {
+func (t *reconnectingTransport) CloseIdleConnections() {
+	t.base.CloseIdleConnections()
+}
+
+func newHTTPClient(conn *Connection) *http.Client {
 	return &http.Client{
-		Transport: &ReconnectingTransport{
-			Provider: provider,
-			Base: &http.Transport{
-				Proxy: http.ProxyFromEnvironment,
-			},
+		Transport: &reconnectingTransport{
+			conn: conn,
+			base: &http.Transport{Proxy: http.ProxyFromEnvironment},
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -149,11 +127,11 @@ func newJSONRequest(ctx context.Context, method, url string, body any) (*http.Re
 	return req, nil
 }
 
-func doAuthenticatedRequest(client *http.Client, token string, req *http.Request) (*http.Response, error) {
-	if token != "" {
+func doAuthenticatedRequest(conn *Connection, req *http.Request) (*http.Response, error) {
+	if token := conn.Token(); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	return client.Do(req)
+	return conn.HTTPClient().Do(req)
 }
 
 func readHTTPError(res *http.Response, limit int64) error {
@@ -202,7 +180,7 @@ func RequestMethod[T any](ctx context.Context, conn *Connection, method, path st
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	res, err := doAuthenticatedRequest(conn.HTTPClient(), conn.Token(), req)
+	res, err := doAuthenticatedRequest(conn, req)
 	if err != nil {
 		return zero, err
 	}

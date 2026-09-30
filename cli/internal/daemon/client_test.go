@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -46,17 +47,15 @@ func TestCompletedCallPreviewsReleaseState(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewChatClient(ChatClientOptions{
-		BaseURL: server.URL,
-		AgentID: "session",
-	})
+	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
+	client := NewChatClient(conn, "session")
 
 	var events []StreamEvent
-	_ = client.Stream(context.Background(), nil, func(event StreamEvent) error {
+	_ = client.Stream(context.Background(), 0, func(event StreamEvent) error {
 		events = append(events, event)
 		return nil
 	})
-	_ = client.Stream(context.Background(), nil, func(event StreamEvent) error {
+	_ = client.Stream(context.Background(), 0, func(event StreamEvent) error {
 		events = append(events, event)
 		return nil
 	})
@@ -113,22 +112,20 @@ func TestUnfinishedArgumentsBounded(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewChatClient(ChatClientOptions{
-		BaseURL: server.URL,
-		AgentID: "session",
-	})
+	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
+	client := NewChatClient(conn, "session")
 
 	for i := 1; i < 33; i++ {
-		_ = client.Stream(context.Background(), nil, func(event StreamEvent) error { return nil })
+		_ = client.Stream(context.Background(), 0, func(event StreamEvent) error { return nil })
 	}
 
-	err := client.Stream(context.Background(), nil, func(event StreamEvent) error { return nil })
+	err := client.Stream(context.Background(), 0, func(event StreamEvent) error { return nil })
 	if err == nil {
 		t.Fatalf("expected error on call count limit, got: %v", err)
 	}
 
 	var events []StreamEvent
-	_ = client.Stream(context.Background(), nil, func(event StreamEvent) error {
+	_ = client.Stream(context.Background(), 0, func(event StreamEvent) error {
 		events = append(events, event)
 		return nil
 	})
@@ -158,13 +155,11 @@ func TestDetachingDropsArgumentPreviews(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewChatClient(ChatClientOptions{
-		BaseURL: server.URL,
-		AgentID: "session",
-	})
+	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
+	client := NewChatClient(conn, "session")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	_ = client.Stream(ctx, nil, func(event StreamEvent) error {
+	_ = client.Stream(ctx, 0, func(event StreamEvent) error {
 		if event.Type == EventToolProgress && event.Progress != nil {
 			cancel()
 		}
@@ -172,7 +167,7 @@ func TestDetachingDropsArgumentPreviews(t *testing.T) {
 	})
 
 	var events []StreamEvent
-	_ = client.Stream(context.Background(), nil, func(event StreamEvent) error {
+	_ = client.Stream(context.Background(), 0, func(event StreamEvent) error {
 		events = append(events, event)
 		return nil
 	})
@@ -206,9 +201,10 @@ func TestSnapshotEventsAreMarkedReplayed(t *testing.T) {
 		_, _ = w.Write([]byte(pages))
 	}))
 	defer server.Close()
-	client := NewChatClient(ChatClientOptions{BaseURL: server.URL, AgentID: "session"})
+	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
+	client := NewChatClient(conn, "session")
 	replayed := map[string]bool{}
-	_ = client.Stream(context.Background(), nil, func(event StreamEvent) error {
+	_ = client.Stream(context.Background(), 0, func(event StreamEvent) error {
 		if event.Type == EventThinking {
 			replayed[event.Text] = event.Replayed
 		}

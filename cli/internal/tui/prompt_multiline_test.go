@@ -20,7 +20,7 @@ import (
 // composer sizes a chat like a small terminal.
 func composer(t *testing.T, width, height int) ChatModel {
 	t.Helper()
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(width, height)
 	return m
 }
@@ -182,7 +182,7 @@ func TestEditorProcessRestoresTerminal(t *testing.T) {
 // reports the mode keeps the setting across chats. The report only exists in
 // a real terminal, so no e2e surface carries it.
 func TestAppRemembersGraphemeTerminal(t *testing.T) {
-	m := AppModel{}
+	m := AppModel{Conn: daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, t.TempDir())}
 	next, _ := m.Update(tea.ModeReportMsg{Mode: ansi.ModeUnicodeCore, Value: ansi.ModeNotRecognized})
 	if next.(AppModel).Graphemes {
 		t.Fatal("a terminal without mode 2027 does not measure graphemes")

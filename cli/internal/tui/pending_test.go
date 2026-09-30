@@ -13,8 +13,7 @@ import (
 )
 
 func TestDotContinueDoesNotAppearInUI(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
-	m.Client = daemon.NewChatClient(daemon.ChatClientOptions{BaseURL: "http://127.0.0.1:1", AgentID: "s"})
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 30)
 	m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Speaker: "albedo", Text: "ready", Timestamp: time.Now().UnixMilli() - 1000})
 
@@ -40,7 +39,7 @@ func TestDotContinueDoesNotAppearInUI(t *testing.T) {
 }
 
 func TestDotContinueErrorDoesNotCorruptPendingUsers(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.pendingUsers = []PendingUserTurn{{Text: "real user prompt", At: time.Now().UnixMilli()}}
 	m.TextArea.SetValue("")
 
@@ -63,8 +62,7 @@ func TestDotContinueErrorDoesNotCorruptPendingUsers(t *testing.T) {
 }
 
 func TestMessageSubmitClearsTurnFailed(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
-	m.Client = daemon.NewChatClient(daemon.ChatClientOptions{BaseURL: "http://127.0.0.1:1", AgentID: "s"})
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 30)
 	m.TurnFailed = true
 	m.Stopped = true
@@ -84,8 +82,7 @@ func TestMessageSubmitClearsTurnFailed(t *testing.T) {
 }
 
 func TestDotContinueClearsTurnFailed(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
-	m.Client = daemon.NewChatClient(daemon.ChatClientOptions{BaseURL: "http://127.0.0.1:1", AgentID: "s"})
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 30)
 	m.TurnFailed = true
 	m.Stopped = true

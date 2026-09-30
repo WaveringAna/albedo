@@ -54,75 +54,26 @@ type SendResult struct {
 	Queued bool `json:"queued,omitempty"`
 }
 
-type ChatClientOptions struct {
-	BaseURL    string
-	Token      string
-	AgentID    string
-	ClientID   string
-	HTTPClient *http.Client
-	Conn       *Connection
-	Endpoint   EndpointProvider
-}
-
 type ChatClient struct {
-	endpoint        EndpointProvider
+	conn            *Connection
 	agentID         string
 	clientID        string
-	httpClient      *http.Client
 	mu              sync.Mutex
 	afterSeq        int
 	argumentsByCall map[string]string
-	// Tail, when positive, asks a reset to replay only the newest rows of the
-	// transcript; History pages back through the rest.
-	Tail int
 }
 
-func NewChatClient(opts ChatClientOptions) *ChatClient {
-	var endpoint EndpointProvider
-	if opts.Conn != nil {
-		endpoint = opts.Conn
-	} else if opts.Endpoint != nil {
-		endpoint = opts.Endpoint
-	} else if opts.BaseURL != "" {
-		endpoint = StaticEndpoint{URL: opts.BaseURL, Token: opts.Token}
-	} else {
-		endpoint = StaticEndpoint{}
+// NewChatClient shares conn's HTTP transport. A nil connection panics.
+func NewChatClient(conn *Connection, agentID string) *ChatClient {
+	if conn == nil {
+		panic("daemon.NewChatClient: nil connection")
 	}
-
-	clientID := opts.ClientID
-	if clientID == "" {
-		b := make([]byte, 16)
-		_, _ = rand.Read(b)
-		clientID = "cli-" + hex.EncodeToString(b)
-	}
-
-	var httpClient *http.Client
-	if opts.HTTPClient == nil {
-		if opts.Conn != nil {
-			httpClient = opts.Conn.HTTPClient()
-		} else {
-			httpClient = NewReconnectingClient(endpoint)
-		}
-	} else {
-		base := opts.HTTPClient.Transport
-		if base == nil {
-			base = http.DefaultTransport
-		}
-		httpClient = &http.Client{
-			Transport: &ReconnectingTransport{
-				Provider: endpoint,
-				Base:     base,
-			},
-			CheckRedirect: opts.HTTPClient.CheckRedirect,
-			Timeout:       opts.HTTPClient.Timeout,
-		}
-	}
-
+	identity := make([]byte, 16)
+	_, _ = rand.Read(identity)
 	return &ChatClient{
-		endpoint:        endpoint,
-		agentID:         strings.TrimSpace(opts.AgentID),
-		clientID:        clientID,
-		httpClient:      httpClient,
+		conn:            conn,
+		agentID:         strings.TrimSpace(agentID),
+		clientID:        "cli-" + hex.EncodeToString(identity),
 		afterSeq:        -1,
 		argumentsByCall: make(map[string]string),
 	}
@@ -132,22 +83,8 @@ func (c *ChatClient) ClientID() string {
 	return c.clientID
 }
 
-func (c *ChatClient) BaseURL() string {
-	if c.endpoint == nil {
-		return ""
-	}
-	return c.endpoint.BaseURL()
-}
-
-func (c *ChatClient) Token() string {
-	if c.endpoint == nil {
-		return ""
-	}
-	return c.endpoint.AuthToken()
-}
-
 func (c *ChatClient) agentURL(path string) string {
-	base := c.BaseURL()
+	base := c.conn.BaseURL()
 	return fmt.Sprintf("%s/sessions/%s%s", base, url.PathEscape(c.agentID), path)
 }
 
@@ -164,7 +101,7 @@ func (c *ChatClient) submitPayload(ctx context.Context, payload map[string]any) 
 		return nil, err
 	}
 
-	res, err := doAuthenticatedRequest(c.httpClient, c.Token(), req)
+	res, err := doAuthenticatedRequest(c.conn, req)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +153,7 @@ func (c *ChatClient) Interrupt(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	res, err := doAuthenticatedRequest(c.httpClient, c.Token(), req)
+	res, err := doAuthenticatedRequest(c.conn, req)
 	if err != nil {
 		return false, err
 	}
@@ -261,7 +198,7 @@ func (c *ChatClient) History(ctx context.Context, before int64, rows int) (*Hist
 	if err != nil {
 		return nil, err
 	}
-	res, err := doAuthenticatedRequest(c.httpClient, c.Token(), req)
+	res, err := doAuthenticatedRequest(c.conn, req)
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +235,7 @@ func (c *ChatClient) ContextWindow(ctx context.Context) (*int, error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := doAuthenticatedRequest(c.httpClient, c.Token(), req)
+	res, err := doAuthenticatedRequest(c.conn, req)
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +268,7 @@ func (c *ChatClient) GetStatus(ctx context.Context) (*AgentStatus, error) {
 		return nil, err
 	}
 
-	res, err := doAuthenticatedRequest(c.httpClient, c.Token(), req)
+	res, err := doAuthenticatedRequest(c.conn, req)
 	if err != nil {
 		return nil, err
 	}
@@ -588,14 +525,14 @@ func parseStreamEvent(raw map[string]any) *StreamEvent {
 }
 
 // Stream uses ctx for cancellation; onEvent must also honor ctx if it blocks.
-func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(StreamEvent) error) error {
+func (c *ChatClient) Stream(ctx context.Context, tail int, onEvent func(StreamEvent) error) error {
 	c.mu.Lock()
 	afterSeq := c.afterSeq
 	c.mu.Unlock()
 
 	route := fmt.Sprintf("/stream?after_seq=%d", afterSeq)
-	if c.Tail > 0 {
-		route += fmt.Sprintf("&tail=%d", c.Tail)
+	if tail > 0 {
+		route += fmt.Sprintf("&tail=%d", tail)
 	}
 
 	req, err := newJSONRequest(ctx, http.MethodGet, c.agentURL(route), nil)
@@ -604,7 +541,7 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 	}
 	req.Header.Set("Accept", "text/event-stream")
 
-	res, err := doAuthenticatedRequest(c.httpClient, c.Token(), req)
+	res, err := doAuthenticatedRequest(c.conn, req)
 	if err != nil {
 		return err
 	}
@@ -612,10 +549,6 @@ func (c *ChatClient) Stream(ctx context.Context, onOpen func(), onEvent func(Str
 
 	if res.StatusCode != http.StatusOK {
 		return readHTTPError(res, 64*1024)
-	}
-
-	if onOpen != nil {
-		onOpen()
 	}
 
 	reporter := NewToolProgressReporter(func(prog *ToolProgress) error {

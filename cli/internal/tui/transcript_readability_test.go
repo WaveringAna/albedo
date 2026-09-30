@@ -72,7 +72,7 @@ func TestSelectionSkipsTheRail(t *testing.T) {
 // chrome, no code block frame or quote bars, and wrapped rows joined back
 // into their lines.
 func TestSelectionCopiesOnlyText(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(60, 70)
 	m.appendSettledEntry(HistoryEntry{Kind: EntryUser, Text: "why does the thing break when i do the other thing, it is really annoying"})
 	m.appendSettledEntry(HistoryEntry{Kind: EntryTool, ToolName: "bash"})

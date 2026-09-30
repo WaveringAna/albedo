@@ -34,7 +34,7 @@ func TestHTTPFailuresRetainIdentity(t *testing.T) {
 			// This fixed peer has no discovery directory; authentication errors stay local.
 			conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
 			_, requestErr := RequestMethod[any](context.Background(), conn, http.MethodGet, "/failure", nil)
-			client := NewChatClient(ChatClientOptions{Conn: conn, AgentID: "session"})
+			client := NewChatClient(conn, "session")
 			_, chatErr := client.GetStatus(context.Background())
 			for _, err := range []error{requestErr, chatErr} {
 				err = fmt.Errorf("request context: %w", err)

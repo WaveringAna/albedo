@@ -4,6 +4,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -49,11 +50,10 @@ func TestScrollingToTheTopLoadsOlderHistoryInPlace(t *testing.T) {
 		})
 	}))
 	defer server.Close()
-	client := daemon.NewChatClient(daemon.ChatClientOptions{BaseURL: server.URL, AgentID: "s"})
+	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
+	client := daemon.NewChatClient(conn, "s")
 	m := NewChatModel(&daemon.Session{ID: "s"}, client)
-	if client.Tail != olderPageRows {
-		t.Fatalf("stream does not ask for a tail: %d", client.Tail)
-	}
+	t.Cleanup(m.Close)
 	m.SetSize(80, 20)
 	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventReset, Before: 10, More: true, Replayed: true})
 	for i, name := range []string{"first", "second", "third"} {

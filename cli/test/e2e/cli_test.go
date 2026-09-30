@@ -106,14 +106,14 @@ func TestChatClientTurnStreamsAndSettles(t *testing.T) {
 	workspace := t.TempDir()
 	id := newSession(t, workspace)
 
-	client := daemon.NewChatClient(daemon.ChatClientOptions{Conn: conn(t), AgentID: id})
+	client := daemon.NewChatClient(conn(t), id)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	events := make(chan daemon.StreamEvent, 128)
 	streamErr := make(chan error, 1)
 	go func() {
-		streamErr <- client.Stream(ctx, nil, func(event daemon.StreamEvent) error {
+		streamErr <- client.Stream(ctx, 0, func(event daemon.StreamEvent) error {
 			select {
 			case events <- event:
 				return nil

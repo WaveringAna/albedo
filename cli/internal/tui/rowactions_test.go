@@ -17,7 +17,7 @@ import (
 // Dragging past the top edge scrolls the transcript and keeps selecting, so
 // the copy reaches rows that were never on screen together.
 func TestDraggingPastTheEdgeScrollsAndKeepsSelecting(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 20)
 	for i := range 40 {
 		m.appendSettledEntry(HistoryEntry{Kind: EntryNote, Text: fmt.Sprintf("note %02d", i), Timestamp: int64(i + 1)})
@@ -67,7 +67,7 @@ func rowWith(t *testing.T, lines []string, text string) int {
 }
 
 func TestSignoffCopiesTheTurnAsMarkdown(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 40)
 	m.appendSettledEntry(HistoryEntry{Kind: EntryUser, Text: "hi", Timestamp: 1})
 	m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Text: "# first\n\n```go\nx := 1\n```", Timestamp: 2})

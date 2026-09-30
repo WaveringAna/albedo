@@ -149,17 +149,13 @@ func (m *AppModel) ApplyUI(prefs daemon.UIPreferences) {
 }
 
 func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
-	chat := NewChatModel(session, m.newChatClient(session.ID))
+	chat := NewChatModel(session, daemon.NewChatClient(m.Conn, session.ID))
 	chat.Flags.Thinking = m.SessionPicker.prefs.Thinking
 	chat.Flags.Tools = m.SessionPicker.prefs.Tools
 	chat.Notices = append(Notices(nil), m.Notices...)
 	chat.graphemes = m.Graphemes
 	m.Notices = nil
 	return chat
-}
-
-func (m AppModel) newChatClient(sessionID string) *daemon.ChatClient {
-	return daemon.NewChatClient(daemon.ChatClientOptions{AgentID: sessionID, Conn: m.Conn})
 }
 
 func NewAppModel(conn *daemon.Connection, profiles config.Profiles, initialSession *daemon.Session, workspace string, needsLogin bool) AppModel {

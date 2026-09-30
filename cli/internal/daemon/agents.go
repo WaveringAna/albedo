@@ -17,7 +17,7 @@ func StreamAgents(ctx context.Context, conn *Connection, onBatch func([]map[stri
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+conn.Token())
-	res, err := doAuthenticatedRequest(conn.HTTPClient(), conn.Token(), req)
+	res, err := doAuthenticatedRequest(conn, req)
 	if err != nil {
 		return err
 	}

@@ -262,7 +262,7 @@ type ChatModel struct {
 	Model          string
 	Effort         string
 	Provider       string
-	Client         *daemon.ChatClient
+	client         *daemon.ChatClient
 	History        *BoundedHistory
 	Renderer       TranscriptRenderer
 	Viewport       viewport.Model
@@ -368,7 +368,11 @@ type ChatModel struct {
 	eventChan    chan daemon.StreamEvent
 }
 
+// NewChatModel requires a session client. A nil client panics.
 func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel {
+	if client == nil {
+		panic("tui.NewChatModel: nil client")
+	}
 	ta := textarea.New()
 	ta.Placeholder = ""
 	ta.Prompt = promptMark
@@ -408,7 +412,7 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		Model:        session.Model,
 		Effort:       session.Effort,
 		Provider:     session.Provider,
-		Client:       client,
+		client:       client,
 		History:      bh,
 		Renderer:     TranscriptRenderer{Styles: DefaultStyles, Workspace: session.Workspace},
 		Viewport:     vp,
@@ -421,10 +425,6 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		streamCtx:    ctx,
 		streamCancel: cancel,
 		eventChan:    make(chan daemon.StreamEvent, 16),
-	}
-	if client != nil {
-		// A reset replays the newest rows; loadOlder pages back from there.
-		client.Tail = olderPageRows
 	}
 
 	return m
@@ -926,14 +926,11 @@ func (m ChatModel) waitForNextEvent() tea.Cmd {
 }
 
 func (m ChatModel) startStreamSubscription() tea.Cmd {
-	if m.Client == nil {
-		return nil
-	}
-	client, ctx, ch := m.Client, m.streamCtx, m.eventChan
+	client, ctx, ch := m.client, m.streamCtx, m.eventChan
 	go func() {
 		defer close(ch)
 		for ctx.Err() == nil {
-			_ = client.Stream(ctx, nil, func(evt daemon.StreamEvent) error {
+			_ = client.Stream(ctx, olderPageRows, func(evt daemon.StreamEvent) error {
 				select {
 				case ch <- evt:
 					return nil
@@ -959,10 +956,7 @@ func (m ChatModel) clearCopyStatusCmd() tea.Cmd {
 }
 
 func (m ChatModel) statusCmd() tea.Cmd {
-	if m.Client == nil {
-		return nil
-	}
-	client, ctx, id, generation, revision := m.Client, m.streamCtx, m.SessionID, m.Generation, m.statusRevision
+	client, ctx, id, generation, revision := m.client, m.streamCtx, m.SessionID, m.Generation, m.statusRevision
 	return func() tea.Msg {
 		value, err := client.GetStatus(ctx)
 		return ChatStatusMsg{SessionID: id, Generation: generation, Revision: revision, Status: value, Err: err}
@@ -972,10 +966,10 @@ func (m ChatModel) statusCmd() tea.Cmd {
 // windowCmd reads the context window when usage names a model whose window
 // has not been read yet.
 func (m ChatModel) windowCmd() tea.Cmd {
-	if m.Client == nil || m.Usage == nil || m.windowModel != nil && *m.windowModel == m.Usage.Model {
+	if m.Usage == nil || m.windowModel != nil && *m.windowModel == m.Usage.Model {
 		return nil
 	}
-	client, ctx, id, generation, model := m.Client, m.streamCtx, m.SessionID, m.Generation, m.Usage.Model
+	client, ctx, id, generation, model := m.client, m.streamCtx, m.SessionID, m.Generation, m.Usage.Model
 	return func() tea.Msg {
 		tokens, err := client.ContextWindow(ctx)
 		return ChatWindowMsg{SessionID: id, Generation: generation, Model: model, Tokens: tokens, Err: err}
@@ -1033,12 +1027,12 @@ func (m *ChatModel) loadOlder() tea.Cmd {
 		return nil
 	}
 	before, more := m.olderCursor()
-	if !more || m.Client == nil {
+	if !more {
 		return nil
 	}
 	m.loadingOlder = true
 	m.refreshViewportContent()
-	client, id, generation := m.Client, m.SessionID, m.Generation
+	client, id, generation := m.client, m.SessionID, m.Generation
 	return func() tea.Msg {
 		page, err := client.History(context.Background(), before, olderPageRows)
 		return ChatOlderLoadedMsg{SessionID: id, Generation: generation, Page: page, Err: err}
@@ -1056,7 +1050,8 @@ func (m *ChatModel) showOlder(msg ChatOlderLoadedMsg) ChatModel {
 		return *m
 	}
 	// The page renders exactly as a reset would, in a scratch transcript.
-	scratch := NewChatModel(&daemon.Session{ID: m.SessionID}, nil)
+	scratch := NewChatModel(&daemon.Session{ID: m.SessionID}, m.client)
+	defer scratch.Close()
 	scratch.AgentName = m.AgentName
 	scratch.History = NewBoundedHistory(1<<30, 1<<40)
 	for _, evt := range msg.Page.Events {
@@ -1145,9 +1140,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			}
 			if m.Status.Running || len(m.pendingUsers) > 0 {
 				m.Stopping = true
-				if m.Client != nil {
-					cmds = append(cmds, m.interruptCmd())
-				}
+				cmds = append(cmds, m.interruptCmd())
 				return m, tea.Batch(cmds...)
 			}
 		case "ctrl+v":
@@ -1403,9 +1396,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if m.interruptDeferred {
 			m.interruptDeferred = false
 			m.Stopping = true
-			if m.Client != nil {
-				cmds = append(cmds, m.interruptCmd())
-			}
+			cmds = append(cmds, m.interruptCmd())
 		}
 		return m, tea.Batch(cmds...)
 
@@ -1529,13 +1520,9 @@ func (p editorProcess) Run() error {
 }
 
 func (m *ChatModel) sendCmd(prompt string, image *daemon.ImageAttachment, isCont bool) tea.Cmd {
-	client, id, gen := m.Client, m.SessionID, m.Generation
+	client, id, gen := m.client, m.SessionID, m.Generation
 	return func() tea.Msg {
 		msg := ChatTurnSentMsg{SessionID: id, Generation: gen, Prompt: prompt, Image: image, Continue: isCont}
-		if client == nil {
-			msg.Err = errors.New("no client available")
-			return msg
-		}
 		var (
 			res *daemon.SendResult
 			err error
@@ -1554,11 +1541,8 @@ func (m *ChatModel) sendCmd(prompt string, image *daemon.ImageAttachment, isCont
 }
 
 func (m *ChatModel) interruptCmd() tea.Cmd {
-	client, id, gen := m.Client, m.SessionID, m.Generation
+	client, id, gen := m.client, m.SessionID, m.Generation
 	return func() tea.Msg {
-		if client == nil {
-			return ChatInterruptMsg{SessionID: id, Generation: gen, Err: errors.New("no client available")}
-		}
 		ok, err := client.Interrupt(context.Background())
 		return ChatInterruptMsg{SessionID: id, Generation: gen, Interrupted: ok, Err: err}
 	}
@@ -1724,7 +1708,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			m.ClearNotices()
 		}
 
-		if m.Client != nil && evt.ClientID == m.Client.ClientID() {
+		if evt.ClientID == m.client.ClientID() {
 			if i := slices.IndexFunc(m.pendingUsers, func(p PendingUserTurn) bool { return p.Text == evt.Text }); i >= 0 {
 				m.pendingUsers = slices.Delete(m.pendingUsers, i, i+1)
 			}
@@ -2109,7 +2093,7 @@ func (m ChatModel) statusLine() string {
 		return "thinking"
 	}
 	if m.connecting() {
-		return pick(m.Client != nil, "connecting…", "opening session…")
+		return "connecting…"
 	}
 	return pick(m.Flags.Tools, "ready", "")
 }

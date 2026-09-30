@@ -94,10 +94,6 @@ func (c *Connection) BaseURL() string {
 	return fmt.Sprintf("http://127.0.0.1:%d", port)
 }
 
-func (c *Connection) AuthToken() string {
-	return c.Token()
-}
-
 func (c *Connection) HomeDir() string {
 	if c == nil {
 		return ""
@@ -117,9 +113,6 @@ func (c *Connection) Update(other *Connection) {
 	}
 	snap := other.Snapshot()
 	c.snapshot.Store(&snap)
-	if other.homeDir != "" {
-		c.homeDir = other.homeDir
-	}
 }
 
 func (c *Connection) Refresh(ctx context.Context) error {
@@ -169,7 +162,7 @@ func (c *Connection) Refresh(ctx context.Context) error {
 // HTTPClient returns the reusable HTTP client owned by this Connection.
 // Address and token updates retain the same client and pool.
 func (c *Connection) HTTPClient() *http.Client {
-	c.httpOnce.Do(func() { c.httpClient = NewReconnectingClient(c) })
+	c.httpOnce.Do(func() { c.httpClient = newHTTPClient(c) })
 	return c.httpClient
 }
 

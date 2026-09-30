@@ -10,7 +10,7 @@ import (
 )
 
 func TestResizeRendersTranscriptOnlyForNewBodyWidth(t *testing.T) {
-	m := NewChatModel(&daemon.Session{ID: "s"}, nil)
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(140, 24)
 	m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Speaker: "albedo", Text: "hello"})
 	const kept = "rendered once"
