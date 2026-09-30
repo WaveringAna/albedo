@@ -2,6 +2,7 @@
 import albedo/daemon/conversation
 import albedo/daemon/image
 import albedo/daemon/images
+import albedo/daemon/migrations/image_store
 import albedo/daemon/store
 import albedo/harness/runtime
 import albedo/openai_api/types
@@ -144,12 +145,12 @@ pub fn migration_moves_legacy_payloads_once_after_a_backup_test() {
   types.image_data(before) |> should.equal(types.InlineData(png))
 
   let backup = path <> ".backup/before.sqlite"
-  images.migrate(ledger, backup) |> should.equal(Ok(1))
+  image_store.run(ledger, backup) |> should.equal(Ok(1))
   exists(backup) |> should.be_true
   let assert [types.UserImage("old", after)] = loaded(ledger, "s")
   let assert types.StoredData(read: read, ..) = types.image_data(after)
   read() |> should.equal(Ok(png))
-  images.migrate(ledger, backup) |> should.equal(Ok(0))
+  image_store.run(ledger, backup) |> should.equal(Ok(0))
   cleanup(path)
 }
 
@@ -175,7 +176,7 @@ pub fn migration_converts_text_images_without_changing_references_test() {
   images.reader(ledger)(hash) |> should.equal(Ok(png))
 
   let backup = path <> ".backup/before-blob.sqlite"
-  images.migrate(ledger, backup) |> should.equal(Ok(0))
+  image_store.run(ledger, backup) |> should.equal(Ok(0))
   exists(backup) |> should.be_true
   count(ledger, "SELECT count(*) FROM images WHERE typeof(data)='blob'")
   |> should.equal(1)
@@ -185,7 +186,7 @@ pub fn migration_converts_text_images_without_changing_references_test() {
     types.image_data(migrated)
   migrated_hash |> should.equal(hash)
   read() |> should.equal(Ok(png))
-  images.migrate(ledger, backup) |> should.equal(Ok(0))
+  image_store.run(ledger, backup) |> should.equal(Ok(0))
   cleanup(path)
 }
 
@@ -201,7 +202,7 @@ pub fn failed_backup_keeps_text_images_untouched_test() {
     )
   let assert Ok(_) =
     store.write(ledger, "UPDATE images SET data=?", [sqlight.text(png)])
-  let assert Error(_) = images.migrate(ledger, path <> "/backup.sqlite")
+  let assert Error(_) = image_store.run(ledger, path <> "/backup.sqlite")
   count(ledger, "SELECT count(*) FROM images WHERE typeof(data)='text'")
   |> should.equal(1)
   cleanup(path)

@@ -2,6 +2,7 @@
 //// the user to review. The model writes and lists; the user triages through
 //// /paperclips. Rows live in the shared ledger store under one table.
 
+import albedo/daemon/migrations/paperclips_title
 import albedo/daemon/store as storage
 import gleam/dynamic/decode
 import gleam/json
@@ -53,9 +54,7 @@ pub type Store =
 pub fn initialise(ledger: Store) -> Result(Nil, String) {
   storage.query(ledger, fn(db) {
     use _ <- result.try(storage.exec(db, schema))
-    storage.add_columns(db, "paperclips", [
-      #("title", "TEXT NOT NULL DEFAULT ''"),
-    ])
+    paperclips_title.apply(db)
   })
 }
 

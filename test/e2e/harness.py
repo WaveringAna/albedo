@@ -609,7 +609,8 @@ class Albedo:
             _daemon_pid = self.connection["pid"]
             daemon_boots += 1
 
-    def restart(self, *, crash=False):
+    def restart(self, *, crash=False, prepare=None):
+        """Restart the shared daemon; optionally prepare offline storage fixtures."""
         global restart_seconds
         started = time.monotonic()
         if crash:
@@ -625,6 +626,8 @@ class Albedo:
                 time.sleep(0.05)
             else:
                 self._fail("daemon did not stop")
+        if prepare is not None:
+            prepare(self)
         self.cli("sessions")
         self._connection_refresh()
         restart_seconds += time.monotonic() - started

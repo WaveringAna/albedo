@@ -1,6 +1,7 @@
 import albedo/daemon/events
 import albedo/daemon/images
 import albedo/daemon/mail
+import albedo/daemon/migrations/conversation_columns
 import albedo/daemon/note
 import albedo/daemon/notice
 import albedo/daemon/requests
@@ -76,36 +77,7 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
         <> images.schema
         <> requests.schema,
     ))
-    use _ <- result.try(
-      store.add_columns(db, "sessions", [
-        #("provider", "TEXT"),
-        #("title", "TEXT"),
-        #("activity_seq", "INTEGER"),
-        #("last_assistant_at", "INTEGER"),
-        #("usage_model", "TEXT"),
-        #("usage_recorded_at", "INTEGER"),
-        #("usage_prompt_tokens", "INTEGER"),
-        #("usage_completion_tokens", "INTEGER"),
-        #("usage_cached_prompt_tokens", "INTEGER"),
-        #("usage_cache_creation_tokens", "INTEGER"),
-        #("usage_cache_write_5m_tokens", "INTEGER"),
-        #("usage_cache_write_1h_tokens", "INTEGER"),
-        #("usage_reasoning_tokens", "INTEGER"),
-        #("usage_cache", "TEXT"),
-        #("effort", "TEXT"),
-        #("pinned_instructions", "TEXT"),
-        #("pinned_context", "BLOB"),
-        #("pinned_head", "INTEGER"),
-        #("name", "TEXT"),
-      ]),
-    )
-    use _ <- result.try(
-      store.add_columns(db, "transcript", [
-        #("timestamp", "INTEGER"),
-        #("provider", "TEXT"),
-        #("thought_ms", "INTEGER"),
-      ]),
-    )
+    use _ <- result.try(conversation_columns.apply(db))
     use _ <- result.try(recover_sessions(db))
     store.exec(
       db,

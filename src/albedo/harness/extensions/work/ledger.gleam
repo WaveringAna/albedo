@@ -1,3 +1,4 @@
+import albedo/daemon/migrations/work_cwd
 import albedo/daemon/store as storage
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -312,23 +313,6 @@ pub fn to_json(item: Item) -> json.Json {
 pub fn initialise(store: Store) -> Result(Nil, String) {
   storage.query(store, fn(db) {
     use _ <- result.try(storage.exec(db, schema))
-    use columns <- result.try(
-      sqlight.query(
-        "PRAGMA table_info(work)",
-        db,
-        [],
-        decode.field(1, decode.string, decode.success),
-      )
-      |> result.map_error(fn(e) { e.message }),
-    )
-    use _ <- result.try(case list.contains(columns, "cwd") {
-      True -> Ok(Nil)
-      False ->
-        storage.exec(
-          db,
-          "ALTER TABLE work ADD COLUMN cwd TEXT NOT NULL DEFAULT '__albedo_legacy__'",
-        )
-    })
-    storage.exec(db, "CREATE INDEX IF NOT EXISTS work_cwd_id ON work(cwd,id)")
+    work_cwd.apply(db)
   })
 }

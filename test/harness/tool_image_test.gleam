@@ -2,6 +2,7 @@
 //// changes; synthetic corrupted and legacy records cannot arise in E2E.
 
 import albedo/daemon/images
+import albedo/daemon/migrations/cell_images
 import albedo/daemon/store
 import albedo/harness/extensions/python/cells
 import albedo/harness/extensions/python/kernel as python
@@ -124,7 +125,7 @@ fn journaled_png(width: Int) -> BitArray {
 pub fn old_cell_images_migrate_without_losing_their_readers_test() {
   let path = temporary_database()
   let assert Ok(ledger) = store.start(path, images.schema)
-  cells.migrate_images(ledger, path <> ".missing-backup") |> should.equal(Ok(0))
+  cell_images.run(ledger, path <> ".missing-backup") |> should.equal(Ok(0))
   let assert Ok(_) = cells.initialise(ledger)
   let assert Ok(_) =
     store.write(
@@ -133,8 +134,8 @@ pub fn old_cell_images_migrate_without_losing_their_readers_test() {
       [sqlight.blob(journaled_png(2))],
     )
   let backup = path <> ".backup"
-  cells.migrate_images(ledger, backup) |> should.equal(Ok(1))
-  cells.migrate_images(ledger, backup) |> should.equal(Ok(0))
+  cell_images.run(ledger, backup) |> should.equal(Ok(1))
+  cell_images.run(ledger, backup) |> should.equal(Ok(0))
   let assert Ok(cell) = cells.get(ledger, "cell")
   let assert Some(Ok(outcome)) = cell.outcome
   let assert [stored] = outcome.images

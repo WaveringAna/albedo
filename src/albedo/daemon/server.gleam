@@ -6,8 +6,8 @@ import albedo/daemon/family
 import albedo/daemon/folders
 import albedo/daemon/history
 import albedo/daemon/image
-import albedo/daemon/images
 import albedo/daemon/mail
+import albedo/daemon/migrations
 import albedo/daemon/quota
 import albedo/daemon/reaper
 import albedo/daemon/requests
@@ -19,7 +19,6 @@ import albedo/harness/cache_ttl
 import albedo/harness/command
 import albedo/harness/credentials
 import albedo/harness/extension
-import albedo/harness/extensions/python/cells as journal
 import albedo/harness/extensions/schedule/ledger as schedule
 import albedo/harness/oauth
 import albedo/harness/runtime
@@ -562,8 +561,7 @@ fn prepare_storage(
     <> "/backups/albedo-before-image-store-"
     <> int.to_string(usage.now())
     <> ".sqlite"
-  use moved <- result.try(images.migrate(runtime.ledger(host), backup))
-  use cells_moved <- result.try(journal.migrate_images(
+  use #(moved, cells_moved) <- result.try(migrations.run(
     runtime.ledger(host),
     backup,
   ))
