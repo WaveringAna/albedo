@@ -385,28 +385,29 @@ fn start_due(state: State, now: Int) -> State {
   })
 }
 
-/// The next wait for an account: the busy cadence while any limit is at or
-/// above 80 percent or resets within fifteen minutes, the ordinary cadence
-/// otherwise, and a doubling backoff on failure.
+/// Seconds until an account's next poll: the busy cadence while any limit is
+/// at or above 80 percent or resets within fifteen minutes, the ordinary
+/// cadence otherwise, and after `failures` failed polls in a row a backoff
+/// that doubles six times at most and never waits past an hour.
+pub fn wait_seconds(settings: Settings, failures: Int, busy: Bool) -> Int {
+  case failures, busy {
+    0, True -> settings.busy_poll_seconds
+    0, False -> settings.poll_seconds
+    _, _ ->
+      settings.poll_seconds * int.bitwise_shift_left(1, int.min(failures, 6))
+      |> int.min(3600)
+  }
+}
+
 fn finished(state: State, key: String, failed: Bool, busy: Bool) -> State {
   case dict.get(state.accounts, key) {
     Error(_) -> state
     Ok(account) -> {
-      let config = load_settings()
       let failures = case failed {
         True -> account.failures + 1
         False -> 0
       }
-      let wait = case failed {
-        True ->
-          config.poll_seconds * int.bitwise_shift_left(1, int.min(failures, 6))
-          |> int.min(3600)
-        False ->
-          case busy {
-            True -> config.busy_poll_seconds
-            False -> config.poll_seconds
-          }
-      }
+      let wait = wait_seconds(load_settings(), failures, busy)
       State(
         ..state,
         accounts: dict.insert(

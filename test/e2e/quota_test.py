@@ -23,8 +23,9 @@ import unittest
 
 from harness import Albedo, Provider, exclusive, text
 
-# The failure backoff waits 2x then 4x the ordinary cadence, and the test
-# needs two of those waits, so the ordinary cadence sets its length.
+# The busy cadence must stay distinguishable from the ordinary one, and the
+# first failure backoff waits 2x the ordinary cadence, which sets the length.
+# How the backoff grows and where it stops is test/daemon/quota_test.gleam.
 POLL_SECONDS = 2
 BUSY_SECONDS = 1
 
@@ -225,23 +226,23 @@ class QuotaTests(unittest.TestCase):
 
         # Enough polls of each account to read a cadence off the intervals.
         self.wait_for(
-            lambda: len(self.observed("charm-hyper")) >= 6,
+            lambda: len(self.observed("charm-hyper")) >= 5,
             60,
-            "the busy cadence never produced six polls: "
+            "the busy cadence never produced five polls: "
             + json.dumps(self.intervals("charm-hyper"))
             + self.fake_errors(),
         )
         self.wait_for(
-            lambda: len(self.observed("fixture-account")) >= 4,
+            lambda: len(self.observed("fixture-account")) >= 3,
             60,
-            "the ordinary cadence never produced four polls: "
+            "the ordinary cadence never produced three polls: "
             + json.dumps(self.intervals("fixture-account"))
             + self.fake_errors(),
         )
         self.wait_for(
-            lambda: len(self.observed("deepseek-fixture")) >= 3,
+            lambda: len(self.observed("deepseek-fixture")) >= 2,
             60,
-            "the failure backoff never produced three polls: "
+            "the failure backoff never produced a second poll: "
             + json.dumps(self.intervals("deepseek-fixture"))
             + self.fake_errors(),
         )
@@ -251,7 +252,7 @@ class QuotaTests(unittest.TestCase):
         # up as an interval with generous bounds either side of its setting.
         # The busy cadence (85 percent, resetting soon) is busyPollSeconds,
         # the ordinary one is pollSeconds, and the failing account backs off
-        # past the ordinary cadence, each wait longer than the last.
+        # past the ordinary cadence.
         busy = self.intervals("charm-hyper")
         ordinary = self.intervals("fixture-account")
         backed_off = self.intervals("deepseek-fixture")
@@ -275,10 +276,6 @@ class QuotaTests(unittest.TestCase):
             min(backed_off),
             POLL_SECONDS * 1800,
             message + " — failures did not back off",
-        )
-        self.assertTrue(
-            all(later >= earlier for earlier, later in zip(backed_off, backed_off[1:])),
-            message + " — the backoff did not grow",
         )
 
         # The feed is the fake, so a driver failure ("usage is not built", the
