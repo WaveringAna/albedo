@@ -415,7 +415,8 @@ pub fn execute(
 ) -> Result(Execution, String) {
   use _ <- result.try(owned_by(runtime, session))
   use id <- result.try(journal.begin(runtime.work, session.id, code))
-  let outcome = python.execute_saved(session.kernel, id, code, timeout_ms)
+  let outcome =
+    python.execute_saved(session.kernel, id, code, timeout_ms, types.any_images)
   use _ <- result.try(journal.finish(runtime.work, id, outcome))
   Ok(Execution(id, outcome))
 }

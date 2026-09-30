@@ -57,7 +57,8 @@ pub fn invoke(
         context.call_id,
         code,
       ))
-      let outcome = python.execute_saved(context.kernel, id, code, timeout)
+      let outcome =
+        python.execute_saved(context.kernel, id, code, timeout, context.images)
       use _ <- result.try(journal.finish(context.store, id, outcome))
       let _ =
         list.try_each(python.events(context.kernel), fn(event) {

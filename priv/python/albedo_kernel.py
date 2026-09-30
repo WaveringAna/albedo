@@ -259,9 +259,12 @@ async def _host(method: str, args: dict[str, object]) -> object:
 
 
 class Capture:
-    def __init__(self, id: str, kind: str = "cell") -> None:
+    def __init__(
+        self, id: str, kind: str = "cell", max_edge: int | None = None
+    ) -> None:
         self.id: str = id
         self.kind: str = kind
+        self.max_edge: int | None = max_edge  # the session provider's, sent per cell
         self.data: bytearray = bytearray()
         self.raw_data: bytearray = (
             bytearray()
@@ -296,6 +299,14 @@ class Capture:
         mime = image_type(data)
         if mime is None:
             raise ValueError("image must be PNG, JPEG, or WebP bytes")
+        size = image_size(data)
+        # A header this parser cannot read is left for the daemon to judge.
+        if size is not None and self.max_edge is not None:
+            _, width, height = size
+            if max(width, height) > self.max_edge:
+                raise ValueError(
+                    f"{width}x{height} image is over this model's {self.max_edge}px edge limit"
+                )
         if len(self.images) >= MAX_IMAGES:
             raise ValueError(f"a cell returns at most {MAX_IMAGES} images")
         if sum(map(len, self.images)) + len(data) > MAX_IMAGE_BYTES:
@@ -308,6 +319,79 @@ class Capture:
 
     def encoded_images(self) -> list[str]:
         return [base64.b64encode(image).decode("ascii") for image in self.images]
+
+
+def image_size(data: bytes) -> tuple[str, int, int] | None:
+    """MIME type, width and height from the header, or None. A port of
+    `dimensions/1` in albedo_image.erl, which stays the authority: the daemon
+    checks every image again, and image_header_parity_test holds the two equal."""
+    if data[:16] == b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR" and len(data) >= 24:
+        width, height = struct.unpack(">II", data[16:24])
+        return ("image/png", width, height) if width > 0 and height > 0 else None
+    if data[:2] == b"\xff\xd8":
+        return jpeg_size(data, 2)
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP" and len(data) >= 12:
+        if struct.unpack("<I", data[4:8])[0] + 8 == len(data):
+            return webp_size(data, 12)
+    return None
+
+
+JPEG_FRAMES = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7}
+JPEG_FRAMES |= {0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+
+
+def jpeg_size(data: bytes, at: int) -> tuple[str, int, int] | None:
+    while True:
+        at = data.find(b"\xff", at)
+        if at < 0:
+            return None
+        at += 1
+        while at < len(data) and data[at] == 0xFF:
+            at += 1
+        if at >= len(data):
+            return None
+        marker = data[at]
+        if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+            at += 1
+            continue
+        if at + 3 > len(data):
+            return None
+        length = struct.unpack(">H", data[at + 1 : at + 3])[0]
+        end = at + 1 + length
+        if length < 2 or end > len(data):
+            return None
+        if marker in JPEG_FRAMES:
+            frame = data[at + 3 : end]
+            if len(frame) < 5:
+                return None
+            height, width = struct.unpack(">HH", frame[1:5])
+            return ("image/jpeg", width, height) if width > 0 and height > 0 else None
+        if marker in (0xDA, 0xD9):
+            return None
+        at = end
+
+
+def webp_size(data: bytes, at: int) -> tuple[str, int, int] | None:
+    while at + 8 <= len(data):
+        kind = data[at : at + 4]
+        size = struct.unpack("<I", data[at + 4 : at + 8])[0]
+        body = data[at + 8 :]
+        if kind == b"VP8X" and size == 10 and len(body) >= 10:
+            width = int.from_bytes(body[4:7], "little") + 1
+            height = int.from_bytes(body[7:10], "little") + 1
+            return ("image/webp", width, height)
+        if kind == b"VP8L" and size >= 5 and len(body) >= 5 and body[0] == 0x2F:
+            bits = struct.unpack("<I", body[1:5])[0]
+            return ("image/webp", (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
+        if kind == b"VP8 " and size >= 10 and len(body) >= 10:
+            if body[3:6] == b"\x9d\x01\x2a":
+                width, height = struct.unpack("<HH", body[6:10])
+                width, height = width & 0x3FFF, height & 0x3FFF
+                return ("image/webp", width, height) if width and height else None
+        at += 8 + size + size % 2
+        if at > len(data):
+            return None
+    return None
 
 
 def image_type(data: bytes) -> str | None:
@@ -337,7 +421,8 @@ def show_image(
 ) -> albedo_api.Text:
     """Return an image to yourself with this cell's result. `source` is PNG,
     JPEG, or WebP bytes, or a path to such a file. At most 4 images and 5 MiB
-    per cell; the image arrives after the cell finishes, not mid-cell."""
+    per cell, each within the model's edge limit, or it raises ValueError; the
+    image arrives after the cell finishes, not mid-cell."""
     if isinstance(source, (bytes, bytearray, memoryview)):
         data = bytes(source)
     elif isinstance(source, (str, os.PathLike)):
@@ -1133,7 +1218,7 @@ async def serve():
         if message["type"] != "execute":
             send(state_reply(message))
             continue
-        capture = Capture(message["id"])
+        capture = Capture(message["id"], max_edge=message.get("max_edge"))
         remember(capture)
         token = CELL.set(capture)
         _ = swap_sink(capture)

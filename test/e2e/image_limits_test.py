@@ -123,10 +123,14 @@ class ImageLimitsTest(unittest.TestCase):
                     for item in strict_requests[1]["input"]
                     if item.get("type") == "function_call_output"
                 )
+                # show_image refuses it at the call, so the cell fails there.
+                result = json.loads(output["output"])
+                self.assertEqual(result["status"], "error")
                 self.assertIn(
-                    "1200x10 image is over this model's 1000px edge limit",
-                    json.dumps(output),
+                    "ValueError: 1200x10 image is over this model's 1000px edge limit",
+                    result["output"],
                 )
+                self.assertNotIn("image_errors", result)
                 notes = [
                     event["text"]
                     for event in app.events(session)

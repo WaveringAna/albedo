@@ -87,16 +87,19 @@ pub fn execute(
   code: String,
   timeout_ms: Int,
 ) -> Result(Outcome, Error) {
-  run(kernel, id, code, timeout_ms, False)
+  run(kernel, id, code, timeout_ms, False, types.max_image_edge)
 }
 
+/// `images` are the session provider's limits: `show_image` refuses an image
+/// over them at the call, so the cell fails where the model can see why.
 pub fn execute_saved(
   kernel: Kernel,
   id: String,
   code: String,
   timeout_ms: Int,
+  images: types.ImageLimits,
 ) -> Result(Outcome, Error) {
-  run(kernel, id, code, timeout_ms, True)
+  run(kernel, id, code, timeout_ms, True, images.max_edge)
 }
 
 fn run(
@@ -105,6 +108,7 @@ fn run(
   code: String,
   timeout_ms: Int,
   durable: Bool,
+  max_edge: Int,
 ) -> Result(Outcome, Error) {
   let size = string.byte_size(code)
   case timeout_ms < 1 || timeout_ms > 3_600_000 || size > 1_048_576 {
@@ -117,6 +121,7 @@ fn run(
           #("id", json.string(id)),
           #("code", json.string(code)),
           #("durable", json.bool(durable)),
+          #("max_edge", json.int(max_edge)),
         ])
         |> json.to_string
       use response <- result.try(execute_native(kernel, command, timeout_ms))

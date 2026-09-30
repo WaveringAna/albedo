@@ -117,6 +117,7 @@ class Execute(TypedDict):
     id: str
     code: str
     durable: NotRequired[bool]
+    max_edge: NotRequired[int]
 
 
 class HostSuccess(TypedDict):
