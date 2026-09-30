@@ -25,11 +25,6 @@ func TestTUICdMovesTheSessionThroughThePicker(t *testing.T) {
 		}
 	}
 	d.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
-	typeText := func(s string) {
-		for _, r := range s {
-			d.Dispatch(tea.KeyPressMsg{Code: r, Text: string(r)})
-		}
-	}
 	same := func(got, want string) bool {
 		g, _ := filepath.EvalSymlinks(got)
 		w, _ := filepath.EvalSymlinks(want)
@@ -43,7 +38,7 @@ func TestTUICdMovesTheSessionThroughThePicker(t *testing.T) {
 	}
 	// The daemon lists the typed folder; the last segment filters it and
 	// dot folders stay hidden.
-	typeText(root + "/pi")
+	d.Type(root + "/pi")
 	if view := d.View(); !strings.Contains(view, "picked") || strings.Contains(view, "other") || strings.Contains(view, ".hidden") {
 		t.Fatalf("the listing was not filtered to picked:\n%s", view)
 	}
@@ -94,9 +89,7 @@ func TestTUIMissingWorkspaceSendsTheTurnFromThePickedFolder(t *testing.T) {
 	if d.App.State != tui.AppStateFolderPicker {
 		t.Fatalf("sending again did not reopen the picker:\n%s", d.View())
 	}
-	for _, r := range root + "/fou" {
-		d.Dispatch(tea.KeyPressMsg{Code: r, Text: string(r)})
-	}
+	d.Type(root + "/fou")
 	// Settling would follow the turn's animation forever; one step sends it.
 	moved, ok := d.Key(tea.KeyEnter).(tui.FolderMovedMsg)
 	if !ok || moved.Err != nil {
@@ -133,10 +126,11 @@ func TestTUISessionsByFolderOpenAndStartSessions(t *testing.T) {
 		}
 	}
 	there := newSession(t, busy)
-	typeText := func(d *tuiDriver, s string) {
-		for _, r := range s {
-			d.Dispatch(tea.KeyPressMsg{Code: r, Text: string(r)})
-		}
+	// In the sessions view the leading slash opens the folder browser, which
+	// must be on screen before the rest of the path is typed into it.
+	typePath := func(d *tuiDriver, path string) {
+		d.Dispatch(tea.KeyPressMsg{Code: '/', Text: "/"})
+		d.Type(strings.TrimPrefix(path, "/"))
 	}
 
 	// ^f in the sessions view browses folders; → steps into the highlighted
@@ -147,7 +141,7 @@ func TestTUISessionsByFolderOpenAndStartSessions(t *testing.T) {
 	if d.App.State != tui.AppStateFolderPicker {
 		t.Fatalf("^f did not open the folder browser:\n%s", d.View())
 	}
-	typeText(d, root+"/bu")
+	d.Type(root + "/bu")
 	if view := d.View(); !strings.Contains(view, "d00/") || !strings.Contains(view, "Untitled session") {
 		t.Fatalf("the preview lost its tree or its sessions:\n%s", view)
 	}
@@ -167,7 +161,7 @@ func TestTUISessionsByFolderOpenAndStartSessions(t *testing.T) {
 	}
 	d = driveTUI(t, nil)
 	d.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
-	typeText(d, root+"/cr")
+	typePath(d, root+"/cr")
 	if view := d.View(); strings.Count(view, "Untitled session") != 12 {
 		t.Fatalf("the preview cut the sessions short:\n%s", view)
 	}
@@ -176,7 +170,7 @@ func TestTUISessionsByFolderOpenAndStartSessions(t *testing.T) {
 	// starts a session there.
 	d = driveTUI(t, nil)
 	d.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
-	typeText(d, root+"/em")
+	typePath(d, root+"/em")
 	if d.App.State != tui.AppStateFolderPicker {
 		t.Fatalf("typing a path did not open the folder browser:\n%s", d.View())
 	}

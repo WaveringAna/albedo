@@ -5,7 +5,9 @@ package e2e
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"albedo/cli/internal/config"
@@ -90,20 +92,40 @@ func (d *tuiDriver) Key(code rune) tea.Msg {
 }
 
 // Dispatch feeds msg and every result it leads to back into the model until
-// it settles; cursor blinks are dropped because nothing consumes them.
+// it settles.
 func (d *tuiDriver) Dispatch(msg tea.Msg) {
 	d.t.Helper()
-	queue := []tea.Msg{msg}
+	d.settle(d.results(d.Update(msg)))
+}
+
+// Type presses each rune of s as fast as a person types and then settles once:
+// the event loop runs the keys' commands side by side, so a debounce waits once
+// for the whole text instead of once per key.
+func (d *tuiDriver) Type(s string) {
+	d.t.Helper()
+	var cmds []tea.Cmd
+	for _, r := range s {
+		cmds = append(cmds, d.Update(tea.KeyPressMsg{Code: r, Text: string(r)}))
+	}
+	d.settle(d.results(tea.Batch(cmds...)))
+}
+
+// settle feeds queued messages, and the results they lead to, until none are
+// left; cursor blinks are dropped because nothing consumes them.
+func (d *tuiDriver) settle(queue []tea.Msg) {
+	d.t.Helper()
 	for step := 0; len(queue) > 0; step++ {
 		if step == 64 {
 			d.t.Fatal("the model never settled")
 		}
+		var msg tea.Msg
 		msg, queue = queue[0], queue[1:]
 		queue = append(queue, d.results(d.Update(msg))...)
 	}
 }
 
-// results runs cmd and every command batched inside it.
+// results runs cmd, and every command batched inside it side by side as the
+// event loop does, and returns what they produced in batch order.
 func (d *tuiDriver) results(cmd tea.Cmd) []tea.Msg {
 	if cmd == nil {
 		return nil
@@ -112,11 +134,13 @@ func (d *tuiDriver) results(cmd tea.Cmd) []tea.Msg {
 	case nil:
 		return nil
 	case tea.BatchMsg:
-		var all []tea.Msg
-		for _, c := range msg {
-			all = append(all, d.results(c)...)
+		produced := make([][]tea.Msg, len(msg))
+		var wg sync.WaitGroup
+		for i, c := range msg {
+			wg.Go(func() { produced[i] = d.results(c) })
 		}
-		return all
+		wg.Wait()
+		return slices.Concat(produced...)
 	default:
 		if reflect.TypeOf(msg).PkgPath() == "charm.land/bubbles/v2/cursor" {
 			return nil
