@@ -2163,14 +2163,7 @@ func (m ChatModel) View() string {
 	var rows []string
 	workspace := cmp.Or(m.Workspace, "chat")
 	model := pick(m.Effort != "", fmt.Sprintf("%s:%s", m.Model, m.Effort), m.Model)
-	var glance *PageGlance
-	if i := slices.IndexFunc(m.Glances, func(g PageGlance) bool { return len(g.Rows) > 0 }); i >= 0 {
-		glance = &m.Glances[i]
-	}
-	right := model
-	if glance != nil && width-100 < 26 {
-		right = fmt.Sprintf("%s %d", glance.Title, len(glance.Rows)) + "  " + right
-	}
+	right := strings.Join(append(m.glanceCounts(), model), "  ")
 	room := width - lipgloss.Width("✦ "+m.AgentName+" on ") - lipgloss.Width(right) - 5
 	header := titleRule(width, located(m.AgentName, truncateMiddle(homePath(workspace), max(1, room))), m.Styles.Faint.Render(right))
 	rows = append(rows, header, "")
@@ -2257,6 +2250,21 @@ func (m ChatModel) composerView() string {
 // empty composer reads as the agent's cue rather than a stalled turn.
 func (m ChatModel) waitingForInput() bool {
 	return !m.connecting() && !m.animating()
+}
+
+// glanceCounts counts each glance with rows that the sidebar leaves out: all
+// of them without a sidebar, the ones after its first with one.
+func (m ChatModel) glanceCounts() []string {
+	var counts []string
+	for _, g := range m.Glances {
+		if len(g.Rows) > 0 {
+			counts = append(counts, fmt.Sprintf("%s %d", g.Title, len(g.Rows)))
+		}
+	}
+	if len(counts) > 0 && m.sidebarWidth() > 0 {
+		counts = counts[1:]
+	}
+	return counts
 }
 
 func (m ChatModel) renderGlances() string {
