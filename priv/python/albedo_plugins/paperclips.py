@@ -28,7 +28,13 @@ async def vents(limit: int = 20) -> list[dict]:
     return cast(list[dict], await host("paperclips.list", {"limit": limit}))
 
 
+async def resolve_vent(id: int, note: str) -> dict:
+    """Close an open or acknowledged vent your change fixed; `note` says what
+    fixed it, and the user sees it on the vent."""
+    return cast(dict, await host("paperclips.resolve", {"id": id, "note": note}))
+
+
 def setup(api: PythonApi) -> dict[str, object]:
     global host
     host = api.host
-    return {"vent": vent, "vents": vents}
+    return {"vent": vent, "vents": vents, "resolve_vent": resolve_vent}

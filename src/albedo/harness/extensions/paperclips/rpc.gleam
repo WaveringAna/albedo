@@ -1,5 +1,6 @@
-//// The vent operations the Python tool calls; the user's triage runs through
-//// the /paperclips command against the same global ledger.
+//// The vent operations the Python tool calls: filing, listing, and closing a
+//// vent the model fixed. The user's triage runs through the /paperclips
+//// command against the same global ledger.
 
 import albedo/harness/extensions/paperclips/ledger as paperclips
 import albedo/harness/rpc
@@ -58,6 +59,16 @@ fn dispatch(store, cwd, session, method, args) {
         suggestion,
         Some(session),
       )
+      |> result.map(paperclips.to_json)
+    }
+    "paperclips.resolve" -> {
+      let decoder = {
+        use id <- decode.field("id", decode.int)
+        use note <- decode.field("note", decode.string)
+        decode.success(#(id, note))
+      }
+      use #(id, note) <- result.try(parse(args, decoder))
+      paperclips.resolve(store, id, note, session)
       |> result.map(paperclips.to_json)
     }
     "paperclips.list" -> {

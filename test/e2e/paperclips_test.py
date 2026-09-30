@@ -35,6 +35,17 @@ VENT_AND_LIST = (
 
 READER_TURN = "print('the reader turns')"
 
+# Refused without a note, closed with one, then refused as already closed.
+RESOLVE = (
+    "vent_id = v['id']\n"
+    "for note in ('  ', 'test.sh prebuilds the cli in 1a2b3c', 'again'):\n"
+    "    try:\n"
+    "        v = await resolve_vent(vent_id, note)\n"
+    "        print('resolved:', v['status'], v['resolution'])\n"
+    "    except Exception as error:\n"
+    "        print('refused:', error)"
+)
+
 TITLELESS = (
     "v = await vent('bug', 'wires crossed somewhere deep in the stack')\nprint(v['id'])"
 )
@@ -339,6 +350,42 @@ class PaperclipsTests(unittest.TestCase):
                 )
             finally:
                 self.remove_vents(app, session, list(ids.values()))
+
+    def test_the_model_resolves_a_vent_it_fixed_with_a_note(self):
+        provider = scripting([VENT, RESOLVE])
+        self.addCleanup(provider.close)
+        with Albedo(provider) as app:
+            session = app.session()
+            vent_id = None
+            try:
+                app.prompt(session, "vent about the build").close()
+                app.idle(session)
+                vent_id = filed_id(app, session)
+                app.prompt(session, "you fixed it, close it").close()
+                app.idle(session)
+
+                output = python_results(app, session)[-1]["output"]
+                lines = output.strip().splitlines()
+                self.assertEqual(len(lines), 3, output)
+                self.assertIn("refused: say what fixed the vent", lines[0])
+                self.assertEqual(
+                    lines[1], "resolved: resolved test.sh prebuilds the cli in 1a2b3c"
+                )
+                self.assertIn(f"refused: vent #{vent_id} is already resolved", lines[2])
+
+                # the user sees the closure and who made it; it leaves the glance
+                app.api(f"/sessions/{session}", {"name": "fixer"}, method="PATCH")
+                page = paperclips_page(app, session)
+                row = vent_row(page, vent_id)
+                self.assertEqual(row["badge"], "resolved")
+                self.assertIn(
+                    "resolved by session fixer: test.sh prebuilds the cli in 1a2b3c",
+                    row["detail"],
+                )
+                self.assertNotIn(str(vent_id), glance_ids(page))
+            finally:
+                if vent_id is not None:
+                    self.remove_vents(app, session, [vent_id])
 
     def test_a_titleless_vent_takes_its_title_from_the_message(self):
         provider = scripting([TITLELESS])

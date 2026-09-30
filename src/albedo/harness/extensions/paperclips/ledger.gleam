@@ -2,11 +2,13 @@
 //// the user to review. The model writes and lists; the user triages through
 //// /paperclips. Rows live in the shared ledger store under one global table:
 //// every session sees every vent, and each row records the session and
-//// workspace that filed it, plus the reply the user answered it with.
+//// workspace that filed it, plus the reply the user answered it with and,
+//// when a model closed it, the note on what fixed it and the session that did.
 
 import albedo/daemon/store as storage
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option}
@@ -41,6 +43,8 @@ pub type Vent {
     session: Option(String),
     cwd: String,
     created_at: String,
+    resolution: String,
+    resolved_by: Option(String),
   )
 }
 
@@ -66,6 +70,8 @@ CREATE TABLE IF NOT EXISTS paperclips (
  message TEXT NOT NULL CHECK(length(trim(message)) > 0),
  suggestion TEXT NOT NULL DEFAULT '',
  reply TEXT NOT NULL DEFAULT '',
+ resolution TEXT NOT NULL DEFAULT '',
+ resolved_by TEXT,
  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','acknowledged','resolved','dismissed')),
  session TEXT,
  cwd TEXT NOT NULL,
@@ -74,7 +80,7 @@ CREATE TABLE IF NOT EXISTS paperclips (
 );
 "
 
-const columns = "id,title,topic,message,suggestion,reply,status,session,cwd,created_at"
+const columns = "id,title,topic,message,suggestion,reply,status,session,cwd,created_at,resolution,resolved_by"
 
 pub fn topic_name(topic: Topic) -> String {
   case topic {
@@ -153,6 +159,8 @@ fn decoder() {
   use session <- decode.field(7, decode.optional(decode.string))
   use cwd <- decode.field(8, decode.string)
   use created_at <- decode.field(9, decode.string)
+  use resolution <- decode.field(10, decode.string)
+  use resolved_by <- decode.field(11, decode.optional(decode.string))
   decode.success(Vent(
     id,
     title,
@@ -164,6 +172,8 @@ fn decoder() {
     session,
     cwd,
     created_at,
+    resolution,
+    resolved_by,
   ))
 }
 
@@ -179,6 +189,8 @@ pub fn to_json(vent: Vent) -> json.Json {
     #("session", json.nullable(vent.session, json.string)),
     #("cwd", json.string(vent.cwd)),
     #("created_at", json.string(vent.created_at)),
+    #("resolution", json.string(vent.resolution)),
+    #("resolved_by", json.nullable(vent.resolved_by, json.string)),
   ])
 }
 
@@ -355,6 +367,39 @@ pub fn answer(store: Store, id: Int, reply: String) -> Result(Vent, Error) {
       })
       |> result.try(one)
   }
+}
+
+/// Closes a vent a model fixed, recording what fixed it and which session
+/// said so. Only a vent still awaiting triage can be resolved this way; the
+/// user's own decisions stand.
+pub fn resolve(
+  store: Store,
+  id: Int,
+  note: String,
+  session: String,
+) -> Result(Vent, Error) {
+  use _ <- result.try(case string.trim(note), string.length(note) > 2000 {
+    "", _ -> Error(Invalid("say what fixed the vent: resolve_vent(id, note)"))
+    _, True -> Error(Invalid("vent text is too long"))
+    _, False -> Ok(Nil)
+  })
+  use vent <- result.try(get(store, id))
+  use _ <- result.try(case vent.status {
+    Open | Acknowledged -> Ok(Nil)
+    status ->
+      Error(Invalid(
+        "vent #" <> int.to_string(id) <> " is already " <> status_name(status),
+      ))
+  })
+  storage.query(store, fn(db) {
+    rows(
+      db,
+      "UPDATE paperclips SET status='resolved',resolution=?,resolved_by=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND status IN ('open','acknowledged') RETURNING "
+        <> columns,
+      [sqlight.text(string.trim(note)), sqlight.text(session), sqlight.int(id)],
+    )
+  })
+  |> result.try(one)
 }
 
 pub fn delete(store: Store, id: Int) -> Result(Vent, Error) {

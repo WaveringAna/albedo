@@ -49,7 +49,9 @@ fn listing(store: paperclips.Store) -> Result(command.Outcome, String) {
     paperclips.session_labels(
       store,
       vents
-        |> list.filter_map(fn(vent) { option.to_result(vent.session, Nil) })
+        |> list.flat_map(fn(vent) {
+          option.values([vent.session, vent.resolved_by])
+        })
         |> list.unique,
     )
     |> result.map_error(describe),
@@ -160,6 +162,14 @@ fn detail(labels: dict.Dict(String, String), vent: paperclips.Vent) -> String {
     case vent.reply {
       "" -> ""
       reply -> "\n\nanswered: " <> reply
+    },
+    case vent.resolution {
+      "" -> ""
+      resolution ->
+        "\n\nresolved by session "
+        <> session_label(labels, vent.resolved_by)
+        <> ": "
+        <> resolution
     },
     "\n\nfiled "
       <> vent.created_at
