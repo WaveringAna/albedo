@@ -8,6 +8,7 @@
 //// against the actor it is running in.
 
 import albedo/daemon/store
+import albedo/harness/protect
 import albedo/harness/rpc
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
@@ -300,7 +301,9 @@ fn run(
     ModelCall, False -> Error(command.name <> " is not callable from the model")
     _, _ -> Ok(Nil)
   })
-  use outcome <- result.try(command.run(context, caller, args))
+  use outcome <- result.try(
+    protect.guarded(fn() { command.run(context, caller, args) }),
+  )
   case caller, outcome {
     ModelCall, Turn(_, _) ->
       Error(

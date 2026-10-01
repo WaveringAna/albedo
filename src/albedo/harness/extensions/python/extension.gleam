@@ -39,11 +39,12 @@ pub fn definition() -> types.Tool {
   )
 }
 
-/// Storage failure stops the harness rather than encouraging an unsafe tool retry.
+/// Storage failure is `Fatal` rather than a refusal: a cell whose source or
+/// outcome went unrecorded must not be offered back to the model to retry.
 pub fn invoke(
   context: extension.Context,
   arguments: String,
-) -> Result(extension.Output, String) {
+) -> Result(extension.Output, extension.Failure) {
   let decoder = {
     use code <- decode.field("code", decode.string)
     use timeout <- decode.field("timeout_ms", decode.int)
@@ -51,15 +52,21 @@ pub fn invoke(
   }
   case json.parse(arguments, decoder) {
     Ok(#(code, timeout)) -> {
-      use id <- result.try(journal.begin_call(
-        context.store,
-        context.session,
-        context.call_id,
-        code,
-      ))
+      use id <- result.try(
+        journal.begin_call(
+          context.store,
+          context.session,
+          context.call_id,
+          code,
+        )
+        |> result.map_error(extension.Fatal),
+      )
       let outcome =
         python.execute_saved(context.kernel, id, code, timeout, context.images)
-      use _ <- result.try(journal.finish(context.store, id, outcome))
+      use _ <- result.try(
+        journal.finish(context.store, id, outcome)
+        |> result.map_error(extension.Fatal),
+      )
       let _ =
         list.try_each(python.events(context.kernel), fn(event) {
           let decoder = {

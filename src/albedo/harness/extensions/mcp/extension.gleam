@@ -180,6 +180,7 @@ fn prepare(
               fn(_, arguments) {
                 native_call(handle, definition.name, arguments)
                 |> result.map(extension.text)
+                |> result.map_error(extension.Refused)
               },
               fn(_) { None },
             )

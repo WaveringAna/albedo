@@ -14,6 +14,8 @@ SERVER = Path(__file__).with_name("fake_mcp_server.py")
 
 class McpTests(unittest.TestCase):
     def setUp(self):
+        self.message = "ping from albedo"
+
         def script(request):
             tools = sorted(tool["name"] for tool in request.get("tools", []))
             answered = any(
@@ -24,7 +26,7 @@ class McpTests(unittest.TestCase):
                 return Reply(
                     "python",
                     tool_name=mcp_tool,
-                    tool_arguments={"message": "ping from albedo"},
+                    tool_arguments={"message": self.message},
                 )
             return text("done")
 
@@ -108,6 +110,19 @@ class McpTests(unittest.TestCase):
             {"echoed": "ping from albedo", "secret": "stored-secret", "ambient": None},
         )
         self.assertEqual(self.extension()["tools"], advertised)
+
+    def test_a_failed_tool_call_is_refused_without_ending_the_turn(self):
+        self.extension({"name": "mcp", "enabled": True})
+        self.message = "fail"
+        requests = self.turn("the server will refuse")
+        self.assertEqual(len(requests), 2)
+        output = next(
+            item["output"]
+            for item in requests[1]["input"]
+            if item.get("type") == "function_call_output"
+        )
+        self.assertIn("MCP request failed", json.loads(output)["error"])
+        self.assertIn("done", json.dumps(self.app.history(self.session)))
 
     @exclusive
     def test_disable_closes_server_and_removes_tools(self):

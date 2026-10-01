@@ -7,6 +7,7 @@ import albedo/harness/command
 import albedo/harness/compaction
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/oauth
+import albedo/harness/protect
 import albedo/harness/settings
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
@@ -15,6 +16,7 @@ import gleam/erlang/process
 import gleam/http/request
 import gleam/http/response
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -42,9 +44,18 @@ pub type Route =
 pub type Tool {
   Tool(
     definition: types.Tool,
-    invoke: fn(Context, String) -> Result(Output, String),
+    invoke: fn(Context, String) -> Result(Output, Failure),
     recover: fn(Context) -> Option(Output),
   )
+}
+
+/// Why a tool call produced no result.
+pub type Failure {
+  /// The call did not work. The model is told why and the turn continues.
+  Refused(String)
+  /// The turn ends: the host could not record what the call did, and the
+  /// model must not be invited to retry something that may already have run.
+  Fatal(String)
 }
 
 /// A tool result: text, plus images the provider shows the model beside it.
@@ -54,6 +65,34 @@ pub type Output {
 
 pub fn text(value: String) -> Output {
   Output(value, [])
+}
+
+/// `tool` run on `arguments`, with a crash answered as a refusal: an
+/// extension's bug costs the model one call rather than the turn.
+pub fn invoke(
+  tool: Tool,
+  context: Context,
+  arguments: String,
+) -> Result(Output, Failure) {
+  case protect.attempt(fn() { tool.invoke(context, arguments) }) {
+    Ok(result) -> result
+    Error(crash) ->
+      Error(Refused(
+        tool.definition.name
+        <> " crashed: "
+        <> crash
+        <> ". Its effects are unknown; inspect them before any retry.",
+      ))
+  }
+}
+
+/// `tool`'s saved result for an interrupted call, or `None` if it saved
+/// nothing or crashed looking.
+pub fn recover(tool: Tool, context: Context) -> Option(Output) {
+  case protect.attempt(fn() { tool.recover(context) }) {
+    Ok(saved) -> saved
+    Error(_) -> None
+  }
 }
 
 pub type Managed {
@@ -871,49 +910,123 @@ pub opaque type Composition {
     extensions: List(Extension),
     contributions: List(Prepared),
     managed: List(Prepared),
+    /// The warning-only contributions of the extensions that broke.
+    failures: List(Prepared),
   )
 }
 
-/// Load context and prepare managed plugins for one selection. A failure
-/// closes everything already prepared and leaves no composition to own.
+/// Compose one session's extensions: static contributions with their loaded
+/// context, then every prepared managed plugin. An extension that fails,
+/// crashes, or collides with another is left out with a warning; the session
+/// composes without it.
 pub fn compose(
   selected: List(Extension),
   ledger: store.Store,
   session: String,
   workspace: String,
-) -> Result(Composition, String) {
-  use static <- result.try(
-    list.try_map(selected, fn(extension) {
-      list.try_map(extension.plugins, fn(plugin) {
-        case plugin {
-          ContextPlugin(load) ->
-            load(workspace)
-            |> result.map(fn(context) { [Managed(..empty(), context: context)] })
-            |> result.map_error(fn(error) { extension.name <> ": " <> error })
-          _ -> Ok(option.values([declare(plugin)]))
-        }
-      })
-      |> result.map(fn(values) {
-        values
-        |> list.flatten
-        |> list.map(Prepared(extension.name, _))
-      })
-    })
-    |> result.map(list.flatten),
+) -> Composition {
+  let #(loadable, unloadable) =
+    split(list.flat_map(selected, loaded(_, workspace)))
+  let #(static, static_rejected) = distinct([], loadable)
+  let #(preparable, unpreparable) =
+    split(prepare(selected, ledger, session, workspace))
+  let #(managed, managed_rejected) = distinct(static, preparable)
+  let failures =
+    list.flatten([
+      unloadable,
+      static_rejected,
+      unpreparable,
+      managed_rejected,
+    ])
+  Composition(
+    selected,
+    list.flatten([static, managed, failures]),
+    managed,
+    failures,
   )
-  use managed <- result.try(prepare(selected, ledger, session, workspace))
-  let composition = Composition(selected, list.append(static, managed), managed)
-  case
-    duplicate_capabilities(
-      list.map(composition.contributions, fn(item) { item.value }),
-    )
-  {
-    False -> Ok(composition)
-    True -> {
-      close(composition)
-      Error("prepared extensions have duplicate capabilities")
+}
+
+/// The working contributions and the broken ones, each in order.
+fn split(
+  values: List(Result(Prepared, Prepared)),
+) -> #(List(Prepared), List(Prepared)) {
+  list.fold_right(values, #([], []), fn(state, value) {
+    case value {
+      Ok(working) -> #([working, ..state.0], state.1)
+      Error(broken) -> #(state.0, [broken, ..state.1])
     }
+  })
+}
+
+/// One extension's static contributions, with its context loaded. An
+/// extension whose context will not load contributes only its warning: the
+/// rest of the session composes without it.
+fn loaded(
+  extension: Extension,
+  workspace: String,
+) -> List(Result(Prepared, Prepared)) {
+  let values =
+    list.try_map(extension.plugins, fn(plugin) {
+      case plugin {
+        ContextPlugin(load) ->
+          protect.guarded(fn() { load(workspace) })
+          |> result.map(fn(context) { [Managed(..empty(), context: context)] })
+        _ -> Ok(option.values([declare(plugin)]))
+      }
+    })
+  case values {
+    Ok(values) ->
+      values
+      |> list.flatten
+      |> list.map(fn(value) { Ok(Prepared(extension.name, value)) })
+    Error(error) -> [
+      Error(broken(extension.name, "its context failed: " <> error)),
+    ]
   }
+}
+
+/// Accept `candidates` in order, dropping any that claims a tool, command,
+/// python module, or route `taken` or an earlier candidate already has.
+/// Answers the kept ones and the dropped ones' warnings; a dropped
+/// contribution is closed here, since the session never sees it.
+fn distinct(
+  taken: List(Prepared),
+  candidates: List(Prepared),
+) -> #(List(Prepared), List(Prepared)) {
+  let #(kept, rejected) =
+    list.fold(candidates, #([], []), fn(state, candidate) {
+      let #(kept, rejected) = state
+      let claimed = list.flatten([[candidate], kept, taken])
+      case duplicate_capabilities(list.map(claimed, value)) {
+        False -> #([candidate, ..kept], rejected)
+        True -> {
+          close_prepared([candidate])
+          #(kept, [
+            broken(
+              candidate.extension,
+              "it duplicates another extension's tools, commands, python modules, or routes",
+            ),
+            ..rejected
+          ])
+        }
+      }
+    })
+  #(list.reverse(kept), list.reverse(rejected))
+}
+
+/// A broken extension's only contribution: no capabilities, one warning,
+/// which the session shows as a note.
+fn broken(name: String, reason: String) -> Prepared {
+  Prepared(
+    name,
+    Managed(..empty(), warnings: [
+      "extension " <> name <> " is inactive in this session: " <> reason,
+    ]),
+  )
+}
+
+fn value(prepared: Prepared) -> Managed {
+  prepared.value
 }
 
 /// Release every managed resource, newest first.
@@ -921,11 +1034,19 @@ pub fn close(composition: Composition) -> Nil {
   close_prepared(composition.managed)
 }
 
-/// Every contribution's observer, in registry order.
+/// Every contribution's observer, in registry order, each guarded: these run
+/// inside the session actor, where a crash would take the session with it.
 pub fn observers(
   composition: Composition,
 ) -> List(fn(Session, SessionEvent) -> Nil) {
-  list.map(composition.contributions, fn(item) { item.value.observe })
+  list.map(composition.contributions, fn(item) {
+    fn(session, event) {
+      case protect.attempt(fn() { item.value.observe(session, event) }) {
+        Ok(_) -> Nil
+        Error(crash) -> report(item.extension, "observer", crash)
+      }
+    }
+  })
 }
 
 pub fn extensions(composition: Composition) -> List(Extension) {
@@ -937,6 +1058,14 @@ pub fn context(composition: Composition) -> List(#(String, String)) {
   composition.contributions
   |> list.filter(fn(item) { string.trim(item.value.context) != "" })
   |> list.map(fn(item) { #(item.extension, item.value.context) })
+}
+
+/// Each extension that failed to load or prepare, with the warning saying
+/// why. Enabling one of these is an error, not a silent no-op.
+pub fn inactive(composition: Composition) -> List(#(String, String)) {
+  list.map(composition.failures, fn(item) {
+    #(item.extension, string.join(item.value.warnings, "; "))
+  })
 }
 
 pub fn warnings(composition: Composition) -> List(String) {
@@ -1097,37 +1226,48 @@ fn duplicate_capabilities(values: List(Managed)) -> Bool {
   || commands != list.unique(commands)
 }
 
-/// Prepare every session-owned plugin in registry order. A failed prepare closes
-/// all earlier values; a plugin that fails must close any resources it started itself.
+/// Prepare every session-owned plugin in registry order. A plugin that fails
+/// or crashes contributes its warning and nothing else; it must close any
+/// resources it started itself.
 fn prepare(
   installed: List(Extension),
   ledger: store.Store,
   session: String,
   workspace: String,
-) -> Result(List(Prepared), String) {
+) -> List(Result(Prepared, Prepared)) {
   plugin_values(installed, fn(name, plugin) {
     case plugin {
       ManagedPlugin(run) -> Ok(#(name, run))
       _ -> Error(Nil)
     }
   })
-  |> list.try_fold([], fn(prepared, item) {
+  |> list.map(fn(item) {
     let #(name, run) = item
-    case run(ledger, session, workspace) {
-      Ok(value) -> Ok([Prepared(name, value), ..prepared])
-      Error(error) -> {
-        close_prepared(list.reverse(prepared))
-        Error(name <> ": " <> error)
-      }
+    case protect.guarded(fn() { run(ledger, session, workspace) }) {
+      Ok(value) -> Ok(Prepared(name, value))
+      Error(error) -> Error(broken(name, "it failed to prepare: " <> error))
     }
   })
-  |> result.map(list.reverse)
 }
 
+/// Release each contribution, newest first. A close that crashes is reported
+/// and the rest still run, so one bad teardown leaks nothing else.
 fn close_prepared(prepared: List(Prepared)) -> Nil {
   prepared
   |> list.reverse
-  |> list.each(fn(item) { item.value.close() })
+  |> list.each(fn(item) {
+    case protect.attempt(item.value.close) {
+      Ok(_) -> Nil
+      Error(crash) -> report(item.extension, "close", crash)
+    }
+  })
+}
+
+/// What an extension's crash leaves in the daemon's log.
+fn report(name: String, stage: String, crash: String) -> Nil {
+  io.println_error(
+    "extension " <> name <> " " <> stage <> " crashed, " <> crash,
+  )
 }
 
 pub fn compaction(installed: List(Extension)) -> Option(compaction.Strategy) {
@@ -1182,7 +1322,7 @@ pub fn reload_catalogs(
   list.each(reloads, fn(item) {
     let #(name, reload) = item
     process.spawn_unlinked(fn() {
-      process.send(answers, #(name, result.flatten(protect(reload))))
+      process.send(answers, #(name, result.flatten(protect.attempt(reload))))
     })
   })
   let expired = process.new_subject()
@@ -1219,9 +1359,6 @@ fn gather(
       }
   }
 }
-
-@external(erlang, "albedo_protect", "run")
-fn protect(run: fn() -> a) -> Result(a, String)
 
 /// The first enabled catalog that knows this model answers.
 pub fn model_info(

@@ -10,12 +10,14 @@ import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/work/ledger as work
 import albedo/harness/instruction_files
 import albedo/harness/oauth
+import albedo/harness/protect
 import albedo/harness/rpc
 import albedo/harness/session_settings
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/io
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some, unwrap}
 import gleam/otp/actor
@@ -434,19 +436,35 @@ fn owned_by(runtime: Runtime, session: Session) -> Result(Nil, String) {
 
 /// Compose one session. `selected = None` reads the persisted selection; a
 /// reload supplies its proposed selection instead (it is persisted only after
-/// the composition succeeds). The caller owns the result's lifecycle.
+/// the composition succeeds). `required` names the extensions that must come
+/// out working. The caller owns the result's lifecycle.
 fn build_cached(
   state: State,
   id: String,
   cwd: String,
   selected: Option(List(extension.Extension)),
+  required: List(String),
 ) -> Result(Cached, String) {
   use selected <- result.try(case selected {
     Some(value) -> Ok(value)
     None ->
       extension.enabled(state.work, state.extensions, state.default_enabled, id)
   })
-  use composition <- result.try(extension.compose(selected, state.work, id, cwd))
+  let composition = extension.compose(selected, state.work, id, cwd)
+  // A session opening on its own composes around whatever is broken, but an
+  // extension the caller just asked for, and one a change must not break,
+  // fail here instead of going quiet.
+  use _ <- result.try(
+    list.try_each(required, fn(name) {
+      case list.key_find(extension.inactive(composition), name) {
+        Error(_) -> Ok(Nil)
+        Ok(warning) -> {
+          extension.close(composition)
+          Error(warning)
+        }
+      }
+    }),
+  )
   let prompts = {
     let home = instruction_files.home()
     use replacement <- result.try(instruction_files.named(
@@ -558,6 +576,7 @@ fn refresh_cached(
       id,
       previous.cwd,
       Some(extension.extensions(previous.composition)),
+      working(previous),
     )
     |> result.map_error(fn(error) { "could not refresh extensions: " <> error }),
   )
@@ -622,7 +641,7 @@ fn ensure_cached(
         Ok(prior) -> extension.close(prior.composition)
         Error(_) -> Nil
       }
-      use cached <- result.try(build_cached(state, id, cwd, None))
+      use cached <- result.try(build_cached(state, id, cwd, None, []))
       Ok(#(
         State(
           ..state,
@@ -675,7 +694,9 @@ fn boot_next(state: State) -> State {
       let self = state.self
       let owner = state.work
       process.spawn_unlinked(fn() {
-        let result = case protect(fn() { open_kernel(owner, id, cached) }) {
+        let result = case
+          protect.attempt(fn() { open_kernel(owner, id, cached) })
+        {
           Ok(result) -> result
           Error(crash) ->
             Error(python.Unavailable("kernel boot failed: " <> crash))
@@ -732,8 +753,25 @@ fn abandon(state: State, id: String) -> State {
   }
 }
 
-@external(erlang, "albedo_protect", "run")
-fn protect(run: fn() -> a) -> Result(a, String)
+/// The extensions a refresh must not break: everything that was working
+/// before it. A settings change that stops one of them is reported, and the
+/// live composition stays.
+fn working(previous: Cached) -> List(String) {
+  let broken =
+    list.map(extension.inactive(previous.composition), fn(failure) { failure.0 })
+  extension.extensions(previous.composition)
+  |> list.map(fn(extension) { extension.name })
+  |> list.filter(fn(name) { !list.contains(broken, name) })
+}
+
+/// The extension this change enables, if it enables one.
+fn demanded(change: extension.Change) -> Option(String) {
+  case change {
+    extension.SetSession(name, True) | extension.SetGlobal(name, True) ->
+      Some(name)
+    _ -> None
+  }
+}
 
 /// Reload one session's extension selection. The choice is persisted before
 /// the live session is touched; a change that alters the running set opens a
@@ -785,7 +823,8 @@ fn reload(
       process.send(reply, Error(error))
       state
     }
-    Ok(selected), False -> reopen(state, id, cwd, selected, persist, reply)
+    Ok(selected), False ->
+      reopen(state, id, cwd, selected, demanded(change), persist, reply)
   }
 }
 
@@ -798,6 +837,7 @@ fn reopen(
   id: String,
   cwd: String,
   selected: List(extension.Extension),
+  demanded: Option(String),
   persist: fn(List(extension.Extension)) -> Result(Nil, String),
   reply: Subject(Result(Option(Session), String)),
 ) -> State {
@@ -808,7 +848,13 @@ fn reopen(
   }
   let opened = {
     use cached <- result.try(
-      build_cached(state, id, workspace, Some(selected))
+      build_cached(
+        state,
+        id,
+        workspace,
+        Some(selected),
+        option.values([demanded]),
+      )
       |> result.map_error(fn(error) { "could not reload extensions: " <> error }),
     )
     open_kernel(state.work, id, cached)
@@ -1049,13 +1095,24 @@ pub fn invoke(
 ) -> Result(types.Input, String) {
   use _ <- result.try(owned_by(runtime, session))
   case tool_call(runtime, session, call, images) {
-    Error(_) -> Ok(types.ToolOutput(call.id, "tool is not installed", []))
+    Error(_) -> Ok(refusal(call, "tool is not installed"))
     Ok(#(tool, context)) ->
-      tool.invoke(context, call.arguments)
-      |> result.map(fn(output) {
-        types.ToolOutput(call.id, output.text, output.images)
-      })
+      case extension.invoke(tool, context, call.arguments) {
+        Ok(output) -> Ok(types.ToolOutput(call.id, output.text, output.images))
+        // A refusal is this call's answer; only `Fatal` ends the turn.
+        Error(extension.Refused(message)) -> Ok(refusal(call, message))
+        Error(extension.Fatal(message)) -> Error(message)
+      }
   }
+}
+
+/// One refused call's answer, in the JSON shape tools report errors in.
+fn refusal(call: types.ToolCall, message: String) -> types.Input {
+  types.ToolOutput(
+    call.id,
+    json.to_string(json.object([#("error", json.string(message))])),
+    [],
+  )
 }
 
 pub fn recover(
@@ -1065,7 +1122,7 @@ pub fn recover(
   images: types.ImageLimits,
 ) -> types.Input {
   let saved = case tool_call(runtime, session, call, images) {
-    Ok(#(tool, context)) -> tool.recover(context)
+    Ok(#(tool, context)) -> extension.recover(tool, context)
     Error(_) -> None
   }
   case saved {
@@ -1337,8 +1394,8 @@ pub fn prepare_view_scoped(
   case extension.compaction(enabled) {
     None if force -> Error("no compaction strategy is enabled")
     None -> Ok(compaction.Prepared(history, None, False))
-    Some(strategy) ->
-      strategy.prepare(
+    Some(strategy) -> {
+      let context =
         compaction.Context(
           runtime.work,
           session.id,
@@ -1358,12 +1415,14 @@ pub fn prepare_view_scoped(
           ),
           reader(info),
           images,
-        ),
-        history,
-      )
+        )
+      // A strategy that raises fails the turn the way one returning an error
+      // does, naming itself, rather than killing the turn's process.
+      protect.guarded(fn() { strategy.prepare(context, history) })
       |> result.map_error(fn(error) {
         "compaction " <> strategy.name <> ": " <> error
       })
+    }
   }
 }
 

@@ -41,6 +41,9 @@ for line in sys.stdin:
         reply(id, {"tools": TOOLS})
     elif method == "tools/call":
         arguments = message["params"].get("arguments", {})
+        if arguments.get("message") == "fail":
+            reply(id, error={"code": -32000, "message": "the tool exploded"})
+            continue
         reply(
             id,
             {
