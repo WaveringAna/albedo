@@ -13,7 +13,7 @@ _: {
           gleam
           beamPackages.erlang
           (beamPackages.rebar3WithPlugins {plugins = [beamPackages.pc];})
-          python3
+          python311
           pre-commit
           ruff
           ty

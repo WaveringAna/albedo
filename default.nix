@@ -6,7 +6,7 @@
   fetchurl,
   gleam,
   beamPackages,
-  python3,
+  python311,
   bash,
   coreutils,
   makeWrapper,
@@ -132,7 +132,7 @@
       ln -s ${usageCore}/bin/usage $out/lib/albedo/albedo/priv/bin/usage
       makeWrapper $out/lib/albedo/entrypoint.sh $out/bin/albedo-daemon \
         --add-flags run \
-        --prefix PATH : ${lib.makeBinPath [erlang python3 bash coreutils render]}
+        --prefix PATH : ${lib.makeBinPath [erlang python311 bash coreutils render]}
       runHook postInstall
     '';
   };
@@ -144,7 +144,7 @@ in
     modRoot = "cli";
     subPackages = ["cmd/albedo"];
     vendorHash = "sha256-RXAAUgTw2JR25IBswfBbxzJXk0Q+zIvW0jxtfeQTI1U=";
-    nativeBuildInputs = [makeWrapper python3];
+    nativeBuildInputs = [makeWrapper python311];
     ALBEDO_NO_BROWSER = "1";
     postInstall = ''
       wrapProgram $out/bin/albedo \

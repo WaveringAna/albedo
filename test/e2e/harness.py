@@ -390,7 +390,7 @@ class Provider:
                 if reply.usage is not None:
                     completed["usage"] = reply.usage
                 emit({"type": "response.completed", "response": completed})
-        except BrokenPipeError, ConnectionResetError:
+        except (BrokenPipeError, ConnectionResetError):
             pass
 
     def close(self):
@@ -451,7 +451,7 @@ class _Response(http.client.HTTPResponse):
             else:
                 try:
                     self.read()
-                except OSError, http.client.HTTPException:
+                except (OSError, http.client.HTTPException):
                     connection.reusable = False
         super().close()
         if connection is not None:
@@ -553,7 +553,7 @@ class Daemon:
     def _stop(self, timeout):
         try:
             self.api("/shutdown", {}).close()
-        except OSError, http.client.HTTPException:
+        except (OSError, http.client.HTTPException):
             pass
         deadline = time.monotonic() + timeout
         while _alive(self._pid):

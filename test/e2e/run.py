@@ -80,7 +80,7 @@ def execute_alone(test):
 def run_suite(suite, jobs, exclusive_jobs):
     try:
         durations = json.loads(DURATIONS.read_text())
-    except OSError, ValueError:
+    except (OSError, ValueError):
         durations = {}
     selected = sorted(cases(suite), key=lambda test: -durations.get(test.id(), 0))
     exclusive = [test for test in selected if marked(test, "_e2e_exclusive")]

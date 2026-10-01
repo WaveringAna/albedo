@@ -173,7 +173,7 @@ def run(output, prompt, timeout):
                 for key, _ in selector.select(max(0, next_sample - time.monotonic())):
                     try:
                         chunk = os.read(key.fd, 65536)
-                    except BlockingIOError, OSError:
+                    except (BlockingIOError, OSError):
                         chunk = b""
                     if chunk:
                         terminal.write(chunk)
