@@ -7,6 +7,7 @@ module never spawns a process of its own and every child stays in a job's group.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import difflib
 import fnmatch
 import json
@@ -16,6 +17,7 @@ import shlex
 import stat
 import tempfile
 from dataclasses import dataclass
+from io import BufferedReader
 from pathlib import Path
 from collections.abc import Awaitable, Callable, Generator
 from typing import Generic, Iterable, Sequence, TypeVar
@@ -25,6 +27,9 @@ import albedo_trace
 from albedo_plugins import run as jobs
 
 READ_LIMIT = 16_000
+READ_CHUNK_BYTES = 64 * 1024
+LINE_SEPARATORS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+LINE_BOUNDARIES = re.compile(rf"\r\n|[{re.escape(LINE_SEPARATORS)}]")
 SEARCH_TIMEOUT = 30
 LINE_WIDTH = 160
 CANDIDATES = 4
@@ -144,6 +149,112 @@ def _numbered(number: int, lines: Sequence[str]) -> str:
     return f"{number:>6} | {text[:LINE_WIDTH]}"
 
 
+class _ReadWindow:
+    """Track selected lines, the current line, and the first rejected row."""
+
+    def __init__(self, start_line: int, last_line: int | None, max_chars: int):
+        self.start_line = start_line
+        self.last_line = last_line
+        self.max_chars = max_chars
+        self.lines: list[str] = []
+        self.used_chars = 0
+        self.stopped_line: int | None = None
+        self.stopped_row_chars = 0
+        self.number = 1
+        self.line_chars = 0
+        self.fragments: list[str] = []
+
+    def wants_line(self) -> bool:
+        return (
+            self.stopped_line is None
+            and self.number >= self.start_line
+            and (self.last_line is None or self.number <= self.last_line)
+        )
+
+    def extend(self, text: str, start: int, end: int) -> None:
+        self.line_chars += end - start
+        if self.wants_line():
+            row_chars = max(6, len(str(self.number))) + 3 + self.line_chars
+            if self.used_chars + row_chars + 1 <= self.max_chars:
+                if start < end:
+                    self.fragments.append(text[start:end])
+            else:
+                # Keep counting a giant line, but release its retained prefix.
+                self.fragments.clear()
+
+    def finish_line(self) -> None:
+        if self.wants_line():
+            row_chars = max(6, len(str(self.number))) + 3 + self.line_chars
+            if self.used_chars + row_chars + 1 > self.max_chars:
+                self.stopped_line = self.number
+                self.stopped_row_chars = row_chars
+            else:
+                self.lines.append("".join(self.fragments))
+                self.used_chars += row_chars + 1
+        self.number += 1
+        self.line_chars = 0
+        self.fragments.clear()
+
+
+def _scan_read(
+    source: BufferedReader, window: _ReadWindow, end_line: int | None
+) -> int:
+    chunk = source.read(READ_CHUNK_BYTES)
+    at_eof = len(chunk) < READ_CHUNK_BYTES or not source.peek(1)
+    text = chunk.decode("utf-8", errors="replace") if at_eof else ""
+    # Native splitting is cheap for a bounded ASCII file. Unicode uses spans
+    # instead, so dense replacement characters never build a list of substrings.
+    if at_eof and text.isascii():
+        lines = text.splitlines()
+        total = len(lines)
+        last = total if window.last_line is None else min(total, window.last_line)
+        window.lines = lines[window.start_line - 1 : last]
+        return total
+
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    if not at_eof:
+        text = decoder.decode(chunk)
+    skip_lf = False
+    while True:
+        if skip_lf and text.startswith("\n"):
+            text = text[1:]
+        separator_count = 0
+        if any(separator in text for separator in LINE_SEPARATORS):
+            separator_count = sum(
+                text.count(separator) for separator in LINE_SEPARATORS
+            )
+            separator_count -= text.count("\r\n")
+        window_complete = window.stopped_line is not None or (
+            window.last_line is not None and window.number > window.last_line
+        )
+        if not separator_count:
+            window.extend(text, 0, len(text))
+        elif window_complete or window.number + separator_count < window.start_line:
+            window.number += separator_count
+            if end_line is not None and window.number > end_line:
+                return end_line
+            # Skipped lines need only an unfinished-line flag for EOF.
+            # A requested line begins after a separator resets this state.
+            window.line_chars = int(text[-1] not in LINE_SEPARATORS)
+        else:
+            position = 0
+            for boundary in LINE_BOUNDARIES.finditer(text):
+                window.extend(text, position, boundary.start())
+                window.finish_line()
+                if end_line is not None and window.number > end_line:
+                    return end_line
+                position = boundary.end()
+            window.extend(text, position, len(text))
+        skip_lf = text.endswith("\r")
+        if at_eof:
+            if window.line_chars:
+                window.finish_line()
+            return window.number - 1
+        chunk = source.read(READ_CHUNK_BYTES)
+        at_eof = not chunk
+        text = decoder.decode(chunk, final=at_eof)
+
+
 class Files:
     """Workspace file access with the diagnostics an exact edit needs."""
 
@@ -181,42 +292,53 @@ class Files:
                     f"{path} is a directory; files.ls({path!r}) lists it"
                 )
             raise FileNotFoundError(_missing(target, path))
-        lines = target.read_bytes().decode("utf-8", errors="replace").splitlines()
-        if start_line > len(lines):
-            return Text(
-                f"[{path} has {len(lines)} lines; nothing at line {start_line}]"
-            )
-        requested = len(lines) if end_line is None else min(end_line, len(lines))
-        last = requested if limit is None else min(requested, start_line + limit - 1)
-        body, used = [], 0
-        for number in range(start_line, last + 1):
-            row = f"{number:>6} | {lines[number - 1]}"
+        last = end_line
+        if limit is not None:
+            limited_last = start_line + limit - 1
+            last = limited_last if last is None else min(last, limited_last)
+        window = _ReadWindow(start_line, last, max_chars)
+        with target.open("rb") as source:
+            total = _scan_read(source, window, end_line)
+        if start_line > total:
+            return Text(f"[{path} has {total} lines; nothing at line {start_line}]")
+        requested = total if end_line is None else min(end_line, total)
+        last = requested if last is None else min(last, requested)
+        body, used = window.lines, 0
+        number = window.stopped_line
+        row_chars = window.stopped_row_chars
+        for current, text in enumerate(body, start_line):
+            row = f"{current:>6} | {text}"
             if used + len(row) + 1 > max_chars:
-                if not body:
-                    retry = (
-                        f"read it alone with start_line={number}, end_line={number}, max_chars={len(row) + 1}"
-                        if len(row) + 1 <= 200_000
-                        else "it exceeds the 200000-character maximum"
-                    )
-                    body.append(
-                        f"[line {number} is {len(row)} characters with its number, over "
-                        f"max_chars={max_chars}; {retry}]"
-                    )
-                else:
-                    body.append(
-                        f"[stopped at max_chars={max_chars} characters; lines {number}-{last} "
-                        f"not shown; read again with start_line={number}, or raise max_chars]"
-                    )
+                number, row_chars = current, len(row)
+                del body[current - start_line :]
                 break
             used += len(row) + 1
-            body.append(row)
-        else:
-            if last < requested:
-                body.append(
-                    f"[limit={limit} lines reached; {requested - last} more through line "
-                    f"{requested}; read again with start_line={last + 1}]"
+            body[current - start_line] = row
+        if number is not None:
+            if not body:
+                retry = (
+                    f"read it alone with start_line={number}, end_line={number}, max_chars={row_chars + 1}"
+                    if row_chars + 1 <= 200_000
+                    else "it exceeds the 200000-character maximum"
                 )
-        return Text("\n".join(body))
+                body.append(
+                    f"[line {number} is {row_chars} characters with its number, over "
+                    f"max_chars={max_chars}; {retry}]"
+                )
+            else:
+                body.append(
+                    f"[stopped at max_chars={max_chars} characters; lines {number}-{last} "
+                    f"not shown; read again with start_line={number}, or raise max_chars]"
+                )
+        elif last < requested:
+            body.append(
+                f"[limit={limit} lines reached; {requested - last} more through line "
+                f"{requested}; read again with start_line={last + 1}]"
+            )
+        result = "\n".join(body)
+        # Release numbered rows before Text copies the joined Unicode buffer.
+        body.clear()
+        return Text(result)
 
     def ls(
         self, path: str = ".", pattern: str | None = None, *, hidden: bool = False

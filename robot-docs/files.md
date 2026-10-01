@@ -17,6 +17,8 @@ files.write("notes/plan.md", "...")
 
 `read(path, start_line=1, end_line=None, *, limit=None, max_chars=16000)` returns numbered lines. `limit` is a number of lines; `max_chars` is a separate character budget that keeps a huge window out of the context. A window stopped by either ends with which one stopped it and the line to resume from, so a large file is read in explicit steps rather than truncated silently. Lines are never shortened, and the numbers are the ones `edit(line_hint=)` accepts.
 
+Reads decode UTF-8 with replacement and recognize Python line boundaries, including CRLF and Unicode separators. Scanning uses 64 KiB chunks and bounds memory by the chunk size and `max_chars`, even for giant lines. An open-ended read scans to EOF to report exact remaining line counts; an explicit `end_line` can stop scanning after that line.
+
 ## edit
 
 `edit(path, old_str, new_str, line_hint=None)` replaces one exact, unique occurrence:
