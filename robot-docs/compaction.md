@@ -16,9 +16,11 @@ Provider projection can combine several durable rows into one model input, split
 
 `lcm` uses durable source rows for summary ranges and plain model inputs for its verbatim tail. It preserves every unsummarized user unit and the latest whole user/tool unit. Source references on live projected inputs would let future strategies cut history within those unit boundaries.
 
-Live source references need the sequence IDs from the transaction that commits inputs. The session coordinator can then project those identified entries before preparing a request. Its current commit callback returns only a timestamp, and its in-memory entries have no sequence field. Callers that do not need references can keep the plain-input path. Text or list positions cannot identify rows reliably because messages can repeat and provider projection can change item counts. An excursion marker belongs to its parent session. The branch has different row references, so returning its outcome requires an explicit link to the parent marker.
+Transcript rows carry an indexed `row_class`: `user`, `image_fit`, or `other`. Every user input, including notes and mail, starts a compaction unit; an image-fit notice does too. LCM counts uncovered units from this metadata before deciding whether to compact. It decodes eligible source payloads only when creating new leaf summaries. Reading saved LCM folds after a strategy switch also uses metadata rather than expanding the covered transcript.
 
 `conversation.snapshot` captures a session's append boundary. `conversation.fold_sources` reads an inclusive source range in chronological pages of 128 rows and can stop before the next page. Indexed image-fit rows through the snapshot boundary supply replacements, including fits after the selected range. Fits affect only earlier occurrences, and replacement composition preserves chains and repeated source hashes.
+
+Text or list positions cannot identify rows reliably because messages can repeat and provider projection can change item counts. An excursion marker belongs to its parent session. The branch has different row references, so returning its outcome requires an explicit link to the parent marker.
 
 ## image payload lifecycle
 

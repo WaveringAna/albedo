@@ -84,8 +84,13 @@ pub fn stored_prior(
     [] -> compaction.no_prior(history)
     _ -> {
       use covered <- result.try(graph.last_seq(ledger, session))
-      use sources <- result.try(conversation.load_sources(ledger, session))
-      Ok(split(frontier, history, sources, covered, None, 0))
+      use snapshot <- result.try(conversation.snapshot(ledger, session))
+      use stats <- result.try(conversation.source_stats(
+        ledger,
+        snapshot,
+        covered,
+      ))
+      Ok(split(frontier, history, stats, None, 0))
     }
   }
 }
@@ -116,17 +121,22 @@ fn prepare(
   context: compaction.Context,
   history: List(types.Input),
 ) -> Result(compaction.Prepared, String) {
-  use sources <- result.try(conversation.load_sources(
+  use snapshot <- result.try(conversation.snapshot(
     context.store,
     context.session,
   ))
   use covered <- result.try(graph.last_seq(context.store, context.session))
   use frontier <- result.try(graph.frontier(context.store, context.session))
+  use stats <- result.try(conversation.source_stats(
+    context.store,
+    snapshot,
+    covered,
+  ))
   let window =
     rolling.effective_window(config.context_window_tokens, context, history)
   let tail_budget =
     option.map(window, fn(window) { window.tokens * config.tail_percent / 100 })
-  let current = projection(frontier, history, sources, covered, tail_budget, 1)
+  let current = projection(frontier, history, stats, tail_budget, 1)
   let estimated = context.pinned_tokens + compaction.estimate_inputs(current)
   case window {
     None ->
@@ -170,11 +180,23 @@ fn prepare(
           ))
         True -> {
           let previous_frontier = frontier
-          use latest_user <- result.try(latest_user_seq(sources))
-          let eligible =
-            list.filter(sources, fn(item) {
-              item.source.seq > covered && item.source.seq < latest_user
-            })
+          use latest_user <- result.try(option.to_result(
+            stats.latest_user,
+            "LCM needs a user message to retain as its tail",
+          ))
+          use eligible <- result.try(case covered + 1 < latest_user {
+            False -> Ok([])
+            True ->
+              conversation.fold_sources(
+                context.store,
+                snapshot,
+                covered + 1,
+                latest_user - 1,
+                [],
+                fn(rows, item) { conversation.Continue([item, ..rows]) },
+              )
+          })
+          let eligible = list.reverse(eligible)
           use _ <- result.try(compaction.require(
             eligible != [] || frontier != [],
             "cannot compact without an older complete conversation unit",
@@ -202,19 +224,22 @@ fn prepare(
             context.store,
             context.session,
           ))
+          use stats <- result.try(conversation.source_stats(
+            context.store,
+            snapshot,
+            covered,
+          ))
           use frontier <- result.try(condense_until_fit(
             context,
             frontier,
             history,
-            sources,
-            covered,
+            stats,
             tail_budget,
             capacity,
             summary_limit,
             0,
           ))
-          let next =
-            projection(frontier, history, sources, covered, tail_budget, 1)
+          let next = projection(frontier, history, stats, tail_budget, 1)
           let next_estimated =
             context.pinned_tokens + compaction.estimate_inputs(next)
           use _ <- result.try(compaction.require(
@@ -276,55 +301,41 @@ fn prepared(
   )
 }
 
-fn latest_user_seq(
-  sources: List(transcript.SourcedEntry),
-) -> Result(Int, String) {
-  sources
-  |> list.reverse
-  |> list.find(fn(item) { compaction.is_user(item.entry.input) })
-  |> result.map(fn(item) { item.source.seq })
-  |> result.map_error(fn(_) { "LCM needs a user message to retain as its tail" })
-}
-
 fn projection(
   frontier: List(graph.Node),
   history: List(types.Input),
-  sources: List(transcript.SourcedEntry),
-  covered: Int,
+  stats: conversation.SourceStats,
   tail_budget: Option(Int),
   minimum_tail_units: Int,
 ) -> List(types.Input) {
   let compaction.Prior(folds, rest) =
-    split(frontier, history, sources, covered, tail_budget, minimum_tail_units)
+    split(frontier, history, stats, tail_budget, minimum_tail_units)
   list.append(folds, rest)
 }
 
 fn split(
   frontier: List(graph.Node),
   history: List(types.Input),
-  sources: List(transcript.SourcedEntry),
-  covered: Int,
+  stats: conversation.SourceStats,
   tail_budget: Option(Int),
   minimum_tail_units: Int,
 ) -> compaction.Prior {
   case frontier {
     [] -> compaction.Prior([], history)
     nodes -> {
-      let unsummarized =
-        list.filter(sources, fn(item) { item.source.seq > covered })
-      let unsummarized_users =
-        list.count(unsummarized, fn(item) {
-          compaction.is_user(item.entry.input)
-        })
       // An assistant or tool result can follow the cursor without a user row.
       // Retain its whole projected unit until live source references permit
       // a narrower cut.
-      let minimum = case unsummarized {
-        [] -> minimum_tail_units
-        _ -> int.max(1, minimum_tail_units)
+      let minimum = case stats.uncovered {
+        False -> minimum_tail_units
+        True -> int.max(1, minimum_tail_units)
       }
       let tail =
-        retain_tail(history, int.max(minimum, unsummarized_users), tail_budget)
+        retain_tail(
+          history,
+          int.max(minimum, stats.uncovered_users),
+          tail_budget,
+        )
       compaction.Prior(list.map(nodes, node_input), tail)
     }
   }
@@ -397,14 +408,13 @@ fn condense_until_fit(
   context: compaction.Context,
   frontier: List(graph.Node),
   history: List(types.Input),
-  sources: List(transcript.SourcedEntry),
-  covered: Int,
+  stats: conversation.SourceStats,
   tail_budget: Option(Int),
   capacity: Int,
   summary_limit: Int,
   attempts: Int,
 ) -> Result(List(graph.Node), String) {
-  let view = projection(frontier, history, sources, covered, tail_budget, 1)
+  let view = projection(frontier, history, stats, tail_budget, 1)
   let estimated = context.pinned_tokens + compaction.estimate_inputs(view)
   case estimated < capacity || attempts >= 16, frontier {
     False, [_, _, ..] -> {
@@ -422,8 +432,7 @@ fn condense_until_fit(
         context,
         next,
         history,
-        sources,
-        covered,
+        stats,
         tail_budget,
         capacity,
         summary_limit,
