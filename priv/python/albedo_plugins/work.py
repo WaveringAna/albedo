@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from albedo_api import Host, PythonApi, Record
+import builtins
 from typing import cast
 
 
@@ -21,11 +22,12 @@ host: Host
 
 
 class Work:
-    async def list(self, after: int = 0, limit: int = 50) -> list[WorkItem]:
+    async def list(self, after: int = 0, limit: int = 50) -> builtins.list[WorkItem]:
         return [
             WorkItem(item)
             for item in cast(
-                list[dict], await host("work.list", {"after": after, "limit": limit})
+                builtins.list[dict],
+                await host("work.list", {"after": after, "limit": limit}),
             )
         ]
 

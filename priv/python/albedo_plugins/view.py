@@ -42,6 +42,7 @@ def setup(api: PythonApi) -> dict[str, object]:
 
         async def run() -> Text:
             renderer, target = _renderer(attach), _existing(path)
+            assert attach is not None
             if target.is_dir():
                 raise IsADirectoryError(
                     f"{path} is a directory; view_code shows one file"
@@ -76,6 +77,7 @@ def setup(api: PythonApi) -> dict[str, object]:
 
         async def run() -> Text:
             renderer, target = _renderer(attach), _existing(path)
+            assert attach is not None
             where = target if target.is_dir() else target.parent
             with tempfile.TemporaryDirectory(prefix="albedo-diff-") as scratch:
                 diff = Path(scratch) / "changes.diff"

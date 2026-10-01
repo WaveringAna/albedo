@@ -46,11 +46,13 @@ class Owner:
         self.send({"type": "shutdown"})
         self.process.wait(timeout=10)
         for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+            assert stream is not None
             stream.close()
         self.buffered.clear()
 
     def send(self, message):
         data = json.dumps(message).encode()
+        assert self.process.stdin is not None
         self.process.stdin.write(struct.pack(">I", len(data)) + data)
         self.process.stdin.flush()
 
@@ -58,6 +60,7 @@ class Owner:
         """One frame, or None when the kernel stays quiet for the window.
         stdout is unbuffered: a frame read ahead into a buffer is invisible to
         select(), and would stall until the next one arrives."""
+        assert self.process.stdout is not None
         ready, _, _ = select.select([self.process.stdout], [], [], timeout)
         if not ready:
             return None
@@ -66,6 +69,7 @@ class Owner:
         return json.loads(self.read_exactly(size))
 
     def read_exactly(self, size):
+        assert self.process.stdout is not None
         data = b""
         while len(data) < size:
             chunk = self.process.stdout.read(size - len(data))
@@ -130,7 +134,7 @@ class WakeProtocolTest(unittest.TestCase):
         return done
 
     def test_a_busy_session_is_retried_and_a_refusal_gives_up(self):
-        handle = self.start_job("echo", "retry-echo")
+        self.start_job("echo", "retry-echo")
         self.wait_job_done()
         # Busy is retried, not dropped; a permanent refusal ends the attempts.
         frame = self.owner.wait_for(lambda f: f.get("type") == "call")

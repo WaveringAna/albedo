@@ -60,7 +60,7 @@ LIVE: collections.OrderedDict[str, object] = (
     collections.OrderedDict()
 )  # remote references
 LIVE_LIMIT = 64  # live references retained for the owner; LRU beyond that
-PENDING_OBJECTS: collections.OrderedDict[str, asyncio.Future[object]] = (
+PENDING_OBJECTS: collections.OrderedDict[str, asyncio.Future[tuple[bool, object]]] = (
     collections.OrderedDict()
 )
 MIRROR_INTERVAL = 0.15  # seconds between output-tail mirror frames while data flows
@@ -75,6 +75,10 @@ HANDLES: list[type[object]] = [asyncio.Task]
 REPR = reprlib.Repr()
 REPR.maxstring = REPR.maxother = 4000
 REPR.maxdict = REPR.maxlist = REPR.maxtuple = 50
+
+
+def forget_output(id: str) -> None:
+    ARCHIVES.pop(id, None)
 
 
 def show(value: object) -> str:
@@ -194,9 +198,9 @@ def deliver(message: dict[str, object]) -> None:
     elif kind == "reply":
         future = PENDING.pop(message["id"], None)
         if future is not None and not future.done():
-            future.set_result(message["value"])
+            future.set_result(cast(albedo_api.HostReply, message["value"]))
     elif kind == "invoke":
-        _ = LOOP.create_task(serve_invoke(cast(dict[str, object], message)))
+        _ = LOOP.create_task(serve_invoke(message))
     elif kind == "introspect":
         send(
             {
@@ -213,7 +217,7 @@ def deliver(message: dict[str, object]) -> None:
             }
         )
     elif kind == "release":
-        LIVE.pop(message.get("handle", ""), None)
+        LIVE.pop(cast(str, message.get("handle", "")), None)
     else:
         QUEUE.put_nowait(cast(albedo_api.Execute | albedo_api.State, message))
 
@@ -253,7 +257,7 @@ async def _host(method: str, args: dict[str, object]) -> object:
         answer = await future
     finally:
         _ = PENDING.pop(key, None)
-    if answer["ok"] is True:
+    if answer["ok"]:
         return answer["value"]
     raise WorkError(answer["code"], answer["message"])
 
@@ -1160,13 +1164,18 @@ async def serve_invoke(message: dict[str, object]) -> None:
                     call = base
                     for part in parts:
                         call = getattr(call, part)
-                args = [_owner_args(item) for item in message.get("args", ())]
+                args = [
+                    _owner_args(item)
+                    for item in cast(Sequence[object], message.get("args", ()))
+                ]
                 kwargs = {
                     key: _owner_args(item)
                     for key, item in cast(
                         dict[str, object], message.get("kwargs", {})
                     ).items()
                 }
+                if not callable(call):
+                    raise TypeError(f"owner invoke {name!r} is not callable")
                 result = call(*args, **kwargs)
                 if inspect.isawaitable(result) and not isinstance(
                     result, tuple(HANDLES)
@@ -1295,7 +1304,7 @@ def main():
         loop=LOOP,
         host=host,
         HostError=WorkError,
-        forget_output=lambda id: ARCHIVES.pop(id, None) and None,
+        forget_output=forget_output,
         capture=background_capture,
         preview=PREVIEW,
         send=send,

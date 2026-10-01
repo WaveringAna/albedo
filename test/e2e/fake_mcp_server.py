@@ -1,6 +1,8 @@
 """Minimal line-delimited JSON-RPC MCP server used by mcp_integration.py."""
 
-import json, os, sys
+import json
+import os
+import sys
 from pathlib import Path
 
 TOOLS = [

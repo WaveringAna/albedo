@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from typing import cast
 from albedo_api import Host, PythonApi, Record
 
@@ -19,10 +20,11 @@ host: Host
 
 
 class Webhooks:
-    async def list(self) -> list[Hook]:
+    async def list(self) -> builtins.list[Hook]:
         """Hooks targeting this session. Agent management requires human opt-in."""
         return [
-            Hook(item) for item in cast(list[dict], await host("webhooks.list", {}))
+            Hook(item)
+            for item in cast(builtins.list[dict], await host("webhooks.list", {}))
         ]
 
     async def delivery(self, id: str) -> Record:

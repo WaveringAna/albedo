@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import io
-import json
 import os
 import sys
 import tempfile
@@ -13,8 +12,8 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "priv" / "python"))
-from albedo_api import PythonApi
-from albedo_plugins import remote
+from albedo_api import PythonApi  # noqa: E402
+from albedo_plugins import remote  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "test"))
 import scratch  # noqa: E402
@@ -35,6 +34,8 @@ class FakeCapture:
 
     def __init__(self, id):
         self.id, self.seen, self.tail_data = id, 0, bytearray()
+        self.raw_data = bytearray()
+        self.raw_seen = 0
         self.data = bytearray()
 
     def write(self, text):
@@ -125,7 +126,8 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
             ["run", "files", "work", "skills", "remote"],
         )
         self.namespace = {}
-        self.remote = remote.setup(self.api)["remote"]
+        remote.setup(self.api)
+        self.remote = remote.Remote()
 
     async def connect(self, **kwargs):
         return await self.remote.connect(**kwargs)

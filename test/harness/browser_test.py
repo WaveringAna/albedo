@@ -13,8 +13,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "priv" / "python"))
 
-from albedo_plugins.browser.transport import SimpleWebSocketClient
-from albedo_plugins.browser import spawn, render, one
+from albedo_plugins.browser.transport import SimpleWebSocketClient  # noqa: E402
+from albedo_plugins.browser import spawn, render, one  # noqa: E402
 
 
 class WebSocketClientUnitTest(unittest.IsolatedAsyncioTestCase):
@@ -48,7 +48,7 @@ class WebSocketClientUnitTest(unittest.IsolatedAsyncioTestCase):
 
             # Read frame from client (client masks frames)
             head = await reader.readexactly(2)
-            b1, b2 = head[0], head[1]
+            b2 = head[1]
             length = b2 & 0x7F
             mask = await reader.readexactly(4)
             payload = await reader.readexactly(length)

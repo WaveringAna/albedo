@@ -1,7 +1,6 @@
 """Daemon integration: provider binding, history, tools, workspaces, and recovery."""
 
 import json
-import os
 from pathlib import Path
 import sqlite3
 import time

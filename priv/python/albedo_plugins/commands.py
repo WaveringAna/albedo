@@ -10,6 +10,8 @@ after boot stays callable through commands.invoke().
 
 from __future__ import annotations
 
+from collections.abc import Callable, Coroutine
+from typing import Any
 import inspect
 import keyword
 from typing import TypedDict, cast
@@ -98,7 +100,9 @@ def _signature(spec: list[CommandArgument]) -> inspect.Signature | None:
     return inspect.Signature(parameters)
 
 
-def _method(host: Host, summary: CommandSummary) -> object:
+def _method(
+    host: Host, summary: CommandSummary
+) -> Callable[..., Coroutine[Any, Any, object]]:
     spec = summary["arguments"]
 
     async def run(*args: object, **kwargs: object) -> object:
@@ -110,7 +114,7 @@ def _method(host: Host, summary: CommandSummary) -> object:
     run.__doc__ = _docstring(summary)
     signature = _signature(spec)
     if signature is not None:
-        run.__signature__ = signature  # type: ignore[attr-defined]
+        setattr(run, "__signature__", signature)
     return run
 
 

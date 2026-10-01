@@ -1,8 +1,6 @@
 """The remote control-frame protocol must preserve pending call races, live references and typed values without requiring an SSH server."""
 
-import asyncio
 import json
-import os
 import struct
 import subprocess
 import sys
@@ -44,6 +42,9 @@ class OwnerChannel:
     def close(self):
         self.send({"type": "shutdown"})
         self.process.wait(timeout=10)
+        assert self.process.stdin is not None
+        assert self.process.stdout is not None
+        assert self.process.stderr is not None
         self.process.stdin.close()
         self.process.stdout.close()
         self.process.stderr.close()
@@ -51,10 +52,12 @@ class OwnerChannel:
 
     def send(self, message):
         data = json.dumps(message).encode()
+        assert self.process.stdin is not None
         self.process.stdin.write(struct.pack(">I", len(data)) + data)
         self.process.stdin.flush()
 
     def recv(self):
+        assert self.process.stdout is not None
         header = self.process.stdout.read(4)
         size = struct.unpack(">I", header)[0]
         assert size <= MAX_FRAME, "control frame exceeds the ceiling"

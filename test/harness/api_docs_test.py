@@ -42,7 +42,7 @@ def namespace() -> dict[str, object]:
         loop,
         host,
         RuntimeError,
-        None,
+        kernel.background_capture,
         100,
         lambda e: None,
         lambda c: None,

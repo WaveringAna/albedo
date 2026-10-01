@@ -147,9 +147,13 @@ class FoldersTest(unittest.TestCase):
         preview = self.get("preview", repo)
         self.assertEqual(preview["repo"], found)
         # JSON is data, so only Go and Python count, largest first.
-        self.assertEqual([l["name"] for l in preview["languages"]], ["Go", "Python"])
+        self.assertEqual(
+            [language["name"] for language in preview["languages"]], ["Go", "Python"]
+        )
         self.assertEqual(preview["languages"][0]["color"], "#00ADD8")
-        self.assertAlmostEqual(sum(l["share"] for l in preview["languages"]), 1.0)
+        self.assertAlmostEqual(
+            sum(language["share"] for language in preview["languages"]), 1.0
+        )
         tree = {e["name"]: e for e in preview["tree"]}
         # Inside a repository only tracked or changed paths show: the
         # ignored build/ stays out, the untracked src/new.go is there.
@@ -213,7 +217,11 @@ class FoldersTest(unittest.TestCase):
         preview = self.get("preview", repo)
         self.assertEqual(preview["repo"], found)
         self.assertEqual(
-            [(l["name"], l["share"]) for l in preview["languages"]], [("Gleam", 1.0)]
+            [
+                (language["name"], language["share"])
+                for language in preview["languages"]
+            ],
+            [("Gleam", 1.0)],
         )
         lib = preview["tree"][0]
         self.assertEqual((lib["name"], lib["changed"]), ("lib", 1))
@@ -226,9 +234,11 @@ class FoldersTest(unittest.TestCase):
 
         # A bookmark that moved on without @ still names @'s line of work,
         # rather than an older backup behind @.
-        log = lambda rev: sh(
-            repo, "jj", "log", "-r", rev, "--no-graph", "-T", "change_id"
-        ).strip()
+        def log(rev):
+            return sh(
+                repo, "jj", "log", "-r", rev, "--no-graph", "-T", "change_id"
+            ).strip()
+
         two, one = log("@-"), log("@--")
         sh(repo, "jj", "bookmark", "create", "backup/old", "-r", one)
         sh(repo, "jj", "new", two, "-m", "side")

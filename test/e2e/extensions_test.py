@@ -1,7 +1,6 @@
 """Extension catalog, commands, live reload, and compaction through a real daemon."""
 
 import json
-import os
 import threading
 import time
 import unittest

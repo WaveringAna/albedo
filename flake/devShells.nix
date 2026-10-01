@@ -16,6 +16,7 @@ _: {
           python3
           pre-commit
           ruff
+          ty
           cargo
           rustc
         ])

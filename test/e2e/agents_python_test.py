@@ -184,7 +184,9 @@ class AgentsPythonTests(unittest.TestCase):
                 )
                 self.assertIn("TASK_SEEN True", read)
                 self.assertRegex(read, r"FOUND [1-9]\d* True True")
-                kid = re.search(r"KID=([0-9a-f]+)", spawned).group(1)
+                match = re.search(r"KID=([0-9a-f]+)", spawned)
+                assert match is not None
+                kid = match.group(1)
                 outsider = app.session()
                 app.prompt(outsider, f"peek {kid}").close()
                 peeked = wait_for(

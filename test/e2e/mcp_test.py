@@ -1,5 +1,6 @@
 """MCP stdio discovery, credentials, namespaced calls, and teardown through the daemon."""
 
+from typing import Any
 import json
 import sys
 import time
@@ -52,7 +53,7 @@ class McpTests(unittest.TestCase):
 
     def configure(self, app, args, startup=20000):
         path = app.home / "extensions.json"
-        settings = (
+        settings: dict[str, Any] = (
             json.loads(path.read_text())
             if path.exists()
             else {"models": {"refreshHours": 0}}

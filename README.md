@@ -82,15 +82,20 @@ formatting
 ```sh
 nix fmt                         # treefmt: Nix, Gleam, Go, Python, and shell files
 pre-commit install              # once per checkout; available in `nix develop`
-pre-commit run --all-files      # run the Gleam and Python hooks
+pre-commit run --all-files       # format, lint Python, and type-check Python
 gleam format src test           # fix Gleam formatting
 ruff format priv/python test    # fix Python formatting
+ruff check                      # lint Python
+ty check                        # type-check the kernel, plugins, and tests
 ```
 
-The commit hook formats staged Gleam and Python files (and asks you to re-stage
-any changes). It requires `gleam` on PATH; pre-commit installs the pinned Ruff
-hook in its own environment. Treefmt uses the Gleam and Ruff versions from
-nixpkgs; the pre-commit Ruff hook remains pinned separately.
+The commit hook formats staged Gleam and Python files, checks Python lint, and
+runs ty across the Python kernel and tests. Re-stage any formatting changes.
+It requires `gleam` on PATH; pre-commit installs pinned Ruff and ty versions in
+its own environments. Treefmt formats Python and applies Ruff lint fixes.
+Nix supplies the development tools; hook versions are pinned separately.
+`./test.sh` runs Ruff lint, Ruff formatting checks, and ty before the build and
+test suites. Python check settings live in `pyproject.toml`.
 
 tests
 

@@ -3,7 +3,12 @@
 Usage: python3 test/manual/nix_package_smoke.py /absolute/path/to/bin/albedo
 """
 
-import json, os, pathlib, subprocess, sys, tempfile, urllib.request
+import json
+import pathlib
+import subprocess
+import sys
+import tempfile
+import urllib.request
 
 binary = sys.argv[1]
 with tempfile.TemporaryDirectory(prefix="albedo-nix-smoke-") as directory:

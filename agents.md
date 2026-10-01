@@ -8,7 +8,7 @@ In a checkout the CLI starts the daemon with `gleam run` (entry: `src/albedo.gle
 
 The package manager is gleam. Please when you want to add a package, which is never unless told to, do `gleam add ...` (dev deps: `gleam add --dev ...`), please do not try to edit `manifest.toml` yourself. Gleam generates it.
 
-PLEASE USE `gleam check` to type check and `gleam format src test` to format Gleam. Python is formatted with `ruff format priv/python test`. `nix develop` puts ruff on PATH; outside it, install the version `.pre-commit-config.yaml` pins with `uv tool install ruff==0.13.3` (or run it once with `uvx ruff@0.13.3 format priv/python test`), since the hook's own copy lives inside pre-commit's cache and is not on PATH. `pre-commit run --all-files` formats the whole repository, and the commit hook re-formats staged Gleam and Python files.
+PLEASE USE `gleam check` to type check and `gleam format src test` to format Gleam. Python is formatted with `ruff format priv/python test`, linted with `ruff check`, and type-checked with `ty check`. Both checks cover `priv/python` and all Python files in `test`, including manual tools; settings live in `pyproject.toml`. `nix develop` puts Ruff and ty on PATH. Outside it, use `uvx ruff@0.15.14 check` and `uvx ty@0.0.84 check`, matching the pre-commit pins. `pre-commit run --all-files` formats Gleam and Python, checks Python lint, and runs ty across the project. The commit hook formats staged files and runs both Python checks. `nix fmt` also applies Ruff lint fixes.
 
 For Go changes, run gopls with `staticcheck` and all available analyses enabled, alongside vet and tests. Fix diagnostics by simplifying the code, without adding wrappers or obscuring control flow.
 
@@ -21,7 +21,7 @@ Anything that opens a browser must set `ALBEDO_NO_BROWSER=1`; `test.sh` exports 
 
 ### Test layout and the build lock
 
-`./test.sh` is the gate. The quick checks run first, in order (format check, cargo test + renderer install, Go vet, the CLI build the Python e2e suite drives); then it compiles the daemon once and runs every suite at the same time (`gleam test`, each `test/harness/*_test.py`, Go unit tests, the Go e2e suite, the Python e2e suite), each into its own log, printed only when that suite fails.
+`./test.sh` is the gate. The quick checks run first, in order (Ruff lint and format checks, ty, Gleam format check, cargo test + renderer install, Go vet, the CLI build the Python e2e suite drives); then it compiles the daemon once and runs every suite at the same time (`gleam test`, each `test/harness/*_test.py`, Go unit tests, the Go e2e suite, the Python e2e suite), each into its own log, printed only when that suite fails.
 
 The e2e suites compile the daemon once per run with `test/snapshot-daemon.sh` (test.sh does it once for both and passes `ALBEDO_TEST_DAEMON`) and boot every test daemon from that copy through `ALBEDO_DAEMON`, never through `gleam run`, so their daemons neither queue on gleam's build lock nor see a rebuild mid-run. The one compile still takes the lock, which `gleam test` holds for its whole run: an e2e suite started from inside `gleam test` deadlocks, and one started beside it waits for it to finish. The Python e2e suite drives the prebuilt `cli/bin/albedo` binary; the Go e2e suite builds its own CLI and runs with `-count=1`, because it boots a hermetic daemon and must never reuse a cached run or a stale binary.
 

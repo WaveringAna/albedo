@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import cast
 import asyncio
 import os
 import sys
@@ -54,11 +56,14 @@ def start(command: str, timeout: float = 300):
 def quick(term: float = 0.01, kill: float = 0.02):
     """Patch the ladder windows so a refusing group is tested without real waiting."""
     real = albedo_proc.terminate
+    quick_term, quick_kill = term, kill
 
-    async def patched(groups, _term=0.0, _kill=0.0):
-        return await real(groups, term, kill)
+    async def patched(
+        groups: Sequence[albedo_proc.Group], term: float = 0.0, kill: float = 0.0
+    ) -> list[albedo_proc.Termination]:
+        return await real(groups, quick_term, quick_kill)
 
-    albedo_proc.terminate = patched
+    setattr(albedo_proc, "terminate", patched)
     return real
 
 
@@ -135,8 +140,12 @@ class SupervisionTest(unittest.TestCase):
             plugin.SHUTDOWN_KILL,
             quick(),
         )
-        albedo_proc.alive = lambda group: True
-        albedo_proc.current = lambda group: True
+
+        def still_alive(group: albedo_proc.Group) -> bool:
+            return True
+
+        setattr(albedo_proc, "alive", still_alive)
+        setattr(albedo_proc, "current", still_alive)
         plugin.SHUTDOWN_TERM, plugin.SHUTDOWN_KILL = 0.01, 0.02
         try:
             job = start("true")
@@ -157,7 +166,10 @@ class SupervisionTest(unittest.TestCase):
         cleanup = [event for event in EVENTS if event.get("type") == "cleanup"]
         self.assertEqual(len(cleanup), 1)
         self.assertTrue(
-            any("SURVIVED" in failure for failure in cleanup[0]["failures"])
+            any(
+                "SURVIVED" in failure
+                for failure in cast(list[str], cleanup[0]["failures"])
+            )
         )
 
     def test_ladder_reports_gone_and_refuses_reuse(self):
@@ -263,7 +275,7 @@ class SupervisionTest(unittest.TestCase):
         self.assertIn(job.id, plugin.active)
         self.assertTrue(run(job.stop()).gone)
         self.assertNotIn(job.id, plugin.active)
-        self.assertTrue(EVENTS[-1]["cleanup"]["gone"])
+        self.assertTrue(cast(dict[str, object], EVENTS[-1]["cleanup"])["gone"])
 
     def test_helper_watchdog_terminates_native_code_even_if_alarm_was_ignored(self):
         import signal

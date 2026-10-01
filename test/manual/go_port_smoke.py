@@ -79,7 +79,7 @@ class StrictMockDaemon:
         parent = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *_):
+            def log_message(self, format, *args):
                 pass
 
             def check_auth(self):
@@ -553,6 +553,7 @@ def test_noninteractive(binary, out_dir):
             [str(binary), "daemon"], env=env, capture_output=True, text=True, timeout=10
         )
         assert p.returncode == 0, f"daemon error: {p.stderr}"
+        assert mock.server is not None
         assert f"127.0.0.1:{mock.server.server_port}" in p.stdout
         print("  [PASS] albedo daemon")
 
@@ -604,16 +605,18 @@ def test_pty_resume(binary, out_dir):
             )
 
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
-        assert any("streaming benchmark test turn" in l for l in lines), (
+        assert any("streaming benchmark test turn" in line for line in lines), (
             "User prompt not rendered"
         )
-        assert any("gpt-4o" in l for l in lines), "Status footer model not rendered"
-        assert any(COMPLETION_TOKEN in l for l in lines), (
+        assert any("gpt-4o" in line for line in lines), (
+            "Status footer model not rendered"
+        )
+        assert any(COMPLETION_TOKEN in line for line in lines), (
             "Completion token not rendered in viewport"
         )
 
         print(
-            f"  [PASS] Rendered transcript, model status, and exit code 0. Terminal restored."
+            "  [PASS] Rendered transcript, model status, and exit code 0. Terminal restored."
         )
     finally:
         mock.stop()
@@ -634,7 +637,7 @@ def test_pty_session_picker(binary, out_dir):
         assert code == 0, f"Expected clean exit 0, got {code}"
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
         has_picker = any(
-            "sessions" in l or "Albedo Refactor Session" in l for l in lines
+            "sessions" in line or "Albedo Refactor Session" in line for line in lines
         )
         assert has_picker, f"Session picker not rendered. Output: {cleaned}"
         print(f"  [PASS] Session Picker rendered cleanly. Code: {code}")
@@ -656,7 +659,7 @@ def test_pty_unconfigured_login(binary, out_dir):
 
         assert code == 0, f"Expected clean exit 0, got {code}"
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
-        has_login = any("login" in l or "provider" in l for l in lines)
+        has_login = any("login" in line or "provider" in line for line in lines)
         assert has_login, f"Login screen not rendered. Output: {cleaned}"
         print(f"  [PASS] Login screen rendered cleanly. Code: {code}")
     finally:
@@ -684,14 +687,14 @@ def test_pty_standalone_login_cancel(binary, out_dir):
             f"Expected clean exit 0 on standalone login cancel, got {code}"
         )
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
-        assert any("login" in l for l in lines), "Login view not rendered"
+        assert any("login" in line for line in lines), "Login view not rendered"
         # Must not enter session picker or chat
-        assert not any("albedo  sessions" in l for l in lines), (
+        assert not any("albedo  sessions" in line for line in lines), (
             "Standalone login cancel opened session picker!"
         )
-        assert not any("type a message" in l or "› type" in l for l in lines), (
-            "Standalone login cancel opened chat!"
-        )
+        assert not any(
+            "type a message" in line or "› type" in line for line in lines
+        ), "Standalone login cancel opened chat!"
         print("  [PASS] Standalone login cancel exited cleanly to shell (code 0)")
     finally:
         mock.stop()
@@ -704,6 +707,7 @@ def test_pty_standalone_login_save_flow(binary, out_dir):
     mock = StrictMockDaemon(home, configured=False)
     mock.start()
 
+    assert mock.server is not None
     # Pre-populate an inactive provider in config.json
     cfg = {
         "providers": {
@@ -735,10 +739,10 @@ def test_pty_standalone_login_save_flow(binary, out_dir):
 
         # Verify it did not launch chat or session picker
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
-        assert not any("albedo  sessions" in l for l in lines), (
+        assert not any("albedo  sessions" in line for line in lines), (
             "Standalone login save opened session picker!"
         )
-        assert not any("type a message" in l for l in lines), (
+        assert not any("type a message" in line for line in lines), (
             "Standalone login save opened chat!"
         )
         print(
@@ -768,10 +772,11 @@ def test_pty_tiny_terminal(binary, out_dir):
                 f"Line exceeded tiny terminal width 40: {len(line)} chars: {line!r}"
             )
 
-        nonempty = [l.strip() for l in lines if l.strip()]
+        nonempty = [line.strip() for line in lines if line.strip()]
         assert len(nonempty) > 0, "No content rendered in tiny terminal"
         assert any(
-            "gpt-4o" in l or "reasoning" in l or "streaming" in l for l in nonempty
+            "gpt-4o" in line or "reasoning" in line or "streaming" in line
+            for line in nonempty
         ), "No expected session content in tiny view"
         print(
             f"  [PASS] Tiny terminal (40x10) respected max column bounds on all {len(lines)} lines without panic. Code: {code}"

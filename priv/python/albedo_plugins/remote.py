@@ -613,8 +613,9 @@ class RemoteConnection:
                 json.dumps(modules if modules is not None else default_modules())
             )
         )
-        if self.target.get("remote_cwd"):
-            inner = f"cd {shlex.quote(self.target['remote_cwd'])} && {inner}"
+        remote_cwd = self.target.get("remote_cwd")
+        if remote_cwd:
+            inner = f"cd {shlex.quote(remote_cwd)} && {inner}"
         script = in_login_shell(inner)
         self._handshake = loop.create_future()
         self._process = await asyncio.create_subprocess_exec(

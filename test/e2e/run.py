@@ -28,6 +28,7 @@ DURATIONS = scratch.ROOT / "e2e-durations.json"
 
 def suite_for(path, test_name=None):
     spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     loader = unittest.defaultTestLoader
@@ -62,7 +63,9 @@ def execute(test, daemon):
         # the tests that ran alongside this one.
         with log.open("rb") as daemon_log:
             daemon_log.seek(offset)
-            result.daemon_log = daemon_log.read()[-8000:].decode(errors="replace")
+            setattr(
+                result, "daemon_log", daemon_log.read()[-8000:].decode(errors="replace")
+            )
     return test, result, duration
 
 

@@ -33,6 +33,8 @@ Example::
 
 from __future__ import annotations
 
+from typing import Any
+
 import atexit
 import contextlib
 from dataclasses import dataclass, field
@@ -76,7 +78,7 @@ class Reply:
     value: str = ""
     status: int = 200
     reasoning: str | None = None
-    usage: dict = field(
+    usage: dict | None = field(
         default_factory=lambda: {"input_tokens": 10, "output_tokens": 20}
     )
     delay: float = 0
@@ -147,7 +149,7 @@ def _provider_server():
     if _server is None:
 
         class Handler(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *_args):
+            def log_message(self, format, *args):
                 pass
 
             def do_GET(self):
@@ -253,20 +255,16 @@ class Provider:
                     )
                 if reply.kind == "python":
                     for offset in range(0, len(arguments), owner.chunk_size):
-                        delta = {
-                            "tool_calls": [
-                                {
-                                    "index": 0,
-                                    "function": {
-                                        "arguments": arguments[
-                                            offset : offset + owner.chunk_size
-                                        ]
-                                    },
-                                }
-                            ]
+                        tool_call: dict[str, object] = {
+                            "index": 0,
+                            "function": {
+                                "arguments": arguments[
+                                    offset : offset + owner.chunk_size
+                                ]
+                            },
                         }
                         if offset == 0:
-                            delta["tool_calls"][0].update(
+                            tool_call.update(
                                 {
                                     "id": call_id,
                                     "type": "function",
@@ -276,6 +274,7 @@ class Provider:
                                     },
                                 }
                             )
+                        delta = {"tool_calls": [tool_call]}
                         emit(
                             {
                                 "id": "fixture",
@@ -540,6 +539,7 @@ class Daemon:
         global restart_seconds
         started = time.monotonic()
         if crash:
+            assert self._pid is not None
             os.kill(self._pid, signal.SIGKILL)
         elif not self._stop(timeout=15):
             self._fail("daemon did not stop")
@@ -573,6 +573,7 @@ class Daemon:
                     self.base = f"http://127.0.0.1:{self.connection['port']}"
                     self._pid = self.connection["pid"]
                 if not self._stop(timeout=10):
+                    assert self._pid is not None
                     os.kill(self._pid, signal.SIGKILL)
                 self._pid = None
             shutil.rmtree(self.root, ignore_errors=True)
@@ -603,6 +604,7 @@ class Daemon:
 
     def _connection(self):
         connection = getattr(self._local, "connection", None)
+        assert self.connection is not None
         port, token = self.connection["port"], self.connection["token"]
         # A restarted daemon has a new token and may be back on the same port.
         if connection is None or connection.token != token or not connection.idle():
@@ -620,6 +622,7 @@ class Daemon:
         socket per request, polled at test speed, leaves thousands of ports in
         TIME_WAIT; the host runs out and unrelated connections fail."""
         connection = self._connection()
+        assert self.connection is not None
         connection.used_at = time.monotonic()
         payload = None if body is None else json.dumps(body).encode()
         try:
@@ -799,7 +802,7 @@ class Albedo:
             default_name = (
                 f"fixture-{self.provider.route}" if self._concurrent else "fixture"
             )
-            configured = (
+            configured: dict[str, Any] = (
                 self.providers
                 if self.providers is not None
                 else {
@@ -813,7 +816,7 @@ class Albedo:
             )
             self.profile = next(iter(configured), None)
             if configured:
-                current = (
+                current: dict[str, Any] = (
                     json.loads((self.home / "config.json").read_text())
                     if self._concurrent and (self.home / "config.json").exists()
                     else {"providers": {}}

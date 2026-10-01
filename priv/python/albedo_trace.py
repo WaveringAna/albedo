@@ -6,7 +6,7 @@ This is observation, not a sandbox. External processes and native writes may byp
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from typing import Protocol
+from typing import Protocol, cast
 import albedo_shell
 import contextlib
 import contextvars
@@ -149,7 +149,11 @@ class TracedCapture(Protocol):
     trace: Trace
 
 
-current: Callable[[], TracedCapture | None] = lambda: None
+def _no_capture() -> None:
+    return None
+
+
+current: Callable[[], TracedCapture | None] = _no_capture
 
 
 def note(kind: str, target: str) -> None:
@@ -185,11 +189,12 @@ def install(get_capture: Callable[[], TracedCapture | None]) -> None:
                     capture.trace.activity("read", path)
             elif event in ("os.rename", "os.replace") and len(args) >= 2:
                 source, destination = (
-                    os.path.abspath(os.fsdecode(path)) for path in args[:2]
+                    os.path.abspath(os.fsdecode(cast(str | bytes, path)))
+                    for path in args[:2]
                 )
                 capture.trace.renamed(source, destination)
             elif event in ("os.listdir", "os.scandir"):
-                path = os.fsdecode(args[0]) if args else "."
+                path = os.fsdecode(cast(str | bytes, args[0])) if args else "."
                 if path != "/proc" and not path.startswith("/proc/"):
                     capture.trace.activity("list", path)
             elif event == "subprocess.Popen":

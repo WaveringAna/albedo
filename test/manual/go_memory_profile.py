@@ -156,7 +156,7 @@ def generate_markdown_report(
         f"**memory_profile_test.go SHA-256:** `{env_info.get('memory_profile_test_go_sha256', 'unknown')}`  "
     )
     md.append(
-        f"**Methodology Note:** Instrumented test-runner harness approximation. All measurements are empirical from identical execution phases."
+        "**Methodology Note:** Instrumented test-runner harness approximation. All measurements are empirical from identical execution phases."
     )
     md.append("")
     md.append("---")

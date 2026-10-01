@@ -93,18 +93,18 @@ class Search(Generic[Result]):
     def __await__(self) -> Generator[object, None, Result]:
         return self._run().__await__()
 
-    def __getitem__(self, index: object) -> "Search[Result]":
+    def __getitem__(self: Search[Rows], index: int | slice) -> Search[object]:
         """`await files.find(...)[:10]` slices before it awaits; apply the
         slice to the rows instead of failing on precedence."""
 
         async def run() -> object:
             rows = await self._run()
-            picked = rows[index]  # type: ignore[index]
+            picked = rows[index]
             if isinstance(rows, Rows) and isinstance(index, slice):
                 return Rows(picked, truncated=rows.truncated)
             return picked
 
-        return Search(self._call, run, self._result)  # type: ignore[arg-type]
+        return Search(self._call, run, self._result)
 
     def _unawaited(self) -> TypeError:
         return TypeError(

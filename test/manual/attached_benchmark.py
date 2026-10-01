@@ -11,7 +11,6 @@ from pathlib import Path
 import pty
 import selectors
 import signal
-import statistics
 import struct
 import subprocess
 import termios

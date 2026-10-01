@@ -1,23 +1,14 @@
 """Semantic observations and deliberately explicit actions, on a live CDP page."""
 
 from __future__ import annotations
+
+from typing import SupportsIndex
 from collections.abc import Callable
-
-_attach_image: Callable[[bytes], str] | None = None
-
-
-def register_attach_image(callback: Callable[[bytes], str] | None) -> None:
-    global _attach_image
-    _attach_image = callback
-
-
-"""Semantic observations and deliberately explicit actions, on a live CDP page."""
 
 import asyncio
 import base64
 import contextlib
 import copy
-import json
 import math
 import time
 import uuid
@@ -33,7 +24,6 @@ from .errors import (
     ActionOutcomeUnknown,
     BrowserError,
     ConnectionLost,
-    IncompleteObservation,
     JavaScriptError,
     NotActionable,
     ProtocolError,
@@ -59,6 +49,14 @@ from .recovery import PageCDPSession
 if TYPE_CHECKING:
     from .session import Browser
 from .transport import CDPSession, JSON, positive
+
+
+_attach_image: Callable[[bytes], str] | None = None
+
+
+def register_attach_image(callback: Callable[[bytes], str] | None) -> None:
+    global _attach_image
+    _attach_image = callback
 
 
 def now() -> str:
@@ -106,12 +104,14 @@ class Page:
         self._closed = False
         self._main_frame = ""
         self.last_action: JSON | None = None
-        self._frame_sessions: dict[str, str] = {}
+        self._frame_sessions: dict[str, str | None] = {}
         self._frame_info: dict[str, JSON] = {}
 
     async def _initialize(self) -> None:
-        await self._init_session(self._sessions[self.cdp.session_id])
-        self._main_frame = self._sessions[self.cdp.session_id].root_frame
+        session_id = self.cdp.session_id
+        assert session_id is not None
+        await self._init_session(self._sessions[session_id])
+        self._main_frame = self._sessions[session_id].root_frame
 
     async def _init_session(self, state: _Session) -> None:
         try:
@@ -441,7 +441,7 @@ class Page:
                 break
             await asyncio.gather(*tasks)
         frames: dict[str, JSON] = {}
-        routes: dict[str, str] = {}
+        routes: dict[str, str | None] = {}
         # Root target first; an OOPIF's own session takes precedence over its placeholder.
         states = sorted(
             self._sessions.values(),
@@ -619,7 +619,7 @@ class Page:
                     if isinstance(row["value"], str) and len(row["value"]) > max_text:
                         row["value"] = row["value"][:max_text]
                         warnings.append({"kind": "value_truncated", "node": row_id})
-                if ref:
+                if ref and backend is not None:
                     refs[ref] = _Reference(
                         sid, frame["id"], generation, backend, role, name, dict(attrs)
                     )
@@ -1051,7 +1051,7 @@ class Page:
                                 arguments=[{"objectId": obj}],
                             )
                         )
-                    except (JavaScriptError, ProtocolError):
+                    except JavaScriptError, ProtocolError:
                         pass
                     finally:
                         await state.cdp.send("Runtime.releaseObject", {"objectId": obj})
@@ -1367,7 +1367,7 @@ class Page:
         await self._stop_tasks()
         self.browser._pages.pop(self.target_id, None)
 
-    def __reduce_ex__(self, protocol: int) -> Any:
+    def __reduce_ex__(self, protocol: SupportsIndex, /) -> Any:
         raise TypeError(
             "Live pages cannot be saved; save page.descriptor() and ordinary observations."
         )

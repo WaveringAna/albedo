@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import SupportsIndex
+
 import asyncio
 import os
 from pathlib import Path
@@ -44,13 +46,13 @@ class Browser:
 
     def _on_event(self, method: str, params: JSON, session_id: str | None) -> None:
         page = self._routes.get(session_id)
-        if page is not None:
+        if page is not None and session_id is not None:
             page._on_event(method, params, session_id)
         if method == "Target.detachedFromTarget":
             sid = params.get("sessionId")
             self._connection.detach_session(sid)
             owner = self._routes.get(sid)
-            if owner is not None:
+            if owner is not None and isinstance(sid, str):
                 owner._detached(sid)
                 self._routes.pop(sid, None)
         if method == "Target.targetDestroyed":
@@ -234,7 +236,7 @@ class Browser:
     async def __aexit__(self, *exc: Any) -> None:
         await self.close()
 
-    def __reduce_ex__(self, protocol: int) -> Any:
+    def __reduce_ex__(self, protocol: SupportsIndex, /) -> Any:
         raise TypeError(
             "Live browsers cannot be saved; save endpoint and page.descriptor()."
         )

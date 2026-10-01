@@ -14,6 +14,7 @@ fixture provider serves the remote table on a loopback URL and the test waits
 for it to land; `/reload` fetches it synchronously. No live network is reached.
 """
 
+from typing import Any
 import json
 import os
 import time
@@ -37,7 +38,7 @@ MODELS_CATALOG = {
     }
 }
 
-REMOTE_TABLE = {
+REMOTE_TABLE: dict[str, Any] = {
     "version": 1,
     "entries": [
         # Replaces the shipped deepseek entry by id, in place.
@@ -63,7 +64,7 @@ REMOTE_TABLE = {
     ],
 }
 
-LOCAL_OVERRIDE = {
+LOCAL_OVERRIDE: dict[str, Any] = {
     "version": 1,
     "entries": [
         # Replaces the remote or default deepseek entry by id, in place.

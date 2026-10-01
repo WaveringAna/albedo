@@ -22,7 +22,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import time
 
 DEFAULT_GO_BIN = "/nix/store/ynhaddwnkhvlr6qn7scbrj1515k52gnw-go-1.26.7/bin/go"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -382,13 +381,13 @@ def generate_report(
             f"- **Sink Destination:** `{profile.get('sink_name', 'unknown')}` (Terminal/PTY: `{profile.get('is_terminal', False)}`, fd `{profile.get('sink_fd', -1)}`)."
         )
         md.append(
-            f"- **Sink Classification Note:** Sink is an OS kernel pipe (`os.Pipe`), NOT a pseudo-terminal (PTY) device."
+            "- **Sink Classification Note:** Sink is an OS kernel pipe (`os.Pipe`), NOT a pseudo-terminal (PTY) device."
         )
         md.append(
-            f"- **Bubble Tea Framerate Cap:** `120 FPS` (`maxFPS = 120` in `github.com/charmbracelet/bubbletea@v1.3.4`)."
+            "- **Bubble Tea Framerate Cap:** `120 FPS` (`maxFPS = 120` in `github.com/charmbracelet/bubbletea@v1.3.4`)."
         )
         md.append(
-            f"- **Bubble Tea Launcher Option:** `tea.WithFPS(120)` sets internal render ticker interval to `8.333ms`."
+            "- **Bubble Tea Launcher Option:** `tea.WithFPS(120)` sets internal render ticker interval to `8.333ms`."
         )
         md.append(
             f"- **Dispatched Input Events:** `{profile.get('events_dispatched', 0)}` key scroll events over `{profile.get('elapsed_seconds', 0):.2f}s` (`{profile.get('dispatch_rate_hz', 0):.1f} Hz` input rate)."
@@ -397,7 +396,7 @@ def generate_report(
             f"- **Raw Kernel write() Syscalls:** `{write_calls}` write calls (`{call_rate:.1f}` calls/sec)."
         )
         md.append(
-            f"  * *Accounting Note:* Raw write count includes startup ANSI sequences (alt screen, cursor, bracketed paste), frame diff flushes, and shutdown sequences. It is an I/O syscall count, NOT a display frame rate."
+            "  * *Accounting Note:* Raw write count includes startup ANSI sequences (alt screen, cursor, bracketed paste), frame diff flushes, and shutdown sequences. It is an I/O syscall count, NOT a display frame rate."
         )
         md.append(
             f"- **Total Bytes Written:** `{profile.get('total_bytes_emitted', 0):,}` bytes (`{format_bytes(profile.get('total_bytes_emitted', 0))}`)."

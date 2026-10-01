@@ -7,6 +7,19 @@ repos:
         language: system
         files: ^(src|test)/.*\.gleam$
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.13.3
+    rev: v0.15.14
     hooks:
+      - id: ruff-check
+        pass_filenames: false
+        files: ^((priv/python|test)/.*\.py$|pyproject\.toml$)
       - id: ruff-format
+        files: ^(priv/python|test)/.*\.py$
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty check
+        entry: ty check
+        language: python
+        additional_dependencies: [ty==0.0.84]
+        pass_filenames: false
+        files: ^((priv/python|test)/.*\.py$|pyproject\.toml$)

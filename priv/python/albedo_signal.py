@@ -78,7 +78,8 @@ def main(request: str) -> int:
         answer: dict[str, object] = {"ok": True, **supervise(json.loads(request))}
         status = 0
     except Exception as error:
-        answer, status = {"ok": False, "error": f"{type(error).__name__}: {error}"}, 2
+        answer = {"ok": False, "error": f"{type(error).__name__}: {error}"}
+        status = 2
     print(json.dumps(answer))
     return status
 

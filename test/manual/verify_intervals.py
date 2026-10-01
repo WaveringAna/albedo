@@ -7,6 +7,7 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location(
     "candidate", Path(sys.argv.pop(1)) / "interval_set.py"
 )
+assert spec is not None and spec.loader is not None
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 

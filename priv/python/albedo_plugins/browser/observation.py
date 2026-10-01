@@ -170,7 +170,10 @@ def render(observation: Observation, *, max_chars: int = 8000) -> str:
     """Bounded, escaped text view. The input observation is never changed."""
     if max_chars < 128:
         raise ValueError("max_chars must be at least 128")
-    quote = lambda value: json.dumps(value, ensure_ascii=False)
+
+    def quote(value: Any) -> str:
+        return json.dumps(value, ensure_ascii=False)
+
     lines = [f"Snapshot {observation['snapshot_id']} | {quote(observation['url'])}"]
     if not observation["coverage"].get("complete"):
         lines.append(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import SupportsIndex
+
 import asyncio
 import base64
 import copy
@@ -168,7 +170,6 @@ class SimpleWebSocketClient:
 
     async def recv_message(self) -> str:
         fragments: list[bytes] = []
-        msg_opcode: int | None = None
         total_len = 0
 
         while True:
@@ -251,7 +252,6 @@ class SimpleWebSocketClient:
             elif opcode == 0xA:  # PONG
                 continue
             elif opcode in (0x1, 0x2):  # TEXT or BINARY
-                msg_opcode = opcode
                 fragments.append(payload)
                 if fin:
                     break
@@ -390,7 +390,7 @@ class Subscription:
                 result.append(params)
         return result
 
-    def __reduce_ex__(self, protocol: int) -> Any:
+    def __reduce_ex__(self, protocol: SupportsIndex, /) -> Any:
         raise TypeError(
             "Live event subscriptions cannot be saved; drain them to ordinary data."
         )
@@ -609,7 +609,7 @@ class Connection:
             self._reader.cancel()
             await asyncio.gather(self._reader, return_exceptions=True)
 
-    def __reduce_ex__(self, protocol: int) -> Any:
+    def __reduce_ex__(self, protocol: SupportsIndex, /) -> Any:
         raise TypeError(
             "A live CDP connection cannot be saved; save a reconnect descriptor."
         )

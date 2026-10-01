@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import http.client
 import http.server
+from collections.abc import Callable
 import json
 import resource
 import socket
@@ -20,7 +21,7 @@ CONNECTIONS = 300
 @dataclass
 class HeldCatalog:
     url: str
-    release: callable
+    release: Callable[[], None]
 
 
 def held_catalog():
@@ -28,7 +29,7 @@ def held_catalog():
     released = threading.Event()
 
     class Handler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, *_args):
+        def log_message(self, format, *args):
             pass
 
         def do_GET(self):
@@ -352,10 +353,12 @@ class DaemonTest(unittest.TestCase):
         # summarized thinking streams once it is written: here the response
         # opens, thinks 0.6s, and its summary comes 0.3s before the answer,
         # so the thought is timed from the opening, not the summary
-        chunk = lambda delta, finish=None: {
-            "id": "fixture",
-            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
-        }
+        def chunk(delta, finish=None):
+            return {
+                "id": "fixture",
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+            }
+
         reply = Reply(
             "text",
             delay=0.3,
