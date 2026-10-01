@@ -54,7 +54,8 @@ load_impl(Workspace0, Home0, Selection) ->
             false -> {error, <<"more than 128 instruction files were discovered">>};
             true ->
                 maybe
-                    {ok, Selected} ?= select_files(Files, Selection, []),
+                    {ok, Preferences} ?= load_preferences(Files, Selection),
+                    {ok, Selected} ?= select_files(Files, Preferences, []),
                     {ok, {Loaded, Warnings}} ?= read_all(Selected, [], [], ?MAX_FILE_BYTES),
                     {ok, {render(Loaded), Warnings}}
                 end
@@ -63,18 +64,18 @@ load_impl(Workspace0, Home0, Selection) ->
         _:_ -> {error, <<"instruction file discovery failed">>}
     end.
 
+load_preferences([], _) -> 'albedo@harness@capabilities':load(<<>>, none);
+load_preferences(_, undefined) -> 'albedo@harness@capabilities':load(<<>>, none);
+load_preferences(_, {Home, Session}) ->
+    SelectedSession = case Session of undefined -> none; _ -> {some, Session} end,
+    'albedo@harness@capabilities':load(Home, SelectedSession).
+
 select_files([], _, Selected) -> {ok, lists:reverse(Selected)};
-select_files([File = {Scope, Display, _} | Rest], Selection, Selected) ->
-    Enabled = case Selection of
-        undefined -> {ok, true};
-        {Home, Session} ->
-            Name = <<(atom_to_binary(Scope))/binary, ":", Display/binary>>,
-            SelectedSession = case Session of undefined -> none; _ -> {some, Session} end,
-            'albedo@harness@capabilities':optional(SelectedSession, Home, <<"instructions">>, Name)
-    end,
-    case Enabled of
-        {ok, true} -> select_files(Rest, Selection, [File | Selected]);
-        {ok, false} -> select_files(Rest, Selection, Selected);
+select_files([File = {Scope, Display, _} | Rest], Preferences, Selected) ->
+    Name = <<(atom_to_binary(Scope))/binary, ":", Display/binary>>,
+    case 'albedo@harness@capabilities':enabled(Preferences, <<"instructions">>, Name) of
+        {ok, true} -> select_files(Rest, Preferences, [File | Selected]);
+        {ok, false} -> select_files(Rest, Preferences, Selected);
         Error -> Error
     end.
 

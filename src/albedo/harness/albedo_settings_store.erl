@@ -8,6 +8,15 @@ with_lock(Home, Run) ->
     albedo_settings_lock:with_lock(Home, Run,
         fun() -> {error, <<"settings store is busy">>} end).
 
+read(Home, <<"capabilities.json">>) ->
+    case albedo_capabilities:read(Home) of
+        {ok, Bytes} ->
+            try json:decode(Bytes) of
+                Value when is_map(Value) -> Value;
+                _ -> throw({settings, <<"capabilities.json is not a readable JSON object">>})
+            catch _:_ -> throw({settings, <<"capabilities.json is not a readable JSON object">>}) end;
+        {error, Reason} -> throw({settings, Reason})
+    end;
 read(Home, File) ->
     Path = filename:join(Home, File),
     case file:read_file_info(Path) of
@@ -27,7 +36,12 @@ object(Key, Map) ->
     end.
 
 write(Home, File, Value) ->
-    case albedo_credentials:write(filename:join(Home, File), Value) of
+    Bytes = iolist_to_binary(json:encode(Value)),
+    case File =:= <<"capabilities.json">> andalso byte_size(Bytes) > albedo_capabilities:max_bytes() of
+        true -> throw({settings, <<"capabilities.json exceeds 1 MiB">>});
+        false -> ok
+    end,
+    case albedo_credentials:write(filename:join(Home, File), Bytes) of
         ok -> ok;
         _ -> throw({settings, <<"could not save ", File/binary>>})
     end.

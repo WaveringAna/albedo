@@ -327,6 +327,48 @@ class SettingsTest(unittest.TestCase):
             "/preference-demo", {item["name"] for item in self.request(commands_route)}
         )
 
+    def test_empty_capability_selections_ignore_malformed_preferences(self):
+        (self.app.home / "capabilities.json").write_text("invalid json")
+        self.request(
+            f"/sessions/{self.session}/extensions", {"name": "mcp", "enabled": True}
+        )
+        self.app.prompt(self.session, "empty selections remain usable").close()
+        self.app.idle(self.session)
+        self.assertEqual(
+            self.provider.requests[-1]["request"]["model"], "fixture-model"
+        )
+
+    def test_capability_size_limit_accepts_boundary_and_rejects_growth(self):
+        path = self.app.home / "capabilities.json"
+        limit = 1048576
+        for size in (limit - 1, limit):
+            document = {
+                "padding": "",
+                "global": {"instructions": {"project:AGENTS.md": False}},
+            }
+            overhead = len(json.dumps(document, separators=(",", ":")).encode())
+            document["padding"] = "a" * (size - overhead)
+            content = json.dumps(document, separators=(",", ":")).encode()
+            self.assertEqual(len(content), size)
+            path.write_bytes(content)
+            self.assertEqual(
+                self.snapshot()["capabilities"], {"global": document["global"]}
+            )
+            self.capability(scope="global", enabled=False)
+            self.assertEqual(path.stat().st_size, size)
+            with self.assertRaises(urllib.error.HTTPError) as failure:
+                self.capability(name="new-choice")
+            self.assertIn("exceeds 1 MiB", failure.exception.read().decode())
+            self.assertEqual(json.loads(path.read_bytes()), document)
+            self.assertLessEqual(path.stat().st_size, limit)
+        content += b" "
+        path.write_bytes(content)
+        with self.assertRaises(urllib.error.HTTPError):
+            self.snapshot()
+        with self.assertRaises(urllib.error.HTTPError):
+            self.capability()
+        self.assertEqual(path.read_bytes(), content)
+
     def test_mcp_save_delete_and_failed_connection_restore_settings_and_credentials(
         self,
     ):

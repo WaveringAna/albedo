@@ -14,6 +14,7 @@ import albedo/harness/extensions/skills/rpc
 import albedo/harness/settings
 import gleam/dict
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 
 pub fn extension() -> harness_extension.Extension {
@@ -29,11 +30,16 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
     [
       harness_extension.ManagedPlugin(fn(_, session, workspace) {
         use discovered <- result.try(catalog.scan_at(workspace, home))
+        use preferences <- result.try(
+          capabilities.load(settings.home(), case discovered.skills {
+            [] -> None
+            _ -> Some(session)
+          }),
+        )
         use names <- result.try(
           list.try_fold(discovered.skills, [], fn(acc, skill) {
             use enabled <- result.try(capabilities.enabled(
-              settings.home(),
-              session,
+              preferences,
               "skills",
               skill.name,
             ))
@@ -101,15 +107,4 @@ fn skill_command(
       }
     },
   )
-}
-
-/// Compatibility helpers for embedders and direct tests. Runtime sessions use the
-/// immutable snapshot prepared above rather than calling these again.
-pub fn discover_at(workspace: String, home: String) {
-  catalog.scan_at(workspace, home)
-  |> result.map(fn(snapshot) { #(snapshot.skills, snapshot.diagnostics) })
-}
-
-pub fn catalog_at(workspace: String, home: String) {
-  catalog.scan_at(workspace, home) |> result.map(catalog.context)
 }

@@ -15,7 +15,12 @@ prepare(ConfigJson, Session) ->
         Servers = maps:get(<<"servers">>, Config, #{}),
         true = is_map(Servers),
         SelectedSession = case Session of undefined -> none; _ -> {some, Session} end,
-        open_servers(lists:sort(maps:to_list(Servers)), [], SelectedSession)
+        Candidates = lists:sort(maps:to_list(Servers)),
+        Selection = case Candidates of [] -> none; _ -> SelectedSession end,
+        case 'albedo@harness@capabilities':load(albedo_extension_settings:home(), Selection) of
+            {ok, Preferences} -> open_servers(Candidates, [], Preferences);
+            Error -> Error
+        end
     catch
         _:_ -> {error, <<"MCP configuration is invalid">>}
     end.
@@ -26,16 +31,16 @@ open_servers([], Opened, _) ->
         {ok, Ops, Ctx} -> {ok, #{servers => Servers, operations => Ops, context => Ctx}};
         {error, Reason} -> close_servers(Servers), {error, Reason}
     end;
-open_servers([{Name, Config} | Rest], Opened, Session) ->
+open_servers([{Name, Config} | Rest], Opened, Preferences) ->
     case {maps:get(<<"enabled">>, Config, true),
-          'albedo@harness@capabilities':optional(Session, albedo_extension_settings:home(), <<"mcp">>, Name)} of
+          'albedo@harness@capabilities':enabled(Preferences, <<"mcp">>, Name)} of
         {true, {ok, true}} ->
             case open_server(Name, Config) of
-                {ok, Server} -> open_servers(Rest, [Server | Opened], Session);
+                {ok, Server} -> open_servers(Rest, [Server | Opened], Preferences);
                 {error, Reason} -> close_servers(Opened), {error, Reason}
             end;
-        {false, _} -> open_servers(Rest, Opened, Session);
-        {_, {ok, false}} -> open_servers(Rest, Opened, Session);
+        {false, _} -> open_servers(Rest, Opened, Preferences);
+        {_, {ok, false}} -> open_servers(Rest, Opened, Preferences);
         {_, {error, Reason}} -> close_servers(Opened), {error, Reason}
     end.
 

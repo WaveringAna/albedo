@@ -8,28 +8,38 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 
-/// Read one choice. Unspecified capabilities are enabled.
-pub fn enabled(
-  home: String,
-  session: String,
-  kind: String,
-  name: String,
-) -> Result(Bool, String) {
-  use bytes <- result.try(read(home))
-  json.parse_bits(bytes, selected_decoder(session, kind, name))
-  |> result.replace_error("invalid capabilities.json")
+pub opaque type Preferences {
+  Unscoped
+  Scoped(session: String, config: Dynamic)
 }
 
-/// Unscoped discovery does not apply a session's preferences.
-pub fn optional(
-  session: Option(String),
+/// Load one immutable snapshot for a selection operation.
+pub fn load(
   home: String,
+  session: Option(String),
+) -> Result(Preferences, String) {
+  case session {
+    None -> Ok(Unscoped)
+    Some(session) -> {
+      use bytes <- result.try(read(home))
+      json.parse_bits(bytes, decode.dynamic)
+      |> result.replace_error("invalid capabilities.json")
+      |> result.map(fn(config) { Scoped(session, config) })
+    }
+  }
+}
+
+/// Unspecified capabilities are enabled.
+pub fn enabled(
+  preferences: Preferences,
   kind: String,
   name: String,
 ) -> Result(Bool, String) {
-  case session {
-    None -> Ok(True)
-    Some(session) -> enabled(home, session, kind, name)
+  case preferences {
+    Unscoped -> Ok(True)
+    Scoped(session, config) ->
+      decode.run(config, selected_decoder(session, kind, name))
+      |> result.replace_error("invalid capabilities.json")
   }
 }
 
