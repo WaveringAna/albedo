@@ -40,6 +40,7 @@ class OwnerChannel:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            bufsize=0,
             cwd=self.workspace,
         )
         self.buffered = []
@@ -66,10 +67,20 @@ class OwnerChannel:
         assert self.process.stdout is not None
         if not select.select([self.process.stdout], [], [], 10)[0]:
             raise AssertionError("kernel did not send a frame within 10 seconds")
-        header = self.process.stdout.read(4)
+        header = self.read_exact(4)
         size = struct.unpack(">I", header)[0]
         assert size <= MAX_FRAME, "control frame exceeds the ceiling"
-        return json.loads(self.process.stdout.read(size))
+        return json.loads(self.read_exact(size))
+
+    def read_exact(self, size):
+        assert self.process.stdout is not None
+        data = bytearray()
+        while len(data) < size:
+            chunk = self.process.stdout.read(size - len(data))
+            if not chunk:
+                raise AssertionError("kernel closed the channel during a frame")
+            data.extend(chunk)
+        return bytes(data)
 
     def wait_for(self, predicate, timeout=10.0):
         deadline = time.monotonic() + timeout
