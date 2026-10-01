@@ -10,14 +10,14 @@ out="$1"
 (cd "$root" && gleam build) >&2
 mkdir -p "$out"
 for ebin in "$root"/build/dev/erlang/*/ebin; do
-	package="$(dirname "$ebin")"
-	name="$(basename "$package")"
-	mkdir -p "$out/$name"
-	cp -R "$ebin" "$out/$name/ebin"
-	# priv keeps pointing at the source tree, as under `gleam run`.
-	if [ -e "$package/priv" ]; then
-		ln -s "$(cd "$package/priv" && pwd -P)" "$out/$name/priv"
-	fi
+  package="$(dirname "$ebin")"
+  name="$(basename "$package")"
+  mkdir -p "$out/$name"
+  cp -R "$ebin" "$out/$name/ebin"
+  # priv keeps pointing at the source tree, as under `gleam run`.
+  if [ -e "$package/priv" ]; then
+    ln -s "$(cd "$package/priv" && pwd -P)" "$out/$name/priv"
+  fi
 done
 cat >"$out/albedo-daemon" <<EOF
 #!/bin/sh

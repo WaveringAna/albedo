@@ -28,19 +28,19 @@ export ALBEDO_TEST_DAEMON
 names=()
 pids=()
 log() {
-	echo "$scratch/${1//[\/ ]/-}.log"
+  echo "$scratch/${1//[\/ ]/-}.log"
 }
 suite() {
-	local name="$1"
-	shift
-	"$@" >"$(log "$name")" 2>&1 &
-	names+=("$name")
-	pids+=("$!")
+  local name="$1"
+  shift
+  "$@" >"$(log "$name")" 2>&1 &
+  names+=("$name")
+  pids+=("$!")
 }
 
 suite "gleam test" gleam test
 for test in test/harness/*_test.py; do
-	suite "$test" python3 "$test"
+  suite "$test" python3 "$test"
 done
 suite "go test" go -C cli test ./internal/... ./cmd/...
 # the Go e2e suite builds its own CLI and boots a hermetic daemon, so it must
@@ -50,12 +50,12 @@ suite "python e2e" python3 test/e2e/run.py
 
 failed=0
 for i in "${!pids[@]}"; do
-	if wait "${pids[$i]}"; then
-		echo "ok      ${names[$i]}"
-	else
-		failed=1
-		echo "FAILED  ${names[$i]}"
-		cat "$(log "${names[$i]}")"
-	fi
+  if wait "${pids[$i]}"; then
+    echo "ok      ${names[$i]}"
+  else
+    failed=1
+    echo "FAILED  ${names[$i]}"
+    cat "$(log "${names[$i]}")"
+  fi
 done
 exit "$failed"
