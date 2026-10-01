@@ -65,9 +65,18 @@ const reserved_commands = [
   "workspace",
 ]
 
-/// Explicit home makes tests and embedders independent of the daemon account.
-pub fn scan_at(workspace: String, home: String) -> Result(Catalog, String) {
-  use #(skills, diagnostics, _) <- result.try(native_catalog(workspace, home))
+/// Explicit home and built-in root make tests and embedders independent of the
+/// daemon account and install; an empty `builtin` ships no built-in skills.
+pub fn scan_at(
+  workspace: String,
+  home: String,
+  builtin: String,
+) -> Result(Catalog, String) {
+  use #(skills, diagnostics, _) <- result.try(native_catalog(
+    workspace,
+    home,
+    builtin,
+  ))
   Ok(Catalog(list.map(skills, fn(v) { Skill(v.0, v.1, v.2) }), diagnostics))
 }
 
@@ -202,10 +211,14 @@ fn find(catalog: Catalog, name: String) -> Result(Skill, String) {
 @external(erlang, "albedo_skills", "home")
 pub fn native_home() -> String
 
+@external(erlang, "albedo_skills", "builtin_root")
+pub fn native_builtin() -> String
+
 @external(erlang, "albedo_skills", "catalog")
 fn native_catalog(
   workspace: String,
   home: String,
+  builtin: String,
 ) -> Result(#(List(#(String, String, String)), List(String), Int), String)
 
 @external(erlang, "albedo_skills", "activate_selected")

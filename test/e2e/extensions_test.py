@@ -550,6 +550,27 @@ class ExtensionTests(unittest.TestCase):
         history = self.get(f"/sessions/{self.sid}/context/history/0")["content"]
         self.assertIn("older conversation summary", history)
 
+    def test_builtin_skill_is_listed_and_yields_to_a_workspace_skill_of_the_same_name(
+        self,
+    ):
+        def description():
+            return next(
+                c["description"]
+                for c in self.get(f"/sessions/{self.sid}/commands")
+                if c["name"] == "/customize-albedo"
+            )
+
+        self.assertIn("MCP servers", description())
+        override = self.app.workspace / ".agents/skills/customize-albedo/SKILL.md"
+        override.parent.mkdir(parents=True)
+        override.write_text(
+            "---\nname: customize-albedo\ndescription: workspace override\n---\nmine\n"
+        )
+        self.command("/reload", args={"target": "session"})
+        self.assertEqual(description(), "workspace override")
+        (request,) = self.turn("after override")
+        self.assertNotIn("duplicate skill", json.dumps(request["input"]))
+
     @exclusive
     def test_reload_pins_system_prompt_until_compaction(self):
         self.turn("first turn")

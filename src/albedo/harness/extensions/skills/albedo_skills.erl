@@ -2,7 +2,7 @@
 
 -include_lib("kernel/include/file.hrl").
 
--export([home/0, catalog/2, activate_selected/1, list_selected/1, read_selected/4, list_resources/3, xml_escape/1]).
+-export([home/0, builtin_root/0, catalog/3, activate_selected/1, list_selected/1, read_selected/4, list_resources/3, xml_escape/1]).
 
 -define(MAX_SKILLS, 128).
 -define(MAX_DIAGNOSTICS, 64).
@@ -37,12 +37,24 @@ xml_codepoint(_) -> <<16#EF, 16#BF, 16#BD>>.
 
 home() -> albedo_daemon:env(<<"HOME">>).
 
-catalog(Workspace0, Home0) ->
+%% Skills shipped with albedo live in priv/skills; the empty string disables them.
+builtin_root() ->
+    case code:priv_dir(albedo) of
+        {error, _} -> <<>>;
+        Priv -> unicode:characters_to_binary(filename:join(Priv, "skills"))
+    end.
+
+%% Built-in skills rank below every workspace and user skill, so a same-named
+%% skill there replaces one silently instead of reporting a duplicate.
+catalog(Workspace0, Home0, Builtin0) ->
     try
         Roots = roots(text_list(Workspace0), text_list(Home0)),
-        {Selected, Diagnostics0, Count, Limited} =
+        {Selected0, Diagnostics0, Count0, Limited0} =
             scan_roots(Roots, #{}, [], 0, false),
-        Diagnostics1 = [<<"skill discovery limit reached; remaining entries ignored">> || Limited] ++ Diagnostics0,
+        {Builtin, Diagnostics2, Count, Limited} =
+            scan_roots(builtin_roots(text_list(Builtin0)), #{}, Diagnostics0, Count0, Limited0),
+        Selected = maps:merge(Builtin, Selected0),
+        Diagnostics1 = [<<"skill discovery limit reached; remaining entries ignored">> || Limited] ++ Diagnostics2,
         Skills = lists:sort(maps:values(Selected)),
         {ok, {Skills, limit_diagnostics(lists:reverse(Diagnostics1)), Count}}
     catch
@@ -76,7 +88,7 @@ activate_selected(SkillFile0) ->
 %% callers of this API supply a workspace and catalog path, not a selected file.
 list_resources(Workspace, Home, Identity) ->
     try
-        case catalog(Workspace, Home) of
+        case catalog(Workspace, Home, builtin_root()) of
             {ok, {Skills, _Diagnostics, _Count}} ->
                 case lists:keyfind(unicode:characters_to_binary(Identity), 3, Skills) of
                     false -> {error, <<"unknown skill path; use a path from the current catalog">>};
@@ -153,6 +165,9 @@ roots(Workspace, Home) ->
               filename:join([Home, ".agents", "skills"])]
     end,
     Project ++ User.
+
+builtin_roots([]) -> [];
+builtin_roots(Root) -> [Root].
 
 scan_roots([], Selected, Diagnostics, Count, Limited) ->
     {Selected, Diagnostics, Count, Limited};

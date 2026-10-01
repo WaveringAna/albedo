@@ -13,10 +13,11 @@ The extension scans immediate child directories in this order:
 2. `<workspace>/.agents/skills`
 3. `~/.albedo/skills`
 4. `~/.agents/skills`
+5. `priv/skills` in the install: skills shipped with albedo (currently `customize-albedo`)
 
-A valid workspace skill wins over a user skill with the same frontmatter `name`. Earlier roots win within the same scope. Entries and the final catalog are sorted deterministically. Invalid metadata and collisions appear as bounded catalog diagnostics rather than disappearing silently.
+A valid workspace skill wins over a user skill with the same frontmatter `name`, and either replaces a built-in one without a diagnostic. Earlier roots win within the same scope. Entries and the final catalog are sorted deterministically. Invalid metadata and collisions appear as bounded catalog diagnostics rather than disappearing silently.
 
-`.agents/skills` is the portable Agent Skills location. `.albedo/skills` is the Albedo-native location.
+`.agents/skills` is the portable Agent Skills location. `.albedo/skills` is the Albedo-native location. A built-in skill is an ordinary skill directory under `priv/skills/`, so it needs no code: add the directory and it is cataloged, can be toggled as a `skills` capability, and is read through the same `skills.read` and `commands` paths.
 
 Each immediate child must contain a regular `SKILL.md`. Its parent directory and frontmatter `name` must match. Albedo requires the specification's `name` and `description` fields and accepts the optional `license`, `compatibility`, `metadata`, and `allowed-tools` fields. Optional fields are not advertised eagerly. YAML folded and multiline descriptions are supported through `yamerl`'s failsafe schema.
 

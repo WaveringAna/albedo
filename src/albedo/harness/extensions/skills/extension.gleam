@@ -29,7 +29,11 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
     ["python", "commands"],
     [
       harness_extension.ManagedPlugin(fn(_, session, workspace) {
-        use discovered <- result.try(catalog.scan_at(workspace, home))
+        use discovered <- result.try(catalog.scan_at(
+          workspace,
+          home,
+          catalog.native_builtin(),
+        ))
         use preferences <- result.try(
           capabilities.load(settings.home(), case discovered.skills {
             [] -> None
