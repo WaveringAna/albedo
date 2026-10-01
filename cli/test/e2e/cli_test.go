@@ -176,6 +176,10 @@ func TestSendAndStopAcceptAShortenedSessionID(t *testing.T) {
 	}
 	waitIdle(t, id, profile, 1)
 	cli(t, "stop", id[:8])
+
+	if reply := cli(t, "--prompt", "by prefix", "--session", id[:8]); !strings.Contains(reply, "echo: by prefix") {
+		t.Fatalf("albedo --prompt --session by prefix did not reach the session: %s", reply)
+	}
 }
 
 // Another agent drives a session with `sessions send` and `sessions read`: the

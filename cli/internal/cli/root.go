@@ -184,7 +184,11 @@ func newResume(deps Dependencies) *cobra.Command {
 }
 func newSessions(deps Dependencies) *cobra.Command {
 	var asJSON bool
-	command := &cobra.Command{Use: "sessions", Short: "list sessions", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+	command := &cobra.Command{Use: "sessions", Short: "list sessions, or read and send to one", Long: `List sessions. The ID column is shortened: every command that takes a <session>
+accepts the full ID or any prefix that matches only one session.
+
+To work with a session from a script or another agent, use "sessions send" to give
+it a message and "sessions read" to see what it said.`, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		result, err := deps.Application.Sessions(cmd.Context())
 		if err != nil {
 			return err
@@ -206,7 +210,13 @@ func newSessions(deps Dependencies) *cobra.Command {
 }
 func newSessionRead(deps Dependencies) *cobra.Command {
 	var asJSON bool
-	command := &cobra.Command{Use: "read <session> [turns]", Short: "print a session's newest turns (default 1)", Args: cobra.RangeArgs(1, 2), RunE: func(cmd *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "read <session> [turns]", Short: "print a session's newest turns (default 1)", Long: `Print the newest turns of a session: each user message, the tools it ran, and the
+reply. <session> is a full ID or a unique prefix. [turns] is how many turns to
+print, newest last; the default is 1.
+
+Only finished work is shown. While the session is still working the output ends
+with a [running] line; read again later for the rest.`, Example: `  albedo sessions read fdf9c339
+  albedo sessions read fdf9c339 3 --json`, Args: cobra.RangeArgs(1, 2), RunE: func(cmd *cobra.Command, args []string) error {
 		turns := 1
 		if len(args) == 2 {
 			parsed, err := strconv.Atoi(args[1])
@@ -267,7 +277,12 @@ func newModels(deps Dependencies) *cobra.Command {
 	}}
 }
 func newSend(deps Dependencies) *cobra.Command {
-	return &cobra.Command{Use: "send <session> <prompt>", Short: "send a message to a session", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+	return &cobra.Command{Use: "send <session> <prompt>", Short: "send a message to a session without waiting for the reply", Long: `Send <prompt> to a session and return at once; it does not wait for the reply.
+<session> is a full ID or a unique prefix. A message sent while the session is
+busy is queued. To see the answer, run "albedo sessions read <session>" until it
+no longer ends with a [running] line, or use "albedo --prompt ... --session <id>"
+to send and wait in one step.`, Example: `  albedo send fdf9c339 "run the tests"
+  albedo sessions send fdf9c339 "run the tests"`, Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
 		result, err := deps.Application.Send(cmd.Context(), args[0], args[1])
 		if err != nil {
 			return err
@@ -276,7 +291,7 @@ func newSend(deps Dependencies) *cobra.Command {
 	}}
 }
 func newStop(deps Dependencies) *cobra.Command {
-	return &cobra.Command{Use: "stop <session>", Short: "interrupt work in a session", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	return &cobra.Command{Use: "stop <session>", Short: "interrupt work in a session", Long: "Interrupt the turn a session is running. <session> is a full ID or a unique prefix.", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		result, err := deps.Application.Stop(cmd.Context(), args[0])
 		if err != nil {
 			return err

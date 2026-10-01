@@ -38,6 +38,11 @@ func (s *Service) RunPrompt(ctx context.Context, options PromptOptions) (PromptR
 			return PromptResult{}, err
 		}
 	}
+	if sessionID != "" {
+		if sessionID, err = resolveSession(ctx, conn, sessionID); err != nil {
+			return PromptResult{}, err
+		}
+	}
 	if sessionID == "" {
 		create := map[string]string{"workspace": cwd}
 		if model != "" {
