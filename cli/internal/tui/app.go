@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -182,7 +183,9 @@ func NewAppModel(conn *daemon.Connection, profiles config.Profiles, initialSessi
 	}
 	// Built even when starting in a session so /sessions has a working search.
 	m.SessionPicker = NewSessionViewer(workspace)
-	m.SessionPicker.Fetch = m.sessionPreviewCmd
+	m.SessionPicker.Fetch = func(id string) tea.Cmd {
+		return sessionPreviewCmd(conn, id)
+	}
 
 	return m
 }
@@ -215,17 +218,18 @@ func (m AppModel) initScreen() tea.Cmd {
 	return nil
 }
 
-func (m AppModel) loadSessionsCmd(gen int) tea.Cmd {
+func (m *AppModel) loadSessionsCmd(gen int) tea.Cmd {
+	conn := m.Conn
 	return func() tea.Msg {
-		if m.Conn == nil {
+		if conn == nil {
 			return sessionsLoadedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		sessions, err := daemon.Request[[]daemon.Session](context.Background(), m.Conn, "/sessions", nil)
+		sessions, err := daemon.Request[[]daemon.Session](context.Background(), conn, "/sessions", nil)
 		return sessionsLoadedMsg{Sessions: sessions, Err: err, Gen: gen}
 	}
 }
 
-func (m AppModel) renameSessionCmd(rename SessionRenameMsg) tea.Cmd {
+func (m *AppModel) renameSessionCmd(rename SessionRenameMsg) tea.Cmd {
 	conn := m.Conn
 	return func() tea.Msg {
 		if conn == nil {
@@ -237,7 +241,7 @@ func (m AppModel) renameSessionCmd(rename SessionRenameMsg) tea.Cmd {
 	}
 }
 
-func (m AppModel) deleteSessionCmd(id string) tea.Cmd {
+func (m *AppModel) deleteSessionCmd(id string) tea.Cmd {
 	conn := m.Conn
 	return func() tea.Msg {
 		if conn == nil {
@@ -248,43 +252,49 @@ func (m AppModel) deleteSessionCmd(id string) tea.Cmd {
 	}
 }
 
-func (m AppModel) sessionPreviewCmd(id string) tea.Cmd {
-	conn := m.Conn
+func sessionPreviewCmd(conn *daemon.Connection, id string) tea.Cmd {
 	return func() tea.Msg {
 		preview, err := daemon.Request[SessionPreview](context.Background(), conn, "/sessions/"+url.PathEscape(id)+"/preview?limit=16", nil)
 		return SessionPreviewMsg{ID: id, Preview: preview, Err: err}
 	}
 }
 
-func (m AppModel) createSessionCmd(gen int, workspace string) tea.Cmd {
+func (m *AppModel) createSessionCmd(gen int, workspace string) tea.Cmd {
+	conn := m.Conn
 	return func() tea.Msg {
-		if m.Conn == nil {
+		if conn == nil {
 			return sessionCreatedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		s, err := daemon.Request[daemon.Session](context.Background(), m.Conn, "/sessions", map[string]string{"workspace": workspace})
+		s, err := daemon.Request[daemon.Session](context.Background(), conn, "/sessions", map[string]string{"workspace": workspace})
 		return sessionCreatedMsg{Session: s, Err: err, Gen: gen}
 	}
 }
 
-func (m AppModel) loadProfilesCmd(provider string, gen int) tea.Cmd {
+func (m *AppModel) loadProfilesCmd(provider string, gen int) tea.Cmd {
+	conn := m.Conn
 	return func() tea.Msg {
-		p, err := daemon.ProviderProfiles(context.Background(), m.Conn)
+		p, err := daemon.ProviderProfiles(context.Background(), conn)
 		return profilesLoadedMsg{Profiles: p, Provider: provider, Err: err, Gen: gen}
 	}
 }
 
-func (m AppModel) loadCommandCatalogCmd(gen int) tea.Cmd {
+func (m *AppModel) loadCommandCatalogCmd(gen int) tea.Cmd {
+	conn, hasSession := m.Conn, m.ActiveSession != nil
+	var sessionID string
+	if hasSession {
+		sessionID = m.ActiveSession.ID
+	}
 	return func() tea.Msg {
-		if m.Conn == nil || m.ActiveSession == nil {
+		if conn == nil || !hasSession {
 			return commandCatalogLoadedMsg{Gen: gen}
 		}
 
-		if err := daemon.CheckCapability(context.Background(), m.Conn, "session_commands", "for the command menu"); err != nil {
+		if err := daemon.CheckCapability(context.Background(), conn, "session_commands", "for the command menu"); err != nil {
 			return commandCatalogLoadedMsg{Err: err, Gen: gen}
 		}
 
-		path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(m.ActiveSession.ID))
-		raw, err := daemon.Request[json.RawMessage](context.Background(), m.Conn, path, nil)
+		path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(sessionID))
+		raw, err := daemon.Request[json.RawMessage](context.Background(), conn, path, nil)
 		if err != nil {
 			return commandCatalogLoadedMsg{Err: err, Gen: gen}
 		}
@@ -294,19 +304,29 @@ func (m AppModel) loadCommandCatalogCmd(gen int) tea.Cmd {
 	}
 }
 
-func (m AppModel) changeModelCmd(model, provider, effort string, raiseCap *bool, gen int) tea.Cmd {
+func (m *AppModel) changeModelCmd(model, provider, effort string, raiseCap *bool, gen int) tea.Cmd {
+	conn, hasSession := m.Conn, m.ActiveSession != nil
+	var sessionID, currentProvider string
+	if hasSession {
+		sessionID, currentProvider = m.ActiveSession.ID, m.ActiveSession.Provider
+	}
+	saveCap := raiseCap != nil
+	var capEnabled bool
+	if saveCap {
+		capEnabled = *raiseCap
+	}
 	return func() tea.Msg {
-		if m.Conn == nil || m.ActiveSession == nil {
+		if conn == nil || !hasSession {
 			return modelChangedMsg{Err: errors.New("no active session or connection"), Gen: gen}
 		}
 
-		if provider != "" && provider != m.ActiveSession.Provider {
-			if err := daemon.CheckCapability(context.Background(), m.Conn, "session_provider", "to switch providers"); err != nil {
+		if provider != "" && provider != currentProvider {
+			if err := daemon.CheckCapability(context.Background(), conn, "session_provider", "to switch providers"); err != nil {
 				return modelChangedMsg{Err: err, Gen: gen}
 			}
 		}
 
-		path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(m.ActiveSession.ID))
+		path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(sessionID))
 		args := map[string]string{"model": model}
 		if provider != "" {
 			args["provider"] = provider
@@ -319,18 +339,18 @@ func (m AppModel) changeModelCmd(model, provider, effort string, raiseCap *bool,
 			"args": args,
 		}
 
-		res, err := daemon.Request[map[string]any](context.Background(), m.Conn, path, body)
+		res, err := daemon.Request[map[string]any](context.Background(), conn, path, body)
 		if err != nil {
 			return modelChangedMsg{Err: err, Gen: gen}
 		}
 		// The cap follows the switch, so a failed switch changes nothing.
-		if raiseCap != nil {
+		if saveCap {
 			state := "off"
-			if *raiseCap {
+			if capEnabled {
 				state = "on"
 			}
 			capBody := map[string]any{"name": "/raise-cap", "args": map[string]string{"state": state, "model": model}}
-			if _, err := daemon.Request[map[string]any](context.Background(), m.Conn, path, capBody); err != nil {
+			if _, err := daemon.Request[map[string]any](context.Background(), conn, path, capBody); err != nil {
 				return modelChangedMsg{Err: fmt.Errorf("switched model, but the context cap was not saved: %w", err), Gen: gen}
 			}
 		}
@@ -363,19 +383,24 @@ func (m AppModel) changeModelCmd(model, provider, effort string, raiseCap *bool,
 	}
 }
 
-func (m AppModel) executeCommandCmd(name, args string, gen int) tea.Cmd {
+func (m *AppModel) executeCommandCmd(name, args string, gen int) tea.Cmd {
+	conn, hasSession := m.Conn, m.ActiveSession != nil
+	var sessionID string
+	if hasSession {
+		sessionID = m.ActiveSession.ID
+	}
 	return func() tea.Msg {
-		if m.Conn == nil || m.ActiveSession == nil {
+		if conn == nil || !hasSession {
 			return commandExecutedMsg{Name: name, Err: errors.New("no active session or connection"), Gen: gen}
 		}
 
-		path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(m.ActiveSession.ID))
+		path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(sessionID))
 		body := map[string]any{"name": name}
 		if args != "" {
 			body["arguments"] = args
 		}
 
-		res, err := daemon.Request[map[string]any](context.Background(), m.Conn, path, body)
+		res, err := daemon.Request[map[string]any](context.Background(), conn, path, body)
 		if err != nil {
 			return commandExecutedMsg{Name: name, Err: err, Gen: gen}
 		}
@@ -395,7 +420,7 @@ func (m AppModel) executeCommandCmd(name, args string, gen int) tea.Cmd {
 					}
 				}
 				if len(available) > 0 {
-					return commandExecutedMsg{Name: name, Available: available, SessionID: m.ActiveSession.ID, Gen: gen}
+					return commandExecutedMsg{Name: name, Available: available, SessionID: sessionID, Gen: gen}
 				}
 				if s, _ := r["effort"].(string); s != "" {
 					newEffort = s
@@ -424,20 +449,28 @@ func glancePollTickCmd(sessionID string, gen int) tea.Cmd {
 	})
 }
 
-func (m AppModel) pollGlancesCmd(gen int) tea.Cmd {
+func (m *AppModel) pollGlancesCmd(gen int) tea.Cmd {
+	conn, hasSession := m.Conn, m.ActiveSession != nil
+	var sessionID string
+	if hasSession {
+		sessionID = m.ActiveSession.ID
+	}
+	var pageNames []string
+	for _, cmd := range m.CommandCatalog {
+		if cmd.Page != nil && *cmd.Page {
+			pageNames = append(pageNames, cmd.Name)
+		}
+	}
 	return func() tea.Msg {
-		if m.Conn == nil || m.ActiveSession == nil {
+		if conn == nil || !hasSession {
 			return glancesPolledMsg{Gen: gen}
 		}
 
-		path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(m.ActiveSession.ID))
+		path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(sessionID))
 		var glances []PageGlance
-		for _, cmd := range m.CommandCatalog {
-			if cmd.Page == nil || !*cmd.Page {
-				continue
-			}
-			body := map[string]any{"name": cmd.Name, "args": map[string]string{}}
-			res, err := daemon.Request[map[string]any](context.Background(), m.Conn, path, body)
+		for _, name := range pageNames {
+			body := map[string]any{"name": name, "args": map[string]string{}}
+			res, err := daemon.Request[map[string]any](context.Background(), conn, path, body)
 			if err != nil {
 				continue
 			}
@@ -1235,7 +1268,7 @@ type uiSavedMsg struct {
 	Open  bool
 }
 
-func (m AppModel) loadSettingsCmd(gen int) tea.Cmd {
+func (m *AppModel) loadSettingsCmd(gen int) tea.Cmd {
 	if m.UISaving {
 		return nil
 	}
@@ -1246,8 +1279,9 @@ func (m AppModel) loadSettingsCmd(gen int) tea.Cmd {
 	}
 }
 
-func (m AppModel) patchUICmd(session string, patch map[string]bool, gen int) tea.Cmd {
+func (m *AppModel) patchUICmd(session string, patch map[string]bool, gen int) tea.Cmd {
 	conn := m.Conn
+	patch = maps.Clone(patch)
 	return func() tea.Msg {
 		var prefs daemon.UIPreferences
 		var err error
@@ -1260,7 +1294,7 @@ func (m AppModel) patchUICmd(session string, patch map[string]bool, gen int) tea
 	}
 }
 
-func (m AppModel) recordOpenCmd(session string) tea.Cmd {
+func (m *AppModel) recordOpenCmd(session string) tea.Cmd {
 	conn := m.Conn
 	return func() tea.Msg {
 		prefs, err := daemon.RecordOpen(context.Background(), conn, session)
