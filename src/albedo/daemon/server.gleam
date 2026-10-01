@@ -1979,9 +1979,18 @@ fn daemon_route(
   let authorised =
     request.get_header(req, "authorization") == Ok("Bearer " <> config.token)
   // Local API is authenticated and not a cross-origin browser endpoint.
-  case authorised && request.get_header(req, "origin") == Error(Nil) {
-    False -> error(403, "forbidden")
-    True ->
+  case request.get_header(req, "origin"), authorised {
+    Ok(_), _ -> error(403, "forbidden")
+    Error(Nil), False ->
+      reply(
+        403,
+        json.object([
+          #("error", json.string("forbidden")),
+          #("code", json.string("authentication_required")),
+        ]),
+      )
+      |> response.set_header("albedo-error-code", "authentication_required")
+    Error(Nil), True ->
       case req.method, request.path_segments(req) {
         Get, ["health"] ->
           reply(

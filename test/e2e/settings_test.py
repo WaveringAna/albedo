@@ -564,6 +564,7 @@ class SettingsTest(unittest.TestCase):
         for method, path in routes:
             for headers in (
                 {},
+                {"Origin": "http://localhost"},
                 {
                     "Authorization": "Bearer " + self.app.connection["token"],
                     "Origin": "http://localhost",
@@ -577,6 +578,16 @@ class SettingsTest(unittest.TestCase):
                 with self.assertRaises(urllib.error.HTTPError) as failure:
                     urllib.request.urlopen(request, timeout=10)
                 self.assertEqual(failure.exception.code, 403, (method, path, headers))
+                with failure.exception as response:
+                    rejected = json.load(response)
+                if "Origin" in headers:
+                    self.assertNotIn("code", rejected)
+                    self.assertIsNone(response.headers.get("Albedo-Error-Code"))
+                else:
+                    self.assertEqual(rejected["code"], "authentication_required")
+                    self.assertEqual(
+                        response.headers["Albedo-Error-Code"], "authentication_required"
+                    )
 
     def test_busy_session_rejects_settings_before_persistence(self):
         entered = threading.Event()
