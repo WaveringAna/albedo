@@ -3,7 +3,7 @@
 Persisted preferences are owned by the daemon and changed through the [settings API](settings.md). The CLI refreshes them on use and never writes settings files.
 
 
-an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, models, provider, login, service, migration, compaction, or fold plugins. `python`, `run`, `work`, `mail`, `agents`, `schedule`, `paperclips`, `files`, `memory`, `instructions`, `commands`, `skills`, `models`, `openai`, `codex`, `antigravity`, `alibaba`, `claude`, `rolling`, `snapcompact-memory`, `lcm-memory`, and `remote` are enabled by default; `mcp`, `view`, [`proxy`](proxy.md), `webhooks`, [`warm`](cache-warming.md), and the `snapcompact` and `lcm` compaction strategies are installed and disabled until enabled. plugin contributions compose inside them.
+an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, models, provider, login, service, migration, compaction, or fold plugins. `python`, `run`, `work`, `mail`, `agents`, `schedule`, `paperclips`, `files`, `memory`, `instructions`, `commands`, `skills`, `models`, `openai`, `codex`, `antigravity`, `alibaba`, `claude`, `rolling`, `snapcompact-memory`, `lcm-memory`, `remote`, and `browser` are enabled by default; `mcp`, `view`, [`proxy`](proxy.md), `webhooks`, [`warm`](cache-warming.md), and the `snapcompact` and `lcm` compaction strategies are installed and disabled until enabled. plugin contributions compose inside them.
 
 ## select extensions
 

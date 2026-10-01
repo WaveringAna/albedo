@@ -2,6 +2,7 @@ import albedo/harness/extension
 import albedo/harness/extensions/agents/extension as agents
 import albedo/harness/extensions/alibaba/extension as alibaba
 import albedo/harness/extensions/antigravity/extension as antigravity
+import albedo/harness/extensions/browser/extension as browser
 import albedo/harness/extensions/claude/extension as claude
 import albedo/harness/extensions/codex/extension as codex
 import albedo/harness/extensions/commands/extension as commands
@@ -65,6 +66,7 @@ pub fn defaults() -> Config {
       lcm.extension(),
       mcp.configured_extension(),
       remote.extension(),
+      browser.extension(),
       view.extension(),
       proxy.extension(),
       webhooks.extension(),
@@ -75,7 +77,7 @@ pub fn defaults() -> Config {
       "python", "run", "work", "mail", "agents", "schedule", "files", "memory",
       "instructions", "commands", "skills", "paperclips", "models", "openai",
       "codex", "antigravity", "alibaba", "claude", "rolling",
-      "snapcompact-memory", "lcm-memory", "remote",
+      "snapcompact-memory", "lcm-memory", "remote", "browser",
     ],
   )
 }
