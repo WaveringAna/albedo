@@ -45,6 +45,9 @@ fn flatten(root: Object, keys: List(String)) -> Json {
     |> list.unique
     |> list.sort(string.compare)
   base
+  |> dict.delete("type")
+  |> dict.delete("properties")
+  |> dict.delete("required")
   |> dict.map_values(fn(_, value) { types.encode_value(value) })
   |> dict.insert("type", json.string("object"))
   |> dict.insert(
@@ -100,10 +103,17 @@ fn field(
 fn common_required(branches: List(Object)) -> List(String) {
   case branches {
     [] -> []
-    [first, ..rest] ->
+    [first, ..rest] -> {
+      let required_sets =
+        list.map(rest, fn(branch) {
+          required(branch)
+          |> list.map(fn(name) { #(name, Nil) })
+          |> dict.from_list
+        })
       list.filter(required(first), fn(name) {
-        list.all(rest, fn(branch) { list.contains(required(branch), name) })
+        list.all(required_sets, fn(names) { dict.has_key(names, name) })
       })
+    }
   }
 }
 

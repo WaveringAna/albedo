@@ -2,6 +2,7 @@
 import albedo/daemon/events
 import albedo/daemon/projection
 import albedo/daemon/transcript
+import albedo/harness/extensions/claude/schema as schemas
 import albedo/harness/extensions/claude/stream
 import albedo/harness/extensions/claude/wire
 import albedo/harness/loop
@@ -36,7 +37,54 @@ const subscription = wire.Subscription(
 pub fn claude_tool_schemas_flatten_only_top_level_combiners_test() {
   let assert Ok(schema) =
     json.parse(
-      "{\"type\":\"object\",\"properties\":{\"urls\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}},\"oneOf\":[{\"required\":[\"urls\"]},{\"required\":[\"ids\"]}],\"allOf\":[{\"required\":[\"mode\"],\"properties\":{\"mode\":{\"oneOf\":[{\"type\":\"string\"},{\"type\":\"integer\"}]}}}]}",
+      "{
+  \"type\": \"object\",
+  \"properties\": {
+    \"urls\": {
+      \"type\": \"array\",
+      \"items\": {
+        \"type\": \"string\"
+      }
+    },
+    \"ids\": {
+      \"type\": \"array\",
+      \"items\": {
+        \"type\": \"string\"
+      }
+    }
+  },
+  \"oneOf\": [
+    {
+      \"required\": [
+        \"urls\"
+      ]
+    },
+    {
+      \"required\": [
+        \"ids\"
+      ]
+    }
+  ],
+  \"allOf\": [
+    {
+      \"required\": [
+        \"mode\"
+      ],
+      \"properties\": {
+        \"mode\": {
+          \"oneOf\": [
+            {
+              \"type\": \"string\"
+            },
+            {
+              \"type\": \"integer\"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}",
       decode.dynamic,
     )
   let request =
@@ -48,7 +96,7 @@ pub fn claude_tool_schemas_flatten_only_top_level_combiners_test() {
         types.Tool(
           "contents",
           "Fetch URLs or IDs",
-          wire.encode_value(schema),
+          types.encode_value(schema),
           False,
         ),
       ],
@@ -96,10 +144,35 @@ pub fn claude_tool_schemas_flatten_only_top_level_combiners_test() {
 pub fn claude_tool_schema_accepts_branch_only_root_union_test() {
   let assert Ok(schema) =
     json.parse(
-      "{\"oneOf\":[{\"type\":\"object\",\"properties\":{\"urls\":{\"type\":\"array\"}},\"required\":[\"urls\"]},{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\"}},\"required\":[\"ids\"]}]}",
+      "{
+  \"oneOf\": [
+    {
+      \"type\": \"object\",
+      \"properties\": {
+        \"urls\": {
+          \"type\": \"array\"
+        }
+      },
+      \"required\": [
+        \"urls\"
+      ]
+    },
+    {
+      \"type\": \"object\",
+      \"properties\": {
+        \"ids\": {
+          \"type\": \"array\"
+        }
+      },
+      \"required\": [
+        \"ids\"
+      ]
+    }
+  ]
+}",
       decode.dynamic,
     )
-  let normalized = wire.normalize_schema(wire.encode_value(schema))
+  let normalized = schemas.normalize(types.encode_value(schema))
   let assert Ok(value) = json.parse(json.to_string(normalized), decode.dynamic)
   let assert Ok(props) =
     decode.run(
@@ -117,7 +190,122 @@ pub fn claude_tool_schema_accepts_branch_only_root_union_test() {
 pub fn claude_schema_preserves_metadata_and_merge_precedence_in_requests_test() {
   let assert Ok(schema) =
     json.parse(
-      "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"$defs\":{\"choice\":{\"anyOf\":[{\"type\":\"string\"},{\"type\":\"null\"}]}},\"x-metadata\":{\"values\":[null,true,2.5,{\"nested\":[\"keep\"]}]},\"additionalProperties\":false,\"description\":\"Choose inputs\",\"properties\":{\"shared\":{\"$ref\":\"#/$defs/choice\",\"x-custom\":[false,null]}},\"required\":[\"root\",\"root\"],\"allOf\":[{\"properties\":{\"shared\":{\"type\":\"integer\"},\"mode\":{\"oneOf\":[{\"const\":\"a\"},{\"const\":\"b\"}]}},\"required\":[\"mode\"]}],\"oneOf\":[{\"properties\":{\"left\":{\"type\":\"string\"},\"collision\":{\"const\":\"first\"}},\"required\":[\"common\",\"left\"]},{\"properties\":{\"right\":{\"type\":\"string\"},\"collision\":{\"const\":\"second\"}},\"required\":[\"right\",\"common\"]}],\"anyOf\":[{\"properties\":{\"extra\":{\"type\":\"boolean\"}},\"required\":[\"common\",\"extra\"]},{\"properties\":{\"other\":false},\"required\":[\"other\",\"common\"]}]}",
+      "{
+  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",
+  \"$defs\": {
+    \"choice\": {
+      \"anyOf\": [
+        {
+          \"type\": \"string\"
+        },
+        {
+          \"type\": \"null\"
+        }
+      ]
+    }
+  },
+  \"x-metadata\": {
+    \"values\": [
+      null,
+      true,
+      2.5,
+      {
+        \"nested\": [
+          \"keep\"
+        ]
+      }
+    ]
+  },
+  \"additionalProperties\": false,
+  \"description\": \"Choose inputs\",
+  \"properties\": {
+    \"shared\": {
+      \"$ref\": \"#/$defs/choice\",
+      \"x-custom\": [
+        false,
+        null
+      ]
+    }
+  },
+  \"required\": [
+    \"root\",
+    \"root\"
+  ],
+  \"allOf\": [
+    {
+      \"properties\": {
+        \"shared\": {
+          \"type\": \"integer\"
+        },
+        \"mode\": {
+          \"oneOf\": [
+            {
+              \"const\": \"a\"
+            },
+            {
+              \"const\": \"b\"
+            }
+          ]
+        }
+      },
+      \"required\": [
+        \"mode\"
+      ]
+    }
+  ],
+  \"oneOf\": [
+    {
+      \"properties\": {
+        \"left\": {
+          \"type\": \"string\"
+        },
+        \"collision\": {
+          \"const\": \"first\"
+        }
+      },
+      \"required\": [
+        \"common\",
+        \"left\"
+      ]
+    },
+    {
+      \"properties\": {
+        \"right\": {
+          \"type\": \"string\"
+        },
+        \"collision\": {
+          \"const\": \"second\"
+        }
+      },
+      \"required\": [
+        \"right\",
+        \"common\"
+      ]
+    }
+  ],
+  \"anyOf\": [
+    {
+      \"properties\": {
+        \"extra\": {
+          \"type\": \"boolean\"
+        }
+      },
+      \"required\": [
+        \"common\",
+        \"extra\"
+      ]
+    },
+    {
+      \"properties\": {
+        \"other\": false
+      },
+      \"required\": [
+        \"other\",
+        \"common\"
+      ]
+    }
+  ]
+}",
       decode.dynamic,
     )
   let request =
@@ -138,7 +326,73 @@ pub fn claude_schema_preserves_metadata_and_merge_precedence_in_requests_test() 
     decode.run(tool, decode.at(["input_schema"], decode.dynamic))
   let assert Ok(expected) =
     json.parse(
-      "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"$defs\":{\"choice\":{\"anyOf\":[{\"type\":\"string\"},{\"type\":\"null\"}]}},\"x-metadata\":{\"values\":[null,true,2.5,{\"nested\":[\"keep\"]}]},\"additionalProperties\":false,\"description\":\"Choose inputs; Exactly one of: common + left or right + common; At least one of: common + extra or other + common\",\"properties\":{\"shared\":{\"$ref\":\"#/$defs/choice\",\"x-custom\":[false,null]},\"mode\":{\"oneOf\":[{\"const\":\"a\"},{\"const\":\"b\"}]},\"left\":{\"type\":\"string\"},\"collision\":{\"const\":\"first\"},\"right\":{\"type\":\"string\"},\"extra\":{\"type\":\"boolean\"},\"other\":false},\"required\":[\"common\",\"mode\",\"root\"],\"type\":\"object\"}",
+      "{
+  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",
+  \"$defs\": {
+    \"choice\": {
+      \"anyOf\": [
+        {
+          \"type\": \"string\"
+        },
+        {
+          \"type\": \"null\"
+        }
+      ]
+    }
+  },
+  \"x-metadata\": {
+    \"values\": [
+      null,
+      true,
+      2.5,
+      {
+        \"nested\": [
+          \"keep\"
+        ]
+      }
+    ]
+  },
+  \"additionalProperties\": false,
+  \"description\": \"Choose inputs; Exactly one of: common + left or right + common; At least one of: common + extra or other + common\",
+  \"properties\": {
+    \"shared\": {
+      \"$ref\": \"#/$defs/choice\",
+      \"x-custom\": [
+        false,
+        null
+      ]
+    },
+    \"mode\": {
+      \"oneOf\": [
+        {
+          \"const\": \"a\"
+        },
+        {
+          \"const\": \"b\"
+        }
+      ]
+    },
+    \"left\": {
+      \"type\": \"string\"
+    },
+    \"collision\": {
+      \"const\": \"first\"
+    },
+    \"right\": {
+      \"type\": \"string\"
+    },
+    \"extra\": {
+      \"type\": \"boolean\"
+    },
+    \"other\": false
+  },
+  \"required\": [
+    \"common\",
+    \"mode\",
+    \"root\"
+  ],
+  \"type\": \"object\"
+}",
       decode.dynamic,
     )
   assert actual == expected

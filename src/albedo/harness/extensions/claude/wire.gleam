@@ -10,7 +10,6 @@ import gleam/bit_array
 import gleam/bool
 import gleam/crypto.{Sha256}
 import gleam/dict.{type Dict}
-import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json.{type Json}
 import gleam/list
@@ -365,7 +364,7 @@ fn replay_decoder() -> decode.Decoder(Replay) {
       decode.list(decode.dynamic),
     )
     decode.success(case kind == blocks_detail {
-      True -> Some(#(model, list.map(blocks, encode_value)))
+      True -> Some(#(model, list.map(blocks, types.encode_value)))
       False -> None
     })
   }
@@ -381,7 +380,7 @@ fn replay_decoder() -> decode.Decoder(Replay) {
 pub fn tool_use_block(id: String, name: String, arguments: String) -> Json {
   let input =
     json.parse(arguments, decode.dynamic)
-    |> result.map(encode_value)
+    |> result.map(types.encode_value)
     |> result.unwrap(json.object([]))
   json.object([
     #("type", json.string("tool_use")),
@@ -474,7 +473,7 @@ fn tool_block(tool: types.Tool, last: Bool) -> Json {
   json.object([
     #("name", json.string(claude_name(tool.name))),
     #("description", json.string(tool.description)),
-    #("input_schema", normalize_schema(tool.parameters)),
+    #("input_schema", schema.normalize(tool.parameters)),
     ..case last {
       True -> [head_cache()]
       False -> []
@@ -602,16 +601,9 @@ fn canonical_name(name: String) -> String {
 @external(erlang, "albedo_claude_billing", "billing_block")
 fn billing_block(version: String, first_user: String) -> Json
 
-pub fn normalize_schema(value: Json) -> Json {
-  schema.normalize(value)
-}
-
 @external(erlang, "albedo_claude_files", "file_source")
 fn file_source(
   home: String,
   account: String,
   data: types.ImageData,
 ) -> Result(Json, Nil)
-
-@external(erlang, "albedo_antigravity", "encode")
-pub fn encode_value(value: Dynamic) -> Json
