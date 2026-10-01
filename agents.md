@@ -74,9 +74,11 @@ An extension bundles plugins: context (system instructions), tool (model tools +
 
 `robot-docs/` is one model-facing doc per subsystem (agents, auth, settings, kernel-state, migrations, cache-ttl, cache-warming, commands, compaction, context, extensions, files, mcp, models, paperclips, provider-requests, proxy, quota, skills, usage-feed, webhooks, workspaces). This file is the map; those are the details. When you change a subsystem's behavior, update its doc in the same change; when you need to understand one, read it there first.
 
+Read the page for a subsystem before you edit it, and name the module that owns the behavior before you write it. Ownership rules live in those docs (an extension owns its own migrations and tables; the daemon only collects them), and the mistakes that cost the most were ones a doc already ruled out. Use the `design-preflight` skill for anything beyond a small change.
+
 ### Other directories
 
 - **`test/`** — `e2e/` (default suite, shared harness), `harness/` (invariant and logic unit tests, Gleam and Python), `daemon/` (Gleam daemon suites), `openai_api/` (transport), `manual/` (opt-in)
 - **`flake/`**, **`default.nix`** — nix packaging and dev shell (`nix develop` ships gleam, go, cargo, python, and pre-commit); `nix build .#albedo` produces a self-contained package
 - **`.agents/skills/`** — repo-local agent skills (`writing-tests`, `charm-tui`, `gleam-design`, `tg`)
-- **`priv/skills/`** — skills shipped with albedo (`customize-albedo`, `research`, `orchestrating-agents`, `complexity-review`); a same-named skill in a project or home directory replaces one
+- **`priv/skills/`** — skills shipped with albedo (`customize-albedo`, `research`, `orchestrating-agents`, `complexity-review`, `design-preflight`); a same-named skill in a project or home directory replaces one
