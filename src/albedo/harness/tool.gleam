@@ -38,7 +38,8 @@ pub fn schema(
 
 /// One tool whose decoded arguments reach `run` directly and whose answer is
 /// text: the schema, the argument decoding, the usage reply for undecodable
-/// arguments, and the no-op recover, written once.
+/// arguments, the error payload for a refused call, and the no-op recover,
+/// written once.
 pub fn text(
   name: String,
   description: String,
@@ -53,12 +54,25 @@ pub fn text(
     types.Tool(name, description, schema(required, properties), strict),
     fn(context, arguments) {
       case json.parse(arguments, decoder) {
-        Ok(decoded) -> run(context, decoded) |> result.map(extension.text)
+        Ok(decoded) ->
+          case run(context, decoded) {
+            Ok(answer) -> Ok(extension.text(answer))
+            // A refused read answers with its reason instead of ending the
+            // turn: these tools are read-only, and a "run failed" letter
+            // costs a subagent its whole reply.
+            Error(message) -> Ok(extension.text(refused(message)))
+          }
         Error(_) -> Ok(extension.text(usage))
       }
     },
     fn(_) { None },
   )
+}
+
+/// One refused call's answer, in the JSON shape these tools already answer in.
+fn refused(message: String) -> String {
+  json.object([#("error", json.string(message))])
+  |> json.to_string
 }
 
 /// The text of a transcript input, as retrieval tools show it.

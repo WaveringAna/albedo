@@ -13,7 +13,7 @@ pub fn extension() -> extension.Extension {
     [],
     [
       extension.ToolPlugin(
-        "Stored LCM folds can remain after a compaction strategy changes. Use lcm_list to find every fold in this session, lcm_describe to inspect a fold, lcm_grep to search prior text, and lcm_expand to read bounded pages of original transcript rows. Summaries may omit details; check their sources when needed.",
+        "Stored LCM folds can remain after a compaction strategy changes. Use lcm_list to find every fold in this session, lcm_describe to inspect a fold, lcm_grep to search prior text, and lcm_expand to read bounded pages of original transcript rows. Node ids come from lcm_list or lcm_grep; a transcript row seq is not a node id and belongs to transcript_read instead. Summaries may omit details; check their sources when needed.",
         tools.definitions(),
         [],
         [],

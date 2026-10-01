@@ -308,5 +308,11 @@ fn required_node(
   id: Int,
 ) -> Result(graph.Node, String) {
   use found <- result.try(graph.node(ledger, session, id))
-  option.to_result(found, "LCM node not found in this session")
+  option.to_result(
+    found,
+    "LCM node "
+      <> int.to_string(id)
+      <> " not found in this session; node ids come from lcm_list or lcm_grep"
+      <> " nodes, and transcript row seqs belong to transcript_read",
+  )
 }
