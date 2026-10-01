@@ -1,8 +1,7 @@
 # Run the Gleam commit check
 
-The Nix development shell supplies glinter at commit
-`2141f5b431040b2a4b126a98276e59028cd945ec`, with its upstream dependencies locked
-separately from the daemon. The cleanup audit used Gleam 1.18.1.
+The Nix development shell supplies glinter, pinned by `flake.lock`, with its
+upstream dependencies locked separately from the daemon.
 Run the commit check with:
 
 ```sh
@@ -24,6 +23,9 @@ nix develop -c test/gleam-lint.sh --review --format json > /tmp/albedo-review.js
 nix develop -c test/gleam-lint.sh --all --format json > /tmp/albedo-audit.json
 ```
 
+Keep generated reports under `/tmp`. Do not commit CSV inventories or
+retrospective cleanup reports.
+
 The default enables eleven rules as errors:
 
 | Purpose | Rules |
@@ -35,7 +37,7 @@ The default enables eleven rules as errors:
 | Suppression hygiene | `nolint_unused`, `nolint_inline` |
 
 A default run promotes all findings to errors and exits unsuccessfully when it
-finds one. The cleanup left this profile with zero findings.
+finds one.
 
 These checks catch accidental debug or unfinished code and keep signatures,
 imports, and existing labels consistent. Acceptance requires zero findings,
@@ -46,8 +48,7 @@ tests. Rules that need application context belong in manual review.
 `--review` retains those errors and adds warnings for production assertions and
 panics, discarded values and errors, lost error context, unused exports, and
 single-branch cases. Inspect these against their callers and failure contracts.
-The cleanup left 267 warnings in this profile. A warning alone
-does not establish a defect. In particular, the discarded-value rule also flags
+A warning alone does not establish a defect. In particular, the discarded-value rule also flags
 `Nil`, `Bool`, timer handles, monitor handles, and process handles.
 
 Keep tests exported for discovery. Test assertions and deliberate failure
@@ -66,8 +67,3 @@ the focused profile uses `warnings_as_errors` to enforce its failure status.
 The review profile is for inspection, so its exit status is not an acceptance
 check. Unwrap and complexity findings retain `off` in the all-rules JSON report.
 `off` therefore does not mean that the all-rules run skipped those checks.
-Compare findings by rule, function, and expression as well as line number;
-annotations and removed definitions move source lines.
-
-See [the cleanup review](gleam-cleanup-review.md) for dispositions and the
-before/after counts.

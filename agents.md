@@ -13,6 +13,7 @@ PLEASE USE `gleam check` to type check and `gleam format src test` to format Gle
 For Go changes, run gopls with `staticcheck` and all available analyses enabled, alongside vet and tests. Fix diagnostics by simplifying the code, without adding wrappers or obscuring control flow.
 
 - Gleam lint: `test/gleam-lint.sh` (pinned glinter in `nix develop`; eleven focused rules also run in pre-commit and `test.sh`; manual review and audit profiles are documented in `robot-docs/gleam-lint.md`)
+- Keep generated lint reports under `/tmp`. Never commit CSV audit inventories or retrospective cleanup reports.
 - Gleam suites: `gleam test`
 - Go: `go -C cli vet ./...` and `go -C cli test ./...`
 - Rust (optional `view` renderer): `cargo test --release --locked --manifest-path native/render/Cargo.toml`

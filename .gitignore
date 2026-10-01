@@ -19,3 +19,6 @@ __pycache__/
 /.direnv
 /.envrc
 /.research/
+
+# Generated Gleam audit inventories belong outside the repository.
+/robot-docs/gleam-*-review.csv
