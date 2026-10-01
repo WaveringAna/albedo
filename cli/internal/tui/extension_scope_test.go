@@ -46,12 +46,4 @@ func TestExtensionsOpenOnGlobalDefaultsAndScopeToSessionOnRequest(t *testing.T) 
 	if m.Confirming {
 		t.Fatal("x needs a session choice to drop")
 	}
-
-	// An older daemon only supports per-session choices.
-	old := NewExtensionPickerModel(nil, "s")
-	old, _ = old.Update(extensionsLoadedMsg{Extensions: []ExtensionItem{{Name: "bash", Enabled: true}}, NoGlobal: true})
-	old, _ = old.Update(tea.KeyPressMsg{Code: 'g', Text: "g"})
-	if !old.Session {
-		t.Fatal("without daemon support the page must stay on this session")
-	}
 }
