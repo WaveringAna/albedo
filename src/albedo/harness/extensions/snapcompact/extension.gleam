@@ -23,7 +23,7 @@ import gleam/result
 import gleam/string
 import sqlight
 
-const default_trigger_percent = 90
+const default_trigger_percent = 80
 
 /// Kept verbatim after a compaction: a small tail leaves the window to the
 /// archive and to new turns.
@@ -636,11 +636,7 @@ fn serialize_input(input: types.Input) -> String {
 /// not decode falls back to the raw JSON so no tool call is lost.
 fn serialize_replay(item: types.ReplayItem) -> String {
   let protocol = types.replay_protocol(item)
-  let decoded = case protocol {
-    types.ChatCompletions -> types.inspect_item(item, replay_parts_decoder())
-    types.Responses -> types.inspect_item(item, responses_parts_decoder())
-  }
-  case decoded {
+  case compaction.assistant_parts(item) {
     Ok(#("", [])) if protocol == types.Responses -> ""
     Ok(#(text, calls)) -> {
       let head = case text {
@@ -663,55 +659,6 @@ fn serialize_replay(item: types.ReplayItem) -> String {
 
 fn replay_fallback(item: types.ReplayItem) -> String {
   "¶turn: " <> cap(json.to_string(types.replay_json(item)), message_chars)
-}
-
-fn replay_parts_decoder() -> decode.Decoder(#(String, List(types.ToolCall))) {
-  use text <- decode.optional_field(
-    "content",
-    "",
-    decode.optional(decode.string) |> decode.map(option.unwrap(_, "")),
-  )
-  use calls <- decode.optional_field(
-    "tool_calls",
-    [],
-    decode.list(call_decoder()),
-  )
-  decode.success(#(text, calls))
-}
-
-/// A Responses output item as text and calls: a message's text parts, or one
-/// function call. Any other item decodes to nothing.
-fn responses_parts_decoder() -> decode.Decoder(#(String, List(types.ToolCall))) {
-  use kind <- decode.field("type", decode.string)
-  case kind {
-    "message" -> {
-      use parts <- decode.optional_field(
-        "content",
-        [],
-        decode.list(decode.optional_field(
-          "text",
-          "",
-          decode.string,
-          decode.success,
-        )),
-      )
-      decode.success(#(string.concat(parts), []))
-    }
-    "function_call" -> {
-      use id <- decode.field("call_id", decode.string)
-      use name <- decode.field("name", decode.string)
-      use args <- decode.field("arguments", decode.string)
-      decode.success(#("", [types.ToolCall(id, name, args)]))
-    }
-    _ -> decode.success(#("", []))
-  }
-}
-
-fn call_decoder() -> decode.Decoder(types.ToolCall) {
-  use id <- decode.field("id", decode.string)
-  use name <- decode.subfield(["function", "name"], decode.string)
-  use args <- decode.subfield(["function", "arguments"], decode.string)
-  decode.success(types.ToolCall(id, name, args))
 }
 
 fn image_notes(images: List(types.Image)) -> String {

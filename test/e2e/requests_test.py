@@ -111,7 +111,16 @@ class ProviderRequestsTest(unittest.TestCase):
                 rows = page["rows"]
                 self.assertEqual(
                     [row["kind"] for row in rows],
-                    ["turn", "turn", "turn", "turn", "turn", "summarizer", "turn"],
+                    [
+                        "turn",
+                        "turn",
+                        "turn",
+                        "turn",
+                        "turn",
+                        "summarizer",
+                        "summarizer",
+                        "turn",
+                    ],
                 )
                 # Every call carries its own reported counts, split as sent.
                 self.assertEqual(
@@ -131,6 +140,7 @@ class ProviderRequestsTest(unittest.TestCase):
                         (400, 50, 160, 5),
                         (None, None, None, None),
                         (60, 10, None, None),
+                        (60, 10, None, None),
                         (70, 15, 30, 2),
                     ],
                 )
@@ -149,7 +159,7 @@ class ProviderRequestsTest(unittest.TestCase):
                     # An OpenAI-protocol provider caches on its own; albedo marks nothing.
                     self.assertEqual(row["cacheMarks"], [])
 
-                for row in rows[:4] + [rows[6]]:
+                for row in rows[:4] + [rows[7]]:
                     self.assertEqual(row["outcome"], "ok")
                     self.assertIsNone(row["status"])
                     self.assertIsNone(row["error"])
@@ -179,7 +189,7 @@ class ProviderRequestsTest(unittest.TestCase):
                 self.assertEqual(rows[0]["seq"], assistant["first reply"])
                 self.assertEqual(rows[2]["seq"], assistant["tool done"])
                 self.assertEqual(rows[3]["seq"], assistant["third reply"])
-                self.assertEqual(rows[6]["seq"], assistant["post compaction reply"])
+                self.assertEqual(rows[7]["seq"], assistant["post compaction reply"])
                 # The tool-call turn's row points at its own assistant row,
                 # the call it produced, not the tool output after it.
                 calls = [item for item in tree if item["preview"] == "call python"]
@@ -192,17 +202,17 @@ class ProviderRequestsTest(unittest.TestCase):
                 linked = [row["seq"] for row in rows if row["seq"] is not None]
                 self.assertEqual(linked, sorted(linked))
 
-                # The compaction summary call is its own kind, outside the
-                # session projection.
-                summary = rows[5]
-                self.assertIsNone(summary["seq"])
-                self.assertIsNone(summary["replaced"])
-                self.assertIsNone(summary["projectionHash"])
-                self.assertEqual(summary["inputs"], 1)
+                # The summary and the notes rewrite are their own kind,
+                # outside the session projection.
+                for summary in rows[5:7]:
+                    self.assertIsNone(summary["seq"])
+                    self.assertIsNone(summary["replaced"])
+                    self.assertIsNone(summary["projectionHash"])
+                    self.assertEqual(summary["inputs"], 1)
 
                 # The projection identity changes once compaction rewrites the
                 # head the verbatim tail hangs from.
-                after = rows[6]
+                after = rows[7]
                 self.assertGreater(after["replaced"], 0)
                 self.assertIsNotNone(after["projectionHash"])
                 self.assertTrue(after["strategy"])

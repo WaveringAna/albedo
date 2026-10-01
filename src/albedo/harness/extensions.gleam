@@ -14,6 +14,7 @@ import albedo/harness/extensions/mail/extension as mail
 import albedo/harness/extensions/mcp/extension as mcp
 import albedo/harness/extensions/memory/extension as memory
 import albedo/harness/extensions/models/extension as models
+import albedo/harness/extensions/notes/extension as notes
 import albedo/harness/extensions/openai/extension as openai
 import albedo/harness/extensions/paperclips/extension as paperclips
 import albedo/harness/extensions/proxy/extension as proxy
@@ -64,6 +65,7 @@ pub fn defaults() -> Config {
       // After lcm-memory: the archive covers history past LCM's folds.
       snapcompact.memory(),
       lcm.extension(),
+      notes.extension(),
       mcp.configured_extension(),
       remote.extension(),
       browser.extension(),
@@ -77,7 +79,7 @@ pub fn defaults() -> Config {
       "python", "run", "work", "mail", "agents", "schedule", "files", "memory",
       "instructions", "commands", "skills", "paperclips", "models", "openai",
       "codex", "antigravity", "alibaba", "claude", "rolling",
-      "snapcompact-memory", "lcm-memory", "remote", "browser",
+      "snapcompact-memory", "lcm-memory", "notes", "remote", "browser",
     ],
   )
 }

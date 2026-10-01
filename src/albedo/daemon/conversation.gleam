@@ -283,6 +283,7 @@ pub fn delete(store: store.Store, id: String) -> Result(Nil, String) {
             "session_extensions",
             "rolling_compaction_state",
             "rolling_compaction_observation",
+            "compaction_notes",
             "cells",
             "work",
           ],

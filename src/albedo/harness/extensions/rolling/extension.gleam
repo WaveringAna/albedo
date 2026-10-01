@@ -77,7 +77,7 @@ type Resumed {
 const cut_prefix = "users:"
 
 fn default_config() -> Config {
-  Config(None, 90, 25)
+  Config(None, 80, 25)
 }
 
 fn config_decoder() -> decode.Decoder(Config) {
@@ -86,7 +86,7 @@ fn config_decoder() -> decode.Decoder(Config) {
     None,
     decode.optional(decode.int),
   )
-  use trigger <- decode.optional_field("triggerPercent", 90, decode.int)
+  use trigger <- decode.optional_field("triggerPercent", 80, decode.int)
   use tail <- decode.optional_field("tailPercent", 25, decode.int)
   decode.success(Config(capacity, trigger, tail))
 }
@@ -514,6 +514,7 @@ fn summarize_chunks(
         previous,
         chunk,
         max_output_tokens,
+        compaction.summary_instructions,
       ))
       |> result.map(string.trim)
       |> result.try(fn(value) {

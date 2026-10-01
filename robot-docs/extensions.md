@@ -3,7 +3,7 @@
 Persisted preferences are owned by the daemon and changed through the [settings API](settings.md). The CLI refreshes them on use and never writes settings files.
 
 
-an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, models, provider, login, service, migration, compaction, or fold plugins. `python`, `run`, `work`, `mail`, `agents`, `schedule`, `paperclips`, `files`, `memory`, `instructions`, `commands`, `skills`, `models`, `openai`, `codex`, `antigravity`, `alibaba`, `claude`, `rolling`, `snapcompact-memory`, `lcm-memory`, `remote`, and `browser` are enabled by default; `mcp`, `view`, [`proxy`](proxy.md), `webhooks`, [`warm`](cache-warming.md), and the `snapcompact` and `lcm` compaction strategies are installed and disabled until enabled. plugin contributions compose inside them.
+an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, models, provider, login, service, migration, compaction, notes, or fold plugins. `python`, `run`, `work`, `mail`, `agents`, `schedule`, `paperclips`, `files`, `memory`, `instructions`, `commands`, `skills`, `models`, `openai`, `codex`, `antigravity`, `alibaba`, `claude`, `rolling`, `snapcompact-memory`, `lcm-memory`, `notes`, `remote`, and `browser` are enabled by default; `mcp`, `view`, [`proxy`](proxy.md), `webhooks`, [`warm`](cache-warming.md), and the `snapcompact` and `lcm` compaction strategies are installed and disabled until enabled. plugin contributions compose inside them.
 
 ## select extensions
 
@@ -202,3 +202,5 @@ see [the skills extension](skills.md) for discovery paths, metadata-only startup
 ## lcm compaction
 
 `lcm` is an alternative compaction strategy with source-backed hierarchical summaries. enabling it disables `rolling` in the same reload. `lcm-memory` keeps `lcm_list`, `lcm_grep`, `lcm_describe`, and `lcm_expand` available after a switch back to `rolling`, so stored folds remain accessible even if a rolling summary omits them. see [compaction](compaction.md) for the handoff and retrieval limits.
+
+`notes` is a layer over whichever strategy is active, not a strategy: at every compaction the model rewrites its own notes, and they lead every later request. it is enabled by default and needs no strategy of its own. see [compaction](compaction.md).

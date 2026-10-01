@@ -531,7 +531,8 @@ class ExtensionTests(unittest.TestCase):
         started = self.command("/compact")["result"]
         self.assertEqual((started["strategy"], started["started"]), ("rolling", True))
         self.compacted()
-        self.assertEqual(len(self.provider.requests), before + 1)
+        # One call writes the summary and one rewrites the model's notes.
+        self.assertEqual(len(self.provider.requests), before + 2)
         self.assertEqual(
             self.get(f"/sessions/{self.sid}/tree?after=0&limit=100")["items"], original
         )

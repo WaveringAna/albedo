@@ -22,9 +22,23 @@ Transcript rows carry an indexed `row_class`: `user`, `image_fit`, or `other`. E
 
 Text or list positions cannot identify rows reliably because messages can repeat and provider projection can change item counts. An excursion marker belongs to its parent session. The branch has different row references, so returning its outcome requires an explicit link to the parent marker.
 
+## notes
+
+`notes` is a layer over whichever strategy is active, enabled by default. At every compaction it asks the model, through the same summarizer call the strategies use, to rewrite its notes from the previous notes and the history that compaction just evicted. The instructions tell the model the budget (`budgetTokens`, default 2000) and say that the archive or summary already carries the story, so the notes keep exact identifiers, decisions, what is verified, open work and the next step, and drop what is finished. The output limit sits a quarter above the budget so a model slightly over is not cut off mid-sentence; nothing else truncates the notes.
+
+The notes are plain text in `compaction_notes`, saved with the same user-message cut a strategy saves, and every later request starts with them under a short header that points to `transcript_grep` and `transcript_read`. They change only at a compaction, so the request prefix stays cached. They belong to the session, not the strategy, and survive a switch between strategies.
+
+What the strategy evicted is derived, not reported: history without the longest tail that the prepared request also ends with, moved forward to a user message. Only history after the saved cut is sent, in chunks of at most half the window, with the previous notes. A fork has no notes row, so its first compaction writes them from all it evicted. A rewritten transcript no longer matches the saved cut, so the notes are rewritten from scratch.
+
+A failed rewrite keeps the old notes, logs once, and says so in the `/context` observation. The strategy has already committed, so the turn is never failed, and the next compaction covers what was missed. The strategies' triggers do not count the notes, which is one reason `triggerPercent` defaults to 80.
+
+```json
+{ "notes": { "budgetTokens": 2000 } }
+```
+
 ## evicted capability notes
 
-A `/reload` adds a `capabilities changed` note that carries the extension context, and the next compaction rebuilds the system prompt. Every strategy leaves such notes out of what it evicts: `snapcompact` omits them from the archive, and the rolling and LCM summarizers never read them. Notes still in the verbatim tail stay, because they are how the model learns of a reload while the old prompt is pinned.
+A `/reload` adds a `capabilities changed` note that carries the extension context, and the next compaction rebuilds the system prompt. Every strategy leaves such notes out of what it evicts: `snapcompact` omits them from the archive, and the summarizer, which rolling, LCM and `notes` share, never reads them. The summarizer sees an assistant turn as its text and calls, not raw provider JSON, and skips encrypted reasoning. Notes still in the verbatim tail stay, because they are how the model learns of a reload while the old prompt is pinned.
 
 ## image payload lifecycle
 
@@ -49,7 +63,7 @@ Search pages actual rows rather than numeric sequence intervals, so deleted sequ
 The `lcm` section in `$ALBEDO_HOME/extensions.json` accepts the same setting names as `rolling`:
 
 ```json
-{ "lcm": { "contextWindowTokens": 200000, "triggerPercent": 90, "tailPercent": 25 } }
+{ "lcm": { "contextWindowTokens": 200000, "triggerPercent": 80, "tailPercent": 25 } }
 ```
 
 `contextWindowTokens` is optional. Without an explicit setting or catalogued window, automatic LCM compaction stays off; `/compact` can still force it. The estimate uses byte counts. The newest whole unit can exceed the available window. In that case preparation reports the limit without discarding part of the unit.
@@ -63,7 +77,7 @@ The `lcm` section in `$ALBEDO_HOME/extensions.json` accepts the same setting nam
 3. a short recap built from recent user messages, quoted verbatim and bounded
 4. the newest conversation tail, unchanged
 
-It compacts when the estimated request reaches `triggerPercent` of the configured context window, so roughly the last 10% stays free for work. The tail keeps about `tailPercent` of the window. A cut is only made between whole conversation units, so an assistant tool call always keeps its result.
+It compacts when the estimated request reaches `triggerPercent` of the configured context window, so roughly the last 20% stays free for work. The tail keeps about `tailPercent` of the window. A cut is only made between whole conversation units, so an assistant tool call always keeps its result.
 
 Each rolling compaction combines the previous summary with newly evicted history in a replacement summary. A long eviction is summarized in chunks of at most half the window, with the summary carried from chunk to chunk. The summarizer call has no tools. Rolling writes its summary and cut position only after a successful call. A provider failure leaves the previous projection and the transcript intact. A branch starts without rolling state.
 
@@ -91,7 +105,7 @@ Other strategies' stored folds stay as text ahead of the frames, so the budget o
 When the catalog reports that the current model reads no image input, `snapcompact` uses rolling's text compaction for that model. The frame archive stays saved for a later model that reads images. A model without catalog modalities is treated as vision-capable.
 
 ```json
-{ "snapcompact": { "contextWindowTokens": 200000, "triggerPercent": 90, "tailPercent": 10, "archivePercent": 20, "maxFrames": 60 } }
+{ "snapcompact": { "contextWindowTokens": 200000, "triggerPercent": 80, "tailPercent": 10, "archivePercent": 20, "maxFrames": 60 } }
 ```
 
 `contextWindowTokens` and `maxFrames` are optional. `maxFrames` replaces the provider caps.
@@ -99,7 +113,7 @@ When the catalog reports that the current model reads no image input, `snapcompa
 ## configure
 
 ```json
-{ "rolling": { "contextWindowTokens": 200000, "triggerPercent": 90, "tailPercent": 25 } }
+{ "rolling": { "contextWindowTokens": 200000, "triggerPercent": 80, "tailPercent": 25 } }
 ```
 
 Put this in `$ALBEDO_HOME/extensions.json`. `contextWindowTokens` is optional. Without it, `rolling` reads the current model's context window from the enabled [models catalog](models.md). An explicit setting takes precedence. Without either source, `rolling` does not compact automatically and `/context` reports an unknown window.

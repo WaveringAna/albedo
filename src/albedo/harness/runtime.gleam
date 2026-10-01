@@ -1413,7 +1413,12 @@ pub fn prepare_view_scoped(
         )
       // A strategy that raises fails the turn the way one returning an error
       // does, naming itself, rather than killing the turn's process.
-      protect.guarded(fn() { strategy.prepare(context, history) })
+      protect.guarded(fn() {
+        use prepared <- result.try(strategy.prepare(context, history))
+        list.try_fold(extension.notes(enabled), prepared, fn(prepared, layer) {
+          layer.apply(context, history, prepared)
+        })
+      })
       |> result.map_error(fn(error) {
         "compaction " <> strategy.name <> ": " <> error
       })

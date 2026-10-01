@@ -34,7 +34,7 @@ type ModelUnit {
 }
 
 fn default_config() -> Config {
-  Config(None, 90, 25)
+  Config(None, 80, 25)
 }
 
 pub fn configured_extension(config: Config) -> harness_extension.Extension {
@@ -101,7 +101,7 @@ fn decoder() -> decode.Decoder(Config) {
     None,
     decode.optional(decode.int),
   )
-  use trigger <- decode.optional_field("triggerPercent", 90, decode.int)
+  use trigger <- decode.optional_field("triggerPercent", 80, decode.int)
   use tail <- decode.optional_field("tailPercent", 25, decode.int)
   decode.success(Config(capacity, trigger, tail))
 }
@@ -486,6 +486,7 @@ fn attempt_summary(
       None,
       inputs,
       limit,
+      compaction.summary_instructions,
     )),
   )
   let summary = string.trim(summary)

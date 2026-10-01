@@ -266,6 +266,8 @@ pub type Plugin {
   /// Session commands shared by the CLI menu and the kernel's `commands` object.
   CommandPlugin(commands: List(command.Command))
   CompactionPlugin(strategy: compaction.Strategy)
+  /// A layer over whichever compaction strategy is active.
+  NotesPlugin(notes: compaction.Notes)
   /// Stored folds any compaction strategy can read through its context.
   FoldPlugin(folds: compaction.Folds)
   /// A catalog answers only for models and providers it actually lists.
@@ -1219,6 +1221,7 @@ pub fn summaries(
             ManagedPlugin(_) -> "managed"
             CommandPlugin(_) -> "commands"
             CompactionPlugin(_) -> "compaction"
+            NotesPlugin(_) -> "notes"
             FoldPlugin(_) -> "folds"
             ModelsPlugin(_) -> "models"
             ModelProviderPlugin(_) -> "model_provider"
@@ -1362,6 +1365,16 @@ pub fn compaction(installed: List(Extension)) -> Option(compaction.Strategy) {
   })
   |> list.first
   |> option.from_result
+}
+
+/// Every enabled notes layer, in registry order.
+pub fn notes(installed: List(Extension)) -> List(compaction.Notes) {
+  plugin_values(installed, fn(_, plugin) {
+    case plugin {
+      NotesPlugin(value) -> Ok(value)
+      _ -> Error(Nil)
+    }
+  })
 }
 
 /// Every enabled fold provider, in registry order.

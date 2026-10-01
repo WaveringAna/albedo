@@ -127,7 +127,7 @@ class ContextTest(unittest.TestCase):
         )
         self.assertEqual(compaction["status"], "not_needed")
         self.assertEqual(compaction["input_limit_tokens"], 200000)
-        self.assertEqual(compaction["trigger_free_percent"], 10)
+        self.assertEqual(compaction["trigger_free_percent"], 20)
         self.assertIn("fixture-cloud", compaction["source"])
         self.assertIn("models.dev catalog", compaction["source"])
         labels = [section["label"] for section in snapshot["sections"]]
