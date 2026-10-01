@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"albedo/cli/internal/daemon"
 	"iter"
 	"slices"
 	"strings"
@@ -164,15 +165,13 @@ const (
 
 type agentPreview struct {
 	lines   agentTail
+	decoder daemon.JSONStringDecoder
 	matched int
-	length  int
-	pending [utf8.UTFMax]byte
 	state   argumentPreviewState
-	escaped bool
 }
 
-// Agent previews use the first literal "code" match and permissive escapes,
-// exposing code while the argument JSON is still incomplete.
+// Agent previews use the first literal "code" match, exposing code while
+// the argument JSON is still incomplete.
 func (preview *agentPreview) appendArguments(text string) bool {
 	if preview.state == argumentDone {
 		return false
@@ -208,25 +207,11 @@ func (preview *agentPreview) appendArguments(text string) bool {
 				preview.state = argumentRaw
 			}
 		case argumentCode:
-			if !preview.escaped && preview.length == 0 && ch < utf8.RuneSelf && ch != '\\' && ch != '"' {
-				start := i
-				for i+1 < len(text) && text[i+1] < utf8.RuneSelf && text[i+1] != '\\' && text[i+1] != '"' {
-					i++
-				}
-				preview.lines.write(text[start:i+1], tailCode)
-				continue
+			preview.decoder.Append(text[i:], preview.appendCode)
+			if preview.decoder.Done() {
+				preview.state = argumentDone
 			}
-			preview.pending[preview.length] = ch
-			preview.length++
-			for preview.length > 0 && utf8.FullRune(preview.pending[:preview.length]) {
-				char, size := utf8.DecodeRune(preview.pending[:preview.length])
-				copy(preview.pending[:], preview.pending[size:preview.length])
-				preview.length -= size
-				preview.appendCodeRune(char)
-				if preview.state == argumentDone {
-					return true
-				}
-			}
+			return true
 		case argumentRaw, argumentDone:
 			return true
 		}
@@ -234,36 +219,12 @@ func (preview *agentPreview) appendArguments(text string) bool {
 	return true
 }
 
-func (preview *agentPreview) appendCodeRune(char rune) {
-	if preview.escaped {
-		preview.escaped = false
-		switch char {
-		case 'n':
-			preview.lines.write("\n", tailCode)
-		case 't':
-			preview.lines.write("    ", tailCode)
-		default:
-			preview.lines.write(string(char), tailCode)
-		}
-		return
-	}
-	switch char {
-	case '\\':
-		preview.escaped = true
-	case '"':
-		preview.state = argumentDone
-	default:
-		preview.lines.write(string(char), tailCode)
-	}
+func (preview *agentPreview) appendCode(text string) {
+	preview.lines.write(strings.ReplaceAll(text, "\t", "    "), tailCode)
 }
 
 func (preview *agentPreview) finish() {
-	for preview.length > 0 {
-		char, size := utf8.DecodeRune(preview.pending[:preview.length])
-		copy(preview.pending[:], preview.pending[size:preview.length])
-		preview.length -= size
-		preview.appendCodeRune(char)
-	}
+	preview.decoder.Finish(preview.appendCode)
 }
 
 type agentTailCache struct {

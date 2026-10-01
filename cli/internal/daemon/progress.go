@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -162,54 +161,8 @@ func ExtractPartialJSONCode(s string) string {
 	start := colon + 1 + quote + 1
 
 	var decodedCode strings.Builder
-	code := s[start:]
-	i := 0
-	for i < len(code) {
-		b := code[i]
-		if b == '"' {
-			break
-		}
-		if b == '\\' {
-			if i+1 >= len(code) {
-				break
-			}
-			escapedByte := code[i+1]
-			switch escapedByte {
-			case 'n':
-				decodedCode.WriteByte('\n')
-				i += 2
-			case 'r':
-				decodedCode.WriteByte('\r')
-				i += 2
-			case 't':
-				decodedCode.WriteByte('\t')
-				i += 2
-			case '"':
-				decodedCode.WriteByte('"')
-				i += 2
-			case '\\':
-				decodedCode.WriteByte('\\')
-				i += 2
-			case 'u':
-				if i+5 < len(code) {
-					hexDigits := code[i+2 : i+6]
-					if codePoint, err := strconv.ParseInt(hexDigits, 16, 32); err == nil {
-						decodedCode.WriteRune(rune(codePoint))
-						i += 6
-						continue
-					}
-				}
-				decodedCode.WriteByte(escapedByte)
-				i += 2
-			default:
-				decodedCode.WriteByte(escapedByte)
-				i += 2
-			}
-		} else {
-			decodedCode.WriteByte(b)
-			i++
-		}
-	}
+	var decoder JSONStringDecoder
+	decoder.Append(s[start:], func(text string) { decodedCode.WriteString(text) })
 	return decodedCode.String()
 }
 
