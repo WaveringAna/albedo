@@ -1,4 +1,5 @@
-"""Daemon and Python crashes inject exactly one reset notice without corrupting history."""
+"""A Python crash injects exactly one reset notice without corrupting history; a
+daemon crash leaves the detached kernel alive, so it injects none."""
 
 import json
 import urllib.error
@@ -40,7 +41,7 @@ class KernelResetTests(unittest.TestCase):
         self.app.idle(session)
         return latest_user(self.provider.requests[-1]["request"])
 
-    def test_daemon_restart_and_kernel_crash_emit_one_shot_reset_notices(self):
+    def test_kernel_crash_emits_one_shot_reset_notice_and_daemon_crash_none(self):
         app = self.app
         session = app.session()
         self.assertEqual(self.turn(session, "first prompt"), "first prompt")
@@ -53,7 +54,7 @@ class KernelResetTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as rejected:
             app.prompt(session, "   ").close()
         self.assertEqual(rejected.exception.code, 409)
-        self.assertEqual(self.turn(session, "after reset"), "after reset" + NOTICE)
+        self.assertEqual(self.turn(session, "after restart"), "after restart")
         self.assertEqual(self.turn(session, "ordinary turn"), "ordinary turn")
         self.assertEqual(self.turn(session, "lose kernel"), "lose kernel")
         self.assertEqual(
@@ -75,7 +76,7 @@ class KernelResetTests(unittest.TestCase):
             users,
             [
                 "first prompt",
-                "after reset",
+                "after restart",
                 "ordinary turn",
                 "lose kernel",
                 "recover kernel",

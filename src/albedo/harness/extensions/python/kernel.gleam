@@ -1,12 +1,16 @@
 //// One trusted CPython process per session. POSIX, Python 3.11+.
 
 import albedo/daemon/image
+import albedo/harness/extensions/python/link
 import albedo/harness/extensions/work/ledger as work
 import albedo/harness/extensions/work/rpc
+import albedo/harness/location
+import albedo/harness/settings
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
+import gleam/io
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -20,6 +24,9 @@ pub type Error {
   Busy
   Lost
   Invalid(String)
+  /// The cell outlived its deadline while the kernel was out of reach. It
+  /// keeps running there; its result is journaled when the kernel is back.
+  Detached
 }
 
 pub type Status {
@@ -53,15 +60,28 @@ pub type Outcome {
   )
 }
 
+/// Everything the port owner needs to start a kernel (`fresh`) or attach
+/// to the one a record names.
+type Boot {
+  Boot(
+    owner: process.Pid,
+    python: String,
+    bridge: String,
+    cwd: String,
+    host: fn(String) -> String,
+    modules: String,
+    link: link.Link,
+    run_dir: String,
+    kernel: String,
+    token: String,
+    grace: Int,
+    out_seq: Int,
+    fresh: Bool,
+  )
+}
+
 @external(erlang, "albedo_python", "start")
-fn start_native(
-  owner: process.Pid,
-  executable: String,
-  script: String,
-  cwd: String,
-  host: fn(String) -> String,
-  modules: List(String),
-) -> Result(Kernel, Error)
+fn start_native(boot: Boot) -> Result(Kernel, Error)
 
 /// A soft interrupt preserves variables; a forced stop returns Lost.
 pub fn execute(
@@ -223,6 +243,12 @@ pub fn interrupt(kernel: Kernel) -> Nil
 @external(erlang, "albedo_python", "stop")
 pub fn stop(kernel: Kernel) -> Result(Nil, String)
 
+/// Let go of the kernel without ending it, as a daemon that is shutting down
+/// does: it keeps its namespace and jobs for its grace period, and the next
+/// `open` for its session attaches to it again.
+@external(erlang, "albedo_python", "detach")
+pub fn detach(kernel: Kernel) -> Nil
+
 /// Swap the live host RPC closure: a refreshed extension snapshot rebinds the
 /// routes Python reaches without restarting the kernel, so skills.read and its
 /// sibling routes resolve against the new catalog immediately. A host call
@@ -289,15 +315,175 @@ pub fn local(store: work.Store, cwd: String) -> Result(Kernel, Error) {
   local_with_plugins(store, cwd, rpc.handle(store, cwd, _), ["run", "work"])
 }
 
-@external(erlang, "albedo_python", "local_paths")
-fn local_paths() -> Result(#(String, String), Error)
-
+/// A kernel no session will look for again.
 pub fn local_with_plugins(
   store: work.Store,
   cwd: String,
   host: fn(String) -> String,
   modules: List(String),
 ) -> Result(Kernel, Error) {
-  use #(executable, script) <- result.try(local_paths())
-  start_native(work.owner(store), executable, script, cwd, host, modules)
+  open(store, "local-" <> new_id(), cwd, host, modules)
+  |> result.map(fn(opened) { opened.0 })
+}
+
+@external(erlang, "albedo_python", "paths")
+fn paths() -> Result(#(String, String), Error)
+
+/// Seconds a kernel outlives its last attach: ALBEDO_KERNEL_GRACE_SECONDS,
+/// else an hour.
+@external(erlang, "albedo_python", "grace")
+fn grace() -> Int
+
+@external(erlang, "albedo_native", "new_id")
+fn new_id() -> String
+
+/// The session's kernel: the one it recorded, attached again, when that one
+/// is still alive, otherwise a fresh one. The flag says it was attached, so
+/// its namespace is the one the session left.
+pub fn open(
+  store: work.Store,
+  session: String,
+  cwd: String,
+  host: fn(String) -> String,
+  modules: List(String),
+) -> Result(#(Kernel, Bool), Error) {
+  use #(modules, boot) <- result.try(booter(store, cwd, host, modules))
+  case reattach(store, session, cwd, modules, boot) {
+    Some(kernel) -> Ok(#(kernel, True))
+    None ->
+      boot_fresh(store, session, cwd, modules, boot)
+      |> result.map(fn(kernel) { #(kernel, False) })
+  }
+}
+
+/// A new kernel for the session, even while its recorded one still runs, as
+/// a replacement prepared beside it does. It becomes the recorded one.
+pub fn fresh(
+  store: work.Store,
+  session: String,
+  cwd: String,
+  host: fn(String) -> String,
+  modules: List(String),
+) -> Result(Kernel, Error) {
+  use #(modules, boot) <- result.try(booter(store, cwd, host, modules))
+  boot_fresh(store, session, cwd, modules, boot)
+}
+
+fn boot_fresh(
+  store: work.Store,
+  session: String,
+  cwd: String,
+  modules: String,
+  boot: fn(link.Record, Bool) -> Result(Kernel, Error),
+) -> Result(Kernel, Error) {
+  let kernel = string.slice(new_id(), 0, 16)
+  let record =
+    link.Record(
+      session: session,
+      kernel: kernel,
+      token: new_id(),
+      run_dir: settings.home() <> "/run/" <> kernel,
+      cwd: cwd,
+      modules: modules,
+      out_seq: 0,
+    )
+  use _ <- result.try(
+    link.create(store, record) |> result.map_error(Unavailable),
+  )
+  boot(record, True)
+}
+
+/// The session's recorded kernel attached again, never a fresh one.
+pub fn resume(
+  store: work.Store,
+  session: String,
+  cwd: String,
+  host: fn(String) -> String,
+  modules: List(String),
+) -> Option(Kernel) {
+  case booter(store, cwd, host, modules) {
+    Ok(#(modules, boot)) -> reattach(store, session, cwd, modules, boot)
+    Error(_) -> None
+  }
+}
+
+/// Every session with a recorded kernel, and the workspace it booted in.
+/// Sessions of kernels nobody looks for again are left to their grace.
+pub fn recorded(store: work.Store) -> List(#(String, String)) {
+  link.all(store)
+  |> list.filter(fn(record) { !string.starts_with(record.session, "local-") })
+  |> list.map(fn(record) { #(record.session, record.cwd) })
+}
+
+/// How to start or attach to a kernel for this workspace and module set,
+/// with the modules as the record stores them.
+fn booter(
+  store: work.Store,
+  cwd: String,
+  host: fn(String) -> String,
+  modules: List(String),
+) -> Result(#(String, fn(link.Record, Bool) -> Result(Kernel, Error)), Error) {
+  use _ <- result.try(local_only(cwd))
+  use #(python, bridge) <- result.try(paths())
+  let modules = json.to_string(json.array(modules, json.string))
+  Ok(
+    #(modules, fn(record: link.Record, fresh) {
+      start_native(Boot(
+        owner: work.owner(store),
+        python: python,
+        bridge: bridge,
+        cwd: cwd,
+        host: host,
+        modules: modules,
+        link: link.bind(store, record),
+        run_dir: record.run_dir,
+        kernel: record.kernel,
+        token: record.token,
+        grace: grace(),
+        out_seq: record.out_seq,
+        fresh: fresh,
+      ))
+    }),
+  )
+}
+
+/// The recorded kernel, when it still answers and still fits this session.
+fn reattach(
+  store: work.Store,
+  session: String,
+  cwd: String,
+  modules: String,
+  boot: fn(link.Record, Bool) -> Result(Kernel, Error),
+) -> Option(Kernel) {
+  use record <- option.then(link.find(store, session))
+  case boot(record, False) {
+    Error(_) -> {
+      // Gone. The port owner forgets what it found gone; this also covers a
+      // bridge that never started.
+      let _ = link.forget(store, record)
+      None
+    }
+    Ok(kernel) if record.cwd == cwd && record.modules == modules -> Some(kernel)
+    Ok(kernel) -> {
+      // #55 will swap a kernel whose workspace or modules changed at its
+      // first idle moment, like bundle skew. Until then it ends here and a
+      // fresh one boots.
+      io.println_error(
+        "kernel "
+        <> record.kernel
+        <> " no longer fits its session; replacing it",
+      )
+      let _ = stop(kernel)
+      None
+    }
+  }
+}
+
+/// Kernels run on this machine only, for now.
+fn local_only(cwd: String) -> Result(Nil, Error) {
+  case location.parse(cwd) {
+    Ok(location.Remote(host:, ..)) ->
+      Error(Invalid(location.unavailable(host, "kernels")))
+    _ -> Ok(Nil)
+  }
 }

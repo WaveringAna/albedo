@@ -6,7 +6,8 @@
 %% the Python suites share (test/scratch.py). It is also TMPDIR, so every file a
 %% test writes is removed with it when the run ends, and a run that died first
 %% is swept by the next Python suite, which removes the <name>-<pid> directories
-%% of processes that no longer exist.
+%% of processes that no longer exist. Kernels keep their run directories under
+%% it too, and leave when it disappears.
 -module(albedo_test_home).
 -export([isolate/0, cleanup/0]).
 
@@ -17,6 +18,8 @@ isolate() ->
     persistent_term:put(?MODULE, Dir),
     true = os:putenv("ALBEDO_HOME", Dir),
     true = os:putenv("TMPDIR", Dir),
+    %% A detached kernel a test never stopped ends soon after, not in an hour.
+    true = os:putenv("ALBEDO_KERNEL_GRACE_SECONDS", "20"),
     nil.
 
 cleanup() ->

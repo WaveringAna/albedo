@@ -3,7 +3,9 @@
 import albedo/harness/extension
 import albedo/harness/extensions/python/cells as journal
 import albedo/harness/extensions/python/kernel as python
+import albedo/harness/extensions/python/link
 import albedo/harness/extensions/python/migrations/cell_images
+import albedo/harness/extensions/python/migrations/kernel_links
 import albedo/harness/extensions/python/rpc as cells
 import albedo/openai_api/types
 import gleam/dynamic/decode
@@ -87,7 +89,7 @@ fn invoke(
           ))
       }
       use _ <- result.try(
-        journal.finish(context.store, id, outcome)
+        journal.settle(context.store, id, outcome)
         |> result.map_error(extension.Fatal),
       )
       let _ =
@@ -123,6 +125,8 @@ pub fn extension() -> extension.Extension {
         "cell_images",
         cell_images.run,
       )),
+      extension.MigrationPlugin(extension.SchemaMigration(kernel_links.apply)),
+      extension.CleanPlugin(link.forget_session),
       extension.ToolPlugin(
         "Python has a persistent namespace, top-level await, cells.read/info/trace and cells.run for saved-source repair (all async), and output.read/output.list for bounded retained output (synchronous; awaiting them also works). cells.last_id is the id of the latest cell, and await cells.list(limit=20) lists this session's cells newest first with their status and first line, even after their output has rolled out. output.read(id, offset=0, limit=4000) returns up to limit characters. output.list() names every retained channel, which is also how to find earlier cells: cells, background jobs, and 'native' for bytes written to fd 1/2 while no cell was running. show_image(source) returns a PNG, JPEG, or WebP (bytes or a file path) to you with this cell's result, so you see it after the cell ends; at most 4 images and 5 MiB per cell.",
         [extension.Tool(definition(), invoke, recover)],
@@ -207,6 +211,8 @@ fn reason(error: python.Error) -> String {
     python.Lost ->
       "kernel lost; namespace unavailable; inspect side effects before resetting"
     python.Unavailable(message) | python.Invalid(message) -> message
+    python.Detached ->
+      "the kernel was out of reach past the deadline; the cell may still be running there and its result is saved when the kernel is back. Check await cells.info(id) before rerunning anything"
   }
 }
 

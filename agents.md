@@ -80,7 +80,7 @@ An extension bundles plugins: context (system instructions), tool (model tools +
 
 ### robot-docs/
 
-`robot-docs/` is one model-facing doc per subsystem (agents, auth, settings, kernel-state, migrations, cache-ttl, cache-warming, commands, compaction, context, extensions, files, mcp, models, paperclips, provider-requests, proxy, quota, skills, usage-feed, webhooks, workspaces). This file is the map; those are the details. When you change a subsystem's behavior, update its doc in the same change; when you need to understand one, read it there first.
+`robot-docs/` is one model-facing doc per subsystem (agents, auth, settings, kernel-state, migrations, cache-ttl, cache-warming, commands, compaction, context, extensions, files, kernel, mcp, models, paperclips, provider-requests, proxy, quota, skills, usage-feed, webhooks, workspaces). This file is the map; those are the details. When you change a subsystem's behavior, update its doc in the same change; when you need to understand one, read it there first.
 
 Read the page for a subsystem before you edit it, and name the module that owns the behavior before you write it. Ownership rules live in those docs (an extension owns its own migrations and tables; the daemon only collects them), and the mistakes that cost the most were ones a doc already ruled out. Use the `design-preflight` skill for anything beyond a small change.
 

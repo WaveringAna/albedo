@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import hashlib
 import importlib
 import io
 import json
@@ -34,6 +33,7 @@ from typing import Any
 from albedo_protocol import RemoteCall, RemoteMessage, parse_remote
 
 from albedo_api import PythonApi, ReadyList, excerpt
+import albedo_bundle
 import albedo_shell
 
 CONNECT_TIMEOUT = 60  # seconds before an unreachable target gives up
@@ -250,14 +250,11 @@ _BUNDLE: dict[str, str] = {}
 def bundle() -> dict[str, str]:
     """Content hash of the packaged python tree, so both sides run the same code."""
     if not _BUNDLE:
-        root = Path(__file__).resolve().parents[1]
-        digest = hashlib.sha256()
-        for path in sorted(root.rglob("*.py")):
-            digest.update(str(path.relative_to(root)).encode())
-            digest.update(path.read_bytes())
-        _BUNDLE["id"] = digest.hexdigest()
+        root = albedo_bundle.ROOT
+        digest = albedo_bundle.digest(root)
+        _BUNDLE["id"] = digest
         _BUNDLE["root"] = str(root)
-        _BUNDLE["remote"] = f"$HOME/.albedo-remote/{digest.hexdigest()[:16]}"
+        _BUNDLE["remote"] = f"$HOME/.albedo-remote/{digest[:16]}"
     return _BUNDLE
 
 

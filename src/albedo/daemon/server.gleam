@@ -218,6 +218,7 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
   )
   // A name, not a pid: handlers keep reaching the registry across restarts.
   let registry = process.named_subject(name)
+  runtime.resume_kernels(host)
   let selected_port = process.new_subject()
   // mist restarts a failed listener on the port it was built with, so port 0
   // would bring it back somewhere daemon.json does not say: pick it once.
@@ -548,6 +549,7 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
       let workers = workers(state)
       let host = state.host
       process.spawn(fn() {
+        runtime.detach_kernels(host)
         list.each(workers, session.close)
         runtime.stop(host)
         shutdown()

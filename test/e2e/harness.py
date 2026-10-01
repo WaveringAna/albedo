@@ -506,6 +506,9 @@ class Daemon:
             ALBEDO_PARENT_PID=str(os.getpid()),
             ERL_FLAGS=TEST_VM_FLAGS,
             ALBEDO_IDLE_SECONDS="10",
+            # Kernels outlive a stopped daemon only this long; one whose home
+            # is removed leaves at once.
+            ALBEDO_KERNEL_GRACE_SECONDS="30",
             ALBEDO_MCP_SECRET="configured-secret",
             ALBEDO_MCP_CLOSED=str(self.root / "closed"),
             ALBEDO_MCP_AMBIENT="must-not-reach-the-server",

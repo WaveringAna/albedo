@@ -13,7 +13,7 @@ own_rss() -> albedo_daemon:rss([list_to_integer(os:getpid())]).
 missing_rss() -> albedo_daemon:rss([2147483646]).
 
 %% A barrier followed by GC measures retained ownership, not transient boot garbage.
-kernel_memory({session, _, _, Kernel, _, _, _, _}) ->
+kernel_memory({session, _, _, Kernel, _, _, _, _, _}) ->
     _ = albedo_python:events(Kernel),
     true = erlang:garbage_collect(Kernel),
     {memory, Bytes} = erlang:process_info(Kernel, memory),

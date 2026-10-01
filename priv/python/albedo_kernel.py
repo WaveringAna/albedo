@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import albedo_api
+import albedo_bundle
+import albedo_link
 from albedo_protocol import parse_incoming
 import albedo_proc
 import albedo_shell
@@ -21,6 +23,7 @@ import json
 import os
 import reprlib
 import select
+import shutil
 import signal
 import pickle
 import types
@@ -28,11 +31,11 @@ import struct
 import sys
 import tempfile
 import threading
+import time
 import traceback
 import uuid
 import weakref
 
-MAX_FRAME = 8 * 1024 * 1024
 CLEANUP_DEADLINE = (
     1.5  # seconds: plugins must finish cleanup inside the supervisor's patience
 )
@@ -46,9 +49,10 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024
 CELL: contextvars.ContextVar[Capture | None] = contextvars.ContextVar(
     "cell", default=None
 )
-CONTROL_IN = os.fdopen(os.dup(0), "rb", buffering=0)
-CONTROL_OUT = os.fdopen(os.dup(1), "wb", buffering=0)
-SEND_LOCK = threading.Lock()
+LINK: albedo_link.StdioLink | albedo_link.SocketLink
+RUN_DIR: str | None = None  # a detached kernel's run directory, None over stdio
+WATCH_INTERVAL = 1.0  # seconds between a detached kernel's lifetime checks
+FIRST_ATTACH_GRACE = 60.0  # seconds a detached kernel waits for its first attach
 LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(LOOP)
 
@@ -72,6 +76,12 @@ active: asyncio.Task[object] | None = None
 active_capture: Capture | None = None
 interrupt_capture: Capture | None = None
 ARCHIVES: collections.OrderedDict[str, Capture] = collections.OrderedDict()
+# Finished executions by cell id: a replayed execute answers with its result
+# instead of running the cell twice. Queued or running ones are in EXECUTING.
+FINISHED: collections.OrderedDict[str, dict[str, object]] = collections.OrderedDict()
+FINISHED_LIMIT = 16
+EXECUTING: set[str] = set()
+READY = threading.Event()
 NAMESPACE: dict[str, object] = {"__name__": "__main__"}
 DEFINITIONS: collections.OrderedDict[str, str] = collections.OrderedDict()
 CLEANUP: list[albedo_api.Cleanup] = []
@@ -95,21 +105,7 @@ def show(value: object) -> str:
 
 
 def send(value: dict[str, object]) -> None:
-    data = json.dumps(value, ensure_ascii=True).encode()
-    with SEND_LOCK:
-        remaining = memoryview(struct.pack(">I", len(data)) + data)
-        while remaining:
-            remaining = remaining[CONTROL_OUT.write(remaining) :]
-
-
-def read_exact(size: int) -> bytes:
-    data = bytearray()
-    while len(data) < size:
-        chunk = CONTROL_IN.read(size - len(data))
-        if not chunk:
-            raise EOFError()
-        data.extend(chunk)
-    return bytes(data)
+    LINK.send(value)
 
 
 async def cleanup() -> None:
@@ -156,34 +152,69 @@ def die() -> None:
             )
         except (OSError, ValueError):
             pass  # the owner disconnected; it independently tracks our groups
+    if RUN_DIR is not None:
+        # No socket left behind: an attach from now on learns we are gone.
+        shutil.rmtree(RUN_DIR, ignore_errors=True)
     # The interpreter and its subprocesses own a separate process group.
     os.killpg(os.getpid(), signal.SIGKILL)
 
 
-def reader():
+def receive(frame: object) -> None:
+    """Act on one frame from the owner, on the link's reader thread."""
     global interrupt_capture
     try:
-        while True:
-            size = struct.unpack(">I", read_exact(4))[0]
-            if size > MAX_FRAME:
-                raise ValueError("control frame too large")
-            message = parse_incoming(json.loads(read_exact(size)))
-            if message["type"] == "shutdown":
-                die()
-            elif message["type"] == "interrupt":
-                capture = active_capture
-                if capture is not None and capture.id == message["id"]:
-                    interrupt_capture = capture
-                    capture.interruption = message.get("reason", "cancelled")
-                    os.kill(os.getpid(), signal.SIGINT)
-                else:
-                    task = OWNER_TASKS.get(message["id"])
-                    if task is not None:
-                        LOOP.call_soon_threadsafe(task.cancel)
-            else:
-                _ = LOOP.call_soon_threadsafe(deliver, message)
-    except Exception:
+        message = parse_incoming(frame)
+    except ValueError:
         die()
+        return
+    if message["type"] == "shutdown":
+        die()
+    elif message["type"] == "interrupt":
+        capture = active_capture
+        if capture is not None and capture.id == message["id"]:
+            interrupt_capture = capture
+            capture.interruption = message.get("reason", "cancelled")
+            os.kill(os.getpid(), signal.SIGINT)
+        else:
+            task = OWNER_TASKS.get(message["id"])
+            if task is not None:
+                LOOP.call_soon_threadsafe(task.cancel)
+    else:
+        _ = LOOP.call_soon_threadsafe(deliver, message)
+
+
+def reader() -> None:
+    try:
+        LINK.serve(receive)
+    except Exception:
+        pass
+    die()
+
+
+def watch() -> None:
+    """A detached kernel ends itself: when its run directory is gone (its home
+    was removed), or when nothing attached for the grace period and no job or
+    cell is still running."""
+    assert isinstance(LINK, albedo_link.SocketLink) and RUN_DIR is not None
+    while True:
+        time.sleep(WATCH_INTERVAL)
+        if not os.path.isdir(RUN_DIR):
+            die()
+        busy = active is not None or not QUEUE.empty() or LINK.jobs.live() > 0
+        if not busy and LINK.idle_for() > LINK.grace:
+            die()
+
+
+def hello() -> dict[str, object]:
+    """What a detached kernel tells each attach about itself."""
+    pgid = os.getpgid(0)
+    return {
+        "pid": os.getpid(),
+        "pgid": pgid if pgid == os.getpid() else None,
+        "leader": albedo_proc.leader_token(os.getpid()),
+        "ready": READY.is_set(),
+        "slots": [id for id, (slot, _) in JOB_SLOTS.items() if not slot.done()],
+    }
 
 
 def deliver(message: albedo_api.Incoming) -> None:
@@ -222,7 +253,13 @@ def deliver(message: albedo_api.Incoming) -> None:
         )
     elif message["type"] == "release":
         LIVE.pop(message["handle"], None)
+    elif message["type"] == "execute" and message["id"] in FINISHED:
+        send(FINISHED[message["id"]])
+    elif message["type"] == "execute" and message["id"] in EXECUTING:
+        pass  # already queued or running; its done frame answers both
     else:
+        if message["type"] == "execute":
+            EXECUTING.add(message["id"])
         QUEUE.put_nowait(cast(albedo_api.Execute | albedo_api.State, message))
 
 
@@ -1476,25 +1513,59 @@ async def serve():
             CELL.reset(token)
         duration = round(LOOP.time() - began, 3)
         deliver_trace(capture)
-        send(
-            {
-                "type": "done",
-                "id": capture.id,
-                "status": status,
-                "duration": duration,
-                "output": capture.preview(status),
-                "value": value,
-                "truncated": capture.seen > PREVIEW,
-                "images": capture.encoded_images(),
-            }
-        )
+        done: dict[str, object] = {
+            "type": "done",
+            "id": capture.id,
+            "status": status,
+            "duration": duration,
+            "output": capture.preview(status),
+            "value": value,
+            "truncated": capture.seen > PREVIEW,
+            "images": capture.encoded_images(),
+        }
+        FINISHED[capture.id] = done
+        while len(FINISHED) > FINISHED_LIMIT:
+            FINISHED.popitem(last=False)
+        EXECUTING.discard(capture.id)
+        send(done)
         capture.images.clear()
+
+
+def flush(timeout: float) -> None:
+    """Give the owner a moment to attach and take what we sent, before a
+    detached kernel that failed to start leaves."""
+    if isinstance(LINK, albedo_link.SocketLink):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and (
+            not LINK.attached() or LINK.outbox.entries
+        ):
+            time.sleep(0.02)
+
+
+def open_link(argv: list[str]) -> list[str]:
+    """Stdio for `kernel.py <modules>`; a socket for `kernel.py --run <dir> <modules>`,
+    whose bridge writes the attach token on our stdin. Returns the module list."""
+    global LINK, RUN_DIR
+    if argv[1:2] != ["--run"]:
+        LINK = albedo_link.StdioLink()
+        return cast(list[str], json.loads(argv[1]))
+    RUN_DIR = argv[2]
+    token = sys.stdin.buffer.readline().decode().strip()
+    LINK = albedo_link.SocketLink(
+        RUN_DIR,
+        token,
+        hello,
+        bundle=albedo_bundle.digest(),
+        grace=FIRST_ATTACH_GRACE,
+    )
+    return cast(list[str], json.loads(argv[3]))
 
 
 def main():
     global NATIVE_FD
     if os.getpgrp() != os.getpid():
         os.setsid()
+    modules = open_link(sys.argv)
     _ = os.dup2(os.open(os.devnull, os.O_RDONLY), 0)
     read_fd, write_fd = os.pipe()
     _ = os.dup2(write_fd, 1)
@@ -1507,10 +1578,11 @@ def main():
     sys.stdout = sys.stderr = Stream()
     threading.Thread(target=native_output, args=(read_fd,), daemon=True).start()
     threading.Thread(target=reader, daemon=True).start()
+    if RUN_DIR is not None:
+        threading.Thread(target=watch, daemon=True).start()
     _ = signal.signal(signal.SIGINT, interrupt)
     albedo_shell.install()  # refusals precede observational audit hooks
     albedo_trace.install(CELL.get)
-    modules = cast(list[str], json.loads(sys.argv[1]))
     api = albedo_api.PythonApi(
         version=2,
         loop=LOOP,
@@ -1535,6 +1607,7 @@ def main():
         LOOP.run_until_complete(albedo_api.load_plugins(modules, api, NAMESPACE))
     except Exception as error:
         send({"type": "startup_error", "message": str(error)})
+        flush(5.0)
         die()
         return
     # Match an interactive Python session only after loading trusted plugins.
@@ -1551,6 +1624,7 @@ def main():
             "leader": albedo_proc.leader_token(os.getpid()),
         }
     )
+    READY.set()
     task = LOOP.create_task(serve())
     while not task.done():
         try:

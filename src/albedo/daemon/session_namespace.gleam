@@ -158,6 +158,20 @@ pub fn adopt(
   state: session_state.State(message),
   kernel: runtime.Session,
 ) -> session_state.State(message) {
+  case runtime.resumed(kernel) {
+    True ->
+      session_state.State(..state, kernel: Some(kernel))
+      |> session_state.emit(view.text("note", resumed_text))
+    False -> revive(state, kernel)
+  }
+}
+
+const resumed_text = "python kernel reattached; its variables and jobs carried on"
+
+fn revive(
+  state: session_state.State(message),
+  kernel: runtime.Session,
+) -> session_state.State(message) {
   case state.notice, state.history {
     Some(notice), _ if notice == lost_notice ->
       session_state.State(..state, kernel: Some(kernel))

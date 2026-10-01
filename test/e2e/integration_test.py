@@ -936,7 +936,8 @@ class IntegrationTest(unittest.TestCase):
                         '<system-note origin="daemon restart">albedo restarted'
                     )
                 )
-                self.assertIn("<system-note>The python kernel", note)
+                # The detached kernel outlives the crash: no reset notice.
+                self.assertNotIn("<system-note>The python kernel", note)
                 markers = [
                     e
                     for e in restored

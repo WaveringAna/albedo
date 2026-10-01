@@ -83,7 +83,7 @@ relayed(Relay, Id, Answer) ->
 kernels() ->
     {ok, {Python, Script}} = albedo_python:local_paths(),
     Host = fun(_) -> <<"{\"ok\":true,\"value\":null}">> end,
-    Kernels = [begin {ok, K} = albedo_python:start(self(), Python, Script, <<"/tmp">>, Host, [<<"run">>]), K end
+    Kernels = [begin {ok, K} = start(Python, Script, Host, [<<"run">>]), K end
                || _ <- lists:seq(1, 3)],
     [A, B, C] = Kernels,
     try
@@ -103,8 +103,21 @@ kernels() ->
         [albedo_python:stop(K) || K <- Kernels]
     end.
 
+%% A fresh detached kernel in /tmp whose session layer persists nothing: these
+%% tests never reattach, so the link only has to answer.
+start(Python, Script, Host, Modules) ->
+    Link = {link, fun(_, _) -> nil end, fun(_) -> nil end, fun() -> [] end,
+            fun(_) -> fresh end, fun(_, _, _) -> nil end, fun(_) -> nil end, fun() -> nil end},
+    Id = binary:part(albedo_native:new_id(), 0, 16),
+    RunDir = filename:join(os:getenv("TMPDIR", "/tmp"), <<"albedo-run-", Id/binary>>),
+    Bridge = filename:join(filename:dirname(Script), <<"albedo_bridge.py">>),
+    albedo_python:start({boot, self(), Python, Bridge, <<"/tmp">>, Host,
+                         iolist_to_binary(json:encode(Modules)), Link, unicode:characters_to_binary(RunDir),
+                         Id, albedo_native:new_id(), 20, 0, true}).
+
 cell(Kernel, Code) ->
-    Request = iolist_to_binary(json:encode(#{type => <<"execute">>, id => <<"test">>, code => Code})),
+    %% A kernel answers a cell id it already ran with that run's result.
+    Request = iolist_to_binary(json:encode(#{type => <<"execute">>, id => albedo_native:new_id(), code => Code})),
     {ok, Reply} = albedo_python:execute(Kernel, Request, 5000),
     #{<<"status">> := <<"ok">>, <<"value">> := Value} = json:decode(Reply),
     Value.
@@ -127,8 +140,8 @@ bootstrap() ->
               "    job = await run('printf', 'booted')\n"
               "    return {'boot_output': job.tail()}\n">>),
         Host = fun(_) -> <<"{\"ok\":true,\"value\":null}">> end,
-        {ok, K} = albedo_python:start(self(), Python,
-            unicode:characters_to_binary(filename:join(Dir, "albedo_kernel.py")), <<"/tmp">>, Host,
+        {ok, K} = start(Python,
+            unicode:characters_to_binary(filename:join(Dir, "albedo_kernel.py")), Host,
             [<<"run">>, <<"fixture.boot_job">>]),
         try <<"'booted'">> = cell(K, <<"boot_output">>), 0 = albedo_python:job_count(K)
         after {ok, nil} = albedo_python:stop(K) end

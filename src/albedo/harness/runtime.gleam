@@ -45,6 +45,9 @@ pub opaque type Session {
     composition: extension.Composition,
     instructions: String,
     context: List(types.Input),
+    /// Attached to the kernel the session already had, so its namespace is
+    /// the one the session left; false for a freshly booted kernel.
+    resumed: Bool,
   )
 }
 
@@ -74,6 +77,9 @@ type State {
     booting: Dict(String, List(fn(Result(Session, python.Error)) -> Nil)),
     /// Kernels waiting for a boot slot, oldest first.
     waiting: List(#(String, Cached)),
+    /// Set while the daemon shuts down: kernels are let go, not ended, so a
+    /// restarted daemon attaches to them again.
+    detaching: Bool,
   )
 }
 
@@ -109,6 +115,10 @@ type Message {
   Reset(String, Subject(Nil))
   Forget(String, Subject(Nil))
   Stop(Subject(Nil))
+  Detach(Subject(Nil))
+  /// Attach to a session's recorded kernel without booting one.
+  Reattach(String, String, Subject(Nil))
+  Reattached(String, Cached, Result(Option(Session), python.Error))
 }
 
 pub fn start(database: String) -> Result(Runtime, actor.StartError) {
@@ -158,19 +168,18 @@ pub fn start_with_config(
       )
     })
     Ok(
-      actor.initialised(
-        State(
-          ledger,
-          dict.new(),
-          dict.new(),
-          installed,
-          quarantined,
-          default_enabled,
-          subject,
-          dict.new(),
-          [],
-        ),
-      )
+      actor.initialised(State(
+        ledger,
+        dict.new(),
+        dict.new(),
+        installed,
+        quarantined,
+        default_enabled,
+        subject,
+        dict.new(),
+        [],
+        False,
+      ))
       |> actor.returning(Runtime(subject, ledger, installed, default_enabled)),
     )
   })
@@ -182,6 +191,15 @@ pub fn start_with_config(
 fn stop_session(context: String, session: Session) -> Nil {
   drop_kernel(context, session)
   extension.close(session.composition)
+}
+
+/// End the kernel, or let it go when the daemon is shutting down.
+fn release_kernel(state: State, id: String, context: String) -> Nil {
+  case state.detaching, dict.get(state.sessions, id) {
+    True, Ok(session) -> python.detach(session.kernel)
+    False, Ok(session) -> drop_kernel(context, session)
+    _, Error(_) -> Nil
+  }
 }
 
 /// End the kernel process only: the prepared composition, and any managed
@@ -377,6 +395,36 @@ pub fn stop(runtime: Runtime) -> Nil {
   actor.call(runtime.subject, 10_000, Stop)
 }
 
+/// From now on, closing a session or stopping the runtime lets its kernel go
+/// instead of ending it: a daemon shutting down calls this first, so the
+/// kernels keep their namespaces and jobs for the next daemon.
+pub fn detach_kernels(runtime: Runtime) -> Nil {
+  actor.call(runtime.subject, 10_000, Detach)
+}
+
+/// Attach every recorded kernel again, one at a time in the background, so
+/// a restarted daemon hears their late results and job wakes without waiting
+/// for each session to need its kernel. A kernel that is gone is forgotten.
+pub fn resume_kernels(runtime: Runtime) -> Nil {
+  let subject = runtime.subject
+  let work = runtime.work
+  process.spawn_unlinked(fn() {
+    list.each(python.recorded(work), fn(entry) {
+      let #(id, cwd) = entry
+      let reply = process.new_subject()
+      process.send(subject, Reattach(id, cwd, reply))
+      let _ = process.receive(reply, 60_000)
+      Nil
+    })
+  })
+  Nil
+}
+
+/// Whether this session's kernel was attached again rather than booted.
+pub fn resumed(session: Session) -> Bool {
+  session.resumed
+}
+
 pub fn alive(session: Session) -> Bool {
   python.alive(session.kernel)
 }
@@ -430,7 +478,7 @@ pub fn execute(
   use id <- result.try(journal.begin(runtime.work, session.id, code))
   let outcome =
     python.execute_saved(session.kernel, id, code, timeout_ms, types.any_images)
-  use _ <- result.try(journal.finish(runtime.work, id, outcome))
+  use _ <- result.try(journal.settle(runtime.work, id, outcome))
   Ok(Execution(id, outcome))
 }
 
@@ -671,23 +719,64 @@ fn open_kernel(
   id: String,
   cached: Cached,
 ) -> Result(Session, python.Error) {
-  python.local_with_plugins(
+  python.open(
     owner,
+    id,
     cached.cwd,
     kernel_routes(owner, id, cached.composition),
     extension.python_modules(cached.composition),
   )
-  |> result.map(fn(kernel) {
-    Session(
-      id,
-      cached.cwd,
-      kernel,
-      owner,
-      cached.composition,
-      cached.instructions,
-      cached.context,
-    )
-  })
+  |> result.map(fn(opened) { session_over(owner, id, cached, opened) })
+}
+
+/// A replacement kernel booted beside the session's live one.
+fn replacement_kernel(
+  owner: work.Store,
+  id: String,
+  cached: Cached,
+) -> Result(Session, python.Error) {
+  python.fresh(
+    owner,
+    id,
+    cached.cwd,
+    kernel_routes(owner, id, cached.composition),
+    extension.python_modules(cached.composition),
+  )
+  |> result.map(fn(kernel) { session_over(owner, id, cached, #(kernel, False)) })
+}
+
+fn session_over(
+  owner: work.Store,
+  id: String,
+  cached: Cached,
+  opened: #(python.Kernel, Bool),
+) -> Session {
+  Session(
+    id,
+    cached.cwd,
+    opened.0,
+    owner,
+    cached.composition,
+    cached.instructions,
+    cached.context,
+    opened.1,
+  )
+}
+
+/// The session's recorded kernel attached again, or None when it is gone.
+fn resume_kernel(
+  owner: work.Store,
+  id: String,
+  cached: Cached,
+) -> Option(Session) {
+  python.resume(
+    owner,
+    id,
+    cached.cwd,
+    kernel_routes(owner, id, cached.composition),
+    extension.python_modules(cached.composition),
+  )
+  |> option.map(fn(kernel) { session_over(owner, id, cached, #(kernel, True)) })
 }
 
 /// Kernels booting right now: requests not still waiting for a slot.
@@ -880,7 +969,12 @@ fn reopen(
       )
       |> result.map_error(fn(error) { "could not reload extensions: " <> error }),
     )
-    open_kernel(state.work, id, cached)
+    // Beside a live kernel, never attached to it: the old one is dropped
+    // only once the new selection is persisted.
+    case previous {
+      Ok(_) -> replacement_kernel(state.work, id, cached)
+      Error(_) -> open_kernel(state.work, id, cached)
+    }
     |> result.map(fn(replacement) { #(cached, replacement) })
     |> result.map_error(fn(error) {
       "could not reload extensions: " <> string.inspect(error)
@@ -1072,7 +1166,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, a) {
     }
     Forget(id, reply) -> {
       let state = abandon(state, id)
-      drop_kernel_at(state, id, "session forgotten")
+      release_kernel(state, id, "session forgotten")
       close_cached_at(state, id)
       process.send(reply, Nil)
       actor.continue(
@@ -1083,8 +1177,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, a) {
       )
     }
     Stop(reply) -> {
-      dict.each(state.sessions, fn(_, session) {
-        drop_kernel("runtime stop", session)
+      dict.each(state.sessions, fn(id, _) {
+        release_kernel(state, id, "runtime stop")
       })
       dict.each(state.compositions, fn(_, cached) {
         extension.close(cached.composition)
@@ -1093,6 +1187,72 @@ fn handle(state: State, message: Message) -> actor.Next(State, a) {
       process.send(reply, Nil)
       actor.stop()
     }
+    Detach(reply) -> {
+      process.send(reply, Nil)
+      actor.continue(State(..state, detaching: True))
+    }
+    Reattach(id, cwd, reply) -> actor.continue(reattach(state, id, cwd, reply))
+    Reattached(id, cached, result) ->
+      actor.continue(reattached(state, id, cached, result) |> boot_next)
+  }
+}
+
+/// Start attaching to a session's recorded kernel, unless the session already
+/// has its kernel or is getting one. It takes a boot slot while it runs.
+fn reattach(
+  state: State,
+  id: String,
+  cwd: String,
+  reply: Subject(Nil),
+) -> State {
+  let busy =
+    dict.has_key(state.sessions, id)
+    || dict.has_key(state.booting, id)
+    || state.detaching
+  let prepared = case busy {
+    True -> Error("already has its kernel")
+    False -> ensure_cached(state, id, cwd)
+  }
+  case prepared {
+    Ok(#(next, cached)) -> {
+      let self = state.self
+      let owner = state.work
+      process.spawn_unlinked(fn() {
+        let result =
+          protect.attempt(fn() { resume_kernel(owner, id, cached) })
+          |> result.map_error(fn(crash) {
+            python.Unavailable("kernel reattach failed: " <> crash)
+          })
+        process.send(self, Reattached(id, cached, result))
+        process.send(reply, Nil)
+      })
+      State(..next, booting: dict.insert(next.booting, id, []))
+    }
+    Error(_) -> {
+      process.send(reply, Nil)
+      state
+    }
+  }
+}
+
+/// An attach finished. Whoever asked for the kernel meanwhile gets it; when
+/// there was nothing to attach to, they get a fresh boot instead.
+fn reattached(
+  state: State,
+  id: String,
+  cached: Cached,
+  result: Result(Option(Session), python.Error),
+) -> State {
+  case dict.get(state.booting, id), result {
+    Ok(_), Ok(Some(session)) -> booted(state, id, Ok(session))
+    Error(_), Ok(Some(session)) -> {
+      drop_kernel("reattach for a forgotten session", session)
+      state
+    }
+    Ok([]), _ -> State(..state, booting: dict.delete(state.booting, id))
+    Ok(_), _ ->
+      State(..state, waiting: list.append(state.waiting, [#(id, cached)]))
+    Error(_), _ -> state
   }
 }
 

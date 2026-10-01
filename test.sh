@@ -11,6 +11,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 export ALBEDO_NO_BROWSER=1
+# a detached kernel a suite left behind ends soon after, not in an hour
+export ALBEDO_KERNEL_GRACE_SECONDS=20
 
 ruff check
 ruff format --check priv/python test cli/internal/storage/maintenance.py

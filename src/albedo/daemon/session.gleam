@@ -1476,7 +1476,7 @@ fn kernel_opened(
         <> case error {
           python.Unavailable(message) | python.Invalid(message) -> message
           python.Lost -> "the kernel exited while starting"
-          python.Busy -> "the kernel is busy"
+          python.Busy | python.Detached -> "the kernel is busy"
         }
       list.fold(
         parked,

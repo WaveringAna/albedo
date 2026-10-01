@@ -138,6 +138,20 @@ pub fn finish(
   })
 }
 
+/// Record how an execution ended, unless it has not: a cell that outlived
+/// its deadline while the kernel was out of reach stays started, and the
+/// kernel's own result finishes it when it arrives.
+pub fn settle(
+  storage: store.Store,
+  id: String,
+  outcome: Result(python.Outcome, python.Error),
+) -> Result(Nil, String) {
+  case outcome {
+    Error(python.Detached) -> Ok(Nil)
+    _ -> finish(storage, id, outcome)
+  }
+}
+
 /// Image references a session's cells hold; collect before deleting their rows.
 pub fn session_hashes(
   db: sqlight.Connection,

@@ -382,7 +382,8 @@ class PreparingOperationsTests(unittest.TestCase):
             wrapper = commands / "python3"
             wrapper.write_text(
                 "#!/bin/sh\n"
-                + 'case "$*" in *albedo_kernel.py*)\n'
+                # a detached kernel opens through its bridge's start
+                + 'case "$*" in *albedo_kernel.py*|*"albedo_bridge.py start"*)\n'
                 + "touch "
                 + shlex.quote(str(self.opened))
                 + "\n"
