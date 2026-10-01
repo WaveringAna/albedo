@@ -284,6 +284,9 @@ pub fn delete(store: store.Store, id: String) -> Result(Nil, String) {
             "rolling_compaction_state",
             "rolling_compaction_observation",
             "compaction_notes",
+            "snapcompact_archive",
+            "lcm_compaction_state",
+            "lcm_compaction_node",
             "cells",
             "work",
           ],
@@ -296,6 +299,12 @@ pub fn delete(store: store.Store, id: String) -> Result(Nil, String) {
                     store.run(
                       db,
                       "DELETE FROM cell_traces WHERE id IN (SELECT id FROM cells WHERE session=?)",
+                      [sqlight.text(id)],
+                    )
+                  "lcm_compaction_node" ->
+                    store.run(
+                      db,
+                      "DELETE FROM lcm_compaction_edge WHERE child IN (SELECT id FROM lcm_compaction_node WHERE session=?1) OR parent IN (SELECT id FROM lcm_compaction_node WHERE session=?1)",
                       [sqlight.text(id)],
                     )
                   _ -> Ok(Nil)
