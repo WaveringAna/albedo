@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import importlib
 import io
@@ -33,8 +34,8 @@ from typing import Any
 from albedo_api import PythonApi, ReadyList, excerpt
 import albedo_shell
 
-CONNECT_TIMEOUT = 15  # seconds before an unreachable target gives up
-HANDSHAKE_TIMEOUT = 30  # seconds for the remote kernel to say ready
+CONNECT_TIMEOUT = 60  # seconds before an unreachable target gives up
+HANDSHAKE_TIMEOUT = 60  # seconds for the remote kernel to say ready
 STAGE_TIMEOUT = 120  # seconds to move the bundle over one ssh stream
 INVOKE_TIMEOUT = 3600  # anti-wedge bound; the cell deadline is the real limit
 COMMAND_TIMEOUT = 120  # degraded-mode command default
@@ -153,6 +154,38 @@ def resolve(
     return target
 
 
+def ssh_env() -> dict[str, str]:
+    """The local environment for SSH client processes.
+
+    If SSH_AUTH_SOCK was not inherited (or stripped by an outer layer),
+    discover standard agent sockets if present so hardware keys, 1Password,
+    and ssh-agent work out of the box.
+    """
+    env = dict(os.environ)
+    if "SSH_AUTH_SOCK" not in env:
+        for candidate in (
+            os.path.expanduser("~/.ssh/agent.sock"),
+            os.path.expanduser(
+                "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+            ),
+        ):
+            if os.path.exists(candidate):
+                env["SSH_AUTH_SOCK"] = candidate
+                break
+    return env
+
+
+def in_login_shell(script: str) -> str:
+    """Run a command under the remote user's login shell.
+
+    Non-interactive SSH commands run under `$SHELL -c` without sourcing
+    `/etc/profile` or user profiles, which leaves PATH minimal (missing
+    Nix, Homebrew, or user tool paths) and environment variables unset.
+    Running under a login shell ensures python3 and tooling are found.
+    """
+    return f'exec "${{SHELL:-/bin/sh}}" -l -c {shlex.quote(script)}'
+
+
 def ssh_base() -> list[str]:
     """The ssh argv prefix: one multiplexed control connection per target.
 
@@ -194,6 +227,7 @@ async def ssh_run(
         else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=ssh_env(),
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(stdin), timeout)
@@ -218,7 +252,7 @@ def bundle() -> dict[str, str]:
             digest.update(path.read_bytes())
         _BUNDLE["id"] = digest.hexdigest()
         _BUNDLE["root"] = str(root)
-        _BUNDLE["remote"] = f"~/.albedo-remote/{digest.hexdigest()[:16]}"
+        _BUNDLE["remote"] = f"$HOME/.albedo-remote/{digest.hexdigest()[:16]}"
     return _BUNDLE
 
 
@@ -228,9 +262,9 @@ async def stage(target: str) -> None:
     archive = io.BytesIO()
     with tarfile.open(fileobj=archive, mode="w") as tar:
         tar.add(bundle()["root"], arcname=".")
-    script = f"mkdir -p {shlex.quote(remote)} && tar -C {shlex.quote(remote)} -xf -"
+    script = f'mkdir -p "{remote}" && tar -C "{remote}" -xf -'
     code, _, stderr = await ssh_run(
-        target, script, timeout=STAGE_TIMEOUT, stdin=archive.getvalue()
+        target, in_login_shell(script), timeout=STAGE_TIMEOUT, stdin=archive.getvalue()
     )
     if code != 0:
         raise RemoteBootError(f"staging failed ({code}): {stderr.strip()[:500]}")
@@ -563,23 +597,25 @@ class RemoteConnection:
         remote_root = bundle()["remote"]
         script_path = f"{remote_root}/albedo_kernel.py"
         code, _, _ = await ssh_run(
-            self.host, f"test -f {shlex.quote(script_path)}", timeout=CONNECT_TIMEOUT
+            self.host,
+            in_login_shell(f'test -f "{script_path}"'),
+            timeout=CONNECT_TIMEOUT,
         )
         if code != 0:
             await stage(self.host)
         python = self.target.get("python") or "python3"
         # The stamp reaches the remote kernel's plugins, so a finished remote
         # job's wake notice names the machine it ran on.
-        script = (
+        inner = (
             f"ALBEDO_REMOTE_TARGET={shlex.quote(self.host)} exec "
-            + f"{shlex.quote(python)} -u {shlex.quote(script_path)}"
-            + " "
+            + f'{shlex.quote(python)} -u "{script_path}" '
             + shlex.quote(
                 json.dumps(modules if modules is not None else default_modules())
             )
         )
         if self.target.get("remote_cwd"):
-            script = f"cd {shlex.quote(self.target['remote_cwd'])} && {script}"
+            inner = f"cd {shlex.quote(self.target['remote_cwd'])} && {inner}"
+        script = in_login_shell(inner)
         self._handshake = loop.create_future()
         self._process = await asyncio.create_subprocess_exec(
             *ssh_base(),
@@ -588,6 +624,7 @@ class RemoteConnection:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=ssh_env(),
         )
         self._stdin, self._stdout = self._process.stdin, self._process.stdout
         self._drain = loop.create_task(self._drain_stderr())
@@ -874,7 +911,9 @@ class RemoteConnection:
         return "attached " + attach_image(data)
 
     async def _ssh(self, script: str, timeout: float) -> bytes:
-        code, stdout, stderr = await ssh_run(self.host, script, timeout=timeout)
+        code, stdout, stderr = await ssh_run(
+            self.host, in_login_shell(script), timeout=timeout
+        )
         if code != 0:
             raise RemoteError(f"SSH failed ({code}): {stderr.strip()}")
         return stdout
@@ -1105,7 +1144,9 @@ class FallbackJob:
         )
         data = stdin.encode() if isinstance(stdin, str) else stdin
         self._task = loop.create_task(
-            self._run(connection.host, " && ".join(steps), timeout, data)
+            self._run(
+                connection.host, in_login_shell(" && ".join(steps)), timeout, data
+            )
         )
 
     async def _run(
@@ -1120,6 +1161,7 @@ class FallbackJob:
             else asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            env=ssh_env(),
         )
         self._process = process
         if stdin is not None and process.stdin is not None:
@@ -1128,6 +1170,8 @@ class FallbackJob:
         copying = loop.create_task(self._copy(process.stdout))
         try:
             self.exit_code = await asyncio.wait_for(process.wait(), timeout)
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(copying, timeout=1.0)
         except asyncio.TimeoutError:
             self.timed_out = True
             process.kill()
