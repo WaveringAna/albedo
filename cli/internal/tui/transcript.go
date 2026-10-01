@@ -520,7 +520,11 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 		if entry.Live {
 			render = RenderMarkdownAnsi
 		}
-		rows = append(rows, render(entry.Text, width))
+		body := render(entry.Text, width)
+		if entry.Kind == EntryUser {
+			body = r.foldUser(entry, body)
+		}
+		rows = append(rows, body)
 	case EntryThinking:
 		rows = []string{markChrome + r.Styles.Faint.Render("thinking")}
 		if flags.Thinking {
@@ -575,6 +579,33 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 		}
 	}
 	return strings.Join(rows, "\n")
+}
+
+// A message of yours taller than userFoldRows plus userFoldSlack shows its
+// first userFoldRows rows and a click target for the rest; the slack keeps
+// a fold from hiding only a line or two.
+const (
+	userFoldRows  = 10
+	userFoldSlack = 2
+)
+
+// foldUser is body, a settled message's rendered rows, cut to its first rows
+// until the message's key is in Open.
+func (r TranscriptRenderer) foldUser(entry HistoryEntry, body string) string {
+	rows := strings.Split(body, "\n")
+	if len(rows) <= userFoldRows+userFoldSlack {
+		return body
+	}
+	key := entryKey(entry)
+	if r.Open[key] {
+		return body + "\n" + r.foldRow(key, toggleOpen+"show less")
+	}
+	label := fmt.Sprintf("%s%d more lines · click to expand", toggleClosed, len(rows)-userFoldRows)
+	return strings.Join(rows[:userFoldRows], "\n") + "\n" + r.foldRow(key, label)
+}
+
+func (r TranscriptRenderer) foldRow(key, label string) string {
+	return markChrome + rowAction{verbMore, key}.mark() + r.Styles.Faint.Render(label)
 }
 
 // compactionWords names what a strategy did with the evicted items and what

@@ -18,9 +18,11 @@ const (
 	verbCopy = "copy"
 	// verbOpen lists or hides the steps of a burst.
 	verbOpen = "open"
+	// verbMore shows or folds the rest of a long message of yours.
+	verbMore = "more"
 )
 
-var actionMark = regexp.MustCompile(`\x1b_albedo:(copy|open):([0-9a-f]+-[0-9a-f]+)\x1b\\`)
+var actionMark = regexp.MustCompile(`\x1b_albedo:(copy|open|more):([0-9a-f]+-[0-9a-f]+)\x1b\\`)
 
 type rowAction struct{ verb, key string }
 
@@ -55,8 +57,43 @@ func (m *ChatModel) actAt(row int) tea.Cmd {
 		return m.copyReply(act.key)
 	case verbOpen:
 		m.toggleBurst(act.key, row)
+	case verbMore:
+		m.toggleFold(act.key, row)
 	}
 	return nil
+}
+
+// toggleFold shows or folds the rest of the message whose fold row is at row,
+// the last row of its block. Only that block renders again and is spliced into
+// the settled rows. The clicked row keeps its place on screen: expanding opens
+// the text below it, and folding brings the new fold row to where it was.
+func (m *ChatModel) toggleFold(key string, row int) {
+	entries := m.History.Entries()
+	at := slices.IndexFunc(entries, func(e HistoryEntry) bool { return e.Kind == EntryUser && entryKey(e) == key })
+	if at < 0 {
+		return
+	}
+	was := m.Renderer
+	was.Open = map[string]bool{key: m.Renderer.Open[key]}
+	old, _ := was.Block(entries[:at], entries[at], m.Flags)
+	if m.Renderer.Open == nil {
+		m.Renderer.Open = map[string]bool{}
+	}
+	m.Renderer.Open[key] = !m.Renderer.Open[key]
+	fresh, _ := m.Renderer.Block(entries[:at], entries[at], m.Flags)
+	from := row - m.settledOffset - (len(old) - 1)
+	if from < 0 || from+len(old) > len(m.settledLines) || m.settledLines[from+len(old)-1] != old[len(old)-1] {
+		m.rebuildSettledLines()
+		m.refreshViewportContent()
+		return
+	}
+	screen := row - m.scrollOffset
+	if !m.Renderer.Open[key] {
+		row += len(fresh) - len(old)
+	}
+	row -= m.replaceSettled(from, len(old), fresh)
+	m.Follow, m.scrollOffset = false, max(0, row-screen)
+	m.Follow = m.scrollOffset >= m.refreshViewportContent()
 }
 
 // toggleBurst opens or closes the burst whose summary is at row, keeping that

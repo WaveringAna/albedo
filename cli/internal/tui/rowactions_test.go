@@ -119,3 +119,40 @@ func TestClickingABurstListsItsSteps(t *testing.T) {
 		t.Fatalf("a second click does not close the burst:\n%s", text)
 	}
 }
+
+// A long message of yours shows its first rows and a click target; clicking
+// it shows the rest, and the row that closes it folds the message again.
+func TestClickingALongMessageShowsTheRestAndFoldsIt(t *testing.T) {
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(100, 30)
+	var lines []string
+	for i := range 40 {
+		lines = append(lines, fmt.Sprintf("line %02d", i))
+	}
+	m.appendSettledEntry(HistoryEntry{Kind: EntryUser, Text: strings.Join(lines, "\n\n"), Timestamp: 1})
+	m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Text: "done", Timestamp: 2})
+	m.refreshViewportContent()
+	shown := func() string { return ansi.Strip(strings.Join(m.frameLines, "\n")) }
+	if text := shown(); strings.Contains(text, "line 39") || !strings.Contains(text, "more lines · click to expand") {
+		t.Fatalf("a long message is not folded:\n%s", text)
+	}
+	spliced := func() {
+		t.Helper()
+		got := slices.Clone(m.settledLines)
+		if m.rebuildSettledLines(); !slices.Equal(got, m.settledLines) {
+			t.Fatal("the splice drew rows a rebuild does not")
+		}
+		m.refreshViewportContent()
+	}
+	click := rowWith(t, m.frameLines, "click to expand")
+	m.actAt(click)
+	spliced()
+	if text := shown(); !strings.Contains(text, "line 39") || !strings.Contains(text, "show less") {
+		t.Fatalf("clicking does not show the rest:\n%s", text)
+	}
+	m.actAt(rowWith(t, m.frameLines, "show less"))
+	spliced()
+	if text := shown(); strings.Contains(text, "line 39") || !strings.Contains(text, "click to expand") {
+		t.Fatalf("clicking again does not fold the message:\n%s", text)
+	}
+}
