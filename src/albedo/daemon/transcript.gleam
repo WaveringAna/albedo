@@ -30,3 +30,11 @@ pub type SourcedEntry {
 pub type ImageFit {
   ImageFit(note: String, source: String, image: types.Image)
 }
+
+/// Compaction boundaries include daemon notes, mail, and image fit notes.
+pub fn row_class(input: types.Input) -> String {
+  case input {
+    types.User(_) | types.UserImage(_, _) -> "user"
+    _ -> "other"
+  }
+}

@@ -17,6 +17,7 @@ import albedo/daemon/transcript
 import albedo/openai_api/types
 import gleam/bit_array
 import gleam/crypto
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option
@@ -140,4 +141,39 @@ fn note(original: types.Image, fitted: types.Image, edge: Int) -> String {
       <> int.to_string(edge)
       <> "px edge limit; the transcript keeps the original.",
   )
+}
+
+/// Later fits composed while walking durable rows backwards.
+pub opaque type Replacements {
+  Replacements(Dict(String, types.Image))
+}
+
+pub fn replacements() -> Replacements {
+  Replacements(dict.new())
+}
+
+/// Earlier fits override the same source; their copy first receives later fits.
+pub fn add(
+  replacements: Replacements,
+  fit: transcript.ImageFit,
+) -> Replacements {
+  let Replacements(images) = replacements
+  let image = dict.get(images, source(fit.image)) |> result.unwrap(fit.image)
+  Replacements(dict.insert(images, fit.source, image))
+}
+
+pub fn apply_replacements(
+  input: types.Input,
+  replacements: Replacements,
+) -> types.Input {
+  let Replacements(images) = replacements
+  let swap = fn(image) {
+    dict.get(images, source(image)) |> result.unwrap(image)
+  }
+  case input {
+    types.UserImage(text, image) -> types.UserImage(text, swap(image))
+    types.ToolOutput(id, text, images) ->
+      types.ToolOutput(id, text, list.map(images, swap))
+    _ -> input
+  }
 }

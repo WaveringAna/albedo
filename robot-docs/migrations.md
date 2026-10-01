@@ -1,7 +1,6 @@
 # existing storage migrations
 
-this organizes migrations already shipped; it does not introduce a schema
-version. core implementations live under `src/albedo/daemon/migrations/`;
+core implementations live under `src/albedo/daemon/migrations/`;
 extension implementations live under their own `migrations/` directories and
 contribute `MigrationPlugin` values. the host applies them, without importing
 extension-specific migration modules.
@@ -25,7 +24,8 @@ sessions; session selection and live reload never rerun migrations.
 2. quota, mail, and family initialise their tables, unchanged.
 3. `migrations.run(ledger, backup)` runs the core `image_store.run`, which first
    externalizes legacy transcript images, then converts image-table TEXT data
-   to decoded BLOB. `runtime.migrate(host, backup)` then collects installed
+   to decoded BLOB. It then runs `transcript_classes.run` to classify old
+   transcript rows. `runtime.migrate(host, backup)` then collects installed
    extensions' `DataMigration` callbacks in registry/plugin order and applies
    them with the same backup path. python contributes `cell_images.run`, which
    requires the core image and marker tables. callbacks report named row counts;
@@ -48,6 +48,18 @@ the upgraded schema. embedding hosts call
 
 ## compatibility and interruption
 
+- `conversation_columns.apply` adds nullable `transcript.row_class`, checked
+  against `user`, `image_fit`, and `other`. Live writes set it in the same
+  transaction as the payload; forks copy it with the retained prefix.
+  `transcript_classes.run` classifies only NULL rows in 128-row transactions.
+  An invalid payload fails the current batch and startup; completed batches
+  survive interruption. The backfill neither rewrites payloads nor adds a
+  migration marker. It runs after the image migration.
+- `transcript_pending_class` indexes unclassified sequence IDs.
+  `transcript_users` indexes `(session,seq)` for user and image-fit rows;
+  `transcript_fits` indexes `(session,seq)` for image-fit rows alone. Completed
+  databases have no pending entries, so subsequent startups do not decode
+  transcript payloads for classification.
 - the existing `migrations(name,applied_at)` table remains unchanged. the exact
   markers are `image_store` and `cell_images`, recorded with `unixepoch()`.
   transcript migration skips when its marker exists; cell migration skips when
@@ -79,6 +91,7 @@ the upgraded schema. embedding hosts call
 | previous implementation | current implementation |
 | --- | --- |
 | `conversation.initialise`: session/transcript `add_columns` | `migrations/conversation_columns.apply` |
+| transcript row classification | `migrations/transcript_classes.run`, after core image upgrades |
 | `images.migrate` / `migrate_legacy` / transcript pages | `migrations/image_store.run` / `migrate_legacy` / transcript pages |
 | `images.migrate_blobs` / BLOB pages | `migrations/image_store.migrate_blobs` / BLOB pages |
 | `images.backup_before_migration` | `migrations/backup.image_store` |
@@ -107,5 +120,5 @@ to their implementation modules.
   timing and semantics; its projections are untouched.
 - credentials migration is filesystem/auth, not SQLite. legacy configuration's
   provider assignment likewise remains in the existing server startup path.
-- no zstd, compression, reference index, schema-version, offline storage upgrade,
+- no zstd, compression, schema-version, offline storage upgrade,
   new dependency, or unrelated transaction fix is part of this refactor.

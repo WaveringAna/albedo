@@ -32,5 +32,6 @@ pub fn apply(db: sqlight.Connection) -> Result(Nil, String) {
     #("timestamp", "INTEGER"),
     #("provider", "TEXT"),
     #("thought_ms", "INTEGER"),
+    #("row_class", "TEXT CHECK(row_class IN ('user','image_fit','other'))"),
   ])
 }

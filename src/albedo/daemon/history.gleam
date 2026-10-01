@@ -384,7 +384,7 @@ fn copy_prefix(
 ) -> Result(Nil, String) {
   store.run(
     db,
-    "INSERT INTO transcript(session,payload,timestamp,provider,thought_ms) SELECT ?,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq<=? ORDER BY seq",
+    "INSERT INTO transcript(session,payload,timestamp,provider,thought_ms,row_class) SELECT ?,payload,timestamp,provider,thought_ms,row_class FROM transcript WHERE session=? AND seq<=? ORDER BY seq",
     [sqlight.text(branch_id), sqlight.text(source_id), sqlight.int(checkpoint)],
   )
 }
@@ -410,7 +410,7 @@ fn append_incomplete_results(
   list.try_each(pending, fn(call_id) {
     store.run(
       db,
-      "INSERT INTO transcript(session,payload,timestamp,provider) VALUES(?,?,NULL,?)",
+      "INSERT INTO transcript(session,payload,timestamp,provider,row_class) VALUES(?,?,NULL,?,'other')",
       [
         sqlight.text(branch_id),
         sqlight.blob(

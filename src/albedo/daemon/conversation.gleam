@@ -12,6 +12,7 @@ import albedo/daemon/usage
 import albedo/harness/cache_fade
 import albedo/harness/extensions/python/cells as journal
 import albedo/openai_api/types
+import gleam/bool
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -74,7 +75,7 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
   store.query(store, fn(db) {
     use _ <- result.try(store.exec(
       db,
-      "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER,usage_cache_creation_tokens INTEGER,effort TEXT); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT,thought_ms INTEGER); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);"
+      "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER,usage_cache_creation_tokens INTEGER,effort TEXT); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT,thought_ms INTEGER,row_class TEXT CHECK(row_class IN ('user','image_fit','other'))); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);"
         <> images.schema
         <> requests.schema,
     ))
@@ -424,6 +425,204 @@ pub fn load_entries(
   |> result.map(fn(rows) { list.map(rows, fn(row) { row.entry }) })
 }
 
+/// Captured append boundary shared by metadata and range reads.
+pub type Snapshot {
+  Snapshot(session: String, upper: Int)
+}
+
+pub fn snapshot(
+  ledger: store.Store,
+  session: String,
+) -> Result(Snapshot, String) {
+  last_seq(ledger, session)
+  |> result.map(fn(upper) { Snapshot(session, upper) })
+}
+
+pub type SourceStats {
+  SourceStats(latest_user: Option(Int), uncovered: Bool, uncovered_users: Int)
+}
+
+pub fn source_stats(
+  ledger: store.Store,
+  snapshot: Snapshot,
+  covered: Int,
+) -> Result(SourceStats, String) {
+  store.query(ledger, fn(db) {
+    use latest <- result.try(store.one(
+      db,
+      "SELECT MAX(seq) FROM transcript WHERE session=? AND seq<=? AND row_class IN ('user','image_fit')",
+      [sqlight.text(snapshot.session), sqlight.int(snapshot.upper)],
+      decode.field(0, decode.optional(decode.int), decode.success),
+      "transcript user boundary",
+    ))
+    use count <- result.try(store.one(
+      db,
+      "SELECT COUNT(*) FROM transcript WHERE session=? AND seq>? AND seq<=? AND row_class IN ('user','image_fit')",
+      [
+        sqlight.text(snapshot.session),
+        sqlight.int(covered),
+        sqlight.int(snapshot.upper),
+      ],
+      decode.field(0, decode.int, decode.success),
+      "transcript user count",
+    ))
+    use uncovered <- result.try(store.one(
+      db,
+      "SELECT EXISTS(SELECT 1 FROM transcript WHERE session=? AND seq>? AND seq<=?)",
+      [
+        sqlight.text(snapshot.session),
+        sqlight.int(covered),
+        sqlight.int(snapshot.upper),
+      ],
+      decode.field(0, decode.int, decode.success),
+      "transcript uncovered rows",
+    ))
+    Ok(SourceStats(latest, uncovered == 1, count))
+  })
+}
+
+pub type FoldStep(a) {
+  Continue(a)
+  Stop(a)
+}
+
+type FitSchedule =
+  List(#(Int, image_fit.Replacements))
+
+/// Chronological range fold. Stop avoids reading another page; later image
+/// fits up to the captured boundary still apply to earlier selected images.
+pub fn fold_sources(
+  ledger: store.Store,
+  snapshot: Snapshot,
+  first: Int,
+  last: Int,
+  acc: a,
+  step: fn(a, transcript.SourcedEntry) -> FoldStep(a),
+) -> Result(a, String) {
+  use <- bool.guard(first > int.min(last, snapshot.upper), Ok(acc))
+  let read = images.reader(ledger)
+  use fits <- result.try(
+    store.read(
+      ledger,
+      "SELECT seq,payload FROM transcript WHERE session=? AND seq>=? AND seq<=? AND row_class='image_fit' ORDER BY seq DESC",
+      [
+        sqlight.text(snapshot.session),
+        sqlight.int(first),
+        sqlight.int(snapshot.upper),
+      ],
+      {
+        use seq <- decode.field(0, decode.int)
+        use payload <- decode.field(1, decode.bit_array)
+        decode.success(#(seq, payload))
+      },
+    ),
+  )
+  use #(schedule, replacements) <- result.try(
+    list.try_fold(fits, #([], image_fit.replacements()), fn(acc, row) {
+      use fit <- result.try(
+        unpack_fit(row.1, read) |> result.replace_error("corrupt image fit row"),
+      )
+      let replacements = image_fit.add(acc.1, fit)
+      Ok(#([#(row.0, acc.1), ..acc.0], replacements))
+    }),
+  )
+  fold_source_pages(
+    ledger,
+    snapshot,
+    first - 1,
+    int.min(last, snapshot.upper),
+    acc,
+    step,
+    schedule,
+    replacements,
+  )
+}
+
+fn fold_source_pages(
+  ledger: store.Store,
+  snapshot: Snapshot,
+  after: Int,
+  upper: Int,
+  acc: a,
+  step: fn(a, transcript.SourcedEntry) -> FoldStep(a),
+  schedule: FitSchedule,
+  replacements: image_fit.Replacements,
+) -> Result(a, String) {
+  let read = images.reader(ledger)
+  use rows <- result.try(
+    store.query(ledger, fn(db) {
+      use rows <- result.try(store.rows(
+        db,
+        "SELECT seq,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq>? AND seq<=? ORDER BY seq LIMIT 128",
+        [sqlight.text(snapshot.session), sqlight.int(after), sqlight.int(upper)],
+        source_row(),
+      ))
+      list.try_map(rows, sourced_entry(snapshot.session, _, read))
+    }),
+  )
+  case rows {
+    [] -> Ok(acc)
+    _ ->
+      case fold_source_rows(rows, acc, step, schedule, replacements) {
+        Stop(#(acc, _, _)) -> Ok(acc)
+        Continue(#(acc, schedule, replacements)) -> {
+          let assert Ok(last) = list.last(rows)
+          fold_source_pages(
+            ledger,
+            snapshot,
+            last.source.seq,
+            upper,
+            acc,
+            step,
+            schedule,
+            replacements,
+          )
+        }
+      }
+  }
+}
+
+fn fold_source_rows(
+  rows: List(transcript.SourcedEntry),
+  acc: a,
+  step: fn(a, transcript.SourcedEntry) -> FoldStep(a),
+  schedule: FitSchedule,
+  replacements: image_fit.Replacements,
+) -> FoldStep(#(a, FitSchedule, image_fit.Replacements)) {
+  case rows {
+    [] -> Continue(#(acc, schedule, replacements))
+    [row, ..rest] -> {
+      let #(schedule, replacements) =
+        advance_fits(schedule, replacements, row.source.seq)
+      let entry = row.entry
+      let row =
+        transcript.SourcedEntry(
+          ..row,
+          entry: transcript.Entry(
+            ..entry,
+            input: image_fit.apply_replacements(entry.input, replacements),
+          ),
+        )
+      case step(acc, row) {
+        Stop(acc) -> Stop(#(acc, schedule, replacements))
+        Continue(acc) ->
+          fold_source_rows(rest, acc, step, schedule, replacements)
+      }
+    }
+  }
+}
+
+fn advance_fits(
+  schedule: FitSchedule,
+  replacements: image_fit.Replacements,
+  seq: Int,
+) -> #(FitSchedule, image_fit.Replacements) {
+  case schedule {
+    [#(at, next), ..rest] if at <= seq -> advance_fits(rest, next, seq)
+    _ -> #(schedule, replacements)
+  }
+}
+
 /// Read durable entries with their SQLite identities in chronological order.
 pub fn load_sources(
   store: store.Store,
@@ -497,25 +696,26 @@ fn load_source_pages(
 /// The entries with each image fit applied to every row before it, so a
 /// history read up to any row is what the model was sent at that point.
 fn fitted(rows: List(LoadedRow)) -> List(transcript.SourcedEntry) {
-  list.fold(rows, [], fn(earlier, row) {
-    let #(sourced, fit) = row
-    let earlier = case fit {
-      Error(_) -> earlier
-      Ok(fit) ->
-        list.map(earlier, fn(earlier: transcript.SourcedEntry) {
-          let entry = earlier.entry
-          transcript.SourcedEntry(
-            ..earlier,
-            entry: transcript.Entry(
-              ..entry,
-              input: image_fit.apply(entry.input, fit),
-            ),
-          )
-        })
-    }
-    [sourced, ..earlier]
-  })
-  |> list.reverse
+  let #(entries, _) =
+    list.fold(list.reverse(rows), #([], image_fit.replacements()), fn(acc, row) {
+      let #(entries, replacements) = acc
+      let #(sourced, fit) = row
+      let entry = sourced.entry
+      let sourced =
+        transcript.SourcedEntry(
+          ..sourced,
+          entry: transcript.Entry(
+            ..entry,
+            input: image_fit.apply_replacements(entry.input, replacements),
+          ),
+        )
+      let replacements = case fit {
+        Ok(fit) -> image_fit.add(replacements, fit)
+        Error(_) -> replacements
+      }
+      #([sourced, ..entries], replacements)
+    })
+  entries
 }
 
 /// A transcript row as the reads select it: seq, payload, timestamp,
@@ -606,7 +806,7 @@ pub fn candidates(
   )
 }
 
-/// A payload from `candidates`, decoded.
+/// Decode a packed transcript row with lazy image payload reads.
 pub fn read_input(
   store: store.Store,
   payload: BitArray,
@@ -800,7 +1000,7 @@ pub fn append_capability_update(
       )
       store.run(
         db,
-        "INSERT INTO transcript(session,payload,timestamp) VALUES(?,?,?)",
+        "INSERT INTO transcript(session,payload,timestamp,row_class) VALUES(?,?,?,'user')",
         [
           sqlight.text(id),
           sqlight.blob(pack(types.User(update))),
@@ -894,7 +1094,7 @@ pub fn commit_fits(
         let assert [image] = stored
         store.run(
           db,
-          "INSERT INTO transcript(session,payload,timestamp,provider) VALUES(?,?,?,?)",
+          "INSERT INTO transcript(session,payload,timestamp,provider,row_class) VALUES(?,?,?,?,'image_fit')",
           [
             sqlight.text(id),
             sqlight.blob(pack_fit(fit.note, fit.source, image)),
@@ -989,13 +1189,14 @@ fn commit_with_letters(
           use _ <- result.try(
             store.run(
               db,
-              "INSERT INTO transcript(session,payload,timestamp,provider,thought_ms) VALUES(?,?,?,?,?)",
+              "INSERT INTO transcript(session,payload,timestamp,provider,thought_ms,row_class) VALUES(?,?,?,?,?,?)",
               [
                 sqlight.text(id),
                 sqlight.blob(pack(input)),
                 sqlight.int(timestamp),
                 sqlight.nullable(sqlight.text, provider),
                 sqlight.nullable(sqlight.int, entry.thought_ms),
+                sqlight.text(transcript.row_class(input)),
               ],
             ),
           )

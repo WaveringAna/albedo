@@ -1,5 +1,5 @@
 -module(albedo_conversation).
--export([pack/1,pack_fit/3,unpack/2,unpack_fit/2,unpack_trace/1,pack_list/1,unpack_list/2,row_atoms/0,elide_tool_images/1,elision_marker/1]).
+-export([pack/1,pack_fit/3,unpack/2,unpack_fit/2,unpack_trace/1,pack_list/1,unpack_list/2,row_atoms/0,classify/1,elide_tool_images/1,elision_marker/1]).
 pack(Input) -> term_to_binary({1,albedo_images:pack(Input)}).
 
 %% binary_to_term/2 with `safe` rejects atoms that do not exist yet; a stored
@@ -68,3 +68,21 @@ elide_tool_images(Bytes) ->
   catch _:_ -> {error, nil} end.
 
 elision_marker(Text) -> <<Text/binary, "\n[image elided and is no longer available]">>.
+
+%% Classification is derived from a valid payload, never from its textual tags.
+classify(Bytes) ->
+    Read = fun(_) -> {error,nil} end,
+    try binary_to_term(Bytes,[safe]) of
+        {1,{image_fit,_,_,_}} ->
+            case unpack_fit(Bytes,Read) of
+                {ok,_} -> {ok,<<"image_fit">>};
+                _ -> {error,nil}
+            end;
+        _ ->
+            case unpack(Bytes,Read) of
+                {ok,{user,_}} -> {ok,<<"user">>};
+                {ok,{user_image,_,_}} -> {ok,<<"user">>};
+                {ok,_} -> {ok,<<"other">>};
+                _ -> {error,nil}
+            end
+    catch _:_ -> {error,nil} end.
