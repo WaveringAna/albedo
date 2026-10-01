@@ -84,7 +84,9 @@ func (t *Service) Open(ctx context.Context, prepared app.PreparedOpen) error {
 	if err := t.announceMigration(ctx, prepared.Connection); err != nil {
 		return err
 	}
-	tui.DetectInk()
+	if err := tui.DetectInk(); err != nil {
+		return err
+	}
 	appModel := tui.NewAppModel(prepared.Connection, prepared.Providers, prepared.Selected, prepared.Workspace, prepared.LoginRequired, t.OpenBrowser)
 	p := tea.NewProgram(appModel, tea.WithFPS(120), tea.WithInput(t.In), tea.WithOutput(t.Out))
 	final, err := p.Run()
@@ -101,7 +103,9 @@ func (t *Service) Login(ctx context.Context, prepared app.PreparedOpen, workspac
 	if err := t.announceMigration(ctx, prepared.Connection); err != nil {
 		return err
 	}
-	tui.DetectInk()
+	if err := tui.DetectInk(); err != nil {
+		return err
+	}
 	model := tui.NewLoginAppModel(prepared.Connection, prepared.Providers, workspace, name, t.OpenBrowser)
 	_, err := tea.NewProgram(model, tea.WithFPS(120), tea.WithInput(t.In), tea.WithOutput(t.Out)).Run()
 	return err

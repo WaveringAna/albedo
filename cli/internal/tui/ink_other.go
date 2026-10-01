@@ -2,4 +2,4 @@
 
 package tui
 
-func queryColors() string { return "" }
+func queryColors() (string, error) { return "", nil }

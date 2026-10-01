@@ -256,8 +256,11 @@ var transcriptInk ink
 
 // DetectInk asks the terminal for its colors and mixes the transcript's
 // ramp from them. It must run before the TUI owns the terminal's input.
-func DetectInk() {
-	reply := queryColors()
+func DetectInk() error {
+	reply, err := queryColors()
+	if err != nil {
+		return err
+	}
 	detected, ok := mixInk(parseColors(reply))
 	if path := os.Getenv("ALBEDO_INK_DEBUG"); path != "" {
 		_ = os.WriteFile(path, fmt.Appendf(nil, "reply %q\ntrusted %v\nink %+v\n", reply, ok, detected), 0o644)
@@ -265,4 +268,5 @@ func DetectInk() {
 	if ok {
 		useInk(detected)
 	}
+	return nil
 }

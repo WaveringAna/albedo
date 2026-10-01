@@ -3,6 +3,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -15,18 +16,23 @@ import (
 // queryColors asks for the text and background colors and the palette entries the theme mixes from, then asks
 // for the device attributes every terminal answers, so a terminal that
 // ignores the color queries ends the read instead of stalling it.
-func queryColors() string {
+func queryColors() (replyText string, restoreErr error) {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
-		return ""
+		return "", nil
 	}
 	defer tty.Close()
+	// Query failures use default colors; restoration failures must reach startup.
 	fd := tty.Fd()
 	state, err := term.MakeRaw(fd)
 	if err != nil {
-		return ""
+		return "", nil
 	}
-	defer term.Restore(fd, state) //nolint:errcheck
+	defer func() {
+		if err := term.Restore(fd, state); err != nil {
+			restoreErr = fmt.Errorf("could not restore terminal settings after color detection: %w", err)
+		}
+	}()
 	var query strings.Builder
 	query.WriteString("\x1b]10;?\x1b\\\x1b]11;?\x1b\\")
 	for _, i := range queriedPalette {
@@ -36,7 +42,7 @@ func queryColors() string {
 	}
 	query.WriteString("\x1b[c")
 	if _, err := tty.WriteString(query.String()); err != nil {
-		return ""
+		return "", nil
 	}
 	var reply strings.Builder
 	deadline := time.Now().Add(300 * time.Millisecond)
@@ -66,5 +72,5 @@ func queryColors() string {
 			break
 		}
 	}
-	return reply.String()
+	return reply.String(), nil
 }
