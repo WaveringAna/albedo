@@ -56,7 +56,7 @@ type SendResult struct {
 
 type ChatClient struct {
 	conn            *Connection
-	argumentsByCall map[string]string
+	argumentsByCall map[string]*strings.Builder
 	agentID         string
 	clientID        string
 	afterSeq        int
@@ -75,7 +75,7 @@ func NewChatClient(conn *Connection, agentID string) *ChatClient {
 		agentID:         strings.TrimSpace(agentID),
 		clientID:        "cli-" + hex.EncodeToString(identity),
 		afterSeq:        -1,
-		argumentsByCall: make(map[string]string),
+		argumentsByCall: make(map[string]*strings.Builder),
 	}
 }
 
@@ -519,7 +519,7 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onE
 			// Transient stream failures retain the cursor and partial tool previews.
 			c.mu.Lock()
 			c.afterSeq = -1
-			c.argumentsByCall = make(map[string]string)
+			c.argumentsByCall = make(map[string]*strings.Builder)
 			c.mu.Unlock()
 		}
 	}()
@@ -585,7 +585,7 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onE
 							switch itemType {
 							case "reset", "retry", "turn_started", "message", "interrupted", "error":
 								c.mu.Lock()
-								c.argumentsByCall = make(map[string]string)
+								c.argumentsByCall = make(map[string]*strings.Builder)
 								c.mu.Unlock()
 								if err := reporter.Report(nil, "running"); err != nil {
 									return err
@@ -632,14 +632,12 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onE
 								text, _ := evMap["text"].(string)
 								if callID != "" && text != "" {
 									c.mu.Lock()
-									fresh := false
-									if _, exists := c.argumentsByCall[callID]; !exists {
-										fresh = true
-									}
+									arguments, exists := c.argumentsByCall[callID]
+									fresh := !exists
 
 									retained := 0
 									for k, v := range c.argumentsByCall {
-										retained += len(k) + len(v)
+										retained += len(k) + v.Len()
 									}
 
 									extraCallID := 0
@@ -648,14 +646,19 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onE
 									}
 
 									if (fresh && len(c.argumentsByCall) >= 32) || retained+len(text)+extraCallID > 2000000 {
-										c.argumentsByCall = make(map[string]string)
+										c.argumentsByCall = make(map[string]*strings.Builder)
 										c.afterSeq = -1
 										c.mu.Unlock()
 										return errors.New("too many tool argument previews for this client to display")
 									}
 
-									args := c.argumentsByCall[callID] + text
-									c.argumentsByCall[callID] = args
+									if fresh {
+										arguments = new(strings.Builder)
+										c.argumentsByCall[callID] = arguments
+									}
+									// Append-only builders keep earlier String snapshots immutable.
+									arguments.WriteString(text)
+									args := arguments.String()
 									c.mu.Unlock()
 
 									call := &ToolCallAssembly{

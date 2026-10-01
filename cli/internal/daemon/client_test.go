@@ -25,21 +25,31 @@ func TestCompletedCallPreviewsReleaseState(t *testing.T) {
 	aData, _ := json.Marshal(map[string]any{"code": "read('first.py')"})
 	bData, _ := json.Marshal(map[string]any{"code": "read('second.py')"})
 	a := string(aData)
-	b := string(bData)
+	b := string(bData) + strings.Repeat(" ", 128)
 
 	var requestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		count := requestCount.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
-		if count == 1 {
+		switch count {
+		case 1:
 			_, _ = w.Write([]byte(formatPage(1, []any{
 				map[string]any{"type": "arguments_delta", "name": "python", "callId": "a", "text": a},
 				map[string]any{"type": "arguments_delta", "name": "python", "callId": "b", "text": b[:15]},
 				map[string]any{"type": "tool", "callId": "a", "name": "python", "args": a, "result": "done"},
 			})))
-		} else {
+		case 2:
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+		case 3:
+			if r.URL.Query().Get("after_seq") != "1" {
+				t.Error("transient failure discarded the reconnect cursor")
+			}
 			_, _ = w.Write([]byte(formatPage(2, []any{
-				map[string]any{"type": "arguments_delta", "name": "python", "callId": "b", "text": b[15:]},
+				map[string]any{"type": "arguments_delta", "name": "python", "callId": "b", "text": b[15:16]},
+			})))
+		default:
+			_, _ = w.Write([]byte(formatPage(3, []any{
+				map[string]any{"type": "arguments_delta", "name": "python", "callId": "b", "text": b[16:]},
 				map[string]any{"type": "tool_progress", "progress": map[string]any{"callId": "b", "name": "python", "phase": "running"}},
 				map[string]any{"type": "tool", "callId": "b", "name": "python", "args": b, "result": "done"},
 			})))
@@ -51,14 +61,49 @@ func TestCompletedCallPreviewsReleaseState(t *testing.T) {
 	client := NewChatClient(conn, "session")
 
 	var events []StreamEvent
-	_ = client.Stream(context.Background(), 0, func(event StreamEvent) error {
+	collect := func(event StreamEvent) error {
+		if event.Type == EventToolProgress && event.Progress != nil && event.Progress.Phase == "running" {
+			if _, exists := client.argumentsByCall[event.Progress.CallID]; exists {
+				t.Error("running call still owns its argument buffer")
+			}
+		}
 		events = append(events, event)
 		return nil
-	})
-	_ = client.Stream(context.Background(), 0, func(event StreamEvent) error {
-		events = append(events, event)
-		return nil
-	})
+	}
+	_ = client.Stream(context.Background(), 0, collect)
+	if _, exists := client.argumentsByCall["a"]; exists {
+		t.Fatal("completed call still owns an argument buffer")
+	}
+	buffer := client.argumentsByCall["b"]
+	if buffer == nil || client.afterSeq != 1 {
+		t.Fatal("EOF discarded the unfinished call or cursor")
+	}
+	firstSnapshot := buffer.String()
+	initialCapacity := buffer.Cap()
+	if initialCapacity <= buffer.Len() {
+		t.Fatal("fixture needs spare capacity to exercise an append without growth")
+	}
+	if err := client.Stream(context.Background(), 0, collect); err == nil {
+		t.Fatal("expected transient HTTP failure")
+	}
+	if client.argumentsByCall["b"] != buffer || buffer.String() != firstSnapshot || client.afterSeq != 1 {
+		t.Fatal("transient HTTP failure discarded unfinished arguments or cursor")
+	}
+	_ = client.Stream(context.Background(), 0, collect)
+	secondSnapshot := buffer.String()
+	if client.argumentsByCall["b"] != buffer || buffer.Cap() != initialCapacity || client.afterSeq != 2 {
+		t.Fatal("reconnect did not continue the same buffer within its capacity")
+	}
+	_ = client.Stream(context.Background(), 0, collect)
+	if buffer.Cap() <= initialCapacity {
+		t.Fatal("fixture did not exercise buffer growth")
+	}
+	if firstSnapshot != b[:15] || secondSnapshot != b[:16] || buffer.String() != b {
+		t.Fatal("appending or growing mutated retained argument snapshots")
+	}
+	if len(client.argumentsByCall) != 0 {
+		t.Fatal("running and completed calls still own argument buffers")
+	}
 
 	hasSecondPreview := false
 	for _, ev := range events {
@@ -136,6 +181,60 @@ func TestUnfinishedArgumentsBounded(t *testing.T) {
 	}
 	if len(events) == 0 || events[len(events)-1].Text != "recovered" {
 		t.Fatalf("expected recovered event, got: %+v", events)
+	}
+}
+
+func TestUnfinishedArgumentBytesBounded(t *testing.T) {
+	const firstCallID = "first"
+	const secondCallID = "second"
+	firstArguments := strings.Repeat("x", 999_999)
+	secondArguments := strings.Repeat("y", 2_000_000-len(firstCallID)-len(secondCallID)-len(firstArguments))
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := requestCount.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch count {
+		case 1:
+			_, _ = w.Write([]byte(formatPage(1, []any{
+				map[string]any{"type": "arguments_delta", "name": "other", "callId": firstCallID, "text": firstArguments},
+				map[string]any{"type": "arguments_delta", "name": "other", "callId": secondCallID, "text": secondArguments},
+			})))
+		case 2:
+			_, _ = w.Write([]byte(formatPage(2, []any{
+				map[string]any{"type": "arguments_delta", "name": "other", "callId": secondCallID, "text": "!"},
+			})))
+		default:
+			_, _ = w.Write([]byte(formatPage(3, []any{
+				map[string]any{"type": "arguments_delta", "name": "other", "callId": firstCallID, "text": firstArguments},
+				map[string]any{"type": "arguments_delta", "name": "other", "callId": secondCallID, "text": secondArguments + "!"},
+			})))
+		}
+	}))
+	defer server.Close()
+	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
+	client := NewChatClient(conn, "session")
+	onEvent := func(StreamEvent) error { return nil }
+	if err := client.Stream(context.Background(), 0, onEvent); err != nil {
+		t.Fatalf("exact combined byte limit rejected: %v", err)
+	}
+	if len(client.argumentsByCall) != 2 || client.argumentsByCall[firstCallID].String() != firstArguments || client.argumentsByCall[secondCallID].String() != secondArguments {
+		t.Fatal("exact limit did not retain both calls intact")
+	}
+	retainedSnapshot := client.argumentsByCall[secondCallID].String()
+	if err := client.Stream(context.Background(), 0, onEvent); err == nil {
+		t.Fatal("accepted one byte beyond the combined argument and call-ID limit")
+	}
+	if len(client.argumentsByCall) != 0 || client.afterSeq != -1 {
+		t.Fatal("byte-limit failure retained argument buffers or cursor")
+	}
+	if retainedSnapshot != secondArguments {
+		t.Fatal("overflow modified the retained argument snapshot")
+	}
+	if err := client.Stream(context.Background(), 0, onEvent); err == nil {
+		t.Fatal("accepted one-byte overflow when adding a fresh call ID")
+	}
+	if len(client.argumentsByCall) != 0 || client.afterSeq != -1 {
+		t.Fatal("fresh-call byte-limit failure retained argument buffers or cursor")
 	}
 }
 
