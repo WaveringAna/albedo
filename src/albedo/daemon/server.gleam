@@ -1715,7 +1715,25 @@ const daemon_routes = [
   "quota", "cache-ttl", "fs",
 ]
 
+/// Shutdown can close a handle after the registry admitted its request.
+/// Keep this transport failure at the HTTP boundary; other panics still fail.
 fn route(
+  config: Config,
+  registry: Subject(Message),
+  req: request.Request(mist.Connection),
+) -> response.Response(mist.ResponseData) {
+  case http_request(fn() { handle_request(config, registry, req) }) {
+    Ok(response) -> response
+    Error(_) -> error(503, "daemon request process is unavailable")
+  }
+}
+
+@external(erlang, "albedo_daemon", "http_request")
+fn http_request(
+  handle: fn() -> response.Response(mist.ResponseData),
+) -> Result(response.Response(mist.ResponseData), Nil)
+
+fn handle_request(
   config: Config,
   registry: Subject(Message),
   req: request.Request(mist.Connection),

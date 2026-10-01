@@ -1,5 +1,5 @@
 -module(albedo_daemon).
--export([env/1,free_port/0,ready/3,read_config/1,directory/1,shutdown/0,rss/1,watch_parent/1,hold/1]).
+-export([env/1,free_port/0,ready/3,read_config/1,directory/1,shutdown/0,rss/1,watch_parent/1,hold/1,http_request/1]).
 env(Name) -> case os:getenv(binary_to_list(Name)) of false -> <<>>; Value -> unicode:characters_to_binary(Value) end.
 %% A loopback port nothing listens on, which the OS just picked.
 free_port() ->
@@ -87,3 +87,19 @@ parse_rss(Output) ->
 pair([Pid, Kb]) ->
     try {binary_to_integer(Pid), binary_to_integer(Kb)} catch _:_ -> {nil, nil} end;
 pair(_) -> {nil, nil}.
+
+%% An admitted HTTP request can outlive the worker/store it was handed just
+%% before shutdown. Only that call transport failure becomes an unavailable
+%% response; application errors retain their original class and stacktrace.
+http_request(Handle) ->
+    try {ok, Handle()}
+    catch
+        error:#{module := <<"gleam/erlang/process">>,
+                function := <<"perform_call">>,
+                message := Message}=Reason:Stack ->
+            case Message of
+                <<"callee exited: ",_/binary>> -> {error,nil};
+                <<"Callee subject had no owner">> -> {error,nil};
+                _ -> erlang:raise(error,Reason,Stack)
+            end
+    end.
