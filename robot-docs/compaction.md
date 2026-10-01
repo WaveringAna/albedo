@@ -12,7 +12,7 @@ A strategy returns prepared inputs and an observation for `/context`. The observ
 
 `conversation.load_sources` reads transcript rows with `SourceRef(session, seq)`. `conversation.source` resolves one reference. The sequence is SQLite's append-only transcript identity. A fork copies rows into a new session with new references. LCM copies saved nodes whose entire source range precedes the fork checkpoint and remaps their row and node IDs without a model call. LCM omits a node that crosses the checkpoint, but can reuse its complete child nodes. The branch may summarize the remaining rows if it later reaches the compaction trigger.
 
-Provider projection can combine several durable rows into one model input, split one row into several inputs, or omit a nonportable reasoning item. `projection.for_model_with_sources` records the rows that produced each projected input. `projection.for_model` still returns plain inputs for existing callers. Synthetic extension context and strategy summaries have no transcript reference.
+Provider projection can combine several durable rows into one model input, split one row into several inputs, or omit a nonportable reasoning item. `projection.for_model` returns plain inputs. Durable source references belong to transcript reads; synthetic extension context and strategy summaries have no transcript reference.
 
 `lcm` uses durable source rows for summary ranges and plain model inputs for its verbatim tail. It preserves every unsummarized user unit and the latest whole user/tool unit. Source references on live projected inputs would let future strategies cut history within those unit boundaries.
 

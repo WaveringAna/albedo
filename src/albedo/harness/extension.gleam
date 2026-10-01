@@ -866,17 +866,6 @@ fn plugin_values(
   })
 }
 
-/// Save only changed selections. A single transaction prevents a restart from
-/// seeing both compaction strategies enabled during a replacement.
-pub fn set_selection(
-  ledger: store.Store,
-  session: String,
-  previous: List(Extension),
-  selected: List(Extension),
-) -> Result(Nil, String) {
-  set_selection_with(ledger, session, previous, selected, None)
-}
-
 fn set_enabled(
   ledger: store.Store,
   session: String,
@@ -903,13 +892,7 @@ pub fn record_selected(
   }
   case change, replacing {
     SetSession(..), True ->
-      set_selection_with(
-        ledger,
-        session,
-        previous,
-        selected,
-        Some(#(name, True)),
-      )
+      set_selection_with(ledger, session, previous, selected, #(name, True))
     SetGlobal(..), True -> {
       use _ <- result.try(
         list.try_each(installed, fn(other) {
@@ -930,17 +913,14 @@ fn set_selection_with(
   session: String,
   previous: List(Extension),
   selected: List(Extension),
-  explicit: Option(#(String, Bool)),
+  explicit: #(String, Bool),
 ) -> Result(Nil, String) {
   let changes =
     list.append(
       entered(selected, previous, True),
       entered(previous, selected, False),
     )
-  write_changes(ledger, session, case explicit {
-    Some(choice) -> [choice, ..changes]
-    None -> changes
-  })
+  write_changes(ledger, session, [explicit, ..changes])
 }
 
 /// The extensions `side` runs and `other` does not, as (name, value) pairs.
@@ -1201,12 +1181,6 @@ pub fn routes(composition: Composition) -> List(Route) {
   contribution_routes(
     list.map(composition.contributions, fn(item) { item.value }),
   )
-}
-
-/// Static commands declared by these extensions, without preparing any.
-pub fn declared_commands(installed: List(Extension)) -> List(command.Command) {
-  list.flat_map(installed, declared)
-  |> list.flat_map(fn(value) { value.commands })
 }
 
 pub fn summaries(

@@ -1184,23 +1184,6 @@ pub fn compaction_name(session: Session) -> Option(String) {
   |> option.map(fn(strategy) { strategy.name })
 }
 
-/// Call one enabled session-scoped extension route without going through Python.
-/// User-facing adapters use this to share the exact resolver and immutable managed
-/// state used by Python plugins.
-pub fn host_request(
-  runtime: Runtime,
-  session: Session,
-  request: String,
-) -> Result(String, String) {
-  use _ <- result.try(owned_by(runtime, session))
-  Ok(rpc.handle(
-    extension.routes(session.composition),
-    runtime.work,
-    session.id,
-    request,
-  ))
-}
-
 /// Compaction sees only durable conversation. Extension context belongs to the
 /// system instructions, not the request history or durable transcript.
 pub fn prepare_history_with(

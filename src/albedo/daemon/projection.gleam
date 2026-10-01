@@ -14,12 +14,6 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 
-/// One provider-facing input and the durable transcript rows that produced it.
-/// A transfer may combine several source rows or omit reasoning without a readable summary.
-pub type SourcedInput {
-  SourcedInput(input: types.Input, sources: List(transcript.SourceRef))
-}
-
 pub fn for_model(
   newest_first: List(transcript.Entry),
   provider: String,
@@ -27,32 +21,19 @@ pub fn for_model(
 ) -> Result(List(types.Input), String) {
   newest_first
   |> list.reverse
-  |> list.map(fn(entry) { #(entry, []) })
-  |> project(provider, protocol, [], empty_chat())
-  |> result.map(fn(inputs) { list.map(inputs, fn(input) { input.input }) })
-}
-
-pub fn for_model_with_sources(
-  newest_first: List(transcript.SourcedEntry),
-  provider: String,
-  protocol: types.Protocol,
-) -> Result(List(SourcedInput), String) {
-  newest_first
-  |> list.reverse
-  |> list.map(fn(item) { #(item.entry, [item.source]) })
   |> project(provider, protocol, [], empty_chat())
 }
 
 fn project(
-  entries: List(#(transcript.Entry, List(transcript.SourceRef))),
+  entries: List(transcript.Entry),
   provider: String,
   protocol: types.Protocol,
-  projected: List(SourcedInput),
+  projected: List(types.Input),
   pending_chat: ChatSemantic,
-) -> Result(List(SourcedInput), String) {
+) -> Result(List(types.Input), String) {
   case entries {
     [] -> flush_chat(projected, pending_chat)
-    [#(entry, sources), ..rest] -> {
+    [entry, ..rest] -> {
       // Both continuations capture this row's position in the walk.
       let ahead = fn(inputs: List(types.Input)) {
         use projected <- result.try(flush_chat(projected, pending_chat))
@@ -60,12 +41,7 @@ fn project(
           rest,
           provider,
           protocol,
-          list.append(
-            list.map(list.reverse(inputs), fn(input) {
-              SourcedInput(input, sources)
-            }),
-            projected,
-          ),
+          list.append(list.reverse(inputs), projected),
           empty_chat(),
         )
       }
@@ -90,13 +66,12 @@ fn project(
                           carry(add_text(
                             pending_chat,
                             reasoning_summary(summary),
-                            sources,
                           ))
                       }
                     Ok(ResponseCall(call)) ->
-                      carry(add_call(pending_chat, call, sources))
+                      carry(add_call(pending_chat, call))
                     Ok(ResponseText(text)) ->
-                      carry(add_text(pending_chat, text, sources))
+                      carry(add_text(pending_chat, text))
                     Error(error) -> Error(error)
                   }
                 types.Responses, types.Responses -> {
@@ -196,11 +171,7 @@ fn response_call_semantics(
 }
 
 type ChatSemantic {
-  ChatSemantic(
-    text: List(String),
-    calls: List(types.ToolCall),
-    sources: List(transcript.SourceRef),
-  )
+  ChatSemantic(text: List(String), calls: List(types.ToolCall))
 }
 
 fn chat_semantics(item: types.ReplayItem) -> Result(ChatSemantic, String) {
@@ -233,7 +204,7 @@ fn chat_semantics(item: types.ReplayItem) -> Result(ChatSemantic, String) {
       "" -> []
       text -> [reasoning_summary(text)]
     }
-    decode.success(ChatSemantic(list.append(summary, text), calls, []))
+    decode.success(ChatSemantic(list.append(summary, text), calls))
   }
   inspect(item, decoder, "Chat Completions assistant message")
 }
@@ -271,34 +242,26 @@ fn chat_call_decoder() -> decode.Decoder(types.ToolCall) {
 }
 
 fn empty_chat() -> ChatSemantic {
-  ChatSemantic([], [], [])
+  ChatSemantic([], [])
 }
 
-/// A call joins the message being assembled, carrying its row's sources.
-fn add_call(
-  chat: ChatSemantic,
-  call: types.ToolCall,
-  sources: List(transcript.SourceRef),
-) -> ChatSemantic {
-  let ChatSemantic(text, calls, pending) = chat
-  ChatSemantic(text, [call, ..calls], list.append(pending, sources))
+/// A call joins the message being assembled.
+fn add_call(chat: ChatSemantic, call: types.ToolCall) -> ChatSemantic {
+  let ChatSemantic(text, calls) = chat
+  ChatSemantic(text, [call, ..calls])
 }
 
-/// Answer text joins the message being assembled, carrying its row's sources.
-fn add_text(
-  chat: ChatSemantic,
-  text: String,
-  sources: List(transcript.SourceRef),
-) -> ChatSemantic {
-  let ChatSemantic(texts, calls, pending) = chat
-  ChatSemantic([text, ..texts], calls, list.append(pending, sources))
+/// Answer text joins the message being assembled.
+fn add_text(chat: ChatSemantic, text: String) -> ChatSemantic {
+  let ChatSemantic(texts, calls) = chat
+  ChatSemantic([text, ..texts], calls)
 }
 
 fn chat_inputs(
   semantic: ChatSemantic,
   protocol: types.Protocol,
 ) -> Result(List(types.Input), String) {
-  let ChatSemantic(text, calls, _) = semantic
+  let ChatSemantic(text, calls) = semantic
   case protocol {
     types.ChatCompletions ->
       case calls {
@@ -319,10 +282,10 @@ fn chat_inputs(
 }
 
 fn flush_chat(
-  projected: List(SourcedInput),
+  projected: List(types.Input),
   pending: ChatSemantic,
-) -> Result(List(SourcedInput), String) {
-  let ChatSemantic(text, calls, sources) = pending
+) -> Result(List(types.Input), String) {
+  let ChatSemantic(text, calls) = pending
   case text, calls {
     [], [] -> Ok(projected)
     _, _ -> {
@@ -330,7 +293,7 @@ fn flush_chat(
         list.reverse(text),
         list.reverse(calls),
       ))
-      Ok([SourcedInput(types.Replay(item), sources), ..projected])
+      Ok([types.Replay(item), ..projected])
     }
   }
 }
