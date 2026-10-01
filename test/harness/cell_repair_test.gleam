@@ -6,7 +6,7 @@ import albedo/harness/runtime
 import gleam/string
 import gleeunit/should
 
-pub fn partial_execution_requires_explicit_replay_permission_test() {
+pub fn partial_execution_requires_explicit_replay_permission_test() -> Nil {
   let assert Ok(host) = runtime.start(":memory:")
   let assert Ok(session) = runtime.open_session(host, "a", "/tmp")
   let assert Ok(failed) =
@@ -36,7 +36,7 @@ pub fn partial_execution_requires_explicit_replay_permission_test() {
   runtime.stop(host)
 }
 
-pub fn ambiguous_repairs_and_compile_errors_do_not_execute_test() {
+pub fn ambiguous_repairs_and_compile_errors_do_not_execute_test() -> Nil {
   let assert Ok(host) = runtime.start(":memory:")
   let assert Ok(session) = runtime.open_session(host, "a", "/tmp")
   let assert Ok(failed) =
@@ -60,7 +60,7 @@ pub fn ambiguous_repairs_and_compile_errors_do_not_execute_test() {
   runtime.stop(host)
 }
 
-pub fn reused_call_id_does_not_fail_unique_constraint_test() {
+pub fn reused_call_id_does_not_fail_unique_constraint_test() -> Nil {
   let assert Ok(host) = runtime.start(":memory:")
   let storage = runtime.ledger(host)
   let session = "test-session"

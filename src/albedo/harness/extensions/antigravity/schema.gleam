@@ -318,7 +318,7 @@ fn properties(node: Schema, key: String) -> Schema {
   field(node, key, decode.dict(decode.string, decode.dynamic), dict.new())
 }
 
-fn object(value: Dynamic) {
+fn object(value: Dynamic) -> Result(Dict(String, Dynamic), Nil) {
   decode.run(value, decode.dict(decode.string, decode.dynamic))
   |> result.replace_error(Nil)
 }

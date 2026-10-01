@@ -6,12 +6,15 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/string_tree
 
-fn body(protocol, request) {
+fn body(protocol: types.Protocol, request: types.Request) -> String {
   let assert Ok(body) = request.encode(protocol, request)
   string_tree.to_string(body)
 }
 
-pub fn replay_preserves_unknown_fields_and_refuses_other_protocol_test() {
+pub fn replay_preserves_unknown_fields_and_refuses_other_protocol_test() -> Result(
+  string_tree.StringTree,
+  types.Error,
+) {
   let assert Ok(item) =
     json.parse(
       "{\"type\":\"reasoning\",\"encrypted_content\":\"opaque\",\"future\":{\"x\":1}}",
@@ -28,7 +31,10 @@ pub fn replay_preserves_unknown_fields_and_refuses_other_protocol_test() {
     request.encode(types.ChatCompletions, request)
 }
 
-pub fn validates_image_metadata_bounds_test() {
+pub fn validates_image_metadata_bounds_test() -> Result(
+  types.Image,
+  types.Error,
+) {
   let assert Error(types.InvalidRequest(_)) =
     types.image("image/gif", "aGVsbG8=", 2, 3, 5)
   let assert Error(types.InvalidRequest(_)) =

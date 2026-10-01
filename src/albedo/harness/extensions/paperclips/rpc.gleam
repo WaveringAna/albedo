@@ -2,8 +2,10 @@
 //// vent the model fixed. The user's triage runs through the /paperclips
 //// command against the same global ledger.
 
+import albedo/daemon/store
 import albedo/harness/extensions/paperclips/ledger as paperclips
 import albedo/harness/rpc
+import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{Some}
@@ -31,11 +33,20 @@ fn describe(error: paperclips.Error) -> #(String, String) {
   }
 }
 
-fn parse(args, decoder) {
+fn parse(
+  args: dynamic.Dynamic,
+  decoder: decode.Decoder(a),
+) -> Result(a, paperclips.Error) {
   rpc.args(args, decoder, paperclips.Invalid("invalid vent arguments"))
 }
 
-fn dispatch(store, cwd, session, method, args) {
+fn dispatch(
+  store: store.Store,
+  cwd: String,
+  session: String,
+  method: String,
+  args: dynamic.Dynamic,
+) -> Result(json.Json, paperclips.Error) {
   case method {
     "paperclips.vent" -> {
       let decoder = {

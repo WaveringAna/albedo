@@ -93,11 +93,11 @@ fn load(home: String) -> Result(Configuration, String) {
   |> result.replace_error(invalid_config)
 }
 
-fn configuration_decoder() {
+fn configuration_decoder() -> decode.Decoder(Configuration) {
   decode.one_of(named_decoder(), or: [legacy_decoder()])
 }
 
-fn named_decoder() {
+fn named_decoder() -> decode.Decoder(Configuration) {
   use active <- decode.optional_field("active", "", decode.string)
   use providers <- decode.field(
     "providers",
@@ -112,14 +112,14 @@ fn named_decoder() {
   decode.success(Configuration(active, providers))
 }
 
-fn legacy_decoder() {
+fn legacy_decoder() -> decode.Decoder(Configuration) {
   provider_decoder()
   |> decode.map(fn(provider) {
     Configuration("default", dict.from_list([#("default", Ok(provider))]))
   })
 }
 
-fn provider_decoder() {
+fn provider_decoder() -> decode.Decoder(Provider) {
   use provider_extension <- decode.optional_field(
     "extension",
     "openai",

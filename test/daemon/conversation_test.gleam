@@ -33,7 +33,7 @@ fn session(id: String) -> conversation.Info {
   )
 }
 
-pub fn latest_user_title_survives_restart_and_legacy_migration_test() {
+pub fn latest_user_title_survives_restart_and_legacy_migration_test() -> Nil {
   let path = temporary_database()
   let assert Ok(host) = runtime.start(path)
   let ledger = runtime.ledger(host)
@@ -86,7 +86,7 @@ pub fn latest_user_title_survives_restart_and_legacy_migration_test() {
   cleanup(path)
 }
 
-pub fn migration_recovers_placeholder_titles_and_activity_order_test() {
+pub fn migration_recovers_placeholder_titles_and_activity_order_test() -> Nil {
   let path = temporary_database()
   let assert Ok(host) = runtime.start(path)
   let ledger = runtime.ledger(host)
@@ -127,7 +127,7 @@ pub fn migration_recovers_placeholder_titles_and_activity_order_test() {
   cleanup(path)
 }
 
-pub fn transcript_timestamps_migrate_without_invention_and_roundtrip_test() {
+pub fn transcript_timestamps_migrate_without_invention_and_roundtrip_test() -> Nil {
   let path = temporary_database()
   let assert Ok(host) = runtime.start(path)
   let ledger = runtime.ledger(host)

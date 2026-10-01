@@ -10,7 +10,7 @@ import gleeunit/should
 @external(erlang, "albedo_runtime_test_support", "kernel_memory")
 fn kernel_memory(session: runtime.Session) -> Int
 
-pub fn kernel_host_ownership_does_not_grow_with_the_swarm_test() {
+pub fn kernel_host_ownership_does_not_grow_with_the_swarm_test() -> Nil {
   let assert Ok(host) = runtime.start_with_extensions(":memory:", [])
   let assert Ok(first) = runtime.open_session(host, "first", "/tmp")
   let baseline = kernel_memory(first)
@@ -31,7 +31,7 @@ pub fn kernel_host_ownership_does_not_grow_with_the_swarm_test() {
   should.be_true(rebound <= baseline * 2 + 4096)
 }
 
-pub fn hard_timeout_requires_explicit_reset_test() {
+pub fn hard_timeout_requires_explicit_reset_test() -> Nil {
   let assert Ok(host) = runtime.start(":memory:")
   let assert Ok(session) = runtime.open_session(host, "a", "/tmp")
   let assert Ok(execution) =

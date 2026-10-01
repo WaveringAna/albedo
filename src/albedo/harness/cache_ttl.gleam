@@ -138,7 +138,7 @@ pub fn merge_layers(
 
 /// The remote layer's configuration in extensions.json: `url: null` disables
 /// fetching; `refreshHours: 0` disables the background refresh.
-pub type Config {
+type Config {
   Config(url: Option(String), refresh_hours: Int)
 }
 
@@ -230,7 +230,7 @@ fn refresh() -> Nil {
   }
 }
 
-pub fn remote_path() -> String {
+fn remote_path() -> String {
   settings.home() <> "/" <> remote_file
 }
 

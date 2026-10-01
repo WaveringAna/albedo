@@ -49,7 +49,7 @@ const restart_note = Submission(
   None,
 )
 
-pub const continue_prompt = "<system-notice>
+const continue_prompt = "<system-notice>
 continue your unfinished task, by resuming the most recent intent.
 if interrupted mid-step, just pick it back up from where it stopped.
 never pause to summarize progress, re-confirm the plan, or ask whether to proceed.
@@ -200,21 +200,24 @@ pub fn start(
       conversation.Idle -> turn.Resting
       _ -> turn.Interrupted
     }
-    let info = case info.effort {
-      Some(_) -> info
+    use info <- result.try(case info.effort {
+      Some(_) -> Ok(info)
       None -> {
         let efforts =
           session_provider.model_efforts(host, home, info.provider, info.model)
         case extension.default_effort(efforts) {
           Some(def) -> {
-            let _ =
-              conversation.set_effort(runtime.ledger(host), info.id, Some(def))
-            conversation.Info(..info, effort: Some(def))
+            use _ <- result.try(conversation.set_effort(
+              runtime.ledger(host),
+              info.id,
+              Some(def),
+            ))
+            Ok(conversation.Info(..info, effort: Some(def)))
           }
-          None -> info
+          None -> Ok(info)
         }
       }
-    }
+    })
     let state =
       session_state.State(
         info,
@@ -426,7 +429,10 @@ fn cleanup_registrations(id: String) -> Nil {
   live_forget(id)
 }
 
-fn handle(state: State, message: Message) {
+fn handle(
+  state: State,
+  message: Message,
+) -> actor.Next(session_state.State(Message), Message) {
   // Anything a client sends counts as attention; a detached session goes quiet.
   let state = case message {
     Submit(..)
@@ -1685,7 +1691,7 @@ fn finish_turn(
     // Compaction makes no provider request, so the footer's last real
     // usage is stale; the strategy's own estimate replaces it.
     _, Ok(_), Ok(_) if run.work == turn.Compaction -> {
-      let state = case context_snapshot.estimate(state.context) {
+      case context_snapshot.estimate(state.context) {
         Some(tokens) -> {
           let metadata =
             usage.Metadata(
@@ -1701,7 +1707,6 @@ fn finish_turn(
         }
         None -> state
       }
-      state
     }
     _, _, _ -> state
   }

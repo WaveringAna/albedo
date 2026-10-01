@@ -16,7 +16,7 @@ import gleam/string
 import gleeunit/should
 import sqlight
 
-fn host(config: rolling.Config) {
+fn host(config: rolling.Config) -> #(runtime.Runtime, runtime.Session) {
   let installed = [rolling.configured_extension(config)]
   let assert Ok(host) =
     runtime.start_with_config(
@@ -27,7 +27,7 @@ fn host(config: rolling.Config) {
   #(host, session)
 }
 
-fn long_history() {
+fn long_history() -> List(types.Input) {
   [
     types.User("u1 " <> string.repeat("a", 380)),
     types.Assistant("a1 " <> string.repeat("b", 380)),
@@ -40,7 +40,7 @@ fn long_history() {
 
 /// A row saved before cuts counted user messages validates the old way, by
 /// item count under its source, and is rewritten in the portable form.
-pub fn legacy_item_count_state_upgrades_in_place_test() {
+pub fn legacy_item_count_state_upgrades_in_place_test() -> Nil {
   let #(host, session) = host(rolling.Config(Some(10_000), 90, 25))
   let history = long_history()
   let assert Ok(_) =
@@ -89,7 +89,7 @@ pub fn legacy_item_count_state_upgrades_in_place_test() {
 
 /// A long eviction folds into the summary chunk by chunk, each request under
 /// half the window, carrying the summary forward.
-pub fn long_eviction_summarizes_in_chunks_test() {
+pub fn long_eviction_summarizes_in_chunks_test() -> Nil {
   let #(host, session) = host(rolling.Config(Some(2000), 90, 25))
   let history =
     list.flatten(list.repeat(long_history(), 4))
@@ -123,7 +123,7 @@ pub fn long_eviction_summarizes_in_chunks_test() {
   runtime.stop(host)
 }
 
-pub fn image_estimate_uses_dimensions_not_base64_transport_size_test() {
+pub fn image_estimate_uses_dimensions_not_base64_transport_size_test() -> Nil {
   let payload = string.repeat("A", 5 * 1024 * 1024)
   let assert Ok(image) =
     types.image("image/png", payload, 1024, 1024, 3 * 1024 * 1024)

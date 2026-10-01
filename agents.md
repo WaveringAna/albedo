@@ -12,6 +12,7 @@ PLEASE USE `gleam check` to type check and `gleam format src test` to format Gle
 
 For Go changes, run gopls with `staticcheck` and all available analyses enabled, alongside vet and tests. Fix diagnostics by simplifying the code, without adding wrappers or obscuring control flow.
 
+- Gleam lint: `test/gleam-lint.sh` (pinned glinter in `nix develop`; eleven focused rules also run in pre-commit and `test.sh`; manual review and audit profiles are documented in `robot-docs/gleam-lint.md`)
 - Gleam suites: `gleam test`
 - Go: `go -C cli vet ./...` and `go -C cli test ./...`
 - Rust (optional `view` renderer): `cargo test --release --locked --manifest-path native/render/Cargo.toml`
@@ -21,7 +22,7 @@ Anything that opens a browser must set `ALBEDO_NO_BROWSER=1`; `test.sh` exports 
 
 ### Test layout and the build lock
 
-`./test.sh` is the gate. The quick checks run first, in order (Ruff lint and format checks, ty, Gleam format check, cargo test + renderer install, Go vet, the CLI build the Python e2e suite drives); then it compiles the daemon once and runs every suite at the same time (`gleam test`, each `test/harness/*_test.py`, Go unit tests, the Go e2e suite, the Python e2e suite), each into its own log, printed only when that suite fails.
+`./test.sh` is the gate. The quick checks run first, in order (Ruff lint and format checks, ty, Gleam format and lint checks, cargo test + renderer install, Go vet, the CLI build the Python e2e suite drives); then it compiles the daemon once and runs every suite at the same time (`gleam test`, each `test/harness/*_test.py`, Go unit tests, the Go e2e suite, the Python e2e suite), each into its own log, printed only when that suite fails.
 
 The e2e suites compile the daemon once per run with `test/snapshot-daemon.sh` (test.sh does it once for both and passes `ALBEDO_TEST_DAEMON`) and boot every test daemon from that copy through `ALBEDO_DAEMON`, never through `gleam run`, so their daemons neither queue on gleam's build lock nor see a rebuild mid-run. The one compile still takes the lock, which `gleam test` holds for its whole run: an e2e suite started from inside `gleam test` deadlocks, and one started beside it waits for it to finish. The Python e2e suite drives the prebuilt `cli/bin/albedo` binary; the Go e2e suite builds its own CLI and runs with `-count=1`, because it boots a hermetic daemon and must never reuse a cached run or a stale binary.
 

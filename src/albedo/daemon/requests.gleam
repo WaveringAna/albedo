@@ -127,7 +127,7 @@ pub fn direct_prefix(
 }
 
 /// The hash of a request head: its instructions and the tools it offers.
-pub fn head_hash(instructions: String, tools: List(types.Tool)) -> String {
+fn head_hash(instructions: String, tools: List(types.Tool)) -> String {
   json.object([
     #("instructions", json.string(instructions)),
     #(
@@ -147,7 +147,7 @@ pub fn head_hash(instructions: String, tools: List(types.Tool)) -> String {
 }
 
 /// The hash of a run of inputs, as request rows identify them.
-pub fn inputs_hash(inputs: List(types.Input)) -> String {
+fn inputs_hash(inputs: List(types.Input)) -> String {
   inputs
   |> list.map(input_identity)
   |> string.join("\n")

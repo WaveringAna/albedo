@@ -22,10 +22,6 @@ pub fn extension() -> harness_extension.Extension {
   )
 }
 
-pub fn plugin() -> harness_extension.Extension {
-  extension()
-}
-
 /// A session's answer to a job wake. `Busy` is the kernel's retry signal.
 pub type Wake {
   Delivered
@@ -37,7 +33,7 @@ pub type Wake {
 /// the submit closure its session registered turns the notice into an ordinary
 /// user turn, so the model never polls for completion. The reply's code is the
 /// kernel's retry signal: "busy" retries, anything else gives up.
-pub fn route(_store: store.Store, session: String, request: String) -> String {
+fn route(_store: store.Store, session: String, request: String) -> String {
   case rpc.decode(request) {
     Ok(#("jobs.completed", args)) ->
       case rpc.args(args, notice_decoder(), Nil) {
@@ -54,7 +50,7 @@ pub fn route(_store: store.Store, session: String, request: String) -> String {
   |> rpc.reply
 }
 
-fn notice_decoder() {
+fn notice_decoder() -> decode.Decoder(#(String, String)) {
   use display <- decode.field("display", decode.string)
   use text <- decode.field("text", decode.string)
   decode.success(#(display, text))

@@ -25,7 +25,7 @@ fn now() -> Int
 @external(erlang, "albedo_live_coding", "with_runtime")
 fn with_runtime(host: runtime.Runtime, run: fn() -> a) -> a
 
-pub fn main() {
+pub fn main() -> Nil {
   let key = take_key()
   let workspace = env("ALBEDO_LIVE_WORKSPACE")
   case
@@ -77,7 +77,14 @@ pub fn main() {
   }
 }
 
-fn run(client, request, host, session, step, tools) {
+fn run(
+  client: types.Client,
+  request: types.Request,
+  host: runtime.Runtime,
+  session: runtime.Session,
+  step: Int,
+  tools: Int,
+) -> Result(#(Int, Int), String) {
   case step > 20 || tools > 30 {
     True -> Error("live test turn/tool limit reached")
     False -> {
@@ -151,7 +158,7 @@ fn run(client, request, host, session, step, tools) {
   }
 }
 
-fn log(fields) {
+fn log(fields: List(#(String, json.Json))) -> Nil {
   fields |> json.object |> json.to_string |> io.println
 }
 

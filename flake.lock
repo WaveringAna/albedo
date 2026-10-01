@@ -18,6 +18,22 @@
         "type": "github"
       }
     },
+    "glinter": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1785091096,
+        "narHash": "sha256-GyY/86O46tbtMYRctRseRLpdIQ0sOCVVq52+fHEwyKA=",
+        "owner": "pairshaped",
+        "repo": "glinter",
+        "rev": "2141f5b431040b2a4b126a98276e59028cd945ec",
+        "type": "github"
+      },
+      "original": {
+        "owner": "pairshaped",
+        "repo": "glinter",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1790055231,
@@ -52,6 +68,7 @@
     "root": {
       "inputs": {
         "flake-parts": "flake-parts",
+        "glinter": "glinter",
         "nixpkgs": "nixpkgs",
         "treefmt-nix": "treefmt-nix",
         "usage-core": "usage-core"

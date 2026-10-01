@@ -42,6 +42,6 @@ fn handle(db: store.Store, session: String, request: String) -> String {
   }
 }
 
-pub fn answer(result: Result(json.Json, String)) -> String {
+fn answer(result: Result(json.Json, String)) -> String {
   rpc.reply(result |> result.map_error(fn(m) { #("invalid", m) }))
 }

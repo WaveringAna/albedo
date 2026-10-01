@@ -90,7 +90,13 @@ pub fn publish_fn(
   waiting timeout: Int,
 ) -> fn(String) -> Bool {
   fn(event) {
-    case try_call(owner, timeout, messages.publish(run_id, event, _)) {
+    case
+      try_call(owner, waiting: timeout, sending: messages.publish(
+        run_id,
+        event,
+        _,
+      ))
+    {
       Ok(keep_going) -> keep_going
       Error(TimedOut) -> !turn.raised(stop)
       Error(CalleeDown) -> False
@@ -109,7 +115,7 @@ fn confirm(
   waiting timeout: Int,
   sending make_request: fn(Subject(Result(reply, String))) -> message,
 ) -> Result(reply, String) {
-  case try_call(owner, timeout, make_request) {
+  case try_call(owner, waiting: timeout, sending: make_request) {
     Ok(reply) -> reply
     Error(TimedOut) ->
       Error(what <> " unconfirmed after a session stall; it may still be saved")
@@ -128,7 +134,7 @@ pub fn commit_fn(
 ) -> fn(List(types.Input), conversation.Stage, Option(Int)) ->
   Result(#(Int, Option(Int)), String) {
   fn(inputs, stage, thought_ms) {
-    confirm(owner, "commit", timeout, messages.commit(
+    confirm(owner, "commit", waiting: timeout, sending: messages.commit(
       run_id,
       inputs,
       stage,
@@ -138,14 +144,18 @@ pub fn commit_fn(
   }
 }
 
-pub fn fits_fn(
+fn fits_fn(
   owner: Subject(message),
   run_id: String,
   messages: Messages(message),
   waiting timeout: Int,
 ) -> fn(List(transcript.ImageFit)) -> Result(Nil, String) {
   fn(fits) {
-    confirm(owner, "image fit", timeout, messages.fits(run_id, fits, _))
+    confirm(owner, "image fit", waiting: timeout, sending: messages.fits(
+      run_id,
+      fits,
+      _,
+    ))
   }
 }
 
@@ -156,7 +166,11 @@ pub fn usage_fn(
   waiting timeout: Int,
 ) -> fn(usage.Metadata) -> Result(Nil, String) {
   fn(metadata) {
-    confirm(owner, "usage", timeout, messages.usage(run_id, metadata, _))
+    confirm(owner, "usage", waiting: timeout, sending: messages.usage(
+      run_id,
+      metadata,
+      _,
+    ))
   }
 }
 
@@ -166,13 +180,18 @@ pub fn drain_fn(
   messages: Messages(message),
   waiting timeout: Int,
 ) -> fn() -> Result(List(types.Input), String) {
-  fn() { confirm(owner, "steering", timeout, messages.drain(run_id, _)) }
+  fn() {
+    confirm(owner, "steering", waiting: timeout, sending: messages.drain(
+      run_id,
+      _,
+    ))
+  }
 }
 
 /// Bookkeeping the turn can go on without: a stalled session actor must not
 /// kill the turn over it; fire and forget after the bound.
 fn report(owner: Subject(message), make: fn(Subject(Nil)) -> message) -> Nil {
-  let _ = try_call(owner, 5000, make)
+  let _ = try_call(owner, waiting: 5000, sending: make)
   Nil
 }
 
@@ -258,9 +277,9 @@ pub fn start(
       kernel,
       state.pin,
       client,
-      publish_fn(owner, run_id, messages, stop, 30_000),
-      commit_fn(owner, run_id, messages, 10_000),
-      fits_fn(owner, run_id, messages, 10_000),
+      publish_fn(owner, run_id, messages, stop, waiting: 30_000),
+      commit_fn(owner, run_id, messages, waiting: 10_000),
+      fits_fn(owner, run_id, messages, waiting: 10_000),
       fn(request, observation, compacted) {
         let snapshot =
           context_snapshot.from_request(
@@ -275,8 +294,8 @@ pub fn start(
         // the session actor stalls; leave the message queued after the bound.
         report(owner, messages.context(run_id, snapshot, compacted, _))
       },
-      usage_fn(owner, run_id, messages, 10_000),
-      drain_fn(owner, run_id, messages, 10_000),
+      usage_fn(owner, run_id, messages, waiting: 10_000),
+      drain_fn(owner, run_id, messages, waiting: 10_000),
       fn(head) { report(owner, messages.pin(run_id, head, _)) },
       fn(call) { report(owner, messages.sent(run_id, call, _)) },
       // Who this session's provider requests are recorded under.

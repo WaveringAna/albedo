@@ -82,7 +82,7 @@ fn loaded(ledger: store.Store, id: String) -> List(types.Input) {
   list.map(entries, fn(entry) { entry.input })
 }
 
-pub fn commit_keeps_one_payload_and_rows_load_references_test() {
+pub fn commit_keeps_one_payload_and_rows_load_references_test() -> Nil {
   let #(path, ledger) = ledger()
   let assert Ok(_) = conversation.create(ledger, session("s"))
   let assert Ok(_) =
@@ -109,7 +109,7 @@ pub fn commit_keeps_one_payload_and_rows_load_references_test() {
   cleanup(path)
 }
 
-pub fn deleting_a_session_releases_only_unshared_payloads_test() {
+pub fn deleting_a_session_releases_only_unshared_payloads_test() -> Nil {
   let #(path, ledger) = ledger()
   let assert Ok(_) = conversation.create(ledger, session("a"))
   let assert Ok(_) = conversation.create(ledger, session("b"))
@@ -129,7 +129,7 @@ pub fn deleting_a_session_releases_only_unshared_payloads_test() {
   cleanup(path)
 }
 
-pub fn migration_moves_legacy_payloads_once_after_a_backup_test() {
+pub fn migration_moves_legacy_payloads_once_after_a_backup_test() -> Nil {
   let #(path, ledger) = ledger()
   let assert Ok(_) = conversation.create(ledger, session("s"))
   let assert Ok(_) =
@@ -154,7 +154,7 @@ pub fn migration_moves_legacy_payloads_once_after_a_backup_test() {
   cleanup(path)
 }
 
-pub fn migration_converts_text_images_without_changing_references_test() {
+pub fn migration_converts_text_images_without_changing_references_test() -> Nil {
   let #(path, ledger) = ledger()
   let assert Ok(_) = conversation.create(ledger, session("s"))
   let assert Ok(_) =
@@ -190,7 +190,7 @@ pub fn migration_converts_text_images_without_changing_references_test() {
   cleanup(path)
 }
 
-pub fn failed_backup_keeps_text_images_untouched_test() {
+pub fn failed_backup_keeps_text_images_untouched_test() -> Nil {
   let #(path, ledger) = ledger()
   let assert Ok(_) = conversation.create(ledger, session("s"))
   let assert Ok(_) =
@@ -208,7 +208,7 @@ pub fn failed_backup_keeps_text_images_untouched_test() {
   cleanup(path)
 }
 
-pub fn fingerprints_ignore_where_a_payload_lives_test() {
+pub fn fingerprints_ignore_where_a_payload_lives_test() -> Nil {
   let #(path, ledger) = ledger()
   let assert Ok(_) = conversation.create(ledger, session("s"))
   let assert Ok(_) =

@@ -108,7 +108,7 @@ pub fn definitions() -> List(extension.Tool) {
   ]
 }
 
-pub fn list_folds(
+fn list_folds(
   ledger: store.Store,
   session: String,
   limit: Int,
@@ -144,7 +144,7 @@ pub fn list_folds(
   |> Ok
 }
 
-pub fn grep_page(
+fn grep_page(
   ledger: store.Store,
   session: String,
   pattern: String,
@@ -225,7 +225,7 @@ pub fn grep_page(
   |> Ok
 }
 
-pub fn describe(
+fn describe(
   ledger: store.Store,
   session: String,
   id: Int,
@@ -244,7 +244,7 @@ pub fn describe(
   |> Ok
 }
 
-pub fn expand(
+fn expand(
   ledger: store.Store,
   session: String,
   id: Int,

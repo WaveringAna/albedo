@@ -4,6 +4,7 @@ import albedo/harness/extensions/antigravity/catalog
 import albedo/harness/extensions/antigravity/stream
 import albedo/harness/extensions/antigravity/wire
 import albedo/openai_api
+import albedo/openai_api/stream as provider_stream
 import albedo/openai_api/types
 import gleam/dynamic
 import gleam/dynamic/decode
@@ -64,7 +65,11 @@ fn body(model: String, request: types.Request) -> dynamic.Dynamic {
   value
 }
 
-fn at(value: dynamic.Dynamic, path: List(String), decoder: decode.Decoder(a)) {
+fn at(
+  value: dynamic.Dynamic,
+  path: List(String),
+  decoder: decode.Decoder(a),
+) -> a {
   let assert Ok(found) = decode.run(value, decode.at(path, decoder))
   found
 }
@@ -93,7 +98,10 @@ fn tool_schema(value: dynamic.Dynamic) -> dynamic.Dynamic {
   at(declaration, ["parameters"], decode.dynamic)
 }
 
-pub fn schema_resolves_references_and_merges_object_requirements_test() {
+pub fn schema_resolves_references_and_merges_object_requirements_test() -> Result(
+  dynamic.Dynamic,
+  List(decode.DecodeError),
+) {
   let schema =
     schema_json(
       "{
@@ -129,7 +137,10 @@ pub fn schema_resolves_references_and_merges_object_requirements_test() {
   let assert Error(_) = decode.run(actual, decode.at(["allOf"], decode.dynamic))
 }
 
-pub fn schema_reduces_unions_and_keeps_constraint_guidance_test() {
+pub fn schema_reduces_unions_and_keeps_constraint_guidance_test() -> Result(
+  dynamic.Dynamic,
+  List(decode.DecodeError),
+) {
   let schema =
     schema_json(
       "{\"type\": \"object\", \"properties\": {
@@ -169,7 +180,7 @@ fn item_depth(schema: dynamic.Dynamic) -> Int {
   }
 }
 
-pub fn schema_bounds_recursion_and_handles_malformed_keywords_test() {
+pub fn schema_bounds_recursion_and_handles_malformed_keywords_test() -> Nil {
   let malformed =
     schema_json(
       "{
@@ -251,7 +262,7 @@ pub fn schema_bounds_recursion_and_handles_malformed_keywords_test() {
   assert at(actual, ["properties"], decode.dynamic) == empty
 }
 
-pub fn both_model_families_normalize_tools_and_structured_responses_test() {
+pub fn both_model_families_normalize_tools_and_structured_responses_test() -> Nil {
   let schemas = [
     #(
       schema_json(
@@ -309,7 +320,10 @@ fn chunk(json: String) -> String {
 }
 
 /// Feeds each payload, then ends the body.
-fn reduce(id: String, payloads: List(String)) {
+fn reduce(
+  id: String,
+  payloads: List(String),
+) -> #(Result(types.Turn, types.Error), List(types.Event)) {
   let #(reducer, events) =
     list.fold(payloads, #(stream.reducer(model(id)), []), fn(acc, data) {
       let #(reducer, events) = acc
@@ -324,11 +338,11 @@ const signed_turn = [
   "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"looking\"},{\"functionCall\":{\"name\":\"bash\",\"args\":{\"command\":\"ls\"}},\"thoughtSignature\":\"Y2FsbA==\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":3,\"thoughtsTokenCount\":2,\"cachedContentTokenCount\":4}}",
 ]
 
-fn signed_turn_payloads() {
+fn signed_turn_payloads() -> List(String) {
   list.map(signed_turn, chunk)
 }
 
-pub fn stream_reduces_thoughts_text_and_calls_test() {
+pub fn stream_reduces_thoughts_text_and_calls_test() -> Nil {
   let #(outcome, events) = reduce(gemini, signed_turn_payloads())
   let assert Ok(turn) = outcome
   let assert [
@@ -356,7 +370,7 @@ pub fn stream_reduces_thoughts_text_and_calls_test() {
     == Ok("weighing")
 }
 
-pub fn same_model_replay_keeps_signed_parts_test() {
+pub fn same_model_replay_keeps_signed_parts_test() -> Nil {
   let #(outcome, _) = reduce(gemini, signed_turn_payloads())
   let assert Ok(turn) = outcome
   let assert [item] = turn.output
@@ -395,7 +409,7 @@ pub fn same_model_replay_keeps_signed_parts_test() {
     == ["bash"]
 }
 
-pub fn another_models_output_replays_portably_test() {
+pub fn another_models_output_replays_portably_test() -> Nil {
   let #(outcome, _) = reduce(gemini, signed_turn_payloads())
   let assert Ok(turn) = outcome
   let assert [item] = turn.output
@@ -429,7 +443,7 @@ pub fn another_models_output_replays_portably_test() {
     == "VALIDATED"
 }
 
-pub fn foreign_calls_carry_the_skip_signature_on_gemini_test() {
+pub fn foreign_calls_carry_the_skip_signature_on_gemini_test() -> Nil {
   let assert Ok(item) =
     json.parse(
       "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{}\"}}]}",
@@ -455,12 +469,15 @@ pub fn foreign_calls_carry_the_skip_signature_on_gemini_test() {
     == ["skip_thought_signature_validator"]
 }
 
-pub fn empty_body_is_a_retryable_failure_test() {
+pub fn empty_body_is_a_retryable_failure_test() -> Nil {
   let #(outcome, _) = reduce(gemini, [])
   assert outcome == Error(types.UnexpectedEnd)
 }
 
-pub fn stream_errors_surface_the_provider_message_test() {
+pub fn stream_errors_surface_the_provider_message_test() -> Result(
+  #(provider_stream.Reducer, List(types.Event), option.Option(types.Turn)),
+  types.Error,
+) {
   let reducer = stream.reducer(model(gemini))
   let assert Error(types.ProviderError("quota")) =
     reducer.feed("{\"error\":{\"code\":429,\"message\":\"quota\"}}")

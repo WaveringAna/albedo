@@ -616,7 +616,7 @@ fn exclusive(
 /// The built-in defaults with the user's global choices from the `enabled`
 /// section of extensions.json applied. An unreadable file keeps the built-in
 /// defaults so a bad edit cannot make every session fail to open.
-pub fn global_defaults(built_in: List(String)) -> List(String) {
+fn global_defaults(built_in: List(String)) -> List(String) {
   let chosen = global_choices()
   let kept =
     list.filter(built_in, fn(name) { dict.get(chosen, name) != Ok(False) })
@@ -796,7 +796,7 @@ pub fn propose(
 /// Whether another override or default keeps its place beside a compaction
 /// switch: sibling strategies are displaced, everything else stays.
 /// Persists a change `propose` accepted.
-pub fn record(
+fn record(
   ledger: store.Store,
   session: String,
   change: Change,
@@ -815,20 +815,6 @@ pub fn record(
 
 @external(erlang, "albedo_extension_settings", "set_enabled")
 fn set_global(home: String, name: String, enabled: Bool) -> Result(Nil, String)
-
-/// The selection that would result from toggling one extension for this
-/// session. Nothing is persisted; `set_enabled` records the choice once its
-/// composition succeeds.
-pub fn selection(
-  ledger: store.Store,
-  installed: List(Extension),
-  default_enabled: List(String),
-  session: String,
-  name: String,
-  value: Bool,
-) -> Result(List(Extension), String) {
-  propose(ledger, installed, default_enabled, session, SetSession(name, value))
-}
 
 fn is_compaction(extension: Extension) -> Bool {
   list.any(extension.plugins, fn(plugin) {
@@ -1473,7 +1459,7 @@ pub fn model_info(
 }
 
 /// The first enabled catalog that lists this provider or endpoint answers.
-pub fn model_names(
+fn model_names(
   installed: List(Extension),
   provider: String,
   endpoint: Option(String),

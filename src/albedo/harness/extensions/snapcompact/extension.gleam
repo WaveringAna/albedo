@@ -127,7 +127,7 @@ pub type Shape {
 /// within the frame budget, and how many characters that budget has dropped.
 /// Frames are re-derived from the text, so a model switch re-renders it in
 /// the new stack's shape instead of discarding it.
-pub type Archive {
+type Archive {
   Archive(cut: compaction.Cut, text: String, dropped: Int)
 }
 
@@ -135,7 +135,7 @@ type FrameRow {
   FrameRow(key: String, hash: String, width: Int, height: Int, bytes: Int)
 }
 
-pub fn default_config() -> Config {
+fn default_config() -> Config {
   Config(
     None,
     default_trigger_percent,
@@ -146,7 +146,7 @@ pub fn default_config() -> Config {
   )
 }
 
-pub fn config_decoder() {
+fn config_decoder() -> decode.Decoder(Config) {
   use capacity <- decode.optional_field(
     "contextWindowTokens",
     None,
@@ -181,17 +181,8 @@ fn validated(loaded: Result(Config, String)) -> Result(Config, String) {
   validate_config(config)
 }
 
-pub fn load_config() -> Result(Config, String) {
+fn load_config() -> Result(Config, String) {
   validated(settings.load("snapcompact", config_decoder(), default_config()))
-}
-
-pub fn load_config_at(home: String) -> Result(Config, String) {
-  validated(settings.load_at(
-    home,
-    "snapcompact",
-    config_decoder(),
-    default_config(),
-  ))
 }
 
 fn validate_config(config: Config) -> Result(Config, String) {
@@ -256,7 +247,7 @@ pub fn memory() -> extension.Extension {
 
 /// The archive as folds for another strategy: readable text pages, oldest
 /// first, and the history after the archive's cut.
-pub fn stored_prior(
+fn stored_prior(
   ledger: store.Store,
   session: String,
   history: List(types.Input),
@@ -310,6 +301,7 @@ pub fn configured_extension(config: Config) -> extension.Extension {
 }
 
 /// The strategy under the settings `resolve` answers per compaction.
+/// The strategy under the settings `resolve` answers per compaction.
 fn strategy_with(
   resolve: fn() -> Result(Config, String),
 ) -> compaction.Strategy {
@@ -320,7 +312,7 @@ fn strategy_with(
 }
 
 /// The text fallback keeps its summary in rolling's tables.
-pub fn initialise(ledger: store.Store) -> Result(Nil, String) {
+fn initialise(ledger: store.Store) -> Result(Nil, String) {
   use _ <- result.try(rolling.initialise(ledger))
   store.query(ledger, fn(db) {
     use _ <- result.try(store.exec(db, frame_schema <> archive_schema))
@@ -501,7 +493,7 @@ fn view(
 /// Frames per request: the provider's image budget, the inline byte budget,
 /// and at most `archivePercent` of the window at the estimated cost of a
 /// full frame. `maxFrames` replaces the provider caps.
-pub fn frame_budget(
+fn frame_budget(
   config: Config,
   shape: Shape,
   reader: Option(compaction.Reader),
@@ -523,7 +515,7 @@ pub fn frame_budget(
 /// own; otherwise oh-my-pi's per-request image budgets apply: policy caps
 /// under the vendor limits (Anthropic 100, OpenAI 500, Gemini ~2500), with
 /// `antigravity` taking Anthropic's, since it also serves Claude models.
-pub fn provider_cap(
+fn provider_cap(
   reader: Option(compaction.Reader),
   limits: types.ImageLimits,
 ) -> Int {
@@ -725,7 +717,7 @@ fn cap(text: String, limit: Int) -> String {
 /// Terminal escapes out, tabs expanded, and newline runs folded into
 /// full-block cells: the archive is one continuous character stream that
 /// wraps positionally, exactly as the reference renderer expects.
-pub fn normalize(inputs: List(types.Input)) -> String {
+fn normalize(inputs: List(types.Input)) -> String {
   serialize(inputs) |> normalize_ansi
 }
 
@@ -764,7 +756,7 @@ pub fn bound(shape: Shape, limit: Int, text: String) -> #(String, Int) {
 /// an unchanged chunk never re-renders. Missing chunks render in one
 /// subprocess; known rows serve metadata only and the payload reads lazily
 /// at request time.
-pub fn frames(
+fn frames(
   ledger: store.Store,
   shape: Shape,
   chunks: List(String),
@@ -922,7 +914,7 @@ fn archive_prompt(dropped: Int) -> String {
   <> " The conversation continues as plain text after the last image."
 }
 
-pub fn load_archive(
+fn load_archive(
   ledger: store.Store,
   session: String,
 ) -> Result(Option(Archive), String) {

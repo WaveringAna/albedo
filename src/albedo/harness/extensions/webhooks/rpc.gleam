@@ -2,6 +2,7 @@ import albedo/daemon/store
 import albedo/harness/extensions/webhooks/ledger as hooks
 import albedo/harness/rpc
 import gleam/bit_array
+import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{None}
@@ -28,17 +29,25 @@ fn describe(error: hooks.Error) -> #(String, String) {
   }
 }
 
-fn parse(args, decoder) {
+fn parse(
+  args: dynamic.Dynamic,
+  decoder: decode.Decoder(a),
+) -> Result(a, hooks.Error) {
   rpc.args(args, decoder, hooks.Invalid("invalid webhook arguments"))
 }
 
-fn id_revision_decoder() {
+fn id_revision_decoder() -> decode.Decoder(#(String, Int)) {
   use id <- decode.field("id", decode.string)
   use revision <- decode.field("revision", decode.int)
   decode.success(#(id, revision))
 }
 
-fn dispatch(db, session, method, args) {
+fn dispatch(
+  db: store.Store,
+  session: String,
+  method: String,
+  args: dynamic.Dynamic,
+) -> Result(json.Json, hooks.Error) {
   let actor = hooks.Agent(session)
   case method {
     "webhooks.list" ->

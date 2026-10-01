@@ -3,6 +3,7 @@
 
 import albedo/harness/extensions/antigravity/catalog.{type Model}
 import albedo/harness/extensions/antigravity/wire
+import albedo/openai_api/decoding
 import albedo/openai_api/replay
 import albedo/openai_api/stream as reducer
 import albedo/openai_api/types
@@ -68,8 +69,10 @@ fn feed(
 ) -> Result(#(State, List(types.Event)), types.Error) {
   use value <- result.try(
     json.parse(data, decode.dynamic)
-    |> result.map_error(fn(_) {
-      types.InvalidEvent("invalid Cloud Code Assist JSON")
+    |> result.map_error(fn(error) {
+      types.InvalidEvent(
+        "invalid Cloud Code Assist JSON: " <> decoding.json_error(error),
+      )
     }),
   )
   case decode.run(value, decode.at(["error"], error_decoder())) {
@@ -205,8 +208,11 @@ fn finish(state: State) -> Result(types.Turn, types.Error) {
           json.to_string(message(state.model, blocks, calls)),
           types.replay_decoder(types.ChatCompletions),
         )
-        |> result.map_error(fn(_) {
-          types.InvalidEvent("could not build the Antigravity replay message")
+        |> result.map_error(fn(error) {
+          types.InvalidEvent(
+            "could not build the Antigravity replay message: "
+            <> decoding.json_error(error),
+          )
         }),
       )
       types.Turn(state.response_id, [item], calls, state.usage, finish, None)

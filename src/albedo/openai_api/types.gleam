@@ -50,7 +50,7 @@ pub const max_image_bytes = 5_242_880
 
 pub const max_image_edge = 16_384
 
-pub const max_image_pixels = 40_000_000
+const max_image_pixels = 40_000_000
 
 /// The images a provider accepts. `max_edge` must hold for every image of
 /// every request the session will send, so it is the strictest bound the

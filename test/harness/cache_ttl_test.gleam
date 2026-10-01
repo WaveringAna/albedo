@@ -38,7 +38,7 @@ fn exhaustive(pattern: List(String), value: List(String)) -> Bool {
   }
 }
 
-pub fn wildcard_retry_agrees_with_exhaustive_matching_test() {
+pub fn wildcard_retry_agrees_with_exhaustive_matching_test() -> Nil {
   list.each(words(["a", "b", "*"], 5), fn(pattern) {
     list.each(words(["a", "b"], 4), fn(value) {
       cache_ttl.matches_glob(pattern, value)
@@ -50,13 +50,13 @@ pub fn wildcard_retry_agrees_with_exhaustive_matching_test() {
   })
 }
 
-pub fn repeated_wildcards_fail_without_exponential_backtracking_test() {
+pub fn repeated_wildcards_fail_without_exponential_backtracking_test() -> Nil {
   let pattern = string.repeat("*a", 24) <> "b"
   cache_ttl.matches_glob(pattern, string.repeat("a", 48))
   |> should.be_false
 }
 
-pub fn wildcard_matches_unicode_graphemes_and_only_star_is_special_test() {
+pub fn wildcard_matches_unicode_graphemes_and_only_star_is_special_test() -> Nil {
   cache_ttl.matches_glob("É*👩‍💻?", "éclair👩‍💻?") |> should.be_true
   cache_ttl.matches_glob("é*", "éclair") |> should.be_true
   cache_ttl.matches_glob("a?", "ab") |> should.be_false

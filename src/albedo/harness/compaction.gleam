@@ -209,7 +209,7 @@ pub type Strategy {
 
 /// A deliberately approximate request-size estimate. It is used only when a
 /// provider has not supplied a tokenizer for the current request.
-pub fn estimate_text(text: String) -> Int {
+fn estimate_text(text: String) -> Int {
   { string.byte_size(text) + 3 } / 4
 }
 
@@ -271,7 +271,7 @@ pub fn estimate_inputs(inputs: List(types.Input)) -> Int {
   fold_cost(inputs, estimate_input)
 }
 
-pub fn estimate_tools(tools: List(types.Tool)) -> Int {
+fn estimate_tools(tools: List(types.Tool)) -> Int {
   fold_cost(tools, fn(tool) {
     estimate_text(tool.name)
     + estimate_text(tool.description)

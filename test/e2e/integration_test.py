@@ -79,6 +79,109 @@ class IntegrationTest(unittest.TestCase):
         app.prompt(session, message).close()
         app.idle(session, timeout=90)
 
+    @exclusive
+    def test_session_start_refuses_an_unsaved_default_effort(self):
+        app = self.app_for("chat_completions")
+        session = app.session()
+
+        def prepare(app):
+            # A newly available catalog gives the persisted session a default.
+            (app.home / "models.json").write_text("{}")
+            with sqlite3.connect(app.home / "albedo.sqlite") as db:
+                db.execute(
+                    "UPDATE sessions SET model='o3-unlisted', effort=NULL WHERE id=?",
+                    (session,),
+                )
+                db.execute(
+                    "CREATE TRIGGER reject_effort BEFORE UPDATE OF effort ON sessions "
+                    "BEGIN SELECT RAISE(FAIL, 'fixture effort write failed'); END"
+                )
+
+        app.restart(prepare=prepare)
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.read(app, f"/sessions/{session}/status")
+        self.assertIn("session could not start", json.load(caught.exception)["error"])
+        with sqlite3.connect(app.home / "albedo.sqlite") as db:
+            self.assertIsNone(
+                db.execute(
+                    "SELECT effort FROM sessions WHERE id=?", (session,)
+                ).fetchone()[0]
+            )
+            db.execute("DROP TRIGGER reject_effort")
+        self.assertFalse(self.provider.requests)
+        self.assertIn(
+            "fixture effort write failed", (app.home / "daemon.log").read_text()
+        )
+        self.read(app, f"/sessions/{session}/status")
+        with sqlite3.connect(app.home / "albedo.sqlite") as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT effort FROM sessions WHERE id=?", (session,)
+                ).fetchone()[0],
+                "medium",
+            )
+
+    @exclusive
+    def test_scheduler_reports_a_failed_occurrence_write_and_retries(self):
+        def prepare(app):
+            app.env["ALBEDO_SCHEDULE_TICK_MS"] = "50"
+
+        app = self.app_for("chat_completions", prepare=prepare)
+        session = app.session()
+        with sqlite3.connect(app.home / "albedo.sqlite") as db:
+            db.execute(
+                "CREATE TRIGGER reject_advance BEFORE DELETE ON schedules "
+                "BEGIN SELECT RAISE(FAIL, 'fixture advance failed'); END"
+            )
+            db.execute(
+                "INSERT INTO schedules(session,kind,prompt,next_at) VALUES(?,'once',?,0)",
+                (session, "scheduled fixture"),
+            )
+        deadline = time.monotonic() + 15
+        while "fixture advance failed" not in (app.home / "daemon.log").read_text():
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.05)
+        self.assertIn(
+            "schedule occurrence could not be advanced",
+            (app.home / "daemon.log").read_text(),
+        )
+        with sqlite3.connect(app.home / "albedo.sqlite") as db:
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM schedules").fetchone()[0], 1
+            )
+            db.execute("DROP TRIGGER reject_advance")
+        while True:
+            with sqlite3.connect(app.home / "albedo.sqlite") as db:
+                if db.execute("SELECT COUNT(*) FROM schedules").fetchone()[0] == 0:
+                    break
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.05)
+        app.idle(session)
+        self.assertTrue(self.provider.requests)
+
+    @exclusive
+    def test_deletion_refuses_a_failed_child_lookup(self):
+        app = self.app_for("chat_completions")
+        session = app.session()
+        with sqlite3.connect(app.home / "albedo.sqlite") as db:
+            db.execute("ALTER TABLE session_family RENAME TO unavailable_family")
+        for suffix in ("", "?tree=1"):
+            with self.subTest(tree=bool(suffix)):
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    app.api(f"/sessions/{session}{suffix}", method="DELETE")
+                self.assertEqual(caught.exception.code, 409)
+                self.assertIn("session_family", json.load(caught.exception)["error"])
+                with sqlite3.connect(app.home / "albedo.sqlite") as db:
+                    self.assertIsNotNone(
+                        db.execute(
+                            "SELECT id FROM sessions WHERE id=?", (session,)
+                        ).fetchone()
+                    )
+        with sqlite3.connect(app.home / "albedo.sqlite") as db:
+            db.execute("ALTER TABLE unavailable_family RENAME TO session_family")
+        with app.api(f"/sessions/{session}?tree=1", method="DELETE") as response:
+            self.assertEqual(json.load(response)["deleted"], 1)
+
     def settings(self, app, protocol, active="alpha", **models):
         other = "responses" if protocol == "chat_completions" else "chat_completions"
         configured = {

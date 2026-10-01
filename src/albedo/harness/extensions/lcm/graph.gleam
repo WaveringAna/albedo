@@ -293,7 +293,7 @@ pub fn save_parent(
   }
 }
 
-fn node_decoder() {
+fn node_decoder() -> decode.Decoder(Node) {
   use id <- decode.field(0, decode.int)
   use depth <- decode.field(1, decode.int)
   use first <- decode.field(2, decode.int)
@@ -303,7 +303,7 @@ fn node_decoder() {
 }
 
 fn insert_node(
-  db,
+  db: sqlight.Connection,
   session: String,
   depth: Int,
   first: Int,
@@ -409,16 +409,16 @@ pub fn search_page(
 }
 
 fn search_node_pages(
-  ledger,
-  where,
-  arguments,
-  upper,
-  after,
-  needle,
-  limit,
-  offset,
+  ledger: store.Store,
+  where: String,
+  arguments: List(sqlight.Value),
+  upper: Int,
+  after: Int,
+  needle: String,
+  limit: Int,
+  offset: Int,
   page: NodeSearchPage,
-) {
+) -> Result(NodeSearchPage, String) {
   use nodes <- result.try(store.read(
     ledger,
     "SELECT id,depth,first_seq,last_seq,summary FROM lcm_compaction_node WHERE "

@@ -29,7 +29,7 @@ pub type Config {
   )
 }
 
-pub type Observation {
+type Observation {
   Observation(
     status: String,
     source: String,
@@ -76,11 +76,11 @@ type Resumed {
 
 const cut_prefix = "users:"
 
-pub fn default_config() -> Config {
+fn default_config() -> Config {
   Config(None, 90, 25)
 }
 
-pub fn config_decoder() {
+fn config_decoder() -> decode.Decoder(Config) {
   use capacity <- decode.optional_field(
     "contextWindowTokens",
     None,
@@ -96,17 +96,8 @@ fn validated(loaded: Result(Config, String)) -> Result(Config, String) {
   validate_config(config)
 }
 
-pub fn load_config() -> Result(Config, String) {
+fn load_config() -> Result(Config, String) {
   validated(settings.load("rolling", config_decoder(), default_config()))
-}
-
-pub fn load_config_at(home: String) -> Result(Config, String) {
-  validated(settings.load_at(
-    home,
-    "rolling",
-    config_decoder(),
-    default_config(),
-  ))
 }
 
 fn bundle(strategy: compaction.Strategy) -> extension.Extension {
@@ -137,7 +128,7 @@ pub fn prepare_with_settings(
   prepare_view(config, context, history)
 }
 
-pub fn strategy(config: Config) -> compaction.Strategy {
+fn strategy(config: Config) -> compaction.Strategy {
   compaction.Strategy("rolling", fn(context, history) {
     use valid <- result.try(validate_config(config))
     prepare_view(valid, context, history)
@@ -258,7 +249,7 @@ fn read_one(
   |> result.map(fn(rows) { list.first(rows) |> option.from_result })
 }
 
-pub fn observation(
+fn observation(
   ledger: store.Store,
   session: String,
 ) -> Result(Option(Observation), String) {
@@ -270,7 +261,7 @@ pub fn observation(
   )
 }
 
-fn observation_decoder() {
+fn observation_decoder() -> decode.Decoder(Observation) {
   use status <- decode.field(0, decode.string)
   use source <- decode.field(1, decode.string)
   use capacity <- decode.field(2, decode.optional(decode.int))
@@ -305,7 +296,7 @@ fn observation_decoder() {
   ))
 }
 
-fn row_decoder() {
+fn row_decoder() -> decode.Decoder(Row) {
   use summary <- decode.field(0, decode.string)
   use cutoff <- decode.field(1, decode.int)
   use cut_hash <- decode.field(2, decode.string)
@@ -764,7 +755,7 @@ fn save_compaction(
 }
 
 fn write_observation(
-  db,
+  db: sqlight.Connection,
   session: String,
   observation: Observation,
 ) -> Result(Nil, String) {

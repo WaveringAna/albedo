@@ -1,7 +1,9 @@
 //// The same ledger operations used by the Python tool and other clients.
 
+import albedo/daemon/store
 import albedo/harness/extensions/work/ledger as work
 import albedo/harness/rpc
+import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{None}
@@ -28,15 +30,23 @@ fn describe(error: work.Error) -> #(String, String) {
   }
 }
 
-fn parse(args, decoder) {
+fn parse(
+  args: dynamic.Dynamic,
+  decoder: decode.Decoder(a),
+) -> Result(a, work.Error) {
   rpc.args(args, decoder, work.Invalid("invalid work arguments"))
 }
 
-fn id_decoder() {
+fn id_decoder() -> decode.Decoder(Int) {
   decode.field("id", decode.int, decode.success)
 }
 
-fn dispatch(store, cwd, method, args) {
+fn dispatch(
+  store: store.Store,
+  cwd: String,
+  method: String,
+  args: dynamic.Dynamic,
+) -> Result(json.Json, work.Error) {
   case method {
     "work.list" -> {
       let decoder = {

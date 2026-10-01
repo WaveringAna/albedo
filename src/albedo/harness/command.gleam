@@ -156,20 +156,11 @@ fn find_free(candidate: String, taken: Dict(String, Bool), n: Int) -> String {
   }
 }
 
-/// A slash name is usable in the catalog: one non-space token after the slash.
-pub fn valid_name(name: String) -> Bool {
-  string.starts_with(name, "/")
-  && string.length(string.trim(name)) > 1
-  && !string.contains(name, " ")
-  && !string.contains(name, "\t")
-  && !string.contains(name, "\n")
-}
-
 /// Split one raw invocation into declared arguments. Leading arguments take one
 /// whitespace token each; the last declared argument takes the rest with outer
 /// whitespace trimmed and inner spacing exact, so `/fix-lint one  two` reaches
 /// the command as "one  two". Missing required arguments answer a usage error.
-pub fn parse_arguments(
+fn parse_arguments(
   command: Command,
   raw: String,
 ) -> Result(Dict(String, String), String) {
@@ -217,7 +208,7 @@ fn take(
 }
 
 /// One command's invocation shape: `/model [model] [provider]`.
-pub fn usage(command: Command) -> String {
+fn usage(command: Command) -> String {
   let arguments =
     command.arguments
     |> list.map(fn(argument) {
@@ -231,7 +222,7 @@ pub fn usage(command: Command) -> String {
 
 /// Validate supplied arguments against the declaration: unknown names fail,
 /// and every required argument must be present and nonempty.
-pub fn check_arguments(
+fn check_arguments(
   command: Command,
   args: Dict(String, String),
 ) -> Result(Dict(String, String), String) {
@@ -261,7 +252,7 @@ pub fn check_arguments(
   Ok(args)
 }
 
-pub fn find(commands: List(Command), name: String) -> Result(Command, String) {
+fn find(commands: List(Command), name: String) -> Result(Command, String) {
   list.find(commands, fn(command) { command.name == name })
   |> result.replace_error("unknown command " <> name)
 }
@@ -324,7 +315,7 @@ fn run(
   }
 }
 
-pub fn command_json(command: Command, method: String) -> json.Json {
+fn command_json(command: Command, method: String) -> json.Json {
   json.object([
     #("name", json.string(command.name)),
     #("description", json.string(command.description)),

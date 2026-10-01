@@ -10,7 +10,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
-pub const default_base_url = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+const default_base_url = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
 
 pub fn catalog() -> extension.ModelCatalog {
   extension.ModelCatalog(
@@ -62,7 +62,7 @@ fn list_models(provider: String, endpoint: Option(String)) -> List(String) {
 }
 
 @external(erlang, "albedo_alibaba", "models")
-pub fn models(home: String, endpoint: String) -> Result(List(String), String)
+fn models(home: String, endpoint: String) -> Result(List(String), String)
 
 @external(erlang, "albedo_alibaba", "reload")
 fn reload(home: String) -> Result(Nil, String)

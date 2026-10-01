@@ -234,14 +234,14 @@ pub fn kind_name(kind: Kind) -> String {
   }
 }
 
-fn row_decoder() {
+fn row_decoder() -> decode.Decoder(#(Int, BitArray, Option(Int))) {
   use seq <- decode.field(0, decode.int)
   use payload <- decode.field(1, decode.bit_array)
   use timestamp <- decode.field(2, decode.optional(decode.int))
   decode.success(#(seq, payload, timestamp))
 }
 
-fn decode_row(row) -> Result(Row, String) {
+fn decode_row(row: #(Int, BitArray, Option(Int))) -> Result(Row, String) {
   let #(seq, payload, timestamp) = row
   use input <- result.try(
     unpack(payload, unread)
@@ -319,7 +319,11 @@ fn safe_preview(text: String) -> String {
   }
 }
 
-fn read_prefix(db, id: String, checkpoint: Int) -> Result(List(Row), String) {
+fn read_prefix(
+  db: sqlight.Connection,
+  id: String,
+  checkpoint: Int,
+) -> Result(List(Row), String) {
   use rows <- result.try(store.rows(
     db,
     "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? AND seq<=? ORDER BY seq",
@@ -357,7 +361,7 @@ fn unmatched_calls(rows: List(Row)) -> Result(List(String), String) {
 }
 
 fn insert_session(
-  db,
+  db: sqlight.Connection,
   source: conversation.Info,
   id: String,
   title: String,
@@ -377,7 +381,7 @@ fn insert_session(
 }
 
 fn copy_prefix(
-  db,
+  db: sqlight.Connection,
   source_id: String,
   branch_id: String,
   checkpoint: Int,
@@ -390,7 +394,7 @@ fn copy_prefix(
 }
 
 fn copy_extension_overrides(
-  db,
+  db: sqlight.Connection,
   source_id: String,
   branch_id: String,
 ) -> Result(Nil, String) {
@@ -402,7 +406,7 @@ fn copy_extension_overrides(
 }
 
 fn append_incomplete_results(
-  db,
+  db: sqlight.Connection,
   branch_id: String,
   provider: String,
   pending: List(String),

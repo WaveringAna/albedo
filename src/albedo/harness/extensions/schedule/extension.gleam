@@ -27,7 +27,7 @@ pub fn extension() -> extension.Extension {
   )
 }
 
-pub fn command(db: store.Store, session: String) -> command.Command {
+fn command(db: store.Store, session: String) -> command.Command {
   Command(
     "/schedule",
     "List or manage scheduled prompts in this session: add <in:seconds|every:seconds> <prompt>, heartbeat <every:seconds> <prompt>, edit <id> <in:seconds|every:seconds> <prompt>, delete <id>. Intervals are 60–31536000 seconds. Heartbeats skip busy sessions; recurring prompts queue behind a running turn.",

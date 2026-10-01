@@ -11,11 +11,11 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 
-pub type EnvRef {
+type EnvRef {
   EnvRef(name: String)
 }
 
-pub type Transport {
+type Transport {
   Stdio(
     command: String,
     arguments: List(String),
@@ -29,7 +29,7 @@ pub type Transport {
   )
 }
 
-pub type Server {
+type Server {
   Server(
     transport: Transport,
     enabled: Bool,
@@ -40,21 +40,21 @@ pub type Server {
   )
 }
 
-pub type Config {
+type Config {
   Config(servers: Dict(String, Server))
 }
 
-pub type Handle
+type Handle
 
 type Definition {
   Definition(name: String, description: String, parameters: Json)
 }
 
-pub fn default_config() -> Config {
+fn default_config() -> Config {
   Config(dict.new())
 }
 
-pub fn config_decoder() {
+fn config_decoder() -> decode.Decoder(Config) {
   use servers <- decode.optional_field(
     "servers",
     dict.new(),
@@ -63,7 +63,7 @@ pub fn config_decoder() {
   decode.success(Config(servers))
 }
 
-fn server_decoder() {
+fn server_decoder() -> decode.Decoder(Server) {
   use kind <- decode.field("type", decode.string)
   use enabled <- decode.optional_field("enabled", True, decode.bool)
   use enabled_tools <- decode.optional_field(
@@ -93,7 +93,7 @@ fn server_decoder() {
   })
 }
 
-fn stdio_decoder() {
+fn stdio_decoder() -> decode.Decoder(Transport) {
   use command <- decode.field("command", decode.string)
   use arguments <- decode.optional_field("args", [], decode.list(decode.string))
   use cwd <- decode.optional_field("cwd", None, decode.optional(decode.string))
@@ -105,7 +105,7 @@ fn stdio_decoder() {
   decode.success(Stdio(command, arguments, cwd, environment))
 }
 
-fn http_decoder() {
+fn http_decoder() -> decode.Decoder(Transport) {
   use url <- decode.field("url", decode.string)
   use headers <- decode.optional_field(
     "headers",
@@ -120,16 +120,12 @@ fn http_decoder() {
   decode.success(Http(url, headers, bearer))
 }
 
-fn env_ref_decoder() {
+fn env_ref_decoder() -> decode.Decoder(EnvRef) {
   decode.map(decode.field("env", decode.string, decode.success), EnvRef)
 }
 
-pub fn load_config() -> Result(Config, String) {
+fn load_config() -> Result(Config, String) {
   settings.load("mcp", config_decoder(), default_config())
-}
-
-pub fn extension(config: Config) -> extension.Extension {
-  bundle(fn() { Ok(config) })
 }
 
 pub fn configured_extension() -> extension.Extension {
@@ -196,7 +192,7 @@ fn decode_definitions(value: String) -> Result(List(Definition), String) {
   |> result.replace_error("MCP discovery returned invalid tool definitions")
 }
 
-fn definition_decoder() {
+fn definition_decoder() -> decode.Decoder(Definition) {
   use name <- decode.field("name", decode.string)
   use description <- decode.field("description", decode.string)
   use parameters <- decode.field("parameters", decode.dynamic)

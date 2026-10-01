@@ -14,7 +14,7 @@ import gleam/option.{None}
 import gleam/string
 import gleeunit/should
 
-fn host() {
+fn host() -> #(runtime.Runtime, runtime.Session) {
   let assert Ok(host) =
     runtime.start_with_config(
       ":memory:",
@@ -59,7 +59,7 @@ fn answer(
   body
 }
 
-pub fn missing_lcm_node_answers_as_tool_output_test() {
+pub fn missing_lcm_node_answers_as_tool_output_test() -> Nil {
   let #(host, session) = host()
   // 35049 is a transcript row seq, the exact confusion that killed a child.
   let body = answer(host, session, "lcm_describe", "{\"id\":35049}")
@@ -70,7 +70,7 @@ pub fn missing_lcm_node_answers_as_tool_output_test() {
   runtime.stop(host)
 }
 
-pub fn missing_summary_scope_answers_as_tool_output_test() {
+pub fn missing_summary_scope_answers_as_tool_output_test() -> Nil {
   let #(host, session) = host()
   let body =
     answer(
@@ -85,7 +85,7 @@ pub fn missing_summary_scope_answers_as_tool_output_test() {
   runtime.stop(host)
 }
 
-pub fn answering_tools_still_answer_normally_test() {
+pub fn answering_tools_still_answer_normally_test() -> Nil {
   let #(host, session) = host()
   let body = answer(host, session, "lcm_list", "{}")
   let assert Ok(total) =

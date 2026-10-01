@@ -111,7 +111,7 @@ pub fn parse_status(name: String) -> Result(Status, Error) {
   }
 }
 
-fn status_decoder() {
+fn status_decoder() -> decode.Decoder(Status) {
   use value <- decode.then(decode.string)
   case parse_status(value) {
     Ok(status) -> decode.success(status)
@@ -119,7 +119,7 @@ fn status_decoder() {
   }
 }
 
-fn decoder() {
+fn decoder() -> decode.Decoder(Item) {
   use id <- decode.field(0, decode.int)
   use title <- decode.field(1, decode.string)
   use notes <- decode.field(2, decode.string)
@@ -131,11 +131,19 @@ fn decoder() {
   decode.success(Item(id, title, notes, status, parent, session, run, revision))
 }
 
-fn rows(db, sql, args) {
+fn rows(
+  db: sqlight.Connection,
+  sql: String,
+  args: List(sqlight.Value),
+) -> Result(List(Item), Error) {
   storage.rows(db, sql, args, decoder()) |> result.map_error(Storage)
 }
 
-fn find(db, cwd: String, id: Int) {
+fn find(
+  db: sqlight.Connection,
+  cwd: String,
+  id: Int,
+) -> Result(List(Item), Error) {
   rows(db, "SELECT " <> columns <> " FROM work WHERE cwd=? AND id=?", [
     sqlight.text(cwd),
     sqlight.int(id),
@@ -278,7 +286,12 @@ pub fn delete(
   })
 }
 
-fn validate(title, notes, session, run) {
+fn validate(
+  title: String,
+  notes: String,
+  session: Option(a),
+  run: Option(b),
+) -> Result(Nil, Error) {
   case
     string.trim(title) == ""
     || string.byte_size(title) > 4096

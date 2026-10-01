@@ -3,13 +3,7 @@
 
 import gleam/string
 
-pub const open = "<system-notice>"
-
-pub const close = "</system-notice>"
-
-pub fn wrap(text: String) -> String {
-  open <> "\n" <> text <> "\n" <> close
-}
+const open = "<system-notice>"
 
 pub fn is_notice(text: String) -> Bool {
   string.starts_with(text, open)

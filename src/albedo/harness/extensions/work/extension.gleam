@@ -37,7 +37,3 @@ pub fn extension() -> harness_extension.Extension {
     work.initialise,
   )
 }
-
-pub fn plugin() -> harness_extension.Extension {
-  extension()
-}

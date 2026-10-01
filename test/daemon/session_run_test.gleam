@@ -44,25 +44,25 @@ fn dies_on_call(message: Ping) -> actor.Next(Nil, Ping) {
   }
 }
 
-pub fn a_reply_in_time_is_some_test() {
+pub fn a_reply_in_time_is_some_test() -> Nil {
   let subject = server(answers)
   session_run.try_call(subject, 2000, Ping)
   |> should.equal(Ok("pong"))
 }
 
-pub fn a_stalled_callee_reports_a_timeout_test() {
+pub fn a_stalled_callee_reports_a_timeout_test() -> Nil {
   let subject = server(never_replies)
   session_run.try_call(subject, 20, Ping)
   |> should.equal(Error(session_run.TimedOut))
 }
 
-pub fn a_dead_callee_reports_the_death_test() {
+pub fn a_dead_callee_reports_the_death_test() -> Nil {
   let subject = server(dies_on_call)
   session_run.try_call(subject, 2000, fn(_reply) { Die })
   |> should.equal(Error(session_run.CalleeDown))
 }
 
-pub fn a_reply_that_races_the_callee_exit_still_arrives_test() {
+pub fn a_reply_that_races_the_callee_exit_still_arrives_test() -> Nil {
   let subject =
     server(fn(message) {
       case message {
@@ -108,7 +108,7 @@ fn publish_after(owner: Subject(Owner), stop: turn.Latch) -> Bool {
   session_run.publish_fn(owner, "run", messages(), stop, waiting: 20)("event")
 }
 
-pub fn publish_passes_the_owner_answer_through_test() {
+pub fn publish_passes_the_owner_answer_through_test() -> Nil {
   let answering = fn(keep_going) {
     server(fn(message) {
       case message {
@@ -122,7 +122,7 @@ pub fn publish_passes_the_owner_answer_through_test() {
   answering(False) |> publish |> should.be_false
 }
 
-pub fn publish_keeps_streaming_through_a_stalled_owner_test() {
+pub fn publish_keeps_streaming_through_a_stalled_owner_test() -> Nil {
   server(fn(_) { actor.continue(Nil) })
   |> publish
   |> should.be_true
@@ -130,7 +130,7 @@ pub fn publish_keeps_streaming_through_a_stalled_owner_test() {
 
 /// A cancelled session actor that stalls must not let a tool gate open: the
 /// kernel interrupt cannot stop a tool outside the kernel.
-pub fn publish_fails_closed_on_a_stall_once_cancelled_test() {
+pub fn publish_fails_closed_on_a_stall_once_cancelled_test() -> Nil {
   let pid = process.spawn(fn() { Nil })
   let assert turn.Running(run) =
     turn.Running(turn.Run(
@@ -147,7 +147,7 @@ pub fn publish_fails_closed_on_a_stall_once_cancelled_test() {
   |> should.be_false
 }
 
-pub fn publish_stops_the_stream_when_the_owner_dies_test() {
+pub fn publish_stops_the_stream_when_the_owner_dies_test() -> Nil {
   server(fn(_) { actor.stop() })
   |> publish
   |> should.be_false
@@ -161,7 +161,7 @@ fn commit(owner: Subject(Owner)) -> Result(#(Int, option.Option(Int)), String) {
   )
 }
 
-pub fn a_dead_owner_ends_the_turn_instead_of_the_worker_test() {
+pub fn a_dead_owner_ends_the_turn_instead_of_the_worker_test() -> Nil {
   let dies = fn() { server(fn(_) { actor.stop() }) }
   commit(dies())
   |> should.equal(Error("commit unconfirmed: the session stopped"))
@@ -177,7 +177,7 @@ pub fn a_dead_owner_ends_the_turn_instead_of_the_worker_test() {
 }
 
 /// A stalled commit may still land, so it must be sent exactly once.
-pub fn a_stalled_commit_ends_the_turn_without_a_retry_test() {
+pub fn a_stalled_commit_ends_the_turn_without_a_retry_test() -> Nil {
   let assert Ok(started) =
     actor.new(0)
     |> actor.on_message(fn(commits, message) {

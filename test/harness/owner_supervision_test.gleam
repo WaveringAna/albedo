@@ -12,7 +12,7 @@ import gleeunit/should
 /// this defines one, `spawn`, compiled outside any cell.
 const library_spawn = "library = {}\nexec(compile('import subprocess\\ndef spawn(*args, **kwargs):\\n    return subprocess.Popen(*args, **kwargs)', 'fixture_library.py', 'exec'), library)\nspawn = library['spawn']\n"
 
-pub fn owner_death_still_ends_reported_job_groups_test() {
+pub fn owner_death_still_ends_reported_job_groups_test() -> Nil {
   let assert Ok(store) = work.start(":memory:")
   let assert Ok(kernel) = python.local(store, "/tmp")
   let assert Ok(started) =
@@ -47,7 +47,7 @@ pub fn owner_death_still_ends_reported_job_groups_test() {
   work.close(store)
 }
 
-pub fn kernel_death_ends_unregistered_children_in_its_own_group_test() {
+pub fn kernel_death_ends_unregistered_children_in_its_own_group_test() -> Nil {
   let assert Ok(store) = work.start(":memory:")
   let assert Ok(kernel) = python.local(store, "/tmp")
   let assert Ok(started) =
@@ -76,7 +76,7 @@ state", 5000)
   work.close(store)
 }
 
-pub fn shutdown_keeps_ownership_of_late_job_registrations_test() {
+pub fn shutdown_keeps_ownership_of_late_job_registrations_test() -> Nil {
   let assert Ok(store) = work.start(":memory:")
   let assert Ok(kernel) = python.local(store, "/tmp")
   let assert Ok(path) =
@@ -114,7 +114,7 @@ state", 5000)
   work.close(store)
 }
 
-pub fn owner_loss_terminates_a_kernel_held_in_native_code_test() {
+pub fn owner_loss_terminates_a_kernel_held_in_native_code_test() -> Nil {
   let assert Ok(store) = work.start(":memory:")
   let assert Ok(kernel) = python.local(store, "/tmp")
   let assert Ok(started) =

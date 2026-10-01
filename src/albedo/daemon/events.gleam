@@ -51,10 +51,6 @@ pub fn stream_event(
   }
 }
 
-pub fn phase(value: String) -> String {
-  event("phase", [#("phase", json.string(value))])
-}
-
 /// A call's progress. A call with code carries its start, so a client that
 /// missed the arguments streaming can still say what it runs.
 pub fn progress(call: types.ToolCall, phase: String) -> String {

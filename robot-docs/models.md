@@ -47,6 +47,8 @@ A Codex lookup answers for the ChatGPT endpoint with the backend's own facts: th
 
 `albedo models` prints `provider/model` for every configured provider, the active provider first and each provider's default model first. `albedo -p <prompt> --model <model>` takes either spelling the agents' `spawn(model=...)` takes: `provider/model`, or a bare id, served by the active provider when it offers it and otherwise by the one provider that does. Only exact ids match; an id no provider lists, or one several list, is refused before a session is created. A new session starts on the model; with `--session`, `POST /sessions/:id/model` (`{model, provider}`, capability `session_model`) switches that session without making the model the default for new sessions, which `/model` does.
 
+A persisted session without an effort selects the catalog default when its actor starts. The actor must save that effort before accepting work. A failed write leaves the session unavailable, logs the initialization failure, and retries on its next activation.
+
 ## raised caps
 
 A provider can report a larger window than a session uses by default; Codex reports 272k by default and 872k at most for GPT-5.6 and GPT-6. Models degrade over long contexts, and published long-context results differ by model, so albedo uses the default until you raise the cap. `/raise-cap` or tab in the `/model` picker raises it for one model, saved in `$ALBEDO_HOME/extensions.json`:

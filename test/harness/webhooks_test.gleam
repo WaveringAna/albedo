@@ -25,7 +25,7 @@ fn database() -> store.Store {
   db
 }
 
-pub fn full_inbox_refuses_new_delivery_test() {
+pub fn full_inbox_refuses_new_delivery_test() -> Nil {
   let db = database()
   let assert Ok(webhooks.Provisioned(hook, key)) =
     webhooks.create(db, webhooks.Human, "infra", "outage", None)

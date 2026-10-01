@@ -1,0 +1,36 @@
+# Diagnostic audit. This is not the project lint policy.
+[tools.glinter]
+stats = true
+warnings_as_errors = true
+include = ["src/", "test/"]
+
+[tools.glinter.rules]
+avoid_panic = "error"
+avoid_todo = "error"
+echo = "error"
+assert_ok_pattern = "error"
+redundant_case = "error"
+unwrap_used = "error"
+panic_without_message = "error"
+string_inspect = "error"
+todo_without_message = "error"
+unnecessary_string_concatenation = "error"
+error_context_lost = "error"
+thrown_away_error = "error"
+missing_type_annotation = "error"
+function_complexity = "error"
+label_possible = "error"
+trailing_underscore = "error"
+stringly_typed_error = "error"
+prefer_guard_clause = "error"
+duplicate_import = "error"
+unqualified_import = "error"
+deep_nesting = "error"
+module_complexity = "error"
+missing_labels = "error"
+short_variable_name = "error"
+unnecessary_variable = "error"
+discarded_result = "error"
+division_by_zero = "error"
+unused_exports = "error"
+ffi_usage = "off"

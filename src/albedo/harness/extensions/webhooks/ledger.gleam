@@ -134,7 +134,7 @@ fn letter(delivery: Delivery) -> mail.Letter {
 
 const columns = "id,session,name,enabled,signature_header,signature_prefix,revision"
 
-fn decoder() {
+fn decoder() -> decode.Decoder(Hook) {
   use id <- decode.field(0, decode.string)
   use session <- decode.field(1, decode.string)
   use name <- decode.field(2, decode.string)
@@ -675,7 +675,7 @@ fn invalid_event_key(key: Option(String)) -> Bool {
   }
 }
 
-fn delivery_decoder() {
+fn delivery_decoder() -> decode.Decoder(Delivery) {
   use id <- decode.field(0, decode.string)
   use hook <- decode.field(1, decode.string)
   use name <- decode.field(2, decode.string)

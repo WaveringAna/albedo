@@ -1,7 +1,9 @@
+import albedo/daemon/store
 import albedo/harness/extensions/python/cells as journal
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/work/ledger as work
 import albedo/harness/rpc
+import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -100,7 +102,10 @@ fn status(cell: journal.Cell) -> String {
   }
 }
 
-fn parse(args, decoder) {
+fn parse(
+  args: dynamic.Dynamic,
+  decoder: decode.Decoder(a),
+) -> Result(a, String) {
   rpc.args(args, decoder, "invalid cell arguments")
 }
 
@@ -113,7 +118,12 @@ fn replacements_decoder() -> decode.Decoder(List(#(String, String))) {
   decode.field("replacements", decode.list(pair), decode.success)
 }
 
-fn cells(store, session, method, args) {
+fn cells(
+  store: store.Store,
+  session: String,
+  method: String,
+  args: dynamic.Dynamic,
+) -> Result(json.Json, String) {
   use id <- result.try(parse(
     args,
     decode.field("id", decode.string, decode.success),

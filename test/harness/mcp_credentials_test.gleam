@@ -20,7 +20,7 @@ fn cleanup(root: String) -> Nil
 @external(erlang, "albedo_mcp_credentials", "server_at")
 fn secret(home: String, name: String) -> Result(dynamic.Dynamic, String)
 
-pub fn credentials_require_private_regular_file_test() {
+pub fn credentials_require_private_regular_file_test() -> Nil {
   let #(root, _, home) = fixture()
   secret(home, "docs") |> should.be_ok
   let _ =

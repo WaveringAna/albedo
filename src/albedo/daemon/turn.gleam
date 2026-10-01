@@ -79,7 +79,7 @@ pub fn latch() -> Latch {
   new_atomics(1, [])
 }
 
-pub fn raise(latch: Latch) -> Nil {
+fn raise(latch: Latch) -> Nil {
   let _ = put(latch, 1, 1)
   Nil
 }
@@ -107,7 +107,7 @@ pub type Rejection {
 }
 
 /// The most chat messages and notes that wait in one session's queue.
-pub const queue_limit = 32
+const queue_limit = 32
 
 pub fn source_name(source: Source) -> String {
   case source {

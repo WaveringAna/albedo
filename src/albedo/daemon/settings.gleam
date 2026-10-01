@@ -6,7 +6,7 @@ import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/result
 
-pub fn capability_decoder() {
+pub fn capability_decoder() -> decode.Decoder(session_settings.Change) {
   use kind <- decode.field("kind", decode.string)
   use name <- decode.field("name", decode.string)
   use scope <- decode.field("scope", decode.string)

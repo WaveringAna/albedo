@@ -55,13 +55,6 @@ pub fn named(
 @external(erlang, "albedo_instruction_files", "home")
 pub fn home() -> String
 
-/// Autoloaded AGENTS.md, CLAUDE.md, and agent-directory Markdown other than prompt files.
-/// Files larger than 1 MiB are skipped.
-pub fn load(workspace: String, home: String) -> Result(String, String) {
-  load_with_selection(workspace, home, None)
-  |> result.map(fn(loaded) { loaded.0 })
-}
-
 /// The selected files' context and any warnings about skipped files.
 pub fn load_selected(
   workspace: String,

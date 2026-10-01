@@ -517,7 +517,7 @@ fn is_busy(report: Report, now: Int) -> Bool {
 // ---- the readings -------------------------------------------------------
 
 /// One stored reading, exactly as the feed reported it.
-pub type Sample {
+type Sample {
   Sample(
     id: Int,
     /// The account's non-secret label.
@@ -702,7 +702,7 @@ fn sample_decoder() -> decode.Decoder(Sample) {
 }
 
 /// The latest reading per account and limit, read-only.
-pub fn latest(database: store.Store) -> Result(List(Sample), String) {
+fn latest(database: store.Store) -> Result(List(Sample), String) {
   store.read(database, "SELECT " <> sample_columns <> " FROM quota_sample s
      WHERE s.id = (SELECT MAX(t.id) FROM quota_sample t
                    WHERE t.account = s.account AND t.provider = s.provider
@@ -712,7 +712,7 @@ pub fn latest(database: store.Store) -> Result(List(Sample), String) {
 
 /// Readings newest-first with id keyset paging: `before` 0 starts at the
 /// newest, any other value continues after that row id.
-pub fn history(
+fn history(
   database: store.Store,
   before: Int,
   limit: Int,
@@ -772,7 +772,7 @@ pub fn page_json(
 
 /// A reading, exactly as it was recorded: unknown stays unknown, so a
 /// missing percentage or reset time is never mistaken for zero.
-pub fn sample_json(sample: Sample) -> json.Json {
+fn sample_json(sample: Sample) -> json.Json {
   json.object([
     #("id", json.int(sample.id)),
     #("account", json.string(sample.account)),

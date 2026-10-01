@@ -33,7 +33,7 @@ type ModelUnit {
   ModelUnit(items: List(types.Input), tokens: Int)
 }
 
-pub fn default_config() -> Config {
+fn default_config() -> Config {
   Config(None, 90, 25)
 }
 
@@ -95,7 +95,7 @@ pub fn stored_prior(
   }
 }
 
-fn decoder() {
+fn decoder() -> decode.Decoder(Config) {
   use capacity <- decode.optional_field(
     "contextWindowTokens",
     None,
@@ -364,11 +364,19 @@ fn summarize_leaves(
 ) -> Result(List(graph.Leaf), String) {
   let chunks = rolling.chunk_units(source_units(eligible), leaf_budget)
   use chunk <- list.try_map(chunks)
-  let assert [first, ..] = chunk
-  let assert Ok(last) = list.last(chunk)
-  let inputs = list.map(chunk, fn(item) { item.entry.input })
-  use summary <- result.try(summarize_bounded(context, inputs, summary_limit))
-  Ok(graph.Leaf(first.source.seq, last.source.seq, summary))
+  case chunk {
+    [] -> Error("cannot summarize an empty source chunk")
+    [first, ..rest] -> {
+      let last = list.fold(rest, first, fn(_, item) { item })
+      let inputs = list.map(chunk, fn(item) { item.entry.input })
+      use summary <- result.try(summarize_bounded(
+        context,
+        inputs,
+        summary_limit,
+      ))
+      Ok(graph.Leaf(first.source.seq, last.source.seq, summary))
+    }
+  }
 }
 
 /// Source rows grouped into conversation units, each with its token cost.

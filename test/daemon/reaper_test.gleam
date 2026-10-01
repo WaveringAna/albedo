@@ -9,7 +9,7 @@ fn pids(victims: List(Candidate)) -> List(Int) {
   list.map(victims, fn(victim: Candidate) { victim.pid })
 }
 
-pub fn attached_running_and_job_holding_kernels_are_never_released_test() {
+pub fn attached_running_and_job_holding_kernels_are_never_released_test() -> Nil {
   [
     // attached moments ago, however much it holds
     Candidate(1, 0, False, 0, 100_000),
@@ -22,7 +22,7 @@ pub fn attached_running_and_job_holding_kernels_are_never_released_test() {
   |> should.equal([])
 }
 
-pub fn a_pool_over_budget_loses_the_longest_unattended_first_test() {
+pub fn a_pool_over_budget_loses_the_longest_unattended_first_test() -> Nil {
   let victims =
     [
       Candidate(1, 31_000, False, 0, 600),
@@ -34,7 +34,7 @@ pub fn a_pool_over_budget_loses_the_longest_unattended_first_test() {
   victims |> pids |> should.equal([2, 3])
 }
 
-pub fn memory_freed_by_the_idle_rule_counts_against_the_budget_test() {
+pub fn memory_freed_by_the_idle_rule_counts_against_the_budget_test() -> Nil {
   let victims =
     [Candidate(1, 120_000, False, 0, 900), Candidate(2, 31_000, False, 0, 600)]
     |> reaper.victims(limits)

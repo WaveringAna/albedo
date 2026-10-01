@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS paperclips (
 
 const columns = "id,title,topic,message,suggestion,reply,status,session,cwd,created_at,resolution,resolved_by"
 
-pub fn topic_name(topic: Topic) -> String {
+fn topic_name(topic: Topic) -> String {
   case topic {
     Harness -> "harness"
     Workflow -> "workflow"
@@ -117,7 +117,7 @@ pub fn status_name(status: Status) -> String {
   }
 }
 
-pub fn parse_status(name: String) -> Result(Status, Error) {
+fn parse_status(name: String) -> Result(Status, Error) {
   case name {
     "open" -> Ok(Open)
     "acknowledged" -> Ok(Acknowledged)
@@ -132,7 +132,7 @@ pub fn parse_status(name: String) -> Result(Status, Error) {
   }
 }
 
-fn topic_decoder() {
+fn topic_decoder() -> decode.Decoder(Topic) {
   use value <- decode.then(decode.string)
   case parse_topic(value) {
     Ok(topic) -> decode.success(topic)
@@ -140,7 +140,7 @@ fn topic_decoder() {
   }
 }
 
-fn status_decoder() {
+fn status_decoder() -> decode.Decoder(Status) {
   use value <- decode.then(decode.string)
   case parse_status(value) {
     Ok(status) -> decode.success(status)
@@ -148,7 +148,7 @@ fn status_decoder() {
   }
 }
 
-fn decoder() {
+fn decoder() -> decode.Decoder(Vent) {
   use id <- decode.field(0, decode.int)
   use title <- decode.field(1, decode.string)
   use topic <- decode.field(2, topic_decoder())
@@ -194,7 +194,11 @@ pub fn to_json(vent: Vent) -> json.Json {
   ])
 }
 
-fn rows(db, sql, args) {
+fn rows(
+  db: sqlight.Connection,
+  sql: String,
+  args: List(sqlight.Value),
+) -> Result(List(Vent), Error) {
   storage.rows(db, sql, args, decoder()) |> result.map_error(Storage)
 }
 
@@ -319,7 +323,7 @@ pub fn session_labels(
   }
 }
 
-fn label_decoder() {
+fn label_decoder() -> decode.Decoder(#(String, String)) {
   use id <- decode.field(0, decode.string)
   use label <- decode.field(1, decode.string)
   decode.success(#(id, label))

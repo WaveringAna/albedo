@@ -88,14 +88,14 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
   })
 }
 
-fn recovery_decoder() {
+fn recovery_decoder() -> decode.Decoder(#(String, String, Int)) {
   use id <- decode.field(0, decode.string)
   use title <- decode.field(1, decode.string)
   use activity_seq <- decode.field(2, decode.int)
   decode.success(#(id, title, activity_seq))
 }
 
-fn recover_sessions(db) -> Result(Nil, String) {
+fn recover_sessions(db: sqlight.Connection) -> Result(Nil, String) {
   use sessions <- result.try(store.rows(
     db,
     "SELECT id,COALESCE(title,''),COALESCE(activity_seq,-1) FROM sessions WHERE activity_seq IS NULL OR title IS NULL OR title=''",
@@ -214,7 +214,7 @@ pub fn get(store: store.Store, id: String) -> Result(Info, String) {
 }
 
 /// `get` inside a query the caller already holds.
-pub fn read_info(db, id: String) -> Result(Info, String) {
+pub fn read_info(db: sqlight.Connection, id: String) -> Result(Info, String) {
   store.one(
     db,
     "SELECT " <> info_columns <> " FROM sessions WHERE id=?",
@@ -560,13 +560,12 @@ fn fold_source_pages(
       list.try_map(rows, sourced_entry(snapshot.session, _, read))
     }),
   )
-  case rows {
+  case list.reverse(rows) {
     [] -> Ok(acc)
-    _ ->
+    [last, ..] ->
       case fold_source_rows(rows, acc, step, schedule, replacements) {
         Stop(#(acc, _, _)) -> Ok(acc)
         Continue(#(acc, schedule, replacements)) -> {
-          let assert Ok(last) = list.last(rows)
           fold_source_pages(
             ledger,
             snapshot,
@@ -874,31 +873,6 @@ pub fn last_seq(store: store.Store, id: String) -> Result(Int, String) {
   })
 }
 
-/// Resolve one reference by both session and sequence. A missing row is an
-/// ordinary result (for example, a reference from a different database).
-pub fn source(
-  store: store.Store,
-  reference: transcript.SourceRef,
-) -> Result(Option(transcript.Entry), String) {
-  let transcript.SourceRef(session, seq) = reference
-  let read = images.reader(store)
-  store.query(store, fn(db) {
-    use rows <- result.try(store.rows(
-      db,
-      "SELECT seq,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq=?",
-      [sqlight.text(session), sqlight.int(seq)],
-      source_row(),
-    ))
-    case rows {
-      [] -> Ok(None)
-      [row] ->
-        sourced_entry(session, row, read)
-        |> result.map(fn(entry) { Some(entry.entry) })
-      _ -> Error("duplicate transcript source reference")
-    }
-  })
-}
-
 pub fn load(
   store: store.Store,
   id: String,
@@ -1173,7 +1147,7 @@ fn commit_with_letters(
   })
 }
 
-fn usage_decoder() {
+fn usage_decoder() -> decode.Decoder(Option(usage.Metadata)) {
   use model <- decode.field(0, decode.optional(decode.string))
   use recorded_at <- decode.field(1, decode.optional(decode.int))
   use prompt <- decode.field(2, decode.optional(decode.int))

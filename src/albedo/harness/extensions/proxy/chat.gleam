@@ -71,7 +71,17 @@ pub fn parse(body: BitArray) -> Result(Completion, String) {
   ))
 }
 
-fn request_decoder() {
+fn request_decoder() -> decode.Decoder(
+  #(
+    String,
+    List(Message),
+    List(types.Tool),
+    Bool,
+    Bool,
+    Option(Int),
+    types.Options,
+  ),
+) {
   let tool = {
     use kind <- decode.optional_field("type", "function", decode.string)
     use name <- decode.subfield(["function", "name"], decode.string)

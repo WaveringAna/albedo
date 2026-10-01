@@ -22,7 +22,7 @@ const waits_on_a_sleeper = "program = 'import subprocess; child = subprocess.Pop
 
 const leaves_a_sleeper = "program = 'import subprocess; child = subprocess.Popen([\"sleep\", \"30\"]); print(child.pid, flush=True)'\n"
 
-pub fn deadline_ends_the_group_and_reports_it_test() {
+pub fn deadline_ends_the_group_and_reports_it_test() -> Nil {
   let assert Ok(store) = work.start(":memory:")
   let assert Ok(kernel) = python.local(store, "/tmp")
   let assert Ok(outcome) =
@@ -45,7 +45,7 @@ pub fn deadline_ends_the_group_and_reports_it_test() {
   work.close(store)
 }
 
-pub fn command_exit_ends_a_descendant_that_holds_output_test() {
+pub fn command_exit_ends_a_descendant_that_holds_output_test() -> Nil {
   let assert Ok(store) = work.start(":memory:")
   let assert Ok(kernel) = python.local(store, "/tmp")
   let assert Ok(outcome) =
@@ -66,7 +66,7 @@ pub fn command_exit_ends_a_descendant_that_holds_output_test() {
   work.close(store)
 }
 
-pub fn stop_ends_a_running_job_group_test() {
+pub fn stop_ends_a_running_job_group_test() -> Nil {
   let assert Ok(store) = work.start(":memory:")
   let assert Ok(kernel) = python.local(store, "/tmp")
   let assert Ok(started) =

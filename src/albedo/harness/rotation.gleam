@@ -36,7 +36,7 @@ pub type Marked {
 
 /// A Marked from a provider's own flags: whether the limit lasts, and whether
 /// a sibling still has room.
-pub fn marked(lasting: Bool, room: Bool) -> Marked {
+fn marked(lasting: Bool, room: Bool) -> Marked {
   case lasting {
     True -> Marked(Lasting, room)
     False -> Marked(Brief, room)
@@ -159,7 +159,7 @@ pub type Budget {
 }
 
 /// Accounts one request may move through after limits, beyond the first.
-pub fn budget() -> Budget {
+fn budget() -> Budget {
   Budget(8, 0, sleep)
 }
 
@@ -260,7 +260,7 @@ pub fn stream(
   }
 }
 
-pub type Slot
+type Slot
 
 @external(erlang, "erlang", "make_ref")
 fn new_slot() -> Slot

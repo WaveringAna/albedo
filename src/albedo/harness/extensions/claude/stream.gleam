@@ -1,6 +1,7 @@
 //// Anthropic Messages SSE into albedo events and chat-shaped portable replay.
 
 import albedo/harness/extensions/claude/wire
+import albedo/openai_api/decoding
 import albedo/openai_api/replay
 import albedo/openai_api/stream.{type Reducer}
 import albedo/openai_api/types
@@ -42,14 +43,18 @@ fn step(
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
   use value <- result.try(
     json.parse(data, decode.dynamic)
-    |> result.map_error(fn(_) {
-      types.InvalidEvent("invalid Anthropic event JSON")
+    |> result.map_error(fn(error) {
+      types.InvalidEvent(
+        "invalid Anthropic event JSON: " <> decoding.json_error(error),
+      )
     }),
   )
   use kind <- result.try(
     decode.run(value, decode.at(["type"], decode.string))
-    |> result.map_error(fn(_) {
-      types.InvalidEvent("Anthropic event has no type")
+    |> result.map_error(fn(error) {
+      types.InvalidEvent(
+        "Anthropic event has no type: " <> decoding.decode_errors(error),
+      )
     }),
   )
   apply(state, kind, value)
@@ -69,8 +74,10 @@ fn apply(
     "message_start" -> {
       use id <- result.try(
         decode.run(value, decode.at(["message", "id"], decode.string))
-        |> result.map_error(fn(_) {
-          types.InvalidEvent("invalid message_start")
+        |> result.map_error(fn(error) {
+          types.InvalidEvent(
+            "invalid message_start: " <> decoding.decode_errors(error),
+          )
         }),
       )
       let usage =
@@ -120,11 +127,19 @@ fn start(
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
   use index <- result.try(
     decode.run(value, decode.at(["index"], decode.int))
-    |> result.map_error(fn(_) { types.InvalidEvent("missing block index") }),
+    |> result.map_error(fn(error) {
+      types.InvalidEvent(
+        "missing block index: " <> decoding.decode_errors(error),
+      )
+    }),
   )
   use kind <- result.try(
     decode.run(value, decode.at(["content_block", "type"], decode.string))
-    |> result.map_error(fn(_) { types.InvalidEvent("missing block type") }),
+    |> result.map_error(fn(error) {
+      types.InvalidEvent(
+        "missing block type: " <> decoding.decode_errors(error),
+      )
+    }),
   )
   let block = case kind {
     "text" -> Some(Text(index, [field(value, ["content_block", "text"])]))
@@ -149,11 +164,19 @@ fn delta(
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
   use index <- result.try(
     decode.run(value, decode.at(["index"], decode.int))
-    |> result.map_error(fn(_) { types.InvalidEvent("missing delta index") }),
+    |> result.map_error(fn(error) {
+      types.InvalidEvent(
+        "missing delta index: " <> decoding.decode_errors(error),
+      )
+    }),
   )
   use kind <- result.try(
     decode.run(value, decode.at(["delta", "type"], decode.string))
-    |> result.map_error(fn(_) { types.InvalidEvent("missing delta type") }),
+    |> result.map_error(fn(error) {
+      types.InvalidEvent(
+        "missing delta type: " <> decoding.decode_errors(error),
+      )
+    }),
   )
   let text = case kind {
     "input_json_delta" -> field(value, ["delta", "partial_json"])
@@ -211,8 +234,10 @@ fn finish(state: State) -> Result(types.Turn, types.Error) {
     list.try_each(calls, fn(call) {
       json.parse(call.arguments, decode.dict(decode.string, decode.dynamic))
       |> result.map(fn(_) { Nil })
-      |> result.map_error(fn(_) {
-        types.InvalidEvent("invalid Claude tool input")
+      |> result.map_error(fn(error) {
+        types.InvalidEvent(
+          "invalid Claude tool input: " <> decoding.json_error(error),
+        )
       })
     }),
   )
@@ -252,7 +277,11 @@ fn finish(state: State) -> Result(types.Turn, types.Error) {
       json.to_string(replay.message(json.string(text), thinking, details, calls)),
       types.replay_decoder(types.ChatCompletions),
     )
-    |> result.map_error(fn(_) { types.InvalidEvent("invalid Claude replay") }),
+    |> result.map_error(fn(error) {
+      types.InvalidEvent(
+        "invalid Claude replay: " <> decoding.json_error(error),
+      )
+    }),
   )
   let finish = case state.reason {
     Some("tool_use") -> types.ToolCalls

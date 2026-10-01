@@ -65,10 +65,6 @@ const reserved_commands = [
   "workspace",
 ]
 
-pub fn scan(workspace: String) -> Result(Catalog, String) {
-  scan_at(workspace, native_home())
-}
-
 /// Explicit home makes tests and embedders independent of the daemon account.
 pub fn scan_at(workspace: String, home: String) -> Result(Catalog, String) {
   use #(skills, diagnostics, _) <- result.try(native_catalog(workspace, home))
@@ -88,7 +84,7 @@ pub fn commands(catalog: Catalog) -> List(Command) {
   })
 }
 
-pub fn command_name(name: String) -> String {
+fn command_name(name: String) -> String {
   case list.contains(reserved_commands, name) {
     True -> "/skill:" <> name
     False -> "/" <> name

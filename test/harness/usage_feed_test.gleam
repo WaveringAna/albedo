@@ -44,7 +44,7 @@ fn credential() -> json.Json {
   ])
 }
 
-pub fn fetch_runs_http_and_command_rounds_test() {
+pub fn fetch_runs_http_and_command_rounds_test() -> Nil {
   let assert Ok(fake) = start_fake()
   let assert Ok(report) = usage_feed.fetch("fake", credential(), 1_234_567_890)
   // The fake core built the report from the real HTTP response body, which
@@ -82,7 +82,7 @@ pub fn fetch_runs_http_and_command_rounds_test() {
   stop_fake(fake)
 }
 
-pub fn a_provider_error_is_data_not_a_driver_failure_test() {
+pub fn a_provider_error_is_data_not_a_driver_failure_test() -> Nil {
   let assert Ok(fake) = start_fake()
   let assert Ok(report) = usage_feed.fetch("broken", credential(), 0)
   report.error |> should.equal(Some("the provider is unreachable"))
@@ -91,14 +91,14 @@ pub fn a_provider_error_is_data_not_a_driver_failure_test() {
   stop_fake(fake)
 }
 
-pub fn a_feed_that_never_reports_is_a_driver_failure_test() {
+pub fn a_feed_that_never_reports_is_a_driver_failure_test() -> Nil {
   let assert Ok(fake) = start_fake()
   let assert Error(message) = usage_feed.fetch("endless", credential(), 0)
   message |> string.contains("did not finish in 6 rounds") |> should.be_true
   stop_fake(fake)
 }
 
-pub fn a_missing_binary_is_a_driver_failure_test() {
+pub fn a_missing_binary_is_a_driver_failure_test() -> Nil {
   let assert Ok(fake) = start_fake()
   break_binary(fake)
   let assert Error(message) = usage_feed.fetch("fake", credential(), 0)
@@ -106,7 +106,7 @@ pub fn a_missing_binary_is_a_driver_failure_test() {
   stop_fake(fake)
 }
 
-pub fn a_command_off_path_answers_126_test() {
+pub fn a_command_off_path_answers_126_test() -> Nil {
   let assert Ok(fake) = start_fake()
   // The fake core asks for a command that does not exist; the feed routes
   // around a non-zero status, so the report still arrives.
@@ -115,7 +115,7 @@ pub fn a_command_off_path_answers_126_test() {
   stop_fake(fake)
 }
 
-pub fn a_trickling_command_hits_its_deadline_and_is_killed_test() {
+pub fn a_trickling_command_hits_its_deadline_and_is_killed_test() -> Nil {
   let assert Ok(fake) = start_fake()
   // The trickle command always has output but never exits: an idle timeout
   // would let it run forever, so only the deadline across chunks ends it.

@@ -4,7 +4,7 @@ import albedo/harness/extensions/work/ledger as work
 import gleam/erlang/process
 import gleam/option.{None, Some}
 
-pub fn only_one_concurrent_edit_wins_test() {
+pub fn only_one_concurrent_edit_wins_test() -> Nil {
   let assert Ok(store) = work.start(":memory:")
   let assert Ok(item) = work.create(store, "/cwd", "original", "", None)
   let reply = process.new_subject()
@@ -31,7 +31,7 @@ pub fn only_one_concurrent_edit_wins_test() {
   work.close(store)
 }
 
-pub fn ledger_items_are_scoped_to_cwd_test() {
+pub fn ledger_items_are_scoped_to_cwd_test() -> Nil {
   let assert Ok(store) = work.start(":memory:")
   let assert Ok(first) = work.create(store, "/one", "first", "", None)
   let assert Ok(second) = work.create(store, "/two", "second", "", None)

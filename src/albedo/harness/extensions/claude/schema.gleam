@@ -64,7 +64,9 @@ fn flatten(root: Object, keys: List(String)) -> Json {
   |> json.object
 }
 
-fn object(value: Dynamic) {
+fn object(
+  value: Dynamic,
+) -> Result(Dict(String, Dynamic), List(decode.DecodeError)) {
   decode.run(value, decode.dict(decode.string, decode.dynamic))
 }
 

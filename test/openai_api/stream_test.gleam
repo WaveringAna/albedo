@@ -6,7 +6,10 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{type Option, None, Some}
 
-pub fn responses_incomplete_never_exposes_executable_calls_test() {
+pub fn responses_incomplete_never_exposes_executable_calls_test() -> Result(
+  #(stream.State, List(types.Event), Option(types.Turn)),
+  types.Error,
+) {
   let data =
     "{\"type\":\"response.incomplete\",\"response\":{\"output\":[{\"type\":\"function_call\",\"call_id\":\"danger\",\"name\":\"delete\",\"arguments\":\"{}\"}],\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}"
   let assert Ok(#(
@@ -16,7 +19,7 @@ pub fn responses_incomplete_never_exposes_executable_calls_test() {
   )) = send(stream.new(types.Responses), "response.incomplete", data)
 }
 
-pub fn responses_provider_failures_and_malformed_fields_are_typed_test() {
+pub fn responses_provider_failures_and_malformed_fields_are_typed_test() -> Nil {
   let failed =
     "{\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"capacity\"}}}"
   assert send(stream.new(types.Responses), "response.failed", failed)
@@ -36,7 +39,10 @@ pub fn responses_provider_failures_and_malformed_fields_are_typed_test() {
     ))
 }
 
-pub fn responses_argument_deltas_name_the_tool_their_item_opened_with_test() {
+pub fn responses_argument_deltas_name_the_tool_their_item_opened_with_test() -> Result(
+  #(stream.State, List(types.Event), Option(types.Turn)),
+  types.Error,
+) {
   let added =
     "{\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"c\",\"name\":\"web_search\",\"arguments\":\"\"}}"
   let assert Ok(#(state, [], None)) =
@@ -47,7 +53,7 @@ pub fn responses_argument_deltas_name_the_tool_their_item_opened_with_test() {
     send(state, "response.function_call_arguments.delta", delta)
 }
 
-pub fn chat_accumulates_interleaved_tools_usage_and_native_replay_test() {
+pub fn chat_accumulates_interleaved_tools_usage_and_native_replay_test() -> Nil {
   let state = stream.new(types.ChatCompletions)
   let first =
     "{\"id\":\"chat_1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hel\",\"reasoning_content\":\"think \"},\"finish_reason\":null}]}"
@@ -115,7 +121,10 @@ pub fn chat_accumulates_interleaved_tools_usage_and_native_replay_test() {
     == Ok(#("hello", "no", "think carefully", ["call_a", "call_b"]))
 }
 
-pub fn cache_usage_details_tolerate_null_and_reject_malformed_values_test() {
+pub fn cache_usage_details_tolerate_null_and_reject_malformed_values_test() -> Result(
+  #(stream.State, List(types.Event), Option(types.Turn)),
+  types.Error,
+) {
   let responses_null =
     "{\"type\":\"response.completed\",\"response\":{\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"input_tokens_details\":null}}}"
   let assert Ok(#(
@@ -159,7 +168,10 @@ pub fn cache_usage_details_tolerate_null_and_reject_malformed_values_test() {
     send(stream.new(types.ChatCompletions), "", chat_malformed)
 }
 
-pub fn responses_separates_reasoning_summary_parts_test() {
+pub fn responses_separates_reasoning_summary_parts_test() -> Result(
+  #(stream.State, List(types.Event), Option(types.Turn)),
+  types.Error,
+) {
   let part = fn(index) {
     "{\"type\":\"response.reasoning_summary_part.added\",\"output_index\":0,\"summary_index\":"
     <> index
@@ -171,7 +183,10 @@ pub fn responses_separates_reasoning_summary_parts_test() {
     send(state, "", part("1"))
 }
 
-pub fn chat_rejects_multiple_choices_and_nonempty_unknown_semantics_test() {
+pub fn chat_rejects_multiple_choices_and_nonempty_unknown_semantics_test() -> Result(
+  #(stream.State, List(types.Event), Option(types.Turn)),
+  types.Error,
+) {
   let multiple =
     "{\"choices\":[{\"index\":0,\"delta\":{}},{\"index\":1,\"delta\":{}}]}"
   assert send(stream.new(types.ChatCompletions), "", multiple)
@@ -182,7 +197,7 @@ pub fn chat_rejects_multiple_choices_and_nonempty_unknown_semantics_test() {
     send(stream.new(types.ChatCompletions), "", audio)
 }
 
-pub fn chat_requires_finish_and_suppresses_partial_tools_on_limits_test() {
+pub fn chat_requires_finish_and_suppresses_partial_tools_on_limits_test() -> Nil {
   assert send(stream.new(types.ChatCompletions), "", "[DONE]")
     == Error(types.InvalidEvent("[DONE] before chat finish reason"))
   let partial =
@@ -205,7 +220,10 @@ pub fn chat_requires_finish_and_suppresses_partial_tools_on_limits_test() {
   assert types.inspect_item(message, decoder) == Ok(None)
 }
 
-pub fn malformed_json_and_content_filter_finish_are_typed_test() {
+pub fn malformed_json_and_content_filter_finish_are_typed_test() -> Result(
+  #(stream.State, List(types.Event), Option(types.Turn)),
+  types.Error,
+) {
   let assert Error(types.InvalidEvent(_)) =
     send(stream.new(types.ChatCompletions), "", "{")
   let assert Error(types.InvalidEvent(_)) =
@@ -222,7 +240,10 @@ pub fn malformed_json_and_content_filter_finish_are_typed_test() {
   )) = send(state, "", "[DONE]")
 }
 
-pub fn chat_assembles_name_fragments_and_encodes_tool_only_content_as_null_test() {
+pub fn chat_assembles_name_fragments_and_encodes_tool_only_content_as_null_test() -> Result(
+  #(stream.State, List(types.Event), Option(types.Turn)),
+  types.Error,
+) {
   let first =
     "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call1\",\"function\":{\"name\":\"read_\",\"arguments\":\"{\"}}]}}]}"
   let second =
@@ -242,7 +263,10 @@ pub fn chat_assembles_name_fragments_and_encodes_tool_only_content_as_null_test(
   let assert Error(types.InvalidEvent(_)) = send(state, "", "[DONE]")
 }
 
-pub fn chat_rejects_data_after_finish_reason_test() {
+pub fn chat_rejects_data_after_finish_reason_test() -> Result(
+  #(stream.State, List(types.Event), Option(types.Turn)),
+  types.Error,
+) {
   let first =
     "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}"
   let late = "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"late\"}}]}"
@@ -251,14 +275,17 @@ pub fn chat_rejects_data_after_finish_reason_test() {
   let assert Error(types.InvalidEvent(_)) = send(state, "", late)
 }
 
-pub fn responses_rejects_incomplete_call_in_completed_response_test() {
+pub fn responses_rejects_incomplete_call_in_completed_response_test() -> Result(
+  #(stream.State, List(types.Event), Option(types.Turn)),
+  types.Error,
+) {
   let event =
     "{\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"function_call\",\"call_id\":\"c\",\"name\":\"tool\",\"arguments\":\"{}\",\"status\":\"in_progress\"}]}}"
   let assert Error(types.InvalidEvent(_)) =
     send(stream.new(types.Responses), "", event)
 }
 
-pub fn compatible_reasoning_fields_are_preserved_without_renaming_test() {
+pub fn compatible_reasoning_fields_are_preserved_without_renaming_test() -> Nil {
   let first =
     "{\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"r1\",\"reasoning_content\":\"c1\"}}]}"
   let second =
@@ -277,7 +304,7 @@ pub fn compatible_reasoning_fields_are_preserved_without_renaming_test() {
     == Ok("c1c2")
 }
 
-pub fn reasoning_details_merge_fragments_by_index_and_keep_metadata_test() {
+pub fn reasoning_details_merge_fragments_by_index_and_keep_metadata_test() -> Nil {
   let first =
     "{\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"a\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"index\":0,\"format\":\"unknown\",\"text\":\"a\"}]}}]}"
   let second =
@@ -305,7 +332,7 @@ pub fn reasoning_details_merge_fragments_by_index_and_keep_metadata_test() {
     == Ok(["unknown"])
 }
 
-pub fn responses_uses_streamed_done_items_when_terminal_output_is_empty_test() {
+pub fn responses_uses_streamed_done_items_when_terminal_output_is_empty_test() -> Nil {
   let state = stream.new(types.Responses)
   let done =
     "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"python\",\"arguments\":\"{\\\"code\\\":\\\"20 + 22\\\",\\\"timeout_ms\\\":1000}\",\"status\":\"completed\"}}"

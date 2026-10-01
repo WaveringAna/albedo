@@ -38,7 +38,7 @@ pub fn initialise(db: store.Store) -> Result(Nil, String) {
 @external(erlang, "albedo_schedule", "now")
 pub fn now() -> Int
 
-fn decoder() {
+fn decoder() -> decode.Decoder(Job) {
   use id <- decode.field(0, decode.int)
   use session <- decode.field(1, decode.string)
   use kind <- decode.field(2, decode.string)

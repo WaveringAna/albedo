@@ -18,7 +18,7 @@ const quota = "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"mess
 
 const capacity = "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"No capacity available for model\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"MODEL_CAPACITY_EXHAUSTED\"}]}}"
 
-fn request() {
+fn request() -> types.Request {
   openai_api.request("gemini-3-flash", [types.User("hi")])
 }
 
@@ -29,7 +29,7 @@ fn limited_stream(
   body: String,
   tried: process.Subject(String),
   key: fn(account) -> String,
-) {
+) -> fn(account, a, b) -> Result(c, types.Error) {
   fn(account, _request, _on_event) {
     process.send(tried, key(account))
     case list.contains(limited, key(account)) {
@@ -54,7 +54,7 @@ fn token(access: antigravity.Access) -> String {
   access.token
 }
 
-pub fn antigravity_sessions_spread_and_stick_test() {
+pub fn antigravity_sessions_spread_and_stick_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ = write(home, "creds.json", google_accounts)
   let pool = fn(session) {
@@ -68,7 +68,7 @@ pub fn antigravity_sessions_spread_and_stick_test() {
   cleanup(root)
 }
 
-pub fn antigravity_quota_moves_the_request_to_a_sibling_test() {
+pub fn antigravity_quota_moves_the_request_to_a_sibling_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ = write(home, "creds.json", google_accounts)
   let tried = process.new_subject()
@@ -104,7 +104,7 @@ pub fn antigravity_quota_moves_the_request_to_a_sibling_test() {
   cleanup(root)
 }
 
-pub fn antigravity_hands_off_when_one_account_is_spent_test() {
+pub fn antigravity_hands_off_when_one_account_is_spent_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ = write(home, "creds.json", google_accounts)
   let tried = process.new_subject()
@@ -138,7 +138,7 @@ pub fn antigravity_hands_off_when_one_account_is_spent_test() {
   cleanup(root)
 }
 
-pub fn antigravity_capacity_waits_without_moving_test() {
+pub fn antigravity_capacity_waits_without_moving_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ = write(home, "creds.json", google_accounts)
   let tried = process.new_subject()
@@ -179,20 +179,23 @@ fn api_key(client: types.Client) -> String {
   client.api_key
 }
 
-pub fn alibaba_rotates_to_another_profiles_key_test() {
+pub fn alibaba_rotates_to_another_profiles_key_test() -> Nil {
   let #(root, _, home) = fixture()
-  let a = "ka-" <> int.to_string(unique())
-  let b = "kb-" <> int.to_string(unique())
-  let _ = write(home, "config.json", alibaba_config(a, b))
+  let first_key = "ka-" <> int.to_string(unique())
+  let second_key = "kb-" <> int.to_string(unique())
+  let _ = write(home, "config.json", alibaba_config(first_key, second_key))
   let tried = process.new_subject()
   let body =
     "{\"error\":{\"message\":\"Allocated quota exceeded, please increase your quota limit.\",\"code\":\"Throttling.AllocationQuota\"}}"
   let pool = alibaba.pool(home, "ali-a", "ali-session")
   let assert Ok(first) = pool.current()
-  first.api_key |> should.equal(a)
+  first.api_key |> should.equal(first_key)
   first.base_url |> should.equal("http://127.0.0.1:1/a")
   rotation.stream(
-    rotation.Pool(..pool, stream: limited_stream([a], body, tried, api_key)),
+    rotation.Pool(
+      ..pool,
+      stream: limited_stream([first_key], body, tried, api_key),
+    ),
     first,
     openai_api.request("qwen3.8-max", [types.User("hi")]),
     fn(_) { types.Continue },
@@ -200,10 +203,10 @@ pub fn alibaba_rotates_to_another_profiles_key_test() {
     fn(_) { Nil },
   )
   |> should.equal(Error(types.HttpError(500, "sibling answered")))
-  drain(tried, []) |> should.equal([a, b])
+  drain(tried, []) |> should.equal([first_key, second_key])
   // The limited key waits its turn; the sibling keeps its own base url.
   let assert Ok(next) = pool.current()
-  next.api_key |> should.equal(b)
+  next.api_key |> should.equal(second_key)
   next.base_url |> should.equal("http://127.0.0.1:1/b")
   cleanup(root)
 }

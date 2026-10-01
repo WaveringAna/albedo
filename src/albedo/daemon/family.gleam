@@ -28,7 +28,7 @@ pub type Member {
 pub const max_depth = 3
 
 /// Open children one parent may have at once.
-pub const max_children = 12
+const max_children = 12
 
 const schema = "
 CREATE TABLE IF NOT EXISTS session_family (
@@ -54,7 +54,7 @@ fn members(filter: String) -> String {
   "SELECT " <> columns <> " FROM session_family " <> filter
 }
 
-fn decoder() {
+fn decoder() -> decode.Decoder(Member) {
   use session <- decode.field(0, decode.string)
   use parent <- decode.field(1, decode.string)
   use name <- decode.field(2, decode.string)
@@ -63,7 +63,11 @@ fn decoder() {
   decode.success(Member(session, parent, name, depth, closed))
 }
 
-fn rows(connection, sql, args) -> Result(List(Member), String) {
+fn rows(
+  connection: sqlight.Connection,
+  sql: String,
+  args: List(sqlight.Value),
+) -> Result(List(Member), String) {
   store.rows(connection, sql, args, decoder())
 }
 
@@ -264,7 +268,7 @@ pub fn name_of(db: store.Store, session: String) -> String {
 
 /// A parent's name as its children say it: its own family name, or when it
 /// is a root the name it was given or its title.
-fn parent_name(connection, id: String) -> String {
+fn parent_name(connection: sqlight.Connection, id: String) -> String {
   store.rows(
     connection,
     "SELECT COALESCE(f.name,NULLIF(s.name,''),s.title) FROM sessions s LEFT JOIN session_family f ON f.session=s.id WHERE s.id=?",

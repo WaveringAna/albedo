@@ -9,7 +9,7 @@ import gleam/result
 import gleeunit/should
 import sqlight
 
-pub fn contributed_migrations_keep_their_phases_and_stop_on_failure_test() {
+pub fn contributed_migrations_keep_their_phases_and_stop_on_failure_test() -> Nil {
   let assert Ok(ledger) = store.start(":memory:", "")
   let installed = [
     extension.Extension(

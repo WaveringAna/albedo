@@ -25,7 +25,7 @@ fn measure(owner: process.Pid, run: fn() -> a) -> #(a, Counts)
 @external(erlang, "albedo_conversation", "pack")
 fn pack(input: types.Input) -> BitArray
 
-fn fixture() {
+fn fixture() -> #(runtime.Runtime, store.Store) {
   let assert Ok(host) = runtime.start(":memory:")
   let ledger = runtime.ledger(host)
   let assert Ok(_) = conversation.initialise(ledger)
@@ -51,7 +51,7 @@ fn fixture() {
   #(host, ledger)
 }
 
-fn insert(ledger, session, seq, text) {
+fn insert(ledger: store.Store, session: String, seq: Int, text: String) -> Nil {
   let assert Ok(_) =
     store.write(
       ledger,
@@ -65,7 +65,7 @@ fn insert(ledger, session, seq, text) {
   Nil
 }
 
-pub fn sparse_scoped_search_advances_by_rows_not_global_sequence_gaps_test() {
+pub fn sparse_scoped_search_advances_by_rows_not_global_sequence_gaps_test() -> Nil {
   let #(host, ledger) = fixture()
   insert(ledger, "other", 1, "needle")
   insert(ledger, "wanted", 200_000, "needle older")
@@ -98,7 +98,7 @@ pub fn sparse_scoped_search_advances_by_rows_not_global_sequence_gaps_test() {
   runtime.stop(host)
 }
 
-pub fn exact_search_count_keeps_only_requested_twenty_matches_test() {
+pub fn exact_search_count_keeps_only_requested_twenty_matches_test() -> Nil {
   let #(host, ledger) = fixture()
   let _ =
     list.each(
@@ -118,7 +118,7 @@ pub fn exact_search_count_keeps_only_requested_twenty_matches_test() {
   runtime.stop(host)
 }
 
-pub fn node_listing_decodes_only_page_and_source_read_stops_after_page_test() {
+pub fn node_listing_decodes_only_page_and_source_read_stops_after_page_test() -> Nil {
   let #(host, ledger) = fixture()
   let _ =
     list.each(
@@ -172,7 +172,7 @@ pub fn node_listing_decodes_only_page_and_source_read_stops_after_page_test() {
   runtime.stop(host)
 }
 
-pub fn excluded_global_rows_advance_cross_session_cursor_without_decoding_test() {
+pub fn excluded_global_rows_advance_cross_session_cursor_without_decoding_test() -> Nil {
   let #(host, ledger) = fixture()
   insert(ledger, "wanted", 1, "needle")
   let _ =

@@ -20,7 +20,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 
-pub const endpoint = "https://api.anthropic.com"
+const endpoint = "https://api.anthropic.com"
 
 const client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
@@ -47,7 +47,7 @@ pub fn extension() -> extension.Extension {
   )
 }
 
-pub fn login() -> oauth.Login {
+fn login() -> oauth.Login {
   oauth.Login(
     "claude",
     "add claude account",

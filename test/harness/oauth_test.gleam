@@ -73,7 +73,7 @@ fn settle(id: String, attempts: Int) -> oauth.Status {
   }
 }
 
-pub fn a_pasted_redirect_races_the_callback_test() {
+pub fn a_pasted_redirect_races_the_callback_test() -> Nil {
   let #(root, _, home) = fixture()
   let assert Ok(#(id, url)) = oauth.start(home, ephemeral())
   let assert Ok(state) = list.key_find(query(url), "state")
@@ -83,7 +83,7 @@ pub fn a_pasted_redirect_races_the_callback_test() {
   cleanup(root)
 }
 
-pub fn a_pasted_code_for_another_attempt_is_rejected_test() {
+pub fn a_pasted_code_for_another_attempt_is_rejected_test() -> Nil {
   let #(root, _, home) = fixture()
   let assert Ok(#(id, _)) = oauth.start(home, ephemeral())
   let assert Ok(Nil) = oauth.input(id, "cy#not-this-state")
@@ -91,7 +91,7 @@ pub fn a_pasted_code_for_another_attempt_is_rejected_test() {
   cleanup(root)
 }
 
-pub fn a_busy_fixed_port_fails_instead_of_moving_test() {
+pub fn a_busy_fixed_port_fails_instead_of_moving_test() -> Nil {
   let taken = occupy(0)
   let port = taken.1
   let #(root, _, home) = fixture()

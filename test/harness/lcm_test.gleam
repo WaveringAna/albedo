@@ -12,7 +12,7 @@ import albedo/openai_api/types
 import gleam/option.{None, Some}
 import gleeunit/should
 
-fn host(capacity: Int) {
+fn host(capacity: Int) -> #(runtime.Runtime, runtime.Session) {
   let installed = [
     memory.extension(),
     lcm.configured_extension(lcm.Config(Some(capacity), 90, 25)),
@@ -44,7 +44,7 @@ fn host(capacity: Int) {
   #(host, session)
 }
 
-fn save(host: runtime.Runtime, inputs: List(types.Input)) {
+fn save(host: runtime.Runtime, inputs: List(types.Input)) -> Nil {
   let assert Ok(_) =
     conversation.commit_from(
       runtime.ledger(host),
@@ -56,7 +56,7 @@ fn save(host: runtime.Runtime, inputs: List(types.Input)) {
   Nil
 }
 
-pub fn lcm_fork_inside_summary_reuses_only_complete_child_nodes_test() {
+pub fn lcm_fork_inside_summary_reuses_only_complete_child_nodes_test() -> Nil {
   let #(host, _) = host(2000)
   let ledger = runtime.ledger(host)
   let original = [

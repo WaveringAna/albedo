@@ -214,7 +214,7 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
   |> result.replace_error("listener did not report its port")
 }
 
-fn handle(state: State, message: Message) {
+fn handle(state: State, message: Message) -> actor.Next(State, a) {
   case state.stage, message {
     Open, _ -> serve(state, message)
     // A second shutdown while the first drains must not cut it short.
@@ -230,7 +230,7 @@ fn handle(state: State, message: Message) {
   }
 }
 
-fn serve(state: State, message: Message) {
+fn serve(state: State, message: Message) -> actor.Next(State, a) {
   case message {
     Create(cwd, provider, model, reply) -> {
       let created = {
@@ -365,18 +365,18 @@ fn serve(state: State, message: Message) {
       }
     }
     DeleteSession(id, reply) -> {
-      let children =
-        family.children(runtime.ledger(state.host), id) |> result.unwrap([])
+      let children = family.children(runtime.ledger(state.host), id)
       let deleted = case dict.get(state.sessions, id), children {
         Error(_), _ -> Error("session not found")
+        _, Error(error) -> Error(error)
         // Deleting a parent would strand its children's work; they go first.
-        Ok(_), [_, ..] ->
+        Ok(_), Ok([_, ..] as children) ->
           Error(
             "session has "
             <> int.to_string(list.length(children))
             <> " child sessions; delete them first",
           )
-        Ok(pair), [] -> delete_idle(state, id, pair)
+        Ok(pair), Ok([]) -> delete_idle(state, id, pair)
       }
       process.send(reply, deleted)
       case deleted {
@@ -454,7 +454,10 @@ fn serve(state: State, message: Message) {
               watch(worker)
               actor.continue(holding(state, info.id, #(info, Some(worker))))
             }
-            Error(_) -> actor.continue(holding(state, info.id, #(info, None)))
+            Error(error) -> {
+              report_start_error(info.id, error)
+              actor.continue(holding(state, info.id, #(info, None)))
+            }
           }
         }
       }
@@ -616,7 +619,7 @@ fn start_registry(
   config: Config,
   host: runtime.Runtime,
   name: process.Name(Message),
-) {
+) -> Result(actor.Started(Subject(Message)), actor.StartError) {
   actor.new_with_initialiser(30_000, fn(self) {
     // A store that died while the VM lives on leaves nothing to serve: come
     // up empty and refusing, with none of the store-backed timers below.
@@ -646,7 +649,8 @@ fn start_registry(
                 watch(worker)
                 Some(worker)
               }
-              Error(_) -> {
+              Error(error) -> {
+                report_start_error(info.id, error)
                 io.println(
                   "session unavailable: "
                   <> info.id
@@ -744,8 +748,11 @@ fn dispatch_mail(db: store.Store, registry: Subject(Message)) -> Nil {
           // Refused by a closing registry: it goes out after the restart.
           Error(reason) if reason == closed -> Nil
           Error(reason) -> {
-            let _ = mail.record_failure(db, letter.id, reason)
-            Nil
+            case mail.record_failure(db, letter.id, reason) {
+              Ok(_) -> Nil
+              Error(error) ->
+                io.println_error("mail failure could not be saved: " <> error)
+            }
           }
         }
       })
@@ -779,13 +786,27 @@ fn dispatch_schedule(
       }
       case delivered {
         True -> {
-          let _ = schedule.advance(db, job, schedule.now())
-          Nil
+          case schedule.advance(db, job, schedule.now()) {
+            Ok(_) -> Nil
+            Error(error) ->
+              io.println_error(
+                "schedule occurrence could not be advanced: " <> error,
+              )
+          }
         }
         False -> Nil
       }
     }
   }
+}
+
+fn report_start_error(id: String, error: actor.StartError) -> Nil {
+  let reason = case error {
+    actor.InitFailed(reason) -> reason
+    actor.InitTimeout -> "initialisation timed out"
+    actor.InitExited(_) -> "initialiser exited"
+  }
+  io.println_error("session " <> id <> " could not start: " <> reason)
 }
 
 fn activate(
@@ -801,7 +822,10 @@ fn activate(
         |> option.to_result(Nil)
         |> result.lazy_or(fn() {
           session.start(state.host, info, state.config.home)
-          |> result.map_error(fn(_) { Nil })
+          |> result.map_error(fn(error) {
+            report_start_error(info.id, error)
+            Nil
+          })
         })
       {
         Error(_) -> #(state, Error("session could not start"))
@@ -898,7 +922,8 @@ fn info_json(info: conversation.Info) -> json.Json {
 fn delete_tree(registry: Subject(Message), id: String) -> Result(Int, String) {
   use host <- result.try(actor.call(registry, 5000, Host))
   let db = runtime.ledger(host)
-  subtree(db, id, family.max_depth + 1)
+  use ids <- result.try(subtree(db, id, family.max_depth + 1))
+  ids
   |> list.try_fold(0, fn(deleted, session_id) {
     case actor.call(registry, 10_000, Lookup(session_id, _)) {
       Ok(worker) -> stop_run(worker, session_id, 50)
@@ -918,15 +943,21 @@ fn delete_tree(registry: Subject(Message), id: String) -> Result(Int, String) {
 }
 
 /// `id` after everything below it.
-fn subtree(db: store.Store, id: String, budget: Int) -> List(String) {
-  let below = case budget {
-    0 -> []
-    _ ->
-      family.children(db, id)
-      |> result.unwrap([])
-      |> list.flat_map(fn(child) { subtree(db, child.session, budget - 1) })
-  }
-  list.append(below, [id])
+fn subtree(
+  db: store.Store,
+  id: String,
+  budget: Int,
+) -> Result(List(String), String) {
+  use below <- result.try(case budget {
+    0 -> Ok([])
+    _ -> {
+      use children <- result.try(family.children(db, id))
+      children
+      |> list.try_map(fn(child) { subtree(db, child.session, budget - 1) })
+      |> result.map(list.flatten)
+    }
+  })
+  Ok(list.append(below, [id]))
 }
 
 /// Interrupt a running session once, then give it up to `polls` tenths of a
@@ -1342,7 +1373,9 @@ fn event_frame(
 /// Every bus event, batched every 100 ms so a hundred streaming agents cost the
 /// client ten frames a second, not thousands of writes. The first frame goes
 /// out on the first tick even when empty, so a client knows it is subscribed.
-fn agents_stream(req) {
+fn agents_stream(
+  req: request.Request(mist.Connection),
+) -> response.Response(mist.ResponseData) {
   mist.server_sent_events(
     req,
     response.new(200),
@@ -1471,7 +1504,10 @@ fn extension_json(summary: extension.Summary) -> json.Json {
   ])
 }
 
-fn reply(status: Int, value: json.Json) {
+fn reply(
+  status: Int,
+  value: json.Json,
+) -> response.Response(mist.ResponseData) {
   response.new(status)
   |> response.set_header("content-type", "application/json")
   |> response.set_body(mist.Bytes(
@@ -1479,12 +1515,12 @@ fn reply(status: Int, value: json.Json) {
   ))
 }
 
-fn error(status: Int, message: String) {
+fn error(status: Int, message: String) -> response.Response(mist.ResponseData) {
   reply(status, json.object([#("error", json.string(message))]))
 }
 
 /// A response whose body is already-encoded JSON.
-fn raw(status: Int, body: String) {
+fn raw(status: Int, body: String) -> response.Response(mist.ResponseData) {
   response.new(status)
   |> response.set_header("content-type", "application/json")
   |> response.set_body(mist.Bytes(bytes_tree.from_string(body)))
@@ -1505,7 +1541,7 @@ fn answered(
 
 /// A folder browser answer for the request's `path`.
 fn browsed(
-  req,
+  req: request.Request(a),
   view: fn(String) -> Result(json.Json, folders.Failure),
 ) -> response.Response(mist.ResponseData) {
   let path = query(req) |> list.key_find("path") |> result.unwrap("")
@@ -1521,12 +1557,12 @@ fn acknowledged(fields: List(#(String, json.Json))) -> json.Json {
 }
 
 /// The request's query parameters, however malformed.
-fn query(req) -> List(#(String, String)) {
+fn query(req: request.Request(a)) -> List(#(String, String)) {
   request.get_query(req) |> result.unwrap([])
 }
 
 /// Query parameter `key` as an integer, when present and valid.
-fn query_optional_int(req, key: String) -> Option(Int) {
+fn query_optional_int(req: request.Request(a), key: String) -> Option(Int) {
   query(req)
   |> list.key_find(key)
   |> result.try(int.parse)
@@ -1534,7 +1570,7 @@ fn query_optional_int(req, key: String) -> Option(Int) {
 }
 
 /// Query parameter `key` as an integer, or `default` when absent or invalid.
-fn query_int(req, key: String, default: Int) -> Int {
+fn query_int(req: request.Request(a), key: String, default: Int) -> Int {
   query_optional_int(req, key) |> option.unwrap(default)
 }
 
@@ -1578,7 +1614,10 @@ fn validate_submitted_image(
 }
 
 /// The request's JSON body; `routed` has already read the bytes off the wire.
-fn body(req: request.Request(BitArray), decoder) {
+fn body(
+  req: request.Request(BitArray),
+  decoder: decode.Decoder(a),
+) -> Result(a, String) {
   json.parse_bits(req.body, decoder)
   |> result.replace_error("invalid request JSON")
 }
@@ -1591,7 +1630,7 @@ fn auth(
   logins: List(oauth.Login),
   req: request.Request(BitArray),
   path: List(String),
-) {
+) -> response.Response(mist.ResponseData) {
   let login = fn(provider) {
     list.find(logins, fn(login) { login.provider == provider })
     |> result.replace_error("no enabled sign-in for " <> provider)
@@ -2396,7 +2435,10 @@ fn when_running(
 /// Rows a client asks for per history page when it does not say.
 const history_page_rows = 120
 
-fn stream(req, worker) {
+fn stream(
+  req: request.Request(mist.Connection),
+  worker: Subject(session.Message),
+) -> response.Response(mist.ResponseData) {
   let after = query_int(req, "after_seq", -1)
   // With `tail`, a reset replays only the newest rows; older ones are paged
   // from /sessions/:id/history. Without it, the whole transcript as before.

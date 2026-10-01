@@ -53,23 +53,6 @@ pub type Outcome {
   )
 }
 
-/// executable and script must be absolute paths; cwd is the session workspace.
-pub fn start(
-  store: work.Store,
-  executable: String,
-  script: String,
-  cwd: String,
-) -> Result(Kernel, Error) {
-  start_native(
-    work.owner(store),
-    executable,
-    script,
-    cwd,
-    rpc.handle(store, cwd, _),
-    ["run", "work"],
-  )
-}
-
 @external(erlang, "albedo_python", "start")
 fn start_native(
   owner: process.Pid,
@@ -235,7 +218,7 @@ pub fn events(kernel: Kernel) -> List(String)
 @external(erlang, "albedo_python", "alive")
 pub fn alive(kernel: Kernel) -> Bool
 
-pub fn outcome_decoder() {
+pub fn outcome_decoder() -> decode.Decoder(Outcome) {
   use id <- decode.field("id", decode.string)
   use status <- decode.field("status", decode.string)
   use output <- decode.field("output", decode.string)

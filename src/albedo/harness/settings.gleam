@@ -13,7 +13,7 @@ pub fn load(
   load_at(home(), name, decoder, default)
 }
 
-pub fn load_at(
+fn load_at(
   home: String,
   name: String,
   decoder: decode.Decoder(a),

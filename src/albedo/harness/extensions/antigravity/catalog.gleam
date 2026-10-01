@@ -73,7 +73,7 @@ const default_budget = Budget(4096, 8192, 16_384)
 
 /// What the backend last offered, with this table's thinking hints, or the
 /// table itself before the first discovery.
-pub fn models(home: String) -> List(Model) {
+fn models(home: String) -> List(Model) {
   refresh(home)
   discovered(home)
 }
@@ -123,7 +123,7 @@ const effort_suffixes = [
 
 /// Splits a model id into its base model id and effort tier.
 /// Maps "gemini-pro-agent" to base "gemini-3.1-pro" and effort "high".
-pub fn split_id(id: String) -> #(String, Option(String)) {
+fn split_id(id: String) -> #(String, Option(String)) {
   case id {
     "gemini-pro-agent" -> #("gemini-3.1-pro", Some("high"))
     _ ->
@@ -150,12 +150,12 @@ fn effort_rank(effort: String) -> Int {
   }
 }
 
-pub fn sort_efforts(efforts: List(String)) -> List(String) {
+fn sort_efforts(efforts: List(String)) -> List(String) {
   list.sort(efforts, fn(a, b) { int.compare(effort_rank(a), effort_rank(b)) })
 }
 
 /// Available reasoning efforts for a base or variant model id.
-pub fn available_efforts(home: String, id: String) -> List(String) {
+fn available_efforts(home: String, id: String) -> List(String) {
   let #(base_id, _) = split_id(renamed(home, id))
   models(home)
   |> list.filter_map(fn(m) {
@@ -171,7 +171,7 @@ pub fn available_efforts(home: String, id: String) -> List(String) {
 
 /// Base model ids discovered from Antigravity, deduplicated while preserving
 /// first-seen order.
-pub fn base_model_ids(home: String) -> List(String) {
+fn base_model_ids(home: String) -> List(String) {
   models(home)
   |> list.map(fn(m) { split_id(m.id).0 })
   |> list.unique

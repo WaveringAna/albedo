@@ -4,6 +4,7 @@
 import albedo/harness/extensions/claude/schema
 import albedo/harness/rotation
 import albedo/openai_api
+import albedo/openai_api/decoding
 import albedo/openai_api/replay
 import albedo/openai_api/types
 import gleam/bit_array
@@ -324,8 +325,11 @@ fn add(
     types.Replay(item) -> {
       use message <- result.try(
         types.inspect_item(item, replay_decoder())
-        |> result.map_error(fn(_) {
-          types.InvalidRequest("invalid assistant replay message")
+        |> result.map_error(fn(error) {
+          types.InvalidRequest(
+            "invalid assistant replay message: "
+            <> decoding.decode_errors(error),
+          )
         }),
       )
       let blocks = case

@@ -62,3 +62,7 @@ settings, read when the daemon starts: `ALBEDO_MAX_LOCAL_JOBS` fixes the slot co
 (1–256), `ALBEDO_JOB_GRACE_SECONDS` sets the grace window, `ALBEDO_JOB_LOAD=0`
 turns off the load adjustment. this bounds sustained shell work, not agent/model
 concurrency, remote kernels, or python computed directly in a cell.
+
+## deletion failures
+
+Direct parent deletion requires a successful child lookup. Tree deletion collects the child-first walk before deleting any session. A failed lookup returns an error and leaves the sessions intact. A failure during deletion still reports how many sessions were already deleted.

@@ -13,6 +13,7 @@ import albedo/harness/extensions/agents/sessions
 import albedo/harness/rpc
 import albedo/harness/search
 import albedo/harness/tool
+import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -65,7 +66,7 @@ fn handle(db: store.Store, session: String, request: String) -> String {
   )
 }
 
-fn text(args, name: String) -> Result(String, String) {
+fn text(args: dynamic.Dynamic, name: String) -> Result(String, String) {
   rpc.args(
     args,
     decode.field(name, decode.string, decode.success),
@@ -73,7 +74,12 @@ fn text(args, name: String) -> Result(String, String) {
   )
 }
 
-fn dispatch(db, session, method, args) -> Result(json.Json, String) {
+fn dispatch(
+  db: store.Store,
+  session: String,
+  method: String,
+  args: dynamic.Dynamic,
+) -> Result(json.Json, String) {
   case method {
     "agents.self" -> {
       use me <- result.try(family.get(db, session))
@@ -194,7 +200,11 @@ fn dispatch(db, session, method, args) -> Result(json.Json, String) {
   }
 }
 
-fn own_child(db, session, args) -> Result(family.Member, String) {
+fn own_child(
+  db: store.Store,
+  session: String,
+  args: dynamic.Dynamic,
+) -> Result(family.Member, String) {
   use id <- result.try(text(args, "id"))
   case family.get(db, id) {
     Ok(Some(member)) if member.parent == session -> Ok(member)
@@ -204,7 +214,11 @@ fn own_child(db, session, args) -> Result(family.Member, String) {
 
 /// The session `args.id` names, as mail would resolve it. Reading is open to
 /// every session: families only narrow who may stop whom.
-fn addressed(db, session, args) -> Result(String, String) {
+fn addressed(
+  db: store.Store,
+  session: String,
+  args: dynamic.Dynamic,
+) -> Result(String, String) {
   use id <- result.try(text(args, "id"))
   family.resolve(db, session, id) |> result.map(fn(address) { address.session })
 }

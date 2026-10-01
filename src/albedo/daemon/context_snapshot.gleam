@@ -77,7 +77,7 @@ pub opaque type Snapshot {
   )
 }
 
-pub fn section(
+fn section(
   id: String,
   label: String,
   kind: SectionKind,
@@ -121,7 +121,7 @@ fn lazy_section(
   )
 }
 
-pub fn compaction(
+fn compaction(
   strategy: Option(String),
   status: CompactionStatus,
   source: Option(String),
@@ -186,7 +186,7 @@ pub fn pending(reason: String) -> Snapshot {
   Pending(reason)
 }
 
-pub fn ready(
+fn ready(
   captured_at: Option(Int),
   provider: Option(String),
   model: String,

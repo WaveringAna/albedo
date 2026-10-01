@@ -52,13 +52,6 @@ pub type Row {
   )
 }
 
-/// A row with the full text a client shows for the selected row, where
-/// `text` is the short title. `page.detail_row` fills it; `page.row` leaves
-/// the detail empty.
-pub fn row(id: String, text: String, badge: String, tone: Tone) -> Row {
-  Row(id, text, badge, tone, "")
-}
-
 pub fn detail_row(
   id: String,
   text: String,

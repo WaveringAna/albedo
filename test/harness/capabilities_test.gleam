@@ -14,7 +14,7 @@ fn write(base: String, relative: String, content: String) -> String
 @external(erlang, "albedo_skills_test_support", "cleanup")
 fn cleanup(root: String) -> Nil
 
-pub fn selection_snapshot_survives_replacement_test() {
+pub fn selection_snapshot_survives_replacement_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ =
     write(

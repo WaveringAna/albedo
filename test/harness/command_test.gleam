@@ -8,7 +8,7 @@ import gleam/json
 import gleam/result
 import gleeunit/should
 
-fn demo() {
+fn demo() -> command.Command {
   Command(
     "/demo",
     "Demo",
@@ -26,7 +26,7 @@ fn demo() {
   )
 }
 
-pub fn method_names_are_mintable_and_collision_free_test() {
+pub fn method_names_are_mintable_and_collision_free_test() -> Nil {
   command.method_name("/model") |> should.equal("model")
   command.method_name("/fix-lint") |> should.equal("fix_lint")
   command.method_name("/skill:model") |> should.equal("skill_model")

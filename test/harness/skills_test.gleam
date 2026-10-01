@@ -28,7 +28,7 @@ fn symlink_raw(base: String, target: String, link: String) -> Nil
 @external(erlang, "albedo_skills_test_support", "cleanup")
 fn cleanup(root: String) -> Nil
 
-pub fn catalog_xml_escapes_malicious_metadata_test() {
+pub fn catalog_xml_escapes_malicious_metadata_test() -> Nil {
   let #(root, workspace, home) = fixture()
   let _ =
     write(
@@ -49,7 +49,7 @@ pub fn catalog_xml_escapes_malicious_metadata_test() {
   cleanup(root)
 }
 
-pub fn traversal_symlink_escape_and_oversized_files_are_rejected_test() {
+pub fn traversal_symlink_escape_and_oversized_files_are_rejected_test() -> Nil {
   let #(root, workspace, home) = fixture()
   let _ =
     write(

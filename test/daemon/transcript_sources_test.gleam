@@ -33,7 +33,7 @@ fn fit(source: String, replacement: types.Image) -> transcript.ImageFit {
   transcript.ImageFit("fit", source, replacement)
 }
 
-pub fn reverse_fits_preserve_chains_repeated_sources_and_reuse_test() {
+pub fn reverse_fits_preserve_chains_repeated_sources_and_reuse_test() -> Nil {
   let original = picture("A")
   let second = picture("B")
   let third = picture("C")
@@ -67,7 +67,7 @@ fn session() -> conversation.Info {
   )
 }
 
-pub fn metadata_range_and_backfill_resume_test() {
+pub fn metadata_range_and_backfill_resume_test() -> Nil {
   let path = temporary_database()
   let assert Ok(host) = runtime.start(path)
   let ledger = runtime.ledger(host)
@@ -114,7 +114,7 @@ pub fn metadata_range_and_backfill_resume_test() {
   cleanup(path)
 }
 
-pub fn ranged_images_equal_full_history_with_later_fits_test() {
+pub fn ranged_images_equal_full_history_with_later_fits_test() -> Nil {
   let path = temporary_database()
   let assert Ok(host) = runtime.start(path)
   let ledger = runtime.ledger(host)

@@ -45,7 +45,7 @@ fn response(status: Int, body: String) -> Result(catalog.Response, Nil) {
 
 const upstream = "{\"models\":[{\"slug\":\"reasoner\",\"display_name\":\"Reasoner\",\"context_window\":200000,\"max_context_window\":400000,\"input_modalities\":[\"text\",false,\"image\"],\"supported_reasoning_levels\":[{\"effort\":\"high\"},{\"effort\":4},{\"effort\":\"low\"}],\"priority\":7},{\"slug\":\"\"},{\"slug\":false},{\"slug\":\"reasoner\",\"display_name\":\"\",\"context_window\":-4,\"max_context_window\":\"wrong\",\"input_modalities\":{},\"visibility\":null,\"priority\":\"wrong\"}]}"
 
-pub fn upstream_rows_keep_valid_duplicates_and_independent_facts_test() {
+pub fn upstream_rows_keep_valid_duplicates_and_independent_facts_test() -> Bool {
   let assert Ok(rows) =
     json.parse(upstream, {
       use rows <- decode.field("models", decode.list(decode.dynamic))
@@ -64,7 +64,7 @@ pub fn upstream_rows_keep_valid_duplicates_and_independent_facts_test() {
   let assert False = duplicate.visible
 }
 
-pub fn refresh_orders_version_freshness_and_conditional_requests_test() {
+pub fn refresh_orders_version_freshness_and_conditional_requests_test() -> Nil {
   let home = temporary_home()
   script([response(200, "{\"version\":\"1.2.3\"}"), response(200, upstream)])
   let assert Ok(Nil) =
@@ -95,7 +95,7 @@ pub fn refresh_orders_version_freshness_and_conditional_requests_test() {
   cleanup(home)
 }
 
-pub fn untouched_malformed_accounts_survive_and_presentation_stays_strict_test() {
+pub fn untouched_malformed_accounts_survive_and_presentation_stays_strict_test() -> Nil {
   let home = temporary_home()
   seed(
     home,
@@ -119,7 +119,7 @@ pub fn untouched_malformed_accounts_survive_and_presentation_stays_strict_test()
   cleanup(home)
 }
 
-pub fn failed_models_save_version_but_preserve_models_and_error_precedence_test() {
+pub fn failed_models_save_version_but_preserve_models_and_error_precedence_test() -> Nil {
   let home = temporary_home()
   seed(
     home,
@@ -156,7 +156,7 @@ pub fn failed_models_save_version_but_preserve_models_and_error_precedence_test(
   cleanup(blocked)
 }
 
-pub fn version_check_precedes_fresh_entry_and_same_version_returns_without_write_test() {
+pub fn version_check_precedes_fresh_entry_and_same_version_returns_without_write_test() -> Nil {
   let home = temporary_home()
   seed(
     home,
@@ -180,7 +180,7 @@ pub fn version_check_precedes_fresh_entry_and_same_version_returns_without_write
   cleanup(home)
 }
 
-pub fn not_modified_retains_models_and_updates_metadata_before_replacement_test() {
+pub fn not_modified_retains_models_and_updates_metadata_before_replacement_test() -> Nil {
   let home = temporary_home()
   seed(
     home,

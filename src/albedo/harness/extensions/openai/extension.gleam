@@ -11,7 +11,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
-pub type Config {
+type Config {
   Config(base_url: String, api_key: String, image_edge: Int)
 }
 
@@ -60,7 +60,7 @@ fn resolve(
 }
 
 /// An upstream served by the shared OpenAI stream.
-pub fn upstream(
+fn upstream(
   client: types.Client,
   explain: fn(types.Error) -> Option(String),
 ) -> extension.Upstream {
@@ -75,7 +75,7 @@ pub fn upstream(
   )
 }
 
-fn config_decoder() {
+fn config_decoder() -> decode.Decoder(Config) {
   use base_url <- decode.field("baseUrl", decode.string)
   use api_key <- decode.field("apiKey", decode.string)
   // An endpoint that takes smaller images than albedo's own bound says so, and

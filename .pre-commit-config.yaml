@@ -6,6 +6,12 @@ repos:
         entry: gleam format
         language: system
         files: ^(src|test)/.*\.gleam$
+      - id: gleam-lint
+        name: Gleam lint
+        entry: test/gleam-lint.sh
+        language: system
+        pass_filenames: false
+        files: ^((src|test)/.*\.gleam$|gleam\.toml$|test/gleam-lint\.sh$|flake/.*\.nix$|flake\.(nix|lock)$)
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.14
     hooks:

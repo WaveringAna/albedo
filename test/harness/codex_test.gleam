@@ -20,7 +20,7 @@ const credentials = "{\"accounts\":{\"openai-codex\":[{\"type\":\"oauth\",\"acce
 
 const reversed_credentials = "{\"accounts\":{\"openai-codex\":[{\"type\":\"oauth\",\"access\":\"h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0yIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJzZWF0LTIifX0.s\",\"refresh\":\"refresh-2\",\"expires\":9999999999999,\"accountId\":\"account-2\",\"accountUserId\":\"seat-2\"},{\"type\":\"oauth\",\"access\":\"h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJzZWF0LTEifX0.s\",\"refresh\":\"refresh-1\",\"expires\":9999999999999,\"accountId\":\"account-1\",\"accountUserId\":\"seat-1\"}]}}"
 
-pub fn sessions_stick_to_and_distribute_across_codex_accounts_test() {
+pub fn sessions_stick_to_and_distribute_across_codex_accounts_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ = write(home, "creds.json", credentials)
   let first = access(home, "session-1")
@@ -32,7 +32,7 @@ pub fn sessions_stick_to_and_distribute_across_codex_accounts_test() {
   cleanup(root)
 }
 
-pub fn session_pin_survives_credential_reordering_test() {
+pub fn session_pin_survives_credential_reordering_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ = write(home, "creds.json", credentials)
   let selected = access(home, "durable-session")
@@ -41,7 +41,7 @@ pub fn session_pin_survives_credential_reordering_test() {
   cleanup(root)
 }
 
-pub fn revoked_codex_account_is_removed_test() {
+pub fn revoked_codex_account_is_removed_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ = write(home, "creds.json", credentials)
   let #(revoked, client) = codex_client(home, "revoked-session")
@@ -60,7 +60,7 @@ pub fn revoked_codex_account_is_removed_test() {
   cleanup(root)
 }
 
-pub fn usage_limit_moves_the_session_to_a_sibling_account_test() {
+pub fn usage_limit_moves_the_session_to_a_sibling_account_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ = write(home, "creds.json", credentials)
   let #(limited, client) = codex_client(home, "busy-session")
@@ -95,7 +95,7 @@ fn limited_stream(
   limited: List(String),
   body: String,
   tried: process.Subject(String),
-) {
+) -> fn(types.Client, a, b) -> Result(c, types.Error) {
   fn(client: types.Client, _request, _on_event) {
     process.send(tried, client.api_key)
     case list.contains(limited, client.api_key) {
@@ -105,7 +105,15 @@ fn limited_stream(
   }
 }
 
-fn rotate(home, session, first, request, stream, pause) {
+fn rotate(
+  home: String,
+  session: String,
+  first: types.Client,
+  request: types.Request,
+  stream: fn(types.Client, types.Request, fn(types.Event) -> types.Control) ->
+    Result(types.Turn, types.Error),
+  pause: fn(Int) -> Nil,
+) -> Result(types.Turn, types.Error) {
   rotation.stream(
     codex.pool(home, session, stream),
     first,
@@ -123,7 +131,7 @@ fn drain(tried: process.Subject(String), found: List(String)) -> List(String) {
   }
 }
 
-pub fn a_limited_account_hands_the_same_request_to_the_next_test() {
+pub fn a_limited_account_hands_the_same_request_to_the_next_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ = write(home, "creds.json", credentials)
   let #(_, first) = codex_client(home, "swarm-session")
@@ -146,7 +154,7 @@ pub fn a_limited_account_hands_the_same_request_to_the_next_test() {
   cleanup(root)
 }
 
-pub fn a_burst_rate_limit_body_rotates_test() {
+pub fn a_burst_rate_limit_body_rotates_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ = write(home, "creds.json", credentials)
   let #(_, first) = codex_client(home, "burst-session")
@@ -169,7 +177,7 @@ pub fn a_burst_rate_limit_body_rotates_test() {
   cleanup(root)
 }
 
-pub fn a_rate_limit_rotates_too_and_stops_when_all_are_busy_test() {
+pub fn a_rate_limit_rotates_too_and_stops_when_all_are_busy_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ = write(home, "creds.json", credentials)
   let #(_, first) = codex_client(home, "busy-swarm")
@@ -195,7 +203,7 @@ pub fn a_rate_limit_rotates_too_and_stops_when_all_are_busy_test() {
   cleanup(root)
 }
 
-pub fn a_usage_limit_on_every_account_does_not_wait_test() {
+pub fn a_usage_limit_on_every_account_does_not_wait_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ = write(home, "creds.json", credentials)
   let #(_, first) = codex_client(home, "spent-swarm")
@@ -217,7 +225,7 @@ pub fn a_usage_limit_on_every_account_does_not_wait_test() {
   cleanup(root)
 }
 
-pub fn selected_account_overrides_the_session_pin_test() {
+pub fn selected_account_overrides_the_session_pin_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ = write(home, "creds.json", credentials)
   let pinned = access(home, "pinned-session")

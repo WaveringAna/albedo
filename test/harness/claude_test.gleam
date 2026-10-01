@@ -34,7 +34,10 @@ const subscription = wire.Subscription(
   "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
 )
 
-pub fn claude_tool_schemas_flatten_only_top_level_combiners_test() {
+pub fn claude_tool_schemas_flatten_only_top_level_combiners_test() -> Result(
+  Dynamic,
+  List(decode.DecodeError),
+) {
   let assert Ok(schema) =
     json.parse(
       "{
@@ -141,7 +144,7 @@ pub fn claude_tool_schemas_flatten_only_top_level_combiners_test() {
     decode.run(tool, decode.at(["input_schema", "allOf"], decode.dynamic))
 }
 
-pub fn claude_tool_schema_accepts_branch_only_root_union_test() {
+pub fn claude_tool_schema_accepts_branch_only_root_union_test() -> Nil {
   let assert Ok(schema) =
     json.parse(
       "{
@@ -187,7 +190,7 @@ pub fn claude_tool_schema_accepts_branch_only_root_union_test() {
   assert string.contains(hint, "urls or ids")
 }
 
-pub fn claude_schema_preserves_metadata_and_merge_precedence_in_requests_test() {
+pub fn claude_schema_preserves_metadata_and_merge_precedence_in_requests_test() -> Nil {
   let assert Ok(schema) =
     json.parse(
       "{
@@ -398,7 +401,7 @@ pub fn claude_schema_preserves_metadata_and_merge_precedence_in_requests_test() 
   assert actual == expected
 }
 
-pub fn claude_stream_preserves_tool_calls_and_replay_test() {
+pub fn claude_stream_preserves_tool_calls_and_replay_test() -> Nil {
   let chunks = [
     "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":12,\"output_tokens\":0,\"cache_read_input_tokens\":200,\"cache_creation_input_tokens\":14}}}",
     "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
@@ -450,7 +453,7 @@ pub fn claude_stream_preserves_tool_calls_and_replay_test() {
   assert string.contains(encoded, "hello")
 }
 
-pub fn claude_refusal_details_and_text_reach_failure_message_test() {
+pub fn claude_refusal_details_and_text_reach_failure_message_test() -> Nil {
   let assert Ok(turn) =
     feed_all(stream.reducer("claude-opus-5-5", []), [
       "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_refusal\"}}",
@@ -464,7 +467,7 @@ pub fn claude_refusal_details_and_text_reach_failure_message_test() {
   assert string.contains(failure, "I can’t help with that request.")
 }
 
-pub fn claude_stream_shows_thinking_and_replays_it_signed_test() {
+pub fn claude_stream_shows_thinking_and_replays_it_signed_test() -> Nil {
   let chunks = [
     "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}",
     "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}",
@@ -545,7 +548,7 @@ pub fn claude_stream_shows_thinking_and_replays_it_signed_test() {
   assert !string.contains(sent(switched), "sig_1")
 }
 
-pub fn codex_reasoning_summary_survives_transfer_to_claude_test() {
+pub fn codex_reasoning_summary_survives_transfer_to_claude_test() -> Nil {
   let assert Ok(item) =
     json.parse(
       "{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"first\"},{\"type\":\"summary_text\",\"text\":\"second\"}],\"encrypted_content\":\"sealed-reasoning\"}",
@@ -596,7 +599,7 @@ fn feed_thinking(
   }
 }
 
-pub fn claude_billing_hash_agrees_across_chunk_boundaries_test() {
+pub fn claude_billing_hash_agrees_across_chunk_boundaries_test() -> Nil {
   let body =
     string.repeat(
       "{\"messages\":[{\"role\":\"user\",\"content\":\"hello cch=00000\"}],",
@@ -649,7 +652,7 @@ fn await_body(fixture: Fixture) -> BitArray
 @external(erlang, "albedo_openai_transport_test_server", "stop")
 fn stop(fixture: Fixture) -> Nil
 
-pub fn claude_attested_body_streams_through_the_transport_test() {
+pub fn claude_attested_body_streams_through_the_transport_test() -> Nil {
   let fixture = start(Stream)
   let image =
     stored_image(
@@ -692,7 +695,7 @@ pub fn claude_attested_body_streams_through_the_transport_test() {
   assert hash == billing_hash(unsigned)
 }
 
-pub fn claude_first_user_surrogates_do_not_crash_the_billing_sample_test() {
+pub fn claude_first_user_surrogates_do_not_crash_the_billing_sample_test() -> Nil {
   let request =
     types.Request(
       "claude-opus-5-5",
@@ -716,7 +719,7 @@ pub fn claude_first_user_surrogates_do_not_crash_the_billing_sample_test() {
   assert hash == billing_hash(unsigned)
 }
 
-pub fn claude_token_encodes_to_a_decodable_binary_test() {
+pub fn claude_token_encodes_to_a_decodable_binary_test() -> Nil {
   // OTP's json:encode leaves `colon | value' unflattened, and a number value
   // encodes to a bare binary, so the encoded credential is an improper list
   // that json:decode rejects; token/1 must hand back a flat binary. This
@@ -735,7 +738,7 @@ pub fn claude_token_encodes_to_a_decodable_binary_test() {
   assert string.byte_size(account) == 16
 }
 
-pub fn claude_billing_hash_matches_reference_vectors_test() {
+pub fn claude_billing_hash_matches_reference_vectors_test() -> Nil {
   assert billing_hash("cch=00000") == "a47f7"
   assert billing_hash("{\"messages\":[],\"cch=00000\",\"x\":1}") == "3073d"
   assert billing_hash(
@@ -757,7 +760,7 @@ fn claude_token(response: String) -> Result(String, String)
 
 /// The ledger records `wire.cache_marks` as what a Claude request asked to
 /// cache; it must name exactly the cache_control markers `encode` sends.
-pub fn claude_cache_marks_match_the_encoded_markers_test() {
+pub fn claude_cache_marks_match_the_encoded_markers_test() -> Nil {
   let requests = [
     types.Request(
       "claude-opus-5-5",
@@ -858,7 +861,10 @@ fn marker_decoder() -> decode.Decoder(option.Option(Int)) {
 /// A Console key bills per token, so it drops the subscription's billing
 /// block, metadata and OAuth shape, but premium models answer a headerless 429
 /// unless the Claude Code identity still leads the system prompt.
-pub fn claude_api_key_requests_keep_only_the_identity_test() {
+pub fn claude_api_key_requests_keep_only_the_identity_test() -> Result(
+  List(String),
+  List(decode.DecodeError),
+) {
   let request =
     types.Request(
       "claude-opus-5-5",
@@ -957,7 +963,7 @@ fn claude_accounts(home: String) -> List(Dynamic)
 // from a background spawn, so the direct call is the only clean reach. Such an
 // account is never refreshed and stays as stored, like a refresh that failed,
 // beside its healthy sibling.
-pub fn claude_accounts_without_a_refresh_token_stay_enumerable_test() {
+pub fn claude_accounts_without_a_refresh_token_stay_enumerable_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ =
     write(
@@ -971,4 +977,20 @@ pub fn claude_accounts_without_a_refresh_token_stay_enumerable_test() {
   let assert [Ok("legacy-access"), Ok("fresh-access")] =
     list.map(claude_accounts(home), decode.run(_, access))
   cleanup(root)
+}
+
+// Claude's fixed authenticated endpoint cannot receive the E2E fixture payloads.
+pub fn malformed_stream_diagnostics_preserve_types_without_payloads_test() -> Nil {
+  let reducer = stream.reducer("claude-opus-5-5", [])
+  let assert Error(types.InvalidEvent(message)) =
+    reducer.feed(
+      "{\"type\":\"content_block_delta\",\"index\":\"secret-provider-value\",\"delta\":{\"type\":\"text_delta\"}}",
+    )
+  assert string.contains(message, "$.index")
+  assert string.contains(message, "expected Int, found String")
+  assert !string.contains(message, "secret-provider-value")
+  let assert Error(types.InvalidEvent(message)) =
+    reducer.feed("{\"type\":\"secret-provider-value")
+  assert string.contains(message, "unexpected end of JSON")
+  assert !string.contains(message, "secret-provider-value")
 }

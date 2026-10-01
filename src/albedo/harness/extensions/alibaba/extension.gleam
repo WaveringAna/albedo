@@ -12,7 +12,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
-pub const provider_name = "alibaba"
+const provider_name = "alibaba"
 
 pub fn extension() -> extension.Extension {
   extension.Extension(
@@ -119,7 +119,7 @@ fn explain_key(
   }
 }
 
-pub fn explain(error: types.Error) -> Option(String) {
+fn explain(error: types.Error) -> Option(String) {
   case error {
     types.HttpError(401, _) ->
       Some(

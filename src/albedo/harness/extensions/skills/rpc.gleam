@@ -2,6 +2,7 @@
 
 import albedo/harness/extensions/skills/catalog
 import albedo/harness/rpc
+import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/json
 import gleam/result
@@ -15,11 +16,18 @@ pub fn handle(snapshot: catalog.Catalog, request: String) -> String {
   )
 }
 
-fn parse(args, decoder) {
+fn parse(
+  args: dynamic.Dynamic,
+  decoder: decode.Decoder(a),
+) -> Result(a, String) {
   rpc.args(args, decoder, "invalid skills arguments")
 }
 
-fn dispatch(snapshot, method, args) {
+fn dispatch(
+  snapshot: catalog.Catalog,
+  method: String,
+  args: dynamic.Dynamic,
+) -> Result(json.Json, String) {
   case method {
     "skills.resources" -> {
       use name <- result.try(parse(

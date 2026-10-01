@@ -53,7 +53,7 @@ fn names(saved: python.Saved) -> String {
   string.join(list.take(saved.names, 40), ", ")
 }
 
-pub fn restored_notice(saved: python.Saved) -> String {
+fn restored_notice(saved: python.Saved) -> String {
   "<system-note>The python kernel restarted. These variables were restored from disk: "
   <> names(saved)
   <> case saved.missed {

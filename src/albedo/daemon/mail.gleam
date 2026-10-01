@@ -50,10 +50,10 @@ pub type Letter {
 }
 
 /// Undelivered letters one recipient may hold, matching the webhook inbox.
-pub const pending_limit = 1000
+const pending_limit = 1000
 
 /// The largest body, matching the largest chat message.
-pub const body_limit = 1_048_576
+const body_limit = 1_048_576
 
 const schema = "
 CREATE TABLE IF NOT EXISTS mail (
@@ -76,7 +76,7 @@ pub fn initialise(db: store.Store) -> Result(Nil, String) {
   store.query(db, fn(connection) { store.exec(connection, schema) })
 }
 
-pub fn kind_name(kind: Kind) -> String {
+fn kind_name(kind: Kind) -> String {
   case kind {
     Task -> "task"
     Message -> "message"
@@ -99,7 +99,7 @@ fn parse_kind(name: String) -> Result(Kind, Nil) {
 
 const columns = "id,recipient,sender,sender_name,kind,body,created_at"
 
-fn decoder() {
+fn decoder() -> decode.Decoder(Letter) {
   use id <- decode.field(0, decode.string)
   use recipient <- decode.field(1, decode.string)
   use sender <- decode.field(2, decode.optional(decode.string))
@@ -351,7 +351,7 @@ pub fn is_mail(text: String) -> Bool {
   || is_webhook(text)
 }
 
-pub fn webhook_text(name: String, id: String, preview: String) -> String {
+fn webhook_text(name: String, id: String, preview: String) -> String {
   webhook_open <> name <> " #" <> id <> webhook_close <> "\n" <> preview
 }
 

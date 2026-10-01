@@ -16,11 +16,11 @@ const default_url = "https://models.dev/api.json"
 
 const default_refresh_hours = 24
 
-pub type Config {
+type Config {
   Config(url: String, refresh_hours: Int)
 }
 
-pub fn default_config() -> Config {
+fn default_config() -> Config {
   Config(default_url, default_refresh_hours)
 }
 
@@ -40,7 +40,7 @@ fn infer_reasoning_efforts(model: String) -> List(String) {
   }
 }
 
-pub fn config_decoder() {
+fn config_decoder() -> decode.Decoder(Config) {
   use url <- decode.optional_field("url", default_url, decode.string)
   use hours <- decode.optional_field(
     "refreshHours",
@@ -82,7 +82,7 @@ fn refresh() -> Nil {
 /// Fetch and atomically replace the cached catalog now, regardless of its age.
 /// Unlike the opportunistic background refresh, this reports fetch failures so
 /// an explicit `/reload models` never claims stale data was refreshed.
-pub fn reload() -> Result(Nil, String) {
+fn reload() -> Result(Nil, String) {
   use Config(url, _) <- result.try(load_config())
   native_reload(path(), url)
 }
@@ -93,7 +93,7 @@ fn path() -> String {
 
 /// `endpoint` is the configured provider base url. It disambiguates a model id
 /// that several catalog providers publish.
-pub fn lookup(
+fn lookup(
   model: String,
   endpoint: Option(String),
 ) -> Option(extension.ModelInfo) {

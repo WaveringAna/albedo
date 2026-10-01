@@ -6,7 +6,7 @@ import gleam/option.{None, Some}
 import gleeunit/should
 import sqlight
 
-pub fn schedules_are_session_scoped_and_advance_once_test() {
+pub fn schedules_are_session_scoped_and_advance_once_test() -> Nil {
   let assert Ok(db) =
     store.start(
       ":memory:",

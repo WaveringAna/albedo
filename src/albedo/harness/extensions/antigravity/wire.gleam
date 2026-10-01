@@ -18,7 +18,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 
-pub const path = "/v1internal:streamGenerateContent?alt=sse"
+const path = "/v1internal:streamGenerateContent?alt=sse"
 
 /// Where an albedo turn's exact Gemini parts ride inside its chat-shaped replay.
 pub const parts_detail = "antigravity.parts"

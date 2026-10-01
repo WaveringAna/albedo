@@ -69,7 +69,7 @@ const fixtures = [
   #("garbage", "bm90IGFuIGltYWdlIGF0IGFsbA==", None),
 ]
 
-pub fn the_kernel_reads_image_headers_the_way_the_daemon_does_test() {
+pub fn the_kernel_reads_image_headers_the_way_the_daemon_does_test() -> Nil {
   let expected = list.map(fixtures, fn(fixture) { #(fixture.0, fixture.2) })
   list.map(fixtures, fn(fixture) {
     #(fixture.0, case inspect(fixture.1) {

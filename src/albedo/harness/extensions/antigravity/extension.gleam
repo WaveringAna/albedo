@@ -113,7 +113,7 @@ fn connect(home: String, session: String) -> Result(Access, String) {
 }
 
 /// Streams on `access`, and on sibling Google accounts when it hits a limit.
-pub fn upstream(
+fn upstream(
   home: String,
   access: Access,
   session: String,

@@ -22,7 +22,7 @@ const client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
 
 const scope = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 
-pub type Access {
+type Access {
   Access(token: String, account_id: String)
 }
 
@@ -82,7 +82,7 @@ fn reload_models() -> Result(Nil, String) {
 
 /// The Codex CLI browser flow. OpenAI allowlists the exact localhost:1455
 /// redirect, so a busy port fails instead of moving.
-pub fn login() -> oauth.Login {
+fn login() -> oauth.Login {
   oauth.Login(
     "codex",
     "add chatgpt codex account",
@@ -229,7 +229,7 @@ fn limit_message(limit: rotation.Limited) -> String {
   )
 }
 
-fn access_decoder() {
+fn access_decoder() -> decode.Decoder(Access) {
   use token <- decode.field("access", decode.string)
   use account_id <- decode.field("accountId", decode.string)
   decode.success(Access(token, account_id))

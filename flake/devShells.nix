@@ -20,6 +20,7 @@ _: {
           cargo
           rustc
         ])
+        ++ [config.packages.glinter]
         ++ lib.attrValues config.treefmt.build.programs;
     };
   };

@@ -15,7 +15,7 @@ fn inputs(completion: chat.Completion) -> List(types.Input) {
   list.map(completion.history, fn(entry) { entry.input })
 }
 
-pub fn tool_history_becomes_replay_and_tool_output_test() {
+pub fn tool_history_becomes_replay_and_tool_output_test() -> List(types.Tool) {
   let assert Ok(completion) =
     parse(
       "{\"model\":\"p/m\",\"messages\":[{\"role\":\"user\",\"content\":\"go\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"ok\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"bash\"}}]}",
@@ -33,7 +33,7 @@ pub fn tool_history_becomes_replay_and_tool_output_test() {
   let assert [types.Tool("bash", "", _, False)] = completion.request.tools
 }
 
-pub fn remote_images_are_refused_test() {
+pub fn remote_images_are_refused_test() -> Nil {
   let assert Error(message) =
     parse(
       "{\"model\":\"p/m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"https://x/y.png\"}}]}]}",
@@ -41,7 +41,7 @@ pub fn remote_images_are_refused_test() {
   assert string.contains(message, "data urls")
 }
 
-pub fn provider_state_rides_back_in_the_first_call_id_test() {
+pub fn provider_state_rides_back_in_the_first_call_id_test() -> Nil {
   let carried = chat.carry(responses_turn(), "cx", types.Responses)
   let assert [first, second] = carried.tool_calls
   assert string.starts_with(first.id, "call_1__albedo__")
@@ -72,7 +72,7 @@ pub fn provider_state_rides_back_in_the_first_call_id_test() {
   assert second_result.input == types.ToolOutput("call_2", "ok", [])
 }
 
-pub fn damaged_state_falls_back_to_portable_history_test() {
+pub fn damaged_state_falls_back_to_portable_history_test() -> Nil {
   let assert Ok(completion) =
     parse(
       "{\"model\":\"cx/m\",\"messages\":[{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_1__albedo__not-state\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_1__albedo__not-state\",\"content\":\"ok\"}]}",
@@ -91,7 +91,7 @@ pub fn damaged_state_falls_back_to_portable_history_test() {
 /// Clients that normalize ids (LiteLLM #37849) must not corrupt a replay.
 /// Short cuts can remove only the zlib checksum and leave complete JSON, so
 /// every one replays portably instead of trusting unverified state.
-pub fn a_shortened_carried_id_replays_portably_test() {
+pub fn a_shortened_carried_id_replays_portably_test() -> Nil {
   let carried = chat.carry(responses_turn(), "cx", types.Responses)
   let assert [first, second] = carried.tool_calls
   list.each([1, 2, 3, 4, 5, 6], fn(n) {

@@ -19,7 +19,9 @@ import gleam/string
 import gleeunit/should
 
 /// A session over `installed`, every one of them enabled.
-fn host(installed: List(extension.Extension)) {
+fn host(
+  installed: List(extension.Extension),
+) -> #(runtime.Runtime, runtime.Session) {
   let assert Ok(host) =
     runtime.start_with_config(
       ":memory:",
@@ -112,7 +114,7 @@ fn answer(
   body
 }
 
-pub fn a_failed_or_crashed_context_load_keeps_the_session_test() {
+pub fn a_failed_or_crashed_context_load_keeps_the_session_test() -> Nil {
   let #(host, session) =
     host([
       plugin_only("sulky", extension.ContextPlugin(fn(_) { Error("no root") })),
@@ -125,7 +127,7 @@ pub fn a_failed_or_crashed_context_load_keeps_the_session_test() {
   runtime.stop(host)
 }
 
-pub fn a_failed_or_crashed_prepare_keeps_the_session_test() {
+pub fn a_failed_or_crashed_prepare_keeps_the_session_test() -> Nil {
   let #(host, session) =
     host([
       plugin_only(
@@ -147,7 +149,7 @@ pub fn a_failed_or_crashed_prepare_keeps_the_session_test() {
 /// A static collision is refused when the extension is selected; one a
 /// managed plugin only discovers while preparing, as an MCP server's tool
 /// list does, reaches the session and must lose there.
-pub fn a_colliding_extension_loses_only_itself_test() {
+pub fn a_colliding_extension_loses_only_itself_test() -> Nil {
   let #(host, session) =
     host([
       healthy("echo"),
@@ -164,7 +166,7 @@ pub fn a_colliding_extension_loses_only_itself_test() {
   runtime.stop(host)
 }
 
-pub fn a_crashing_tool_answers_instead_of_ending_the_turn_test() {
+pub fn a_crashing_tool_answers_instead_of_ending_the_turn_test() -> Nil {
   let #(host, session) =
     host([
       tool_only(
@@ -182,7 +184,7 @@ pub fn a_crashing_tool_answers_instead_of_ending_the_turn_test() {
   runtime.stop(host)
 }
 
-pub fn a_fatal_tool_still_ends_the_turn_test() {
+pub fn a_fatal_tool_still_ends_the_turn_test() -> Nil {
   let #(host, session) =
     host([
       tool_only(
@@ -204,7 +206,7 @@ pub fn a_fatal_tool_still_ends_the_turn_test() {
   runtime.stop(host)
 }
 
-pub fn a_crashing_observer_leaves_the_session_working_test() {
+pub fn a_crashing_observer_leaves_the_session_working_test() -> Nil {
   let #(host, session) =
     host([
       plugin_only(
@@ -257,7 +259,7 @@ fn summary(
   list.find(summaries, fn(summary) { summary.name == name })
 }
 
-pub fn an_extension_that_cannot_install_is_quarantined_test() {
+pub fn an_extension_that_cannot_install_is_quarantined_test() -> Nil {
   let #(host, session) =
     host([
       uninstallable("sulky", fn() { Nil }),
@@ -274,7 +276,7 @@ pub fn an_extension_that_cannot_install_is_quarantined_test() {
   runtime.stop(host)
 }
 
-pub fn a_quarantined_requirement_takes_its_dependents_with_it_test() {
+pub fn a_quarantined_requirement_takes_its_dependents_with_it_test() -> Nil {
   let #(host, session) =
     host([
       uninstallable("engine", fn() { Nil }),
@@ -294,7 +296,7 @@ pub fn a_quarantined_requirement_takes_its_dependents_with_it_test() {
   runtime.stop(host)
 }
 
-pub fn a_quarantined_extension_cannot_be_enabled_test() {
+pub fn a_quarantined_extension_cannot_be_enabled_test() -> Nil {
   let #(host, _) =
     host([uninstallable("sulky", fn() { Nil }), healthy("working")])
   let assert Error(refusal) =

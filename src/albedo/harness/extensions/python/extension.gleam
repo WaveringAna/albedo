@@ -12,7 +12,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 
-pub fn definition() -> types.Tool {
+fn definition() -> types.Tool {
   types.Tool(
     "python",
     "Execute Python in your persistent session. Always provide both JSON arguments: code (string) and timeout_ms (integer, 1–3600000), even for a one-line call. Top-level await works. Variables stay alive. Only printed output and the final expression return; duration is the cell's wall seconds; truncated=true means the output passed the 64 KiB preview, and the rest (up to 1 MiB) is readable with output.read(cell_id, offset=65536) while the cell is among the 16 most recent; read it before running many more cells, or print less. Failed cells are retained: await cells.read(id) for bounded source, await cells.info(id) for its status (ok, error, interrupted, started, saved) without source, await cells.trace(id) for what the cell read, ran and changed. Repair exact unique text without resending the source with await cells.run(id, replacements=[(old,new)]), or pass check=True first to compile the rewrite and get the syntax error back without running anything. A cell that started requires allow_partial=True after checking side effects; never retry blindly.",
@@ -41,7 +41,7 @@ pub fn definition() -> types.Tool {
 
 /// Storage failure is `Fatal` rather than a refusal: a cell whose source or
 /// outcome went unrecorded must not be offered back to the model to retry.
-pub fn invoke(
+fn invoke(
   context: extension.Context,
   arguments: String,
 ) -> Result(extension.Output, extension.Failure) {
@@ -185,7 +185,7 @@ fn reason(error: python.Error) -> String {
   }
 }
 
-fn recover(context: extension.Context) {
+fn recover(context: extension.Context) -> option.Option(extension.Output) {
   // The id invoke saved the cell under: begin_call's session <> "/" <> call_id,
   // or qualified with a nonce when an upstream provider reuses call ids.
   let base_id = context.session <> "/" <> context.call_id

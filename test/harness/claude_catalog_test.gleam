@@ -2,12 +2,13 @@
 //// These fixtures catch forgiving upstream parsing and cache compatibility bugs.
 
 import albedo/harness/extensions/claude/catalog
+import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{None, Some}
 import gleeunit/should
 
-fn upstream() {
+fn upstream() -> List(dynamic.Dynamic) {
   let assert Ok(rows) =
     json.parse(
       "[
@@ -28,7 +29,7 @@ fn upstream() {
   rows
 }
 
-pub fn upstream_normalization_keeps_valid_order_duplicates_and_typed_facts_test() {
+pub fn upstream_normalization_keeps_valid_order_duplicates_and_typed_facts_test() -> Nil {
   catalog.normalize(upstream())
   |> should.equal([
     catalog.Model("claude-fixture", Some(200_000), Some(64_000), True, [
@@ -39,7 +40,7 @@ pub fn upstream_normalization_keeps_valid_order_duplicates_and_typed_facts_test(
   ])
 }
 
-pub fn normalized_upstream_saves_a_readable_private_cache_test() {
+pub fn normalized_upstream_saves_a_readable_private_cache_test() -> Nil {
   let home = temporary_home()
   let models = catalog.normalize(upstream())
   catalog.save(home, models) |> should.equal(Ok(Nil))
@@ -50,7 +51,7 @@ pub fn normalized_upstream_saves_a_readable_private_cache_test() {
   cleanup(home)
 }
 
-pub fn cache_write_failure_keeps_the_existing_error_test() {
+pub fn cache_write_failure_keeps_the_existing_error_test() -> Nil {
   let home = temporary_home()
   block_cache(home)
   catalog.save(home, catalog.normalize(upstream()))

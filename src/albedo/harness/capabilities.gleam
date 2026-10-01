@@ -70,7 +70,11 @@ fn selected_decoder(
   decode.success(enabled)
 }
 
-fn choice_decoder(kind: String, name: String, default: Bool) {
+fn choice_decoder(
+  kind: String,
+  name: String,
+  default: Bool,
+) -> decode.Decoder(Bool) {
   let named_decoder = {
     use enabled <- decode.optional_field(name, default, decode.bool)
     decode.success(enabled)

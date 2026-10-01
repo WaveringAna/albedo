@@ -5,9 +5,7 @@
 import gleam/option.{type Option, None, Some}
 import gleam/string
 
-pub const open = "<system-note>"
-
-pub const close = "</system-note>"
+const close = "</system-note>"
 
 /// `text` as a note from `origin`. Text that is already a note keeps its tag.
 pub fn wrap(origin: String, text: String) -> String {

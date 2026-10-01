@@ -9,7 +9,7 @@ fn fixture() -> #(String, String, String)
 @external(erlang, "albedo_skills_test_support", "cleanup")
 fn cleanup(root: String) -> Nil
 
-pub fn second_daemon_cannot_claim_a_held_home_test() {
+pub fn second_daemon_cannot_claim_a_held_home_test() -> Nil {
   let #(root, _, home) = fixture()
   let claimed = process.new_subject()
   // A subject only delivers to the process that created it, so the owner makes

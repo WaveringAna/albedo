@@ -19,7 +19,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/io
 import gleam/json
 import gleam/list
-import gleam/option.{type Option, None, Some, unwrap}
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
@@ -383,10 +383,6 @@ pub fn warnings(session: Session) -> List(String) {
   extension.warnings(session.composition)
 }
 
-pub fn events(session: Session) -> List(String) {
-  python.events(session.kernel)
-}
-
 pub fn kernel_pid(session: Session) -> Result(Int, Nil) {
   python.os_pid(session.kernel)
 }
@@ -509,7 +505,7 @@ fn system_instructions(
   replacement: Option(String),
   composition: extension.Composition,
 ) -> String {
-  let base = unwrap(replacement, base_instructions)
+  let base = option.unwrap(replacement, base_instructions)
   let extensions = extension.instructions(composition)
   case replacement, extensions {
     Some(_), "" -> base
@@ -562,7 +558,7 @@ fn kernel_routes(
   owner: work.Store,
   id: String,
   composition: extension.Composition,
-) {
+) -> fn(String) -> String {
   // Partial application captures its expressions, not just their results.
   // Keep only this session's routes: the callback is copied for every RPC.
   let routes = extension.routes(composition)
@@ -950,7 +946,7 @@ fn finish_refresh(
   }
 }
 
-fn handle(state: State, message: Message) {
+fn handle(state: State, message: Message) -> actor.Next(State, a) {
   case message {
     Open(id, cwd, answer) ->
       case dict.get(state.sessions, id), dict.get(state.booting, id) {
@@ -1162,12 +1158,6 @@ pub fn instructions(session: Session) -> String {
   session.instructions
 }
 
-/// This session's commands: the exact list and run callbacks the kernel
-/// routes and user adapters dispatch against.
-pub fn commands(session: Session) -> List(command.Command) {
-  extension.commands(session.composition)
-}
-
 /// Tells every extension this session composed about one of its events.
 pub fn observe(
   session: Session,
@@ -1210,7 +1200,7 @@ pub fn prepare_history_with(
 }
 
 /// Only a catalog answer becomes a capacity; an unknown model stays unknown.
-pub fn model_info(
+fn model_info(
   session: Session,
   model: String,
   endpoint: Option(String),

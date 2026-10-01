@@ -19,7 +19,7 @@ pub fn input(submission: Submission) -> types.Input {
   }
 }
 
-pub fn event(submission: Submission, timestamp: Int) -> String {
+fn event(submission: Submission, timestamp: Int) -> String {
   let source = turn.source_name(submission.source)
   let client = Some(submission.client_id)
   case submission.image {

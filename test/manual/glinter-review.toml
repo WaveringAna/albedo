@@ -1,0 +1,40 @@
+# Manual review prompts, including the focused checks.
+[tools.glinter]
+include = ["src/", "test/"]
+stats = true
+
+[tools.glinter.rules]
+missing_type_annotation = "error"
+missing_labels = "error"
+unqualified_import = "error"
+unnecessary_variable = "error"
+duplicate_import = "error"
+echo = "error"
+avoid_todo = "error"
+todo_without_message = "error"
+division_by_zero = "error"
+short_variable_name = "off"
+trailing_underscore = "off"
+nolint_unused = "error"
+nolint_inline = "error"
+assert_ok_pattern = "warning"
+avoid_panic = "warning"
+panic_without_message = "warning"
+discarded_result = "warning"
+thrown_away_error = "warning"
+error_context_lost = "warning"
+unused_exports = "warning"
+redundant_case = "warning"
+label_possible = "off"
+prefer_guard_clause = "off"
+stringly_typed_error = "off"
+unwrap_used = "off"
+unnecessary_string_concatenation = "off"
+function_complexity = "off"
+module_complexity = "off"
+deep_nesting = "off"
+string_inspect = "off"
+ffi_usage = "off"
+
+[tools.glinter.ignore]
+"test/**/*.gleam" = ["assert_ok_pattern", "avoid_panic", "panic_without_message", "unused_exports"]

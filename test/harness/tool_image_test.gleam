@@ -19,7 +19,10 @@ import sqlight
 /// A PNG signature and IHDR header for a 2x3 image: enough for albedo to read.
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD"
 
-pub fn the_kernel_decoder_reads_images_at_the_boundary_test() {
+pub fn the_kernel_decoder_reads_images_at_the_boundary_test() -> Result(
+  python.Outcome,
+  json.DecodeError,
+) {
   let frame = fn(images) {
     json.object([
       #("id", json.string("cell")),
@@ -68,7 +71,7 @@ type LegacyOutcome {
   Outcome(String, python.Status, String, String, Bool)
 }
 
-pub fn records_saved_before_images_still_load_test() {
+pub fn records_saved_before_images_still_load_test() -> Nil {
   let assert Ok(input) =
     unpack_input(term_to_binary(#(1, ToolOutput("call", "text"))))
   input |> should.equal(types.ToolOutput("call", "text", []))
@@ -87,7 +90,7 @@ pub fn records_saved_before_images_still_load_test() {
   ))
 }
 
-pub fn a_journaled_image_is_checked_again_on_load_test() {
+pub fn a_journaled_image_is_checked_again_on_load_test() -> Nil {
   // Journaled before cells were timed, so its duration is unknown.
   let assert Ok(Ok(outcome)) = unpack_cell(journaled_png(2))
   outcome.duration |> should.equal(None)
@@ -122,7 +125,7 @@ fn journaled_png(width: Int) -> BitArray {
 }
 
 /// Legacy cell records are not producible by the current daemon wire format.
-pub fn old_cell_images_migrate_without_losing_their_readers_test() {
+pub fn old_cell_images_migrate_without_losing_their_readers_test() -> Nil {
   let path = temporary_database()
   let assert Ok(ledger) = store.start(path, images.schema)
   cell_images.run(ledger, path <> ".missing-backup") |> should.equal(Ok(0))

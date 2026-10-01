@@ -35,3 +35,7 @@ Within one projection the request is append-only, so equal head hash plus equal 
 - `?limit=<n>` bounds the page (1–500, default 100).
 
 The response is `{session, rows, after}`; `after` is the id to continue from. Like every session route it needs the daemon token. The later `/quota` inspector reads the same rows; nothing is stored twice.
+
+## decode diagnostics
+
+Claude and Antigravity event and replay decoding preserve JSON error categories or expected types and field paths. Diagnostics omit raw provider values and unexpected JSON bytes or sequences.

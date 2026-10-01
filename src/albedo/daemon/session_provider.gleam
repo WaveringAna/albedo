@@ -261,7 +261,7 @@ pub fn select(
   }
 }
 
-pub fn resolve_effort(
+fn resolve_effort(
   efforts: List(String),
   current: option.Option(String),
 ) -> option.Option(String) {

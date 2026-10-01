@@ -33,7 +33,3 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
     harness_extension.no_initialise,
   )
 }
-
-pub fn load_at(workspace: String, home: String) -> Result(String, String) {
-  instruction_files.load(workspace, home)
-}

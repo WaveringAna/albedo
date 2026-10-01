@@ -16,6 +16,7 @@ ruff check
 ruff format --check priv/python test
 ty check
 gleam format --check src test
+test/gleam-lint.sh
 cargo test --quiet --release --locked --manifest-path native/render/Cargo.toml
 native/render/install.sh
 go -C cli vet ./...

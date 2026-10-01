@@ -11,7 +11,7 @@ import gleam/option.{None}
 import gleam/string
 import gleeunit/should
 
-pub fn bound_keeps_the_first_and_newest_frames_test() {
+pub fn bound_keeps_the_first_and_newest_frames_test() -> Nil {
   let shape = snapcompact.Shape(11, 16, 256, 1)
   // 23 cells per frame: ten frames, bounded to four.
   let pages =
@@ -32,7 +32,7 @@ pub fn bound_keeps_the_first_and_newest_frames_test() {
   |> should.equal(#(string.concat(pages), 0))
 }
 
-pub fn a_full_frame_renders_inside_the_provider_edge_test() {
+pub fn a_full_frame_renders_inside_the_provider_edge_test() -> Nil {
   let limits = types.ImageLimits(max_edge: 1000, max_images: None)
   use model <- list.each(["gemini-3-pro", "gpt-5", "claude-opus-5-5"])
   let shape = snapcompact.fit(snapcompact.shape(model), limits)
@@ -43,7 +43,7 @@ pub fn a_full_frame_renders_inside_the_provider_edge_test() {
   { width <= 1000 && height <= 1000 } |> should.be_true
 }
 
-pub fn paginate_never_splits_a_multibyte_cell_test() {
+pub fn paginate_never_splits_a_multibyte_cell_test() -> Nil {
   let shape = snapcompact.Shape(11, 16, 256, 1)
   // The 23rd cell, which fills the first frame, is the 3-byte newline cell.
   let first = string.repeat("a", 22) <> "\u{2588}"
@@ -52,7 +52,7 @@ pub fn paginate_never_splits_a_multibyte_cell_test() {
   |> should.equal([first, second])
 }
 
-pub fn split_tail_keeps_whole_units_within_budget_test() {
+pub fn split_tail_keeps_whole_units_within_budget_test() -> Nil {
   let history = [
     types.User("first"),
     types.Assistant("a1"),
@@ -69,7 +69,7 @@ pub fn split_tail_keeps_whole_units_within_budget_test() {
   |> should.equal(#([], [types.User("only"), types.Assistant("a")]))
 }
 
-pub fn split_tail_never_orphans_a_tool_output_test() {
+pub fn split_tail_never_orphans_a_tool_output_test() -> Nil {
   let history = [
     types.User("first"),
     types.User("second"),
@@ -82,7 +82,7 @@ pub fn split_tail_never_orphans_a_tool_output_test() {
   tail |> should.equal([types.User("third")])
 }
 
-pub fn cut_resumes_across_projection_changes_test() {
+pub fn cut_resumes_across_projection_changes_test() -> Nil {
   let prefix = [types.User("one"), types.Assistant("a"), types.User("two")]
   let cut = compaction.cut_of(prefix)
   cut.users |> should.equal(2)
