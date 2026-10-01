@@ -735,6 +735,7 @@ class Cells:
                         outer.write(
                             f"[image from cell {cell['id']} dropped: {dropped}]\n"
                         )
+        deliver_trace(capture)
         _ = await host(
             "cells.finish",
             {
@@ -1232,6 +1233,12 @@ async def serve_invoke(message: albedo_api.Invoke) -> None:
     send(reply)
 
 
+def deliver_trace(capture: Capture) -> None:
+    payload = capture.trace.finish()
+    send({"type": "trace", "id": capture.id, "trace": payload})
+    capture.trace.release()
+
+
 async def serve():
     global active, active_capture
     while True:
@@ -1276,7 +1283,7 @@ async def serve():
             active_capture = None
             CELL.reset(token)
         duration = round(LOOP.time() - began, 3)
-        send({"type": "trace", "id": capture.id, "trace": capture.trace.finish()})
+        deliver_trace(capture)
         send(
             {
                 "type": "done",

@@ -56,8 +56,11 @@ class Trace:
         self.activities: dict[tuple[str, str], dict[str, str]] = {}
         self.before: dict[str, str | None] = {}
         self.truncated: bool = False
+        self.sealed: bool = False
 
     def activity(self, kind: str, target: object) -> None:
+        if self.sealed:
+            return
         if len(self.activities) >= 64:
             self.truncated = True
         else:
@@ -65,7 +68,7 @@ class Trace:
             self.activities[(kind, target)] = {"kind": kind, "target": target}
 
     def renamed(self, source: str, destination: str) -> None:
-        if source == destination:
+        if self.sealed or source == destination:
             return
         # Atomic editors write a temporary file then replace the real target.
         # The temporary file is not an edit; snapshot the destination before rename.
@@ -73,7 +76,7 @@ class Trace:
         self.before.pop(source, None)
 
     def writing(self, path: str) -> None:
-        if path in self.before:
+        if self.sealed or path in self.before:
             return
         if len(self.before) >= 16:
             self.truncated = True
@@ -81,6 +84,9 @@ class Trace:
         self.before[path] = snapshot(path)
 
     def finish(self) -> dict[str, object]:
+        if self.sealed:
+            raise RuntimeError("trace is already sealed")
+        self.sealed = True
         with unobserved():
             changes: list[dict[str, str | int]] = []
             for path, before in self.before.items():
@@ -122,10 +128,18 @@ class Trace:
                     }
                 )
             return {
-                "activities": list(self.activities.values()),
+                "activities": [
+                    activity.copy() for activity in self.activities.values()
+                ],
                 "changes": changes,
                 "truncated": self.truncated,
             }
+
+    def release(self) -> None:
+        if not self.sealed:
+            raise RuntimeError("trace must be sealed before release")
+        self.before.clear()
+        self.activities.clear()
 
 
 def snapshot(path: str) -> str | None:
@@ -170,7 +184,7 @@ def install(get_capture: Callable[[], TracedCapture | None]) -> None:
 
     def audit(event: str, args: tuple[object, ...]) -> None:
         capture = get_capture()
-        if capture is None or GUARD.get():
+        if capture is None or capture.trace.sealed or GUARD.get():
             return
         token = GUARD.set(True)
         try:
@@ -200,7 +214,8 @@ def install(get_capture: Callable[[], TracedCapture | None]) -> None:
             elif event == "subprocess.Popen":
                 capture.trace.activity("run", command(args[1]))
         except Exception:
-            capture.trace.truncated = True
+            if not capture.trace.sealed:
+                capture.trace.truncated = True
         finally:
             GUARD.reset(token)
 
