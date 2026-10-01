@@ -8,10 +8,12 @@
 //// specific defaults keep their place. First match in table order wins a
 //// lookup; values marked `folklore` or `unknown` are placeholders the ledger
 //// replaces with measurements. The file I/O and revision cache live in
-//// `albedo_cache_ttl.erl`; this module owns the shapes and the matching.
+//// `albedo_cache_ttl.erl`; this module owns merging, shapes, and matching.
 
 import albedo/daemon/configuration
 import albedo/harness/settings
+import gleam/dict.{type Dict}
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/io
@@ -93,6 +95,46 @@ pub type Layer {
 
 pub type Table {
   Table(entries: List(Entry), layers: List(Layer))
+}
+
+/// Merge native layer entries in precedence order. The file reader has checked
+/// their ids; other fields stay raw until the merged table is decoded, so an
+/// invalid override still shadows the entry it replaces.
+pub fn merge_layers(
+  layers: List(#(String, List(Dict(String, Dynamic)))),
+) -> List(Dict(String, Dynamic)) {
+  list.fold(layers, [], fn(entries, layer) {
+    let tagged =
+      list.map(layer.1, fn(fields) {
+        let assert Ok(value) = dict.get(fields, "id")
+        let assert Ok(id) = decode.run(value, decode.string)
+        #(id, dict.insert(fields, "layer", dynamic.string(layer.0)))
+      })
+    case entries, tagged {
+      [], _ -> tagged
+      _, [] -> entries
+      _, _ -> {
+        // The last incoming duplicate replaces only the first earlier occurrence.
+        // Unmatched ids stay indexed so every new entry keeps its original order.
+        let #(unmatched, replaced) =
+          list.map_fold(
+            entries,
+            dict.from_list(tagged),
+            fn(replacements, entry) {
+              let #(id, _) = entry
+              case dict.get(replacements, id) {
+                Ok(fields) -> #(dict.delete(replacements, id), #(id, fields))
+                Error(_) -> #(replacements, entry)
+              }
+            },
+          )
+        let fresh =
+          list.filter(tagged, fn(entry) { dict.has_key(unmatched, entry.0) })
+        list.append(fresh, replaced)
+      }
+    }
+  })
+  |> list.map(fn(entry) { entry.1 })
 }
 
 /// The remote layer's configuration in extensions.json: `url: null` disables

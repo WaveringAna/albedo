@@ -201,6 +201,90 @@ class CacheTtlTests(unittest.TestCase):
             self.resolved("?extension=claude")["id"], "claude-subscription"
         )
 
+    def test_three_layers_keep_replacements_in_place_and_new_ids_first(self):
+        write_atomic(self.app.home / "cache-ttl-remote.json", REMOTE_TABLE)
+        gateway = {
+            **REMOTE_TABLE["entries"][1],
+            "match": {"host": "gateway.*"},
+            "note": "local gateway replacement",
+        }
+        local = {"entries": [*LOCAL_OVERRIDE["entries"], gateway]}
+        write_atomic(self.app.home / "cache-ttl.json", local)
+        table = self.table()
+        self.assertEqual(
+            [entry["id"] for entry in table["entries"]],
+            ["laptop-gateway", "fixture-gateway"]
+            + [entry["id"] for entry in SHIPPED["entries"]],
+        )
+        self.assertTrue(self.layers(table)["remote"]["loaded"])
+        self.assertEqual(self.entries(table)["fixture-gateway"]["layer"], "local")
+        self.assertEqual(self.entries(table)["deepseek"]["note"], "local override")
+        # A fresh local rule wins before the replaced, more general gateway rule.
+        self.assertEqual(self.resolved("?host=gateway.laptop")["id"], "laptop-gateway")
+        self.assertEqual(
+            self.resolved("?host=gateway.fixture")["note"],
+            "local gateway replacement",
+        )
+        self.assertEqual(self.resolved("?host=api.deepseek.com")["clock"], "request")
+
+    def test_duplicate_ids_keep_first_match_and_first_replacement(self):
+        def entry(identifier, note):
+            return {
+                "id": identifier,
+                "note": note,
+                "match": {"host": "duplicates.fixture"},
+                "policy": "fixed",
+                "evidence": "measured",
+            }
+
+        write_atomic(
+            self.app.home / "cache-ttl-remote.json",
+            {
+                "entries": [
+                    entry("duplicate", "old first"),
+                    entry("duplicate", "old second"),
+                ]
+            },
+        )
+        write_atomic(
+            self.app.home / "cache-ttl.json",
+            {
+                "entries": [
+                    entry("duplicate", "replacement first"),
+                    entry("duplicate", "replacement last"),
+                    entry("fresh", "new first"),
+                    entry("fresh", "new second"),
+                ]
+            },
+        )
+        table = self.table()
+        self.assertEqual(
+            [
+                (item["id"], item["note"], item["layer"])
+                for item in table["entries"][:4]
+            ],
+            [
+                ("fresh", "new first", "local"),
+                ("fresh", "new second", "local"),
+                ("duplicate", "replacement last", "local"),
+                ("duplicate", "old second", "remote"),
+            ],
+        )
+        self.assertEqual(self.resolved("?host=duplicates.fixture")["note"], "new first")
+
+    def test_invalid_override_shadows_previous_entry_before_decoding(self):
+        write_atomic(
+            self.app.home / "cache-ttl.json",
+            {"entries": [{**LOCAL_OVERRIDE["entries"][0], "policy": "invalid"}]},
+        )
+        table = self.table()
+        self.assertTrue(self.layers(table)["local"]["loaded"])
+        self.assertNotIn("deepseek", self.entries(table))
+        self.assertIsNone(self.resolved("?host=api.deepseek.com"))
+        self.assertEqual(
+            self.resolved("?extension=claude")["id"], "claude-subscription"
+        )
+
     def test_malformed_local_file_keeps_the_last_good_table(self):
         write_atomic(self.app.home / "cache-ttl.json", LOCAL_OVERRIDE)
         self.assertTrue(self.layers(self.table())["local"]["loaded"])

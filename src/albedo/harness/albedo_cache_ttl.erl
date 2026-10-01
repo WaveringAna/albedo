@@ -31,7 +31,8 @@ merged() ->
     end.
 
 rebuild(Resolved, Key) ->
-    Entries = lists:foldl(fun apply_layer/2, [], Resolved),
+    Entries = 'albedo@harness@cache_ttl':merge_layers(
+        [{Name, Entries} || {Name, _, _, _, _, Entries} <- Resolved]),
     Json = iolist_to_binary(json:encode(#{
         <<"entries">> => Entries,
         <<"layers">> => [layer_json(L) || L <- Resolved]
@@ -113,24 +114,6 @@ log(Dropped) ->
                            [Dropped])
          catch _:_ -> ok end,
     true.
-
-apply_layer({Name, _, _, _, _, Entries}, Acc) ->
-    Tagged = [E#{<<"layer">> => Name} || E <- Entries],
-    Replaced = lists:foldl(fun replace/2, Acc, Tagged),
-    Fresh = [E || E <- Tagged, not has_id(Replaced, id(E))],
-    Fresh ++ Replaced.
-
-replace(_Entry, []) -> [];
-replace(Entry, [E | Rest]) ->
-    case id(E) =:= id(Entry) of
-        true -> [Entry | Rest];
-        false -> [E | replace(Entry, Rest)]
-    end.
-
-has_id([], _) -> false;
-has_id([E | Rest], Id) -> id(E) =:= Id orelse has_id(Rest, Id).
-
-id(Entry) -> maps:get(<<"id">>, Entry, <<>>).
 
 layer(Name, Path, Revision, Loaded, Error, Entries) ->
     {Name, Path, Revision, Loaded, Error, Entries}.
