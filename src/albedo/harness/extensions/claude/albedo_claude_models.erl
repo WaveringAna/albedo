@@ -3,7 +3,7 @@
 %% effort levels. A model Anthropic releases reaches the picker without an
 %% albedo update.
 -module(albedo_claude_models).
--export([read/1, reload/2, refresh/2, api_key/1]).
+-export([read/1, fetch/1, write/2, refresh/2, api_key/1]).
 
 -define(CATALOG, "claude-models.json").
 -define(URL, "https://api.anthropic.com/v1/models?limit=1000").
@@ -22,23 +22,22 @@ read(Home) ->
 
 %% Refetches the list with one credential header. A bearer token is a Claude
 %% Code subscription, which the API accepts only with the OAuth beta.
-reload(Home, {Name, Value}) ->
+fetch({Name, Value}) ->
     Headers = [{text(Name), text(Value)},
                {"anthropic-version", "2023-06-01"},
                {"accept", "application/json"},
                {"user-agent", "albedo"}]
         ++ [{"anthropic-beta", "oauth-2025-04-20"} || Name =:= <<"authorization">>],
-    case pages(Headers, "", ?MAX_PAGES, []) of
-        {ok, Models} ->
-            case albedo_credentials:write(path(Home), json:encode(Models)) of
-                ok -> {ok, nil};
-                _ -> {error, <<"could not save the Claude model list">>}
-            end;
-        Error -> Error
+    pages(Headers, "", ?MAX_PAGES, []).
+
+write(Home, Encoded) ->
+    case albedo_credentials:write(path(Home), Encoded) of
+        ok -> {ok, nil};
+        _ -> {error, <<"could not save the Claude model list">>}
     end.
 
 %% Refetches off the caller's process when the cache is missing or old, one
-%% refresh at a time. `Reload' resolves a credential and calls reload/2.
+%% refresh at a time. `Reload' resolves a credential and fetches and saves the list.
 refresh(Home, Reload) ->
     case albedo_credentials:stale(path(Home), ?MAX_AGE_MS) of
         false -> nil;
@@ -69,7 +68,7 @@ pages(Headers, After, Left, Models) ->
         {ok, {200, _, Body}} ->
             try json:decode(Body) of
                 #{<<"data">> := Data} = Page when is_list(Data) ->
-                    Listed = Models ++ [M || Raw <- Data, M <- [trim(Raw)], M =/= skip],
+                    Listed = Models ++ Data,
                     case Page of
                         #{<<"has_more">> := true, <<"last_id">> := <<_, _/binary>> = Last} ->
                             pages(Headers, binary_to_list(Last), Left - 1, Listed);
@@ -82,40 +81,6 @@ pages(Headers, After, Left, Models) ->
             {error, iolist_to_binary(io_lib:format("Anthropic model list returned HTTP ~B", [Status]))};
         _ -> {error, <<"Anthropic model list request failed">>}
     end.
-
-%% Only what lookup and listing read.
-trim(#{<<"id">> := <<_, _/binary>> = Id} = Model) ->
-    Capabilities = case maps:get(<<"capabilities">>, Model, null) of
-        C when is_map(C) -> C;
-        _ -> #{}
-    end,
-    #{<<"id">> => Id,
-      <<"context">> => positive(maps:get(<<"max_input_tokens">>, Model, null)),
-      <<"output">> => positive(maps:get(<<"max_tokens">>, Model, null)),
-      <<"images">> => supported(maps:get(<<"image_input">>, Capabilities, null)),
-      <<"efforts">> => efforts(maps:get(<<"effort">>, Capabilities, null))};
-trim(_) -> skip.
-
-supported(#{<<"supported">> := true}) -> true;
-supported(_) -> false.
-
-%% The supported levels, lowest first; a level albedo does not know sorts last.
-efforts(#{<<"supported">> := true} = Levels) ->
-    Supported = [Level || {Level, Detail} <- maps:to_list(Levels),
-                          Level =/= <<"supported">>, supported(Detail)],
-    lists:sort(fun(A, B) -> {rank(A), A} =< {rank(B), B} end, Supported);
-efforts(_) -> [].
-
-rank(<<"minimal">>) -> 0;
-rank(<<"low">>) -> 1;
-rank(<<"medium">>) -> 2;
-rank(<<"high">>) -> 3;
-rank(<<"xhigh">>) -> 4;
-rank(<<"max">>) -> 5;
-rank(_) -> 6.
-
-positive(N) when is_integer(N), N > 0 -> N;
-positive(_) -> null.
 
 path(Home) -> filename:join(text(Home), ?CATALOG).
 

@@ -292,3 +292,64 @@ class ModelCatalogSelectionTests(unittest.TestCase):
             {"workspace": str(self.app.workspace), "model": "o3-unlisted"},
         ) as response:
             self.assertIsNone(json.load(response)["effort"])
+
+
+@exclusive
+class CodexCachedCatalogTests(unittest.TestCase):
+    """Account caches keep picker precedence and facts across restart."""
+
+    def test_cache_deduplicates_before_visibility_and_survives_restart(self):
+        provider = Provider(lambda _request: text("ok"))
+        self.addCleanup(provider.close)
+        cache = {
+            "clientVersion": "0.157.1",
+            "versionCheckedAt": 123,
+            "accounts": {
+                "account-a": {
+                    "fetchedAt": 123,
+                    "clientVersion": "0.157.1",
+                    "etag": "fixture-a",
+                    "models": [
+                        {"slug": "hidden-first", "visible": False},
+                        {"slug": "hidden-first", "visible": True},
+                        {
+                            "slug": "codex-fixture",
+                            "name": "Codex fixture",
+                            "context": 200000,
+                            "maxContext": 400000,
+                            "input": ["text", "image"],
+                            "efforts": ["low", "high"],
+                            "priority": 2,
+                        },
+                        {"slug": "codex-fixture", "context": 1000, "priority": 0},
+                    ],
+                },
+                "account-b": {
+                    "models": [{"slug": "other-account", "priority": 1}],
+                },
+            },
+        }
+
+        def prepare(app):
+            (app.home / "codex-models.json").write_text(json.dumps(cache))
+            app.write_extensions({"models": {"refreshHours": 0}})
+
+        with Albedo(provider, prepare=prepare) as app:
+
+            def listed(details=False):
+                suffix = "?details=1" if details else ""
+                with app.api("/models/codex" + suffix) as response:
+                    return json.load(response)
+
+            expected = ["other-account", "codex-fixture"]
+            self.assertEqual(listed(), expected)
+            facts = listed(True)
+            self.assertEqual([item["id"] for item in facts], expected)
+            model = facts[1]
+            self.assertEqual(model["context"], 200000)
+            self.assertEqual(model["maxContext"], 400000)
+            self.assertEqual(model["input"], ["text", "image"])
+            self.assertEqual(model["efforts"], ["low", "high"])
+            app.restart()
+            self.assertEqual(listed(), expected)
+            self.assertEqual(listed(True), facts)
