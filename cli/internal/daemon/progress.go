@@ -67,15 +67,7 @@ func ParsePythonIntent(code string) *ToolIntent {
 				case "read_text", "read_bytes":
 					intents = append(intents, ToolIntent{Kind: "read", Target: label})
 				case "open":
-					mode := "r"
-					if mm := modeRegex.FindStringSubmatch(args); mm != nil {
-						mode = mm[1]
-					}
-					kind := "read"
-					if strings.ContainsAny(mode, "wax+") {
-						kind = "write"
-					}
-					intents = append(intents, ToolIntent{Kind: kind, Target: label})
+					intents = append(intents, ToolIntent{Kind: openIntentKind(args), Target: label})
 				}
 				continue
 			}
@@ -108,15 +100,7 @@ func ParsePythonIntent(code string) *ToolIntent {
 					case "read":
 						intents = append(intents, ToolIntent{Kind: "read", Target: label})
 					case "open":
-						mode := "r"
-						if mm := modeRegex.FindStringSubmatch(args); mm != nil {
-							mode = mm[1]
-						}
-						kind := "read"
-						if strings.ContainsAny(mode, "wax+") {
-							kind = "write"
-						}
-						intents = append(intents, ToolIntent{Kind: kind, Target: label})
+						intents = append(intents, ToolIntent{Kind: openIntentKind(args), Target: label})
 					}
 				}
 			}
@@ -127,6 +111,17 @@ func ParsePythonIntent(code string) *ToolIntent {
 		return nil
 	}
 	return &intents[len(intents)-1]
+}
+
+func openIntentKind(args string) string {
+	mode := "r"
+	if match := modeRegex.FindStringSubmatch(args); match != nil {
+		mode = match[1]
+	}
+	if strings.ContainsAny(mode, "wax+") {
+		return "write"
+	}
+	return "read"
 }
 
 // runWords is the leading string literals of run()'s arguments: the program
