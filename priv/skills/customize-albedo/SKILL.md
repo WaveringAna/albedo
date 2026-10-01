@@ -22,12 +22,12 @@ A skill is a directory named after the skill, holding a `SKILL.md`. At startup t
 
 ### Where to put it
 
-Ask the user when it is not obvious. Locations, highest precedence first (a name found earlier replaces a later one):
+Default to the portable Agent Skills locations, which other agents read too, so the skill works beyond albedo:
 
-1. `<project>/.albedo/skills/<name>/` for a skill that belongs to one project
-2. `<project>/.agents/skills/<name>/` for the same, in the portable Agent Skills location other agents read too
-3. `~/.albedo/skills/<name>/` for a personal skill in every project
-4. `~/.agents/skills/<name>/` for the same, in the portable location
+- `<project>/.agents/skills/<name>/` for a skill that belongs to one project, committed with it
+- `~/.agents/skills/<name>/` for a personal skill available in every project
+
+`.albedo/skills/` (in the project or in `~`) is read as well. Use it only for a skill that is specific to albedo, such as one that relies on its commands. If the same name exists in both, the `.albedo` copy wins, and a project skill wins over a personal one. Ask the user when the right place is not obvious.
 
 A skill that ships with albedo is replaced by a same-named skill from any of these.
 
@@ -78,14 +78,14 @@ After `/reload session`, the skill should appear in the model's skill catalog an
 Markdown the model always has in context:
 
 - `AGENTS.md` or `CLAUDE.md` in the project root
-- any `*.md` in `<project>/.agents/` or `<project>/.albedo/`
-- any `*.md` in `~/.agents/` or `~/.albedo/`, for personal preferences
+- any `*.md` in `<project>/.agents/`, or in `<project>/.albedo/` for albedo-only guidance
+- any `*.md` in `~/.agents/`, or in `~/.albedo/` for albedo-only guidance, for personal preferences
 
-Project files win over personal ones on a conflict. Put what is true of this project (layout, how to build and test, conventions) in `AGENTS.md`, and personal habits in `~`. Every line costs context on every request, so keep these short and move occasional procedures into a skill.
+Project files win over personal ones on a conflict. Put what is true of this project (layout, how to build and test, conventions) in `AGENTS.md`, which other agents read too, and personal habits in `~/.agents/`. Every line costs context on every request, so keep these short and move occasional procedures into a skill.
 
 ### Changing the system prompt
 
-Two special files sit beside the instruction files, searched in the same five places (project root, `<project>/.agents/`, `<project>/.albedo/`, `~/.agents/`, `~/.albedo/`), matched without regard to case, and never loaded as ordinary instructions:
+Two special files sit beside the instruction files, searched in the same five places (project root, `<project>/.agents/`, `<project>/.albedo/`, `~/.agents/`, `~/.albedo/`; prefer the `.agents` ones), matched without regard to case, and never loaded as ordinary instructions:
 
 - `APPEND_SYSTEM.md` adds text after albedo's base prompt and the extension context, ahead of `AGENTS.md`. Every match in every location is used, in that order. This is the normal way to add guidance that should always apply.
 - `SYSTEM.md` replaces albedo's base prompt outright; only the highest-priority match is used. Extension context and instruction files are still added after it. Replacing the base prompt drops albedo's built-in guidance, so prefer `APPEND_SYSTEM.md` unless the user wants a different prompt entirely.
