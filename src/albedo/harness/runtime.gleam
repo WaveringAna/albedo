@@ -227,6 +227,11 @@ pub fn migrate(
   extension.migrate(runtime.extensions, runtime.work, backup)
 }
 
+/// Every installed extension's cleanup for a deleted session.
+pub fn cleaners(runtime: Runtime) -> List(extension.Cleaner) {
+  extension.cleaners(runtime.extensions)
+}
+
 fn checked_id(id: String) -> Result(String, python.Error) {
   case string.trim(id) == "" || string.byte_size(id) > 256 {
     True ->

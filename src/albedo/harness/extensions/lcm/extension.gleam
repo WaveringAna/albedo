@@ -62,6 +62,7 @@ fn bundle(
           prepare(config, context, history)
         }),
       ),
+      harness_extension.CleanPlugin(graph.forget_session),
     ],
     graph.initialise,
   )

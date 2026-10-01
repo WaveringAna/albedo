@@ -252,6 +252,11 @@ pub type ModelProvider {
   )
 }
 
+/// What an extension deletes when a session is deleted: its rows for the
+/// session, inside the delete's transaction.
+pub type Cleaner =
+  fn(sqlight.Connection, String) -> Result(Nil, String)
+
 pub type Plugin {
   ContextPlugin(load: fn(String) -> Result(String, String))
   ToolPlugin(
@@ -281,6 +286,10 @@ pub type Plugin {
   ServicePlugin(service: Service)
   /// SQLite upgrades owned by this extension, applied by the host at startup.
   MigrationPlugin(migration: Migration)
+  /// Rows this extension keeps for a session, deleted with it. Every
+  /// installed extension's runs, enabled or not: its rows still belong to the
+  /// session.
+  CleanPlugin(clean: Cleaner)
 }
 
 pub type Migration {
@@ -1228,6 +1237,7 @@ pub fn summaries(
             LoginPlugin(_) -> "login"
             ServicePlugin(_) -> "service"
             MigrationPlugin(_) -> "migration"
+            CleanPlugin(_) -> "clean"
           }
         }),
         None,
@@ -1365,6 +1375,16 @@ pub fn compaction(installed: List(Extension)) -> Option(compaction.Strategy) {
   })
   |> list.first
   |> option.from_result
+}
+
+/// Every installed extension's session cleanup, in registry order.
+pub fn cleaners(installed: List(Extension)) -> List(Cleaner) {
+  plugin_values(installed, fn(_, plugin) {
+    case plugin {
+      CleanPlugin(clean) -> Ok(clean)
+      _ -> Error(Nil)
+    }
+  })
 }
 
 /// Every enabled notes layer, in registry order.

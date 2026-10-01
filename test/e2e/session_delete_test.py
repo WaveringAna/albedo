@@ -58,19 +58,26 @@ class SessionDeleteTests(unittest.TestCase):
         for prompt in ("first", "second", "third", "fourth"):
             self.app.prompt(session, prompt + " " + "x" * 6000).close()
             self.app.idle(session)
+        self.compact(session, strategy)
+        return session
+
+    def compact(self, session, strategy):
         with self.app.api(
             f"/sessions/{session}/commands",
             {"name": "/compact", "arguments": strategy},
         ) as response:
             self.assertTrue(json.load(response)["result"]["started"])
         self.app.idle(session)
-        return session
 
-    def assert_delete_clears(self, strategy, table):
+    def assert_delete_clears(self, strategy, table, then=None):
         session = self.compacted_session(strategy)
         with self.database() as db:
             self.assertGreater(self.rows(db, table, session), 0, table)
             self.assertIn(table, self.keyed_tables(db))
+        if then:
+            self.compact(session, then)
+            with self.database() as db:
+                self.assertGreater(self.rows(db, table, session), 0, table)
         with self.app.api(f"/sessions/{session}", method="DELETE") as response:
             self.assertEqual(response.status, 200)
         with self.database() as db:
@@ -90,6 +97,35 @@ class SessionDeleteTests(unittest.TestCase):
 
     def test_lcm_rows_go_with_the_session(self):
         self.assert_delete_clears("lcm", "lcm_compaction_node")
+
+    def test_rows_of_a_strategy_switched_off_go_too(self):
+        # Switching to rolling disables lcm; its graph still belongs to the session.
+        self.assert_delete_clears("lcm", "lcm_compaction_node", then="rolling")
+
+    def test_work_and_schedule_rows_go_with_the_session(self):
+        session = self.app.session()
+        with self.app.api(
+            f"/sessions/{session}/commands",
+            {
+                "name": "/schedule",
+                "args": {"action": "add", "details": "in:3600 build"},
+            },
+        ) as response:
+            response.read()
+        # An item assigned to a session; the Python API cannot assign one.
+        with sqlite3.connect(self.app.home / "albedo.sqlite", timeout=10) as db:
+            db.execute(
+                "INSERT INTO work(title, session, cwd) VALUES('assigned', ?, '/w')",
+                (session,),
+            )
+        with self.database() as db:
+            for table in ("work", "schedules"):
+                self.assertGreater(self.rows(db, table, session), 0, table)
+        with self.app.api(f"/sessions/{session}", method="DELETE") as response:
+            self.assertEqual(response.status, 200)
+        with self.database() as db:
+            for table in ("work", "schedules"):
+                self.assertEqual(self.rows(db, table, session), 0, table)
 
     def test_snapcompact_archive_goes_with_the_session(self):
         self.assert_delete_clears("snapcompact", "snapcompact_archive")

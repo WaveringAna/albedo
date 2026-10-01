@@ -216,9 +216,17 @@ pub fn extension() -> extension.Extension {
     "snapcompact",
     description,
     ["snapcompact-memory"],
-    compaction_plugins(),
+    [clean_plugin(), ..compaction_plugins()],
     initialise,
   )
+}
+
+/// The archive goes with its session. Frames are cached by content, not
+/// session, so they stay.
+fn clean_plugin() -> extension.Plugin {
+  extension.CleanPlugin(fn(db, session) {
+    store.forget_session(db, ["snapcompact_archive"], session)
+  })
 }
 
 /// The saved archive and the transcript tools stay available after a switch
@@ -295,7 +303,10 @@ pub fn configured_extension(config: Config) -> extension.Extension {
     "snapcompact",
     description,
     [],
-    [extension.CompactionPlugin(strategy_with(fn() { Ok(config) }))],
+    [
+      clean_plugin(),
+      extension.CompactionPlugin(strategy_with(fn() { Ok(config) })),
+    ],
     initialise,
   )
 }

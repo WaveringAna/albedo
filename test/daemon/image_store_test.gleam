@@ -118,13 +118,13 @@ pub fn deleting_a_session_releases_only_unshared_payloads_test() -> Nil {
   let assert Ok(_) =
     conversation.commit(ledger, "b", inputs(), conversation.Idle)
 
-  let assert Ok(_) = conversation.delete(ledger, "a")
+  let assert Ok(_) = conversation.delete(ledger, "a", [])
   count(ledger, "SELECT count(*) FROM images") |> should.equal(1)
   let assert [types.UserImage(_, kept), ..] = loaded(ledger, "b")
   let assert types.StoredData(read: read, ..) = types.image_data(kept)
   read() |> should.equal(Ok(png))
 
-  let assert Ok(_) = conversation.delete(ledger, "b")
+  let assert Ok(_) = conversation.delete(ledger, "b", [])
   count(ledger, "SELECT count(*) FROM images") |> should.equal(0)
   cleanup(path)
 }

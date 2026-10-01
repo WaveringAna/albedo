@@ -260,7 +260,13 @@ pub fn given_name(store: store.Store, id: String) -> Option(String) {
 }
 
 /// Permanently remove a session and its dependent records in one transaction.
-pub fn delete(store: store.Store, id: String) -> Result(Nil, String) {
+/// The tables here are the daemon's own; each extension's `cleaners` delete
+/// what it keeps for the session, before the session row goes.
+pub fn delete(
+  store: store.Store,
+  id: String,
+  cleaners: List(fn(sqlight.Connection, String) -> Result(Nil, String)),
+) -> Result(Nil, String) {
   store.query(store, fn(db) {
     store.transaction(db, fn() {
       use hashes <- result.try(images.session_hashes(db, id))
@@ -274,21 +280,15 @@ pub fn delete(store: store.Store, id: String) -> Result(Nil, String) {
         True -> journal.session_hashes(db, id)
         False -> Ok([])
       })
+      // Cell rows stay here: deleting them feeds the image reference count
+      // released below, in this transaction.
       use _ <- result.try(
         list.try_each(
           [
             "transcript",
             "provider_requests",
-            "schedules",
             "session_extensions",
-            "rolling_compaction_state",
-            "rolling_compaction_observation",
-            "compaction_notes",
-            "snapcompact_archive",
-            "lcm_compaction_state",
-            "lcm_compaction_node",
             "cells",
-            "work",
           ],
           fn(table) {
             case list.contains(tables, table) {
@@ -301,12 +301,6 @@ pub fn delete(store: store.Store, id: String) -> Result(Nil, String) {
                       "DELETE FROM cell_traces WHERE id IN (SELECT id FROM cells WHERE session=?)",
                       [sqlight.text(id)],
                     )
-                  "lcm_compaction_node" ->
-                    store.run(
-                      db,
-                      "DELETE FROM lcm_compaction_edge WHERE child IN (SELECT id FROM lcm_compaction_node WHERE session=?1) OR parent IN (SELECT id FROM lcm_compaction_node WHERE session=?1)",
-                      [sqlight.text(id)],
-                    )
                   _ -> Ok(Nil)
                 })
                 store.run(db, "DELETE FROM " <> table <> " WHERE session=?", [
@@ -317,6 +311,7 @@ pub fn delete(store: store.Store, id: String) -> Result(Nil, String) {
           },
         ),
       )
+      use _ <- result.try(list.try_each(cleaners, fn(clean) { clean(db, id) }))
       use _ <- result.try(
         store.run(db, "DELETE FROM sessions WHERE id=?", [sqlight.text(id)]),
       )

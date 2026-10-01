@@ -99,6 +99,20 @@ pub fn run(
   rows(db, sql, arguments, decode.dynamic) |> result.replace(Nil)
 }
 
+/// Deletes the rows `tables` keep for `session`: the cleanup an extension
+/// that owns session-keyed tables registers with a `CleanPlugin`.
+pub fn forget_session(
+  db: sqlight.Connection,
+  tables: List(String),
+  session: String,
+) -> Result(Nil, String) {
+  list.try_each(tables, fn(table) {
+    run(db, "DELETE FROM " <> table <> " WHERE session=?", [
+      sqlight.text(session),
+    ])
+  })
+}
+
 pub fn rows(
   db: sqlight.Connection,
   sql: String,

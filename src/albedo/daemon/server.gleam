@@ -563,7 +563,11 @@ fn delete_idle(
     True -> Error("session is busy")
     False -> {
       use _ <- result.try(settings.forget(state.config.home, id))
-      conversation.delete(runtime.ledger(state.host), id)
+      conversation.delete(
+        runtime.ledger(state.host),
+        id,
+        runtime.cleaners(state.host),
+      )
     }
   }
 }
@@ -1210,7 +1214,7 @@ fn create_child(
     case family.link(db, info.id, parent, name) {
       Ok(member) -> Ok(#(info, member))
       Error(error) -> {
-        let _ = conversation.delete(db, info.id)
+        let _ = conversation.delete(db, info.id, runtime.cleaners(state.host))
         Error(error)
       }
     }

@@ -63,7 +63,12 @@ pub fn extension() -> extension.Extension {
     "notes",
     "Notes the model writes for itself at every compaction",
     [],
-    [extension.NotesPlugin(compaction.Notes("notes", apply))],
+    [
+      extension.NotesPlugin(compaction.Notes("notes", apply)),
+      extension.CleanPlugin(fn(db, session) {
+        store.forget_session(db, ["compaction_notes"], session)
+      }),
+    ],
     initialise,
   )
 }

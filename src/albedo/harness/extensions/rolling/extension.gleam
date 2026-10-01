@@ -105,7 +105,16 @@ fn bundle(strategy: compaction.Strategy) -> extension.Extension {
     "rolling",
     "Incremental summary, recent-user recap, and verbatim conversation tail",
     [],
-    [extension.CompactionPlugin(strategy)],
+    [
+      extension.CompactionPlugin(strategy),
+      extension.CleanPlugin(fn(db, session) {
+        store.forget_session(
+          db,
+          ["rolling_compaction_state", "rolling_compaction_observation"],
+          session,
+        )
+      }),
+    ],
     initialise,
   )
 }

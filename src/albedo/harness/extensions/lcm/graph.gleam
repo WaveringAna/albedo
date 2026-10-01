@@ -27,6 +27,25 @@ pub fn initialise(ledger: store.Store) -> Result(Nil, String) {
   })
 }
 
+/// Deletes a session's summary graph, edges first: they reference its nodes.
+pub fn forget_session(
+  db: sqlight.Connection,
+  session: String,
+) -> Result(Nil, String) {
+  use _ <- result.try(
+    store.run(
+      db,
+      "DELETE FROM lcm_compaction_edge WHERE child IN (SELECT id FROM lcm_compaction_node WHERE session=?1) OR parent IN (SELECT id FROM lcm_compaction_node WHERE session=?1)",
+      [sqlight.text(session)],
+    ),
+  )
+  store.forget_session(
+    db,
+    ["lcm_compaction_state", "lcm_compaction_node"],
+    session,
+  )
+}
+
 /// The single row `sql` answers, or `None` when it answers none.
 fn one_row(
   ledger: store.Store,

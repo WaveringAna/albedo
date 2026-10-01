@@ -15,6 +15,9 @@ pub fn extension() -> extension.Extension {
     "Durable session prompts, recurring reminders, and idle heartbeats.",
     ["python"],
     [
+      extension.CleanPlugin(fn(db, session) {
+        store.forget_session(db, ["schedules"], session)
+      }),
       extension.ManagedPlugin(fn(db, session, _) {
         Ok(
           extension.Managed(..extension.empty(), commands: [
