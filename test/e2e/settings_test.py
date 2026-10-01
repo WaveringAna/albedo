@@ -273,6 +273,60 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(after["mcp"], before["mcp"])
         self.assertEqual(after["capabilities"], before["capabilities"])
 
+    def test_capability_defaults_and_session_overrides_control_context_and_commands(
+        self,
+    ):
+        instruction = "CAPABILITY_INSTRUCTION_MARKER"
+        description = "CAPABILITY_SKILL_MARKER"
+        (self.app.workspace / "AGENTS.md").write_text(instruction)
+        skill = self.app.workspace / ".albedo/skills/preference-demo/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text(
+            "---\nname: preference-demo\ndescription: "
+            + description
+            + "\n---\nSkill body.\n"
+        )
+
+        def prompt_context(session):
+            self.app.prompt(session, "inspect capability preferences").close()
+            self.app.idle(session)
+            return json.dumps(self.provider.requests[-1]["request"])
+
+        default_session = self.app.session()
+        context = prompt_context(default_session)
+        self.assertIn(instruction, context)
+        self.assertIn(description, context)
+
+        self.capability(scope="global", enabled=False)
+        self.capability(
+            kind="skills", name="preference-demo", scope="global", enabled=False
+        )
+        disabled_session = self.app.session()
+        context = prompt_context(disabled_session)
+        self.assertNotIn(instruction, context)
+        self.assertNotIn(description, context)
+        self.assertNotIn(
+            "/preference-demo",
+            {
+                item["name"]
+                for item in self.request(f"/sessions/{disabled_session}/commands")
+            },
+        )
+
+        self.capability(enabled=True)
+        self.capability(kind="skills", name="preference-demo", enabled=True)
+        context = prompt_context(self.session)
+        self.assertIn(instruction, context)
+        self.assertIn(description, context)
+        commands_route = f"/sessions/{self.session}/commands"
+        self.assertIn(
+            "/preference-demo", {item["name"] for item in self.request(commands_route)}
+        )
+        self.capability(kind="skills", name="preference-demo", enabled=None)
+        self.assertNotIn(
+            "/preference-demo", {item["name"] for item in self.request(commands_route)}
+        )
+
     def test_mcp_save_delete_and_failed_connection_restore_settings_and_credentials(
         self,
     ):
@@ -322,6 +376,12 @@ class SettingsTest(unittest.TestCase):
                 lambda: self.request("/settings/ui", {"tools": True}, "PATCH"),
             ),
             ("capabilities.json", {"global": {"skills": []}}, self.capability),
+            ("capabilities.json", {"sessions": []}, self.capability),
+            (
+                "capabilities.json",
+                {"sessions": {"other-session": {"mcp": {"broken": "yes"}}}},
+                self.capability,
+            ),
             (
                 "extensions.json",
                 {"mcp": {"servers": []}},

@@ -69,7 +69,8 @@ select_files([File = {Scope, Display, _} | Rest], Selection, Selected) ->
         undefined -> {ok, true};
         {Home, Session} ->
             Name = <<(atom_to_binary(Scope))/binary, ":", Display/binary>>,
-            albedo_capabilities:optional(Session, Home, <<"instructions">>, Name)
+            SelectedSession = case Session of undefined -> none; _ -> {some, Session} end,
+            'albedo@harness@capabilities':optional(SelectedSession, Home, <<"instructions">>, Name)
     end,
     case Enabled of
         {ok, true} -> select_files(Rest, Selection, [File | Selected]);

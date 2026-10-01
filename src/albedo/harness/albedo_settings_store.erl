@@ -92,13 +92,7 @@ capability(Home, Session, Kind, Name, Value, After) ->
     end, After).
 
 validate_caps(Config) ->
-    Groups = [object(<<"global">>, Config) | maps:values(object(<<"sessions">>, Config))],
-    lists:foreach(fun(Group) ->
-        true = is_map(Group),
-        lists:foreach(fun(Kind) ->
-            true = lists:all(fun({K, V}) -> is_binary(K) andalso is_boolean(V) end, maps:to_list(object(Kind, Group)))
-        end, [<<"skills">>, <<"instructions">>, <<"mcp">>])
-    end, Groups).
+    check('albedo@harness@capabilities':validate(Config)).
 
 mcp(Home, Name, ServerJSON, SecretsJSON, After) ->
     transaction(Home, <<"extensions.json">>, {<<"mcp">>, Name}, fun validate_mcp/1, fun(Prior) ->

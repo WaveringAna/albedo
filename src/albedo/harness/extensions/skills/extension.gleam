@@ -6,6 +6,7 @@
 //// unified command catalog, where a user invocation submits the activation as
 //// one turn and a model invocation returns it as data.
 
+import albedo/harness/capabilities
 import albedo/harness/command
 import albedo/harness/extension as harness_extension
 import albedo/harness/extensions/skills/catalog
@@ -30,7 +31,7 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
         use discovered <- result.try(catalog.scan_at(workspace, home))
         use names <- result.try(
           list.try_fold(discovered.skills, [], fn(acc, skill) {
-            use enabled <- result.try(item_enabled(
+            use enabled <- result.try(capabilities.enabled(
               settings.home(),
               session,
               "skills",
@@ -63,14 +64,6 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
     harness_extension.no_initialise,
   )
 }
-
-@external(erlang, "albedo_capabilities", "enabled")
-fn item_enabled(
-  home: String,
-  session: String,
-  kind: String,
-  name: String,
-) -> Result(Bool, String)
 
 const instructions = "Agent Skills are cataloged session commands. Invoke one through the `commands` object (commands.catalog() maps slash names to methods): it returns the skill's instructions as data and never submits a turn or executes bundled scripts. `await skills.resources(name)` returns a record whose .resources lists bundled resource names, and `await skills.read(name, resource=\"SKILL.md\", offset=0, limit=16384)` reads one bounded page as a record: page.content, page.next_offset, and page.truncated (page[\"content\"] works too). Failures raise SkillsError. A user may explicitly run the listed slash command, which submits the activation as one user turn."
 
