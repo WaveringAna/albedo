@@ -60,6 +60,18 @@ class PythonToolsTests(unittest.TestCase):
         self.assertIn("before", output)
         self.assertIn("after", output)
 
+    def test_paths_searches_a_list_of_directories_with_a_list_of_globs(self):
+        for directory, name in [("a", "one.md"), ("b", "two.txt"), ("c", "three.md")]:
+            (self.app.workspace / directory).mkdir()
+            (self.app.workspace / directory / name).write_text("x")
+        output = self.execute(
+            "rows = await files.paths(None, ['a', 'b'], glob=['*.md', '*.txt'])\n"
+            "print(sorted(str(row) for row in rows))"
+        )
+        self.assertIn("one.md", output)
+        self.assertIn("two.txt", output)
+        self.assertNotIn("three.md", output)
+
     def test_a_cell_reports_how_long_it_ran(self):
         session = self.app.session()
         slept = self.run_cell("import asyncio\nawait asyncio.sleep(0.3)", session)

@@ -275,10 +275,7 @@ class Files:
         hidden: bool,
     ) -> Rows:
         albedo_trace.note("search", pattern)
-        targets = [
-            Path(item).expanduser()
-            for item in ([path] if isinstance(path, str) else path)
-        ]
+        targets = _targets(path)
         if not _which("rg"):
             return _fallback_find(
                 pattern,
@@ -301,7 +298,7 @@ class Files:
             flags.append("-i")
         if hidden:
             flags.append("--hidden")
-        for value in [glob] if isinstance(glob, str) else list(glob or []):
+        for value in _globs(glob):
             flags += ["-g", value]
         command = " ".join(
             shlex.quote(part)
@@ -339,15 +336,15 @@ class Files:
     def paths(
         self,
         pattern: str | None = None,
-        path: str = ".",
+        path: str | Sequence[str] = ".",
         *,
-        glob: str | None = None,
+        glob: str | Sequence[str] | None = None,
         max_results: int = 100,
         hidden: bool = False,
     ) -> Search[Rows]:
         """File names, not contents; the same ripgrep-or-Python split. A pattern
         with *, ? or [ is a glob over names; other text matches anywhere in the path.
-        Await it: `await files.paths(pattern)`."""
+        `path` may be one path or a list. Await it: `await files.paths(pattern)`."""
         return Search(
             "files.paths", lambda: self._paths(pattern, path, glob, max_results, hidden)
         )
@@ -355,20 +352,23 @@ class Files:
     async def _paths(
         self,
         pattern: str | None,
-        path: str,
-        glob: str | None,
+        path: str | Sequence[str],
+        glob: str | Sequence[str] | None,
         max_results: int,
         hidden: bool,
     ) -> Rows:
-        target = Path(path).expanduser()
+        targets = _targets(path)
+        globs = _globs(glob)
         if not _which("rg"):
-            return _fallback_paths(pattern, target, glob, max_results, hidden)
+            return _fallback_paths(pattern, targets, globs, max_results, hidden)
         flags = ["--files"]
         if hidden:
             flags.append("--hidden")
-        if glob:
-            flags += ["-g", glob]
-        command = " ".join(shlex.quote(part) for part in ["rg", *flags, str(target)])
+        for value in globs:
+            flags += ["-g", value]
+        command = " ".join(
+            shlex.quote(part) for part in ["rg", *flags, *map(str, targets)]
+        )
         _, output = await _run(command)
         matches = _name_matcher(pattern)
         found = [line for line in output.splitlines() if line and matches(line)]
@@ -433,14 +433,11 @@ def _fallback_find(
 ) -> Rows:
     flags = 0 if case_sensitive else re.IGNORECASE
     matcher = re.compile(re.escape(pattern) if literal else pattern, flags)
-    globs = [glob] if isinstance(glob, str) else list(glob or [])
+    globs = _globs(glob)
     results, matched = [], 0
     for target in targets:
         for file in _walk(target, hidden):
-            if globs and not any(
-                fnmatch.fnmatch(str(file), value) or fnmatch.fnmatch(file.name, value)
-                for value in globs
-            ):
+            if not _globbed(file, globs):
                 continue
             try:
                 lines = file.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -471,6 +468,24 @@ def _fallback_find(
     return Rows(results)
 
 
+def _targets(path: str | Sequence[str]) -> list[Path]:
+    return [
+        Path(item).expanduser() for item in ([path] if isinstance(path, str) else path)
+    ]
+
+
+def _globs(glob: str | Sequence[str] | None) -> list[str]:
+    return [glob] if isinstance(glob, str) else list(glob or [])
+
+
+def _globbed(file: Path, globs: list[str]) -> bool:
+    """True when there is no glob, or one matches the path or the file name."""
+    return not globs or any(
+        fnmatch.fnmatch(str(file), value) or fnmatch.fnmatch(file.name, value)
+        for value in globs
+    )
+
+
 def _name_matcher(pattern: str | None) -> Callable[[str], bool]:
     """A pattern with *, ? or [ is a glob over the file name (or the whole path
     when it has a /); anything else matches as case-insensitive text anywhere
@@ -485,12 +500,15 @@ def _name_matcher(pattern: str | None) -> Callable[[str], bool]:
     return lambda path: folded in path.lower()
 
 
-def _fallback_paths(pattern, path: Path, glob, max_results, hidden) -> Rows:
+def _fallback_paths(
+    pattern, targets: list[Path], globs: list[str], max_results, hidden
+) -> Rows:
     matches = _name_matcher(pattern)
     found = [
         str(file)
-        for file in _walk(path, hidden)
-        if (glob is None or fnmatch.fnmatch(file.name, glob)) and matches(str(file))
+        for target in targets
+        for file in _walk(target, hidden)
+        if _globbed(file, globs) and matches(str(file))
     ]
     return Rows(found[:max_results], truncated=len(found) > max_results)
 
