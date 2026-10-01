@@ -23,6 +23,7 @@ import reprlib
 import select
 import signal
 import pickle
+import types
 import struct
 import sys
 import tempfile
@@ -72,6 +73,7 @@ active_capture: Capture | None = None
 interrupt_capture: Capture | None = None
 ARCHIVES: collections.OrderedDict[str, Capture] = collections.OrderedDict()
 NAMESPACE: dict[str, object] = {"__name__": "__main__"}
+DEFINITIONS: collections.OrderedDict[str, str] = collections.OrderedDict()
 CLEANUP: list[albedo_api.Cleanup] = []
 HANDLES: list[type[object]] = [asyncio.Task]
 REPR = reprlib.Repr()
@@ -557,9 +559,12 @@ def interrupt(_signal: int, _frame: FrameType | None) -> None:
         raise KeyboardInterrupt()
 
 
-def compile_cell(source: str, filename: str) -> tuple[CodeType, CodeType | None]:
-    """Every part compiles before anything runs; a trailing expression yields the cell value."""
+def compile_cell(
+    source: str, filename: str
+) -> tuple[CodeType, CodeType | None, ast.Module]:
+    """Compile every part before running; return the unmodified tree for state capture."""
     tree = ast.parse(source, filename=filename)
+    original = ast.Module(body=list(tree.body), type_ignores=tree.type_ignores)
     last = tree.body[-1] if tree.body else None
     trailing = None
     if isinstance(last, ast.Expr):
@@ -576,13 +581,125 @@ def compile_cell(source: str, filename: str) -> tuple[CodeType, CodeType | None]
         if trailing
         else None
     )
-    return prefix, suffix
+    return prefix, suffix, original
+
+
+def _target_names(node: ast.AST) -> set[str]:
+    return {
+        target.id
+        for target in ast.walk(node)
+        if isinstance(target, ast.Name) and isinstance(target.ctx, (ast.Store, ast.Del))
+    }
+
+
+def _bound_names(node: ast.AST) -> set[str]:
+    names = {
+        item.id
+        for item in ast.walk(node)
+        if isinstance(item, ast.Name) and isinstance(item.ctx, (ast.Store, ast.Del))
+    }
+    for item in ast.walk(node):
+        if isinstance(item, ast.ExceptHandler) and item.name:
+            names.add(item.name)
+        elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(item.name)
+    return names
+
+
+def _drop_definition(name: str) -> None:
+    for key in list(DEFINITIONS):
+        if key == name or key.startswith(name + "#"):
+            DEFINITIONS.pop(key, None)
+
+
+def _definition_changes(
+    source: str, tree: ast.Module
+) -> list[tuple[set[str], str | None, bool]]:
+    changes: list[tuple[set[str], str | None, bool]] = []
+    for statement in tree.body:
+        names: set[str] = set()
+        definition = isinstance(
+            statement,
+            (
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+                ast.Import,
+                ast.ImportFrom,
+            ),
+        )
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(statement.name)
+        elif isinstance(statement, ast.Import):
+            names.update(
+                alias.asname or alias.name.split(".")[0] for alias in statement.names
+            )
+        elif isinstance(statement, ast.ImportFrom):
+            names.update(
+                alias.asname or alias.name
+                for alias in statement.names
+                if alias.name != "*"
+            )
+        else:
+            names = _bound_names(statement)
+        if names:
+            changes.append(
+                (
+                    names,
+                    ast.get_source_segment(source, statement) if definition else None,
+                    isinstance(statement, ast.Import),
+                )
+            )
+    return changes
+
+
+def capture_definitions(
+    source: str, tree: ast.Module, upto_line: int | None = None
+) -> None:
+    for statement, (names, segment, is_import) in zip(
+        tree.body, _definition_changes(source, tree)
+    ):
+        if (
+            upto_line is not None
+            and (statement.end_lineno or statement.lineno) >= upto_line
+        ):
+            continue
+        for name in names:
+            # Plain dotted imports share their root binding and must accumulate.
+            plain_dotted = (
+                is_import
+                and any(
+                    alias.name.startswith(name + ".") and alias.asname is None
+                    for alias in statement.names
+                )
+                if isinstance(statement, ast.Import)
+                else False
+            )
+            if not plain_dotted:
+                _drop_definition(name)
+        if segment is not None:
+            key = next(iter(names), "definition")
+            if (
+                is_import
+                and isinstance(statement, ast.Import)
+                and any(
+                    "." in alias.name and alias.asname is None
+                    for alias in statement.names
+                )
+            ):
+                while key in DEFINITIONS:
+                    key += "#2"
+            elif key in DEFINITIONS:
+                _drop_definition(key)
+            # One source segment is replayed once; its imports bind every listed name.
+            if segment not in DEFINITIONS.values():
+                DEFINITIONS[key] = segment
 
 
 async def evaluate(source: str, cell_id: str, durable: bool = False) -> object:
     started = False
     try:
-        prefix, suffix = compile_cell(source, "<albedo:" + cell_id + ">")
+        prefix, suffix, tree = compile_cell(source, "<albedo:" + cell_id + ">")
         if durable:
             _ = await host("cells.started", {"id": cell_id})
         started = True
@@ -594,8 +711,20 @@ async def evaluate(source: str, cell_id: str, durable: bool = False) -> object:
             if inspect.isawaitable(value) and not isinstance(value, tuple(HANDLES)):
                 value = await cast(Awaitable[object], value)
             NAMESPACE["_"] = value
-            return value
+        capture_definitions(source, tree)
+        return value
     except BaseException as error:
+        filename = "<albedo:" + cell_id + ">"
+        line = next(
+            (
+                lineno
+                for frame, lineno in traceback.walk_tb(error.__traceback__)
+                if frame.f_code.co_filename == filename
+            ),
+            None,
+        )
+        if "tree" in locals() and line is not None:
+            capture_definitions(source, tree, line)
         if not hasattr(error, "_albedo_cell_id"):
             setattr(error, "_albedo_cell_id", cell_id)
             setattr(error, "_albedo_started", started)
@@ -758,9 +887,11 @@ class Cells:
 
 
 # Saved state is the session's own namespace, written by this kernel into the
-# daemon's home. Loading it runs pickle: the same trust domain as the transcript.
-STATE_MAX = 256 * 1024 * 1024
-STATE_MAX_VALUE = 16 * 1024 * 1024
+# daemon's home. Loading pickle and replaying definitions share the transcript's trust domain.
+STATE_MAX = 64 * 1024 * 1024
+STATE_MAX_VALUE = 8 * 1024 * 1024
+DEFINITION_MAX = 256 * 1024
+DEFINITION_MAX_VALUE = 32 * 1024
 INJECTED: set[str] = {"__name__", "__builtins__", "_"}
 
 
@@ -776,38 +907,63 @@ def engine() -> tuple[object, str]:
 
 
 def save_state(path: str) -> dict[str, object]:
-    """Serialise each name on its own, so one unpicklable object costs only itself."""
+    """Serialise values and readable top-level definitions within fixed caps."""
     serialiser, kind = cast("Any", engine())
     payload: dict[str, bytes] = {}
     skipped: list[dict[str, str]] = []
     total = 0
+    largest: list[tuple[str, int]] = []
     for name in list(NAMESPACE.keys()):
         if name.startswith("_") or name in INJECTED:
             continue
-        value = NAMESPACE.get(
-            name, INJECTED
-        )  # a background thread may delete it mid-walk
+        value = NAMESPACE.get(name, INJECTED)
         if value is INJECTED:
             continue
         try:
             blob = cast(bytes, serialiser.dumps(value))
         except BaseException as error:
-            skipped.append(
-                {"name": name, "reason": f"{type(error).__name__}: {error}"[:200]}
-            )
+            if name not in DEFINITIONS or not isinstance(
+                value, (types.FunctionType, type, types.ModuleType)
+            ):
+                skipped.append(
+                    {"name": name, "reason": f"{type(error).__name__}: {error}"[:200]}
+                )
             continue
         if len(blob) > STATE_MAX_VALUE:
-            skipped.append(
-                {
-                    "name": name,
-                    "reason": f"{len(blob)} bytes exceeds the per-variable cap",
-                }
-            )
+            if name not in DEFINITIONS or not isinstance(
+                value, (types.FunctionType, type, types.ModuleType)
+            ):
+                skipped.append(
+                    {
+                        "name": name,
+                        "reason": f"{len(blob)} bytes exceeds the per-variable cap",
+                    }
+                )
         elif total + len(blob) > STATE_MAX:
             skipped.append({"name": name, "reason": "saved state is full"})
         else:
             payload[name] = blob
             total += len(blob)
+            if len(blob) >= 64 * 1024:
+                largest.append((name, len(blob)))
+    definitions: list[dict[str, str]] = []
+    definition_bytes = 0
+    for name, source in DEFINITIONS.items():
+        size = len(source.encode("utf-8"))
+        if size > DEFINITION_MAX_VALUE:
+            skipped.append(
+                {
+                    "name": name,
+                    "reason": f"definition is {size} bytes; per-definition cap is {DEFINITION_MAX_VALUE}",
+                }
+            )
+        elif definition_bytes + size > DEFINITION_MAX:
+            skipped.append(
+                {"name": name, "reason": "definitions are over the total source cap"}
+            )
+        else:
+            definitions.append({"name": name, "source": source})
+            definition_bytes += size
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         handle, temporary = tempfile.mkstemp(
@@ -815,31 +971,38 @@ def save_state(path: str) -> dict[str, object]:
         )
         try:
             with os.fdopen(handle, "wb") as file:
-                pickle.dump({"cwd": os.getcwd(), "names": payload}, file)
-            os.replace(temporary, path)  # a crash leaves the previous state intact
+                pickle.dump(
+                    {"cwd": os.getcwd(), "names": payload, "definitions": definitions},
+                    file,
+                )
+            os.replace(temporary, path)
         except BaseException:
             os.unlink(temporary)
             raise
     except OSError as error:
         return {"error": f"could not write saved state: {error}"}
+    largest.sort(key=lambda item: item[1], reverse=True)
     return {
-        "saved": sorted(payload),
+        "saved": sorted(set(payload) | {item["name"] for item in definitions}),
+        "defs": [item["name"] for item in definitions],
         "skipped": skipped,
+        "largest": [{"name": name, "bytes": size} for name, size in largest[:5]],
         "bytes": total,
         "engine": kind,
     }
 
 
 def load_state(path: str) -> dict[str, object]:
-    """Revive every name that survives; a name that fails is reported, not fatal."""
+    """Restore pickled values, then replay definitions in their saved order."""
     try:
         with open(path, "rb") as file:
             saved = cast(dict[str, object], pickle.load(file))
     except FileNotFoundError:
-        return {"restored": [], "failed": [], "error": "no saved state"}
+        return {"restored": [], "defs": [], "failed": [], "error": "no saved state"}
     except BaseException as error:
         return {
             "restored": [],
+            "defs": [],
             "failed": [],
             "error": f"unreadable saved state: {type(error).__name__}",
         }
@@ -855,10 +1018,39 @@ def load_state(path: str) -> dict[str, object]:
             )
         else:
             restored.append(name)
+    defs: list[str] = []
+    for item in cast(list[object], saved.get("definitions", [])):
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("name"), str)
+            or not isinstance(item.get("source"), str)
+        ):
+            continue
+        name, source = item["name"], item["source"]
+        try:
+            exec(compile(source, "<albedo:state>", "exec"), NAMESPACE)
+        except BaseException as error:
+            failed.append(
+                {"name": name, "reason": f"{type(error).__name__}: {error}"[:200]}
+            )
+        else:
+            if source not in DEFINITIONS.values():
+                key = name
+                while key in DEFINITIONS:
+                    key += "#2"
+                DEFINITIONS[key] = source
+            if name not in restored:
+                restored.append(name)
+            defs.append(name)
     directory = saved.get("cwd")
     if isinstance(directory, str) and os.path.isdir(directory):
         os.chdir(directory)
-    return {"restored": sorted(restored), "failed": failed, "engine": kind}
+    return {
+        "restored": sorted(set(restored)),
+        "defs": defs,
+        "failed": failed,
+        "engine": kind,
+    }
 
 
 def swap_sink(capture: Capture | None) -> Capture | None:

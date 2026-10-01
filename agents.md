@@ -72,7 +72,7 @@ An extension bundles plugins: context (system instructions), tool (model tools +
 
 ### robot-docs/
 
-`robot-docs/` is one model-facing doc per subsystem (agents, auth, settings, migrations, cache-ttl, cache-warming, commands, compaction, context, extensions, files, mcp, models, paperclips, provider-requests, proxy, quota, skills, usage-feed, webhooks, workspaces). This file is the map; those are the details. When you change a subsystem's behavior, update its doc in the same change; when you need to understand one, read it there first.
+`robot-docs/` is one model-facing doc per subsystem (agents, auth, settings, kernel-state, migrations, cache-ttl, cache-warming, commands, compaction, context, extensions, files, mcp, models, paperclips, provider-requests, proxy, quota, skills, usage-feed, webhooks, workspaces). This file is the map; those are the details. When you change a subsystem's behavior, update its doc in the same change; when you need to understand one, read it there first.
 
 ### Other directories
 

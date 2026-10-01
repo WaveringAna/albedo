@@ -123,7 +123,13 @@ fn execute_native(
 
 /// Names carried across a kernel's life: saved or restored, and those that could not be.
 pub type Saved {
-  Saved(names: List(String), missed: List(#(String, String)), engine: String)
+  Saved(
+    names: List(String),
+    missed: List(#(String, String)),
+    engine: String,
+    defs: List(String),
+    largest: List(#(String, Int)),
+  )
 }
 
 /// Write the namespace to path. The kernel must be idle; a busy kernel answers Busy.
@@ -171,11 +177,22 @@ fn saved_decoder() -> decode.Decoder(Result(Saved, Error)) {
   }
   let names = decode.list(decode.string)
   let entries = decode.list(entry)
+  let largest_entry = {
+    use name <- decode.field("name", decode.string)
+    use bytes <- decode.field("bytes", decode.int)
+    decode.success(#(name, bytes))
+  }
   use saved <- decode.optional_field("saved", [], names)
   use restored <- decode.optional_field("restored", [], names)
   use skipped <- decode.optional_field("skipped", [], entries)
   use failed <- decode.optional_field("failed", [], entries)
   use engine <- decode.optional_field("engine", "", decode.string)
+  use defs <- decode.optional_field("defs", [], names)
+  use largest <- decode.optional_field(
+    "largest",
+    [],
+    decode.list(largest_entry),
+  )
   use failure <- decode.optional_field("error", "", decode.string)
   decode.success(case failure {
     "" ->
@@ -183,6 +200,8 @@ fn saved_decoder() -> decode.Decoder(Result(Saved, Error)) {
         list.append(saved, restored),
         list.append(skipped, failed),
         engine,
+        defs,
+        largest,
       ))
     message -> Error(Invalid(message))
   })

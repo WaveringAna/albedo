@@ -49,26 +49,47 @@ pub fn save_state_within(
   }
 }
 
-fn names(saved: python.Saved) -> String {
-  string.join(list.take(saved.names, 40), ", ")
+fn names(values: List(String)) -> String {
+  string.join(list.take(values, 40), ", ")
+}
+
+fn human_size(bytes: Int) -> String {
+  case bytes {
+    bytes if bytes >= 1024 * 1024 -> int.to_string(bytes / 1_048_576) <> " MB"
+    bytes -> int.to_string(bytes / 1024) <> " KB"
+  }
+}
+
+fn largest(saved: python.Saved) -> String {
+  saved.largest
+  |> list.map(fn(entry) { entry.0 <> " (" <> human_size(entry.1) <> ")" })
+  |> names
 }
 
 fn restored_notice(saved: python.Saved) -> String {
   "<system-note>The python kernel restarted. These variables were restored from disk: "
-  <> names(saved)
+  <> names(saved.names)
+  <> case saved.defs {
+    [] -> ""
+    defs ->
+      ". Functions, classes, and imports re-run from source: " <> names(defs)
+  }
   <> case saved.missed {
-    [] -> "."
+    [] -> ""
     missed ->
-      ". These were not: "
+      ". These were not restored: "
       <> string.join(
         list.map(list.take(missed, 20), fn(entry) {
           entry.0 <> " (" <> entry.1 <> ")"
         }),
         ", ",
       )
-      <> "."
   }
-  <> " Imports and definitions from earlier cells are gone unless named here.</system-note>"
+  <> case saved.largest {
+    [] -> ""
+    _ -> ". Largest saved variables: " <> largest(saved)
+  }
+  <> ". Other imports and definitions from earlier cells are gone.</system-note>"
 }
 
 pub fn restored_text(saved: python.Saved) -> String {
@@ -87,7 +108,7 @@ pub fn released_text(
 ) -> String {
   let prefix = "python kernel released: " <> reason <> "; "
   case saved {
-    Ok(python.Saved([_, ..] as names, missed, engine)) ->
+    Ok(python.Saved([_, ..] as names, missed, engine, _defs, _largest)) ->
       prefix
       <> int.to_string(list.length(names))
       <> " variables saved to disk"
@@ -96,7 +117,7 @@ pub fn released_text(
         _, "pickle" ->
           ", "
           <> int.to_string(list.length(missed))
-          <> " skipped (install dill to also save functions and classes)"
+          <> " skipped (source definitions are restored when available)"
         _, _ -> ", " <> int.to_string(list.length(missed)) <> " skipped"
       }
     _ -> prefix <> "variables are gone, the transcript is intact"
@@ -147,7 +168,7 @@ pub fn adopt(
         None -> Error(python.Invalid("session has no state file"))
       }
       case revived {
-        Ok(python.Saved([_, ..], _, _) as saved) ->
+        Ok(python.Saved([_, ..], _, _, _, _) as saved) ->
           adopted(state, kernel, restored_notice(saved), restored_text(saved))
         _ -> adopted(state, kernel, lost_notice, lost_text)
       }

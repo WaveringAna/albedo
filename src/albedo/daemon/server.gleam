@@ -14,6 +14,7 @@ import albedo/daemon/requests
 import albedo/daemon/session
 import albedo/daemon/session_provider
 import albedo/daemon/settings
+import albedo/daemon/state_expiry
 import albedo/daemon/store
 import albedo/daemon/usage
 import albedo/harness/cache_ttl
@@ -55,6 +56,7 @@ pub type Config {
     token: String,
     idle_ms: Int,
     budget_kb: Int,
+    state_expiry_seconds: Int,
     /// How often schedules fire and letters left undelivered are retried.
     tick_ms: Int,
   )
@@ -131,6 +133,7 @@ type State {
     /// Mail arrived while a dispatcher ran; read the inbox again after it.
     mail_waiting: Bool,
     stage: Stage,
+    last_state_expiry: Int,
   )
 }
 
@@ -480,7 +483,23 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
       // must not make API calls wait behind filesystem or database work.
       let workers = workers(state)
       let config = state.config
+      let now = usage.now() / 1000
+      let should_expire =
+        now - state.last_state_expiry
+        >= state_expiry.sweep_seconds(config.state_expiry_seconds)
       let _ = process.spawn_unlinked(fn() { reap(workers, config) })
+      let state = case should_expire {
+        True -> {
+          let infos = dict.values(state.sessions)
+          let ledger = runtime.ledger(state.host)
+          let _ =
+            process.spawn_unlinked(fn() {
+              expire_states(config, ledger, infos, now)
+            })
+          State(..state, last_state_expiry: now)
+        }
+        False -> state
+      }
       let _ =
         process.send_after(state.self, sweep_interval(state.config), Sweep)
       actor.continue(state)
@@ -663,6 +682,8 @@ fn start_registry(
         }
         #(info.id, #(info, worker))
       })
+    let _ =
+      reclaim_states(config.home, [], [], list.map(saved, fn(info) { info.id }))
     case stage {
       Open -> {
         let _ = process.send_after(self, sweep_interval(config), Sweep)
@@ -684,6 +705,7 @@ fn start_registry(
         None,
         False,
         stage,
+        0,
       ))
       |> actor.returning(self)
       |> actor.selecting(
@@ -899,6 +921,89 @@ fn reap(workers: List(session.Session), config: Config) -> Nil {
     }
   })
 }
+
+fn expire_states(
+  config: Config,
+  ledger: store.Store,
+  cached: List(#(conversation.Info, Option(session.Session))),
+  now: Int,
+) -> Nil {
+  let statuses =
+    cached
+    |> list.filter_map(fn(entry) {
+      case entry.1 {
+        None -> Error(Nil)
+        Some(worker) -> {
+          let report = session.report(worker)
+          Ok(#(entry.0.id, #(report.kernel != None, report.running)))
+        }
+      }
+    })
+  case conversation.list(ledger) {
+    Error(_) -> Nil
+    Ok(infos) -> {
+      let protected =
+        infos
+        |> list.filter_map(fn(info) {
+          case list.key_find(statuses, info.id) {
+            Ok(#(live, running)) if live || running -> Ok(info.id)
+            _ -> Error(Nil)
+          }
+        })
+      let candidates =
+        list.map(infos, fn(info) {
+          let running = case list.key_find(statuses, info.id) {
+            Ok(#(live, active)) -> live || active
+            Error(_) -> False
+          }
+          state_expiry.Candidate(
+            info.id,
+            info.last_assistant_at,
+            running,
+            info.stage != conversation.Idle,
+          )
+        })
+      let expired =
+        state_expiry.expired(candidates, now, config.state_expiry_seconds)
+      let _ =
+        reclaim_states(
+          config.home,
+          expired,
+          protected,
+          list.map(infos, fn(info) { info.id }),
+        )
+      Nil
+    }
+  }
+}
+
+fn reclaim_states(
+  home: String,
+  expired: List(String),
+  protected: List(String),
+  known: List(String),
+) -> Nil {
+  let #(count, bytes) = reclaim_native(home, expired, protected, known)
+  case count > 0 {
+    True ->
+      io.println(
+        "python state expiry: reclaimed "
+        <> int.to_string(count)
+        <> " files ("
+        <> int.to_string(bytes)
+        <> " bytes)",
+      )
+    False -> Nil
+  }
+}
+
+@external(erlang, "albedo_state_expiry", "reclaim")
+fn reclaim_native(
+  home: String,
+  expired: List(String),
+  protected: List(String),
+  known: List(String),
+) -> #(Int, Int)
 
 @external(erlang, "albedo_daemon", "rss")
 fn rss(pids: List(Int)) -> List(#(Int, Int))
@@ -2502,6 +2607,7 @@ pub fn main() -> Nil {
       token,
       setting("ALBEDO_IDLE_SECONDS", 31 * 60, 1, 604_800) * 1000,
       setting("ALBEDO_KERNEL_BUDGET_MB", 2048, 64, 1_048_576) * 1024,
+      setting("ALBEDO_STATE_EXPIRY_SECONDS", 1_209_600, 1, 31_536_000),
       setting("ALBEDO_SCHEDULE_TICK_MS", 15_000, 50, 60_000),
     )
   let assert True = string.byte_size(token) >= 32 && home != ""
