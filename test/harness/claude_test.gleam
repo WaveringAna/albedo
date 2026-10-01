@@ -114,6 +114,36 @@ pub fn claude_tool_schema_accepts_branch_only_root_union_test() {
   assert string.contains(hint, "urls or ids")
 }
 
+pub fn claude_schema_preserves_metadata_and_merge_precedence_in_requests_test() {
+  let assert Ok(schema) =
+    json.parse(
+      "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"$defs\":{\"choice\":{\"anyOf\":[{\"type\":\"string\"},{\"type\":\"null\"}]}},\"x-metadata\":{\"values\":[null,true,2.5,{\"nested\":[\"keep\"]}]},\"additionalProperties\":false,\"description\":\"Choose inputs\",\"properties\":{\"shared\":{\"$ref\":\"#/$defs/choice\",\"x-custom\":[false,null]}},\"required\":[\"root\",\"root\"],\"allOf\":[{\"properties\":{\"shared\":{\"type\":\"integer\"},\"mode\":{\"oneOf\":[{\"const\":\"a\"},{\"const\":\"b\"}]}},\"required\":[\"mode\"]}],\"oneOf\":[{\"properties\":{\"left\":{\"type\":\"string\"},\"collision\":{\"const\":\"first\"}},\"required\":[\"common\",\"left\"]},{\"properties\":{\"right\":{\"type\":\"string\"},\"collision\":{\"const\":\"second\"}},\"required\":[\"right\",\"common\"]}],\"anyOf\":[{\"properties\":{\"extra\":{\"type\":\"boolean\"}},\"required\":[\"common\",\"extra\"]},{\"properties\":{\"other\":false},\"required\":[\"other\",\"common\"]}]}",
+      decode.dynamic,
+    )
+  let request =
+    types.Request(
+      "claude-opus-5-5",
+      None,
+      [types.User("hi")],
+      [types.Tool("inputs", "Choose inputs", types.encode_value(schema), False)],
+      None,
+      types.defaults,
+    )
+  let assert Ok(openai_api.Exchange(body: body, ..)) =
+    wire.encode(no_files_home, subscription, request)
+  let assert Ok(value) = json.parse(sent(body), decode.dynamic)
+  let assert Ok([tool]) =
+    decode.run(value, decode.at(["tools"], decode.list(decode.dynamic)))
+  let assert Ok(actual) =
+    decode.run(tool, decode.at(["input_schema"], decode.dynamic))
+  let assert Ok(expected) =
+    json.parse(
+      "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"$defs\":{\"choice\":{\"anyOf\":[{\"type\":\"string\"},{\"type\":\"null\"}]}},\"x-metadata\":{\"values\":[null,true,2.5,{\"nested\":[\"keep\"]}]},\"additionalProperties\":false,\"description\":\"Choose inputs; Exactly one of: common + left or right + common; At least one of: common + extra or other + common\",\"properties\":{\"shared\":{\"$ref\":\"#/$defs/choice\",\"x-custom\":[false,null]},\"mode\":{\"oneOf\":[{\"const\":\"a\"},{\"const\":\"b\"}]},\"left\":{\"type\":\"string\"},\"collision\":{\"const\":\"first\"},\"right\":{\"type\":\"string\"},\"extra\":{\"type\":\"boolean\"},\"other\":false},\"required\":[\"common\",\"mode\",\"root\"],\"type\":\"object\"}",
+      decode.dynamic,
+    )
+  assert actual == expected
+}
+
 pub fn claude_stream_preserves_tool_calls_and_replay_test() {
   let chunks = [
     "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":12,\"output_tokens\":0,\"cache_read_input_tokens\":200,\"cache_creation_input_tokens\":14}}}",

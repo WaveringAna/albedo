@@ -1,6 +1,7 @@
 //// Albedo chat history into Anthropic Messages. Replay preserves Claude's
 //// signed thinking blocks; foreign-model turns replay as text and tool calls.
 
+import albedo/harness/extensions/claude/schema
 import albedo/harness/rotation
 import albedo/openai_api
 import albedo/openai_api/replay
@@ -601,8 +602,9 @@ fn canonical_name(name: String) -> String {
 @external(erlang, "albedo_claude_billing", "billing_block")
 fn billing_block(version: String, first_user: String) -> Json
 
-@external(erlang, "albedo_claude_schema", "normalize")
-pub fn normalize_schema(schema: Json) -> Json
+pub fn normalize_schema(value: Json) -> Json {
+  schema.normalize(value)
+}
 
 @external(erlang, "albedo_claude_files", "file_source")
 fn file_source(
