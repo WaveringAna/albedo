@@ -29,6 +29,8 @@ type TranscriptRenderer struct {
 	// Workspace roots the paths trace rows name.
 	Workspace string
 	BodyWidth int
+	// Open holds the keys of bursts drawn with every step listed.
+	Open map[string]bool
 }
 
 func NewTranscriptRenderer() TranscriptRenderer {
@@ -664,12 +666,6 @@ func (r TranscriptRenderer) Block(before []HistoryEntry, entry HistoryEntry, fla
 	return r.frame(before, entry, flags, func(width int) string {
 		return r.RenderAfter(priorOf(before), entry, flags, width)
 	})
-}
-
-// RenderBurst collects entries' facts and renders them; the live path keeps
-// the collected burst cached instead.
-func (r TranscriptRenderer) RenderBurst(entries []HistoryEntry, flags DisplayFlags, width int) string {
-	return r.renderBurst(collect(entries), flags, width)
 }
 
 // BurstBlock is a burst as finished transcript rows, framed like a Block.

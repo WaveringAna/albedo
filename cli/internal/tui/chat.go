@@ -659,6 +659,29 @@ func (m *ChatModel) trimSettledLines() {
 	}
 }
 
+// replaceSettled swaps the n settled rows at from for rows, and returns how
+// many rows the caps then dropped from the top.
+func (m *ChatModel) replaceSettled(from, n int, rows []string) int {
+	m.settledLinesBytes += rowBytes(rows) - rowBytes(m.settledLines[from:from+n])
+	m.settledLines = slices.Replace(m.settledLines, from, from+n, rows...)
+	for i, at := range m.userRows {
+		if at >= from+n {
+			m.userRows[i] += len(rows) - n
+		}
+	}
+	dropped := m.droppedSettledLines
+	m.trimSettledLines()
+	return m.droppedSettledLines - dropped
+}
+
+func rowBytes(rows []string) int64 {
+	var n int64
+	for _, row := range rows {
+		n += int64(len(row))
+	}
+	return n
+}
+
 // clearAction drops the live action row; the next action starts a new one.
 func (m *ChatModel) clearAction() {
 	m.ToolProgressText = ""

@@ -188,6 +188,10 @@ func SelectedText(lines []string, sel Selection) string {
 		}
 		from, to := selBounds(line, sel, start, end, row)
 		_, text, _ := selectedRange(line, from, to, quoteColumns(line))
+		if act, ok := actionOf(line); ok && act.verb == verbOpen {
+			// the toggle is a control, not part of what the row says
+			text = strings.TrimPrefix(strings.TrimPrefix(text, toggleClosed), toggleOpen)
+		}
 		// rows are padded out to the viewport's width
 		p := piece{text: strings.TrimRight(text, " "), chrome: strings.Contains(line, markChrome)}
 		if row > start.Row {

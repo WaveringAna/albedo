@@ -6,6 +6,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -82,5 +83,39 @@ func TestSignoffCopiesTheTurnAsMarkdown(t *testing.T) {
 	}
 	if got, _ := m.replyMarkdown(act.key); got != "# first\n\n```go\nx := 1\n```\n\n**second**" {
 		t.Fatalf("the signoff copied %q", got)
+	}
+}
+
+// Clicking a burst's summary lists every step in full, the commands the
+// summary only names included, and clicking it again folds them away.
+func TestClickingABurstListsItsSteps(t *testing.T) {
+	m := newTestChatModel(t, &daemon.Session{ID: "s", Workspace: "/w/albedo"})
+	m.SetSize(120, 40)
+	m.appendSettledEntry(HistoryEntry{Kind: EntryUser, Text: "go", Timestamp: 1})
+	for _, entry := range burstFixture() {
+		m.appendSettledEntry(entry)
+	}
+	m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Text: "done", Timestamp: 9})
+	m.refreshViewportContent()
+	full := "cd cli && go test ./..."
+	row := rowWith(t, m.frameLines, "▸ thought")
+	if text := ansi.Strip(strings.Join(m.frameLines, "\n")); strings.Contains(text, full) {
+		t.Fatalf("a closed burst lists its steps:\n%s", text)
+	}
+	m.actAt(row)
+	spliced := slices.Clone(m.settledLines)
+	if m.rebuildSettledLines(); !slices.Equal(spliced, m.settledLines) {
+		t.Fatal("opening the burst drew rows a rebuild does not")
+	}
+	m.refreshViewportContent()
+	text := ansi.Strip(strings.Join(m.frameLines, "\n"))
+	for _, step := range []string{"▾ thought", "run    " + full, "read   cli/internal/tui/chat.go", "edit   priv/python/albedo_trace.py", "python · 1/0"} {
+		if !strings.Contains(text, step) {
+			t.Fatalf("the open burst does not show %q:\n%s", step, text)
+		}
+	}
+	m.actAt(rowWith(t, m.frameLines, "▾ thought"))
+	if text := ansi.Strip(strings.Join(m.frameLines, "\n")); strings.Contains(text, full) || !strings.Contains(text, "▸ thought") {
+		t.Fatalf("a second click does not close the burst:\n%s", text)
 	}
 }

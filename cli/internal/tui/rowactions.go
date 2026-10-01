@@ -16,9 +16,11 @@ import (
 const (
 	// verbCopy copies a turn's replies as the markdown they were written in.
 	verbCopy = "copy"
+	// verbOpen lists or hides the steps of a burst.
+	verbOpen = "open"
 )
 
-var actionMark = regexp.MustCompile(`\x1b_albedo:(copy):([0-9a-f]+-[0-9a-f]+)\x1b\\`)
+var actionMark = regexp.MustCompile(`\x1b_albedo:(copy|open):([0-9a-f]+-[0-9a-f]+)\x1b\\`)
 
 type rowAction struct{ verb, key string }
 
@@ -44,10 +46,60 @@ func (m *ChatModel) actAt(row int) tea.Cmd {
 	if row < 0 || row >= len(m.frameLines) {
 		return nil
 	}
-	if act, ok := actionOf(m.frameLines[row]); ok && act.verb == verbCopy {
+	act, ok := actionOf(m.frameLines[row])
+	if !ok {
+		return nil
+	}
+	switch act.verb {
+	case verbCopy:
 		return m.copyReply(act.key)
+	case verbOpen:
+		m.toggleBurst(act.key, row)
 	}
 	return nil
+}
+
+// toggleBurst opens or closes the burst whose summary is at row, keeping that
+// row where it was on screen; an opened list that would end below the screen
+// scrolls up into view. Only the burst renders again: a settled one is
+// spliced into the settled rows, and the live one redraws on its own.
+func (m *ChatModel) toggleBurst(key string, row int) {
+	entries := m.History.Entries()
+	start, end, ok := burstNamed(entries, key, m.Flags)
+	if !ok {
+		return
+	}
+	before, burst := entries[:start], entries[start:end]
+	was := m.Renderer
+	was.Open = map[string]bool{key: m.Renderer.Open[key]}
+	old := was.BurstBlock(before, burst, m.Flags)
+	if m.Renderer.Open == nil {
+		m.Renderer.Open = map[string]bool{}
+	}
+	m.Renderer.Open[key] = !m.Renderer.Open[key]
+	fresh := m.Renderer.BurstBlock(before, burst, m.Flags)
+	// the summary sits after the same separator in both
+	head := slices.IndexFunc(fresh, func(line string) bool {
+		_, ok := actionOf(line)
+		return ok
+	})
+	screen := row - m.scrollOffset
+	if end < len(entries) {
+		from := row - m.settledOffset - head
+		if from < 0 || from+len(old) > len(m.settledLines) || m.settledLines[from+head] != old[head] {
+			m.rebuildSettledLines()
+			m.refreshViewportContent()
+			return
+		}
+		row -= m.replaceSettled(from, len(old), fresh)
+	}
+	m.burstEpoch++
+	offset, last := row-screen, row-head+len(fresh)
+	if last-offset > m.Viewport.Height() {
+		offset = min(row, last-m.Viewport.Height())
+	}
+	m.Follow, m.scrollOffset = false, max(0, offset)
+	m.Follow = m.scrollOffset >= m.refreshViewportContent()
 }
 
 // copyReply copies a reply's markdown.

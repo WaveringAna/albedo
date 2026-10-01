@@ -26,6 +26,22 @@ func trailingBurst(entries []HistoryEntry, flags DisplayFlags) []HistoryEntry {
 	return entries[i:]
 }
 
+// burstNamed is the span of entries holding the burst that key names, or
+// false when none is retained.
+func burstNamed(entries []HistoryEntry, key string, flags DisplayFlags) (start, end int, ok bool) {
+	for i, entry := range entries {
+		if !Compact(entry, flags) || i > 0 && Compact(entries[i-1], flags) || factsOf(entry).key != key {
+			continue
+		}
+		end = i + 1
+		for end < len(entries) && Compact(entries[end], flags) {
+			end++
+		}
+		return i, end, true
+	}
+	return 0, 0, false
+}
+
 // tally keeps labels in the order they first came, with how often each did.
 type tally struct {
 	counts map[string]int
@@ -80,6 +96,8 @@ func (t tally) counted() []string {
 // entry settles. Targets stay as the trace recorded them; naming them for the
 // workspace happens at render time, so a workspace change re-names old rows.
 type entryFacts struct {
+	// key is the entry's entryKey, which names the burst it starts
+	key       string
 	read      []string
 	edited    []string
 	searched  []string
@@ -100,7 +118,7 @@ func factsOf(entry HistoryEntry) entryFacts {
 	if entry.facts != nil {
 		return *entry.facts
 	}
-	var f entryFacts
+	f := entryFacts{key: entryKey(entry)}
 	if entry.Kind == EntryThinking {
 		f.thoughtMs, f.untimed = entry.ElapsedMs, entry.ElapsedMs <= 0
 		return f
@@ -307,13 +325,39 @@ func shorten(clauses []*clause) bool {
 	return true
 }
 
-// renderBurst is a burst's summary row, then the row of each call that
-// failed, and with diffs shown, each change.
-func (r TranscriptRenderer) renderBurst(b burst, flags DisplayFlags, width int) string {
-	n := r.namer()
-	rows := []string{markChrome + r.summary(b, width, n)}
-	for _, entry := range b.failed {
-		rows = append(rows, markChrome+r.Styles.Error.Render(toolRow(entry, true, "", width)))
+// A burst's summary leads with a triangle when it has calls to list.
+const (
+	toggleClosed = "▸ "
+	toggleOpen   = "▾ "
+)
+
+// RenderBurst is a burst's summary row, its steps when it is open, then the
+// row of each call that failed, and with diffs shown, each change.
+func (r TranscriptRenderer) RenderBurst(entries []HistoryEntry, flags DisplayFlags, width int) string {
+	b, n := collect(entries), r.namer()
+	key := factsOf(entries[0]).key
+	opens := slices.ContainsFunc(entries, func(e HistoryEntry) bool { return e.Kind == EntryTool })
+	open := opens && r.Open[key]
+	head, room := markChrome, width
+	if opens {
+		// the triangle says the row opens, and which way it is now
+		toggle := toggleClosed
+		if open {
+			toggle = toggleOpen
+		}
+		head += rowAction{verbOpen, key}.mark() + r.Styles.Faint.Render(toggle)
+		room -= ansi.StringWidth(toggle)
+	}
+	rows := []string{head + r.summary(b, room, n)}
+	if open {
+		// failed calls are among the steps
+		for _, step := range r.steps(entries, width-2) {
+			rows = append(rows, "  "+step)
+		}
+	} else {
+		for _, entry := range b.failed {
+			rows = append(rows, markChrome+r.Styles.Error.Render(toolRow(entry, true, "", width)))
+		}
 	}
 	if flags.Diffs {
 		for _, change := range b.changes {
@@ -325,6 +369,47 @@ func (r TranscriptRenderer) renderBurst(b burst, flags DisplayFlags, width int) 
 		}
 	}
 	return strings.Join(rows, "\n")
+}
+
+// steps is one row for each thing a burst's calls did, in order: the full
+// command, pattern, or path, which the summary row only counts.
+func (r TranscriptRenderer) steps(entries []HistoryEntry, width int) []string {
+	var rows []string
+	for _, entry := range entries {
+		if entry.Kind != EntryTool {
+			continue
+		}
+		trace := entry.ToolTrace
+		if trace == nil || len(trace.Activities)+len(trace.Changes) == 0 {
+			failed, style := toolFailed(entry), r.Styles.Faint
+			if failed {
+				style = r.Styles.Error
+			}
+			rows = append(rows, style.Render(toolRow(entry, failed, "", width)))
+			continue
+		}
+		for _, act := range trace.Activities {
+			style := r.Styles.Faint
+			if act.Failed {
+				style = r.Styles.Error
+			}
+			rows = append(rows, style.Render(r.traceLine(stepLabel(act.Kind), act.Target, isPath(act), width)))
+		}
+		for _, change := range trace.Changes {
+			counts := ""
+			if change.Kind == "diff" {
+				counts = "  " + r.diffCounts(change)
+			}
+			line := r.traceLine(stepLabel("edit"), change.Path, true, width-ansi.StringWidth(counts))
+			rows = append(rows, fit(r.Styles.Faint.Render(line), counts, width))
+		}
+	}
+	return rows
+}
+
+// stepLabel pads a step's kind so the targets after it line up.
+func stepLabel(kind string) string {
+	return fmt.Sprintf("%-6s", kind)
 }
 
 // pathGroups names paths by their parent and name, and paths that share a
