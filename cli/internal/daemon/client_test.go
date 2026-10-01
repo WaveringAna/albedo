@@ -240,17 +240,33 @@ func TestUnfinishedArgumentBytesBounded(t *testing.T) {
 
 func TestDetachingDropsArgumentPreviews(t *testing.T) {
 	var requestedURLs []string
+	var requestCount atomic.Int32
+	waitingForHeaders := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := requestCount.Add(1)
 		requestedURLs = append(requestedURLs, r.URL.String())
+		if count == 3 {
+			close(waitingForHeaders)
+			<-r.Context().Done()
+			return
+		}
 		code := "old()"
-		if len(requestedURLs) > 1 {
+		if count > 1 {
 			code = "new()"
 		}
 		raw, _ := json.Marshal(map[string]any{"code": code})
+		pageEvents := []any{}
+		if count == 5 {
+			pageEvents = append(pageEvents,
+				map[string]any{"type": "arguments_delta", "name": "python", "callId": "same", "text": `{"code":"discarded`},
+				map[string]any{"type": "reset"},
+				map[string]any{"type": "arguments_delta", "name": "python", "callId": "same", "text": `{"code":"discarded`},
+				map[string]any{"type": "retry"},
+			)
+		}
+		pageEvents = append(pageEvents, map[string]any{"type": "arguments_delta", "name": "python", "callId": "same", "text": string(raw)})
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(formatPage(len(requestedURLs), []any{
-			map[string]any{"type": "arguments_delta", "name": "python", "callId": "same", "text": string(raw)},
-		})))
+		_, _ = w.Write([]byte(formatPage(int(count), pageEvents)))
 	}))
 	defer server.Close()
 
@@ -264,15 +280,50 @@ func TestDetachingDropsArgumentPreviews(t *testing.T) {
 		}
 		return nil
 	})
+	assertCleared := func() {
+		t.Helper()
+		if len(client.argumentsByCall) != 0 || client.afterSeq != -1 {
+			t.Fatal("detach retained unfinished arguments or cursor")
+		}
+	}
+	assertCleared()
 
 	var events []StreamEvent
-	_ = client.Stream(context.Background(), 0, func(event StreamEvent) error {
+	collect := func(event StreamEvent) error {
+		if event.Type == EventReset || event.Type == EventRetry {
+			if len(client.argumentsByCall) != 0 {
+				t.Error("reset or retry retained discarded argument buffers")
+			}
+		}
 		events = append(events, event)
 		return nil
-	})
+	}
+	_ = client.Stream(context.Background(), 0, collect)
+	if len(client.argumentsByCall) != 1 || client.afterSeq != 2 {
+		t.Fatal("fixture did not retain arguments across EOF")
+	}
 
-	if len(requestedURLs) < 2 || !strings.HasSuffix(requestedURLs[1], "after_seq=-1") {
-		t.Fatalf("expected reconnect cursor reset to after_seq=-1, got: %+v", requestedURLs)
+	ctx, cancel = context.WithCancel(context.Background())
+	requestFinished := make(chan error, 1)
+	go func() { requestFinished <- client.Stream(ctx, 0, collect) }()
+	<-waitingForHeaders
+	cancel()
+	if err := <-requestFinished; err == nil {
+		t.Fatal("expected cancellation before response headers")
+	}
+	assertCleared()
+	_ = client.Stream(context.Background(), 0, collect)
+	client.ResetStream()
+	assertCleared()
+	_ = client.Stream(context.Background(), 0, collect)
+
+	for _, index := range []int{1, 3, 4} {
+		if !strings.HasSuffix(requestedURLs[index], "after_seq=-1") {
+			t.Fatalf("expected fresh subscription cursor, got: %+v", requestedURLs)
+		}
+	}
+	if !strings.HasSuffix(requestedURLs[2], "after_seq=2") {
+		t.Fatalf("expected pending request to continue the previous cursor, got: %+v", requestedURLs)
 	}
 	hasNew := false
 	for _, ev := range events {
@@ -285,6 +336,9 @@ func TestDetachingDropsArgumentPreviews(t *testing.T) {
 	}
 	if !hasNew {
 		t.Fatal("expected new() tool progress")
+	}
+	if buffer := client.argumentsByCall["same"]; buffer == nil || buffer.String() != `{"code":"new()"}` {
+		t.Fatal("new subscription mixed fresh arguments with discarded previews")
 	}
 }
 

@@ -487,8 +487,25 @@ func parseStreamEvent(raw map[string]any) *StreamEvent {
 	}
 }
 
+// ResetStream discards unfinished tool arguments and starts the next stream from
+// a fresh snapshot. Call it after the subscription has stopped writing.
+func (c *ChatClient) ResetStream() {
+	c.mu.Lock()
+	c.argumentsByCall = make(map[string]*strings.Builder)
+	c.afterSeq = -1
+	c.mu.Unlock()
+}
+
 // Stream uses ctx for cancellation; onEvent must also honor ctx if it blocks.
 func (c *ChatClient) Stream(ctx context.Context, tail int, onEvent func(StreamEvent) error) error {
+	defer func() {
+		// Cancellation also clears state when the request fails before reading.
+		// Transient failures and EOF retain the cursor and unfinished arguments.
+		if ctx.Err() != nil {
+			c.ResetStream()
+		}
+	}()
+
 	c.mu.Lock()
 	afterSeq := c.afterSeq
 	c.mu.Unlock()
@@ -514,14 +531,6 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onE
 
 	defer func() {
 		_ = reporter.Report(nil, "running")
-		if ctx.Err() != nil {
-			// Cancellation starts the next subscription from a fresh snapshot.
-			// Transient stream failures retain the cursor and partial tool previews.
-			c.mu.Lock()
-			c.afterSeq = -1
-			c.argumentsByCall = make(map[string]*strings.Builder)
-			c.mu.Unlock()
-		}
 	}()
 
 	var eventType string

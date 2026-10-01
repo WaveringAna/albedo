@@ -898,6 +898,7 @@ func (m ChatModel) startStreamSubscription() tea.Cmd {
 	client, ctx, ch := m.client, m.streamCtx, m.eventChan
 	go func() {
 		defer close(ch)
+		defer client.ResetStream()
 		for ctx.Err() == nil {
 			_ = client.Stream(ctx, olderPageRows, func(evt daemon.StreamEvent) error {
 				select {
