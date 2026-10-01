@@ -3,6 +3,7 @@ package daemon
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -235,9 +236,17 @@ func (r *ToolProgressReporter) Report(call *ToolCallAssembly, phase string) erro
 
 	var preview *ToolCodePreview
 	if phase == "generating" && len(r.code) > 0 {
-		codeRunes := []rune(r.code)
-		offset := max(0, len(codeRunes)-512)
-		text := sanitizeControlRunes(string(codeRunes[offset:]))
+		runeCount := utf8.RuneCountInString(r.code)
+		offset := max(0, runeCount-512)
+		start := 0
+		if offset > 0 {
+			start = len(r.code)
+			for range 512 {
+				_, width := utf8.DecodeLastRuneInString(r.code[:start])
+				start -= width
+			}
+		}
+		text := sanitizeControlRunes(r.code[start:])
 		preview = &ToolCodePreview{
 			Offset: offset,
 			Text:   text,
