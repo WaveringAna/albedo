@@ -47,6 +47,36 @@ images for a final review pass. needs cargo.
 native/render/install.sh   # then enable `view` in /extensions
 ```
 
+## CLI usage
+
+Run `albedo` to open the terminal interface, or use `--prompt` to print a reply:
+
+```sh
+albedo -p "Explain this project"
+albedo --prompt "Run the checks" --session SESSION_ID --timeout 10m
+albedo resume SESSION_ID
+albedo sessions --json
+```
+
+Run `albedo --help` or `albedo COMMAND --help` for command options.
+Unknown flags and extra arguments are errors. The root flags `--session`,
+`--model`, and `--timeout` require `--prompt` and cannot accompany a subcommand.
+Prompts have no time limit unless you supply a positive duration with `--timeout`.
+Use `--prompt=--help` for a prompt that starts with a flag, or `--` before
+positional text such as `albedo send -- SESSION_ID "--literal message"`.
+
+To inspect disk usage without starting the daemon, run `albedo storage --json`
+or `albedo storage --sessions`. To clean up local files, stop the daemon first:
+
+```sh
+albedo daemon --stop
+albedo storage prune --backups
+```
+
+Cleanup shows a preview and asks for confirmation. To permanently delete sessions,
+use `albedo storage prune --session SESSION_ID`, repeating `--session` for each
+full ID. Add `--yes` to skip confirmation in scripts.
+
 formatting
 
 ```sh

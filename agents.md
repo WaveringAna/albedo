@@ -51,7 +51,11 @@ An extension bundles plugins: context (system instructions), tool (model tools +
 
 ### `cli/` — the terminal (Go)
 
-- **`cli/cmd/albedo`** — entry point and local state
+- **`cli/cmd/albedo`** — production wiring, project-root discovery, and final error reporting
+- **`cli/internal/cli`** — Cobra constructors, strict argument validation, and command rendering
+- **`cli/internal/app`** — typed session, prompt, model, and daemon workflows with lazy connections
+- **`cli/internal/terminal`** — TTY detection, confirmation, migration notices, and Bubble Tea launch
+- **`cli/internal/storage`** — offline usage inspection and approved cleanup plans with revalidation
 - **`cli/internal/config`** — connection home, settings value types, and immediate form validation
 - **`cli/internal/daemon`** — daemon lifecycle (find or start, auth token) and the typed API client
 - **`cli/internal/tui`** — the bubbletea UI: chat, model picker, orchestrator view, page screens, forms

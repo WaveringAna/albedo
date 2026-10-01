@@ -143,7 +143,7 @@ in
     src = source;
     modRoot = "cli";
     subPackages = ["cmd/albedo"];
-    vendorHash = "sha256-enSzYyW7Ku9JjLeRuzfBZsUgdAYb4P7vFGZkvPDZGSo=";
+    vendorHash = "sha256-RXAAUgTw2JR25IBswfBbxzJXk0Q+zIvW0jxtfeQTI1U=";
     nativeBuildInputs = [makeWrapper python3];
     ALBEDO_NO_BROWSER = "1";
     postInstall = ''

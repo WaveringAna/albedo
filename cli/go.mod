@@ -15,6 +15,7 @@ require (
 	github.com/mattn/go-isatty v0.0.20
 	github.com/rivo/uniseg v0.4.7
 	github.com/sahilm/fuzzy v0.1.3
+	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.47.0
 	golang.org/x/text v0.30.0
 )
@@ -30,9 +31,11 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/mattn/go-runewidth v0.0.30 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
+	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/xo/terminfo v1.0.0 // indirect
 	github.com/yuin/goldmark v1.7.13 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect

@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -183,4 +184,21 @@ func samePath(a, b string) bool {
 	resolvedA, errA := filepath.EvalSymlinks(a)
 	resolvedB, errB := filepath.EvalSymlinks(b)
 	return errA == nil && errB == nil && resolvedA == resolvedB
+}
+
+// Session deletion requires approval before it reaches the daemon.
+func TestCLISessionDeletionRequiresConfirmation(t *testing.T) {
+	providerRoute(t, echoReply)
+	id := newSession(t, t.TempDir())
+	stdout, stderr, err := runCLI("storage", "prune", "--session", id)
+	if err == nil || !strings.Contains(stdout, "Permanently delete session "+id) || !strings.Contains(stderr, "no files have been removed") {
+		t.Fatalf("unconfirmed deletion: %v %q %q", err, stdout, stderr)
+	}
+	if daemonSession(t, id).ID != id {
+		t.Fatal("unconfirmed session deletion mutated daemon")
+	}
+	cli(t, "storage", "prune", "--session", id, "--yes")
+	if sessions := daemonSessions(t); slices.ContainsFunc(sessions, func(session daemon.Session) bool { return session.ID == id }) {
+		t.Fatal("confirmed session was not deleted")
+	}
 }

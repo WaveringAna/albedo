@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"context"
@@ -87,28 +87,20 @@ func switchModel(ctx context.Context, conn *daemon.Connection, sessionID string,
 	return err
 }
 
-func modelsCommand(args []string) error {
-	if len(args) > 0 {
-		arg := args[0]
-		if arg == "-h" || arg == "--help" {
-			fmt.Println("Usage: albedo models\n\nLists provider/model for every configured provider; the first line is the active provider's default.")
-			return nil
-		}
-		return fmt.Errorf("unexpected models option %q", arg)
-	}
-	ctx := context.Background()
-	conn, err := daemon.Ensure(config.HomeDir(), findProjectRoot(), replaceStale)
+func (s *Service) Models(ctx context.Context) ([]string, error) {
+	conn, err := s.Connect(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	profiles, err := daemon.ProviderProfiles(ctx, conn)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var models []string
 	for _, p := range configuredModels(ctx, conn, profiles) {
 		for _, model := range p.models {
-			fmt.Println(p.provider + "/" + model)
+			models = append(models, p.provider+"/"+model)
 		}
 	}
-	return nil
+	return models, nil
 }

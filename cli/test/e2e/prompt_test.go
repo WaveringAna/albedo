@@ -124,3 +124,39 @@ func TestPromptTimeoutStopsTheTurn(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 }
+
+// Cancellation while queued must leave the already running turn alone.
+func TestPromptTimeoutWhileQueuedDoesNotInterruptAnotherTurn(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	profile := providerRoute(t, func(request map[string]any) string {
+		if lastUserText(request) == "other turn" {
+			close(entered)
+			<-release
+		}
+		return echoReply(request)
+	})
+	id := newSession(t, t.TempDir())
+	client := daemon.NewChatClient(conn(t), id)
+	if _, err := client.Send(t.Context(), "other turn", nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("other turn never started")
+	}
+	stdout, stderr, err := runCLI("--prompt", "queued turn", "--session", id, "--timeout", "1s")
+	if err == nil || stdout != "" || !strings.Contains(stderr, "timed out after 1s") {
+		t.Fatalf("queued timeout: %v %q %q", err, stdout, stderr)
+	}
+	status, statusErr := client.GetStatus(t.Context())
+	if statusErr != nil || status.Idle {
+		t.Fatalf("queued cancellation stopped the other turn: %+v %v", status, statusErr)
+	}
+	// Stop the session explicitly so this stalled fixture cannot leak into other tests.
+	if _, err := client.Interrupt(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, id, profile, 1)
+}

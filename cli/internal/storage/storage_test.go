@@ -1,20 +1,18 @@
 // Storage pruning must never delete a live session snapshot or unapproved files;
 // the age and database checks are local safety boundaries that a daemon E2E cannot force.
-package main
+package storage
 
 import (
-	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
 
 func TestStoragePreviewAndOfflinePrune(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("ALBEDO_HOME", home)
 	setup := `import sqlite3,sys
 c=sqlite3.connect(sys.argv[1])
 c.execute('CREATE TABLE sessions(id TEXT,pinned_context BLOB)')
@@ -58,9 +56,9 @@ c.close()`
 			t.Fatal(err)
 		}
 	}
-	p, err := storageSnapshot(home, time.Now())
-	if err != nil {
-		t.Fatal(err)
+	p, reportErr := testService(home).Report(t.Context())
+	if reportErr != nil {
+		t.Fatal(reportErr)
 	}
 	if len(p.DB.Sessions) != 1 || p.DB.Sessions[0].Bytes != 20 || p.DB.Images != 4 {
 		t.Fatalf("unexpected storage estimates: %+v", p.DB)
@@ -68,34 +66,23 @@ c.close()`
 	if len(p.OldKernels) != 1 || p.OldKernels[0].Path != orphan || len(p.OldBackups) != 1 || p.OldBackups[0].Path != backup || p.RecentBackupCount != 1 || p.RecentBackups != 4 || p.DB.FreePages == 0 {
 		t.Fatalf("unsafe candidates or missing free pages: %+v", p)
 	}
-	var summary bytes.Buffer
-	storagePrint(&summary, p, false)
-	if strings.Contains(summary.String(), "live") {
-		t.Fatalf("default preview exposes session details: %s", summary.String())
-	}
-	var detailed bytes.Buffer
-	storagePrint(&detailed, p, true)
-	if !strings.Contains(detailed.String(), "live") {
-		t.Fatalf("missing session detail: %s", detailed.String())
-	}
-	if err := storageCommand(nil); err != nil {
-		t.Fatal(err)
-	}
+	service := testService(home)
 	if _, err := os.Stat(orphan); err != nil {
 		t.Fatalf("preview deleted snapshot: %v", err)
 	}
-	if err := storageCommand([]string{"prune", "--all"}); err == nil {
-		t.Fatalf("prune without confirmation: %v", err)
-	}
-	if err := storageCommand([]string{"prune", "--all", "--backups", "--yes"}); err == nil {
-		t.Fatalf("ambiguous --all accepted: %v", err)
+	if _, err := service.PlanCleanup(t.Context(), CleanupOptions{All: true, Backups: true}); err == nil {
+		t.Fatal("ambiguous --all accepted")
 	}
 	for _, path := range []string{live, orphan, recent, backup, protected, unrelated} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("refused cleanup changed %s: %v", path, err)
 		}
 	}
-	if err := storageCommand([]string{"prune", "--all", "--yes"}); err != nil {
+	plan, planErr := service.PlanCleanup(t.Context(), CleanupOptions{All: true})
+	if planErr != nil {
+		t.Fatal(planErr)
+	}
+	if _, err := service.ApplyCleanup(t.Context(), plan); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{orphan, backup} {
@@ -108,19 +95,17 @@ c.close()`
 			t.Errorf("should retain %s: %v", path, err)
 		}
 	}
-	if after, err := storageSnapshot(home, time.Now()); err != nil || len(after.DB.Sessions) != 1 || after.Database >= p.Database || after.DB.FreePages != 0 {
+	if after, err := testService(home).Report(t.Context()); err != nil || len(after.DB.Sessions) != 1 || after.Database >= p.Database || after.DB.FreePages != 0 {
 		t.Fatalf("--all did not safely reclaim SQLite pages: %+v, %v", after, err)
 	}
 }
 
 func TestStorageRequiresDatabaseForOrphanCleanup(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("ALBEDO_HOME", home)
-	if err := storageCommand([]string{"prune", "--old-kernels", "--yes"}); err == nil {
+	if _, err := testService(home).PlanCleanup(t.Context(), CleanupOptions{OldKernels: true}); err == nil {
 		t.Fatalf("unsafe cleanup without database: %v", err)
 	}
-	var ids sessionIDs
-	if err := ids.Set("../sessions/escape"); err == nil {
+	if _, err := testService(home).PlanCleanup(t.Context(), CleanupOptions{Sessions: []string{"../sessions/escape"}}); err == nil {
 		t.Fatal("accepted non-session ID")
 	}
 }
@@ -131,7 +116,78 @@ func TestStorageRefusesSymlinkDirectory(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(home, "kernels")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if _, err := storageSnapshot(home, time.Now()); err == nil {
+	if _, err := testService(home).Report(t.Context()); err == nil {
 		t.Fatal("followed symlinked kernel directory")
+	}
+}
+
+func testService(home string) *Service {
+	return &Service{Home: home, Now: time.Now, Running: func() (bool, error) { return false, nil }, DeleteSessions: func(context.Context, []string) error { panic("offline test attempted session deletion") }}
+}
+
+// Candidate races occur during the confirmation wait. Force them locally so
+// their timing does not depend on a real daemon, terminal, or filesystem clock.
+func TestCleanupRevalidatesBeforeAnyDeletion(t *testing.T) {
+	for _, change := range []string{"daemon started", "candidate added", "same-size replacement", "symlink replacement"} {
+		t.Run(change, func(t *testing.T) {
+			home := t.TempDir()
+			backups := filepath.Join(home, "backups")
+			if err := os.Mkdir(backups, 0700); err != nil {
+				t.Fatal(err)
+			}
+			approved := filepath.Join(backups, "albedo-before-image-store-1.sqlite")
+			untouched := filepath.Join(backups, "albedo-before-image-store-2.sqlite")
+			old := time.Now().Add(-31 * 24 * time.Hour)
+			for _, file := range []string{approved, untouched} {
+				if err := os.WriteFile(file, []byte("data"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(file, old, old); err != nil {
+					t.Fatal(err)
+				}
+			}
+			service := testService(home)
+			plan, planErr := service.PlanCleanup(t.Context(), CleanupOptions{Backups: true})
+			if planErr != nil {
+				t.Fatal(planErr)
+			}
+			switch change {
+			case "daemon started":
+				service.Running = func() (bool, error) { return true, nil }
+			case "candidate added":
+				file := filepath.Join(backups, "albedo-before-image-store-3.sqlite")
+				if err := os.WriteFile(file, []byte("data"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(file, old, old); err != nil {
+					t.Fatal(err)
+				}
+			case "same-size replacement":
+				replacement := filepath.Join(home, "replacement")
+				if err := os.WriteFile(replacement, []byte("data"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(replacement, old, old); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(replacement, approved); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink replacement":
+				if err := os.Remove(approved); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(untouched, approved); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, applyErr := service.ApplyCleanup(t.Context(), plan)
+			if applyErr == nil {
+				t.Fatal("cleanup accepted changed state")
+			}
+			if _, err := os.Stat(untouched); err != nil {
+				t.Fatalf("cleanup partially deleted candidates: %v", err)
+			}
+		})
 	}
 }

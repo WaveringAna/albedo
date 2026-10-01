@@ -1,41 +1,41 @@
-package main
+package app
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"os/signal"
 	"sync"
-	"syscall"
 	"time"
 
-	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
 )
 
-// promptCommand runs one prompt to the end of its turn and prints the reply.
-// A zero timeout waits as long as the turn takes.
-func promptCommand(prompt, sessionID, cwd, model string, timeout time.Duration) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+type PromptOptions struct {
+	Prompt, SessionID, Workspace, Model string
+	Timeout                             time.Duration
+}
+type PromptResult struct{ SessionID, Answer string }
+
+// RunPrompt waits for the reply to this invocation's turn. Zero timeout is unlimited.
+func (s *Service) RunPrompt(ctx context.Context, options PromptOptions) (PromptResult, error) {
+	prompt, sessionID, cwd, model, timeout := options.Prompt, options.SessionID, options.Workspace, options.Model, options.Timeout
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	conn, err := daemon.Ensure(config.HomeDir(), findProjectRoot(), replaceStale)
+	conn, err := s.Connect(ctx)
 	if err != nil {
-		return err
+		return PromptResult{}, err
 	}
 	var choice modelChoice
 	if model != "" {
 		profiles, profileErr := daemon.ProviderProfiles(ctx, conn)
 		if profileErr != nil {
-			return profileErr
+			return PromptResult{}, profileErr
 		}
 		if choice, err = chooseModel(configuredModels(ctx, conn, profiles), profiles.Active, model); err != nil {
-			return err
+			return PromptResult{}, err
 		}
 	}
 	if sessionID == "" {
@@ -45,12 +45,12 @@ func promptCommand(prompt, sessionID, cwd, model string, timeout time.Duration) 
 		}
 		session, createErr := daemon.Request[daemon.Session](ctx, conn, "/sessions", create)
 		if createErr != nil {
-			return createErr
+			return PromptResult{}, createErr
 		}
 		sessionID = session.ID
 	} else if model != "" {
 		if switchErr := switchModel(ctx, conn, sessionID, choice); switchErr != nil {
-			return switchErr
+			return PromptResult{}, switchErr
 		}
 	}
 
@@ -58,15 +58,14 @@ func promptCommand(prompt, sessionID, cwd, model string, timeout time.Duration) 
 	answer, err := awaitReply(ctx, client, prompt)
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return fmt.Errorf("timed out after %s and stopped the turn; the session is %s", timeout, sessionID)
+		return PromptResult{}, fmt.Errorf("timed out after %s and stopped the turn; the session is %s", timeout, sessionID)
 	case ctx.Err() != nil:
-		return fmt.Errorf("interrupted; the session is %s", sessionID)
+		return PromptResult{}, fmt.Errorf("interrupted; the session is %s", sessionID)
 	}
 	if err != nil {
-		return err
+		return PromptResult{}, err
 	}
-	fmt.Println(answer)
-	return nil
+	return PromptResult{SessionID: sessionID, Answer: answer}, nil
 }
 
 // awaitReply sends prompt and answers the last assistant text of the turn it
@@ -77,9 +76,24 @@ func awaitReply(ctx context.Context, client *daemon.ChatClient, prompt string) (
 	var (
 		mu      sync.Mutex
 		started bool // our prompt has reached the transcript
+		owned   bool // the latest observed live turn belongs to this invocation
 		answer  string
 		failure error
 	)
+	// Cleanup uses its own deadline even when the operation's context is canceled.
+	defer func() {
+		if ctx.Err() == nil {
+			return
+		}
+		mu.Lock()
+		interrupt := owned
+		mu.Unlock()
+		if interrupt {
+			interruptCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stop()
+			_, _ = client.Interrupt(interruptCtx)
+		}
+	}()
 	ready := make(chan struct{})
 	streamDone := make(chan error, 1)
 	go func() {
@@ -95,8 +109,9 @@ func awaitReply(ctx context.Context, client *daemon.ChatClient, prompt string) (
 				}
 			case event.Replayed:
 			case event.Type == daemon.EventUser:
-				started = started || event.ClientID == client.ClientID()
-			case !started:
+				owned = event.ClientID == client.ClientID()
+				started = started || owned
+			case !owned:
 			case event.Type == daemon.EventMessage:
 				answer, failure = event.Text, nil
 			case event.Type == daemon.EventError:
@@ -129,13 +144,6 @@ func awaitReply(ctx context.Context, client *daemon.ChatClient, prompt string) (
 		mu.Unlock()
 		select {
 		case <-ctx.Done():
-			// Ctrl-C or the timeout stops our turn too, rather than leaving it
-			// running unseen; a turn still queued behind another is left alone.
-			if turnSeen {
-				interruptCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
-				defer stop()
-				_, _ = client.Interrupt(interruptCtx)
-			}
 			return "", ctx.Err()
 		case err := <-streamDone:
 			return "", fmt.Errorf("lost the session stream before the turn finished: %v", err)
