@@ -414,6 +414,14 @@ local_paths() ->
 
 %% Model tools must not inherit provider credentials or the daemon's client token.
 clean_environment() ->
-    Keep = ["PATH","HOME","USER","LOGNAME","TMPDIR","TMP","TEMP","LANG","LC_ALL","LC_CTYPE","SYSTEMROOT",
-            "ALBEDO_HOME","ALBEDO_SSH","ALBEDO_JOB_GRACE_SECONDS"],
-    [{Name,false} || Entry <- os:getenv(), Name <- [hd(string:split(Entry,"="))], not lists:member(Name,Keep)].
+    %% Strip daemon internal tokens (e.g. ALBEDO_TOKEN, ALBEDO_API_KEY) and
+    %% provider keys, keeping the user's shell/tool environment intact.
+    SafeAlbedo = ["ALBEDO_HOME", "ALBEDO_SSH", "ALBEDO_JOB_GRACE_SECONDS", "ALBEDO_JOB_ADMISSION"],
+    SecretSuffixes = ["_API_KEY", "_TOKEN"],
+    IsBlocked = fun(Name) ->
+        case lists:prefix("ALBEDO_", Name) of
+            true -> not lists:member(Name, SafeAlbedo);
+            false -> lists:any(fun(Suffix) -> lists:suffix(Suffix, Name) end, SecretSuffixes)
+        end
+    end,
+    [{Name, false} || Entry <- os:getenv(), Name <- [hd(string:split(Entry, "="))], IsBlocked(Name)].
