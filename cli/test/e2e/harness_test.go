@@ -535,7 +535,6 @@ func streamSnapshot(t *testing.T, session string) []map[string]any {
 		}
 		var page struct {
 			Events []map[string]any `json:"events"`
-			Cursor int              `json:"cursor"`
 		}
 		if json.Unmarshal([]byte(line[len("data: "):]), &page) != nil {
 			continue
