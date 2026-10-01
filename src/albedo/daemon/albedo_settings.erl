@@ -15,7 +15,7 @@ named(Config) ->
 validate_config(Config) ->
     Named = named(Config),
     maps:foreach(fun(Name, Profile) ->
-        case albedo_configuration:validate_profile(Name, encode_dynamic(Profile)) of
+        case 'albedo@daemon@configuration':validate_profile(Name, encode_dynamic(Profile)) of
             {ok, _} -> ok;
             _ -> throw({settings, <<"invalid config.json provider profile">>})
         end

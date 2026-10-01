@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -107,6 +108,84 @@ class SettingsTest(unittest.TestCase):
         self.assertIn("default", self.snapshot()["profiles"]["providers"])
         self.assertEqual(json.loads(path.read_text())["custom"], "keep")
         self.assertNotIn("legacy-secret", json.dumps(self.snapshot()))
+
+    def test_provider_validation_normalizes_profiles_and_preserves_key_omission(self):
+        profile = self.profile(
+            model=" \t" + "é" * 256 + "\n",
+            baseUrl=" \t" + self.provider.url + "/v1/// \n",
+            apiKey="profile-secret",
+            ignored="drop",
+        )
+        del profile["extension"]
+        name = "A" + "a" * 60 + "._-"
+        self.request("/settings/providers/" + name, profile, "PUT")
+        stored = json.loads((self.app.home / "config.json").read_text())
+        self.assertEqual(
+            stored["providers"][name],
+            {
+                "extension": "openai",
+                "model": "é" * 256,
+                "baseUrl": self.provider.url + "/v1",
+                "protocol": "responses",
+            },
+        )
+        self.assertTrue(self.snapshot()["profiles"]["providers"][name]["hasKey"])
+        del profile["apiKey"]
+        self.request("/settings/providers/" + name, profile, "PUT")
+        self.assertTrue(self.snapshot()["profiles"]["providers"][name]["hasKey"])
+        profile["apiKey"] = ""
+        self.request("/settings/providers/" + name, profile, "PUT")
+        self.assertFalse(self.snapshot()["profiles"]["providers"][name]["hasKey"])
+        subscription = self.profile(extension="codex", protocol="chat_completions")
+        del subscription["baseUrl"]
+        self.request("/settings/providers/subscription", subscription, "PUT")
+        self.assertEqual(
+            self.snapshot()["profiles"]["providers"]["subscription"]["baseUrl"], ""
+        )
+
+    def test_invalid_provider_profiles_leave_settings_and_credentials_untouched(self):
+        paths = [self.app.home / name for name in ("config.json", "creds.json")]
+        before = [path.read_bytes() if path.exists() else None for path in paths]
+        invalid_profiles = [
+            [],
+            {},
+            self.profile(model=" \t\n"),
+            self.profile(model="é" * 257),
+            self.profile(model="fixture\x00model"),
+            self.profile(model="fixture\x7fmodel"),
+            self.profile(protocol="wrong"),
+            self.profile(extension=""),
+            self.profile(extension=None),
+            self.profile(baseUrl=None),
+            self.profile(baseUrl=""),
+            self.profile(baseUrl="file:///tmp/model"),
+            self.profile(baseUrl="HTTPS://example.com"),
+            self.profile(baseUrl="https://"),
+            self.profile(baseUrl="https://user@example.com"),
+            self.profile(baseUrl="https://example.com?"),
+            self.profile(baseUrl="https://example.com#"),
+            self.profile(baseUrl="https://example.com:invalid"),
+            self.profile(apiKey=None),
+            self.profile(apiKey="secret key"),
+            self.profile(apiKey="secret\nkey"),
+            self.profile(apiKey="secret\x7fkey"),
+        ]
+        cases = [("invalid-profile", profile) for profile in invalid_profiles]
+        cases += [
+            (name, self.profile())
+            for name in ("_bad", "a" * 65, "é", "a b", "name\n", "a" * 64 + "\n")
+        ]
+        for name, profile in cases:
+            with self.subTest(name=name, profile=profile):
+                route = "/settings/providers/" + urllib.parse.quote(name, safe="")
+                with self.assertRaises(urllib.error.HTTPError) as failure:
+                    self.request(route, profile, "PUT")
+                self.assertEqual(failure.exception.code, 400)
+                self.assertNotIn("secret", failure.exception.read().decode())
+                self.assertEqual(
+                    [path.read_bytes() if path.exists() else None for path in paths],
+                    before,
+                )
 
     def test_ui_updates_and_open_counts_survive_restart_and_session_deletion(self):
         session_path = f"/settings/ui/sessions/{self.session}"
@@ -253,6 +332,20 @@ class SettingsTest(unittest.TestCase):
             (
                 "config.json",
                 {"providers": []},
+                lambda: self.request(
+                    "/settings/providers/sample", self.profile(), "PUT"
+                ),
+            ),
+            (
+                "config.json",
+                {"providers": {"broken": self.profile(protocol="wrong")}},
+                lambda: self.request(
+                    "/settings/providers/sample", self.profile(), "PUT"
+                ),
+            ),
+            (
+                "config.json",
+                {"providers": {"broken\n": self.profile()}},
                 lambda: self.request(
                     "/settings/providers/sample", self.profile(), "PUT"
                 ),

@@ -3,8 +3,10 @@ import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/uri
 
 const not_configured = "provider is not configured; run /login"
 
@@ -172,5 +174,130 @@ pub fn select_default(
 fn read_config(home: String) -> Result(BitArray, Nil)
 
 /// Validate profiles at the daemon boundary without reporting secret values.
-@external(erlang, "albedo_configuration", "validate_profile")
-pub fn validate_profile(name: String, profile: String) -> Result(String, String)
+pub fn validate_profile(
+  name: String,
+  profile: String,
+) -> Result(String, String) {
+  let invalid = "invalid provider name, model, protocol, endpoint, or API key"
+  use profile <- result.try(
+    json.parse(profile, saved_profile_decoder())
+    |> result.replace_error(invalid),
+  )
+  let model = string.trim(profile.model)
+  let endpoint = string.trim(profile.endpoint)
+  let key_valid = case profile.api_key {
+    None -> True
+    Some(key) -> !has_control_characters(key, including_space: True)
+  }
+  case
+    valid_provider_name(name)
+    && string.byte_size(model) > 0
+    && string.byte_size(model) <= 512
+    && !has_control_characters(model, including_space: False)
+    && profile.extension != ""
+    && valid_endpoint(endpoint, profile.extension)
+    && key_valid
+  {
+    False -> Error(invalid)
+    True -> {
+      let fields = [
+        #("extension", json.string(profile.extension)),
+        #("baseUrl", json.string(trim_endpoint_slashes(endpoint))),
+        #("model", json.string(model)),
+        #("protocol", json.string(types.protocol_name(profile.protocol))),
+      ]
+      let fields = case profile.api_key {
+        None -> fields
+        Some(key) -> [#("apiKey", json.string(key)), ..fields]
+      }
+      Ok(json.object(fields) |> json.to_string)
+    }
+  }
+}
+
+type SavedProfile {
+  SavedProfile(
+    extension: String,
+    endpoint: String,
+    model: String,
+    protocol: types.Protocol,
+    api_key: Option(String),
+  )
+}
+
+fn saved_profile_decoder() -> decode.Decoder(SavedProfile) {
+  use extension <- decode.optional_field("extension", "openai", decode.string)
+  use endpoint <- decode.optional_field("baseUrl", "", decode.string)
+  use model <- decode.field("model", decode.string)
+  use protocol <- decode.field("protocol", types.protocol_decoder())
+  use api_key <- decode.optional_field(
+    "apiKey",
+    None,
+    decode.string |> decode.map(Some),
+  )
+  decode.success(SavedProfile(extension, endpoint, model, protocol, api_key))
+}
+
+fn valid_provider_name(name: String) -> Bool {
+  case string.to_utf_codepoints(name) {
+    [] -> False
+    [first, ..rest] ->
+      string.byte_size(name) <= 64
+      && ascii_alphanumeric(string.utf_codepoint_to_int(first))
+      && list.all(rest, fn(codepoint) {
+        let value = string.utf_codepoint_to_int(codepoint)
+        ascii_alphanumeric(value) || value == 46 || value == 95 || value == 45
+      })
+  }
+}
+
+fn ascii_alphanumeric(value: Int) -> Bool {
+  value >= 48
+  && value <= 57
+  || value >= 65
+  && value <= 90
+  || value >= 97
+  && value <= 122
+}
+
+fn has_control_characters(
+  value: String,
+  including_space include_space: Bool,
+) -> Bool {
+  value
+  |> string.to_utf_codepoints
+  |> list.any(fn(codepoint) {
+    let value = string.utf_codepoint_to_int(codepoint)
+    value < 32 || value == 127 || include_space && value == 32
+  })
+}
+
+fn valid_endpoint(endpoint: String, extension: String) -> Bool {
+  case endpoint {
+    "" -> extension != "openai"
+    _ -> {
+      // uri.parse lowercases the scheme; saved profiles require its original
+      // spelling to be http or https, as the previous validator did.
+      let scheme_valid =
+        string.starts_with(endpoint, "http:")
+        || string.starts_with(endpoint, "https:")
+      case uri.parse(endpoint) {
+        Ok(parsed) ->
+          scheme_valid
+          && parsed.host != None
+          && parsed.host != Some("")
+          && parsed.userinfo == None
+          && parsed.query == None
+          && parsed.fragment == None
+        Error(_) -> False
+      }
+    }
+  }
+}
+
+fn trim_endpoint_slashes(endpoint: String) -> String {
+  case string.ends_with(endpoint, "/") {
+    True -> trim_endpoint_slashes(string.remove_suffix(endpoint, "/"))
+    False -> endpoint
+  }
+}

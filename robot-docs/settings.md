@@ -20,6 +20,8 @@ Every route requires `Authorization: Bearer <daemon token>` and rejects requests
 
 `profiles` contains `{active, providers}`. Public profile fields are `extension`, `baseUrl`, `model`, `protocol`, and `hasKey`. API keys never appear in responses. `mcp` maps names to public server configuration. Its header and environment references contain environment variable names, never plaintext credentials. `credentials` has the same presence-only shape as `/auth/credentials`.
 
+Provider names contain 1 to 64 ASCII characters. The first character must be a letter or digit. Remaining characters may also be `.`, `_`, or `-`. Whitespace, including a trailing newline, is rejected when saving profiles or validating existing configuration.
+
 `capabilities` contains `global` and `sessions`. Each scope maps capability kinds to named boolean choices. Kinds are `skills`, `instructions`, and `mcp`. A session choice overrides its global choice; an absent global choice is enabled. Mutation scope is `global` or `session`, and `enabled` is required even when null.
 
 `ui` contains `thinking`, `tools`, arrays of `pinned` and `archived` session IDs, and an `opens` map of session IDs to counts. These preferences are shared by clients. No live settings notifications are sent.
