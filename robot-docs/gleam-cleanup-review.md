@@ -5,14 +5,12 @@ assertions, deliberate fallbacks, and style preferences. This cleanup adds the
 missing function annotations and existing labels, qualifies `option.unwrap`,
 removes the redundant binding, and names the two ambiguous test keys.
 
-The [error review](gleam-error-review.csv) records each of the 404 baseline
+The error review covered the 404 baseline
 production assertion, unwrap, discarded-value, discarded-error, and
-lost-context findings. Rows retain the original function, line, and expression
-so the review survives line changes. Each row records a fix, intentional
-invariant, intentional fallback, or best-effort operation. Duplicate findings
-at the same location remain separate rows.
+lost-context findings, distinguishing defects from intentional invariants,
+fallbacks, and best-effort operations.
 
-The [export review](gleam-export-review.csv) records the 124 baseline production
+The export review covered the 124 baseline production
 export findings and additional exports exposed by removing their callers. The
 review checks Gleam imports and aliases, Erlang calls, registered callbacks,
 dynamic dispatch, and public type contracts. Same-module helpers are private;
@@ -58,7 +56,7 @@ verifies that provider values do not appear in the diagnostic.
 
 Formatting, `gleam check`, the 186 Gleam tests, and the full existing `test.sh`
 gate pass. The curated manual lint run reports no mechanical errors. Remaining
-review warnings retain their recorded dispositions.
+review warnings include intentional invariants, fallbacks, and best-effort operations.
 
 ## All-rules comparison
 
