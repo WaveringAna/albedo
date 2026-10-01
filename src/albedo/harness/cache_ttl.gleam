@@ -114,7 +114,6 @@ pub fn merge_layers(
       [], _ -> tagged
       _, [] -> entries
       _, _ -> {
-        // The last incoming duplicate replaces only the first earlier occurrence.
         // Unmatched ids stay indexed so every new entry keeps its original order.
         let #(unmatched, replaced) =
           list.map_fold(
@@ -154,9 +153,8 @@ const defaults = Config(Some(default_url), 24)
 /// catalog's lookups do.
 pub fn table() -> Table {
   refresh()
-  case native_merged() {
-    Ok(encoded) ->
-      json.parse(encoded, table_decoder()) |> result.unwrap(Table([], []))
+  case native_table() {
+    Ok(table) -> table
     Error(reason) -> {
       io.println_error("cache-ttl: " <> reason)
       Table([], [])
@@ -246,15 +244,66 @@ fn config_decoder() -> decode.Decoder(Config) {
   decode.success(Config(url, hours))
 }
 
-/// A bad entry never fails the table: it is skipped, and the reason logged.
-fn table_decoder() -> decode.Decoder(Table) {
-  use entries <- decode.field("entries", entries_decoder())
-  use layers <- decode.field("layers", decode.list(layer_decoder()))
-  decode.success(Table(entries, layers))
+/// Check mergeable identities before decoding policies, preserving shadowing.
+/// Duplicate ids make a layer ambiguous, so the previous revision stays active.
+pub fn validate_layer(
+  raw: Dynamic,
+) -> Result(List(Dict(String, Dynamic)), String) {
+  let decoder =
+    decode.field("entries", decode.list(decode.dynamic), decode.success)
+  use entries <- result.try(
+    decode.run(raw, decoder)
+    |> result.replace_error(
+      "cache-ttl table is not an object with an entries list",
+    ),
+  )
+  use checked <- result.try(
+    list.try_fold(entries, #([], dict.new(), 0), fn(state, raw) {
+      let fields_decoder = decode.dict(decode.string, decode.dynamic)
+      case decode.run(raw, fields_decoder) {
+        Error(_) -> {
+          Ok(#(state.0, state.1, state.2 + 1))
+        }
+        Ok(fields) ->
+          case
+            dict.get(fields, "id")
+            |> result.try(fn(value) {
+              decode.run(value, decode.string) |> result.replace_error(Nil)
+            })
+          {
+            Error(_) -> {
+              Ok(#(state.0, state.1, state.2 + 1))
+            }
+            Ok(id) ->
+              case dict.has_key(state.1, id) {
+                True -> Error("cache-ttl table has duplicate id: " <> id)
+                False ->
+                  Ok(#(
+                    [fields, ..state.0],
+                    dict.insert(state.1, id, Nil),
+                    state.2,
+                  ))
+              }
+          }
+      }
+    }),
+  )
+  case checked.2 > 0 {
+    True ->
+      io.println_error(
+        "cache-ttl: skipping "
+        <> int.to_string(checked.2)
+        <> " entries without a string id",
+      )
+    False -> Nil
+  }
+  Ok(list.reverse(checked.0))
 }
 
-fn entries_decoder() -> decode.Decoder(List(Entry)) {
-  decode.map(decode.list(decode.dynamic), fn(raw) {
+/// Decode the merged revision once; invalid overrides have already shadowed
+/// their earlier entries by id before semantic decoding skips them.
+pub fn decode_table(raw: List(Dynamic), reports: List(Layer)) -> Table {
+  let entries =
     raw
     |> list.index_map(fn(item, position) {
       case decode.run(item, entry_decoder()) {
@@ -265,20 +314,8 @@ fn entries_decoder() -> decode.Decoder(List(Entry)) {
         }
       }
     })
-    |> list.filter_map(fn(decoded) { decoded })
-  })
-}
-
-fn layer_decoder() -> decode.Decoder(Layer) {
-  use name <- decode.field("name", decode.string)
-  use path <- decode.field("path", decode.string)
-  use loaded <- decode.field("loaded", decode.bool)
-  use error <- decode.optional_field(
-    "error",
-    None,
-    decode.optional(decode.string),
-  )
-  decode.success(Layer(name, path, loaded, error))
+    |> list.filter_map(fn(entry) { entry })
+  Table(entries, reports)
 }
 
 fn entry_decoder() -> decode.Decoder(Entry) {
@@ -446,24 +483,31 @@ fn covers(patterns: Option(List(String)), value: String) -> Bool {
   }
 }
 
-fn matches_glob(pattern: String, value: String) -> Bool {
-  glob(string.lowercase(pattern), string.lowercase(value))
+/// Case-insensitive Unicode grapheme matching; only `*` is special.
+/// Remember the most recent wildcard and retry from its next value position.
+/// Each retry scans at most the pattern, giving O(pattern × value) work.
+pub fn matches_glob(pattern: String, value: String) -> Bool {
+  glob(
+    string.to_graphemes(string.lowercase(pattern)),
+    string.to_graphemes(string.lowercase(value)),
+    None,
+  )
 }
 
-/// Glob matching where `*` covers any run of characters, including none.
-fn glob(pattern: String, value: String) -> Bool {
-  case string.pop_grapheme(pattern) {
-    Error(Nil) -> value == ""
-    Ok(#("*", rest)) ->
-      glob(rest, value)
-      || case string.pop_grapheme(value) {
-        Ok(#(_, tail)) -> glob(pattern, tail)
-        Error(Nil) -> False
-      }
-    Ok(#(head, rest)) ->
-      case string.pop_grapheme(value) {
-        Ok(#(letter, tail)) -> head == letter && glob(rest, tail)
-        Error(Nil) -> False
+fn glob(
+  pattern: List(String),
+  value: List(String),
+  wildcard: Option(#(List(String), List(String))),
+) -> Bool {
+  case pattern, value {
+    [], [] -> True
+    ["*", ..rest], _ -> glob(rest, value, Some(#(rest, value)))
+    [head, ..rest], [letter, ..tail] if head == letter ->
+      glob(rest, tail, wildcard)
+    _, _ ->
+      case wildcard {
+        Some(#(rest, [_, ..tail])) -> glob(rest, tail, Some(#(rest, tail)))
+        _ -> False
       }
   }
 }
@@ -584,8 +628,8 @@ fn evidence_name(evidence: Evidence) -> String {
   }
 }
 
-@external(erlang, "albedo_cache_ttl", "merged")
-fn native_merged() -> Result(String, String)
+@external(erlang, "albedo_cache_ttl", "table")
+fn native_table() -> Result(Table, String)
 
 @external(erlang, "albedo_cache_ttl", "refresh")
 fn native_refresh(path: String, url: String, max_age_ms: Int) -> Nil

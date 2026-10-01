@@ -8,8 +8,8 @@ The table is data, not code: `priv/cache-ttl.json` ships with the daemon, and no
 
 A file is `{"version": 1, "entries": [...]}`. One entry:
 
-- `id` — unique. Layers replace entries by it.
-- `match` — which requests the entry describes: `extension` (albedo's extension name: claude, codex, openai, antigravity, alibaba, ...), `host` (endpoint host), `model` (model id). Each is one string or a list; each string is a glob where `*` matches any run of characters, case-insensitively. An absent field matches anything; a list matches if any element does.
+- `id` — unique within a layer. Layers replace entries by it.
+- `match` — which requests the entry describes: `extension` (albedo's extension name: claude, codex, openai, antigravity, alibaba, ...), `host` (endpoint host), `model` (model id). Each is one string or a list; each string is a glob where only `*` is special: it matches any run of Unicode graphemes, case-insensitively. Matching has bounded polynomial work even for repeated wildcards. An absent field matches anything; a list matches if any element does.
 - `policy` — `refresh` (every hit restarts the lifetime), `fixed` (lifetime runs from the write), `evict` (no clock, best-effort, only survival windows are known), or `unknown`.
 - `clock` — `request` or `response` (default `response`): whether a lifetime counts from request start or response end. Anthropic counts from request start, so streaming time uses the cache up.
 - `tiers` — the TTLs a request can ask for, each `{seconds, write}` with the write-price multiplier.
@@ -18,7 +18,7 @@ A file is `{"version": 1, "entries": [...]}`. One entry:
 - `evidence` — `documented`, `measured`, `implemented`, `folklore`, or `unknown`.
 - `source` (url), `checked` (date), `note` (text).
 
-Unknown fields are ignored, so a newer file stays readable. A bad entry — missing `id`, `match`, `policy` or `evidence`, or a value that does not decode — is skipped with a logged reason and never fails the table.
+Unknown fields are ignored, so a newer file stays readable. An entry without a string `id`, or with an invalid `policy`, `evidence`, or other field, is skipped with a logged reason. An absent `match` matches anything. Repeated string ids within one layer reject that layer, even when one of the entries would fail semantic decoding; the layer keeps its last good entries. The same id in different layers is a valid override.
 
 **Values marked `folklore` or `unknown` are placeholders.** They are the shape of the answer, not the answer: phase 2 replaces them with what the session's own request rows measure.
 
@@ -34,9 +34,9 @@ A later layer replaces an entry with the same id in place, and puts entries with
 
 ## reload
 
-Each layer file is parsed once per revision (size + mtime) and the merged table is cached; a changed file is picked up on the next lookup without a restart. A malformed layer file keeps that layer's last good entries and reports the reason in `/cache-ttl`; fixing the file is live again.
+Each layer file is parsed once per revision (size + mtime), including malformed JSON, invalid table shapes, and duplicate-id failures. The merged decoded Gleam table is cached; a changed file is picked up on the next lookup without a restart. A malformed layer file keeps that layer's last good entries and reports the reason in `/cache-ttl`; fixing the file at a new revision is live again. Transient file-read errors are retried on the next read and retain last good entries. HTTP responses encode the cached table only when serving it.
 
-The remote copy refreshes in the background when it is stale, the same cadence as the models catalog. `/reload` (no target) re-fetches it immediately, alongside the models catalog: the command returns after the copy is atomically replaced, or with the fetch failure.
+The remote copy refreshes in the background when it is stale, the same cadence as the models catalog. `/reload` (no target) re-fetches it immediately, alongside the models catalog: the command returns after the copy is atomically replaced, or with the fetch failure. A fetched layer with duplicate ids is rejected before replacing the file. A confirmed replacement invalidates the parsed layer and merged table even when size and timestamp stay unchanged.
 
 ## local api
 

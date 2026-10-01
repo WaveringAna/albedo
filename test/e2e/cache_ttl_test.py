@@ -15,6 +15,7 @@ for it to land; `/reload` fetches it synchronously. No live network is reached.
 """
 
 import json
+import os
 import time
 import unittest
 import urllib.error
@@ -227,50 +228,69 @@ class CacheTtlTests(unittest.TestCase):
         )
         self.assertEqual(self.resolved("?host=api.deepseek.com")["clock"], "request")
 
-    def test_duplicate_ids_keep_first_match_and_first_replacement(self):
-        def entry(identifier, note):
-            return {
-                "id": identifier,
-                "note": note,
-                "match": {"host": "duplicates.fixture"},
-                "policy": "fixed",
-                "evidence": "measured",
-            }
-
-        write_atomic(
-            self.app.home / "cache-ttl-remote.json",
-            {
-                "entries": [
-                    entry("duplicate", "old first"),
-                    entry("duplicate", "old second"),
-                ]
-            },
-        )
-        write_atomic(
-            self.app.home / "cache-ttl.json",
-            {
-                "entries": [
-                    entry("duplicate", "replacement first"),
-                    entry("duplicate", "replacement last"),
-                    entry("fresh", "new first"),
-                    entry("fresh", "new second"),
-                ]
-            },
-        )
+    def test_duplicate_ids_reject_the_layer_and_retain_last_good_entries(self):
+        duplicate = {"entries": [LOCAL_OVERRIDE["entries"][0]] * 2}
+        write_atomic(self.app.home / "cache-ttl.json", duplicate)
         table = self.table()
+        self.assertFalse(self.layers(table)["local"]["loaded"])
+        self.assertIn("duplicate id: deepseek", self.layers(table)["local"]["error"])
+        self.assertFalse(any(entry["layer"] == "local" for entry in table["entries"]))
+        write_atomic(self.app.home / "cache-ttl.json", LOCAL_OVERRIDE)
+        self.assertTrue(self.layers(self.table())["local"]["loaded"])
+        write_atomic(self.app.home / "cache-ttl.json", duplicate)
+        for _ in range(3):
+            table = self.table()
+            self.assertFalse(self.layers(table)["local"]["loaded"])
+            self.assertIn(
+                "duplicate id: deepseek", self.layers(table)["local"]["error"]
+            )
+            self.assertEqual(self.entries(table)["deepseek"]["note"], "local override")
+        write_atomic(self.app.home / "cache-ttl.json", LOCAL_OVERRIDE)
+        self.assertTrue(self.layers(self.table())["local"]["loaded"])
+
+    def test_duplicate_remote_ids_are_rejected_before_replacement(self):
+        session = self.app.session()
+        with self.app.api(
+            f"/sessions/{session}/commands", {"name": "/reload", "args": {}}
+        ):
+            pass
+        path = self.app.home / "cache-ttl-remote.json"
+        before = path.read_bytes()
+        self.provider.catalog = {"entries": [REMOTE_TABLE["entries"][0]] * 2}
+        with self.assertRaises(urllib.error.HTTPError) as rejected:
+            self.app.api(
+                f"/sessions/{session}/commands", {"name": "/reload", "args": {}}
+            )
+        self.assertIn("duplicate id", rejected.exception.read().decode())
+        self.assertEqual(path.read_bytes(), before)
         self.assertEqual(
-            [
-                (item["id"], item["note"], item["layer"])
-                for item in table["entries"][:4]
-            ],
-            [
-                ("fresh", "new first", "local"),
-                ("fresh", "new second", "local"),
-                ("duplicate", "replacement last", "local"),
-                ("duplicate", "old second", "remote"),
-            ],
+            self.entries(self.table())["deepseek"]["note"], "remote override"
         )
-        self.assertEqual(self.resolved("?host=duplicates.fixture")["note"], "new first")
+
+    def test_same_revision_remote_replacement_invalidates_parsed_layer(self):
+        session = self.app.session()
+        path = self.app.home / "cache-ttl-remote.json"
+        write_atomic(path, REMOTE_TABLE)
+        # A future mtime prevents background refresh. Restoring it after reload
+        # keeps the cached revision unchanged without depending on scheduling.
+        replacement = json.loads(json.dumps(REMOTE_TABLE))
+        replacement["entries"][0]["note"] = "remote revised!"
+        self.assertEqual(len(json.dumps(replacement)), len(json.dumps(REMOTE_TABLE)))
+        self.provider.catalog = replacement
+
+        timestamp = int(time.time()) + 60
+        os.utime(path, (timestamp, timestamp))
+        self.assertEqual(
+            self.entries(self.table())["deepseek"]["note"], "remote override"
+        )
+        with self.app.api(
+            f"/sessions/{session}/commands", {"name": "/reload", "args": {}}
+        ):
+            pass
+        os.utime(path, (timestamp, timestamp))
+        self.assertEqual(
+            self.entries(self.table())["deepseek"]["note"], "remote revised!"
+        )
 
     def test_invalid_override_shadows_previous_entry_before_decoding(self):
         write_atomic(
