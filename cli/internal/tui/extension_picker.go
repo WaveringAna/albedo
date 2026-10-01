@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -15,15 +16,15 @@ import (
 type ExtensionItem struct {
 	Name          string   `json:"name"`
 	Description   string   `json:"description"`
+	// Quarantined is why the daemon will not run this extension; empty when
+	// it is usable. A quarantined extension cannot be toggled.
+	Quarantined   string   `json:"quarantined"`
 	Tools         []string `json:"tools"`
 	PythonModules []string `json:"python_modules"`
 	Requires      []string `json:"requires"`
 	Plugins       []string `json:"plugins"`
 	Enabled       bool     `json:"enabled"`
 	Context       bool     `json:"context"`
-	// Quarantined is why the daemon will not run this extension; empty when
-	// it is usable. A quarantined extension cannot be toggled.
-	Quarantined string `json:"quarantined"`
 	// Overridden means this session has its own choice; otherwise it follows
 	// GlobalEnabled, the default for sessions without one.
 	Overridden    bool `json:"overridden"`
@@ -91,7 +92,7 @@ func (m ExtensionPickerModel) loadExtensionsCmd(gen int) tea.Cmd {
 		noGlobal := !slices.Contains(caps, "global_extensions")
 
 		path := fmt.Sprintf("/sessions/%s/extensions", m.SessionID)
-		items, err := daemon.Request[[]ExtensionItem](context.Background(), m.Conn, path, nil)
+		items, err := daemon.RequestOperation[[]ExtensionItem](context.Background(), m.Conn, daemon.Operation{Name: "load extensions", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
 		return extensionsLoadedMsg{Extensions: items, Err: err, Gen: gen, NoGlobal: noGlobal}
 	}
 }
@@ -112,7 +113,7 @@ func (m ExtensionPickerModel) changeExtensionCmd(name, scope string, enabled boo
 			// Older daemons only know session choices.
 			body = map[string]any{"name": name, "enabled": enabled}
 		}
-		updated, err := daemon.Request[[]ExtensionItem](context.Background(), m.Conn, path, body)
+		updated, err := daemon.RequestOperation[[]ExtensionItem](context.Background(), m.Conn, daemon.Operation{Name: "change extension", Method: http.MethodPost, Path: path, Body: body, Policy: daemon.AuthRecovery})
 		return extensionToggledMsg{Extensions: updated, Err: err, Gen: gen}
 	}
 }

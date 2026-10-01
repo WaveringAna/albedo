@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -85,7 +86,7 @@ func (m CapabilityPageModel) loadCmd(gen int) tea.Cmd {
 		if err == nil && m.Conn != nil {
 			path := fmt.Sprintf("/sessions/%s/extensions", url.PathEscape(m.SessionID))
 			var extensions []ExtensionItem
-			extensions, err = daemon.Request[[]ExtensionItem](context.Background(), m.Conn, path, nil)
+			extensions, err = daemon.RequestOperation[[]ExtensionItem](context.Background(), m.Conn, daemon.Operation{Name: "load", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
 			if i := slices.IndexFunc(extensions, func(ext ExtensionItem) bool { return ext.Name == kind }); err == nil && i >= 0 {
 				enabled = extensions[i].Enabled
 			}
@@ -170,7 +171,7 @@ func discoverInstructions(workspace string) []capabilityItem {
 func (m CapabilityPageModel) enableExtensionCmd(gen int) tea.Cmd {
 	return func() tea.Msg {
 		path := fmt.Sprintf("/sessions/%s/extensions", url.PathEscape(m.SessionID))
-		_, err := daemon.Request[[]ExtensionItem](context.Background(), m.Conn, path, map[string]any{"name": m.Kind, "enabled": true})
+		_, err := daemon.RequestOperation[[]ExtensionItem](context.Background(), m.Conn, daemon.Operation{Name: "enable extension", Method: http.MethodPost, Path: path, Body: map[string]any{"name": m.Kind, "enabled": true}, Policy: daemon.AuthRecovery})
 		return capabilitySavedMsg{Gen: gen, Err: err}
 	}
 }

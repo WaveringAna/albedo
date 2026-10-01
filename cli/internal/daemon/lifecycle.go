@@ -45,11 +45,12 @@ type ConnectionSnapshot struct {
 }
 
 type Connection struct {
-	snapshot   atomic.Pointer[ConnectionSnapshot]
-	httpClient *http.Client
-	homeDir    string
-	httpOnce   sync.Once
-	refreshMu  sync.Mutex
+	snapshot    atomic.Pointer[ConnectionSnapshot]
+	httpClient  *http.Client
+	refreshGate chan struct{}
+	homeDir     string
+	httpOnce    sync.Once
+	refreshOnce sync.Once
 }
 
 // NewConnection binds a daemon snapshot to its discovery directory. An empty
@@ -118,8 +119,16 @@ func (c *Connection) Refresh(ctx context.Context) error {
 	if c == nil {
 		return errors.New("not connected to Albedo")
 	}
-	c.refreshMu.Lock()
-	defer c.refreshMu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.refreshOnce.Do(func() { c.refreshGate = make(chan struct{}, 1) })
+	select {
+	case c.refreshGate <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-c.refreshGate }()
 
 	homeDir := c.HomeDir()
 	if homeDir == "" {
@@ -134,7 +143,7 @@ func (c *Connection) Refresh(ctx context.Context) error {
 		if ctx != nil && ctx.Err() != nil {
 			return ctx.Err()
 		}
-		latest, err := Existing(homeDir)
+		latest, err := existingContext(ctx, homeDir)
 		if err != nil {
 			lastErr = err
 		} else if latest != nil {
@@ -161,7 +170,7 @@ func (c *Connection) Refresh(ctx context.Context) error {
 // HTTPClient returns the reusable HTTP client owned by this Connection.
 // Address and token updates retain the same client and pool.
 func (c *Connection) HTTPClient() *http.Client {
-	c.httpOnce.Do(func() { c.httpClient = newHTTPClient(c) })
+	c.httpOnce.Do(func() { c.httpClient = newHTTPClient() })
 	return c.httpClient
 }
 
@@ -252,6 +261,10 @@ func SessionListing(sessions []Session, now time.Time) string {
 }
 
 func Existing(homeDir string) (*Connection, error) {
+	return existingContext(context.Background(), homeDir)
+}
+
+func existingContext(parent context.Context, homeDir string) (*Connection, error) {
 	recordPath := filepath.Join(homeDir, "daemon.json")
 	fi, err := os.Stat(recordPath)
 	if err != nil || fi.Size() > 64*1024 {
@@ -271,7 +284,7 @@ func Existing(homeDir string) (*Connection, error) {
 		return nil, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(parent, 500*time.Millisecond)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/health", snap.Port), nil)
@@ -280,7 +293,7 @@ func Existing(homeDir string) (*Connection, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+snap.Token)
 
-	// Refresh calls Existing; a reconnecting health probe would recurse into Refresh.
+	// Discovery health probes never invoke operation recovery.
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -422,7 +435,7 @@ func daemonCommand(daemonExe, projectRoot string, env []string) (*exec.Cmd, erro
 // stop shuts a daemon down and waits until its process has exited, so the
 // next daemon can take the home.
 func stop(homeDir string, conn *Connection) error {
-	_, _ = Request[any](context.Background(), conn, "/shutdown", map[string]any{})
+	_, _ = RequestOperation[any](context.Background(), conn, Operation{Name: "stop daemon", Method: http.MethodPost, Path: "/shutdown", Body: map[string]any{}, Policy: NoRecovery})
 	for range pollAttempts {
 		running, err := Existing(homeDir)
 		if err != nil {
@@ -596,9 +609,9 @@ func startupExitError(waitErr error, logPath string, logStart int64, projectRoot
 
 // Capabilities lists what the daemon at conn says it supports.
 func Capabilities(ctx context.Context, conn *Connection) ([]string, error) {
-	health, err := Request[struct {
+	health, err := RequestOperation[struct {
 		Capabilities []string `json:"capabilities"`
-	}](ctx, conn, "/health", nil)
+	}](ctx, conn, Operation{Name: "read capabilities", Method: http.MethodGet, Path: "/health", Policy: ReadRecovery})
 	return health.Capabilities, err
 }
 

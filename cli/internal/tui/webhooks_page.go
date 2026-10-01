@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
@@ -89,7 +90,7 @@ func (m WebhooksPageModel) run(action, details string) (map[string]any, error) {
 	}
 	path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(m.SessionID))
 	body := map[string]any{"name": "/webhooks", "args": map[string]string{"action": action, "details": details}}
-	res, err := daemon.Request[map[string]any](context.Background(), m.Conn, path, body)
+	res, err := daemon.RequestOperation[map[string]any](context.Background(), m.Conn, daemon.Operation{Name: "run", Method: http.MethodPost, Path: path, Body: body, Policy: daemon.AuthRecovery})
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +107,7 @@ func (m WebhooksPageModel) loadCmd(gen int) tea.Cmd {
 		}
 		mounted := true
 		path := fmt.Sprintf("/sessions/%s/extensions", url.PathEscape(m.SessionID))
-		if extensions, err := daemon.Request[[]ExtensionItem](context.Background(), m.Conn, path, nil); err == nil {
+		if extensions, err := daemon.RequestOperation[[]ExtensionItem](context.Background(), m.Conn, daemon.Operation{Name: "load", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery}); err == nil {
 			if i := slices.IndexFunc(extensions, func(ext ExtensionItem) bool { return ext.Name == "webhooks" }); i >= 0 {
 				mounted = extensions[i].GlobalEnabled
 				if !extensions[i].Enabled {
@@ -114,7 +115,7 @@ func (m WebhooksPageModel) loadCmd(gen int) tea.Cmd {
 				}
 			}
 		}
-		all, err := daemon.Request[[]daemon.Session](context.Background(), m.Conn, "/sessions", nil)
+		all, err := daemon.RequestOperation[[]daemon.Session](context.Background(), m.Conn, daemon.Operation{Name: "load", Method: http.MethodGet, Path: "/sessions", Body: nil, Policy: daemon.ReadRecovery})
 		if err != nil {
 			return webhooksLoadedMsg{Gen: gen, Err: err}
 		}

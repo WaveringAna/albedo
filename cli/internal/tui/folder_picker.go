@@ -4,6 +4,7 @@ import (
 	"albedo/cli/internal/daemon"
 	"cmp"
 	"context"
+	"net/http"
 	"path"
 	"slices"
 	"strings"
@@ -39,7 +40,7 @@ func (d daemonFolders) Preview(p string) (daemon.FolderPreview, error) {
 }
 
 func (d daemonFolders) Sessions() ([]daemon.Session, error) {
-	return daemon.Request[[]daemon.Session](context.Background(), d.conn, "/sessions", nil)
+	return daemon.RequestOperation[[]daemon.Session](context.Background(), d.conn, daemon.Operation{Name: "sessions", Method: http.MethodGet, Path: "/sessions", Body: nil, Policy: daemon.ReadRecovery})
 }
 
 func (d daemonFolders) Move(id, workspace string) (daemon.Session, error) {

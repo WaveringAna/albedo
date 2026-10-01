@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 )
 
@@ -47,5 +48,5 @@ func ListProfileModels(ctx context.Context, conn *Connection, profile config.Set
 // ListModels reads the models a provider extension lists for endpoint.
 func ListModels(ctx context.Context, conn *Connection, extension, endpoint string) ([]Model, error) {
 	path := fmt.Sprintf("/models/%s?endpoint=%s&details=1", url.PathEscape(extension), url.QueryEscape(endpoint))
-	return Request[[]Model](ctx, conn, path, nil)
+	return RequestOperation[[]Model](ctx, conn, Operation{Name: "list models", Method: http.MethodGet, Path: path, Policy: ReadRecovery})
 }

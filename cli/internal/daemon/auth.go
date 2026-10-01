@@ -51,36 +51,36 @@ func accountPath(provider, id string) string {
 }
 
 func SignInList(ctx context.Context, conn *Connection) (SignIns, error) {
-	return RequestMethod[SignIns](ctx, conn, http.MethodGet, "/auth", nil)
+	return RequestOperation[SignIns](ctx, conn, Operation{Name: "sign in list", Method: http.MethodGet, Path: "/auth", Body: nil, Policy: ReadRecovery})
 }
 
 // StartSignIn begins a sign-in and returns the url the browser should open.
 func StartSignIn(ctx context.Context, conn *Connection, provider string) (StartedSignIn, error) {
-	return RequestMethod[StartedSignIn](ctx, conn, http.MethodPost, "/auth/"+url.PathEscape(provider), nil)
+	return RequestOperation[StartedSignIn](ctx, conn, Operation{Name: "start sign in", Method: http.MethodPost, Path: "/auth/" + url.PathEscape(provider), Body: nil, Policy: AuthRecovery})
 }
 
 func PollSignIn(ctx context.Context, conn *Connection, id string) (SignInStatus, error) {
-	return RequestMethod[SignInStatus](ctx, conn, http.MethodGet, "/auth/logins/"+url.PathEscape(id), nil)
+	return RequestOperation[SignInStatus](ctx, conn, Operation{Name: "poll sign in", Method: http.MethodGet, Path: "/auth/logins/" + url.PathEscape(id), Body: nil, Policy: ReadRecovery})
 }
 
 // SignInInput delivers a pasted callback url, code#state, query string, or
 // bare code; the daemon parses and races it against the browser callback.
 func SignInInput(ctx context.Context, conn *Connection, id, input string) error {
-	_, err := RequestMethod[acknowledged](ctx, conn, http.MethodPost, "/auth/logins/"+url.PathEscape(id), map[string]string{"input": input})
+	_, err := RequestOperation[acknowledged](ctx, conn, Operation{Name: "sign in input", Method: http.MethodPost, Path: "/auth/logins/" + url.PathEscape(id), Body: map[string]string{"input": input}, Policy: AuthRecovery})
 	return err
 }
 
 func CancelSignIn(ctx context.Context, conn *Connection, id string) error {
-	_, err := RequestMethod[acknowledged](ctx, conn, http.MethodDelete, "/auth/logins/"+url.PathEscape(id), nil)
+	_, err := RequestOperation[acknowledged](ctx, conn, Operation{Name: "cancel sign in", Method: http.MethodDelete, Path: "/auth/logins/" + url.PathEscape(id), Body: nil, Policy: AuthRecovery})
 	return err
 }
 
 func SelectAccount(ctx context.Context, conn *Connection, provider, id string) error {
-	_, err := RequestMethod[acknowledged](ctx, conn, http.MethodPost, accountPath(provider, id), nil)
+	_, err := RequestOperation[acknowledged](ctx, conn, Operation{Name: "select account", Method: http.MethodPost, Path: accountPath(provider, id), Body: nil, Policy: AuthRecovery})
 	return err
 }
 
 func RemoveAccount(ctx context.Context, conn *Connection, provider, id string) error {
-	_, err := RequestMethod[acknowledged](ctx, conn, http.MethodDelete, accountPath(provider, id), nil)
+	_, err := RequestOperation[acknowledged](ctx, conn, Operation{Name: "remove account", Method: http.MethodDelete, Path: accountPath(provider, id), Body: nil, Policy: AuthRecovery})
 	return err
 }

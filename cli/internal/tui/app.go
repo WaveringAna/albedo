@@ -224,7 +224,7 @@ func (m *AppModel) loadSessionsCmd(gen int) tea.Cmd {
 		if conn == nil {
 			return sessionsLoadedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		sessions, err := daemon.Request[[]daemon.Session](context.Background(), conn, "/sessions", nil)
+		sessions, err := daemon.RequestOperation[[]daemon.Session](context.Background(), conn, daemon.Operation{Name: "load sessions", Method: http.MethodGet, Path: "/sessions", Body: nil, Policy: daemon.ReadRecovery})
 		return sessionsLoadedMsg{Sessions: sessions, Err: err, Gen: gen}
 	}
 }
@@ -236,7 +236,7 @@ func (m *AppModel) renameSessionCmd(rename SessionRenameMsg) tea.Cmd {
 			return sessionRenamedMsg{SessionRenameMsg: rename, Err: errors.New("daemon connection unavailable")}
 		}
 		path := "/sessions/" + url.PathEscape(rename.ID)
-		s, err := daemon.RequestMethod[daemon.Session](context.Background(), conn, http.MethodPatch, path, map[string]string{"name": rename.Name})
+		s, err := daemon.RequestOperation[daemon.Session](context.Background(), conn, daemon.Operation{Name: "rename session", Method: http.MethodPatch, Path: path, Body: map[string]string{"name": rename.Name}, Policy: daemon.AuthRecovery})
 		return sessionRenamedMsg{SessionRenameMsg: rename, Session: s, Err: err}
 	}
 }
@@ -247,14 +247,14 @@ func (m *AppModel) deleteSessionCmd(id string) tea.Cmd {
 		if conn == nil {
 			return sessionDeletedMsg{ID: id, Err: errors.New("daemon connection unavailable")}
 		}
-		_, err := daemon.RequestMethod[struct{}](context.Background(), conn, http.MethodDelete, "/sessions/"+url.PathEscape(id)+"?tree=1", nil)
+		_, err := daemon.RequestOperation[struct{}](context.Background(), conn, daemon.Operation{Name: "delete session", Method: http.MethodDelete, Path: "/sessions/" + url.PathEscape(id) + "?tree=1", Body: nil, Policy: daemon.AuthRecovery})
 		return sessionDeletedMsg{ID: id, Err: err}
 	}
 }
 
 func sessionPreviewCmd(conn *daemon.Connection, id string) tea.Cmd {
 	return func() tea.Msg {
-		preview, err := daemon.Request[SessionPreview](context.Background(), conn, "/sessions/"+url.PathEscape(id)+"/preview?limit=16", nil)
+		preview, err := daemon.RequestOperation[SessionPreview](context.Background(), conn, daemon.Operation{Name: "session preview", Method: http.MethodGet, Path: "/sessions/" + url.PathEscape(id) + "/preview?limit=16", Body: nil, Policy: daemon.ReadRecovery})
 		return SessionPreviewMsg{ID: id, Preview: preview, Err: err}
 	}
 }
@@ -265,7 +265,7 @@ func (m *AppModel) createSessionCmd(gen int, workspace string) tea.Cmd {
 		if conn == nil {
 			return sessionCreatedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		s, err := daemon.Request[daemon.Session](context.Background(), conn, "/sessions", map[string]string{"workspace": workspace})
+		s, err := daemon.RequestOperation[daemon.Session](context.Background(), conn, daemon.Operation{Name: "create session", Method: http.MethodPost, Path: "/sessions", Body: map[string]string{"workspace": workspace}, Policy: daemon.AuthRecovery})
 		return sessionCreatedMsg{Session: s, Err: err, Gen: gen}
 	}
 }
@@ -294,7 +294,7 @@ func (m *AppModel) loadCommandCatalogCmd(gen int) tea.Cmd {
 		}
 
 		path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(sessionID))
-		raw, err := daemon.Request[json.RawMessage](context.Background(), conn, path, nil)
+		raw, err := daemon.RequestOperation[json.RawMessage](context.Background(), conn, daemon.Operation{Name: "load command catalog", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
 		if err != nil {
 			return commandCatalogLoadedMsg{Err: err, Gen: gen}
 		}
@@ -339,7 +339,7 @@ func (m *AppModel) changeModelCmd(model, provider, effort string, raiseCap *bool
 			"args": args,
 		}
 
-		res, err := daemon.Request[map[string]any](context.Background(), conn, path, body)
+		res, err := daemon.RequestOperation[map[string]any](context.Background(), conn, daemon.Operation{Name: "change model", Method: http.MethodPost, Path: path, Body: body, Policy: daemon.AuthRecovery})
 		if err != nil {
 			return modelChangedMsg{Err: err, Gen: gen}
 		}
@@ -350,8 +350,8 @@ func (m *AppModel) changeModelCmd(model, provider, effort string, raiseCap *bool
 				state = "on"
 			}
 			capBody := map[string]any{"name": "/raise-cap", "args": map[string]string{"state": state, "model": model}}
-			if _, err := daemon.Request[map[string]any](context.Background(), conn, path, capBody); err != nil {
-				return modelChangedMsg{Err: fmt.Errorf("switched model, but the context cap was not saved: %w", err), Gen: gen}
+			if _, err := daemon.RequestOperation[map[string]any](context.Background(), conn, daemon.Operation{Name: "save context cap", Method: http.MethodPost, Path: path, Body: capBody, Policy: daemon.AuthRecovery}); err != nil {
+				return modelChangedMsg{Err: fmt.Errorf("switched model; context cap update: %w", err), Gen: gen}
 			}
 		}
 
@@ -400,7 +400,7 @@ func (m *AppModel) executeCommandCmd(name, args string, gen int) tea.Cmd {
 			body["arguments"] = args
 		}
 
-		res, err := daemon.Request[map[string]any](context.Background(), conn, path, body)
+		res, err := daemon.RequestOperation[map[string]any](context.Background(), conn, daemon.Operation{Name: "execute command", Method: http.MethodPost, Path: path, Body: body, Policy: daemon.AuthRecovery})
 		if err != nil {
 			return commandExecutedMsg{Name: name, Err: err, Gen: gen}
 		}
@@ -470,7 +470,7 @@ func (m *AppModel) pollGlancesCmd(gen int) tea.Cmd {
 		var glances []PageGlance
 		for _, name := range pageNames {
 			body := map[string]any{"name": name, "args": map[string]string{}}
-			res, err := daemon.Request[map[string]any](context.Background(), conn, path, body)
+			res, err := daemon.RequestOperation[map[string]any](context.Background(), conn, daemon.Operation{Name: "poll glances", Method: http.MethodPost, Path: path, Body: body, Policy: daemon.AuthRecovery})
 			if err != nil {
 				continue
 			}
@@ -619,7 +619,7 @@ func (m *AppModel) moved(msg FolderMovedMsg) tea.Cmd {
 		if m.State == AppStateFolderPicker {
 			m.FolderPicker.Refused(msg.Err)
 		} else {
-			m.AddError("Could not move this session: " + msg.Err.Error())
+			m.AddError(operationError(msg.Err, "Could not move this session: ", "Session may have moved; check its folder before trying again."))
 		}
 		return nil
 	}
@@ -773,7 +773,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionDeletedMsg:
 		if msg.Err != nil {
-			m.AddError("Could not delete the session: " + msg.Err.Error())
+			m.AddError(operationError(msg.Err, "Could not delete the session: ", "Session may have been deleted; refresh the session list before trying again."))
 			return m, nil
 		}
 		m.SessionPicker.Removed(msg.ID)
@@ -792,7 +792,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Agents, cmd = m.Agents.Update(msg)
 		}
 		if msg.Err != nil {
-			m.SessionPicker.notice = "Could not rename the session: " + msg.Err.Error()
+			m.SessionPicker.notice = operationError(msg.Err, "Could not rename the session: ", "Session may have been renamed; refresh the session list before trying again.")
 			return m, cmd
 		}
 		if i := slices.IndexFunc(m.Sessions, func(s daemon.Session) bool { return s.ID == msg.ID }); i >= 0 {
@@ -831,11 +831,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Err != nil && m.State == AppStateFolderPicker {
-			m.FolderPicker.Refused(msg.Err)
+			m.FolderPicker.Refused(errors.New(operationError(msg.Err, "", "Session may have been created; check the session list before creating another.")))
 			return m, nil
 		}
 		if msg.Err != nil {
-			m.AddError("Could not create a session: " + msg.Err.Error())
+			m.AddError(operationError(msg.Err, "Could not create a session: ", "Session may have been created; check the session list before creating another."))
 			return m, nil
 		}
 		return m, m.setChatSession(msg.Session, true)
@@ -906,7 +906,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Err != nil {
-			m.AddError("Command error: " + msg.Err.Error())
+			m.AddError(operationError(msg.Err, "Command error: ", msg.Name+" may have run; check its result before running it again."))
 			return m, nil
 		}
 		m.AddNotice(msg.Message)

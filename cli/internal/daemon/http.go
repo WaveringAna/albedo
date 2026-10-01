@@ -10,69 +10,33 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"syscall"
 	"time"
 )
 
-type reconnectingTransport struct {
-	conn *Connection
-	base *http.Transport
+// RetryPolicy controls application recovery. Audited read-only GET requests
+// may also be recovered internally by net/http on a reused connection.
+type RetryPolicy uint8
+
+const (
+	NoRecovery RetryPolicy = iota
+	ReadRecovery
+	AuthRecovery
+)
+
+type Operation struct {
+	Body   any
+	Name   string
+	Method string
+	Path   string
+	Policy RetryPolicy
 }
 
-func (t *reconnectingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	base := t.base
-
-	res, err := base.RoundTrip(req)
-	status := 0
-	if res != nil {
-		status = res.StatusCode
-	}
-
-	// Retrying shutdown could stop a replacement daemon. The settings /open
-	// route increments an open count and its contract forbids automatic retries.
-	if req.URL != nil && req.URL.Path != "/shutdown" && !strings.HasSuffix(req.URL.Path, "/open") && isStaleDaemon(err, status) {
-		if refreshErr := t.conn.Refresh(req.Context()); refreshErr == nil {
-			if res != nil {
-				_ = res.Body.Close()
-			}
-			newReq := req.Clone(req.Context())
-			newBase := t.conn.BaseURL()
-			if parsed, parseErr := url.Parse(newBase); parseErr == nil && newReq.URL != nil {
-				newReq.URL.Scheme = parsed.Scheme
-				newReq.URL.Host = parsed.Host
-				newReq.Host = parsed.Host
-			}
-			if token := t.conn.Token(); token != "" {
-				newReq.Header.Set("Authorization", "Bearer "+token)
-			}
-			if req.GetBody != nil {
-				body, bodyErr := req.GetBody()
-				if bodyErr != nil {
-					return nil, bodyErr
-				}
-				newReq.Body = body
-			}
-			return base.RoundTrip(newReq)
-		}
-	}
-	return res, err
-}
-
-func (t *reconnectingTransport) CloseIdleConnections() {
-	t.base.CloseIdleConnections()
-}
-
-func newHTTPClient(conn *Connection) *http.Client {
+func newHTTPClient() *http.Client {
 	return &http.Client{
-		Transport: &reconnectingTransport{
-			conn: conn,
-			base: &http.Transport{Proxy: http.ProxyFromEnvironment},
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+		Transport:     &http.Transport{Proxy: http.ProxyFromEnvironment},
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }
 
@@ -100,40 +64,6 @@ func isConnectionError(err error) bool {
 		strings.Contains(msg, "EOF")
 }
 
-func isStaleDaemon(err error, statusCode int) bool {
-	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
-		return true
-	}
-	return isConnectionError(err)
-}
-
-func newJSONRequest(ctx context.Context, method, url string, body any) (*http.Request, error) {
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		// A bytes.Reader lets net/http populate GetBody for a reconnect retry.
-		reader = bytes.NewReader(encoded)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, url, reader)
-	if err != nil {
-		return nil, err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	return req, nil
-}
-
-func doAuthenticatedRequest(conn *Connection, req *http.Request) (*http.Response, error) {
-	if token := conn.Token(); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	return conn.HTTPClient().Do(req)
-}
-
 // responseLimits preserves each endpoint's accepted status and bounded reads.
 // A zero successStatus accepts any 2xx response.
 type responseLimits struct {
@@ -142,19 +72,109 @@ type responseLimits struct {
 	errorBytes    int64
 }
 
-// requestBytes owns the response until its bounded body has been read.
-func requestBytes(conn *Connection, req *http.Request, limits responseLimits) ([]byte, error) {
-	res, err := doAuthenticatedRequest(conn, req)
+// operationRequest binds the address and credentials to one immutable snapshot.
+func operationRequest(ctx context.Context, snapshot ConnectionSnapshot, operation Operation, payload []byte) (*http.Request, error) {
+	var reader io.Reader
+	if payload != nil {
+		reader = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, operation.Method, fmt.Sprintf("http://127.0.0.1:%d", snapshot.Port)+operation.Path, reader)
 	if err != nil {
 		return nil, err
 	}
-	// Read and status errors describe the operation; closing cannot undo it.
-	defer res.Body.Close()
-	if (limits.successStatus != 0 && res.StatusCode != limits.successStatus) ||
-		(limits.successStatus == 0 && (res.StatusCode < 200 || res.StatusCode >= 300)) {
-		return nil, readHTTPError(res, limits.errorBytes)
+	req.Header.Set("Content-Type", "application/json")
+	if snapshot.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+snapshot.Token)
 	}
-	return readBounded(res.Body, limits.bodyBytes)
+	// A mutation must never become replayable through net/http's pooled-connection retry.
+	// Explicit application recovery constructs a fresh request from payload instead.
+	if operation.Policy != ReadRecovery {
+		req.GetBody = nil
+	}
+	return req, nil
+}
+
+func encodeOperation(operation Operation) ([]byte, error) {
+	if operation.Body == nil {
+		return nil, nil
+	}
+	return json.Marshal(operation.Body)
+}
+
+func recoverOperation(ctx context.Context, conn *Connection, operation Operation, snapshot ConnectionSnapshot, failure error) bool {
+	if operation.Policy == NoRecovery || ctx.Err() != nil {
+		return false
+	}
+	apiError, rejected := errors.AsType[*APIError](failure)
+	authRefusal := rejected && apiError.StatusCode == http.StatusForbidden && apiError.Code == "authentication_required"
+	if !authRefusal && (operation.Policy != ReadRecovery || !isConnectionError(failure)) {
+		return false
+	}
+	if conn.Refresh(ctx) != nil {
+		return false
+	}
+	latest := conn.Snapshot()
+	return !authRefusal || latest.Port != snapshot.Port || latest.Token != snapshot.Token
+}
+
+func uncertainOperation(operation Operation, failure error) error {
+	if operation.Policy == ReadRecovery {
+		return failure
+	}
+	return &UncertainOutcomeError{Operation: operation.Name, Cause: failure}
+}
+
+// requestBytes owns every response until its bounded body has been read.
+func requestBytes(ctx context.Context, conn *Connection, operation Operation, limits responseLimits) ([]byte, error) {
+	payload, err := encodeOperation(operation)
+	if err != nil {
+		return nil, err
+	}
+	for attempt := range 2 {
+		if canceled := ctx.Err(); canceled != nil {
+			return nil, canceled
+		}
+		snapshot := conn.Snapshot()
+		req, err := operationRequest(ctx, snapshot, operation, payload)
+		if err != nil {
+			return nil, err
+		}
+		if canceled := ctx.Err(); canceled != nil {
+			return nil, canceled
+		}
+		res, err := conn.HTTPClient().Do(req)
+		if err != nil {
+			if attempt == 0 && recoverOperation(ctx, conn, operation, snapshot, err) {
+				continue
+			}
+			if canceled := ctx.Err(); canceled != nil {
+				err = errors.Join(err, canceled)
+			}
+			return nil, uncertainOperation(operation, err)
+		}
+		success := (limits.successStatus == 0 && res.StatusCode >= 200 && res.StatusCode < 300) || res.StatusCode == limits.successStatus
+		var body []byte
+		if success {
+			body, err = readBounded(res.Body, limits.bodyBytes)
+		} else {
+			err = readHTTPError(res, limits.errorBytes)
+		}
+		_ = res.Body.Close()
+		if err == nil {
+			return body, nil
+		}
+		if attempt == 0 && recoverOperation(ctx, conn, operation, snapshot, err) {
+			continue
+		}
+		if canceled := ctx.Err(); canceled != nil {
+			err = errors.Join(err, canceled)
+		}
+		if success || res.StatusCode >= 500 {
+			return nil, uncertainOperation(operation, err)
+		}
+		return nil, err
+	}
+	panic("unreachable retry budget")
 }
 
 type streamLimits struct {
@@ -162,28 +182,56 @@ type streamLimits struct {
 	errorBytes int64
 }
 
-// scanEventStream owns the response while consume scans it. The scanner is
-// borrowed for that call only; callbacks never own or close the response.
-func scanEventStream(conn *Connection, req *http.Request, limits streamLimits, consume func(*bufio.Scanner) error) error {
-	req.Header.Set("Accept", "text/event-stream")
-	res, err := doAuthenticatedRequest(conn, req)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		if limits.errorBytes == 0 {
-			// Some error streams never finish, so only inspect their status.
-			return &APIError{StatusCode: res.StatusCode}
+// Recovery ends as soon as a successful stream is accepted; events are never replayed here.
+func scanEventStream(ctx context.Context, conn *Connection, operation Operation, limits streamLimits, consume func(*bufio.Scanner) error) error {
+	for attempt := range 2 {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		return readHTTPError(res, limits.errorBytes)
+		snapshot := conn.Snapshot()
+		req, err := operationRequest(ctx, snapshot, operation, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "text/event-stream")
+		res, err := conn.HTTPClient().Do(req)
+		if err != nil {
+			if attempt == 0 && recoverOperation(ctx, conn, operation, snapshot, err) {
+				continue
+			}
+			if canceled := ctx.Err(); canceled != nil {
+				err = errors.Join(err, canceled)
+			}
+			return err
+		}
+		if res.StatusCode != http.StatusOK {
+			if limits.errorBytes == 0 {
+				apiError := &APIError{StatusCode: res.StatusCode}
+				if res.StatusCode == http.StatusForbidden && res.Header.Get("Albedo-Error-Code") == "authentication_required" {
+					apiError.Code = "authentication_required"
+				}
+				err = apiError
+			} else {
+				err = readHTTPError(res, limits.errorBytes)
+			}
+			_ = res.Body.Close()
+			if attempt == 0 && recoverOperation(ctx, conn, operation, snapshot, err) {
+				continue
+			}
+			if canceled := ctx.Err(); canceled != nil {
+				err = errors.Join(err, canceled)
+			}
+			return err
+		}
+		defer res.Body.Close()
+		scanner := bufio.NewScanner(res.Body)
+		scanner.Buffer(make([]byte, 64*1024), limits.lineBytes)
+		if err := consume(scanner); err != nil {
+			return err
+		}
+		return scanner.Err()
 	}
-	scanner := bufio.NewScanner(res.Body)
-	scanner.Buffer(make([]byte, 64*1024), limits.lineBytes)
-	if err := consume(scanner); err != nil {
-		return err
-	}
-	return scanner.Err()
+	panic("unreachable retry budget")
 }
 
 func readHTTPError(res *http.Response, limit int64) error {
@@ -205,15 +253,7 @@ func readBounded(r io.Reader, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-func Request[T any](ctx context.Context, conn *Connection, path string, body any) (T, error) {
-	method := http.MethodGet
-	if body != nil {
-		method = http.MethodPost
-	}
-	return RequestMethod[T](ctx, conn, method, path, body)
-}
-
-func RequestMethod[T any](ctx context.Context, conn *Connection, method, path string, body any) (T, error) {
+func RequestOperation[T any](ctx context.Context, conn *Connection, operation Operation) (T, error) {
 	var zero T
 	if conn == nil {
 		return zero, errors.New("not connected to Albedo")
@@ -221,26 +261,16 @@ func RequestMethod[T any](ctx context.Context, conn *Connection, method, path st
 	if ctx == nil {
 		ctx = context.Background()
 	}
-
 	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-
-	reqURL := conn.BaseURL() + path
-	req, err := newJSONRequest(reqCtx, method, reqURL, body)
+	respData, err := requestBytes(reqCtx, conn, operation, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 50 * 1024 * 1024})
 	if err != nil {
 		return zero, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-
-	respData, err := requestBytes(conn, req, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 50 * 1024 * 1024})
-	if err != nil {
-		return zero, err
-	}
-
 	var result T
 	if len(respData) > 0 {
 		if err := json.Unmarshal(respData, &result); err != nil {
-			return zero, err
+			return zero, uncertainOperation(operation, err)
 		}
 	}
 	return result, nil

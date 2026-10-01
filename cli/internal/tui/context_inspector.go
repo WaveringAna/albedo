@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -178,7 +179,7 @@ func (m ContextInspectorModel) loadSnapshotCmd(gen int) tea.Cmd {
 		}
 
 		path := fmt.Sprintf("/sessions/%s/context", url.PathEscape(m.SessionID))
-		snapshot, err := daemon.Request[ContextSnapshot](context.Background(), m.Conn, path, nil)
+		snapshot, err := daemon.RequestOperation[ContextSnapshot](context.Background(), m.Conn, daemon.Operation{Name: "load snapshot", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
 		if err == nil {
 			err = validContextSnapshot(snapshot)
 		}
@@ -195,7 +196,7 @@ func (m ContextInspectorModel) loadPageCmd(sectionID string, page int, gen int) 
 			return contextPageLoadedMsg{SectionID: sectionID, Page: page, Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
 		path := fmt.Sprintf("/sessions/%s/context/%s/%d", url.PathEscape(m.SessionID), url.PathEscape(sectionID), page)
-		data, err := daemon.Request[ContextPage](context.Background(), m.Conn, path, nil)
+		data, err := daemon.RequestOperation[ContextPage](context.Background(), m.Conn, daemon.Operation{Name: "load page", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
 		if err == nil {
 			err = validContextPage(data, sectionID)
 		}

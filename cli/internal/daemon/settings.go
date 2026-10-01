@@ -28,7 +28,7 @@ func GetSettings(ctx context.Context, conn *Connection) (Settings, error) {
 	if err := CheckCapability(ctx, conn, "settings_api", "for persisted settings; upgrade the CLI and daemon together"); err != nil {
 		return Settings{}, err
 	}
-	return RequestMethod[Settings](ctx, conn, http.MethodGet, "/settings", nil)
+	return RequestOperation[Settings](ctx, conn, Operation{Name: "get settings", Method: http.MethodGet, Path: "/settings", Body: nil, Policy: ReadRecovery})
 }
 
 func ProviderProfiles(ctx context.Context, conn *Connection) (config.Profiles, error) {
@@ -37,22 +37,22 @@ func ProviderProfiles(ctx context.Context, conn *Connection) (config.Profiles, e
 }
 
 func SaveProvider(ctx context.Context, conn *Connection, name string, profile config.Settings) error {
-	_, err := RequestMethod[acknowledged](ctx, conn, http.MethodPut, "/settings/providers/"+url.PathEscape(name), profile)
+	_, err := RequestOperation[acknowledged](ctx, conn, Operation{Name: "save provider", Method: http.MethodPut, Path: "/settings/providers/" + url.PathEscape(name), Body: profile, Policy: AuthRecovery})
 	return err
 }
 
 func DeleteProvider(ctx context.Context, conn *Connection, name string) error {
-	_, err := RequestMethod[acknowledged](ctx, conn, http.MethodDelete, "/settings/providers/"+url.PathEscape(name), nil)
+	_, err := RequestOperation[acknowledged](ctx, conn, Operation{Name: "delete provider", Method: http.MethodDelete, Path: "/settings/providers/" + url.PathEscape(name), Body: nil, Policy: AuthRecovery})
 	return err
 }
 
 func SetCapability(ctx context.Context, conn *Connection, session, kind, name, scope string, enabled *bool) error {
-	_, err := RequestMethod[acknowledged](ctx, conn, http.MethodPost, "/sessions/"+url.PathEscape(session)+"/settings/capabilities", struct {
+	_, err := RequestOperation[acknowledged](ctx, conn, Operation{Name: "set capability", Method: http.MethodPost, Path: "/sessions/" + url.PathEscape(session) + "/settings/capabilities", Body: struct {
 		Enabled *bool  `json:"enabled"`
 		Kind    string `json:"kind"`
 		Name    string `json:"name"`
 		Scope   string `json:"scope"`
-	}{Kind: kind, Name: name, Scope: scope, Enabled: enabled})
+	}{Kind: kind, Name: name, Scope: scope, Enabled: enabled}, Policy: AuthRecovery})
 	return err
 }
 
@@ -66,20 +66,20 @@ func SaveMCP(ctx context.Context, conn *Connection, session, name string, server
 	if server == nil {
 		method, body = http.MethodDelete, nil
 	}
-	_, err := RequestMethod[acknowledged](ctx, conn, method, path, body)
+	_, err := RequestOperation[acknowledged](ctx, conn, Operation{Name: "save MCP", Method: method, Path: path, Body: body, Policy: AuthRecovery})
 	return err
 }
 
 func PatchUI(ctx context.Context, conn *Connection, patch map[string]bool) (UIPreferences, error) {
-	return RequestMethod[UIPreferences](ctx, conn, http.MethodPatch, "/settings/ui", patch)
+	return RequestOperation[UIPreferences](ctx, conn, Operation{Name: "patch u i", Method: http.MethodPatch, Path: "/settings/ui", Body: patch, Policy: AuthRecovery})
 }
 
 func PatchSessionUI(ctx context.Context, conn *Connection, session string, patch map[string]bool) (UIPreferences, error) {
-	return RequestMethod[UIPreferences](ctx, conn, http.MethodPatch, "/settings/ui/sessions/"+url.PathEscape(session), patch)
+	return RequestOperation[UIPreferences](ctx, conn, Operation{Name: "patch session u i", Method: http.MethodPatch, Path: "/settings/ui/sessions/" + url.PathEscape(session), Body: patch, Policy: AuthRecovery})
 }
 
 // RecordOpen is never replayed after transport loss. The server may have already
 // incremented the count even when its response did not reach us.
 func RecordOpen(ctx context.Context, conn *Connection, session string) (UIPreferences, error) {
-	return RequestMethod[UIPreferences](ctx, conn, http.MethodPost, "/settings/ui/sessions/"+url.PathEscape(session)+"/open", nil)
+	return RequestOperation[UIPreferences](ctx, conn, Operation{Name: "record open", Method: http.MethodPost, Path: "/settings/ui/sessions/" + url.PathEscape(session) + "/open", Body: nil, Policy: NoRecovery})
 }

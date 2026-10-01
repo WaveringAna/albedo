@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"net/http"
 	"net/url"
 )
 
@@ -64,21 +65,21 @@ type FolderNode struct {
 }
 
 func ListFolders(ctx context.Context, conn *Connection, path string) (FolderList, error) {
-	return Request[FolderList](ctx, conn, "/fs/list?path="+url.QueryEscape(path), nil)
+	return RequestOperation[FolderList](ctx, conn, Operation{Name: "list folders", Method: http.MethodGet, Path: "/fs/list?path=" + url.QueryEscape(path), Policy: ReadRecovery})
 }
 
 func FolderRepo(ctx context.Context, conn *Connection, path string) (*Repo, error) {
-	res, err := Request[struct {
+	res, err := RequestOperation[struct {
 		Repo *Repo `json:"repo"`
-	}](ctx, conn, "/fs/repo?path="+url.QueryEscape(path), nil)
+	}](ctx, conn, Operation{Name: "read repository", Method: http.MethodGet, Path: "/fs/repo?path=" + url.QueryEscape(path), Policy: ReadRecovery})
 	return res.Repo, err
 }
 
 func PreviewFolder(ctx context.Context, conn *Connection, path string) (FolderPreview, error) {
-	return Request[FolderPreview](ctx, conn, "/fs/preview?path="+url.QueryEscape(path), nil)
+	return RequestOperation[FolderPreview](ctx, conn, Operation{Name: "preview folder", Method: http.MethodGet, Path: "/fs/preview?path=" + url.QueryEscape(path), Policy: ReadRecovery})
 }
 
 // MoveSession moves an idle session to another folder.
 func MoveSession(ctx context.Context, conn *Connection, id, workspace string) (Session, error) {
-	return Request[Session](ctx, conn, "/sessions/"+url.PathEscape(id)+"/workspace", map[string]string{"workspace": workspace})
+	return RequestOperation[Session](ctx, conn, Operation{Name: "move session", Method: http.MethodPost, Path: "/sessions/" + url.PathEscape(id) + "/workspace", Body: map[string]string{"workspace": workspace}, Policy: AuthRecovery})
 }

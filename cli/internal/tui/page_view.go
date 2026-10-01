@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -222,7 +223,7 @@ func (m PageViewModel) loadPageCmd(gen int) tea.Cmd {
 		}
 		path := fmt.Sprintf("/sessions/%s/commands", m.SessionID)
 		body := map[string]any{"name": m.Command, "args": map[string]string{}}
-		res, err := daemon.Request[map[string]any](context.Background(), m.Conn, path, body)
+		res, err := daemon.RequestOperation[map[string]any](context.Background(), m.Conn, daemon.Operation{Name: "load page", Method: http.MethodPost, Path: path, Body: body, Policy: daemon.AuthRecovery})
 		if err != nil {
 			return pageLoadedMsg{Err: err, Gen: gen}
 		}
@@ -266,7 +267,7 @@ func (m PageViewModel) executeActionCmd(act PageAction, row *PageRow, entered st
 			},
 		}
 
-		res, err := daemon.Request[map[string]any](context.Background(), m.Conn, path, body)
+		res, err := daemon.RequestOperation[map[string]any](context.Background(), m.Conn, daemon.Operation{Name: "execute action", Method: http.MethodPost, Path: path, Body: body, Policy: daemon.AuthRecovery})
 		return pageActionExecutedMsg{Result: res, Action: act, Err: err, Gen: gen}
 	}
 }

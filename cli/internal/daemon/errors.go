@@ -55,3 +55,15 @@ func decodeAPIError(status int, body []byte) error {
 	}
 	return apiErr
 }
+
+// UncertainOutcomeError means the daemon may have applied a mutation. Callers
+// must reconcile its result before asking the user to submit it again.
+type UncertainOutcomeError struct {
+	Cause     error
+	Operation string
+}
+
+func (e *UncertainOutcomeError) Error() string {
+	return e.Operation + " may have been accepted; check its result before trying again"
+}
+func (e *UncertainOutcomeError) Unwrap() error { return e.Cause }

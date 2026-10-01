@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"slices"
@@ -45,16 +46,16 @@ func (s *Service) PrepareOpen(ctx context.Context, options OpenOptions) (Prepare
 		return PreparedOpen{}, err
 	}
 
-	sessions, err := daemon.Request[[]daemon.Session](ctx, conn, "/sessions", nil)
+	sessions, err := daemon.RequestOperation[[]daemon.Session](ctx, conn, daemon.Operation{Name: "list sessions", Method: http.MethodGet, Path: "/sessions", Policy: daemon.ReadRecovery})
 	if err != nil {
 		return PreparedOpen{}, err
 	}
 
 	var selected *daemon.Session
 	if id != "" {
-		session, err := matchSession(sessions, id)
-		if err != nil {
-			return PreparedOpen{}, err
+		session, matchErr := matchSession(sessions, id)
+		if matchErr != nil {
+			return PreparedOpen{}, matchErr
 		}
 		selected = &session
 	}
@@ -73,7 +74,7 @@ func (s *Service) PrepareOpen(ctx context.Context, options OpenOptions) (Prepare
 	if selected != nil {
 		initial = selected
 	} else if configured && (fresh || len(sessions) == 0) {
-		created, createErr := daemon.Request[daemon.Session](ctx, conn, "/sessions", map[string]string{"workspace": absWorkspace})
+		created, createErr := daemon.RequestOperation[daemon.Session](ctx, conn, daemon.Operation{Name: "create session", Method: http.MethodPost, Path: "/sessions", Body: map[string]string{"workspace": absWorkspace}, Policy: daemon.AuthRecovery})
 		if createErr != nil {
 			return PreparedOpen{}, createErr
 		}
@@ -93,7 +94,7 @@ func (s *Service) Sessions(ctx context.Context) (SessionList, error) {
 	if err != nil {
 		return SessionList{}, err
 	}
-	sessions, err := daemon.Request[[]daemon.Session](ctx, conn, "/sessions", nil)
+	sessions, err := daemon.RequestOperation[[]daemon.Session](ctx, conn, daemon.Operation{Name: "list sessions", Method: http.MethodGet, Path: "/sessions", Policy: daemon.ReadRecovery})
 	if err != nil {
 		return SessionList{}, err
 	}
@@ -129,7 +130,7 @@ func matchSession(sessions []daemon.Session, id string) (daemon.Session, error) 
 
 // resolveSession expands a shortened session ID against the daemon's sessions.
 func resolveSession(ctx context.Context, conn *daemon.Connection, id string) (string, error) {
-	sessions, err := daemon.Request[[]daemon.Session](ctx, conn, "/sessions", nil)
+	sessions, err := daemon.RequestOperation[[]daemon.Session](ctx, conn, daemon.Operation{Name: "resolve session", Method: http.MethodGet, Path: "/sessions", Policy: daemon.ReadRecovery})
 	if err != nil {
 		return "", err
 	}
@@ -146,7 +147,7 @@ func (s *Service) Send(ctx context.Context, id, prompt string) (json.RawMessage,
 	if err != nil {
 		return nil, err
 	}
-	return daemon.Request[json.RawMessage](ctx, conn, "/sessions/"+url.PathEscape(id)+"/events", map[string]string{"content": prompt})
+	return daemon.RequestOperation[json.RawMessage](ctx, conn, daemon.Operation{Name: "send message", Method: http.MethodPost, Path: "/sessions/" + url.PathEscape(id) + "/events", Body: map[string]string{"content": prompt}, Policy: daemon.AuthRecovery})
 }
 func (s *Service) Stop(ctx context.Context, id string) (json.RawMessage, error) {
 	conn, err := s.Connect(ctx)
@@ -157,7 +158,7 @@ func (s *Service) Stop(ctx context.Context, id string) (json.RawMessage, error) 
 	if err != nil {
 		return nil, err
 	}
-	return daemon.Request[json.RawMessage](ctx, conn, "/sessions/"+url.PathEscape(id)+"/interrupt", map[string]any{})
+	return daemon.RequestOperation[json.RawMessage](ctx, conn, daemon.Operation{Name: "interrupt session", Method: http.MethodPost, Path: "/sessions/" + url.PathEscape(id) + "/interrupt", Body: map[string]any{}, Policy: daemon.AuthRecovery})
 }
 func (s *Service) DeleteSessions(ctx context.Context, ids []string) error {
 	conn, err := s.Connect(ctx)
@@ -165,7 +166,7 @@ func (s *Service) DeleteSessions(ctx context.Context, ids []string) error {
 		return err
 	}
 	for _, id := range ids {
-		if _, err := daemon.RequestMethod[json.RawMessage](ctx, conn, "DELETE", "/sessions/"+url.PathEscape(id), nil); err != nil {
+		if _, err := daemon.RequestOperation[json.RawMessage](ctx, conn, daemon.Operation{Name: "delete session", Method: http.MethodDelete, Path: "/sessions/" + url.PathEscape(id), Policy: daemon.AuthRecovery}); err != nil {
 			return err
 		}
 	}
@@ -176,7 +177,7 @@ func (s *Service) StopDaemon(ctx context.Context) error {
 	if err != nil || conn == nil {
 		return err
 	}
-	_, err = daemon.Request[json.RawMessage](ctx, conn, "/shutdown", map[string]any{})
+	_, err = daemon.RequestOperation[json.RawMessage](ctx, conn, daemon.Operation{Name: "stop daemon", Method: http.MethodPost, Path: "/shutdown", Body: map[string]any{}, Policy: daemon.NoRecovery})
 	return err
 }
 func (s *Service) PrepareLogin(ctx context.Context) (PreparedOpen, error) {

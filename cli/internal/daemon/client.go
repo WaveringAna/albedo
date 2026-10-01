@@ -83,9 +83,8 @@ func (c *ChatClient) ClientID() string {
 	return c.clientID
 }
 
-func (c *ChatClient) agentURL(path string) string {
-	base := c.conn.BaseURL()
-	return fmt.Sprintf("%s/sessions/%s%s", base, url.PathEscape(c.agentID), path)
+func (c *ChatClient) agentPath(path string) string {
+	return fmt.Sprintf("/sessions/%s%s", url.PathEscape(c.agentID), path)
 }
 
 func (c *ChatClient) submitPayload(ctx context.Context, payload map[string]any) (*SendResult, error) {
@@ -96,12 +95,8 @@ func (c *ChatClient) submitPayload(ctx context.Context, payload map[string]any) 
 		payload["clientId"] = c.clientID
 	}
 
-	req, err := newJSONRequest(reqCtx, http.MethodPost, c.agentURL("/events"), payload)
-	if err != nil {
-		return nil, err
-	}
-
-	body, err := requestBytes(c.conn, req, responseLimits{bodyBytes: 64 * 1024, errorBytes: 64 * 1024})
+	operation := Operation{Name: "submit message", Method: http.MethodPost, Path: c.agentPath("/events"), Body: payload, Policy: AuthRecovery}
+	body, err := requestBytes(reqCtx, c.conn, operation, responseLimits{bodyBytes: 64 * 1024, errorBytes: 64 * 1024})
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +105,9 @@ func (c *ChatClient) submitPayload(ctx context.Context, payload map[string]any) 
 		OK     bool `json:"ok"`
 		Queued bool `json:"queued"`
 	}
-	_ = json.Unmarshal(body, &data)
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, uncertainOperation(operation, err)
+	}
 
 	return &SendResult{
 		OK:     true,
@@ -138,12 +135,8 @@ func (c *ChatClient) Interrupt(ctx context.Context) (bool, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	req, err := newJSONRequest(reqCtx, http.MethodPost, c.agentURL("/interrupt"), map[string]any{})
-	if err != nil {
-		return false, err
-	}
-
-	body, err := requestBytes(c.conn, req, responseLimits{successStatus: http.StatusOK, bodyBytes: 64 * 1024, errorBytes: 64 * 1024})
+	operation := Operation{Name: "interrupt session", Method: http.MethodPost, Path: c.agentPath("/interrupt"), Body: map[string]any{}, Policy: AuthRecovery}
+	body, err := requestBytes(reqCtx, c.conn, operation, responseLimits{successStatus: http.StatusOK, bodyBytes: 64 * 1024, errorBytes: 64 * 1024})
 	if err != nil {
 		return false, err
 	}
@@ -151,7 +144,9 @@ func (c *ChatClient) Interrupt(ctx context.Context) (bool, error) {
 	var data struct {
 		Interrupted bool `json:"interrupted"`
 	}
-	_ = json.Unmarshal(body, &data)
+	if err := json.Unmarshal(body, &data); err != nil {
+		return false, uncertainOperation(operation, err)
+	}
 	return data.Interrupted, nil
 }
 
@@ -171,11 +166,8 @@ func (c *ChatClient) History(ctx context.Context, before int64, rows int) (*Hist
 	if before > 0 {
 		route += fmt.Sprintf("&before=%d", before)
 	}
-	req, err := newJSONRequest(reqCtx, http.MethodGet, c.agentURL(route), nil)
-	if err != nil {
-		return nil, err
-	}
-	body, err := requestBytes(c.conn, req, responseLimits{successStatus: http.StatusOK, bodyBytes: 32 * 1024 * 1024, errorBytes: 64 * 1024})
+	operation := Operation{Name: "read history", Method: http.MethodGet, Path: c.agentPath(route), Body: nil, Policy: ReadRecovery}
+	body, err := requestBytes(reqCtx, c.conn, operation, responseLimits{successStatus: http.StatusOK, bodyBytes: 32 * 1024 * 1024, errorBytes: 64 * 1024})
 	if err != nil {
 		return nil, err
 	}
@@ -204,11 +196,8 @@ func (c *ChatClient) History(ctx context.Context, before int64, rows int) (*Hist
 func (c *ChatClient) ContextWindow(ctx context.Context) (*int, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	req, err := newJSONRequest(reqCtx, http.MethodGet, c.agentURL("/context"), nil)
-	if err != nil {
-		return nil, err
-	}
-	body, err := requestBytes(c.conn, req, responseLimits{successStatus: http.StatusOK, bodyBytes: 1024 * 1024, errorBytes: 64 * 1024})
+	operation := Operation{Name: "read context", Method: http.MethodGet, Path: c.agentPath("/context"), Body: nil, Policy: ReadRecovery}
+	body, err := requestBytes(reqCtx, c.conn, operation, responseLimits{successStatus: http.StatusOK, bodyBytes: 1024 * 1024, errorBytes: 64 * 1024})
 	if err != nil {
 		return nil, err
 	}
@@ -229,12 +218,8 @@ func (c *ChatClient) GetStatus(ctx context.Context) (*AgentStatus, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	req, err := newJSONRequest(reqCtx, http.MethodGet, c.agentURL("/status"), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	body, err := requestBytes(c.conn, req, responseLimits{successStatus: http.StatusOK, bodyBytes: 64 * 1024, errorBytes: 64 * 1024})
+	operation := Operation{Name: "read status", Method: http.MethodGet, Path: c.agentPath("/status"), Body: nil, Policy: ReadRecovery}
+	body, err := requestBytes(reqCtx, c.conn, operation, responseLimits{successStatus: http.StatusOK, bodyBytes: 64 * 1024, errorBytes: 64 * 1024})
 	if err != nil {
 		return nil, err
 	}
@@ -515,11 +500,8 @@ func (c *ChatClient) Stream(ctx context.Context, tail int, onEvent func(StreamEv
 		route += fmt.Sprintf("&tail=%d", tail)
 	}
 
-	req, err := newJSONRequest(ctx, http.MethodGet, c.agentURL(route), nil)
-	if err != nil {
-		return err
-	}
-	return scanEventStream(c.conn, req, streamLimits{lineBytes: 10 * 1024 * 1024, errorBytes: 64 * 1024}, func(scanner *bufio.Scanner) error {
+	operation := Operation{Name: "stream session", Method: http.MethodGet, Path: c.agentPath(route), Policy: ReadRecovery}
+	return scanEventStream(ctx, c.conn, operation, streamLimits{lineBytes: 10 * 1024 * 1024, errorBytes: 64 * 1024}, func(scanner *bufio.Scanner) error {
 		return c.readStream(ctx, scanner, onEvent)
 	})
 }

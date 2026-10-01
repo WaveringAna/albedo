@@ -1,13 +1,14 @@
 //go:build unix
 
-// A ChatClient built before a real daemon restart must send another turn via
-// its refreshed connection without losing the first turn's transcript. A fake
-// daemon cannot exercise process lifetime or on-disk session persistence.
+// A read through a ChatClient built before a real daemon restart refreshes
+// its connection before another turn without losing the first turn's transcript.
+// A fake daemon cannot exercise process lifetime or on-disk session persistence.
 package e2e
 
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func restartDaemon(t *testing.T) daemon.ConnectionSnapshot {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := daemon.Request[map[string]any](ctx, conn(t), "/shutdown", map[string]any{}); err != nil {
+	if _, err := daemon.RequestOperation[map[string]any](ctx, conn(t), daemon.Operation{Name: "shutdown daemon", Method: http.MethodPost, Path: "/shutdown", Body: map[string]any{}, Policy: daemon.NoRecovery}); err != nil {
 		t.Fatalf("shutdown request: %v", err)
 	}
 	if !awaitExit(old, 15*time.Second) {
@@ -50,9 +51,9 @@ func restartDaemon(t *testing.T) daemon.ConnectionSnapshot {
 	}
 }
 
-// TestChatClientSendReconnectsAfterDaemonRestart sends two turns through the
-// same client and session, with a real restart between them.
-func TestChatClientSendReconnectsAfterDaemonRestart(t *testing.T) {
+// TestChatClientReadReconnectsAfterDaemonRestart recovers a read before
+// sending another turn through the same client and persisted session.
+func TestChatClientReadReconnectsAfterDaemonRestart(t *testing.T) {
 	profile := providerRoute(t, echoReply)
 	workspace := t.TempDir()
 	id := newSession(t, workspace)
@@ -70,6 +71,11 @@ func TestChatClientSendReconnectsAfterDaemonRestart(t *testing.T) {
 
 	oldSnap := shared.Snapshot()
 	snap := restartDaemon(t)
+
+	page, err := client.History(context.Background(), 0, 120)
+	if err != nil || len(page.Events) == 0 {
+		t.Fatalf("read recovery after restart: %+v, %v", page, err)
+	}
 
 	prompt2 := "turn after the restart"
 	sent, err := client.Send(context.Background(), prompt2, nil)
@@ -143,10 +149,10 @@ func TestTUIReopensInterruptedSessionWithoutCompacting(t *testing.T) {
 	}
 	waitIdle(t, id, profile, 1)
 	restartDaemon(t)
-	status, err := daemon.Request[struct {
+	status, err := daemon.RequestOperation[struct {
 		Phase string `json:"phase"`
 		Idle  bool   `json:"idle"`
-	}](ctx, conn(t), "/sessions/"+id+"/status", nil)
+	}](ctx, conn(t), daemon.Operation{Name: "read reopened session status", Method: http.MethodGet, Path: "/sessions/" + id + "/status", Policy: daemon.ReadRecovery})
 	if err != nil || !status.Idle || status.Phase != "interrupted" {
 		t.Fatalf("reopened status: %+v, %v", status, err)
 	}

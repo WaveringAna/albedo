@@ -11,11 +11,8 @@ import (
 // StreamAgents delivers nonempty batches until the stream ends or onBatch fails.
 // The caller controls cancellation, including any blocking work in onBatch.
 func StreamAgents(ctx context.Context, conn *Connection, onBatch func([]map[string]any) error) error {
-	req, err := newJSONRequest(ctx, http.MethodGet, conn.BaseURL()+"/agents/stream", nil)
-	if err != nil {
-		return err
-	}
-	return scanEventStream(conn, req, streamLimits{lineBytes: 8 * 1024 * 1024}, func(scanner *bufio.Scanner) error {
+	operation := Operation{Name: "stream agents", Method: http.MethodGet, Path: "/agents/stream", Policy: ReadRecovery}
+	return scanEventStream(ctx, conn, operation, streamLimits{lineBytes: 8 * 1024 * 1024}, func(scanner *bufio.Scanner) error {
 		// The daemon sends each JSON batch on one data: line; batches do not span lines.
 		for scanner.Scan() {
 			line := scanner.Text()

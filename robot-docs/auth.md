@@ -1,5 +1,7 @@
 # model authentication
 
+Client retry and admission rules are documented in [client request recovery](client-requests.md).
+
 model authentication is supplied by model-provider extensions rather than the daemon configuration loader.
 
 ## credentials

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"slices"
 	"strings"
@@ -109,7 +110,7 @@ func (m TreePickerModel) loadTreeCmd(after int, gen int) tea.Cmd {
 			HasMore    bool             `json:"hasMore"`
 		}
 		path := fmt.Sprintf("/sessions/%s/tree?after=%d&limit=50", m.SessionID, after)
-		resp, err := daemon.Request[treeResp](context.Background(), m.Conn, path, nil)
+		resp, err := daemon.RequestOperation[treeResp](context.Background(), m.Conn, daemon.Operation{Name: "load tree", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
 		if err != nil {
 			return treeLoadedMsg{Err: err, Gen: gen}
 		}
@@ -129,7 +130,7 @@ func (m TreePickerModel) forkCmd(checkpointID int, gen int) tea.Cmd {
 		}
 		path := fmt.Sprintf("/sessions/%s/fork", m.SessionID)
 		body := map[string]int{"checkpoint": checkpointID}
-		branch, err := daemon.Request[daemon.Session](context.Background(), m.Conn, path, body)
+		branch, err := daemon.RequestOperation[daemon.Session](context.Background(), m.Conn, daemon.Operation{Name: "fork", Method: http.MethodPost, Path: path, Body: body, Policy: daemon.AuthRecovery})
 		return treeForkedMsg{Session: branch, Err: err, Gen: gen}
 	}
 }
@@ -151,7 +152,7 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 		}
 		m.Forking = false
 		if msg.Err != nil {
-			m.ForkError = msg.Err.Error()
+			m.ForkError = operationError(msg.Err, "", "Branch may have been created; check the session list before branching again.")
 			return m, nil
 		}
 		return m, func() tea.Msg { return TreeForkSuccessMsg{Session: msg.Session} }

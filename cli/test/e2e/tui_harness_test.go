@@ -6,6 +6,7 @@ package e2e
 
 import (
 	"context"
+	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -36,18 +37,24 @@ func newTUIDriver(t *testing.T) *tuiDriver {
 
 // driveTUI boots an AppModel on session, or on the session picker when nil.
 func driveTUI(t *testing.T, session *daemon.Session) *tuiDriver {
+	t.Helper()
+	return driveTUIWithConnection(t, session, conn(t))
+}
+
+func driveTUIWithConnection(t *testing.T, session *daemon.Session, connection *daemon.Connection) *tuiDriver {
+	t.Helper()
 	workspace := t.TempDir()
 	if session != nil {
 		workspace = session.Workspace
 	}
-	d := &tuiDriver{t: t, App: tui.NewAppModel(conn(t), config.Profiles{}, session, workspace, false, nil)}
+	d := &tuiDriver{t: t, App: tui.NewAppModel(connection, config.Profiles{}, session, workspace, false, nil)}
 	d.Update(tea.WindowSizeMsg{Width: 80, Height: 22})
 	return d
 }
 
 func daemonSessions(t *testing.T) []daemon.Session {
 	t.Helper()
-	sessions, err := daemon.Request[[]daemon.Session](context.Background(), conn(t), "/sessions", nil)
+	sessions, err := daemon.RequestOperation[[]daemon.Session](context.Background(), conn(t), daemon.Operation{Name: "list sessions", Method: http.MethodGet, Path: "/sessions", Policy: daemon.ReadRecovery})
 	if err != nil {
 		t.Fatalf("list sessions: %v", err)
 	}

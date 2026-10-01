@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -561,7 +562,7 @@ func (m LoginModel) fetchCatalogCmd(ext, endpoint string, gen int) tea.Cmd {
 			return loginModelsLoadedMsg{Note: note, Gen: gen}
 		}
 		path := fmt.Sprintf("/models/%s?endpoint=%s", url.PathEscape(ext), url.QueryEscape(endpoint))
-		names, err := daemon.Request[[]string](context.Background(), m.Conn, path, nil)
+		names, err := daemon.RequestOperation[[]string](context.Background(), m.Conn, daemon.Operation{Name: "fetch catalog", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
 		if err != nil {
 			return loginModelsLoadedMsg{Err: err, Note: note, Gen: gen}
 		}
@@ -627,7 +628,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			return m, m.cancelSignInCmd(msg.ID)
 		}
 		if msg.Err != nil {
-			m.Error = msg.Err.Error()
+			m.Error = operationError(msg.Err, "", "Sign-in may have started; check your accounts before starting another. Its outcome cannot be confirmed from this response.")
 			return m, nil
 		}
 		m.LoginID = msg.ID

@@ -1327,6 +1327,15 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		m.isSending = false
 		if msg.Err != nil {
 			m.interruptDeferred = false
+			if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](msg.Err); uncertain {
+				message := "Message may have been accepted; check the conversation before resending."
+				if msg.Continue {
+					message = "Continue may have been accepted; check the conversation before trying again."
+				}
+				m.AddError(message)
+				m.refreshViewportContent()
+				return m, nil
+			}
 			if !msg.Continue {
 				if len(m.pendingUsers) > 0 {
 					m.pendingUsers = m.pendingUsers[1:]

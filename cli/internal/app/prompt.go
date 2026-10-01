@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -48,7 +49,7 @@ func (s *Service) RunPrompt(ctx context.Context, options PromptOptions) (PromptR
 		if model != "" {
 			create["provider"], create["model"] = choice.provider, choice.model
 		}
-		session, createErr := daemon.Request[daemon.Session](ctx, conn, "/sessions", create)
+		session, createErr := daemon.RequestOperation[daemon.Session](ctx, conn, daemon.Operation{Name: "create session", Method: http.MethodPost, Path: "/sessions", Body: create, Policy: daemon.AuthRecovery})
 		if createErr != nil {
 			return PromptResult{}, createErr
 		}
@@ -61,6 +62,9 @@ func (s *Service) RunPrompt(ctx context.Context, options PromptOptions) (PromptR
 
 	client := daemon.NewChatClient(conn, sessionID)
 	answer, err := awaitReply(ctx, client, prompt)
+	if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](err); uncertain {
+		return PromptResult{}, fmt.Errorf("%w; the session is %s", err, sessionID)
+	}
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return PromptResult{}, fmt.Errorf("timed out after %s and stopped the turn; the session is %s", timeout, sessionID)
