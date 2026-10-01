@@ -62,6 +62,10 @@ pub type StateOp {
   /// session's queue and reaches the model at its next step or next turn.
   /// `origin` labels it in the transcript.
   Note(origin: String, display: String, text: String)
+  /// Whether the session's kernel is stale and what keeps it.
+  KernelReport
+  /// Swap a stale kernel now, ending its live jobs as a restart would.
+  KernelUpgrade
 }
 
 /// The dispatch context: `state` is the session's registered command bridge.

@@ -10,12 +10,18 @@
 %%
 %% Only confirmed cleanup releases a running lease. If its bridge dies without
 %% that proof, keep the slot reserved rather than oversubscribing leaked work.
+%%
+%% Kernels on another host share that host's own pool instead: sized to the
+%% cores its probe reported (ALBEDO_MAX_REMOTE_JOBS overrides), with no load
+%% adjustment, since this machine's load average says nothing about it. The
+%% local pool starts and watches the host pools; the admission protocol is the
+%% same.
 -module(albedo_job_slots).
 -behaviour(gen_server).
--export([ensure/0, acquire/2, release/2, release_owner/1, limit/0]).
+-export([ensure/0, ensure/2, acquire/2, release/2, release_owner/1, limit/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
--record(state, {base, running = 0, entries = #{}, waiting = [], load = false, ticking = false}).
+-record(state, {base, running = 0, entries = #{}, waiting = [], load = false, ticking = false, hosts = #{}}).
 -define(MAX_WAITING, 1024).
 -define(TICK_MS, 2000).
 %% Load above this multiple of the cores counts as overload.
@@ -27,6 +33,9 @@ ensure() ->
         {error, {already_started, Pid}} -> Pid
     end.
 
+%% The pool for kernels on Host, which has Cpus cores.
+ensure(Host, Cpus) -> gen_server:call(ensure(), {host, Host, Cpus}).
+
 acquire(Pool, Id) -> gen_server:cast(Pool, {acquire, self(), Id}).
 release(Pool, Id) -> gen_server:cast(Pool, {release, {self(), Id}}).
 release_owner(Pool) -> gen_server:cast(Pool, {release_owner, self()}).
@@ -34,6 +43,7 @@ release_owner(Pool) -> gen_server:cast(Pool, {release_owner, self()}).
 %% The slot count right now, for tests and status.
 limit() -> gen_server:call(ensure(), limit).
 
+init([{host, Cpus}]) -> {ok, #state{base = remote_base(Cpus)}};
 init([]) ->
     Cores = case erlang:system_info(logical_processors_available) of
                 N when is_integer(N), N > 0 -> N;
@@ -58,6 +68,18 @@ init([]) ->
     {ok, #state{base = Base, load = Load}}.
 
 handle_call(limit, _, S) -> {reply, effective(S), S};
+handle_call({host, Host, Cpus}, _, S = #state{hosts = Hosts}) ->
+    case maps:find(Host, Hosts) of
+        {ok, Pool} ->
+            %% A pool opened while the host was out of reach learns its cores
+            %% from the first kernel that probed it.
+            Cpus > 0 andalso gen_server:cast(Pool, {base, Cpus}),
+            {reply, Pool, S};
+        error ->
+            {ok, Pool} = gen_server:start(?MODULE, [{host, Cpus}], []),
+            monitor(process, Pool),
+            {reply, Pool, S#state{hosts = Hosts#{Host => Pool}}}
+    end;
 handle_call(_, _, S) -> {reply, {error, unsupported}, S}.
 
 handle_cast({acquire, Owner, Id}, S = #state{entries = Entries}) ->
@@ -79,16 +101,30 @@ handle_cast({acquire, Owner, Id}, S = #state{entries = Entries}) ->
             {noreply, tick(S1)}
     end;
 handle_cast({release, Key}, S) -> {noreply, drain(drop(Key, S))};
+handle_cast({base, Cpus}, S) -> {noreply, drain(S#state{base = remote_base(Cpus)})};
 handle_cast({release_owner, Owner}, S) ->
     {noreply, drop_keys([K || {P, _} = K := _ <- S#state.entries, P =:= Owner], S)}.
 
 handle_info(tick, S) ->
     {noreply, tick(drain(S#state{ticking = false}))};
-handle_info({'DOWN', Mon, process, Owner, _}, S) ->
-    %% A waiting request owns no running work; active ones need cleanup proof.
-    {noreply, drop_keys([K || {P, _} = K := {waiting, Ref} <- S#state.entries,
-                              P =:= Owner, Ref =:= Mon], S)};
+handle_info({'DOWN', Mon, process, Pid, _}, S = #state{hosts = Hosts}) ->
+    case [Host || Host := Pool <- Hosts, Pool =:= Pid] of
+        [Host | _] -> {noreply, S#state{hosts = maps:remove(Host, Hosts)}};
+        %% A waiting request owns no running work; active ones need cleanup proof.
+        [] -> {noreply, drop_keys([K || {P, _} = K := {waiting, Ref} <- S#state.entries,
+                                        P =:= Pid, Ref =:= Mon], S)}
+    end;
 handle_info(_, S) -> {noreply, S}.
+
+%% A host pool's size: ALBEDO_MAX_REMOTE_JOBS, else the host's cores, else
+%% (cores still unknown) two.
+remote_base(Cpus) ->
+    Default = case Cpus > 0 of true -> Cpus; false -> 2 end,
+    try list_to_integer(os:getenv("ALBEDO_MAX_REMOTE_JOBS", "")) of
+        N when N > 0 -> min(256, N);
+        _ -> Default
+    catch _:_ -> Default
+    end.
 
 drop_keys(Keys, S) -> drain(lists:foldl(fun drop/2, S, Keys)).
 

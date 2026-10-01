@@ -6,6 +6,7 @@ import albedo/harness/extensions/work/ledger as work
 import albedo/harness/extensions/work/rpc
 import albedo/harness/location
 import albedo/harness/settings
+import albedo/harness/ssh
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -77,7 +78,23 @@ type Boot {
     grace: Int,
     out_seq: Int,
     fresh: Bool,
+    remote: Option(Remote),
   )
+}
+
+/// How the port owner reaches a kernel on another host: the commands it
+/// runs there over ssh, and the host's cores for its own heavy-job pool (0
+/// while unknown).
+type Remote {
+  Remote(commands: ssh.Commands, host: String, cpus: Int)
+}
+
+/// A remote workspace's host as a boot finds it: probed now, or out of reach
+/// and known only by name, which still lets a recorded kernel be attached
+/// once ssh is back.
+type Reach {
+  Probed(Remote)
+  Unprobed(target: String)
 }
 
 @external(erlang, "albedo_python", "start")
@@ -347,11 +364,11 @@ pub fn open(
   host: fn(String) -> String,
   modules: List(String),
 ) -> Result(#(Kernel, Bool), Error) {
-  use #(modules, boot) <- result.try(booter(store, cwd, host, modules))
+  use #(modules, runs, boot) <- result.try(booter(store, cwd, host, modules))
   case reattach(store, session, cwd, modules, boot) {
     Some(kernel) -> Ok(#(kernel, True))
     None ->
-      boot_fresh(store, session, cwd, modules, boot)
+      boot_fresh(store, session, cwd, modules, runs, boot)
       |> result.map(fn(kernel) { #(kernel, False) })
   }
 }
@@ -365,8 +382,8 @@ pub fn fresh(
   host: fn(String) -> String,
   modules: List(String),
 ) -> Result(Kernel, Error) {
-  use #(modules, boot) <- result.try(booter(store, cwd, host, modules))
-  boot_fresh(store, session, cwd, modules, boot)
+  use #(modules, runs, boot) <- result.try(booter(store, cwd, host, modules))
+  boot_fresh(store, session, cwd, modules, runs, boot)
 }
 
 fn boot_fresh(
@@ -374,15 +391,17 @@ fn boot_fresh(
   session: String,
   cwd: String,
   modules: String,
+  runs: Result(String, Error),
   boot: fn(link.Record, Bool) -> Result(Kernel, Error),
 ) -> Result(Kernel, Error) {
+  use runs <- result.try(runs)
   let kernel = string.slice(new_id(), 0, 16)
   let record =
     link.Record(
       session: session,
       kernel: kernel,
       token: new_id(),
-      run_dir: settings.home() <> "/run/" <> kernel,
+      run_dir: runs <> "/" <> kernel,
       cwd: cwd,
       modules: modules,
       out_seq: 0,
@@ -402,7 +421,7 @@ pub fn resume(
   modules: List(String),
 ) -> Option(Kernel) {
   case booter(store, cwd, host, modules) {
-    Ok(#(modules, boot)) -> reattach(store, session, cwd, modules, boot)
+    Ok(#(modules, _, boot)) -> reattach(store, session, cwd, modules, boot)
     Error(_) -> None
   }
 }
@@ -416,23 +435,32 @@ pub fn recorded(store: work.Store) -> List(#(String, String)) {
 }
 
 /// How to start or attach to a kernel for this workspace and module set,
-/// with the modules as the record stores them.
+/// with the modules as the record stores them and the directory new run
+/// directories go under (an error when a fresh kernel can't boot there now).
 fn booter(
   store: work.Store,
   cwd: String,
   host: fn(String) -> String,
   modules: List(String),
-) -> Result(#(String, fn(link.Record, Bool) -> Result(Kernel, Error)), Error) {
-  use _ <- result.try(local_only(cwd))
+) -> Result(
+  #(
+    String,
+    Result(String, Error),
+    fn(link.Record, Bool) -> Result(Kernel, Error),
+  ),
+  Error,
+) {
   use #(python, bridge) <- result.try(paths())
+  use #(path, runs, reach) <- result.try(place(cwd))
   let modules = json.to_string(json.array(modules, json.string))
   Ok(
-    #(modules, fn(record: link.Record, fresh) {
+    #(modules, runs, fn(record: link.Record, fresh) {
+      use remote <- result.try(reached(reach, record))
       start_native(Boot(
         owner: work.owner(store),
         python: python,
         bridge: bridge,
-        cwd: cwd,
+        cwd: path,
         host: host,
         modules: modules,
         link: link.bind(store, record),
@@ -442,6 +470,7 @@ fn booter(
         grace: grace(),
         out_seq: record.out_seq,
         fresh: fresh,
+        remote: remote,
       ))
     }),
   )
@@ -464,14 +493,18 @@ fn reattach(
       None
     }
     Ok(kernel) if record.cwd == cwd && record.modules == modules -> Some(kernel)
+    // Another module set: kept, like an older bundle, and swapped at the
+    // session's next idle moment so its variables come along.
+    Ok(kernel) if record.cwd == cwd -> {
+      mark_stale(kernel, Modules)
+      Some(kernel)
+    }
+    // Another workspace is a move, which never keeps the namespace.
     Ok(kernel) -> {
-      // #55 will swap a kernel whose workspace or modules changed at its
-      // first idle moment, like bundle skew. Until then it ends here and a
-      // fresh one boots.
       io.println_error(
         "kernel "
         <> record.kernel
-        <> " no longer fits its session; replacing it",
+        <> " belongs to another workspace; replacing it",
       )
       let _ = stop(kernel)
       None
@@ -479,11 +512,171 @@ fn reattach(
   }
 }
 
-/// Kernels run on this machine only, for now.
-fn local_only(cwd: String) -> Result(Nil, Error) {
+/// Where a workspace's kernel runs: the directory it starts in, the root
+/// its run directories go under, and the host when that is not this
+/// machine. A remote host is probed (or its recent probe reused) first, so
+/// the bundle is staged there before the bridge needs it. A host out of
+/// reach still lets a recorded kernel be attached; only a fresh boot needs
+/// it now, and one that can never run a kernel refuses outright.
+fn place(
+  cwd: String,
+) -> Result(#(String, Result(String, Error), Option(Reach)), Error) {
   case location.parse(cwd) {
-    Ok(location.Remote(host:, ..)) ->
-      Error(Invalid(location.unavailable(host, "kernels")))
-    _ -> Ok(Nil)
+    Ok(location.Remote(path:, ..) as at) -> {
+      use target <- result.try(
+        location.ssh_target(at)
+        |> result.replace_error(Invalid("not a remote location")),
+      )
+      case ssh.ready(target, ssh.boot_wait_ms) {
+        Ok(host) -> {
+          let remote = Remote(host.commands, target, host.cpus)
+          Ok(#(path, Ok(host.home <> remote_runs), Some(Probed(remote))))
+        }
+        Error(ssh.Unsupported(_) as failure) ->
+          Error(Unavailable(ssh.describe(target, failure)))
+        Error(failure) -> {
+          let fresh = Error(Unavailable(ssh.describe(target, failure)))
+          Ok(#(path, fresh, Some(Unprobed(target))))
+        }
+      }
+    }
+    _ -> Ok(#(cwd, Ok(settings.home() <> "/run"), None))
   }
 }
+
+/// Run directories under a remote home.
+const remote_runs = "/.albedo-remote/run"
+
+/// The remote a boot uses. A host out of reach is rebuilt from the record:
+/// its run directory names the home, so the commands need no probe, and
+/// the port owner keeps trying until ssh is back.
+fn reached(
+  reach: Option(Reach),
+  record: link.Record,
+) -> Result(Option(Remote), Error) {
+  case reach {
+    None -> Ok(None)
+    Some(Probed(remote)) -> Ok(Some(remote))
+    Some(Unprobed(target)) -> {
+      use #(home, _) <- result.try(
+        string.split_once(record.run_dir, remote_runs <> "/")
+        |> result.replace_error(Unavailable("can't reach " <> target)),
+      )
+      ssh.offline(target, home)
+      |> result.map(fn(commands) { Some(Remote(commands, target, 0)) })
+      |> result.map_error(Unavailable)
+    }
+  }
+}
+
+/// Whether the session has a kernel on record, which a turn may wait to
+/// attach to again even while its host is out of reach.
+pub fn recorded_for(store: work.Store, session: String) -> Bool {
+  option.is_some(link.find(store, session))
+}
+
+/// Why a kernel should give way to a current one.
+pub type Stale {
+  /// It runs another python bundle than the daemon's.
+  Bundle
+  /// It booted with another module set than its session has now.
+  Modules
+  /// It speaks another session protocol; only its frozen frames still work.
+  Protocol
+}
+
+/// Why this kernel should be swapped, and whether the swap was forced past
+/// its live jobs; None while it is current.
+@external(erlang, "albedo_python", "stale")
+pub fn stale(kernel: Kernel) -> Option(#(Stale, Bool))
+
+@external(erlang, "albedo_python", "mark_stale")
+fn mark_stale(kernel: Kernel, reason: Stale) -> Nil
+
+/// Let the swap end the kernel's live jobs, as a restart did; False when the
+/// kernel is current and there is nothing to swap.
+@external(erlang, "albedo_python", "force")
+pub fn force(kernel: Kernel) -> Bool
+
+/// What a swap carried: the names restored and those that were not, with why.
+pub type Carried {
+  Carried(reason: Stale, saved: Saved)
+}
+
+/// Replace a stale kernel with a fresh one on the current bundle and module
+/// set, carrying its namespace: a snapshot in its own run directory, a fresh
+/// kernel, a restore, then the old kernel and whatever jobs it still had end.
+/// A busy kernel (a cell still running) answers Busy and stays; so does one
+/// whose namespace could not be written, unless it speaks another protocol,
+/// which is replaced with nothing carried.
+pub fn upgrade(
+  store: work.Store,
+  session: String,
+  cwd: String,
+  host: fn(String) -> String,
+  modules: List(String),
+  old: Kernel,
+) -> Result(#(Kernel, Carried), Error) {
+  use #(reason, _) <- result.try(
+    stale(old) |> option.to_result(Invalid("the kernel is current")),
+  )
+  use record <- result.try(
+    link.find(store, session)
+    |> option.to_result(Unavailable("the session has no recorded kernel")),
+  )
+  let path = record.run_dir <> "/namespace.state"
+  use snapshot <- result.try(case snapshot(old, path, state_timeout), reason {
+    Ok(saved), _ -> Ok(Some(saved))
+    Error(_), Protocol -> Ok(None)
+    Error(error), _ -> Error(error)
+  })
+  use kernel <- result.try(fresh(store, session, cwd, host, modules))
+  let saved = case snapshot {
+    None ->
+      Saved(
+        [],
+        [#("namespace", "the old kernel could not save it")],
+        "",
+        [],
+        [],
+      )
+    Some(snapshot) ->
+      case restore(kernel, path, state_timeout) {
+        Ok(restored) ->
+          Saved(
+            ..restored,
+            missed: list.append(snapshot.missed, restored.missed),
+            largest: snapshot.largest,
+          )
+        Error(error) ->
+          Saved(
+            [],
+            [#("namespace", "restore failed: " <> describe(error))],
+            "",
+            [],
+            [],
+          )
+      }
+  }
+  case stop(old) {
+    Ok(_) -> Nil
+    Error(report) -> io.println_error("kernel upgrade: " <> report)
+  }
+  Ok(#(kernel, Carried(reason, saved)))
+}
+
+const state_timeout = 30_000
+
+fn describe(error: Error) -> String {
+  case error {
+    Unavailable(message) | Invalid(message) -> message
+    Busy -> "the kernel was busy"
+    Lost -> "the kernel was lost"
+    Detached -> "the kernel was out of reach"
+  }
+}
+
+/// Whether a bridge carries the kernel now: False while the port owner
+/// reattaches after a dropped connection, and for a kernel that is gone.
+@external(erlang, "albedo_python", "linked")
+pub fn linked(kernel: Kernel) -> Bool

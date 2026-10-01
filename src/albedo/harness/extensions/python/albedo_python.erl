@@ -16,7 +16,9 @@
 %% and it returns a structured verdict instead of kill(1) exit statuses the
 %% supervisor would have to guess at.
 -module(albedo_python).
--export([start/1, execute/3, interrupt/1, stop/1, detach/1, events/1, alive/1, os_pid/1, job_count/1, local_paths/0, paths/0, grace/0, rebind/2]).
+-export([start/1, execute/3, interrupt/1, stop/1, detach/1, events/1, alive/1, os_pid/1, job_count/1, local_paths/0, paths/0, grace/0, rebind/2, clean_environment/0]).
+-export([stale/1, mark_stale/2, force/1]).
+-export([linked/1]).
 
 -define(PROTOCOL, 1).
 -define(STARTUP_TIMEOUT, 10000). %% bridge, kernel, and plugins, end to end
@@ -29,23 +31,31 @@
 -define(ESCALATE_KILL_MS, 500).
 -define(ACK_DELAY, 100).         %% a kernel frame is acknowledged within this
 -define(GONE, 3).                %% the bridge's exit status when no kernel is there
+-define(NO_FOLDER, 4).           %% a remote bridge's when the workspace is no folder
+-define(SSH_FAILED, 255).        %% ssh's own
+-define(REMOTE_HELPER_WAIT, 15000). %% a helper run over ssh
 -define(REATTACH_MAX_MS, 2000).
 -define(REATTACH_TRIES, 40).     %% consecutive failed attaches before giving up
+-define(REMOTE_REATTACH_MAX_MS, 30000).
+-define(GRACE_MARGIN_S, 60).     %% past a remote kernel's grace before it is given up
 
 %% Boot is the Gleam kernel.Boot record; Link is kernel.Link.
-start({boot, Owner, Python, Bridge, Cwd, Host, Modules, Link, RunDir, Kernel, Token, Grace, OutSeq, Fresh}) ->
+start({boot, Owner, Python, Bridge, Cwd, Host, Modules, Link, RunDir, Kernel, Token, Grace, OutSeq, Fresh, Remote}) ->
     Parent = self(), Ref = make_ref(),
     {Pid, Mon} = spawn_monitor(fun() ->
         process_flag(trap_exit, true),
         monitor(process, Owner),
-        Pool = albedo_job_slots:ensure(),
+        Pool = case Remote of
+            {some, {remote, _, Machine, Cpus}} -> albedo_job_slots:ensure(Machine, Cpus);
+            none -> albedo_job_slots:ensure()
+        end,
         monitor(process, Pool),
         S = #{port => none, host => Host, link => Link, owner => Owner, active => none, events => [],
               groups => #{}, external => 0, pool => Pool, slots => #{}, target => none,
-              python => Python, bridge => Bridge, cwd => Cwd,
+              python => Python, bridge => Bridge, cwd => Cwd, remote => Remote,
               modules => Modules, run_dir => RunDir, kernel => Kernel, token => Token,
               grace => Grace, in => 0, acked => 0, kack => 0, out => OutSeq,
-              calls => #{}, bundle => none, retries => 0, flush => none},
+              calls => #{}, bundle => none, retries => 0, flush => none, give_up => none, stale => none, forced => false},
         Mode = case Fresh of true -> start; false -> attach end,
         case open_bridge(S, Mode) of
             {ok, S1} -> startup(S1, Mode, Parent, Ref, erlang:monotonic_time(millisecond) + ?STARTUP_TIMEOUT);
@@ -59,21 +69,37 @@ start({boot, Owner, Python, Bridge, Cwd, Host, Modules, Link, RunDir, Kernel, To
 
 %% A bridge that starts the kernel, or one that attaches to the running one.
 %% The attach frame goes first either way: the token, what we have seen, and
-%% how long the kernel may outlive a dropped connection.
+%% how long the kernel may outlive a dropped connection. A remote kernel's
+%% bridge is the same argv run over ssh, so a dropped ssh connection is just
+%% a bridge that exited.
 open_bridge(S = #{python := Python, bridge := Bridge, run_dir := RunDir}, Mode) ->
     {Args, Cd} = case Mode of
         start -> {[<<"start">>, RunDir, maps:get(modules, S)], maps:get(cwd, S)};
         attach -> {[<<"attach">>, RunDir], <<"/">>}
     end,
-    try open_port({spawn_executable, binary_to_list(Python)},
+    %% A remote bridge's command line is fixed (albedo_ssh.py builds and
+    %% quotes it); its arguments and folder go as the first frame instead.
+    {Exe, Argv, Dir, Env, First} = case maps:get(remote, S) of
+        none ->
+            {Python, [<<"-u">>, Bridge | Args], Cd,
+             [{"ALBEDO_JOB_ADMISSION", "1"} | lists:keydelete("ALBEDO_JOB_ADMISSION", 1, clean_environment())], []};
+        {some, {remote, {commands, _, Command, _, _, _, _}, _, _}} ->
+            Spec = case Mode of
+                start -> #{argv => Args, cwd => Cd};
+                attach -> #{argv => Args}
+            end,
+            {Ssh, SshArgs, Local, SshEnv} = ssh_command(S, Command),
+            {Ssh, SshArgs, Local, SshEnv, [json:encode(#{bridge => Spec})]}
+    end,
+    try open_port({spawn_executable, binary_to_list(Exe)},
             [binary, {packet, 4}, use_stdio, exit_status, hide,
-             {args, ["-u", binary_to_list(Bridge) | [binary_to_list(A) || A <- Args]]},
-             {cd, binary_to_list(Cd)},
-             {env, [{"ALBEDO_JOB_ADMISSION", "1"} | lists:keydelete("ALBEDO_JOB_ADMISSION", 1, clean_environment())]}]) of
+             {args, [binary_to_list(A) || A <- Argv]},
+             {cd, binary_to_list(Dir)},
+             {env, Env}]) of
         Port ->
             Attach = #{attach => #{kernel => maps:get(kernel, S), token => maps:get(token, S),
                                    ack => maps:get(in, S), grace => maps:get(grace, S)}},
-            _ = try port_command(Port, json:encode(Attach)) catch _:_ -> ok end,
+            _ = try [port_command(Port, Frame) || Frame <- First ++ [json:encode(Attach)]] catch _:_ -> ok end,
             {ok, S#{port => Port, acked => maps:get(in, S)}}
     catch _:Reason -> {error, Reason}
     end.
@@ -105,14 +131,34 @@ startup(S = #{port := Port}, Mode, Parent, Ref, Deadline) ->
         flush_ack -> startup(flush_ack(S), Mode, Parent, Ref, Deadline);
         {Port, {data, _}} -> startup_fail(S, Parent, Ref, {unavailable, <<"invalid kernel handshake">>});
         {Port, {exit_status, ?GONE}} when Mode =:= attach -> startup_fail(S#{port => none}, Parent, Ref, lost);
+        %% Only "no kernel there" or a refusal proves a remote kernel gone. Any
+        %% other end of an attach (ssh down, a timeout) is a connection that
+        %% dropped: the kernel stays ours and is attached again in the
+        %% background, as after a drop mid-session.
+        {Port, {exit_status, _}} when Mode =:= attach, map_get(remote, S) =/= none ->
+            detached_start(S#{port => none}, Parent, Ref);
+        {Port, {exit_status, ?NO_FOLDER}} when Mode =:= start, map_get(remote, S) =/= none ->
+            startup_fail(S#{port => none}, Parent, Ref, {unavailable, <<(maps:get(cwd, S))/binary, " is not a folder there">>});
+        {Port, {exit_status, ?SSH_FAILED}} when map_get(remote, S) =/= none ->
+            startup_fail(S#{port => none}, Parent, Ref, {unavailable, <<"ssh to the kernel's host failed">>});
         {Port, {exit_status, _}} -> startup_fail(S#{port => none}, Parent, Ref, {unavailable, <<"python exited at startup">>});
         {'DOWN', _, process, _, _} -> startup_fail(S, Parent, Ref, lost)
-    after After -> startup_fail(S, Parent, Ref, {unavailable, <<"python startup timed out">>})
+    after After ->
+        case Mode =:= attach andalso maps:get(remote, S) =/= none of
+            true -> close_port(Port), detached_start(S#{port => none}, Parent, Ref);
+            false -> startup_fail(S, Parent, Ref, {unavailable, <<"python startup timed out">>})
+        end
     end.
 
 started(S, Parent, Ref) ->
     Parent ! {Ref, {ok, self()}},
     loop(S).
+
+%% A remote kernel on record that ssh can't reach right now: the session gets
+%% it at once, reattaching, and the attach goes on in the background.
+detached_start(S, Parent, Ref) ->
+    erlang:send_after(backoff(S), self(), reattach),
+    started(lost_at(S), Parent, Ref).
 
 startup_fail(S, Parent, Ref, Error) ->
     reap_start(S), Parent ! {Ref, {error, Error}}.
@@ -146,6 +192,19 @@ detach(Pid) -> _ = call(Pid, detach), nil.
 
 alive(Pid) -> is_process_alive(Pid).
 
+%% Why the kernel should be swapped for a current one, and whether the user
+%% asked for that despite its live jobs: {some, {Reason, Forced}} or none.
+stale(Pid) -> case call(Pid, stale) of {error, lost} -> none; Reply -> Reply end.
+
+%% Whether a bridge carries the kernel now; false while it reattaches.
+linked(Pid) -> call(Pid, linked) =:= true.
+
+%% The daemon found a reason the kernel no longer fits (a changed module set).
+mark_stale(Pid, Reason) -> _ = call(Pid, {mark_stale, Reason}), nil.
+
+%% Swap a stale kernel even with live jobs; false when it is current.
+force(Pid) -> call(Pid, force) =:= true.
+
 %% The kernel's own process id, as it declared it at the handshake.
 os_pid(Pid) ->
     case call(Pid, os_pid) of
@@ -176,8 +235,9 @@ loop(S = #{port := Port, active := Active}) ->
         {call, From, Ref, {execute, _, _}} ->
             From ! {Ref, {error, busy}}, loop(S);
         {call, From, Ref, os_pid} ->
+            %% A remote kernel's pid means nothing to this machine's ps.
             Reply = case S of
-                #{target := #{pid := KernelPid}} -> {ok, KernelPid};
+                #{target := #{pid := KernelPid}, remote := none} -> {ok, KernelPid};
                 _ -> {error, nil}
             end,
             From ! {Ref, Reply}, loop(S);
@@ -188,6 +248,20 @@ loop(S = #{port := Port, active := Active}) ->
             From ! {Ref, {ok, nil}}, loop(S#{host => Host});
         {call, From, Ref, events} ->
             From ! {Ref, {ok, lists:reverse(maps:get(events, S))}}, loop(S#{events => []});
+        {call, From, Ref, stale} ->
+            Reply = case S of
+                #{stale := none} -> none;
+                #{stale := Stale, forced := Forced} -> {some, {Stale, Forced}}
+            end,
+            From ! {Ref, Reply}, loop(S);
+        {call, From, Ref, linked} ->
+            From ! {Ref, Port =/= none}, loop(S);
+        {call, From, Ref, {mark_stale, Reason}} ->
+            From ! {Ref, nil},
+            loop(case S of #{stale := none} -> S#{stale => Reason}; _ -> S end);
+        {call, From, Ref, force} ->
+            From ! {Ref, maps:get(stale, S) =/= none},
+            loop(S#{forced => maps:get(stale, S) =/= none});
         {call, From, Ref, stop} ->
             From ! {Ref, shutdown(S, ?TERM_MS, ?KILL_MS)},
             nil;
@@ -244,14 +318,43 @@ loop(S = #{port := Port, active := Active}) ->
 bridge_lost(S, ?GONE) -> abandon(S#{port => none, exited => true});
 bridge_lost(S, _) ->
     erlang:send_after(backoff(S), self(), reattach),
-    loop(S#{port => none}).
+    loop(lost_at(S#{port => none})).
 
-backoff(#{retries := Tries}) -> min(?REATTACH_MAX_MS, 50 bsl min(Tries, 10)).
+%% When a remote kernel's connection dropped, its grace started at the
+%% latest: once that has surely passed, the kernel has ended itself.
+lost_at(S = #{remote := none}) -> S;
+lost_at(S = #{give_up := none, grace := Grace}) ->
+    S#{give_up => erlang:monotonic_time(millisecond) + (Grace + ?GRACE_MARGIN_S) * 1000};
+lost_at(S) -> S.
 
+%% A host out of reach is asked less often than a local bridge that died.
+backoff(#{retries := Tries, remote := none}) -> min(?REATTACH_MAX_MS, 50 bsl min(Tries, 10));
+backoff(#{retries := Tries}) -> min(?REMOTE_REATTACH_MAX_MS, 50 bsl min(Tries, 10)).
+
+reattach(S = #{remote := {some, _}, give_up := GiveUp}) when is_integer(GiveUp) ->
+    case erlang:monotonic_time(millisecond) >= GiveUp of
+        true -> expire(S);
+        false -> attach_again(S)
+    end;
 reattach(S = #{retries := Tries}) when Tries >= ?REATTACH_TRIES ->
     log({kernel_unreachable, maps:get(kernel, S)}),
     abandon(S);
-reattach(S = #{retries := Tries}) ->
+reattach(S) -> attach_again(S).
+
+%% A remote kernel unreachable for longer than its grace has exited by itself
+%% and reaped its own jobs: forget it without reaching for the host again.
+expire(S = #{pool := Pool}) ->
+    case maps:get(active, S) of
+        {From, Ref, Timer, Caller, _} ->
+            erlang:cancel_timer(Timer), demonitor(Caller, [flush]),
+            From ! {Ref, {error, lost}};
+        none -> ok
+    end,
+    link_forget(S),
+    albedo_job_slots:release_owner(Pool),
+    nil.
+
+attach_again(S = #{retries := Tries}) ->
     case open_bridge(S, attach) of
         {ok, S1} -> loop(S1#{retries => Tries + 1});
         {error, Reason} ->
@@ -295,16 +398,12 @@ flush_ack(S) -> S#{flush => none}.
 %% A (re)attach answered: drop what the kernel already has, resend the rest,
 %% and take its word for its identity and the jobs it still owns.
 hello(Hello, S0) ->
-    S = acknowledged(Hello, S0#{retries => 0}),
-    Ack = maps:get(kack, S),
-    [write_envelope(S, Seq, Frame) || {Seq, Frame} <- link_pending(S), Seq > Ack],
-    case {maps:get(bundle, S), maps:get(<<"bundle">>, Hello, none)} of
-        {Same, Same} -> ok;
-        {Ours, Theirs} -> log({kernel_bundle_skew, maps:get(kernel, S), Ours, Theirs})
-    end,
-    case maps:get(<<"protocol">>, Hello, none) of
-        ?PROTOCOL -> ok;
-        Other -> log({kernel_protocol_skew, maps:get(kernel, S), Other})
+    S = skew(Hello, acknowledged(Hello, S0#{retries => 0, give_up => none})),
+    case S of
+        %% Frames written for another protocol mean nothing to this kernel:
+        %% they are dropped, not replayed, and the kernel is swapped out.
+        #{stale := protocol} -> link_ack(S, maps:get(out, S));
+        #{kack := Ack} -> [write_envelope(S, Seq, Frame) || {Seq, Frame} <- link_pending(S), Seq > Ack]
     end,
     Target = target_of(Hello),
     link_record(S, #{pid => maps:get(pid, Target), pgid => maps:get(pgid, Target),
@@ -318,6 +417,24 @@ hello(Hello, S0) ->
     Waiting = [Id || Id <- maps:get(<<"slots">>, Hello, []), is_binary(Id),
                      not maps:is_key(Id, maps:get(slots, S2))],
     lists:foldl(fun acquire_slot/2, S2, Waiting).
+
+%% A kernel speaking another protocol, or running another bundle than the
+%% bridge that reached it, is stale: the session swaps it at its next idle
+%% moment (kernel.upgrade). A protocol difference outranks a bundle one.
+skew(Hello, S = #{stale := Stale}) ->
+    Protocol = maps:get(<<"protocol">>, Hello, none),
+    Bundle = maps:get(<<"bundle">>, Hello, none),
+    Found = if
+        Protocol =/= ?PROTOCOL -> protocol;
+        Bundle =/= map_get(bundle, S) -> bundle;
+        true -> none
+    end,
+    case Found of
+        none -> S;
+        _ ->
+            log({kernel_skew, maps:get(kernel, S), Found, Protocol, Bundle}),
+            S#{stale => case Stale of protocol -> protocol; _ -> Found end}
+    end.
 
 handle_frame(#{<<"type">> := <<"done">>, <<"id">> := Id} = Done, S = #{active := {From, Ref, Timer, Caller, Id}}) ->
     erlang:cancel_timer(Timer), demonitor(Caller, [flush]),
@@ -470,7 +587,7 @@ shutdown(S = #{target := Target}, TermMs, KillMs) ->
     %% from a cell inherit the kernel group and can outlive it.
     Kernel = case Target of none -> []; _ -> [target_spec(<<"kernel">>, Target)] end,
     Targets = Kernel ++ job_specs(maps:get(groups, Settled)),
-    reap_finish(Settled, verdict(supervise(Targets, TermMs, KillMs))).
+    reap_finish(Settled, verdict(supervise(Settled, Targets, TermMs, KillMs))).
 
 abandon(S) -> report(owner_lost, shutdown(S, ?TERM_MS, ?KILL_MS)).
 
@@ -509,23 +626,64 @@ track(#{<<"type">> := <<"cleanup">>, <<"failures">> := Failures}, S) ->
     log({kernel_cleanup_failed, Failures}), S;
 track(_, S) -> S.
 
-%% One checked helper process ends every target and returns its verdicts.
-supervise(Targets, TermMs, KillMs) ->
-    Request = binary_to_list(iolist_to_binary(json:encode(#{targets => Targets, term_ms => TermMs, kill_ms => KillMs}))),
-    case local_paths() of
-        {ok, {Python, Script}} ->
-            Helper = filename:join(filename:dirname(binary_to_list(Script)), "albedo_signal.py"),
-            run_helper(binary_to_list(Python), Helper, Request);
-        {error, Reason} -> {error, detail(Reason)}
+%% One checked helper process ends every target and returns its verdicts. It
+%% runs where the targets live: the pids of a remote kernel and its jobs are
+%% that host's, so their ladder runs there over ssh and never here. When ssh
+%% cannot reach the host the targets are left to the kernel's own grace exit,
+%% and the error says so.
+supervise(_, [], _, _) -> {ok, []};
+supervise(S, Targets, TermMs, KillMs) ->
+    Request = iolist_to_binary(json:encode(#{targets => Targets, term_ms => TermMs, kill_ms => KillMs})),
+    case S of
+        #{remote := {some, {remote, {commands, _, _, Signal, _, _, _}, Host, _}}} ->
+            {Ssh, Argv, _, Env} = ssh_command(S, Signal),
+            case run_helper(Ssh, Argv, Env, ?REMOTE_HELPER_WAIT, [Request, $\n]) of
+                {error, Reason} -> {error, iolist_to_binary([<<"ending the kernel on ">>, Host, <<" over ssh failed, so its own grace exit is left to end it: ">>, Reason])};
+                Verdict -> Verdict
+            end;
+        _ ->
+            case local_paths() of
+                {ok, {Python, Script}} ->
+                    Helper = filename:join(filename:dirname(Script), <<"albedo_signal.py">>),
+                    run_helper(Python, [<<"-u">>, Helper, Request], clean_environment(), ?HELPER_WAIT, []);
+                {error, Reason} -> {error, detail(Reason)}
+            end
     end.
 
-run_helper(Python, Helper, Request) ->
-    try open_port({spawn_executable, Python},
+%% Input, when there is any, is the helper's one line of stdin.
+run_helper(Exe, Args, Env, Wait, Input) ->
+    try open_port({spawn_executable, binary_to_list(Exe)},
                   [binary, exit_status, use_stdio,
-                   {args, ["-u", Helper, Request]}, {env, clean_environment()}]) of
-        Port -> collect(Port, <<>>, erlang:monotonic_time(millisecond) + ?HELPER_WAIT)
+                   {args, [binary_to_list(A) || A <- Args]}, {env, Env}]) of
+        Port ->
+            _ = Input =:= [] orelse (catch port_command(Port, Input)),
+            collect(Port, <<>>, erlang:monotonic_time(millisecond) + Wait)
     catch _:Reason -> {error, detail(Reason)}
     end.
+
+%% ssh to a remote kernel's host, running one of the commands albedo_ssh.py
+%% built for it: the executable, its arguments, the local directory and the
+%% environment. Nothing is quoted here.
+ssh_command(#{remote := {some, {remote, {commands, [Ssh | Options], _, _, _, _, AuthSock}, _, _}}}, Command) ->
+    Exe = case os:find_executable(binary_to_list(Ssh)) of
+        false -> Ssh;
+        Found -> unicode:characters_to_binary(Found)
+    end,
+    Env = case AuthSock of
+        {some, Sock} -> [{"SSH_AUTH_SOCK", binary_to_list(Sock)} | clean_environment()];
+        none -> clean_environment()
+    end,
+    {Exe, Options ++ [Command], <<"/">>, Env}.
+
+%% A remote kernel's run directory goes with a short ssh command; the kernel
+%% exits within a second of it disappearing, as a local one does.
+remove_run_dir(S = #{remote := {some, {remote, {commands, _, _, _, Remove, _, _}, _, _}}, run_dir := RunDir}) ->
+    {Ssh, Argv, _, Env} = ssh_command(S, Remove),
+    _ = run_helper(Ssh, Argv, Env, ?REMOTE_HELPER_WAIT, [RunDir, $\n]),
+    ok;
+remove_run_dir(#{run_dir := RunDir}) ->
+    _ = file:del_dir_r(RunDir),
+    ok.
 
 %% The helper has its own OS alarm (< HELPER_WAIT). Drain to exit_status even
 %% on output overflow; closing a port alone is not proof its child exited.
@@ -600,14 +758,18 @@ reap_start(S = #{port := Port}) ->
                  _ -> []
              end,
     Kernel = case maps:get(target, S) of none -> []; Target -> [target_spec(<<"kernel">>, Target)] end,
-    Result = verdict(supervise(Bridge ++ Kernel ++ job_specs(maps:get(groups, S)), ?TERM_MS, ?KILL_MS)),
+    %% The bridge is always this machine's process, even when it is an ssh
+    %% client and the kernel runs elsewhere.
+    Local = verdict(supervise(S#{remote => none}, Bridge, ?TERM_MS, ?KILL_MS)),
+    Owned = verdict(supervise(S, Kernel ++ job_specs(maps:get(groups, S)), ?TERM_MS, ?KILL_MS)),
+    Result = case Local of ok -> Owned; _ -> Local end,
     report(startup_reaped, reap_finish(S, Result)).
 
 %% The kernel is gone for good: its durable link and run directory go too.
 reap_finish(S = #{pool := Pool, port := Port}, Result) ->
     close_port(Port),
     link_forget(S),
-    _ = file:del_dir_r(maps:get(run_dir, S)),
+    remove_run_dir(S),
     case Result of ok -> albedo_job_slots:release_owner(Pool); _ -> ok end,
     Result.
 

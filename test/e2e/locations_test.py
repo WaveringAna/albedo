@@ -1,11 +1,11 @@
 """Sessions at remote locations: `[user@]host:/abs/path` workspaces.
 
-Until kernels can run on another host, a remote location is a stored key the
-daemon parses, labels and refuses to act on. These cover what a client sees:
-the canonical spelling and parsed `location`, the host label's `user@`
-elision against `ssh -G`, rejected forms, moving between local and remote,
-and the refusals that keep the daemon from looking for a remote path on its
-own disk.
+A remote location is a stored key the daemon parses and labels without
+connecting to the host. These cover what a client sees: the canonical
+spelling and parsed `location`, the host label's `user@` elision against
+`ssh -G`, rejected forms, and moving between local and remote. What needs
+the host itself (kernels, `~`, folders, project files) is
+remote_kernels_test.py, over a loopback ssh.
 """
 
 import json
@@ -101,7 +101,6 @@ class LocationsTest(unittest.TestCase):
 
     def test_unusable_locations_are_rejected(self):
         for workspace, said in (
-            (f"{HOST}:~/proj", "must be absolute"),
             (f"{HOST}:proj", "must be absolute"),
             (f"{HOST}:", "must be absolute"),
             ("-oProxyCommand=touch:/tmp", "not a valid host"),
@@ -116,24 +115,6 @@ class LocationsTest(unittest.TestCase):
                 self.assertEqual(status, 400)
                 self.assertIn(said, message)
 
-    def test_remote_session_refuses_what_needs_the_host(self):
-        session = self.create(f"{HOST}:/srv/app")["id"]
-        status, message = self.failure(
-            f"/sessions/{session}/events", {"content": "hello"}
-        )
-        self.assertEqual(status, 409)
-        self.assertEqual(message, f"kernels on {HOST} aren't available yet")
-
-        # Its extensions still compose around the project files they skip.
-        self.assertTrue(self.api(f"/sessions/{session}/commands"))
-
-        for route in ("list", "repo", "preview"):
-            with self.subTest(route=route):
-                query = urllib.parse.urlencode({"path": f"{HOST}:/srv/app"})
-                status, message = self.failure(f"/fs/{route}?{query}")
-                self.assertEqual(status, 400)
-                self.assertEqual(message, f"folders on {HOST} aren't available yet")
-
     def test_a_session_moves_to_a_remote_location_and_back(self):
         session = self.app.session()
         moved = self.api(
@@ -142,7 +123,7 @@ class LocationsTest(unittest.TestCase):
         self.assertEqual(moved["workspace"], f"{HOST}:/srv/app")
         self.assertEqual(moved["location"]["host"], HOST)
         status, message = self.failure(
-            f"/sessions/{session}/workspace", {"workspace": f"{HOST}:~/app"}
+            f"/sessions/{session}/workspace", {"workspace": f"{HOST}:app"}
         )
         self.assertEqual(status, 409)
         self.assertIn("must be absolute", message)

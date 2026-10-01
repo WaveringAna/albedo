@@ -1,13 +1,16 @@
 //// The single model-facing tool. Host capabilities are ordinary Python functions.
 
+import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/python/cells as journal
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/python/link
 import albedo/harness/extensions/python/migrations/cell_images
 import albedo/harness/extensions/python/migrations/kernel_links
+import albedo/harness/extensions/python/place
 import albedo/harness/extensions/python/rpc as cells
 import albedo/openai_api/types
+import gleam/dict
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -127,6 +130,8 @@ pub fn extension() -> extension.Extension {
       )),
       extension.MigrationPlugin(extension.SchemaMigration(kernel_links.apply)),
       extension.CleanPlugin(link.forget_session),
+      extension.CommandPlugin([kernel_command()]),
+      extension.ContextPlugin(place.context),
       extension.ToolPlugin(
         "Python has a persistent namespace, top-level await, cells.read/info/trace and cells.run for saved-source repair (all async), and output.read/output.list for bounded retained output (synchronous; awaiting them also works). cells.last_id is the id of the latest cell, and await cells.list(limit=20) lists this session's cells newest first with their status and first line, even after their output has rolled out. output.read(id, offset=0, limit=4000) returns up to limit characters. output.list() names every retained channel, which is also how to find earlier cells: cells, background jobs, and 'native' for bytes written to fd 1/2 while no cell was running. show_image(source) returns a PNG, JPEG, or WebP (bytes or a file path) to you with this cell's result, so you see it after the cell ends; at most 4 images and 5 MiB per cell.",
         [extension.Tool(definition(), invoke, recover)],
@@ -142,6 +147,29 @@ pub fn extension() -> extension.Extension {
       }),
     ],
     journal.initialise,
+  )
+}
+
+/// `/kernel` shows whether the session's kernel runs older code than the
+/// daemon; `/kernel upgrade` swaps it now, past its live jobs.
+fn kernel_command() -> command.Command {
+  command.Command(
+    "/kernel",
+    "Show whether this session's python kernel is older than the daemon's bundle or modules, or upgrade it now (user only): the namespace carries over, live jobs stop.",
+    [command.Argument("action", "upgrade, or omit to show", False, ["upgrade"])],
+    False,
+    False,
+    False,
+    None,
+    fn(ctx: command.Context, _caller, args) {
+      case dict.get(args, "action") {
+        Error(_) | Ok("") -> ctx.state(command.KernelReport)
+        Ok("upgrade") -> ctx.state(command.KernelUpgrade)
+        Ok(other) ->
+          Error("unknown kernel action " <> other <> "; available: upgrade")
+      }
+      |> result.map(command.Data)
+    },
   )
 }
 

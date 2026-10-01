@@ -113,7 +113,7 @@ start(Python, Script, Host, Modules) ->
     Bridge = filename:join(filename:dirname(Script), <<"albedo_bridge.py">>),
     albedo_python:start({boot, self(), Python, Bridge, <<"/tmp">>, Host,
                          iolist_to_binary(json:encode(Modules)), Link, unicode:characters_to_binary(RunDir),
-                         Id, albedo_native:new_id(), 20, 0, true}).
+                         Id, albedo_native:new_id(), 20, 0, true, none}).
 
 cell(Kernel, Code) ->
     %% A kernel answers a cell id it already ran with that run's result.

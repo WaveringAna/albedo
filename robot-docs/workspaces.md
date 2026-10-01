@@ -18,8 +18,10 @@ every workspace is a location (`src/albedo/harness/location.gleam`):
   first `:` holds no `/`. user and host start with a letter or digit, so
   neither is ever an ssh option. the path must be absolute and is
   normalised (`//`, `.`, `..`, trailing slash), so one remote directory has
-  one key. a remote `~` is refused: the remote home is only known once
-  albedo connects there.
+  one key. a stored remote path is always absolute: `host:~` and
+  `host:~/x` given to create or move a session are resolved against that
+  host's home (one probe over ssh, bounded, kernel.md) and stored absolute;
+  an unreachable host refuses with ssh's words.
 
 session info carries the parsed location beside the `workspace` string:
 
@@ -35,35 +37,46 @@ session info carries the parsed location beside the `workspace` string:
 it is the user `ssh -G <host>` reports (local config only, no network),
 cached per host for the daemon's life. without ssh the user stays.
 
-nothing runs at a remote location yet. what is only a key works as it is:
-the work ledger and paperclips scope, recent folders, session search by
-cwd, family moves. what needs the remote filesystem refuses or skips by
-name, and never looks for the path on the daemon's own disk:
+a remote session's python kernel and `run` jobs run on its host
+(kernel.md, "remote kernels"). what is only a key works as it is: the work
+ledger and paperclips scope, recent folders, session search by cwd, family
+moves. what the daemon itself reads from a workspace goes through the
+location, and never looks for a remote path on its own disk:
 
-- a turn in a remote session answers 409 `kernels on chernobog aren't
-  available yet` (the kernel refuses to boot there too).
-- `/fs/list`, `/fs/repo` and `/fs/preview` answer 400 `folders on chernobog
-  aren't available yet`.
-- AGENTS.md, SYSTEM.md and the other instruction files, and skills, are
-  read from the home directories only; the instructions extension warns
-  `project instruction files on chernobog aren't available yet` and the
-  skills catalog lists `project skills on chernobog aren't available yet`
-  among its diagnostics.
+- `/fs/list`, `/fs/repo` and `/fs/preview` take `host:/abs` and `host:~`
+  too (see browsing).
+- AGENTS.md, SYSTEM.md and the other instruction files, and project skills,
+  are read from a daemon-side mirror of the remote workspace's project
+  files (`$ALBEDO_HOME/mirror/<digest>/`: root `*.md`, `.agents/*.md`,
+  `.albedo/*.md`, and the `.agents/skills` and `.albedo/skills` trees, at
+  most 512 files and 8 MiB, each read up to one byte past the 1 MiB
+  instruction limit). one gather over ssh fills it, at most every 5 s, and
+  the local readers read it as the workspace, so the same rules apply. a
+  skill's `location` is its mirror path. while the host is out of reach
+  only the home directories count, and the instructions warn and the
+  skills catalog diagnoses `project … skipped: can't reach chernobog: …`.
 - memory is a daemon-side file keyed by the workspace string, so a remote
   workspace gets its own.
 
-the tui shows a remote workspace as `label:/path`: the chat header reads
-`✦ albedo on chernobog:/home/mayer/proj/albedo`, folds only the path, keeps
-the host in every layout that shows a place, and colors the host with a
-stable hue derived from its label, lifted to the theme's contrast. recent
-folders and the sessions view lead remote entries with their host.
+the tui shows a remote workspace as `label:path`, the path folded under
+that host's own home once a listing or probe reported it: the chat header
+reads `✦ albedo on chernobog:~/proj/albedo`, folds only the path, keeps the
+host in every layout that shows a place, and colors the host with a stable
+hue derived from its label, lifted to the theme's contrast. the host goes
+faint while the session's kernel boots or reattaches (the status line says
+`connecting to chernobog…`) and takes the error color once it is lost (the
+port owner gave up and forgot the kernel, so the status line says the next
+turn starts a fresh one), from
+the session status's `kernel.link` (kernel.md). recent folders and the
+sessions view lead remote entries with their host.
 
 ## moving a session
 
 `POST /sessions/:id/workspace {"workspace": "/abs/dir"}` answers the session's
 info. the session must be idle and the target an existing absolute directory,
-or a remote location (stored canonically; it can't be checked before albedo
-connects to the host). `POST /sessions` takes the same forms.
+or a remote location (stored canonically; an absolute one isn't checked
+until a kernel boots there, a `~` one is resolved over ssh first).
+`POST /sessions` takes the same forms.
 the kernel is dropped (python variables start fresh), the transcript stays,
 and a note records the move.
 
@@ -76,9 +89,44 @@ move, nobody moves.
 ## browsing
 
 all three routes take `path`: absolute, or starting with `~`, which expands
-to the daemon's home. anything else is a 400, a remote location included; a path that is not an existing
-directory is a 404. errors are `{"error": "..."}`. `/health` lists
+to the daemon's home, or a remote `[user@]host:/abs` or `[user@]host:~/x`
+(`~` is that host's home). anything else is a 400; a path that is not an
+existing directory is a 404. errors are `{"error": "..."}`. `/health` lists
 `workspace_browser` when these routes exist.
+
+a remote path is gathered on its host in one ssh round trip per request
+(`priv/python/albedo_gather.py`, after the host's probe, kernel.md): the
+directory entries with their stats, which `.jj`/`.git` markers exist, the
+very vcs commands `vcs.plan` names (run there with the same 2 s deadline),
+and the sizes of tracked files. the daemon reads that snapshot with the
+same code it reads its own disk with (`folders.gleam`, `vcs.gleam` over a
+`Shell`), so a remote answer is the local answer for the same tree, except
+that `path` and `home` are canonical location strings
+(`mayer@chernobog:/home/mayer/proj`, `mayer@chernobog:/home/mayer`) so a
+client can fold `~`. a repository's `root` stays the plain path on that
+host. a host without a ready probe answers 503 `{error, host, state}`
+(`needs_auth` with `control_path`, `unreachable`, `unsupported`,
+`warming`), so the picker can show it on the row.
+
+### `GET /hosts`
+
+the hosts the picker completes:
+
+```json
+{"hosts": [{"host": "mayer@chernobog", "label": "chernobog",
+            "source": "recent", "state": "ready"},
+           {"host": "devbox", "label": "devbox", "source": "config"}]}
+```
+
+- `recent` hosts come from session workspaces, ranked as the picker ranks
+  recent folders (per session 4 within the hour, halving past a day, a week
+  and a month, summed per host).
+- `config` hosts are the `Host` names of the daemon user's
+  `~/.ssh/config` and the files it `Include`s, wildcard patterns (`*`, `?`,
+  `!`) left out, in file order, after the recent ones and without repeats.
+- `host` is the canonical `[user@]host` for `/hosts/:host` and `host:/path`;
+  `label` the display form. `state` is the cached probe's when one is
+  fresh; listing never probes.
 
 ### `GET /fs/list?path=P`
 
@@ -159,11 +207,41 @@ everything the preview pane shows for P.
 ## the picker
 
 `/cd` opens it full screen; `/cd <path>` moves at once. an empty query lists
-recent folders (the workspaces of your sessions, ranked by how often and how
-recently they were used). typing a path lists that folder's directories,
-filtered by the last segment. tab enters the highlighted folder, shift+tab goes
-up, enter moves there, esc goes back. the same picker replaces the plain text
-box shown when a session's workspace has gone missing.
+recent folders (the workspaces of your sessions, local and remote, ranked by
+how often and how recently they were used). typing a path lists that
+folder's directories, filtered by the last segment. tab enters the
+highlighted folder, shift+tab goes up, enter moves there, esc goes back. the
+same picker replaces the plain text box shown when a session's workspace has
+gone missing.
+
+the query takes scp syntax for another host, so a host is picked like a
+folder (`cli/internal/tui/folder_picker.go`, `parseQuery`):
+
+- `chernobog:` lists that host's home, `chernobog:proj/` and
+  `chernobog:~/proj/` browse under it, `chernobog:/srv/` from its root.
+  everything after the last slash filters, as locally. the listing comes
+  from `/fs/list` with the location; its canonical `path` and `home` fold
+  rows to `chernobog:~/proj/albedo`.
+- hosts complete from `GET /hosts` (recent first, then ssh config), with the
+  hosts of the sessions already listed as a fallback. a bare word still
+  filters the recent folders exactly as before and only adds the hosts whose
+  name it starts, after the folders, so `cher` offers `chernobog:` without
+  turning a local filter fuzzy. text with an `@` and no `:` can only be
+  `user@host`: it lists hosts alone, fuzzy on the host part, and the typed
+  user goes with the completion. tab or enter on a host completes to
+  `host:`.
+- highlighting a remote row (a recent remote folder, a host, a folder in a
+  remote listing), or typing a remote listing, warms its host once per
+  picker: `POST /hosts/:host/warm`, then `GET /hosts/:host` every 750 ms
+  until the probe settles. the row shows it quietly: faint while warming,
+  plain once ready, the probe's detail in the error style when unreachable
+  or unsupported, `sign in · ctrl+l` when it needs a person. ctrl+l runs the
+  same `ssh -M -fN` handoff a refused turn offers (kernel.md, "signing
+  in"), with the `control_path` the probe answered, then warms the host
+  again. repositories and the preview of a remote row wait for ready; until
+  then the pane shows the host's state, and when ready its os, arch and ~.
+- enter never picks a dead host: on an unreachable, unsupported or
+  needs-auth host it stays and says why in the footer.
 
 in the sessions view, ctrl+f (or `~` or `/` typed into an empty search) opens
 the same picker to browse sessions by folder: enter starts a new session in

@@ -1,9 +1,14 @@
 //// Which repository a directory is in, and what git or jj says about it:
 //// shared by anything that shows folders. Finding a repository is a stat;
 //// everything else is one short-lived command per question, each with a
-//// short deadline, run by `albedo_vcs.erl`. jj always runs with
-//// `--ignore-working-copy`: asking never snapshots the working copy or
-//// writes an operation, so its answers are as fresh as the last jj command.
+//// short deadline. jj always runs with `--ignore-working-copy`: asking never
+//// snapshots the working copy or writes an operation, so its answers are as
+//// fresh as the last jj command.
+////
+//// Every question goes through a `Shell`: `local` stats and runs here (in
+//// `albedo_vcs.erl`); a remote host's shell answers from what one gather
+//// over ssh collected, running the commands `plan` names. Either way the
+//// answers are read by the same code below.
 
 import gleam/int
 import gleam/list
@@ -50,14 +55,94 @@ pub type Repo {
   )
 }
 
-const deadline_ms = 2000
+pub const deadline_ms = 2000
+
+/// How questions about a machine's files are answered.
+pub type Shell {
+  Shell(
+    /// A file or directory exists at the path.
+    exists: fn(String) -> Bool,
+    /// One command's stdout, run in a directory, when it exits 0 in time.
+    run: fn(Command, String) -> Result(String, Nil),
+  )
+}
+
+/// One command a question runs: a program, its arguments, and where.
+pub type Command {
+  Command(program: String, args: List(String), at: Place)
+}
+
+pub type Place {
+  /// The repository root.
+  AtRoot
+  /// The directory asked about.
+  AtDir
+}
+
+/// This machine.
+pub fn local() -> Shell {
+  Shell(exists:, run: fn(command: Command, cwd) {
+    run(command.program, command.args, cwd, deadline_ms)
+  })
+}
+
+/// Every command `repo` (and, for a preview, `tracked` and `changes`) may
+/// run for a checkout of this kind, for a gather that runs them elsewhere.
+pub fn plan(jj: Bool, preview: Bool) -> List(Command) {
+  case jj, preview {
+    False, False -> [git_status, git_head]
+    False, True -> [git_status, git_head, git_tracked]
+    True, False -> [jj_at, jj_bookmarks()]
+    True, True -> [jj_at, jj_bookmarks(), jj_tracked, jj_changes]
+  }
+}
+
+const git_status = Command(
+  "git",
+  ["--no-optional-locks", "status", "--porcelain=v2", "--branch", "-z"],
+  AtRoot,
+)
+
+const git_head = Command(
+  "git",
+  ["--no-optional-locks", "log", "-1", "--format=%h%x09%ct"],
+  AtRoot,
+)
+
+const git_tracked = Command(
+  "git",
+  ["--no-optional-locks", "ls-files", "-z"],
+  AtDir,
+)
+
+const jj_at = Command(
+  "jj",
+  [
+    "log",
+    "-r",
+    "@",
+    "--no-graph",
+    "-T",
+    "change_id.shortest(4) ++ \"\\t\" ++ self.diff().files().len() ++ \"\\t\" ++ committer.timestamp().format(\"%s\")",
+    ..jj_flags
+  ],
+  AtRoot,
+)
+
+const jj_tracked = Command("jj", ["file", "list", ".", ..jj_flags], AtDir)
+
+const jj_changes = Command(
+  "jj",
+  ["diff", "-r", "@", "--name-only", ..jj_flags],
+  AtRoot,
+)
 
 /// After every jj subcommand: never snapshot, never page, never colour.
 const jj_flags = ["--ignore-working-copy", "--no-pager", "--color=never"]
 
 /// The repository rooted at `dir` itself, if any.
-pub fn at(dir: String) -> Option(Checkout) {
-  case exists(child(dir, ".jj")), exists(child(dir, ".git")) {
+pub fn at(shell: Shell, dir: String) -> Option(Checkout) {
+  case shell.exists(child(dir, ".jj")), shell.exists(child(dir, ".git")) {
     True, _ -> Some(JjCheckout(dir))
     False, True -> Some(GitCheckout(dir))
     False, False -> None
@@ -65,40 +150,51 @@ pub fn at(dir: String) -> Option(Checkout) {
 }
 
 /// The nearest repository enclosing the absolute, normalised `dir`.
-pub fn find(dir: String) -> Option(Checkout) {
-  case at(dir), parent(dir) {
+pub fn find(shell: Shell, dir: String) -> Option(Checkout) {
+  case at(shell, dir), parent(dir) {
     Some(checkout), _ -> Some(checkout)
-    None, Some(up) -> find(up)
+    None, Some(up) -> find(shell, up)
     None, None -> None
   }
 }
 
-pub fn repo(checkout: Checkout) -> Repo {
+pub fn repo(shell: Shell, checkout: Checkout) -> Repo {
   case checkout {
-    GitCheckout(root) -> git_repo(root)
-    JjCheckout(root) -> jj_repo(root)
+    GitCheckout(root) -> git_repo(shell, root)
+    JjCheckout(root) -> jj_repo(shell, root)
   }
 }
 
 /// The tracked files under `dir`, relative to it.
-pub fn tracked(checkout: Checkout, dir: String) -> Result(List(String), Nil) {
+pub fn tracked(
+  shell: Shell,
+  checkout: Checkout,
+  dir: String,
+) -> Result(List(String), Nil) {
   case checkout {
     GitCheckout(_) ->
-      git(dir, ["ls-files", "-z"]) |> result.map(lines(_, "\u{0}"))
-    JjCheckout(_) ->
-      jj(dir, ["file", "list", "."]) |> result.map(lines(_, "\n"))
+      shell.run(git_tracked, dir) |> result.map(lines(_, "\u{0}"))
+    JjCheckout(_) -> shell.run(jj_tracked, dir) |> result.map(lines(_, "\n"))
+  }
+}
+
+/// How `tracked` output splits into paths, for a gather that sizes them.
+pub fn tracked_separator(jj: Bool) -> String {
+  case jj {
+    True -> "\n"
+    False -> "\u{0}"
   }
 }
 
 /// The paths with uncommitted changes (for jj, the files `@` changes),
 /// relative to the root. An untracked directory git has not looked inside
 /// is one path.
-pub fn changes(checkout: Checkout) -> Result(List(String), Nil) {
+pub fn changes(shell: Shell, checkout: Checkout) -> Result(List(String), Nil) {
   case checkout {
     GitCheckout(root) ->
-      git_status(root) |> result.map(fn(status) { status.paths })
+      status(shell, root) |> result.map(fn(status) { status.paths })
     JjCheckout(root) ->
-      jj(root, ["diff", "-r", "@", "--name-only"]) |> result.map(lines(_, "\n"))
+      shell.run(jj_changes, root) |> result.map(lines(_, "\n"))
   }
 }
 
@@ -106,12 +202,12 @@ type Status {
   Status(branch: Option(String), born: Bool, paths: List(String))
 }
 
-fn git_repo(root: String) -> Repo {
-  let status = git_status(root)
+fn git_repo(shell: Shell, root: String) -> Repo {
+  let status = status(shell, root)
   let head = case status {
     Ok(Status(born: False, ..)) -> Error(Nil)
     _ ->
-      git(root, ["log", "-1", "--format=%h%x09%ct"])
+      shell.run(git_head, root)
       |> result.try(fn(out) { string.split_once(string.trim(out), "\t") })
   }
   Git(
@@ -130,8 +226,8 @@ fn git_repo(root: String) -> Repo {
   )
 }
 
-fn git_status(root: String) -> Result(Status, Nil) {
-  git(root, ["status", "--porcelain=v2", "--branch", "-z"])
+fn status(shell: Shell, root: String) -> Result(Status, Nil) {
+  shell.run(git_status, root)
   |> result.map(fn(out) {
     parse_status(string.split(out, "\u{0}"), Status(None, True, []))
   })
@@ -166,12 +262,9 @@ fn drop_fields(record: String, count: Int) -> String {
   }
 }
 
-fn jj_repo(root: String) -> Repo {
+fn jj_repo(shell: Shell, root: String) -> Repo {
   let at =
-    jj(root, [
-      "log", "-r", "@", "--no-graph", "-T",
-      "change_id.shortest(4) ++ \"\\t\" ++ self.diff().files().len() ++ \"\\t\" ++ committer.timestamp().format(\"%s\")",
-    ])
+    shell.run(jj_at, root)
     |> result.map(fn(out) { string.split(string.trim(out), "\t") })
   let field = fn(index) {
     at
@@ -184,7 +277,7 @@ fn jj_repo(root: String) -> Repo {
   Jj(
     root:,
     change: field(0),
-    bookmark: nearest_bookmark(root),
+    bookmark: nearest_bookmark(shell, root),
     changed: number(1),
     touched: number(2),
   )
@@ -199,7 +292,20 @@ const fork = "heads(::@ & ::bookmarks())"
 /// often an old backup instead. This is a name at the fork itself, local or
 /// remote (such as git's `@git` view in a colocated repository), else the
 /// newest bookmark that grew from the fork.
-fn nearest_bookmark(root: String) -> Option(Bookmark) {
+fn nearest_bookmark(shell: Shell, root: String) -> Option(Bookmark) {
+  shell.run(jj_bookmarks(), root)
+  |> result.try(fn(out) {
+    let changes = lines(out, "\n") |> list.map(string.split(_, "\t"))
+    let ahead =
+      list.count(changes, fn(change) { list.first(change) == Ok("@") })
+    use name <- result.map(fork_bookmark(changes))
+    Bookmark(name, ahead - 1)
+  })
+  |> option.from_result
+}
+
+/// One line per change on `@`'s path and the bookmarks grown from the fork.
+fn jj_bookmarks() -> Command {
   let within = fn(revset, mark) {
     "if(self.contained_in(\"" <> revset <> "\"), \"" <> mark <> "\", \"\")"
   }
@@ -216,15 +322,11 @@ fn nearest_bookmark(root: String) -> Option(Bookmark) {
     |> string.join(" ++ \"\\t\" ++ ")
     |> string.append(" ++ \"\\n\"")
   let revset = fork <> "::@ | roots(" <> fork <> ":: & bookmarks())"
-  jj(root, ["log", "-r", revset, "--no-graph", "-T", template])
-  |> result.try(fn(out) {
-    let changes = lines(out, "\n") |> list.map(string.split(_, "\t"))
-    let ahead =
-      list.count(changes, fn(change) { list.first(change) == Ok("@") })
-    use name <- result.map(fork_bookmark(changes))
-    Bookmark(name, ahead - 1)
-  })
-  |> option.from_result
+  Command(
+    "jj",
+    ["log", "-r", revset, "--no-graph", "-T", template, ..jj_flags],
+    AtRoot,
+  )
 }
 
 fn fork_bookmark(changes: List(List(String))) -> Result(String, Nil) {
@@ -252,14 +354,6 @@ fn fork_bookmark(changes: List(List(String))) -> Result(String, Nil) {
   |> list.sort(fn(a, b) { int.compare(b.1, a.1) })
   |> list.first
   |> result.map(pair.first)
-}
-
-fn git(dir: String, args: List(String)) -> Result(String, Nil) {
-  run("git", ["--no-optional-locks", ..args], dir, deadline_ms)
-}
-
-fn jj(dir: String, args: List(String)) -> Result(String, Nil) {
-  run("jj", list.append(args, jj_flags), dir, deadline_ms)
 }
 
 fn lines(out: String, separator: String) -> List(String) {

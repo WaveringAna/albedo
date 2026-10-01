@@ -2,6 +2,12 @@
 
     albedo_bridge.py start <run_dir> <modules-json>
     albedo_bridge.py attach <run_dir>
+    albedo_bridge.py --frame
+
+`--frame` takes the same arguments from its first stdin frame instead,
+`{"bridge": {"argv": [...], "cwd": dir}}`, and starts in `cwd` (exit status 4
+when it is no directory): the remote form, so the daemon's ssh command line
+never carries a path or the module list.
 
 The daemon talks to this process as it once talked to the kernel itself, over
 4-byte-length-framed stdio, and writes the attach frame first. `start` reads
@@ -30,6 +36,7 @@ import albedo_bundle
 import albedo_link
 
 GONE = 3
+NO_FOLDER = 4
 START_TIMEOUT = 10.0  # seconds a starting kernel has to bind its socket
 
 
@@ -95,7 +102,25 @@ def pump(source: Callable[[int], bytes], sink: Callable[[bytes], int | None]) ->
     os._exit(0)
 
 
+def framed() -> list[str]:
+    """The arguments a remote daemon sent as the first frame."""
+    first = albedo_link.read_frame(stdin)
+    spec = first.get("bridge") if isinstance(first, dict) else None
+    argv = spec.get("argv") if isinstance(spec, dict) else None
+    if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
+        sys.exit(2)
+    cwd = spec.get("cwd") if isinstance(spec, dict) else None
+    if isinstance(cwd, str):
+        try:
+            os.chdir(cwd)
+        except OSError:
+            sys.exit(NO_FOLDER)
+    return [sys.argv[0], *argv]
+
+
 def main(argv: list[str]) -> None:
+    if argv[1:] == ["--frame"]:
+        argv = framed()
     mode, run_dir = argv[1], argv[2]
     if mode == "start":
         attach = albedo_link.read_frame(stdin)

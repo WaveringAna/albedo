@@ -5,6 +5,7 @@
 //// were. A remote one is `[user@]host:/abs/path`; its path must be absolute,
 //// so one remote directory never gets two keys.
 
+import albedo/harness/ssh
 import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -66,7 +67,7 @@ fn remote(text: String) -> Result(Location, String) {
       Error(
         "a path on "
         <> host
-        <> " must be absolute: ~ there can't be resolved until albedo connects to it",
+        <> " must be absolute: ~ there is only resolved when a session is created or moved there",
       )
     _ -> Error("a path on " <> host <> " must be absolute")
   }
@@ -116,9 +117,11 @@ fn normalise(path: String) -> String {
 }
 
 /// A workspace a session can be created in or moved to: an existing absolute
-/// local directory, or any remote location, which can't be checked before
-/// albedo connects to its host.
+/// local directory, or a remote location. A remote `~` is resolved against
+/// that host's home, which connects to it (bounded); an absolute remote path
+/// is taken as it is.
 pub fn workspace(text: String) -> Result(Location, String) {
+  use text <- result.try(remote_home(text))
   use location <- result.try(parse(text))
   case location {
     Local(path) ->
@@ -127,6 +130,37 @@ pub fn workspace(text: String) -> Result(Location, String) {
         False -> Error("workspace must be an existing absolute directory")
       }
     Remote(..) -> Ok(location)
+  }
+}
+
+/// `host:~/x` with the host's home in place of `~`; anything else as it is.
+fn remote_home(text: String) -> Result(String, String) {
+  case text, string.split_once(text, ":~") {
+    "/" <> _, _ | "~" <> _, _ | _, Error(_) -> Ok(text)
+    _, Ok(#(head, rest)) ->
+      case string.contains(head, "/"), rest {
+        True, _ -> Ok(text)
+        False, "" | False, "/" <> _ -> {
+          // Parse the head with a placeholder path, so a malformed host is
+          // refused before anything connects to it.
+          use location <- result.try(parse(head <> ":/"))
+          use target <- result.try(
+            ssh_target(location) |> result.replace_error("not a remote host"),
+          )
+          use home <- result.try(ssh.home(target))
+          Ok(head <> ":" <> home <> rest)
+        }
+        False, _ -> Error("only ~ and ~/path can be resolved on a remote host")
+      }
+  }
+}
+
+/// The ssh target for a remote location, `[user@]host` (an IPv6 host bare).
+pub fn ssh_target(location: Location) -> Result(String, Nil) {
+  case location {
+    Local(_) -> Error(Nil)
+    Remote(Some(user), host, _) -> Ok(user <> "@" <> host)
+    Remote(None, host, _) -> Ok(host)
   }
 }
 
@@ -145,12 +179,6 @@ pub fn to_string(location: Location) -> String {
       }
     }
   }
-}
-
-/// What can't run at a remote location yet, for refusals: "kernels on
-/// chernobog aren't available yet".
-pub fn unavailable(host: String, what: String) -> String {
-  what <> " on " <> host <> " aren't available yet"
 }
 
 /// How a client shows the host: the alias, with `user@` only when it differs

@@ -253,6 +253,9 @@ def deliver(message: albedo_api.Incoming) -> None:
         )
     elif message["type"] == "release":
         LIVE.pop(message["handle"], None)
+    elif message["type"] == "snapshot" and (active is not None or not QUEUE.empty()):
+        # A namespace mid-cell is no state to carry: the owner tries again later.
+        send(state_reply(message, {"error": "a cell is still running"}))
     elif message["type"] == "execute" and message["id"] in FINISHED:
         send(FINISHED[message["id"]])
     elif message["type"] == "execute" and message["id"] in EXECUTING:
@@ -1114,12 +1117,15 @@ def remember(capture: Capture) -> None:
             counts[held.kind] -= 1
 
 
-def state_reply(message: albedo_api.State) -> dict[str, object]:
-    state = (
-        save_state(message["path"])
-        if message["type"] == "snapshot"
-        else load_state(message["path"])
-    )
+def state_reply(
+    message: albedo_api.State, state: dict[str, object] | None = None
+) -> dict[str, object]:
+    if state is None:
+        state = (
+            save_state(message["path"])
+            if message["type"] == "snapshot"
+            else load_state(message["path"])
+        )
     return {
         "type": "done",
         "id": message["id"],

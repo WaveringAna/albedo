@@ -5,6 +5,7 @@ import albedo/daemon/session_state
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/runtime
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -66,6 +67,12 @@ fn largest(saved: python.Saved) -> String {
   |> names
 }
 
+fn missed_names(missed: List(#(String, String))) -> String {
+  list.take(missed, 20)
+  |> list.map(fn(entry) { entry.0 <> " (" <> entry.1 <> ")" })
+  |> string.join(", ")
+}
+
 fn restored_notice(saved: python.Saved) -> String {
   "<system-note>The python kernel restarted. These variables were restored from disk: "
   <> names(saved.names)
@@ -76,14 +83,7 @@ fn restored_notice(saved: python.Saved) -> String {
   }
   <> case saved.missed {
     [] -> ""
-    missed ->
-      ". These were not restored: "
-      <> string.join(
-        list.map(list.take(missed, 20), fn(entry) {
-          entry.0 <> " (" <> entry.1 <> ")"
-        }),
-        ", ",
-      )
+    missed -> ". These were not restored: " <> missed_names(missed)
   }
   <> case saved.largest {
     [] -> ""
@@ -124,14 +124,15 @@ pub fn released_text(
   }
 }
 
-/// The session's kernel when it has a live one. A dead one is dropped, so the
-/// caller asks the runtime for a replacement.
+/// The session's kernel when it has a live, current one. A dead one is
+/// dropped, so the caller asks the runtime for a replacement; so is a stale
+/// one nothing keeps, and the runtime swaps it before handing it back.
 pub fn ready(
   state: session_state.State(message),
 ) -> #(session_state.State(message), Option(runtime.Session)) {
   case state.kernel {
     Some(kernel) ->
-      case runtime.alive(kernel) {
+      case runtime.alive(kernel) && !runtime.upgradable(kernel) {
         True -> #(state, Some(kernel))
         False -> #(session_state.State(..state, kernel: None), None)
       }
@@ -158,11 +159,154 @@ pub fn adopt(
   state: session_state.State(message),
   kernel: runtime.Session,
 ) -> session_state.State(message) {
-  case runtime.resumed(kernel) {
-    True ->
+  case runtime.origin(kernel) {
+    runtime.Resumed ->
       session_state.State(..state, kernel: Some(kernel))
       |> session_state.emit(view.text("note", resumed_text))
-    False -> revive(state, kernel)
+    runtime.Upgraded(carried) ->
+      adopted(state, kernel, upgraded_notice(carried), upgraded_text(carried))
+    runtime.Kept -> session_state.State(..state, kernel: Some(kernel))
+    runtime.Fresh -> revive(state, kernel)
+  }
+}
+
+/// What the swap replaced the kernel for, as the notice and note say it.
+fn upgraded_to(reason: python.Stale) -> String {
+  case reason {
+    python.Bundle -> "the new python bundle"
+    python.Modules -> "the session's new extension modules"
+    python.Protocol -> "the current kernel protocol"
+  }
+}
+
+fn upgraded_notice(carried: python.Carried) -> String {
+  let saved = carried.saved
+  "<system-note>The python kernel was upgraded to "
+  <> upgraded_to(carried.reason)
+  <> ". "
+  <> case saved.names {
+    [] -> "No variables were restored"
+    _ -> "Restored: " <> names(saved.names)
+  }
+  <> case saved.defs {
+    [] -> ""
+    defs ->
+      ". Functions, classes, and imports re-run from source: " <> names(defs)
+  }
+  <> case saved.missed {
+    [] -> "."
+    missed -> ". Not carried: " <> missed_names(missed) <> "."
+  }
+  <> " Imports and definitions from earlier cells are gone unless named here.</system-note>"
+}
+
+fn upgraded_text(carried: python.Carried) -> String {
+  "python kernel upgraded to "
+  <> upgraded_to(carried.reason)
+  <> "; restored "
+  <> int.to_string(list.length(carried.saved.names))
+  <> " variables"
+  <> case carried.saved.missed {
+    [] -> ""
+    missed -> ", " <> int.to_string(list.length(missed)) <> " not carried"
+  }
+}
+
+/// The kernel for the session status: `{stale, reason?, link}`.
+pub fn kernel_json(state: session_state.State(message)) -> json.Json {
+  let reason = option.then(state.kernel, runtime.stale)
+  json.object([
+    #("stale", json.bool(reason != None)),
+    #("link", json.string(link_name(state))),
+    ..case reason {
+      Some(reason) -> [#("reason", json.string(stale_name(reason)))]
+      None -> []
+    }
+  ])
+}
+
+/// How the session reaches its kernel: `booting` while one opens (a boot, or
+/// waiting for a daemon start to attach the recorded one), `attached`,
+/// `reattaching` while the bridge is down and the port owner retries, `lost`
+/// once the port owner gave up, and `none` before the session needed one.
+fn link_name(state: session_state.State(message)) -> String {
+  case state.booting, state.kernel {
+    Some(_), _ -> "booting"
+    None, None -> "none"
+    None, Some(kernel) ->
+      case runtime.alive(kernel), runtime.linked(kernel) {
+        False, _ -> "lost"
+        True, True -> "attached"
+        True, False -> "reattaching"
+      }
+  }
+}
+
+fn stale_name(reason: python.Stale) -> String {
+  case reason {
+    python.Bundle -> "bundle"
+    python.Modules -> "modules"
+    python.Protocol -> "protocol"
+  }
+}
+
+/// `/kernel`: report whether the kernel is stale and what keeps it, or, with
+/// `apply`, let a stale kernel go now so the next open swaps it, ending its
+/// live jobs. The flag says the kernel was let go.
+pub fn upgrade(
+  state: session_state.State(message),
+  apply: Bool,
+  busy: Bool,
+) -> #(session_state.State(message), json.Json, Bool) {
+  let report = fn(message, jobs) {
+    json.object([
+      #("message", json.string(message)),
+      #("jobs", json.int(jobs)),
+      #("kernel", kernel_json(state)),
+    ])
+  }
+  case state.kernel {
+    None -> #(
+      state,
+      report(
+        "no kernel is attached to this session yet; it attaches with the next turn, and an older one is upgraded then",
+        0,
+      ),
+      False,
+    )
+    Some(kernel) -> {
+      let jobs = runtime.job_count(kernel)
+      case runtime.stale(kernel), apply, busy {
+        None, _, _ -> #(
+          state,
+          report("the kernel runs the current bundle and modules", jobs),
+          False,
+        )
+        Some(reason), False, _ -> #(
+          state,
+          report(
+            "the kernel is older ("
+              <> stale_name(reason)
+              <> "); it upgrades at the next idle moment with no live jobs, or now with /kernel upgrade, which stops its jobs",
+            jobs,
+          ),
+          False,
+        )
+        Some(_), True, True -> #(
+          state,
+          report("the session is busy; run /kernel upgrade between turns", jobs),
+          False,
+        )
+        Some(_), True, False -> {
+          let _ = runtime.force_upgrade(kernel)
+          #(
+            session_state.State(..state, kernel: None),
+            report("upgrading the kernel; its live jobs stop", jobs),
+            True,
+          )
+        }
+      }
+    }
   }
 }
 

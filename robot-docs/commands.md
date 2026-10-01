@@ -43,6 +43,8 @@ argument parsing is shared: leading arguments take one whitespace token each, th
 - `/context [section] [page]` — the prepared model request: a summary, or one bounded section page.
 - `/raise-cap [on|off] [model]` — raise a model's context window to the provider's maximum, or restore its default (user only). Without a state it toggles; without a model it uses the session's. The choice is saved per model in `raisedCaps` and applies to every session on that model from its next request. See [raised caps](models.md#raised-caps).
 
+the python extension contributes `/kernel [upgrade]` — whether the session's kernel runs older code than the daemon (bundle, module set, or protocol) and what keeps it, or, with `upgrade` (user only, between turns), swap it now past its live jobs (`KernelReport` / `KernelUpgrade` state ops). See [kernel](kernel.md#version-skew).
+
 skills contributes one command per cataloged skill; `/tree`, `/fork`, `/login`, and the other picker-style entries stay presentation-only in the CLI.
 
 ## CLI page lifecycle

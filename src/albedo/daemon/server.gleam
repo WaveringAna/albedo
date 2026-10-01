@@ -5,6 +5,7 @@ import albedo/daemon/conversation
 import albedo/daemon/family
 import albedo/daemon/folders
 import albedo/daemon/history
+import albedo/daemon/hosts
 import albedo/daemon/image
 import albedo/daemon/mail
 import albedo/daemon/migrations
@@ -30,6 +31,7 @@ import albedo/harness/location
 import albedo/harness/oauth
 import albedo/harness/runtime
 import albedo/harness/session_settings
+import albedo/harness/ssh
 import albedo/harness/usage_feed
 import albedo/openai_api/types
 import gleam/bit_array
@@ -1076,6 +1078,30 @@ fn info_json(info: conversation.Info) -> json.Json {
   ])
 }
 
+@external(erlang, "os", "system_time")
+fn system_time(unit: Int) -> Int
+
+fn now_seconds() -> Int {
+  system_time(1)
+}
+
+/// A `/hosts/:host` answer for `[user@]host`, refused before ssh sees
+/// anything that is not one.
+fn hosted(
+  target: String,
+  answer: fn(String) -> json.Json,
+) -> response.Response(mist.ResponseData) {
+  let parsed =
+    location.parse(target <> ":/")
+    |> result.try(fn(at) {
+      location.ssh_target(at) |> result.replace_error("not a remote host")
+    })
+  case parsed {
+    Ok(target) -> reply(200, answer(target))
+    Error(message) -> error(400, message)
+  }
+}
+
 /// Stored workspaces were validated when they were set; one that no longer
 /// parses is shown as the plain path it is.
 fn location_json(workspace: String) -> json.Json {
@@ -1726,7 +1752,7 @@ fn browsed(
   let path = query(req) |> list.key_find("path") |> result.unwrap("")
   case view(path) {
     Ok(value) -> reply(200, value)
-    Error(#(status, message)) -> error(status, message)
+    Error(#(status, body)) -> reply(status, body)
   }
 }
 
@@ -1976,7 +2002,7 @@ fn uri_decode(segment: String) -> String {
 /// The daemon's own top-level routes; a service never shadows them.
 const daemon_routes = [
   "operations", "settings", "health", "sessions", "models", "auth", "shutdown",
-  "agents", "quota", "cache-ttl", "fs",
+  "agents", "quota", "cache-ttl", "fs", "hosts",
 ]
 
 /// Shutdown can close a handle after the registry admitted its request.
@@ -2252,6 +2278,7 @@ fn daemon_route(
                   "session_context",
                   "session_commands",
                   "workspace_browser",
+                  "remote_hosts",
                   "settings_api",
                   "session_model",
                 ],
@@ -2366,6 +2393,11 @@ fn daemon_route(
     Get, ["fs", "list"] -> browsed(req, folders.list)
     Get, ["fs", "repo"] -> browsed(req, folders.repo)
     Get, ["fs", "preview"] -> browsed(req, folders.preview)
+    // What a remote host looks like over ssh; robot-docs/kernel.md.
+    Get, ["hosts"] ->
+      reply(200, hosts.list(actor.call(registry, 5000, List), now_seconds()))
+    Get, ["hosts", target] -> hosted(target, ssh.status)
+    Post, ["hosts", target, "warm"] -> hosted(target, ssh.warm)
     // Quota readings, read-only: the latest per account and limit, or
     // with `?history=<id>` the raw samples after that row, newest first.
     Get, ["quota"] -> {

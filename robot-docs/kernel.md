@@ -21,7 +21,8 @@ session layer that neither loses nor repeats a message across a reconnect.
   `attach <run_dir>` connects to a running one. it announces its own bundle
   hash (`{"bridge": {"bundle"}}`), then copies bytes both ways until either
   side closes. exit status 3 means no kernel is there. killing it never
-  touches the kernel. #56 runs the same argv over ssh.
+  touches the kernel. a remote kernel's bridge is the same argv run over ssh
+  (see remote kernels below).
 - **port owner** (`albedo_python.erl`): one erlang process per kernel, as
   before. it owns the job groups the kernel reports and the
   `albedo_signal.py` termination ladder, aimed at the pid/pgid/leader the
@@ -40,8 +41,8 @@ off any older connection (newest attach wins), and answers
 external, slots, dropped}}`, or `{"refused": reason}`. `protocol` (1) and the
 hello/snapshot/shutdown frames never change shape. `bundle` is
 `albedo_bundle.digest()`, the same content hash the remote plugin stages
-under; a hello whose bundle or protocol differs from the bridge's is only
-logged for now (#55 acts on it). `jobs` (live `job_start` frames), `external`
+under; a hello whose bundle or protocol differs from the bridge's makes the
+kernel stale (see version skew). `jobs` (live `job_start` frames), `external`
 and `slots` (job slots still waited for) let a fresh port owner take over job
 ownership and admission.
 
@@ -95,14 +96,58 @@ dedupe:
   the background, one at a time through the boot slots, so late results and
   job wakes arrive without waiting for the session. a session that asks for
   its kernel meanwhile waits for that attach, and gets a fresh boot if there
-  was nothing to attach to. an attached kernel is `runtime.resumed`, and the
-  session keeps its namespace without the disk restore. a recorded kernel
-  whose workspace or module set no longer fits is stopped and replaced (#55
-  will swap it at idle instead).
+  was nothing to attach to. an attached kernel's `runtime.origin` is
+  `Resumed`, and the session keeps its namespace without the disk restore. a
+  recorded kernel whose module set no longer fits is kept and marked stale; one
+  in another workspace is stopped and replaced.
 
 explicit drops still end the kernel at once: reset, release by the idle
 sweep, `/cd`, session close, extension reloads (the replacement boots beside
-the live kernel, never attached to it).
+the live kernel, never attached to it), and the old kernel after a swap.
+
+## version skew
+
+a kernel is stale when it runs another bundle than the bridge that reached it,
+speaks another protocol (both read from the hello), or booted with another
+module set than its session now has (found at reattach). `kernel.stale`
+answers the reason and whether the swap was forced; the session status carries
+`kernel: {stale, reason?, link}`, and the tui shows `kernel older` beside the
+header counts. `link` is how the session reaches its kernel: `none` before it
+needed one, `booting` while one opens (or a daemon start's attach is awaited),
+`attached`, `reattaching` while the bridge is down and the port owner retries
+(`albedo_python:linked/1`), and `lost` once it gave up. the tui fades a remote
+host in the header while booting or reattaching, and colors it as an error
+once lost.
+
+the swap happens at the session's next idle moment: `session_namespace.ready`,
+which every turn, compaction and background call goes through, lets go of a
+kernel that `runtime.upgradable` says nothing keeps, so the session asks the
+runtime again (parking its work), and the runtime's open runs `kernel.upgrade`
+off the actor while the session waits, as for a boot:
+
+1. snapshot the old namespace to `namespace.state` in the old kernel's run
+   directory (a kernel with a cell still running answers busy at once);
+2. boot a fresh kernel on the current bundle and module set beside it;
+3. restore into it from that file;
+4. stop the old kernel, ending any jobs it still had, and its run directory.
+
+the session adopts it with origin `Upgraded`: the model's next message carries
+"The python kernel was upgraded to the new python bundle. Restored: a, b. Not
+carried: x (why)." and the transcript a note. imports and definitions that
+were not saved are gone, as after a disk restore. a swap that cannot happen
+now (busy, a namespace that would not save) hands the old kernel back
+(`Kept`), still stale, and the next idle moment tries again.
+
+live jobs keep an older bundle or module set until they end (the job's wake
+is usually that idle moment). `/kernel` reports the staleness and the live
+jobs; `/kernel upgrade` (user only, between turns) forces the swap now,
+stopping the jobs as a restart did before kernels were detached.
+
+protocol skew does not wait for jobs: a kernel on another protocol cannot be
+supervised. its outbox is dropped, not replayed; the swap asks for a snapshot
+and a shutdown through the frozen frames, carries nothing if the snapshot
+fails, and the stop's signal ladder ends the recorded process group either
+way.
 
 ## lifetime
 
@@ -114,9 +159,117 @@ exits within a second of its run directory disappearing, which is how test
 homes clean up after themselves. the e2e harness sets a 30 s grace, the gleam
 test home 20 s.
 
+## remote kernels
+
+a session whose workspace is `[user@]host:/path` (workspaces.md) runs its
+kernel on that host. nothing above the bridge changes: the outbox, reattach
+with backoff and `resume_kernels` treat an ssh drop as a bridge that exited.
+
+- **one ssh layer**: `priv/python/albedo_ssh.py` builds the argv (BatchMode,
+  `ConnectTimeout=10`, `StrictHostKeyChecking=accept-new`,
+  `ControlMaster=auto`, `ControlPath=/tmp/albedo-ssh-cm/%C`,
+  `ControlPersist=600`), finds an agent socket, wraps commands in the
+  remote login shell and stages the bundle. the model's `remote` plugin
+  imports it, so the daemon and `remote.connect()` share masters and the
+  staged bundle.
+- **clean stdout**: every remote command is `/bin/sh -c 'exec 3>&1 1>&2;
+  exec "$SHELL" -l -c "exec 1>&3 3>&-; <command>"'`, quoted with shlex in
+  `albedo_ssh.in_login_shell` only. whatever the login profile prints (a
+  motd, a greeting) goes to stderr, and the command gets the real stdout
+  back, so the bridge's frames, the remote plugin's kernel and the probe's
+  lines stay clean whatever the user's shell is.
+- **fixed command lines**: the probe (and, with no network,
+  `albedo_ssh.py commands <target> <home>`) answers the complete remote
+  commands the daemon runs: `bridge` (`albedo_bridge.py --frame`), `signal`
+  (`albedo_signal.py -`) and `remove`. their inputs go on stdin, never in
+  the command line, so nothing in erlang quotes for a shell: the bridge's
+  first frame is `{"bridge": {"argv": [start|attach, run_dir, modules?],
+  "cwd": path}}` (exit 4 when `cwd` is no folder), the ladder reads its
+  request line, `remove` the run directory.
+- **probe** (`albedo_ssh.py probe <target>`, run by `albedo_ssh.erl`): one
+  command over the master prints os, arch, home, cores, the python3 version
+  and whether `~/.albedo-remote/<digest[:16]>` is staged; python older than
+  3.11 is `unsupported`, a missing bundle is staged (tar over the same
+  stream, unpacked beside the target and moved into place, so a bundle
+  directory that exists is complete). ssh's own failure (exit 255) is
+  `needs_auth` when its words say a person could get in (permission
+  denied, host key verification, passphrase, keyboard-interactive),
+  otherwise `unreachable`. answers are cached in the daemon, ready ones for
+  a minute and failures for five seconds; a second caller joins a probe in
+  flight. `albedo/harness/ssh.gleam` is the gleam face.
+- **boot**: `kernel.place` probes (or reuses the cached probe) before the
+  bridge starts, so a warmed host boots fast. the port owner runs the
+  `bridge` command over ssh. a fresh boot's exit 4 reads as "not a folder
+  there", 255 as an ssh failure. run directories live under the remote
+  home, `~/.albedo-remote/run/<kernel id>`, recorded absolute.
+- **a host out of reach is not a kernel gone**: only an attach the bridge
+  ends with exit 3 (nothing at the run directory) or a refused attach
+  proves a remote kernel gone. ssh failing (255), any other exit, or a
+  startup timeout while attaching is a dropped connection: the session gets
+  the kernel at once, reattaching, and the port owner keeps attaching in the
+  background, backing off to every 30 s, until the kernel's grace (plus a
+  minute) has surely passed since it lost the connection; then it forgets
+  the record quietly, without reaching for the host. when the probe itself
+  fails at boot, a recorded kernel is attached with commands rebuilt from
+  its run directory (which names the home), so a wifi blip during a daemon
+  restart keeps the namespace. a turn in a session with a kernel on record
+  goes through while its host is unreachable or needs a sign-in, waiting
+  like any reattach. only a fresh boot needs the host now.
+- **ownership**: the pids a remote kernel declares are that host's. the
+  `albedo_signal.py` ladder for its kernel and job groups runs there over
+  ssh (the `signal` command, 15 s), never
+  locally; if ssh can't reach the host the targets are left to the kernel's
+  own grace exit, which reaps its jobs on the host, and the error says so.
+  only the bridge (a local ssh client) is ever signalled here. the run
+  directory goes with `rm -rf` over ssh. `os_pid` answers nothing for a
+  remote kernel, so the reaper's `ps` never reads an unrelated local pid.
+- **heavy slots**: a remote kernel's jobs queue in that host's own pool
+  (`albedo_job_slots:ensure(Host, Cpus)`, started and watched by the local
+  pool), sized to the cores the probe found (`ALBEDO_MAX_REMOTE_JOBS`
+  overrides; two while a host attached without a probe is still unknown,
+  corrected by the next probe) with no load adjustment; admission is the
+  same protocol.
+- **turns**: a session that holds a kernel (attached, or reattaching
+  through its outbox) never probes on a turn. one that must boot probes
+  for up to 3 s: still warming is left to the boot, which waits for the
+  probe; `needs_auth`, unreachable or unsupported leave the turn admitted
+  and waiting, blocked with the probe's words as its receipt's
+  `blockingReason`, retried every 15 s like any blocked input
+  (operations.md).
+- **the model** gets a context line (python extension, `place.gleam`):
+  "your python kernel and run jobs execute on chernobog (Linux aarch64)…",
+  with the remote home.
+
+### `/hosts`
+
+- `GET /hosts/:host` (`[user@]host`): the cached probe, or `warming` while
+  one runs (a stale or missing answer starts one).
+- `POST /hosts/:host/warm`: drops a cached answer and probes now, waiting up
+  to a minute.
+
+both answer `{host, state, detail}` with `state` one of `ready`, `warming`,
+`needs_auth` (with `control_path`), `unreachable`, `unsupported`, and `os`,
+`arch`, `home` when ready. `/health` lists `remote_hosts`. `GET /hosts`
+(the picker's host completion) is in workspaces.md. the same probe also
+answers the `gather` command the folder browser and project readers run.
+
+### signing in
+
+BatchMode stays on for the daemon. when a remote session's waiting turn is
+blocked, the chat asks `GET /hosts/:host`; if that says `needs_auth` and the
+daemon shares the tui's machine, the chat offers ctrl+l: it runs
+`ssh -M -fN -o ControlPath=<control_path> -o ControlPersist=600 <host>`
+through `tea.ExecProcess`, so ssh asks in the terminal, then warms the host,
+and the waiting turn starts on the daemon's next try; the daemon rides that
+master from then on. with a daemon elsewhere the notice says to run
+`ssh <host>` on its machine. the offer goes once the turn starts or goes
+away, or the session moves.
+
 ## not yet
 
 - after a daemon restart, job groups of a kernel that died hard (SIGKILL) while
   nobody was attached are not reaped: the recorded pid could be reused.
 - job slots a reattached kernel's running jobs held are not re-counted in the
   new daemon's pool; only slots still waited for are asked for again.
+- profile output a remote login shell prints reaches the daemon's own
+  stderr log on every remote command.

@@ -31,6 +31,7 @@ import albedo/harness/location
 import albedo/harness/loop
 import albedo/harness/runtime
 import albedo/harness/session_settings
+import albedo/harness/ssh
 import albedo/openai_api/types
 import gleam/erlang/process.{type Subject}
 import gleam/json
@@ -140,6 +141,8 @@ pub type Message {
   ReadEffort(Subject(Result(json.Json, String)))
   ChangeEffort(String, Subject(Result(json.Json, String)))
   Status(Subject(String))
+  /// Report on the kernel's staleness, or (True) force its swap now.
+  UpgradeKernel(Bool, Subject(Result(json.Json, String)))
   Read(Option(Cursor), Option(Int), Subject(Result(Page, String)))
   Watch(process.Pid, fn() -> Nil)
   Consumed(process.Pid, Cursor, Bool)
@@ -479,6 +482,30 @@ fn interrupt_kernel(state: State) -> Nil {
   }
 }
 
+fn upgrade_kernel(
+  state: State,
+  apply: Bool,
+  idle: Bool,
+  reply: Subject(Result(json.Json, String)),
+) -> actor.Next(State, Message) {
+  case session_namespace.upgrade(state, apply, !idle) {
+    #(state, report, False) -> answer(state, reply, Ok(report))
+    // The stale kernel was let go: the runtime swaps it on this open.
+    #(state, report, True) ->
+      answer(
+        case state.booting {
+          Some(_) -> state
+          None -> {
+            request_kernel(state)
+            session_state.State(..state, booting: Some(#(1, [])))
+          }
+        },
+        reply,
+        Ok(report),
+      )
+  }
+}
+
 fn call_submit(
   session: Session,
   submission: Submission,
@@ -693,6 +720,19 @@ fn handle(
       )
     }
 
+    UpgradeKernel(apply, reply) -> {
+      let idle = turn.running(state.activity) == None
+      // After a restart the kernel is attached but not yet the session's:
+      // an upgrade first takes it, as a turn would.
+      case apply && idle && option.is_none(state.kernel) {
+        True ->
+          case kernel_or_park(state, UpgradeKernel(apply, reply)) {
+            Ok(state) -> upgrade_kernel(state, apply, idle, reply)
+            Error(state) -> actor.continue(state)
+          }
+        False -> upgrade_kernel(state, apply, idle, reply)
+      }
+    }
     ReadEffort(reply) ->
       answer(state, reply, session_provider.read_effort(state))
     ChangeEffort(level, reply) ->
@@ -724,6 +764,7 @@ fn handle(
               None -> turn.phase(state.activity)
             }),
           ),
+          #("kernel", session_namespace.kernel_json(state)),
         ])
           |> json.to_string,
       )
@@ -1203,6 +1244,8 @@ fn command_op(
         Submission(display, text, "", turn.Note(origin), None, None, None),
         "queued",
       )
+    command.KernelReport -> actor.call(session, 5000, UpgradeKernel(False, _))
+    command.KernelUpgrade -> actor.call(session, 5000, UpgradeKernel(True, _))
   }
 }
 
@@ -1249,12 +1292,36 @@ fn selection_json(selection: ModelSelection) -> json.Json {
 @external(erlang, "albedo_daemon", "directory")
 fn directory(path: String) -> Bool
 
-/// A turn needs a kernel in the workspace: a local folder that still exists.
-/// A remote one is refused before anything looks for it on this machine.
-fn workspace_ready(cwd: String) -> Result(Nil, SubmissionError) {
+/// A turn needs a kernel in the workspace: a local folder that still exists,
+/// or, when a kernel must boot, a host albedo can reach. A host still being
+/// probed after a moment is left to the kernel's boot, which waits for the
+/// probe and reports its failure; one known to need a sign-in or to be out
+/// of reach is refused.
+fn workspace_ready(state: State) -> Result(Nil, SubmissionError) {
+  let cwd = state.info.cwd
   case location.parse(cwd) {
-    Ok(location.Remote(host:, ..)) ->
-      Error(Rejected(location.unavailable(host, "kernels")))
+    // A kernel the session holds (attached, or reattaching through its
+    // outbox) needs nothing from here: a dropped connection is its bridge's
+    // to recover, and a host only matters again once that gives up.
+    Ok(location.Remote(..)) if state.kernel != None -> Ok(Nil)
+    Ok(location.Remote(..) as at) ->
+      case location.ssh_target(at) {
+        Error(Nil) -> Ok(Nil)
+        Ok(target) -> {
+          let recorded =
+            python.recorded_for(runtime.ledger(state.host), state.info.id)
+          case ssh.ready(target, 3000) {
+            Ok(_) | Error(ssh.Warming) -> Ok(Nil)
+            // A kernel on record is attached again in the background, and the
+            // turn waits for it like any reattach.
+            Error(ssh.NeedsAuth(..)) | Error(ssh.Unreachable(_)) if recorded ->
+              Ok(Nil)
+            // The turn waits blocked with ssh's words, and a sign-in (the
+            // tui's ctrl+l) lets the next try through.
+            Error(failure) -> Error(Rejected(ssh.describe(target, failure)))
+          }
+        }
+      }
     _ ->
       case directory(cwd) {
         True -> Ok(Nil)
@@ -1336,7 +1403,7 @@ fn discard(path: String) -> Nil
 fn prepare_submission(
   state: State,
 ) -> Result(#(State, runtime.Session, extension.Upstream), SubmissionError) {
-  use _ <- result.try(workspace_ready(state.info.cwd))
+  use _ <- result.try(workspace_ready(state))
   use state <- result.try(
     session_history.ensure_history(state) |> result.map_error(Rejected),
   )
@@ -1640,7 +1707,7 @@ fn admit_within_limits(
         Ok(True),
       )
     turn.Start ->
-      case workspace_ready(state.info.cwd) {
+      case workspace_ready(state) {
         Error(error) -> answer(state, reply, Error(error))
         Ok(Nil) ->
           case session_namespace.ready(state) {

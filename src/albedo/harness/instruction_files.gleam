@@ -1,7 +1,7 @@
 //// Instruction selection, prompt precedence, and rendering over native file IO.
 
 import albedo/harness/capabilities
-import albedo/harness/location
+import albedo/harness/project_files
 import albedo/harness/settings
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -117,15 +117,14 @@ fn load_with_selection(
   }
 }
 
-/// The directory to look for project files in, and the warning when there is
-/// none: a remote workspace's files can't be read from here yet, so only the
-/// home directories count (native discovery takes "" as no project).
+/// The directory to look for project files in (a remote workspace's mirror,
+/// see project_files), and the warning when there is none right now: then
+/// only the home directories count (native discovery takes "" as no
+/// project).
 fn project(workspace: String) -> #(String, List(String)) {
-  case location.parse(workspace) {
-    Ok(location.Remote(host:, ..)) -> #("", [
-      location.unavailable(host, "project instruction files"),
-    ])
-    _ -> #(workspace, [])
+  case project_files.readable(workspace) {
+    Ok(dir) -> #(dir, [])
+    Error(why) -> #("", ["project instruction files skipped: " <> why])
   }
 }
 

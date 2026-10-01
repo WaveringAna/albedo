@@ -3,7 +3,9 @@
 Erlang runs this as its own process, so supervision keeps making progress when
 the kernel cannot (a native cell holding the GIL, a wedged interpreter), and so
 the supervisor never parses kill(1) error text or guesses an exit status. One
-argv carries the request; one JSON object on stdout carries the verdict.
+argv carries the request (or `-` and one stdin line, the form run over ssh
+for a remote kernel's processes); one JSON object on stdout carries the
+verdict.
 """
 
 from __future__ import annotations
@@ -89,4 +91,5 @@ if __name__ == "__main__":
     # The owning port waits longer than this before reporting a helper timeout.
     signal.signal(signal.SIGALRM, signal.SIG_DFL)
     signal.alarm(3)
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "{}"))
+    request = sys.argv[1] if len(sys.argv) > 1 else "{}"
+    sys.exit(main(sys.stdin.readline() if request == "-" else request))

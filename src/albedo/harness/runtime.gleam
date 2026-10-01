@@ -45,10 +45,22 @@ pub opaque type Session {
     composition: extension.Composition,
     instructions: String,
     context: List(types.Input),
-    /// Attached to the kernel the session already had, so its namespace is
-    /// the one the session left; false for a freshly booted kernel.
-    resumed: Bool,
+    /// How the kernel came to be the session's: the adopting session tells
+    /// the model what happened to its namespace from this.
+    origin: Origin,
   )
+}
+
+pub type Origin {
+  /// Booted for this open; its namespace starts empty.
+  Fresh
+  /// Attached to the kernel the session already had: the namespace the
+  /// session left.
+  Resumed
+  /// Swapped in for a stale kernel, carrying what its namespace could.
+  Upgraded(python.Carried)
+  /// The kernel the session had, handed back unchanged.
+  Kept
 }
 
 /// One session's composition for its workspace. It survives kernel releases,
@@ -80,6 +92,10 @@ type State {
     /// Set while the daemon shuts down: kernels are let go, not ended, so a
     /// restarted daemon attaches to them again.
     detaching: Bool,
+    /// Extension reloads that arrived while their session's kernel was
+    /// booting, attaching, or being swapped, newest first: each runs once the
+    /// kernel settles, so it never races a kernel on its way in.
+    deferred: Dict(String, List(Message)),
   )
 }
 
@@ -179,6 +195,7 @@ pub fn start_with_config(
         dict.new(),
         [],
         False,
+        dict.new(),
       ))
       |> actor.returning(Runtime(subject, ledger, installed, default_enabled)),
     )
@@ -420,13 +437,38 @@ pub fn resume_kernels(runtime: Runtime) -> Nil {
   Nil
 }
 
-/// Whether this session's kernel was attached again rather than booted.
-pub fn resumed(session: Session) -> Bool {
-  session.resumed
+pub fn origin(session: Session) -> Origin {
+  session.origin
+}
+
+/// Why the kernel should give way to a current one, if it should.
+pub fn stale(session: Session) -> Option(python.Stale) {
+  python.stale(session.kernel) |> option.map(fn(stale) { stale.0 })
+}
+
+/// Whether the next open swaps this kernel: it is stale and nothing keeps it.
+/// Live jobs keep an older bundle or module set unless the swap was forced; a
+/// kernel on another protocol goes regardless, since it cannot be supervised.
+pub fn upgradable(session: Session) -> Bool {
+  case python.stale(session.kernel) {
+    None -> False
+    Some(#(python.Protocol, _)) | Some(#(_, True)) -> True
+    Some(_) -> python.job_count(session.kernel) == 0
+  }
+}
+
+/// Let the swap end the kernel's live jobs; False when it is current.
+pub fn force_upgrade(session: Session) -> Bool {
+  python.force(session.kernel)
 }
 
 pub fn alive(session: Session) -> Bool {
   python.alive(session.kernel)
+}
+
+/// Whether the kernel is reachable now, rather than reattaching.
+pub fn linked(session: Session) -> Bool {
+  python.linked(session.kernel)
 }
 
 pub fn interrupt(session: Session) -> Nil {
@@ -726,7 +768,13 @@ fn open_kernel(
     kernel_routes(owner, id, cached.composition),
     extension.python_modules(cached.composition),
   )
-  |> result.map(fn(opened) { session_over(owner, id, cached, opened) })
+  |> result.map(fn(opened) {
+    let origin = case opened.1 {
+      True -> Resumed
+      False -> Fresh
+    }
+    session_over(owner, id, cached, opened.0, origin)
+  })
 }
 
 /// A replacement kernel booted beside the session's live one.
@@ -742,24 +790,25 @@ fn replacement_kernel(
     kernel_routes(owner, id, cached.composition),
     extension.python_modules(cached.composition),
   )
-  |> result.map(fn(kernel) { session_over(owner, id, cached, #(kernel, False)) })
+  |> result.map(fn(kernel) { session_over(owner, id, cached, kernel, Fresh) })
 }
 
 fn session_over(
   owner: work.Store,
   id: String,
   cached: Cached,
-  opened: #(python.Kernel, Bool),
+  kernel: python.Kernel,
+  origin: Origin,
 ) -> Session {
   Session(
     id,
     cached.cwd,
-    opened.0,
+    kernel,
     owner,
     cached.composition,
     cached.instructions,
     cached.context,
-    opened.1,
+    origin,
   )
 }
 
@@ -776,7 +825,59 @@ fn resume_kernel(
     kernel_routes(owner, id, cached.composition),
     extension.python_modules(cached.composition),
   )
-  |> option.map(fn(kernel) { session_over(owner, id, cached, #(kernel, True)) })
+  |> option.map(fn(kernel) { session_over(owner, id, cached, kernel, Resumed) })
+}
+
+/// Swap a stale kernel for a current one off the actor, the way a boot runs:
+/// whoever opens the session meanwhile waits for it. A swap that cannot
+/// happen now (a cell still running, a namespace that would not save) hands
+/// the old kernel back, still stale, to try again at the next open.
+fn start_upgrade(
+  state: State,
+  id: String,
+  session: Session,
+  answer: fn(Result(Session, python.Error)) -> Nil,
+) -> State {
+  case dict.get(state.compositions, id) {
+    Error(_) -> {
+      answer(Ok(Session(..session, origin: Kept)))
+      state
+    }
+    Ok(cached) -> {
+      let self = state.self
+      let owner = state.work
+      process.spawn_unlinked(fn() {
+        let upgraded =
+          protect.attempt(fn() {
+            python.upgrade(
+              owner,
+              id,
+              cached.cwd,
+              kernel_routes(owner, id, cached.composition),
+              extension.python_modules(cached.composition),
+              session.kernel,
+            )
+          })
+        let result = case upgraded {
+          Ok(Ok(#(kernel, carried))) ->
+            session_over(owner, id, cached, kernel, Upgraded(carried))
+          Ok(Error(error)) -> {
+            io.println_error("kernel upgrade waits: " <> string.inspect(error))
+            Session(..session, origin: Kept)
+          }
+          Error(crash) -> {
+            io.println_error("kernel upgrade failed: " <> crash)
+            Session(..session, origin: Kept)
+          }
+        }
+        process.send(self, Booted(id, Ok(result)))
+      })
+      State(
+        ..without_session(state, id),
+        booting: dict.insert(state.booting, id, [answer]),
+      )
+    }
+  }
 }
 
 /// Kernels booting right now: requests not still waiting for a slot.
@@ -829,9 +930,26 @@ fn booted(
         Error(_) -> state
       }
       list.each(list.reverse(waiters), fn(answer) { answer(result) })
-      state
+      replay(state, id)
     }
   }
+}
+
+fn defer(state: State, id: String, message: Message) -> State {
+  let waiting = dict.get(state.deferred, id) |> result.unwrap([])
+  State(
+    ..state,
+    deferred: dict.insert(state.deferred, id, [message, ..waiting]),
+  )
+}
+
+/// The session's kernel settled: what waited for it runs now, in order.
+fn replay(state: State, id: String) -> State {
+  dict.get(state.deferred, id)
+  |> result.unwrap([])
+  |> list.reverse
+  |> list.each(process.send(state.self, _))
+  State(..state, deferred: dict.delete(state.deferred, id))
 }
 
 /// Drop a session's pending boot, telling whoever waited.
@@ -849,6 +967,7 @@ fn abandon(state: State, id: String) -> State {
         booting: dict.delete(state.booting, id),
         waiting: list.filter(state.waiting, fn(entry) { entry.0 != id }),
       )
+      |> replay(id)
     }
   }
 }
@@ -1047,20 +1166,53 @@ fn finish_refresh(
 }
 
 fn handle(state: State, message: Message) -> actor.Next(State, a) {
+  case settling(state, message) {
+    Some(id) -> actor.continue(defer(state, id, message))
+    None -> serve(state, message)
+  }
+}
+
+/// The session a composition change targets while its kernel is booting,
+/// attaching, or being swapped: the change waits for it (see `deferred`).
+fn settling(state: State, message: Message) -> Option(String) {
+  case message {
+    Reload(id, ..) | SaveSettings(_, id, ..) | Refresh(id, ..) ->
+      case dict.has_key(state.booting, id) {
+        True -> Some(id)
+        False -> None
+      }
+    _ -> None
+  }
+}
+
+fn serve(state: State, message: Message) -> actor.Next(State, a) {
   case message {
     Open(id, cwd, answer) ->
       case dict.get(state.sessions, id), dict.get(state.booting, id) {
-        Ok(session), _ -> {
-          answer(case session.cwd == cwd, python.alive(session.kernel) {
-            False, _ ->
-              Error(python.Invalid(
-                "session workspace differs; reset explicitly to change it",
-              ))
-            _, False -> Error(python.Lost)
-            True, True -> Ok(session)
-          })
-          actor.continue(state)
-        }
+        Ok(session), _ ->
+          case session.cwd == cwd, python.alive(session.kernel) {
+            False, _ -> {
+              answer(
+                Error(python.Invalid(
+                  "session workspace differs; reset explicitly to change it",
+                )),
+              )
+              actor.continue(state)
+            }
+            _, False -> {
+              answer(Error(python.Lost))
+              actor.continue(state)
+            }
+            True, True ->
+              case upgradable(session) {
+                True ->
+                  actor.continue(start_upgrade(state, id, session, answer))
+                False -> {
+                  answer(Ok(Session(..session, origin: Kept)))
+                  actor.continue(state)
+                }
+              }
+          }
         // Already on its way: wait with everyone else.
         Error(_), Ok(waiters) ->
           actor.continue(
@@ -1249,7 +1401,8 @@ fn reattached(
       drop_kernel("reattach for a forgotten session", session)
       state
     }
-    Ok([]), _ -> State(..state, booting: dict.delete(state.booting, id))
+    Ok([]), _ ->
+      State(..state, booting: dict.delete(state.booting, id)) |> replay(id)
     Ok(_), _ ->
       State(..state, waiting: list.append(state.waiting, [#(id, cached)]))
     Error(_), _ -> state
