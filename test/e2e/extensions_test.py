@@ -1,6 +1,7 @@
 """Extension catalog, commands, live reload, and compaction through a real daemon."""
 
 import json
+from pathlib import Path
 import threading
 import time
 import unittest
@@ -549,6 +550,13 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("older conversation summary", compacted["summary"])
         history = self.get(f"/sessions/{self.sid}/context/history/0")["content"]
         self.assertIn("older conversation summary", history)
+
+    def test_every_shipped_skill_loads(self):
+        shipped = sorted(
+            path.name for path in (Path(__file__).parents[2] / "priv/skills").iterdir()
+        )
+        listed = {c["name"] for c in self.get(f"/sessions/{self.sid}/commands")}
+        self.assertEqual([name for name in shipped if f"/{name}" not in listed], [])
 
     def test_builtin_skill_is_listed_and_yields_to_a_workspace_skill_of_the_same_name(
         self,
