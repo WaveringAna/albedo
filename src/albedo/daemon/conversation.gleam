@@ -748,64 +748,6 @@ fn sourced_entry(
   ))
 }
 
-/// The oldest and newest seq in `session`'s transcript, or in every
-/// session's when it is "". An empty transcript is #(1, 0).
-pub fn seq_bounds(
-  store: store.Store,
-  session: String,
-) -> Result(#(Int, Int), String) {
-  store.query(store, fn(db) {
-    store.one(
-      db,
-      "SELECT COALESCE(MIN(seq),1),COALESCE(MAX(seq),0) FROM transcript WHERE ?='' OR session=?",
-      [sqlight.text(session), sqlight.text(session)],
-      {
-        use low <- decode.field(0, decode.int)
-        use high <- decode.field(1, decode.int)
-        decode.success(#(low, high))
-      },
-      "could not read transcript bounds",
-    )
-  })
-}
-
-/// Rows with `low <= seq < high`, newest first, whose packed payload
-/// contains `probe`, which must be lowercase ASCII (SQLite folds only ASCII
-/// case): each as its session, seq, and payload for `read_input`. Only rows
-/// of `session` unless it is "", never rows of `except`, and only sessions
-/// opened in `cwd` unless it is "". A match on the packed payload is only a
-/// candidate; the caller confirms it against the row's text.
-pub fn candidates(
-  store: store.Store,
-  probe: String,
-  session: String,
-  except: String,
-  cwd: String,
-  low: Int,
-  high: Int,
-) -> Result(List(#(String, Int, BitArray)), String) {
-  store.read(
-    store,
-    "SELECT t.session,t.seq,t.payload FROM transcript t JOIN sessions s ON s.id=t.session WHERE t.seq>=? AND t.seq<? AND (?='' OR t.session=?) AND t.session<>? AND (?='' OR s.cwd=?) AND instr(lower(t.payload),?)>0 ORDER BY t.seq DESC",
-    [
-      sqlight.int(low),
-      sqlight.int(high),
-      sqlight.text(session),
-      sqlight.text(session),
-      sqlight.text(except),
-      sqlight.text(cwd),
-      sqlight.text(cwd),
-      sqlight.text(probe),
-    ],
-    {
-      use session <- decode.field(0, decode.string)
-      use seq <- decode.field(1, decode.int)
-      use payload <- decode.field(2, decode.bit_array)
-      decode.success(#(session, seq, payload))
-    },
-  )
-}
-
 /// Decode a packed transcript row with lazy image payload reads.
 pub fn read_input(
   store: store.Store,

@@ -7,6 +7,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import sqlight
 
 pub type Node {
@@ -69,18 +70,6 @@ pub fn frontier(
   store.read(
     ledger,
     "SELECT n.id,n.depth,n.first_seq,n.last_seq,n.summary FROM lcm_compaction_node n LEFT JOIN lcm_compaction_edge e ON e.child=n.id WHERE n.session=? AND e.child IS NULL ORDER BY n.first_seq,n.id",
-    [sqlight.text(session)],
-    node_decoder(),
-  )
-}
-
-pub fn all_nodes(
-  ledger: store.Store,
-  session: String,
-) -> Result(List(Node), String) {
-  store.read(
-    ledger,
-    "SELECT id,depth,first_seq,last_seq,summary FROM lcm_compaction_node WHERE session=? ORDER BY id",
     [sqlight.text(session)],
     node_decoder(),
   )
@@ -337,4 +326,160 @@ fn insert_node(
     [id] -> Ok(id)
     _ -> Error("LCM node insert returned no identity")
   }
+}
+
+pub type NodeListPage {
+  NodeListPage(total: Int, nodes: List(#(Node, Bool)))
+}
+
+/// Count and fetch one node page in the same store turn. Frontier membership
+/// is determined for returned nodes without loading every summary.
+pub fn list_page(
+  ledger: store.Store,
+  session: String,
+  limit: Int,
+  offset: Int,
+) -> Result(NodeListPage, String) {
+  store.query(ledger, fn(db) {
+    use total <- result.try(store.one(
+      db,
+      "SELECT COUNT(*) FROM lcm_compaction_node WHERE session=?",
+      [sqlight.text(session)],
+      decode.field(0, decode.int, decode.success),
+      "could not count LCM nodes",
+    ))
+    use nodes <- result.try(
+      store.rows(
+        db,
+        "SELECT n.id,n.depth,n.first_seq,n.last_seq,n.summary,NOT EXISTS(SELECT 1 FROM lcm_compaction_edge e WHERE e.child=n.id) FROM lcm_compaction_node n WHERE n.session=? ORDER BY n.id LIMIT ? OFFSET ?",
+        [sqlight.text(session), sqlight.int(limit), sqlight.int(offset)],
+        {
+          use node <- decode.then(node_decoder())
+          use frontier <- decode.field(5, decode.int)
+          decode.success(#(node, frontier == 1))
+        },
+      ),
+    )
+    Ok(NodeListPage(total, nodes))
+  })
+}
+
+pub type NodeSearchPage {
+  NodeSearchPage(count: Int, nodes: List(Node))
+}
+
+/// Unicode matching remains in Gleam; SQLite lower only folds ASCII. Count
+/// every match in the scoped range while retaining only the requested page.
+pub fn search_page(
+  ledger: store.Store,
+  session: String,
+  scope: Option(Node),
+  needle: String,
+  limit: Int,
+  offset: Int,
+) -> Result(NodeSearchPage, String) {
+  let #(where, arguments) = case scope {
+    None -> #("session=?", [sqlight.text(session)])
+    Some(node) -> #("session=? AND first_seq>=? AND last_seq<=?", [
+      sqlight.text(session),
+      sqlight.int(node.first_seq),
+      sqlight.int(node.last_seq),
+    ])
+  }
+  use upper <- result.try(one_row(
+    ledger,
+    "SELECT COALESCE(MAX(id),0) FROM lcm_compaction_node WHERE " <> where,
+    arguments,
+    decode.field(0, decode.int, decode.success),
+  ))
+  search_node_pages(
+    ledger,
+    where,
+    arguments,
+    option.unwrap(upper, 0),
+    0,
+    needle,
+    limit,
+    offset,
+    NodeSearchPage(0, []),
+  )
+  |> result.map(fn(page) {
+    NodeSearchPage(page.count, list.reverse(page.nodes))
+  })
+}
+
+fn search_node_pages(
+  ledger,
+  where,
+  arguments,
+  upper,
+  after,
+  needle,
+  limit,
+  offset,
+  page: NodeSearchPage,
+) {
+  use nodes <- result.try(store.read(
+    ledger,
+    "SELECT id,depth,first_seq,last_seq,summary FROM lcm_compaction_node WHERE "
+      <> where
+      <> " AND id>? AND id<=? ORDER BY id LIMIT 128",
+    list.append(arguments, [sqlight.int(after), sqlight.int(upper)]),
+    node_decoder(),
+  ))
+  let page =
+    list.fold(nodes, page, fn(page, node) {
+      case string.contains(string.lowercase(node.summary), needle) {
+        False -> page
+        True -> {
+          let kept = case page.count >= offset && page.count - offset < limit {
+            True -> [node, ..page.nodes]
+            False -> page.nodes
+          }
+          NodeSearchPage(page.count + 1, kept)
+        }
+      }
+    })
+  case list.last(nodes) {
+    Error(_) -> Ok(page)
+    Ok(last) ->
+      case list.length(nodes) < 128 {
+        True -> Ok(page)
+        False ->
+          search_node_pages(
+            ledger,
+            where,
+            arguments,
+            upper,
+            last.id,
+            needle,
+            limit,
+            offset,
+            page,
+          )
+      }
+  }
+}
+
+/// The first frontier node covering each requested source, in frontier order.
+/// Only IDs are read; retrieval pages do not need every frontier summary.
+pub fn covering_nodes(
+  ledger: store.Store,
+  session: String,
+  seqs: List(Int),
+) -> Result(Dict(Int, Int), String) {
+  store.query(ledger, fn(db) {
+    list.try_fold(seqs, dict.new(), fn(found, seq) {
+      use rows <- result.try(store.rows(
+        db,
+        "SELECT n.id FROM lcm_compaction_node n WHERE n.session=? AND n.first_seq<=? AND n.last_seq>=? AND NOT EXISTS(SELECT 1 FROM lcm_compaction_edge e WHERE e.child=n.id) ORDER BY n.first_seq,n.id LIMIT 1",
+        [sqlight.text(session), sqlight.int(seq), sqlight.int(seq)],
+        decode.field(0, decode.int, decode.success),
+      ))
+      Ok(case rows {
+        [id] -> dict.insert(found, seq, id)
+        _ -> found
+      })
+    })
+  })
 }

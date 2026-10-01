@@ -7,6 +7,7 @@ import albedo/harness/extension
 import albedo/harness/extensions/lcm/graph
 import albedo/harness/search
 import albedo/harness/tool
+import gleam/dict
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -117,26 +118,23 @@ pub fn list_folds(
     offset >= 0,
     "LCM list offset must be nonnegative",
   ))
-  use nodes <- result.try(graph.all_nodes(ledger, session))
-  use frontier <- result.try(graph.frontier(ledger, session))
   let limit = int.clamp(limit, 1, 20)
+  use page <- result.try(graph.list_page(ledger, session, limit, offset))
   let next = offset + limit
   json.object([
-    #("total", json.int(list.length(nodes))),
+    #("total", json.int(page.total)),
     #("offset", json.int(offset)),
-    #("next_offset", tool.next_offset(next, next < list.length(nodes))),
+    #("next_offset", tool.next_offset(next, next < page.total)),
     #(
       "folds",
-      json.array(list.take(list.drop(nodes, offset), limit), fn(node) {
+      json.array(page.nodes, fn(item) {
+        let #(node, frontier) = item
         json.object([
           #("id", json.int(node.id)),
           #("depth", json.int(node.depth)),
           #("first_seq", json.int(node.first_seq)),
           #("last_seq", json.int(node.last_seq)),
-          #(
-            "frontier",
-            json.bool(list.any(frontier, fn(item) { item.id == node.id })),
-          ),
+          #("frontier", json.bool(frontier)),
           #("preview", json.string(tool.excerpt(node.summary, 200))),
         ])
       }),
@@ -144,16 +142,6 @@ pub fn list_folds(
   ])
   |> json.to_string
   |> Ok
-}
-
-/// Search the first page of matching transcript rows and LCM summaries.
-pub fn grep(
-  ledger: store.Store,
-  session: String,
-  pattern: String,
-  limit: Int,
-) -> Result(String, String) {
-  grep_page(ledger, session, pattern, limit, 0, None)
 }
 
 pub fn grep_page(
@@ -169,46 +157,55 @@ pub fn grep_page(
     offset >= 0,
     "LCM search offset must be nonnegative",
   ))
-  use sources <- result.try(search.rows(ledger, search.Within(session), needle))
-  use nodes <- result.try(graph.all_nodes(ledger, session))
-  use frontier <- result.try(graph.frontier(ledger, session))
   use scope <- result.try(case summary_id {
     Some(id) -> required_node(ledger, session, id) |> result.map(Some)
     None -> Ok(None)
   })
-  let matches = list.filter(sources, fn(match) { in_scope(match.seq, scope) })
-  let summaries =
-    nodes
-    |> list.filter(fn(node) {
-      case scope {
-        Some(parent) ->
-          node.first_seq >= parent.first_seq && node.last_seq <= parent.last_seq
-        None -> True
-      }
-      && string.contains(string.lowercase(node.summary), needle)
-    })
   let limit = int.clamp(limit, 1, 20)
+  let #(first, last) = case scope {
+    None -> #(0, 9_223_372_036_854_775_807)
+    Some(node) -> #(node.first_seq, node.last_seq)
+  }
+  use sources <- result.try(search.page(
+    ledger,
+    session,
+    needle,
+    first,
+    last,
+    offset,
+    limit,
+  ))
+  use summaries <- result.try(graph.search_page(
+    ledger,
+    session,
+    scope,
+    needle,
+    limit,
+    offset,
+  ))
+  use covering <- result.try(graph.covering_nodes(
+    ledger,
+    session,
+    list.map(sources.matches, fn(match) { match.seq }),
+  ))
   let next = offset + limit
   json.object([
     #("pattern", json.string(string.trim(pattern))),
     #("offset", json.int(offset)),
-    #("source_count", json.int(list.length(matches))),
-    #("node_count", json.int(list.length(summaries))),
+    #("source_count", json.int(sources.count)),
+    #("node_count", json.int(summaries.count)),
     #(
       "next_offset",
-      tool.next_offset(
-        next,
-        next < list.length(matches) || next < list.length(summaries),
-      ),
+      tool.next_offset(next, next < sources.count || next < summaries.count),
     ),
     #(
       "sources",
-      json.array(list.take(list.drop(matches, offset), limit), fn(match) {
+      json.array(sources.matches, fn(match) {
         json.object([
           #("seq", json.int(match.seq)),
-          #("node_id", case covering_node(frontier, match.seq) {
-            Some(node) -> json.int(node.id)
-            None -> json.null()
+          #("node_id", case dict.get(covering, match.seq) {
+            Ok(id) -> json.int(id)
+            Error(_) -> json.null()
           }),
           #("preview", json.string(search.preview(match.text, needle))),
         ])
@@ -216,7 +213,7 @@ pub fn grep_page(
     ),
     #(
       "nodes",
-      json.array(list.take(list.drop(summaries, offset), limit), fn(node) {
+      json.array(summaries.nodes, fn(node) {
         json.object([
           #("id", json.int(node.id)),
           #("preview", json.string(search.preview(node.summary, needle))),
@@ -226,23 +223,6 @@ pub fn grep_page(
   ])
   |> json.to_string
   |> Ok
-}
-
-/// Whether `node`'s durable source range contains `seq`.
-fn covers(node: graph.Node, seq: Int) -> Bool {
-  seq >= node.first_seq && seq <= node.last_seq
-}
-
-fn in_scope(seq: Int, scope: Option(graph.Node)) -> Bool {
-  case scope {
-    Some(node) -> covers(node, seq)
-    None -> True
-  }
-}
-
-fn covering_node(frontier: List(graph.Node), seq: Int) -> Option(graph.Node) {
-  list.find(frontier, fn(node) { covers(node, seq) })
-  |> option.from_result
 }
 
 pub fn describe(
@@ -276,23 +256,21 @@ pub fn expand(
     "LCM expansion offset must be nonnegative",
   ))
   use node <- result.try(required_node(ledger, session, id))
-  use sources <- result.try(conversation.load_sources(ledger, session))
-  let rendered =
-    sources
-    |> list.filter(fn(item) { covers(node, item.source.seq) })
-    |> list.map(fn(item) {
-      "[source #"
-      <> int.to_string(item.source.seq)
-      <> "]\n"
-      <> tool.row_text(item.entry.input)
-    })
-    |> string.join("\n\n")
-  let #(page, next) = tool.text_page(rendered, offset, limit)
+  use snapshot <- result.try(conversation.snapshot(ledger, session))
+  use #(page, next, more) <- result.try(tool.source_page(
+    ledger,
+    snapshot,
+    node.first_seq,
+    node.last_seq,
+    "source",
+    offset,
+    limit,
+  ))
   json.object([
     #("id", json.int(id)),
     #("offset", json.int(offset)),
     #("content", json.string(page)),
-    #("next_offset", tool.next_offset(next, next < string.length(rendered))),
+    #("next_offset", tool.next_offset(next, more)),
     #(
       "image_payloads",
       json.string("retained in transcript; text page shows metadata only"),

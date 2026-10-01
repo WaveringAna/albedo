@@ -38,6 +38,10 @@ Before the configured trigger, `lcm` sends ordinary history without a summarizer
 
 The default-enabled `lcm-memory` extension provides four read-only tools. `lcm_list` pages through every stored fold in the current session, including nodes absent from the request view. `lcm_grep` searches literal text in raw history and summaries with paged results and optional node scope. `lcm_describe` returns a node's source range, children, and summary. `lcm_expand` reads bounded pages of the original text rows covered by a node. These tools remain enabled when the session switches from `lcm` to `rolling`. Image hashes and metadata remain in transcript rows until compaction elides a tool-output image, which leaves a text marker; the text tools show whichever remains. The extension implements hierarchical memory. It does not implement the paper's large-file dispatcher, map operators, or subagent-only expansion.
 
+Search pages actual rows rather than numeric sequence intervals, so deleted sequence gaps do not create empty scan windows. A session-scoped search uses its session index and excludes unrelated sessions before paging. Cross-session search pages global rows before applying its caller and workspace filters, bounding each scan even when few sessions match. SQLite narrows candidates in batches of at most 2,048 rows; Unicode case-insensitive matching stays in Gleam. Paged searches count every matching row while keeping only the requested result texts. LCM source and summary matches have separate counts and pages at the same offset. `lcm_list` counts nodes and selects its page in SQL, including each returned node's frontier flag.
+
+`transcript_read` and `lcm_expand` render selected source rows incrementally and stop after the requested page plus lookahead. Offsets and limits count graphemes, including across row separators. A page no longer requires a complete rendered copy of the transcript; an offset deep in a range still requires scanning the text before it.
+
 The `lcm` section in `$ALBEDO_HOME/extensions.json` accepts the same setting names as `rolling`:
 
 ```json

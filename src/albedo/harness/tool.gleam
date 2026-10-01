@@ -107,13 +107,6 @@ pub fn next_offset(next: Int, more: Bool) -> json.Json {
   }
 }
 
-/// One page of `rendered` starting at `offset`, at most 8000 graphemes, and
-/// the offset the next page starts at.
-pub fn text_page(rendered: String, offset: Int, limit: Int) -> #(String, Int) {
-  let page = string.slice(rendered, offset, int.clamp(limit, 1, 8000))
-  #(page, offset + string.length(page))
-}
-
 /// One text page of `session`'s durable transcript rows from `seq` on.
 pub fn transcript_read(
   ledger: store.Store,
@@ -126,24 +119,113 @@ pub fn transcript_read(
     offset >= 0,
     "transcript read offset must be nonnegative",
   ))
-  use sources <- result.try(conversation.load_sources(ledger, session))
-  let rendered =
-    sources
-    |> list.filter(fn(item) { item.source.seq >= seq })
-    |> list.map(fn(item) {
-      "[row #"
-      <> int.to_string(item.source.seq)
-      <> "]\n"
-      <> row_text(item.entry.input)
-    })
-    |> string.join("\n\n")
-  let #(page, next) = text_page(rendered, offset, limit)
+  use snapshot <- result.try(conversation.snapshot(ledger, session))
+  use #(page, next, more) <- result.try(source_page(
+    ledger,
+    snapshot,
+    seq,
+    snapshot.upper,
+    "row",
+    offset,
+    limit,
+  ))
   Ok(
     json.object([
       #("seq", json.int(seq)),
       #("offset", json.int(offset)),
       #("content", json.string(page)),
-      #("next_offset", next_offset(next, next < string.length(rendered))),
+      #("next_offset", next_offset(next, more)),
     ]),
   )
+}
+
+type TextPage {
+  TextPage(
+    offset: Int,
+    limit: Int,
+    position: Int,
+    pending: String,
+    kept: List(String),
+    more: Bool,
+    first: Bool,
+  )
+}
+
+/// Render a chronological source range without retaining its complete text.
+/// Carry the final grapheme across fragments, since a trailing CR combines
+/// with the next row's newline separator.
+pub fn source_page(
+  ledger: store.Store,
+  snapshot: conversation.Snapshot,
+  first: Int,
+  last: Int,
+  label: String,
+  offset: Int,
+  limit: Int,
+) -> Result(#(String, Int, Bool), String) {
+  let initial =
+    TextPage(offset, int.clamp(limit, 1, 8000), 0, "", [], False, True)
+  use page <- result.try(
+    conversation.fold_sources(
+      ledger,
+      snapshot,
+      first,
+      last,
+      initial,
+      fn(page, item) {
+        let separator = case page.first {
+          True -> ""
+          False -> "\n\n"
+        }
+        let text =
+          separator
+          <> "["
+          <> label
+          <> " #"
+          <> int.to_string(item.source.seq)
+          <> "]\n"
+          <> row_text(item.entry.input)
+        let page = consume(TextPage(..page, first: False), page.pending <> text)
+        case page.more {
+          True -> conversation.Stop(page)
+          False -> conversation.Continue(page)
+        }
+      },
+    ),
+  )
+  let page = case page.pending {
+    "" -> page
+    pending -> keep_grapheme(page, pending)
+  }
+  let content = page.kept |> list.reverse |> string.concat
+  Ok(#(content, offset + string.length(content), page.more))
+}
+
+fn consume(page: TextPage, text: String) -> TextPage {
+  case string.pop_grapheme(text) {
+    Error(_) -> TextPage(..page, pending: "")
+    Ok(#(grapheme, "")) -> TextPage(..page, pending: grapheme)
+    Ok(#(grapheme, rest)) -> {
+      let page = keep_grapheme(page, grapheme)
+      case page.more {
+        True -> TextPage(..page, pending: "")
+        False -> consume(page, rest)
+      }
+    }
+  }
+}
+
+fn keep_grapheme(page: TextPage, grapheme: String) -> TextPage {
+  case page.position < page.offset {
+    True -> TextPage(..page, position: page.position + 1)
+    False ->
+      case page.position - page.offset < page.limit {
+        True ->
+          TextPage(..page, position: page.position + 1, kept: [
+            grapheme,
+            ..page.kept
+          ])
+        False -> TextPage(..page, more: True)
+      }
+  }
 }
