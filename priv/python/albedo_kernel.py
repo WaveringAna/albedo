@@ -29,6 +29,7 @@ import tempfile
 import threading
 import traceback
 import uuid
+import weakref
 
 MAX_FRAME = 8 * 1024 * 1024
 CLEANUP_DEADLINE = (
@@ -80,6 +81,7 @@ REPR.maxdict = REPR.maxlist = REPR.maxtuple = 50
 
 def forget_output(id: str) -> None:
     ARCHIVES.pop(id, None)
+    READ_WATCHERS.pop(id, None)
 
 
 def show(value: object) -> str:
@@ -457,12 +459,21 @@ def retained(id: str) -> Capture:
     return capture
 
 
-READ_WATCHERS: dict[str, Callable[[], None]] = {}
+READ_WATCHERS: dict[str, Callable[[], None] | weakref.WeakMethod] = {}
 
 
 def watch_output(id: str, notify: Callable[[], None]) -> None:
-    """Register one read callback for a retained output channel (a background job)."""
-    READ_WATCHERS[id] = notify
+    """Notify reads while the output is retained, without owning a bound method's job."""
+
+    def expired(reference: weakref.WeakMethod) -> None:
+        if READ_WATCHERS.get(id) is reference:
+            READ_WATCHERS.pop(id, None)
+
+    try:
+        READ_WATCHERS[id] = weakref.WeakMethod(notify, expired)
+    except TypeError:
+        # Functions and other callables need a strong reference to stay usable.
+        READ_WATCHERS[id] = notify
 
 
 class Output:
@@ -470,7 +481,9 @@ class Output:
         """Read retained output by cell or job id: up to 1 MiB each, for the 16
         most recent cells and 64 most recent jobs."""
         capture = retained(id)
-        notify = READ_WATCHERS.pop(id, None)  # one read satisfies the watcher
+        notify = READ_WATCHERS.get(id)
+        if isinstance(notify, weakref.WeakMethod):
+            notify = notify()
         if notify is not None:
             try:
                 notify()
@@ -866,7 +879,7 @@ def remember(capture: Capture) -> None:
     counts = collections.Counter(held.kind for held in ARCHIVES.values())
     for key, held in list(ARCHIVES.items()):
         if counts[held.kind] > LIMITS[held.kind]:
-            del ARCHIVES[key]
+            forget_output(key)
             counts[held.kind] -= 1
 
 
