@@ -101,17 +101,7 @@ func (c *ChatClient) submitPayload(ctx context.Context, payload map[string]any) 
 		return nil, err
 	}
 
-	res, err := doAuthenticatedRequest(c.conn, req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, readHTTPError(res, 64*1024)
-	}
-
-	body, err := readBounded(res.Body, 64*1024)
+	body, err := requestBytes(c.conn, req, responseLimits{bodyBytes: 64 * 1024, errorBytes: 64 * 1024})
 	if err != nil {
 		return nil, err
 	}
@@ -153,17 +143,7 @@ func (c *ChatClient) Interrupt(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	res, err := doAuthenticatedRequest(c.conn, req)
-	if err != nil {
-		return false, err
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		return false, readHTTPError(res, 64*1024)
-	}
-
-	body, err := readBounded(res.Body, 64*1024)
+	body, err := requestBytes(c.conn, req, responseLimits{successStatus: http.StatusOK, bodyBytes: 64 * 1024, errorBytes: 64 * 1024})
 	if err != nil {
 		return false, err
 	}
@@ -195,18 +175,11 @@ func (c *ChatClient) History(ctx context.Context, before int64, rows int) (*Hist
 	if err != nil {
 		return nil, err
 	}
-	res, err := doAuthenticatedRequest(c.conn, req)
+	body, err := requestBytes(c.conn, req, responseLimits{successStatus: http.StatusOK, bodyBytes: 32 * 1024 * 1024, errorBytes: 64 * 1024})
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return nil, readHTTPError(res, 64*1024)
-	}
-	body, err := readBounded(res.Body, 32*1024*1024)
-	if err != nil {
-		return nil, err
-	}
+
 	var data struct {
 		Events []map[string]any `json:"events"`
 		Before int64            `json:"before"`
@@ -235,18 +208,11 @@ func (c *ChatClient) ContextWindow(ctx context.Context) (*int, error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := doAuthenticatedRequest(c.conn, req)
+	body, err := requestBytes(c.conn, req, responseLimits{successStatus: http.StatusOK, bodyBytes: 1024 * 1024, errorBytes: 64 * 1024})
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return nil, readHTTPError(res, 64*1024)
-	}
-	body, err := readBounded(res.Body, 1024*1024)
-	if err != nil {
-		return nil, err
-	}
+
 	var data struct {
 		Window *int `json:"context_window_tokens"`
 	}
@@ -268,17 +234,7 @@ func (c *ChatClient) GetStatus(ctx context.Context) (*AgentStatus, error) {
 		return nil, err
 	}
 
-	res, err := doAuthenticatedRequest(c.conn, req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		return nil, readHTTPError(res, 64*1024)
-	}
-
-	body, err := readBounded(res.Body, 64*1024)
+	body, err := requestBytes(c.conn, req, responseLimits{successStatus: http.StatusOK, bodyBytes: 64 * 1024, errorBytes: 64 * 1024})
 	if err != nil {
 		return nil, err
 	}
@@ -539,18 +495,12 @@ func (c *ChatClient) Stream(ctx context.Context, tail int, onEvent func(StreamEv
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Accept", "text/event-stream")
+	return scanEventStream(c.conn, req, streamLimits{lineBytes: 10 * 1024 * 1024, errorBytes: 64 * 1024}, func(scanner *bufio.Scanner) error {
+		return c.readStream(ctx, scanner, onEvent)
+	})
+}
 
-	res, err := doAuthenticatedRequest(c.conn, req)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		return readHTTPError(res, 64*1024)
-	}
-
+func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onEvent func(StreamEvent) error) error {
 	reporter := NewToolProgressReporter(func(prog *ToolProgress) error {
 		return onEvent(StreamEvent{Type: EventToolProgress, Progress: prog})
 	})
@@ -566,10 +516,6 @@ func (c *ChatClient) Stream(ctx context.Context, tail int, onEvent func(StreamEv
 			c.mu.Unlock()
 		}
 	}()
-
-	scanner := bufio.NewScanner(res.Body)
-	buf := make([]byte, 64*1024)
-	scanner.Buffer(buf, 10*1024*1024)
 
 	var eventType string
 
@@ -735,5 +681,5 @@ func (c *ChatClient) Stream(ctx context.Context, tail int, onEvent func(StreamEv
 		}
 	}
 
-	return scanner.Err()
+	return nil
 }

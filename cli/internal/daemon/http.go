@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -133,6 +134,58 @@ func doAuthenticatedRequest(conn *Connection, req *http.Request) (*http.Response
 	return conn.HTTPClient().Do(req)
 }
 
+// responseLimits preserves each endpoint's accepted status and bounded reads.
+// A zero successStatus accepts any 2xx response.
+type responseLimits struct {
+	successStatus int
+	bodyBytes     int64
+	errorBytes    int64
+}
+
+// requestBytes owns the response until its bounded body has been read.
+func requestBytes(conn *Connection, req *http.Request, limits responseLimits) ([]byte, error) {
+	res, err := doAuthenticatedRequest(conn, req)
+	if err != nil {
+		return nil, err
+	}
+	// Read and status errors describe the operation; closing cannot undo it.
+	defer res.Body.Close()
+	if (limits.successStatus != 0 && res.StatusCode != limits.successStatus) ||
+		(limits.successStatus == 0 && (res.StatusCode < 200 || res.StatusCode >= 300)) {
+		return nil, readHTTPError(res, limits.errorBytes)
+	}
+	return readBounded(res.Body, limits.bodyBytes)
+}
+
+type streamLimits struct {
+	lineBytes  int
+	errorBytes int64
+}
+
+// scanEventStream owns the response while consume scans it. The scanner is
+// borrowed for that call only; callbacks never own or close the response.
+func scanEventStream(conn *Connection, req *http.Request, limits streamLimits, consume func(*bufio.Scanner) error) error {
+	req.Header.Set("Accept", "text/event-stream")
+	res, err := doAuthenticatedRequest(conn, req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		if limits.errorBytes == 0 {
+			// Some error streams never finish, so only inspect their status.
+			return &APIError{StatusCode: res.StatusCode}
+		}
+		return readHTTPError(res, limits.errorBytes)
+	}
+	scanner := bufio.NewScanner(res.Body)
+	scanner.Buffer(make([]byte, 64*1024), limits.lineBytes)
+	if err := consume(scanner); err != nil {
+		return err
+	}
+	return scanner.Err()
+}
+
 func readHTTPError(res *http.Response, limit int64) error {
 	body, err := readBounded(res.Body, limit)
 	if err != nil {
@@ -179,16 +232,7 @@ func RequestMethod[T any](ctx context.Context, conn *Connection, method, path st
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	res, err := doAuthenticatedRequest(conn, req)
-	if err != nil {
-		return zero, err
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return zero, readHTTPError(res, 50*1024*1024)
-	}
-	respData, err := readBounded(res.Body, 50*1024*1024)
+	respData, err := requestBytes(conn, req, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 50 * 1024 * 1024})
 	if err != nil {
 		return zero, err
 	}
