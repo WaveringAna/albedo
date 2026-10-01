@@ -1,5 +1,6 @@
 //// Optional request-history projection, not a transcript rewrite.
 
+import albedo/daemon/note
 import albedo/daemon/store
 import albedo/harness/extensions/python/kernel
 import albedo/openai_api/types
@@ -109,6 +110,24 @@ pub fn compose_prior(
       Ok(Prior(list.append(prior.folds, next.folds), next.rest))
     })
   }
+}
+
+/// Whether `input` is a capabilities-changed note. A compaction rebuilds the
+/// system prompt, so an evicted one describes a prompt that no longer applies.
+pub fn superseded_note(input: types.Input) -> Bool {
+  case input {
+    types.User(text) ->
+      case note.parse(text) {
+        Some(#("capabilities changed", _)) -> True
+        _ -> False
+      }
+    _ -> False
+  }
+}
+
+/// `evicted` without the notes a compaction supersedes.
+pub fn without_superseded(evicted: List(types.Input)) -> List(types.Input) {
+  list.filter(evicted, fn(input) { !superseded_note(input) })
 }
 
 /// What a strategy prepared for one request. The observation describes this

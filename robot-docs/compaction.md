@@ -22,6 +22,10 @@ Transcript rows carry an indexed `row_class`: `user`, `image_fit`, or `other`. E
 
 Text or list positions cannot identify rows reliably because messages can repeat and provider projection can change item counts. An excursion marker belongs to its parent session. The branch has different row references, so returning its outcome requires an explicit link to the parent marker.
 
+## evicted capability notes
+
+A `/reload` adds a `capabilities changed` note that carries the extension context, and the next compaction rebuilds the system prompt. Every strategy leaves such notes out of what it evicts: `snapcompact` omits them from the archive, and the rolling and LCM summarizers never read them. Notes still in the verbatim tail stay, because they are how the model learns of a reload while the old prompt is pinned.
+
 ## image payload lifecycle
 
 When a compaction plugin commits a new projection — through `/compact` or the automatic trigger — it signals cleanup before the next provider request. Tool-output images absent from that projection are elided: the transcript row and its Python cell keep their text and gain `[image elided and is no longer available]`, and each payload is deleted once no transcript row or pinned prompt names its hash. Tool outputs in the verbatim tail keep their images. User uploads are never elided, because their hashes are part of the saved compaction cut. Reusing a saved projection does not trigger cleanup; neither do ordinary turns or failed compactions.
@@ -71,7 +75,7 @@ After a switch from `lcm` to `rolling`, rolling reads the stored LCM summary nod
 
 `snapcompact` archives evicted history as rendered bitmap frames that a vision model reads directly, instead of a model-written summary. The frames are X11 8x13 pixel-font text drawn by the local `albedo-render` binary and cached in `snapcompact_frames` by geometry and content. The request contains the frames, then the verbatim tail. Each model's geometry (glyph advance, row pitch, frame width, rows per frame) is clamped to the upstream's image edge, so a frame is rendered narrower or shorter to fit instead of being scaled or refused; the archive is stored as text, so a model switch simply renders frames for the new geometry.
 
-The saved archive is the normalized text of everything before the cut, stored in `snapcompact_archive` with a user-message cut like rolling's. Frames are re-derived from that text for each request, so after a model switch the same archive renders in the new model's frame shape. Recompaction appends newly evicted history to the saved text. Unchanged leading frames keep their cache keys, so the request prefix stays stable.
+The saved archive is the normalized text of everything before the cut, with Responses reasoning items left out and function calls rendered like chat-completions ones, stored in `snapcompact_archive` with a user-message cut like rolling's. Frames are re-derived from that text for each request, so after a model switch the same archive renders in the new model's frame shape. Recompaction appends newly evicted history to the saved text. Unchanged leading frames keep their cache keys, so the request prefix stays stable.
 
 The archive keeps at most a frame budget, the smallest of:
 

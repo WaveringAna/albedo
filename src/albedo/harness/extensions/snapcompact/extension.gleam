@@ -607,7 +607,9 @@ pub fn shape(model: String) -> Shape {
 
 fn serialize(inputs: List(types.Input)) -> String {
   inputs
+  |> compaction.without_superseded
   |> list.map(serialize_input)
+  |> list.filter(fn(line) { line != "" })
   |> string.join("\n")
 }
 
@@ -629,14 +631,17 @@ fn serialize_input(input: types.Input) -> String {
 
 /// A replayed assistant turn: its text, then each tool call as
 /// `→ name(key = value, ...)` with the arguments decoded, so code reads as
-/// code instead of escaped JSON. Only the chat-completions shape is decoded;
-/// anything else falls back to the raw JSON so no tool call is lost.
+/// code instead of escaped JSON. A Responses item that is neither text nor a
+/// call, such as encrypted reasoning, renders as nothing. A shape that does
+/// not decode falls back to the raw JSON so no tool call is lost.
 fn serialize_replay(item: types.ReplayItem) -> String {
-  let decoded = case types.replay_protocol(item) {
+  let protocol = types.replay_protocol(item)
+  let decoded = case protocol {
     types.ChatCompletions -> types.inspect_item(item, replay_parts_decoder())
-    types.Responses -> Error([])
+    types.Responses -> types.inspect_item(item, responses_parts_decoder())
   }
   case decoded {
+    Ok(#("", [])) if protocol == types.Responses -> ""
     Ok(#(text, calls)) -> {
       let head = case text {
         "" -> "¶ai:"
@@ -672,6 +677,34 @@ fn replay_parts_decoder() -> decode.Decoder(#(String, List(types.ToolCall))) {
     decode.list(call_decoder()),
   )
   decode.success(#(text, calls))
+}
+
+/// A Responses output item as text and calls: a message's text parts, or one
+/// function call. Any other item decodes to nothing.
+fn responses_parts_decoder() -> decode.Decoder(#(String, List(types.ToolCall))) {
+  use kind <- decode.field("type", decode.string)
+  case kind {
+    "message" -> {
+      use parts <- decode.optional_field(
+        "content",
+        [],
+        decode.list(decode.optional_field(
+          "text",
+          "",
+          decode.string,
+          decode.success,
+        )),
+      )
+      decode.success(#(string.concat(parts), []))
+    }
+    "function_call" -> {
+      use id <- decode.field("call_id", decode.string)
+      use name <- decode.field("name", decode.string)
+      use args <- decode.field("arguments", decode.string)
+      decode.success(#("", [types.ToolCall(id, name, args)]))
+    }
+    _ -> decode.success(#("", []))
+  }
 }
 
 fn call_decoder() -> decode.Decoder(types.ToolCall) {
@@ -717,7 +750,7 @@ fn cap(text: String, limit: Int) -> String {
 /// Terminal escapes out, tabs expanded, and newline runs folded into
 /// full-block cells: the archive is one continuous character stream that
 /// wraps positionally, exactly as the reference renderer expects.
-fn normalize(inputs: List(types.Input)) -> String {
+pub fn normalize(inputs: List(types.Input)) -> String {
   serialize(inputs) |> normalize_ansi
 }
 

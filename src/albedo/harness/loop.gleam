@@ -634,7 +634,10 @@ fn summarize(
     request
   let previous = option.unwrap(previous, "(none)")
   let transcript =
-    evicted |> list.map(render_summary_input) |> string.join("\n")
+    evicted
+    |> compaction.without_superseded
+    |> list.map(render_summary_input)
+    |> string.join("\n")
   let prompt =
     "<previous-summary>\n"
     <> previous

@@ -6,6 +6,7 @@
 import albedo/harness/compaction
 import albedo/harness/extensions/snapcompact/extension as snapcompact
 import albedo/openai_api/types
+import gleam/json
 import gleam/list
 import gleam/option.{None}
 import gleam/string
@@ -100,4 +101,47 @@ pub fn cut_resumes_across_projection_changes_test() -> Nil {
   |> should.equal(Error(Nil))
   // No user message left after the cut: nothing to resume into.
   compaction.resume(prefix, cut) |> should.equal(Error(Nil))
+}
+
+fn replay(protocol: types.Protocol, body: String) -> types.Input {
+  let assert Ok(item) = json.parse(body, types.replay_decoder(protocol))
+  types.Replay(item)
+}
+
+pub fn responses_items_render_as_text_and_calls_without_reasoning_test() -> Nil {
+  let archive =
+    snapcompact.normalize([
+      replay(
+        types.Responses,
+        "{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"OPAQUEBLOB\"}",
+      ),
+      replay(
+        types.Responses,
+        "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"checking\"}]}",
+      ),
+      replay(
+        types.Responses,
+        "{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"python\",\"arguments\":\"{\\\"code\\\":\\\"print(1)\\\"}\"}",
+      ),
+    ])
+  string.contains(archive, "OPAQUEBLOB") |> should.be_false
+  string.contains(archive, "¶turn:") |> should.be_false
+  string.contains(archive, "¶ai: checking") |> should.be_true
+  string.contains(archive, "→ python(code = print(1))") |> should.be_true
+}
+
+pub fn evicted_capability_notes_do_not_reach_the_archive_test() -> Nil {
+  let archive =
+    snapcompact.normalize([
+      types.User(
+        "<system-note origin=\"capabilities changed\">old catalog</system-note>",
+      ),
+      types.User(
+        "<system-note origin=\"python kernel\">kept note</system-note>",
+      ),
+      types.User("real question"),
+    ])
+  string.contains(archive, "old catalog") |> should.be_false
+  string.contains(archive, "kept note") |> should.be_true
+  string.contains(archive, "real question") |> should.be_true
 }
