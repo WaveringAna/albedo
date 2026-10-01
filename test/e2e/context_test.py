@@ -181,3 +181,120 @@ class ContextTest(unittest.TestCase):
         unknown = self.read(self.route)
         self.assertNotIn("context_window_tokens", unknown)
         self.assertEqual(unknown["compaction"]["status"], "unknown")
+
+
+class ContextReplayTest(unittest.TestCase):
+    def test_inspection_preserves_replay_and_replaces_prior_request_for_both_protocols(
+        self,
+    ):
+        for protocol in ("responses", "chat_completions"):
+            with self.subTest(protocol=protocol):
+                opaque = "opaque-replay-must-only-reach-provider"
+                if protocol == "responses":
+                    replay = {
+                        "type": "reasoning",
+                        "id": "fixed-reasoning",
+                        "summary": [],
+                        "encrypted_content": opaque,
+                    }
+                    message = {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "first answer"}],
+                    }
+                    initial = Reply(
+                        "raw",
+                        events=[
+                            {
+                                "type": "response.completed",
+                                "response": {
+                                    "id": "fixed-response",
+                                    "status": "completed",
+                                    "output": [replay, message],
+                                    "usage": {
+                                        "input_tokens": 31,
+                                        "output_tokens": 2,
+                                        "input_tokens_details": {"cached_tokens": 9},
+                                    },
+                                },
+                            }
+                        ],
+                    )
+                else:
+                    replay = {
+                        "role": "assistant",
+                        "content": "first answer",
+                        "reasoning_content": opaque,
+                    }
+                    initial = Reply(
+                        "raw",
+                        events=[
+                            {
+                                "id": "fixed-chat",
+                                "choices": [
+                                    {"index": 0, "delta": replay, "finish_reason": None}
+                                ],
+                            },
+                            {
+                                "id": "fixed-chat",
+                                "choices": [
+                                    {"index": 0, "delta": {}, "finish_reason": "stop"}
+                                ],
+                                "usage": {
+                                    "prompt_tokens": 31,
+                                    "completion_tokens": 2,
+                                    "prompt_tokens_details": {"cached_tokens": 9},
+                                },
+                            },
+                        ],
+                    )
+
+                def reply(request):
+                    inputs = request.get("input", request.get("messages", []))
+                    users = [item for item in inputs if item.get("role") == "user"]
+                    return (
+                        initial
+                        if len(users) == 1
+                        else Reply("text", "later answer", usage=None)
+                    )
+
+                provider = Provider(reply)
+                try:
+                    with Albedo(provider, protocol=protocol) as app:
+                        session = app.session()
+                        route = f"/sessions/{session}/context"
+
+                        def inspect():
+                            with app.api(route) as response:
+                                summary = json.load(response)
+                            contents = {}
+                            for section in summary.get("sections", []):
+                                parts = []
+                                for index in range(section["pages"]):
+                                    with app.api(
+                                        f"{route}/{section['id']}/{index}"
+                                    ) as response:
+                                        parts.append(json.load(response)["content"])
+                                contents[section["id"]] = "".join(parts)
+                            return summary, contents
+
+                        app.prompt(session, "first request").close()
+                        app.idle(session)
+                        first, pages = inspect()
+                        self.assertNotIn("first answer", pages["history"])
+                        self.assertNotIn(opaque, json.dumps((first, pages)))
+                        self.assertEqual(len(provider.requests), 1)
+                        app.prompt(session, "replacement request").close()
+                        app.idle(session)
+                        second, pages = inspect()
+                        self.assertIn("replacement request", pages["history"])
+                        self.assertNotIn("later answer", pages["history"])
+                        self.assertNotIn(opaque, json.dumps((second, pages)))
+                        sent = provider.requests[-1]["request"]
+                        inputs = sent.get("input", sent.get("messages", []))
+                        self.assertIn(replay, inputs)
+                        self.assertEqual(len(provider.requests), 2)
+                        inspect()
+                        self.assertEqual(len(provider.requests), 2)
+                finally:
+                    provider.close()
