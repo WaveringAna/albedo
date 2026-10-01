@@ -45,6 +45,10 @@ A command that tells the agent about a user's change uses the `Note(origin, disp
 
 a managed contribution also hears its session through `observe(session, event)`, which runs inside the session actor and so must only send and return. events arrive in order: `CallSent` for each successful turn call as it went out (request, prefix identity, usage, cache marks, profile, endpoint, protocol, timing), `TurnEnded(cancelled)`, `Compacted` after a forced compaction, and `Stirred` for any new activity. the `extension.Session` handle it comes with names the session and offers `call(request, prefix)`: any `types.Request`, sent on the session's upstream as exclusive work that queues submissions behind it, records a provider request row of kind `background` under `prefix`, and never reaches the transcript or the stream. it blocks its caller until the call ends and fails at once while another run holds the session or its kernel is released. `extension.empty()` is the contribution with nothing in it, for record updates; [`warm`](cache-warming.md) is built on these two seams alone.
 
+## broken extensions
+
+the daemon starts without an extension it cannot run and says so. `extension.install` quarantines one whose name is blank or already taken, whose requirement is not installed (cascading to what needed it), whose initialiser or schema callback fails or raises, or that the default selection cannot run (a requirement it does not enable, duplicate capabilities, a second compaction strategy). only storage the host owns stops the boot. a quarantined extension is in no session's selection, is listed by `/extensions` with its reason in the `quarantined` field, and any attempt to enable it is refused with that reason.
+
 a broken extension loses only itself. a context plugin that will not load, a managed plugin that fails or raises while preparing, and a contribution whose tool, command, python module, or route another extension already claims are all left out of the session with a warning the client shows as a note; `extension.inactive(composition)` names them. enabling one of them explicitly still fails, with the same reason, and leaves the previous selection running. observers run inside the session actor and close callbacks run at teardown, so both are guarded: a crash is logged against its extension and the session carries on.
 
 `ModelsPlugin` supplies catalogued model facts and provider model lists. `ModelProviderPlugin` declares its models.dev namespace and resolves a tagged saved profile into an `Upstream`: a `stream` function over albedo's request, event, and turn types, plus the endpoint, replay protocol, and an `explain` for failures. A provider with its own wire format encodes an `openai_api.Exchange` and passes it with its own `stream.Reducer` to `openai_api.exchange`, which keeps HTTP, SSE framing, limits, and callbacks shared; `antigravity` does this. `LoginPlugin` supplies a browser sign-in that the daemon runs for every client; see [model authentication](auth.md#sign-in-api).
@@ -62,7 +66,9 @@ under the owning extension, not `daemon/migrations/`.
 
 `extension.install` calls each installed owner's `initialise(ledger)` to create
 its tables, then applies that owner's schema callbacks on the serialized store
-connection before proceeding to the next owner. `runtime.migrate(host, backup)`
+connection before proceeding to the next owner. an owner whose initialiser or
+schema callback fails or raises is quarantined rather than stopping the daemon;
+see [broken extensions](#broken-extensions). `runtime.migrate(host, backup)`
 collects and applies data callbacks in registry/plugin order after the daemon's
 core data upgrades and before sessions start. `run(ledger, backup)` returns a
 rewritten-row count. installed-but-disabled extensions still upgrade their

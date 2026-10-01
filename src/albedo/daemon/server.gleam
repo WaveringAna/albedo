@@ -1467,6 +1467,7 @@ fn extension_json(summary: extension.Summary) -> json.Json {
     #("python_modules", json.array(summary.python_modules, json.string)),
     #("requires", json.array(summary.requires, json.string)),
     #("plugins", json.array(summary.plugins, json.string)),
+    #("quarantined", json.nullable(summary.quarantined, json.string)),
   ])
 }
 

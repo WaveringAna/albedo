@@ -65,6 +65,8 @@ type State {
     sessions: Dict(String, Session),
     compositions: Dict(String, Cached),
     extensions: List(extension.Extension),
+    /// Installed extensions the daemon will not run, with their reasons.
+    quarantined: List(extension.Quarantined),
     default_enabled: List(String),
     self: Subject(Message),
     /// Kernels booting now, each with everyone waiting for it.
@@ -141,13 +143,19 @@ pub fn start_with_config(
       |> result.replace_error("could not open storage"),
     )
     // A failed install still owns the ledger: close it before the error escapes.
-    use _ <- result.try(
+    use installation <- result.try(
       extension.install(installed, default_enabled, ledger)
       |> result.map_error(fn(error) {
         work.close(ledger)
         error
       }),
     )
+    let #(installed, quarantined) = installation
+    list.each(quarantined, fn(failure) {
+      io.println_error(
+        "extension " <> failure.name <> " is quarantined: " <> failure.reason,
+      )
+    })
     Ok(
       actor.initialised(
         State(
@@ -155,6 +163,7 @@ pub fn start_with_config(
           dict.new(),
           dict.new(),
           installed,
+          quarantined,
           default_enabled,
           subject,
           dict.new(),
@@ -753,6 +762,15 @@ fn abandon(state: State, id: String) -> State {
   }
 }
 
+/// Why the daemon will not run this extension at all, if it quarantined it.
+fn quarantine(state: State, name: String) -> Option(String) {
+  list.find(state.quarantined, fn(failure) { failure.name == name })
+  |> option.from_result
+  |> option.map(fn(failure) {
+    "extension " <> name <> " is quarantined: " <> failure.reason
+  })
+}
+
 /// The extensions a refresh must not break: everything that was working
 /// before it. A settings change that stops one of them is reported, and the
 /// live composition stays.
@@ -783,14 +801,17 @@ fn reload(
   change: extension.Change,
   reply: Subject(Result(Option(Session), String)),
 ) -> State {
-  let proposed =
-    extension.propose(
-      state.work,
-      state.extensions,
-      state.default_enabled,
-      id,
-      change,
-    )
+  let proposed = case quarantine(state, extension.change_name(change)) {
+    Some(error) -> Error(error)
+    None ->
+      extension.propose(
+        state.work,
+        state.extensions,
+        state.default_enabled,
+        id,
+        change,
+      )
+  }
   let current =
     extension.enabled(state.work, state.extensions, state.default_enabled, id)
   // Extensions carry function fields, so the running set compares by name.
@@ -1006,6 +1027,7 @@ fn handle(state: State, message: Message) {
         extension.summaries(
           state.work,
           state.extensions,
+          state.quarantined,
           state.default_enabled,
           id,
           composition,

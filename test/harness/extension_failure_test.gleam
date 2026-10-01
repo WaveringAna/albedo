@@ -14,7 +14,7 @@ import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
 
@@ -232,4 +232,79 @@ fn error_of(body: String) -> String {
   let assert Ok(reason) =
     json.parse(body, decode.field("error", decode.string, decode.success))
   reason
+}
+
+/// An extension whose initialiser `fails`, for the quarantine cases.
+fn uninstallable(name: String, fails: fn() -> Nil) -> extension.Extension {
+  extension.Extension(
+    name,
+    "will not install",
+    [],
+    [extension.ToolPlugin("", [answering(name)], [], [])],
+    fn(_) {
+      fails()
+      Error("no tables")
+    },
+  )
+}
+
+fn summary(
+  host: runtime.Runtime,
+  name: String,
+) -> Result(extension.Summary, Nil) {
+  let assert Ok(summaries) =
+    runtime.extension_summaries(host, "broken-extension-test")
+  list.find(summaries, fn(summary) { summary.name == name })
+}
+
+pub fn an_extension_that_cannot_install_is_quarantined_test() {
+  let #(host, session) =
+    host([
+      uninstallable("sulky", fn() { Nil }),
+      uninstallable("exploding", fn() { panic as "initialiser bug" }),
+      healthy("working"),
+    ])
+  tool_names(session) |> should.equal(["working"])
+  let assert Ok(extension.Summary(quarantined: Some(reason), enabled: False, ..)) =
+    summary(host, "sulky")
+  string.contains(reason, "no tables") |> should.be_true
+  let assert Ok(extension.Summary(quarantined: Some(crash), ..)) =
+    summary(host, "exploding")
+  string.contains(crash, "initialiser bug") |> should.be_true
+  runtime.stop(host)
+}
+
+pub fn a_quarantined_requirement_takes_its_dependents_with_it_test() {
+  let #(host, session) =
+    host([
+      uninstallable("engine", fn() { Nil }),
+      extension.Extension(
+        "rider",
+        "needs the engine",
+        ["engine"],
+        [extension.ToolPlugin("", [answering("rider")], [], [])],
+        extension.no_initialise,
+      ),
+      healthy("working"),
+    ])
+  tool_names(session) |> should.equal(["working"])
+  let assert Ok(extension.Summary(quarantined: Some(reason), ..)) =
+    summary(host, "rider")
+  string.contains(reason, "it requires engine") |> should.be_true
+  runtime.stop(host)
+}
+
+pub fn a_quarantined_extension_cannot_be_enabled_test() {
+  let #(host, _) =
+    host([uninstallable("sulky", fn() { Nil }), healthy("working")])
+  let assert Error(refusal) =
+    runtime.reload_extension(
+      host,
+      "broken-extension-test",
+      "/tmp",
+      "sulky",
+      True,
+    )
+  string.contains(refusal, "quarantined") |> should.be_true
+  runtime.stop(host)
 }

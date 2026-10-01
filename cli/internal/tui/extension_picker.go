@@ -21,6 +21,9 @@ type ExtensionItem struct {
 	Plugins       []string `json:"plugins"`
 	Enabled       bool     `json:"enabled"`
 	Context       bool     `json:"context"`
+	// Quarantined is why the daemon will not run this extension; empty when
+	// it is usable. A quarantined extension cannot be toggled.
+	Quarantined string `json:"quarantined"`
 	// Overridden means this session has its own choice; otherwise it follows
 	// GlobalEnabled, the default for sessions without one.
 	Overridden    bool `json:"overridden"`
@@ -205,6 +208,10 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		switch msg.String() {
 		case "space", "enter":
 			if len(m.Extensions) > 0 && m.Cursor < len(m.Extensions) {
+				if reason := m.Extensions[m.Cursor].Quarantined; reason != "" {
+					m.Error = reason
+					return m, nil
+				}
 				m.Error = ""
 				m.Confirming = true
 			}
@@ -315,9 +322,12 @@ func (m ExtensionPickerModel) View() string {
 			scope = "  this session: " + state
 		}
 		var status string
-		if on {
+		switch {
+		case ext.Quarantined != "":
+			status, scope = DefaultStyles.Error.Render("bad"), "  quarantined"
+		case on:
 			status = DefaultStyles.Success.Render("on ")
-		} else {
+		default:
 			status = m.Styles.Faint.Render("off")
 		}
 		line := status + "  " + ext.Name + m.Styles.Faint.Render(scope)
@@ -350,6 +360,10 @@ func (m ExtensionPickerModel) View() string {
 		b.WriteByte('\n')
 		b.WriteString(m.Styles.Faint.Render("requires: " + joinOr(current.Requires, ", ", "none")))
 		b.WriteByte('\n')
+		if current.Quarantined != "" {
+			b.WriteString(DefaultStyles.Error.Render(inkWrap("quarantined: "+current.Quarantined, m.Width)))
+			b.WriteByte('\n')
+		}
 
 	}
 

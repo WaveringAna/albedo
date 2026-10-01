@@ -69,7 +69,7 @@ pub fn contributed_migrations_keep_their_phases_and_stop_on_failure_test() {
     ),
   ]
   // Neither extension is enabled for sessions, but both own durable tables.
-  extension.install(installed, [], ledger) |> should.equal(Ok(Nil))
+  let assert Ok(#(_, [])) = extension.install(installed, [], ledger)
   let assert Ok([2]) =
     store.read(
       ledger,

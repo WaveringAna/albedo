@@ -10,6 +10,7 @@ import albedo/harness/oauth
 import albedo/harness/protect
 import albedo/harness/settings
 import albedo/openai_api/types
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -341,7 +342,15 @@ pub type Summary {
     python_modules: List(String),
     requires: List(String),
     plugins: List(String),
+    /// Why the daemon will not run this extension, when it quarantined it.
+    quarantined: Option(String),
   )
+}
+
+/// An installed extension the daemon will not run, with the reason. No
+/// session selects it; it is listed so the failure is visible.
+pub type Quarantined {
+  Quarantined(name: String, description: String, reason: String)
 }
 
 /// The initialiser of an extension that keeps no tables.
@@ -365,19 +374,15 @@ pub fn python_module(
   )
 }
 
-/// Registry validity does not require every extension to be co-enabled. This permits
-/// installing alternative compaction policies whose defaults select at most one.
+/// Install every extension, quarantining each one the daemon cannot run:
+/// a blank or repeated name, a missing requirement, an initialiser that
+/// fails or raises, or a default selection it makes invalid. The daemon
+/// starts on the rest; only storage the host owns stops it.
 pub fn install(
   installed: List(Extension),
   default_enabled: List(String),
   ledger: store.Store,
-) -> Result(Nil, String) {
-  use _ <- result.try(validate_registry(installed, default_enabled))
-  let defaults =
-    list.filter(installed, fn(extension) {
-      list.contains(default_enabled, extension.name)
-    })
-  use _ <- result.try(validate_selection(defaults))
+) -> Result(#(List(Extension), List(Quarantined)), String) {
   use _ <- result.try(
     store.query(ledger, fn(db) {
       store.exec(
@@ -386,15 +391,144 @@ pub fn install(
       )
     }),
   )
-  list.try_each(installed, fn(extension) {
-    use _ <- result.try(extension.initialise(ledger))
-    list.try_each(extension.plugins, fn(plugin) {
-      case plugin {
-        MigrationPlugin(SchemaMigration(apply)) -> store.query(ledger, apply)
-        _ -> Ok(Nil)
+  let #(installed, unnamed) = distinctly_named(installed)
+  let #(installed, unstarted) = started(installed, ledger)
+  let #(installed, unmet) = satisfied(installed)
+  let #(installed, conflicting) = agreeable(installed, default_enabled)
+  Ok(#(installed, list.flatten([unnamed, unstarted, unmet, conflicting])))
+}
+
+fn quarantined(extension: Extension, reason: String) -> Quarantined {
+  Quarantined(extension.name, extension.description, reason)
+}
+
+/// Split `installed` in order: each extension `check` accepts is kept, and
+/// each one it refuses is quarantined with the reason it gave. `check` sees
+/// what has been kept so far, since a conflict is with an earlier one.
+fn sift(
+  installed: List(Extension),
+  check: fn(List(Extension), Extension) -> Result(Nil, String),
+) -> #(List(Extension), List(Quarantined)) {
+  let #(kept, rejected) =
+    list.fold(installed, #([], []), fn(state, extension) {
+      let #(kept, rejected) = state
+      case check(kept, extension) {
+        Ok(_) -> #([extension, ..kept], rejected)
+        Error(reason) -> #(kept, [quarantined(extension, reason), ..rejected])
       }
     })
+  #(list.reverse(kept), list.reverse(rejected))
+}
+
+/// Extensions with a name of their own, and the ones whose name is blank or
+/// already taken by an earlier one.
+fn distinctly_named(
+  installed: List(Extension),
+) -> #(List(Extension), List(Quarantined)) {
+  sift(installed, fn(kept, extension) {
+    let taken =
+      list.any(kept, fn(other: Extension) { other.name == extension.name })
+    case string.trim(extension.name), taken {
+      "", _ -> Error("its name is blank")
+      _, True -> Error("another installed extension has this name")
+      _, False -> Ok(Nil)
+    }
   })
+}
+
+/// Extensions whose tables and schema upgrades are in place, and the ones
+/// whose initialiser failed or raised.
+fn started(
+  installed: List(Extension),
+  ledger: store.Store,
+) -> #(List(Extension), List(Quarantined)) {
+  sift(installed, fn(_, extension) {
+    protect.guarded(fn() {
+      use _ <- result.try(extension.initialise(ledger))
+      list.try_each(extension.plugins, fn(plugin) {
+        case plugin {
+          MigrationPlugin(SchemaMigration(apply)) -> store.query(ledger, apply)
+          _ -> Ok(Nil)
+        }
+      })
+    })
+    |> result.map_error(fn(error) { "it did not install: " <> error })
+  })
+}
+
+/// Extensions whose requirements are all installed, and the ones missing
+/// one. Quarantine cascades: what an absent extension was needed for cannot
+/// run either.
+fn satisfied(
+  installed: List(Extension),
+) -> #(List(Extension), List(Quarantined)) {
+  let names = list.map(installed, fn(extension) { extension.name })
+  let unmet = fn(extension: Extension) {
+    list.filter(extension.requires, fn(name) { !list.contains(names, name) })
+  }
+  case list.partition(installed, fn(extension) { unmet(extension) == [] }) {
+    #(kept, []) -> #(kept, [])
+    #(kept, missing) -> {
+      let #(kept, cascaded) = satisfied(kept)
+      let rejected =
+        list.map(missing, fn(extension) {
+          quarantined(
+            extension,
+            "it requires "
+              <> string.join(unmet(extension), ", ")
+              <> ", which is not installed",
+          )
+        })
+      #(kept, list.append(rejected, cascaded))
+    }
+  }
+}
+
+/// Extensions the default selection can run, and the ones it cannot: a
+/// default-enabled extension whose requirement is not enabled with it, or
+/// one that conflicts with another already enabled by default.
+fn agreeable(
+  installed: List(Extension),
+  default_enabled: List(String),
+) -> #(List(Extension), List(Quarantined)) {
+  let enabled = fn(name) { list.contains(default_enabled, name) }
+  sift(installed, fn(kept, extension) {
+    use <- bool.guard(!enabled(extension.name), Ok(Nil))
+    use _ <- result.try(
+      case list.find(extension.requires, fn(name) { !enabled(name) }) {
+        Ok(missing) ->
+          Error("the default selection does not enable " <> missing)
+        Error(_) -> Ok(Nil)
+      },
+    )
+    let selection =
+      list.filter([extension, ..kept], fn(other: Extension) {
+        enabled(other.name)
+      })
+    case conflict(selection) {
+      Some(reason) -> Error("the default selection cannot have " <> reason)
+      None -> Ok(Nil)
+    }
+  })
+}
+
+/// Why these extensions cannot all be enabled at once, if they cannot.
+fn conflict(selected: List(Extension)) -> Option(String) {
+  let strategies =
+    plugin_values(selected, fn(_, plugin) {
+      case plugin {
+        CompactionPlugin(strategy) -> Ok(strategy)
+        _ -> Error(Nil)
+      }
+    })
+  case
+    duplicate_capabilities(list.flat_map(selected, declared)),
+    list.length(strategies) > 1
+  {
+    True, _ -> Some("duplicate capabilities")
+    _, True -> Some("multiple compaction strategies")
+    _, _ -> None
+  }
 }
 
 /// Installed extensions' data upgrades, in registry/plugin order, not session
@@ -414,25 +548,6 @@ pub fn migrate(
     migration.1(ledger, backup)
     |> result.map(fn(count) { #(migration.0, count) })
   })
-}
-
-fn validate_registry(
-  installed: List(Extension),
-  defaults: List(String),
-) -> Result(Nil, String) {
-  let names = list.map(installed, fn(extension) { extension.name })
-  case
-    list.any(names, fn(name) { string.trim(name) == "" })
-    || names != list.unique(names)
-    || defaults != list.unique(defaults)
-    || !list.all(defaults, list.contains(names, _))
-    || list.any(installed, fn(extension) {
-      !list.all(extension.requires, list.contains(names, _))
-    })
-  {
-    True -> Error("duplicate or invalid extension registry/default selection")
-    False -> Ok(Nil)
-  }
 }
 
 pub fn enabled(
@@ -592,7 +707,7 @@ pub type Change {
   Inherit(name: String)
 }
 
-fn change_name(change: Change) -> String {
+pub fn change_name(change: Change) -> String {
   case change {
     SetSession(name, _) | SetGlobal(name, _) | Inherit(name) -> name
   }
@@ -881,22 +996,9 @@ fn validate_selection(selected: List(Extension)) -> Result(Nil, String) {
       }
     }),
   )
-  let strategies =
-    plugin_values(selected, fn(_, plugin) {
-      case plugin {
-        CompactionPlugin(strategy) -> Ok(strategy)
-        _ -> Error(Nil)
-      }
-    })
-  case
-    duplicate_capabilities(list.flat_map(selected, declared))
-    || list.length(strategies) > 1
-  {
-    True ->
-      Error(
-        "enabled extensions have duplicate capabilities or multiple compaction strategies",
-      )
-    False -> Ok(Nil)
+  case conflict(selected) {
+    Some(reason) -> Error("enabled extensions have " <> reason)
+    None -> Ok(Nil)
   }
 }
 
@@ -1110,6 +1212,7 @@ pub fn declared_commands(installed: List(Extension)) -> List(command.Command) {
 pub fn summaries(
   ledger: store.Store,
   installed: List(Extension),
+  quarantined: List(Quarantined),
   default_enabled: List(String),
   session: String,
   composition: Option(Composition),
@@ -1164,8 +1267,28 @@ pub fn summaries(
             MigrationPlugin(_) -> "migration"
           }
         }),
+        None,
       )
-    }),
+    })
+    |> list.append(list.map(quarantined, quarantined_summary)),
+  )
+}
+
+/// What a quarantined extension shows: no capabilities, never enabled, and
+/// the reason the daemon will not run it.
+fn quarantined_summary(failure: Quarantined) -> Summary {
+  Summary(
+    name: failure.name,
+    description: failure.description,
+    enabled: False,
+    overridden: False,
+    global_enabled: False,
+    context: False,
+    tools: [],
+    python_modules: [],
+    requires: [],
+    plugins: [],
+    quarantined: Some(failure.reason),
   )
 }
 
