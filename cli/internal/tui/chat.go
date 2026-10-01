@@ -83,6 +83,15 @@ type ChatStatusMsg struct {
 	Revision   uint64
 }
 
+// ChatHostMsg is the probe of the host a remote workspace is on.
+type ChatHostMsg struct {
+	Err        error
+	SessionID  string
+	Workspace  string
+	Status     daemon.HostStatus
+	Generation int64
+}
+
 // ChatWindowMsg carries the context window for the model a usage event named.
 type ChatWindowMsg struct {
 	Err        error
@@ -331,6 +340,10 @@ type ChatModel struct {
 	ThoughtProgressText string
 	Renderer            TranscriptRenderer
 
+	// hostHome is the remote home ~ names in the header, once the host's
+	// probe reported it for hostAsked, the workspace it was asked for.
+	hostHome, hostAsked string
+
 	// userRows are the settled rows where user messages start.
 	userRows      []int
 	effortOptions []string
@@ -392,6 +405,7 @@ type ChatModel struct {
 	loadingOlder      bool
 	isSending         bool
 	interruptDeferred bool
+	hostAuth          *hostSignIn
 	sentHere          bool
 	// graphemes says the terminal measures grapheme clusters (mode 2027),
 	// which Bubble Tea turns off when it hands the terminal to the editor.
@@ -1061,6 +1075,21 @@ func (m ChatModel) cacheFadeCmd() tea.Cmd {
 	return nil
 }
 
+// hostHomeCmd asks a remote workspace's host where its home is, once per
+// workspace, after the kernel attached: the probe has answered by then.
+func (m *ChatModel) hostHomeCmd() tea.Cmd {
+	host, _ := daemon.SplitLocation(m.Workspace)
+	if host == "" || m.hostAsked == m.Workspace || m.Status.KernelLink != "attached" {
+		return nil
+	}
+	m.hostAsked = m.Workspace
+	client, ctx, id, generation, workspace := m.client, m.streamCtx, m.SessionID, m.Generation, m.Workspace
+	return func() tea.Msg {
+		status, err := client.Host(ctx, host)
+		return ChatHostMsg{SessionID: id, Generation: generation, Workspace: workspace, Status: status, Err: err}
+	}
+}
+
 func (m ChatModel) statusPollCmd() tea.Cmd {
 	id, generation := m.SessionID, m.Generation
 	return tea.Tick(750*time.Millisecond, func(time.Time) tea.Msg { return ChatStatusPollMsg{SessionID: id, Generation: generation} })
@@ -1224,6 +1253,10 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			return m, PasteClipboardImageCmd(m.SessionID, m.Generation)
 		case "ctrl+g":
 			return m, m.openEditorCmd()
+		case "ctrl+l":
+			if m.hostAuth != nil && m.hostAuth.here {
+				return m, m.signInCmd()
+			}
 		case "pgup", "pgdown":
 			delta := m.Viewport.Height()
 			if msg.String() == "pgup" {
@@ -1376,7 +1409,14 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				m.refreshViewportContent()
 			}
 		}
-		return m, tea.Batch(m.startAnimation(), m.statusPollCmd())
+		home := m.hostHomeCmd()
+		return m, tea.Batch(m.startAnimation(), m.statusPollCmd(), home)
+
+	case ChatHostMsg:
+		if msg.SessionID == m.SessionID && msg.Generation == m.Generation && msg.Workspace == m.Workspace && msg.Err == nil {
+			_, m.hostHome = daemon.SplitLocation(msg.Status.Home)
+		}
+		return m, nil
 
 	case ChatStreamEventMsg:
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || m.streamStopped {
@@ -1472,6 +1512,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		}
 		if msg.Err == nil && (msg.Receipt.Status == "rejected" || msg.Receipt.DeliveryStatus == "cancelled" || msg.Receipt.DeliveryStatus == "committed") {
 			delete(m.pendingContinuations, msg.Handle.ID())
+			m.dropSignIn()
 			if rejection := msg.Receipt.Rejection(); rejection != nil {
 				m.ClearNotices()
 				m.AddError(rejection.Error())
@@ -1487,7 +1528,15 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.pendingUsers[index].BlockingReason = msg.Receipt.BlockingReason
 			m.refreshViewportContent()
 		}
-		return m, m.resolveOperationCmd(msg.Handle)
+		return m, tea.Batch(m.resolveOperationCmd(msg.Handle), m.hostAuthCmd(msg.Receipt.BlockingReason))
+
+	case chatHostAuthMsg:
+		m.offerSignIn(msg)
+		return m, nil
+
+	case chatSignedInMsg:
+		m.signedIn(msg)
+		return m, nil
 
 	case ChatTurnSentMsg:
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
@@ -1599,10 +1648,15 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 // missing folder refused.
 func (m *ChatModel) Moved(moved daemon.Session, retry *WorkspaceRetry) tea.Cmd {
 	workspace := moved.Workspace
-	m.Workspace, m.Host = workspace, sessionHost(moved)
+	m.Workspace, m.Host, m.hostHome = workspace, sessionHost(moved), ""
 	m.Renderer.Workspace = workspace
 	m.rebuildSettledLines() // settled rows name paths from the old workspace
 	m.refreshViewportContent()
+	return m.resend(retry)
+}
+
+// resend sends again a turn the daemon refused, once what refused it is fixed.
+func (m *ChatModel) resend(retry *WorkspaceRetry) tea.Cmd {
 	if retry == nil {
 		return nil
 	}
@@ -2045,6 +2099,13 @@ func (m ChatModel) statusLine() string {
 		}
 		return ""
 	}
+	if host := m.reaching(); host != "" {
+		return "connecting to " + host + "…"
+	}
+	// the port owner gave up and forgot the kernel, so nothing reattaches
+	if host, _ := daemon.SplitLocation(m.Workspace); host != "" && m.Status.KernelLink == "lost" {
+		return "kernel on " + cmp.Or(m.Host, host) + " lost · the next turn starts a fresh one"
+	}
 	if m.isSending || m.pendingSendCount() > 0 && !m.Status.Running {
 		return "preparing"
 	}
@@ -2121,6 +2182,7 @@ func (m ChatModel) header(width int) string {
 	} else {
 		host = cmp.Or(m.Host, host)
 		lead = host + ":"
+		workspace = underHome(workspace, m.hostHome)
 	}
 	model := m.Model
 	if m.Effort != "" {
@@ -2153,7 +2215,7 @@ func (m ChatModel) header(width int) string {
 		}
 		place := m.Styles.Muted.Render(l.place)
 		if host != "" {
-			place = hostStyle(host).Render(host) + m.Styles.Muted.Render(":"+l.place)
+			place = m.hostSegment(host) + m.Styles.Muted.Render(":"+l.place)
 		}
 		if l.brand {
 			return titleRule(width, brand(m.AgentName)+m.Styles.Faint.Render(" on ")+place, m.Styles.Faint.Render(right))
@@ -2161,6 +2223,27 @@ func (m ChatModel) header(width int) string {
 		return titleRule(width, place, m.Styles.Faint.Render(right))
 	}
 	return m.Styles.Faint.Render(ansi.Truncate(model, width, "…"))
+}
+
+// hostSegment is the header's host in its own color once the kernel there is
+// attached: faint while it boots or reattaches, the error color once lost.
+func (m ChatModel) hostSegment(host string) string {
+	switch m.Status.KernelLink {
+	case "booting", "reattaching":
+		return m.Styles.Faint.Render(host)
+	case "lost":
+		return m.Styles.Error.Render(host)
+	}
+	return hostStyle(host).Render(host)
+}
+
+// reaching is the remote host a booting or reattaching kernel is on.
+func (m ChatModel) reaching() string {
+	host, _ := daemon.SplitLocation(m.Workspace)
+	if link := m.Status.KernelLink; host == "" || link != "booting" && link != "reattaching" {
+		return ""
+	}
+	return cmp.Or(m.Host, host)
 }
 
 func (m ChatModel) View() string {
@@ -2271,6 +2354,9 @@ func (m ChatModel) glanceCounts() []string {
 	}
 	if len(counts) > 0 && m.sidebarWidth() > 0 {
 		counts = counts[1:]
+	}
+	if m.Status.KernelStale {
+		counts = append([]string{"kernel older"}, counts...)
 	}
 	return counts
 }

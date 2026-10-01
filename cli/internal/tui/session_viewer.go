@@ -93,7 +93,7 @@ func (m SessionViewer) workspacePlace() string {
 	if i := slices.IndexFunc(m.raw, func(s daemon.Session) bool { return s.Workspace == m.Workspace }); i >= 0 {
 		return sessionPlace(m.raw[i])
 	}
-	return placeText(m.Workspace, "")
+	return placeText(m.Workspace, "", "")
 }
 
 func NewSessionViewer(workspace string) SessionViewer {

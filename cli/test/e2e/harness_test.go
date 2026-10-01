@@ -42,6 +42,8 @@ var suite struct {
 	home      string // hermetic ALBEDO_HOME
 	env       []string
 	daemonPID int
+	// remoteHome is the loopback ssh's remote HOME.
+	remoteHome string
 }
 
 func TestMain(m *testing.M) {
@@ -102,8 +104,12 @@ func bootSuite() (func() (string, bool), error) {
 		return teardown, err
 	}
 
+	sshBin, err := loopbackSSH(temp)
+	if err != nil {
+		return teardown, err
+	}
 	suite.root, suite.home = root, home
-	suite.env = hermeticEnv(root, home, userHome, scratch, launcher)
+	suite.env = hermeticEnv(root, home, userHome, scratch, launcher, sshBin)
 	suite.provider = newFakeProvider()
 	// A models.dev refresh or the cache-TTL table's remote copy would reach
 	// the network from a test.
@@ -253,12 +259,15 @@ func snapshotDaemon(root, out string) (string, error) {
 // hermeticEnv builds the environment for every CLI invocation and the daemon
 // it spawns: no real home, no inherited albedo state, temporary files inside
 // the suite's tree, the snapshot's launcher, and the parent watcher.
-func hermeticEnv(root, home, userHome, scratch, daemonExe string) []string {
+func hermeticEnv(root, home, userHome, scratch, daemonExe, sshBin string) []string {
 	var env []string
 	for _, kv := range os.Environ() {
-		name, _, _ := strings.Cut(kv, "=")
+		name, value, _ := strings.Cut(kv, "=")
 		if name == "HOME" || name == "TMPDIR" || name == "ERL_FLAGS" || strings.HasPrefix(name, "ALBEDO_") {
 			continue
+		}
+		if name == "PATH" {
+			kv = "PATH=" + sshBin + string(os.PathListSeparator) + value
 		}
 		env = append(env, kv)
 	}
@@ -273,6 +282,50 @@ func hermeticEnv(root, home, userHome, scratch, daemonExe string) []string {
 		// Two schedulers keep a booting test VM from pinning every core.
 		"ERL_FLAGS=+S 2:2 +SDcpu 2:2 +sbwt none +sbwtdcpu none +sbwtdio none",
 	)
+}
+
+// loopbackSSH puts an ssh on the daemon's PATH that runs every command here,
+// under its own "remote" HOME (suite.remoteHome), for scenarios with a remote
+// workspace; the real ssh, and its masters, are never reached. Host `nohost`
+// cannot be reached.
+func loopbackSSH(temp string) (string, error) {
+	bin, remoteBin := filepath.Join(temp, "ssh-bin"), filepath.Join(temp, "remote-bin")
+	suite.remoteHome = filepath.Join(temp, "remote-home")
+	for _, dir := range []string{bin, remoteBin, suite.remoteHome} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", err
+		}
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		return "", err
+	}
+	ssh := `#!/bin/sh
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o|-O|-l|-p|-i|-F|-J|-S) shift 2 ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+target=$1
+shift
+case "$target" in
+  nohost) echo "ssh: connect to host nohost port 22: Connection refused" >&2; exit 255 ;;
+  lockedhost) echo "lockedhost: Permission denied (publickey)." >&2; exit 255 ;;
+esac
+exec env -i HOME=` + suite.remoteHome + ` PATH=` + remoteBin + `:/usr/bin:/bin SHELL=` + remoteBin + `/loginsh /bin/sh -c "$*"
+`
+	// a login shell that sources no profile, which would put the system
+	// python ahead of the linked one
+	loginsh := "#!/bin/sh\n[ \"$1\" = -l ] && shift\nexec /bin/sh \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte(ssh), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(remoteBin, "loginsh"), []byte(loginsh), 0o755); err != nil {
+		return "", err
+	}
+	return bin, os.Symlink(python, filepath.Join(remoteBin, "python3"))
 }
 
 // runCLI runs the built binary the way a user would and returns its output.

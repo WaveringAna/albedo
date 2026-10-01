@@ -2,6 +2,8 @@ package tui
 
 import (
 	"cmp"
+	"path"
+	"strings"
 
 	"albedo/cli/internal/daemon"
 )
@@ -17,17 +19,54 @@ func sessionHost(s daemon.Session) string {
 	return host
 }
 
-// placeText is a workspace as one line of text: a local path under home
-// starts with ~, a remote one leads with its host (label, else as stored).
-func placeText(workspace, label string) string {
+// placeText is a workspace as one line of text: a path under its home
+// starts with ~, and a remote one leads with its host (label, else as
+// stored). home is the path ~ names where the workspace is; empty, a local
+// path folds under your own home and a remote one stays whole.
+func placeText(workspace, label, home string) string {
 	host, p := daemon.SplitLocation(workspace)
-	if host == "" {
+	switch {
+	case host != "":
+		return cmp.Or(label, host) + ":" + underHome(p, home)
+	case home == "":
 		return homePath(workspace)
 	}
-	return cmp.Or(label, host) + ":" + p
+	return underHome(workspace, home)
 }
 
 // sessionPlace is where a session works, as placeText shows it.
 func sessionPlace(s daemon.Session) string {
-	return placeText(s.Workspace, sessionHost(s))
+	return placeText(s.Workspace, sessionHost(s), "")
+}
+
+// splitHost reads typed text as a location still being written: the host
+// before the first colon and whatever follows it, which may be empty, ~ or
+// relative to the remote home as well as absolute. Like the daemon's rule,
+// text starting with / or ~, or with a slash before the colon, is local.
+func splitHost(text string) (host, rest string, ok bool) {
+	if text == "" || text[0] == '/' || text[0] == '~' {
+		return "", text, false
+	}
+	if i := strings.Index(text, "]:"); text[0] == '[' && i > 0 {
+		return text[:i+1], text[i+2:], true
+	}
+	host, rest, ok = strings.Cut(text, ":")
+	if !ok || host == "" || strings.Contains(host, "/") {
+		return "", text, false
+	}
+	return host, rest, true
+}
+
+// joinPlace is the folder name inside the location dir.
+func joinPlace(dir, name string) string {
+	host, p := daemon.SplitLocation(dir)
+	if host == "" {
+		return path.Join(dir, name)
+	}
+	return host + ":" + path.Join(p, name)
+}
+
+// parentPlace is the folder above the location dir, on the same host.
+func parentPlace(dir string) string {
+	return joinPlace(dir, "..")
 }

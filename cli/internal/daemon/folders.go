@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // The folder browser's routes, as robot-docs/workspaces.md describes them.
@@ -288,4 +289,98 @@ func decodeFolderNode(data []byte) (FolderNode, error) {
 // MoveSession moves an idle session to another folder.
 func MoveSession(ctx context.Context, conn *Connection, id, workspace string) (Session, error) {
 	return mutateSession(ctx, conn, operation{Name: "move session", Method: http.MethodPost, Path: sessionPath(id, "/workspace"), Body: map[string]string{"workspace": workspace}, Policy: authRecovery}, http.StatusOK)
+}
+
+// HostStatus is what the daemon knows of a remote host over ssh: State is
+// ready, warming, needs_auth, unreachable or unsupported; Detail says why
+// when it is not ready. OS, Arch and Home come with a ready one.
+type HostStatus struct {
+	Host        string `json:"host"`
+	State       string `json:"state"`
+	Detail      string `json:"detail"`
+	OS          string `json:"os"`
+	Arch        string `json:"arch"`
+	Home        string `json:"home"`
+	ControlPath string `json:"control_path"`
+}
+
+// KnownHost is a host worth offering: one sessions worked on ("recent"), or
+// a Host entry of the daemon's ssh config ("config"). State is the cached
+// probe's, empty when there is none.
+type KnownHost struct {
+	Host   string `json:"host"`
+	Label  string `json:"label"`
+	Source string `json:"source"`
+	State  string `json:"state"`
+}
+
+// ListHosts is GET /hosts. It never probes.
+func ListHosts(ctx context.Context, conn *Connection) ([]KnownHost, error) {
+	var result []KnownHost
+	err := executeRead(ctx, conn, operation{Name: "list hosts", Method: http.MethodGet, Path: "/hosts", Policy: readRecovery}, func(data []byte) error {
+		fields, err := object(data)
+		if err != nil {
+			return err
+		}
+		return required(fields, "hosts", &result)
+	})
+	return result, err
+}
+
+// GetHost is the cached probe of host, or warming while one runs.
+func GetHost(ctx context.Context, conn *Connection, host string) (HostStatus, error) {
+	var status HostStatus
+	err := executeRead(ctx, conn, operation{Name: "read host", Method: http.MethodGet, Path: "/hosts/" + url.PathEscape(host), Policy: readRecovery}, func(data []byte) error {
+		return decodeHostStatus(data, &status)
+	})
+	return status, err
+}
+
+// WarmHost probes host now, past a cached answer, and answers how it went.
+func WarmHost(ctx context.Context, conn *Connection, host string) (HostStatus, error) {
+	// the probe waits up to a minute
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	var status HostStatus
+	operation := operation{Name: "warm host", Method: http.MethodPost, Path: "/hosts/" + url.PathEscape(host) + "/warm", Body: map[string]any{}, Policy: authRecovery}
+	// requestBytes directly: executeMutation would cap the wait at 20 s
+	body, err := requestBytes(ctx, conn, operation, responseLimits{successStatus: http.StatusOK, bodyBytes: 64 * 1024, errorBytes: 64 * 1024})
+	if err != nil {
+		return status, err
+	}
+	if err := decodeHostStatus(body, &status); err != nil {
+		return status, invalidResponse(operation, "", err)
+	}
+	return status, nil
+}
+
+// WarmHost probes the session's host again, past a cached failure, so a
+// turn after a sign-in finds it ready.
+func (c *ChatClient) WarmHost(ctx context.Context, host string) (HostStatus, error) {
+	return WarmHost(ctx, c.conn, host)
+}
+
+// Host is the daemon's cached probe of host.
+func (c *ChatClient) Host(ctx context.Context, host string) (HostStatus, error) {
+	return GetHost(ctx, c.conn, host)
+}
+
+// LocalDaemon says the daemon runs on this machine, so an ssh master opened
+// here is one it can ride.
+func (c *ChatClient) LocalDaemon() bool {
+	return c.conn.Local()
+}
+
+func decodeHostStatus(data []byte, status *HostStatus) error {
+	fields, err := object(data)
+	if err != nil {
+		return err
+	}
+	if err := required(fields, "host", &status.Host); err != nil {
+		return err
+	}
+	if err := required(fields, "state", &status.State); err != nil {
+		return err
+	}
+	return json.Unmarshal(data, status)
 }

@@ -6,7 +6,7 @@
 package e2e
 
 import (
-	"albedo/cli/internal/daemon"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"albedo/cli/internal/daemon"
 	"albedo/cli/internal/tui"
 
 	tea "charm.land/bubbletea/v2"
@@ -230,4 +231,115 @@ func mustEval(t *testing.T, p string) string {
 		t.Fatal(err)
 	}
 	return resolved
+}
+
+// A host is picked like a folder: scp syntax lists its home through the
+// daemon's ssh, the rows fold under that host's ~, enter starts a session
+// whose kernel boots there, and a host ssh cannot reach is never picked.
+//
+// The TUI starts the session on the active profile, so this runs alone.
+func TestTUIStartsASessionOnAHostPickedLikeAFolder(t *testing.T) {
+	profile := providerRoute(t, echoReply)
+	picked := filepath.Join(suite.remoteHome, "proj", fmt.Sprintf("picked-%d", os.Getpid()))
+	if err := os.MkdirAll(picked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d := driveTUI(t, nil)
+	d.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	d.Dispatch(tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
+	d.Type("gohost:")
+	if view := d.View(); !strings.Contains(view, "in gohost:~") || !strings.Contains(view, "proj") {
+		t.Fatalf("gohost: did not list the host's home:\n%s", view)
+	}
+	d.Type("proj/" + filepath.Base(picked)[:6])
+	if view := d.View(); !strings.Contains(view, "in gohost:~/proj") || !strings.Contains(view, filepath.Base(picked)) {
+		t.Fatalf("the host's folder did not list:\n%s", view)
+	}
+	started, ok := d.Key(tea.KeyEnter).(tui.FolderNewSessionMsg)
+	if !ok || started.Workspace != "gohost:"+picked {
+		t.Fatalf("enter did not start a session in gohost:%s: %#v", picked, started)
+	}
+	d.Update(d.Send(started))
+	session := d.App.ActiveSession
+	if d.App.State != tui.AppStateChat || session == nil || session.Workspace != "gohost:"+picked {
+		t.Fatalf("the new session is not on gohost:\n%s", d.View())
+	}
+	// the daemon's parsed location reaches the client, so the header shows the host
+	if l := session.Location; l == nil || l.Host == nil || *l.Host != "gohost" || l.Path != picked {
+		t.Fatalf("the session's location did not decode: %+v", l)
+	}
+
+	// its kernel boots on the host, and the status says it is attached
+	if _, err := daemon.NewChatClient(conn(t), session.ID).Send(context.Background(), "hello there", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, session.ID, profile, 1)
+	status, err := daemon.NewChatClient(conn(t), session.ID).GetStatus(context.Background())
+	if err != nil || status.KernelLink != "attached" {
+		t.Fatalf("after a turn the kernel status is %+v (%v)", status, err)
+	}
+
+	// a host ssh cannot reach says why and is never picked
+	d = driveTUI(t, nil)
+	d.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	d.Dispatch(tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
+	d.Type("nohost:")
+	if view := d.View(); !strings.Contains(view, "connect to host nohost") {
+		t.Fatalf("an unreachable host does not say why:\n%s", view)
+	}
+	if msg, started := d.Key(tea.KeyEnter).(tui.FolderNewSessionMsg); started {
+		t.Fatalf("enter started a session on an unreachable host: %#v", msg)
+	}
+}
+
+// A turn at a host that needs a person to sign in is kept, waiting on the
+// daemon's next try, and the chat offers to open the daemon's ssh master
+// here so ssh can ask.
+func TestTUIOffersSignInForATurnWaitingOnItsHost(t *testing.T) {
+	t.Parallel()
+	providerRoute(t, echoReply)
+	session := daemonSession(t, newSession(t, "lockedhost:/srv/app"))
+	d := driveTUI(t, &session)
+	d.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	d.connected()
+	d.App.Chat.TextArea.SetValue("hello behind a lock")
+	var admitted tui.ChatTurnSentMsg
+	for _, message := range d.results(d.Update(tea.KeyPressMsg{Code: tea.KeyEnter})) {
+		if sent, ok := message.(tui.ChatTurnSentMsg); ok {
+			admitted = sent
+			d.Update(sent)
+		}
+	}
+	if admitted.Err != nil || admitted.Handle == nil {
+		t.Fatalf("the turn was not admitted: %+v", admitted)
+	}
+	var receipt daemon.OperationReceipt
+	for deadline := time.Now().Add(10 * time.Second); receipt.BlockingReason == ""; time.Sleep(25 * time.Millisecond) {
+		var err error
+		if receipt, err = daemon.ResolveOperation(t.Context(), conn(t), admitted.Handle); err != nil {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the turn never waited on its host: %+v", receipt)
+		}
+	}
+	// The receipt's own poll answers only at the daemon's next try, so each
+	// answer is taken as it comes rather than waiting for all of them.
+	resolved := tui.ChatOperationResolvedMsg{SessionID: session.ID, Generation: d.App.Chat.Generation, Handle: admitted.Handle, Receipt: receipt}
+	answers := make(chan tea.Msg, 4)
+	for _, cmd := range d.Update(resolved)().(tea.BatchMsg) {
+		go func() { answers <- cmd() }()
+	}
+	offer := "Press ctrl+l to sign in to lockedhost here"
+	for timeout := time.After(10 * time.Second); !strings.Contains(d.View(), offer); {
+		select {
+		case answer := <-answers:
+			d.Update(answer)
+		case <-timeout:
+			t.Fatalf("a turn waiting on a sign-in does not offer one:\n%s", d.View())
+		}
+	}
+	if view := d.View(); !strings.Contains(view, "Permission denied") {
+		t.Fatalf("the waiting turn does not say why:\n%s", view)
+	}
 }

@@ -91,6 +91,8 @@ func (m FolderPicker) footer(width int) string {
 		right = DefaultStyles.Faint.Render("moving…")
 	case m.notice != "":
 		right = DefaultStyles.Warning.Render(tailFit(m.notice, room))
+	case m.deadHighlighted() != "":
+		right = DefaultStyles.Error.Render(ansi.Truncate(m.deadHighlighted(), room, "…"))
 	case m.sessionsError != "":
 		right = DefaultStyles.Warning.Render(ansi.Truncate("Recent sessions: "+m.sessionsError, room, "…"))
 	case m.retry != nil:
@@ -117,8 +119,12 @@ func (m FolderPicker) hints() []hint {
 		return append(hints, hint{"↑↓", "move"}, hint{"enter", "open"}, hint{"←", "folders"})
 	}
 	hints = append(hints, hint{"↑↓", "move"}, hint{"tab", "open"}, hint{"⇧tab", "up"})
-	if row, ok := m.highlighted(); ok && len(m.sessionsIn(row.path)) > 0 {
+	row, ok := m.highlighted()
+	if ok && len(m.sessionsIn(row.path)) > 0 {
 		hints = append(hints, hint{"→", "sessions"})
+	}
+	if ok && m.probe(row.hostKey).State == "needs_auth" {
+		hints = append(hints, hint{"ctrl+l", "sign in"})
 	}
 	action := "move here"
 	if m.browse {
@@ -149,11 +155,37 @@ func (m FolderPicker) list(width, height int) []string {
 	return scrollWindow(all, m.cursor+1, width, height)
 }
 
+// typedHost is the host a remote listing is typed for, as a row.
+func (m FolderPicker) typedHost() folderRow {
+	if host, _, remote := splitHost(m.listed); remote {
+		return folderRow{hostKey: m.canonical(host), hostRow: true}
+	}
+	return folderRow{}
+}
+
+// deadHighlighted is why the highlighted row's host cannot be reached, in
+// full, or empty when it can.
+func (m FolderPicker) deadHighlighted() string {
+	row, _ := m.highlighted()
+	if row.hostKey == "" {
+		row = m.typedHost()
+	}
+	if p := m.probe(row.hostKey); p.State == "unreachable" || p.State == "unsupported" {
+		return m.labelOf(row.hostKey) + ": " + cmp.Or(p.Detail, p.State)
+	}
+	return ""
+}
+
 func (m FolderPicker) emptyNote() string {
 	l := m.listings[m.listed]
+	host, _, remote := splitHost(m.listed)
 	switch {
+	case m.listed == "" && m.section == "hosts":
+		return "no known hosts match; type host: to browse one"
 	case m.listed == "":
 		return "no matches"
+	case l == nil && remote && m.probe(m.canonical(host)).State == "warming":
+		return "connecting to " + m.labelOf(host) + "…"
 	case l == nil:
 		return "loading…"
 	case l.Err != nil:
@@ -175,14 +207,39 @@ func (m FolderPicker) latestOther() string {
 	return best
 }
 
-// where is the folder a row is in, led by its host when it is remote.
+// where is the folder a row is in, led by its host when it is remote; a
+// host row says where the host is known from.
 func (m FolderPicker) where(row folderRow) string {
-	host, p := daemon.SplitLocation(row.path)
-	crumbs := crumbParts(m.homed(path.Dir(p)))
-	if host != "" {
-		crumbs = append([]string{cmp.Or(row.host, host)}, crumbs...)
+	switch {
+	case row.hostRow && row.source == "config":
+		return "ssh config"
+	case row.hostRow:
+		return "recent host"
 	}
+	host, p := daemon.SplitLocation(row.path)
+	if host == "" {
+		return strings.Join(crumbParts(m.homed(path.Dir(p))), " › ")
+	}
+	// the host leads the first crumb, as in the preview's rule
+	crumbs := crumbParts(underHome(path.Dir(p), m.homes[m.canonical(host)]))
+	crumbs[0] = cmp.Or(row.host, m.labelOf(host)) + ":" + crumbs[0]
 	return strings.Join(crumbs, " › ")
+}
+
+// reach is a remote row's host state where its head and age would go:
+// nothing once ready or while warming (the row is faint then), what is
+// wrong otherwise, and the way in when a person must sign in.
+func (m FolderPicker) reach(row folderRow) (note string, style lipgloss.Style, dim bool) {
+	p := m.probe(row.hostKey)
+	switch p.State {
+	case "warming":
+		return "", DefaultStyles.Faint, true
+	case "needs_auth":
+		return "sign in · ctrl+l", DefaultStyles.Warning, false
+	case "unreachable", "unsupported":
+		return cmp.Or(p.Detail, p.State), DefaultStyles.Error, false
+	}
+	return "", DefaultStyles.Faint, false
 }
 
 // row is a folder in the sessions view's grammar: bar, glyph, name with
@@ -198,7 +255,7 @@ func (m FolderPicker) row(row folderRow, selected, here, latest bool, width int,
 		glyph, glyphStyle = "● ", DefaultStyles.Success
 	}
 	whereW, tagW, ageW := 0, 12, 4
-	if row.recent && width >= 60 {
+	if (row.recent || row.hostRow) && width >= 48 {
 		whereW = 16
 	}
 	nameW := min(18, max(4, width-4-(whereW+2)-(tagW+2)-(ageW+2)))
@@ -206,9 +263,24 @@ func (m FolderPicker) row(row folderRow, selected, here, latest bool, width int,
 	if selected {
 		bar = selectBar()
 	}
-	line := bar + glyphStyle.Render(glyph) + " " + litName(row.name, row.matched, nameW, selected)
+	note, noteStyle, dim := m.reach(row)
+	base := lipgloss.NewStyle()
+	switch {
+	case dim:
+		base = DefaultStyles.Faint
+	case selected:
+		base = DefaultStyles.Bold
+	}
+	line := bar + glyphStyle.Render(glyph) + " " + litName(row.name, row.matched, nameW, base)
 	if whereW > 0 {
 		line += "  " + DefaultStyles.Faint.Render(svCell(m.where(row), whereW, false))
+	}
+	if note != "" {
+		line += "  " + noteStyle.Render(svCell(note, tagW+2+ageW, false))
+		if selected {
+			return selectedLine(line, width)
+		}
+		return line
 	}
 	line += "  " + DefaultStyles.Faint.Render(svCell(repoTag(m.repos[row.path]), tagW, false))
 	age := ""
@@ -224,12 +296,8 @@ func (m FolderPicker) row(row folderRow, selected, here, latest bool, width int,
 	return line
 }
 
-// litName fits name into w columns with its fuzzy-matched letters lit.
-func litName(name string, matched []int, w int, selected bool) string {
-	base := lipgloss.NewStyle()
-	if selected {
-		base = DefaultStyles.Bold
-	}
+// litName fits name into w columns in base, its fuzzy-matched letters lit.
+func litName(name string, matched []int, w int, base lipgloss.Style) string {
 	lit := DefaultStyles.Prompt.Bold(true).Underline(true)
 	fitted := ansi.Truncate(name, w, "…")
 	var b strings.Builder
@@ -282,7 +350,12 @@ func repoTag(r *daemon.Repo) string {
 func (m FolderPicker) preview(width, height int) []string {
 	row, ok := m.highlighted()
 	if !ok {
-		return make([]string, height)
+		if row = m.typedHost(); row.hostKey == "" {
+			return make([]string, height)
+		}
+	}
+	if row.hostRow || !m.reachable(row) {
+		return m.hostPane(row, width, height)
 	}
 	c := m.previews[row.path]
 	var body []string
@@ -314,6 +387,37 @@ func (m FolderPicker) preview(width, height int) []string {
 		lines = append(lines, "  "+l)
 	}
 	lines = append(lines, m.sessionBlock(sessions, width, height-len(lines)-sessionHead)...)
+	return append(lines, make([]string, max(0, height-len(lines)))...)[:height]
+}
+
+// hostPane is a host, or a folder on a host not reached yet: how the host
+// answers, then what it runs and where ~ is once it is ready.
+func (m FolderPicker) hostPane(row folderRow, width, height int) []string {
+	p := m.probe(row.hostKey)
+	label := m.labelOf(row.hostKey)
+	var body []string
+	switch p.State {
+	case "", "warming":
+		body = []string{DefaultStyles.Faint.Render("connecting to " + label + "…")}
+	case "ready":
+		if p.OS != "" {
+			body = append(body, DefaultStyles.Muted.Render(strings.TrimSpace(p.OS+" "+p.Arch)))
+		}
+		if home := m.homes[m.canonical(row.hostKey)]; home != "" {
+			body = append(body, DefaultStyles.Faint.Render("~ is ")+DefaultStyles.Muted.Render(home))
+		}
+	case "needs_auth":
+		body = []string{DefaultStyles.Warning.Render(cmp.Or(p.Detail, "needs a person to sign in")), DefaultStyles.Faint.Render("ctrl+l signs in here")}
+	default:
+		body = []string{DefaultStyles.Error.Render(cmp.Or(p.Detail, p.State))}
+	}
+	lines := []string{DefaultStyles.Decor.Render("─ ") + hostStyle(label).Render(label) + " " + DefaultStyles.Decor.Render(strings.Repeat("─", max(0, width-3-ansi.StringWidth(label)))), ""}
+	for _, l := range body {
+		lines = append(lines, "  "+ansi.Truncate(l, max(0, width-2), "…"))
+	}
+	if !row.hostRow {
+		lines = append(lines, m.sessionBlock(m.sessionsIn(row.path), width, height-len(lines)-sessionHead)...)
+	}
 	return append(lines, make([]string, max(0, height-len(lines)))...)[:height]
 }
 

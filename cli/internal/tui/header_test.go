@@ -65,3 +65,28 @@ func TestRemoteHeaderKeepsTheHostWholeAndFoldsOnlyThePath(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoteHeaderFoldsUnderTheHostsHomeAndSaysWhileConnecting(t *testing.T) {
+	label := "chernobog"
+	m := newTestChatModel(t, &daemon.Session{
+		ID:        "s",
+		Workspace: "mayer@chernobog:/home/mayer/proj/albedo",
+		Location:  &daemon.Location{Label: &label},
+	})
+	m.AgentName, m.Model = "albedo", "claude-opus-4-6"
+	m.Status = daemon.AgentStatus{Idle: true, KernelLink: "booting"}
+	if got := m.statusLine(); got != "connecting to chernobog…" {
+		t.Fatalf("a booting remote kernel reads %q", got)
+	}
+	m.Status.KernelLink, m.hostHome = "attached", "/home/mayer"
+	if header := ansi.Strip(m.header(120)); !strings.Contains(header, "✦ albedo on chernobog:~/proj/albedo") {
+		t.Fatalf("the path should fold under the host's own home: %q", header)
+	}
+	if got := m.statusLine(); strings.Contains(got, "connecting") {
+		t.Fatalf("an attached kernel still reads %q", got)
+	}
+	m.Status.KernelLink = "lost"
+	if got := m.statusLine(); got != "kernel on chernobog lost · the next turn starts a fresh one" {
+		t.Fatalf("a lost kernel reads %q", got)
+	}
+}

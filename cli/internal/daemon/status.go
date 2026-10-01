@@ -37,6 +37,12 @@ type AgentStatus struct {
 	Phase   *AgentPhase `json:"phase,omitempty"`
 	Running bool        `json:"running"`
 	Idle    bool        `json:"idle"`
+	// KernelStale reports a kernel on older code than the daemon, waiting for
+	// an idle moment (or /kernel upgrade) to be swapped.
+	KernelStale bool `json:"kernelStale,omitempty"`
+	// KernelLink is how the session reaches its kernel: none, booting,
+	// attached, reattaching or lost; empty from a daemon that does not say.
+	KernelLink string `json:"kernelLink,omitempty"`
 }
 
 // ContextWindow reads the model's context window from the session's last
@@ -66,6 +72,17 @@ func (c *ChatClient) GetStatus(ctx context.Context) (*AgentStatus, error) {
 			return fieldError("idle")
 		}
 		result.Phase = &phase
+		if _, said := fields["kernel"]; !said {
+			return nil
+		}
+		var kernel struct {
+			Stale bool   `json:"stale"`
+			Link  string `json:"link"`
+		}
+		if err = required(fields, "kernel", &kernel); err != nil {
+			return err
+		}
+		result.KernelStale, result.KernelLink = kernel.Stale, kernel.Link
 		return nil
 	})
 	if err != nil {

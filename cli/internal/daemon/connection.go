@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -74,6 +75,12 @@ func (c *Connection) BaseURL() string {
 		return ""
 	}
 	return fmt.Sprintf("http://127.0.0.1:%d", port)
+}
+
+// Local says the daemon runs on this machine, so an ssh master opened here
+// is one it can ride.
+func (c *Connection) Local() bool {
+	return strings.HasPrefix(c.BaseURL(), "http://127.0.0.1:")
 }
 
 func (c *Connection) Update(other *Connection) {
