@@ -236,6 +236,84 @@ class ExtensionTests(unittest.TestCase):
         )
         self.turn("next turn still works")
 
+    @exclusive
+    def test_instruction_locations_concatenate_in_scope_and_directory_order(self):
+        home = self.app.root / "user-home"
+        files = [
+            (self.app.workspace / "AGENTS.md", "ROOT_AGENTS"),
+            (self.app.workspace / "cLaUdE.Md", "ROOT_CLAUDE"),
+            (self.app.workspace / ".agents/a.MD", "PROJECT_AGENTS_A"),
+            (self.app.workspace / ".agents/z.md", "PROJECT_AGENTS_Z"),
+            (self.app.workspace / ".albedo/a.md", "PROJECT_ALBEDO"),
+            (home / ".agents/a.md", "GLOBAL_AGENTS"),
+            (home / ".albedo/a.md", "GLOBAL_ALBEDO"),
+        ]
+        for path, marker in reversed(files):
+            path.parent.mkdir(exist_ok=True)
+            path.write_text(marker)
+        (self.app.workspace / "SYSTEM.md").write_text("ROOT_SYSTEM")
+        (self.app.workspace / ".agents/SyStEm.Md").write_text("UNSELECTED_SYSTEM")
+        (self.app.workspace / ".agents/ApPeNd_SyStEm.Md").write_text("APPENDED_SYSTEM")
+        (self.app.workspace / ".agents/ignored.txt").write_text("NON_MARKDOWN")
+
+        (request,) = self.turn("inspect instruction ordering")
+        prompt = request["instructions"]
+        positions = [prompt.index(marker) for _, marker in files]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(
+            [prompt.count(marker) for _, marker in files], [1] * len(files)
+        )
+        self.assertLess(prompt.index("APPENDED_SYSTEM"), positions[0])
+        self.assertEqual(prompt.count("APPENDED_SYSTEM"), 1)
+        self.assertNotIn("UNSELECTED_SYSTEM", prompt)
+        self.assertNotIn("NON_MARKDOWN", prompt)
+        self.assertLess(positions[4], prompt.index("## Global user preferences"))
+        self.assertLess(prompt.index("## Global user preferences"), positions[5])
+        self.assertIn(".agents/a.MD", prompt)
+        self.assertIn("~/.agents/a.md", prompt)
+
+    def test_system_replacement_reads_only_highest_priority_match(self):
+        root = self.app.workspace / "SYSTEM.md"
+        root.write_text("VALID_REPLACEMENT")
+        directory = self.app.workspace / ".agents"
+        directory.mkdir()
+        (directory / "system.md").write_bytes(b"\xff")
+
+        (request,) = self.turn("ignore unreadable lower priority prompt")
+        self.assertTrue(request["instructions"].startswith("VALID_REPLACEMENT\n"))
+        root.unlink()
+        error = self.rejected(
+            f"/sessions/{self.sid}/commands",
+            {"name": "/reload", "args": {"target": "session"}},
+        )
+        self.assertIn(".agents/system.md must be UTF-8 text", error)
+
+    @exclusive
+    def test_instruction_discovery_limit_applies_before_capability_filtering(self):
+        directory = self.app.workspace / ".agents"
+        directory.mkdir()
+        choices = {}
+        for i in range(128):
+            name = f"instruction-{i:03}.md"
+            (directory / name).write_text("DISABLED_INSTRUCTION")
+            choices[f"project:.agents/{name}"] = False
+        (self.app.home / "capabilities.json").write_text(
+            json.dumps({"global": {"instructions": choices}})
+        )
+        (request,) = self.turn("128 disabled instructions remain usable")
+        self.assertNotIn("DISABLED_INSTRUCTION", request["instructions"])
+
+        (directory / "overflow.md").write_text("OVERFLOW_INSTRUCTION")
+        choices["project:.agents/overflow.md"] = False
+        (self.app.home / "capabilities.json").write_text(
+            json.dumps({"global": {"instructions": choices}})
+        )
+        error = self.rejected(
+            f"/sessions/{self.sid}/commands",
+            {"name": "/reload", "args": {"target": "session"}},
+        )
+        self.assertIn("more than 128 instruction files were discovered", error)
+
     def test_workspace_system_files_are_optional(self):
         (request,) = self.turn("no custom system files")
         self.assertTrue(

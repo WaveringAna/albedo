@@ -2,112 +2,67 @@
 
 -include_lib("kernel/include/file.hrl").
 
--export([home/0, load/2, load_selected/3, named/4]).
+-export([home/0, discover_instructions/2, discover_named/3, read/2]).
 
 -define(MAX_FILE_BYTES, 1048576).
 -define(MAX_FILES, 128).
 
 home() -> albedo_daemon:env(<<"HOME">>).
 
-%% First match wins for a replacement; append files concatenate in discovery order.
-named(Workspace0, Home0, Name, Mode) ->
+discover_named(Workspace0, Home0, Name) ->
     try
         Lower = string:lowercase(unicode:characters_to_list(Name)),
         Match = fun(Entry) -> string:lowercase(Entry) =:= Lower end,
-        Files = discover(unicode:characters_to_list(Workspace0),
-                         unicode:characters_to_list(Home0), Match, Match),
-        case length(Files) =< ?MAX_FILES of
-            false -> {error, <<"more than 128 prompt files were discovered">>};
-            true ->
-                Chosen = case {Mode, Files} of
-                    {first, [File | _]} -> [File];
-                    {first, []} -> [];
-                    {all, _} -> Files
-                end,
-                case read_all(Chosen, [], [], unlimited) of
-                    {ok, {[], _}} -> {ok, none};
-                    {ok, {Loaded, _}} ->
-                        {ok, {some, iolist_to_binary(lists:join(<<"\n\n">>,
-                            [Text || {_, _, Text} <- Loaded]))}};
-                    Error -> Error
-                end
-        end
+        discover_checked(Workspace0, Home0, Match, Match, <<"prompt">>)
     catch
         _:_ -> {error, <<"prompt file discovery failed">>}
     end.
 
-load(Workspace0, Home0) ->
-    case load_impl(Workspace0, Home0, undefined) of
-        {ok, {Context, _Warnings}} -> {ok, Context};
-        Error -> Error
-    end.
-
-load_selected(Workspace0, Home0, Session) ->
-    load_impl(Workspace0, Home0, {albedo_extension_settings:home(), Session}).
-
-load_impl(Workspace0, Home0, Selection) ->
+discover_instructions(Workspace0, Home0) ->
     try
-        Files = discover(unicode:characters_to_list(Workspace0),
-                         unicode:characters_to_list(Home0),
-                         fun instruction_name/1, fun markdown/1),
-        case length(Files) =< ?MAX_FILES of
-            false -> {error, <<"more than 128 instruction files were discovered">>};
-            true ->
-                maybe
-                    {ok, Preferences} ?= load_preferences(Files, Selection),
-                    {ok, Selected} ?= select_files(Files, Preferences, []),
-                    {ok, {Loaded, Warnings}} ?= read_all(Selected, [], [], ?MAX_FILE_BYTES),
-                    {ok, {render(Loaded), Warnings}}
-                end
-        end
+        discover_checked(Workspace0, Home0, fun instruction_name/1,
+                         fun markdown/1, <<"instruction">>)
     catch
         _:_ -> {error, <<"instruction file discovery failed">>}
     end.
 
-load_preferences([], _) -> 'albedo@harness@capabilities':load(<<>>, none);
-load_preferences(_, undefined) -> 'albedo@harness@capabilities':load(<<>>, none);
-load_preferences(_, {Home, Session}) ->
-    SelectedSession = case Session of undefined -> none; _ -> {some, Session} end,
-    'albedo@harness@capabilities':load(Home, SelectedSession).
-
-select_files([], _, Selected) -> {ok, lists:reverse(Selected)};
-select_files([File = {Scope, Display, _} | Rest], Preferences, Selected) ->
-    Name = <<(atom_to_binary(Scope))/binary, ":", Display/binary>>,
-    case 'albedo@harness@capabilities':enabled(Preferences, <<"instructions">>, Name) of
-        {ok, true} -> select_files(Rest, Preferences, [File | Selected]);
-        {ok, false} -> select_files(Rest, Preferences, Selected);
-        Error -> Error
+discover_checked(Workspace0, Home0, RootMatch, DirectoryMatch, Kind) ->
+    Files = discover(unicode:characters_to_list(Workspace0),
+                     unicode:characters_to_list(Home0), RootMatch, DirectoryMatch),
+    case length(Files) =< ?MAX_FILES of
+        true -> {ok, Files};
+        false -> {error, <<"more than 128 ", Kind/binary, " files were discovered">>}
     end.
 
 discover(Workspace, Home, RootMatch, DirectoryMatch) ->
     Project = root_files(Workspace, RootMatch)
-              ++ directory_files(project, Workspace, ".agents", DirectoryMatch)
-              ++ directory_files(project, Workspace, ".albedo", DirectoryMatch),
+              ++ directory_files(project_agents, Workspace, ".agents", DirectoryMatch)
+              ++ directory_files(project_albedo, Workspace, ".albedo", DirectoryMatch),
     Global = case Home of
         [] -> [];
-        _ -> directory_files(global, Home, ".agents", DirectoryMatch)
-             ++ directory_files(global, Home, ".albedo", DirectoryMatch)
+        _ -> directory_files(global_agents, Home, ".agents", DirectoryMatch)
+             ++ directory_files(global_albedo, Home, ".albedo", DirectoryMatch)
     end,
     Project ++ Global.
 
 root_files(Workspace, Match) ->
-    listed(project, Workspace, fun unicode:characters_to_binary/1, Match).
+    listed(project_root, Workspace, fun unicode:characters_to_binary/1, Match).
 
 instruction_name(Name) ->
     Lower = string:lowercase(Name),
     Lower =:= "agents.md" orelse Lower =:= "claude.md".
 
-directory_files(Scope, Base, Directory, Match) ->
-    listed(Scope, filename:join(Base, Directory),
-           fun(Entry) -> directory_display(Scope, Directory, Entry) end,
+directory_files(Location, Base, Directory, Match) ->
+    listed(Location, filename:join(Base, Directory),
+           fun(Entry) -> directory_display(Location, Directory, Entry) end,
            Match).
 
 %% Sorted regular files of one directory that satisfy Keep, tagged with their
-%% discovery scope and shown as Display names.
-listed(Scope, Root, Display, Keep) ->
+%% location and shown as Display names. Tuple tags match Gleam's Candidate.
+listed(Location, Root, Display, Keep) ->
     case file:list_dir(Root) of
         {ok, Entries} ->
-            [{Scope, Display(Entry), Path}
+            [{candidate, Location, Display(Entry), unicode:characters_to_binary(Path)}
              || Entry <- lists:sort(Entries), Keep(Entry),
                 Path <- [filename:join(Root, Entry)],
                 filelib:is_regular(Path)];
@@ -119,17 +74,28 @@ markdown(Name) ->
     string:lowercase(filename:extension(Name)) =:= ".md"
     andalso Lower =/= "system.md" andalso Lower =/= "append_system.md".
 
-directory_display(project, Directory, Entry) ->
+directory_display(Location, Directory, Entry)
+  when Location =:= project_agents; Location =:= project_albedo ->
     unicode:characters_to_binary(filename:join(Directory, Entry));
-directory_display(global, Directory, Entry) ->
+directory_display(Location, Directory, Entry)
+  when Location =:= global_agents; Location =:= global_albedo ->
     unicode:characters_to_binary(filename:join(["~", Directory, Entry])).
+
+read(Files, instructions) -> read_files(Files, ?MAX_FILE_BYTES, <<"instruction">>);
+read(Files, prompts) -> read_files(Files, unlimited, <<"prompt">>).
+
+read_files(Files, Limit, Kind) ->
+    try read_all(Files, [], [], Limit)
+    catch
+        _:_ -> {error, <<Kind/binary, " file discovery failed">>}
+    end.
 
 read_all([], Loaded, Warnings, _) ->
     {ok, {lists:reverse(Loaded), lists:reverse(Warnings)}};
-read_all([{Scope, Display, Path} | Rest], Loaded, Warnings, Limit) ->
+read_all([File = {candidate, _Location, Display, Path} | Rest], Loaded, Warnings, Limit) ->
     case read_text(Path, Display, Limit) of
         {ok, Text} ->
-            read_all(Rest, [{Scope, Display, Text} | Loaded], Warnings, Limit);
+            read_all(Rest, [{File, Text} | Loaded], Warnings, Limit);
         {skip, Warning} -> read_all(Rest, Loaded, [Warning | Warnings], Limit);
         Error -> Error
     end.
@@ -154,39 +120,3 @@ read_text(Path, Display, Limit) ->
 
 file_error(Display, Message) ->
     {error, iolist_to_binary([Display, <<" ">>, Message])}.
-
-render([]) -> <<>>;
-render(Loaded) ->
-    Project = [File || {project, _, _} = File <- Loaded],
-    Global = [File || {global, _, _} = File <- Loaded],
-    iolist_to_binary([
-        <<"# Autoloaded instructions
-
-"
-          "Project-level files define conventions for this project. Global-level files "
-          "describe the user's general preferences. Apply both; when they conflict on "
-          "project-specific work, follow the project-level convention. Files at the same "
-          "level are concatenated rather than overriding one another.
-">>,
-        render_group(<<"
-## Project-level conventions
-
-Use these for project-level conventions.
-">>, Project),
-        render_group(<<"
-## Global user preferences
-
-Use these for acting in the user's preferences.
-">>, Global)
-    ]).
-
-render_group(_, []) -> [];
-render_group(Header, Files) ->
-    [Header, [render_file(File) || File <- Files]].
-
-render_file({_Scope, Display, Contents}) ->
-    [<<"
-### ">>, Display, <<"
-
-">>, Contents, <<"
-">>].

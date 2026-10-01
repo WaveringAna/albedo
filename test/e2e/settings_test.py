@@ -338,6 +338,22 @@ class SettingsTest(unittest.TestCase):
             self.provider.requests[-1]["request"]["model"], "fixture-model"
         )
 
+    def test_disabled_instruction_is_not_read_until_enabled(self):
+        (self.app.workspace / "AGENTS.md").write_bytes(b"\xff")
+        (self.app.workspace / "CLAUDE.md").write_text("READABLE_INSTRUCTION")
+        self.capability(scope="global", enabled=False)
+        self.app.prompt(self.session, "skip disabled invalid UTF-8").close()
+        self.app.idle(self.session)
+        self.assertIn(
+            "READABLE_INSTRUCTION",
+            json.dumps(self.provider.requests[-1]["request"]),
+        )
+
+        with self.assertRaises(urllib.error.HTTPError) as failure:
+            self.capability(enabled=True)
+        self.assertEqual(failure.exception.code, 409)
+        self.assertIn("AGENTS.md must be UTF-8 text", failure.exception.read().decode())
+
     def test_capability_size_limit_accepts_boundary_and_rejects_growth(self):
         path = self.app.home / "capabilities.json"
         limit = 1048576
