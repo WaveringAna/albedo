@@ -144,7 +144,6 @@ func (s *Service) DeleteSessions(ctx context.Context, ids []string) error {
 	}
 	return nil
 }
-func (s *Service) StartDaemon(ctx context.Context) (*daemon.Connection, error) { return s.Connect(ctx) }
 func (s *Service) StopDaemon(ctx context.Context) error {
 	conn, err := s.Existing()
 	if err != nil || conn == nil {

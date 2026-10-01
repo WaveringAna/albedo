@@ -239,7 +239,7 @@ func newDaemon(deps Dependencies) *cobra.Command {
 		if stop {
 			return deps.Application.StopDaemon(cmd.Context())
 		}
-		conn, err := deps.Application.StartDaemon(cmd.Context())
+		conn, err := deps.Application.Connect(cmd.Context())
 		if err != nil {
 			return err
 		}
