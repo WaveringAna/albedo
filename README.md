@@ -56,7 +56,13 @@ albedo -p "Explain this project"
 albedo --prompt "Run the checks" --session SESSION_ID --timeout 10m
 albedo resume SESSION_ID
 albedo sessions --json
+albedo sessions read SESSION_ID 3      # the newest 3 turns (default 1); --json for structure
+albedo sessions send SESSION_ID "message"
 ```
+
+Session IDs may be shortened to any unique prefix. `sessions read` ends with a
+`[running]` line while the session is still working, so another agent knows to
+read again; `sessions send` is the same command as `albedo send`.
 
 Run `albedo --help` or `albedo COMMAND --help` for command options.
 Unknown flags and extra arguments are errors. The root flags `--session`,

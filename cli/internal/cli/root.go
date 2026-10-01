@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -199,7 +201,56 @@ func newSessions(deps Dependencies) *cobra.Command {
 		return err
 	}}
 	command.Flags().BoolVar(&asJSON, "json", false, "print sessions as JSON")
+	command.AddCommand(newSessionRead(deps), newSend(deps))
 	return command
+}
+func newSessionRead(deps Dependencies) *cobra.Command {
+	var asJSON bool
+	command := &cobra.Command{Use: "read <session> [turns]", Short: "print a session's newest turns (default 1)", Args: cobra.RangeArgs(1, 2), RunE: func(cmd *cobra.Command, args []string) error {
+		turns := 1
+		if len(args) == 2 {
+			parsed, err := strconv.Atoi(args[1])
+			if err != nil || parsed < 1 {
+				return fmt.Errorf("turns must be a positive number, got %q", args[1])
+			}
+			turns = parsed
+		}
+		result, err := deps.Application.Read(cmd.Context(), args[0], turns)
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return writeJSON(cmd.OutOrStdout(), result, true)
+		}
+		_, err = fmt.Fprint(cmd.OutOrStdout(), renderTurns(result))
+		return err
+	}}
+	command.Flags().BoolVar(&asJSON, "json", false, "print the turns as JSON")
+	return command
+}
+
+// renderTurns prints what was said and done, one block per event, ending with
+// whether the session is still working.
+func renderTurns(result app.SessionTurns) string {
+	var out strings.Builder
+	for _, event := range result.Events {
+		switch event.Type {
+		case daemon.EventUser:
+			fmt.Fprintf(&out, "[user] %s\n", event.Text)
+		case daemon.EventMessage:
+			fmt.Fprintf(&out, "[assistant] %s\n", event.Text)
+		case daemon.EventTool:
+			fmt.Fprintf(&out, "[tool] %s\n", event.ToolName)
+		case daemon.EventError, daemon.EventNote:
+			fmt.Fprintf(&out, "[%s] %s\n", event.Type, event.Text)
+		case daemon.EventInterrupted:
+			out.WriteString("[interrupted]\n")
+		}
+	}
+	if result.Running {
+		out.WriteString("[running] this session is still working; read again for more\n")
+	}
+	return out.String()
 }
 func newModels(deps Dependencies) *cobra.Command {
 	return &cobra.Command{Use: "models", Short: "list provider/model for every configured provider", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {

@@ -178,6 +178,51 @@ func TestSendAndStopAcceptAShortenedSessionID(t *testing.T) {
 	cli(t, "stop", id[:8])
 }
 
+// Another agent drives a session with `sessions send` and `sessions read`: the
+// newest turns come back as text or JSON, and a count of one leaves the older
+// turn out.
+func TestSessionsSendAndRead(t *testing.T) {
+	t.Parallel()
+	profile := providerRoute(t, echoReply)
+	id := newSession(t, t.TempDir())
+
+	for i, prompt := range []string{"first question", "second question"} {
+		var sent daemon.SendResult
+		if err := json.Unmarshal([]byte(cli(t, "sessions", "send", id[:8], prompt)), &sent); err != nil || !sent.OK {
+			t.Fatalf("albedo sessions send %q: ok=%v err=%v", prompt, sent.OK, err)
+		}
+		waitIdle(t, id, profile, i+1)
+	}
+
+	latest := cli(t, "sessions", "read", id[:8])
+	if !strings.Contains(latest, "[user] second question") || !strings.Contains(latest, "[assistant] echo: second question") {
+		t.Fatalf("read of the newest turn is missing it:\n%s", latest)
+	}
+	if strings.Contains(latest, "first question") {
+		t.Fatalf("read of one turn includes an older one:\n%s", latest)
+	}
+	both := cli(t, "sessions", "read", id[:8], "2")
+	if !strings.Contains(both, "[user] first question") || !strings.Contains(both, "[assistant] echo: second question") {
+		t.Fatalf("read of two turns is missing one:\n%s", both)
+	}
+
+	var parsed struct {
+		Session string `json:"session"`
+		Running bool   `json:"running"`
+		Events  []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal([]byte(cli(t, "sessions", "read", id, "1", "--json")), &parsed); err != nil || parsed.Session != id || parsed.Running || len(parsed.Events) == 0 {
+		t.Fatalf("read --json: %+v err=%v", parsed, err)
+	}
+
+	if _, stderr, err := runCLI("sessions", "read", id, "0"); err == nil || !strings.Contains(stderr, "positive number") {
+		t.Fatalf("read with zero turns: err=%v stderr=%s", err, stderr)
+	}
+}
+
 // Sending to a session that does not exist must fail loudly rather than queue
 // a prompt into nothing.
 func TestSendToUnknownSessionFails(t *testing.T) {
