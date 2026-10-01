@@ -243,3 +243,52 @@ class ModelCatalogSelectionTests(unittest.TestCase):
         self.assertEqual(subscription["output"], 8000)
         self.assertEqual(subscription["input"], ["text", "image", "pdf"])
         self.assertEqual(subscription["efforts"], ["low", "medium", "high"])
+
+    def test_known_reasoning_models_keep_empty_catalog_efforts(self):
+        catalog = {
+            "openai": {
+                "models": {
+                    "o3-disjoint": {
+                        "id": "o3-disjoint",
+                        "reasoning_options": [{"type": "effort", "values": ["low"]}],
+                    },
+                    "o3-empty": {"id": "o3-empty"},
+                }
+            },
+            "mirror": {
+                "models": {
+                    "o3-disjoint": {
+                        "id": "o3-disjoint",
+                        "reasoning_options": [{"type": "effort", "values": ["high"]}],
+                    }
+                }
+            },
+        }
+        (self.app.home / "models.json").write_text(json.dumps(catalog))
+        self.app.restart()
+        listed = self.listed("openai", "https://gateway.example/v1")
+        self.assertEqual([item["id"] for item in listed], ["o3-disjoint", "o3-empty"])
+        self.assertEqual([item["efforts"] for item in listed], [[], []])
+        self.app.restart()
+        self.assertEqual(self.listed("openai"), listed)
+
+    def test_efforts_are_inferred_only_for_a_model_absent_from_a_valid_catalog(self):
+        with self.app.api(
+            "/sessions",
+            {"workspace": str(self.app.workspace), "model": "o3-unlisted"},
+        ) as response:
+            session = json.load(response)["id"]
+        with self.app.api(
+            f"/sessions/{session}/commands", {"name": "/effort"}
+        ) as response:
+            self.assertEqual(
+                json.load(response)["result"]["available"], ["low", "medium", "high"]
+            )
+        # A corrupt catalog cannot establish that the model is absent.
+        (self.app.home / "models.json").write_text("{")
+        self.app.restart()
+        with self.app.api(
+            "/sessions",
+            {"workspace": str(self.app.workspace), "model": "o3-unlisted"},
+        ) as response:
+            self.assertIsNone(json.load(response)["effort"])

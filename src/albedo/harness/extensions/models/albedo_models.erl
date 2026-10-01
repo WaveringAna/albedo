@@ -85,12 +85,12 @@ lookup(Catalog0, Model0, Endpoint0) ->
     try
         case catalog(Catalog) of
             {ok, #{index := Index, providers := Providers}} ->
-                encoded('albedo@harness@extensions@models@catalog':select(
-                    maps:get(Model, Index, []), Providers, host(Endpoint)));
-            Error -> Error
+                'albedo@harness@extensions@models@catalog':select(
+                    maps:get(Model, Index, []), Providers, host(Endpoint));
+            {error, Reason} -> {error, {unavailable, Reason}}
         end
     catch
-        _:_ -> {error, <<"models catalog lookup failed">>}
+        _:_ -> {error, {unavailable, <<"models catalog lookup failed">>}}
     end.
 
 %% A provider-owned transport must not borrow another provider's metadata
@@ -102,12 +102,12 @@ lookup_provider(Catalog0, Provider0, Model0) ->
     try
         case catalog(Catalog) of
             {ok, #{index := Index, providers := Providers}} ->
-                encoded('albedo@harness@extensions@models@catalog':select_provider(
-                    maps:get(Model, Index, []), Providers, Provider));
-            Error -> Error
+                'albedo@harness@extensions@models@catalog':select_provider(
+                    maps:get(Model, Index, []), Providers, Provider);
+            {error, Reason} -> {error, {unavailable, Reason}}
         end
     catch
-        _:_ -> {error, <<"models catalog lookup failed">>}
+        _:_ -> {error, {unavailable, <<"models catalog lookup failed">>}}
     end.
 
 %% Parsing 4 MiB per request would be wasteful, so a file revision is parsed once.
@@ -200,7 +200,7 @@ retrim(Catalog, Decoded, {_, Modified} = Revision) ->
             end
     end.
 
-%% Provider: {Host, Api, Env, SortedModelIds}. Model: {Id, Context, Output, Inputs}.
+%% Provider: {Host, Api, Env, SortedModelIds}. Model: {Id, Context, Output, Inputs, Efforts}.
 provider(Name, Provider, {Providers, Index}) when is_binary(Name), is_map(Provider) ->
     Models = case maps:get(<<"models">>, Provider, #{}) of
         M when is_map(M) -> maps:to_list(M);
@@ -262,15 +262,12 @@ list(Catalog0, Provider0, Endpoint0) ->
     try
         case catalog(Catalog) of
             {ok, CatalogData} ->
-                encoded('albedo@harness@extensions@models@catalog':list_provider(
-                    maps:get(providers, CatalogData), Provider, host(Endpoint)));
+                'albedo@harness@extensions@models@catalog':list_provider(
+                    maps:get(providers, CatalogData), Provider, host(Endpoint));
             Error -> Error
         end
     catch
         _:_ -> {error, <<"models catalog listing failed">>}
     end.
-
-encoded({ok, Json}) -> {ok, iolist_to_binary(Json)};
-encoded(Error) -> Error.
 
 text(Value) -> unicode:characters_to_list(Value).

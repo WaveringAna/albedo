@@ -325,6 +325,7 @@ class ExtensionTests(unittest.TestCase):
 
     @exclusive
     def test_python_activation_and_user_only_model_switch(self):
+        (self.app.home / "models.json").write_text("{}")
         requests = self.turn("activate demo via python", expected=2)
         self.assertIn("SKILL_PYTHON_ACTIVATION_OK", self.output(requests[-1]))
         session = self.app.session()

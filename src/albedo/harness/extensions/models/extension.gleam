@@ -3,10 +3,9 @@
 
 import albedo/daemon/store
 import albedo/harness/extension
+import albedo/harness/extensions/models/catalog.{type LookupError, MissingModel}
 import albedo/harness/settings
 import gleam/dynamic/decode
-import gleam/json
-import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -25,7 +24,7 @@ pub fn default_config() -> Config {
   Config(default_url, default_refresh_hours)
 }
 
-pub fn infer_reasoning_efforts(model: String) -> List(String) {
+fn infer_reasoning_efforts(model: String) -> List(String) {
   let id = string.lowercase(model)
   let reasoning =
     string.starts_with(id, "o1")
@@ -72,7 +71,7 @@ fn load_config() -> Result(Config, String) {
 
 /// Refresh the cache in the background when it is missing or older than the
 /// configured window. A failed fetch keeps the previous cache.
-pub fn refresh() -> Nil {
+fn refresh() -> Nil {
   case load_config() {
     Ok(Config(url, hours)) if hours > 0 ->
       native_refresh(path(), url, hours * 3_600_000)
@@ -85,14 +84,10 @@ pub fn refresh() -> Nil {
 /// an explicit `/reload models` never claims stale data was refreshed.
 pub fn reload() -> Result(Nil, String) {
   use Config(url, _) <- result.try(load_config())
-  reload_at(path(), url)
+  native_reload(path(), url)
 }
 
-pub fn reload_at(catalog: String, url: String) -> Result(Nil, String) {
-  native_reload(catalog, url)
-}
-
-pub fn path() -> String {
+fn path() -> String {
   settings.home() <> "/" <> catalog_file
 }
 
@@ -103,16 +98,9 @@ pub fn lookup(
   endpoint: Option(String),
 ) -> Option(extension.ModelInfo) {
   refresh()
-  lookup_at(path(), model, endpoint)
-}
-
-pub fn lookup_at(
-  catalog: String,
-  model: String,
-  endpoint: Option(String),
-) -> Option(extension.ModelInfo) {
+  let catalog = path()
   case native_lookup(catalog, model, option.unwrap(endpoint, "")) {
-    Error(_) -> {
+    Error(MissingModel) -> {
       let efforts = infer_reasoning_efforts(model)
       case efforts {
         [] -> None
@@ -126,9 +114,8 @@ pub fn lookup_at(
           )
       }
     }
-    Ok(encoded) ->
-      json.parse(encoded, info_decoder(catalog))
-      |> option.from_result
+    Error(_) -> None
+    Ok(info) -> Some(with_source(info, catalog))
   }
 }
 
@@ -139,80 +126,30 @@ pub fn lookup_provider(
   model: String,
 ) -> Option(extension.ModelInfo) {
   refresh()
-  lookup_provider_at(path(), provider, model)
-}
-
-pub fn lookup_provider_at(
-  catalog: String,
-  provider: String,
-  model: String,
-) -> Option(extension.ModelInfo) {
+  let catalog = path()
   case native_lookup_provider(catalog, provider, model) {
-    Ok(encoded) ->
-      json.parse(encoded, info_decoder(catalog)) |> option.from_result
+    Ok(info) -> Some(with_source(info, catalog))
     Error(_) -> None
   }
 }
 
 pub fn list(provider: String, endpoint: Option(String)) -> List(String) {
   refresh()
-  list_at(path(), provider, endpoint)
+  native_list(path(), provider, option.unwrap(endpoint, ""))
+  |> result.unwrap([])
 }
 
-pub fn list_at(
+fn with_source(
+  info: extension.ModelInfo,
   catalog: String,
-  provider: String,
-  endpoint: Option(String),
-) -> List(String) {
-  case native_list(catalog, provider, option.unwrap(endpoint, "")) {
-    Ok(encoded) ->
-      json.parse(encoded, decode.list(decode.string)) |> result.unwrap([])
-    Error(_) -> []
-  }
-}
-
-fn info_decoder(catalog: String) {
-  use model <- decode.field("model", decode.string)
-  use provider <- decode.field("provider", decode.string)
-  use context <- decode.optional_field(
-    "context",
-    None,
-    decode.optional(decode.int),
+) -> extension.ModelInfo {
+  extension.ModelInfo(
+    ..info,
+    source: "models.dev catalog cached at "
+      <> catalog
+      <> "; matched by "
+      <> info.source,
   )
-  use output <- decode.optional_field(
-    "output",
-    None,
-    decode.optional(decode.int),
-  )
-  use modalities <- decode.optional_field(
-    "input_modalities",
-    [],
-    decode.list(decode.string),
-  )
-  use api <- decode.optional_field("api", None, decode.optional(decode.string))
-  use env <- decode.optional_field("env", [], decode.list(decode.string))
-  use matched <- decode.field("matched", decode.string)
-  use efforts <- decode.optional_field(
-    "efforts",
-    [],
-    decode.list(decode.string),
-  )
-  let resolved_efforts = case efforts {
-    [] -> infer_reasoning_efforts(model)
-    _ -> efforts
-  }
-  decode.success(extension.ModelInfo(
-    model,
-    provider,
-    context,
-    None,
-    output,
-    modalities,
-    api,
-    env,
-    "models.dev catalog cached at " <> catalog <> "; matched by " <> matched,
-    resolved_efforts,
-  ))
 }
 
 @external(erlang, "albedo_models", "refresh")
@@ -226,21 +163,21 @@ fn native_lookup(
   catalog: String,
   model: String,
   endpoint: String,
-) -> Result(String, String)
+) -> Result(extension.ModelInfo, LookupError)
 
 @external(erlang, "albedo_models", "lookup_provider")
 fn native_lookup_provider(
   catalog: String,
   provider: String,
   model: String,
-) -> Result(String, String)
+) -> Result(extension.ModelInfo, LookupError)
 
 @external(erlang, "albedo_models", "list")
 fn native_list(
   catalog: String,
   provider: String,
   endpoint: String,
-) -> Result(String, String)
+) -> Result(List(String), String)
 
 /// Fills in missing fields of a ModelInfo (context tokens, max output tokens,
 /// input modalities, efforts, endpoint, environment) by looking up the model
@@ -250,35 +187,10 @@ pub fn complete_model(
   info: extension.ModelInfo,
   endpoint: Option(String),
 ) -> extension.ModelInfo {
-  case complete_models([info], endpoint) {
-    [completed] -> completed
-    _ -> info
+  case lookup(info.model, endpoint) {
+    Some(found) -> fill_info(info, found)
+    None -> info
   }
-}
-
-/// Batch completes a list of ModelInfo records against models.dev.
-/// Refreshes the models.dev cache at most once across the entire batch,
-/// then resolves each model against the local index.
-pub fn complete_models(
-  models: List(extension.ModelInfo),
-  endpoint: Option(String),
-) -> List(extension.ModelInfo) {
-  refresh()
-  complete_models_at(path(), models, endpoint)
-}
-
-/// Batch completes ModelInfo records using a specific catalog file path.
-pub fn complete_models_at(
-  catalog_path: String,
-  models: List(extension.ModelInfo),
-  endpoint: Option(String),
-) -> List(extension.ModelInfo) {
-  list.map(models, fn(item) {
-    case lookup_at(catalog_path, item.model, endpoint) {
-      Some(found) -> fill_info(item, found)
-      None -> item
-    }
-  })
 }
 
 fn fill_info(

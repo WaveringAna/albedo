@@ -111,6 +111,9 @@ func bootSuite() (func() (string, bool), error) {
 		[]byte(`{"models": {"refreshHours": 0}, "cacheTtl": {"url": null}}`), 0o600); writeErr != nil {
 		return teardown, writeErr
 	}
+	if writeErr := os.WriteFile(filepath.Join(home, "models.json"), []byte(`{}`), 0o600); writeErr != nil {
+		return teardown, writeErr
+	}
 
 	if _, stderr, startupErr := runCLI("sessions"); startupErr != nil {
 		return teardown, bootFailure(startupErr, stderr)
