@@ -263,7 +263,8 @@ type pieceKey struct {
 
 // pieceCache keeps rendered pieces in two generations: a hit moves a piece
 // into the fresh one, and the stale one is dropped once the fresh one fills,
-// so the pieces the transcript still shows stay cached.
+// so the pieces the transcript still shows stay cached. Each generation holds
+// at most maxPieceBytes of key and rendered text, excluding map overhead.
 type pieceCache struct {
 	fresh, stale map[pieceKey]string
 	ink          ink
@@ -294,16 +295,29 @@ func (c *pieceCache) get(key pieceKey) (string, bool) {
 // put keeps copies: the key and piece are slices of one moment's stream and
 // its rendering, and would hold all of it.
 func (c *pieceCache) put(key pieceKey, piece string) {
-	key.prev, key.block = strings.Clone(key.prev), strings.Clone(key.block)
+	if len(key.prev)+len(key.block)+len(piece) > maxPieceBytes {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if _, exists := c.fresh[key]; exists {
+		return
+	}
+	key.prev, key.block = strings.Clone(key.prev), strings.Clone(key.block)
 	c.store(key, strings.Clone(piece))
 }
 
 func (c *pieceCache) store(key pieceKey, piece string) {
-	if c.fresh == nil || c.bytes > maxPieceBytes {
+	if _, exists := c.fresh[key]; exists {
+		return
+	}
+	size := len(key.prev) + len(key.block) + len(piece)
+	if size > maxPieceBytes {
+		return
+	}
+	if c.fresh == nil || size > maxPieceBytes-c.bytes {
 		c.stale, c.fresh, c.bytes = c.fresh, map[pieceKey]string{}, 0
 	}
 	c.fresh[key] = piece
-	c.bytes += len(key.prev) + len(key.block) + len(piece)
+	c.bytes += size
 }
