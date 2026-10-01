@@ -1,4 +1,5 @@
-// Signed Gemini and Claude replay must survive Antigravity stream reduction and cross-model projection.
+// Signed replay and provider schema policy are tested offline because Antigravity
+// uses an authenticated fixed endpoint that the loopback E2E provider cannot reach.
 import albedo/harness/extensions/antigravity/catalog
 import albedo/harness/extensions/antigravity/stream
 import albedo/harness/extensions/antigravity/wire
@@ -6,6 +7,7 @@ import albedo/openai_api
 import albedo/openai_api/types
 import gleam/dynamic
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
@@ -65,6 +67,241 @@ fn body(model: String, request: types.Request) -> dynamic.Dynamic {
 fn at(value: dynamic.Dynamic, path: List(String), decoder: decode.Decoder(a)) {
   let assert Ok(found) = decode.run(value, decode.at(path, decoder))
   found
+}
+
+fn schema_json(source: String) -> json.Json {
+  let assert Ok(value) = json.parse(source, decode.dynamic)
+  types.encode_value(value)
+}
+
+fn schema_request(id: String, schema: json.Json) -> types.Request {
+  types.Request(
+    ..openai_api.request(id, [types.User("hi")]),
+    tools: [types.Tool("inputs", "Choose inputs", schema, False)],
+    options: types.Options(
+      ..types.defaults,
+      format: Some(types.JsonSchema("answer", schema, True)),
+    ),
+  )
+}
+
+fn tool_schema(value: dynamic.Dynamic) -> dynamic.Dynamic {
+  let assert [tool] =
+    at(value, ["request", "tools"], decode.list(decode.dynamic))
+  let assert [declaration] =
+    at(tool, ["functionDeclarations"], decode.list(decode.dynamic))
+  at(declaration, ["parameters"], decode.dynamic)
+}
+
+pub fn schema_resolves_references_and_merges_object_requirements_test() {
+  let schema =
+    schema_json(
+      "{
+    \"definitions\": {\"child\": {\"type\": \"boolean\"}},
+    \"$defs\": {\"child\": {\"type\": \"object\", \"properties\": {
+      \"value\": {\"type\": \"integer\"}
+    }, \"required\": [\"value\", \"missing\", 12]}},
+    \"properties\": {\"shared\": {\"type\": \"string\"}},
+    \"required\": [\"shared\", \"absent\", false],
+    \"allOf\": [
+      {\"title\": \"earlier\", \"properties\": {
+        \"shared\": {\"type\": \"number\"},
+        \"branch\": {\"type\": \"boolean\"},
+        \"children\": {\"type\": \"array\", \"items\": {\"$ref\": \"#/arbitrary/path/child\"}}
+      }, \"required\": [\"children\", \"branch\"]},
+      {\"title\": \"later\", \"properties\": {\"branch\": {\"type\": \"string\"}},
+       \"required\": [\"shared\", \"branch\", null]}
+    ]
+  }",
+    )
+  let actual = tool_schema(body(gemini, schema_request(gemini, schema)))
+  assert at(actual, ["type"], decode.string) == "object"
+  assert at(actual, ["title"], decode.string) == "later"
+  assert at(actual, ["properties", "shared", "type"], decode.string) == "string"
+  assert at(actual, ["properties", "branch", "type"], decode.string)
+    == "boolean"
+  assert at(actual, ["required"], decode.list(decode.string))
+    == ["branch", "children", "shared"]
+  let child = at(actual, ["properties", "children", "items"], decode.dynamic)
+  assert at(child, ["type"], decode.string) == "object"
+  assert at(child, ["properties", "value", "type"], decode.string) == "integer"
+  assert at(child, ["required"], decode.list(decode.string)) == ["value"]
+  let assert Error(_) = decode.run(actual, decode.at(["allOf"], decode.dynamic))
+}
+
+pub fn schema_reduces_unions_and_keeps_constraint_guidance_test() {
+  let schema =
+    schema_json(
+      "{\"type\": \"object\", \"properties\": {
+    \"nullable\": {\"anyOf\": [{\"type\": \"null\"}, {\"type\": \"integer\"}]},
+    \"typed\": {\"type\": [null, \"null\", \"boolean\", \"string\"]},
+    \"choice\": {\"oneOf\": [{\"const\": 7}, {\"enum\": [true, \"seven\", null, 7]}]},
+    \"constant\": {\"const\": false},
+    \"mixed\": {\"description\": \"Pick\", \"anyOf\": [{\"type\": \"string\"}, {\"type\": \"number\"}]},
+    \"limited\": {\"type\": \"string\", \"description\": \"Name\", \"pattern\": \"^[a-z]+$\", \"minLength\": 2}
+  }}",
+    )
+  let actual = tool_schema(body(gemini, schema_request(gemini, schema)))
+  let properties = at(actual, ["properties"], decode.dynamic)
+  assert at(properties, ["nullable", "type"], decode.string) == "integer"
+  assert at(properties, ["typed", "type"], decode.string) == "boolean"
+  assert at(properties, ["choice", "type"], decode.string) == "string"
+  assert at(properties, ["choice", "enum"], decode.list(decode.string))
+    == ["7", "seven", "true"]
+  assert at(properties, ["constant", "enum"], decode.list(decode.string))
+    == ["false"]
+  assert at(properties, ["mixed", "type"], decode.string) == "string"
+  assert at(properties, ["mixed", "description"], decode.string)
+    == "Pick (one of: string, number)"
+  let limited = at(properties, ["limited"], decode.dynamic)
+  let guidance = at(limited, ["description"], decode.string)
+  assert string.contains(guidance, "Name")
+  assert string.contains(guidance, "pattern: \"^[a-z]+$\"")
+  assert string.contains(guidance, "minLength: 2")
+  let assert Error(_) =
+    decode.run(limited, decode.at(["pattern"], decode.dynamic))
+}
+
+fn item_depth(schema: dynamic.Dynamic) -> Int {
+  case decode.run(schema, decode.at(["items"], decode.dynamic)) {
+    Ok(items) -> 1 + item_depth(items)
+    Error(_) -> 0
+  }
+}
+
+pub fn schema_bounds_recursion_and_handles_malformed_keywords_test() {
+  let malformed =
+    schema_json(
+      "{
+    \"type\": \"object\", \"description\": false, \"title\": [], \"required\": true,
+    \"definitions\": [], \"$defs\": {\"loop\": {\"$ref\": \"#/$defs/loop\"}},
+    \"allOf\": [null, false, {\"properties\": [], \"required\": false}],
+    \"properties\": {
+      \"cycle\": {\"$ref\": \"#/$defs/loop\"},
+      \"object\": {\"type\": \"object\", \"properties\": [], \"required\": true},
+      \"array\": {\"type\": \"array\", \"items\": [false, {\"type\": \"string\"}]},
+      \"union\": {\"oneOf\": [3, {\"title\": false}, {\"title\": []}]},
+      \"enum\": {\"type\": \"string\", \"enum\": false},
+      \"combiner\": {\"anyOf\": false, \"allOf\": {}, \"oneOf\": 2}
+    }
+  }",
+    )
+  let actual = tool_schema(body(gemini, schema_request(gemini, malformed)))
+  let assert Ok(empty) = json.parse("{}", decode.dynamic)
+  assert at(actual, ["properties", "cycle"], decode.dynamic) == empty
+  assert at(actual, ["properties", "object", "properties"], decode.dynamic)
+    == empty
+  let assert Error(_) =
+    decode.run(actual, decode.at(["required"], decode.dynamic))
+  assert at(actual, ["title"], decode.string) == ""
+  assert at(actual, ["description"], decode.string) == ""
+  let assert Error(_) =
+    decode.run(
+      actual,
+      decode.at(["properties", "enum", "enum"], decode.dynamic),
+    )
+  assert at(actual, ["properties", "combiner"], decode.dynamic) == empty
+  assert at(actual, ["properties", "union", "description"], decode.string)
+    == "one of: schema, schema"
+  assert at(actual, ["properties", "array", "items", "type"], decode.string)
+    == "string"
+  let deep =
+    list.fold(list.repeat(Nil, 40), json.object([]), fn(items, _) {
+      json.object([#("type", json.string("array")), #("items", items)])
+    })
+  let schema =
+    json.object([
+      #("type", json.string("object")),
+      #("properties", json.object([#("deep", deep)])),
+    ])
+  let actual = tool_schema(body(gemini, schema_request(gemini, schema)))
+  let depth = item_depth(at(actual, ["properties", "deep"], decode.dynamic))
+  assert depth > 0
+  assert depth <= 32
+  let definitions =
+    int.range(0, 41, [], fn(definitions, index) {
+      let target = case index {
+        40 ->
+          json.object([
+            #("type", json.string("object")),
+            #(
+              "properties",
+              json.object([
+                #(
+                  "unreachable",
+                  json.object([#("type", json.string("string"))]),
+                ),
+              ]),
+            ),
+          ])
+        _ ->
+          json.object([
+            #("$ref", json.string("#/$defs/" <> int.to_string(index + 1))),
+          ])
+      }
+      [#(int.to_string(index), target), ..definitions]
+    })
+  let schema =
+    json.object([
+      #("$ref", json.string("#/$defs/0")),
+      #("$defs", json.object(definitions)),
+    ])
+  let actual = tool_schema(body(gemini, schema_request(gemini, schema)))
+  assert at(actual, ["type"], decode.string) == "object"
+  assert at(actual, ["properties"], decode.dynamic) == empty
+}
+
+pub fn both_model_families_normalize_tools_and_structured_responses_test() {
+  let schemas = [
+    #(
+      schema_json(
+        "{\"properties\": {\"answer\": {\"const\": 42}}, \"required\": [\"answer\", \"missing\"]}",
+      ),
+      True,
+    ),
+    #(json.bool(True), False),
+    #(
+      schema_json("{\"type\": \"array\", \"items\": {\"type\": \"string\"}}"),
+      False,
+    ),
+  ]
+  list.each([gemini, claude], fn(id) {
+    list.each(schemas, fn(entry) {
+      let #(schema, has_answer) = entry
+      let value = body(id, schema_request(id, schema))
+      let parameters = tool_schema(value)
+      let response =
+        at(
+          value,
+          ["request", "generationConfig", "responseSchema"],
+          decode.dynamic,
+        )
+      assert parameters == response
+      assert at(response, ["type"], decode.string) == "object"
+      assert at(
+          value,
+          ["request", "generationConfig", "responseMimeType"],
+          decode.string,
+        )
+        == "application/json"
+      case has_answer {
+        True -> {
+          assert at(
+              response,
+              ["properties", "answer", "enum"],
+              decode.list(decode.string),
+            )
+            == ["42"]
+          assert at(response, ["required"], decode.list(decode.string))
+            == ["answer"]
+        }
+        False -> {
+          let assert Ok(empty) = json.parse("{}", decode.dynamic)
+          assert at(response, ["properties"], decode.dynamic) == empty
+        }
+      }
+    })
+  })
 }
 
 fn chunk(json: String) -> String {

@@ -1,6 +1,7 @@
 //// Albedo requests as Cloud Code Assist `streamGenerateContent` envelopes.
 
 import albedo/harness/extensions/antigravity/catalog.{type Model}
+import albedo/harness/extensions/antigravity/schema
 import albedo/openai_api
 import albedo/openai_api/replay
 import albedo/openai_api/types.{
@@ -100,7 +101,7 @@ pub fn encode(
                     json.object([
                       #("name", json.string(tool.name)),
                       #("description", json.string(tool.description)),
-                      #("parameters", normalize_schema(tool.parameters)),
+                      #("parameters", schema.normalize(tool.parameters)),
                     ])
                   }),
                 ),
@@ -361,7 +362,7 @@ fn generation(
     ]
     Some(types.JsonSchema(_, schema, _)) -> [
       #("responseMimeType", json.string("application/json")),
-      #("responseSchema", normalize_schema(schema)),
+      #("responseSchema", schema.normalize(schema)),
     ]
   })
   |> json.object
@@ -470,9 +471,6 @@ fn optional(
 
 @external(erlang, "albedo_antigravity", "encode")
 pub fn encode_value(value: Dynamic) -> Json
-
-@external(erlang, "albedo_antigravity", "normalize_schema")
-pub fn normalize_schema(schema: Json) -> Json
 
 @external(erlang, "albedo_antigravity", "session_number")
 fn session_number(seed: String) -> String
