@@ -44,21 +44,19 @@ def _ready(value):
 
 class Text(str):
     """A result that is ready now. Awaiting it is harmless, so a synchronous
-    call reads the same with or without `await`. It is the text itself, not a
-    response object, so `.content` and `.text` explain that instead of failing bare."""
+    call reads the same with or without `await`. `.content` and `.text` are the
+    text itself, for code written against a response object."""
 
     def __await__(self):
         return _ready(self)
 
-    def __getattr__(self, name: str):
-        if name in ("content", "text"):
-            raise AttributeError(
-                f"this result is the text itself, not an object with .{name}; "
-                "print it, slice it, or pass it on directly"
-            )
-        raise AttributeError(
-            f"{type(self).__name__!r} object has no attribute {name!r}"
-        )
+    @property
+    def content(self) -> str:
+        return str(self)
+
+    @property
+    def text(self) -> str:
+        return str(self)
 
 
 class ReadyList(list):
