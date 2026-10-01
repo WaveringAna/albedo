@@ -26,14 +26,7 @@ func TestTUILoginAddsAManualProviderThroughTheDaemon(t *testing.T) {
 	providerRoute(t, echoReply)
 	// The wizard uses the suite daemon for profile persistence.
 	t.Setenv("ALBEDO_HOME", suite.home)
-	// The saved provider would change the next run's /login, so it is undone.
-	configPath := filepath.Join(suite.home, "config.json")
-	saved, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.WriteFile(configPath, saved, 0o600) })
-	forgetKey(t, name)
+	preserveLoginState(t, name)
 	before, err := daemon.ProviderProfiles(context.Background(), conn(t))
 	if err != nil {
 		t.Fatalf("suite config: %v", err)
@@ -116,11 +109,24 @@ func TestTUILoginAddsAManualProviderThroughTheDaemon(t *testing.T) {
 	}
 }
 
-// forgetKey removes the api key a scenario saves for profile, once it ends.
-func forgetKey(t *testing.T, profile string) {
+// preserveLoginState registers cleanup that deletes the temporary provider and
+// its API key before restoring the saved config.
+func preserveLoginState(t *testing.T, profile string) {
 	t.Helper()
+	configPath := filepath.Join(suite.home, "config.json")
+	saved, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	connection := conn(t)
-	t.Cleanup(func() { daemon.DeleteProvider(context.Background(), connection, profile) })
+	t.Cleanup(func() {
+		if err := daemon.DeleteProvider(context.Background(), connection, profile); err != nil {
+			t.Errorf("delete temporary provider %q: %v", profile, err)
+		}
+		if err := os.WriteFile(configPath, saved, 0o600); err != nil {
+			t.Errorf("restore login config: %v", err)
+		}
+	})
 }
 
 // An Anthropic API key rides the claude extension that otherwise signs in,
@@ -131,13 +137,7 @@ func TestTUILoginSavesAnAnthropicAPIKeyProfile(t *testing.T) {
 	name, key, model := "claude", "sk-ant-fixture", "claude-fixture"
 	providerRoute(t, echoReply)
 	t.Setenv("ALBEDO_HOME", suite.home)
-	configPath := filepath.Join(suite.home, "config.json")
-	saved, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.WriteFile(configPath, saved, 0o600) })
-	forgetKey(t, name)
+	preserveLoginState(t, name)
 	d := newTUIDriver(t)
 	expect := func(want tui.LoginStep) {
 		t.Helper()
