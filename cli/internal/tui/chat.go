@@ -650,11 +650,11 @@ func (m *ChatModel) trimSettledLines() {
 			}
 		}
 		m.userRows = kept
+		// Rendered rows own their text: body chunks are concatenated with a
+		// nonempty rail; separators retain only small rail strings or empty text.
 		fresh := make([]string, len(m.settledLines))
-		for i := range m.settledLines {
-			fresh[i] = strings.Clone(m.settledLines[i])
-			m.settledLines[i] = ""
-		}
+		copy(fresh, m.settledLines)
+		clear(m.settledLines)
 		m.settledLines = fresh
 	}
 }
