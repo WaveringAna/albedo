@@ -8,7 +8,24 @@ import importlib
 import inspect
 import keyword
 from dataclasses import dataclass
-from typing import Literal, NotRequired, Protocol, TypedDict, cast
+from typing import Protocol, cast
+
+from albedo_protocol import (
+    Execute as Execute,
+    HostSuccess as HostSuccess,
+    HostFailure as HostFailure,
+    HostReply as HostReply,
+    Reply as Reply,
+    Interrupt as Interrupt,
+    Shutdown as Shutdown,
+    JobSlot as JobSlot,
+    Invoke as Invoke,
+    Introspect as Introspect,
+    Release as Release,
+    State as State,
+    Incoming as Incoming,
+    SavedCell as SavedCell,
+)
 
 RAW_RETAIN = 1024 * 1024  # bytes a late pipe reader can replay
 
@@ -110,106 +127,6 @@ class PythonApi:
     # Local shell admission, shared across the daemon's kernels. Completion
     # releases it through the existing verified `job` cleanup frame.
     job_slot: Callable[[str, Callable[[], None]], Awaitable[None]] | None = None
-
-
-class Execute(TypedDict):
-    type: Literal["execute"]
-    id: str
-    code: str
-    durable: NotRequired[bool]
-    max_edge: NotRequired[int]
-
-
-class HostSuccess(TypedDict):
-    ok: Literal[True]
-    value: object
-
-
-class HostFailure(TypedDict):
-    ok: Literal[False]
-    code: str
-    message: str
-
-
-HostReply = HostSuccess | HostFailure
-
-
-class Reply(TypedDict):
-    type: Literal["reply"]
-    id: str
-    value: HostReply
-
-
-class Interrupt(TypedDict):
-    type: Literal["interrupt"]
-    id: str
-    reason: NotRequired[Literal["deadline", "cancelled"]]
-
-
-class Shutdown(TypedDict):
-    type: Literal["shutdown"]
-
-
-class JobSlot(TypedDict):
-    type: Literal["job_slot"]
-    id: str
-    ok: bool
-    queued: NotRequired[bool]
-    message: NotRequired[str]
-
-
-class Invoke(TypedDict):
-    """One owner tool call: a namespace path or live reference, never both.
-
-    A `wait: true` frame (spelled "await" on the wire, a JSON key TypedDict
-    cannot express) awaits the live reference instead of calling a method.
-    """
-
-    type: Literal["invoke"]
-    id: str
-    name: NotRequired[str]
-    target: NotRequired[dict[str, str]]
-    args: NotRequired[list[object]]
-    kwargs: NotRequired[dict[str, object]]
-
-
-class Introspect(TypedDict):
-    type: Literal["introspect"]
-    id: str
-
-
-class Release(TypedDict):
-    type: Literal["release"]
-    handle: str
-
-
-class State(TypedDict):
-    """Save the namespace to disk, or revive it from an earlier save."""
-
-    type: Literal["snapshot", "restore"]
-    id: str
-    path: str
-
-
-Incoming = (
-    Execute
-    | Reply
-    | Interrupt
-    | Shutdown
-    | Invoke
-    | Introspect
-    | Release
-    | State
-    | JobSlot
-)
-
-
-class SavedCell(TypedDict):
-    id: str
-    source: str
-    started: bool
-    parent: str | None
-    finished: bool
 
 
 class PythonPlugin(Protocol):

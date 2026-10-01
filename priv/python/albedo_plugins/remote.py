@@ -31,6 +31,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from albedo_protocol import RemoteCall, RemoteMessage, parse_remote
+
 from albedo_api import PythonApi, ReadyList, excerpt
 import albedo_shell
 
@@ -126,6 +128,9 @@ def _settings() -> dict[str, str]:
     if not isinstance(section, dict):
         raise RemoteError("extensions.json remote section must be an object")
     keys = ("host", "remoteCwd", "python")
+    for key in keys:
+        if key in section and not isinstance(section[key], str):
+            raise RemoteError(f"extensions.json remote.{key} must be a string")
     return {key: section[key] for key in keys if key in section}
 
 
@@ -658,36 +663,37 @@ class RemoteConnection:
                 size = struct.unpack(">I", header)[0]
                 if size > MAX_FRAME:
                     raise RemoteLost("remote control frame exceeds the ceiling")
-                frame = json.loads(await self._stdout.readexactly(size))
+                frame = parse_remote(json.loads(await self._stdout.readexactly(size)))
                 self._dispatch(frame)
         except asyncio.CancelledError:
             raise
-        except (asyncio.IncompleteReadError, ConnectionResetError, OSError, ValueError):
+        except Exception:
+            pass  # Every reader failure invalidates its outstanding work below.
+        finally:
             self._lost()
 
-    def _dispatch(self, frame: dict[str, Any]) -> None:
-        kind = frame.get("type")
-        if kind in ("invoked", "introspected"):
-            future = self._pending.get(frame.get("id"))
+    def _dispatch(self, frame: RemoteMessage) -> None:
+        if frame["type"] == "invoked" or frame["type"] == "introspected":
+            future = self._pending.get(frame["id"])
             if future is not None and not future.done():
-                future.set_result(frame)
-        elif kind in ("ready", "startup_error"):
+                future.set_result(dict(frame))
+        elif frame["type"] in ("ready", "startup_error"):
             if self._handshake is not None and not self._handshake.done():
-                self._handshake.set_result(frame)
-        elif kind == "call":
+                self._handshake.set_result(dict(frame))
+        elif frame["type"] == "call":
             _ = loop.create_task(self._relay(frame))
-        elif kind == "mirror" and isinstance(frame.get("handle"), str):
-            self._mirrors[frame["handle"]] = frame
-        elif kind == "job_start" and isinstance(frame.get("id"), str):
+        elif frame["type"] == "mirror":
+            self._mirrors[frame["handle"]] = dict(frame)
+        elif frame["type"] == "job_start":
             self._live.add(frame["id"])
             _report_live()
-        elif kind == "job" and isinstance(frame.get("id"), str):
+        elif frame["type"] == "job":
             self._live.discard(frame["id"])
             _report_live()
         # trace, done, cleanup describe remote cells; those are addressed
         # through references, not events on this side.
 
-    async def _relay(self, frame: dict[str, Any]) -> None:
+    async def _relay(self, frame: RemoteCall) -> None:
         """Answer one remote host-route call against this session's daemon."""
         try:
             value = await host_call(frame["method"], frame["args"])
@@ -1352,12 +1358,15 @@ class Remote:
             if connection._process is not None:
                 if connection._reader is not None:
                     connection._reader.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await connection._reader
                 if connection._drain is not None:
                     connection._drain.cancel()
                 if connection._process.returncode is None:
                     connection._process.terminate()
             connection._process = None
             connection._stdin = connection._stdout = None
+            connection.closed = False
             print(
                 f"[remote] kernel boot failed on {target['host']}: {error}; "
                 "degraded to ssh command mode: rem.run(program, *args) still works; "

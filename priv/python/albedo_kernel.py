@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import albedo_api
+from albedo_protocol import parse_incoming
 import albedo_proc
 import albedo_shell
 from collections.abc import Awaitable, Callable, Iterable, Sequence
@@ -162,7 +163,7 @@ def reader():
             size = struct.unpack(">I", read_exact(4))[0]
             if size > MAX_FRAME:
                 raise ValueError("control frame too large")
-            message = cast(albedo_api.Incoming, json.loads(read_exact(size)))
+            message = parse_incoming(json.loads(read_exact(size)))
             if message["type"] == "shutdown":
                 die()
             elif message["type"] == "interrupt":
@@ -177,14 +178,13 @@ def reader():
                         LOOP.call_soon_threadsafe(task.cancel)
             else:
                 _ = LOOP.call_soon_threadsafe(deliver, message)
-    except (EOFError, OSError, ValueError, KeyError):
+    except Exception:
         die()
 
 
-def deliver(message: dict[str, object]) -> None:
-    kind = message["type"]
-    if kind == "job_slot":
-        entry = JOB_SLOTS.get(cast(str, message["id"]))
+def deliver(message: albedo_api.Incoming) -> None:
+    if message["type"] == "job_slot":
+        entry = JOB_SLOTS.get(message["id"])
         if entry is not None and not entry[0].done():
             slot, on_queued = entry
             if message.get("ok") is True:
@@ -195,13 +195,13 @@ def deliver(message: dict[str, object]) -> None:
                 slot.set_exception(
                     RuntimeError(str(message.get("message", "job admission failed")))
                 )
-    elif kind == "reply":
+    elif message["type"] == "reply":
         future = PENDING.pop(message["id"], None)
         if future is not None and not future.done():
-            future.set_result(cast(albedo_api.HostReply, message["value"]))
-    elif kind == "invoke":
+            future.set_result(message["value"])
+    elif message["type"] == "invoke":
         _ = LOOP.create_task(serve_invoke(message))
-    elif kind == "introspect":
+    elif message["type"] == "introspect":
         send(
             {
                 "type": "introspected",
@@ -216,8 +216,8 @@ def deliver(message: dict[str, object]) -> None:
                 ],
             }
         )
-    elif kind == "release":
-        LIVE.pop(cast(str, message.get("handle", "")), None)
+    elif message["type"] == "release":
+        LIVE.pop(message["handle"], None)
     else:
         QUEUE.put_nowait(cast(albedo_api.Execute | albedo_api.State, message))
 
@@ -1118,7 +1118,7 @@ async def _target_object(target: object) -> object | None:
     return None
 
 
-async def serve_invoke(message: dict[str, object]) -> None:
+async def serve_invoke(message: albedo_api.Invoke) -> None:
     """One owner tool call: resolve, call, await by the cell rule, answer one reference.
 
     The reply inlines the value when it can cross and otherwise retains the
@@ -1129,7 +1129,7 @@ async def serve_invoke(message: dict[str, object]) -> None:
     never racy, and every call's result object is retained briefly as a pending
     target for method calls that raced ahead of the reply.
     """
-    call_id = cast(str, message["id"])
+    call_id = message["id"]
     OWNER_TASKS[call_id] = cast(asyncio.Task[object], asyncio.current_task())
     future: asyncio.Future[tuple[bool, object]] = LOOP.create_future()
     PENDING_OBJECTS[call_id] = future
@@ -1151,7 +1151,7 @@ async def serve_invoke(message: dict[str, object]) -> None:
                     _mirror_state(result) if getattr(result, "capture", None) else None
                 )
             else:
-                name = cast(str, message.get("name", ""))
+                name = message.get("name", "")
                 if base is None:
                     call = _resolve(name)
                 else:
@@ -1170,9 +1170,7 @@ async def serve_invoke(message: dict[str, object]) -> None:
                 ]
                 kwargs = {
                     key: _owner_args(item)
-                    for key, item in cast(
-                        dict[str, object], message.get("kwargs", {})
-                    ).items()
+                    for key, item in message.get("kwargs", {}).items()
                 }
                 if not callable(call):
                     raise TypeError(f"owner invoke {name!r} is not callable")

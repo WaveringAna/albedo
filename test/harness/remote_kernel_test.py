@@ -1,6 +1,11 @@
-"""The remote control-frame protocol must preserve pending call races, live references and typed values without requiring an SSH server."""
+"""Exercise owner frames the daemon cannot generate, including malformed messages.
+
+The real kernel must clean up children on invalid input while preserving pending
+call races, live references and typed values without an SSH server.
+"""
 
 import json
+import select
 import struct
 import subprocess
 import sys
@@ -40,7 +45,8 @@ class OwnerChannel:
         self.buffered = []
 
     def close(self):
-        self.send({"type": "shutdown"})
+        if self.process.poll() is None:
+            self.send({"type": "shutdown"})
         self.process.wait(timeout=10)
         assert self.process.stdin is not None
         assert self.process.stdout is not None
@@ -58,6 +64,8 @@ class OwnerChannel:
 
     def recv(self):
         assert self.process.stdout is not None
+        if not select.select([self.process.stdout], [], [], 10)[0]:
+            raise AssertionError("kernel did not send a frame within 10 seconds")
         header = self.process.stdout.read(4)
         size = struct.unpack(">I", header)[0]
         assert size <= MAX_FRAME, "control frame exceeds the ceiling"
@@ -98,6 +106,63 @@ class KernelInvokeTest(unittest.TestCase):
         ready = self.channel.recv()
         self.assertEqual(ready["type"], "ready")
 
+    def test_malformed_frames_shutdown_and_clean_up_a_child(self):
+        frames = [
+            [],
+            None,
+            {},
+            {"type": "unknown"},
+            {"type": "execute", "id": "x"},
+            {"type": "execute", "id": "x", "code": 7},
+            {"type": "execute", "id": "x", "code": "", "durable": 1},
+            {"type": "execute", "id": "x", "code": "", "max_edge": True},
+            {"type": "invoke", "id": []},
+            {"type": "invoke", "id": "x", "args": {}},
+            {"type": "invoke", "id": "x", "kwargs": []},
+            {"type": "invoke", "id": "x", "await": 1},
+            {"type": "invoke", "id": "x", "target": {"handle": "a", "pending": "b"}},
+            {"type": "invoke", "id": "x", "target": {"handle": 1}},
+            {"type": "reply", "id": "x", "value": []},
+            {"type": "reply", "id": "x", "value": {"ok": 1, "value": None}},
+            {"type": "reply", "id": "x", "value": {"ok": True}},
+            {"type": "reply", "id": "x", "value": {"ok": False, "code": "bad"}},
+            {"type": "job_slot", "id": "x", "ok": "yes"},
+            {"type": "interrupt", "id": "x", "reason": "other"},
+            {"type": "restore", "id": "x", "path": None},
+            {"type": "release", "handle": []},
+        ]
+        payloads = [json.dumps(frame).encode() for frame in frames] + [b"{bad json"]
+        wire_frames = [struct.pack(">I", len(data)) + data for data in payloads]
+        wire_frames.append(struct.pack(">I", MAX_FRAME + 1))
+        for wire in wire_frames:
+            with self.subTest(wire=wire[:160]):
+                channel = OwnerChannel(["run"])
+                try:
+                    self.assertEqual(channel.recv()["type"], "ready")
+                    channel.invoke(
+                        "child", name="run", args=python("import time; time.sleep(60)")
+                    )
+                    started = channel.wait_for(
+                        lambda frame: frame["type"] == "job_start"
+                    )
+                    assert channel.process.stdin is not None
+                    channel.process.stdin.write(wire)
+                    channel.process.stdin.flush()
+                    channel.process.wait(timeout=5)
+                    # Cleanup reaps the child before the kernel kills its own group.
+                    self.assertFalse(Path(f"/proc/{started['pgid']}").exists())
+                finally:
+                    channel.close()
+
+    def test_extra_fields_and_missing_methods_keep_the_channel_open(self):
+        reply = self.channel.invoke(
+            "extra", name="files.read", args=["missing"], extra=True
+        )
+        self.assertFalse(reply["ok"])
+        self.assertFalse(self.channel.invoke("missing")["ok"])
+        self.channel.send({"type": "introspect", "id": "still-open", "extra": []})
+        self.assertIn("run", self.channel.recv_reply("still-open")["names"])
+
     def test_pending_targets_resolve_calls_raced_ahead_of_their_reply(self):
         self.channel.send(
             {
@@ -119,6 +184,33 @@ class KernelInvokeTest(unittest.TestCase):
             "r3", target={"handle": reply["handle"]}, **{"await": True}
         )
         self.assertEqual(done["state"]["tail"], "raced\ndone\n")
+
+    def test_interrupt_cancels_an_await_without_losing_the_reference(self):
+        reply = self.channel.invoke(
+            "job",
+            name="run",
+            args=python("import time; time.sleep(1); print('finished')"),
+        )
+        handle = reply["handle"]
+        self.channel.send(
+            {
+                "type": "invoke",
+                "id": "wait",
+                "target": {"handle": handle},
+                "await": True,
+            }
+        )
+        # A mirror arrives after the await task has had a loop turn to start.
+        self.channel.wait_for(lambda frame: frame["type"] == "mirror")
+        self.channel.send({"type": "interrupt", "id": "wait"})
+        cancelled = self.channel.recv_reply("wait")
+        self.assertFalse(cancelled["ok"])
+        self.assertTrue(cancelled["cancelled"])
+        finished = self.channel.invoke(
+            "finish", target={"handle": handle}, **{"await": True}
+        )
+        self.assertTrue(finished["ok"])
+        self.assertEqual(finished["state"]["tail"], "finished\n")
 
     def test_a_failing_pending_call_propagates_its_error(self):
         self.channel.send({"type": "invoke", "id": "f1", "name": "nope"})
