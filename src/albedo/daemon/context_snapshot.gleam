@@ -17,6 +17,18 @@ const page_characters = 8000
 
 const preview_characters = 180
 
+type InspectionEntry {
+  UserText(text: String)
+  UserImageText(text: String, image: ImageMetadata)
+  AssistantText(text: String)
+  ToolResult(id: String, output: String, images: List(ImageMetadata))
+  ReplayMarker
+}
+
+type ImageMetadata {
+  ImageMetadata(mime: String, width: Int, height: Int, decoded_bytes: Int)
+}
+
 pub type SectionKind {
   Instructions
   History
@@ -218,13 +230,6 @@ pub fn from_request(
   request: types.Request,
   observation: Option(context_size.Observation),
 ) -> Snapshot {
-  let sections =
-    [
-      instructions_section(request.instructions),
-      history_section(request.input, observation),
-      tools_section(protocol, request.tools),
-    ]
-    |> list.filter_map(option.to_result(_, Nil))
   let calls =
     list.filter_map(request.input, fn(input) {
       case input {
@@ -232,6 +237,13 @@ pub fn from_request(
         _ -> Error(Nil)
       }
     })
+  let sections =
+    [
+      instructions_section(request.instructions),
+      history_section(request.input, observation),
+      tools_section(protocol, request.tools),
+    ]
+    |> list.filter_map(option.to_result(_, Nil))
   case
     ready(
       captured_at,
@@ -277,17 +289,24 @@ fn history_section(
 ) -> Option(Section) {
   case history {
     [] -> None
-    history ->
+    history -> {
+      let item_count = list.length(history)
+      // Exact byte counting still temporarily serializes replay JSON. The
+      // inspection entries remove retained payloads, not that preparation cost.
+      let byte_count = context_size.inputs_bytes(history)
+      let omitted = input_omission(history)
+      let entries = list.map(history, inspection_entry)
       Some(lazy_section(
         "history",
         "prepared conversation",
         History,
         history_source(observation),
-        list.length(history),
-        context_size.inputs_bytes(history),
-        fn() { render_inputs(history) },
-        input_omission(history),
+        item_count,
+        byte_count,
+        fn() { render_entries(entries) },
+        omitted,
       ))
+    }
   }
 }
 
@@ -316,9 +335,25 @@ pub fn retained_tool_calls(snapshot: Snapshot) -> Option(List(String)) {
   }
 }
 
-fn render_inputs(inputs: List(types.Input)) -> String {
-  inputs
-  |> list.map(render_input)
+fn inspection_entry(input: types.Input) -> InspectionEntry {
+  case input {
+    types.User(text) -> UserText(text)
+    types.UserImage(text, image) -> UserImageText(text, image_metadata(image))
+    types.Assistant(text) -> AssistantText(text)
+    types.ToolOutput(id, output, images) ->
+      ToolResult(id, output, list.map(images, image_metadata))
+    types.Replay(_) -> ReplayMarker
+  }
+}
+
+fn image_metadata(image: types.Image) -> ImageMetadata {
+  let #(mime, width, height, bytes) = types.image_meta(image)
+  ImageMetadata(mime, width, height, bytes)
+}
+
+fn render_entries(entries: List(InspectionEntry)) -> String {
+  entries
+  |> list.map(render_entry)
   |> string.join(
     "
 
@@ -326,26 +361,25 @@ fn render_inputs(inputs: List(types.Input)) -> String {
   )
 }
 
-fn render_input(input: types.Input) -> String {
-  case input {
-    types.User(text) -> "[user]
+fn render_entry(entry: InspectionEntry) -> String {
+  case entry {
+    UserText(text) -> "[user]
 " <> text
-    types.UserImage(text, image) -> "[user]
+    UserImageText(text, image) -> "[user]
 " <> text <> "
 " <> image_label(image)
-    types.Assistant(text) -> "[assistant]
+    AssistantText(text) -> "[assistant]
 " <> text
-    types.ToolOutput(id, output, images) -> "[tool output · " <> id <> "]
+    ToolResult(id, output, images) -> "[tool output · " <> id <> "]
 " <> output <> string.concat(
         list.map(images, fn(image) { "\n" <> image_label(image) }),
       )
-    types.Replay(_) ->
-      "[provider replay item · opaque provider payload omitted]"
+    ReplayMarker -> "[provider replay item · opaque provider payload omitted]"
   }
 }
 
-fn image_label(image: types.Image) -> String {
-  let #(mime, width, height, bytes) = types.image_meta(image)
+fn image_label(image: ImageMetadata) -> String {
+  let ImageMetadata(mime, width, height, bytes) = image
   "[image · "
   <> mime
   <> " · "
