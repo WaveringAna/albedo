@@ -33,9 +33,13 @@ func execClipboardCommand(ctx context.Context, name string, args ...string) ([]b
 	if err != nil {
 		return nil, err
 	}
+	defer stdout.Close()
 	if err = cmd.Start(); err != nil {
 		return nil, err
 	}
+	// Killing the command does not close stdout held open by a descendant.
+	stopClosingStdout := context.AfterFunc(ctx, func() { _ = stdout.Close() })
+	defer stopClosingStdout()
 
 	// The extra byte detects oversized output without buffering the rest.
 	limited := io.LimitReader(stdout, MaxClipboardImageBytes+1)
@@ -48,6 +52,9 @@ func execClipboardCommand(ctx context.Context, name string, args ...string) ([]b
 
 	if len(buf) > MaxClipboardImageBytes {
 		return nil, fmt.Errorf("clipboard image exceeds %d byte limit", MaxClipboardImageBytes)
+	}
+	if ctx.Err() != nil {
+		return buf, ctx.Err()
 	}
 	if err != nil {
 		return buf, err
