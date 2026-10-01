@@ -60,6 +60,17 @@ class PythonToolsTests(unittest.TestCase):
         self.assertIn("before", output)
         self.assertIn("after", output)
 
+    def test_a_file_result_is_awaitable_and_explains_a_missing_content_attribute(self):
+        (self.app.workspace / "note.txt").write_text("hello\n")
+        output = self.execute(
+            "text = await files.read('note.txt')\n"
+            "print('awaited:', text.strip())\n"
+            "try:\n    text.content\n"
+            "except AttributeError as exc:\n    print('hint:', exc)"
+        )
+        self.assertIn("awaited: 1 | hello", output)
+        self.assertIn("is the text itself", output)
+
     def test_paths_searches_a_list_of_directories_with_a_list_of_globs(self):
         for directory, name in [("a", "one.md"), ("b", "two.txt"), ("c", "three.md")]:
             (self.app.workspace / directory).mkdir()
