@@ -373,7 +373,7 @@ class Job:
         if group is not None:
             try:
                 os.killpg(group.pgid, signum)
-            except ProcessLookupError, PermissionError:
+            except (ProcessLookupError, PermissionError):
                 pass
 
     def _pause(self) -> None:

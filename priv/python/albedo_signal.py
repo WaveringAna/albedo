@@ -44,7 +44,7 @@ def target(spec: object) -> albedo_proc.Group:
     if not whole:
         try:
             whole = os.getpgid(operand) == operand
-        except ProcessLookupError, PermissionError:
+        except (ProcessLookupError, PermissionError):
             pass
     return albedo_proc.Group(
         operand, leader if isinstance(leader, str) else None, whole

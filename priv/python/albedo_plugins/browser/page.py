@@ -1051,7 +1051,7 @@ class Page:
                                 arguments=[{"objectId": obj}],
                             )
                         )
-                    except JavaScriptError, ProtocolError:
+                    except (JavaScriptError, ProtocolError):
                         pass
                     finally:
                         await state.cdp.send("Runtime.releaseObject", {"objectId": obj})

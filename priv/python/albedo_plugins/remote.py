@@ -662,7 +662,7 @@ class RemoteConnection:
                 self._dispatch(frame)
         except asyncio.CancelledError:
             raise
-        except asyncio.IncompleteReadError, ConnectionResetError, OSError, ValueError:
+        except (asyncio.IncompleteReadError, ConnectionResetError, OSError, ValueError):
             self._lost()
 
     def _dispatch(self, frame: dict[str, Any]) -> None:

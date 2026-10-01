@@ -141,7 +141,7 @@ def snapshot(path: str) -> str | None:
             if len(value) <= LIMIT and b"\0" not in value
             else None
         )
-    except OSError, UnicodeError:
+    except (OSError, UnicodeError):
         return None
 
 

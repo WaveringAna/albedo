@@ -244,7 +244,7 @@ class OwnedChrome:
                         r"/devtools/browser/[a-zA-Z0-9._-]+", path
                     ):
                         return f"ws://127.0.0.1:{port}{path}"
-            except FileNotFoundError, UnicodeError:
+            except (FileNotFoundError, UnicodeError):
                 pass  # The file may not exist yet, or Chrome may still be writing it.
             await asyncio.sleep(0.05)
 

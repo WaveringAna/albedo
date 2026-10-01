@@ -102,6 +102,7 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
                 "HOME": self.home,
                 "ALBEDO_HOME": os.path.join(self.home, ".albedo"),
                 "ALBEDO_SSH": "loopback",
+                "SHELL": "/bin/sh",
             },
         )
         self.environment.start()
@@ -130,7 +131,7 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         self.remote = remote.Remote()
 
     async def connect(self, **kwargs):
-        return await self.remote.connect(**kwargs)
+        return await self.remote.connect(python=sys.executable, **kwargs)
 
     async def test_connect_boots_the_kernel_and_answers_every_tool(self):
         rem = await self.connect()

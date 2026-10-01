@@ -169,6 +169,8 @@ the target resolves per call from a `host=` argument, then `remote.configure(hos
 }
 ```
 
+the kernel bundle supports Python 3.11 and newer; remote boot uses `python3` unless the `python` setting selects another executable. the bundle-wide syntax check uses the minimum version in `pyrightconfig.json`, and `priv/python/ruff.toml` keeps formatting compatible with it.
+
 a bare host asks the remote for its `pwd` once. if the host is reachable but its kernel cannot boot (no python, staging failed, bad handshake), `connect()` still returns and prints a warning: the connection is degraded to SSH command mode, where only `rem.run(program, *args, cwd=, env=, stdin=, timeout=300)`, `rem.shell(command, cwd=, env=, stdin=, timeout=300)`, `rem.read(path)`, `rem.write(path, content)`, and `rem.show_image(path_or_bytes)` answer and everything else raises. here `stdin` accepts only text or bytes, not a file or another job, and `.pipe()` is unavailable. The connect warning shows the degraded-only escape hatch `rem.shell('git log --oneline | rg fix')`, which invokes `bash -c` on the host for pipes or other shell syntax. `rem.shell()` does not exist in kernel mode. Neither the quoted-argv `rem.run()` fallback nor `rem.shell()` can offer process-group supervision, so stopping or timing out an ssh client does not prove the remote program stopped. an unreachable host fails `connect()`. connections are scoped: a lost SSH channel invalidates the connection rather than silently reconnecting, and `await rem.close()` ends it. connections run under `BatchMode=yes`, so key-based auth is required.
 
 ## skills

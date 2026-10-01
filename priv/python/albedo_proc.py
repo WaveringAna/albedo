@@ -111,7 +111,7 @@ def start_token(stat: bytes) -> str | None:
     """Start time of one /proc/<pid>/stat line (field 22, after the command name)."""
     try:
         return stat.rsplit(b")", 1)[1].split()[19].decode()
-    except IndexError, UnicodeDecodeError:
+    except (IndexError, UnicodeDecodeError):
         return None
 
 
@@ -146,7 +146,7 @@ def live_members(pgid: int) -> list[int] | None:
                 for pid, group, state in rows
                 if int(group) == pgid and not state.startswith("Z")
             ]
-        except OSError, subprocess.SubprocessError, ValueError:
+        except (OSError, subprocess.SubprocessError, ValueError):
             return None
     members = []
     for entry in entries:
@@ -157,7 +157,7 @@ def live_members(pgid: int) -> list[int] | None:
                 fields = stat.read().rsplit(b")", 1)[1].split()
         except FileNotFoundError:
             continue  # process exited while enumerating
-        except OSError, IndexError:
+        except (OSError, IndexError):
             return None  # an incomplete view cannot prove the group empty
         if fields[0] == b"Z" or fields[2] != str(pgid).encode():
             continue
