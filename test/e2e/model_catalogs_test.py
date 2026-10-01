@@ -149,3 +149,97 @@ class ModelCatalogReloadTests(unittest.TestCase):
         )
         # No effort listed means the model takes none, not a guessed default.
         self.assertEqual(small["efforts"], [])
+
+
+@exclusive
+class ModelCatalogSelectionTests(unittest.TestCase):
+    """Disputed gateway facts must not borrow one provider's larger limits."""
+
+    def setUp(self):
+        self.provider = Provider(lambda _request: text("ok"))
+        self.addCleanup(self.provider.close)
+        catalog = {
+            "openai": {
+                "api": "https://api.openai.example/v1",
+                "models": {
+                    "shared-model": {
+                        "id": "shared-model",
+                        "limit": {"context": 400000, "output": 8000},
+                        "modalities": {"input": ["text", "image", "pdf"]},
+                        "reasoning_options": [
+                            {"type": "effort", "values": ["low", "medium", "high"]}
+                        ],
+                    }
+                },
+            },
+            "mirror": {
+                "api": "https://mirror.example/v1",
+                "models": {
+                    "shared-model": {
+                        "id": "shared-model",
+                        "limit": {"context": 200000, "output": 16000},
+                        "modalities": {"input": ["image", "text"]},
+                        "reasoning_options": [
+                            {"type": "effort", "values": ["medium", "high"]}
+                        ],
+                    },
+                    "vendor/qualified-model": {
+                        "id": "vendor/qualified-model",
+                        "limit": {"context": 32000},
+                    },
+                },
+            },
+            "unknown": {
+                "models": {
+                    "shared-model": {
+                        "id": "shared-model",
+                        "limit": {"context": None, "output": 0},
+                    }
+                }
+            },
+        }
+
+        def prepare(app):
+            (app.home / "models.json").write_text(json.dumps(catalog))
+            (app.home / "models.json.index").unlink(missing_ok=True)
+            app.write_extensions({"models": {"refreshHours": 0}})
+
+        self.app = Albedo(self.provider, prepare=prepare)
+        self.app.__enter__()
+        self.addCleanup(self.app.__exit__, None, None, None)
+
+    def listed(self, provider, endpoint=""):
+        query = urllib.parse.urlencode({"endpoint": endpoint, "details": "1"})
+        with self.app.api(f"/models/{provider}?{query}") as response:
+            return json.load(response)
+
+    def test_gateway_uses_smallest_limits_and_shared_reported_capabilities(self):
+        gateway = "https://gateway.example/v1"
+        [shared] = self.listed("openai", gateway)
+        self.assertEqual(shared["context"], 200000)
+        self.assertEqual(shared["output"], 8000)
+        self.assertEqual(shared["input"], ["image", "text"])
+        self.assertEqual(shared["efforts"], ["medium", "high"])
+        self.assertEqual(self.listed("openai"), [shared])
+        # The reduced index must give the same answer after a daemon restart.
+        self.assertTrue((self.app.home / "models.json.index").exists())
+        self.app.restart()
+        self.assertEqual(self.listed("openai", gateway), [shared])
+
+    def test_endpoint_selects_provider_facts_and_model_list(self):
+        listed = self.listed("openai", "https://MIRROR.example/other-path")
+        self.assertEqual(
+            [item["id"] for item in listed],
+            ["shared-model", "vendor/qualified-model"],
+        )
+        shared, qualified = listed
+        self.assertEqual(shared["context"], 200000)
+        self.assertEqual(shared["output"], 16000)
+        self.assertEqual(shared["input"], ["image", "text"])
+        self.assertEqual(qualified["context"], 32000)
+        # ChatGPT has no matching API host in models.dev; it uses OpenAI identity.
+        [subscription] = self.listed("openai", "https://chatgpt.com/backend-api")
+        self.assertEqual(subscription["context"], 400000)
+        self.assertEqual(subscription["output"], 8000)
+        self.assertEqual(subscription["input"], ["text", "image", "pdf"])
+        self.assertEqual(subscription["efforts"], ["low", "medium", "high"])

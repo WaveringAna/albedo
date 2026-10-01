@@ -9,7 +9,7 @@ It is enabled by default and contributes no model tools and no prompt context.
 
 ## cache
 
-The catalog is cached at `$ALBEDO_HOME/models.json` (default `~/.albedo/models.json`). Albedo refreshes it when it is missing or older than the refresh window, in the background, and writes it by rename so a partial download is never readable. A failed fetch keeps the previous cache, and the whole file stays as models.dev published it.
+The catalog is cached at `$ALBEDO_HOME/models.json` (default `~/.albedo/models.json`). Albedo refreshes it when it is missing or older than the refresh window, in the background, and writes it by rename so a partial download is never readable. A failed fetch keeps the previous cache. The cached JSON keeps only the fields used by lookups and lists. Fetching, revision caching, and the persisted reduced index stay in `harness/extensions/models/albedo_models.erl`.
 
 ```json
 { "models": { "url": "https://models.dev/api.json", "refreshHours": 24 } }
@@ -21,7 +21,7 @@ Run `/reload models` to fetch the configured catalog immediately, regardless of 
 
 ## lookup
 
-A lookup takes the session's model id and its configured provider base url. The endpoint decides between providers that publish the same model id. Without a host match, candidates that agree still answer, and candidates that disagree stay unknown rather than picking one. Both the catalog key and its trailing segment resolve, so `vendor/model` and `model` find the same entry.
+A lookup takes the session's model id and its configured provider base url. The endpoint decides between providers that publish the same model id. The ChatGPT endpoint uses the OpenAI provider identity. Without a host match, the smallest positive context and output limits win, and modalities and efforts are intersected across candidates that report them. Empty capability lists mean unknown and do not constrain the intersection. The answer carries no guessed provider, API endpoint, or environment. Exact provider lookups never borrow another provider's facts. These selection rules live in `harness/extensions/models/catalog.gleam`. Both the catalog key and its trailing segment resolve, so `vendor/model` and `model` find the same entry.
 
 An answer carries the context window, the maximum output, the input modalities, the provider id, its documented API endpoint, and its expected environment variable names. Everything is reported with its source: the cached file and how the model was matched.
 

@@ -84,7 +84,9 @@ lookup(Catalog0, Model0, Endpoint0) ->
     Endpoint = unicode:characters_to_binary(Endpoint0),
     try
         case catalog(Catalog) of
-            {ok, CatalogData} -> resolve(CatalogData, Model, host(Endpoint));
+            {ok, #{index := Index, providers := Providers}} ->
+                encoded('albedo@harness@extensions@models@catalog':select(
+                    maps:get(Model, Index, []), Providers, host(Endpoint)));
             Error -> Error
         end
     catch
@@ -100,10 +102,8 @@ lookup_provider(Catalog0, Provider0, Model0) ->
     try
         case catalog(Catalog) of
             {ok, #{index := Index, providers := Providers}} ->
-                case [E || {Name, _} = E <- maps:get(Model, Index, []), Name =:= Provider] of
-                    [Entry | _] -> {ok, encode(Entry, Providers, <<"provider name">>)};
-                    [] -> {error, <<"model is not listed by this provider">>}
-                end;
+                encoded('albedo@harness@extensions@models@catalog':select_provider(
+                    maps:get(Model, Index, []), Providers, Provider));
             Error -> Error
         end
     catch
@@ -245,85 +245,6 @@ add(Index, Key, Entry) ->
     lists:foldl(fun(K, Acc) -> maps:update_with(K, fun(V) -> [Entry | V] end, [Entry], Acc) end,
                 Index, Keys).
 
-resolve(#{index := Index, providers := Providers}, Model, Host) ->
-    case maps:get(Model, Index, []) of
-        [] -> {error, <<"model is not in the cached catalog">>};
-        Candidates -> {ok, select(Candidates, Providers, Host)}
-    end.
-
-%% The configured endpoint decides between providers that publish one model id.
-%% Codex subscription models use OpenAI's metadata, even though models.dev
-%% does not publish the ChatGPT endpoint (or an API URL for OpenAI). Without a
-%% match, the model id alone answers for no provider in particular.
-select(Candidates, Providers, <<"chatgpt.com">>) ->
-    case [E || {<<"openai">>, _} = E <- Candidates] of
-        [Entry | _] -> encode(Entry, Providers, <<"provider identity">>);
-        [] -> unattributed(Candidates)
-    end;
-select(Candidates, Providers, Host) ->
-    case [E || {Name, _} = E <- Candidates, Host =/= <<>>,
-               element(1, maps:get(Name, Providers)) =:= Host] of
-        [Entry | _] -> encode(Entry, Providers, <<"provider endpoint">>);
-        [] -> unattributed(Candidates)
-    end.
-
-%% A model id served through a gateway the catalog does not list. Its provider,
-%% API, and environment would be a guess, so they stay empty. Input kinds and
-%% efforts are those every candidate reports, and where candidates disagree
-%% on limits the smallest stand: the cost is compacting or capping output a
-%% little early, never overrunning the real window.
-unattributed(Candidates) ->
-    Models = [Model || {_, Model} <- lists:sort(Candidates)],
-    {Id, _, _, _, _} = hd(Models),
-    Limits = lists:usort([{Context, Output} || {_, Context, Output, _, _} <- Models]),
-    Matched = case Limits of
-        [_] -> <<"model id">>;
-        _ ->
-            iolist_to_binary([<<"model id; smallest limits of ">>,
-                              integer_to_binary(length(Models)), <<" providers">>])
-    end,
-    iolist_to_binary(json:encode(#{
-        <<"model">> => Id,
-        <<"provider">> => <<>>,
-        <<"context">> => smallest([C || {_, C, _, _, _} <- Models]),
-        <<"output">> => smallest([O || {_, _, O, _, _} <- Models]),
-        <<"input_modalities">> => shared([I || {_, _, _, I, _} <- Models]),
-        <<"api">> => null,
-        <<"env">> => [],
-        <<"matched">> => Matched,
-        <<"efforts">> => shared([E || {_, _, _, _, E} <- Models])
-    })).
-
-smallest(Values) ->
-    case [V || V <- Values, is_integer(V), V > 0] of
-        [] -> null;
-        Known -> lists:min(Known)
-    end.
-
-%% What every candidate that reports a list agrees on, in the first one's order.
-shared(Lists) ->
-    case [L || L <- Lists, L =/= []] of
-        [] -> [];
-        [First | Rest] -> [V || V <- First, lists:all(fun(L) -> lists:member(V, L) end, Rest)]
-    end.
-
-encode({Name, {Id, Context, Output, Inputs, Efforts}}, Providers, Matched) ->
-    {_, Api, Env, _} = maps:get(Name, Providers),
-    iolist_to_binary(json:encode(#{
-        <<"model">> => Id,
-        <<"provider">> => Name,
-        <<"context">> => integer_or_null(Context),
-        <<"output">> => integer_or_null(Output),
-        <<"input_modalities">> => Inputs,
-        <<"api">> => Api,
-        <<"env">> => Env,
-        <<"matched">> => Matched,
-        <<"efforts">> => Efforts
-    })).
-
-integer_or_null(Value) when is_integer(Value), Value > 0 -> Value;
-integer_or_null(_) -> null.
-
 strings(Values) when is_list(Values) -> [V || V <- Values, is_binary(V)];
 strings(_) -> [].
 
@@ -340,28 +261,16 @@ list(Catalog0, Provider0, Endpoint0) ->
     Endpoint = unicode:characters_to_binary(Endpoint0),
     try
         case catalog(Catalog) of
-            {ok, CatalogData} -> list_provider(maps:get(providers, CatalogData), Provider, host(Endpoint));
+            {ok, CatalogData} ->
+                encoded('albedo@harness@extensions@models@catalog':list_provider(
+                    maps:get(providers, CatalogData), Provider, host(Endpoint)));
             Error -> Error
         end
     catch
         _:_ -> {error, <<"models catalog listing failed">>}
     end.
 
-list_provider(Providers, Provider, EndpointHost) ->
-    Candidate = case find_provider(maps:values(Providers), EndpointHost) of
-        undefined -> maps:get(Provider, Providers, undefined);
-        Found -> Found
-    end,
-    case Candidate of
-        {_, _, _, Ids} -> {ok, iolist_to_binary(json:encode(Ids))};
-        _ -> {error, <<"provider is not in the cached catalog">>}
-    end.
-
-find_provider(_, <<>>) -> undefined;
-find_provider(Providers, EndpointHost) ->
-    case [P || {Host, _, _, _} = P <- Providers, Host =:= EndpointHost] of
-        [Provider | _] -> Provider;
-        [] -> undefined
-    end.
+encoded({ok, Json}) -> {ok, iolist_to_binary(Json)};
+encoded(Error) -> Error.
 
 text(Value) -> unicode:characters_to_list(Value).
