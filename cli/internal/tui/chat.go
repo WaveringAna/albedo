@@ -6,11 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"math/rand/v2"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -32,8 +29,9 @@ type ChatQuitMsg struct{}
 type ChatEditorFinishedMsg struct {
 	Err        error
 	SessionID  string
-	Path       string
+	Text       string
 	Generation int64
+	Edited     bool
 }
 
 // ChatOlderLoadedMsg carries a page of history from before what is shown.
@@ -1349,19 +1347,15 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case ChatEditorFinishedMsg:
-		if msg.Path != "" {
-			defer os.Remove(msg.Path)
-		}
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
 			return m, nil
 		}
-		if msg.Err != nil {
-			m.AddError("Could not open the editor: " + msg.Err.Error())
-		} else if data, err := os.ReadFile(msg.Path); err != nil {
-			m.AddError("Could not read the edited prompt: " + err.Error())
-		} else {
-			m.TextArea.SetValue(strings.TrimRight(string(data), "\r\n"))
+		if msg.Edited {
+			m.TextArea.SetValue(strings.TrimRight(msg.Text, "\r\n"))
 			m.syncLayout()
+		}
+		if msg.Err != nil {
+			m.AddError("Could not finish editing the prompt: " + msg.Err.Error())
 		}
 		return m, nil
 
@@ -1411,64 +1405,6 @@ func (m *ChatModel) Moved(workspace string, retry *WorkspaceRetry) tea.Cmd {
 	}
 	m.submitInput(prompt, &cmds)
 	return tea.Batch(cmds...)
-}
-
-func (m ChatModel) openEditorCmd() tea.Cmd {
-	args := strings.Fields(cmp.Or(os.Getenv("EDITOR"), os.Getenv("VISUAL"), "nano"))
-	if len(args) == 0 {
-		args = []string{"nano"}
-	}
-
-	tmpFile, err := os.CreateTemp("", "albedo-prompt-*.md")
-	sessID, gen := m.SessionID, m.Generation
-	if err != nil {
-		return func() tea.Msg {
-			return ChatEditorFinishedMsg{SessionID: sessID, Generation: gen, Err: fmt.Errorf("could not create temporary file: %w", err)}
-		}
-	}
-
-	if _, err := tmpFile.WriteString(m.TextArea.Value()); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpFile.Name())
-		return func() tea.Msg {
-			return ChatEditorFinishedMsg{SessionID: sessID, Generation: gen, Err: fmt.Errorf("could not write to temporary file: %w", err)}
-		}
-	}
-	tmpFile.Close()
-
-	path := tmpFile.Name()
-	c := exec.Command(args[0], append(args[1:], path)...)
-
-	return tea.Exec(editorProcess{c, m.graphemes}, func(err error) tea.Msg {
-		return ChatEditorFinishedMsg{SessionID: sessID, Generation: gen, Path: path, Err: err}
-	})
-}
-
-// editorProcess runs the editor on the terminal, then hands the terminal back
-// the way Bubble Tea left it. Bubble Tea repaints from where it left the
-// cursor and trusts the column, but leaving the alternate screen puts the
-// cursor back wherever the editor found it, and a terminal reply echoed
-// before the editor took raw mode can have moved it along the row; the
-// repaint then starts mid-row, wraps the header and scrolls it off the top.
-// Bubble Tea also turns grapheme widths off for the editor and never turns
-// them back on, while it keeps measuring by grapheme.
-type editorProcess struct {
-	*exec.Cmd
-	graphemes bool
-}
-
-func (p editorProcess) SetStdin(r io.Reader)  { p.Stdin = r }
-func (p editorProcess) SetStdout(w io.Writer) { p.Stdout = w }
-func (p editorProcess) SetStderr(w io.Writer) { p.Stderr = w }
-
-func (p editorProcess) Run() error {
-	err := p.Cmd.Run()
-	restore := "\r"
-	if p.graphemes {
-		restore += ansi.SetModeUnicodeCore
-	}
-	_, _ = io.WriteString(p.Stdout, restore)
-	return err
 }
 
 func (m *ChatModel) sendCmd(prompt string, image *daemon.ImageAttachment, isCont bool) tea.Cmd {
