@@ -3,6 +3,7 @@ package tui
 import (
 	"cmp"
 	"fmt"
+	"hash/fnv"
 	"image/color"
 	"os"
 	"path/filepath"
@@ -371,6 +372,22 @@ func languageStyle(name, linguist string) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(c.hex()))
 }
 
+// identityHues tell things apart that have no meaning of their own to show:
+// agents in the orchestrator view, hosts beside their paths.
+var identityHues = []string{"#e08cf5", "#6fd1c4", "#f28fb8", "#f0c674", "#b6e37a", "#b9a6f5", "#80aaf9", "#f5a97f"}
+
+// hostStyle colors a host label the same way every time, legible on the
+// terminal's background like a language's color.
+func hostStyle(host string) lipgloss.Style {
+	h := fnv.New32a()
+	h.Write([]byte(host))
+	c := parseHex(identityHues[h.Sum32()%uint32(len(identityHues))])
+	if bg := parseHex(transcriptInk.bg); bg != nil {
+		*c = legible(*c, *bg, languageLc)
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(c.hex()))
+}
+
 // agentPalette colors the orchestrator view. Each agent keeps one identity
 // hue wherever it appears; structure and quiet text follow the terminal's
 // own ink like every other screen.
@@ -386,8 +403,8 @@ func agentColors() agentPalette {
 		}
 		return *parseHex(fallback)
 	}
-	hues := make([]rgb, 8)
-	for i, h := range []string{"#e08cf5", "#6fd1c4", "#f28fb8", "#f0c674", "#b6e37a", "#b9a6f5", "#80aaf9", "#f5a97f"} {
+	hues := make([]rgb, len(identityHues))
+	for i, h := range identityHues {
 		hues[i] = *parseHex(h)
 	}
 	return agentPalette{

@@ -3,6 +3,7 @@
 //// on the daemon, so the picker only offers folders the daemon can see.
 
 import albedo/harness/languages.{type Language}
+import albedo/harness/location
 import albedo/harness/vcs
 import gleam/bool
 import gleam/dict
@@ -114,11 +115,13 @@ pub fn preview(path: String) -> Result(Json, Failure) {
 
 /// `path` expanded and normalised, when it names an existing directory.
 fn directory(path: String) -> Result(String, Failure) {
-  use absolute <- result.try(case path {
-    "~" -> Ok(home())
-    "~/" <> rest -> Ok(home() <> "/" <> rest)
-    "/" <> _ -> Ok(path)
-    _ -> Error(#(400, "path must be absolute or start with ~"))
+  use absolute <- result.try(case path, location.parse(path) {
+    "~", _ -> Ok(home())
+    "~/" <> rest, _ -> Ok(home() <> "/" <> rest)
+    "/" <> _, _ -> Ok(path)
+    _, Ok(location.Remote(host:, ..)) ->
+      Error(#(400, location.unavailable(host, "folders")))
+    _, _ -> Error(#(400, "path must be absolute or start with ~"))
   })
   let dir = normalise(absolute)
   case is_directory(dir) {

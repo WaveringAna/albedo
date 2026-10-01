@@ -87,6 +87,15 @@ type SessionViewer struct {
 	Saving      bool
 }
 
+// workspacePlace is the viewer's folder as text, its host labelled the way
+// the daemon labels it on any session there.
+func (m SessionViewer) workspacePlace() string {
+	if i := slices.IndexFunc(m.raw, func(s daemon.Session) bool { return s.Workspace == m.Workspace }); i >= 0 {
+		return sessionPlace(m.raw[i])
+	}
+	return placeText(m.Workspace, "")
+}
+
 func NewSessionViewer(workspace string) SessionViewer {
 	p := NewPickerModel("", sessionViewerActions(workspace), true, "new")
 	p.SearchInput.Placeholder = "search sessions, models, folders…"

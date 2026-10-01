@@ -6,10 +6,64 @@ another folder; the folder picker browses through the daemon, so it only ever
 offers folders the daemon itself can see (and works the same once the daemon
 is remote).
 
+## locations
+
+every workspace is a location (`src/albedo/harness/location.gleam`):
+
+- **local**: a plain absolute path, stored exactly as it always was. no
+  prefix anywhere, on the wire or on screen. `~` (the daemon's home) parses
+  as local too; whether a folder exists is the caller's question.
+- **remote**: `[user@]host:/abs/path` (an IPv6 host in brackets). a text is
+  remote when it does not start with `/` or `~` and the part before the
+  first `:` holds no `/`. user and host start with a letter or digit, so
+  neither is ever an ssh option. the path must be absolute and is
+  normalised (`//`, `.`, `..`, trailing slash), so one remote directory has
+  one key. a remote `~` is refused: the remote home is only known once
+  albedo connects there.
+
+session info carries the parsed location beside the `workspace` string:
+
+```json
+{"workspace": "mayer@chernobog:/home/mayer/proj/albedo",
+ "location": {"host": "chernobog", "user": "mayer",
+              "path": "/home/mayer/proj/albedo", "label": "chernobog"}}
+{"workspace": "/Users/dawn/proj", "location":
+ {"host": null, "user": null, "path": "/Users/dawn/proj", "label": null}}
+```
+
+`label` is how clients show the host: the alias, with `user@` dropped when
+it is the user `ssh -G <host>` reports (local config only, no network),
+cached per host for the daemon's life. without ssh the user stays.
+
+nothing runs at a remote location yet. what is only a key works as it is:
+the work ledger and paperclips scope, recent folders, session search by
+cwd, family moves. what needs the remote filesystem refuses or skips by
+name, and never looks for the path on the daemon's own disk:
+
+- a turn in a remote session answers 409 `kernels on chernobog aren't
+  available yet` (the kernel refuses to boot there too).
+- `/fs/list`, `/fs/repo` and `/fs/preview` answer 400 `folders on chernobog
+  aren't available yet`.
+- AGENTS.md, SYSTEM.md and the other instruction files, and skills, are
+  read from the home directories only; the instructions extension warns
+  `project instruction files on chernobog aren't available yet` and the
+  skills catalog lists `project skills on chernobog aren't available yet`
+  among its diagnostics.
+- memory is a daemon-side file keyed by the workspace string, so a remote
+  workspace gets its own.
+
+the tui shows a remote workspace as `label:/path`: the chat header reads
+`✦ albedo on chernobog:/home/mayer/proj/albedo`, folds only the path, keeps
+the host in every layout that shows a place, and colors the host with a
+stable hue derived from its label, lifted to the theme's contrast. recent
+folders and the sessions view lead remote entries with their host.
+
 ## moving a session
 
 `POST /sessions/:id/workspace {"workspace": "/abs/dir"}` answers the session's
-info. the session must be idle and the target an existing absolute directory.
+info. the session must be idle and the target an existing absolute directory,
+or a remote location (stored canonically; it can't be checked before albedo
+connects to the host). `POST /sessions` takes the same forms.
 the kernel is dropped (python variables start fresh), the transcript stays,
 and a note records the move.
 
@@ -22,7 +76,7 @@ move, nobody moves.
 ## browsing
 
 all three routes take `path`: absolute, or starting with `~`, which expands
-to the daemon's home. anything else is a 400; a path that is not an existing
+to the daemon's home. anything else is a 400, a remote location included; a path that is not an existing
 directory is a 404. errors are `{"error": "..."}`. `/health` lists
 `workspace_browser` when these routes exist.
 

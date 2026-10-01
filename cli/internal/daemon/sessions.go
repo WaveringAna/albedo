@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 type DeletionResult struct {
@@ -35,14 +36,40 @@ type ForkRequest struct {
 }
 
 type Session struct {
-	ID              string `json:"id"`
-	Title           string `json:"title,omitempty"`
-	LastAssistantAt *int64 `json:"last_assistant_at,omitempty"`
-	Workspace       string `json:"workspace"`
-	Model           string `json:"model"`
-	Effort          string `json:"effort,omitempty"`
-	Protocol        string `json:"protocol"`
-	Provider        string `json:"provider"`
+	ID              string    `json:"id"`
+	Title           string    `json:"title,omitempty"`
+	LastAssistantAt *int64    `json:"last_assistant_at,omitempty"`
+	Workspace       string    `json:"workspace"`
+	Location        *Location `json:"location,omitempty"`
+	Model           string    `json:"model"`
+	Effort          string    `json:"effort,omitempty"`
+	Protocol        string    `json:"protocol"`
+	Provider        string    `json:"provider"`
+}
+
+// Location is a session's workspace as the daemon parsed it. Host and User
+// are nil for a local one; Label is how the host reads, with a user ssh
+// would pick anyway left out.
+type Location struct {
+	Host  *string `json:"host"`
+	User  *string `json:"user"`
+	Path  string  `json:"path"`
+	Label *string `json:"label"`
+}
+
+// SplitLocation reads a workspace as the daemon stores it: a plain path is
+// local, and [user@]host:/abs/path is on that host. A remote path is always
+// absolute and a host never holds a slash, so the first ":/" before any
+// slash ends the host.
+func SplitLocation(workspace string) (host, path string) {
+	if workspace == "" || workspace[0] == '/' || workspace[0] == '~' {
+		return "", workspace
+	}
+	i := strings.Index(workspace, ":/")
+	if i <= 0 || strings.Contains(workspace[:i], "/") {
+		return "", workspace
+	}
+	return workspace[:i], workspace[i+1:]
 }
 
 func CreateSession(ctx context.Context, conn *Connection, body CreateSessionRequest) (Session, error) {
@@ -160,6 +187,7 @@ func decodeSession(data []byte) (Session, error) {
 		ID              *string         `json:"id"`
 		Title           *string         `json:"title"`
 		Workspace       *string         `json:"workspace"`
+		Location        *Location       `json:"location"`
 		Model           *string         `json:"model"`
 		Protocol        *string         `json:"protocol"`
 		Provider        *string         `json:"provider"`
@@ -189,7 +217,7 @@ func decodeSession(data []byte) (Session, error) {
 			return Session{}, &responseFieldError{field: "effort", cause: err}
 		}
 	}
-	session := Session{ID: *wire.ID, Title: *wire.Title, Workspace: *wire.Workspace, Model: *wire.Model, Protocol: *wire.Protocol, Provider: *wire.Provider}
+	session := Session{ID: *wire.ID, Title: *wire.Title, Workspace: *wire.Workspace, Location: wire.Location, Model: *wire.Model, Protocol: *wire.Protocol, Provider: *wire.Provider}
 	if effort != nil {
 		session.Effort = *effort
 	}

@@ -175,6 +175,16 @@ func (m FolderPicker) latestOther() string {
 	return best
 }
 
+// where is the folder a row is in, led by its host when it is remote.
+func (m FolderPicker) where(row folderRow) string {
+	host, p := daemon.SplitLocation(row.path)
+	crumbs := crumbParts(m.homed(path.Dir(p)))
+	if host != "" {
+		crumbs = append([]string{cmp.Or(row.host, host)}, crumbs...)
+	}
+	return strings.Join(crumbs, " › ")
+}
+
 // row is a folder in the sessions view's grammar: bar, glyph, name with
 // the matched letters lit, then quiet columns for where, head and age.
 func (m FolderPicker) row(row folderRow, selected, here, latest bool, width int, now time.Time) string {
@@ -198,7 +208,7 @@ func (m FolderPicker) row(row folderRow, selected, here, latest bool, width int,
 	}
 	line := bar + glyphStyle.Render(glyph) + " " + litName(row.name, row.matched, nameW, selected)
 	if whereW > 0 {
-		line += "  " + DefaultStyles.Faint.Render(svCell(strings.Join(crumbParts(m.homed(path.Dir(row.path))), " › "), whereW, false))
+		line += "  " + DefaultStyles.Faint.Render(svCell(m.where(row), whereW, false))
 	}
 	line += "  " + DefaultStyles.Faint.Render(svCell(repoTag(m.repos[row.path]), tagW, false))
 	age := ""

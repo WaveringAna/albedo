@@ -235,9 +235,13 @@ read_instructions(Path) ->
         Error -> Error
     end.
 
+%% An empty workspace has no project skills here: it is on another host.
 roots(Workspace, Home) ->
-    Project = [filename:join([Workspace, ".albedo", "skills"]),
-               filename:join([Workspace, ".agents", "skills"])],
+    Project = case Workspace of
+        [] -> [];
+        _ -> [filename:join([Workspace, ".albedo", "skills"]),
+              filename:join([Workspace, ".agents", "skills"])]
+    end,
     User = case Home of
         [] -> [];
         _ -> [filename:join([Home, ".albedo", "skills"]),

@@ -198,7 +198,7 @@ func (m SessionViewer) titleRule(width int) string {
 	if m.ArchiveView {
 		label = "albedo  archive"
 	}
-	return " " + titleRule(width-1, located(label, sessionText(homePath(m.Workspace))), "")
+	return " " + titleRule(width-1, located(label, sessionText(m.workspacePlace())), "")
 }
 
 func (m SessionViewer) footer(width int, now time.Time) string {
@@ -474,7 +474,7 @@ func (m SessionViewer) preview(width, height int, now time.Time) []string {
 		meta = append(meta, DefaultStyles.Muted.Render(sessionText(s.Model)))
 	}
 	if s.Workspace != "" {
-		meta = append(meta, DefaultStyles.Muted.Render(sessionText(homePath(s.Workspace))))
+		meta = append(meta, DefaultStyles.Muted.Render(sessionText(sessionPlace(s))))
 	}
 	meta = append(meta, DefaultStyles.Faint.Render(presentation.AssistantAge(s.LastAssistantAt, now)))
 	if c := m.previews[s.ID]; c != nil && !c.loading && !c.err {
@@ -494,7 +494,7 @@ func (m SessionViewer) actionPreview(id string, inner, height int) []string {
 			lines = append(append(lines, ""), logo...)
 		}
 		lines = append(lines, "", gradientText("New session", true), "",
-			DefaultStyles.Muted.Render("start fresh in ")+lipgloss.NewStyle().Render(sessionText(homePath(m.Workspace))), "",
+			DefaultStyles.Muted.Render("start fresh in ")+lipgloss.NewStyle().Render(sessionText(m.workspacePlace())), "",
 			DefaultStyles.Faint.Render("enter ")+DefaultStyles.Muted.Render("begin"))
 	case "archive":
 		lines = []string{"", "", DefaultStyles.Muted.Bold(true).Render("▤ Archive"), "",

@@ -1,6 +1,7 @@
 //// Instruction selection, prompt precedence, and rendering over native file IO.
 
 import albedo/harness/capabilities
+import albedo/harness/location
 import albedo/harness/settings
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -69,7 +70,7 @@ pub fn named(
   name: String,
   selection: Selection,
 ) -> Result(Option(String), String) {
-  use files <- result.try(discover_named(workspace, home, name))
+  use files <- result.try(discover_named(project(workspace).0, home, name))
   let files = ordered(files)
   let selected = case selection {
     First -> list.take(files, 1)
@@ -99,10 +100,11 @@ fn load_with_selection(
   home: String,
   session: Option(String),
 ) -> Result(#(String, List(String)), String) {
-  use files <- result.try(discover_instructions(workspace, home))
+  let #(project, skipped) = project(workspace)
+  use files <- result.try(discover_instructions(project, home))
   case files {
     // An empty selection must not read or validate capability preferences.
-    [] -> Ok(#("", []))
+    [] -> Ok(#("", skipped))
     _ -> {
       use preferences <- result.try(case session {
         None -> capabilities.load("", None)
@@ -110,8 +112,20 @@ fn load_with_selection(
       })
       use selected <- result.try(select(ordered(files), preferences))
       use #(loaded, warnings) <- result.try(read(selected, Instructions))
-      Ok(#(render(loaded), warnings))
+      Ok(#(render(loaded), list.append(skipped, warnings)))
     }
+  }
+}
+
+/// The directory to look for project files in, and the warning when there is
+/// none: a remote workspace's files can't be read from here yet, so only the
+/// home directories count (native discovery takes "" as no project).
+fn project(workspace: String) -> #(String, List(String)) {
+  case location.parse(workspace) {
+    Ok(location.Remote(host:, ..)) -> #("", [
+      location.unavailable(host, "project instruction files"),
+    ])
+    _ -> #(workspace, [])
   }
 }
 

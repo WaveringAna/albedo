@@ -26,6 +26,7 @@ import albedo/harness/command
 import albedo/harness/credentials
 import albedo/harness/extension
 import albedo/harness/extensions/schedule/ledger as schedule
+import albedo/harness/location
 import albedo/harness/oauth
 import albedo/harness/runtime
 import albedo/harness/session_settings
@@ -271,6 +272,7 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
     }
     Create(cwd, provider, model, reply) -> {
       let created = {
+        use workspace <- result.try(location.workspace(cwd))
         use provider <- result.try(case provider {
           Some(name) -> configuration.named(state.config.home, name)
           None -> configuration.active(state.config.home)
@@ -291,7 +293,7 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
           conversation.Info(
             new_id(),
             "new session",
-            cwd,
+            location.to_string(workspace),
             provider.name,
             model,
             provider.protocol,
@@ -300,13 +302,12 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
             effort,
           )
         case
-          directory(cwd)
-          && string.trim(info.model) != ""
+          string.trim(info.model) != ""
           && string.byte_size(info.model) <= 512
           && !string.contains(info.model, "\r")
           && !string.contains(info.model, "\n")
         {
-          False -> Error("expected an existing absolute workspace and a model")
+          False -> Error("expected a model")
           True ->
             conversation.create(runtime.ledger(state.host), info)
             |> result.replace(info)
@@ -1064,12 +1065,21 @@ fn info_json(info: conversation.Info) -> json.Json {
     #("id", json.string(info.id)),
     #("title", json.string(info.title)),
     #("workspace", json.string(info.cwd)),
+    #("location", location_json(info.cwd)),
     #("provider", json.string(info.provider)),
     #("model", json.string(info.model)),
     #("effort", json.nullable(info.effort, json.string)),
     #("protocol", json.string(conversation.protocol(info.protocol))),
     #("last_assistant_at", json.nullable(info.last_assistant_at, json.int)),
   ])
+}
+
+/// Stored workspaces were validated when they were set; one that no longer
+/// parses is shown as the plain path it is.
+fn location_json(workspace: String) -> json.Json {
+  location.parse(workspace)
+  |> result.unwrap(location.Local(workspace))
+  |> location.to_json
 }
 
 /// Delete `id` and its descendants, children before parents. A running agent
@@ -2963,9 +2973,6 @@ fn hold(connection: sqlight.Connection) -> Nil
 @external(erlang, "albedo_daemon", "ready")
 fn ready(home: String, port: Int, token: String) -> Result(Nil, String)
 
-@external(erlang, "albedo_daemon", "directory")
-fn directory(path: String) -> Bool
-
 @external(erlang, "albedo_daemon", "shutdown")
 fn shutdown() -> Nil
 
@@ -3200,6 +3207,7 @@ fn create_operation(
     Ok(Some(receipt)) -> #(state, Ok(receipt))
     Ok(None) -> {
       let prepared = {
+        use workspace <- result.try(location.workspace(cwd))
         use provider <- result.try(case provider_name {
           Some(name) -> configuration.named(state.config.home, name)
           None -> configuration.active(state.config.home)
@@ -3210,15 +3218,13 @@ fn create_operation(
         }
         use _ <- result.try(
           case
-            directory(cwd)
-            && string.trim(model) != ""
+            string.trim(model) != ""
             && string.byte_size(model) <= 512
             && !string.contains(model, "\r")
             && !string.contains(model, "\n")
           {
             True -> Ok(Nil)
-            False ->
-              Error("expected an existing absolute workspace and a model")
+            False -> Error("expected a model")
           },
         )
         let effort =
@@ -3232,7 +3238,7 @@ fn create_operation(
         Ok(conversation.Info(
           new_id(),
           "new session",
-          cwd,
+          location.to_string(workspace),
           provider.name,
           model,
           provider.protocol,

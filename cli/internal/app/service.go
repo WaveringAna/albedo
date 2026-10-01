@@ -31,12 +31,21 @@ type PreparedOpen struct {
 	LoginRequired bool
 }
 
+// absoluteWorkspace resolves a local workspace against the current
+// directory; a location on another host is the daemon's to read.
+func absoluteWorkspace(workspace string) string {
+	if host, _ := daemon.SplitLocation(workspace); host != "" {
+		return workspace
+	}
+	if abs, err := filepath.Abs(workspace); err == nil {
+		return abs
+	}
+	return workspace
+}
+
 func (s *Service) PrepareOpen(ctx context.Context, options OpenOptions) (PreparedOpen, error) {
 	id, workspace, fresh := options.SessionID, options.Workspace, options.Fresh
-	absWorkspace, err := filepath.Abs(workspace)
-	if err != nil {
-		absWorkspace = workspace
-	}
+	absWorkspace := absoluteWorkspace(workspace)
 
 	conn, err := s.Connect(ctx)
 	if err != nil {

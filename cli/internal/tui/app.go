@@ -580,12 +580,12 @@ func (m *AppModel) moved(msg FolderMovedMsg) tea.Cmd {
 		}
 		return nil
 	}
-	m.ActiveSession.Workspace, m.Workspace = msg.Workspace, msg.Workspace
+	m.ActiveSession.Workspace, m.ActiveSession.Location, m.Workspace = msg.Workspace, msg.Location, msg.Workspace
 	if i := slices.IndexFunc(m.Sessions, func(s daemon.Session) bool { return s.ID == msg.SessionID }); i >= 0 {
-		m.Sessions[i].Workspace = msg.Workspace
+		m.Sessions[i].Workspace, m.Sessions[i].Location = msg.Workspace, msg.Location
 	}
 	m.State = AppStateChat
-	return m.Chat.Moved(msg.Workspace, msg.Retry)
+	return m.Chat.Moved(daemon.Session{Workspace: msg.Workspace, Location: msg.Location}, msg.Retry)
 }
 
 func (m *AppModel) AddNotice(message string) {

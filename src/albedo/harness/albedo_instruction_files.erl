@@ -66,10 +66,14 @@ discover_checked(Workspace0, Home0, RootMatch, DirectoryMatch, Kind) ->
         false -> {error, <<"more than 128 ", Kind/binary, " files were discovered">>}
     end.
 
+%% An empty workspace has no project files here: it is on another host.
 discover(Workspace, Home, RootMatch, DirectoryMatch) ->
-    Project = root_files(Workspace, RootMatch)
-              ++ directory_files(project_agents, Workspace, ".agents", DirectoryMatch)
-              ++ directory_files(project_albedo, Workspace, ".albedo", DirectoryMatch),
+    Project = case Workspace of
+        [] -> [];
+        _ -> root_files(Workspace, RootMatch)
+             ++ directory_files(project_agents, Workspace, ".agents", DirectoryMatch)
+             ++ directory_files(project_albedo, Workspace, ".albedo", DirectoryMatch)
+    end,
     Global = case Home of
         [] -> [];
         _ -> directory_files(global_agents, Home, ".agents", DirectoryMatch)

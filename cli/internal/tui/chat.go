@@ -322,6 +322,7 @@ type ChatModel struct {
 	Status              daemon.AgentStatus
 	AgentName           string
 	Workspace           string
+	Host                string // the label of a remote workspace's host; "" when local
 	Model               string
 	Effort              string
 	Provider            string
@@ -438,6 +439,7 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		Generation:   gen,
 		AgentName:    "albedo",
 		Workspace:    session.Workspace,
+		Host:         sessionHost(*session),
 		Model:        session.Model,
 		Effort:       session.Effort,
 		Provider:     session.Provider,
@@ -1595,8 +1597,9 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 // Moved takes the session's new folder, then sends again the turn a
 // missing folder refused.
-func (m *ChatModel) Moved(workspace string, retry *WorkspaceRetry) tea.Cmd {
-	m.Workspace = workspace
+func (m *ChatModel) Moved(moved daemon.Session, retry *WorkspaceRetry) tea.Cmd {
+	workspace := moved.Workspace
+	m.Workspace, m.Host = workspace, sessionHost(moved)
 	m.Renderer.Workspace = workspace
 	m.rebuildSettledLines() // settled rows name paths from the old workspace
 	m.refreshViewportContent()
@@ -2110,7 +2113,15 @@ func (m ChatModel) phaseMood() mood {
 // brand, the glance counts from the last, then the path down to its name,
 // which alone may squeeze the rule to one cell.
 func (m ChatModel) header(width int) string {
-	workspace := homePath(cmp.Or(m.Workspace, "chat"))
+	host, workspace := daemon.SplitLocation(cmp.Or(m.Workspace, "chat"))
+	// a remote workspace's host stays whole in every layout
+	lead := ""
+	if host == "" {
+		workspace = homePath(workspace)
+	} else {
+		host = cmp.Or(m.Host, host)
+		lead = host + ":"
+	}
 	model := m.Model
 	if m.Effort != "" {
 		model += ":" + m.Effort
@@ -2133,17 +2144,21 @@ func (m ChatModel) header(width int) string {
 	layouts = append(layouts, layout{brand: false, place: filepath.Base(workspace), counts: 0, rule: 1})
 	for _, l := range layouts {
 		right := strings.Join(append(counts[:l.counts:l.counts], model), "  ")
-		left := l.place
+		left := lead + l.place
 		if l.brand {
-			left = "✦ " + m.AgentName + " on " + l.place
+			left = "✦ " + m.AgentName + " on " + left
 		}
 		if lipgloss.Width(left)+lipgloss.Width(right)+l.rule+2 > width {
 			continue
 		}
-		if l.brand {
-			return titleRule(width, located(m.AgentName, l.place), m.Styles.Faint.Render(right))
+		place := m.Styles.Muted.Render(l.place)
+		if host != "" {
+			place = hostStyle(host).Render(host) + m.Styles.Muted.Render(":"+l.place)
 		}
-		return titleRule(width, m.Styles.Muted.Render(l.place), m.Styles.Faint.Render(right))
+		if l.brand {
+			return titleRule(width, brand(m.AgentName)+m.Styles.Faint.Render(" on ")+place, m.Styles.Faint.Render(right))
+		}
+		return titleRule(width, place, m.Styles.Faint.Render(right))
 	}
 	return m.Styles.Faint.Render(ansi.Truncate(model, width, "…"))
 }

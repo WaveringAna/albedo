@@ -1,0 +1,157 @@
+"""Sessions at remote locations: `[user@]host:/abs/path` workspaces.
+
+Until kernels can run on another host, a remote location is a stored key the
+daemon parses, labels and refuses to act on. These cover what a client sees:
+the canonical spelling and parsed `location`, the host label's `user@`
+elision against `ssh -G`, rejected forms, moving between local and remote,
+and the refusals that keep the daemon from looking for a remote path on its
+own disk.
+"""
+
+import json
+import shutil
+import subprocess
+import unittest
+import urllib.error
+import urllib.parse
+
+from harness import Albedo, exclusive
+
+HOST = "albedo-e2e-nowhere"
+
+
+def ssh_user(host):
+    """The user ssh would pick for `host`, or None without ssh."""
+    if shutil.which("ssh") is None:
+        return None
+    output = subprocess.run(
+        ["ssh", "-G", host], capture_output=True, text=True, check=True
+    ).stdout
+    return next(
+        line.split(" ", 1)[1]
+        for line in output.splitlines()
+        if line.startswith("user ")
+    )
+
+
+class LocationsTest(unittest.TestCase):
+    def setUp(self):
+        self.app = Albedo().__enter__()
+        self.addCleanup(self.app.__exit__, None, None, None)
+
+    def api(self, path, body=None):
+        with self.app.api(path, body) as response:
+            return json.load(response)
+
+    def failure(self, path, body=None):
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.api(path, body)
+        return caught.exception.code, json.load(caught.exception)["error"]
+
+    def create(self, workspace):
+        return self.api(
+            "/sessions", {"workspace": workspace, "provider": self.app.profile}
+        )
+
+    def test_remote_workspace_is_stored_canonically_with_its_location(self):
+        created = self.create(f"mayer@{HOST}:/home/mayer//proj/./albedo/")
+        canonical = f"mayer@{HOST}:/home/mayer/proj/albedo"
+        self.assertEqual(created["workspace"], canonical)
+        location = created["location"]
+        self.assertEqual(
+            (location["host"], location["user"], location["path"]),
+            (HOST, "mayer", "/home/mayer/proj/albedo"),
+        )
+        listed = next(s for s in self.api("/sessions") if s["id"] == created["id"])
+        self.assertEqual(listed["workspace"], canonical)
+
+        local = self.create(str(self.app.workspace))
+        self.assertEqual(local["workspace"], str(self.app.workspace))
+        self.assertEqual(
+            local["location"],
+            {
+                "host": None,
+                "user": None,
+                "path": str(self.app.workspace),
+                "label": None,
+            },
+        )
+
+    def test_host_label_drops_the_user_ssh_would_pick_anyway(self):
+        self.assertEqual(self.create(f"{HOST}:/srv")["location"]["label"], HOST)
+        other = "someone-else"
+        self.assertEqual(
+            self.create(f"{other}@{HOST}:/srv")["location"]["label"],
+            f"{other}@{HOST}",
+        )
+        default = ssh_user(HOST)
+        if default is None:
+            self.skipTest("ssh is not installed: the label keeps any user")
+        self.assertEqual(
+            self.create(f"{default}@{HOST}:/srv")["location"]["label"], HOST
+        )
+
+    # `albedo new` takes the active profile, which other tests on the shared
+    # daemon rewrite; a daemon of its own keeps that profile this fixture's.
+    @exclusive
+    def test_the_cli_starts_a_remote_session_without_resolving_it_locally(self):
+        session = json.loads(self.app.cli("new", f"{HOST}:/srv/cli"))["session"]
+        listed = next(s for s in self.api("/sessions") if s["id"] == session)
+        self.assertEqual(listed["workspace"], f"{HOST}:/srv/cli")
+
+    def test_unusable_locations_are_rejected(self):
+        for workspace, said in (
+            (f"{HOST}:~/proj", "must be absolute"),
+            (f"{HOST}:proj", "must be absolute"),
+            (f"{HOST}:", "must be absolute"),
+            ("-oProxyCommand=touch:/tmp", "not a valid host"),
+            (f"-l@{HOST}:/srv", "not a valid user"),
+            ("relative/path", "absolute path or host:/absolute/path"),
+            ("dir/with:colon", "absolute path or host:/absolute/path"),
+        ):
+            with self.subTest(workspace=workspace):
+                status, message = self.failure(
+                    "/sessions", {"workspace": workspace, "provider": self.app.profile}
+                )
+                self.assertEqual(status, 400)
+                self.assertIn(said, message)
+
+    def test_remote_session_refuses_what_needs_the_host(self):
+        session = self.create(f"{HOST}:/srv/app")["id"]
+        status, message = self.failure(
+            f"/sessions/{session}/events", {"content": "hello"}
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(message, f"kernels on {HOST} aren't available yet")
+
+        # Its extensions still compose around the project files they skip.
+        self.assertTrue(self.api(f"/sessions/{session}/commands"))
+
+        for route in ("list", "repo", "preview"):
+            with self.subTest(route=route):
+                query = urllib.parse.urlencode({"path": f"{HOST}:/srv/app"})
+                status, message = self.failure(f"/fs/{route}?{query}")
+                self.assertEqual(status, 400)
+                self.assertEqual(message, f"folders on {HOST} aren't available yet")
+
+    def test_a_session_moves_to_a_remote_location_and_back(self):
+        session = self.app.session()
+        moved = self.api(
+            f"/sessions/{session}/workspace", {"workspace": f"{HOST}:/srv//app/"}
+        )
+        self.assertEqual(moved["workspace"], f"{HOST}:/srv/app")
+        self.assertEqual(moved["location"]["host"], HOST)
+        status, message = self.failure(
+            f"/sessions/{session}/workspace", {"workspace": f"{HOST}:~/app"}
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("must be absolute", message)
+        back = self.api(
+            f"/sessions/{session}/workspace", {"workspace": str(self.app.workspace)}
+        )
+        self.assertEqual(back["workspace"], str(self.app.workspace))
+        self.assertIsNone(back["location"]["host"])
+
+
+if __name__ == "__main__":
+    unittest.main()

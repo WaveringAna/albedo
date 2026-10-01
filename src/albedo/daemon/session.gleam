@@ -27,6 +27,7 @@ import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/run/extension as run
+import albedo/harness/location
 import albedo/harness/loop
 import albedo/harness/runtime
 import albedo/harness/session_settings
@@ -628,10 +629,11 @@ fn handle(
     ChangeWorkspace(cwd, reply) -> {
       let state = stirred(state)
       let previous = state.info.cwd
-      let moved = case turn.running(state.activity), directory(cwd) {
+      let moved = case turn.running(state.activity), location.workspace(cwd) {
         Some(_), _ -> Error("session must be idle to change workspace")
-        None, False -> Error("workspace must be an existing absolute directory")
-        None, True -> relocate(state, cwd, "workspace changed")
+        None, Error(error) -> Error(error)
+        None, Ok(target) ->
+          relocate(state, location.to_string(target), "workspace changed")
       }
       case moved {
         Error(error) -> answer(state, reply, Error(error))
@@ -1247,6 +1249,20 @@ fn selection_json(selection: ModelSelection) -> json.Json {
 @external(erlang, "albedo_daemon", "directory")
 fn directory(path: String) -> Bool
 
+/// A turn needs a kernel in the workspace: a local folder that still exists.
+/// A remote one is refused before anything looks for it on this machine.
+fn workspace_ready(cwd: String) -> Result(Nil, SubmissionError) {
+  case location.parse(cwd) {
+    Ok(location.Remote(host:, ..)) ->
+      Error(Rejected(location.unavailable(host, "kernels")))
+    _ ->
+      case directory(cwd) {
+        True -> Ok(Nil)
+        False -> Error(WorkspaceMissing(cwd))
+      }
+  }
+}
+
 @external(erlang, "albedo_session", "kill")
 fn kill(pid: process.Pid) -> Nil
 
@@ -1320,10 +1336,7 @@ fn discard(path: String) -> Nil
 fn prepare_submission(
   state: State,
 ) -> Result(#(State, runtime.Session, extension.Upstream), SubmissionError) {
-  use _ <- result.try(case directory(state.info.cwd) {
-    True -> Ok(Nil)
-    False -> Error(WorkspaceMissing(state.info.cwd))
-  })
+  use _ <- result.try(workspace_ready(state.info.cwd))
   use state <- result.try(
     session_history.ensure_history(state) |> result.map_error(Rejected),
   )
@@ -1627,24 +1640,26 @@ fn admit_within_limits(
         Ok(True),
       )
     turn.Start ->
-      case directory(state.info.cwd), session_namespace.ready(state) {
-        False, _ ->
-          answer(state, reply, Error(WorkspaceMissing(state.info.cwd)))
-        // It starts once the kernel boots, not behind another turn, so to
-        // the caller it is not queued; the actor keeps answering meanwhile.
-        True, #(state, None) ->
-          answer(
-            park(
-              session_state.State(
-                ..state,
-                steering: list.append(state.steering, [submission]),
-              ),
-              StartQueued,
-            ),
-            reply,
-            Ok(False),
-          )
-        True, #(state, Some(_)) -> start_now(state, submission, reply)
+      case workspace_ready(state.info.cwd) {
+        Error(error) -> answer(state, reply, Error(error))
+        Ok(Nil) ->
+          case session_namespace.ready(state) {
+            // It starts once the kernel boots, not behind another turn, so to
+            // the caller it is not queued; the actor keeps answering meanwhile.
+            #(state, None) ->
+              answer(
+                park(
+                  session_state.State(
+                    ..state,
+                    steering: list.append(state.steering, [submission]),
+                  ),
+                  StartQueued,
+                ),
+                reply,
+                Ok(False),
+              )
+            #(state, Some(_)) -> start_now(state, submission, reply)
+          }
       }
   }
 }
@@ -2206,9 +2221,9 @@ fn follow_up(state: State) -> State {
     None -> state
     Some(cwd) -> {
       let state = session_state.State(..state, following: None)
-      let moved = case directory(cwd) {
-        False -> Error(cwd <> " no longer exists")
-        True -> relocate(state, cwd, "workspace moved with parent")
+      let moved = case location.workspace(cwd) {
+        Error(_) -> Error(cwd <> " no longer exists")
+        Ok(_) -> relocate(state, cwd, "workspace moved with parent")
       }
       case moved {
         Ok(state) -> state

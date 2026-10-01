@@ -1,5 +1,6 @@
 //// Immutable Agent Skills catalog snapshots and on-demand activation.
 
+import albedo/harness/location
 import gleam/json
 import gleam/list
 import gleam/option.{type Option}
@@ -116,19 +117,28 @@ const reserved_commands = [
 
 /// Explicit home and built-in root make tests and embedders independent of the
 /// daemon account and install; an empty `builtin` ships no built-in skills.
+/// A remote workspace's project skills can't be read from here yet: only the
+/// home directories are scanned (native discovery takes "" as no project),
+/// and a diagnostic says so.
 pub fn scan_at(
   workspace: String,
   home: String,
   builtin: String,
 ) -> Result(Catalog, String) {
+  let #(project, skipped) = case location.parse(workspace) {
+    Ok(location.Remote(host:, ..)) -> #("", [
+      location.unavailable(host, "project skills"),
+    ])
+    _ -> #(workspace, [])
+  }
   use #(skills, diagnostics, _) <- result.try(native_catalog(
-    workspace,
+    project,
     home,
     builtin,
   ))
   Ok(Catalog(
     list.map(skills, fn(v) { Skill(v.0, v.1, v.2, v.3, v.4, v.5) }),
-    diagnostics,
+    list.append(skipped, diagnostics),
   ))
 }
 

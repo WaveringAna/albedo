@@ -61,6 +61,7 @@ type FolderMovedMsg struct {
 	Retry     *WorkspaceRetry
 	SessionID string
 	Workspace string
+	Location  *daemon.Location
 }
 
 type FolderPickerCancelMsg struct{}
@@ -102,7 +103,7 @@ type folderSessionsMsg struct {
 func moveCmd(src folderSource, id, workspace, input string, retry *WorkspaceRetry) tea.Cmd {
 	return func() tea.Msg {
 		target := folderRequest(workspace, input)
-		if !strings.HasPrefix(target, "/") {
+		if host, _ := daemon.SplitLocation(target); host == "" && !strings.HasPrefix(target, "/") {
 			list, err := src.List(target)
 			if err != nil {
 				return FolderMovedMsg{SessionID: id, Retry: retry, Err: err}
@@ -110,17 +111,18 @@ func moveCmd(src folderSource, id, workspace, input string, retry *WorkspaceRetr
 			target = list.Path
 		}
 		s, err := src.Move(id, target)
-		return FolderMovedMsg{SessionID: id, Workspace: cmp.Or(s.Workspace, target), Retry: retry, Err: err}
+		return FolderMovedMsg{SessionID: id, Workspace: cmp.Or(s.Workspace, target), Location: s.Location, Retry: retry, Err: err}
 	}
 }
 
-// folderRequest is how the daemon is asked about a typed folder: ~ and
-// absolute paths as they are, anything else under the current folder.
+// folderRequest is how the daemon is asked about a typed folder: ~,
+// absolute paths and host:/paths as they are, anything else under the
+// current folder.
 func folderRequest(workspace, typed string) string {
 	if typed != "/" {
 		typed = strings.TrimSuffix(typed, "/")
 	}
-	if strings.HasPrefix(typed, "/") || typed == "~" || strings.HasPrefix(typed, "~/") {
+	if host, _ := daemon.SplitLocation(typed); host != "" || strings.HasPrefix(typed, "/") || typed == "~" || strings.HasPrefix(typed, "~/") {
 		return typed
 	}
 	return path.Join(workspace, typed)
@@ -154,9 +156,9 @@ func frecency(last *int64, now time.Time) float64 {
 }
 
 type recentFolder struct {
-	last  *int64
-	path  string
-	score float64
+	last       *int64
+	path, host string
+	score      float64
 }
 
 // recentFolders are the distinct workspaces of sessions, most frecent
@@ -171,7 +173,7 @@ func recentFolders(sessions []daemon.Session, current string, now time.Time) []r
 		i, ok := index[s.Workspace]
 		if !ok {
 			i, index[s.Workspace] = len(out), len(out)
-			out = append(out, recentFolder{path: s.Workspace})
+			out = append(out, recentFolder{path: s.Workspace, host: sessionHost(s)})
 		}
 		f := &out[i]
 		f.score += frecency(s.LastAssistantAt, now)
@@ -211,7 +213,9 @@ func fuzzyNames(segment string, names []string) []fuzzy.Match {
 type folderRow struct {
 	age        *int64
 	path, name string
-	matched    []int
+	// host labels a remote folder's host.
+	host    string
+	matched []int
 	// recent rows show where the folder is beside its name.
 	recent bool
 	// repo says the folder may be in a repository worth asking about.
@@ -346,7 +350,7 @@ func (m *FolderPicker) rebuild() {
 	if !listing {
 		m.section = "recent"
 		for _, f := range recentFolders(m.sessions, m.workspace(), time.Now()) {
-			candidates = append(candidates, folderRow{path: f.path, name: path.Base(f.path), recent: true, age: f.last, repo: true})
+			candidates = append(candidates, folderRow{path: f.path, host: f.host, name: path.Base(f.path), recent: true, age: f.last, repo: true})
 		}
 	} else {
 		m.listed = folderRequest(m.workspace(), dir)
