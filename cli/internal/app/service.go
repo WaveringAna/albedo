@@ -52,26 +52,11 @@ func (s *Service) PrepareOpen(ctx context.Context, options OpenOptions) (Prepare
 
 	var selected *daemon.Session
 	if id != "" {
-		selectedIndex, matchCount := -1, 0
-		for i := range sessions {
-			if sessions[i].ID == id {
-				selectedIndex, matchCount = i, 1
-				break
-			}
-			if strings.HasPrefix(sessions[i].ID, id) {
-				selectedIndex = i
-				matchCount++
-			}
+		session, err := matchSession(sessions, id)
+		if err != nil {
+			return PreparedOpen{}, err
 		}
-		switch matchCount {
-		case 0:
-			return PreparedOpen{}, fmt.Errorf("no session matches %q; run albedo sessions to see the available sessions", id)
-		case 1:
-			session := sessions[selectedIndex]
-			selected = &session
-		default:
-			return PreparedOpen{}, fmt.Errorf("more than one session ID starts with %q; use a longer ID or run albedo sessions to find it", id)
-		}
+		selected = &session
 	}
 
 	profs, err := daemon.ProviderProfiles(ctx, conn)
@@ -118,8 +103,46 @@ func (s *Service) Sessions(ctx context.Context) (SessionList, error) {
 	}
 	return SessionList{Sessions: sessions, ArchiveWarning: warning}, nil
 }
+
+// matchSession finds the session whose ID is id or, failing that, the only one
+// that starts with it, since `albedo sessions` prints shortened IDs.
+func matchSession(sessions []daemon.Session, id string) (daemon.Session, error) {
+	selectedIndex, matchCount := -1, 0
+	for i := range sessions {
+		if sessions[i].ID == id {
+			return sessions[i], nil
+		}
+		if strings.HasPrefix(sessions[i].ID, id) {
+			selectedIndex = i
+			matchCount++
+		}
+	}
+	switch matchCount {
+	case 0:
+		return daemon.Session{}, fmt.Errorf("no session matches %q; run albedo sessions to see the available sessions", id)
+	case 1:
+		return sessions[selectedIndex], nil
+	default:
+		return daemon.Session{}, fmt.Errorf("more than one session ID starts with %q; use a longer ID or run albedo sessions to find it", id)
+	}
+}
+
+// resolveSession expands a shortened session ID against the daemon's sessions.
+func resolveSession(ctx context.Context, conn *daemon.Connection, id string) (string, error) {
+	sessions, err := daemon.Request[[]daemon.Session](ctx, conn, "/sessions", nil)
+	if err != nil {
+		return "", err
+	}
+	session, err := matchSession(sessions, id)
+	return session.ID, err
+}
+
 func (s *Service) Send(ctx context.Context, id, prompt string) (json.RawMessage, error) {
 	conn, err := s.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	id, err = resolveSession(ctx, conn, id)
 	if err != nil {
 		return nil, err
 	}
@@ -127,6 +150,10 @@ func (s *Service) Send(ctx context.Context, id, prompt string) (json.RawMessage,
 }
 func (s *Service) Stop(ctx context.Context, id string) (json.RawMessage, error) {
 	conn, err := s.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	id, err = resolveSession(ctx, conn, id)
 	if err != nil {
 		return nil, err
 	}

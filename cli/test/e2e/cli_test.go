@@ -163,6 +163,21 @@ func TestChatClientTurnStreamsAndSettles(t *testing.T) {
 	}
 }
 
+// `albedo sessions` prints shortened IDs, so send and stop must accept them the
+// way resume does.
+func TestSendAndStopAcceptAShortenedSessionID(t *testing.T) {
+	t.Parallel()
+	profile := providerRoute(t, echoReply)
+	id := newSession(t, t.TempDir())
+
+	var sent daemon.SendResult
+	if err := json.Unmarshal([]byte(cli(t, "send", id[:8], "short id")), &sent); err != nil || !sent.OK {
+		t.Fatalf("albedo send by prefix: ok=%v err=%v", sent.OK, err)
+	}
+	waitIdle(t, id, profile, 1)
+	cli(t, "stop", id[:8])
+}
+
 // Sending to a session that does not exist must fail loudly rather than queue
 // a prompt into nothing.
 func TestSendToUnknownSessionFails(t *testing.T) {
@@ -171,8 +186,8 @@ func TestSendToUnknownSessionFails(t *testing.T) {
 	if err == nil {
 		t.Fatalf("albedo send to an unknown session exited 0: %s", stdout)
 	}
-	if !strings.Contains(stderr, "not found") {
-		t.Fatalf("expected a not-found diagnostic, got stderr: %s", stderr)
+	if !strings.Contains(stderr, "no session matches") {
+		t.Fatalf("expected a no-match diagnostic, got stderr: %s", stderr)
 	}
 }
 
