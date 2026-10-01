@@ -24,4 +24,6 @@ Authenticated local clients use GET requests only:
 - `GET /sessions/:id/context` returns pending state or request metadata and ordered section summaries.
 - `GET /sessions/:id/context/:section/:page` returns one bounded, zero-based content page.
 
+The session actor owns the immutable prepared snapshot and returns it to the caller. Summary and page rendering run in the calling process, so rendering does not occupy the session actor. Each read uses one captured snapshot.
+
 The `session_context` health capability indicates support. Invalid section or page identifiers return an error without changing session state.

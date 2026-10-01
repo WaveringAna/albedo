@@ -155,8 +155,7 @@ pub type Message {
   Compact(Option(String), Subject(Result(json.Json, String)))
   RefreshData(Subject(Result(json.Json, String)))
   DrainSteering(String, Subject(Result(List(types.Input), String)))
-  ReadContext(Subject(json.Json))
-  ReadContextPage(String, Int, Subject(Result(json.Json, String)))
+  ReadContext(Subject(context_snapshot.Snapshot))
   Finished(String, Result(Nil, String))
   Down(process.Down)
   Idle(Subject(Report))
@@ -340,7 +339,7 @@ pub fn read(session: Session, after: Int, tail: Option(Int)) -> Page {
 }
 
 pub fn context(session: Session) -> json.Json {
-  actor.call(session, 5000, ReadContext)
+  actor.call(session, 5000, ReadContext) |> context_snapshot.summary
 }
 
 pub fn context_page(
@@ -348,7 +347,8 @@ pub fn context_page(
   section: String,
   page: Int,
 ) -> Result(json.Json, String) {
-  actor.call(session, 5000, ReadContextPage(section, page, _))
+  actor.call(session, 5000, ReadContext)
+  |> context_snapshot.page(section, page)
 }
 
 /// Remove the saved variables after a session has stopped.
@@ -441,7 +441,6 @@ fn handle(
     | Status(..)
     | Read(..)
     | ReadContext(..)
-    | ReadContextPage(..)
     | ChangeModel(..)
     | Compact(..)
     | RefreshData(..)
@@ -848,10 +847,7 @@ fn handle(
         reply,
         Nil,
       )
-    ReadContext(reply) ->
-      answer(state, reply, context_snapshot.summary(state.context))
-    ReadContextPage(section, page, reply) ->
-      answer(state, reply, context_snapshot.page(state.context, section, page))
+    ReadContext(reply) -> answer(state, reply, state.context)
     RecordUsage(id, metadata, reply) ->
       case turn.owner(state.activity, id) {
         Some(_) -> {
@@ -1012,7 +1008,7 @@ fn command_op(
     command.EffortGet -> actor.call(session, 5000, ReadEffort)
     command.EffortSelect(level) ->
       actor.call(session, 5000, ChangeEffort(level, _))
-    command.ContextSummary -> Ok(actor.call(session, 5000, ReadContext))
+    command.ContextSummary -> Ok(context(session))
     // Switching strategy reloads the session's extensions first.
     command.Compact(strategy) ->
       actor.call(session, 60_000, Compact(strategy, _))
@@ -1020,8 +1016,7 @@ fn command_op(
     // Catalog fetches read no session state, so they stay off the actor.
     command.ReloadCatalogs ->
       runtime.reload_catalogs(host, id) |> result.map(catalogs_json)
-    command.ContextPage(section, page) ->
-      actor.call(session, 5000, ReadContextPage(section, page, _))
+    command.ContextPage(section, page) -> context_page(session, section, page)
     command.Submit(display, text, client) ->
       submitted(
         session,
