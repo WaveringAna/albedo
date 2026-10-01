@@ -57,6 +57,49 @@ class ImageToolOutputTest(unittest.TestCase):
         finally:
             provider.close()
 
+    @exclusive
+    def test_top_level_and_nested_images_survive_restart(self):
+        code = ""
+
+        def reply(request):
+            if request["input"][-1].get("type") == "function_call_output":
+                return text("done")
+            return python(code) if code else text("history restored")
+
+        provider = Provider(reply)
+        try:
+            with Albedo(provider, protocol="responses") as app:
+                session = app.session()
+
+                def run(source):
+                    nonlocal code
+                    code = source
+                    app.prompt(session, "run image scenario").close()
+                    app.idle(session)
+                    result = next(
+                        json.loads(event["result"])
+                        for event in reversed(app.events(session))
+                        if event.get("type") == "tool" and event.get("name") == "python"
+                    )
+                    self.assertEqual(result["status"], "ok", result)
+                    return result
+
+                first = run(f"show_image(__import__('base64').b64decode({SHOWN!r}))")
+                run(f"await cells.run({first['cell_id']!r}, allow_partial=True)")
+                attachment = "data:image/png;base64," + SHOWN
+                self.assertEqual(
+                    json.dumps(provider.requests[-1]["request"]).count(attachment), 2
+                )
+                code = ""
+                app.restart()
+                app.prompt(session, "recall delivered images").close()
+                app.idle(session)
+                self.assertEqual(
+                    json.dumps(provider.requests[-1]["request"]).count(attachment), 2
+                )
+        finally:
+            provider.close()
+
     def test_compaction_elides_evicted_tool_images_only(self):
         def reply(request):
             inputs = request["input"]

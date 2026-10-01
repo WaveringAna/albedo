@@ -750,6 +750,7 @@ class Cells:
                 },
             },
         )
+        capture.images.clear()
         if error is not None:
             raise error
         return value
@@ -1288,6 +1289,7 @@ async def serve():
                 "images": capture.encoded_images(),
             }
         )
+        capture.images.clear()
 
 
 def main():

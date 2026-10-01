@@ -113,6 +113,8 @@ a cell returns images with `show_image(bytes_or_path)`, or a plugin with `api.at
 
 on the wire, responses sends the images inside `function_call_output.output`, after the text. chat completions tool messages take text only, so after a run of tool results one user message carries their images, each group labelled with its call id. history keeps the images on the tool result itself, so compaction never mistakes that message for a user turn. the model must accept image input; nothing checks that yet.
 
+Retained kernel captures release image bytes after delivery, including error and interrupted results. Top-level delivery completes when the control-stream write returns. Nested `cells.run` delivery completes when the host acknowledges `cells.finish`, after images propagate to the parent. Failed delivery keeps the capture's images. Retained text and durable image results keep their existing lifetimes; durable images remain available after daemon restart.
+
 interfaces: [`PythonApi`](../priv/python/albedo_api.py), [`work`](../src/albedo/harness/work.gleam), [`compaction strategy`](../src/albedo/harness/compaction.gleam).
 
 Kernel control messages are checked by `priv/python/albedo_protocol.py` before delivery to the event loop. Invalid JSON, oversized frames, unknown message types, and invalid fields enter the kernel shutdown path, including plugin cleanup and child-process cleanup. Host replies are checked before their pending futures are removed or completed. Extra fields on known messages are accepted. Missing methods, expired references, and tool exceptions remain call errors.
