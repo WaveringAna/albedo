@@ -3,6 +3,7 @@ package tui
 import (
 	"albedo/cli/internal/daemon"
 	"cmp"
+	"strings"
 	"time"
 )
 
@@ -15,8 +16,11 @@ type transcriptState struct {
 	lastEvent  time.Time
 	turn       *openTurn
 	activeKind ActiveStreamKind
-	activeText string
-	thoughtMs  int64
+	// Only the current update path appends to activeBuffer. Retained model
+	// copies read activeText, whose bytes stay unchanged after each append.
+	activeBuffer *strings.Builder
+	activeText   string
+	thoughtMs    int64
 
 	streamedHash uint64
 	streamedLen  int64
@@ -28,6 +32,7 @@ func newTranscriptState() transcriptState {
 
 func (t *transcriptState) resetStream() {
 	t.activeKind, t.activeText = StreamKindNone, ""
+	t.activeBuffer = nil
 	t.streamedHash, t.streamedLen = fnvOffset64, 0
 }
 
@@ -44,7 +49,7 @@ func (t *transcriptState) settle(agentName string) []HistoryEntry {
 		entry := HistoryEntry{
 			Kind:      t.activeEntryKind(),
 			Speaker:   agentName,
-			Text:      t.activeText,
+			Text:      strings.Clone(t.activeText),
 			Timestamp: time.Now().UnixMilli(),
 		}
 		if entry.Kind == EntryThinking {
@@ -56,6 +61,7 @@ func (t *transcriptState) settle(agentName string) []HistoryEntry {
 		entries = append(entries, entry)
 	}
 	t.activeKind, t.activeText = StreamKindNone, ""
+	t.activeBuffer = nil
 	t.thinkingSince, t.thoughtMs = time.Time{}, 0
 	return entries
 }
@@ -70,7 +76,11 @@ func (t *transcriptState) streamDelta(kind ActiveStreamKind, text, agentName str
 		entries = t.settle(agentName)
 		t.activeKind = kind
 	}
-	t.activeText += text
+	if t.activeBuffer == nil {
+		t.activeBuffer = new(strings.Builder)
+	}
+	t.activeBuffer.WriteString(text)
+	t.activeText = t.activeBuffer.String()
 	if kind == StreamKindText {
 		t.streamedHash = fnv1a(t.streamedHash, text)
 		t.streamedLen += int64(len(text))
