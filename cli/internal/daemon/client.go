@@ -425,6 +425,12 @@ func parseStreamEvent(raw map[string]any) *StreamEvent {
 
 	case "usage":
 		model, _ := raw["model"].(string)
+		var cacheFade []CacheStep
+		if data, err := json.Marshal(raw["cacheFade"]); err == nil {
+			if err := json.Unmarshal(data, &cacheFade); err != nil {
+				cacheFade = nil
+			}
+		}
 		var recordedAt *int64
 		if ra, ok := raw["recordedAt"].(float64); ok {
 			r := int64(ra)
@@ -455,6 +461,7 @@ func parseStreamEvent(raw map[string]any) *StreamEvent {
 				TotalTokens:        getInt("totalTokens"),
 				ElapsedMs:          getFloat("elapsedMs"),
 				TokensPerSecond:    getFloat("tokensPerSecond"),
+				CacheFade:          cacheFade,
 			},
 		}
 
