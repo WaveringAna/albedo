@@ -10,7 +10,9 @@ The proxy is a [service](extensions.md) mounted at `http://127.0.0.1:<port>/prox
 - The list only helps clients choose. Any `<profile>/<model>` is requested as given, listed or not, and a broken or signed-out profile fails only its own requests.
 - `POST /proxy/v1/chat/completions` accepts `model` as `<profile>/<model>`, or a bare `<profile>` for its saved model. Streaming (`stream`, `stream_options.include_usage`) and non-streaming replies are supported.
 
-There is no API key: the daemon binds only to loopback, and any local process running as you can already read `creds.json`. Put an authenticating reverse proxy in front of it if you need one. Requests with an `Origin` header are refused, so web pages cannot call it.
+There is no API key: the daemon binds only to loopback, and any local process running as you can already read `creds.json`. Put an authenticating reverse proxy in front of it if you need one. Requests with an `Origin` header are refused, so web pages cannot call it. The proxy declares the `LocalAccess` service policy, so the daemon token is not required.
+
+Send uploads with a decimal `Content-Length` of at most 32,000,000 bytes. Chunked uploads and all other `Transfer-Encoding` headers return `400`; oversized declared bodies return `413`. A missing length means an empty body. Streamed responses remain supported.
 
 ## translation
 
