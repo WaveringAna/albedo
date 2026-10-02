@@ -73,6 +73,45 @@ API recovery cannot launch or replace a daemon.
 [Daemon attachment and local startup](daemon-lifecycle.md) describes the startup
 policy, authentication, and operator overrides.
 
+## Storage reports and offline diagnosis
+
+`albedo storage` attaches to an existing daemon and calls `GetStorageReport`.
+The authenticated `GET /storage/report` route requires the `storage_report`
+capability. The daemon inspects its own database and files; online clients need
+neither Python nor access to that installation's storage files.
+
+When discovery proves the daemon absent or its record stale, reporting uses
+read-only local inspection automatically. Authentication, protocol, health, and
+transport failures remain errors. `albedo storage --offline` explicitly selects
+local diagnosis, including when a daemon is running or unreachable. Reporting
+never launches or restarts a daemon.
+
+Offline inspection requires Python only when a database exists. It recognizes
+layouts from before pinned context and cell traces, optional image and cell
+tables, and earlier TEXT image storage without migrating them. Layout recognition
+uses the columns needed for accounting, rather than a new schema version marker.
+Missing storage produces an empty database report without creating files;
+unsupported required columns produce an error rather than an incomplete
+successful report.
+
+The offline inspector reads a temporary copy of the database and any WAL.
+SQLite may create a private SHM file there, leaving the installation untouched.
+If storage changes during copying, diagnosis fails and asks you to retry when
+the daemon is quiet. The temporary copy needs space for the database and WAL.
+
+Session sizes estimate selected stored content: pinned context, transcripts,
+cell source and payloads, and cell traces. Shared images are counted separately,
+once each. These estimates retain SQLite's existing length arithmetic and do
+not describe allocated disk space per session. Database size measures the main
+file; the `wal` field includes both WAL and SHM. Database measurements are
+collected together, while file sizes reflect the filesystem during inspection.
+
+Old orphan state files and recognized migration backups become cleanup
+candidates after 30 days. A report does not authorize deleting them. Local
+cleanup takes the existing exclusive ownership lock and rechecks locally
+approved candidates before mutation. Paths returned by the daemon never
+authorize local deletion. Session deletion uses the daemon's report and API.
+
 ## Adding a client operation
 
 Add the named operation and its request and response types to the adapter first.
