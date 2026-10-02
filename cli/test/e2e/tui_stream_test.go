@@ -113,7 +113,7 @@ func faultSessionStream(t *testing.T, session string, fault string) *streamFault
 	t.Cleanup(server.Close)
 	snapshot := conn(t).Snapshot()
 	snapshot.Port = server.Listener.Addr().(*net.TCPAddr).Port
-	proxy.connection = daemon.NewConnection(snapshot, "")
+	proxy.connection = daemon.NewConnection(snapshot, nil)
 	t.Cleanup(proxy.connection.HTTPClient().CloseIdleConnections)
 	return proxy
 }

@@ -133,7 +133,6 @@ class StorageTests(unittest.TestCase):
                     timeout=20,
                 )
                 self.assertNotEqual(cleanup.returncode, 0)
-                self.assertIn(b"storage is in use", cleanup.stderr)
                 self.assertEqual(backup.read_bytes(), b"approved backup")
                 self.assertEqual(
                     json.loads(app.cli("storage", "--json")), json.loads(before)

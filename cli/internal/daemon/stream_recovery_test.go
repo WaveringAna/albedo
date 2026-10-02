@@ -52,7 +52,7 @@ func TestStreamAuthenticationRecoveryBeforeDelivery(t *testing.T) {
 					var deliveries atomic.Int32
 					server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 						if request.URL.Path == "/health" {
-							_, _ = writer.Write([]byte(`{"version":2}`))
+							_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow"]}`))
 							return
 						}
 						if requests.Add(1) == 1 {
@@ -81,11 +81,11 @@ func TestStreamAuthenticationRecoveryBeforeDelivery(t *testing.T) {
 						_, _ = io.WriteString(writer, "data: {\"generation\":\"generation-a\",\"cursor\":1,\"events\":[{\"type\":\"reset\"},{\"type\":\"text\",\"session\":\"s\",\"text\":\"hello\"}]}\n\n")
 					}))
 					defer server.Close()
-					home := t.TempDir()
+
 					snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: test.token, Version: 2}
-					writeDiscovery(t, home, snapshot)
+					replacement := snapshot
 					snapshot.Token = "old"
-					conn := NewConnection(snapshot, home)
+					conn := NewConnection(snapshot, func(context.Context) (ConnectionSnapshot, error) { return replacement, nil })
 					defer conn.HTTPClient().CloseIdleConnections()
 					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 					defer cancel()
@@ -122,7 +122,7 @@ func TestAcceptedStreamIsNeverReplayed(t *testing.T) {
 					callbackFailure := errors.New("consumer stopped")
 					server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 						if request.URL.Path == "/health" {
-							_, _ = writer.Write([]byte(`{"version":2}`))
+							_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow"]}`))
 							return
 						}
 						requests.Add(1)
@@ -134,9 +134,9 @@ func TestAcceptedStreamIsNeverReplayed(t *testing.T) {
 					}))
 					defer server.Close()
 					snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "token", Version: 2}
-					home := t.TempDir()
-					writeDiscovery(t, home, snapshot)
-					conn := NewConnection(snapshot, home)
+
+					replacement := snapshot
+					conn := NewConnection(snapshot, func(context.Context) (ConnectionSnapshot, error) { return replacement, nil })
 					defer conn.HTTPClient().CloseIdleConnections()
 					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 					defer cancel()

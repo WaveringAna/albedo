@@ -112,7 +112,7 @@ func TestPageFocusedInputReceivesPasteAndCursorCommands(t *testing.T) {
 }
 
 func TestChatHistoryAndWindowCompletionsSurviveModal(t *testing.T) {
-	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, "")
+	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil)
 	session := &daemon.Session{ID: "s"}
 	chat := NewChatModel(session, daemon.NewChatClient(conn, "s"))
 	defer chat.Close()

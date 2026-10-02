@@ -18,7 +18,7 @@ import (
 )
 
 func promptTestConnection(server *httptest.Server) *daemon.Connection {
-	return daemon.NewConnection(daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
+	return daemon.NewConnection(daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
 }
 
 func TestPromptRequiresSubmissionCancellationBeforeCreatingASession(t *testing.T) {
@@ -26,7 +26,7 @@ func TestPromptRequiresSubmissionCancellationBeforeCreatingASession(t *testing.T
 		if request.URL.Path != "/health" {
 			t.Errorf("unsupported prompt issued %s", request.URL.Path)
 		}
-		_, _ = writer.Write([]byte(`{"capabilities":[]}`))
+		_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":[]}`))
 	}))
 	defer server.Close()
 	service := Service{Connect: func(context.Context) (*daemon.Connection, error) { return promptTestConnection(server), nil }}

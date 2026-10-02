@@ -122,7 +122,12 @@ func bootSuite() (func() (string, bool), error) {
 	if err != nil {
 		return teardown, err
 	}
-	suite.conn = daemon.NewConnection(snap, home)
+	suite.conn, err = daemon.Attach(context.Background(), snap, func(ctx context.Context) (daemon.ConnectionSnapshot, error) {
+		return daemon.Rediscover(ctx, home)
+	})
+	if err != nil {
+		return teardown, err
+	}
 	suite.daemonPID = snap.Pid
 	return teardown, nil
 }

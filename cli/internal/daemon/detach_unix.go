@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -33,3 +34,13 @@ func processAlive(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
+
+func tryLauncherLock(file *os.File) (bool, error) {
+	err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func endpointRefused(err error) bool { return errors.Is(err, syscall.ECONNREFUSED) }

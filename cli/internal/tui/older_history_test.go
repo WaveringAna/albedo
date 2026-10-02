@@ -50,7 +50,7 @@ func TestScrollingToTheTopLoadsOlderHistoryInPlace(t *testing.T) {
 		})
 	}))
 	defer server.Close()
-	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
+	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
 	client := daemon.NewChatClient(conn, "s")
 	m := NewChatModel(&daemon.Session{ID: "s"}, client)
 	t.Cleanup(m.Close)

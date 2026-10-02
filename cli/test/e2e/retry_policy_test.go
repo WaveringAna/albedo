@@ -17,8 +17,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -211,15 +209,7 @@ func mutateAcknowledgement(t *testing.T, path string, fault acknowledgementFault
 	}))
 	t.Cleanup(server.Close)
 	upstream.Port = server.Listener.Addr().(*net.TCPAddr).Port
-	home := t.TempDir()
-	record, err := json.Marshal(upstream)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, "daemon.json"), record, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	proxy.connection = daemon.NewConnection(upstream, home)
+	proxy.connection = daemon.NewConnection(upstream, func(context.Context) (daemon.ConnectionSnapshot, error) { return upstream, nil })
 	t.Cleanup(proxy.connection.HTTPClient().CloseIdleConnections)
 	return proxy
 }
@@ -437,7 +427,9 @@ func TestCoreAuthenticationRefusalRecoversBeforeCreation(t *testing.T) {
 	profile := providerRoute(t, echoReply)
 	snapshot := conn(t).Snapshot()
 	snapshot.Token = "expired-client-token"
-	stale := daemon.NewConnection(snapshot, suite.home)
+	stale := daemon.NewConnection(snapshot, func(ctx context.Context) (daemon.ConnectionSnapshot, error) {
+		return daemon.Rediscover(ctx, suite.home)
+	})
 	t.Cleanup(stale.HTTPClient().CloseIdleConnections)
 	workspace := t.TempDir()
 	created, err := daemon.CreateSession(context.Background(), stale, map[string]string{"workspace": workspace, "provider": profile})
@@ -617,7 +609,7 @@ func TestQueuedPromptDeadlineCancelsOnlyItsOperation(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("active turn never started")
 	}
-	connection := daemon.NewConnection(conn(t).Snapshot(), "")
+	connection := daemon.NewConnection(conn(t).Snapshot(), nil)
 	counter := &submissionCounterTransport{next: connection.HTTPClient().Transport, accepted: make(chan struct{})}
 	connection.HTTPClient().Transport = counter
 	t.Cleanup(connection.HTTPClient().CloseIdleConnections)

@@ -4,13 +4,10 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -46,18 +43,13 @@ func TestStopDaemonDoesNotRecoverAuthenticationRefusal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	home := t.TempDir()
 	replacement := daemon.ConnectionSnapshot{Port: port, Token: "new", Version: 2}
-	record, err := json.Marshal(replacement)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if writeErr := os.WriteFile(filepath.Join(home, "daemon.json"), record, 0600); writeErr != nil {
-		t.Fatal(writeErr)
-	}
 	original := replacement
 	original.Token = "old"
-	conn := daemon.NewConnection(original, home)
+	conn := daemon.NewConnection(original, func(context.Context) (daemon.ConnectionSnapshot, error) {
+		t.Error("shutdown must not rediscover a replacement")
+		return replacement, nil
+	})
 	t.Cleanup(conn.HTTPClient().CloseIdleConnections)
 	service := Service{Existing: func(context.Context) (*daemon.Connection, error) { return conn, nil }}
 	err = service.StopDaemon(context.Background())

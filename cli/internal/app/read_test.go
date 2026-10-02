@@ -43,7 +43,7 @@ func TestReadFlattensHistoryPagesInChronologicalOrder(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
+	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
 	service := Service{Connect: func(context.Context) (*daemon.Connection, error) { return conn, nil }}
 	for _, turns := range []int{3, 2} {
 		cursors = nil

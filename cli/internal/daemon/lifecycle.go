@@ -1,10 +1,7 @@
-// Package daemon discovers and starts the local daemon and provides its typed HTTP API client.
 package daemon
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,332 +10,152 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"slices"
-	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
-	"text/tabwriter"
 	"time"
 )
 
-var sanitizerRegex = regexp.MustCompile(`[\p{Cc}\x{202a}-\x{202e}\x{2066}-\x{2069}]`)
-
-// SessionText replaces control characters and direction overrides in session metadata.
-func SessionText(s string) string { return sanitizerRegex.ReplaceAllString(s, " ") }
-
-// Startup and replacement share a wall-clock deadline, including health probes.
 const (
 	pollInterval   = 10 * time.Millisecond
 	startupTimeout = 30 * time.Second
 )
 
-type ConnectionSnapshot struct {
-	Token   string `json:"token"`
-	Build   string `json:"build,omitempty"`
-	Port    int    `json:"port"`
-	Pid     int    `json:"pid"`
-	Version int    `json:"version"`
+type DiscoveryKind int
+
+const (
+	Absent DiscoveryKind = iota
+	Stale
+	Running
+)
+
+type Discovery struct {
+	Kind     DiscoveryKind
+	Snapshot ConnectionSnapshot
+	Health   Health
 }
 
-type Connection struct {
-	snapshot    atomic.Pointer[ConnectionSnapshot]
-	httpClient  *http.Client
-	refreshGate chan struct{}
-	homeDir     string
-	httpOnce    sync.Once
-	refreshOnce sync.Once
+type LocalOptions struct {
+	HomeDir     string
+	ProjectRoot string
 }
 
-// NewConnection binds a daemon snapshot to its discovery directory. An empty
-// directory permits HTTP requests but disables automatic rediscovery.
-func NewConnection(snap ConnectionSnapshot, homeDir string) *Connection {
-	c := &Connection{homeDir: homeDir}
-	c.snapshot.Store(&snap)
-	return c
+type LocalErrorKind string
+
+const (
+	InvalidDiscovery     LocalErrorKind = "invalid_discovery"
+	DiscoveryUnavailable LocalErrorKind = "discovery_unavailable"
+	UnreachableDaemon    LocalErrorKind = "unreachable_daemon"
+	UnhealthyDaemon      LocalErrorKind = "unhealthy_daemon"
+	AuthenticationFailed LocalErrorKind = "authentication_failed"
+	TargetChanged        LocalErrorKind = "target_changed"
+	LauncherLockFailure  LocalErrorKind = "launcher_lock_failure"
+	StartupFailed        LocalErrorKind = "startup_failed"
+	HomeInUse            LocalErrorKind = "home_in_use"
+)
+
+type LocalError struct {
+	Kind    LocalErrorKind
+	HomeDir string
+	Cause   error
 }
 
-func (c *Connection) Snapshot() ConnectionSnapshot {
-	if c == nil {
-		return ConnectionSnapshot{}
+func (e *LocalError) Error() string {
+	return fmt.Sprintf("Albedo %s in %s: %v", strings.ReplaceAll(string(e.Kind), "_", " "), e.HomeDir, e.Cause)
+}
+func (e *LocalError) Unwrap() error { return e.Cause }
+
+// Discover distinguishes missing and proven stale records from unsafe failures.
+// A valid live endpoint is returned even when its API contract needs upgrading.
+func Discover(ctx context.Context, homeDir string) (Discovery, error) {
+	if err := ctx.Err(); err != nil {
+		return Discovery{}, err
 	}
-	p := c.snapshot.Load()
-	if p == nil {
-		return ConnectionSnapshot{}
+	fail := func(kind LocalErrorKind, cause error) (Discovery, error) {
+		return Discovery{}, &LocalError{Kind: kind, HomeDir: homeDir, Cause: cause}
 	}
-	return *p
-}
-
-func (c *Connection) Port() int {
-	return c.Snapshot().Port
-}
-
-func (c *Connection) Token() string {
-	return c.Snapshot().Token
-}
-
-func (c *Connection) Pid() int {
-	return c.Snapshot().Pid
-}
-
-func (c *Connection) Version() int {
-	return c.Snapshot().Version
-}
-
-func (c *Connection) Build() string {
-	return c.Snapshot().Build
-}
-
-func (c *Connection) BaseURL() string {
-	port := c.Port()
-	if port <= 0 {
-		return ""
+	file, err := os.Open(filepath.Join(homeDir, "daemon.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return Discovery{Kind: Absent}, nil
 	}
-	return fmt.Sprintf("http://127.0.0.1:%d", port)
-}
-
-func (c *Connection) HomeDir() string {
-	if c == nil {
-		return ""
+	if err != nil {
+		return fail(DiscoveryUnavailable, err)
 	}
-	return c.homeDir
-}
-
-func (c *Connection) Update(other *Connection) {
-	if c == nil || other == nil || c == other {
-		return
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, 64*1024+1))
+	if err != nil {
+		return fail(DiscoveryUnavailable, err)
 	}
-	snap := other.Snapshot()
-	c.snapshot.Store(&snap)
-}
-
-func (c *Connection) Refresh(ctx context.Context) error {
-	if c == nil {
-		return errors.New("not connected to Albedo")
+	if len(data) > 64*1024 {
+		return fail(InvalidDiscovery, errors.New("daemon.json exceeds 64 KiB"))
 	}
-	if ctx == nil {
-		ctx = context.Background()
+	var snapshot ConnectionSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return fail(InvalidDiscovery, err)
 	}
-	c.refreshOnce.Do(func() { c.refreshGate = make(chan struct{}, 1) })
-	select {
-	case c.refreshGate <- struct{}{}:
-	case <-ctx.Done():
-		return ctx.Err()
+	if snapshot.Pid <= 0 || snapshot.Port < 1 || snapshot.Port > 65535 || snapshot.Token == "" || snapshot.Version <= 0 {
+		return fail(InvalidDiscovery, errors.New("daemon.json requires a positive PID, valid port, token and protocol version"))
 	}
-	defer func() { <-c.refreshGate }()
-
-	homeDir := c.HomeDir()
-	if homeDir == "" {
-		return errors.New("cannot reconnect without a daemon home directory")
-	}
-
-	const attempts = 20
-	const interval = 100 * time.Millisecond
-
-	var lastErr error
-	for i := range attempts {
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
+	probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	connection := NewConnection(snapshot, nil)
+	health, err := ProbeHealth(probeCtx, connection)
+	connection.HTTPClient().CloseIdleConnections()
+	cancel()
+	if err != nil {
+		if ctx.Err() != nil {
+			return Discovery{}, ctx.Err()
 		}
-		latest, err := existingContext(ctx, homeDir)
+		if !processAlive(snapshot.Pid) && endpointRefused(err) {
+			return Discovery{Kind: Stale, Snapshot: snapshot}, nil
+		}
+		var api *APIError
+		if errors.As(err, &api) {
+			if api.StatusCode == http.StatusUnauthorized || api.StatusCode == http.StatusForbidden {
+				return fail(AuthenticationFailed, err)
+			}
+			return fail(UnhealthyDaemon, err)
+		}
+		var protocol *ProtocolError
+		if errors.As(err, &protocol) {
+			return fail(UnhealthyDaemon, err)
+		}
+		return fail(UnreachableDaemon, err)
+	}
+	if health.Version != snapshot.Version || (health.Build != "" && health.Build != snapshot.Build) {
+		return fail(InvalidDiscovery, errors.New("health identity does not match daemon.json"))
+	}
+	discovery := Discovery{Kind: Running, Snapshot: snapshot, Health: health}
+	return discovery, CheckCompatible(health)
+}
+
+// Rediscover waits for a verified replacement endpoint without starting one.
+func Rediscover(ctx context.Context, homeDir string) (ConnectionSnapshot, error) {
+	for attempt := 0; attempt < 20; attempt++ {
+		discovery, err := Discover(ctx, homeDir)
+		if err == nil && discovery.Kind == Running {
+			return discovery.Snapshot, nil
+		}
 		if err != nil {
-			lastErr = err
-		} else if latest != nil {
-			if _, compErr := checkCompatible(latest); compErr != nil {
-				return compErr
+			var local *LocalError
+			if !errors.As(err, &local) || (local.Kind != UnreachableDaemon && local.Kind != UnhealthyDaemon) {
+				return ConnectionSnapshot{}, err
 			}
-			c.Update(latest)
-			return nil
-		}
-		if i < attempts-1 {
-			select {
-			case <-time.After(interval):
-			case <-ctxDone(ctx):
-				return ctx.Err()
+			var api *APIError
+			if errors.As(err, &api) && api.Code != "daemon_stopping" && api.Code != "daemon_unavailable" {
+				return ConnectionSnapshot{}, err
+			}
+			var protocol *ProtocolError
+			if errors.As(err, &protocol) {
+				return ConnectionSnapshot{}, err
 			}
 		}
-	}
-	if lastErr != nil {
-		return lastErr
-	}
-	return fmt.Errorf("could not reconnect to Albedo; check whether it is running with ALBEDO_HOME=%s", homeDir)
-}
-
-// HTTPClient returns the reusable HTTP client owned by this Connection.
-// Address and token updates retain the same client and pool.
-func (c *Connection) HTTPClient() *http.Client {
-	c.httpOnce.Do(func() { c.httpClient = newHTTPClient() })
-	return c.httpClient
-}
-
-func (c *Connection) MarshalJSON() ([]byte, error) {
-	snap := c.Snapshot()
-	return json.Marshal(snap)
-}
-
-func (c *Connection) UnmarshalJSON(data []byte) error {
-	var snap ConnectionSnapshot
-	if decodeErr := json.Unmarshal(data, &snap); decodeErr != nil {
-		return decodeErr
-	}
-	c.snapshot.Store(&snap)
-	return nil
-}
-
-func ctxDone(ctx context.Context) <-chan struct{} {
-	if ctx == nil {
-		return nil
-	}
-	return ctx.Done()
-}
-
-// Stale is a live daemon from a build other than the one this client bundles.
-type Stale struct {
-	Running *Connection
-	Bundled string
-}
-
-// Replace decides whether a stale daemon stops so the bundled build can start.
-type Replace func(Stale) bool
-
-type Session struct {
-	ID              string `json:"id"`
-	Title           string `json:"title,omitempty"`
-	LastAssistantAt *int64 `json:"last_assistant_at,omitempty"`
-	Workspace       string `json:"workspace"`
-	Model           string `json:"model"`
-	Effort          string `json:"effort,omitempty"`
-	Protocol        string `json:"protocol"`
-	Provider        string `json:"provider"`
-}
-
-func AssistantAge(timestamp *int64, now time.Time) string {
-	if timestamp == nil {
-		return "time unknown"
-	}
-	sec := max(0, now.Unix()-*timestamp)
-	if sec < 60 {
-		return "just now"
-	}
-	if sec < 3600 {
-		return fmt.Sprintf("%dm ago", sec/60)
-	}
-	if sec < 86400 {
-		return fmt.Sprintf("%dh ago", sec/3600)
-	}
-	return fmt.Sprintf("%dd ago", sec/86400)
-}
-
-func SessionListing(sessions []Session, now time.Time) string {
-	if len(sessions) == 0 {
-		return "no sessions"
-	}
-
-	var listing strings.Builder
-	writer := tabwriter.NewWriter(&listing, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(writer, "ID\tTITLE\tWORKSPACE\tLAST ASSISTANT")
-	for _, s := range sessions {
-		title := SessionText(s.Title)
-		title = strings.TrimSpace(title)
-		if title == "" {
-			title = "session name unavailable"
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ConnectionSnapshot{}, ctx.Err()
+		case <-timer.C:
 		}
-		shortID := s.ID
-		if len(shortID) > 8 {
-			shortID = shortID[:8]
-		}
-		workspace := SessionText(strings.TrimSpace(s.Workspace))
-		if workspace == "" {
-			workspace = "—"
-		}
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", shortID, title, workspace, AssistantAge(s.LastAssistantAt, now))
 	}
-	_ = writer.Flush()
-	return strings.TrimRight(listing.String(), "\n")
-}
-
-func Existing(homeDir string) (*Connection, error) {
-	return ExistingContext(context.Background(), homeDir)
-}
-
-// ExistingContext discovers a live daemon within the caller's deadline.
-func ExistingContext(ctx context.Context, homeDir string) (*Connection, error) {
-	return existingContext(ctx, homeDir)
-}
-
-func existingContext(parent context.Context, homeDir string) (*Connection, error) {
-	if err := parent.Err(); err != nil {
-		return nil, err
-	}
-	recordPath := filepath.Join(homeDir, "daemon.json")
-	fi, err := os.Stat(recordPath)
-	if err != nil || fi.Size() > 64*1024 {
-		return nil, nil
-	}
-	data, err := os.ReadFile(recordPath)
-	if err != nil {
-		return nil, nil
-	}
-
-	var snap ConnectionSnapshot
-	if decodeErr := json.Unmarshal(data, &snap); decodeErr != nil {
-		return nil, nil
-	}
-
-	if snap.Port < 1 || snap.Port > 65535 || snap.Token == "" || (snap.Version != 1 && snap.Version != 2) {
-		return nil, nil
-	}
-
-	ctx, cancel := context.WithTimeout(parent, 500*time.Millisecond)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/health", snap.Port), nil)
-	if err != nil {
-		return nil, nil
-	}
-	req.Header.Set("Authorization", "Bearer "+snap.Token)
-
-	// Discovery health probes never invoke operation recovery.
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, parent.Err()
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		return nil, nil
-	}
-
-	body, err := readBounded(res.Body, 64*1024)
-	if err != nil {
-		return nil, parent.Err()
-	}
-
-	var health struct {
-		Version int `json:"version"`
-	}
-	if err := json.Unmarshal(body, &health); err != nil {
-		return nil, nil
-	}
-
-	if health.Version == snap.Version {
-		return NewConnection(snap, homeDir), nil
-	}
-
-	return nil, nil
-}
-
-func checkCompatible(conn *Connection) (*Connection, error) {
-	if conn.Version() != 2 {
-		return nil, errors.New("this client cannot connect to the copy of Albedo already running; after its work has finished, run albedo daemon --stop, then launch Albedo again")
-	}
-	return conn, nil
+	return ConnectionSnapshot{}, &LocalError{Kind: UnreachableDaemon, HomeDir: homeDir, Cause: errors.New("could not rediscover a ready daemon; check whether it is running")}
 }
 
 func resolveDaemonExecutable(path string) (string, error) {
@@ -347,115 +164,49 @@ func resolveDaemonExecutable(path string) (string, error) {
 	}
 	resolved, err := exec.LookPath(path)
 	if err != nil {
-		return "", fmt.Errorf("cannot run the executable specified by ALBEDO_DAEMON (%q): %w", path, err)
+		return "", fmt.Errorf("cannot run ALBEDO_DAEMON (%q): %w", path, err)
 	}
-	fi, err := os.Stat(resolved)
+	info, err := os.Stat(resolved)
 	if err != nil {
-		return "", fmt.Errorf("cannot run the executable specified by ALBEDO_DAEMON (%q): %w", path, err)
+		return "", err
 	}
-	if fi.IsDir() {
-		return "", fmt.Errorf("ALBEDO_DAEMON points to a directory (%q); set it to the executable file instead", path)
+	if info.IsDir() {
+		return "", fmt.Errorf("ALBEDO_DAEMON points to a directory (%q)", path)
 	}
 	return resolved, nil
 }
 
-// bundledBuild names a packaged daemon by its resolved executable, which a
-// content-addressed install changes on every build. A source checkout has none.
-func bundledBuild(daemonExe string) string {
-	if daemonExe == "" {
-		return ""
-	}
-	resolved, err := resolveDaemonExecutable(daemonExe)
-	if err != nil {
-		return ""
-	}
-	if real, err := filepath.EvalSymlinks(resolved); err == nil {
-		return real
-	}
-	return resolved
-}
-
-func buildDaemonEnv(homeDir, tokenHex, build string) []string {
-	var env []string
-	filteredVars := map[string]bool{
-		"ALBEDO_API_KEY":  true,
-		"ALBEDO_MODEL":    true,
-		"ALBEDO_BASE_URL": true,
-		"ALBEDO_PROTOCOL": true,
-		"ALBEDO_BUILD":    true,
-	}
-	var erlFlags strings.Builder
-	erlFlags.WriteString(daemonErlFlags)
-	for _, kv := range os.Environ() {
-		k, v, _ := strings.Cut(kv, "=")
-		if k == "ERL_FLAGS" {
-			// The operator's flags come last so they override the defaults.
-			erlFlags.WriteByte(' ')
-			erlFlags.WriteString(v)
-			continue
+// Local launch filters provider overrides; daemon bootstrap owns all defaults.
+func daemonCommand(options LocalOptions) (*exec.Cmd, error) {
+	executable := os.Getenv("ALBEDO_DAEMON")
+	if executable == "" {
+		if options.ProjectRoot == "" {
+			return nil, errors.New("set ALBEDO_DAEMON to its full executable path or ALBEDO_ROOT to a source checkout")
 		}
-		if !filteredVars[k] {
-			env = append(env, kv)
-		}
-	}
-	env = append(env, "ERL_FLAGS="+erlFlags.String(), "ALBEDO_HOME="+homeDir, "ALBEDO_TOKEN="+tokenHex)
-	if build != "" {
-		env = append(env, "ALBEDO_BUILD="+build)
-	}
-	return env
-}
-
-// Sized for one local daemon, measured with ALBEDO_INSPECT (three large
-// sessions running turns at once peaked near 80 MB instead of 100).
-//
-// +P/+Q: the process and port tables are preallocated at their limits; the
-// defaults (1,048,576 processes, 65,536 ports) cost about 16 MB up front.
-//
-// +MB*/+MH* (binary and heap allocators): transcripts are loaded and dropped
-// per turn, so allocations come in bursts. Small carriers, address-order
-// best fit, a low single-block threshold (so large binaries get their own
-// mapping) and no carrier pooling let freed bursts go back to the OS instead
-// of staying resident as empty carrier space.
-const daemonErlFlags = "+P 65536 +Q 16384" +
-	" +MBsbct 16 +MHsbct 32 +MBlmbcs 256 +MHlmbcs 256 +MBsmbcs 32 +MHsmbcs 32" +
-	" +MBas aobf +MHas aobf +MBacul 0 +MHacul 0"
-
-func daemonCommand(daemonExe, projectRoot string, env []string) (*exec.Cmd, error) {
-	if daemonExe != "" {
-		resolved, err := resolveDaemonExecutable(daemonExe)
+		root, err := filepath.Abs(options.ProjectRoot)
 		if err != nil {
 			return nil, err
 		}
-		cmd := exec.Command(resolved)
-		cmd.Dir = ""
-		cmd.Env = env
-		return cmd, nil
+		if _, err := exec.LookPath("gleam"); err != nil {
+			return nil, fmt.Errorf("source daemon requires gleam: %w", err)
+		}
+		executable = filepath.Join(root, "priv", "bin", "albedo-daemon")
 	}
-
-	cmd := exec.Command("gleam", "run")
-	cmd.Dir = projectRoot
-	cmd.Env = env
+	executable, err := resolveDaemonExecutable(executable)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command(executable)
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		switch key {
+		case "ALBEDO_API_KEY", "ALBEDO_MODEL", "ALBEDO_BASE_URL", "ALBEDO_PROTOCOL", "ALBEDO_HOME":
+		default:
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	cmd.Env = append(cmd.Env, "ALBEDO_HOME="+options.HomeDir)
 	return cmd, nil
-}
-
-// stop shuts a daemon down and waits until its process has exited, so the
-// next daemon can take the home.
-func stop(ctx context.Context, homeDir string, conn *Connection) error {
-	if err := StopDaemon(ctx, conn); err != nil {
-		return err
-	}
-	for {
-		running, err := ExistingContext(ctx, homeDir)
-		if err != nil {
-			return err
-		}
-		if running == nil && !processAlive(conn.Pid()) {
-			return nil
-		}
-		if err := waitForPoll(ctx); err != nil {
-			return fmt.Errorf("daemon did not stop; check %s for details; the running process ID is %d: %w", filepath.Join(homeDir, "daemon.log"), conn.Pid(), err)
-		}
-	}
 }
 
 func waitForPoll(ctx context.Context) error {
@@ -469,199 +220,178 @@ func waitForPoll(ctx context.Context) error {
 	}
 }
 
-// Ensure connects to the running daemon or starts one. When this client bundles
-// a daemon and the running one is another build, replace (if non-nil) decides
-// whether it is stopped first.
-func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
-	return EnsureContext(context.Background(), homeDir, projectRoot, replace)
+func acquireLauncher(ctx context.Context, homeDir string) (*os.File, error) {
+	// The launcher must create its lock directory before the daemon can start.
+	if err := os.MkdirAll(homeDir, 0700); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(filepath.Join(homeDir, "launcher.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			file.Close()
+			return nil, err
+		}
+		acquired, err := tryLauncherLock(file)
+		if err != nil {
+			file.Close()
+			return nil, err
+		}
+		if acquired {
+			return file, nil
+		}
+		if err := waitForPoll(ctx); err != nil {
+			file.Close()
+			return nil, err
+		}
+	}
 }
 
-// EnsureContext caps discovery, replacement, and startup at thirty seconds.
-func EnsureContext(parent context.Context, homeDir, projectRoot string, replace Replace) (*Connection, error) {
+// Launch serializes local startup without weakening the daemon's home lock.
+func Launch(parent context.Context, options LocalOptions) (*Connection, error) {
+	return launchLocal(parent, options, nil)
+}
+
+// Upgrade stops only the exact authenticated protocol-v2 daemon approved by the caller.
+func Upgrade(parent context.Context, options LocalOptions, approved ConnectionSnapshot) (*Connection, error) {
+	return launchLocal(parent, options, &approved)
+}
+
+func launchLocal(parent context.Context, options LocalOptions, approved *ConnectionSnapshot) (*Connection, error) {
 	ctx, cancel := context.WithTimeout(parent, startupTimeout)
 	defer cancel()
-	daemonExe := os.Getenv("ALBEDO_DAEMON")
-	build := bundledBuild(daemonExe)
-
-	current, err := ExistingContext(ctx, homeDir)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if options.HomeDir == "" {
+		return nil, errors.New("local launch requires HomeDir")
+	}
+	home, err := filepath.Abs(options.HomeDir)
 	if err != nil {
 		return nil, err
 	}
-	if current != nil {
-		if build == "" || current.Build() == build || replace == nil || !replace(Stale{current, build}) {
-			return checkCompatible(current)
+	options.HomeDir = home
+	// Validate the replacement executable before taking any destructive action.
+	cmd, err := daemonCommand(options)
+	if err != nil {
+		return nil, err
+	}
+	lock, err := acquireLauncher(ctx, home)
+	if err != nil {
+		return nil, &LocalError{Kind: LauncherLockFailure, HomeDir: home, Cause: err}
+	}
+	defer lock.Close() // Closing releases the advisory lock; its inode persists.
+	discovery, discoveryErr := Discover(ctx, home)
+	if approved == nil {
+		if discoveryErr != nil {
+			return nil, discoveryErr
 		}
-		if stopErr := stop(ctx, homeDir, current); stopErr != nil {
+		if discovery.Kind == Running {
+			return Attach(ctx, discovery.Snapshot, func(ctx context.Context) (ConnectionSnapshot, error) { return Rediscover(ctx, home) })
+		}
+	} else {
+		var compatible *CompatibilityError
+		if discoveryErr != nil && !errors.As(discoveryErr, &compatible) {
+			return nil, discoveryErr
+		}
+		if discovery.Kind != Running || discovery.Snapshot != *approved {
+			return nil, &LocalError{Kind: TargetChanged, HomeDir: home, Cause: errors.New("the daemon changed after approval; review the current daemon before restarting")}
+		}
+		if discovery.Health.Version != ProtocolVersion {
+			return nil, &CompatibilityError{Version: discovery.Health.Version}
+		}
+		connection := NewConnection(discovery.Snapshot, nil)
+		stopErr := StopDaemon(ctx, connection)
+		connection.HTTPClient().CloseIdleConnections()
+		if stopErr != nil {
 			return nil, stopErr
 		}
-	}
-
-	if daemonExe != "" {
-		if _, executableErr := resolveDaemonExecutable(daemonExe); executableErr != nil {
-			return nil, executableErr
-		}
-	}
-
-	if contextErr := ctx.Err(); contextErr != nil {
-		return nil, contextErr
-	}
-	if mkdirErr := os.MkdirAll(homeDir, 0700); mkdirErr != nil {
-		return nil, mkdirErr
-	}
-	_ = os.Chmod(homeDir, 0700)
-
-	lockPath := filepath.Join(homeDir, "starting.lock")
-	lockFile, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil && os.IsExist(err) && staleLock(lockPath) {
-		_ = os.Remove(lockPath)
-		lockFile, err = os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	}
-	if err != nil {
-		if os.IsExist(err) {
-			for {
-				running, discoveryErr := ExistingContext(ctx, homeDir)
-				if discoveryErr != nil {
-					return nil, discoveryErr
-				}
-				if running != nil {
-					return checkCompatible(running)
-				}
-				if pollErr := waitForPoll(ctx); pollErr != nil {
-					return nil, fmt.Errorf("timed out starting Albedo; check %s/daemon.log for details; only remove %s if the process starting Albedo is no longer running: %w", homeDir, lockPath, pollErr)
-				}
+		for processAlive(discovery.Snapshot.Pid) {
+			if err := waitForPoll(ctx); err != nil {
+				return nil, err
 			}
 		}
-		return nil, err
+		current, err := Discover(ctx, home)
+		if err != nil {
+			return nil, err
+		}
+		if current.Kind == Running {
+			return nil, &LocalError{Kind: TargetChanged, HomeDir: home, Cause: errors.New("another daemon started during shutdown")}
+		}
 	}
-	_, _ = fmt.Fprintf(lockFile, "%d", os.Getpid())
-	defer func() {
-		_ = lockFile.Close()
-		_ = os.Remove(lockPath)
-	}()
+	return startLocal(ctx, cmd, options)
+}
 
-	again, err := ExistingContext(ctx, homeDir)
-	if err != nil {
-		return nil, err
-	}
-	if again != nil {
-		return checkCompatible(again)
-	}
-
-	logPath := filepath.Join(homeDir, "daemon.log")
+func startLocal(ctx context.Context, cmd *exec.Cmd, options LocalOptions) (*Connection, error) {
+	logPath := filepath.Join(options.HomeDir, "daemon.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return nil, err
 	}
-
-	randomToken := make([]byte, 32)
-	_, _ = rand.Read(randomToken)
-	tokenHex := hex.EncodeToString(randomToken)
-
-	env := buildDaemonEnv(homeDir, tokenHex, build)
-	cmd, err := daemonCommand(daemonExe, projectRoot, env)
-	if err != nil {
-		_ = logFile.Close()
-		return nil, err
-	}
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	logStart, _ := logFile.Seek(0, io.SeekEnd)
+	cmd.Stdout, cmd.Stderr = logFile, logFile
 	detach(cmd)
 	passFileLimit()
-
-	logStart, _ := logFile.Seek(0, io.SeekEnd)
-	if contextErr := ctx.Err(); contextErr != nil {
-		_ = logFile.Close()
-		return nil, contextErr
-	}
-	if err := cmd.Start(); err != nil {
-		_ = logFile.Close()
+	if err := ctx.Err(); err != nil {
+		logFile.Close()
 		return nil, err
 	}
-	_ = logFile.Close()
-
+	if err := cmd.Start(); err != nil {
+		logFile.Close()
+		return nil, err
+	}
+	logFile.Close()
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
-
+	contended := false
 	for {
-		running, err := ExistingContext(ctx, homeDir)
-		if err != nil {
-			return nil, err
+		discovery, err := Discover(ctx, options.HomeDir)
+		if err == nil && discovery.Kind == Running {
+			return Attach(ctx, discovery.Snapshot, func(ctx context.Context) (ConnectionSnapshot, error) { return Rediscover(ctx, options.HomeDir) })
 		}
-		if running != nil {
-			return checkCompatible(running)
+		if err != nil && ctx.Err() == nil {
+			var api *APIError
+			if !errors.As(err, &api) || (api.Code != "daemon_stopping" && api.Code != "daemon_unavailable") {
+				return nil, err
+			}
 		}
 		select {
 		case waitErr := <-exited:
-			root := projectRoot
-			if daemonExe != "" {
-				root = ""
+			exited = nil
+			var exit *exec.ExitError
+			if errors.As(waitErr, &exit) && exit.ExitCode() == 75 {
+				contended = true
+			} else {
+				return nil, &LocalError{Kind: StartupFailed, HomeDir: options.HomeDir, Cause: startupExitError(waitErr, logPath, logStart, options.ProjectRoot)}
 			}
-			return nil, startupExitError(waitErr, logPath, logStart, root)
 		case <-ctx.Done():
-			return nil, fmt.Errorf("timed out starting Albedo; check %s/daemon.log for details: %w", homeDir, ctx.Err())
+			if contended && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, &LocalError{Kind: HomeInUse, HomeDir: options.HomeDir, Cause: fmt.Errorf("home is held by another daemon or maintenance command; wait for it to finish and retry: %w", ctx.Err())}
+			}
+			return nil, ctx.Err()
 		case <-time.After(pollInterval):
 		}
 	}
-
-}
-
-// staleLock reports whether the startup lock was left by a starter that is no
-// longer running (e.g. one interrupted with ctrl-c before it could clean up).
-func staleLock(lockPath string) bool {
-	data, err := os.ReadFile(lockPath)
-	if err != nil {
-		return false
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		// Locks from older clients carry no pid; treat them as stale once they
-		// are older than the startup window.
-		fi, statErr := os.Stat(lockPath)
-		return statErr == nil && time.Since(fi.ModTime()) > startupTimeout
-	}
-	return !processAlive(pid)
 }
 
 func startupExitError(waitErr error, logPath string, logStart int64, projectRoot string) error {
-	msg := "daemon stopped before it finished starting"
-
-	if f, err := os.Open(logPath); err == nil {
-		defer f.Close()
-		if _, err := f.Seek(logStart, io.SeekStart); err == nil {
-			out, _ := io.ReadAll(io.LimitReader(f, 4096))
-			if tail := strings.TrimSpace(string(out)); tail != "" {
-				msg += ":\n" + tail
+	message := "daemon stopped before it finished starting"
+	if file, err := os.Open(logPath); err == nil {
+		defer file.Close()
+		if _, err := file.Seek(logStart, io.SeekStart); err == nil {
+			output, _ := io.ReadAll(io.LimitReader(file, 4096))
+			if tail := strings.TrimSpace(string(output)); tail != "" {
+				message += ":\n" + tail
 			}
 		}
 	}
 	if projectRoot != "" {
-		msg += fmt.Sprintf("\nsource checkout: %s; if this is not your Albedo checkout, set ALBEDO_ROOT to its full path", projectRoot)
+		message += fmt.Sprintf("\nsource checkout: %s; check ALBEDO_ROOT", projectRoot)
 	}
 	if waitErr != nil {
-		return fmt.Errorf("%s: %w", msg, waitErr)
+		return fmt.Errorf("%s: %w", message, waitErr)
 	}
-	return errors.New(msg)
-}
-
-// Capabilities lists what the daemon at conn says it supports.
-func Capabilities(ctx context.Context, conn *Connection) ([]string, error) {
-	health, err := RequestOperation[struct {
-		Capabilities []string `json:"capabilities"`
-	}](ctx, conn, Operation{Name: "read capabilities", Method: http.MethodGet, Path: "/health", Policy: ReadRecovery})
-	return health.Capabilities, err
-}
-
-// CheckCapability is UpgradeNeeded(feature) when the daemon answers /health
-// without capability. A /health that fails is left to the request after it.
-func CheckCapability(ctx context.Context, conn *Connection, capability, feature string) error {
-	if caps, err := Capabilities(ctx, conn); err == nil && !slices.Contains(caps, capability) {
-		return UpgradeNeeded(feature)
-	}
-	return nil
-}
-
-// UpgradeNeeded is the error for a feature the running daemon predates;
-// feature finishes the sentence, as in "for /tree" or "to switch providers".
-func UpgradeNeeded(feature string) error {
-	return &UpgradeRequiredError{Feature: feature}
+	return errors.New(message)
 }

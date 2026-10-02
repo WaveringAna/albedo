@@ -89,3 +89,13 @@ type StreamError struct {
 
 func (e *StreamError) Error() string { return e.Cause.Error() }
 func (e *StreamError) Unwrap() error { return e.Cause }
+
+// CompatibilityError describes a live daemon that cannot serve this client.
+type CompatibilityError struct {
+	Version             int
+	MissingCapabilities []string
+}
+
+func (e *CompatibilityError) Error() string {
+	return fmt.Sprintf("daemon protocol %d is incompatible with this client; required protocol is %d; missing capabilities: %v", e.Version, ProtocolVersion, e.MissingCapabilities)
+}

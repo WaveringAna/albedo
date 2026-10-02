@@ -44,7 +44,7 @@ func (transport *mutationTransport) RoundTrip(*http.Request) (*http.Response, er
 	return &http.Response{StatusCode: transport.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(transport.body))}, nil
 }
 func mutationConnection(body string, status int) (*Connection, *mutationTransport) {
-	conn := NewConnection(ConnectionSnapshot{Port: 12345}, "")
+	conn := NewConnection(ConnectionSnapshot{Port: 12345}, nil)
 	transport := &mutationTransport{body: body, status: status}
 	conn.HTTPClient().Transport = transport
 	return conn, transport

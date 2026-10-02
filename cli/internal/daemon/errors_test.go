@@ -32,7 +32,7 @@ func TestHTTPFailuresRetainIdentity(t *testing.T) {
 			}))
 			defer server.Close()
 			// This fixed peer has no discovery directory; authentication errors stay local.
-			conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
+			conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
 			_, requestErr := RequestOperation[any](context.Background(), conn, Operation{Name: "read failure", Method: http.MethodGet, Path: "/failure", Policy: ReadRecovery})
 			client := NewChatClient(conn, "session")
 			_, chatErr := client.GetStatus(context.Background())

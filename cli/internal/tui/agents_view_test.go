@@ -153,7 +153,7 @@ func TestFailedSeedRetriesOnTheNextSelection(t *testing.T) {
 	port, _ := strconv.Atoi(address.Port())
 
 	m := agentsFixture(t)
-	m.Conn = daemon.NewConnection(daemon.ConnectionSnapshot{Port: port, Token: "t", Version: 2}, "")
+	m.Conn = daemon.NewConnection(daemon.ConnectionSnapshot{Port: port, Token: "t", Version: 2}, nil)
 	m.selected = "coder"
 
 	cmd := m.seedCmd()
@@ -227,7 +227,7 @@ func TestAgentsOverflowPreservesPendingOperationOutcomeAndDraft(t *testing.T) {
 	address, _ := url.Parse(server.URL)
 	port, _ := strconv.Atoi(address.Port())
 	m := agentsFixture(t)
-	m.Conn = daemon.NewConnection(daemon.ConnectionSnapshot{Port: port}, "")
+	m.Conn = daemon.NewConnection(daemon.ConnectionSnapshot{Port: port}, nil)
 	for _, char := range "/spawn helper inspect files" {
 		m, _ = m.Update(tea.KeyPressMsg{Code: char, Text: string(char)})
 	}

@@ -94,7 +94,7 @@ func TestTUIAgentsOverflowRefreshesMembershipAndPreviews(t *testing.T) {
 	t.Cleanup(server.Close)
 	snapshot := conn(t).Snapshot()
 	snapshot.Port = server.Listener.Addr().(*net.TCPAddr).Port
-	connection := daemon.NewConnection(snapshot, "")
+	connection := daemon.NewConnection(snapshot, nil)
 	t.Cleanup(connection.HTTPClient().CloseIdleConnections)
 	driver := driveTUIWithConnection(t, &root, connection)
 	driver.Update(tea.WindowSizeMsg{Width: 140, Height: 50})

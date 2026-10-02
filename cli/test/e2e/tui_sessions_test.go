@@ -87,7 +87,7 @@ func TestTUINavigationRetainsPendingTurnsAndContinuation(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("active turn did not start")
 	}
-	connection := daemon.NewConnection(conn(t).Snapshot(), "")
+	connection := daemon.NewConnection(conn(t).Snapshot(), nil)
 	counter := &submissionCounterTransport{next: connection.HTTPClient().Transport, accepted: make(chan struct{})}
 	connection.HTTPClient().Transport = counter
 	t.Cleanup(connection.HTTPClient().CloseIdleConnections)

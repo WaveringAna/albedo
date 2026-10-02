@@ -92,7 +92,7 @@ func TestModelChangeIgnoresStaleSessionOrGeneration(t *testing.T) {
 		{"generation", "session", 0},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			app := NewAppModel(daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, ""), config.Profiles{}, &daemon.Session{ID: "session", Model: "old"}, "", false, nil)
+			app := NewAppModel(daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil), config.Profiles{}, &daemon.Session{ID: "session", Model: "old"}, "", false, nil)
 			t.Cleanup(app.Chat.Close)
 			app.State, app.ModelPicker.Saving, app.ModelGen = AppStateModelPicker, true, 1
 			updated, cmd := app.Update(modelChangedMsg{
@@ -108,7 +108,7 @@ func TestModelChangeIgnoresStaleSessionOrGeneration(t *testing.T) {
 }
 
 func TestModelChangePreservesScreenAfterLeavingPicker(t *testing.T) {
-	app := NewAppModel(daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, ""), config.Profiles{}, &daemon.Session{ID: "session", Model: "old"}, "", false, nil)
+	app := NewAppModel(daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil), config.Profiles{}, &daemon.Session{ID: "session", Model: "old"}, "", false, nil)
 	t.Cleanup(app.Chat.Close)
 	app.State, app.ModelGen = AppStateSessionPicker, 1
 	updated, cmd := app.Update(modelChangedMsg{

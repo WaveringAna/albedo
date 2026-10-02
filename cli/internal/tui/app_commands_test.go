@@ -21,7 +21,7 @@ func commandTestConnection(t *testing.T, handler http.HandlerFunc) *daemon.Conne
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	return daemon.NewConnection(daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
+	return daemon.NewConnection(daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
 }
 
 func awaitCommandSignal[T any](t *testing.T, ch <-chan T) T {
@@ -52,7 +52,7 @@ func TestModelChangeCapturesProviderAndCapBeforeExecution(t *testing.T) {
 			conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/health" {
 					healthCalls++
-					_, _ = w.Write([]byte(`{"capabilities":["session_provider"]}`))
+					_, _ = w.Write([]byte(`{"ok":true,"version":2,"capabilities":["session_provider"]}`))
 					return
 				}
 				var body struct {

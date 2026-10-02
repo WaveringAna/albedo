@@ -106,24 +106,27 @@ func encodeOperation(operation Operation) ([]byte, error) {
 	return json.Marshal(operation.Body)
 }
 
-func recoverOperation(ctx context.Context, conn *Connection, operation Operation, snapshot ConnectionSnapshot, failure error) bool {
+func recoverOperation(ctx context.Context, conn *Connection, operation Operation, snapshot ConnectionSnapshot, failure error) (bool, error) {
 	if operation.Policy == NoRecovery || ctx.Err() != nil {
-		return false
+		return false, nil
 	}
 	apiError, rejected := errors.AsType[*APIError](failure)
 	authRefusal := rejected && apiError.StatusCode == http.StatusForbidden && apiError.Code == "authentication_required"
 	if !authRefusal && (operation.Policy != ReadRecovery || !isConnectionError(failure)) {
-		return false
+		return false, nil
 	}
-	if conn.Refresh(ctx) != nil {
-		return false
+	if conn.rediscover == nil {
+		return false, nil
+	}
+	if err := conn.Refresh(ctx); err != nil {
+		return false, err
 	}
 	latest := conn.Snapshot()
-	return !authRefusal || latest.Port != snapshot.Port || latest.Token != snapshot.Token
+	return !authRefusal || latest.Port != snapshot.Port || latest.Token != snapshot.Token, nil
 }
 
 func uncertainOperation(operation Operation, failure error) error {
-	if operation.Policy == ReadRecovery {
+	if operation.Policy == ReadRecovery || operation.Method == http.MethodGet {
 		return failure
 	}
 	return &UncertainOutcomeError{Operation: operation.Name, Cause: failure, Handle: operation.Handle}
@@ -149,8 +152,14 @@ func requestBytes(ctx context.Context, conn *Connection, operation Operation, li
 		}
 		res, err := conn.HTTPClient().Do(req)
 		if err != nil {
-			if attempt == 0 && recoverOperation(ctx, conn, operation, snapshot, err) {
-				continue
+			if attempt == 0 {
+				recovered, recoveryErr := recoverOperation(ctx, conn, operation, snapshot, err)
+				if recoveryErr != nil {
+					return nil, errors.Join(err, recoveryErr)
+				}
+				if recovered {
+					continue
+				}
 			}
 			if canceled := ctx.Err(); canceled != nil {
 				err = errors.Join(err, canceled)
@@ -186,8 +195,14 @@ func requestBytes(ctx context.Context, conn *Connection, operation Operation, li
 		if err == nil {
 			return body, nil
 		}
-		if attempt == 0 && recoverOperation(ctx, conn, operation, snapshot, err) {
-			continue
+		if attempt == 0 {
+			recovered, recoveryErr := recoverOperation(ctx, conn, operation, snapshot, err)
+			if recoveryErr != nil {
+				return nil, errors.Join(err, recoveryErr)
+			}
+			if recovered {
+				continue
+			}
 		}
 		if canceled := ctx.Err(); canceled != nil {
 			err = errors.Join(err, canceled)
@@ -220,8 +235,14 @@ func scanEventStream(ctx context.Context, conn *Connection, operation Operation,
 		req.Header.Set("Accept", "text/event-stream")
 		res, err := conn.HTTPClient().Do(req)
 		if err != nil {
-			if attempt == 0 && recoverOperation(ctx, conn, operation, snapshot, err) {
-				continue
+			if attempt == 0 {
+				recovered, recoveryErr := recoverOperation(ctx, conn, operation, snapshot, err)
+				if recoveryErr != nil {
+					return errors.Join(err, recoveryErr)
+				}
+				if recovered {
+					continue
+				}
 			}
 			if canceled := ctx.Err(); canceled != nil {
 				err = errors.Join(err, canceled)
@@ -239,8 +260,14 @@ func scanEventStream(ctx context.Context, conn *Connection, operation Operation,
 				err = readHTTPError(res, limits.errorBytes)
 			}
 			_ = res.Body.Close()
-			if attempt == 0 && recoverOperation(ctx, conn, operation, snapshot, err) {
-				continue
+			if attempt == 0 {
+				recovered, recoveryErr := recoverOperation(ctx, conn, operation, snapshot, err)
+				if recoveryErr != nil {
+					return errors.Join(err, recoveryErr)
+				}
+				if recovered {
+					continue
+				}
 			}
 			if canceled := ctx.Err(); canceled != nil {
 				err = errors.Join(err, canceled)

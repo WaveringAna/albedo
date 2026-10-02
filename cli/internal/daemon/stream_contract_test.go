@@ -48,7 +48,7 @@ func TestStreamRejectsMalformedBatchesWithoutLosingTheCursor(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
 			var delivered []string
 			consume := func(event StreamEvent) error {
 				if event.Type == EventReset {
@@ -96,7 +96,7 @@ func TestStreamIgnoresUnknownKindsAndCommitsTheirCursor(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
 	consumed := 0
 	for range 2 {
 		if err := client.StreamWithProgress(t.Context(), 0, func(event StreamEvent) error {
@@ -128,7 +128,7 @@ func TestStreamCallbackFailureRetainsCauseAndUncommittedCursor(t *testing.T) {
 		_, _ = io.WriteString(w, "data: "+`{"generation":"generation-b","cursor":8,"events":[{"type":"reset"},{"type":"text","text":"first"},{"type":"text","text":"second"}]}`+"\n\n")
 	}))
 	defer server.Close()
-	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
 	if err := client.Stream(t.Context(), 0, func(StreamEvent) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestStreamClassifiesHTTPRefusalsWithoutRetryingThem(t *testing.T) {
 				_, _ = io.WriteString(w, `{"error":"stream unavailable"}`)
 			}))
 			defer server.Close()
-			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
 			err := client.Stream(t.Context(), 0, func(StreamEvent) error {
 				t.Error("HTTP refusal delivered an event")
 				return nil
@@ -198,7 +198,7 @@ func TestStreamRejectsNonSSESuccessResponses(t *testing.T) {
 				_, _ = io.WriteString(w, `{"error":"this is not a stream"}`)
 			}))
 			defer server.Close()
-			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
 			err := client.Stream(t.Context(), 0, func(StreamEvent) error {
 				t.Error("non-SSE response delivered an event")
 				return nil
@@ -229,7 +229,7 @@ func TestStreamRecoveryRequiresResetBeforeDeliveringHistory(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
 	consume := func(StreamEvent) error { return nil }
 	if err := client.Stream(t.Context(), 0, consume); err != nil {
 		t.Fatal(err)
@@ -278,7 +278,7 @@ func TestStreamClassifiesExplicitSSEFailures(t *testing.T) {
 				_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", test.payload)
 			}))
 			defer server.Close()
-			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
 			err := client.Stream(t.Context(), 0, func(StreamEvent) error {
 				t.Error("SSE failure became transcript output")
 				return nil
@@ -315,7 +315,7 @@ func TestStreamGenerationResetReplacesUnfinishedArguments(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
 	var previews []string
 	consume := func(event StreamEvent) error {
 		if event.Type == EventText {
@@ -352,7 +352,7 @@ func TestInitialStreamRequiresLeadingReset(t *testing.T) {
 				_, _ = fmt.Fprintf(w, "data: {\"generation\":\"new\",\"cursor\":0,\"events\":%s}\n\n", events)
 			}))
 			defer server.Close()
-			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
 			err := client.Stream(t.Context(), 0, func(StreamEvent) error { t.Error("initial events escaped without reset"); return nil })
 			failure, ok := errors.AsType[*StreamError](err)
 			if !ok || failure.Kind != StreamProtocol {
@@ -405,7 +405,7 @@ func TestStreamLoadsHistoryDespiteInvalidDisplayTraces(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
 			var events []StreamEvent
 			consumed := 0
 			for range 2 {

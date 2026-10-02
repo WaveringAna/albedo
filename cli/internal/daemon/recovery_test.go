@@ -10,13 +10,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 type captureTransport struct {
@@ -31,7 +28,7 @@ func (transport captureTransport) RoundTrip(request *http.Request) (*http.Respon
 }
 
 func TestOperationUsesCapturedAddressAndToken(t *testing.T) {
-	conn := NewConnection(ConnectionSnapshot{Port: 34567, Token: "old"}, "")
+	conn := NewConnection(ConnectionSnapshot{Port: 34567, Token: "old"}, nil)
 	transport := captureTransport{entered: make(chan *http.Request), release: make(chan struct{})}
 	conn.HTTPClient().Transport = transport
 	finished := make(chan error, 1)
@@ -40,32 +37,13 @@ func TestOperationUsesCapturedAddressAndToken(t *testing.T) {
 		finished <- err
 	}()
 	request := <-transport.entered
-	conn.Update(NewConnection(ConnectionSnapshot{Port: 45678, Token: "new"}, ""))
+	conn.Update(NewConnection(ConnectionSnapshot{Port: 45678, Token: "new"}, nil))
 	if request.URL.Host != "127.0.0.1:34567" || request.Header.Get("Authorization") != "Bearer old" {
 		t.Errorf("request mixed connection snapshots: %s, %s", request.URL.Host, request.Header.Get("Authorization"))
 	}
 	close(transport.release)
 	if err := <-finished; err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestRefreshWaitHonorsCancellation(t *testing.T) {
-	conn := NewConnection(ConnectionSnapshot{}, t.TempDir())
-	conn.refreshOnce.Do(func() { conn.refreshGate = make(chan struct{}, 1) })
-	conn.refreshGate <- struct{}{}
-	defer func() { <-conn.refreshGate }()
-	ctx, cancel := context.WithCancel(context.Background())
-	finished := make(chan error, 1)
-	go func() { finished <- conn.Refresh(ctx) }()
-	cancel()
-	select {
-	case err := <-finished:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("refresh returned %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("refresh ignored cancellation while waiting")
 	}
 }
 
@@ -102,7 +80,7 @@ func TestPooledMutationAcknowledgementLossIsNotReplayed(t *testing.T) {
 			}
 			server.Start()
 			defer server.Close()
-			conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
+			conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
 			defer conn.HTTPClient().CloseIdleConnections()
 			operation := Operation{Name: "submit", Method: test.method, Path: "/mutation", Body: test.body, Policy: AuthRecovery}
 			if _, err := RequestOperation[any](context.Background(), conn, operation); err != nil {
@@ -132,9 +110,9 @@ func TestConcurrentOperationsNeverMixConnectionSnapshots(t *testing.T) {
 	first, second := newServer("first"), newServer("second")
 	defer first.Close()
 	defer second.Close()
-	firstConn := NewConnection(ConnectionSnapshot{Port: first.Listener.Addr().(*net.TCPAddr).Port, Token: "first"}, "")
-	secondConn := NewConnection(ConnectionSnapshot{Port: second.Listener.Addr().(*net.TCPAddr).Port, Token: "second"}, "")
-	conn := NewConnection(firstConn.Snapshot(), "")
+	firstConn := NewConnection(ConnectionSnapshot{Port: first.Listener.Addr().(*net.TCPAddr).Port, Token: "first"}, nil)
+	secondConn := NewConnection(ConnectionSnapshot{Port: second.Listener.Addr().(*net.TCPAddr).Port, Token: "second"}, nil)
+	conn := NewConnection(firstConn.Snapshot(), nil)
 	defer conn.HTTPClient().CloseIdleConnections()
 	var readers sync.WaitGroup
 	for range 4 {
@@ -160,27 +138,27 @@ func TestConcurrentOperationsNeverMixConnectionSnapshots(t *testing.T) {
 // Auth refusal must prove non-admission before a mutation can be dispatched again.
 func TestMutationAuthRecoveryBudget(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		token    string
-		status   int
-		expected int32
-		marker   bool
-		home     bool
-		repeated bool
+		name       string
+		token      string
+		status     int
+		expected   int32
+		marker     bool
+		rediscover bool
+		repeated   bool
 	}{
-		{name: "changed credentials", marker: true, status: 403, token: "new", home: true, expected: 2},
-		{name: "unchanged credentials", marker: true, status: 403, token: "old", home: true, expected: 1},
-		{name: "unmarked refusal", status: 403, token: "new", home: true, expected: 1},
-		{name: "unmarked unauthorized", status: 401, token: "new", home: true, expected: 1},
-		{name: "marked unauthorized", marker: true, status: 401, token: "new", home: true, expected: 1},
+		{name: "changed credentials", marker: true, status: 403, token: "new", rediscover: true, expected: 2},
+		{name: "unchanged credentials", marker: true, status: 403, token: "old", rediscover: true, expected: 1},
+		{name: "unmarked refusal", status: 403, token: "new", rediscover: true, expected: 1},
+		{name: "unmarked unauthorized", status: 401, token: "new", rediscover: true, expected: 1},
+		{name: "marked unauthorized", marker: true, status: 401, token: "new", rediscover: true, expected: 1},
 		{name: "no discovery", marker: true, status: 403, token: "new", expected: 1},
-		{name: "repeated refusal", marker: true, status: 403, token: "new", home: true, repeated: true, expected: 2},
+		{name: "repeated refusal", marker: true, status: 403, token: "new", rediscover: true, repeated: true, expected: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var calls atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				if request.URL.Path == "/health" {
-					_, _ = writer.Write([]byte(`{"version":2}`))
+					_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow"]}`))
 					return
 				}
 				count := calls.Add(1)
@@ -200,12 +178,13 @@ func TestMutationAuthRecoveryBudget(t *testing.T) {
 			}))
 			defer server.Close()
 			port := server.Listener.Addr().(*net.TCPAddr).Port
-			home := ""
-			if test.home {
-				home = t.TempDir()
-				writeDiscovery(t, home, ConnectionSnapshot{Port: port, Token: test.token, Version: 2})
+			var rediscover Rediscovery
+			if test.rediscover {
+				rediscover = func(context.Context) (ConnectionSnapshot, error) {
+					return ConnectionSnapshot{Port: port, Token: test.token, Version: 2}, nil
+				}
 			}
-			conn := NewConnection(ConnectionSnapshot{Port: port, Token: "old", Version: 2}, home)
+			conn := NewConnection(ConnectionSnapshot{Port: port, Token: "old", Version: 2}, rediscover)
 			defer conn.HTTPClient().CloseIdleConnections()
 			_, err := RequestOperation[any](context.Background(), conn, Operation{Name: "mutate", Method: http.MethodPost, Path: "/mutation", Policy: AuthRecovery})
 			if calls.Load() != test.expected {
@@ -224,22 +203,11 @@ func TestMutationAuthRecoveryBudget(t *testing.T) {
 	}
 }
 
-func writeDiscovery(t *testing.T, home string, snapshot ConnectionSnapshot) {
-	t.Helper()
-	data, err := json.Marshal(snapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, "daemon.json"), data, 0600); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestReadRecoveryIncludesTruncatedBody(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/health" {
-			_, _ = writer.Write([]byte(`{"version":2}`))
+			_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow"]}`))
 			return
 		}
 		if calls.Add(1) == 1 {
@@ -251,9 +219,7 @@ func TestReadRecoveryIncludesTruncatedBody(t *testing.T) {
 	}))
 	defer server.Close()
 	snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "token", Version: 2}
-	home := t.TempDir()
-	writeDiscovery(t, home, snapshot)
-	conn := NewConnection(snapshot, home)
+	conn := NewConnection(snapshot, func(context.Context) (ConnectionSnapshot, error) { return snapshot, nil })
 	defer conn.HTTPClient().CloseIdleConnections()
 	result, err := RequestOperation[map[string]bool](context.Background(), conn, Operation{Name: "read", Method: http.MethodGet, Path: "/read", Policy: ReadRecovery})
 	if err != nil || !result["ok"] || calls.Load() != 2 {
@@ -265,7 +231,7 @@ func TestMalformedMutationAcknowledgementIsUncertain(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { calls.Add(1); _, _ = writer.Write([]byte(`{"ok":`)) }))
 	defer server.Close()
-	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
+	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
 	defer conn.HTTPClient().CloseIdleConnections()
 	_, err := RequestOperation[any](context.Background(), conn, Operation{Name: "mutate", Method: http.MethodPost, Path: "/mutation", Policy: AuthRecovery})
 	if _, ok := errors.AsType[*UncertainOutcomeError](err); !ok {
@@ -283,7 +249,7 @@ func TestRecordOpenDoesNotRecoverAuthentication(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/health" {
-			_, _ = writer.Write([]byte(`{"version":2}`))
+			_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow"]}`))
 			return
 		}
 		calls.Add(1)
@@ -292,47 +258,13 @@ func TestRecordOpenDoesNotRecoverAuthentication(t *testing.T) {
 	}))
 	defer server.Close()
 	snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "new", Version: 2}
-	home := t.TempDir()
-	writeDiscovery(t, home, snapshot)
+	replacement := snapshot
 	snapshot.Token = "old"
-	conn := NewConnection(snapshot, home)
+	conn := NewConnection(snapshot, func(context.Context) (ConnectionSnapshot, error) { return replacement, nil })
 	defer conn.HTTPClient().CloseIdleConnections()
 	_, err := RecordOpen(context.Background(), conn, "test")
 	if err == nil || calls.Load() != 1 || conn.Token() != "old" {
 		t.Fatalf("open recovered authentication: %v, %d, %s", err, calls.Load(), conn.Token())
-	}
-}
-
-func TestLifecycleStopDoesNotRecoverAuthentication(t *testing.T) {
-	if processAlive(0) {
-		t.Skip("process liveness unavailable")
-	}
-	home := t.TempDir()
-	var shutdowns atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/health" {
-			if removeErr := os.Remove(filepath.Join(home, "daemon.json")); removeErr != nil && !os.IsNotExist(removeErr) {
-				t.Error(removeErr)
-			}
-			_, _ = writer.Write([]byte(`{"version":2}`))
-			return
-		}
-		shutdowns.Add(1)
-		writer.WriteHeader(http.StatusForbidden)
-		_, _ = writer.Write([]byte(`{"code":"authentication_required"}`))
-	}))
-	defer server.Close()
-	snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "new", Version: 2, Pid: os.Getpid()}
-	writeDiscovery(t, home, snapshot)
-	snapshot.Token = "old"
-	snapshot.Pid = 0
-	conn := NewConnection(snapshot, home)
-	defer conn.HTTPClient().CloseIdleConnections()
-	if stopErr := stop(context.Background(), home, conn); stopErr == nil {
-		t.Fatal("shutdown authentication refusal was ignored")
-	}
-	if shutdowns.Load() != 1 || conn.Token() != "old" {
-		t.Fatalf("shutdown recovered authentication: calls=%d token=%s", shutdowns.Load(), conn.Token())
 	}
 }
 
@@ -363,7 +295,7 @@ func TestOperationClosesResponsesAndBoundsReads(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			body := &trackedResponseBody{Reader: strings.NewReader(test.content)}
-			conn := NewConnection(ConnectionSnapshot{Port: 12345}, "")
+			conn := NewConnection(ConnectionSnapshot{Port: 12345}, nil)
 			conn.HTTPClient().Transport = responseTransport{response: &http.Response{StatusCode: test.status, Body: body, Header: make(http.Header)}}
 			_, err := requestBytes(context.Background(), conn, Operation{Name: "mutate", Method: http.MethodPost, Path: "/mutation", Policy: AuthRecovery}, responseLimits{bodyBytes: 4, errorBytes: 4})
 			if !body.closed {
@@ -392,7 +324,7 @@ func TestMutationRedirectIsNotFollowed(t *testing.T) {
 		http.Redirect(writer, request, target.URL, http.StatusTemporaryRedirect)
 	}))
 	defer source.Close()
-	conn := NewConnection(ConnectionSnapshot{Port: source.Listener.Addr().(*net.TCPAddr).Port}, "")
+	conn := NewConnection(ConnectionSnapshot{Port: source.Listener.Addr().(*net.TCPAddr).Port}, nil)
 	defer conn.HTTPClient().CloseIdleConnections()
 	_, err := RequestOperation[any](context.Background(), conn, Operation{Name: "mutate", Method: http.MethodPost, Path: "/mutation", Body: map[string]string{"text": "hello"}, Policy: AuthRecovery})
 	failure, ok := errors.AsType[*APIError](err)

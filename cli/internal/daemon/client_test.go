@@ -49,7 +49,7 @@ func TestToolPreviewContinuesAcrossEOFAndTransientFailure(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
 	var previews []string
 	var completed []string
 	consume := func(event StreamEvent) error {
@@ -115,7 +115,7 @@ func TestStreamRejectsExcessUnfinishedCallsBeforeDeliveringTheBatch(t *testing.T
 		}
 	}))
 	defer server.Close()
-	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
 	consume := func(StreamEvent) error { return nil }
 	for range 32 {
 		if err := client.Stream(t.Context(), 0, consume); err != nil {
@@ -183,7 +183,7 @@ func TestStreamRejectsExcessArgumentBytesBeforeDeliveringTheBatch(t *testing.T) 
 		}
 	}))
 	defer server.Close()
-	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
 	consume := func(StreamEvent) error { return nil }
 	if err := client.Stream(t.Context(), 0, consume); err != nil {
 		t.Fatalf("exact byte budget rejected: %v", err)
@@ -238,7 +238,7 @@ func TestCancellationStartsTheNextSubscriptionWithoutOldArguments(t *testing.T) 
 				})))
 			}))
 			defer server.Close()
-			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			var err error
@@ -293,7 +293,7 @@ func TestSnapshotEventsAreMarkedReplayed(t *testing.T) {
 		_, _ = writer.Write([]byte(pages))
 	}))
 	defer server.Close()
-	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
 	replayed := map[string]bool{}
 	if err := client.Stream(t.Context(), 0, func(event StreamEvent) error {
 		if event.Type == EventThinking {

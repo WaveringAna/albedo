@@ -52,7 +52,7 @@ func TestCapabilityStaleReplyFromReplacedInstanceIsRejected(t *testing.T) {
 // The detached view owns response ordering and key routing, which daemon E2E
 // scenarios cannot observe deterministically.
 func TestCapabilityConflictRefreshesWithoutReplayingToggle(t *testing.T) {
-	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, "")
+	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil)
 	var methods []string
 	conn.HTTPClient().Transport = catalogTransport(func(request *http.Request) (*http.Response, error) {
 		methods = append(methods, request.Method)
@@ -109,7 +109,7 @@ func (transport catalogTransport) RoundTrip(request *http.Request) (*http.Respon
 }
 
 func TestCapabilityToggleSubmitsRowIdentityAndAcknowledgedRevision(t *testing.T) {
-	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, "")
+	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil)
 	requests := 0
 	conn.HTTPClient().Transport = catalogTransport(func(request *http.Request) (*http.Response, error) {
 		requests++

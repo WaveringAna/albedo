@@ -20,7 +20,7 @@ func TestAgentStreamReadinessAndOverflowStopDelivery(t *testing.T) {
 			"data: "+`{"events":[{"type":"text","session":"s","text":"must stay hidden"}]}`+"\n\n")
 	}))
 	defer server.Close()
-	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
+	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
 	var delivered [][]AgentEvent
 	err := StreamAgents(t.Context(), conn, func(events []AgentEvent) error { delivered = append(delivered, events); return nil })
 	if err != nil {
@@ -46,7 +46,7 @@ func TestAgentStreamRejectsMalformedBatchBeforeDelivery(t *testing.T) {
 				_, _ = io.WriteString(w, "data: "+batch+"\n\n")
 			}))
 			defer server.Close()
-			conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
+			conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
 			err := StreamAgents(t.Context(), conn, func([]AgentEvent) error { t.Error("malformed batch partially delivered"); return nil })
 			failure, ok := errors.AsType[*StreamError](err)
 			if !ok || failure.Kind != StreamProtocol {

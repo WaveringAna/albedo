@@ -34,20 +34,6 @@ func IsTTY(in io.Reader, out io.Writer) bool {
 	return inputOK && outputOK && isatty.IsTerminal(input.Fd()) && isatty.IsTerminal(output.Fd())
 }
 
-// ReplaceStale asks before stopping a daemon from another build. Without a
-// terminal it keeps the running daemon.
-func (t *Service) ReplaceStale(s daemon.Stale) bool {
-	if !t.Capable {
-		fmt.Fprintf(t.Err, "Albedo is already running (PID %d). Keeping that copy because there is no terminal to ask about restarting.\nStopping Albedo will interrupt work in all sessions.\nWhen you are ready to use the copy you just launched, run albedo daemon --stop, then launch Albedo again.\n", s.Running.Pid())
-		return false
-	}
-	if _, err := fmt.Fprintf(t.Out, "Albedo is already running (PID %d). To use the copy you just launched,\nit needs to restart. This will interrupt work in all sessions.\n\nRestart Albedo? [y/N] ", s.Running.Pid()); err != nil {
-		return false
-	}
-	answer, _ := bufio.NewReader(t.In).ReadString('\n')
-	return Confirmed(answer)
-}
-
 // announceMigration tells the user, once, that the daemon's start moved their
 // secrets into creds.json, and waits for enter so the TUI does not cover it.
 // The daemon answers only the first client that asks.

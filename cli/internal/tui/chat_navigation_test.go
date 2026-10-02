@@ -13,7 +13,7 @@ import (
 
 func newTestChatModel(t *testing.T, session *daemon.Session) ChatModel {
 	t.Helper()
-	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, "")
+	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil)
 	client := daemon.NewChatClient(conn, session.ID)
 	model := NewChatModel(session, client)
 	t.Cleanup(model.Close)

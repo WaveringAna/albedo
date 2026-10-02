@@ -182,7 +182,7 @@ func TestEditorProcessRestoresTerminal(t *testing.T) {
 // reports the mode keeps the setting across chats. The report only exists in
 // a real terminal, so no e2e surface carries it.
 func TestAppRemembersGraphemeTerminal(t *testing.T) {
-	m := AppModel{Conn: daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, t.TempDir())}
+	m := AppModel{Conn: daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil)}
 	next, _ := m.Update(tea.ModeReportMsg{Mode: ansi.ModeUnicodeCore, Value: ansi.ModeNotRecognized})
 	if next.(AppModel).Graphemes {
 		t.Fatal("a terminal without mode 2027 does not measure graphemes")

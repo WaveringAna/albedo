@@ -1,98 +1,121 @@
-// Daemon startup must not leak inherited API secrets, and bundled-build replacement prompts must not interrupt source clients.
+// Discovery must distinguish an unsafe live endpoint from an absent daemon.
+// Malformed records and deliberate health failures require controlled peers.
 package daemon
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
-	"sync/atomic"
 	"testing"
+	"time"
 )
 
-func TestDaemonEnvironment(t *testing.T) {
-	for _, key := range []string{"ALBEDO_API_KEY", "ALBEDO_MODEL", "ALBEDO_BASE_URL", "ALBEDO_PROTOCOL"} {
-		t.Setenv(key, "do-not-inherit")
-	}
-	t.Setenv("ALBEDO_DAEMON", "/nix/store/fixture/bin/daemon")
-	env := strings.Join(buildDaemonEnv("/tmp/home", "token", ""), "\n")
-	if strings.Contains(env, "do-not-inherit") || !strings.Contains(env, "ALBEDO_HOME=/tmp/home") || !strings.Contains(env, "ALBEDO_TOKEN=token") {
-		t.Fatal("incorrect daemon environment")
-	}
-}
-
-func fakeDaemon(t *testing.T, build string, pid int) (home string, down *atomic.Bool) {
+func writeDiscovery(t *testing.T, home string, snapshot ConnectionSnapshot) {
 	t.Helper()
-	down = new(atomic.Bool)
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/shutdown":
-			down.Store(true)
-			_, _ = w.Write([]byte(`{"ok":true}`))
-		case r.URL.Path == "/health" && !down.Load():
-			_, _ = w.Write([]byte(`{"ok":true,"version":2}`))
-		default:
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}
-	}))
-	t.Cleanup(ts.Close)
-	port, _ := strconv.Atoi(ts.URL[strings.LastIndex(ts.URL, ":")+1:])
-	home = t.TempDir()
-	data, _ := json.Marshal(ConnectionSnapshot{Port: port, Token: "t", Pid: pid, Version: 2, Build: build})
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(home, "daemon.json"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	return home, down
 }
 
-func bundledDaemon(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "albedo-daemon")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+// A real daemon normally exits before cancellation can reach the stop wait.
+func TestUpgradeCancellationAfterShutdownDoesNotLaunchReplacement(t *testing.T) {
+	if processAlive(0) {
+		t.Skip("local process inspection is unsupported")
+	}
+	home := t.TempDir()
+	executable := filepath.Join(t.TempDir(), "replacement")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\n: > \"$ALBEDO_HOME/replacement-started\"\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("ALBEDO_DAEMON", path)
-	return bundledBuild(path)
+	t.Setenv("ALBEDO_DAEMON", executable)
+	shutdownAcknowledged := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			_, _ = fmt.Fprint(w, healthyHealth)
+		case "/shutdown":
+			_, _ = fmt.Fprint(w, `{"ok":true}`)
+			w.(http.Flusher).Flush()
+			close(shutdownAcknowledged)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: ProtocolVersion, Build: "verified-build"}
+	writeDiscovery(t, home, snapshot)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	finished := make(chan error, 1)
+	go func() {
+		_, err := Upgrade(ctx, LocalOptions{HomeDir: home}, snapshot)
+		finished <- err
+	}()
+	select {
+	case <-shutdownAcknowledged:
+	case <-time.After(time.Second):
+		t.Fatal("upgrade did not request shutdown")
+	}
+	// The acknowledged process deliberately remains alive, keeping Upgrade in
+	// its exit wait until the caller cancels.
+	select {
+	case err := <-finished:
+		t.Fatalf("upgrade returned before the live process exited: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-finished:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("upgrade lost cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("upgrade did not cancel its exit wait")
+	}
+	if _, err := os.Stat(filepath.Join(home, "replacement-started")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("canceled upgrade launched a replacement: %v", err)
+	}
 }
 
-func TestEnsureAsksOnlyAboutAnotherBundledBuild(t *testing.T) {
-	cases := []struct {
-		name    string
-		running string // "" = no build recorded, "same" = the bundled build
-		bundled bool
-		asked   bool
-	}{
-		{name: "source client", bundled: false, running: "/nix/store/old", asked: false},
-		{name: "same build", bundled: true, running: "same", asked: false},
-		{name: "other build", bundled: true, running: "/nix/store/old", asked: true},
-		{name: "unrecorded build", bundled: true, running: "", asked: true},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			t.Setenv("ALBEDO_DAEMON", "")
-			build := ""
-			if c.bundled {
-				build = bundledDaemon(t)
+func TestDiscoveryPreservesUnsafeRecordAndLiveHealthFailures(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"code":"authentication_required","error":"health refused"}`))
+			}))
+			defer server.Close()
+			home := t.TempDir()
+			writeDiscovery(t, home, ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: ProtocolVersion})
+			_, err := Discover(t.Context(), home)
+			failure, ok := errors.AsType[*LocalError](err)
+			expected := UnhealthyDaemon
+			if status == http.StatusForbidden {
+				expected = AuthenticationFailed
 			}
-			running := c.running
-			if running == "same" {
-				running = build
-			}
-			home, down := fakeDaemon(t, running, os.Getpid())
-			var asked []Stale
-			conn, err := Ensure(home, "unused", func(s Stale) bool { asked = append(asked, s); return false })
-			if err != nil || conn == nil || down.Load() {
-				t.Fatalf("declined replacement changed the daemon: conn=%v err=%v down=%v", conn, err, down.Load())
-			}
-			if (len(asked) == 1) != c.asked {
-				t.Fatalf("asked %d times, want asked=%v", len(asked), c.asked)
-			}
-			if c.asked && (asked[0].Bundled != build || asked[0].Running.Build() != running) {
-				t.Fatalf("unexpected stale report: %+v", asked[0])
+			api, hasAPI := errors.AsType[*APIError](err)
+			if !ok || failure.Kind != expected || !hasAPI || api.StatusCode != status {
+				t.Fatalf("health failure was treated as absence: %v", err)
 			}
 		})
+	}
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "daemon.json"), []byte(`{`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Discover(t.Context(), home)
+	failure, ok := errors.AsType[*LocalError](err)
+	if !ok || failure.Kind != InvalidDiscovery {
+		t.Fatalf("malformed record was treated as absence: %v", err)
 	}
 }
