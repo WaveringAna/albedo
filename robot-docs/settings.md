@@ -34,7 +34,7 @@ Provider, UI, and snapshot errors return HTTP 400. Session settings errors retur
 
 ## Skill and instruction catalog
 
-`GET /sessions/:id/catalog` inspects the session workspace through daemon discovery. It does not prepare commands, reload extensions, or change the pinned prompt. The response contains `workspace`, an opaque `revision`, `extensions` with skills/instructions enabled booleans, bounded `diagnostics`, and `candidates`. Disabled and rejected candidates remain visible. Discovery keeps the existing validation, size limits, symlink rules, and duplicate precedence.
+`GET /sessions/:id/catalog` inspects the session workspace through daemon discovery. It does not prepare commands, reload extensions, or change the pinned prompt. The response contains `workspace`, an opaque `revision`, `extensions` with skills/instructions enabled booleans, bounded `diagnostics`, and `candidates`. Disabled and rejected candidates remain visible. Discovery applies metadata validation, size limits, and duplicate precedence. [Skills](skills.md) may link to external local installations and resources.
 
 Each candidate contains `id`, `kind`, `title`, nullable `description`, lexical `source`, nullable `resolved_source`, nullable `preference_key`, `valid`, nullable `diagnostic`, and nullable `shadowed_by`. IDs identify source locations independently of preference keys. Duplicate skill rows have separate IDs but share the validated skill-name key. Instruction keys retain `project:<display>` or `global:<display>`.
 
@@ -42,7 +42,7 @@ Each candidate contains `id`, `kind`, `title`, nullable `description`, lexical `
 
 Catalog mutations use the row ID and revision, with `scope` set to `global` or `session`. `enabled: null` clears the explicit choice. Shadowed rows are read-only. Invalid rows with a preference key may be disabled or cleared but cannot be enabled. The daemon resolves the preference key and checks fresh discovery, workspace, preferences, and extension state under the settings mutation lock before writing. A changed revision returns HTTP 409 with `{code: "stale_catalog", error: message}` and leaves preferences and the prepared composition untouched. The client refreshes and requires a new user action; it does not replay the mutation. Inspection racing a workspace change also returns this error. Missing sessions return HTTP 404.
 
-An unchanged catalog has a stable revision. Reading it or reloading unchanged extension inputs does not change the revision. Changes to bounded inspected content or file identity change the revision, including edits that preserve size and modification time. Content beyond an oversized file’s inspection limit and targets of rejected escaping links are not read. This check does not make concurrent external filesystem edits atomic with a settings save.
+An unchanged catalog has a stable revision. Reading it or reloading unchanged extension inputs does not change the revision. Changes to bounded inspected content or file identity change the revision, including edits that preserve size and modification time. Retargeting a skill directory or its instruction link also changes the revision. Content beyond an oversized file's inspection limit is not read. This check does not make concurrent external filesystem edits atomic with a settings save.
 
 ## Persistence and recovery
 

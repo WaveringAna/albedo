@@ -3,7 +3,7 @@
 Persisted preferences are owned by the daemon and changed through the [settings API](settings.md). The CLI refreshes them on use and never writes settings files.
 
 
-Albedo's `skills` extension implements progressive disclosure for the [Agent Skills specification](https://agentskills.io/specification). It advertises only each valid skill's `name`, `description`, actual local `SKILL.md` path, and slash command. The model or user loads a full skill only through explicit activation.
+Albedo's `skills` extension implements progressive disclosure for the [Agent Skills specification](https://agentskills.io/specification). It advertises only each valid skill's `name`, `description`, installed local `SKILL.md` path, and slash command. The model or user loads a full skill only through explicit activation.
 
 ## Discovery
 
@@ -19,7 +19,9 @@ A valid workspace skill wins over a user skill with the same frontmatter `name`,
 
 `.agents/skills` is the portable Agent Skills location. `.albedo/skills` is the Albedo-native location. A built-in skill is an ordinary skill directory under `priv/skills/`, so it needs no code: add the directory and it is cataloged, can be toggled as a `skills` capability, and is read through the same `skills.read` and `commands` paths.
 
-Each immediate child must contain a regular `SKILL.md`. Its parent directory and frontmatter `name` must match. Albedo requires the specification's `name` and `description` fields and accepts the optional `license`, `compatibility`, `metadata`, and `allowed-tools` fields. Optional fields are not advertised eagerly. YAML folded and multiline descriptions are supported through `yamerl`'s failsafe schema.
+Each immediate child must contain a `SKILL.md` that resolves to a regular file. The discovered child directory name and frontmatter `name` must match, even when the directory points to a package store path with a different name. Albedo requires the specification's `name` and `description` fields and accepts the optional `license`, `compatibility`, `metadata`, and `allowed-tools` fields. Optional fields are not advertised eagerly. YAML folded and multiline descriptions are supported through `yamerl`'s failsafe schema.
+
+Discovery directories, individual skill directories, `SKILL.md`, and resources may be absolute or relative symlinks to any local location the daemon can read. This supports shared installations and Nix store layouts without copying their files. Broken links, link cycles, unreadable targets, and invalid metadata produce bounded diagnostics without blocking other skills.
 
 Discovery is bounded to 128 candidates, 64 diagnostics, 64 KiB of frontmatter per file, and 1 MiB per `SKILL.md`. A catalog never includes the Markdown body or resource content.
 
@@ -27,9 +29,9 @@ The catalog is prepared once when a runtime session opens. Its immutable snapsho
 
 ## Management catalog
 
-`GET /sessions/:id/catalog` discovers skills and instruction files in the daemon's session workspace and home directories. It includes disabled, invalid, and shadowed candidates, with source paths and validation diagnostics. Skill preference keys remain frontmatter names; each discovered source has a separate stable row ID so duplicates remain distinguishable.
+`GET /sessions/:id/catalog` discovers skills and instruction files in the daemon's session workspace and home directories. It includes disabled, invalid, and shadowed candidates, with source paths and validation diagnostics. For skills, `source` is the installed `SKILL.md` path and `resolved_source` is its actual target. Skill preference keys remain frontmatter names; each installed source has a separate stable row ID so duplicates remain distinguishable when links are retargeted.
 
-The management catalog reports global preferences, session overrides, and effective enablement separately. Its revision changes with discovered files and preferences; catalog updates must use the observed revision. Reading it does not reload extensions or change the session's prepared prompt. A disabled winning skill does not expose a lower-priority duplicate.
+The management catalog reports global preferences, session overrides, and effective enablement separately. Its revision changes with bounded instruction content, resolved directory and instruction targets, and preferences; catalog updates must use the observed revision. Reading it does not reload extensions or change the session's prepared prompt. A disabled winning skill does not expose a lower-priority duplicate.
 
 ## Activation and Python API
 
@@ -41,11 +43,13 @@ await skills.resources("demo")
 await skills.read("demo", "references/formats.md", offset=0, limit=16384)
 ```
 
-`commands.catalog()` lists this session's commands (skills and built-ins) with argument details, and `commands.invoke("/demo", arguments)` runs one by slash name. If required metadata changed since discovery, activation asks the caller to reload instead of silently switching identities.
+`commands.catalog()` lists this session's commands (skills and built-ins) with argument details, and `commands.invoke("/demo", arguments)` runs one by slash name. The session pins the resolved skill directory and instruction target, including their filesystem identities. Activation and resource access require reload if either target changes, either object is replaced, or required metadata changes. In-place instruction body edits remain readable without reload. Reload discovers the current targets.
 
-`skills.resources(name)` lists resource names beneath one selected skill without loading their contents. It returns at most 512 files, traverses at most 2,048 entries and 16 directory levels, and reports skipped or escaping resources as diagnostics.
+`skills.resources(name)` lists resource names beneath the installed skill directory without loading their contents. If only `SKILL.md` points elsewhere, sibling `references/` and `assets/` remain resources of that installed directory. Linked files and directories appear under their installed relative names, including separate aliases to the same directory. The listing returns at most 512 files, traverses at most 2,048 entries and 16 directory levels, skips links back to ancestor directories, and reports cycles, unreadable targets, or invalid resources as diagnostics.
 
 `skills.read(name, resource, offset, limit)` reads one bounded byte range. `resource` defaults to `SKILL.md`, `offset` to `0`, and `limit` to `16384`; the maximum page is `65536` bytes. The result includes `next_offset`, `truncated`, total `size`, and `encoding`. UTF-8 pages are returned directly. Other bytes are base64. A readable resource cannot exceed 16 MiB.
+
+Activation returns the installed `SKILL.md` path as `source`. Relative paths in skill instructions use its containing directory. Resource links resolve when listed or read, so changing a resource link does not require reload.
 
 ## Slash commands
 
@@ -59,7 +63,7 @@ The selected Albedo workspace is already trusted for model-driven code execution
 
 Reading or activating a skill never executes its scripts, imports its Python modules, fetches remote links, enables tools, or grants permissions. `allowed-tools` is descriptive metadata only. References, scripts, and assets are ordinary resources that require an explicit `skills.read` call. Remote URLs remain text for the model to consider; the extension does not fetch them.
 
-Relative parent traversal, absolute resource paths, and symlink escapes are rejected. Internal symlinks may resolve only within the selected skill root. Symlinked discovered skill directories must resolve within their configured discovery root.
+Resource requests must use relative paths without parent traversal. Their symlink targets may lie outside the skill directory or discovery directory. Normal daemon filesystem permissions still apply.
 
 Disabling the extension removes its catalog, instructions, Python module, RPC route, and slash commands together for that session. It does not stop another enabled capability, such as Python, from reading files it is already authorized to access.
 

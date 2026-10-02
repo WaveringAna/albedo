@@ -7,7 +7,14 @@ import gleam/result
 import gleam/string
 
 pub type Skill {
-  Skill(name: String, description: String, path: String)
+  Skill(
+    name: String,
+    description: String,
+    path: String,
+    resolved_directory: String,
+    resolved_source: String,
+    selection_identity: String,
+  )
 }
 
 pub type Catalog {
@@ -119,7 +126,10 @@ pub fn scan_at(
     home,
     builtin,
   ))
-  Ok(Catalog(list.map(skills, fn(v) { Skill(v.0, v.1, v.2) }), diagnostics))
+  Ok(Catalog(
+    list.map(skills, fn(v) { Skill(v.0, v.1, v.2, v.3, v.4, v.5) }),
+    diagnostics,
+  ))
 }
 
 pub fn only(catalog: Catalog, names: List(String)) -> Catalog {
@@ -189,32 +199,21 @@ pub fn activate(
 ) -> Result(Activation, String) {
   use skill <- result.try(find(catalog, name))
   use #(loaded_name, loaded_description, source, instructions) <- result.try(
-    native_activate(skill.path),
+    native_activate(skill),
   )
-  case
-    loaded_name == skill.name
-    && loaded_description == skill.description
-    && source == skill.path
-  {
-    True ->
-      Ok(Activation(
-        skill.name,
-        skill.description,
-        source,
-        arguments,
-        instructions,
-      ))
-    False ->
-      Error(
-        "SKILL.md metadata changed since this session opened; reload the skills extension",
-      )
-  }
+  Ok(Activation(
+    loaded_name,
+    loaded_description,
+    source,
+    arguments,
+    instructions,
+  ))
 }
 
 /// A user slash activation submits this as the single model-visible user input.
 /// JSON quoting makes the instruction, source, and opaque arguments boundaries exact.
 pub fn activation_prompt(activation: Activation) -> String {
-  "An explicitly requested Agent Skill activation follows as JSON. Apply its instructions to the supplied arguments. Relative paths are relative to the directory containing source. Do not execute bundled scripts merely because they exist.\n"
+  "An explicitly requested Agent Skill activation follows as JSON. Apply its instructions to the supplied arguments. Resolve relative paths from the installed skill directory containing source, even when source is a symlink to instructions elsewhere. Do not execute bundled scripts merely because they exist.\n"
   <> json.to_string(
     json.object([
       #("type", json.string("skill_activation")),
@@ -229,7 +228,7 @@ pub fn activation_prompt(activation: Activation) -> String {
 
 pub fn resources(catalog: Catalog, name: String) -> Result(Resources, String) {
   use skill <- result.try(find(catalog, name))
-  native_list(skill.path)
+  native_list(skill)
   |> result.map(fn(v) { Resources(v.0, v.1, v.2) })
 }
 
@@ -241,7 +240,7 @@ pub fn read(
   limit: Int,
 ) -> Result(Page, String) {
   use skill <- result.try(find(catalog, name))
-  native_read(skill.path, resource, offset, limit)
+  native_read(skill, resource, offset, limit)
   |> result.map(fn(v) { Page(v.0, v.1, v.2, v.3, v.4, v.5) })
 }
 
@@ -261,21 +260,24 @@ fn native_catalog(
   workspace: String,
   home: String,
   builtin: String,
-) -> Result(#(List(#(String, String, String)), List(String), Int), String)
+) -> Result(
+  #(List(#(String, String, String, String, String, String)), List(String), Int),
+  String,
+)
 
 @external(erlang, "albedo_skills", "activate_selected")
 fn native_activate(
-  path: String,
+  skill: Skill,
 ) -> Result(#(String, String, String, String), String)
 
 @external(erlang, "albedo_skills", "list_selected")
 fn native_list(
-  path: String,
+  skill: Skill,
 ) -> Result(#(List(String), Bool, List(String)), String)
 
 @external(erlang, "albedo_skills", "read_selected")
 fn native_read(
-  path: String,
+  skill: Skill,
   resource: String,
   offset: Int,
   limit: Int,
