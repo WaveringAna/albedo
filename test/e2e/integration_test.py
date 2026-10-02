@@ -49,7 +49,12 @@ def script(request):
         "saved = Path('example.txt').read_text()\n"
         "assert 'ALBEDO_API_KEY' not in os.environ\n"
         "assert 'ALBEDO_TOKEN' not in os.environ\n"
-        f"await asyncio.sleep({30 if 'hang' in user else 2 if 'first task' in user else 0.4})\nlen(saved)"
+        + (
+            "Path('recovery-started').write_text('ready')\n"
+            if "hang then recover" in user
+            else ""
+        )
+        + f"await asyncio.sleep({30 if 'hang' in user else 2 if 'first task' in user else 0.4})\nlen(saved)"
     )
     return (
         text("finished")
@@ -890,7 +895,11 @@ class IntegrationTest(unittest.TestCase):
                 )
                 third = app.session()
                 app.prompt(third, "hang then recover").close()
-                time.sleep(0.5)
+                ready = app.workspace / "recovery-started"
+                deadline = time.monotonic() + 15
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(ready.exists(), "recovery tool did not start")
                 stamp = (app.workspace / "example.txt").stat().st_mtime_ns
                 self.settings(
                     app, protocol, active="alpha", beta="changed-beta-default"

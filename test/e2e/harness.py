@@ -519,6 +519,9 @@ class Daemon:
         self.base = None
         self._pid = None
         self._local = threading.local()
+        self.boot_action = None
+        self._launchers = []
+        self._commands = []
         with _daemons_lock:
             _daemons.append(self)
 
@@ -531,8 +534,51 @@ class Daemon:
         extensions = self.home / "extensions.json"
         if not extensions.exists():
             extensions.write_text(json.dumps(OFFLINE))
+        if self.boot_action is not None:
+            self.boot_action(self)
         self.cli("sessions")
         self._refresh()
+
+    def start_launcher(self):
+        """Run the real launcher directly, retaining its log and process owner."""
+        with (self.home / "daemon.log").open("ab") as log:
+            process = subprocess.Popen(
+                [self.env["ALBEDO_DAEMON"]],
+                cwd=ROOT,
+                env=self.env,
+                stdout=log,
+                stderr=log,
+            )
+        self._launchers.append(process)
+        # Direct launches are our children. Reap them as soon as they exit so
+        # another CLI can observe that the old daemon is gone during upgrade.
+        threading.Thread(target=process.wait, daemon=True).start()
+        return process
+
+    def await_ready(self, timeout=20):
+        """Adopt the published endpoint once its authenticated API answers."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                self._refresh()
+                with self.api("/health") as response:
+                    if json.load(response).get("ok"):
+                        return
+            except (OSError, ValueError, http.client.HTTPException):
+                pass
+            time.sleep(0.02)
+        self._fail("launcher did not publish an authenticated endpoint")
+
+    def start_cli(self, *args, **streams):
+        """Start a CLI command whose input or cancellation the fixture controls."""
+        process = subprocess.Popen(
+            [str(ROOT / "cli/bin/albedo"), *args],
+            cwd=ROOT,
+            env=self.env,
+            **streams,
+        )
+        self._commands.append(process)
+        return process
 
     def _refresh(self):
         global daemon_boots
@@ -588,6 +634,14 @@ class Daemon:
                     assert self._pid is not None
                     os.kill(self._pid, signal.SIGKILL)
                 self._pid = None
+            for launcher in self._launchers:
+                if launcher.poll() is None:
+                    launcher.kill()
+                launcher.wait()
+            for command in self._commands:
+                if command.poll() is None:
+                    command.kill()
+                command.wait()
             shutil.rmtree(self.root, ignore_errors=True)
         with _daemons_lock:
             if self in _daemons:
