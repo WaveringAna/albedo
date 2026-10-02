@@ -21,7 +21,7 @@ deleted if later deletion or vacuum fails.
 for each installed extension, `extension.install` first calls its table
 initialiser, then applies its contributed `SchemaMigration` callbacks on the
 store-owned SQLite connection, in plugin order. work contributes `cwd.apply`;
-paperclips contributes `title.apply`, `scope.apply`, and `reply.apply`; python contributes `kernel_links.apply`, the detached kernel's link tables (see [kernel](kernel.md)), which `link.create` also ensures for embedded runtimes that boot kernels without the extension. their ledgers create tables but do not run
+paperclips contributes `title.apply`, `scope.apply`, and `reply.apply`; the links extension's initialiser creates `workspace_links` (see [workspaces](workspaces.md#linked-workspaces)), which `links.link` also ensures; python contributes `kernel_links.apply`, the detached kernel's link tables (see [kernel](kernel.md)), which `link.create` also ensures for embedded runtimes that boot kernels without the extension. their ledgers create tables but do not run
 upgrades themselves. all installed owners upgrade, even when disabled for
 sessions; session selection and live reload never rerun migrations.
 

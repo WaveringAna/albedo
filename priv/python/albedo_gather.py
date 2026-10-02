@@ -10,7 +10,8 @@ commands the daemon planned, file sizes, and project files. Everything comes
 back in one ssh round trip per question.
 
 Request: `{route, dir, plans, separators, deadline, counted}`, `dir` absolute
-and normalised. `route` is list, repo, preview or project.
+and normalised. `route` is list, repo, preview or project, or exists, which
+answers `directory` alone.
 
 Snapshot: `{directory, entries: {dir: [[name, dir, modified]]}, exists:
 [path], outputs: {key: stdout}, sizes: {path: bytes}, files: {relative:
@@ -148,7 +149,7 @@ def project(directory: str) -> dict[str, str]:
 def gather(request: dict) -> dict[str, object]:
     route, directory = request["route"], request["dir"]
     snapshot: dict[str, object] = {"directory": os.path.isdir(directory)}
-    if not snapshot["directory"]:
+    if not snapshot["directory"] or route == "exists":
         return snapshot
     if route == "project":
         snapshot["files"] = project(directory)

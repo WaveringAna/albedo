@@ -1,4 +1,5 @@
 import albedo/daemon/store as storage
+import albedo/harness/links
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
@@ -27,6 +28,8 @@ pub type Item {
     session: Option(String),
     run: Option(String),
     revision: Int,
+    /// Where the item was filed: this workspace, or one linked with it.
+    workspace: String,
   )
 }
 
@@ -74,7 +77,7 @@ CREATE INDEX IF NOT EXISTS work_parent ON work(parent);
 CREATE INDEX IF NOT EXISTS work_session ON work(session);
 "
 
-const columns = "id,title,notes,status,parent,session,run,revision"
+const columns = "id,title,notes,status,parent,session,run,revision,cwd"
 
 const legacy_cwd = "__albedo_legacy__"
 
@@ -128,7 +131,18 @@ fn decoder() -> decode.Decoder(Item) {
   use session <- decode.field(5, decode.optional(decode.string))
   use run <- decode.field(6, decode.optional(decode.string))
   use revision <- decode.field(7, decode.int)
-  decode.success(Item(id, title, notes, status, parent, session, run, revision))
+  use workspace <- decode.field(8, decode.string)
+  decode.success(Item(
+    id,
+    title,
+    notes,
+    status,
+    parent,
+    session,
+    run,
+    revision,
+    workspace,
+  ))
 }
 
 fn rows(
@@ -139,15 +153,31 @@ fn rows(
   storage.rows(db, sql, args, decoder()) |> result.map_error(Storage)
 }
 
+/// `cwd IN (...)` over the workspace and the ones linked with it, and its
+/// arguments: every read and change reaches the whole group, and only a new
+/// item is filed under the workspace itself.
+fn scope(
+  db: sqlight.Connection,
+  cwd: String,
+) -> #(String, List(sqlight.Value)) {
+  let group = links.members(db, cwd)
+  #(
+    "cwd IN (" <> string.join(list.map(group, fn(_) { "?" }), ",") <> ")",
+    list.map(group, sqlight.text),
+  )
+}
+
 fn find(
   db: sqlight.Connection,
   cwd: String,
   id: Int,
 ) -> Result(List(Item), Error) {
-  rows(db, "SELECT " <> columns <> " FROM work WHERE cwd=? AND id=?", [
-    sqlight.text(cwd),
-    sqlight.int(id),
-  ])
+  let #(within, group) = scope(db, cwd)
+  rows(
+    db,
+    "SELECT " <> columns <> " FROM work WHERE " <> within <> " AND id=?",
+    list.append(group, [sqlight.int(id)]),
+  )
 }
 
 fn one(items: List(Item)) -> Result(Item, Error) {
@@ -170,12 +200,15 @@ pub fn list(
     True -> Error(Invalid("after >= 0 and 1 <= limit <= 200 required"))
     False ->
       storage.query(store, fn(db) {
+        let #(within, group) = scope(db, cwd)
         rows(
           db,
           "SELECT "
             <> columns
-            <> " FROM work WHERE cwd=? AND id > ? ORDER BY id LIMIT ?",
-          [sqlight.text(cwd), sqlight.int(after), sqlight.int(limit)],
+            <> " FROM work WHERE "
+            <> within
+            <> " AND id > ? ORDER BY id LIMIT ?",
+          list.append(group, [sqlight.int(after), sqlight.int(limit)]),
         )
       })
   }
@@ -225,7 +258,7 @@ pub fn update(store: Store, cwd: String, item: Item) -> Result(Item, Error) {
       [] -> Error(NotFound)
       [current, ..] if current.parent != item.parent ->
         Error(Invalid("parent cannot change"))
-      _ -> {
+      [current, ..] -> {
         use changed <- result.try(
           rows(
             db,
@@ -237,7 +270,7 @@ pub fn update(store: Store, cwd: String, item: Item) -> Result(Item, Error) {
               sqlight.text(status_name(item.status)),
               sqlight.nullable(sqlight.text, item.session),
               sqlight.nullable(sqlight.text, item.run),
-              sqlight.text(cwd),
+              sqlight.text(current.workspace),
               sqlight.int(item.id),
               sqlight.int(item.revision),
             ],
@@ -261,25 +294,24 @@ pub fn delete(
   storage.query(store, fn(db) {
     use existing <- result.try(find(db, cwd, id))
     use children <- result.try(
-      rows(
-        db,
-        "SELECT " <> columns <> " FROM work WHERE cwd=? AND parent=? LIMIT 1",
-        [
-          sqlight.text(cwd),
-          sqlight.int(id),
-        ],
-      ),
+      rows(db, "SELECT " <> columns <> " FROM work WHERE parent=? LIMIT 1", [
+        sqlight.int(id),
+      ]),
     )
     case existing, children {
       [], _ -> Error(NotFound)
       _, [_, ..] -> Error(Invalid("remove its sub-items first"))
       [current, ..], [] if current.revision != revision -> Error(Conflict)
-      _, [] ->
+      [current, ..], [] ->
         rows(
           db,
           "DELETE FROM work WHERE cwd=? AND id=? AND revision=? RETURNING "
             <> columns,
-          [sqlight.text(cwd), sqlight.int(id), sqlight.int(revision)],
+          [
+            sqlight.text(current.workspace),
+            sqlight.int(id),
+            sqlight.int(revision),
+          ],
         )
         |> result.try(one_or_conflict)
     }
@@ -319,6 +351,7 @@ pub fn to_json(item: Item) -> json.Json {
     #("session", json.nullable(item.session, json.string)),
     #("run", json.nullable(item.run, json.string)),
     #("revision", json.int(item.revision)),
+    #("workspace", json.string(item.workspace)),
   ])
 }
 

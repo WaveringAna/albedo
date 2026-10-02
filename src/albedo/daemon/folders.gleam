@@ -245,6 +245,43 @@ fn remote(path: String, route: Route) -> Result(#(Machine, String), Failure) {
 /// The vcs commands' own deadline on the host, plus the ssh round trip.
 const gather_ms = 20_000
 
+/// Whether a workspace's folder exists. A remote one is asked on its host
+/// over the shared ControlMaster; a host not ready within `wait_ms` answers
+/// why instead (0 takes only a recent probe, starting one in the background),
+/// so an unreachable folder never reads as a missing one.
+pub fn exists(
+  workspace: location.Location,
+  wait_ms: Int,
+) -> Result(Bool, ssh.Failure) {
+  case workspace, location.ssh_target(workspace) {
+    location.Local(path), _ -> Ok(is_directory(path))
+    location.Remote(path:, ..), Ok(target) -> {
+      use host <- result.try(case wait_ms {
+        0 -> ssh.known(target)
+        _ -> ssh.ready(target, wait_ms)
+      })
+      let request =
+        json.object([
+          #("route", json.string("exists")),
+          #("dir", json.string(path)),
+        ])
+      ssh.gather(host, request, exists_ms)
+      |> result.try(fn(answer) {
+        json.parse(
+          answer,
+          decode.field("directory", decode.bool, decode.success),
+        )
+        |> result.replace_error("the gather on " <> target <> " answered badly")
+      })
+      |> result.map_error(ssh.Unreachable)
+    }
+    location.Remote(..), Error(Nil) -> Error(ssh.Unreachable("not a host"))
+  }
+}
+
+/// One stat on a host that already answered its probe.
+pub const exists_ms = 5000
+
 fn route_name(route: Route) -> String {
   case route {
     Listing -> "list"

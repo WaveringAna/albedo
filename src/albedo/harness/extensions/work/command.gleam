@@ -49,7 +49,7 @@ fn listing(store: work.Store, cwd: String) -> Result(command.Outcome, String) {
     work.list(store, cwd, 0, 200) |> result.map_error(describe),
   )
   let ordered = list.sort(items, fn(a, b) { int.compare(rank(a), rank(b)) })
-  let rows = list.map(ordered, row)
+  let rows = list.map(ordered, row(_, cwd))
   let pending = list.filter(ordered, fn(item) { rank(item) < 3 })
   Ok(
     Data(
@@ -86,7 +86,7 @@ fn listing(store: work.Store, cwd: String) -> Result(command.Outcome, String) {
           ),
           page.Action("x", "remove", "remove", True, page.NoInput, True),
         ],
-        Some(page.Glance("pending work", list.map(pending, row))),
+        Some(page.Glance("pending work", list.map(pending, row(_, cwd)))),
       )),
     ),
   )
@@ -107,13 +107,18 @@ fn rank(item: work.Item) -> Int {
   status_style(item.status).0
 }
 
-fn row(item: work.Item) -> page.Row {
+/// An item filed in a linked workspace says where.
+fn row(item: work.Item, cwd: String) -> page.Row {
+  let detail = case item.workspace == cwd {
+    True -> item.notes
+    False -> string.trim(item.notes <> "\n\nfiled in " <> item.workspace)
+  }
   page.detail_row(
     int.to_string(item.id),
     item.title,
     work.status_name(item.status),
     status_style(item.status).1,
-    item.notes,
+    detail,
   )
 }
 

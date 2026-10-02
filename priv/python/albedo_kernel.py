@@ -59,6 +59,10 @@ asyncio.set_event_loop(LOOP)
 albedo_proc.reap_stopped_safely(LOOP)
 QUEUE: asyncio.Queue[albedo_api.Execute | albedo_api.State] = asyncio.Queue()
 PENDING: dict[str, asyncio.Future[albedo_api.HostReply]] = {}
+# Host calls a synchronous API waits for; the reader thread hands their reply
+# over directly, since the loop it would go through is the one waiting.
+WAITING: dict[str, tuple[threading.Event, list[albedo_api.HostReply]]] = {}
+HOST_NOW_TIMEOUT = 30.0
 JOB_SLOTS: dict[str, tuple[asyncio.Future[None], Callable[[], None]]] = {}
 HOST_SLOTS = asyncio.Semaphore(32)
 OWNER_CALLS = asyncio.Semaphore(32)  # concurrent tool calls from the connection owner
@@ -179,6 +183,10 @@ def receive(frame: object) -> None:
             task = OWNER_TASKS.get(message["id"])
             if task is not None:
                 LOOP.call_soon_threadsafe(task.cancel)
+    elif message["type"] == "reply" and message["id"] in WAITING:
+        arrived, answer = WAITING[message["id"]]
+        answer.append(message["value"])
+        arrived.set()
     else:
         _ = LOOP.call_soon_threadsafe(deliver, message)
 
@@ -302,6 +310,28 @@ async def _host(method: str, args: dict[str, object]) -> object:
         answer = await future
     finally:
         _ = PENDING.pop(key, None)
+    if answer["ok"]:
+        return answer["value"]
+    raise WorkError(answer["code"], answer["message"])
+
+
+def host_now(method: str, args: dict[str, object]) -> object:
+    """A host call for a synchronous API: blocks the calling thread, the
+    loop's included, until the reply. Only for calls the host answers at
+    once; an interrupt still ends the wait."""
+    key = uuid.uuid4().hex
+    arrived = threading.Event()
+    answers: list[albedo_api.HostReply] = []
+    WAITING[key] = (arrived, answers)
+    send({"type": "call", "id": key, "method": method, "args": args})
+    try:
+        if not arrived.wait(HOST_NOW_TIMEOUT):
+            raise WorkError(
+                "timeout", f"{method} had no answer within {HOST_NOW_TIMEOUT:.0f}s"
+            )
+    finally:
+        _ = WAITING.pop(key, None)
+    answer = answers[0]
     if answer["ok"]:
         return answer["value"]
     raise WorkError(answer["code"], answer["message"])
@@ -1594,6 +1624,7 @@ def main():
         version=2,
         loop=LOOP,
         host=host,
+        host_now=host_now,
         HostError=WorkError,
         forget_output=forget_output,
         capture=background_capture,

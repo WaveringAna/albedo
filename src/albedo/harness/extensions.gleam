@@ -10,6 +10,7 @@ import albedo/harness/extensions/files/extension as files
 import albedo/harness/extensions/instructions/extension as instructions
 import albedo/harness/extensions/lcm/extension as lcm
 import albedo/harness/extensions/lcm/memory as lcm_memory
+import albedo/harness/extensions/links/extension as links
 import albedo/harness/extensions/mail/extension as mail
 import albedo/harness/extensions/mcp/extension as mcp
 import albedo/harness/extensions/memory/extension as memory
@@ -46,6 +47,7 @@ pub fn defaults() -> Config {
       paperclips.extension(),
       files.extension(),
       memory.extension(),
+      links.extension(),
       instructions.extension(),
       commands.extension(),
       skills.extension(),
@@ -77,8 +79,8 @@ pub fn defaults() -> Config {
     ],
     [
       "python", "run", "work", "mail", "agents", "schedule", "files", "memory",
-      "instructions", "commands", "skills", "paperclips", "models", "openai",
-      "codex", "antigravity", "alibaba", "claude", "rolling",
+      "links", "instructions", "commands", "skills", "paperclips", "models",
+      "openai", "codex", "antigravity", "alibaba", "claude", "rolling",
       "snapcompact-memory", "lcm-memory", "notes", "remote", "browser",
     ],
   )

@@ -9,6 +9,7 @@ person to sign in, and one that cannot be reached.
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -40,6 +41,7 @@ fi
 case "$target" in
   gone) echo "ssh: connect to host gone port 22: Connection refused" >&2; exit 255 ;;
   locked) echo "locked: Permission denied (publickey)." >&2; exit 255 ;;
+  slow-*) sleep 3; echo "ssh: connect to host $target port 22: Connection refused" >&2; exit 255 ;;
 esac
 path={bin}:/usr/bin:/bin
 [ "$target" = oldhost ] && path={old}:$path
@@ -230,6 +232,85 @@ class RemoteKernelTests(unittest.TestCase):
         self.app.restart(crash=True)
         after = self.cell(session, "survivor += 1\n(survivor, os.getpid())")
         self.assertEqual(after["value"], f"(42, {first['value']})")
+
+    def test_a_remote_sessions_memory_is_the_daemons_and_links_with_a_local_one(self):
+        remote = f"fakehost:{self.project}"
+        session = self.create(remote)["id"]
+        self.cell(session, "memory.append('the gate runs on fakehost')")
+        slug = re.sub(r"[^A-Za-z0-9]", "-", remote)
+        written = self.app.home / "memories" / slug / "memory.md"
+        self.assertEqual(written.read_text(), "the gate runs on fakehost\n")
+        self.assertFalse((self.remote_home / ".albedo").exists())
+
+        # The same project checked out here, linked: it reads the remote one.
+        checkout = self.app.root / "checkout"
+        checkout.mkdir()
+        local = self.create(str(checkout))["id"]
+        with self.app.api(
+            f"/sessions/{local}/commands",
+            {"name": "/link", "args": {"action": "add", "details": remote}},
+        ) as response:
+            self.assertIn("linked with", json.load(response)["result"]["message"])
+        found = self.cell(local, "print(memory.grep('gate'))")
+        self.assertIn(f"[{remote}] memory.md:1: the gate runs", found["output"])
+
+    def test_a_linked_remote_folder_is_checked_on_its_host(self):
+        checkout = self.app.root / "checkout"
+        checkout.mkdir()
+        local = self.create(str(checkout))["id"]
+
+        def link(**args):
+            with self.app.api(
+                f"/sessions/{local}/commands", {"name": "/link", "args": args}
+            ) as response:
+                return json.load(response)["result"]
+
+        def badges():
+            rows = link()["page"]["rows"][1:]
+            return {row["id"]: (row["badge"], row["detail"]) for row in rows}
+
+        present = f"fakehost:{self.project}"
+        missing = f"fakehost:{self.remote_home}/missing"
+        for member in (present, missing, "gone:/srv/app"):
+            link(action="add", details=member)
+        found = badges()
+        self.assertEqual(found[present], ("", ""))
+        self.assertEqual(found[missing][0], "gone")
+        badge, detail = found["gone:/srv/app"]
+        self.assertEqual(badge, "unreachable")
+        self.assertIn("Connection refused", detail)
+
+        # A host that stops answering is not a gone folder.
+        self.down.touch()
+        found = badges()
+        self.assertEqual(found[present][0], "unreachable")
+        self.assertEqual(found[missing][0], "unreachable")
+        self.down.unlink()
+
+        # A session opening with the host's probe fresh is told what is gone.
+        self.cell(self.create(str(checkout))["id"], "1")
+        instructions = self.provider.requests[-1]["request"]["instructions"]
+        self.assertIn(f"{missing} (its folder is gone)", instructions)
+        self.assertNotIn(f"{present} (its folder is gone)", instructions)
+
+    def test_linked_hosts_are_checked_side_by_side(self):
+        checkout = self.app.root / "slow-checkout"
+        checkout.mkdir()
+        local = self.create(str(checkout))["id"]
+
+        def link(**args):
+            with self.app.api(
+                f"/sessions/{local}/commands", {"name": "/link", "args": args}
+            ) as response:
+                return json.load(response)["result"]
+
+        for host in ("slow-a", "slow-b"):
+            link(action="add", details=f"{host}:/srv")
+        # Each host takes 3 s to refuse; one after the other would be 6.
+        began = time.monotonic()
+        rows = link()["page"]["rows"][1:]
+        self.assertLess(time.monotonic() - began, 5.5)
+        self.assertEqual([row["badge"] for row in rows], ["unreachable"] * 2)
 
     def test_a_remote_home_is_resolved_and_stored_absolute(self):
         created = self.create("fakehost:~/proj")

@@ -16,6 +16,7 @@ class WorkItem(Record):
     session: str | None
     run: str | None
     revision: int
+    workspace: str  # where it was filed: this workspace or a linked one
 
 
 host: Host

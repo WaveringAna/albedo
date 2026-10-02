@@ -56,6 +56,15 @@ pub fn ready(target: String, wait_ms: Int) -> Result(Host, Failure) {
   }
 }
 
+/// The host as a recent probe found it, without waiting: a stale or missing
+/// answer starts a probe in the background and reads as still warming.
+pub fn known(target: String) -> Result(Host, Failure) {
+  case peek(target) {
+    Ok(answer) -> decoded(answer)
+    Error(Nil) -> Error(Warming)
+  }
+}
+
 /// The host's home directory, for resolving `host:~/x`.
 pub fn home(target: String) -> Result(String, String) {
   ready(target, 30_000)
@@ -75,10 +84,7 @@ pub fn describe(target: String, failure: Failure) -> String {
 
 /// The `/hosts/:host` answer: the cached probe, or `warming` while one runs.
 pub fn status(target: String) -> Json {
-  case peek(target) {
-    Ok(answer) -> wire(target, decoded(answer))
-    Error(Nil) -> wire(target, Error(Warming))
-  }
+  wire(target, known(target))
 }
 
 /// The state of a host's recent probe, without probing: `ready`,

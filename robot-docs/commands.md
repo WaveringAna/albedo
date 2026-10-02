@@ -45,6 +45,8 @@ argument parsing is shared: leading arguments take one whitespace token each, th
 
 the python extension contributes `/kernel [upgrade]` — whether the session's kernel runs older code than the daemon (bundle, module set, or protocol) and what keeps it, or, with `upgrade` (user only, between turns), swap it now past its live jobs (`KernelReport` / `KernelUpgrade` state ops). See [kernel](kernel.md#version-skew).
 
+the links extension contributes `/link [add|remove] [workspace]` — the workspaces linked with this one, as a page (`here`, `gone` for a member whose folder is missing, checked on its host for a remote one, or why the host can't say), or, user only, link one or unlink one; every open session in the workspaces it touches gets a note either way. See [workspaces](workspaces.md#linked-workspaces).
+
 skills contributes one command per cataloged skill; `/tree`, `/fork`, `/login`, and the other picker-style entries stay presentation-only in the CLI.
 
 ## CLI page lifecycle

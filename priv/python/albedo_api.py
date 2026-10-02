@@ -136,6 +136,9 @@ class PythonApi:
     # Local shell admission, shared across the daemon's kernels. Completion
     # releases it through the existing verified `job` cleanup frame.
     job_slot: Callable[[str, Callable[[], None]], Awaitable[None]] | None = None
+    # A host call that blocks until its answer, for synchronous APIs over
+    # routes that answer at once. Absent when the host pre-dates it.
+    host_now: Callable[[str, dict[str, object]], object] | None = None
 
 
 class PythonPlugin(Protocol):

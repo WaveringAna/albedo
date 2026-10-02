@@ -39,7 +39,7 @@ cached per host for the daemon's life. without ssh the user stays.
 
 a remote session's python kernel and `run` jobs run on its host
 (kernel.md, "remote kernels"). what is only a key works as it is: the work
-ledger and paperclips scope, recent folders, session search by cwd, family
+ledger and paperclips scope, workspace links, recent folders, session search by cwd, family
 moves. what the daemon itself reads from a workspace goes through the
 location, and never looks for a remote path on its own disk:
 
@@ -56,7 +56,64 @@ location, and never looks for a remote path on its own disk:
   only the home directories count, and the instructions warn and the
   skills catalog diagnoses `project … skipped: can't reach chernobog: …`.
 - memory is a daemon-side file keyed by the workspace string, so a remote
-  workspace gets its own.
+  workspace gets its own. the kernel's `memory` object reaches it through the
+  `memory` host route wherever the kernel runs (`memory.read`, `.save`,
+  `.append`, `.journal`, `.documents`; synchronous over the kernel's
+  `host_now`), so a remote session's notes land in the daemon's
+  `$ALBEDO_HOME/memories`, never the host's.
+
+## linked workspaces
+
+a workspace can be linked with others that hold the same project, such as one
+repository checked out here and on chernobog (`src/albedo/harness/links.gleam`,
+the `links` extension). links are peers: every member keeps writing its own
+memory and work items, and reads cover the whole group.
+
+- storage: `workspace_links(workspace, grp)` in the daemon's sqlite. linking
+  two workspaces merges their groups; unlinking one takes only that row out,
+  and a group left with one member is dropped. nothing else changes, so
+  unlinking (or linking again) loses and repeats nothing.
+- memory: the snapshot a session opens with shows its own memory, then each
+  linked member's under `## linked workspace <location>`, within the same
+  8000-character budget. `memory.read()` is this workspace's file only;
+  `grep` and `search` cover the group, a linked file named
+  `[<location>] memory.md`. `save`, `append` and `journal` write here.
+- work ledger: `list`, `get`, `update` and `delete` reach every member's
+  items, an update or delete stays in the item's own workspace, and `create`
+  files under this one. each item carries `workspace`; the `/work` page says
+  where an item from another member was filed.
+- vents are one ledger for every workspace already, so links change nothing
+  there.
+- the model is told it is linked (the `links` context, naming each member,
+  and marking one whose folder is gone).
+- linking or unlinking queues a note in every open session of every
+  workspace it touches, worded for that side ("linked this workspace with
+  X" / "unlinked X" / "unlinked this workspace from Y, Z"). a link note
+  carries the newly linked members' memory as a new session's snapshot holds
+  it (`albedo_memory:linked`), so a session that opened before the link
+  reads the same text without rebuilding its prompt and losing its prompt
+  cache; its snapshot catches up at the next rebuild. open means the session
+  has a live actor (and so a cached composition); any other session composes
+  its snapshot afresh when it opens. live reads (`grep`, `search`, the work
+  ledger) follow the group on every call anyway.
+- a member's folder is checked where it is: a local one on the daemon's
+  disk, a remote one with one `exists` gather on its host over the shared
+  ControlMaster (`folders.exists`). a host that does not answer is never
+  read as a gone folder. every member is checked at once, so slow hosts
+  wait side by side. the `/link` page waits up to 5 s for a host and
+  then says why (`connecting`, `sign in`, `unreachable`, with ssh's words);
+  the session-start context takes only a recent probe, starting one in the
+  background, so opening a session never waits on a host.
+- `/link` (user only for changes) lists the members: this one `here`, a
+  member whose folder no longer exists `gone`, a remote one whose host can't
+  say as above. `add <workspace>` takes what a session can be created in (an
+  existing local directory, or `host:/abs` / `host:~/x`) and refuses this
+  workspace and one already linked; `remove <workspace>` takes a listed one,
+  this one included (leaving the group). a gone member stays, read as before,
+  until it is removed.
+
+a worktree or jj workspace of the same repository is not linked by itself
+yet; that and suggesting links from shared history are later work.
 
 the tui shows a remote workspace as `label:path`, the path folded under
 that host's own home once a listing or probe reported it: the chat header
