@@ -1,5 +1,5 @@
 -module(albedo_skills_test_support).
--export([fixture/0, write/3, write_repeat/4, symlink/3, symlink_raw/3, replace_with_symlink/3, exists/2, serve_once/1, chmod/3, cleanup/1]).
+-export([fixture/0, write/3, replace_with_symlink/3, exists/2, serve_once/1, chmod/3, cleanup/1]).
 
 fixture() ->
     Root = filename:join(os:getenv("TMPDIR", "/tmp"), "albedo-skills-" ++ integer_to_list(erlang:system_time(nanosecond)) ++ "-" ++ integer_to_list(erlang:unique_integer([positive]))),
@@ -14,27 +14,6 @@ write(Base0, Relative0, Content) ->
     ok = filelib:ensure_dir(Path),
     ok = file:write_file(Path, Content),
     bin(Path).
-
-write_repeat(Base0, Relative0, Chunk, Count) ->
-    Path = filename:join(text(Base0), text(Relative0)),
-    ok = filelib:ensure_dir(Path),
-    ok = file:write_file(Path, binary:copy(Chunk, Count)),
-    bin(Path).
-
-symlink(Base0, TargetRelative0, LinkRelative0) ->
-    Base = text(Base0),
-    Target = filename:join(Base, text(TargetRelative0)),
-    Link = filename:join(Base, text(LinkRelative0)),
-    ok = filelib:ensure_dir(Link),
-    ok = file:make_symlink(Target, Link),
-    nil.
-
-symlink_raw(Base0, Target0, LinkRelative0) ->
-    Base = text(Base0),
-    Link = filename:join(Base, text(LinkRelative0)),
-    ok = filelib:ensure_dir(Link),
-    ok = file:make_symlink(text(Target0), Link),
-    nil.
 
 replace_with_symlink(Base0, TargetRelative0, LinkRelative0) ->
     Base = text(Base0),

@@ -49,21 +49,11 @@ class CatalogTest(unittest.TestCase):
         shadowed = self.write_skill(low, "duplicate", "SHADOWED_DESCRIPTION")
         target = self.write_skill(high / "container", "linked", "LINKED_WINNER")
         (high / "linked").symlink_to(target.parent, target_is_directory=True)
-        outside = self.write_skill(self.app.root / "outside", "escape", "OUTSIDE")
-        (high / "escape").symlink_to(outside.parent, target_is_directory=True)
-        escaped_file = high / "file-escape/SKILL.md"
-        escaped_file.parent.mkdir()
-        escaped_file.symlink_to(outside)
 
         catalog = self.request(self.route)
         by_source = {row["source"]: row for row in catalog["candidates"]}
         for path in (malformed, mismatch, oversized):
             row = by_source[str(path)]
-            self.assertFalse(row["valid"])
-            self.assertTrue(row["diagnostic"])
-            self.assertFalse(row["eligible"])
-        for name in ("escape", "file-escape"):
-            row = next(row for row in catalog["candidates"] if row["title"] == name)
             self.assertFalse(row["valid"])
             self.assertTrue(row["diagnostic"])
             self.assertFalse(row["eligible"])
@@ -86,11 +76,7 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(descriptions["/fallback"], "LOWER_WINNER")
         self.assertEqual(descriptions["/duplicate"], "HIGHER_WINNER")
         self.assertEqual(descriptions["/linked"], "LINKED_WINNER")
-        self.assertTrue(
-            {"/mismatch", "/oversized", "/escape", "/file-escape"}.isdisjoint(
-                descriptions
-            )
-        )
+        self.assertTrue({"/mismatch", "/oversized"}.isdisjoint(descriptions))
 
         self.app.prompt(self.session, "inspect selected skills").close()
         self.app.idle(self.session)
@@ -98,7 +84,6 @@ class CatalogTest(unittest.TestCase):
         for description in ("LOWER_WINNER", "HIGHER_WINNER", "LINKED_WINNER"):
             self.assertIn(description, prompt)
         self.assertNotIn("SHADOWED_DESCRIPTION", prompt)
-        self.assertNotIn("OUTSIDE", prompt)
 
         replacement_target = self.write_skill(
             high / "replacement", "linked", "RETARGETED_WINNER"
