@@ -328,8 +328,8 @@ func TestLifecycleStopDoesNotRecoverAuthentication(t *testing.T) {
 	snapshot.Pid = 0
 	conn := NewConnection(snapshot, home)
 	defer conn.HTTPClient().CloseIdleConnections()
-	if stopErr := stop(home, conn); stopErr != nil {
-		t.Fatal(stopErr)
+	if stopErr := stop(context.Background(), home, conn); stopErr == nil {
+		t.Fatal("shutdown authentication refusal was ignored")
 	}
 	if shutdowns.Load() != 1 || conn.Token() != "old" {
 		t.Fatalf("shutdown recovered authentication: calls=%d token=%s", shutdowns.Load(), conn.Token())

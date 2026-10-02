@@ -59,7 +59,7 @@ func TestStopDaemonDoesNotRecoverAuthenticationRefusal(t *testing.T) {
 	original.Token = "old"
 	conn := daemon.NewConnection(original, home)
 	t.Cleanup(conn.HTTPClient().CloseIdleConnections)
-	service := Service{Existing: func() (*daemon.Connection, error) { return conn, nil }}
+	service := Service{Existing: func(context.Context) (*daemon.Connection, error) { return conn, nil }}
 	err = service.StopDaemon(context.Background())
 	apiError, ok := errors.AsType[*daemon.APIError](err)
 	if !ok || apiError.StatusCode != http.StatusForbidden {

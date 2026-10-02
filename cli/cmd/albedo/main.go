@@ -31,10 +31,10 @@ func run(args []string) error {
 		term.OpenBrowser = config.OpenBrowser
 	}
 	application := &app.Service{
-		Connect: func(context.Context) (*daemon.Connection, error) {
-			return daemon.Ensure(home, findProjectRoot(), term.ReplaceStale)
+		Connect: func(ctx context.Context) (*daemon.Connection, error) {
+			return daemon.EnsureContext(ctx, home, findProjectRoot(), term.ReplaceStale)
 		},
-		Existing: func() (*daemon.Connection, error) { return daemon.Existing(home) },
+		Existing: func(ctx context.Context) (*daemon.Connection, error) { return daemon.ExistingContext(ctx, home) },
 	}
 	store := &storage.Service{
 		Home: home, Now: time.Now,

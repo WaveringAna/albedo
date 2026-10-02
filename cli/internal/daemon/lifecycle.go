@@ -28,12 +28,10 @@ var sanitizerRegex = regexp.MustCompile(`[\p{Cc}\x{202a}-\x{202e}\x{2066}-\x{206
 // SessionText replaces control characters and direction overrides in session metadata.
 func SessionText(s string) string { return sanitizerRegex.ReplaceAllString(s, " ") }
 
-// A starting daemon is looked for every 10ms, up to 30 seconds: until its
-// record exists each look is one stat, and it is ready in about a quarter
-// second.
+// Startup and replacement share a wall-clock deadline, including health probes.
 const (
-	pollInterval = 10 * time.Millisecond
-	pollAttempts = 3000
+	pollInterval   = 10 * time.Millisecond
+	startupTimeout = 30 * time.Second
 )
 
 type ConnectionSnapshot struct {
@@ -261,10 +259,18 @@ func SessionListing(sessions []Session, now time.Time) string {
 }
 
 func Existing(homeDir string) (*Connection, error) {
-	return existingContext(context.Background(), homeDir)
+	return ExistingContext(context.Background(), homeDir)
+}
+
+// ExistingContext discovers a live daemon within the caller's deadline.
+func ExistingContext(ctx context.Context, homeDir string) (*Connection, error) {
+	return existingContext(ctx, homeDir)
 }
 
 func existingContext(parent context.Context, homeDir string) (*Connection, error) {
+	if err := parent.Err(); err != nil {
+		return nil, err
+	}
 	recordPath := filepath.Join(homeDir, "daemon.json")
 	fi, err := os.Stat(recordPath)
 	if err != nil || fi.Size() > 64*1024 {
@@ -301,7 +307,7 @@ func existingContext(parent context.Context, homeDir string) (*Connection, error
 	}
 	res, err := client.Do(req)
 	if err != nil {
-		return nil, nil
+		return nil, parent.Err()
 	}
 	defer res.Body.Close()
 
@@ -311,7 +317,7 @@ func existingContext(parent context.Context, homeDir string) (*Connection, error
 
 	body, err := readBounded(res.Body, 64*1024)
 	if err != nil {
-		return nil, nil
+		return nil, parent.Err()
 	}
 
 	var health struct {
@@ -434,29 +440,50 @@ func daemonCommand(daemonExe, projectRoot string, env []string) (*exec.Cmd, erro
 
 // stop shuts a daemon down and waits until its process has exited, so the
 // next daemon can take the home.
-func stop(homeDir string, conn *Connection) error {
-	_ = StopDaemon(context.Background(), conn)
-	for range pollAttempts {
-		running, err := Existing(homeDir)
+func stop(ctx context.Context, homeDir string, conn *Connection) error {
+	if err := StopDaemon(ctx, conn); err != nil {
+		return err
+	}
+	for {
+		running, err := ExistingContext(ctx, homeDir)
 		if err != nil {
 			return err
 		}
 		if running == nil && !processAlive(conn.Pid()) {
 			return nil
 		}
-		time.Sleep(pollInterval)
+		if err := waitForPoll(ctx); err != nil {
+			return fmt.Errorf("daemon did not stop; check %s for details; the running process ID is %d: %w", filepath.Join(homeDir, "daemon.log"), conn.Pid(), err)
+		}
 	}
-	return fmt.Errorf("daemon did not stop; check %s for details; the running process ID is %d", filepath.Join(homeDir, "daemon.log"), conn.Pid())
+}
+
+func waitForPoll(ctx context.Context) error {
+	timer := time.NewTimer(pollInterval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // Ensure connects to the running daemon or starts one. When this client bundles
 // a daemon and the running one is another build, replace (if non-nil) decides
 // whether it is stopped first.
 func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
+	return EnsureContext(context.Background(), homeDir, projectRoot, replace)
+}
+
+// EnsureContext caps discovery, replacement, and startup at thirty seconds.
+func EnsureContext(parent context.Context, homeDir, projectRoot string, replace Replace) (*Connection, error) {
+	ctx, cancel := context.WithTimeout(parent, startupTimeout)
+	defer cancel()
 	daemonExe := os.Getenv("ALBEDO_DAEMON")
 	build := bundledBuild(daemonExe)
 
-	current, err := Existing(homeDir)
+	current, err := ExistingContext(ctx, homeDir)
 	if err != nil {
 		return nil, err
 	}
@@ -464,7 +491,7 @@ func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
 		if build == "" || current.Build() == build || replace == nil || !replace(Stale{current, build}) {
 			return checkCompatible(current)
 		}
-		if stopErr := stop(homeDir, current); stopErr != nil {
+		if stopErr := stop(ctx, homeDir, current); stopErr != nil {
 			return nil, stopErr
 		}
 	}
@@ -475,6 +502,9 @@ func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
 		}
 	}
 
+	if contextErr := ctx.Err(); contextErr != nil {
+		return nil, contextErr
+	}
 	if mkdirErr := os.MkdirAll(homeDir, 0700); mkdirErr != nil {
 		return nil, mkdirErr
 	}
@@ -488,17 +518,18 @@ func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
 	}
 	if err != nil {
 		if os.IsExist(err) {
-			for range pollAttempts {
-				running, discoveryErr := Existing(homeDir)
+			for {
+				running, discoveryErr := ExistingContext(ctx, homeDir)
 				if discoveryErr != nil {
 					return nil, discoveryErr
 				}
 				if running != nil {
 					return checkCompatible(running)
 				}
-				time.Sleep(pollInterval)
+				if pollErr := waitForPoll(ctx); pollErr != nil {
+					return nil, fmt.Errorf("timed out starting Albedo; check %s/daemon.log for details; only remove %s if the process starting Albedo is no longer running: %w", homeDir, lockPath, pollErr)
+				}
 			}
-			return nil, fmt.Errorf("timed out starting Albedo; check %s/daemon.log for details; only remove %s if the process starting Albedo is no longer running", homeDir, lockPath)
 		}
 		return nil, err
 	}
@@ -508,7 +539,7 @@ func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
 		_ = os.Remove(lockPath)
 	}()
 
-	again, err := Existing(homeDir)
+	again, err := ExistingContext(ctx, homeDir)
 	if err != nil {
 		return nil, err
 	}
@@ -538,6 +569,10 @@ func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
 	passFileLimit()
 
 	logStart, _ := logFile.Seek(0, io.SeekEnd)
+	if contextErr := ctx.Err(); contextErr != nil {
+		_ = logFile.Close()
+		return nil, contextErr
+	}
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
 		return nil, err
@@ -547,8 +582,8 @@ func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 
-	for range pollAttempts {
-		running, err := Existing(homeDir)
+	for {
+		running, err := ExistingContext(ctx, homeDir)
 		if err != nil {
 			return nil, err
 		}
@@ -562,11 +597,12 @@ func Ensure(homeDir, projectRoot string, replace Replace) (*Connection, error) {
 				root = ""
 			}
 			return nil, startupExitError(waitErr, logPath, logStart, root)
+		case <-ctx.Done():
+			return nil, fmt.Errorf("timed out starting Albedo; check %s/daemon.log for details: %w", homeDir, ctx.Err())
 		case <-time.After(pollInterval):
 		}
 	}
 
-	return nil, fmt.Errorf("timed out starting Albedo; check %s/daemon.log for details", homeDir)
 }
 
 // staleLock reports whether the startup lock was left by a starter that is no
@@ -581,7 +617,7 @@ func staleLock(lockPath string) bool {
 		// Locks from older clients carry no pid; treat them as stale once they
 		// are older than the startup window.
 		fi, statErr := os.Stat(lockPath)
-		return statErr == nil && time.Since(fi.ModTime()) > pollInterval*pollAttempts
+		return statErr == nil && time.Since(fi.ModTime()) > startupTimeout
 	}
 	return !processAlive(pid)
 }

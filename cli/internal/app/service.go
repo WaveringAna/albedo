@@ -17,7 +17,7 @@ import (
 // Service obtains connections only when an operation needs one.
 type Service struct {
 	Connect  func(context.Context) (*daemon.Connection, error)
-	Existing func() (*daemon.Connection, error)
+	Existing func(context.Context) (*daemon.Connection, error)
 }
 type OpenOptions struct {
 	SessionID, Workspace string
@@ -177,7 +177,7 @@ func (s *Service) DeleteSessions(ctx context.Context, ids []string) error {
 	return nil
 }
 func (s *Service) StopDaemon(ctx context.Context) error {
-	conn, err := s.Existing()
+	conn, err := s.Existing(ctx)
 	if err != nil || conn == nil {
 		return err
 	}
