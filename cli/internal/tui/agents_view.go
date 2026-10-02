@@ -45,22 +45,28 @@ type agentsEventsMsg struct {
 	Gen    int
 }
 
-type agentsStreamClosedMsg struct{ Gen int }
+type agentsStreamClosedMsg struct {
+	Gen int
+	Err error
+}
+type agentsSnapshotRetryMsg struct{ Gen int }
 
 // agentsSeedMsg is an agent's recent history, so its tail starts from where
 // it is rather than empty.
 type agentsSeedMsg struct {
-	ID    string
-	Items []struct {
+	Snapshot int
+	ID       string
+	Items    []struct {
 		Type    string `json:"type"`
 		Preview string `json:"preview"`
 	}
 	Gen int
 }
 type agentsSeedErrMsg struct {
-	Err error
-	ID  string
-	Gen int
+	Snapshot int
+	Err      error
+	ID       string
+	Gen      int
 }
 
 type agentsFrameMsg struct{ Gen int }
@@ -74,14 +80,14 @@ type agentsReconnectMsg struct{ Gen int }
 
 type agentsGenMsg interface{ gen() int }
 
-func (m agentsSnapshotMsg) gen() int     { return m.Gen }
-func (m agentsSeedMsg) gen() int         { return m.Gen }
-func (m agentsSeedErrMsg) gen() int      { return m.Gen }
-func (m agentsEventsMsg) gen() int       { return m.Gen }
-func (m agentsStreamClosedMsg) gen() int { return m.Gen }
-func (m agentsReconnectMsg) gen() int    { return m.Gen }
-func (m agentsFrameMsg) gen() int        { return m.Gen }
-func (m agentsSentMsg) gen() int         { return m.Gen }
+func (m agentsSnapshotRetryMsg) gen() int { return m.Gen }
+func (m agentsSnapshotMsg) gen() int      { return m.Gen }
+func (m agentsSeedMsg) gen() int          { return m.Gen }
+func (m agentsSeedErrMsg) gen() int       { return m.Gen }
+func (m agentsEventsMsg) gen() int        { return m.Gen }
+func (m agentsStreamClosedMsg) gen() int  { return m.Gen }
+func (m agentsReconnectMsg) gen() int     { return m.Gen }
+func (m agentsFrameMsg) gen() int         { return m.Gen }
 
 type agentWire struct {
 	Parent  *string        `json:"parent"`
@@ -155,16 +161,21 @@ type agentFloat struct {
 }
 
 type AgentsViewModel struct {
-	last      time.Time
-	err       error
-	heat      map[string]float64
-	events    chan []daemon.AgentEvent
-	cancel    context.CancelFunc
-	Conn      *daemon.Connection
-	nodes     map[string]*agentNode
-	SessionID string
-	root      string
-	selected  string
+	last             time.Time
+	err              error
+	heat             map[string]float64
+	events           chan tea.Msg
+	streamCtx        context.Context
+	streamReady      bool
+	snapshotInFlight bool
+	snapshotDirty    bool
+	snapshotRevision int
+	cancel           context.CancelFunc
+	Conn             *daemon.Connection
+	nodes            map[string]*agentNode
+	SessionID        string
+	root             string
+	selected         string
 
 	notice    string
 	confirm   string // the agent waiting for y to delete it
@@ -178,6 +189,7 @@ type AgentsViewModel struct {
 	clock     float64
 	Height    int
 	Gen       int
+	viewGen   int // User operation outcomes survive stream replacement.
 	noticeT   float64
 	ticking   bool // a frame tick is in flight
 }
@@ -214,19 +226,27 @@ func (m *AgentsViewModel) SetSize(w, h int) {
 }
 
 func (m *AgentsViewModel) Init() tea.Cmd {
+	m.viewGen++
 	m.Gen++
 	m.ticking = true
-	return tea.Batch(m.snapshotCmd(m.Gen), m.startStream(m.Gen), m.frameCmd(m.Gen), textinput.Blink)
+	return tea.Batch(m.startStream(m.Gen), m.frameCmd(m.Gen), textinput.Blink)
 }
 
 // Close stops the stream and invalidates batches, completions, and timers
 // already queued for this view.
 func (m *AgentsViewModel) Close() {
+	m.viewGen++
+	m.stopStream()
+}
+
+func (m *AgentsViewModel) stopStream() {
 	if m.cancel != nil {
 		m.cancel()
 		m.cancel = nil
 	}
 	m.Gen++
+	m.streamReady = false
+	m.snapshotInFlight, m.snapshotDirty = false, false
 }
 
 func (m AgentsViewModel) snapshotCmd(gen int) tea.Cmd {
@@ -238,7 +258,7 @@ func (m AgentsViewModel) snapshotCmd(gen int) tea.Cmd {
 		tree, err := daemon.RequestOperation[struct {
 			Root  string      `json:"root"`
 			Nodes []agentWire `json:"nodes"`
-		}](context.Background(), conn, daemon.Operation{Name: "snapshot", Method: http.MethodGet, Path: "/agents?session=" + url.QueryEscape(id), Body: nil, Policy: daemon.ReadRecovery})
+		}](m.streamCtx, conn, daemon.Operation{Name: "snapshot", Method: http.MethodGet, Path: "/agents?session=" + url.QueryEscape(id), Body: nil, Policy: daemon.ReadRecovery})
 		return agentsSnapshotMsg{Gen: gen, Root: tree.Root, Nodes: tree.Nodes, Err: err}
 	}
 }
@@ -252,34 +272,55 @@ func (m *AgentsViewModel) startStream(gen int) tea.Cmd {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
-	events := make(chan []daemon.AgentEvent, 64)
+	m.streamCtx = ctx
+	m.streamReady = false
+	m.snapshotInFlight, m.snapshotDirty = false, false
+	events := make(chan tea.Msg, 1)
 	m.events = events
 	conn := m.Conn
 	go func() {
 		defer close(events)
-		// EOF and failures both reconnect through queue closure, so the view
-		// deliberately discards the transport error here.
-		_ = daemon.StreamAgents(ctx, conn, func(batch []daemon.AgentEvent) error {
+		err := daemon.StreamAgents(ctx, conn, func(batch []daemon.AgentEvent) error {
 			// Leaving the view stops its consumer. Cancellation must release a
 			// producer blocked on a full queue so it can close the HTTP body.
 			select {
-			case events <- batch:
+			case events <- agentsEventsMsg{Gen: gen, Events: batch}:
 				return nil
 			case <-ctx.Done():
 				return ctx.Err()
 			}
 		})
+		select {
+		case events <- agentsStreamClosedMsg{Gen: gen, Err: err}:
+		case <-ctx.Done():
+		}
 	}()
 	return waitAgents(events, gen)
 }
 
-func waitAgents(events <-chan []daemon.AgentEvent, gen int) tea.Cmd {
+func (m *AgentsViewModel) restartStream() tea.Cmd {
+	m.stopStream()
+	m.snapshotRevision++
+	for _, n := range m.nodes {
+		n.preview = agentPreview{}
+		n.tail = agentTail{}
+		n.call = ""
+		n.lineKind = tailText
+		n.seeded = false
+		n.revision++
+	}
+	m.packets, m.floats = nil, nil
+	m.ticking = false
+	return m.startStream(m.Gen)
+}
+
+func waitAgents(events <-chan tea.Msg, gen int) tea.Cmd {
 	return func() tea.Msg {
 		batch, ok := <-events
 		if !ok {
 			return agentsStreamClosedMsg{Gen: gen}
 		}
-		return agentsEventsMsg{Gen: gen, Events: batch}
+		return batch
 	}
 }
 
@@ -305,13 +346,30 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 	}
 	switch msg := msg.(type) {
 	case agentsSnapshotMsg:
+		m.snapshotInFlight = false
 		if msg.Err != nil {
+			m.snapshotDirty = false
 			m.err = msg.Err
-			return m, nil
+			m.say("Could not refresh agents; retrying: " + msg.Err.Error())
+			return m, tea.Tick(time.Second, func(time.Time) tea.Msg { return agentsSnapshotRetryMsg{Gen: m.Gen} })
+		}
+		if m.snapshotDirty {
+			m.snapshotDirty = false
+			m.snapshotInFlight = true
+			return m, m.snapshotCmd(m.Gen)
 		}
 		m.err, m.root = nil, msg.Root
+		m.snapshotRevision++
+		previous := m.nodes
+		m.nodes = make(map[string]*agentNode, len(msg.Nodes))
 		for _, wire := range msg.Nodes {
+			if n := previous[wire.Session.ID]; n != nil {
+				m.nodes[wire.Session.ID] = n
+			}
 			n := m.node(wire.Session.ID, wire.Name)
+			n.name = wire.Name
+			n.parent, n.address = "", ""
+			n.seeded = false
 			n.session = wire.Session
 			n.model = wire.Session.Model
 			n.depth = wire.Depth
@@ -325,10 +383,22 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 				n.parent = *wire.Parent
 			}
 		}
+		if m.nodes[m.selected] == nil {
+			m.selected = m.root
+		}
+		if m.nodes[m.confirm] == nil {
+			m.confirm = ""
+		}
+		if m.nodes[m.rename.id] == nil {
+			m.rename = renameField{}
+		}
 		m.layout()
 		return m, m.seedCmd()
 
 	case agentsSeedMsg:
+		if msg.Snapshot != m.snapshotRevision {
+			return m, nil
+		}
 		n := m.nodes[msg.ID]
 		if n == nil {
 			return m, nil
@@ -358,6 +428,9 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		return m, nil
 
 	case agentsSeedErrMsg:
+		if msg.Snapshot != m.snapshotRevision {
+			return m, nil
+		}
 		// The seed died; unseed its node so the next selection tries again.
 		if n := m.nodes[msg.ID]; n != nil {
 			n.seeded = false
@@ -366,21 +439,51 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		return m, nil
 
 	case agentsEventsMsg:
+		if len(msg.Events) == 1 && msg.Events[0].Type == "overflow" {
+			return m, m.restartStream()
+		}
+		var snapshot tea.Cmd
+		if !m.streamReady {
+			m.streamReady = true
+			m.snapshotInFlight = true
+			snapshot = m.snapshotCmd(m.Gen)
+		}
 		relayout := false
 		for _, event := range msg.Events {
+			if m.snapshotInFlight {
+				switch event.Type {
+				case "spawn", "gone", "running", "renamed", "closed":
+					m.snapshotDirty = true
+				}
+			}
 			relayout = m.apply(event) || relayout
 		}
 		if relayout {
 			m.layout()
 		}
-		return m, waitAgents(m.events, m.Gen)
+		return m, tea.Batch(snapshot, waitAgents(m.events, m.Gen))
 
 	case agentsStreamClosedMsg:
-		// The daemon restarted or the connection dropped: reconnect shortly.
-		return m, tea.Tick(time.Second, func(time.Time) tea.Msg { return agentsReconnectMsg(msg) })
+		if msg.Err != nil {
+			m.err = msg.Err
+			m.say("Agent stream failed; ctrl+l retries: " + msg.Err.Error())
+			if failure, ok := errors.AsType[*daemon.StreamError](msg.Err); ok && failure.Kind != daemon.StreamTransient {
+				m.stopStream()
+				m.ticking = false
+				return m, nil
+			}
+		}
+		return m, tea.Tick(time.Second, func(time.Time) tea.Msg { return agentsReconnectMsg{Gen: m.Gen} })
 
 	case agentsReconnectMsg:
-		return m, tea.Batch(m.snapshotCmd(m.Gen), m.startStream(m.Gen))
+		return m, m.restartStream()
+
+	case agentsSnapshotRetryMsg:
+		if !m.streamReady || m.snapshotInFlight {
+			return m, nil
+		}
+		m.snapshotInFlight = true
+		return m, m.snapshotCmd(m.Gen)
 
 	case agentsFrameMsg:
 		m.step()
@@ -390,6 +493,9 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		return m, m.frameCmd(m.Gen)
 
 	case agentsSentMsg:
+		if msg.Gen != m.viewGen {
+			return m, nil
+		}
 		if msg.Err != nil {
 			m.say(operationError(msg.Err, "Could not "+msg.Action+": ", "The request to "+msg.Action+" may have been accepted; check the agent before trying again."))
 		} else if msg.Notice != "" {
@@ -432,6 +538,8 @@ func (m AgentsViewModel) key(msg tea.KeyPressMsg) (AgentsViewModel, tea.Cmd) {
 		return m, nil
 	}
 	switch {
+	case s == "ctrl+l":
+		return m, m.restartStream()
 	case s == "ctrl+r":
 		if n := m.nodes[m.selected]; n != nil && n.id != agentsYou {
 			m.rename.open(n.id, n.name, "name this agent")
@@ -486,18 +594,22 @@ func (m AgentsViewModel) key(msg tea.KeyPressMsg) (AgentsViewModel, tea.Cmd) {
 // seedCmd loads the selected agent's recent history once; failures retry.
 func (m *AgentsViewModel) seedCmd() tea.Cmd {
 	n := m.nodes[m.selected]
-	if n == nil || n.seeded || n.id == agentsYou || m.Conn == nil {
+	if !m.streamReady || m.snapshotInFlight || m.err != nil || n == nil || n.seeded || n.id == agentsYou || m.Conn == nil {
 		return nil
 	}
 	n.seeded = true
 	conn, gen, id := m.Conn, m.Gen, n.id
+	snapshot, ctx := m.snapshotRevision, m.streamCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return func() tea.Msg {
 		path := fmt.Sprintf("/sessions/%s/preview?limit=10", url.PathEscape(id))
-		res, err := daemon.RequestOperation[agentsSeedMsg](context.Background(), conn, daemon.Operation{Name: "seed", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
+		res, err := daemon.RequestOperation[agentsSeedMsg](ctx, conn, daemon.Operation{Name: "seed", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
 		if err != nil {
-			return agentsSeedErrMsg{Gen: gen, ID: id, Err: err}
+			return agentsSeedErrMsg{Gen: gen, Snapshot: snapshot, ID: id, Err: err}
 		}
-		res.Gen, res.ID = gen, id
+		res.Gen, res.ID, res.Snapshot = gen, id, snapshot
 		return res
 	}
 }
@@ -521,7 +633,7 @@ func (m AgentsViewModel) below(id string) int {
 }
 
 func (m AgentsViewModel) deleteCmd(id string) tea.Cmd {
-	conn, gen, name := m.Conn, m.Gen, m.label(id, "")
+	conn, gen, name := m.Conn, m.viewGen, m.label(id, "")
 	return func() tea.Msg {
 		res, err := daemon.DeleteSession(context.Background(), conn, id, true)
 		if err != nil {
@@ -532,7 +644,7 @@ func (m AgentsViewModel) deleteCmd(id string) tea.Cmd {
 }
 
 func (m AgentsViewModel) sendCmd(id, text string) tea.Cmd {
-	conn, gen, target := m.Conn, m.Gen, m.label(id, "agent")
+	conn, gen, target := m.Conn, m.viewGen, m.label(id, "agent")
 	return func() tea.Msg {
 		_, err := daemon.Submit(context.Background(), conn, id, map[string]any{"content": text})
 		return agentsSentMsg{Gen: gen, Action: "send a message to " + target, Err: err}
@@ -540,7 +652,7 @@ func (m AgentsViewModel) sendCmd(id, text string) tea.Cmd {
 }
 
 func (m AgentsViewModel) spawnCmd(parent, name, task string) tea.Cmd {
-	conn, gen := m.Conn, m.Gen
+	conn, gen := m.Conn, m.viewGen
 	return func() tea.Msg {
 		if name == "" || task == "" {
 			return agentsSentMsg{Gen: gen, Action: "start an agent", Err: errors.New("use /spawn <name> <task>")}
@@ -1392,7 +1504,7 @@ func (m AgentsViewModel) View() string {
 			status += DefaultStyles.Faint.Render(" · its family can still mail it at ") + DefaultStyles.Muted.Render(n.address)
 		}
 	case m.err != nil:
-		status = DefaultStyles.Error.Render(m.err.Error())
+		status = DefaultStyles.Error.Render(m.err.Error() + " · ctrl+l retries")
 	case m.noticeT > 0:
 		status = DefaultStyles.Muted.Render(m.notice)
 	}

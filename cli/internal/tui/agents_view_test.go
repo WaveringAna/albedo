@@ -1,4 +1,4 @@
-// Four invariants the e2e suite cannot reach, because each lives inside the
+// Invariants the e2e suite cannot reach, because each lives inside the
 // tui package or needs a failure the daemon never produces:
 //
 //   - frame pacing: an idle graph must not keep scheduling animation frames,
@@ -7,7 +7,8 @@
 //     which a real stream only ever shows mid-flight;
 //   - a pending delete confirm must not outlive the agent it names;
 //   - a failed history seed must retry on the next selection, and a late
-//     error from an older generation must not unseed the live node.
+//     error from an older generation must not unseed the live node;
+//   - overflow during a blocked mutation must preserve its later outcome and draft.
 package tui
 
 import (
@@ -20,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"albedo/cli/internal/daemon"
 
@@ -32,6 +34,7 @@ func agentsFixture(t *testing.T) AgentsViewModel {
 	t.Helper()
 	m := NewAgentsViewModel(nil, "lead")
 	m.Gen = 1
+	m.streamReady = true
 	m.SetSize(120, 30)
 	lead := "lead"
 	coder := "coder"
@@ -64,7 +67,7 @@ func frames(cmd tea.Cmd) int {
 
 func TestAgentsFramesStopWhenStillAndResumeOnce(t *testing.T) {
 	m := agentsFixture(t)
-	closed := make(chan []daemon.AgentEvent)
+	closed := make(chan tea.Msg)
 	close(closed)
 	m.events = closed
 	running := func(id string, on bool) agentsEventsMsg {
@@ -193,5 +196,64 @@ func TestFailedSeedRetriesOnTheNextSelection(t *testing.T) {
 	}
 	if cmd := m.seedCmd(); cmd != nil {
 		t.Fatal("a seeded node should not fetch again")
+	}
+}
+
+func TestAgentsOverflowPreservesPendingOperationOutcomeAndDraft(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/agents/stream" {
+			<-r.Context().Done()
+			return
+		}
+		if r.URL.Path != "/sessions/lead/children" {
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			w.WriteHeader(404)
+			return
+		}
+		close(started)
+		<-release
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"spawn refused"}`))
+	}))
+	defer server.Close()
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	address, _ := url.Parse(server.URL)
+	port, _ := strconv.Atoi(address.Port())
+	m := agentsFixture(t)
+	m.Conn = daemon.NewConnection(daemon.ConnectionSnapshot{Port: port}, "")
+	for _, char := range "/spawn helper inspect files" {
+		m, _ = m.Update(tea.KeyPressMsg{Code: char, Text: string(char)})
+	}
+	var cmd tea.Cmd
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	finished := make(chan tea.Msg, 1)
+	go func() { finished <- cmd() }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("spawn never reached server")
+	}
+	for _, char := range "next draft" {
+		m, _ = m.Update(tea.KeyPressMsg{Code: char, Text: string(char)})
+	}
+	m, _ = m.Update(agentsEventsMsg{Gen: m.Gen, Events: []daemon.AgentEvent{{Type: "overflow"}}})
+	defer func() { m.Close() }()
+	close(release)
+	select {
+	case outcome := <-finished:
+		m, _ = m.Update(outcome)
+	case <-time.After(5 * time.Second):
+		t.Fatal("spawn did not complete")
+	}
+	rendered := ansi.Strip(m.View())
+	if !strings.Contains(rendered, "spawn refused") || !strings.Contains(rendered, "next draft") {
+		t.Fatalf("overflow lost pending outcome or draft: %s", rendered)
 	}
 }
