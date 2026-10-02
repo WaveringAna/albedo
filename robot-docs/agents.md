@@ -33,6 +33,8 @@ a letter is stored first and marked delivered in the same transaction that write
 
 routes: `GET /agents?session=<id>` (the tree), `GET /agents/stream` (batched events), `POST /sessions/:id/children`, `POST /sessions/:id/mail`.
 
+The Go client decodes known agent events into `daemon.AgentEvent` before delivery to the view. Unknown event kinds are ignored. Malformed known events return a protocol error instead of supplying empty fields to the view. Tool progress uses the same typed value as the session stream.
+
 ## swarm overhead
 
 kernel boots queue behind four slots. each boot owns only its session's composition,

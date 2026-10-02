@@ -22,7 +22,7 @@ type streamCaller struct {
 func streamCallers() []streamCaller {
 	return []streamCaller{
 		{name: "agents", start: func(ctx context.Context, conn *Connection, deliver func() error) error {
-			return StreamAgents(ctx, conn, func(_ []map[string]any) error { return deliver() })
+			return StreamAgents(ctx, conn, func(_ []AgentEvent) error { return deliver() })
 		}},
 		{name: "chat", start: func(ctx context.Context, conn *Connection, deliver func() error) error {
 			return NewChatClient(conn, "test").Stream(ctx, 0, func(event StreamEvent) error {
@@ -77,7 +77,7 @@ func TestStreamAuthenticationRecoveryBeforeDelivery(t *testing.T) {
 						if request.Header.Get("Authorization") != "Bearer new" {
 							t.Error("stream reused old credentials")
 						}
-						_, _ = io.WriteString(writer, "data: {\"cursor\":1,\"events\":[{\"text\":\"hello\"}]}\n\n")
+						_, _ = io.WriteString(writer, "data: {\"cursor\":1,\"events\":[{\"type\":\"text\",\"session\":\"s\",\"text\":\"hello\"}]}\n\n")
 					}))
 					defer server.Close()
 					home := t.TempDir()
@@ -93,7 +93,7 @@ func TestStreamAuthenticationRecoveryBeforeDelivery(t *testing.T) {
 						t.Fatalf("stream waited for unfinished refusal body: %v", streamErr)
 					}
 					if requests.Load() != test.requests {
-							t.Fatalf("got %d requests, expected %d", requests.Load(), test.requests)
+						t.Fatalf("got %d requests, expected %d", requests.Load(), test.requests)
 					}
 					if test.requests == 2 {
 						if streamErr != nil || deliveries.Load() != 1 {
@@ -128,7 +128,7 @@ func TestAcceptedStreamIsNeverReplayed(t *testing.T) {
 						if failure == "truncated body" {
 							writer.Header().Set("Content-Length", "1000")
 						}
-						_, _ = io.WriteString(writer, "data: {\"cursor\":1,\"events\":[{\"text\":\"hello\"}]}\n\n")
+						_, _ = io.WriteString(writer, "data: {\"cursor\":1,\"events\":[{\"type\":\"text\",\"session\":\"s\",\"text\":\"hello\"}]}\n\n")
 					}))
 					defer server.Close()
 					snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "token", Version: 2}

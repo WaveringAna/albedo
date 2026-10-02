@@ -64,11 +64,11 @@ func frames(cmd tea.Cmd) int {
 
 func TestAgentsFramesStopWhenStillAndResumeOnce(t *testing.T) {
 	m := agentsFixture(t)
-	closed := make(chan []map[string]any)
+	closed := make(chan []daemon.AgentEvent)
 	close(closed)
 	m.events = closed
 	running := func(id string, on bool) agentsEventsMsg {
-		return agentsEventsMsg{Gen: 1, Events: []map[string]any{{"type": "running", "session": id, "running": on}}}
+		return agentsEventsMsg{Gen: 1, Events: []daemon.AgentEvent{{Type: "running", Session: id, Running: on}}}
 	}
 	m, _ = m.Update(running("lead", false))
 	m, _ = m.Update(running("coder", false))
@@ -114,8 +114,8 @@ func TestAgentsDeleteConfirmDropsWithTheAgent(t *testing.T) {
 	if m.confirm != "coder" {
 		t.Fatal("ctrl+x should ask before deleting coder")
 	}
-	m, _ = m.Update(agentsEventsMsg{Gen: 1, Events: []map[string]any{
-		{"type": "gone", "session": "coder"},
+	m, _ = m.Update(agentsEventsMsg{Gen: 1, Events: []daemon.AgentEvent{
+		{Type: "gone", Session: "coder"},
 	}})
 	if m.confirm != "" {
 		t.Fatalf("the confirm prompt outlived the agent it named:\n%s", ansi.Strip(m.View()))

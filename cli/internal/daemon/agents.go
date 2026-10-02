@@ -4,28 +4,113 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 )
 
+// AgentEvent is one event from the daemon's agent bus.
+type AgentEvent struct {
+	Progress *ToolProgress `json:"progress"`
+	Type     string        `json:"type"`
+	Session  string        `json:"session"`
+	Parent   string        `json:"parent"`
+	Name     string        `json:"name"`
+	Model    string        `json:"model"`
+	From     string        `json:"from"`
+	To       string        `json:"to"`
+	FromName string        `json:"fromName"`
+	Kind     string        `json:"kind"`
+	Text     string        `json:"text"`
+	CallID   string        `json:"callId"`
+	Output   string        `json:"output"`
+	Source   string        `json:"source"`
+	Depth    int           `json:"depth"`
+	Bytes    int           `json:"bytes"`
+	Running  bool          `json:"running"`
+}
+
+func decodeAgentEvent(raw json.RawMessage) (*AgentEvent, error) {
+	var header struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &header); err != nil {
+		return nil, fmt.Errorf("invalid agent event: %w", err)
+	}
+	switch header.Type {
+	case "spawn", "gone", "mail", "running", "text", "thinking", "arguments_delta", "tool_progress", "tool", "user", "message", "error", "interrupted", "progress", "renamed", "closed":
+	default:
+		return nil, nil
+	}
+	var event AgentEvent
+	if err := json.Unmarshal(raw, &event); err != nil {
+		return nil, fmt.Errorf("invalid %s agent event: %w", header.Type, err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	required := []string{"session"}
+	switch event.Type {
+	case "mail":
+		required = []string{"to", "bytes", "kind"}
+	case "spawn":
+		required = append(required, "parent", "name", "model", "depth")
+	case "running":
+		required = append(required, "running")
+	case "text", "thinking", "arguments_delta", "user", "message", "error", "progress":
+		required = append(required, "text")
+		if event.Type == "arguments_delta" {
+			required = append(required, "callId", "name")
+		}
+	case "tool_progress":
+		if err := validateToolProgress(fields["progress"]); err != nil {
+			return nil, err
+		}
+		required = append(required, "progress")
+	case "tool":
+		required = append(required, "output")
+	case "renamed":
+		required = append(required, "name")
+	}
+	for _, name := range required {
+		if value, exists := fields[name]; !exists || (string(value) == "null" && name != "progress") {
+			return nil, fmt.Errorf("invalid %s agent event: missing %s", event.Type, name)
+		}
+	}
+	return &event, nil
+}
+
 // StreamAgents delivers nonempty batches until the stream ends or onBatch fails.
 // The caller controls cancellation, including any blocking work in onBatch.
-func StreamAgents(ctx context.Context, conn *Connection, onBatch func([]map[string]any) error) error {
+func StreamAgents(ctx context.Context, conn *Connection, onBatch func([]AgentEvent) error) error {
 	operation := Operation{Name: "stream agents", Method: http.MethodGet, Path: "/agents/stream", Policy: ReadRecovery}
 	return scanEventStream(ctx, conn, operation, streamLimits{lineBytes: 8 * 1024 * 1024}, func(scanner *bufio.Scanner) error {
-		// The daemon sends each JSON batch on one data: line; batches do not span lines.
 		for scanner.Scan() {
 			line := scanner.Text()
 			if !strings.HasPrefix(line, "data:") {
 				continue
 			}
 			var batch struct {
-				Events []map[string]any `json:"events"`
+				Events []json.RawMessage `json:"events"`
 			}
-			if json.Unmarshal([]byte(strings.TrimSpace(line[5:])), &batch) != nil || len(batch.Events) == 0 {
+			if err := json.Unmarshal([]byte(strings.TrimSpace(line[5:])), &batch); err != nil {
+				return fmt.Errorf("invalid agent batch: %w", err)
+			}
+			events := make([]AgentEvent, 0, len(batch.Events))
+			for _, raw := range batch.Events {
+				event, err := decodeAgentEvent(raw)
+				if err != nil {
+					return err
+				}
+				if event != nil {
+					events = append(events, *event)
+				}
+			}
+			if len(events) == 0 {
 				continue
 			}
-			if err := onBatch(batch.Events); err != nil {
+			if err := onBatch(events); err != nil {
 				return err
 			}
 		}

@@ -41,7 +41,7 @@ type agentsSnapshotMsg struct {
 }
 
 type agentsEventsMsg struct {
-	Events []map[string]any
+	Events []daemon.AgentEvent
 	Gen    int
 }
 
@@ -158,7 +158,7 @@ type AgentsViewModel struct {
 	last      time.Time
 	err       error
 	heat      map[string]float64
-	events    chan []map[string]any
+	events    chan []daemon.AgentEvent
 	cancel    context.CancelFunc
 	Conn      *daemon.Connection
 	nodes     map[string]*agentNode
@@ -252,14 +252,14 @@ func (m *AgentsViewModel) startStream(gen int) tea.Cmd {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
-	events := make(chan []map[string]any, 64)
+	events := make(chan []daemon.AgentEvent, 64)
 	m.events = events
 	conn := m.Conn
 	go func() {
 		defer close(events)
 		// EOF and failures both reconnect through queue closure, so the view
 		// deliberately discards the transport error here.
-		_ = daemon.StreamAgents(ctx, conn, func(batch []map[string]any) error {
+		_ = daemon.StreamAgents(ctx, conn, func(batch []daemon.AgentEvent) error {
 			// Leaving the view stops its consumer. Cancellation must release a
 			// producer blocked on a full queue so it can close the HTTP body.
 			select {
@@ -273,7 +273,7 @@ func (m *AgentsViewModel) startStream(gen int) tea.Cmd {
 	return waitAgents(events, gen)
 }
 
-func waitAgents(events <-chan []map[string]any, gen int) tea.Cmd {
+func waitAgents(events <-chan []daemon.AgentEvent, gen int) tea.Cmd {
 	return func() tea.Msg {
 		batch, ok := <-events
 		if !ok {
@@ -601,23 +601,18 @@ func hueFor(id string) rgb {
 	return hues[hashOf(id)%uint32(len(hues))]
 }
 
-func str(event map[string]any, key string) string {
-	v, _ := event[key].(string)
-	return v
-}
-
 // apply folds one bus event into the view; true when the tree changed shape.
-func (m *AgentsViewModel) apply(event map[string]any) bool {
-	kind := str(event, "type")
-	id := str(event, "session")
+func (m *AgentsViewModel) apply(event daemon.AgentEvent) bool {
+	kind := event.Type
+	id := event.Session
 	switch kind {
 	case "spawn":
-		parent := str(event, "parent")
+		parent := event.Parent
 		if _, ok := m.nodes[parent]; !ok {
 			return false
 		}
-		n := m.node(id, str(event, "name"))
-		n.parent, n.model, n.depth = parent, str(event, "model"), int(num(event, "depth"))
+		n := m.node(id, event.Name)
+		n.parent, n.model, n.depth = parent, event.Model, event.Depth
 		n.peer, n.flash = false, 1
 		return true
 	case "gone":
@@ -636,8 +631,8 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 		}
 		return true
 	case "mail":
-		from, to := str(event, "from"), str(event, "to")
-		fromName := str(event, "fromName")
+		from, to := event.From, event.To
+		fromName := event.FromName
 		changed := false
 		ensure := func(nodeID, name string) {
 			if _, ok := m.nodes[nodeID]; !ok {
@@ -654,7 +649,7 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 		if changed {
 			m.layout()
 		}
-		bytes, label := int(num(event, "bytes")), str(event, "kind")
+		bytes, label := event.Bytes, event.Kind
 		addMail := func(nodeID string, incoming bool, who string) {
 			if n := m.nodes[nodeID]; n != nil {
 				n.mail = capped(append(n.mail, agentMail{incoming: incoming, who: who, kind: label}), 12)
@@ -671,11 +666,12 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 	}
 	switch kind {
 	case "running":
-		if n.running, _ = event["running"].(bool); !n.running {
+		n.running = event.Running
+		if !n.running {
 			m.flushLine(n)
 		}
 	case "text", "thinking":
-		text := str(event, "text")
+		text := event.Text
 		n.chars += utf8.RuneCountInString(text)
 		n.rate += float64(len(text))
 		tail := tailText
@@ -684,10 +680,10 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 		}
 		m.stream(n, tail, text)
 	case "arguments_delta":
-		text := str(event, "text")
+		text := event.Text
 		n.chars += utf8.RuneCountInString(text)
 		n.rate += float64(len(text))
-		if call := str(event, "callId"); call != n.call || n.lineKind != tailCode {
+		if call := event.CallID; call != n.call || n.lineKind != tailCode {
 			m.flushLine(n)
 			n.call = call
 		}
@@ -696,42 +692,42 @@ func (m *AgentsViewModel) apply(event map[string]any) bool {
 			n.revision++
 		}
 	case "tool_progress":
-		progress, _ := event["progress"].(map[string]any)
-		if str(progress, "phase") == "running" {
+		progress := event.Progress
+		if progress != nil && progress.Phase == "running" {
 			m.flushLine(n)
-			m.pushTail(n, tailMeta, "▸ "+str(progress, "name"))
+			m.pushTail(n, tailMeta, "▸ "+progress.Name)
 		}
 	case "tool":
 		m.flushLine(n)
-		for line := range strings.SplitSeq(str(event, "output"), "\n") {
+		for line := range strings.SplitSeq(event.Output, "\n") {
 			if strings.TrimSpace(line) != "" {
 				m.pushTail(n, tailOutput, line)
 			}
 		}
 	case "user":
-		text := str(event, "text")
+		text := event.Text
 		m.flushLine(n)
 		m.pushTail(n, tailMeta, "← "+firstLine(text))
 		// Mail already travelled as a packet; a person typing is new.
-		if str(event, "source") == "chat" {
+		if event.Source == "chat" {
 			m.send(agentsYou, id, max(1, len(text)/4))
 		}
 	case "message":
 		// A root's answer goes back to you.
 		if n.parent == "" && !n.peer {
-			m.send(id, agentsYou, max(1, len(str(event, "text"))/4))
+			m.send(id, agentsYou, max(1, len(event.Text)/4))
 		}
 	case "error":
-		m.pushTail(n, tailMeta, "✕ "+str(event, "text"))
+		m.pushTail(n, tailMeta, "✕ "+event.Text)
 	case "interrupted":
 		m.flushLine(n)
 		m.pushTail(n, tailMeta, "· interrupted")
 	case "progress":
 		m.flushLine(n)
-		m.pushTail(n, tailMeta, "» "+str(event, "text"))
+		m.pushTail(n, tailMeta, "» "+event.Text)
 		n.flash = 0.6
 	case "renamed":
-		n.name = str(event, "name")
+		n.name = event.Name
 	case "closed":
 		n.closed, n.running = true, false
 	}
@@ -754,11 +750,6 @@ func capped[S ~[]E, E any](list S, keep int) S {
 		return list[len(list)-keep:]
 	}
 	return list
-}
-
-func num(event map[string]any, key string) float64 {
-	v, _ := event[key].(float64)
-	return v
 }
 
 // stream appends streamed text of one kind, closing a line at each newline.

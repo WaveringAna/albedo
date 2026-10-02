@@ -148,18 +148,25 @@ func (c *ChatClient) History(ctx context.Context, before int64, rows int) (*Hist
 	}
 
 	var data struct {
-		Events []map[string]any `json:"events"`
-		Before int64            `json:"before"`
-		More   bool             `json:"more"`
+		Before *int64            `json:"before"`
+		More   *bool             `json:"more"`
+		Events []json.RawMessage `json:"events"`
 	}
 	if err := json.Unmarshal(body, &data); err != nil {
 		return nil, err
 	}
-	page := &HistoryPage{Before: data.Before, More: data.More}
-	for _, evMap := range data.Events {
-		if ev := normalizeEvent(evMap); ev != nil {
-			ev.Replayed = true
-			page.Events = append(page.Events, *ev)
+	if data.Events == nil || data.Before == nil || data.More == nil || *data.Before < 0 {
+		return nil, errors.New("invalid history page: missing events, before, or more")
+	}
+	page := &HistoryPage{Before: *data.Before, More: *data.More}
+	for _, raw := range data.Events {
+		event, err := decodeChatEvent(raw)
+		if err != nil {
+			return nil, err
+		}
+		if event != nil {
+			event.Replayed = true
+			page.Events = append(page.Events, event.StreamEvent)
 		}
 	}
 	return page, nil
@@ -223,228 +230,142 @@ func (c *ChatClient) GetStatus(ctx context.Context) (*AgentStatus, error) {
 	}, nil
 }
 
-func int64Field(raw map[string]any, key string) int64 {
-	if n, ok := raw[key].(float64); ok && n > 0 {
-		return int64(n)
-	}
-	return 0
+// wireChatEvent keeps arbitrary tool arguments separate from protocol fields.
+type wireChatEvent struct {
+	CallID  string          `json:"callId"`
+	Args    json.RawMessage `json:"args"`
+	Elapsed json.RawMessage `json:"elapsedMs"`
+	StreamEvent
 }
 
-// normalizeEvent parses one daemon event map, decoding a tool's JSON-encoded args.
-func normalizeEvent(evMap map[string]any) *StreamEvent {
-	if evMap["type"] == "tool" {
-		if strArgs, ok := evMap["args"].(string); ok {
-			var parsedArgs map[string]any
-			if err := json.Unmarshal([]byte(strArgs), &parsedArgs); err == nil {
-				evMap["args"] = parsedArgs
-			} else {
-				evMap["args"] = make(map[string]any)
+func decodeChatEvent(data json.RawMessage) (*wireChatEvent, error) {
+	var header struct {
+		Type EventType `json:"type"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return nil, fmt.Errorf("invalid event: %w", err)
+	}
+	switch header.Type {
+	case "", EventText, EventReset, EventRetry, EventError, EventInterrupted, EventMessage, EventUser, EventThinking, EventNote, EventCompacted, EventToolProgress, EventTool, EventUsage, EventCommitted, EventTurnMembership, EventTurnCompleted, "arguments_delta", "turn_started":
+	default:
+		return nil, nil
+	}
+	var event wireChatEvent
+	if err := json.Unmarshal(data, &event); err != nil {
+		return nil, fmt.Errorf("invalid %s event: %w", header.Type, err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	require := func(names ...string) error {
+		for _, name := range names {
+			value, exists := fields[name]
+			if !exists || string(value) == "null" {
+				return fmt.Errorf("invalid %s event: missing %s", header.Type, name)
 			}
-		}
-	}
-	return parseStreamEvent(evMap)
-}
-
-func parseStreamEvent(raw map[string]any) *StreamEvent {
-	typ, _ := raw["type"].(string)
-	if typ == "" {
-		if txt, ok := raw["text"].(string); ok {
-			return &StreamEvent{Type: EventText, Text: txt}
 		}
 		return nil
 	}
-
-	var timestamp *int64
-	if ts, ok := raw["timestamp"].(float64); ok && ts >= 0 {
-		t := int64(ts)
-		timestamp = &t
-	}
-
-	switch typ {
-	case "tool_progress":
-		progVal := raw["progress"]
-		if progVal == nil {
-			return &StreamEvent{Type: EventToolProgress, Progress: nil}
+	var err error
+	switch header.Type {
+	case "", EventText, EventMessage, EventUser, EventThinking, EventNote, EventError:
+		err = require("text")
+		if header.Type == "" {
+			event.Type = EventText
 		}
-		progMap, ok := progVal.(map[string]any)
-		if !ok {
-			return nil
+		if header.Type == EventMessage {
+			event.Role = "assistant"
 		}
-		callID, _ := progMap["callId"].(string)
-		name, _ := progMap["name"].(string)
-		phase, _ := progMap["phase"].(string)
-		if len(callID) > 200 || len(name) > 100 || (phase != "generating" && phase != "running") {
-			return nil
+	case "arguments_delta":
+		err = require("callId", "name", "text")
+	case EventTurnMembership:
+		err = require("turnId", "submissionIds")
+	case EventTurnCompleted:
+		err = require("turnId")
+	case EventCommitted:
+		err = require("seq")
+		if event.Seq <= 0 {
+			err = errors.New("invalid committed event: seq must be positive")
 		}
-
-		var intent *ToolIntent
-		if im, ok := progMap["intent"].(map[string]any); ok {
-			k, _ := im["kind"].(string)
-			t, _ := im["target"].(string)
-			if (k == "write" || k == "edit" || k == "read" || k == "run") && len(t) <= 300 {
-				intent = &ToolIntent{Kind: k, Target: t}
+	case EventCompacted:
+		err = require("evicted", "summary")
+		if event.Evicted < 0 || event.Evicted > 1000000 || len(event.Summary) > 60000 {
+			err = errors.New("invalid compacted event")
+		}
+	case EventTool:
+		err = require("name", "result")
+		if len(event.Args) != 0 && string(event.Args) != "null" {
+			args := event.Args
+			if args[0] == '"' {
+				var encoded string
+				if decodeErr := json.Unmarshal(args, &encoded); decodeErr != nil {
+					return nil, decodeErr
+				}
+				args = []byte(encoded)
+			}
+			// Invalid tool argument JSON is display-only, and has historically rendered empty.
+			if json.Unmarshal(args, &event.ToolArgs) != nil {
+				event.ToolArgs = map[string]any{}
 			}
 		}
-
-		var code *ToolCodePreview
-		if cm, ok := progMap["code"].(map[string]any); ok {
-			off, hasOff := cm["offset"].(float64)
-			txt, hasTxt := cm["text"].(string)
-			if hasOff && hasTxt && off >= 0 {
-				switch {
-				case phase == "generating" && len(txt) <= 512:
-					code = &ToolCodePreview{Offset: int(off), Text: txt}
-				case phase == "running" && len(txt) <= 16000:
-					// a running call's code is its start: what it does, and
-					// the first line to name it by
-					if intent == nil && name == "python" {
-						intent = ParsePythonIntent(txt)
+	case EventUsage:
+		var usage Usage
+		if decodeErr := json.Unmarshal(data, &usage); decodeErr != nil {
+			return nil, fmt.Errorf("invalid usage event: %w", decodeErr)
+		}
+		event.Usage = &usage
+	case EventToolProgress:
+		if fieldErr := validateToolProgress(fields["progress"]); fieldErr != nil {
+			return nil, fieldErr
+		}
+		if _, exists := fields["progress"]; !exists {
+			err = errors.New("invalid tool progress event: missing progress")
+		}
+		if progress := event.Progress; progress != nil {
+			if len(progress.CallID) > 200 || len(progress.Name) > 100 || (progress.Phase != "generating" && progress.Phase != "running") {
+				return nil, errors.New("invalid tool progress event")
+			}
+			progress.Name = cleanLabel(progress.Name)
+			if intent := progress.Intent; intent != nil {
+				if (intent.Kind != "write" && intent.Kind != "edit" && intent.Kind != "read" && intent.Kind != "run") || len(intent.Target) > 300 {
+					progress.Intent = nil
+				}
+			}
+			if code := progress.Code; code != nil {
+				if code.Offset < 0 || (progress.Phase == "generating" && len(code.Text) > 512) || len(code.Text) > 16000 {
+					progress.Code = nil
+				} else if progress.Phase == "running" {
+					if progress.Intent == nil && progress.Name == "python" {
+						progress.Intent = ParsePythonIntent(code.Text)
 					}
-					head, _, _ := strings.Cut(strings.TrimSpace(txt), "\n")
-					code = &ToolCodePreview{Text: sanitizeControlRunes(head)}
+					head, _, _ := strings.Cut(strings.TrimSpace(code.Text), "\n")
+					progress.Code = &ToolCodePreview{Text: sanitizeControlRunes(head)}
 				}
 			}
 		}
-
-		return &StreamEvent{
-			Type: EventToolProgress,
-			Progress: &ToolProgress{
-				CallID: callID,
-				Name:   cleanLabel(name),
-				Phase:  phase,
-				Intent: intent,
-				Code:   code,
-			},
-		}
-
-	case "message":
-		txt, _ := raw["text"].(string)
-		return &StreamEvent{
-			Type:      EventMessage,
-			Role:      "assistant",
-			Text:      txt,
-			Timestamp: timestamp,
-		}
-
-	case "interrupted":
-		return &StreamEvent{Type: EventInterrupted}
-
-	case "retry":
-		return &StreamEvent{Type: EventRetry}
-
-	case "reset":
-		return &StreamEvent{Type: EventReset, Before: int64Field(raw, "before"), More: raw["more"] == true}
-
-	case "committed":
-		seq := int64Field(raw, "seq")
-		if seq <= 0 {
-			return nil
-		}
-		return &StreamEvent{Type: EventCommitted, Seq: seq}
-
-	case "note":
-		txt, _ := raw["text"].(string)
-		return &StreamEvent{Type: EventNote, Text: txt}
-
-	case "user":
-		txt, _ := raw["text"].(string)
-		source, _ := raw["source"].(string)
-		trig, _ := raw["triggeredAt"].(string)
-		clientID, _ := raw["clientId"].(string)
-		img := ParseImageMetadata(raw["image"])
-		return &StreamEvent{
-			Type:        EventUser,
-			Text:        txt,
-			Source:      source,
-			TriggeredAt: trig,
-			ClientID:    clientID,
-			Timestamp:   timestamp,
-			Image:       img,
-		}
-
-	case "thinking":
-		txt, _ := raw["text"].(string)
-		return &StreamEvent{Type: EventThinking, Text: txt, ElapsedMs: int64Field(raw, "elapsedMs")}
-
-	case "error":
-		txt, _ := raw["text"].(string)
-		return &StreamEvent{Type: EventError, Text: txt}
-
-	case "tool":
-		name, _ := raw["name"].(string)
-		result, _ := raw["result"].(string)
-		args, _ := raw["args"].(map[string]any)
-		trace := ParseToolTrace(raw["trace"])
-		return &StreamEvent{
-			Type:       EventTool,
-			ToolName:   name,
-			ToolArgs:   args,
-			ToolResult: result,
-			ToolTrace:  trace,
-		}
-
-	case "usage":
-		model, _ := raw["model"].(string)
-		var cacheFade []CacheStep
-		if data, err := json.Marshal(raw["cacheFade"]); err == nil {
-			if err := json.Unmarshal(data, &cacheFade); err != nil {
-				cacheFade = nil
-			}
-		}
-		var recordedAt *int64
-		if ra, ok := raw["recordedAt"].(float64); ok {
-			r := int64(ra)
-			recordedAt = &r
-		}
-		getInt := func(k string) *int {
-			if v, ok := raw[k].(float64); ok {
-				i := int(v)
-				return &i
-			}
-			return nil
-		}
-		getFloat := func(k string) *float64 {
-			if v, ok := raw[k].(float64); ok {
-				return &v
-			}
-			return nil
-		}
-		return &StreamEvent{
-			Type: EventUsage,
-			Usage: &Usage{
-				Model:              model,
-				RecordedAt:         recordedAt,
-				PromptTokens:       getInt("promptTokens"),
-				CachedPromptTokens: getInt("cachedPromptTokens"),
-				CacheWriteTokens:   getInt("cacheWriteTokens"),
-				CompletionTokens:   getInt("completionTokens"),
-				TotalTokens:        getInt("totalTokens"),
-				ElapsedMs:          getFloat("elapsedMs"),
-				TokensPerSecond:    getFloat("tokensPerSecond"),
-				CacheFade:          cacheFade,
-			},
-		}
-
-	case "compacted":
-		evicted, hasEv := raw["evicted"].(float64)
-		summary, hasSum := raw["summary"].(string)
-		if hasEv && hasSum && evicted >= 0 && evicted <= 1000000 && len(summary) <= 60000 {
-			strategy, _ := raw["strategy"].(string)
-			return &StreamEvent{
-				Type:     EventCompacted,
-				Evicted:  int(evicted),
-				Summary:  summary,
-				Strategy: strategy,
-			}
-		}
-		return nil
-
-	default:
-		if txt, ok := raw["text"].(string); ok {
-			return &StreamEvent{Type: EventText, Text: txt}
-		}
-		return nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	if event.Type != EventUsage && len(event.Elapsed) != 0 {
+		if err := json.Unmarshal(event.Elapsed, &event.ElapsedMs); err != nil {
+			return nil, fmt.Errorf("invalid elapsedMs: %w", err)
+		}
+	}
+	if event.Timestamp != nil && *event.Timestamp < 0 {
+		event.Timestamp = nil
+	}
+	if event.ElapsedMs < 0 {
+		event.ElapsedMs = 0
+	}
+	if event.Image != nil {
+		event.Image = ParseImageMetadata(event.Image)
+	}
+	if event.ToolTrace != nil {
+		event.ToolTrace = ParseToolTrace(event.ToolTrace)
+	}
+	return &event, nil
 }
 
 // ResetStream discards unfinished tool arguments and starts the next stream from
@@ -482,29 +403,20 @@ func (c *ChatClient) Stream(ctx context.Context, tail int, onEvent func(StreamEv
 }
 
 func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onEvent func(StreamEvent) error) error {
-	reporter := NewToolProgressReporter(func(prog *ToolProgress) error {
-		return onEvent(StreamEvent{Type: EventToolProgress, Progress: prog})
+	reporter := NewToolProgressReporter(func(progress *ToolProgress) error {
+		return onEvent(StreamEvent{Type: EventToolProgress, Progress: progress})
 	})
-
-	defer func() {
-		_ = reporter.Report(nil, "running")
-	}()
-
+	defer func() { _ = reporter.Report(nil, "running") }()
 	var eventType string
-
 	for scanner.Scan() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-
 		line := scanner.Text()
 		if line == "" {
 			eventType = ""
 			continue
 		}
-
 		if strings.HasPrefix(line, "event:") {
 			eventType = strings.TrimSpace(line[6:])
 			continue
@@ -512,150 +424,124 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onE
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
-
 		payload := strings.TrimSpace(line[5:])
 		if payload == "" {
 			continue
 		}
-
-		var raw any
-		if err := json.Unmarshal([]byte(payload), &raw); err != nil {
-			continue
-		}
-
 		if eventType == "error" {
-			errStr := payload
-			if m, ok := raw.(map[string]any); ok {
-				if e, ok := m["error"].(string); ok {
-					errStr = e
-				} else if t, ok := m["text"].(string); ok {
-					errStr = t
+			var failure struct {
+				Error string `json:"error"`
+				Text  string `json:"text"`
+			}
+			if err := json.Unmarshal([]byte(payload), &failure); err != nil {
+				return fmt.Errorf("invalid stream error: %w", err)
+			}
+			if failure.Error != "" {
+				return errors.New(failure.Error)
+			}
+			if failure.Text != "" {
+				return errors.New(failure.Text)
+			}
+			return errors.New(payload)
+		}
+		var batch struct {
+			Cursor *int              `json:"cursor"`
+			Events []json.RawMessage `json:"events"`
+		}
+		if err := json.Unmarshal([]byte(payload), &batch); err != nil {
+			return fmt.Errorf("invalid stream batch: %w", err)
+		}
+		if batch.Cursor == nil || *batch.Cursor < 0 || batch.Events == nil {
+			return errors.New("invalid stream batch: missing cursor or events")
+		}
+		// Validate the whole batch before delivering events or changing preview state.
+		events := make([]wireChatEvent, 0, len(batch.Events))
+		for _, raw := range batch.Events {
+			event, err := decodeChatEvent(raw)
+			if err != nil {
+				return err
+			}
+			if event != nil {
+				events = append(events, *event)
+			}
+		}
+		snapshot := false
+		for _, event := range events {
+			switch event.Type {
+			case EventReset, EventRetry, "turn_started", EventMessage, EventInterrupted, EventError:
+				c.mu.Lock()
+				c.argumentsByCall = make(map[string]*strings.Builder)
+				c.mu.Unlock()
+				if err := reporter.Report(nil, "running"); err != nil {
+					return err
 				}
 			}
-			return errors.New(errStr)
-		}
-
-		rawMap, isMap := raw.(map[string]any)
-		if isMap {
-			if cursorVal, hasCursor := rawMap["cursor"]; hasCursor {
-				if cursorNum, ok := cursorVal.(float64); ok {
-					if eventsArr, ok := rawMap["events"].([]any); ok {
-						// a reset opens the snapshot, and the snapshot is the rest of its page
-						snapshot := false
-						for _, evRaw := range eventsArr {
-							evMap, ok := evRaw.(map[string]any)
-							if !ok {
-								continue
-							}
-							itemType, _ := evMap["type"].(string)
-							switch itemType {
-							case "reset", "retry", "turn_started", "message", "interrupted", "error":
-								c.mu.Lock()
-								c.argumentsByCall = make(map[string]*strings.Builder)
-								c.mu.Unlock()
-								if err := reporter.Report(nil, "running"); err != nil {
-									return err
-								}
-							}
-
-							if itemType == "reset" {
-								snapshot = true
-								if err := onEvent(*parseStreamEvent(evMap)); err != nil {
-									return err
-								}
-								continue
-							}
-							if itemType == "turn_started" {
-								continue
-							}
-							if itemType == "tool" {
-								if callID, ok := evMap["callId"].(string); ok {
-									c.mu.Lock()
-									delete(c.argumentsByCall, callID)
-									c.mu.Unlock()
-								}
-								if err := reporter.Report(nil, "running"); err != nil {
-									return err
-								}
-							}
-							if itemType == "tool_progress" {
-								if prog, ok := evMap["progress"].(map[string]any); ok {
-									ph, _ := prog["phase"].(string)
-									cid, _ := prog["callId"].(string)
-									if ph == "running" && cid != "" {
-										c.mu.Lock()
-										delete(c.argumentsByCall, cid)
-										c.mu.Unlock()
-										if err := reporter.Report(nil, "running"); err != nil {
-											return err
-										}
-									}
-								}
-							}
-							if itemType == "arguments_delta" {
-								callID, _ := evMap["callId"].(string)
-								name, _ := evMap["name"].(string)
-								text, _ := evMap["text"].(string)
-								if callID != "" && text != "" {
-									c.mu.Lock()
-									arguments, exists := c.argumentsByCall[callID]
-									fresh := !exists
-
-									retained := 0
-									for k, v := range c.argumentsByCall {
-										retained += len(k) + v.Len()
-									}
-
-									extraCallID := 0
-									if fresh {
-										extraCallID = len(callID)
-									}
-
-									if (fresh && len(c.argumentsByCall) >= 32) || retained+len(text)+extraCallID > 2000000 {
-										c.argumentsByCall = make(map[string]*strings.Builder)
-										c.afterSeq = -1
-										c.mu.Unlock()
-										return errors.New("too many tool argument previews for this client to display")
-									}
-
-									if fresh {
-										arguments = new(strings.Builder)
-										c.argumentsByCall[callID] = arguments
-									}
-									// Append-only builders keep earlier String snapshots immutable.
-									arguments.WriteString(text)
-									args := arguments.String()
-									c.mu.Unlock()
-
-									call := &ToolCallAssembly{
-										ID: callID,
-									}
-									call.Function.Name = name
-									call.Function.Arguments = args
-									if err := reporter.Report(call, "generating"); err != nil {
-										return err
-									}
-									continue
-								}
-							}
-
-							if ev := normalizeEvent(evMap); ev != nil {
-								ev.Replayed = snapshot
-								if err := onEvent(*ev); err != nil {
-									return err
-								}
-							}
-						}
-
-						c.mu.Lock()
-						c.afterSeq = int(cursorNum)
-						c.mu.Unlock()
-						continue
+			if event.Type == EventReset {
+				snapshot = true
+			}
+			if event.Type == "turn_started" {
+				continue
+			}
+			if event.Type == EventTool || (event.Type == EventToolProgress && event.Progress != nil && event.Progress.Phase == "running" && event.Progress.CallID != "") {
+				callID := event.CallID
+				if event.Progress != nil {
+					callID = event.Progress.CallID
+				}
+				c.mu.Lock()
+				delete(c.argumentsByCall, callID)
+				c.mu.Unlock()
+				if err := reporter.Report(nil, "running"); err != nil {
+					return err
+				}
+			}
+			if event.Type == "arguments_delta" {
+				if event.CallID != "" && event.Text != "" {
+					arguments, err := c.appendArguments(event.CallID, event.Text)
+					if err != nil {
+						return err
+					}
+					call := &ToolCallAssembly{ID: event.CallID}
+					call.Function.Name = event.ToolName
+					call.Function.Arguments = arguments
+					if err := reporter.Report(call, "generating"); err != nil {
+						return err
 					}
 				}
+				continue
+			}
+			event.Replayed = snapshot && event.Type != EventReset
+			if err := onEvent(event.StreamEvent); err != nil {
+				return err
 			}
 		}
+		c.mu.Lock()
+		c.afterSeq = *batch.Cursor
+		c.mu.Unlock()
 	}
-
 	return nil
+}
+
+func (c *ChatClient) appendArguments(callID, text string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	arguments, exists := c.argumentsByCall[callID]
+	retained := 0
+	for key, value := range c.argumentsByCall {
+		retained += len(key) + value.Len()
+	}
+	extraCallID := 0
+	if !exists {
+		extraCallID = len(callID)
+	}
+	if (!exists && len(c.argumentsByCall) >= 32) || retained+len(text)+extraCallID > 2000000 {
+		c.argumentsByCall = make(map[string]*strings.Builder)
+		c.afterSeq = -1
+		return "", errors.New("too many tool argument previews for this client to display")
+	}
+	if !exists {
+		arguments = new(strings.Builder)
+		c.argumentsByCall[callID] = arguments
+	}
+	arguments.WriteString(text)
+	return arguments.String(), nil
 }
