@@ -18,6 +18,7 @@ import albedo/daemon/session_provider
 import albedo/daemon/session_submission
 import albedo/daemon/settings
 import albedo/daemon/state_expiry
+import albedo/daemon/storage_report
 import albedo/daemon/store
 import albedo/daemon/turn
 import albedo/daemon/usage
@@ -2002,7 +2003,7 @@ fn uri_decode(segment: String) -> String {
 /// The daemon's own top-level routes; a service never shadows them.
 const daemon_routes = [
   "operations", "settings", "health", "sessions", "models", "auth", "shutdown",
-  "agents", "quota", "cache-ttl", "fs", "hosts",
+  "storage", "agents", "quota", "cache-ttl", "fs", "hosts",
 ]
 
 /// Shutdown can close a handle after the registry admitted its request.
@@ -2266,6 +2267,7 @@ fn daemon_route(
               "capabilities",
               json.array(
                 [
+                  "storage_report",
                   "operation_receipts",
                   "session_stream_generation",
                   "agents_stream_overflow",
@@ -2292,6 +2294,13 @@ fn daemon_route(
           }
           reply(200, acknowledged(fields))
         }
+      }
+    Get, ["storage", "report"] ->
+      case actor.call(registry, 5000, Host) {
+        Error(message) -> error(503, message)
+        Ok(host) ->
+          storage_report.report(runtime.ledger(host), config.home)
+          |> answered(200, fn(report) { report }, 500)
       }
     Get, ["settings"] -> settings.snapshot(config.home) |> answered_settings
     Put, ["settings", "providers", name] ->
