@@ -18,6 +18,7 @@ import albedo/daemon/state_expiry
 import albedo/daemon/store
 import albedo/daemon/usage
 import albedo/harness/cache_ttl
+import albedo/harness/capability_catalog
 import albedo/harness/command
 import albedo/harness/credentials
 import albedo/harness/extension
@@ -2176,6 +2177,21 @@ fn daemon_route(
     Post, ["settings", "ui", "sessions", id, "open"] ->
       settings.record_open(config.home, id)
       |> answered_settings
+    Get, ["sessions", id, "catalog"] ->
+      case actor.call(registry, 5000, Lookup(id, _)) {
+        Error(message) -> error(404, message)
+        Ok(worker) -> session.catalog(worker) |> answered_catalog
+      }
+    Post, ["sessions", id, "catalog"] ->
+      case actor.call(registry, 5000, Lookup(id, _)) {
+        Error(message) -> error(404, message)
+        Ok(worker) ->
+          body(req, capability_catalog.change_decoder())
+          |> result.try(fn(change) {
+            session.save_settings(worker, session_settings.Catalog(change))
+          })
+          |> answered_catalog
+      }
     Post, ["sessions", id, "settings", "capabilities"] ->
       body(req, settings.capability_decoder())
       |> result.try(fn(change) {
@@ -2799,5 +2815,25 @@ fn answered_settings(
   case value {
     Ok(json) -> raw(200, json)
     Error(message) -> error(400, message)
+  }
+}
+
+fn answered_catalog(
+  outcome: Result(json.Json, String),
+) -> response.Response(mist.ResponseData) {
+  case outcome {
+    Ok(value) -> reply(200, value)
+    Error(message) ->
+      case message == capability_catalog.stale_error {
+        True ->
+          reply(
+            409,
+            json.object([
+              #("code", json.string("stale_catalog")),
+              #("error", json.string(message)),
+            ]),
+          )
+        False -> error(409, message)
+      }
   }
 }

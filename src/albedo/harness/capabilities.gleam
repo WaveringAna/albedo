@@ -35,53 +35,56 @@ pub fn enabled(
   kind: String,
   name: String,
 ) -> Result(Bool, String) {
+  choices(preferences, kind, name)
+  |> result.map(fn(choices) { choices.2 })
+}
+
+pub fn validate_preferences(preferences: Preferences) -> Result(Nil, String) {
   case preferences {
-    Unscoped -> Ok(True)
-    Scoped(session, config) ->
-      decode.run(config, selected_decoder(session, kind, name))
+    Unscoped -> Ok(Nil)
+    Scoped(_, config) -> validate(config)
+  }
+}
+
+/// Preserve absent choices separately from their resolved enabled default.
+/// Readers validate only the requested choice; persisted settings are validated
+/// in full before a mutation or snapshot.
+pub fn choices(
+  preferences: Preferences,
+  kind: String,
+  name: String,
+) -> Result(#(Option(Bool), Option(Bool), Bool), String) {
+  case preferences {
+    Unscoped -> Ok(#(None, None, True))
+    Scoped(session, config) -> {
+      let choice = {
+        use named <- decode.optional_field(
+          name,
+          None,
+          decode.map(decode.bool, Some),
+        )
+        decode.success(named)
+      }
+      let group = decode.optional_field(kind, None, choice, decode.success)
+      let decoder = {
+        use global <- decode.optional_field("global", None, group)
+        let selected =
+          decode.optional_field(session, None, group, decode.success)
+        use override <- decode.optional_field("sessions", None, selected)
+        decode.success(#(
+          global,
+          override,
+          option.unwrap(override, option.unwrap(global, True)),
+        ))
+      }
+      decode.run(config, decoder)
       |> result.replace_error("invalid capabilities.json")
+    }
   }
 }
 
 @external(erlang, "albedo_capabilities", "read")
 fn read(home: String) -> Result(BitArray, String)
-
-// Readers check only the requested choice; persisted settings are validated
-// in full before a mutation or snapshot.
-fn selected_decoder(
-  session: String,
-  kind: String,
-  name: String,
-) -> decode.Decoder(Bool) {
-  use default <- decode.optional_field(
-    "global",
-    True,
-    choice_decoder(kind, name, True),
-  )
-  let session_decoder = {
-    use enabled <- decode.optional_field(
-      session,
-      default,
-      choice_decoder(kind, name, default),
-    )
-    decode.success(enabled)
-  }
-  use enabled <- decode.optional_field("sessions", default, session_decoder)
-  decode.success(enabled)
-}
-
-fn choice_decoder(
-  kind: String,
-  name: String,
-  default: Bool,
-) -> decode.Decoder(Bool) {
-  let named_decoder = {
-    use enabled <- decode.optional_field(name, default, decode.bool)
-    decode.success(enabled)
-  }
-  use enabled <- decode.optional_field(kind, default, named_decoder)
-  decode.success(enabled)
-}
 
 /// Validate every known capability group while allowing unrelated fields.
 pub fn validate(config: Dynamic) -> Result(Nil, String) {

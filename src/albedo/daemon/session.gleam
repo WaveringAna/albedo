@@ -21,6 +21,7 @@ import albedo/daemon/transcript
 import albedo/daemon/turn.{type Submission, Submission}
 import albedo/daemon/usage
 import albedo/harness/cache_fade
+import albedo/harness/capability_catalog
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/python/kernel as python
@@ -105,6 +106,8 @@ pub type Message {
   ReadCommands(
     Subject(Result(#(List(command.Command), command.Context), String)),
   )
+  ReadCatalogContext(Subject(#(String, String, String, runtime.Runtime)))
+  CheckCatalogWorkspace(String, Subject(Bool))
   ReadSelection(Subject(ModelSelection))
   ChangeWorkspace(String, Subject(Result(String, String)))
   /// An ancestor left the first workspace for the second.
@@ -437,6 +440,7 @@ fn handle(
   let state = case message {
     Submit(..)
     | ReadCommands(..)
+    | ReadCatalogContext(..)
     | Interrupt(..)
     | Status(..)
     | Read(..)
@@ -545,17 +549,34 @@ fn handle(
         True -> settle(session_state.State(..state, following: Some(to)))
       }
       |> answer(reply, Nil)
+    ReadCatalogContext(reply) ->
+      answer(state, reply, #(
+        state.info.cwd,
+        state.home,
+        state.info.id,
+        state.host,
+      ))
+    CheckCatalogWorkspace(workspace, reply) ->
+      answer(state, reply, state.info.cwd == workspace)
     ReadExtensions(reply) ->
       answer(
         state,
         reply,
         runtime.extension_summaries(state.host, state.info.id),
       )
-    ChangeSettings(change, reply) ->
+    ChangeSettings(change, reply) -> {
+      let change = case change {
+        session_settings.Catalog(request) ->
+          session_settings.Catalog(
+            capability_catalog.Change(..request, workspace: state.info.cwd),
+          )
+        _ -> change
+      }
       transition(
         reply,
         session_extensions.save_settings(stirred(state), change),
       )
+    }
     ChangeExtension(change, reply) ->
       transition(reply, session_extensions.change(stirred(state), change))
     ChangeModel(model, provider_name, effort, remember, reply) -> {
@@ -2015,4 +2036,21 @@ pub fn save_settings(
   change: session_settings.Change,
 ) -> Result(json.Json, String) {
   actor.call(session, 60_000, ChangeSettings(change, _))
+}
+
+/// Filesystem inspection runs in the requesting process, not either actor.
+pub fn catalog(session: Session) -> Result(json.Json, String) {
+  let #(workspace, home, id, host) =
+    actor.call(session, 5000, ReadCatalogContext)
+  use summaries <- result.try(runtime.extension_summaries(host, id))
+  use snapshot <- result.try(capability_catalog.inspect(
+    workspace,
+    home,
+    id,
+    capability_catalog.extension_state(summaries),
+  ))
+  case actor.call(session, 5000, CheckCatalogWorkspace(workspace, _)) {
+    True -> Ok(capability_catalog.to_json(snapshot))
+    False -> Error(capability_catalog.stale_error)
+  }
 }

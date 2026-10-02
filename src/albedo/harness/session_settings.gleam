@@ -1,11 +1,13 @@
 //// Persist capability and MCP choices while the runtime owns session reloads.
 
+import albedo/harness/capability_catalog
 import albedo/harness/extensions/mcp/extension as mcp
 import gleam/option.{type Option}
 import gleam/result
 
 pub type Change {
   Capability(kind: String, name: String, scope: String, enabled: Option(Bool))
+  Catalog(change: capability_catalog.Change)
   MCP(name: String, server: Option(String), secrets: String)
 }
 
@@ -13,9 +15,12 @@ pub fn mutate(
   home: String,
   session: String,
   change: Change,
+  extensions: fn() -> Result(capability_catalog.Extensions, String),
   after: fn() -> Result(a, String),
 ) -> Result(a, String) {
   case change {
+    Catalog(change) ->
+      capability_catalog.save(home, session, change, extensions, after)
     Capability(kind, name, scope, enabled) ->
       case
         name != ""

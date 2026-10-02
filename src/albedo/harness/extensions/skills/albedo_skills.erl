@@ -2,7 +2,7 @@
 
 -include_lib("kernel/include/file.hrl").
 
--export([home/0, builtin_root/0, catalog/3, activate_selected/1, list_selected/1, read_selected/4, list_resources/3, xml_escape/1]).
+-export([home/0, builtin_root/0, catalog/3, discover/3, activate_selected/1, list_selected/1, read_selected/4, xml_escape/1]).
 
 -define(MAX_SKILLS, 128).
 -define(MAX_DIAGNOSTICS, 64).
@@ -46,19 +46,79 @@ builtin_root() ->
 
 %% Built-in skills rank below every workspace and user skill, so a same-named
 %% skill there replaces one silently instead of reporting a duplicate.
-catalog(Workspace0, Home0, Builtin0) ->
+catalog(Workspace, Home, Builtin) ->
+    case scan(Workspace, Home, Builtin) of
+        {ok, {Candidates, Diagnostics, _Truncated}} ->
+            Skills = [{Name, Description, Source}
+                      || {candidate, _Id, {some, Name}, {some, Description},
+                          _Lexical, {some, Source}, true, _Diagnostic, true,
+                          _Shadowed} <- Candidates],
+            {ok, {lists:sort(Skills), Diagnostics, length(Candidates)}};
+        Error -> Error
+    end.
+
+discover(Workspace, Home, Builtin) ->
+    case scan(Workspace, Home, Builtin) of
+        {ok, {Candidates, Diagnostics, Limited}} ->
+            Fingerprints = [bounded_fingerprint(text_list(Source))
+                            || {candidate, _Id, _Name, _Description, Source,
+                                _Resolved, _Valid, _Diagnostic, _Eligible,
+                                _Shadowed} <- Candidates],
+            Fingerprint = binary:encode_hex(crypto:hash(sha256,
+                term_to_binary({Candidates, Diagnostics, Limited, Fingerprints}))),
+            {ok, {Candidates, Diagnostics, Limited, Fingerprint}};
+        Error -> Error
+    end.
+
+scan(Workspace0, Home0, Builtin0) ->
     try
         Roots = roots(text_list(Workspace0), text_list(Home0)),
         {Selected0, Diagnostics0, Count0, Limited0} =
-            scan_roots(Roots, #{}, [], 0, false),
-        {Builtin, Diagnostics2, Count, Limited} =
-            scan_roots(builtin_roots(text_list(Builtin0)), #{}, Diagnostics0, Count0, Limited0),
-        Selected = maps:merge(Builtin, Selected0),
+            scan_roots(Roots, {#{}, []}, [], 0, false),
+        {Builtin, Diagnostics2, _Count, Limited} =
+            scan_roots(builtin_roots(text_list(Builtin0)), {#{}, []},
+                       Diagnostics0, Count0, Limited0),
+        {WorkspaceSelected, WorkspaceCandidates} = Selected0,
+        {BuiltinSelected, BuiltinCandidates} = Builtin,
+        Winners = maps:merge(BuiltinSelected, WorkspaceSelected),
+        Candidates0 = unique_candidates(lists:reverse(WorkspaceCandidates)
+                      ++ lists:reverse(BuiltinCandidates), #{}),
+        Candidates = [with_precedence(Candidate, Winners)
+                      || Candidate <- Candidates0],
         Diagnostics1 = [<<"skill discovery limit reached; remaining entries ignored">> || Limited] ++ Diagnostics2,
-        Skills = lists:sort(maps:values(Selected)),
-        {ok, {Skills, limit_diagnostics(lists:reverse(Diagnostics1)), Count}}
+        Diagnostics = limit_diagnostics(lists:reverse(Diagnostics1)),
+        {ok, {Candidates, Diagnostics, Limited}}
     catch
         _:_ -> {error, <<"skill discovery failed">>}
+    end.
+
+unique_candidates([], _Seen) -> [];
+unique_candidates([{candidate, Id, _Name, _Description, _Source, _Resolved,
+                    _Valid, _Diagnostic, _Eligible, _Shadowed} = Candidate | Rest],
+                  Seen) ->
+    case maps:is_key(Id, Seen) of
+        true -> unique_candidates(Rest, Seen);
+        false -> [Candidate | unique_candidates(Rest, Seen#{Id => true})]
+    end.
+
+with_precedence({candidate, Id, {some, Name}, Description, Source, Resolved,
+                 true, Diagnostic, _Eligible, _Shadowed}, Winners) ->
+    {WinnerId, _Skill} = maps:get(Name, Winners),
+    Shadowed = case Id =:= WinnerId of true -> none; false -> {some, WinnerId} end,
+    {candidate, Id, {some, Name}, Description, Source, Resolved,
+     true, Diagnostic, Id =:= WinnerId, Shadowed};
+with_precedence(Candidate, _Winners) -> Candidate.
+
+bounded_fingerprint(Path) ->
+    Directory = filename:dirname(Path),
+    case {realpath(filename:dirname(Directory)), realpath(Directory), realpath(Path)} of
+        {{ok, Root}, {ok, ActualDirectory}, {ok, Actual}} ->
+            case within(ActualDirectory, Root) andalso within(Actual, ActualDirectory)
+                 andalso within(Actual, Root) of
+                true -> albedo_file_fingerprint:fingerprint(Actual, ?MAX_SKILL_BYTES);
+                false -> {error, escaping_symlink}
+            end;
+        Error -> Error
     end.
 
 activate_selected(SkillFile0) ->
@@ -82,22 +142,6 @@ activate_selected(SkillFile0) ->
         end
     catch
         _:_ -> {error, <<"skill activation failed">>}
-    end.
-
-%% Resolve the current catalog identity before listing; unlike list_selected/1,
-%% callers of this API supply a workspace and catalog path, not a selected file.
-list_resources(Workspace, Home, Identity) ->
-    try
-        case catalog(Workspace, Home, builtin_root()) of
-            {ok, {Skills, _Diagnostics, _Count}} ->
-                case lists:keyfind(unicode:characters_to_binary(Identity), 3, Skills) of
-                    false -> {error, <<"unknown skill path; use a path from the current catalog">>};
-                    {_Name, _Description, SkillFile} -> list_selected(SkillFile)
-                end;
-            Error -> Error
-        end
-    catch
-        _:_ -> {error, <<"resource listing failed">>}
     end.
 
 list_selected(SkillFile0) ->
@@ -192,7 +236,7 @@ root_entries(Root0) ->
     case realpath(Root0) of
         {ok, Root} ->
             case file:list_dir(Root) of
-                {ok, Entries} -> {ok, Root, lists:sort(Entries)};
+                {ok, Entries} -> {ok, filename:absname(Root0), lists:sort(Entries)};
                 {error, enoent} -> ignore;
                 {error, enotdir} -> {error, "is not a directory"};
                 {error, _} -> {error, "cannot be listed"}
@@ -206,25 +250,33 @@ scan_entries([], _Root, Selected, Diagnostics, Count, Limited) ->
 scan_entries(_Entries, _Root, Selected, Diagnostics, Count, _Limited)
   when Count >= ?MAX_SKILLS ->
     {Selected, Diagnostics, Count, true};
-scan_entries([Entry | Rest], Root, Selected, Diagnostics, Count, Limited) ->
-    Candidate = filename:join(Root, Entry),
-    case candidate(Root, Candidate, Entry) of
+scan_entries([Entry | Rest], Root, {Selected, Candidates} = State,
+             Diagnostics, Count, Limited) ->
+    CandidatePath = filename:join(Root, Entry),
+    Source = unicode:characters_to_binary(filename:join(CandidatePath, "SKILL.md")),
+    Id = <<"skills:", Source/binary>>,
+    case candidate(Root, CandidatePath, Entry) of
         skip ->
-            scan_entries(Rest, Root, Selected, Diagnostics, Count, Limited);
+            scan_entries(Rest, Root, State, Diagnostics, Count, Limited);
         {error, Message} ->
-            scan_entries(Rest, Root, Selected,
-                         [diagnostic(Candidate, Message) | Diagnostics],
+            Candidate = {candidate, Id, none, none, Source, none, false,
+                         {some, unicode:characters_to_binary(Message)}, false, none},
+            scan_entries(Rest, Root, {Selected, [Candidate | Candidates]},
+                         [diagnostic(CandidatePath, Message) | Diagnostics],
                          Count + 1, Limited);
-        {ok, {Name, _Description, SkillFile} = Skill} ->
+        {ok, {Name, Description, SkillFile} = Skill} ->
+            Candidate = {candidate, Id, {some, Name}, {some, Description}, Source,
+                         {some, SkillFile}, true, none, false, none},
             {Selected1, Diagnostics1} = case maps:find(Name, Selected) of
                 error ->
-                    {maps:put(Name, Skill, Selected), Diagnostics};
-                {ok, {_OldName, _OldDescription, Winner}} ->
+                    {maps:put(Name, {Id, Skill}, Selected), Diagnostics};
+                {ok, {_WinnerId, {_OldName, _OldDescription, Winner}}} ->
                     Message = iolist_to_binary([
                         <<"duplicate skill ">>, Name, <<" ignored; using ">>, Winner]),
                     {Selected, [diagnostic(SkillFile, Message) | Diagnostics]}
             end,
-            scan_entries(Rest, Root, Selected1, Diagnostics1, Count + 1, Limited)
+            scan_entries(Rest, Root, {Selected1, [Candidate | Candidates]},
+                         Diagnostics1, Count + 1, Limited)
     end.
 
 candidate(Root, Candidate, Entry) ->
@@ -232,12 +284,13 @@ candidate(Root, Candidate, Entry) ->
         {ok, #file_info{type = Type}} when Type =:= directory; Type =:= symlink ->
             case realpath(Candidate) of
                 {ok, Directory} ->
-                    case within(Directory, Root) of
+                    {ok, CanonicalRoot} = realpath(Root),
+                    case within(Directory, CanonicalRoot) of
                         false -> {error, "skill directory symlink escapes discovery root"};
                         true ->
                             case file:read_file_info(Directory) of
                                 {ok, #file_info{type = directory}} ->
-                                    parse_skill(Root, Directory, filename:join(Directory, "SKILL.md"), Entry);
+                                    parse_skill(CanonicalRoot, Directory, filename:join(Directory, "SKILL.md"), Entry);
                                 _ -> skip
                             end
                     end;

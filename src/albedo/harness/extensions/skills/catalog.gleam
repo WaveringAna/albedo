@@ -2,6 +2,7 @@
 
 import gleam/json
 import gleam/list
+import gleam/option.{type Option}
 import gleam/result
 import gleam/string
 
@@ -12,6 +13,47 @@ pub type Skill {
 pub type Catalog {
   Catalog(skills: List(Skill), diagnostics: List(String))
 }
+
+pub type Candidate {
+  Candidate(
+    id: String,
+    name: Option(String),
+    description: Option(String),
+    source: String,
+    resolved_source: Option(String),
+    valid: Bool,
+    diagnostic: Option(String),
+    eligible: Bool,
+    shadowed_by: Option(String),
+  )
+}
+
+pub type Discovery {
+  Discovery(
+    candidates: List(Candidate),
+    diagnostics: List(String),
+    truncated: Bool,
+    fingerprint: String,
+  )
+}
+
+pub fn discover_at(
+  workspace: String,
+  home: String,
+  builtin: String,
+) -> Result(Discovery, String) {
+  native_discover(workspace, home, builtin)
+  |> result.map(fn(discovery) {
+    Discovery(discovery.0, discovery.1, discovery.2, discovery.3)
+  })
+}
+
+@external(erlang, "albedo_skills", "discover")
+fn native_discover(
+  workspace: String,
+  home: String,
+  builtin: String,
+) -> Result(#(List(Candidate), List(String), Bool, String), String)
 
 pub type Command {
   Command(name: String, description: String, command: String, source: String)

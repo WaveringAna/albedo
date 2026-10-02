@@ -1,6 +1,7 @@
 //// An embeddable extension runtime with durable work and session-owned Python kernels.
 
 import albedo/daemon/store
+import albedo/harness/capability_catalog
 import albedo/harness/command
 import albedo/harness/compaction
 import albedo/harness/extension
@@ -996,9 +997,23 @@ fn handle(state: State, message: Message) -> actor.Next(State, a) {
       actor.continue(reload(state, id, cwd, change, reply))
     SaveSettings(home, id, change, reply) -> {
       let changed =
-        session_settings.mutate(home, id, change, fn() {
-          refresh_value(state, id)
-        })
+        session_settings.mutate(
+          home,
+          id,
+          change,
+          fn() {
+            extension.summaries(
+              state.work,
+              state.extensions,
+              state.quarantined,
+              state.default_enabled,
+              id,
+              None,
+            )
+            |> result.map(capability_catalog.extension_state)
+          },
+          fn() { refresh_value(state, id) },
+        )
       actor.continue(finish_refresh(state, reply, changed))
     }
     Refresh(id, reply) ->

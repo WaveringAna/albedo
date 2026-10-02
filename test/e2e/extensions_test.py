@@ -569,7 +569,15 @@ class ExtensionTests(unittest.TestCase):
                 if c["name"] == "/customize-albedo"
             )
 
-        self.assertIn("MCP servers", description())
+        catalog_route = f"/sessions/{self.sid}/catalog"
+        builtin = next(
+            row
+            for row in self.get(catalog_route)["candidates"]
+            if row["preference_key"] == "customize-albedo"
+        )
+        self.assertTrue(builtin["valid"])
+        self.assertTrue(builtin["eligible"])
+        self.assertEqual(description(), builtin["description"])
         override = self.app.workspace / ".agents/skills/customize-albedo/SKILL.md"
         override.parent.mkdir(parents=True)
         override.write_text(
@@ -577,12 +585,25 @@ class ExtensionTests(unittest.TestCase):
         )
         self.command("/reload", args={"target": "session"})
         self.assertEqual(description(), "workspace override")
+        candidates = [
+            row
+            for row in self.get(catalog_route)["candidates"]
+            if row["preference_key"] == "customize-albedo"
+        ]
+        selected = next(row for row in candidates if row["source"] == str(override))
+        shipped = next(row for row in candidates if row["id"] == builtin["id"])
+        self.assertTrue(selected["eligible"])
+        self.assertTrue(shipped["valid"])
+        self.assertFalse(shipped["eligible"])
+        self.assertEqual(shipped["shadowed_by"], selected["id"])
         (request,) = self.turn("after override")
         self.assertNotIn("duplicate skill", json.dumps(request["input"]))
 
     @exclusive
     def test_reload_pins_system_prompt_until_compaction(self):
         self.turn("first turn")
+        catalog_route = f"/sessions/{self.sid}/catalog"
+        original_catalog = self.get(catalog_route)
         late = self.app.workspace / ".agents/skills/late/SKILL.md"
         late.parent.mkdir(parents=True)
         late.write_text(
@@ -596,6 +617,15 @@ class ExtensionTests(unittest.TestCase):
         self.assertNotIn(
             "/late", {c["name"] for c in self.get(f"/sessions/{self.sid}/commands")}
         )
+        fresh_catalog = self.get(catalog_route)
+        self.assertNotEqual(fresh_catalog["revision"], original_catalog["revision"])
+        late_row = next(
+            row
+            for row in fresh_catalog["candidates"]
+            if row["preference_key"] == "late"
+        )
+        self.assertTrue(late_row["eligible"])
+        self.assertEqual(self.get(catalog_route)["revision"], fresh_catalog["revision"])
         requests = self.turn("hot probe before reload", expected=2)
         self.assertIn("BEFORE_RELOAD_OK", self.output(requests[-1]))
         cached = requests[-1]
@@ -603,6 +633,16 @@ class ExtensionTests(unittest.TestCase):
         self.assertEqual(reloaded["result"]["reloaded"], "session")
         self.assertIn(
             "/late", {c["name"] for c in self.get(f"/sessions/{self.sid}/commands")}
+        )
+        current_catalog = self.get(catalog_route)
+        self.assertEqual(current_catalog["revision"], fresh_catalog["revision"])
+        self.assertEqual(
+            next(
+                row["id"]
+                for row in current_catalog["candidates"]
+                if row["preference_key"] == "late"
+            ),
+            late_row["id"],
         )
         (request,) = self.turn("after session reload")
         self.assertEqual(request["instructions"], cached["instructions"])

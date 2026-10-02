@@ -308,16 +308,54 @@ class SettingsTest(unittest.TestCase):
             self.app.idle(session)
             return json.dumps(self.provider.requests[-1]["request"])
 
+        def catalog_choice(session, name):
+            catalog = self.request(f"/sessions/{session}/catalog")
+            return next(
+                row for row in catalog["candidates"] if row["preference_key"] == name
+            )
+
         default_session = self.app.session()
+        choice = catalog_choice(default_session, "preference-demo")
+        self.assertIsNone(choice["global_preference"])
+        self.assertIsNone(choice["session_override"])
+        self.assertTrue(choice["effective_enabled"])
+        self.assertTrue(choice["eligible"])
         context = prompt_context(default_session)
         self.assertIn(instruction, context)
         self.assertIn(description, context)
+
+        commands_route = f"/sessions/{self.session}/commands"
+        self.capability(kind="skills", name="preference-demo", enabled=False)
+        choice = catalog_choice(self.session, "preference-demo")
+        self.assertIsNone(choice["global_preference"])
+        self.assertFalse(choice["session_override"])
+        self.assertFalse(choice["effective_enabled"])
+        self.assertFalse(choice["eligible"])
+        self.assertNotIn(
+            "/preference-demo", {item["name"] for item in self.request(commands_route)}
+        )
+        self.capability(kind="skills", name="preference-demo", enabled=None)
+        choice = catalog_choice(self.session, "preference-demo")
+        self.assertIsNone(choice["global_preference"])
+        self.assertIsNone(choice["session_override"])
+        self.assertTrue(choice["effective_enabled"])
+        self.assertTrue(choice["eligible"])
+        self.assertIn(
+            "/preference-demo", {item["name"] for item in self.request(commands_route)}
+        )
 
         self.capability(scope="global", enabled=False)
         self.capability(
             kind="skills", name="preference-demo", scope="global", enabled=False
         )
         disabled_session = self.app.session()
+        for name in ("preference-demo", "project:AGENTS.md"):
+            choice = catalog_choice(disabled_session, name)
+            self.assertFalse(choice["global_preference"])
+            self.assertIsNone(choice["session_override"])
+            self.assertFalse(choice["effective_enabled"])
+            self.assertFalse(choice["eligible"])
+            self.assertTrue(choice["valid"])
         context = prompt_context(disabled_session)
         self.assertNotIn(instruction, context)
         self.assertNotIn(description, context)
@@ -331,17 +369,73 @@ class SettingsTest(unittest.TestCase):
 
         self.capability(enabled=True)
         self.capability(kind="skills", name="preference-demo", enabled=True)
+        choice = catalog_choice(self.session, "preference-demo")
+        self.assertFalse(choice["global_preference"])
+        self.assertTrue(choice["session_override"])
+        self.assertTrue(choice["effective_enabled"])
+        self.assertFalse(
+            catalog_choice(disabled_session, "preference-demo")["effective_enabled"]
+        )
         context = prompt_context(self.session)
         self.assertIn(instruction, context)
         self.assertIn(description, context)
-        commands_route = f"/sessions/{self.session}/commands"
         self.assertIn(
             "/preference-demo", {item["name"] for item in self.request(commands_route)}
         )
         self.capability(kind="skills", name="preference-demo", enabled=None)
+        choice = catalog_choice(self.session, "preference-demo")
+        self.assertIsNone(choice["session_override"])
+        self.assertFalse(choice["effective_enabled"])
         self.assertNotIn(
             "/preference-demo", {item["name"] for item in self.request(commands_route)}
         )
+
+    def test_session_override_does_not_hide_malformed_selected_global_preference(self):
+        skill = self.app.workspace / ".albedo/skills/validated-choice/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text(
+            "---\nname: validated-choice\ndescription: PREPARED_CHOICE\n---\nbody\n"
+        )
+        self.capability(kind="skills", name="validated-choice", enabled=True)
+        commands_route = f"/sessions/{self.session}/commands"
+        prepared = self.request(commands_route)
+        self.assertIn("/validated-choice", {row["name"] for row in prepared})
+
+        settings_file = self.app.home / "capabilities.json"
+        preferences = json.loads(settings_file.read_text())
+        preferences["global"] = {"skills": {"validated-choice": "invalid"}}
+        settings_file.write_text(json.dumps(preferences))
+        malformed = settings_file.read_bytes()
+        skill.write_text(
+            skill.read_text().replace("PREPARED_CHOICE", "REPAIRED_CHOICE")
+        )
+        reload_request = {"name": "/reload", "args": {"target": "session"}}
+        with self.assertRaises(urllib.error.HTTPError) as failure:
+            self.request(commands_route, reload_request)
+        self.assertEqual(failure.exception.code, 409)
+        self.assertEqual(settings_file.read_bytes(), malformed)
+        self.assertEqual(self.request(commands_route), prepared)
+
+        preferences["global"]["skills"]["validated-choice"] = False
+        settings_file.write_text(json.dumps(preferences))
+        repaired = settings_file.read_bytes()
+        self.request(commands_route, reload_request)
+        self.assertEqual(settings_file.read_bytes(), repaired)
+        command = next(
+            row
+            for row in self.request(commands_route)
+            if row["name"] == "/validated-choice"
+        )
+        self.assertEqual(command["description"], "REPAIRED_CHOICE")
+        catalog = self.request(f"/sessions/{self.session}/catalog")
+        choice = next(
+            row
+            for row in catalog["candidates"]
+            if row["preference_key"] == "validated-choice"
+        )
+        self.assertFalse(choice["global_preference"])
+        self.assertTrue(choice["session_override"])
+        self.assertTrue(choice["eligible"])
 
     def test_empty_capability_selections_ignore_malformed_preferences(self):
         (self.app.home / "capabilities.json").write_text("invalid json")
@@ -358,6 +452,18 @@ class SettingsTest(unittest.TestCase):
         (self.app.workspace / "AGENTS.md").write_bytes(b"\xff")
         (self.app.workspace / "CLAUDE.md").write_text("READABLE_INSTRUCTION")
         self.capability(scope="global", enabled=False)
+        before = self.snapshot()["capabilities"]
+        catalog = self.request(f"/sessions/{self.session}/catalog")
+        invalid = next(
+            row
+            for row in catalog["candidates"]
+            if row["preference_key"] == "project:AGENTS.md"
+        )
+        self.assertFalse(invalid["valid"])
+        self.assertTrue(invalid["diagnostic"])
+        self.assertFalse(invalid["effective_enabled"])
+        self.assertFalse(invalid["eligible"])
+        self.assertEqual(self.snapshot()["capabilities"], before)
         self.app.prompt(self.session, "skip disabled invalid UTF-8").close()
         self.app.idle(self.session)
         self.assertIn(
@@ -369,6 +475,7 @@ class SettingsTest(unittest.TestCase):
             self.capability(enabled=True)
         self.assertEqual(failure.exception.code, 409)
         self.assertIn("AGENTS.md must be UTF-8 text", failure.exception.read().decode())
+        self.assertEqual(self.snapshot()["capabilities"], before)
 
     def test_capability_size_limit_accepts_boundary_and_rejects_growth(self):
         path = self.app.home / "capabilities.json"

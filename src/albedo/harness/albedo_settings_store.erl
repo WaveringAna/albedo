@@ -1,7 +1,7 @@
 -module(albedo_settings_store).
 -include_lib("kernel/include/file.hrl").
 -export([with_lock/2, read/2, object/2, write/3, guarded/1, check/1,
-         transaction/6, capability/6, mcp/5, validate_caps/1]).
+         transaction/6, capability/6, catalog_capability/4, mcp/5, validate_caps/1]).
 
 %% Every persisted settings and credential mutation shares the home lock.
 with_lock(Home, Run) ->
@@ -104,6 +104,16 @@ capability(Home, Session, Kind, Name, Value, After) ->
         end,
         write(Home, <<"capabilities.json">>, Document)
     end, After).
+
+%% Revalidation and persistence share the same lock, including reload rollback.
+catalog_capability(Home, Session, Resolve, After) ->
+    with_lock(Home, fun() ->
+        case Resolve() of
+            {error, _} = Error -> Error;
+            {ok, {Kind, Name, Scope, Enabled}} ->
+                capability(Home, Session, Kind, Name, {Scope, Enabled}, After)
+        end
+    end).
 
 validate_caps(Config) ->
     check('albedo@harness@capabilities':validate(Config)).

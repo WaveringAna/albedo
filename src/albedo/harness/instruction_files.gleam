@@ -24,6 +24,36 @@ type Candidate {
   Candidate(location: Location, display: String, path: String)
 }
 
+pub type InspectedFile {
+  InspectedFile(
+    id: String,
+    key: String,
+    display: String,
+    path: String,
+    valid: Bool,
+    diagnostic: Option(String),
+  )
+}
+
+pub type Discovery {
+  Discovery(candidates: List(InspectedFile), fingerprint: String)
+}
+
+/// Inspect all discovered files without applying preferences or preparing context.
+pub fn inspect_at(
+  workspace: String,
+  home: String,
+) -> Result(Discovery, String) {
+  native_inspect(workspace, home)
+  |> result.map(fn(discovery) { Discovery(discovery.0, discovery.1) })
+}
+
+@external(erlang, "albedo_instruction_files", "inspect")
+fn native_inspect(
+  workspace: String,
+  home: String,
+) -> Result(#(List(InspectedFile), String), String)
+
 type ReadLimit {
   Instructions
   Prompts
