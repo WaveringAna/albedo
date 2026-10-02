@@ -3,13 +3,17 @@
 import json
 import unittest
 
-from harness import Albedo, Provider, python, text
+from harness import Albedo, Provider, Reply, python, text
 
 
 class PythonToolsTests(unittest.TestCase):
     def setUp(self):
+        self.arguments = None
+
         def script(request):
             if request["messages"][-1].get("role") == "user":
+                if self.arguments is not None:
+                    return Reply("python", tool_arguments=self.arguments)
                 return python(self.code)
             return text("done")
 
@@ -260,3 +264,31 @@ class PythonToolsTests(unittest.TestCase):
             f"print((await cells.info({slept['cell_id']!r}))['duration'])", session
         )
         self.assertEqual(float(info["output"]), slept["duration"])
+
+    def call(self, arguments, session):
+        """The result of one python call made with exactly these arguments."""
+        self.arguments = arguments
+        self.app.prompt(session, "call the Python tool").close()
+        self.app.idle(session)
+        self.arguments = None
+        return [
+            json.loads(event["result"])
+            for event in self.app.events(session)
+            if event.get("type") == "tool" and event.get("name") == "python"
+        ][-1]
+
+    def test_timeout_is_optional(self):
+        result = self.call({"code": "print('no timeout')"}, self.app.session())
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(result["output"].strip(), "no timeout")
+
+    def test_an_unusable_timeout_keeps_the_code_for_a_rerun(self):
+        session = self.app.session()
+        rejected = self.call(
+            {"code": "open('made.txt', 'w').write('hi')", "timeout_ms": "soon"},
+            session,
+        )
+        self.assertIn("timeout_ms", rejected["error"])
+        self.assertFalse((self.app.workspace / "made.txt").exists())
+        self.run_cell(f"await cells.run({rejected['cell_id']!r})", session)
+        self.assertEqual((self.app.workspace / "made.txt").read_text(), "hi")

@@ -12,14 +12,16 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 
+const default_timeout_ms = 300_000
+
 fn definition() -> types.Tool {
   types.Tool(
     "python",
-    "Execute Python in your persistent session. Always provide both JSON arguments: code (string) and timeout_ms (integer, 1–3600000), even for a one-line call. Top-level await works. Variables stay alive. Only printed output and the final expression return; duration is the cell's wall seconds; truncated=true means the output passed the 64 KiB preview, and the rest (up to 1 MiB) is readable with output.read(cell_id, offset=65536) while the cell is among the 16 most recent; read it before running many more cells, or print less. Failed cells are retained: await cells.read(id) for bounded source, await cells.info(id) for its status (ok, error, interrupted, started, saved) without source, await cells.trace(id) for what the cell read, ran and changed. Repair exact unique text without resending the source with await cells.run(id, replacements=[(old,new)]), or pass check=True first to compile the rewrite and get the syntax error back without running anything. A cell that started requires allow_partial=True after checking side effects; never retry blindly.",
+    "Execute Python in your persistent session. Provide code (string); timeout_ms (integer, 1–3600000) is optional and defaults to 300000. Top-level await works. Variables stay alive. Only printed output and the final expression return; duration is the cell's wall seconds; truncated=true means the output passed the 64 KiB preview, and the rest (up to 1 MiB) is readable with output.read(cell_id, offset=65536) while the cell is among the 16 most recent; read it before running many more cells, or print less. Failed cells are retained: await cells.read(id) for bounded source, await cells.info(id) for its status (ok, error, interrupted, started, saved) without source, await cells.trace(id) for what the cell read, ran and changed. Repair exact unique text without resending the source with await cells.run(id, replacements=[(old,new)]), or pass check=True first to compile the rewrite and get the syntax error back without running anything. A cell that started requires allow_partial=True after checking side effects; never retry blindly.",
     json.object([
       #("type", json.string("object")),
       #("additionalProperties", json.bool(False)),
-      #("required", json.array(["code", "timeout_ms"], json.string)),
+      #("required", json.array(["code"], json.string)),
       #(
         "properties",
         json.object([
@@ -39,6 +41,9 @@ fn definition() -> types.Tool {
   )
 }
 
+/// An unusable `timeout_ms` still saves the code, so the model reruns it with
+/// `cells.run(id)` instead of resending the source.
+///
 /// Storage failure is `Fatal` rather than a refusal: a cell whose source or
 /// outcome went unrecorded must not be offered back to the model to retry.
 fn invoke(
@@ -47,7 +52,13 @@ fn invoke(
 ) -> Result(extension.Output, extension.Failure) {
   let decoder = {
     use code <- decode.field("code", decode.string)
-    use timeout <- decode.field("timeout_ms", decode.int)
+    use timeout <- decode.optional_field(
+      "timeout_ms",
+      Ok(default_timeout_ms),
+      decode.one_of(decode.map(decode.int, Ok), [
+        decode.map(decode.dynamic, fn(_) { Error(Nil) }),
+      ]),
+    )
     decode.success(#(code, timeout))
   }
   case json.parse(arguments, decoder) {
@@ -61,8 +72,20 @@ fn invoke(
         )
         |> result.map_error(extension.Fatal),
       )
-      let outcome =
-        python.execute_saved(context.kernel, id, code, timeout, context.images)
+      let outcome = case timeout {
+        Ok(timeout_ms) ->
+          python.execute_saved(
+            context.kernel,
+            id,
+            code,
+            timeout_ms,
+            context.images,
+          )
+        Error(Nil) ->
+          Error(python.Invalid(
+            "timeout_ms must be an integer from 1 to 3600000; the code is saved, rerun it with cells.run(cell_id)",
+          ))
+      }
       use _ <- result.try(
         journal.finish(context.store, id, outcome)
         |> result.map_error(extension.Fatal),
@@ -84,7 +107,9 @@ fn invoke(
       Ok(outcome_output(id, outcome, context.images))
     }
     Error(_) ->
-      Ok(extension.text("{\"error\":\"expected code and timeout_ms\"}"))
+      Ok(extension.text(
+        "{\"error\":\"expected code (string) and optional timeout_ms (integer)\"}",
+      ))
   }
 }
 
