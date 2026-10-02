@@ -300,6 +300,7 @@ func loopbackSSH(temp string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	remotePath := "'" + strings.ReplaceAll(remoteBin+string(os.PathListSeparator)+os.Getenv("PATH"), "'", "'\"'\"'") + "'"
 	ssh := `#!/bin/sh
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -314,7 +315,7 @@ case "$target" in
   nohost) echo "ssh: connect to host nohost port 22: Connection refused" >&2; exit 255 ;;
   lockedhost) echo "lockedhost: Permission denied (publickey)." >&2; exit 255 ;;
 esac
-exec env -i HOME=` + suite.remoteHome + ` PATH=` + remoteBin + `:/usr/bin:/bin SHELL=` + remoteBin + `/loginsh /bin/sh -c "$*"
+exec env -i HOME=` + suite.remoteHome + ` PATH=` + remotePath + ` SHELL=` + remoteBin + `/loginsh /bin/sh -c "$*"
 `
 	// a login shell that sources no profile, which would put the system
 	// python ahead of the linked one

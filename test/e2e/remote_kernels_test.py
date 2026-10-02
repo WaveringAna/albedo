@@ -10,6 +10,7 @@ person to sign in, and one that cannot be reached.
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -46,7 +47,7 @@ esac
 case "$*" in
   *.part.*) [ -e {slow} ] && sleep 3 ;;
 esac
-path={bin}:/usr/bin:/bin
+path={path}
 [ "$target" = oldhost ] && path={old}:$path
 exec env -i HOME={home} PATH="$path" SHELL={bin}/loginsh /bin/sh -c "$*"
 """
@@ -129,6 +130,7 @@ class RemoteKernelTests(unittest.TestCase):
                     home=self.remote_home,
                     down=self.down,
                     slow=self.slow_stage,
+                    path=shlex.quote(f"{remote}{os.pathsep}{app.daemon.env['PATH']}"),
                 ),
             )
             write(
@@ -136,10 +138,6 @@ class RemoteKernelTests(unittest.TestCase):
             )
             write(remote / "loginsh", LOGIN_SHELL)
             os.symlink(real, remote / "python3")
-            for tool in ("git", "jj"):
-                found = shutil.which(tool)
-                if found:
-                    os.symlink(found, remote / tool)
             ssh_config = root / "user-home" / ".ssh"
             ssh_config.mkdir()
             (ssh_config / "config").write_text(
