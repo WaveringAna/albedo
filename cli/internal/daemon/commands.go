@@ -28,6 +28,7 @@ type SessionCommand struct {
 	Method        string            `json:"method"`
 	Arguments     []CommandArgument `json:"arguments"`
 	ModelCallable bool              `json:"modelCallable"`
+	Skill         bool              `json:"skill"`
 	UserTurn      bool              `json:"userTurn"`
 }
 

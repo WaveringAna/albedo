@@ -50,8 +50,9 @@ func (e *WorkspaceMissingError) Error() string {
 }
 
 type SendResult struct {
-	OK     bool `json:"ok"`
-	Queued bool `json:"queued"`
+	OperationID string `json:"operationId"`
+	OK          bool   `json:"ok"`
+	Queued      bool   `json:"queued"`
 }
 
 type ChatClient struct {
@@ -87,33 +88,50 @@ func (c *ChatClient) agentPath(path string) string {
 	return fmt.Sprintf("/sessions/%s%s", url.PathEscape(c.agentID), path)
 }
 
-func (c *ChatClient) submitPayload(ctx context.Context, payload map[string]any) (*SendResult, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-
-	if c.clientID != "" {
-		payload["clientId"] = c.clientID
+func (c *ChatClient) PrepareTurn(content string, image *ImageAttachment, continuation bool) (*OperationHandle, error) {
+	payload := map[string]any{"clientId": c.clientID, "content": content, "type": "user"}
+	if continuation {
+		payload = map[string]any{"clientId": c.clientID, "type": "continue"}
 	}
-
-	result, err := Submit(reqCtx, c.conn, c.agentID, payload)
+	if image != nil {
+		payload["image"] = image
+	}
+	return NewSubmission(c.agentID, payload)
+}
+func (c *ChatClient) PrepareSkill(name, args string) (*OperationHandle, error) {
+	return NewSubmission(c.agentID, map[string]any{"clientId": c.clientID, "type": "skill", "name": name, "arguments": args})
+}
+func (c *ChatClient) SubmitOperation(ctx context.Context, handle *OperationHandle) (*SendResult, error) {
+	result, err := SubmitOperation(ctx, c.conn, handle)
 	if err != nil {
 		return nil, err
 	}
 	return &result, nil
 }
-
+func (c *ChatClient) ResolveOperation(ctx context.Context, handle *OperationHandle) (OperationReceipt, error) {
+	return ResolveOperation(ctx, c.conn, handle)
+}
 func (c *ChatClient) Send(ctx context.Context, content string, image *ImageAttachment) (*SendResult, error) {
-	payload := map[string]any{
-		"content": content,
+	handle, err := c.PrepareTurn(content, image, false)
+	if err != nil {
+		return nil, err
 	}
-	if image != nil {
-		payload["image"] = image
+	return c.SubmitOperation(ctx, handle)
+}
+func (c *ChatClient) Continue(ctx context.Context) (*SendResult, error) {
+	handle, err := c.PrepareTurn("", nil, true)
+	if err != nil {
+		return nil, err
 	}
-	return c.submitPayload(ctx, payload)
+	return c.SubmitOperation(ctx, handle)
 }
 
 func (c *ChatClient) SendSubmission(ctx context.Context, content, submissionID string) (*SendResult, error) {
-	return c.submitPayload(ctx, map[string]any{"content": content, "submissionId": submissionID})
+	handle, err := NewSubmission(c.agentID, map[string]any{"content": content, "clientId": c.clientID, "submissionId": submissionID})
+	if err != nil {
+		return nil, err
+	}
+	return c.SubmitOperation(ctx, handle)
 }
 
 func (c *ChatClient) CancelSubmission(ctx context.Context, submissionID string) (string, error) {
@@ -129,12 +147,6 @@ func (c *ChatClient) CancelSubmission(ctx context.Context, submissionID string) 
 	default:
 		return "", fmt.Errorf("invalid cancellation outcome %q", result.Outcome)
 	}
-}
-
-func (c *ChatClient) Continue(ctx context.Context) (*SendResult, error) {
-	return c.submitPayload(ctx, map[string]any{
-		"type": "continue",
-	})
 }
 
 func (c *ChatClient) Interrupt(ctx context.Context) (bool, error) {

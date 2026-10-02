@@ -61,9 +61,13 @@ func decodeAPIError(status int, body []byte) error {
 type UncertainOutcomeError struct {
 	Cause     error
 	Operation string
+	Handle    *OperationHandle
 }
 
 func (e *UncertainOutcomeError) Error() string {
+	if e.Handle != nil {
+		return e.Operation + " admission is uncertain; operation " + e.Handle.ID + " can be queried"
+	}
 	return e.Operation + " may have been accepted; check its result before trying again"
 }
 func (e *UncertainOutcomeError) Unwrap() error { return e.Cause }

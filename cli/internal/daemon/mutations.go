@@ -38,8 +38,8 @@ func fieldError(field string) error {
 	return &responseFieldError{field: field, cause: errors.New("required field is missing or invalid")}
 }
 
-// executeMutation validates only after requestBytes has finished authentication
-// recovery. A malformed success can never enter the retry path.
+// executeMutation validates after requestBytes finishes authentication recovery.
+// Covered operations apply receipt recovery around this single attempt.
 func executeMutation(ctx context.Context, conn *Connection, operation Operation, statuses []int, decode func([]byte, int) error) error {
 	if conn == nil {
 		return errors.New("not connected to Albedo")
@@ -119,8 +119,9 @@ func sessionPath(id, tail string) string { return "/sessions/" + url.PathEscape(
 
 func decodeSubmission(data []byte, _ int) (SendResult, error) {
 	var wire struct {
-		OK     *bool `json:"ok"`
-		Queued *bool `json:"queued"`
+		OK          *bool  `json:"ok"`
+		Queued      *bool  `json:"queued"`
+		OperationID string `json:"operationId"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return SendResult{}, err
@@ -131,13 +132,26 @@ func decodeSubmission(data []byte, _ int) (SendResult, error) {
 	if wire.Queued == nil {
 		return SendResult{}, fieldError("queued")
 	}
-	return SendResult{OK: *wire.OK, Queued: *wire.Queued}, nil
+	if wire.OperationID == "" {
+		return SendResult{}, fieldError("operationId")
+	}
+	return SendResult{OK: *wire.OK, Queued: *wire.Queued, OperationID: wire.OperationID}, nil
 }
 func Submit(ctx context.Context, conn *Connection, id string, payload map[string]any) (SendResult, error) {
+	handle, err := NewSubmission(id, payload)
+	if err != nil {
+		return SendResult{}, err
+	}
+	return SubmitOperation(ctx, conn, handle)
+}
+func SubmitOperation(ctx context.Context, conn *Connection, handle *OperationHandle) (SendResult, error) {
 	var result SendResult
-	err := executeMutation(ctx, conn, Operation{Name: "submit message", Method: http.MethodPost, Path: sessionPath(id, "/events"), Body: payload, Policy: AuthRecovery}, []int{http.StatusAccepted}, func(body []byte, status int) error {
+	err := executeReceipt(ctx, conn, handle, []int{http.StatusAccepted}, func(body []byte, status int) error {
 		var err error
 		result, err = decodeSubmission(body, status)
+		if err == nil && result.OperationID != handle.ID {
+			return fieldError("operationId")
+		}
 		return err
 	})
 	return result, err
@@ -218,7 +232,30 @@ func mutateSession(ctx context.Context, conn *Connection, operation Operation, s
 	return session, err
 }
 func CreateSession(ctx context.Context, conn *Connection, body map[string]string) (Session, error) {
-	return mutateSession(ctx, conn, Operation{Name: "create session", Method: http.MethodPost, Path: "/sessions", Body: body, Policy: AuthRecovery}, http.StatusCreated)
+	handle, err := NewCreation(body)
+	if err != nil {
+		return Session{}, err
+	}
+	return CreateSessionOperation(ctx, conn, handle)
+}
+func CreateSessionOperation(ctx context.Context, conn *Connection, handle *OperationHandle) (Session, error) {
+	var session Session
+	err := executeReceipt(ctx, conn, handle, []int{http.StatusCreated}, func(body []byte, _ int) error {
+		fields, err := object(body)
+		if err != nil {
+			return err
+		}
+		var operationID string
+		if err := required(fields, "operationId", &operationID); err != nil {
+			return err
+		}
+		if operationID != handle.ID {
+			return fieldError("operationId")
+		}
+		session, err = decodeSession(body)
+		return err
+	})
+	return session, err
 }
 func RenameSession(ctx context.Context, conn *Connection, id, name string) (Session, error) {
 	return mutateSession(ctx, conn, Operation{Name: "rename session", Method: http.MethodPatch, Path: sessionPath(id, ""), Body: map[string]string{"name": name}, Policy: AuthRecovery}, http.StatusOK)

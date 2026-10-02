@@ -2,8 +2,6 @@ package app
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -69,14 +67,14 @@ func (s *Service) RunPrompt(ctx context.Context, options PromptOptions) (PromptR
 	if err == nil {
 		return PromptResult{SessionID: sessionID, Answer: answer}, nil
 	}
-	if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](err); uncertain {
-		return PromptResult{}, fmt.Errorf("%w; the session is %s", err, sessionID)
-	}
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return PromptResult{}, fmt.Errorf("timed out after %s; %v; the session is %s", timeout, err, sessionID)
+		return PromptResult{}, fmt.Errorf("timed out after %s; %w; the session is %s", timeout, err, sessionID)
 	case ctx.Err() != nil:
-		return PromptResult{}, fmt.Errorf("interrupted; %v; the session is %s", err, sessionID)
+		return PromptResult{}, fmt.Errorf("interrupted; %w; the session is %s", err, sessionID)
+	}
+	if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](err); uncertain {
+		return PromptResult{}, fmt.Errorf("%w; the session is %s", err, sessionID)
 	}
 	return PromptResult{}, err
 }
@@ -84,11 +82,19 @@ func (s *Service) RunPrompt(ctx context.Context, options PromptOptions) (PromptR
 // awaitReply follows the logical turn containing this submission. The actor
 // publishes membership before any worker events, and completion after them.
 func awaitReply(ctx context.Context, client *daemon.ChatClient, prompt string) (answer string, failure error) {
-	var identity [16]byte
-	if _, err := rand.Read(identity[:]); err != nil {
+	handle, err := client.PrepareTurn(prompt, nil, false)
+	if err != nil {
 		return "", err
 	}
-	submissionID := hex.EncodeToString(identity[:])
+	submissionID := handle.ID
+	defer func() {
+		if failure != nil && ctx.Err() != nil {
+			if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](failure); !uncertain {
+				uncertain := &daemon.UncertainOutcomeError{Operation: "await turn", Handle: handle, Cause: failure}
+				failure = fmt.Errorf("%w; %v", uncertain, failure)
+			}
+		}
+	}()
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	submitted := false
@@ -147,7 +153,7 @@ func awaitReply(ctx context.Context, client *daemon.ChatClient, prompt string) (
 	// A failed request can already have reached the actor. Cleanup always uses
 	// its identity, so it cannot interrupt a different client's turn.
 	submitted = true
-	if _, err := client.SendSubmission(ctx, prompt, submissionID); err != nil {
+	if _, err := client.SubmitOperation(ctx, handle); err != nil {
 		return "", err
 	}
 	turnID := ""
@@ -158,14 +164,14 @@ func awaitReply(ctx context.Context, client *daemon.ChatClient, prompt string) (
 		case <-ctx.Done():
 			return "", ctx.Err()
 		case err := <-streamDone:
-			return "", fmt.Errorf("lost the session stream before the turn finished: %v", err)
+			return "", &daemon.UncertainOutcomeError{Operation: "await turn", Handle: handle, Cause: fmt.Errorf("lost the session stream before the turn finished: %v", err)}
 		case event := <-events:
 			if event.Type == daemon.EventReset && initialReset {
 				initialReset = false
 				continue
 			}
 			if event.Type == daemon.EventReset {
-				return "", errors.New("session stream reset before the submission completed; outcome uncertain")
+				return "", &daemon.UncertainOutcomeError{Operation: "await turn", Handle: handle, Cause: errors.New("session stream reset before the submission completed")}
 			}
 			if event.Type == daemon.EventTurnMembership && slices.Contains(event.SubmissionIDs, submissionID) {
 				turnID = event.TurnID

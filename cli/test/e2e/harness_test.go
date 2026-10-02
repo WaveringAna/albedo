@@ -449,7 +449,7 @@ func cli(t *testing.T, args ...string) string {
 // running side by side never depend on which profile is active.
 func newSession(t *testing.T, workspace string) string {
 	t.Helper()
-	created, err := daemon.RequestOperation[daemon.Session](context.Background(), conn(t), daemon.Operation{Name: "create session", Method: http.MethodPost, Path: "/sessions", Body: map[string]string{"workspace": workspace, "provider": t.Name()}, Policy: daemon.AuthRecovery})
+	created, err := daemon.CreateSession(context.Background(), conn(t), map[string]string{"workspace": workspace, "provider": t.Name()})
 	if err != nil || created.ID == "" {
 		t.Fatalf("creating a session on %s: %v", t.Name(), err)
 	}

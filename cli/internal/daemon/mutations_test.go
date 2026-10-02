@@ -146,7 +146,7 @@ func TestMutationContracts(t *testing.T) {
 	}
 }
 
-func TestInvalidMutationIsUncertainWithoutReplay(t *testing.T) {
+func TestInvalidCoveredMutationRetainsHandleAfterOneReplay(t *testing.T) {
 	for _, test := range []struct {
 		body   string
 		status int
@@ -164,8 +164,11 @@ func TestInvalidMutationIsUncertainWithoutReplay(t *testing.T) {
 		if strings.Contains(test.body, `"queued":"false"`) && protocol.Field != "queued" {
 			t.Fatalf("missing known field: %+v", protocol)
 		}
-		if transport.calls != 1 {
-			t.Fatalf("mutation executed %d times", transport.calls)
+		if transport.calls != 4 {
+			t.Fatalf("want two posts and two receipt queries, got %d requests", transport.calls)
+		}
+		if uncertainty.Handle == nil || uncertainty.Handle.ID == "" {
+			t.Fatal("lost operation handle")
 		}
 	}
 	conn, transport := mutationConnection(`{"code":"invalid_submission","error":"bad"}`, 400)

@@ -23,9 +23,11 @@ const (
 	NoRecovery RetryPolicy = iota
 	ReadRecovery
 	AuthRecovery
+	ReceiptRecovery
 )
 
 type Operation struct {
+	Handle *OperationHandle
 	Body   any
 	Name   string
 	Method string
@@ -123,7 +125,7 @@ func uncertainOperation(operation Operation, failure error) error {
 	if operation.Policy == ReadRecovery {
 		return failure
 	}
-	return &UncertainOutcomeError{Operation: operation.Name, Cause: failure}
+	return &UncertainOutcomeError{Operation: operation.Name, Cause: failure, Handle: operation.Handle}
 }
 
 // requestBytes owns every response until its bounded body has been read.

@@ -42,6 +42,7 @@ func TestPromptFollowsCombinedSubmissionThroughRetryAndCompletion(t *testing.T) 
 		case "/sessions/test/events":
 			var payload struct {
 				SubmissionID string `json:"submissionId"`
+				OperationID  string `json:"operationId"`
 			}
 			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 				t.Error(err)
@@ -52,7 +53,7 @@ func TestPromptFollowsCombinedSubmissionThroughRetryAndCompletion(t *testing.T) 
 			}
 			submitted <- payload.SubmissionID
 			writer.WriteHeader(http.StatusAccepted)
-			_, _ = writer.Write([]byte(`{"ok":true,"queued":true}`))
+			_ = json.NewEncoder(writer).Encode(map[string]any{"ok": true, "queued": true, "operationId": payload.OperationID})
 		case "/sessions/test/stream":
 			_, _ = fmt.Fprint(writer, "data: {\"cursor\":0,\"events\":[{\"type\":\"reset\"}]}\n\n")
 			writer.(http.Flusher).Flush()
@@ -103,8 +104,12 @@ func TestPromptCancellationReportsSharedWorkAndCleanupFailure(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				switch request.URL.Path {
 				case "/sessions/test/events":
+					var payload struct {
+						OperationID string `json:"operationId"`
+					}
+					_ = json.NewDecoder(request.Body).Decode(&payload)
 					writer.WriteHeader(http.StatusAccepted)
-					_, _ = writer.Write([]byte(`{"ok":true,"queued":true}`))
+					_ = json.NewEncoder(writer).Encode(map[string]any{"ok": true, "queued": true, "operationId": payload.OperationID})
 					close(submitted)
 				case "/sessions/test/stream":
 					_, _ = fmt.Fprint(writer, "data: {\"cursor\":0,\"events\":[{\"type\":\"reset\"}]}\n\n")

@@ -148,6 +148,7 @@ type CacheStep struct {
 }
 
 type StreamEvent struct {
+	OperationID   string         `json:"operationId,omitempty"`
 	Image         *ImageMetadata `json:"image,omitempty"`
 	Usage         *Usage         `json:"usage,omitempty"`
 	ToolTrace     *ToolTrace     `json:"trace,omitempty"`
