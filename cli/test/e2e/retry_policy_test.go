@@ -80,7 +80,12 @@ func mutateAcknowledgement(t *testing.T, path string, fault acknowledgementFault
 		proxy.requests = append(proxy.requests, request.Method+" "+request.URL.Path)
 		proxy.mu.Unlock()
 		forwarded := request.Clone(request.Context())
-		forwarded.Body = io.NopCloser(bytes.NewReader(requestBody))
+		forwarded.Body = http.NoBody
+		if len(requestBody) > 0 {
+			forwarded.Body = io.NopCloser(bytes.NewReader(requestBody))
+		}
+		forwarded.ContentLength = int64(len(requestBody))
+		forwarded.TransferEncoding = nil
 		forwarded.URL.Scheme, forwarded.URL.Host = destination.Scheme, destination.Host
 		forwarded.RequestURI = ""
 		forwarded.Host = destination.Host

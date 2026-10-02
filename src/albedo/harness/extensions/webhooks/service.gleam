@@ -7,27 +7,20 @@ import gleam/http/request
 import gleam/http/response
 import gleam/json
 import gleam/option
-import gleam/result
 import mist
 
 pub fn handle(
   daemon: extension.Daemon,
   path: List(String),
-  req: request.Request(mist.Connection),
+  req: request.Request(BitArray),
+  _live: request.Request(mist.Connection),
 ) -> response.Response(mist.ResponseData) {
   case req.method, path {
     Post, [id] -> {
-      let accepted = {
-        use raw <- result.try(
-          mist.read_body(req, 65_536)
-          |> result.replace_error(ledger.Invalid(
-            "body unreadable or exceeds 64 KiB",
-          )),
-        )
-        let event_key =
-          request.get_header(req, "x-albedo-event-id") |> option.from_result
-        ledger.accept(daemon.ledger, id, req.headers, raw.body, event_key)
-      }
+      let event_key =
+        request.get_header(req, "x-albedo-event-id") |> option.from_result
+      let accepted =
+        ledger.accept(daemon.ledger, id, req.headers, req.body, event_key)
       case accepted {
         Ok(delivery) -> {
           mail.waiting()
@@ -44,8 +37,7 @@ pub fn handle(
         Error(ledger.Overloaded) -> respond(429, message("webhook queue full"))
         Error(ledger.Conflict) ->
           respond(409, message("event id already used for a different body"))
-        Error(ledger.Invalid("webhook body exceeds 64 KiB" as reason))
-        | Error(ledger.Invalid("body unreadable or exceeds 64 KiB" as reason)) ->
+        Error(ledger.Invalid("webhook body exceeds 64 KiB" as reason)) ->
           respond(413, message(reason))
         Error(ledger.Invalid(reason)) -> respond(400, message(reason))
         Error(_) -> respond(503, message("webhook unavailable"))

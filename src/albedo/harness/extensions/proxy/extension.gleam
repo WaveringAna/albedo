@@ -27,7 +27,13 @@ pub fn extension() -> extension.Extension {
     "proxy",
     "OpenAI-compatible Chat Completions at /proxy/v1 for every saved provider profile",
     [],
-    [extension.ServicePlugin(extension.Service(handle))],
+    [
+      extension.ServicePlugin(extension.Service(
+        extension.LocalAccess,
+        32_000_000,
+        handle,
+      )),
+    ],
     extension.no_initialise,
   )
 }
@@ -35,18 +41,15 @@ pub fn extension() -> extension.Extension {
 fn handle(
   daemon: extension.Daemon,
   path: List(String),
-  req: request.Request(mist.Connection),
+  req: request.Request(BitArray),
+  live: request.Request(mist.Connection),
 ) -> response.Response(mist.ResponseData) {
   case req.method, path {
     Get, ["v1", "models"] -> respond(200, models(daemon))
     Post, ["v1", "chat", "completions"] ->
-      case
-        mist.read_body(req, 32_000_000)
-        |> result.replace_error("request body is unreadable or too large")
-        |> result.try(fn(req) { chat.parse(req.body) })
-      {
+      case chat.parse(req.body) {
         Error(message) -> respond(400, chat.error(message))
-        Ok(completion) -> complete(daemon, req, completion)
+        Ok(completion) -> complete(daemon, live, completion)
       }
     _, _ -> respond(404, chat.error("no such proxy route"))
   }

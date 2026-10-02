@@ -303,12 +303,26 @@ pub type Migration {
   )
 }
 
-/// Handles a request below the extension's mount point. The daemon token does
-/// not apply: a service owns its own authentication.
+/// Admission policy enforced by daemon ingress before reading the body.
+pub type Authorization {
+  DaemonToken
+  LocalAccess
+  /// The service verifies the buffered body before admitting any work.
+  SignedBody
+}
+
+/// Handles a buffered request below the extension's mount point. The live
+/// request is available for streaming responses, not for reading the body.
 pub type Service {
   Service(
-    handle: fn(Daemon, List(String), request.Request(mist.Connection)) ->
-      response.Response(mist.ResponseData),
+    authorization: Authorization,
+    body_limit: Int,
+    handle: fn(
+      Daemon,
+      List(String),
+      request.Request(BitArray),
+      request.Request(mist.Connection),
+    ) -> response.Response(mist.ResponseData),
   )
 }
 

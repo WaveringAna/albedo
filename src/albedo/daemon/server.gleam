@@ -27,6 +27,7 @@ import albedo/harness/runtime
 import albedo/harness/session_settings
 import albedo/harness/usage_feed
 import albedo/openai_api/types
+import gleam/bit_array
 import gleam/bytes_tree
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
@@ -1902,7 +1903,9 @@ fn route(
 ) -> response.Response(mist.ResponseData) {
   case http_request(fn() { handle_request(config, registry, req) }) {
     Ok(response) -> response
-    Error(_) -> error(503, "daemon request process is unavailable")
+    Error(_) ->
+      error(503, "daemon request process is unavailable")
+      |> response.set_header("connection", "close")
   }
 }
 
@@ -1916,55 +1919,167 @@ fn handle_request(
   registry: Subject(Message),
   req: request.Request(mist.Connection),
 ) -> response.Response(mist.ResponseData) {
-  case request.path_segments(req) {
-    [name, ..rest] ->
-      case list.contains(daemon_routes, name) {
-        True -> routed(config, registry, req)
-        False -> {
-          use host <- with_host(registry)
-          case
-            runtime.global(host)
-            |> result.replace_error(Nil)
-            |> result.try(extension.service(_, name))
-          {
-            // A browser page must not reach a local service that spends the
-            // user's credentials, so cross-origin requests stay refused. The
-            // service never sees this request, so nothing of its own reads
-            // the body: drain it, or it kills the keep-alive connection.
-            Ok(service) ->
-              case request.get_header(req, "origin") {
-                Ok(_) -> {
-                  let _ = mist.read_body(req, 9_200_000)
-                  error(403, "forbidden")
-                }
-                // A service owns its request's body: it reads what it answers
-                // from the live connection itself.
-                Error(_) ->
-                  service.handle(daemon(config, registry, host), rest, req)
+  // Reject browser requests before routing, authentication, or body framing.
+  case request.get_header(req, "origin") {
+    Ok(_) ->
+      error(403, "forbidden") |> response.set_header("connection", "close")
+    Error(_) ->
+      case request.path_segments(req) {
+        [name, ..rest] ->
+          case list.contains(daemon_routes, name) {
+            True -> routed(config, registry, req)
+            False ->
+              case actor.call(registry, 5000, Host) {
+                Error(message) ->
+                  error(503, message)
+                  |> response.set_header("connection", "close")
+                Ok(host) ->
+                  case
+                    runtime.global(host)
+                    |> result.replace_error(Nil)
+                    |> result.try(extension.service(_, name))
+                  {
+                    Ok(service) ->
+                      admitted(
+                        config,
+                        service.authorization,
+                        service.body_limit,
+                        req,
+                        fn(read) {
+                          service.handle(
+                            daemon(config, registry, host),
+                            rest,
+                            read,
+                            req,
+                          )
+                        },
+                      )
+                    Error(_) -> routed(config, registry, req)
+                  }
               }
-            Error(_) -> routed(config, registry, req)
           }
-        }
+        [] -> routed(config, registry, req)
       }
-    [] -> routed(config, registry, req)
   }
 }
 
-/// The daemon's own routes answer from a request whose body is already read:
-/// a handler that ignores its body would otherwise leave the bytes to mist's
-/// next-request parser, and a body arriving in a later TCP read than its
-/// headers is parsed there as a new request, which fails and closes the
-/// keep-alive connection without a response.
+const core_body_limit = 9_200_000
+
 fn routed(
   config: Config,
   registry: Subject(Message),
   req: request.Request(mist.Connection),
 ) -> response.Response(mist.ResponseData) {
-  case mist.read_body(req, 9_200_000) {
-    Ok(read) -> daemon_route(config, registry, read, req)
-    Error(mist.ExcessBody) -> error(413, "request body exceeds its limit")
-    Error(mist.MalformedBody) -> error(400, "invalid request body")
+  admitted(config, extension.DaemonToken, core_body_limit, req, fn(read) {
+    daemon_route(config, registry, read, req)
+  })
+}
+
+/// Authenticate before touching body bytes. Every accepted route, including
+/// GET and unknown routes, consumes its known-length body at this boundary.
+fn admitted(
+  config: Config,
+  authorization: extension.Authorization,
+  body_limit: Int,
+  req: request.Request(mist.Connection),
+  next: fn(request.Request(BitArray)) -> response.Response(mist.ResponseData),
+) -> response.Response(mist.ResponseData) {
+  case
+    authorization == extension.DaemonToken
+    && request.get_header(req, "authorization") != Ok("Bearer " <> config.token)
+  {
+    True -> ingress_error(403, "authentication_required", "forbidden")
+    False ->
+      case body_length(req, body_limit) {
+        Error(refusal) -> refusal
+        Ok(length) ->
+          case mist.read_body(req, body_limit) {
+            Ok(read) ->
+              case bit_array.byte_size(read.body) == length {
+                True -> next(read)
+                False ->
+                  ingress_error(
+                    400,
+                    "invalid_request_body",
+                    "invalid request body",
+                  )
+              }
+            Error(mist.MalformedBody) ->
+              ingress_error(400, "invalid_request_body", "invalid request body")
+            Error(mist.ExcessBody) ->
+              ingress_error(
+                413,
+                "request_body_too_large",
+                "request body exceeds its limit",
+              )
+          }
+      }
   }
+}
+
+fn body_length(
+  req: request.Request(mist.Connection),
+  limit: Int,
+) -> Result(Int, response.Response(mist.ResponseData)) {
+  case request.get_header(req, "transfer-encoding") {
+    Ok(_) ->
+      Error(ingress_error(
+        400,
+        "unsupported_transfer_encoding",
+        "transfer encoding is unsupported",
+      ))
+    Error(_) -> {
+      let length = case request.get_header(req, "content-length") {
+        Error(_) -> Ok(0)
+        Ok(value) -> {
+          case
+            value != ""
+            && list.all(string.to_graphemes(value), fn(digit) {
+              list.contains(
+                ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+                digit,
+              )
+            })
+          {
+            True -> int.parse(value)
+            False -> Error(Nil)
+          }
+        }
+      }
+      case length {
+        Error(_) ->
+          Error(ingress_error(
+            400,
+            "invalid_content_length",
+            "invalid content length",
+          ))
+        Ok(length) if length > limit ->
+          Error(ingress_error(
+            413,
+            "request_body_too_large",
+            "request body exceeds its limit",
+          ))
+        Ok(length) -> Ok(length)
+      }
+    }
+  }
+}
+
+/// The body has not been consumed, so Mist must close after this response.
+fn ingress_error(
+  status: Int,
+  code: String,
+  message: String,
+) -> response.Response(mist.ResponseData) {
+  reply(
+    status,
+    json.object([
+      #("error", json.string(message)),
+      #("code", json.string(code)),
+    ]),
+  )
+  |> response.set_header("albedo-error-code", code)
+  |> response.set_header("connection", "close")
 }
 
 /// The runtime, or 503 once the registry has stopped serving from the store.
@@ -2010,534 +2125,504 @@ fn daemon_route(
   req: request.Request(BitArray),
   live: request.Request(mist.Connection),
 ) -> response.Response(mist.ResponseData) {
-  let authorised =
-    request.get_header(req, "authorization") == Ok("Bearer " <> config.token)
-  // Local API is authenticated and not a cross-origin browser endpoint.
-  case request.get_header(req, "origin"), authorised {
-    Ok(_), _ -> error(403, "forbidden")
-    Error(Nil), False ->
+  case req.method, request.path_segments(req) {
+    Get, ["health"] ->
       reply(
-        403,
-        json.object([
-          #("error", json.string("forbidden")),
-          #("code", json.string("authentication_required")),
+        200,
+        acknowledged([
+          #("version", json.int(2)),
+          #(
+            "capabilities",
+            json.array(
+              [
+                "session_provider",
+                "session_workspace",
+                "session_extensions",
+                "global_extensions",
+                "session_tree",
+                "session_context",
+                "session_commands",
+                "workspace_browser",
+                "settings_api",
+                "session_model",
+              ],
+              json.string,
+            ),
+          ),
         ]),
       )
-      |> response.set_header("albedo-error-code", "authentication_required")
-    Error(Nil), True ->
-      case req.method, request.path_segments(req) {
-        Get, ["health"] ->
+    Get, ["settings"] -> settings.snapshot(config.home) |> answered_settings
+    Put, ["settings", "providers", name] ->
+      body(req, decode.dynamic)
+      |> result.try(fn(value) {
+        settings.save_provider(config.home, name, settings.encode(value))
+      })
+      |> answered(200, fn(_) { acknowledged([]) }, 400)
+    Delete, ["settings", "providers", name] ->
+      settings.delete_provider(config.home, name)
+      |> answered(200, fn(_) { acknowledged([]) }, 400)
+    Patch, ["settings", "ui"] ->
+      body(req, decode.dynamic)
+      |> result.try(fn(value) {
+        settings.patch_ui(config.home, "", settings.encode(value))
+      })
+      |> answered_settings
+    Patch, ["settings", "ui", "sessions", id] ->
+      body(req, decode.dynamic)
+      |> result.try(fn(value) {
+        settings.patch_ui(config.home, id, settings.encode(value))
+      })
+      |> answered_settings
+    Post, ["settings", "ui", "sessions", id, "open"] ->
+      settings.record_open(config.home, id)
+      |> answered_settings
+    Post, ["sessions", id, "settings", "capabilities"] ->
+      body(req, settings.capability_decoder())
+      |> result.try(fn(change) {
+        actor.call(registry, 5000, Lookup(id, _))
+        |> result.try(session.save_settings(_, change))
+      })
+      |> answered(200, fn(value) { value }, 409)
+    Put, ["sessions", id, "settings", "mcp", name] -> {
+      let decoder = {
+        use server <- decode.field(
+          "server",
+          decode.map(decode.dynamic, settings.encode),
+        )
+        use secrets <- decode.optional_field(
+          "secrets",
+          "{}",
+          decode.map(decode.dynamic, settings.encode),
+        )
+        decode.success(session_settings.MCP(name, Some(server), secrets))
+      }
+      body(req, decoder)
+      |> result.try(fn(change) {
+        actor.call(registry, 5000, Lookup(id, _))
+        |> result.try(session.save_settings(_, change))
+      })
+      |> answered(200, fn(value) { value }, 409)
+    }
+    Delete, ["sessions", id, "settings", "mcp", name] ->
+      actor.call(registry, 5000, Lookup(id, _))
+      |> result.try(session.save_settings(
+        _,
+        session_settings.MCP(
+          name,
+          None,
+          "{\"bearerToken\":null,\"headers\":null,\"env\":null}",
+        ),
+      ))
+      |> answered(200, fn(value) { value }, 409)
+    Get, ["sessions"] ->
+      reply(200, json.array(actor.call(registry, 5000, List), info_json))
+    // The tree the given session belongs to, for the orchestrator view.
+    Get, ["agents"] -> {
+      let id = query(req) |> list.key_find("session") |> result.unwrap("")
+      actor.call(registry, 10_000, ReadAgents(id, _))
+      |> answered(
+        200,
+        fn(tree) {
+          json.object([
+            #("root", json.string(tree.0)),
+            #("nodes", json.array(tree.1, agent_json)),
+          ])
+        },
+        404,
+      )
+    }
+    Get, ["agents", "stream"] -> agents_stream(live)
+    // The workspace picker's folder browser; robot-docs/workspaces.md.
+    Get, ["fs", "list"] -> browsed(req, folders.list)
+    Get, ["fs", "repo"] -> browsed(req, folders.repo)
+    Get, ["fs", "preview"] -> browsed(req, folders.preview)
+    // Quota readings, read-only: the latest per account and limit, or
+    // with `?history=<id>` the raw samples after that row, newest first.
+    Get, ["quota"] -> {
+      use host <- with_host(registry)
+      let database = runtime.ledger(host)
+      case list.key_find(query(req), "history") {
+        Ok(cursor) ->
+          quota.page_json(
+            database,
+            int.parse(cursor) |> result.unwrap(0),
+            query_int(req, "limit", 50) |> int.clamp(1, 200),
+          )
+          |> answered(200, fn(value) { value }, 400)
+        Error(_) ->
+          quota.latest_json(database)
+          |> answered(200, fn(value) { value }, 400)
+      }
+    }
+    // The prompt-cache TTL table, read-only: every merged entry with the
+    // layer it came from, or with `extension`, `host` and `model`, the
+    // single resolved entry (or null).
+    Get, ["cache-ttl"] -> {
+      let parameters = query(req)
+      let asked = fn(key) {
+        parameters |> list.key_find(key) |> result.unwrap("")
+      }
+      case asked("extension"), asked("host"), asked("model") {
+        "", "", "" -> reply(200, cache_ttl.table_json(cache_ttl.table()))
+        _, _, _ ->
           reply(
             200,
-            acknowledged([
-              #("version", json.int(2)),
-              #(
-                "capabilities",
-                json.array(
-                  [
-                    "session_provider",
-                    "session_workspace",
-                    "session_extensions",
-                    "global_extensions",
-                    "session_tree",
-                    "session_context",
-                    "session_commands",
-                    "workspace_browser",
-                    "settings_api",
-                    "session_model",
-                  ],
-                  json.string,
-                ),
-              ),
+            case
+              cache_ttl.lookup(
+                asked("extension"),
+                asked("host"),
+                asked("model"),
+              )
+            {
+              Some(entry) -> cache_ttl.entry_json(entry)
+              None -> json.null()
+            },
+          )
+      }
+    }
+    // `details` lists objects with catalog facts. Without it, plain ids.
+    Get, ["models", provider] -> {
+      let query = query(req)
+      let endpoint =
+        list.key_find(query, "endpoint")
+        |> result.unwrap("")
+        |> extension.clean_endpoint
+      use host <- with_host(registry)
+      case list.key_find(query, "details") {
+        Ok(_) ->
+          reply(
+            200,
+            json.array(
+              runtime.listed_models(host, provider, endpoint),
+              listed_model_json,
+            ),
+          )
+        Error(_) ->
+          reply(
+            200,
+            json.array(
+              runtime.model_names(host, provider, endpoint),
+              json.string,
+            ),
+          )
+      }
+    }
+    _, ["auth", ..rest] ->
+      auth(config.home, actor.call(registry, 5000, Logins), req, rest)
+    Post, ["sessions"] -> {
+      let decoder = {
+        use cwd <- decode.field("workspace", decode.string)
+        use provider <- decode.optional_field(
+          "provider",
+          None,
+          decode.map(decode.string, Some),
+        )
+        use model <- decode.optional_field("model", "", decode.string)
+        decode.success(#(cwd, provider, model))
+      }
+      body(req, decoder)
+      |> result.try(fn(fields) {
+        let #(cwd, provider, model) = fields
+        actor.call(registry, 15_000, Create(cwd, provider, model, _))
+      })
+      |> answered(201, info_json, 400)
+    }
+    Post, ["shutdown"] -> {
+      let _ = process.send_after(registry, 100, Shutdown)
+      reply(200, acknowledged([]))
+    }
+    // A blank name hands the title back to the latest message.
+    Patch, ["sessions", id] ->
+      body(req, decode.field("name", decode.string, decode.success))
+      |> result.try(fn(name) { actor.call(registry, 5000, Rename(id, name, _)) })
+      |> answered(200, info_json, 409)
+    // With ?tree=1, the session and every agent below it, deepest first.
+    Delete, ["sessions", id] -> {
+      let tree = list.key_find(query(req), "tree") == Ok("1")
+      case tree {
+        False ->
+          actor.call(registry, 40_000, DeleteSession(id, _))
+          |> result.replace(1)
+        True -> delete_tree(registry, id)
+      }
+      |> answered(
+        200,
+        fn(count) { acknowledged([#("deleted", json.int(count))]) },
+        409,
+      )
+    }
+    Get, ["sessions", id, "tree"] -> {
+      let after = query_int(req, "after", 0)
+      let limit = query_int(req, "limit", 50)
+      actor.call(registry, 10_000, ReadTree(id, after, limit, _))
+      |> answered(200, tree_page_json, 400)
+    }
+    Get, ["sessions", id, "preview"] -> {
+      let limit = query_int(req, "limit", 12)
+      actor.call(registry, 10_000, ReadRecent(id, limit, _))
+      |> answered(
+        200,
+        fn(recent) {
+          json.object([
+            #("items", json.array(recent.items, tree_item_json)),
+            #("total", json.int(recent.total)),
+          ])
+        },
+        400,
+      )
+    }
+    // The session's provider requests, oldest first, for tests and the
+    // quota inspector: `after` is the last row id to continue from.
+    Get, ["sessions", id, "requests"] -> {
+      let after = query_int(req, "after", 0)
+      let limit =
+        query_int(req, "limit", requests.page_rows)
+        |> int.clamp(1, 500)
+      use host <- with_host(registry)
+      requests.page(runtime.ledger(host), id, after, limit)
+      |> answered(
+        200,
+        fn(page) {
+          json.object([
+            #("session", json.string(id)),
+            #("rows", json.array(page.0, requests.row_json)),
+            #("after", json.int(page.1)),
+          ])
+        },
+        400,
+      )
+    }
+    // Older transcript as rendered events, for a client scrolled past what
+    // its reset carried: `before` is the `before` of the page it holds.
+    Get, ["sessions", id, "history"] -> {
+      let before = query_optional_int(req, "before")
+      let rows = query_int(req, "rows", history_page_rows) |> int.clamp(1, 400)
+      case actor.call(registry, 10_000, ReadHistory(id, before, rows, _)) {
+        Ok(rendered) -> raw(200, rendered)
+        Error(e) -> error(400, e)
+      }
+    }
+    Get, ["sessions", id, "context", section, page] ->
+      int.parse(page)
+      |> result.replace_error("invalid context page")
+      |> result.try(fn(page) {
+        actor.call(registry, 5000, Lookup(id, _))
+        |> result.try(session.context_page(_, section, page))
+      })
+      |> answered(200, fn(content) { content }, 404)
+    Post, ["sessions", id, "fork"] -> {
+      body(req, decode.field("checkpoint", decode.int, decode.success))
+      |> result.try(fn(checkpoint) {
+        actor.call(registry, 15_000, Fork(id, checkpoint, _))
+      })
+      |> answered(201, info_json, 409)
+    }
+    // A child session the user starts by hand; agents use the same path.
+    Post, ["sessions", id, "children"] -> {
+      let decoder = {
+        use name <- decode.field("name", decode.string)
+        use task <- decode.field("task", decode.string)
+        use model <- decode.optional_field("model", "", decode.string)
+        decode.success(#(name, task, model))
+      }
+      body(req, decoder)
+      |> result.try(fn(fields) {
+        let #(name, task, model) = fields
+        actor.call(registry, 15_000, CreateChild(id, name, task, model, _))
+      })
+      |> answered(
+        201,
+        fn(pair) {
+          json.object([
+            #("session", info_json(pair.0)),
+            #("member", member_json(pair.1)),
+          ])
+        },
+        409,
+      )
+    }
+    Get, ["sessions", id, "children"] -> {
+      use host <- with_host(registry)
+      family.children(runtime.ledger(host), id)
+      |> answered(200, fn(members) { json.array(members, member_json) }, 400)
+    }
+    // Mail written as session `id`: the daemon token is the user's, who may
+    // speak for any of their sessions.
+    Post, ["sessions", id, "mail"] -> {
+      let decoder = {
+        use to <- decode.field("to", decode.string)
+        use text <- decode.field("body", decode.string)
+        decode.success(#(to, text))
+      }
+      body(req, decoder)
+      |> result.try(fn(fields) {
+        use host <- result.try(actor.call(registry, 5000, Host))
+        mail.send(runtime.ledger(host), id, fields.0, fields.1)
+      })
+      |> answered(202, mail.receipt_json, 409)
+    }
+    Post, ["sessions", id, "events"] -> {
+      case body(req, submission_decoder()) {
+        Error(message) ->
+          reply(
+            400,
+            json.object([
+              #("code", json.string("invalid_submission")),
+              #("error", json.string(message)),
             ]),
           )
-        Get, ["settings"] -> settings.snapshot(config.home) |> answered_settings
-        Put, ["settings", "providers", name] ->
-          body(req, decode.dynamic)
-          |> result.try(fn(value) {
-            settings.save_provider(config.home, name, settings.encode(value))
-          })
-          |> answered(200, fn(_) { acknowledged([]) }, 400)
-        Delete, ["settings", "providers", name] ->
-          settings.delete_provider(config.home, name)
-          |> answered(200, fn(_) { acknowledged([]) }, 400)
-        Patch, ["settings", "ui"] ->
-          body(req, decode.dynamic)
-          |> result.try(fn(value) {
-            settings.patch_ui(config.home, "", settings.encode(value))
-          })
-          |> answered_settings
-        Patch, ["settings", "ui", "sessions", id] ->
-          body(req, decode.dynamic)
-          |> result.try(fn(value) {
-            settings.patch_ui(config.home, id, settings.encode(value))
-          })
-          |> answered_settings
-        Post, ["settings", "ui", "sessions", id, "open"] ->
-          settings.record_open(config.home, id)
-          |> answered_settings
-        Post, ["sessions", id, "settings", "capabilities"] ->
-          body(req, settings.capability_decoder())
-          |> result.try(fn(change) {
-            actor.call(registry, 5000, Lookup(id, _))
-            |> result.try(session.save_settings(_, change))
-          })
-          |> answered(200, fn(value) { value }, 409)
-        Put, ["sessions", id, "settings", "mcp", name] -> {
-          let decoder = {
-            use server <- decode.field(
-              "server",
-              decode.map(decode.dynamic, settings.encode),
-            )
-            use secrets <- decode.optional_field(
-              "secrets",
-              "{}",
-              decode.map(decode.dynamic, settings.encode),
-            )
-            decode.success(session_settings.MCP(name, Some(server), secrets))
-          }
-          body(req, decoder)
-          |> result.try(fn(change) {
-            actor.call(registry, 5000, Lookup(id, _))
-            |> result.try(session.save_settings(_, change))
-          })
-          |> answered(200, fn(value) { value }, 409)
-        }
-        Delete, ["sessions", id, "settings", "mcp", name] ->
-          actor.call(registry, 5000, Lookup(id, _))
-          |> result.try(session.save_settings(
-            _,
-            session_settings.MCP(
-              name,
-              None,
-              "{\"bearerToken\":null,\"headers\":null,\"env\":null}",
-            ),
-          ))
-          |> answered(200, fn(value) { value }, 409)
-        Get, ["sessions"] ->
-          reply(200, json.array(actor.call(registry, 5000, List), info_json))
-        // The tree the given session belongs to, for the orchestrator view.
-        Get, ["agents"] -> {
-          let id = query(req) |> list.key_find("session") |> result.unwrap("")
-          actor.call(registry, 10_000, ReadAgents(id, _))
-          |> answered(
-            200,
-            fn(tree) {
-              json.object([
-                #("root", json.string(tree.0)),
-                #("nodes", json.array(tree.1, agent_json)),
-              ])
-            },
-            404,
-          )
-        }
-        Get, ["agents", "stream"] -> agents_stream(live)
-        // The workspace picker's folder browser; robot-docs/workspaces.md.
-        Get, ["fs", "list"] -> browsed(req, folders.list)
-        Get, ["fs", "repo"] -> browsed(req, folders.repo)
-        Get, ["fs", "preview"] -> browsed(req, folders.preview)
-        // Quota readings, read-only: the latest per account and limit, or
-        // with `?history=<id>` the raw samples after that row, newest first.
-        Get, ["quota"] -> {
-          use host <- with_host(registry)
-          let database = runtime.ledger(host)
-          case list.key_find(query(req), "history") {
-            Ok(cursor) ->
-              quota.page_json(
-                database,
-                int.parse(cursor) |> result.unwrap(0),
-                query_int(req, "limit", 50) |> int.clamp(1, 200),
-              )
-              |> answered(200, fn(value) { value }, 400)
-            Error(_) ->
-              quota.latest_json(database)
-              |> answered(200, fn(value) { value }, 400)
-          }
-        }
-        // The prompt-cache TTL table, read-only: every merged entry with the
-        // layer it came from, or with `extension`, `host` and `model`, the
-        // single resolved entry (or null).
-        Get, ["cache-ttl"] -> {
-          let parameters = query(req)
-          let asked = fn(key) {
-            parameters |> list.key_find(key) |> result.unwrap("")
-          }
-          case asked("extension"), asked("host"), asked("model") {
-            "", "", "" -> reply(200, cache_ttl.table_json(cache_ttl.table()))
-            _, _, _ ->
-              reply(
-                200,
-                case
-                  cache_ttl.lookup(
-                    asked("extension"),
-                    asked("host"),
-                    asked("model"),
-                  )
-                {
-                  Some(entry) -> cache_ttl.entry_json(entry)
-                  None -> json.null()
-                },
-              )
-          }
-        }
-        // `details` lists objects with catalog facts. Without it, plain ids.
-        Get, ["models", provider] -> {
-          let query = query(req)
-          let endpoint =
-            list.key_find(query, "endpoint")
-            |> result.unwrap("")
-            |> extension.clean_endpoint
-          use host <- with_host(registry)
-          case list.key_find(query, "details") {
-            Ok(_) ->
-              reply(
-                200,
-                json.array(
-                  runtime.listed_models(host, provider, endpoint),
-                  listed_model_json,
-                ),
-              )
-            Error(_) ->
-              reply(
-                200,
-                json.array(
-                  runtime.model_names(host, provider, endpoint),
-                  json.string,
-                ),
-              )
-          }
-        }
-        _, ["auth", ..rest] ->
-          auth(config.home, actor.call(registry, 5000, Logins), req, rest)
-        Post, ["sessions"] -> {
-          let decoder = {
-            use cwd <- decode.field("workspace", decode.string)
-            use provider <- decode.optional_field(
-              "provider",
-              None,
-              decode.map(decode.string, Some),
-            )
-            use model <- decode.optional_field("model", "", decode.string)
-            decode.success(#(cwd, provider, model))
-          }
-          body(req, decoder)
-          |> result.try(fn(fields) {
-            let #(cwd, provider, model) = fields
-            actor.call(registry, 15_000, Create(cwd, provider, model, _))
-          })
-          |> answered(201, info_json, 400)
-        }
-        Post, ["shutdown"] -> {
-          let _ = process.send_after(registry, 100, Shutdown)
-          reply(200, acknowledged([]))
-        }
-        // A blank name hands the title back to the latest message.
-        Patch, ["sessions", id] ->
-          body(req, decode.field("name", decode.string, decode.success))
-          |> result.try(fn(name) {
-            actor.call(registry, 5000, Rename(id, name, _))
-          })
-          |> answered(200, info_json, 409)
-        // With ?tree=1, the session and every agent below it, deepest first.
-        Delete, ["sessions", id] -> {
-          let tree = list.key_find(query(req), "tree") == Ok("1")
-          case tree {
-            False ->
-              actor.call(registry, 40_000, DeleteSession(id, _))
-              |> result.replace(1)
-            True -> delete_tree(registry, id)
-          }
-          |> answered(
-            200,
-            fn(count) { acknowledged([#("deleted", json.int(count))]) },
-            409,
-          )
-        }
-        Get, ["sessions", id, "tree"] -> {
-          let after = query_int(req, "after", 0)
-          let limit = query_int(req, "limit", 50)
-          actor.call(registry, 10_000, ReadTree(id, after, limit, _))
-          |> answered(200, tree_page_json, 400)
-        }
-        Get, ["sessions", id, "preview"] -> {
-          let limit = query_int(req, "limit", 12)
-          actor.call(registry, 10_000, ReadRecent(id, limit, _))
-          |> answered(
-            200,
-            fn(recent) {
-              json.object([
-                #("items", json.array(recent.items, tree_item_json)),
-                #("total", json.int(recent.total)),
-              ])
-            },
-            400,
-          )
-        }
-        // The session's provider requests, oldest first, for tests and the
-        // quota inspector: `after` is the last row id to continue from.
-        Get, ["sessions", id, "requests"] -> {
-          let after = query_int(req, "after", 0)
-          let limit =
-            query_int(req, "limit", requests.page_rows)
-            |> int.clamp(1, 500)
-          use host <- with_host(registry)
-          requests.page(runtime.ledger(host), id, after, limit)
-          |> answered(
-            200,
-            fn(page) {
-              json.object([
-                #("session", json.string(id)),
-                #("rows", json.array(page.0, requests.row_json)),
-                #("after", json.int(page.1)),
-              ])
-            },
-            400,
-          )
-        }
-        // Older transcript as rendered events, for a client scrolled past what
-        // its reset carried: `before` is the `before` of the page it holds.
-        Get, ["sessions", id, "history"] -> {
-          let before = query_optional_int(req, "before")
-          let rows =
-            query_int(req, "rows", history_page_rows) |> int.clamp(1, 400)
-          case actor.call(registry, 10_000, ReadHistory(id, before, rows, _)) {
-            Ok(rendered) -> raw(200, rendered)
-            Error(e) -> error(400, e)
-          }
-        }
-        Get, ["sessions", id, "context", section, page] ->
-          int.parse(page)
-          |> result.replace_error("invalid context page")
-          |> result.try(fn(page) {
-            actor.call(registry, 5000, Lookup(id, _))
-            |> result.try(session.context_page(_, section, page))
-          })
-          |> answered(200, fn(content) { content }, 404)
-        Post, ["sessions", id, "fork"] -> {
-          body(req, decode.field("checkpoint", decode.int, decode.success))
-          |> result.try(fn(checkpoint) {
-            actor.call(registry, 15_000, Fork(id, checkpoint, _))
-          })
-          |> answered(201, info_json, 409)
-        }
-        // A child session the user starts by hand; agents use the same path.
-        Post, ["sessions", id, "children"] -> {
-          let decoder = {
-            use name <- decode.field("name", decode.string)
-            use task <- decode.field("task", decode.string)
-            use model <- decode.optional_field("model", "", decode.string)
-            decode.success(#(name, task, model))
-          }
-          body(req, decoder)
-          |> result.try(fn(fields) {
-            let #(name, task, model) = fields
-            actor.call(registry, 15_000, CreateChild(id, name, task, model, _))
-          })
-          |> answered(
-            201,
-            fn(pair) {
-              json.object([
-                #("session", info_json(pair.0)),
-                #("member", member_json(pair.1)),
-              ])
-            },
-            409,
-          )
-        }
-        Get, ["sessions", id, "children"] -> {
-          use host <- with_host(registry)
-          family.children(runtime.ledger(host), id)
-          |> answered(
-            200,
-            fn(members) { json.array(members, member_json) },
-            400,
-          )
-        }
-        // Mail written as session `id`: the daemon token is the user's, who may
-        // speak for any of their sessions.
-        Post, ["sessions", id, "mail"] -> {
-          let decoder = {
-            use to <- decode.field("to", decode.string)
-            use text <- decode.field("body", decode.string)
-            decode.success(#(to, text))
-          }
-          body(req, decoder)
-          |> result.try(fn(fields) {
-            use host <- result.try(actor.call(registry, 5000, Host))
-            mail.send(runtime.ledger(host), id, fields.0, fields.1)
-          })
-          |> answered(202, mail.receipt_json, 409)
-        }
-        Post, ["sessions", id, "events"] -> {
-          case body(req, submission_decoder()) {
-            Error(message) ->
-              reply(
-                400,
-                json.object([
-                  #("code", json.string("invalid_submission")),
-                  #("error", json.string(message)),
-                ]),
-              )
-            Ok(submission) ->
-              case actor.call(registry, 5000, Lookup(id, _)) {
-                Error(message) -> error(404, message)
-                Ok(worker) -> {
-                  let outcome = case submission {
-                    User(text, client_id, image) ->
-                      session.submit(worker, text, client_id, image)
-                    Continue(client_id) ->
-                      session.submit_continue(worker, client_id)
-                  }
-                  case outcome {
-                    Ok(queued) ->
-                      reply(202, acknowledged([#("queued", json.bool(queued))]))
-                    Error(session.Rejected(e)) -> error(409, e)
-                    Error(session.Busy) ->
-                      error(409, "session is busy or message queue is full")
-                    Error(session.WorkspaceMissing(path)) ->
-                      reply(
-                        409,
-                        json.object([
-                          #("code", json.string("workspace_missing")),
-                          #("workspace", json.string(path)),
-                          #(
-                            "error",
-                            json.string("workspace not found: " <> path),
-                          ),
-                        ]),
-                      )
-                  }
-                }
-              }
-          }
-        }
-        _, ["sessions", id, operation] ->
+        Ok(submission) ->
           case actor.call(registry, 5000, Lookup(id, _)) {
-            Error(e) -> error(404, e)
-            Ok(worker) ->
-              case req.method, operation {
-                Get, "context" -> reply(200, session.context(worker))
-                Get, "commands" ->
-                  session.commands(worker)
-                  |> answered(
-                    200,
-                    fn(found) { command.catalog_json(found.0) },
-                    409,
-                  )
-                Get, "extensions" ->
-                  session.extensions(worker)
-                  |> answered(200, extensions_json, 409)
-                Post, "extensions" -> {
-                  // `scope` "global" changes the default every session
-                  // without its own choice follows; "inherit" drops this
-                  // session's choice. Omitted, it is a session choice.
-                  let decoder = {
-                    use name <- decode.field("name", decode.string)
-                    use scope <- decode.optional_field(
-                      "scope",
-                      "session",
-                      decode.string,
-                    )
-                    use enabled <- decode.optional_field(
-                      "enabled",
-                      None,
-                      decode.optional(decode.bool),
-                    )
-                    case scope, enabled {
-                      "session", Some(value) ->
-                        decode.success(extension.SetSession(name, value))
-                      "global", Some(value) ->
-                        decode.success(extension.SetGlobal(name, value))
-                      "inherit", _ -> decode.success(extension.Inherit(name))
-                      _, _ ->
-                        decode.failure(
-                          extension.Inherit(name),
-                          "scope session or global with enabled, or inherit",
-                        )
-                    }
-                  }
-                  body(req, decoder)
-                  |> result.try(session.set_extension(worker, _))
-                  |> answered(200, extensions_json, 409)
-                }
-                Get, "status" -> raw(200, session.status(worker))
-                // Unlike `/model`, leaves the default for new sessions alone.
-                Post, "model" -> {
-                  let decoder = {
-                    use model <- decode.field("model", decode.string)
-                    use provider <- decode.optional_field(
-                      "provider",
-                      None,
-                      decode.map(decode.string, Some),
-                    )
-                    decode.success(#(model, provider))
-                  }
-                  body(req, decoder)
-                  |> result.try(fn(fields) {
-                    session.set_model(worker, fields.0, fields.1)
-                  })
-                  |> answered(200, fn(selection) { selection }, 409)
-                }
-                Post, "workspace" -> {
-                  body(
-                    req,
-                    decode.field("workspace", decode.string, decode.success),
-                  )
-                  // The session answers here, off the registry.
-                  |> result.try(session.set_workspace(worker, _))
-                  |> result.try(fn(previous) {
-                    use #(info, live) <- result.map(
-                      actor.call(registry, 5000, Moved(id, previous, _)),
-                    )
-                    list.each(live, session.follow(_, previous, info.cwd))
-                    info
-                  })
-                  |> answered(200, info_json, 409)
-                }
-                Post, "commands" -> {
-                  case
-                    body(req, decode.dynamic)
-                    |> result.try(fn(fields) {
-                      use #(name, supplied, raw, client) <- result.try(
-                        command.decode_run(
-                          ["name", "args", "arguments", "clientId"],
-                          fields,
-                        ),
-                      )
-                      use #(commands, context) <- result.try(session.commands(
-                        worker,
-                      ))
-                      command.call(
-                        commands,
-                        context,
-                        command.UserCall,
-                        client,
-                        name,
-                        supplied,
-                        raw,
-                      )
-                    })
-                  {
-                    Ok(command.Data(value)) ->
-                      reply(200, json.object([#("result", value)]))
-                    Ok(command.Turn(_, _)) ->
-                      reply(202, json.object([#("submitted", json.bool(True))]))
-                    Error(e) -> error(409, e)
-                  }
-                }
-                Post, "interrupt" ->
+            Error(message) -> error(404, message)
+            Ok(worker) -> {
+              let outcome = case submission {
+                User(text, client_id, image) ->
+                  session.submit(worker, text, client_id, image)
+                Continue(client_id) ->
+                  session.submit_continue(worker, client_id)
+              }
+              case outcome {
+                Ok(queued) ->
+                  reply(202, acknowledged([#("queued", json.bool(queued))]))
+                Error(session.Rejected(e)) -> error(409, e)
+                Error(session.Busy) ->
+                  error(409, "session is busy or message queue is full")
+                Error(session.WorkspaceMissing(path)) ->
                   reply(
-                    200,
+                    409,
                     json.object([
-                      #("interrupted", json.bool(session.interrupt(worker))),
+                      #("code", json.string("workspace_missing")),
+                      #("workspace", json.string(path)),
+                      #("error", json.string("workspace not found: " <> path)),
                     ]),
                   )
-                Get, "stream" -> stream(live, worker)
-                _, _ -> error(404, "unknown session operation")
               }
+            }
           }
-        _, _ -> error(404, "not found")
       }
+    }
+    _, ["sessions", id, operation] ->
+      case actor.call(registry, 5000, Lookup(id, _)) {
+        Error(e) -> error(404, e)
+        Ok(worker) ->
+          case req.method, operation {
+            Get, "context" -> reply(200, session.context(worker))
+            Get, "commands" ->
+              session.commands(worker)
+              |> answered(200, fn(found) { command.catalog_json(found.0) }, 409)
+            Get, "extensions" ->
+              session.extensions(worker)
+              |> answered(200, extensions_json, 409)
+            Post, "extensions" -> {
+              // `scope` "global" changes the default every session
+              // without its own choice follows; "inherit" drops this
+              // session's choice. Omitted, it is a session choice.
+              let decoder = {
+                use name <- decode.field("name", decode.string)
+                use scope <- decode.optional_field(
+                  "scope",
+                  "session",
+                  decode.string,
+                )
+                use enabled <- decode.optional_field(
+                  "enabled",
+                  None,
+                  decode.optional(decode.bool),
+                )
+                case scope, enabled {
+                  "session", Some(value) ->
+                    decode.success(extension.SetSession(name, value))
+                  "global", Some(value) ->
+                    decode.success(extension.SetGlobal(name, value))
+                  "inherit", _ -> decode.success(extension.Inherit(name))
+                  _, _ ->
+                    decode.failure(
+                      extension.Inherit(name),
+                      "scope session or global with enabled, or inherit",
+                    )
+                }
+              }
+              body(req, decoder)
+              |> result.try(session.set_extension(worker, _))
+              |> answered(200, extensions_json, 409)
+            }
+            Get, "status" -> raw(200, session.status(worker))
+            // Unlike `/model`, leaves the default for new sessions alone.
+            Post, "model" -> {
+              let decoder = {
+                use model <- decode.field("model", decode.string)
+                use provider <- decode.optional_field(
+                  "provider",
+                  None,
+                  decode.map(decode.string, Some),
+                )
+                decode.success(#(model, provider))
+              }
+              body(req, decoder)
+              |> result.try(fn(fields) {
+                session.set_model(worker, fields.0, fields.1)
+              })
+              |> answered(200, fn(selection) { selection }, 409)
+            }
+            Post, "workspace" -> {
+              body(
+                req,
+                decode.field("workspace", decode.string, decode.success),
+              )
+              // The session answers here, off the registry.
+              |> result.try(session.set_workspace(worker, _))
+              |> result.try(fn(previous) {
+                use #(info, live) <- result.map(
+                  actor.call(registry, 5000, Moved(id, previous, _)),
+                )
+                list.each(live, session.follow(_, previous, info.cwd))
+                info
+              })
+              |> answered(200, info_json, 409)
+            }
+            Post, "commands" -> {
+              case
+                body(req, decode.dynamic)
+                |> result.try(fn(fields) {
+                  use #(name, supplied, raw, client) <- result.try(
+                    command.decode_run(
+                      ["name", "args", "arguments", "clientId"],
+                      fields,
+                    ),
+                  )
+                  use #(commands, context) <- result.try(session.commands(
+                    worker,
+                  ))
+                  command.call(
+                    commands,
+                    context,
+                    command.UserCall,
+                    client,
+                    name,
+                    supplied,
+                    raw,
+                  )
+                })
+              {
+                Ok(command.Data(value)) ->
+                  reply(200, json.object([#("result", value)]))
+                Ok(command.Turn(_, _)) ->
+                  reply(202, json.object([#("submitted", json.bool(True))]))
+                Error(e) -> error(409, e)
+              }
+            }
+            Post, "interrupt" ->
+              reply(
+                200,
+                json.object([
+                  #("interrupted", json.bool(session.interrupt(worker))),
+                ]),
+              )
+            Get, "stream" -> stream(live, worker)
+            _, _ -> error(404, "unknown session operation")
+          }
+      }
+    _, _ -> error(404, "not found")
   }
 }
 

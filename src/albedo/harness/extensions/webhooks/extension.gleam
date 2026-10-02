@@ -10,7 +10,11 @@ pub fn extension() -> extension.Extension {
     "Signed webhooks delivered to a specific persistent session.",
     [],
     [
-      extension.ServicePlugin(extension.Service(service.handle)),
+      extension.ServicePlugin(extension.Service(
+        extension.SignedBody,
+        65_536,
+        service.handle,
+      )),
       extension.ManagedPlugin(fn(db, session, _) {
         Ok(
           extension.Managed(
