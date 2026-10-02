@@ -158,6 +158,32 @@ class WakeProtocolTest(unittest.TestCase):
         )
         self.owner.expect_no_call("jobs.completed")
 
+    def test_jobs_owed_when_a_busy_session_frees_share_one_notice(self):
+        self.start_job("echo", "first-echo")
+        self.wait_job_done()
+        frame = self.owner.wait_for(lambda f: f.get("type") == "call")
+        self.assertEqual(len(frame["args"]["jobs"]), 1)
+        self.start_job("echo", "second-echo")
+        self.wait_job_done()
+        self.owner.send(
+            {
+                "type": "reply",
+                "id": frame["id"],
+                "value": {"ok": False, "code": "busy", "message": "session is busy"},
+            }
+        )
+        retry = self.owner.wait_for(
+            lambda f: f.get("type") == "call" and f.get("method") == "jobs.completed",
+            timeout=RETRY_WINDOW,
+        )
+        self.assertEqual(len(retry["args"]["jobs"]), 2)
+        self.assertIn("2 background jobs finished", retry["args"]["text"])
+        self.assertIn("second-echo", retry["args"]["display"])
+        self.owner.send(
+            {"type": "reply", "id": retry["id"], "value": {"ok": True, "value": None}}
+        )
+        self.owner.expect_no_call("jobs.completed")
+
     def test_a_read_result_retires_a_pending_notice(self):
         handle = self.start_job("echo", "read-echo")
         self.wait_job_done()

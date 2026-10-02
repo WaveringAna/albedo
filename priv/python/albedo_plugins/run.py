@@ -10,7 +10,8 @@ A job that finishes with its result unread wakes the session: the kernel tells
 the host, the host submits a user turn naming the job, and the model never has
 to poll or await. Reading the result (tail, poll, await, output.read) or
 stopping the job withdraws the wake, and a busy session is retried until it
-goes idle, so a notice can never overtake the read that satisfies it.
+goes idle, so a notice can never overtake the read that satisfies it. Jobs
+still owed when the retry lands share one notice, and so one turn.
 """
 
 from __future__ import annotations
@@ -36,6 +37,8 @@ preview_limit: int
 jobs: dict[str, Job] = {}  # every handle the session can address
 active: dict[str, Job] = {}  # unfinished work: the bounded resource
 retained: OrderedDict[str, Job] = OrderedDict()  # finished handles, completion order
+owed: dict[str, Job] = {}  # finished with results unread, in completion order
+announcer: asyncio.Task[None] | None = None
 send: Send
 host: Host | None = None
 job_slot: Callable[[str, Callable[[], None]], Awaitable[None]] | None = None
@@ -466,7 +469,7 @@ class Job:
             )
             release(self)
             if host is not None and not self._awaited:
-                _ = loop.create_task(self._announce())
+                owe(self)
         return self
 
     async def _wait(self, process: Command, timeout: float) -> int:
@@ -538,33 +541,16 @@ class Job:
         if self.exit_code is not None:
             self._read = True
 
-    async def _announce(self) -> None:
-        """Wake the session for this job's result, retrying while it runs.
+    @property
+    def _unreported(self) -> bool:
+        """Finished, and its result has reached no one yet."""
+        return not self._read and not self._awaited
 
-        A busy session answers with a refusal rather than queueing, so the
-        notice retries until the run ends; a read or await in the meantime
-        retires it, which is also the creating-cell barrier: a cell that will
-        await its own job suppresses the wake before any turn can start.
-        """
-        notify = host
-        if notify is None:
-            return
-        while not self._read and not self._awaited:
-            try:
-                await notify("jobs.completed", self._notice())
-                return
-            except Exception as error:
-                if getattr(error, "code", "") != "busy":
-                    self.capture.write(f"\n[completion notice not delivered: {error}\n")
-                    return
-            await asyncio.sleep(NOTICE_RETRY)
-
-    def _notice(self) -> dict[str, object]:
-        """The wake turn's display text, model text, and the facts behind both."""
+    def _facts(self) -> dict[str, object]:
+        """What a wake notice says about this job."""
         command = self.pipeline[:NOTICE_COMMAND_CAP] + (
             "..." if len(self.pipeline) > NOTICE_COMMAND_CAP else ""
         )
-        where = f" on {self._remote}" if self._remote else ""
         outcome = (
             "timed out"
             if self.timed_out
@@ -579,19 +565,11 @@ class Job:
         )
         if self.waited:
             seconds += f", queued {self.waited:.1f}s"
-        display = f"job finished{where} ({outcome}, {seconds}): {command}"
-        text = (
-            "<system-note>a background job finished with its result unread"
-            f"{where}: {outcome}, {seconds}, command: {command}."
-            f" its handle is jobs[{self.id!r}] in python; jobs[{self.id!r}].tail() or"
-            f" output.read({self.id!r}) reads its output."
-            " no user sent this message; use the result if the session's work needs"
-            " it, otherwise acknowledge briefly and stay idle.</system-note>"
-        )
         return {
-            "display": display,
-            "text": text,
             "id": self.id,
+            "command": command,
+            "where": f" on {self._remote}" if self._remote else "",
+            "summary": f"{outcome}, {seconds}",
             "exit_code": self.exit_code,
             "timed_out": self.timed_out,
             "duration": self.duration,
@@ -693,6 +671,74 @@ def forget(job: Job) -> None:
     retained.pop(job.id, None)
     if forget_output is not None:
         forget_output(job.id)
+
+
+def owe(job: Job) -> None:
+    """Queue a finished job's wake. One announcer carries every owed result,
+    so jobs that finish during a turn wake the session once, not once each."""
+    global announcer
+    owed[job.id] = job
+    if announcer is None or announcer.done():
+        announcer = loop.create_task(_announce())
+
+
+async def _announce() -> None:
+    """Wake the session for every owed result, retrying while it runs.
+
+    A busy session answers with a refusal rather than queueing, so the notice
+    retries until the run ends, naming whatever is still owed then; a read or
+    await in the meantime retires that job, which is also the creating-cell
+    barrier: a cell that will await its own job suppresses the wake before any
+    turn can start.
+    """
+    while True:
+        for job in [job for job in owed.values() if not job._unreported]:
+            del owed[job.id]
+        notify = host
+        if not owed or notify is None:
+            return
+        batch = list(owed.values())
+        try:
+            await notify("jobs.completed", notice([job._facts() for job in batch]))
+        except Exception as error:
+            if getattr(error, "code", "") == "busy":
+                await asyncio.sleep(NOTICE_RETRY)
+                continue
+            for job in batch:
+                job.capture.write(f"\n[completion notice not delivered: {error}\n")
+        for job in batch:
+            owed.pop(job.id, None)
+
+
+def notice(facts: list[dict[str, object]]) -> dict[str, object]:
+    """The wake turn's display text, model text, and the facts behind both."""
+    advice = (
+        " no user sent this message; use the result if the session's work needs"
+        " it, otherwise acknowledge briefly and stay idle.</system-note>"
+    )
+    if len(facts) == 1:
+        [job] = facts
+        text = (
+            "<system-note>a background job finished with its result unread"
+            f"{job['where']}: {job['summary']}, command: {job['command']}."
+            f" its handle is jobs[{job['id']!r}] in python; jobs[{job['id']!r}].tail() or"
+            f" output.read({job['id']!r}) reads its output." + advice
+        )
+    else:
+        listed = "; ".join(
+            f"jobs[{job['id']!r}]{job['where']}: {job['summary']}, command: {job['command']}"
+            for job in facts
+        )
+        text = (
+            f"<system-note>{len(facts)} background jobs finished with their results"
+            f" unread: {listed}. jobs[id].tail() or output.read(id) reads one's"
+            " output." + advice
+        )
+    display = "\n".join(
+        f"job finished{job['where']} ({job['summary']}): {job['command']}"
+        for job in facts
+    )
+    return {"display": display, "text": text, "jobs": facts}
 
 
 def run(
