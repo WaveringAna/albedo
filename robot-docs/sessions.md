@@ -17,16 +17,29 @@ it. starting a new turn does not require `/compact` to change the old phase.
 ## Stream failures and recovery
 
 Session streams require the `text/event-stream` content type. Each batch carries
-a nonnegative integer cursor and an event array. The CLI validates the whole
-batch before consuming it and advances the cursor only after every callback
-succeeds. Unknown event kinds are ignored;
-missing kinds and malformed known events are protocol failures.
+a nonempty `generation`, a nonnegative integer `cursor`, and an `events` array.
+The generation identifies one lifetime of the session actor. Reconnect requests
+send both `after_generation` and `after_seq`; an initial request omits both.
+A missing or different generation, or a sequence outside the replay window,
+returns a durable transcript reset. Empty keepalive batches carry the current
+pair too.
+
+The CLI validates the whole batch before consuming it and saves both cursor
+values only after every callback succeeds. Initial attachment and a generation
+change require a leading reset. Within one generation, the sequence cannot
+decrease without a reset. A generation change with a reset is normal recovery.
+A change without a reset is a protocol failure. The reset replaces visible
+history and clears partial tool arguments. Older-history navigation continues
+to use transcript row IDs. Unknown event kinds are ignored.
+Missing kinds and malformed known events are protocol failures.
 
 Transport failures, ordinary EOF, HTTP 408/429, and server errors reconnect with
 a delay starting at 500 milliseconds and increasing to at most five seconds.
-Cancellation ends the subscription quietly. Other HTTP refusals, explicit SSE
-failures, and consumer callback failures end it with a visible notice. A terminal
-failure also stops status polling for that attachment.
+EOF and transient failures retain the saved pair. Cancellation ends the
+subscription quietly and clears the pair, as does explicit protocol recovery.
+Other HTTP refusals, explicit SSE failures, and consumer callback failures end
+the subscription with a visible notice. A terminal failure also stops status
+polling for that attachment.
 
 The TUI attempts one durable transcript reset per attachment after a protocol
 failure. It clears partial tool arguments and requires the recovery stream to
