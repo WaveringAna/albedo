@@ -295,6 +295,16 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         ending = await job.stop  # awaiting an uncalled method runs it
         self.assertTrue(ending.gone)
 
+    async def test_a_file_larger_than_a_command_line_writes_and_reads_back(self):
+        rem = await self.connect()
+        self.addCleanup(rem.close)
+        # Past macOS's whole ARG_MAX and Linux's 128 KiB per argument, so the
+        # text must travel on stdin rather than in the remote command.
+        content = "".join(f"line {index} ü\n" for index in range(150_000))
+        await rem.write("big.lock", content)
+        self.assertEqual(Path(self.workspace, "big.lock").read_text(), content)
+        self.assertEqual(await rem.read("big.lock"), content)
+
     async def test_session_tools_relay_to_this_daemon(self):
         rem = await self.connect()
         self.addCleanup(rem.close)

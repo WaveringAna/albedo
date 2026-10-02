@@ -856,9 +856,11 @@ class RemoteConnection:
             )
         return "attached " + attach_image(data)
 
-    async def _ssh(self, script: str, timeout: float) -> bytes:
+    async def _ssh(
+        self, script: str, timeout: float, stdin: bytes | None = None
+    ) -> bytes:
         code, stdout, stderr = await ssh_run(
-            self.host, in_login_shell(script), timeout=timeout
+            self.host, in_login_shell(script), timeout=timeout, stdin=stdin
         )
         if code != 0:
             raise RemoteError(f"SSH failed ({code}): {stderr.strip()}")
@@ -867,13 +869,10 @@ class RemoteConnection:
     async def write(
         self, path: str, content: str, *, timeout: float = COMMAND_TIMEOUT
     ) -> None:
-        """Replace a remote file; bytes travel base64, never as shell text."""
+        """Replace a remote file. The text travels on stdin, never in the
+        command line, which a host caps (128 KiB per argument on Linux)."""
         remote = _remote_path(self, path)
-        encoded = base64.b64encode(content.encode()).decode()
-        await self._ssh(
-            f"printf %s {shlex.quote(encoded)} | base64 -d > {shlex.quote(remote)}",
-            timeout,
-        )
+        await self._ssh(f"cat > {shlex.quote(remote)}", timeout, content.encode())
 
     # --- degraded mode ---
 
