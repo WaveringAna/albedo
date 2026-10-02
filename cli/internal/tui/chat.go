@@ -104,6 +104,20 @@ type ChatStatusPollMsg struct {
 	Generation int64
 }
 
+// ChatStreamResultMsg follows all accepted events from the same subscription.
+type ChatStreamResultMsg struct {
+	SessionID  string
+	Generation int64
+	Err        error
+	Recovering bool
+}
+
+type streamDelivery struct {
+	Event      *daemon.StreamEvent
+	Err        error
+	Recovering bool
+}
+
 type ChatStreamClosedMsg struct {
 	SessionID  string
 	Generation int64
@@ -287,7 +301,8 @@ type ChatModel struct {
 	// outlives Progress, which the result clears, so the row can still say
 	// what the call did once it ends.
 	inFlight      *daemon.ToolProgress
-	eventChan     chan daemon.StreamEvent
+	eventChan     chan streamDelivery
+	streamStopped bool
 	AttachedImage *daemon.ImageAttachment
 	// window is the context window of windowModel, read once per model so
 	// the footer can say how full the context is.
@@ -438,7 +453,7 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		transcript:   newTranscriptState(),
 		streamCtx:    ctx,
 		streamCancel: cancel,
-		eventChan:    make(chan daemon.StreamEvent, 16),
+		eventChan:    make(chan streamDelivery, 16),
 	}
 
 	return m
@@ -471,6 +486,10 @@ func (m *ChatModel) AddError(message string) {
 }
 
 func (m *ChatModel) ClearNotices() {
+	// A successful mutation does not repair a stopped subscription.
+	if m.streamStopped {
+		return
+	}
 	if len(m.Notices) > 0 {
 		m.Notices.Clear()
 		m.syncViewportHeight()
@@ -909,7 +928,7 @@ func (m ChatModel) animating() bool {
 }
 
 func (m *ChatModel) startAnimation() tea.Cmd {
-	if m.animationActive || !m.animating() {
+	if m.streamStopped || m.animationActive || !m.animating() {
 		return nil
 	}
 	m.animationActive = true
@@ -929,7 +948,10 @@ func (m ChatModel) waitForNextEvent() tea.Cmd {
 			if !ok {
 				return ChatStreamClosedMsg{SessionID: sessID, Generation: gen}
 			}
-			return ChatStreamEventMsg{SessionID: sessID, Generation: gen, Event: evt}
+			if evt.Event != nil {
+				return ChatStreamEventMsg{SessionID: sessID, Generation: gen, Event: *evt.Event}
+			}
+			return ChatStreamResultMsg{SessionID: sessID, Generation: gen, Err: evt.Err, Recovering: evt.Recovering}
 		case <-ctx.Done():
 			return ChatStreamClosedMsg{SessionID: sessID, Generation: gen}
 		}
@@ -941,20 +963,52 @@ func (m ChatModel) startStreamSubscription() tea.Cmd {
 	go func() {
 		defer close(ch)
 		defer client.ResetStream()
+		deliver := func(value streamDelivery) bool {
+			select {
+			case ch <- value:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		recovered := false
+		delay := 500 * time.Millisecond
 		for ctx.Err() == nil {
-			_ = client.Stream(ctx, olderPageRows, func(evt daemon.StreamEvent) error {
-				select {
-				case ch <- evt:
-					return nil
-				case <-ctx.Done():
+			err := client.StreamWithProgress(ctx, olderPageRows, func(evt daemon.StreamEvent) error {
+				if !deliver(streamDelivery{Event: &evt}) {
 					return ctx.Err()
 				}
-			})
+				return nil
+			}, func() { delay = 500 * time.Millisecond })
+			if ctx.Err() != nil {
+				return
+			}
+			var failure *daemon.StreamError
+			if errors.As(err, &failure) {
+				switch failure.Kind {
+				case daemon.StreamProtocol:
+					if recovered {
+						deliver(streamDelivery{Err: err})
+						return
+					}
+					recovered = true
+					if !deliver(streamDelivery{Err: err, Recovering: true}) {
+						return
+					}
+					client.RequireStreamReset()
+				case daemon.StreamTerminal:
+					deliver(streamDelivery{Err: err})
+					return
+				}
+			}
+			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
-			case <-time.After(500 * time.Millisecond):
+			case <-timer.C:
 			}
+			delay = min(delay*2, 5*time.Second)
 		}
 	}()
 	return m.waitForNextEvent()
@@ -1293,13 +1347,13 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		return m, nil
 
 	case ChatStatusPollMsg:
-		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
+		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || m.streamStopped {
 			return m, nil
 		}
 		return m, m.statusCmd()
 
 	case ChatStatusMsg:
-		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
+		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || m.streamStopped {
 			return m, nil
 		}
 		if msg.Err == nil && msg.Status != nil && msg.Revision == m.statusRevision {
@@ -1323,7 +1377,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		return m, tea.Batch(m.startAnimation(), m.statusPollCmd())
 
 	case ChatStreamEventMsg:
-		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
+		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || m.streamStopped {
 			return m, nil
 		}
 		// only a live event outdates a status reply in flight
@@ -1359,7 +1413,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		return m, nil
 
 	case ChatProgressTickMsg:
-		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
+		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || m.streamStopped {
 			return m, nil
 		}
 		if !m.animating() {
@@ -1369,6 +1423,22 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		// the face lives in the status line, so the transcript stays as it is
 		m.ProgressFrame++
 		return m, m.progressTickCmd()
+
+	case ChatStreamResultMsg:
+		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || m.streamStopped {
+			return m, nil
+		}
+		m.Progress = nil
+		m.clearAction()
+		if msg.Recovering {
+			m.AddNotice(fmt.Sprintf("Stream data could not be read; refreshing history: %v", msg.Err))
+			return m, m.waitForNextEvent()
+		}
+		m.streamStopped = true
+		m.animationActive = false
+		m.AddError(fmt.Sprintf("Session stream stopped: %v. Reopen the session to reconnect.", msg.Err))
+		m.refreshViewportContent()
+		return m, nil
 
 	case ChatStreamClosedMsg:
 		return m, nil

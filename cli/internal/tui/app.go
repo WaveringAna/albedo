@@ -673,6 +673,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sid, forward = sm.SessionID, true
 	case ChatStatusMsg:
 		sid, forward = sm.SessionID, true
+	case ChatStreamResultMsg:
+		sid, forward = sm.SessionID, true
 	case ChatStreamClosedMsg:
 		sid, forward = sm.SessionID, true
 	case ChatInterruptMsg:
@@ -681,7 +683,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sid, forward = sm.SessionID, true
 	case ChatStreamEventMsg:
 		sid, forward = sm.SessionID, true
-		if m.ActiveSession != nil && sid == m.ActiveSession.ID && sm.Event.Type == daemon.EventUser && !sm.Event.Replayed {
+		if m.ActiveSession != nil && sid == m.ActiveSession.ID && sm.Generation == m.Chat.Generation && sm.Event.Type == daemon.EventUser && !sm.Event.Replayed {
 			m.ClearNotices()
 		}
 	case ChatOperationPollMsg:
@@ -699,7 +701,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.ActiveSession != nil && sid == m.ActiveSession.ID {
 			m.Chat, cmd = m.Chat.Update(msg)
 		}
-		if event, ok := msg.(ChatStreamEventMsg); ok && event.Event.Type == daemon.EventReset {
+		if event, ok := msg.(ChatStreamEventMsg); ok && event.SessionID == m.Chat.SessionID && event.Generation == m.Chat.Generation && event.Event.Type == daemon.EventReset {
 			cmd = tea.Batch(cmd, m.loadSettingsCmd(m.SettingsGen))
 		}
 		return m, cmd
