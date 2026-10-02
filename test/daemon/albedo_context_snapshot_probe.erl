@@ -179,8 +179,8 @@ actor(Id) ->
     Check = self(),
     {Reader, ReaderMonitor} = spawn_monitor(fun() ->
         State = sys:get_state(Pid),
-        %% session_state.State currently has 20 fields: history is field 6.
-        state = element(1, State), 21 = tuple_size(State),
+        %% history is field 6 in session_state.State.
+        state = element(1, State),
         Check ! {checked, element(7, State) =:= none,
             contains(State, <<"REPLAY_SENTINEL:">>)}
     end),

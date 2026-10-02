@@ -5,6 +5,7 @@ import albedo/daemon/mail
 import albedo/daemon/migrations/conversation_columns
 import albedo/daemon/note
 import albedo/daemon/notice
+import albedo/daemon/operations
 import albedo/daemon/requests
 import albedo/daemon/store
 import albedo/daemon/transcript
@@ -77,7 +78,8 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
       db,
       "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER,usage_cache_creation_tokens INTEGER,effort TEXT); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT,thought_ms INTEGER,row_class TEXT CHECK(row_class IN ('user','image_fit','other'))); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);"
         <> images.schema
-        <> requests.schema,
+        <> requests.schema
+        <> operations.schema,
     ))
     use _ <- result.try(conversation_columns.apply(db))
     use _ <- result.try(recover_sessions(db))
@@ -269,6 +271,7 @@ pub fn delete(
 ) -> Result(Nil, String) {
   store.query(store, fn(db) {
     store.transaction(db, fn() {
+      use _ <- result.try(operations.cancel_in(db, id))
       use hashes <- result.try(images.session_hashes(db, id))
       use tables <- result.try(store.rows(
         db,
@@ -286,6 +289,8 @@ pub fn delete(
         list.try_each(
           [
             "transcript",
+            "submission_events",
+            "continuation_markers",
             "provider_requests",
             "session_extensions",
             "cells",
@@ -321,8 +326,29 @@ pub fn delete(
 }
 
 pub fn create(store: store.Store, info: Info) -> Result(Nil, String) {
-  store.write(
-    store,
+  store.query(store, create_in(_, info))
+}
+
+pub fn create_operation(
+  ledger: store.Store,
+  info: Info,
+  request: operations.Request,
+  http_status: Int,
+  response: String,
+) -> Result(operations.Receipt, String) {
+  operations.admit(
+    ledger,
+    operations.Request(..request, target: info.id),
+    http_status,
+    response,
+    None,
+    create_in(_, info),
+  )
+}
+
+fn create_in(db: sqlight.Connection, info: Info) -> Result(Nil, String) {
+  store.run(
+    db,
     "INSERT INTO sessions(id,title,cwd,provider,model,protocol,activity_seq,last_assistant_at,effort) SELECT ?,?,?,?,?,?,COALESCE(MAX(activity_seq),0)+1,?,? FROM sessions",
     [
       sqlight.text(info.id),
@@ -748,7 +774,13 @@ fn sourced_entry(
   )
   Ok(transcript.SourcedEntry(
     transcript.SourceRef(session, row.0),
-    transcript.Entry(input, row.2, row.3, row.4),
+    transcript.Entry(
+      input,
+      row.2,
+      row.3,
+      row.4,
+      Some(transcript.SourceRef(session, row.0)),
+    ),
   ))
 }
 
@@ -986,7 +1018,7 @@ pub fn entries(
 ) -> List(transcript.Entry) {
   let #(_, entries) =
     list.map_fold(inputs, thought_ms, fn(thought_ms, input) {
-      let entry = transcript.Entry(input, timestamp, provider, _)
+      let entry = transcript.Entry(input, timestamp, provider, _, None)
       case input {
         types.Replay(item) if thought_ms != None ->
           case events.thinking_text(item) {
@@ -1049,7 +1081,7 @@ pub fn commit_from(
   stage: Stage,
   provider: Option(String),
 ) -> Result(Int, String) {
-  commit_with_letters(store, id, inputs, stage, provider, None, [])
+  commit_with_letters(store, id, inputs, stage, provider, None, [], [])
   |> result.map(fn(committed) { committed.0 })
 }
 
@@ -1066,7 +1098,7 @@ pub fn commit_response(
   provider: Option(String),
   thought_ms: Option(Int),
 ) -> Result(#(Int, Option(Int)), String) {
-  commit_with_letters(store, id, inputs, stage, provider, thought_ms, [])
+  commit_with_letters(store, id, inputs, stage, provider, thought_ms, [], [])
 }
 
 /// Letters and the inputs that carry them commit together, so a letter retried
@@ -1079,7 +1111,30 @@ pub fn commit_letters(
   provider: Option(String),
   letters: List(String),
 ) -> Result(Int, String) {
-  commit_with_letters(store, id, inputs, stage, provider, None, letters)
+  commit_with_letters(store, id, inputs, stage, provider, None, letters, [])
+  |> result.map(fn(committed) { committed.0 })
+}
+
+/// Admission receipts retire in the same transaction that writes model input.
+pub fn commit_operations(
+  ledger: store.Store,
+  id: String,
+  inputs: List(types.Input),
+  stage: Stage,
+  provider: Option(String),
+  letters: List(String),
+  commits: List(operations.Commit),
+) -> Result(Int, String) {
+  commit_with_letters(
+    ledger,
+    id,
+    inputs,
+    stage,
+    provider,
+    None,
+    letters,
+    commits,
+  )
   |> result.map(fn(committed) { committed.0 })
 }
 
@@ -1091,12 +1146,20 @@ fn commit_with_letters(
   provider: Option(String),
   thought_ms: Option(Int),
   letters: List(String),
+  commits: List(operations.Commit),
 ) -> Result(#(Int, Option(Int)), String) {
   let timestamp = usage.now()
   let read = images.reader(store)
   store.query(store, fn(db) {
     store.transaction(db, fn() {
       use _ <- result.try(mail.receive(db, id, letters))
+      use previous_seq <- result.try(store.one(
+        db,
+        "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='transcript'),0)",
+        [],
+        decode.field(0, decode.int, decode.success),
+        "transcript boundary",
+      ))
       let advances_assistant = case has_visible_assistant(inputs) {
         True -> 1
         False -> 0
@@ -1135,6 +1198,21 @@ fn commit_with_letters(
           }
         }),
       )
+      use seq <- result.try(store.one(
+        db,
+        "SELECT COALESCE(MAX(seq),0) FROM transcript WHERE session=?",
+        [sqlight.text(id)],
+        decode.field(0, decode.int, decode.success),
+        "committed input sequence",
+      ))
+      use _ <- result.try(operations.committed(
+        db,
+        id,
+        commits,
+        previous_seq + 1,
+        seq,
+        timestamp,
+      ))
       // COALESCE keeps the old title when no new user message suggests one.
       store.run(
         db,

@@ -30,6 +30,7 @@ pub fn command(db: hooks.Store, session: String) -> Command {
     True,
     False,
     False,
+    None,
     fn(_, caller, args) {
       let #(action, details) = page.args(args, "")
       let actor = case caller {

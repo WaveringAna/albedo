@@ -142,7 +142,14 @@ pub fn transaction(
 ) -> Result(a, String) {
   use _ <- result.try(exec(db, "BEGIN IMMEDIATE"))
   case body() {
-    Ok(value) -> exec(db, "COMMIT") |> result.replace(value)
+    Ok(value) ->
+      case exec(db, "COMMIT") {
+        Ok(_) -> Ok(value)
+        Error(error) -> {
+          let _ = sqlight.exec("ROLLBACK", db)
+          Error(error)
+        }
+      }
     Error(error) -> {
       let _ = sqlight.exec("ROLLBACK", db)
       Error(error)

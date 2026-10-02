@@ -41,6 +41,7 @@ pub type State(message) {
     /// Where an ancestor's move sent this session while it was busy; taken
     /// when the run ends. Not persisted: a restart forgets it.
     following: Option(String),
+    blocked_until: Int,
   )
 }
 

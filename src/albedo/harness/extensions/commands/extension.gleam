@@ -55,6 +55,7 @@ fn effort() -> Command {
     True,
     False,
     False,
+    None,
     fn(ctx: Context, caller, args) {
       use value <- result.try(case caller, dict.get(args, "level") {
         ModelCall, Ok(_) -> Error(user_action("switching effort", "/effort"))
@@ -93,6 +94,7 @@ fn model() -> Command {
     True,
     False,
     False,
+    None,
     fn(ctx: Context, caller, args) {
       // A model call is always mid-turn, so it may only read the selection.
       let given = fn(name) {
@@ -134,6 +136,7 @@ fn reload() -> Command {
     False,
     False,
     False,
+    None,
     fn(ctx: Context, _caller, args) {
       case dict.get(args, "target") {
         Ok("models") -> {
@@ -230,6 +233,7 @@ fn compact() -> Command {
     False,
     False,
     False,
+    None,
     fn(ctx: Context, caller, args) {
       case caller {
         ModelCall -> Error(user_action("compaction", "/compact"))
@@ -260,6 +264,7 @@ fn raise_cap() -> Command {
     False,
     False,
     False,
+    None,
     fn(ctx: Context, caller, args) {
       case caller {
         ModelCall ->
@@ -319,6 +324,7 @@ fn context_inspect() -> Command {
     True,
     False,
     False,
+    None,
     fn(ctx: Context, _caller, args) {
       use value <- result.try(case dict.get(args, "section") {
         Error(_) -> ctx.state(ContextSummary)

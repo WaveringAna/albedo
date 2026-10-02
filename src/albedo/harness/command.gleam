@@ -15,7 +15,7 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -85,6 +85,8 @@ pub type Command {
     /// a client renders as the extension's own screen; its actions run this
     /// same command with arguments.
     page: Bool,
+    /// Prepares a selected skill without running a command or submitting a turn.
+    skill_activation: Option(fn(String) -> Result(#(String, String), String)),
     run: fn(Context, Caller, Dict(String, String)) -> Result(Outcome, String),
   )
 }
@@ -339,6 +341,13 @@ fn command_json(command: Command, method: String) -> json.Json {
     #("modelCallable", json.bool(command.model_callable)),
     #("userTurn", json.bool(command.user_turn)),
     #("page", json.bool(command.page)),
+    #(
+      "skill",
+      json.bool(case command.skill_activation {
+        Some(_) -> True
+        None -> False
+      }),
+    ),
   ])
 }
 

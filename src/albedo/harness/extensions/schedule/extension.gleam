@@ -41,6 +41,7 @@ fn command(db: store.Store, session: String) -> command.Command {
     True,
     False,
     False,
+    None,
     fn(_, _, args) {
       let #(action, details) = page.args(args, "list")
       use value <- result.try(case action {

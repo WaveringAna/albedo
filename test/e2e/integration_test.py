@@ -7,7 +7,7 @@ import time
 import unittest
 import urllib.error
 
-from harness import Albedo, Provider, exclusive, python, text
+from harness import Albedo, Provider, exclusive, operation_id, python, text
 
 
 def contents(item):
@@ -391,7 +391,7 @@ class IntegrationTest(unittest.TestCase):
             {"content": 4},
             {"content": "must not submit", "clientId": False},
             {"type": "continue", "content": False},
-            {"type": "resume", "image": {}},
+            {"type": "continue", "image": {}},
             {
                 "content": "must not submit",
                 "image": {
@@ -421,19 +421,25 @@ class IntegrationTest(unittest.TestCase):
         fixture = json.loads(
             (Path(__file__).parents[1] / "fixtures/mutation_responses.json").read_text()
         )["submission"]
-        for kind in (None, "user", "continue", "resume"):
-            payload = {"content": "valid submission " + str(kind)}
+        for kind in (None, "user", "continue"):
+            payload = {
+                "operationId": operation_id(),
+                "content": "valid submission " + str(kind),
+            }
             if kind is not None:
                 payload["type"] = kind
             with app.api(f"/sessions/{session}/events", payload) as response:
                 self.assertEqual(response.status, fixture["status"])
-                self.assertEqual(json.load(response), fixture["body"])
+                self.assertEqual(
+                    json.load(response),
+                    {**fixture["body"], "operationId": payload["operationId"]},
+                )
             app.idle(session)
         users = [
             event["text"] for event in app.events(session) if event["type"] == "user"
         ]
         self.assertEqual(users, ["valid submission None", "valid submission user"])
-        self.assertGreaterEqual(len(self.provider.requests), 4)
+        self.assertGreaterEqual(len(self.provider.requests), 3)
 
     def test_busy_messages_join_next_model_request_in_order(self):
         app = self.app_for("responses")
@@ -478,12 +484,12 @@ class IntegrationTest(unittest.TestCase):
         old.rename(moved)
         pid = app.connection["pid"]
         before = app.events(session)
-        with self.assertRaises(urllib.error.HTTPError) as caught:
-            app.prompt(session, "workspace probe after move").close()
-        self.assertEqual(caught.exception.code, 409)
-        failure = json.load(caught.exception)
-        self.assertEqual(failure["code"], "workspace_missing")
-        self.assertEqual(failure["workspace"], str(old))
+        operation = operation_id()
+        request = {"operationId": operation, "content": "workspace probe after move"}
+        with app.api(f"/sessions/{session}/events", request) as response:
+            self.assertEqual(response.status, 202)
+        receipt = self.read(app, f"/operations/{operation}")
+        self.assertEqual(receipt["deliveryStatus"], "pending")
         for invalid in ("relative", str(old), str(moved / "cwd-probe")):
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 app.api(
@@ -501,7 +507,14 @@ class IntegrationTest(unittest.TestCase):
             str(moved),
         )
         self.assertEqual(json.loads((app.home / "daemon.json").read_text())["pid"], pid)
-        self.send(app, session, "workspace probe after move")
+        deadline = time.monotonic() + 35
+        while time.monotonic() < deadline:
+            receipt = self.read(app, f"/operations/{operation}")
+            if receipt["deliveryStatus"] == "committed":
+                break
+            time.sleep(0.05)
+        self.assertEqual(receipt["deliveryStatus"], "committed")
+        app.idle(session)
         self.assertEqual(
             Path((moved / "cwd-probe").read_text()).resolve(), moved.resolve()
         )

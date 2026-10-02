@@ -1,5 +1,6 @@
 import albedo/daemon/note
 import albedo/daemon/notice
+import albedo/daemon/operations
 import albedo/daemon/store
 import albedo/daemon/transcript
 import albedo/daemon/usage
@@ -257,7 +258,7 @@ fn calls_by_id(
   |> dict.from_list
 }
 
-fn render(
+fn render_original(
   store: store.Store,
   tool_calls: dict.Dict(String, types.ToolCall),
   entry: transcript.Entry,
@@ -416,4 +417,46 @@ pub fn calls(input: types.Input) -> List(types.ToolCall) {
       }
     _ -> []
   }
+}
+
+fn render(
+  store: store.Store,
+  tool_calls: dict.Dict(String, types.ToolCall),
+  entry: transcript.Entry,
+) -> List(String) {
+  case entry.source {
+    Some(source) ->
+      case operations.committed_input(store, source.session, source.seq) {
+        Ok(Some(display)) -> [
+          durable_submission(display, option.unwrap(entry.timestamp, 0)),
+        ]
+        _ -> render_original(store, tool_calls, entry)
+      }
+    None -> render_original(store, tool_calls, entry)
+  }
+}
+
+pub fn durable_submission(
+  display: operations.Display,
+  timestamp: Int,
+) -> String {
+  let fields =
+    list.flatten([
+      opt("operationId", display.operation_id, json.string),
+      opt("image", display.image, fn(image) {
+        json.object([
+          #("mimeType", json.string(image.mime_type)),
+          #("width", json.int(image.width)),
+          #("height", json.int(image.height)),
+          #("bytes", json.int(image.bytes)),
+        ])
+      }),
+    ])
+  user_event(
+    display.text,
+    display.source,
+    Some(display.client_id),
+    Some(timestamp),
+    fields,
+  )
 }

@@ -153,7 +153,15 @@ pub fn transcript_timestamps_migrate_without_invention_and_roundtrip_test() -> N
   let assert Ok(_) = conversation.initialise(ledger)
   conversation.load_entries(ledger, "timestamped")
   |> should.equal(
-    Ok([transcript.Entry(types.User("legacy"), None, None, None)]),
+    Ok([
+      transcript.Entry(
+        types.User("legacy"),
+        None,
+        None,
+        None,
+        Some(transcript.SourceRef("timestamped", 1)),
+      ),
+    ]),
   )
 
   let new_inputs = [types.User("current"), types.Assistant("answer")]
@@ -163,9 +171,27 @@ pub fn transcript_timestamps_migrate_without_invention_and_roundtrip_test() -> N
   let assert Ok(entries) = conversation.load_entries(ledger, "timestamped")
   entries
   |> should.equal([
-    transcript.Entry(types.User("legacy"), None, None, None),
-    transcript.Entry(types.User("current"), Some(timestamp), None, None),
-    transcript.Entry(types.Assistant("answer"), Some(timestamp), None, None),
+    transcript.Entry(
+      types.User("legacy"),
+      None,
+      None,
+      None,
+      Some(transcript.SourceRef("timestamped", 1)),
+    ),
+    transcript.Entry(
+      types.User("current"),
+      Some(timestamp),
+      None,
+      None,
+      Some(transcript.SourceRef("timestamped", 2)),
+    ),
+    transcript.Entry(
+      types.Assistant("answer"),
+      Some(timestamp),
+      None,
+      None,
+      Some(transcript.SourceRef("timestamped", 3)),
+    ),
   ])
   conversation.load(ledger, "timestamped")
   |> should.equal(Ok([types.User("legacy"), ..new_inputs]))

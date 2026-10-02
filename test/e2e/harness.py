@@ -46,6 +46,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import secrets
 import signal
 import subprocess
 import sys
@@ -53,6 +54,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test"))
@@ -129,6 +131,14 @@ def _content_text(item):
 
 # Guards the provider registry and the shared provider server.
 _config_lock = threading.RLock()
+
+
+def operation_id(timestamp=None):
+    """Generate one UUIDv7 action identity, optionally at a fixture time."""
+    milliseconds = int(time.time() * 1000) if timestamp is None else timestamp
+    bits = (milliseconds << 80) | (7 << 76) | secrets.randbits(76)
+    bits = (bits & ~(3 << 62)) | (2 << 62)
+    return str(uuid.UUID(int=bits))
 
 
 def exclusive(target):
@@ -852,6 +862,12 @@ class Albedo:
         self.daemon._fail(message)
 
     def api(self, path, body=None, *, method=None):
+        if (
+            isinstance(body, dict)
+            and method in (None, "POST")
+            and (path == "/sessions" or path.endswith("/events"))
+        ):
+            body = {"operationId": operation_id(), **body}
         return self.daemon.api(path, body, method=method)
 
     def cli(self, *args):

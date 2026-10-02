@@ -163,6 +163,15 @@ class ImageLimitsTest(unittest.TestCase):
                 ]
                 self.assertEqual(len(notes), 1, notes)
                 self.assertIn(NOTE, notes[0])
+                original = [
+                    event
+                    for event in app.events(session)
+                    if event.get("type") == "user" and event.get("text") == "look"
+                ]
+                self.assertEqual(len(original), 1)
+                self.assertEqual(original[0]["image"]["width"], 1200)
+                self.assertEqual(original[0]["image"]["height"], 10)
+                self.assertEqual(original[0]["image"]["bytes"], len(WIDE))
 
                 source = hashlib.sha256(WIDE_DATA.encode()).hexdigest()
                 database = f"file:{app.home / 'albedo.sqlite'}?mode=ro"

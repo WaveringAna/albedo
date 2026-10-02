@@ -8,14 +8,17 @@ import albedo/daemon/history
 import albedo/daemon/image
 import albedo/daemon/mail
 import albedo/daemon/migrations
+import albedo/daemon/operations
 import albedo/daemon/quota
 import albedo/daemon/reaper
 import albedo/daemon/requests
 import albedo/daemon/session
 import albedo/daemon/session_provider
+import albedo/daemon/session_submission
 import albedo/daemon/settings
 import albedo/daemon/state_expiry
 import albedo/daemon/store
+import albedo/daemon/turn
 import albedo/daemon/usage
 import albedo/harness/cache_ttl
 import albedo/harness/capability_catalog
@@ -74,6 +77,19 @@ fn sweep_interval(config: Config) -> Int {
 }
 
 type Message {
+  CreateOperation(
+    operations.Request,
+    String,
+    Option(String),
+    String,
+    Subject(Result(operations.Receipt, String)),
+  )
+  SubmitOperation(
+    operations.Request,
+    Submission,
+    Subject(Result(operations.Receipt, String)),
+  )
+
   /// A session in a workspace, on a named provider or the active one, with a
   /// model or "" for the provider's.
   Create(
@@ -237,6 +253,17 @@ fn handle(state: State, message: Message) -> actor.Next(State, a) {
 
 fn serve(state: State, message: Message) -> actor.Next(State, a) {
   case message {
+    CreateOperation(operation, cwd, provider, model, reply) -> {
+      let #(state, outcome) =
+        create_operation(state, operation, cwd, provider, model)
+      process.send(reply, outcome)
+      actor.continue(state)
+    }
+    SubmitOperation(operation, submission, reply) -> {
+      let #(state, outcome) = submit_operation(state, operation, submission)
+      process.send(reply, outcome)
+      actor.continue(state)
+    }
     Create(cwd, provider, model, reply) -> {
       let created = {
         use provider <- result.try(case provider {
@@ -469,6 +496,7 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
     }
     WorkerDown(_) -> actor.continue(state)
     ScheduleTick -> {
+      let _ = operations.prune(runtime.ledger(state.host))
       let _ = process.send_after(state.self, state.config.tick_ms, ScheduleTick)
       case state.scheduling {
         Some(_) -> actor.continue(state)
@@ -527,6 +555,8 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
 fn refuse(state: State, message: Message) -> Nil {
   case message {
     Create(_, _, _, reply) -> process.send(reply, Error(closed))
+    CreateOperation(_, _, _, _, reply) | SubmitOperation(_, _, reply) ->
+      process.send(reply, Error(closed))
     CreateChild(_, _, _, _, reply) -> process.send(reply, Error(closed))
     Lookup(_, reply) -> process.send(reply, Error(closed))
     AgentOp(_, reply) -> process.send(reply, Error(closed))
@@ -657,11 +687,13 @@ fn start_registry(
       Open -> conversation.list(ledger)
       _ -> Ok([])
     })
+    use pending_sessions <- result.try(operations.pending_sessions(ledger))
     let sessions =
       list.map(saved, fn(info) {
         let worker = case
           session.live(info.id),
           conversation.resumable(info.stage)
+          || list.contains(pending_sessions, info.id)
         {
           // Still running from before a registry restart: adopt it.
           Some(worker), _ -> {
@@ -1732,6 +1764,7 @@ type Submission {
     submission_id: Option(String),
   )
   Continue(client_id: String)
+  Skill(name: String, arguments: String, client_id: String)
 }
 
 fn submission_decoder() -> decode.Decoder(Submission) {
@@ -1752,15 +1785,19 @@ fn submission_decoder() -> decode.Decoder(Submission) {
     None,
     decode.optional(submitted_image_decoder()),
   )
+  use name <- decode.optional_field("name", "", decode.string)
+  use arguments <- decode.optional_field("arguments", "", decode.string)
   case validate_submitted_image(submitted_image) {
     Error(message) -> decode.failure(Continue(client_id), message)
     Ok(image) ->
       case kind, content {
         "user", Some(text) ->
           decode.success(User(text, client_id, image, submission_id))
-        "continue", _ | "resume", _ -> decode.success(Continue(client_id))
+        "continue", _ -> decode.success(Continue(client_id))
+        "skill", _ ->
+          decode.success(Skill(name, string.trim(arguments), client_id))
         "user", None -> decode.failure(Continue(client_id), "user content")
-        _, _ -> decode.failure(Continue(client_id), "user, continue, or resume")
+        _, _ -> decode.failure(Continue(client_id), "user, continue, or skill")
       }
   }
 }
@@ -1902,8 +1939,8 @@ fn uri_decode(segment: String) -> String {
 
 /// The daemon's own top-level routes; a service never shadows them.
 const daemon_routes = [
-  "settings", "health", "sessions", "models", "auth", "shutdown", "agents",
-  "quota", "cache-ttl", "fs",
+  "operations", "settings", "health", "sessions", "models", "auth", "shutdown",
+  "agents", "quota", "cache-ttl", "fs",
 ]
 
 /// Shutdown can close a handle after the registry admitted its request.
@@ -2337,8 +2374,31 @@ fn daemon_route(
     }
     _, ["auth", ..rest] ->
       auth(config.home, actor.call(registry, 5000, Logins), req, rest)
+    Get, ["operations", id] -> {
+      case actor.call(registry, 5000, Host) {
+        Error(message) -> error(503, message)
+        Ok(host) ->
+          case operations.lookup(runtime.ledger(host), id) {
+            Error(message) -> error(500, message)
+            Ok(Some(receipt)) -> raw(200, receipt_json(receipt))
+            Ok(None) ->
+              case operations.validate_id(id, usage.now()) {
+                Error(code) -> operation_error(code)
+                Ok(_) ->
+                  reply(
+                    404,
+                    json.object([
+                      #("code", json.string("operation_unknown")),
+                      #("error", json.string("operation is not known")),
+                    ]),
+                  )
+              }
+          }
+      }
+    }
     Post, ["sessions"] -> {
       let decoder = {
+        use operation_id <- decode.field("operationId", decode.string)
         use cwd <- decode.field("workspace", decode.string)
         use provider <- decode.optional_field(
           "provider",
@@ -2346,14 +2406,31 @@ fn daemon_route(
           decode.map(decode.string, Some),
         )
         use model <- decode.optional_field("model", "", decode.string)
-        decode.success(#(cwd, provider, model))
+        decode.success(#(operation_id, cwd, provider, model))
       }
-      body(req, decoder)
-      |> result.try(fn(fields) {
-        let #(cwd, provider, model) = fields
-        actor.call(registry, 15_000, Create(cwd, provider, model, _))
-      })
-      |> answered(201, info_json, 400)
+      case body(req, decoder) {
+        Error(message) -> error(400, message)
+        Ok(#(operation_id, cwd, provider, model)) -> {
+          let fingerprint =
+            json.to_string(
+              json.object([
+                #("version", json.int(1)),
+                #("kind", json.string("create")),
+                #("workspace", json.string(cwd)),
+                #("provider", json.nullable(provider, json.string)),
+                #("model", json.string(model)),
+              ]),
+            )
+          actor.call(registry, 15_000, CreateOperation(
+            operations.Request(operation_id, fingerprint, "create", ""),
+            cwd,
+            provider,
+            model,
+            _,
+          ))
+          |> operation_answer
+        }
+      }
     }
     Post, ["shutdown"] -> {
       let _ = process.send_after(registry, 100, Shutdown)
@@ -2490,7 +2567,12 @@ fn daemon_route(
       |> answered(202, mail.receipt_json, 409)
     }
     Post, ["sessions", id, "events"] -> {
-      case body(req, submission_decoder()) {
+      let decoder = {
+        use operation_id <- decode.field("operationId", decode.string)
+        use submission <- decode.then(submission_decoder())
+        decode.success(#(operation_id, submission))
+      }
+      case body(req, decoder) {
         Error(message) ->
           reply(
             400,
@@ -2499,40 +2581,15 @@ fn daemon_route(
               #("error", json.string(message)),
             ]),
           )
-        Ok(submission) ->
-          case actor.call(registry, 5000, Lookup(id, _)) {
-            Error(message) -> error(404, message)
-            Ok(worker) -> {
-              let outcome = case submission {
-                User(text, client_id, image, submission_id) ->
-                  session.submit_identified(
-                    worker,
-                    text,
-                    client_id,
-                    image,
-                    submission_id,
-                  )
-                Continue(client_id) ->
-                  session.submit_continue(worker, client_id)
-              }
-              case outcome {
-                Ok(queued) ->
-                  reply(202, acknowledged([#("queued", json.bool(queued))]))
-                Error(session.Rejected(e)) -> error(409, e)
-                Error(session.Busy) ->
-                  error(409, "session is busy or message queue is full")
-                Error(session.WorkspaceMissing(path)) ->
-                  reply(
-                    409,
-                    json.object([
-                      #("code", json.string("workspace_missing")),
-                      #("workspace", json.string(path)),
-                      #("error", json.string("workspace not found: " <> path)),
-                    ]),
-                  )
-              }
-            }
-          }
+        Ok(#(operation_id, submission)) -> {
+          let #(kind, fingerprint) = submission_fingerprint(id, submission)
+          actor.call(registry, 30_000, SubmitOperation(
+            operations.Request(operation_id, fingerprint, kind, id),
+            submission,
+            _,
+          ))
+          |> operation_answer
+        }
       }
     }
     _, ["sessions", id, operation] ->
@@ -2627,6 +2684,17 @@ fn daemon_route(
                   use #(commands, context) <- result.try(session.commands(
                     worker,
                   ))
+                  use _ <- result.try(
+                    case
+                      list.find(commands, fn(selected) { selected.name == name })
+                    {
+                      Ok(selected) if selected.skill_activation != None ->
+                        Error(
+                          "submit skill activation through the session events route with an operationId",
+                        )
+                      _ -> Ok(Nil)
+                    },
+                  )
                   command.call(
                     commands,
                     context,
@@ -2656,14 +2724,13 @@ fn daemon_route(
                   case string.trim(id) == "" {
                     True -> error(400, "submissionId must not be empty")
                     False ->
-                      reply(
+                      session.cancel_submission(worker, id)
+                      |> answered(
                         200,
-                        json.object([
-                          #(
-                            "outcome",
-                            json.string(session.cancel_submission(worker, id)),
-                          ),
-                        ]),
+                        fn(outcome) {
+                          json.object([#("outcome", json.string(outcome))])
+                        },
+                        409,
                       )
                   }
                 Error(message) -> error(400, message)
@@ -2878,4 +2945,264 @@ fn answered_catalog(
         False -> error(409, message)
       }
   }
+}
+
+fn operation_error(code: String) -> response.Response(mist.ResponseData) {
+  let status = case code {
+    "operation_conflict" -> 409
+    "operation_expired" -> 410
+    "operation_invalid" | "operation_future" -> 400
+    _ -> 500
+  }
+  reply(
+    status,
+    json.object([#("code", json.string(code)), #("error", json.string(code))]),
+  )
+}
+
+fn operation_answer(
+  outcome: Result(operations.Receipt, String),
+) -> response.Response(mist.ResponseData) {
+  case outcome {
+    Ok(receipt) -> raw(receipt.http_status, receipt.response)
+    Error(code) -> operation_error(code)
+  }
+}
+
+fn receipt_json(receipt: operations.Receipt) -> String {
+  let metadata =
+    json.object([
+      #("operationId", json.string(receipt.operation.id)),
+      #("kind", json.string(receipt.operation.kind)),
+      #("target", json.string(receipt.operation.target)),
+      #("status", json.string(receipt.status)),
+      #("httpStatus", json.int(receipt.http_status)),
+      #("createdAt", json.int(receipt.created_at)),
+      #("fingerprint", json.string(receipt.operation.fingerprint)),
+      #("committedSeq", json.nullable(receipt.committed_seq, json.int)),
+      #("deliveryStatus", json.nullable(receipt.delivery, json.string)),
+      #("blockingReason", json.nullable(receipt.blocking_reason, json.string)),
+    ])
+    |> json.to_string
+  let field = case receipt.status {
+    "accepted" -> "result"
+    _ -> "error"
+  }
+  "{\""
+  <> field
+  <> "\":"
+  <> receipt.response
+  <> ","
+  <> string.drop_start(metadata, 1)
+}
+
+fn submission_fingerprint(
+  target: String,
+  submission: Submission,
+) -> #(String, String) {
+  let #(kind, fields) = case submission {
+    User(text, _, image, submission_id) -> #("user", [
+      #("content", json.string(text)),
+      #("submissionId", json.nullable(submission_id, json.string)),
+      #(
+        "image",
+        json.nullable(image, fn(image) {
+          json.string(session_submission.image_fingerprint(image))
+        }),
+      ),
+    ])
+    Continue(_) -> #("continue", [])
+    Skill(name, arguments, _) -> #("skill", [
+      #("name", json.string(name)),
+      #("arguments", json.string(arguments)),
+    ])
+  }
+  #(
+    kind,
+    json.to_string(
+      json.object([
+        #("version", json.int(1)),
+        #("kind", json.string(kind)),
+        #("target", json.string(target)),
+        ..fields
+      ]),
+    ),
+  )
+}
+
+fn rejected_operation(
+  state: State,
+  operation: operations.Request,
+  status: Int,
+  reason: String,
+) -> Result(operations.Receipt, String) {
+  operations.reject(
+    runtime.ledger(state.host),
+    operation,
+    status,
+    json.to_string(
+      json.object([
+        #("error", json.string(reason)),
+        #("operationId", json.string(operation.id)),
+      ]),
+    ),
+  )
+}
+
+fn submit_operation(
+  state: State,
+  operation: operations.Request,
+  submission: Submission,
+) -> #(State, Result(operations.Receipt, String)) {
+  case operations.check(runtime.ledger(state.host), operation) {
+    Error(error) -> #(state, Error(error))
+    Ok(Some(receipt)) -> #(state, Ok(receipt))
+    Ok(None) -> {
+      let #(state, activated) = activate(state, operation.target)
+      case activated {
+        Error(reason) -> #(
+          state,
+          rejected_operation(state, operation, 404, reason),
+        )
+        Ok(worker) -> {
+          let prepared = case submission {
+            User(text, client, image, submission_id) ->
+              Ok(turn.Submission(
+                text,
+                text,
+                client,
+                turn.Chat,
+                image,
+                Some(option.unwrap(submission_id, operation.id)),
+                Some(operation.id),
+              ))
+            Continue(client) -> Ok(session.continuation(client, operation.id))
+            Skill(name, arguments, client) -> {
+              use #(commands, _) <- result.try(
+                runtime.peek_commands(
+                  state.host,
+                  operation.target,
+                  case dict.get(state.sessions, operation.target) {
+                    Ok(#(info, _)) -> info.cwd
+                    Error(_) -> ""
+                  },
+                ),
+              )
+              use selected <- result.try(
+                list.find(commands, fn(command) { command.name == name })
+                |> result.map_error(fn(_) { "unknown skill command" }),
+              )
+              use prepare <- result.try(option.to_result(
+                selected.skill_activation,
+                "command is not a skill activation",
+              ))
+              use #(display, text) <- result.try(prepare(arguments))
+              Ok(turn.Submission(
+                display,
+                text,
+                client,
+                turn.Chat,
+                None,
+                None,
+                Some(operation.id),
+              ))
+            }
+          }
+          #(state, case prepared {
+            Error(reason) -> rejected_operation(state, operation, 409, reason)
+            Ok(input) -> session.admit_durable(worker, operation, input)
+          })
+        }
+      }
+    }
+  }
+}
+
+fn create_operation(
+  state: State,
+  operation: operations.Request,
+  cwd: String,
+  provider_name: Option(String),
+  model_name: String,
+) -> #(State, Result(operations.Receipt, String)) {
+  case operations.check(runtime.ledger(state.host), operation) {
+    Error(error) -> #(state, Error(error))
+    Ok(Some(receipt)) -> #(state, Ok(receipt))
+    Ok(None) -> {
+      let prepared = {
+        use provider <- result.try(case provider_name {
+          Some(name) -> configuration.named(state.config.home, name)
+          None -> configuration.active(state.config.home)
+        })
+        let model = case model_name {
+          "" -> provider.model
+          _ -> model_name
+        }
+        use _ <- result.try(
+          case
+            directory(cwd)
+            && string.trim(model) != ""
+            && string.byte_size(model) <= 512
+            && !string.contains(model, "\r")
+            && !string.contains(model, "\n")
+          {
+            True -> Ok(Nil)
+            False ->
+              Error("expected an existing absolute workspace and a model")
+          },
+        )
+        let effort =
+          session_provider.model_efforts(
+            state.host,
+            state.config.home,
+            provider.name,
+            model,
+          )
+          |> extension.default_effort
+        Ok(conversation.Info(
+          new_id(),
+          "new session",
+          cwd,
+          provider.name,
+          model,
+          provider.protocol,
+          conversation.Idle,
+          None,
+          effort,
+        ))
+      }
+      case prepared {
+        Error(reason) -> #(
+          state,
+          rejected_operation(state, operation, 400, reason),
+        )
+        Ok(info) -> {
+          let response = info_json(info) |> json.to_string
+          let response = add_operation_id(response, operation.id)
+          case
+            conversation.create_operation(
+              runtime.ledger(state.host),
+              info,
+              operation,
+              201,
+              response,
+            )
+          {
+            Error(error) -> #(state, Error(error))
+            Ok(receipt) -> #(
+              holding(state, info.id, #(info, None)),
+              Ok(receipt),
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+fn add_operation_id(encoded: String, operation_id: String) -> String {
+  "{\"operationId\":"
+  <> json.to_string(json.string(operation_id))
+  <> ","
+  <> string.drop_start(encoded, 1)
 }

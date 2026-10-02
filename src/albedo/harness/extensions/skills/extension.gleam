@@ -16,6 +16,7 @@ import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
+import gleam/string
 
 pub fn extension() -> harness_extension.Extension {
   extension_at(catalog.native_home())
@@ -83,6 +84,15 @@ fn skill_command(
   snapshot: catalog.Catalog,
   entry: catalog.Command,
 ) -> command.Command {
+  let activate = catalog.activate(snapshot, entry.name, _)
+  let prepare = fn(arguments) {
+    let arguments = string.trim(arguments)
+    use activation <- result.try(activate(arguments))
+    Ok(#(
+      display(entry.command, arguments),
+      catalog.activation_prompt(activation),
+    ))
+  }
   command.Command(
     entry.command,
     entry.description,
@@ -90,25 +100,26 @@ fn skill_command(
     True,
     True,
     False,
+    Some(prepare),
     fn(_context, caller, args) {
       let arguments = dict.get(args, "arguments") |> result.unwrap("")
-      use activation <- result.try(catalog.activate(
-        snapshot,
-        entry.name,
-        arguments,
-      ))
       case caller {
-        command.UserCall ->
-          Ok(command.Turn(
-            entry.command
-              <> case arguments {
-              "" -> ""
-              value -> " " <> value
-            },
-            catalog.activation_prompt(activation),
-          ))
-        command.ModelCall -> Ok(command.Data(rpc.activation_json(activation)))
+        command.UserCall -> {
+          use prepared <- result.try(prepare(arguments))
+          Ok(command.Turn(prepared.0, prepared.1))
+        }
+        command.ModelCall -> {
+          use activation <- result.try(activate(arguments))
+          Ok(command.Data(rpc.activation_json(activation)))
+        }
       }
     },
   )
+}
+
+fn display(name: String, arguments: String) -> String {
+  case arguments {
+    "" -> name
+    value -> name <> " " <> value
+  }
 }

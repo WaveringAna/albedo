@@ -515,7 +515,8 @@ pub fn claude_stream_shows_thinking_and_replays_it_signed_test() -> Nil {
   let assert Ok([_, [signature, _], _]) = decode.run(value, block("signature"))
   assert signature == "sig_1"
 
-  let entry = transcript.Entry(types.Replay(item), None, Some("claude"), None)
+  let entry =
+    transcript.Entry(types.Replay(item), None, Some("claude"), None, None)
   let assert Ok([types.Assistant("done"), types.Assistant(summary)]) =
     projection.for_model([entry], "codex", types.Responses)
   assert summary == "[Reasoning summary]\nweighing options"
@@ -554,7 +555,8 @@ pub fn codex_reasoning_summary_survives_transfer_to_claude_test() -> Nil {
       "{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"first\"},{\"type\":\"summary_text\",\"text\":\"second\"}],\"encrypted_content\":\"sealed-reasoning\"}",
       types.replay_decoder(types.Responses),
     )
-  let entry = transcript.Entry(types.Replay(item), None, Some("codex"), None)
+  let entry =
+    transcript.Entry(types.Replay(item), None, Some("codex"), None, None)
   let assert Ok([types.Assistant(summary)]) =
     projection.for_model([entry], "other-codex", types.Responses)
   assert summary == "[Reasoning summary]\nfirst\n\nsecond"

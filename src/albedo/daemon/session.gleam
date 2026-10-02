@@ -9,6 +9,7 @@ import albedo/daemon/family
 import albedo/daemon/images
 import albedo/daemon/mail
 import albedo/daemon/note
+import albedo/daemon/operations
 import albedo/daemon/requests
 import albedo/daemon/session_extensions
 import albedo/daemon/session_history
@@ -47,6 +48,7 @@ const restart_note = Submission(
   restart_text,
   "daemon",
   turn.Note("daemon restart"),
+  None,
   None,
   None,
 )
@@ -104,7 +106,7 @@ pub type Message {
   Resume
   Abort(String)
   Submit(Submission, Subject(Result(Bool, SubmissionError)))
-  CancelSubmission(String, Subject(String))
+  CancelSubmission(String, Subject(Result(String, String)))
   ReadCommands(
     Subject(Result(#(List(command.Command), command.Context), String)),
   )
@@ -175,6 +177,11 @@ pub type Message {
   KernelOpened(Result(runtime.Session, python.Error))
   /// Start a turn for what waits in the queue, now that the kernel is here.
   StartQueued
+  AdmitOperation(
+    operations.Request,
+    Submission,
+    Subject(Result(operations.Receipt, String)),
+  )
 }
 
 type State =
@@ -222,6 +229,13 @@ pub fn start(
         }
       }
     })
+    use pending <- result.try(operations.pending(runtime.ledger(host), info.id))
+    let steering =
+      list.map(pending, fn(row) { session_submission.decode(row.payload) })
+    case steering {
+      [] -> Nil
+      _ -> process.send(self, StartQueued)
+    }
     let state =
       session_state.State(
         info,
@@ -232,7 +246,7 @@ pub fn start(
         None,
         latest_usage,
         activity,
-        [],
+        steering,
         [],
         0,
         event_buffer.new(),
@@ -247,12 +261,16 @@ pub fn start(
         now_ms(),
         None,
         None,
+        0,
       )
     // Background jobs wake this session through the kernel's jobs route; the
     // registered closure lands a completion notice as an ordinary submit, so
     // the wake reuses the whole turn pipeline and busy answers itself.
     wakes_register(info.id, fn(display, text) {
-      wake(self, Submission(display, text, "job", turn.JobWake, None, None))
+      wake(
+        self,
+        Submission(display, text, "job", turn.JobWake, None, None, None),
+      )
     })
     commands_register(info.id, fn(op) { command_op(self, host, info.id, op) })
     live_register(info.id, self)
@@ -293,6 +311,7 @@ pub fn submit_mail(
       turn.Mail(letter.id, letter.kind),
       None,
       None,
+      None,
     ),
   )
 }
@@ -305,7 +324,7 @@ pub fn submit(
 ) -> Result(Bool, SubmissionError) {
   call_submit(
     session,
-    Submission(text, text, client_id, turn.Chat, image, None),
+    Submission(text, text, client_id, turn.Chat, image, None, None),
   )
 }
 
@@ -318,11 +337,14 @@ pub fn submit_identified(
 ) -> Result(Bool, SubmissionError) {
   call_submit(
     session,
-    Submission(text, text, client_id, turn.Chat, image, submission_id),
+    Submission(text, text, client_id, turn.Chat, image, submission_id, None),
   )
 }
 
-pub fn cancel_submission(session: Session, submission_id: String) -> String {
+pub fn cancel_submission(
+  session: Session,
+  submission_id: String,
+) -> Result(String, String) {
   actor.call(session, 5000, CancelSubmission(submission_id, _))
 }
 
@@ -332,7 +354,7 @@ pub fn submit_continue(
 ) -> Result(Bool, SubmissionError) {
   call_submit(
     session,
-    Submission("", continue_prompt, client_id, turn.Continue, None, None),
+    Submission("", continue_prompt, client_id, turn.Continue, None, None, None),
   )
 }
 
@@ -490,6 +512,8 @@ fn handle(
       }
     KernelOpened(result) -> actor.continue(kernel_opened(state, result))
     StartQueued -> actor.continue(start_queued(state))
+    AdmitOperation(operation, submission, reply) ->
+      admit_operation(state, operation, submission, reply)
     Abort(id) ->
       case turn.owner(state.activity, id) {
         Some(run) if run.cancelled -> {
@@ -522,17 +546,27 @@ fn handle(
       )
     ReadSelection(reply) -> answer(state, reply, model_selection(state.info))
     CancelSubmission(id, reply) -> {
-      let remaining =
-        list.filter(state.steering, fn(submission) {
-          submission.submission_id != Some(id)
+      let #(selected, remaining) =
+        list.partition(state.steering, fn(submission) {
+          submission.submission_id == Some(id)
         })
       case list.length(remaining) != list.length(state.steering) {
         True ->
-          answer(
-            session_state.State(..state, steering: remaining),
-            reply,
-            "cancelled_queued",
-          )
+          case
+            operations.cancel_inputs(
+              runtime.ledger(state.host),
+              state.info.id,
+              turn.operations(selected),
+            )
+          {
+            Error(error) -> answer(state, reply, Error(error))
+            Ok(_) ->
+              answer(
+                session_state.State(..state, steering: remaining),
+                reply,
+                Ok("cancelled_queued"),
+              )
+          }
         False ->
           case turn.running(state.activity), state.active_submissions {
             Some(run), [submission] if submission.submission_id == Some(id) -> {
@@ -544,68 +578,39 @@ fn handle(
                   activity: turn.cancel(state.activity),
                 ),
                 reply,
-                "interrupt_requested",
+                Ok("interrupt_requested"),
               )
             }
             Some(_), submissions ->
               answer(
                 state,
                 reply,
-                case
-                  list.any(submissions, fn(submission) {
-                    submission.submission_id == Some(id)
-                  })
-                {
-                  True -> "shared_running"
-                  False -> "not_pending"
-                },
+                Ok(
+                  case
+                    list.any(submissions, fn(submission) {
+                      submission.submission_id == Some(id)
+                    })
+                  {
+                    True -> "shared_running"
+                    False -> "not_pending"
+                  },
+                ),
               )
-            _, _ -> answer(state, reply, "not_pending")
+            _, _ -> answer(state, reply, Ok("not_pending"))
           }
       }
     }
-    Interrupt(reply) ->
-      case turn.running(state.activity), waiting_turn(state) {
-        // A turn still waiting for its kernel: drop it. Letters it held stay
-        // undelivered, so the dispatcher offers them again later.
-        None, True -> {
-          let id = mail.new_id()
-          let state =
-            session_state.State(..state, active_submissions: state.steering)
-            |> session_submission.membership(id)
-            |> session_state.emit(view.event("interrupted", []))
-            |> session_state.emit(
-              view.event("turn_completed", [#("turnId", json.string(id))]),
-            )
+    Interrupt(reply) -> {
+      case operations.cancel(runtime.ledger(state.host), state.info.id) {
+        Error(error) ->
           answer(
-            session_state.State(
-              ..state,
-              steering: [],
-              active_submissions: [],
-              booting: option.map(state.booting, fn(boot) {
-                #(
-                  boot.0,
-                  list.filter(boot.1, fn(work) {
-                    work != StartQueued && work != Resume
-                  }),
-                )
-              }),
-            ),
+            session_state.emit(state, view.text("error", error)),
             reply,
-            True,
+            False,
           )
-        }
-        None, False -> answer(state, reply, False)
-        Some(run), _ -> {
-          interrupt_kernel(state)
-          let _ = process.send_after(state.self, 2500, Abort(run.id))
-          answer(
-            session_state.State(..state, activity: turn.cancel(state.activity)),
-            reply,
-            True,
-          )
-        }
+        Ok(_) -> interrupt_waiting(state, reply)
       }
+    }
     ChangeWorkspace(cwd, reply) -> {
       let state = stirred(state)
       let previous = state.info.cwd
@@ -838,15 +843,16 @@ fn handle(
         False, _ -> answer(state, reply, Error("cancelled"))
         True, [] -> answer(state, reply, Ok([]))
         True, queued -> {
-          let inputs = list.map(queued, session_submission.input)
+          let inputs = session_submission.inputs(queued)
           case
-            conversation.commit_letters(
+            conversation.commit_operations(
               runtime.ledger(state.host),
               state.info.id,
               inputs,
               conversation.Model,
               Some(state.info.provider),
               turn.letters(queued),
+              session_submission.commits(queued, 0),
             )
           {
             Error(error) -> answer(state, reply, Error(error))
@@ -868,7 +874,7 @@ fn handle(
                 )
                   |> session_submission.membership(id),
                 reply,
-                Ok(inputs),
+                Ok(list.map(queued, session_submission.input)),
               )
             }
           }
@@ -1126,13 +1132,13 @@ fn command_op(
     command.Submit(display, text, client) ->
       submitted(
         session,
-        Submission(display, text, client, turn.Chat, None, None),
+        Submission(display, text, client, turn.Chat, None, None, None),
         "submitted",
       )
     command.Note(origin, display, text) ->
       submitted(
         session,
-        Submission(display, text, "", turn.Note(origin), None, None),
+        Submission(display, text, "", turn.Note(origin), None, None, None),
         "queued",
       )
   }
@@ -1421,15 +1427,16 @@ fn kernel_opened(
 }
 
 fn failed_queued(state: State, error: String) -> State {
-  let id = mail.new_id()
-  session_state.State(..state, active_submissions: state.steering, steering: [])
-  |> session_submission.membership(id)
-  |> session_state.emit(view.text(
-    "error",
-    "queued messages were not delivered; resend them: " <> error,
-  ))
-  |> session_state.emit(
-    view.event("turn_completed", [#("turnId", json.string(id))]),
+  let _ =
+    operations.block(
+      runtime.ledger(state.host),
+      turn.operations(state.steering),
+      error,
+    )
+  let _ = process.send_after(state.self, 15_000, StartQueued)
+  session_state.emit(
+    session_state.State(..state, blocked_until: now_ms() + 15_000),
+    view.text("error", "waiting inputs are blocked: " <> error),
   )
   |> fn(state) { session_state.State(..state, active_submissions: []) }
 }
@@ -1583,10 +1590,14 @@ fn admit_within_limits(
 }
 
 fn resume(state: State) -> State {
-  case prepare_turn_pipeline(state, [restart_note]) {
+  case
+    prepare_turn_pipeline(state, list.append([restart_note], state.steering))
+  {
     Error(#(state, err)) ->
-      session_state.State(..state, activity: turn.Resting)
-      |> session_state.emit(view.text("error", submission_error(err)))
+      failed_queued(
+        session_state.State(..state, activity: turn.Resting),
+        submission_error(err),
+      )
     Ok(#(state, kernel, client, history)) ->
       start_run(state, kernel, client, history)
   }
@@ -1718,24 +1729,35 @@ fn prepare_turn_pipeline(
         kernel,
         client.images,
       ),
-      list.map(submissions, session_submission.input),
+      session_submission.inputs(submissions),
     )
   use history <- result.try(
     projected_inputs(session_history.remember(state, accepted, 0))
     |> result.map_error(fn(err) { #(state, Rejected(err)) }),
   )
   use timestamp <- result.try(
-    conversation.commit_letters(
+    conversation.commit_operations(
       runtime.ledger(state.host),
       state.info.id,
       accepted,
       conversation.Model,
       Some(state.info.provider),
       turn.letters(submissions),
+      session_submission.commits(
+        submissions,
+        list.length(accepted)
+          - list.length(session_submission.inputs(submissions)),
+      ),
     )
     |> result.map_error(fn(err) { #(state, Rejected(err)) }),
   )
-  let history = with_notice(history, state.notice)
+  let continuations =
+    list.filter(submissions, fn(submission) {
+      submission.source == turn.Continue
+    })
+    |> list.map(session_submission.input)
+  let history =
+    with_notice(list.append(list.reverse(continuations), history), state.notice)
   let state =
     session_history.remember(state, accepted, timestamp)
     |> session_submission.emit(submissions, timestamp)
@@ -1745,6 +1767,7 @@ fn prepare_turn_pipeline(
         notice: None,
         steering: [],
         active_submissions: submissions,
+        blocked_until: 0,
       )
     }
   Ok(#(state, kernel, client, history))
@@ -1966,6 +1989,17 @@ fn background_handle(id: String, self: Session) -> extension.Session {
 }
 
 fn start_queued(state: State) -> State {
+  case turn.running(state.activity) {
+    Some(_) -> state
+    None ->
+      case state.blocked_until != 0 && now_ms() < state.blocked_until {
+        True -> state
+        False -> start_waiting(state)
+      }
+  }
+}
+
+fn start_waiting(state: State) -> State {
   case turn.starts_turn(state.steering), kernel_or_park(state, StartQueued) {
     False, _ -> state
     True, Error(state) -> state
@@ -2156,5 +2190,149 @@ pub fn catalog(session: Session) -> Result(json.Json, String) {
   case actor.call(session, 5000, CheckCatalogWorkspace(workspace, _)) {
     True -> Ok(capability_catalog.to_json(snapshot))
     False -> Error(capability_catalog.stale_error)
+  }
+}
+
+/// Admission commits before kernel or provider preparation begins.
+pub fn admit_durable(
+  worker: Session,
+  operation: operations.Request,
+  submission: Submission,
+) -> Result(operations.Receipt, String) {
+  actor.call(worker, 15_000, AdmitOperation(operation, submission, _))
+}
+
+pub fn continuation(client: String, operation_id: String) -> Submission {
+  Submission(
+    "",
+    continue_prompt,
+    client,
+    turn.Continue,
+    None,
+    None,
+    Some(operation_id),
+  )
+}
+
+fn admit_operation(
+  state: State,
+  operation: operations.Request,
+  submission: Submission,
+  reply: Subject(Result(operations.Receipt, String)),
+) -> actor.Next(State, Message) {
+  let db = runtime.ledger(state.host)
+  case operations.check(db, operation) {
+    Error(error) -> answer(state, reply, Error(error))
+    Ok(Some(receipt)) -> answer(state, reply, Ok(receipt))
+    Ok(None) -> {
+      let #(state, image_error) = refused_image(state, submission)
+      let refusal = case
+        image_error,
+        turn.admit(state.activity, submission, list.length(state.steering))
+      {
+        Some(reason), _ -> Some(reason)
+        _, turn.Reject(turn.Busy) ->
+          Some("session is busy or message queue is full")
+        _, turn.Reject(turn.Oversized) ->
+          Some("prompt or activation exceeds its bounded size")
+        _, _ -> None
+      }
+      case refusal {
+        Some(reason) ->
+          answer(
+            state,
+            reply,
+            operations.reject(
+              db,
+              operation,
+              409,
+              json.to_string(json.object([#("error", json.string(reason))])),
+            ),
+          )
+        None -> {
+          let queued = turn.running(state.activity) != None
+          let response =
+            json.to_string(
+              json.object([
+                #("ok", json.bool(True)),
+                #("queued", json.bool(queued)),
+                #("operationId", json.string(operation.id)),
+              ]),
+            )
+          case
+            operations.admit_pending(
+              db,
+              operation,
+              session_submission.encode(submission),
+              202,
+              response,
+            )
+          {
+            Error(error) -> answer(state, reply, Error(error))
+            Ok(receipt) -> {
+              let state =
+                session_state.State(
+                  ..state,
+                  steering: list.append(state.steering, [submission]),
+                )
+              process.send(state.self, StartQueued)
+              answer(state, reply, Ok(receipt))
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn interrupt_waiting(
+  state: State,
+  reply: Subject(Bool),
+) -> actor.Next(State, Message) {
+  let waiting = state.steering != [] || waiting_turn(state)
+  case turn.running(state.activity), waiting {
+    None, True -> {
+      let id = mail.new_id()
+      let state =
+        session_state.State(..state, active_submissions: state.steering)
+        |> session_submission.membership(id)
+        |> session_state.emit(view.event("interrupted", []))
+        |> session_state.emit(
+          view.event("turn_completed", [#("turnId", json.string(id))]),
+        )
+      answer(
+        session_state.State(
+          ..state,
+          steering: [],
+          active_submissions: [],
+          blocked_until: 0,
+          booting: option.map(state.booting, fn(boot) {
+            #(
+              boot.0,
+              list.filter(boot.1, fn(work) {
+                work != StartQueued && work != Resume
+              }),
+            )
+          }),
+        ),
+        reply,
+        True,
+      )
+    }
+    None, False -> answer(state, reply, False)
+    Some(run), _ -> {
+      interrupt_kernel(state)
+      let _ = process.send_after(state.self, 2500, Abort(run.id))
+      answer(
+        session_state.State(
+          ..state,
+          steering: [],
+          blocked_until: 0,
+          activity: turn.cancel(state.activity),
+        ),
+        reply,
+        True,
+      )
+    }
   }
 }

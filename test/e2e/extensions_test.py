@@ -100,6 +100,11 @@ class ExtensionTests(unittest.TestCase):
     def command(self, name, **args):
         return self.post(f"/sessions/{self.sid}/commands", {"name": name, **args})
 
+    def activate(self, name, **args):
+        return self.post(
+            f"/sessions/{self.sid}/events", {"type": "skill", "name": name, **args}
+        )
+
     def turn(self, prompt, session=None, *, expected=1):
         sid = session or self.sid
         before = len(self.provider.requests)
@@ -362,6 +367,7 @@ class ExtensionTests(unittest.TestCase):
                     "modelCallable": True,
                     "userTurn": True,
                     "page": False,
+                    "skill": True,
                 }
             ],
         )
@@ -369,9 +375,10 @@ class ExtensionTests(unittest.TestCase):
             {"/model", "/context", "/compact"} <= {item["name"] for item in catalog}
         )
         before = len(self.provider.requests)
-        self.assertEqual(
-            self.command("/demo", arguments="one  two", clientId="fixture-client"),
-            {"submitted": True},
+        self.assertTrue(
+            self.activate("/demo", arguments="one  two", clientId="fixture-client")[
+                "ok"
+            ]
         )
         self.app.idle(self.sid)
         self.assertEqual(len(self.provider.requests), before + 1)
@@ -386,7 +393,7 @@ class ExtensionTests(unittest.TestCase):
         self.assertEqual(self.get(f"/sessions/{self.sid}/commands"), catalog)
         self.skill.write_text(SKILL)
         before = len(self.provider.requests)
-        self.command("/demo", arguments="slash argument")
+        self.activate("/demo", arguments="slash argument")
         self.app.idle(self.sid)
         self.assertEqual(len(self.provider.requests), before + 1)
         user = next(
@@ -753,8 +760,8 @@ class ExtensionTests(unittest.TestCase):
             next(item["enabled"] for item in disabled if item["name"] == "skills")
         )
         self.rejected(
-            f"/sessions/{self.sid}/commands",
-            {"name": "/demo", "arguments": "must not run"},
+            f"/sessions/{self.sid}/events",
+            {"type": "skill", "name": "/demo", "arguments": "must not run"},
         )
         pid = self.app.connection["pid"]
         (request,) = self.turn("extension disabled")

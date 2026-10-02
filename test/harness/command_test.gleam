@@ -5,6 +5,7 @@ import albedo/harness/command.{
 }
 import gleam/dict
 import gleam/json
+import gleam/option.{None}
 import gleam/result
 import gleeunit/should
 
@@ -16,6 +17,7 @@ fn demo() -> command.Command {
     True,
     True,
     False,
+    None,
     fn(_context, caller, args) {
       let arguments = dict.get(args, "arguments") |> result.unwrap("")
       case caller {
@@ -34,16 +36,16 @@ pub fn method_names_are_mintable_and_collision_free_test() -> Nil {
   let methods =
     command.method_names([
       demo(),
-      Command("/skill:model", "", [], True, False, False, fn(_, _, _) {
+      Command("/skill:model", "", [], True, False, False, None, fn(_, _, _) {
         Ok(Data(json.string("")))
       }),
-      Command("/skill-model", "", [], True, False, False, fn(_, _, _) {
+      Command("/skill-model", "", [], True, False, False, None, fn(_, _, _) {
         Ok(Data(json.string("")))
       }),
-      Command("/catalog", "", [], True, False, False, fn(_, _, _) {
+      Command("/catalog", "", [], True, False, False, None, fn(_, _, _) {
         Ok(Data(json.string("")))
       }),
-      Command("/__init__", "", [], True, False, False, fn(_, _, _) {
+      Command("/__init__", "", [], True, False, False, None, fn(_, _, _) {
         Ok(Data(json.string("")))
       }),
     ])

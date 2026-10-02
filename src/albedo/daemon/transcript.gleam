@@ -11,6 +11,7 @@ pub type Entry {
     timestamp: Option(Int),
     provider: Option(String),
     thought_ms: Option(Int),
+    source: Option(SourceRef),
   )
 }
 

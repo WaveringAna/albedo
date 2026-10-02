@@ -32,6 +32,7 @@ pub fn command(store: work.Store, cwd: String) -> Command {
     False,
     False,
     True,
+    None,
     fn(ctx, caller, args) {
       let #(action, details) = page.args(args, "")
       case action, caller {

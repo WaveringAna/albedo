@@ -128,6 +128,29 @@ pub fn remember_response(
       Some(state.info.provider),
       thought_ms,
     )
+  // Committed rows keep their identities in the live cache too, so reconnects
+  // recover the same admission metadata before any eviction or restart.
+  let entries = case timestamp, inputs {
+    0, _ | _, [] -> entries
+    _, _ ->
+      case conversation.last_seq(runtime.ledger(state.host), state.info.id) {
+        Error(_) -> entries
+        Ok(last) -> {
+          let first = last - list.length(entries) + 1
+          let #(_, entries) =
+            list.map_fold(entries, first, fn(seq, entry) {
+              #(
+                seq + 1,
+                transcript.Entry(
+                  ..entry,
+                  source: Some(transcript.SourceRef(state.info.id, seq)),
+                ),
+              )
+            })
+          entries
+        }
+      }
+  }
   // An unloaded transcript stays unloaded: the entries are already durable and
   // the next load reads them. Starting a list here would pass a transcript of
   // only these entries off as the whole conversation.

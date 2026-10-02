@@ -30,6 +30,7 @@ pub fn command(store: paperclips.Store) -> Command {
     False,
     False,
     True,
+    None,
     fn(_ctx, caller, args) {
       let #(action, details) = page.args(args, "")
       case action, caller {

@@ -38,6 +38,7 @@ pub type Submission {
     source: Source,
     image: Option(types.Image),
     submission_id: Option(String),
+    operation_id: Option(String),
   )
 }
 
@@ -107,7 +108,7 @@ pub type Rejection {
   Oversized
 }
 
-/// The most chat messages and notes that wait in one session's queue.
+/// The most inputs waiting in one session's queue.
 const queue_limit = 32
 
 pub fn source_name(source: Source) -> String {
@@ -140,19 +141,18 @@ pub fn admit(
   submission: Submission,
   queued: Int,
 ) -> Admission {
-  case bounded(submission), source_rule(submission.source), activity {
-    False, _, _ -> Reject(Oversized)
-    True, SteersOnly, _ -> room(queued)
-    True, RefusedWhenBusy, Running(_) -> Reject(Busy)
-    True, StartsTurn, Running(_) -> room(queued)
-    True, _, _ -> Start
-  }
-}
-
-fn room(queued: Int) -> Admission {
-  case queued < queue_limit {
-    True -> Queue
-    False -> Reject(Busy)
+  case
+    bounded(submission),
+    queued < queue_limit,
+    source_rule(submission.source),
+    activity
+  {
+    False, _, _, _ -> Reject(Oversized)
+    True, False, _, _ -> Reject(Busy)
+    True, True, SteersOnly, _ -> Queue
+    True, True, RefusedWhenBusy, Running(_) -> Reject(Busy)
+    True, True, StartsTurn, Running(_) -> Queue
+    True, True, _, _ -> Start
   }
 }
 
@@ -261,4 +261,11 @@ pub fn phase(activity: Activity) -> String {
     Running(Run(work: Turn(None), ..)) -> "preparing"
     Running(Run(work: Turn(Some(stage)), ..)) -> conversation.stage_name(stage)
   }
+}
+
+/// Covered user operations carried by these durable inputs.
+pub fn operations(submissions: List(Submission)) -> List(String) {
+  list.filter_map(submissions, fn(submission) {
+    option.to_result(submission.operation_id, Nil)
+  })
 }
