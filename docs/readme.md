@@ -5,3 +5,6 @@ Albedo is daemonized with the CLI and (future) WebUI being clients of this daemo
 
 [Daemon attachment and local startup](daemon-lifecycle.md) explains how clients
 discover, attach to, start, and explicitly restart a daemon.
+
+[Client API ownership](client-api.md) explains how named operations separate
+daemon requests from application commands and TUI screens.
