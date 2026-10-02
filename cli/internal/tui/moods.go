@@ -93,6 +93,16 @@ func (m mood) frame(seed int64, tick int) string {
 	return set[tick%len(set)]
 }
 
+// reachingText is what waiting on a host reads as, by its label: connecting,
+// or copying albedo's kernel over (step staging), which the first visit to a
+// host, and the first after albedo's python changed, waits for.
+func reachingText(label, step string) string {
+	if step == "staging" {
+		return "copying the kernel to " + label + "…"
+	}
+	return "connecting to " + label + "…"
+}
+
 // connectingFace is the animation for reaching a host, by its label, at
 // tick: the same one for a host wherever it shows.
 func connectingFace(host string, tick int) string {

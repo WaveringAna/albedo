@@ -2100,7 +2100,7 @@ func (m ChatModel) statusLine() string {
 		return ""
 	}
 	if host := m.reaching(); host != "" {
-		return "connecting to " + host + "…"
+		return reachingText(host, m.Status.KernelStep)
 	}
 	// the port owner gave up and forgot the kernel, so nothing reattaches
 	if host, _ := daemon.SplitLocation(m.Workspace); host != "" && m.Status.KernelLink == "lost" {

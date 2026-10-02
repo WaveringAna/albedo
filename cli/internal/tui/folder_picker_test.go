@@ -304,6 +304,19 @@ func TestConnectingFaceMovesUntilTheHostSettles(t *testing.T) {
 	}
 }
 
+func TestPickerSaysWhenItCopiesTheKernelOver(t *testing.T) {
+	src := remoteFolders("warming", "")
+	src.probe.Step = "staging"
+	m := NewFolderBrowser(src, "/Users/dawn/proj/albedo", "")
+	m.SetSize(140, 16)
+	m = settle(t, m, m.Init())
+	m = typeQuery(t, m, "cher")
+	m, _ = m.Update(hostStatusMsg{Host: "mayer@chernobog", Status: src.probe})
+	if frame := pickerFrame(m); !strings.Contains(frame, "copying the kernel to chernobog… ") {
+		t.Fatalf("a probe staging the bundle does not say so:\n%s", frame)
+	}
+}
+
 func TestPickerOffersSignInForAHostThatNeedsAPerson(t *testing.T) {
 	src := remoteFolders("needs_auth", "Permission denied (publickey)")
 	m := NewFolderBrowser(src, "/Users/dawn/proj/albedo", "")

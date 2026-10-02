@@ -3,7 +3,9 @@
 import albedo/daemon/events as view
 import albedo/daemon/session_state
 import albedo/harness/extensions/python/kernel as python
+import albedo/harness/location
 import albedo/harness/runtime
+import albedo/harness/ssh
 import gleam/int
 import gleam/json
 import gleam/list
@@ -212,17 +214,30 @@ fn upgraded_text(carried: python.Carried) -> String {
   }
 }
 
-/// The kernel for the session status: `{stale, reason?, link}`.
+/// The kernel for the session status: `{stale, reason?, link, step?}`.
+/// `step` is `staging` while a kernel booting on a remote host waits for
+/// albedo's bundle to be copied there.
 pub fn kernel_json(state: session_state.State(message)) -> json.Json {
   let reason = option.then(state.kernel, runtime.stale)
-  json.object([
-    #("stale", json.bool(reason != None)),
-    #("link", json.string(link_name(state))),
-    ..case reason {
-      Some(reason) -> [#("reason", json.string(stale_name(reason)))]
-      None -> []
-    }
-  ])
+  let link = link_name(state)
+  let step = case link, location.parse(state.info.cwd) {
+    "booting", Ok(location.Remote(..) as at) ->
+      location.ssh_target(at) |> result.map(ssh.step) |> result.unwrap("")
+    _, _ -> ""
+  }
+  json.object(
+    list.flatten([
+      [#("stale", json.bool(reason != None)), #("link", json.string(link))],
+      case reason {
+        Some(reason) -> [#("reason", json.string(stale_name(reason)))]
+        None -> []
+      },
+      case step {
+        "" -> []
+        step -> [#("step", json.string(step))]
+      },
+    ]),
+  )
 }
 
 /// How the session reaches its kernel: `booting` while one opens (a boot, or

@@ -9,11 +9,12 @@ that needs a passphrase, a second factor or a new host key answers
     albedo_ssh.py commands <[user@]host> <home>
     albedo_ssh.py hosts
 
-`probe` prints one JSON object: `{state, detail, os, arch, home, cpus,
-python}` and, once the home is known, the `commands` answer: `{argv, control,
-bundle, bridge, signal, remove, gather, auth_sock}`, the complete remote
-commands the daemon runs there. state is ready, needs_auth, unreachable or unsupported. A
-ready probe has checked python >= 3.11 and staged the content-hashed bundle
+`probe` prints `{"step": "staging"}` on a line of its own before it copies
+the bundle over, so a waiting client can say so, then one JSON object:
+`{state, detail, os, arch, home, cpus, python}` and, once the home is known,
+the `commands` answer: `{argv, control, bundle, bridge, signal, remove,
+gather, auth_sock}`, the complete remote commands the daemon runs there.
+state is ready, needs_auth, unreachable or unsupported. A ready probe has checked python >= 3.11 and staged the content-hashed bundle
 under `~/.albedo-remote/<digest>`. `commands` needs no network, for a host
 known only from a kernel's record while ssh is down. `hosts` lists the `Host`
 names of ~/.ssh/config and its includes, patterns left out.
@@ -30,6 +31,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from collections.abc import Callable
 
 import albedo_bundle
 
@@ -209,7 +211,9 @@ PROBE = (
 )
 
 
-def probe(target: str) -> dict[str, object]:
+def probe(
+    target: str, step: Callable[[str], None] = lambda _: None
+) -> dict[str, object]:
     answer: dict[str, object] = {
         "host": target,
         "argv": [*base(), target],
@@ -251,6 +255,7 @@ def probe(target: str) -> dict[str, object]:
             "detail": f"needs python >= 3.11 (found {python})",
         }
     if staged != "staged":
+        step("staging")
         try:
             staging = run(
                 target,
@@ -301,9 +306,13 @@ def config_hosts(path: str | None = None, seen: set[str] | None = None) -> list[
     return list(dict.fromkeys(names))
 
 
+def announce(step: str) -> None:
+    print(json.dumps({"step": step}), flush=True)
+
+
 def main(argv: list[str]) -> int:
     if len(argv) == 3 and argv[1] == "probe":
-        print(json.dumps(probe(argv[2])))
+        print(json.dumps(probe(argv[2], announce)))
         return 0
     if len(argv) == 2 and argv[1] == "hosts":
         print(json.dumps(config_hosts()))

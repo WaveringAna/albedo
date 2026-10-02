@@ -43,6 +43,9 @@ type AgentStatus struct {
 	// KernelLink is how the session reaches its kernel: none, booting,
 	// attached, reattaching or lost; empty from a daemon that does not say.
 	KernelLink string `json:"kernelLink,omitempty"`
+	// KernelStep is staging while a booting kernel waits for albedo to be
+	// copied to its remote host.
+	KernelStep string `json:"kernelStep,omitempty"`
 }
 
 // ContextWindow reads the model's context window from the session's last
@@ -78,11 +81,12 @@ func (c *ChatClient) GetStatus(ctx context.Context) (*AgentStatus, error) {
 		var kernel struct {
 			Stale bool   `json:"stale"`
 			Link  string `json:"link"`
+			Step  string `json:"step"`
 		}
 		if err = required(fields, "kernel", &kernel); err != nil {
 			return err
 		}
-		result.KernelStale, result.KernelLink = kernel.Stale, kernel.Link
+		result.KernelStale, result.KernelLink, result.KernelStep = kernel.Stale, kernel.Link, kernel.Step
 		return nil
 	})
 	if err != nil {

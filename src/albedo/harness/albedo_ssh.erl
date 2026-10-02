@@ -7,7 +7,7 @@
 %% again while a probe runs joins it instead of starting another.
 -module(albedo_ssh).
 -behaviour(gen_server).
--export([probe/2, peek/1, cached/1, forget/1, commands/2, exec/5, config_hosts/0]).
+-export([probe/2, peek/1, cached/1, step/1, forget/1, commands/2, exec/5, config_hosts/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(READY_MS, 60000).
@@ -27,6 +27,10 @@ peek(Target) -> gen_server:call(ensure(), {peek, Target}).
 
 %% A fresh cached answer, never starting a probe.
 cached(Target) -> gen_server:call(ensure(), {cached, Target}).
+
+%% What a running probe is doing past connecting: <<"staging">> while it
+%% copies the bundle over, <<>> otherwise.
+step(Target) -> gen_server:call(ensure(), {step, Target}).
 
 %% The Host names of ~/.ssh/config and its includes, as a JSON list.
 config_hosts() ->
@@ -75,7 +79,7 @@ ensure() ->
         {error, {already_started, Pid}} -> Pid
     end.
 
-init([]) -> {ok, #{hosts => #{}, running => #{}}}.
+init([]) -> {ok, #{hosts => #{}, running => #{}, steps => #{}}}.
 
 handle_call({probe, Target}, From, S) ->
     case fresh(Target, S) of
@@ -87,6 +91,8 @@ handle_call({cached, Target}, _, S) ->
         {ok, Json} -> {reply, {ok, Json}, S};
         none -> {reply, {error, nil}, S}
     end;
+handle_call({step, Target}, _, S = #{steps := Steps}) ->
+    {reply, maps:get(Target, Steps, <<>>), S};
 handle_call({peek, Target}, _, S) ->
     case fresh(Target, S) of
         {ok, Json} -> {reply, {ok, Json}, S};
@@ -96,12 +102,18 @@ handle_call({peek, Target}, _, S) ->
 handle_cast({forget, Target}, S = #{hosts := Hosts}) ->
     {noreply, S#{hosts => maps:remove(Target, Hosts)}}.
 
-handle_info({probed, Target, Json}, S = #{hosts := Hosts, running := Running}) ->
+handle_info({probed, Target, Json}, S = #{hosts := Hosts, running := Running, steps := Steps}) ->
     Waiters = maps:get(Target, Running, []),
     [gen_server:reply(From, {ok, Json}) || From <- Waiters],
     Now = erlang:monotonic_time(millisecond),
     {noreply, S#{hosts => Hosts#{Target => {Json, Now + ttl(Json)}},
-                 running => maps:remove(Target, Running)}};
+                 running => maps:remove(Target, Running),
+                 steps => maps:remove(Target, Steps)}};
+handle_info({stepped, Target, Step}, S = #{running := Running, steps := Steps}) ->
+    case maps:is_key(Target, Running) of
+        true -> {noreply, S#{steps => Steps#{Target => Step}}};
+        false -> {noreply, S}
+    end;
 handle_info(_, S) -> {noreply, S}.
 
 fresh(Target, #{hosts := Hosts}) ->
@@ -117,7 +129,7 @@ start(Target, From, S = #{running := Running}) ->
         {ok, Earlier} -> S#{running => Running#{Target => Waiters ++ Earlier}};
         error ->
             Self = self(),
-            spawn(fun() -> Self ! {probed, Target, run(Target)} end),
+            spawn(fun() -> Self ! {probed, Target, run(Target, Self)} end),
             S#{running => Running#{Target => Waiters}}
     end.
 
@@ -127,14 +139,29 @@ ttl(Json) ->
         _ -> ?FAILED_MS
     end.
 
-run(Target) ->
-    case helper([<<"probe">>, Target], ?HELPER_MS) of
-        {ok, Json} -> Json;
+%% The probe's answer is its last line; a step line before it is passed on
+%% to the server as it arrives.
+run(Target, Server) ->
+    Stepped = fun(Line) ->
+        case catch json:decode(Line) of
+            #{<<"step">> := Step} when is_binary(Step) -> Server ! {stepped, Target, Step};
+            _ -> ok
+        end
+    end,
+    case helper([<<"probe">>, Target], ?HELPER_MS, Stepped) of
+        {ok, Out} ->
+            case [L || L <- binary:split(Out, <<"\n">>, [global]), L =/= <<>>] of
+                [] -> failed("albedo_ssh.py answered nothing");
+                Lines -> lists:last(Lines)
+            end;
         {error, Why} -> failed(Why)
     end.
 
-%% One run of albedo_ssh.py: its stdout, or why there is none.
-helper(Args, Wait) ->
+%% One run of albedo_ssh.py: its stdout, or why there is none. Given an
+%% OnLine, each line goes to it as soon as it is complete.
+helper(Args, Wait) -> helper(Args, Wait, none).
+
+helper(Args, Wait, OnLine) ->
     case albedo_python:local_paths() of
         {ok, {Python, Kernel}} ->
             Helper = filename:join(filename:dirname(Kernel), <<"albedo_ssh.py">>),
@@ -142,15 +169,24 @@ helper(Args, Wait) ->
                           [binary, exit_status, use_stdio, hide,
                            {args, ["-u", binary_to_list(Helper) | [binary_to_list(A) || A <- Args]]},
                            {env, albedo_python:clean_environment()}]) of
-                Port -> collect(Port, [], erlang:monotonic_time(millisecond) + Wait)
+                Port -> collect(Port, [], erlang:monotonic_time(millisecond) + Wait, OnLine, <<>>)
             catch _:Reason -> {error, io_lib:format("~p", [Reason])}
             end;
         {error, {unavailable, Why}} -> {error, Why}
     end.
 
-collect(Port, Acc, Deadline) ->
+collect(Port, Acc, Deadline) -> collect(Port, Acc, Deadline, none, <<>>).
+
+%% Without OnLine nothing is split, so a large one-line answer (a gather)
+%% is never copied again per chunk.
+collect(Port, Acc, Deadline, OnLine, Partial) ->
     receive
-        {Port, {data, Data}} -> collect(Port, [Data | Acc], Deadline);
+        {Port, {data, Data}} when OnLine =:= none ->
+            collect(Port, [Data | Acc], Deadline, none, Partial);
+        {Port, {data, Data}} ->
+            [Rest | Lines] = lists:reverse(binary:split(<<Partial/binary, Data/binary>>, <<"\n">>, [global])),
+            lists:foreach(OnLine, lists:reverse(Lines)),
+            collect(Port, [Data | Acc], Deadline, OnLine, Rest);
         {Port, {exit_status, 0}} -> {ok, iolist_to_binary(lists:reverse(Acc))};
         {Port, {exit_status, Status}} -> {error, io_lib:format("albedo_ssh.py exited ~p", [Status])}
     after max(0, Deadline - erlang:monotonic_time(millisecond)) ->

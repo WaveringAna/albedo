@@ -78,6 +78,11 @@ func TestRemoteHeaderFoldsUnderTheHostsHomeAndSaysWhileConnecting(t *testing.T) 
 	if got := m.statusLine(); got != "connecting to chernobog…" {
 		t.Fatalf("a booting remote kernel reads %q", got)
 	}
+	m.Status.KernelStep = "staging"
+	if got := m.statusLine(); got != "copying the kernel to chernobog…" {
+		t.Fatalf("a first boot on the host reads %q", got)
+	}
+	m.Status.KernelStep = ""
 	// an idle session animates too, with the face the picker shows for the host
 	m.ProgressFrame = 1
 	if view := ansi.Strip(m.View()); !m.animating() || !strings.Contains(view, "connecting to chernobog… "+connectingFace("chernobog", 1)) {

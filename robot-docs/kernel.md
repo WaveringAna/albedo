@@ -122,13 +122,15 @@ a kernel is stale when it runs another bundle than the bridge that reached it,
 speaks another protocol (both read from the hello), or booted with another
 module set than its session now has (found at reattach). `kernel.stale`
 answers the reason and whether the swap was forced; the session status carries
-`kernel: {stale, reason?, link}`, and the tui shows `kernel older` beside the
+`kernel: {stale, reason?, link, step?}`, and the tui shows `kernel older` beside the
 header counts. `link` is how the session reaches its kernel: `none` before it
 needed one, `booting` while one opens (or a daemon start's attach is awaited),
 `attached`, `reattaching` while the bridge is down and the port owner retries
 (`albedo_python:linked/1`), and `lost` once it gave up. the tui fades a remote
 host in the header while booting or reattaching, and colors it as an error
-once lost.
+once lost. `step` is `staging` while a remote kernel's boot waits for its
+host's probe to copy the bundle over, so the status line can say `copying
+the kernel to chernobog…` instead of `connecting to chernobog…`.
 
 the swap happens at the session's next idle moment: `session_namespace.ready`,
 which every turn, compaction and background call goes through, lets go of a
@@ -260,7 +262,10 @@ with backoff and `resume_kernels` treat an ssh drop as a bridge that exited.
 
 both answer `{host, state, detail}` with `state` one of `ready`, `warming`,
 `needs_auth` (with `control_path`), `unreachable`, `unsupported`, and `os`,
-`arch`, `home` when ready. `/health` lists `remote_hosts`. `GET /hosts`
+`arch`, `home` when ready. a `warming` answer carries `step: "staging"` while
+the probe copies the bundle: `albedo_ssh.py probe` prints `{"step":
+"staging"}` on its own line first, and `albedo_ssh.erl` passes each line on
+as it arrives (`albedo_ssh:step/1`), keeping the last line as the answer. `/health` lists `remote_hosts`. `GET /hosts`
 (the picker's host completion) is in workspaces.md. the same probe also
 answers the `gather` command the folder browser and project readers run.
 

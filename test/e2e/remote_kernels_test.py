@@ -43,6 +43,9 @@ case "$target" in
   locked) echo "locked: Permission denied (publickey)." >&2; exit 255 ;;
   slow-*) sleep 3; echo "ssh: connect to host $target port 22: Connection refused" >&2; exit 255 ;;
 esac
+case "$*" in
+  *.part.*) [ -e {slow} ] && sleep 3 ;;
+esac
 path={bin}:/usr/bin:/bin
 [ "$target" = oldhost ] && path={old}:$path
 exec env -i HOME={home} PATH="$path" SHELL={bin}/loginsh /bin/sh -c "$*"
@@ -91,6 +94,7 @@ class RemoteKernelTests(unittest.TestCase):
     ssh_log: Path
     python_log: Path
     down: Path
+    slow_stage: Path
 
     def setUp(self):
         self.cells = []
@@ -107,6 +111,7 @@ class RemoteKernelTests(unittest.TestCase):
             self.ssh_log = root / "ssh.log"
             self.python_log = root / "local-python.log"
             self.down = root / "fakehost-down"
+            self.slow_stage = root / "slow-stage"
             real = shutil.which("python3") or sys.executable
             local, remote, old = (
                 root / "local-bin",
@@ -123,6 +128,7 @@ class RemoteKernelTests(unittest.TestCase):
                     old=old,
                     home=self.remote_home,
                     down=self.down,
+                    slow=self.slow_stage,
                 ),
             )
             write(
@@ -190,6 +196,30 @@ class RemoteKernelTests(unittest.TestCase):
         # The model is told where it runs.
         system = json.dumps(self.provider.requests[0]["request"])
         self.assertIn("execute on fakehost (", system)
+
+    def test_a_first_visit_says_it_is_copying_the_kernel(self):
+        self.slow_stage.touch()  # each copy of the bundle takes 3 s
+        session = self.create(f"fakehost:{self.project}")["id"]
+        seen = set()
+
+        def watch():
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                with self.app.api(f"/sessions/{session}/status") as response:
+                    kernel = json.load(response)["kernel"]
+                with self.app.api("/hosts/fakehost") as response:
+                    host = json.load(response)
+                seen.update(
+                    {("session", kernel.get("step")), ("host", host.get("step"))}
+                )
+                if kernel["link"] == "attached":
+                    return
+                time.sleep(0.2)
+
+        result = self.cell(session, "1", during=watch)
+        self.assertEqual(result["status"], "ok", result)
+        self.assertIn(("session", "staging"), seen)
+        self.assertIn(("host", "staging"), seen)
 
     def test_a_bridge_killed_mid_cell_reattaches_over_ssh(self):
         session = self.create(f"fakehost:{self.project}")["id"]

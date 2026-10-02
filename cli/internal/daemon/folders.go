@@ -293,11 +293,13 @@ func MoveSession(ctx context.Context, conn *Connection, id, workspace string) (S
 
 // HostStatus is what the daemon knows of a remote host over ssh: State is
 // ready, warming, needs_auth, unreachable or unsupported; Detail says why
-// when it is not ready. OS, Arch and Home come with a ready one.
+// when it is not ready. OS, Arch and Home come with a ready one; Step is
+// staging while a warming probe copies albedo's kernel to the host.
 type HostStatus struct {
 	Host        string `json:"host"`
 	State       string `json:"state"`
 	Detail      string `json:"detail"`
+	Step        string `json:"step"`
 	OS          string `json:"os"`
 	Arch        string `json:"arch"`
 	Home        string `json:"home"`

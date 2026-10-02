@@ -131,14 +131,19 @@ fn wire(target: String, answer: Result(Host, Failure)) -> Json {
         Unsupported(detail) -> #("unsupported", detail)
         Warming -> #("warming", "")
       }
-      let control = case failure {
+      let extra = case failure {
         NeedsAuth(_, control) -> [#("control_path", json.string(control))]
+        Warming ->
+          case step(target) {
+            "" -> []
+            doing -> [#("step", json.string(doing))]
+          }
         _ -> []
       }
       [
         #("state", json.string(state)),
         #("detail", json.string(detail)),
-        ..control
+        ..extra
       ]
     }
   }
@@ -239,6 +244,11 @@ fn config_hosts_json() -> Result(String, Nil)
 
 @external(erlang, "albedo_ssh", "forget")
 fn forget(target: String) -> Nil
+
+/// What a running probe is doing past connecting: `staging` while it copies
+/// albedo's bundle to the host, "" otherwise.
+@external(erlang, "albedo_ssh", "step")
+pub fn step(target: String) -> String
 
 @external(erlang, "albedo_ssh", "peek")
 fn peek(target: String) -> Result(String, Nil)
