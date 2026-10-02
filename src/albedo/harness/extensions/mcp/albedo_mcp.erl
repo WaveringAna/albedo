@@ -1,10 +1,13 @@
 -module(albedo_mcp).
 
--export([prepare/1, prepare/2, definitions/1, context/1, call/3, close/1, url_allowed/1, validate_settings/3]).
+-export([prepare/1, prepare/2, definitions/1, context/1, offline/1, observe/3, check/4, call/3, close/1,
+         url_allowed/1, validate_settings/3]).
 
 -define(DEFAULT_STARTUP_MS, 20000).
 -define(DEFAULT_CALL_MS, 60000).
 -define(CLOSE_MS, 2500).
+-define(DEFAULT_RETRY_MS, 30000).
+-define(RETRY_CEILING, 20).
 -define(SAFE_ENV, ["HOME", "PATH", "TMPDIR", "TEMP", "TMP", "SystemRoot", "WINDIR"]).
 
 prepare(ConfigJson) -> prepare(ConfigJson, undefined).
@@ -14,34 +17,52 @@ prepare(ConfigJson, Session) ->
         Config = json:decode(ConfigJson),
         Servers = maps:get(<<"servers">>, Config, #{}),
         true = is_map(Servers),
+        Retry = positive_ms(maps:get(<<"retryMs">>, Config, ?DEFAULT_RETRY_MS)),
         SelectedSession = case Session of undefined -> none; _ -> {some, Session} end,
         Candidates = lists:sort(maps:to_list(Servers)),
         Selection = case Candidates of [] -> none; _ -> SelectedSession end,
         case 'albedo@harness@capabilities':load(albedo_extension_settings:home(), Selection) of
-            {ok, Preferences} -> open_servers(Candidates, [], Preferences);
+            {ok, Preferences} -> open_servers(Candidates, Preferences, Retry);
             Error -> Error
         end
     catch
         _:_ -> {error, <<"MCP configuration is invalid">>}
     end.
 
-open_servers([], Opened, _) ->
-    Servers = lists:reverse(Opened),
-    case catalogue(Servers) of
-        {ok, Ops, Ctx} -> {ok, #{servers => Servers, operations => Ops, context => Ctx}};
-        {error, Reason} -> close_servers(Servers), {error, Reason}
-    end;
-open_servers([{Name, Config} | Rest], Opened, Preferences) ->
+open_servers(Candidates, Preferences, Retry) ->
+    open_servers(Candidates, [], [], Preferences, Retry).
+
+%% A server that cannot start is left out and named; one that is badly
+%% configured still fails the whole preparation.
+open_servers([], Opened, Offline, _, Retry) ->
+    finish(lists:reverse(Opened), lists:reverse(Offline), Retry);
+open_servers([{Name, Config} | Rest], Opened, Offline, Preferences, Retry) ->
     case {maps:get(<<"enabled">>, Config, true),
           'albedo@harness@capabilities':enabled(Preferences, <<"mcp">>, Name)} of
         {true, {ok, true}} ->
             case open_server(Name, Config) of
-                {ok, Server} -> open_servers(Rest, [Server | Opened], Preferences);
+                {ok, Server} -> open_servers(Rest, [Server | Opened], Offline, Preferences, Retry);
+                {unavailable, _} -> open_servers(Rest, Opened, [{Name, Config} | Offline], Preferences, Retry);
                 {error, Reason} -> close_servers(Opened), {error, Reason}
             end;
-        {false, _} -> open_servers(Rest, Opened, Preferences);
-        {_, {ok, false}} -> open_servers(Rest, Opened, Preferences);
+        {false, _} -> open_servers(Rest, Opened, Offline, Preferences, Retry);
+        {_, {ok, false}} -> open_servers(Rest, Opened, Offline, Preferences, Retry);
         {_, {error, Reason}} -> close_servers(Opened), {error, Reason}
+    end.
+
+finish(Servers, Offline0, Retry) ->
+    {Live, Offline1, Operations, Context} = catalogue(Servers, Offline0),
+    Offline = lists:keysort(1, Offline1),
+    Names = [maps:get(advertised, O) || O <- Operations],
+    case length(Operations) =< 512 andalso length(Names) =:= length(lists:usort(Names)) of
+        true ->
+            Watcher = watch(Offline, Retry),
+            {ok, #{servers => Live, operations => Operations, offline => [N || {N, _} <- Offline],
+                   watcher => Watcher,
+                   context => iolist_to_binary(lists:join("\n", Context))}};
+        false ->
+            close_servers(Live),
+            {error, <<"MCP catalogue is too large or ambiguous">>}
     end.
 
 open_server(Name, Config) when is_binary(Name), is_map(Config) ->
@@ -70,10 +91,10 @@ open_server_with_secrets(Name, Config, Secrets) ->
         {ok, Pid} = barrel_mcp_client:start(Spec),
         case await_ready(Pid, Startup) of
             ok -> {ok, #{name => Name, pid => Pid, call_timeout => Call, config => Config}};
-            {error, _} -> close_client(Pid), {error, unavailable(Name)}
+            {error, _} -> close_client(Pid), {unavailable, Name}
         end
     catch
-        _:_ -> {error, unavailable(Name)}
+        _:_ -> {unavailable, Name}
     end.
 
 transport_spec(#{<<"type">> := <<"http">>, <<"url">> := Url} = Config, Secrets, Spec)
@@ -206,21 +227,21 @@ await_ready_loop(Pid, Monitor, Deadline) ->
             end
     end.
 
-catalogue(Servers) ->
-    catalogue(Servers, [], []).
+%% A server whose tools cannot be listed is closed and counted offline with
+%% the ones that never started.
+catalogue(Servers, Offline) ->
+    catalogue(Servers, Offline, [], [], []).
 
-catalogue([], Operations0, Context) ->
-    Operations = lists:reverse(Operations0),
-    Names = [maps:get(advertised, O) || O <- Operations],
-    case length(Operations) =< 512 andalso length(Names) =:= length(lists:usort(Names)) of
-        true -> {ok, Operations, iolist_to_binary(lists:join("
-", lists:reverse(Context)))};
-        false -> {error, <<"MCP catalogue is too large or ambiguous">>}
-    end;
-catalogue([#{name := Name} = Server | Rest], Operations, Context) ->
+catalogue([], Offline, Live, Operations, Context) ->
+    {lists:reverse(Live), lists:reverse(Offline), lists:reverse(Operations),
+     lists:reverse(Context)};
+catalogue([#{name := Name, config := Config} = Server | Rest], Offline, Live, Operations, Context) ->
     case discover(Server) of
-        {ok, Ops, Text} -> catalogue(Rest, lists:reverse(Ops) ++ Operations, [Text | Context]);
-        {error, _} -> {error, unavailable(Name)}
+        {ok, Ops, Text} ->
+            catalogue(Rest, Offline, [Server | Live], lists:reverse(Ops) ++ Operations, [Text | Context]);
+        {error, _} ->
+            close_servers([Server]),
+            catalogue(Rest, [{Name, Config} | Offline], Live, Operations, Context)
     end.
 
 discover(#{name := Name, pid := Pid, call_timeout := Timeout, config := Config}) ->
@@ -407,7 +428,10 @@ find(Key, Name, Items) ->
         {value, Item} -> Item; false -> erlang:error(not_found)
     end.
 
-close(#{servers := Servers}) -> close_servers(Servers), nil;
+close(#{servers := Servers, watcher := Watcher}) ->
+    stop_watch(Watcher),
+    close_servers(Servers),
+    nil;
 close(_) -> nil.
 
 close_servers(Servers) -> lists:foreach(fun(S) -> close_client(maps:get(pid, S)) end, Servers).
@@ -438,6 +462,92 @@ optional_binary(Value) when is_binary(Value) -> Value;
 optional_binary(_) -> erlang:error(invalid_value).
 
 unavailable(Name) -> <<"MCP server '", Name/binary, "' is unavailable">>.
+
+%% The servers that were configured and enabled but could not be reached.
+offline(#{offline := Offline}) -> Offline.
+
+%% Connects to one saved server and hangs up, so the settings form can refuse a
+%% server that cannot start. A server that is switched off, or off for `Session`
+%% when `Preferences` is true, is not tried.
+check(ConfigJson, Session, Name, Preferences) ->
+    try
+        Servers = maps:get(<<"servers">>, json:decode(ConfigJson), #{}),
+        {ok, Prefs} = 'albedo@harness@capabilities':load(albedo_extension_settings:home(), {some, Session}),
+        Wanted = Preferences =:= false orelse 'albedo@harness@capabilities':enabled(Prefs, <<"mcp">>, Name) =:= {ok, true},
+        case maps:find(Name, Servers) of
+            {ok, #{<<"enabled">> := false}} -> {ok, nil};
+            {ok, Config} when Wanted ->
+                case probe(Name, Config) of
+                    true -> {ok, nil};
+                    false -> {error, unavailable(Name)}
+                end;
+            _ -> {ok, nil}
+        end
+    catch
+        _:_ -> {error, <<"MCP configuration is invalid">>}
+    end.
+
+probe(Name, Config) ->
+    case open_server(Name, Config) of
+        {ok, Server} -> close_servers([Server]), true;
+        _ -> false
+    end.
+
+%% Tells the handle's watcher what its session just did. `Refresh` takes the
+%% reason a server is back and asks the session to prepare its tools again.
+observe(#{watcher := Watcher}, TurnEnded, Refresh) when is_pid(Watcher) ->
+    Watcher ! {event, TurnEnded, Refresh},
+    nil;
+observe(_, _, _) -> nil.
+
+%% Servers that were offline at preparation are probed when the session shows
+%% activity, never on a timer, so an idle daemon does not poll a dead host.
+%% Probes back off after each failure; one that finds a server up waits for a
+%% turn to end and then asks for the refresh, repeating until the session
+%% takes it (which closes this handle and with it the watcher).
+watch([], _) -> none;
+watch(Offline, Retry) ->
+    spawn(fun() -> watch(Offline, Retry, [], 0, now_ms() + Retry) end).
+
+watch(Offline, Retry, Back, Failures, Next) ->
+    receive
+        stop -> ok;
+        {event, TurnEnded, Refresh} ->
+            Ended = folded_events(TurnEnded),
+            {Back1, Failures1, Next1} = maybe_probe(Offline, Retry, Back, Failures, Next),
+            case Back1 =/= [] andalso Ended of
+                true -> Refresh(<<"MCP server ", (hd(Back1))/binary, " is reachable again">>);
+                false -> ok
+            end,
+            watch(Offline, Retry, Back1, Failures1, Next1)
+    end.
+
+%% Folds the events already queued into one, so a burst costs one probe; the
+%% turn counts as ended if any of them ended it.
+folded_events(TurnEnded) ->
+    receive
+        {event, Later, _} -> folded_events(TurnEnded orelse Later)
+    after 0 -> TurnEnded
+    end.
+
+maybe_probe(_, _, Back, Failures, Next) when Back =/= [] -> {Back, Failures, Next};
+maybe_probe(Offline, Retry, [], Failures, Next) ->
+    Now = now_ms(),
+    case Now >= Next of
+        false -> {[], Failures, Next};
+        true ->
+            case [Name || {Name, Config} <- Offline, probe(Name, Config)] of
+                [] ->
+                    Wait = min(Retry bsl Failures, Retry * ?RETRY_CEILING),
+                    {[], Failures + 1, now_ms() + Wait};
+                Back -> {Back, 0, now_ms()}
+            end
+    end.
+
+stop_watch(Watcher) when is_pid(Watcher) -> Watcher ! stop, ok;
+stop_watch(_) -> ok.
+
+now_ms() -> erlang:monotonic_time(millisecond).
 
 %% Validate persisted transport references and secret patches without resolving
 %% environment variables or starting a client.

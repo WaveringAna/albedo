@@ -167,6 +167,9 @@ pub type Message {
   BackgroundFinished(String, Int, Result(Option(types.Usage), String))
   Compact(Option(String), Subject(Result(json.Json, String)))
   RefreshData(Subject(Result(json.Json, String)))
+  /// An extension asks for a refresh and gives its reason; see
+  /// `extension.Session`.
+  RefreshRequested(String)
   DrainSteering(String, Subject(Result(List(types.Input), String)))
   ReadContext(Subject(context_snapshot.Snapshot))
   Finished(String, Result(Nil, String))
@@ -694,6 +697,8 @@ fn handle(
       transition(reply, session_provider.change_effort(stirred(state), level))
 
     RefreshData(reply) -> transition(reply, session_extensions.refresh(state))
+    RefreshRequested(reason) ->
+      actor.continue(session_extensions.refresh_requested(state, reason))
     Compact(strategy, reply) ->
       case
         turn.running(state.activity),
@@ -2031,16 +2036,20 @@ fn observe(state: State, event: extension.SessionEvent) -> Nil {
 /// What an observer may ask of this session. It travels to the observer, so
 /// it captures the actor's subject, never the state and its transcript.
 fn background_handle(id: String, self: Session) -> extension.Session {
-  extension.Session(id, fn(request, prefix) {
-    case
-      session_run.try_call(self, 600_000, CallInBackground(request, prefix, _))
-    {
-      Ok(outcome) -> outcome
-      Error(session_run.TimedOut) ->
-        Error("the background call went unanswered for ten minutes")
-      Error(session_run.CalleeDown) -> Error("the session stopped")
-    }
-  })
+  extension.Session(
+    id,
+    fn(request, prefix) {
+      case
+        session_run.try_call(self, 600_000, CallInBackground(request, prefix, _))
+      {
+        Ok(outcome) -> outcome
+        Error(session_run.TimedOut) ->
+          Error("the background call went unanswered for ten minutes")
+        Error(session_run.CalleeDown) -> Error("the session stopped")
+      }
+    },
+    fn(reason) { process.send(self, RefreshRequested(reason)) },
+  )
 }
 
 fn start_queued(state: State) -> State {

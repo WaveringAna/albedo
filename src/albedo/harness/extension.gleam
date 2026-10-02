@@ -154,6 +154,10 @@ pub type Session {
     /// the session or its kernel is released.
     call: fn(types.Request, requests.Prefix) ->
       Result(Option(types.Usage), String),
+    /// Asks the session to prepare its extensions again, noting `reason` in
+    /// the transcript. Answers at once; the session declines while a turn is
+    /// running, so call it again when the next one ends.
+    refresh: fn(String) -> Nil,
   )
 }
 

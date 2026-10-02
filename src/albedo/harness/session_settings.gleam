@@ -20,21 +20,55 @@ pub fn mutate(
 ) -> Result(a, String) {
   case change {
     Catalog(change) ->
-      capability_catalog.save(home, session, change, extensions, after)
+      capability_catalog.save(
+        home,
+        session,
+        change,
+        extensions,
+        fn(kind, name) { enabling(session, kind, name) },
+        after,
+      )
     Capability(kind, name, scope, enabled) ->
       case
         name != ""
         && { kind == "skills" || kind == "instructions" || kind == "mcp" }
         && { scope == "global" || scope == "session" }
       {
-        True -> capability(home, session, kind, name, #(scope, enabled), after)
+        True -> {
+          use _ <- result.try(case enabled {
+            option.Some(True) -> enabling(session, kind, name)
+            _ -> Ok(Nil)
+          })
+          capability(home, session, kind, name, #(scope, enabled), after)
+        }
         False ->
           Error("choose a capability kind, name, and global or session scope")
       }
     MCP(name, server, secrets) -> {
       use _ <- result.try(mcp.validate_settings(name, server, secrets))
-      save_mcp(home, name, server, secrets, after)
+      // Session preparation skips a server that is down; saving one refuses
+      // it, so a typo is caught where it is typed.
+      save_mcp(home, name, server, secrets, fn() {
+        use _ <- result.try(case server {
+          option.Some(_) -> mcp.check_connects(session, name, True)
+          option.None -> Ok(Nil)
+        })
+        after()
+      })
     }
+  }
+}
+
+/// Turning a server on refuses one that cannot start; other kinds have
+/// nothing to connect to.
+fn enabling(
+  session: String,
+  kind: String,
+  name: String,
+) -> Result(Nil, String) {
+  case kind {
+    "mcp" -> mcp.check_connects(session, name, False)
+    _ -> Ok(Nil)
   }
 }
 

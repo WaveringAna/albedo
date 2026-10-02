@@ -185,6 +185,7 @@ pub fn save(
   session: String,
   change: Change,
   extensions: fn() -> Result(Extensions, String),
+  enabling: fn(String, String) -> Result(Nil, String),
   after: fn() -> Result(a, String),
 ) -> Result(a, String) {
   guarded_capability(
@@ -216,6 +217,14 @@ pub fn save(
                 Some(_), _, _ -> Error("shadowed candidates cannot be changed")
                 _, False, Some(True) ->
                   Error("invalid candidates cannot be enabled")
+                _, _, Some(True) ->
+                  enabling(row.kind, key)
+                  |> result.replace(#(
+                    row.kind,
+                    key,
+                    change.scope,
+                    change.enabled,
+                  ))
                 _, _, _ -> Ok(#(row.kind, key, change.scope, change.enabled))
               }
           }

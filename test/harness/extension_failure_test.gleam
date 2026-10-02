@@ -223,7 +223,11 @@ pub fn a_crashing_observer_leaves_the_session_working_test() -> Nil {
     ])
   runtime.observe(
     session,
-    extension.Session("broken-extension-test", fn(_, _) { Error("no upstream") }),
+    extension.Session(
+      "broken-extension-test",
+      fn(_, _) { Error("no upstream") },
+      fn(_) { Nil },
+    ),
     extension.Stirred,
   )
   answer(host, session, "working") |> should.equal("answered")

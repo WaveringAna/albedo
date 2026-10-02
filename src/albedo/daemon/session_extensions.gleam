@@ -105,13 +105,39 @@ pub fn change(
 pub fn refresh(
   state: session_state.State(message),
 ) -> #(session_state.State(message), Result(json.Json, String)) {
-  refresh_with(state, fn() {
+  refresh_with(state, "session data reloaded from disk", fn() {
     runtime.refresh_session(state.host, state.info.id)
   })
 }
 
+/// Prepares the extensions again because one asked, and says why in a note.
+/// A running turn leaves the session as it is: the extension asks again when
+/// the turn ends.
+pub fn refresh_requested(
+  state: session_state.State(message),
+  reason: String,
+) -> session_state.State(message) {
+  case turn.running(state.activity) {
+    Some(_) -> state
+    None ->
+      case
+        refresh_with(state, reason, fn() {
+          runtime.refresh_session(state.host, state.info.id)
+        })
+      {
+        #(state, Ok(_)) -> state
+        #(state, Error(error)) ->
+          session_state.emit(
+            state,
+            view.text("error", reason <> ", but the reload failed: " <> error),
+          )
+      }
+  }
+}
+
 fn refresh_with(
   state: session_state.State(message),
+  label: String,
   reload: fn() -> Result(Option(runtime.Session), String),
 ) -> #(session_state.State(message), Result(json.Json, String)) {
   case turn.running(state.activity) {
@@ -127,10 +153,7 @@ fn refresh_with(
           }
           case session_prompt.pin_changed_prompt(state, previous) {
             Ok(#(state, detail)) -> #(
-              session_state.emit(
-                state,
-                view.text("note", "session data reloaded from disk" <> detail),
-              ),
+              session_state.emit(state, view.text("note", label <> detail)),
               Ok(
                 json.object([
                   #("reloaded", json.string("session")),
@@ -145,10 +168,7 @@ fn refresh_with(
               ),
             )
             Error(error) -> #(
-              session_prompt.reset_prompt_cache(
-                state,
-                "session data reloaded from disk",
-              ),
+              session_prompt.reset_prompt_cache(state, label),
               Ok(
                 json.object([
                   #("reloaded", json.string("session")),
@@ -175,7 +195,7 @@ pub fn save_settings(
   state: session_state.State(message),
   change: session_settings.Change,
 ) -> #(session_state.State(message), Result(json.Json, String)) {
-  refresh_with(state, fn() {
+  refresh_with(state, "session data reloaded from disk", fn() {
     runtime.save_settings(state.host, state.home, state.info.id, change)
   })
 }

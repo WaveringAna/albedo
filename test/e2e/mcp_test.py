@@ -2,6 +2,7 @@
 
 from typing import Any
 import json
+import shutil
 import sys
 import time
 import unittest
@@ -51,7 +52,7 @@ class McpTests(unittest.TestCase):
         self.session = self.app.session()
         self.route = f"/sessions/{self.session}/extensions"
 
-    def configure(self, app, args, startup=20000):
+    def configure(self, app, args, startup=20000, retry=None):
         path = app.home / "extensions.json"
         settings: dict[str, Any] = (
             json.loads(path.read_text())
@@ -72,7 +73,16 @@ class McpTests(unittest.TestCase):
                 }
             }
         }
+        if retry is not None:
+            settings["mcp"]["retryMs"] = retry
         path.write_text(json.dumps(settings))
+
+    def tools(self, requests):
+        return [
+            tool["name"]
+            for tool in requests[0]["tools"]
+            if tool["name"].startswith("mcp_")
+        ]
 
     def extension(self, body=None):
         with self.app.api(self.route, body) as response:
@@ -141,15 +151,44 @@ class McpTests(unittest.TestCase):
         )
 
     @exclusive
-    def test_insecure_credentials_and_unavailable_server_fail_closed(self):
+    def test_insecure_credentials_fail_closed(self):
         credentials = self.app.home / "creds.json"
         credentials.chmod(0o644)
         with self.assertRaises(urllib.error.HTTPError) as rejected:
             self.extension({"name": "mcp", "enabled": True})
         self.assertEqual(rejected.exception.code, 409)
         credentials.chmod(0o600)
-        self.configure(self.app, [str(self.app.root / "missing.py")], startup=3000)
-        with self.assertRaises(urllib.error.HTTPError) as rejected:
-            self.extension({"name": "mcp", "enabled": True})
-        self.assertEqual(rejected.exception.code, 409)
         self.assertFalse(self.extension()["enabled"])
+
+    @exclusive
+    def test_an_unavailable_server_is_skipped_and_the_rest_load(self):
+        path = self.app.home / "extensions.json"
+        settings = json.loads(path.read_text())
+        settings["mcp"]["servers"]["dead"] = {
+            "type": "stdio",
+            "command": str(self.app.root / "missing-server"),
+            "startupTimeoutMs": 3000,
+        }
+        path.write_text(json.dumps(settings))
+        self.assertTrue(self.extension({"name": "mcp", "enabled": True})["enabled"])
+        advertised = self.tools(self.turn("one server is down"))
+        self.assertEqual(len(advertised), 1)
+        self.assertTrue(advertised[0].startswith("mcp_fake_echo_"))
+
+    @exclusive
+    def test_a_server_that_comes_online_joins_the_session_after_a_turn(self):
+        late = self.app.root / "late_server.py"
+        self.configure(self.app, [str(late)], startup=3000, retry=200)
+        self.assertTrue(self.extension({"name": "mcp", "enabled": True})["enabled"])
+        self.assertEqual(self.tools(self.turn("nothing is up yet")), [])
+        shutil.copy(SERVER, late)
+        deadline = time.monotonic() + 40
+        advertised = []
+        while time.monotonic() < deadline and not advertised:
+            time.sleep(0.5)
+            advertised = self.tools(self.turn("is it up now?"))
+        self.assertEqual(len(advertised), 1, "the server never joined the session")
+        self.assertTrue(advertised[0].startswith("mcp_fake_echo_"))
+        history = json.dumps(self.app.history(self.session))
+        self.assertIn("capabilities changed", history)
+        self.assertIn("fake", history)

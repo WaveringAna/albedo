@@ -41,7 +41,7 @@ type Server {
 }
 
 type Config {
-  Config(servers: Dict(String, Server))
+  Config(servers: Dict(String, Server), retry_ms: Int)
 }
 
 type Handle
@@ -50,8 +50,10 @@ type Definition {
   Definition(name: String, description: String, parameters: Json)
 }
 
+const default_retry_ms = 30_000
+
 fn default_config() -> Config {
-  Config(dict.new())
+  Config(dict.new(), default_retry_ms)
 }
 
 fn config_decoder() -> decode.Decoder(Config) {
@@ -60,7 +62,8 @@ fn config_decoder() -> decode.Decoder(Config) {
     dict.new(),
     decode.dict(decode.string, server_decoder()),
   )
-  decode.success(Config(servers))
+  use retry_ms <- decode.optional_field("retryMs", default_retry_ms, decode.int)
+  decode.success(Config(servers, retry_ms))
 }
 
 fn server_decoder() -> decode.Decoder(Server) {
@@ -181,6 +184,20 @@ fn prepare(
               fn(_) { None },
             )
           }),
+          warnings: list.map(native_offline(handle), fn(name) {
+            "MCP server '"
+            <> name
+            <> "' is unavailable; its tools join the session once it connects"
+          }),
+          observe: fn(session: extension.Session, event) {
+            case event {
+              extension.Stirred ->
+                native_observe(handle, False, session.refresh)
+              extension.TurnEnded(_) ->
+                native_observe(handle, True, session.refresh)
+              _ -> Nil
+            }
+          },
           close: fn() { native_close(handle) },
         ),
       )
@@ -209,6 +226,7 @@ fn encode_config(config: Config) -> String {
         |> list.map(fn(entry) { #(entry.0, encode_server(entry.1)) }),
       ),
     ),
+    #("retryMs", json.int(config.retry_ms)),
   ])
   |> json.to_string
 }
@@ -266,6 +284,24 @@ fn native_definitions(handle: Handle) -> String
 @external(erlang, "albedo_mcp", "context")
 fn native_context(handle: Handle) -> String
 
+@external(erlang, "albedo_mcp", "offline")
+fn native_offline(handle: Handle) -> List(String)
+
+@external(erlang, "albedo_mcp", "observe")
+fn native_observe(
+  handle: Handle,
+  turn_ended: Bool,
+  refresh: fn(String) -> Nil,
+) -> Nil
+
+@external(erlang, "albedo_mcp", "check")
+fn native_check(
+  config: String,
+  session: String,
+  name: String,
+  preferences: Bool,
+) -> Result(Nil, String)
+
 @external(erlang, "albedo_mcp", "call")
 fn native_call(
   handle: Handle,
@@ -275,6 +311,19 @@ fn native_call(
 
 @external(erlang, "albedo_mcp", "close")
 fn native_close(handle: Handle) -> Nil
+
+/// Connects to the saved server `name` and hangs up. A server that is not
+/// saved or is switched off passes, and so does one that `session`'s
+/// capability choices leave off when `preferences` is true; one that cannot
+/// start is an error.
+pub fn check_connects(
+  session: String,
+  name: String,
+  preferences: Bool,
+) -> Result(Nil, String) {
+  use config <- result.try(load_config())
+  native_check(encode_config(config), session, name, preferences)
+}
 
 /// Validate a persisted server even when MCP is disabled in the session.
 pub fn validate_settings(
