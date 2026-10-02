@@ -47,8 +47,8 @@ def held_catalog():
     return HeldCatalog(f"http://127.0.0.1:{server.server_port}/api.json", release)
 
 
-def read_response(connection):
-    """One HTTP response off a keep-alive socket: its status code."""
+def read_response_details(connection):
+    """Read one known-length HTTP response from a raw socket."""
     head = b""
     while b"\r\n\r\n" not in head:
         chunk = connection.recv(65536)
@@ -58,8 +58,10 @@ def read_response(connection):
     lines = head.split(b"\r\n\r\n", 1)
     body = lines[1] if len(lines) > 1 else b""
     length = 0
+    headers = {}
     for line in lines[0].split(b"\r\n")[1:]:
         name, _, value = line.lower().partition(b":")
+        headers[name.strip().decode()] = value.strip().decode()
         if name.strip() == b"content-length":
             length = int(value.strip())
     while len(body) < length:
@@ -67,7 +69,65 @@ def read_response(connection):
         if not chunk:
             raise AssertionError("connection closed mid-body")
         body += chunk
-    return int(lines[0].split(b" ")[1])
+    return int(lines[0].split(b" ")[1]), headers, body
+
+
+def read_response(connection):
+    return read_response_details(connection)[0]
+
+
+def refused_request(app, path, headers):
+    """Send only headers and require a refusal and closure within two seconds."""
+    address = urllib.parse.urlsplit(app.base)
+    head = (
+        f"POST {path} HTTP/1.1\r\n"
+        f"Host: {address.hostname}\r\n"
+        + "".join(f"{name}: {value}\r\n" for name, value in headers.items())
+        + "\r\n"
+    ).encode()
+    with socket.create_connection(
+        (address.hostname, address.port), timeout=2
+    ) as connection:
+        connection.sendall(head)
+        result = read_response_details(connection)
+        try:
+            closed = connection.recv(1) == b""
+        except ConnectionResetError:
+            closed = True
+        if not closed:
+            raise AssertionError("refusal left the connection open")
+        return result
+
+
+def delayed_request(app, method, path, body, headers):
+    """Split the headers and delay the body, then reuse the connection."""
+    address = urllib.parse.urlsplit(app.base)
+    token = app.connection["token"]
+    head = (
+        f"{method} {path} HTTP/1.1\r\n"
+        f"Host: {address.hostname}\r\n"
+        + "".join(f"{name}: {value}\r\n" for name, value in headers.items())
+        + f"Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n\r\n"
+    ).encode()
+    connection = socket.create_connection((address.hostname, address.port), timeout=20)
+    try:
+        connection.sendall(head[:17])
+        time.sleep(0.01)
+        connection.sendall(head[17:])
+        time.sleep(0.05)
+        connection.sendall(body)
+        first = read_response(connection)
+        connection.sendall(
+            (
+                f"GET /health HTTP/1.1\r\n"
+                f"Host: {address.hostname}\r\n"
+                f"Authorization: Bearer {token}\r\n\r\n"
+            ).encode()
+        )
+        return first, read_response(connection)
+    finally:
+        connection.close()
 
 
 class DaemonTest(unittest.TestCase):
@@ -233,51 +293,116 @@ class DaemonTest(unittest.TestCase):
         provider = Provider(lambda _request: text("answer"))
         self.addCleanup(provider.close)
         with Albedo(provider) as app:
-            address = urllib.parse.urlsplit(app.base)
             token = app.connection["token"]
             session = app.session()
             interrupt = f"/sessions/{session}/interrupt"
-
-            def sent(method, path, body):
-                # The headers and the body as two writes, so the route answers
-                # in between, before the body is read.
-                head = (
-                    f"{method} {path} HTTP/1.1\r\n"
-                    f"Host: {address.hostname}\r\n"
-                    f"Authorization: Bearer {token}\r\n"
-                    f"Content-Type: application/json\r\n"
-                    f"Content-Length: {len(body)}\r\n\r\n"
-                ).encode()
-                connection = socket.create_connection(
-                    (address.hostname, address.port), timeout=20
-                )
-                try:
-                    connection.sendall(head)
-                    time.sleep(0.05)
-                    connection.sendall(body)
-                    first = read_response(connection)
-                    connection.sendall(
-                        (
-                            f"GET /health HTTP/1.1\r\n"
-                            f"Host: {address.hostname}\r\n"
-                            f"Authorization: Bearer {token}\r\n\r\n"
-                        ).encode()
-                    )
-                    return first, read_response(connection)
-                finally:
-                    connection.close()
 
             # Every shape that answers without reading its body: a plain
             # route, an ignored POST body, an unknown route, and a route that
             # answers a session actor call.
             for method, path, status in (
                 ("GET", "/health", 200),
+                ("GET", "/nope", 404),
                 ("POST", "/auth/credentials/migration", 200),
                 ("POST", "/nope", 404),
                 ("POST", interrupt, 200),
             ):
                 with self.subTest(f"{method} {path}"):
-                    self.assertEqual(sent(method, path, b"{}"), (status, 200))
+                    self.assertEqual(
+                        delayed_request(
+                            app,
+                            method,
+                            path,
+                            b"{}",
+                            {"Authorization": "Bearer " + token},
+                        ),
+                        (status, 200),
+                    )
+
+    def test_empty_and_incomplete_bodies_are_handled_at_ingress(self):
+        with Albedo() as app:
+            token = {"Authorization": "Bearer " + app.connection["token"]}
+            session = app.session()
+            before = app.history(session)
+            self.assertEqual(
+                delayed_request(app, "GET", "/health", b"", token), (200, 200)
+            )
+            address = urllib.parse.urlsplit(app.base)
+            with socket.create_connection(
+                (address.hostname, address.port), timeout=2
+            ) as connection:
+                connection.sendall(
+                    (
+                        f"POST /sessions/{session}/events HTTP/1.1\r\n"
+                        f"Host: {address.hostname}\r\n"
+                        f"Authorization: {token['Authorization']}\r\n"
+                        "Content-Length: 2\r\n\r\n{"
+                    ).encode()
+                )
+                connection.shutdown(socket.SHUT_WR)
+                # Mist closes the socket when its body read encounters EOF.
+                self.assertEqual(connection.recv(1), b"")
+            self.assertEqual(app.history(session), before)
+
+    def test_core_refuses_before_reading_withheld_bodies(self):
+        provider = Provider(lambda _request: text("answer"))
+        self.addCleanup(provider.close)
+        with Albedo(provider) as app:
+            token = {"Authorization": "Bearer " + app.connection["token"]}
+            session = app.session()
+            before = app.history(session)
+            path = f"/sessions/{session}/events"
+            for authorization in ({}, {"Authorization": "Bearer wrong"}):
+                for length in ("2", "9200001", "invalid"):
+                    with self.subTest(authorization=authorization, length=length):
+                        status, headers, body = refused_request(
+                            app, path, {**authorization, "Content-Length": length}
+                        )
+                        self.assertEqual(status, 403)
+                        self.assertEqual(
+                            json.loads(body)["code"], "authentication_required"
+                        )
+                        self.assertEqual(
+                            headers["albedo-error-code"], "authentication_required"
+                        )
+            for framing in (
+                {"Content-Length": "9200001"},
+                {"Content-Length": "invalid"},
+                {"Transfer-Encoding": "chunked"},
+            ):
+                with self.subTest(origin_framing=framing):
+                    status, _, _ = refused_request(
+                        app,
+                        path,
+                        {**token, **framing, "Origin": "https://attacker.example"},
+                    )
+                    self.assertEqual(status, 403)
+            self.assertEqual(app.history(session), before)
+            self.assertFalse(provider.requests)
+
+    def test_core_rejects_unsupported_and_oversized_body_framing(self):
+        with Albedo() as app:
+            session = app.session()
+            before = app.history(session)
+            token = {"Authorization": "Bearer " + app.connection["token"]}
+            for framing, expected_status in (
+                ({"Transfer-Encoding": "chunked"}, 400),
+                ({"Transfer-Encoding": "identity", "Content-Length": "0"}, 400),
+                ({"Content-Length": "-1"}, 400),
+                ({"Content-Length": "+1"}, 400),
+                ({"Content-Length": "1x"}, 400),
+                ({"Content-Length": "9200001"}, 413),
+            ):
+                with self.subTest(framing=framing):
+                    status, _, body = refused_request(
+                        app, f"/sessions/{session}/events", {**token, **framing}
+                    )
+                    self.assertEqual(status, expected_status)
+                    if "Transfer-Encoding" in framing:
+                        self.assertEqual(
+                            json.loads(body)["code"], "unsupported_transfer_encoding"
+                        )
+            self.assertEqual(app.history(session), before)
 
     @exclusive
     def test_a_daemon_started_from_a_macos_shell_answers_hundreds_of_connections(self):

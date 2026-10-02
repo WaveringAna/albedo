@@ -5,6 +5,7 @@ import unittest
 import urllib.error
 import urllib.request
 
+from daemon_test import delayed_request, refused_request
 from harness import Albedo, Provider, exclusive, Reply
 
 TOOLS = [
@@ -185,6 +186,7 @@ class ProxyTests(unittest.TestCase):
         ) as response:
             self.assertEqual(json.load(response)["model"], f"{self.chat}/unlisted")
         self.assertEqual(self.sent()[1]["model"], "unlisted")
+        self.assertEqual(self.provider.requests[-1]["authorization"], "Bearer k")
         for model in (self.broken, f"{self.cx}/gpt-saved"):
             with (
                 self.subTest(model=model),
@@ -201,6 +203,36 @@ class ProxyTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as rejected:
             self.post({"model": "missing/x", "messages": OPENING})
         self.assertEqual(rejected.exception.code, 400)
+
+    def test_ingress_limits_and_origin_refuse_before_provider_work(self):
+        path = "/proxy/v1/chat/completions"
+        for framing, expected_status, code in (
+            ({"Transfer-Encoding": "chunked"}, 400, "unsupported_transfer_encoding"),
+            ({"Content-Length": "invalid"}, 400, "invalid_content_length"),
+            ({"Content-Length": "32000001"}, 413, "request_body_too_large"),
+        ):
+            with self.subTest(framing=framing):
+                status, headers, body = refused_request(self.app, path, framing)
+                self.assertEqual(status, expected_status)
+                self.assertEqual(json.loads(body)["code"], code)
+                self.assertEqual(headers["albedo-error-code"], code)
+                status, _, _ = refused_request(
+                    self.app, path, {**framing, "Origin": "https://attacker.example"}
+                )
+                self.assertEqual(status, 403)
+        self.assertFalse(self.provider.requests)
+
+    def test_get_and_unknown_route_bodies_keep_anonymous_connection_usable(self):
+        for method, path, expected_status in (
+            ("GET", "/proxy/v1/models", 200),
+            ("GET", "/proxy/v1/missing", 404),
+            ("POST", "/proxy/v1/missing", 404),
+        ):
+            with self.subTest(method=method, path=path):
+                self.assertEqual(
+                    delayed_request(self.app, method, path, b"{}", {}),
+                    (expected_status, 200),
+                )
 
     def test_streamed_chat_deltas_usage_and_provider_routing(self):
         with self.post(
