@@ -13,8 +13,8 @@ const historyPageRows = 200
 // SessionTurns is the newest turns of a session's committed transcript.
 type SessionTurns struct {
 	Session string               `json:"session"`
-	Running bool                 `json:"running"`
 	Events  []daemon.StreamEvent `json:"events"`
+	Running bool                 `json:"running"`
 }
 
 // Read answers the newest turns of a session, reading older transcript pages
@@ -34,30 +34,43 @@ func (s *Service) Read(ctx context.Context, id string, turns int) (SessionTurns,
 	if err != nil {
 		return SessionTurns{}, err
 	}
-	var events []daemon.StreamEvent
+	var pages [][]daemon.StreamEvent
+	eventCount, turnCount := 0, 0
 	var before int64
 	for {
 		page, err := client.History(ctx, before, historyPageRows)
 		if err != nil {
 			return SessionTurns{}, err
 		}
-		events = append(page.Events, events...)
-		if !page.More || turnStarts(events) >= turns {
+		pages = append(pages, page.Events)
+		eventCount += len(page.Events)
+		turnCount += turnStarts(page.Events)
+		if !page.More || turnCount >= turns {
 			break
 		}
 		before = page.Before
+	}
+	events := make([]daemon.StreamEvent, 0, eventCount)
+	for _, page := range slices.Backward(pages) {
+		events = append(events, page...)
 	}
 	return SessionTurns{Session: id, Running: status.Running, Events: lastTurns(events, turns)}, nil
 }
 
 func turnStarts(events []daemon.StreamEvent) int {
-	return len(slices.DeleteFunc(slices.Clone(events), func(e daemon.StreamEvent) bool { return e.Type != daemon.EventUser }))
+	count := 0
+	for _, event := range events {
+		if event.Type == daemon.EventUser {
+			count++
+		}
+	}
+	return count
 }
 
 // lastTurns keeps the events from the start of the turns-th newest turn on.
 func lastTurns(events []daemon.StreamEvent, turns int) []daemon.StreamEvent {
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type != daemon.EventUser {
+	for i, event := range slices.Backward(events) {
+		if event.Type != daemon.EventUser {
 			continue
 		}
 		if turns--; turns == 0 {
