@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"albedo/cli/internal/daemon"
 	"albedo/cli/internal/tui"
@@ -58,5 +59,96 @@ func TestTUISessionPickerPinsRenamesArchivesAndDeletes(t *testing.T) {
 	d.Dispatch(tea.KeyPressMsg{Code: 'y', Text: "y"})
 	if slices.ContainsFunc(daemonSessions(t), func(s daemon.Session) bool { return s.ID == target }) {
 		t.Fatalf("the daemon still lists deleted session %s", target)
+	}
+}
+
+func TestTUINavigationRetainsPendingTurnsAndContinuation(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	profile := providerRoute(t, func(request map[string]any) string {
+		if lastUserText(request) == "active navigation turn" {
+			close(entered)
+			<-release
+		}
+		return echoReply(request)
+	})
+	session := daemonSession(t, newSession(t, t.TempDir()))
+	other := daemonSession(t, newSession(t, t.TempDir()))
+	if _, err := daemon.NewChatClient(conn(t), session.ID).Send(t.Context(), "active navigation turn", nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("active turn did not start")
+	}
+	connection := daemon.NewConnection(conn(t).Snapshot(), "")
+	counter := &submissionCounterTransport{next: connection.HTTPClient().Transport, accepted: make(chan struct{})}
+	connection.HTTPClient().Transport = counter
+	t.Cleanup(connection.HTTPClient().CloseIdleConnections)
+	driver := driveTUIWithConnection(t, &session, connection)
+	t.Cleanup(func() { driver.App.Chat.Close() })
+	driver.connected()
+	submit := func(text string) tui.ChatTurnSentMsg {
+		t.Helper()
+		driver.App.Chat.TextArea.SetValue(text)
+		var sent tui.ChatTurnSentMsg
+		for _, message := range driver.results(driver.Update(tea.KeyPressMsg{Code: tea.KeyEnter})) {
+			if admission, ok := message.(tui.ChatTurnSentMsg); ok {
+				sent = admission
+			}
+			driver.Update(message)
+		}
+		if sent.Err != nil || sent.Handle == nil || !sent.OK {
+			t.Fatalf("durable admission: %+v", sent)
+		}
+		return sent
+	}
+	pending := submit("waiting after navigation")
+	continuation := submit(".")
+	driver.Update(tui.FolderOpenSessionMsg{Session: other})
+	seen := make(map[string]bool)
+	for _, message := range driver.results(driver.Update(tui.FolderOpenSessionMsg{Session: session})) {
+		if resolved, ok := message.(tui.ChatOperationResolvedMsg); ok {
+			seen[resolved.Handle.ID] = true
+			if resolved.Err != nil || resolved.Receipt.DeliveryStatus != "pending" {
+				t.Fatalf("reattached intent: %+v", resolved)
+			}
+		}
+		driver.Update(message)
+	}
+	if !seen[pending.OperationID] || !seen[continuation.OperationID] || counter.posts.Load() != 2 {
+		t.Fatal("navigation lost an intent or resubmitted it")
+	}
+	if !strings.Contains(driver.View(), "waiting after navigation") {
+		t.Fatal("returning to the session lost its pending display")
+	}
+	close(release)
+	released = true
+	waitIdle(t, session.ID, profile, 2)
+	driver.Update(tui.FolderOpenSessionMsg{Session: other})
+	for _, message := range driver.results(driver.Update(tui.FolderOpenSessionMsg{Session: session})) {
+		driver.Update(message)
+	}
+	history, err := daemon.NewChatClient(conn(t), session.ID).History(t.Context(), 0, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matched := 0
+	for _, event := range history.Events {
+		if event.Type == daemon.EventUser && event.OperationID == pending.OperationID {
+			matched++
+		}
+		event.Replayed = true
+		driver.Update(tui.ChatStreamEventMsg{SessionID: session.ID, Generation: driver.App.Chat.Generation, Event: event})
+	}
+	receipt, err := daemon.ResolveOperation(t.Context(), connection, continuation.Handle)
+	if err != nil || receipt.DeliveryStatus != "committed" || matched != 1 || counter.posts.Load() != 2 {
+		t.Fatalf("navigation delivery: matched=%d receipt=%+v err=%v posts=%d", matched, receipt, err, counter.posts.Load())
 	}
 }

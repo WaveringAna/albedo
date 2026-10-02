@@ -6,11 +6,13 @@
 package e2e
 
 import (
+	"albedo/cli/internal/daemon"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"albedo/cli/internal/tui"
 
@@ -80,32 +82,64 @@ func TestTUIMissingWorkspaceSendsTheTurnFromThePickedFolder(t *testing.T) {
 
 	d.connected()
 	d.App.Chat.TextArea.SetValue("hello from nowhere")
-	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if view := d.View(); d.App.State != tui.AppStateFolderPicker || !strings.Contains(view, "not found") {
-		t.Fatalf("a missing workspace did not open the picker:\n%s", view)
+	messages := d.results(d.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
+	var admitted tui.ChatTurnSentMsg
+	for _, message := range messages {
+		if sent, ok := message.(tui.ChatTurnSentMsg); ok {
+			admitted = sent
+			d.Update(sent)
+		}
 	}
-	// Leaving the picker gives the refused turn back to the composer.
-	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if got := d.App.Chat.TextArea.Value(); d.App.State != tui.AppStateChat || got != "hello from nowhere" {
-		t.Fatalf("esc left state %v and composer %q", d.App.State, got)
+	if admitted.Err != nil || admitted.Handle == nil || !admitted.OK {
+		t.Fatalf("durable admission: %+v", admitted)
 	}
-	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if d.App.State != tui.AppStateFolderPicker {
-		t.Fatalf("sending again did not reopen the picker:\n%s", d.View())
+	var receipt daemon.OperationReceipt
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var err error
+		receipt, err = daemon.ResolveOperation(t.Context(), conn(t), admitted.Handle)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if receipt.BlockingReason != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("missing workspace did not retain blocked pending input")
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
+	if receipt.DeliveryStatus != "pending" {
+		t.Fatalf("blocked input was lost: %+v", receipt)
+	}
+	d.Update(tui.ChatOperationResolvedMsg{SessionID: session.ID, Generation: d.App.Chat.Generation, Handle: admitted.Handle, Receipt: receipt})
+	if d.App.State != tui.AppStateChat || d.App.Chat.TextArea.Value() != "" || !strings.Contains(d.View(), "hello from nowhere") {
+		t.Fatalf("blocked admission state=%v composer=%q view=%q", d.App.State, d.App.Chat.TextArea.Value(), d.View())
+	}
+
+	d.Dispatch(tui.ChatExecuteCommandMsg{Name: "/cd"})
 	d.Type(root + "/fou")
-	// Settling would follow the turn's animation forever; one step sends it.
 	moved, ok := d.Key(tea.KeyEnter).(tui.FolderMovedMsg)
 	if !ok || moved.Err != nil {
 		t.Fatalf("enter did not move the session: %#v", moved)
 	}
-	d.results(d.Update(moved))
-
+	d.Update(moved)
 	waitIdle(t, session.ID, profile, 1)
-	requests := suite.provider.requests(profile)
-	body, _ := requests[len(requests)-1]["body"].(map[string]any)
-	if got := lastUserText(body); !strings.Contains(got, "hello from nowhere") {
-		t.Fatalf("the refused turn was not sent again, the provider saw %q", got)
+	history, err := daemon.NewChatClient(conn(t), session.ID).History(t.Context(), 0, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := 0
+	for _, event := range history.Events {
+		if event.Type == daemon.EventUser {
+			users++
+			if event.OperationID != admitted.OperationID {
+				t.Fatal("workspace repair created another user intent")
+			}
+		}
+	}
+	if users != 1 {
+		t.Fatalf("workspace repair delivered %d user rows", users)
 	}
 	if got, _ := filepath.EvalSymlinks(daemonSession(t, session.ID).Workspace); got != mustEval(t, found) {
 		t.Fatalf("the daemon kept workspace %q", got)

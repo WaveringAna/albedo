@@ -47,7 +47,13 @@ type sessionDeletedMsg struct {
 	ID  string
 }
 
+type sessionCreationRecoveryMsg struct {
+	Handle *daemon.OperationHandle
+	Gen    int
+}
+
 type sessionCreatedMsg struct {
+	Handle  *daemon.OperationHandle
 	Err     error
 	Session daemon.Session
 	Gen     int
@@ -95,7 +101,14 @@ type profilesLoadedMsg struct {
 	Gen      int
 }
 
+type pendingSessionIntents struct {
+	users         []PendingUserTurn
+	continuations map[string]pendingOperation
+}
+
 type AppModel struct {
+	pendingBySession map[string]pendingSessionIntents
+	pendingCreations map[string]pendingOperation
 	ActiveSession    *daemon.Session
 	openBrowser      func(url string)
 	Conn             *daemon.Connection
@@ -150,6 +163,11 @@ func (m *AppModel) ApplyUI(prefs daemon.UIPreferences) {
 
 func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
 	chat := NewChatModel(session, daemon.NewChatClient(m.Conn, session.ID))
+	if pending, ok := m.pendingBySession[session.ID]; ok {
+		chat.pendingUsers = slices.Clone(pending.users)
+		chat.pendingContinuations = maps.Clone(pending.continuations)
+		delete(m.pendingBySession, session.ID)
+	}
 	chat.Flags.Thinking = m.SessionPicker.prefs.Thinking
 	chat.Flags.Tools = m.SessionPicker.prefs.Tools
 	chat.Notices = slices.Clone(m.Notices)
@@ -259,13 +277,26 @@ func sessionPreviewCmd(conn *daemon.Connection, id string) tea.Cmd {
 
 func (m *AppModel) createSessionCmd(gen int, workspace string) tea.Cmd {
 	conn := m.Conn
-	return func() tea.Msg {
-		if conn == nil {
-			return sessionCreatedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
+	handle, preparationErr := daemon.NewCreation(map[string]string{"workspace": workspace})
+	if preparationErr == nil {
+		if m.pendingCreations == nil {
+			m.pendingCreations = make(map[string]pendingOperation)
 		}
-		s, err := daemon.CreateSession(context.Background(), conn, map[string]string{"workspace": workspace})
-		return sessionCreatedMsg{Session: s, Err: err, Gen: gen}
+		m.pendingCreations[handle.ID] = pendingOperation{Handle: handle}
 	}
+	return func() tea.Msg {
+		if preparationErr != nil {
+			return sessionCreatedMsg{Err: preparationErr, Gen: gen}
+		}
+		if conn == nil {
+			return sessionCreatedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen, Handle: handle}
+		}
+		session, err := daemon.CreateSessionOperation(context.Background(), conn, handle)
+		return sessionCreatedMsg{Session: session, Err: err, Gen: gen, Handle: handle}
+	}
+}
+func creationRecoveryCmd(handle *daemon.OperationHandle, gen int) tea.Cmd {
+	return tea.Tick(15*time.Second, func(time.Time) tea.Msg { return sessionCreationRecoveryMsg{Handle: handle, Gen: gen} })
 }
 
 func (m *AppModel) loadProfilesCmd(provider string, gen int) tea.Cmd {
@@ -456,6 +487,17 @@ func (m *AppModel) updateSessionPickerItems() {
 }
 
 func (m *AppModel) setChatSession(s daemon.Session, prepend bool) tea.Cmd {
+	m.SessionGen++
+	if m.pendingBySession == nil {
+		m.pendingBySession = make(map[string]pendingSessionIntents)
+	}
+	if m.Chat.SessionID != "" {
+		if len(m.Chat.pendingUsers) == 0 && len(m.Chat.pendingContinuations) == 0 {
+			delete(m.pendingBySession, m.Chat.SessionID)
+		} else {
+			m.pendingBySession[m.Chat.SessionID] = pendingSessionIntents{users: slices.Clone(m.Chat.pendingUsers), continuations: maps.Clone(m.Chat.pendingContinuations)}
+		}
+	}
 	m.Chat.Close()
 	session := s
 	m.ActiveSession = &session
@@ -642,6 +684,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.ActiveSession != nil && sid == m.ActiveSession.ID && sm.Event.Type == daemon.EventUser && !sm.Event.Replayed {
 			m.ClearNotices()
 		}
+	case ChatOperationPollMsg:
+		sid, forward = sm.SessionID, true
+	case ChatOperationResolvedMsg:
+		sid, forward = sm.SessionID, true
 	case ChatTurnSentMsg:
 		sid, forward = sm.SessionID, true
 		if m.ActiveSession != nil && sid == m.ActiveSession.ID && sm.Err == nil {
@@ -734,6 +780,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sessionDeletedMsg:
+		if msg.Err == nil {
+			delete(m.pendingBySession, msg.ID)
+		}
 		if msg.Err != nil {
 			m.AddError(operationError(msg.Err, "Could not delete the session: ", "Session may have been deleted; refresh the session list before trying again."))
 			return m, nil
@@ -788,8 +837,50 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateSessionPickerItems()
 		return m, m.SessionPicker.PreviewCmd()
 
+	case sessionCreationRecoveryMsg:
+		if pending, exists := m.pendingCreations[msg.Handle.ID]; !exists || pending.Expired {
+			return m, nil
+		}
+		conn, handle, gen := m.Conn, msg.Handle, msg.Gen
+		return m, func() tea.Msg {
+			session, err := daemon.ResolveCreation(context.Background(), conn, handle)
+			return sessionCreatedMsg{Session: session, Err: err, Handle: handle, Gen: gen}
+		}
+
 	case sessionCreatedMsg:
+		if msg.Gen != m.SessionGen && (msg.Handle == nil || m.pendingCreations[msg.Handle.ID].Handle == nil) {
+			return m, nil
+		}
+		if msg.Handle != nil && daemon.IsOperationExpired(msg.Err) {
+			pending := m.pendingCreations[msg.Handle.ID]
+			pending.Expired = true
+			m.pendingCreations[msg.Handle.ID] = pending
+			m.AddError("Session operation " + msg.Handle.ID + " expired; its outcome is unresolved.")
+			return m, nil
+		}
+		if msg.Err != nil && msg.Handle != nil {
+			if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](msg.Err); uncertain {
+				m.AddError("Session admission is uncertain. Checking operation " + msg.Handle.ID + ".")
+				return m, creationRecoveryCmd(msg.Handle, msg.Gen)
+			}
+			if api, ok := errors.AsType[*daemon.APIError](msg.Err); ok && (api.Code == "operation_unknown" || api.StatusCode >= 500) {
+				return m, creationRecoveryCmd(msg.Handle, msg.Gen)
+			}
+		}
+		if msg.Handle != nil {
+			delete(m.pendingCreations, msg.Handle.ID)
+		}
 		if msg.Gen != m.SessionGen {
+			if msg.Err != nil {
+				m.AddError(msg.Err.Error())
+				return m, nil
+			}
+			if !slices.ContainsFunc(m.Sessions, func(session daemon.Session) bool { return session.ID == msg.Session.ID }) {
+				m.Sessions = append(m.Sessions, msg.Session)
+			}
+			m.updateSessionPickerItems()
+			m.ClearNotices()
+			m.AddNotice("Recovered the created session " + msg.Session.ID)
 			return m, nil
 		}
 		if msg.Err != nil && m.State == AppStateFolderPicker {
@@ -1047,6 +1138,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadProfilesCmd(msg.Name, m.ProfileGen)
 
 	case ChatExecuteCommandMsg:
+		if slices.ContainsFunc(m.CommandCatalog, func(command daemon.SessionCommand) bool { return command.Name == msg.Name && command.Skill }) {
+			var commands []tea.Cmd
+			m.Chat.handleSubmittedCommand(strings.TrimSpace(msg.Name+" "+msg.Args), &commands)
+			return m, tea.Batch(commands...)
+		}
 		switch msg.Name {
 		case "/login":
 			return m, m.openLogin(msg.Args)

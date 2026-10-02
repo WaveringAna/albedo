@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"path/filepath"
@@ -108,15 +109,25 @@ type ChatStreamClosedMsg struct {
 	Generation int64
 }
 
-type ChatTurnSentMsg struct {
-	Err        error
-	Image      *daemon.ImageAttachment
+type ChatOperationResolvedMsg struct {
 	SessionID  string
-	Prompt     string
 	Generation int64
-	Continue   bool
-	OK         bool
-	Queued     bool
+	Handle     *daemon.OperationHandle
+	Receipt    daemon.OperationReceipt
+	Err        error
+}
+
+type ChatTurnSentMsg struct {
+	Handle      *daemon.OperationHandle
+	OperationID string
+	Err         error
+	Image       *daemon.ImageAttachment
+	SessionID   string
+	Prompt      string
+	Generation  int64
+	Continue    bool
+	OK          bool
+	Queued      bool
 }
 
 type ChatInterruptMsg struct {
@@ -138,11 +149,26 @@ const (
 	StreamKindThinking ActiveStreamKind = "thinking"
 )
 
+type pendingOperation struct {
+	Handle  *daemon.OperationHandle
+	Expired bool
+}
+
+type ChatOperationPollMsg struct {
+	SessionID  string
+	Generation int64
+	Handle     *daemon.OperationHandle
+}
+
 type PendingUserTurn struct {
-	Image  *daemon.ImageAttachment
-	Text   string
-	At     int64
-	Queued bool
+	Expired        bool
+	Handle         *daemon.OperationHandle
+	OperationID    string
+	BlockingReason string
+	Image          *daemon.ImageAttachment
+	Text           string
+	At             int64
+	Queued         bool
 }
 
 const (
@@ -300,11 +326,12 @@ type ChatModel struct {
 	Notices      Notices
 	settledLines []string
 
-	pendingUsers []PendingUserTurn
-	Glances      []PageGlance
-	frameLines   []string
-	CommandMenu  CommandMenuModel
-	Viewport     viewport.Model
+	pendingUsers         []PendingUserTurn
+	pendingContinuations map[string]pendingOperation
+	Glances              []PageGlance
+	frameLines           []string
+	CommandMenu          CommandMenuModel
+	Viewport             viewport.Model
 
 	transcript         transcriptState
 	TextArea           textarea.Model
@@ -794,7 +821,7 @@ func (m *ChatModel) refreshViewportContent() int {
 // the end of the transcript where they will settle. Each follows whatever is
 // live above it, so the rails and names join up as they will once settled.
 func (m ChatModel) pendingRows() []string {
-	if len(m.pendingUsers) == 0 {
+	if len(m.pendingUsers) == 0 && len(m.pendingContinuations) == 0 {
 		return nil
 	}
 	before := slices.Clone(m.History.Entries())
@@ -812,10 +839,25 @@ func (m ChatModel) pendingRows() []string {
 		if p.Queued {
 			state = queued
 		}
-		entry := HistoryEntry{Kind: EntryUser, Speaker: "You", Text: p.Text, Timestamp: p.At, Pending: state}
+		text := p.Text
+		if p.Expired {
+			state = unresolved
+			text += "\nOperation " + p.OperationID + " expired; its outcome is unknown."
+		}
+		if p.BlockingReason != "" && !p.Expired {
+			text += "\nWaiting: " + p.BlockingReason
+		}
+		entry := HistoryEntry{Kind: EntryUser, Speaker: "You", Text: text, Timestamp: p.At, Pending: state}
 		block, _ := m.Renderer.Block(before, entry, m.Flags)
 		rows = append(rows, block...)
 		before = append(before, entry)
+	}
+	for _, id := range slices.Sorted(maps.Keys(m.pendingContinuations)) {
+		if m.pendingContinuations[id].Expired {
+			entry := HistoryEntry{Kind: EntryError, Text: "Continue operation " + id + " expired; its outcome is unresolved."}
+			block, _ := m.Renderer.Block(before, entry, m.Flags)
+			rows = append(rows, block...)
+		}
 	}
 	return rows
 }
@@ -863,7 +905,7 @@ func (m *ChatModel) scrollBy(rows int) {
 }
 
 func (m ChatModel) animating() bool {
-	return m.isSending || len(m.pendingUsers) > 0 || m.Stopping || m.Progress != nil || m.Status.Running && !m.Status.Idle
+	return m.isSending || m.pendingSendCount() > 0 || m.Stopping || m.Progress != nil || m.Status.Running && !m.Status.Idle
 }
 
 func (m *ChatModel) startAnimation() tea.Cmd {
@@ -969,7 +1011,18 @@ func (m ChatModel) statusPollCmd() tea.Cmd {
 }
 
 func (m ChatModel) Init() tea.Cmd {
-	return tea.Batch(m.startStreamSubscription(), m.statusCmd())
+	commands := []tea.Cmd{m.startStreamSubscription(), m.statusCmd()}
+	for _, pending := range m.pendingUsers {
+		if pending.Handle != nil && !pending.Expired {
+			commands = append(commands, m.queryOperationCmd(pending.Handle))
+		}
+	}
+	for _, pending := range m.pendingContinuations {
+		if !pending.Expired {
+			commands = append(commands, m.queryOperationCmd(pending.Handle))
+		}
+	}
+	return tea.Batch(commands...)
 }
 
 // Update handles msg, then fetches older history when it left you at the top.
@@ -1320,6 +1373,50 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	case ChatStreamClosedMsg:
 		return m, nil
 
+	case ChatOperationPollMsg:
+		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || !m.operationRecoverable(msg.Handle.ID) {
+			return m, nil
+		}
+		return m, m.queryOperationCmd(msg.Handle)
+
+	case ChatOperationResolvedMsg:
+		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
+			return m, nil
+		}
+		index := slices.IndexFunc(m.pendingUsers, func(p PendingUserTurn) bool { return p.OperationID == msg.Handle.ID })
+		if !m.operationRecoverable(msg.Handle.ID) {
+			return m, nil
+		}
+		if daemon.IsOperationExpired(msg.Err) {
+			if index >= 0 {
+				m.pendingUsers[index].Expired = true
+			} else {
+				pending := m.pendingContinuations[msg.Handle.ID]
+				pending.Expired = true
+				m.pendingContinuations[msg.Handle.ID] = pending
+			}
+			m.refreshViewportContent()
+			return m, nil
+		}
+		if msg.Err == nil && (msg.Receipt.Status == "rejected" || msg.Receipt.DeliveryStatus == "cancelled" || msg.Receipt.DeliveryStatus == "committed") {
+			delete(m.pendingContinuations, msg.Handle.ID)
+			if rejection := msg.Receipt.Rejection(); rejection != nil {
+				m.ClearNotices()
+				m.AddError(rejection.Error())
+			}
+			if index >= 0 {
+				m.pendingUsers = slices.Delete(m.pendingUsers, index, index+1)
+			}
+			m.refreshViewportContent()
+			return m, nil
+		}
+		if index >= 0 && msg.Err == nil {
+			m.pendingUsers[index].Queued = true
+			m.pendingUsers[index].BlockingReason = msg.Receipt.BlockingReason
+			m.refreshViewportContent()
+		}
+		return m, m.resolveOperationCmd(msg.Handle)
+
 	case ChatTurnSentMsg:
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
 			return m, nil
@@ -1328,17 +1425,24 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if msg.Err != nil {
 			m.interruptDeferred = false
 			if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](msg.Err); uncertain {
-				message := "Message may have been accepted; check the conversation before resending."
+				if msg.Handle != nil && m.operationRecoverable(msg.Handle.ID) && daemon.IsOperationExpired(msg.Err) {
+					return m.Update(ChatOperationResolvedMsg{SessionID: m.SessionID, Generation: m.Generation, Handle: msg.Handle, Err: msg.Err})
+				}
+				message := "Message admission is uncertain. Checking its operation receipt."
 				if msg.Continue {
-					message = "Continue may have been accepted; check the conversation before trying again."
+					message = "Continue admission is uncertain. Checking its operation receipt."
 				}
 				m.AddError(message)
 				m.refreshViewportContent()
+				if msg.Handle != nil && m.operationRecoverable(msg.Handle.ID) {
+					return m, m.resolveOperationCmd(msg.Handle)
+				}
 				return m, nil
 			}
+			delete(m.pendingContinuations, msg.OperationID)
 			if !msg.Continue {
-				if len(m.pendingUsers) > 0 {
-					m.pendingUsers = m.pendingUsers[1:]
+				if i := slices.IndexFunc(m.pendingUsers, func(p PendingUserTurn) bool { return p.OperationID == msg.OperationID }); i >= 0 {
+					m.pendingUsers = slices.Delete(m.pendingUsers, i, i+1)
 				}
 				if m.TextArea.Value() == "" {
 					m.TextArea.SetValue(msg.Prompt)
@@ -1365,10 +1469,13 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 		if msg.Queued {
 			if i := slices.IndexFunc(m.pendingUsers, func(p PendingUserTurn) bool {
-				return p.Text == msg.Prompt && !p.Queued
+				return p.OperationID == msg.OperationID && !p.Queued
 			}); i >= 0 {
 				m.pendingUsers[i].Queued = true
 			}
+		}
+		if msg.Handle != nil && (msg.Continue || slices.ContainsFunc(m.pendingUsers, func(p PendingUserTurn) bool { return p.OperationID == msg.OperationID })) {
+			cmds = append(cmds, m.resolveOperationCmd(msg.Handle))
 		}
 
 		// If user pressed Esc while this send was in flight, dispatch interrupt now that send is accepted
@@ -1440,22 +1547,25 @@ func (m *ChatModel) Moved(workspace string, retry *WorkspaceRetry) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-func (m *ChatModel) sendCmd(prompt string, image *daemon.ImageAttachment, isCont bool) tea.Cmd {
+func (m ChatModel) queryOperationCmd(handle *daemon.OperationHandle) tea.Cmd {
+	client, id, gen, ctx := m.client, m.SessionID, m.Generation, m.streamCtx
+	return func() tea.Msg {
+		receipt, err := client.ResolveOperation(ctx, handle)
+		return ChatOperationResolvedMsg{SessionID: id, Generation: gen, Handle: handle, Receipt: receipt, Err: err}
+	}
+}
+func (m ChatModel) resolveOperationCmd(handle *daemon.OperationHandle) tea.Cmd {
+	id, gen := m.SessionID, m.Generation
+	return tea.Tick(15*time.Second, func(time.Time) tea.Msg { return ChatOperationPollMsg{SessionID: id, Generation: gen, Handle: handle} })
+}
+func (m *ChatModel) sendCmd(handle *daemon.OperationHandle, prompt string, image *daemon.ImageAttachment, isCont bool) tea.Cmd {
 	client, id, gen := m.client, m.SessionID, m.Generation
 	return func() tea.Msg {
-		msg := ChatTurnSentMsg{SessionID: id, Generation: gen, Prompt: prompt, Image: image, Continue: isCont}
-		var (
-			res *daemon.SendResult
-			err error
-		)
-		if isCont {
-			res, err = client.Continue(context.Background())
-		} else {
-			res, err = client.Send(context.Background(), prompt, image)
-		}
+		msg := ChatTurnSentMsg{SessionID: id, Generation: gen, Prompt: prompt, Image: image, Continue: isCont, Handle: handle, OperationID: handle.ID}
+		result, err := client.SubmitOperation(context.Background(), handle)
 		msg.Err = err
-		if err == nil && res != nil {
-			msg.OK, msg.Queued = res.OK, res.Queued
+		if err == nil && result != nil {
+			msg.OK, msg.Queued = result.OK, result.Queued
 		}
 		return msg
 	}
@@ -1492,7 +1602,7 @@ func (m *ChatModel) submitInput(input string, cmds *[]tea.Cmd) {
 		return
 	}
 
-	if len(m.pendingUsers) >= MaxPendingUsers {
+	if m.pendingSendCount() >= MaxPendingUsers {
 		m.AddError("Too many messages are waiting. Wait for the current reply to finish before sending another message.")
 		m.refreshViewportContent()
 		return
@@ -1502,16 +1612,26 @@ func (m *ChatModel) submitInput(input string, cmds *[]tea.Cmd) {
 	m.TurnFailed = false
 	m.Stopped = false
 
-	cmd := m.sendCmd(".", nil, true)
-	if input != "." {
-		img := m.AttachedImage
+	continuation := input == "."
+	image := m.AttachedImage
+	if continuation {
+		image = nil
+	}
+	handle, err := m.client.PrepareTurn(input, image, continuation)
+	if err != nil {
+		m.AddError(err.Error())
+		return
+	}
+	cmd := m.sendCmd(handle, input, image, continuation)
+	if continuation {
+		if m.pendingContinuations == nil {
+			m.pendingContinuations = make(map[string]pendingOperation)
+		}
+		m.pendingContinuations[handle.ID] = pendingOperation{Handle: handle}
+	}
+	if !continuation {
 		m.AttachedImage = nil
-		m.pendingUsers = append(m.pendingUsers, PendingUserTurn{
-			Text:  input,
-			Image: img,
-			At:    time.Now().UnixMilli(),
-		})
-		cmd = m.sendCmd(input, img, false)
+		m.pendingUsers = append(m.pendingUsers, PendingUserTurn{Text: input, Image: image, At: time.Now().UnixMilli(), Handle: handle, OperationID: handle.ID})
 	}
 	m.isSending, m.sentHere, m.Follow = true, true, true
 	m.reseedMood()
@@ -1524,6 +1644,25 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 	m.syncLayout()
 	trimmed := strings.TrimSpace(input)
 	emit := func(msg tea.Msg) { *cmds = append(*cmds, func() tea.Msg { return msg }) }
+
+	name, args, _ := strings.Cut(trimmed, " ")
+	if slices.ContainsFunc(m.CommandMenu.Catalog, func(command daemon.SessionCommand) bool { return command.Name == name && command.Skill }) {
+		if m.pendingSendCount() >= MaxPendingUsers {
+			m.AddError("Too many messages are waiting.")
+			return
+		}
+		handle, err := m.client.PrepareSkill(name, args)
+		if err != nil {
+			m.AddError(err.Error())
+			return
+		}
+		m.pendingUsers = append(m.pendingUsers, PendingUserTurn{Text: trimmed, At: time.Now().UnixMilli(), Handle: handle, OperationID: handle.ID})
+		m.isSending, m.sentHere, m.Follow = true, true, true
+		m.TurnFailed, m.Stopped = false, false
+		*cmds = append(*cmds, m.sendCmd(handle, trimmed, nil, false), m.startAnimation())
+		m.refreshViewportContent()
+		return
+	}
 
 	switch trimmed {
 	case "/agents":
@@ -1610,7 +1749,6 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		m.ClearNotices()
 		m.TurnFailed, m.Stopping, m.Stopped = false, false, false
 		m.Follow, m.scrollOffset = true, 0
-		m.pendingUsers = nil
 		m.olderBefore, m.olderMore, m.loadingOlder = evt.Before, evt.More, false
 	case daemon.EventCommitted:
 		m.History.Stamp(evt.Seq)
@@ -1622,8 +1760,8 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		if !evt.Replayed {
 			m.ClearNotices()
 		}
-		if evt.ClientID == m.client.ClientID() {
-			if i := slices.IndexFunc(m.pendingUsers, func(p PendingUserTurn) bool { return p.Text == evt.Text }); i >= 0 {
+		if evt.OperationID != "" {
+			if i := slices.IndexFunc(m.pendingUsers, func(p PendingUserTurn) bool { return p.OperationID == evt.OperationID }); i >= 0 {
 				m.pendingUsers = slices.Delete(m.pendingUsers, i, i+1)
 			}
 		}
@@ -1834,7 +1972,7 @@ func (m ChatModel) statusLine() string {
 		}
 		return ""
 	}
-	if m.isSending || len(m.pendingUsers) > 0 && !m.Status.Running {
+	if m.isSending || m.pendingSendCount() > 0 && !m.Status.Running {
 		return "preparing"
 	}
 	if m.Progress != nil {
@@ -1878,7 +2016,7 @@ func (m ChatModel) phaseMood() mood {
 	switch {
 	case m.Stopping:
 		return moodStopping
-	case m.isSending || len(m.pendingUsers) > 0 && !m.Status.Running:
+	case m.isSending || m.pendingSendCount() > 0 && !m.Status.Running:
 		return moodPreparing
 	case m.Progress != nil:
 		return moodWorking
@@ -1957,7 +2095,7 @@ func (m ChatModel) View() string {
 	}
 
 	view := m.Viewport.View()
-	if m.History.Len() == 0 && m.transcript.activeText == "" && m.ToolProgressText == "" {
+	if m.History.Len() == 0 && len(m.pendingUsers) == 0 && m.transcript.activeText == "" && m.ToolProgressText == "" {
 		textWidth := max(1, min(m.Renderer.BodyWidth, m.Viewport.Width())-railWidth)
 		var emptyRows []string
 		for _, line := range wrapOrChunkLine("What would you like to work on?", textWidth) {
@@ -2180,4 +2318,24 @@ func shortCount(n int) string {
 	default:
 		return strings.TrimSuffix(fmt.Sprintf("%.1f", float64(n)/1_000_000), ".0") + "m"
 	}
+}
+
+func (m ChatModel) pendingSendCount() int {
+	count := 0
+	for _, pending := range m.pendingUsers {
+		if !pending.Expired {
+			count++
+		}
+	}
+	return count
+}
+
+func (m ChatModel) operationRecoverable(id string) bool {
+	for _, pending := range m.pendingUsers {
+		if pending.OperationID == id {
+			return !pending.Expired
+		}
+	}
+	pending, exists := m.pendingContinuations[id]
+	return exists && !pending.Expired
 }

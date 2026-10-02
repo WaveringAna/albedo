@@ -99,6 +99,9 @@ func (r TranscriptRenderer) nameplate(entry HistoryEntry, flags DisplayFlags, be
 	if entry.Pending == queued {
 		meta = append(meta, "queued")
 	}
+	if entry.Pending == unresolved {
+		meta = append(meta, "unresolved")
+	}
 	plate := markChrome + style.Render(strings.ToLower(who))
 	if len(meta) > 0 {
 		plate += r.Styles.Faint.Render(" · " + strings.Join(meta, " · "))

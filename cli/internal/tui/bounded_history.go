@@ -51,14 +51,15 @@ type HistoryEntry struct {
 	Live bool
 }
 
-// pending is how far a message of yours has got: sent and waiting for the
-// daemon, or accepted and queued behind the running turn.
+// pending records whether a user message is awaiting admission, queued for
+// delivery, or unresolved after its operation receipt expires.
 type pending int
 
 const (
 	settled pending = iota
 	sending
 	queued
+	unresolved
 )
 
 func (e *HistoryEntry) ComputeSize() int64 {

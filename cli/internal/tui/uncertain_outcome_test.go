@@ -22,16 +22,18 @@ func TestUncertainSubmissionRetainsPendingUntilStreamEcho(t *testing.T) {
 			m.AttachedImage = image
 			var commands []tea.Cmd
 			m.submitInput("check this", &commands)
+			handle := m.pendingUsers[0].Handle
 			m.pendingUsers[0].Queued = queued
 			m.TextArea.Reset()
 			m.interruptDeferred = true
 
 			m, cmd := m.Update(ChatTurnSentMsg{
 				SessionID: "s", Generation: m.Generation, Prompt: "check this", Image: image,
-				Err: fmt.Errorf("send: %w", &daemon.UncertainOutcomeError{Operation: "submit", Cause: io.ErrUnexpectedEOF}),
+				Handle: handle, OperationID: handle.ID,
+				Err: fmt.Errorf("send: %w", &daemon.UncertainOutcomeError{Operation: "submit", Cause: io.ErrUnexpectedEOF, Handle: handle}),
 			})
-			if cmd != nil || m.isSending || m.interruptDeferred {
-				t.Fatal("uncertain acknowledgement must settle sending without another mutation")
+			if cmd == nil || m.isSending || m.interruptDeferred {
+				t.Fatal("uncertain acknowledgement must settle sending and schedule receipt recovery")
 			}
 			if m.TextArea.Value() != "" || m.AttachedImage != nil {
 				t.Fatal("uncertain send restored a duplicate prompt or image")
@@ -44,7 +46,7 @@ func TestUncertainSubmissionRetainsPendingUntilStreamEcho(t *testing.T) {
 			}
 
 			for _, event := range []daemon.StreamEvent{
-				{Type: daemon.EventUser, Text: "check this", Source: "chat", ClientID: m.client.ClientID()},
+				{Type: daemon.EventUser, Text: "check this", Source: "chat", ClientID: m.client.ClientID(), OperationID: m.pendingUsers[0].OperationID},
 				{Type: daemon.EventCommitted, Seq: 1},
 			} {
 				m, _ = m.Update(ChatStreamEventMsg{SessionID: "s", Generation: m.Generation, Event: event})
@@ -72,9 +74,10 @@ func TestStreamEchoBeforeUncertainAcknowledgementDoesNotRestoreSubmission(t *tes
 	m.AttachedImage = image
 	var commands []tea.Cmd
 	m.submitInput("already accepted", &commands)
+	handle := m.pendingUsers[0].Handle
 	m.TextArea.Reset()
 	for _, event := range []daemon.StreamEvent{
-		{Type: daemon.EventUser, Text: "already accepted", Source: "chat", ClientID: m.client.ClientID()},
+		{Type: daemon.EventUser, Text: "already accepted", Source: "chat", ClientID: m.client.ClientID(), OperationID: m.pendingUsers[0].OperationID},
 		{Type: daemon.EventCommitted, Seq: 1},
 	} {
 		m, _ = m.Update(ChatStreamEventMsg{SessionID: "s", Generation: m.Generation, Event: event})
@@ -82,7 +85,8 @@ func TestStreamEchoBeforeUncertainAcknowledgementDoesNotRestoreSubmission(t *tes
 
 	m, cmd := m.Update(ChatTurnSentMsg{
 		SessionID: "s", Generation: m.Generation, Prompt: "already accepted", Image: image,
-		Err: &daemon.UncertainOutcomeError{Operation: "submit", Cause: io.EOF},
+		Handle: handle, OperationID: handle.ID,
+		Err: &daemon.UncertainOutcomeError{Operation: "submit", Cause: io.EOF, Handle: handle},
 	})
 	if cmd != nil || m.isSending || len(m.pendingUsers) != 0 || m.TextArea.Value() != "" || m.AttachedImage != nil {
 		t.Fatal("late uncertain acknowledgement restored or resubmitted an echoed message")
@@ -95,50 +99,6 @@ func TestStreamEchoBeforeUncertainAcknowledgementDoesNotRestoreSubmission(t *tes
 	}
 	if users != 1 {
 		t.Fatalf("want one committed user message, got %d", users)
-	}
-}
-
-func TestUncertainContinueDoesNotChangePendingOrRestorePrompt(t *testing.T) {
-	m := newTestChatModel(t, &daemon.Session{ID: "s"})
-	m.pendingUsers = []PendingUserTurn{{Text: "already waiting", Queued: true}}
-	m.isSending = true
-	m, cmd := m.Update(ChatTurnSentMsg{
-		SessionID: "s", Generation: m.Generation, Continue: true, Prompt: ".",
-		Err: &daemon.UncertainOutcomeError{Operation: "continue", Cause: io.EOF},
-	})
-	if cmd != nil || m.isSending || m.TextArea.Value() != "" || len(m.pendingUsers) != 1 {
-		t.Fatal("uncertain continue restored or removed a user submission")
-	}
-	if len(m.Notices) != 1 || m.Notices[0].Message == "" {
-		t.Fatalf("continue reported definite rejection: %+v", m.Notices)
-	}
-}
-
-func TestDefiniteRejectionRestoresPromptAndImage(t *testing.T) {
-	m := newTestChatModel(t, &daemon.Session{ID: "s"})
-	image := &daemon.ImageAttachment{}
-	m.pendingUsers = []PendingUserTurn{{Text: "try this", Image: image}}
-	m, _ = m.Update(ChatTurnSentMsg{
-		SessionID: "s", Generation: m.Generation, Prompt: "try this", Image: image,
-		Err: errors.New("submission refused"),
-	})
-	if len(m.pendingUsers) != 0 || m.TextArea.Value() != "try this" || m.AttachedImage != image {
-		t.Fatal("definite rejection did not restore the user's input")
-	}
-}
-
-func TestUncertainCreationKeepsCurrentSession(t *testing.T) {
-	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, "")
-	session := &daemon.Session{ID: "current"}
-	m := NewAppModel(conn, config.Profiles{}, session, "", false, nil)
-	t.Cleanup(m.Chat.Close)
-	updated, cmd := m.Update(sessionCreatedMsg{Err: &daemon.UncertainOutcomeError{Operation: "create session", Cause: io.EOF}})
-	m = updated.(AppModel)
-	if cmd != nil || m.ActiveSession != session || m.Chat.SessionID != session.ID || m.State != AppStateChat {
-		t.Fatal("uncertain creation changed the active session or resubmitted creation")
-	}
-	if len(m.Chat.Notices) != 1 || m.Chat.Notices[0].Message == "" {
-		t.Fatalf("missing creation guidance: %+v", m.Chat.Notices)
 	}
 }
 
@@ -215,4 +175,64 @@ func invalidResponseOutcome(operation, field string, cause error) error {
 	return &daemon.UncertainOutcomeError{Operation: operation, Cause: &daemon.ProtocolError{
 		Code: "invalid_response", Operation: operation, Field: field, Cause: cause,
 	}}
+}
+
+func TestIdenticalPendingTurnsReconcileByOperationID(t *testing.T) {
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	var commands []tea.Cmd
+	m.submitInput("same message", &commands)
+	first := m.pendingUsers[0].OperationID
+	m.submitInput("same message", &commands)
+	second := m.pendingUsers[1].OperationID
+	m, _ = m.Update(ChatTurnSentMsg{SessionID: "s", Generation: m.Generation, OperationID: second, Handle: m.pendingUsers[1].Handle, Queued: true, OK: true})
+	if m.pendingUsers[0].Queued || !m.pendingUsers[1].Queued {
+		t.Fatal("admission result matched the wrong identical message")
+	}
+	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventUser, Text: "same message", OperationID: second})
+	if len(m.pendingUsers) != 1 || m.pendingUsers[0].OperationID != first {
+		t.Fatal("stream echo retired the wrong identical message")
+	}
+	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventUser, Text: "same message", OperationID: first})
+	if len(m.pendingUsers) != 0 {
+		t.Fatal("original pending message was not reconciled")
+	}
+}
+
+// A timer scheduled before expiry may arrive afterward; rejecting it in the
+// model prevents the timer from issuing a receipt query.
+func TestScheduledReceiptPollStopsAfterExpiry(t *testing.T) {
+	for _, prompt := range []string{"waiting input", "."} {
+		t.Run(prompt, func(t *testing.T) {
+			m := newTestChatModel(t, &daemon.Session{ID: "s"})
+			image := &daemon.ImageAttachment{}
+			if prompt != "." {
+				m.AttachedImage = image
+			}
+			var commands []tea.Cmd
+			m.submitInput(prompt, &commands)
+			var handle *daemon.OperationHandle
+			if prompt == "." {
+				for _, pending := range m.pendingContinuations {
+					handle = pending.Handle
+				}
+			} else {
+				handle = m.pendingUsers[0].Handle
+			}
+			tick := ChatOperationPollMsg{SessionID: "s", Generation: m.Generation, Handle: handle}
+			m, command := m.Update(ChatOperationResolvedMsg{
+				SessionID: "s", Generation: m.Generation, Handle: handle,
+				Err: &daemon.APIError{StatusCode: 410, Code: "operation_expired"},
+			})
+			if command != nil {
+				t.Fatal("expiry scheduled another receipt poll")
+			}
+			m, command = m.Update(tick)
+			if command != nil || m.operationRecoverable(handle.ID) {
+				t.Fatal("already scheduled tick restarted expired receipt recovery")
+			}
+			if prompt != "." && (len(m.pendingUsers) != 1 || m.pendingUsers[0].Handle != handle || m.pendingUsers[0].Image != image) {
+				t.Fatal("expiry lost the original submission or attachment")
+			}
+		})
+	}
 }
