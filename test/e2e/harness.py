@@ -485,7 +485,8 @@ class Daemon:
             )
         self.concurrent = concurrent
         self.lock = threading.RLock()
-        self.root = Path(tempfile.mkdtemp(prefix=f"{name}-"))
+        # Resolved, so a path the daemon reports through a symlink (macOS /tmp) matches.
+        self.root = Path(tempfile.mkdtemp(prefix=f"{name}-")).resolve()
         self.home = self.root / "home"
         self.home.mkdir()
         (self.root / "user-home").mkdir()

@@ -7,6 +7,9 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="$1"
+# A reused directory would keep the previous beams, and `ln -s` would follow its
+# old priv link into the checkout.
+rm -rf "$out"
 (cd "$root" && gleam build) >&2
 mkdir -p "$out"
 for ebin in "$root"/build/dev/erlang/*/ebin; do
