@@ -136,7 +136,7 @@ def main():
 
         def outputs(session):
             """The first stream page after reset is the full history snapshot."""
-            with api(f"/sessions/{session}/stream?after_seq=-1") as response:
+            with api(f"/sessions/{session}/stream") as response:
                 response.fp.raw._sock.settimeout(60)
                 while True:
                     line = response.readline()

@@ -17,7 +17,7 @@ import (
 )
 
 func formatPage(cursor int, events []any) string {
-	batch, _ := json.Marshal(map[string]any{"cursor": cursor, "events": events})
+	batch, _ := json.Marshal(map[string]any{"generation": "generation-a", "cursor": cursor, "events": events})
 	return fmt.Sprintf("data: %s\n\n", batch)
 }
 
@@ -28,6 +28,7 @@ func TestToolPreviewContinuesAcrossEOFAndTransientFailure(t *testing.T) {
 		switch requests.Add(1) {
 		case 1:
 			_, _ = writer.Write([]byte(formatPage(1, []any{
+				map[string]any{"type": "reset"},
 				map[string]any{"type": "arguments_delta", "name": "python", "callId": "read", "text": `{"code":"read('first.py')"}`},
 				map[string]any{"type": "tool", "callId": "read", "name": "python", "args": `{"code":"read('first.py')"}`, "result": "done"},
 				map[string]any{"type": "arguments_delta", "name": "python", "callId": "edit", "text": `{"code":"edit('second`},
@@ -86,9 +87,11 @@ func TestStreamRejectsExcessUnfinishedCallsBeforeDeliveringTheBatch(t *testing.T
 		count := requests.Add(1)
 		switch {
 		case count <= 32:
-			_, _ = writer.Write([]byte(formatPage(int(count), []any{
-				map[string]any{"type": "arguments_delta", "name": "python", "callId": fmt.Sprintf("call-%d", count), "text": `{"code":"`},
-			})))
+			events := []any{map[string]any{"type": "arguments_delta", "name": "python", "callId": fmt.Sprintf("call-%d", count), "text": `{"code":"`}}
+			if count == 1 {
+				events = append([]any{map[string]any{"type": "reset"}}, events...)
+			}
+			_, _ = writer.Write([]byte(formatPage(int(count), events)))
 		case count == 33:
 			_, _ = writer.Write([]byte(formatPage(33, []any{
 				map[string]any{"type": "text", "text": "must not escape"},
@@ -100,7 +103,7 @@ func TestStreamRejectsExcessUnfinishedCallsBeforeDeliveringTheBatch(t *testing.T
 			}
 			_, _ = writer.Write([]byte(formatPage(32, []any{})))
 		case count == 35:
-			if cursor := request.URL.Query().Get("after_seq"); cursor != "-1" {
+			if cursor := request.URL.Query().Get("after_seq"); cursor != "" || request.URL.Query().Has("after_generation") {
 				t.Errorf("recovery did not request a fresh snapshot: %s", cursor)
 			}
 			_, _ = writer.Write([]byte(formatPage(35, []any{
@@ -127,7 +130,7 @@ func TestStreamRejectsExcessUnfinishedCallsBeforeDeliveringTheBatch(t *testing.T
 	if err := client.Stream(t.Context(), 0, consume); err != nil {
 		t.Fatal(err)
 	}
-	client.RequireStreamReset()
+	client.ResetStream()
 	var recovered bool
 	if err := client.Stream(t.Context(), 0, func(event StreamEvent) error {
 		recovered = recovered || event.Type == EventMessage && event.Text == "recovered" && event.Replayed
@@ -149,6 +152,7 @@ func TestStreamRejectsExcessArgumentBytesBeforeDeliveringTheBatch(t *testing.T) 
 		switch requests.Add(1) {
 		case 1:
 			_, _ = writer.Write([]byte(formatPage(1, []any{
+				map[string]any{"type": "reset"},
 				map[string]any{"type": "arguments_delta", "name": "other", "callId": "first", "text": firstArguments},
 				map[string]any{"type": "arguments_delta", "name": "other", "callId": "second", "text": secondArguments},
 			})))
@@ -192,7 +196,7 @@ func TestStreamRejectsExcessArgumentBytesBeforeDeliveringTheBatch(t *testing.T) 
 	if err := client.Stream(t.Context(), 0, consume); err != nil {
 		t.Fatal(err)
 	}
-	client.RequireStreamReset()
+	client.ResetStream()
 	var delivered []EventType
 	err = client.Stream(t.Context(), 0, func(event StreamEvent) error { delivered = append(delivered, event.Type); return nil })
 	failure, ok = errors.AsType[*StreamError](err)
@@ -223,12 +227,13 @@ func TestCancellationStartsTheNextSubscriptionWithoutOldArguments(t *testing.T) 
 				writer.Header().Set("Content-Type", "text/event-stream")
 				arguments := `{"code":"old`
 				if count > 1 {
-					if cursor := request.URL.Query().Get("after_seq"); cursor != "-1" {
+					if cursor := request.URL.Query().Get("after_seq"); cursor != "" || request.URL.Query().Has("after_generation") {
 						t.Errorf("cancelled subscription retained its cursor: %s", cursor)
 					}
 					arguments = `{"code":"new()"}`
 				}
 				_, _ = writer.Write([]byte(formatPage(int(count), []any{
+					map[string]any{"type": "reset"},
 					map[string]any{"type": "arguments_delta", "name": "python", "callId": "same", "text": arguments},
 				})))
 			}))
@@ -251,7 +256,13 @@ func TestCancellationStartsTheNextSubscriptionWithoutOldArguments(t *testing.T) 
 				cancel()
 				err = <-finished
 			} else {
-				err = client.Stream(ctx, 0, func(StreamEvent) error { cancel(); return ctx.Err() })
+				err = client.Stream(ctx, 0, func(event StreamEvent) error {
+					if event.Type == EventReset {
+						return nil
+					}
+					cancel()
+					return ctx.Err()
+				})
 			}
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("cancellation cause lost: %v", err)

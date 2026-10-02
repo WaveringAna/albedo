@@ -995,7 +995,7 @@ func (m ChatModel) startStreamSubscription() tea.Cmd {
 					if !deliver(streamDelivery{Err: err, Recovering: true}) {
 						return
 					}
-					client.RequireStreamReset()
+					client.ResetStream()
 				case daemon.StreamTerminal:
 					deliver(streamDelivery{Err: err})
 					return

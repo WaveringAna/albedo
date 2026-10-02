@@ -335,15 +335,17 @@ class AgentsTests(unittest.TestCase):
                 busy: str(self.app.workspace),
             },
         )
+        cursor = self.app.stream_page(busy)
         release.set()
         self.app.idle(busy)
         self.assertEqual(workspaces()[busy], str(moved))
-        with self.app.api(f"/sessions/{busy}/stream?after_seq=0") as response:
-            frame = next(line for line in response if line.startswith(b"data: "))
         self.assertIn(
             "workspace moved with parent; python variables were cleared, "
             "the transcript is intact",
-            [event.get("text") for event in json.loads(frame[6:])["events"]],
+            [
+                event.get("text")
+                for event in self.app.stream_page(busy, cursor)["events"]
+            ],
         )
 
     def test_qualified_and_inferred_cross_provider_models(self):

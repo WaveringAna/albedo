@@ -166,7 +166,13 @@ class StrictMockDaemon:
                     def send_chunk(events, cursor):
                         payload = (
                             "data: "
-                            + json.dumps({"cursor": cursor, "events": events})
+                            + json.dumps(
+                                {
+                                    "generation": "smoke-generation",
+                                    "cursor": cursor,
+                                    "events": events,
+                                }
+                            )
                             + "\n\n"
                         )
                         self.wfile.write(payload.encode())

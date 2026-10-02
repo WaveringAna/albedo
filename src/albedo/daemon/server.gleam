@@ -2772,7 +2772,14 @@ fn stream(
   req: request.Request(mist.Connection),
   worker: Subject(session.Message),
 ) -> response.Response(mist.ResponseData) {
-  let after = query_int(req, "after_seq", -1)
+  let after = case
+    query(req) |> list.key_find("after_generation"),
+    query_optional_int(req, "after_seq")
+  {
+    Ok(generation), Some(sequence) if generation != "" && sequence >= 0 ->
+      Some(session.Cursor(generation, sequence))
+    _, _ -> None
+  }
   // With `tail`, a reset replays only the newest rows; older ones are paged
   // from /sessions/:id/history. Without it, the whole transcript as before.
   let tail = query_optional_int(req, "tail") |> option.map(int.clamp(_, 1, 400))
@@ -2794,33 +2801,49 @@ fn stream(
       // A closing daemon stops session workers while clients are still attached,
       // so a dead worker ends this stream instead of failing a call into it.
       use <- when_running(worker)
-      let page = session.read(worker, state.1, tail)
-      case message, page.events {
-        Wake, [] -> actor.continue(state)
-        _, _ -> {
-          let events =
-            event_frame(
-              string_tree.from_strings([
-                "{\"cursor\":",
-                int.to_string(page.cursor),
-                ",\"events\":[",
-              ]),
-              page.events,
-            )
-          case mist.send_event(connection, mist.event(events)) {
-            Error(_) -> actor.stop()
-            Ok(_) -> {
-              case message {
-                Tick -> {
-                  let _ = process.send_after(state.0, 1000, Tick)
-                  Nil
+      case session.read(worker, state.1, tail) {
+        Error(error) -> {
+          let failure =
+            json.object([
+              #("error", json.string("could not load transcript: " <> error)),
+            ])
+            |> json.to_string
+            |> string_tree.from_string
+            |> mist.event
+            |> mist.event_name("error")
+          let _ = mist.send_event(connection, failure)
+          actor.stop()
+        }
+        Ok(page) ->
+          case message, page.events {
+            Wake, [] -> actor.continue(state)
+            _, _ -> {
+              let events =
+                event_frame(
+                  string_tree.from_strings([
+                    "{\"generation\":",
+                    json.to_string(json.string(page.cursor.generation)),
+                    ",\"cursor\":",
+                    int.to_string(page.cursor.sequence),
+                    ",\"events\":[",
+                  ]),
+                  page.events,
+                )
+              case mist.send_event(connection, mist.event(events)) {
+                Error(_) -> actor.stop()
+                Ok(_) -> {
+                  case message {
+                    Tick -> {
+                      let _ = process.send_after(state.0, 1000, Tick)
+                      Nil
+                    }
+                    Wake -> Nil
+                  }
+                  actor.continue(#(state.0, Some(page.cursor)))
                 }
-                Wake -> Nil
               }
-              actor.continue(#(state.0, page.cursor))
             }
           }
-        }
       }
     },
   )

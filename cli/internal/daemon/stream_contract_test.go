@@ -36,20 +36,23 @@ func TestStreamRejectsMalformedBatchesWithoutLosingTheCursor(t *testing.T) {
 				w.Header().Set("Content-Type", "text/event-stream")
 				switch requests.Add(1) {
 				case 1:
-					_, _ = io.WriteString(w, "data: "+`{"cursor":7,"events":[{"type":"text","text":"accepted"}]}`+"\n\n")
+					_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":7,"events":[{"type":"reset"},{"type":"text","text":"accepted"}]}`+"\n\n")
 				case 2:
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", batch)
 				default:
 					if got := r.URL.Query().Get("after_seq"); got != "7" {
 						t.Errorf("failed batch lost committed cursor: %s", got)
 					}
-					_, _ = io.WriteString(w, "data: "+`{"cursor":8,"events":[{"type":"text","text":"replayed"}]}`+"\n\n")
+					_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":8,"events":[{"type":"text","text":"replayed"}]}`+"\n\n")
 				}
 			}))
 			defer server.Close()
 			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
 			var delivered []string
 			consume := func(event StreamEvent) error {
+				if event.Type == EventReset {
+					return nil
+				}
 				if event.Type != EventText {
 					t.Errorf("unexpected event delivered: %+v", event)
 				}
@@ -86,7 +89,7 @@ func TestStreamIgnoresUnknownKindsAndCommitsTheirCursor(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		if requests.Add(1) == 1 {
-			_, _ = io.WriteString(w, "data: "+`{"cursor":12,"events":[{"type":"future_output","text":"not assistant output","args":false}]}`+"\n\n")
+			_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":12,"events":[{"type":"reset"},{"type":"future_output","text":"not assistant output","args":false}]}`+"\n\n")
 		} else if got := r.URL.Query().Get("after_seq"); got != "12" {
 			t.Errorf("ignored additive batch lost cursor: %s", got)
 		}
@@ -96,7 +99,9 @@ func TestStreamIgnoresUnknownKindsAndCommitsTheirCursor(t *testing.T) {
 	consumed := 0
 	for range 2 {
 		if err := client.StreamWithProgress(t.Context(), 0, func(event StreamEvent) error {
-			t.Errorf("unknown event delivered: %+v", event)
+			if event.Type != EventReset {
+				t.Errorf("unknown event delivered: %+v", event)
+			}
 			return nil
 		}, func() { consumed++ }); err != nil {
 			t.Fatal(err)
@@ -113,13 +118,13 @@ func TestStreamCallbackFailureRetainsCauseAndUncommittedCursor(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		n := requests.Add(1)
 		if n == 1 {
-			_, _ = io.WriteString(w, "data: "+`{"cursor":7,"events":[]}`+"\n\n")
+			_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":7,"events":[{"type":"reset"}]}`+"\n\n")
 			return
 		}
-		if n == 3 && r.URL.Query().Get("after_seq") != "7" {
+		if n == 3 && (r.URL.Query().Get("after_seq") != "7" || r.URL.Query().Get("after_generation") != "generation-a") {
 			t.Error("callback failure committed the batch cursor")
 		}
-		_, _ = io.WriteString(w, "data: "+`{"cursor":8,"events":[{"type":"text","text":"first"},{"type":"text","text":"second"}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: "+`{"generation":"generation-b","cursor":8,"events":[{"type":"reset"},{"type":"text","text":"first"},{"type":"text","text":"second"}]}`+"\n\n")
 	}))
 	defer server.Close()
 	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
@@ -129,6 +134,9 @@ func TestStreamCallbackFailureRetainsCauseAndUncommittedCursor(t *testing.T) {
 	cause := errors.New("consumer stopped")
 	var callbacks int
 	err := client.Stream(t.Context(), 0, func(event StreamEvent) error {
+		if event.Type == EventReset {
+			return nil
+		}
 		callbacks++
 		if callbacks == 2 {
 			return cause
@@ -208,11 +216,11 @@ func TestStreamRecoveryRequiresResetBeforeDeliveringHistory(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch requests.Add(1) {
 		case 1:
-			_, _ = io.WriteString(w, "data: "+`{"cursor":20,"events":[]}`+"\n\n")
+			_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":20,"events":[{"type":"reset"}]}`+"\n\n")
 		case 2:
-			_, _ = io.WriteString(w, "data: "+`{"cursor":1,"events":[{"type":"text","text":"not durable reset"}]}`+"\n\n")
+			_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":1,"events":[{"type":"text","text":"not durable reset"}]}`+"\n\n")
 		case 3:
-			_, _ = io.WriteString(w, "data: "+`{"cursor":1,"events":[{"type":"reset"},{"type":"message","role":"assistant","text":"durable"}]}`+"\n\n")
+			_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":1,"events":[{"type":"reset"},{"type":"message","role":"assistant","text":"durable"}]}`+"\n\n")
 		default:
 			if r.URL.Query().Get("after_seq") != "1" {
 				t.Error("validated reset failed to commit its cursor")
@@ -225,7 +233,7 @@ func TestStreamRecoveryRequiresResetBeforeDeliveringHistory(t *testing.T) {
 	if err := client.Stream(t.Context(), 0, consume); err != nil {
 		t.Fatal(err)
 	}
-	client.RequireStreamReset()
+	client.ResetStream()
 	err := client.Stream(t.Context(), 0, func(StreamEvent) error {
 		t.Error("non-reset recovery data escaped")
 		return nil
@@ -277,6 +285,77 @@ func TestStreamClassifiesExplicitSSEFailures(t *testing.T) {
 			failure, ok := errors.AsType[*StreamError](err)
 			if !ok || failure.Kind != test.kind || requests.Load() != 1 {
 				t.Fatalf("wrong explicit failure or automatic retry: %v, requests=%d", err, requests.Load())
+			}
+		})
+	}
+}
+
+func TestStreamGenerationResetReplacesUnfinishedArguments(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch requests.Add(1) {
+		case 1:
+			if r.URL.Query().Has("after_seq") || r.URL.Query().Has("after_generation") {
+				t.Error("initial subscription sent a cursor")
+			}
+			_, _ = io.WriteString(w, "data: "+`{"generation":"old","cursor":10,"events":[{"type":"reset"},{"type":"arguments_delta","callId":"same","name":"python","text":"{\"code\":\"old"}]}`+"\n\n")
+		case 2:
+			_, _ = io.WriteString(w, "data: "+`{"generation":"new","cursor":11,"events":[{"type":"text","text":"must stay hidden"}]}`+"\n\n")
+		case 3:
+			if r.URL.Query().Get("after_seq") != "10" || r.URL.Query().Get("after_generation") != "old" {
+				t.Error("invalid generation change replaced the consumed pair")
+			}
+			_, _ = io.WriteString(w, "data: "+`{"generation":"new","cursor":1,"events":[{"type":"reset"},{"type":"arguments_delta","callId":"same","name":"python","text":"{\"code\":\"new()\"}"}]}`+"\n\n")
+		default:
+			if r.URL.Query().Get("after_seq") != "1" || r.URL.Query().Get("after_generation") != "new" {
+				t.Error("successful reset failed to replace both cursor values")
+			}
+		}
+	}))
+	defer server.Close()
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+	var previews []string
+	consume := func(event StreamEvent) error {
+		if event.Type == EventText {
+			t.Error("invalid generation events escaped")
+		}
+		if event.Progress != nil && event.Progress.Code != nil {
+			previews = append(previews, event.Progress.Code.Text)
+		}
+		return nil
+	}
+	if err := client.Stream(t.Context(), 0, consume); err != nil {
+		t.Fatal(err)
+	}
+	err := client.Stream(t.Context(), 0, consume)
+	failure, ok := errors.AsType[*StreamError](err)
+	if !ok || failure.Kind != StreamProtocol {
+		t.Fatalf("generation change without reset accepted: %v", err)
+	}
+	for range 2 {
+		if err := client.Stream(t.Context(), 0, consume); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(previews) != 2 || previews[0] != "old" || previews[1] != "new()" {
+		t.Fatalf("reset mixed old and new arguments: %q", previews)
+	}
+}
+
+func TestInitialStreamRequiresLeadingReset(t *testing.T) {
+	for _, events := range []string{`[]`, `[{"type":"text","text":"must stay hidden"}]`} {
+		t.Run(events, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprintf(w, "data: {\"generation\":\"new\",\"cursor\":0,\"events\":%s}\n\n", events)
+			}))
+			defer server.Close()
+			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+			err := client.Stream(t.Context(), 0, func(StreamEvent) error { t.Error("initial events escaped without reset"); return nil })
+			failure, ok := errors.AsType[*StreamError](err)
+			if !ok || failure.Kind != StreamProtocol {
+				t.Fatalf("initial batch without reset accepted: %v", err)
 			}
 		})
 	}

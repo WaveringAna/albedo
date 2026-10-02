@@ -1,6 +1,5 @@
 """Unread background job results wake idle sessions once, even across idle reaping."""
 
-import json
 import time
 import unittest
 
@@ -61,13 +60,6 @@ class JobWakeCase(unittest.TestCase):
     def users(self):
         return [user_text(record["request"]) for record in self.provider.requests]
 
-    def stream(self, session, query):
-        with self.app.api(f"/sessions/{session}/stream{query}") as response:
-            for line in response:
-                if line.startswith(b"data: "):
-                    return json.loads(line[6:])
-        self.fail("no stream snapshot")
-
 
 class JobWakeTests(JobWakeCase):
     def test_unread_job_wakes_once_with_live_source_and_durable_turn(self):
@@ -75,7 +67,7 @@ class JobWakeTests(JobWakeCase):
         self.app.prompt(session, "start a slow job").close()
         self.app.idle(session)
         self.assertEqual(len(self.users()), 2)
-        before = self.stream(session, "?after_seq=-1")
+        before = self.app.stream_page(session)
         wait_for(lambda: len(self.users()) >= 3)
         self.app.idle(session)
         self.assertEqual(len(self.users()), 3)
@@ -83,7 +75,7 @@ class JobWakeTests(JobWakeCase):
         self.assertIn("background job finished", wake)
         self.assertIn("jobs[", wake)
         self.assertIn("output.read", wake)
-        live = self.stream(session, f"?after_seq={before['cursor']}")["events"]
+        live = self.app.stream_page(session, before)["events"]
         notices = [
             event
             for event in live
@@ -95,7 +87,7 @@ class JobWakeTests(JobWakeCase):
         self.assertIn("exit_code=0", notices[0]["text"])
         durable = [
             event
-            for event in self.stream(session, "?after_seq=-1")["events"]
+            for event in self.app.events(session)
             if event.get("type") == "user" and "job finished" in event.get("text", "")
         ]
         self.assertEqual(len(durable), 1)

@@ -63,8 +63,13 @@ just continue.
 pub type Session =
   Subject(Message)
 
+/// A replay position belongs to exactly one session actor lifetime.
+pub type Cursor {
+  Cursor(generation: String, sequence: Int)
+}
+
 pub type Page {
-  Page(cursor: Int, reset: Bool, events: List(String))
+  Page(cursor: Cursor, reset: Bool, events: List(String))
 }
 
 /// What a sweep needs to decide whether this session's kernel can be released.
@@ -134,7 +139,7 @@ pub type Message {
   ReadEffort(Subject(Result(json.Json, String)))
   ChangeEffort(String, Subject(Result(json.Json, String)))
   Status(Subject(String))
-  Read(Int, Option(Int), Subject(Page))
+  Read(Option(Cursor), Option(Int), Subject(Result(Page, String)))
   Watch(process.Pid, fn() -> Nil)
   Publish(String, String, Subject(Bool))
   Commit(
@@ -262,6 +267,7 @@ pub fn start(
         None,
         None,
         0,
+        new_generation(),
       )
     // Background jobs wake this session through the kernel's jobs route; the
     // registered closure lands a completion notice as an ordinary submit, so
@@ -383,7 +389,11 @@ pub fn watch(session: Session, owner: process.Pid, notify: fn() -> Nil) -> Nil {
 /// Events after `after`. A reset (a new or lagging client) replays the
 /// transcript: whole, or with `tail` only its newest rows, which the client
 /// pages back from with `history.rendered`.
-pub fn read(session: Session, after: Int, tail: Option(Int)) -> Page {
+pub fn read(
+  session: Session,
+  after: Option(Cursor),
+  tail: Option(Int),
+) -> Result(Page, String) {
   actor.call(session, 5000, Read(after, tail, _))
 }
 
@@ -458,17 +468,6 @@ fn call_submit(
   submission: Submission,
 ) -> Result(Bool, SubmissionError) {
   actor.call(session, 10_000, Submit(submission, _))
-}
-
-fn transcript_error_events(error: String) -> List(String) {
-  [
-    view.event("reset", []),
-    view.text("error", "could not load transcript: " <> error),
-  ]
-}
-
-fn transcript_error(sequence: Int, error: String) -> Page {
-  Page(sequence, True, transcript_error_events(error))
 }
 
 fn cleanup_registrations(id: String) -> Nil {
@@ -719,33 +718,38 @@ fn handle(
         ]),
       )
     Read(after, tail, reply) -> {
-      case event_buffer.since(state.events, after, state.sequence) {
-        Ok(events) -> answer(state, reply, Page(state.sequence, False, events))
+      let cursor = Cursor(state.generation, state.sequence)
+      let replay = case after {
+        Some(after) if after.generation == state.generation ->
+          event_buffer.since(state.events, after.sequence, state.sequence)
+        _ -> Error(Nil)
+      }
+      case replay {
+        Ok(events) -> answer(state, reply, Ok(Page(cursor, False, events)))
         Error(_) if tail != None -> {
           let rows = option.unwrap(tail, 0)
-          let events = case
+          let page =
             conversation.load_tail(
               runtime.ledger(state.host),
               state.info.id,
               None,
               rows,
             )
-          {
-            Error(error) -> transcript_error_events(error)
-            Ok(#(entries, more)) -> [
-              view.event("reset", view.page_fields(entries, more)),
-              ..list.append(
-                view.rows(runtime.ledger(state.host), entries),
-                option.values([option.map(state.latest_usage, usage.event)]),
-              )
-            ]
-          }
-          answer(state, reply, Page(state.sequence, True, events))
+            |> result.map(fn(loaded) {
+              let #(entries, more) = loaded
+              Page(cursor, True, [
+                view.event("reset", view.page_fields(entries, more)),
+                ..list.append(
+                  view.rows(runtime.ledger(state.host), entries),
+                  option.values([option.map(state.latest_usage, usage.event)]),
+                )
+              ])
+            })
+          answer(state, reply, page)
         }
         Error(_) ->
           case session_history.ensure_history(state) {
-            Error(error) ->
-              answer(state, reply, transcript_error(state.sequence, error))
+            Error(error) -> answer(state, reply, Error(error))
             Ok(state) -> {
               let history = state.history |> option.unwrap([]) |> list.reverse
               // A reset renders the transcript once for the client; keeping it
@@ -755,14 +759,16 @@ fn handle(
               answer(
                 session_state.State(..state, history: None),
                 reply,
-                Page(state.sequence, True, [
-                  view.event("reset", []),
-                  ..view.snapshot(
-                    runtime.ledger(state.host),
-                    history,
-                    state.latest_usage,
-                  )
-                ]),
+                Ok(
+                  Page(cursor, True, [
+                    view.event("reset", []),
+                    ..view.snapshot(
+                      runtime.ledger(state.host),
+                      history,
+                      state.latest_usage,
+                    )
+                  ]),
+                ),
               )
             }
           }
@@ -2336,3 +2342,6 @@ fn interrupt_waiting(
     }
   }
 }
+
+@external(erlang, "albedo_session", "new_generation")
+fn new_generation() -> String

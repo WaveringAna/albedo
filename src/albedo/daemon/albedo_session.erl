@@ -1,5 +1,5 @@
 -module(albedo_session).
--export([kill/1, now_ms/0, discard/1, collect/0, collect_over/1, decode_submission/1, fingerprint/1]).
+-export([kill/1, now_ms/0, discard/1, collect/0, collect_over/1, decode_submission/1, fingerprint/1, new_generation/0]).
 kill(Pid) -> exit(Pid,kill), nil.
 %% Monotonic: idle time must not move when the wall clock does.
 now_ms() -> erlang:monotonic_time(millisecond).
@@ -16,3 +16,6 @@ collect_over(Words) ->
 decode_submission(Payload) -> binary_to_term(Payload, [safe]).
 
 fingerprint(Value) -> binary:encode_hex(crypto:hash(sha256, term_to_binary(Value))).
+
+new_generation() ->
+    base64:encode(crypto:strong_rand_bytes(16), #{mode => urlsafe, padding => false}).

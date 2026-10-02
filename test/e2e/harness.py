@@ -54,6 +54,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -922,12 +923,24 @@ class Albedo:
             time.sleep(0.05)
         self._fail(f"session did not settle: {status}")
 
-    def events(self, session_id):
-        with self.api(f"/sessions/{session_id}/stream") as response:
+    def stream_page(self, session_id, after=None, *, tail=None):
+        query = {}
+        if after is not None:
+            query = {
+                "after_generation": after["generation"],
+                "after_seq": after["cursor"],
+            }
+        if tail is not None:
+            query["tail"] = tail
+        suffix = "?" + urllib.parse.urlencode(query) if query else ""
+        with self.api(f"/sessions/{session_id}/stream{suffix}") as response:
             for line in response:
                 if line.startswith(b"data: "):
-                    return json.loads(line[6:])["events"]
-        return []
+                    return json.loads(line[6:])
+        self._fail("stream closed before its first batch")
+
+    def events(self, session_id):
+        return self.stream_page(session_id)["events"]
 
     def history(self, session_id):
         with self.api(f"/sessions/{session_id}/history") as response:

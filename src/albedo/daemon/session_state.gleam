@@ -42,6 +42,7 @@ pub type State(message) {
     /// when the run ends. Not persisted: a restart forgets it.
     following: Option(String),
     blocked_until: Int,
+    generation: String,
   )
 }
 

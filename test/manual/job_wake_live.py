@@ -124,7 +124,7 @@ def main():
 
         # Hold the stream open: no status polling, no python calls, nothing that
         # could carry the completion back except the wake itself.
-        with api(f"/sessions/{session_id}/stream?after_seq=-1") as response:
+        with api(f"/sessions/{session_id}/stream") as response:
             response.fp.raw._sock.settimeout(150)
             seen = []
             wake_at = None

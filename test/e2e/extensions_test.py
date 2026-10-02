@@ -222,15 +222,13 @@ class ExtensionTests(unittest.TestCase):
             removed.unlink()
 
     def test_oversized_agent_instructions_warn_and_allow_turns(self):
+        before = self.app.stream_page(self.sid)
         (self.app.workspace / "AGENTS.md").write_text("X" * (1024 * 1024 + 1))
         (self.app.workspace / "CLAUDE.md").write_text("USABLE_CONVENTION")
         (request,) = self.turn("continue without oversized instructions")
         self.assertIn("USABLE_CONVENTION", request["instructions"])
         self.assertNotIn("X" * 128, request["instructions"])
-        with self.app.api(f"/sessions/{self.sid}/stream?after_seq=0") as stream:
-            events = json.loads(
-                next(line[6:] for line in stream if line.startswith(b"data: "))
-            )["events"]
+        events = self.app.stream_page(self.sid, before)["events"]
         warnings = [
             event["text"]
             for event in events
@@ -529,6 +527,7 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("second workspace item", json.dumps(invoke(sessions[1], {})))
 
     def test_manual_compaction_keeps_tree_and_reuses_summary(self):
+        cursor = self.app.stream_page(self.sid)
         self.turn("first turn")
         self.turn("second turn")
         self.turn("third turn")
@@ -549,10 +548,7 @@ class ExtensionTests(unittest.TestCase):
         self.assertEqual(
             (context["state"], context["compaction"]["status"]), ("ready", "compacted")
         )
-        with self.app.api(f"/sessions/{self.sid}/stream?after_seq=0") as stream:
-            events = json.loads(
-                next(line[6:] for line in stream if line.startswith(b"data: "))
-            )["events"]
+        events = self.app.stream_page(self.sid, cursor)["events"]
         compacted = next(event for event in events if event.get("type") == "compacted")
         self.assertGreater(compacted["evicted"], 0)
         self.assertIn("older conversation summary", compacted["summary"])

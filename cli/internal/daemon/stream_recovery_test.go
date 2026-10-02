@@ -78,7 +78,7 @@ func TestStreamAuthenticationRecoveryBeforeDelivery(t *testing.T) {
 							t.Error("stream reused old credentials")
 						}
 						writer.Header().Set("Content-Type", "text/event-stream")
-						_, _ = io.WriteString(writer, "data: {\"cursor\":1,\"events\":[{\"type\":\"text\",\"session\":\"s\",\"text\":\"hello\"}]}\n\n")
+						_, _ = io.WriteString(writer, "data: {\"generation\":\"generation-a\",\"cursor\":1,\"events\":[{\"type\":\"reset\"},{\"type\":\"text\",\"session\":\"s\",\"text\":\"hello\"}]}\n\n")
 					}))
 					defer server.Close()
 					home := t.TempDir()
@@ -130,7 +130,7 @@ func TestAcceptedStreamIsNeverReplayed(t *testing.T) {
 							writer.Header().Set("Content-Length", "1000")
 						}
 						writer.Header().Set("Content-Type", "text/event-stream")
-						_, _ = io.WriteString(writer, "data: {\"cursor\":1,\"events\":[{\"type\":\"text\",\"session\":\"s\",\"text\":\"hello\"}]}\n\n")
+						_, _ = io.WriteString(writer, "data: {\"generation\":\"generation-a\",\"cursor\":1,\"events\":[{\"type\":\"reset\"},{\"type\":\"text\",\"session\":\"s\",\"text\":\"hello\"}]}\n\n")
 					}))
 					defer server.Close()
 					snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "token", Version: 2}

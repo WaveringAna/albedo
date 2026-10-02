@@ -57,7 +57,7 @@ func TestPromptFollowsCombinedSubmissionThroughRetryAndCompletion(t *testing.T) 
 			_ = json.NewEncoder(writer).Encode(map[string]any{"ok": true, "queued": true, "operationId": payload.OperationID})
 		case "/sessions/test/stream":
 			writer.Header().Set("Content-Type", "text/event-stream")
-			_, _ = fmt.Fprint(writer, "data: {\"cursor\":0,\"events\":[{\"type\":\"reset\"}]}\n\n")
+			_, _ = fmt.Fprint(writer, "data: {\"generation\":\"generation-a\",\"cursor\":0,\"events\":[{\"type\":\"reset\"}]}\n\n")
 			writer.(http.Flusher).Flush()
 			id := <-submitted
 			events := []map[string]any{
@@ -72,7 +72,7 @@ func TestPromptFollowsCombinedSubmissionThroughRetryAndCompletion(t *testing.T) 
 				{"type": "turn_membership", "turnId": "later", "submissionIds": []string{"other"}},
 				{"type": "message", "role": "assistant", "text": "later answer"},
 			}
-			page, _ := json.Marshal(map[string]any{"cursor": 1, "events": events})
+			page, _ := json.Marshal(map[string]any{"generation": "generation-a", "cursor": 1, "events": events})
 			_, _ = fmt.Fprintf(writer, "data: %s\n\n", page)
 			writer.(http.Flusher).Flush()
 			<-request.Context().Done()
@@ -115,7 +115,7 @@ func TestPromptCancellationReportsSharedWorkAndCleanupFailure(t *testing.T) {
 					close(submitted)
 				case "/sessions/test/stream":
 					writer.Header().Set("Content-Type", "text/event-stream")
-					_, _ = fmt.Fprint(writer, "data: {\"cursor\":0,\"events\":[{\"type\":\"reset\"}]}\n\n")
+					_, _ = fmt.Fprint(writer, "data: {\"generation\":\"generation-a\",\"cursor\":0,\"events\":[{\"type\":\"reset\"}]}\n\n")
 					writer.(http.Flusher).Flush()
 					<-request.Context().Done()
 				case "/sessions/test/cancel-submission":

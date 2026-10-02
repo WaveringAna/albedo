@@ -65,7 +65,7 @@ type ChatClient struct {
 	agentID         string
 	clientID        string
 	afterSeq        int64
-	requireReset    bool
+	afterGeneration string
 	mu              sync.Mutex
 }
 
@@ -455,23 +455,14 @@ func (c *ChatClient) ResetStream() {
 	c.mu.Lock()
 	c.argumentsByCall = make(map[string]*strings.Builder)
 	c.afterSeq = -1
-	c.requireReset = false
-	c.mu.Unlock()
-}
-
-// RequireStreamReset requests durable history before accepting further events.
-// Call it after the subscription has stopped writing.
-func (c *ChatClient) RequireStreamReset() {
-	c.mu.Lock()
-	c.argumentsByCall = make(map[string]*strings.Builder)
-	c.afterSeq = -1
-	c.requireReset = true
+	c.afterGeneration = ""
 	c.mu.Unlock()
 }
 
 type streamBatch struct {
-	Cursor *int64            `json:"cursor"`
-	Events []json.RawMessage `json:"events"`
+	Generation string            `json:"generation"`
+	Cursor     *int64            `json:"cursor"`
+	Events     []json.RawMessage `json:"events"`
 }
 
 func streamFailure(kind StreamFailureKind, cause error) error {
@@ -521,14 +512,19 @@ func (c *ChatClient) StreamWithProgress(ctx context.Context, tail int, onEvent f
 	}()
 
 	c.mu.Lock()
-	afterSeq := c.afterSeq
+	afterSeq, afterGeneration := c.afterSeq, c.afterGeneration
 	c.mu.Unlock()
 
-	route := fmt.Sprintf("/stream?after_seq=%d", afterSeq)
+	query := url.Values{}
+	if afterGeneration != "" {
+		query.Set("after_generation", afterGeneration)
+		query.Set("after_seq", fmt.Sprint(afterSeq))
+	}
 	if tail > 0 {
-		route += fmt.Sprintf("&tail=%d", tail)
+		query.Set("tail", fmt.Sprint(tail))
 	}
 
+	route := "/stream?" + query.Encode()
 	operation := Operation{Name: "stream session", Method: http.MethodGet, Path: c.agentPath(route), Policy: ReadRecovery}
 	err := scanEventStream(ctx, c.conn, operation, streamLimits{requireSSE: true, lineBytes: 10 * 1024 * 1024, errorBytes: 64 * 1024}, func(scanner *bufio.Scanner) error {
 		return c.readStream(ctx, scanner, onBatchConsumed, func(event StreamEvent) error {
@@ -586,34 +582,32 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 		if err := json.Unmarshal([]byte(payload), &batch); err != nil {
 			return streamFailure(StreamProtocol, fmt.Errorf("invalid stream batch: %w", err))
 		}
-		if batch.Cursor == nil || *batch.Cursor < 0 || batch.Events == nil {
-			return streamFailure(StreamProtocol, errors.New("invalid stream batch: missing cursor or events"))
+		if batch.Generation == "" || batch.Cursor == nil || *batch.Cursor < 0 || batch.Events == nil {
+			return streamFailure(StreamProtocol, errors.New("invalid stream batch: missing generation, cursor, or events"))
 		}
 		// Validate the whole batch before delivering events or changing preview state.
 		events := make([]wireChatEvent, 0, len(batch.Events))
-		for _, raw := range batch.Events {
+		for index, raw := range batch.Events {
 			event, err := decodeChatEvent(raw)
 			if err != nil {
 				return streamFailure(StreamProtocol, err)
 			}
 			if event != nil {
+				if event.Type == EventReset && index != 0 {
+					return streamFailure(StreamProtocol, errors.New("reset must begin its batch"))
+				}
 				events = append(events, *event)
 			}
 		}
 		reset := len(events) > 0 && events[0].Type == EventReset
 		c.mu.Lock()
-		previous, requiresReset := c.afterSeq, c.requireReset
+		previous, generation := c.afterSeq, c.afterGeneration
 		c.mu.Unlock()
-		if requiresReset && !reset {
-			return streamFailure(StreamProtocol, errors.New("recovery stream must begin with reset"))
+		if generation != batch.Generation && !reset {
+			return streamFailure(StreamProtocol, errors.New("initial or changed generation stream must begin with reset"))
 		}
-		if *batch.Cursor < previous && !reset {
+		if generation == batch.Generation && *batch.Cursor < previous && !reset {
 			return streamFailure(StreamProtocol, errors.New("stream cursor regressed without reset"))
-		}
-		for i, event := range events {
-			if event.Type == EventReset && i != 0 {
-				return streamFailure(StreamProtocol, errors.New("reset must begin its batch"))
-			}
 		}
 		if err := c.validateArgumentBatch(events); err != nil {
 			return streamFailure(StreamProtocol, err)
@@ -662,7 +656,7 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 		}
 		c.mu.Lock()
 		c.afterSeq = *batch.Cursor
-		c.requireReset = false
+		c.afterGeneration = batch.Generation
 		c.mu.Unlock()
 		if onBatchConsumed != nil {
 			onBatchConsumed()

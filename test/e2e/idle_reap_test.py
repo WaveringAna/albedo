@@ -1,6 +1,5 @@
 """Idle kernel reaping persists Python state and explains restoration to the model."""
 
-import json
 import subprocess
 import time
 import unittest
@@ -8,16 +7,12 @@ import unittest
 from harness import Albedo, Provider, exclusive, python, text
 
 
-def notes_for(app, session):
-    with app.api(f"/sessions/{session}/stream?after_seq=0") as response:
-        for line in response:
-            if line.startswith(b"data: "):
-                return [
-                    event["text"]
-                    for event in json.loads(line[6:])["events"]
-                    if event.get("type") == "note"
-                ]
-    return []
+def notes_for(app, session, cursor):
+    return [
+        event["text"]
+        for event in app.stream_page(session, cursor)["events"]
+        if event.get("type") == "note"
+    ]
 
 
 # Short enough that the test waits seconds, long enough to outlast a turn.
@@ -82,6 +77,7 @@ class IdleReapTests(unittest.TestCase):
         daemon = app.connection["pid"]
         existing = set(kernels(daemon))
         session = app.session()
+        cursor = app.stream_page(session)
         self.assertEqual(
             set(kernels(daemon)) - existing,
             set(),
@@ -95,7 +91,7 @@ class IdleReapTests(unittest.TestCase):
         self.assertEqual(
             set(kernels(daemon)) - existing, set(), "idle kernel outlived its limit"
         )
-        notes = notes_for(app, session)
+        notes = notes_for(app, session, cursor)
         self.assertIn("released", notes[-1])
         self.assertIn("2 variables saved to disk", notes[-1])
         self.assertTrue((app.home / "kernels" / f"{session}.state").exists())
@@ -110,7 +106,7 @@ class IdleReapTests(unittest.TestCase):
                 for item in self.provider.requests[-1]["request"]["input"]
             )
         )
-        notes = notes_for(app, session)
+        notes = notes_for(app, session, cursor)
         self.assertTrue(
             any("restored 2 variables from disk" in note for note in notes), notes
         )
