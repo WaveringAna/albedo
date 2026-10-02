@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -200,4 +201,47 @@ func TestCleanupRevalidatesBeforeAnyDeletion(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestKernelCleanupRefusesDatabaseLostAfterPreview(t *testing.T) {
+	home := t.TempDir()
+	database := filepath.Join(home, "albedo.sqlite")
+	setup := `import sqlite3,sys
+with sqlite3.connect(sys.argv[1]) as db:
+    db.executescript("CREATE TABLE sessions(id TEXT, pinned_context TEXT); CREATE TABLE transcript(session TEXT,payload BLOB);")
+`
+	if out, err := exec.Command("python3", "-c", setup, database).CombinedOutput(); err != nil {
+		t.Fatalf("setup database: %v %s", err, out)
+	}
+	kernels := filepath.Join(home, "kernels")
+	if err := os.Mkdir(kernels, 0700); err != nil {
+		t.Fatal(err)
+	}
+	candidate := filepath.Join(kernels, "orphan.state")
+	if err := os.WriteFile(candidate, []byte("retain"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-31 * 24 * time.Hour)
+	if err := os.Chtimes(candidate, old, old); err != nil {
+		t.Fatal(err)
+	}
+	service := testService(home)
+	plan, planErr := service.PlanCleanup(t.Context(), CleanupOptions{OldKernels: true})
+	if planErr != nil {
+		t.Fatal(planErr)
+	}
+	if err := os.Remove(database); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ApplyCleanup(t.Context(), plan); err == nil || !strings.Contains(err.Error(), "database disappeared") {
+		t.Fatalf("missing database authorized kernel deletion: %v", err)
+	}
+	if content, err := os.ReadFile(candidate); err != nil || string(content) != "retain" {
+		t.Fatalf("kernel changed: %q, %v", content, err)
+	}
+	helper, err := startMaintenance(t.Context(), home, nil)
+	if err != nil {
+		t.Fatalf("refused cleanup retained ownership: %v", err)
+	}
+	helper.close()
 }

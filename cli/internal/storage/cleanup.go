@@ -145,6 +145,9 @@ func (s *Service) ApplyCleanup(ctx context.Context, plan CleanupPlan) (CleanupRe
 		}
 		return result, err
 	}
+	if options.OldKernels && fresh.Database == 0 {
+		return result, errors.New("database disappeared after the preview; no Python state files have been removed; restore the database and retry cleanup")
+	}
 	if options.OldKernels && !slices.Equal(preview.OldKernels, fresh.OldKernels) {
 		return result, errors.New("unused Python state files changed after the preview; no files have been removed; run cleanup again to review the new list")
 	}
