@@ -940,7 +940,7 @@ func (m *ChatModel) scrollBy(rows int) {
 }
 
 func (m ChatModel) animating() bool {
-	return m.isSending || m.pendingSendCount() > 0 || m.Stopping || m.Progress != nil || m.Status.Running && !m.Status.Idle
+	return m.isSending || m.pendingSendCount() > 0 || m.Stopping || m.Progress != nil || m.Status.Running && !m.Status.Idle || m.reaching() != ""
 }
 
 func (m *ChatModel) startAnimation() tea.Cmd {
@@ -2150,6 +2150,8 @@ func (m ChatModel) phaseMood() mood {
 	switch {
 	case m.Stopping:
 		return moodStopping
+	case m.reaching() != "":
+		return moodConnecting
 	case m.isSending || m.pendingSendCount() > 0 && !m.Status.Running:
 		return moodPreparing
 	case m.Progress != nil:
@@ -2289,7 +2291,11 @@ func (m ChatModel) View() string {
 	status := m.statusLine()
 	// the face trails the text, so its frames never move anything
 	if m.animating() && !m.TurnFailed && !m.Notices.HasError() {
-		status = m.Styles.Faint.Render(status) + " " + m.Styles.Agent.Render(m.phaseMood().frame(m.moodSeed, m.ProgressFrame))
+		face := m.phaseMood().frame(m.moodSeed, m.ProgressFrame)
+		if host := m.reaching(); host != "" {
+			face = connectingFace(host, m.ProgressFrame) // the picker's face for this host
+		}
+		status = m.Styles.Faint.Render(status) + " " + m.Styles.Agent.Render(face)
 	}
 	if !m.Follow {
 		status = fmt.Sprintf("history · %d rows below · pgdn", max(0, m.scrollLimit-m.scrollOffset))

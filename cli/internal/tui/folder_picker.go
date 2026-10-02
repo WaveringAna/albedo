@@ -127,6 +127,10 @@ type hostStatusMsg struct {
 
 type hostPollMsg struct{ Host string }
 
+// connectTickMsg advances the connecting face; Gen is the picker's, so a
+// closed picker's tick never speeds up the next one.
+type connectTickMsg struct{ Gen int64 }
+
 type hostSignedInMsg struct {
 	Err  error
 	Host string
@@ -412,6 +416,11 @@ type FolderPicker struct {
 
 	// inSessions moves the cursor through the highlighted folder's sessions.
 	inSessions bool
+
+	// frame animates the face beside a host still connecting; ticking is
+	// whether its next tick is already on its way.
+	frame   int
+	ticking bool
 }
 
 func NewFolderPicker(src folderSource, session daemon.Session, retry *WorkspaceRetry) FolderPicker {
@@ -671,6 +680,13 @@ func (m FolderPicker) Update(msg tea.Msg) (FolderPicker, tea.Cmd) {
 		}
 	case hostStatusMsg:
 		return m, m.probed(msg)
+	case connectTickMsg:
+		if msg.Gen != m.sessionsGeneration {
+			return m, nil
+		}
+		m.ticking = false
+		m.frame++
+		return m, m.tick()
 	case hostSignedInMsg:
 		if msg.Err != nil {
 			m.notice = "Signing in to " + m.labelOf(msg.Host) + " failed: " + msg.Err.Error()
@@ -812,7 +828,26 @@ func (m *FolderPicker) warm(host string) tea.Cmd {
 	return tea.Batch(func() tea.Msg {
 		status, err := src.Warm(host)
 		return hostStatusMsg{Host: host, Status: status, Err: err, Warmed: true}
-	}, pollHost(host))
+	}, pollHost(host), m.tick())
+}
+
+func (m FolderPicker) warming() bool {
+	for _, p := range m.probes {
+		if p.State == "warming" {
+			return true
+		}
+	}
+	return false
+}
+
+// tick keeps the connecting face moving while any host still warms.
+func (m *FolderPicker) tick() tea.Cmd {
+	if m.ticking || !m.warming() {
+		return nil
+	}
+	m.ticking = true
+	gen := m.sessionsGeneration
+	return tea.Tick(faceInterval, func(time.Time) tea.Msg { return connectTickMsg{Gen: gen} })
 }
 
 func pollHost(host string) tea.Cmd {

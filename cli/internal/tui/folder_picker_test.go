@@ -279,6 +279,31 @@ func TestPickerCompletesHostsAndRefusesADeadOne(t *testing.T) {
 	}
 }
 
+func TestConnectingFaceMovesUntilTheHostSettles(t *testing.T) {
+	m := NewFolderBrowser(remoteFolders("warming", ""), "/Users/dawn/proj/albedo", "")
+	m.SetSize(140, 16)
+	m = settle(t, m, m.Init())
+	m = typeQuery(t, m, "cher")
+	shows := func(frame int) bool {
+		return strings.Contains(pickerFrame(m), "connecting to chernobog… "+connectingFace("chernobog", frame))
+	}
+	if !shows(m.frame) {
+		t.Fatalf("a warming host shows no face:\n%s", pickerFrame(m))
+	}
+	before := m.frame
+	if m, _ = m.Update(connectTickMsg{Gen: m.sessionsGeneration + 1}); m.frame != before {
+		t.Fatal("a closed picker's tick moved the face")
+	}
+	var cmd tea.Cmd
+	if m, cmd = m.Update(connectTickMsg{Gen: m.sessionsGeneration}); m.frame != before+1 || cmd == nil || !shows(m.frame) {
+		t.Fatalf("the tick did not move the face on (frame %d, next tick %v)", m.frame, cmd != nil)
+	}
+	m, _ = m.Update(hostStatusMsg{Host: "mayer@chernobog", Status: daemon.HostStatus{Host: "mayer@chernobog", State: "ready"}, Warmed: true})
+	if _, cmd = m.Update(connectTickMsg{Gen: m.sessionsGeneration}); cmd != nil {
+		t.Fatal("the face kept ticking after the host settled")
+	}
+}
+
 func TestPickerOffersSignInForAHostThatNeedsAPerson(t *testing.T) {
 	src := remoteFolders("needs_auth", "Permission denied (publickey)")
 	m := NewFolderBrowser(src, "/Users/dawn/proj/albedo", "")

@@ -16,6 +16,7 @@ const (
 	moodWorking    mood = "working"
 	moodCompacting mood = "compacting"
 	moodStopping   mood = "stopping"
+	moodConnecting mood = "connecting"
 
 	moodDone    mood = "done"
 	moodQuick   mood = "quick"
@@ -52,6 +53,11 @@ var animations = map[mood][][]string{
 	},
 	moodCompacting: {{"(>_<)", "(>.<)"}},
 	moodStopping:   {{"(・_・;)"}},
+	moodConnecting: {
+		{"(・ω・)ﾉ", "(・ω・)ﾉ ･", "(・ω・)ﾉ ･･", "(・ω・)ﾉ ･･･"},
+		{"( ˘ω˘ )～", "( ˘ω˘ )～～", "( ˘ω˘ )～～～"},
+		{"(っ•ᴗ•)っ", "(っ•ᴗ•)っ ･", "(っ•ᴗ•)っ ･ﾟ", "(っ•ᴗ•)っ ･ﾟ✧"},
+	},
 }
 
 // An outcome owns a pool of faces and each turn shows one of them.
@@ -85,6 +91,12 @@ func (m mood) frame(seed int64, tick int) string {
 	pool := animations[m]
 	set := pool[m.pick(seed, len(pool))]
 	return set[tick%len(set)]
+}
+
+// connectingFace is the animation for reaching a host, by its label, at
+// tick: the same one for a host wherever it shows.
+func connectingFace(host string, tick int) string {
+	return moodConnecting.frame(int64(fnv1a(fnvOffset64, host)), tick)
 }
 
 // outcome classes a finished turn by how it ended and how long it took.

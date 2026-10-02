@@ -78,6 +78,11 @@ func TestRemoteHeaderFoldsUnderTheHostsHomeAndSaysWhileConnecting(t *testing.T) 
 	if got := m.statusLine(); got != "connecting to chernobog…" {
 		t.Fatalf("a booting remote kernel reads %q", got)
 	}
+	// an idle session animates too, with the face the picker shows for the host
+	m.ProgressFrame = 1
+	if view := ansi.Strip(m.View()); !m.animating() || !strings.Contains(view, "connecting to chernobog… "+connectingFace("chernobog", 1)) {
+		t.Fatalf("connecting should animate (animating %v):\n%s", m.animating(), view)
+	}
 	m.Status.KernelLink, m.hostHome = "attached", "/home/mayer"
 	if header := ansi.Strip(m.header(120)); !strings.Contains(header, "✦ albedo on chernobog:~/proj/albedo") {
 		t.Fatalf("the path should fold under the host's own home: %q", header)

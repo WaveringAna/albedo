@@ -185,7 +185,7 @@ func (m FolderPicker) emptyNote() string {
 	case m.listed == "":
 		return "no matches"
 	case l == nil && remote && m.probe(m.canonical(host)).State == "warming":
-		return "connecting to " + m.labelOf(host) + "…"
+		return "connecting to " + m.labelOf(host) + "… " + DefaultStyles.Agent.Render(connectingFace(m.labelOf(host), m.frame))
 	case l == nil:
 		return "loading…"
 	case l.Err != nil:
@@ -398,7 +398,7 @@ func (m FolderPicker) hostPane(row folderRow, width, height int) []string {
 	var body []string
 	switch p.State {
 	case "", "warming":
-		body = []string{DefaultStyles.Faint.Render("connecting to " + label + "…")}
+		body = []string{DefaultStyles.Faint.Render("connecting to "+label+"… ") + DefaultStyles.Agent.Render(connectingFace(label, m.frame))}
 	case "ready":
 		if p.OS != "" {
 			body = append(body, DefaultStyles.Muted.Render(strings.TrimSpace(p.OS+" "+p.Arch)))

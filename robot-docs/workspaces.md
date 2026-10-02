@@ -121,7 +121,8 @@ reads `✦ albedo on chernobog:~/proj/albedo`, folds only the path, keeps the
 host in every layout that shows a place, and colors the host with a stable
 hue derived from its label, lifted to the theme's contrast. the host goes
 faint while the session's kernel boots or reattaches (the status line says
-`connecting to chernobog…`) and takes the error color once it is lost (the
+`connecting to chernobog…` with an animated face, the same one the picker
+shows beside a host still warming, picked by the host's label) and takes the error color once it is lost (the
 port owner gave up and forgot the kernel, so the status line says the next
 turn starts a fresh one), from
 the session status's `kernel.link` (kernel.md). recent folders and the
