@@ -85,6 +85,11 @@ c.close()`
 	if _, err := service.ApplyCleanup(t.Context(), plan); err != nil {
 		t.Fatal(err)
 	}
+	helper, err := startMaintenance(t.Context(), home, nil)
+	if err != nil {
+		t.Fatalf("vacuum retained ownership: %v", err)
+	}
+	helper.close()
 	for _, path := range []string{orphan, backup} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Errorf("should remove %s: %v", path, err)
@@ -185,6 +190,11 @@ func TestCleanupRevalidatesBeforeAnyDeletion(t *testing.T) {
 			if applyErr == nil {
 				t.Fatal("cleanup accepted changed state")
 			}
+			helper, err := startMaintenance(t.Context(), home, nil)
+			if err != nil {
+				t.Fatalf("revalidation failure retained ownership: %v", err)
+			}
+			helper.close()
 			if _, err := os.Stat(untouched); err != nil {
 				t.Fatalf("cleanup partially deleted candidates: %v", err)
 			}
