@@ -1,6 +1,6 @@
 [tool.ruff]
 target-version = "py311"
-include = ["priv/python/**/*.py", "test/**/*.py", "pyproject.toml"]
+include = ["priv/python/**/*.py", "test/**/*.py", "cli/internal/storage/maintenance.py", "pyproject.toml"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
@@ -10,7 +10,7 @@ python-version = "3.11"
 extra-paths = ["priv/python", "test", "test/harness", "test/e2e"]
 
 [tool.ty.src]
-include = ["priv/python", "test"]
+include = ["priv/python", "test", "cli/internal/storage/maintenance.py"]
 
 [tool.ty.analysis]
 # Optional serializer; the kernel falls back to pickle when it is unavailable.

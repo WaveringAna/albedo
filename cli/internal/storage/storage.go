@@ -204,19 +204,3 @@ func storageSnapshot(ctx context.Context, home string, now time.Time) (Preview, 
 	}
 	return p, nil
 }
-
-func pruneFiles(files []File) error {
-	for _, f := range files {
-		size, err := regularSize(f.Path)
-		if err != nil {
-			return err
-		}
-		if size != f.Bytes {
-			return fmt.Errorf("file changed after the preview; cleanup stopped: %s", f.Path)
-		}
-		if err := os.Remove(f.Path); err != nil {
-			return err
-		}
-	}
-	return nil
-}

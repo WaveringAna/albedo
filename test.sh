@@ -13,7 +13,7 @@ cd "$(dirname "$0")"
 export ALBEDO_NO_BROWSER=1
 
 ruff check
-ruff format --check priv/python test
+ruff format --check priv/python test cli/internal/storage/maintenance.py
 ty check
 gleam format --check src test
 test/gleam-lint.sh

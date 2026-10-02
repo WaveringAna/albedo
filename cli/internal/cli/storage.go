@@ -2,7 +2,10 @@ package cli
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"albedo/cli/internal/storage"
 	"github.com/spf13/cobra"
@@ -55,7 +58,9 @@ temporary disk space equal to the database size. Session sizes exclude shared im
 				return nil
 			}
 		}
-		result, err := deps.Storage.ApplyCleanup(cmd.Context(), plan)
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		result, err := deps.Storage.ApplyCleanup(ctx, plan)
 		if err != nil {
 			return err
 		}

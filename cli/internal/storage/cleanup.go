@@ -6,11 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"slices"
-	"strings"
 	"time"
 )
 
@@ -129,8 +126,23 @@ func (s *Service) ApplyCleanup(ctx context.Context, plan CleanupPlan) (CleanupRe
 	if running {
 		return result, errors.New("daemon started while you were confirming cleanup; no files have been removed; stop Albedo and try again")
 	}
+	var files []File
+	if options.OldKernels {
+		files = append(files, preview.OldKernels...)
+	}
+	if options.Backups {
+		files = append(files, preview.OldBackups...)
+	}
+	helper, err := startMaintenance(ctx, s.Home, files)
+	if err != nil {
+		return result, err
+	}
+	defer helper.close()
 	fresh, err := s.Report(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
 		return result, err
 	}
 	if options.OldKernels && !slices.Equal(preview.OldKernels, fresh.OldKernels) {
@@ -138,13 +150,6 @@ func (s *Service) ApplyCleanup(ctx context.Context, plan CleanupPlan) (CleanupRe
 	}
 	if options.Backups && !slices.Equal(preview.OldBackups, fresh.OldBackups) {
 		return result, errors.New("backups changed after the preview; no backups have been removed; run cleanup again to review the new list")
-	}
-	var files []File
-	if options.OldKernels {
-		files = append(files, preview.OldKernels...)
-	}
-	if options.Backups {
-		files = append(files, preview.OldBackups...)
 	}
 	// Recheck all approved candidates before deleting any, including replacements of equal size.
 	for _, file := range files {
@@ -160,27 +165,5 @@ func (s *Service) ApplyCleanup(ctx context.Context, plan CleanupPlan) (CleanupRe
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	if err := pruneFiles(files); err != nil {
-		return result, err
-	}
-	if options.Vacuum {
-		if fresh.Database == 0 {
-			return result, errors.New("no SQLite database to shrink")
-		}
-		if fresh.DB.FreePages == 0 {
-			result.VacuumSkipped = true
-		} else {
-			path := filepath.Join(s.Home, "albedo.sqlite")
-			out, err := exec.CommandContext(ctx, "python3", "-c", "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.execute('VACUUM'); db.close()", path).CombinedOutput()
-			if err != nil {
-				return result, fmt.Errorf("shrink the database: %w: %s", err, strings.TrimSpace(string(out)))
-			}
-			final, err := regularSize(path)
-			if err != nil {
-				return result, err
-			}
-			result.Vacuumed, result.Before, result.After = true, fresh.Database, final
-		}
-	}
-	return result, nil
+	return helper.apply(ctx, options.Vacuum, fresh)
 }

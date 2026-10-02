@@ -2716,7 +2716,7 @@ pub fn main() -> Nil {
   let assert True = string.byte_size(token) >= 32 && home != ""
     as "start albedo through its CLI"
   let assert Ok(_) = claim_home(home)
-    as "another albedo daemon is already running for this ALBEDO_HOME"
+    as "storage is in use by another albedo daemon or maintenance command for this ALBEDO_HOME"
   // A fixed port gives services such as the proxy a stable base url.
   let assert Ok(port) = start(config, setting("ALBEDO_PORT", 0, 0, 65_535))
   let assert Ok(_) = ready(home, port, token)
@@ -2741,8 +2741,10 @@ fn env(name: String) -> String
 
 /// Takes an exclusive SQLite lock on `home` for the life of the calling
 /// process. Startup resumes saved sessions, so a second daemon on the same home
-/// would run every in-flight turn twice. The OS drops the lock when the process
-/// exits, so a crashed daemon never leaves it stale.
+/// would run every in-flight turn twice. Offline cleanup takes the same lock
+/// before revalidation and holds it through deletion and vacuum. Neither owner
+/// commits the transaction or replaces the lock file. The OS drops the lock
+/// when its owner exits, so a crashed owner never leaves it stale.
 pub fn claim_home(home: String) -> Result(Nil, Nil) {
   use connection <- result.try(
     sqlight.open(home <> "/daemon.lock") |> result.replace_error(Nil),
