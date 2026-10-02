@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -22,23 +20,27 @@ import (
 // CapabilityPageModel owns a dedicated session page for one source of agent
 // context. MCP servers are added and edited through one form (mcp_form.go).
 type CapabilityPageModel struct {
-	Prefs                      config.CapabilityPrefs
-	Conn                       *daemon.Connection
-	Form                       *mcpForm
-	SessionID, Workspace, Kind string
-	Items                      []capabilityItem
+	Prefs           config.CapabilityPrefs
+	Conn            *daemon.Connection
+	Form            *mcpForm
+	SessionID, Kind string
+	Items           []capabilityItem
+	Revision        string
+	Diagnostics     []string
 	page
 	Global, ExtensionEnabled, ConfirmExtension bool
 	ConfirmDelete                              bool
 }
 type capabilityItem struct {
 	ID, Title, Detail string
+	Candidate         daemon.CatalogCandidate
 	Secrets           daemon.MCPSecretNames
 	Server            config.MCPServer
-	Draft             bool
 }
 type capabilityLoadedMsg struct {
 	Prefs            config.CapabilityPrefs
+	Revision         string
+	Diagnostics      []string
 	Err              error
 	Items            []capabilityItem
 	Gen              int
@@ -59,32 +61,35 @@ var capabilityGen atomic.Int64
 
 func nextCapabilityGen() int { return int(capabilityGen.Add(1)) }
 
-func NewCapabilityPageModel(conn *daemon.Connection, sessionID, workspace, kind string) CapabilityPageModel {
+func NewCapabilityPageModel(conn *daemon.Connection, sessionID, kind string) CapabilityPageModel {
 	// Pages open on the global defaults; s scopes changes to this session.
-	return CapabilityPageModel{Conn: conn, SessionID: sessionID, Workspace: workspace, Kind: kind, Global: true, page: page{Loading: true, Generation: nextCapabilityGen()}}
+	return CapabilityPageModel{Conn: conn, SessionID: sessionID, Kind: kind, Global: true, page: page{Loading: true, Generation: nextCapabilityGen()}}
 }
 func (m CapabilityPageModel) Init() tea.Cmd { return m.loadCmd(m.Generation) }
 func (m CapabilityPageModel) loadCmd(gen int) tea.Cmd {
-	workspace, kind := m.Workspace, m.Kind
+	kind := m.Kind
 	return func() tea.Msg {
+		if kind == "skills" || kind == "instructions" {
+			catalog, err := daemon.GetCapabilityCatalog(context.Background(), m.Conn, m.SessionID)
+			items := make([]capabilityItem, 0, len(catalog.Candidates))
+			for _, candidate := range catalog.Candidates {
+				if candidate.Kind == kind {
+					items = append(items, capabilityItem{ID: candidate.ID, Title: candidate.Title, Detail: candidate.Source, Candidate: candidate})
+				}
+			}
+			return capabilityLoadedMsg{Items: items, Revision: catalog.Revision, Diagnostics: catalog.Diagnostics, ExtensionEnabled: catalog.Extensions[kind], Gen: gen, Err: err}
+		}
+		if kind != "mcp" {
+			return capabilityLoadedMsg{Gen: gen, Err: errors.New("unknown capability page")}
+		}
 		settings, err := daemon.GetSettings(context.Background(), m.Conn)
 		if err != nil {
 			return capabilityLoadedMsg{Gen: gen, Err: err}
 		}
-		var items []capabilityItem
-		switch kind {
-		case "skills":
-			items, err = discoverSkills(workspace)
-		case "instructions":
-			items = discoverInstructions(workspace)
-		case "mcp":
-			items = mcpItems(settings)
-		default:
-			err = errors.New("unknown capability page")
-		}
+		items := mcpItems(settings)
 		slices.SortFunc(items, func(a, b capabilityItem) int { return strings.Compare(a.ID, b.ID) })
 		enabled := true
-		if err == nil && m.Conn != nil {
+		if m.Conn != nil {
 			path := fmt.Sprintf("/sessions/%s/extensions", url.PathEscape(m.SessionID))
 			var extensions []ExtensionItem
 			extensions, err = daemon.RequestOperation[[]ExtensionItem](context.Background(), m.Conn, daemon.Operation{Name: "load", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
@@ -110,65 +115,6 @@ func mcpItems(settings daemon.Settings) []capabilityItem {
 	return items
 }
 
-// Discovery mirrors the daemon's root ordering. Disabled entries remain listed;
-// the daemon's prepared catalog remains authoritative after a reload.
-func discoverSkills(workspace string) ([]capabilityItem, error) {
-	userHome, _ := os.UserHomeDir()
-	roots := []string{filepath.Join(workspace, ".albedo", "skills"), filepath.Join(workspace, ".agents", "skills"), filepath.Join(userHome, ".albedo", "skills"), filepath.Join(userHome, ".agents", "skills")}
-	seen := map[string]bool{}
-	var items []capabilityItem
-	for _, root := range roots {
-		dirs, err := os.ReadDir(root)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		for _, dir := range dirs {
-			name := dir.Name()
-			if seen[name] || !dir.IsDir() {
-				continue
-			}
-			path := filepath.Join(root, name, "SKILL.md")
-			info, err := os.Stat(path)
-			if err != nil || !info.Mode().IsRegular() {
-				continue
-			}
-			seen[name] = true
-			items = append(items, capabilityItem{ID: name, Title: name, Detail: path})
-		}
-	}
-	return items, nil
-}
-func discoverInstructions(workspace string) []capabilityItem {
-	var items []capabilityItem
-	entries, _ := os.ReadDir(workspace)
-	for _, e := range entries {
-		if e.Type().IsRegular() && (strings.EqualFold(e.Name(), "AGENTS.md") || strings.EqualFold(e.Name(), "CLAUDE.md")) {
-			items = append(items, capabilityItem{ID: "project:" + e.Name(), Title: e.Name(), Detail: filepath.Join(workspace, e.Name())})
-		}
-	}
-	userHome, _ := os.UserHomeDir()
-	for _, group := range []struct{ scope, base string }{{"project", workspace}, {"global", userHome}} {
-		for _, folder := range []string{".agents", ".albedo"} {
-			path := filepath.Join(group.base, folder)
-			subEntries, _ := os.ReadDir(path)
-			for _, e := range subEntries {
-				if !e.Type().IsRegular() || !strings.EqualFold(filepath.Ext(e.Name()), ".md") {
-					continue
-				}
-				display := filepath.Join(folder, e.Name())
-				if group.scope == "global" {
-					display = filepath.Join("~", folder, e.Name())
-				}
-				items = append(items, capabilityItem{ID: group.scope + ":" + display, Title: display, Detail: filepath.Join(path, e.Name())})
-			}
-		}
-	}
-	return items
-}
-
 func (m CapabilityPageModel) enableExtensionCmd(gen int) tea.Cmd {
 	return func() tea.Msg {
 		_, err := daemon.SelectExtension(context.Background(), m.Conn, m.SessionID, map[string]any{"name": m.Kind, "enabled": true})
@@ -178,12 +124,22 @@ func (m CapabilityPageModel) enableExtensionCmd(gen int) tea.Cmd {
 
 func (m CapabilityPageModel) toggleCmd(item capabilityItem, gen int) tea.Cmd {
 	next := !m.selectedEnabled(item)
+	return m.choiceCmd(item, &next, gen)
+}
+
+func (m CapabilityPageModel) choiceCmd(item capabilityItem, enabled *bool, gen int) tea.Cmd {
 	scope := "session"
 	if m.Global {
 		scope = "global"
 	}
 	return func() tea.Msg {
-		result, err := daemon.SetCapability(context.Background(), m.Conn, m.SessionID, m.Kind, item.ID, scope, &next)
+		var result daemon.ReloadResult
+		var err error
+		if m.Kind == "mcp" {
+			result, err = daemon.SetCapability(context.Background(), m.Conn, m.SessionID, m.Kind, item.ID, scope, enabled)
+		} else {
+			result, err = daemon.SetCatalogCapability(context.Background(), m.Conn, m.SessionID, m.Revision, item.ID, scope, enabled)
+		}
 		return capabilitySavedMsg{Gen: gen, Err: err, Warning: result.Warning}
 	}
 }
@@ -236,8 +192,19 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 		}
 		m.Cursor = reselect(m.Cursor, m.Items, msg.Items, func(item capabilityItem) string { return item.ID })
 		m.Items, m.Prefs, m.ExtensionEnabled, m.Error = msg.Items, msg.Prefs, msg.ExtensionEnabled, ""
+		if m.Kind != "mcp" {
+			m.Revision, m.Diagnostics = msg.Revision, msg.Diagnostics
+		}
 		return m, nil
 	case capabilitySavedMsg:
+		if msg.Gen == m.Generation {
+			if apiErr, ok := errors.AsType[*daemon.APIError](msg.Err); ok && apiErr.Code == "stale_catalog" {
+				m.Saving, m.Loading, m.Error = false, true, ""
+				m.Notice = "The list changed. Review it before trying again."
+				m.Generation = nextCapabilityGen()
+				return m, m.loadCmd(m.Generation)
+			}
+		}
 		if !m.settle(msg.Gen, msg.Err, &m.Saving) {
 			return m, nil
 		}
@@ -341,14 +308,43 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 				m.openForm(true)
 			}
 		case "space":
-			if hasItems {
+			if hasItems && m.canToggle(m.Items[m.Cursor]) {
 				return m.save(func(gen int) tea.Cmd { return m.toggleCmd(m.Items[m.Cursor], gen) })
+			}
+		case "x":
+			if !mcp && hasItems && m.canClear(m.Items[m.Cursor]) {
+				return m.save(func(gen int) tea.Cmd { return m.choiceCmd(m.Items[m.Cursor], nil, gen) })
 			}
 		}
 	}
 	return m, nil
 }
+func (m CapabilityPageModel) canToggle(item capabilityItem) bool {
+	if m.Kind == "mcp" {
+		return true
+	}
+	candidate := item.Candidate
+	return candidate.PreferenceKey != nil && candidate.ShadowedBy == nil && (candidate.Valid || m.selectedEnabled(item))
+}
+
+func (m CapabilityPageModel) canClear(item capabilityItem) bool {
+	candidate := item.Candidate
+	if candidate.PreferenceKey == nil || candidate.ShadowedBy != nil {
+		return false
+	}
+	if m.Global {
+		return candidate.GlobalPreference != nil
+	}
+	return candidate.SessionOverride != nil
+}
+
 func (m CapabilityPageModel) selectedEnabled(item capabilityItem) bool {
+	if m.Kind != "mcp" {
+		if m.Global {
+			return item.Candidate.GlobalPreference == nil || *item.Candidate.GlobalPreference
+		}
+		return item.Candidate.EffectiveEnabled
+	}
 	if m.Global {
 		if value, ok := m.Prefs.Global[m.Kind][item.ID]; ok {
 			return value
@@ -356,6 +352,13 @@ func (m CapabilityPageModel) selectedEnabled(item capabilityItem) bool {
 		return true
 	}
 	return m.Prefs.Enabled(m.SessionID, m.Kind, item.ID)
+}
+
+func enabledLabel(enabled bool) string {
+	if enabled {
+		return "on"
+	}
+	return "off"
 }
 
 func (m CapabilityPageModel) View() string {
@@ -390,6 +393,13 @@ func (m CapabilityPageModel) View() string {
 	if !m.ExtensionEnabled {
 		rows = append(rows, DefaultStyles.Warning.Render("Extension is off")+DefaultStyles.Decor.Render(" · ")+keyHints(hint{"E", "enable (reloads this session)"}))
 	}
+	if len(m.Diagnostics) > 0 {
+		diagnostic := m.Diagnostics[0]
+		if len(m.Diagnostics) > 1 {
+			diagnostic = fmt.Sprintf("%d discovery diagnostics: %s", len(m.Diagnostics), diagnostic)
+		}
+		rows = append(rows, DefaultStyles.Warning.Render(ansi.Truncate(diagnostic, width, "…")))
+	}
 	if len(m.Items) == 0 {
 		rows = append(rows, DefaultStyles.Faint.Render("No "+strings.ToLower(heading)+" found."))
 	}
@@ -398,6 +408,14 @@ func (m CapabilityPageModel) View() string {
 		label := DefaultStyles.Success.Render("on ")
 		if !m.selectedEnabled(item) || (mcp && item.Server.Enabled != nil && !*item.Server.Enabled) {
 			label = DefaultStyles.Faint.Render("off")
+		}
+		if !mcp {
+			switch {
+			case !item.Candidate.Valid:
+				label = DefaultStyles.Warning.Render("invalid")
+			case item.Candidate.ShadowedBy != nil:
+				label = DefaultStyles.Faint.Render("shadowed")
+			}
 		}
 		detail := ""
 		if mcp {
@@ -430,8 +448,31 @@ func (m CapabilityPageModel) View() string {
 				}
 			}
 			rows = append(rows, "", DefaultStyles.Faint.Render(ansi.Truncate(detail, width, "…")))
+			if !mcp {
+				candidate := selected.Candidate
+				if candidate.Diagnostic != nil {
+					rows = append(rows, DefaultStyles.Warning.Render(ansi.Truncate(*candidate.Diagnostic, width, "…")))
+				}
+				global, session := "default", "inherit"
+				if candidate.GlobalPreference != nil {
+					global = enabledLabel(*candidate.GlobalPreference)
+				}
+				if candidate.SessionOverride != nil {
+					session = enabledLabel(*candidate.SessionOverride)
+				}
+				state := fmt.Sprintf("global: %s · session: %s · enabled: %s · eligible on reload: %s", global, session, enabledLabel(candidate.EffectiveEnabled), enabledLabel(candidate.Eligible))
+				rows = append(rows, DefaultStyles.Faint.Render(ansi.Truncate(state, width, "…")))
+			}
 		}
-		rows = append(rows, "", keyHints(hint{"↑↓", "select"}, hint{"space", "toggle"}, hint{"s", "session"}, hint{"g", "global"}, hint{"r", "refresh"}, hint{"esc", "back"}))
+		hints := []hint{{"↑↓", "select"}}
+		if len(m.Items) > 0 && m.canToggle(m.Items[m.Cursor]) {
+			hints = append(hints, hint{"space", "toggle"})
+		}
+		if !mcp && len(m.Items) > 0 && m.canClear(m.Items[m.Cursor]) {
+			hints = append(hints, hint{"x", "inherit"})
+		}
+		hints = append(hints, hint{"s", "session"}, hint{"g", "global"}, hint{"r", "refresh"}, hint{"esc", "back"})
+		rows = append(rows, "", keyHints(hints...))
 		if mcp {
 			rows = append(rows, keyHints(hint{"n", "add server"}, hint{"enter", "edit"}, hint{"d", "delete"}))
 		}

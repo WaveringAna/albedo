@@ -151,7 +151,7 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 	if !mcpName.MatchString(name) {
 		return mcpSubmission{}, errors.New("use 1–64 letters, digits, underscores, or hyphens for the server name")
 	}
-	if f.Editing == "" && slices.ContainsFunc(existing, func(item capabilityItem) bool { return item.ID == name && !item.Draft }) {
+	if f.Editing == "" && slices.ContainsFunc(existing, func(item capabilityItem) bool { return item.ID == name }) {
 		return mcpSubmission{}, fmt.Errorf("a server called %s already exists; choose another name", name)
 	}
 	server := f.Base

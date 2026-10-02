@@ -1000,7 +1000,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ChatOpenCapabilityPageMsg:
 		if m.ActiveSession != nil {
-			m.CapabilityPage = NewCapabilityPageModel(m.Conn, m.ActiveSession.ID, m.ActiveSession.Workspace, msg.Kind)
+			m.CapabilityPage = NewCapabilityPageModel(m.Conn, m.ActiveSession.ID, msg.Kind)
 			return m, m.openScreen(AppStateCapabilityPage, &m.CapabilityPage)
 		}
 
