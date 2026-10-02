@@ -208,17 +208,8 @@ fn unsupported_field(fields: Dict(String, dynamic.Dynamic)) -> Option(String) {
   |> option.from_result
 }
 
-fn semantically_empty(value: dynamic.Dynamic) -> Bool {
-  case decode.run(value, decode.optional(decode.dynamic)) {
-    Ok(None) -> True
-    _ ->
-      decode.run(value, decode.string) == Ok("")
-      || decode.run(value, decode.list(decode.dynamic)) == Ok([])
-      || decode.run(value, decode.dict(decode.dynamic, decode.dynamic))
-      |> result.map(dict.is_empty)
-      |> result.unwrap(False)
-  }
-}
+@external(erlang, "albedo_openai_json", "semantically_empty")
+fn semantically_empty(value: dynamic.Dynamic) -> Bool
 
 fn apply_chunk(
   state: State,

@@ -1,9 +1,19 @@
 -module(albedo_openai_json).
--export([encode/1, null/0, flatten/1, data_url/2, base64_string/1]).
+-export([encode/1, null/0, flatten/1, data_url/2, base64_string/1, semantically_empty/1]).
 
 encode(Value) -> json:encode(Value).
 
 null() -> null.
+
+%% Inspect only the container, without decoding or copying its contents.
+semantically_empty(null) -> true;
+semantically_empty(nil) -> true;
+semantically_empty(undefined) -> true;
+semantically_empty(<<>>) -> true;
+semantically_empty([]) -> true;
+semantically_empty({}) -> true;
+semantically_empty(Value) when is_map(Value) -> map_size(Value) =:= 0;
+semantically_empty(_) -> false.
 
 %% Binaries at least this large cross process boundaries by reference.
 -define(SHARED, 512).

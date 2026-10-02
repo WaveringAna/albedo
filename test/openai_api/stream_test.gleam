@@ -4,6 +4,7 @@ import albedo/openai_api/stream
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/option.{type Option, None, Some}
 
 pub fn responses_incomplete_never_exposes_executable_calls_test() -> Result(
@@ -195,6 +196,23 @@ pub fn chat_rejects_multiple_choices_and_nonempty_unknown_semantics_test() -> Re
     "{\"choices\":[{\"index\":0,\"delta\":{\"audio\":{\"id\":\"a\"}}}]}"
   let assert Error(types.InvalidEvent(_)) =
     send(stream.new(types.ChatCompletions), "", audio)
+}
+
+pub fn chat_ignores_only_empty_unknown_fields_test() -> Nil {
+  list.each(["null", "\"\"", "[]", "{}"], fn(value) {
+    let data =
+      "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\",\"audio\":"
+      <> value
+      <> "}}]}"
+    let assert Ok(#(_, [types.TextDelta(0, 0, "hello")], None)) =
+      send(stream.new(types.ChatCompletions), "", data)
+  })
+  list.each(["\"x\"", "[0]", "{\"id\":null}", "0", "false", "true"], fn(value) {
+    let data =
+      "{\"choices\":[{\"index\":0,\"delta\":{\"audio\":" <> value <> "}}]}"
+    let assert Error(types.InvalidEvent(_)) =
+      send(stream.new(types.ChatCompletions), "", data)
+  })
 }
 
 pub fn chat_requires_finish_and_suppresses_partial_tools_on_limits_test() -> Nil {
