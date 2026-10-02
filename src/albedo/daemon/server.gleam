@@ -1725,11 +1725,21 @@ fn validate_submitted_image(
 }
 
 type Submission {
-  User(text: String, client_id: String, image: Option(types.Image))
+  User(
+    text: String,
+    client_id: String,
+    image: Option(types.Image),
+    submission_id: Option(String),
+  )
   Continue(client_id: String)
 }
 
 fn submission_decoder() -> decode.Decoder(Submission) {
+  use submission_id <- decode.optional_field(
+    "submissionId",
+    None,
+    decode.optional(decode.string),
+  )
   use client_id <- decode.optional_field("clientId", "", decode.string)
   use kind <- decode.optional_field("type", "user", decode.string)
   use content <- decode.optional_field(
@@ -1746,7 +1756,8 @@ fn submission_decoder() -> decode.Decoder(Submission) {
     Error(message) -> decode.failure(Continue(client_id), message)
     Ok(image) ->
       case kind, content {
-        "user", Some(text) -> decode.success(User(text, client_id, image))
+        "user", Some(text) ->
+          decode.success(User(text, client_id, image, submission_id))
         "continue", _ | "resume", _ -> decode.success(Continue(client_id))
         "user", None -> decode.failure(Continue(client_id), "user content")
         _, _ -> decode.failure(Continue(client_id), "user, continue, or resume")
@@ -2136,6 +2147,7 @@ fn daemon_route(
             "capabilities",
             json.array(
               [
+                "submission_cancellation",
                 "session_provider",
                 "session_workspace",
                 "session_extensions",
@@ -2492,8 +2504,14 @@ fn daemon_route(
             Error(message) -> error(404, message)
             Ok(worker) -> {
               let outcome = case submission {
-                User(text, client_id, image) ->
-                  session.submit(worker, text, client_id, image)
+                User(text, client_id, image, submission_id) ->
+                  session.submit_identified(
+                    worker,
+                    text,
+                    client_id,
+                    image,
+                    submission_id,
+                  )
                 Continue(client_id) ->
                   session.submit_continue(worker, client_id)
               }
@@ -2625,6 +2643,30 @@ fn daemon_route(
                 Ok(command.Turn(_, _)) ->
                   reply(202, json.object([#("submitted", json.bool(True))]))
                 Error(e) -> error(409, e)
+              }
+            }
+            Post, "cancel-submission" -> {
+              case
+                body(req, {
+                  use id <- decode.field("submissionId", decode.string)
+                  decode.success(id)
+                })
+              {
+                Ok(id) ->
+                  case string.trim(id) == "" {
+                    True -> error(400, "submissionId must not be empty")
+                    False ->
+                      reply(
+                        200,
+                        json.object([
+                          #(
+                            "outcome",
+                            json.string(session.cancel_submission(worker, id)),
+                          ),
+                        ]),
+                      )
+                  }
+                Error(message) -> error(400, message)
               }
             }
             Post, "interrupt" ->

@@ -48,6 +48,7 @@ const restart_note = Submission(
   "daemon",
   turn.Note("daemon restart"),
   None,
+  None,
 )
 
 const continue_prompt = "<system-notice>
@@ -103,6 +104,7 @@ pub type Message {
   Resume
   Abort(String)
   Submit(Submission, Subject(Result(Bool, SubmissionError)))
+  CancelSubmission(String, Subject(String))
   ReadCommands(
     Subject(Result(#(List(command.Command), command.Context), String)),
   )
@@ -231,6 +233,7 @@ pub fn start(
         latest_usage,
         activity,
         [],
+        [],
         0,
         event_buffer.new(),
         [],
@@ -249,7 +252,7 @@ pub fn start(
     // registered closure lands a completion notice as an ordinary submit, so
     // the wake reuses the whole turn pipeline and busy answers itself.
     wakes_register(info.id, fn(display, text) {
-      wake(self, Submission(display, text, "job", turn.JobWake, None))
+      wake(self, Submission(display, text, "job", turn.JobWake, None, None))
     })
     commands_register(info.id, fn(op) { command_op(self, host, info.id, op) })
     live_register(info.id, self)
@@ -289,6 +292,7 @@ pub fn submit_mail(
       letter.id,
       turn.Mail(letter.id, letter.kind),
       None,
+      None,
     ),
   )
 }
@@ -299,7 +303,27 @@ pub fn submit(
   client_id: String,
   image: Option(types.Image),
 ) -> Result(Bool, SubmissionError) {
-  call_submit(session, Submission(text, text, client_id, turn.Chat, image))
+  call_submit(
+    session,
+    Submission(text, text, client_id, turn.Chat, image, None),
+  )
+}
+
+pub fn submit_identified(
+  session: Session,
+  text: String,
+  client_id: String,
+  image: Option(types.Image),
+  submission_id: Option(String),
+) -> Result(Bool, SubmissionError) {
+  call_submit(
+    session,
+    Submission(text, text, client_id, turn.Chat, image, submission_id),
+  )
+}
+
+pub fn cancel_submission(session: Session, submission_id: String) -> String {
+  actor.call(session, 5000, CancelSubmission(submission_id, _))
 }
 
 pub fn submit_continue(
@@ -308,7 +332,7 @@ pub fn submit_continue(
 ) -> Result(Bool, SubmissionError) {
   call_submit(
     session,
-    Submission("", continue_prompt, client_id, turn.Continue, None),
+    Submission("", continue_prompt, client_id, turn.Continue, None, None),
   )
 }
 
@@ -442,6 +466,7 @@ fn handle(
     | ReadCommands(..)
     | ReadCatalogContext(..)
     | Interrupt(..)
+    | CancelSubmission(..)
     | Status(..)
     | Read(..)
     | ReadContext(..)
@@ -496,15 +521,67 @@ fn handle(
         runtime.peek_commands(state.host, state.info.id, state.info.cwd),
       )
     ReadSelection(reply) -> answer(state, reply, model_selection(state.info))
+    CancelSubmission(id, reply) -> {
+      let remaining =
+        list.filter(state.steering, fn(submission) {
+          submission.submission_id != Some(id)
+        })
+      case list.length(remaining) != list.length(state.steering) {
+        True ->
+          answer(
+            session_state.State(..state, steering: remaining),
+            reply,
+            "cancelled_queued",
+          )
+        False ->
+          case turn.running(state.activity), state.active_submissions {
+            Some(run), [submission] if submission.submission_id == Some(id) -> {
+              interrupt_kernel(state)
+              let _ = process.send_after(state.self, 2500, Abort(run.id))
+              answer(
+                session_state.State(
+                  ..state,
+                  activity: turn.cancel(state.activity),
+                ),
+                reply,
+                "interrupt_requested",
+              )
+            }
+            Some(_), submissions ->
+              answer(
+                state,
+                reply,
+                case
+                  list.any(submissions, fn(submission) {
+                    submission.submission_id == Some(id)
+                  })
+                {
+                  True -> "shared_running"
+                  False -> "not_pending"
+                },
+              )
+            _, _ -> answer(state, reply, "not_pending")
+          }
+      }
+    }
     Interrupt(reply) ->
       case turn.running(state.activity), waiting_turn(state) {
         // A turn still waiting for its kernel: drop it. Letters it held stay
         // undelivered, so the dispatcher offers them again later.
-        None, True ->
+        None, True -> {
+          let id = mail.new_id()
+          let state =
+            session_state.State(..state, active_submissions: state.steering)
+            |> session_submission.membership(id)
+            |> session_state.emit(view.event("interrupted", []))
+            |> session_state.emit(
+              view.event("turn_completed", [#("turnId", json.string(id))]),
+            )
           answer(
             session_state.State(
               ..state,
               steering: [],
+              active_submissions: [],
               booting: option.map(state.booting, fn(boot) {
                 #(
                   boot.0,
@@ -513,11 +590,11 @@ fn handle(
                   }),
                 )
               }),
-            )
-              |> session_state.emit(view.event("interrupted", [])),
+            ),
             reply,
             True,
           )
+        }
         None, False -> answer(state, reply, False)
         Some(run), _ -> {
           interrupt_kernel(state)
@@ -781,7 +858,15 @@ fn handle(
                   timestamp,
                 )
               answer(
-                session_state.State(..state, steering: []),
+                session_state.State(
+                  ..state,
+                  steering: [],
+                  active_submissions: list.append(
+                    state.active_submissions,
+                    queued,
+                  ),
+                )
+                  |> session_submission.membership(id),
                 reply,
                 Ok(inputs),
               )
@@ -1041,13 +1126,13 @@ fn command_op(
     command.Submit(display, text, client) ->
       submitted(
         session,
-        Submission(display, text, client, turn.Chat, None),
+        Submission(display, text, client, turn.Chat, None, None),
         "submitted",
       )
     command.Note(origin, display, text) ->
       submitted(
         session,
-        Submission(display, text, "", turn.Note(origin), None),
+        Submission(display, text, "", turn.Note(origin), None, None),
         "queued",
       )
   }
@@ -1336,13 +1421,17 @@ fn kernel_opened(
 }
 
 fn failed_queued(state: State, error: String) -> State {
-  session_state.emit(
-    session_state.State(..state, steering: []),
-    view.text(
-      "error",
-      "queued messages were not delivered; resend them: " <> error,
-    ),
+  let id = mail.new_id()
+  session_state.State(..state, active_submissions: state.steering, steering: [])
+  |> session_submission.membership(id)
+  |> session_state.emit(view.text(
+    "error",
+    "queued messages were not delivered; resend them: " <> error,
+  ))
+  |> session_state.emit(
+    view.event("turn_completed", [#("turnId", json.string(id))]),
   )
+  |> fn(state) { session_state.State(..state, active_submissions: []) }
 }
 
 /// A child whose run ends without having answered its parent's latest task or
@@ -1650,7 +1739,14 @@ fn prepare_turn_pipeline(
   let state =
     session_history.remember(state, accepted, timestamp)
     |> session_submission.emit(submissions, timestamp)
-    |> fn(state) { session_state.State(..state, notice: None, steering: []) }
+    |> fn(state) {
+      session_state.State(
+        ..state,
+        notice: None,
+        steering: [],
+        active_submissions: submissions,
+      )
+    }
   Ok(#(state, kernel, client, history))
 }
 
@@ -1729,6 +1825,14 @@ fn finish_turn(
   let state = case run.work, run.cancelled {
     turn.Turn(_), False -> answer_parent(state, outcome)
     _, _ -> state
+  }
+  let state = case run.work {
+    turn.Turn(_) ->
+      session_state.emit(
+        session_state.State(..state, active_submissions: []),
+        view.event("turn_completed", [#("turnId", json.string(run.id))]),
+      )
+    _ -> state
   }
   report_end(state, run)
   process.send(state.self, Collect)

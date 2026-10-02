@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"sync"
+	"slices"
 	"time"
 
 	"albedo/cli/internal/daemon"
@@ -27,6 +29,9 @@ func (s *Service) RunPrompt(ctx context.Context, options PromptOptions) (PromptR
 	conn, err := s.Connect(ctx)
 	if err != nil {
 		return PromptResult{}, err
+	}
+	if capabilityErr := daemon.CheckCapability(ctx, conn, "submission_cancellation", "prompt submission cancellation"); capabilityErr != nil {
+		return PromptResult{}, capabilityErr
 	}
 	var choice modelChoice
 	if model != "" {
@@ -61,75 +66,75 @@ func (s *Service) RunPrompt(ctx context.Context, options PromptOptions) (PromptR
 
 	client := daemon.NewChatClient(conn, sessionID)
 	answer, err := awaitReply(ctx, client, prompt)
+	if err == nil {
+		return PromptResult{SessionID: sessionID, Answer: answer}, nil
+	}
 	if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](err); uncertain {
 		return PromptResult{}, fmt.Errorf("%w; the session is %s", err, sessionID)
 	}
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return PromptResult{}, fmt.Errorf("timed out after %s and stopped the turn; the session is %s", timeout, sessionID)
+		return PromptResult{}, fmt.Errorf("timed out after %s; %v; the session is %s", timeout, err, sessionID)
 	case ctx.Err() != nil:
-		return PromptResult{}, fmt.Errorf("interrupted; the session is %s", sessionID)
+		return PromptResult{}, fmt.Errorf("interrupted; %v; the session is %s", err, sessionID)
 	}
-	if err != nil {
-		return PromptResult{}, err
-	}
-	return PromptResult{SessionID: sessionID, Answer: answer}, nil
+	return PromptResult{}, err
 }
 
-// awaitReply sends prompt and answers the last assistant text of the turn it
-// starts once the session is idle again, or the error that ended the turn.
-func awaitReply(ctx context.Context, client *daemon.ChatClient, prompt string) (string, error) {
+// awaitReply follows the logical turn containing this submission. The actor
+// publishes membership before any worker events, and completion after them.
+func awaitReply(ctx context.Context, client *daemon.ChatClient, prompt string) (answer string, failure error) {
+	var identity [16]byte
+	if _, err := rand.Read(identity[:]); err != nil {
+		return "", err
+	}
+	submissionID := hex.EncodeToString(identity[:])
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	var (
-		mu      sync.Mutex
-		started bool // our prompt has reached the transcript
-		owned   bool // the latest observed live turn belongs to this invocation
-		answer  string
-		failure error
-	)
-	// Cleanup uses its own deadline even when the operation's context is canceled.
+	submitted := false
 	defer func() {
-		if ctx.Err() == nil {
+		if failure == nil || !submitted {
 			return
 		}
-		mu.Lock()
-		interrupt := owned
-		mu.Unlock()
-		if interrupt {
-			interruptCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
-			defer stop()
-			_, _ = client.Interrupt(interruptCtx)
+		cleanupCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		outcome, err := client.CancelSubmission(cleanupCtx, submissionID)
+		if err != nil {
+			failure = fmt.Errorf("%w; cancellation unconfirmed: %v", failure, err)
+			return
+		}
+		switch outcome {
+		case "cancelled_queued":
+			failure = fmt.Errorf("%w; queued submission cancelled", failure)
+		case "interrupt_requested":
+			failure = fmt.Errorf("%w; interruption requested for the turn", failure)
+		case "shared_running":
+			failure = fmt.Errorf("%w; the shared turn is still running", failure)
+		case "not_pending":
+			failure = fmt.Errorf("%w; submission is no longer pending", failure)
 		}
 	}()
 	ready := make(chan struct{})
+	events := make(chan daemon.StreamEvent, 64)
 	streamDone := make(chan error, 1)
 	go func() {
 		streamDone <- client.Stream(streamCtx, 0, func(event daemon.StreamEvent) error {
-			mu.Lock()
-			defer mu.Unlock()
-			switch {
-			case event.Type == daemon.EventReset:
+			if event.Type == daemon.EventReset {
 				select {
 				case <-ready:
 				default:
-					close(ready) // the snapshot is read; later events are live
+					close(ready)
 				}
-			case event.Replayed:
-			case event.Type == daemon.EventUser:
-				owned = event.ClientID == client.ClientID()
-				started = started || owned
-			case !owned:
-			case event.Type == daemon.EventMessage:
-				answer, failure = event.Text, nil
-			case event.Type == daemon.EventError:
-				failure = errors.New(event.Text)
-			case event.Type == daemon.EventInterrupted:
-				failure = errors.New("the turn was interrupted")
-			case event.Type == daemon.EventRetry:
-				failure = nil
 			}
-			return nil
+			if event.Replayed {
+				return nil
+			}
+			select {
+			case events <- event:
+				return nil
+			case <-streamCtx.Done():
+				return streamCtx.Err()
+			}
 		})
 	}()
 	select {
@@ -139,45 +144,56 @@ func awaitReply(ctx context.Context, client *daemon.ChatClient, prompt string) (
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}
-	if _, err := client.Send(ctx, prompt, nil); err != nil {
+	// A failed request can already have reached the actor. Cleanup always uses
+	// its identity, so it cannot interrupt a different client's turn.
+	submitted = true
+	if _, err := client.SendSubmission(ctx, prompt, submissionID); err != nil {
 		return "", err
 	}
-
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	idleBefore := false
+	turnID := ""
+	// Discard the initial reset already acknowledged before submission.
+	initialReset := true
 	for {
-		mu.Lock()
-		turnSeen := started
-		mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
 		case err := <-streamDone:
 			return "", fmt.Errorf("lost the session stream before the turn finished: %v", err)
-		case <-ticker.C:
+		case event := <-events:
+			if event.Type == daemon.EventReset && initialReset {
+				initialReset = false
+				continue
+			}
+			if event.Type == daemon.EventReset {
+				return "", errors.New("session stream reset before the submission completed; outcome uncertain")
+			}
+			if event.Type == daemon.EventTurnMembership && slices.Contains(event.SubmissionIDs, submissionID) {
+				turnID = event.TurnID
+			}
+			if turnID == "" {
+				continue
+			}
+			switch event.Type {
+			case daemon.EventMessage:
+				answer, failure = event.Text, nil
+			case daemon.EventError:
+				failure = errors.New(event.Text)
+			case daemon.EventInterrupted:
+				failure = errors.New("the turn was interrupted")
+			case daemon.EventRetry:
+				failure = nil
+			case daemon.EventTurnCompleted:
+				if event.TurnID != turnID {
+					continue
+				}
+				if failure != nil {
+					return "", failure
+				}
+				if answer == "" {
+					return "", errors.New("the turn ended without an assistant reply")
+				}
+				return answer, nil
+			}
 		}
-		if !turnSeen {
-			continue
-		}
-		// Idle after our prompt reached the transcript means its turn is over;
-		// idle twice in a row gives the stream time to deliver its last events.
-		status, err := client.GetStatus(ctx)
-		if err != nil {
-			return "", err
-		}
-		if !status.Idle || !idleBefore {
-			idleBefore = status.Idle
-			continue
-		}
-		mu.Lock()
-		defer mu.Unlock()
-		switch {
-		case failure != nil:
-			return "", failure
-		case answer == "":
-			return "", errors.New("the turn ended without an assistant reply")
-		}
-		return answer, nil
 	}
 }

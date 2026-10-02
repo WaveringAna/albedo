@@ -24,6 +24,7 @@ pub type State(message) {
     latest_usage: Option(usage.Metadata),
     activity: turn.Activity,
     steering: List(Submission),
+    active_submissions: List(Submission),
     sequence: Int,
     events: event_buffer.Buffer,
     watchers: List(#(process.Pid, fn() -> Nil)),

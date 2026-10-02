@@ -179,12 +179,15 @@ actor(Id) ->
     Check = self(),
     {Reader, ReaderMonitor} = spawn_monitor(fun() ->
         State = sys:get_state(Pid),
-        %% session_state.State currently has 19 fields: history is field 6.
-        state = element(1, State), 20 = tuple_size(State),
+        %% session_state.State currently has 20 fields: history is field 6.
+        state = element(1, State), 21 = tuple_size(State),
         Check ! {checked, element(7, State) =:= none,
             contains(State, <<"REPLAY_SENTINEL:">>)}
     end),
-    {Unloaded, Reachable} = receive {checked, A, B} -> {A, B} end,
+    {Unloaded, Reachable} = receive
+        {checked, A, B} -> {A, B};
+        {'DOWN', ReaderMonitor, process, Reader, Reason} -> error({state_inspection_failed, Reason})
+    end,
     receive {'DOWN', ReaderMonitor, process, Reader, normal} -> ok end,
     erlang:garbage_collect(Pid),
     Retained = binary_bytes(Pid),

@@ -4,6 +4,7 @@ import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
 import albedo/daemon/requests
 import albedo/daemon/session_state
+import albedo/daemon/session_submission
 import albedo/daemon/transcript
 import albedo/daemon/turn
 import albedo/daemon/usage
@@ -261,6 +262,10 @@ pub fn start(
   messages: Messages(message),
 ) -> session_state.State(message) {
   let run_id = new_id()
+  let state = case work {
+    turn.Turn(_) -> session_submission.membership(state, run_id)
+    _ -> state
+  }
   let owner = state.self
   let stop = turn.latch()
   let client = stoppable(client, stop)

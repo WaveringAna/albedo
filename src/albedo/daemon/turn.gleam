@@ -37,6 +37,7 @@ pub type Submission {
     client_id: String,
     source: Source,
     image: Option(types.Image),
+    submission_id: Option(String),
   )
 }
 

@@ -6,6 +6,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strings"
@@ -129,7 +130,12 @@ func TestPromptTimeoutStopsTheTurn(t *testing.T) {
 // Cancellation while queued must leave the already running turn alone.
 func TestPromptTimeoutWhileQueuedDoesNotInterruptAnotherTurn(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
-	defer close(release)
+	releaseClosed := false
+	defer func() {
+		if !releaseClosed {
+			close(release)
+		}
+	}()
 	profile := providerRoute(t, func(request map[string]any) string {
 		if lastUserText(request) == "other turn" {
 			close(entered)
@@ -155,9 +161,184 @@ func TestPromptTimeoutWhileQueuedDoesNotInterruptAnotherTurn(t *testing.T) {
 	if statusErr != nil || status.Idle {
 		t.Fatalf("queued cancellation stopped the other turn: %+v %v", status, statusErr)
 	}
-	// Stop the session explicitly so this stalled fixture cannot leak into other tests.
-	if _, err := client.Interrupt(t.Context()); err != nil {
+	if !strings.Contains(stderr, "queued submission cancelled") || strings.Contains(stderr, "stopped") {
+		t.Fatalf("incorrect cancellation report: %s", stderr)
+	}
+	close(release)
+	releaseClosed = true
+	waitIdle(t, id, profile, 1)
+	if got := len(suite.provider.requests(profile)); got != 1 {
+		t.Fatalf("cancelled queued prompt still ran: %d requests", got)
+	}
+	outcome, err := client.CancelSubmission(t.Context(), "missing-submission")
+	if err != nil || outcome != "not_pending" {
+		t.Fatalf("missing cancellation: %q %v", outcome, err)
+	}
+}
+
+// Both identified submissions contribute to the same next turn. Targeted
+// cancellation must leave that shared turn running, including anonymous input.
+func TestSubmissionCancellationLeavesSharedRunningTurn(t *testing.T) {
+	firstEntered, firstRelease := make(chan struct{}), make(chan struct{})
+	sharedEntered, sharedRelease := make(chan struct{}), make(chan struct{})
+	firstReleased, sharedReleased := false, false
+	defer func() {
+		if !firstReleased {
+			close(firstRelease)
+		}
+		if !sharedReleased {
+			close(sharedRelease)
+		}
+	}()
+	profile := providerRoute(t, func(request map[string]any) string {
+		if lastUserText(request) == "blocking turn" {
+			close(firstEntered)
+			<-firstRelease
+		} else {
+			close(sharedEntered)
+			<-sharedRelease
+		}
+		return echoReply(request)
+	})
+	id := newSession(t, t.TempDir())
+	client := daemon.NewChatClient(conn(t), id)
+	if _, err := client.Send(t.Context(), "blocking turn", nil); err != nil {
 		t.Fatal(err)
 	}
+	select {
+	case <-firstEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("first turn never started")
+	}
+	if _, err := client.SendSubmission(t.Context(), "identified contribution", "shared-submission"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Send(t.Context(), "anonymous contribution", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.SendSubmission(t.Context(), "cancel this queued contribution", "queued-submission"); err != nil {
+		t.Fatal(err)
+	}
+	outcome, cancelErr := client.CancelSubmission(t.Context(), "queued-submission")
+	if cancelErr != nil || outcome != "cancelled_queued" {
+		t.Fatalf("queued cancellation = %q %v", outcome, cancelErr)
+	}
+	outcome, cancelErr = client.CancelSubmission(t.Context(), "queued-submission")
+	if cancelErr != nil || outcome != "not_pending" {
+		t.Fatalf("repeated queued cancellation = %q %v", outcome, cancelErr)
+	}
+	close(firstRelease)
+	firstReleased = true
+	select {
+	case <-sharedEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("shared turn never started")
+	}
+	for range 2 {
+		outcome, err := client.CancelSubmission(t.Context(), "shared-submission")
+		if err != nil || outcome != "shared_running" {
+			t.Fatalf("shared cancellation = %q, %v", outcome, err)
+		}
+	}
+	status, err := client.GetStatus(t.Context())
+	if err != nil || status.Idle {
+		t.Fatalf("shared turn stopped: %+v %v", status, err)
+	}
+	close(sharedRelease)
+	sharedReleased = true
+	waitIdle(t, id, profile, 2)
+	requests := suite.provider.requests(profile)
+	encoded, marshalErr := json.Marshal(requests[1])
+	if marshalErr != nil || strings.Contains(string(encoded), "cancel this queued contribution") || !strings.Contains(string(encoded), "identified contribution") || !strings.Contains(string(encoded), "anonymous contribution") {
+		t.Fatalf("queued cancellation damaged sibling inputs: %s %v", encoded, marshalErr)
+	}
+}
+
+// Cancellation races turn admission and completion. Once that target settles,
+// repeating cancellation cannot stop a later exclusively owned turn.
+func TestSubmissionCancellationRacesStartAndCompletion(t *testing.T) {
+	firstEntered, firstRelease := make(chan struct{}), make(chan struct{})
+	laterEntered, laterRelease := make(chan struct{}), make(chan struct{})
+	firstReleased, laterReleased := false, false
+	defer func() {
+		if !firstReleased {
+			close(firstRelease)
+		}
+		if !laterReleased {
+			close(laterRelease)
+		}
+	}()
+	profile := providerRoute(t, func(request map[string]any) string {
+		switch lastUserText(request) {
+		case "hold first turn":
+			close(firstEntered)
+			<-firstRelease
+		case "hold later turn":
+			close(laterEntered)
+			<-laterRelease
+		}
+		return echoReply(request)
+	})
+	id := newSession(t, t.TempDir())
+	client := daemon.NewChatClient(conn(t), id)
+	if _, err := client.Send(t.Context(), "hold first turn", nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-firstEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("first turn never started")
+	}
+	const submissionID = "racing-target"
+	if _, err := client.SendSubmission(t.Context(), "short target turn", submissionID); err != nil {
+		t.Fatal(err)
+	}
+	type cancellation struct {
+		err     error
+		outcome string
+	}
+	result := make(chan cancellation, 1)
+	start := make(chan struct{})
+	go func() {
+		<-start
+		outcome, err := client.CancelSubmission(t.Context(), submissionID)
+		result <- cancellation{err: err, outcome: outcome}
+	}()
+	close(start)
+	close(firstRelease)
+	firstReleased = true
+	var cancelled cancellation
+	select {
+	case cancelled = <-result:
+	case <-time.After(10 * time.Second):
+		t.Fatal("racing cancellation did not return")
+	}
+	if cancelled.err != nil {
+		t.Fatal(cancelled.err)
+	}
+	switch cancelled.outcome {
+	case "cancelled_queued", "interrupt_requested", "not_pending":
+	default:
+		t.Fatalf("unexpected racing cancellation outcome %q", cancelled.outcome)
+	}
 	waitIdle(t, id, profile, 1)
+	if _, err := client.SendSubmission(t.Context(), "hold later turn", "later-owner"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-laterEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("later turn never started")
+	}
+	outcome, err := client.CancelSubmission(t.Context(), submissionID)
+	if err != nil || outcome != "not_pending" {
+		t.Fatalf("settled target cancellation = %q %v", outcome, err)
+	}
+	status, err := client.GetStatus(t.Context())
+	if err != nil || status.Idle {
+		t.Fatalf("old cancellation stopped a later turn: %+v %v", status, err)
+	}
+	close(laterRelease)
+	laterReleased = true
+	waitIdle(t, id, profile, 2)
 }

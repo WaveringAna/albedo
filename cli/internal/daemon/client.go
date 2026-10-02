@@ -112,6 +112,25 @@ func (c *ChatClient) Send(ctx context.Context, content string, image *ImageAttac
 	return c.submitPayload(ctx, payload)
 }
 
+func (c *ChatClient) SendSubmission(ctx context.Context, content, submissionID string) (*SendResult, error) {
+	return c.submitPayload(ctx, map[string]any{"content": content, "submissionId": submissionID})
+}
+
+func (c *ChatClient) CancelSubmission(ctx context.Context, submissionID string) (string, error) {
+	result, err := RequestOperation[struct {
+		Outcome string `json:"outcome"`
+	}](ctx, c.conn, Operation{Name: "cancel submission", Method: http.MethodPost, Path: sessionPath(c.agentID, "/cancel-submission"), Body: map[string]string{"submissionId": submissionID}})
+	if err != nil {
+		return "", err
+	}
+	switch result.Outcome {
+	case "cancelled_queued", "interrupt_requested", "shared_running", "not_pending":
+		return result.Outcome, nil
+	default:
+		return "", fmt.Errorf("invalid cancellation outcome %q", result.Outcome)
+	}
+}
+
 func (c *ChatClient) Continue(ctx context.Context) (*SendResult, error) {
 	return c.submitPayload(ctx, map[string]any{
 		"type": "continue",

@@ -5,6 +5,7 @@ import albedo/daemon/note
 import albedo/daemon/session_state
 import albedo/daemon/turn.{type Submission}
 import albedo/openai_api/types
+import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 
@@ -46,4 +47,28 @@ pub fn emit(
       _ -> session_state.emit(state, event(submission, timestamp))
     }
   })
+}
+
+pub fn membership(
+  state: session_state.State(message),
+  id: String,
+) -> session_state.State(message) {
+  session_state.emit(
+    state,
+    view.event("turn_membership", [
+      #("turnId", json.string(id)),
+      #(
+        "submissionIds",
+        json.array(
+          list.filter_map(state.active_submissions, fn(submission) {
+            case submission.submission_id {
+              Some(id) -> Ok(id)
+              None -> Error(Nil)
+            }
+          }),
+          json.string,
+        ),
+      ),
+    ]),
+  )
 }
