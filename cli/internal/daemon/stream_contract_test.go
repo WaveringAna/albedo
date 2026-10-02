@@ -363,6 +363,16 @@ func TestInitialStreamRequiresLeadingReset(t *testing.T) {
 }
 
 func TestStreamLoadsHistoryDespiteInvalidDisplayTraces(t *testing.T) {
+	unicodeTrace, err := json.Marshal(ToolTrace{
+		Activities: []ToolActivity{{Kind: "read", Target: strings.Repeat("界", 1000)}},
+		Changes: []FileChange{
+			{Kind: "diff", Path: strings.Repeat("界", 1000), Diff: strings.Repeat("🙂", 16000)},
+			{Kind: "unavailable", Path: "binary", Reason: strings.Repeat("界", 1000)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		name      string
 		trace     string
@@ -376,6 +386,7 @@ func TestStreamLoadsHistoryDespiteInvalidDisplayTraces(t *testing.T) {
 		{"oversized target", `{"activities":[{"kind":"read","target":"` + strings.Repeat("界", 1001) + `"}]}`, false},
 		{"oversized diff", `{"changes":[{"kind":"diff","path":"file","diff":"` + strings.Repeat("🙂", 16001) + `"}]}`, false},
 		{"negative line count", `{"changes":[{"kind":"diff","path":"file","added":-1}]}`, false},
+		{"unicode at limits", string(unicodeTrace), true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -410,7 +421,11 @@ func TestStreamLoadsHistoryDespiteInvalidDisplayTraces(t *testing.T) {
 			}
 			if got := events[1].ToolTrace; (got != nil) != tc.wantTrace {
 				t.Fatalf("unexpected display trace: %+v", got)
-
+			} else if tc.wantTrace {
+				gotJSON, err := json.Marshal(got)
+				if err != nil || string(gotJSON) != string(unicodeTrace) {
+					t.Fatalf("unicode trace changed: %s, %v", gotJSON, err)
+				}
 			}
 		})
 	}

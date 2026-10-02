@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // ToolActivity records display-only execution evidence, not model-facing tool output.
@@ -60,22 +61,23 @@ func ParseToolTrace(raw any) *ToolTrace {
 		default:
 			return nil
 		}
-		if len(act.Target) > 1000 {
+		// Python bounds these strings by Unicode characters, not UTF-8 bytes.
+		if utf8.RuneCountInString(act.Target) > 1000 {
 			return nil
 		}
 	}
 
 	for _, ch := range trace.Changes {
-		if len(ch.Path) > 1000 {
+		if utf8.RuneCountInString(ch.Path) > 1000 {
 			return nil
 		}
 		switch ch.Kind {
 		case "unavailable":
-			if len(ch.Reason) > 1000 {
+			if utf8.RuneCountInString(ch.Reason) > 1000 {
 				return nil
 			}
 		case "diff":
-			if len(ch.Diff) > 16000 || ch.Added < 0 || ch.Removed < 0 {
+			if utf8.RuneCountInString(ch.Diff) > 16000 || ch.Added < 0 || ch.Removed < 0 {
 				return nil
 			}
 		default:
