@@ -336,6 +336,15 @@ func underHome(p, home string) string {
 	return "~" + rest
 }
 
+// scpRelative is a remote path after its host's colon as scp reads it:
+// one under ~ relative to the home, which itself stays ~.
+func scpRelative(p string) string {
+	if rest, ok := strings.CutPrefix(p, "~/"); ok {
+		return rest
+	}
+	return p
+}
+
 // languageHues are our own colors for common languages, by linguist name.
 // Each starts from linguist's hue, softened to a pastel and nudged so
 // languages that often share a repository stay apart.

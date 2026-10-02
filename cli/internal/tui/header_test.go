@@ -89,7 +89,7 @@ func TestRemoteHeaderFoldsUnderTheHostsHomeAndSaysWhileConnecting(t *testing.T) 
 		t.Fatalf("connecting should animate (animating %v):\n%s", m.animating(), view)
 	}
 	m.Status.KernelLink, m.hostHome = "attached", "/home/mayer"
-	if header := ansi.Strip(m.header(120)); !strings.Contains(header, "✦ albedo on chernobog:~/proj/albedo") {
+	if header := ansi.Strip(m.header(120)); !strings.Contains(header, "✦ albedo on chernobog:proj/albedo") {
 		t.Fatalf("the path should fold under the host's own home: %q", header)
 	}
 	if got := m.statusLine(); strings.Contains(got, "connecting") {

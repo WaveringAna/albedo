@@ -115,9 +115,10 @@ memory and work items, and reads cover the whole group.
 a worktree or jj workspace of the same repository is not linked by itself
 yet; that and suggesting links from shared history are later work.
 
-the tui shows a remote workspace as `label:path`, the path folded under
-that host's own home once a listing or probe reported it: the chat header
-reads `✦ albedo on chernobog:~/proj/albedo`, folds only the path, keeps the
+the tui shows a remote workspace as `label:path`, the path relative to that
+host's own home once a listing or probe reported it, as scp reads it (the
+home itself is `label:~`, a path outside it stays absolute): the chat header
+reads `✦ albedo on chernobog:proj/albedo`, folds only the path, keeps the
 host in every layout that shows a place, and colors the host with a stable
 hue derived from its label, lifted to the theme's contrast. the host goes
 faint while the session's kernel boots or reattaches (the status line says
@@ -287,7 +288,7 @@ folder (`cli/internal/tui/folder_picker.go`, `parseQuery`):
   `chernobog:~/proj/` browse under it, `chernobog:/srv/` from its root.
   everything after the last slash filters, as locally. the listing comes
   from `/fs/list` with the location; its canonical `path` and `home` fold
-  rows to `chernobog:~/proj/albedo`.
+  rows to `chernobog:proj/albedo`.
 - hosts complete from `GET /hosts` (recent first, then ssh config), with the
   hosts of the sessions already listed as a fallback. a bare word still
   filters the recent folders exactly as before and only adds the hosts whose

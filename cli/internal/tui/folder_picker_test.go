@@ -209,10 +209,11 @@ func TestPickerBrowsesAHostFoldingUnderItsHome(t *testing.T) {
 	m = settle(t, m, cmd)
 	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	m = settle(t, m, cmd)
-	if got := m.input.Value(); got != "chernobog:~/proj/" {
+	// under the host's home, scp-style: relative to it
+	if got := m.input.Value(); got != "chernobog:proj/" {
 		t.Fatalf("tab went to %q", got)
 	}
-	if frame := pickerFrame(m); !strings.Contains(frame, "in chernobog:~/proj") || !strings.Contains(frame, "albedo") {
+	if frame := pickerFrame(m); !strings.Contains(frame, "in chernobog:proj") || !strings.Contains(frame, "albedo") {
 		t.Fatalf("the host's folder did not list:\n%s", frame)
 	}
 	// shift+tab goes back up through the canonical path, still folded
@@ -231,8 +232,8 @@ func TestPickerBrowsesAHostFoldingUnderItsHome(t *testing.T) {
 	// back among the recent folders, the remote one reads like the preview's rule
 	m.setQuery("")
 	m.cursor = slices.IndexFunc(m.rows, func(r folderRow) bool { return r.hostKey != "" })
-	if row := m.row(m.rows[m.cursor], false, false, false, 60, time.Now()); !strings.Contains(ansi.Strip(row), "chernobog:~ › p") {
-		t.Fatalf("a recent remote folder's where should lead with host:~: %q", ansi.Strip(row))
+	if row := m.row(m.rows[m.cursor], false, false, false, 60, time.Now()); !strings.Contains(ansi.Strip(row), "chernobog:proj") {
+		t.Fatalf("a recent remote folder's where should read host:path under its home: %q", ansi.Strip(row))
 	}
 	if len(src.warmed) != 1 {
 		t.Fatalf("the host was warmed %d times, want once: %v", len(src.warmed), src.warmed)

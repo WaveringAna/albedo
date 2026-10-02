@@ -951,7 +951,7 @@ func (m FolderPicker) parentQuery() string {
 		if rest == "~" {
 			return m.input.Value()
 		}
-		return host + ":" + path.Dir(rest) + "/"
+		return host + ":" + scpRelative(path.Dir(rest)) + "/"
 	}
 	up := m.homed(parentPlace(dir))
 	if strings.HasSuffix(up, "/") {

@@ -266,7 +266,7 @@ func TestTUIStartsASessionOnAHostPickedLikeAFolder(t *testing.T) {
 		t.Fatalf("gohost: did not list the host's home:\n%s", view)
 	}
 	d.Type("proj/" + filepath.Base(picked)[:6])
-	if view := d.View(); !strings.Contains(view, "in gohost:~/proj") || !strings.Contains(view, filepath.Base(picked)) {
+	if view := d.View(); !strings.Contains(view, "in gohost:proj") || !strings.Contains(view, filepath.Base(picked)) {
 		t.Fatalf("the host's folder did not list:\n%s", view)
 	}
 	started, ok := d.Key(tea.KeyEnter).(tui.FolderNewSessionMsg)

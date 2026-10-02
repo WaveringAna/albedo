@@ -19,15 +19,16 @@ func sessionHost(s daemon.Session) string {
 	return host
 }
 
-// placeText is a workspace as one line of text: a path under its home
-// starts with ~, and a remote one leads with its host (label, else as
-// stored). home is the path ~ names where the workspace is; empty, a local
-// path folds under your own home and a remote one stays whole.
+// placeText is a workspace as one line of text: a local path under your
+// home starts with ~, and a remote one leads with its host (label, else as
+// stored), relative to that host's home as scp reads it. home is the path ~
+// names where the workspace is; empty, a local path folds under your own
+// home and a remote one stays whole.
 func placeText(workspace, label, home string) string {
 	host, p := daemon.SplitLocation(workspace)
 	switch {
 	case host != "":
-		return cmp.Or(label, host) + ":" + underHome(p, home)
+		return cmp.Or(label, host) + ":" + scpRelative(underHome(p, home))
 	case home == "":
 		return homePath(workspace)
 	}

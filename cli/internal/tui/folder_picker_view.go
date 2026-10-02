@@ -222,7 +222,7 @@ func (m FolderPicker) where(row folderRow) string {
 		return strings.Join(crumbParts(m.homed(path.Dir(p))), " › ")
 	}
 	// the host leads the first crumb, as in the preview's rule
-	crumbs := crumbParts(underHome(path.Dir(p), m.homes[m.canonical(host)]))
+	crumbs := crumbParts(scpRelative(underHome(path.Dir(p), m.homes[m.canonical(host)])))
 	crumbs[0] = cmp.Or(row.host, m.labelOf(host)) + ":" + crumbs[0]
 	return strings.Join(crumbs, " › ")
 }

@@ -2202,7 +2202,7 @@ func (m ChatModel) header(width int) string {
 	} else {
 		host = cmp.Or(m.Host, host)
 		lead = host + ":"
-		workspace = underHome(workspace, m.hostHome)
+		workspace = scpRelative(underHome(workspace, m.hostHome))
 	}
 	model := m.Model
 	if m.Effort != "" {
