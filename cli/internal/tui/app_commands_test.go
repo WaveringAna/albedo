@@ -47,7 +47,7 @@ func TestModelChangeCapturesProviderAndCapBeforeExecution(t *testing.T) {
 		{name: "cap fails", failCap: true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			var paths, names, capStates []string
+			var paths, names, capStates, capModels []string
 			healthCalls := 0
 			conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/health" {
@@ -66,12 +66,13 @@ func TestModelChangeCapturesProviderAndCapBeforeExecution(t *testing.T) {
 				names = append(names, body.Name)
 				if body.Name == "/raise-cap" {
 					capStates = append(capStates, body.Args["state"])
+					capModels = append(capModels, body.Args["model"])
 				}
 				if body.Name == "/model" && scenario.failSwitch || body.Name == "/raise-cap" && scenario.failCap {
 					http.Error(w, `{"error":"refused"}`, http.StatusBadRequest)
 					return
 				}
-				_, _ = w.Write([]byte(`{"result":{"model":"chosen","provider":"new","effort":"high"}}`))
+				_, _ = w.Write([]byte(`{"result":{"model":"resolved","provider":"new","protocol":"openai","effort":"high"}}`))
 			})
 			session := &daemon.Session{ID: "original", Provider: "old"}
 			app := AppModel{Conn: conn, ActiveSession: session}
@@ -81,7 +82,7 @@ func TestModelChangeCapturesProviderAndCapBeforeExecution(t *testing.T) {
 			raiseCap = false
 			app.Conn, app.ActiveSession, app.ModelGen = nil, nil, 8
 			msg := cmd().(modelChangedMsg)
-			if msg.Gen != 7 || (msg.Err != nil) != (scenario.failSwitch || scenario.failCap) {
+			if msg.Gen != 7 || msg.SessionID != "original" || (msg.Err != nil) != (scenario.failSwitch || scenario.failCap) {
 				t.Fatalf("unexpected model result: %+v", msg)
 			}
 			if healthCalls != 1 {
@@ -91,8 +92,8 @@ func TestModelChangeCapturesProviderAndCapBeforeExecution(t *testing.T) {
 			wantPaths := []string{"/sessions/original/commands", "/sessions/original/commands"}
 			if scenario.failSwitch {
 				wantNames, wantPaths = wantNames[:1], wantPaths[:1]
-			} else if !reflect.DeepEqual(capStates, []string{"on"}) {
-				t.Fatalf("cap used changed input: %v", capStates)
+			} else if !reflect.DeepEqual(capStates, []string{"on"}) || !reflect.DeepEqual(capModels, []string{"resolved"}) {
+				t.Fatalf("cap used changed input or unconfirmed model: state=%v model=%v", capStates, capModels)
 			}
 			if !reflect.DeepEqual(names, wantNames) || !reflect.DeepEqual(paths, wantPaths) {
 				t.Fatalf("requests changed target or order: paths=%v commands=%v", paths, names)
@@ -111,7 +112,7 @@ func TestSessionCommandKeepsSessionWhileRequestIsRunning(t *testing.T) {
 		}
 		close(started)
 		<-release
-		_, _ = w.Write([]byte(`{"result":{"available":["low","high"]}}`))
+		_, _ = w.Write([]byte(`{"result":{"effort":null,"message":"","available":["low","high"]}}`))
 	})
 	// Release the handler before the server cleanup, including on test failure.
 	t.Cleanup(releaseRequest)
@@ -138,9 +139,10 @@ func TestGlancePollingCapturesPageNames(t *testing.T) {
 			t.Error(err)
 		}
 		paths, names = append(paths, r.URL.Path), append(names, body.Name)
-		_ = json.NewEncoder(w).Encode(map[string]any{"page": map[string]any{
-			"title": body.Name, "glance": map[string]any{"title": body.Name},
-		}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"page": map[string]any{
+			"title": body.Name, "summary": "", "empty": "", "rows": []any{}, "actions": []any{},
+			"glance": map[string]any{"title": body.Name, "rows": []any{}},
+		}}})
 	})
 	pageFlag := true
 	session := &daemon.Session{ID: "original"}
@@ -178,7 +180,7 @@ func TestUIPatchCapturesValues(t *testing.T) {
 				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 					t.Error(err)
 				}
-				_, _ = w.Write([]byte(`{"thinking":true,"tools":false}`))
+				_, _ = w.Write([]byte(`{"thinking":true,"tools":false,"pinned":[],"archived":[],"opens":{}}`))
 			})
 			app := AppModel{Conn: conn}
 			patch := map[string]bool{"thinking": true, "tools": false}

@@ -171,3 +171,48 @@ func TestUncertainSignInDoesNotRestartOrOpenBrowser(t *testing.T) {
 		t.Fatal("Enter automatically restarted an uncertain sign-in")
 	}
 }
+
+func TestInvalidGlanceResponseKeepsConfirmedGlances(t *testing.T) {
+	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, "")
+	m := NewAppModel(conn, config.Profiles{}, &daemon.Session{ID: "current"}, "", false, nil)
+	t.Cleanup(m.Chat.Close)
+	m.Glances = []PageGlance{{Title: "confirmed"}}
+	m.Chat.Glances = m.Glances
+	updated, cmd := m.Update(glancesPolledMsg{
+		Gen: m.GlanceGen,
+		Err: invalidResponseOutcome("/work", "page", errors.New("missing page")),
+	})
+	m = updated.(AppModel)
+	if cmd != nil || len(m.Glances) != 1 || m.Glances[0].Title != "confirmed" || len(m.Chat.Glances) != 1 {
+		t.Fatal("invalid glance response replaced confirmed state or retried")
+	}
+}
+
+func TestInvalidOpenResponseDoesNotRefreshSettings(t *testing.T) {
+	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, "")
+	m := NewAppModel(conn, config.Profiles{}, &daemon.Session{ID: "current"}, "", false, nil)
+	t.Cleanup(m.Chat.Close)
+	_, cmd := m.Update(uiSavedMsg{Open: true, Err: invalidResponseOutcome("record open", "thinking", errors.New("missing preference"))})
+	if cmd != nil {
+		t.Fatal("invalid open response scheduled a settings refresh")
+	}
+}
+
+func TestUncertainWebhookStepRetainsConfirmedSecretWithoutRefresh(t *testing.T) {
+	m := loadedWebhooksPage(t)
+	m.Saving = true
+	secret := &webhookSecret{Hook: "ci", Session: "s", Secret: "confirmed-secret"}
+	m, cmd := m.Update(webhooksSavedMsg{
+		Gen: m.Generation, Reveal: secret,
+		Err: invalidResponseOutcome("/webhooks", "hook", errors.New("missing hook")),
+	})
+	if cmd != nil || m.Reveal != secret || m.Saving || m.Loading {
+		t.Fatal("uncertain later step lost the confirmed secret or scheduled a refresh")
+	}
+}
+
+func invalidResponseOutcome(operation, field string, cause error) error {
+	return &daemon.UncertainOutcomeError{Operation: operation, Cause: &daemon.ProtocolError{
+		Code: "invalid_response", Operation: operation, Field: field, Cause: cause,
+	}}
+}

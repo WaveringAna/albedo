@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"slices"
 	"strings"
 
@@ -16,49 +15,19 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-type PageTone string
+type PageTone = daemon.PageTone
 
 const (
-	TonePlain   PageTone = "plain"
-	ToneActive  PageTone = "active"
-	ToneWarning PageTone = "warning"
-	ToneMuted   PageTone = "muted"
+	TonePlain   = daemon.TonePlain
+	ToneActive  = daemon.ToneActive
+	ToneWarning = daemon.ToneWarning
+	ToneMuted   = daemon.ToneMuted
 )
 
-type PageRow struct {
-	ID     string   `json:"id"`
-	Text   string   `json:"text"`
-	Badge  string   `json:"badge"`
-	Tone   PageTone `json:"tone"`
-	Detail string   `json:"detail,omitempty"`
-}
-
-type PageAction struct {
-	Key     string   `json:"key"`
-	Label   string   `json:"label"`
-	Run     string   `json:"run"`
-	Input   string   `json:"input"` // "none" | "text" | "secret" | "choice" | "value"
-	Prompt  string   `json:"prompt,omitempty"`
-	Value   string   `json:"value,omitempty"`
-	Options []string `json:"options,omitempty"`
-	Row     bool     `json:"row"`
-	Confirm bool     `json:"confirm"`
-	Prefill bool     `json:"prefill,omitempty"`
-}
-
-type PageGlance struct {
-	Title string    `json:"title"`
-	Rows  []PageRow `json:"rows"`
-}
-
-type PageDocument struct {
-	Glance  *PageGlance  `json:"glance,omitempty"`
-	Title   string       `json:"title"`
-	Summary string       `json:"summary"`
-	Empty   string       `json:"empty"`
-	Rows    []PageRow    `json:"rows"`
-	Actions []PageAction `json:"actions"`
-}
+type PageRow = daemon.PageRow
+type PageAction = daemon.PageAction
+type PageGlance = daemon.PageGlance
+type PageDocument = daemon.PageDocument
 
 type PageCancelMsg struct{}
 type PageViewChangedMsg struct{}
@@ -70,10 +39,10 @@ type pageLoadedMsg struct {
 }
 
 type pageActionExecutedMsg struct {
-	Err    error
-	Result map[string]any
-	Action PageAction
-	Gen    int
+	Err     error
+	Message string
+	Action  PageAction
+	Gen     int
 }
 
 type pageModeKind int
@@ -121,122 +90,18 @@ func (m PageViewModel) Init() tea.Cmd {
 	return m.loadPageCmd(m.Generation)
 }
 
-func parsePageDocument(result map[string]any) (*PageDocument, error) {
-	page, _ := result["page"].(map[string]any)
-	title, ok := page["title"].(string)
-	if !ok {
-		return nil, errors.New("command did not answer a page")
-	}
-	doc := &PageDocument{Title: title, Empty: "Nothing here yet."}
-	if summary, ok := page["summary"].(string); ok {
-		doc.Summary = summary
-	}
-	if empty, ok := page["empty"].(string); ok {
-		doc.Empty = empty
-	}
-	parseRows := func(raw any) []PageRow {
-		result := []PageRow{}
-		entries, _ := raw.([]any)
-		for _, entry := range entries {
-			obj, ok := entry.(map[string]any)
-			if !ok {
-				continue
-			}
-			id, idOK := obj["id"].(string)
-			text, textOK := obj["text"].(string)
-			badge, badgeOK := obj["badge"].(string)
-			if !idOK || !textOK || !badgeOK {
-				continue
-			}
-			tone, _ := obj["tone"].(string)
-			switch tone {
-			case "active", "warning", "muted":
-			default:
-				tone = "plain"
-			}
-			detail, _ := obj["detail"].(string)
-			result = append(result, PageRow{ID: id, Text: text, Badge: badge, Tone: PageTone(tone), Detail: detail})
-		}
-		return result
-	}
-	doc.Rows = parseRows(page["rows"])
-	if raw, ok := page["actions"].([]any); ok {
-		for _, entry := range raw {
-			obj, ok := entry.(map[string]any)
-			if !ok {
-				continue
-			}
-			key, keyOK := obj["key"].(string)
-			label, labelOK := obj["label"].(string)
-			run, runOK := obj["run"].(string)
-			if !keyOK || len([]rune(key)) != 1 || !labelOK || !runOK {
-				continue
-			}
-			action := PageAction{Key: key, Label: label, Run: run, Row: obj["row"] == true, Confirm: obj["confirm"] == true, Input: "none"}
-			kind, _ := obj["input"].(string)
-			switch kind {
-			case "text", "secret":
-				action.Input, action.Prompt = kind, label
-				if prompt, ok := obj["prompt"].(string); ok {
-					action.Prompt = prompt
-				}
-				action.Prefill = obj["prefill"] == true
-			case "choice":
-				choices, _ := obj["options"].([]any)
-				if len(choices) == 0 {
-					continue
-				}
-				var opts []string
-				for _, raw := range choices {
-					value, ok := raw.(string)
-					if !ok {
-						break
-					}
-					opts = append(opts, value)
-				}
-				if len(opts) != len(choices) {
-					continue
-				}
-				action.Input, action.Options = "choice", opts
-			case "value":
-				value, ok := obj["value"].(string)
-				if !ok {
-					continue
-				}
-				action.Input, action.Value = "value", value
-			}
-			doc.Actions = append(doc.Actions, action)
-		}
-	}
-	if glance, ok := page["glance"].(map[string]any); ok {
-		if title, ok := glance["title"].(string); ok {
-			doc.Glance = &PageGlance{Title: title, Rows: parseRows(glance["rows"])}
-		}
-	}
-	return doc, nil
-}
-
 func (m PageViewModel) loadPageCmd(gen int) tea.Cmd {
 	return func() tea.Msg {
 		if m.Conn == nil {
 			return pageLoadedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		path := fmt.Sprintf("/sessions/%s/commands", m.SessionID)
 		body := map[string]any{"name": m.Command, "args": map[string]string{}}
-		res, err := daemon.RequestOperation[map[string]any](context.Background(), m.Conn, daemon.Operation{Name: "load page", Method: http.MethodPost, Path: path, Body: body, Policy: daemon.AuthRecovery})
+		res, err := daemon.ExecutePageCommand(context.Background(), m.Conn, m.SessionID, body)
 		if err != nil {
 			return pageLoadedMsg{Err: err, Gen: gen}
 		}
 
-		target := res
-		if res["result"] != nil {
-			target, _ = res["result"].(map[string]any)
-		}
-		doc, err := parsePageDocument(target)
-		if err != nil {
-			err = fmt.Errorf("%s did not return a page", m.Command)
-		}
-		return pageLoadedMsg{Doc: doc, Err: err, Gen: gen}
+		return pageLoadedMsg{Doc: res.Page, Gen: gen}
 	}
 }
 
@@ -258,7 +123,6 @@ func (m PageViewModel) executeActionCmd(act PageAction, row *PageRow, entered st
 			details = append(details, val)
 		}
 
-		path := fmt.Sprintf("/sessions/%s/commands", m.SessionID)
 		body := map[string]any{
 			"name": m.Command,
 			"args": map[string]string{
@@ -267,8 +131,8 @@ func (m PageViewModel) executeActionCmd(act PageAction, row *PageRow, entered st
 			},
 		}
 
-		res, err := daemon.RequestOperation[map[string]any](context.Background(), m.Conn, daemon.Operation{Name: "execute action", Method: http.MethodPost, Path: path, Body: body, Policy: daemon.AuthRecovery})
-		return pageActionExecutedMsg{Result: res, Action: act, Err: err, Gen: gen}
+		res, err := daemon.ExecuteCommand(context.Background(), m.Conn, m.SessionID, body)
+		return pageActionExecutedMsg{Message: res.Message, Action: act, Err: err, Gen: gen}
 	}
 }
 
@@ -613,15 +477,8 @@ func toneStyle(tone PageTone, styles Styles) lipgloss.Style {
 // when it sent one, else the action's label.
 func pageNotice(msg pageActionExecutedMsg) string {
 	notice := fmt.Sprintf("%s completed", msg.Action.Label)
-	if msg.Result == nil {
-		return notice
-	}
-	r, _ := msg.Result["result"].(map[string]any)
-	if r == nil {
-		r = msg.Result
-	}
-	if s, ok := r["message"].(string); ok && s != "" {
-		return s
+	if msg.Message != "" {
+		return msg.Message
 	}
 	return notice
 }

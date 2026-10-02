@@ -523,10 +523,7 @@ func (m AgentsViewModel) below(id string) int {
 func (m AgentsViewModel) deleteCmd(id string) tea.Cmd {
 	conn, gen, name := m.Conn, m.Gen, m.label(id, "")
 	return func() tea.Msg {
-		path := fmt.Sprintf("/sessions/%s?tree=1", url.PathEscape(id))
-		res, err := daemon.RequestOperation[struct {
-			Deleted int `json:"deleted"`
-		}](context.Background(), conn, daemon.Operation{Name: "delete", Method: http.MethodDelete, Path: path, Body: nil, Policy: daemon.AuthRecovery})
+		res, err := daemon.DeleteSession(context.Background(), conn, id, true)
 		if err != nil {
 			return agentsSentMsg{Gen: gen, Action: "delete " + name, Err: err}
 		}
@@ -537,8 +534,7 @@ func (m AgentsViewModel) deleteCmd(id string) tea.Cmd {
 func (m AgentsViewModel) sendCmd(id, text string) tea.Cmd {
 	conn, gen, target := m.Conn, m.Gen, m.label(id, "agent")
 	return func() tea.Msg {
-		path := fmt.Sprintf("/sessions/%s/events", url.PathEscape(id))
-		_, err := daemon.RequestOperation[map[string]any](context.Background(), conn, daemon.Operation{Name: "send", Method: http.MethodPost, Path: path, Body: map[string]any{"content": text}, Policy: daemon.AuthRecovery})
+		_, err := daemon.Submit(context.Background(), conn, id, map[string]any{"content": text})
 		return agentsSentMsg{Gen: gen, Action: "send a message to " + target, Err: err}
 	}
 }
@@ -549,8 +545,7 @@ func (m AgentsViewModel) spawnCmd(parent, name, task string) tea.Cmd {
 		if name == "" || task == "" {
 			return agentsSentMsg{Gen: gen, Action: "start an agent", Err: errors.New("use /spawn <name> <task>")}
 		}
-		path := fmt.Sprintf("/sessions/%s/children", url.PathEscape(parent))
-		_, err := daemon.RequestOperation[map[string]any](context.Background(), conn, daemon.Operation{Name: "spawn", Method: http.MethodPost, Path: path, Body: map[string]any{"name": name, "task": task}, Policy: daemon.AuthRecovery})
+		_, err := daemon.CreateChild(context.Background(), conn, parent, map[string]any{"name": name, "task": task})
 		if err != nil {
 			return agentsSentMsg{Gen: gen, Action: "start " + name, Err: err}
 		}

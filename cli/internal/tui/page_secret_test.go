@@ -12,14 +12,9 @@ import (
 )
 
 func TestPageSecretInputIsMasked(t *testing.T) {
-	doc, err := parsePageDocument(map[string]any{"page": map[string]any{
-		"title": "webhooks", "actions": []any{map[string]any{
-			"key": "k", "label": "rotate", "run": "rotate_with_secret", "input": "secret", "prompt": "replacement",
-		}},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	doc := &PageDocument{Title: "webhooks", Actions: []PageAction{
+		{Key: "k", Label: "rotate", Run: "rotate_with_secret", Input: "secret", Prompt: "replacement"},
+	}}
 	m := NewPageViewModel(nil, "session", "/webhooks")
 	m.Doc = doc
 	m.Busy = false

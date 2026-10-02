@@ -435,7 +435,7 @@ func daemonCommand(daemonExe, projectRoot string, env []string) (*exec.Cmd, erro
 // stop shuts a daemon down and waits until its process has exited, so the
 // next daemon can take the home.
 func stop(homeDir string, conn *Connection) error {
-	_, _ = RequestOperation[any](context.Background(), conn, Operation{Name: "stop daemon", Method: http.MethodPost, Path: "/shutdown", Body: map[string]any{}, Policy: NoRecovery})
+	_ = StopDaemon(context.Background(), conn)
 	for range pollAttempts {
 		running, err := Existing(homeDir)
 		if err != nil {

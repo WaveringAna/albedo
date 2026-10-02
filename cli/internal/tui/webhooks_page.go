@@ -84,20 +84,16 @@ func NewWebhooksPageModel(conn *daemon.Connection, sessionID string) WebhooksPag
 func (m WebhooksPageModel) Init() tea.Cmd { return m.loadCmd(m.Generation) }
 
 // run calls /webhooks with an action and answers its result object.
-func (m WebhooksPageModel) run(action, details string) (map[string]any, error) {
+func (m WebhooksPageModel) run(action, details string) (*daemon.WebhookResult, error) {
 	if m.Conn == nil {
 		return nil, errors.New("daemon connection unavailable")
 	}
-	path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(m.SessionID))
 	body := map[string]any{"name": "/webhooks", "args": map[string]string{"action": action, "details": details}}
-	res, err := daemon.RequestOperation[map[string]any](context.Background(), m.Conn, daemon.Operation{Name: "run", Method: http.MethodPost, Path: path, Body: body, Policy: daemon.AuthRecovery})
+	res, err := daemon.ExecuteCommand(context.Background(), m.Conn, m.SessionID, body)
 	if err != nil {
 		return nil, err
 	}
-	if r, ok := res["result"].(map[string]any); ok {
-		return r, nil
-	}
-	return res, nil
+	return res.Webhooks, nil
 }
 
 func (m WebhooksPageModel) loadCmd(gen int) tea.Cmd {
@@ -131,30 +127,18 @@ func (m WebhooksPageModel) loadCmd(gen int) tea.Cmd {
 		if err != nil {
 			return webhooksLoadedMsg{Gen: gen, Err: err}
 		}
-		agent, _ := res["agentManagement"].(bool)
-		var hooks []webhookEntry
-		entries, _ := res["hooks"].([]any)
-		for _, raw := range entries {
-			entry, _ := raw.(map[string]any)
-			hook, _ := entry["hook"].(map[string]any)
-			if hook == nil {
-				continue
+		agent := res.AgentManagement
+		hooks := make([]webhookEntry, len(res.Hooks))
+		for i, entry := range res.Hooks {
+			hook := entry.Hook
+			deferred := ""
+			if entry.Deferred != nil {
+				deferred = *entry.Deferred
 			}
-			queued, _ := entry["queued"].(float64)
-			enabled, _ := hook["enabled"].(bool)
-			w := webhookEntry{
-				ID:       str(hook, "id"),
-				Session:  str(hook, "session"),
-				Name:     str(hook, "name"),
-				URL:      str(hook, "url"),
-				Header:   str(hook, "signatureHeader"),
-				Prefix:   str(hook, "signaturePrefix"),
-				Enabled:  enabled,
-				Queued:   int(queued),
-				Deferred: str(entry, "deferred"),
-			}
-			if w.ID != "" {
-				hooks = append(hooks, w)
+			hooks[i] = webhookEntry{
+				ID: hook.ID, Session: hook.Session, Name: hook.Name, URL: hook.URL,
+				Header: hook.Header, Prefix: hook.Prefix, Enabled: hook.Enabled,
+				Queued: entry.Queued, Deferred: deferred,
 			}
 		}
 		// Group by session in the order they are offered, current first.
@@ -185,14 +169,11 @@ func (m WebhooksPageModel) save(gen int, notice string, steps ...[2]string) tea.
 				// failed, so it still has to be shown.
 				return webhooksSavedMsg{Reveal: reveal, Gen: gen, Err: err}
 			}
-			hook, _ := res["hook"].(map[string]any)
-			if id, ok := hook["id"].(string); ok {
-				created = id
-			}
-			if secret, _ := res["secret"].(string); secret != "" {
-				name, _ := hook["name"].(string)
-				session, _ := hook["session"].(string)
-				reveal = &webhookSecret{Hook: name, Session: session, Secret: secret}
+			if res.Hook != nil {
+				created = res.Hook.ID
+				if res.Secret != "" {
+					reveal = &webhookSecret{Hook: res.Hook.Name, Session: res.Hook.Session, Secret: res.Secret}
+				}
 			}
 		}
 		return webhooksSavedMsg{Notice: notice, Reveal: reveal, Gen: gen}
@@ -257,6 +238,9 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 		m.Saving, m.Reveal = false, msg.Reveal
 		if msg.Err != nil {
 			m.Error = msg.Err.Error()
+			if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](msg.Err); uncertain {
+				return m, nil
+			}
 			if msg.Reveal == nil {
 				return m, nil
 			}

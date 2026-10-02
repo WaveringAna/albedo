@@ -13,23 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-type ExtensionItem struct {
-	Name          string   `json:"name"`
-	Description   string   `json:"description"`
-	// Quarantined is why the daemon will not run this extension; empty when
-	// it is usable. A quarantined extension cannot be toggled.
-	Quarantined   string   `json:"quarantined"`
-	Tools         []string `json:"tools"`
-	PythonModules []string `json:"python_modules"`
-	Requires      []string `json:"requires"`
-	Plugins       []string `json:"plugins"`
-	Enabled       bool     `json:"enabled"`
-	Context       bool     `json:"context"`
-	// Overridden means this session has its own choice; otherwise it follows
-	// GlobalEnabled, the default for sessions without one.
-	Overridden    bool `json:"overridden"`
-	GlobalEnabled bool `json:"global_enabled"`
-}
+type ExtensionItem = daemon.ExtensionSummary
 
 type ExtensionPickerDoneMsg struct{}
 type ExtensionPickerChangedMsg struct{}
@@ -38,8 +22,6 @@ type extensionsLoadedMsg struct {
 	Err        error
 	Extensions []ExtensionItem
 	Gen        int
-	// NoGlobal reports a daemon that predates global extension defaults.
-	NoGlobal bool
 }
 
 type extensionToggledMsg struct {
@@ -57,7 +39,6 @@ type ExtensionPickerModel struct {
 	// Session scopes changes to this session; the page opens on the global
 	// defaults, so a session only diverges once a change is made here.
 	Session    bool
-	NoGlobal   bool
 	Confirming bool
 	// Inheriting confirms dropping this session's choice instead of a toggle.
 	Inheriting bool
@@ -82,18 +63,9 @@ func (m ExtensionPickerModel) loadExtensionsCmd(gen int) tea.Cmd {
 			return extensionsLoadedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
 
-		caps, err := daemon.Capabilities(context.Background(), m.Conn)
-		if err != nil {
-			return extensionsLoadedMsg{Err: err, Gen: gen}
-		}
-		if !slices.Contains(caps, "session_extensions") {
-			return extensionsLoadedMsg{Err: daemon.UpgradeNeeded("for /extensions"), Gen: gen}
-		}
-		noGlobal := !slices.Contains(caps, "global_extensions")
-
 		path := fmt.Sprintf("/sessions/%s/extensions", m.SessionID)
 		items, err := daemon.RequestOperation[[]ExtensionItem](context.Background(), m.Conn, daemon.Operation{Name: "load extensions", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
-		return extensionsLoadedMsg{Extensions: items, Err: err, Gen: gen, NoGlobal: noGlobal}
+		return extensionsLoadedMsg{Extensions: items, Err: err, Gen: gen}
 	}
 }
 
@@ -104,16 +76,11 @@ func (m ExtensionPickerModel) changeExtensionCmd(name, scope string, enabled boo
 		if m.Conn == nil {
 			return extensionToggledMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		path := fmt.Sprintf("/sessions/%s/extensions", m.SessionID)
 		body := map[string]any{"name": name, "scope": scope}
 		if scope != "inherit" {
 			body["enabled"] = enabled
 		}
-		if m.NoGlobal {
-			// Older daemons only know session choices.
-			body = map[string]any{"name": name, "enabled": enabled}
-		}
-		updated, err := daemon.RequestOperation[[]ExtensionItem](context.Background(), m.Conn, daemon.Operation{Name: "change extension", Method: http.MethodPost, Path: path, Body: body, Policy: daemon.AuthRecovery})
+		updated, err := daemon.SelectExtension(context.Background(), m.Conn, m.SessionID, body)
 		return extensionToggledMsg{Extensions: updated, Err: err, Gen: gen}
 	}
 }
@@ -140,10 +107,6 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		}
 		m.Extensions = msg.Extensions
 		m.Error = ""
-		m.NoGlobal = msg.NoGlobal
-		if m.NoGlobal {
-			m.Session = true
-		}
 		if m.Cursor >= len(m.Extensions) {
 			m.Cursor = max(0, len(m.Extensions)-1)
 		}
@@ -217,9 +180,7 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 				m.Confirming = true
 			}
 		case "g":
-			if !m.NoGlobal {
-				m.Session = false
-			}
+			m.Session = false
 		case "s":
 			m.Session = true
 		case "o":
@@ -227,7 +188,7 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 				return m, func() tea.Msg { return ChatOpenWebhooksPageMsg{} }
 			}
 		case "x":
-			if m.Session && !m.NoGlobal && m.Cursor < len(m.Extensions) && m.Extensions[m.Cursor].Overridden {
+			if m.Session && m.Cursor < len(m.Extensions) && m.Extensions[m.Cursor].Overridden {
 				m.Error = ""
 				m.Confirming, m.Inheriting = true, true
 			}
@@ -242,9 +203,6 @@ func (m ExtensionPickerModel) View() string {
 	scope, note := "global defaults", "Sessions without their own choice use these defaults · s to change this session only"
 	if m.Session {
 		scope, note = "this session", "Changes here affect only this session · g to edit global defaults"
-		if m.NoGlobal {
-			note = "This version only supports choices for this session. Restart Albedo to use global defaults."
-		}
 	}
 	b.WriteString(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/extensions"), m.Styles.Faint.Render(scope)))
 	b.WriteByte('\n')
@@ -380,7 +338,7 @@ func (m ExtensionPickerModel) View() string {
 		keys := []hint{{"↑↓", "select"}, {"enter/space", "toggle"}}
 		if !m.Session {
 			keys = append(keys, hint{"s", "this session"})
-		} else if !m.NoGlobal {
+		} else {
 			keys = append(keys, hint{"x", "follow global"}, hint{"g", "global defaults"})
 		}
 		keys = append(keys, hint{"esc", "return to chat"})

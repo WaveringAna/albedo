@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 )
 
@@ -36,8 +37,19 @@ type MCPSecretsPatch map[string]any
 // TakeMigration names the files the daemon's start moved secrets out of, only
 // to the first client that asks, so the user hears about it once.
 func TakeMigration(ctx context.Context, conn *Connection) ([]string, error) {
-	taken, err := RequestOperation[struct {
-		Moved []string `json:"moved"`
-	}](ctx, conn, Operation{Name: "take migration", Method: http.MethodPost, Path: "/auth/credentials/migration", Body: map[string]string{}, Policy: AuthRecovery})
-	return taken.Moved, err
+	var moved []string
+	err := executeMutation(ctx, conn, Operation{Name: "take migration", Method: http.MethodPost, Path: "/auth/credentials/migration", Body: map[string]string{}, Policy: AuthRecovery}, []int{200}, func(data []byte, _ int) error {
+		var wire struct {
+			Moved *stringCollection `json:"moved"`
+		}
+		if err := json.Unmarshal(data, &wire); err != nil {
+			return err
+		}
+		if wire.Moved == nil {
+			return fieldError("moved")
+		}
+		moved = []string(*wire.Moved)
+		return nil
+	})
+	return moved, err
 }

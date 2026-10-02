@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"sync"
 	"time"
 
@@ -49,7 +48,7 @@ func (s *Service) RunPrompt(ctx context.Context, options PromptOptions) (PromptR
 		if model != "" {
 			create["provider"], create["model"] = choice.provider, choice.model
 		}
-		session, createErr := daemon.RequestOperation[daemon.Session](ctx, conn, daemon.Operation{Name: "create session", Method: http.MethodPost, Path: "/sessions", Body: create, Policy: daemon.AuthRecovery})
+		session, createErr := daemon.CreateSession(ctx, conn, create)
 		if createErr != nil {
 			return PromptResult{}, createErr
 		}

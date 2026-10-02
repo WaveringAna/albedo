@@ -45,8 +45,9 @@ type capabilityLoadedMsg struct {
 	ExtensionEnabled bool
 }
 type capabilitySavedMsg struct {
-	Err error
-	Gen int
+	Err     error
+	Warning string
+	Gen     int
 }
 type CapabilityPageDoneMsg struct{}
 type CapabilityPageChangedMsg struct{}
@@ -170,8 +171,7 @@ func discoverInstructions(workspace string) []capabilityItem {
 
 func (m CapabilityPageModel) enableExtensionCmd(gen int) tea.Cmd {
 	return func() tea.Msg {
-		path := fmt.Sprintf("/sessions/%s/extensions", url.PathEscape(m.SessionID))
-		_, err := daemon.RequestOperation[[]ExtensionItem](context.Background(), m.Conn, daemon.Operation{Name: "enable extension", Method: http.MethodPost, Path: path, Body: map[string]any{"name": m.Kind, "enabled": true}, Policy: daemon.AuthRecovery})
+		_, err := daemon.SelectExtension(context.Background(), m.Conn, m.SessionID, map[string]any{"name": m.Kind, "enabled": true})
 		return capabilitySavedMsg{Gen: gen, Err: err}
 	}
 }
@@ -183,8 +183,8 @@ func (m CapabilityPageModel) toggleCmd(item capabilityItem, gen int) tea.Cmd {
 		scope = "global"
 	}
 	return func() tea.Msg {
-		err := daemon.SetCapability(context.Background(), m.Conn, m.SessionID, m.Kind, item.ID, scope, &next)
-		return capabilitySavedMsg{Gen: gen, Err: err}
+		result, err := daemon.SetCapability(context.Background(), m.Conn, m.SessionID, m.Kind, item.ID, scope, &next)
+		return capabilitySavedMsg{Gen: gen, Err: err, Warning: result.Warning}
 	}
 }
 
@@ -196,13 +196,15 @@ var mcpEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z_0-9]*$`)
 // restored, so a half-configured server is never left behind.
 func (m CapabilityPageModel) saveMCPCmd(sub mcpSubmission, gen int) tea.Cmd {
 	return func() tea.Msg {
-		return capabilitySavedMsg{Gen: gen, Err: daemon.SaveMCP(context.Background(), m.Conn, m.SessionID, sub.Name, &sub.Server, sub.Secrets)}
+		result, err := daemon.SaveMCP(context.Background(), m.Conn, m.SessionID, sub.Name, &sub.Server, sub.Secrets)
+		return capabilitySavedMsg{Gen: gen, Err: err, Warning: result.Warning}
 	}
 }
 
 func (m CapabilityPageModel) deleteMCPCmd(name string, gen int) tea.Cmd {
 	return func() tea.Msg {
-		return capabilitySavedMsg{Gen: gen, Err: daemon.SaveMCP(context.Background(), m.Conn, m.SessionID, name, nil, nil)}
+		result, err := daemon.SaveMCP(context.Background(), m.Conn, m.SessionID, name, nil, nil)
+		return capabilitySavedMsg{Gen: gen, Err: err, Warning: result.Warning}
 	}
 }
 
@@ -242,6 +244,9 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 		m.Form = nil
 		m.ConfirmDelete = false
 		m.Notice = "Saved. Session reloaded."
+		if msg.Warning != "" {
+			m.Notice = msg.Warning
+		}
 		m.Loading, m.Generation = true, nextCapabilityGen()
 		return m, tea.Batch(m.loadCmd(m.Generation), func() tea.Msg { return CapabilityPageChangedMsg{} })
 	case tea.PasteMsg:

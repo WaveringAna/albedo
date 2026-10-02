@@ -67,9 +67,11 @@ func isConnectionError(err error) bool {
 // responseLimits preserves each endpoint's accepted status and bounded reads.
 // A zero successStatus accepts any 2xx response.
 type responseLimits struct {
-	successStatus int
-	bodyBytes     int64
-	errorBytes    int64
+	status          *int
+	successStatuses []int
+	successStatus   int
+	bodyBytes       int64
+	errorBytes      int64
 }
 
 // operationRequest binds the address and credentials to one immutable snapshot.
@@ -153,11 +155,29 @@ func requestBytes(ctx context.Context, conn *Connection, operation Operation, li
 			return nil, uncertainOperation(operation, err)
 		}
 		success := (limits.successStatus == 0 && res.StatusCode >= 200 && res.StatusCode < 300) || res.StatusCode == limits.successStatus
+		if limits.status != nil {
+			*limits.status = res.StatusCode
+		}
+		if len(limits.successStatuses) > 0 {
+			success = false
+			for _, expected := range limits.successStatuses {
+				if res.StatusCode == expected {
+					success = true
+				}
+			}
+		}
 		var body []byte
 		if success {
 			body, err = readBounded(res.Body, limits.bodyBytes)
+			if err != nil && operation.Policy != ReadRecovery {
+				err = &ProtocolError{Code: "invalid_response", Operation: operation.Name, Cause: err}
+			}
 		} else {
-			err = readHTTPError(res, limits.errorBytes)
+			if res.StatusCode >= 200 && res.StatusCode < 300 && operation.Policy != ReadRecovery {
+				err = invalidResponse(operation, "status", fmt.Errorf("unexpected HTTP status %d", res.StatusCode))
+			} else {
+				err = readHTTPError(res, limits.errorBytes)
+			}
 		}
 		_ = res.Body.Close()
 		if err == nil {

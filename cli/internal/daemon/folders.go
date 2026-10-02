@@ -81,5 +81,5 @@ func PreviewFolder(ctx context.Context, conn *Connection, path string) (FolderPr
 
 // MoveSession moves an idle session to another folder.
 func MoveSession(ctx context.Context, conn *Connection, id, workspace string) (Session, error) {
-	return RequestOperation[Session](ctx, conn, Operation{Name: "move session", Method: http.MethodPost, Path: "/sessions/" + url.PathEscape(id) + "/workspace", Body: map[string]string{"workspace": workspace}, Policy: AuthRecovery})
+	return mutateSession(ctx, conn, Operation{Name: "move session", Method: http.MethodPost, Path: sessionPath(id, "/workspace"), Body: map[string]string{"workspace": workspace}, Policy: AuthRecovery}, http.StatusOK)
 }

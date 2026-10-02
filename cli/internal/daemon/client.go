@@ -51,7 +51,7 @@ func (e *WorkspaceMissingError) Error() string {
 
 type SendResult struct {
 	OK     bool `json:"ok"`
-	Queued bool `json:"queued,omitempty"`
+	Queued bool `json:"queued"`
 }
 
 type ChatClient struct {
@@ -95,24 +95,11 @@ func (c *ChatClient) submitPayload(ctx context.Context, payload map[string]any) 
 		payload["clientId"] = c.clientID
 	}
 
-	operation := Operation{Name: "submit message", Method: http.MethodPost, Path: c.agentPath("/events"), Body: payload, Policy: AuthRecovery}
-	body, err := requestBytes(reqCtx, c.conn, operation, responseLimits{bodyBytes: 64 * 1024, errorBytes: 64 * 1024})
+	result, err := Submit(reqCtx, c.conn, c.agentID, payload)
 	if err != nil {
 		return nil, err
 	}
-
-	var data struct {
-		OK     bool `json:"ok"`
-		Queued bool `json:"queued"`
-	}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return nil, uncertainOperation(operation, err)
-	}
-
-	return &SendResult{
-		OK:     true,
-		Queued: data.Queued,
-	}, nil
+	return &result, nil
 }
 
 func (c *ChatClient) Send(ctx context.Context, content string, image *ImageAttachment) (*SendResult, error) {
@@ -135,19 +122,7 @@ func (c *ChatClient) Interrupt(ctx context.Context) (bool, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	operation := Operation{Name: "interrupt session", Method: http.MethodPost, Path: c.agentPath("/interrupt"), Body: map[string]any{}, Policy: AuthRecovery}
-	body, err := requestBytes(reqCtx, c.conn, operation, responseLimits{successStatus: http.StatusOK, bodyBytes: 64 * 1024, errorBytes: 64 * 1024})
-	if err != nil {
-		return false, err
-	}
-
-	var data struct {
-		Interrupted bool `json:"interrupted"`
-	}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return false, uncertainOperation(operation, err)
-	}
-	return data.Interrupted, nil
+	return InterruptSession(reqCtx, c.conn, c.agentID)
 }
 
 // HistoryPage is older transcript, rendered as the stream renders a reset.

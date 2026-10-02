@@ -37,26 +37,25 @@ func ProviderProfiles(ctx context.Context, conn *Connection) (config.Profiles, e
 }
 
 func SaveProvider(ctx context.Context, conn *Connection, name string, profile config.Settings) error {
-	_, err := RequestOperation[acknowledged](ctx, conn, Operation{Name: "save provider", Method: http.MethodPut, Path: "/settings/providers/" + url.PathEscape(name), Body: profile, Policy: AuthRecovery})
+	err := acknowledge(ctx, conn, Operation{Name: "save provider", Method: http.MethodPut, Path: "/settings/providers/" + url.PathEscape(name), Body: profile, Policy: AuthRecovery})
 	return err
 }
 
 func DeleteProvider(ctx context.Context, conn *Connection, name string) error {
-	_, err := RequestOperation[acknowledged](ctx, conn, Operation{Name: "delete provider", Method: http.MethodDelete, Path: "/settings/providers/" + url.PathEscape(name), Body: nil, Policy: AuthRecovery})
+	err := acknowledge(ctx, conn, Operation{Name: "delete provider", Method: http.MethodDelete, Path: "/settings/providers/" + url.PathEscape(name), Body: nil, Policy: AuthRecovery})
 	return err
 }
 
-func SetCapability(ctx context.Context, conn *Connection, session, kind, name, scope string, enabled *bool) error {
-	_, err := RequestOperation[acknowledged](ctx, conn, Operation{Name: "set capability", Method: http.MethodPost, Path: "/sessions/" + url.PathEscape(session) + "/settings/capabilities", Body: struct {
+func SetCapability(ctx context.Context, conn *Connection, session, kind, name, scope string, enabled *bool) (ReloadResult, error) {
+	return reloadSettings(ctx, conn, Operation{Name: "set capability", Method: http.MethodPost, Path: "/sessions/" + url.PathEscape(session) + "/settings/capabilities", Body: struct {
 		Enabled *bool  `json:"enabled"`
 		Kind    string `json:"kind"`
 		Name    string `json:"name"`
 		Scope   string `json:"scope"`
 	}{Kind: kind, Name: name, Scope: scope, Enabled: enabled}, Policy: AuthRecovery})
-	return err
 }
 
-func SaveMCP(ctx context.Context, conn *Connection, session, name string, server *config.MCPServer, secrets MCPSecretsPatch) error {
+func SaveMCP(ctx context.Context, conn *Connection, session, name string, server *config.MCPServer, secrets MCPSecretsPatch) (ReloadResult, error) {
 	path := "/sessions/" + url.PathEscape(session) + "/settings/mcp/" + url.PathEscape(name)
 	method := http.MethodPut
 	var body any = struct {
@@ -66,20 +65,19 @@ func SaveMCP(ctx context.Context, conn *Connection, session, name string, server
 	if server == nil {
 		method, body = http.MethodDelete, nil
 	}
-	_, err := RequestOperation[acknowledged](ctx, conn, Operation{Name: "save MCP", Method: method, Path: path, Body: body, Policy: AuthRecovery})
-	return err
+	return reloadSettings(ctx, conn, Operation{Name: "save MCP", Method: method, Path: path, Body: body, Policy: AuthRecovery})
 }
 
 func PatchUI(ctx context.Context, conn *Connection, patch map[string]bool) (UIPreferences, error) {
-	return RequestOperation[UIPreferences](ctx, conn, Operation{Name: "patch u i", Method: http.MethodPatch, Path: "/settings/ui", Body: patch, Policy: AuthRecovery})
+	return mutateUI(ctx, conn, Operation{Name: "patch u i", Method: http.MethodPatch, Path: "/settings/ui", Body: patch, Policy: AuthRecovery})
 }
 
 func PatchSessionUI(ctx context.Context, conn *Connection, session string, patch map[string]bool) (UIPreferences, error) {
-	return RequestOperation[UIPreferences](ctx, conn, Operation{Name: "patch session u i", Method: http.MethodPatch, Path: "/settings/ui/sessions/" + url.PathEscape(session), Body: patch, Policy: AuthRecovery})
+	return mutateUI(ctx, conn, Operation{Name: "patch session u i", Method: http.MethodPatch, Path: "/settings/ui/sessions/" + url.PathEscape(session), Body: patch, Policy: AuthRecovery})
 }
 
 // RecordOpen is never replayed after transport loss. The server may have already
 // incremented the count even when its response did not reach us.
 func RecordOpen(ctx context.Context, conn *Connection, session string) (UIPreferences, error) {
-	return RequestOperation[UIPreferences](ctx, conn, Operation{Name: "record open", Method: http.MethodPost, Path: "/settings/ui/sessions/" + url.PathEscape(session) + "/open", Body: nil, Policy: NoRecovery})
+	return mutateUI(ctx, conn, Operation{Name: "record open", Method: http.MethodPost, Path: "/settings/ui/sessions/" + url.PathEscape(session) + "/open", Body: nil, Policy: NoRecovery})
 }

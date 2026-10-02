@@ -128,9 +128,7 @@ func (m TreePickerModel) forkCmd(checkpointID int, gen int) tea.Cmd {
 		if m.Conn == nil {
 			return treeForkedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		path := fmt.Sprintf("/sessions/%s/fork", m.SessionID)
-		body := map[string]int{"checkpoint": checkpointID}
-		branch, err := daemon.RequestOperation[daemon.Session](context.Background(), m.Conn, daemon.Operation{Name: "fork", Method: http.MethodPost, Path: path, Body: body, Policy: daemon.AuthRecovery})
+		branch, err := daemon.ForkSession(context.Background(), m.Conn, m.SessionID, map[string]any{"checkpoint": checkpointID})
 		return treeForkedMsg{Session: branch, Err: err, Gen: gen}
 	}
 }

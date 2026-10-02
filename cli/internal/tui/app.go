@@ -60,22 +60,21 @@ type commandCatalogLoadedMsg struct {
 }
 
 type modelChangedMsg struct {
-	Err      error
-	Model    string
-	Provider string
-	Protocol string
-	Effort   string
-	Gen      int
+	Selection *daemon.ModelSelection
+	Err       error
+	SessionID string
+	Gen       int
 }
 
 type commandExecutedMsg struct {
-	Err       error
-	Name      string
-	Message   string
-	Effort    string
-	SessionID string
-	Available []string
-	Gen       int
+	Err           error
+	Name          string
+	Message       string
+	Effort        string
+	SessionID     string
+	Available     []string
+	Gen           int
+	EffortChanged bool
 }
 
 type glancesPolledMsg struct {
@@ -235,8 +234,7 @@ func (m *AppModel) renameSessionCmd(rename SessionRenameMsg) tea.Cmd {
 		if conn == nil {
 			return sessionRenamedMsg{SessionRenameMsg: rename, Err: errors.New("daemon connection unavailable")}
 		}
-		path := "/sessions/" + url.PathEscape(rename.ID)
-		s, err := daemon.RequestOperation[daemon.Session](context.Background(), conn, daemon.Operation{Name: "rename session", Method: http.MethodPatch, Path: path, Body: map[string]string{"name": rename.Name}, Policy: daemon.AuthRecovery})
+		s, err := daemon.RenameSession(context.Background(), conn, rename.ID, rename.Name)
 		return sessionRenamedMsg{SessionRenameMsg: rename, Session: s, Err: err}
 	}
 }
@@ -247,7 +245,7 @@ func (m *AppModel) deleteSessionCmd(id string) tea.Cmd {
 		if conn == nil {
 			return sessionDeletedMsg{ID: id, Err: errors.New("daemon connection unavailable")}
 		}
-		_, err := daemon.RequestOperation[struct{}](context.Background(), conn, daemon.Operation{Name: "delete session", Method: http.MethodDelete, Path: "/sessions/" + url.PathEscape(id) + "?tree=1", Body: nil, Policy: daemon.AuthRecovery})
+		_, err := daemon.DeleteSession(context.Background(), conn, id, true)
 		return sessionDeletedMsg{ID: id, Err: err}
 	}
 }
@@ -265,7 +263,7 @@ func (m *AppModel) createSessionCmd(gen int, workspace string) tea.Cmd {
 		if conn == nil {
 			return sessionCreatedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		s, err := daemon.RequestOperation[daemon.Session](context.Background(), conn, daemon.Operation{Name: "create session", Method: http.MethodPost, Path: "/sessions", Body: map[string]string{"workspace": workspace}, Policy: daemon.AuthRecovery})
+		s, err := daemon.CreateSession(context.Background(), conn, map[string]string{"workspace": workspace})
 		return sessionCreatedMsg{Session: s, Err: err, Gen: gen}
 	}
 }
@@ -317,16 +315,15 @@ func (m *AppModel) changeModelCmd(model, provider, effort string, raiseCap *bool
 	}
 	return func() tea.Msg {
 		if conn == nil || !hasSession {
-			return modelChangedMsg{Err: errors.New("no active session or connection"), Gen: gen}
+			return modelChangedMsg{Err: errors.New("no active session or connection"), SessionID: sessionID, Gen: gen}
 		}
 
 		if provider != "" && provider != currentProvider {
 			if err := daemon.CheckCapability(context.Background(), conn, "session_provider", "to switch providers"); err != nil {
-				return modelChangedMsg{Err: err, Gen: gen}
+				return modelChangedMsg{Err: err, SessionID: sessionID, Gen: gen}
 			}
 		}
 
-		path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(sessionID))
 		args := map[string]string{"model": model}
 		if provider != "" {
 			args["provider"] = provider
@@ -339,47 +336,25 @@ func (m *AppModel) changeModelCmd(model, provider, effort string, raiseCap *bool
 			"args": args,
 		}
 
-		res, err := daemon.RequestOperation[map[string]any](context.Background(), conn, daemon.Operation{Name: "change model", Method: http.MethodPost, Path: path, Body: body, Policy: daemon.AuthRecovery})
+		res, err := daemon.ExecuteCommand(context.Background(), conn, sessionID, body)
 		if err != nil {
-			return modelChangedMsg{Err: err, Gen: gen}
+			return modelChangedMsg{Err: err, SessionID: sessionID, Gen: gen}
 		}
-		// The cap follows the switch, so a failed switch changes nothing.
+		changed := modelChangedMsg{Selection: res.Model, SessionID: sessionID, Gen: gen}
+		// Keep the confirmed switch if the following cap update fails.
 		if saveCap {
 			state := "off"
 			if capEnabled {
 				state = "on"
 			}
-			capBody := map[string]any{"name": "/raise-cap", "args": map[string]string{"state": state, "model": model}}
-			if _, err := daemon.RequestOperation[map[string]any](context.Background(), conn, daemon.Operation{Name: "save context cap", Method: http.MethodPost, Path: path, Body: capBody, Policy: daemon.AuthRecovery}); err != nil {
-				return modelChangedMsg{Err: fmt.Errorf("switched model; context cap update: %w", err), Gen: gen}
+			capBody := map[string]any{"name": "/raise-cap", "args": map[string]string{"state": state, "model": res.Model.Model}}
+			if _, err := daemon.ExecuteCommand(context.Background(), conn, sessionID, capBody); err != nil {
+				changed.Err = fmt.Errorf("switched model; context cap update: %w", err)
+				return changed
 			}
 		}
 
-		newModel, newProvider := model, provider
-		var newProtocol, newEffort string
-
-		if r, ok := res["result"].(map[string]any); ok {
-			if s, _ := r["model"].(string); s != "" {
-				newModel = s
-			}
-			if s, _ := r["provider"].(string); s != "" {
-				newProvider = s
-			}
-			if s, _ := r["protocol"].(string); s != "" {
-				newProtocol = s
-			}
-			if s, ok := r["effort"].(string); ok {
-				newEffort = s
-			}
-		}
-
-		return modelChangedMsg{
-			Model:    newModel,
-			Provider: newProvider,
-			Protocol: newProtocol,
-			Effort:   newEffort,
-			Gen:      gen,
-		}
+		return changed
 	}
 }
 
@@ -394,46 +369,31 @@ func (m *AppModel) executeCommandCmd(name, args string, gen int) tea.Cmd {
 			return commandExecutedMsg{Name: name, Err: errors.New("no active session or connection"), Gen: gen}
 		}
 
-		path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(sessionID))
 		body := map[string]any{"name": name}
 		if args != "" {
 			body["arguments"] = args
 		}
 
-		res, err := daemon.RequestOperation[map[string]any](context.Background(), conn, daemon.Operation{Name: "execute command", Method: http.MethodPost, Path: path, Body: body, Policy: daemon.AuthRecovery})
+		res, err := daemon.ExecuteCommand(context.Background(), conn, sessionID, body)
 		if err != nil {
 			return commandExecutedMsg{Name: name, Err: err, Gen: gen}
 		}
 
 		msg := fmt.Sprintf("%s done", name)
 		var newEffort string
-		if res != nil {
-			if r, ok := res["result"].(map[string]any); ok {
-				var available []string
-				if name == "/effort" && args == "" {
-					if levels, ok := r["available"].([]any); ok {
-						for _, level := range levels {
-							if text, ok := level.(string); ok {
-								available = append(available, text)
-							}
-						}
-					}
-				}
-				if len(available) > 0 {
-					return commandExecutedMsg{Name: name, Available: available, SessionID: sessionID, Gen: gen}
-				}
-				if s, _ := r["effort"].(string); s != "" {
-					newEffort = s
-				}
-				if s, _ := r["message"].(string); s != "" {
-					msg = s
-				}
-			} else if s, _ := res["message"].(string); s != "" {
-				msg = s
+		if res.Effort != nil {
+			if args == "" {
+				return commandExecutedMsg{Name: name, Available: res.Effort.Available, SessionID: sessionID, Gen: gen}
 			}
+			newEffort = res.Effort.Effort
+			if res.Effort.Message != "" {
+				msg = res.Effort.Message
+			}
+		} else if res.Message != "" {
+			msg = res.Message
 		}
 
-		return commandExecutedMsg{Name: name, Message: msg, Effort: newEffort, Gen: gen}
+		return commandExecutedMsg{Name: name, Message: msg, Effort: newEffort, EffortChanged: res.Effort != nil, SessionID: sessionID, Gen: gen}
 	}
 }
 
@@ -466,20 +426,15 @@ func (m *AppModel) pollGlancesCmd(gen int) tea.Cmd {
 			return glancesPolledMsg{Gen: gen}
 		}
 
-		path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(sessionID))
 		var glances []PageGlance
 		for _, name := range pageNames {
 			body := map[string]any{"name": name, "args": map[string]string{}}
-			res, err := daemon.RequestOperation[map[string]any](context.Background(), conn, daemon.Operation{Name: "poll glances", Method: http.MethodPost, Path: path, Body: body, Policy: daemon.AuthRecovery})
+			res, err := daemon.ExecutePageCommand(context.Background(), conn, sessionID, body)
 			if err != nil {
-				continue
+				return glancesPolledMsg{Gen: gen, Err: err}
 			}
-			target := res
-			if res["result"] != nil {
-				target, _ = res["result"].(map[string]any)
-			}
-			if doc, err := parsePageDocument(target); err == nil && doc != nil && doc.Glance != nil {
-				glances = append(glances, *doc.Glance)
+			if res.Page.Glance != nil {
+				glances = append(glances, *res.Page.Glance)
 			}
 		}
 
@@ -717,6 +672,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Open {
 			if msg.Err != nil {
 				m.Chat.AddError(msg.Err.Error())
+				if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](msg.Err); uncertain {
+					return m, nil
+				}
 			}
 			return m, m.loadSettingsCmd(m.SettingsGen)
 		}
@@ -864,36 +822,30 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case modelChangedMsg:
-		if msg.Gen != m.ModelGen {
+		if msg.Gen != m.ModelGen || m.ActiveSession == nil || msg.SessionID != m.ActiveSession.ID {
 			return m, nil
+		}
+		if msg.Selection != nil {
+			selected := msg.Selection
+			m.ActiveSession.Model, m.Chat.Model = selected.Model, selected.Model
+			m.ActiveSession.Effort, m.Chat.Effort = selected.Effort, selected.Effort
+			m.ActiveSession.Provider, m.Chat.Provider = selected.Provider, selected.Provider
+			m.ActiveSession.Protocol = selected.Protocol
+			m.ModelPicker.Saving = false
+			if m.State == AppStateModelPicker {
+				m.State = AppStateChat
+			}
+			m.ClearNotices()
 		}
 		if msg.Err != nil {
+			message := operationError(msg.Err, "Model settings error: ", "Model settings may have changed; check them before trying again.")
 			if m.State == AppStateModelPicker {
 				m.ModelPicker.Saving = false
-				m.ModelPicker.Error = msg.Err.Error()
+				m.ModelPicker.Error = message
 			} else {
-				m.AddError("Model settings error: " + msg.Err.Error())
-			}
-			return m, nil
-		}
-		if m.ActiveSession != nil {
-			if msg.Model != "" {
-				m.ActiveSession.Model = msg.Model
-				m.Chat.Model = msg.Model
-			}
-			m.ActiveSession.Effort = msg.Effort
-			m.Chat.Effort = msg.Effort
-			if msg.Provider != "" {
-				m.ActiveSession.Provider = msg.Provider
-				m.Chat.Provider = msg.Provider
-			}
-			if msg.Protocol != "" {
-				m.ActiveSession.Protocol = msg.Protocol
+				m.AddError(message)
 			}
 		}
-		m.ModelPicker.Saving = false
-		m.State = AppStateChat
-		m.ClearNotices()
 		return m, nil
 
 	case commandExecutedMsg:
@@ -910,14 +862,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.AddNotice(msg.Message)
-		if msg.Effort != "" && m.ActiveSession != nil {
+		if msg.EffortChanged && m.ActiveSession != nil {
 			m.ActiveSession.Effort = msg.Effort
 			m.Chat.Effort = msg.Effort
 		}
 		return m, nil
 
 	case glancesPolledMsg:
-		if msg.Gen == m.GlanceGen && msg.Err == nil {
+		if msg.Err != nil {
+			return m, nil
+		}
+		if msg.Gen == m.GlanceGen {
 			m.Glances = msg.Glances
 			m.Chat.Glances = msg.Glances
 			m.Chat.SetSize(m.Width, m.Height)

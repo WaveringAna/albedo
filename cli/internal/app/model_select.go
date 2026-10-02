@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 
@@ -83,8 +81,7 @@ func switchModel(ctx context.Context, conn *daemon.Connection, sessionID string,
 	if err := daemon.CheckCapability(ctx, conn, "session_model", "to choose a model for an existing session"); err != nil {
 		return err
 	}
-	path := "/sessions/" + url.PathEscape(sessionID) + "/model"
-	_, err := daemon.RequestOperation[map[string]any](ctx, conn, daemon.Operation{Name: "switch model", Method: http.MethodPost, Path: path, Body: map[string]string{"model": choice.model, "provider": choice.provider}, Policy: daemon.AuthRecovery})
+	_, err := daemon.SelectModel(ctx, conn, sessionID, map[string]string{"model": choice.model, "provider": choice.provider})
 	return err
 }
 
