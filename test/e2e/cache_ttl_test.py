@@ -7,7 +7,8 @@ with a new more-specific one — without a restart — and a malformed file
 keeping the last good table. A turn's usage carries the steps its cached
 count fades through by that table, which the chat footer counts down from and
 which must survive a restart. It writes extensions.json and cache-ttl.json, so
-every test is exclusive, on a home of its own.
+tests that change those layers are exclusive, on a home of their own.
+Read-only default lookups and authentication share the daemon without overrides.
 
 The remote layer's fetch is background (like the models catalog's), so the
 fixture provider serves the remote table on a loopback URL and the test waits
@@ -97,6 +98,7 @@ def write_atomic(path, payload):
     temporary.replace(path)
 
 
+# exclusive: configures daemon-wide TTL/catalog layers and writes cache files
 @exclusive
 class CacheTtlTests(unittest.TestCase):
     def setUp(self):
@@ -144,41 +146,6 @@ class CacheTtlTests(unittest.TestCase):
 
     def entries(self, table):
         return {entry["id"]: entry for entry in table["entries"]}
-
-    def test_default_table_is_served_and_lookups_resolve(self):
-        table = self.table()
-        self.assertTrue(self.layers(table)["default"]["loaded"])
-        self.assertIn("priv/cache-ttl.json", self.layers(table)["default"]["path"])
-        self.assertFalse(self.layers(table)["local"]["loaded"])
-        # Every shipped entry, each tagged with the layer it came from.
-        self.assertEqual(
-            set(self.entries(table)), {e["id"] for e in SHIPPED["entries"]}
-        )
-        for entry in table["entries"]:
-            self.assertEqual(entry["layer"], "default")
-        # First match in table order: the subscription entry shadows nothing,
-        # but a specific model glob beats the general host entry after it.
-        claude = self.resolved("?extension=claude")
-        self.assertEqual(claude["id"], "claude-subscription")
-        self.assertEqual(claude["policy"], "refresh")
-        self.assertEqual(claude["clock"], "request")
-        self.assertEqual([t["seconds"] for t in claude["tiers"]], [300, 3600])
-        self.assertEqual(claude["read"], 0.1)
-        deepseek = self.resolved("?host=api.deepseek.com")
-        self.assertEqual(deepseek["id"], "deepseek")
-        self.assertEqual(deepseek["policy"], "evict")
-        self.assertEqual(deepseek["survival"]["typical"], 14400)
-        # Matching is case-insensitive.
-        self.assertEqual(self.resolved("?host=API.DEEPSEEK.COM")["id"], "deepseek")
-        # A model glob within a list of patterns, ahead of the plain host rule.
-        self.assertEqual(
-            self.resolved("?host=api.openai.com&model=gpt-5.6-turbo")["id"],
-            "openai-5.6",
-        )
-        self.assertEqual(
-            self.resolved("?host=api.openai.com&model=gpt-4o")["id"], "openai"
-        )
-        self.assertIsNone(self.resolved("?extension=never-heard-of-it"))
 
     def test_local_override_replaces_and_adds_without_restart(self):
         write_atomic(self.app.home / "cache-ttl.json", LOCAL_OVERRIDE)
@@ -394,6 +361,53 @@ class CacheTtlTests(unittest.TestCase):
         # restarted daemon still counts down from the same call.
         self.app.restart()
         self.assertEqual(latest_fade(), fading)
+
+
+class DefaultCacheTtlTests(unittest.TestCase):
+    table = CacheTtlTests.table
+    resolved = CacheTtlTests.resolved
+    layers = CacheTtlTests.layers
+    entries = CacheTtlTests.entries
+
+    def setUp(self):
+        self.app = Albedo()
+        self.app.__enter__()
+        self.addCleanup(self.app.__exit__, None, None, None)
+
+    def test_default_table_is_served_and_lookups_resolve(self):
+        table = self.table()
+        self.assertTrue(self.layers(table)["default"]["loaded"])
+        self.assertIn("priv/cache-ttl.json", self.layers(table)["default"]["path"])
+        self.assertFalse(self.layers(table)["local"]["loaded"])
+        # Every shipped entry, each tagged with the layer it came from.
+        self.assertEqual(
+            set(self.entries(table)), {e["id"] for e in SHIPPED["entries"]}
+        )
+        for entry in table["entries"]:
+            self.assertEqual(entry["layer"], "default")
+        # First match in table order: the subscription entry shadows nothing,
+        # but a specific model glob beats the general host entry after it.
+        claude = self.resolved("?extension=claude")
+        self.assertEqual(claude["id"], "claude-subscription")
+        self.assertEqual(claude["policy"], "refresh")
+        self.assertEqual(claude["clock"], "request")
+        self.assertEqual([t["seconds"] for t in claude["tiers"]], [300, 3600])
+        self.assertEqual(claude["read"], 0.1)
+        deepseek = self.resolved("?host=api.deepseek.com")
+        self.assertEqual(deepseek["id"], "deepseek")
+        self.assertEqual(deepseek["policy"], "evict")
+        self.assertEqual(deepseek["survival"]["typical"], 14400)
+        # Matching is case-insensitive.
+        self.assertEqual(self.resolved("?host=API.DEEPSEEK.COM")["id"], "deepseek")
+        # A model glob within a list of patterns, ahead of the plain host rule.
+        self.assertEqual(
+            self.resolved("?host=api.openai.com&model=gpt-5.6-turbo")["id"],
+            "openai-5.6",
+        )
+        self.assertEqual(
+            self.resolved("?host=api.openai.com&model=gpt-4o")["id"], "openai"
+        )
+        self.assertIsNone(self.resolved("?extension=never-heard-of-it"))
 
     def test_route_requires_authentication(self):
         request = urllib.request.Request(self.app.base + "/cache-ttl")

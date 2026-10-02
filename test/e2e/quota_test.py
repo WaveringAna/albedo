@@ -71,6 +71,7 @@ except Exception:
 """
 
 
+# exclusive: configures global quota cadence, credentials, and usage-core environment
 @exclusive
 class QuotaTests(unittest.TestCase):
     def setUp(self):

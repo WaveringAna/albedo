@@ -90,6 +90,7 @@ def processes(*needles):
     ]
 
 
+# exclusive: sets daemon PATH for loopback SSH and local Python wrappers
 @exclusive
 class RemoteKernelTests(unittest.TestCase):
     remote_home: Path

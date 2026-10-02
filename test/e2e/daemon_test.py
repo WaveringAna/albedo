@@ -163,6 +163,7 @@ class DaemonTest(unittest.TestCase):
             )
             self.assertFalse(pages[-1]["more"])
 
+    # exclusive: restarts the daemon
     @exclusive
     def test_a_clean_restart_leaves_no_registry_crash_loop(self):
         # Shutdown closes the store before the VM halts, and the supervisor
@@ -189,6 +190,7 @@ class DaemonTest(unittest.TestCase):
             for marker in ("Noproc", "reached_max_restart_intensity", "callee exited"):
                 self.assertNotIn(marker, tail)
 
+    # exclusive: shuts down and restarts the daemon
     @exclusive
     def test_requests_during_a_restart_are_answered_not_crashed(self):
         # Shutdown closes each session and then the store before the VM halts,
@@ -404,6 +406,7 @@ class DaemonTest(unittest.TestCase):
                         )
             self.assertEqual(app.history(session), before)
 
+    # exclusive: changes daemon startup open-file limits
     @exclusive
     def test_a_daemon_started_from_a_macos_shell_answers_hundreds_of_connections(self):
         # macOS starts a shell at a soft limit of 256 open files. The CLI, like
@@ -431,6 +434,7 @@ class DaemonTest(unittest.TestCase):
                 response.read()
                 self.assertEqual(response.status, 200)
 
+    # exclusive: changes daemon open-file limits and crashes its listener
     @exclusive
     def test_a_listener_out_of_files_comes_back_on_the_daemons_port(self):
         # Accepts past the open-file limit crash glisten's acceptors until mist

@@ -67,6 +67,7 @@ class StreamReplayTest(unittest.TestCase):
             prompts,
         )
 
+    # exclusive: enables daemon inspection at startup
     @exclusive
     def test_old_actor_cursor_inside_replacement_window_resets_durable_history(self):
         def prepare(app):
@@ -87,6 +88,7 @@ class StreamReplayTest(unittest.TestCase):
             self.assertNotEqual(replay["generation"], old["generation"])
             self.assertEqual(replay["generation"], current["generation"])
 
+    # exclusive: restarts the daemon
     @exclusive
     def test_old_daemon_cursor_resets_durable_history(self):
         with Albedo(self.provider) as app:
@@ -127,6 +129,7 @@ class StreamReplayTest(unittest.TestCase):
             self.assertEqual(keepalive["generation"], replay["generation"])
             self.assertEqual(keepalive["cursor"], replay["cursor"])
 
+    # exclusive: renames the global transcript table
     @exclusive
     def test_failed_transcript_read_emits_failure_without_replacement_cursor(self):
         with Albedo(self.provider) as app:

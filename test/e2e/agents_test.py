@@ -145,7 +145,6 @@ class AgentsTests(unittest.TestCase):
             [m["name"] for m in self.api(f"/sessions/{parent}/children")], ["coder"]
         )
 
-    @exclusive
     def test_tree_snapshot_and_event_stream(self):
         parent = self.app.session()
         heard = self.listen()
@@ -176,7 +175,6 @@ class AgentsTests(unittest.TestCase):
         except AssertionError:
             self.fail(f"missing stream events: {expected - kinds()}; got {kinds()}")
 
-    @exclusive
     def test_rename_keeps_family_address_and_reports_stream_event(self):
         parent = self.app.session()
         child = self.spawn(parent)["session"]["id"]
@@ -381,6 +379,7 @@ class AgentsTests(unittest.TestCase):
             sum("/beta/" in r["path"] for r in self.provider.requests), 2
         )
 
+    # exclusive: writes the daemon-wide models.json catalog
     @exclusive
     def test_generic_profile_lists_its_endpoints_catalog_models(self):
         parent = self.app.session()

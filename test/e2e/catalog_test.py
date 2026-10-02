@@ -8,7 +8,6 @@ import urllib.error
 from harness import Albedo, Provider, exclusive, text
 
 
-@exclusive
 class CatalogTest(unittest.TestCase):
     def setUp(self):
         self.provider = Provider(lambda _request: text("ok"))
@@ -122,10 +121,12 @@ class CatalogTest(unittest.TestCase):
     def test_instruction_links_follow_daemon_policy_and_exclude_system_files(self):
         directory = self.app.workspace / ".agents"
         directory.mkdir()
-        external = self.app.root / "external.md"
+        external = self.app.workspace.with_name(
+            self.app.workspace.name + "-external.md"
+        )
         external.write_text("LINKED_INSTRUCTION")
         (directory / "linked.md").symlink_to(external)
-        (directory / "broken.md").symlink_to(self.app.root / "missing")
+        (directory / "broken.md").symlink_to(self.app.workspace / "missing")
         (directory / "directory.md").symlink_to(
             self.app.workspace, target_is_directory=True
         )
@@ -151,12 +152,14 @@ class CatalogTest(unittest.TestCase):
             "LINKED_INSTRUCTION", self.provider.requests[-1]["request"]["instructions"]
         )
 
+    # exclusive: GET /settings validates every profile, so it fails while any concurrent test holds an invalid one
+    @exclusive
     def test_workspace_move_changes_catalog_without_using_client_workspace(self):
         first = self.write_skill(
             self.app.workspace / ".albedo/skills", "first", "FIRST_WORKSPACE"
         )
         (self.app.workspace / "AGENTS.md").write_text("FIRST_INSTRUCTION")
-        other = self.app.root / "other-workspace"
+        other = self.app.workspace.with_name(self.app.workspace.name + "-other")
         other.mkdir()
         second = self.write_skill(
             other / ".albedo/skills", "second", "SECOND_WORKSPACE"
@@ -177,7 +180,11 @@ class CatalogTest(unittest.TestCase):
         }
         self.assertIn("/second", commands)
         self.assertNotIn("/first", commands)
-        preferences = self.request("/settings")["capabilities"]
+        preferences = (
+            self.request("/settings")["capabilities"]
+            .get("sessions", {})
+            .get(self.session)
+        )
         previous = next(
             row for row in before["candidates"] if row["source"] == str(first)
         )
@@ -193,12 +200,19 @@ class CatalogTest(unittest.TestCase):
             )
         self.assertEqual(failure.exception.code, 409)
         self.assertEqual(json.load(failure.exception)["code"], "stale_catalog")
-        self.assertEqual(self.request("/settings")["capabilities"], preferences)
+        self.assertEqual(
+            self.request("/settings")["capabilities"]
+            .get("sessions", {})
+            .get(self.session),
+            preferences,
+        )
         self.assertEqual(
             {row["name"] for row in self.request(f"/sessions/{self.session}/commands")},
             commands,
         )
 
+    # exclusive: writes global preferences and asserts unchanged global file bytes
+    @exclusive
     def test_stale_updates_do_not_write_preferences_or_reload_disk_changes(self):
         skill = self.write_skill(
             self.app.workspace / ".albedo/skills", "stale", "PREPARED_DESCRIPTION"
@@ -288,6 +302,8 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(settings_file.read_bytes(), preferences)
         self.assertEqual(self.request(f"/sessions/{self.session}/commands"), commands)
 
+    # exclusive: GET /settings validates every profile, so it fails while any concurrent test holds an invalid one
+    @exclusive
     def test_instruction_content_change_rejects_stale_save_with_restored_mtime(self):
         instruction = self.app.workspace / "AGENTS.md"
         instruction.write_text("FIRST_INSTRUCTION")
@@ -298,7 +314,11 @@ class CatalogTest(unittest.TestCase):
             row for row in initial["candidates"] if row["source"] == str(instruction)
         )
         row_id = row["id"]
-        preferences = self.request("/settings")["capabilities"]
+        preferences = (
+            self.request("/settings")["capabilities"]
+            .get("sessions", {})
+            .get(self.session)
+        )
         original_stat = instruction.stat()
         original_contents = instruction.read_bytes()
         replacement = original_contents.replace(b"FIRST", b"OTHER")
@@ -318,7 +338,12 @@ class CatalogTest(unittest.TestCase):
             )
         self.assertEqual(failure.exception.code, 409)
         self.assertEqual(json.load(failure.exception)["code"], "stale_catalog")
-        self.assertEqual(self.request("/settings")["capabilities"], preferences)
+        self.assertEqual(
+            self.request("/settings")["capabilities"]
+            .get("sessions", {})
+            .get(self.session),
+            preferences,
+        )
         refreshed = self.request(self.route)
         self.assertNotEqual(refreshed["revision"], initial["revision"])
         self.assertEqual(self.request(self.route)["revision"], refreshed["revision"])
@@ -330,6 +355,8 @@ class CatalogTest(unittest.TestCase):
             )
         )
 
+    # exclusive: writes skills and instructions in the daemon user home
+    @exclusive
     def test_session_in_daemon_home_has_unique_rows_and_distinct_instruction_choices(
         self,
     ):

@@ -59,6 +59,7 @@ class StorageTests(unittest.TestCase):
         os.utime(path, (old, old))
         return path
 
+    # exclusive: restarts the daemon around offline maintenance
     @exclusive
     def test_maintenance_refuses_startup_and_second_cleanup_then_releases(self):
         with Albedo(providers={}) as app:
@@ -101,6 +102,7 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(backup.read_bytes(), b"approved backup")
             self.assertEqual(app.api("/health").status, 200)
 
+    # exclusive: suspends the daemon and inspects global storage
     @exclusive
     @unittest.skipUnless(os.path.isdir("/proc/self"), "requires Linux process status")
     def test_unreachable_daemon_keeps_cleanup_out(self):
@@ -153,6 +155,7 @@ class StorageTests(unittest.TestCase):
             finally:
                 os.kill(pid, signal.SIGCONT)
 
+    # exclusive: restarts the daemon around offline maintenance
     @exclusive
     @unittest.skipUnless(hasattr(os, "pidfd_open"), "requires Linux pidfds")
     def test_cli_death_and_signals_stop_its_mutation_helper(self):
@@ -233,6 +236,7 @@ class StorageTests(unittest.TestCase):
 
             app.restart(prepare=maintenance)
 
+    # exclusive: restarts the daemon and races startup against offline cleanup
     @exclusive
     def test_daemon_started_after_preview_refuses_cleanup_before_mutation(self):
         with Albedo(providers={}) as app:
@@ -293,6 +297,7 @@ class StorageTests(unittest.TestCase):
 
             app.restart(prepare=maintenance)
 
+    # exclusive: restarts the daemon and mutates global storage offline
     @exclusive
     def test_successful_cleanup_retains_session_files_and_releases_ownership(self):
         with Albedo() as app:
@@ -353,6 +358,7 @@ class StorageTests(unittest.TestCase):
                 self.assertEqual(response.status, 200)
             self.assertEqual(app.history(session), history)
 
+    # exclusive: mutates global storage and asserts complete daemon-wide reports
     @exclusive
     def test_online_report_uses_daemon_storage_without_client_disk_or_python(self):
         with Albedo() as app:
@@ -491,7 +497,7 @@ class StorageTests(unittest.TestCase):
                 record = json.loads((client_home / "daemon.json").read_text())
                 self.assertEqual(record, app.connection)
 
-    @exclusive
+    # Only the private client home changes; the daemon is not stopped or mutated.
     def test_offline_reports_supported_older_layouts_and_rejects_unknown_without_changes(
         self,
     ):
@@ -595,7 +601,7 @@ class StorageTests(unittest.TestCase):
                 {path.name: path.read_bytes() for path in home.iterdir()}, originals
             )
 
-    @exclusive
+    # Only the private client home changes; the daemon is not stopped or mutated.
     def test_report_mode_selection_never_launches_or_hides_discovery_and_auth_failures(
         self,
     ):
@@ -654,7 +660,7 @@ class StorageTests(unittest.TestCase):
                         {path.name for path in home.iterdir()}, {"daemon.json"}
                     )
 
-    @exclusive
+    # The diagnostic and its snapshot use private homes, tools, and scratch paths.
     @unittest.skipUnless(hasattr(os, "pidfd_open"), "requires Linux pidfds")
     def test_canceling_offline_diagnostic_reaps_child_and_removes_private_snapshot(
         self,

@@ -65,6 +65,7 @@ CLAUDE_MODELS = [
 ]
 
 
+# exclusive: writes global model caches/settings and reloads provider catalogs
 @exclusive
 class ModelCatalogReloadTests(unittest.TestCase):
     def setUp(self):
@@ -151,6 +152,7 @@ class ModelCatalogReloadTests(unittest.TestCase):
         self.assertEqual(small["efforts"], [])
 
 
+# exclusive: seeds global models catalog; several tests restart the daemon
 @exclusive
 class ModelCatalogSelectionTests(unittest.TestCase):
     """Disputed gateway facts must not borrow one provider's larger limits."""
@@ -294,6 +296,7 @@ class ModelCatalogSelectionTests(unittest.TestCase):
             self.assertIsNone(json.load(response)["effort"])
 
 
+# exclusive: seeds global Codex catalog and restarts the daemon
 @exclusive
 class CodexCachedCatalogTests(unittest.TestCase):
     """Account caches keep picker precedence and facts across restart."""

@@ -178,6 +178,7 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual([event["operationId"] for event in users], [operation])
 
 
+# exclusive: crashes and restarts the daemon
 @exclusive
 class WaitingOperationsTests(unittest.TestCase):
     post = OperationsTests.post
@@ -296,6 +297,7 @@ class WaitingOperationsTests(unittest.TestCase):
         )
 
 
+# exclusive: installs a global SQLite trigger and restarts the daemon
 @exclusive
 class BlockedOperationsTests(unittest.TestCase):
     app: Albedo
@@ -360,6 +362,7 @@ class BlockedOperationsTests(unittest.TestCase):
         self.assertEqual(json.load(replay.exception), rejection)
 
 
+# exclusive: changes daemon PATH to gate kernel startup; also tests restart
 @exclusive
 class PreparingOperationsTests(unittest.TestCase):
     opened: Path

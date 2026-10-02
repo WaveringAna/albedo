@@ -17,7 +17,6 @@ from image_limits_test import png
 SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
 
 
-@exclusive
 class OperationLifecycleTests(unittest.TestCase):
     def setUp(self):
         self.provider = Provider(lambda request: text("done"))
@@ -46,6 +45,8 @@ class OperationLifecycleTests(unittest.TestCase):
             time.sleep(0.05)
         self.fail(f"operation was not committed: {receipt}")
 
+    # exclusive: installs a global database trigger and counts all sessions
+    @exclusive
     def test_creation_failure_rolls_back_session_and_receipt(self):
         operation = operation_id()
         request = {
@@ -76,6 +77,8 @@ class OperationLifecycleTests(unittest.TestCase):
         self.assertEqual(self.post("/sessions", request), created)
         self.assertEqual(self.receipt(operation)["status"], "accepted")
 
+    # exclusive: installs a global database trigger
+    @exclusive
     def test_admission_failure_can_retry_original_id(self):
         session = self.app.session()
         operation = operation_id()
@@ -113,6 +116,8 @@ class OperationLifecycleTests(unittest.TestCase):
                 1,
             )
 
+    # exclusive: installs a global database trigger and restarts the daemon
+    @exclusive
     def test_consumption_failure_keeps_pending_input_until_storage_recovers(self):
         session = self.app.session()
         operation = operation_id()
@@ -180,6 +185,8 @@ class OperationLifecycleTests(unittest.TestCase):
                 1,
             )
 
+    # exclusive: measures global storage growth and restarts the daemon
+    @exclusive
     def test_repeated_image_commits_grow_only_compact_metadata(self):
         session = self.app.session()
         width, height = 256, 256
@@ -279,6 +286,8 @@ class OperationLifecycleTests(unittest.TestCase):
                     0,
                 )
 
+    # exclusive: restarts the daemon and counts all sessions
+    @exclusive
     def test_rejected_creation_replays_after_workspace_is_repaired(self):
         operation = operation_id()
         workspace = self.app.workspace / "missing"
@@ -302,6 +311,8 @@ class OperationLifecycleTests(unittest.TestCase):
                 db.execute("SELECT count(*) FROM sessions").fetchone()[0], 0
             )
 
+    # exclusive: installs global database triggers and restarts the daemon
+    @exclusive
     def test_failed_interrupt_does_not_discard_pending_input(self):
         session = self.app.session()
         operation = operation_id()

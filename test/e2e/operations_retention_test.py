@@ -11,6 +11,7 @@ from harness import Albedo, Provider, exclusive, operation_id, text
 RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 
 
+# exclusive: sets the daemon schedule tick; tests also restart or mutate global tables
 @exclusive
 class OperationRetentionTests(unittest.TestCase):
     def setUp(self):

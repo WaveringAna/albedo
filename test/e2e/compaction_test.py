@@ -1,9 +1,11 @@
 """Image tool outputs reach the model, and compaction reclaims the ones it evicts."""
 
+import base64
 import hashlib
 import json
 import sqlite3
 import unittest
+import uuid
 
 from harness import Albedo, Provider, error, exclusive, python, text
 
@@ -57,6 +59,7 @@ class ImageToolOutputTest(unittest.TestCase):
         finally:
             provider.close()
 
+    # exclusive: restarts the daemon
     @exclusive
     def test_top_level_and_nested_images_survive_restart(self):
         code = ""
@@ -101,6 +104,11 @@ class ImageToolOutputTest(unittest.TestCase):
             provider.close()
 
     def test_compaction_elides_evicted_tool_images_only(self):
+        # Unique hashes keep global image reclamation assertions fixture-local.
+        suffix = uuid.uuid4().bytes
+        shown_image = base64.b64encode(base64.b64decode(SHOWN) + suffix).decode()
+        uploaded_image = base64.b64encode(base64.b64decode(UPLOADED) + suffix).decode()
+
         def reply(request):
             inputs = request["input"]
             user = next(
@@ -115,15 +123,15 @@ class ImageToolOutputTest(unittest.TestCase):
                 return text("older conversation summary")
             if inputs[-1].get("type") != "function_call_output" and user == "show":
                 return python(
-                    "show_image(__import__('base64').b64decode('" + SHOWN + "'))"
+                    "show_image(__import__('base64').b64decode('" + shown_image + "'))"
                 )
             return text("done")
 
         provider = Provider(reply)
         try:
             with Albedo(provider, protocol="responses") as app:
-                shown = hashlib.sha256(SHOWN.encode()).hexdigest()
-                uploaded = hashlib.sha256(UPLOADED.encode()).hexdigest()
+                shown = hashlib.sha256(shown_image.encode()).hexdigest()
+                uploaded = hashlib.sha256(uploaded_image.encode()).hexdigest()
                 database = f"file:{app.home / 'albedo.sqlite'}?mode=ro"
 
                 def converse(sid, prompts):
@@ -151,10 +159,10 @@ class ImageToolOutputTest(unittest.TestCase):
                         "content": "keep this upload",
                         "image": {
                             "mimeType": "image/png",
-                            "data": UPLOADED,
+                            "data": uploaded_image,
                             "width": 18,
                             "height": 3,
-                            "bytes": 24,
+                            "bytes": len(base64.b64decode(uploaded_image)),
                         },
                     },
                 ).close()
@@ -180,10 +188,11 @@ class ImageToolOutputTest(unittest.TestCase):
                 converse(recent, ["first", "second", "third", "show"])
                 self.assertEqual(rows(recent, "transcript", shown), 1)
                 self.assertEqual(rows(recent, "cells", shown), 1)
-                self.assertEqual(rows(recent, "cells", SHOWN), 0)
+                self.assertEqual(rows(recent, "cells", shown_image), 0)
         finally:
             provider.close()
 
+    # exclusive: changes global rolling settings and restarts the daemon
     @exclusive
     def test_automatic_compaction_elides_evicted_tool_images(self):
         fail_summary = True

@@ -29,6 +29,7 @@ PENDING = {
 }
 
 
+# exclusive: replaces the global models catalog and asserts catalog resolution
 @exclusive
 class ContextTest(unittest.TestCase):
     def setUp(self):

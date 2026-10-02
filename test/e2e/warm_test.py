@@ -158,6 +158,7 @@ class WarmTest(unittest.TestCase):
         self.assertEqual(len(self.requests("/parent/")), 1)
         self.assertEqual([row["kind"] for row in self.rows(parent)], ["turn"])
 
+    # exclusive: writes daemon-wide cache TTL and warmer settings
     @exclusive
     def test_the_warmer_is_off_unless_enabled(self):
         settings = json.loads((self.app.home / "extensions.json").read_text())
@@ -165,6 +166,7 @@ class WarmTest(unittest.TestCase):
         (self.app.home / "extensions.json").write_text(json.dumps(settings))
         self.assert_no_pings(*self.swarm())
 
+    # exclusive: writes daemon-wide cache TTL and warmer settings
     @exclusive
     def test_a_session_that_disables_the_warmer_is_not_pinged(self):
         parent = self.app.session()
@@ -176,6 +178,7 @@ class WarmTest(unittest.TestCase):
         )
         self.assert_no_pings(*self.swarm(parent))
 
+    # exclusive: writes daemon-wide cache TTL and warmer settings
     @exclusive
     def test_pings_repeat_the_last_request_and_stop_at_the_budget(self):
         parent, child = self.swarm()
@@ -242,6 +245,7 @@ class WarmTest(unittest.TestCase):
         self.assertEqual(len(turns), 2)
         self.assertIn("scout finished", json.dumps(turns[1]))
 
+    # exclusive: writes daemon-wide cache TTL and warmer settings
     @exclusive
     def test_a_ping_restarts_the_cached_counts_fade(self):
         parent, child = self.swarm()
@@ -278,6 +282,7 @@ class WarmTest(unittest.TestCase):
         self.app.idle(child)
         self.app.idle(parent)
 
+    # exclusive: writes daemon-wide cache TTL and warmer settings
     @exclusive
     def test_a_submit_during_warming_answers_and_warming_ends_with_the_children(self):
         parent, child = self.swarm()

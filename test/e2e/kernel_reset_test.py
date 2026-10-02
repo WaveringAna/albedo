@@ -18,6 +18,7 @@ def latest_user(request):
     ]
 
 
+# exclusive: crashes and restarts the daemon
 @exclusive
 class KernelResetTests(unittest.TestCase):
     def setUp(self):

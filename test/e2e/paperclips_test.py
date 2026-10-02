@@ -287,6 +287,7 @@ class PaperclipsTests(unittest.TestCase):
                 if vent_id is not None:
                     self.remove_vents(app, reader, [vent_id])
 
+    # exclusive: restarts the daemon to load seeded vents
     @exclusive
     def test_an_undeliverable_reply_is_kept_on_the_vent(self):
         """A reply survives its note: the answer is durable on the vent even

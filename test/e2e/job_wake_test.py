@@ -95,6 +95,7 @@ class JobWakeTests(JobWakeCase):
         self.assertEqual(len(self.users()), 3)
 
 
+# exclusive: changes daemon idle sweep timing
 @exclusive
 class IdleSweepTests(JobWakeCase):
     idle_seconds = IDLE_SECONDS

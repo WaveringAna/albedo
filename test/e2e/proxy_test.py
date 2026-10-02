@@ -164,6 +164,7 @@ class ProxyTests(unittest.TestCase):
         record = self.provider.requests[-1]
         return record["path"], record["request"]
 
+    # exclusive: toggles the global proxy gateway enablement
     @exclusive
     def test_enablement_listing_and_profile_errors(self):
         self.app.write_extensions({"enabled": {"proxy": False}})

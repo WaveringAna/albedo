@@ -39,6 +39,7 @@ def legacy_cell(cell_id):
     )
 
 
+# exclusive: seeds legacy global schema and restarts the daemon
 @exclusive
 class MigrationsTest(unittest.TestCase):
     def test_installed_extensions_upgrade_legacy_tables_before_their_routes_run(self):

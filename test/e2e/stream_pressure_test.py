@@ -76,6 +76,7 @@ def unread_stream(app, path):
     return connection
 
 
+# exclusive: enables daemon inspection at startup and measures global subscribers
 @exclusive
 class StreamPressureTest(unittest.TestCase):
     def setUp(self):

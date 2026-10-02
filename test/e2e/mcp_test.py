@@ -14,6 +14,8 @@ from harness import Albedo, Provider, exclusive, Reply, text
 SERVER = Path(__file__).with_name("fake_mcp_server.py")
 
 
+# exclusive: fixture configures global MCP servers, credentials, and daemon environment
+@exclusive
 class McpTests(unittest.TestCase):
     def setUp(self):
         self.message = "ping from albedo"
@@ -135,7 +137,6 @@ class McpTests(unittest.TestCase):
         self.assertIn("MCP request failed", json.loads(output)["error"])
         self.assertIn("done", json.dumps(self.app.history(self.session)))
 
-    @exclusive
     def test_disable_closes_server_and_removes_tools(self):
         self.extension({"name": "mcp", "enabled": True})
         disabled = self.extension({"name": "mcp", "enabled": False})
@@ -150,7 +151,6 @@ class McpTests(unittest.TestCase):
             any(tool["name"].startswith("mcp_") for tool in requests[0]["tools"])
         )
 
-    @exclusive
     def test_insecure_credentials_fail_closed(self):
         credentials = self.app.home / "creds.json"
         credentials.chmod(0o644)
@@ -160,7 +160,6 @@ class McpTests(unittest.TestCase):
         credentials.chmod(0o600)
         self.assertFalse(self.extension()["enabled"])
 
-    @exclusive
     def test_an_unavailable_server_is_skipped_and_the_rest_load(self):
         path = self.app.home / "extensions.json"
         settings = json.loads(path.read_text())
@@ -175,7 +174,6 @@ class McpTests(unittest.TestCase):
         self.assertEqual(len(advertised), 1)
         self.assertTrue(advertised[0].startswith("mcp_fake_echo_"))
 
-    @exclusive
     def test_a_server_that_comes_online_joins_the_session_after_a_turn(self):
         late = self.app.root / "late_server.py"
         self.configure(self.app, [str(late)], startup=3000, retry=200)

@@ -45,6 +45,7 @@ def kernels(daemon_pid):
     return owned
 
 
+# exclusive: changes the daemon idle timeout and counts all its kernels
 @exclusive
 class IdleReapTests(unittest.TestCase):
     def setUp(self):

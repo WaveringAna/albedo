@@ -93,6 +93,7 @@ class LocationsTest(unittest.TestCase):
 
     # `albedo new` takes the active profile, which other tests on the shared
     # daemon rewrite; a daemon of its own keeps that profile this fixture's.
+    # exclusive: CLI new depends on the active provider profile other fixtures rewrite
     @exclusive
     def test_the_cli_starts_a_remote_session_without_resolving_it_locally(self):
         session = json.loads(self.app.cli("new", f"{HOST}:/srv/cli"))["session"]

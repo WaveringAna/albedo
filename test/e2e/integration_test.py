@@ -84,6 +84,7 @@ class IntegrationTest(unittest.TestCase):
         app.prompt(session, message).close()
         app.idle(session, timeout=90)
 
+    # exclusive: restarts the daemon and installs a global database trigger
     @exclusive
     def test_session_start_refuses_an_unsaved_default_effort(self):
         app = self.app_for("chat_completions")
@@ -135,6 +136,7 @@ class IntegrationTest(unittest.TestCase):
                 "medium",
             )
 
+    # exclusive: changes scheduler timing and installs a global database trigger
     @exclusive
     def test_scheduler_reports_a_failed_occurrence_write_and_retries(self):
         def prepare(app):
@@ -173,6 +175,7 @@ class IntegrationTest(unittest.TestCase):
         app.idle(session)
         self.assertTrue(self.provider.requests)
 
+    # exclusive: renames the global session_family table
     @exclusive
     def test_deletion_refuses_a_failed_child_lookup(self):
         app = self.app_for("chat_completions")
@@ -255,6 +258,7 @@ class IntegrationTest(unittest.TestCase):
         self.assertTrue(any(call.startswith("fixture-call-") for call in calls))
         self.assertTrue(set(calls) & set(outputs))
 
+    # exclusive: tests unconfigured startup and legacy migration
     @exclusive
     def test_unconfigured_startup_and_legacy_provider_migration(self):
         def prepare(app):
@@ -477,6 +481,7 @@ class IntegrationTest(unittest.TestCase):
             )
         )
 
+    # exclusive: restarts the daemon
     @exclusive
     def test_workspace_repair_validates_path_and_preserves_history(self):
         app = self.app_for("responses")
@@ -540,6 +545,7 @@ class IntegrationTest(unittest.TestCase):
         info = next(s for s in self.read(app, "/sessions") if s["id"] == session)
         self.assertEqual(info["workspace"], str(moved))
 
+    # exclusive: restarts the daemon
     @exclusive
     def test_tools_trace_detach_and_fork_checkpoint(self):
         for protocol in ("responses", "chat_completions"):
@@ -677,6 +683,7 @@ class IntegrationTest(unittest.TestCase):
                     timestamps,
                 )
 
+    # exclusive: changes global provider settings and restarts the daemon
     @exclusive
     def test_provider_switch_projects_history_across_protocols_and_restart(self):
         for protocol in ("responses", "chat_completions"):
@@ -828,6 +835,7 @@ class IntegrationTest(unittest.TestCase):
                     restarted[0], protocol, users + ["after persisted restart"]
                 )
 
+    # exclusive: changes global provider settings and restarts the daemon
     @exclusive
     def test_provider_config_reload_and_interrupt_recovery(self):
         for protocol in ("responses", "chat_completions"):

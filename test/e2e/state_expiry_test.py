@@ -33,6 +33,7 @@ def wait_until(condition, seconds, message):
     raise AssertionError(message)
 
 
+# exclusive: changes daemon idle/expiry sweep timing and tests startup cleanup
 @exclusive
 class StateExpiryTests(unittest.TestCase):
     def setUp(self):
@@ -96,6 +97,7 @@ class StateExpiryTests(unittest.TestCase):
         self.assertTrue(young.exists(), "a young orphan was deleted")
 
 
+# exclusive: changes daemon retention/idle timing and restarts the daemon
 @exclusive
 class StateRetentionTests(unittest.TestCase):
     def setUp(self):

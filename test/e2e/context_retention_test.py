@@ -10,6 +10,7 @@ import unittest
 from harness import Albedo, Provider, Reply, ROOT, exclusive
 
 
+# exclusive: enables daemon inspection and global rolling settings
 @exclusive
 class ContextRetentionTest(unittest.TestCase):
     def test_eviction_releases_replay_while_inspection_survives(self):

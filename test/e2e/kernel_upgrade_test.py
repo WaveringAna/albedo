@@ -123,6 +123,7 @@ class Swaps(unittest.TestCase):
         self.app.idle(self.session)
 
 
+# exclusive: boots an editable Python bundle and restarts the daemon
 @exclusive
 class KernelUpgradeTests(Swaps):
     def setUp(self):
@@ -179,6 +180,7 @@ class KernelUpgradeTests(Swaps):
         self.assertFalse(self.stale())
 
 
+# exclusive: restarts the daemon and changes global extension enablement
 @exclusive
 class ModuleSkewTests(Swaps):
     """The session's module set changes while the daemon is down: disabling
@@ -224,6 +226,7 @@ class ModuleSkewTests(Swaps):
         self.assertTrue(swapped["value"].startswith("(41, False,"), swapped)
 
 
+# exclusive: restarts the daemon and edits its kernel outbox offline
 @exclusive
 class ProtocolSkewTests(Swaps):
     """The kernel's session layer is told to speak protocol 2 from inside a

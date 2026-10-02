@@ -173,6 +173,7 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("NEW_APPEND_ONLY", current["instructions"])
         self.assertNotIn("CUSTOM_APPEND_ONLY", current["instructions"])
 
+    # exclusive: writes global home instruction files
     @exclusive
     def test_system_files_share_instruction_discovery_paths(self):
         home = self.app.root / "user-home"
@@ -239,6 +240,7 @@ class ExtensionTests(unittest.TestCase):
         )
         self.turn("next turn still works")
 
+    # exclusive: writes global home instruction files
     @exclusive
     def test_instruction_locations_concatenate_in_scope_and_directory_order(self):
         home = self.app.root / "user-home"
@@ -291,6 +293,7 @@ class ExtensionTests(unittest.TestCase):
         )
         self.assertIn(".agents/system.md must be UTF-8 text", error)
 
+    # exclusive: writes daemon-wide capabilities.json
     @exclusive
     def test_instruction_discovery_limit_applies_before_capability_filtering(self):
         directory = self.app.workspace / ".agents"
@@ -406,6 +409,7 @@ class ExtensionTests(unittest.TestCase):
         )
         self.assertIn("BODY_MUST_NOT_AUTOLOAD", activation["instructions"])
 
+    # exclusive: writes models.json and /model saves global defaults
     @exclusive
     def test_python_activation_and_user_only_model_switch(self):
         (self.app.home / "models.json").write_text("{}")
@@ -602,6 +606,7 @@ class ExtensionTests(unittest.TestCase):
         (request,) = self.turn("after override")
         self.assertNotIn("duplicate skill", json.dumps(request["input"]))
 
+    # exclusive: restarts the daemon
     @exclusive
     def test_reload_pins_system_prompt_until_compaction(self):
         self.turn("first turn")
@@ -718,6 +723,7 @@ class ExtensionTests(unittest.TestCase):
         (request,) = self.turn("pin stays released")
         self.assertIn("another live skill", request["instructions"])
 
+    # exclusive: changes global compaction settings and restarts the daemon
     @exclusive
     def test_auto_compaction_releases_pin_on_first_turn_after_restart(self):
         for index in range(4):
@@ -744,6 +750,7 @@ class ExtensionTests(unittest.TestCase):
         )
         self.assertIn("older conversation summary", json.dumps(requests[-1]["input"]))
 
+    # exclusive: restarts the daemon
     @exclusive
     def test_live_toggles_guard_dependencies_busy_turns_and_persist(self):
         self.turn("first turn")
@@ -821,6 +828,7 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("refreshed catalog description", request["instructions"])
         self.assertNotIn("BODY_MUST_NOT_AUTOLOAD", request["instructions"])
 
+    # exclusive: restarts the daemon
     @exclusive
     def test_compaction_strategies_preserve_lcm_folds_across_switch_and_restart(self):
         self.turn("first turn")

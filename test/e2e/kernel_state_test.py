@@ -49,6 +49,7 @@ def wait_until(condition, seconds, message):
     raise AssertionError(message)
 
 
+# exclusive: requires the daemon-wide idle-kernel timing knob
 @exclusive
 class KernelStateTests(unittest.TestCase):
     def setUp(self):

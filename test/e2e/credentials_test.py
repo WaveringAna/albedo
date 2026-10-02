@@ -37,6 +37,7 @@ class CredentialsTest(unittest.TestCase):
         with app.api("/auth/credentials") as response:
             return response.read().decode()
 
+    # exclusive: restarts the daemon to migrate global credential files
     @exclusive
     def test_a_boot_moves_every_secret_into_creds_json(self):
         app = self.app_for()
@@ -73,11 +74,28 @@ class CredentialsTest(unittest.TestCase):
         # The moved key still reaches the provider.
         self.assertEqual(self.authorization(app), "Bearer fixture-key")
 
-    @exclusive
     def test_clients_change_secrets_without_reading_them(self):
-        # The daemon booted after the fixture wrote its profile, so the key
-        # is already in creds.json, where a client rotates it.
-        app = self.app_for()
+        # No legacy config key: clients store and rotate only this fixture's
+        # credential, without depending on startup migration of config.json.
+        app = Albedo(
+            self.provider,
+            providers={
+                f"fixture-{self.provider.route}": {
+                    "baseUrl": self.provider.url,
+                    "model": "fixture-model",
+                    "protocol": "chat_completions",
+                }
+            },
+        )
+        app.__enter__()
+        self.addCleanup(app.__exit__, None, None, None)
+        server = app.profile
+        app.api(
+            f"/auth/credentials/providers/{app.profile}",
+            {"apiKey": "fixture-key"},
+            method="PUT",
+        ).close()
+        self.assertEqual(self.authorization(app), "Bearer fixture-key")
         app.api(
             f"/auth/credentials/providers/{app.profile}",
             {"apiKey": "rotated-key"},
@@ -87,7 +105,7 @@ class CredentialsTest(unittest.TestCase):
 
         def patch(body):
             with app.api(
-                "/auth/credentials/mcp/docs", body, method="PATCH"
+                f"/auth/credentials/mcp/{server}", body, method="PATCH"
             ) as response:
                 return json.load(response)["undo"]
 
@@ -96,12 +114,12 @@ class CredentialsTest(unittest.TestCase):
         summary = self.summary(app)
         self.assertIn(app.profile, json.loads(summary)["providers"])
         self.assertEqual(
-            json.loads(summary)["mcp"]["docs"],
+            json.loads(summary)["mcp"][server],
             {"bearerToken": False, "headers": ["X-Team"], "env": ["TOKEN"]},
         )
-        app.api("/auth/credentials/mcp/docs/undo", {"token": undo}).close()
+        app.api(f"/auth/credentials/mcp/{server}/undo", {"token": undo}).close()
         self.assertEqual(
-            json.loads(self.summary(app))["mcp"]["docs"],
+            json.loads(self.summary(app))["mcp"][server],
             {"bearerToken": True, "headers": ["X-Team"], "env": []},
         )
         self.assertFalse(

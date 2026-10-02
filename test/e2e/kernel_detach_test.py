@@ -37,6 +37,7 @@ def alive(pid):
     return True
 
 
+# exclusive: changes daemon-wide heavy-job timing and restarts the daemon
 @exclusive
 class KernelDetachTests(unittest.TestCase):
     def setUp(self):

@@ -118,6 +118,7 @@ class TerminalCommand:
         return result
 
 
+# exclusive: owns daemon startup and restart behavior
 @exclusive
 class LifecycleTest(unittest.TestCase):
     def test_standalone_default_home_authentication_and_vm_defaults_match_cli(self):

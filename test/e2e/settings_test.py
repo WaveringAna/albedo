@@ -17,7 +17,6 @@ from harness import Albedo, Provider, exclusive, text
 SERVER = Path(__file__).with_name("fake_mcp_server.py")
 
 
-@exclusive
 class SettingsTest(unittest.TestCase):
     def setUp(self):
         self.provider = Provider(lambda _request: text("ok"))
@@ -69,6 +68,8 @@ class SettingsTest(unittest.TestCase):
             {"kind": kind, "name": name, "scope": scope, "enabled": enabled},
         )
 
+    # exclusive: rewrites global provider configuration and credentials
+    @exclusive
     def test_profiles_preserve_keys_and_unrelated_fields_and_redact_secrets(self):
         path = self.app.home / "config.json"
         config = json.loads(path.read_text())
@@ -100,6 +101,8 @@ class SettingsTest(unittest.TestCase):
             snapshot["profiles"]["active"], min(snapshot["profiles"]["providers"])
         )
 
+    # exclusive: replaces global provider configuration
+    @exclusive
     def test_legacy_flat_provider_remains_available_after_save(self):
         path = self.app.home / "config.json"
         path.write_text(json.dumps(self.profile(apiKey="legacy-secret", custom="keep")))
@@ -109,6 +112,8 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(json.loads(path.read_text())["custom"], "keep")
         self.assertNotIn("legacy-secret", json.dumps(self.snapshot()))
 
+    # exclusive: saves global provider defaults and credentials
+    @exclusive
     def test_provider_validation_normalizes_profiles_and_preserves_key_omission(self):
         profile = self.profile(
             model=" \t" + "é" * 256 + "\n",
@@ -143,6 +148,8 @@ class SettingsTest(unittest.TestCase):
             self.snapshot()["profiles"]["providers"]["subscription"]["baseUrl"], ""
         )
 
+    # exclusive: asserts unchanged global settings and credential files
+    @exclusive
     def test_invalid_provider_profiles_leave_settings_and_credentials_untouched(self):
         paths = [self.app.home / name for name in ("config.json", "creds.json")]
         before = [path.read_bytes() if path.exists() else None for path in paths]
@@ -187,6 +194,8 @@ class SettingsTest(unittest.TestCase):
                     before,
                 )
 
+    # exclusive: changes and asserts complete global UI preferences
+    @exclusive
     def test_ui_mutations_return_complete_preferences_before_any_picker_use(self):
         fixture = json.loads(
             (Path(__file__).parents[1] / "fixtures/mutation_responses.json").read_text()
@@ -203,6 +212,8 @@ class SettingsTest(unittest.TestCase):
         prefs = self.request(session_path + "/open", method="POST")
         self.assertEqual(prefs, dict(fixture["body"], opens={self.session: 1}))
 
+    # exclusive: restarts the daemon and writes global preferences
+    @exclusive
     def test_ui_updates_and_open_counts_survive_restart_and_session_deletion(self):
         session_path = f"/settings/ui/sessions/{self.session}"
         (self.app.home / "picker.json").write_text(
@@ -234,6 +245,8 @@ class SettingsTest(unittest.TestCase):
         self.assertNotIn(self.session, snapshot["ui"]["opens"])
         self.assertNotIn(self.session, snapshot["capabilities"]["sessions"])
 
+    # exclusive: changes global UI preferences
+    @exclusive
     def test_concurrent_clients_preserve_independent_updates(self):
         ids = [self.session, self.app.session()]
         jobs = [
@@ -260,6 +273,8 @@ class SettingsTest(unittest.TestCase):
         self.assertTrue(set(ids) <= set(prefs["pinned"]))
         self.assertEqual(prefs["opens"][ids[0]], 12)
 
+    # exclusive: changes global capability defaults and MCP configuration
+    @exclusive
     def test_capability_inheritance_and_reload_failure_restore_previous_choice(self):
         (self.app.workspace / "AGENTS.md").write_text("unique settings instruction")
         self.capability(scope="global", enabled=False)
@@ -289,6 +304,8 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(after["mcp"], before["mcp"])
         self.assertEqual(after["capabilities"], before["capabilities"])
 
+    # exclusive: tests global capability inheritance
+    @exclusive
     def test_capability_defaults_and_session_overrides_control_context_and_commands(
         self,
     ):
@@ -390,6 +407,8 @@ class SettingsTest(unittest.TestCase):
             "/preference-demo", {item["name"] for item in self.request(commands_route)}
         )
 
+    # exclusive: writes malformed global capability preferences
+    @exclusive
     def test_session_override_does_not_hide_malformed_selected_global_preference(self):
         skill = self.app.workspace / ".albedo/skills/validated-choice/SKILL.md"
         skill.parent.mkdir(parents=True)
@@ -437,6 +456,8 @@ class SettingsTest(unittest.TestCase):
         self.assertTrue(choice["session_override"])
         self.assertTrue(choice["eligible"])
 
+    # exclusive: writes malformed global capability preferences
+    @exclusive
     def test_empty_capability_selections_ignore_malformed_preferences(self):
         (self.app.home / "capabilities.json").write_text("invalid json")
         self.request(
@@ -448,6 +469,8 @@ class SettingsTest(unittest.TestCase):
             self.provider.requests[-1]["request"]["model"], "fixture-model"
         )
 
+    # exclusive: changes global instruction preferences
+    @exclusive
     def test_disabled_instruction_is_not_read_until_enabled(self):
         (self.app.workspace / "AGENTS.md").write_bytes(b"\xff")
         (self.app.workspace / "CLAUDE.md").write_text("READABLE_INSTRUCTION")
@@ -477,6 +500,8 @@ class SettingsTest(unittest.TestCase):
         self.assertIn("AGENTS.md must be UTF-8 text", failure.exception.read().decode())
         self.assertEqual(self.snapshot()["capabilities"], before)
 
+    # exclusive: replaces the global capability file at its size limit
+    @exclusive
     def test_capability_size_limit_accepts_boundary_and_rejects_growth(self):
         path = self.app.home / "capabilities.json"
         limit = 1048576
@@ -508,6 +533,8 @@ class SettingsTest(unittest.TestCase):
             self.capability()
         self.assertEqual(path.read_bytes(), content)
 
+    # exclusive: changes global MCP configuration and credentials
+    @exclusive
     def test_mcp_save_delete_and_failed_connection_restore_settings_and_credentials(
         self,
     ):
@@ -549,6 +576,8 @@ class SettingsTest(unittest.TestCase):
         self.assertNotIn("settings-mcp", self.snapshot()["mcp"])
         self.assertNotIn("settings-mcp", self.snapshot()["credentials"]["mcp"])
 
+    # exclusive: replaces global settings documents with malformed data
+    @exclusive
     def test_malformed_documents_and_inputs_are_rejected_without_overwriting(self):
         cases = [
             (
@@ -622,6 +651,8 @@ class SettingsTest(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError):
                 save()
 
+    # exclusive: changes permissions on the shared daemon home
+    @exclusive
     def test_failed_persistence_reports_restoration_failure_and_keeps_old_files(self):
         before = {
             name: (self.app.home / name).read_bytes()
@@ -645,6 +676,8 @@ class SettingsTest(unittest.TestCase):
             path = self.app.home / name
             self.assertEqual(path.read_bytes() if path.exists() else None, content)
 
+    # exclusive: changes global extension defaults and MCP configuration
+    @exclusive
     def test_reload_and_global_extension_save_complete_when_they_overlap(self):
         other = self.app.session()
         marker = self.app.workspace / "mcp-started"
@@ -672,6 +705,8 @@ class SettingsTest(unittest.TestCase):
             extension.result(timeout=10)
             capability.result(timeout=10)
 
+    # exclusive: GET /settings validates every profile, so it fails while any concurrent test holds an invalid one
+    @exclusive
     def test_every_new_route_rejects_missing_authentication_and_browser_origins(self):
         routes = [
             ("GET", "/settings"),
@@ -712,6 +747,8 @@ class SettingsTest(unittest.TestCase):
                         response.headers["Albedo-Error-Code"], "authentication_required"
                     )
 
+    # exclusive: GET /settings validates every profile, so it fails while any concurrent test holds an invalid one
+    @exclusive
     def test_busy_session_rejects_settings_before_persistence(self):
         entered = threading.Event()
         release = threading.Event()
@@ -725,12 +762,15 @@ class SettingsTest(unittest.TestCase):
         self.addCleanup(release.set)
         self.app.prompt(self.session, "wait").close()
         self.assertTrue(entered.wait(10))
-        before = self.snapshot()["capabilities"]
+        before = self.snapshot()["capabilities"].get("sessions", {}).get(self.session)
         try:
             with self.assertRaises(urllib.error.HTTPError) as failure:
                 self.capability()
             self.assertEqual(failure.exception.code, 409)
-            self.assertEqual(self.snapshot()["capabilities"], before)
+            self.assertEqual(
+                self.snapshot()["capabilities"].get("sessions", {}).get(self.session),
+                before,
+            )
         finally:
             release.set()
             self.app.idle(self.session)

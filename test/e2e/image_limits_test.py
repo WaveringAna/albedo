@@ -65,8 +65,7 @@ def cell_result(output):
 
 
 class ImageLimitsTest(unittest.TestCase):
-    # /model saves the default for new sessions into config.json, global state
-    # the daemon rewrites beside the other tests' fixtures.
+    # exclusive: /model saves daemon-wide defaults in config.json
     @exclusive
     def test_a_declared_edge_refuses_new_images_and_fits_history(self):
         def reply(request):
