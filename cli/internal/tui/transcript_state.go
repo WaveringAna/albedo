@@ -71,6 +71,7 @@ func (t *transcriptState) streamDelta(kind ActiveStreamKind, text, agentName str
 		return nil
 	}
 	t.turnIsLive()
+	t.turn.answered = true
 	var entries []HistoryEntry
 	if t.activeKind != kind {
 		entries = t.settle(agentName)
@@ -185,6 +186,7 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		if t.turn == nil {
 			t.turn = newOpenTurn(ts)
 		}
+		t.turn.answered = true
 		t.turn.touch(evt.Timestamp)
 	case daemon.EventNote:
 		entries = t.settle(agentName)
@@ -242,6 +244,9 @@ type openTurn struct {
 	// A live turn ends now, rather than at its last replayed event.
 	live   bool
 	failed bool
+	// answered is whether the agent wrote anything; a turn opened by a note
+	// it never answered has nothing to sign off.
+	answered bool
 }
 
 func newOpenTurn(ts int64) *openTurn {
@@ -275,6 +280,9 @@ func (t *transcriptState) closeTurn(stopped bool) []HistoryEntry {
 		return nil
 	}
 	t.turn, t.lastEvent = nil, time.Time{}
+	if !turn.answered && turn.tools == 0 && !turn.failed && !stopped {
+		return nil
+	}
 	end := turn.last
 	if turn.live {
 		end = max(end, time.Now().UnixMilli())

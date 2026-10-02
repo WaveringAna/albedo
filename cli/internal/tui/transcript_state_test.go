@@ -1,10 +1,12 @@
-// These tests catch mutable live-buffer ownership and chunk-boundary regressions.
-// Daemon E2E cannot retain Go model copies or control the exact delta boundaries
-// received by the terminal. Copies here are retained readers; only the current
-// update path appends, settles, or discards live text.
+// These tests catch mutable live-buffer ownership and chunk-boundary
+// regressions, and signoffs placed by event order. Daemon E2E cannot retain Go
+// model copies, control the exact delta boundaries received by the terminal,
+// or see rows. Copies here are retained readers; only the current update path
+// appends, settles, or discards live text.
 package tui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"unsafe"
@@ -117,5 +119,21 @@ func TestTranscriptMessageDeduplicationSpansSettlements(t *testing.T) {
 	entries := state.apply(daemon.StreamEvent{Type: daemon.EventMessage, Text: first + second}, "agent")
 	if len(entries) != 1 || entries[0].Text != first+second {
 		t.Fatal("deduplication did not reset after the committed message")
+	}
+}
+
+func TestANoteTheAgentNeverAnsweredHasNoSignoff(t *testing.T) {
+	// /link and /work queue a note; it commits right before your next message.
+	entries := replayTranscript([]daemon.StreamEvent{
+		{Type: daemon.EventUser, Source: "links", Text: "linked with chernobog:~/proj/albedo", Replayed: true},
+		{Type: daemon.EventUser, Source: "chat", Text: "hi", Replayed: true},
+		{Type: daemon.EventMessage, Text: "hello", Replayed: true},
+	}, "albedo")
+	var kinds []EntryKind
+	for _, entry := range entries {
+		kinds = append(kinds, entry.Kind)
+	}
+	if want := []EntryKind{EntryUser, EntryUser, EntryAssistant}; !slices.Equal(kinds, want) {
+		t.Fatalf("entries %v, want %v", kinds, want)
 	}
 }
