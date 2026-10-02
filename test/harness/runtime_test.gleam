@@ -34,13 +34,18 @@ pub fn kernel_host_ownership_does_not_grow_with_the_swarm_test() -> Nil {
 pub fn hard_timeout_requires_explicit_reset_test() -> Nil {
   let assert Ok(host) = runtime.start(":memory:")
   let assert Ok(session) = runtime.open_session(host, "a", "/tmp")
-  let assert Ok(execution) =
+  // SIGINT is ignored before the timed cell starts: in the same cell, a
+  // deadline landing ahead of the signal.signal line under load is a
+  // graceful interrupt instead.
+  let assert Ok(_) =
     runtime.execute(
       host,
       session,
-      "import signal\nsignal.signal(signal.SIGINT, signal.SIG_IGN)\nwhile True: pass",
-      100,
+      "import signal\nsignal.signal(signal.SIGINT, signal.SIG_IGN)",
+      10_000,
     )
+  let assert Ok(execution) =
+    runtime.execute(host, session, "while True: pass", 100)
   execution.result |> should.equal(Error(python.Lost))
   runtime.open_session(host, "a", "/tmp") |> should.equal(Error(python.Lost))
   runtime.reset_session(host, "a")
