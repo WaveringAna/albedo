@@ -130,8 +130,9 @@
       mkdir -p $out/lib/albedo/albedo/priv/bin
       ln -s ${render}/bin/albedo-render $out/lib/albedo/albedo/priv/bin/albedo-render
       ln -s ${usageCore}/bin/usage $out/lib/albedo/albedo/priv/bin/usage
-      makeWrapper $out/lib/albedo/entrypoint.sh $out/bin/albedo-daemon \
-        --add-flags run \
+      makeWrapper $out/lib/albedo/albedo/priv/bin/albedo-daemon $out/bin/albedo-daemon \
+        --add-flags "$out/lib/albedo/entrypoint.sh run" \
+        --set-default ALBEDO_BUILD $out/bin/albedo-daemon \
         --prefix PATH : ${lib.makeBinPath [erlang python311 bash coreutils render]}
       runHook postInstall
     '';

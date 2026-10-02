@@ -1,0 +1,12 @@
+#!/bin/sh
+# VM defaults must be installed before Erlang starts in every launch mode.
+set -eu
+vm_defaults='+P 65536 +Q 16384 +MBsbct 16 +MHsbct 32 +MBlmbcs 256 +MHlmbcs 256 +MBsmbcs 32 +MHsmbcs 32 +MBas aobf +MHas aobf +MBacul 0 +MHacul 0'
+ERL_FLAGS="$vm_defaults ${ERL_FLAGS:-}"
+export ERL_FLAGS
+if [ "$#" -eq 0 ]; then
+    source_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+    cd "$source_root"
+    exec gleam run
+fi
+exec "$@"

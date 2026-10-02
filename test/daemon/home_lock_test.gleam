@@ -1,6 +1,7 @@
 /// Concurrent ownership of one home conflicts with the one-daemon E2E harness.
 import albedo/daemon/server
 import gleam/erlang/process
+import gleam/result
 import gleeunit/should
 
 @external(erlang, "albedo_skills_test_support", "fixture")
@@ -22,7 +23,9 @@ pub fn second_daemon_cannot_claim_a_held_home_test() -> Nil {
   let assert Ok(#(first, release)) = process.receive(claimed, 5000)
   first |> should.equal(Ok(Nil))
 
-  server.claim_home(home) |> should.equal(Error(Nil))
+  server.claim_home(home)
+  |> result.map_error(fn(_) { Nil })
+  |> should.equal(Error(Nil))
 
   // The connection closes when the owner's resources are freed, which can land
   // just after its exit is observable, so a fresh claimant retries briefly.

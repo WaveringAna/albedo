@@ -24,7 +24,7 @@ for ebin in "$root"/build/dev/erlang/*/ebin; do
 done
 cat >"$out/albedo-daemon" <<EOF
 #!/bin/sh
-exec erl -pa "$out"/*/ebin -eval 'albedo@@main:run(albedo)' -noshell -extra
+exec "$root/priv/bin/albedo-daemon" erl -pa "$out"/*/ebin -eval 'albedo@@main:run(albedo)' -noshell -extra
 EOF
 chmod +x "$out/albedo-daemon"
 echo "$out/albedo-daemon"

@@ -1,6 +1,30 @@
 -module(albedo_daemon).
--export([env/1,free_port/0,ready/3,read_config/1,directory/1,shutdown/0,rss/1,watch_parent/1,hold/1,http_request/1]).
+-export([defaults/0,refuse_home/1,env/1,free_port/0,ready/3,read_config/1,directory/1,shutdown/0,rss/1,watch_parent/1,hold/1,http_request/1]).
 env(Name) -> case os:getenv(binary_to_list(Name)) of false -> <<>>; Value -> unicode:characters_to_binary(Value) end.
+%% Home and authentication belong to the daemon, including direct starts.
+defaults() ->
+    try
+        Home = case env(<<"ALBEDO_HOME">>) of
+            <<>> -> filename:join(unicode:characters_to_binary(os:getenv("HOME")), <<".albedo">>);
+            Specified -> Specified
+        end,
+        Absolute = filename:absname(Home),
+        ok = filelib:ensure_dir(filename:join(Absolute, <<"daemon.lock">>)),
+        ok = file:change_mode(Absolute, 8#700),
+        Token = case env(<<"ALBEDO_TOKEN">>) of
+            <<>> -> binary:encode_hex(crypto:strong_rand_bytes(32), lowercase);
+            Supplied when byte_size(Supplied) >= 32 -> Supplied;
+            _ -> error(token_too_short)
+        end,
+        {ok, {Absolute, Token}}
+    catch Class:Reason ->
+        {error, unicode:characters_to_binary(io_lib:format("daemon defaults failed: ~p:~p", [Class, Reason]))}
+    end.
+
+refuse_home(Home) ->
+    io:format(standard_error, "storage is in use by another albedo daemon or maintenance command for ALBEDO_HOME=~ts~n", [Home]),
+    erlang:halt(75).
+
 %% A loopback port nothing listens on, which the OS just picked.
 free_port() ->
     {ok, Socket} = gen_tcp:listen(0, [{ip, loopback}, {reuseaddr, true}]),
@@ -24,7 +48,14 @@ ready(Home,Port,Token) ->
         Build -> Record#{build=>unicode:characters_to_binary(Build)}
     end),
     case file:write_file(Temp,Data,[write,sync]) of
-      ok -> ok=file:change_mode(Temp,8#600), file:rename(Temp,File), {ok,nil};
+      ok ->
+        case file:change_mode(Temp,8#600) of
+          ok -> case file:rename(Temp,File) of
+            ok -> {ok,nil};
+            {error,Reason} -> {error,atom_to_binary(Reason)}
+          end;
+          {error,Reason} -> {error,atom_to_binary(Reason)}
+        end;
       {error,Reason} -> {error,atom_to_binary(Reason)}
     end.
 %% Called once the drain has closed every session, kernel and store. What

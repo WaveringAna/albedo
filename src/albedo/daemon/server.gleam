@@ -139,6 +139,7 @@ type Message {
   /// rest.
   MailWaiting
   Shutdown
+  ReadHealth(Subject(Result(Nil, String)))
 }
 
 type State {
@@ -253,6 +254,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, a) {
 
 fn serve(state: State, message: Message) -> actor.Next(State, a) {
   case message {
+    ReadHealth(reply) -> {
+      process.send(reply, Ok(Nil))
+      actor.continue(state)
+    }
     CreateOperation(operation, cwd, provider, model, reply) -> {
       let #(state, outcome) =
         create_operation(state, operation, cwd, provider, model)
@@ -554,6 +559,14 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
 /// A registry that is not open answers without the store, which may be gone.
 fn refuse(state: State, message: Message) -> Nil {
   case message {
+    ReadHealth(reply) ->
+      process.send(
+        reply,
+        Error(case state.stage {
+          Closing -> "daemon_stopping"
+          _ -> "daemon_unavailable"
+        }),
+      )
     Create(_, _, _, reply) -> process.send(reply, Error(closed))
     CreateOperation(_, _, _, _, reply) | SubmitOperation(_, _, reply) ->
       process.send(reply, Error(closed))
@@ -1964,7 +1977,13 @@ fn route(
   case http_request(fn() { handle_request(config, registry, req) }) {
     Ok(response) -> response
     Error(_) ->
-      error(503, "daemon request process is unavailable")
+      reply(
+        503,
+        json.object([
+          #("code", json.string("daemon_unavailable")),
+          #("error", json.string("daemon request process is unavailable")),
+        ]),
+      )
       |> response.set_header("connection", "close")
   }
 }
@@ -2187,31 +2206,54 @@ fn daemon_route(
 ) -> response.Response(mist.ResponseData) {
   case req.method, request.path_segments(req) {
     Get, ["health"] ->
-      reply(
-        200,
-        acknowledged([
-          #("version", json.int(2)),
-          #(
-            "capabilities",
-            json.array(
-              [
-                "submission_cancellation",
-                "session_provider",
-                "session_workspace",
-                "session_extensions",
-                "global_extensions",
-                "session_tree",
-                "session_context",
-                "session_commands",
-                "workspace_browser",
-                "settings_api",
-                "session_model",
-              ],
-              json.string,
+      case actor.call(registry, 5000, ReadHealth) {
+        Error(code) ->
+          reply(
+            503,
+            json.object([
+              #("code", json.string(code)),
+              #(
+                "error",
+                json.string(case code {
+                  "daemon_stopping" -> "daemon is stopping"
+                  _ -> "daemon is unavailable"
+                }),
+              ),
+            ]),
+          )
+        Ok(_) -> {
+          let fields = [
+            #("version", json.int(2)),
+            #(
+              "capabilities",
+              json.array(
+                [
+                  "operation_receipts",
+                  "session_stream_generation",
+                  "agents_stream_overflow",
+                  "submission_cancellation",
+                  "session_provider",
+                  "session_workspace",
+                  "session_extensions",
+                  "global_extensions",
+                  "session_tree",
+                  "session_context",
+                  "session_commands",
+                  "workspace_browser",
+                  "settings_api",
+                  "session_model",
+                ],
+                json.string,
+              ),
             ),
-          ),
-        ]),
-      )
+          ]
+          let fields = case env("ALBEDO_BUILD") {
+            "" -> fields
+            build -> [#("build", json.string(build)), ..fields]
+          }
+          reply(200, acknowledged(fields))
+        }
+      }
     Get, ["settings"] -> settings.snapshot(config.home) |> answered_settings
     Put, ["settings", "providers", name] ->
       body(req, decode.dynamic)
@@ -2856,8 +2898,7 @@ fn stream(
 }
 
 pub fn main() -> Nil {
-  let home = env("ALBEDO_HOME")
-  let token = env("ALBEDO_TOKEN")
+  let assert Ok(#(home, token)) = defaults()
   let config =
     Config(
       home,
@@ -2867,10 +2908,12 @@ pub fn main() -> Nil {
       setting("ALBEDO_STATE_EXPIRY_SECONDS", 1_209_600, 1, 31_536_000),
       setting("ALBEDO_SCHEDULE_TICK_MS", 15_000, 50, 60_000),
     )
-  let assert True = string.byte_size(token) >= 32 && home != ""
-    as "start albedo through its CLI"
-  let assert Ok(_) = claim_home(home)
-    as "storage is in use by another albedo daemon or maintenance command for this ALBEDO_HOME"
+  case claim_home(home) {
+    Ok(_) -> Nil
+    Error(sqlight.SqlightError(code: sqlight.Busy, ..))
+    | Error(sqlight.SqlightError(code: sqlight.Locked, ..)) -> refuse_home(home)
+    Error(error) -> panic as error.message
+  }
   // A fixed port gives services such as the proxy a stable base url.
   let assert Ok(port) = start(config, setting("ALBEDO_PORT", 0, 0, 65_535))
   let assert Ok(_) = ready(home, port, token)
@@ -2899,19 +2942,17 @@ fn env(name: String) -> String
 /// before revalidation and holds it through deletion and vacuum. Neither owner
 /// commits the transaction or replaces the lock file. The OS drops the lock
 /// when its owner exits, so a crashed owner never leaves it stale.
-pub fn claim_home(home: String) -> Result(Nil, Nil) {
-  use connection <- result.try(
-    sqlight.open(home <> "/daemon.lock") |> result.replace_error(Nil),
-  )
+pub fn claim_home(home: String) -> Result(Nil, sqlight.Error) {
+  use connection <- result.try(sqlight.open(home <> "/daemon.lock"))
   case
     // The transaction is never committed: holding it open keeps the exclusive
     // lock, and a refused BEGIN leaves no lock behind on its connection.
     sqlight.exec("BEGIN EXCLUSIVE;", connection)
   {
     Ok(_) -> Ok(hold(connection))
-    Error(_) -> {
+    Error(error) -> {
       let _ = sqlight.close(connection)
-      Error(Nil)
+      Error(error)
     }
   }
 }
@@ -3235,3 +3276,9 @@ fn add_operation_id(encoded: String, operation_id: String) -> String {
   <> ","
   <> string.drop_start(encoded, 1)
 }
+
+@external(erlang, "albedo_daemon", "defaults")
+fn defaults() -> Result(#(String, String), String)
+
+@external(erlang, "albedo_daemon", "refuse_home")
+fn refuse_home(home: String) -> Nil
