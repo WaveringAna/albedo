@@ -1,5 +1,5 @@
 //// The agents bus: one daemon-wide feed of what every session is doing, for
-//// the orchestrator view. It carries small events only — a session's own
+//// the orchestrator view. It carries small events only; a session's own
 //// stream stays the place for whole transcripts, tool output, and resets.
 
 import albedo/daemon/family
@@ -124,9 +124,25 @@ pub fn mailed(
   )
 }
 
-/// Receive every bus event while `owner` lives. `deliver` must only send.
+/// One subscriber's bounded queue, removed when its stream process dies.
+pub type Subscription
+
+pub type Batch {
+  Batch(events: List(String))
+  Overflow
+}
+
+/// Publishers queue events before sending this payload-free notification.
 @external(erlang, "albedo_bus", "subscribe")
-pub fn subscribe(owner: process.Pid, deliver: fn(String) -> Nil) -> Nil
+pub fn subscribe(owner: process.Pid, notify: fn() -> Nil) -> Subscription
+
+/// Take one bounded batch, keeping notification latched until sending finishes.
+@external(erlang, "albedo_bus", "drain")
+pub fn drain(subscription: Subscription) -> Batch
+
+/// Rearm after sending. A timer can run before the pending wake was consumed.
+@external(erlang, "albedo_bus", "rearm")
+pub fn rearm(subscription: Subscription, wake_consumed: Bool) -> Nil
 
 fn event_json(
   session: String,

@@ -174,10 +174,10 @@ type Stream {
   Wake
 }
 
-/// The agents stream: bus events arrive one by one and leave in batches.
+/// The agents stream drains a bounded bus queue on each batching tick.
 type AgentStream {
   Flush
-  Heard(String)
+  Heard
 }
 
 type AgentNode {
@@ -1523,38 +1523,49 @@ fn agents_stream(
     req,
     response.new(200),
     fn(self) {
-      case process.subject_owner(self) {
-        Ok(owner) ->
-          bus.subscribe(owner, fn(event) { process.send(self, Heard(event)) })
-        Error(_) -> Nil
-      }
+      let assert Ok(owner) = process.subject_owner(self)
+      let subscription =
+        bus.subscribe(owner, fn() { process.send(self, Heard) })
       process.send(self, Flush)
-      #(self, [], 0, 50)
+      #(self, subscription, 50, True, False)
     },
     fn(state, message, connection) {
-      let #(self, buffered, count, quiet) = state
+      let #(self, subscription, quiet, initial, wake_consumed) = state
       case message {
-        // Past the cap, a stalled client loses deltas rather than memory.
-        Heard(event) ->
-          case count < 4000 {
-            True ->
-              actor.continue(#(self, [event, ..buffered], count + 1, quiet))
-            False -> actor.continue(state)
-          }
+        Heard -> actor.continue(#(self, subscription, quiet, initial, True))
         Flush -> {
-          let _ = process.send_after(self, 100, Flush)
-          case buffered, quiet >= 50 {
-            [], False -> actor.continue(#(self, [], 0, quiet + 1))
-            _, _ -> {
-              let body =
-                event_frame(
+          // Readiness is always an empty batch, even when events were admitted
+          // between registering this subscription and its first flush.
+          let batch = case initial {
+            True -> bus.Batch([])
+            False -> bus.drain(subscription)
+          }
+          let events = case batch {
+            bus.Batch(events) -> events
+            bus.Overflow -> ["{\"type\":\"overflow\"}"]
+          }
+          let sent = case events == [] && quiet < 50 {
+            True -> Ok(Nil)
+            False ->
+              mist.send_event(
+                connection,
+                mist.event(event_frame(
                   string_tree.from_string("{\"events\":["),
-                  list.reverse(buffered),
-                )
-              case mist.send_event(connection, mist.event(body)) {
-                Error(_) -> actor.stop()
-                Ok(_) -> actor.continue(#(self, [], 0, 0))
+                  events,
+                )),
+              )
+          }
+          case sent, batch {
+            Error(_), _ -> actor.stop()
+            _, bus.Overflow -> actor.stop()
+            Ok(_), _ -> {
+              bus.rearm(subscription, wake_consumed)
+              let _ = process.send_after(self, 100, Flush)
+              let quiet = case events == [] && quiet < 50 {
+                True -> quiet + 1
+                False -> 0
               }
+              actor.continue(#(self, subscription, quiet, False, False))
             }
           }
         }
@@ -2787,15 +2798,13 @@ fn stream(
     req,
     response.new(200),
     fn(self) {
-      // The session wakes this stream per event; the tick is only a keepalive
+      // The session coalesces wakes until a sent frame is acknowledged; the tick
+      // is only a keepalive
       // and the way a dropped connection is noticed while nothing is streaming.
-      case process.subject_owner(self) {
-        Ok(owner) ->
-          session.watch(worker, owner, fn() { process.send(self, Wake) })
-        Error(_) -> Nil
-      }
+      let assert Ok(owner) = process.subject_owner(self)
+      session.watch(worker, owner, fn() { process.send(self, Wake) })
       process.send(self, Tick)
-      #(self, after)
+      #(self, after, owner)
     },
     fn(state, message, connection) {
       // A closing daemon stops session workers while clients are still attached,
@@ -2814,36 +2823,33 @@ fn stream(
           let _ = mist.send_event(connection, failure)
           actor.stop()
         }
-        Ok(page) ->
-          case message, page.events {
-            Wake, [] -> actor.continue(state)
-            _, _ -> {
-              let events =
-                event_frame(
-                  string_tree.from_strings([
-                    "{\"generation\":",
-                    json.to_string(json.string(page.cursor.generation)),
-                    ",\"cursor\":",
-                    int.to_string(page.cursor.sequence),
-                    ",\"events\":[",
-                  ]),
-                  page.events,
-                )
-              case mist.send_event(connection, mist.event(events)) {
-                Error(_) -> actor.stop()
-                Ok(_) -> {
-                  case message {
-                    Tick -> {
-                      let _ = process.send_after(state.0, 1000, Tick)
-                      Nil
-                    }
-                    Wake -> Nil
-                  }
-                  actor.continue(#(state.0, Some(page.cursor)))
+        Ok(page) -> {
+          let events =
+            event_frame(
+              string_tree.from_strings([
+                "{\"generation\":",
+                json.to_string(json.string(page.cursor.generation)),
+                ",\"cursor\":",
+                int.to_string(page.cursor.sequence),
+                ",\"events\":[",
+              ]),
+              page.events,
+            )
+          case mist.send_event(connection, mist.event(events)) {
+            Error(_) -> actor.stop()
+            Ok(_) -> {
+              session.consumed(worker, state.2, page.cursor, message == Wake)
+              case message {
+                Tick -> {
+                  let _ = process.send_after(state.0, 1000, Tick)
+                  Nil
                 }
+                Wake -> Nil
               }
+              actor.continue(#(state.0, Some(page.cursor), state.2))
             }
           }
+        }
       }
     },
   )

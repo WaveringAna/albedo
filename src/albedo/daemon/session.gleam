@@ -141,6 +141,7 @@ pub type Message {
   Status(Subject(String))
   Read(Option(Cursor), Option(Int), Subject(Result(Page, String)))
   Watch(process.Pid, fn() -> Nil)
+  Consumed(process.Pid, Cursor, Bool)
   Publish(String, String, Subject(Bool))
   Commit(
     String,
@@ -384,6 +385,17 @@ pub fn status(session: Session) -> String {
 /// session process and must only notify; dead watchers are dropped.
 pub fn watch(session: Session, owner: process.Pid, notify: fn() -> Nil) -> Nil {
   process.send(session, Watch(owner, notify))
+}
+
+/// A successful frame consumed this cursor. Timers can overtake a queued wake,
+/// so only handling that wake rearms its notification.
+pub fn consumed(
+  session: Session,
+  owner: process.Pid,
+  cursor: Cursor,
+  wake_consumed: Bool,
+) -> Nil {
+  process.send(session, Consumed(owner, cursor, wake_consumed))
 }
 
 /// Events after `after`. A reset (a new or lagging client) replays the
@@ -708,15 +720,44 @@ fn handle(
         ])
           |> json.to_string,
       )
-    Watch(owner, notify) ->
-      actor.continue(
-        session_state.State(..state, watchers: [
-          #(owner, notify),
-          ..list.filter(state.watchers, fn(watcher) {
-            process.is_alive(watcher.0) && watcher.0 != owner
+    Watch(owner, notify) -> {
+      let watchers = case
+        list.any(state.watchers, fn(watcher) { watcher.owner == owner })
+      {
+        True -> state.watchers
+        False -> {
+          let _ = process.monitor(owner)
+          [session_state.Watcher(owner, notify, False), ..state.watchers]
+        }
+      }
+      actor.continue(session_state.State(..state, watchers: watchers))
+    }
+    Consumed(owner, cursor, wake_consumed) -> {
+      let watchers = case
+        cursor.generation == state.generation
+        && cursor.sequence >= 0
+        && cursor.sequence <= state.sequence
+      {
+        False -> state.watchers
+        True ->
+          list.map(state.watchers, fn(watcher) {
+            case watcher.owner == owner {
+              False -> watcher
+              True -> {
+                let notified = watcher.notified && !wake_consumed
+                case !notified && cursor.sequence < state.sequence {
+                  True -> {
+                    watcher.notify()
+                    session_state.Watcher(..watcher, notified: True)
+                  }
+                  False -> session_state.Watcher(..watcher, notified: notified)
+                }
+              }
+            }
           })
-        ]),
-      )
+      }
+      actor.continue(session_state.State(..state, watchers: watchers))
+    }
     Read(after, tail, reply) -> {
       let cursor = Cursor(state.generation, state.sequence)
       let replay = case after {
@@ -996,7 +1037,14 @@ fn handle(
         Some(run) -> finish_run(state, run, outcome)
         _ -> actor.continue(state)
       }
-    Down(process.ProcessDown(_, pid, _)) ->
+    Down(process.ProcessDown(_, pid, _)) -> {
+      let state =
+        session_state.State(
+          ..state,
+          watchers: list.filter(state.watchers, fn(watcher) {
+            watcher.owner != pid
+          }),
+        )
       case turn.running(state.activity) {
         Some(run) if run.pid == pid ->
           case run.work {
@@ -1016,6 +1064,7 @@ fn handle(
           }
         _ -> actor.continue(state)
       }
+    }
     Down(_) -> actor.continue(state)
     Idle(reply) -> {
       let #(kernel, jobs) = case state.kernel {

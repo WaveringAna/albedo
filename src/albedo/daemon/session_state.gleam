@@ -13,6 +13,10 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option}
 
+pub type Watcher {
+  Watcher(owner: process.Pid, notify: fn() -> Nil, notified: Bool)
+}
+
 pub type State(message) {
   State(
     info: conversation.Info,
@@ -27,7 +31,7 @@ pub type State(message) {
     active_submissions: List(Submission),
     sequence: Int,
     events: event_buffer.Buffer,
-    watchers: List(#(process.Pid, fn() -> Nil)),
+    watchers: List(Watcher),
     notice: Option(String),
     context: context_snapshot.Snapshot,
     pin: loop.Pin,
@@ -52,8 +56,15 @@ pub fn emit(state: State(message), event: String) -> State(message) {
   let seq = state.sequence + 1
   let events = event_buffer.push(state.events, seq, event)
   let watchers =
-    list.filter(state.watchers, fn(watcher) { process.is_alive(watcher.0) })
-  list.each(watchers, fn(watcher) { watcher.1() })
+    list.map(state.watchers, fn(watcher) {
+      case watcher.notified {
+        True -> watcher
+        False -> {
+          watcher.notify()
+          Watcher(..watcher, notified: True)
+        }
+      }
+    })
   bus.activity(state.info.id, event)
   State(..state, sequence: seq, events: events, watchers: watchers)
 }
