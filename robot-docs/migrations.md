@@ -7,6 +7,16 @@ extension-specific migration modules.
 
 ## startup order
 
+`server.main` first claims `ALBEDO_HOME/daemon.lock` with `BEGIN EXCLUSIVE`.
+Offline cleanup in `cli/internal/storage` takes the same lock after confirmation,
+before it revalidates candidates. Its Python helper holds ownership through file
+deletion and vacuum. Daemon startup refuses while maintenance owns the home,
+before it touches application storage. Neither owner commits the lock transaction,
+changes its journal mode, or replaces the lock file. Cleanup checks health for
+diagnostics; only exclusive ownership permits offline mutation. CLI cancellation
+or death stops the helper and releases ownership. Completed deletions remain
+deleted if later deletion or vacuum fails.
+
 `runtime.start` installs the extension registry before `server.prepare_storage`.
 for each installed extension, `extension.install` first calls its table
 initialiser, then applies its contributed `SchemaMigration` callbacks on the
