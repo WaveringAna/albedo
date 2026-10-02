@@ -29,7 +29,10 @@ sessions; session selection and live reload never rerun migrations.
 
 1. `conversation.initialise` creates the core tables, then calls
    `conversation_columns.apply`: the existing session columns first, transcript
-   columns second. it then runs its existing domain-local session recovery
+   columns second. The same core initialization creates `operations`,
+   `pending_inputs`, `submission_events`, and `continuation_markers` through
+   `operations.schema`.
+   These are new tables and require no backfill. it then runs its existing domain-local session recovery
    (missing activity/title from transcript), then creates `sessions_activity`.
 2. quota, mail, and family initialise their tables, unchanged.
 3. `migrations.run(ledger, backup)` runs the core `image_store.run`, which first
@@ -132,3 +135,27 @@ to their implementation modules.
   provider assignment likewise remains in the existing server startup path.
 - no zstd, compression, schema-version, offline storage upgrade,
   new dependency, or unrelated transaction fix is part of this refactor.
+
+## durable operation admissions
+
+`operations` owns receipt retention and pending delivery state on the shared
+store connection. Session creation commits its session row and accepted receipt
+in one immediate transaction. Submission admission commits its receipt and
+pending input together. Transcript consumption moves pending metadata into
+`submission_events`, records its committed position, and removes pending input
+in the same transaction as the transcript rows. Failed statements roll back the
+whole transaction, including a failed commit.
+
+Receipts retain the original admission result. They do not reference the session
+row, so deletion cancels pending inputs and leaves receipts available. Terminal
+receipts expire seven days after acceptance for creation or rejection, or after
+commit or cancellation for submissions. Pending receipts do not expire. Cleanup
+removes at most 128 expired receipts per call. Durable display metadata in
+`submission_events` remains until session deletion, including operation IDs,
+display text, and echo identity. Continuations commit a `continuation_markers`
+row in the same transaction without adding a user-text transcript row. These
+markers also remain until session deletion and survive receipt cleanup.
+
+Acceptance guarantees stored input or its committed or cancelled outcome.
+Commit means the input reached the transcript. Neither guarantee promises that
+assistant generation, tools, or external effects occur exactly once.

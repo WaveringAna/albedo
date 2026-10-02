@@ -4,7 +4,7 @@ every session command is one definition with three faces: the CLI menu, user inv
 
 ## the catalog
 
-`GET /sessions/:id/commands` lists the materialized catalog: name (the slash spelling), description, the minted python `method`, its `usage` line, declared `arguments`, and the `modelCallable` / `userTurn` flags. the CLI menu renders it (merged with its presentation-only entries like `/login` and `/sessions`), `GET`'s list mints the kernel bindings at boot, and the prompt's `<session_commands>` block summarizes it. all three read the same list.
+`GET /sessions/:id/commands` lists the materialized catalog: name (the slash spelling), description, the minted python `method`, its `usage` line, declared `arguments`, and the `modelCallable`, `userTurn`, and `skill` flags. The `skill` flag marks a selected skill with a preparation function. The CLI submits these through the durable events route. Other command handlers keep their existing uncertainty policy. The CLI menu renders the catalog, merged with its presentation-only entries like `/login` and `/sessions`. The list mints the kernel bindings at boot, and the prompt's `<session_commands>` block summarizes it.
 
 `POST /sessions/:id/commands` runs one command. the body is `{name, arguments}` with raw invocation text (`{"name": "/model", "arguments": "gpt-5 anthropic"}`) or `{name, args}` with declared names (`{"name": "/model", "args": {"model": "gpt-5"}}`); `clientId` labels a submitted turn. the answer is `{"result": ...}` with the command's JSON value or `{"submitted": true}` when a user invocation submitted its turn.
 
@@ -21,6 +21,8 @@ Command(
   [Argument("window", "reporting window", False)],
   True,
   False,
+  False,
+  None,
   fn(context, _caller, args) { ... Ok(command.Data(value)) },
 )
 ```

@@ -55,7 +55,7 @@ Activation returns the installed `SKILL.md` path as `source`. Relative paths in 
 
 The official client guide recommends user-explicit activation through a slash command or mention, while leaving the exact syntax to the client. Albedo assigns `/<skill-name>` and includes it in command autocomplete. Built-in commands always win. A colliding skill such as `model` gets the deterministic command `/skill:model` instead of replacing `/model`.
 
-The CLI resolves an invocation against the daemon's [command catalog](commands.md) and asks the daemon to run it. The daemon resolves the same immutable session catalog used by Python, runs the same skill command, and a user invocation submits one normal user turn. The visible intent remains the original slash command while the model input carries a JSON-delimited activation with the exact arguments, source, and instructions. Normal idle, enabled-extension, and workspace checks still apply.
+The CLI resolves an invocation against the daemon's [command catalog](commands.md), whose `skill` flag identifies skill entries. It submits a dedicated skill activation through the events route with a stable operation ID. The daemon uses the selected entry's `skill_activation` preparation function, shared with the existing command implementation. It stores the resolved instructions with the admission, so a retry or restart does not reread changed skill content. The visible intent remains the original slash command while the model input carries a JSON-delimited activation with the exact arguments, source, and instructions. See [operation receipts](operations.md) for recovery and retention.
 
 ## Trust and execution
 

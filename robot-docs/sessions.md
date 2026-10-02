@@ -1,5 +1,9 @@
 # session attachment
 
+Session creation and user turn admission use durable [operation receipts](operations.md).
+An accepted submission survives a daemon restart while it waits for transcript
+consumption. A retry with the same operation ID returns the original admission.
+
 opening a session attaches the cli to its event stream and independently
 reads `GET /sessions/:id/status`. replayed history does not establish the
 session's live phase; status and live events do.
