@@ -35,6 +35,28 @@ routes: `GET /agents?session=<id>` (the tree), `GET /agents/stream` (batched eve
 
 The Go client decodes known agent events into `daemon.AgentEvent` before delivery to the view. Unknown event kinds are ignored. Malformed known events return a protocol error instead of supplying empty fields to the view. Tool progress uses the same typed value as the session stream.
 
+## Stream overflow and refresh
+
+The agents stream sends an initial empty batch after subscribing. Each
+subscriber retains at most 256 queued events or 1 MiB of encoded payload,
+plus one bounded batch being sent. Event payloads stay outside subscriber
+mailboxes, and wake notifications are coalesced. Publication never waits for
+a client to read its socket.
+
+When a subscriber exceeds either limit, the daemon discards queued deltas,
+sends `{"events":[{"type":"overflow"}]}`, and closes the stream. An event larger
+than the byte limit also causes overflow. A socket that remains stalled may
+close before delivering the marker.
+
+Overflow triggers a normal refresh. The CLI
+clears unfinished previews, reconnects, and reloads the authoritative tree
+after subscribing. The refreshed tree removes missing agents and replaces
+names, parent relationships, closed state, and running status. Replies from
+an older attachment cannot repopulate the view. Disconnecting releases the
+subscriber's queue when its stream process stops, without waiting for another
+publication. Drafts and pending action results survive recovery. Terminal
+stream failures remain visible; `ctrl+l` starts a fresh attachment.
+
 ## swarm overhead
 
 kernel boots queue behind four slots. each boot owns only its session's composition,

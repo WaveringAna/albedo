@@ -24,6 +24,11 @@ A missing or different generation, or a sequence outside the replay window,
 returns a durable transcript reset. Empty keepalive batches carry the current
 pair too.
 
+Session subscribers receive coalesced wake notifications. Event payloads stay
+in the session's existing replay buffer; a successful frame acknowledges its
+cursor before another wake is issued. A subscriber's death removes its watch
+without requiring another event.
+
 The CLI validates the whole batch before consuming it and saves both cursor
 values only after every callback succeeds. Initial attachment and a generation
 change require a leading reset. Within one generation, the sequence cannot
