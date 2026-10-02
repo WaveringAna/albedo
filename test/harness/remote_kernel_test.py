@@ -223,6 +223,21 @@ class KernelInvokeTest(unittest.TestCase):
         self.assertTrue(finished["ok"])
         self.assertEqual(finished["state"]["tail"], "finished\n")
 
+    def test_interrupt_for_a_queued_cell_lands_when_it_starts(self):
+        self.channel.send(
+            {"type": "execute", "id": "busy", "code": "import time; time.sleep(0.5)"}
+        )
+        self.channel.send({"type": "execute", "id": "queued", "code": "ran = True"})
+        self.channel.send({"type": "interrupt", "id": "queued", "reason": "deadline"})
+        busy = self.channel.wait_for(lambda f: f["type"] == "done")
+        self.assertEqual((busy["id"], busy["status"]), ("busy", "ok"))
+        queued = self.channel.wait_for(lambda f: f["type"] == "done")
+        self.assertEqual((queued["id"], queued["status"]), ("queued", "interrupted"))
+        self.assertIn("deadline exceeded", queued["output"])
+        self.channel.send({"type": "execute", "id": "check", "code": "'ran' in dir()"})
+        check = self.channel.wait_for(lambda f: f["type"] == "done")
+        self.assertEqual(check["value"], "False")
+
     def test_a_failing_pending_call_propagates_its_error(self):
         self.channel.send({"type": "invoke", "id": "f1", "name": "nope"})
         failure = self.channel.invoke("f2", target={"pending": "f1"}, name="tail")

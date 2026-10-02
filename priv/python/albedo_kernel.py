@@ -85,6 +85,8 @@ ARCHIVES: collections.OrderedDict[str, Capture] = collections.OrderedDict()
 FINISHED: collections.OrderedDict[str, dict[str, object]] = collections.OrderedDict()
 FINISHED_LIMIT = 16
 EXECUTING: set[str] = set()
+# Interrupts that arrived while their cell was still queued, by cell id.
+INTERRUPTS: dict[str, str] = {}
 READY = threading.Event()
 NAMESPACE: dict[str, object] = {"__name__": "__main__"}
 DEFINITIONS: collections.OrderedDict[str, str] = collections.OrderedDict()
@@ -180,9 +182,8 @@ def receive(frame: object) -> None:
             capture.interruption = message.get("reason", "cancelled")
             os.kill(os.getpid(), signal.SIGINT)
         else:
-            task = OWNER_TASKS.get(message["id"])
-            if task is not None:
-                LOOP.call_soon_threadsafe(task.cancel)
+            # The loop takes it after the execute it may name, not started yet.
+            _ = LOOP.call_soon_threadsafe(deliver, message)
     elif message["type"] == "reply" and message["id"] in WAITING:
         arrived, answer = WAITING[message["id"]]
         answer.append(message["value"])
@@ -239,6 +240,8 @@ def deliver(message: albedo_api.Incoming) -> None:
                 slot.set_exception(
                     RuntimeError(str(message.get("message", "job admission failed")))
                 )
+    elif message["type"] == "interrupt":
+        interrupt_queued(message)
     elif message["type"] == "reply":
         future = PENDING.pop(message["id"], None)
         if future is not None and not future.done():
@@ -273,6 +276,22 @@ def deliver(message: albedo_api.Incoming) -> None:
         if message["type"] == "execute":
             EXECUTING.add(message["id"])
         QUEUE.put_nowait(cast(albedo_api.Execute | albedo_api.State, message))
+
+
+def interrupt_queued(message: albedo_api.Interrupt) -> None:
+    """An interrupt the reader thread found no running cell for. Here on the
+    loop, the cell it names is still queued, or has started since and waits
+    at an await, where cancelling reaches it."""
+    reason = message.get("reason", "cancelled")
+    task = OWNER_TASKS.get(message["id"])
+    capture = active_capture
+    if task is not None:
+        _ = task.cancel()
+    elif active is not None and capture is not None and capture.id == message["id"]:
+        capture.interruption = reason
+        _ = active.cancel()
+    elif message["id"] in EXECUTING:
+        INTERRUPTS[message["id"]] = reason
 
 
 class WorkError(Exception):
@@ -1521,6 +1540,10 @@ async def serve():
         task = active = LOOP.create_task(
             evaluate(message["code"], capture.id, message.get("durable", False))
         )
+        interrupted = INTERRUPTS.pop(capture.id, None)
+        if interrupted is not None:
+            capture.interruption = interrupted
+            _ = task.cancel()
         try:
             active_capture = capture
             result = await task

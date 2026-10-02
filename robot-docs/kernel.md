@@ -79,7 +79,9 @@ dedupe:
   kernel acknowledges its reply.
 - execute, by cell id: a finished cell (the newest 16) resends its `done`; a
   queued or running one is ignored. callers must not reuse cell ids.
-- interrupt, reply, release are idempotent already.
+- interrupt, reply, release are idempotent already. an interrupt for a cell
+  still queued behind the loop is kept and cancels the cell as it starts;
+  one for a cell the kernel no longer holds is dropped.
 - what the kernel resends after a restart: job wakes are host calls
   (`jobs.completed`), so the call ledger covers them; `job_start`, `job`,
   `job_cancel` and `jobs` only update ownership and slot bookkeeping, which
