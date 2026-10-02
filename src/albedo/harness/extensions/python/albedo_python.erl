@@ -115,7 +115,15 @@ startup(S = #{port := Port}, Mode, Parent, Ref, Deadline) ->
         {Port, {data, Data}} when byte_size(Data) =< 8388608 ->
             case wire(Data, S) of
                 {frame, #{<<"type">> := <<"ready">>} = Ready, S1} ->
-                    started(S1#{target => target_of(Ready)}, Parent, Ref);
+                    S2 = S1#{target => target_of(Ready)},
+                    case S2 of
+                        %% A kernel booted now from the current bundle can only be
+                        %% stale when this daemon and that bundle disagree; swapping
+                        %% it would boot another just like it, forever.
+                        #{stale := Stale} when Mode =:= start, Stale =/= none ->
+                            startup_fail(S2, Parent, Ref, {unavailable, out_of_step(Stale)});
+                        _ -> started(S2, Parent, Ref)
+                    end;
                 {frame, #{<<"type">> := <<"startup_error">>, <<"message">> := Message}, S1} when is_binary(Message) ->
                     startup_fail(S1, Parent, Ref, {unavailable, Message});
                 {frame, Frame, S1} -> startup(handle_frame(Frame, S1), Mode, Parent, Ref, Deadline);
@@ -152,6 +160,11 @@ startup(S = #{port := Port}, Mode, Parent, Ref, Deadline) ->
             false -> startup_fail(S, Parent, Ref, {unavailable, <<"python startup timed out">>})
         end
     end.
+
+out_of_step(protocol) ->
+    <<"the python kernel speaks another protocol than this daemon: albedo's python bundle and daemon are out of step; reinstall or rebuild albedo">>;
+out_of_step(_) ->
+    <<"the python kernel reports another bundle than its bridge: albedo's python files changed while it booted, or are out of step; try again">>.
 
 started(S, Parent, Ref) ->
     Parent ! {Ref, {ok, self()}},

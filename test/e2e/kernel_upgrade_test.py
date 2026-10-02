@@ -306,6 +306,31 @@ class ProtocolSkewTests(Swaps):
         self.assertFalse(self.stale())
         self.assert_gone(marker, kernel, job)
 
+    def test_a_bundle_out_of_step_with_the_daemon_refuses_to_boot(self):
+        """A python bundle on another protocol than the daemon's own makes
+        every fresh kernel stale at birth: the boot fails and says why,
+        instead of swapping one fresh kernel for another forever."""
+
+        def prepare(app):
+            launcher, bundle = editable_daemon(app.root)
+            app.env["ALBEDO_DAEMON"] = str(launcher)
+            link = bundle / "albedo_link.py"
+            link.write_text(link.read_text().replace("PROTOCOL = 1", "PROTOCOL = 2", 1))
+
+        self.app.restart(prepare=prepare)
+        started = time.monotonic()
+        with self.app.prompt(self.session, "run it") as response:
+            operation = json.load(response)["operationId"]
+        self.app.idle(self.session)
+        self.assertLess(time.monotonic() - started, 10)
+        # The input waits, blocked with the reason, rather than lost.
+        with self.app.api(f"/operations/{operation}") as response:
+            receipt = json.load(response)
+        self.assertIn("out of step", receipt["blockingReason"] or "", receipt)
+        self.assertIn("protocol", receipt["blockingReason"])
+        with self.app.api(f"/sessions/{self.session}/status") as response:
+            self.assertEqual(json.load(response)["kernel"]["link"], "none")
+
     def test_another_protocol_whose_snapshot_fails_is_swapped_carrying_nothing(self):
         kernel, job = self.start()
         marker = self.restart_current(unsaveable=True)

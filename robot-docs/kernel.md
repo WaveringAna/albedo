@@ -158,6 +158,11 @@ is usually that idle moment). `/kernel` reports the staleness and the live
 jobs; `/kernel upgrade` (user only, between turns) forces the swap now,
 stopping the jobs as a restart did before kernels were detached.
 
+a kernel booted now that is already stale says this daemon and its own python
+bundle disagree (a protocol bumped on one side only, a partial install): its
+boot fails with that reason (`albedo_python:out_of_step/1`), so a turn waits
+blocked on it instead of swapping one fresh kernel for another forever.
+
 protocol skew does not wait for jobs: a kernel on another protocol cannot be
 supervised. its outbox is dropped, not replayed; the swap asks for a snapshot
 and a shutdown through the frozen frames, carries nothing if the snapshot
