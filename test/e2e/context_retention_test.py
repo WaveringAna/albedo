@@ -58,7 +58,15 @@ class ContextRetentionTest(unittest.TestCase):
                     item.get("encrypted_content") == payload
                     for item in provider.requests[1]["request"]["input"]
                 ),
-                "second request lost opaque replay",
+                "second request lost opaque replay: "
+                + json.dumps(
+                    [
+                        (item.get("type") or item.get("role"), len(json.dumps(item)))
+                        for item in provider.requests[1]["request"]["input"]
+                    ]
+                )
+                + " events="
+                + json.dumps([e.get("type") for e in app.events(session)]),
             )
             route = f"/sessions/{session}/context"
 

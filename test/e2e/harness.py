@@ -602,6 +602,10 @@ class Daemon:
         if crash:
             assert self._pid is not None
             os.kill(self._pid, signal.SIGKILL)
+            # SIGKILL is asynchronous: a CLI started before the process is gone
+            # reads the dead daemon's record and finds nothing listening.
+            if not self._gone(timeout=15):
+                self._fail("daemon did not die")
         elif not self._stop(timeout=15):
             self._fail("daemon did not stop")
         if prepare is not None:
@@ -616,6 +620,9 @@ class Daemon:
             self.api("/shutdown", {}).close()
         except (OSError, http.client.HTTPException):
             pass
+        return self._gone(timeout)
+
+    def _gone(self, timeout):
         deadline = time.monotonic() + timeout
         while _alive(self._pid):
             if time.monotonic() > deadline:

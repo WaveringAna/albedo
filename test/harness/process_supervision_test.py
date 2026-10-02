@@ -91,6 +91,16 @@ def pid_present(pid: int) -> bool:
         return True
 
 
+def ready(job, marker: str = "ready") -> None:
+    """Wait for the job to print `marker`. A shell that has not yet run its
+    first line cannot be said to refuse a signal or to have started a child, and
+    how soon it runs one depends on the machine's load, not on the code."""
+    deadline = time.monotonic() + 30
+    while marker not in job.tail():
+        assert time.monotonic() < deadline, f"job never printed {marker!r}"
+        run(asyncio.sleep(0.01))
+
+
 def pid_from(output: str) -> int:
     return int(output.strip().splitlines()[0])
 
@@ -101,13 +111,16 @@ class SupervisionTest(unittest.TestCase):
         install()
 
     def test_deadline_ends_the_whole_group(self):
-        job = start("sleep 30 & echo $!; wait", timeout=0.1)
+        # The deadline must outlast the shell's first lines on a loaded machine,
+        # so wait for the child's pid before relying on the deadline to end it.
+        job = start("sleep 30 & echo $!; wait", timeout=2)
+        ready(job, "\n")
         wait(job)
         self.assertTrue(job.timed_out)
         self.assertTrue(job.termination.gone)
         self.assertFalse(present(job.group.pgid))
         self.assertFalse(pid_present(pid_from(job.tail())))
-        self.assertIn("deadline exceeded after 0.1s", job.tail())
+        self.assertIn("deadline exceeded after 2s", job.tail())
         self.assertIn("terminated", job.tail())
 
     def test_command_exit_ends_descendants_that_hold_no_output(self):
@@ -121,8 +134,8 @@ class SupervisionTest(unittest.TestCase):
         self.assertFalse(pid_present(grandchild))
 
     def test_stop_escalates_and_is_retryable(self):
-        job = start("trap '' TERM; while :; do sleep 0.2; done", timeout=30)
-        run(asyncio.sleep(0.05))
+        job = start("trap '' TERM; echo ready; while :; do sleep 0.2; done", timeout=30)
+        ready(job)  # the trap is installed before the first signal is sent
         self.assertIsNone(job.poll())  # still running
         ending = run(job.stop())
         self.assertTrue(ending.gone)
