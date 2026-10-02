@@ -74,9 +74,15 @@ pub fn feed(
           types.InvalidEvent("invalid chat JSON: " <> string.inspect(error))
         }),
       )
-      case decode.run(value, decode.at(["error", "message"], decode.string)) {
-        Ok(message) -> Error(types.ProviderError(message))
-        Error(_) -> {
+      let error_decoder =
+        decode.optionally_at(
+          ["error", "message"],
+          None,
+          decode.map(decode.string, Some),
+        )
+      case decode.run(value, error_decoder) {
+        Ok(Some(message)) -> Error(types.ProviderError(message))
+        _ -> {
           use chunk <- result.try(
             decode.run(value, chunk_decoder())
             |> result.map_error(fn(error) {

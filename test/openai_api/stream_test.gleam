@@ -223,6 +223,44 @@ pub fn chat_rejects_non_object_deltas_test() -> Nil {
   })
 }
 
+pub fn chat_provider_errors_take_precedence_only_with_string_messages_test() -> Nil {
+  list.each(["", "capacity"], fn(message) {
+    let data =
+      json.object([
+        #("error", json.object([#("message", json.string(message))])),
+        #(
+          "choices",
+          json.array(["hello"], fn(content) {
+            json.object([
+              #("index", json.int(0)),
+              #("delta", json.object([#("content", json.string(content))])),
+            ])
+          }),
+        ),
+      ])
+      |> json.to_string
+    assert send(stream.new(types.ChatCompletions), "", data)
+      == Error(types.ProviderError(message))
+  })
+  list.each(
+    [
+      "null", "42", "\"x\"", "{}", "{\"message\":null}", "{\"message\":42}",
+      "{\"message\":false}", "{\"message\":[]}",
+    ],
+    fn(value) {
+      let data =
+        "{\"error\":"
+        <> value
+        <> ",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}"
+      let assert Ok(#(_, [types.TextDelta(0, 0, "hello")], None)) =
+        send(stream.new(types.ChatCompletions), "", data)
+    },
+  )
+  let assert Error(types.InvalidEvent(_)) =
+    send(stream.new(types.ChatCompletions), "", "{\"error\":{\"message\":42}}")
+  Nil
+}
+
 pub fn chat_requires_finish_and_suppresses_partial_tools_on_limits_test() -> Nil {
   assert send(stream.new(types.ChatCompletions), "", "[DONE]")
     == Error(types.InvalidEvent("[DONE] before chat finish reason"))
