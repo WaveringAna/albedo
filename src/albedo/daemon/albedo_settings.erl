@@ -48,7 +48,8 @@ snapshot(Home) -> with_lock(Home, fun() -> guarded(fun() ->
 end) end).
 
 public_ui(Picker) ->
-    maps:merge(#{<<"thinking">> => false, <<"tools">> => false},
+    maps:merge(#{<<"thinking">> => false, <<"tools">> => false,
+                 <<"pinned">> => [], <<"archived">> => [], <<"opens">> => #{}},
         maps:with([<<"pinned">>, <<"archived">>, <<"opens">>, <<"thinking">>, <<"tools">>], Picker)).
 
 public_mcp(Server) ->

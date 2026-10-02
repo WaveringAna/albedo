@@ -187,6 +187,22 @@ class SettingsTest(unittest.TestCase):
                     before,
                 )
 
+    def test_ui_mutations_return_complete_preferences_before_any_picker_use(self):
+        fixture = json.loads(
+            (Path(__file__).parents[1] / "fixtures/mutation_responses.json").read_text()
+        )["ui"]
+        with self.app.api(
+            "/settings/ui", {"thinking": False}, method="PATCH"
+        ) as response:
+            self.assertEqual(response.status, fixture["status"])
+            self.assertEqual(json.load(response), fixture["body"])
+        session_path = f"/settings/ui/sessions/{self.session}"
+        self.assertEqual(
+            self.request(session_path, {"pinned": False}, "PATCH"), fixture["body"]
+        )
+        prefs = self.request(session_path + "/open", method="POST")
+        self.assertEqual(prefs, dict(fixture["body"], opens={self.session: 1}))
+
     def test_ui_updates_and_open_counts_survive_restart_and_session_deletion(self):
         session_path = f"/settings/ui/sessions/{self.session}"
         (self.app.home / "picker.json").write_text(

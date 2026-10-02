@@ -98,6 +98,15 @@ class IntegrationTest(unittest.TestCase):
                 )
 
         app.restart(prepare=prepare)
+        # Malformed submissions must be rejected before attempting the worker
+        # activation whose effort write this fixture deliberately blocks.
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            app.api(
+                f"/sessions/{session}/events",
+                {"type": "continu", "content": "must not submit"},
+            ).close()
+        self.assertEqual(caught.exception.code, 400)
+        self.assertEqual(json.load(caught.exception)["code"], "invalid_submission")
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.read(app, f"/sessions/{session}/status")
         self.assertIn("session could not start", json.load(caught.exception)["error"])
@@ -335,7 +344,10 @@ class IntegrationTest(unittest.TestCase):
                             "image": dict(attachment, width=4),
                         },
                     ).close()
-                self.assertEqual(caught.exception.code, 409)
+                self.assertEqual(caught.exception.code, 400)
+                self.assertEqual(
+                    json.load(caught.exception)["code"], "invalid_submission"
+                )
                 start = len(self.provider.requests)
                 app.api(
                     f"/sessions/{session}/events",
@@ -364,6 +376,64 @@ class IntegrationTest(unittest.TestCase):
                     {"mimeType": "image/png", "width": 2, "height": 3, "bytes": 24},
                 )
                 self.assertNotIn(png, json.dumps(image))
+
+    def test_invalid_submissions_do_not_activate_or_admit_work(self):
+        app = self.app_for("responses")
+        session = app.session()
+        before = app.events(session)
+        invalid = [
+            {},
+            [],
+            {"type": "usr", "content": "must not submit"},
+            {"type": "continu", "content": "must not submit"},
+            {"type": None, "content": "must not submit"},
+            {"content": None},
+            {"content": 4},
+            {"content": "must not submit", "clientId": False},
+            {"type": "continue", "content": False},
+            {"type": "resume", "image": {}},
+            {
+                "content": "must not submit",
+                "image": {
+                    "mimeType": "image/png",
+                    "data": "not base64",
+                    "width": 1,
+                    "height": 1,
+                    "bytes": 1,
+                },
+            },
+        ]
+        for payload in invalid:
+            for identity in (session, "nonexistent-submission-session"):
+                with self.subTest(payload=payload, identity=identity):
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        app.api(f"/sessions/{identity}/events", payload).close()
+                    self.assertEqual(caught.exception.code, 400)
+                    self.assertEqual(
+                        json.load(caught.exception)["code"], "invalid_submission"
+                    )
+        self.assertEqual(app.events(session), before)
+        self.assertFalse(self.provider.requests)
+
+    def test_submission_kinds_preserve_user_and_continuation_behavior(self):
+        app = self.app_for("responses")
+        session = app.session()
+        fixture = json.loads(
+            (Path(__file__).parents[1] / "fixtures/mutation_responses.json").read_text()
+        )["submission"]
+        for kind in (None, "user", "continue", "resume"):
+            payload = {"content": "valid submission " + str(kind)}
+            if kind is not None:
+                payload["type"] = kind
+            with app.api(f"/sessions/{session}/events", payload) as response:
+                self.assertEqual(response.status, fixture["status"])
+                self.assertEqual(json.load(response), fixture["body"])
+            app.idle(session)
+        users = [
+            event["text"] for event in app.events(session) if event["type"] == "user"
+        ]
+        self.assertEqual(users, ["valid submission None", "valid submission user"])
+        self.assertGreaterEqual(len(self.provider.requests), 4)
 
     def test_busy_messages_join_next_model_request_in_order(self):
         app = self.app_for("responses")

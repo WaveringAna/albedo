@@ -1722,6 +1722,36 @@ fn validate_submitted_image(
   }
 }
 
+type Submission {
+  User(text: String, client_id: String, image: Option(types.Image))
+  Continue(client_id: String)
+}
+
+fn submission_decoder() -> decode.Decoder(Submission) {
+  use client_id <- decode.optional_field("clientId", "", decode.string)
+  use kind <- decode.optional_field("type", "user", decode.string)
+  use content <- decode.optional_field(
+    "content",
+    None,
+    decode.map(decode.string, Some),
+  )
+  use submitted_image <- decode.optional_field(
+    "image",
+    None,
+    decode.optional(submitted_image_decoder()),
+  )
+  case validate_submitted_image(submitted_image) {
+    Error(message) -> decode.failure(Continue(client_id), message)
+    Ok(image) ->
+      case kind, content {
+        "user", Some(text) -> decode.success(User(text, client_id, image))
+        "continue", _ | "resume", _ -> decode.success(Continue(client_id))
+        "user", None -> decode.failure(Continue(client_id), "user content")
+        _, _ -> decode.failure(Continue(client_id), "user, continue, or resume")
+      }
+  }
+}
+
 /// The request's JSON body; `routed` has already read the bytes off the wire.
 fn body(
   req: request.Request(BitArray),
@@ -2338,6 +2368,49 @@ fn daemon_route(
           })
           |> answered(202, mail.receipt_json, 409)
         }
+        Post, ["sessions", id, "events"] -> {
+          case body(req, submission_decoder()) {
+            Error(message) ->
+              reply(
+                400,
+                json.object([
+                  #("code", json.string("invalid_submission")),
+                  #("error", json.string(message)),
+                ]),
+              )
+            Ok(submission) ->
+              case actor.call(registry, 5000, Lookup(id, _)) {
+                Error(message) -> error(404, message)
+                Ok(worker) -> {
+                  let outcome = case submission {
+                    User(text, client_id, image) ->
+                      session.submit(worker, text, client_id, image)
+                    Continue(client_id) ->
+                      session.submit_continue(worker, client_id)
+                  }
+                  case outcome {
+                    Ok(queued) ->
+                      reply(202, acknowledged([#("queued", json.bool(queued))]))
+                    Error(session.Rejected(e)) -> error(409, e)
+                    Error(session.Busy) ->
+                      error(409, "session is busy or message queue is full")
+                    Error(session.WorkspaceMissing(path)) ->
+                      reply(
+                        409,
+                        json.object([
+                          #("code", json.string("workspace_missing")),
+                          #("workspace", json.string(path)),
+                          #(
+                            "error",
+                            json.string("workspace not found: " <> path),
+                          ),
+                        ]),
+                      )
+                  }
+                }
+              }
+          }
+        }
         _, ["sessions", id, operation] ->
           case actor.call(registry, 5000, Lookup(id, _)) {
             Error(e) -> error(404, e)
@@ -2388,74 +2461,6 @@ fn daemon_route(
                   |> answered(200, extensions_json, 409)
                 }
                 Get, "status" -> raw(200, session.status(worker))
-                Post, "events" -> {
-                  let decoder = {
-                    use client_id <- decode.optional_field(
-                      "clientId",
-                      "",
-                      decode.string,
-                    )
-                    use kind <- decode.optional_field(
-                      "type",
-                      "user",
-                      decode.string,
-                    )
-                    case kind {
-                      "continue" | "resume" ->
-                        decode.success(#(True, "", client_id, None))
-                      _ -> {
-                        use text <- decode.field("content", decode.string)
-                        use submitted_image <- decode.optional_field(
-                          "image",
-                          None,
-                          decode.optional(submitted_image_decoder()),
-                        )
-                        decode.success(#(
-                          False,
-                          text,
-                          client_id,
-                          submitted_image,
-                        ))
-                      }
-                    }
-                  }
-                  case
-                    body(req, decoder)
-                    |> result.map_error(session.Rejected)
-                    |> result.try(fn(submission) {
-                      let #(is_continue, text, client_id, raw_image) =
-                        submission
-                      case is_continue {
-                        True -> session.submit_continue(worker, client_id)
-                        False -> {
-                          use image <- result.try(
-                            validate_submitted_image(raw_image)
-                            |> result.map_error(session.Rejected),
-                          )
-                          session.submit(worker, text, client_id, image)
-                        }
-                      }
-                    })
-                  {
-                    Ok(queued) ->
-                      reply(202, acknowledged([#("queued", json.bool(queued))]))
-                    Error(session.Rejected(e)) -> error(409, e)
-                    Error(session.Busy) ->
-                      error(409, "session is busy or message queue is full")
-                    Error(session.WorkspaceMissing(path)) ->
-                      reply(
-                        409,
-                        json.object([
-                          #("code", json.string("workspace_missing")),
-                          #("workspace", json.string(path)),
-                          #(
-                            "error",
-                            json.string("workspace not found: " <> path),
-                          ),
-                        ]),
-                      )
-                  }
-                }
                 // Unlike `/model`, leaves the default for new sessions alone.
                 Post, "model" -> {
                   let decoder = {
