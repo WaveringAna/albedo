@@ -271,6 +271,41 @@ func TestLostCreationAcknowledgementCreatesOneSession(t *testing.T) {
 	}
 }
 
+func TestRejectedCreationReceiptRecoversWithoutAllocatingSession(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	handle, err := daemon.NewCreation(daemon.CreateSessionRequest{Workspace: workspace, Provider: "missing-creation-profile"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = daemon.CreateSessionOperation(t.Context(), conn(t), handle)
+	initial, ok := errors.AsType[*daemon.APIError](err)
+	if !ok || initial.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown provider did not reject creation: %v", err)
+	}
+	// A rejected creation has a durable receipt but no session target. An
+	// independent receipt read must recover that rejection without treating
+	// the empty target as malformed or submitting another creation.
+	receipt, err := daemon.ResolveOperation(t.Context(), conn(t), handle)
+	if err != nil || receipt.Status != "rejected" || receipt.Target != "" || receipt.OperationID != handle.ID() {
+		t.Fatalf("rejected creation receipt: %+v, %v", receipt, err)
+	}
+	created, err := daemon.ResolveCreation(t.Context(), conn(t), handle)
+	recovered, ok := errors.AsType[*daemon.APIError](err)
+	if !ok || recovered.StatusCode != initial.StatusCode || created.ID != "" {
+		t.Fatalf("resolve rejected creation: %+v, %v", created, err)
+	}
+	sessions, err := daemon.ListSessions(t.Context(), conn(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range sessions {
+		if session.Workspace == workspace {
+			t.Fatal("rejected creation allocated a session")
+		}
+	}
+}
+
 func TestInvalidTUICreationAcknowledgementRecoversCreatedSession(t *testing.T) {
 	profile := providerRoute(t, echoReply)
 	for _, fault := range []acknowledgementFault{dropAcknowledgement, emptyAcknowledgement, malformedAcknowledgement, missingAcknowledgement} {
