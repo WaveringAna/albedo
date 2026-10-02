@@ -25,6 +25,12 @@ Discovery is bounded to 128 candidates, 64 diagnostics, 64 KiB of frontmatter pe
 
 The catalog is prepared once when a runtime session opens. Its immutable snapshot is shared by prompt context, session commands, Python RPC, and user slash activation. Changes on disk take effect after the skills extension or session is reloaded, or immediately through `/reload session`, which re-runs discovery and swaps the snapshot in place: the kernel, its Python namespace, and `skills` RPC routes rebind without a restart, and the refreshed catalog reaches prompt context, the command menu, and Python in the same swap. This prevents a UI lookup from seeing a different skill set than the model. New skills gained by a reload are reachable through `commands.catalog()` and `commands.invoke` right away; the typed `commands.<method>` bindings minted at kernel boot are not re-minted, so a skill added mid-session is invoked by name.
 
+## Management catalog
+
+`GET /sessions/:id/catalog` discovers skills and instruction files in the daemon's session workspace and home directories. It includes disabled, invalid, and shadowed candidates, with source paths and validation diagnostics. Skill preference keys remain frontmatter names; each discovered source has a separate stable row ID so duplicates remain distinguishable.
+
+The management catalog reports global preferences, session overrides, and effective enablement separately. Its revision changes with discovered files and preferences; catalog updates must use the observed revision. Reading it does not reload extensions or change the session's prepared prompt. A disabled winning skill does not expose a lower-priority duplicate.
+
 ## Activation and Python API
 
 The `skills` extension depends on the `python` extension. It does not advertise separate model function tools. Every cataloged skill is a session command (see [commands](commands.md)): the kernel mints one typed method per skill from the same catalog the CLI menu shows. A model invocation reads the selected full `SKILL.md` and returns `name`, `description`, `source`, exact `arguments`, and `instructions` to the current Python call, without submitting or committing another turn; a user invocation submits exactly one activation turn.
