@@ -27,11 +27,13 @@ import (
 )
 
 type streamFaultProxy struct {
-	connection  *daemon.Connection
-	mu          sync.Mutex
-	cursors     []string
-	firstCursor int64
-	reconnected chan struct{}
+	connection      *daemon.Connection
+	mu              sync.Mutex
+	cursors         []string
+	generations     []string
+	firstCursor     int64
+	firstGeneration string
+	reconnected     chan struct{}
 }
 
 func faultSessionStream(t *testing.T, session string, fault string) *streamFaultProxy {
@@ -47,9 +49,10 @@ func faultSessionStream(t *testing.T, session string, fault string) *streamFault
 		if r.URL.Path == "/sessions/"+session+"/stream" {
 			proxy.mu.Lock()
 			proxy.cursors = append(proxy.cursors, r.URL.Query().Get("after_seq"))
+			proxy.generations = append(proxy.generations, r.URL.Query().Get("after_generation"))
 			count := len(proxy.cursors)
 			proxy.mu.Unlock()
-			if fault == "eof" {
+			if fault == "eof" || fault == "after-history" {
 				if count == 1 {
 					outgoing := r.Clone(r.Context())
 					outgoing.URL.Scheme, outgoing.URL.Host = destination.Scheme, destination.Host
@@ -68,13 +71,15 @@ func faultSessionStream(t *testing.T, session string, fault string) *streamFault
 						_, _ = fmt.Fprintln(w, line)
 						if strings.HasPrefix(line, "data: ") {
 							var envelope struct {
-								Cursor int64 `json:"cursor"`
+								Cursor     int64  `json:"cursor"`
+								Generation string `json:"generation"`
 							}
 							if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &envelope); err != nil {
 								t.Error(err)
 							}
 							proxy.mu.Lock()
 							proxy.firstCursor = envelope.Cursor
+							proxy.firstGeneration = envelope.Generation
 							proxy.mu.Unlock()
 						}
 						if line == "" {
@@ -88,13 +93,18 @@ func faultSessionStream(t *testing.T, session string, fault string) *streamFault
 					}
 					return
 				}
+				if fault == "after-history" && count == 2 {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: "+`{"generation":"invalid-replacement","cursor":10,"events":[{"type":"text","text":"poison must stay hidden"}]}`+"\n\n")
+					return
+				}
 				select {
 				case proxy.reconnected <- struct{}{}:
 				default:
 				}
 			} else if count == 1 || fault == "repeated" {
 				w.Header().Set("Content-Type", "text/event-stream")
-				_, _ = io.WriteString(w, "data: "+`{"cursor":10,"events":[{"type":"text","text":"poison must stay hidden"},{"type":"message","role":"assistant","text":false}]}`+"\n\n")
+				_, _ = io.WriteString(w, "data: "+`{"generation":"fault","cursor":10,"events":[{"type":"text","text":"poison must stay hidden"},{"type":"message","role":"assistant","text":false}]}`+"\n\n")
 				return
 			}
 		}
@@ -181,7 +191,7 @@ func TestTUIStreamProtocolFailureRecoversDurableHistoryOnce(t *testing.T) {
 		t.Fatalf("reset lost or duplicated durable transcript:\n%s", view)
 	}
 	requests := proxy.requests()
-	if len(requests) != 2 || requests[1] != "-1" {
+	if len(requests) != 2 || requests[1] != "" {
 		t.Fatalf("protocol recovery did not request exactly one durable reset: %v", requests)
 	}
 }
@@ -275,12 +285,58 @@ func TestTUIStreamEOFReconnectsFromConsumedCursor(t *testing.T) {
 	}
 	proxy.mu.Lock()
 	requests, first := append([]string(nil), proxy.cursors...), proxy.firstCursor
+	generations, firstGeneration := append([]string(nil), proxy.generations...), proxy.firstGeneration
 	proxy.mu.Unlock()
-	if len(requests) != 2 || requests[1] != fmt.Sprint(first) {
+	if len(requests) != 2 || requests[1] != fmt.Sprint(first) || generations[1] != firstGeneration || firstGeneration == "" {
 		t.Fatalf("EOF lost consumed cursor: requests=%v, cursor=%d", requests, first)
 	}
 	view := driver.View()
 	if strings.Count(view, "before EOF") != 2 || strings.Count(view, "after EOF") != 2 {
 		t.Fatalf("EOF replay lost or duplicated rows:\n%s", view)
+	}
+}
+
+func TestTUIResetReplacesHistoryAndPreservesOlderNavigation(t *testing.T) {
+	profile := providerRoute(t, echoReply)
+	session := daemonSession(t, newSession(t, t.TempDir()))
+	client := daemon.NewChatClient(conn(t), session.ID)
+	const turns = 62
+	for index := range turns {
+		if _, err := client.Send(t.Context(), fmt.Sprintf("history row %03d", index), nil); err != nil {
+			t.Fatal(err)
+		}
+		waitIdle(t, session.ID, profile, index+1)
+	}
+	proxy := faultSessionStream(t, session.ID, "after-history")
+	driver := driveTUIWithConnection(t, &session, proxy.connection)
+	t.Cleanup(driver.App.Chat.Close)
+	driver.Update(tea.WindowSizeMsg{Width: 100, Height: 50})
+	recoverySeen := false
+	pumpStreamUntil(t, driver, func(msg tea.Msg) bool {
+		if result, ok := msg.(tui.ChatStreamResultMsg); ok && result.Recovering {
+			recoverySeen = true
+		}
+		event, ok := msg.(tui.ChatStreamEventMsg)
+		return recoverySeen && ok && event.Event.Type == daemon.EventMessage && strings.Contains(event.Event.Text, "history row 061")
+	})
+	if requests := proxy.requests(); len(requests) != 3 || requests[2] != "" {
+		t.Fatalf("generation failure did not recover with a fresh subscription: %v", requests)
+	}
+	seen := map[string]int{}
+	for _, entry := range driver.App.Chat.History.Entries() {
+		seen[entry.Text]++
+	}
+	if seen["history row 061"] != 1 || seen["history row 000"] != 0 || strings.Contains(driver.View(), "poison must stay hidden") {
+		t.Fatalf("reset duplicated history or lost the tail boundary: %v", seen)
+	}
+	for range 4 {
+		driver.Dispatch(tea.KeyPressMsg{Code: tea.KeyHome, Mod: tea.ModCtrl})
+	}
+	seen = map[string]int{}
+	for _, entry := range driver.App.Chat.History.Entries() {
+		seen[entry.Text]++
+	}
+	if seen["history row 000"] != 1 || seen["history row 061"] != 1 {
+		t.Fatalf("older navigation after reset lost or duplicated rows: %v", seen)
 	}
 }
