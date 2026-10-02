@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"strings"
@@ -200,6 +201,7 @@ func requestBytes(ctx context.Context, conn *Connection, operation Operation, li
 }
 
 type streamLimits struct {
+	requireSSE bool
 	lineBytes  int
 	errorBytes int64
 }
@@ -244,6 +246,13 @@ func scanEventStream(ctx context.Context, conn *Connection, operation Operation,
 				err = errors.Join(err, canceled)
 			}
 			return err
+		}
+		if limits.requireSSE {
+			mediaType, _, parseErr := mime.ParseMediaType(res.Header.Get("Content-Type"))
+			if parseErr != nil || mediaType != "text/event-stream" {
+				_ = res.Body.Close()
+				return streamFailure(StreamProtocol, fmt.Errorf("invalid stream content type %q", res.Header.Get("Content-Type")))
+			}
 		}
 		defer res.Body.Close()
 		scanner := bufio.NewScanner(res.Body)

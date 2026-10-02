@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -55,12 +57,15 @@ type SendResult struct {
 	Queued      bool   `json:"queued"`
 }
 
+// ChatClient retains the cursor and argument state for one stream subscription.
+// Callers must serialize stream subscriptions and reset operations.
 type ChatClient struct {
 	conn            *Connection
 	argumentsByCall map[string]*strings.Builder
 	agentID         string
 	clientID        string
-	afterSeq        int
+	afterSeq        int64
+	requireReset    bool
 	mu              sync.Mutex
 }
 
@@ -276,8 +281,11 @@ func decodeChatEvent(data json.RawMessage) (*wireChatEvent, error) {
 	if err := json.Unmarshal(data, &header); err != nil {
 		return nil, fmt.Errorf("invalid event: %w", err)
 	}
+	if header.Type == "" {
+		return nil, errors.New("invalid event: missing or empty type")
+	}
 	switch header.Type {
-	case "", EventText, EventReset, EventRetry, EventError, EventInterrupted, EventMessage, EventUser, EventThinking, EventNote, EventCompacted, EventToolProgress, EventTool, EventUsage, EventCommitted, EventTurnMembership, EventTurnCompleted, "arguments_delta", "turn_started":
+	case EventText, EventReset, EventRetry, EventError, EventInterrupted, EventMessage, EventUser, EventThinking, EventNote, EventCompacted, EventToolProgress, EventTool, EventUsage, EventCommitted, EventTurnMembership, EventTurnCompleted, "arguments_delta", "turn_started":
 	default:
 		return nil, nil
 	}
@@ -300,20 +308,44 @@ func decodeChatEvent(data json.RawMessage) (*wireChatEvent, error) {
 	}
 	var err error
 	switch header.Type {
-	case "", EventText, EventMessage, EventUser, EventThinking, EventNote, EventError:
+	case EventText, EventMessage, EventUser, EventThinking, EventNote, EventError:
 		err = require("text")
-		if header.Type == "" {
-			event.Type = EventText
-		}
 		if header.Type == EventMessage {
-			event.Role = "assistant"
+			err = require("text", "role")
+			if event.Role != "assistant" {
+				return nil, errors.New("invalid message event: role must be assistant")
+			}
+		}
+		if header.Type == EventUser {
+			err = require("text", "source", "triggeredAt")
 		}
 	case "arguments_delta":
 		err = require("callId", "name", "text")
+		if event.CallID == "" || event.ToolName == "" {
+			return nil, errors.New("invalid argument delta identity")
+		}
 	case EventTurnMembership:
 		err = require("turnId", "submissionIds")
+		if event.TurnID == "" || event.SubmissionIDs == nil {
+			return nil, errors.New("invalid turn membership identity")
+		}
+		for _, id := range event.SubmissionIDs {
+			if id == "" {
+				return nil, errors.New("invalid empty submission identity")
+			}
+		}
 	case EventTurnCompleted:
 		err = require("turnId")
+		if event.TurnID == "" {
+			return nil, errors.New("invalid empty turn identity")
+		}
+	case EventReset:
+		if raw, ok := fields["before"]; ok && string(raw) == "null" {
+			return nil, errors.New("invalid reset before")
+		}
+		if raw, ok := fields["more"]; ok && string(raw) == "null" {
+			return nil, errors.New("invalid reset more")
+		}
 	case EventCommitted:
 		err = require("seq")
 		if event.Seq <= 0 {
@@ -325,18 +357,17 @@ func decodeChatEvent(data json.RawMessage) (*wireChatEvent, error) {
 			err = errors.New("invalid compacted event")
 		}
 	case EventTool:
-		err = require("name", "result")
+		err = require("callId", "name", "args", "result")
+		if event.CallID == "" || event.ToolName == "" {
+			return nil, errors.New("invalid tool identity")
+		}
 		if len(event.Args) != 0 && string(event.Args) != "null" {
-			args := event.Args
-			if args[0] == '"' {
-				var encoded string
-				if decodeErr := json.Unmarshal(args, &encoded); decodeErr != nil {
-					return nil, decodeErr
-				}
-				args = []byte(encoded)
+			var encoded string
+			if decodeErr := json.Unmarshal(event.Args, &encoded); decodeErr != nil {
+				return nil, fmt.Errorf("invalid tool args: %w", decodeErr)
 			}
-			// Invalid tool argument JSON is display-only, and has historically rendered empty.
-			if json.Unmarshal(args, &event.ToolArgs) != nil {
+			// Tool arguments are model-generated text, not protocol-owned JSON.
+			if json.Unmarshal([]byte(encoded), &event.ToolArgs) != nil {
 				event.ToolArgs = map[string]any{}
 			}
 		}
@@ -345,27 +376,43 @@ func decodeChatEvent(data json.RawMessage) (*wireChatEvent, error) {
 		if decodeErr := json.Unmarshal(data, &usage); decodeErr != nil {
 			return nil, fmt.Errorf("invalid usage event: %w", decodeErr)
 		}
+		if fieldErr := require("model", "recordedAt"); fieldErr != nil {
+			return nil, fieldErr
+		}
+		if usage.RecordedAt == nil || *usage.RecordedAt < 0 {
+			return nil, errors.New("invalid usage timestamp")
+		}
+		for _, count := range []*int{usage.PromptTokens, usage.CachedPromptTokens, usage.CacheWriteTokens, usage.CompletionTokens, usage.TotalTokens} {
+			if count != nil && *count < 0 {
+				return nil, errors.New("invalid usage token count")
+			}
+		}
+		if usage.ElapsedMs != nil && *usage.ElapsedMs < 0 || usage.TokensPerSecond != nil && *usage.TokensPerSecond < 0 {
+			return nil, errors.New("invalid usage rate or duration")
+		}
+		for _, step := range usage.CacheFade {
+			if step.At < 0 || step.Cached != nil && *step.Cached < 0 {
+				return nil, errors.New("invalid cache fade")
+			}
+		}
 		event.Usage = &usage
 	case EventToolProgress:
 		if fieldErr := validateToolProgress(fields["progress"]); fieldErr != nil {
 			return nil, fieldErr
 		}
-		if _, exists := fields["progress"]; !exists {
-			err = errors.New("invalid tool progress event: missing progress")
-		}
 		if progress := event.Progress; progress != nil {
-			if len(progress.CallID) > 200 || len(progress.Name) > 100 || (progress.Phase != "generating" && progress.Phase != "running") {
+			if progress.CallID == "" || progress.Name == "" || len(progress.CallID) > 200 || len(progress.Name) > 100 {
 				return nil, errors.New("invalid tool progress event")
 			}
 			progress.Name = cleanLabel(progress.Name)
 			if intent := progress.Intent; intent != nil {
 				if (intent.Kind != "write" && intent.Kind != "edit" && intent.Kind != "read" && intent.Kind != "run") || len(intent.Target) > 300 {
-					progress.Intent = nil
+					return nil, errors.New("invalid tool progress intent")
 				}
 			}
 			if code := progress.Code; code != nil {
 				if code.Offset < 0 || (progress.Phase == "generating" && len(code.Text) > 512) || len(code.Text) > 16000 {
-					progress.Code = nil
+					return nil, errors.New("invalid tool progress code")
 				} else if progress.Phase == "running" {
 					if progress.Intent == nil && progress.Name == "python" {
 						progress.Intent = ParsePythonIntent(code.Text)
@@ -384,17 +431,20 @@ func decodeChatEvent(data json.RawMessage) (*wireChatEvent, error) {
 			return nil, fmt.Errorf("invalid elapsedMs: %w", err)
 		}
 	}
-	if event.Timestamp != nil && *event.Timestamp < 0 {
-		event.Timestamp = nil
-	}
-	if event.ElapsedMs < 0 {
-		event.ElapsedMs = 0
+	if event.Timestamp != nil && *event.Timestamp < 0 || event.ElapsedMs < 0 || event.Before < 0 {
+		return nil, errors.New("invalid event timestamp, elapsed time, or history cursor")
 	}
 	if event.Image != nil {
 		event.Image = ParseImageMetadata(event.Image)
+		if event.Image == nil {
+			return nil, errors.New("invalid image metadata")
+		}
 	}
 	if event.ToolTrace != nil {
 		event.ToolTrace = ParseToolTrace(event.ToolTrace)
+		if event.ToolTrace == nil {
+			return nil, errors.New("invalid tool trace")
+		}
 	}
 	return &event, nil
 }
@@ -405,11 +455,63 @@ func (c *ChatClient) ResetStream() {
 	c.mu.Lock()
 	c.argumentsByCall = make(map[string]*strings.Builder)
 	c.afterSeq = -1
+	c.requireReset = false
 	c.mu.Unlock()
+}
+
+// RequireStreamReset requests durable history before accepting further events.
+// Call it after the subscription has stopped writing.
+func (c *ChatClient) RequireStreamReset() {
+	c.mu.Lock()
+	c.argumentsByCall = make(map[string]*strings.Builder)
+	c.afterSeq = -1
+	c.requireReset = true
+	c.mu.Unlock()
+}
+
+type streamBatch struct {
+	Cursor *int64            `json:"cursor"`
+	Events []json.RawMessage `json:"events"`
+}
+
+func streamFailure(kind StreamFailureKind, cause error) error {
+	return &StreamError{Kind: kind, Cause: cause}
+}
+
+func classifyStreamFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+	if _, ok := errors.AsType[*StreamError](err); ok {
+		return err
+	}
+	if apiErr, ok := errors.AsType[*APIError](err); ok {
+		kind := StreamTerminal
+		if apiErr.StatusCode == http.StatusRequestTimeout || apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode >= 500 {
+			kind = StreamTransient
+		}
+		return streamFailure(kind, err)
+	}
+	if errors.Is(err, bufio.ErrTooLong) {
+		return streamFailure(StreamProtocol, err)
+	}
+	if _, ok := errors.AsType[net.Error](err); ok {
+		return streamFailure(StreamTransient, err)
+	}
+	if isConnectionError(err) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return streamFailure(StreamTransient, err)
+	}
+	return streamFailure(StreamTerminal, err)
 }
 
 // Stream uses ctx for cancellation; onEvent must also honor ctx if it blocks.
 func (c *ChatClient) Stream(ctx context.Context, tail int, onEvent func(StreamEvent) error) error {
+	return c.StreamWithProgress(ctx, tail, onEvent, nil)
+}
+
+// StreamWithProgress reports fully consumed batches, including ignored additive
+// events, so subscribers can reset their reconnect backoff after progress.
+func (c *ChatClient) StreamWithProgress(ctx context.Context, tail int, onEvent func(StreamEvent) error, onBatchConsumed func()) error {
 	defer func() {
 		// Cancellation also clears state when the request fails before reading.
 		// Transient failures and EOF retain the cursor and unfinished arguments.
@@ -428,16 +530,21 @@ func (c *ChatClient) Stream(ctx context.Context, tail int, onEvent func(StreamEv
 	}
 
 	operation := Operation{Name: "stream session", Method: http.MethodGet, Path: c.agentPath(route), Policy: ReadRecovery}
-	return scanEventStream(ctx, c.conn, operation, streamLimits{lineBytes: 10 * 1024 * 1024, errorBytes: 64 * 1024}, func(scanner *bufio.Scanner) error {
-		return c.readStream(ctx, scanner, onEvent)
+	err := scanEventStream(ctx, c.conn, operation, streamLimits{requireSSE: true, lineBytes: 10 * 1024 * 1024, errorBytes: 64 * 1024}, func(scanner *bufio.Scanner) error {
+		return c.readStream(ctx, scanner, onBatchConsumed, func(event StreamEvent) error {
+			if err := onEvent(event); err != nil {
+				return streamFailure(StreamTerminal, err)
+			}
+			return nil
+		})
 	})
+	return classifyStreamFailure(err)
 }
 
-func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onEvent func(StreamEvent) error) error {
+func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onBatchConsumed func(), onEvent func(StreamEvent) error) error {
 	reporter := NewToolProgressReporter(func(progress *ToolProgress) error {
 		return onEvent(StreamEvent{Type: EventToolProgress, Progress: progress})
 	})
-	defer func() { _ = reporter.Report(nil, "running") }()
 	var eventType string
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
@@ -465,38 +572,52 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onE
 				Text  string `json:"text"`
 			}
 			if err := json.Unmarshal([]byte(payload), &failure); err != nil {
-				return fmt.Errorf("invalid stream error: %w", err)
+				return streamFailure(StreamProtocol, fmt.Errorf("invalid stream error: %w", err))
 			}
 			if failure.Error != "" {
-				return errors.New(failure.Error)
+				return streamFailure(StreamTerminal, errors.New(failure.Error))
 			}
 			if failure.Text != "" {
-				return errors.New(failure.Text)
+				return streamFailure(StreamTerminal, errors.New(failure.Text))
 			}
-			return errors.New(payload)
+			return streamFailure(StreamProtocol, errors.New("invalid stream error: missing error or text"))
 		}
-		var batch struct {
-			Cursor *int              `json:"cursor"`
-			Events []json.RawMessage `json:"events"`
-		}
+		var batch streamBatch
 		if err := json.Unmarshal([]byte(payload), &batch); err != nil {
-			return fmt.Errorf("invalid stream batch: %w", err)
+			return streamFailure(StreamProtocol, fmt.Errorf("invalid stream batch: %w", err))
 		}
 		if batch.Cursor == nil || *batch.Cursor < 0 || batch.Events == nil {
-			return errors.New("invalid stream batch: missing cursor or events")
+			return streamFailure(StreamProtocol, errors.New("invalid stream batch: missing cursor or events"))
 		}
 		// Validate the whole batch before delivering events or changing preview state.
 		events := make([]wireChatEvent, 0, len(batch.Events))
 		for _, raw := range batch.Events {
 			event, err := decodeChatEvent(raw)
 			if err != nil {
-				return err
+				return streamFailure(StreamProtocol, err)
 			}
 			if event != nil {
 				events = append(events, *event)
 			}
 		}
-		snapshot := false
+		reset := len(events) > 0 && events[0].Type == EventReset
+		c.mu.Lock()
+		previous, requiresReset := c.afterSeq, c.requireReset
+		c.mu.Unlock()
+		if requiresReset && !reset {
+			return streamFailure(StreamProtocol, errors.New("recovery stream must begin with reset"))
+		}
+		if *batch.Cursor < previous && !reset {
+			return streamFailure(StreamProtocol, errors.New("stream cursor regressed without reset"))
+		}
+		for i, event := range events {
+			if event.Type == EventReset && i != 0 {
+				return streamFailure(StreamProtocol, errors.New("reset must begin its batch"))
+			}
+		}
+		if err := c.validateArgumentBatch(events); err != nil {
+			return streamFailure(StreamProtocol, err)
+		}
 		for _, event := range events {
 			switch event.Type {
 			case EventReset, EventRetry, "turn_started", EventMessage, EventInterrupted, EventError:
@@ -507,13 +628,10 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onE
 					return err
 				}
 			}
-			if event.Type == EventReset {
-				snapshot = true
-			}
 			if event.Type == "turn_started" {
 				continue
 			}
-			if event.Type == EventTool || (event.Type == EventToolProgress && event.Progress != nil && event.Progress.Phase == "running" && event.Progress.CallID != "") {
+			if event.Type == EventTool || (event.Type == EventToolProgress && event.Progress != nil && event.Progress.Phase == "running") {
 				callID := event.CallID
 				if event.Progress != nil {
 					callID = event.Progress.CallID
@@ -526,11 +644,8 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onE
 				}
 			}
 			if event.Type == "arguments_delta" {
-				if event.CallID != "" && event.Text != "" {
-					arguments, err := c.appendArguments(event.CallID, event.Text)
-					if err != nil {
-						return err
-					}
+				if event.Text != "" {
+					arguments := c.appendArguments(event.CallID, event.Text)
 					call := &ToolCallAssembly{ID: event.CallID}
 					call.Function.Name = event.ToolName
 					call.Function.Arguments = arguments
@@ -540,39 +655,65 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onE
 				}
 				continue
 			}
-			event.Replayed = snapshot && event.Type != EventReset
+			event.Replayed = reset && event.Type != EventReset
 			if err := onEvent(event.StreamEvent); err != nil {
 				return err
 			}
 		}
 		c.mu.Lock()
 		c.afterSeq = *batch.Cursor
+		c.requireReset = false
 		c.mu.Unlock()
+		if onBatchConsumed != nil {
+			onBatchConsumed()
+		}
 	}
 	return nil
 }
 
-func (c *ChatClient) appendArguments(callID, text string) (string, error) {
+func (c *ChatClient) appendArguments(callID, text string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	arguments, exists := c.argumentsByCall[callID]
-	retained := 0
-	for key, value := range c.argumentsByCall {
-		retained += len(key) + value.Len()
-	}
-	extraCallID := 0
-	if !exists {
-		extraCallID = len(callID)
-	}
-	if (!exists && len(c.argumentsByCall) >= 32) || retained+len(text)+extraCallID > 2000000 {
-		c.argumentsByCall = make(map[string]*strings.Builder)
-		c.afterSeq = -1
-		return "", errors.New("too many tool argument previews for this client to display")
-	}
 	if !exists {
 		arguments = new(strings.Builder)
 		c.argumentsByCall[callID] = arguments
 	}
 	arguments.WriteString(text)
-	return arguments.String(), nil
+	return arguments.String()
+}
+
+// validateArgumentBatch checks preview limits before delivering any batch event.
+func (c *ChatClient) validateArgumentBatch(events []wireChatEvent) error {
+	sizes := make(map[string]int)
+	c.mu.Lock()
+	for id, args := range c.argumentsByCall {
+		sizes[id] = args.Len()
+	}
+	c.mu.Unlock()
+	for _, event := range events {
+		switch event.Type {
+		case EventReset, EventRetry, "turn_started", EventMessage, EventInterrupted, EventError:
+			clear(sizes)
+		case EventTool:
+			delete(sizes, event.CallID)
+		case EventToolProgress:
+			if event.Progress != nil && event.Progress.Phase == "running" {
+				delete(sizes, event.Progress.CallID)
+			}
+		case "arguments_delta":
+			if event.Text == "" {
+				continue
+			}
+			sizes[event.CallID] += len(event.Text)
+			retained := 0
+			for id, size := range sizes {
+				retained += len(id) + size
+			}
+			if len(sizes) > 32 || retained > 2000000 {
+				return errors.New("too many tool argument previews for this client to display")
+			}
+		}
+	}
+	return nil
 }

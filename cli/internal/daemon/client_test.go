@@ -1,9 +1,11 @@
-// Stream preview state across partial tool arguments, detach, and snapshot boundaries is race-prone and hard to force with a live daemon.
+// Controlled streams exercise preview assembly across EOF, cancellation, and
+// reset boundaries that provider timing cannot reliably produce.
 package daemon
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,334 +13,262 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func formatPage(cursor int, events []any) string {
-	b, _ := json.Marshal(map[string]any{
-		"cursor": cursor,
-		"events": events,
-	})
-	return fmt.Sprintf("data: %s\n\n", string(b))
+	batch, _ := json.Marshal(map[string]any{"cursor": cursor, "events": events})
+	return fmt.Sprintf("data: %s\n\n", batch)
 }
 
-func TestCompletedCallPreviewsReleaseState(t *testing.T) {
-	aData, _ := json.Marshal(map[string]any{"code": "read('first.py')"})
-	bData, _ := json.Marshal(map[string]any{"code": "read('second.py')"})
-	a := string(aData)
-	b := string(bData) + strings.Repeat(" ", 128)
-
-	var requestCount atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		count := requestCount.Add(1)
-		w.Header().Set("Content-Type", "text/event-stream")
-		switch count {
+func TestToolPreviewContinuesAcrossEOFAndTransientFailure(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		switch requests.Add(1) {
 		case 1:
-			_, _ = w.Write([]byte(formatPage(1, []any{
-				map[string]any{"type": "arguments_delta", "name": "python", "callId": "a", "text": a},
-				map[string]any{"type": "arguments_delta", "name": "python", "callId": "b", "text": b[:15]},
-				map[string]any{"type": "tool", "callId": "a", "name": "python", "args": a, "result": "done"},
+			_, _ = writer.Write([]byte(formatPage(1, []any{
+				map[string]any{"type": "arguments_delta", "name": "python", "callId": "read", "text": `{"code":"read('first.py')"}`},
+				map[string]any{"type": "tool", "callId": "read", "name": "python", "args": `{"code":"read('first.py')"}`, "result": "done"},
+				map[string]any{"type": "arguments_delta", "name": "python", "callId": "edit", "text": `{"code":"edit('second`},
 			})))
 		case 2:
-			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			writer.WriteHeader(http.StatusServiceUnavailable)
 		case 3:
-			if r.URL.Query().Get("after_seq") != "1" {
-				t.Error("transient failure discarded the reconnect cursor")
+			if cursor := request.URL.Query().Get("after_seq"); cursor != "1" {
+				t.Errorf("transient failure lost the consumed cursor: %s", cursor)
 			}
-			_, _ = w.Write([]byte(formatPage(2, []any{
-				map[string]any{"type": "arguments_delta", "name": "python", "callId": "b", "text": b[15:16]},
+			_, _ = writer.Write([]byte(formatPage(2, []any{
+				map[string]any{"type": "arguments_delta", "name": "python", "callId": "edit", "text": `.py')"}`},
+				map[string]any{"type": "tool_progress", "progress": map[string]any{"callId": "edit", "name": "python", "phase": "running"}},
+				map[string]any{"type": "tool", "callId": "edit", "name": "python", "args": `{"code":"edit('second.py')"}`, "result": "done"},
 			})))
 		default:
-			_, _ = w.Write([]byte(formatPage(3, []any{
-				map[string]any{"type": "arguments_delta", "name": "python", "callId": "b", "text": b[16:]},
-				map[string]any{"type": "tool_progress", "progress": map[string]any{"callId": "b", "name": "python", "phase": "running"}},
-				map[string]any{"type": "tool", "callId": "b", "name": "python", "args": b, "result": "done"},
-			})))
+			t.Errorf("unexpected automatic stream request: %s", request.URL)
 		}
 	}))
 	defer server.Close()
-
-	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
-	client := NewChatClient(conn, "session")
-
-	var events []StreamEvent
-	collect := func(event StreamEvent) error {
-		if event.Type == EventToolProgress && event.Progress != nil && event.Progress.Phase == "running" {
-			if _, exists := client.argumentsByCall[event.Progress.CallID]; exists {
-				t.Error("running call still owns its argument buffer")
-			}
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+	var previews []string
+	var completed []string
+	consume := func(event StreamEvent) error {
+		if event.Type == EventToolProgress && event.Progress != nil && event.Progress.Code != nil {
+			previews = append(previews, event.Progress.Code.Text)
 		}
-		events = append(events, event)
+		if event.Type == EventTool {
+			completed = append(completed, event.ToolResult)
+		}
 		return nil
 	}
-	_ = client.Stream(context.Background(), 0, collect)
-	if _, exists := client.argumentsByCall["a"]; exists {
-		t.Fatal("completed call still owns an argument buffer")
+	if err := client.Stream(t.Context(), 0, consume); err != nil {
+		t.Fatal(err)
 	}
-	buffer := client.argumentsByCall["b"]
-	if buffer == nil || client.afterSeq != 1 {
-		t.Fatal("EOF discarded the unfinished call or cursor")
+	err := client.Stream(t.Context(), 0, consume)
+	failure, ok := errors.AsType[*StreamError](err)
+	if !ok || failure.Kind != StreamTransient {
+		t.Fatalf("server failure was not transient: %v", err)
 	}
-	firstSnapshot := buffer.String()
-	initialCapacity := buffer.Cap()
-	if initialCapacity <= buffer.Len() {
-		t.Fatal("fixture needs spare capacity to exercise an append without growth")
+	if err := client.Stream(t.Context(), 0, consume); err != nil {
+		t.Fatal(err)
 	}
-	if err := client.Stream(context.Background(), 0, collect); err == nil {
-		t.Fatal("expected transient HTTP failure")
+	if len(previews) != 3 || previews[0] != "read('first.py')" || previews[1] != "edit('second" || previews[2] != "edit('second.py')" {
+		t.Fatalf("reconnect lost or mixed tool argument fragments: %q", previews)
 	}
-	if client.argumentsByCall["b"] != buffer || buffer.String() != firstSnapshot || client.afterSeq != 1 {
-		t.Fatal("transient HTTP failure discarded unfinished arguments or cursor")
-	}
-	_ = client.Stream(context.Background(), 0, collect)
-	secondSnapshot := buffer.String()
-	if client.argumentsByCall["b"] != buffer || buffer.Cap() != initialCapacity || client.afterSeq != 2 {
-		t.Fatal("reconnect did not continue the same buffer within its capacity")
-	}
-	_ = client.Stream(context.Background(), 0, collect)
-	if buffer.Cap() <= initialCapacity {
-		t.Fatal("fixture did not exercise buffer growth")
-	}
-	if firstSnapshot != b[:15] || secondSnapshot != b[:16] || buffer.String() != b {
-		t.Fatal("appending or growing mutated retained argument snapshots")
-	}
-	if len(client.argumentsByCall) != 0 {
-		t.Fatal("running and completed calls still own argument buffers")
-	}
-
-	hasSecondPreview := false
-	for _, ev := range events {
-		if ev.Type == EventToolProgress && ev.Progress != nil && ev.Progress.Code != nil {
-			if ev.Progress.Code.Text == "read('second.py')" {
-				hasSecondPreview = true
-				break
-			}
-		}
-	}
-	if !hasSecondPreview {
-		t.Fatal("expected second.py progress preview")
-	}
-
-	runningIdx := -1
-	for i, ev := range events {
-		if ev.Type == EventToolProgress && ev.Progress != nil && ev.Progress.Phase == "running" {
-			runningIdx = i
-			break
-		}
-	}
-	if runningIdx <= 0 {
-		t.Fatal("expected running progress event preceded by clear")
-	}
-	if events[runningIdx-1].Type != EventToolProgress || events[runningIdx-1].Progress != nil {
-		t.Fatalf("expected nil progress before running, got: %+v", events[runningIdx-1])
-	}
-
-	if events[len(events)-1].Type != EventTool {
-		t.Fatalf("expected last event tool, got: %+v", events[len(events)-1])
+	if len(completed) != 2 {
+		t.Fatalf("lost completed tool results: %v", completed)
 	}
 }
 
-func TestUnfinishedArgumentsBounded(t *testing.T) {
-	var requestedURLs []string
-	var serverCallCount atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestedURLs = append(requestedURLs, r.URL.String())
-		count := serverCallCount.Add(1)
-		w.Header().Set("Content-Type", "text/event-stream")
-		if count <= 33 {
-			_, _ = w.Write([]byte(formatPage(int(count), []any{
+func TestStreamRejectsExcessUnfinishedCallsBeforeDeliveringTheBatch(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		count := requests.Add(1)
+		switch {
+		case count <= 32:
+			_, _ = writer.Write([]byte(formatPage(int(count), []any{
 				map[string]any{"type": "arguments_delta", "name": "python", "callId": fmt.Sprintf("call-%d", count), "text": `{"code":"`},
 			})))
-		} else {
-			_, _ = w.Write([]byte(formatPage(int(count), []any{
+		case count == 33:
+			_, _ = writer.Write([]byte(formatPage(33, []any{
+				map[string]any{"type": "text", "text": "must not escape"},
+				map[string]any{"type": "arguments_delta", "name": "python", "callId": "excess-call", "text": `{"code":"`},
+			})))
+		case count == 34:
+			if cursor := request.URL.Query().Get("after_seq"); cursor != "32" {
+				t.Errorf("rejected batch advanced the cursor: %s", cursor)
+			}
+			_, _ = writer.Write([]byte(formatPage(32, []any{})))
+		case count == 35:
+			if cursor := request.URL.Query().Get("after_seq"); cursor != "-1" {
+				t.Errorf("recovery did not request a fresh snapshot: %s", cursor)
+			}
+			_, _ = writer.Write([]byte(formatPage(35, []any{
 				map[string]any{"type": "reset"},
 				map[string]any{"type": "message", "role": "assistant", "text": "recovered"},
 			})))
+		default:
+			t.Error("unexpected stream request")
 		}
 	}))
 	defer server.Close()
-
-	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
-	client := NewChatClient(conn, "session")
-
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+	consume := func(StreamEvent) error { return nil }
 	for range 32 {
-		_ = client.Stream(context.Background(), 0, func(event StreamEvent) error { return nil })
+		if err := client.Stream(t.Context(), 0, consume); err != nil {
+			t.Fatalf("accepted call rejected: %v", err)
+		}
 	}
-
-	err := client.Stream(context.Background(), 0, func(event StreamEvent) error { return nil })
-	if err == nil {
-		t.Fatalf("expected error on call count limit, got: %v", err)
+	err := client.Stream(t.Context(), 0, func(StreamEvent) error { t.Error("oversized batch partially delivered"); return nil })
+	failure, ok := errors.AsType[*StreamError](err)
+	if !ok || failure.Kind != StreamProtocol {
+		t.Fatalf("excess unfinished call did not fail protocol validation: %v", err)
 	}
-
-	var events []StreamEvent
-	_ = client.Stream(context.Background(), 0, func(event StreamEvent) error {
-		events = append(events, event)
+	if err := client.Stream(t.Context(), 0, consume); err != nil {
+		t.Fatal(err)
+	}
+	client.RequireStreamReset()
+	var recovered bool
+	if err := client.Stream(t.Context(), 0, func(event StreamEvent) error {
+		recovered = recovered || event.Type == EventMessage && event.Text == "recovered" && event.Replayed
 		return nil
-	})
-
-	lastURL := requestedURLs[len(requestedURLs)-1]
-	if !strings.HasSuffix(lastURL, "after_seq=-1") {
-		t.Fatalf("expected reconnect cursor reset to after_seq=-1, got: %s", lastURL)
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if len(events) == 0 || events[len(events)-1].Text != "recovered" {
-		t.Fatalf("expected recovered event, got: %+v", events)
+	if !recovered {
+		t.Fatal("recovery did not deliver durable history")
 	}
 }
 
-func TestUnfinishedArgumentBytesBounded(t *testing.T) {
-	const firstCallID = "first"
-	const secondCallID = "second"
+func TestStreamRejectsExcessArgumentBytesBeforeDeliveringTheBatch(t *testing.T) {
 	firstArguments := strings.Repeat("x", 999_999)
-	secondArguments := strings.Repeat("y", 2_000_000-len(firstCallID)-len(secondCallID)-len(firstArguments))
-	var requestCount atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		count := requestCount.Add(1)
-		w.Header().Set("Content-Type", "text/event-stream")
-		switch count {
+	secondArguments := strings.Repeat("y", 2_000_000-len("first")-len("second")-len(firstArguments))
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		switch requests.Add(1) {
 		case 1:
-			_, _ = w.Write([]byte(formatPage(1, []any{
-				map[string]any{"type": "arguments_delta", "name": "other", "callId": firstCallID, "text": firstArguments},
-				map[string]any{"type": "arguments_delta", "name": "other", "callId": secondCallID, "text": secondArguments},
+			_, _ = writer.Write([]byte(formatPage(1, []any{
+				map[string]any{"type": "arguments_delta", "name": "other", "callId": "first", "text": firstArguments},
+				map[string]any{"type": "arguments_delta", "name": "other", "callId": "second", "text": secondArguments},
 			})))
 		case 2:
-			_, _ = w.Write([]byte(formatPage(2, []any{
-				map[string]any{"type": "arguments_delta", "name": "other", "callId": secondCallID, "text": "!"},
+			_, _ = writer.Write([]byte(formatPage(2, []any{
+				map[string]any{"type": "text", "text": "must not escape"},
+				map[string]any{"type": "arguments_delta", "name": "other", "callId": "second", "text": "!"},
 			})))
+		case 3:
+			if cursor := request.URL.Query().Get("after_seq"); cursor != "1" {
+				t.Errorf("rejected byte overflow advanced the cursor: %s", cursor)
+			}
+			_, _ = writer.Write([]byte(formatPage(1, []any{})))
+		case 4:
+			_, _ = writer.Write([]byte(formatPage(3, []any{map[string]any{"type": "reset"}})))
+			_, _ = writer.Write([]byte(formatPage(4, []any{
+				map[string]any{"type": "text", "text": "must not escape"},
+				map[string]any{"type": "arguments_delta", "name": "other", "callId": "first", "text": firstArguments},
+				map[string]any{"type": "arguments_delta", "name": "other", "callId": "second", "text": secondArguments + "!"},
+			})))
+		case 5:
+			if cursor := request.URL.Query().Get("after_seq"); cursor != "3" {
+				t.Errorf("overflow lost the preceding successful reset: %s", cursor)
+			}
+			_, _ = writer.Write([]byte(formatPage(3, []any{})))
 		default:
-			_, _ = w.Write([]byte(formatPage(3, []any{
-				map[string]any{"type": "arguments_delta", "name": "other", "callId": firstCallID, "text": firstArguments},
-				map[string]any{"type": "arguments_delta", "name": "other", "callId": secondCallID, "text": secondArguments + "!"},
-			})))
+			t.Error("unexpected stream request")
 		}
 	}))
 	defer server.Close()
-	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
-	client := NewChatClient(conn, "session")
-	onEvent := func(StreamEvent) error { return nil }
-	if err := client.Stream(context.Background(), 0, onEvent); err != nil {
-		t.Fatalf("exact combined byte limit rejected: %v", err)
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+	consume := func(StreamEvent) error { return nil }
+	if err := client.Stream(t.Context(), 0, consume); err != nil {
+		t.Fatalf("exact byte budget rejected: %v", err)
 	}
-	if len(client.argumentsByCall) != 2 || client.argumentsByCall[firstCallID].String() != firstArguments || client.argumentsByCall[secondCallID].String() != secondArguments {
-		t.Fatal("exact limit did not retain both calls intact")
+	err := client.Stream(t.Context(), 0, func(StreamEvent) error { t.Error("overflowing batch partially delivered"); return nil })
+	failure, ok := errors.AsType[*StreamError](err)
+	if !ok || failure.Kind != StreamProtocol {
+		t.Fatalf("existing call overflow was not a protocol failure: %v", err)
 	}
-	retainedSnapshot := client.argumentsByCall[secondCallID].String()
-	if err := client.Stream(context.Background(), 0, onEvent); err == nil {
-		t.Fatal("accepted one byte beyond the combined argument and call-ID limit")
+	if err := client.Stream(t.Context(), 0, consume); err != nil {
+		t.Fatal(err)
 	}
-	if len(client.argumentsByCall) != 0 || client.afterSeq != -1 {
-		t.Fatal("byte-limit failure retained argument buffers or cursor")
+	client.RequireStreamReset()
+	var delivered []EventType
+	err = client.Stream(t.Context(), 0, func(event StreamEvent) error { delivered = append(delivered, event.Type); return nil })
+	failure, ok = errors.AsType[*StreamError](err)
+	if !ok || failure.Kind != StreamProtocol || len(delivered) != 1 || delivered[0] != EventReset {
+		t.Fatalf("fresh call overflow leaked a partial batch: error=%v, events=%v", err, delivered)
 	}
-	if retainedSnapshot != secondArguments {
-		t.Fatal("overflow modified the retained argument snapshot")
-	}
-	if err := client.Stream(context.Background(), 0, onEvent); err == nil {
-		t.Fatal("accepted one-byte overflow when adding a fresh call ID")
-	}
-	if len(client.argumentsByCall) != 0 || client.afterSeq != -1 {
-		t.Fatal("fresh-call byte-limit failure retained argument buffers or cursor")
+	if err := client.Stream(t.Context(), 0, consume); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestDetachingDropsArgumentPreviews(t *testing.T) {
-	var requestedURLs []string
-	var requestCount atomic.Int32
-	waitingForHeaders := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		count := requestCount.Add(1)
-		requestedURLs = append(requestedURLs, r.URL.String())
-		if count == 3 {
-			close(waitingForHeaders)
-			<-r.Context().Done()
-			return
+func TestCancellationStartsTheNextSubscriptionWithoutOldArguments(t *testing.T) {
+	for _, beforeHeaders := range []bool{false, true} {
+		name := "during event delivery"
+		if beforeHeaders {
+			name = "before response headers"
 		}
-		code := "old()"
-		if count > 1 {
-			code = "new()"
-		}
-		raw, _ := json.Marshal(map[string]any{"code": code})
-		pageEvents := []any{}
-		if count == 5 {
-			pageEvents = append(pageEvents,
-				map[string]any{"type": "arguments_delta", "name": "python", "callId": "same", "text": `{"code":"discarded`},
-				map[string]any{"type": "reset"},
-				map[string]any{"type": "arguments_delta", "name": "python", "callId": "same", "text": `{"code":"discarded`},
-				map[string]any{"type": "retry"},
-			)
-		}
-		pageEvents = append(pageEvents, map[string]any{"type": "arguments_delta", "name": "python", "callId": "same", "text": string(raw)})
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(formatPage(int(count), pageEvents)))
-	}))
-	defer server.Close()
-
-	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
-	client := NewChatClient(conn, "session")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	_ = client.Stream(ctx, 0, func(event StreamEvent) error {
-		if event.Type == EventToolProgress && event.Progress != nil {
-			cancel()
-		}
-		return nil
-	})
-	assertCleared := func() {
-		t.Helper()
-		if len(client.argumentsByCall) != 0 || client.afterSeq != -1 {
-			t.Fatal("detach retained unfinished arguments or cursor")
-		}
-	}
-	assertCleared()
-
-	var events []StreamEvent
-	collect := func(event StreamEvent) error {
-		if event.Type == EventReset || event.Type == EventRetry {
-			if len(client.argumentsByCall) != 0 {
-				t.Error("reset or retry retained discarded argument buffers")
+		t.Run(name, func(t *testing.T) {
+			var requests atomic.Int32
+			waiting := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				count := requests.Add(1)
+				if beforeHeaders && count == 2 {
+					close(waiting)
+					<-request.Context().Done()
+					return
+				}
+				writer.Header().Set("Content-Type", "text/event-stream")
+				arguments := `{"code":"old`
+				if count > 1 {
+					if cursor := request.URL.Query().Get("after_seq"); cursor != "-1" {
+						t.Errorf("cancelled subscription retained its cursor: %s", cursor)
+					}
+					arguments = `{"code":"new()"}`
+				}
+				_, _ = writer.Write([]byte(formatPage(int(count), []any{
+					map[string]any{"type": "arguments_delta", "name": "python", "callId": "same", "text": arguments},
+				})))
+			}))
+			defer server.Close()
+			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			var err error
+			if beforeHeaders {
+				if err := client.Stream(t.Context(), 0, func(StreamEvent) error { return nil }); err != nil {
+					t.Fatal(err)
+				}
+				finished := make(chan error, 1)
+				go func() { finished <- client.Stream(ctx, 0, func(StreamEvent) error { return nil }) }()
+				select {
+				case <-waiting:
+				case <-ctx.Done():
+					t.Fatal("stream never requested response headers")
+				}
+				cancel()
+				err = <-finished
+			} else {
+				err = client.Stream(ctx, 0, func(StreamEvent) error { cancel(); return ctx.Err() })
 			}
-		}
-		events = append(events, event)
-		return nil
-	}
-	_ = client.Stream(context.Background(), 0, collect)
-	if len(client.argumentsByCall) != 1 || client.afterSeq != 2 {
-		t.Fatal("fixture did not retain arguments across EOF")
-	}
-
-	ctx, cancel = context.WithCancel(context.Background())
-	requestFinished := make(chan error, 1)
-	go func() { requestFinished <- client.Stream(ctx, 0, collect) }()
-	<-waitingForHeaders
-	cancel()
-	if err := <-requestFinished; err == nil {
-		t.Fatal("expected cancellation before response headers")
-	}
-	assertCleared()
-	_ = client.Stream(context.Background(), 0, collect)
-	client.ResetStream()
-	assertCleared()
-	_ = client.Stream(context.Background(), 0, collect)
-
-	for _, index := range []int{1, 3, 4} {
-		if !strings.HasSuffix(requestedURLs[index], "after_seq=-1") {
-			t.Fatalf("expected fresh subscription cursor, got: %+v", requestedURLs)
-		}
-	}
-	if !strings.HasSuffix(requestedURLs[2], "after_seq=2") {
-		t.Fatalf("expected pending request to continue the previous cursor, got: %+v", requestedURLs)
-	}
-	hasNew := false
-	for _, ev := range events {
-		if ev.Type == EventToolProgress && ev.Progress != nil && ev.Progress.Code != nil {
-			if ev.Progress.Code.Text == "new()" {
-				hasNew = true
-				break
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancellation cause lost: %v", err)
 			}
-		}
-	}
-	if !hasNew {
-		t.Fatal("expected new() tool progress")
-	}
-	if buffer := client.argumentsByCall["same"]; buffer == nil || buffer.String() != `{"code":"new()"}` {
-		t.Fatal("new subscription mixed fresh arguments with discarded previews")
+			var preview string
+			if err := client.Stream(t.Context(), 0, func(event StreamEvent) error {
+				if event.Progress != nil && event.Progress.Code != nil {
+					preview = event.Progress.Code.Text
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if preview != "new()" {
+				t.Fatalf("new subscription mixed old argument fragments: %q", preview)
+			}
+		})
 	}
 }
 
@@ -346,24 +276,23 @@ func TestSnapshotEventsAreMarkedReplayed(t *testing.T) {
 	pages := formatPage(2, []any{
 		map[string]any{"type": "reset"},
 		map[string]any{"type": "thinking", "text": "earlier"},
-	}) + formatPage(3, []any{
-		map[string]any{"type": "thinking", "text": "now"},
-	})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(pages))
+	}) + formatPage(3, []any{map[string]any{"type": "thinking", "text": "now"}})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte(pages))
 	}))
 	defer server.Close()
-	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
-	client := NewChatClient(conn, "session")
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
 	replayed := map[string]bool{}
-	_ = client.Stream(context.Background(), 0, func(event StreamEvent) error {
+	if err := client.Stream(t.Context(), 0, func(event StreamEvent) error {
 		if event.Type == EventThinking {
 			replayed[event.Text] = event.Replayed
 		}
 		return nil
-	})
-	if !replayed["earlier"] || replayed["now"] {
-		t.Fatalf("only the snapshot after a reset is history: %v", replayed)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(replayed) != 2 || !replayed["earlier"] || replayed["now"] {
+		t.Fatalf("only reset snapshot events should be replayed: %v", replayed)
 	}
 }

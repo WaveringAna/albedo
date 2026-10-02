@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -20,7 +21,7 @@ func promptTestConnection(server *httptest.Server) *daemon.Connection {
 	return daemon.NewConnection(daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, "")
 }
 
-func TestPromptRejectsAnOlderDaemonBeforeCreatingASession(t *testing.T) {
+func TestPromptRequiresSubmissionCancellationBeforeCreatingASession(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/health" {
 			t.Errorf("unsupported prompt issued %s", request.URL.Path)
@@ -30,8 +31,8 @@ func TestPromptRejectsAnOlderDaemonBeforeCreatingASession(t *testing.T) {
 	defer server.Close()
 	service := Service{Connect: func(context.Context) (*daemon.Connection, error) { return promptTestConnection(server), nil }}
 	_, err := service.RunPrompt(t.Context(), PromptOptions{Prompt: "hello"})
-	if err == nil || !strings.Contains(err.Error(), "needs an update") {
-		t.Fatalf("old daemon result: %v", err)
+	if _, ok := errors.AsType[*daemon.UpgradeRequiredError](err); !ok {
+		t.Fatalf("missing required capability did not prevent submission: %v", err)
 	}
 }
 
@@ -55,20 +56,21 @@ func TestPromptFollowsCombinedSubmissionThroughRetryAndCompletion(t *testing.T) 
 			writer.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(writer).Encode(map[string]any{"ok": true, "queued": true, "operationId": payload.OperationID})
 		case "/sessions/test/stream":
+			writer.Header().Set("Content-Type", "text/event-stream")
 			_, _ = fmt.Fprint(writer, "data: {\"cursor\":0,\"events\":[{\"type\":\"reset\"}]}\n\n")
 			writer.(http.Flusher).Flush()
 			id := <-submitted
 			events := []map[string]any{
 				{"type": "turn_membership", "turnId": "combined", "submissionIds": []string{id, "other"}},
-				{"type": "user", "clientId": "another-client", "text": "other contribution"},
-				{"type": "message", "text": "before retry"},
+				{"type": "user", "clientId": "another-client", "source": "chat", "triggeredAt": "", "text": "other contribution"},
+				{"type": "message", "role": "assistant", "text": "before retry"},
 				{"type": "error", "text": "temporary failure"},
 				{"type": "retry"},
 				{"type": "compacted", "evicted": 1, "summary": "summary"},
-				{"type": "message", "text": "combined final answer"},
+				{"type": "message", "role": "assistant", "text": "combined final answer"},
 				{"type": "turn_completed", "turnId": "combined"},
 				{"type": "turn_membership", "turnId": "later", "submissionIds": []string{"other"}},
-				{"type": "message", "text": "later answer"},
+				{"type": "message", "role": "assistant", "text": "later answer"},
 			}
 			page, _ := json.Marshal(map[string]any{"cursor": 1, "events": events})
 			_, _ = fmt.Fprintf(writer, "data: %s\n\n", page)
@@ -112,6 +114,7 @@ func TestPromptCancellationReportsSharedWorkAndCleanupFailure(t *testing.T) {
 					_ = json.NewEncoder(writer).Encode(map[string]any{"ok": true, "queued": true, "operationId": payload.OperationID})
 					close(submitted)
 				case "/sessions/test/stream":
+					writer.Header().Set("Content-Type", "text/event-stream")
 					_, _ = fmt.Fprint(writer, "data: {\"cursor\":0,\"events\":[{\"type\":\"reset\"}]}\n\n")
 					writer.(http.Flusher).Flush()
 					<-request.Context().Done()

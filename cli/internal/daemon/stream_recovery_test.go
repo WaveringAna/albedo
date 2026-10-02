@@ -77,6 +77,7 @@ func TestStreamAuthenticationRecoveryBeforeDelivery(t *testing.T) {
 						if request.Header.Get("Authorization") != "Bearer new" {
 							t.Error("stream reused old credentials")
 						}
+						writer.Header().Set("Content-Type", "text/event-stream")
 						_, _ = io.WriteString(writer, "data: {\"cursor\":1,\"events\":[{\"type\":\"text\",\"session\":\"s\",\"text\":\"hello\"}]}\n\n")
 					}))
 					defer server.Close()
@@ -128,6 +129,7 @@ func TestAcceptedStreamIsNeverReplayed(t *testing.T) {
 						if failure == "truncated body" {
 							writer.Header().Set("Content-Length", "1000")
 						}
+						writer.Header().Set("Content-Type", "text/event-stream")
 						_, _ = io.WriteString(writer, "data: {\"cursor\":1,\"events\":[{\"type\":\"text\",\"session\":\"s\",\"text\":\"hello\"}]}\n\n")
 					}))
 					defer server.Close()

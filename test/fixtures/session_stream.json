@@ -1,0 +1,28 @@
+{
+  "malformed_batches": {
+    "malformed JSON": "{\"cursor\":8,",
+    "missing cursor": "{\"events\":[]}",
+    "null cursor": "{\"cursor\":null,\"events\":[]}",
+    "fractional cursor": "{\"cursor\":8.5,\"events\":[]}",
+    "negative cursor": "{\"cursor\":-1,\"events\":[]}",
+    "overflowing cursor": "{\"cursor\":9223372036854775808,\"events\":[]}",
+    "regressing cursor": "{\"cursor\":6,\"events\":[]}",
+    "missing events": "{\"cursor\":8}",
+    "null events": "{\"cursor\":8,\"events\":null}",
+    "missing event type": "{\"cursor\":8,\"events\":[{\"text\":\"not an assistant\"}]}",
+    "empty event type": "{\"cursor\":8,\"events\":[{\"type\":\"\",\"text\":\"not an assistant\"}]}",
+    "nonstring event type": "{\"cursor\":8,\"events\":[{\"type\":42}]}",
+    "partial batch": "{\"cursor\":8,\"events\":[{\"type\":\"text\",\"text\":\"must not escape\"},{\"type\":\"message\",\"role\":\"assistant\",\"text\":false}]}",
+    "missing known field": "{\"cursor\":8,\"events\":[{\"type\":\"message\",\"role\":\"assistant\"}]}",
+    "missing identity": "{\"cursor\":8,\"events\":[{\"type\":\"turn_completed\",\"turnId\":\"\"}]}",
+    "negative transcript offset": "{\"cursor\":8,\"events\":[{\"type\":\"committed\",\"seq\":-1}]}",
+    "tool args nonstring": "{\"cursor\":8,\"events\":[{\"type\":\"tool\",\"callId\":\"c\",\"name\":\"python\",\"args\":false,\"result\":\"\"}]}",
+    "missing user source": "{\"cursor\":8,\"events\":[{\"type\":\"user\",\"text\":\"hello\",\"triggeredAt\":\"\"}]}",
+    "missing user trigger": "{\"cursor\":8,\"events\":[{\"type\":\"user\",\"text\":\"hello\",\"source\":\"chat\"}]}",
+    "invalid usage count": "{\"cursor\":8,\"events\":[{\"type\":\"usage\",\"model\":\"test\",\"recordedAt\":1,\"promptTokens\":-1}]}",
+    "missing progress": "{\"cursor\":8,\"events\":[{\"type\":\"tool_progress\"}]}",
+    "invalid member identity": "{\"cursor\":8,\"events\":[{\"type\":\"turn_membership\",\"turnId\":\"turn\",\"submissionIds\":[\"\"]}]}",
+    "invalid thinking elapsed": "{\"cursor\":8,\"events\":[{\"type\":\"thinking\",\"text\":\"thought\",\"elapsedMs\":1.5}]}",
+    "compaction missing summary": "{\"cursor\":8,\"events\":[{\"type\":\"compacted\",\"evicted\":2}]}"
+  }
+}

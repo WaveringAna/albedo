@@ -28,11 +28,11 @@ func TestReadFlattensHistoryPagesInChronologicalOrder(t *testing.T) {
 			var body string
 			switch cursor {
 			case "":
-				body = `{"events":[{"type":"user","text":"third"},{"type":"message","text":"third reply"}],"before":5,"more":true}`
+				body = `{"events":[{"type":"user","source":"chat","triggeredAt":"","text":"third"},{"type":"message","role":"assistant","text":"third reply"}],"before":5,"more":true}`
 			case "5":
-				body = `{"events":[{"type":"user","text":"second"},{"type":"message","text":"second reply"}],"before":3,"more":true}`
+				body = `{"events":[{"type":"user","source":"chat","triggeredAt":"","text":"second"},{"type":"message","role":"assistant","text":"second reply"}],"before":3,"more":true}`
 			case "3":
-				body = `{"events":[{"type":"user","text":"first"},{"type":"message","text":"first reply"}],"before":1,"more":false}`
+				body = `{"events":[{"type":"user","source":"chat","triggeredAt":"","text":"first"},{"type":"message","role":"assistant","text":"first reply"}],"before":1,"more":false}`
 			default:
 				t.Errorf("unexpected cursor %s", cursor)
 			}

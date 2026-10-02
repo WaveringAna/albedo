@@ -71,3 +71,21 @@ func (e *UncertainOutcomeError) Error() string {
 	return e.Operation + " may have been accepted; check its result before trying again"
 }
 func (e *UncertainOutcomeError) Unwrap() error { return e.Cause }
+
+// StreamFailureKind tells subscribers whether reconnecting can make progress.
+type StreamFailureKind uint8
+
+const (
+	StreamTransient StreamFailureKind = iota
+	StreamTerminal
+	StreamProtocol
+)
+
+// StreamError preserves the cause while defining subscription recovery.
+type StreamError struct {
+	Kind  StreamFailureKind
+	Cause error
+}
+
+func (e *StreamError) Error() string { return e.Cause.Error() }
+func (e *StreamError) Unwrap() error { return e.Cause }

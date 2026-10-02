@@ -40,9 +40,9 @@ func TestScrollingToTheTopLoadsOlderHistoryInPlace(t *testing.T) {
 		asked = append(asked, r.URL.RawQuery)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"events": []any{
-				map[string]any{"type": "user", "text": "older question", "source": "chat"},
+				map[string]any{"type": "user", "text": "older question", "source": "chat", "triggeredAt": ""},
 				map[string]any{"type": "committed", "seq": 8},
-				map[string]any{"type": "message", "text": "older answer"},
+				map[string]any{"type": "message", "role": "assistant", "text": "older answer"},
 				map[string]any{"type": "committed", "seq": 9},
 			},
 			"before": 8,
