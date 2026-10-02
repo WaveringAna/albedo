@@ -2,6 +2,7 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/presentation"
 	"cmp"
 	"slices"
 	"strings"
@@ -11,7 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-func sessionText(s string) string { return daemon.SessionText(ansi.Strip(s)) }
+func sessionText(s string) string { return presentation.SessionText(ansi.Strip(s)) }
 
 // Sections of the session list, in navigation order. Pinned and most used
 // sessions lead the dated groups.

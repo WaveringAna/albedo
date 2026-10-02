@@ -2,6 +2,7 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/presentation"
 	"cmp"
 	"fmt"
 	"path/filepath"
@@ -475,7 +476,7 @@ func (m SessionViewer) preview(width, height int, now time.Time) []string {
 	if s.Workspace != "" {
 		meta = append(meta, DefaultStyles.Muted.Render(sessionText(homePath(s.Workspace))))
 	}
-	meta = append(meta, DefaultStyles.Faint.Render(daemon.AssistantAge(s.LastAssistantAt, now)))
+	meta = append(meta, DefaultStyles.Faint.Render(presentation.AssistantAge(s.LastAssistantAt, now)))
 	if c := m.previews[s.ID]; c != nil && !c.loading && !c.err {
 		meta = append(meta, DefaultStyles.Faint.Render(fmt.Sprintf("%d messages", c.Total)))
 	}

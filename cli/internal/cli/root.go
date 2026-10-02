@@ -201,7 +201,7 @@ it a message and "sessions read" to see what it said.`, Args: cobra.NoArgs, RunE
 		if asJSON {
 			return writeJSON(cmd.OutOrStdout(), result.Sessions, true)
 		}
-		_, err = fmt.Fprintln(cmd.OutOrStdout(), daemon.SessionListing(result.Sessions, time.Now()))
+		_, err = fmt.Fprintln(cmd.OutOrStdout(), sessionListing(result.Sessions, time.Now()))
 		return err
 	}}
 	command.Flags().BoolVar(&asJSON, "json", false, "print sessions as JSON")
