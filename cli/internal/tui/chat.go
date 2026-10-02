@@ -1647,12 +1647,30 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 // Moved takes the session's new folder, then sends again the turn a
 // missing folder refused.
 func (m *ChatModel) Moved(moved daemon.Session, retry *WorkspaceRetry) tea.Cmd {
-	workspace := moved.Workspace
+	workspace, from := moved.Workspace, m.Workspace
+	m.dropSignIn() // the offer was for the old folder's host
+	// a hint from an earlier move names a folder this one did not leave
+	m.Notices = slices.DeleteFunc(m.Notices, func(n Notice) bool { return strings.HasPrefix(n.Message, linkHintText) })
+	m.Notices.AddNotice(linkHint(from, workspace, retry))
+	m.syncViewportHeight()
 	m.Workspace, m.Host, m.hostHome = workspace, sessionHost(moved), ""
 	m.Renderer.Workspace = workspace
 	m.rebuildSettledLines() // settled rows name paths from the old workspace
 	m.refreshViewportContent()
 	return m.resend(retry)
+}
+
+const linkHintText = "to share memory and work with the folder you left: /link add "
+
+// linkHint offers linking the folder a session just left with the one it
+// moved to, as a command to paste. The folder is named as stored, so the
+// link lands on the key the left folder's memory and work items use. A
+// session that moved because its folder went missing has nothing to link.
+func linkHint(from, to string, retry *WorkspaceRetry) string {
+	if from == "" || from == to || retry != nil {
+		return ""
+	}
+	return linkHintText + from
 }
 
 // resend sends again a turn the daemon refused, once what refused it is fixed.

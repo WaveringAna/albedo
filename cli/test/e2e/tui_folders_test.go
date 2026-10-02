@@ -62,6 +62,20 @@ func TestTUICdMovesTheSessionThroughThePicker(t *testing.T) {
 	if got := daemonSession(t, id).Workspace; !same(got, filepath.Join(root, "other")) || !same(d.App.Chat.Workspace, got) {
 		t.Fatalf("/cd ../other left the daemon at %q and the chat at %q", got, d.App.Chat.Workspace)
 	}
+	// The chat offers linking the folder it left, as a command to paste.
+	view := d.View()
+	_, offered, ok := strings.Cut(view, "/link add ")
+	if !ok {
+		t.Fatalf("moving did not offer /link add:\n%s", view)
+	}
+	offered = strings.Fields(offered)[0]
+	if !same(offered, filepath.Join(root, "picked")) {
+		t.Fatalf("the hint offers %q, not the folder the session left", offered)
+	}
+	d.Dispatch(tui.ChatExecuteCommandMsg{Name: "/link", Args: "add " + offered})
+	if view := d.View(); !strings.Contains(view, "linked with "+offered) {
+		t.Fatalf("pasting the hint did not link the folders:\n%s", view)
+	}
 }
 
 func TestTUIMissingWorkspaceSendsTheTurnFromThePickedFolder(t *testing.T) {

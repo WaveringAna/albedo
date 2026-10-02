@@ -122,10 +122,11 @@ host in every layout that shows a place, and colors the host with a stable
 hue derived from its label, lifted to the theme's contrast. the host goes
 faint while the session's kernel boots or reattaches (the status line says
 `connecting to chernobog…` with an animated face, the same one the picker
-shows beside a host still warming, picked by the host's label) and takes the error color once it is lost (the
-port owner gave up and forgot the kernel, so the status line says the next
-turn starts a fresh one), from
-the session status's `kernel.link` (kernel.md). recent folders and the
+shows beside a host still warming, picked by the host's label, or `copying
+the kernel to chernobog…` while albedo is staged there) and takes the error
+color once it is lost (the port owner gave up and forgot the kernel, so the
+status line says the next turn starts a fresh one), from the session
+status's `kernel.link` (kernel.md). recent folders and the
 sessions view lead remote entries with their host.
 
 ## moving a session
@@ -143,6 +144,13 @@ whose workspace was the same folder follows it. an idle descendant moves at
 once; a running one moves when its current turn ends. descendants that were
 working somewhere else keep their own folder. if the session itself cannot
 move, nobody moves.
+
+after a move the tui offers linking the folder the session left, as a notice
+to paste: `/link add <folder as stored>` (absolute, `user@` kept, so the link
+lands on the key that folder's memory and work items use). a later move
+replaces it, and a move away from a folder that went missing offers nothing.
+it does not check whether the two are already linked; `/link add` refuses
+that.
 
 ## browsing
 
