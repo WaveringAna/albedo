@@ -14,6 +14,26 @@ phase is display metadata, not a failed connection. before live status is
 known, enter preserves the draft; superseded status replies cannot unblock
 it. starting a new turn does not require `/compact` to change the old phase.
 
+## Stream failures and recovery
+
+Session streams require the `text/event-stream` content type. Each batch carries
+a nonnegative integer cursor and an event array. The CLI validates the whole
+batch before consuming it and advances the cursor only after every callback
+succeeds. Unknown event kinds are ignored;
+missing kinds and malformed known events are protocol failures.
+
+Transport failures, ordinary EOF, HTTP 408/429, and server errors reconnect with
+a delay starting at 500 milliseconds and increasing to at most five seconds.
+Cancellation ends the subscription quietly. Other HTTP refusals, explicit SSE
+failures, and consumer callback failures end it with a visible notice. A terminal
+failure also stops status polling for that attachment.
+
+The TUI attempts one durable transcript reset per attachment after a protocol
+failure. It clears partial tool arguments and requires the recovery stream to
+begin with a reset. A second protocol failure ends automatic recovery; reopening
+the session starts a new attachment. Pending submissions and drafts remain
+available, and a stream failure does not claim that model execution finished.
+
 ## asynchronous persistence failures
 
 The dispatcher logs failures to advance delivered schedule occurrences or save mail delivery errors. Undelivered mail and unadvanced schedules remain durable and retry under the existing dispatch policy. A schedule whose submission succeeded but whose advance failed can be delivered again.
