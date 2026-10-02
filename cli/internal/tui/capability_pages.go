@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync/atomic"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -56,14 +55,9 @@ type CapabilityPageChangedMsg struct{}
 
 type ChatOpenCapabilityPageMsg struct{ Kind string }
 
-// Commands outlive closed pages; globally unique generations reject their replies.
-var capabilityGen atomic.Int64
-
-func nextCapabilityGen() int { return int(capabilityGen.Add(1)) }
-
 func NewCapabilityPageModel(conn *daemon.Connection, sessionID, kind string) CapabilityPageModel {
 	// Pages open on the global defaults; s scopes changes to this session.
-	return CapabilityPageModel{Conn: conn, SessionID: sessionID, Kind: kind, Global: true, page: page{Loading: true, Generation: nextCapabilityGen()}}
+	return CapabilityPageModel{Conn: conn, SessionID: sessionID, Kind: kind, Global: true, page: page{Loading: true, Generation: nextPageGeneration()}}
 }
 func (m CapabilityPageModel) Init() tea.Cmd { return m.loadCmd(m.Generation) }
 func (m CapabilityPageModel) loadCmd(gen int) tea.Cmd {
@@ -180,7 +174,7 @@ func (m *CapabilityPageModel) openForm(edit bool) {
 
 func (m CapabilityPageModel) save(cmd func(int) tea.Cmd) (CapabilityPageModel, tea.Cmd) {
 	m.Saving = true
-	m.Generation = nextCapabilityGen()
+	m.Generation = nextPageGeneration()
 	return m, cmd(m.Generation)
 }
 
@@ -201,7 +195,7 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 			if apiErr, ok := errors.AsType[*daemon.APIError](msg.Err); ok && apiErr.Code == "stale_catalog" {
 				m.Saving, m.Loading, m.Error = false, true, ""
 				m.Notice = "The list changed. Review it before trying again."
-				m.Generation = nextCapabilityGen()
+				m.Generation = nextPageGeneration()
 				return m, m.loadCmd(m.Generation)
 			}
 		}
@@ -214,7 +208,7 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 		if msg.Warning != "" {
 			m.Notice = msg.Warning
 		}
-		m.Loading, m.Generation = true, nextCapabilityGen()
+		m.Loading, m.Generation = true, nextPageGeneration()
 		return m, tea.Batch(m.loadCmd(m.Generation), func() tea.Msg { return CapabilityPageChangedMsg{} })
 	case tea.PasteMsg:
 		if m.Form == nil || m.Saving {
@@ -275,7 +269,7 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 		switch msg.String() {
 		case "r":
 			m.Loading = true
-			m.Generation = nextCapabilityGen()
+			m.Generation = nextPageGeneration()
 			return m, m.loadCmd(m.Generation)
 		case "g", "s":
 			m.Global = msg.String() == "g"

@@ -42,3 +42,9 @@ argument parsing is shared: leading arguments take one whitespace token each, th
 - `/raise-cap [on|off] [model]` — raise a model's context window to the provider's maximum, or restore its default (user only). Without a state it toggles; without a model it uses the session's. The choice is saved per model in `raisedCaps` and applies to every session on that model from its next request. See [raised caps](models.md#raised-caps).
 
 skills contributes one command per cataloged skill; `/tree`, `/fork`, `/login`, and the other picker-style entries stay presentation-only in the CLI.
+
+## CLI page lifecycle
+
+`cli/internal/tui/page.go` allocates a unique generation for each page instance and each superseding request. Generic pages, capability pages, extension pickers, tree pickers, context inspectors, and webhook pages reject responses from earlier generations before changing data or operation state. A delayed tree-fork completion also carries its generation to the app.
+
+The app forwards history and context-window responses to the active chat while a modal is open. Chat checks the session and generation before accepting them. Generic page text and secret inputs receive paste and cursor messages while focused, including the input component's returned command.

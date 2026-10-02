@@ -48,7 +48,7 @@ func NewExtensionPickerModel(conn *daemon.Connection, sessionID string) Extensio
 	return ExtensionPickerModel{
 		Conn:      conn,
 		SessionID: sessionID,
-		page:      page{Loading: true},
+		page:      page{Loading: true, Generation: nextPageGeneration()},
 		Styles:    DefaultStyles,
 	}
 }
@@ -144,7 +144,7 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		if len(m.Extensions) == 0 && m.Error != "" {
 			if strings.EqualFold(msg.String(), "r") {
 				m.Loading, m.Error = true, ""
-				m.Generation++
+				m.Generation = nextPageGeneration()
 				return m, m.loadExtensionsCmd(m.Generation)
 			}
 			return m, nil
@@ -154,7 +154,7 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 			if msg.String() == "enter" && len(m.Extensions) > m.Cursor {
 				ext := m.Extensions[m.Cursor]
 				m.Saving, m.Error = true, ""
-				m.Generation++
+				m.Generation = nextPageGeneration()
 				scope, val := "global", !ext.GlobalEnabled
 				if m.Inheriting {
 					scope, val = "inherit", false

@@ -37,7 +37,8 @@ type TreeCheckpoint struct {
 type TreeCancelMsg struct{}
 
 type TreeForkSuccessMsg struct {
-	Session daemon.Session
+	Session    daemon.Session
+	Generation int
 }
 
 type treeLoadedMsg struct {
@@ -75,7 +76,7 @@ func NewTreePickerModel(conn *daemon.Connection, sessionID string) TreePickerMod
 		SessionID: sessionID,
 		Cursors:   []int{0},
 		PageIndex: 0,
-		page:      page{Loading: true},
+		page:      page{Loading: true, Generation: nextPageGeneration()},
 		Styles:    DefaultStyles,
 	}
 }
@@ -86,7 +87,7 @@ func (m TreePickerModel) Init() tea.Cmd {
 
 func (m TreePickerModel) loadPage(after int) (TreePickerModel, tea.Cmd) {
 	m.Loading, m.Error = true, ""
-	m.Generation++
+	m.Generation = nextPageGeneration()
 	return m, m.loadTreeCmd(after, m.Generation)
 }
 
@@ -153,7 +154,7 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 			m.ForkError = operationError(msg.Err, "", "Branch may have been created; check the session list before branching again.")
 			return m, nil
 		}
-		return m, func() tea.Msg { return TreeForkSuccessMsg{Session: msg.Session} }
+		return m, func() tea.Msg { return TreeForkSuccessMsg{Session: msg.Session, Generation: msg.Gen} }
 
 	case tea.KeyPressMsg:
 		if msg.String() == "esc" || msg.String() == "ctrl+c" || msg.String() == "ctrl+d" {
@@ -173,7 +174,7 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 				cp := m.Checkpoints[m.Cursor]
 				m.Forking = true
 				m.ForkError, m.Error = "", ""
-				m.Generation++
+				m.Generation = nextPageGeneration()
 				return m, m.forkCmd(cp.ID, m.Generation)
 			}
 			return m, nil

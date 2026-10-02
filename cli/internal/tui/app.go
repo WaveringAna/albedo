@@ -614,6 +614,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var sid string
 	var forward bool
 	switch sm := msg.(type) {
+	case ChatOlderLoadedMsg:
+		sid, forward = sm.SessionID, true
+	case ChatWindowMsg:
+		sid, forward = sm.SessionID, true
 	case ChatEditorFinishedMsg:
 		sid, forward = sm.SessionID, true
 	case ChatClearCopyStatusMsg:
@@ -993,6 +997,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.openTreePicker()
 
 	case TreeForkSuccessMsg:
+		if m.State != AppStateTreePicker || msg.Generation != m.TreePicker.Generation {
+			return m, nil
+		}
 		return m, m.setChatSession(msg.Session, true)
 
 	case ChatOpenContextInspectorMsg:

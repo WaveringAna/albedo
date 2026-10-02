@@ -100,7 +100,7 @@ func NewContextInspectorModel(conn *daemon.Connection, sessionID string) Context
 	return ContextInspectorModel{
 		Conn:      conn,
 		SessionID: sessionID,
-		page:      page{Loading: true},
+		page:      page{Loading: true, Generation: nextPageGeneration()},
 		Styles:    DefaultStyles,
 	}
 }
@@ -235,7 +235,7 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 		case "esc", "ctrl+c", "ctrl+d":
 			if m.Detail != nil {
 				m.Detail = nil
-				m.Generation++
+				m.Generation = nextPageGeneration()
 				return m, nil
 			}
 			return m, func() tea.Msg { return ContextDoneMsg{} }
@@ -257,7 +257,7 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 				}
 				if page >= 0 && page < m.Detail.Section.Pages {
 					m.Detail.Page, m.Detail.Value, m.Detail.Scroll, m.Detail.Error = page, nil, 0, ""
-					m.Generation++
+					m.Generation = nextPageGeneration()
 					return m, m.loadPageCmd(m.Detail.Section.ID, m.Detail.Page, m.Generation)
 				}
 			case "up":
@@ -278,7 +278,7 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 
 		if strings.EqualFold(msg.String(), "r") {
 			m.Loading, m.Snapshot, m.Detail, m.Error = true, nil, nil, ""
-			m.Generation++
+			m.Generation = nextPageGeneration()
 			return m, m.loadSnapshotCmd(m.Generation)
 		}
 
@@ -296,7 +296,7 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 				sec := m.Snapshot.Sections[m.Cursor]
 				if sec.Pages > 0 {
 					m.Detail = &ContextDetail{Section: sec}
-					m.Generation++
+					m.Generation = nextPageGeneration()
 					return m, m.loadPageCmd(sec.ID, 0, m.Generation)
 				}
 			}

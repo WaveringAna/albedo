@@ -75,6 +75,7 @@ func NewPageViewModel(conn *daemon.Connection, sessionID, command string) PageVi
 		SessionID: sessionID,
 		Command:   command,
 		TextInput: newField(),
+		page:      page{Generation: nextPageGeneration()},
 		Busy:      true,
 		Styles:    DefaultStyles,
 	}
@@ -156,7 +157,7 @@ func (m PageViewModel) currentIndex() int {
 func (m *PageViewModel) runAction(act PageAction, entered string) tea.Cmd {
 	m.Mode, m.CurrentAction = modeBrowse, nil
 	m.Busy, m.Error, m.Notice = true, "", ""
-	m.Generation++
+	m.Generation = nextPageGeneration()
 	return m.executeActionCmd(act, m.currentRow(), entered, m.Generation)
 }
 
@@ -210,7 +211,7 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 		m.Notice = pageNotice(msg)
 		m.Error = ""
 		m.Busy = true
-		m.Generation++
+		m.Generation = nextPageGeneration()
 		return m, tea.Batch(
 			func() tea.Msg { return PageViewChangedMsg{} },
 			m.loadPageCmd(m.Generation),
@@ -232,7 +233,7 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 			if strings.ToLower(msg.String()) == "r" {
 				m.Busy = true
 				m.Error = ""
-				m.Generation++
+				m.Generation = nextPageGeneration()
 				return m, m.loadPageCmd(m.Generation)
 			}
 			return m, nil
@@ -297,6 +298,11 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 				}
 			}
 		}
+	}
+	if m.Mode == modeText && m.TextInput.Focused() {
+		var cmd tea.Cmd
+		m.TextInput, cmd = m.TextInput.Update(msg)
+		return m, cmd
 	}
 	return m, nil
 }

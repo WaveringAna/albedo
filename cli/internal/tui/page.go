@@ -3,6 +3,7 @@ package tui
 import (
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -16,6 +17,11 @@ type page struct {
 	Cursor, Width, Height, Generation int
 	Loading, Saving                   bool
 }
+
+// Commands outlive closed screens; unique generations reject their replies.
+var pageGeneration atomic.Int64
+
+func nextPageGeneration() int { return int(pageGeneration.Add(1)) }
 
 func (p *page) SetSize(width, height int) { p.Width, p.Height = width, height }
 

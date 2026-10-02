@@ -78,7 +78,7 @@ const (
 )
 
 func NewWebhooksPageModel(conn *daemon.Connection, sessionID string) WebhooksPageModel {
-	return WebhooksPageModel{Conn: conn, SessionID: sessionID, Mounted: true, page: page{Loading: true}}
+	return WebhooksPageModel{Conn: conn, SessionID: sessionID, Mounted: true, page: page{Loading: true, Generation: nextPageGeneration()}}
 }
 
 func (m WebhooksPageModel) Init() tea.Cmd { return m.loadCmd(m.Generation) }
@@ -217,7 +217,7 @@ func (m WebhooksPageModel) address(hook webhookEntry) string {
 func (m WebhooksPageModel) begin(notice string, steps ...[2]string) (WebhooksPageModel, tea.Cmd) {
 	m.Error, m.Notice = "", ""
 	m.Saving = true
-	m.Generation++
+	m.Generation = nextPageGeneration()
 	return m, m.save(m.Generation, notice, steps...)
 }
 
@@ -247,7 +247,7 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 		} else {
 			m.Form, m.Notice = nil, msg.Notice
 		}
-		m.Loading, m.Generation = true, m.Generation+1
+		m.Loading, m.Generation = true, nextPageGeneration()
 		return m, m.loadCmd(m.Generation)
 	case tea.KeyPressMsg:
 		key := msg.String()
@@ -308,7 +308,7 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 		if key == "r" {
 			m.Error, m.Notice = "", ""
 			m.Loading = true
-			m.Generation++
+			m.Generation = nextPageGeneration()
 			return m, m.loadCmd(m.Generation)
 		}
 		if !m.Loaded {

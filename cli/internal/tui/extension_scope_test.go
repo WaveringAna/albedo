@@ -14,7 +14,7 @@ import (
 func TestExtensionsOpenOnGlobalDefaultsAndScopeToSessionOnRequest(t *testing.T) {
 	m := NewExtensionPickerModel(nil, "s")
 	m.SetSize(120, 30)
-	m, _ = m.Update(extensionsLoadedMsg{Extensions: []ExtensionItem{
+	m, _ = m.Update(extensionsLoadedMsg{Gen: m.Generation, Extensions: []ExtensionItem{
 		{Name: "view", Enabled: true, GlobalEnabled: false, Overridden: true},
 		{Name: "bash", Enabled: true, GlobalEnabled: true},
 	}})

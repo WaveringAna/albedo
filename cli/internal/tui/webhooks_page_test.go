@@ -21,7 +21,7 @@ func loadedWebhooksPage(t *testing.T) WebhooksPageModel {
 	t.Helper()
 	m := NewWebhooksPageModel(nil, "s")
 	m.SetSize(100, 30)
-	m, _ = m.Update(webhooksLoadedMsg{Mounted: true, Sessions: webhookSessions, Hooks: []webhookEntry{
+	m, _ = m.Update(webhooksLoadedMsg{Gen: m.Generation, Mounted: true, Sessions: webhookSessions, Hooks: []webhookEntry{
 		{ID: "wh1", Session: "s", Name: "deploy", Enabled: true, URL: "/webhooks/wh1", Header: "x-hub-signature-256", Prefix: "sha256=", Queued: 2, Deferred: "session busy"},
 		{ID: "wh2", Session: "t", Name: "grafana", URL: "/webhooks/wh2", Header: "x-albedo-signature", Prefix: "sha256="},
 	}})
