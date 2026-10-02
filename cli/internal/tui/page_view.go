@@ -96,13 +96,12 @@ func (m PageViewModel) loadPageCmd(gen int) tea.Cmd {
 		if m.Conn == nil {
 			return pageLoadedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		body := map[string]any{"name": m.Command, "args": map[string]string{}}
-		res, err := daemon.ExecutePageCommand(context.Background(), m.Conn, m.SessionID, body)
+		doc, err := daemon.LoadPage(context.Background(), m.Conn, m.SessionID, m.Command)
 		if err != nil {
 			return pageLoadedMsg{Err: err, Gen: gen}
 		}
 
-		return pageLoadedMsg{Doc: res.Page, Gen: gen}
+		return pageLoadedMsg{Doc: doc, Gen: gen}
 	}
 }
 
@@ -112,27 +111,7 @@ func (m PageViewModel) executeActionCmd(act PageAction, row *PageRow, entered st
 			return pageActionExecutedMsg{Action: act, Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
 
-		val := entered
-		if act.Input == "value" {
-			val = act.Value
-		}
-		var details []string
-		if act.Row && row != nil {
-			details = append(details, row.ID)
-		}
-		if val != "" {
-			details = append(details, val)
-		}
-
-		body := map[string]any{
-			"name": m.Command,
-			"args": map[string]string{
-				"action":  act.Run,
-				"details": strings.Join(details, " "),
-			},
-		}
-
-		res, err := daemon.ExecuteCommand(context.Background(), m.Conn, m.SessionID, body)
+		res, err := daemon.ExecutePageAction(context.Background(), m.Conn, m.SessionID, daemon.PageActionRequest{Command: m.Command, Action: act, Row: row, Value: entered})
 		return pageActionExecutedMsg{Message: res.Message, Action: act, Err: err, Gen: gen}
 	}
 }

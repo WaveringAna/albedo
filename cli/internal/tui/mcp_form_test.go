@@ -56,7 +56,7 @@ func TestAddingAnHTTPServerAsksForAuthBeforeSaving(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sub.Name != "mcp-100-64-0-19" || sub.Server.Type != "http" || sub.Server.URL != "http://100.64.0.19:8787/mcp" || sub.Secrets["bearerToken"] != "sensitive-token" {
+	if sub.Name != "mcp-100-64-0-19" || sub.Server.Type != "http" || sub.Server.URL != "http://100.64.0.19:8787/mcp" || (sub.Secrets.BearerToken == nil || *sub.Secrets.BearerToken != "sensitive-token") {
 		t.Fatalf("unexpected submission %+v", sub)
 	}
 }
@@ -81,8 +81,8 @@ func TestStdioServerParsesItsCommandAndSuggestsAName(t *testing.T) {
 	if sub.Name != "filesystem" || sub.Server.Command != "npx" || strings.Join(sub.Server.Args, "|") != "-y|@modelcontextprotocol/server-filesystem|/tmp/my dir" {
 		t.Fatalf("unexpected stdio submission %+v", sub)
 	}
-	env, _ := sub.Secrets["env"].(map[string]any)
-	if token, kept := sub.Secrets["bearerToken"]; env["TOKEN"] != "abc" || env["DEBUG"] != "1" || !kept || token != nil {
+	env := sub.Secrets.Env
+	if env["TOKEN"] == nil || *env["TOKEN"] != "abc" || env["DEBUG"] == nil || *env["DEBUG"] != "1" || !sub.Secrets.RemoveBearerToken {
 		t.Fatalf("env should be stored privately, got %+v", sub.Secrets)
 	}
 	if strings.Contains(ansi.Strip(m.View()), "abc") {
@@ -95,9 +95,7 @@ func TestEditingKeepsOrRemovesStoredSecrets(t *testing.T) {
 	enabled := false
 	f := newMCPForm("docs", config.MCPServer{Type: "http", URL: "https://docs.example/mcp", Enabled: &enabled}, stored)
 	sub, err := f.submission([]capabilityItem{{ID: "docs"}})
-	_, token := sub.Secrets["bearerToken"]
-	_, headers := sub.Secrets["headers"]
-	if err != nil || token || headers || sub.Server.Enabled == nil {
+	if err != nil || sub.Secrets.BearerToken != nil || sub.Secrets.RemoveBearerToken || sub.Secrets.Headers != nil || sub.Secrets.ClearHeaders || sub.Server.Enabled == nil {
 		t.Fatalf("a blank edit must keep stored secrets and other fields: %+v %v", sub, err)
 	}
 
@@ -105,9 +103,9 @@ func TestEditingKeepsOrRemovesStoredSecrets(t *testing.T) {
 	f.Inputs[fieldHeader].SetValue("X-Key")
 	f.Inputs[fieldValue].SetValue("-")
 	sub, _ = f.submission(nil)
-	removed, _ := sub.Secrets["headers"].(map[string]any)
+	removed := sub.Secrets.Headers
 	header, named := removed["X-Key"]
-	if token, ok := sub.Secrets["bearerToken"]; !ok || token != nil || !named || header != nil {
+	if !sub.Secrets.RemoveBearerToken || !named || header != nil {
 		t.Fatalf("- should remove stored secrets: %+v", sub.Secrets)
 	}
 }

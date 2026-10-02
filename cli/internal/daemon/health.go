@@ -71,7 +71,7 @@ func ProbeHealth(ctx context.Context, conn *Connection) (Health, error) {
 	if conn == nil {
 		return Health{}, errors.New("not connected to Albedo")
 	}
-	operation := Operation{Name: "probe health", Method: http.MethodGet, Path: "/health", Policy: NoRecovery}
+	operation := operation{Name: "probe health", Method: http.MethodGet, Path: "/health", Policy: noRecovery}
 	body, err := requestBytes(ctx, conn, operation, responseLimits{successStatus: http.StatusOK, bodyBytes: 64 * 1024, errorBytes: 64 * 1024})
 	if err != nil {
 		return Health{}, err
@@ -115,14 +115,14 @@ func Attach(ctx context.Context, snapshot ConnectionSnapshot, rediscover Redisco
 	return conn, nil
 }
 
-// Capabilities reads a validated health response with ordinary read recovery.
-func Capabilities(ctx context.Context, conn *Connection) ([]string, error) {
+// capabilities reads a validated health response with ordinary read recovery.
+func capabilities(ctx context.Context, conn *Connection) ([]string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	operation := Operation{Name: "read capabilities", Method: http.MethodGet, Path: "/health", Policy: ReadRecovery}
+	operation := operation{Name: "read capabilities", Method: http.MethodGet, Path: "/health", Policy: readRecovery}
 	body, err := requestBytes(ctx, conn, operation, responseLimits{successStatus: http.StatusOK, bodyBytes: 64 * 1024, errorBytes: 64 * 1024})
 	if err != nil {
 		return nil, err
@@ -131,15 +131,22 @@ func Capabilities(ctx context.Context, conn *Connection) ([]string, error) {
 	return health.Capabilities, err
 }
 
-func CheckCapability(ctx context.Context, conn *Connection, capability, feature string) error {
-	capabilities, err := Capabilities(ctx, conn)
+func checkCapability(ctx context.Context, conn *Connection, capability, feature string) error {
+	capabilities, err := capabilities(ctx, conn)
 	if err != nil {
 		return err
 	}
 	if !slices.Contains(capabilities, capability) {
-		return UpgradeNeeded(feature)
+		return &UpgradeRequiredError{Feature: feature}
 	}
 	return nil
 }
 
-func UpgradeNeeded(feature string) error { return &UpgradeRequiredError{Feature: feature} }
+// CheckPromptSupport runs before a headless prompt can create or modify a session.
+func CheckPromptSupport(ctx context.Context, conn *Connection) error {
+	return checkCapability(ctx, conn, "submission_cancellation", "prompt submission cancellation")
+}
+
+func StopDaemon(ctx context.Context, conn *Connection) error {
+	return acknowledge(ctx, conn, operation{Name: "stop daemon", Method: http.MethodPost, Path: "/shutdown", Body: map[string]any{}, Policy: noRecovery})
+}

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -66,10 +67,11 @@ type UncertainOutcomeError struct {
 
 func (e *UncertainOutcomeError) Error() string {
 	if e.Handle != nil {
-		return e.Operation + " admission is uncertain; operation " + e.Handle.ID + " can be queried"
+		return e.Operation + " admission is uncertain; operation " + e.Handle.ID() + " can be queried"
 	}
 	return e.Operation + " may have been accepted; check its result before trying again"
 }
+
 func (e *UncertainOutcomeError) Unwrap() error { return e.Cause }
 
 // StreamFailureKind tells subscribers whether reconnecting can make progress.
@@ -88,6 +90,7 @@ type StreamError struct {
 }
 
 func (e *StreamError) Error() string { return e.Cause.Error() }
+
 func (e *StreamError) Unwrap() error { return e.Cause }
 
 // CompatibilityError describes a live daemon that cannot serve this client.
@@ -98,4 +101,44 @@ type CompatibilityError struct {
 
 func (e *CompatibilityError) Error() string {
 	return fmt.Sprintf("daemon protocol %d is incompatible with this client; required protocol is %d; missing capabilities: %v", e.Version, ProtocolVersion, e.MissingCapabilities)
+}
+
+// ProtocolError identifies an invalid successful API response.
+type ProtocolError struct {
+	Cause     error
+	Code      string
+	Operation string
+	Field     string
+}
+
+func (e *ProtocolError) Error() string {
+	if e.Field == "" {
+		return fmt.Sprintf("invalid response for %s: %v", e.Operation, e.Cause)
+	}
+	return fmt.Sprintf("invalid response for %s (%s): %v", e.Operation, e.Field, e.Cause)
+}
+
+func (e *ProtocolError) Unwrap() error { return e.Cause }
+
+func invalidResponse(operation operation, field string, cause error) error {
+	return uncertainOperation(operation, &ProtocolError{Code: "invalid_response", Operation: operation.Name, Field: field, Cause: cause})
+}
+
+type responseFieldError struct {
+	cause error
+	field string
+}
+
+func (e *responseFieldError) Error() string { return e.field + ": " + e.cause.Error() }
+
+func fieldError(field string) error {
+	return &responseFieldError{field: field, cause: errors.New("required field is missing or invalid")}
+}
+
+type WorkspaceMissingError struct {
+	Workspace string
+}
+
+func (e *WorkspaceMissingError) Error() string {
+	return "workspace folder not found: " + e.Workspace
 }

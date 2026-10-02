@@ -80,7 +80,7 @@ func TestSessionViewerPreviewFetchesOnSettleAndRenders(t *testing.T) {
 	if strings.Join(fetched, " ") != "two" {
 		t.Fatalf("fetched: %v", fetched)
 	}
-	m, _ = m.Update(SessionPreviewMsg{ID: "two", Preview: SessionPreview{Total: 9, Items: []PreviewItem{
+	m, _ = m.Update(SessionPreviewMsg{ID: "two", Preview: daemon.SessionPreview{Total: 9, Items: []daemon.PreviewItem{
 		{Type: "user", Preview: "please fix the flaky test"},
 		{Type: "tool", Preview: "read"}, {Type: "tool", Preview: "read"}, {Type: "tool", Preview: "bash"},
 		{Type: "assistant", Preview: "fixed the race in the watcher"},

@@ -5,9 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"regexp"
-	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -27,13 +25,6 @@ func readablePreview(value string) string {
 	return string(runes[:95]) + "…"
 }
 
-type TreeCheckpoint struct {
-	Timestamp *int64 `json:"timestamp,omitempty"`
-	Type      string `json:"type"`
-	Preview   string `json:"preview"`
-	ID        int    `json:"id"`
-}
-
 type TreeCancelMsg struct{}
 
 type TreeForkSuccessMsg struct {
@@ -44,7 +35,7 @@ type TreeForkSuccessMsg struct {
 type treeLoadedMsg struct {
 	Err        error
 	NextCursor *int
-	Items      []TreeCheckpoint
+	Items      []daemon.TreeCheckpoint
 	Gen        int
 	HasMore    bool
 }
@@ -62,7 +53,7 @@ type TreePickerModel struct {
 	SessionID   string
 	ForkError   string
 	Cursors     []int
-	Checkpoints []TreeCheckpoint
+	Checkpoints []daemon.TreeCheckpoint
 	page
 	PageIndex  int
 	HasMore    bool
@@ -97,21 +88,7 @@ func (m TreePickerModel) loadTreeCmd(after int, gen int) tea.Cmd {
 			return treeLoadedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
 
-		caps, err := daemon.Capabilities(context.Background(), m.Conn)
-		if err == nil && !slices.Contains(caps, "session_tree") {
-			err = daemon.UpgradeNeeded("for /tree")
-		}
-		if err != nil {
-			return treeLoadedMsg{Err: err, Gen: gen}
-		}
-
-		type treeResp struct {
-			NextCursor *int             `json:"nextCursor"`
-			Items      []TreeCheckpoint `json:"items"`
-			HasMore    bool             `json:"hasMore"`
-		}
-		path := fmt.Sprintf("/sessions/%s/tree?after=%d&limit=50", m.SessionID, after)
-		resp, err := daemon.RequestOperation[treeResp](context.Background(), m.Conn, daemon.Operation{Name: "load tree", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
+		resp, err := daemon.GetSessionTree(context.Background(), m.Conn, m.SessionID, after, 50)
 		if err != nil {
 			return treeLoadedMsg{Err: err, Gen: gen}
 		}
@@ -129,7 +106,7 @@ func (m TreePickerModel) forkCmd(checkpointID int, gen int) tea.Cmd {
 		if m.Conn == nil {
 			return treeForkedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		branch, err := daemon.ForkSession(context.Background(), m.Conn, m.SessionID, map[string]any{"checkpoint": checkpointID})
+		branch, err := daemon.ForkSession(context.Background(), m.Conn, m.SessionID, daemon.ForkRequest{Checkpoint: checkpointID})
 		return treeForkedMsg{Session: branch, Err: err, Gen: gen}
 	}
 }

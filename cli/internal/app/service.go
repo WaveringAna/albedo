@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -44,7 +43,7 @@ func (s *Service) PrepareOpen(ctx context.Context, options OpenOptions) (Prepare
 		return PreparedOpen{}, err
 	}
 
-	sessions, err := daemon.RequestOperation[[]daemon.Session](ctx, conn, daemon.Operation{Name: "list sessions", Method: http.MethodGet, Path: "/sessions", Policy: daemon.ReadRecovery})
+	sessions, err := daemon.ListSessions(ctx, conn)
 	if err != nil {
 		return PreparedOpen{}, err
 	}
@@ -72,7 +71,7 @@ func (s *Service) PrepareOpen(ctx context.Context, options OpenOptions) (Prepare
 	if selected != nil {
 		initial = selected
 	} else if configured && (fresh || len(sessions) == 0) {
-		created, createErr := daemon.CreateSession(ctx, conn, map[string]string{"workspace": absWorkspace})
+		created, createErr := daemon.CreateSession(ctx, conn, daemon.CreateSessionRequest{Workspace: absWorkspace})
 		if createErr != nil {
 			return PreparedOpen{}, createErr
 		}
@@ -92,7 +91,7 @@ func (s *Service) Sessions(ctx context.Context) (SessionList, error) {
 	if err != nil {
 		return SessionList{}, err
 	}
-	sessions, err := daemon.RequestOperation[[]daemon.Session](ctx, conn, daemon.Operation{Name: "list sessions", Method: http.MethodGet, Path: "/sessions", Policy: daemon.ReadRecovery})
+	sessions, err := daemon.ListSessions(ctx, conn)
 	if err != nil {
 		return SessionList{}, err
 	}
@@ -128,7 +127,7 @@ func matchSession(sessions []daemon.Session, id string) (daemon.Session, error) 
 
 // resolveSession expands a shortened session ID against the daemon's sessions.
 func resolveSession(ctx context.Context, conn *daemon.Connection, id string) (string, error) {
-	sessions, err := daemon.RequestOperation[[]daemon.Session](ctx, conn, daemon.Operation{Name: "resolve session", Method: http.MethodGet, Path: "/sessions", Policy: daemon.ReadRecovery})
+	sessions, err := daemon.ListSessions(ctx, conn)
 	if err != nil {
 		return "", err
 	}
@@ -145,7 +144,7 @@ func (s *Service) Send(ctx context.Context, id, prompt string) (daemon.SendResul
 	if err != nil {
 		return daemon.SendResult{}, err
 	}
-	return daemon.Submit(ctx, conn, id, map[string]any{"content": prompt})
+	return daemon.Submit(ctx, conn, id, daemon.SubmissionRequest{Content: &prompt})
 }
 
 type InterruptionResult struct {

@@ -6,8 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -84,9 +82,8 @@ func (m CapabilityPageModel) loadCmd(gen int) tea.Cmd {
 		slices.SortFunc(items, func(a, b capabilityItem) int { return strings.Compare(a.ID, b.ID) })
 		enabled := true
 		if m.Conn != nil {
-			path := fmt.Sprintf("/sessions/%s/extensions", url.PathEscape(m.SessionID))
 			var extensions []ExtensionItem
-			extensions, err = daemon.RequestOperation[[]ExtensionItem](context.Background(), m.Conn, daemon.Operation{Name: "load", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
+			extensions, err = daemon.ListExtensions(context.Background(), m.Conn, m.SessionID)
 			if i := slices.IndexFunc(extensions, func(ext ExtensionItem) bool { return ext.Name == kind }); err == nil && i >= 0 {
 				enabled = extensions[i].Enabled
 			}
@@ -111,7 +108,7 @@ func mcpItems(settings daemon.Settings) []capabilityItem {
 
 func (m CapabilityPageModel) enableExtensionCmd(gen int) tea.Cmd {
 	return func() tea.Msg {
-		_, err := daemon.SelectExtension(context.Background(), m.Conn, m.SessionID, map[string]any{"name": m.Kind, "enabled": true})
+		_, err := daemon.SelectExtension(context.Background(), m.Conn, m.SessionID, daemon.ExtensionSelectionRequest{Name: m.Kind, Enabled: new(true)})
 		return capabilitySavedMsg{Gen: gen, Err: err}
 	}
 }
@@ -130,9 +127,9 @@ func (m CapabilityPageModel) choiceCmd(item capabilityItem, enabled *bool, gen i
 		var result daemon.ReloadResult
 		var err error
 		if m.Kind == "mcp" {
-			result, err = daemon.SetCapability(context.Background(), m.Conn, m.SessionID, m.Kind, item.ID, scope, enabled)
+			result, err = daemon.SetCapability(context.Background(), m.Conn, m.SessionID, daemon.CapabilitySelectionRequest{Kind: m.Kind, Name: item.ID, Scope: scope, Enabled: enabled})
 		} else {
-			result, err = daemon.SetCatalogCapability(context.Background(), m.Conn, m.SessionID, m.Revision, item.ID, scope, enabled)
+			result, err = daemon.SetCatalogCapability(context.Background(), m.Conn, m.SessionID, daemon.CatalogCapabilityRequest{Revision: m.Revision, ID: item.ID, Scope: scope, Enabled: enabled})
 		}
 		return capabilitySavedMsg{Gen: gen, Err: err, Warning: result.Warning}
 	}
@@ -146,14 +143,14 @@ var mcpEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z_0-9]*$`)
 // restored, so a half-configured server is never left behind.
 func (m CapabilityPageModel) saveMCPCmd(sub mcpSubmission, gen int) tea.Cmd {
 	return func() tea.Msg {
-		result, err := daemon.SaveMCP(context.Background(), m.Conn, m.SessionID, sub.Name, &sub.Server, sub.Secrets)
+		result, err := daemon.SaveMCP(context.Background(), m.Conn, m.SessionID, daemon.MCPUpdateRequest{Name: sub.Name, Server: &sub.Server, Secrets: sub.Secrets})
 		return capabilitySavedMsg{Gen: gen, Err: err, Warning: result.Warning}
 	}
 }
 
 func (m CapabilityPageModel) deleteMCPCmd(name string, gen int) tea.Cmd {
 	return func() tea.Msg {
-		result, err := daemon.SaveMCP(context.Background(), m.Conn, m.SessionID, name, nil, nil)
+		result, err := daemon.SaveMCP(context.Background(), m.Conn, m.SessionID, daemon.MCPUpdateRequest{Name: name, Server: nil, Secrets: daemon.MCPSecretsPatch{}})
 		return capabilitySavedMsg{Gen: gen, Err: err, Warning: result.Warning}
 	}
 }

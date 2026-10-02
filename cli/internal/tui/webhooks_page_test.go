@@ -5,6 +5,8 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"errors"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -39,7 +41,7 @@ func TestWebhookEditOnlySendsWhatChanged(t *testing.T) {
 	}
 	m.Form.Inputs[hookFieldSecret].SetValue("a-new-sixteen-byte-secret")
 	steps, _, err := m.Form.steps()
-	if err != nil || len(steps) != 1 || steps[0] != [2]string{"rotate_with_secret", "wh1 a-new-sixteen-byte-secret"} {
+	if err != nil || len(steps) != 1 || steps[0] != (daemon.WebhookRequest{Action: daemon.WebhookRotate, HookID: "wh1", Secret: "a-new-sixteen-byte-secret"}) {
 		t.Fatalf("steps = %v, %v", steps, err)
 	}
 	if strings.Contains(m.View(), "a-new-sixteen-byte-secret") {
@@ -86,7 +88,53 @@ func TestWebhookFormPicksTheSessionToWake(t *testing.T) {
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 	m.Form.Inputs[hookFieldName].SetValue("notes")
 	steps, notice, err := m.Form.steps()
-	if err != nil || steps[0] != [2]string{"create_in", "t notes"} || !strings.Contains(notice, "release notes") {
+	if err != nil || steps[0] != (daemon.WebhookRequest{Action: daemon.WebhookCreate, SessionID: "t", Name: "notes"}) || !strings.Contains(notice, "release notes") {
 		t.Fatalf("steps = %v, %q, %v", steps, notice, err)
+	}
+}
+
+// A failed extension read cannot establish that deliveries are mounted.
+func TestWebhookLoadSurfacesExtensionFailure(t *testing.T) {
+	requests := 0
+	conn := commandTestConnection(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"extension load refused"}`))
+	})
+	m := NewWebhooksPageModel(conn, "session")
+	msg := m.loadCmd(m.Generation)().(webhooksLoadedMsg)
+	if msg.Err == nil || msg.Mounted || requests != 1 {
+		t.Fatalf("extension failure treated as mounted: %+v requests=%d", msg, requests)
+	}
+	m, _ = m.Update(msg)
+	if m.Loaded || m.Error == "" {
+		t.Fatal("extension failure did not surface in screen")
+	}
+}
+
+// Creation is already committed when a following signature update fails.
+func TestWebhookSaveRetainsCreatedSecretAfterLaterFailure(t *testing.T) {
+	requests := 0
+	conn := commandTestConnection(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		if requests == 1 {
+			_, _ = w.Write([]byte(`{"result":{"hook":{"id":"created","session":"session","name":"deploy","url":"/webhooks/created","signatureHeader":"x-albedo-signature","signaturePrefix":"sha256=","enabled":true,"revision":1},"secret":"whsec_created","message":"created"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"signature refused"}`))
+	})
+	m := NewWebhooksPageModel(conn, "session")
+	msg := m.save(m.Generation, "added", daemon.WebhookRequest{Action: daemon.WebhookCreate, SessionID: "session", Name: "deploy"}, daemon.WebhookRequest{Action: daemon.WebhookSignature, Header: "x-custom", Prefix: ""})().(webhooksSavedMsg)
+	if msg.Err == nil || msg.Reveal == nil || msg.Reveal.Secret != "whsec_created" || requests != 2 {
+		t.Fatalf("lost committed secret: %+v requests=%d", msg, requests)
+	}
+	var apiErr *daemon.APIError
+	if !errors.As(msg.Err, &apiErr) {
+		t.Fatalf("lost failure: %v", msg.Err)
+	}
+	m, _ = m.Update(msg)
+	if m.Reveal == nil || m.Error == "" {
+		t.Fatal("partial success did not retain reveal and error")
 	}
 }

@@ -13,27 +13,26 @@ import (
 	"net/http"
 	"strings"
 	"syscall"
-	"time"
 )
 
-// RetryPolicy controls application recovery. Audited read-only GET requests
+// retryPolicy controls application recovery. Audited read-only GET requests
 // may also be recovered internally by net/http on a reused connection.
-type RetryPolicy uint8
+type retryPolicy uint8
 
 const (
-	NoRecovery RetryPolicy = iota
-	ReadRecovery
-	AuthRecovery
-	ReceiptRecovery
+	noRecovery retryPolicy = iota
+	readRecovery
+	authRecovery
+	receiptRecovery
 )
 
-type Operation struct {
+type operation struct {
 	Handle *OperationHandle
 	Body   any
 	Name   string
 	Method string
 	Path   string
-	Policy RetryPolicy
+	Policy retryPolicy
 }
 
 func newHTTPClient() *http.Client {
@@ -78,7 +77,7 @@ type responseLimits struct {
 }
 
 // operationRequest binds the address and credentials to one immutable snapshot.
-func operationRequest(ctx context.Context, snapshot ConnectionSnapshot, operation Operation, payload []byte) (*http.Request, error) {
+func operationRequest(ctx context.Context, snapshot ConnectionSnapshot, operation operation, payload []byte) (*http.Request, error) {
 	var reader io.Reader
 	if payload != nil {
 		reader = bytes.NewReader(payload)
@@ -93,26 +92,26 @@ func operationRequest(ctx context.Context, snapshot ConnectionSnapshot, operatio
 	}
 	// A mutation must never become replayable through net/http's pooled-connection retry.
 	// Explicit application recovery constructs a fresh request from payload instead.
-	if operation.Policy != ReadRecovery {
+	if operation.Policy != readRecovery {
 		req.GetBody = nil
 	}
 	return req, nil
 }
 
-func encodeOperation(operation Operation) ([]byte, error) {
+func encodeOperation(operation operation) ([]byte, error) {
 	if operation.Body == nil {
 		return nil, nil
 	}
 	return json.Marshal(operation.Body)
 }
 
-func recoverOperation(ctx context.Context, conn *Connection, operation Operation, snapshot ConnectionSnapshot, failure error) (bool, error) {
-	if operation.Policy == NoRecovery || ctx.Err() != nil {
+func recoverOperation(ctx context.Context, conn *Connection, operation operation, snapshot ConnectionSnapshot, failure error) (bool, error) {
+	if operation.Policy == noRecovery || ctx.Err() != nil {
 		return false, nil
 	}
 	apiError, rejected := errors.AsType[*APIError](failure)
 	authRefusal := rejected && apiError.StatusCode == http.StatusForbidden && apiError.Code == "authentication_required"
-	if !authRefusal && (operation.Policy != ReadRecovery || !isConnectionError(failure)) {
+	if !authRefusal && (operation.Policy != readRecovery || !isConnectionError(failure)) {
 		return false, nil
 	}
 	if conn.rediscover == nil {
@@ -125,15 +124,15 @@ func recoverOperation(ctx context.Context, conn *Connection, operation Operation
 	return !authRefusal || latest.Port != snapshot.Port || latest.Token != snapshot.Token, nil
 }
 
-func uncertainOperation(operation Operation, failure error) error {
-	if operation.Policy == ReadRecovery || operation.Method == http.MethodGet {
+func uncertainOperation(operation operation, failure error) error {
+	if operation.Policy == readRecovery || operation.Method == http.MethodGet {
 		return failure
 	}
 	return &UncertainOutcomeError{Operation: operation.Name, Cause: failure, Handle: operation.Handle}
 }
 
 // requestBytes owns every response until its bounded body has been read.
-func requestBytes(ctx context.Context, conn *Connection, operation Operation, limits responseLimits) ([]byte, error) {
+func requestBytes(ctx context.Context, conn *Connection, operation operation, limits responseLimits) ([]byte, error) {
 	payload, err := encodeOperation(operation)
 	if err != nil {
 		return nil, err
@@ -181,11 +180,11 @@ func requestBytes(ctx context.Context, conn *Connection, operation Operation, li
 		var body []byte
 		if success {
 			body, err = readBounded(res.Body, limits.bodyBytes)
-			if err != nil && operation.Policy != ReadRecovery {
+			if err != nil && operation.Policy != readRecovery {
 				err = &ProtocolError{Code: "invalid_response", Operation: operation.Name, Cause: err}
 			}
 		} else {
-			if res.StatusCode >= 200 && res.StatusCode < 300 && operation.Policy != ReadRecovery {
+			if res.StatusCode >= 200 && res.StatusCode < 300 && operation.Policy != readRecovery {
 				err = invalidResponse(operation, "status", fmt.Errorf("unexpected HTTP status %d", res.StatusCode))
 			} else {
 				err = readHTTPError(res, limits.errorBytes)
@@ -222,7 +221,7 @@ type streamLimits struct {
 }
 
 // Recovery ends as soon as a successful stream is accepted; events are never replayed here.
-func scanEventStream(ctx context.Context, conn *Connection, operation Operation, limits streamLimits, consume func(*bufio.Scanner) error) error {
+func scanEventStream(ctx context.Context, conn *Connection, operation operation, limits streamLimits, consume func(*bufio.Scanner) error) error {
 	for attempt := range 2 {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -309,27 +308,4 @@ func readBounded(r io.Reader, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("response exceeds this client's read limit (%d bytes)", limit)
 	}
 	return data, nil
-}
-
-func RequestOperation[T any](ctx context.Context, conn *Connection, operation Operation) (T, error) {
-	var zero T
-	if conn == nil {
-		return zero, errors.New("not connected to Albedo")
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	respData, err := requestBytes(reqCtx, conn, operation, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 50 * 1024 * 1024})
-	if err != nil {
-		return zero, err
-	}
-	var result T
-	if len(respData) > 0 {
-		if err := json.Unmarshal(respData, &result); err != nil {
-			return zero, uncertainOperation(operation, err)
-		}
-	}
-	return result, nil
 }

@@ -197,6 +197,17 @@ func (m ModelPickerModel) listCmd(c profileCatalog) tea.Cmd {
 	}
 }
 
+func utf16Length(s string) int {
+	length := 0
+	for _, char := range s {
+		length++
+		if char > 0xffff {
+			length++
+		}
+	}
+	return length
+}
+
 func validateModelID(m string) error {
 	m = strings.TrimSpace(m)
 	if m == "" || utf16Length(m) > 512 || strings.ContainsFunc(m, func(r rune) bool { return r < 0x20 || r == 0x7f }) {

@@ -154,7 +154,7 @@ func teardownSuite(temp string) (string, bool) {
 	default:
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if _, err := daemon.RequestOperation[map[string]any](ctx, suite.conn, daemon.Operation{Name: "shutdown daemon", Method: http.MethodPost, Path: "/shutdown", Body: map[string]any{}, Policy: daemon.NoRecovery}); err != nil {
+		if err := daemon.StopDaemon(ctx, suite.conn); err != nil {
 			report = append(report, fmt.Sprintf("shutdown request failed: %v", err))
 		}
 		if awaitExit(snap.Pid, 15*time.Second) {
@@ -454,7 +454,7 @@ func cli(t *testing.T, args ...string) string {
 // running side by side never depend on which profile is active.
 func newSession(t *testing.T, workspace string) string {
 	t.Helper()
-	created, err := daemon.CreateSession(context.Background(), conn(t), map[string]string{"workspace": workspace, "provider": t.Name()})
+	created, err := daemon.CreateSession(context.Background(), conn(t), daemon.CreateSessionRequest{Workspace: workspace, Provider: t.Name()})
 	if err != nil || created.ID == "" {
 		t.Fatalf("creating a session on %s: %v", t.Name(), err)
 	}
@@ -495,9 +495,7 @@ func waitIdle(t *testing.T, session, profile string, wantRequests int) {
 	connection := conn(t)
 	deadline := time.Now().Add(60 * time.Second)
 	for {
-		status, err := daemon.RequestOperation[struct {
-			Running bool `json:"running"`
-		}](context.Background(), connection, daemon.Operation{Name: "read session status", Method: http.MethodGet, Path: "/sessions/" + url.PathEscape(session) + "/status", Policy: daemon.ReadRecovery})
+		status, err := daemon.NewChatClient(connection, session).GetStatus(context.Background())
 		if err != nil {
 			t.Fatalf("status of %s: %v", session, err)
 		}

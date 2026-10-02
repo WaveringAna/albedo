@@ -1444,7 +1444,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		return m, nil
 
 	case ChatOperationPollMsg:
-		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || !m.operationRecoverable(msg.Handle.ID) {
+		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || !m.operationRecoverable(msg.Handle.ID()) {
 			return m, nil
 		}
 		return m, m.queryOperationCmd(msg.Handle)
@@ -1453,23 +1453,23 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
 			return m, nil
 		}
-		index := slices.IndexFunc(m.pendingUsers, func(p PendingUserTurn) bool { return p.OperationID == msg.Handle.ID })
-		if !m.operationRecoverable(msg.Handle.ID) {
+		index := slices.IndexFunc(m.pendingUsers, func(p PendingUserTurn) bool { return p.OperationID == msg.Handle.ID() })
+		if !m.operationRecoverable(msg.Handle.ID()) {
 			return m, nil
 		}
 		if daemon.IsOperationExpired(msg.Err) {
 			if index >= 0 {
 				m.pendingUsers[index].Expired = true
 			} else {
-				pending := m.pendingContinuations[msg.Handle.ID]
+				pending := m.pendingContinuations[msg.Handle.ID()]
 				pending.Expired = true
-				m.pendingContinuations[msg.Handle.ID] = pending
+				m.pendingContinuations[msg.Handle.ID()] = pending
 			}
 			m.refreshViewportContent()
 			return m, nil
 		}
 		if msg.Err == nil && (msg.Receipt.Status == "rejected" || msg.Receipt.DeliveryStatus == "cancelled" || msg.Receipt.DeliveryStatus == "committed") {
-			delete(m.pendingContinuations, msg.Handle.ID)
+			delete(m.pendingContinuations, msg.Handle.ID())
 			if rejection := msg.Receipt.Rejection(); rejection != nil {
 				m.ClearNotices()
 				m.AddError(rejection.Error())
@@ -1495,7 +1495,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if msg.Err != nil {
 			m.interruptDeferred = false
 			if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](msg.Err); uncertain {
-				if msg.Handle != nil && m.operationRecoverable(msg.Handle.ID) && daemon.IsOperationExpired(msg.Err) {
+				if msg.Handle != nil && m.operationRecoverable(msg.Handle.ID()) && daemon.IsOperationExpired(msg.Err) {
 					return m.Update(ChatOperationResolvedMsg{SessionID: m.SessionID, Generation: m.Generation, Handle: msg.Handle, Err: msg.Err})
 				}
 				message := "Message admission is uncertain. Checking its operation receipt."
@@ -1504,7 +1504,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				}
 				m.AddError(message)
 				m.refreshViewportContent()
-				if msg.Handle != nil && m.operationRecoverable(msg.Handle.ID) {
+				if msg.Handle != nil && m.operationRecoverable(msg.Handle.ID()) {
 					return m, m.resolveOperationCmd(msg.Handle)
 				}
 				return m, nil
@@ -1631,7 +1631,7 @@ func (m ChatModel) resolveOperationCmd(handle *daemon.OperationHandle) tea.Cmd {
 func (m *ChatModel) sendCmd(handle *daemon.OperationHandle, prompt string, image *daemon.ImageAttachment, isCont bool) tea.Cmd {
 	client, id, gen := m.client, m.SessionID, m.Generation
 	return func() tea.Msg {
-		msg := ChatTurnSentMsg{SessionID: id, Generation: gen, Prompt: prompt, Image: image, Continue: isCont, Handle: handle, OperationID: handle.ID}
+		msg := ChatTurnSentMsg{SessionID: id, Generation: gen, Prompt: prompt, Image: image, Continue: isCont, Handle: handle, OperationID: handle.ID()}
 		result, err := client.SubmitOperation(context.Background(), handle)
 		msg.Err = err
 		if err == nil && result != nil {
@@ -1697,11 +1697,11 @@ func (m *ChatModel) submitInput(input string, cmds *[]tea.Cmd) {
 		if m.pendingContinuations == nil {
 			m.pendingContinuations = make(map[string]pendingOperation)
 		}
-		m.pendingContinuations[handle.ID] = pendingOperation{Handle: handle}
+		m.pendingContinuations[handle.ID()] = pendingOperation{Handle: handle}
 	}
 	if !continuation {
 		m.AttachedImage = nil
-		m.pendingUsers = append(m.pendingUsers, PendingUserTurn{Text: input, Image: image, At: time.Now().UnixMilli(), Handle: handle, OperationID: handle.ID})
+		m.pendingUsers = append(m.pendingUsers, PendingUserTurn{Text: input, Image: image, At: time.Now().UnixMilli(), Handle: handle, OperationID: handle.ID()})
 	}
 	m.isSending, m.sentHere, m.Follow = true, true, true
 	m.reseedMood()
@@ -1726,7 +1726,7 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 			m.AddError(err.Error())
 			return
 		}
-		m.pendingUsers = append(m.pendingUsers, PendingUserTurn{Text: trimmed, At: time.Now().UnixMilli(), Handle: handle, OperationID: handle.ID})
+		m.pendingUsers = append(m.pendingUsers, PendingUserTurn{Text: trimmed, At: time.Now().UnixMilli(), Handle: handle, OperationID: handle.ID()})
 		m.isSending, m.sentHere, m.Follow = true, true, true
 		m.TurnFailed, m.Stopped = false, false
 		*cmds = append(*cmds, m.sendCmd(handle, trimmed, nil, false), m.startAnimation())

@@ -65,8 +65,8 @@ func TestCapabilityConflictRefreshesWithoutReplayingToggle(t *testing.T) {
 			status, body = http.StatusConflict, `{"code":"stale_catalog","error":"catalog changed"}`
 		case len(methods) == 2 && request.Method == http.MethodGet:
 			body = `{"workspace":"/daemon-workspace","revision":"after","extensions":{"skills":true},"diagnostics":[],"candidates":[
-				{"id":"row","kind":"skills","title":"Updated skill","source":"/skills/draft/SKILL.md","preference_key":"draft","valid":true,"global_preference":false,"session_override":false,"effective_enabled":false,"eligible":false},
-				{"id":"new-row","kind":"skills","title":"New skill","source":"/skills/new/SKILL.md","preference_key":"new","valid":true,"effective_enabled":true,"eligible":true}
+				{"id":"row","kind":"skills","title":"Updated skill","source":"/skills/draft/SKILL.md","description":null,"resolved_source":null,"diagnostic":null,"shadowed_by":null,"preference_key":"draft","valid":true,"global_preference":false,"session_override":false,"effective_enabled":false,"eligible":false},
+				{"id":"new-row","kind":"skills","title":"New skill","source":"/skills/new/SKILL.md","description":null,"resolved_source":null,"diagnostic":null,"shadowed_by":null,"global_preference":null,"session_override":null,"preference_key":"new","valid":true,"effective_enabled":true,"eligible":true}
 			]}`
 		default:
 			t.Fatalf("unexpected request sequence: %v", methods)

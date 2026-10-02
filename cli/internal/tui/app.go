@@ -5,12 +5,9 @@ import (
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
-	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -241,7 +238,7 @@ func (m *AppModel) loadSessionsCmd(gen int) tea.Cmd {
 		if conn == nil {
 			return sessionsLoadedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		sessions, err := daemon.RequestOperation[[]daemon.Session](context.Background(), conn, daemon.Operation{Name: "load sessions", Method: http.MethodGet, Path: "/sessions", Body: nil, Policy: daemon.ReadRecovery})
+		sessions, err := daemon.ListSessions(context.Background(), conn)
 		return sessionsLoadedMsg{Sessions: sessions, Err: err, Gen: gen}
 	}
 }
@@ -270,19 +267,19 @@ func (m *AppModel) deleteSessionCmd(id string) tea.Cmd {
 
 func sessionPreviewCmd(conn *daemon.Connection, id string) tea.Cmd {
 	return func() tea.Msg {
-		preview, err := daemon.RequestOperation[SessionPreview](context.Background(), conn, daemon.Operation{Name: "session preview", Method: http.MethodGet, Path: "/sessions/" + url.PathEscape(id) + "/preview?limit=16", Body: nil, Policy: daemon.ReadRecovery})
+		preview, err := daemon.GetSessionPreview(context.Background(), conn, id, 16)
 		return SessionPreviewMsg{ID: id, Preview: preview, Err: err}
 	}
 }
 
 func (m *AppModel) createSessionCmd(gen int, workspace string) tea.Cmd {
 	conn := m.Conn
-	handle, preparationErr := daemon.NewCreation(map[string]string{"workspace": workspace})
+	handle, preparationErr := daemon.NewCreation(daemon.CreateSessionRequest{Workspace: workspace})
 	if preparationErr == nil {
 		if m.pendingCreations == nil {
 			m.pendingCreations = make(map[string]pendingOperation)
 		}
-		m.pendingCreations[handle.ID] = pendingOperation{Handle: handle}
+		m.pendingCreations[handle.ID()] = pendingOperation{Handle: handle}
 	}
 	return func() tea.Msg {
 		if preparationErr != nil {
@@ -318,17 +315,7 @@ func (m *AppModel) loadCommandCatalogCmd(gen int) tea.Cmd {
 			return commandCatalogLoadedMsg{Gen: gen}
 		}
 
-		if err := daemon.CheckCapability(context.Background(), conn, "session_commands", "for the command menu"); err != nil {
-			return commandCatalogLoadedMsg{Err: err, Gen: gen}
-		}
-
-		path := fmt.Sprintf("/sessions/%s/commands", url.PathEscape(sessionID))
-		raw, err := daemon.RequestOperation[json.RawMessage](context.Background(), conn, daemon.Operation{Name: "load command catalog", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
-		if err != nil {
-			return commandCatalogLoadedMsg{Err: err, Gen: gen}
-		}
-
-		cmds, err := daemon.ParseCommandCatalog(raw)
+		cmds, err := daemon.ListSessionCommands(context.Background(), conn, sessionID)
 		return commandCatalogLoadedMsg{Commands: cmds, Err: err, Gen: gen}
 	}
 }
@@ -349,37 +336,14 @@ func (m *AppModel) changeModelCmd(model, provider, effort string, raiseCap *bool
 			return modelChangedMsg{Err: errors.New("no active session or connection"), SessionID: sessionID, Gen: gen}
 		}
 
-		if provider != "" && provider != currentProvider {
-			if err := daemon.CheckCapability(context.Background(), conn, "session_provider", "to switch providers"); err != nil {
-				return modelChangedMsg{Err: err, SessionID: sessionID, Gen: gen}
-			}
-		}
-
-		args := map[string]string{"model": model}
-		if provider != "" {
-			args["provider"] = provider
-		}
-		if effort != "" {
-			args["effort"] = effort
-		}
-		body := map[string]any{
-			"name": "/model",
-			"args": args,
-		}
-
-		res, err := daemon.ExecuteCommand(context.Background(), conn, sessionID, body)
+		selection, err := daemon.ChangeModel(context.Background(), conn, sessionID, daemon.ModelChangeRequest{Model: model, Provider: provider, Effort: effort, CurrentProvider: currentProvider})
 		if err != nil {
 			return modelChangedMsg{Err: err, SessionID: sessionID, Gen: gen}
 		}
-		changed := modelChangedMsg{Selection: res.Model, SessionID: sessionID, Gen: gen}
+		changed := modelChangedMsg{Selection: &selection, SessionID: sessionID, Gen: gen}
 		// Keep the confirmed switch if the following cap update fails.
 		if saveCap {
-			state := "off"
-			if capEnabled {
-				state = "on"
-			}
-			capBody := map[string]any{"name": "/raise-cap", "args": map[string]string{"state": state, "model": res.Model.Model}}
-			if _, err := daemon.ExecuteCommand(context.Background(), conn, sessionID, capBody); err != nil {
+			if err := daemon.SetModelContextCap(context.Background(), conn, sessionID, daemon.ModelContextCapRequest{Model: selection.Model, Enabled: capEnabled}); err != nil {
 				changed.Err = fmt.Errorf("switched model; context cap update: %w", err)
 				return changed
 			}
@@ -400,10 +364,7 @@ func (m *AppModel) executeCommandCmd(name, args string, gen int) tea.Cmd {
 			return commandExecutedMsg{Name: name, Err: errors.New("no active session or connection"), Gen: gen}
 		}
 
-		body := map[string]any{"name": name}
-		if args != "" {
-			body["arguments"] = args
-		}
+		body := daemon.CommandRequest{Name: name, Arguments: args}
 
 		res, err := daemon.ExecuteCommand(context.Background(), conn, sessionID, body)
 		if err != nil {
@@ -459,13 +420,12 @@ func (m *AppModel) pollGlancesCmd(gen int) tea.Cmd {
 
 		var glances []PageGlance
 		for _, name := range pageNames {
-			body := map[string]any{"name": name, "args": map[string]string{}}
-			res, err := daemon.ExecutePageCommand(context.Background(), conn, sessionID, body)
+			doc, err := daemon.LoadPage(context.Background(), conn, sessionID, name)
 			if err != nil {
 				return glancesPolledMsg{Gen: gen, Err: err}
 			}
-			if res.Page.Glance != nil {
-				glances = append(glances, *res.Page.Glance)
+			if doc.Glance != nil {
+				glances = append(glances, *doc.Glance)
 			}
 		}
 
@@ -749,7 +709,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.UISaving = true
 		m.SettingsGen++
-		return m, m.patchUICmd(msg.ID, map[string]bool{msg.Field: msg.Value}, m.SettingsGen)
+		patch := daemon.UIPreferencesPatch{}
+		switch msg.Field {
+		case "pinned":
+			patch.Pinned = &msg.Value
+		case "archived":
+			patch.Archived = &msg.Value
+		}
+		return m, m.patchUICmd(msg.ID, patch, m.SettingsGen)
 
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
@@ -840,7 +807,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.SessionPicker.PreviewCmd()
 
 	case sessionCreationRecoveryMsg:
-		if pending, exists := m.pendingCreations[msg.Handle.ID]; !exists || pending.Expired {
+		if pending, exists := m.pendingCreations[msg.Handle.ID()]; !exists || pending.Expired {
 			return m, nil
 		}
 		conn, handle, gen := m.Conn, msg.Handle, msg.Gen
@@ -850,19 +817,19 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case sessionCreatedMsg:
-		if msg.Gen != m.SessionGen && (msg.Handle == nil || m.pendingCreations[msg.Handle.ID].Handle == nil) {
+		if msg.Gen != m.SessionGen && (msg.Handle == nil || m.pendingCreations[msg.Handle.ID()].Handle == nil) {
 			return m, nil
 		}
 		if msg.Handle != nil && daemon.IsOperationExpired(msg.Err) {
-			pending := m.pendingCreations[msg.Handle.ID]
+			pending := m.pendingCreations[msg.Handle.ID()]
 			pending.Expired = true
-			m.pendingCreations[msg.Handle.ID] = pending
-			m.AddError("Session operation " + msg.Handle.ID + " expired; its outcome is unresolved.")
+			m.pendingCreations[msg.Handle.ID()] = pending
+			m.AddError("Session operation " + msg.Handle.ID() + " expired; its outcome is unresolved.")
 			return m, nil
 		}
 		if msg.Err != nil && msg.Handle != nil {
 			if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](msg.Err); uncertain {
-				m.AddError("Session admission is uncertain. Checking operation " + msg.Handle.ID + ".")
+				m.AddError("Session admission is uncertain. Checking operation " + msg.Handle.ID() + ".")
 				return m, creationRecoveryCmd(msg.Handle, msg.Gen)
 			}
 			if api, ok := errors.AsType[*daemon.APIError](msg.Err); ok && (api.Code == "operation_unknown" || api.StatusCode >= 500) {
@@ -870,7 +837,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if msg.Handle != nil {
-			delete(m.pendingCreations, msg.Handle.ID)
+			delete(m.pendingCreations, msg.Handle.ID())
 		}
 		if msg.Gen != m.SessionGen {
 			if msg.Err != nil {
@@ -1228,12 +1195,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.UISaving {
 				m.UISaving = true
 				m.SettingsGen++
-				patch := map[string]bool{}
+				patch := daemon.UIPreferencesPatch{}
 				if draft.Thinking != before.Thinking {
-					patch["thinking"] = draft.Thinking
+					patch.Thinking = &draft.Thinking
 				}
 				if draft.Tools != before.Tools {
-					patch["tools"] = draft.Tools
+					patch.Tools = &draft.Tools
 				}
 				cmd = tea.Batch(cmd, m.patchUICmd("", patch, m.SettingsGen))
 			}
@@ -1339,9 +1306,20 @@ func (m *AppModel) loadSettingsCmd(gen int) tea.Cmd {
 	}
 }
 
-func (m *AppModel) patchUICmd(session string, patch map[string]bool, gen int) tea.Cmd {
+func (m *AppModel) patchUICmd(session string, patch daemon.UIPreferencesPatch, gen int) tea.Cmd {
 	conn := m.Conn
-	patch = maps.Clone(patch)
+	if patch.Thinking != nil {
+		patch.Thinking = new(*patch.Thinking)
+	}
+	if patch.Tools != nil {
+		patch.Tools = new(*patch.Tools)
+	}
+	if patch.Pinned != nil {
+		patch.Pinned = new(*patch.Pinned)
+	}
+	if patch.Archived != nil {
+		patch.Archived = new(*patch.Archived)
+	}
 	return func() tea.Msg {
 		var prefs daemon.UIPreferences
 		var err error

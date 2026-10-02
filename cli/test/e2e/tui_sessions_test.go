@@ -115,7 +115,7 @@ func TestTUINavigationRetainsPendingTurnsAndContinuation(t *testing.T) {
 	seen := make(map[string]bool)
 	for _, message := range driver.results(driver.Update(tui.FolderOpenSessionMsg{Session: session})) {
 		if resolved, ok := message.(tui.ChatOperationResolvedMsg); ok {
-			seen[resolved.Handle.ID] = true
+			seen[resolved.Handle.ID()] = true
 			if resolved.Err != nil || resolved.Receipt.DeliveryStatus != "pending" {
 				t.Fatalf("reattached intent: %+v", resolved)
 			}

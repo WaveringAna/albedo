@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math"
-	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -36,7 +34,7 @@ type AgentsAttachMsg struct{ Session daemon.Session }
 type agentsSnapshotMsg struct {
 	Err   error
 	Root  string
-	Nodes []agentWire
+	Nodes []daemon.AgentNode
 	Gen   int
 }
 
@@ -56,11 +54,8 @@ type agentsSnapshotRetryMsg struct{ Gen int }
 type agentsSeedMsg struct {
 	Snapshot int
 	ID       string
-	Items    []struct {
-		Type    string `json:"type"`
-		Preview string `json:"preview"`
-	}
-	Gen int
+	Items    []daemon.PreviewItem
+	Gen      int
 }
 type agentsSeedErrMsg struct {
 	Snapshot int
@@ -88,16 +83,6 @@ func (m agentsEventsMsg) gen() int        { return m.Gen }
 func (m agentsStreamClosedMsg) gen() int  { return m.Gen }
 func (m agentsReconnectMsg) gen() int     { return m.Gen }
 func (m agentsFrameMsg) gen() int         { return m.Gen }
-
-type agentWire struct {
-	Parent  *string        `json:"parent"`
-	Address *string        `json:"address"`
-	Session daemon.Session `json:"session"`
-	Name    string         `json:"name"`
-	Depth   int            `json:"depth"`
-	Running bool           `json:"running"`
-	Closed  bool           `json:"closed"`
-}
 
 type agentMail struct {
 	who      string
@@ -255,10 +240,7 @@ func (m AgentsViewModel) snapshotCmd(gen int) tea.Cmd {
 		if conn == nil {
 			return agentsSnapshotMsg{Gen: gen, Err: errors.New("daemon connection unavailable")}
 		}
-		tree, err := daemon.RequestOperation[struct {
-			Root  string      `json:"root"`
-			Nodes []agentWire `json:"nodes"`
-		}](m.streamCtx, conn, daemon.Operation{Name: "snapshot", Method: http.MethodGet, Path: "/agents?session=" + url.QueryEscape(id), Body: nil, Policy: daemon.ReadRecovery})
+		tree, err := daemon.GetAgents(m.streamCtx, conn, id)
 		return agentsSnapshotMsg{Gen: gen, Root: tree.Root, Nodes: tree.Nodes, Err: err}
 	}
 }
@@ -604,13 +586,11 @@ func (m *AgentsViewModel) seedCmd() tea.Cmd {
 		ctx = context.Background()
 	}
 	return func() tea.Msg {
-		path := fmt.Sprintf("/sessions/%s/preview?limit=10", url.PathEscape(id))
-		res, err := daemon.RequestOperation[agentsSeedMsg](ctx, conn, daemon.Operation{Name: "seed", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
+		preview, err := daemon.GetSessionPreview(ctx, conn, id, 10)
 		if err != nil {
 			return agentsSeedErrMsg{Gen: gen, Snapshot: snapshot, ID: id, Err: err}
 		}
-		res.Gen, res.ID, res.Snapshot = gen, id, snapshot
-		return res
+		return agentsSeedMsg{Gen: gen, ID: id, Snapshot: snapshot, Items: preview.Items}
 	}
 }
 
@@ -646,7 +626,7 @@ func (m AgentsViewModel) deleteCmd(id string) tea.Cmd {
 func (m AgentsViewModel) sendCmd(id, text string) tea.Cmd {
 	conn, gen, target := m.Conn, m.viewGen, m.label(id, "agent")
 	return func() tea.Msg {
-		_, err := daemon.Submit(context.Background(), conn, id, map[string]any{"content": text})
+		_, err := daemon.Submit(context.Background(), conn, id, daemon.SubmissionRequest{Content: &text})
 		return agentsSentMsg{Gen: gen, Action: "send a message to " + target, Err: err}
 	}
 }
@@ -657,7 +637,7 @@ func (m AgentsViewModel) spawnCmd(parent, name, task string) tea.Cmd {
 		if name == "" || task == "" {
 			return agentsSentMsg{Gen: gen, Action: "start an agent", Err: errors.New("use /spawn <name> <task>")}
 		}
-		_, err := daemon.CreateChild(context.Background(), conn, parent, map[string]any{"name": name, "task": task})
+		_, err := daemon.CreateChild(context.Background(), conn, parent, daemon.ChildRequest{Name: name, Task: task})
 		if err != nil {
 			return agentsSentMsg{Gen: gen, Action: "start " + name, Err: err}
 		}

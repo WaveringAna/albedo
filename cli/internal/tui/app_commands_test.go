@@ -38,21 +38,26 @@ func awaitCommandSignal[T any](t *testing.T, ch <-chan T) T {
 
 func TestModelChangeCapturesProviderAndCapBeforeExecution(t *testing.T) {
 	for _, scenario := range []struct {
-		name       string
-		failSwitch bool
-		failCap    bool
+		name                string
+		failSwitch          bool
+		failCap             bool
+		unsupportedProvider bool
 	}{
 		{name: "success"},
+		{name: "provider unsupported", unsupportedProvider: true},
 		{name: "switch fails", failSwitch: true},
 		{name: "cap fails", failCap: true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			var paths, names, capStates, capModels []string
-			healthCalls := 0
+			var modelArgs map[string]string
 			conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/health" {
-					healthCalls++
-					_, _ = w.Write([]byte(`{"ok":true,"version":2,"capabilities":["session_provider"]}`))
+					if scenario.unsupportedProvider {
+						_, _ = w.Write([]byte(`{"ok":true,"version":2,"capabilities":[]}`))
+					} else {
+						_, _ = w.Write([]byte(`{"ok":true,"version":2,"capabilities":["session_provider"]}`))
+					}
 					return
 				}
 				var body struct {
@@ -64,6 +69,9 @@ func TestModelChangeCapturesProviderAndCapBeforeExecution(t *testing.T) {
 				}
 				paths = append(paths, r.URL.Path)
 				names = append(names, body.Name)
+				if body.Name == "/model" {
+					modelArgs = body.Args
+				}
 				if body.Name == "/raise-cap" {
 					capStates = append(capStates, body.Args["state"])
 					capModels = append(capModels, body.Args["model"])
@@ -82,11 +90,24 @@ func TestModelChangeCapturesProviderAndCapBeforeExecution(t *testing.T) {
 			raiseCap = false
 			app.Conn, app.ActiveSession, app.ModelGen = nil, nil, 8
 			msg := cmd().(modelChangedMsg)
-			if msg.Gen != 7 || msg.SessionID != "original" || (msg.Err != nil) != (scenario.failSwitch || scenario.failCap) {
+			if msg.Gen != 7 || msg.SessionID != "original" || (msg.Err != nil) != (scenario.failSwitch || scenario.failCap || scenario.unsupportedProvider) {
 				t.Fatalf("unexpected model result: %+v", msg)
 			}
-			if healthCalls != 1 {
-				t.Fatalf("provider change skipped its capability check: calls=%d", healthCalls)
+			if scenario.unsupportedProvider {
+				if len(names) != 0 || msg.Selection != nil {
+					t.Fatalf("unsupported provider dispatched mutation: names=%v result=%+v", names, msg)
+				}
+				return
+			}
+			if !reflect.DeepEqual(modelArgs, map[string]string{"model": "chosen", "provider": "new", "effort": "high"}) {
+				t.Fatalf("model request used changed inputs: %v", modelArgs)
+			}
+			if scenario.failSwitch {
+				if msg.Selection != nil {
+					t.Fatalf("failed switch installed selection: %+v", msg.Selection)
+				}
+			} else if msg.Selection == nil || msg.Selection.Model != "resolved" {
+				t.Fatalf("confirmed switch was lost: %+v", msg)
 			}
 			wantNames := []string{"/model", "/raise-cap"}
 			wantPaths := []string{"/sessions/original/commands", "/sessions/original/commands"}
@@ -183,12 +204,18 @@ func TestUIPatchCapturesValues(t *testing.T) {
 				_, _ = w.Write([]byte(`{"thinking":true,"tools":false,"pinned":[],"archived":[],"opens":{}}`))
 			})
 			app := AppModel{Conn: conn}
-			patch := map[string]bool{"thinking": true, "tools": false}
+			first, second := true, false
+			patch := daemon.UIPreferencesPatch{Thinking: &first, Tools: &second}
+			wanted := map[string]bool{"thinking": true, "tools": false}
+			if sessionID != "" {
+				patch = daemon.UIPreferencesPatch{Pinned: &first, Archived: &second}
+				wanted = map[string]bool{"pinned": true, "archived": false}
+			}
 			cmd := app.patchUICmd(sessionID, patch, 5)
-			patch["thinking"], patch["tools"], patch["extra"] = false, true, true
+			first, second = false, true
 			app.Conn, app.SettingsGen = nil, 6
 			msg := cmd().(uiSavedMsg)
-			if msg.Err != nil || msg.Gen != 5 || !reflect.DeepEqual(got, map[string]bool{"thinking": true, "tools": false}) {
+			if msg.Err != nil || msg.Gen != 5 || !reflect.DeepEqual(got, wanted) {
 				t.Fatalf("patch read changed inputs: body=%v result=%+v", got, msg)
 			}
 		})

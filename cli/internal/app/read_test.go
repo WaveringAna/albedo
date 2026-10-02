@@ -19,9 +19,9 @@ func TestReadFlattensHistoryPagesInChronologicalOrder(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/sessions":
-			_, _ = w.Write([]byte(`[{"id":"s"}]`))
+			_, _ = w.Write([]byte(`[{"id":"s","title":"","workspace":"","provider":"fixture","model":"fixture","protocol":"responses","effort":null,"last_assistant_at":null}]`))
 		case "/sessions/s/status":
-			_, _ = w.Write([]byte(`{"running":true,"idle":false}`))
+			_, _ = w.Write([]byte(`{"running":true,"idle":false,"phase":"preparing"}`))
 		case "/sessions/s/history":
 			cursor := r.URL.Query().Get("before")
 			cursors = append(cursors, cursor)

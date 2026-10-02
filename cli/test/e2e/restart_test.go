@@ -8,7 +8,6 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +26,7 @@ func restartDaemon(t *testing.T) daemon.ConnectionSnapshot {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := daemon.RequestOperation[map[string]any](ctx, conn(t), daemon.Operation{Name: "shutdown daemon", Method: http.MethodPost, Path: "/shutdown", Body: map[string]any{}, Policy: daemon.NoRecovery}); err != nil {
+	if err := daemon.StopDaemon(ctx, conn(t)); err != nil {
 		t.Fatalf("shutdown request: %v", err)
 	}
 	if !awaitExit(old, 15*time.Second) {
@@ -149,11 +148,8 @@ func TestTUIReopensInterruptedSessionWithoutCompacting(t *testing.T) {
 	}
 	waitIdle(t, id, profile, 1)
 	restartDaemon(t)
-	status, err := daemon.RequestOperation[struct {
-		Phase string `json:"phase"`
-		Idle  bool   `json:"idle"`
-	}](ctx, conn(t), daemon.Operation{Name: "read reopened session status", Method: http.MethodGet, Path: "/sessions/" + id + "/status", Policy: daemon.ReadRecovery})
-	if err != nil || !status.Idle || status.Phase != "interrupted" {
+	status, err := daemon.NewChatClient(conn(t), id).GetStatus(ctx)
+	if err != nil || !status.Idle || status.Phase == nil || *status.Phase != "interrupted" {
 		t.Fatalf("reopened status: %+v, %v", status, err)
 	}
 

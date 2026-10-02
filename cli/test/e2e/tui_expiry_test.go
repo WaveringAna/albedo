@@ -115,8 +115,8 @@ func TestTUIExpiredSubmissionsRemainUnresolvedAcrossNavigation(t *testing.T) {
 	driver.Update(tea.WindowSizeMsg{Width: 120, Height: 100})
 	view := driver.View()
 	for _, handle := range handles {
-		if !strings.Contains(view, handle.ID) {
-			t.Fatalf("navigation lost unresolved identity %s:\n%s", handle.ID, view)
+		if !strings.Contains(view, handle.ID()) {
+			t.Fatalf("navigation lost unresolved identity %s:\n%s", handle.ID(), view)
 		}
 	}
 	if after := operationRequests(proxy); !slices.Equal(before, after) {
@@ -135,7 +135,7 @@ func TestTUIExpiredSubmissionsRemainUnresolvedAcrossNavigation(t *testing.T) {
 	}
 	matched := false
 	for _, event := range history.Events {
-		if event.Type == daemon.EventUser && event.OperationID == handles[0].ID {
+		if event.Type == daemon.EventUser && event.OperationID == handles[0].ID() {
 			matched = true
 			if event.Image == nil || event.Image.Width != 1 || event.Image.Height != 1 {
 				t.Fatalf("expired image metadata lost: %+v", event)
@@ -143,7 +143,7 @@ func TestTUIExpiredSubmissionsRemainUnresolvedAcrossNavigation(t *testing.T) {
 			driver.Update(tui.ChatStreamEventMsg{SessionID: session.ID, Generation: driver.App.Chat.Generation, Event: event})
 		}
 	}
-	if !matched || strings.Contains(driver.View(), handles[0].ID) {
+	if !matched || strings.Contains(driver.View(), handles[0].ID()) {
 		t.Fatal("durable user echo did not reconcile expired row")
 	}
 

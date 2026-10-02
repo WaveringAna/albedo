@@ -36,28 +36,17 @@ const (
 	previewDebounce  = 120 * time.Millisecond
 )
 
-// PreviewItem is one transcript excerpt from GET /sessions/{id}/preview.
-type PreviewItem struct {
-	Type    string `json:"type"`
-	Preview string `json:"preview"`
-}
-
-type SessionPreview struct {
-	Items []PreviewItem `json:"items"`
-	Total int           `json:"total"`
-}
-
 // SessionPreviewMsg carries a fetched preview back to the viewer.
 type SessionPreviewMsg struct {
 	Err     error
 	ID      string
-	Preview SessionPreview
+	Preview daemon.SessionPreview
 }
 
 type sessionPreviewTickMsg struct{ ID string }
 
 type cachedPreview struct {
-	SessionPreview
+	daemon.SessionPreview
 	stamp   int64 // LastAssistantAt when fetched; a newer reply invalidates it
 	loading bool
 	err     bool

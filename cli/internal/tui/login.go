@@ -7,8 +7,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -561,8 +559,11 @@ func (m LoginModel) fetchCatalogCmd(ext, endpoint string, gen int) tea.Cmd {
 		if m.Conn == nil {
 			return loginModelsLoadedMsg{Note: note, Gen: gen}
 		}
-		path := fmt.Sprintf("/models/%s?endpoint=%s", url.PathEscape(ext), url.QueryEscape(endpoint))
-		names, err := daemon.RequestOperation[[]string](context.Background(), m.Conn, daemon.Operation{Name: "fetch catalog", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
+		models, err := daemon.ListModels(context.Background(), m.Conn, ext, endpoint)
+		names := make([]string, len(models))
+		for i, model := range models {
+			names[i] = model.ID
+		}
 		if err != nil {
 			return loginModelsLoadedMsg{Err: err, Note: note, Gen: gen}
 		}

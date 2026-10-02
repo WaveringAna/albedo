@@ -59,9 +59,9 @@ func TestReopenedScreensRejectPreviousRequestReplies(t *testing.T) {
 			old := NewContextInspectorModel(nil, "s")
 			old, _ = old.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
 			current := NewContextInspectorModel(nil, "s")
-			current.Detail = &ContextDetail{Section: ContextSection{ID: "history"}}
-			current, _ = current.Update(contextSnapshotLoadedMsg{Gen: old.Generation, Err: replyErr, Snapshot: &ContextSnapshot{State: "ready"}})
-			current, _ = current.Update(contextPageLoadedMsg{Gen: old.Generation, Err: replyErr, SectionID: "history", Data: &ContextPage{Content: "obsolete"}})
+			current.Detail = &ContextDetail{Section: daemon.ContextSection{ID: "history"}}
+			current, _ = current.Update(contextSnapshotLoadedMsg{Gen: old.Generation, Err: replyErr, Snapshot: &daemon.ContextSnapshot{State: "ready"}})
+			current, _ = current.Update(contextPageLoadedMsg{Gen: old.Generation, Err: replyErr, SectionID: "history", Data: &daemon.ContextPage{Content: "obsolete"}})
 			if !current.Loading || current.Snapshot != nil || current.Error != "" || current.Detail.Value != nil || current.Detail.Error != "" {
 				t.Fatal("old reply changed reopened context")
 			}

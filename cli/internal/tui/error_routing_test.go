@@ -18,7 +18,7 @@ func TestCatalogFailureUsesErrorIdentity(t *testing.T) {
 		err  error
 		show bool
 	}{
-		{fmt.Errorf("catalog: %w", daemon.UpgradeNeeded("for commands")), true},
+		{fmt.Errorf("catalog: %w", &daemon.UpgradeRequiredError{Feature: "for commands"}), true},
 		{errors.New("unrelated service needs an update"), false},
 	} {
 		m := AppModel{}

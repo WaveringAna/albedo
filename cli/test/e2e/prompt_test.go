@@ -7,8 +7,6 @@ package e2e
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -111,9 +109,7 @@ func TestPromptTimeoutStopsTheTurn(t *testing.T) {
 	}
 	_, id, _ := strings.Cut(strings.TrimSpace(stderr), "the session is ")
 	for {
-		status, err := daemon.RequestOperation[struct {
-			Idle bool `json:"idle"`
-		}](context.Background(), conn(t), daemon.Operation{Name: "read session status", Method: http.MethodGet, Path: "/sessions/" + url.PathEscape(id) + "/status", Policy: daemon.ReadRecovery})
+		status, err := daemon.NewChatClient(conn(t), id).GetStatus(context.Background())
 		if err != nil {
 			t.Fatalf("status of %q: %v", id, err)
 		}

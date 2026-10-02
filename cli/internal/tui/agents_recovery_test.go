@@ -86,13 +86,13 @@ func TestAgentsRefreshDiscardsDirtyAndPreviousSubscriptionReplies(t *testing.T) 
 			case 5:
 				name = "FINAL_TREE"
 			}
-			_, _ = fmt.Fprintf(w, `{"root":"lead","nodes":[{"session":{"id":"lead","model":"test"},"name":%q,"depth":0,"running":false,"closed":false}]}`, name)
+			_, _ = fmt.Fprintf(w, `{"root":"lead","nodes":[{"session":{"id":"lead","model":"test","title":"","workspace":"","provider":"fixture","protocol":"responses","effort":null,"last_assistant_at":null},"parent":null,"address":null,"name":%q,"depth":0,"running":false,"closed":false}]}`, name)
 		case strings.HasSuffix(r.URL.Path, "/preview"):
 			preview := "OLD_SUBSCRIPTION_SEED"
 			if seeds.Add(1) > 1 {
 				preview = "FINAL_SEED"
 			}
-			_, _ = fmt.Fprintf(w, `{"items":[{"type":"assistant","preview":%q}]}`, preview)
+			_, _ = fmt.Fprintf(w, `{"total":1,"items":[{"type":"assistant","preview":%q}]}`, preview)
 		default:
 			t.Errorf("unexpected request: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)

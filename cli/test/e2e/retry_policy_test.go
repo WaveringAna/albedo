@@ -254,7 +254,7 @@ func TestLostCreationAcknowledgementCreatesOneSession(t *testing.T) {
 			if opened.Selected == nil || opened.Selected.ID != created.ID {
 				t.Fatal("lost creation receipt was not recovered")
 			}
-			sessions, err := daemon.RequestOperation[[]daemon.Session](context.Background(), conn(t), daemon.Operation{Name: "list sessions", Method: http.MethodGet, Path: "/sessions", Policy: daemon.ReadRecovery})
+			sessions, err := daemon.ListSessions(context.Background(), conn(t))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -354,11 +354,11 @@ func TestInvalidCommandAcknowledgementAddsOneWorkItem(t *testing.T) {
 			if driver.App.ActiveSession == nil || driver.App.ActiveSession.ID != id || !driver.App.Chat.Notices.HasError() {
 				t.Fatalf("command acknowledgement loss changed the active session or hid its error: %+v", driver.App.Chat.Notices)
 			}
-			listed, err := daemon.ExecutePageCommand(context.Background(), conn(t), id, map[string]any{"name": "/work", "args": map[string]string{}})
+			listed, err := daemon.LoadPage(context.Background(), conn(t), id, "/work")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(listed.Page.Rows) != 1 || listed.Page.Rows[0].Text != "one uncertain work item" {
+			if len(listed.Rows) != 1 || listed.Rows[0].Text != "one uncertain work item" {
 				t.Fatalf("ledger after lost acknowledgement: %+v", listed)
 			}
 		})
@@ -373,7 +373,7 @@ func TestCancellationAfterAdmissionPreservesUncertainCause(t *testing.T) {
 	result := make(chan error, 1)
 	workspace := t.TempDir()
 	go func() {
-		_, err := daemon.CreateSession(ctx, proxy.connection, map[string]string{"workspace": workspace, "provider": profile})
+		_, err := daemon.CreateSession(ctx, proxy.connection, daemon.CreateSessionRequest{Workspace: workspace, Provider: profile})
 		result <- err
 	}()
 	select {
@@ -432,14 +432,14 @@ func TestCoreAuthenticationRefusalRecoversBeforeCreation(t *testing.T) {
 	})
 	t.Cleanup(stale.HTTPClient().CloseIdleConnections)
 	workspace := t.TempDir()
-	created, err := daemon.CreateSession(context.Background(), stale, map[string]string{"workspace": workspace, "provider": profile})
+	created, err := daemon.CreateSession(context.Background(), stale, daemon.CreateSessionRequest{Workspace: workspace, Provider: profile})
 	if err != nil || created.ID == "" {
 		t.Fatalf("creation after pre-admission refusal: %+v, %v", created, err)
 	}
 	if stale.Token() != conn(t).Token() {
 		t.Fatal("recovery did not update credentials")
 	}
-	sessions, err := daemon.RequestOperation[[]daemon.Session](context.Background(), conn(t), daemon.Operation{Name: "list sessions", Method: http.MethodGet, Path: "/sessions", Policy: daemon.ReadRecovery})
+	sessions, err := daemon.ListSessions(context.Background(), conn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +456,7 @@ func TestCoreAuthenticationRefusalRecoversBeforeCreation(t *testing.T) {
 
 func newFaultSession(t *testing.T, profile string) string {
 	t.Helper()
-	created, err := daemon.CreateSession(t.Context(), conn(t), map[string]string{"workspace": t.TempDir(), "provider": profile})
+	created, err := daemon.CreateSession(t.Context(), conn(t), daemon.CreateSessionRequest{Workspace: t.TempDir(), Provider: profile})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +466,7 @@ func newFaultSession(t *testing.T, profile string) string {
 func TestWebhookCreationMissingGeneratedSecretStopsAfterOneEffect(t *testing.T) {
 	profile := providerRoute(t, echoReply)
 	id := newFaultSession(t, profile)
-	if _, err := daemon.SelectExtension(t.Context(), conn(t), id, map[string]any{"name": "webhooks", "enabled": true, "scope": "session"}); err != nil {
+	if _, err := daemon.SelectExtension(t.Context(), conn(t), id, daemon.ExtensionSelectionRequest{Name: "webhooks", Enabled: new(true), Scope: "session"}); err != nil {
 		t.Fatal(err)
 	}
 	path := "/sessions/" + id + "/commands"
@@ -529,17 +529,17 @@ func TestWebhookCreationMissingGeneratedSecretStopsAfterOneEffect(t *testing.T) 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, err := daemon.ExecuteCommand(context.Background(), conn(t), id, map[string]any{"name": "/webhooks", "args": map[string]string{"action": "delete", "details": original.Result.Hook.ID}})
+		_, err := daemon.RunWebhook(context.Background(), conn(t), id, daemon.WebhookRequest{Action: daemon.WebhookDelete, HookID: original.Result.Hook.ID})
 		if err != nil {
 			t.Error(err)
 		}
 	})
-	listed, err := daemon.ExecuteCommand(t.Context(), conn(t), id, map[string]any{"name": "/webhooks", "args": map[string]string{"action": "list"}})
+	listed, err := daemon.RunWebhook(t.Context(), conn(t), id, daemon.WebhookRequest{Action: daemon.WebhookList})
 	if err != nil {
 		t.Fatal(err)
 	}
 	count := 0
-	for _, entry := range listed.Webhooks.Hooks {
+	for _, entry := range listed.Hooks {
 		if entry.Hook.Session == id && entry.Hook.Name == "missing-secret" {
 			count++
 			if entry.Hook.Header != "x-albedo-signature" {
@@ -556,7 +556,7 @@ func TestUnknownReceiptReplaysOriginalCreationOnce(t *testing.T) {
 	providerRoute(t, echoReply)
 	workspace := t.TempDir()
 	proxy := cutAcknowledgement(t, "/sessions", hideReceiptAcknowledgement)
-	handle, err := daemon.NewCreation(map[string]string{"workspace": workspace})
+	handle, err := daemon.NewCreation(daemon.CreateSessionRequest{Workspace: workspace})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +654,7 @@ func TestQueuedPromptDeadlineCancelsOnlyItsOperation(t *testing.T) {
 	}
 	matched := 0
 	for _, event := range history.Events {
-		if event.Type == daemon.EventUser && event.OperationID == uncertain.Handle.ID {
+		if event.Type == daemon.EventUser && event.OperationID == uncertain.Handle.ID() {
 			matched++
 		}
 	}

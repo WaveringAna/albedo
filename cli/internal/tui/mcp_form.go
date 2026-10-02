@@ -165,9 +165,9 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 		}
 		server.URL, server.Command, server.Args, server.CWD = raw, "", nil, ""
 		if token := f.value(fieldToken); token == "-" {
-			secrets["bearerToken"] = nil
+			secrets.RemoveBearerToken = true
 		} else if token != "" {
-			secrets["bearerToken"] = token
+			secrets.BearerToken = &token
 		}
 		header, value := f.value(fieldHeader), f.value(fieldValue)
 		switch {
@@ -175,13 +175,13 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 		case !mcpHeaderName.MatchString(header):
 			return mcpSubmission{}, errors.New("enter a valid HTTP header name")
 		case value == "-":
-			secrets["headers"] = map[string]any{header: nil}
+			secrets.Headers = map[string]*string{header: nil}
 		case value == "":
 			return mcpSubmission{}, fmt.Errorf("enter a value for %s, or - to remove it", header)
 		default:
-			secrets["headers"] = map[string]any{header: value}
+			secrets.Headers = map[string]*string{header: &value}
 		}
-		secrets["env"] = nil
+		secrets.ClearEnv = true
 	} else {
 		argv, err := splitCommand(f.Inputs[fieldCommand].Value())
 		if err != nil || len(argv) == 0 {
@@ -192,25 +192,25 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 		if err != nil {
 			return mcpSubmission{}, fmt.Errorf("check environment variables: %w", err)
 		}
-		var env map[string]any
+		var env map[string]*string
 		for _, entry := range entries {
 			key, value, ok := strings.Cut(entry, "=")
 			if !ok || !mcpEnvName.MatchString(key) {
 				return mcpSubmission{}, errors.New("enter environment variables as KEY=value pairs separated by spaces")
 			}
 			if env == nil {
-				env = map[string]any{}
+				env = map[string]*string{}
 			}
 			if value == "-" {
 				env[key] = nil
 			} else {
-				env[key] = value
+				env[key] = &value
 			}
 		}
 		if env != nil {
-			secrets["env"] = env
+			secrets.Env = env
 		}
-		secrets["bearerToken"], secrets["headers"] = nil, nil
+		secrets.RemoveBearerToken, secrets.ClearHeaders = true, true
 	}
 	return mcpSubmission{Name: name, Server: server, Secrets: secrets}, nil
 }

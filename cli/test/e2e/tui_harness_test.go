@@ -6,7 +6,6 @@ package e2e
 
 import (
 	"context"
-	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -54,7 +53,7 @@ func driveTUIWithConnection(t *testing.T, session *daemon.Session, connection *d
 
 func daemonSessions(t *testing.T) []daemon.Session {
 	t.Helper()
-	sessions, err := daemon.RequestOperation[[]daemon.Session](context.Background(), conn(t), daemon.Operation{Name: "list sessions", Method: http.MethodGet, Path: "/sessions", Policy: daemon.ReadRecovery})
+	sessions, err := daemon.ListSessions(context.Background(), conn(t))
 	if err != nil {
 		t.Fatalf("list sessions: %v", err)
 	}

@@ -152,7 +152,7 @@ func TestInvalidCoveredMutationRetainsHandleAfterOneReplay(t *testing.T) {
 		status int
 	}{{"{}", 202}, {`{"ok":false,"queued":false}`, 202}, {`{"ok":true}`, 202}, {`{"ok":true,"queued":null}`, 202}, {`{"ok":true,"queued":false}`, 200}, {"", 204}, {"{", 202}, {`{"ok":true,"queued":"false"}`, 202}} {
 		conn, transport := mutationConnection(test.body, test.status)
-		_, err := Submit(context.Background(), conn, "s", map[string]any{"content": "hello"})
+		_, err := Submit(context.Background(), conn, "s", SubmissionRequest{Content: new("hello")})
 		uncertainty, ok := errors.AsType[*UncertainOutcomeError](err)
 		if !ok {
 			t.Fatalf("missing uncertainty for %s/%d: %v", test.body, test.status, err)
@@ -167,12 +167,12 @@ func TestInvalidCoveredMutationRetainsHandleAfterOneReplay(t *testing.T) {
 		if transport.calls != 4 {
 			t.Fatalf("want two posts and two receipt queries, got %d requests", transport.calls)
 		}
-		if uncertainty.Handle == nil || uncertainty.Handle.ID == "" {
+		if uncertainty.Handle == nil || uncertainty.Handle.ID() == "" {
 			t.Fatal("lost operation handle")
 		}
 	}
 	conn, transport := mutationConnection(`{"code":"invalid_submission","error":"bad"}`, 400)
-	_, err := Submit(context.Background(), conn, "s", map[string]any{})
+	_, err := Submit(context.Background(), conn, "s", SubmissionRequest{})
 	if api, ok := errors.AsType[*APIError](err); !ok || api.Code != "invalid_submission" {
 		t.Fatalf("non-2xx error changed: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestInvalidCoveredMutationRetainsHandleAfterOneReplay(t *testing.T) {
 func TestCommandAlternativesAndOpaqueResults(t *testing.T) {
 	for _, result := range []string{"null", "false", "42", `"text"`, "[]", `{"message":42}`, "{}", "9007199254740993", "1.0000000000000001", "1e400", `{"nested":[9007199254740993,1.0000000000000001]}`} {
 		conn, transport := mutationConnection(`{"result":`+result+`}`, 200)
-		got, err := ExecuteCommand(context.Background(), conn, "s", map[string]any{"name": "/extension"})
+		got, err := ExecuteCommand(context.Background(), conn, "s", CommandRequest{Name: "/extension"})
 		if err != nil || got.Submitted || string(got.Result) != result {
 			t.Fatalf("opaque %s: %+v %v", result, got, err)
 		}
@@ -330,9 +330,9 @@ func TestInterpretedCommandContracts(t *testing.T) {
 		conn, transport := mutationConnection(`{"result":`+test.result+`}`, 200)
 		var err error
 		if test.name == "/page" {
-			_, err = ExecutePageCommand(context.Background(), conn, "s", map[string]any{"name": test.name})
+			_, err = LoadPage(context.Background(), conn, "s", test.name)
 		} else {
-			_, err = ExecuteCommand(context.Background(), conn, "s", map[string]any{"name": test.name})
+			_, err = ExecuteCommand(context.Background(), conn, "s", CommandRequest{Name: test.name})
 		}
 		if _, ok := errors.AsType[*ProtocolError](err); !ok {
 			t.Errorf("accepted interpreted %s result: %v", test.name, err)
@@ -341,7 +341,7 @@ func TestInterpretedCommandContracts(t *testing.T) {
 			t.Fatal("replayed interpreted command")
 		}
 	}
-	for _, body := range []map[string]any{{"name": "/effort", "args": map[string]string{"level": "high"}}, {"name": "/effort", "arguments": "high"}} {
+	for _, body := range []CommandRequest{{Name: "/effort", Args: &CommandArgs{Level: "high"}}, {Name: "/effort", Arguments: "high"}} {
 		conn, _ := mutationConnection(`{"result":{"effort":"high","message":"set"}}`, 200)
 		result, err := ExecuteCommand(context.Background(), conn, "s", body)
 		if err != nil || result.Effort == nil || result.Effort.Effort != "high" {
@@ -349,7 +349,7 @@ func TestInterpretedCommandContracts(t *testing.T) {
 		}
 	}
 	conn, _ := mutationConnection(`{"result":{"message":"enabled"}}`, 200)
-	result, err := ExecuteCommand(context.Background(), conn, "s", map[string]any{"name": "/webhooks", "arguments": "agent_on"})
+	result, err := ExecuteCommand(context.Background(), conn, "s", CommandRequest{Name: "/webhooks", Arguments: "agent_on"})
 	if err != nil || result.Webhooks == nil || result.Webhooks.Message != "enabled" || result.Message != "enabled" {
 		t.Fatalf("webhook raw arguments rejected: %+v %v", result, err)
 	}

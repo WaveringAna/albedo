@@ -28,7 +28,7 @@ func (s *Service) RunPrompt(ctx context.Context, options PromptOptions) (PromptR
 	if err != nil {
 		return PromptResult{}, err
 	}
-	if capabilityErr := daemon.CheckCapability(ctx, conn, "submission_cancellation", "prompt submission cancellation"); capabilityErr != nil {
+	if capabilityErr := daemon.CheckPromptSupport(ctx, conn); capabilityErr != nil {
 		return PromptResult{}, capabilityErr
 	}
 	var choice modelChoice
@@ -47,9 +47,9 @@ func (s *Service) RunPrompt(ctx context.Context, options PromptOptions) (PromptR
 		}
 	}
 	if sessionID == "" {
-		create := map[string]string{"workspace": cwd}
+		create := daemon.CreateSessionRequest{Workspace: cwd}
 		if model != "" {
-			create["provider"], create["model"] = choice.provider, choice.model
+			create.Provider, create.Model = choice.provider, choice.model
 		}
 		session, createErr := daemon.CreateSession(ctx, conn, create)
 		if createErr != nil {
@@ -86,7 +86,7 @@ func awaitReply(ctx context.Context, client *daemon.ChatClient, prompt string) (
 	if err != nil {
 		return "", err
 	}
-	submissionID := handle.ID
+	submissionID := handle.ID()
 	defer func() {
 		if failure != nil && ctx.Err() != nil {
 			if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](failure); !uncertain {

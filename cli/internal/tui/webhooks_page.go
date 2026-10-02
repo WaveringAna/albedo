@@ -6,8 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -43,6 +41,7 @@ type webhookEntry struct {
 	ID       string
 	Session  string
 	Name     string
+	Address  string
 	URL      string
 	Header   string
 	Prefix   string
@@ -83,35 +82,23 @@ func NewWebhooksPageModel(conn *daemon.Connection, sessionID string) WebhooksPag
 
 func (m WebhooksPageModel) Init() tea.Cmd { return m.loadCmd(m.Generation) }
 
-// run calls /webhooks with an action and answers its result object.
-func (m WebhooksPageModel) run(action, details string) (*daemon.WebhookResult, error) {
-	if m.Conn == nil {
-		return nil, errors.New("daemon connection unavailable")
-	}
-	body := map[string]any{"name": "/webhooks", "args": map[string]string{"action": action, "details": details}}
-	res, err := daemon.ExecuteCommand(context.Background(), m.Conn, m.SessionID, body)
-	if err != nil {
-		return nil, err
-	}
-	return res.Webhooks, nil
-}
-
 func (m WebhooksPageModel) loadCmd(gen int) tea.Cmd {
 	return func() tea.Msg {
 		if m.Conn == nil {
 			return webhooksLoadedMsg{Gen: gen, Err: errors.New("daemon connection unavailable")}
 		}
 		mounted := true
-		path := fmt.Sprintf("/sessions/%s/extensions", url.PathEscape(m.SessionID))
-		if extensions, err := daemon.RequestOperation[[]ExtensionItem](context.Background(), m.Conn, daemon.Operation{Name: "load", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery}); err == nil {
-			if i := slices.IndexFunc(extensions, func(ext ExtensionItem) bool { return ext.Name == "webhooks" }); i >= 0 {
-				mounted = extensions[i].GlobalEnabled
-				if !extensions[i].Enabled {
-					return webhooksLoadedMsg{Gen: gen, Err: errors.New("webhooks are off for this session; turn them on in /extensions")}
-				}
+		extensions, err := daemon.ListExtensions(context.Background(), m.Conn, m.SessionID)
+		if err != nil {
+			return webhooksLoadedMsg{Gen: gen, Err: err}
+		}
+		if i := slices.IndexFunc(extensions, func(ext ExtensionItem) bool { return ext.Name == "webhooks" }); i >= 0 {
+			mounted = extensions[i].GlobalEnabled
+			if !extensions[i].Enabled {
+				return webhooksLoadedMsg{Gen: gen, Err: errors.New("webhooks are off for this session; turn them on in /extensions")}
 			}
 		}
-		all, err := daemon.RequestOperation[[]daemon.Session](context.Background(), m.Conn, daemon.Operation{Name: "load", Method: http.MethodGet, Path: "/sessions", Body: nil, Policy: daemon.ReadRecovery})
+		all, err := daemon.ListSessions(context.Background(), m.Conn)
 		if err != nil {
 			return webhooksLoadedMsg{Gen: gen, Err: err}
 		}
@@ -123,7 +110,7 @@ func (m WebhooksPageModel) loadCmd(gen int) tea.Cmd {
 				sessions = append(sessions, s)
 			}
 		}
-		res, err := m.run("list", "")
+		res, err := daemon.RunWebhook(context.Background(), m.Conn, m.SessionID, daemon.WebhookRequest{Action: daemon.WebhookList})
 		if err != nil {
 			return webhooksLoadedMsg{Gen: gen, Err: err}
 		}
@@ -136,7 +123,7 @@ func (m WebhooksPageModel) loadCmd(gen int) tea.Cmd {
 				deferred = *entry.Deferred
 			}
 			hooks[i] = webhookEntry{
-				ID: hook.ID, Session: hook.Session, Name: hook.Name, URL: hook.URL,
+				ID: hook.ID, Session: hook.Session, Name: hook.Name, URL: hook.URL, Address: hook.Address,
 				Header: hook.Header, Prefix: hook.Prefix, Enabled: hook.Enabled,
 				Queued: entry.Queued, Deferred: deferred,
 			}
@@ -153,17 +140,17 @@ func (m WebhooksPageModel) loadCmd(gen int) tea.Cmd {
 	}
 }
 
-// newHookID stands in for the id of a hook created by an earlier step.
-const newHookID = "{id}"
-
 // save runs steps in order and stops at the first failure; a generated secret
 // from any step is carried back to be shown once.
-func (m WebhooksPageModel) save(gen int, notice string, steps ...[2]string) tea.Cmd {
+func (m WebhooksPageModel) save(gen int, notice string, steps ...daemon.WebhookRequest) tea.Cmd {
 	return func() tea.Msg {
 		var reveal *webhookSecret
 		created := ""
 		for _, step := range steps {
-			res, err := m.run(step[0], strings.Replace(step[1], newHookID, created, 1))
+			if step.HookID == "" {
+				step.HookID = created
+			}
+			res, err := daemon.RunWebhook(context.Background(), m.Conn, m.SessionID, step)
 			if err != nil {
 				// The hook exists with this secret even though a later step
 				// failed, so it still has to be shown.
@@ -205,16 +192,7 @@ func sessionLabel(sessions []daemon.Session, id, current string) string {
 	return strings.Join(parts, " · ")
 }
 
-// address is where a sender posts: the daemon's local address, which a
-// reverse proxy can expose.
-func (m WebhooksPageModel) address(hook webhookEntry) string {
-	if m.Conn == nil || m.Conn.Port() == 0 {
-		return hook.URL
-	}
-	return fmt.Sprintf("http://127.0.0.1:%d%s", m.Conn.Port(), hook.URL)
-}
-
-func (m WebhooksPageModel) begin(notice string, steps ...[2]string) (WebhooksPageModel, tea.Cmd) {
+func (m WebhooksPageModel) begin(notice string, steps ...daemon.WebhookRequest) (WebhooksPageModel, tea.Cmd) {
 	m.Error, m.Notice = "", ""
 	m.Saving = true
 	m.Generation = nextPageGeneration()
@@ -297,7 +275,7 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 			if action == "delete" {
 				note = "Deleted " + hook.Name
 			}
-			return m.begin(note, [2]string{action, hook.ID})
+			return m.begin(note, daemon.WebhookRequest{Action: daemon.WebhookAction(action), HookID: hook.ID})
 		}
 		if key == "esc" || key == "ctrl+c" {
 			return m, func() tea.Msg { return WebhooksPageDoneMsg{} }
@@ -330,17 +308,17 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 				if hook.Enabled {
 					action, note = "disable", hook.Name+" disabled. New deliveries will receive a 404 response."
 				}
-				return m.begin(note, [2]string{action, hook.ID})
+				return m.begin(note, daemon.WebhookRequest{Action: daemon.WebhookAction(action), HookID: hook.ID})
 			}
 		case "n":
 			m.Error, m.Notice = "", ""
 			m.Form = newWebhookForm(nil, m.Sessions, m.SessionID)
 		case "a":
-			action, note := "agent_on", "This session’s agent can now manage its own webhooks."
+			action, note := daemon.WebhookAgentEnable, "This session’s agent can now manage its own webhooks."
 			if m.AgentManagement {
-				action, note = "agent_off", "This session’s agent can no longer manage its webhooks."
+				action, note = daemon.WebhookAgentDisable, "This session’s agent can no longer manage its webhooks."
 			}
-			return m.begin(note, [2]string{action, ""})
+			return m.begin(note, daemon.WebhookRequest{Action: action})
 		case "d", "k":
 			if hook != nil {
 				if key == "d" {
@@ -352,7 +330,7 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 		case "y":
 			if hook != nil {
 				m.Error, m.Notice = "", "URL copied."
-				return m, CopyText(m.address(*hook))
+				return m, CopyText(cmp.Or(hook.Address, hook.URL))
 			}
 		}
 	case tea.PasteMsg:
@@ -472,7 +450,7 @@ func (m WebhooksPageModel) detail(hook webhookEntry, width int) []string {
 	}
 	rows := []string{
 		field("wakes", sessionLabel(m.Sessions, hook.Session, m.SessionID)),
-		field("url", "POST "+m.address(hook)),
+		field("url", "POST "+cmp.Or(hook.Address, hook.URL)),
 		field("signature", hook.Header+": "+hook.Prefix+DefaultStyles.Faint.Render("<hex HMAC-SHA256 of the body>")),
 	}
 	inbox := DefaultStyles.Faint.Render("empty")
@@ -597,7 +575,7 @@ func (f *webhookForm) update(msg tea.Msg) (submit bool, cmd tea.Cmd) {
 
 // steps turns the form into /webhooks calls, after checking what the daemon
 // would otherwise reject one step in.
-func (f *webhookForm) steps() ([][2]string, string, error) {
+func (f *webhookForm) steps() ([]daemon.WebhookRequest, string, error) {
 	name, secret, header, prefix := f.value(hookFieldName), f.value(hookFieldSecret), f.value(hookFieldHeader), f.value(hookFieldPrefix)
 	switch {
 	case f.Editing == nil && f.Chosen == "":
@@ -617,22 +595,18 @@ func (f *webhookForm) steps() ([][2]string, string, error) {
 		return nil, "", errors.New("use at most 32 characters without spaces for the signature prefix")
 	}
 	if f.Editing == nil {
-		create := f.Chosen + " " + name
-		if secret != "" {
-			create += " " + secret
-		}
-		steps := [][2]string{{"create_in", create}}
+		steps := []daemon.WebhookRequest{{Action: daemon.WebhookCreate, SessionID: f.Chosen, Name: name, Secret: secret}}
 		if !strings.EqualFold(header, defaultSignatureHeader) || prefix != defaultSignaturePrefix {
-			steps = append(steps, [2]string{"signature", newHookID + " " + header + " " + prefix})
+			steps = append(steps, daemon.WebhookRequest{Action: daemon.WebhookSignature, Header: header, Prefix: prefix})
 		}
 		return steps, "added " + name + " · wakes " + sessionLabel(f.Sessions, f.Chosen, f.Current), nil
 	}
-	var steps [][2]string
+	var steps []daemon.WebhookRequest
 	if !strings.EqualFold(header, f.Editing.Header) || prefix != f.Editing.Prefix {
-		steps = append(steps, [2]string{"signature", f.Editing.ID + " " + header + " " + prefix})
+		steps = append(steps, daemon.WebhookRequest{Action: daemon.WebhookSignature, HookID: f.Editing.ID, Header: header, Prefix: prefix})
 	}
 	if secret != "" {
-		steps = append(steps, [2]string{"rotate_with_secret", f.Editing.ID + " " + secret})
+		steps = append(steps, daemon.WebhookRequest{Action: daemon.WebhookRotate, HookID: f.Editing.ID, Secret: secret})
 	}
 	return steps, "saved " + f.Editing.Name, nil
 }

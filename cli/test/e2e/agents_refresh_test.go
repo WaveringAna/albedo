@@ -35,7 +35,7 @@ func TestTUIAgentsOverflowRefreshesMembershipAndPreviews(t *testing.T) {
 	root := daemonSession(t, newSession(t, t.TempDir()))
 	create := func(name string) daemon.Session {
 		t.Helper()
-		child, err := daemon.CreateChild(t.Context(), conn(t), root.ID, map[string]any{"name": name, "task": "finish child setup"})
+		child, err := daemon.CreateChild(t.Context(), conn(t), root.ID, daemon.ChildRequest{Name: name, Task: "finish child setup"})
 		if err != nil {
 			t.Fatal(err)
 		}

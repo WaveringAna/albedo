@@ -38,7 +38,7 @@ func agentsFixture(t *testing.T) AgentsViewModel {
 	m.SetSize(120, 30)
 	lead := "lead"
 	coder := "coder"
-	m, _ = m.Update(agentsSnapshotMsg{Gen: 1, Root: "lead", Nodes: []agentWire{
+	m, _ = m.Update(agentsSnapshotMsg{Gen: 1, Root: "lead", Nodes: []daemon.AgentNode{
 		{Session: daemon.Session{ID: "lead", Title: "lead", Model: "gpt-6-luna"}, Name: "lead", Running: true},
 		{Session: daemon.Session{ID: "scout", Model: "gpt-6-luna"}, Parent: &lead, Name: "scout", Depth: 1},
 		{Session: daemon.Session{ID: "coder", Model: "gpt-6-luna"}, Parent: &lead, Name: "coder", Depth: 1, Running: true},
@@ -143,7 +143,7 @@ func TestFailedSeedRetriesOnTheNextSelection(t *testing.T) {
 			http.Error(w, `{"error":"history is gone"}`, http.StatusInternalServerError)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]any{"total": 2, "items": []map[string]string{
 			{"type": "user", "preview": "fan out three scouts"},
 			{"type": "assistant", "preview": "sent them off"},
 		}})

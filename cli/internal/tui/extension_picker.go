@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"slices"
 	"strings"
 
@@ -62,9 +61,7 @@ func (m ExtensionPickerModel) loadExtensionsCmd(gen int) tea.Cmd {
 		if m.Conn == nil {
 			return extensionsLoadedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-
-		path := fmt.Sprintf("/sessions/%s/extensions", m.SessionID)
-		items, err := daemon.RequestOperation[[]ExtensionItem](context.Background(), m.Conn, daemon.Operation{Name: "load extensions", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
+		items, err := daemon.ListExtensions(context.Background(), m.Conn, m.SessionID)
 		return extensionsLoadedMsg{Extensions: items, Err: err, Gen: gen}
 	}
 }
@@ -76,9 +73,9 @@ func (m ExtensionPickerModel) changeExtensionCmd(name, scope string, enabled boo
 		if m.Conn == nil {
 			return extensionToggledMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		body := map[string]any{"name": name, "scope": scope}
+		body := daemon.ExtensionSelectionRequest{Name: name, Scope: scope}
 		if scope != "inherit" {
-			body["enabled"] = enabled
+			body.Enabled = &enabled
 		}
 		updated, err := daemon.SelectExtension(context.Background(), m.Conn, m.SessionID, body)
 		return extensionToggledMsg{Extensions: updated, Err: err, Gen: gen}

@@ -147,7 +147,7 @@ func TestRefreshGateCancellationAndSuccessfulAttachment(t *testing.T) {
 	if conn.Version() != ProtocolVersion || conn.Build() != "verified-build" {
 		t.Fatalf("attachment trusted unverified discovery: %+v", conn.Snapshot())
 	}
-	if _, err := RequestOperation[any](t.Context(), conn, Operation{Name: "read", Method: http.MethodGet, Path: "/read", Policy: ReadRecovery}); err != nil {
+	if _, err := requestBytes(t.Context(), conn, operation{Name: "read", Method: http.MethodGet, Path: "/read", Policy: readRecovery}, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 64 * 1024}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -174,7 +174,7 @@ func TestOperationSurfacesRefreshFailureWithoutReplaying(t *testing.T) {
 				}
 				return ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "new"}, nil
 			})
-			_, err := RequestOperation[any](t.Context(), conn, Operation{Name: "change", Method: http.MethodPost, Path: "/mutation", Policy: AuthRecovery})
+			_, err := requestBytes(t.Context(), conn, operation{Name: "change", Method: http.MethodPost, Path: "/mutation", Policy: authRecovery}, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 64 * 1024})
 			if malformed {
 				if _, ok := errors.AsType[*ProtocolError](err); !ok {
 					t.Fatalf("health failure hidden: %v", err)

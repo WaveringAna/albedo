@@ -29,7 +29,7 @@ func TestUncertainSubmissionRetainsPendingUntilStreamEcho(t *testing.T) {
 
 			m, cmd := m.Update(ChatTurnSentMsg{
 				SessionID: "s", Generation: m.Generation, Prompt: "check this", Image: image,
-				Handle: handle, OperationID: handle.ID,
+				Handle: handle, OperationID: handle.ID(),
 				Err: fmt.Errorf("send: %w", &daemon.UncertainOutcomeError{Operation: "submit", Cause: io.ErrUnexpectedEOF, Handle: handle}),
 			})
 			if cmd == nil || m.isSending || m.interruptDeferred {
@@ -85,7 +85,7 @@ func TestStreamEchoBeforeUncertainAcknowledgementDoesNotRestoreSubmission(t *tes
 
 	m, cmd := m.Update(ChatTurnSentMsg{
 		SessionID: "s", Generation: m.Generation, Prompt: "already accepted", Image: image,
-		Handle: handle, OperationID: handle.ID,
+		Handle: handle, OperationID: handle.ID(),
 		Err: &daemon.UncertainOutcomeError{Operation: "submit", Cause: io.EOF, Handle: handle},
 	})
 	if cmd != nil || m.isSending || len(m.pendingUsers) != 0 || m.TextArea.Value() != "" || m.AttachedImage != nil {
@@ -227,7 +227,7 @@ func TestScheduledReceiptPollStopsAfterExpiry(t *testing.T) {
 				t.Fatal("expiry scheduled another receipt poll")
 			}
 			m, command = m.Update(tick)
-			if command != nil || m.operationRecoverable(handle.ID) {
+			if command != nil || m.operationRecoverable(handle.ID()) {
 				t.Fatal("already scheduled tick restarted expired receipt recovery")
 			}
 			if prompt != "." && (len(m.pendingUsers) != 1 || m.pendingUsers[0].Handle != handle || m.pendingUsers[0].Image != image) {

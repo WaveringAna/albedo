@@ -1,119 +1,139 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"regexp"
-	"strings"
+	"net/http"
+	"time"
 )
 
-var (
-	commandTokenPattern = regexp.MustCompile(`^/[^\s]+`)
-	commandExactPattern = regexp.MustCompile(`^/[^\s]+$`)
-	methodPattern       = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-)
-
-type CommandArgument struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Choices     []string `json:"choices,omitempty"`
-	Required    bool     `json:"required"`
+type CommandResult struct {
+	Model     *ModelSelection
+	Effort    *EffortResult
+	Page      *PageDocument
+	Webhooks  *WebhookResult
+	Message   string
+	Result    json.RawMessage
+	Submitted bool
 }
 
-type SessionCommand struct {
-	Page          *bool             `json:"page,omitempty"`
-	Name          string            `json:"name"`
-	Description   string            `json:"description"`
-	Method        string            `json:"method"`
-	Arguments     []CommandArgument `json:"arguments"`
-	ModelCallable bool              `json:"modelCallable"`
-	Skill         bool              `json:"skill"`
-	UserTurn      bool              `json:"userTurn"`
+func decodeCommand(data []byte, status int) (CommandResult, error) {
+	var wire struct {
+		Result    json.RawMessage `json:"result"`
+		Submitted json.RawMessage `json:"submitted"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return CommandResult{}, err
+	}
+	if status == 200 {
+		if wire.Result == nil {
+			return CommandResult{}, fieldError("result")
+		}
+		if wire.Submitted != nil {
+			return CommandResult{}, fieldError("submitted")
+		}
+		return CommandResult{Result: wire.Result}, nil
+	}
+	if wire.Result != nil {
+		return CommandResult{}, fieldError("result")
+	}
+	var submitted bool
+	if wire.Submitted == nil || json.Unmarshal(wire.Submitted, &submitted) != nil || !submitted {
+		return CommandResult{}, fieldError("submitted")
+	}
+	return CommandResult{Submitted: true}, nil
 }
 
-type CommandMenuItem struct {
-	Name        string
-	Description string
+func ExecuteCommand(ctx context.Context, conn *Connection, id string, body CommandRequest) (CommandResult, error) {
+	return executeCommand(ctx, conn, id, body, false)
 }
 
-// CommandMenuItems flattens command catalog into runnable menu entries.
-func CommandMenuItems(catalog []SessionCommand) []CommandMenuItem {
-	var items []CommandMenuItem
-	for _, cmd := range catalog {
-		if len(cmd.Arguments) > 0 && cmd.Arguments[0].Required && len(cmd.Arguments[0].Choices) > 0 {
-			for _, choice := range cmd.Arguments[0].Choices {
-				items = append(items, CommandMenuItem{
-					Name:        fmt.Sprintf("%s %s", cmd.Name, choice),
-					Description: cmd.Arguments[0].Description,
-				})
+func executeCommand(ctx context.Context, conn *Connection, id string, body CommandRequest, page bool) (CommandResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	var result CommandResult
+	name := body.Name
+
+	err := executeMutation(ctx, conn, operation{Name: "execute command " + name, Method: http.MethodPost, Path: sessionPath(id, "/commands"), Body: body, Policy: authRecovery}, []int{200, 202}, func(data []byte, status int) error {
+		var err error
+		result, err = decodeCommand(data, status)
+		if err != nil {
+			return err
+		}
+		if page || name == "/model" || name == "/effort" || name == "/webhooks" {
+			if result.Submitted {
+				return fieldError("result")
 			}
-		} else {
-			items = append(items, CommandMenuItem{
-				Name:        cmd.Name,
-				Description: cmd.Description,
-			})
+			payload := result.Result
+			switch {
+			case page:
+				result.Page, err = decodePageDocument(payload)
+				return err
+			case name == "/model":
+				model, err := decodeModelSelection(payload)
+				if err != nil {
+					return err
+				}
+				result.Model = &model
+				return nil
+			case name == "/effort":
+				result.Effort, err = decodeEffort(payload, body)
+				return err
+			case name == "/webhooks":
+				result.Webhooks, err = decodeWebhookResult(payload, body)
+				if err != nil {
+					return err
+				}
+				result.Message = result.Webhooks.Message
+				return nil
+			}
 		}
-	}
-	return items
+		if len(result.Result) > 0 && result.Result[0] == '{' {
+			if fields, err := object(result.Result); err == nil {
+				var message string
+				if raw := fields["message"]; raw != nil && json.Unmarshal(raw, &message) == nil {
+					result.Message = message
+				}
+			}
+		}
+		return nil
+	})
+	return result, err
 }
 
-func isValidCommand(cmd SessionCommand) bool {
-	if !commandExactPattern.MatchString(cmd.Name) {
-		return false
+func ListSessionCommands(ctx context.Context, conn *Connection, session string) ([]SessionCommand, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if !methodPattern.MatchString(cmd.Method) {
-		return false
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	var result []SessionCommand
+	if err := checkCapability(ctx, conn, "session_commands", "for the command menu"); err != nil {
+		return result, err
 	}
-	for _, arg := range cmd.Arguments {
-		if arg.Name == "" || arg.Description == "" {
-			return false
-		}
-	}
-	return true
+	err := executeRead(ctx, conn, operation{Name: "list session commands", Method: http.MethodGet, Path: sessionPath(session, "/commands"), Policy: readRecovery}, func(data []byte) error {
+		var err error
+		result, err = parseCommandCatalog(data)
+		return err
+	})
+	return result, err
 }
 
-// ParseCommandCatalog validates command catalog JSON from daemon.
-func ParseCommandCatalog(data []byte) ([]SessionCommand, error) {
-	var rawList []json.RawMessage
-	if err := json.Unmarshal(data, &rawList); err != nil {
-		return nil, fmt.Errorf("decode command catalog: %w", err)
-	}
-
-	commands := make([]SessionCommand, 0, len(rawList))
-	for _, raw := range rawList {
-		var cmd SessionCommand
-		if err := json.Unmarshal(raw, &cmd); err != nil || !isValidCommand(cmd) {
-			continue
-		}
-		commands = append(commands, cmd)
-	}
-
-	if len(rawList) > 0 && len(commands) == 0 {
-		return nil, errors.New("cannot read command details returned by Albedo")
-	}
-
-	return commands, nil
+type CommandRequest struct {
+	Name      string       `json:"name"`
+	Arguments string       `json:"arguments,omitempty"`
+	Args      *CommandArgs `json:"args,omitempty"`
 }
 
-// ParseCommandInvocation extracts matched command and arguments from user input.
-func ParseCommandInvocation(value string, catalog []SessionCommand) (name, args string, ok bool) {
-	loc := commandTokenPattern.FindStringIndex(value)
-	if loc == nil {
-		return "", "", false
-	}
-	token := value[loc[0]:loc[1]]
-	var matched *SessionCommand
-	for i := range catalog {
-		if catalog[i].Name == token {
-			matched = &catalog[i]
-			break
-		}
-	}
-	if matched == nil {
-		return "", "", false
-	}
-
-	rest := strings.TrimPrefix(value[loc[1]:], " ")
-	return matched.Name, rest, true
+type CommandArgs struct {
+	Level    string `json:"level,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Effort   string `json:"effort,omitempty"`
+	State    string `json:"state,omitempty"`
+	Action   string `json:"action,omitempty"`
+	Details  string `json:"details,omitempty"`
 }

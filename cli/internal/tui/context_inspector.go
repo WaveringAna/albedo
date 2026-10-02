@@ -6,10 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
-	"net/http"
-	"net/url"
-	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -18,55 +14,10 @@ import (
 	"golang.org/x/text/message"
 )
 
-type ContextSection struct {
-	ID        string `json:"id"`
-	Label     string `json:"label"`
-	Kind      string `json:"kind"` // "instructions" | "extension_context" | "history" | "tools" | "other"
-	Source    string `json:"source"`
-	Preview   string `json:"preview"`
-	ItemCount int    `json:"item_count"`
-	ByteCount int    `json:"byte_count"`
-	Pages     int    `json:"pages"`
-}
-
-type CompactionState struct {
-	TriggerFreePercent        *float64 `json:"trigger_free_percent,omitempty"`
-	InputLimitTokens          *int     `json:"input_limit_tokens,omitempty"`
-	EstimatedInputTokens      *int     `json:"estimated_input_tokens,omitempty"`
-	ProviderInputTokens       *int     `json:"provider_input_tokens,omitempty"`
-	ProviderCachedInputTokens *int     `json:"provider_cached_input_tokens,omitempty"`
-	BeforeItems               *int     `json:"before_items,omitempty"`
-	AfterItems                *int     `json:"after_items,omitempty"`
-	Strategy                  string   `json:"strategy,omitempty"`
-	Status                    string   `json:"status"` // "not_configured" | "not_needed" | "compacted" | "unknown"
-	Source                    string   `json:"source,omitempty"`
-	EstimateMethod            string   `json:"estimate_method,omitempty"`
-}
-
-type ContextSnapshot struct {
-	Compaction          CompactionState  `json:"compaction"`
-	CapturedAt          *int64           `json:"captured_at,omitempty"`
-	ContextWindowTokens *int             `json:"context_window_tokens,omitempty"`
-	State               string           `json:"state"` // "pending" | "ready"
-	Reason              string           `json:"reason,omitempty"`
-	Provider            string           `json:"provider,omitempty"`
-	Model               string           `json:"model,omitempty"`
-	Protocol            string           `json:"protocol,omitempty"`
-	Sections            []ContextSection `json:"sections,omitempty"`
-}
-
-type ContextPage struct {
-	Section string `json:"section"`
-	Content string `json:"content"`
-	Omitted string `json:"omitted,omitempty"`
-	Page    int    `json:"page"`
-	Pages   int    `json:"pages"`
-}
-
 type ContextDetail struct {
-	Value   *ContextPage
+	Value   *daemon.ContextPage
 	Error   string
-	Section ContextSection
+	Section daemon.ContextSection
 	Page    int
 	Scroll  int
 }
@@ -74,14 +25,14 @@ type ContextDetail struct {
 type ContextDoneMsg struct{}
 
 type contextSnapshotLoadedMsg struct {
-	Snapshot *ContextSnapshot
+	Snapshot *daemon.ContextSnapshot
 	Err      error
 	Gen      int
 }
 
 type contextPageLoadedMsg struct {
 	Err       error
-	Data      *ContextPage
+	Data      *daemon.ContextPage
 	SectionID string
 	Page      int
 	Gen       int
@@ -90,7 +41,7 @@ type contextPageLoadedMsg struct {
 type ContextInspectorModel struct {
 	Conn      *daemon.Connection
 	SessionID string
-	Snapshot  *ContextSnapshot
+	Snapshot  *daemon.ContextSnapshot
 	Detail    *ContextDetail
 	Styles    Styles
 	page
@@ -109,63 +60,8 @@ func (m ContextInspectorModel) Init() tea.Cmd {
 	return m.loadSnapshotCmd(m.Generation)
 }
 
-func utf16Length(s string) int {
-	length := 0
-	for _, char := range s {
-		length++
-		if char > 0xffff {
-			length++
-		}
-	}
-	return length
-}
-
-func isNeg(p *int) bool { return p != nil && *p < 0 }
-
-var (
-	validKinds         = []string{"instructions", "extension_context", "history", "tools", "other"}
-	compactionStatuses = map[string]string{
-		"not_configured": "not configured",
-		"not_needed":     "not needed",
-		"compacted":      "applied",
-		"unknown":        "state unavailable",
-	}
-)
-
-func validContextSnapshot(s ContextSnapshot) error {
-	if s.State == "pending" {
-		if utf16Length(s.Reason) <= 500 {
-			return nil
-		}
-		return errors.New("daemon returned invalid context metadata")
-	}
-	if s.State != "ready" || utf16Length(s.Model) > 512 || s.Sections == nil || len(s.Sections) > 1000 ||
-		utf16Length(s.Provider) > 512 || utf16Length(s.Protocol) > 512 || (s.CapturedAt != nil && *s.CapturedAt < 0) ||
-		isNeg(s.ContextWindowTokens) {
-		return errors.New("daemon returned invalid context metadata")
-	}
-	for _, sec := range s.Sections {
-		if sec.ID == "" || utf16Length(sec.ID) > 200 || sec.Label == "" || utf16Length(sec.Label) > 200 || !slices.Contains(validKinds, sec.Kind) ||
-			utf16Length(sec.Source) > 500 || sec.ItemCount < 0 || sec.ByteCount < 0 || utf16Length(sec.Preview) > 2000 || sec.Pages < 0 || sec.Pages > 10000 {
-			return errors.New("daemon returned invalid context section metadata")
-		}
-	}
-	c := s.Compaction
-	badPct := c.TriggerFreePercent != nil && (math.IsNaN(*c.TriggerFreePercent) || math.IsInf(*c.TriggerFreePercent, 0) || *c.TriggerFreePercent < 0 || *c.TriggerFreePercent > 100)
-	if compactionStatuses[c.Status] == "" || utf16Length(c.Strategy) > 200 || utf16Length(c.Source) > 500 || utf16Length(c.EstimateMethod) > 500 ||
-		badPct || isNeg(c.InputLimitTokens) || isNeg(c.EstimatedInputTokens) ||
-		isNeg(c.ProviderInputTokens) || isNeg(c.ProviderCachedInputTokens) ||
-		isNeg(c.BeforeItems) || isNeg(c.AfterItems) {
-		return errors.New("daemon returned invalid compaction metadata")
-	}
-	return nil
-}
-
-func validContextPage(p ContextPage, sectionID string) error {
-	if p.Section != sectionID || p.Page < 0 || p.Pages < 0 || p.Pages > 10000 || p.Page >= max(1, p.Pages) || utf16Length(p.Content) > 65536 || utf16Length(p.Omitted) > 1000 {
-		return errors.New("daemon returned invalid context page")
-	}
-	return nil
+var compactionStatuses = map[string]string{
+	"not_configured": "not configured", "not_needed": "not needed", "compacted": "applied", "unknown": "state unavailable",
 }
 
 func (m ContextInspectorModel) loadSnapshotCmd(gen int) tea.Cmd {
@@ -174,15 +70,7 @@ func (m ContextInspectorModel) loadSnapshotCmd(gen int) tea.Cmd {
 			return contextSnapshotLoadedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
 
-		if err := daemon.CheckCapability(context.Background(), m.Conn, "session_context", "for /context"); err != nil {
-			return contextSnapshotLoadedMsg{Err: err, Gen: gen}
-		}
-
-		path := fmt.Sprintf("/sessions/%s/context", url.PathEscape(m.SessionID))
-		snapshot, err := daemon.RequestOperation[ContextSnapshot](context.Background(), m.Conn, daemon.Operation{Name: "load snapshot", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
-		if err == nil {
-			err = validContextSnapshot(snapshot)
-		}
+		snapshot, err := daemon.GetContextSnapshot(context.Background(), m.Conn, m.SessionID)
 		if err != nil {
 			return contextSnapshotLoadedMsg{Err: err, Gen: gen}
 		}
@@ -195,11 +83,7 @@ func (m ContextInspectorModel) loadPageCmd(sectionID string, page int, gen int) 
 		if m.Conn == nil {
 			return contextPageLoadedMsg{SectionID: sectionID, Page: page, Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		path := fmt.Sprintf("/sessions/%s/context/%s/%d", url.PathEscape(m.SessionID), url.PathEscape(sectionID), page)
-		data, err := daemon.RequestOperation[ContextPage](context.Background(), m.Conn, daemon.Operation{Name: "load page", Method: http.MethodGet, Path: path, Body: nil, Policy: daemon.ReadRecovery})
-		if err == nil {
-			err = validContextPage(data, sectionID)
-		}
+		data, err := daemon.GetContextPage(context.Background(), m.Conn, m.SessionID, sectionID, page)
 		if err != nil {
 			return contextPageLoadedMsg{SectionID: sectionID, Page: page, Err: err, Gen: gen}
 		}

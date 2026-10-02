@@ -17,8 +17,8 @@ func TestWebhookRevisionRejectsFractionalWireValue(t *testing.T) {
 	for _, revision := range []string{"1.0000000000000001", "1.5"} {
 		t.Run(revision, func(t *testing.T) {
 			conn, transport := mutationConnection(webhookReceipt(revision, `,"secret":"generated"`), 200)
-			result, err := ExecuteCommand(context.Background(), conn, "s", map[string]any{
-				"name": "/webhooks", "args": map[string]string{"action": "create", "details": "notes"},
+			result, err := ExecuteCommand(context.Background(), conn, "s", CommandRequest{
+				Name: "/webhooks", Args: &CommandArgs{Action: "create", Details: "notes"},
 			})
 			uncertainty, ok := errors.AsType[*UncertainOutcomeError](err)
 			if !ok {
@@ -36,10 +36,9 @@ func TestWebhookRevisionRejectsFractionalWireValue(t *testing.T) {
 }
 
 func TestCreateInGeneratedSecretRequired(t *testing.T) {
-	requests := map[string]map[string]any{
-		"declared":   {"name": "/webhooks", "args": map[string]string{"action": "create_in", "details": " s notes "}},
-		"raw":        {"name": "/webhooks", "arguments": " create_in s notes "},
-		"empty_args": {"name": "/webhooks", "args": map[string]string{}, "arguments": "create_in s notes"},
+	requests := map[string]CommandRequest{
+		"declared": {Name: "/webhooks", Args: &CommandArgs{Action: "create_in", Details: " s notes "}},
+		"raw":      {Name: "/webhooks", Arguments: " create_in s notes "},
 	}
 	for name, body := range requests {
 		t.Run(name, func(t *testing.T) {
@@ -68,9 +67,9 @@ func TestCreateInGeneratedSecretRequired(t *testing.T) {
 }
 
 func TestCreateInSuppliedSecretReceipt(t *testing.T) {
-	for name, body := range map[string]map[string]any{
-		"declared": {"name": "/webhooks", "args": map[string]string{"action": "create_in", "details": "s notes supplied-secret"}},
-		"raw":      {"name": "/webhooks", "arguments": "create_in s notes supplied-secret"},
+	for name, body := range map[string]CommandRequest{
+		"declared": {Name: "/webhooks", Args: &CommandArgs{Action: "create_in", Details: "s notes supplied-secret"}},
+		"raw":      {Name: "/webhooks", Arguments: "create_in s notes supplied-secret"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			conn, transport := mutationConnection(webhookReceipt("1", ""), 200)
