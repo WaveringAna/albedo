@@ -52,14 +52,15 @@ path={path}
 exec env -i HOME={home} PATH="$path" SHELL={bin}/loginsh /bin/sh -c "$*"
 """
 
-# A login shell whose "profile" greets on stdout, as many do, and sources
-# nothing else: /etc/profile would put the system python ahead of the fake
-# host's. Every scenario runs through it, so a greeting must never reach a
-# framed stream.
+# A login shell whose "profile" greets on stdout and stderr, as many do, and
+# sources nothing else: /etc/profile would put the system python ahead of the
+# fake host's. Every scenario runs through it, so a greeting must never reach
+# a framed stream, nor the daemon's log.
 LOGIN_SHELL = """#!/bin/sh
 if [ "$1" = -l ]; then
   shift
   echo "welcome to the fake host"
+  echo "you have no mail" >&2
 fi
 exec /bin/sh "$@"
 """
@@ -194,6 +195,9 @@ class RemoteKernelTests(unittest.TestCase):
         # The model is told where it runs.
         system = json.dumps(self.provider.requests[0]["request"])
         self.assertIn("execute on fakehost (", system)
+        log = (self.app.home / "daemon.log").read_text(errors="replace")
+        self.assertNotIn("welcome to the fake host", log)
+        self.assertNotIn("you have no mail", log)
 
     def test_a_first_visit_says_it_is_copying_the_kernel(self):
         self.slow_stage.touch()  # each copy of the bundle takes 3 s

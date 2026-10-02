@@ -105,12 +105,16 @@ def in_login_shell(script: str) -> str:
     `/etc/profile` or user profiles, which leaves PATH minimal (missing
     Nix, Homebrew, or user tool paths); a login shell finds python3 and the
     user's tools. Profiles often print (a motd, a greeting), which would
-    corrupt a framed stdout, so the login shell starts with stdout on stderr
-    and the real stdout kept on fd 3, and `script` gets it back. The outer
-    `/bin/sh` makes the redirections work whatever the user's shell is.
+    corrupt a framed stdout and fill the daemon's log on every command, so
+    the login shell starts with both on /dev/null and the real ones kept on
+    fds 3 and 4, and `script` gets them back. The outer `/bin/sh` makes the
+    redirections work whatever the user's shell is.
     """
-    login = f"exec 1>&3 3>&-; {script}"
-    outer = f'exec 3>&1 1>&2; exec "${{SHELL:-/bin/sh}}" -l -c {shlex.quote(login)}'
+    login = f"exec 1>&3 2>&4 3>&- 4>&-; {script}"
+    outer = (
+        "exec 3>&1 4>&2 1>/dev/null 2>&1; "
+        f'exec "${{SHELL:-/bin/sh}}" -l -c {shlex.quote(login)}'
+    )
     return f"/bin/sh -c {shlex.quote(outer)}"
 
 
