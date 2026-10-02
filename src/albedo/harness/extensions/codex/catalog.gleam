@@ -215,10 +215,15 @@ fn model_decoder() -> decode.Decoder(Model) {
     context,
     max_context,
     input,
-    efforts,
+    usable_efforts(efforts),
     visible,
     priority,
   ))
+}
+
+/// The backend advertises "ultra" as a virtual tier, not a requestable effort.
+fn usable_efforts(efforts: List(String)) -> List(String) {
+  list.filter(efforts, fn(effort) { effort != "ultra" })
 }
 
 const models_url = "https://chatgpt.com/backend-api/codex/models"
@@ -479,7 +484,7 @@ pub fn normalize(rows: List(Dynamic)) -> List(Model) {
           positive(value(fields, "context_window", decode.int, 0)),
           positive(value(fields, "max_context_window", decode.int, 0)),
           input,
-          efforts,
+          usable_efforts(efforts),
           case dict.get(fields, "visibility") {
             Error(_) -> True
             Ok(raw) -> decode.run(raw, decode.string) == Ok("list")
