@@ -9,9 +9,10 @@ collects: directory entries, which repository markers exist, the vcs
 commands the daemon planned, file sizes, and project files. Everything comes
 back in one ssh round trip per question.
 
-Request: `{route, dir, plans, separators, deadline, counted}`, `dir` absolute
+Request: `{route, dir, plans, tracked, deadline, counted}`, `dir` absolute
 and normalised. `route` is list, repo, preview or project, or exists, which
-answers `directory` alone.
+answers `directory` alone. `tracked` names, per kind, the planned command
+that lists a preview's tracked files and the separator its output uses.
 
 Snapshot: `{directory, entries: {dir: [[name, dir, modified]]}, exists:
 [path], outputs: {key: stdout}, sizes: {path: bytes}, files: {relative:
@@ -181,13 +182,14 @@ def gather(request: dict) -> dict[str, object]:
     outputs = {k: v for k, v in answers.items() if v is not None}
     snapshot["outputs"] = outputs
     if route == "preview":
-        tracked = next((c for c in plan if c[2] == "dir"), None)
-        separator = request.get("separators", {}).get(kind, "\n")
-        listing = outputs.get(key(tracked[0], tracked[1])) if tracked else None
+        relatives: list[str] = []
+        tracked = request.get("tracked", {}).get(kind)
+        if tracked is not None:
+            program, args, _ = tracked["command"]
+            listing = outputs.get(key(program, args)) or ""
+            relatives = listing.split(tracked["separator"])
         sizes: dict[str, int] = {}
-        for relative in (listing or "").split(separator)[
-            : int(request.get("counted", 0))
-        ]:
+        for relative in relatives[: int(request.get("counted", 0))]:
             if not relative:
                 continue
             path = child(directory, relative)

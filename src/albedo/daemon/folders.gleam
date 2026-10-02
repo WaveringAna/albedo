@@ -217,11 +217,8 @@ fn remote(path: String, route: Route) -> Result(#(Machine, String), Failure) {
       #("dir", json.string(dir)),
       #("plans", plans(route)),
       #(
-        "separators",
-        json.object([
-          #("git", json.string(vcs.tracked_separator(False))),
-          #("jj", json.string(vcs.tracked_separator(True))),
-        ]),
+        "tracked",
+        json.object([#("git", tracked(False)), #("jj", tracked(True))]),
       ),
       #("deadline", json.float(int.to_float(vcs.deadline_ms) /. 1000.0)),
       #("counted", json.int(counted_files)),
@@ -291,19 +288,28 @@ fn route_name(route: Route) -> String {
 }
 
 fn plans(route: Route) -> Json {
-  let plan = fn(jj) {
-    json.array(vcs.plan(jj, route == Preview), fn(command: vcs.Command) {
-      json.preprocessed_array([
-        json.string(command.program),
-        json.array(command.args, json.string),
-        json.string(case command.at {
-          vcs.AtRoot -> "root"
-          vcs.AtDir -> "dir"
-        }),
-      ])
-    })
-  }
+  let plan = fn(jj) { json.array(vcs.plan(jj, route == Preview), command) }
   json.object([#("git", plan(False)), #("jj", plan(True))])
+}
+
+/// Which planned command lists a preview's tracked files, and how its
+/// output splits.
+fn tracked(jj: Bool) -> Json {
+  json.object([
+    #("command", command(vcs.tracked_command(jj))),
+    #("separator", json.string(vcs.tracked_separator(jj))),
+  ])
+}
+
+fn command(command: vcs.Command) -> Json {
+  json.preprocessed_array([
+    json.string(command.program),
+    json.array(command.args, json.string),
+    json.string(case command.at {
+      vcs.AtRoot -> "root"
+      vcs.AtDir -> "dir"
+    }),
+  ])
 }
 
 /// A host without a ready probe answers with the probe's state, so the

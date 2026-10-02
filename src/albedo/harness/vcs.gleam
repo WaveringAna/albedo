@@ -178,6 +178,14 @@ pub fn tracked(
   }
 }
 
+/// The command `tracked` runs, for a gather that sizes what it lists.
+pub fn tracked_command(jj: Bool) -> Command {
+  case jj {
+    True -> jj_tracked
+    False -> git_tracked
+  }
+}
+
 /// How `tracked` output splits into paths, for a gather that sizes them.
 pub fn tracked_separator(jj: Bool) -> String {
   case jj {
