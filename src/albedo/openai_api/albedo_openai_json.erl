@@ -1,5 +1,5 @@
 -module(albedo_openai_json).
--export([encode/1, null/0, flatten/1, data_url/2, base64_string/1, semantically_empty/1]).
+-export([encode/1, null/0, flatten/1, data_url/2, base64_string/1, semantically_empty/1, object_fields/1]).
 
 encode(Value) -> json:encode(Value).
 
@@ -14,6 +14,21 @@ semantically_empty([]) -> true;
 semantically_empty({}) -> true;
 semantically_empty(Value) when is_map(Value) -> map_size(Value) =:= 0;
 semantically_empty(_) -> false.
+
+%% Validate the typed key contract while retaining the original map and values.
+object_fields(Value) when is_map(Value) ->
+    case has_string_keys(maps:iterator(Value)) of
+        true -> {ok, Value};
+        false -> {error, #{}}
+    end;
+object_fields(_) -> {error, #{}}.
+
+has_string_keys(Iterator) ->
+    case maps:next(Iterator) of
+        none -> true;
+        {Key, _, Next} when is_binary(Key) -> has_string_keys(Next);
+        _ -> false
+    end.
 
 %% Binaries at least this large cross process boundaries by reference.
 -define(SHARED, 512).

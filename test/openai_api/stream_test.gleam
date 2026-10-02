@@ -215,6 +215,14 @@ pub fn chat_ignores_only_empty_unknown_fields_test() -> Nil {
   })
 }
 
+pub fn chat_rejects_non_object_deltas_test() -> Nil {
+  list.each(["null", "[]", "42", "\"x\"", "false"], fn(value) {
+    let data = "{\"choices\":[{\"index\":0,\"delta\":" <> value <> "}]}"
+    let assert Error(types.InvalidEvent(_)) =
+      send(stream.new(types.ChatCompletions), "", data)
+  })
+}
+
 pub fn chat_requires_finish_and_suppresses_partial_tools_on_limits_test() -> Nil {
   assert send(stream.new(types.ChatCompletions), "", "[DONE]")
     == Error(types.InvalidEvent("[DONE] before chat finish reason"))

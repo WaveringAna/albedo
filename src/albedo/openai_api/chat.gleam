@@ -120,7 +120,7 @@ fn choice_decoder() -> decode.Decoder(Choice) {
 }
 
 fn delta_decoder() -> decode.Decoder(Delta) {
-  use fields <- decode.then(decode.dict(decode.string, decode.dynamic))
+  use fields <- decode.then(decode.new_primitive_decoder("Dict", object_fields))
   case unsupported_field(fields) {
     Some(field) ->
       decode.failure(
@@ -153,6 +153,11 @@ fn delta_decoder() -> decode.Decoder(Delta) {
     }
   }
 }
+
+@external(erlang, "albedo_openai_json", "object_fields")
+fn object_fields(
+  value: dynamic.Dynamic,
+) -> Result(Dict(String, dynamic.Dynamic), Dict(String, dynamic.Dynamic))
 
 fn non_empty_string() -> decode.Decoder(Option(String)) {
   decode.optional(decode.string)
