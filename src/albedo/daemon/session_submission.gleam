@@ -64,7 +64,7 @@ pub fn commits(
   submissions: List(Submission),
   offset: Int,
 ) -> List(operations.Commit) {
-  let #(_, commits) =
+  let #(_, reversed_commits) =
     list.fold(submissions, #(offset, []), fn(acc, submission) {
       let position = case submission.source {
         turn.Continue -> None
@@ -76,13 +76,13 @@ pub fn commits(
       }
       #(next, case submission.operation_id {
         None -> acc.1
-        Some(id) ->
-          list.append(acc.1, [
-            operations.Commit(id, position, display(submission)),
-          ])
+        Some(id) -> [
+          operations.Commit(id, position, display(submission)),
+          ..acc.1
+        ]
       })
     })
-  commits
+  list.reverse(reversed_commits)
 }
 
 pub fn inputs(submissions: List(Submission)) -> List(types.Input) {
