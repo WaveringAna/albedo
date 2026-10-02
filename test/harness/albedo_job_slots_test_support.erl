@@ -107,13 +107,13 @@ kernels() ->
 %% tests never reattach, so the link only has to answer.
 start(Python, Script, Host, Modules) ->
     Link = {link, fun(_, _) -> nil end, fun(_) -> nil end, fun() -> [] end,
-            fun(_) -> fresh end, fun(_, _, _) -> nil end, fun(_) -> nil end, fun() -> nil end},
+            fun(_) -> fresh end, fun(_, _, _) -> nil end, fun(_) -> nil end, fun() -> nil end, fun(_) -> nil end},
     Id = binary:part(albedo_native:new_id(), 0, 16),
     RunDir = filename:join(os:getenv("TMPDIR", "/tmp"), <<"albedo-run-", Id/binary>>),
     Bridge = filename:join(filename:dirname(Script), <<"albedo_bridge.py">>),
     albedo_python:start({boot, self(), Python, Bridge, <<"/tmp">>, Host,
                          iolist_to_binary(json:encode(Modules)), Link, unicode:characters_to_binary(RunDir),
-                         Id, albedo_native:new_id(), 20, 0, true, none}).
+                         Id, albedo_native:new_id(), 20, 0, <<"{}">>, true, none}).
 
 cell(Kernel, Code) ->
     %% A kernel answers a cell id it already ran with that run's result.

@@ -38,13 +38,15 @@ the daemon writes `{"attach": {"kernel", "token", "ack", "grace"}}` first. the
 kernel checks the token (kept in the daemon's sqlite), bumps its epoch, cuts
 off any older connection (newest attach wins), and answers
 `{"hello": {protocol, bundle, epoch, ack, pid, pgid, leader, ready, jobs,
-external, slots, dropped}}`, or `{"refused": reason}`. `protocol` (1) and the
+held, external, slots, dropped}}`, or `{"refused": reason}`. `protocol` (1) and the
 hello/snapshot/shutdown frames never change shape. `bundle` is
 `albedo_bundle.digest()`, the same content hash the remote plugin stages
 under; a hello whose bundle or protocol differs from the bridge's makes the
-kernel stale (see version skew). `jobs` (live `job_start` frames), `external`
-and `slots` (job slots still waited for) let a fresh port owner take over job
-ownership and admission.
+kernel stale (see version skew). `jobs` (live `job_start` frames), `external`,
+`held` (jobs granted a heavy slot whose end isn't proven yet) and `slots` (job
+slots still waited for) let a fresh port owner take over job ownership and
+admission: held slots count in its pool at once (`albedo_job_slots:claim`,
+even past the limit), waited-for ones are asked for again.
 
 ## session layer
 
@@ -61,7 +63,7 @@ a bare `{"ack": m}`. `ack` is cumulative: everything up to it arrived.
 - **daemon side** (`python/link.gleam`, tables from the python extension's
   `kernel_links` schema migration): `kernel_links` (one row per session: kernel
   id, token, run dir, workspace, modules, pid/pgid/leader, epoch, last seq
-  sent), `kernel_outbox` keyed (session, kernel, seq), bounded at 2048 frames /
+  sent, and the job groups it owns, rewritten as they change), `kernel_outbox` keyed (session, kernel, seq), bounded at 2048 frames /
   64 MiB per kernel, and `kernel_calls`. the port owner persists each frame
   before writing it, deletes what the kernel acknowledges, and acknowledges
   kernel frames within 100 ms. its own last-seen seq lives in memory: after a
@@ -78,12 +80,21 @@ dedupe:
 - execute, by cell id: a finished cell (the newest 16) resends its `done`; a
   queued or running one is ignored. callers must not reuse cell ids.
 - interrupt, reply, release are idempotent already.
+- what the kernel resends after a restart: job wakes are host calls
+  (`jobs.completed`), so the call ledger covers them; `job_start`, `job`,
+  `job_cancel` and `jobs` only update ownership and slot bookkeeping, which
+  converges; `job_acquire` asks the new pool, which never saw it; a `done`
+  nobody waits for rewrites the same outcome; traces save by cell id.
 
 ## drops
 
 - the bridge dies: the port owner reattaches with backoff (50 ms doubling to
   2 s, 40 tries); exit 3 or a refusal means the kernel is gone and the old
-  abandon path reaps it. the cell keeps running meanwhile.
+  abandon path reaps it. a port owner attaching after a restart starts from
+  the record's pid/pgid/leader and groups, so a kernel that died hard while
+  nobody was attached still has its process group and its jobs' groups
+  ended. the leader token (start time, from `/proc` or Darwin's `sysctl`)
+  keeps a reused pid from being signalled. the cell keeps running meanwhile.
 - the cell deadline passes, or an interrupt goes unanswered for 2 s, while
   detached: the interrupt waits in the outbox and the caller gets
   `kernel.Detached`, which leaves the journaled cell `started` (the model is
@@ -267,9 +278,5 @@ away, or the session moves.
 
 ## not yet
 
-- after a daemon restart, job groups of a kernel that died hard (SIGKILL) while
-  nobody was attached are not reaped: the recorded pid could be reused.
-- job slots a reattached kernel's running jobs held are not re-counted in the
-  new daemon's pool; only slots still waited for are asked for again.
 - profile output a remote login shell prints reaches the daemon's own
   stderr log on every remote command.

@@ -18,7 +18,7 @@
 %% same.
 -module(albedo_job_slots).
 -behaviour(gen_server).
--export([ensure/0, ensure/2, acquire/2, release/2, release_owner/1, limit/0]).
+-export([ensure/0, ensure/2, acquire/2, claim/2, release/2, release_owner/1, limit/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -record(state, {base, running = 0, entries = #{}, waiting = [], load = false, ticking = false, hosts = #{}}).
@@ -37,6 +37,9 @@ ensure() ->
 ensure(Host, Cpus) -> gen_server:call(ensure(), {host, Host, Cpus}).
 
 acquire(Pool, Id) -> gen_server:cast(Pool, {acquire, self(), Id}).
+%% A slot a running job already holds, granted by an earlier daemon: it counts
+%% at once, even past the limit, and nothing is sent back.
+claim(Pool, Id) -> gen_server:cast(Pool, {claim, self(), Id}).
 release(Pool, Id) -> gen_server:cast(Pool, {release, {self(), Id}}).
 release_owner(Pool) -> gen_server:cast(Pool, {release_owner, self()}).
 
@@ -99,6 +102,14 @@ handle_cast({acquire, Owner, Id}, S = #state{entries = Entries}) ->
                 _ -> ok
             end,
             {noreply, tick(S1)}
+    end;
+handle_cast({claim, Owner, Id}, S = #state{entries = Entries, running = Running}) ->
+    Key = {Owner, Id},
+    case maps:is_key(Key, Entries) of
+        true -> {noreply, S};
+        false ->
+            Mon = monitor(process, Owner),
+            {noreply, S#state{entries = Entries#{Key => {active, Mon}}, running = Running + 1}}
     end;
 handle_cast({release, Key}, S) -> {noreply, drain(drop(Key, S))};
 handle_cast({base, Cpus}, S) -> {noreply, drain(S#state{base = remote_base(Cpus)})};

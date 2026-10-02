@@ -3,6 +3,8 @@
 The kernel runs detached behind a bridge process; the daemon reattaches to it
 after a restart (graceful or crash) and after the bridge dies mid-cell, so the
 namespace, the kernel process, and an in-flight cell's result all survive.
+What the kernel owns survives with it: a reattached kernel's running job keeps
+its heavy-job slot, and one found dead after a restart has its jobs ended.
 """
 
 import json
@@ -27,6 +29,14 @@ def bridges(home):
     ]
 
 
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 @exclusive
 class KernelDetachTests(unittest.TestCase):
     def setUp(self):
@@ -39,7 +49,16 @@ class KernelDetachTests(unittest.TestCase):
 
         self.provider = Provider(script)
         self.addCleanup(self.provider.close)
-        self.app = Albedo(self.provider, protocol="responses")
+
+        def prepare(app):
+            # One heavy slot, granted to a job half a second in.
+            app.daemon.env.update(
+                ALBEDO_MAX_LOCAL_JOBS="1",
+                ALBEDO_JOB_LOAD="0",
+                ALBEDO_JOB_GRACE_SECONDS="0.5",
+            )
+
+        self.app = Albedo(self.provider, protocol="responses", prepare=prepare)
         self.app.__enter__()
         self.addCleanup(self.app.__exit__, None, None, None)
         self.session = self.app.session()
@@ -90,6 +109,35 @@ class KernelDetachTests(unittest.TestCase):
         self.assertEqual(slept["value"], first["value"])
         (replacement,) = bridges(self.app.home)
         self.assertNotEqual(replacement, bridge)
+
+    def test_a_reattached_kernels_running_job_keeps_its_slot(self):
+        held = self.cell(
+            "import asyncio\na = run('sleep', '60')\nawait asyncio.sleep(1.5)\na.queued"
+        )
+        self.assertEqual(held["value"], "False")
+        self.app.restart()
+        # The new daemon's pool counts the slot a's job already holds.
+        waiting = self.cell(
+            "b = run('sleep', '60')\nawait asyncio.sleep(1.5)\n(a.queued, b.queued)"
+        )
+        self.assertEqual(waiting["value"], "(False, True)")
+        freed = self.cell("await a.stop()\nawait asyncio.sleep(1)\nb.queued")
+        self.assertEqual(freed["value"], "False")
+        self.cell("await b.stop()")
+
+    def test_a_kernel_killed_while_the_daemon_was_down_has_its_jobs_ended(self):
+        started = self.cell(
+            "import asyncio, os\nj = run('sleep', '300')\nawait asyncio.sleep(0.5)\n(os.getpid(), j.process.pid)"
+        )
+        kernel, job = (int(part) for part in started["value"].strip("()").split(","))
+
+        # Graceful stop leaves the kernel running; it dies hard before the
+        # next daemon reaches it, and its job's group outlives it.
+        self.app.restart(prepare=lambda _: os.kill(kernel, signal.SIGKILL))
+        deadline = time.monotonic() + 15
+        while alive(job) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertFalse(alive(job), "the dead kernel's job is still running")
 
 
 if __name__ == "__main__":

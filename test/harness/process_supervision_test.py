@@ -181,12 +181,11 @@ class SupervisionTest(unittest.TestCase):
             asyncio.create_subprocess_shell("sleep 30", start_new_session=True)
         )
         try:
+            # Linux and Darwin both give a process an identity beyond its pid.
+            self.assertIsNotNone(albedo_proc.leader_token(leader.pid))
             group = albedo_proc.Group(leader.pid, "not-the-leader-we-created")
-            if (
-                albedo_proc.leader_token(leader.pid) is not None
-            ):  # identity source present
-                self.assertFalse(albedo_proc.alive(group))
-                self.assertTrue(present(leader.pid))  # and it was left alone
+            self.assertFalse(albedo_proc.alive(group))
+            self.assertTrue(present(leader.pid))  # and it was left alone
         finally:
             run(albedo_proc.terminate([albedo_proc.Group(leader.pid)]))
             run(leader.wait())

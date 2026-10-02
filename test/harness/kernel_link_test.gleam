@@ -19,6 +19,7 @@ fn recorded() -> #(store.Store, link.Record) {
       cwd: "/tmp",
       modules: "[]",
       out_seq: 0,
+      owned: "{}",
     )
   let assert Ok(_) = link.create(ledger, record)
   #(ledger, record)

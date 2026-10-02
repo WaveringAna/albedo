@@ -160,13 +160,19 @@ class JobBook:
     """Job groups this kernel still owns, read from the frames it sends.
 
     The same bookkeeping the daemon keeps: a started job's group is owned
-    until a job frame proves it gone. A reattaching daemon learns them from
-    the hello, and the kernel stays alive past its grace while any are live.
+    until a job frame proves it gone, and so is the heavy-job slot it was
+    granted. A reattaching daemon learns both from the hello, and the kernel
+    stays alive past its grace while any job is live.
     """
 
     def __init__(self) -> None:
         self.started: dict[str, dict[str, object]] = {}
+        self.held: set[str] = set()
         self.external = 0
+
+    def hold(self, id: str) -> None:
+        """The daemon granted this job a slot."""
+        self.held.add(id)
 
     def observe(self, frame: dict[str, object]) -> None:
         kind, id = frame.get("type"), frame.get("id")
@@ -178,6 +184,7 @@ class JobBook:
             cleanup = frame.get("cleanup")
             if isinstance(cleanup, dict) and cleanup.get("gone") is True:
                 self.started.pop(id, None)
+                self.held.discard(id)
         elif kind == "jobs":
             live = frame.get("live")
             if isinstance(live, int) and not isinstance(live, bool) and live >= 0:
@@ -324,6 +331,7 @@ class SocketLink:
                 "epoch": self.epoch,
                 "ack": self.inbound.last,
                 "jobs": list(self.jobs.started.values()),
+                "held": sorted(self.jobs.held),
                 "external": self.jobs.external,
                 "dropped": self.outbox.dropped,
             }

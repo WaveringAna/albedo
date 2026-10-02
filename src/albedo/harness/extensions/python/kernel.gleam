@@ -77,6 +77,7 @@ type Boot {
     token: String,
     grace: Int,
     out_seq: Int,
+    owned: String,
     fresh: Bool,
     remote: Option(Remote),
   )
@@ -405,6 +406,7 @@ fn boot_fresh(
       cwd: cwd,
       modules: modules,
       out_seq: 0,
+      owned: "{}",
     )
   use _ <- result.try(
     link.create(store, record) |> result.map_error(Unavailable),
@@ -469,6 +471,7 @@ fn booter(
         token: record.token,
         grace: grace(),
         out_seq: record.out_seq,
+        owned: record.owned,
         fresh: fresh,
         remote: remote,
       ))

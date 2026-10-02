@@ -12,14 +12,17 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 import asyncio
+import ctypes
 import os
 import signal
+import struct
 import subprocess
 import sys
 
 TERM_GRACE = 0.25  # seconds a group gets to honour TERM
 KILL_GRACE = 2.0  # seconds a group gets to die after KILL
 PROBE_INTERVAL = 0.02
+LIBC = ctypes.CDLL(None)
 
 
 def reap_stopped_safely(loop: asyncio.AbstractEventLoop) -> None:
@@ -66,7 +69,7 @@ def reap_stopped_safely(loop: asyncio.AbstractEventLoop) -> None:
 class Group:
     """A target to end: a whole process group, or one process that leads none.
 
-    `leader` identifies the leader where /proc exists, so a reused id is refused.
+    `leader` identifies the leader by its start time, so a reused id is refused.
     """
 
     pgid: int
@@ -116,12 +119,25 @@ def start_token(stat: bytes) -> str | None:
 
 
 def leader_token(pid: int) -> str | None:
-    """Identity token for a live pid, where the platform exposes /proc."""
+    """Identity token for a live pid: its start time, from /proc or, on
+    Darwin, its process table entry. None where neither can tell."""
     try:
         with open(f"/proc/{pid}/stat", "rb") as stat:
             return start_token(stat.read())
     except OSError:
+        return darwin_start(pid) if sys.platform == "darwin" else None
+
+
+def darwin_start(pid: int) -> str | None:
+    """A Darwin process's start time: the timeval that opens its kinfo_proc
+    (sysctl CTL_KERN, KERN_PROC, KERN_PROC_PID). None for a pid not in use."""
+    mib = (ctypes.c_int * 4)(1, 14, 1, pid)
+    buffer = ctypes.create_string_buffer(1024)
+    size = ctypes.c_size_t(len(buffer))
+    if LIBC.sysctl(mib, 4, buffer, ctypes.byref(size), None, 0) != 0 or size.value < 12:
         return None
+    seconds, micros = struct.unpack_from("=qi", buffer.raw)
+    return f"{seconds}.{micros:06d}"
 
 
 def live_members(pgid: int) -> list[int] | None:

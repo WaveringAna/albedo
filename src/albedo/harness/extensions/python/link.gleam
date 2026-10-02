@@ -1,12 +1,13 @@
 //// The daemon's half of a detached kernel's durable session layer.
 ////
 //// One row per session names its kernel: where its run directory is, the
-//// token an attach presents, the workspace and modules it booted with, and
-//// the last sequence number the daemon sent it. Frames the daemon sent and
-//// the kernel has not acknowledged stay in `kernel_outbox`, so a reattach
-//// (or a restarted daemon) resends them. `kernel_calls` remembers every host
-//// call the kernel made until the kernel has its reply, so a replayed call
-//// never runs twice.
+//// token an attach presents, the workspace and modules it booted with, the
+//// last sequence number the daemon sent it, and the process groups it owns,
+//// so a kernel found dead after a restart still has its jobs ended. Frames
+//// the daemon sent and the kernel has not acknowledged stay in
+//// `kernel_outbox`, so a reattach (or a restarted daemon) resends them.
+//// `kernel_calls` remembers every host call the kernel made until the kernel
+//// has its reply, so a replayed call never runs twice.
 
 import albedo/daemon/store
 import gleam/dynamic/decode
@@ -31,6 +32,9 @@ pub type Record {
     cwd: String,
     modules: String,
     out_seq: Int,
+    /// `{pid, pgid, leader, groups}`: the kernel's identity from its last
+    /// hello and its job groups by job id, as JSON.
+    owned: String,
   )
 }
 
@@ -54,17 +58,18 @@ pub type Link {
     reply: fn(String, Int, String) -> Nil,
     record: fn(String) -> Nil,
     forget: fn() -> Nil,
+    own: fn(String) -> Nil,
   )
 }
 
 pub fn apply(db: sqlight.Connection) -> Result(Nil, String) {
-  store.exec(
+  use _ <- result.try(store.exec(
     db,
     "CREATE TABLE IF NOT EXISTS kernel_links (
       session TEXT PRIMARY KEY, kernel TEXT NOT NULL UNIQUE, token TEXT NOT NULL,
       run_dir TEXT NOT NULL, cwd TEXT NOT NULL, modules TEXT NOT NULL,
       pid INTEGER, pgid INTEGER, leader TEXT, epoch INTEGER NOT NULL DEFAULT 0,
-      out_seq INTEGER NOT NULL DEFAULT 0,
+      out_seq INTEGER NOT NULL DEFAULT 0, groups TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
     CREATE TABLE IF NOT EXISTS kernel_outbox (
       session TEXT NOT NULL, kernel TEXT NOT NULL, seq INTEGER NOT NULL,
@@ -72,7 +77,10 @@ pub fn apply(db: sqlight.Connection) -> Result(Nil, String) {
     CREATE TABLE IF NOT EXISTS kernel_calls (
       kernel TEXT NOT NULL, call TEXT NOT NULL, reply_seq INTEGER,
       PRIMARY KEY (kernel, call));",
-  )
+  ))
+  store.add_columns(db, "kernel_links", [
+    #("groups", "TEXT NOT NULL DEFAULT '{}'"),
+  ])
 }
 
 /// Record a kernel about to boot, replacing whatever the session had.
@@ -107,10 +115,20 @@ fn record_decoder() -> decode.Decoder(Record) {
   use cwd <- decode.field(4, decode.string)
   use modules <- decode.field(5, decode.string)
   use out_seq <- decode.field(6, decode.int)
-  decode.success(Record(session, kernel, token, run_dir, cwd, modules, out_seq))
+  use owned <- decode.field(7, decode.string)
+  decode.success(Record(
+    session,
+    kernel,
+    token,
+    run_dir,
+    cwd,
+    modules,
+    out_seq,
+    owned,
+  ))
 }
 
-const columns = "session,kernel,token,run_dir,cwd,modules,out_seq"
+const columns = "session,kernel,token,run_dir,cwd,modules,out_seq,json_object('pid',pid,'pgid',pgid,'leader',leader,'groups',json(groups))"
 
 /// The kernel a session last booted, if one is recorded.
 pub fn find(storage: store.Store, session: String) -> Option(Record) {
@@ -189,7 +207,20 @@ pub fn bind(storage: store.Store, record: Record) -> Link {
     reply: fn(id, seq, frame) { log(reply(storage, record, id, seq, frame)) },
     record: fn(fields) { log(identify(storage, record, fields)) },
     forget: fn() { log(forget(storage, record)) },
+    own: fn(groups) { log(own(storage, record, groups)) },
   )
+}
+
+/// The job groups the kernel owns now, by job id.
+fn own(
+  storage: store.Store,
+  record: Record,
+  groups: String,
+) -> Result(Nil, String) {
+  store.write(storage, "UPDATE kernel_links SET groups=? WHERE kernel=?", [
+    sqlight.text(groups),
+    sqlight.text(record.kernel),
+  ])
 }
 
 fn log(outcome: Result(Nil, String)) -> Nil {

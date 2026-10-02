@@ -223,6 +223,7 @@ def deliver(message: albedo_api.Incoming) -> None:
         if entry is not None and not entry[0].done():
             slot, on_queued = entry
             if message.get("ok") is True:
+                LINK.jobs.hold(message["id"])
                 slot.set_result(None)
             elif message.get("queued") is True:
                 on_queued()

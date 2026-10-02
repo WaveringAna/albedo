@@ -40,7 +40,7 @@
 -define(GRACE_MARGIN_S, 60).     %% past a remote kernel's grace before it is given up
 
 %% Boot is the Gleam kernel.Boot record; Link is kernel.Link.
-start({boot, Owner, Python, Bridge, Cwd, Host, Modules, Link, RunDir, Kernel, Token, Grace, OutSeq, Fresh, Remote}) ->
+start({boot, Owner, Python, Bridge, Cwd, Host, Modules, Link, RunDir, Kernel, Token, Grace, OutSeq, Owned, Fresh, Remote}) ->
     Parent = self(), Ref = make_ref(),
     {Pid, Mon} = spawn_monitor(fun() ->
         process_flag(trap_exit, true),
@@ -50,8 +50,11 @@ start({boot, Owner, Python, Bridge, Cwd, Host, Modules, Link, RunDir, Kernel, To
             none -> albedo_job_slots:ensure()
         end,
         monitor(process, Pool),
+        %% What the record says the kernel owned, so a kernel found dead at
+        %% this attach still has its groups ended.
+        {Target, Groups} = owned(Owned),
         S = #{port => none, host => Host, link => Link, owner => Owner, active => none, events => [],
-              groups => #{}, external => 0, pool => Pool, slots => #{}, target => none,
+              groups => Groups, external => 0, pool => Pool, slots => #{}, target => Target,
               python => Python, bridge => Bridge, cwd => Cwd, remote => Remote,
               modules => Modules, run_dir => RunDir, kernel => Kernel, token => Token,
               grace => Grace, in => 0, acked => 0, kack => 0, out => OutSeq,
@@ -414,9 +417,12 @@ hello(Hello, S0) ->
         Live when is_integer(Live), Live >= 0 -> S1#{external => Live};
         _ -> S1
     end,
-    Waiting = [Id || Id <- maps:get(<<"slots">>, Hello, []), is_binary(Id),
-                     not maps:is_key(Id, maps:get(slots, S2))],
-    lists:foldl(fun acquire_slot/2, S2, Waiting).
+    %% Slots its running jobs hold count again in this daemon's pool; the
+    %% ones still waited for are asked for again.
+    Untracked = fun(Field) -> [Id || Id <- maps:get(Field, Hello, []), is_binary(Id),
+                                     not maps:is_key(Id, maps:get(slots, S2))] end,
+    S3 = lists:foldl(fun claim_slot/2, S2, Untracked(<<"held">>)),
+    lists:foldl(fun acquire_slot/2, S3, Untracked(<<"slots">>)).
 
 %% A kernel speaking another protocol, or running another bundle than the
 %% bridge that reached it, is stale: the session swaps it at its next idle
@@ -485,6 +491,10 @@ acquire_slot(Id, S = #{pool := Pool, slots := Slots}) ->
     albedo_job_slots:acquire(Pool, Id),
     S#{slots => Slots#{Id => true}}.
 
+claim_slot(Id, S = #{pool := Pool, slots := Slots}) ->
+    albedo_job_slots:claim(Pool, Id),
+    S#{slots => Slots#{Id => true}}.
+
 slot_reply(Id, Result, S = #{slots := Slots}) ->
     case maps:is_key(Id, Slots) of
         false -> S;  %% cancelled before the grant reached us
@@ -513,10 +523,36 @@ host_call(Host, Message) ->
 %% shutdown drains: a started job's group is recorded; a job proven gone
 %% releases its slot and its group.
 start_job(Message, Id, S = #{groups := Groups}) ->
-    S#{groups => Groups#{Id => group_of(Message)}}.
+    owns(S, Groups#{Id => group_of(Message)}).
 
 gone(Id, S = #{groups := Groups}) ->
-    (release_slot(Id, S))#{groups => maps:remove(Id, Groups)}.
+    owns(release_slot(Id, S), maps:remove(Id, Groups)).
+
+%% The groups are recorded as they change, so a daemon that finds the kernel
+%% dead after a restart can still end them.
+owns(S = #{groups := Groups}, Groups) -> S;
+owns(S, Groups) ->
+    link_own(S, json:encode(maps:map(fun(_, Spec) -> maps:map(fun nil_null/2, Spec) end, Groups))),
+    S#{groups => Groups}.
+
+nil_null(_, nil) -> null;
+nil_null(_, V) -> V.
+
+%% The record's {pid, pgid, leader, groups}: the kernel's identity from its
+%% last hello and the job groups it owned.
+owned(Owned) ->
+    M = try json:decode(Owned) catch _:_ -> #{} end,
+    Spec = fun(Fields) -> maps:map(fun(_, null) -> nil; (_, V) -> V end,
+                                   maps:with([<<"pid">>, <<"pgid">>, <<"leader">>], Fields)) end,
+    Target = case maps:get(<<"pid">>, M, null) of
+        Pid when is_integer(Pid), Pid > 1 -> target_of(Spec(M));
+        _ -> none
+    end,
+    Groups = case maps:get(<<"groups">>, M, #{}) of
+        G when is_map(G) -> #{Id => group_of(Spec(Fields)) || Id := Fields <- G, is_map(Fields)};
+        _ -> #{}
+    end,
+    {Target, Groups}.
 
 %% The newest 100 job and trace frames, what events/1 hands out.
 journal(Message, S = #{events := Events}) ->
@@ -552,19 +588,20 @@ answer_detached(S) -> S.
 %% The Gleam link: the durable outbox and host-call ledger. A storage failure
 %% is logged and never stops the kernel; the frame still goes out. Once the
 %% store is gone (its owner died) there is nothing left to record.
-link_persist(S = #{link := {link, Persist, _, _, _, _, _, _}}, Seq, Frame) -> guarded(S, fun() -> Persist(Seq, Frame) end).
-link_ack(S = #{link := {link, _, Ack, _, _, _, _, _}}, Upto) -> guarded(S, fun() -> Ack(Upto) end).
-link_pending(S = #{link := {link, _, _, Pending, _, _, _, _}}) ->
+link_persist(S = #{link := {link, Persist, _, _, _, _, _, _, _}}, Seq, Frame) -> guarded(S, fun() -> Persist(Seq, Frame) end).
+link_ack(S = #{link := {link, _, Ack, _, _, _, _, _, _}}, Upto) -> guarded(S, fun() -> Ack(Upto) end).
+link_pending(S = #{link := {link, _, _, Pending, _, _, _, _, _}}) ->
     case guarded(S, Pending) of Frames when is_list(Frames) -> Frames; _ -> [] end.
-link_call(S = #{link := {link, _, _, _, Call, _, _, _}}, Id) ->
+link_call(S = #{link := {link, _, _, _, Call, _, _, _, _}}, Id) ->
     case guarded(S, fun() -> Call(Id) end) of
         State when State =:= fresh; State =:= answered; State =:= unknown -> State;
         _ -> fresh
     end.
-link_reply(S = #{link := {link, _, _, _, _, Reply, _, _}}, Id, Seq, Frame) -> guarded(S, fun() -> Reply(Id, Seq, Frame) end).
-link_record(S = #{link := {link, _, _, _, _, _, Record, _}}, Fields) ->
+link_reply(S = #{link := {link, _, _, _, _, Reply, _, _, _}}, Id, Seq, Frame) -> guarded(S, fun() -> Reply(Id, Seq, Frame) end).
+link_record(S = #{link := {link, _, _, _, _, _, Record, _, _}}, Fields) ->
     guarded(S, fun() -> Record(iolist_to_binary(json:encode(maps:filter(fun(_, V) -> V =/= nil end, Fields)))) end).
-link_forget(S = #{link := {link, _, _, _, _, _, _, Forget}}) -> guarded(S, Forget).
+link_forget(S = #{link := {link, _, _, _, _, _, _, Forget, _}}) -> guarded(S, Forget).
+link_own(S = #{link := {link, _, _, _, _, _, _, _, Own}}, Groups) -> guarded(S, fun() -> Own(iolist_to_binary(Groups)) end).
 
 guarded(#{owner := Owner}, Fun) ->
     case is_process_alive(Owner) of
