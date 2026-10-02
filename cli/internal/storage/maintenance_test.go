@@ -3,6 +3,7 @@
 package storage
 
 import (
+	"albedo/cli/internal/daemon"
 	"context"
 	"errors"
 	"os"
@@ -28,7 +29,7 @@ func TestMaintenanceOwnershipAndRelease(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			helper, err := startMaintenance(ctx, home, []File{{Path: path, Bytes: 4}})
+			helper, err := startMaintenance(ctx, home, []daemon.StorageFile{{Path: path, Bytes: 4}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -41,10 +42,10 @@ func TestMaintenanceOwnershipAndRelease(t *testing.T) {
 			}
 			switch ending {
 			case "success":
-				_, err = helper.apply(ctx, false, Preview{})
+				_, err = helper.apply(ctx, false, daemon.StorageReport{})
 			case "cancel":
 				cancel()
-				_, err = helper.apply(ctx, false, Preview{})
+				_, err = helper.apply(ctx, false, daemon.StorageReport{})
 				if !errors.Is(err, context.Canceled) {
 					t.Fatalf("lost cancellation: %v", err)
 				}
@@ -52,7 +53,7 @@ func TestMaintenanceOwnershipAndRelease(t *testing.T) {
 				if err = helper.command.Process.Kill(); err != nil {
 					t.Fatal(err)
 				}
-				_, err = helper.apply(ctx, false, Preview{})
+				_, err = helper.apply(ctx, false, daemon.StorageReport{})
 			case "input EOF":
 				if err = helper.input.Close(); err != nil {
 					t.Fatal(err)
@@ -67,18 +68,18 @@ func TestMaintenanceOwnershipAndRelease(t *testing.T) {
 				if err = os.Rename(replacement, path); err != nil {
 					t.Fatal(err)
 				}
-				_, err = helper.apply(ctx, false, Preview{})
+				_, err = helper.apply(ctx, false, daemon.StorageReport{})
 			case "deletion failure":
 				if err = os.Chmod(directory, 0500); err != nil {
 					t.Fatal(err)
 				}
 				defer os.Chmod(directory, 0700)
-				_, err = helper.apply(ctx, false, Preview{})
+				_, err = helper.apply(ctx, false, daemon.StorageReport{})
 			case "vacuum failure":
-				_, err = helper.apply(ctx, true, Preview{Database: 4096, DB: Database{FreePages: 1}})
+				_, err = helper.apply(ctx, true, daemon.StorageReport{Database: 4096, DB: daemon.StorageDatabase{FreePages: 1}})
 			case "no free pages":
 				var result CleanupResult
-				result, err = helper.apply(ctx, true, Preview{Database: 4096})
+				result, err = helper.apply(ctx, true, daemon.StorageReport{Database: 4096})
 				if !result.VacuumSkipped || result.Vacuumed {
 					t.Fatalf("unexpected vacuum result: %+v", result)
 				}

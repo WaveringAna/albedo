@@ -7,25 +7,38 @@ import (
 	"strings"
 	"syscall"
 
+	"albedo/cli/internal/daemon"
 	"albedo/cli/internal/storage"
 	"github.com/spf13/cobra"
 )
 
 func newStorage(deps Dependencies) *cobra.Command {
-	var asJSON, sessions bool
+	var asJSON, sessions, offline bool
 	command := &cobra.Command{Use: "storage", Short: "show disk usage or clean up selected data", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		preview, err := deps.Storage.Report(cmd.Context())
-		if err != nil {
-			return err
+		var preview *daemon.StorageReport
+		var err error
+		if !offline {
+			preview, err = deps.Application.StorageReport(cmd.Context())
+			if err != nil {
+				return err
+			}
+		}
+		if preview == nil {
+			report, reportErr := deps.Storage.OfflineReport(cmd.Context())
+			if reportErr != nil {
+				return reportErr
+			}
+			preview = &report
 		}
 		if asJSON {
 			return writeJSON(cmd.OutOrStdout(), preview, true)
 		}
-		if err := storagePrint(cmd.OutOrStdout(), preview, sessions); err != nil {
+		if err := storagePrint(cmd.OutOrStdout(), *preview, sessions); err != nil {
 			return err
 		}
 		return storageHint(cmd.OutOrStdout())
 	}}
+	command.Flags().BoolVar(&offline, "offline", false, "inspect local storage without contacting the daemon")
 	command.Flags().BoolVar(&asJSON, "json", false, "print the full storage report as JSON")
 	command.Flags().BoolVar(&sessions, "sessions", false, "show estimated sizes by session")
 	command.MarkFlagsMutuallyExclusive("json", "sessions")

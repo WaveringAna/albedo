@@ -3,10 +3,12 @@
 package storage
 
 import (
+	"albedo/cli/internal/daemon"
 	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -57,7 +59,7 @@ c.close()`
 			t.Fatal(err)
 		}
 	}
-	p, reportErr := testService(home).Report(t.Context())
+	p, reportErr := testService(home).OfflineReport(t.Context())
 	if reportErr != nil {
 		t.Fatal(reportErr)
 	}
@@ -101,7 +103,7 @@ c.close()`
 			t.Errorf("should retain %s: %v", path, err)
 		}
 	}
-	if after, err := testService(home).Report(t.Context()); err != nil || len(after.DB.Sessions) != 1 || after.Database >= p.Database || after.DB.FreePages != 0 {
+	if after, err := testService(home).OfflineReport(t.Context()); err != nil || len(after.DB.Sessions) != 1 || after.Database >= p.Database || after.DB.FreePages != 0 {
 		t.Fatalf("--all did not safely reclaim SQLite pages: %+v, %v", after, err)
 	}
 }
@@ -122,7 +124,7 @@ func TestStorageRefusesSymlinkDirectory(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(home, "kernels")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if _, err := testService(home).Report(t.Context()); err == nil {
+	if _, err := testService(home).OfflineReport(t.Context()); err == nil {
 		t.Fatal("followed symlinked kernel directory")
 	}
 }
@@ -200,6 +202,42 @@ func TestCleanupRevalidatesBeforeAnyDeletion(t *testing.T) {
 				t.Fatalf("cleanup partially deleted candidates: %v", err)
 			}
 		})
+	}
+}
+
+// Session deletion must use daemon authority even when its reported files are
+// inaccessible to this client. Local mutation plans still revalidate locally.
+func TestSessionDeletionPlanNeverInspectsDaemonReportedPaths(t *testing.T) {
+	id := strings.Repeat("a", 32)
+	home := filepath.Join(t.TempDir(), "not-local-storage")
+	if err := os.WriteFile(home, []byte("cannot inspect as a home"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	deleted := false
+	service := testService(home)
+	service.OnlineReport = func(context.Context) (*daemon.StorageReport, error) {
+		return &daemon.StorageReport{
+			DB:         daemon.StorageDatabase{Sessions: []daemon.StorageSession{{ID: id, Bytes: 7}}},
+			OldKernels: []daemon.StorageFile{{Path: "/not-accessible/daemon/orphan.state", Bytes: 5}},
+		}, nil
+	}
+	service.DeleteSessions = func(ctx context.Context, ids []string) error {
+		deleted = slices.Equal(ids, []string{id})
+		return nil
+	}
+	plan, err := service.PlanCleanup(t.Context(), CleanupOptions{Sessions: []string{id}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.Preview(); len(got.DB.Sessions) != 1 || got.DB.Sessions[0].Bytes != 7 {
+		t.Fatalf("lost authoritative preview: %+v", got)
+	}
+	if _, err := service.ApplyCleanup(t.Context(), plan); err != nil || !deleted {
+		t.Fatalf("session deletion was not delegated: %v", err)
+	}
+	service.OnlineReport = func(context.Context) (*daemon.StorageReport, error) { return nil, nil }
+	if _, err := service.PlanCleanup(t.Context(), CleanupOptions{Sessions: []string{id}}); err == nil || !strings.Contains(err.Error(), "running daemon") {
+		t.Fatalf("missing daemon not actionable: %v", err)
 	}
 }
 

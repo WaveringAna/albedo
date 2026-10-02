@@ -2,6 +2,7 @@
 package storage
 
 import (
+	"albedo/cli/internal/daemon"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 // Service keeps offline inspection separate from daemon-backed session deletion.
 type Service struct {
+	OnlineReport   func(context.Context) (*daemon.StorageReport, error)
 	Now            func() time.Time
 	Running        func() (bool, error)
 	DeleteSessions func(context.Context, []string) error
@@ -28,10 +30,10 @@ type CleanupPlan struct {
 	files   map[string]os.FileInfo
 	home    string
 	options CleanupOptions
-	preview Preview
+	preview daemon.StorageReport
 }
 
-func (p CleanupPlan) Preview() Preview {
+func (p CleanupPlan) Preview() daemon.StorageReport {
 	result := p.preview
 	result.DB.Sessions = slices.Clone(result.DB.Sessions)
 	result.OldKernels = slices.Clone(result.OldKernels)
@@ -52,9 +54,6 @@ type CleanupResult struct {
 
 var storageID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
-func (s *Service) Report(ctx context.Context) (Preview, error) {
-	return storageSnapshot(ctx, s.Home, s.Now())
-}
 func (s *Service) PlanCleanup(ctx context.Context, options CleanupOptions) (CleanupPlan, error) {
 	var plan CleanupPlan
 	options.Sessions = slices.Clone(options.Sessions)
@@ -78,7 +77,23 @@ func (s *Service) PlanCleanup(ctx context.Context, options CleanupOptions) (Clea
 	if len(options.Sessions) > 0 && (options.OldKernels || options.Backups || options.Vacuum) {
 		return plan, errors.New("delete sessions and clean up local files in separate commands; session deletion needs Albedo running, file cleanup needs it stopped")
 	}
-	preview, err := s.Report(ctx)
+	var preview daemon.StorageReport
+	var err error
+	if len(options.Sessions) > 0 {
+		if s.OnlineReport == nil {
+			return plan, errors.New("session deletion needs a running daemon; start Albedo, then try again")
+		}
+		online, reportErr := s.OnlineReport(ctx)
+		if reportErr != nil {
+			return plan, reportErr
+		}
+		if online == nil {
+			return plan, errors.New("session deletion needs a running daemon; start Albedo, then try again")
+		}
+		preview = *online
+	} else {
+		preview, err = s.OfflineReport(ctx)
+	}
 	if err != nil {
 		return plan, err
 	}
@@ -95,13 +110,19 @@ func (s *Service) PlanCleanup(ctx context.Context, options CleanupOptions) (Clea
 		}
 	} else {
 		for _, id := range options.Sessions {
-			if !slices.ContainsFunc(preview.DB.Sessions, func(session Session) bool { return session.ID == id }) {
+			if !slices.ContainsFunc(preview.DB.Sessions, func(session daemon.StorageSession) bool { return session.ID == id }) {
 				return plan, fmt.Errorf("no session has the ID %s; use the full ID from albedo sessions", id)
 			}
 		}
 	}
 	plan = CleanupPlan{preview: preview, options: options, home: s.Home, files: make(map[string]os.FileInfo)}
+	if len(options.Sessions) > 0 {
+		return plan, nil
+	}
 	for _, file := range append(slices.Clone(preview.OldKernels), preview.OldBackups...) {
+		if err := ctx.Err(); err != nil {
+			return CleanupPlan{}, err
+		}
 		info, err := os.Lstat(file.Path)
 		if err != nil {
 			return CleanupPlan{}, err
@@ -126,7 +147,7 @@ func (s *Service) ApplyCleanup(ctx context.Context, plan CleanupPlan) (CleanupRe
 	if running {
 		return result, errors.New("daemon started while you were confirming cleanup; no files have been removed; stop Albedo and try again")
 	}
-	var files []File
+	var files []daemon.StorageFile
 	if options.OldKernels {
 		files = append(files, preview.OldKernels...)
 	}
@@ -138,7 +159,7 @@ func (s *Service) ApplyCleanup(ctx context.Context, plan CleanupPlan) (CleanupRe
 		return result, err
 	}
 	defer helper.close()
-	fresh, err := s.Report(ctx)
+	fresh, err := s.OfflineReport(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
@@ -156,6 +177,9 @@ func (s *Service) ApplyCleanup(ctx context.Context, plan CleanupPlan) (CleanupRe
 	}
 	// Recheck all approved candidates before deleting any, including replacements of equal size.
 	for _, file := range files {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		info, err := os.Lstat(file.Path)
 		if err != nil {
 			return result, err

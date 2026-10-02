@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"albedo/cli/internal/storage"
+	"albedo/cli/internal/daemon"
 )
 
 func storageSize(bytes int64) string {
@@ -24,7 +24,7 @@ func storageSize(bytes int64) string {
 	return ""
 }
 
-func storagePrint(w io.Writer, p storage.Preview, sessions bool) error {
+func storagePrint(w io.Writer, p daemon.StorageReport, sessions bool) error {
 	var text strings.Builder
 	fmt.Fprintf(&text, "Database: %s · %s of unused space can be reclaimed with --vacuum\n", storageSize(p.Database), storageSize(p.DB.FreePages*p.DB.PageSize))
 	fmt.Fprintf(&text, "Shared images: %s (each image is stored once)\n", storageSize(p.DB.Images))
@@ -41,7 +41,7 @@ func storagePrint(w io.Writer, p storage.Preview, sessions bool) error {
 	}
 	fmt.Fprintf(&text, "Available to clean up: %d unused Python state files (%s), %d old backups (%s)\n", len(p.OldKernels), storageSize(kernels), len(p.OldBackups), storageSize(backups))
 	if sessions {
-		slices.SortFunc(p.DB.Sessions, func(a, b storage.Session) int { return cmp.Compare(b.Bytes, a.Bytes) })
+		slices.SortFunc(p.DB.Sessions, func(a, b daemon.StorageSession) int { return cmp.Compare(b.Bytes, a.Bytes) })
 		for _, s := range p.DB.Sessions {
 			fmt.Fprintf(&text, "  %s  %s\n", storageSize(s.Bytes), s.ID)
 		}

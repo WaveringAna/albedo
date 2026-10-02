@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"albedo/cli/internal/daemon"
 	"bytes"
 	"context"
 	_ "embed"
@@ -29,7 +30,7 @@ type maintenanceMessage struct {
 	Ready  bool           `json:"ready"`
 }
 
-func startMaintenance(ctx context.Context, home string, files []File) (*maintenance, error) {
+func startMaintenance(ctx context.Context, home string, files []daemon.StorageFile) (*maintenance, error) {
 	helper := &maintenance{command: exec.CommandContext(ctx, "python3", "-c", maintenanceScript, home)}
 	helper.command.Stderr = &helper.stderr
 	input, err := helper.command.StdinPipe()
@@ -87,7 +88,7 @@ func (m *maintenance) failure(ctx context.Context, err error) error {
 	return fmt.Errorf("storage maintenance: %w: %s", err, strings.TrimSpace(m.stderr.String()))
 }
 
-func (m *maintenance) apply(ctx context.Context, vacuum bool, fresh Preview) (CleanupResult, error) {
+func (m *maintenance) apply(ctx context.Context, vacuum bool, fresh daemon.StorageReport) (CleanupResult, error) {
 	var result CleanupResult
 	err := json.NewEncoder(m.input).Encode(struct {
 		Apply     bool  `json:"apply"`

@@ -102,6 +102,7 @@ func run(args []string) error {
 			return found.Kind == daemon.Running, err
 		},
 		DeleteSessions: application.DeleteSessions,
+		OnlineReport:   application.StorageReport,
 	}
 	workspace, err := os.Getwd()
 	if err != nil {
