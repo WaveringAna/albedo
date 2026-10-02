@@ -36,9 +36,13 @@ func ParseToolTrace(raw any) *ToolTrace {
 		return nil
 	}
 
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return nil
+	data, ok := raw.(json.RawMessage)
+	if !ok {
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			return nil
+		}
+		data = encoded
 	}
 
 	var trace ToolTrace

@@ -266,11 +266,12 @@ func (c *ChatClient) GetStatus(ctx context.Context) (*AgentStatus, error) {
 	}, nil
 }
 
-// wireChatEvent keeps arbitrary tool arguments separate from protocol fields.
+// wireChatEvent decodes tool arguments and optional display traces separately.
 type wireChatEvent struct {
 	CallID  string          `json:"callId"`
 	Args    json.RawMessage `json:"args"`
 	Elapsed json.RawMessage `json:"elapsedMs"`
+	Trace   json.RawMessage `json:"trace"`
 	StreamEvent
 }
 
@@ -440,11 +441,9 @@ func decodeChatEvent(data json.RawMessage) (*wireChatEvent, error) {
 			return nil, errors.New("invalid image metadata")
 		}
 	}
-	if event.ToolTrace != nil {
-		event.ToolTrace = ParseToolTrace(event.ToolTrace)
-		if event.ToolTrace == nil {
-			return nil, errors.New("invalid tool trace")
-		}
+	if len(event.Trace) != 0 && string(event.Trace) != "null" {
+		// Display-only evidence must not prevent loading the saved conversation.
+		event.ToolTrace = ParseToolTrace(event.Trace)
 	}
 	return &event, nil
 }

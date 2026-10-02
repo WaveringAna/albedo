@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -356,6 +357,60 @@ func TestInitialStreamRequiresLeadingReset(t *testing.T) {
 			failure, ok := errors.AsType[*StreamError](err)
 			if !ok || failure.Kind != StreamProtocol {
 				t.Fatalf("initial batch without reset accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestStreamLoadsHistoryDespiteInvalidDisplayTraces(t *testing.T) {
+	cases := []struct {
+		name      string
+		trace     string
+		wantTrace bool
+	}{
+		{"missing", "", false},
+		{"null", "null", false},
+		{"wrong type", `"unusable"`, false},
+		{"wrong nested type", `{"activities":false}`, false},
+		{"unknown activity", `{"activities":[{"kind":"unknown","target":"file"}]}`, false},
+		{"oversized target", `{"activities":[{"kind":"read","target":"` + strings.Repeat("界", 1001) + `"}]}`, false},
+		{"oversized diff", `{"changes":[{"kind":"diff","path":"file","diff":"` + strings.Repeat("🙂", 16001) + `"}]}`, false},
+		{"negative line count", `{"changes":[{"kind":"diff","path":"file","added":-1}]}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			traceField := ""
+			if tc.trace != "" {
+				traceField = `,"trace":` + tc.trace
+			}
+			batch := `{"generation":"generation-a","cursor":12,"events":[{"type":"reset"},{"type":"tool","callId":"call","name":"python","args":"{}","result":"saved output"` + traceField + `},{"type":"text","text":"after tool"}]}`
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				if requests.Add(1) == 1 {
+					_, _ = fmt.Fprintf(w, "data: %s\n\n", batch)
+				} else if got := r.URL.Query().Get("after_seq"); got != "12" {
+					t.Errorf("history batch lost cursor: %s", got)
+				}
+			}))
+			defer server.Close()
+			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, ""), "session")
+			var events []StreamEvent
+			consumed := 0
+			for range 2 {
+				if err := client.StreamWithProgress(t.Context(), 0, func(event StreamEvent) error {
+					events = append(events, event)
+					return nil
+				}, func() { consumed++ }); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if consumed != 1 || len(events) != 3 || events[1].Type != EventTool || events[1].ToolResult != "saved output" || events[2].Text != "after tool" {
+				t.Fatalf("history did not load completely: consumed=%d events=%+v", consumed, events)
+			}
+			if got := events[1].ToolTrace; (got != nil) != tc.wantTrace {
+				t.Fatalf("unexpected display trace: %+v", got)
+
 			}
 		})
 	}
