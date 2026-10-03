@@ -16,17 +16,6 @@ pub type Group {
   UI
 }
 
-pub fn group_name(group: Group) -> String {
-  case group {
-    Providers -> "providers"
-    MCP -> "mcp"
-    Extensions -> "extensions"
-    Capabilities -> "capabilities"
-    Models -> "models"
-    UI -> "ui"
-  }
-}
-
 pub fn parse_group(name: String) -> Result(Group, String) {
   case name {
     "providers" -> Ok(Providers)

@@ -15,14 +15,3 @@ func object(data []byte) (map[string]json.RawMessage, error) {
 	}
 	return fields, nil
 }
-
-func required(fields map[string]json.RawMessage, key string, target any) error {
-	raw, ok := fields[key]
-	if !ok || string(raw) == "null" {
-		return fieldError(key)
-	}
-	if err := json.Unmarshal(raw, target); err != nil {
-		return &responseFieldError{field: key, cause: err}
-	}
-	return nil
-}

@@ -135,20 +135,6 @@ fn kept(
   }
 }
 
-/// The steps as clients read them: from `at` on, `cached` tokens, absent
-/// when unknown.
-pub fn steps_json(fade: Fade) -> Json {
-  json.array(fade.steps, fn(step) {
-    json.object([
-      #("at", json.int(fade.anchor_ms + step.after_ms)),
-      ..case step.cached {
-        Some(cached) -> [#("cached", json.int(cached))]
-        None -> []
-      }
-    ])
-  })
-}
-
 /// The stored form, which keeps the anchor apart so a ping can move it.
 pub fn to_json(fade: Fade) -> Json {
   json.object([
