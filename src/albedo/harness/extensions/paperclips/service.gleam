@@ -89,7 +89,7 @@ fn dispatch(
         |> result.map_error(failure),
       )
       let supplied = list.length(items)
-      let items = bounded(items)
+      let items = api.bounded_items(items, 350_000, resource)
       let next = case
         supplied == limit || list.length(items) < supplied,
         list.last(items)
@@ -335,7 +335,7 @@ fn value(item: ledger.Vent) -> json.Json {
     #(
       "title",
       json.string(case item.title {
-        "" -> preview(presentation.title(item), 1000)
+        "" -> api.content_preview(presentation.title(item), 1000)
         title -> title
       }),
     ),
@@ -393,7 +393,7 @@ fn descriptor(
     rows: list.map(items, fn(item) {
       client_api.PageRow(
         id: int.to_string(item.id),
-        text: preview(
+        text: api.content_preview(
           case item.title {
             "" -> item.message
             title -> title
@@ -402,7 +402,10 @@ fn descriptor(
         ),
         badge: ledger.status_name(item.status),
         tone: "plain",
-        detail: Some(preview(presentation.detail(labels, item), 4000)),
+        detail: Some(api.content_preview(
+          presentation.detail(labels, item),
+          4000,
+        )),
         resource: resource(item),
       )
     }),
@@ -587,25 +590,6 @@ fn actions() -> List(client_api.Action) {
   ]
 }
 
-fn bounded(items: List(ledger.Vent)) -> List(ledger.Vent) {
-  let #(kept, _, _) =
-    list.fold(items, #([], 0, False), fn(state, item) {
-      let #(kept, bytes, full) = state
-      let size = string.byte_size(json.to_string(resource(item)))
-      case full || bytes + size > 350_000 {
-        True -> #(kept, bytes, True)
-        False -> #([item, ..kept], bytes + size, False)
-      }
-    })
-  list.reverse(kept)
-}
-
-fn preview(text: String, limit: Int) -> String {
-  api.content_slice(text, 0, limit)
-  |> result.map(fn(slice) { slice.0 })
-  |> result.unwrap("")
-}
-
 fn glance(items: List(ledger.Vent)) -> json.Json {
   let rows =
     items
@@ -616,7 +600,7 @@ fn glance(items: List(ledger.Vent)) -> json.Json {
         #("id", json.string(int.to_string(item.id))),
         #(
           "text",
-          json.string(preview(
+          json.string(api.content_preview(
             case item.title {
               "" -> item.message
               title -> title
@@ -653,7 +637,7 @@ pub fn sidebar(
     list.map(items, fn(item) {
       page.detail_row(
         int.to_string(item.id),
-        preview(presentation.title(item), 64),
+        api.content_preview(presentation.title(item), 64),
         ledger.status_name(item.status),
         page.Warning,
         "",

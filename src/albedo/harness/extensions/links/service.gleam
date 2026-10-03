@@ -100,7 +100,7 @@ fn dispatch(
         ledger.page(daemon.ledger, own, group.revision, offset, limit)
         |> result.map_error(failure),
       )
-      let members = bounded_members(group.members)
+      let members = api.bounded_items(group.members, 100_000, json.string)
       let next = case group.total > offset + list.length(members) {
         True ->
           json.string(api.page_token(
@@ -283,7 +283,8 @@ fn change(
   group: ledger.Group,
   notes: List(#(String, String)),
 ) -> json.Json {
-  let members = list.take(group.members, 200) |> bounded_members
+  let members =
+    list.take(group.members, 200) |> api.bounded_items(100_000, json.string)
   bus.invalidate(list.map(notes, fn(note) { url(note.0) }), [], True)
   let targets =
     daemon.sessions()
@@ -471,17 +472,4 @@ fn field(name: String) -> json.Json {
     #("maximum", json.null()),
     #("description", json.string("path or host:/path")),
   ])
-}
-
-fn bounded_members(members: List(String)) -> List(String) {
-  let #(kept, _, _) =
-    list.fold(members, #([], 0, False), fn(state, member) {
-      let #(kept, bytes, full) = state
-      let size = string.byte_size(json.to_string(json.string(member)))
-      case full || bytes + size > 100_000 {
-        True -> #(kept, bytes, True)
-        False -> #([member, ..kept], bytes + size, False)
-      }
-    })
-  list.reverse(kept)
 }

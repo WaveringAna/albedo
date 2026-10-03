@@ -83,7 +83,7 @@ fn dispatch(
         |> result.map_error(failure),
       )
       let supplied = list.length(items)
-      let items = bounded(items)
+      let items = api.bounded_items(items, 350_000, resource)
       let next = case
         supplied == limit || list.length(items) < supplied,
         list.last(items)
@@ -331,7 +331,7 @@ fn descriptor(items: List(ledger.Job), session: String) -> json.Json {
     rows: list.map(items, fn(item) {
       client_api.PageRow(
         id: int.to_string(item.id),
-        text: preview(item.prompt, 1000),
+        text: api.content_preview(item.prompt, 1000),
         badge: item.kind,
         tone: "plain",
         detail: None,
@@ -529,23 +529,4 @@ fn actions(session: String) -> List(client_api.Action) {
       ),
     ),
   ]
-}
-
-fn bounded(items: List(ledger.Job)) -> List(ledger.Job) {
-  let #(kept, _, _) =
-    list.fold(items, #([], 0, False), fn(state, item) {
-      let #(kept, bytes, full) = state
-      let size = string.byte_size(json.to_string(resource(item)))
-      case full || bytes + size > 350_000 {
-        True -> #(kept, bytes, True)
-        False -> #([item, ..kept], bytes + size, False)
-      }
-    })
-  list.reverse(kept)
-}
-
-fn preview(text: String, limit: Int) -> String {
-  api.content_slice(text, 0, limit)
-  |> result.map(fn(slice) { slice.0 })
-  |> result.unwrap("")
 }

@@ -82,7 +82,7 @@ fn dispatch(
         |> result.map_error(failure),
       )
       let supplied = list.length(items)
-      let items = bounded(items, workspace)
+      let items = api.bounded_items(items, 350_000, resource(_, workspace))
       let next = case
         supplied == limit || list.length(items) < supplied,
         list.last(items)
@@ -436,7 +436,7 @@ fn descriptor(items: List(work.Item), workspace: String) -> json.Json {
         text: item.title,
         badge: work.status_name(item.status),
         tone: "plain",
-        detail: Some(preview(item.notes, 4000)),
+        detail: Some(api.content_preview(item.notes, 4000)),
         resource: resource(item, workspace),
       )
     }),
@@ -591,25 +591,6 @@ fn actions(workspace: String) -> List(client_api.Action) {
   ]
 }
 
-fn bounded(items: List(work.Item), workspace: String) -> List(work.Item) {
-  let #(kept, _, _) =
-    list.fold(items, #([], 0, False), fn(state, item) {
-      let #(kept, bytes, full) = state
-      let size = string.byte_size(json.to_string(resource(item, workspace)))
-      case full || bytes + size > 350_000 {
-        True -> #(kept, bytes, True)
-        False -> #([item, ..kept], bytes + size, False)
-      }
-    })
-  list.reverse(kept)
-}
-
-fn preview(text: String, limit: Int) -> String {
-  api.content_slice(text, 0, limit)
-  |> result.map(fn(slice) { slice.0 })
-  |> result.unwrap("")
-}
-
 fn glance(items: List(work.Item), workspace: String) -> json.Json {
   let rows =
     items
@@ -620,7 +601,7 @@ fn glance(items: List(work.Item), workspace: String) -> json.Json {
     |> list.map(fn(item) {
       json.object([
         #("id", json.string(int.to_string(item.id))),
-        #("text", json.string(preview(item.title, 64))),
+        #("text", json.string(api.content_preview(item.title, 64))),
         #("badge", json.string(work.status_name(item.status))),
         #("tone", json.string("plain")),
         #("detail", json.null()),
@@ -669,7 +650,7 @@ pub fn sidebar(
     list.map(items, fn(item) {
       page.detail_row(
         int.to_string(item.id),
-        preview(item.title, 64),
+        api.content_preview(item.title, 64),
         work.status_name(item.status),
         case item.status {
           work.Active -> page.Active

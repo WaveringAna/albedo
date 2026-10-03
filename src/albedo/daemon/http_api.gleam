@@ -223,6 +223,30 @@ pub fn content_slice(
   limit: Int,
 ) -> Result(#(String, Int, Bool), String)
 
+pub fn content_preview(text: String, limit: Int) -> String {
+  content_slice(text, 0, limit)
+  |> result.map(fn(slice) { slice.0 })
+  |> result.unwrap("")
+}
+
+/// Keep the ordered prefix whose encoded items fit within the byte budget.
+pub fn bounded_items(
+  items: List(item),
+  budget: Int,
+  encode: fn(item) -> json.Json,
+) -> List(item) {
+  let #(kept, _, _) =
+    list.fold(items, #([], 0, False), fn(state, item) {
+      let #(kept, bytes, full) = state
+      let size = string.byte_size(json.to_string(encode(item)))
+      case full || bytes + size > budget {
+        True -> #(kept, bytes, True)
+        False -> #([item, ..kept], bytes + size, False)
+      }
+    })
+  list.reverse(kept)
+}
+
 @external(erlang, "albedo_http_api", "image_slice")
 pub fn image_slice(
   base64: String,
