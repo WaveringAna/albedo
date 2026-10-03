@@ -105,3 +105,22 @@ func TestSessionViewerPreviewFetchesOnSettleAndRenders(t *testing.T) {
 		t.Fatal("failed preview did not leave loading state")
 	}
 }
+
+func TestSessionViewerArchiveKeepsCursorSlot(t *testing.T) {
+	m := NewSessionViewer("/work/current")
+	m.SetSize(120, 30)
+	m.SetSessions([]daemon.Session{{ID: "a"}, {ID: "b"}, {ID: "c"}, {ID: "d"}}, nil)
+	m.focus("b")
+	slot := m.Cursor
+	m.prefs.Archived = []string{"b"}
+	m.rebuild()
+	if item, _ := m.Highlighted(); item.ID != "c" || m.Cursor != slot {
+		t.Fatalf("cursor %d on %q, want slot %d on c", m.Cursor, item.ID, slot)
+	}
+	m.focus("d")
+	m.prefs.Archived = []string{"b", "d"}
+	m.rebuild()
+	if item, _ := m.Highlighted(); item.ID != "c" {
+		t.Fatalf("archiving the last session left the cursor on %q, want c", item.ID)
+	}
+}

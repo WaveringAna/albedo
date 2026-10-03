@@ -183,6 +183,8 @@ func (m *SessionViewer) Prune(sessions []daemon.Session) {
 // rebuild orders sessions into sections and refreshes the picker items,
 // keeping the search and the highlighted item.
 func (m *SessionViewer) rebuild() {
+	highlighted, ok := m.Highlighted()
+	slot := m.Cursor
 	if m.section == nil {
 		m.section = map[string]int{}
 	}
@@ -271,6 +273,11 @@ func (m *SessionViewer) rebuild() {
 	}
 	m.Items = items
 	m.applyFilter()
+	// A session that left the list (archived, restored, deleted) leaves its
+	// slot to the next one rather than sending the cursor to the top.
+	if gone := ok && !slices.ContainsFunc(m.Filtered, func(item PickerItem) bool { return item.ID == highlighted.ID }); gone {
+		m.Cursor = max(0, min(slot, len(m.Filtered)-1))
+	}
 	m.rebuildGroups()
 }
 
