@@ -51,15 +51,21 @@ A stdio server is launched as an exact executable and argument vector through Al
 
 ## Tools and lifecycle
 
-Discovered capabilities are advertised as `mcp_<server>_<operation>_<hash>`, so two servers that expose the same tool name stay distinct and stable. Resources and prompts, when a server offers them, appear as one `read_resource` and one `get_prompt` operation per server. The catalog and its connections belong to the session composition: enabling, disabling, or reloading the extension prepares a replacement first and closes the previous connections only after a successful swap.
+Discovered capabilities are advertised as `mcp_<server>_<operation>_<hash>`, so two servers that expose the same tool name stay distinct and stable. Resources and prompts, when a server offers them, appear as one `read_resource` and one `get_prompt` operation per server. Connections belong to the session composition: enabling, disabling, or reloading the extension prepares a replacement first and closes the previous connections only after a successful swap.
 
-A server that cannot start, initialize, or be discovered is left out of the session and named in a warning; the servers that did connect load as usual. Bad configuration (an invalid name, a missing credential file, a catalogue over the size limit) still fails the whole preparation, and the session keeps its previous working composition. Disabling the extension closes every connection and terminates each stdio subprocess.
+### Saved catalogues
+
+Preparation runs in the daemon-wide runtime actor (see [extensions](extensions.md)), so it never waits on a server it has heard from before. Each discovery is saved in the `mcp_catalogues` table, one row per server name, under a fingerprint of that server's configuration and credentials. A session opening with a saved catalogue for the current fingerprint advertises those tools and context at once and dials the server in the background. A tool call that arrives first waits for that dial, up to `startupTimeoutMs` plus `callTimeoutMs`. If the background discovery matches the saved catalogue, nothing else happens: no note, no new prompt. If it differs, the new catalogue is saved and the session refreshes after its next turn, the same way a returning server does.
+
+A server with no saved catalogue (never connected, or its configuration or credentials changed) is connected and discovered during preparation, so only the first session after a change waits on it.
+
+A server that cannot start, initialize, or be discovered during that first connection is left out of the session and named in a warning; the servers that did connect load as usual. A server with a saved catalogue that turns out unreachable stays advertised: its calls report it unavailable, and each later call dials it again. A client that drops after connecting, or that a timed-out call closed, is dialled again by the next call. Bad configuration (an invalid name, a missing credential file, a catalogue over the size limit) still fails the whole preparation, and the session keeps its previous working composition. Disabling the extension closes every connection and terminates each stdio subprocess.
 
 ### Servers that come back
 
 A server that was left out joins the session once it connects, the way a skill does after a reload: albedo prepares the extension again, appends a "capabilities changed" user turn, and keeps the cached system prompt until compaction.
 
-There is no timer. The extension probes the missing servers when the session shows activity (a submit or the end of a turn), first `retryMs` after the session prepared and then at doubling intervals, capped at twenty times `retryMs`. A server found up waits for the end of a turn and then asks the session to refresh, so it appears after the turn that follows its return, not mid-turn. `retryMs` (default `30000`) sits beside `servers` in the `mcp` section. A server that drops after connecting is not removed; its calls report a transport loss as before.
+There is no timer. The extension probes the missing servers when the session shows activity (a submit or the end of a turn), first `retryMs` after the session prepared and then at doubling intervals, capped at twenty times `retryMs`. A server found up waits for the end of a turn and then asks the session to refresh, so it appears after the turn that follows its return, not mid-turn. `retryMs` (default `30000`) sits beside `servers` in the `mcp` section.
 
 ### Saving a server
 

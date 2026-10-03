@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 TOOLS = [
@@ -18,6 +19,16 @@ TOOLS = [
 ]
 
 
+# Optional test controls: `delay` holds the handshake for that many seconds
+# and `tools` replaces the catalogue, without changing the server's config.
+CONTROL = Path(os.environ.get("FAKE_MCP_CONTROL") or "/nonexistent")
+
+
+def control(name):
+    path = CONTROL / name
+    return path.read_text() if path.exists() else None
+
+
 def reply(id, result=None, error=None):
     body = {"jsonrpc": "2.0", "id": id}
     body["error" if error else "result"] = error or result
@@ -31,6 +42,7 @@ for line in sys.stdin:
     if id is None:
         continue
     if method == "initialize":
+        time.sleep(float(control("delay") or 0))
         reply(
             id,
             {
@@ -40,7 +52,8 @@ for line in sys.stdin:
             },
         )
     elif method == "tools/list":
-        reply(id, {"tools": TOOLS})
+        tools = control("tools")
+        reply(id, {"tools": json.loads(tools) if tools else TOOLS})
     elif method == "tools/call":
         arguments = message["params"].get("arguments", {})
         if arguments.get("message") == "fail":

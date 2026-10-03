@@ -42,7 +42,9 @@ class McpTests(unittest.TestCase):
                 ALBEDO_MCP_SECRET="configured-secret",
                 ALBEDO_MCP_CLOSED=str(app.root / "closed"),
                 ALBEDO_MCP_AMBIENT="must-not-reach-the-server",
+                ALBEDO_MCP_CONTROL=str(app.root / "control"),
             )
+            (app.root / "control").mkdir()
             self.configure(app, [str(SERVER)])
             app.store_secrets(
                 "mcp", {"fake": {"env": {"FAKE_SECRET": "stored-secret"}}}
@@ -70,6 +72,7 @@ class McpTests(unittest.TestCase):
                     "env": {
                         "FAKE_SECRET": {"env": "ALBEDO_MCP_SECRET"},
                         "FAKE_MCP_CLOSED": {"env": "ALBEDO_MCP_CLOSED"},
+                        "FAKE_MCP_CONTROL": {"env": "ALBEDO_MCP_CONTROL"},
                     },
                     "startupTimeoutMs": startup,
                 }
@@ -90,10 +93,11 @@ class McpTests(unittest.TestCase):
         with self.app.api(self.route, body) as response:
             return next(item for item in json.load(response) if item["name"] == "mcp")
 
-    def turn(self, prompt):
+    def turn(self, prompt, session=None):
+        session = session or self.session
         before = len(self.provider.requests)
-        self.app.prompt(self.session, prompt).close()
-        self.app.idle(self.session, timeout=60)
+        self.app.prompt(session, prompt).close()
+        self.app.idle(session, timeout=60)
         return [entry["request"] for entry in self.provider.requests[before:]]
 
     def test_discovery_namespaced_call_and_scrubbed_credentials(self):
@@ -190,3 +194,51 @@ class McpTests(unittest.TestCase):
         history = json.dumps(self.app.history(self.session))
         self.assertIn("capabilities changed", history)
         self.assertIn("fake", history)
+
+    def test_a_known_server_does_not_hold_up_opening_a_session(self):
+        self.extension({"name": "mcp", "enabled": True, "scope": "global"})
+        self.assertEqual(len(self.tools(self.turn("learn the catalogue"))), 1)
+        (self.app.root / "control" / "delay").write_text("3")
+
+        session = self.app.session()
+        started = time.monotonic()
+        with self.app.api(f"/sessions/{session}/commands") as response:
+            commands = [item["name"] for item in json.load(response)]
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertIn("/model", commands)
+
+        # The saved tools are advertised at once; the call waits for the dial.
+        requests = self.turn("use the mcp server", session)
+        self.assertEqual(len(self.tools(requests)), 1)
+        output = next(
+            item["output"]
+            for item in requests[-1]["input"]
+            if item.get("type") == "function_call_output"
+        )
+        self.assertIn(self.message, output)
+        self.assertNotIn("capabilities changed", json.dumps(self.app.history(session)))
+
+    def test_a_changed_catalogue_refreshes_the_session_after_its_turn(self):
+        self.extension({"name": "mcp", "enabled": True, "scope": "global"})
+        self.turn("learn the catalogue")
+        schema = {
+            "type": "object",
+            "required": ["message"],
+            "properties": {"message": {"type": "string"}},
+        }
+        tools = [
+            {"name": name, "description": name, "inputSchema": schema}
+            for name in ("echo", "shout")
+        ]
+        (self.app.root / "control" / "tools").write_text(json.dumps(tools))
+
+        session = self.app.session()
+        self.assertEqual(
+            len(self.tools(self.turn("still the saved tools", session))), 1
+        )
+        deadline = time.monotonic() + 20
+        while "capabilities changed" not in json.dumps(self.app.history(session)):
+            self.assertLess(time.monotonic(), deadline, "the session never refreshed")
+            time.sleep(0.1)
+        self.assertIn("shout", json.dumps(self.app.history(session)))
+        self.assertEqual(len(self.tools(self.turn("now the new ones", session))), 2)

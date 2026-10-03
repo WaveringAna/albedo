@@ -771,12 +771,15 @@ fn handle(
         False, True -> admit(state, submission, reply)
       }
     Submit(submission, reply) -> admit(state, submission, reply)
-    ReadCommands(reply) ->
-      answer(
-        state,
-        reply,
-        runtime.peek_commands(state.host, state.info.id, state.info.cwd),
-      )
+    ReadCommands(reply) -> {
+      let host = state.host
+      let id = state.info.id
+      let cwd = state.info.cwd
+      process.spawn_unlinked(fn() {
+        process.send(reply, runtime.peek_commands(host, id, cwd))
+      })
+      actor.continue(state)
+    }
     ReadSelection(reply) -> answer(state, reply, model_selection(state.info))
     CancelSubmission(id, reply) -> {
       let #(selected, remaining) =

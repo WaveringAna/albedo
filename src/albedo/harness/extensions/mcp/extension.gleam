@@ -10,6 +10,7 @@ import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import sqlight
 
 type EnvRef {
   EnvRef(name: String)
@@ -146,17 +147,69 @@ fn bundle(resolve: fn() -> Result(Config, String)) -> extension.Extension {
         prepare(config, ledger, session, workspace)
       }),
     ],
-    extension.no_initialise,
+    initialise_catalogues,
   )
+}
+
+/// The last catalogue each server answered, under the fingerprint of the
+/// setup it answered for. A session opening reads it instead of waiting on
+/// the server; one row per server name, so it never outgrows the config.
+fn initialise_catalogues(ledger: store.Store) -> Result(Nil, String) {
+  store.query(ledger, fn(db) {
+    store.exec(
+      db,
+      "CREATE TABLE IF NOT EXISTS mcp_catalogues(server TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,catalogue BLOB NOT NULL);",
+    )
+  })
+}
+
+fn saved_catalogue(
+  ledger: store.Store,
+  server: String,
+  fingerprint: String,
+) -> Option(BitArray) {
+  store.read(
+    ledger,
+    "SELECT catalogue FROM mcp_catalogues WHERE server=? AND fingerprint=?",
+    [sqlight.text(server), sqlight.text(fingerprint)],
+    decode.at([0], decode.bit_array),
+  )
+  |> result.unwrap([])
+  |> list.first
+  |> option.from_result
+}
+
+fn save_catalogue(
+  ledger: store.Store,
+  server: String,
+  fingerprint: String,
+  catalogue: BitArray,
+) -> Nil {
+  let _ =
+    store.write(
+      ledger,
+      "INSERT OR REPLACE INTO mcp_catalogues(server,fingerprint,catalogue) VALUES(?,?,?)",
+      [sqlight.text(server), sqlight.text(fingerprint), sqlight.blob(catalogue)],
+    )
+  Nil
 }
 
 fn prepare(
   config: Config,
-  _ledger: store.Store,
+  ledger: store.Store,
   session: String,
   _workspace: String,
 ) -> Result(extension.Managed, String) {
-  use handle <- result.try(native_prepare(encode_config(config), session))
+  use handle <- result.try(
+    native_prepare(
+      encode_config(config),
+      session,
+      fn(server, fingerprint) { saved_catalogue(ledger, server, fingerprint) },
+      fn(server, fingerprint, catalogue) {
+        save_catalogue(ledger, server, fingerprint, catalogue)
+      },
+    ),
+  )
   case decode_definitions(native_definitions(handle)) {
     Error(error) -> {
       native_close(handle)
@@ -276,7 +329,12 @@ fn encode_refs(values: Dict(String, EnvRef)) -> Json {
 }
 
 @external(erlang, "albedo_mcp", "prepare")
-fn native_prepare(config: String, session: String) -> Result(Handle, String)
+fn native_prepare(
+  config: String,
+  session: String,
+  saved: fn(String, String) -> Option(BitArray),
+  save: fn(String, String, BitArray) -> Nil,
+) -> Result(Handle, String)
 
 @external(erlang, "albedo_mcp", "definitions")
 fn native_definitions(handle: Handle) -> String
