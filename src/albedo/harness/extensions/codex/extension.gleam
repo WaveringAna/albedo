@@ -64,7 +64,7 @@ fn list_models(provider: String, _endpoint: Option(String)) -> List(String) {
     "codex" -> {
       let home = settings.home()
       let _ =
-        result.map(account(home, ""), fn(a) {
+        result.map(account(home, "", ""), fn(a) {
           catalog.refresh(home, a.token, a.account_id)
         })
       catalog.listed(home)
@@ -76,7 +76,7 @@ fn list_models(provider: String, _endpoint: Option(String)) -> List(String) {
 /// Refetches the list `list_models` shows, for the same account.
 fn reload_models() -> Result(Nil, String) {
   let home = settings.home()
-  use a <- result.try(account(home, ""))
+  use a <- result.try(account(home, "", ""))
   catalog.reload(home, a.token, a.account_id)
 }
 
@@ -115,12 +115,21 @@ fn resolve(
   context: extension.ModelContext,
 ) -> Option(Result(extension.Upstream, String)) {
   use <- rotation.require_provider(context, "codex", "Codex", types.Responses)
-  use access <- result.map(account(context.home, context.session))
+  use access <- result.map(account(
+    context.home,
+    context.session,
+    context.profile,
+  ))
   // The list refreshes here, once per resolved session, and not in the rotation
   // pool: a pool reconnect is not a reason to reach the network again.
   catalog.refresh_later(context.home, access.token, access.account_id)
   rotation.client_upstream(
-    pool(context.home, context.session, openai_api.stream),
+    profile_pool(
+      context.home,
+      context.session,
+      context.profile,
+      openai_api.stream,
+    ),
     client_for(access, context.session),
     fn(client, error) { account_failure(context.home, client, error) },
     account_label,
@@ -136,16 +145,24 @@ fn account_label(client: types.Client) -> String {
 }
 
 /// The session's current account as a client.
-fn connect(home: String, session: String) -> Result(types.Client, String) {
-  account(home, session) |> result.map(client_for(_, session))
+fn connect(
+  home: String,
+  session: String,
+  profile: String,
+) -> Result(types.Client, String) {
+  account(home, session, profile) |> result.map(client_for(_, session))
 }
 
 fn client_for(access: Access, session: String) -> types.Client {
   openai_api.codex_client(base_url, access.token, access.account_id, session)
 }
 
-fn account(home: String, session: String) -> Result(Access, String) {
-  use encoded <- result.try(native_access(home, session))
+fn account(
+  home: String,
+  session: String,
+  profile: String,
+) -> Result(Access, String) {
+  use encoded <- result.try(native_access(home, session, profile))
   json.parse(encoded, access_decoder())
   |> result.replace_error("invalid Codex credential response")
 }
@@ -158,8 +175,18 @@ pub fn pool(
   stream: fn(types.Client, types.Request, fn(types.Event) -> types.Control) ->
     Result(types.Turn, types.Error),
 ) -> rotation.Pool(types.Client) {
+  profile_pool(home, session, "", stream)
+}
+
+fn profile_pool(
+  home: String,
+  session: String,
+  profile: String,
+  stream: fn(types.Client, types.Request, fn(types.Event) -> types.Control) ->
+    Result(types.Turn, types.Error),
+) -> rotation.Pool(types.Client) {
   rotation.Pool(
-    current: fn() { connect(home, session) },
+    current: fn() { connect(home, session, profile) },
     mark: fn(client, body) {
       limited(home, client, body) |> rotation.mark_limit
     },
@@ -246,7 +273,11 @@ fn native_exchange(
 fn native_account(credential: Dynamic) -> oauth.Account
 
 @external(erlang, "albedo_openai_auth", "codex_access")
-fn native_access(home: String, session: String) -> Result(String, String)
+fn native_access(
+  home: String,
+  session: String,
+  profile: String,
+) -> Result(String, String)
 
 @external(erlang, "albedo_openai_auth", "codex_revoke")
 fn native_revoke(home: String, access: String) -> Result(String, String)

@@ -348,6 +348,51 @@ pub fn trace(storage: store.Store, id: String) -> Option(Json) {
   |> option.from_result
 }
 
+/// History captures retrieve the selected cells on their existing connection.
+/// A missing extension table is absence; a failed read or corrupt trace is an
+/// error, so the caller cannot install an incomplete successful snapshot.
+pub fn traces_in(
+  db: sqlight.Connection,
+  ids: List(String),
+) -> Result(List(#(String, Json)), String) {
+  case ids {
+    [] -> Ok([])
+    _ -> {
+      use tables <- result.try(store.rows(
+        db,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='cell_traces'",
+        [],
+        decode.field(0, decode.string, decode.success),
+      ))
+      case tables {
+        [] -> Ok([])
+        _ -> {
+          let placeholders = list.map(ids, fn(_) { "?" }) |> string.join(",")
+          use rows <- result.try(
+            store.rows(
+              db,
+              "SELECT id,payload FROM cell_traces WHERE id IN ("
+                <> placeholders
+                <> ")",
+              list.map(ids, sqlight.text),
+              {
+                use id <- decode.field(0, decode.string)
+                use payload <- decode.field(1, decode.bit_array)
+                decode.success(#(id, payload))
+              },
+            ),
+          )
+          list.try_map(rows, fn(row) {
+            unpack_trace(row.1)
+            |> result.map(fn(value) { #(row.0, types.encode_value(value)) })
+            |> result.replace_error("invalid saved cell trace")
+          })
+        }
+      }
+    }
+  }
+}
+
 @external(erlang, "albedo_conversation", "pack")
 fn pack_trace(value: Dynamic) -> BitArray
 

@@ -1,22 +1,28 @@
 //// An embeddable extension runtime with durable work and session-owned Python kernels.
 
+import albedo/daemon/configuration
+import albedo/daemon/session_catalog
 import albedo/daemon/store
-import albedo/harness/capability_catalog
+import albedo/harness/client_api
 import albedo/harness/command
 import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/harness/extensions
 import albedo/harness/extensions/python/cells as journal
 import albedo/harness/extensions/python/kernel as python
+import albedo/harness/extensions/python/link
 import albedo/harness/extensions/work/ledger as work
 import albedo/harness/instruction_files
 import albedo/harness/oauth
+import albedo/harness/project_files
 import albedo/harness/protect
 import albedo/harness/rpc
-import albedo/harness/session_settings
+import albedo/harness/settings
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
+import gleam/erlang/reference.{type Reference}
+import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
@@ -33,6 +39,7 @@ pub opaque type Runtime {
     work: work.Store,
     extensions: List(extension.Extension),
     default_enabled: List(String),
+    quarantined: List(extension.Quarantined),
   )
 }
 
@@ -49,6 +56,60 @@ pub opaque type Session {
     /// the model what happened to its namespace from this.
     origin: Origin,
   )
+}
+
+/// Facts captured before the upgrade and after runtime ownership has settled.
+pub type KernelUpgrade {
+  KernelUpgrade(
+    state: String,
+    old: Option(python.Observation),
+    new: Option(python.Observation),
+    session: Option(Session),
+    stopped_jobs: List(String),
+    warnings: List(String),
+    failure: Option(String),
+  )
+}
+
+pub fn upgrade_async(
+  runtime: Runtime,
+  id: String,
+  answer: fn(Result(KernelUpgrade, String)) -> Nil,
+) -> Nil {
+  case process.subject_owner(runtime.subject) {
+    Error(_) -> answer(Error("runtime owner is unavailable"))
+    Ok(owner) -> {
+      process.spawn_unlinked(fn() {
+        let monitor = process.monitor(owner)
+        let reply = process.new_subject()
+        process.send(
+          runtime.subject,
+          Upgrade(id, fn(outcome) { process.send(reply, outcome) }),
+        )
+        let selector =
+          process.new_selector()
+          |> process.select(reply)
+          |> process.select_specific_monitor(monitor, fn(_) {
+            Error("runtime owner stopped during kernel upgrade")
+          })
+        let outcome = await_upgrade(selector)
+        process.demonitor_process(monitor)
+        answer(outcome)
+      })
+      Nil
+    }
+  }
+}
+
+// The HTTP caller can time out while the actual action remains in flight.
+// Keep its one completion waiter until ownership settles or the owner dies.
+fn await_upgrade(
+  selector: process.Selector(Result(KernelUpgrade, String)),
+) -> Result(KernelUpgrade, String) {
+  case process.selector_receive(selector, 185_000) {
+    Ok(outcome) -> outcome
+    Error(_) -> await_upgrade(selector)
+  }
 }
 
 pub type Origin {
@@ -72,6 +133,332 @@ type Cached {
     composition: extension.Composition,
     instructions: String,
     context: List(types.Input),
+    loaded_revision: Option(String),
+    basis: Option(Desired),
+  )
+}
+
+/// A retained discovery is valid only while its exact source inputs match.
+type Desired {
+  Desired(inputs: String, snapshot: session_catalog.Snapshot)
+}
+
+pub type CompositionObservation {
+  CompositionObservation(
+    discovery: session_catalog.Snapshot,
+    desired_revision: String,
+    loaded_revision: Option(String),
+    needs_reload: Bool,
+    dependencies: Dict(String, List(String)),
+    quarantine: List(extension.Quarantined),
+    availability: Dict(String, Bool),
+    glances: List(extension.Glance),
+  )
+}
+
+pub fn observe_composition(
+  runtime: Runtime,
+  home: String,
+  id: String,
+) -> Result(CompositionObservation, String) {
+  use owner <- result.try(
+    process.subject_owner(runtime.subject)
+    |> result.replace_error("runtime owner is unavailable"),
+  )
+  let monitor = process.monitor(owner)
+  let reply = process.new_subject()
+  process.send(runtime.subject, ObserveComposition(home, id, reply))
+  let outcome =
+    process.new_selector()
+    |> process.select(reply)
+    |> process.select_specific_monitor(monitor, fn(_) {
+      Error("runtime owner stopped during composition observation")
+    })
+    |> process.selector_receive(15_000)
+    |> result.replace_error("runtime composition observation is unavailable")
+    |> result.flatten
+  process.demonitor_process(monitor)
+  outcome
+}
+
+/// Sessions with an actual prepared composition; observing this set does not
+/// prepare another session or attach its kernel.
+pub fn loaded_sessions(runtime: Runtime) -> List(String) {
+  actor.call(runtime.subject, 5000, LoadedIDs)
+}
+
+pub type LoadedObservation {
+  LoadedObservation(
+    loaded_revision: Option(String),
+    kernel: Option(python.Observation),
+    phase: String,
+    recorded_kernel_id: Option(String),
+  )
+}
+
+pub type CatalogObservation {
+  CatalogObservation(
+    discovery: Result(session_catalog.Snapshot, String),
+    loaded_revision: Option(String),
+    commands: List(#(String, command.Command)),
+    client_commands: List(#(String, client_api.Command)),
+  )
+}
+
+/// Desired discovery and retained commands are independent observations. A
+/// failed desired read cannot erase the composition the owner actually loaded.
+pub fn observe_catalog(
+  runtime: Runtime,
+  home: String,
+  id: String,
+) -> Result(CatalogObservation, String) {
+  use owner <- result.try(
+    process.subject_owner(runtime.subject)
+    |> result.replace_error("runtime owner is unavailable"),
+  )
+  let monitor = process.monitor(owner)
+  let reply = process.new_subject()
+  process.send(runtime.subject, ObserveCatalog(home, id, reply))
+  let outcome =
+    process.new_selector()
+    |> process.select(reply)
+    |> process.select_specific_monitor(monitor, fn(_) {
+      Error("runtime owner stopped during catalog observation")
+    })
+    |> process.selector_receive(15_000)
+    |> result.replace_error("runtime catalog observation is unavailable")
+    |> result.flatten
+  process.demonitor_process(monitor)
+  outcome
+}
+
+/// Observe retained loaded state even when desired discovery is unreadable.
+pub fn observe_loaded(
+  runtime: Runtime,
+  id: String,
+) -> Result(LoadedObservation, String) {
+  use owner <- result.try(
+    process.subject_owner(runtime.subject)
+    |> result.replace_error("runtime owner is unavailable"),
+  )
+  let monitor = process.monitor(owner)
+  let reply = process.new_subject()
+  process.send(runtime.subject, ObserveLoaded(id, reply))
+  let outcome =
+    process.new_selector()
+    |> process.select(reply)
+    |> process.select_specific_monitor(monitor, fn(_) {
+      Error("runtime owner stopped during observation")
+    })
+    |> process.selector_receive(5000)
+    |> result.replace_error("loaded runtime observation is unavailable")
+    |> result.flatten
+  process.demonitor_process(monitor)
+  outcome
+}
+
+fn composition_inventory(state: State) -> session_catalog.Inventory {
+  session_catalog.Inventory(
+    state.work,
+    state.extensions,
+    state.quarantined,
+    state.default_enabled,
+  )
+}
+
+/// Trusted embeddings may prepare kernels without a daemon session row. They
+/// have no saved discovery basis; daemon sessions retain the real basis used
+/// for preparation instead of substituting a later desired revision.
+fn composition_basis(
+  inventory: session_catalog.Inventory,
+  id: String,
+  retained: List(Desired),
+) -> Result(Option(Desired), String) {
+  let home = settings.home()
+  case session_catalog.inputs(home, inventory, id) {
+    Ok(inputs) -> {
+      case list.find(retained, fn(value) { value.inputs == inputs.key }) {
+        Ok(observation) -> Ok(Some(observation))
+        Error(_) -> {
+          use snapshot <- result.try(session_catalog.inspect(
+            home,
+            inventory,
+            id,
+          ))
+          use after <- result.try(session_catalog.inputs(home, inventory, id))
+          case after.key == inputs.key {
+            True -> Ok(Some(Desired(inputs.key, snapshot)))
+            False -> Error("composition inputs changed during preparation")
+          }
+        }
+      }
+    }
+    Error("session not found") -> Ok(None)
+    Error(reason) -> Error(reason)
+  }
+}
+
+/// Reuse actual discovery facts while their content and saved choices match.
+/// Equivalent sessions can share the immutable snapshot; each lifetime owns
+/// its retained reference and teardown removes that reference.
+fn desired(
+  inventory: session_catalog.Inventory,
+  retained: List(Desired),
+  home: String,
+  id: String,
+) -> Result(Desired, String) {
+  use inputs <- result.try(session_catalog.inputs(home, inventory, id))
+  case list.find(retained, fn(value) { value.inputs == inputs.key }) {
+    Ok(value) -> Ok(value)
+    Error(_) -> {
+      use snapshot <- result.try(session_catalog.inspect(home, inventory, id))
+      use after <- result.try(session_catalog.inputs(home, inventory, id))
+      case after.key == inputs.key {
+        True -> Ok(Desired(inputs.key, snapshot))
+        False -> Error("composition inputs changed during discovery")
+      }
+    }
+  }
+}
+
+fn observe_composition_value(
+  inventory: session_catalog.Inventory,
+  cached: Option(Cached),
+  discovery: session_catalog.Snapshot,
+  id: String,
+) -> Result(CompositionObservation, String) {
+  let desired_revision =
+    session_catalog.composition_revision(
+      discovery,
+      discovery.candidates
+        |> list.filter(fn(candidate) {
+          candidate.kind == "extension" && candidate.effective_enabled
+        })
+        |> list.map(fn(candidate) { candidate.id }),
+    )
+  let loaded = option.then(cached, fn(value) { value.loaded_revision })
+  let failures =
+    option.map(cached, fn(value) {
+      extension.inactive(value.composition) |> list.map(fn(item) { item.0 })
+    })
+    |> option.unwrap([])
+  let selected =
+    option.map(cached, fn(value) {
+      extension.extensions(value.composition)
+      |> list.map(fn(item) { item.name })
+    })
+    |> option.unwrap([])
+  let availability =
+    list.map(
+      discovery.candidates
+        |> list.filter(fn(candidate) { candidate.kind == "extension" }),
+      fn(candidate) {
+        #(
+          candidate.id,
+          list.contains(selected, candidate.id)
+            && !list.contains(failures, candidate.id),
+        )
+      },
+    )
+    |> dict.from_list
+  let dependencies =
+    inventory.installed
+    |> list.map(fn(item) { #(item.name, item.requires) })
+    |> dict.from_list
+  let quarantine =
+    list.append(
+      inventory.quarantined,
+      list.filter_map(
+        option.map(cached, fn(value) { extension.inactive(value.composition) })
+          |> option.unwrap([]),
+        fn(failure) {
+          list.find(inventory.installed, fn(item) { item.name == failure.0 })
+          |> result.map(fn(item) {
+            extension.Quarantined(item.name, item.description, failure.1)
+          })
+        },
+      ),
+    )
+  use glances <- result.try(case cached {
+    None -> Ok([])
+    Some(cached) ->
+      extension.glances(cached.composition, inventory.ledger, id, cached.cwd)
+  })
+  Ok(CompositionObservation(
+    discovery,
+    desired_revision,
+    loaded,
+    case loaded {
+      None -> False
+      Some(revision) -> revision != desired_revision
+    },
+    dependencies,
+    quarantine,
+    availability,
+    glances,
+  ))
+}
+
+type ObservationReply {
+  CompositionReply(Subject(Result(CompositionObservation, String)))
+  CatalogReply(Subject(Result(CatalogObservation, String)))
+}
+
+type ObservationResult {
+  CompositionResult(Result(CompositionObservation, String))
+  CatalogResult(Result(CatalogObservation, String))
+}
+
+type BootRequest {
+  Observe(id: String, home: String, reply: ObservationReply, retries: Int)
+  Compose(id: String, cwd: String, generation: Reference)
+  BootKernel(id: String, generation: Reference, cached: Cached)
+  AttachKernel(
+    id: String,
+    generation: Reference,
+    cached: Cached,
+    reply: Subject(Nil),
+  )
+  UpgradeKernel(
+    id: String,
+    generation: Reference,
+    cached: Cached,
+    previous: Option(Session),
+    answer: fn(Result(KernelUpgrade, String)) -> Nil,
+  )
+  RecomposeSelected(
+    id: String,
+    generation: Reference,
+    cwd: String,
+    selected: List(extension.Extension),
+    demanded: Option(String),
+    persist: fn(List(extension.Extension)) -> Result(Nil, String),
+    previous: Option(Session),
+    reply: Subject(Result(Option(Session), String)),
+  )
+}
+
+type Booting {
+  Booting(
+    generation: Reference,
+    waiters: List(fn(Result(Session, python.Error)) -> Nil),
+  )
+}
+
+type PreparedWork {
+  CommandsOrOpen
+  AttachRecorded(reply: Subject(Nil))
+  UpgradeRecorded(answer: fn(Result(KernelUpgrade, String)) -> Nil)
+}
+
+type Preparation {
+  Preparation(generation: Reference, work: PreparedWork)
+}
+
+type CommandWaiter {
+  CommandWaiter(
+    cwd: String,
+    reply: Subject(Result(#(List(command.Command), command.Context), String)),
   )
 }
 
@@ -80,15 +467,21 @@ type State {
     work: work.Store,
     sessions: Dict(String, Session),
     compositions: Dict(String, Cached),
+    desired: Dict(String, Desired),
     extensions: List(extension.Extension),
     /// Installed extensions the daemon will not run, with their reasons.
     quarantined: List(extension.Quarantined),
     default_enabled: List(String),
     self: Subject(Message),
     /// Kernels booting now, each with everyone waiting for it.
-    booting: Dict(String, List(fn(Result(Session, python.Error)) -> Nil)),
+    booting: Dict(String, Booting),
     /// Kernels waiting for a boot slot, oldest first.
-    waiting: List(#(String, Cached)),
+    waiting: List(BootRequest),
+    /// Observation workers share the same admission budget as preparation.
+    observing: Int,
+    preparing: Dict(String, Preparation),
+    /// Command reads join preparation without asking for a Python kernel.
+    commands: Dict(String, List(CommandWaiter)),
     /// Set while the daemon shuts down: kernels are let go, not ended, so a
     /// restarted daemon attaches to them again.
     detaching: Bool,
@@ -99,15 +492,24 @@ type State {
   )
 }
 
-/// Kernels that boot at once. Booting is mostly waiting on Python, so a few
-/// overlap well; a swarm queues behind them instead of stampeding.
+/// Preparation and observation share four workers. Each class leaves one
+/// slot available to the other so slow preparation cannot block reads.
 const boot_slots = 4
 
 type Message {
   /// Answered through the callback, never by blocking the caller: a session
   /// actor asks and keeps serving while its kernel boots.
   Open(String, String, fn(Result(Session, python.Error)) -> Nil)
-  Booted(String, Result(Session, python.Error))
+  Composed(String, Reference, Result(Cached, String))
+  Booted(String, Reference, Result(Session, python.Error))
+  Upgrade(String, fn(Result(KernelUpgrade, String)) -> Nil)
+  UpgradedKernel(
+    String,
+    Reference,
+    Option(Session),
+    Result(KernelUpgrade, String),
+    fn(Result(KernelUpgrade, String)) -> Nil,
+  )
   Peek(
     String,
     String,
@@ -119,22 +521,41 @@ type Message {
     extension.Change,
     Subject(Result(Option(Session), String)),
   )
-  SaveSettings(
+  ReloadDesired(String, String, Subject(Result(Option(Session), String)))
+  Reloaded(
     String,
-    String,
-    session_settings.Change,
+    Reference,
+    Option(Session),
+    Result(#(Cached, Option(Session)), String),
     Subject(Result(Option(Session), String)),
   )
-  Refresh(String, Subject(Result(Option(Session), String)))
   Summaries(String, Subject(Result(List(extension.Summary), String)))
+  ObserveComposition(
+    String,
+    String,
+    Subject(Result(CompositionObservation, String)),
+  )
+  Observed(
+    String,
+    String,
+    Int,
+    Option(Cached),
+    Result(Desired, String),
+    ObservationReply,
+    ObservationResult,
+  )
+  ObserveLoaded(String, Subject(Result(LoadedObservation, String)))
+  ObserveCatalog(String, String, Subject(Result(CatalogObservation, String)))
   PeekPrompt(String, Subject(Option(#(String, List(types.Input)))))
+  LoadedIDs(Subject(List(String)))
   Reset(String, Subject(Nil))
   Forget(String, Subject(Nil))
+  Delete(String, Subject(Result(Nil, String)))
   Stop(Subject(Nil))
   Detach(Subject(Nil))
   /// Attach to a session's recorded kernel without booting one.
   Reattach(String, String, Subject(Nil))
-  Reattached(String, Cached, Result(Option(Session), python.Error))
+  Reattached(String, Reference, Cached, Result(Option(Session), python.Error))
 }
 
 pub fn start(database: String) -> Result(Runtime, actor.StartError) {
@@ -185,29 +606,34 @@ pub fn start_with_config(
     })
     Ok(
       actor.initialised(State(
-        ledger,
-        dict.new(),
-        dict.new(),
-        installed,
-        quarantined,
-        default_enabled,
-        subject,
-        dict.new(),
-        [],
-        False,
-        dict.new(),
+        work: ledger,
+        sessions: dict.new(),
+        compositions: dict.new(),
+        desired: dict.new(),
+        extensions: installed,
+        quarantined: quarantined,
+        default_enabled: default_enabled,
+        self: subject,
+        booting: dict.new(),
+        waiting: [],
+        observing: 0,
+        preparing: dict.new(),
+        commands: dict.new(),
+        detaching: False,
+        deferred: dict.new(),
       ))
-      |> actor.returning(Runtime(subject, ledger, installed, default_enabled)),
+      |> actor.returning(Runtime(
+        subject,
+        ledger,
+        installed,
+        default_enabled,
+        quarantined,
+      )),
     )
   })
   |> actor.on_message(handle)
   |> actor.start
   |> result.map(fn(started) { started.data })
-}
-
-fn stop_session(context: String, session: Session) -> Nil {
-  drop_kernel(context, session)
-  extension.close(session.composition)
 }
 
 /// End the kernel, or let it go when the daemon is shutting down.
@@ -340,34 +766,20 @@ pub fn change_extension(
   actor.call(runtime.subject, 30_000, Reload(id, cwd, change, _))
 }
 
-/// Re-prepare one session's cached composition from disk and swap it into the
-/// live kernel: static context, every managed plugin (the skills catalog among
-/// them), and the aggregate command catalog. The kernel keeps its process and
-/// Python namespace; only its host route closure is rebound. The persisted
-/// selection is untouched — enablement changes replace the kernel through
-/// `change_extension`. Answers the refreshed session while its kernel is
-/// open, or `None` when there was nothing live to rebind (a closed session's
-/// next open picks the refreshed composition up anyway).
-pub fn refresh_session(
+/// Prepare the saved composition before replacing the running one. A live
+/// kernel keeps its namespace through a route rebind or native state carry;
+/// a parked session remains parked. Preparation and kernel work run outside
+/// the runtime owner, while opens and further reloads wait for this decision.
+pub fn reload_desired(
   runtime: Runtime,
   id: String,
+  cwd: String,
 ) -> Result(Option(Session), String) {
-  actor.call(runtime.subject, 30_000, Refresh(id, _))
+  actor.call(runtime.subject, 180_000, ReloadDesired(id, cwd, _))
 }
 
 /// Save and reload in the composition owner. No caller holds a settings lock
 /// while waiting for this actor, whose extension operations also persist choices.
-pub fn save_settings(
-  runtime: Runtime,
-  home: String,
-  id: String,
-  change: session_settings.Change,
-) -> Result(Option(Session), String) {
-  actor.call(runtime.subject, 60_000, SaveSettings(home, id, change, _))
-}
-
-/// The current composition's instructions and context blocks, without booting
-/// a kernel. A live reload pins this prefix until history is compacted.
 pub fn peek_prompt(
   runtime: Runtime,
   id: String,
@@ -396,6 +808,30 @@ pub fn reset_session(runtime: Runtime, id: String) -> Nil {
 /// Drop the session's kernel and its prepared composition together.
 pub fn forget_session(runtime: Runtime, id: String) -> Nil {
   actor.call(runtime.subject, 10_000, Forget(id, _))
+}
+
+/// Remove runtime state only after supervising the actual recorded processes.
+pub fn delete_session(runtime: Runtime, id: String) -> Result(Nil, String) {
+  use owner <- result.try(
+    process.subject_owner(runtime.subject)
+    |> result.replace_error("runtime owner is unavailable"),
+  )
+  let monitor = process.monitor(owner)
+  let reply = process.new_subject()
+  process.send(runtime.subject, Delete(id, reply))
+  let outcome =
+    process.new_selector()
+    |> process.select(reply)
+    |> process.select_specific_monitor(monitor, fn(_) {
+      Error("runtime owner stopped during deletion")
+    })
+    |> process.selector_receive(30_000)
+    |> result.replace_error(
+      "runtime did not confirm deletion before its deadline",
+    )
+    |> result.flatten
+  process.demonitor_process(monitor)
+  outcome
 }
 
 /// This session's materialized commands and their state context, served from
@@ -441,34 +877,23 @@ pub fn origin(session: Session) -> Origin {
   session.origin
 }
 
-/// Why the kernel should give way to a current one, if it should.
-pub fn stale(session: Session) -> Option(python.Stale) {
-  python.stale(session.kernel) |> option.map(fn(stale) { stale.0 })
+pub fn kernel_observation(session: Session) -> Result(python.Observation, Nil) {
+  python.observation(session.kernel)
 }
 
 /// Whether the next open swaps this kernel: it is stale and nothing keeps it.
-/// Live jobs keep an older bundle or module set unless the swap was forced; a
+/// Live jobs keep an older bundle or module set; a
 /// kernel on another protocol goes regardless, since it cannot be supervised.
 pub fn upgradable(session: Session) -> Bool {
   case python.stale(session.kernel) {
     None -> False
-    Some(#(python.Protocol, _)) | Some(#(_, True)) -> True
+    Some(python.Protocol) -> True
     Some(_) -> python.job_count(session.kernel) == 0
   }
 }
 
-/// Let the swap end the kernel's live jobs; False when it is current.
-pub fn force_upgrade(session: Session) -> Bool {
-  python.force(session.kernel)
-}
-
 pub fn alive(session: Session) -> Bool {
   python.alive(session.kernel)
-}
-
-/// Whether the kernel is reachable now, rather than reattaching.
-pub fn linked(session: Session) -> Bool {
-  python.linked(session.kernel)
 }
 
 pub fn interrupt(session: Session) -> Nil {
@@ -535,23 +960,42 @@ fn owned_by(runtime: Runtime, session: Session) -> Result(Nil, String) {
   }
 }
 
+/// Reuse immutable discovery facts from observations and actual preparations.
+fn retained_basis(state: State) -> List(Desired) {
+  list.append(
+    dict.values(state.desired),
+    dict.values(state.compositions)
+      |> list.filter_map(fn(cached) { option.to_result(cached.basis, Nil) }),
+  )
+}
+
 /// Compose one session. `selected = None` reads the persisted selection; a
 /// reload supplies its proposed selection instead (it is persisted only after
 /// the composition succeeds). `required` names the extensions that must come
 /// out working. The caller owns the result's lifecycle.
 fn build_cached(
-  state: State,
+  inventory: session_catalog.Inventory,
   id: String,
   cwd: String,
   selected: Option(List(extension.Extension)),
   required: List(String),
+  retained: List(Desired),
 ) -> Result(Cached, String) {
+  // Actual preparation refreshes the remote mirror before capturing its basis.
+  // Observation paths only read an existing mirror and never contact a host.
+  let _ = project_files.readable(cwd)
+  use basis <- result.try(composition_basis(inventory, id, retained))
   use selected <- result.try(case selected {
     Some(value) -> Ok(value)
     None ->
-      extension.enabled(state.work, state.extensions, state.default_enabled, id)
+      extension.enabled(
+        inventory.ledger,
+        inventory.installed,
+        inventory.defaults,
+        id,
+      )
   })
-  let composition = extension.compose(selected, state.work, id, cwd)
+  let composition = extension.compose(selected, inventory.ledger, id, cwd)
   // A session opening on its own composes around whatever is broken, but an
   // extension the caller just asked for, and one a change must not break,
   // fail here instead of going quiet.
@@ -582,13 +1026,38 @@ fn build_cached(
     ))
     Ok(#(replacement, appended))
   }
-  case prompts {
+  let prepared = {
+    use prompts <- result.try(prompts)
+    use _ <- result.try(case basis {
+      None -> Ok(Nil)
+      Some(observed) -> {
+        use after <- result.try(session_catalog.inputs(
+          settings.home(),
+          inventory,
+          id,
+        ))
+        case after.key == observed.inputs {
+          True -> Ok(Nil)
+          False -> Error("composition inputs changed during preparation")
+        }
+      }
+    })
+    Ok(prompts)
+  }
+  case prepared {
     Ok(#(replacement, appended)) ->
       Ok(Cached(
         cwd,
         composition,
         system_instructions(replacement, composition),
         context_inputs(composition, appended),
+        option.map(basis, fn(observed) {
+          session_catalog.composition_revision(
+            observed.snapshot,
+            list.map(selected, fn(item) { item.name }),
+          )
+        }),
+        basis,
       ))
     Error(error) -> {
       extension.close(composition)
@@ -661,95 +1130,81 @@ fn kernel_routes(
   rpc.handle(routes, owner, id, _)
 }
 
-/// Compose the cached selection again from scratch and swap it into the live
-/// kernel. The kernel is not replaced, so the module set must be unchanged —
-/// those install at boot; a changed set needs a session reload. A failed
-/// refresh keeps the previous composition: the new one is closed before the
-/// error escapes, and the old routes stay bound in the kernel.
-fn refresh_cached(
-  state: State,
+fn command_value(
   id: String,
-  previous: Cached,
-) -> Result(#(Cached, Option(Session)), String) {
-  use fresh <- result.try(
-    build_cached(
-      state,
-      id,
-      previous.cwd,
-      Some(extension.extensions(previous.composition)),
-      working(previous),
-    )
-    |> result.map_error(fn(error) { "could not refresh extensions: " <> error }),
-  )
-  let live = case dict.get(state.sessions, id) {
-    Ok(session) ->
-      case session.cwd == fresh.cwd && python.alive(session.kernel) {
-        True -> Some(session)
-        False -> None
-      }
-    Error(_) -> None
-  }
-  let rebound = case
-    extension.python_modules(fresh.composition)
-    == extension.python_modules(previous.composition),
-    live
-  {
-    False, _ ->
-      Error("the extension module set changed; reload extensions to apply it")
-    True, None -> Ok(None)
-    True, Some(session) ->
-      python.rebind(
-        session.kernel,
-        kernel_routes(state.work, id, fresh.composition),
-      )
-      |> result.map(fn(_) {
-        Some(
-          Session(
-            ..session,
-            composition: fresh.composition,
-            instructions: fresh.instructions,
-            context: fresh.context,
-          ),
-        )
-      })
-      |> result.map_error(fn(error) {
-        "could not rebind kernel routes: " <> string.inspect(error)
-      })
-  }
-  case rebound {
-    Error(error) -> {
-      extension.close(fresh.composition)
-      Error(error)
-    }
-    Ok(session) -> {
-      extension.close(previous.composition)
-      Ok(#(fresh, session))
-    }
+  cwd: String,
+  cached: Cached,
+) -> Result(#(List(command.Command), command.Context), String) {
+  case cached.cwd == cwd {
+    True -> Ok(#(extension.commands(cached.composition), command.context(id)))
+    False -> Error("prepared composition belongs to another workspace")
   }
 }
 
-/// The cached composition for this workspace, or a fresh one. A stale
-/// composition (a different workspace) is closed on the way out.
-fn ensure_cached(
+fn finish_commands(
+  state: State,
+  id: String,
+  outcome: Result(Cached, String),
+) -> State {
+  dict.get(state.commands, id)
+  |> result.unwrap([])
+  |> list.reverse
+  |> list.each(fn(waiter) {
+    process.send(
+      waiter.reply,
+      outcome |> result.try(command_value(id, waiter.cwd, _)),
+    )
+  })
+  State(..state, commands: dict.delete(state.commands, id))
+}
+
+fn prepare(
   state: State,
   id: String,
   cwd: String,
-) -> Result(#(State, Cached), String) {
+  generation: Reference,
+  work: PreparedWork,
+) -> State {
+  State(
+    ..state,
+    preparing: dict.insert(state.preparing, id, Preparation(generation, work)),
+    waiting: list.append(state.waiting, [Compose(id, cwd, generation)]),
+  )
+  |> boot_next
+}
+
+fn peek(
+  state: State,
+  id: String,
+  cwd: String,
+  reply: Subject(Result(#(List(command.Command), command.Context), String)),
+) -> State {
   case dict.get(state.compositions, id) {
-    Ok(cached) if cached.cwd == cwd -> Ok(#(state, cached))
-    stale -> {
-      case stale {
-        Ok(prior) -> extension.close(prior.composition)
-        Error(_) -> Nil
-      }
-      use cached <- result.try(build_cached(state, id, cwd, None, []))
-      Ok(#(
+    Ok(cached) if cached.cwd == cwd -> {
+      process.send(reply, command_value(id, cwd, cached))
+      state
+    }
+    _ -> {
+      let waiters = dict.get(state.commands, id) |> result.unwrap([])
+      let state =
         State(
           ..state,
-          compositions: dict.insert(state.compositions, id, cached),
-        ),
-        cached,
-      ))
+          commands: dict.insert(state.commands, id, [
+            CommandWaiter(cwd, reply),
+            ..waiters
+          ]),
+        )
+      case dict.has_key(state.booting, id) {
+        True -> state
+        False -> {
+          let generation = reference.new()
+          State(
+            ..state,
+            booting: dict.insert(state.booting, id, Booting(generation, [])),
+          )
+          |> prepare(id, cwd, generation, CommandsOrOpen)
+        }
+      }
     }
   }
 }
@@ -775,22 +1230,6 @@ fn open_kernel(
     }
     session_over(owner, id, cached, opened.0, origin)
   })
-}
-
-/// A replacement kernel booted beside the session's live one.
-fn replacement_kernel(
-  owner: work.Store,
-  id: String,
-  cached: Cached,
-) -> Result(Session, python.Error) {
-  python.fresh(
-    owner,
-    id,
-    cached.cwd,
-    kernel_routes(owner, id, cached.composition),
-    extension.python_modules(cached.composition),
-  )
-  |> result.map(fn(kernel) { session_over(owner, id, cached, kernel, Fresh) })
 }
 
 fn session_over(
@@ -846,6 +1285,7 @@ fn start_upgrade(
     Ok(cached) -> {
       let self = state.self
       let owner = state.work
+      let generation = reference.new()
       process.spawn_unlinked(fn() {
         let upgraded =
           protect.attempt(fn() {
@@ -860,53 +1300,617 @@ fn start_upgrade(
           })
         let result = case upgraded {
           Ok(Ok(#(kernel, carried))) ->
-            session_over(owner, id, cached, kernel, Upgraded(carried))
+            Ok(session_over(owner, id, cached, kernel, Upgraded(carried)))
           Ok(Error(error)) -> {
-            io.println_error("kernel upgrade waits: " <> string.inspect(error))
-            Session(..session, origin: Kept)
+            io.println_error(
+              "kernel upgrade waits: " <> string.inspect(error.reason),
+            )
+            case python.alive(session.kernel) {
+              True -> Ok(Session(..session, origin: Kept))
+              False -> Error(error.reason)
+            }
           }
           Error(crash) -> {
             io.println_error("kernel upgrade failed: " <> crash)
-            Session(..session, origin: Kept)
+            case python.alive(session.kernel) {
+              True -> Ok(Session(..session, origin: Kept))
+              False -> Error(python.Unavailable(crash))
+            }
           }
         }
-        process.send(self, Booted(id, Ok(result)))
+        case owner_alive(self) {
+          True -> process.send(self, Booted(id, generation, result))
+          False -> {
+            case result {
+              Ok(session) ->
+                drop_kernel("upgrade for a stopped runtime", session)
+              Error(_) -> Nil
+            }
+          }
+        }
       })
       State(
         ..without_session(state, id),
-        booting: dict.insert(state.booting, id, [answer]),
+        booting: dict.insert(state.booting, id, Booting(generation, [answer])),
       )
     }
   }
 }
 
-/// Kernels booting right now: requests not still waiting for a slot.
-fn active(state: State) -> Int {
-  dict.size(state.booting) - list.length(state.waiting)
+fn start_kernel_upgrade(
+  state: State,
+  id: String,
+  answer: fn(Result(KernelUpgrade, String)) -> Nil,
+) -> State {
+  case dict.has_key(state.booting, id) {
+    True -> defer(state, id, Upgrade(id, answer))
+    False -> {
+      let previous = dict.get(state.sessions, id) |> option.from_result
+      let prepared = case previous {
+        Some(_) ->
+          dict.get(state.compositions, id)
+          |> result.map(fn(cached) { Some(#(cached.cwd, Some(cached))) })
+          |> result.replace_error("prepared composition missing")
+        None -> {
+          use recorded <- result.try(link.lookup(state.work, id))
+          Ok(
+            option.map(recorded, fn(record) {
+              #(
+                record.cwd,
+                dict.get(state.compositions, id) |> option.from_result,
+              )
+            }),
+          )
+        }
+      }
+      case prepared {
+        Error(reason) -> {
+          answer(Error(reason))
+          state
+        }
+        Ok(None) -> {
+          answer(Ok(KernelUpgrade("unchanged", None, None, None, [], [], None)))
+          state
+        }
+        Ok(Some(#(cwd, cached))) -> {
+          let generation = reference.new()
+          let state =
+            State(
+              ..without_session(state, id),
+              booting: dict.insert(state.booting, id, Booting(generation, [])),
+            )
+          case cached {
+            Some(cached) if cached.cwd == cwd ->
+              State(
+                ..state,
+                waiting: list.append(state.waiting, [
+                  UpgradeKernel(id, generation, cached, previous, answer),
+                ]),
+              )
+              |> boot_next
+            _ -> prepare(state, id, cwd, generation, UpgradeRecorded(answer))
+          }
+        }
+      }
+    }
+  }
 }
 
-/// Start waiting boots while slots are free. Each boots in its own process
-/// and reports back as `Booted`; the kernel's owner is the store, not that
-/// process, so the kernel outlives it.
+fn upgrade_value(
+  owner: work.Store,
+  id: String,
+  cached: Cached,
+  previous: Option(Session),
+) -> Result(KernelUpgrade, String) {
+  use current <- result.try(case previous {
+    Some(session) -> Ok(session)
+    None ->
+      resume_kernel(owner, id, cached)
+      |> option.to_result("recorded kernel could not be attached")
+  })
+  case python.observation(current.kernel) {
+    Error(_) ->
+      Ok(KernelUpgrade(
+        "failed",
+        None,
+        None,
+        Some(current),
+        [],
+        [],
+        Some("the live kernel did not answer observation"),
+      ))
+    Ok(old) ->
+      case old.stale {
+        None ->
+          Ok(KernelUpgrade(
+            "unchanged",
+            Some(old),
+            Some(old),
+            Some(current),
+            [],
+            [],
+            None,
+          ))
+        Some(_) -> {
+          let outcome =
+            python.upgrade(
+              owner,
+              id,
+              cached.cwd,
+              kernel_routes(owner, id, cached.composition),
+              extension.python_modules(cached.composition),
+              current.kernel,
+            )
+          let #(session, failure, restored_warnings, stopped) = case outcome {
+            Ok(#(kernel, carried)) -> #(
+              Some(session_over(owner, id, cached, kernel, Upgraded(carried))),
+              None,
+              list.map(carried.saved.missed, fn(item) {
+                item.0 <> ": " <> item.1
+              }),
+              carried.stopped_jobs,
+            )
+            Error(error) -> #(
+              case python.alive(current.kernel) {
+                True -> Some(current)
+                False -> None
+              },
+              Some(string.inspect(error.reason)),
+              [],
+              error.stopped_jobs,
+            )
+          }
+          let observed =
+            option.then(session, fn(value) {
+              python.observation(value.kernel) |> option.from_result
+            })
+          let warnings =
+            list.append(
+              restored_warnings,
+              case
+                old.live_job_count > list.length(stopped)
+                && { failure == None || stopped != [] }
+              {
+                True -> [
+                  "some jobs observed before upgrade have no individually reported stop identity",
+                ]
+                False -> []
+              },
+            )
+          Ok(
+            KernelUpgrade(
+              case failure, observed {
+                None, Some(_) -> "upgraded"
+                _, _ -> "failed"
+              },
+              Some(old),
+              observed,
+              session,
+              stopped,
+              warnings,
+              case failure, observed {
+                None, None -> Some("replacement observation unavailable")
+                _, _ -> failure
+              },
+            ),
+          )
+        }
+      }
+  }
+}
+
+fn kernel_upgraded(
+  state: State,
+  id: String,
+  generation: Reference,
+  previous: Option(Session),
+  outcome: Result(KernelUpgrade, String),
+  answer: fn(Result(KernelUpgrade, String)) -> Nil,
+) -> State {
+  case current_work(state, id, generation) {
+    False -> {
+      discard_upgrade(previous, outcome)
+      answer(Error("the session closed during kernel upgrade"))
+      state
+    }
+    True -> {
+      let current = case outcome {
+        Ok(report) -> report.session
+        Error(_) -> previous
+      }
+      let state = case current {
+        Some(session) -> holding(state, id, session)
+        None -> without_session(state, id)
+      }
+      let waiters =
+        dict.get(state.booting, id)
+        |> result.map(fn(booting) { booting.waiters })
+        |> result.unwrap([])
+      let state = State(..state, booting: dict.delete(state.booting, id))
+      let state =
+        finish_commands(
+          state,
+          id,
+          dict.get(state.compositions, id)
+            |> result.replace_error("prepared composition is unavailable"),
+        )
+      answer(outcome)
+      list.each(list.reverse(waiters), fn(waiter) {
+        waiter(case current {
+          Some(session) -> Ok(session)
+          None ->
+            Error(python.Unavailable(
+              "kernel upgrade left no attached namespace",
+            ))
+        })
+      })
+      replay(state, id)
+    }
+  }
+}
+
+/// Admitted workers: exclude queued preparations and include observations.
+fn active(state: State) -> Int {
+  let queued_preparations =
+    list.count(state.waiting, fn(request) {
+      case request {
+        Observe(..) -> False
+        _ -> True
+      }
+    })
+  dict.size(state.booting) - queued_preparations + state.observing
+}
+
+/// Admit the oldest eligible request, preserving order within each class.
+/// Kernels belong to the store and outlive the workers that prepare them.
 fn boot_next(state: State) -> State {
-  case state.waiting, active(state) < boot_slots {
-    [#(id, cached), ..rest], True -> {
-      let state = State(..state, waiting: rest)
+  let running = active(state)
+  let preparations = running - state.observing
+  let #(skipped, eligible) = case running < boot_slots {
+    True ->
+      list.split_while(state.waiting, fn(request) {
+        case request {
+          Observe(..) -> state.observing >= boot_slots - 1
+          _ -> preparations >= boot_slots - 1
+        }
+      })
+    False -> #([], [])
+  }
+  case eligible {
+    [request, ..rest] -> {
+      let state =
+        State(
+          ..state,
+          waiting: list.append(skipped, rest),
+          observing: state.observing
+            + case request {
+              Observe(..) -> 1
+              _ -> 0
+            },
+        )
       let self = state.self
       let owner = state.work
-      process.spawn_unlinked(fn() {
-        let result = case
-          protect.attempt(fn() { open_kernel(owner, id, cached) })
-        {
-          Ok(result) -> result
-          Error(crash) ->
-            Error(python.Unavailable("kernel boot failed: " <> crash))
+      case request {
+        Observe(id, home, reply, retries) -> {
+          let inventory = composition_inventory(state)
+          // A read captures only this session's bases, never the runtime cache.
+          let retained =
+            list.filter_map(
+              [
+                dict.get(state.desired, id) |> option.from_result,
+                dict.get(state.compositions, id)
+                  |> option.from_result
+                  |> option.then(fn(value) { value.basis }),
+              ],
+              option.to_result(_, Nil),
+            )
+          let cached = dict.get(state.compositions, id) |> option.from_result
+          process.spawn_unlinked(fn() {
+            let discovered =
+              protect.attempt(fn() { desired(inventory, retained, home, id) })
+              |> result.flatten
+            let observed = case reply {
+              CompositionReply(_) ->
+                CompositionResult({
+                  use value <- result.try(discovered)
+                  protect.attempt(fn() {
+                    observe_composition_value(
+                      inventory,
+                      cached,
+                      value.snapshot,
+                      id,
+                    )
+                  })
+                  |> result.flatten
+                })
+              CatalogReply(_) ->
+                CatalogResult({
+                  use _ <- result.try(case discovered {
+                    Error("session not found") -> Error("session not found")
+                    _ -> Ok(Nil)
+                  })
+                  Ok(CatalogObservation(
+                    result.map(discovered, fn(value) { value.snapshot }),
+                    option.then(cached, fn(value) { value.loaded_revision }),
+                    option.map(cached, fn(value) {
+                      extension.command_entries(value.composition)
+                    })
+                      |> option.unwrap([]),
+                    option.map(cached, fn(value) {
+                      extension.client_commands(value.composition)
+                    })
+                      |> option.unwrap([]),
+                  ))
+                })
+            }
+            // Recheck after plugin observation, not just after file discovery.
+            let discovered =
+              protect.attempt(fn() {
+                use value <- result.try(discovered)
+                use after <- result.try(session_catalog.inputs(
+                  home,
+                  inventory,
+                  id,
+                ))
+                case after.key == value.inputs {
+                  True -> Ok(value)
+                  False ->
+                    Error("composition inputs changed during observation")
+                }
+              })
+              |> result.flatten
+            process.send(
+              self,
+              Observed(id, home, retries, cached, discovered, reply, observed),
+            )
+          })
         }
-        process.send(self, Booted(id, result))
-      })
+        Compose(id, cwd, generation) -> {
+          let inventory = composition_inventory(state)
+          let retained = retained_basis(state)
+          process.spawn_unlinked(fn() {
+            let prepared =
+              protect.attempt(fn() {
+                build_cached(inventory, id, cwd, None, [], retained)
+              })
+              |> result.flatten
+            case owner_alive(self) {
+              True -> process.send(self, Composed(id, generation, prepared))
+              False -> {
+                case prepared {
+                  Ok(cached) -> extension.close(cached.composition)
+                  Error(_) -> Nil
+                }
+              }
+            }
+          })
+        }
+        BootKernel(id, generation, cached) ->
+          process.spawn_unlinked(fn() {
+            let outcome = case
+              protect.attempt(fn() { open_kernel(owner, id, cached) })
+            {
+              Ok(result) -> result
+              Error(crash) ->
+                Error(python.Unavailable("kernel boot failed: " <> crash))
+            }
+            case owner_alive(self) {
+              True -> process.send(self, Booted(id, generation, outcome))
+              False -> {
+                case outcome {
+                  Ok(session) ->
+                    drop_kernel("boot for a stopped runtime", session)
+                  Error(_) -> Nil
+                }
+              }
+            }
+          })
+        AttachKernel(id, generation, cached, reply) ->
+          process.spawn_unlinked(fn() {
+            let outcome =
+              protect.attempt(fn() { resume_kernel(owner, id, cached) })
+              |> result.map_error(fn(crash) {
+                python.Unavailable("kernel reattach failed: " <> crash)
+              })
+            case owner_alive(self) {
+              True ->
+                process.send(self, Reattached(id, generation, cached, outcome))
+              False -> {
+                case outcome {
+                  Ok(Some(session)) ->
+                    drop_kernel("reattach for a stopped runtime", session)
+                  _ -> Nil
+                }
+              }
+            }
+            process.send(reply, Nil)
+          })
+        UpgradeKernel(id, generation, cached, previous, answer) ->
+          process.spawn_unlinked(fn() {
+            let outcome =
+              protect.attempt(fn() {
+                upgrade_value(owner, id, cached, previous)
+              })
+              |> result.flatten
+            case owner_alive(self) {
+              True ->
+                process.send(
+                  self,
+                  UpgradedKernel(id, generation, previous, outcome, answer),
+                )
+              False -> {
+                discard_upgrade(previous, outcome)
+                answer(Error("runtime owner stopped during kernel upgrade"))
+              }
+            }
+          })
+        RecomposeSelected(
+          id,
+          generation,
+          cwd,
+          selected,
+          demanded,
+          persist,
+          previous,
+          reply,
+        ) -> {
+          let inventory = composition_inventory(state)
+          let retained = retained_basis(state)
+          process.spawn_unlinked(fn() {
+            let outcome =
+              protect.attempt(fn() {
+                recompose_selected(
+                  inventory,
+                  retained,
+                  id,
+                  cwd,
+                  selected,
+                  demanded,
+                  persist,
+                  previous,
+                )
+              })
+              |> result.flatten
+            publish_reload(self, id, generation, previous, outcome, reply)
+          })
+        }
+      }
       boot_next(state)
     }
-    _, _ -> state
+    [] -> state
+  }
+}
+
+fn composed(
+  state: State,
+  id: String,
+  generation: Reference,
+  prepared: Result(Cached, String),
+) -> State {
+  case dict.get(state.preparing, id) {
+    Ok(Preparation(current, work)) if current == generation -> {
+      let state = State(..state, preparing: dict.delete(state.preparing, id))
+      case prepared {
+        Error(reason) -> {
+          preparation_failed(work, reason)
+          state
+          |> finish_commands(id, Error(reason))
+          |> booted(id, generation, Error(python.Invalid(reason)))
+        }
+        Ok(cached) -> {
+          close_cached_at(state, id)
+          let state =
+            State(
+              ..state,
+              compositions: dict.insert(state.compositions, id, cached),
+            )
+            |> finish_commands(id, Ok(cached))
+          case work {
+            AttachRecorded(reply) ->
+              State(
+                ..state,
+                waiting: list.append(state.waiting, [
+                  AttachKernel(id, generation, cached, reply),
+                ]),
+              )
+            UpgradeRecorded(answer) ->
+              State(
+                ..state,
+                waiting: list.append(state.waiting, [
+                  UpgradeKernel(id, generation, cached, None, answer),
+                ]),
+              )
+            CommandsOrOpen ->
+              case dict.get(state.booting, id) {
+                Ok(Booting(_, [_, ..])) ->
+                  State(..state, waiting: [
+                    BootKernel(id, generation, cached),
+                    ..state.waiting
+                  ])
+                _ ->
+                  State(..state, booting: dict.delete(state.booting, id))
+                  |> replay(id)
+              }
+          }
+        }
+      }
+    }
+    _ -> {
+      case prepared {
+        Ok(cached) -> extension.close(cached.composition)
+        Error(_) -> Nil
+      }
+      state
+    }
+  }
+}
+
+fn preparation_failed(work: PreparedWork, reason: String) -> Nil {
+  case work {
+    CommandsOrOpen -> Nil
+    AttachRecorded(reply) -> process.send(reply, Nil)
+    UpgradeRecorded(answer) -> answer(Error(reason))
+  }
+}
+
+fn current_work(state: State, id: String, generation: Reference) -> Bool {
+  case dict.get(state.booting, id) {
+    Ok(Booting(current, _)) -> current == generation
+    Error(_) -> False
+  }
+}
+
+fn owner_alive(subject: Subject(Message)) -> Bool {
+  process.subject_owner(subject)
+  |> result.map(process.is_alive)
+  |> result.unwrap(False)
+}
+
+fn discard_upgrade(
+  previous: Option(Session),
+  outcome: Result(KernelUpgrade, String),
+) -> Nil {
+  let session = case outcome {
+    Ok(report) -> report.session
+    Error(_) -> previous
+  }
+  case session {
+    Some(session) -> drop_kernel("upgrade for a forgotten session", session)
+    None -> Nil
+  }
+}
+
+fn publish_reload(
+  subject: Subject(Message),
+  id: String,
+  generation: Reference,
+  previous: Option(Session),
+  outcome: Result(#(Cached, Option(Session)), String),
+  reply: Subject(Result(Option(Session), String)),
+) -> Nil {
+  case owner_alive(subject) {
+    True ->
+      process.send(subject, Reloaded(id, generation, previous, outcome, reply))
+    False -> {
+      case outcome {
+        Error(_) -> {
+          case previous {
+            Some(session) ->
+              drop_kernel("reload for a stopped runtime", session)
+            None -> Nil
+          }
+        }
+        Ok(#(fresh, replacement)) -> {
+          case replacement {
+            Some(session) ->
+              drop_kernel("reload for a stopped runtime", session)
+            None -> Nil
+          }
+          extension.close(fresh.composition)
+        }
+      }
+      process.send(reply, Error("runtime owner stopped during reload"))
+    }
   }
 }
 
@@ -915,9 +1919,14 @@ fn boot_next(state: State) -> State {
 fn booted(
   state: State,
   id: String,
+  generation: Reference,
   result: Result(Session, python.Error),
 ) -> State {
-  case dict.get(state.booting, id), result {
+  let waiting = case dict.get(state.booting, id) {
+    Ok(Booting(current, waiters)) if current == generation -> Ok(waiters)
+    _ -> Error(Nil)
+  }
+  case waiting, result {
     Error(_), Ok(session) -> {
       drop_kernel("boot for a forgotten session", session)
       state
@@ -929,6 +1938,16 @@ fn booted(
         Ok(session) -> holding(state, id, session)
         Error(_) -> state
       }
+      let state =
+        finish_commands(
+          state,
+          id,
+          dict.get(state.compositions, id)
+            |> result.replace_error(case result {
+              Error(reason) -> string.inspect(reason)
+              Ok(_) -> "prepared composition is unavailable"
+            }),
+        )
       list.each(list.reverse(waiters), fn(answer) { answer(result) })
       replay(state, id)
     }
@@ -954,9 +1973,55 @@ fn replay(state: State, id: String) -> State {
 
 /// Drop a session's pending boot, telling whoever waited.
 fn abandon(state: State, id: String) -> State {
+  let state =
+    finish_commands(
+      state,
+      id,
+      Error("the session closed during composition preparation"),
+    )
+  case dict.get(state.preparing, id) {
+    Ok(preparation) ->
+      preparation_failed(
+        preparation.work,
+        "the session closed during preparation",
+      )
+    Error(_) -> Nil
+  }
+  state.waiting
+  |> list.filter(fn(request) { request.id == id })
+  |> list.each(fn(request) {
+    case request {
+      Observe(_, _, reply, _) ->
+        case reply {
+          CompositionReply(reply) ->
+            process.send(reply, Error("session closed during observation"))
+          CatalogReply(reply) ->
+            process.send(reply, Error("session closed during observation"))
+        }
+      AttachKernel(_, _, _, reply) -> process.send(reply, Nil)
+      UpgradeKernel(_, _, _, _, answer) ->
+        answer(Error("the session closed during kernel upgrade"))
+      RecomposeSelected(_, _, _, _, _, _, _, reply) ->
+        process.send(reply, Error("the session closed during reload"))
+      _ -> Nil
+    }
+  })
+  dict.get(state.deferred, id)
+  |> result.unwrap([])
+  |> list.each(fn(message) {
+    case message {
+      Reload(_, _, _, reply) | ReloadDesired(_, _, reply) ->
+        process.send(reply, Error("the session closed during reload"))
+      Upgrade(_, answer) ->
+        answer(Error("the session closed during kernel upgrade"))
+      Reattach(_, _, reply) -> process.send(reply, Nil)
+      _ -> Nil
+    }
+  })
+  let state = State(..state, deferred: dict.delete(state.deferred, id))
   case dict.get(state.booting, id) {
     Error(_) -> state
-    Ok(waiters) -> {
+    Ok(Booting(_, waiters)) -> {
       list.each(waiters, fn(answer) {
         answer(
           Error(python.Invalid("the session closed while its kernel booted")),
@@ -965,9 +2030,9 @@ fn abandon(state: State, id: String) -> State {
       State(
         ..state,
         booting: dict.delete(state.booting, id),
-        waiting: list.filter(state.waiting, fn(entry) { entry.0 != id }),
+        waiting: list.filter(state.waiting, fn(entry) { entry.id != id }),
+        preparing: dict.delete(state.preparing, id),
       )
-      |> replay(id)
     }
   }
 }
@@ -979,17 +2044,6 @@ fn quarantine(state: State, name: String) -> Option(String) {
   |> option.map(fn(failure) {
     "extension " <> name <> " is quarantined: " <> failure.reason
   })
-}
-
-/// The extensions a refresh must not break: everything that was working
-/// before it. A settings change that stops one of them is reported, and the
-/// live composition stays.
-fn working(previous: Cached) -> List(String) {
-  let broken =
-    list.map(extension.inactive(previous.composition), fn(failure) { failure.0 })
-  extension.extensions(previous.composition)
-  |> list.map(fn(extension) { extension.name })
-  |> list.filter(fn(name) { !list.contains(broken, name) })
 }
 
 /// The extension this change enables, if it enables one.
@@ -1032,16 +2086,11 @@ fn reload(
     Ok(selected), Ok(running) -> names(selected) == names(running)
     _, _ -> False
   }
+  let ledger = state.work
+  let installed = state.extensions
   let persist = fn(selected) {
     use previous <- result.try(current)
-    extension.record_selected(
-      state.work,
-      id,
-      change,
-      previous,
-      selected,
-      state.extensions,
-    )
+    extension.record_selected(ledger, id, change, previous, selected, installed)
   }
   case proposed, unchanged {
     // Nothing this session runs changes: record the choice and keep the
@@ -1072,96 +2121,297 @@ fn reopen(
   persist: fn(List(extension.Extension)) -> Result(Nil, String),
   reply: Subject(Result(Option(Session), String)),
 ) -> State {
-  let previous = dict.get(state.sessions, id)
-  let workspace = case previous {
-    Ok(session) -> session.cwd
-    Error(_) -> cwd
-  }
-  let opened = {
-    use cached <- result.try(
-      build_cached(
-        state,
+  let previous = dict.get(state.sessions, id) |> option.from_result
+  let workspace =
+    option.map(previous, fn(session) { session.cwd }) |> option.unwrap(cwd)
+  let generation = reference.new()
+  State(
+    ..without_session(state, id),
+    booting: dict.insert(state.booting, id, Booting(generation, [])),
+    waiting: list.append(state.waiting, [
+      RecomposeSelected(
         id,
+        generation,
         workspace,
-        Some(selected),
-        option.values([demanded]),
-      )
-      |> result.map_error(fn(error) { "could not reload extensions: " <> error }),
+        selected,
+        demanded,
+        persist,
+        previous,
+        reply,
+      ),
+    ]),
+  )
+  |> boot_next
+}
+
+fn recompose_selected(
+  inventory: session_catalog.Inventory,
+  retained: List(Desired),
+  id: String,
+  workspace: String,
+  selected: List(extension.Extension),
+  demanded: Option(String),
+  persist: fn(List(extension.Extension)) -> Result(Nil, String),
+  previous: Option(Session),
+) -> Result(#(Cached, Option(Session)), String) {
+  use recorded <- result.try(link.lookup(inventory.ledger, id))
+  use cached <- result.try(build_cached(
+    inventory,
+    id,
+    workspace,
+    Some(selected),
+    option.values([demanded]),
+    retained,
+  ))
+  let staged =
+    python.stage(
+      inventory.ledger,
+      id,
+      workspace,
+      kernel_routes(inventory.ledger, id, cached.composition),
+      extension.python_modules(cached.composition),
     )
-    // Beside a live kernel, never attached to it: the old one is dropped
-    // only once the new selection is persisted.
-    case previous {
-      Ok(_) -> replacement_kernel(state.work, id, cached)
-      Error(_) -> open_kernel(state.work, id, cached)
-    }
-    |> result.map(fn(replacement) { #(cached, replacement) })
-    |> result.map_error(fn(error) {
-      "could not reload extensions: " <> string.inspect(error)
-    })
-  }
-  case opened {
+  case staged {
     Error(error) -> {
-      process.send(reply, Error(error))
-      state
+      extension.close(cached.composition)
+      Error("could not prepare replacement: " <> string.inspect(error))
     }
-    Ok(#(cached, replacement)) ->
-      case persist(selected) {
-        Error(error) -> {
-          stop_session("extension reload rollback", replacement)
-          process.send(reply, Error(error))
-          state
-        }
-        Ok(_) -> {
-          case previous {
-            Ok(session) -> drop_kernel("extension reload", session)
-            Error(_) -> Nil
-          }
-          close_cached_at(state, id)
-          process.send(reply, Ok(Some(replacement)))
-          State(
-            ..holding(state, id, replacement),
-            compositions: dict.insert(state.compositions, id, cached),
-          )
-        }
+    Ok(#(kernel, record)) -> {
+      let replacement =
+        session_over(inventory.ledger, id, cached, kernel, Fresh)
+      let published = {
+        use observed <- result.try(
+          python.observation(replacement.kernel)
+          |> result.replace_error("replacement observation unavailable"),
+        )
+        use _ <- result.try(case observed.linked && observed.stale == None {
+          True -> Ok(Nil)
+          False -> Error("replacement is not current and attached")
+        })
+        use _ <- result.try(persist(selected))
+        use _ <- result.try(link.ready(inventory.ledger, record))
+        use _ <- result.try(case previous, recorded {
+          Some(session), _ -> python.stop(session.kernel)
+          None, Some(record) ->
+            python.stop_recorded_instance(inventory.ledger, record)
+          None, None -> Ok(Nil)
+        })
+        link.publish(inventory.ledger, record)
       }
+      case published {
+        Error(reason) -> {
+          let cleanup = python.stop(replacement.kernel)
+          extension.close(cached.composition)
+          Error(case cleanup {
+            Ok(_) -> reason
+            Error(failure) ->
+              reason <> "; replacement cleanup failed: " <> failure
+          })
+        }
+        Ok(_) -> Ok(#(cached, Some(replacement)))
+      }
+    }
   }
 }
 
-fn refresh_value(
+fn start_desired_reload(
   state: State,
   id: String,
-) -> Result(#(State, Option(Session)), String) {
-  case dict.get(state.compositions, id) {
-    Error(_) -> Ok(#(state, None))
-    Ok(cached) -> {
-      use refreshed <- result.map(refresh_cached(state, id, cached))
-      let #(fresh, update) = refreshed
-      let state = case update {
-        Some(session) -> holding(state, id, session)
-        None -> state
-      }
-      #(
-        State(..state, compositions: dict.insert(state.compositions, id, fresh)),
-        update,
-      )
-    }
-  }
+  cwd: String,
+  reply: Subject(Result(Option(Session), String)),
+) -> State {
+  let generation = reference.new()
+  let previous = dict.get(state.sessions, id) |> option.from_result
+  let active_strategy =
+    dict.get(state.compositions, id)
+    |> option.from_result
+    |> option.then(fn(cached) {
+      extension.compaction(extension.extensions(cached.composition))
+    })
+    |> option.map(fn(strategy) { strategy.name })
+  let inventory = composition_inventory(state)
+  let self = state.self
+  let retained = retained_basis(state)
+  process.spawn_unlinked(fn() {
+    let outcome =
+      protect.attempt(fn() {
+        use selected <- result.try(extension.enabled(
+          inventory.ledger,
+          inventory.installed,
+          inventory.defaults,
+          id,
+        ))
+        use _ <- result.try(
+          case active_strategy, extension.compaction(selected) {
+            Some(name), None ->
+              Error("select another compaction strategy to replace " <> name)
+            _, _ -> Ok(Nil)
+          },
+        )
+        use fresh <- result.try(build_cached(
+          inventory,
+          id,
+          cwd,
+          Some(selected),
+          list.map(selected, fn(item) { item.name }),
+          retained,
+        ))
+        let rebound =
+          protect.attempt(fn() {
+            case previous {
+              None -> Ok(None)
+              Some(session) ->
+                case python.alive(session.kernel) {
+                  False -> Ok(None)
+                  True ->
+                    case
+                      session.cwd == cwd
+                      && extension.python_modules(session.composition)
+                      == extension.python_modules(fresh.composition)
+                    {
+                      True ->
+                        python.rebind(
+                          session.kernel,
+                          kernel_routes(inventory.ledger, id, fresh.composition),
+                        )
+                        |> result.map(fn(_) {
+                          Some(session_over(
+                            inventory.ledger,
+                            id,
+                            fresh,
+                            session.kernel,
+                            Kept,
+                          ))
+                        })
+                      False -> {
+                        python.mark_stale(session.kernel, python.Modules)
+                        case upgradable(session) {
+                          False -> Error(python.Busy)
+                          True ->
+                            python.upgrade(
+                              inventory.ledger,
+                              id,
+                              cwd,
+                              kernel_routes(
+                                inventory.ledger,
+                                id,
+                                fresh.composition,
+                              ),
+                              extension.python_modules(fresh.composition),
+                              session.kernel,
+                            )
+                            |> result.map_error(fn(failure) { failure.reason })
+                            |> result.map(fn(upgraded) {
+                              Some(session_over(
+                                inventory.ledger,
+                                id,
+                                fresh,
+                                upgraded.0,
+                                Upgraded(upgraded.1),
+                              ))
+                            })
+                        }
+                      }
+                    }
+                }
+            }
+          })
+          |> result.map_error(fn(crash) { python.Unavailable(crash) })
+          |> result.flatten
+        case rebound {
+          Ok(session) -> Ok(#(fresh, session))
+          Error(error) -> {
+            extension.close(fresh.composition)
+            Error("could not reload extensions: " <> string.inspect(error))
+          }
+        }
+      })
+      |> result.map_error(fn(crash) { "could not reload extensions: " <> crash })
+      |> result.flatten
+    publish_reload(self, id, generation, previous, outcome, reply)
+  })
+  State(
+    ..without_session(state, id),
+    booting: dict.insert(state.booting, id, Booting(generation, [])),
+  )
 }
 
-fn finish_refresh(
+fn reloaded(
   state: State,
+  id: String,
+  generation: Reference,
+  previous: Option(Session),
+  outcome: Result(#(Cached, Option(Session)), String),
   reply: Subject(Result(Option(Session), String)),
-  changed: Result(#(State, Option(Session)), String),
 ) -> State {
-  case changed {
-    Error(error) -> {
-      process.send(reply, Error(error))
+  let waiting = case dict.get(state.booting, id) {
+    Ok(Booting(current, waiters)) if current == generation -> Ok(waiters)
+    _ -> Error(Nil)
+  }
+  case waiting {
+    Error(_) -> {
+      case outcome {
+        Error(_) ->
+          case previous {
+            Some(session) ->
+              drop_kernel("failed reload for a forgotten session", session)
+            None -> Nil
+          }
+        Ok(#(fresh, replacement)) -> {
+          case replacement {
+            Some(session) ->
+              drop_kernel("reload for a forgotten session", session)
+            None -> Nil
+          }
+          extension.close(fresh.composition)
+        }
+      }
+      process.send(reply, Error("the session closed during reload"))
       state
     }
-    Ok(#(fresh, update)) -> {
-      process.send(reply, Ok(update))
-      fresh
-    }
+    Ok(waiters) ->
+      case outcome {
+        Error(reason) -> {
+          let state = case previous {
+            Some(session) -> holding(state, id, session)
+            None -> state
+          }
+          list.each(list.reverse(waiters), fn(answer) {
+            answer(Error(python.Invalid(reason)))
+          })
+          let state =
+            finish_commands(
+              state,
+              id,
+              dict.get(state.compositions, id) |> result.replace_error(reason),
+            )
+          process.send(reply, Error(reason))
+          State(..state, booting: dict.delete(state.booting, id)) |> replay(id)
+        }
+        Ok(#(fresh, replacement)) -> {
+          close_cached_at(state, id)
+          let state =
+            State(
+              ..state,
+              compositions: dict.insert(state.compositions, id, fresh),
+            )
+            |> finish_commands(id, Ok(fresh))
+          process.send(reply, Ok(replacement))
+          case replacement, waiters {
+            Some(session), _ -> booted(state, id, generation, Ok(session))
+            None, [] ->
+              State(..state, booting: dict.delete(state.booting, id))
+              |> replay(id)
+            None, _ ->
+              State(
+                ..state,
+                waiting: list.append(state.waiting, [
+                  BootKernel(id, generation, fresh),
+                ]),
+              )
+          }
+        }
+      }
   }
 }
 
@@ -1176,7 +2426,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, a) {
 /// attaching, or being swapped: the change waits for it (see `deferred`).
 fn settling(state: State, message: Message) -> Option(String) {
   case message {
-    Reload(id, ..) | SaveSettings(_, id, ..) | Refresh(id, ..) ->
+    Reload(id, ..) | ReloadDesired(id, ..) ->
       case dict.has_key(state.booting, id) {
         True -> Some(id)
         False -> None
@@ -1214,56 +2464,196 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
               }
           }
         // Already on its way: wait with everyone else.
-        Error(_), Ok(waiters) ->
+        Error(_), Ok(Booting(generation, waiters)) ->
           actor.continue(
             State(
               ..state,
-              booting: dict.insert(state.booting, id, [answer, ..waiters]),
+              booting: dict.insert(
+                state.booting,
+                id,
+                Booting(generation, [answer, ..waiters]),
+              ),
             ),
           )
-        Error(_), Error(_) ->
-          case ensure_cached(state, id, cwd) {
-            Error(message) -> {
-              answer(Error(python.Invalid(message)))
-              actor.continue(state)
-            }
-            Ok(#(next, cached)) ->
-              actor.continue(
-                State(
-                  ..next,
-                  booting: dict.insert(next.booting, id, [answer]),
-                  waiting: list.append(next.waiting, [#(id, cached)]),
-                )
-                |> boot_next,
+        Error(_), Error(_) -> {
+          let generation = reference.new()
+          let state =
+            State(
+              ..state,
+              booting: dict.insert(
+                state.booting,
+                id,
+                Booting(generation, [answer]),
+              ),
+            )
+          actor.continue(case dict.get(state.compositions, id) {
+            Ok(cached) if cached.cwd == cwd ->
+              State(
+                ..state,
+                waiting: list.append(state.waiting, [
+                  BootKernel(id, generation, cached),
+                ]),
               )
-          }
+              |> boot_next
+            _ -> prepare(state, id, cwd, generation, CommandsOrOpen)
+          })
+        }
       }
-    Booted(id, result) -> actor.continue(booted(state, id, result) |> boot_next)
+    Composed(id, generation, prepared) ->
+      actor.continue(composed(state, id, generation, prepared) |> boot_next)
+    Booted(id, generation, result) ->
+      actor.continue(booted(state, id, generation, result) |> boot_next)
+    Upgrade(id, answer) ->
+      actor.continue(start_kernel_upgrade(state, id, answer))
+    UpgradedKernel(id, generation, previous, outcome, answer) ->
+      actor.continue(
+        kernel_upgraded(state, id, generation, previous, outcome, answer)
+        |> boot_next,
+      )
     Reload(id, cwd, change, reply) ->
       actor.continue(reload(state, id, cwd, change, reply))
-    SaveSettings(home, id, change, reply) -> {
-      let changed =
-        session_settings.mutate(
-          home,
-          id,
-          change,
-          fn() {
-            extension.summaries(
-              state.work,
-              state.extensions,
-              state.quarantined,
-              state.default_enabled,
-              id,
-              None,
-            )
-            |> result.map(capability_catalog.extension_state)
-          },
-          fn() { refresh_value(state, id) },
+    ReloadDesired(id, cwd, reply) ->
+      actor.continue(start_desired_reload(state, id, cwd, reply))
+    Reloaded(id, generation, previous, outcome, reply) ->
+      actor.continue(
+        reloaded(state, id, generation, previous, outcome, reply) |> boot_next,
+      )
+    ObserveComposition(home, id, reply) ->
+      actor.continue(
+        State(
+          ..state,
+          waiting: list.append(state.waiting, [
+            Observe(id, home, CompositionReply(reply), 2),
+          ]),
         )
-      actor.continue(finish_refresh(state, reply, changed))
+        |> boot_next,
+      )
+    ObserveCatalog(home, id, reply) ->
+      actor.continue(
+        State(
+          ..state,
+          waiting: list.append(state.waiting, [
+            Observe(id, home, CatalogReply(reply), 2),
+          ]),
+        )
+        |> boot_next,
+      )
+    Observed(id, home, retries, captured, discovered, reply, observed) -> {
+      let failure = case
+        dict.get(state.compositions, id) |> option.from_result
+      {
+        current if current != captured ->
+          Some("loaded composition changed during observation")
+        _ ->
+          case discovered {
+            Error(reason) -> Some(reason)
+            Ok(_) -> None
+          }
+      }
+      let state = State(..state, observing: state.observing - 1)
+      // An ordinary reload may settle between capture and completion. Retry
+      // fresh work through admission; never publish the superseded result.
+      let stale = case failure {
+        Some("loaded composition changed during observation")
+        | Some("composition inputs changed during discovery")
+        | Some("composition inputs changed during observation") -> True
+        _ -> False
+      }
+      case stale && retries > 0 {
+        True ->
+          actor.continue(
+            State(
+              ..state,
+              waiting: list.append(state.waiting, [
+                Observe(id, home, reply, retries - 1),
+              ]),
+            )
+            |> boot_next,
+          )
+        False -> {
+          let state = case failure, discovered {
+            None, Ok(value) ->
+              State(..state, desired: dict.insert(state.desired, id, value))
+            _, _ -> state
+          }
+          case reply, observed {
+            CompositionReply(reply), CompositionResult(value) ->
+              process.send(reply, case failure {
+                Some(reason) -> Error(reason)
+                None -> value
+              })
+            CatalogReply(reply), CatalogResult(value) ->
+              process.send(reply, case failure {
+                Some("loaded composition changed during observation") ->
+                  Error("loaded composition changed during observation")
+                Some("session not found") -> Error("session not found")
+                // A desired-read failure must retain available loaded commands.
+                Some(reason) ->
+                  case value {
+                    Ok(value) ->
+                      Ok(CatalogObservation(..value, discovery: Error(reason)))
+                    Error(_) -> Error(reason)
+                  }
+                None -> value
+              })
+            _, _ -> Nil
+          }
+          actor.continue(boot_next(state))
+        }
+      }
     }
-    Refresh(id, reply) ->
-      actor.continue(finish_refresh(state, reply, refresh_value(state, id)))
+    ObserveLoaded(id, reply) -> {
+      let observed = {
+        let revision =
+          dict.get(state.compositions, id)
+          |> option.from_result
+          |> option.then(fn(cached) { cached.loaded_revision })
+        use #(kernel, lost) <- result.try(case dict.get(state.sessions, id) {
+          Error(_) -> Ok(#(None, False))
+          Ok(current) ->
+            case python.observation(current.kernel) {
+              Ok(observed) -> Ok(#(Some(observed), False))
+              Error(_) ->
+                case python.alive(current.kernel) {
+                  False -> Ok(#(None, True))
+                  True -> Error("loaded kernel observation is unavailable")
+                }
+            }
+        })
+        use recorded <- result.try(case kernel {
+          Some(_) -> Ok(None)
+          None -> link.lookup(state.work, id)
+        })
+        let phase = case
+          dict.has_key(state.booting, id),
+          kernel,
+          lost,
+          recorded
+        {
+          True, _, _, _ -> "booting"
+          False, Some(observed), _, _ ->
+            case observed.linked {
+              True -> "attached"
+              False -> "reattaching"
+            }
+          False, None, True, _ -> "lost"
+          False, None, False, Some(_) -> "lost"
+          False, None, False, None -> "none"
+        }
+        Ok(LoadedObservation(
+          revision,
+          kernel,
+          phase,
+          option.map(recorded, fn(record) { record.kernel }),
+        ))
+      }
+      process.send(reply, observed)
+      actor.continue(state)
+    }
+    LoadedIDs(reply) -> {
+      process.send(reply, dict.keys(state.compositions))
+      actor.continue(state)
+    }
     PeekPrompt(id, reply) -> {
       process.send(
         reply,
@@ -1297,24 +2687,11 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
       )
       actor.continue(state)
     }
-    Peek(id, cwd, reply) ->
-      case ensure_cached(state, id, cwd) {
-        Error(message) -> {
-          process.send(reply, Error(message))
-          actor.continue(state)
-        }
-        Ok(#(next, cached)) -> {
-          process.send(
-            reply,
-            Ok(#(extension.commands(cached.composition), command.context(id))),
-          )
-          actor.continue(next)
-        }
-      }
+    Peek(id, cwd, reply) -> actor.continue(peek(state, id, cwd, reply))
     Reset(id, reply) -> {
       drop_kernel_at(state, id, "session reset")
       process.send(reply, Nil)
-      actor.continue(without_session(state, id))
+      actor.continue(without_session(abandon(state, id), id))
     }
     Forget(id, reply) -> {
       let state = abandon(state, id)
@@ -1325,10 +2702,46 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
         State(
           ..without_session(state, id),
           compositions: dict.delete(state.compositions, id),
+          desired: dict.delete(state.desired, id),
         ),
       )
     }
+    Delete(id, reply) -> {
+      let stopped = case dict.has_key(state.booting, id) {
+        True -> Error("runtime preparation is still in progress")
+        False ->
+          case dict.get(state.sessions, id) {
+            Ok(session) ->
+              case python.alive(session.kernel) {
+                True -> python.stop(session.kernel)
+                False -> python.stop_recorded(state.work, id)
+              }
+            Error(_) -> python.stop_recorded(state.work, id)
+          }
+      }
+      case stopped {
+        Error(reason) -> {
+          process.send(reply, Error(reason))
+          actor.continue(state)
+        }
+        Ok(_) -> {
+          close_cached_at(state, id)
+          process.send(reply, Ok(Nil))
+          actor.continue(
+            State(
+              ..without_session(state, id),
+              compositions: dict.delete(state.compositions, id),
+              desired: dict.delete(state.desired, id),
+            ),
+          )
+        }
+      }
+    }
     Stop(reply) -> {
+      let state =
+        list.fold(dict.keys(state.booting), state, fn(state, id) {
+          abandon(state, id)
+        })
       dict.each(state.sessions, fn(id, _) {
         release_kernel(state, id, "runtime stop")
       })
@@ -1344,8 +2757,10 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
       actor.continue(State(..state, detaching: True))
     }
     Reattach(id, cwd, reply) -> actor.continue(reattach(state, id, cwd, reply))
-    Reattached(id, cached, result) ->
-      actor.continue(reattached(state, id, cached, result) |> boot_next)
+    Reattached(id, generation, cached, result) ->
+      actor.continue(
+        reattached(state, id, generation, cached, result) |> boot_next,
+      )
   }
 }
 
@@ -1357,32 +2772,45 @@ fn reattach(
   cwd: String,
   reply: Subject(Nil),
 ) -> State {
+  case dict.has_key(state.preparing, id) {
+    True -> defer(state, id, Reattach(id, cwd, reply))
+    False -> reattach_prepared(state, id, cwd, reply)
+  }
+}
+
+fn reattach_prepared(
+  state: State,
+  id: String,
+  cwd: String,
+  reply: Subject(Nil),
+) -> State {
   let busy =
     dict.has_key(state.sessions, id)
     || dict.has_key(state.booting, id)
     || state.detaching
-  let prepared = case busy {
-    True -> Error("already has its kernel")
-    False -> ensure_cached(state, id, cwd)
-  }
-  case prepared {
-    Ok(#(next, cached)) -> {
-      let self = state.self
-      let owner = state.work
-      process.spawn_unlinked(fn() {
-        let result =
-          protect.attempt(fn() { resume_kernel(owner, id, cached) })
-          |> result.map_error(fn(crash) {
-            python.Unavailable("kernel reattach failed: " <> crash)
-          })
-        process.send(self, Reattached(id, cached, result))
-        process.send(reply, Nil)
-      })
-      State(..next, booting: dict.insert(next.booting, id, []))
-    }
-    Error(_) -> {
+  case busy {
+    True -> {
       process.send(reply, Nil)
       state
+    }
+    False -> {
+      let generation = reference.new()
+      let state =
+        State(
+          ..state,
+          booting: dict.insert(state.booting, id, Booting(generation, [])),
+        )
+      case dict.get(state.compositions, id) {
+        Ok(cached) if cached.cwd == cwd ->
+          State(
+            ..state,
+            waiting: list.append(state.waiting, [
+              AttachKernel(id, generation, cached, reply),
+            ]),
+          )
+          |> boot_next
+        _ -> prepare(state, id, cwd, generation, AttachRecorded(reply))
+      }
     }
   }
 }
@@ -1392,20 +2820,34 @@ fn reattach(
 fn reattached(
   state: State,
   id: String,
+  generation: Reference,
   cached: Cached,
-  result: Result(Option(Session), python.Error),
+  outcome: Result(Option(Session), python.Error),
 ) -> State {
-  case dict.get(state.booting, id), result {
-    Ok(_), Ok(Some(session)) -> booted(state, id, Ok(session))
-    Error(_), Ok(Some(session)) -> {
-      drop_kernel("reattach for a forgotten session", session)
+  case dict.get(state.booting, id) {
+    Ok(Booting(current, waiters)) if current == generation -> {
+      let state = finish_commands(state, id, Ok(cached))
+      case outcome, waiters {
+        Ok(Some(session)), _ -> booted(state, id, generation, Ok(session))
+        _, [] ->
+          State(..state, booting: dict.delete(state.booting, id)) |> replay(id)
+        _, _ ->
+          State(
+            ..state,
+            waiting: list.append(state.waiting, [
+              BootKernel(id, generation, cached),
+            ]),
+          )
+      }
+    }
+    _ -> {
+      case outcome {
+        Ok(Some(session)) ->
+          drop_kernel("reattach for a forgotten session", session)
+        _ -> Nil
+      }
       state
     }
-    Ok([]), _ ->
-      State(..state, booting: dict.delete(state.booting, id)) |> replay(id)
-    Ok(_), _ ->
-      State(..state, waiting: list.append(state.waiting, [#(id, cached)]))
-    Error(_), _ -> state
   }
 }
 
@@ -1555,6 +2997,20 @@ pub fn global(runtime: Runtime) -> Result(List(extension.Extension), String) {
   )
 }
 
+/// Immutable declarations are safe to inspect under a settings owner lock;
+/// they do not call the composition actor or read mutable configuration.
+pub fn installed(runtime: Runtime) -> List(extension.Extension) {
+  runtime.extensions
+}
+
+pub fn quarantined(runtime: Runtime) -> List(extension.Quarantined) {
+  runtime.quarantined
+}
+
+pub fn base_defaults(runtime: Runtime) -> List(String) {
+  runtime.default_enabled
+}
+
 /// Refetch the model catalogs this session enables, on the caller's process.
 pub fn reload_catalogs(
   runtime: Runtime,
@@ -1636,13 +3092,19 @@ pub fn upstream(
   protocol: types.Protocol,
   effort: Option(String),
 ) -> Result(extension.Upstream, String) {
+  use edge <- result.try(case profile {
+    "" -> Ok(None)
+    _ ->
+      configuration.named(home, profile)
+      |> result.map(fn(profile) { profile.image_edge })
+  })
   use selected <- result.try(extension.enabled(
     runtime.work,
     runtime.extensions,
     runtime.default_enabled,
     session,
   ))
-  extension.upstream(
+  use upstream <- result.map(extension.upstream(
     selected,
     extension.ModelContext(
       home,
@@ -1653,7 +3115,18 @@ pub fn upstream(
       protocol,
       effort,
     ),
-  )
+  ))
+  case edge {
+    None -> upstream
+    Some(edge) ->
+      extension.Upstream(
+        ..upstream,
+        images: types.ImageLimits(
+          ..upstream.images,
+          max_edge: int.min(edge, upstream.images.max_edge),
+        ),
+      )
+  }
 }
 
 fn capacity(info: Option(extension.ModelInfo)) -> Option(compaction.Capacity) {
@@ -1761,3 +3234,30 @@ pub fn prepare_view_scoped(
 
 @external(erlang, "albedo_inspect", "label")
 fn label(kind: String, id: String) -> Nil
+
+pub fn inventory(host: Runtime) -> session_catalog.Inventory {
+  session_catalog.Inventory(
+    ledger(host),
+    installed(host),
+    quarantined(host),
+    base_defaults(host),
+  )
+}
+
+pub fn needs_reload(
+  host: Runtime,
+  home: String,
+) -> Result(List(String), String) {
+  loaded_sessions(host)
+  |> list.try_fold([], fn(ids, id) {
+    case observe_composition(host, home, id) {
+      Error("session not found") -> Ok(ids)
+      Error(reason) -> Error(reason)
+      Ok(observed) ->
+        Ok(case observed.needs_reload {
+          True -> [id, ..ids]
+          False -> ids
+        })
+    }
+  })
+}

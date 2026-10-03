@@ -1,9 +1,14 @@
 import albedo/daemon/store
+import albedo/harness/client_api
 import albedo/harness/extension as harness_extension
 import albedo/harness/extensions/work/command as work_command
 import albedo/harness/extensions/work/ledger as work
 import albedo/harness/extensions/work/migrations/cwd
 import albedo/harness/extensions/work/rpc
+import gleam/http
+import gleam/json
+
+import albedo/harness/extensions/work/service
 
 pub fn extension() -> harness_extension.Extension {
   harness_extension.Extension(
@@ -11,6 +16,30 @@ pub fn extension() -> harness_extension.Extension {
     "A durable revision-checked work ledger shared by humans and agents.",
     ["python"],
     [
+      harness_extension.ClientPlugin([
+        client_api.Command(
+          "/work",
+          client_api.Read,
+          [],
+          client_api.Operation(
+            "listWork",
+            http.Get,
+            "/extensions/work/items",
+            [],
+            [#("workspace", client_api.Session("/workspace"))],
+            [],
+            [],
+            json.object([]),
+          ),
+        ),
+      ]),
+      harness_extension.GlancePlugin(service.sidebar, service.resource_url),
+      harness_extension.ServicePlugin(harness_extension.Service(
+        fn(_, _) {
+          harness_extension.Admission(harness_extension.DaemonToken, 65_536)
+        },
+        service.handle,
+      )),
       harness_extension.MigrationPlugin(harness_extension.SchemaMigration(
         cwd.apply,
       )),

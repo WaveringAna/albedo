@@ -46,7 +46,7 @@ directory(Path) -> filename:pathtype(Path) =:= absolute andalso filelib:is_dir(P
 %% ebin/ and priv/ trees, symlinks followed. Memoized for the VM's life, so a
 %% tree edited under a running daemon keeps the digest it booted with. Empty
 %% when the tree cannot be read. The CLI hashes its candidate build with the
-%% same recipe (cli/internal/daemon/build_identity.go); the shared fixture in
+%% same recipe (cli/cmd/albedo/build_identity.go); the shared fixture in
 %% test/fixtures/build-digest pins the two implementations together.
 build_digest() ->
     case persistent_term:get(albedo_build_digest, none) of
@@ -121,7 +121,7 @@ hash_build_files([{Rel, Path} | Rest], Ctx) ->
 
 ready(Home,Port,Token) ->
     File=filename:join(Home,<<"daemon.json">>), Temp= <<File/binary,".tmp">>,
-    Record=#{pid=>list_to_integer(os:getpid()),port=>Port,token=>Token,version=>2},
+    Record=#{pid=>list_to_integer(os:getpid()),port=>Port,token=>Token,version=>3},
     Labelled=case os:getenv("ALBEDO_BUILD") of
         false -> Record;
         Build -> Record#{build=>unicode:characters_to_binary(Build)}
@@ -214,6 +214,7 @@ http_request(Handle) ->
             case Message of
                 <<"callee exited: ",_/binary>> -> {error,nil};
                 <<"Callee subject had no owner">> -> {error,nil};
+                <<"callee did not send reply before timeout">> -> {error,nil};
                 _ -> erlang:raise(error,Reason,Stack)
             end
     end.

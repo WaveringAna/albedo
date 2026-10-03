@@ -3,7 +3,6 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"unicode/utf8"
 )
 
@@ -11,7 +10,6 @@ import (
 type ToolActivity struct {
 	Kind   string `json:"kind"` // "read" | "search" | "list" | "run"
 	Target string `json:"target"`
-	Failed bool   `json:"failed,omitempty"`
 }
 
 type FileChange struct {
@@ -29,19 +27,10 @@ type ToolTrace struct {
 	Truncated  bool           `json:"truncated,omitempty"`
 }
 
-// ParseToolTrace validates and extracts a ToolTrace from untyped data.
-func ParseToolTrace(raw any) *ToolTrace {
-	if raw == nil {
+// ParseToolTrace validates the display evidence encoded in a history or tool event.
+func ParseToolTrace(data json.RawMessage) *ToolTrace {
+	if len(data) == 0 {
 		return nil
-	}
-
-	data, ok := raw.(json.RawMessage)
-	if !ok {
-		encoded, err := json.Marshal(raw)
-		if err != nil {
-			return nil
-		}
-		data = encoded
 	}
 
 	var trace ToolTrace
@@ -94,8 +83,8 @@ type ToolCodePreview struct {
 
 type ToolProgress struct {
 	Code       *ToolCodePreview `json:"code,omitempty"`
-	ToolCallID string           `json:"toolCallId,omitempty"`
-	CallID     string           `json:"callId"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+	CallID     string           `json:"call_id"`
 	Name       string           `json:"name"`
 	Phase      string           `json:"phase"` // "generating" | "running"
 }
@@ -120,6 +109,7 @@ const (
 	EventToolProgress   EventType = "tool_progress"
 	EventTool           EventType = "tool"
 	EventUsage          EventType = "usage"
+	EventInvalidate     EventType = "invalidate"
 	// EventCommitted says transcript rows up to Seq now cover what was shown.
 	EventCommitted EventType = "committed"
 )
@@ -147,38 +137,44 @@ type CacheStep struct {
 }
 
 type StreamEvent struct {
-	OperationID    string         `json:"operationId,omitempty"`
-	Image          *ImageMetadata `json:"image,omitempty"`
-	Usage          *Usage         `json:"usage,omitempty"`
-	ToolTrace      *ToolTrace     `json:"trace,omitempty"`
-	Timestamp      *int64         `json:"timestamp,omitempty"`
-	ToolArgs       map[string]any `json:"args,omitempty"`
-	Progress       *ToolProgress  `json:"progress,omitempty"`
-	TurnID         string         `json:"turnId,omitempty"`
-	Type           EventType      `json:"type"`
-	Text           string         `json:"text,omitempty"`
-	Role           string         `json:"role,omitempty"` // "assistant"
-	Source         string         `json:"source,omitempty"`
-	TriggeredAt    string         `json:"triggeredAt,omitempty"`
-	ClientID       string         `json:"clientId,omitempty"`
-	Summary        string         `json:"summary,omitempty"`
-	Strategy       string         `json:"strategy,omitempty"`
-	ToolName       string         `json:"name,omitempty"`
-	ToolResult     string         `json:"result,omitempty"`
-	ProgressCallID string         `json:"progressCallId,omitempty"`
-	SubmissionIDs  []string       `json:"submissionIds,omitempty"`
-	Evicted        int            `json:"evicted,omitempty"`
+	Invalidation   *ResourceInvalidation
+	Status         *AgentStatus
+	Snapshot       *Session
+	Receipt        *OperationReceipt
+	OperationID    string
+	Image          *ImageMetadata
+	Usage          *Usage
+	ToolTrace      *ToolTrace
+	Timestamp      *int64
+	ToolArgs       map[string]any
+	Progress       *ToolProgress
+	TurnID         string
+	Type           EventType
+	Text           string
+	Source         string
+	Summary        string
+	Strategy       string
+	ToolName       string
+	ToolResult     string
+	ProgressCallID string
+	SubmissionIDs  []string
+	Evicted        int
 	// ElapsedMs is how long a replayed thought took, when the daemon timed it.
-	ElapsedMs int64 `json:"elapsedMs,omitempty"`
+	ElapsedMs       int64
+	ElapsedObserved bool
 	// Seq is the newest transcript row an EventCommitted covers.
-	Seq int64 `json:"seq,omitempty"`
+	Seq int64
 	// Before and More describe the history a reset or page carried: Before is
 	// its first row (the cursor for the next older page), More whether one exists.
-	Before int64 `json:"before,omitempty"`
-	More   bool  `json:"more,omitempty"`
+	Before int64
+	More   bool
 	// Replayed marks an event from the transcript snapshot that follows a
 	// reset: history, which says nothing about what the session does now.
-	Replayed bool `json:"-"`
+	Replayed bool
+}
+
+type ResourceInvalidation struct {
+	Session, Settings, Catalog, Context, Extension bool
 }
 
 // decodeToolProgress validates the normalized progress object before delivery.
@@ -187,44 +183,37 @@ func decodeToolProgress(raw json.RawMessage) (*ToolProgress, error) {
 	if string(raw) == "null" {
 		return nil, nil
 	}
-	if len(raw) > 8*1024 {
-		return nil, errors.New("invalid tool progress: event exceeds 8 KiB")
+	if len(raw) > 8192 {
+		return nil, errors.New("tool progress exceeds 8 KiB")
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, fmt.Errorf("invalid tool progress: %w", err)
+	var wire wireToolProgress
+	if err := decodeRequired(raw, &wire, "call_id", "tool_call_id", "name", "phase", "intent"); err != nil {
+		return nil, err
 	}
-	for _, name := range []string{"callId", "name", "phase"} {
-		if value, exists := fields[name]; !exists || string(value) == "null" {
-			return nil, fmt.Errorf("invalid tool progress: missing %s", name)
+	if wire.CallID == "" || wire.Name == "" || len(wire.Name) > 100 || (wire.Phase != "generating" && wire.Phase != "running") {
+		return nil, fieldError("tool progress")
+	}
+	if wire.Preview.OffsetScalars < 0 || utf8.RuneCountInString(wire.Preview.Text) > 512 || len(wire.Preview.Text) > 2048 {
+		return nil, fieldError("tool progress preview")
+	}
+	return progressValue(wire), nil
+}
+func progressValue(wire wireToolProgress) *ToolProgress {
+	progress := &ToolProgress{CallID: wire.CallID, ToolCallID: value(wire.ToolCallID), Name: wire.Name, Phase: wire.Phase}
+	if wire.Preview.Text != "" || wire.Preview.OffsetScalars > 0 {
+		progress.Code = &ToolCodePreview{Text: wire.Preview.Text, Offset: int(wire.Preview.OffsetScalars)}
+	}
+	return progress
+}
+func usageValue(wire wireUsage) *Usage {
+	usage := &Usage{Model: value(wire.Model), PromptTokens: intPointer(wire.PromptTokens), CachedPromptTokens: intPointer(wire.CachedPromptTokens), CacheWriteTokens: intPointer(wire.CacheWriteTokens), CompletionTokens: intPointer(wire.CompletionTokens), TotalTokens: intPointer(wire.TotalTokens), ElapsedMs: wire.ElapsedMs, TokensPerSecond: wire.TokensPerSecond}
+	if wire.ObservedAt != nil {
+		usage.RecordedAt = timestampMilliseconds(*wire.ObservedAt)
+	}
+	for _, step := range wire.CacheFade {
+		if at := timestampMilliseconds(step.At); at != nil {
+			usage.CacheFade = append(usage.CacheFade, CacheStep{At: *at, Cached: intPointer(step.CachedTokens)})
 		}
 	}
-	var progress ToolProgress
-	if err := json.Unmarshal(raw, &progress); err != nil {
-		return nil, fmt.Errorf("invalid tool progress: %w", err)
-	}
-	if progress.CallID == "" || progress.Name == "" || len(progress.Name) > 100 {
-		return nil, errors.New("invalid tool progress identity")
-	}
-	if progress.ToolCallID != "" && len(progress.ToolCallID) > 200 {
-		return nil, errors.New("invalid tool progress toolCallId")
-	}
-	if progress.Phase != "running" && progress.Phase != "generating" {
-		return nil, errors.New("invalid tool progress phase")
-	}
-	if progress.Code != nil {
-		var codeFields map[string]json.RawMessage
-		if err := json.Unmarshal(fields["code"], &codeFields); err != nil {
-			return nil, errors.New("invalid tool progress code")
-		}
-		for _, name := range []string{"offset", "text"} {
-			if value, exists := codeFields[name]; !exists || string(value) == "null" {
-				return nil, fmt.Errorf("invalid tool progress code: missing %s", name)
-			}
-		}
-		if progress.Code.Offset < 0 || utf8.RuneCountInString(progress.Code.Text) > 512 || len(progress.Code.Text) > 2048 {
-			return nil, errors.New("invalid tool progress code preview")
-		}
-	}
-	return &progress, nil
+	return usage
 }

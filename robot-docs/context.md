@@ -21,11 +21,11 @@ The summary endpoint returns only bounded previews. Full inspectable text is ava
 
 Authenticated local clients use GET requests only:
 
-- `GET /sessions/:id/context` returns pending state or request metadata and ordered section summaries.
-- `GET /sessions/:id/context/:section/:page` returns one bounded, zero-based content page.
+- `GET /sessions/{session_id}/context?view=summary` returns pending state or request metadata and ordered section summaries.
+- `GET /sessions/{session_id}/context?view=section&snapshot_id={snapshot_id}&section_id={section_id}&page={page}` returns one bounded, zero-based content page.
 
-The session actor owns the immutable prepared snapshot and returns it to the caller. Summary and page rendering run in the calling process, so rendering does not occupy the session actor. Each read uses one captured snapshot.
+The session actor owns the immutable prepared snapshot and returns it to the caller. Summary and page rendering run in the calling process, so rendering does not occupy the session actor. Section reads pin the observed snapshot ID; replacement returns `410 context_changed`.
 
-The `session_context` health capability indicates support. Invalid section or page identifiers return an error without changing session state.
+The `context: 1` server capability indicates support. Invalid section or page identifiers return an error without changing session state.
 
-The skills and instructions management catalog at `GET /sessions/:id/catalog` is a fresh discovery view, separate from this prepared request snapshot. A candidate can appear there before a session reload makes it available at runtime; reloads can also update live commands while the cached system prompt remains pinned until compaction.
+The skills and instructions management catalog at `GET /sessions/{session_id}/catalog` is a fresh discovery view, separate from this prepared request snapshot. A candidate can appear there before a session reload makes it available at runtime; reloads can also update live commands while the cached system prompt remains pinned until compaction.

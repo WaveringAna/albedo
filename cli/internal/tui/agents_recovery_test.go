@@ -3,7 +3,9 @@
 package tui
 
 import (
+	"albedo/cli/internal/testwire"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -32,12 +34,8 @@ func TestAgentsRefreshDiscardsDirtyAndPreviousSubscriptionReplies(t *testing.T) 
 		}
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health" {
-			_, _ = fmt.Fprint(w, `{"ok":true,"version":2,"capabilities":["normalized_tool_progress"]}`)
-			return
-		}
 		switch {
-		case r.URL.Path == "/agents/stream":
+		case r.URL.Path == "/sessions" && r.Header.Get("Accept") == "text/event-stream":
 			number := streams.Add(1)
 			notify()
 			if number > int32(len(feeds)) {
@@ -45,7 +43,7 @@ func TestAgentsRefreshDiscardsDirtyAndPreviousSubscriptionReplies(t *testing.T) 
 				return
 			}
 			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = fmt.Fprint(w, "data: {\"events\":[]}\n\n")
+			testwire.InitialStream(w, "agents")
 			w.(http.Flusher).Flush()
 			for {
 				select {
@@ -61,7 +59,7 @@ func TestAgentsRefreshDiscardsDirtyAndPreviousSubscriptionReplies(t *testing.T) 
 					return
 				}
 			}
-		case r.URL.Path == "/agents":
+		case r.URL.Path == "/sessions":
 			number := snapshots.Add(1)
 			notify()
 			if streams.Load() == 0 {
@@ -76,7 +74,7 @@ func TestAgentsRefreshDiscardsDirtyAndPreviousSubscriptionReplies(t *testing.T) 
 					return
 				}
 				w.WriteHeader(http.StatusServiceUnavailable)
-				_, _ = fmt.Fprint(w, `{"error":"snapshot refused"}`)
+				_, _ = fmt.Fprint(w, `{"detail":"snapshot refused"}`)
 				return
 			case 2:
 				select {
@@ -90,13 +88,20 @@ func TestAgentsRefreshDiscardsDirtyAndPreviousSubscriptionReplies(t *testing.T) 
 			case 5:
 				name = "FINAL_TREE"
 			}
-			_, _ = fmt.Fprintf(w, `{"root":"lead","nodes":[{"session":{"id":"lead","model":"test","title":"","workspace":"","provider":"fixture","protocol":"responses","effort":null,"last_assistant_at":null},"parent":null,"address":null,"name":%q,"depth":0,"running":false,"closed":false}]}`, name)
-		case strings.HasSuffix(r.URL.Path, "/preview"):
-			preview := "OLD_SUBSCRIPTION_SEED"
-			if seeds.Add(1) > 1 {
-				preview = "FINAL_SEED"
+			session := protocolSession("lead", generationA, 0)
+			session["name"] = name
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{session}, "next": nil, "family": map[string]any{"root_id": "lead", "revision": "family-a"}})
+		case r.URL.Path == "/sessions/lead":
+			session := protocolSession("lead", generationA, 0)
+			if r.URL.Query().Has("tail") {
+				preview := "OLD_SUBSCRIPTION_SEED"
+				if seeds.Add(1) > 1 {
+					preview = "FINAL_SEED"
+				}
+				session["preview"].(map[string]any)["transcript_count"] = 1
+				session["history"].(map[string]any)["items"] = []any{protocolEntry("answer", "assistant", preview, 1)}
 			}
-			_, _ = fmt.Fprintf(w, `{"total":1,"items":[{"type":"assistant","preview":%q}]}`, preview)
+			_ = json.NewEncoder(w).Encode(session)
 		default:
 			t.Errorf("unexpected request: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -163,14 +168,14 @@ func TestAgentsRefreshDiscardsDirtyAndPreviousSubscriptionReplies(t *testing.T) 
 	}
 	run(model.Init())
 	pump(func() bool { return snapshots.Load() == 1 })
-	feeds[0] <- `{"events":[{"type":"spawn","session":"lead","parent":"lead","name":"first","model":"test","depth":0}]}`
+	feeds[0] <- `{"events":[{"type":"invalidate","data":{"urls":["/sessions"],"session_ids":["lead"],"scope_dirty":true}}]}`
 	// The event must be consumed before releasing the failed snapshot.
 	takeEvent := take(func(message tea.Msg) bool { batch, ok := message.(agentsEventsMsg); return ok && len(batch.Events) > 0 })
 	update(takeEvent)
 	close(failureRelease)
 	pump(func() bool { return strings.Contains(view(), "snapshot refused") })
 	pump(func() bool { return snapshots.Load() == 2 })
-	feeds[0] <- `{"events":[{"type":"renamed","session":"lead","name":"renamed-during-fetch"}]}`
+	feeds[0] <- `{"events":[{"type":"invalidate","data":{"urls":["/sessions"],"session_ids":["lead"],"scope_dirty":true}}]}`
 	update(take(func(message tea.Msg) bool { batch, ok := message.(agentsEventsMsg); return ok && len(batch.Events) > 0 }))
 	close(dirtyRelease)
 	dirty := take(func(message tea.Msg) bool {
@@ -183,12 +188,12 @@ func TestAgentsRefreshDiscardsDirtyAndPreviousSubscriptionReplies(t *testing.T) 
 	}
 	pump(func() bool { return strings.Contains(view(), "LIVE_TREE") })
 	oldSeed := take(func(message tea.Msg) bool { _, ok := message.(agentsSeedMsg); return ok })
-	feeds[0] <- `{"events":[{"type":"overflow"}]}`
+	feeds[0] <- `{"events":[{"type":"overflow","data":{}}]}`
 	oldSnapshot := take(func(message tea.Msg) bool {
 		snapshot, ok := message.(agentsSnapshotMsg)
 		return ok && snapshot.Err == nil
 	})
-	feeds[1] <- `{"events":[{"type":"overflow"}]}`
+	feeds[1] <- `{"events":[{"type":"overflow","data":{}}]}`
 	pump(func() bool { return strings.Contains(view(), "FINAL_SEED") })
 	update(oldSnapshot)
 	update(oldSeed)

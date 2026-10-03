@@ -2,6 +2,7 @@
 //// and exact source bounds that the HTTP E2E API does not expose.
 
 import albedo/daemon/conversation
+import albedo/daemon/family
 import albedo/daemon/history
 import albedo/daemon/image_fit
 import albedo/daemon/migrations/transcript_classes
@@ -119,6 +120,7 @@ pub fn ranged_images_equal_full_history_with_later_fits_test() -> Nil {
   let assert Ok(host) = runtime.start(path)
   let ledger = runtime.ledger(host)
   let assert Ok(_) = conversation.initialise(ledger)
+  let assert Ok(_) = family.initialise(ledger)
   let assert Ok(_) = conversation.create(ledger, session())
   let data = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD"
   let assert Ok(original) = types.image("image/png", data, 2, 3, 24)

@@ -22,6 +22,17 @@ var CommonCommands = []ChatCommand{
 }
 
 var AppCommands = []ChatCommand{
+	{Name: "/link", Description: "inspect and confirm linked workspace groups"},
+	{Name: "/ttl", Description: "inspect provider cache policy"},
+	{Name: "/quota", Description: "inspect observed provider quota"},
+	{Name: "/requests", Description: "inspect provider request diagnostics"},
+	{Name: "/raise-cap", Description: "raise or restore the model context cap"},
+	{Name: "/effort", Description: "choose reasoning effort"},
+	{Name: "/reload", Description: "apply selected configuration and refresh models"},
+	{Name: "/compact", Description: "compact durable context"},
+	{Name: "/kernel", Description: "upgrade the session kernel"},
+	{Name: "/model", Description: "choose a model"},
+	{Name: "/context", Description: "inspect prepared context"},
 	{Name: "/login", Description: "add or select a model provider"},
 	{Name: "/new", Description: "start a new coding session"},
 	{Name: "/sessions", Description: "switch to another session"},

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/testwire"
 )
 
 func TestReadFlattensHistoryPagesInChronologicalOrder(t *testing.T) {
@@ -19,24 +20,27 @@ func TestReadFlattensHistoryPagesInChronologicalOrder(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/sessions":
-			_, _ = w.Write([]byte(`[{"id":"s","title":"","workspace":"","provider":"fixture","model":"fixture","protocol":"responses","effort":null,"last_assistant_at":null}]`))
-		case "/sessions/s/status":
-			_, _ = w.Write([]byte(`{"running":true,"idle":false,"phase":"preparing"}`))
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{testwire.Session("s", testwire.GenerationA, 0)}, "next": nil})
+		case "/sessions/s":
+			session := testwire.Session("s", testwire.GenerationA, 0)
+			session["status"].(map[string]any)["phase"] = "preparing"
+			_ = json.NewEncoder(w).Encode(session)
 		case "/sessions/s/history":
 			cursor := r.URL.Query().Get("before")
 			cursors = append(cursors, cursor)
-			var body string
+			position := int64(5)
+			text := "third"
+			var older any = "older"
 			switch cursor {
-			case "":
-				body = `{"events":[{"type":"user","source":"chat","triggeredAt":"","text":"third"},{"type":"message","role":"assistant","text":"third reply"}],"before":5,"more":true}`
 			case "5":
-				body = `{"events":[{"type":"user","source":"chat","triggeredAt":"","text":"second"},{"type":"message","role":"assistant","text":"second reply"}],"before":3,"more":true}`
+				position, text = 3, "second"
 			case "3":
-				body = `{"events":[{"type":"user","source":"chat","triggeredAt":"","text":"first"},{"type":"message","role":"assistant","text":"first reply"}],"before":1,"more":false}`
-			default:
-				t.Errorf("unexpected cursor %s", cursor)
+				position, text, older = 1, "first", nil
 			}
-			_, _ = w.Write([]byte(body))
+			makeEntry := func(id, kind, text string, position int64) map[string]any {
+				return map[string]any{"id": id, "position": position, "kind": kind, "created_at": nil, "input_id": nil, "turn_id": nil, "checkpoint_id": nil, "content_complete": true, "content": []any{map[string]any{"kind": "text", "text": text}}, "tool": nil}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{makeEntry(text, "user", text, position), makeEntry(text+"-reply", "assistant", text+" reply", position+1)}, "older": older, "newer": nil, "high_water": 6})
 		default:
 			t.Errorf("unexpected request %s", r.URL.Path)
 			w.WriteHeader(404)
@@ -53,7 +57,9 @@ func TestReadFlattensHistoryPagesInChronologicalOrder(t *testing.T) {
 		}
 		var texts []string
 		for _, event := range result.Events {
-			texts = append(texts, event.Text)
+			if event.Type != daemon.EventCommitted {
+				texts = append(texts, event.Text)
+			}
 			if !event.Replayed {
 				t.Fatal("history event not marked replayed")
 			}

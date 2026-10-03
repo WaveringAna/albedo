@@ -1,15 +1,17 @@
 """MCP stdio discovery, credentials, namespaced calls, and teardown through the daemon."""
 
 from typing import Any
+from concurrent.futures import ThreadPoolExecutor
+import errno
 import json
+import os
 import shutil
 import sys
 import time
 import unittest
-import urllib.error
 from pathlib import Path
 
-from harness import Albedo, Provider, exclusive, Reply, text
+from harness import Albedo, Provider, exclusive, operation_id, Reply, text
 
 SERVER = Path(__file__).with_name("fake_mcp_server.py")
 
@@ -54,7 +56,6 @@ class McpTests(unittest.TestCase):
         self.app.__enter__()
         self.addCleanup(self.app.__exit__, None, None, None)
         self.session = self.app.session()
-        self.route = f"/sessions/{self.session}/extensions"
 
     def configure(self, app, args, startup=20000, retry=None):
         path = app.home / "extensions.json"
@@ -89,9 +90,33 @@ class McpTests(unittest.TestCase):
             if tool["name"].startswith("mcp_")
         ]
 
-    def extension(self, body=None):
-        with self.app.api(self.route, body) as response:
-            return next(item for item in json.load(response) if item["name"] == "mcp")
+    def mcp(self):
+        with self.app.api(f"/sessions/{self.session}/catalog") as response:
+            catalog = json.load(response)
+        return next(
+            row
+            for row in catalog["discovery"]["candidates"]
+            if row["kind"] == "extension" and row["preference_key"] == "mcp"
+        )
+
+    def select_mcp(self, session, enabled):
+        route = f"/sessions/{session}?view=configuration"
+        with self.app.api(route) as response:
+            json.load(response)
+            etag = response.headers["ETag"]
+        self.app.api(
+            route,
+            {"selection": {"extensions": {"mcp": enabled}}},
+            method="PATCH",
+            headers={"If-Match": etag},
+        ).close()
+
+    def set_mcp(self, enabled):
+        self.select_mcp(self.session, enabled)
+        with self.app.api(
+            f"/sessions/{self.session}/reload", {"target": "session"}
+        ) as response:
+            return json.load(response)
 
     def turn(self, prompt, session=None):
         session = session or self.session
@@ -100,10 +125,113 @@ class McpTests(unittest.TestCase):
         self.app.idle(session, timeout=60)
         return [entry["request"] for entry in self.provider.requests[before:]]
 
+    def test_cold_command_and_recorded_recovery_do_not_block_another_session(self):
+        other = self.app.session()
+        for session, enabled in ((self.session, True), (other, False)):
+            route = f"/sessions/{session}?view=configuration"
+            with self.app.api(route) as response:
+                json.load(response)
+                etag = response.headers["ETag"]
+            self.app.api(
+                route,
+                {"selection": {"extensions": {"mcp": enabled}}},
+                method="PATCH",
+                headers={"If-Match": etag},
+            ).close()
+        with self.app.api(f"/sessions/{self.session}?tail=0") as response:
+            self.assertEqual(json.load(response)["kernel"]["state"], "none")
+        marker = self.app.workspace / "cold-mcp-started"
+        gate = self.app.workspace / "cold-mcp-release"
+        os.mkfifo(gate)
+        script = (
+            "import pathlib; "
+            + f"pathlib.Path({str(marker)!r}).touch(); "
+            + f"open({str(gate)!r}, 'rb').read(1); "
+            + f"exec(pathlib.Path({str(SERVER)!r}).read_text())"
+        )
+        self.configure(self.app, ["-c", script], startup=30000)
+        input_id = operation_id()
+
+        def submit_command():
+            with self.app.api(
+                f"/sessions/{self.session}/inputs/{input_id}",
+                {
+                    "kind": "command",
+                    "command_id": "/research",
+                    "arguments": {"arguments": "cold composition fixture"},
+                },
+                method="PUT",
+            ) as response:
+                return json.load(response)
+
+        def release_preparation():
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    descriptor = os.open(gate, os.O_WRONLY | os.O_NONBLOCK)
+                    break
+                except OSError as error:
+                    if error.errno != errno.ENXIO or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.01)
+            try:
+                os.write(descriptor, b"x")
+            finally:
+                os.close(descriptor)
+
+        def complete_independent_turn():
+            with self.app.api(f"/sessions/{other}?tail=0") as response:
+                self.assertEqual(json.load(response)["id"], other)
+            with self.app.prompt(other, "independent turn") as response:
+                other_input = json.load(response)["id"]
+            self.app.idle(other)
+            with self.app.api(f"/sessions/{other}/inputs/{other_input}") as response:
+                self.assertEqual(json.load(response)["turn"]["state"], "completed")
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            command = pool.submit(submit_command)
+            deadline = time.monotonic() + 10
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(marker.exists(), "cold MCP preparation did not start")
+            try:
+                complete_independent_turn()
+                self.assertFalse(command.done(), "command passed the held preparation")
+            finally:
+                release_preparation()
+            self.assertEqual(command.result(timeout=40)["id"], input_id)
+        self.app.idle(self.session)
+        with self.app.api(f"/sessions/{self.session}/inputs/{input_id}") as response:
+            self.assertEqual(json.load(response)["turn"]["state"], "completed")
+        with self.app.api(f"/sessions/{self.session}?tail=0") as response:
+            original_kernel = json.load(response)["kernel"]["instance_id"]
+        self.assertIsNotNone(original_kernel)
+        original_history = self.app.history(self.session)["items"]
+        marker.unlink()
+        self.app.restart()
+        deadline = time.monotonic() + 10
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(marker.exists(), "recorded kernel preparation did not start")
+        try:
+            complete_independent_turn()
+        finally:
+            release_preparation()
+        deadline = time.monotonic() + 20
+        while True:
+            with self.app.api(f"/sessions/{self.session}?tail=0") as response:
+                recovered = json.load(response)["kernel"]
+            if recovered["state"] == "attached" or time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+        self.assertEqual(recovered["state"], "attached")
+        self.assertEqual(recovered["instance_id"], original_kernel)
+        self.assertEqual(self.app.history(self.session)["items"], original_history)
+
     def test_discovery_namespaced_call_and_scrubbed_credentials(self):
-        enabled = self.extension({"name": "mcp", "enabled": True})
-        self.assertTrue(enabled["enabled"])
-        self.assertEqual(enabled["plugins"], ["managed"])
+        self.assertEqual(self.set_mcp(True)["session"]["state"], "applied")
+        self.assertTrue(self.mcp()["effective_enabled"])
+        self.assertEqual(self.mcp()["extension"]["plugins"], ["managed"])
         requests = self.turn("use the mcp server")
         self.assertEqual(len(requests), 2)
         context = requests[0]["instructions"]
@@ -126,10 +254,9 @@ class McpTests(unittest.TestCase):
             json.loads(json.loads(output)["content"][0]["text"]),
             {"echoed": "ping from albedo", "secret": "stored-secret", "ambient": None},
         )
-        self.assertEqual(self.extension()["tools"], advertised)
 
     def test_a_failed_tool_call_is_refused_without_ending_the_turn(self):
-        self.extension({"name": "mcp", "enabled": True})
+        self.set_mcp(True)
         self.message = "fail"
         requests = self.turn("the server will refuse")
         self.assertEqual(len(requests), 2)
@@ -142,9 +269,9 @@ class McpTests(unittest.TestCase):
         self.assertIn("done", json.dumps(self.app.history(self.session)))
 
     def test_disable_closes_server_and_removes_tools(self):
-        self.extension({"name": "mcp", "enabled": True})
-        disabled = self.extension({"name": "mcp", "enabled": False})
-        self.assertFalse(disabled["enabled"])
+        self.set_mcp(True)
+        self.assertEqual(self.set_mcp(False)["session"]["state"], "applied")
+        self.assertFalse(self.mcp()["effective_enabled"])
         closed = self.app.root / "closed"
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline and not closed.exists():
@@ -158,11 +285,13 @@ class McpTests(unittest.TestCase):
     def test_insecure_credentials_fail_closed(self):
         credentials = self.app.home / "creds.json"
         credentials.chmod(0o644)
-        with self.assertRaises(urllib.error.HTTPError) as rejected:
-            self.extension({"name": "mcp", "enabled": True})
-        self.assertEqual(rejected.exception.code, 409)
+        self.addCleanup(credentials.chmod, 0o600)
+        outcome = self.set_mcp(True)
+        self.assertEqual(outcome["session"]["state"], "failed")
+        self.assertIn("0600", outcome["session"]["failure"]["detail"])
+        self.assertFalse(self.provider.requests)
         credentials.chmod(0o600)
-        self.assertFalse(self.extension()["enabled"])
+        self.assertEqual(self.set_mcp(True)["session"]["state"], "applied")
 
     def test_an_unavailable_server_is_skipped_and_the_rest_load(self):
         path = self.app.home / "extensions.json"
@@ -173,7 +302,7 @@ class McpTests(unittest.TestCase):
             "startupTimeoutMs": 3000,
         }
         path.write_text(json.dumps(settings))
-        self.assertTrue(self.extension({"name": "mcp", "enabled": True})["enabled"])
+        self.assertEqual(self.set_mcp(True)["session"]["state"], "applied")
         advertised = self.tools(self.turn("one server is down"))
         self.assertEqual(len(advertised), 1)
         self.assertTrue(advertised[0].startswith("mcp_fake_echo_"))
@@ -181,7 +310,7 @@ class McpTests(unittest.TestCase):
     def test_a_server_that_comes_online_joins_the_session_after_a_turn(self):
         late = self.app.root / "late_server.py"
         self.configure(self.app, [str(late)], startup=3000, retry=200)
-        self.assertTrue(self.extension({"name": "mcp", "enabled": True})["enabled"])
+        self.assertEqual(self.set_mcp(True)["session"]["state"], "applied")
         self.assertEqual(self.tools(self.turn("nothing is up yet")), [])
         shutil.copy(SERVER, late)
         deadline = time.monotonic() + 40
@@ -196,16 +325,18 @@ class McpTests(unittest.TestCase):
         self.assertIn("fake", history)
 
     def test_a_known_server_does_not_hold_up_opening_a_session(self):
-        self.extension({"name": "mcp", "enabled": True, "scope": "global"})
+        self.set_mcp(True)
         self.assertEqual(len(self.tools(self.turn("learn the catalogue"))), 1)
         (self.app.root / "control" / "delay").write_text("3")
 
         session = self.app.session()
+        self.select_mcp(session, True)
         started = time.monotonic()
-        with self.app.api(f"/sessions/{session}/commands") as response:
-            commands = [item["name"] for item in json.load(response)]
+        with self.app.api(
+            f"/sessions/{session}/reload", {"target": "session"}
+        ) as response:
+            self.assertEqual(json.load(response)["session"]["state"], "applied")
         self.assertLess(time.monotonic() - started, 1.5)
-        self.assertIn("/model", commands)
 
         # The saved tools are advertised at once; the call waits for the dial.
         requests = self.turn("use the mcp server", session)
@@ -219,7 +350,7 @@ class McpTests(unittest.TestCase):
         self.assertNotIn("capabilities changed", json.dumps(self.app.history(session)))
 
     def test_a_changed_catalogue_refreshes_the_session_after_its_turn(self):
-        self.extension({"name": "mcp", "enabled": True, "scope": "global"})
+        self.set_mcp(True)
         self.turn("learn the catalogue")
         schema = {
             "type": "object",
@@ -233,6 +364,7 @@ class McpTests(unittest.TestCase):
         (self.app.root / "control" / "tools").write_text(json.dumps(tools))
 
         session = self.app.session()
+        self.select_mcp(session, True)
         self.assertEqual(
             len(self.tools(self.turn("still the saved tools", session))), 1
         )
@@ -240,5 +372,6 @@ class McpTests(unittest.TestCase):
         while "capabilities changed" not in json.dumps(self.app.history(session)):
             self.assertLess(time.monotonic(), deadline, "the session never refreshed")
             time.sleep(0.1)
-        self.assertIn("shout", json.dumps(self.app.history(session)))
-        self.assertEqual(len(self.tools(self.turn("now the new ones", session))), 2)
+        advertised = self.tools(self.turn("now the new ones", session))
+        self.assertEqual(len(advertised), 2)
+        self.assertTrue(any(name.startswith("mcp_fake_shout_") for name in advertised))

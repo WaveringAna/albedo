@@ -203,6 +203,7 @@ fn prepare(
   use handle <- result.try(
     native_prepare(
       encode_config(config),
+      ledger,
       session,
       fn(server, fingerprint) { saved_catalogue(ledger, server, fingerprint) },
       fn(server, fingerprint, catalogue) {
@@ -331,6 +332,7 @@ fn encode_refs(values: Dict(String, EnvRef)) -> Json {
 @external(erlang, "albedo_mcp", "prepare")
 fn native_prepare(
   config: String,
+  ledger: store.Store,
   session: String,
   saved: fn(String, String) -> Option(BitArray),
   save: fn(String, String, BitArray) -> Nil,
@@ -352,14 +354,6 @@ fn native_observe(
   refresh: fn(String) -> Nil,
 ) -> Nil
 
-@external(erlang, "albedo_mcp", "check")
-fn native_check(
-  config: String,
-  session: String,
-  name: String,
-  preferences: Bool,
-) -> Result(Nil, String)
-
 @external(erlang, "albedo_mcp", "call")
 fn native_call(
   handle: Handle,
@@ -369,39 +363,3 @@ fn native_call(
 
 @external(erlang, "albedo_mcp", "close")
 fn native_close(handle: Handle) -> Nil
-
-/// Connects to the saved server `name` and hangs up. A server that is not
-/// saved or is switched off passes, and so does one that `session`'s
-/// capability choices leave off when `preferences` is true; one that cannot
-/// start is an error.
-pub fn check_connects(
-  session: String,
-  name: String,
-  preferences: Bool,
-) -> Result(Nil, String) {
-  use config <- result.try(load_config())
-  native_check(encode_config(config), session, name, preferences)
-}
-
-/// Validate a persisted server even when MCP is disabled in the session.
-pub fn validate_settings(
-  name: String,
-  server: Option(String),
-  secrets: String,
-) -> Result(Nil, String) {
-  use _ <- result.try(case server {
-    None -> Ok(Nil)
-    Some(value) ->
-      json.parse(value, server_decoder())
-      |> result.map(fn(_) { Nil })
-      |> result.replace_error("invalid MCP server settings")
-  })
-  validate_settings_native(name, server, secrets)
-}
-
-@external(erlang, "albedo_mcp", "validate_settings")
-fn validate_settings_native(
-  name: String,
-  server: Option(String),
-  secrets: String,
-) -> Result(Nil, String)

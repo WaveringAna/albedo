@@ -1,5 +1,7 @@
 """Unread background job results wake idle sessions once, even across idle reaping."""
 
+import errno
+import os
 import time
 import unittest
 
@@ -35,14 +37,20 @@ class JobWakeCase(unittest.TestCase):
     idle_seconds = None
 
     def setUp(self):
+        self.job_gate = None
+
         def script(request):
             last = request["messages"][-1]
             user = user_text(request)
             if last.get("role") == "user" and "start a slow job" in user:
                 seconds = IDLE_SECONDS * 2.5 if "detached" in user else 1.2
+                program = (
+                    f"open({str(self.job_gate)!r}, 'rb').read(1); print('wake-done')"
+                    if self.job_gate is not None
+                    else f"import time; time.sleep({seconds}); print('wake-done')"
+                )
                 code = (
-                    "import sys\njob = run(sys.executable, '-c', "
-                    f"\"import time; time.sleep({seconds}); print('wake-done')\")\njob.id"
+                    f"import sys\njob = run(sys.executable, '-c', {program!r})\njob.id"
                 )
                 return python(code)
             return text("finished")
@@ -64,10 +72,28 @@ class JobWakeCase(unittest.TestCase):
 class JobWakeTests(JobWakeCase):
     def test_unread_job_wakes_once_with_live_source_and_durable_turn(self):
         session = self.app.session()
+        gate = self.app.workspace / "job-release"
+        self.job_gate = gate
+        os.mkfifo(gate)
         self.app.prompt(session, "start a slow job").close()
         self.app.idle(session)
         self.assertEqual(len(self.users()), 2)
         before = self.app.stream_page(session)
+
+        def release_job():
+            try:
+                descriptor = os.open(gate, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as error:
+                if error.errno == errno.ENXIO:
+                    return False
+                raise
+            try:
+                os.write(descriptor, b"x")
+            finally:
+                os.close(descriptor)
+            return True
+
+        wait_for(release_job)
         wait_for(lambda: len(self.users()) >= 3)
         self.app.idle(session)
         self.assertEqual(len(self.users()), 3)
@@ -77,20 +103,49 @@ class JobWakeTests(JobWakeCase):
         self.assertIn("output.read", wake)
         live = self.app.stream_page(session, before)["events"]
         notices = [
-            event
+            event["data"]["entry"]
             for event in live
-            if event.get("type") == "user" and "job finished" in event.get("text", "")
+            if event["type"] == "message"
+            and event["data"]["entry"]["kind"] == "note"
+            and any(
+                part["kind"] == "text" and "job finished" in part["text"]
+                for part in event["data"]["entry"]["content"]
+            )
         ]
-        self.assertEqual(len(notices), 1)
-        self.assertEqual(notices[0]["source"], "job")
-        self.assertEqual(notices[0]["clientId"], "job")
-        self.assertIn("exit_code=0", notices[0]["text"])
+        self.assertEqual(
+            len(notices),
+            1,
+            {"live": live, "history": self.app.history(session)},
+        )
+        self.assertIn(
+            "exit_code=0",
+            "".join(
+                part["text"] for part in notices[0]["content"] if part["kind"] == "text"
+            ),
+        )
         durable = [
-            event
-            for event in self.app.events(session)
-            if event.get("type") == "user" and "job finished" in event.get("text", "")
+            entry
+            for entry in self.app.history(session)["items"]
+            if entry["kind"] == "note"
+            and any(
+                part["kind"] == "text" and "job finished" in part["text"]
+                for part in entry["content"]
+            )
         ]
         self.assertEqual(len(durable), 1)
+        self.assertEqual(durable[0]["id"], notices[0]["id"])
+        self.assertEqual(durable[0]["turn_id"], notices[0]["turn_id"])
+        self.assertIsNotNone(durable[0]["turn_id"])
+        self.assertIsNone(durable[0]["input_id"])
+        for entry in [notices[0], durable[0]]:
+            self.assertEqual(
+                [
+                    part["value"]
+                    for part in entry["content"]
+                    if part["kind"] == "json" and part["field"] == "origin"
+                ],
+                ["note"],
+            )
         time.sleep(2.5)
         self.assertEqual(len(self.users()), 3)
 

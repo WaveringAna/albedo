@@ -6,6 +6,7 @@
 //// checked here against deliberately broken extensions.
 
 import albedo/daemon/conversation
+import albedo/daemon/family
 import albedo/harness/extension
 import albedo/harness/extensions
 import albedo/harness/runtime
@@ -32,6 +33,7 @@ fn host(
     )
   let ledger = runtime.ledger(host)
   let assert Ok(_) = conversation.initialise(ledger)
+  let assert Ok(_) = family.initialise(ledger)
   let assert Ok(_) =
     conversation.create(
       ledger,

@@ -5,6 +5,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -104,31 +105,31 @@ type fakeFolders struct {
 	warmed []string
 }
 
-func (f *fakeFolders) List(p string) (daemon.FolderList, error) {
+func (f *fakeFolders) List(_ context.Context, p string) (daemon.FolderList, error) {
 	if l, ok := f.lists[p]; ok {
 		return l, nil
 	}
 	return daemon.FolderList{}, errors.New("no such folder")
 }
-func (f *fakeFolders) Repo(string) (*daemon.Repo, error) { return nil, nil }
-func (f *fakeFolders) Preview(p string) (daemon.FolderPreview, error) {
+func (f *fakeFolders) Repo(_ context.Context, _ string) (*daemon.Repo, error) { return nil, nil }
+func (f *fakeFolders) Preview(_ context.Context, p string) (daemon.FolderPreview, error) {
 	return daemon.FolderPreview{Path: p}, nil
 }
-func (f *fakeFolders) Sessions() ([]daemon.Session, error) {
+func (f *fakeFolders) Sessions(_ context.Context) ([]daemon.Session, error) {
 	label := "chernobog"
 	return []daemon.Session{
 		{ID: "a", Workspace: "/Users/dawn/proj/albedo"},
 		{ID: "b", Workspace: "mayer@chernobog:/home/mayer/proj/albedo", Location: &daemon.Location{Label: &label}},
 	}, nil
 }
-func (f *fakeFolders) Move(id, workspace string) (daemon.Session, error) {
+func (f *fakeFolders) Move(_ context.Context, id, workspace string) (daemon.Session, error) {
 	return daemon.Session{ID: id, Workspace: workspace}, nil
 }
-func (f *fakeFolders) Hosts() ([]daemon.KnownHost, error) { return f.hosts, nil }
-func (f *fakeFolders) Host(string) (daemon.HostStatus, error) {
+func (f *fakeFolders) Hosts(_ context.Context) ([]daemon.KnownHost, error) { return f.hosts, nil }
+func (f *fakeFolders) Host(_ context.Context, _ string) (daemon.HostStatus, error) {
 	return f.probe, nil
 }
-func (f *fakeFolders) Warm(h string) (daemon.HostStatus, error) {
+func (f *fakeFolders) Warm(_ context.Context, h string) (daemon.HostStatus, error) {
 	f.warmed = append(f.warmed, h)
 	return f.probe, nil
 }
@@ -299,7 +300,7 @@ func TestConnectingFaceMovesUntilTheHostSettles(t *testing.T) {
 	if m, cmd = m.Update(connectTickMsg{Gen: m.sessionsGeneration}); m.frame != before+1 || cmd == nil || !shows(m.frame) {
 		t.Fatalf("the tick did not move the face on (frame %d, next tick %v)", m.frame, cmd != nil)
 	}
-	m, _ = m.Update(hostStatusMsg{Host: "mayer@chernobog", Status: daemon.HostStatus{Host: "mayer@chernobog", State: "ready"}, Warmed: true})
+	m, _ = m.Update(hostStatusMsg{Gen: m.sessionsGeneration, Host: "mayer@chernobog", Status: daemon.HostStatus{Host: "mayer@chernobog", State: "ready"}, Warmed: true})
 	if _, cmd = m.Update(connectTickMsg{Gen: m.sessionsGeneration}); cmd != nil {
 		t.Fatal("the face kept ticking after the host settled")
 	}
@@ -312,7 +313,7 @@ func TestPickerSaysWhenItCopiesTheKernelOver(t *testing.T) {
 	m.SetSize(140, 16)
 	m = settle(t, m, m.Init())
 	m = typeQuery(t, m, "cher")
-	m, _ = m.Update(hostStatusMsg{Host: "mayer@chernobog", Status: src.probe})
+	m, _ = m.Update(hostStatusMsg{Gen: m.sessionsGeneration, Host: "mayer@chernobog", Status: src.probe})
 	if frame := pickerFrame(m); !strings.Contains(frame, "copying the kernel to chernobog… ") {
 		t.Fatalf("a probe staging the bundle does not say so:\n%s", frame)
 	}

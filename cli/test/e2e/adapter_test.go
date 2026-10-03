@@ -39,6 +39,19 @@ func TestIndependentAdapterDrivesContextTreeAndSessionCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pending, err := daemon.GetContextSnapshot(t.Context(), attached, session.ID)
+	if err != nil {
+		t.Fatalf("read context before its first turn: %v", err)
+	}
+	if pending.State != "pending" || strings.TrimSpace(pending.Reason) == "" {
+		t.Fatalf("pending context lost its readable reason: %+v", pending)
+	}
+	if pending.SnapshotID != "" || pending.CapturedAt != nil || len(pending.Sections) != 0 {
+		t.Fatalf("reading pending context prepared a snapshot: %+v", pending)
+	}
+	if requests := suite.provider.requests(profile); len(requests) != 0 {
+		t.Fatalf("reading pending context called the provider: %d requests", len(requests))
+	}
 	client := daemon.NewChatClient(attached, session.ID)
 	for index, prompt := range []string{"adapter durable first turn", "inspect adapter durable history"} {
 		if _, err := client.Send(t.Context(), prompt, nil); err != nil {
@@ -68,7 +81,7 @@ func TestIndependentAdapterDrivesContextTreeAndSessionCatalog(t *testing.T) {
 		t.Fatal("enabled workspace skill is missing from the command menu catalog")
 	}
 	skillCommand := commands[commandIndex]
-	if !skillCommand.Skill || !skillCommand.UserTurn || skillCommand.Method == "" || skillCommand.Description != "Review an attached adapter workflow" || len(skillCommand.Arguments) != 1 {
+	if skillCommand.Delivery != "input" || skillCommand.CommandID != "/adapter-review" || !skillCommand.UserTurn || skillCommand.Method != "PUT" || skillCommand.Description != "Review an attached adapter workflow" || len(skillCommand.Arguments) != 1 {
 		t.Fatalf("skill command lost its runnable metadata: %+v", skillCommand)
 	}
 	driver := driveTUIWithConnection(t, &session, attached)
@@ -145,14 +158,66 @@ func TestIndependentAdapterDrivesContextTreeAndSessionCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !slices.ContainsFunc(commands, func(command daemon.SessionCommand) bool { return command.Name == "/adapter-review" }) {
+		t.Fatal("desired skill selection prematurely replaced the loaded command catalogue")
+	}
+	if result, err := daemon.ReloadSession(t.Context(), attached, session.ID, daemon.ReloadRequest{Target: "session"}); err != nil || result.Session == nil || result.Session.Failure != nil {
+		t.Fatalf("reload disabled skill: %+v %v", result, err)
+	}
+	commands, err = daemon.ListSessionCommands(t.Context(), attached, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if slices.ContainsFunc(commands, func(command daemon.SessionCommand) bool {
 		return command.Name == "/adapter-review"
 	}) {
 		t.Fatal("disabled skill still appears as a runnable command")
 	}
 	after, err := readDaemonSnapshot(suite.home)
-	if err != nil || after != before {
+	if err != nil || after.Port != before.Port || after.Pid != before.Pid || after.Token != before.Token || after.Version != before.Version || after.Build != before.Build {
 		t.Fatalf("independent attachment replaced its daemon: before=%+v after=%+v err=%v", before, after, err)
+	}
+}
+
+func TestTUICapabilityPageEnablesAndLoadsSkillCommands(t *testing.T) {
+	providerRoute(t, echoReply)
+	workspace := t.TempDir()
+	skill := filepath.Join(workspace, ".agents", "skills", "enable-review", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skill), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill, []byte("---\nname: enable-review\ndescription: Verify enabling the skills extension\n---\nReview the current task.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session := daemonSession(t, newSession(t, workspace))
+	if _, err := daemon.SelectExtension(t.Context(), conn(t), session.ID, daemon.ExtensionSelectionRequest{Name: "skills", Scope: "session", ETag: session.ETag, Enabled: new(false)}); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded, err := daemon.ReloadSession(t.Context(), conn(t), session.ID, daemon.ReloadRequest{Target: "session"}); err != nil || reloaded.Session == nil || reloaded.Session.State != "applied" {
+		t.Fatalf("disable skills before opening its page: %+v, %v", reloaded, err)
+	}
+	commands, err := daemon.ListSessionCommands(t.Context(), conn(t), session.ID)
+	if err != nil || slices.ContainsFunc(commands, func(command daemon.SessionCommand) bool { return command.Name == "/enable-review" }) {
+		t.Fatalf("disabled skills retained runnable command: %+v, %v", commands, err)
+	}
+	session = daemonSession(t, session.ID)
+	driver := driveTUI(t, &session)
+	defer driver.App.Chat.Close()
+	driver.Dispatch(tui.ChatOpenCapabilityPageMsg{Kind: "skills"})
+	if driver.App.CapabilityPage.ExtensionEnabled {
+		t.Fatal("page did not observe the disabled skills extension")
+	}
+	driver.Dispatch(tea.KeyPressMsg{Code: 'E', Text: "E"})
+	if !driver.App.CapabilityPage.ConfirmExtension {
+		t.Fatal("E did not request extension-enable confirmation")
+	}
+	driver.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if page := driver.App.CapabilityPage; page.Error != "" || !page.ExtensionEnabled || !strings.Contains(page.Notice, "Reload completed.") {
+		t.Fatalf("confirmed extension enable did not reload:\n%s", driver.View())
+	}
+	commands, err = daemon.ListSessionCommands(t.Context(), conn(t), session.ID)
+	if err != nil || !slices.ContainsFunc(commands, func(command daemon.SessionCommand) bool { return command.Name == "/enable-review" }) {
+		t.Fatalf("enabled extension did not load the skill command: %+v, %v", commands, err)
 	}
 }
 
@@ -166,16 +231,22 @@ func TestTypedMCPSecretsKeepReplaceRemoveAndClear(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	name := "typed-secret-patch"
-	server := config.MCPServer{Type: "http", URL: "http://127.0.0.1:1/mcp", Enabled: new(false)}
+	httpName, stdioName := "typed-secret-http", "typed-secret-stdio"
+	servers := map[string]config.MCPServer{
+		httpName:  {Type: "http", URL: "http://127.0.0.1:1/mcp", Enabled: new(false)},
+		stdioName: {Type: "stdio", Command: "python3", Args: []string{}, Enabled: new(false)},
+	}
 	t.Cleanup(func() {
-		if _, err := daemon.SaveMCP(context.Background(), attached, session.ID, daemon.MCPUpdateRequest{Name: name, Server: nil, Secrets: daemon.MCPSecretsPatch{}}); err != nil {
-			t.Error(err)
+		for name := range servers {
+			if _, err := updateMCP(context.Background(), attached, session.ID, daemon.MCPUpdateRequest{Name: name, Server: nil, Secrets: daemon.MCPSecretsPatch{}}); err != nil {
+				t.Error(err)
+			}
 		}
 	})
-	save := func(patch daemon.MCPSecretsPatch) daemon.Settings {
+	save := func(name string, patch daemon.MCPSecretsPatch) daemon.Settings {
 		t.Helper()
-		if _, err := daemon.SaveMCP(t.Context(), attached, session.ID, daemon.MCPUpdateRequest{Name: name, Server: &server, Secrets: patch}); err != nil {
+		server := servers[name]
+		if _, err := updateMCP(t.Context(), attached, session.ID, daemon.MCPUpdateRequest{Name: name, Server: &server, Secrets: patch}); err != nil {
 			t.Fatal(err)
 		}
 		settings, err := daemon.GetSettings(t.Context(), attached)
@@ -184,26 +255,26 @@ func TestTypedMCPSecretsKeepReplaceRemoveAndClear(t *testing.T) {
 		}
 		return settings
 	}
-	save(daemon.MCPSecretsPatch{
+	save(httpName, daemon.MCPSecretsPatch{
 		BearerToken: new("initial-bearer"),
 		Headers:     map[string]*string{"x-retained": new("initial-header"), "x-removed": new("remove-header")},
-		Env:         map[string]*string{"RETAINED": new("initial-env"), "REMOVED": new("remove-env")},
 	})
-	kept := save(daemon.MCPSecretsPatch{}).Credentials.MCP[name]
-	if !kept.BearerToken || !slices.Equal(kept.Headers, []string{"x-removed", "x-retained"}) || !slices.Equal(kept.Env, []string{"REMOVED", "RETAINED"}) {
-		t.Fatalf("omitted secret patch changed saved names: %+v", kept)
+	save(stdioName, daemon.MCPSecretsPatch{Env: map[string]*string{"RETAINED": new("initial-env"), "REMOVED": new("remove-env")}})
+	keptHTTP := save(httpName, daemon.MCPSecretsPatch{}).Credentials.MCP[httpName]
+	keptStdio := save(stdioName, daemon.MCPSecretsPatch{}).Credentials.MCP[stdioName]
+	if !keptHTTP.BearerToken || !slices.Equal(keptHTTP.Headers, []string{"x-removed", "x-retained"}) || !slices.Equal(keptStdio.Env, []string{"REMOVED", "RETAINED"}) {
+		t.Fatalf("omitted secret patch changed saved names: HTTP=%+v stdio=%+v", keptHTTP, keptStdio)
 	}
-	replaced := save(daemon.MCPSecretsPatch{
+	replacedHTTP := save(httpName, daemon.MCPSecretsPatch{
 		BearerToken: new("replacement-bearer"),
 		Headers:     map[string]*string{"x-retained": new("replacement-header"), "x-removed": nil},
-		Env:         map[string]*string{"RETAINED": new("replacement-env"), "REMOVED": nil},
-	}).Credentials.MCP[name]
-	if !replaced.BearerToken || !slices.Equal(replaced.Headers, []string{"x-retained"}) || !slices.Equal(replaced.Env, []string{"RETAINED"}) {
-		t.Fatalf("named removal changed retained secret names: %+v", replaced)
+	}).Credentials.MCP[httpName]
+	replacedStdio := save(stdioName, daemon.MCPSecretsPatch{Env: map[string]*string{"RETAINED": new("replacement-env"), "REMOVED": nil}}).Credentials.MCP[stdioName]
+	if !replacedHTTP.BearerToken || !slices.Equal(replacedHTTP.Headers, []string{"x-retained"}) || !slices.Equal(replacedStdio.Env, []string{"RETAINED"}) {
+		t.Fatalf("named removal changed retained secret names: HTTP=%+v stdio=%+v", replacedHTTP, replacedStdio)
 	}
-	// The fixture already owns this daemon home. Reading its stored test values
-	// distinguishes replacement from accidental omission without exposing them
-	// through the adapter's redacted settings response.
+	// The fixture owns this home; inspect only its test values to distinguish
+	// actual replacement from omission without public secret disclosure.
 	data, err := os.ReadFile(filepath.Join(suite.home, "creds.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -218,13 +289,13 @@ func TestTypedMCPSecretsKeepReplaceRemoveAndClear(t *testing.T) {
 	if err := json.Unmarshal(data, &stored); err != nil {
 		t.Fatal(err)
 	}
-	values := stored.MCP[name]
-	if values.BearerToken != "replacement-bearer" || values.Headers["x-retained"] != "replacement-header" || values.Env["RETAINED"] != "replacement-env" {
+	if stored.MCP[httpName].BearerToken != "replacement-bearer" || stored.MCP[httpName].Headers["x-retained"] != "replacement-header" || stored.MCP[stdioName].Env["RETAINED"] != "replacement-env" {
 		t.Fatal("typed replacement patch did not update persisted test secrets")
 	}
-	cleared := save(daemon.MCPSecretsPatch{RemoveBearerToken: true, ClearHeaders: true, ClearEnv: true}).Credentials.MCP[name]
-	if cleared.Any() {
-		t.Fatalf("explicit container removal retained secret names: %+v", cleared)
+	clearedHTTP := save(httpName, daemon.MCPSecretsPatch{RemoveBearerToken: true, ClearHeaders: true}).Credentials.MCP[httpName]
+	clearedStdio := save(stdioName, daemon.MCPSecretsPatch{ClearEnv: true}).Credentials.MCP[stdioName]
+	if clearedHTTP.Any() || clearedStdio.Any() {
+		t.Fatalf("explicit container removal retained secret names: HTTP=%+v stdio=%+v", clearedHTTP, clearedStdio)
 	}
 }
 
@@ -238,9 +309,7 @@ func TestAttachedWebhookScreenCreatesConfiguresDisablesAndDeletesHook(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := daemon.SelectExtension(t.Context(), attached, session.ID, daemon.ExtensionSelectionRequest{Name: "webhooks", Scope: "session", Enabled: new(true)}); err != nil {
-		t.Fatal(err)
-	}
+	enableExtension(t, attached, session.ID, "webhooks")
 	driver := driveTUIWithConnection(t, &session, attached)
 	defer driver.App.Chat.Close()
 	driver.Dispatch(tui.ChatOpenWebhooksPageMsg{})
@@ -256,12 +325,12 @@ func TestAttachedWebhookScreenCreatesConfiguresDisablesAndDeletesHook(t *testing
 	if page.Error != "" || page.Reveal == nil || page.Reveal.Secret == "" {
 		t.Fatalf("webhook form lost its generated signing secret: %+v", page)
 	}
-	listed, err := daemon.RunWebhook(t.Context(), attached, session.ID, daemon.WebhookRequest{Action: daemon.WebhookList})
+	listed, err := daemon.ListWebhooks(t.Context(), attached, session.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var hook *daemon.Webhook
-	for _, entry := range listed.Hooks {
+	for _, entry := range listed {
 		if entry.Hook.Session == session.ID && entry.Hook.Name == "attached-alert" {
 			copy := entry.Hook
 			hook = &copy
@@ -275,41 +344,46 @@ func TestAttachedWebhookScreenCreatesConfiguresDisablesAndDeletesHook(t *testing
 		if deleted {
 			return
 		}
-		if _, err := daemon.RunWebhook(context.Background(), attached, session.ID, daemon.WebhookRequest{Action: daemon.WebhookDelete, HookID: hook.ID}); err != nil {
+		if _, err := daemon.DeleteWebhook(context.Background(), attached, hook.ID, hook.ETag); err != nil {
 			t.Error(err)
 		}
 	})
-	for _, request := range []daemon.WebhookRequest{
-		{Action: daemon.WebhookSignature, HookID: hook.ID, Header: "x-typed-signature", Prefix: "typed="},
-		{Action: daemon.WebhookDisable, HookID: hook.ID},
-		{Action: daemon.WebhookEnable, HookID: hook.ID},
+	for _, patch := range []daemon.WebhookPatch{
+		{Header: new("x-typed-signature"), Prefix: new("typed=")},
+		{Enabled: new(false)}, {Enabled: new(true)},
 	} {
-		updated, err := daemon.RunWebhook(t.Context(), attached, session.ID, request)
+		updated, err := daemon.EditWebhook(t.Context(), attached, hook.ID, hook.ETag, patch)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if updated.Hook == nil || updated.Hook.ID != hook.ID || updated.Hook.Session != session.ID || updated.Hook.Revision != hook.Revision+1 || updated.Hook.Header != "x-typed-signature" || updated.Hook.Prefix != "typed=" || updated.Hook.Address == "" {
-			t.Fatalf("typed %s result lost updated hook: %+v", request.Action, updated)
+		if updated.Hook == nil || updated.Hook.ID != hook.ID || updated.Hook.Session != session.ID || updated.Hook.Revision == hook.Revision || updated.Hook.Header != "x-typed-signature" || updated.Hook.Prefix != "typed=" {
+			t.Fatalf("typed edit lost updated configuration: %+v", updated)
 		}
-		if updated.Hook.Enabled != (request.Action != daemon.WebhookDisable) {
-			t.Fatalf("typed %s result lost enabled state: %+v", request.Action, updated.Hook)
+		if patch.Enabled != nil && updated.Hook.Enabled != *patch.Enabled {
+			t.Fatalf("typed edit lost enabled state: %+v", updated)
 		}
 		hook = updated.Hook
-		persisted, err := daemon.RunWebhook(t.Context(), attached, session.ID, daemon.WebhookRequest{Action: daemon.WebhookList})
+		persisted, err := daemon.ListWebhooks(t.Context(), attached, session.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		found := false
-		for _, entry := range persisted.Hooks {
-			if entry.Hook.ID == hook.ID {
-				found = true
-				if entry.Hook != *hook {
-					t.Fatalf("typed %s result differs from persisted hook: result=%+v saved=%+v", request.Action, hook, entry.Hook)
-				}
+		for _, entry := range persisted {
+			if entry.Hook.ID != hook.ID {
+				continue
 			}
+			found = true
+			configuration := entry.Hook
+			configuration.URL = ""
+			configuration.Address = ""
+			if configuration != *hook {
+				t.Fatalf("saved configuration differs: result=%+v saved=%+v", hook, entry.Hook)
+			}
+			copy := entry.Hook
+			hook = &copy
 		}
 		if !found {
-			t.Fatalf("typed %s hook missing from list", request.Action)
+			t.Fatal("edited hook missing from list")
 		}
 	}
 	driver.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -322,15 +396,16 @@ func TestAttachedWebhookScreenCreatesConfiguresDisablesAndDeletesHook(t *testing
 	if selected < 0 {
 		t.Fatal("created hook did not appear after secret dismissal")
 	}
+	driver.Dispatch(tea.KeyPressMsg{Code: 'r', Text: "r"})
 	page.Cursor = selected
 	driver.Dispatch(tea.KeyPressMsg{Code: tea.KeySpace})
 	driver.Dispatch(tea.KeyPressMsg{Code: 'r', Text: "r"})
-	listed, err = daemon.RunWebhook(t.Context(), attached, session.ID, daemon.WebhookRequest{Action: daemon.WebhookList})
+	listed, err = daemon.ListWebhooks(t.Context(), attached, session.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	disabled := false
-	for _, entry := range listed.Hooks {
+	for _, entry := range listed {
 		if entry.Hook.ID == hook.ID {
 			disabled = !entry.Hook.Enabled
 		}
@@ -338,26 +413,26 @@ func TestAttachedWebhookScreenCreatesConfiguresDisablesAndDeletesHook(t *testing
 	if page.Error != "" || !disabled {
 		t.Fatalf("disabled hook did not survive reload: %+v", page)
 	}
-	// Deletion returns the last saved hook, then authoritative reload removes it.
-	for _, entry := range listed.Hooks {
+	// Deletion acknowledges its identity; authoritative reload removes it.
+	for _, entry := range listed {
 		if entry.Hook.ID == hook.ID {
 			hook = &entry.Hook
 		}
 	}
-	removed, err := daemon.RunWebhook(t.Context(), attached, session.ID, daemon.WebhookRequest{Action: daemon.WebhookDelete, HookID: hook.ID})
+	removed, err := daemon.DeleteWebhook(t.Context(), attached, hook.ID, hook.ETag)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if removed.Hook == nil || *removed.Hook != *hook {
+	if removed.DeletedID != hook.ID {
 		t.Fatalf("typed deletion lost deleted hook: result=%+v saved=%+v", removed, hook)
 	}
 	deleted = true
 	driver.Dispatch(tea.KeyPressMsg{Code: 'r', Text: "r"})
-	listed, err = daemon.RunWebhook(t.Context(), attached, session.ID, daemon.WebhookRequest{Action: daemon.WebhookList})
+	listed, err = daemon.ListWebhooks(t.Context(), attached, session.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range listed.Hooks {
+	for _, entry := range listed {
 		if entry.Hook.ID == hook.ID {
 			t.Fatal("deleted hook still appears in authoritative list")
 		}

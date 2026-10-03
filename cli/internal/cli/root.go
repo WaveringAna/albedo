@@ -193,15 +193,10 @@ it a message and "sessions read" to see what it said.`, Args: cobra.NoArgs, RunE
 		if err != nil {
 			return err
 		}
-		if result.ArchiveWarning != nil {
-			if _, writeErr := fmt.Fprintf(cmd.ErrOrStderr(), "Showing archived sessions too: %v\n", result.ArchiveWarning); writeErr != nil {
-				return writeErr
-			}
-		}
 		if asJSON {
-			return writeJSON(cmd.OutOrStdout(), result.Sessions, true)
+			return writeJSON(cmd.OutOrStdout(), result, true)
 		}
-		_, err = fmt.Fprintln(cmd.OutOrStdout(), sessionListing(result.Sessions, time.Now()))
+		_, err = fmt.Fprintln(cmd.OutOrStdout(), sessionListing(result, time.Now()))
 		return err
 	}}
 	command.Flags().BoolVar(&asJSON, "json", false, "print sessions as JSON")

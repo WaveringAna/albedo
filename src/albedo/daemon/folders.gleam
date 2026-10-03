@@ -1,5 +1,5 @@
-//// The folder browser behind `/cd`: `/fs/list`, `/fs/repo` and
-//// `/fs/preview`, as robot-docs/workspaces.md specifies. A local path is
+//// Native directory and preview observations behind `/workspaces` and `/cd`.
+//// A local path is
 //// read on the daemon, so the picker only offers folders the daemon can
 //// see; a `host:/path` is gathered on that host in one ssh round trip
 //// (priv/python/albedo_gather.py) and read by the same code, through a
@@ -15,7 +15,7 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/json.{type Json}
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/order
 import gleam/result
 import gleam/set
@@ -40,72 +40,93 @@ type Machine {
 /// What a route needs gathered on a remote host.
 type Route {
   Listing
-  Repository
   Preview
 }
 
-/// One directory entry, built by `albedo_folders.erl`; a symlink counts as
-/// what it points at.
+/// A directory entry preserves its link identity while following its target
+/// to determine whether the folder picker can enter it.
 pub type Entry {
-  Entry(name: String, dir: Bool, modified: Int)
+  Entry(name: String, dir: Bool, modified: Int, symlink: Bool)
 }
 
-const listed_entries = 2000
+pub type DirectoryItem {
+  DirectoryItem(
+    name: String,
+    location: String,
+    vcs: Option(String),
+    modified: Int,
+    hidden: Bool,
+  )
+}
 
-const tree_entries = 12
+pub type Directory {
+  Directory(
+    location: String,
+    parent: Option(String),
+    home: String,
+    items: List(DirectoryItem),
+  )
+}
 
-const tree_children = 4
-
-const shown_languages = 4
-
-/// Shares are by bytes over at most this many tracked files, so a huge
-/// repository previews as quickly as a small one: past the cap, the shares
-/// are those of the first files the vcs lists rather than of every file.
-const counted_files = 20_000
-
-/// The directories directly inside `path`.
-pub fn list(path: String) -> Result(Json, Failure) {
-  use #(machine, dir) <- result.map(open(path, Listing))
-  let #(shown, rest) =
+pub fn directory(path: String) -> Result(Directory, Failure) {
+  use #(machine, dir) <- result.try(open(path, Listing))
+  let items =
     machine.entries(dir)
     |> list.filter(fn(entry) { entry.dir })
     |> list.sort(fn(a, b) { by_name(a.name, b.name) })
-    |> list.split(listed_entries)
-  json.object([
-    #("path", json.string(machine.show(dir))),
-    #("home", json.string(machine.show(machine.home))),
-    #("truncated", json.bool(rest != [])),
-    #(
-      "entries",
-      json.array(shown, fn(entry) {
-        json.object([
-          #("name", json.string(entry.name)),
-          #("modified", json.int(entry.modified)),
-          #("hidden", json.bool(string.starts_with(entry.name, "."))),
-          #(
-            "vcs",
-            json.nullable(
-              vcs.at(machine.shell, child(dir, entry.name)),
-              fn(checkout) { json.string(vcs_name(checkout)) },
-            ),
-          ),
-        ])
-      }),
-    ),
-  ])
+    |> list.map(fn(entry) {
+      DirectoryItem(
+        entry.name,
+        machine.show(child(dir, entry.name)),
+        option.map(vcs.at(machine.shell, child(dir, entry.name)), vcs_name),
+        entry.modified,
+        string.starts_with(entry.name, "."),
+      )
+    })
+  let parent = case dir {
+    "/" -> None
+    _ -> Some(machine.show(parent_path(dir)))
+  }
+  Ok(Directory(machine.show(dir), parent, machine.show(machine.home), items))
 }
 
-/// The repository `path` is in, or null.
-pub fn repo(path: String) -> Result(Json, Failure) {
-  use #(machine, dir) <- result.map(open(path, Repository))
-  let repo =
-    vcs.find(machine.shell, dir) |> option.map(vcs.repo(machine.shell, _))
-  json.object([#("repo", json.nullable(repo, repo_json))])
+fn parent_path(path: String) -> String {
+  let parts =
+    string.split(path, "/") |> list.reverse |> list.drop(1) |> list.reverse
+  case string.join(parts, "/") {
+    "" -> "/"
+    parent -> parent
+  }
 }
 
-/// Everything the picker's preview pane shows for `path`.
-pub fn preview(path: String) -> Result(Json, Failure) {
-  use #(machine, dir) <- result.map(open(path, Preview))
+pub type LanguageShare {
+  LanguageShare(name: String, bytes: Int, share: Float, color: Option(String))
+}
+
+pub type TreeItem {
+  TreeItem(
+    name: String,
+    directory: Bool,
+    location: String,
+    language: Option(String),
+    changed: Int,
+    children: List(TreeItem),
+    more: Int,
+    symlink: Bool,
+  )
+}
+
+pub type PreviewObservation {
+  PreviewObservation(
+    repository: Option(vcs.Repo),
+    languages: List(LanguageShare),
+    tree: List(TreeItem),
+    more: Int,
+  )
+}
+
+pub fn observe_preview(path: String) -> Result(PreviewObservation, Failure) {
+  use #(machine, dir) <- result.try(open(path, Preview))
   let shell = machine.shell
   let checkout = vcs.find(shell, dir)
   let #(tracked, changed, shows) = case checkout {
@@ -120,30 +141,71 @@ pub fn preview(path: String) -> Result(Json, Failure) {
     None -> #([], [], fn(_) { True })
   }
   let #(shown, more) = visible(machine, dir, shows) |> list.split(tree_entries)
-  json.object([
-    #("path", json.string(machine.show(dir))),
-    #(
-      "repo",
-      json.nullable(option.map(checkout, vcs.repo(shell, _)), repo_json),
-    ),
-    #(
-      "languages",
-      json.array(shares(machine, tracked, dir), fn(share) {
-        let #(language, fraction) = share
-        json.object([
-          #("name", json.string(language.name)),
-          #("color", json.nullable(language.color, json.string)),
-          #("share", json.float(fraction)),
-        ])
-      }),
-    ),
-    #(
-      "tree",
-      json.array(shown, top_entry_json(machine, dir, _, changed, shows)),
-    ),
-    #("more", json.int(list.length(more))),
-  ])
+  let tree =
+    list.map(shown, fn(entry) {
+      let changed_inside = list.filter_map(changed, inside(_, entry.name))
+      let #(children, more) = case entry.dir {
+        True ->
+          visible(machine, child(dir, entry.name), fn(name) {
+            shows(entry.name <> "/" <> name)
+          })
+          |> list.split(tree_children)
+        False -> #([], [])
+      }
+      let children =
+        list.map(children, tree_item(
+          machine,
+          child(dir, entry.name),
+          _,
+          changed_inside,
+          [],
+          0,
+        ))
+      tree_item(machine, dir, entry, changed, children, list.length(more))
+    })
+  Ok(PreviewObservation(
+    option.map(checkout, vcs.repo(shell, _)),
+    language_shares(machine, tracked, dir),
+    tree,
+    list.length(more),
+  ))
 }
+
+fn tree_item(
+  machine: Machine,
+  dir: String,
+  entry: Entry,
+  changed: List(String),
+  children: List(TreeItem),
+  more: Int,
+) -> TreeItem {
+  TreeItem(
+    entry.name,
+    entry.dir,
+    machine.show(child(dir, entry.name)),
+    case entry.dir {
+      True -> None
+      False ->
+        languages.detect(entry.name)
+        |> option.map(fn(language) { language.name })
+    },
+    changed_at(changed, entry.name),
+    children,
+    more,
+    entry.symlink,
+  )
+}
+
+const tree_entries = 12
+
+const tree_children = 4
+
+const shown_languages = 4
+
+/// Shares are by bytes over at most this many tracked files, so a huge
+/// repository previews as quickly as a small one: past the cap, the shares
+/// are those of the first files the vcs lists rather than of every file.
+const counted_files = 20_000
 
 /// The machine `path` is on, and the directory it names there, expanded
 /// and normalised, when that is an existing directory.
@@ -282,7 +344,6 @@ pub const exists_ms = 5000
 fn route_name(route: Route) -> String {
   case route {
     Listing -> "list"
-    Repository -> "repo"
     Preview -> "preview"
   }
 }
@@ -349,7 +410,8 @@ fn snapshot_decoder() -> decode.Decoder(Snapshot) {
     use name <- decode.field(0, decode.string)
     use dir <- decode.field(1, decode.bool)
     use modified <- decode.field(2, decode.int)
-    decode.success(Entry(name, dir, modified))
+    use symlink <- decode.field(3, decode.bool)
+    decode.success(Entry(name, dir, modified, symlink))
   }
   use directory <- decode.field("directory", decode.bool)
   use entries <- decode.optional_field(
@@ -415,37 +477,6 @@ fn vcs_name(checkout: vcs.Checkout) -> String {
   }
 }
 
-fn repo_json(repo: vcs.Repo) -> Json {
-  case repo {
-    vcs.Git(root:, branch:, commit:, changed:, touched:) ->
-      json.object([
-        #("kind", json.string("git")),
-        #("root", json.string(root)),
-        #("branch", json.nullable(branch, json.string)),
-        #("commit", json.nullable(commit, json.string)),
-        #("changed", json.nullable(changed, json.int)),
-        #("touched", json.nullable(touched, json.int)),
-      ])
-    vcs.Jj(root:, change:, bookmark:, changed:, touched:) ->
-      json.object([
-        #("kind", json.string("jj")),
-        #("root", json.string(root)),
-        #("change", json.nullable(change, json.string)),
-        #(
-          "bookmark",
-          json.nullable(bookmark, fn(bookmark) {
-            json.object([
-              #("name", json.string(bookmark.name)),
-              #("ahead", json.int(bookmark.ahead)),
-            ])
-          }),
-        ),
-        #("changed", json.nullable(changed, json.int)),
-        #("touched", json.nullable(touched, json.int)),
-      ])
-  }
-}
-
 /// Inside a repository the tree shows only tracked or changed paths, so
 /// build output and other ignored files stay out while new files show. A
 /// path under a changed one shows too: git reports a new directory whole.
@@ -470,11 +501,11 @@ fn known(tracked: List(String), changed: List(String)) -> fn(String) -> Bool {
 /// The largest counted languages among `tracked`, the files under `dir`,
 /// each with its share of all counted bytes. A language in a group counts
 /// towards the group's language, as on github.
-fn shares(
+fn language_shares(
   machine: Machine,
   tracked: List(String),
   dir: String,
-) -> List(#(Language, Float)) {
+) -> List(LanguageShare) {
   let bytes =
     tracked
     |> list.take(counted_files)
@@ -506,7 +537,12 @@ fn shares(
       |> list.sort(fn(a, b) { int.compare(b.1, a.1) })
       |> list.take(shown_languages)
       |> list.map(fn(counted) {
-        #(counted.0, int.to_float(counted.1) /. int.to_float(total))
+        LanguageShare(
+          counted.0.name,
+          counted.1,
+          int.to_float(counted.1) /. int.to_float(total),
+          counted.0.color,
+        )
       })
   }
 }
@@ -515,58 +551,6 @@ fn towards_group(language: Language) -> Language {
   language.group
   |> option.then(languages.named)
   |> option.unwrap(language)
-}
-
-fn top_entry_json(
-  machine: Machine,
-  dir: String,
-  entry: Entry,
-  changed: List(String),
-  shows: fn(String) -> Bool,
-) -> Json {
-  case entry.dir {
-    False -> entry_json(entry, changed, [])
-    True -> {
-      let changed_inside = list.filter_map(changed, inside(_, entry.name))
-      let #(children, more) =
-        visible(machine, child(dir, entry.name), fn(name) {
-          shows(entry.name <> "/" <> name)
-        })
-        |> list.split(tree_children)
-      entry_json(entry, changed, [
-        #("more", json.int(list.length(more))),
-        #("children", json.array(children, entry_json(_, changed_inside, []))),
-      ])
-    }
-  }
-}
-
-/// A tree entry: its name, whether it is a directory, the changes at or
-/// under it, and `fields` besides; a file also names its language.
-fn entry_json(
-  entry: Entry,
-  changed: List(String),
-  fields: List(#(String, Json)),
-) -> Json {
-  let fields = case entry.dir {
-    True -> fields
-    False -> [
-      #(
-        "language",
-        json.nullable(
-          languages.detect(entry.name) |> option.map(fn(l) { l.name }),
-          json.string,
-        ),
-      ),
-      ..fields
-    ]
-  }
-  json.object([
-    #("name", json.string(entry.name)),
-    #("dir", json.bool(entry.dir)),
-    #("changed", json.int(changed_at(changed, entry.name))),
-    ..fields
-  ])
 }
 
 /// The changed paths at or under `name`.

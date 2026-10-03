@@ -2,6 +2,7 @@
 
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
+import albedo/daemon/events
 import albedo/daemon/requests
 import albedo/daemon/session_state
 import albedo/daemon/session_submission
@@ -17,7 +18,7 @@ import gleam/option.{type Option, None, Some}
 
 pub type Messages(message) {
   Messages(
-    publish: fn(String, String, Subject(Bool)) -> message,
+    publish: fn(String, events.Event, Subject(Bool)) -> message,
     tool_progress_delta: fn(
       String,
       Int,
@@ -105,7 +106,7 @@ pub fn publish_fn(
   messages: Messages(message),
   stop: turn.Latch,
   waiting timeout: Int,
-) -> fn(String) -> Bool {
+) -> fn(events.Event) -> Bool {
   fn(event) {
     case
       try_call(owner, waiting: timeout, sending: messages.publish(
@@ -372,9 +373,9 @@ pub fn start(
   client: extension.Upstream,
   model_history: List(types.Input),
   work: turn.Work,
+  run_id: String,
   messages: Messages(message),
 ) -> session_state.State(message) {
-  let run_id = new_id()
   let state = case work {
     turn.Turn(_) -> session_submission.membership(state, run_id)
     _ -> state
@@ -424,6 +425,7 @@ pub fn start(
       // Who this session's provider requests are recorded under.
       state.info.id,
       state.info.provider,
+      run_id,
     )
   let pid =
     process.spawn_unlinked(fn() {
@@ -431,7 +433,7 @@ pub fn start(
       process.send(
         owner,
         messages.finished(run_id, case work {
-          turn.Compaction -> loop.compact(worker, model_history)
+          turn.Compaction(..) -> loop.compact(worker, model_history)
           turn.Turn(_) -> loop.run(worker, run_id, model_history, 0)
           // A background call never starts here; start_background owns it.
           turn.Background(_) ->
@@ -448,7 +450,7 @@ pub fn start(
     history: None,
     activity: turn.Running(run),
     context: case work {
-      turn.Compaction | turn.Background(_) -> state.context
+      turn.Compaction(..) | turn.Background(_) -> state.context
       turn.Turn(_) -> session_state.unprepared()
     },
   )
@@ -500,6 +502,7 @@ pub fn start_background(
       fn(_call) { Nil },
       state.info.id,
       state.info.provider,
+      run_id,
     )
   let pid =
     process.spawn_unlinked(fn() {

@@ -5,6 +5,10 @@
 max_bytes() -> 1048576.
 
 read(Home) ->
+    albedo_settings_lock:with_lock(Home, fun() -> read_locked(Home) end,
+        fun() -> {error, <<"settings store is busy">>} end).
+
+read_locked(Home) ->
     Path = filename:join(Home, <<"capabilities.json">>),
     case file:read_file_info(Path) of
         {error, enoent} -> {ok, <<"{}">>};

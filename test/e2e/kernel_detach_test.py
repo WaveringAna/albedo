@@ -72,9 +72,11 @@ class KernelDetachTests(unittest.TestCase):
             during()
         self.app.idle(self.session)
         results = [
-            json.loads(event["result"])
-            for event in self.app.events(self.session)
-            if event.get("type") == "tool" and event.get("name") == "python"
+            json.loads(part["value"])
+            for entry in self.app.history(self.session)["items"]
+            if entry["kind"] == "tool_result" and entry["tool"]["name"] == "python"
+            for part in entry["content"]
+            if part["kind"] == "json" and part["field"] == "result"
         ]
         return results[-1]
 
@@ -87,9 +89,11 @@ class KernelDetachTests(unittest.TestCase):
         after_crash = self.cell("survivor += 1\n(survivor, os.getpid())")
         self.assertEqual(after_crash["value"], f"(43, {first['value']})")
         notes = [
-            event["text"]
-            for event in self.app.events(self.session)
-            if event.get("type") == "note"
+            part["text"]
+            for entry in self.app.history(self.session)["items"]
+            if entry["kind"] == "note"
+            for part in entry["content"]
+            if part["kind"] == "text"
         ]
         self.assertFalse([note for note in notes if "variables are gone" in note])
 

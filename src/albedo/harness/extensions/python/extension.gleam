@@ -1,5 +1,6 @@
 //// The single model-facing tool. Host capabilities are ordinary Python functions.
 
+import albedo/harness/client_api
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/python/cells as journal
@@ -12,6 +13,7 @@ import albedo/harness/extensions/python/rpc as cells
 import albedo/openai_api/types
 import gleam/dict
 import gleam/dynamic/decode
+import gleam/http.{Get, Post}
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
@@ -131,6 +133,50 @@ pub fn extension() -> extension.Extension {
       extension.MigrationPlugin(extension.SchemaMigration(kernel_links.apply)),
       extension.CleanPlugin(link.forget_session),
       extension.CommandPlugin([kernel_command()]),
+      extension.ClientPlugin([
+        client_api.Command(
+          "/kernel",
+          client_api.Read,
+          [],
+          client_api.Operation(
+            "getSession",
+            Get,
+            "/sessions/{session_id}",
+            [#("session_id", client_api.Session("/id"))],
+            [#("tail", client_api.Literal(json.int(0)))],
+            [],
+            [],
+            json.object([
+              #("type", json.string("object")),
+              #("required", json.array(["kernel", "cursor"], json.string)),
+            ]),
+          ),
+        ),
+        client_api.Command(
+          "/kernel",
+          client_api.Mutation,
+          [],
+          client_api.Operation(
+            "upgradeKernel",
+            Post,
+            "/sessions/{session_id}/kernel/upgrade",
+            [#("session_id", client_api.Session("/id"))],
+            [],
+            [],
+            [],
+            json.object([
+              #("type", json.string("object")),
+              #(
+                "required",
+                json.array(
+                  ["state", "old_kernel_id", "new_kernel_id"],
+                  json.string,
+                ),
+              ),
+            ]),
+          ),
+        ),
+      ]),
       extension.ContextPlugin(place.context),
       extension.ToolPlugin(
         "Python has a persistent namespace, top-level await, cells.read/info/trace and cells.run for saved-source repair (all async), and output.read/output.list for bounded retained output (synchronous; awaiting them also works). cells.last_id is the id of the latest cell, and await cells.list(limit=20) lists this session's cells newest first with their status and first line, even after their output has rolled out. output.read(id, offset=0, limit=4000) returns up to limit characters. output.list() names every retained channel, which is also how to find earlier cells: cells, background jobs, and 'native' for bytes written to fd 1/2 while no cell was running. show_image(source) returns a PNG, JPEG, or WebP (bytes or a file path) to you with this cell's result, so you see it after the cell ends; at most 4 images and 5 MiB per cell.",

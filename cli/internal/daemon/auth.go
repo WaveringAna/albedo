@@ -1,191 +1,188 @@
 package daemon
 
 import (
+	"albedo/cli/internal/config"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
-	"strings"
 )
 
-// Browser sign-ins run in the daemon so every client shares one OAuth
-// implementation; these are the routes a client uses to list, start, poll,
-// answer, and cancel one.
-
 type SignIn struct {
-	Provider string `json:"provider"`
-	Label    string `json:"label"`
-	Detail   string `json:"detail"`
-	Protocol string `json:"protocol"`
+	Provider, Label, Detail, Protocol string
+	Flows                             []string
+	Fields                            []FormField
 }
-
 type Account struct {
-	Provider string `json:"provider"`
-	ID       string `json:"id"`
-	Label    string `json:"label"`
-	Detail   string `json:"detail"`
-	Selected bool   `json:"selected"`
+	Provider, ID, Label, Detail string
+	Selected                    bool
+	SelectedByProfiles          []string
 }
-
-// SignIns is everything /login can choose from: the sign-ins the enabled
-// extensions offer and the accounts they have already stored.
 type SignIns struct {
-	Logins   []SignIn  `json:"logins"`
-	Accounts []Account `json:"accounts"`
+	Logins   []SignIn
+	Accounts []Account
 }
-
-type StartedSignIn struct {
-	ID  string `json:"id"`
-	URL string `json:"url"`
-}
-
+type StartedSignIn struct{ ID, URL, ETag string }
 type SignInStatus struct {
-	State   string `json:"state"`
-	Message string `json:"message"`
+	State, Message, ETag, Instructions, URL, Provider string
+	Accounts                                          []Account
 }
 
-func accountPath(provider, id string) string {
-	return "/auth/" + url.PathEscape(provider) + "/accounts/" + url.PathEscape(id)
+func accountValue(w wireAccount) Account {
+	return Account{Provider: w.Provider, ID: w.ID, Label: w.Label, Detail: w.Detail, Selected: len(w.SelectedByProfiles) > 0, SelectedByProfiles: w.SelectedByProfiles}
 }
-
 func SignInList(ctx context.Context, conn *Connection) (SignIns, error) {
 	var result SignIns
-	err := executeRead(ctx, conn, operation{Name: "sign in list", Method: http.MethodGet, Path: "/auth", Policy: readRecovery}, func(data []byte) error {
-		var wire struct {
-			Logins []struct {
-				Provider *string `json:"provider"`
-				Label    *string `json:"label"`
-				Detail   *string `json:"detail"`
-				Protocol *string `json:"protocol"`
-			} `json:"logins"`
-			Accounts []struct {
-				Provider *string `json:"provider"`
-				ID       *string `json:"id"`
-				Label    *string `json:"label"`
-				Detail   *string `json:"detail"`
-				Selected *bool   `json:"selected"`
-			} `json:"accounts"`
-		}
-		if err := json.Unmarshal(data, &wire); err != nil {
+	err := executeRead(ctx, conn, operation{Capability: "provider_auth", Name: "list provider accounts", Method: http.MethodGet, Path: "/auth", Policy: readRecovery}, func(data []byte) error {
+		var w wireAuth
+		if err := decodeRequired(data, &w, "providers", "accounts"); err != nil {
 			return err
 		}
-		if wire.Logins == nil {
-			return fieldError("logins")
+		if w.Providers == nil || w.Accounts == nil {
+			return fieldError("auth")
 		}
-		if wire.Accounts == nil {
-			return fieldError("accounts")
+		result = SignIns{Logins: []SignIn{}, Accounts: []Account{}}
+		for _, p := range w.Providers {
+			result.Logins = append(result.Logins, SignIn{Provider: p.ID, Label: p.Label, Detail: p.Detail, Flows: p.Flows, Fields: p.Fields})
 		}
-		result = SignIns{Logins: make([]SignIn, 0, len(wire.Logins)), Accounts: make([]Account, 0, len(wire.Accounts))}
-		for _, login := range wire.Logins {
-			if login.Provider == nil {
-				return fieldError("provider")
-			}
-			if login.Label == nil {
-				return fieldError("label")
-			}
-			if login.Detail == nil {
-				return fieldError("detail")
-			}
-			if login.Protocol == nil {
-				return fieldError("protocol")
-			}
-			result.Logins = append(result.Logins, SignIn{Provider: *login.Provider, Label: *login.Label, Detail: *login.Detail, Protocol: *login.Protocol})
-		}
-		for _, account := range wire.Accounts {
-			if account.Provider == nil {
-				return fieldError("provider")
-			}
-			if account.ID == nil {
-				return fieldError("id")
-			}
-			if account.Label == nil {
-				return fieldError("label")
-			}
-			if account.Detail == nil {
-				return fieldError("detail")
-			}
-			if account.Selected == nil {
-				return fieldError("selected")
-			}
-			result.Accounts = append(result.Accounts, Account{Provider: *account.Provider, ID: *account.ID, Label: *account.Label, Detail: *account.Detail, Selected: *account.Selected})
+		for _, a := range w.Accounts {
+			result.Accounts = append(result.Accounts, accountValue(a))
 		}
 		return nil
 	})
 	return result, err
 }
-
-// StartSignIn begins a sign-in and returns the url the browser should open.
-func StartSignIn(ctx context.Context, conn *Connection, provider string) (StartedSignIn, error) {
-	var result StartedSignIn
-	err := executeMutation(ctx, conn, operation{Name: "start sign in", Method: http.MethodPost, Path: "/auth/" + url.PathEscape(provider), Policy: authRecovery}, []int{http.StatusCreated}, func(data []byte, _ int) error {
-		var wire struct {
-			ID  *string `json:"id"`
-			URL *string `json:"url"`
+func loginValue(w wireLogin, etag string) (SignInStatus, error) {
+	if w.ID == "" || etag == "" || w.Accounts == nil {
+		return SignInStatus{}, fieldError("login")
+	}
+	switch w.State {
+	case "waiting", "exchanging", "complete", "failed", "cancelled", "expired":
+	default:
+		return SignInStatus{}, fieldError("login state")
+	}
+	if urlText := value(w.URL); urlText != "" {
+		parsed, err := url.Parse(urlText)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return SignInStatus{}, fieldError("login URL")
 		}
-		if err := json.Unmarshal(data, &wire); err != nil {
-			return err
-		}
-		if wire.ID == nil || strings.TrimSpace(*wire.ID) == "" {
-			return fieldError("id")
-		}
-		if wire.URL == nil {
-			return fieldError("url")
-		}
-		parsed, err := url.Parse(*wire.URL)
-		if err != nil || !parsed.IsAbs() || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-			return fieldError("url")
-		}
-		result = StartedSignIn{ID: *wire.ID, URL: *wire.URL}
-		return nil
-	})
-	return result, err
+	}
+	r := SignInStatus{State: w.State, Message: w.Progress, ETag: etag, Instructions: value(w.Instructions), URL: value(w.URL), Provider: w.Provider, Accounts: []Account{}}
+	if w.Failure != nil {
+		r.Message = w.Failure.Detail
+	}
+	for _, a := range w.Accounts {
+		r.Accounts = append(r.Accounts, accountValue(a))
+	}
+	return r, nil
 }
 
+// StartSignInWithID retains the same admitted intent when a transport failure is retried.
+func StartSignInWithID(ctx context.Context, conn *Connection, id, provider, flow string, values map[string]json.RawMessage) (StartedSignIn, error) {
+	result := StartedSignIn{ID: id}
+	body := map[string]any{"provider": provider, "values": nonNilMap(values)}
+	if flow != "" {
+		body["flow"] = flow
+	}
+	frozen, err := json.Marshal(body)
+	if err != nil {
+		return result, err
+	}
+	op := operation{Capability: "provider_auth", Name: "start provider login", Method: http.MethodPut, Path: "/auth/logins/" + url.PathEscape(id), Body: json.RawMessage(frozen), Validator: &result.ETag, Policy: noRecovery}
+	for attempt := range 2 {
+		err = executeMutation(ctx, conn, op, []int{201, 200}, func(data []byte, _ int) error {
+			var w wireLogin
+			if err := decodeRequired(data, &w, "id", "provider", "url", "expires_at", "state", "instructions", "progress", "accounts", "failure"); err != nil {
+				return err
+			}
+			if w.ID != id || w.Provider != provider {
+				return fieldError("login identity")
+			}
+			status, err := loginValue(w, result.ETag)
+			if err != nil {
+				return err
+			}
+			result.URL = status.URL
+			return nil
+		})
+		if err == nil {
+			return result, nil
+		}
+		if _, uncertain := errors.AsType[*UncertainOutcomeError](err); !uncertain {
+			return result, err
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return result, err
+		}
+		status, lookupErr := PollSignIn(ctx, conn, id)
+		if lookupErr == nil {
+			if status.Provider != provider {
+				return result, fieldError("login provider")
+			}
+			result.URL, result.ETag = status.URL, status.ETag
+			return result, nil
+		}
+		if api, ok := errors.AsType[*APIError](lookupErr); ok && api.StatusCode == 410 {
+			return result, lookupErr
+		}
+		if attempt == 1 {
+			return result, err
+		}
+	}
+	panic("unreachable login retry budget")
+}
 func PollSignIn(ctx context.Context, conn *Connection, id string) (SignInStatus, error) {
 	var result SignInStatus
-	err := executeRead(ctx, conn, operation{Name: "poll sign in", Method: http.MethodGet, Path: "/auth/logins/" + url.PathEscape(id), Policy: readRecovery}, func(data []byte) error {
-		var wire struct {
-			State   *string `json:"state"`
-			Message *string `json:"message"`
-		}
-		if err := json.Unmarshal(data, &wire); err != nil {
+	var etag string
+	err := executeRead(ctx, conn, operation{Capability: "provider_auth", Name: "read provider login", Method: http.MethodGet, Path: "/auth/logins/" + url.PathEscape(id), Validator: &etag, Policy: readRecovery}, func(data []byte) error {
+		var w wireLogin
+		if err := decodeRequired(data, &w, "id", "provider", "url", "expires_at", "state", "instructions", "progress", "accounts", "failure"); err != nil {
 			return err
 		}
-		if wire.State == nil {
-			return fieldError("state")
+		if w.ID != id {
+			return fieldError("login identity")
 		}
-		if wire.Message == nil {
-			return fieldError("message")
-		}
-		switch *wire.State {
-		case "waiting", "exchanging", "done", "failed":
-		default:
-			return fieldError("state")
-		}
-		result = SignInStatus{State: *wire.State, Message: *wire.Message}
-		return nil
+		var err error
+		result, err = loginValue(w, etag)
+		return err
 	})
 	return result, err
 }
-
-// SignInInput delivers a pasted callback url, code#state, query string, or
-// bare code; the daemon parses and races it against the browser callback.
-func SignInInput(ctx context.Context, conn *Connection, id, input string) error {
-	err := acknowledge(ctx, conn, operation{Name: "sign in input", Method: http.MethodPost, Path: "/auth/logins/" + url.PathEscape(id), Body: map[string]string{"input": input}, Policy: authRecovery})
-	return err
+func SignInInput(ctx context.Context, conn *Connection, id, input, etag string) error {
+	headers, err := observedHeaders(etag)
+	if err != nil {
+		return err
+	}
+	var next string
+	return executeMutation(ctx, conn, operation{Capability: "provider_auth", Name: "answer provider login", Method: http.MethodPatch, Path: "/auth/logins/" + url.PathEscape(id), Body: map[string]string{"response": input}, Headers: headers, Validator: &next, Policy: noRecovery}, []int{200}, func(data []byte, _ int) error {
+		var w wireLogin
+		if err := decodeRequired(data, &w, "id", "state", "accounts", "progress", "failure"); err != nil {
+			return err
+		}
+		_, err := loginValue(w, next)
+		return err
+	})
 }
-
 func CancelSignIn(ctx context.Context, conn *Connection, id string) error {
-	err := acknowledge(ctx, conn, operation{Name: "cancel sign in", Method: http.MethodDelete, Path: "/auth/logins/" + url.PathEscape(id), Body: nil, Policy: authRecovery})
-	return err
+	return executeMutation(ctx, conn, operation{Capability: "provider_auth", Name: "cancel provider login", Method: http.MethodDelete, Path: "/auth/logins/" + url.PathEscape(id), Policy: noRecovery}, []int{204}, func([]byte, int) error { return nil })
+}
+func SelectProfileAccount(ctx context.Context, conn *Connection, profile string, account Account, profiles config.Profiles) error {
+	saved, ok := profiles.Providers[profile]
+	if !ok || saved.Extension != account.Provider {
+		return errors.New("select a profile for this account provider")
+	}
+	saved.AccountID = &account.ID
+	return SaveProvider(ctx, conn, profile, saved, profiles.ETag)
+}
+func RemoveAccount(ctx context.Context, conn *Connection, id string) error {
+	return executeMutation(ctx, conn, operation{Capability: "provider_auth", Name: "remove provider account", Method: http.MethodDelete, Path: "/auth/accounts/" + url.PathEscape(id), Policy: noRecovery}, []int{204}, func([]byte, int) error { return nil })
 }
 
-func SelectAccount(ctx context.Context, conn *Connection, provider, id string) error {
-	err := acknowledge(ctx, conn, operation{Name: "select account", Method: http.MethodPost, Path: accountPath(provider, id), Body: nil, Policy: authRecovery})
-	return err
-}
-
-func RemoveAccount(ctx context.Context, conn *Connection, provider, id string) error {
-	err := acknowledge(ctx, conn, operation{Name: "remove account", Method: http.MethodDelete, Path: accountPath(provider, id), Body: nil, Policy: authRecovery})
-	return err
+func StartProviderLogin(ctx context.Context, conn *Connection, provider, flow string, values map[string]json.RawMessage) (StartedSignIn, error) {
+	id, err := operationID()
+	if err != nil {
+		return StartedSignIn{}, err
+	}
+	return StartSignInWithID(ctx, conn, id, provider, flow, values)
 }

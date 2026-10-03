@@ -142,14 +142,22 @@ class LifecycleTest(unittest.TestCase):
             )
             with connection:
                 connection.sendall(
-                    b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+                    f"GET /server HTTP/1.1\r\nHost: localhost:{direct['port']}\r\nConnection: close\r\n\r\n".encode()
                 )
-                self.assertIn(b"403", connection.recv(1024).split(b"\r\n", 1)[0])
+                self.assertIn(b"401", connection.recv(1024).split(b"\r\n", 1)[0])
             direct_limits = runtime_limits(app)
             session = app.session()
             app.prompt(session, "independent daemon is usable").close()
             app.idle(session)
-            self.assertIn("ok", [event.get("text") for event in app.events(session)])
+            self.assertIn(
+                "ok",
+                [
+                    part["text"]
+                    for entry in app.history(session)["items"]
+                    for part in entry["content"]
+                    if part["kind"] == "text"
+                ],
+            )
             self.assertEqual(app.connection, direct)
             app.restart()
             self.assertNotEqual(app.connection["pid"], direct["pid"])
@@ -165,7 +173,7 @@ class LifecycleTest(unittest.TestCase):
             self.assertEqual(
                 app.connection["token"], "operator-chosen-authentication-token"
             )
-            self.assertEqual(app.api("/health").status, 200)
+            self.assertEqual(app.api("/server").status, 200)
 
     def test_cancelling_cli_startup_wait_leaves_the_started_daemon_owned(self):
         captured = {}
@@ -206,7 +214,15 @@ class LifecycleTest(unittest.TestCase):
             session = app.session()
             app.prompt(session, "daemon survived waiter cancellation").close()
             app.idle(session)
-            self.assertIn("ok", [event.get("text") for event in app.events(session)])
+            self.assertIn(
+                "ok",
+                [
+                    part["text"]
+                    for entry in app.history(session)["items"]
+                    for part in entry["content"]
+                    if part["kind"] == "text"
+                ],
+            )
 
     def test_simultaneous_cli_starters_converge_on_one_real_execution(self):
         captured = {}
@@ -297,7 +313,7 @@ class LifecycleTest(unittest.TestCase):
             self.assertEqual(
                 json.loads((app.home / "daemon.json").read_text()), replacement
             )
-            self.assertEqual(app.api("/health").status, 200)
+            self.assertEqual(app.api("/server").status, 200)
 
     def test_explicit_upgrade_recovers_history_receipt_and_uncertain_tool_without_repeating_effect(
         self,
@@ -328,8 +344,9 @@ class LifecycleTest(unittest.TestCase):
             session = app.session()
             operation = operation_id()
             app.api(
-                f"/sessions/{session}/events",
-                {"operationId": operation, "content": "apply an effect then wait"},
+                f"/sessions/{session}/inputs/{operation}",
+                {"kind": "message", "text": "apply an effect then wait"},
+                method="PUT",
             ).close()
             deadline = time.monotonic() + 20
             while (
@@ -340,7 +357,8 @@ class LifecycleTest(unittest.TestCase):
                     app._fail("tool never published its external effect")
                 time.sleep(0.02)
             self.assertTrue(
-                json.load(app.api(f"/sessions/{session}/status"))["running"]
+                json.load(app.api(f"/sessions/{session}?tail=0"))["status"]["phase"]
+                == "running"
             )
             previous = dict(app.connection)
             terminal = TerminalCommand(app, "daemon")
@@ -349,20 +367,29 @@ class LifecycleTest(unittest.TestCase):
             app.daemon._refresh()
             self.assertNotEqual(app.connection["pid"], previous["pid"])
             app.idle(session)
-            receipt = json.load(app.api(f"/operations/{operation}"))
-            self.assertEqual(receipt["deliveryStatus"], "committed")
-            events = app.events(session)
+            receipt = json.load(app.api(f"/sessions/{session}/inputs/{operation}"))
+            self.assertEqual(receipt["delivery"], "committed")
+            self.assertEqual(receipt["turn"]["state"], "abandoned")
+            entries = app.history(session)["items"]
             self.assertEqual(
-                len(
-                    [event for event in events if event.get("operationId") == operation]
-                ),
-                1,
+                sum(entry["input_id"] == operation for entry in entries), 1
             )
             self.assertTrue(
-                any(event.get("source") == "daemon restart" for event in events)
+                any(
+                    entry["kind"] == "note"
+                    and any(
+                        part["kind"] == "text" and "restart" in part["text"]
+                        for part in entry["content"]
+                    )
+                    for entry in entries
+                )
             )
             self.assertTrue(
-                any(event.get("text") == "recovered after upgrade" for event in events)
+                any(
+                    part["kind"] == "text" and part["text"] == "recovered after upgrade"
+                    for entry in entries
+                    for part in entry["content"]
+                )
             )
             self.assertEqual(fixture["effect"].read_text(), "effect applied\n")
 
@@ -383,4 +410,4 @@ class LifecycleTest(unittest.TestCase):
         with Albedo(prepare=prepare) as app:
             self.assertNotEqual(captured["exit"], 0)
             self.assertNotEqual(app.connection["pid"], captured["pid"])
-            self.assertEqual(app.api("/health").status, 200)
+            self.assertEqual(app.api("/server").status, 200)

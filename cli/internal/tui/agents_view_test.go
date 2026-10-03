@@ -141,20 +141,20 @@ func TestFailedSeedRetriesOnTheNextSelection(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if calls == 1 {
-			http.Error(w, `{"error":"history is gone"}`, http.StatusInternalServerError)
+			http.Error(w, `{"detail":"history is gone"}`, http.StatusInternalServerError)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"total": 2, "items": []map[string]string{
-			{"type": "user", "preview": "fan out three scouts"},
-			{"type": "assistant", "preview": "sent them off"},
-		}})
+		session := protocolSession("coder", generationA, 0)
+		session["preview"].(map[string]any)["transcript_count"] = 2
+		session["history"].(map[string]any)["items"] = []any{protocolEntry("q", "user", "fan out three scouts", 1), protocolEntry("a", "assistant", "sent them off", 2)}
+		_ = json.NewEncoder(w).Encode(session)
 	}))
 	defer server.Close()
 	address, _ := url.Parse(server.URL)
 	port, _ := strconv.Atoi(address.Port())
 
 	m := agentsFixture(t)
-	m.Conn = daemon.NewConnection(daemon.ConnectionSnapshot{Port: port, Token: "t", Version: 2}, nil)
+	m.Conn = daemon.NewConnection(daemon.ConnectionSnapshot{Port: port, Token: "t", Version: daemon.ProtocolVersion}, nil)
 	m.selected = "coder"
 
 	cmd := m.seedCmd()
@@ -203,15 +203,11 @@ func TestFailedSeedRetriesOnTheNextSelection(t *testing.T) {
 func TestAgentsOverflowPreservesPendingOperationOutcomeAndDraft(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health" {
-			_, _ = w.Write([]byte(`{"ok":true,"version":2,"capabilities":["normalized_tool_progress"]}`))
-			return
-		}
-		if r.URL.Path == "/agents/stream" {
+		if r.URL.Path == "/sessions" && r.Header.Get("Accept") == "text/event-stream" {
 			<-r.Context().Done()
 			return
 		}
-		if r.URL.Path != "/sessions/lead/children" {
+		if r.Method != http.MethodPut || !strings.HasPrefix(r.URL.Path, "/sessions/") {
 			t.Errorf("unexpected request: %s", r.URL.Path)
 			w.WriteHeader(404)
 			return
@@ -219,7 +215,7 @@ func TestAgentsOverflowPreservesPendingOperationOutcomeAndDraft(t *testing.T) {
 		close(started)
 		<-release
 		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`{"error":"spawn refused"}`))
+		_, _ = w.Write([]byte(`{"detail":"spawn refused"}`))
 	}))
 	defer server.Close()
 	defer func() {
@@ -260,6 +256,29 @@ func TestAgentsOverflowPreservesPendingOperationOutcomeAndDraft(t *testing.T) {
 	rendered := ansi.Strip(m.View())
 	if !strings.Contains(rendered, "spawn refused") || !strings.Contains(rendered, "next draft") {
 		t.Fatalf("overflow lost pending outcome or draft: %s", rendered)
+	}
+}
+
+func TestAgentsClosedViewRetainsInFlightOutcomeAndUnknownDecision(t *testing.T) {
+	m := agentsFixture(t)
+	_ = m.sendCmd("scout", "retained draft")
+	if len(m.pendingOperations) != 1 {
+		t.Fatal("admission was not retained before dispatch")
+	}
+	var pending agentPendingOperation
+	for _, value := range m.pendingOperations {
+		pending = value
+	}
+	gen := m.viewGen
+	m.Close()
+	m, _ = m.Update(agentsSentMsg{Gen: gen, Handle: pending.Handle, Draft: pending.Draft, Action: pending.Action, Err: &daemon.UncertainOutcomeError{Operation: "submit", Cause: errors.New("lost response")}})
+	m, _ = m.Update(agentsSentMsg{Gen: m.viewGen, Handle: pending.Handle, Draft: pending.Draft, Action: pending.Action, Recovery: true, Err: &daemon.APIError{StatusCode: 404, Code: "not_found"}})
+	if retained, ok := m.pendingOperations[pending.Handle.ID()]; !ok || retained.InFlight || m.input.Value() != "" {
+		t.Fatalf("unknown retained outcome restored a replayable draft: %#v %q", m.pendingOperations, m.input.Value())
+	}
+	m, _ = m.Update(agentsSentMsg{Gen: m.viewGen, Handle: pending.Handle, Notice: "confirmed"})
+	if len(m.pendingOperations) != 0 {
+		t.Fatal("confirmed request remained unresolved")
 	}
 }
 

@@ -1,4 +1,4 @@
-"""The workspace picker's folder browser: `/fs/list`, `/fs/repo`, `/fs/preview`.
+"""Workspace directory and preview resources preserve real filesystem and VCS facts.
 
 What the picker shows comes from real directories, git and jj run by the
 daemon with its own environment, so the checks are end to end: a plain tree,
@@ -7,6 +7,7 @@ a git repository (branch, changes, detached HEAD), a colocated jj repository
 shares, and path validation. The jj cases skip when jj is not installed.
 """
 
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,7 @@ import unittest
 import urllib.error
 import urllib.parse
 
-from harness import Albedo
+from harness import Albedo, exclusive
 
 GIT_ENV = {
     "GIT_AUTHOR_NAME": "fixture",
@@ -49,23 +50,28 @@ class FoldersTest(unittest.TestCase):
     def setUp(self):
         self.app = Albedo().__enter__()
         self.addCleanup(self.app.__exit__, None, None, None)
-        self.root = Path(tempfile.mkdtemp(prefix="folders-", dir=self.app.root))
+        directory = (
+            Path("/var/tmp")
+            if self._testMethodName
+            == "test_plain_tree_lists_directories_and_previews_two_levels"
+            else self.app.root
+        )
+        self.root = Path(tempfile.mkdtemp(prefix="albedo-folders-", dir=directory))
         self.addCleanup(shutil.rmtree, self.root, True)
 
-    def get(self, route, path):
-        query = urllib.parse.urlencode({"path": str(path)})
-        with self.app.api(f"/fs/{route}?{query}") as response:
+    def get(self, location, *, preview=False):
+        query = {"location": str(location)}
+        if preview:
+            query["include"] = "preview"
+        with self.app.api("/workspaces?" + urllib.parse.urlencode(query)) as response:
             return json.load(response)
 
-    def failure(self, route, path):
+    def failure(self, location, *, preview=False):
         with self.assertRaises(urllib.error.HTTPError) as caught:
-            self.get(route, path)
+            self.get(location, preview=preview)
         return caught.exception.code, json.load(caught.exception)
 
-    def test_health_lists_the_browser(self):
-        with self.app.api("/health") as response:
-            self.assertIn("workspace_browser", json.load(response)["capabilities"])
-
+    @exclusive
     def test_plain_tree_lists_directories_and_previews_two_levels(self):
         for name in ("beta", "Alpha", ".hidden", "gamma/one", "gamma/two"):
             (self.root / name).mkdir(parents=True)
@@ -74,11 +80,11 @@ class FoldersTest(unittest.TestCase):
         (self.root / "notes.txt").write_text("not a directory\n")
         (self.root / "zeta").symlink_to(self.root / "beta")
 
-        listed = self.get("list", f"{self.root}/./gamma/../")
-        self.assertEqual(listed["path"], str(self.root))
-        self.assertFalse(listed["truncated"])
+        listed = self.get(f"{self.root}/./gamma/../")
+        self.assertEqual(listed["directory"], str(self.root))
+        self.assertIsNone(listed["next"])
         self.assertEqual(
-            [(e["name"], e["hidden"], e["vcs"]) for e in listed["entries"]],
+            [(e["name"], e["hidden"], e["vcs"]) for e in listed["items"]],
             [
                 (".hidden", True, None),
                 ("Alpha", False, None),
@@ -87,22 +93,25 @@ class FoldersTest(unittest.TestCase):
                 ("zeta", False, None),
             ],
         )
-        self.assertEqual(
-            listed["entries"][1]["modified"], int((self.root / "Alpha").stat().st_mtime)
+        modified = datetime.fromisoformat(
+            listed["items"][1]["modified_at"].replace("Z", "+00:00")
+        )
+        self.assertAlmostEqual(
+            modified.timestamp(), (self.root / "Alpha").stat().st_mtime, delta=1
         )
 
-        preview = self.get("preview", self.root)
-        self.assertIsNone(preview["repo"])
+        preview = self.get(self.root, preview=True)["preview"]
+        self.assertIsNone(preview["repository"])
         self.assertEqual(preview["languages"], [])
         self.assertEqual(preview["more"], 0)
         self.assertEqual(
-            [(e["name"], e["dir"]) for e in preview["tree"]],
+            [(e["name"], e["kind"]) for e in preview["tree"]],
             [
-                ("Alpha", True),
-                ("beta", True),
-                ("gamma", True),
-                ("zeta", True),
-                ("notes.txt", False),
+                ("Alpha", "directory"),
+                ("beta", "directory"),
+                ("gamma", "directory"),
+                ("zeta", "symlink"),
+                ("notes.txt", "file"),
             ],
         )
         gamma = preview["tree"][2]
@@ -128,29 +137,29 @@ class FoldersTest(unittest.TestCase):
         write(repo / "src" / "new.go", "package main\n")
         write(repo / "build" / "out.o", "ignored\n")
         commit = sh(repo, "git", "rev-parse", "--short", "HEAD").strip()
-        touched = int(sh(repo, "git", "log", "-1", "--format=%ct"))
 
-        self.assertEqual(self.get("list", self.root)["entries"][0]["vcs"], "git")
-        found = self.get("repo", repo / "src")["repo"]
+        self.assertEqual(self.get(self.root)["items"][0]["vcs"], "git")
+        found = self.get(repo / "src", preview=True)["preview"]["repository"]
         self.assertEqual(
-            found,
+            {
+                key: found[key]
+                for key in ("kind", "root", "branch", "revision", "changed")
+            },
             {
                 "kind": "git",
                 "root": str(repo),
                 "branch": "trunk",
-                "commit": commit,
+                "revision": commit,
                 "changed": 2,
-                "touched": touched,
             },
         )
 
-        preview = self.get("preview", repo)
-        self.assertEqual(preview["repo"], found)
+        preview = self.get(repo, preview=True)["preview"]
+        self.assertEqual(preview["repository"], found)
         # JSON is data, so only Go and Python count, largest first.
         self.assertEqual(
             [language["name"] for language in preview["languages"]], ["Go", "Python"]
         )
-        self.assertEqual(preview["languages"][0]["color"], "#00ADD8")
         self.assertAlmostEqual(
             sum(language["share"] for language in preview["languages"]), 1.0
         )
@@ -166,22 +175,35 @@ class FoldersTest(unittest.TestCase):
         self.assertEqual(tree["script.py"]["changed"], 0)
 
         sh(repo, "git", "checkout", "-q", "--detach")
-        self.assertIsNone(self.get("repo", repo)["repo"]["branch"])
+        self.assertIsNone(
+            self.get(repo, preview=True)["preview"]["repository"]["branch"]
+        )
 
     def test_unborn_git_repository_has_no_commit(self):
         repo = self.root / "fresh"
         repo.mkdir()
         sh(repo, "git", "init", "-q", "-b", "main")
         (repo / "draft.md").write_text("# draft\n")
+        found = self.get(repo, preview=True)["preview"]["repository"]
         self.assertEqual(
-            self.get("repo", repo)["repo"],
+            {
+                key: found[key]
+                for key in (
+                    "kind",
+                    "root",
+                    "branch",
+                    "revision",
+                    "changed",
+                    "touched_at",
+                )
+            },
             {
                 "kind": "git",
                 "root": str(repo),
                 "branch": "main",
-                "commit": None,
+                "revision": None,
                 "changed": 1,
-                "touched": None,
+                "touched_at": None,
             },
         )
 
@@ -205,17 +227,18 @@ class FoldersTest(unittest.TestCase):
         write(repo / "lib" / "later.gleam", "pub fn later() { Nil }\n")
         operations = self.operations(repo)
 
-        self.assertEqual(self.get("list", self.root)["entries"][0]["vcs"], "jj")
-        found = self.get("repo", repo / "lib")["repo"]
+        self.assertEqual(self.get(self.root)["items"][0]["vcs"], "jj")
+        found = self.get(repo / "lib", preview=True)["preview"]["repository"]
         self.assertEqual(found["kind"], "jj")
         self.assertEqual(found["root"], str(repo))
-        self.assertEqual(found["change"], change)
+        self.assertEqual(found["change_id"], change)
         self.assertEqual(found["bookmark"], {"name": "main", "ahead": 2})
         self.assertEqual(found["changed"], 1)
-        self.assertIsInstance(found["touched"], int)
+        self.assertIsInstance(found["touched_at"], str)
+        datetime.fromisoformat(found["touched_at"].replace("Z", "+00:00"))
 
-        preview = self.get("preview", repo)
-        self.assertEqual(preview["repo"], found)
+        preview = self.get(repo, preview=True)["preview"]
+        self.assertEqual(preview["repository"], found)
         self.assertEqual(
             [
                 (language["name"], language["share"])
@@ -245,7 +268,8 @@ class FoldersTest(unittest.TestCase):
         sh(repo, "jj", "bookmark", "set", "main", "-r", "@")
         sh(repo, "jj", "edit", change)
         self.assertEqual(
-            self.get("repo", repo)["repo"]["bookmark"], {"name": "main", "ahead": 1}
+            self.get(repo, preview=True)["preview"]["repository"]["bookmark"],
+            {"name": "main", "ahead": 1},
         )
 
     @staticmethod
@@ -263,16 +287,18 @@ class FoldersTest(unittest.TestCase):
 
     def test_paths_expand_home_and_refuse_the_rest(self):
         home = self.app.root / "user-home"
-        listed = self.get("list", "~")
-        self.assertEqual((listed["path"], listed["home"]), (str(home), str(home)))
-        self.assertEqual(self.get("list", "~/")["path"], str(home))
+        listed = self.get("~")
+        self.assertEqual((listed["directory"], listed["home"]), (str(home), str(home)))
+        self.assertEqual(self.get("~/")["directory"], str(home))
 
         (self.root / "file.txt").write_text("x\n")
-        for route in ("list", "repo", "preview"):
-            self.assertEqual(self.failure(route, "relative/dir")[0], 400)
-            self.assertEqual(self.failure(route, "~someone")[0], 400)
-            self.assertEqual(self.failure(route, "")[0], 400)
-            code, body = self.failure(route, self.root / "missing")
+        for preview in (False, True):
+            self.assertEqual(self.failure("relative/dir", preview=preview)[0], 400)
+            self.assertEqual(self.failure("~someone", preview=preview)[0], 400)
+            self.assertEqual(self.failure("", preview=preview)[0], 400)
+            code, body = self.failure(self.root / "missing", preview=preview)
             self.assertEqual(code, 404)
-            self.assertIn("error", body)
-            self.assertEqual(self.failure(route, self.root / "file.txt")[0], 404)
+            self.assertEqual(body["status"], 404)
+            self.assertEqual(
+                self.failure(self.root / "file.txt", preview=preview)[0], 404
+            )

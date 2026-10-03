@@ -1,3 +1,4 @@
+// Package presentation formats session metadata for terminal displays.
 package presentation
 
 import (

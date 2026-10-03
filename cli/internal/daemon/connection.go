@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,16 +11,17 @@ import (
 )
 
 type ConnectionSnapshot struct {
-	Token   string `json:"token"`
-	Build   string `json:"build,omitempty"`
-	Digest  string `json:"digest,omitempty"`
-	Port    int    `json:"port"`
-	Pid     int    `json:"pid"`
-	Version int    `json:"version"`
+	InstanceID string `json:"instance_id,omitempty"`
+	Token      string `json:"token"`
+	Build      string `json:"build,omitempty"`
+	Digest     string `json:"digest,omitempty"`
+	Port       int    `json:"port"`
+	Pid        int    `json:"pid"`
+	Version    int    `json:"version"`
 }
 
 type Connection struct {
-	snapshot    atomic.Pointer[ConnectionSnapshot]
+	state       atomic.Pointer[connectionState]
 	httpClient  *http.Client
 	refreshGate chan struct{}
 	rediscover  Rediscovery
@@ -29,13 +29,20 @@ type Connection struct {
 	refreshOnce sync.Once
 }
 
+type connectionState struct {
+	endpoint     ConnectionSnapshot
+	capabilities map[string]int64
+}
+
 // Rediscovery obtains an updated endpoint without owning API attachment.
 type Rediscovery func(context.Context) (ConnectionSnapshot, error)
 
-// NewConnection creates an API client. A nil rediscover disables recovery.
+// NewConnection creates an unattached client for endpoint inspection. Attach
+// validates the daemon and installs the capabilities needed by optional APIs.
+// A nil rediscover disables recovery.
 func NewConnection(snap ConnectionSnapshot, rediscover Rediscovery) *Connection {
 	c := &Connection{rediscover: rediscover}
-	c.snapshot.Store(&snap)
+	c.state.Store(&connectionState{endpoint: snap})
 	return c
 }
 
@@ -43,31 +50,15 @@ func (c *Connection) Snapshot() ConnectionSnapshot {
 	if c == nil {
 		return ConnectionSnapshot{}
 	}
-	p := c.snapshot.Load()
+	p := c.state.Load()
 	if p == nil {
 		return ConnectionSnapshot{}
 	}
-	return *p
+	return p.endpoint
 }
 
 func (c *Connection) Port() int {
 	return c.Snapshot().Port
-}
-
-func (c *Connection) Token() string {
-	return c.Snapshot().Token
-}
-
-func (c *Connection) Pid() int {
-	return c.Snapshot().Pid
-}
-
-func (c *Connection) Version() int {
-	return c.Snapshot().Version
-}
-
-func (c *Connection) Build() string {
-	return c.Snapshot().Build
 }
 
 func (c *Connection) BaseURL() string {
@@ -88,8 +79,7 @@ func (c *Connection) Update(other *Connection) {
 	if c == nil || other == nil || c == other {
 		return
 	}
-	snap := other.Snapshot()
-	c.snapshot.Store(&snap)
+	c.state.Store(other.state.Load())
 }
 
 // Refresh serializes rediscovery and installs only a compatible live endpoint.
@@ -131,25 +121,4 @@ func (c *Connection) Refresh(ctx context.Context) error {
 func (c *Connection) HTTPClient() *http.Client {
 	c.httpOnce.Do(func() { c.httpClient = newHTTPClient() })
 	return c.httpClient
-}
-
-func (c *Connection) MarshalJSON() ([]byte, error) {
-	snap := c.Snapshot()
-	return json.Marshal(snap)
-}
-
-func (c *Connection) UnmarshalJSON(data []byte) error {
-	var snap ConnectionSnapshot
-	if decodeErr := json.Unmarshal(data, &snap); decodeErr != nil {
-		return decodeErr
-	}
-	c.snapshot.Store(&snap)
-	return nil
-}
-
-func ctxDone(ctx context.Context) <-chan struct{} {
-	if ctx == nil {
-		return nil
-	}
-	return ctx.Done()
 }

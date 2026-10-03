@@ -29,7 +29,7 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
     "Discover Agent Skills metadata and activate selected instructions or resources on demand.",
     ["python", "commands"],
     [
-      harness_extension.ManagedPlugin(fn(_, session, workspace) {
+      harness_extension.ManagedPlugin(fn(ledger, session, workspace) {
         use discovered <- result.try(catalog.scan_at(
           workspace,
           home,
@@ -38,7 +38,7 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
         use preferences <- result.try(
           capabilities.load(settings.home(), case discovered.skills {
             [] -> None
-            _ -> Some(session)
+            _ -> Some(#(ledger, session))
           }),
         )
         use names <- result.try(

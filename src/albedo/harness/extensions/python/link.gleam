@@ -57,7 +57,7 @@ pub type Link {
     call: fn(String) -> CallState,
     reply: fn(String, Int, String) -> Nil,
     record: fn(String) -> Nil,
-    forget: fn() -> Nil,
+    forget: fn() -> Result(Nil, String),
     own: fn(String) -> Nil,
   )
 }
@@ -78,9 +78,35 @@ pub fn apply(db: sqlight.Connection) -> Result(Nil, String) {
       kernel TEXT NOT NULL, call TEXT NOT NULL, reply_seq INTEGER,
       PRIMARY KEY (kernel, call));",
   ))
-  store.add_columns(db, "kernel_links", [
-    #("groups", "TEXT NOT NULL DEFAULT '{}'"),
-  ])
+  use _ <- result.try(
+    store.add_columns(db, "kernel_links", [
+      #("groups", "TEXT NOT NULL DEFAULT '{}'"),
+    ]),
+  )
+  use _ <- result.try(store.exec(
+    db,
+    "
+    CREATE TABLE IF NOT EXISTS kernel_stages (
+      session TEXT PRIMARY KEY, kernel TEXT NOT NULL UNIQUE, token TEXT NOT NULL,
+      run_dir TEXT NOT NULL, cwd TEXT NOT NULL, modules TEXT NOT NULL,
+      pid INTEGER, pgid INTEGER, leader TEXT, epoch INTEGER NOT NULL DEFAULT 0,
+      out_seq INTEGER NOT NULL DEFAULT 0, groups TEXT NOT NULL DEFAULT '{}',
+      ready INTEGER NOT NULL DEFAULT 0);
+    CREATE VIEW IF NOT EXISTS kernel_records AS
+      SELECT session,kernel,token,run_dir,cwd,modules,pid,pgid,leader,epoch,out_seq,groups FROM kernel_links
+      UNION ALL
+      SELECT session,kernel,token,run_dir,cwd,modules,pid,pgid,leader,epoch,out_seq,groups FROM kernel_stages;
+    CREATE TRIGGER IF NOT EXISTS kernel_records_update INSTEAD OF UPDATE ON kernel_records BEGIN
+      UPDATE kernel_links SET pid=NEW.pid,pgid=NEW.pgid,leader=NEW.leader,epoch=NEW.epoch,out_seq=NEW.out_seq,groups=NEW.groups WHERE kernel=OLD.kernel;
+      UPDATE kernel_stages SET pid=NEW.pid,pgid=NEW.pgid,leader=NEW.leader,epoch=NEW.epoch,out_seq=NEW.out_seq,groups=NEW.groups WHERE kernel=OLD.kernel;
+    END;
+    INSERT OR IGNORE INTO kernel_links(session,kernel,token,run_dir,cwd,modules,pid,pgid,leader,epoch,out_seq,groups)
+      SELECT session,kernel,token,run_dir,cwd,modules,pid,pgid,leader,epoch,out_seq,groups FROM kernel_stages
+      WHERE ready=1 AND NOT EXISTS(SELECT 1 FROM kernel_links WHERE kernel_links.session=kernel_stages.session);
+    DELETE FROM kernel_stages WHERE EXISTS(SELECT 1 FROM kernel_links WHERE kernel_links.kernel=kernel_stages.kernel);
+  ",
+  ))
+  Ok(Nil)
 }
 
 /// Record a kernel about to boot, replacing whatever the session had.
@@ -107,6 +133,74 @@ pub fn create(storage: store.Store, record: Record) -> Result(Nil, String) {
   })
 }
 
+/// A staged replacement owns its durable identities without replacing the live link.
+pub fn stage(storage: store.Store, record: Record) -> Result(Nil, String) {
+  store.query(storage, fn(db) {
+    store.transaction(db, fn() {
+      use _ <- result.try(apply(db))
+      store.run(
+        db,
+        "INSERT INTO kernel_stages(session,kernel,token,run_dir,cwd,modules) VALUES(?,?,?,?,?,?)",
+        [
+          sqlight.text(record.session),
+          sqlight.text(record.kernel),
+          sqlight.text(record.token),
+          sqlight.text(record.run_dir),
+          sqlight.text(record.cwd),
+          sqlight.text(record.modules),
+        ],
+      )
+    })
+  })
+}
+
+pub fn ready(storage: store.Store, record: Record) -> Result(Nil, String) {
+  store.write(
+    storage,
+    "UPDATE kernel_stages SET ready=1 WHERE session=? AND kernel=?",
+    [sqlight.text(record.session), sqlight.text(record.kernel)],
+  )
+}
+
+/// The previous namespace must have confirmed shutdown before publication.
+pub fn publish(storage: store.Store, record: Record) -> Result(Nil, String) {
+  store.query(storage, fn(db) {
+    store.transaction(db, fn() {
+      use _ <- result.try(
+        store.run(
+          db,
+          "INSERT INTO kernel_links(session,kernel,token,run_dir,cwd,modules,pid,pgid,leader,epoch,out_seq,groups) SELECT session,kernel,token,run_dir,cwd,modules,pid,pgid,leader,epoch,out_seq,groups FROM kernel_stages WHERE session=? AND kernel=? AND ready=1",
+          [sqlight.text(record.session), sqlight.text(record.kernel)],
+        ),
+      )
+      use published <- result.try(store.one(
+        db,
+        "SELECT kernel FROM kernel_links WHERE session=?",
+        [sqlight.text(record.session)],
+        decode.field(0, decode.string, decode.success),
+        "replacement was not published",
+      ))
+      use _ <- result.try(case published == record.kernel {
+        True -> Ok(Nil)
+        False -> Error("another kernel is still published")
+      })
+      store.run(db, "DELETE FROM kernel_stages WHERE session=? AND kernel=?", [
+        sqlight.text(record.session),
+        sqlight.text(record.kernel),
+      ])
+    })
+  })
+}
+
+pub fn stages(storage: store.Store) -> Result(List(Record), String) {
+  store.read(
+    storage,
+    "SELECT " <> columns <> " FROM kernel_stages ORDER BY rowid",
+    [],
+    record_decoder(),
+  )
+}
+
 fn record_decoder() -> decode.Decoder(Record) {
   use session <- decode.field(0, decode.string)
   use kernel <- decode.field(1, decode.string)
@@ -129,6 +223,20 @@ fn record_decoder() -> decode.Decoder(Record) {
 }
 
 const columns = "session,kernel,token,run_dir,cwd,modules,out_seq,json_object('pid',pid,'pgid',pgid,'leader',leader,'groups',json(groups))"
+
+/// A strict observation for destructive lifecycle decisions.
+pub fn lookup(
+  storage: store.Store,
+  session: String,
+) -> Result(Option(Record), String) {
+  use rows <- result.try(store.read(
+    storage,
+    "SELECT " <> columns <> " FROM kernel_links WHERE session=?",
+    [sqlight.text(session)],
+    record_decoder(),
+  ))
+  Ok(list.first(rows) |> option.from_result)
+}
 
 /// The kernel a session last booted, if one is recorded.
 pub fn find(storage: store.Store, session: String) -> Option(Record) {
@@ -171,6 +279,16 @@ pub fn forget_session(
     "DELETE FROM kernel_outbox WHERE session=?",
     id,
   ))
+  use _ <- result.try(store.run(
+    db,
+    "DELETE FROM kernel_calls WHERE kernel IN (SELECT kernel FROM kernel_stages WHERE session=?)",
+    id,
+  ))
+  use _ <- result.try(store.run(
+    db,
+    "DELETE FROM kernel_stages WHERE session=?",
+    id,
+  ))
   store.run(db, "DELETE FROM kernel_links WHERE session=?", id)
 }
 
@@ -185,6 +303,12 @@ pub fn forget(storage: store.Store, record: Record) -> Result(Nil, String) {
       )
       use _ <- result.try(
         store.run(db, "DELETE FROM kernel_outbox WHERE session=? AND kernel=?", [
+          sqlight.text(record.session),
+          sqlight.text(record.kernel),
+        ]),
+      )
+      use _ <- result.try(
+        store.run(db, "DELETE FROM kernel_stages WHERE session=? AND kernel=?", [
           sqlight.text(record.session),
           sqlight.text(record.kernel),
         ]),
@@ -206,7 +330,7 @@ pub fn bind(storage: store.Store, record: Record) -> Link {
     call: fn(id) { call(storage, record, id) },
     reply: fn(id, seq, frame) { log(reply(storage, record, id, seq, frame)) },
     record: fn(fields) { log(identify(storage, record, fields)) },
-    forget: fn() { log(forget(storage, record)) },
+    forget: fn() { forget(storage, record) },
     own: fn(groups) { log(own(storage, record, groups)) },
   )
 }
@@ -217,7 +341,7 @@ fn own(
   record: Record,
   groups: String,
 ) -> Result(Nil, String) {
-  store.write(storage, "UPDATE kernel_links SET groups=? WHERE kernel=?", [
+  store.write(storage, "UPDATE kernel_records SET groups=? WHERE kernel=?", [
     sqlight.text(groups),
     sqlight.text(record.kernel),
   ])
@@ -243,13 +367,13 @@ fn insert(
     // still saying goodbye) gets no outbox back.
     "INSERT OR REPLACE INTO kernel_outbox(session,kernel,seq,frame)
       SELECT ?1,?2,?3,?4 WHERE EXISTS
-        (SELECT 1 FROM kernel_links WHERE session=?1 AND kernel=?2)",
+        (SELECT 1 FROM kernel_records WHERE session=?1 AND kernel=?2)",
     list.append(kernel, [sqlight.int(seq), sqlight.text(frame)]),
   ))
   use _ <- result.try(
     store.run(
       db,
-      "UPDATE kernel_links SET out_seq=max(out_seq,?) WHERE kernel=?",
+      "UPDATE kernel_records SET out_seq=max(out_seq,?) WHERE kernel=?",
       [sqlight.int(seq), sqlight.text(record.kernel)],
     ),
   )
@@ -400,7 +524,7 @@ fn identify(
   )
   store.write(
     storage,
-    "UPDATE kernel_links SET pid=?,pgid=?,leader=?,epoch=? WHERE kernel=?",
+    "UPDATE kernel_records SET pid=?,pgid=?,leader=?,epoch=? WHERE kernel=?",
     [
       sqlight.nullable(sqlight.int, pid),
       sqlight.nullable(sqlight.int, pgid),

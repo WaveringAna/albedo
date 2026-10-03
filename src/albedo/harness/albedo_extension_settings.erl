@@ -15,6 +15,10 @@ home() ->
     end).
 
 read(Home) ->
+    albedo_settings_lock:with_lock(Home, fun() -> read_locked(Home) end,
+        fun() -> {error, <<"settings store is busy">>} end).
+
+read_locked(Home) ->
     Path = filename:join(Home, <<"extensions.json">>),
     case file:read_file_info(Path) of
         {error, enoent} -> {ok, <<"{}">>};

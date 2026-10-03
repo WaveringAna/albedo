@@ -13,7 +13,26 @@ import gleam/dict
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
+
+/// Observe an existing mirror without contacting its host or refreshing files.
+/// A missing mirror leaves only the daemon's home sources for inspection.
+pub fn observed(workspace: String) -> Option(String) {
+  case location.parse(workspace) {
+    Ok(location.Remote(..)) -> {
+      let mirror = settings.home() <> "/mirror/" <> digest(workspace)
+      case mirrored(mirror) {
+        True -> Some(mirror)
+        False -> None
+      }
+    }
+    _ -> Some(workspace)
+  }
+}
+
+@external(erlang, "albedo_project_mirror", "observed")
+fn mirrored(mirror: String) -> Bool
 
 /// The directory to read `workspace`'s project files from, or why there is
 /// none right now (a host out of reach), which the readers report as a

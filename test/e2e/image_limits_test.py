@@ -14,10 +14,10 @@ import unittest
 import urllib.error
 import zlib
 
-from harness import Albedo, Provider, exclusive, python, text
+from harness import Albedo, Provider, exclusive, operation_id, python, text
 
 
-def png(width, height):
+def png(width, height, metadata=b""):
     def chunk(kind, data):
         body = kind + data
         return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
@@ -26,6 +26,7 @@ def png(width, height):
     return (
         b"\x89PNG\r\n\x1a\n"
         + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + (chunk(b"npAD", metadata) if metadata else b"")
         + chunk(b"IDAT", zlib.compress(rows))
         + chunk(b"IEND", b"")
     )
@@ -36,7 +37,8 @@ def png(width, height):
 LOOPBACK_SSH = """#!/bin/sh
 while [ $# -gt 0 ]; do
   case "$1" in
-    -*) shift 2 ;;
+    -o) shift 2 ;;
+    -*) shift ;;
     *) break ;;
   esac
 done
@@ -65,8 +67,36 @@ def cell_result(output):
 
 
 class ImageLimitsTest(unittest.TestCase):
-    # exclusive: /model saves daemon-wide defaults in config.json
     @exclusive
+    def test_large_valid_image_remains_available_after_durable_reload(self):
+        # A valid ancillary chunk makes encoded length exceed 5 MiB while the
+        # decoded PNG remains below the advertised file-size boundary.
+        image = png(2, 3, b"x" * (4 * 1024 * 1024))
+        data = base64.b64encode(image).decode()
+        self.assertLess(len(image), 5 * 1024 * 1024)
+        self.assertGreater(len(data), 5 * 1024 * 1024)
+        provider = Provider(lambda _: text("image accepted"))
+        self.addCleanup(provider.close)
+        with Albedo(provider, protocol="responses") as app:
+            session = app.session()
+            app.api(
+                f"/sessions/{session}/inputs/{operation_id()}",
+                {
+                    "kind": "message",
+                    "text": "look",
+                    "image": {"mime_type": "image/png", "data": data},
+                },
+                method="PUT",
+            ).close()
+            app.idle(session)
+            app.restart()
+            app.prompt(session, "look again").close()
+            app.idle(session)
+            sent = json.dumps(provider.requests[-1]["request"])
+            encoded = re.findall(r"data:image/png;base64,([A-Za-z0-9+/=]+)", sent)
+            self.assertEqual(len(encoded), 1)
+            self.assertEqual(base64.b64decode(encoded[0]), image)
+
     def test_a_declared_edge_refuses_new_images_and_fits_history(self):
         def reply(request):
             inputs = request["input"]
@@ -100,24 +130,28 @@ class ImageLimitsTest(unittest.TestCase):
             ) as app:
                 session = app.session()
                 attach = {
-                    "content": "look",
-                    "image": {
-                        "mimeType": "image/png",
-                        "data": WIDE_DATA,
-                        "width": 1200,
-                        "height": 10,
-                        "bytes": len(WIDE),
-                    },
+                    "kind": "message",
+                    "text": "look",
+                    "image": {"mime_type": "image/png", "data": WIDE_DATA},
                 }
 
                 def switch(name):
+                    with app.api(f"/sessions/{session}?view=configuration") as response:
+                        json.load(response)
+                        revision = response.headers["ETag"]
                     app.api(
-                        f"/sessions/{session}/commands",
-                        {
-                            "name": "/model",
-                            "args": {"provider": name, "model": "fixture-model"},
-                        },
+                        f"/sessions/{session}?view=configuration",
+                        {"provider_profile": name, "model": "fixture-model"},
+                        method="PATCH",
+                        headers={"If-Match": revision},
                     ).close()
+
+                def attach_image():
+                    return app.api(
+                        f"/sessions/{session}/inputs/{operation_id()}",
+                        attach,
+                        method="PUT",
+                    )
 
                 def send(content):
                     start = len(provider.requests)
@@ -125,16 +159,18 @@ class ImageLimitsTest(unittest.TestCase):
                     app.idle(session)
                     return [r["request"] for r in provider.requests[start:]]
 
-                app.api(f"/sessions/{session}/events", attach).close()
+                attach_image().close()
                 app.idle(session)
                 self.assertEqual(widths(provider.requests[-1]["request"]), [1200])
 
                 switch(strict)
                 sent = len(provider.requests)
                 with self.assertRaises(urllib.error.HTTPError) as refused:
-                    app.api(f"/sessions/{session}/events", attach).close()
+                    attach_image().close()
                 self.assertEqual(refused.exception.code, 409)
-                self.assertIn("1000px edge limit", str(refused.exception))
+                self.assertIn(
+                    "1000px edge limit", json.load(refused.exception)["detail"]
+                )
                 self.assertEqual(len(provider.requests), sent)
 
                 strict_requests = send("show") + send("again")
@@ -155,22 +191,34 @@ class ImageLimitsTest(unittest.TestCase):
                     result["output"],
                 )
                 self.assertNotIn("image_errors", result)
+                entries = app.history(session)["items"]
                 notes = [
-                    event["text"]
-                    for event in app.events(session)
-                    if event.get("source") == "image scaled"
+                    part["text"]
+                    for entry in entries
+                    if entry["kind"] == "image_fit"
+                    for part in entry["content"]
+                    if part["kind"] == "text"
                 ]
                 self.assertEqual(len(notes), 1, notes)
                 self.assertIn(NOTE, notes[0])
                 original = [
-                    event
-                    for event in app.events(session)
-                    if event.get("type") == "user" and event.get("text") == "look"
+                    entry
+                    for entry in entries
+                    if entry["kind"] == "user"
+                    and any(
+                        part["kind"] == "text" and part["text"] == "look"
+                        for part in entry["content"]
+                    )
                 ]
                 self.assertEqual(len(original), 1)
-                self.assertEqual(original[0]["image"]["width"], 1200)
-                self.assertEqual(original[0]["image"]["height"], 10)
-                self.assertEqual(original[0]["image"]["bytes"], len(WIDE))
+                [image] = [
+                    part["image"]
+                    for part in original[0]["content"]
+                    if part["kind"] == "image"
+                ]
+                self.assertEqual(image["width"], 1200)
+                self.assertEqual(image["height"], 10)
+                self.assertEqual(image["original_bytes"], len(WIDE))
 
                 source = hashlib.sha256(WIDE_DATA.encode()).hexdigest()
                 database = f"file:{app.home / 'albedo.sqlite'}?mode=ro"
@@ -197,17 +245,22 @@ class ImageLimitsTest(unittest.TestCase):
                 self.assertEqual(json.dumps(back).count(NOTE), 1)
 
                 # A fork from before the fit starts from the original.
-                with sqlite3.connect(database, uri=True) as db:
-                    # The assistant's answer to the first attachment.
-                    (answer,) = db.execute(
-                        "SELECT seq FROM transcript WHERE session=? "
-                        "ORDER BY seq LIMIT 1 OFFSET 1",
-                        (session,),
-                    ).fetchone()
-                with app.api(
-                    f"/sessions/{session}/fork", {"checkpoint": answer}
-                ) as response:
-                    branch = json.load(response)["id"]
+                checkpoint = next(
+                    entry["checkpoint_id"]
+                    for entry in entries
+                    if entry["kind"] == "assistant"
+                )
+                branch = operation_id()
+                app.api(
+                    f"/sessions/{branch}",
+                    {
+                        "kind": "fork",
+                        "source_session_id": session,
+                        "checkpoint_id": checkpoint,
+                    },
+                    method="PUT",
+                    headers={"If-None-Match": "*"},
+                ).close()
                 start = len(provider.requests)
                 app.prompt(branch, "branch").close()
                 app.idle(branch)
@@ -224,6 +277,10 @@ os.makedirs("bin", exist_ok=True)
 with open("bin/ssh", "w") as script:
     script.write(%r)
 os.chmod("bin/ssh", 0o755)
+with open("bin/loginsh", "w") as script:
+    script.write('#!/bin/sh\\n[ "$1" = -l ] && shift\\nexec /bin/sh "$@"\\n')
+os.chmod("bin/loginsh", 0o755)
+os.environ["SHELL"] = os.path.abspath("bin/loginsh")
 os.environ["PATH"] = os.path.abspath("bin") + os.pathsep + os.environ["PATH"]
 rem = await remote.connect("loopback")
 try:

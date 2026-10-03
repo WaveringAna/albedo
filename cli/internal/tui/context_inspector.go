@@ -83,7 +83,7 @@ func (m ContextInspectorModel) loadPageCmd(sectionID string, page int, gen int) 
 		if m.Conn == nil {
 			return contextPageLoadedMsg{SectionID: sectionID, Page: page, Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		data, err := daemon.GetContextPage(context.Background(), m.Conn, m.SessionID, sectionID, page)
+		data, err := daemon.GetContextPage(context.Background(), m.Conn, m.SessionID, m.Snapshot.SnapshotID, sectionID, page)
 		if err != nil {
 			return contextPageLoadedMsg{SectionID: sectionID, Page: page, Err: err, Gen: gen}
 		}

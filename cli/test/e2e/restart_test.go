@@ -56,9 +56,23 @@ func TestChatClientReadReconnectsAfterDaemonRestart(t *testing.T) {
 	profile := providerRoute(t, echoReply)
 	workspace := t.TempDir()
 	id := newSession(t, workspace)
+	configured := daemonSession(t, id)
+	if _, err := daemon.SelectModel(t.Context(), conn(t), id, daemon.ModelSelectionRequest{Model: "o3", Effort: "high", ETag: configured.ETag}); err != nil {
+		t.Fatalf("select a model with a default effort: %v", err)
+	}
+	configured = daemonSession(t, id)
+	if configured.Effort != "high" {
+		t.Fatalf("selected effort is %q, want high", configured.Effort)
+	}
+	if _, err := daemon.SelectEffort(t.Context(), conn(t), configured, ""); err != nil {
+		t.Fatalf("clear the effort preference: %v", err)
+	}
+	if cleared := daemonSession(t, id); cleared.Effort != "" {
+		t.Fatalf("cleared effort is %q", cleared.Effort)
+	}
 
-	// The client exists before the restart and is the only thing this test
-	// uses afterwards; a client created after the reboot would prove nothing.
+	// Reads and turns use the same client across the restart so they exercise
+	// connection recovery rather than a new attachment.
 	shared := conn(t)
 	client := daemon.NewChatClient(shared, id)
 
@@ -70,6 +84,9 @@ func TestChatClientReadReconnectsAfterDaemonRestart(t *testing.T) {
 
 	oldSnap := shared.Snapshot()
 	snap := restartDaemon(t)
+	if reopened := daemonSession(t, id); reopened.Effort != "" {
+		t.Fatalf("restart replaced the cleared effort with %q", reopened.Effort)
+	}
 
 	page, err := client.History(context.Background(), 0, 120)
 	if err != nil || len(page.Events) == 0 {
@@ -82,19 +99,23 @@ func TestChatClientReadReconnectsAfterDaemonRestart(t *testing.T) {
 		t.Fatalf("second send through the same client after the restart: ok=%v err=%v", sent != nil && sent.OK, err)
 	}
 	waitIdle(t, id, profile, 2)
+	if continued := daemonSession(t, id); continued.Effort != "" {
+		t.Fatalf("resumed turn replaced the cleared effort with %q", continued.Effort)
+	}
 
 	// The shared connection must now describe the restarted daemon, not the
 	// one it was built on.
-	if shared.Pid() != snap.Pid {
-		t.Errorf("connection pid is %d, restarted daemon is %d", shared.Pid(), snap.Pid)
+	current := shared.Snapshot()
+	if current.Pid != snap.Pid {
+		t.Errorf("connection pid is %d, restarted daemon is %d", current.Pid, snap.Pid)
 	}
-	if shared.Token() != snap.Token {
+	if current.Token != snap.Token {
 		t.Errorf("connection token is not the restarted daemon's")
 	}
 	if want := fmt.Sprintf("http://127.0.0.1:%d", snap.Port); shared.BaseURL() != want {
 		t.Errorf("connection base url is %s, want %s", shared.BaseURL(), want)
 	}
-	if shared.Token() == oldSnap.Token {
+	if current.Token == oldSnap.Token {
 		t.Errorf("the token never changed, so this run did not exercise a real restart")
 	}
 
@@ -113,7 +134,7 @@ func TestChatClientReadReconnectsAfterDaemonRestart(t *testing.T) {
 	}
 
 	// The transcript survived the restart in the same session.
-	reply := strings.Join(eventText(streamSnapshot(t, id), "message"), "\n")
+	reply := strings.Join(eventText(durableHistorySnapshot(t, id), "message"), "\n")
 	if !strings.Contains(reply, "echo: "+prompt1) || !strings.Contains(reply, "echo: "+prompt2) {
 		t.Fatalf("transcript after the restart is missing a turn; got:\n%s", reply)
 	}
@@ -143,13 +164,13 @@ func TestTUIReopensInterruptedSessionWithoutCompacting(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("the turn never reached the provider")
 	}
-	if interrupted, err := client.Interrupt(ctx); err != nil || !interrupted {
+	if interrupted, err := daemon.InterruptSession(ctx, conn(t), id); err != nil || !interrupted {
 		t.Fatalf("interrupt: %v, %v", interrupted, err)
 	}
 	waitIdle(t, id, profile, 1)
 	restartDaemon(t)
 	status, err := daemon.NewChatClient(conn(t), id).GetStatus(ctx)
-	if err != nil || !status.Idle || status.Phase == nil || *status.Phase != "interrupted" {
+	if err != nil || !status.Idle || status.Phase == nil || *status.Phase != daemon.PhaseIdle {
 		t.Fatalf("reopened status: %+v, %v", status, err)
 	}
 
@@ -180,7 +201,7 @@ func TestTUIReopensInterruptedSessionWithoutCompacting(t *testing.T) {
 		}
 	}
 	waitIdle(t, id, profile, 2)
-	replies := strings.Join(eventText(streamSnapshot(t, id), "message"), "\n")
+	replies := strings.Join(eventText(durableHistorySnapshot(t, id), "message"), "\n")
 	if !strings.Contains(replies, "echo: continue without compacting") {
 		t.Fatalf("the reopened session did not answer: %q", replies)
 	}

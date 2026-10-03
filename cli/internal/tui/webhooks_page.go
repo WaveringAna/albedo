@@ -5,8 +5,6 @@ import (
 	"cmp"
 	"context"
 	"errors"
-	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -16,16 +14,17 @@ import (
 
 // WebhooksPageModel is the Webhooks screen: every signed endpoint grouped by
 // the session it wakes, their inboxes, and whether the agent of the session it
-// was opened from may manage its own. Every change runs /webhooks on the
-// daemon and then reloads, so the list is never patched locally.
+// was opened from may manage its own. Changes use the typed webhook API and
+// reload the list after saving.
 type WebhooksPageModel struct {
 	Conn *daemon.Connection
 	Form *webhookForm
 	// Reveal holds a generated secret until it is dismissed; it is never
 	// fetched again.
-	Reveal    *webhookSecret
-	SessionID string
-	Confirm   string // "delete" or "rotate"
+	Reveal         *webhookSecret
+	SessionID      string
+	PermissionETag string
+	Confirm        string // "delete" or "rotate"
 	// Sessions are the ones a hook can target, the current one first.
 	Sessions []daemon.Session
 	Hooks    []webhookEntry
@@ -38,6 +37,7 @@ type WebhooksPageModel struct {
 }
 
 type webhookEntry struct {
+	ETag     string
 	ID       string
 	Session  string
 	Name     string
@@ -53,12 +53,13 @@ type webhookEntry struct {
 type webhookSecret struct{ Hook, Session, Secret string }
 
 type webhooksLoadedMsg struct {
-	Err      error
-	Sessions []daemon.Session
-	Hooks    []webhookEntry
-	Gen      int
-	Agent    bool
-	Mounted  bool
+	PermissionETag string
+	Err            error
+	Sessions       []daemon.Session
+	Hooks          []webhookEntry
+	Gen            int
+	Agent          bool
+	Mounted        bool
 }
 
 type webhooksSavedMsg struct {
@@ -98,7 +99,7 @@ func (m WebhooksPageModel) loadCmd(gen int) tea.Cmd {
 				return webhooksLoadedMsg{Gen: gen, Err: errors.New("webhooks are off for this session; turn them on in /extensions")}
 			}
 		}
-		all, err := daemon.ListSessions(context.Background(), m.Conn)
+		all, err := daemon.ListAllSessions(context.Background(), m.Conn)
 		if err != nil {
 			return webhooksLoadedMsg{Gen: gen, Err: err}
 		}
@@ -110,20 +111,24 @@ func (m WebhooksPageModel) loadCmd(gen int) tea.Cmd {
 				sessions = append(sessions, s)
 			}
 		}
-		res, err := daemon.RunWebhook(context.Background(), m.Conn, m.SessionID, daemon.WebhookRequest{Action: daemon.WebhookList})
+		rows, err := daemon.ListWebhooks(context.Background(), m.Conn, "")
 		if err != nil {
 			return webhooksLoadedMsg{Gen: gen, Err: err}
 		}
-		agent := res.AgentManagement
-		hooks := make([]webhookEntry, len(res.Hooks))
-		for i, entry := range res.Hooks {
+		permission, err := daemon.GetWebhookPermission(context.Background(), m.Conn, m.SessionID)
+		if err != nil {
+			return webhooksLoadedMsg{Gen: gen, Err: err}
+		}
+		agent := permission.AgentManagement
+		hooks := make([]webhookEntry, len(rows))
+		for i, entry := range rows {
 			hook := entry.Hook
 			deferred := ""
 			if entry.Deferred != nil {
 				deferred = *entry.Deferred
 			}
 			hooks[i] = webhookEntry{
-				ID: hook.ID, Session: hook.Session, Name: hook.Name, URL: hook.URL, Address: hook.Address,
+				ETag: hook.ETag, ID: hook.ID, Session: hook.Session, Name: hook.Name, URL: hook.URL, Address: hook.Address,
 				Header: hook.Header, Prefix: hook.Prefix, Enabled: hook.Enabled,
 				Queued: entry.Queued, Deferred: deferred,
 			}
@@ -136,7 +141,7 @@ func (m WebhooksPageModel) loadCmd(gen int) tea.Cmd {
 			return len(sessions)
 		}
 		slices.SortStableFunc(hooks, func(a, b webhookEntry) int { return cmp.Compare(rank(a.Session), rank(b.Session)) })
-		return webhooksLoadedMsg{Sessions: sessions, Hooks: hooks, Agent: agent, Mounted: mounted, Gen: gen}
+		return webhooksLoadedMsg{Sessions: sessions, Hooks: hooks, Agent: agent, Mounted: mounted, PermissionETag: permission.ETag, Gen: gen}
 	}
 }
 
@@ -145,19 +150,43 @@ func (m WebhooksPageModel) loadCmd(gen int) tea.Cmd {
 func (m WebhooksPageModel) save(gen int, notice string, steps ...daemon.WebhookRequest) tea.Cmd {
 	return func() tea.Msg {
 		var reveal *webhookSecret
-		created := ""
+		created, etag := "", ""
 		for _, step := range steps {
 			if step.HookID == "" {
 				step.HookID = created
 			}
-			res, err := daemon.RunWebhook(context.Background(), m.Conn, m.SessionID, step)
+			if etag != "" && step.HookID == created {
+				step.ETag = etag
+			}
+			var res *daemon.WebhookResult
+			var err error
+			switch step.Action {
+			case daemon.WebhookCreate:
+				res, err = daemon.CreateWebhook(context.Background(), m.Conn, daemon.WebhookCreateRequest{SessionID: step.SessionID, Name: step.Name, Secret: step.Secret, Header: step.Header, Prefix: &step.Prefix})
+			case daemon.WebhookSignature:
+				res, err = daemon.EditWebhook(context.Background(), m.Conn, step.HookID, step.ETag, daemon.WebhookPatch{Header: &step.Header, Prefix: &step.Prefix})
+			case daemon.WebhookRotate:
+				res, err = daemon.RotateWebhookSecret(context.Background(), m.Conn, step.HookID, step.ETag, step.Secret)
+			case daemon.WebhookEnable, daemon.WebhookDisable:
+				enabled := step.Action == daemon.WebhookEnable
+				res, err = daemon.EditWebhook(context.Background(), m.Conn, step.HookID, step.ETag, daemon.WebhookPatch{Enabled: &enabled})
+			case daemon.WebhookDelete:
+				res, err = daemon.DeleteWebhook(context.Background(), m.Conn, step.HookID, step.ETag)
+			case daemon.WebhookAgentEnable, daemon.WebhookAgentDisable:
+				res, err = daemon.SetWebhookPermission(context.Background(), m.Conn, m.SessionID, step.ETag, step.Action == daemon.WebhookAgentEnable)
+			default:
+				err = errors.New("unknown webhook form action")
+			}
 			if err != nil {
 				// The hook exists with this secret even though a later step
 				// failed, so it still has to be shown.
 				return webhooksSavedMsg{Reveal: reveal, Gen: gen, Err: err}
 			}
+			if res.Message != "" {
+				notice = res.Message
+			}
 			if res.Hook != nil {
-				created = res.Hook.ID
+				created, etag = res.Hook.ID, res.Hook.ETag
 				if res.Secret != "" {
 					reveal = &webhookSecret{Hook: res.Hook.Name, Session: res.Hook.Session, Secret: res.Secret}
 				}
@@ -193,6 +222,17 @@ func sessionLabel(sessions []daemon.Session, id, current string) string {
 }
 
 func (m WebhooksPageModel) begin(notice string, steps ...daemon.WebhookRequest) (WebhooksPageModel, tea.Cmd) {
+	for i := range steps {
+		if steps[i].Action == daemon.WebhookAgentEnable || steps[i].Action == daemon.WebhookAgentDisable {
+			steps[i].ETag = m.PermissionETag
+		} else {
+			for _, hook := range m.Hooks {
+				if hook.ID == steps[i].HookID {
+					steps[i].ETag = hook.ETag
+				}
+			}
+		}
+	}
 	m.Error, m.Notice = "", ""
 	m.Saving = true
 	m.Generation = nextPageGeneration()
@@ -207,6 +247,7 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 		}
 		m.Loaded = true
 		m.Cursor = reselect(m.Cursor, m.Hooks, msg.Hooks, func(hook webhookEntry) string { return hook.ID })
+		m.PermissionETag = msg.PermissionETag
 		m.Sessions, m.Hooks, m.AgentManagement, m.Mounted = msg.Sessions, msg.Hooks, msg.Agent, msg.Mounted
 		return m, nil
 	case webhooksSavedMsg:
@@ -341,339 +382,4 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
-}
-
-func (m WebhooksPageModel) View() string {
-	width := max(1, m.Width)
-	rows := m.header("/webhooks", "all sessions")
-	if m.Loading && !m.Loaded {
-		rows = append(rows, DefaultStyles.Faint.Render("loading webhooks…"))
-		return strings.Join(rows, "\n")
-	}
-	if !m.Loaded {
-		return strings.Join(append(rows, "", keyHints(hint{"r", "retry"}, hint{"esc", "back"})), "\n")
-	}
-	// Give the confirmation the screen instead of truncating its consequence or target.
-	if m.Confirm != "" && m.selected() != nil {
-		question := "Its URL will stop working; accepted deliveries stay in the inbox. Delete " + m.selected().Name + "?"
-		if m.Confirm == "rotate" {
-			question = "The sender must use the new secret. Replace the secret for " + m.selected().Name + "?"
-		}
-		rows = append(rows, "")
-		for line := range strings.SplitSeq(ansi.Wrap(question, width, " "), "\n") {
-			rows = append(rows, DefaultStyles.Warning.Render(line))
-		}
-		rows = append(rows, keyHints(hint{"enter", "confirm"}, hint{"any other key", "cancels"}))
-		return m.fit(rows)
-	}
-	if !m.Mounted {
-		rows = append(rows, DefaultStyles.Warning.Render("Webhooks are not listening")+DefaultStyles.Faint.Render(" · enable webhooks globally in /extensions to accept deliveries"))
-	}
-	agent := DefaultStyles.Faint.Render("off") + DefaultStyles.Faint.Render(" · this session's agent can't touch webhooks")
-	if m.AgentManagement {
-		agent = DefaultStyles.Success.Render("on ") + DefaultStyles.Faint.Render(" · this session's agent can add, rotate and delete its own hooks")
-	}
-	rows = append(rows, ansi.Truncate(DefaultStyles.Muted.Render("agent access ")+agent, width, "…"), "")
-
-	if len(m.Hooks) == 0 {
-		rows = append(rows, DefaultStyles.Faint.Render("No webhooks yet. Add one to wake a session with a signed request."))
-	}
-	nameWidth := 4
-	for _, hook := range m.Hooks {
-		nameWidth = max(nameWidth, ansi.StringWidth(hook.Name))
-	}
-	// Hooks sit under the session they wake; the cursor line is kept in view.
-	counts := map[string]int{}
-	for _, hook := range m.Hooks {
-		counts[hook.Session]++
-	}
-	var list []string
-	cursorLine := 0
-	for i, hook := range m.Hooks {
-		if i == 0 || hook.Session != m.Hooks[i-1].Session {
-			if i > 0 {
-				list = append(list, "")
-			}
-			list = append(list, sectionRule(ansi.Truncate(sessionLabel(m.Sessions, hook.Session, m.SessionID), max(8, width-12), "…"), counts[hook.Session], width))
-		}
-		var label string
-		if hook.Enabled {
-			label = DefaultStyles.Success.Render("on ")
-		} else {
-			label = DefaultStyles.Faint.Render("off")
-		}
-		row := label + "  " + padRight(hook.Name, nameWidth+1) + DefaultStyles.Faint.Render(hook.URL)
-		if hook.Queued > 0 {
-			row += DefaultStyles.Decor.Render(" · ") + DefaultStyles.Warning.Render(fmt.Sprintf("%d queued", hook.Queued))
-		}
-		if i == m.Cursor {
-			cursorLine = len(list)
-		}
-		list = append(list, listRow(i == m.Cursor, row, width))
-	}
-	rows = append(rows, scrolled(list, cursorLine, max(2, m.Height-17))...)
-
-	switch {
-	case m.Reveal != nil:
-		rows = append(rows, "", ansi.Truncate(DefaultStyles.Bold.Render("signing secret for "+m.Reveal.Hook)+DefaultStyles.Faint.Render(" → "+sessionLabel(m.Sessions, m.Reveal.Session, m.SessionID)+" · shown only once; copy it now"), width, "…"))
-		rows = append(rows, "  "+DefaultStyles.Prompt.Render(m.Reveal.Secret), "")
-		rows = append(rows, keyHints(hint{"c", "copy"}, hint{"enter", "done"}))
-	case m.Form != nil:
-		rows = append(rows, "")
-		rows = append(rows, m.Form.view(width)...)
-		if m.Saving {
-			rows = append(rows, DefaultStyles.Faint.Render("saving…"))
-		}
-	case m.Saving:
-		rows = append(rows, "", DefaultStyles.Faint.Render("saving…"))
-	default:
-		if hook := m.selected(); hook != nil {
-			rows = append(rows, "")
-			rows = append(rows, m.detail(*hook, width)...)
-		}
-		browse := []hint{{"r", "refresh"}, {"esc", "back"}}
-		keys := []hint{{"n", "add hook"}, {"a", "agent access"}}
-		if len(m.Hooks) > 0 {
-			browse = []hint{{"↑↓", "select"}, {"space", "on/off"}, {"y", "copy url"}, {"r", "refresh"}, {"esc", "back"}}
-			keys = []hint{{"n", "add hook"}, {"enter", "edit"}, {"k", "new secret"}, {"d", "delete"}, {"a", "agent access"}}
-		}
-		rows = append(rows, "", keyHints(browse...), keyHints(keys...))
-	}
-	return m.fit(rows)
-}
-
-// detail explains the selected hook: where to send, how to sign, and what is
-// waiting for the session.
-func (m WebhooksPageModel) detail(hook webhookEntry, width int) []string {
-	field := func(label, value string) string {
-		return ansi.Truncate(DefaultStyles.Muted.Render(padRight(label, 11))+value, width, "…")
-	}
-	rows := []string{
-		field("wakes", sessionLabel(m.Sessions, hook.Session, m.SessionID)),
-		field("url", "POST "+cmp.Or(hook.Address, hook.URL)),
-		field("signature", hook.Header+": "+hook.Prefix+DefaultStyles.Faint.Render("<hex HMAC-SHA256 of the body>")),
-	}
-	inbox := DefaultStyles.Faint.Render("empty")
-	if hook.Queued > 0 {
-		inbox = DefaultStyles.Warning.Render(fmt.Sprintf("%d waiting for the session", hook.Queued))
-		if hook.Deferred != "" {
-			inbox += DefaultStyles.Faint.Render(" · last attempt: " + hook.Deferred)
-		}
-	}
-	if !hook.Enabled {
-		inbox += DefaultStyles.Faint.Render(" · off, new deliveries answer 404")
-	}
-	return append(rows, field("inbox", inbox))
-}
-
-// webhookForm adds a hook or edits one on a single screen: the session it
-// wakes, its name, signing secret, and the header and prefix its sender signs
-// with. The session and name are fixed once the hook exists.
-type webhookForm struct {
-	form
-	// Editing is the hook being edited; nil for a new hook.
-	Editing         *webhookEntry
-	Current, Chosen string
-	// Sessions are offered in order; Chosen starts at Current, the session
-	// the screen was opened from.
-	Sessions []daemon.Session
-}
-
-const (
-	hookFieldSession = "session"
-	hookFieldName    = "name"
-	hookFieldSecret  = "secret"
-	hookFieldHeader  = "header"
-	hookFieldPrefix  = "prefix"
-)
-
-var hookFields = []string{hookFieldSession, hookFieldName, hookFieldSecret, hookFieldHeader, hookFieldPrefix}
-
-// sessionChoices is how many matching sessions the picker shows at once.
-const sessionChoices = 5
-
-var (
-	hookName   = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-	hookHeader = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
-)
-
-func newWebhookForm(editing *webhookEntry, sessions []daemon.Session, current string) *webhookForm {
-	f := &webhookForm{form: newForm(hookFields, hookFieldSecret), Sessions: sessions, Current: current, Chosen: current}
-	f.Inputs[hookFieldSession].Placeholder = "type to filter"
-	f.Inputs[hookFieldName].Placeholder = "github-deploys"
-	f.Inputs[hookFieldHeader].SetValue(defaultSignatureHeader)
-	f.Inputs[hookFieldPrefix].SetValue(defaultSignaturePrefix)
-	f.Inputs[hookFieldSecret].Placeholder = "leave blank to generate one"
-	f.Focus = 1 // the session already defaults to this one
-	if editing != nil {
-		hook := *editing
-		f.Editing, f.Chosen, f.Focus = &hook, hook.Session, 2
-		f.Inputs[hookFieldName].SetValue(hook.Name)
-		f.Inputs[hookFieldHeader].SetValue(hook.Header)
-		f.Inputs[hookFieldPrefix].SetValue(hook.Prefix)
-		f.Inputs[hookFieldSecret].Placeholder = "stored · leave blank to keep it"
-	}
-	f.focus(f.current())
-	return f
-}
-
-func (f *webhookForm) current() string { return hookFields[f.Focus] }
-
-// matches are the sessions the picker's filter leaves, in order.
-func (f *webhookForm) matches() []daemon.Session {
-	query := strings.ToLower(strings.TrimSpace(f.Inputs[hookFieldSession].Value()))
-	var out []daemon.Session
-	for _, s := range f.Sessions {
-		if query == "" || strings.Contains(strings.ToLower(sessionTitle(s)+" "+homePath(s.Workspace)+" "+s.ID), query) {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-func (f *webhookForm) chosenIndex(matches []daemon.Session) int {
-	return slices.IndexFunc(matches, func(s daemon.Session) bool { return s.ID == f.Chosen })
-}
-
-// update handles one key or paste; submit reports that the form should be saved.
-func (f *webhookForm) update(msg tea.Msg) (submit bool, cmd tea.Cmd) {
-	firstField := 0
-	if f.Editing != nil {
-		firstField = 2
-	}
-	if submit, handled := f.key(msg, hookFields, firstField); handled {
-		return submit, nil
-	}
-	if key, ok := msg.(tea.KeyPressMsg); ok {
-		if f.current() == hookFieldSession && (key.String() == "left" || key.String() == "right") {
-			if matches := f.matches(); len(matches) > 0 {
-				i := f.chosenIndex(matches)
-				if i < 0 {
-					i = 0
-				} else {
-					step := 1
-					if key.String() == "left" {
-						step = -1
-					}
-					i = (i + step + len(matches)) % len(matches)
-				}
-				f.Chosen = matches[i].ID
-				return false, nil
-			}
-		}
-	}
-	input := f.Inputs[f.current()]
-	next, cmd := input.Update(msg)
-	*input = next
-	if f.current() == hookFieldSession {
-		if matches := f.matches(); len(matches) > 0 && f.chosenIndex(matches) < 0 {
-			f.Chosen = matches[0].ID
-		}
-	}
-	return false, cmd
-}
-
-// steps turns the form into /webhooks calls, after checking what the daemon
-// would otherwise reject one step in.
-func (f *webhookForm) steps() ([]daemon.WebhookRequest, string, error) {
-	name, secret, header, prefix := f.value(hookFieldName), f.value(hookFieldSecret), f.value(hookFieldHeader), f.value(hookFieldPrefix)
-	switch {
-	case f.Editing == nil && f.Chosen == "":
-		return nil, "", errors.New("choose the session this webhook will wake")
-	case f.Editing == nil && !hookName.MatchString(name):
-		return nil, "", errors.New("use 1–64 letters, digits, underscores, or hyphens for the webhook name")
-	case secret != "" && (len(secret) < 16 || len(secret) > 4096):
-		if f.Editing != nil {
-			return nil, "", errors.New("use 16–4096 bytes for the secret, or leave it blank to keep the existing secret")
-		}
-		return nil, "", errors.New("use 16–4096 bytes for the secret, or leave it blank to generate one")
-	case strings.ContainsAny(secret, " \t"):
-		return nil, "", errors.New("remove spaces from the secret")
-	case !hookHeader.MatchString(header):
-		return nil, "", errors.New("use 1–64 letters, digits, or hyphens for the signature header")
-	case len(prefix) > 32 || strings.ContainsAny(prefix, " \t"):
-		return nil, "", errors.New("use at most 32 characters without spaces for the signature prefix")
-	}
-	if f.Editing == nil {
-		steps := []daemon.WebhookRequest{{Action: daemon.WebhookCreate, SessionID: f.Chosen, Name: name, Secret: secret}}
-		if !strings.EqualFold(header, defaultSignatureHeader) || prefix != defaultSignaturePrefix {
-			steps = append(steps, daemon.WebhookRequest{Action: daemon.WebhookSignature, Header: header, Prefix: prefix})
-		}
-		return steps, "added " + name + " · wakes " + sessionLabel(f.Sessions, f.Chosen, f.Current), nil
-	}
-	var steps []daemon.WebhookRequest
-	if !strings.EqualFold(header, f.Editing.Header) || prefix != f.Editing.Prefix {
-		steps = append(steps, daemon.WebhookRequest{Action: daemon.WebhookSignature, HookID: f.Editing.ID, Header: header, Prefix: prefix})
-	}
-	if secret != "" {
-		steps = append(steps, daemon.WebhookRequest{Action: daemon.WebhookRotate, HookID: f.Editing.ID, Secret: secret})
-	}
-	return steps, "saved " + f.Editing.Name, nil
-}
-
-func (f *webhookForm) view(width int) []string {
-	title := "add webhook"
-	if f.Editing != nil {
-		title = "edit " + f.Editing.Name
-	}
-	f.fit(width - 14)
-	rows := []string{DefaultStyles.Bold.Render(title)}
-	indent := strings.Repeat(" ", 13)
-	for i, key := range hookFields {
-		value := f.Inputs[key].View()
-		switch {
-		case key == hookFieldSession && f.Editing != nil:
-			value = DefaultStyles.Faint.Render(sessionLabel(f.Sessions, f.Chosen, f.Current))
-		case key == hookFieldSession && i != f.Focus:
-			value = sessionLabel(f.Sessions, f.Chosen, f.Current)
-		case key == hookFieldName && f.Editing != nil:
-			value = DefaultStyles.Faint.Render(f.Editing.Name)
-		}
-		rows = append(rows, formRow(i == f.Focus, key, 11, value, width))
-		if key == hookFieldSession && i == f.Focus {
-			rows = append(rows, f.pickerRows(indent, width)...)
-		}
-	}
-	var own []hint
-	var note string
-	switch f.current() {
-	case hookFieldSession:
-		note, own = "which session deliveries wake", []hint{{"←→", "choose"}}
-	case hookFieldName:
-		note = "letters, digits, _ or -"
-	case hookFieldSecret:
-		note = "16+ bytes from the sender, or blank to generate one"
-		if f.Editing != nil {
-			note = "enter a new secret to replace the stored one"
-		}
-	case hookFieldHeader:
-		note = "the header the sender signs with · GitHub uses x-hub-signature-256"
-	case hookFieldPrefix:
-		note = "text before the hex digest · blank for none"
-	}
-	return append(rows, "", formFooter(note, width, own...))
-}
-
-// pickerRows lists the matching sessions around the chosen one.
-func (f *webhookForm) pickerRows(indent string, width int) []string {
-	matches := f.matches()
-	if len(matches) == 0 {
-		return []string{indent + DefaultStyles.Faint.Render("No sessions match. Try another search.")}
-	}
-	chosen := max(0, f.chosenIndex(matches))
-	start := max(0, min(chosen-sessionChoices/2, len(matches)-sessionChoices))
-	var rows []string
-	w := width - len(indent)
-	for i := start; i < min(len(matches), start+sessionChoices); i++ {
-		label := sessionLabel(f.Sessions, matches[i].ID, f.Current)
-		if i == chosen {
-			rows = append(rows, indent+selectedLine(ansi.Truncate(selectBar()+" "+label, w, "…"), w))
-		} else {
-			rows = append(rows, indent+DefaultStyles.Faint.Render(ansi.Truncate("  "+label, w, "…")))
-		}
-	}
-	if more := len(matches) - sessionChoices; more > 0 {
-		rows = append(rows, indent+DefaultStyles.Faint.Render(fmt.Sprintf("  %d more · type to filter", more)))
-	}
-	return rows
 }

@@ -1,5 +1,6 @@
 //// Instruction selection, prompt precedence, and rendering over native file IO.
 
+import albedo/daemon/store
 import albedo/harness/capabilities
 import albedo/harness/project_files
 import albedo/harness/settings
@@ -90,15 +91,7 @@ pub fn home() -> String
 pub fn load_selected(
   workspace: String,
   home: String,
-  session: String,
-) -> Result(#(String, List(String)), String) {
-  load_with_selection(workspace, home, Some(session))
-}
-
-fn load_with_selection(
-  workspace: String,
-  home: String,
-  session: Option(String),
+  scope: #(store.Store, String),
 ) -> Result(#(String, List(String)), String) {
   let #(project, skipped) = project(workspace)
   use files <- result.try(discover_instructions(project, home))
@@ -106,10 +99,10 @@ fn load_with_selection(
     // An empty selection must not read or validate capability preferences.
     [] -> Ok(#("", skipped))
     _ -> {
-      use preferences <- result.try(case session {
-        None -> capabilities.load("", None)
-        Some(_) -> capabilities.load(settings.home(), session)
-      })
+      use preferences <- result.try(capabilities.load(
+        settings.home(),
+        Some(scope),
+      ))
       use selected <- result.try(select(ordered(files), preferences))
       use #(loaded, warnings) <- result.try(read(selected, Instructions))
       Ok(#(render(loaded), list.append(skipped, warnings)))

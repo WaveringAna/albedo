@@ -17,6 +17,11 @@ pub type Location {
   Remote(user: Option(String), host: String, path: String)
 }
 
+pub type Failure {
+  Invalid(detail: String)
+  Unavailable(detail: String)
+}
+
 /// A workspace as a client or the store spells it. Anything starting with `/`
 /// or `~` (the daemon's home) is local and kept verbatim; existence is the
 /// caller's question.
@@ -120,21 +125,22 @@ fn normalise(path: String) -> String {
 /// local directory, or a remote location. A remote `~` is resolved against
 /// that host's home, which connects to it (bounded); an absolute remote path
 /// is taken as it is.
-pub fn workspace(text: String) -> Result(Location, String) {
+pub fn workspace(text: String) -> Result(Location, Failure) {
   use text <- result.try(remote_home(text))
-  use location <- result.try(parse(text))
+  use location <- result.try(parse(text) |> result.map_error(Invalid))
   case location {
     Local(path) ->
       case is_directory(path) {
         True -> Ok(location)
-        False -> Error("workspace must be an existing absolute directory")
+        False ->
+          Error(Invalid("workspace must be an existing absolute directory"))
       }
     Remote(..) -> Ok(location)
   }
 }
 
 /// `host:~/x` with the host's home in place of `~`; anything else as it is.
-fn remote_home(text: String) -> Result(String, String) {
+fn remote_home(text: String) -> Result(String, Failure) {
   case text, string.split_once(text, ":~") {
     "/" <> _, _ | "~" <> _, _ | _, Error(_) -> Ok(text)
     _, Ok(#(head, rest)) ->
@@ -143,14 +149,20 @@ fn remote_home(text: String) -> Result(String, String) {
         False, "" | False, "/" <> _ -> {
           // Parse the head with a placeholder path, so a malformed host is
           // refused before anything connects to it.
-          use location <- result.try(parse(head <> ":/"))
-          use target <- result.try(
-            ssh_target(location) |> result.replace_error("not a remote host"),
+          use location <- result.try(
+            parse(head <> ":/") |> result.map_error(Invalid),
           )
-          use home <- result.try(ssh.home(target))
+          use target <- result.try(
+            ssh_target(location)
+            |> result.replace_error(Invalid("not a remote host")),
+          )
+          use home <- result.try(
+            ssh.home(target) |> result.map_error(Unavailable),
+          )
           Ok(head <> ":" <> home <> rest)
         }
-        False, _ -> Error("only ~ and ~/path can be resolved on a remote host")
+        False, _ ->
+          Error(Invalid("only ~ and ~/path can be resolved on a remote host"))
       }
   }
 }

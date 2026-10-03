@@ -14,7 +14,7 @@ and normalised. `route` is list, repo, preview or project, or exists, which
 answers `directory` alone. `tracked` names, per kind, the planned command
 that lists a preview's tracked files and the separator its output uses.
 
-Snapshot: `{directory, entries: {dir: [[name, dir, modified]]}, exists:
+Snapshot: `{directory, entries: {dir: [[name, dir, modified, symlink]]}, exists:
 [path], outputs: {key: stdout}, sizes: {path: bytes}, files: {relative:
 base64}}`. An output's key is its program and arguments joined by NUL; only
 commands that exit 0 within the deadline answer.
@@ -57,11 +57,15 @@ def entries(directory: str) -> list[list[object]]:
         return []
     listed: list[list[object]] = []
     for name in filter(shown, names):
+        path = child(directory, name)
+        symlink = os.path.islink(path)
         try:
-            info = os.stat(child(directory, name))
-            listed.append([name, stat.S_ISDIR(info.st_mode), int(info.st_mtime)])
+            info = os.stat(path)
+            listed.append(
+                [name, stat.S_ISDIR(info.st_mode), int(info.st_mtime), symlink]
+            )
         except OSError:
-            listed.append([name, False, 0])
+            listed.append([name, False, 0, symlink])
     return listed
 
 
@@ -159,7 +163,7 @@ def gather(request: dict) -> dict[str, object]:
     listed = {directory: entries(directory)}
     snapshot.update(entries=listed, exists=exists)
     if route == "list":
-        for name, is_directory, _ in listed[directory]:
+        for name, is_directory, _, _symlink in listed[directory]:
             if is_directory:
                 marks(child(directory, str(name)), exists)
         return snapshot
@@ -167,7 +171,7 @@ def gather(request: dict) -> dict[str, object]:
     if route == "preview":
         children = [
             child(directory, str(name))
-            for name, is_directory, _ in listed[directory]
+            for name, is_directory, _, _symlink in listed[directory]
             if is_directory and not str(name).startswith(".")
         ]
         for path in children[:SUBDIRECTORIES]:

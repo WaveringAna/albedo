@@ -6,7 +6,6 @@
 package e2e
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -15,7 +14,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +33,7 @@ import (
 // suite is the process-wide fixture: one daemon, one provider server, one
 // hermetic home. A restart scenario must update daemonPID.
 var suite struct {
+	contract  *wireContract
 	conn      *daemon.Connection
 	provider  *fakeProvider
 	root      string // the albedo repository
@@ -63,6 +62,14 @@ func TestMain(m *testing.M) {
 	}
 	code := m.Run()
 	report, ok := shutdown()
+	suite.contract.mu.Lock()
+	if failures := suite.contract.failures; len(failures) != 0 {
+		for _, failure := range failures {
+			fmt.Fprintln(os.Stderr, "OpenAPI:", failure)
+		}
+		code = 1
+	}
+	suite.contract.mu.Unlock()
 	fmt.Printf("go e2e suite: %s, %s\n", time.Since(started).Round(time.Millisecond), report)
 	if !ok {
 		code = 1
@@ -74,6 +81,10 @@ func bootSuite() (func() (string, bool), error) {
 	root, err := repoRoot()
 	if err != nil {
 		return nil, err
+	}
+	suite.contract, err = loadWireContract(root)
+	if err != nil {
+		return nil, fmt.Errorf("loading OpenAPI contract: %w", err)
 	}
 	temp, err := os.MkdirTemp("", "albedo-go-e2e-")
 	if err != nil {
@@ -111,10 +122,13 @@ func bootSuite() (func() (string, bool), error) {
 	suite.root, suite.home = root, home
 	suite.env = hermeticEnv(root, home, userHome, scratch, launcher, sshBin)
 	suite.provider = newFakeProvider()
-	// A models.dev refresh or the cache-TTL table's remote copy would reach
-	// the network from a test.
-	if writeErr := os.WriteFile(filepath.Join(home, "extensions.json"),
-		[]byte(`{"models": {"refreshHours": 0}, "cacheTtl": {"url": null}}`), 0o600); writeErr != nil {
+	// Both explicit and background catalogue refreshes stay within the
+	// fixture. An empty catalogue leaves native model inference observable.
+	extensionConfig, marshalErr := json.Marshal(map[string]any{"models": map[string]any{"refreshHours": 0, "url": suite.provider.server.URL + "/models-dev"}, "cacheTtl": map[string]any{"url": nil}})
+	if marshalErr != nil {
+		return teardown, marshalErr
+	}
+	if writeErr := os.WriteFile(filepath.Join(home, "extensions.json"), extensionConfig, 0o600); writeErr != nil {
 		return teardown, writeErr
 	}
 	if writeErr := os.WriteFile(filepath.Join(home, "models.json"), []byte(`{}`), 0o600); writeErr != nil {
@@ -135,6 +149,8 @@ func bootSuite() (func() (string, bool), error) {
 		return teardown, err
 	}
 	suite.daemonPID = snap.Pid
+	client := suite.conn.HTTPClient()
+	client.Transport = contractTransport{upstream: client.Transport, contract: suite.contract}
 	return teardown, nil
 }
 
@@ -369,6 +385,9 @@ func newFakeProvider() *fakeProvider {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/t/", p.serve)
+	mux.HandleFunc("/models-dev", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	})
 	p.server = httptest.NewServer(mux)
 	return p
 }
@@ -386,7 +405,7 @@ func (p *fakeProvider) addProfile(name string, reply func(map[string]any) string
 	p.byName[name] = route
 	p.byRoute[segment] = route
 	p.mu.Unlock()
-	return daemon.SaveProvider(context.Background(), suite.conn, name, config.Settings{
+	return saveAndSelectProvider(context.Background(), suite.conn, name, config.Settings{
 		Extension: "openai",
 		BaseURL:   p.server.URL + "/t/" + segment,
 		APIKey:    "fixture-key",
@@ -565,48 +584,18 @@ func waitIdle(t *testing.T, session, profile string, wantRequests int) {
 	}
 }
 
-// streamSnapshot reads the first non-empty page of a session's event stream.
-func streamSnapshot(t *testing.T, session string) []map[string]any {
+// durableHistorySnapshot reads the daemon's canonical durable history resource.
+func durableHistorySnapshot(t *testing.T, session string) []map[string]any {
 	t.Helper()
-	connection := conn(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		connection.BaseURL()+"/sessions/"+url.PathEscape(session)+"/stream", nil)
+	page, err := daemon.NewChatClient(conn(t), session).History(t.Context(), 0, 200)
 	if err != nil {
-		t.Fatalf("stream request: %v", err)
+		t.Fatal(err)
 	}
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("Authorization", "Bearer "+connection.Token())
-	res, err := connection.HTTPClient().Do(req)
-	if err != nil {
-		t.Fatalf("stream: %v", err)
+	events := []map[string]any{}
+	for _, event := range page.Events {
+		events = append(events, map[string]any{"type": string(event.Type), "text": event.Text})
 	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("stream: %s", res.Status)
-	}
-	scanner := bufio.NewScanner(res.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		var page struct {
-			Events []map[string]any `json:"events"`
-		}
-		if json.Unmarshal([]byte(line[len("data: "):]), &page) != nil {
-			continue
-		}
-		if len(page.Events) > 0 {
-			return page.Events
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatalf("read stream of %s: %v", session, err)
-	}
-	t.Fatalf("stream of %s produced no event page", session)
-	return nil
+	return events
 }
 
 // eventText collects the text of every event of one kind.
@@ -665,4 +654,59 @@ func chunks(text string, size int) []string {
 		text = text[size:]
 	}
 	return append(parts, text)
+}
+
+// A test profile edit observes its validator under the same lock as its write.
+// Concurrent test profiles remain independent without silently rebasing intent.
+var sharedSettingsMu sync.Mutex
+
+func saveAndSelectProvider(ctx context.Context, connection *daemon.Connection, name string, profile config.Settings) error {
+	sharedSettingsMu.Lock()
+	defer sharedSettingsMu.Unlock()
+	settings, err := daemon.GetSettings(ctx, connection)
+	if err != nil {
+		return err
+	}
+	return daemon.SaveAndSelectProvider(ctx, connection, name, profile, settings.ETags["providers"])
+}
+func updateMCP(ctx context.Context, connection *daemon.Connection, session string, request daemon.MCPUpdateRequest) (daemon.ReloadResult, error) {
+	sharedSettingsMu.Lock()
+	defer sharedSettingsMu.Unlock()
+	settings, err := daemon.GetSettings(ctx, connection)
+	if err != nil {
+		return daemon.ReloadResult{}, err
+	}
+	request.ETag = settings.ETags["mcp"]
+	request.StoredSecrets = settings.Credentials.MCP[request.Name]
+	return daemon.SaveMCP(ctx, connection, session, request)
+}
+func enableExtension(t *testing.T, connection *daemon.Connection, session, name string) {
+	t.Helper()
+	sharedSettingsMu.Lock()
+	defer sharedSettingsMu.Unlock()
+	settings, err := daemon.GetSettings(t.Context(), connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := daemon.SelectExtension(t.Context(), connection, session, daemon.ExtensionSelectionRequest{Name: name, Scope: "global", Enabled: new(true), ETag: settings.ETags["extensions"]}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := daemon.GetSession(t.Context(), connection, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := daemon.SelectExtension(t.Context(), connection, session, daemon.ExtensionSelectionRequest{Name: name, Scope: "session", Enabled: new(true), ETag: current.ETag}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := daemon.ReloadSession(t.Context(), connection, session, daemon.ReloadRequest{Target: "both"}); err != nil {
+		t.Fatal(err)
+	}
+}
+func sessionCondition(t *testing.T, connection *daemon.Connection, id string) daemon.SessionCondition {
+	t.Helper()
+	current, err := daemon.GetSession(t.Context(), connection, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return daemon.SessionCondition{ETag: current.ETag, FamilyRevision: current.FamilyRevision}
 }

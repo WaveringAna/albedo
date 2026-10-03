@@ -4,6 +4,7 @@
 //// transcript row seq to an LCM node tool.
 
 import albedo/daemon/conversation
+import albedo/daemon/family
 import albedo/harness/extensions
 import albedo/harness/extensions/lcm/memory as lcm_memory
 import albedo/harness/runtime
@@ -22,6 +23,7 @@ fn host() -> #(runtime.Runtime, runtime.Session) {
     )
   let ledger = runtime.ledger(host)
   let assert Ok(_) = conversation.initialise(ledger)
+  let assert Ok(_) = family.initialise(ledger)
   let assert Ok(_) =
     conversation.create(
       ledger,

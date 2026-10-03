@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -18,15 +19,15 @@ import (
 	"albedo/cli/internal/app"
 	"albedo/cli/internal/daemon"
 	"albedo/cli/internal/storage"
+	"albedo/cli/internal/testwire"
 )
 
 func TestStorageCommandKeepsOnlineFailuresWithoutLocalFallback(t *testing.T) {
 	for _, scenario := range []struct {
-		name               string
-		capabilities, body string
+		name, body string
 	}{
-		{name: "unsupported", capabilities: `[]`},
-		{name: "malformed", capabilities: `["storage_report"]`, body: `{"database":12}`},
+		{name: "unsupported"},
+		{name: "malformed", body: `{"database":12}`},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			home := filepath.Join(t.TempDir(), "unreadable")
@@ -35,15 +36,30 @@ func TestStorageCommandKeepsOnlineFailuresWithoutLocalFallback(t *testing.T) {
 			}
 			reportCalls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/health" {
-					_, _ = w.Write([]byte(`{"ok":true,"version":2,"capabilities":` + scenario.capabilities + `}`))
+				if r.URL.Path == "/server" {
+					var resource map[string]any
+					_ = json.Unmarshal([]byte(testwire.Server), &resource)
+					capabilities := resource["capabilities"].(map[string]any)
+					delete(capabilities, "storage_report")
+					if scenario.name != "unsupported" {
+						capabilities["storage_report"] = 1
+					}
+					_ = json.NewEncoder(w).Encode(resource)
 					return
 				}
 				reportCalls++
+				if scenario.name == "unsupported" {
+					w.WriteHeader(404)
+					_, _ = w.Write([]byte(`{"code":"not_found","detail":"Storage is unavailable"}`))
+					return
+				}
 				_, _ = w.Write([]byte(scenario.body))
 			}))
 			defer server.Close()
-			conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
+			conn, attachErr := daemon.Attach(t.Context(), daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "token"}, nil)
+			if attachErr != nil {
+				t.Fatal(attachErr)
+			}
 			defer conn.HTTPClient().CloseIdleConnections()
 			application := &app.Service{Connect: func(context.Context) (*daemon.Connection, error) { t.Fatal("unexpected launch"); return nil, nil }, Existing: func(context.Context) (*daemon.Connection, error) { return conn, nil }}
 			var output bytes.Buffer
@@ -71,15 +87,18 @@ func TestStorageCommandKeepsOnlineFailuresWithoutLocalFallback(t *testing.T) {
 func TestStorageCommandCancellationDoesNotInspectLocalStorage(t *testing.T) {
 	started := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health" {
-			_, _ = w.Write([]byte(`{"ok":true,"version":2,"capabilities":["storage_report"]}`))
+		if r.URL.Path == "/server" {
+			_, _ = w.Write([]byte(testwire.Server))
 			return
 		}
 		close(started)
 		<-r.Context().Done()
 	}))
 	defer server.Close()
-	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
+	conn, attachErr := daemon.Attach(t.Context(), daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "token"}, nil)
+	if attachErr != nil {
+		t.Fatal(attachErr)
+	}
 	defer conn.HTTPClient().CloseIdleConnections()
 	home := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(home, []byte("unreadable storage"), 0600); err != nil {

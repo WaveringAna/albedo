@@ -52,4 +52,4 @@ Each cadence is asserted as the interval between one account's consecutive readi
 
 ## source references
 
-`albedo/daemon/quota.gleam` owns the poller, the table, and the read path. The poller takes its fetch function as a parameter, so tests can drive it against a fake. The per-provider account listing lives with each provider's credentials: `albedo_claude_auth:accounts/1`, `albedo_openai_auth:accounts/1`, and `albedo_antigravity:accounts/1`. Startup wiring is in `albedo/daemon/server.gleam`: the table in `prepare_storage`, the poller under the daemon supervisor, and the route among the daemon's own.
+`albedo/daemon/quota.gleam` owns the poller, the table, and the read path. The poller takes its fetch function as a parameter, so tests can drive it against a fake. The per-provider account listing lives with each provider's credentials: `albedo_claude_auth:accounts/1`, `albedo_openai_auth:accounts/1`, and `albedo_antigravity:accounts/1`. `albedo/daemon/registry.gleam` initializes the table in `prepare_storage`. `albedo/daemon/server.gleam` starts the poller under the daemon supervisor and exposes its route.

@@ -2,7 +2,7 @@
 
 -include_lib("kernel/include/file.hrl").
 
--export([home/0, builtin_root/0, catalog/3, discover/3, activate_selected/1, list_selected/1, read_selected/4, xml_escape/1]).
+-export([home/0, builtin_root/0, catalog/3, discover/3, inputs/3, activate_selected/1, list_selected/1, read_selected/4, xml_escape/1]).
 
 -define(MAX_SKILLS, 128).
 -define(MAX_DIAGNOSTICS, 64).
@@ -57,6 +57,43 @@ catalog(Workspace, Home, Builtin) ->
         Error -> Error
     end catch
         _:_ -> {error, <<"skill catalog changed during discovery; retry loading skills">>}
+    end.
+
+%% Detect source changes without parsing YAML or reconstructing candidate rows.
+%% Hash contents as well as identity to detect same-length in-place edits.
+inputs(Workspace, Home, Builtin) ->
+    Roots = roots(text_list(Workspace), text_list(Home))
+        ++ builtin_roots(text_list(Builtin)),
+    {Sources, _Count} = input_roots(Roots, [], 0),
+    Sources.
+
+input_roots([], Sources, Count) -> {lists:reverse(Sources), Count};
+input_roots([Root | Rest], Sources, Count) when Count >= ?MAX_SKILLS ->
+    input_roots(Rest, [{Root, limited} | Sources], Count);
+input_roots([Root | Rest], Sources, Count) ->
+    case root_entries(Root) of
+        {ok, Lexical, Entries} ->
+            {Next, Number} = input_entries(Entries, Lexical, Sources, Count),
+            input_roots(Rest, Next, Number);
+        Other -> input_roots(Rest, [{Root, Other} | Sources], Count)
+    end.
+
+input_entries([], _Root, Sources, Count) -> {Sources, Count};
+input_entries(_Entries, Root, Sources, Count) when Count >= ?MAX_SKILLS ->
+    {[{Root, limited} | Sources], Count};
+input_entries([Entry | Rest], Root, Sources, Count) ->
+    Path = filename:join(Root, Entry),
+    case file:read_link_info(Path) of
+        {ok, #file_info{type = Type}} when Type =:= directory; Type =:= symlink ->
+            case file:read_file_info(Path) of
+                {ok, #file_info{type = directory}} ->
+                    Fingerprint = bounded_fingerprint(filename:join(Path, "SKILL.md")),
+                    input_entries(Rest, Root, [{Path, Fingerprint} | Sources], Count + 1);
+                {ok, _} -> input_entries(Rest, Root, Sources, Count);
+                Error -> input_entries(Rest, Root, [{Path, Error} | Sources], Count + 1)
+            end;
+        {ok, _} -> input_entries(Rest, Root, Sources, Count);
+        Error -> input_entries(Rest, Root, [{Path, Error} | Sources], Count + 1)
     end.
 
 discover(Workspace, Home, Builtin) ->

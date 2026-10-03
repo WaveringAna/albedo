@@ -19,16 +19,16 @@ func TestStopDaemonDoesNotRecoverAuthenticationRefusal(t *testing.T) {
 	var shutdowns, healthProbes atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/shutdown":
+		case "/server/shutdown":
 			shutdowns.Add(1)
 			if request.Method != http.MethodPost || request.Header.Get("Authorization") != "Bearer old" {
 				t.Errorf("unexpected shutdown attempt: %s %q", request.Method, request.Header.Get("Authorization"))
 			}
 			writer.WriteHeader(http.StatusForbidden)
-			_, _ = writer.Write([]byte(`{"code":"authentication_required","error":"invalid bearer"}`))
-		case "/health":
+			_, _ = writer.Write([]byte(`{"code":"authentication_required","detail":"invalid bearer"}`))
+		case "/server":
 			healthProbes.Add(1)
-			_, _ = writer.Write([]byte(`{"version":2}`))
+			_, _ = writer.Write([]byte(`{"instance_id":"replacement","protocol":3,"state":"ready","capabilities":{"durable_inputs":1,"session_replay":1,"collection_invalidation":1,"tool_progress":1},"build":null,"digest":null,"extensions":[],"quota":[],"notices":[]}`))
 		default:
 			t.Errorf("unexpected request %s", request.URL.Path)
 			writer.WriteHeader(http.StatusNotFound)
@@ -43,7 +43,7 @@ func TestStopDaemonDoesNotRecoverAuthenticationRefusal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	replacement := daemon.ConnectionSnapshot{Port: port, Token: "new", Version: 2}
+	replacement := daemon.ConnectionSnapshot{Port: port, Token: "new", Version: daemon.ProtocolVersion, InstanceID: "instance-a"}
 	original := replacement
 	original.Token = "old"
 	conn := daemon.NewConnection(original, func(context.Context) (daemon.ConnectionSnapshot, error) {

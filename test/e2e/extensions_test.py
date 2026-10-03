@@ -3,11 +3,11 @@
 import json
 from pathlib import Path
 import threading
-import time
 import unittest
 import urllib.error
+import urllib.parse
 
-from harness import Albedo, Provider, exclusive, python, text
+from harness import Albedo, Provider, exclusive, operation_id, python, text
 
 
 SKILL = "---\nname: demo\ndescription: catalog-only fixture description\n---\nBODY_MUST_NOT_AUTOLOAD\n"
@@ -74,6 +74,7 @@ class ExtensionTests(unittest.TestCase):
             protocol="responses",
             providers={
                 f"fixture-{self.provider.route}": {
+                    "extension": "openai",
                     "baseUrl": self.provider.url,
                     "apiKey": "fixture-key",
                     "model": "fixture",
@@ -87,7 +88,6 @@ class ExtensionTests(unittest.TestCase):
         self.skill.parent.mkdir(parents=True)
         self.skill.write_text(SKILL)
         self.sid = self.app.session()
-        self.route = f"/sessions/{self.sid}/extensions"
 
     def get(self, path):
         with self.app.api(path) as response:
@@ -97,13 +97,73 @@ class ExtensionTests(unittest.TestCase):
         with self.app.api(path, body) as response:
             return json.load(response)
 
-    def command(self, name, **args):
-        return self.post(f"/sessions/{self.sid}/commands", {"name": name, **args})
+    def catalog(self):
+        return self.get(f"/sessions/{self.sid}/catalog")
 
-    def activate(self, name, **args):
+    def commands(self):
+        return self.catalog()["loaded"]["commands"]
+
+    def reload(self):
+        return self.post(f"/sessions/{self.sid}/reload", {"target": "session"})
+
+    def compact(self, strategy=None):
         return self.post(
-            f"/sessions/{self.sid}/events", {"type": "skill", "name": name, **args}
+            f"/sessions/{self.sid}/compaction",
+            {"strategy": strategy} if strategy else {},
         )
+
+    def change(self, fields, session=None):
+        route = f"/sessions/{session or self.sid}?view=configuration"
+        with self.app.api(route) as response:
+            json.load(response)
+            etag = response.headers["ETag"]
+        with self.app.api(
+            route, fields, method="PATCH", headers={"If-Match": etag}
+        ) as response:
+            return json.load(response)
+
+    def snapshot(self):
+        return self.get(f"/sessions/{self.sid}?tail=0")
+
+    def extensions(self):
+        return self.snapshot()["selection"]["effective"]["extensions"]
+
+    def section_text(self, section):
+        snapshot = self.get(f"/sessions/{self.sid}/context")
+        descriptor = next(row for row in snapshot["sections"] if row["id"] == section)
+        chunks = []
+        for page in range(descriptor["page_count"]):
+            query = urllib.parse.urlencode(
+                {
+                    "view": "section",
+                    "snapshot_id": snapshot["snapshot_id"],
+                    "section_id": section,
+                    "page": page,
+                }
+            )
+            chunks.append(self.get(f"/sessions/{self.sid}/context?{query}")["text"])
+        return "".join(chunks)
+
+    def activate(self, name, *, arguments="", client_id=None):
+        catalog = self.catalog()["discovery"]
+        candidate = next(
+            row
+            for row in catalog["candidates"]
+            if row["kind"] == "skill"
+            and row["preference_key"] == name.removeprefix("/")
+        )
+        body = {
+            "kind": "skill",
+            "candidate_id": candidate["id"],
+            "catalog_revision": catalog["revision"],
+            "arguments": arguments,
+        }
+        if client_id is not None:
+            body["client_id"] = client_id
+        with self.app.api(
+            f"/sessions/{self.sid}/inputs/{operation_id()}", body, method="PUT"
+        ) as response:
+            return json.load(response)
 
     def turn(self, prompt, session=None, *, expected=1):
         sid = session or self.sid
@@ -113,23 +173,8 @@ class ExtensionTests(unittest.TestCase):
         self.assertEqual(len(self.provider.requests) - before, expected)
         return [entry["request"] for entry in self.provider.requests[before:]]
 
-    def compacted(self):
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            context = self.get(f"/sessions/{self.sid}/context")
-            if context["compaction"]["status"] == "compacted":
-                return context
-            time.sleep(0.05)
-        self.fail(f"compaction did not finish: {context}")
-
     def restart(self):
         self.app.restart()
-
-    def rejected(self, path, body):
-        with self.assertRaises(urllib.error.HTTPError) as caught:
-            self.post(path, body)
-        self.assertEqual(caught.exception.code, 409)
-        return caught.exception.read().decode()
 
     def output(self, request):
         return next(
@@ -161,13 +206,12 @@ class ExtensionTests(unittest.TestCase):
         self.assertNotIn("CUSTOM_APPEND_ONLY", json.dumps(request["input"]))
         (self.app.workspace / "SYSTEM.md").write_text("NEW_BASE_ONLY")
         (self.app.workspace / "APPEND_SYSTEM.md").write_text("NEW_APPEND_ONLY")
-        self.command("/reload", args={"target": "session"})
+        self.reload()
         (pinned,) = self.turn("after system file reload")
         self.assertEqual(pinned["instructions"], prompt)
         self.assertIn("NEW_BASE_ONLY", json.dumps(pinned["input"]))
         self.assertIn("NEW_APPEND_ONLY", json.dumps(pinned["input"]))
-        self.command("/compact")
-        self.compacted()
+        self.compact()
         (current,) = self.turn("after prompt compaction")
         self.assertTrue(current["instructions"].startswith("NEW_BASE_ONLY\n"))
         self.assertIn("NEW_APPEND_ONLY", current["instructions"])
@@ -231,9 +275,9 @@ class ExtensionTests(unittest.TestCase):
         self.assertNotIn("X" * 128, request["instructions"])
         events = self.app.stream_page(self.sid, before)["events"]
         warnings = [
-            event["text"]
+            event["data"]["text"]
             for event in events
-            if event.get("type") == "note" and "AGENTS.md" in event.get("text", "")
+            if event["type"] == "note" and "AGENTS.md" in event["data"]["text"]
         ]
         self.assertEqual(
             warnings, ["Warning: AGENTS.md exceeds 1 MiB and was not loaded"]
@@ -287,10 +331,9 @@ class ExtensionTests(unittest.TestCase):
         (request,) = self.turn("ignore unreadable lower priority prompt")
         self.assertTrue(request["instructions"].startswith("VALID_REPLACEMENT\n"))
         root.unlink()
-        error = self.rejected(
-            f"/sessions/{self.sid}/commands",
-            {"name": "/reload", "args": {"target": "session"}},
-        )
+        outcome = self.reload()
+        self.assertEqual(outcome["session"]["state"], "failed")
+        error = json.dumps(outcome["session"]["failure"])
         self.assertIn(".agents/system.md must be UTF-8 text", error)
 
     # exclusive: writes daemon-wide capabilities.json
@@ -314,10 +357,9 @@ class ExtensionTests(unittest.TestCase):
         (self.app.home / "capabilities.json").write_text(
             json.dumps({"global": {"instructions": choices}})
         )
-        error = self.rejected(
-            f"/sessions/{self.sid}/commands",
-            {"name": "/reload", "args": {"target": "session"}},
-        )
+        outcome = self.reload()
+        self.assertEqual(outcome["session"]["state"], "failed")
+        error = json.dumps(outcome["session"]["failure"])
         self.assertIn("more than 128 instruction files were discovered", error)
 
     def test_workspace_system_files_are_optional(self):
@@ -329,69 +371,42 @@ class ExtensionTests(unittest.TestCase):
         )
 
     def test_catalog_is_lazy_and_activation_submits_one_turn(self):
-        self.assertIn("session_extensions", self.get("/health")["capabilities"])
-        installed = self.get(self.route)
-        names = {item["name"] for item in installed if item["enabled"]}
-        self.assertTrue({"python", "run", "work", "files", "skills"} <= names)
+        initial = self.catalog()
+        self.assertFalse(self.provider.requests)
+        self.assertIsNone(self.get(f"/sessions/{self.sid}/context")["snapshot_id"])
         (request,) = self.turn("first turn")
         context = request["instructions"]
         self.assertIn("catalog-only fixture description", context)
         self.assertIn(str(self.skill.resolve()), context)
         self.assertNotIn("BODY_MUST_NOT_AUTOLOAD", json.dumps(request))
-        self.assertNotIn(
-            "catalog-only fixture description", json.dumps(request["input"])
+        skills = next(
+            row
+            for row in initial["discovery"]["candidates"]
+            if row["kind"] == "extension" and row["preference_key"] == "skills"
         )
-        self.assertIn("returning {content, next_offset, size, truncated}", context)
-        skills = next(item for item in self.get(self.route) if item["name"] == "skills")
-        self.assertEqual(skills["requires"], ["python", "commands"])
-        self.assertIn("skills", skills["python_modules"])
-        self.assertEqual(skills["tools"], [])
-        self.assertFalse(
-            {"skills_read", "skills_list"} & {tool["name"] for tool in request["tools"]}
-        )
-        catalog = self.get(f"/sessions/{self.sid}/commands")
-        self.assertEqual(
-            [item for item in catalog if item["name"] == "/demo"],
-            [
-                {
-                    "name": "/demo",
-                    "description": "catalog-only fixture description",
-                    "method": "demo",
-                    "usage": "/demo [arguments]",
-                    "arguments": [
-                        {
-                            "name": "arguments",
-                            "description": "arguments for the skill",
-                            "required": False,
-                        }
-                    ],
-                    "modelCallable": True,
-                    "userTurn": True,
-                    "page": False,
-                    "skill": True,
-                }
-            ],
-        )
-        self.assertTrue(
-            {"/model", "/context", "/compact"} <= {item["name"] for item in catalog}
-        )
+        self.assertEqual(skills["dependencies"], ["python", "commands"])
+        self.assertEqual(skills["extension"]["tools"], [])
+        catalog = self.commands()
+        demo = next(row for row in catalog if row["slash_name"] == "/demo")
+        self.assertEqual(demo["delivery"], "input")
+        self.assertTrue({"human", "model"} <= set(demo["caller_permissions"]))
         before = len(self.provider.requests)
-        self.assertTrue(
-            self.activate("/demo", arguments="one  two", clientId="fixture-client")[
-                "ok"
-            ]
+        receipt = self.activate(
+            "/demo", arguments="one  two", client_id="fixture-client"
+        )
+        self.assertEqual(
+            (receipt["admission"], receipt["client_id"]), ("accepted", "fixture-client")
         )
         self.app.idle(self.sid)
         self.assertEqual(len(self.provider.requests), before + 1)
         activation = json.dumps(self.provider.requests[-1]["request"]["input"])
-        self.assertIn("BODY_MUST_NOT_AUTOLOAD", activation)
-        self.assertIn("one  two", activation)
-        self.assertIn(str(self.skill.resolve()), activation)
-        self.assertEqual(self.get(f"/sessions/{self.sid}/commands"), catalog)
+        for marker in ("BODY_MUST_NOT_AUTOLOAD", "one  two", str(self.skill.resolve())):
+            self.assertIn(marker, activation)
+        self.assertEqual(self.commands(), catalog)
         self.skill.write_text(
             SKILL.replace("catalog-only fixture description", "changed on disk")
         )
-        self.assertEqual(self.get(f"/sessions/{self.sid}/commands"), catalog)
+        self.assertEqual(self.commands(), catalog)
         self.skill.write_text(SKILL)
         before = len(self.provider.requests)
         self.activate("/demo", arguments="slash argument")
@@ -410,6 +425,7 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("BODY_MUST_NOT_AUTOLOAD", activation["instructions"])
 
     # exclusive: writes models.json and /model saves global defaults
+    # exclusive: model catalog seeded on disk
     @exclusive
     def test_python_activation_and_user_only_model_switch(self):
         (self.app.home / "models.json").write_text("{}")
@@ -418,73 +434,42 @@ class ExtensionTests(unittest.TestCase):
         session = self.app.session()
         requests = self.turn("model probe via python", session, expected=2)
         self.assertIn("MODEL_COMMAND_OK", self.output(requests[-1]))
-        route = f"/sessions/{session}/commands"
-        switched = self.post(
-            route, {"name": "/model", "args": {"model": "switched-model"}}
-        )["result"]
+        selected = self.change({"model": "switched-model"}, session)["session"]
         self.assertEqual(
-            (switched["model"], switched["provider"]),
+            (selected["model"], selected["provider_profile"]),
             ("switched-model", self.app.profile),
         )
-        self.assertEqual(
-            next(s for s in self.get("/sessions") if s["id"] == session)["model"],
-            "switched-model",
-        )
-        self.rejected(route, {"name": "/effort"})
-        selected = self.post(route, {"name": "/model", "args": {"model": "o3-mini"}})[
-            "result"
-        ]
+        selected = self.change({"model": "o3-mini"}, session)["session"]
         self.assertEqual((selected["model"], selected["effort"]), ("o3-mini", "medium"))
-        effort = self.post(route, {"name": "/effort"})["result"]
+        with self.assertRaises(urllib.error.HTTPError):
+            self.change({"effort": "bogus"}, session)
+        selected = self.change({"effort": "high"}, session)["session"]
+        self.assertEqual(selected["effort"], "high")
         self.assertEqual(
-            (effort["effort"], effort["available"]),
-            ("medium", ["low", "medium", "high"]),
+            self.change({"model": "o3-mini", "effort": "low"}, session)["session"][
+                "effort"
+            ],
+            "low",
         )
-        self.rejected(route, {"name": "/effort", "args": {"level": "bogus"}})
-        effort = self.post(route, {"name": "/effort", "args": {"level": "high"}})[
-            "result"
-        ]
-        self.assertEqual(effort["effort"], "high")
-        self.assertIn("reasoning effort set to high", effort["message"])
-        self.assertEqual(
-            next(s for s in self.get("/sessions") if s["id"] == session)["effort"],
-            "high",
-        )
-        picked = self.post(
-            route, {"name": "/model", "args": {"model": "o3-mini", "effort": "low"}}
-        )
-        self.assertEqual(picked["result"]["effort"], "low")
-        self.rejected(
-            route, {"name": "/model", "args": {"model": "o3-mini", "effort": "max"}}
-        )
-        self.rejected(
-            route,
-            {"name": "/model", "args": {"model": "switched-model", "effort": "low"}},
-        )
-        self.assertEqual(
-            next(s for s in self.get("/sessions") if s["id"] == session)["model"],
-            "o3-mini",
-        )
+        for fields in (
+            {"model": "o3-mini", "effort": "max"},
+            {"model": "switched-model", "effort": "low"},
+        ):
+            with self.assertRaises(urllib.error.HTTPError):
+                self.change(fields, session)
+        self.assertEqual(self.get(f"/sessions/{session}")["model"], "o3-mini")
 
     def test_work_page_queues_agent_note_without_starting_turn(self):
-        command = next(
-            c
-            for c in self.get(f"/sessions/{self.sid}/commands")
-            if c["name"] == "/work"
+        route = "/extensions/work/items?" + urllib.parse.urlencode(
+            {"workspace": str(self.app.workspace)}
         )
-        self.assertTrue(command["page"])
-        self.assertFalse(command["modelCallable"])
-        page = self.command("/work", args={})["result"]["page"]
+        page = self.get(route)["page"]
         self.assertEqual(page["title"], "work")
-        self.assertTrue(
-            {"a", "d", "x"} <= {action["key"] for action in page["actions"]}
-        )
-        added = self.command(
-            "/work", args={"action": "add", "details": "write the release notes"}
-        )
-        self.assertIn("the agent will be told", added["result"]["message"])
         before = len(self.provider.requests)
-        time.sleep(0.3)
+        added = self.post(
+            route, {"title": "write the release notes", "session_id": self.sid}
+        )
+        self.assertEqual(added["notification"]["state"], "queued")
         self.assertEqual(len(self.provider.requests), before)
         (request,) = self.turn("anything new on the ledger?")
         context = json.dumps(request["input"])
@@ -502,49 +487,53 @@ class ExtensionTests(unittest.TestCase):
             context.index("The user added work item"),
             context.index("anything new on the ledger?"),
         )
-        page = self.command("/work", args={})["result"]["page"]
         self.assertTrue(
             any(
-                row["text"] == "write the release notes"
-                for row in page["glance"]["rows"]
+                resource["value"]["title"] == "write the release notes"
+                for resource in self.get(route)["items"]
             )
         )
 
-    def test_work_command_is_scoped_to_each_workspace(self):
+    def test_work_resources_are_scoped_to_each_workspace(self):
         workspaces = [self.app.root / "work-one", self.app.root / "work-two"]
         for workspace in workspaces:
             workspace.mkdir()
-        sessions = [self.app.session(workspace) for workspace in workspaces]
+            self.app.session(workspace)
+        routes = [
+            "/extensions/work/items?"
+            + urllib.parse.urlencode({"workspace": str(workspace)})
+            for workspace in workspaces
+        ]
+        self.post(routes[0], {"title": "first workspace item"})
+        self.assertIn("first workspace item", json.dumps(self.get(routes[0])))
+        self.assertNotIn("first workspace item", json.dumps(self.get(routes[1])))
+        self.post(routes[1], {"title": "second workspace item"})
+        self.assertNotIn("second workspace item", json.dumps(self.get(routes[0])))
+        self.assertIn("second workspace item", json.dumps(self.get(routes[1])))
 
-        def invoke(session, args):
-            return self.post(
-                f"/sessions/{session}/commands", {"name": "/work", "args": args}
-            )
-
-        invoke(sessions[0], {"action": "add", "details": "first workspace item"})
-        first_page = invoke(sessions[0], {})
-        second_page = invoke(sessions[1], {})
-        self.assertIn("first workspace item", json.dumps(first_page))
-        self.assertNotIn("first workspace item", json.dumps(second_page))
-        invoke(sessions[1], {"action": "add", "details": "second workspace item"})
-        self.assertNotIn("second workspace item", json.dumps(invoke(sessions[0], {})))
-        self.assertIn("second workspace item", json.dumps(invoke(sessions[1], {})))
-
-    def test_manual_compaction_keeps_tree_and_reuses_summary(self):
+    def test_manual_compaction_preserves_durable_history_and_reuses_summary(self):
         cursor = self.app.stream_page(self.sid)
-        self.turn("first turn")
-        self.turn("second turn")
-        self.turn("third turn")
-        self.turn("fourth turn")
-        original = self.get(f"/sessions/{self.sid}/tree?after=0&limit=100")["items"]
+        for prompt in ("first turn", "second turn", "third turn", "fourth turn"):
+            self.turn(prompt)
+        original = self.app.history(self.sid)["items"]
         before = len(self.provider.requests)
-        started = self.command("/compact")["result"]
-        self.assertEqual((started["strategy"], started["started"]), ("rolling", True))
-        self.compacted()
-        # One call writes the summary and one rewrites the model's notes.
-        self.assertEqual(len(self.provider.requests), before + 2)
+        outcome = self.compact()
         self.assertEqual(
-            self.get(f"/sessions/{self.sid}/tree?after=0&limit=100")["items"], original
+            (outcome["effective_strategy"], outcome["state"]), ("rolling", "compacted")
+        )
+        self.assertFalse(outcome["selection_applied"])
+        self.assertIsNone(outcome["failure"])
+        self.assertEqual(outcome["observation"]["strategy"], "rolling")
+        self.assertGreater(outcome["observation"]["evicted_entries"], 0)
+        self.assertEqual(len(self.provider.requests), before + 2)
+        current = self.app.history(self.sid)["items"]
+        self.assertEqual(
+            [
+                entry
+                for entry in current
+                if entry["position"] <= original[-1]["position"]
+            ],
+            original,
         )
         (request,) = self.turn("after manual compaction")
         self.assertIn("older conversation summary", json.dumps(request["input"]))
@@ -553,17 +542,20 @@ class ExtensionTests(unittest.TestCase):
             (context["state"], context["compaction"]["status"]), ("ready", "compacted")
         )
         events = self.app.stream_page(self.sid, cursor)["events"]
-        compacted = next(event for event in events if event.get("type") == "compacted")
-        self.assertGreater(compacted["evicted"], 0)
+        compacted = next(
+            event["data"] for event in events if event["type"] == "compacted"
+        )
+        self.assertEqual(compacted, outcome["observation"])
+        self.assertGreater(compacted["evicted_entries"], 0)
         self.assertIn("older conversation summary", compacted["summary"])
-        history = self.get(f"/sessions/{self.sid}/context/history/0")["content"]
-        self.assertIn("older conversation summary", history)
+        self.assertIn("older conversation summary", self.section_text("history"))
 
     def test_every_shipped_skill_loads(self):
+        self.reload()
         shipped = sorted(
             path.name for path in (Path(__file__).parents[2] / "priv/skills").iterdir()
         )
-        listed = {c["name"] for c in self.get(f"/sessions/{self.sid}/commands")}
+        listed = {c["slash_name"] for c in self.commands()}
         self.assertEqual([name for name in shipped if f"/{name}" not in listed], [])
 
     def test_builtin_skill_is_listed_and_yields_to_a_workspace_skill_of_the_same_name(
@@ -572,14 +564,15 @@ class ExtensionTests(unittest.TestCase):
         def description():
             return next(
                 c["description"]
-                for c in self.get(f"/sessions/{self.sid}/commands")
-                if c["name"] == "/customize-albedo"
+                for c in self.commands()
+                if c["slash_name"] == "/customize-albedo"
             )
 
+        self.reload()
         catalog_route = f"/sessions/{self.sid}/catalog"
         builtin = next(
             row
-            for row in self.get(catalog_route)["candidates"]
+            for row in self.get(catalog_route)["discovery"]["candidates"]
             if row["preference_key"] == "customize-albedo"
         )
         self.assertTrue(builtin["valid"])
@@ -590,11 +583,11 @@ class ExtensionTests(unittest.TestCase):
         override.write_text(
             "---\nname: customize-albedo\ndescription: workspace override\n---\nmine\n"
         )
-        self.command("/reload", args={"target": "session"})
+        self.reload()
         self.assertEqual(description(), "workspace override")
         candidates = [
             row
-            for row in self.get(catalog_route)["candidates"]
+            for row in self.get(catalog_route)["discovery"]["candidates"]
             if row["preference_key"] == "customize-albedo"
         ]
         selected = next(row for row in candidates if row["source"] == str(override))
@@ -611,7 +604,7 @@ class ExtensionTests(unittest.TestCase):
     def test_reload_pins_system_prompt_until_compaction(self):
         self.turn("first turn")
         catalog_route = f"/sessions/{self.sid}/catalog"
-        original_catalog = self.get(catalog_route)
+        original_catalog = self.get(catalog_route)["discovery"]
         late = self.app.workspace / ".agents/skills/late/SKILL.md"
         late.parent.mkdir(parents=True)
         late.write_text(
@@ -622,10 +615,8 @@ class ExtensionTests(unittest.TestCase):
                 "catalog-only fixture description", "updated demo description"
             )
         )
-        self.assertNotIn(
-            "/late", {c["name"] for c in self.get(f"/sessions/{self.sid}/commands")}
-        )
-        fresh_catalog = self.get(catalog_route)
+        self.assertNotIn("/late", {c["slash_name"] for c in self.commands()})
+        fresh_catalog = self.get(catalog_route)["discovery"]
         self.assertNotEqual(fresh_catalog["revision"], original_catalog["revision"])
         late_row = next(
             row
@@ -633,16 +624,16 @@ class ExtensionTests(unittest.TestCase):
             if row["preference_key"] == "late"
         )
         self.assertTrue(late_row["eligible"])
-        self.assertEqual(self.get(catalog_route)["revision"], fresh_catalog["revision"])
+        self.assertEqual(
+            self.get(catalog_route)["discovery"]["revision"], fresh_catalog["revision"]
+        )
         requests = self.turn("hot probe before reload", expected=2)
         self.assertIn("BEFORE_RELOAD_OK", self.output(requests[-1]))
         cached = requests[-1]
-        reloaded = self.command("/reload", args={"target": "session"})
-        self.assertEqual(reloaded["result"]["reloaded"], "session")
-        self.assertIn(
-            "/late", {c["name"] for c in self.get(f"/sessions/{self.sid}/commands")}
-        )
-        current_catalog = self.get(catalog_route)
+        reloaded = self.reload()
+        self.assertEqual(reloaded["session"]["state"], "applied")
+        self.assertIn("/late", {c["slash_name"] for c in self.commands()})
+        current_catalog = self.get(catalog_route)["discovery"]
         self.assertEqual(current_catalog["revision"], fresh_catalog["revision"])
         self.assertEqual(
             next(
@@ -677,7 +668,7 @@ class ExtensionTests(unittest.TestCase):
             "---\nname: newer\ndescription: another live skill\n---\nNEWER_BODY\n"
         )
         late.unlink()
-        self.command("/reload", args={"target": "session"})
+        self.reload()
         (request,) = self.turn("after second reload")
         self.assertEqual(request["instructions"], cached["instructions"])
         update = next(
@@ -705,14 +696,9 @@ class ExtensionTests(unittest.TestCase):
         (request,) = self.turn("reload pin survives restart")
         self.assertEqual(request["instructions"], cached["instructions"])
         self.turn("one more turn before compaction")
-        self.command("/compact")
-        self.compacted()
+        self.compact()
         self.app.idle(self.sid)
-        first = self.get(f"/sessions/{self.sid}/context/instructions/0")
-        snapshot = "".join(
-            self.get(f"/sessions/{self.sid}/context/instructions/{page}")["content"]
-            for page in range(first["pages"])
-        )
+        snapshot = self.section_text("instructions")
         self.assertNotIn("added after the session opened", snapshot)
         self.assertIn("updated demo description", snapshot)
         self.assertIn("another live skill", snapshot)
@@ -733,7 +719,7 @@ class ExtensionTests(unittest.TestCase):
                 "catalog-only fixture description", "reloaded skill description"
             )
         )
-        self.command("/reload", args={"target": "session"})
+        self.reload()
         settings_path = self.app.home / "extensions.json"
         settings = json.loads(settings_path.read_text())
         settings["rolling"] = {"contextWindowTokens": 50000}
@@ -754,112 +740,89 @@ class ExtensionTests(unittest.TestCase):
     @exclusive
     def test_live_toggles_guard_dependencies_busy_turns_and_persist(self):
         self.turn("first turn")
-        installed = self.get(self.route)
-        self.rejected(self.route, {"name": "not-installed", "enabled": False})
-        self.rejected(self.route, {"name": "python", "enabled": False})
-        self.assertEqual(self.get(self.route), installed)
-        disabled = self.post(self.route, {"name": "skills", "enabled": False})
-        self.assertFalse(
-            next(item["enabled"] for item in disabled if item["name"] == "skills")
-        )
-        self.rejected(
-            f"/sessions/{self.sid}/events",
-            {"type": "skill", "name": "/demo", "arguments": "must not run"},
-        )
+        installed = self.extensions()
+        for name in ("not-installed", "python"):
+            with self.assertRaises(urllib.error.HTTPError):
+                self.change({"selection": {"extensions": {name: False}}})
+        self.assertEqual(self.extensions(), installed)
+        self.change({"selection": {"extensions": {"skills": False}}})
+        self.reload()
+        disabled = self.extensions()
+        self.assertFalse(disabled["skills"])
+        with self.assertRaises(urllib.error.HTTPError):
+            self.activate("/demo", arguments="must not run")
         pid = self.app.connection["pid"]
         (request,) = self.turn("extension disabled")
-        self.assertIn("<available_skills>", request["instructions"])
         self.assertIn("Context removed: skills", json.dumps(request["input"]))
-        self.assertNotIn(
-            "skills",
-            {
-                module
-                for item in disabled
-                if item["enabled"]
-                for module in item["python_modules"]
-            },
-        )
-        self.assertFalse(
-            {"skills_read", "skills_list"} & {tool["name"] for tool in request["tools"]}
-        )
         self.assertEqual(
             json.loads((self.app.home / "daemon.json").read_text())["pid"], pid
         )
-        # The provider holds this turn active while configuration changes are
-        # refused, until the test releases it.
-        release = threading.Event()
+        entered, release = threading.Event(), threading.Event()
         self.addCleanup(release.set)
 
         def held(_request):
+            entered.set()
             release.wait(30)
             return text("done")
 
         self.provider.script = held
         self.app.prompt(self.sid, "hold this turn").close()
-        deadline = time.monotonic() + 10
-        while len(self.provider.requests) < 3 and time.monotonic() < deadline:
-            time.sleep(0.02)
-        self.assertGreaterEqual(len(self.provider.requests), 3)
-        self.rejected(self.route, {"name": "skills", "enabled": True})
-        self.rejected(
-            f"/sessions/{self.sid}/commands",
-            {"name": "/model", "args": {"model": "mid-run"}},
-        )
-        self.rejected(f"/sessions/{self.sid}/commands", {"name": "/compact"})
-        self.assertEqual(self.get(self.route), disabled)
+        self.assertTrue(entered.wait(10))
+        for fields in (
+            {"selection": {"extensions": {"skills": True}}},
+            {"model": "mid-run"},
+        ):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self.change(fields)
+            self.assertEqual(caught.exception.code, 409)
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.compact()
+        self.assertEqual(caught.exception.code, 409)
+        self.assertEqual(self.extensions(), disabled)
         release.set()
         self.app.idle(self.sid)
         self.provider.script = scripted
         self.restart()
-        self.assertFalse(
-            next(
-                item["enabled"]
-                for item in self.get(self.route)
-                if item["name"] == "skills"
-            )
-        )
+        self.assertFalse(self.extensions()["skills"])
         self.skill.write_text(
             SKILL.replace(
                 "catalog-only fixture description", "refreshed catalog description"
             )
         )
-        self.post(self.route, {"name": "skills", "enabled": True})
+        self.change({"selection": {"extensions": {"skills": True}}})
+        self.reload()
+        refreshed = next(
+            command for command in self.commands() if command["slash_name"] == "/demo"
+        )
+        self.assertEqual(refreshed["description"], "refreshed catalog description")
         (request,) = self.turn("extension reloaded")
-        self.assertIn("refreshed catalog description", request["instructions"])
         self.assertNotIn("BODY_MUST_NOT_AUTOLOAD", request["instructions"])
 
     # exclusive: restarts the daemon
     @exclusive
     def test_compaction_strategies_preserve_lcm_folds_across_switch_and_restart(self):
-        self.turn("first turn")
-        self.turn("second turn")
-        self.turn("third turn")
-        self.turn("fourth turn")
-        self.assertIn(
-            "unknown compaction strategy skills",
-            self.rejected(
-                f"/sessions/{self.sid}/commands",
-                {"name": "/compact", "arguments": "skills"},
-            ),
+        for prompt in ("first turn", "second turn", "third turn", "fourth turn"):
+            self.turn(prompt)
+        refused = self.compact("skills")
+        self.assertEqual(refused["state"], "failed")
+        self.assertFalse(refused["selection_applied"])
+        self.assertIsNotNone(refused["failure"])
+        self.assertFalse(self.extensions()["lcm"])
+        result = self.compact("lcm")
+        self.assertEqual(
+            (result["effective_strategy"], result["state"]), ("lcm", "compacted")
         )
-        self.assertFalse(
-            next(
-                item["enabled"]
-                for item in self.get(self.route)
-                if item["name"] == "lcm"
-            )
-        )
-        result = self.command("/compact", arguments="lcm")["result"]
-        self.assertEqual((result["strategy"], result["started"]), ("lcm", True))
-        self.app.idle(self.sid)
-        selected = self.get(self.route)
-        self.assertTrue(
-            next(item["enabled"] for item in selected if item["name"] == "lcm")
-        )
-        self.assertFalse(
-            next(item["enabled"] for item in selected if item["name"] == "rolling")
-        )
-        self.rejected(self.route, {"name": "lcm", "enabled": False})
+        self.assertTrue(result["selection_applied"])
+        self.assertIsNone(result["failure"])
+        self.assertEqual(result["observation"]["strategy"], "lcm")
+        self.assertTrue(self.extensions()["lcm"])
+        self.assertFalse(self.extensions()["rolling"])
+        self.change({"selection": {"extensions": {"lcm": False}}})
+        configured = self.get(f"/sessions/{self.sid}?view=configuration")
+        self.assertFalse(configured["selection"]["extensions"]["lcm"])
+        refused_reload = self.reload()
+        self.assertEqual(refused_reload["session"]["state"], "failed")
+        self.assertIsNotNone(refused_reload["session"]["failure"])
         (request,) = self.turn("lcm preflight")
         self.assertTrue(
             {"lcm_list", "lcm_grep", "lcm_describe", "lcm_expand"}
@@ -869,16 +832,19 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("LCM summary node #", json.dumps(requests[0]["input"]))
         self.assertIn("source_count", self.output(requests[-1]))
         self.assertIn("first turn", self.output(requests[-1]))
-        self.assertEqual(
-            self.get(f"/sessions/{self.sid}/context")["compaction"]["strategy"], "lcm"
-        )
-        selected = self.post(self.route, {"name": "rolling", "enabled": True})
-        self.assertTrue(
-            next(item["enabled"] for item in selected if item["name"] == "rolling")
-        )
-        self.assertFalse(
-            next(item["enabled"] for item in selected if item["name"] == "lcm")
-        )
+        self.change({"selection": {"extensions": {"lcm": True}}})
+        self.assertEqual(self.reload()["session"]["state"], "applied")
+        configuration_url = f"/sessions/{self.sid}?view=configuration"
+        before_conflict = self.get(configuration_url)
+        with self.assertRaises(urllib.error.HTTPError) as conflict:
+            self.change({"selection": {"extensions": {"lcm": True, "rolling": True}}})
+        self.assertEqual(conflict.exception.code, 400)
+        self.assertEqual(json.load(conflict.exception)["code"], "selection_conflict")
+        self.assertEqual(self.get(configuration_url), before_conflict)
+        self.change({"selection": {"extensions": {"rolling": True}}})
+        self.assertEqual(self.reload()["session"]["state"], "applied")
+        self.assertTrue(self.extensions()["rolling"])
+        self.assertFalse(self.extensions()["lcm"])
         (request,) = self.turn("folded under rolling")
         self.assertIn("LCM summary node #", json.dumps(request["input"]))
         requests = self.turn("fold list probe", expected=2)
@@ -888,12 +854,158 @@ class ExtensionTests(unittest.TestCase):
             "rolling",
         )
         self.restart()
-        selected = self.get(self.route)
-        self.assertTrue(
-            next(item["enabled"] for item in selected if item["name"] == "rolling")
-        )
-        self.assertFalse(
-            next(item["enabled"] for item in selected if item["name"] == "lcm")
-        )
+        self.assertTrue(self.extensions()["rolling"])
+        self.assertFalse(self.extensions()["lcm"])
         (request,) = self.turn("folded after restart")
         self.assertIn("LCM summary node #", json.dumps(request["input"]))
+
+    def test_rest_extension_edits_compare_the_displayed_resource_at_commit(self):
+        """Concurrent clients cannot overwrite a newer edit or delete its row."""
+        cases = [
+            (
+                "/extensions/work/items?"
+                + urllib.parse.urlencode({"workspace": str(self.app.workspace)}),
+                {"title": "original"},
+                "title",
+                "😀" * 1025,
+            ),
+            (
+                "/extensions/paperclips/items",
+                {"message": "original"},
+                "reply",
+                "😀" * 4097,
+            ),
+            (
+                "/extensions/schedule/jobs",
+                {
+                    "session_id": self.sid,
+                    "kind": "once",
+                    "prompt": "original",
+                    "delay_seconds": 86400,
+                },
+                "prompt",
+                "😀" * 1025,
+            ),
+        ]
+        before = len(self.provider.requests)
+        for collection, creation, field, oversize in cases:
+            with self.subTest(collection=collection):
+                created = self.post(collection, creation)["resource"]
+                route = created["url"]
+                try:
+                    with self.app.api(route) as response:
+                        original = json.load(response)
+                        observed = response.headers["ETag"]
+                    self.assertEqual(original, created["value"])
+                    for patch, status in (({field: "unguarded"}, 428),):
+                        with self.assertRaises(urllib.error.HTTPError) as error:
+                            self.app.api(route, patch, method="PATCH")
+                        self.assertEqual(error.exception.code, status)
+                    for patch in (
+                        {"revision": "invented"},
+                        {field: None},
+                        {field: oversize},
+                    ):
+                        with self.assertRaises(urllib.error.HTTPError) as error:
+                            self.app.api(
+                                route,
+                                patch,
+                                method="PATCH",
+                                headers={"If-Match": observed},
+                            )
+                        self.assertIn(error.exception.code, (400, 413))
+                    self.assertEqual(self.get(route), original)
+
+                    barrier = threading.Barrier(3)
+                    outcomes = []
+
+                    def edit(value):
+                        barrier.wait()
+                        try:
+                            with self.app.api(
+                                route,
+                                {field: value},
+                                method="PATCH",
+                                headers={"If-Match": observed},
+                            ) as response:
+                                outcomes.append((response.status, json.load(response)))
+                        except urllib.error.HTTPError as error:
+                            outcomes.append((error.code, json.load(error)))
+
+                    threads = [
+                        threading.Thread(target=edit, args=(value,))
+                        for value in ("first", "second")
+                    ]
+                    for thread in threads:
+                        thread.start()
+                    barrier.wait()
+                    for thread in threads:
+                        thread.join(timeout=10)
+                        self.assertFalse(thread.is_alive())
+                    self.assertEqual(
+                        sorted(status for status, _ in outcomes), [200, 412]
+                    )
+                    winner = next(
+                        body["resource"] for status, body in outcomes if status == 200
+                    )
+                    self.assertEqual(self.get(route), winner["value"])
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        self.app.api(
+                            route, method="DELETE", headers={"If-Match": observed}
+                        )
+                    self.assertEqual(error.exception.code, 412)
+                    self.assertEqual(self.get(route), winner["value"])
+                finally:
+                    with self.app.api(route) as response:
+                        json.load(response)
+                        current = response.headers["ETag"]
+                    with self.app.api(
+                        route, method="DELETE", headers={"If-Match": current}
+                    ) as response:
+                        self.assertEqual(
+                            json.load(response)["id"], created["value"]["id"]
+                        )
+        self.assertEqual(len(self.provider.requests), before)
+
+    def test_links_validator_does_not_reappear_after_link_and_unlink(self):
+        """An old singleton observation stays stale after membership returns."""
+        other = self.app.root / "linked-rest-peer"
+        other.mkdir()
+        own = str(self.app.workspace)
+        route = "/extensions/links/groups?" + urllib.parse.urlencode(
+            {"workspace": own, "view": "configuration"}
+        )
+        peer = "/extensions/links/groups?" + urllib.parse.urlencode(
+            {"workspace": str(other), "view": "configuration"}
+        )
+        with self.app.api(route) as response:
+            before = json.load(response)
+            old = response.headers["ETag"]
+        with self.app.api(peer) as response:
+            json.load(response)
+            peer_etag = response.headers["ETag"]
+        with self.app.api(
+            route,
+            {"other_workspace": str(other), "other_etag": peer_etag},
+            headers={"If-Match": old},
+        ) as response:
+            merged = json.load(response)["resource"]
+        self.assertEqual(set(merged["value"]["members"]), {own, str(other)})
+        unlink = route + "&" + urllib.parse.urlencode({"member": str(other)})
+        with self.app.api(
+            unlink, method="DELETE", headers={"If-Match": merged["etag"]}
+        ) as response:
+            unlinked = json.load(response)["resource"]
+        self.assertEqual(unlinked["value"]["members"], before["members"])
+        self.assertNotEqual(unlinked["etag"], old)
+        with self.app.api(peer) as response:
+            json.load(response)
+            peer_etag = response.headers["ETag"]
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.app.api(
+                route,
+                {"other_workspace": str(other), "other_etag": peer_etag},
+                headers={"If-Match": old},
+            )
+        self.assertEqual(error.exception.code, 412)
+        self.assertEqual(self.get(route)["members"], before["members"])

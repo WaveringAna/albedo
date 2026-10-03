@@ -29,12 +29,12 @@ Within one projection the request is append-only, so equal head hash plus equal 
 
 ## Local API
 
-`GET /sessions/:id/requests` answers rows oldest first, read-only straight from the store:
-
-- `?after=<id>` continues from the last row id of the previous page.
-- `?limit=<n>` bounds the page (1–500, default 100).
-
-The response is `{session, rows, after}`; `after` is the id to continue from. Like every session route it needs the daemon token. The later `/quota` inspector reads the same rows; nothing is stored twice.
+`GET /sessions/{session_id}/context?view=requests` reads paged provider
+request records from the store. `after` is a durable request-record ID;
+opaque `next` continues the same query. The route requires the daemon token.
+These records and the server's quota observations use the same stored facts.
+See the [HTTP contract](../docs/http-api-design.md#prepared-context-and-request-records)
+for fields and bounds.
 
 ## decode diagnostics
 

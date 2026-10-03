@@ -30,9 +30,12 @@ class WorkTests(unittest.TestCase):
                 app.prompt(session, "use work").close()
                 app.idle(session)
                 results = [
-                    json.loads(event["result"])
-                    for event in app.events(session)
-                    if event.get("type") == "tool" and event.get("name") == "python"
+                    json.loads(part["value"])
+                    for entry in app.history(session)["items"]
+                    if entry["kind"] == "tool_result"
+                    and entry["tool"]["name"] == "python"
+                    for part in entry["content"]
+                    if part["kind"] == "json" and part["field"] == "result"
                 ]
                 self.assertEqual(len(results), 1)
                 self.assertEqual(results[0]["status"], "ok", results[0])

@@ -14,6 +14,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
+import harness/session_fixture
 import sqlight
 
 fn host(config: rolling.Config) -> #(runtime.Runtime, runtime.Session) {
@@ -23,6 +24,8 @@ fn host(config: rolling.Config) -> #(runtime.Runtime, runtime.Session) {
       ":memory:",
       extensions.Config(installed, ["rolling"]),
     )
+  session_fixture.initialise(host)
+  session_fixture.create(host, "rolling-test", "/tmp")
   let assert Ok(session) = runtime.open_session(host, "rolling-test", "/tmp")
   #(host, session)
 }

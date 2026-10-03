@@ -12,7 +12,6 @@ import (
 	"sync"
 	"testing"
 
-	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
 	"albedo/cli/internal/tui"
 
@@ -46,7 +45,11 @@ func driveTUIWithConnection(t *testing.T, session *daemon.Session, connection *d
 	if session != nil {
 		workspace = session.Workspace
 	}
-	d := &tuiDriver{t: t, App: tui.NewAppModel(connection, config.Profiles{}, session, workspace, false, nil)}
+	profiles, err := daemon.ProviderProfiles(t.Context(), connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &tuiDriver{t: t, App: tui.NewAppModel(connection, profiles, session, workspace, false, nil)}
 	d.Update(tea.WindowSizeMsg{Width: 80, Height: 22})
 	return d
 }
@@ -62,13 +65,11 @@ func daemonSessions(t *testing.T) []daemon.Session {
 
 func daemonSession(t *testing.T, id string) daemon.Session {
 	t.Helper()
-	for _, s := range daemonSessions(t) {
-		if s.ID == id {
-			return s
-		}
+	session, err := daemon.GetSession(t.Context(), conn(t), id)
+	if err != nil {
+		t.Fatalf("read session %s: %v", id, err)
 	}
-	t.Fatalf("the daemon does not list session %s", id)
-	return daemon.Session{}
+	return session
 }
 
 // Update feeds one message to the model and returns its command.
@@ -150,6 +151,9 @@ func (d *tuiDriver) results(cmd tea.Cmd) []tea.Msg {
 		wg.Wait()
 		return slices.Concat(produced...)
 	default:
+		if _, recurring := msg.(tui.ChatStatusPollMsg); recurring {
+			return nil
+		}
 		if reflect.TypeOf(msg).PkgPath() == "charm.land/bubbles/v2/cursor" {
 			return nil
 		}

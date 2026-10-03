@@ -3,10 +3,11 @@
 
 import gleam/dict.{type Dict}
 import gleam/int
+import gleam/json
 import gleam/string
 
 pub opaque type Buffer {
-  Buffer(oldest: Int, entries: Dict(Int, String), bytes: Int)
+  Buffer(oldest: Int, entries: Dict(Int, #(json.Json, Int)), bytes: Int)
 }
 
 pub fn new() -> Buffer {
@@ -14,15 +15,15 @@ pub fn new() -> Buffer {
 }
 
 /// The session supplies consecutive sequence numbers, starting at one.
-pub fn push(buffer: Buffer, sequence: Int, event: String) -> Buffer {
-  let size = string.byte_size(event)
+pub fn push(buffer: Buffer, sequence: Int, event: json.Json) -> Buffer {
+  let size = string.byte_size(json.to_string(event))
   case size > 4_194_304 {
     // An unretained event is a gap: even a client one event behind must reset.
     True -> Buffer(sequence + 1, dict.new(), 0)
     False ->
       trim(Buffer(
         buffer.oldest,
-        dict.insert(buffer.entries, sequence, event),
+        dict.insert(buffer.entries, sequence, #(event, size)),
         buffer.bytes + size,
       ))
   }
@@ -32,11 +33,11 @@ fn trim(buffer: Buffer) -> Buffer {
   case dict.size(buffer.entries) > 256 || buffer.bytes > 4_194_304 {
     False -> buffer
     True -> {
-      let assert Ok(event) = dict.get(buffer.entries, buffer.oldest)
+      let assert Ok(#(_, size)) = dict.get(buffer.entries, buffer.oldest)
       trim(Buffer(
         buffer.oldest + 1,
         dict.delete(buffer.entries, buffer.oldest),
-        buffer.bytes - string.byte_size(event),
+        buffer.bytes - size,
       ))
     }
   }
@@ -47,13 +48,13 @@ pub fn since(
   buffer: Buffer,
   after: Int,
   sequence: Int,
-) -> Result(List(String), Nil) {
+) -> Result(List(json.Json), Nil) {
   case after < 0 || after > sequence || after < buffer.oldest - 1 {
     True -> Error(Nil)
     False ->
       Ok(
         int.range(sequence, after, [], fn(events, cursor) {
-          let assert Ok(event) = dict.get(buffer.entries, cursor)
+          let assert Ok(#(event, _)) = dict.get(buffer.entries, cursor)
           [event, ..events]
         }),
       )

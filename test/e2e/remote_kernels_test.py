@@ -22,7 +22,7 @@ import urllib.error
 import urllib.parse
 from pathlib import Path
 
-from harness import Albedo, Provider, exclusive, python, text
+from harness import Albedo, Provider, exclusive, operation_id, python, text
 
 FAKE_SSH = """#!/bin/sh
 printf '%s\\n' "$*" >> {log}
@@ -173,8 +173,38 @@ class RemoteKernelTests(unittest.TestCase):
         self.project.mkdir()
 
     def create(self, workspace):
+        session = operation_id()
         with self.app.api(
-            "/sessions", {"workspace": workspace, "provider": self.app.profile}
+            f"/sessions/{session}",
+            {
+                "kind": "new",
+                "workspace": workspace,
+                "provider_profile": self.app.profile,
+            },
+            method="PUT",
+            headers={"If-None-Match": "*"},
+        ) as response:
+            return json.load(response)
+
+    def host(self, target):
+        query = urllib.parse.urlencode({"target": target})
+        with self.app.api("/hosts?" + query) as response:
+            [host] = json.load(response)["items"]
+        self.assertEqual(host["target"], target)
+        return host
+
+    def group(self, workspace):
+        query = urllib.parse.urlencode({"workspace": str(workspace)})
+        with self.app.api(f"/extensions/links/groups?{query}") as response:
+            return json.load(response)
+
+    def merge(self, workspace, other):
+        group = self.group(workspace)["configuration_resource"]
+        target = self.group(other)["configuration_resource"]
+        with self.app.api(
+            group["url"],
+            {"other_workspace": str(other), "other_etag": target["etag"]},
+            headers={"If-Match": group["etag"]},
         ) as response:
             return json.load(response)
 
@@ -186,9 +216,11 @@ class RemoteKernelTests(unittest.TestCase):
             during()
         self.app.idle(session, timeout=60)
         results = [
-            json.loads(event["result"])
-            for event in self.app.events(session)
-            if event.get("type") == "tool" and event.get("name") == "python"
+            json.loads(part["value"])
+            for entry in self.app.history(session)["items"]
+            if entry["kind"] == "tool_result" and entry["tool"]["name"] == "python"
+            for part in entry["content"]
+            if part["kind"] == "json" and part["field"] == "result"
         ]
         return results[-1]
 
@@ -222,21 +254,16 @@ class RemoteKernelTests(unittest.TestCase):
         def watch():
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
-                with self.app.api(f"/sessions/{session}/status") as response:
+                with self.app.api(f"/sessions/{session}?tail=0") as response:
                     kernel = json.load(response)["kernel"]
-                with self.app.api("/hosts/fakehost") as response:
-                    host = json.load(response)
-                seen.update(
-                    {("session", kernel.get("step")), ("host", host.get("step"))}
-                )
-                if kernel["link"] == "attached":
+                seen.add(kernel["stage"])
+                if kernel["state"] == "attached":
                     return
                 time.sleep(0.2)
 
         result = self.cell(session, "1", during=watch)
         self.assertEqual(result["status"], "ok", result)
-        self.assertIn(("session", "staging"), seen)
-        self.assertIn(("host", "staging"), seen)
+        self.assertIn("staging", seen)
 
     def test_a_bridge_killed_mid_cell_reattaches_over_ssh(self):
         session = self.create(f"fakehost:{self.project}")["id"]
@@ -293,46 +320,57 @@ class RemoteKernelTests(unittest.TestCase):
         checkout = self.app.root / "checkout"
         checkout.mkdir()
         local = self.create(str(checkout))["id"]
-        with self.app.api(
-            f"/sessions/{local}/commands",
-            {"name": "/link", "args": {"action": "add", "details": remote}},
-        ) as response:
-            self.assertIn("linked with", json.load(response)["result"]["message"])
+        merged = self.merge(checkout, remote)
+        self.assertIn(remote, merged["resource"]["value"]["members"])
         found = self.cell(local, "print(memory.grep('gate'))")
         self.assertIn(f"[{remote}] memory.md:1: the gate runs", found["output"])
 
     def test_a_linked_remote_folder_is_checked_on_its_host(self):
         checkout = self.app.root / "checkout"
         checkout.mkdir()
-        local = self.create(str(checkout))["id"]
+        self.create(str(checkout))
 
-        def link(**args):
-            with self.app.api(
-                f"/sessions/{local}/commands", {"name": "/link", "args": args}
-            ) as response:
-                return json.load(response)["result"]
-
-        def badges():
-            rows = link()["page"]["rows"][1:]
-            return {row["id"]: (row["badge"], row["detail"]) for row in rows}
+        def presence():
+            return {
+                item["workspace"]: item for item in self.group(checkout)["presence"]
+            }
 
         present = f"fakehost:{self.project}"
         missing = f"fakehost:{self.remote_home}/missing"
         for member in (present, missing, "gone:/srv/app"):
-            link(action="add", details=member)
-        found = badges()
-        self.assertEqual(found[present], ("", ""))
-        self.assertEqual(found[missing][0], "gone")
-        badge, detail = found["gone:/srv/app"]
-        self.assertEqual(badge, "unreachable")
-        self.assertIn("Connection refused", detail)
+            self.merge(checkout, member)
+        found = presence()
+        self.assertTrue(found[present]["exists"])
+        self.assertFalse(found[missing]["exists"])
+        self.assertEqual(found["gone:/srv/app"]["host"]["state"], "unreachable")
+        self.assertIn(
+            "Connection refused", found["gone:/srv/app"]["host"]["detail"]["detail"]
+        )
 
         # A host that stops answering is not a gone folder.
         self.down.touch()
-        found = badges()
-        self.assertEqual(found[present][0], "unreachable")
-        self.assertEqual(found[missing][0], "unreachable")
+        found = presence()
+        self.assertIsNone(found[present]["exists"])
+        self.assertIsNone(found[missing]["exists"])
+        with self.app.api("/hosts/fakehost/probe", {}) as response:
+            self.assertEqual(response.status, 202)
+        deadline = time.monotonic() + 15
+        while (
+            self.host("fakehost")["state"] == "probing" and time.monotonic() < deadline
+        ):
+            time.sleep(0.05)
+        found = presence()
+        self.assertEqual(found[present]["host"]["state"], "unreachable")
+        self.assertEqual(found[missing]["host"]["state"], "unreachable")
         self.down.unlink()
+        with self.app.api("/hosts/fakehost/probe", {}) as response:
+            self.assertEqual(response.status, 202)
+        deadline = time.monotonic() + 15
+        while (
+            self.host("fakehost")["state"] == "probing" and time.monotonic() < deadline
+        ):
+            time.sleep(0.05)
+        self.assertEqual(self.host("fakehost")["state"], "ready")
 
         # A session opening with the host's probe fresh is told what is gone.
         self.cell(self.create(str(checkout))["id"], "1")
@@ -343,42 +381,47 @@ class RemoteKernelTests(unittest.TestCase):
     def test_linked_hosts_are_checked_side_by_side(self):
         checkout = self.app.root / "slow-checkout"
         checkout.mkdir()
-        local = self.create(str(checkout))["id"]
-
-        def link(**args):
-            with self.app.api(
-                f"/sessions/{local}/commands", {"name": "/link", "args": args}
-            ) as response:
-                return json.load(response)["result"]
+        self.create(str(checkout))
 
         for host in ("slow-a", "slow-b"):
-            link(action="add", details=f"{host}:/srv")
+            self.merge(checkout, f"{host}:/srv")
         # Each host takes 3 s to refuse; one after the other would be 6.
         began = time.monotonic()
-        rows = link()["page"]["rows"][1:]
+        rows = [
+            item
+            for item in self.group(checkout)["presence"]
+            if item["workspace"] != str(checkout)
+        ]
         self.assertLess(time.monotonic() - began, 5.5)
-        self.assertEqual([row["badge"] for row in rows], ["unreachable"] * 2)
+        self.assertEqual([row["host"]["state"] for row in rows], ["unreachable"] * 2)
 
     def test_a_remote_home_is_resolved_and_stored_absolute(self):
         created = self.create("fakehost:~/proj")
         self.assertEqual(created["workspace"], f"fakehost:{self.project}")
         with self.assertRaises(urllib.error.HTTPError) as refused:
             self.create("gone:~/proj")
-        self.assertEqual(refused.exception.code, 400)
+        self.assertEqual(refused.exception.code, 503)
         self.assertIn("Connection refused", refused.exception.read().decode())
 
     def test_hosts_report_what_ssh_found(self):
         def warm(host):
-            with self.app.api(f"/hosts/{host}/warm", {}) as response:
-                return json.load(response)
+            with self.app.api(f"/hosts/{host}/probe", {}) as response:
+                self.assertEqual(response.status, 202)
+                observation = json.load(response)
+            deadline = time.monotonic() + 15
+            while observation["state"] == "probing" and time.monotonic() < deadline:
+                time.sleep(0.05)
+                observation = self.host(host)
+            self.assertNotEqual(observation["state"], "probing", observation)
+            return observation
 
         ready = warm("fakehost")
         self.assertEqual(ready["state"], "ready", ready)
         self.assertEqual(ready["home"], str(self.remote_home))
-        self.assertTrue(ready["os"] and ready["arch"])
+        self.assertTrue(ready["os"] and ready["architecture"])
         old = warm("oldhost")
         self.assertEqual(old["state"], "unsupported", old)
-        self.assertIn("python >= 3.11", old["detail"])
+        self.assertIn("python >= 3.11", old["detail"]["detail"])
         self.assertEqual(warm("locked")["state"], "needs_auth")
         self.assertEqual(warm("gone")["state"], "unreachable")
         # A host whose ssh config names a ControlPath rides that master, so the
@@ -393,27 +436,25 @@ class RemoteKernelTests(unittest.TestCase):
         for line in muxed:
             self.assertIn(f"ControlPath={self.mux} ", line)
             self.assertIn("ControlPersist=1800 ", line)
-        with self.app.api("/hosts/fakehost") as response:
-            self.assertEqual(json.load(response)["state"], "ready")
+        self.assertEqual(self.host("fakehost")["state"], "ready")
 
         # A turn at a host that needs a sign-in waits with ssh's words, and
         # the host names the control path the tui's sign-in opens.
         session = self.create("locked:/srv/app")["id"]
         with self.app.prompt(session, "hello") as response:
-            operation = json.load(response)["operationId"]
+            input_id = json.load(response)["id"]
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            with self.app.api(f"/operations/{operation}") as response:
+            with self.app.api(f"/sessions/{session}/inputs/{input_id}") as response:
                 receipt = json.load(response)
-            if receipt["blockingReason"]:
+            if receipt["blocking_reason"]:
                 break
             time.sleep(0.05)
-        self.assertEqual(receipt["deliveryStatus"], "pending", receipt)
-        self.assertIn("Permission denied", receipt["blockingReason"] or "")
-        with self.app.api("/hosts/locked") as response:
-            host = json.load(response)
+        self.assertEqual(receipt["delivery"], "pending", receipt)
+        self.assertIn("Permission denied", receipt["blocking_reason"]["detail"])
+        host = self.host("locked")
         self.assertEqual(host["state"], "needs_auth", host)
-        self.assertTrue(host["control_path"].endswith("/%C"), host)
+        self.assertTrue(host["authentication"]["control_path"].endswith("/%C"), host)
 
     def test_a_remote_kernel_is_ended_on_its_host_never_here(self):
         session = self.create(f"fakehost:{self.project}")["id"]
@@ -425,10 +466,18 @@ class RemoteKernelTests(unittest.TestCase):
         self.assertTrue(processes("sleep 7777"))
         elsewhere = self.remote_home / "elsewhere"
         elsewhere.mkdir()
-        with self.app.api(
-            f"/sessions/{session}/workspace", {"workspace": f"fakehost:{elsewhere}"}
-        ):
-            pass
+        with self.app.api(f"/sessions/{session}?view=configuration") as response:
+            configuration = json.load(response)
+            revision = response.headers["ETag"]
+        self.app.api(
+            f"/sessions/{session}?view=configuration",
+            {
+                "workspace": f"fakehost:{elsewhere}",
+                "family_revision": configuration["family_revision"],
+            },
+            method="PATCH",
+            headers={"If-Match": revision},
+        ).close()
         deadline = time.monotonic() + 15
         while processes("sleep 7777") and time.monotonic() < deadline:
             time.sleep(0.1)
@@ -445,34 +494,87 @@ class RemoteKernelTests(unittest.TestCase):
     def test_hosts_list_recent_and_configured_hosts_without_probing(self):
         self.create(f"fakehost:{self.project}")
         with self.app.api("/hosts") as response:
-            hosts = json.load(response)["hosts"]
-        by_host = {entry["host"]: entry for entry in hosts}
-        self.assertEqual(by_host["fakehost"]["source"], "recent")
-        self.assertEqual(by_host["configured-box"]["source"], "config")
-        self.assertEqual(by_host["included-box"]["source"], "config")
+            hosts = json.load(response)["items"]
+        by_host = {entry["target"]: entry for entry in hosts}
+        self.assertTrue({"fakehost", "configured-box", "included-box"} <= set(by_host))
         self.assertNotIn("*", by_host)
         self.assertFalse([host for host in by_host if "*" in host])
         # Nothing was probed just to list them.
-        self.assertNotIn("state", by_host["configured-box"])
+        self.assertEqual(by_host["configured-box"]["state"], "unknown")
+        self.assertIsNone(by_host["configured-box"]["observed_at"])
 
-    def browse(self, route, path):
-        query = urllib.parse.urlencode({"path": path})
-        with self.app.api(f"/fs/{route}?{query}") as response:
+    def browse(self, location, *, preview=False):
+        query = {"location": str(location)}
+        if preview:
+            query["include"] = "preview"
+        with self.app.api("/workspaces?" + urllib.parse.urlencode(query)) as response:
             return json.load(response)
 
     def assert_same_answers(self, tree):
-        """A remote folder reads exactly as the same folder read locally."""
-        for route in ("list", "repo", "preview"):
-            with self.subTest(route=route):
-                remote = self.browse(route, f"fakehost:{tree}")
-                local = self.browse(route, str(tree))
-                if "path" in remote:
-                    self.assertEqual(remote.pop("path"), f"fakehost:{tree}")
-                    local.pop("path")
-                if "home" in remote:
-                    self.assertEqual(remote.pop("home"), f"fakehost:{self.remote_home}")
-                    local.pop("home")
-                self.assertEqual(remote, local)
+        """Remote and local inspection preserve the same filesystem facts."""
+        remote = self.browse(f"fakehost:{tree}", preview=True)
+        local = self.browse(tree, preview=True)
+        self.assertEqual(remote["directory"], f"fakehost:{tree}")
+        self.assertEqual(remote["home"], f"fakehost:{self.remote_home}")
+        self.assertEqual(
+            [
+                {key: row[key] for key in ("name", "vcs", "hidden", "modified_at")}
+                for row in remote["items"]
+            ],
+            [
+                {key: row[key] for key in ("name", "vcs", "hidden", "modified_at")}
+                for row in local["items"]
+            ],
+        )
+        remote_preview = remote["preview"]
+        local_preview = local["preview"]
+        for key in ("languages", "more"):
+            self.assertEqual(remote_preview[key], local_preview[key])
+        self.assertEqual(len(remote_preview["tree"]), len(local_preview["tree"]))
+        for remote_row, local_row in zip(remote_preview["tree"], local_preview["tree"]):
+            self.assertEqual(
+                remote_row["location"], "fakehost:" + local_row["location"]
+            )
+            self.assertEqual(
+                {
+                    key: value
+                    for key, value in remote_row.items()
+                    if key not in {"location", "children"}
+                },
+                {
+                    key: value
+                    for key, value in local_row.items()
+                    if key not in {"location", "children"}
+                },
+            )
+            self.assertEqual(len(remote_row["children"]), len(local_row["children"]))
+            for remote_child, local_child in zip(
+                remote_row["children"], local_row["children"]
+            ):
+                self.assertEqual(
+                    remote_child["location"], "fakehost:" + local_child["location"]
+                )
+                self.assertEqual(
+                    {
+                        key: value
+                        for key, value in remote_child.items()
+                        if key != "location"
+                    },
+                    {
+                        key: value
+                        for key, value in local_child.items()
+                        if key != "location"
+                    },
+                )
+        remote_repo = remote_preview["repository"]
+        local_repo = local_preview["repository"]
+        self.assertEqual(remote_repo is None, local_repo is None)
+        if remote_repo is not None:
+            self.assertEqual(remote_repo["root"], "fakehost:" + local_repo["root"])
+            self.assertEqual(
+                {key: value for key, value in remote_repo.items() if key != "root"},
+                {key: value for key, value in local_repo.items() if key != "root"},
+            )
 
     def make_tree(self, name):
         tree = self.remote_home / name
@@ -493,7 +595,12 @@ class RemoteKernelTests(unittest.TestCase):
         subprocess.run([*git, "add", "src", "README.md"], check=True)
         subprocess.run([*git, "commit", "-qm", "one"], check=True)
         (tree / "docs" / "new.md").write_text("new\n")
-        self.assertEqual(self.browse("repo", f"fakehost:{tree}")["repo"]["kind"], "git")
+        self.assertEqual(
+            self.browse(f"fakehost:{tree}", preview=True)["preview"]["repository"][
+                "kind"
+            ],
+            "git",
+        )
         self.assert_same_answers(tree)
         self.assert_same_answers(tree / "src")
 
@@ -508,24 +615,31 @@ class RemoteKernelTests(unittest.TestCase):
             check=True,
             env=env,
         )
-        self.assertEqual(self.browse("repo", f"fakehost:{tree}")["repo"]["kind"], "jj")
+        self.assertEqual(
+            self.browse(f"fakehost:{tree}", preview=True)["preview"]["repository"][
+                "kind"
+            ],
+            "jj",
+        )
         self.assert_same_answers(tree)
 
     def test_a_remote_folder_answers_with_the_hosts_state(self):
-        query = urllib.parse.urlencode({"path": "gone:/srv"})
+        query = urllib.parse.urlencode({"location": "gone:/srv"})
         with self.assertRaises(urllib.error.HTTPError) as refused:
-            self.app.api(f"/fs/list?{query}").close()
+            self.app.api(f"/workspaces?{query}").close()
         self.assertEqual(refused.exception.code, 503)
         body = json.loads(refused.exception.read())
-        self.assertEqual((body["host"], body["state"]), ("gone", "unreachable"))
+        self.assertEqual(body["status"], 503)
+        self.assertIn("Connection refused", body["detail"])
+        self.assertEqual(self.host("gone")["state"], "unreachable")
         # A session there still composes, its project files skipped.
         session = self.create("gone:/srv/app")["id"]
-        with self.app.api(f"/sessions/{session}/commands") as response:
-            self.assertTrue(json.load(response))
+        with self.app.api(f"/sessions/{session}/catalog") as response:
+            self.assertTrue(json.load(response)["discovery"]["candidates"])
         # A ~ path lists the remote home.
-        listed = self.browse("list", "fakehost:~")
-        self.assertEqual(listed["path"], f"fakehost:{self.remote_home}")
-        self.assertIn("proj", [entry["name"] for entry in listed["entries"]])
+        listed = self.browse("fakehost:~")
+        self.assertEqual(listed["directory"], f"fakehost:{self.remote_home}")
+        self.assertIn("proj", [entry["name"] for entry in listed["items"]])
 
     def test_project_instructions_and_skills_come_from_the_host(self):
         (self.project / "AGENTS.md").write_text("remote rule: always say banana\n")

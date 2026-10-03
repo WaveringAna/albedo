@@ -6,6 +6,7 @@
 
 import albedo/daemon/conversation
 import albedo/daemon/mail
+import albedo/harness/compaction
 import albedo/openai_api/types
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process
@@ -42,8 +43,29 @@ pub type Submission {
   )
 }
 
+pub type CompactionObservation {
+  CompactionObservation(
+    observed: Option(compaction.Observation),
+    evicted: Int,
+    summary: String,
+  )
+}
+
+pub type CompactionReport {
+  CompactionReport(
+    selection_applied: Bool,
+    effective_strategy: Option(String),
+    state: String,
+    observation: Option(CompactionObservation),
+    failure: Option(String),
+  )
+}
+
 pub type Work {
-  Compaction
+  Compaction(
+    reply: process.Subject(Result(CompactionReport, String)),
+    report: CompactionReport,
+  )
   /// An extension's background call: commits nothing and publishes
   /// nothing; its outcome goes back to `reply`.
   Background(reply: process.Subject(Result(Option(types.Usage), String)))
@@ -156,14 +178,14 @@ pub fn admit(
   }
 }
 
-/// A nonempty prompt within its size limits. An activation whose display
+/// Text or an image within the prompt size limits. An activation whose display
 /// differs from its text may send a larger body.
 fn bounded(submission: Submission) -> Bool {
   let maximum = case submission.display == submission.text {
     True -> 1_048_576
     False -> 2_200_000
   }
-  string.trim(submission.text) != ""
+  { string.trim(submission.text) != "" || submission.image != None }
   && string.byte_size(submission.text) <= maximum
   && string.byte_size(submission.display) <= 1_048_576
 }
@@ -256,7 +278,7 @@ pub fn phase(activity: Activity) -> String {
   case activity {
     Resting -> "resting"
     Interrupted -> "interrupted"
-    Running(Run(work: Compaction, ..)) -> "compacting"
+    Running(Run(work: Compaction(..), ..)) -> "compacting"
     Running(Run(work: Background(_), ..)) -> "background"
     Running(Run(work: Turn(None), ..)) -> "preparing"
     Running(Run(work: Turn(Some(stage)), ..)) -> conversation.stage_name(stage)

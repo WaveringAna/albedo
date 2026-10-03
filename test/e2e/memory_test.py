@@ -34,9 +34,11 @@ class MemoryTests(unittest.TestCase):
             app.prompt(first, "save notes").close()
             app.idle(first)
             output = next(
-                json.loads(event["result"])["output"]
-                for event in app.events(first)
-                if event.get("type") == "tool" and event.get("name") == "python"
+                json.loads(part["value"])["output"]
+                for entry in app.history(first)["items"]
+                if entry["kind"] == "tool_result" and entry["tool"]["name"] == "python"
+                for part in entry["content"]
+                if part["kind"] == "json" and part["field"] == "result"
             )
             self.assertIn("memory.md:3:", output)
             self.assertRegex(output, r"journal/\d{4}-\d{2}-\d{2}\.md:1:")

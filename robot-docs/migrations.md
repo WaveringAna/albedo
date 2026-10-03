@@ -32,7 +32,10 @@ sessions; session selection and live reload never rerun migrations.
    columns second. The same core initialization creates `operations`,
    `pending_inputs`, `submission_events`, and `continuation_markers` through
    `operations.schema`.
-   These are new tables and require no backfill. it then runs its existing domain-local session recovery
+   `operations.initialise` upgrades historical display and continuation metadata
+   to unique `(session,operation_id)` keys in one transaction, preserving their
+   rowids. Admission receipts and pending inputs still require globally unique
+   input identities. It then runs its existing domain-local session recovery
    (missing activity/title from transcript), then creates `sessions_activity`.
 2. quota, mail, and family initialise their tables, unchanged.
 3. `migrations.run(ledger, backup)` runs the core `image_store.run`, which first
@@ -155,6 +158,10 @@ removes at most 128 expired receipts per call. Durable display metadata in
 display text, and echo identity. Continuations commit a `continuation_markers`
 row in the same transaction without adding a user-text transcript row. These
 markers also remain until session deletion and survive receipt cleanup.
+Forks copy this historical metadata with its original input IDs, timestamps,
+and turn IDs at the branch's remapped transcript positions. A continuation
+follows its anchor row, so only markers anchored strictly before the selected
+checkpoint belong to the fork. Forks copy no admission receipts or live runs.
 
 Acceptance guarantees stored input or its committed or cancelled outcome.
 Commit means the input reached the transcript. Neither guarantee promises that

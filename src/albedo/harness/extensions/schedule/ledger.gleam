@@ -16,6 +16,9 @@ pub type Job {
     prompt: String,
     next_at: Int,
     every: Option(Int),
+    revision: Int,
+    created_at: Option(String),
+    updated_at: Option(String),
   )
 }
 
@@ -26,7 +29,10 @@ CREATE TABLE IF NOT EXISTS schedules (
  kind TEXT NOT NULL CHECK(kind IN ('recurring','heartbeat','once')),
  prompt TEXT NOT NULL,
  next_at INTEGER NOT NULL,
- every_seconds INTEGER
+ every_seconds INTEGER,
+ revision INTEGER NOT NULL DEFAULT 1,
+ created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+ updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS schedules_due ON schedules(next_at);
 "
@@ -45,10 +51,23 @@ fn decoder() -> decode.Decoder(Job) {
   use prompt <- decode.field(3, decode.string)
   use next_at <- decode.field(4, decode.int)
   use every <- decode.field(5, decode.optional(decode.int))
-  decode.success(Job(id, session, kind, prompt, next_at, every))
+  use revision <- decode.field(6, decode.int)
+  use created_at <- decode.field(7, decode.optional(decode.string))
+  use updated_at <- decode.field(8, decode.optional(decode.string))
+  decode.success(Job(
+    id,
+    session,
+    kind,
+    prompt,
+    next_at,
+    every,
+    revision,
+    created_at,
+    updated_at,
+  ))
 }
 
-const columns = "id,session,kind,prompt,next_at,every_seconds"
+const columns = "id,session,kind,prompt,next_at,every_seconds,revision,created_at,updated_at"
 
 pub fn list(db: store.Store, session: String) -> Result(List(Job), String) {
   store.read(
@@ -99,10 +118,10 @@ pub fn save(
   case
     string.trim(prompt) == ""
     || string.byte_size(prompt) > 4096
-    || delay < 1
+    || delay < 0
     || delay > 31_536_000
   {
-    True -> Error("prompt must be 1–4096 bytes and delay 1–31536000 seconds")
+    True -> Error("prompt must be 1–4096 bytes and delay 0–31536000 seconds")
     False -> {
       let next = now() + delay
       let args = [
@@ -113,12 +132,12 @@ pub fn save(
       ]
       let #(sql, values) = case id {
         None -> #(
-          "INSERT INTO schedules(session,kind,prompt,next_at,every_seconds) VALUES(?,?,?,?,?) RETURNING "
+          "INSERT INTO schedules(session,kind,prompt,next_at,every_seconds,created_at,updated_at) VALUES(?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now')) RETURNING "
             <> columns,
           [sqlight.text(session), ..args],
         )
         Some(id) -> #(
-          "UPDATE schedules SET kind=?,prompt=?,next_at=?,every_seconds=? WHERE id=? AND session=? RETURNING "
+          "UPDATE schedules SET revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),kind=?,prompt=?,next_at=?,every_seconds=? WHERE id=? AND session=? RETURNING "
             <> columns,
           list.append(args, [sqlight.int(id), sqlight.text(session)]),
         )
@@ -144,16 +163,23 @@ pub fn delete(
 
 /// Advance only the occurrence actually delivered. Downtime skips missed intervals.
 pub fn advance(db: store.Store, job: Job, time: Int) -> Result(Nil, String) {
-  let key = [sqlight.int(job.id), sqlight.int(job.next_at)]
+  let key = [
+    sqlight.int(job.id),
+    sqlight.int(job.next_at),
+    sqlight.int(job.revision),
+  ]
   let #(sql, args) = case job.every {
-    None -> #("DELETE FROM schedules WHERE id=? AND next_at=?", key)
+    None -> #(
+      "DELETE FROM schedules WHERE id=? AND next_at=? AND revision=?",
+      key,
+    )
     Some(seconds) -> {
       let elapsed = int.max(time - job.next_at, 0)
       let next = job.next_at + { elapsed / seconds + 1 } * seconds
-      #("UPDATE schedules SET next_at=? WHERE id=? AND next_at=?", [
-        sqlight.int(next),
-        ..key
-      ])
+      #(
+        "UPDATE schedules SET revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),next_at=? WHERE id=? AND next_at=? AND revision=?",
+        [sqlight.int(next), ..key],
+      )
     }
   }
   store.write(db, sql, args)
@@ -167,4 +193,66 @@ pub fn to_json(job: Job) -> json.Json {
     #("next_at", json.int(job.next_at)),
     #("every_seconds", json.nullable(job.every, json.int)),
   ])
+}
+
+pub fn find(db: store.Store, id: Int) -> Result(Job, String) {
+  one(db, "SELECT " <> columns <> " FROM schedules WHERE id=?", [
+    sqlight.int(id),
+  ])
+}
+
+pub fn page(
+  db: store.Store,
+  session: String,
+  after: Int,
+  limit: Int,
+) -> Result(List(Job), String) {
+  store.read(
+    db,
+    "SELECT "
+      <> columns
+      <> " FROM schedules WHERE session=? AND id>? ORDER BY id LIMIT ?",
+    [sqlight.text(session), sqlight.int(after), sqlight.int(limit)],
+    decoder(),
+  )
+}
+
+pub fn update_observed(db: store.Store, candidate: Job) -> Result(Job, String) {
+  one(
+    db,
+    "UPDATE schedules SET kind=?,prompt=?,next_at=?,every_seconds=?,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND revision=? RETURNING "
+      <> columns,
+    [
+      sqlight.text(candidate.kind),
+      sqlight.text(candidate.prompt),
+      sqlight.int(candidate.next_at),
+      sqlight.nullable(sqlight.int, candidate.every),
+      sqlight.int(candidate.id),
+      sqlight.int(candidate.revision),
+    ],
+  )
+  |> result.map_error(fn(error) {
+    case error {
+      "schedule not found" -> "schedule changed"
+      other -> other
+    }
+  })
+}
+
+pub fn delete_observed(
+  db: store.Store,
+  id: Int,
+  revision: Int,
+) -> Result(Job, String) {
+  one(
+    db,
+    "DELETE FROM schedules WHERE id=? AND revision=? RETURNING " <> columns,
+    [sqlight.int(id), sqlight.int(revision)],
+  )
+  |> result.map_error(fn(error) {
+    case error {
+      "schedule not found" -> "schedule changed"
+      other -> other
+    }
+  })
 }

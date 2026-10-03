@@ -153,10 +153,6 @@ var diffLanguages = map[string]string{
 	"py": "python", "rs": "rust", "sh": "bash",
 }
 
-func (r TranscriptRenderer) RenderDiff(diff string, width int) string {
-	return r.renderDiffPath(diff, "", width)
-}
-
 func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string {
 	if width < 8 {
 		return "…"
@@ -430,10 +426,6 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 			continue
 		}
 		label, style := act.Kind, r.Styles.Faint
-		if act.Failed {
-			label += " failed"
-			style = r.Styles.Error
-		}
 		if flags.Tools {
 			rows = append(rows, "  "+r.traceLine(style.Render(label), act.Target, isPath(act), width-2))
 		} else {
@@ -749,18 +741,4 @@ func (r TranscriptRenderer) OpenBurst(entries []HistoryEntry, flags DisplayFlags
 		return nil
 	}
 	return r.BurstBlock(entries[:len(entries)-len(burst)], burst, flags)
-}
-
-func (r TranscriptRenderer) RenderHistory(history *BoundedHistory, flags DisplayFlags) string {
-	var rows []string
-	if notice := history.TruncationNotice(); notice != "" {
-		rows = append(rows, r.rail(laneNone)+r.Styles.Warning.Render(notice), "")
-	}
-	entries := history.Entries()
-	for i, entry := range entries {
-		block, _ := r.Settle(entries[:i], entry, flags)
-		rows = append(rows, block...)
-	}
-	rows = append(rows, r.OpenBurst(entries, flags)...)
-	return strings.Join(rows, "\n")
 }

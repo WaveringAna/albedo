@@ -10,9 +10,9 @@
 
 -export([read/1, read_json/1, read_json/2, write/2, write/3,
          creds_path/1, accounts/1, put_accounts/2, provider_keys/1,
-         put_provider_key/3, mcp/1, patch_mcp/3, patch_mcp_settings/3, undo_mcp/3, summary/1, config/1,
-         migrate/2, take_migrated/0,
-         values/2, oauth/2, put_values/3, expire_access/3, stale/2, fresh/2]).
+         mcp/1, patch_mcp_settings/3, config/1,
+         migrate/2, migrated/0,
+         values/2, bound_values/3, oauth/2, put_values/3, expire_access/3, stale/2, fresh/2]).
 
 creds_path(Home) ->
     filename:join(unicode:characters_to_list(Home), "creds.json").
@@ -34,15 +34,6 @@ keys(Profiles) ->
     maps:from_list([{Name, Key} || {Name, #{<<"apiKey">> := <<_, _/binary>> = Key}}
                                        <- maps:to_list(Profiles)]).
 
-%% Saves a profile's apiKey; an empty key removes it.
-put_provider_key(Home, Name, Key) ->
-    update_section(Home, <<"providers">>, fun(Profiles) ->
-        case Key of
-            <<>> -> maps:remove(Name, Profiles);
-            _ -> Profiles#{Name => #{<<"apiKey">> => Key}}
-        end
-    end).
-
 %% Every MCP server's secrets, by server name.
 mcp(Home) ->
     case section(creds_path(Home), <<"mcp">>) of
@@ -51,42 +42,11 @@ mcp(Home) ->
         Error -> Error
     end.
 
-%% Saves one MCP server's secrets; an empty map removes them.
-put_mcp(Home, Name, Secret) ->
-    update_section(Home, <<"mcp">>, fun(Servers) -> with_secret(Servers, Name, Secret) end).
-
-%% Changes one MCP server's secrets without a client ever reading them. An
-%% absent field keeps its value and null removes it; "headers" and "env" map
-%% names to a value or null. Returns a token that undo_mcp/3 takes to put back
-%% what the server held before, for a client whose save failed later on.
-patch_mcp(Home, Name, Patch) when is_map(Patch) ->
-    Token = binary:encode_hex(crypto:strong_rand_bytes(16), lowercase),
-    Changed = update_section(Home, <<"mcp">>, fun(Servers) ->
-        Prior = maps:get(Name, Servers, #{}),
-        persistent_term:put({?MODULE, undo, Name}, {Token, Prior}),
-        with_secret(Servers, Name, patched(Prior, Patch))
-    end),
-    case Changed of
-        {ok, nil} -> {ok, Token};
-        Error -> Error
-    end;
-patch_mcp(_, _, _) -> {error, <<"a secrets patch must be a JSON object">>}.
-
 %% Settings transactions capture and restore the affected entry themselves.
 patch_mcp_settings(Home, Name, Patch) ->
     update_section(Home, <<"mcp">>, fun(Servers) ->
         with_secret(Servers, Name, patched(maps:get(Name, Servers, #{}), Patch))
     end).
-
-undo_mcp(Home, Name, Token) ->
-    albedo_settings_lock:with_lock(Home, fun() ->
-        case persistent_term:get({?MODULE, undo, Name}, none) of
-            {Token, Prior} ->
-                _ = persistent_term:erase({?MODULE, undo, Name}),
-                put_mcp(Home, Name, Prior);
-            _ -> {error, <<"nothing to undo for this server">>}
-        end
-    end, fun() -> {error, <<"settings store is busy">>} end).
 
 with_secret(Servers, Name, Secret) when map_size(Secret) =:= 0 -> maps:remove(Name, Servers);
 with_secret(Servers, Name, Secret) -> Servers#{Name => Secret}.
@@ -110,29 +70,14 @@ patched(Secret, Patch) ->
     end, Secret, [{F, maps:get(F, Patch)} || F <- [<<"bearerToken">>, <<"headers">>, <<"env">>],
                                             maps:is_key(F, Patch)]).
 
-%% What a client may know of the saved secrets: which profiles have a key, and
-%% for each MCP server whether it has a token and the names of its headers and
-%% env entries.
-summary(Home) ->
-    case mcp(Home) of
-        {ok, Servers} ->
-            Names = fun(Field, Secret) ->
-                case maps:get(Field, Secret, #{}) of
-                    Found when is_map(Found) -> lists:sort(maps:keys(Found));
-                    _ -> []
-                end
-            end,
-            {ok, {summary, lists:sort(maps:keys(provider_keys(Home))),
-                  [{server, Name, maps:get(<<"bearerToken">>, Secret, <<>>) =/= <<>>,
-                    Names(<<"headers">>, Secret), Names(<<"env">>, Secret)}
-                   || {Name, Secret} <- lists:sort(maps:to_list(Servers))]}};
-        {error, _} -> {error, <<"creds.json is unreadable; repair it first">>}
-    end.
-
 %% config.json with each profile's saved apiKey filled in. A key still written
 %% in config.json is a hand edit newer than the saved one, so it wins until the
 %% next boot moves it.
 config(Home) ->
+    albedo_settings_lock:with_lock(Home, fun() -> config_locked(Home) end,
+        fun() -> {error, busy} end).
+
+config_locked(Home) ->
     case read(config_path(Home)) of
         {ok, #{<<"providers">> := Profiles} = Config} when is_map(Profiles) ->
             Keys = provider_keys(Home),
@@ -252,12 +197,9 @@ retire(Home, Stamp, Files, Config, Keys) ->
     persistent_term:put({?MODULE, migrated}, Retired),
     {ok, Retired}.
 
-%% The files this daemon's start moved secrets out of, once: the first client
-%% to ask tells the user, and later ones get nothing.
-take_migrated() ->
-    Moved = persistent_term:get({?MODULE, migrated}, []),
-    _ = persistent_term:erase({?MODULE, migrated}),
-    Moved.
+%% Each client can observe this daemon's migration. Dismissal is a saved UI
+%% preference and does not destroy the native observation for other clients.
+migrated() -> persistent_term:get({?MODULE, migrated}, []).
 
 move(File, To) ->
     case file:rename(File, To) of
@@ -301,6 +243,14 @@ read(Path) ->
     end.
 
 read_json(Path) ->
+    case lists:member(unicode:characters_to_binary(filename:basename(Path)),
+            [<<"config.json">>, <<"creds.json">>, <<"extensions.json">>, <<"capabilities.json">>, <<"picker.json">>]) of
+        true -> albedo_settings_lock:with_lock(filename:dirname(Path), fun() -> read_json_locked(Path) end,
+            fun() -> {error, busy} end);
+        false -> read_json_locked(Path)
+    end.
+
+read_json_locked(Path) ->
     case file:read_file(Path) of
         {ok, Bytes} ->
             try json:decode(Bytes) of
@@ -392,3 +342,28 @@ expire_access(Path, Key, Access) ->
         end
     end, fun() -> nil end).
 
+
+%% A profile's explicit public account identity confines this transport to that
+%% account. No matching credential is an error rather than a silent fallback.
+bound_values(_, <<>>, Values) -> {ok, Values};
+bound_values(Home, Profile, Values) ->
+    albedo_settings_lock:with_lock(Home, fun() ->
+        case config_locked(Home) of
+            {ok, Config} ->
+                Saved = case maps:find(<<"providers">>, Config) of
+                    {ok, Profiles} -> maps:get(Profile, Profiles, #{});
+                    error when Profile =:= <<"default">> -> Config;
+                    error -> #{}
+                end,
+                case maps:get(<<"accountId">>, Saved, null) of
+                    null -> {ok, Values};
+                    Id when is_binary(Id), byte_size(Id) > 0 ->
+                        case [V || V <- Values, maps:get(<<"_albedo_account_id">>, V, null) =:= Id] of
+                            [] -> {error, <<"Profile's selected account is unavailable">>};
+                            Selected -> {ok, Selected}
+                        end;
+                    _ -> {error, <<"Profile's selected account is invalid">>}
+                end;
+            _ -> {error, <<"Provider profile is unavailable">>}
+        end
+    end, fun() -> {error, <<"Credential store is busy">>} end).

@@ -153,7 +153,7 @@ func dateSection(s daemon.Session, now time.Time) int {
 func (m *SessionViewer) SetSessions(sessions []daemon.Session, active *daemon.Session) {
 	m.Loading = false
 	m.HasActive = active != nil
-	m.raw = sessions
+	m.raw = slices.Clone(sessions)
 	m.active = active
 	previous, ok := m.Highlighted()
 	m.rebuild()
@@ -352,8 +352,8 @@ func (m *SessionViewer) switchGroup() {
 
 // SessionPreferenceMsg requests a single explicit change; the root model owns I/O.
 type SessionPreferenceMsg struct {
-	ID, Field string
-	Value     bool
+	ID, Field, ETag string
+	Value           bool
 }
 
 func (m *SessionViewer) togglePin() tea.Cmd {
@@ -362,11 +362,17 @@ func (m *SessionViewer) togglePin() tea.Cmd {
 		return nil
 	}
 	value := !m.prefs.pinned(item.ID)
+	session, _ := m.session(item.ID)
 	m.Saving = true
-	return func() tea.Msg { return SessionPreferenceMsg{item.ID, "pinned", value} }
+	return func() tea.Msg {
+		return SessionPreferenceMsg{ID: item.ID, Field: "pinned", Value: value, ETag: session.ETag}
+	}
 }
 
-type SessionDeleteMsg struct{ ID string }
+type SessionDeleteMsg struct {
+	ID        string
+	Condition daemon.SessionCondition
+}
 
 // SessionFoldersMsg browses sessions by folder, starting from Query.
 type SessionFoldersMsg struct{ Query string }
@@ -383,7 +389,12 @@ func (m *SessionViewer) startRename() {
 	if current == untitled {
 		current = ""
 	}
+	if s.ETag == "" {
+		m.notice = "Wait for the session preview, then rename."
+		return
+	}
 	m.rename.open(s.ID, current, "Name this session")
+	m.rename.etag = s.ETag
 }
 
 // Renamed takes a session's new listing from the daemon.
@@ -407,8 +418,11 @@ func (m *SessionViewer) toggleArchive() tea.Cmd {
 		return nil
 	}
 	value := !m.archivedIDs[item.ID]
+	session, _ := m.session(item.ID)
 	m.Saving = true
-	return func() tea.Msg { return SessionPreferenceMsg{item.ID, "archived", value} }
+	return func() tea.Msg {
+		return SessionPreferenceMsg{ID: item.ID, Field: "archived", Value: value, ETag: session.ETag}
+	}
 }
 
 func (m *SessionViewer) OpenArchive() { m.setArchive(true) }
@@ -446,6 +460,13 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 			c.loading, c.err = false, msg.Err != nil
 			if !c.err {
 				c.SessionPreview = msg.Preview
+				if msg.Preview.Session != nil {
+					for i := range m.raw {
+						if m.raw[i].ID == msg.ID {
+							m.raw[i] = *msg.Preview.Session
+						}
+					}
+				}
 			}
 		}
 		return m, nil
@@ -462,7 +483,10 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 			id := m.ConfirmDelete
 			m.ConfirmDelete = ""
 			if msg.Text == "y" {
-				return m, func() tea.Msg { return SessionDeleteMsg{ID: id} }
+				s, _ := m.session(id)
+				return m, func() tea.Msg {
+					return SessionDeleteMsg{ID: id, Condition: daemon.SessionCondition{ETag: s.ETag, FamilyRevision: s.FamilyRevision}}
+				}
 			}
 			return m, nil
 		}
@@ -473,7 +497,12 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 		switch key := msg.String(); {
 		case key == "ctrl+d":
 			if item, ok := m.Highlighted(); m.ArchiveView && ok {
-				m.ConfirmDelete = item.ID
+				s, _ := m.session(item.ID)
+				if s.ETag == "" {
+					m.notice = "Wait for the session preview, then delete."
+				} else {
+					m.ConfirmDelete = item.ID
+				}
 			}
 			return m, nil
 		case key == "ctrl+a":

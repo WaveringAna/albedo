@@ -11,8 +11,10 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // retryPolicy controls application recovery. Audited read-only GET requests
@@ -27,12 +29,35 @@ const (
 )
 
 type operation struct {
-	Handle *OperationHandle
-	Body   any
-	Name   string
-	Method string
-	Path   string
-	Policy retryPolicy
+	Handle     *OperationHandle
+	Body       any
+	Name       string
+	Method     string
+	Path       string
+	Policy     retryPolicy
+	Headers    http.Header
+	Validator  *string
+	Timeout    time.Duration
+	Capability string
+}
+
+func (c *Connection) operationEndpoint(op operation) (ConnectionSnapshot, error) {
+	if c == nil {
+		return ConnectionSnapshot{}, errors.New("not connected to Albedo")
+	}
+	state := c.state.Load()
+	if state == nil {
+		return ConnectionSnapshot{}, errors.New("not connected to Albedo")
+	}
+	if op.Capability != "" {
+		if state.capabilities == nil {
+			return ConnectionSnapshot{}, &ProtocolError{Code: "not_attached", Operation: op.Name, Cause: errors.New("attach to the daemon before invoking optional APIs")}
+		}
+		if state.capabilities[op.Capability] < 1 {
+			return ConnectionSnapshot{}, &UpgradeRequiredError{Feature: "for " + op.Capability}
+		}
+	}
+	return state.endpoint, nil
 }
 
 func newHTTPClient() *http.Client {
@@ -87,6 +112,10 @@ func operationRequest(ctx context.Context, snapshot ConnectionSnapshot, operatio
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	for name, values := range operation.Headers {
+		req.Header[name] = slices.Clone(values)
+	}
 	if snapshot.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+snapshot.Token)
 	}
@@ -110,7 +139,7 @@ func recoverOperation(ctx context.Context, conn *Connection, operation operation
 		return false, nil
 	}
 	apiError, rejected := errors.AsType[*APIError](failure)
-	authRefusal := rejected && apiError.StatusCode == http.StatusForbidden && apiError.Code == "authentication_required"
+	authRefusal := rejected && apiError.StatusCode == http.StatusUnauthorized && apiError.Code == "authentication_required"
 	if !authRefusal && (operation.Policy != readRecovery || !isConnectionError(failure)) {
 		return false, nil
 	}
@@ -141,7 +170,10 @@ func requestBytes(ctx context.Context, conn *Connection, operation operation, li
 		if canceled := ctx.Err(); canceled != nil {
 			return nil, canceled
 		}
-		snapshot := conn.Snapshot()
+		snapshot, err := conn.operationEndpoint(operation)
+		if err != nil {
+			return nil, err
+		}
 		req, err := operationRequest(ctx, snapshot, operation, payload)
 		if err != nil {
 			return nil, err
@@ -179,6 +211,9 @@ func requestBytes(ctx context.Context, conn *Connection, operation operation, li
 		}
 		var body []byte
 		if success {
+			if operation.Validator != nil {
+				*operation.Validator = res.Header.Get("ETag")
+			}
 			body, err = readBounded(res.Body, limits.bodyBytes)
 			if err != nil && operation.Policy != readRecovery {
 				err = &ProtocolError{Code: "invalid_response", Operation: operation.Name, Cause: err}
@@ -226,7 +261,10 @@ func scanEventStream(ctx context.Context, conn *Connection, operation operation,
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		snapshot := conn.Snapshot()
+		snapshot, err := conn.operationEndpoint(operation)
+		if err != nil {
+			return err
+		}
 		req, err := operationRequest(ctx, snapshot, operation, nil)
 		if err != nil {
 			return err
@@ -251,7 +289,7 @@ func scanEventStream(ctx context.Context, conn *Connection, operation operation,
 		if res.StatusCode != http.StatusOK {
 			if limits.errorBytes == 0 {
 				apiError := &APIError{StatusCode: res.StatusCode}
-				if res.StatusCode == http.StatusForbidden && res.Header.Get("Albedo-Error-Code") == "authentication_required" {
+				if res.StatusCode == http.StatusUnauthorized && strings.HasPrefix(res.Header.Get("WWW-Authenticate"), "Bearer") {
 					apiError.Code = "authentication_required"
 				}
 				err = apiError

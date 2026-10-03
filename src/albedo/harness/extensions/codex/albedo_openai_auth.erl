@@ -1,7 +1,7 @@
 -module(albedo_openai_auth).
 %% Codex sign-in, multi-account credential selection, and refresh.
 
--export([codex_access/2, codex_revoke/2, codex_limited/3, codex_exchange/3, codex_account/1, accounts/1]).
+-export([codex_access/2, codex_access/3, codex_revoke/2, codex_limited/3, codex_exchange/3, codex_account/1, accounts/1]).
 
 -define(SCOPE, <<"codex">>).
 -define(STORE, <<"openai-codex">>).
@@ -86,14 +86,18 @@ post_token(Body) ->
         _ -> {error, <<"codex token exchange failed">>}
     end.
 
-codex_access(Home0, Session0) ->
+codex_access(Home0, Session0) -> codex_access(Home0, Session0, <<>>).
+
+codex_access(Home0, Session0, Profile) ->
     Home = text(Home0),
     Session = unicode:characters_to_binary(Session0),
     Path = albedo_credentials:creds_path(Home),
     case albedo_credentials:accounts(Path) of
         {ok, Data} ->
-            Credentials = credentials(Data),
-            select(albedo_accounts:order(?SCOPE, Credentials, Session, fun identity/1), Path, Session);
+            case albedo_credentials:bound_values(Home0, Profile, credentials(Data)) of
+                {ok, Credentials} -> select(albedo_accounts:order(?SCOPE, Credentials, Session, fun identity/1), Path, Session);
+                Error -> Error
+            end;
         {error, _} -> {error, <<"Codex is not authenticated; run /login and add a ChatGPT account">>}
     end.
 

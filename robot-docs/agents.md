@@ -31,36 +31,30 @@ a letter is stored first and marked delivered in the same transaction that write
 
 `ctrl+o` or `/agents` in a session shows its whole tree live: running agents pulse with their token rate, mail travels the edges as blocks. tab picks an agent, enter opens it (typing there is you, as the user), text + enter sends to it, `/spawn <name> <task>` starts a child under it.
 
-routes: `GET /agents?session=<id>` (the tree), `GET /agents/stream` (batched events), `POST /sessions/:id/children`, `POST /sessions/:id/mail`.
+The view reads `GET /sessions?scope=family&root_id={root_id}` and subscribes
+to the same collection with `Accept: text/event-stream`. Child creation and
+messages use the core session and input resources. The
+[HTTP contract](../docs/http-api-design.md#collection-watch-and-overload)
+defines activity replacements, mail animation metadata, and invalidations.
 
-The Go client decodes known agent events into `daemon.AgentEvent` before delivery to the view. Unknown event kinds are ignored. Malformed known events return a protocol error instead of supplying empty fields to the view. Tool progress uses the same typed value as the session stream.
-
-Both streams require `normalized_tool_progress`. The daemon supplies tool names,
-phases, and bounded code previews. The
-[client contract](../docs/client-api.md#live-tool-progress) defines preview limits,
-offset units, and tool-call identities.
+The Go adapter decodes known events before delivery. Malformed known events
+fail the stream; unknown event kinds are ignored. The daemon supplies bounded
+tool progress under `tool_progress: 1`. Clients render it without reconstructing
+arguments or guessing Python intent.
 
 ## Stream overflow and refresh
 
-The agents stream sends an initial empty batch after subscribing. Each
-subscriber retains at most 256 queued events or 1 MiB of encoded payload,
-plus one bounded batch being sent. Event payloads stay outside subscriber
-mailboxes, and wake notifications are coalesced. Publication never waits for
-a client to read its socket.
+The initial batch contains ready and reset controls. Subscriber byte and event
+limits apply before payloads enter mailboxes; wakes are coalesced. Publication
+does not wait for a client to read its socket.
 
-When a subscriber exceeds either limit, the daemon discards queued deltas,
-sends `{"events":[{"type":"overflow"}]}`, and closes the stream. An event larger
-than the byte limit also causes overflow. A socket that remains stalled may
-close before delivering the marker.
-
-Overflow triggers a normal refresh. The CLI
-clears unfinished previews, reconnects, and reloads the authoritative tree
-after subscribing. The refreshed tree removes missing agents and replaces
-names, parent relationships, closed state, and running status. Replies from
-an older attachment cannot repopulate the view. Disconnecting releases the
-subscriber's queue when its stream process stops, without waiting for another
-publication. Drafts and pending action results survive recovery. Terminal
-stream failures remain visible; `ctrl+l` starts a fresh attachment.
+Overflow discards queued deltas, emits an overflow control when the socket can
+accept it, and closes the stream. The client resubscribes and refreshes the
+authoritative family. That refresh replaces names, relationships, closed state,
+status, and activity. Replies from an older attachment cannot repopulate the
+view. Disconnect releases subscriber state without another publication.
+Drafts and pending action results survive recovery. Terminal failures remain
+visible; ctrl+l starts a fresh attachment.
 
 ## swarm overhead
 

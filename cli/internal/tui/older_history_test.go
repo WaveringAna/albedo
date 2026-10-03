@@ -20,7 +20,7 @@ func turn(name string, seq int64) []daemon.StreamEvent {
 	return []daemon.StreamEvent{
 		{Type: daemon.EventUser, Text: name, Source: "chat", Replayed: true},
 		{Type: daemon.EventCommitted, Seq: seq, Replayed: true},
-		{Type: daemon.EventMessage, Role: "assistant", Text: "reply to " + name + "\n" + strings.Repeat("more\n", 8), Replayed: true},
+		{Type: daemon.EventMessage, Text: "reply to " + name + "\n" + strings.Repeat("more\n", 8), Replayed: true},
 		{Type: daemon.EventCommitted, Seq: seq + 1, Replayed: true},
 	}
 }
@@ -38,16 +38,7 @@ func TestScrollingToTheTopLoadsOlderHistoryInPlace(t *testing.T) {
 	var asked []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		asked = append(asked, r.URL.RawQuery)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"events": []any{
-				map[string]any{"type": "user", "text": "older question", "source": "chat", "triggeredAt": ""},
-				map[string]any{"type": "committed", "seq": 8},
-				map[string]any{"type": "message", "role": "assistant", "text": "older answer"},
-				map[string]any{"type": "committed", "seq": 9},
-			},
-			"before": 8,
-			"more":   false,
-		})
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{protocolEntry("q", "user", "older question", 8), protocolEntry("a", "assistant", "older answer", 9)}, "older": nil, "newer": nil, "high_water": 9})
 	}))
 	defer server.Close()
 	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)

@@ -5,8 +5,8 @@ import albedo/daemon/note
 import albedo/daemon/operations
 import albedo/daemon/session_state
 import albedo/daemon/turn.{type Submission}
+import albedo/harness/runtime
 import albedo/openai_api/types
-import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 
@@ -21,8 +21,33 @@ pub fn input(submission: Submission) -> types.Input {
   }
 }
 
-pub fn event(submission: Submission, timestamp: Int) -> String {
-  view.durable_submission(display(submission), timestamp)
+/// Read the retained admission after the owner's durable transition.
+pub fn observed(
+  state: session_state.State(message),
+  submission: Submission,
+) -> session_state.State(message) {
+  case submission.operation_id {
+    None -> state
+    Some(id) -> observed_id(state, id, Some(display(submission)))
+  }
+}
+
+fn observed_id(
+  state: session_state.State(message),
+  id: String,
+  display: option.Option(operations.Display),
+) -> session_state.State(message) {
+  case operations.input_outcome(runtime.ledger(state.host), id) {
+    Ok(Some(outcome)) -> session_state.emit(state, view.Input(outcome, display))
+    _ -> state
+  }
+}
+
+pub fn refresh_ids(
+  state: session_state.State(message),
+  ids: List(String),
+) -> session_state.State(message) {
+  list.fold(ids, state, fn(state, id) { observed_id(state, id, None) })
 }
 
 pub fn display(submission: Submission) -> operations.Display {
@@ -41,14 +66,9 @@ pub fn display(submission: Submission) -> operations.Display {
 pub fn emit(
   state: session_state.State(message),
   submissions: List(Submission),
-  timestamp: Int,
+  _timestamp: Int,
 ) -> session_state.State(message) {
-  list.fold(submissions, state, fn(state, submission) {
-    case submission.source {
-      turn.Continue -> state
-      _ -> session_state.emit(state, event(submission, timestamp))
-    }
-  })
+  list.fold(submissions, state, observed)
 }
 
 @external(erlang, "erlang", "term_to_binary")
@@ -56,9 +76,6 @@ pub fn encode(submission: Submission) -> BitArray
 
 @external(erlang, "albedo_session", "decode_submission")
 pub fn decode(payload: BitArray) -> Submission
-
-@external(erlang, "albedo_session", "fingerprint")
-pub fn image_fingerprint(image: types.Image) -> String
 
 pub fn commits(
   submissions: List(Submission),
@@ -92,24 +109,7 @@ pub fn inputs(submissions: List(Submission)) -> List(types.Input) {
 
 pub fn membership(
   state: session_state.State(message),
-  id: String,
+  _id: String,
 ) -> session_state.State(message) {
-  session_state.emit(
-    state,
-    view.event("turn_membership", [
-      #("turnId", json.string(id)),
-      #(
-        "submissionIds",
-        json.array(
-          list.filter_map(state.active_submissions, fn(submission) {
-            case submission.submission_id {
-              Some(id) -> Ok(id)
-              None -> Error(Nil)
-            }
-          }),
-          json.string,
-        ),
-      ),
-    ]),
-  )
+  list.fold(state.active_submissions, state, observed)
 }

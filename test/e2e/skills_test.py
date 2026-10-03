@@ -41,8 +41,8 @@ class SkillSymlinkTests(unittest.TestCase):
 
     def reload(self):
         self.request(
-            f"/sessions/{self.session}/commands",
-            {"name": "/reload", "args": {"target": "session"}},
+            f"/sessions/{self.session}/reload",
+            {"target": "session"},
         )
 
     def probe(self, code):
@@ -74,7 +74,11 @@ class SkillSymlinkTests(unittest.TestCase):
             (source.parent / "reference.txt").write_text(f"REFERENCE_{name}")
         catalog = self.request(self.route)
         for name in ("absolute", "relative"):
-            row = next(row for row in catalog["candidates"] if row["title"] == name)
+            row = next(
+                row
+                for row in catalog["discovery"]["candidates"]
+                if row["title"] == name
+            )
             self.assertEqual(row["source"], str(self.installed / name / "SKILL.md"))
             self.assertEqual(
                 row["resolved_source"],
@@ -176,7 +180,8 @@ class SkillSymlinkTests(unittest.TestCase):
                         link.symlink_to(current)
                         expected_resource = "FIRST_RESOURCE"
                 self.assertNotEqual(
-                    initial["revision"], self.request(self.route)["revision"]
+                    initial["discovery"]["revision"],
+                    self.request(self.route)["discovery"]["revision"],
                 )
                 self.probe(
                     f"for operation in [lambda: commands.invoke('/' + {name!r}), lambda: skills.resources({name!r}), lambda: skills.read({name!r})]:\n"

@@ -47,10 +47,8 @@ class NotesTests(unittest.TestCase):
             self.app.idle(self.session)
 
     def compact(self):
-        with self.app.api(
-            f"/sessions/{self.session}/commands", {"name": "/compact"}
-        ) as response:
-            self.assertTrue(json.load(response)["result"]["started"])
+        with self.app.api(f"/sessions/{self.session}/compaction", {}) as response:
+            self.assertEqual(json.load(response)["state"], "compacted")
         self.app.idle(self.session)
 
     def note_calls(self):

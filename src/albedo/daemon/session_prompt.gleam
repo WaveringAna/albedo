@@ -40,8 +40,8 @@ pub fn reset_prompt_cache(
   let state =
     session_state.emit(
       state,
-      view.text(
-        "note",
+      view.note(
+        "daemon",
         "extensions reloaded; prompt cache usage reset; " <> namespace,
       ),
     )
@@ -50,13 +50,35 @@ pub fn reset_prompt_cache(
     Error(error), _ | _, Error(error) ->
       session_state.emit(
         state,
-        view.text(
-          "error",
+        view.error(
           "extensions reloaded but the previous prompt cache state could not be cleared: "
-            <> error,
+          <> error,
         ),
       )
   }
+}
+
+/// A changed tool set uses the current prompt instead of pinning an
+/// incompatible prefix. Record the actual adoption in durable history too.
+pub fn record_capability_change(
+  state: session_state.State(message),
+  reason: String,
+) -> Result(session_state.State(message), String) {
+  let update =
+    note.wrap(
+      "capabilities changed",
+      "Session capabilities changed. "
+        <> reason
+        <> ". The session's tool capabilities were reloaded.\n"
+        <> "Call commands.catalog() for the current command and skill catalog.",
+    )
+  use timestamp <- result.try(conversation.commit(
+    runtime.ledger(state.host),
+    state.info.id,
+    [types.User(update)],
+    conversation.Idle,
+  ))
+  Ok(session_history.remember(state, [types.User(update)], timestamp))
 }
 
 fn context_blocks(context: List(types.Input)) -> List(#(String, String)) {

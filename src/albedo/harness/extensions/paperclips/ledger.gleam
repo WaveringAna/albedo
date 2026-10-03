@@ -45,12 +45,15 @@ pub type Vent {
     created_at: String,
     resolution: String,
     resolved_by: Option(String),
+    revision: Int,
+    updated_at: String,
   )
 }
 
 pub type Error {
   Invalid(String)
   NotFound
+  Conflict
   Storage(String)
 }
 
@@ -76,13 +79,14 @@ CREATE TABLE IF NOT EXISTS paperclips (
  session TEXT,
  cwd TEXT NOT NULL,
  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+ revision INTEGER NOT NULL DEFAULT 1,
  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 "
 
-const columns = "id,title,topic,message,suggestion,reply,status,session,cwd,created_at,resolution,resolved_by"
+const columns = "id,title,topic,message,suggestion,reply,status,session,cwd,created_at,resolution,resolved_by,revision,updated_at"
 
-fn topic_name(topic: Topic) -> String {
+pub fn topic_name(topic: Topic) -> String {
   case topic {
     Harness -> "harness"
     Workflow -> "workflow"
@@ -161,6 +165,8 @@ fn decoder() -> decode.Decoder(Vent) {
   use created_at <- decode.field(9, decode.string)
   use resolution <- decode.field(10, decode.string)
   use resolved_by <- decode.field(11, decode.optional(decode.string))
+  use revision <- decode.field(12, decode.int)
+  use updated_at <- decode.field(13, decode.string)
   decode.success(Vent(
     id,
     title,
@@ -174,6 +180,8 @@ fn decoder() -> decode.Decoder(Vent) {
     created_at,
     resolution,
     resolved_by,
+    revision,
+    updated_at,
   ))
 }
 
@@ -222,9 +230,9 @@ fn validate(
     True -> Error(Invalid("a vent needs a message"))
     False ->
       case
-        string.length(title) > 200
-        || string.length(suggestion) > 2000
-        || string.length(message) > 8000
+        string.byte_size(title) > 4096
+        || string.byte_size(suggestion) > 16_384
+        || string.byte_size(message) > 32_768
       {
         True -> Error(Invalid("vent text is too long"))
         False -> Ok(Nil)
@@ -347,7 +355,7 @@ pub fn set_status(
   storage.query(store, fn(db) {
     rows(
       db,
-      "UPDATE paperclips SET status=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? RETURNING "
+      "UPDATE paperclips SET status=?,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? RETURNING "
         <> columns,
       [sqlight.text(status_name(status)), sqlight.int(id)],
     )
@@ -358,13 +366,13 @@ pub fn set_status(
 /// Records the user's answer on the vent and acknowledges it: the reply is
 /// durable even when the session that filed the vent can no longer be told.
 pub fn answer(store: Store, id: Int, reply: String) -> Result(Vent, Error) {
-  case string.length(reply) > 8000 {
+  case string.byte_size(reply) > 16_384 {
     True -> Error(Invalid("vent text is too long"))
     False ->
       storage.query(store, fn(db) {
         rows(
           db,
-          "UPDATE paperclips SET status='acknowledged',reply=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? RETURNING "
+          "UPDATE paperclips SET status='acknowledged',reply=?,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? RETURNING "
             <> columns,
           [sqlight.text(reply), sqlight.int(id)],
         )
@@ -382,7 +390,7 @@ pub fn resolve(
   note: String,
   session: String,
 ) -> Result(Vent, Error) {
-  use _ <- result.try(case string.trim(note), string.length(note) > 2000 {
+  use _ <- result.try(case string.trim(note), string.byte_size(note) > 16_384 {
     "", _ -> Error(Invalid("say what fixed the vent: resolve_vent(id, note)"))
     _, True -> Error(Invalid("vent text is too long"))
     _, False -> Ok(Nil)
@@ -398,7 +406,7 @@ pub fn resolve(
   storage.query(store, fn(db) {
     rows(
       db,
-      "UPDATE paperclips SET status='resolved',resolution=?,resolved_by=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND status IN ('open','acknowledged') RETURNING "
+      "UPDATE paperclips SET status='resolved',resolution=?,resolved_by=?,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND status IN ('open','acknowledged') RETURNING "
         <> columns,
       [sqlight.text(string.trim(note)), sqlight.text(session), sqlight.int(id)],
     )
@@ -413,4 +421,94 @@ pub fn delete(store: Store, id: Int) -> Result(Vent, Error) {
     ])
   })
   |> result.try(one)
+}
+
+/// A bounded stable collection page, newest first.
+pub fn page(
+  store: Store,
+  before: Int,
+  limit: Int,
+) -> Result(List(Vent), Error) {
+  use _ <- result.try(within(limit))
+  storage.query(store, fn(db) {
+    rows(
+      db,
+      "SELECT "
+        <> columns
+        <> " FROM paperclips WHERE (?=0 OR id<?) ORDER BY id DESC LIMIT ?",
+      [sqlight.int(before), sqlight.int(before), sqlight.int(limit)],
+    )
+  })
+}
+
+/// Compare and change in the durable owner's single serialized call.
+pub fn patch(store: Store, candidate: Vent) -> Result(Vent, Error) {
+  storage.query(store, fn(db) {
+    use found <- result.try(
+      rows(db, "SELECT " <> columns <> " FROM paperclips WHERE id=?", [
+        sqlight.int(candidate.id),
+      ]),
+    )
+    use current <- result.try(one(found))
+    case current.revision == candidate.revision {
+      False -> Error(Conflict)
+      True ->
+        rows(
+          db,
+          "UPDATE paperclips SET status=?,reply=?,resolution=?,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND revision=? RETURNING "
+            <> columns,
+          [
+            sqlight.text(status_name(candidate.status)),
+            sqlight.text(candidate.reply),
+            sqlight.text(candidate.resolution),
+            sqlight.int(candidate.id),
+            sqlight.int(candidate.revision),
+          ],
+        )
+        |> result.try(fn(items) {
+          list.first(items) |> result.replace_error(Conflict)
+        })
+    }
+  })
+}
+
+pub fn delete_observed(
+  store: Store,
+  id: Int,
+  revision: Int,
+) -> Result(Vent, Error) {
+  storage.query(store, fn(db) {
+    use found <- result.try(
+      rows(db, "SELECT " <> columns <> " FROM paperclips WHERE id=?", [
+        sqlight.int(id),
+      ]),
+    )
+    use current <- result.try(one(found))
+    case current.revision == revision {
+      False -> Error(Conflict)
+      True ->
+        rows(
+          db,
+          "DELETE FROM paperclips WHERE id=? AND revision=? RETURNING "
+            <> columns,
+          [sqlight.int(id), sqlight.int(revision)],
+        )
+        |> result.try(fn(items) {
+          list.first(items) |> result.replace_error(Conflict)
+        })
+    }
+  })
+}
+
+/// A sidebar remains small even when finished records fill the global ledger.
+pub fn open(store: Store) -> Result(List(Vent), Error) {
+  storage.query(store, fn(db) {
+    rows(
+      db,
+      "SELECT "
+        <> columns
+        <> " FROM paperclips WHERE status='open' ORDER BY id DESC LIMIT 12",
+      [],
+    )
+  })
 }

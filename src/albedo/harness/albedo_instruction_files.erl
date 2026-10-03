@@ -2,7 +2,7 @@
 
 -include_lib("kernel/include/file.hrl").
 
--export([home/0, discover_instructions/2, discover_named/3, inspect/2, read/2]).
+-export([home/0, discover_instructions/2, discover_named/3, inspect/2, inputs/2, read/2]).
 
 -define(MAX_FILE_BYTES, 1048576).
 -define(MAX_FILES, 128).
@@ -34,6 +34,50 @@ inspect(Workspace, Home) ->
             Fingerprint = binary:encode_hex(crypto:hash(sha256,
                 term_to_binary(Inspected))),
             {ok, {Candidates, Fingerprint}};
+        Error -> Error
+    end.
+
+%% Content facts for retaining an unchanged native discovery observation.
+inputs(Workspace, Home) ->
+    Instructions = case discover_instructions(Workspace, Home) of
+        {ok, Files} ->
+            [{Path, albedo_file_fingerprint:fingerprint(Path, ?MAX_FILE_BYTES)}
+             || {candidate, _Location, _Display, Path} <- Files];
+        Error -> Error
+    end,
+    Prompts = [{Name, prompt_inputs(discover_named(Workspace, Home, Name))}
+               || Name <- [<<"SYSTEM.md">>, <<"APPEND_SYSTEM.md">>]],
+    {Instructions, Prompts}.
+
+prompt_inputs({ok, Files}) ->
+    [{Path, prompt_fingerprint(Path)}
+     || {candidate, _Location, _Display, Path} <- Files];
+prompt_inputs(Error) -> Error.
+
+%% Prompt loading permits large files. Hash the captured size in bounded chunks
+%% without assembling another whole prompt buffer for every observation.
+prompt_fingerprint(Path) ->
+    case file:read_file_info(Path) of
+        {ok, #file_info{type = regular, size = Size}} ->
+            {albedo_file_fingerprint:identity(Path), prompt_hash(Path, Size + 1)};
+        Other -> Other
+    end.
+
+prompt_hash(Path, Limit) ->
+    case file:open(Path, [read, binary, raw]) of
+        {ok, Io} ->
+            try prompt_hash_chunks(Io, Limit, crypto:hash_init(sha256))
+            after file:close(Io) end;
+        Error -> Error
+    end.
+
+prompt_hash_chunks(_Io, 0, Hash) -> crypto:hash_final(Hash);
+prompt_hash_chunks(Io, Remaining, Hash) ->
+    case file:read(Io, min(Remaining, 65536)) of
+        {ok, Bytes} ->
+            prompt_hash_chunks(Io, Remaining - byte_size(Bytes),
+                               crypto:hash_update(Hash, Bytes));
+        eof -> crypto:hash_final(Hash);
         Error -> Error
     end.
 

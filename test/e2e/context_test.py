@@ -2,6 +2,7 @@
 
 import json
 import unittest
+import urllib.error
 from urllib.parse import urlencode
 
 from harness import Albedo, Provider, exclusive, Reply, text
@@ -22,10 +23,6 @@ CATALOG = {
             }
         },
     }
-}
-PENDING = {
-    "state": "pending",
-    "reason": "runtime session has not prepared a provider request",
 }
 
 
@@ -67,7 +64,6 @@ class ContextTest(unittest.TestCase):
         )
         self.app.__enter__()
         self.addCleanup(self.app.__exit__, None, None, None)
-        self.assertIn("session_context", self.read("/health")["capabilities"])
         self.session = self.app.session()
         self.route = f"/sessions/{self.session}/context"
 
@@ -80,48 +76,28 @@ class ContextTest(unittest.TestCase):
         self.app.idle(self.session)
 
     def test_pending_inspection_is_read_only_and_snapshot_matches_request(self):
-        self.assertEqual(self.read(self.route), PENDING)
+        pending = self.read(self.route)
+        self.assertEqual(pending["state"], "pending")
+        self.assertIsNone(pending["snapshot_id"])
+        self.assertEqual(set(pending["reason"]), {"code", "detail"})
+        self.assertEqual(pending["reason"]["code"], "context_pending")
+        self.assertIsInstance(pending["reason"]["detail"], str)
+        self.assertTrue(pending["reason"]["detail"].strip())
+        self.assertLessEqual(len(pending["reason"]["detail"]), 4096)
         self.assertEqual(self.provider.requests, [])
         self.turn("inspect exact composition")
         self.assertEqual(len(self.provider.requests), 1)
         sent = self.provider.requests[0]["request"]
         snapshot = self.read(self.route)
         self.assertEqual(snapshot["state"], "ready")
+        self.assertIsNone(snapshot["reason"])
         self.assertEqual(
             (snapshot["provider"], snapshot["model"]), ("fixture", "fixture")
-        )
-        served = CATALOG["fixture-cloud"]
-        stored = json.loads((self.app.home / "models.json").read_text())
-        self.assertEqual(
-            stored,
-            {
-                "fixture-cloud": {
-                    "api": served["api"],
-                    "env": served["env"],
-                    "models": served["models"],
-                }
-            },
-        )
-        listing = "/models/openai?" + urlencode({"endpoint": self.provider.url + "/v1"})
-        self.assertEqual(self.read(listing), ["fixture"])
-        self.assertEqual(
-            self.read(listing + "&details=1"),
-            [
-                {
-                    "id": "fixture",
-                    "efforts": [],
-                    "context": 200000,
-                    "maxContext": None,
-                    "raised": False,
-                    "output": 8000,
-                    "input": ["text"],
-                }
-            ],
         )
         self.assertEqual(snapshot["context_window_tokens"], 200000)
         compaction = snapshot["compaction"]
         self.assertEqual(compaction["provider_input_tokens"], 20)
-        self.assertNotIn("provider_cached_input_tokens", compaction)
+        self.assertIsNone(compaction["provider_cached_input_tokens"])
         self.assertEqual(
             compaction["estimate_method"],
             "local byte-based estimate; not provider token usage",
@@ -131,15 +107,12 @@ class ContextTest(unittest.TestCase):
         self.assertEqual(compaction["trigger_free_percent"], 20)
         self.assertIn("fixture-cloud", compaction["source"])
         self.assertIn("models.dev catalog", compaction["source"])
-        labels = [section["label"] for section in snapshot["sections"]]
-        self.assertEqual(
-            labels, ["system instructions", "prepared conversation", "tool schemas"]
-        )
         self.assertIn("<extension-context", sent["instructions"])
         self.assertNotIn("<extension-context", json.dumps(sent["input"]))
         self.assertTrue(
             all(
-                section["preview"] and len(section["preview"]) <= 180
+                section["preview"]["text"]
+                and len(section["preview"]["text"].encode()) <= 1024
                 for section in snapshot["sections"]
             )
         )
@@ -147,40 +120,96 @@ class ContextTest(unittest.TestCase):
 
         pages = {}
         for section in snapshot["sections"]:
-            first = self.read(f"{self.route}/{section['id']}/0")
-            parts = [first] + [
-                self.read(f"{self.route}/{section['id']}/{page}")
-                for page in range(1, first["pages"])
+            parts = [
+                self.read(
+                    self.route
+                    + "?"
+                    + urlencode(
+                        {
+                            "view": "section",
+                            "snapshot_id": snapshot["snapshot_id"],
+                            "section_id": section["id"],
+                            "page": page,
+                        }
+                    )
+                )
+                for page in range(section["page_count"])
             ]
+            self.assertTrue(all(len(part["text"].encode()) <= 32768 for part in parts))
             self.assertTrue(
-                all(len(part["content"].encode()) <= 32000 for part in parts)
+                all(part["snapshot_id"] == snapshot["snapshot_id"] for part in parts)
             )
-            pages[section["id"]] = "".join(part["content"] for part in parts)
+            pages[section["id"]] = "".join(part["text"] for part in parts)
         self.assertEqual(pages["instructions"], sent["instructions"])
         self.assertEqual(json.loads(pages["tools"]), sent["tools"])
         self.assertIn("inspect exact composition", pages["history"])
         self.assertNotIn(SECRET, json.dumps(pages))
         self.assertEqual(len(self.provider.requests), 1)
 
+    def test_combining_marks_cannot_make_context_pages_unbounded(self):
+        message = "a" + "\u0301" * 20000
+        self.turn(message)
+        session = self.read(f"/sessions/{self.session}?tail=0")
+        listed = next(
+            item
+            for item in self.read("/sessions")["items"]
+            if item["id"] == self.session
+        )
+        for representation in (session, listed):
+            for field in ("name", "automatic_name"):
+                self.assertTrue(representation[field].startswith("a"))
+                self.assertLessEqual(len(representation[field]), 4096)
+        resource = session["configuration_resource"]
+        configuration = self.read(resource["url"])
+        self.assertEqual(configuration, resource["value"])
+        self.assertEqual(configuration["name"], session["name"])
+        self.assertEqual(listed["name"], session["name"])
+        self.assertEqual(listed["automatic_name"], session["automatic_name"])
+        snapshot = self.read(self.route)
+        history = next(
+            section for section in snapshot["sections"] if section["id"] == "history"
+        )
+        parts = []
+        for page in range(history["page_count"]):
+            part = self.read(
+                self.route
+                + "?"
+                + urlencode(
+                    {
+                        "view": "section",
+                        "snapshot_id": snapshot["snapshot_id"],
+                        "section_id": "history",
+                        "page": page,
+                    }
+                )
+            )
+            self.assertLessEqual(len(part["text"]), 8000)
+            self.assertLessEqual(len(part["text"].encode()), 32000)
+            parts.append(part["text"])
+        self.assertGreater(len(parts), 1)
+        self.assertIn(message, "".join(parts))
+
     def test_usage_absence_model_selection_and_unknown_catalog_model(self):
         self.turn("without provider usage")
         compaction = self.read(self.route)["compaction"]
-        self.assertNotIn("provider_input_tokens", compaction)
-        self.assertIn("estimated_input_tokens", compaction)
+        self.assertIsNone(compaction["provider_input_tokens"])
+        self.assertIsNotNone(compaction["estimated_input_tokens"])
+        resource = self.read(f"/sessions/{self.session}")["configuration_resource"]
         with self.app.api(
-            f"/sessions/{self.session}/commands",
-            {
-                "name": "/model",
-                "args": {"model": "changed-model"},
-            },
+            resource["url"],
+            {"model": "changed-model"},
+            method="PATCH",
+            headers={"If-Match": resource["etag"]},
         ) as response:
             changed = json.load(response)
-        self.assertEqual(changed["result"]["model"], "changed-model")
-        self.assertEqual(self.read(self.route), PENDING)
+        self.assertEqual(changed["session"]["model"], "changed-model")
+        pending = self.read(self.route)
+        self.assertEqual(pending["state"], "pending")
+        self.assertIsNone(pending["snapshot_id"])
         self.assertEqual(len(self.provider.requests), 1)
         self.turn("a model outside the catalog")
         unknown = self.read(self.route)
-        self.assertNotIn("context_window_tokens", unknown)
+        self.assertIsNone(unknown["context_window_tokens"])
         self.assertEqual(unknown["compaction"]["status"], "unknown")
 
 
@@ -271,11 +300,20 @@ class ContextReplayTest(unittest.TestCase):
                             contents = {}
                             for section in summary.get("sections", []):
                                 parts = []
-                                for index in range(section["pages"]):
+                                for index in range(section["page_count"]):
                                     with app.api(
-                                        f"{route}/{section['id']}/{index}"
+                                        route
+                                        + "?"
+                                        + urlencode(
+                                            {
+                                                "view": "section",
+                                                "snapshot_id": summary["snapshot_id"],
+                                                "section_id": section["id"],
+                                                "page": index,
+                                            }
+                                        )
                                     ) as response:
-                                        parts.append(json.load(response)["content"])
+                                        parts.append(json.load(response)["text"])
                                 contents[section["id"]] = "".join(parts)
                             return summary, contents
 
@@ -288,6 +326,23 @@ class ContextReplayTest(unittest.TestCase):
                         app.prompt(session, "replacement request").close()
                         app.idle(session)
                         second, pages = inspect()
+                        with self.assertRaises(urllib.error.HTTPError) as obsolete:
+                            app.api(
+                                route
+                                + "?"
+                                + urlencode(
+                                    {
+                                        "view": "section",
+                                        "snapshot_id": first["snapshot_id"],
+                                        "section_id": first["sections"][0]["id"],
+                                        "page": 0,
+                                    }
+                                )
+                            )
+                        self.assertEqual(obsolete.exception.code, 410)
+                        self.assertEqual(
+                            json.load(obsolete.exception)["code"], "context_changed"
+                        )
                         self.assertIn("replacement request", pages["history"])
                         self.assertNotIn("later answer", pages["history"])
                         self.assertNotIn(opaque, json.dumps((second, pages)))

@@ -3,6 +3,7 @@
 //// Names resolve only inside a family: anything further away is addressed by
 //// session id, so a title shared by two unrelated sessions cannot misdirect.
 
+import albedo/daemon/operations
 import albedo/daemon/store
 import albedo/daemon/usage
 import gleam/dynamic/decode
@@ -20,6 +21,55 @@ pub type Member {
     name: String,
     depth: Int,
     closed: Bool,
+  )
+}
+
+pub type Facts {
+  Facts(root_id: String, member: Option(Member), revision: Int)
+}
+
+/// Family identity and its membership validator share the caller's store read.
+pub fn capture_in(
+  connection: sqlight.Connection,
+  session: String,
+) -> Result(Facts, String) {
+  use root <- result.try(root_in(connection, session))
+  use revision <- result.try(store.one(
+    connection,
+    "SELECT family_revision FROM sessions WHERE id=?",
+    [sqlight.text(root)],
+    decode.field(0, decode.int, decode.success),
+    "family root not found",
+  ))
+  use member <- result.try(
+    rows(connection, members("WHERE session=?"), [sqlight.text(session)]),
+  )
+  Ok(Facts(root, list.first(member) |> option.from_result, revision))
+}
+
+fn root_in(
+  connection: sqlight.Connection,
+  session: String,
+) -> Result(String, String) {
+  store.one(
+    connection,
+    "WITH RECURSIVE lineage(id,depth) AS (SELECT ?,0 UNION ALL SELECT f.parent,l.depth+1 FROM session_family f JOIN lineage l ON f.session=l.id WHERE l.depth<?) SELECT id FROM lineage ORDER BY depth DESC LIMIT 1",
+    [sqlight.text(session), sqlight.int(max_depth)],
+    decode.field(0, decode.string, decode.success),
+    "family root not found",
+  )
+}
+
+/// Called before removing members, while their ancestor links still exist.
+pub fn changed_in(
+  connection: sqlight.Connection,
+  session: String,
+) -> Result(Nil, String) {
+  use root <- result.try(root_in(connection, session))
+  store.run(
+    connection,
+    "UPDATE sessions SET family_revision=family_revision+1 WHERE id=?",
+    [sqlight.text(root)],
   )
 }
 
@@ -116,49 +166,49 @@ pub fn children(
   )
 }
 
-/// Record `child` as `parent`'s child named `name`. The child's session row
-/// must already exist; the caller creates it in the same breath.
-pub fn link(
-  db: store.Store,
+/// The caller owns the transaction that also creates the child and its task.
+pub fn link_in(
+  connection: sqlight.Connection,
   child: String,
   parent: String,
   name: String,
 ) -> Result(Member, String) {
+  use _ <- result.try(available_in(connection, parent))
   use _ <- result.try(valid_name(name))
-  store.query(db, fn(connection) {
-    use above <- result.try(
-      rows(connection, members("WHERE session=?"), [sqlight.text(parent)]),
-    )
-    let depth = case above {
-      [member] -> member.depth + 1
-      _ -> 1
-    }
-    use siblings <- result.try(
-      rows(connection, members("WHERE parent=?"), [sqlight.text(parent)]),
-    )
-    let open = list.filter(siblings, fn(member) { !member.closed })
-    use _ <- result.try(
-      case
-        depth > max_depth,
-        list.length(open) >= max_children,
-        list.any(siblings, fn(member) { member.name == name })
-      {
-        True, _, _ ->
-          Error(
-            "agents nest at most "
-            <> int.to_string(max_depth)
-            <> " deep; mail a session by id instead of nesting to reach it",
-          )
-        _, True, _ ->
-          Error(
-            "at most "
-            <> int.to_string(max_children)
-            <> " open children; close one you are done with first",
-          )
-        _, _, True -> Error("a child named '" <> name <> "' already exists")
-        False, False, False -> Ok(Nil)
-      },
-    )
+  use above <- result.try(
+    rows(connection, members("WHERE session=?"), [sqlight.text(parent)]),
+  )
+  let depth = case above {
+    [member] -> member.depth + 1
+    _ -> 1
+  }
+  use siblings <- result.try(
+    rows(connection, members("WHERE parent=?"), [sqlight.text(parent)]),
+  )
+  let open = list.filter(siblings, fn(member) { !member.closed })
+  use _ <- result.try(
+    case
+      depth > max_depth,
+      list.length(open) >= max_children,
+      list.any(siblings, fn(member) { member.name == name })
+    {
+      True, _, _ ->
+        Error(
+          "agents nest at most "
+          <> int.to_string(max_depth)
+          <> " deep; mail a session by id instead of nesting to reach it",
+        )
+      _, True, _ ->
+        Error(
+          "at most "
+          <> int.to_string(max_children)
+          <> " open children; close one you are done with first",
+        )
+      _, _, True -> Error("a child named '" <> name <> "' already exists")
+      False, False, False -> Ok(Nil)
+    },
+  )
+  use _ <- result.try(
     store.run(
       connection,
       "INSERT INTO session_family(session,parent,name,depth,created_at) VALUES(?,?,?,?,?)",
@@ -169,17 +219,33 @@ pub fn link(
         sqlight.int(depth),
         sqlight.int(usage.now()),
       ],
-    )
-    |> result.replace(Member(child, parent, name, depth, False))
-  })
+    ),
+  )
+  changed_in(connection, parent)
+  |> result.replace(Member(child, parent, name, depth, False))
 }
 
 pub fn close(db: store.Store, session: String) -> Result(Nil, String) {
-  store.write(
-    db,
-    "UPDATE session_family SET closed_at=COALESCE(closed_at,?) WHERE session=?",
-    [sqlight.int(usage.now()), sqlight.text(session)],
-  )
+  store.query(db, fn(connection) {
+    store.transaction(connection, fn() {
+      use found <- result.try(
+        rows(connection, members("WHERE session=?"), [sqlight.text(session)]),
+      )
+      case found {
+        [Member(closed: False, ..)] -> {
+          use _ <- result.try(
+            store.run(
+              connection,
+              "UPDATE session_family SET closed_at=? WHERE session=?",
+              [sqlight.int(usage.now()), sqlight.text(session)],
+            ),
+          )
+          changed_in(connection, session)
+        }
+        _ -> Ok(Nil)
+      }
+    })
+  })
 }
 
 pub type Address {
@@ -277,4 +343,170 @@ fn parent_name(connection: sqlight.Connection, id: String) -> String {
   )
   |> result.map(fn(found) { list.first(found) |> result.unwrap("parent") })
   |> result.unwrap("parent")
+}
+
+/// A deletion claim blocks child and execution admission for its captured rows.
+pub type DeletionRequest {
+  DeletionRequest(
+    session: String,
+    configuration_revision: Int,
+    family_revision: Int,
+    subtree: Bool,
+  )
+}
+
+pub type DeletionClaim {
+  DeletionClaim(token: String, session: String, captured_count: Int)
+}
+
+pub type DeletionMember {
+  DeletionMember(id: String, depth: Int)
+}
+
+pub fn available_in(
+  db: sqlight.Connection,
+  session: String,
+) -> Result(Nil, String) {
+  use available <- result.try(store.one(
+    db,
+    "SELECT deletion_id IS NULL FROM sessions WHERE id=?",
+    [sqlight.text(session)],
+    decode.field(0, decode.int, decode.success),
+    "session not found",
+  ))
+  case available {
+    1 -> Ok(Nil)
+    _ -> Error("deletion_in_progress")
+  }
+}
+
+const deletion_membership = "WITH RECURSIVE captured(id) AS (SELECT ? UNION SELECT f.session FROM session_family f JOIN captured c ON f.parent=c.id WHERE ?=1) "
+
+@external(erlang, "albedo_session", "now_ms")
+fn now_ms() -> Int
+
+pub fn claim_deletion(
+  ledger: store.Store,
+  request: DeletionRequest,
+  token: String,
+  deadline: Int,
+) -> Result(DeletionClaim, String) {
+  store.query(ledger, fn(db) {
+    store.transaction(db, fn() {
+      use _ <- result.try(case now_ms() >= deadline {
+        True -> Error("deletion admission deadline reached")
+        False -> Ok(Nil)
+      })
+      use revision <- result.try(store.one(
+        db,
+        "SELECT config_revision FROM sessions WHERE id=?",
+        [sqlight.text(request.session)],
+        decode.field(0, decode.int, decode.success),
+        "session not found",
+      ))
+      use facts <- result.try(capture_in(db, request.session))
+      use _ <- result.try(
+        case
+          revision == request.configuration_revision
+          && facts.revision == request.family_revision
+        {
+          True -> Ok(Nil)
+          False -> Error("configuration_changed")
+        },
+      )
+      let scope = case request.subtree {
+        True -> 1
+        False -> 0
+      }
+      use leaf_children <- result.try(store.one(
+        db,
+        "SELECT COUNT(*) FROM session_family WHERE parent=?",
+        [sqlight.text(request.session)],
+        decode.field(0, decode.int, decode.success),
+        "family unavailable",
+      ))
+      use _ <- result.try(case !request.subtree && leaf_children > 0 {
+        True -> Error("session_has_children")
+        False -> Ok(Nil)
+      })
+      use active <- result.try(store.one(
+        db,
+        "SELECT EXISTS(SELECT 1 FROM input_turns WHERE session=? AND state='running')",
+        [sqlight.text(request.session)],
+        decode.field(0, decode.int, decode.success),
+        "session activity unavailable",
+      ))
+      use _ <- result.try(case !request.subtree && active == 1 {
+        True -> Error("session must be idle to delete")
+        False -> Ok(Nil)
+      })
+      use counts <- result.try(store.one(
+        db,
+        deletion_membership
+          <> "SELECT COUNT(*),COALESCE(SUM(deletion_id IS NOT NULL),0) FROM sessions WHERE id IN (SELECT id FROM captured)",
+        [sqlight.text(request.session), sqlight.int(scope)],
+        {
+          use count <- decode.field(0, decode.int)
+          use locked <- decode.field(1, decode.int)
+          decode.success(#(count, locked))
+        },
+        "family unavailable",
+      ))
+      use _ <- result.try(case counts.1 {
+        0 -> Ok(Nil)
+        _ -> Error("deletion_in_progress")
+      })
+      use _ <- result.try(
+        store.run(
+          db,
+          deletion_membership
+            <> "UPDATE sessions SET deletion_id=? WHERE id IN (SELECT id FROM captured)",
+          [
+            sqlight.text(request.session),
+            sqlight.int(scope),
+            sqlight.text(token),
+          ],
+        ),
+      )
+      use _ <- result.try(operations.cancel_deletion_in(db, token))
+      Ok(DeletionClaim(token, request.session, counts.0))
+    })
+  })
+}
+
+/// Keyset pages retain deepest-first order even as earlier rows disappear.
+pub fn deletion_members(
+  ledger: store.Store,
+  claim: DeletionClaim,
+  after_member: Option(DeletionMember),
+) -> Result(List(DeletionMember), String) {
+  let depth = option.map(after_member, fn(member) { member.depth })
+  let id = option.map(after_member, fn(member) { member.id })
+  store.read(
+    ledger,
+    "SELECT s.id,COALESCE(f.depth,0) FROM sessions s LEFT JOIN session_family f ON f.session=s.id WHERE s.deletion_id=? AND (? IS NULL OR COALESCE(f.depth,0)<? OR (COALESCE(f.depth,0)=? AND s.id>?)) ORDER BY COALESCE(f.depth,0) DESC,s.id LIMIT 200",
+    [
+      sqlight.text(claim.token),
+      sqlight.nullable(sqlight.int, depth),
+      sqlight.nullable(sqlight.int, depth),
+      sqlight.nullable(sqlight.int, depth),
+      sqlight.nullable(sqlight.text, id),
+    ],
+    {
+      use id <- decode.field(0, decode.string)
+      use depth <- decode.field(1, decode.int)
+      decode.success(DeletionMember(id, depth))
+    },
+  )
+}
+
+pub fn release_deletion(
+  ledger: store.Store,
+  claim: DeletionClaim,
+) -> Result(Nil, String) {
+  store.write(
+    ledger,
+    "UPDATE sessions SET deletion_id=NULL WHERE deletion_id=?",
+    [sqlight.text(claim.token)],
+  )
 }

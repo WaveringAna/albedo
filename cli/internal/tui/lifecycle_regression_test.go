@@ -104,8 +104,8 @@ func TestPageFocusedInputReceivesPasteAndCursorCommands(t *testing.T) {
 			}
 			page, _ = page.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 			page, _ = page.Update(tea.PasteMsg{Content: "ignored"})
-			if page.TextInput.Value() != "pasted value" {
-				t.Fatal("browse mode accepted paste")
+			if page.TextInput.Value() != "" {
+				t.Fatal("dismissed form retained input or browse mode accepted paste")
 			}
 		})
 	}

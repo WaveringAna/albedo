@@ -1,460 +1,547 @@
-import albedo/daemon/note
-import albedo/daemon/notice
+//// Native stream observations. The session owner assigns sequence numbers and
+//// serializes each envelope once; workers never construct public JSON events.
+
+import albedo/daemon/http_api
+import albedo/daemon/http_history
+import albedo/daemon/mail
 import albedo/daemon/operations
-import albedo/daemon/store
+import albedo/daemon/session_activity
 import albedo/daemon/tool_progress as progress
 import albedo/daemon/transcript
 import albedo/daemon/usage
-import albedo/harness/extensions/python/cells as journal
-import albedo/openai_api/replay
+import albedo/harness/compaction
 import albedo/openai_api/types
-import gleam/dict
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
-pub fn event(kind: String, fields: List(#(String, json.Json))) -> String {
-  json.object([#("type", json.string(kind)), ..fields]) |> json.to_string
+pub type Event {
+  Status(session_activity.Status)
+  Input(operations.InputOutcome, Option(operations.Display))
+  Text(run_id: String, message_id: String, text: String)
+  Thinking(
+    run_id: String,
+    message_id: String,
+    text: String,
+    elapsed_ms: Option(Int),
+  )
+  Message(http_history.Entry)
+  ToolProgress(Option(progress.Snapshot))
+  Tool(
+    call: types.ToolCall,
+    output: String,
+    trace: Option(json.Json),
+    progress_id: String,
+    position: Int,
+  )
+  Note(entry_id: String, origin: String, text: String, mail: Option(json.Json))
+  Retry(run_id: String, attempt: Int, reason: String, delay_ms: Int)
+  Usage(usage.Metadata)
+  Committed(high_water: Int)
+  TurnCompleted(run_id: String, state: String, input_ids: List(String))
+  Compacted(
+    observation: Option(compaction.Observation),
+    evicted: Int,
+    summary: String,
+  )
+  Failure(run_id: Option(String), code: String, message: String)
+  Invalidate(kind: String, url: String)
+  /// A worker liveness handshake, never a public observation.
+  Checkpoint
+  ProviderStarted
 }
 
-pub fn text(kind: String, value: String) -> String {
-  event(kind, [#("text", json.string(value))])
+pub fn error(message: String) -> Event {
+  Failure(None, "session_error", message)
 }
 
-pub fn stream_event(incoming: types.Event) -> Option(String) {
+pub fn note(origin: String, text: String) -> Event {
+  Note(mail.new_id(), origin, text, None)
+}
+
+pub fn stream_event(
+  run_id: String,
+  message_id: String,
+  incoming: types.Event,
+) -> Option(Event) {
   case incoming {
-    types.TextDelta(_, _, "") -> None
-    types.TextDelta(_, _, value) -> Some(text("text", value))
-    types.ThinkingDelta("") -> None
-    types.ThinkingDelta(value) -> Some(text("thinking", value))
-    types.ArgumentsDelta(_, _, _) -> None
-    types.Started(_) -> Some(event("turn_started", []))
+    types.TextDelta(_, _, "") | types.ThinkingDelta("") -> None
+    types.TextDelta(output_index, content_index, value) ->
+      Some(Text(
+        run_id,
+        message_id
+          <> ":"
+          <> int.to_string(output_index)
+          <> ":"
+          <> int.to_string(content_index),
+        value,
+      ))
+    types.ThinkingDelta(value) ->
+      Some(Thinking(run_id, message_id <> ":thinking", value, None))
+    types.ArgumentsDelta(_, _, _) | types.Started(_) -> None
   }
 }
 
-pub fn tool_progress_event(snapshot: progress.Snapshot) -> String {
-  event("tool_progress", [#("progress", tool_progress_value(snapshot))])
+pub fn tool_progress_event(snapshot: progress.Snapshot) -> Event {
+  ToolProgress(Some(snapshot))
 }
 
-pub fn tool_progress_snapshot(snapshot: progress.Snapshot) -> String {
-  json.to_string(tool_progress_value(snapshot))
+pub fn clear_tool_progress() -> Event {
+  ToolProgress(None)
 }
 
-fn tool_progress_value(snapshot: progress.Snapshot) -> json.Json {
-  let progress.Snapshot(call_id, tool_call_id, name, phase, code) = snapshot
+pub fn encode(session: String, sequence: Int, event: Event) -> json.Json {
+  let #(kind, data) = case event {
+    Status(value) -> #("status", status(value))
+    Input(value, _) -> #("input", json.object([#("input", input(value))]))
+    Text(run_id, message_id, text) -> #(
+      "text",
+      delta(run_id, message_id, text, None),
+    )
+    Thinking(run_id, message_id, text, elapsed) -> #(
+      "thinking",
+      delta(run_id, message_id, text, elapsed),
+    )
+    Message(entry) -> #(
+      "message",
+      json.object([#("entry", http_history.encode(session, entry, 65_536))]),
+    )
+    ToolProgress(value) -> #(
+      "tool_progress",
+      json.object([#("progress", json.nullable(value, progress))]),
+    )
+    Tool(call, output, trace, progress_id, position) -> #(
+      "tool",
+      tool(session, call, output, trace, progress_id, position),
+    )
+    Note(id, origin, text, letter) -> #(
+      "note",
+      json.object([
+        #("entry_id", json.string(id)),
+        #("origin", json.string(http_api.scalar_prefix(origin, 256))),
+        #("text", json.string(http_api.scalar_prefix(text, 262_144))),
+        #("mail", json.nullable(letter, fn(value) { value })),
+      ]),
+    )
+    Retry(run_id, attempt, reason, delay_ms) -> #(
+      "retry",
+      json.object([
+        #("run_id", json.string(run_id)),
+        #("attempt", json.int(attempt)),
+        #("reason", http_api.reason("provider_retry", reason)),
+        #("delay_ms", json.int(delay_ms)),
+      ]),
+    )
+    Usage(metadata) -> #("usage", usage(Some(metadata)))
+    Committed(high_water) -> #(
+      "committed",
+      json.object([#("high_water", json.int(high_water))]),
+    )
+    TurnCompleted(run_id, state, ids) -> #(
+      "turn_completed",
+      json.object([
+        #("run_id", json.string(run_id)),
+        #("state", json.string(state)),
+        #("input_ids", json.array(list.take(ids, 200), json.string)),
+        #("input_count", json.int(list.length(ids))),
+        #("truncated", json.bool(list.length(ids) > 200)),
+      ]),
+    )
+    Compacted(observation, evicted, summary) -> #(
+      "compacted",
+      json.object([
+        #(
+          "strategy",
+          json.nullable(
+            option.map(observation, fn(value) { value.strategy }),
+            json.string,
+          ),
+        ),
+        #("before_tokens", json.null()),
+        #("after_tokens", json.null()),
+        #("evicted_entries", json.int(evicted)),
+        #("summary", json.string(http_api.scalar_prefix(summary, 32_768))),
+      ]),
+    )
+    Failure(run_id, code, message) -> #(
+      "error",
+      json.object([
+        #("run_id", json.nullable(run_id, json.string)),
+        #("code", json.string(http_api.scalar_prefix(code, 100))),
+        #("message", json.string(http_api.scalar_prefix(message, 4096))),
+      ]),
+    )
+    Invalidate(kind, url) -> #(
+      "invalidate",
+      json.object([#("kind", json.string(kind)), #("url", json.string(url))]),
+    )
+    Checkpoint | ProviderStarted -> #("checkpoint", json.null())
+  }
+  json.object([
+    #("type", json.string(kind)),
+    #("sequence", json.int(sequence)),
+    #("data", data),
+  ])
+}
+
+fn delta(
+  run_id: String,
+  message_id: String,
+  text: String,
+  elapsed: Option(Int),
+) -> json.Json {
   let fields = [
-    #("callId", json.string(call_id)),
-    #("name", json.string(name)),
-    #("phase", json.string(phase)),
+    #("run_id", json.string(run_id)),
+    #("message_id", json.string(message_id)),
+    #("text", json.string(text)),
   ]
-  let fields = case tool_call_id {
-    Some(id) -> [#("toolCallId", json.string(id)), ..fields]
+  json.object(case elapsed {
     None -> fields
+    Some(value) -> [#("elapsed_ms", json.int(value)), ..fields]
+  })
+}
+
+fn tool(
+  session: String,
+  call: types.ToolCall,
+  output: String,
+  trace: Option(json.Json),
+  progress_id: String,
+  position: Int,
+) -> json.Json {
+  // A large completed argument document is fetched from its durable entry;
+  // live publication never parses it merely to discard the value.
+  let arguments = case string.byte_size(call.arguments) <= 65_536 {
+    True -> transcript.argument_json(call.arguments)
+    False -> json.null()
   }
-  let fields = case code {
+  let result = json.string(output)
+  let result_bytes = string.byte_size(json.to_string(result))
+  let size =
+    string.byte_size(json.to_string(arguments))
+    + result_bytes
+    + {
+      option.map(trace, fn(value) { string.byte_size(json.to_string(value)) })
+      |> option.unwrap(0)
+    }
+  let complete = string.byte_size(call.arguments) <= 65_536 && size <= 65_536
+  json.object([
+    #("tool_call_id", json.string(call.id)),
+    #("progress_call_id", json.string(progress_id)),
+    #("name", json.string(call.name)),
+    #("arguments", case complete {
+      True -> arguments
+      False -> json.null()
+    }),
+    #("result", case complete {
+      True -> result
+      False -> json.null()
+    }),
+    #("trace", case complete {
+      True -> json.nullable(trace, fn(value) { value })
+      False -> json.null()
+    }),
+    #("content_complete", json.bool(complete)),
+    #("reference", case complete {
+      True -> json.null()
+      False ->
+        json.object([
+          #(
+            "url",
+            json.string(
+              "/sessions/" <> session <> "/history/" <> int.to_string(position),
+            ),
+          ),
+          #("field", json.string("result")),
+          #("bytes", json.int(result_bytes)),
+        ])
+    }),
+  ])
+}
+
+pub fn status(value: session_activity.Status) -> json.Json {
+  json.object([
+    #("phase", json.string(value.phase)),
+    #("run_id", json.nullable(value.run_id, json.string)),
+    #("interrupt_requested", json.bool(value.interrupt_requested)),
+    #(
+      "blocking_reason",
+      json.nullable(value.blocking_reason, http_api.reason("inputs_blocked", _)),
+    ),
+  ])
+}
+
+pub fn activity(value: session_activity.Projection) -> json.Json {
+  let encoded = activity_value(value)
+  case string.byte_size(json.to_string(encoded)) <= 16_384 {
+    True -> encoded
+    False ->
+      case value.lines {
+        [] -> encoded
+        [first, ..rest] ->
+          activity(
+            session_activity.Projection(..value, lines: case first.text {
+              "" -> rest
+              text -> {
+                let scalars = string.to_utf_codepoints(text)
+                [
+                  session_activity.Line(
+                    first.kind,
+                    scalars
+                      |> list.drop(int.max(1, list.length(scalars) / 2))
+                      |> string.from_utf_codepoints,
+                  ),
+                  ..rest
+                ]
+              }
+            }),
+          )
+      }
+  }
+}
+
+fn activity_value(value: session_activity.Projection) -> json.Json {
+  json.object([
+    #(
+      "lines",
+      json.array(value.lines, fn(line) {
+        json.object([
+          #("kind", json.string(line.kind)),
+          #("text", json.string(line.text)),
+        ])
+      }),
+    ),
+    #("output_scalars", json.int(value.output_scalars)),
+    #("output_utf8_bytes", json.int(value.output_utf8_bytes)),
+    #("observed_at", timestamp(value.observed_at)),
+    #(
+      "latest_input",
+      json.nullable(value.latest_input, fn(input) {
+        json.object([
+          #("input_id", json.string(input.id)),
+          #("source", json.string(input.source)),
+          #("bytes", json.int(input.bytes)),
+        ])
+      }),
+    ),
+    #(
+      "latest_answer",
+      json.nullable(value.latest_answer, fn(answer) {
+        json.object([
+          #("message_id", json.string(answer.id)),
+          #("bytes", json.int(answer.bytes)),
+        ])
+      }),
+    ),
+  ])
+}
+
+pub fn progress(value: progress.Snapshot) -> json.Json {
+  let fields = [
+    #("call_id", json.string(value.call_id)),
+    #("tool_call_id", json.nullable(value.tool_call_id, json.string)),
+    #("name", json.string(value.name)),
+    #("phase", json.string(value.phase)),
+    #("intent", json.string("unknown")),
+  ]
+  json.object(case value.code {
+    None -> fields
     Some(#(offset, text)) -> [
       #(
-        "code",
+        "preview",
         json.object([
-          #("offset", json.int(offset)),
+          #("offset_scalars", json.int(offset)),
           #("text", json.string(text)),
         ]),
       ),
       ..fields
     ]
-    None -> fields
-  }
-  json.object(fields)
-}
-
-pub fn clear_tool_progress() -> String {
-  event("tool_progress", [#("progress", json.null())])
-}
-
-pub fn tool(
-  store: store.Store,
-  call: types.ToolCall,
-  output: String,
-  images: List(types.Image),
-  progress_call_id: Option(String),
-) -> String {
-  let trace =
-    json.parse(output, decode.field("cell_id", decode.string, decode.success))
-    |> result.map(fn(id) { journal.trace(store, id) })
-    |> result.unwrap(None)
-  let fields = [
-    #("callId", json.string(call.id)),
-    #("name", json.string(call.name)),
-    #("args", json.string(call.arguments)),
-    #("result", json.string(output)),
-    #("trace", json.nullable(trace, fn(value) { value })),
-    #("images", json.array(images, image_metadata)),
-  ]
-  let fields = case progress_call_id {
-    Some(id) -> [#("progressCallId", json.string(id)), ..fields]
-    None -> fields
-  }
-  event("tool", fields)
-}
-
-/// Text rendered as an assistant message in the transcript.
-pub fn visible_assistant_text(input: types.Input) -> Option(String) {
-  let text = case input {
-    types.Assistant(value) -> value
-    types.Replay(item) ->
-      case item_kind(item) {
-        "reasoning" -> ""
-        _ -> output_text(item)
-      }
-    _ -> ""
-  }
-  case text {
-    "" -> None
-    value -> Some(value)
-  }
-}
-
-/// The fields for `key` when `value` is present: absent optional fields are
-/// omitted from objects, not sent null.
-pub fn opt(
-  key: String,
-  value: Option(a),
-  encode: fn(a) -> json.Json,
-) -> List(#(String, json.Json)) {
-  case value {
-    Some(val) -> [#(key, encode(val))]
-    None -> []
-  }
-}
-
-fn user_event(
-  text: String,
-  source: String,
-  client_id: Option(String),
-  timestamp: Option(Int),
-  fields: List(#(String, json.Json)),
-) -> String {
-  event("user", [
-    #("text", json.string(text)),
-    #("source", json.string(source)),
-    #("triggeredAt", json.string("")),
-    ..list.flatten([
-      fields,
-      opt("clientId", client_id, json.string),
-      opt("timestamp", timestamp, json.int),
-    ])
-  ])
-}
-
-pub fn user(
-  text: String,
-  source: String,
-  client_id: Option(String),
-  timestamp: Option(Int),
-) -> String {
-  user_event(text, source, client_id, timestamp, [])
-}
-
-/// User-facing streams carry safe image metadata; the durable base64 payload
-/// stays in the transcript and is sent only to the selected model provider.
-pub fn user_image(
-  text: String,
-  source: String,
-  client_id: Option(String),
-  timestamp: Option(Int),
-  image: types.Image,
-) -> String {
-  user_event(text, source, client_id, timestamp, [
-    #("image", image_metadata(image)),
-  ])
-}
-
-/// What clients show of an image: never its payload.
-fn image_metadata(image: types.Image) -> json.Json {
-  let #(mime_type, width, height, bytes) = types.image_meta(image)
-  json.object([
-    #("mimeType", json.string(mime_type)),
-    #("width", json.int(width)),
-    #("height", json.int(height)),
-    #("bytes", json.int(bytes)),
-  ])
-}
-
-pub fn assistant_message(
-  input: types.Input,
-  timestamp: Option(Int),
-) -> List(String) {
-  case visible_assistant_text(input) {
-    Some(value) -> [
-      event("message", [
-        #("role", json.string("assistant")),
-        #("text", json.string(value)),
-        ..opt("timestamp", timestamp, json.int)
-      ]),
-    ]
-    None -> []
-  }
-}
-
-pub fn snapshot(
-  store: store.Store,
-  entries: List(transcript.Entry),
-  latest_usage: Option(usage.Metadata),
-) -> List(String) {
-  let tool_calls = calls_by_id(entries)
-  let rendered = list.flat_map(entries, render(store, tool_calls, _))
-  case latest_usage {
-    Some(metadata) -> list.append(rendered, [usage.event(metadata)])
-    None -> rendered
-  }
-}
-
-/// Rendered transcript rows, each followed by a `committed` marker naming
-/// its row: a client stamps what it shows with the rows it came from, and so
-/// knows where to resume when it asks for older history.
-pub fn rows(
-  store: store.Store,
-  entries: List(transcript.SourcedEntry),
-) -> List(String) {
-  let tool_calls = calls_by_id(list.map(entries, fn(item) { item.entry }))
-  list.flat_map(entries, fn(item) {
-    case render(store, tool_calls, item.entry) {
-      [] -> []
-      events -> list.append(events, [committed(item.source.seq)])
-    }
   })
 }
 
-/// Where a rendered page starts: `before` is its first row, the cursor for
-/// the next older page, and `more` says whether one exists.
-pub fn page_fields(
-  entries: List(transcript.SourcedEntry),
-  more: Bool,
-) -> List(#(String, json.Json)) {
-  case entries {
-    [first, ..] -> [
-      #("before", json.int(first.source.seq)),
-      #("more", json.bool(more)),
-    ]
-    [] -> [#("more", json.bool(False))]
-  }
-}
-
-/// Everything shown so far is covered by transcript rows up to `seq`.
-pub fn committed(seq: Int) -> String {
-  event("committed", [#("seq", json.int(seq))])
-}
-
-fn calls_by_id(
-  entries: List(transcript.Entry),
-) -> dict.Dict(String, types.ToolCall) {
-  list.flat_map(entries, fn(entry) { calls(entry.input) })
-  |> list.map(fn(call) { #(call.id, call) })
-  |> dict.from_list
-}
-
-fn render_original(
-  store: store.Store,
-  tool_calls: dict.Dict(String, types.ToolCall),
-  entry: transcript.Entry,
-) -> List(String) {
-  case entry.input {
-    types.User(value) ->
-      case notice.is_notice(value) {
-        True -> []
-        False ->
-          case note.parse(value) {
-            Some(#(origin, body)) -> [user(body, origin, None, entry.timestamp)]
-            None -> [user(value, "chat", None, entry.timestamp)]
-          }
-      }
-    types.UserImage(value, image) -> [
-      user_image(value, "user", None, entry.timestamp, image),
-    ]
-    types.Assistant(_) -> assistant_message(entry.input, entry.timestamp)
-    types.ToolOutput(id, output, images) ->
-      case dict.get(tool_calls, id) {
-        Ok(call) -> [tool(store, call, output, images, None)]
-        Error(_) -> []
-      }
-    types.Replay(item) -> {
-      let thinking = thinking_text(item)
-      list.append(
-        case thinking {
-          "" -> []
-          _ -> [
-            event("thinking", [
-              #("text", json.string(thinking)),
-              ..opt("elapsedMs", entry.thought_ms, json.int)
-            ]),
-          ]
-        },
-        assistant_message(entry.input, entry.timestamp),
-      )
-    }
-  }
-}
-
-pub fn output_text(item: types.ReplayItem) -> String {
-  case types.replay_protocol(item) {
-    types.ChatCompletions ->
-      types.inspect_item(
-        item,
-        decode.field("content", decode.optional(decode.string), decode.success),
-      )
-      |> result.unwrap(None)
-      |> option.unwrap("")
-    types.Responses -> {
-      let part = decode.field("text", decode.string, decode.success)
-      types.inspect_item(
-        item,
-        decode.field(
-          "content",
-          decode.list(decode.one_of(part, [decode.success("")])),
-          decode.success,
-        ),
-      )
-      |> result.unwrap([])
-      |> string.concat
-    }
-  }
-}
-
-/// Reasoning text saved with a provider item, rendered apart from the answer.
-pub fn thinking_text(item: types.ReplayItem) -> String {
-  case types.replay_protocol(item) {
-    types.ChatCompletions -> chat_thinking(item)
-    types.Responses -> responses_thinking(item)
-  }
-}
-
-fn optional_text(item: types.ReplayItem, name: String) -> Option(String) {
-  types.inspect_item(
-    item,
-    decode.field(name, decode.optional(decode.string), decode.success),
-  )
-  |> result.unwrap(None)
-}
-
-fn chat_thinking(item: types.ReplayItem) -> String {
-  case
-    optional_text(item, "reasoning_content"),
-    optional_text(item, "reasoning")
-  {
-    Some(value), _ if value != "" -> value
-    _, Some(value) if value != "" -> value
-    _, _ -> ""
-  }
-}
-
-fn item_kind(item: types.ReplayItem) -> String {
-  types.inspect_item(item, decode.field("type", decode.string, decode.success))
-  |> result.unwrap("")
-}
-
-fn responses_thinking(item: types.ReplayItem) -> String {
-  case item_kind(item) {
-    "reasoning" -> {
-      let part = decode.field("text", decode.string, decode.success)
-      let fragments = fn(name: String) {
-        types.inspect_item(
-          item,
-          decode.field(name, decode.list(part), decode.success),
-        )
-        |> result.unwrap([])
-      }
-      // Prefer the human-readable summary; raw reasoning_text is a fallback.
-      let parts = case fragments("summary") {
-        [] -> fragments("content")
-        summary -> summary
-      }
-      string.join(parts, "\n\n")
-    }
-    _ -> ""
-  }
-}
-
-pub fn calls(input: types.Input) -> List(types.ToolCall) {
-  let function = {
-    use name <- decode.field("name", decode.string)
-    use arguments <- decode.field("arguments", decode.string)
-    decode.success(#(name, arguments))
-  }
-  case input {
-    types.Replay(item) ->
-      case types.replay_protocol(item) {
-        types.Responses -> {
-          let decoder = {
-            use kind <- decode.field("type", decode.string)
-            use id <- decode.field("call_id", decode.string)
-            use pair <- decode.then(function)
-            case kind {
-              "function_call" ->
-                decode.success(types.ToolCall(id, pair.0, pair.1))
-              _ -> decode.failure(types.ToolCall("", "", ""), "function_call")
-            }
-          }
-          case types.inspect_item(item, decoder) {
-            Ok(call) -> [call]
-            Error(_) -> []
-          }
-        }
-        types.ChatCompletions ->
-          types.inspect_item(
-            item,
-            decode.field(
-              "tool_calls",
-              decode.list(replay.tool_call_decoder()),
-              decode.success,
-            ),
-          )
-          |> result.unwrap([])
-      }
-    _ -> []
-  }
-}
-
-fn render(
-  store: store.Store,
-  tool_calls: dict.Dict(String, types.ToolCall),
-  entry: transcript.Entry,
-) -> List(String) {
-  case entry.source {
-    Some(source) ->
-      case operations.committed_input(store, source.session, source.seq) {
-        Ok(Some(display)) -> [
-          durable_submission(display, option.unwrap(entry.timestamp, 0)),
-        ]
-        _ -> render_original(store, tool_calls, entry)
-      }
-    None -> render_original(store, tool_calls, entry)
-  }
-}
-
-pub fn durable_submission(
-  display: operations.Display,
-  timestamp: Int,
-) -> String {
-  let fields =
-    list.flatten([
-      opt("operationId", display.operation_id, json.string),
-      opt("image", display.image, fn(image) {
+pub fn input(value: operations.InputOutcome) -> json.Json {
+  let receipt = value.receipt
+  let admitted = receipt.status == "accepted"
+  let problem =
+    json.nullable(receipt.rejection, fn(rejection) {
+      http_api.problem(http_api.Failure(
+        rejection.status,
+        rejection.code,
+        rejection.detail,
+      ))
+    })
+  json.object([
+    #("id", json.string(receipt.operation.id)),
+    #("session_id", json.string(receipt.operation.target)),
+    #(
+      "kind",
+      json.string(case receipt.operation.kind {
+        "user" -> "message"
+        other -> other
+      }),
+    ),
+    #("admission", json.string(receipt.status)),
+    #("http_status", json.int(receipt.http_status)),
+    #("problem", problem),
+    #("accepted_at", case admitted {
+      True -> timestamp(receipt.created_at)
+      False -> json.null()
+    }),
+    #("acceptance_order", case admitted {
+      True -> json.int(value.acceptance_order)
+      False -> json.null()
+    }),
+    #("delivery", json.nullable(receipt.delivery, json.string)),
+    #(
+      "blocking_reason",
+      json.nullable(receipt.blocking_reason, http_api.reason("input_blocked", _)),
+    ),
+    #("transcript_position", json.nullable(receipt.committed_seq, json.int)),
+    #(
+      "turn",
+      json.nullable(value.turn, fn(turn) {
         json.object([
-          #("mimeType", json.string(image.mime_type)),
-          #("width", json.int(image.width)),
-          #("height", json.int(image.height)),
-          #("bytes", json.int(image.bytes)),
+          #("id", json.string(turn.id)),
+          #("state", json.string(turn.state)),
+          #("started_at", timestamp(turn.started_at)),
+          #("ended_at", json.nullable(turn.ended_at, timestamp)),
+          #("outcome", json.null()),
         ])
       }),
-    ])
-  user_event(
-    display.text,
-    display.source,
-    Some(display.client_id),
-    Some(timestamp),
-    fields,
-  )
+    ),
+    #("client_id", json.nullable(receipt.operation.client_id, json.string)),
+  ])
+}
+
+pub fn usage(metadata: Option(usage.Metadata)) -> json.Json {
+  let tokens = option.then(metadata, fn(value) { value.tokens })
+  let counter = fn(read) { json.nullable(option.map(tokens, read), json.int) }
+  json.object([
+    #(
+      "model",
+      json.nullable(
+        option.map(metadata, fn(value) { value.model }),
+        json.string,
+      ),
+    ),
+    #(
+      "observed_at",
+      json.nullable(
+        option.map(metadata, fn(value) { value.recorded_at }),
+        timestamp,
+      ),
+    ),
+    #("prompt_tokens", counter(fn(value) { value.prompt_tokens })),
+    #(
+      "cached_prompt_tokens",
+      json.nullable(
+        option.then(tokens, fn(value) { value.cached_prompt_tokens }),
+        json.int,
+      ),
+    ),
+    #(
+      "cache_write_tokens",
+      json.nullable(
+        option.then(tokens, fn(value) { value.cache_creation_tokens }),
+        json.int,
+      ),
+    ),
+    #("completion_tokens", counter(fn(value) { value.completion_tokens })),
+    #(
+      "total_tokens",
+      counter(fn(value) { value.prompt_tokens + value.completion_tokens }),
+    ),
+    #("elapsed_ms", json.null()),
+    #("tokens_per_second", json.null()),
+    #("context_window_tokens", json.null()),
+    #("cache_ttl_seconds", json.null()),
+    #("cache_fade", case option.then(metadata, fn(value) { value.cache }) {
+      None -> json.array([], fn(value) { value })
+      Some(fade) ->
+        json.array(list.take(fade.steps, 200), fn(step) {
+          json.object([
+            #("at", timestamp(fade.anchor_ms + step.after_ms)),
+            #("cached_tokens", json.nullable(step.cached, json.int)),
+          ])
+        })
+    }),
+  ])
+}
+
+fn timestamp(value: Int) -> json.Json {
+  json.string(http_api.timestamp(value))
+}
+
+/// Advance bounded live activity from native values, without parsing an
+/// envelope or reconstructing argument fragments.
+pub fn observe(
+  projection: session_activity.Projection,
+  event: Event,
+  now: Int,
+) -> session_activity.Projection {
+  let projection = session_activity.Projection(..projection, observed_at: now)
+  case event {
+    Status(value) ->
+      case value.phase {
+        "preparing" ->
+          session_activity.Projection(..projection, streamed_answer: False)
+        _ -> projection
+      }
+    Text(_, _, text) -> session_activity.output(projection, "assistant", text)
+    Thinking(_, _, text, _) ->
+      session_activity.output(projection, "thinking", text)
+    Input(outcome, Some(display)) ->
+      case outcome.receipt.delivery {
+        Some("committed") ->
+          session_activity.input(
+            projection,
+            outcome.receipt.operation.id,
+            case display.source {
+              "chat" | "continue" -> "chat"
+              "mail" -> "agent"
+              _ -> "system"
+            },
+            display.text,
+          )
+        _ -> projection
+      }
+    Message(entry) -> {
+      let text =
+        list.filter_map(entry.parts, fn(part) {
+          case part {
+            http_history.Text(_, value) -> Ok(value)
+            _ -> Error(Nil)
+          }
+        })
+        |> string.concat
+      case entry.kind {
+        "assistant" -> session_activity.answer(projection, entry.id, text)
+        "user" ->
+          case entry.input_id {
+            None -> session_activity.append(projection, "input", text)
+            Some(_) -> projection
+          }
+        "thinking" -> projection
+        "note" | "compaction" | "image_fit" ->
+          session_activity.append(projection, "note", text)
+        _ -> projection
+      }
+    }
+    Tool(_, output, _, _, _) -> {
+      let text =
+        json.parse(
+          output,
+          decode.field("output", decode.string, decode.success),
+        )
+        |> result.unwrap(output)
+      session_activity.append(projection, "tool", text)
+    }
+    Note(_, _, text, _) -> session_activity.append(projection, "note", text)
+    Failure(_, _, text) -> session_activity.append(projection, "error", text)
+    _ -> projection
+  }
 }

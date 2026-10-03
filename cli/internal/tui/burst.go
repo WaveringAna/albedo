@@ -218,10 +218,7 @@ func collect(entries []HistoryEntry) burst {
 // first line of it, folded and capped.
 func pyLabel(code string) string {
 	line := oneLine(firstLine(code))
-	if len(line) > 48 {
-		line = line[:45] + "…"
-	}
-	return line
+	return ansi.Truncate(line, 48, "…")
 }
 
 // clause is a verb and what it acted on: n things, noun in the plural,
@@ -390,9 +387,6 @@ func (r TranscriptRenderer) steps(entries []HistoryEntry, width int) []string {
 		}
 		for _, act := range trace.Activities {
 			style := r.Styles.Faint
-			if act.Failed {
-				style = r.Styles.Error
-			}
 			rows = append(rows, style.Render(r.traceLine(stepLabel(act.Kind), act.Target, isPath(act), width)))
 		}
 		for _, change := range trace.Changes {

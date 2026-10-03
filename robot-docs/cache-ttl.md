@@ -20,7 +20,7 @@ A file is `{"version": 1, "entries": [...]}`. One entry:
 
 Unknown fields are ignored, so a newer file stays readable. An entry without a string `id`, or with an invalid `policy`, `evidence`, or other field, is skipped with a logged reason. An absent `match` matches anything. Repeated string ids within one layer reject that layer, even when one of the entries would fail semantic decoding; the layer keeps its last good entries. The same id in different layers is a valid override.
 
-**Values marked `folklore` or `unknown` are placeholders.** They are the shape of the answer, not the answer: phase 2 replaces them with what the session's own request rows measure.
+**Values marked `folklore` or `unknown` are placeholders.** Session request measurements supersede these estimates when available.
 
 ## layers
 
@@ -34,15 +34,15 @@ A later layer replaces an entry with the same id in place, and puts entries with
 
 ## reload
 
-Each layer file is parsed once per revision (size + mtime), including malformed JSON, invalid table shapes, and duplicate-id failures. The merged decoded Gleam table is cached; a changed file is picked up on the next lookup without a restart. A malformed layer file keeps that layer's last good entries and reports the reason in `/cache-ttl`; fixing the file at a new revision is live again. Transient file-read errors are retried on the next read and retain last good entries. HTTP responses encode the cached table only when serving it.
+Each layer file is parsed once per revision (size + mtime), including malformed JSON, invalid table shapes, and duplicate-id failures. The merged decoded Gleam table is cached; a changed file is picked up on the next lookup without a restart. A malformed layer file keeps that layer's last good entries and reports the reason in `GET /models?view=cache-policy`; fixing the file at a new revision is live again. Transient file-read errors are retried on the next read and retain last good entries. HTTP responses encode the cached table only when serving it.
 
 The remote copy refreshes in the background when it is stale, the same cadence as the models catalog. `/reload` (no target) re-fetches it immediately, alongside the models catalog: the command returns after the copy is atomically replaced, or with the fetch failure. A fetched layer with duplicate ids is rejected before replacing the file. A confirmed replacement invalidates the parsed layer and merged table even when size and timestamp stay unchanged.
 
-## local api
+## HTTP API
 
-`GET /cache-ttl`, read-only, daemon-token authenticated like `/quota`:
+`GET /models?view=cache-policy` is read-only and requires the daemon bearer token:
 
 - no parameters — `{"entries": [...], "layers": [{"name": "default"|"remote"|"local", "path", "loaded", "error"?}]}`, each entry carrying the layer it came from and every field above it decoded.
-- `?extension=&host=&model=` — the single resolved entry, or `null`, resolved exactly as `lookup` resolves it.
+- `&extension=&host=&model=` returns `matched`, the resolved entry or `null`, using the same lookup.
 
 `layers` is the state of each file: `loaded` false with an `error` means that layer's last good entries are still merged in (or it was never readable). An absent local override or unconfigured remote url is simply not loaded, with no error.

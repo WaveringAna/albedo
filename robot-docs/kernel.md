@@ -123,40 +123,47 @@ the live kernel, never attached to it), and the old kernel after a swap.
 a kernel is stale when it runs another bundle than the bridge that reached it,
 speaks another protocol (both read from the hello), or booted with another
 module set than its session now has (found at reattach). `kernel.stale`
-answers the reason and whether the swap was forced; the session status carries
-`kernel: {stale, reason?, link, step?}`, and the tui shows `kernel older` beside the
-header counts. `link` is how the session reaches its kernel: `none` before it
-needed one, `booting` while one opens (or a daemon start's attach is awaited),
-`attached`, `reattaching` while the bridge is down and the port owner retries
-(`albedo_python:linked/1`), and `lost` once it gave up. the tui fades a remote
-host in the header while booting or reattaching, and colors it as an error
-once lost. `step` is `staging` while a remote kernel's boot waits for its
-host's probe to copy the bundle over, so the status line can say `copying
-the kernel to chernobog…` instead of `connecting to chernobog…`.
+answers the reason and whether the swap was forced. `GET /sessions/{id}`
+returns the native `kernel` observation with `instance_id`, `build`, `state`,
+`stage`, `stale`, and `live_job_count`. Unknown identities and counts are null.
+Reading this resource does not prepare or replace a kernel. `stage` reports
+remote bundle staging while the owner is booting.
 
-the swap happens at the session's next idle moment: `session_namespace.ready`,
-which every turn, compaction and background call goes through, lets go of a
-kernel that `runtime.upgradable` says nothing keeps, so the session asks the
-runtime again (parking its work), and the runtime's open runs `kernel.upgrade`
-off the actor while the session waits, as for a boot:
+At the next idle moment, `session_namespace.ready` lets the runtime replace a
+stale kernel when no live jobs keep it. The runtime does the work off its actor:
 
-1. snapshot the old namespace to `namespace.state` in the old kernel's run
-   directory (a kernel with a cell still running answers busy at once);
-2. boot a fresh kernel on the current bundle and module set beside it;
-3. restore into it from that file;
-4. stop the old kernel, ending any jobs it still had, and its run directory.
+1. Snapshot the old namespace to `namespace.state` in its run directory.
+2. Boot a replacement beside it. The replacement's identities, groups and
+   outbox belong to `kernel_stages`; the old `kernel_links` row stays authoritative.
+3. Check that the replacement is attached and current, then restore its namespace.
+4. Mark the staged replacement ready, stop the old kernel and its jobs, and
+   confirm that the old durable ownership record was removed.
+5. Publish the replacement in `kernel_links` and adopt its actual handle.
 
-the session adopts it with origin `Upgraded`: the model's next message carries
-"The python kernel was upgraded to the new python bundle. Restored: a, b. Not
-carried: x (why)." and the transcript a note. imports and definitions that
-were not saved are gone, as after a disk restore. a swap that cannot happen
-now (busy, a namespace that would not save) hands the old kernel back
-(`Kept`), still stale, and the next idle moment tries again.
+Boot, validation or restore failure stops the staged candidate and keeps the
+old kernel. A failed old-kernel stop reports the actual failure and attempts to
+stop the staged candidate. Shutdown may already have affected jobs; the report
+cannot promise to restore those external effects. Failed cleanup retains the
+relevant durable identities for a later verified stop. No failed stop is reported
+as a successful swap.
 
-live jobs keep an older bundle or module set until they end (the job's wake
-is usually that idle moment). `/kernel` reports the staleness and the live
-jobs; `/kernel upgrade` (user only, between turns) forces the swap now,
-stopping the jobs as a restart did before kernels were detached.
+On restart, storage publishes a ready candidate if its old link is absent.
+The daemon then supervises abandoned staged candidates before admitting work.
+Staged owners use their immutable kernel ID throughout publication, so replies
+and ownership updates continue to reach the same namespace.
+
+The adopted kernel has origin `Upgraded`. The next model input names the carried
+variables and definitions, and the transcript records the upgrade. A background
+upgrade that cannot proceed keeps a usable old kernel and tries at a later idle
+moment. A lost old kernel is reported as lost.
+
+Live jobs keep an older bundle or module set until they end. `POST
+/sessions/{id}/kernel/upgrade` is an explicit idle-session action that can stop
+those jobs. Its response waits for the session to adopt the replacement and
+reports actual old/new identities and builds, observed stopped job IDs, warnings,
+and failure. An empty unattached session remains unchanged. There is no automatic
+retry after a lost HTTP response; read the session kernel first. `/kernel upgrade`
+uses this same operation, and `/kernel` reads the observation.
 
 a kernel booted now that is already stale says this daemon and its own python
 bundle disagree (a protocol bumped on one side only, a partial install): its
@@ -266,26 +273,20 @@ with backoff and `resume_kernels` treat an ssh drop as a bridge that exited.
   "your python kernel and run jobs execute on chernobog (Linux aarch64)…",
   with the remote home.
 
-### `/hosts`
+### Host probes
 
-- `GET /hosts/:host` (`[user@]host`): the cached probe, or `warming` while
-  one runs (a stale or missing answer starts one).
-- `POST /hosts/:host/warm`: drops a cached answer and probes now, waiting up
-  to a minute.
-
-both answer `{host, state, detail}` with `state` one of `ready`, `warming`,
-`needs_auth` (with `control_path`), `unreachable`, `unsupported`, and `os`,
-`arch`, `home` when ready. a `warming` answer carries `step: "staging"` while
-the probe copies the bundle: `albedo_ssh.py probe` prints `{"step":
-"staging"}` on its own line first, and `albedo_ssh.erl` passes each line on
-as it arrives (`albedo_ssh:step/1`), keeping the last line as the answer. `/health` lists `remote_hosts`. `GET /hosts`
-(the picker's host completion) is in workspaces.md. the same probe also
-answers the `gather` command the folder browser and project readers run.
+`GET /hosts?target={host}` reads cached SSH probe state.
+`POST /hosts/{host}/probe` starts or joins a bounded probe and returns `202`.
+The client polls the read until it reaches a terminal state. Probe state includes
+safe diagnostics and authentication instructions when operator sign-in is needed.
+The same probe supports remote folder gathering. See the
+[HTTP contract](../docs/http-api-design.md#models-workspaces-hosts-and-provider-login)
+for the wire format and [workspaces](workspaces.md#browsing) for folder browsing.
 
 ### signing in
 
 BatchMode stays on for the daemon. when a remote session's waiting turn is
-blocked, the chat asks `GET /hosts/:host`; if that says `needs_auth` and the
+blocked, the chat asks `GET /hosts?target={host}`; if that says `needs_auth` and the
 daemon shares the tui's machine, the chat offers ctrl+l: it runs
 `ssh -M -fN -o ControlPath=<control_path> -o ControlPersist=600 <host>`
 through `tea.ExecProcess`, so ssh asks in the terminal, then warms the host,

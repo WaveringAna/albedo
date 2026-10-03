@@ -7,7 +7,7 @@ import sqlite3
 import unittest
 import uuid
 
-from harness import Albedo, Provider, error, exclusive, python, text
+from harness import Albedo, Provider, error, exclusive, operation_id, python, text
 
 
 PNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD"
@@ -80,9 +80,12 @@ class ImageToolOutputTest(unittest.TestCase):
                     app.prompt(session, "run image scenario").close()
                     app.idle(session)
                     result = next(
-                        json.loads(event["result"])
-                        for event in reversed(app.events(session))
-                        if event.get("type") == "tool" and event.get("name") == "python"
+                        json.loads(part["value"])
+                        for entry in reversed(app.history(session)["items"])
+                        if entry["kind"] == "tool_result"
+                        and entry["tool"]["name"] == "python"
+                        for part in entry["content"]
+                        if part["kind"] == "json" and part["field"] == "result"
                     )
                     self.assertEqual(result["status"], "ok", result)
                     return result
@@ -138,10 +141,8 @@ class ImageToolOutputTest(unittest.TestCase):
                     for prompt in prompts:
                         app.prompt(sid, prompt).close()
                         app.idle(sid)
-                    with app.api(
-                        f"/sessions/{sid}/commands", {"name": "/compact"}
-                    ) as response:
-                        self.assertTrue(json.load(response)["result"]["started"])
+                    with app.api(f"/sessions/{sid}/compaction", {}) as response:
+                        self.assertEqual(json.load(response)["state"], "compacted")
                     app.idle(sid)
 
                 def rows(sid, table, needle):
@@ -154,17 +155,16 @@ class ImageToolOutputTest(unittest.TestCase):
 
                 old = app.session()
                 app.api(
-                    f"/sessions/{old}/events",
+                    f"/sessions/{old}/inputs/{operation_id()}",
                     {
-                        "content": "keep this upload",
+                        "kind": "message",
+                        "text": "keep this upload",
                         "image": {
-                            "mimeType": "image/png",
+                            "mime_type": "image/png",
                             "data": uploaded_image,
-                            "width": 18,
-                            "height": 3,
-                            "bytes": len(base64.b64decode(uploaded_image)),
                         },
                     },
+                    method="PUT",
                 ).close()
                 app.idle(old)
                 converse(old, ["show", "second", "third", "fourth"])

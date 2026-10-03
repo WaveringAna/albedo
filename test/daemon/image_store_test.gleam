@@ -1,5 +1,6 @@
 /// Image deduplication and legacy migration need database fixtures absent from E2E.
 import albedo/daemon/conversation
+import albedo/daemon/family
 import albedo/daemon/image
 import albedo/daemon/images
 import albedo/daemon/migrations/image_store
@@ -16,6 +17,9 @@ const png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD"
 
 @external(erlang, "albedo_runtime_test_support", "temporary_database")
 fn temporary_database() -> String
+
+@external(erlang, "albedo_session", "now_ms")
+fn now_ms() -> Int
 
 @external(erlang, "albedo_runtime_test_support", "cleanup")
 fn cleanup(path: String) -> Nil
@@ -111,6 +115,7 @@ pub fn commit_keeps_one_payload_and_rows_load_references_test() -> Nil {
 
 pub fn deleting_a_session_releases_only_unshared_payloads_test() -> Nil {
   let #(path, ledger) = ledger()
+  let assert Ok(_) = family.initialise(ledger)
   let assert Ok(_) = conversation.create(ledger, session("a"))
   let assert Ok(_) = conversation.create(ledger, session("b"))
   let assert Ok(_) =
@@ -118,13 +123,39 @@ pub fn deleting_a_session_releases_only_unshared_payloads_test() -> Nil {
   let assert Ok(_) =
     conversation.commit(ledger, "b", inputs(), conversation.Idle)
 
-  let assert Ok(_) = conversation.delete(ledger, "a", [])
+  let assert Ok(first) = conversation.capture(ledger, "a")
+  let assert Ok(claim) =
+    family.claim_deletion(
+      ledger,
+      family.DeletionRequest(
+        "a",
+        first.configuration.revision,
+        first.family.revision,
+        False,
+      ),
+      "delete-a",
+      now_ms() + 5000,
+    )
+  let assert Ok(_) = conversation.delete_claimed(ledger, "a", claim, [])
   count(ledger, "SELECT count(*) FROM images") |> should.equal(1)
   let assert [types.UserImage(_, kept), ..] = loaded(ledger, "b")
   let assert types.StoredData(read: read, ..) = types.image_data(kept)
   read() |> should.equal(Ok(png))
 
-  let assert Ok(_) = conversation.delete(ledger, "b", [])
+  let assert Ok(second) = conversation.capture(ledger, "b")
+  let assert Ok(claim) =
+    family.claim_deletion(
+      ledger,
+      family.DeletionRequest(
+        "b",
+        second.configuration.revision,
+        second.family.revision,
+        False,
+      ),
+      "delete-b",
+      now_ms() + 5000,
+    )
+  let assert Ok(_) = conversation.delete_claimed(ledger, "b", claim, [])
   count(ledger, "SELECT count(*) FROM images") |> should.equal(0)
   cleanup(path)
 }
@@ -225,8 +256,5 @@ pub fn fingerprints_ignore_where_a_payload_lives_test() -> Nil {
   |> should.equal(fingerprint(#("source", inline)))
   legacy_fingerprint(#("source", stored))
   |> should.equal(Ok(old_fingerprint("source", "look", png)))
-  // Without images the current fingerprint is the one saved before.
-  fingerprint(#("source", [types.User("hi")]))
-  |> should.equal(fingerprint(#("source", [types.User("hi")])))
   cleanup(path)
 }

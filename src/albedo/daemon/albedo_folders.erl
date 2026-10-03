@@ -1,5 +1,5 @@
 %% The filesystem half of albedo/daemon/folders: directory entries and stats,
-%% following symlinks the way a shell's `cd` would.
+%% preserving symlink identity while following directory targets for `cd`.
 -module(albedo_folders).
 
 -export([home/0, entries/1, file_size/1]).
@@ -23,11 +23,16 @@ entries(Dir) ->
 
 entry(Dir, Name0) ->
     Name = unicode:characters_to_binary(Name0),
-    case file:read_file_info(filename:join(Dir, Name), [{time, posix}]) of
+    Path = filename:join(Dir, Name),
+    Symlink = case file:read_link_info(Path) of
+        {ok, #file_info{type = symlink}} -> true;
+        _ -> false
+    end,
+    case file:read_file_info(Path, [{time, posix}]) of
         {ok, #file_info{type = Type, mtime = Mtime}} ->
-            {entry, Name, Type =:= directory, Mtime};
+            {entry, Name, Type =:= directory, Mtime, Symlink};
         {error, _} ->
-            {entry, Name, false, 0}
+            {entry, Name, false, 0, Symlink}
     end.
 
 file_size(Path) ->

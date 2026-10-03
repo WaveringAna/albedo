@@ -18,6 +18,9 @@ pub type Provider {
     extension: String,
     model: String,
     protocol: types.Protocol,
+    effort: Option(String),
+    image_edge: Option(Int),
+    account_id: Option(String),
   )
 }
 
@@ -127,7 +130,30 @@ fn provider_decoder() -> decode.Decoder(Provider) {
   )
   use model <- decode.field("model", decode.string)
   use protocol <- decode.field("protocol", types.protocol_decoder())
-  decode.success(Provider("", provider_extension, model, protocol))
+  use effort <- decode.optional_field(
+    "effort",
+    None,
+    decode.optional(decode.string),
+  )
+  use image_edge <- decode.optional_field(
+    "imageEdge",
+    None,
+    decode.optional(decode.int),
+  )
+  use account_id <- decode.optional_field(
+    "accountId",
+    None,
+    decode.optional(decode.string),
+  )
+  decode.success(Provider(
+    "",
+    provider_extension,
+    model,
+    protocol,
+    effort,
+    image_edge,
+    account_id,
+  ))
 }
 
 /// Decode one provider's extension-owned settings without exposing credentials

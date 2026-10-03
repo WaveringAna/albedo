@@ -18,6 +18,18 @@ import (
 	"albedo/cli/internal/daemon"
 )
 
+func listedSessionPrefix(t *testing.T, id string) string {
+	t.Helper()
+	for line := range strings.SplitSeq(cli(t, "sessions"), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && len(fields[0]) >= 8 && strings.HasPrefix(id, fields[0]) {
+			return fields[0]
+		}
+	}
+	t.Fatalf("session listing omitted %s", id)
+	return ""
+}
+
 // A session created by `albedo new` must be listed by `sessions --json` with
 // its workspace, model, and active provider, and `resume` must resolve both
 // the full id and a prefix back to it. This only holds when new, sessions,
@@ -57,7 +69,7 @@ func TestNewSessionIsListedAndResumes(t *testing.T) {
 	if err := json.Unmarshal([]byte(cli(t, "resume", created)), &resumed); err != nil || resumed.Session != created {
 		t.Fatalf("albedo resume by id: session=%q err=%v", resumed.Session, err)
 	}
-	if err := json.Unmarshal([]byte(cli(t, "resume", created[:8])), &resumed); err != nil || resumed.Session != created {
+	if err := json.Unmarshal([]byte(cli(t, "resume", listedSessionPrefix(t, created))), &resumed); err != nil || resumed.Session != created {
 		t.Fatalf("albedo resume by prefix: session=%q err=%v", resumed.Session, err)
 	}
 }
@@ -79,7 +91,7 @@ func TestSendTurnReachesProviderAndTranscript(t *testing.T) {
 	}
 
 	waitIdle(t, id, profile, 1)
-	reply := strings.Join(eventText(streamSnapshot(t, id), "message"), "\n")
+	reply := strings.Join(eventText(durableHistorySnapshot(t, id), "message"), "\n")
 	if !strings.Contains(reply, "echo: "+prompt) {
 		t.Fatalf("assistant reply is missing from the transcript; got:\n%s", reply)
 	}
@@ -169,15 +181,16 @@ func TestSendAndStopAcceptAShortenedSessionID(t *testing.T) {
 	t.Parallel()
 	profile := providerRoute(t, echoReply)
 	id := newSession(t, t.TempDir())
+	prefix := listedSessionPrefix(t, id)
 
 	var sent daemon.SendResult
-	if err := json.Unmarshal([]byte(cli(t, "send", id[:8], "short id")), &sent); err != nil || !sent.OK {
+	if err := json.Unmarshal([]byte(cli(t, "send", prefix, "short id")), &sent); err != nil || !sent.OK {
 		t.Fatalf("albedo send by prefix: ok=%v err=%v", sent.OK, err)
 	}
 	waitIdle(t, id, profile, 1)
-	cli(t, "stop", id[:8])
+	cli(t, "stop", prefix)
 
-	if reply := cli(t, "--prompt", "by prefix", "--session", id[:8]); !strings.Contains(reply, "echo: by prefix") {
+	if reply := cli(t, "--prompt", "by prefix", "--session", prefix); !strings.Contains(reply, "echo: by prefix") {
 		t.Fatalf("albedo --prompt --session by prefix did not reach the session: %s", reply)
 	}
 }
@@ -189,23 +202,24 @@ func TestSessionsSendAndRead(t *testing.T) {
 	t.Parallel()
 	profile := providerRoute(t, echoReply)
 	id := newSession(t, t.TempDir())
+	prefix := listedSessionPrefix(t, id)
 
 	for i, prompt := range []string{"first question", "second question"} {
 		var sent daemon.SendResult
-		if err := json.Unmarshal([]byte(cli(t, "sessions", "send", id[:8], prompt)), &sent); err != nil || !sent.OK {
+		if err := json.Unmarshal([]byte(cli(t, "sessions", "send", prefix, prompt)), &sent); err != nil || !sent.OK {
 			t.Fatalf("albedo sessions send %q: ok=%v err=%v", prompt, sent.OK, err)
 		}
 		waitIdle(t, id, profile, i+1)
 	}
 
-	latest := cli(t, "sessions", "read", id[:8])
+	latest := cli(t, "sessions", "read", prefix)
 	if !strings.Contains(latest, "[user] second question") || !strings.Contains(latest, "[assistant] echo: second question") {
 		t.Fatalf("read of the newest turn is missing it:\n%s", latest)
 	}
 	if strings.Contains(latest, "first question") {
 		t.Fatalf("read of one turn includes an older one:\n%s", latest)
 	}
-	both := cli(t, "sessions", "read", id[:8], "2")
+	both := cli(t, "sessions", "read", prefix, "2")
 	if !strings.Contains(both, "[user] first question") || !strings.Contains(both, "[assistant] echo: second question") {
 		t.Fatalf("read of two turns is missing one:\n%s", both)
 	}

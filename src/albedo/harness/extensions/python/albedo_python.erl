@@ -17,8 +17,8 @@
 %% supervisor would have to guess at.
 -module(albedo_python).
 -export([start/1, execute/3, interrupt/1, stop/1, detach/1, events/1, alive/1, os_pid/1, job_count/1, local_paths/0, paths/0, grace/0, rebind/2, clean_environment/0]).
--export([stale/1, mark_stale/2, force/1]).
--export([linked/1]).
+-export([stale/1, mark_stale/2]).
+-export([observation/1, stop_recorded/2, stop_jobs/1]).
 
 -define(PROTOCOL, 1).
 -define(STARTUP_TIMEOUT, 10000). %% bridge, kernel, and plugins, end to end
@@ -58,7 +58,7 @@ start({boot, Owner, Python, Bridge, Cwd, Host, Modules, Link, RunDir, Kernel, To
               python => Python, bridge => Bridge, cwd => Cwd, remote => Remote,
               modules => Modules, run_dir => RunDir, kernel => Kernel, token => Token,
               grace => Grace, in => 0, acked => 0, kack => 0, out => OutSeq,
-              calls => #{}, bundle => none, retries => 0, flush => none, give_up => none, stale => none, forced => false},
+              calls => #{}, bundle => none, kernel_bundle => none, retries => 0, flush => none, give_up => none, stale => none},
         Mode = case Fresh of true -> start; false -> attach end,
         case open_bridge(S, Mode) of
             {ok, S1} -> startup(S1, Mode, Parent, Ref, erlang:monotonic_time(millisecond) + ?STARTUP_TIMEOUT);
@@ -202,24 +202,54 @@ stop(Pid) ->
         Other -> {error, detail(Other)}
     end.
 
+%% Supervise the recorded identities directly, without attaching, staging a
+%% bundle, executing a host call, or starting a replacement namespace.
+stop_jobs(Pid) ->
+    case call(Pid, stop_jobs) of
+        {ok, Jobs} -> {ok, Jobs};
+        {error, Reason} -> {error, detail(Reason)};
+        Other -> {error, detail(Other)}
+    end.
+
+stop_recorded({record, _Session, _Kernel, _Token, RunDir, _Cwd, _Modules, _OutSeq, Owned}, Remote) ->
+    {Target, Groups} = owned(Owned),
+    case Target of
+        none -> {error, <<"recorded kernel has no verified process identity">>};
+        _ ->
+            S = #{remote => Remote, run_dir => RunDir},
+            Targets = [target_spec(<<"kernel">>, Target) | job_specs(Groups)],
+            case verdict(supervise(S, Targets, ?TERM_MS, ?KILL_MS)) of
+                ok -> remove_run_dir(S), {ok, nil};
+                {error, Reason} -> {error, Reason}
+            end
+    end.
+
 %% Let go of the kernel without ending it: the bridge closes, the kernel keeps
 %% its namespace and jobs, and a later start in attach mode picks it up again.
 detach(Pid) -> _ = call(Pid, detach), nil.
 
 alive(Pid) -> is_process_alive(Pid).
 
-%% Why the kernel should be swapped for a current one, and whether the user
-%% asked for that despite its live jobs: {some, {Reason, Forced}} or none.
+%% The native reason the kernel should be swapped, or none while current.
 stale(Pid) -> case call(Pid, stale) of {error, lost} -> none; Reply -> Reply end.
 
-%% Whether a bridge carries the kernel now; false while it reattaches.
-linked(Pid) -> call(Pid, linked) =:= true.
+%% One owner turn captures the identity, reported build, link and job facts.
+%% Deactivating the reply alias also discards a reply after the read deadline.
+observation(Pid) ->
+    Alias = alias(),
+    Mon = monitor(process, Pid),
+    Pid ! {call, Alias, Mon, observation},
+    Result = receive
+        {Mon, Observed} -> {ok, Observed};
+        {'DOWN', Mon, process, Pid, _} -> {error, nil}
+    after 1000 -> {error, nil}
+    end,
+    unalias(Alias),
+    demonitor(Mon, [flush]),
+    Result.
 
 %% The daemon found a reason the kernel no longer fits (a changed module set).
 mark_stale(Pid, Reason) -> _ = call(Pid, {mark_stale, Reason}), nil.
-
-%% Swap a stale kernel even with live jobs; false when it is current.
-force(Pid) -> call(Pid, force) =:= true.
 
 %% The kernel's own process id, as it declared it at the handshake.
 os_pid(Pid) ->
@@ -260,6 +290,17 @@ loop(S = #{port := Port, active := Active}) ->
         {call, From, Ref, job_count} ->
             Count = maps:size(maps:merge(maps:get(groups, S), maps:get(slots, S))) + maps:get(external, S, 0),
             From ! {Ref, {ok, Count}}, loop(S);
+        {call, From, Ref, observation} ->
+            Build = case maps:get(kernel_bundle, S) of
+                Value when is_binary(Value) -> {some, Value};
+                _ -> none
+            end,
+            Stale = case maps:get(stale, S) of none -> none; Reason -> {some, Reason} end,
+            Jobs = maps:merge(maps:get(groups, S), maps:get(slots, S)),
+            Count = maps:size(Jobs) + maps:get(external, S, 0),
+            JobIds = lists:sublist(lists:sort(maps:keys(Jobs)), 200),
+            From ! {Ref, {observation, maps:get(kernel, S), Build, Port =/= none, Stale, Count, JobIds}},
+            loop(S);
         {call, From, Ref, {rebind, Host}} when is_function(Host, 1) ->
             From ! {Ref, {ok, nil}}, loop(S#{host => Host});
         {call, From, Ref, events} ->
@@ -267,20 +308,25 @@ loop(S = #{port := Port, active := Active}) ->
         {call, From, Ref, stale} ->
             Reply = case S of
                 #{stale := none} -> none;
-                #{stale := Stale, forced := Forced} -> {some, {Stale, Forced}}
+                #{stale := Stale} -> {some, Stale}
             end,
             From ! {Ref, Reply}, loop(S);
-        {call, From, Ref, linked} ->
-            From ! {Ref, Port =/= none}, loop(S);
         {call, From, Ref, {mark_stale, Reason}} ->
             From ! {Ref, nil},
             loop(case S of #{stale := none} -> S#{stale => Reason}; _ -> S end);
-        {call, From, Ref, force} ->
-            From ! {Ref, maps:get(stale, S) =/= none},
-            loop(S#{forced => maps:get(stale, S) =/= none});
+        {call, From, Ref, stop_jobs} ->
+            case shutdown_state(S, ?TERM_MS, ?KILL_MS) of
+                {ok, _, Jobs} ->
+                    From ! {Ref, {ok, lists:sublist(lists:sort(maps:keys(Jobs)), 200)}}, nil;
+                {{error, Reason}, Retained, _} ->
+                    From ! {Ref, {error, Reason}}, loop(Retained)
+            end;
         {call, From, Ref, stop} ->
-            From ! {Ref, shutdown(S, ?TERM_MS, ?KILL_MS)},
-            nil;
+            case shutdown_state(S, ?TERM_MS, ?KILL_MS) of
+                {ok, _, _} -> From ! {Ref, ok}, nil;
+                {{error, Reason}, Retained, _} ->
+                    From ! {Ref, {error, Reason}}, loop(Retained)
+            end;
         {call, From, Ref, detach} ->
             close_port(Port),
             From ! {Ref, ok},
@@ -414,7 +460,8 @@ flush_ack(S) -> S#{flush => none}.
 %% A (re)attach answered: drop what the kernel already has, resend the rest,
 %% and take its word for its identity and the jobs it still owns.
 hello(Hello, S0) ->
-    S = skew(Hello, acknowledged(Hello, S0#{retries => 0, give_up => none})),
+    S = skew(Hello, acknowledged(Hello, S0#{retries => 0, give_up => none,
+        kernel_bundle => maps:get(<<"bundle">>, Hello, none)})),
     case S of
         %% Frames written for another protocol mean nothing to this kernel:
         %% they are dropped, not replayed, and the kernel is swapped out.
@@ -624,40 +671,47 @@ guarded(#{owner := Owner}, Fun) ->
 
 %% Ask the kernel to clean up, wait, then end whatever it left behind. The job
 %% groups live in their own sessions, so the kernel's death never reaps them.
-shutdown(S = #{target := Target}, TermMs, KillMs) ->
+shutdown(S, TermMs, KillMs) ->
+    {Result, _, _} = shutdown_state(S, TermMs, KillMs),
+    Result.
+
+shutdown_state(S = #{target := Target}, TermMs, KillMs) ->
     S1 = case S of
         #{port := none} -> S;
         _ -> send(#{type => <<"shutdown">>}, S)
     end,
-    Settled = case maps:get(exited, S1, false) orelse maps:get(port, S1) =:= none of
-        true -> S1;
-        false -> await_exit(S1, erlang:monotonic_time(millisecond) + ?SHUTDOWN_GRACE)
+    Jobs = maps:merge(maps:get(groups, S1), maps:get(slots, S1)),
+    {Settled, ShutdownJobs} = case maps:get(exited, S1, false) orelse maps:get(port, S1) =:= none of
+        true -> {S1, Jobs};
+        false -> await_exit(S1, erlang:monotonic_time(millisecond) + ?SHUTDOWN_GRACE, Jobs)
     end,
     %% The leader exiting does not prove its group empty: plain subprocesses
     %% from a cell inherit the kernel group and can outlive it.
     Kernel = case Target of none -> []; _ -> [target_spec(<<"kernel">>, Target)] end,
     Targets = Kernel ++ job_specs(maps:get(groups, Settled)),
-    reap_finish(Settled, verdict(supervise(Settled, Targets, TermMs, KillMs))).
+    Result = reap_finish(Settled, verdict(supervise(Settled, Targets, TermMs, KillMs))),
+    {Result, Settled#{port => none}, ShutdownJobs}.
 
 abandon(S) -> report(owner_lost, shutdown(S, ?TERM_MS, ?KILL_MS)).
 
 %% Keep accepting ownership transfers while shutdown is in flight. A job may
 %% finish spawning after the shutdown request was sent.
-await_exit(S = #{port := Port}, Deadline) ->
+await_exit(S = #{port := Port}, Deadline, Jobs) ->
+    Known = maps:merge(Jobs, maps:merge(maps:get(groups, S), maps:get(slots, S))),
     Now = erlang:monotonic_time(millisecond),
     case Now >= Deadline of
-        true -> S;
+        true -> {S, Known};
         false ->
             receive
-                {Port, {exit_status, _}} -> S#{port => none};
+                {Port, {exit_status, _}} -> {S#{port => none}, Known};
                 {Port, {data, Data}} ->
                     case wire(Data, S) of
-                        {frame, Frame, S1} -> await_exit(track(Frame, S1), Deadline);
-                        {_, _, S1} -> await_exit(S1, Deadline);
-                        {skip, S1} -> await_exit(S1, Deadline);
-                        invalid -> await_exit(S, Deadline)
+                        {frame, Frame, S1} -> await_exit(track(Frame, S1), Deadline, Known);
+                        {_, _, S1} -> await_exit(S1, Deadline, Known);
+                        {skip, S1} -> await_exit(S1, Deadline, Known);
+                        invalid -> await_exit(S, Deadline, Known)
                     end
-            after min(50, Deadline - Now) -> await_exit(S, Deadline)
+            after min(50, Deadline - Now) -> await_exit(S, Deadline, Known)
             end
     end.
 
@@ -818,10 +872,18 @@ reap_start(S = #{port := Port}) ->
 %% The kernel is gone for good: its durable link and run directory go too.
 reap_finish(S = #{pool := Pool, port := Port}, Result) ->
     close_port(Port),
-    link_forget(S),
-    remove_run_dir(S),
-    case Result of ok -> albedo_job_slots:release_owner(Pool); _ -> ok end,
-    Result.
+    case Result of
+        ok ->
+            case link_forget(S) of
+                {ok, nil} ->
+                    remove_run_dir(S),
+                    albedo_job_slots:release_owner(Pool),
+                    ok;
+                {error, Reason} -> {error, <<"kernel ownership cleanup failed: ", Reason/binary>>};
+                _ -> {error, <<"kernel ownership cleanup was not confirmed">>}
+            end;
+        _ -> Result
+    end.
 
 close_port(none) -> ok;
 close_port(Port) -> _ = try port_close(Port) catch _:_ -> ok end, ok.

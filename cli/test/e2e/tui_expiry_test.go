@@ -23,10 +23,16 @@ func operationRequests(proxy *acknowledgementProxy) []string {
 	proxy.mu.Lock()
 	defer proxy.mu.Unlock()
 	return slices.DeleteFunc(slices.Clone(proxy.requests), func(request string) bool {
-		receiptQuery := strings.HasPrefix(request, "GET /operations/")
-		creation := request == "POST /sessions"
-		submission := strings.HasPrefix(request, "POST /sessions/") && strings.HasSuffix(request, "/events")
-		return !receiptQuery && !creation && !submission
+		if strings.Contains(request, "/visits/") {
+			return true
+		}
+		if strings.HasPrefix(request, "PUT /sessions/") {
+			return false
+		}
+		if strings.HasPrefix(request, "GET /sessions/") {
+			return !slices.Contains(proxy.requests, "PUT "+strings.TrimPrefix(request, "GET "))
+		}
+		return true
 	})
 }
 
@@ -56,7 +62,7 @@ func TestTUIExpiredSubmissionsRemainUnresolvedAcrossNavigation(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("active turn never started")
 	}
-	proxy := cutAcknowledgement(t, "/sessions/"+session.ID+"/events", expiredAcknowledgement)
+	proxy := cutAcknowledgement(t, "/sessions/"+session.ID+"/inputs/", expiredAcknowledgement)
 	driver := driveTUIWithConnection(t, &session, proxy.connection)
 	t.Cleanup(func() { driver.App.Chat.Close() })
 	driver.Update(tea.WindowSizeMsg{Width: 120, Height: 100})
@@ -143,8 +149,14 @@ func TestTUIExpiredSubmissionsRemainUnresolvedAcrossNavigation(t *testing.T) {
 			driver.Update(tui.ChatStreamEventMsg{SessionID: session.ID, Generation: driver.App.Chat.Generation, Event: event})
 		}
 	}
-	if !matched || strings.Contains(driver.View(), handles[0].ID()) {
-		t.Fatal("durable user echo did not reconcile expired row")
+	if !matched {
+		for _, event := range history.Events {
+			t.Logf("durable event %s input=%s image=%v", event.Type, event.OperationID, event.Image != nil)
+		}
+		t.Fatal("durable history did not retain the expired input identity")
+	}
+	if strings.Contains(driver.View(), handles[0].ID()) {
+		t.Fatalf("durable user echo did not reconcile expired row:\n%s", driver.View())
 	}
 
 }
@@ -176,7 +188,7 @@ func TestTUICreationExpiryStopsRecoveryWithoutSwitchingSession(t *testing.T) {
 		t.Fatalf("creation expiry switched session or lost notice:\n%s", driver.View())
 	}
 	before := operationRequests(proxy)
-	operationID := strings.TrimPrefix(before[len(before)-1], "GET /operations/")
+	operationID := strings.TrimPrefix(before[len(before)-1], "GET /sessions/")
 	if !strings.Contains(driver.View(), operationID) {
 		t.Fatal("expired creation notice lost its operation identity")
 	}

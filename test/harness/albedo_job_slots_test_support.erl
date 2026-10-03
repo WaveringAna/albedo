@@ -107,7 +107,7 @@ kernels() ->
 %% tests never reattach, so the link only has to answer.
 start(Python, Script, Host, Modules) ->
     Link = {link, fun(_, _) -> nil end, fun(_) -> nil end, fun() -> [] end,
-            fun(_) -> fresh end, fun(_, _, _) -> nil end, fun(_) -> nil end, fun() -> nil end, fun(_) -> nil end},
+            fun(_) -> fresh end, fun(_, _, _) -> nil end, fun(_) -> nil end, fun() -> {ok, nil} end, fun(_) -> nil end},
     Id = binary:part(albedo_native:new_id(), 0, 16),
     RunDir = filename:join(os:getenv("TMPDIR", "/tmp"), <<"albedo-run-", Id/binary>>),
     Bridge = filename:join(filename:dirname(Script), <<"albedo_bridge.py">>),

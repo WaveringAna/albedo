@@ -1,107 +1,94 @@
-//// The agents bus: one daemon-wide feed of what every session is doing, for
-//// the orchestrator view. It carries small events only; a session's own
-//// stream stays the place for whole transcripts, tool output, and resets.
+//// Bounded daemon-wide canonical collection observations. Lifecycle changes
+//// invalidate resources; session owners publish one captured activity value.
 
 import albedo/daemon/family
-import gleam/dynamic/decode
 import gleam/erlang/process
-import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{type Option}
-import gleam/result
+import gleam/option.{type Option, None, Some}
 import gleam/string
 
-/// Forward one of a session's stream events, reduced to what the view shows.
-pub fn activity(session: String, event: String) -> Nil {
+/// Larger changes invalidate the collection scope instead of allocating an
+/// unbounded notification. Publication never waits for a subscriber.
+pub fn invalidate(
+  urls: List(String),
+  session_ids: List(String),
+  scope_dirty: Bool,
+) -> Nil {
   case has_subscribers() {
     False -> Nil
-    True -> publish_activity(session, event)
-  }
-}
-
-fn publish_activity(session: String, event: String) -> Nil {
-  let kind = kind(event)
-  case kind {
-    // Deltas and progress are small and frequent: tag them and pass them on.
-    "text" | "thinking" | "tool_progress" | "turn_started" | "interrupted" ->
+    True -> {
+      let truncated = list.length(urls) > 200 || list.length(session_ids) > 200
       publish(
-        "{\"session\":" <> quote(session) <> "," <> string.drop_start(event, 1),
+        json.object([
+          #("type", json.string("invalidate")),
+          #(
+            "data",
+            json.object([
+              #("urls", json.array(list.take(urls, 200), json.string)),
+              #(
+                "session_ids",
+                json.array(list.take(session_ids, 200), json.string),
+              ),
+              #("scope_dirty", json.bool(scope_dirty || truncated)),
+            ]),
+          ),
+        ])
+        |> json.to_string,
       )
-    "user" | "message" | "error" | "note" ->
-      publish(
-        event_json(session, kind, [
-          #("text", json.string(field(event, "text") |> string.slice(0, 240))),
-          #("source", json.string(field(event, "source"))),
-        ]),
-      )
-    "tool" -> {
-      let progress_id = field(event, "progressCallId")
-      let fields = [
-        #("name", json.string(field(event, "name"))),
-        #("callId", json.string(field(event, "callId"))),
-        #("output", json.string(tool_output(field(event, "result")))),
-      ]
-      let fields = case progress_id == "" {
-        True -> fields
-        False -> [#("progressCallId", json.string(progress_id)), ..fields]
-      }
-      publish(event_json(session, "tool", fields))
     }
-    _ -> Nil
   }
 }
 
-/// A run started or ended. Also recorded, so `is_running` can answer without
-/// asking the session.
+pub fn activity(session: String, encode: fn() -> String) -> Nil {
+  case has_subscribers() {
+    False -> Nil
+    True -> publish_activity(session, encode())
+  }
+}
+
 pub fn running(session: String, running: Bool) -> Nil {
   mark_running(session, running)
-  publish(event_json(session, "running", [#("running", json.bool(running))]))
 }
 
-/// Whether `session` was running a turn when it last said.
 @external(erlang, "albedo_bus", "mark_running")
 fn mark_running(session: String, running: Bool) -> Nil
 
 @external(erlang, "albedo_bus", "running")
 pub fn is_running(session: String) -> Bool
 
-/// A child session joined the tree.
-pub fn spawned(member: family.Member, model: String) -> Nil {
-  publish(
-    event_json(member.session, "spawn", [
-      #("parent", json.string(member.parent)),
-      #("name", json.string(member.name)),
-      #("depth", json.int(member.depth)),
-      #("model", json.string(model)),
-    ]),
+pub fn spawned(member: family.Member) -> Nil {
+  invalidate(
+    ["/sessions/" <> member.session, "/sessions/" <> member.parent],
+    [member.session, member.parent],
+    True,
   )
 }
 
-/// A session's name changed; `name` is what the agents view calls it now.
-pub fn renamed(session: String, name: String) -> Nil {
-  publish(event_json(session, "renamed", [#("name", json.string(name))]))
-}
-
-/// A child was closed: its work stays, its kernel goes.
 pub fn closed(session: String) -> Nil {
-  publish(event_json(session, "closed", []))
+  invalidate(["/sessions/" <> session], [session], True)
 }
 
-/// A short note an agent posts about where it is, without starting a turn.
-pub fn progress(session: String, text: String) -> Nil {
-  publish(event_json(session, "progress", [#("text", json.string(text))]))
-}
+/// An agent's ephemeral note belongs to its session owner, so the actor's
+/// stream, snapshot, and collection tail observe the same publication.
+@external(erlang, "albedo_bus", "progress")
+pub fn progress(session: String, text: String) -> Nil
+
+@external(erlang, "albedo_bus", "register_progress")
+pub fn register_progress(
+  session: String,
+  owner: process.Pid,
+  publish: fn(String) -> Nil,
+) -> Nil
 
 pub fn gone(session: String) -> Nil {
   forget_running(session)
-  publish(event_json(session, "gone", []))
+  invalidate(["/sessions/" <> session], [session], True)
 }
 
 @external(erlang, "albedo_bus", "forget")
 fn forget_running(session: String) -> Nil
 
-/// A letter was posted: who to whom, what kind, and how big.
 pub fn mailed(
   id: String,
   sender: Option(String),
@@ -110,18 +97,35 @@ pub fn mailed(
   kind: String,
   bytes: Int,
 ) -> Nil {
-  publish(
+  let sender_label = case sender_name {
+    "" -> None
+    name -> Some(scalar_prefix(name, 100))
+  }
+  publish_mail(
+    sender,
+    recipient,
     json.object([
       #("type", json.string("mail")),
-      #("id", json.string(id)),
-      #("from", json.nullable(sender, json.string)),
-      #("fromName", json.string(sender_name)),
-      #("to", json.string(recipient)),
-      #("kind", json.string(kind)),
-      #("bytes", json.int(bytes)),
+      #(
+        "data",
+        json.object([
+          #("mail_id", json.string(id)),
+          #("sender_session_id", json.nullable(sender, json.string)),
+          #("receiver_session_id", json.string(recipient)),
+          #("kind", json.string(kind)),
+          #("bytes", json.int(bytes)),
+          #("sender_label", json.nullable(sender_label, json.string)),
+        ]),
+      ),
     ])
-    |> json.to_string,
+      |> json.to_string,
   )
+}
+
+fn scalar_prefix(value: String, count: Int) -> String {
+  string.to_utf_codepoints(value)
+  |> list.take(count)
+  |> string.from_utf_codepoints
 }
 
 /// One subscriber's bounded queue, removed when its stream process dies.
@@ -136,6 +140,18 @@ pub type Batch {
 @external(erlang, "albedo_bus", "subscribe")
 pub fn subscribe(owner: process.Pid, notify: fn() -> Nil) -> Subscription
 
+/// Filter activity at producer admission, before a subscriber queue spends
+/// its byte/event budget. Invalidation and mail remain visible to the scope.
+@external(erlang, "albedo_bus", "subscribe_filtered")
+pub fn subscribe_filtered(
+  owner: process.Pid,
+  notify: fn() -> Nil,
+  session_ids: List(String),
+) -> Subscription
+
+@external(erlang, "albedo_bus", "set_filter")
+pub fn set_filter(subscription: Subscription, session_ids: List(String)) -> Nil
+
 /// Take one bounded batch, keeping notification latched until sending finishes.
 @external(erlang, "albedo_bus", "drain")
 pub fn drain(subscription: Subscription) -> Batch
@@ -144,53 +160,14 @@ pub fn drain(subscription: Subscription) -> Batch
 @external(erlang, "albedo_bus", "rearm")
 pub fn rearm(subscription: Subscription, wake_consumed: Bool) -> Nil
 
-fn event_json(
-  session: String,
-  kind: String,
-  fields: List(#(String, json.Json)),
-) -> String {
-  json.object([
-    #("type", json.string(kind)),
-    #("session", json.string(session)),
-    ..fields
-  ])
-  |> json.to_string
-}
-
-/// The type of a stream event: they are all built with "type" first.
-fn kind(event: String) -> String {
-  case string.starts_with(event, "{\"type\":\"") {
-    False -> ""
-    True ->
-      string.drop_start(event, 9)
-      |> string.split_once("\"")
-      |> result.map(fn(pair) { pair.0 })
-      |> result.unwrap("")
-  }
-}
-
-/// The end of what a tool printed: its last few lines, bounded. Python cells
-/// answer JSON with an "output" field; anything else is shown as it came.
-fn tool_output(result: String) -> String {
-  let text =
-    json.parse(result, decode.at(["output"], decode.string))
-    |> result.unwrap(result)
-  let lines = string.split(string.trim_end(text), "\n")
-  let kept = list.drop(lines, int.max(0, list.length(lines) - 6))
-  string.join(kept, "\n") |> string.slice(0, 600)
-}
-
-fn field(event: String, name: String) -> String {
-  json.parse(event, decode.at([name], decode.string))
-  |> result.unwrap("")
-}
-
-fn quote(value: String) -> String {
-  json.string(value) |> json.to_string
-}
+@external(erlang, "albedo_bus", "publish_activity")
+fn publish_activity(session: String, event: String) -> Nil
 
 @external(erlang, "albedo_bus", "publish")
 fn publish(event: String) -> Nil
 
 @external(erlang, "albedo_bus", "has_subscribers")
 fn has_subscribers() -> Bool
+
+@external(erlang, "albedo_bus", "publish_mail")
+fn publish_mail(sender: Option(String), recipient: String, event: String) -> Nil

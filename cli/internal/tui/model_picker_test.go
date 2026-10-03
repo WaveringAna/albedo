@@ -28,12 +28,12 @@ func loadedPicker(t *testing.T) ModelPickerModel {
 	t.Helper()
 	m := NewModelPickerModel(nil, pickerProfiles, "gpt-5", "work", "high")
 	m.SetSize(120, 30)
-	m, _ = m.Update(modelCatalogLoadedMsg{Profile: "work", Models: []daemon.Model{
+	m, _ = m.Update(modelCatalogLoadedMsg{Generation: m.Generation, Profile: "work", Models: []daemon.Model{
 		{ID: "gpt-4.1", Context: 1_047_576},
 		{ID: "gpt-5", Efforts: reasoning, Context: 400_000, Output: 128_000, Input: []string{"text", "image"}},
 		{ID: "o4-mini", Efforts: []string{"low", "medium"}},
 	}})
-	m, _ = m.Update(modelCatalogLoadedMsg{Profile: "codex", Models: []daemon.Model{
+	m, _ = m.Update(modelCatalogLoadedMsg{Generation: m.Generation, Profile: "codex", Models: []daemon.Model{
 		{ID: "gpt-5-codex", Efforts: []string{"minimal", "low", "medium", "high"}},
 	}})
 	return m
@@ -150,9 +150,9 @@ func TestModelPickerViewFitsEveryWidth(t *testing.T) {
 func TestModelPickerTabRaisesAModelsContextCap(t *testing.T) {
 	m := NewModelPickerModel(nil, pickerProfiles, "gpt-5-codex", "codex", "")
 	m.SetSize(140, 30)
-	m, _ = m.Update(modelCatalogLoadedMsg{Profile: "codex", Models: []daemon.Model{
+	m, _ = m.Update(modelCatalogLoadedMsg{Generation: m.Generation, Profile: "codex", Models: []daemon.Model{
 		{ID: "gpt-6-astra", Context: 272_000, MaxContext: 872_000, Efforts: reasoning},
-		{ID: "gpt-6-sol", Context: 272_000, MaxContext: 872_000, Raised: true},
+		{ID: "gpt-6-sol", CapKey: "codex/gpt-6-sol", Context: 272_000, MaxContext: 872_000, Raised: true},
 		{ID: "gpt-5.5", Context: 272_000},
 	}})
 	m = pickerKey(m, typed("astra"))

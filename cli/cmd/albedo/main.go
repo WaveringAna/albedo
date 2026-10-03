@@ -57,13 +57,13 @@ func run(args []string) error {
 				return chosen, err
 			}
 			// An unknown protocol cannot safely authorize the shutdown operation.
-			if found.Health.Version != daemon.ProtocolVersion {
-				return nil, daemon.CheckCompatible(found.Health)
+			if found.Server.Protocol != daemon.ProtocolVersion {
+				return nil, daemon.CheckCompatible(found.Server)
 			}
 			// A restart offer needs a reason: a provable build difference,
 			// or a difference no digest or label can rule out. Proven
 			// sameness attaches and keeps the running sessions warm.
-			selected := daemon.SelectedBuild(options.ProjectRoot)
+			selected := selectedBuild(options.ProjectRoot)
 			running := daemon.BuildIdentity{Build: found.Snapshot.Build, Digest: found.Snapshot.Digest}
 			if daemon.BuildMismatch(running, selected) {
 				restart, err := term.ConfirmRestart(ctx, found.Snapshot, selected)
@@ -87,10 +87,10 @@ func run(args []string) error {
 			if found.Kind != daemon.Running {
 				return nil, nil
 			}
-			if found.Health.Version != daemon.ProtocolVersion {
-				return nil, daemon.CheckCompatible(found.Health)
+			if found.Server.Protocol != daemon.ProtocolVersion {
+				return nil, daemon.CheckCompatible(found.Server)
 			}
-			return daemon.NewConnection(found.Snapshot, nil), nil
+			return daemon.Attach(ctx, found.Snapshot, nil)
 		},
 	}
 	store := &storage.Service{

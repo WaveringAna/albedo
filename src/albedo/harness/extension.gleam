@@ -1,12 +1,15 @@
 //// Extensions are ordered bundles of model context, tools, REPL modules, RPC routes, and request policies.
 
 import albedo/daemon/conversation
+import albedo/daemon/family
 import albedo/daemon/requests
 import albedo/daemon/store
+import albedo/harness/client_api
 import albedo/harness/command
 import albedo/harness/compaction
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/oauth
+import albedo/harness/page
 import albedo/harness/protect
 import albedo/harness/settings
 import albedo/openai_api/types
@@ -14,6 +17,7 @@ import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/erlang/process
+import gleam/http
 import gleam/http/request
 import gleam/http/response
 import gleam/int
@@ -285,9 +289,16 @@ pub type Plugin {
   ModelProviderPlugin(provider: ModelProvider)
   /// A browser sign-in the daemon runs on behalf of clients.
   LoginPlugin(login: oauth.Login)
-  /// HTTP routes the daemon serves under `/<extension>/` while the extension
+  /// HTTP routes the daemon serves under `/extensions/<extension>/` while the extension
   /// is enabled globally.
   ServicePlugin(service: Service)
+  /// A bounded read-only sidebar, independent of command invocation.
+  GlancePlugin(
+    read: fn(store.Store, String, String) -> Result(page.Glance, String),
+    resource_url: fn(String, String) -> String,
+  )
+  /// Human client bindings for this extension's actual command catalog.
+  ClientPlugin(commands: List(client_api.Command))
   /// SQLite upgrades owned by this extension, applied by the host at startup.
   MigrationPlugin(migration: Migration)
   /// Rows this extension keeps for a session, deleted with it. Every
@@ -319,8 +330,7 @@ pub type Authorization {
 /// request is available for streaming responses, not for reading the body.
 pub type Service {
   Service(
-    authorization: Authorization,
-    body_limit: Int,
+    admission: fn(List(String), http.Method) -> Admission,
     handle: fn(
       Daemon,
       List(String),
@@ -328,6 +338,11 @@ pub type Service {
       request.Request(mist.Connection),
     ) -> response.Response(mist.ResponseData),
   )
+}
+
+pub type Admission {
+  Admission(authorization: Authorization, body_limit: Int)
+  RelayAdmission(authorization: Authorization, body_limit: Int)
 }
 
 /// What a service can reach. It serves requests outside any session, so
@@ -612,7 +627,7 @@ fn overrides(
 
 /// A compaction strategy the session enabled by name displaces one that only
 /// the defaults enable, as with a default strategy installed after the choice.
-fn select(
+pub fn select(
   installed: List(Extension),
   defaults: List(String),
   overrides: List(#(String, Bool)),
@@ -626,6 +641,69 @@ fn select(
     list.key_find(overrides, extension.name) == Ok(True)
   }
   exclusive(selected, is_compaction, chosen)
+}
+
+pub type SelectionError {
+  ConflictingStrategies
+  InvalidSelection(String)
+}
+
+/// Validate global defaults before publication. One newly chosen strategy
+/// replaces earlier explicit choices; an incoming null still means inheritance.
+pub fn change_defaults(
+  installed: List(Extension),
+  built_in: List(String),
+  current: List(#(String, Bool)),
+  changes: List(#(String, Option(Bool))),
+) -> Result(List(#(String, Bool)), SelectionError) {
+  let strategies =
+    list.filter(changes, fn(change) {
+      change.1 == Some(True) && compaction_named(installed, change.0)
+    })
+  use _ <- result.try(case strategies {
+    [] | [_] -> Ok(Nil)
+    _ -> Error(ConflictingStrategies)
+  })
+  use _ <- result.try(
+    list.try_each(changes, fn(change) {
+      case
+        change.1 == Some(True)
+        && !list.any(installed, fn(item) { item.name == change.0 })
+      {
+        True ->
+          Error(InvalidSelection("extension is not installed: " <> change.0))
+        False -> Ok(Nil)
+      }
+    }),
+  )
+  let choices =
+    list.fold(changes, dict.from_list(current), fn(choices, change) {
+      case change.1 {
+        None -> dict.delete(choices, change.0)
+        Some(enabled) -> dict.insert(choices, change.0, enabled)
+      }
+    })
+  let choices = case strategies {
+    [chosen] ->
+      dict.fold(choices, choices, fn(choices, name, enabled) {
+        case
+          enabled
+          && name != chosen.0
+          && compaction_named(installed, name)
+          && !list.any(changes, fn(change) { change.0 == name })
+        {
+          True -> dict.delete(choices, name)
+          False -> choices
+        }
+      })
+    _ -> choices
+  }
+  let choices = dict.to_list(choices)
+  use _ <- result.try(
+    validate_selection(select(installed, built_in, choices))
+    |> result.map_error(InvalidSelection),
+  )
+  Ok(choices)
 }
 
 /// At most one compaction strategy runs: when several are enabled and one of
@@ -958,24 +1036,32 @@ fn write_changes(
 ) -> Result(Nil, String) {
   store.query(ledger, fn(db) {
     store.transaction(db, fn() {
-      list.try_each(changes, fn(change) {
-        store.run(
-          db,
-          "INSERT INTO session_extensions(session,name,enabled) VALUES(?,?,?) ON CONFLICT(session,name) DO UPDATE SET enabled=excluded.enabled",
-          [
-            sqlight.text(session),
-            sqlight.text(change.0),
-            sqlight.bool(change.1),
-          ],
-        )
-      })
+      use _ <- result.try(family.available_in(db, session))
+      use _ <- result.try(
+        list.try_each(changes, fn(change) {
+          store.run(
+            db,
+            "INSERT INTO session_extensions(session,name,enabled) VALUES(?,?,?) ON CONFLICT(session,name) DO UPDATE SET enabled=excluded.enabled",
+            [
+              sqlight.text(session),
+              sqlight.text(change.0),
+              sqlight.bool(change.1),
+            ],
+          )
+        }),
+      )
+      store.run(
+        db,
+        "UPDATE sessions SET config_revision=config_revision+1 WHERE id=?",
+        [sqlight.text(session)],
+      )
     })
   })
 }
 
 /// Checks what a selection declares before anything is loaded or prepared.
 /// `compose` repeats the capability check once managed contributions exist.
-fn validate_selection(selected: List(Extension)) -> Result(Nil, String) {
+pub fn validate_selection(selected: List(Extension)) -> Result(Nil, String) {
   let names = list.map(selected, fn(extension) { extension.name })
   use _ <- result.try(
     selected
@@ -1192,10 +1278,81 @@ pub fn commands(composition: Composition) -> List(command.Command) {
   list.flat_map(composition.contributions, fn(item) { item.value.commands })
 }
 
+pub fn command_entries(
+  composition: Composition,
+) -> List(#(String, command.Command)) {
+  list.flat_map(composition.contributions, fn(item) {
+    list.map(item.value.commands, fn(command) { #(item.extension, command) })
+  })
+}
+
+pub fn client_commands(
+  composition: Composition,
+) -> List(#(String, client_api.Command)) {
+  let commands = command_entries(composition)
+  composition.extensions
+  |> list.flat_map(fn(item) {
+    item.plugins
+    |> list.flat_map(fn(plugin) {
+      case plugin {
+        ClientPlugin(bindings) ->
+          bindings
+          |> list.filter(fn(binding) {
+            list.any(commands, fn(command) {
+              command.0 == item.name && command.1.name == binding.slash_name
+            })
+          })
+          |> list.map(fn(binding) { #(item.name, binding) })
+        _ -> []
+      }
+    })
+  })
+}
+
 pub fn routes(composition: Composition) -> List(Route) {
   contribution_routes(
     list.map(composition.contributions, fn(item) { item.value }),
   )
+}
+
+pub type Glance {
+  Glance(extension: String, value: page.Glance, url: String)
+}
+
+/// Read declared glances only for working loaded extensions. A failed owner
+/// read fails the observation; an empty sidebar remains an observed value.
+pub fn glances(
+  composition: Composition,
+  ledger: store.Store,
+  session: String,
+  workspace: String,
+) -> Result(List(Glance), String) {
+  let failed = inactive(composition) |> list.map(fn(item) { item.0 })
+  let reads =
+    composition.extensions
+    |> list.filter(fn(item) { !list.contains(failed, item.name) })
+    |> list.flat_map(fn(item) {
+      item.plugins
+      |> list.filter_map(fn(plugin) {
+        case plugin {
+          GlancePlugin(read, resource_url) ->
+            Ok(#(item.name, read, resource_url))
+          _ -> Error(Nil)
+        }
+      })
+    })
+  list.try_map(list.take(reads, 16), fn(item) {
+    use value <- result.try(
+      protect.attempt(fn() { item.1(ledger, session, workspace) })
+      |> result.replace_error("extension sidebar failed"),
+    )
+    use value <- result.try(value)
+    Ok(Glance(
+      item.0,
+      page.Glance(value.title, list.take(value.rows, 12)),
+      item.2(session, workspace),
+    ))
+  })
 }
 
 pub fn summaries(
@@ -1254,6 +1411,8 @@ pub fn summaries(
             ModelProviderPlugin(_) -> "model_provider"
             LoginPlugin(_) -> "login"
             ServicePlugin(_) -> "service"
+            GlancePlugin(..) -> "glance"
+            ClientPlugin(_) -> "client"
             MigrationPlugin(_) -> "migration"
             CleanPlugin(_) -> "clean"
           }

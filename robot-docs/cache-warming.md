@@ -46,7 +46,7 @@ warming also stops when:
 
 ## the request kind
 
-every ping is a provider request row of kind `background`, with the prefix identity (`headHash`, `inputs`, `replaced`, `projectionHash`) and `cacheMarks` of the turn it repeats, and its own usage. its `cachedInputTokens` says whether the cache was still there, which makes every ping a free TTL measurement for phase 2. a background call never attaches a seq, never commits to the transcript, and never publishes stream events; the agents bus does not flap for it (robot-docs/provider-requests.md).
+every ping is a provider request row of kind `background`, with the prefix identity (`headHash`, `inputs`, `replaced`, `projectionHash`) and `cacheMarks` of the turn it repeats, and its own usage. its `cachedInputTokens` says whether the cache was still there, which makes every ping a TTL measurement for cache-policy reports. a background call never attaches a seq, never commits to the transcript, and never publishes stream events; the agents bus does not flap for it (robot-docs/provider-requests.md).
 
 ## settings
 

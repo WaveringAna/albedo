@@ -5,7 +5,7 @@ An accepted submission survives a daemon restart while it waits for transcript
 consumption. A retry with the same operation ID returns the original admission.
 
 opening a session attaches the cli to its event stream and independently
-reads `GET /sessions/:id/status`. replayed history does not establish the
+reads `GET /sessions/{session_id}?tail=0`. replayed history does not establish the
 session's live phase; status and live events do.
 
 an idle status is enough to enable the composer, including a persisted
@@ -34,8 +34,7 @@ values only after every callback succeeds. Initial attachment and a generation
 change require a leading reset. Within one generation, the sequence cannot
 decrease without a reset. A generation change with a reset is normal recovery.
 A change without a reset is a protocol failure. The reset replaces visible
-history and clears live tool progress. Reset batches include a `currentProgress`
-array captured with the cursor. The CLI delivers that snapshot after history as
+history and clears live tool progress. Reset batches include `current_progress` in the captured session snapshot. The CLI delivers that snapshot after history as
 live progress, so attaching during a tool call restores its current tool name,
 phase, and bounded code preview. Older-history navigation uses transcript row IDs.
 Unknown event kinds are ignored.
@@ -61,30 +60,24 @@ The dispatcher logs failures to advance delivered schedule occurrences or save m
 
 ## Prompt ownership and cancellation
 
-`POST /sessions/:id/events` accepts an optional `submissionId` alongside
-`clientId`. The CLI generates a new submission ID for each prompt. The session
-actor owns queued submissions and every input contributing to an active turn,
-including inputs without an ID.
+Inputs use `PUT /sessions/{session_id}/inputs/{input_id}` with a client-generated
+UUIDv7. The same identity follows admission, transcript consumption, turn
+membership, and cancellation. Accepted inputs survive restart. The
+[input contract](../docs/http-api-design.md#input-admission-and-outcomes)
+defines message, continuation, skill, and command variants.
 
-`POST /sessions/:id/cancel-submission` takes `{ "submissionId": "..." }`.
-The actor returns `outcome` atomically:
+`POST /sessions/{session_id}/inputs/{input_id}/cancel` returns the current input
+and `cancelled`, `interrupt_requested`, `shared_running`, or `not_pending`.
+A waiting cancellation commits its receipt and pending removal together. A
+running turn shared with other inputs continues. Cancellation never falls back
+to a session-wide interruption or affects a later unrelated turn.
 
-- `cancelled_queued`: removed that submission from the queue.
-- `interrupt_requested`: requested interruption of its exclusively owned turn.
-- `shared_running`: other inputs contribute to the turn, which continues.
-- `not_pending`: the submission is neither queued nor active.
+The CLI uses a separate five-second cleanup deadline and reports unconfirmed
+cancellation when cleanup fails. An interruption acknowledgement does not claim
+that work stopped.
 
-Cancellation never falls back to session-wide interruption. Repeating the
-request is safe. An interruption acknowledgment does not confirm that work
-stopped. The CLI uses a separate five-second cleanup deadline and reports an
-unconfirmed cancellation when cleanup fails.
-
-Ordered live `turn_membership` events carry `turnId` and `submissionIds`.
-Membership precedes worker output and expands when queued input steers a turn.
-`turn_completed` carries the same `turnId` after its final output or failure.
-Retries and compaction within the turn preserve this identity. These events
-are live bookkeeping, not durable transcript rows. Prompt clients follow their
-submission through completion instead of inferring ownership from `clientId`
-or session idle status. A stream reset before completion leaves the outcome
-uncertain. Daemon health advertises `submission_cancellation`; CLI prompts
-require that capability before submitting.
+Live turn membership precedes worker output and expands when queued input
+steers a turn. Completion follows its final output or failure. The durable input
+read retains membership and terminal outcome across reconnects and restarts.
+Prompt clients follow their input identity instead of inferring completion from
+echo metadata or idle status. Drafts and unresolved input handles survive resets.

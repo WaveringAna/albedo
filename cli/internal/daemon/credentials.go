@@ -1,10 +1,8 @@
 package daemon
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
 )
 
 // The daemon alone reads and writes creds.json. A client changes a profile's
@@ -47,9 +45,9 @@ func (patch MCPSecretsPatch) MarshalJSON() ([]byte, error) {
 	}
 	fields := make(map[string]any)
 	if patch.BearerToken != nil {
-		fields["bearerToken"] = *patch.BearerToken
+		fields["bearer_token"] = *patch.BearerToken
 	} else if patch.RemoveBearerToken {
-		fields["bearerToken"] = nil
+		fields["bearer_token"] = nil
 	}
 	if patch.Headers != nil {
 		fields["headers"] = patch.Headers
@@ -57,29 +55,9 @@ func (patch MCPSecretsPatch) MarshalJSON() ([]byte, error) {
 		fields["headers"] = nil
 	}
 	if patch.Env != nil {
-		fields["env"] = patch.Env
+		fields["environment"] = patch.Env
 	} else if patch.ClearEnv {
-		fields["env"] = nil
+		fields["environment"] = nil
 	}
 	return json.Marshal(fields)
-}
-
-// TakeMigration names the files the daemon's start moved secrets out of, only
-// to the first client that asks, so the user hears about it once.
-func TakeMigration(ctx context.Context, conn *Connection) ([]string, error) {
-	var moved []string
-	err := executeMutation(ctx, conn, operation{Name: "take migration", Method: http.MethodPost, Path: "/auth/credentials/migration", Body: map[string]string{}, Policy: authRecovery}, []int{200}, func(data []byte, _ int) error {
-		var wire struct {
-			Moved *stringCollection `json:"moved"`
-		}
-		if err := json.Unmarshal(data, &wire); err != nil {
-			return err
-		}
-		if wire.Moved == nil {
-			return fieldError("moved")
-		}
-		moved = []string(*wire.Moved)
-		return nil
-	})
-	return moved, err
 }

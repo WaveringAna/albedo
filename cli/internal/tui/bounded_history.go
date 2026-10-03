@@ -30,7 +30,6 @@ type HistoryEntry struct {
 	Speaker    string
 	Mood       mood
 	Text       string
-	ClientID   string
 	ToolName   string
 	ToolResult string
 	// Strategy is the compaction strategy that produced a compacted entry.
@@ -63,7 +62,7 @@ const (
 )
 
 func (e *HistoryEntry) ComputeSize() int64 {
-	size := int64(len(e.Speaker) + len(e.Text) + len(e.ClientID) + len(e.ToolName) + len(e.ToolResult) + 64)
+	size := int64(len(e.Speaker) + len(e.Text) + len(e.ToolName) + len(e.ToolResult) + 64)
 	for k, v := range e.ToolArgs {
 		size += int64(len(k) + 16)
 		switch val := v.(type) {
@@ -175,29 +174,6 @@ func (h *BoundedHistory) Append(entry HistoryEntry) {
 	entry.ComputeSize()
 	h.entries = append(h.entries, entry)
 	h.totalBytes += entry.SizeBytes
-	h.enforceBounds()
-}
-
-func (h *BoundedHistory) AppendToLast(chunk string) {
-	if len(h.entries) == 0 {
-		h.Append(HistoryEntry{Kind: EntryAssistant, Text: chunk})
-		return
-	}
-	last := &h.entries[len(h.entries)-1]
-	oldSize := last.SizeBytes
-	last.Text += chunk
-	h.totalBytes += last.ComputeSize() - oldSize
-	h.enforceBounds()
-}
-
-func (h *BoundedHistory) ReplaceLast(entry HistoryEntry) {
-	if len(h.entries) == 0 {
-		h.Append(entry)
-		return
-	}
-	last := &h.entries[len(h.entries)-1]
-	h.totalBytes += entry.ComputeSize() - last.SizeBytes
-	*last = entry
 	h.enforceBounds()
 }
 

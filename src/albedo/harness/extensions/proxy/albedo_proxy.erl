@@ -1,5 +1,7 @@
 -module(albedo_proxy).
--export([conversation/1, now/0, unique/0, pack/1, unpack/1]).
+-export([conversation/1, now/0, unique/0, pack/1, unpack/1, allow_anonymous/0]).
+
+allow_anonymous() -> os:getenv("ALBEDO_PROXY_ALLOW_ANONYMOUS") =:= "1".
 
 -define(MAX_STATE, 4194304).
 
@@ -16,14 +18,18 @@ pack(Json) -> base64:encode(zlib:compress(Json), #{mode => urlsafe, padding => f
 
 unpack(Text) ->
     try
+        Compressed = base64:decode(Text, #{mode => urlsafe, padding => false}),
         Z = zlib:open(),
-        ok = zlib:inflateInit(Z),
-        Inflated = bounded(Z, zlib:safeInflate(Z, base64:decode(Text, #{mode => urlsafe, padding => false})), []),
-        %% Raises unless the stream ended with a matching checksum, so a
-        %% client that truncated or rewrote the id gets the portable path.
-        ok = zlib:inflateEnd(Z),
-        zlib:close(Z),
-        Inflated
+        try
+            ok = zlib:inflateInit(Z),
+            Inflated = bounded(Z, zlib:safeInflate(Z, Compressed), []),
+            %% Raises unless the stream ended with a matching checksum, so a
+            %% client that truncated or rewrote the id gets the portable path.
+            ok = zlib:inflateEnd(Z),
+            Inflated
+        after
+            zlib:close(Z)
+        end
     catch _:_ -> {error, nil}
     end.
 

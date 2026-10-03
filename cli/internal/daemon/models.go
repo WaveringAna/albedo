@@ -2,222 +2,155 @@ package daemon
 
 import (
 	"albedo/cli/internal/config"
-	"bytes"
-	"cmp"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
-	"time"
+	"strings"
 )
 
-// Model is one entry of a provider's model listing. Only the id is certain;
-// the catalog may know the rest.
 type Model struct {
-	ID string `json:"id"`
-	// Efforts are the reasoning levels a session accepts, lowest first.
-	Efforts []string `json:"efforts,omitempty"`
-	Input   []string `json:"input,omitempty"`
-	Context int      `json:"context,omitempty"`
-	// MaxContext is the window a raised cap gives, when the provider offers
-	// more than Context; Raised says the user raised it.
-	MaxContext int  `json:"maxContext,omitempty"`
-	Output     int  `json:"output,omitempty"`
-	Raised     bool `json:"raised,omitempty"`
+	ID, Label, CapKey           string
+	Efforts, Input              []string
+	Context, MaxContext, Output int
+	Raised                      bool
 }
-
 type EffortResult struct {
-	Effort    string   `json:"-"`
-	Message   string   `json:"message"`
-	Available []string `json:"available"`
+	Effort, Message, ETag string
+	Available             []string
 }
-
-type ModelSelection struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	Protocol string `json:"protocol"`
-	Effort   string `json:"effort"`
-}
-
-type ModelSelectionRequest struct {
-	Model    string `json:"model"`
-	Provider string `json:"provider,omitempty"`
-	Effort   string `json:"effort,omitempty"`
-}
-
-// ModelChangeRequest captures a command-based model switch and its provider guard.
+type ModelSelection struct{ Provider, Model, Protocol, Effort, ETag, DefaultETag, ModelsETag string }
+type ModelSelectionRequest struct{ Model, Provider, Effort, ETag string }
 type ModelChangeRequest struct {
-	Model           string
-	Provider        string
-	Effort          string
-	CurrentProvider string
+	Model, Provider, Effort, CurrentProvider, ETag, DefaultETag string
+	MakeDefault                                                 bool
 }
-
 type ModelContextCapRequest struct {
-	Model   string
-	Enabled bool
+	CapKey, ETag string
+	Enabled      bool
 }
 
-// ListProfileModels reads the models a saved provider profile offers. A codex
-// profile's catalog is its account's, whatever endpoint it names.
 func ListProfileModels(ctx context.Context, conn *Connection, profile config.Settings) ([]Model, error) {
-	extension, endpoint := cmp.Or(profile.Extension, "openai"), profile.BaseURL
-	if extension == "codex" {
-		endpoint = ""
+	if profile.ProfileName != "" {
+		return listModels(ctx, conn, url.Values{"provider_profile": {profile.ProfileName}})
 	}
-	return ListModels(ctx, conn, extension, endpoint)
+	return ListModels(ctx, conn, profile.Extension, profile.BaseURL)
 }
-
-// ListModels reads the models a provider extension lists for endpoint.
-func ListModels(ctx context.Context, conn *Connection, extension, endpoint string) ([]Model, error) {
-	path := fmt.Sprintf("/models/%s?endpoint=%s&details=1", url.PathEscape(extension), url.QueryEscape(endpoint))
-	var result []Model
-	err := executeRead(ctx, conn, operation{Name: "list models", Method: http.MethodGet, Path: path, Policy: readRecovery}, func(data []byte) error {
-		var rows []modelWire
-		if err := json.Unmarshal(data, &rows); err != nil {
-			return err
+func ListModels(ctx context.Context, conn *Connection, provider, endpoint string) ([]Model, error) {
+	q := url.Values{"provider": {provider}}
+	if endpoint != "" {
+		q.Set("endpoint", endpoint)
+	}
+	return listModels(ctx, conn, q)
+}
+func listModels(ctx context.Context, conn *Connection, q url.Values) ([]Model, error) {
+	result := []Model{}
+	q.Set("limit", "200")
+	seen := map[string]bool{}
+	for {
+		var page wireModelPage
+		err := executeRead(ctx, conn, operation{Name: "list models", Method: http.MethodGet, Path: "/models?" + q.Encode(), Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "items", "next") })
+		if err != nil {
+			return nil, err
 		}
-		if rows == nil {
-			return fieldError("models")
+		if page.Items == nil {
+			return nil, fieldError("models")
 		}
-		result = make([]Model, 0, len(rows))
-		for _, row := range rows {
-			if row.ID == nil || *row.ID == "" {
-				return fieldError("id")
+		for _, row := range page.Items {
+			if row.ID == "" || row.CapKey == "" || row.Efforts == nil {
+				return nil, fieldError("model")
 			}
-			result = append(result, Model{
-				ID: *row.ID, Efforts: row.Efforts, Input: row.Input,
-				Context: row.Context, MaxContext: row.MaxContext, Output: row.Output, Raised: row.Raised,
-			})
+			model := Model{ID: row.ID, Label: row.Label, CapKey: row.CapKey, Input: row.InputModalities, Context: int(value(row.DefaultContextTokens)), MaxContext: int(value(row.MaxContextTokens)), Output: int(value(row.MaxOutputTokens)), Raised: row.Raised}
+			for _, effort := range row.Efforts {
+				model.Efforts = append(model.Efforts, effort.ID)
+			}
+			result = append(result, model)
 		}
-		return nil
-	})
-	return result, err
-}
-
-func SelectModel(ctx context.Context, conn *Connection, id string, body ModelSelectionRequest) (ModelSelection, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	if err := checkCapability(ctx, conn, "session_model", "to choose a model for an existing session"); err != nil {
-		return ModelSelection{}, err
-	}
-	var result ModelSelection
-	err := executeMutation(ctx, conn, operation{Name: "select model", Method: http.MethodPost, Path: sessionPath(id, "/model"), Body: body, Policy: authRecovery}, []int{200}, func(body []byte, _ int) error {
-		var err error
-		result, err = decodeModelSelection(body)
-		return err
-	})
-	return result, err
-}
-
-func ChangeModel(ctx context.Context, conn *Connection, session string, request ModelChangeRequest) (ModelSelection, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	if request.Provider != "" && request.Provider != request.CurrentProvider {
-		if err := checkCapability(ctx, conn, "session_provider", "to switch providers"); err != nil {
-			return ModelSelection{}, err
+		if page.Next == nil {
+			return result, nil
 		}
+		if seen[*page.Next] {
+			return nil, fieldError("model page cursor")
+		}
+		seen[*page.Next] = true
+		q.Set("next", *page.Next)
 	}
-	result, err := ExecuteCommand(ctx, conn, session, CommandRequest{Name: "/model", Args: &CommandArgs{Model: request.Model, Provider: request.Provider, Effort: request.Effort}})
+}
+func SelectModel(ctx context.Context, conn *Connection, id string, request ModelSelectionRequest) (ModelSelection, error) {
+	body := map[string]any{"model": request.Model}
+	if request.Provider != "" {
+		body["provider_profile"] = request.Provider
+	}
+	if request.Effort != "" {
+		body["effort"] = request.Effort
+	}
+	session, err := patchSession(ctx, conn, id, request.ETag, body)
+	return ModelSelection{Provider: session.Provider, Model: session.Model, Protocol: session.Protocol, Effort: session.Effort, ETag: session.ETag}, err
+}
+func ChangeModel(ctx context.Context, conn *Connection, id string, request ModelChangeRequest) (ModelSelection, error) {
+	if request.MakeDefault && request.DefaultETag == "" {
+		return ModelSelection{}, fieldError("provider settings validator")
+	}
+	selection, err := SelectModel(ctx, conn, id, ModelSelectionRequest{Model: request.Model, Provider: request.Provider, Effort: request.Effort, ETag: request.ETag})
 	if err != nil {
-		return ModelSelection{}, err
+		return selection, err
 	}
-	return *result.Model, nil
-}
-
-func SetModelContextCap(ctx context.Context, conn *Connection, session string, request ModelContextCapRequest) error {
-	state := "off"
-	if request.Enabled {
-		state = "on"
-	}
-	_, err := ExecuteCommand(ctx, conn, session, CommandRequest{Name: "/raise-cap", Args: &CommandArgs{Model: request.Model, State: state}})
-	return err
-}
-
-func decodeEffort(data []byte, body CommandRequest) (*EffortResult, error) {
-	var wire struct {
-		Effort    json.RawMessage `json:"effort"`
-		Message   *string         `json:"message"`
-		Available json.RawMessage `json:"available"`
-	}
-	if err := json.Unmarshal(data, &wire); err != nil {
-		return nil, err
-	}
-	if wire.Effort == nil {
-		return nil, fieldError("effort")
-	}
-	if wire.Message == nil {
-		return nil, fieldError("message")
-	}
-	var effort *string
-	if err := json.Unmarshal(wire.Effort, &effort); err != nil {
-		return nil, &responseFieldError{field: "effort", cause: err}
-	}
-	result := &EffortResult{Message: *wire.Message}
-	if effort != nil {
-		result.Effort = *effort
-	}
-	if wire.Available != nil {
-		var available stringCollection
-		if err := json.Unmarshal(wire.Available, &available); err != nil {
-			return nil, &responseFieldError{field: "available", cause: err}
-		}
-		result.Available = available
-	} else if body.Arguments == "" && (body.Args == nil || body.Args.Level == "") {
-		return nil, fieldError("available")
-	}
-	return result, nil
-}
-
-func decodeModelSelection(data []byte) (ModelSelection, error) {
-	var wire struct {
-		Provider *string         `json:"provider"`
-		Model    *string         `json:"model"`
-		Protocol *string         `json:"protocol"`
-		Effort   json.RawMessage `json:"effort"`
-	}
-	if err := json.Unmarshal(data, &wire); err != nil {
-		return ModelSelection{}, err
-	}
-	if wire.Provider == nil {
-		return ModelSelection{}, fieldError("provider")
-	}
-	if wire.Model == nil {
-		return ModelSelection{}, fieldError("model")
-	}
-	if wire.Protocol == nil {
-		return ModelSelection{}, fieldError("protocol")
-	}
-	if wire.Effort == nil {
-		return ModelSelection{}, fieldError("effort")
-	}
-	var effort *string
-	if !bytes.Equal(bytes.TrimSpace(wire.Effort), []byte("null")) {
-		if err := json.Unmarshal(wire.Effort, &effort); err != nil {
-			return ModelSelection{}, &responseFieldError{field: "effort", cause: err}
+	if request.MakeDefault {
+		change, saveErr := patchSettingsGroup[wireProviderSettings](ctx, conn, "providers", request.DefaultETag, map[string]any{"default_profile": selection.Provider, "profiles": map[string]any{selection.Provider: map[string]any{"model": selection.Model, "effort": optionalString(selection.Effort)}}})
+		selection.DefaultETag = change.Resource.ETag
+		if saveErr != nil {
+			return selection, fmt.Errorf("switched session; saving the default model: %w", saveErr)
 		}
 	}
-	result := ModelSelection{Provider: *wire.Provider, Model: *wire.Model, Protocol: *wire.Protocol}
-	if effort != nil {
-		result.Effort = *effort
+	return selection, nil
+}
+func SetModelContextCap(ctx context.Context, conn *Connection, request ModelContextCapRequest) (string, error) {
+	if request.CapKey == "" {
+		return "", fieldError("model cap key")
 	}
-	return result, nil
+	change, err := patchSettingsGroup[wireModelSettings](ctx, conn, "models", request.ETag, map[string]any{"raised_caps": map[string]bool{request.CapKey: request.Enabled}})
+	return change.Resource.ETag, err
+}
+func ReadEffort(ctx context.Context, conn *Connection, session Session) (EffortResult, error) {
+	q := url.Values{"model": {session.Model}}
+	if session.Provider != "" {
+		q.Set("provider_profile", session.Provider)
+	}
+	models, err := listModels(ctx, conn, q)
+	if err != nil {
+		return EffortResult{}, err
+	}
+	for _, model := range models {
+		if model.ID == session.Model {
+			return EffortResult{Effort: session.Effort, Available: model.Efforts}, nil
+		}
+	}
+	return EffortResult{}, fmt.Errorf("model %q has no metadata", session.Model)
 }
 
-// Catalog metadata is optional; a detailed entry must name its model.
-type modelWire struct {
-	ID         *string  `json:"id"`
-	Efforts    []string `json:"efforts"`
-	Input      []string `json:"input"`
-	Context    int      `json:"context"`
-	MaxContext int      `json:"maxContext"`
-	Output     int      `json:"output"`
-	Raised     bool     `json:"raised"`
+// SelectEffort clears the preference when effort is empty.
+func SelectEffort(ctx context.Context, conn *Connection, session Session, effort string) (EffortResult, error) {
+	result, err := patchSession(ctx, conn, session.ID, session.ETag, map[string]any{"effort": optionalString(effort)})
+	return EffortResult{Effort: result.Effort, Message: "Effort saved.", ETag: result.ETag}, err
+}
+
+// ResolveSessionModel keeps a manual ID in the observed session profile, or
+// selects an explicitly named configured profile. The daemon validates the ID
+// and computes the available reasoning efforts.
+func ResolveSessionModel(profiles config.Profiles, requested string) (string, string, error) {
+	if strings.TrimSpace(requested) == "" {
+		return "", "", fmt.Errorf("enter a model ID")
+	}
+	for name := range profiles.Providers {
+		if model, explicit := strings.CutPrefix(requested, name+"/"); explicit {
+			if model == "" {
+				return "", "", fmt.Errorf("enter a model ID after %s/", name)
+			}
+			return name, model, nil
+		}
+	}
+	if _, configured := profiles.Providers[profiles.Active]; !configured {
+		return "", "", fmt.Errorf("the session's provider is not configured; run /login")
+	}
+	return profiles.Active, requested, nil
 }

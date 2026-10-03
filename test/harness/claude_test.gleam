@@ -1,5 +1,5 @@
 // Signed Claude SSE replay, schema unions, billing hashes, and stored-credential enumeration have edge cases absent from the fake E2E provider.
-import albedo/daemon/events
+import albedo/daemon/message_content as events
 import albedo/daemon/projection
 import albedo/daemon/transcript
 import albedo/harness/extensions/claude/schema as schemas

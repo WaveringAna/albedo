@@ -12,7 +12,12 @@ with_lock(Home, Run, Busy) ->
         _ ->
             Locked = fun() ->
                 put(Key, held),
-                try Run() after erase(Key) end
+                try
+                    case albedo_settings_store:recover(Directory) of
+                        {ok, nil} -> Run();
+                        Error -> Error
+                    end
+                after erase(Key) end
             end,
             case global:trans({Key, self()}, Locked, [node()], 8) of
                 aborted -> Busy();

@@ -3,6 +3,7 @@
 //// upstream and streamed back as Chat Completions.
 
 import albedo/daemon/configuration
+import albedo/daemon/http_api
 import albedo/daemon/projection
 import albedo/harness/extension
 import albedo/harness/extensions/proxy/chat
@@ -10,7 +11,7 @@ import albedo/openai_api/types
 import gleam/bytes_tree
 import gleam/dynamic/decode
 import gleam/erlang/process
-import gleam/http.{Get, Post}
+import gleam/http.{type Method, Get, Post}
 import gleam/http/request
 import gleam/http/response
 import gleam/json.{type Json}
@@ -25,18 +26,30 @@ import mist
 pub fn extension() -> extension.Extension {
   extension.Extension(
     "proxy",
-    "OpenAI-compatible Chat Completions at /proxy/v1 for every saved provider profile",
+    "OpenAI-compatible Chat Completions at /extensions/proxy/v1 for every saved provider profile",
     [],
     [
-      extension.ServicePlugin(extension.Service(
-        extension.LocalAccess,
-        32_000_000,
-        handle,
-      )),
+      extension.ServicePlugin(extension.Service(admission, handle)),
     ],
     extension.no_initialise,
   )
 }
+
+fn admission(path: List(String), method: Method) -> extension.Admission {
+  let authorization = case allow_anonymous() {
+    True -> extension.LocalAccess
+    False -> extension.DaemonToken
+  }
+  case method, path {
+    Get, ["v1", "models"] -> extension.RelayAdmission(authorization, 65_536)
+    Post, ["v1", "chat", "completions"] ->
+      extension.RelayAdmission(authorization, 32_000_000)
+    _, _ -> extension.Admission(extension.DaemonToken, 65_536)
+  }
+}
+
+@external(erlang, "albedo_proxy", "allow_anonymous")
+fn allow_anonymous() -> Bool
 
 fn handle(
   daemon: extension.Daemon,
@@ -44,13 +57,35 @@ fn handle(
   req: request.Request(BitArray),
   live: request.Request(mist.Connection),
 ) -> response.Response(mist.ResponseData) {
+  case http_api.parameters(req, []) {
+    Error(failure) -> respond(failure.status, chat.error(failure.detail))
+    Ok(_) -> dispatch(daemon, path, req, live)
+  }
+}
+
+fn dispatch(
+  daemon: extension.Daemon,
+  path: List(String),
+  req: request.Request(BitArray),
+  live: request.Request(mist.Connection),
+) -> response.Response(mist.ResponseData) {
   case req.method, path {
-    Get, ["v1", "models"] -> respond(200, models(daemon))
-    Post, ["v1", "chat", "completions"] ->
-      case chat.parse(req.body) {
-        Error(message) -> respond(400, chat.error(message))
-        Ok(completion) -> complete(daemon, live, completion)
+    Get, ["v1", "models"] ->
+      case models(daemon) {
+        Ok(value) -> respond(200, value)
+        Error(message) -> respond(503, chat.error(message))
       }
+    Post, ["v1", "chat", "completions"] ->
+      case http_api.body(req, chat.request_fields(), chat.request_decoder()) {
+        Error(failure) -> respond(failure.status, chat.error(failure.detail))
+        Ok(fields) ->
+          case chat.from_fields(fields) {
+            Error(message) -> respond(400, chat.error(message))
+            Ok(completion) -> complete(daemon, live, completion)
+          }
+      }
+    _, ["v1", "models"] | _, ["v1", "chat", "completions"] ->
+      respond(405, chat.error("method not allowed"))
     _, _ -> respond(404, chat.error("no such proxy route"))
   }
 }
@@ -62,14 +97,13 @@ fn handle(
 /// Listing only helps clients choose: any `<profile>/<model>` is requested
 /// as given. Profiles that cannot be used are named under a nonstandard
 /// `errors` field, which clients ignore, instead of failing the list.
-fn models(daemon: extension.Daemon) -> Json {
-  let #(profiles, errors) = case configuration.profiles(daemon.home) {
-    Ok(profiles) -> {
-      let #(usable, broken) = result.partition(profiles)
-      #(list.reverse(usable), list.reverse(broken))
-    }
-    Error(message) -> #([], [#("", message)])
-  }
+fn models(daemon: extension.Daemon) -> Result(Json, String) {
+  use available <- result.try(configuration.profiles(daemon.home))
+  let #(usable, broken) = result.partition(available)
+  let #(profiles, errors) = #(
+    list.reverse(usable),
+    list.take(list.reverse(broken), 200),
+  )
   let ids =
     list.flat_map(profiles, fn(profile) {
       let catalog = case endpoint(daemon, profile) {
@@ -98,21 +132,23 @@ fn models(daemon: extension.Daemon) -> Json {
       }),
     ),
   ]
-  json.object(case errors {
-    [] -> fields
-    errors ->
-      list.append(fields, [
-        #(
-          "errors",
-          json.array(errors, fn(pair) {
-            json.object([
-              #("profile", json.string(pair.0)),
-              #("message", json.string(pair.1)),
-            ])
-          }),
-        ),
-      ])
-  })
+  Ok(
+    json.object(case errors {
+      [] -> fields
+      errors ->
+        list.append(fields, [
+          #(
+            "errors",
+            json.array(errors, fn(pair) {
+              json.object([
+                #("profile", json.string(pair.0)),
+                #("message", json.string(http_api.scalar_prefix(pair.1, 4096))),
+              ])
+            }),
+          ),
+        ])
+    }),
+  )
 }
 
 fn endpoint(

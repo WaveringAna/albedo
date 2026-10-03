@@ -1,6 +1,6 @@
 -module(albedo_claude_auth).
 
--export([exchange/4, account/1, access/2, profile/2, expire/2, token/1, accounts/1]).
+-export([exchange/4, account/1, access/2, access/3, profile/2, expire/2, token/1, accounts/1]).
 
 -define(KEY, <<"anthropic">>).
 -define(CLIENT_ID, <<"9d1c250a-e61b-44d9-88ed-5944d1962f5e">>).
@@ -70,14 +70,17 @@ identity(Credential) -> maps:get(<<"accountId">>, Credential,
 token_id(Token) ->
     binary:encode_hex(binary:part(crypto:hash(sha256, Token), 0, 8), lowercase).
 
-access(Home0, Session0) ->
+access(Home0, Session0) -> access(Home0, Session0, <<>>).
+
+access(Home0, Session0, Profile) ->
     Path = albedo_credentials:creds_path(Home0),
     Session = unicode:characters_to_binary(Session0),
     case albedo_credentials:accounts(Path) of
         {ok, Data} ->
-            Values = credentials(Data),
-            Ordered = albedo_accounts:order(<<"claude">>, Values, Session, fun identity/1),
-            first_access(Ordered, Path, Session);
+            case albedo_credentials:bound_values(Home0, Profile, credentials(Data)) of
+                {ok, Values} -> first_access(albedo_accounts:order(<<"claude">>, Values, Session, fun identity/1), Path, Session);
+                Error -> Error
+            end;
         _ -> {error, <<"Claude is not authenticated; run /login and add a Claude account">>}
     end.
 

@@ -46,7 +46,7 @@ func TestUncertainSubmissionRetainsPendingUntilStreamEcho(t *testing.T) {
 			}
 
 			for _, event := range []daemon.StreamEvent{
-				{Type: daemon.EventUser, Text: "check this", Source: "chat", ClientID: m.client.ClientID(), OperationID: m.pendingUsers[0].OperationID},
+				{Type: daemon.EventUser, Text: "check this", Source: "chat", OperationID: m.pendingUsers[0].OperationID},
 				{Type: daemon.EventCommitted, Seq: 1},
 			} {
 				m, _ = m.Update(ChatStreamEventMsg{SessionID: "s", Generation: m.Generation, Event: event})
@@ -77,7 +77,7 @@ func TestStreamEchoBeforeUncertainAcknowledgementDoesNotRestoreSubmission(t *tes
 	handle := m.pendingUsers[0].Handle
 	m.TextArea.Reset()
 	for _, event := range []daemon.StreamEvent{
-		{Type: daemon.EventUser, Text: "already accepted", Source: "chat", ClientID: m.client.ClientID(), OperationID: m.pendingUsers[0].OperationID},
+		{Type: daemon.EventUser, Text: "already accepted", Source: "chat", OperationID: m.pendingUsers[0].OperationID},
 		{Type: daemon.EventCommitted, Seq: 1},
 	} {
 		m, _ = m.Update(ChatStreamEventMsg{SessionID: "s", Generation: m.Generation, Event: event})
@@ -132,19 +132,18 @@ func TestUncertainSignInDoesNotRestartOrOpenBrowser(t *testing.T) {
 	}
 }
 
-func TestInvalidGlanceResponseKeepsConfirmedGlances(t *testing.T) {
+func TestInvalidSessionSnapshotKeepsConfirmedGlances(t *testing.T) {
 	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil)
 	m := NewAppModel(conn, config.Profiles{}, &daemon.Session{ID: "current"}, "", false, nil)
 	t.Cleanup(m.Chat.Close)
-	m.Glances = []PageGlance{{Title: "confirmed"}}
-	m.Chat.Glances = m.Glances
-	updated, cmd := m.Update(glancesPolledMsg{
-		Gen: m.GlanceGen,
+	m.Chat.Glances = []PageGlance{{Title: "confirmed"}}
+	updated, _ := m.Update(ChatStatusMsg{
+		SessionID: m.Chat.SessionID, Generation: m.Chat.Generation,
 		Err: invalidResponseOutcome("/work", "page", errors.New("missing page")),
 	})
 	m = updated.(AppModel)
-	if cmd != nil || len(m.Glances) != 1 || m.Glances[0].Title != "confirmed" || len(m.Chat.Glances) != 1 {
-		t.Fatal("invalid glance response replaced confirmed state or retried")
+	if len(m.Chat.Glances) != 1 || m.Chat.Glances[0].Title != "confirmed" {
+		t.Fatal("invalid snapshot replaced confirmed glances")
 	}
 }
 

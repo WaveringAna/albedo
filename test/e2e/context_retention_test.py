@@ -67,7 +67,9 @@ class ContextRetentionTest(unittest.TestCase):
                     ]
                 )
                 + " events="
-                + json.dumps([e.get("type") for e in app.events(session)]),
+                + json.dumps(
+                    [entry["kind"] for entry in app.history(session)["items"]]
+                ),
             )
             route = f"/sessions/{session}/context"
 

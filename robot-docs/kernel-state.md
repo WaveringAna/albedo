@@ -15,7 +15,7 @@ Pickled state is capped at 64 MiB total and 8 MiB per variable. Definition sourc
 - `defs`: names saved or restored by definition replay; these also occur in `saved`/`restored`.
 - `largest`: up to five saved variables, biggest first, as `{"name": str, "bytes": int}`, only entries at least 64 KiB.
 
-Old state files without `definitions` continue to load. Older readers ignore the additive key.
+State files without `definitions` continue to load.
 
 ## expiry
 
@@ -27,3 +27,6 @@ Never deleted: the state of a session that holds a live kernel or is running a t
 
 A state file that belongs to no session the store knows about is an orphan, and is deleted once it is more than a day old by modification time. Startup removes old orphans before sessions open.
 
+
+`priv/python/albedo_state.py` owns serialization and definition capture.
+`priv/python/albedo_kernel.py` owns the live namespace and release/restore lifecycle.

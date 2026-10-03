@@ -124,18 +124,25 @@ class MigrationsTest(unittest.TestCase):
                             "SELECT name FROM sqlite_master WHERE name='paperclips_cwd' AND type='index'"
                         ).fetchone()
                     )
-                for name in ("work", "paperclips"):
-                    app.api(
-                        f"/sessions/{session}/extensions",
-                        {"name": name, "enabled": True},
-                    ).close()
+                with app.api(f"/sessions/{session}?view=configuration") as response:
+                    json.load(response)
+                    revision = response.headers["ETag"]
+                app.api(
+                    f"/sessions/{session}?view=configuration",
+                    {"selection": {"extensions": {"work": True, "paperclips": True}}},
+                    method="PATCH",
+                    headers={"If-Match": revision},
+                ).close()
                 app.restart()
                 app.prompt(session, "use the upgraded extension ledgers").close()
                 app.idle(session)
                 results = [
-                    json.loads(event["result"])
-                    for event in app.events(session)
-                    if event.get("type") == "tool" and event.get("name") == "python"
+                    json.loads(part["value"])
+                    for entry in app.history(session)["items"]
+                    if entry["kind"] == "tool_result"
+                    and entry["tool"]["name"] == "python"
+                    for part in entry["content"]
+                    if part["kind"] == "json" and part["field"] == "result"
                 ]
                 self.assertEqual(len(results), 1)
                 self.assertEqual(results[0]["status"], "ok", results[0])

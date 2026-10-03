@@ -15,12 +15,10 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
     "Autoload AGENTS.md, CLAUDE.md, and Markdown instructions from project and user agent directories.",
     [],
     [
-      harness_extension.ManagedPlugin(fn(_, session, workspace) {
-        use #(context, warnings) <- result.try(instruction_files.load_selected(
-          workspace,
-          home,
-          session,
-        ))
+      harness_extension.ManagedPlugin(fn(ledger, session, workspace) {
+        use #(context, warnings) <- result.try(
+          instruction_files.load_selected(workspace, home, #(ledger, session)),
+        )
         Ok(
           harness_extension.Managed(
             ..harness_extension.empty(),

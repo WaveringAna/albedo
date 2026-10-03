@@ -517,7 +517,7 @@ fn is_busy(report: Report, now: Int) -> Bool {
 // ---- the readings -------------------------------------------------------
 
 /// One stored reading, exactly as the feed reported it.
-type Sample {
+pub type Sample {
   Sample(
     id: Int,
     /// The account's non-secret label.
@@ -702,7 +702,7 @@ fn sample_decoder() -> decode.Decoder(Sample) {
 }
 
 /// The latest reading per account and limit, read-only.
-fn latest(database: store.Store) -> Result(List(Sample), String) {
+pub fn latest(database: store.Store) -> Result(List(Sample), String) {
   store.read(database, "SELECT " <> sample_columns <> " FROM quota_sample s
      WHERE s.id = (SELECT MAX(t.id) FROM quota_sample t
                    WHERE t.account = s.account AND t.provider = s.provider
@@ -712,7 +712,7 @@ fn latest(database: store.Store) -> Result(List(Sample), String) {
 
 /// Readings newest-first with id keyset paging: `before` 0 starts at the
 /// newest, any other value continues after that row id.
-fn history(
+pub fn history(
   database: store.Store,
   before: Int,
   limit: Int,
@@ -737,59 +737,6 @@ fn history(
         sample_decoder(),
       )
   }
-}
-
-/// The latest readings, as the `/quota` route serves them.
-pub fn latest_json(database: store.Store) -> Result(json.Json, String) {
-  use samples <- result.try(latest(database))
-  Ok(
-    json.object([
-      #("readings", json.array(samples, sample_json)),
-    ]),
-  )
-}
-
-/// One history page: the rows and where the next page continues.
-pub fn page_json(
-  database: store.Store,
-  before: Int,
-  limit: Int,
-) -> Result(json.Json, String) {
-  use samples <- result.try(history(database, before, limit))
-  let next = case list.length(samples) < limit, list.last(samples) {
-    True, _ -> None
-    False, Ok(last) -> Some(last.id)
-    False, Error(_) -> None
-  }
-  Ok(
-    json.object([
-      #("items", json.array(samples, sample_json)),
-      #("nextCursor", json.nullable(next, json.int)),
-      #("hasMore", json.bool(next != None)),
-    ]),
-  )
-}
-
-/// A reading, exactly as it was recorded: unknown stays unknown, so a
-/// missing percentage or reset time is never mistaken for zero.
-fn sample_json(sample: Sample) -> json.Json {
-  json.object([
-    #("id", json.int(sample.id)),
-    #("account", json.string(sample.account)),
-    #("provider", json.string(sample.provider)),
-    #("plan", json.nullable(sample.plan, json.string)),
-    #("limitId", json.string(sample.limit_id)),
-    #("label", json.string(sample.label)),
-    #("usedPercent", json.nullable(sample.used_percent, json.float)),
-    #("windowLabel", json.nullable(sample.window_label, json.string)),
-    #("windowSeconds", json.nullable(sample.window_seconds, json.int)),
-    #("resetsAt", json.nullable(sample.resets_at, json.int)),
-    #("scope", json.nullable(sample.scope, json.string)),
-    #("status", json.string(sample.status)),
-    #("error", json.nullable(sample.error, json.string)),
-    #("observedAt", json.int(sample.observed_at)),
-    #("source", json.string(sample.source)),
-  ])
 }
 
 fn key_of(target: Target) -> String {

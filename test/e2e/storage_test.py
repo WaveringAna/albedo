@@ -100,7 +100,7 @@ class StorageTests(unittest.TestCase):
 
             app.restart(prepare=maintenance)
             self.assertEqual(backup.read_bytes(), b"approved backup")
-            self.assertEqual(app.api("/health").status, 200)
+            self.assertEqual(app.api("/server").status, 200)
 
     # exclusive: suspends the daemon and inspects global storage
     @exclusive
@@ -354,7 +354,7 @@ class StorageTests(unittest.TestCase):
                     db.execute("BEGIN EXCLUSIVE")
 
             app.restart(prepare=maintenance)
-            with app.api("/health") as response:
+            with app.api("/server") as response:
                 self.assertEqual(response.status, 200)
             self.assertEqual(app.history(session), history)
 

@@ -8,7 +8,9 @@ Every secret albedo keeps lives in `$ALBEDO_HOME/creds.json`, mode `0600`, and o
 
 At start the daemon moves secrets still kept elsewhere into `creds.json`: `auth.json`'s accounts, `mcp-credentials.json`'s servers, and each `config.json` profile's `apiKey`. It writes `creds.json` first, then moves the old files into `backups/` as `<name>-before-creds-<ms>` with every mode bit cleared, so an interrupted start loses nothing and the next one finishes. Not even their owner can read the backups without `chmod 600` first, so tools and agents running as the user never read them by accident; `rm -f` deletes them.
 
-Clients save provider profiles and MCP configuration with credentials through the [settings API](settings.md). They only learn which credentials are saved. The existing authentication routes remain available. `GET /auth/credentials` answers `{"providers": [profile...], "mcp": {server: {"bearerToken": bool, "headers": [name...], "env": [name...]}}}`. `POST /auth/credentials/migration` answers `{"moved": [file...]}` with the files this daemon's start moved secrets out of, to the first client that asks and `[]` after; the CLI asks before its TUI starts and, after a migration, prints where the secrets went and the `rm -f` for the backups, then waits for enter. `PUT /auth/credentials/providers/<profile>` with `{"apiKey"}` saves a key and `DELETE` removes it. `PATCH /auth/credentials/mcp/<server>` changes one server's secrets: an absent field keeps its value, `null` removes it, and `headers` and `env` map a name to a value or `null`. It answers `{"undo": token}`; `POST /auth/credentials/mcp/<server>/undo` with `{"token"}` puts back what the server held before, for callers of the credential-only API. The CLI uses daemon-owned settings save/reload/restoration instead.
+Clients save provider profiles and MCP configuration with credentials through the [settings API](settings.md). Reads disclose saved credential presence, never secret values. Provider keys belong to `PATCH /settings?group=providers`; MCP secrets belong to `PATCH /settings?group=mcp`. Both use the observed group validator and commit public and private changes together.
+
+`GET /server` includes credential migration notices for files moved during this daemon's start. Reading a notice does not consume it. Clients dismiss notices through `ui.dismissed_notices`. Original files remain sealed in `backups/`.
 
 ## openai-compatible api keys
 
@@ -30,16 +32,18 @@ The oauth callback binds only to `127.0.0.1`. Port 1455 is fixed because OpenAI 
 
 Browser sign-ins run in the daemon, so every client shares one OAuth implementation. An extension contributes `extension.LoginPlugin(oauth.Login(...))`: the profile extension it serves, a chooser label and detail, the protocol its profiles use, its `creds.json` accounts key, its loopback callback (host, port, path, and whether the port is fixed), and three functions. `authorize` builds the provider url from a `Grant` (redirect, state, PKCE verifier and challenge). `exchange` trades the code for the credential object to store and may report progress. `account` names a stored credential; equal ids are the same account. `albedo_oauth` owns the rest: the callback listener, the race with a pasted code, a 5-minute timeout, and locked writes. A sign-in replaces the stored account with the same id and appends a new one. One account is stored as an object, two or more as an array.
 
-Clients use these daemon routes. All of them require the daemon token.
+Clients use these resources with the daemon bearer token:
 
-- `GET /auth` returns `{logins: [{provider, label, detail, protocol}], accounts: [{provider, id, label, detail, selected}]}`. Accounts whose labels collide get the start of their id appended.
-- `POST /auth/{provider}` starts a sign-in and returns `201 {id, url}`. The client opens `url` in a browser unless `ALBEDO_NO_BROWSER` is set, and shows it for copying.
-- `GET /auth/logins/{id}` returns `{state, message}`. `state` is `waiting`, `exchanging`, `done`, or `failed`; `message` is progress, the new account's label when done, or the failure reason. Clients poll it. A settled sign-in is forgotten after 10 minutes.
-- `POST /auth/logins/{id}` with `{input}` delivers a pasted callback url, `code#state`, query string, or bare code.
-- `DELETE /auth/logins/{id}` cancels the sign-in and closes its callback listener.
-- `POST /auth/{provider}/accounts/{id}` selects that account; `DELETE` on the same path removes it.
+- `GET /auth` returns advertised providers and forms, saved account descriptors, and incomplete login resources.
+- `PUT /auth/logins/<id>` creates a login at a client-generated UUIDv7 with `{provider, flow, values}`. Browser and manual flows use an empty values object. A known identical intent recovers the same resource; another intent conflicts. Creation returns `201`; recovery returns `200`.
+- `GET /auth/logins/<id>` returns retained state, browser URL, progress, completion account, and validator. States are `waiting`, `exchanging`, `complete`, `failed`, or `cancelled`.
+- `PATCH /auth/logins/<id>` with `{response}` and `If-Match` delivers a pasted callback URL, `code#state`, query string, or code. Callback and manual response compete for one exchange.
+- `DELETE /auth/logins/<id>` cancels the login and closes its listener.
+- `DELETE /auth/accounts/<account-id>` removes a saved account. A profile binding prevents removal until that binding changes.
 
-After a sign-in finishes, the client lists models with `GET /models/{provider}` and saves the profile `{extension: provider, model, protocol}` itself. Profiles stay client-owned; credentials are daemon-owned.
+Login identity and intent survive restart. Callback and PKCE material remain private. The daemon admits at most eight unfinished logins and retains terminal decisions for fifteen minutes. Browser launch remains client policy and respects `ALBEDO_NO_BROWSER`.
+
+Clients list models through `GET /models?provider_profile=<profile>`. Profile defaults and account selection belong to conditional providers settings patches. `account_id: null` uses existing account rotation; an explicit ID binds runtime authentication to that account.
 
 ## claude code oauth
 

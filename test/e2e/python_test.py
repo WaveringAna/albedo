@@ -29,9 +29,11 @@ class PythonToolsTests(unittest.TestCase):
         self.app.prompt(session, "use the Python tools").close()
         self.app.idle(session)
         results = [
-            json.loads(event["result"])
-            for event in self.app.events(session)
-            if event.get("type") == "tool" and event.get("name") == "python"
+            json.loads(part["value"])
+            for entry in self.app.history(session)["items"]
+            if entry["kind"] == "tool_result" and entry["tool"]["name"] == "python"
+            for part in entry["content"]
+            if part["kind"] == "json" and part["field"] == "result"
         ]
         self.assertEqual(results[-1]["status"], "ok", results[-1])
         return results[-1]
@@ -295,9 +297,11 @@ class PythonToolsTests(unittest.TestCase):
         self.app.idle(session)
         self.arguments = None
         return [
-            json.loads(event["result"])
-            for event in self.app.events(session)
-            if event.get("type") == "tool" and event.get("name") == "python"
+            json.loads(part["value"])
+            for entry in self.app.history(session)["items"]
+            if entry["kind"] == "tool_result" and entry["tool"]["name"] == "python"
+            for part in entry["content"]
+            if part["kind"] == "json" and part["field"] == "result"
         ][-1]
 
     def test_timeout_is_optional(self):

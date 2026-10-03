@@ -29,7 +29,7 @@ The catalog is prepared once when a runtime session opens. Its immutable snapsho
 
 ## Management catalog
 
-`GET /sessions/:id/catalog` discovers skills and instruction files in the daemon's session workspace and home directories. It includes disabled, invalid, and shadowed candidates, with source paths and validation diagnostics. For skills, `source` is the installed `SKILL.md` path and `resolved_source` is its actual target. Skill preference keys remain frontmatter names; each installed source has a separate stable row ID so duplicates remain distinguishable when links are retargeted.
+`GET /sessions/{session_id}/catalog` discovers skills and instruction files in the daemon's session workspace and home directories. It includes disabled, invalid, and shadowed candidates, with source paths and validation diagnostics. For skills, `source` is the installed `SKILL.md` path and `resolved_source` is its actual target. Skill preference keys remain frontmatter names; each installed source has a separate stable row ID so duplicates remain distinguishable when links are retargeted.
 
 The management catalog reports global preferences, session overrides, and effective enablement separately. Its revision changes with bounded instruction content, resolved directory and instruction targets, and preferences; catalog updates must use the observed revision. Reading it does not reload extensions or change the session's prepared prompt. A disabled winning skill does not expose a lower-priority duplicate.
 

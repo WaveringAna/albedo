@@ -3,6 +3,7 @@
 import albedo/daemon/conversation
 import albedo/daemon/events as view
 import albedo/daemon/image_fit
+import albedo/daemon/message_content
 import albedo/daemon/requests
 import albedo/daemon/tool_progress
 import albedo/daemon/transcript
@@ -11,8 +12,10 @@ import albedo/harness/cache_fade
 import albedo/harness/cache_ttl
 import albedo/harness/compaction
 import albedo/harness/extension
+import albedo/harness/extensions/python/cells as journal
 import albedo/harness/runtime
 import albedo/openai_api/types
+import gleam/dynamic/decode
 import gleam/int
 import gleam/io
 import gleam/json
@@ -29,7 +32,7 @@ pub type Loop {
     kernel: runtime.Session,
     pin: Pin,
     upstream: extension.Upstream,
-    publish: fn(String) -> Bool,
+    publish: fn(view.Event) -> Bool,
     generation: String,
     progress_delta: fn(Int, Int, Int, String, String) -> Bool,
     progress_running: fn(Int, Int, Int, String, String) -> Bool,
@@ -57,6 +60,7 @@ pub type Loop {
     session: String,
     /// The saved profile those calls went through.
     profile: String,
+    run_id: String,
   )
 }
 
@@ -77,7 +81,7 @@ pub fn stopped_message(
   let failure = "model stopped: " <> string.inspect(finish)
   let response =
     output
-    |> list.map(view.output_text)
+    |> list.map(message_content.output_text)
     |> list.filter(fn(text) { text != "" })
     |> string.join("\n\n")
   case response {
@@ -115,7 +119,13 @@ pub fn run(
       request_prefix(request, history, original, prepared.observation),
       state.publish,
       fn(event) {
-        case view.stream_event(event) {
+        case
+          view.stream_event(
+            state.run_id,
+            state.run_id <> ":" <> int.to_string(step),
+            event,
+          )
+        {
           Some(serialized) ->
             case state.publish(serialized) {
               True -> types.Continue
@@ -144,7 +154,7 @@ pub fn run(
   let completed_usage =
     usage.from_completion(state.model, turn.usage, usage.now(), cache)
   let replay = list.map(turn.output, types.Replay)
-  use #(timestamp, seq) <- result.try(state.commit(
+  use #(_timestamp, seq) <- result.try(state.commit(
     replay,
     case turn.tool_calls {
       [] -> conversation.Idle
@@ -153,12 +163,7 @@ pub fn run(
     turn.thought_ms,
   ))
   attach(state, row, seq)
-  list.each(replay, fn(input) {
-    let _ =
-      list.each(view.assistant_message(input, Some(timestamp)), state.publish)
-  })
   use _ <- result.try(state.record_usage(completed_usage))
-  let _ = state.publish(usage.event(completed_usage))
   case turn.tool_calls {
     [] ->
       case turn.finish {
@@ -225,38 +230,30 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
   // suffix is what the strategy's replacement stands in for.
   let suffix = compaction.common_suffix(original, history)
   let evicted = list.length(inputs) - suffix
-  let _ = case evicted > 0 {
+  // A source-backed fold can change the projection while its verbatim tail
+  // still covers every original input. Report that committed change as well.
+  let changed = prepared.compacted || evicted > 0
+  let _ = case changed {
     True -> {
       // The summary replaced the history the pinned prompt was cached with.
       case state.pin {
         Pinned(..) -> state.report_pin(None)
         Unpinned -> Nil
       }
-      state.publish(
-        view.event("compacted", [
-          #("evicted", json.int(evicted)),
-          // Clients word the notice by strategy: a summary, folds, frames.
-          #("strategy", case prepared.observation {
-            Some(observation) -> json.string(observation.strategy)
-            None -> json.null()
-          }),
-          #(
-            "summary",
-            json.string(
-              display_text(list.take(history, list.length(history) - suffix)),
-            ),
-          ),
-        ]),
-      )
+      state.publish(view.Compacted(
+        prepared.observation,
+        evicted,
+        display_text(list.take(history, list.length(history) - suffix)),
+      ))
     }
     False ->
-      state.publish(view.text(
-        "note",
+      state.publish(view.note(
+        "daemon",
         "history already fits; nothing new to compact",
       ))
   }
   state.report_pin(Some(evicted))
-  let instructions = case evicted > 0 {
+  let instructions = case changed {
     True -> current_instructions(state)
     False -> request_instructions(state)
   }
@@ -329,14 +326,40 @@ fn run_tool(
             Error(error) -> Error(error)
             Ok(_) -> {
               let _ = case output {
-                types.ToolOutput(_, body, images) ->
-                  state.publish(view.tool(
-                    runtime.ledger(state.host),
-                    call,
-                    body,
-                    images,
-                    Some(progress_id),
-                  ))
+                types.ToolOutput(_, body, _) -> {
+                  let trace =
+                    json.parse(
+                      body,
+                      decode.field("cell_id", decode.string, decode.success),
+                    )
+                    |> result.map(fn(cell) {
+                      journal.trace(runtime.ledger(state.host), cell)
+                    })
+                    |> result.unwrap(None)
+                  case
+                    conversation.tool_result_position(
+                      runtime.ledger(state.host),
+                      state.session,
+                      state.run_id,
+                      call.id,
+                    )
+                  {
+                    Ok(Some(position)) ->
+                      state.publish(view.Tool(
+                        call,
+                        body,
+                        trace,
+                        progress_id,
+                        position,
+                      ))
+                    _ ->
+                      state.publish(view.Failure(
+                        Some(state.run_id),
+                        "tool_publication_failed",
+                        "committed tool result identity could not be observed",
+                      ))
+                  }
+                }
                 _ -> True
               }
               Ok(output)
@@ -349,7 +372,7 @@ fn run_tool(
 
 /// A checkpoint event a client may refuse; a refusal ends the turn cancelled.
 fn checkpoint(state: Loop) -> Result(Nil, String) {
-  compaction.require(state.publish(view.event("checkpoint", [])), "cancelled")
+  compaction.require(state.publish(view.Checkpoint), "cancelled")
 }
 
 /// The request this turn or a forced compaction prepares: its scoped strategy
@@ -393,7 +416,7 @@ fn display_text(items: List(types.Input)) -> String {
       types.ToolOutput(id, _, _) -> "[tool output " <> id <> " omitted]"
       input ->
         option.unwrap(
-          view.visible_assistant_text(input),
+          message_content.visible_assistant_text(input),
           "[assistant tool call omitted]",
         )
     }
@@ -424,13 +447,17 @@ fn call(
   kind: requests.Kind,
   request: types.Request,
   prefix: requests.Prefix,
-  publish: fn(String) -> Bool,
+  publish: fn(view.Event) -> Bool,
   on_event: fn(types.Event) -> types.Control,
   progress_event: fn(Int, types.Event) -> types.Control,
   reset_progress: fn(Int) -> Nil,
 ) -> Result(#(Option(Int), types.Turn, extension.SentCall, Int), types.Error) {
   retry_stream(
     fn(attempt) {
+      use _ <- result.try(case publish(view.ProviderStarted) {
+        True -> Ok(Nil)
+        False -> Error(types.Cancelled)
+      })
       let started = requests.now()
       let outcome =
         state.upstream.stream(request, fn(event) {
@@ -463,6 +490,7 @@ fn call(
             usage,
             prefix,
             marks,
+            state.run_id,
           ),
         )
       let row = case row {
@@ -500,6 +528,7 @@ fn call(
       }
     },
     publish,
+    state.run_id,
     reset_progress,
     1,
   )
@@ -576,7 +605,8 @@ const attempts = 8
 /// or tool effects; discard its live previews before forwarding the next attempt.
 fn retry_stream(
   run: fn(Int) -> Result(a, types.Error),
-  publish: fn(String) -> Bool,
+  publish: fn(view.Event) -> Bool,
+  run_id: String,
   reset_progress: fn(Int) -> Nil,
   attempt: Int,
 ) -> Result(a, types.Error) {
@@ -585,12 +615,19 @@ fn retry_stream(
       case attempt < attempts && retryable(error) {
         False -> Error(error)
         True ->
-          case publish(view.event("retry", [])) {
+          case
+            publish(view.Retry(
+              run_id,
+              attempt + 1,
+              "transient provider request failure",
+              int.bitwise_shift_left(250, attempt - 1),
+            ))
+          {
             False -> Error(types.Cancelled)
             True -> {
               reset_progress(attempt)
               sleep_retry(int.bitwise_shift_left(250, attempt - 1))
-              retry_stream(run, publish, reset_progress, attempt + 1)
+              retry_stream(run, publish, run_id, reset_progress, attempt + 1)
             }
           }
       }
@@ -743,7 +780,7 @@ fn summarize(
   let text =
     turn.output
     |> list.filter_map(fn(item) {
-      view.visible_assistant_text(types.Replay(item))
+      message_content.visible_assistant_text(types.Replay(item))
       |> option.to_result(Nil)
     })
     |> string.join("")

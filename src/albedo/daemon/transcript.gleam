@@ -1,5 +1,8 @@
 import albedo/openai_api/types
+import gleam/dynamic/decode
+import gleam/json
 import gleam/option.{type Option}
+import gleam/result
 
 /// A durable transcript item and the daemon time when it was accepted.
 /// Legacy rows have no timestamp; unknown time is never reconstructed.
@@ -38,4 +41,12 @@ pub fn row_class(input: types.Input) -> String {
     types.User(_) | types.UserImage(_, _) -> "user"
     _ -> "other"
   }
+}
+
+/// Model arguments may be incomplete JSON. History exposes invalid arguments
+/// as a string; valid values use the same encoding for facets and exact content.
+pub fn argument_json(raw: String) -> json.Json {
+  json.parse(raw, decode.dynamic)
+  |> result.map(types.encode_value)
+  |> result.unwrap(json.string(raw))
 }

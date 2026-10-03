@@ -1,8 +1,8 @@
 %% Bounded subscriber queues. Publishers admit directly into ETS; subscriber
 %% mailboxes carry only a coalesced wake, never event payloads.
 -module(albedo_bus).
--export([subscribe/2, drain/1, rearm/2, publish/1, has_subscribers/0,
-         mark_running/2, running/1, forget/1]).
+-export([subscribe/2, subscribe_filtered/3, set_filter/2, drain/1, rearm/2, publish/1, publish_activity/2, publish_mail/3, has_subscribers/0,
+         mark_running/2, running/1, forget/1, register_progress/3, progress/2]).
 
 -define(TABLE, albedo_bus).
 -define(QUEUES, albedo_bus_queues).
@@ -10,11 +10,16 @@
 -define(BYTE_LIMIT, 1048576).
 -define(CAS_ATTEMPTS, 32).
 
-subscribe(Owner, Notify) ->
+subscribe(Owner, Notify) -> subscribe_with_filter(Owner, Notify, all).
+
+subscribe_filtered(Owner, Notify, Sessions) ->
+    subscribe_with_filter(Owner, Notify, maps:from_keys(Sessions, true)).
+
+subscribe_with_filter(Owner, Notify, Filter) ->
     Ref = make_ref(),
     Control = atomics:new(2, [{signed, false}]),
     albedo_registry:register(?QUEUES, Ref, {queue:new(), 0, 0}),
-    albedo_registry:register(?TABLE, Ref, {Owner, Notify, Control}),
+    albedo_registry:register(?TABLE, Ref, {Owner, Notify, Control, Filter}),
     spawn(fun() ->
         Monitor = erlang:monitor(process, Owner),
         receive {'DOWN', Monitor, process, Owner, _} ->
@@ -35,10 +40,54 @@ publish(Event) ->
         undefined -> nil;
         _ ->
             lists:foreach(
-                fun({Ref, {_Owner, Notify, Control}}) ->
+                fun({Ref, {_Owner, Notify, Control, _Filter}}) ->
                     admit(Ref, Event, byte_size(Event), Notify, Control, ?CAS_ATTEMPTS)
                 end,
                 ets:tab2list(?TABLE)),
+            nil
+    end.
+
+%% Selection changes cannot recreate a dead or overflowed queue.
+set_filter(Ref, Sessions) ->
+    case ets:whereis(?TABLE) of
+        undefined -> nil;
+        _ ->
+            case ets:lookup(?TABLE, Ref) of
+                [{Ref, {Owner, Notify, Control, _}}] ->
+                    ets:update_element(?TABLE, Ref, {2,
+                        {Owner, Notify, Control, maps:from_keys(Sessions, true)}});
+                [] -> ok
+            end,
+            nil
+    end.
+
+publish_activity(Session, Event) ->
+    case ets:whereis(?TABLE) of
+        undefined -> nil;
+        _ ->
+            lists:foreach(fun({Ref, {_Owner, Notify, Control, Filter}}) ->
+                case Filter == all orelse maps:is_key(Session, Filter) of
+                    true -> admit(Ref, Event, byte_size(Event), Notify, Control, ?CAS_ATTEMPTS);
+                    false -> ok
+                end
+            end, ets:tab2list(?TABLE)),
+            nil
+    end.
+
+%% Mail crossing the selected scope remains visible at both ends; unrelated
+%% mail never consumes a filtered subscriber's bounded queue.
+publish_mail(Sender, Recipient, Event) ->
+    case ets:whereis(?TABLE) of
+        undefined -> nil;
+        _ ->
+            lists:foreach(fun({Ref, {_Owner, Notify, Control, Filter}}) ->
+                Interested = Filter == all orelse maps:is_key(Recipient, Filter)
+                    orelse case Sender of {some, Id} -> maps:is_key(Id, Filter); _ -> false end,
+                case Interested of
+                    true -> admit(Ref, Event, byte_size(Event), Notify, Control, ?CAS_ATTEMPTS);
+                    false -> ok
+                end
+            end, ets:tab2list(?TABLE)),
             nil
     end.
 
@@ -88,7 +137,7 @@ replace_queue(Ref, Previous, Next) ->
 
 drain(Ref) ->
     case ets:lookup(?TABLE, Ref) of
-        [{Ref, {_Owner, Notify, Control}}] -> drain(Ref, Notify, Control, ?CAS_ATTEMPTS);
+        [{Ref, {_Owner, Notify, Control, _Filter}}] -> drain(Ref, Notify, Control, ?CAS_ATTEMPTS);
         [] -> {batch, []}
     end.
 
@@ -115,7 +164,7 @@ drain(Ref, Notify, Control, Attempts) ->
 %% Only consuming that wake permits rearming; otherwise its gate stays set.
 rearm(Ref, WakeConsumed) ->
     case ets:lookup(?TABLE, Ref) of
-        [{Ref, {_Owner, Notify, Control}}] ->
+        [{Ref, {_Owner, Notify, Control, _Filter}}] ->
             case WakeConsumed of
                 true -> atomics:put(Control, 2, 0);
                 false -> ok
@@ -141,3 +190,28 @@ running(Session) ->
     end.
 
 forget(Session) -> albedo_registry:forget(albedo_running, Session).
+
+%% Model progress is published by the same session owner as all other live
+%% observations; a bus publisher cannot capture another actor's status/tail.
+register_progress(Session, Owner, Publish) ->
+    albedo_registry:register(albedo_session_progress, Session, {Owner, Publish}),
+    spawn(fun() ->
+        Monitor = erlang:monitor(process, Owner),
+        receive {'DOWN', Monitor, process, Owner, _} ->
+            case albedo_registry:lookup(albedo_session_progress, Session) of
+                {ok, {Owner, _}} -> albedo_registry:forget(albedo_session_progress, Session);
+                _ -> ok
+            end
+        end
+    end),
+    nil.
+
+progress(Session, Text) ->
+    case albedo_registry:lookup(albedo_session_progress, Session) of
+        {ok, {Owner, Publish}} ->
+            case erlang:is_process_alive(Owner) of
+                true -> Publish(Text);
+                false -> nil
+            end;
+        _ -> nil
+    end.

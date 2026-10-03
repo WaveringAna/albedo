@@ -1,15 +1,11 @@
 /// Legacy schema migrations preserve titles and event timestamps; E2E uses current schemas.
 import albedo/daemon/conversation
-import albedo/daemon/events as view
 import albedo/daemon/store
 import albedo/daemon/transcript
 import albedo/harness/runtime
 import albedo/openai_api/types
-import gleam/dynamic/decode
-import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/string
 import gleeunit/should
 import sqlight
 
@@ -196,44 +192,19 @@ pub fn transcript_timestamps_migrate_without_invention_and_roundtrip_test() -> N
   conversation.load(ledger, "timestamped")
   |> should.equal(Ok([types.User("legacy"), ..new_inputs]))
 
-  let snapshot = view.snapshot(ledger, entries, None)
-  let stamped_event = {
-    use kind <- decode.field("type", decode.string)
-    use text <- decode.field("text", decode.string)
-    use saved_at <- decode.optional_field(
-      "timestamp",
-      None,
-      decode.optional(decode.int),
-    )
-    decode.success(#(kind, text, saved_at))
-  }
-  list.map(snapshot, fn(event) { json.parse(event, stamped_event) })
-  |> should.equal([
-    Ok(#("user", "legacy", None)),
-    Ok(#("user", "current", Some(timestamp))),
-    Ok(#("message", "answer", Some(timestamp))),
-  ])
-  let assert [legacy_event, _, _] = snapshot
-  string.contains(legacy_event, "\"timestamp\"") |> should.be_false
-
-  // The live acceptance/completion renderers use the same committed value.
-  let live = [
-    view.user("current", "chat", Some("client-1"), Some(timestamp)),
-    ..view.assistant_message(types.Assistant("answer"), Some(timestamp))
-  ]
-  list.map(live, fn(event) { json.parse(event, stamped_event) })
-  |> should.equal([
-    Ok(#("user", "current", Some(timestamp))),
-    Ok(#("message", "answer", Some(timestamp))),
-  ])
+  let assert Ok(snapshot) = conversation.snapshot(ledger, "timestamped")
+  let range = conversation.Range(snapshot, conversation.After(0), 100, 0)
+  let assert Ok(page) = conversation.read_range(ledger, range)
+  list.map(page.entries, fn(sourced) { sourced.entry })
+  |> should.equal(entries)
+  page.has_more |> should.be_false
 
   runtime.stop(host)
   let assert Ok(restarted) = runtime.start(path)
   let ledger = runtime.ledger(restarted)
   let assert Ok(_) = conversation.initialise(ledger)
   conversation.load_entries(ledger, "timestamped") |> should.equal(Ok(entries))
-  let assert Ok(restored) = conversation.load_entries(ledger, "timestamped")
-  view.snapshot(ledger, restored, None) |> should.equal(snapshot)
+  conversation.read_range(ledger, range) |> should.equal(Ok(page))
   runtime.stop(restarted)
   cleanup(path)
 }

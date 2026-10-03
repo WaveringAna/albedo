@@ -7,7 +7,7 @@
 %% again while a probe runs joins it instead of starting another.
 -module(albedo_ssh).
 -behaviour(gen_server).
--export([probe/2, peek/1, cached/1, step/1, forget/1, commands/2, exec/5, config_hosts/0]).
+-export([probe/2, peek/1, observe/2, step/1, commands/2, exec/5, config_hosts/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(READY_MS, 60000).
@@ -25,8 +25,9 @@ probe(Target, WaitMs) ->
 %% and reads as still warming.
 peek(Target) -> gen_server:call(ensure(), {peek, Target}).
 
-%% A fresh cached answer, never starting a probe.
-cached(Target) -> gen_server:call(ensure(), {cached, Target}).
+%% Cached facts and whether a probe is running. Only explicit refresh starts
+%% or joins a probe, discarding the previous answer before starting it.
+observe(Target, Refresh) -> gen_server:call(ensure(), {observe, Target, Refresh}).
 
 %% What a running probe is doing past connecting: <<"staging">> while it
 %% copies the bundle over, <<>> otherwise.
@@ -38,8 +39,6 @@ config_hosts() ->
         {ok, Json} -> {ok, Json};
         {error, _} -> {error, nil}
     end.
-
-forget(Target) -> gen_server:cast(ensure(), {forget, Target}), nil.
 
 %% The commands for a host whose home is known, built locally (no network).
 commands(Target, Home) ->
@@ -86,11 +85,16 @@ handle_call({probe, Target}, From, S) ->
         {ok, Json} -> {reply, {ok, Json}, S};
         none -> {noreply, start(Target, From, S)}
     end;
-handle_call({cached, Target}, _, S) ->
-    case fresh(Target, S) of
-        {ok, Json} -> {reply, {ok, Json}, S};
-        none -> {reply, {error, nil}, S}
-    end;
+handle_call({observe, Target, Refresh}, _, S = #{hosts := Hosts}) ->
+    Observed = case Refresh of
+        true -> start(Target, none, S#{hosts => maps:remove(Target, Hosts)});
+        false -> S
+    end,
+    Reply = case fresh(Target, Observed) of
+        {ok, Json} -> {ok, Json};
+        none -> {error, maps:is_key(Target, maps:get(running, Observed))}
+    end,
+    {reply, Reply, Observed};
 handle_call({step, Target}, _, S = #{steps := Steps}) ->
     {reply, maps:get(Target, Steps, <<>>), S};
 handle_call({peek, Target}, _, S) ->
@@ -99,8 +103,7 @@ handle_call({peek, Target}, _, S) ->
         none -> {reply, {error, nil}, start(Target, none, S)}
     end.
 
-handle_cast({forget, Target}, S = #{hosts := Hosts}) ->
-    {noreply, S#{hosts => maps:remove(Target, Hosts)}}.
+handle_cast(_, S) -> {noreply, S}.
 
 handle_info({probed, Target, Json}, S = #{hosts := Hosts, running := Running, steps := Steps}) ->
     Waiters = maps:get(Target, Running, []),

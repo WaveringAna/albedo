@@ -1,11 +1,17 @@
+import albedo/harness/client_api
 import albedo/harness/extension as harness_extension
 import albedo/harness/extensions/paperclips/command as paperclips_command
 import albedo/harness/extensions/paperclips/ledger as paperclips
 import albedo/harness/extensions/paperclips/migrations/reply
 import albedo/harness/extensions/paperclips/migrations/resolution
+import albedo/harness/extensions/paperclips/migrations/revision
 import albedo/harness/extensions/paperclips/migrations/scope
 import albedo/harness/extensions/paperclips/migrations/title
 import albedo/harness/extensions/paperclips/rpc
+import gleam/http
+import gleam/json
+
+import albedo/harness/extensions/paperclips/service
 
 pub fn extension() -> harness_extension.Extension {
   harness_extension.Extension(
@@ -13,6 +19,30 @@ pub fn extension() -> harness_extension.Extension {
     "A vent channel: the model records friction, the user reviews it in /paperclips.",
     ["python"],
     [
+      harness_extension.ClientPlugin([
+        client_api.Command(
+          "/paperclips",
+          client_api.Read,
+          [],
+          client_api.Operation(
+            "listPaperclips",
+            http.Get,
+            "/extensions/paperclips/items",
+            [],
+            [],
+            [],
+            [],
+            json.object([]),
+          ),
+        ),
+      ]),
+      harness_extension.GlancePlugin(service.sidebar, service.resource_url),
+      harness_extension.ServicePlugin(harness_extension.Service(
+        fn(_, _) {
+          harness_extension.Admission(harness_extension.DaemonToken, 65_536)
+        },
+        service.handle,
+      )),
       harness_extension.MigrationPlugin(harness_extension.SchemaMigration(
         title.apply,
       )),
@@ -24,6 +54,9 @@ pub fn extension() -> harness_extension.Extension {
       )),
       harness_extension.MigrationPlugin(harness_extension.SchemaMigration(
         resolution.apply,
+      )),
+      harness_extension.MigrationPlugin(harness_extension.SchemaMigration(
+        revision.apply,
       )),
       harness_extension.ToolPlugin(vent_instructions, [], ["paperclips"], []),
       // The prepared workspace records where a new vent was filed; the

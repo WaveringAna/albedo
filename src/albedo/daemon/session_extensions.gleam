@@ -1,5 +1,6 @@
 //// Reconfigure a session's extensions without losing its prompt or namespace.
 
+import albedo/daemon/bus
 import albedo/daemon/events as view
 import albedo/daemon/session_namespace
 import albedo/daemon/session_prompt
@@ -8,8 +9,7 @@ import albedo/daemon/turn
 import albedo/harness/extension
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/runtime
-import albedo/harness/session_settings
-import gleam/json
+import gleam/list
 import gleam/option.{type Option, None, Some}
 
 /// The state once a fresh kernel replaces the old one: the next provider
@@ -80,17 +80,16 @@ pub fn change(
                 Ok(#(state, detail)) ->
                   session_state.emit(
                     state,
-                    view.text(
-                      "note",
+                    view.note(
+                      "daemon",
                       "extensions reloaded; " <> namespace <> detail,
                     ),
                   )
                 Error(error) ->
                   session_prompt.reset_prompt_cache(state, namespace)
-                  |> session_state.emit(view.text(
-                    "error",
+                  |> session_state.emit(view.error(
                     "extensions reloaded but the capability notice could not be saved: "
-                      <> error,
+                    <> error,
                   ))
               }
             False -> session_prompt.reset_prompt_cache(state, namespace)
@@ -102,85 +101,77 @@ pub fn change(
   }
 }
 
-pub fn refresh(
-  state: session_state.State(message),
-) -> #(session_state.State(message), Result(json.Json, String)) {
-  refresh_with(state, "session data reloaded from disk", fn() {
-    runtime.refresh_session(state.host, state.info.id)
-  })
+pub type Reloaded {
+  Reloaded(loaded_revision: Option(String), warnings: List(String))
 }
 
-/// Prepares the extensions again because one asked, and says why in a note.
-/// A running turn leaves the session as it is: the extension asks again when
-/// the turn ends.
-pub fn refresh_requested(
+/// Apply persisted choices and fresh file discovery. Kernel replacement is
+/// complete before success; failures retain the previously loaded composition.
+pub fn reload(
   state: session_state.State(message),
   reason: String,
-) -> session_state.State(message) {
-  case turn.running(state.activity) {
-    Some(_) -> state
-    None ->
-      case
-        refresh_with(state, reason, fn() {
-          runtime.refresh_session(state.host, state.info.id)
-        })
-      {
-        #(state, Ok(_)) -> state
-        #(state, Error(error)) ->
-          session_state.emit(
-            state,
-            view.text("error", reason <> ", but the reload failed: " <> error),
-          )
-      }
-  }
-}
-
-fn refresh_with(
-  state: session_state.State(message),
-  label: String,
-  reload: fn() -> Result(Option(runtime.Session), String),
-) -> #(session_state.State(message), Result(json.Json, String)) {
-  case turn.running(state.activity) {
-    Some(_) -> #(state, Error("session must be idle to reload"))
-    None -> {
+) -> #(session_state.State(message), Result(Reloaded, String)) {
+  case turn.running(state.activity) != None || state.booting != None {
+    True -> #(state, Error("session must be idle to reload"))
+    False -> {
       let previous = runtime.peek_prompt(state.host, state.info.id)
-      case reload() {
+      let previous_tools = option.map(state.kernel, runtime.tools)
+      case runtime.reload_desired(state.host, state.info.id, state.info.cwd) {
         Error(error) -> #(state, Error(error))
-        Ok(update) -> {
-          let state = case update {
-            Some(kernel) -> with_kernel(state, kernel)
-            None -> state
-          }
-          case session_prompt.pin_changed_prompt(state, previous) {
-            Ok(#(state, detail)) -> #(
-              session_state.emit(state, view.text("note", label <> detail)),
-              Ok(
-                json.object([
-                  #("reloaded", json.string("session")),
-                  #(
-                    "message",
-                    json.string(
-                      "Extension context, skills catalog, and session commands rescanned from disk."
-                      <> detail,
-                    ),
-                  ),
-                ]),
-              ),
+        Ok(kernel) -> {
+          let state =
+            session_state.State(
+              ..state,
+              kernel: kernel,
+              context: session_state.unprepared(),
             )
-            Error(error) -> #(
-              session_prompt.reset_prompt_cache(state, label),
-              Ok(
-                json.object([
-                  #("reloaded", json.string("session")),
-                  #(
-                    "warning",
-                    json.string(
-                      "session data reloaded, but its capability notice could not be saved: "
+          let #(state, warnings) = case
+            previous_tools == option.map(kernel, runtime.tools)
+          {
+            False -> {
+              let state = session_prompt.reset_prompt_cache(state, reason)
+              case previous_tools, kernel {
+                Some(_), Some(_) ->
+                  case session_prompt.record_capability_change(state, reason) {
+                    Ok(state) -> #(state, [])
+                    Error(error) -> #(state, [
+                      "reloaded, but the capability notice could not be saved: "
                       <> error,
-                    ),
+                    ])
+                  }
+                _, _ -> #(state, [])
+              }
+            }
+            True ->
+              case session_prompt.pin_changed_prompt(state, previous) {
+                Ok(#(state, detail)) -> #(
+                  session_state.emit(
+                    state,
+                    view.note("daemon", reason <> detail),
                   ),
-                ]),
-              ),
+                  [],
+                )
+                Error(error) -> #(
+                  session_prompt.reset_prompt_cache(state, reason),
+                  [
+                    "reloaded, but the capability notice could not be saved: "
+                    <> error,
+                  ],
+                )
+              }
+          }
+          let warnings =
+            list.append(warnings, case kernel {
+              Some(kernel) -> runtime.warnings(kernel)
+              None -> []
+            })
+          case
+            runtime.observe_composition(state.host, state.home, state.info.id)
+          {
+            Error(error) -> #(state, Error(error))
+            Ok(observed) -> #(
+              reloaded(state),
+              Ok(Reloaded(observed.loaded_revision, warnings)),
             )
           }
         }
@@ -189,13 +180,37 @@ fn refresh_with(
   }
 }
 
-/// The session actor checks idleness; the runtime actor owns the locked
-/// persistence/reload operation so no lock crosses the actor call.
-pub fn save_settings(
+pub fn refresh_requested(
   state: session_state.State(message),
-  change: session_settings.Change,
-) -> #(session_state.State(message), Result(json.Json, String)) {
-  refresh_with(state, "session data reloaded from disk", fn() {
-    runtime.save_settings(state.host, state.home, state.info.id, change)
-  })
+  reason: String,
+) -> session_state.State(message) {
+  case reload(state, reason) {
+    #(state, Ok(_)) -> state
+    #(state, Error(error)) ->
+      session_state.emit(
+        state,
+        view.error(reason <> ", but the reload failed: " <> error),
+      )
+  }
+}
+
+fn reloaded(
+  state: session_state.State(message),
+) -> session_state.State(message) {
+  let base = "/sessions/" <> state.info.id
+  bus.invalidate(
+    [
+      base,
+      base <> "?view=configuration",
+      base <> "/catalog",
+      base <> "/context",
+    ],
+    [state.info.id],
+    False,
+  )
+  state
+  |> session_state.invalidate("session", base)
+  |> session_state.invalidate("settings", base <> "?view=configuration")
+  |> session_state.invalidate("catalog", base <> "/catalog")
+  |> session_state.invalidate("context", base <> "/context")
 }

@@ -58,6 +58,8 @@ import urllib.error
 import urllib.parse
 import uuid
 
+from provider_events import chat_events, responses_events
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test"))
 import scratch  # noqa: E402
@@ -242,7 +244,6 @@ class Provider:
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
                 return
-            chat = self.path.endswith("chat/completions")
             call_id = f"fixture-call-{index + 1}"
             arguments = json.dumps(
                 reply.tool_arguments
@@ -251,169 +252,15 @@ class Provider:
                 if reply.tool_name == "lcm_grep"
                 else {"code": reply.value, "timeout_ms": 60000}
             )
-            if chat:
-                if reply.reasoning:
-                    emit(
-                        {
-                            "id": "fixture",
-                            "choices": [
-                                {
-                                    "index": 0,
-                                    "delta": {"reasoning_content": reply.reasoning},
-                                    "finish_reason": None,
-                                }
-                            ],
-                        }
-                    )
-                if reply.kind == "python":
-                    for offset in range(0, len(arguments), owner.chunk_size):
-                        tool_call: dict[str, object] = {
-                            "index": 0,
-                            "function": {
-                                "arguments": arguments[
-                                    offset : offset + owner.chunk_size
-                                ]
-                            },
-                        }
-                        if offset == 0:
-                            tool_call.update(
-                                {
-                                    "id": call_id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": reply.tool_name,
-                                        "arguments": arguments[: owner.chunk_size],
-                                    },
-                                }
-                            )
-                        delta = {"tool_calls": [tool_call]}
-                        emit(
-                            {
-                                "id": "fixture",
-                                "choices": [
-                                    {"index": 0, "delta": delta, "finish_reason": None}
-                                ],
-                            }
-                        )
-                    emit(
-                        {
-                            "id": "fixture",
-                            "choices": [
-                                {"index": 0, "delta": {}, "finish_reason": "tool_calls"}
-                            ],
-                        }
-                    )
-                else:
-                    for offset in range(0, len(reply.value), owner.chunk_size):
-                        emit(
-                            {
-                                "id": "fixture",
-                                "choices": [
-                                    {
-                                        "index": 0,
-                                        "delta": {
-                                            "content": reply.value[
-                                                offset : offset + owner.chunk_size
-                                            ]
-                                        },
-                                        "finish_reason": None,
-                                    }
-                                ],
-                            }
-                        )
-                    emit(
-                        {
-                            "id": "fixture",
-                            "choices": [
-                                {"index": 0, "delta": {}, "finish_reason": "stop"}
-                            ],
-                        }
-                    )
-                self.wfile.write(b"data: [DONE]\n\n")
-                self.wfile.flush()
-            else:
-                emit({"type": "response.created", "response": {"id": "fixture"}})
-                output = []
-                if reply.reasoning:
-                    emit(
-                        {
-                            "type": "response.reasoning_summary_text.delta",
-                            "output_index": 0,
-                            "summary_index": 0,
-                            "delta": reply.reasoning,
-                        }
-                    )
-                    output.append(
-                        {
-                            "id": "reasoning",
-                            "type": "reasoning",
-                            "summary": [
-                                {"type": "summary_text", "text": reply.reasoning}
-                            ],
-                        }
-                    )
-                if reply.kind == "python":
-                    emit(
-                        {
-                            "type": "response.output_item.added",
-                            "output_index": 0,
-                            "item": {
-                                "id": "call",
-                                "type": "function_call",
-                                "call_id": call_id,
-                                "name": reply.tool_name,
-                            },
-                        }
-                    )
-                    for offset in range(0, len(arguments), owner.chunk_size):
-                        emit(
-                            {
-                                "type": "response.function_call_arguments.delta",
-                                "output_index": 0,
-                                "delta": arguments[offset : offset + owner.chunk_size],
-                            }
-                        )
-                    output.append(
-                        {
-                            "id": "call",
-                            "type": "function_call",
-                            "call_id": call_id,
-                            "name": reply.tool_name,
-                            "arguments": arguments,
-                            "status": "completed",
-                        }
-                    )
-                else:
-                    for offset in range(0, len(reply.value), owner.chunk_size):
-                        emit(
-                            {
-                                "type": "response.output_text.delta",
-                                "output_index": 0,
-                                "content_index": 0,
-                                "delta": reply.value[
-                                    offset : offset + owner.chunk_size
-                                ],
-                            }
-                        )
-                    output.append(
-                        {
-                            "id": "message",
-                            "type": "message",
-                            "role": "assistant",
-                            "status": "completed",
-                            "content": [
-                                {
-                                    "type": "output_text",
-                                    "text": reply.value,
-                                    "annotations": [],
-                                }
-                            ],
-                        }
-                    )
-                completed = {"id": "fixture", "status": "completed", "output": output}
-                if reply.usage is not None:
-                    completed["usage"] = reply.usage
-                emit({"type": "response.completed", "response": completed})
+            events = (
+                chat_events(reply, arguments, call_id, owner.chunk_size)
+                if self.path.endswith("chat/completions")
+                else responses_events(reply, arguments, call_id, owner.chunk_size)
+            )
+            for event in events:
+                emit(event)
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
 
@@ -466,10 +313,10 @@ class _Response(http.client.HTTPResponse):
 
     def close(self):
         connection = self.connection
+        streaming = self.getheader("content-type", "").startswith("text/event-stream")
+        if connection is not None and streaming:
+            connection.reusable = False
         if connection is not None and not self.isclosed():
-            streaming = self.getheader("content-type", "").startswith(
-                "text/event-stream"
-            )
             if streaming or self.length is None or self.length > 1 << 20:
                 connection.reusable = False
             else:
@@ -528,6 +375,8 @@ class Daemon:
         )
         if _executable:
             self.env["ALBEDO_DAEMON"] = _executable
+        if "ALBEDO_TEST_CLI" in os.environ:
+            self.env["ALBEDO_TEST_CLI"] = os.environ["ALBEDO_TEST_CLI"]
         # A (soft, hard) open-file limit the CLI, and so the daemon it boots,
         # starts under; None passes on the test process's own.
         self.open_files = None
@@ -577,8 +426,8 @@ class Daemon:
         while time.monotonic() < deadline:
             try:
                 self._refresh()
-                with self.api("/health") as response:
-                    if json.load(response).get("ok"):
+                with self.api("/server") as response:
+                    if json.load(response)["state"] == "ready":
                         return
             except (OSError, ValueError, http.client.HTTPException):
                 pass
@@ -588,7 +437,7 @@ class Daemon:
     def start_cli(self, *args, **streams):
         """Start a CLI command whose input or cancellation the fixture controls."""
         process = subprocess.Popen(
-            [str(ROOT / "cli/bin/albedo"), *args],
+            [self.env.get("ALBEDO_TEST_CLI", str(ROOT / "cli/bin/albedo")), *args],
             cwd=ROOT,
             env=self.env,
             **streams,
@@ -630,7 +479,15 @@ class Daemon:
 
     def _stop(self, timeout):
         try:
-            self.api("/shutdown", {}).close()
+            with self.api("/server") as response:
+                instance_id = json.load(response)["instance_id"]
+            self.api(
+                "/server/shutdown",
+                {
+                    "instance_id": instance_id,
+                    "timeout_ms": min(timeout * 1000, 30000),
+                },
+            ).close()
         except (OSError, http.client.HTTPException):
             pass
         return self._gone(timeout)
@@ -646,16 +503,18 @@ class Daemon:
     def shutdown(self):
         """Stop the daemon, killing it if it will not stop, and drop the home."""
         with self.lock:
-            if self.booted:
-                # The daemon's own record may be stale after a crash restart.
-                path = self.home / "daemon.json"
-                if path.exists():
-                    self.connection = json.loads(path.read_text())
-                    self.base = f"http://127.0.0.1:{self.connection['port']}"
-                    self._pid = self.connection["pid"]
-                if not self._stop(timeout=10):
-                    assert self._pid is not None
-                    os.kill(self._pid, signal.SIGKILL)
+            # A failed CLI boot may already have launched this private home's daemon.
+            path = self.home / "daemon.json"
+            if path.exists():
+                self.connection = json.loads(path.read_text())
+                self.base = f"http://127.0.0.1:{self.connection['port']}"
+                self._pid = self.connection["pid"]
+            if self._pid is not None:
+                if _alive(self._pid) and not self._stop(timeout=10):
+                    try:
+                        os.kill(self._pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                 self._pid = None
             for launcher in self._launchers:
                 if launcher.poll() is None:
@@ -706,7 +565,7 @@ class Daemon:
             connection = self._local.connection = _Connection(port, token)
         return connection
 
-    def api(self, path, body=None, *, method=None):
+    def api(self, path, body=None, *, method=None, headers=None):
         """One daemon request over this thread's kept-alive connection. A
         socket per request, polled at test speed, leaves thousands of ports in
         TIME_WAIT; the host runs out and unrelated connections fail."""
@@ -721,7 +580,10 @@ class Daemon:
                 payload,
                 {
                     "Authorization": "Bearer " + self.connection["token"],
-                    "Content-Type": "application/json",
+                    "Content-Type": "application/merge-patch+json"
+                    if method == "PATCH"
+                    else "application/json",
+                    **(headers or {}),
                 },
             )
             response = connection.getresponse()
@@ -736,13 +598,13 @@ class Daemon:
         raise urllib.error.HTTPError(
             self.base + path,
             response.status,
-            response.reason + ": " + payload.decode(errors="replace"),
+            f"{response.reason} ({method} {path}): " + payload.decode(errors="replace"),
             response.headers,
             io.BytesIO(payload),
         )
 
     def cli(self, *args):
-        command = [str(ROOT / "cli/bin/albedo"), *args]
+        command = [self.env.get("ALBEDO_TEST_CLI", str(ROOT / "cli/bin/albedo")), *args]
         if self.open_files:
             command = [
                 sys.executable,
@@ -766,14 +628,17 @@ class Daemon:
     def install_shared_features(self):
         """Enable the additive global gateways concurrent tests rely on, once,
         before they start: none of them may change global state itself."""
-        with on_daemon(self):
-            app = Albedo().__enter__()
         settings = json.loads((self.home / "extensions.json").read_text())
         settings.setdefault("enabled", {})["proxy"] = True
         (self.home / "extensions.json").write_text(json.dumps(settings))
+        with self.api("/settings?group=extensions") as response:
+            validator = response.getheader("ETag")
+            response.read()
         self.api(
-            f"/sessions/{app.session()}/extensions",
-            {"name": "webhooks", "scope": "global", "enabled": True},
+            "/settings?group=extensions",
+            {"defaults": {"webhooks": True}},
+            method="PATCH",
+            headers={"If-Match": validator},
         ).close()
 
 
@@ -896,6 +761,7 @@ class Albedo:
                 if self.providers is not None
                 else {
                     default_name: {
+                        "extension": "openai",
                         "baseUrl": self.provider.url,
                         "apiKey": "fixture-key",
                         "model": "fixture-model",
@@ -940,14 +806,8 @@ class Albedo:
     def _fail(self, message):
         self.daemon._fail(message)
 
-    def api(self, path, body=None, *, method=None):
-        if (
-            isinstance(body, dict)
-            and method in (None, "POST")
-            and (path == "/sessions" or path.endswith("/events"))
-        ):
-            body = {"operationId": operation_id(), **body}
-        return self.daemon.api(path, body, method=method)
+    def api(self, path, body=None, *, method=None, headers=None):
+        return self.daemon.api(path, body, method=method, headers=headers)
 
     def cli(self, *args):
         return self.daemon.cli(*args)
@@ -972,34 +832,48 @@ class Albedo:
         path.chmod(0o600)
 
     def session(self, workspace=None):
-        with self.daemon.lock:
-            if self._concurrent:
-                with self.api(
-                    "/sessions",
-                    {
-                        "workspace": str(workspace or self.workspace),
-                        "provider": self.profile,
-                    },
-                ) as response:
-                    created = json.load(response)
-                assert created["provider"] == self.profile, created
-                return created["id"]
-            return json.loads(self.cli("new", str(workspace or self.workspace)))[
-                "session"
-            ]
+        session_id = operation_id()
+        with self.api(
+            f"/sessions/{session_id}",
+            {
+                "kind": "new",
+                "workspace": str(workspace or self.workspace),
+                "provider_profile": self.profile,
+            },
+            method="PUT",
+            headers={"If-None-Match": "*"},
+        ) as response:
+            created = json.load(response)
+        assert created["id"] == session_id, created
+        assert created["provider_profile"] == self.profile, created
+        return session_id
 
     def prompt(self, session_id, content):
-        return self.api(f"/sessions/{session_id}/events", {"content": content})
+        return self.api(
+            f"/sessions/{session_id}/inputs/{operation_id()}",
+            {"kind": "message", "text": content},
+            method="PUT",
+        )
 
     def idle(self, session_id, timeout=30):
         deadline = time.monotonic() + timeout
+        snapshot = None
         while time.monotonic() < deadline:
-            with self.api(f"/sessions/{session_id}/status") as response:
-                status = json.load(response)
-            if not status["running"]:
-                return status
+            try:
+                with self.api(f"/sessions/{session_id}?tail=0") as response:
+                    snapshot = json.load(response)
+            except urllib.error.HTTPError as error:
+                if error.code != 503:
+                    raise
+                snapshot = json.load(error)
+            else:
+                if (
+                    snapshot["status"]["phase"] == "idle"
+                    and not snapshot["pending_inputs"]
+                ):
+                    return snapshot
             time.sleep(0.05)
-        self._fail(f"session did not settle: {status}")
+        self._fail(f"session did not settle: {snapshot}")
 
     def stream_page(self, session_id, after=None, *, tail=None):
         query = {}
@@ -1011,14 +885,14 @@ class Albedo:
         if tail is not None:
             query["tail"] = tail
         suffix = "?" + urllib.parse.urlencode(query) if query else ""
-        with self.api(f"/sessions/{session_id}/stream{suffix}") as response:
+        with self.api(
+            f"/sessions/{session_id}{suffix}",
+            headers={"Accept": "text/event-stream"},
+        ) as response:
             for line in response:
                 if line.startswith(b"data: "):
                     return json.loads(line[6:])
         self._fail("stream closed before its first batch")
-
-    def events(self, session_id):
-        return self.stream_page(session_id)["events"]
 
     def history(self, session_id):
         with self.api(f"/sessions/{session_id}/history") as response:

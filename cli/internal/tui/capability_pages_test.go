@@ -4,6 +4,7 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/testwire"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -52,54 +53,58 @@ func TestCapabilityStaleReplyFromReplacedInstanceIsRejected(t *testing.T) {
 // The detached view owns response ordering and key routing, which daemon E2E
 // scenarios cannot observe deterministically.
 func TestCapabilityConflictRefreshesWithoutReplayingToggle(t *testing.T) {
-	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil)
 	var methods []string
-	conn.HTTPClient().Transport = catalogTransport(func(request *http.Request) (*http.Response, error) {
-		methods = append(methods, request.Method)
-		if request.URL.Path != "/sessions/s/catalog" {
-			t.Fatalf("unexpected request path: %s", request.URL.Path)
-		}
-		status, body := http.StatusOK, ""
+	conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		status := 200
+		var body any
 		switch {
-		case len(methods) == 1 && request.Method == http.MethodPost:
-			status, body = http.StatusConflict, `{"code":"stale_catalog","error":"catalog changed"}`
-		case len(methods) == 2 && request.Method == http.MethodGet:
-			body = `{"workspace":"/daemon-workspace","revision":"after","extensions":{"skills":true},"diagnostics":[],"candidates":[
-				{"id":"row","kind":"skills","title":"Updated skill","source":"/skills/draft/SKILL.md","description":null,"resolved_source":null,"diagnostic":null,"shadowed_by":null,"preference_key":"draft","valid":true,"global_preference":false,"session_override":false,"effective_enabled":false,"eligible":false},
-				{"id":"new-row","kind":"skills","title":"New skill","source":"/skills/new/SKILL.md","description":null,"resolved_source":null,"diagnostic":null,"shadowed_by":null,"global_preference":null,"session_override":null,"preference_key":"new","valid":true,"effective_enabled":true,"eligible":true}
-			]}`
+		case len(methods) == 1 && r.Method == http.MethodPatch:
+			if r.URL.RequestURI() != "/sessions/s?view=configuration" {
+				t.Fatalf("wrong mutation %s", r.URL)
+			}
+			status = 409
+			body = map[string]any{"type": "about:blank", "title": "Catalog changed", "status": 409, "code": "catalog_changed", "detail": "catalog changed"}
+		case r.URL.Path == "/sessions/s/catalog":
+			body = map[string]any{"discovery": map[string]any{"workspace": "/daemon-workspace", "revision": "after", "candidates": []any{protocolCandidate("row", "Updated skill", false), protocolCandidate("new-row", "New skill", true)}, "diagnostics": []any{}, "next": nil}, "discovery_failure": nil, "loaded": map[string]any{"revision": nil, "commands": []any{}, "next": nil}}
+		case r.URL.Path == "/settings":
+			body = testwire.Settings()
+		case r.URL.Path == "/sessions/s":
+			body = protocolSession("s", generationA, 0)["configuration_resource"].(map[string]any)["value"]
 		default:
-			t.Fatalf("unexpected request sequence: %v", methods)
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL)
 		}
-		return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+		w.Header().Set("ETag", "\"after\"")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(body)
 	})
 	key := "draft"
-	item := capabilityItem{ID: "row", Title: "Original skill", Candidate: daemon.CatalogCandidate{PreferenceKey: &key, Valid: true, EffectiveEnabled: true}}
+	item := capabilityItem{ID: "row", Title: "Original skill", Candidate: daemon.CatalogCandidate{ID: "row", PreferenceKey: &key, Valid: true, EffectiveEnabled: true}}
 	m := NewCapabilityPageModel(conn, "s", "skills")
-	m, _ = m.Update(capabilityLoadedMsg{Gen: m.Generation, Items: []capabilityItem{item}, Revision: "before"})
+	m, _ = m.Update(capabilityLoadedMsg{Gen: m.Generation, Items: []capabilityItem{item}, Revision: "before", SessionETag: "\"seen\""})
 	m.Global = false
 	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
-	if cmd == nil || !m.Saving {
-		t.Fatal("toggle did not start a save")
-	}
 	m, cmd = m.Update(cmd())
 	if m.Saving || !m.Loading || cmd == nil || !m.selectedEnabled(m.Items[0]) {
-		t.Fatal("conflict must keep acknowledged choices and start a read")
+		t.Fatal("conflict must preserve acknowledged choices and start a read")
 	}
 	m, cmd = m.Update(cmd())
-	if cmd != nil || m.Loading || m.Saving || m.Error != "" || m.Revision != "after" {
-		t.Fatal("refresh must adopt daemon state and wait for another user action")
+	if cmd != nil || m.Loading || m.Error != "" || m.Revision != "after" || len(m.Items) != 2 {
+		t.Fatalf("refresh did not adopt catalog %+v", m)
 	}
-	if len(m.Items) != 2 || m.Items[0].Title != "Updated skill" || m.Items[1].ID != "new-row" || m.selectedEnabled(m.Items[0]) {
-		t.Fatalf("refresh did not adopt changed rows and choices: %+v", m.Items)
+	first := m.Items[1]
+	if first.ID != "row" {
+		first = m.Items[0]
 	}
-	candidate := m.Items[0].Candidate
-	if candidate.GlobalPreference == nil || *candidate.GlobalPreference || candidate.SessionOverride == nil || *candidate.SessionOverride {
-		t.Fatalf("refresh did not adopt daemon preferences: %+v", candidate)
+	if m.selectedEnabled(first) || first.Candidate.SessionOverride == nil {
+		t.Fatalf("fresh disabled row lost %+v", first)
 	}
-	if len(methods) != 2 || methods[0] != http.MethodPost || methods[1] != http.MethodGet {
-		t.Fatalf("conflict must issue one POST followed by one GET: %v", methods)
+	if len(methods) != 4 || methods[0] != "PATCH" {
+		t.Fatalf("toggle replayed or missing canonical reads %v", methods)
 	}
+}
+func protocolCandidate(id, title string, enabled bool) map[string]any {
+	return map[string]any{"id": id, "kind": "skill", "title": title, "description": "", "source": "/skills/" + id, "resolved_source": nil, "preference_key": "skill:" + id, "valid": true, "eligible": enabled, "effective_enabled": enabled, "global_preference": enabled, "session_override": enabled, "shadowed_by": nil, "dependencies": []any{}, "quarantined": false, "diagnostic": nil, "extension": nil}
 }
 
 type catalogTransport func(*http.Request) (*http.Response, error)
@@ -114,16 +119,22 @@ func TestCapabilityToggleSubmitsRowIdentityAndAcknowledgedRevision(t *testing.T)
 	conn.HTTPClient().Transport = catalogTransport(func(request *http.Request) (*http.Response, error) {
 		requests++
 		var body struct {
-			Enabled             *bool
-			ID, Revision, Scope string
+			CatalogRevision string `json:"catalog_revision"`
+			Selection       struct {
+				Skills map[string]*bool `json:"skills"`
+			} `json:"selection"`
 		}
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		if request.URL.Path != "/sessions/s/catalog" || body.ID != "row-winner" || body.Revision != "current" || body.Scope != "session" || body.Enabled == nil || *body.Enabled {
-			t.Fatalf("wrong catalog action: %s %+v", request.URL.Path, body)
+		choice := body.Selection.Skills["row-winner"]
+		if request.Method != "PATCH" || request.URL.RequestURI() != "/sessions/s?view=configuration" || request.Header.Get("If-Match") != "\"seen\"" || body.CatalogRevision != "current" || choice == nil || *choice {
+			t.Fatalf("wrong observed selection %s %+v", request.URL, body)
 		}
-		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"reloaded":"session","message":"saved"}`))}, nil
+		session := protocolSession("s", generationA, 0)
+		resource := session["configuration_resource"]
+		encoded, _ := json.Marshal(map[string]any{"resource": resource, "session": session, "move": nil})
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(encoded)))}, nil
 	})
 	key, winner := "shared-name", "row-winner"
 	items := []capabilityItem{
@@ -132,7 +143,7 @@ func TestCapabilityToggleSubmitsRowIdentityAndAcknowledgedRevision(t *testing.T)
 		{ID: "row-invalid", Candidate: daemon.CatalogCandidate{Valid: false}},
 	}
 	m := NewCapabilityPageModel(conn, "s", "skills")
-	m, _ = m.Update(capabilityLoadedMsg{Gen: m.Generation, Items: items, Revision: "current"})
+	m, _ = m.Update(capabilityLoadedMsg{Gen: m.Generation, Items: items, Revision: "current", SessionETag: "\"seen\""})
 	m.Global = false
 	for _, index := range []int{1, 2} {
 		m.Cursor = index

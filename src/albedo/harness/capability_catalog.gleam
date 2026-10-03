@@ -1,27 +1,16 @@
 //// Fresh management discovery, independent of prepared commands and prompt state.
 
+import albedo/daemon/store
 import albedo/harness/capabilities
 import albedo/harness/extension
 import albedo/harness/extensions/skills/catalog as skills
 import albedo/harness/instruction_files
-import gleam/dynamic/decode
-import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 
 pub type Extensions {
   Extensions(skills: Bool, instructions: Bool, fingerprint: String)
-}
-
-pub type Change {
-  Change(
-    workspace: String,
-    revision: String,
-    id: String,
-    scope: String,
-    enabled: Option(Bool),
-  )
 }
 
 pub type Candidate {
@@ -53,16 +42,6 @@ pub type Snapshot {
   )
 }
 
-pub const stale_error = "catalog changed; refresh before changing a capability"
-
-pub fn change_decoder() -> decode.Decoder(Change) {
-  use revision <- decode.field("revision", decode.string)
-  use id <- decode.field("id", decode.string)
-  use scope <- decode.field("scope", decode.string)
-  use enabled <- decode.field("enabled", decode.optional(decode.bool))
-  decode.success(Change("", revision, id, scope, enabled))
-}
-
 pub fn extension_state(summaries: List(extension.Summary)) -> Extensions {
   let relevant =
     list.filter(summaries, fn(item) {
@@ -87,6 +66,7 @@ pub fn inspect(
   home: String,
   session: String,
   extensions: Extensions,
+  ledger: store.Store,
 ) -> Result(Snapshot, String) {
   use discovered_skills <- result.try(skills.discover_at(
     workspace,
@@ -97,7 +77,10 @@ pub fn inspect(
     workspace,
     instruction_files.home(),
   ))
-  use preferences <- result.try(capabilities.load(home, Some(session)))
+  use preferences <- result.try(capabilities.load(
+    home,
+    Some(#(ledger, session)),
+  ))
   use _ <- result.try(capabilities.validate_preferences(preferences))
   use skill_rows <- result.try(
     list.try_map(discovered_skills.candidates, fn(skill) {
@@ -154,7 +137,6 @@ pub fn inspect(
     fingerprint(#(
       workspace,
       home,
-      session,
       discovered_skills.fingerprint,
       discovered_instructions.fingerprint,
       extensions.fingerprint,
@@ -180,106 +162,8 @@ fn choices(
   }
 }
 
-pub fn save(
-  home: String,
-  session: String,
-  change: Change,
-  extensions: fn() -> Result(Extensions, String),
-  enabling: fn(String, String) -> Result(Nil, String),
-  after: fn() -> Result(a, String),
-) -> Result(a, String) {
-  guarded_capability(
-    home,
-    session,
-    fn() {
-      use current_extensions <- result.try(extensions())
-      use snapshot <- result.try(inspect(
-        change.workspace,
-        home,
-        session,
-        current_extensions,
-      ))
-      case snapshot.revision == change.revision {
-        False -> Error(stale_error)
-        True -> {
-          use row <- result.try(
-            list.find(snapshot.candidates, fn(row) { row.id == change.id })
-            |> result.replace_error(stale_error),
-          )
-          use key <- result.try(option.to_result(
-            row.preference_key,
-            "candidate has no validated preference key",
-          ))
-          case change.scope == "global" || change.scope == "session" {
-            False -> Error("choose global or session scope")
-            True ->
-              case row.shadowed_by, row.valid, change.enabled {
-                Some(_), _, _ -> Error("shadowed candidates cannot be changed")
-                _, False, Some(True) ->
-                  Error("invalid candidates cannot be enabled")
-                _, _, Some(True) ->
-                  enabling(row.kind, key)
-                  |> result.replace(#(
-                    row.kind,
-                    key,
-                    change.scope,
-                    change.enabled,
-                  ))
-                _, _, _ -> Ok(#(row.kind, key, change.scope, change.enabled))
-              }
-          }
-        }
-      }
-    },
-    after,
-  )
-}
-
-pub fn to_json(snapshot: Snapshot) -> json.Json {
-  json.object([
-    #("workspace", json.string(snapshot.workspace)),
-    #("revision", json.string(snapshot.revision)),
-    #(
-      "extensions",
-      json.object([
-        #("skills", json.bool(snapshot.extensions.skills)),
-        #("instructions", json.bool(snapshot.extensions.instructions)),
-      ]),
-    ),
-    #("diagnostics", json.array(snapshot.diagnostics, json.string)),
-    #("candidates", json.array(snapshot.candidates, candidate_json)),
-  ])
-}
-
-fn candidate_json(row: Candidate) -> json.Json {
-  json.object([
-    #("id", json.string(row.id)),
-    #("kind", json.string(row.kind)),
-    #("title", json.string(row.title)),
-    #("description", json.nullable(row.description, json.string)),
-    #("source", json.string(row.source)),
-    #("resolved_source", json.nullable(row.resolved_source, json.string)),
-    #("preference_key", json.nullable(row.preference_key, json.string)),
-    #("valid", json.bool(row.valid)),
-    #("diagnostic", json.nullable(row.diagnostic, json.string)),
-    #("shadowed_by", json.nullable(row.shadowed_by, json.string)),
-    #("global_preference", json.nullable(row.global_preference, json.bool)),
-    #("session_override", json.nullable(row.session_override, json.bool)),
-    #("effective_enabled", json.bool(row.effective_enabled)),
-    #("eligible", json.bool(row.eligible)),
-  ])
-}
-
 @external(erlang, "albedo_capability_catalog", "fingerprint")
 fn fingerprint(value: a) -> String
-
-@external(erlang, "albedo_settings_store", "catalog_capability")
-fn guarded_capability(
-  home: String,
-  session: String,
-  resolve: fn() -> Result(#(String, String, String, Option(Bool)), String),
-  after: fn() -> Result(a, String),
-) -> Result(a, String)
 
 @external(erlang, "albedo_capability_catalog", "source_title")
 fn source_title(source: String) -> String

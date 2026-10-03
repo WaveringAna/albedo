@@ -4,25 +4,27 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"time"
 )
 
 type SendResult struct {
-	OperationID string `json:"operationId"`
-	OK          bool   `json:"ok"`
-	Queued      bool   `json:"queued"`
+	OperationID     string `json:"operationId"`
+	OK              bool   `json:"ok"`
+	Queued          bool   `json:"queued"`
+	AcceptanceOrder int64
 }
 
-// Content is a pointer so an empty user message and absent continuation content
-// retain their distinct wire representations.
+// SubmissionRequest keeps message text and continuation content distinct:
+// an empty message has a Content pointer, while a continuation has none.
 type SubmissionRequest struct {
-	Content      *string          `json:"content,omitempty"`
-	Image        *ImageAttachment `json:"image,omitempty"`
-	Type         string           `json:"type,omitempty"`
-	ClientID     string           `json:"clientId,omitempty"`
-	SubmissionID string           `json:"submissionId,omitempty"`
-	Name         string           `json:"name,omitempty"`
-	Arguments    string           `json:"arguments,omitempty"`
+	CatalogRevision  string
+	CommandArguments json.RawMessage
+	Content          *string
+	Image            *ImageAttachment
+	Type             string
+	ClientID         string
+	SubmissionID     string
+	Name             string
+	Arguments        string
 }
 
 func Submit(ctx context.Context, conn *Connection, id string, payload SubmissionRequest) (SendResult, error) {
@@ -47,13 +49,28 @@ func SubmitOperation(ctx context.Context, conn *Connection, handle *OperationHan
 }
 
 func InterruptSession(ctx context.Context, conn *Connection, id string) (bool, error) {
-	var interrupted bool
-	err := executeMutation(ctx, conn, operation{Name: "interrupt session", Method: http.MethodPost, Path: sessionPath(id, "/interrupt"), Body: map[string]any{}, Policy: authRecovery}, []int{http.StatusOK}, func(body []byte, status int) error {
-		var err error
-		interrupted, err = decodeInterruption(body, status)
-		return err
+	session, err := GetSession(ctx, conn, id)
+	if err != nil {
+		return false, err
+	}
+	return interruptCaptured(ctx, conn, id, session.wire.Status.RunID, session.wire.InputOrder)
+}
+func interruptCaptured(ctx context.Context, conn *Connection, id string, runID *string, inputOrder int64) (bool, error) {
+	var result wireInterruption
+	err := executeMutation(ctx, conn, operation{Name: "interrupt session", Method: http.MethodPost, Path: sessionPath(id, "/interrupt"), Body: struct {
+		RunID   *string `json:"run_id"`
+		Through int64   `json:"through_input_order"`
+	}{runID, inputOrder}, Policy: noRecovery}, []int{200}, func(data []byte, _ int) error {
+		if err := decodeRequired(data, &result, "run_id", "state", "cancelled_input_ids", "warnings"); err != nil {
+			return err
+		}
+		switch result.State {
+		case "requested", "already_ended":
+			return nil
+		}
+		return fieldError("interruption state")
 	})
-	return interrupted, err
+	return result.State == "requested", err
 }
 
 func (c *ChatClient) PrepareTurn(content string, image *ImageAttachment, continuation bool) (*OperationHandle, error) {
@@ -62,10 +79,6 @@ func (c *ChatClient) PrepareTurn(content string, image *ImageAttachment, continu
 		payload.Type, payload.Content = "continue", nil
 	}
 	return NewSubmission(c.agentID, payload)
-}
-
-func (c *ChatClient) PrepareSkill(name, args string) (*OperationHandle, error) {
-	return NewSubmission(c.agentID, SubmissionRequest{ClientID: c.clientID, Type: "skill", Name: name, Arguments: args})
 }
 
 func (c *ChatClient) SubmitOperation(ctx context.Context, handle *OperationHandle) (*SendResult, error) {
@@ -88,84 +101,52 @@ func (c *ChatClient) Send(ctx context.Context, content string, image *ImageAttac
 	return c.SubmitOperation(ctx, handle)
 }
 
-func (c *ChatClient) Continue(ctx context.Context) (*SendResult, error) {
-	handle, err := c.PrepareTurn("", nil, true)
-	if err != nil {
-		return nil, err
-	}
-	return c.SubmitOperation(ctx, handle)
-}
-
-func (c *ChatClient) SendSubmission(ctx context.Context, content, submissionID string) (*SendResult, error) {
-	handle, err := NewSubmission(c.agentID, SubmissionRequest{Content: &content, ClientID: c.clientID, SubmissionID: submissionID})
-	if err != nil {
-		return nil, err
-	}
-	return c.SubmitOperation(ctx, handle)
-}
-
 func (c *ChatClient) CancelSubmission(ctx context.Context, submissionID string) (string, error) {
-	var outcome string
-	err := executeMutation(ctx, c.conn, operation{Name: "cancel submission", Method: http.MethodPost, Path: sessionPath(c.agentID, "/cancel-submission"), Body: struct {
-		SubmissionID string `json:"submissionId"`
-	}{submissionID}, Policy: noRecovery}, []int{http.StatusOK}, func(data []byte, _ int) error {
-		fields, err := object(data)
-		if err != nil {
+	var result wireInputCancellation
+	err := executeMutation(ctx, c.conn, operation{Name: "cancel input", Method: http.MethodPost, Path: sessionPath(c.agentID, "/inputs/"+submissionID+"/cancel"), Body: struct{}{}, Policy: noRecovery}, []int{200}, func(data []byte, _ int) error {
+		if err := decodeRequired(data, &result, "input", "result"); err != nil {
 			return err
 		}
-		if err = required(fields, "outcome", &outcome); err != nil {
-			return err
+		if result.Input.ID != submissionID {
+			return fieldError("input identity")
 		}
-		switch outcome {
-		case "cancelled_queued", "interrupt_requested", "shared_running", "not_pending":
-			return nil
-		default:
-			return fieldError("outcome")
-		}
+		return validInput(result.Input)
 	})
-	if err != nil {
-		return "", err
+	outcome := result.Result
+	if outcome == "cancelled" {
+		outcome = "cancelled_queued"
 	}
-	return outcome, nil
-}
-
-func (c *ChatClient) Interrupt(ctx context.Context) (bool, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	return InterruptSession(reqCtx, c.conn, c.agentID)
+	switch result.Result {
+	case "cancelled", "interrupt_requested", "shared_running", "not_pending":
+	default:
+		if err == nil {
+			err = fieldError("cancellation result")
+		}
+	}
+	return outcome, err
 }
 
 func decodeSubmission(data []byte, _ int) (SendResult, error) {
-	var wire struct {
-		OK          *bool  `json:"ok"`
-		Queued      *bool  `json:"queued"`
-		OperationID string `json:"operationId"`
-	}
-	if err := json.Unmarshal(data, &wire); err != nil {
+	var input wireInput
+	if err := decodeRequired(data, &input, "id", "session_id", "kind", "admission", "http_status", "delivery", "problem", "accepted_at", "acceptance_order"); err != nil {
 		return SendResult{}, err
 	}
-	if wire.OK == nil || !*wire.OK {
-		return SendResult{}, fieldError("ok")
+	if err := validInput(input); err != nil {
+		return SendResult{}, err
 	}
-	if wire.Queued == nil {
-		return SendResult{}, fieldError("queued")
+	if input.Admission == "rejected" {
+		return SendResult{}, inputReceipt(input).Rejection()
 	}
-	if wire.OperationID == "" {
-		return SendResult{}, fieldError("operationId")
-	}
-	return SendResult{OK: *wire.OK, Queued: *wire.Queued, OperationID: wire.OperationID}, nil
+	return SendResult{OK: true, Queued: value(input.Delivery) == "pending", OperationID: input.ID, AcceptanceOrder: value(input.AcceptanceOrder)}, nil
 }
 
-func decodeInterruption(data []byte, _ int) (bool, error) {
-	var wire struct {
-		Interrupted *bool `json:"interrupted"`
+func (c *ChatClient) PrepareCommand(commandID string, arguments map[string]json.RawMessage) (*OperationHandle, error) {
+	payload, err := json.Marshal(arguments)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(data, &wire); err != nil {
-		return false, err
-	}
-	if wire.Interrupted == nil {
-		return false, fieldError("interrupted")
-	}
-	return *wire.Interrupted, nil
+	return NewSubmission(c.agentID, SubmissionRequest{ClientID: c.clientID, Type: "command", Name: commandID, CommandArguments: payload})
+}
+func (c *ChatClient) InterruptObserved(ctx context.Context, status AgentStatus) (bool, error) {
+	return interruptCaptured(ctx, c.conn, c.agentID, status.RunID, status.InputOrder)
 }

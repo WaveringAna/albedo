@@ -95,11 +95,11 @@ print('RETRIEVAL_PAGES_OK')
         for prompt in ["first Café", "second Café", "third Café", "fourth Café"]:
             self.turn(self.session, prompt)
         with self.app.api(
-            f"/sessions/{self.session}/commands",
-            {"name": "/compact", "arguments": "lcm"},
+            f"/sessions/{self.session}/compaction",
+            {"strategy": "lcm"},
         ) as response:
             result = json.load(response)
-        self.assertTrue(result["result"]["started"])
+        self.assertEqual(result["state"], "compacted")
         self.app.idle(self.session)
         listed = self.retrieve("lcm_list", {"limit": 1})
         self.assertGreater(listed["total"], 0)

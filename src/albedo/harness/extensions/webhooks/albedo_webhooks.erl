@@ -1,5 +1,7 @@
 -module(albedo_webhooks).
--export([new_id/0, new_secret/0, verify/4, fingerprint/1]).
+-export([new_id/0, new_secret/0, verify/4, fingerprint/1, base64/1]).
+
+base64(Body) -> base64:encode(Body).
 
 new_id() -> binary:encode_hex(crypto:strong_rand_bytes(16), lowercase).
 new_secret() -> base64:encode(crypto:strong_rand_bytes(32), #{mode => urlsafe, padding => false}).

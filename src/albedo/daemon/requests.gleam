@@ -207,6 +207,7 @@ pub type Call {
     prefix: Prefix,
     /// Where the request asked the provider to cache, and for how long.
     cache_marks: List(types.CacheMark),
+    run_id: String,
   )
 }
 
@@ -226,7 +227,7 @@ pub fn record(database: store.Store, call: Call) -> Result(Int, String) {
 }
 
 // `seq` starts null and is attached after the call's transcript row commits.
-const insert = "INSERT INTO provider_requests(session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks) VALUES(?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+const insert = "INSERT INTO provider_requests(session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks,run_id) VALUES(?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 
 fn values(call: Call) -> List(sqlight.Value) {
   let Call(
@@ -242,6 +243,7 @@ fn values(call: Call) -> List(sqlight.Value) {
     usage,
     prefix,
     cache_marks,
+    run_id,
   ) = call
   let Prefix(head_hash, inputs, replaced, projection_hash, strategy) = prefix
   let #(status, error) = case outcome {
@@ -298,6 +300,7 @@ fn values(call: Call) -> List(sqlight.Value) {
     sqlight.nullable(sqlight.text, projection_hash),
     sqlight.nullable(sqlight.text, strategy),
     sqlight.text(json.array(cache_marks, cache_mark_json) |> json.to_string),
+    sqlight.text(run_id),
   ]
 }
 
@@ -344,6 +347,7 @@ pub type Row {
     projection_hash: Option(String),
     strategy: Option(String),
     cache_marks: List(types.CacheMark),
+    run_id: Option(String),
   )
 }
 
@@ -396,7 +400,7 @@ pub fn head_tokens(
 }
 
 // Named, in decoder order, so a column added later cannot shift a read.
-const columns = "id,session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks"
+const columns = "id,session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks,run_id"
 
 fn row_decoder() -> decode.Decoder(Row) {
   use id <- decode.field(0, decode.int)
@@ -425,6 +429,7 @@ fn row_decoder() -> decode.Decoder(Row) {
   use projection_hash <- decode.field(23, decode.optional(decode.string))
   use strategy <- decode.field(24, decode.optional(decode.string))
   use cache_marks <- decode.field(25, decode.then(decode.string, marks_decoder))
+  use run_id <- decode.field(26, decode.optional(decode.string))
   decode.success(Row(
     id,
     session,
@@ -452,43 +457,11 @@ fn row_decoder() -> decode.Decoder(Row) {
     projection_hash,
     strategy,
     cache_marks,
+    run_id,
   ))
 }
 
-/// One row as the read route serves it. Unreported counts are null, so a
-/// reader distinguishes unknown from zero.
-pub fn row_json(row: Row) -> Json {
-  json.object([
-    #("id", json.int(row.id)),
-    #("session", json.string(row.session)),
-    #("seq", json.nullable(row.seq, json.int)),
-    #("kind", json.string(row.kind)),
-    #("profile", json.string(row.profile)),
-    #("provider", json.string(row.provider)),
-    #("account", json.nullable(row.account, json.string)),
-    #("model", json.string(row.model)),
-    #("startedMs", json.int(row.started_ms)),
-    #("finishedMs", json.int(row.finished_ms)),
-    #("outcome", json.string(row.outcome)),
-    #("status", json.nullable(row.status, json.int)),
-    #("error", json.nullable(row.error, json.string)),
-    #("inputTokens", json.nullable(row.input_tokens, json.int)),
-    #("cachedInputTokens", json.nullable(row.cached_input_tokens, json.int)),
-    #("cacheCreationTokens", json.nullable(row.cache_creation_tokens, json.int)),
-    #("cacheWrite5mTokens", json.nullable(row.cache_write_5m_tokens, json.int)),
-    #("cacheWrite1hTokens", json.nullable(row.cache_write_1h_tokens, json.int)),
-    #("outputTokens", json.nullable(row.output_tokens, json.int)),
-    #("reasoningTokens", json.nullable(row.reasoning_tokens, json.int)),
-    #("headHash", json.string(row.head_hash)),
-    #("inputs", json.int(row.inputs)),
-    #("replaced", json.nullable(row.replaced, json.int)),
-    #("projectionHash", json.nullable(row.projection_hash, json.string)),
-    #("strategy", json.nullable(row.strategy, json.string)),
-    #("cacheMarks", json.array(row.cache_marks, cache_mark_json)),
-  ])
-}
-
-/// A mark as stored and served: `{"through":"tools"|"system"|"input",
+/// A durable cache mark: `{"through":"tools"|"system"|"input",
 /// "index"?, "ttlSeconds"}`.
 fn cache_mark_json(mark: types.CacheMark) -> Json {
   let through = case mark.through {

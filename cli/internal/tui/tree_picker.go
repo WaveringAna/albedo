@@ -101,7 +101,7 @@ func (m TreePickerModel) loadTreeCmd(after int, gen int) tea.Cmd {
 	}
 }
 
-func (m TreePickerModel) forkCmd(checkpointID int, gen int) tea.Cmd {
+func (m TreePickerModel) forkCmd(checkpointID string, gen int) tea.Cmd {
 	return func() tea.Msg {
 		if m.Conn == nil {
 			return treeForkedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}

@@ -20,6 +20,9 @@ open_request(#{host := Host, port := Port, target := Target,
             Options = #{
                 connect_timeout => Timeout,
                 domain_lookup_timeout => Timeout,
+                %% Close-delimited responses may stream longer than Gun's
+                %% shutdown grace. receive_message owns the idle deadline.
+                http_opts => #{closing_timeout => infinity},
                 protocols => Protocols,
                 retry => 0,
                 supervise => true,
@@ -29,6 +32,7 @@ open_request(#{host := Host, port := Port, target := Target,
             },
             case gun:open(Host, Port, Options) of
                 {ok, Pid} ->
+                    close_when_owner_exits(Pid),
                     unlink(Pid),
                     Monitor = erlang:monitor(process, Pid),
                     await_connection(Pid, Monitor, Target, Headers, Body, Timeout);
@@ -38,6 +42,20 @@ open_request(#{host := Host, port := Port, target := Target,
         {error, Reason} ->
             transport_error(<<"could not start HTTP transport">>, Reason)
     end.
+
+%% Gun defers owner death while a close-delimited response is still streaming.
+%% A killed caller cannot run with_connection's cleanup, so close it explicitly.
+close_when_owner_exits(Pid) ->
+    Owner = self(),
+    spawn(fun() ->
+        OwnerMonitor = erlang:monitor(process, Owner),
+        ConnectionMonitor = erlang:monitor(process, Pid),
+        receive
+            {'DOWN', OwnerMonitor, process, Owner, _} ->
+                ignore_failure(fun() -> gun:close(Pid) end);
+            {'DOWN', ConnectionMonitor, process, Pid, _} -> ok
+        end
+    end).
 
 await_connection(Pid, Monitor, Target, Headers, Body, Timeout) ->
     case gun:await_up(Pid, Timeout, Monitor) of

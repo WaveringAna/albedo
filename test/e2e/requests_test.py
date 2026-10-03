@@ -10,6 +10,7 @@ of this is observable from events or history alone.
 
 import json
 import unittest
+from datetime import datetime
 
 from harness import Albedo, Provider, Reply, text
 
@@ -75,21 +76,20 @@ def reply(request):
 
 class ProviderRequestsTest(unittest.TestCase):
     def rows(self, app, session, query=""):
-        with app.api(f"/sessions/{session}/requests{query}") as response:
+        with app.api(f"/sessions/{session}/context?view=requests{query}") as response:
             return json.load(response)
 
-    def tree(self, app, session):
-        """Every transcript row through the tree route, oldest first."""
+    def history(self, app, session):
         items, after = [], 0
         while True:
             with app.api(
-                f"/sessions/{session}/tree?after={after}&limit=100"
+                f"/sessions/{session}/history?after={after}&limit=100"
             ) as response:
                 page = json.load(response)
             items.extend(page["items"])
-            if not page["hasMore"]:
+            if page["newer"] is None:
                 return items
-            after = page["nextCursor"]
+            after = items[-1]["position"]
 
     def test_rows_record_usage_identity_prefix_and_projection(self):
         provider = Provider(reply)
@@ -99,16 +99,14 @@ class ProviderRequestsTest(unittest.TestCase):
                 for prompt in ("first", "use the tool", "third", "hit the limit"):
                     app.prompt(session, prompt).close()
                     app.idle(session)
-                with app.api(
-                    f"/sessions/{session}/commands", {"name": "/compact"}
-                ) as response:
-                    self.assertTrue(json.load(response)["result"]["started"])
+                with app.api(f"/sessions/{session}/compaction", {}) as response:
+                    self.assertEqual(json.load(response)["state"], "compacted")
                 app.idle(session)
                 app.prompt(session, "after compaction").close()
                 app.idle(session)
 
                 page = self.rows(app, session)
-                rows = page["rows"]
+                rows = page["items"]
                 self.assertEqual(
                     [row["kind"] for row in rows],
                     [
@@ -126,10 +124,10 @@ class ProviderRequestsTest(unittest.TestCase):
                 self.assertEqual(
                     [
                         (
-                            row["inputTokens"],
-                            row["outputTokens"],
-                            row["cachedInputTokens"],
-                            row["reasoningTokens"],
+                            row["prompt_tokens"]["observed"],
+                            row["completion_tokens"]["observed"],
+                            row["cached_tokens"]["observed"],
+                            row["reasoning_tokens"]["observed"],
                         )
                         for row in rows
                     ],
@@ -145,85 +143,98 @@ class ProviderRequestsTest(unittest.TestCase):
                     ],
                 )
                 # The head (instructions and tools) never changed, so one hash.
-                heads = {row["headHash"] for row in rows if row["kind"] == "turn"}
+                heads = {row["head_hash"] for row in rows if row["kind"] == "turn"}
                 self.assertEqual(len(heads), 1)
-                self.assertNotIn(rows[5]["headHash"], heads)
+                self.assertNotIn(rows[5]["head_hash"], heads)
 
                 for row in rows:
-                    self.assertIsNone(row["account"])
+                    self.assertIsNone(row["account_id"])
                     # The shared harness names the fixture profile per route.
-                    self.assertTrue(row["profile"].startswith("fixture"))
+                    self.assertTrue(row["provider_profile"].startswith("fixture"))
                     self.assertEqual(row["model"], "fixture-model")
                     self.assertTrue(row["provider"].startswith("responses:"))
-                    self.assertLessEqual(row["startedMs"], row["finishedMs"])
+                    self.assertLessEqual(row["started_at"], row["ended_at"])
                     # An OpenAI-protocol provider caches on its own; albedo marks nothing.
-                    self.assertEqual(row["cacheMarks"], [])
+                    self.assertEqual(row["cache_marks"], [])
 
                 for row in rows[:4] + [rows[7]]:
-                    self.assertEqual(row["outcome"], "ok")
-                    self.assertIsNone(row["status"])
-                    self.assertIsNone(row["error"])
+                    self.assertEqual(row["outcome"], "completed")
+                    self.assertIsNone(row["http_status"])
+                    self.assertIsNone(row["failure"])
 
                 for row in rows[:4]:
                     # Nothing replaced yet: the identity is a plain append.
-                    self.assertEqual(row["replaced"], 0)
-                    self.assertIsNone(row["projectionHash"])
+                    self.assertEqual(row["replaced_input_count"], 0)
+                    self.assertIsNone(row["projection_hash"])
 
                 # A 429 is a quota reading, with no usage and no transcript row.
                 limited = rows[4]
-                self.assertEqual(limited["outcome"], "error")
-                self.assertEqual(limited["status"], 429)
-                self.assertIn("limit exceeded", limited["error"])
-                self.assertIsNone(limited["seq"])
+                self.assertEqual(limited["outcome"], "failed")
+                self.assertEqual(limited["http_status"], 429)
+                self.assertEqual(set(limited["failure"]), {"code", "detail"})
+                self.assertEqual(limited["failure"]["code"], "provider_request_failed")
+                self.assertIn("limit exceeded", limited["failure"]["detail"])
+                self.assertLessEqual(len(limited["failure"]["detail"]), 4096)
+                self.assertEqual(limited["transcript_positions"], [])
 
                 # Each turn row's seq is the transcript row its response
                 # committed, exactly: the assistant row that turn produced,
                 # found again through the tree route straight from the
                 # transcript.
-                tree = self.tree(app, session)
+                entries = self.history(app, session)
                 assistant = {
-                    item["preview"]: item["id"]
-                    for item in tree
-                    if item["type"] == "assistant"
+                    part["text"]: entry["position"]
+                    for entry in entries
+                    if entry["kind"] == "assistant"
+                    for part in entry["content"]
+                    if part["kind"] == "text"
                 }
-                self.assertEqual(rows[0]["seq"], assistant["first reply"])
-                self.assertEqual(rows[2]["seq"], assistant["tool done"])
-                self.assertEqual(rows[3]["seq"], assistant["third reply"])
-                self.assertEqual(rows[7]["seq"], assistant["post compaction reply"])
-                # The tool-call turn's row points at its own assistant row,
-                # the call it produced, not the tool output after it.
-                calls = [item for item in tree if item["preview"] == "call python"]
+                for index, message in (
+                    (0, "first reply"),
+                    (2, "tool done"),
+                    (3, "third reply"),
+                    (7, "post compaction reply"),
+                ):
+                    self.assertIn(
+                        assistant[message], rows[index]["transcript_positions"]
+                    )
+                calls = [entry for entry in entries if entry["kind"] == "tool_call"]
                 self.assertEqual(len(calls), 1)
-                self.assertEqual(rows[1]["seq"], calls[0]["id"])
-                tool_output = tree[tree.index(calls[0]) + 1]
-                self.assertEqual(tool_output["type"], "tool")
-                self.assertNotEqual(tool_output["id"], rows[1]["seq"])
-                # Linked rows sit in transcript order.
-                linked = [row["seq"] for row in rows if row["seq"] is not None]
+                self.assertIn(calls[0]["position"], rows[1]["transcript_positions"])
+                tool_output = entries[entries.index(calls[0]) + 1]
+                self.assertEqual(tool_output["kind"], "tool_result")
+                self.assertNotIn(
+                    tool_output["position"], rows[1]["transcript_positions"]
+                )
+                linked = [
+                    position for row in rows for position in row["transcript_positions"]
+                ]
                 self.assertEqual(linked, sorted(linked))
 
                 # The summary and the notes rewrite are their own kind,
                 # outside the session projection.
                 for summary in rows[5:7]:
-                    self.assertIsNone(summary["seq"])
-                    self.assertIsNone(summary["replaced"])
-                    self.assertIsNone(summary["projectionHash"])
-                    self.assertEqual(summary["inputs"], 1)
+                    self.assertEqual(summary["transcript_positions"], [])
+                    self.assertIsNone(summary["replaced_input_count"])
+                    self.assertIsNone(summary["projection_hash"])
+                    self.assertEqual(summary["input_count"], 1)
 
                 # The projection identity changes once compaction rewrites the
                 # head the verbatim tail hangs from.
                 after = rows[7]
-                self.assertGreater(after["replaced"], 0)
-                self.assertIsNotNone(after["projectionHash"])
+                self.assertGreater(after["replaced_input_count"], 0)
+                self.assertIsNotNone(after["projection_hash"])
                 self.assertTrue(after["strategy"])
 
                 # Paging: continue after the first row, bounded by limit.
-                second = self.rows(app, session, f"?after={rows[0]['id']}&limit=2")
-                self.assertEqual(
-                    [row["id"] for row in second["rows"]],
-                    [row["id"] for row in rows[1:3]],
+                second = self.rows(
+                    app, session, f"&after={rows[0]['sequence']}&limit=2"
                 )
-                self.assertEqual(second["after"], rows[2]["id"])
+                self.assertEqual(
+                    [row["sequence"] for row in second["items"]],
+                    [row["sequence"] for row in rows[1:3]],
+                )
+                self.assertIsNotNone(second["next"])
         finally:
             provider.close()
 
@@ -242,16 +253,24 @@ class ProviderRequestsTest(unittest.TestCase):
                 session = app.session()
                 app.prompt(session, "hello").close()
                 app.idle(session, timeout=60)
-                rows = self.rows(app, session)["rows"]
+                rows = self.rows(app, session)["items"]
                 self.assertEqual(
-                    [row["outcome"] for row in rows], ["error"] * 4 + ["ok"]
+                    [row["outcome"] for row in rows], ["failed"] * 4 + ["completed"]
                 )
-                self.assertEqual({row["status"] for row in rows[:4]}, {503})
-                self.assertIsNotNone(rows[4]["seq"])
+                self.assertEqual({row["http_status"] for row in rows[:4]}, {503})
+                self.assertTrue(rows[4]["transcript_positions"])
                 # Each wait doubles from 250ms, measured from the failed
                 # attempt's end to the next one's start.
                 gaps = [
-                    after["startedMs"] - before["finishedMs"]
+                    (
+                        datetime.fromisoformat(
+                            after["started_at"].replace("Z", "+00:00")
+                        )
+                        - datetime.fromisoformat(
+                            before["ended_at"].replace("Z", "+00:00")
+                        )
+                    ).total_seconds()
+                    * 1000
                     for before, after in zip(rows, rows[1:])
                 ]
                 for gap, wait in zip(gaps, (250, 500, 1000, 2000)):

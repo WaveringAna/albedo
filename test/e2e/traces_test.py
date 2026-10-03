@@ -2,6 +2,7 @@
 
 import json
 import unittest
+import urllib.parse
 
 from harness import Albedo, Provider, python, text
 
@@ -26,14 +27,50 @@ class TracesTests(unittest.TestCase):
         self.code = code
         self.app.prompt(self.session, "execute this cell").close()
         self.app.idle(self.session)
-        event = [
-            event
-            for event in self.app.events(self.session)
-            if event.get("type") == "tool" and event.get("name") == "python"
+        entry = [
+            entry
+            for entry in self.app.history(self.session)["items"]
+            if entry["kind"] == "tool_result" and entry["tool"]["name"] == "python"
         ][-1]
-        result = json.loads(event["result"])
+
+        def referenced_json(field):
+            [reference] = [
+                part["reference"]
+                for part in entry["content"]
+                if part["kind"] == "reference" and part["reference"]["field"] == field
+            ]
+            pieces, offset, token = [], 0, None
+            for _ in range(100):
+                path = reference["url"]
+                if token is not None:
+                    path += "?" + urllib.parse.urlencode({"next": token})
+                with self.app.api(path) as response:
+                    page = json.load(response)
+                for chunk in page["parts"]:
+                    if chunk["field"] != field:
+                        continue
+                    self.assertEqual(chunk["offset_bytes"], offset)
+                    self.assertEqual(chunk["encoding"], "utf8")
+                    pieces.append(chunk["text"])
+                    offset += len(chunk["text"].encode())
+                token = page["next"]
+                if token is None:
+                    break
+            else:
+                self.fail(f"{field} content pagination did not terminate")
+            self.assertEqual(offset, reference["bytes"])
+            return json.loads("".join(pieces))
+
+        results = [
+            json.loads(part["value"])
+            for part in entry["content"]
+            if part["kind"] == "json" and part["field"] == "result"
+        ]
+        result = results[0] if results else json.loads(referenced_json("result"))
+        traces = [part["trace"] for part in entry["content"] if part["kind"] == "trace"]
+        trace = traces[0] if traces else referenced_json("trace")
         self.assertEqual(result["status"], status, result)
-        return result, event["trace"]
+        return result, trace
 
     def read_trace(self, id):
         result, _ = self.run_cell(

@@ -1,6 +1,6 @@
-%% Unit tests read extension settings from ALBEDO_HOME; pointing it at a fresh
-%% directory keeps a developer's own ~/.albedo (a disabled compaction strategy,
-%% an MCP server) from changing what the tests see.
+%% Native tests discover settings under ALBEDO_HOME and instructions and skills
+%% under HOME. Both roots belong to this run so developer files cannot change
+%% the tests' compositions or discovery work.
 %%
 %% The directory is the run's scratch space: <root>/gleam-<pid> under the root
 %% the Python suites share (test/scratch.py). It is also TMPDIR, so every file a
@@ -15,9 +15,12 @@ isolate() ->
     Root = os:getenv("ALBEDO_TEST_TMP", "/tmp/albedo-tests"),
     Dir = filename:join(Root, "gleam-" ++ os:getpid()),
     ok = filelib:ensure_path(Dir),
+    UserHome = filename:join(Dir, "user-home"),
+    ok = filelib:ensure_path(UserHome),
     persistent_term:put(?MODULE, Dir),
     true = os:putenv("ALBEDO_HOME", Dir),
     true = os:putenv("TMPDIR", Dir),
+    true = os:putenv("HOME", UserHome),
     %% A detached kernel a test never stopped ends soon after, not in an hour.
     true = os:putenv("ALBEDO_KERNEL_GRACE_SECONDS", "20"),
     nil.

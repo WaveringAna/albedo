@@ -11,7 +11,7 @@ import (
 
 // SessionRenameMsg asks the app to save a session's name. A blank name hands
 // the title back to the daemon, which takes it from the latest message.
-type SessionRenameMsg struct{ ID, Name string }
+type SessionRenameMsg struct{ ID, Name, ETag string }
 
 // sessionRenamedMsg is the daemon's answer to a SessionRenameMsg: the
 // session as it is now listed.
@@ -24,8 +24,8 @@ type sessionRenamedMsg struct {
 // renameField edits one session's name in place. While it is open its owner
 // hands it every key, so typing never reaches search or navigation.
 type renameField struct {
-	id, was string
-	input   textinput.Model
+	id, was, etag string
+	input         textinput.Model
 	// selected holds until the first key: typing replaces the opening
 	// draft, which a message title can fill to the limit; other keys edit it.
 	selected bool
@@ -64,7 +64,7 @@ func (f *renameField) key(msg tea.KeyPressMsg) tea.Cmd {
 		if name == strings.TrimSpace(f.was) {
 			return nil
 		}
-		return func() tea.Msg { return SessionRenameMsg{ID: id, Name: name} }
+		return func() tea.Msg { return SessionRenameMsg{ID: id, Name: name, ETag: f.etag} }
 	}
 	if f.selected && msg.Text != "" {
 		f.input.SetValue("")

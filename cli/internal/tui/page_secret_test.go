@@ -4,6 +4,7 @@
 package tui
 
 import (
+	"albedo/cli/internal/daemon"
 	"strings"
 	"testing"
 
@@ -13,7 +14,7 @@ import (
 
 func TestPageSecretInputIsMasked(t *testing.T) {
 	doc := &PageDocument{Title: "webhooks", Actions: []PageAction{
-		{Key: "k", Label: "rotate", Run: "rotate_with_secret", Input: "secret", Prompt: "replacement"},
+		{ID: "rotate", Key: "k", Label: "rotate", Fields: []daemon.FormField{{Name: "secret", Label: "replacement", Type: "secret", Required: true}}},
 	}}
 	m := NewPageViewModel(nil, "session", "/webhooks")
 	m.Doc = doc

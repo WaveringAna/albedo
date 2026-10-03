@@ -3,21 +3,30 @@
 
 import albedo/daemon/store
 import gleam/dynamic/decode
-import gleam/json
 import gleam/list
+import gleam/option.{type Option}
 import gleam/result
 import sqlight
 
-type SessionBytes {
-  SessionBytes(id: String, bytes: Int)
+pub type SessionBytes {
+  SessionBytes(
+    id: String,
+    bytes: Int,
+    title: String,
+    workspace: String,
+    created_at: Option(Int),
+    activity_at: Option(Int),
+  )
 }
 
-type Database {
+pub type Database {
   Database(
     sessions: List(SessionBytes),
     images: Int,
     free_pages: Int,
     page_size: Int,
+    page_count: Int,
+    image_count: Int,
   )
 }
 
@@ -42,49 +51,17 @@ pub type Filesystem {
 @external(erlang, "albedo_storage_report", "inspect")
 fn inspect(home: String, sessions: List(String)) -> Result(Filesystem, String)
 
-pub fn report(db: store.Store, home: String) -> Result(json.Json, String) {
+pub type Observation {
+  Observation(database: Database, files: Filesystem)
+}
+
+pub fn observe(db: store.Store, home: String) -> Result(Observation, String) {
   use database <- result.try(store.query(db, projection))
   use files <- result.try(inspect(
     home,
     list.map(database.sessions, fn(session) { session.id }),
   ))
-  Ok(
-    json.object([
-      #("old_kernels", json.array(files.old_kernels, file_json)),
-      #("old_backups", json.array(files.old_backups, file_json)),
-      #(
-        "db",
-        json.object([
-          #(
-            "sessions",
-            json.array(database.sessions, fn(session) {
-              json.object([
-                #("id", json.string(session.id)),
-                #("bytes", json.int(session.bytes)),
-              ])
-            }),
-          ),
-          #("images", json.int(database.images)),
-          #("free_pages", json.int(database.free_pages)),
-          #("page_size", json.int(database.page_size)),
-        ]),
-      ),
-      #("database", json.int(files.database)),
-      #("wal", json.int(files.wal)),
-      #("kernels", json.int(files.kernels)),
-      #("backups", json.int(files.backups)),
-      #("other", json.int(files.other)),
-      #("recent_backups", json.int(files.recent_backups)),
-      #("recent_backup_count", json.int(files.recent_backup_count)),
-    ]),
-  )
-}
-
-fn file_json(file: FileBytes) -> json.Json {
-  json.object([
-    #("path", json.string(file.path)),
-    #("bytes", json.int(file.bytes)),
-  ])
+  Ok(Observation(database, files))
 }
 
 fn projection(db: sqlight.Connection) -> Result(Database, String) {
@@ -122,6 +99,11 @@ fn projection(db: sqlight.Connection) -> Result(Database, String) {
       <> " WHERE c.session=s.id),0)"
     }
   }
+  let fork_traces = case list.contains(tables, "transcript_traces") {
+    True ->
+      "COALESCE((SELECT SUM(LENGTH(CAST(payload AS BLOB))) FROM transcript_traces WHERE session=s.id),0)"
+    False -> "0"
+  }
   use sessions <- result.try(
     store.rows(
       db,
@@ -129,12 +111,25 @@ fn projection(db: sqlight.Connection) -> Result(Database, String) {
         <> transcript
         <> "+"
         <> cells
-        <> " FROM sessions s",
+        <> "+"
+        <> fork_traces
+        <> ",COALESCE(NULLIF(s.name,''),s.title),s.cwd,s.created_at,s.activity_at FROM sessions s ORDER BY s.id",
       [],
       {
         use id <- decode.field(0, decode.string)
         use bytes <- decode.field(1, decode.int)
-        decode.success(SessionBytes(id, bytes))
+        use title <- decode.field(2, decode.string)
+        use workspace <- decode.field(3, decode.string)
+        use created_at <- decode.field(4, decode.optional(decode.int))
+        use activity_at <- decode.field(5, decode.optional(decode.int))
+        decode.success(SessionBytes(
+          id,
+          bytes,
+          title,
+          workspace,
+          created_at,
+          activity_at,
+        ))
       },
     ),
   )
@@ -144,7 +139,12 @@ fn projection(db: sqlight.Connection) -> Result(Database, String) {
   })
   use free_pages <- result.try(scalar(db, "PRAGMA freelist_count"))
   use page_size <- result.try(scalar(db, "PRAGMA page_size"))
-  Ok(Database(sessions, images, free_pages, page_size))
+  use page_count <- result.try(scalar(db, "PRAGMA page_count"))
+  use image_count <- result.try(case list.contains(tables, "images") {
+    True -> scalar(db, "SELECT COUNT(*) FROM images")
+    False -> Ok(0)
+  })
+  Ok(Database(sessions, images, free_pages, page_size, page_count, image_count))
 }
 
 fn scalar(db: sqlight.Connection, sql: String) -> Result(Int, String) {

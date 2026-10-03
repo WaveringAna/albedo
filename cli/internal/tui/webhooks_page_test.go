@@ -1,6 +1,6 @@
 // Webhook form differential updates, ephemeral secret protection, and session picker filtering.
 // Differential step generation and modal reveal dismissal guards operate inside unexported
-// form state; daemon E2E only sees executed RPCs and cannot verify zero-command emission.
+// form state; daemon E2E only sees submitted mutations and cannot verify an unchanged form.
 package tui
 
 import (
@@ -24,8 +24,8 @@ func loadedWebhooksPage(t *testing.T) WebhooksPageModel {
 	m := NewWebhooksPageModel(nil, "s")
 	m.SetSize(100, 30)
 	m, _ = m.Update(webhooksLoadedMsg{Gen: m.Generation, Mounted: true, Sessions: webhookSessions, Hooks: []webhookEntry{
-		{ID: "wh1", Session: "s", Name: "deploy", Enabled: true, URL: "/webhooks/wh1", Header: "x-hub-signature-256", Prefix: "sha256=", Queued: 2, Deferred: "session busy"},
-		{ID: "wh2", Session: "t", Name: "grafana", URL: "/webhooks/wh2", Header: "x-albedo-signature", Prefix: "sha256="},
+		{ID: "wh1", Session: "s", Name: "deploy", Enabled: true, URL: "/extensions/webhooks/hooks/wh1/deliveries", Header: "x-hub-signature-256", Prefix: "sha256=", Queued: 2, Deferred: "session busy"},
+		{ID: "wh2", Session: "t", Name: "grafana", URL: "/extensions/webhooks/hooks/wh2/deliveries", Header: "x-albedo-signature", Prefix: "sha256="},
 	}})
 	return m
 }
@@ -88,7 +88,7 @@ func TestWebhookFormPicksTheSessionToWake(t *testing.T) {
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 	m.Form.Inputs[hookFieldName].SetValue("notes")
 	steps, notice, err := m.Form.steps()
-	if err != nil || steps[0] != (daemon.WebhookRequest{Action: daemon.WebhookCreate, SessionID: "t", Name: "notes"}) || !strings.Contains(notice, "release notes") {
+	if err != nil || steps[0] != (daemon.WebhookRequest{Action: daemon.WebhookCreate, SessionID: "t", Name: "notes", Header: "x-albedo-signature", Prefix: "sha256="}) || !strings.Contains(notice, "release notes") {
 		t.Fatalf("steps = %v, %q, %v", steps, notice, err)
 	}
 }
@@ -99,7 +99,7 @@ func TestWebhookLoadSurfacesExtensionFailure(t *testing.T) {
 	conn := commandTestConnection(t, func(w http.ResponseWriter, _ *http.Request) {
 		requests++
 		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`{"error":"extension load refused"}`))
+		_, _ = w.Write([]byte(`{"detail":"extension load refused"}`))
 	})
 	m := NewWebhooksPageModel(conn, "session")
 	msg := m.loadCmd(m.Generation)().(webhooksLoadedMsg)
@@ -118,11 +118,12 @@ func TestWebhookSaveRetainsCreatedSecretAfterLaterFailure(t *testing.T) {
 	conn := commandTestConnection(t, func(w http.ResponseWriter, _ *http.Request) {
 		requests++
 		if requests == 1 {
-			_, _ = w.Write([]byte(`{"result":{"hook":{"id":"created","session":"session","name":"deploy","url":"/webhooks/created","signatureHeader":"x-albedo-signature","signaturePrefix":"sha256=","enabled":true,"revision":1},"secret":"whsec_created","message":"created"}}`))
+			w.WriteHeader(201)
+			_, _ = w.Write([]byte(`{"resource":{"url":"/extensions/webhooks/hooks/created?view=configuration","etag":"\"created-a\"","value":{"id":"created","session_id":"session","name":"deploy","signature_header":"x-albedo-signature","signature_prefix":"sha256=","enabled":true,"revision":"a","created_at":"2026-10-03T00:00:00Z","updated_at":"2026-10-03T00:00:00Z"}},"secret":"whsec_created","notification":{"state":"not_requested","code":null,"detail":null}}`))
 			return
 		}
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"signature refused"}`))
+		_, _ = w.Write([]byte(`{"detail":"signature refused"}`))
 	})
 	m := NewWebhooksPageModel(conn, "session")
 	msg := m.save(m.Generation, "added", daemon.WebhookRequest{Action: daemon.WebhookCreate, SessionID: "session", Name: "deploy"}, daemon.WebhookRequest{Action: daemon.WebhookSignature, Header: "x-custom", Prefix: ""})().(webhooksSavedMsg)

@@ -1,7 +1,65 @@
 -module(albedo_settings_store).
 -include_lib("kernel/include/file.hrl").
--export([with_lock/2, read/2, object/2, write/3, guarded/1, check/1,
-         transaction/6, capability/6, catalog_capability/4, mcp/5, validate_caps/1]).
+-export([with_lock/2, read/2, object/2, guarded/1, check/1, validate_caps/1,
+         recover/1, commit_group/2]).
+
+%% Publication is one durable recovery record. Readers hold the same home
+%% lock and finish any committed publication before reading a destination.
+%% The record contains replacement bytes, so recovery does not depend on a
+%% temporary file surviving a rename or process failure.
+recover(Home) ->
+    Journal = filename:join(Home, <<".settings-recovery">>),
+    case file:read_link_info(Journal) of
+        {error, enoent} -> {ok, nil};
+        {ok, #file_info{type=regular, size=Size, mode=Mode}} when Size =< 12582912, Mode band 8#077 =:= 0 ->
+            try
+                {ok, Bytes} = file:read_file(Journal),
+                {settings_group, 1, Documents} = binary_to_term(Bytes, [safe]),
+                validate_documents(Documents),
+                publish(Home, Documents),
+                ok = file:delete(Journal),
+                sync_directory(Home),
+                {ok, nil}
+            catch _:_ -> {error, <<"settings recovery could not complete">>} end;
+        _ -> {error, <<"settings recovery record is unsafe or unreadable">>}
+    end.
+
+commit_group(Home, Documents0) ->
+    Documents = maps:map(fun(_, Value) -> iolist_to_binary(json:encode(Value)) end, Documents0),
+    validate_documents(Documents),
+    Journal = filename:join(Home, <<".settings-recovery">>),
+    %% Destination replacement is forbidden until this record and its name
+    %% are durable. Once committed, failures are completed by recover/1.
+    check(recover(Home)),
+    check_write(albedo_credentials:write(Journal, term_to_binary({settings_group, 1, Documents}))),
+    sync_directory(Home),
+    check(recover(Home)),
+    ok.
+
+validate_documents(Documents) when is_map(Documents), map_size(Documents) > 0, map_size(Documents) =< 6 ->
+    maps:foreach(fun(File, Bytes) ->
+        true = lists:member(File, [<<"config.json">>, <<"creds.json">>, <<"extensions.json">>, <<"capabilities.json">>, <<"picker.json">>, <<"models.json">>, <<"oauth-logins.json">>, <<"settings-revisions.json">>]),
+        Limit = case File of
+            <<"capabilities.json">> -> albedo_capabilities:max_bytes();
+            _ -> 2097152
+        end,
+        true = is_binary(Bytes) andalso byte_size(Bytes) =< Limit,
+        true = is_map(json:decode(Bytes))
+    end, Documents);
+validate_documents(_) -> throw({settings, <<"invalid settings replacement">>}).
+
+publish(Home, Documents) ->
+    lists:foreach(fun({File, Bytes}) ->
+        check_write(albedo_credentials:write(filename:join(Home, File), Bytes))
+    end, lists:sort(maps:to_list(Documents))),
+    sync_directory(Home).
+
+check_write(ok) -> ok;
+check_write(_) -> throw({settings, <<"could not publish settings">>}).
+
+sync_directory(Home) ->
+    {ok, Device} = file:open(Home, [read, raw, directory]),
+    try ok = file:sync(Device) after file:close(Device) end.
 
 %% Every persisted settings and credential mutation shares the home lock.
 with_lock(Home, Run) ->
@@ -35,102 +93,14 @@ object(Key, Map) ->
         _ -> throw({settings, <<"invalid settings section">>})
     end.
 
-write(Home, File, Value) ->
-    Bytes = iolist_to_binary(json:encode(Value)),
-    case File =:= <<"capabilities.json">> andalso byte_size(Bytes) > albedo_capabilities:max_bytes() of
-        true -> throw({settings, <<"capabilities.json exceeds 1 MiB">>});
-        false -> ok
-    end,
-    case albedo_credentials:write(filename:join(Home, File), Bytes) of
-        ok -> ok;
-        _ -> throw({settings, <<"could not save ", File/binary>>})
-    end.
-
 guarded(Run) ->
     try Run() catch
         throw:{settings, Error} -> {error, Error};
         _:_ -> {error, <<"invalid settings">>}
     end.
 
-%% Rollback is deliberately scoped to the settings file and credential entry
-%% affected by this mutation. Other credential entries remain untouched.
-transaction(Home, File, Credential, Validate, Change, After) ->
-    with_lock(Home, fun() -> guarded(fun() ->
-        Prior = read(Home, File),
-        Validate(Prior),
-        PreviousSecret = case Credential of
-            none -> error;
-            {Section, Name} -> maps:find(Name, object(Section, read(Home, <<"creds.json">>)))
-        end,
-        try
-            Change(Prior),
-            case After() of
-                {ok, _} = Success -> Success;
-                {error, Error} -> throw({settings, Error})
-            end
-        catch Class:Reason ->
-            Error0 = case {Class, Reason} of {throw, {settings, Message}} -> Message; _ -> <<"invalid settings">> end,
-            Restorations = [guarded(fun() -> write(Home, File, Prior), {ok, nil} end),
-                            guarded(fun() -> restore_secret(Home, Credential, PreviousSecret), {ok, nil} end)],
-            case [Message || {error, Message} <- Restorations] of
-                [] -> {error, Error0};
-                Errors ->
-                    Detail = iolist_to_binary(lists:join(<<"; ">>, Errors)),
-                    {error, <<Error0/binary, "; restoration failed: ", Detail/binary>>}
-            end
-        end
-    end) end).
-
-restore_secret(_, none, _) -> ok;
-restore_secret(Home, {Section, Name}, Previous) ->
-    Current = read(Home, <<"creds.json">>),
-    Entries = object(Section, Current),
-    Next = case Previous of {ok, Value} -> Entries#{Name => Value}; error -> maps:remove(Name, Entries) end,
-    write(Home, <<"creds.json">>, Current#{Section => Next}).
-
 check({ok, _}) -> ok;
 check({error, Error}) -> throw({settings, Error}).
 
-capability(Home, Session, Kind, Name, Value, After) ->
-    transaction(Home, <<"capabilities.json">>, none, fun validate_caps/1, fun(Prior) ->
-        {Scope, Enabled} = Value,
-        Groups = case Scope of <<"global">> -> object(Scope, Prior); <<"session">> -> object(Session, object(<<"sessions">>, Prior)) end,
-        Items = object(Kind, Groups),
-        Next = case Enabled of none -> maps:remove(Name, Items); {some, V} -> Items#{Name => V} end,
-        Updated = Groups#{Kind => Next},
-        Document = case Scope of
-            <<"global">> -> Prior#{<<"global">> => Updated};
-            <<"session">> -> Prior#{<<"sessions">> => (object(<<"sessions">>, Prior))#{Session => Updated}}
-        end,
-        write(Home, <<"capabilities.json">>, Document)
-    end, After).
-
-%% Revalidation and persistence share the same lock, including reload rollback.
-catalog_capability(Home, Session, Resolve, After) ->
-    with_lock(Home, fun() ->
-        case Resolve() of
-            {error, _} = Error -> Error;
-            {ok, {Kind, Name, Scope, Enabled}} ->
-                capability(Home, Session, Kind, Name, {Scope, Enabled}, After)
-        end
-    end).
-
 validate_caps(Config) ->
     check('albedo@harness@capabilities':validate(Config)).
-
-mcp(Home, Name, ServerJSON, SecretsJSON, After) ->
-    transaction(Home, <<"extensions.json">>, {<<"mcp">>, Name}, fun validate_mcp/1, fun(Prior) ->
-        MCP = object(<<"mcp">>, Prior), Servers = object(<<"servers">>, MCP),
-        Updated = case ServerJSON of
-            none -> maps:remove(Name, Servers);
-            {some, JSON} ->
-                Server = json:decode(JSON),
-                Servers#{Name => maps:merge(maps:get(Name, Servers, #{}), Server)}
-        end,
-        check(albedo_credentials:patch_mcp_settings(Home, Name, json:decode(SecretsJSON))),
-        write(Home, <<"extensions.json">>, Prior#{<<"mcp">> => MCP#{<<"servers">> => Updated}})
-    end, After).
-
-validate_mcp(Value) ->
-    Servers = object(<<"servers">>, object(<<"mcp">>, Value)),
-    maps:foreach(fun(Name, Server) -> check(albedo_mcp:validate_settings(Name, {some, iolist_to_binary(json:encode(Server))}, <<"{}">>)) end, Servers).

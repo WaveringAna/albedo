@@ -26,6 +26,7 @@ type extensionsLoadedMsg struct {
 type extensionToggledMsg struct {
 	Err        error
 	Extensions []ExtensionItem
+	Notice     string
 	Gen        int
 }
 
@@ -73,12 +74,41 @@ func (m ExtensionPickerModel) changeExtensionCmd(name, scope string, enabled boo
 		if m.Conn == nil {
 			return extensionToggledMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		body := daemon.ExtensionSelectionRequest{Name: name, Scope: scope}
+		etag := ""
+		for _, item := range m.Extensions {
+			if item.Name == name {
+				etag = item.SessionETag
+				if scope == "global" {
+					etag = item.GlobalETag
+				}
+			}
+		}
+		body := daemon.ExtensionSelectionRequest{Name: name, Scope: scope, ETag: etag}
 		if scope != "inherit" {
 			body.Enabled = &enabled
 		}
 		updated, err := daemon.SelectExtension(context.Background(), m.Conn, m.SessionID, body)
-		return extensionToggledMsg{Extensions: updated, Err: err, Gen: gen}
+		if err != nil {
+			return extensionToggledMsg{Err: err, Gen: gen}
+		}
+		notice := "Saved the global default. Reload sessions to apply it."
+		if scope != "global" {
+			reloaded, reloadErr := daemon.ReloadSession(context.Background(), m.Conn, m.SessionID, daemon.ReloadRequest{Target: "session"})
+			switch {
+			case reloadErr != nil:
+				notice = "Selection saved; reload failed: " + reloadErr.Error()
+				if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](reloadErr); uncertain {
+					notice = "Selection saved; reload not confirmed: " + reloadErr.Error()
+				}
+			case reloaded.Session == nil:
+				notice = "Selection saved; reload returned no session outcome."
+			case reloaded.Session.State != "applied":
+				notice = "Selection saved; session reload " + reloaded.Session.State + ". " + reloaded.Message()
+			default:
+				notice = reloaded.Message()
+			}
+		}
+		return extensionToggledMsg{Extensions: updated, Notice: notice, Gen: gen}
 	}
 }
 
@@ -110,6 +140,14 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		return m, nil
 
 	case extensionToggledMsg:
+		if msg.Gen == m.Generation {
+			if apiErr, ok := errors.AsType[*daemon.APIError](msg.Err); ok && apiErr.StatusCode == 412 {
+				m.Saving, m.Loading, m.Confirming, m.Inheriting, m.Error = false, true, false, false, ""
+				m.Notice = "The configuration changed. Review the refreshed choices before saving."
+				m.Generation = nextPageGeneration()
+				return m, m.loadExtensionsCmd(m.Generation)
+			}
+		}
 		if !m.settle(msg.Gen, msg.Err, &m.Saving) {
 			return m, nil
 		}
@@ -122,6 +160,7 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 			m.Cursor = idx
 		}
 		m.Confirming, m.Inheriting, m.Error = false, false, ""
+		m.Notice = msg.Notice
 		return m, func() tea.Msg { return ExtensionPickerChangedMsg{} }
 
 	case tea.KeyPressMsg:
@@ -205,11 +244,19 @@ func (m ExtensionPickerModel) View() string {
 	b.WriteByte('\n')
 	b.WriteString(m.Styles.Faint.Render(inkWrap(note, m.Width)))
 	b.WriteByte('\n')
-	b.WriteString(DefaultStyles.Warning.Render(ansi.Wrap("Changes reload the affected sessions, prevent reuse of cached prompts, and may lose Python variables that cannot be saved.", max(1, m.Width), " ")))
+	warning := "Global defaults apply when sessions reload."
+	if m.Session {
+		warning = "Changes reload this session and may lose Python variables that cannot be saved."
+	}
+	b.WriteString(DefaultStyles.Warning.Render(ansi.Wrap(warning, max(1, m.Width), " ")))
 	b.WriteByte('\n')
 
 	if m.Error != "" {
 		b.WriteString(DefaultStyles.Error.Render(m.Error))
+		b.WriteByte('\n')
+	}
+	if m.Notice != "" {
+		b.WriteString(DefaultStyles.Warning.Render(ansi.Wrap(m.Notice, max(1, m.Width), " ")))
 		b.WriteByte('\n')
 	}
 
@@ -328,7 +375,11 @@ func (m ExtensionPickerModel) View() string {
 		if m.Cursor < len(m.Extensions) {
 			currName = m.Extensions[m.Cursor].Name
 		}
-		b.WriteString(m.Styles.Faint.Render(fmt.Sprintf("Reloading %s…", currName)))
+		status := "Saving global default for %s…"
+		if m.Session {
+			status = "Reloading %s…"
+		}
+		b.WriteString(m.Styles.Faint.Render(fmt.Sprintf(status, currName)))
 	} else if m.Confirming {
 		b.WriteString(m.Styles.Faint.Render("waiting for confirmation"))
 	} else {

@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -43,10 +44,12 @@ func faultSessionStream(t *testing.T, session string, fault string) *streamFault
 		t.Fatal(err)
 	}
 	forward := httputil.NewSingleHostReverseProxy(destination)
+	direct := forward.Director
+	forward.Director = func(r *http.Request) { direct(r); r.Host = destination.Host }
 	forward.FlushInterval = -1
 	proxy := &streamFaultProxy{reconnected: make(chan struct{}, 1)}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/sessions/"+session+"/stream" {
+		if r.URL.Path == "/sessions/"+session && r.Header.Get("Accept") == "text/event-stream" {
 			proxy.mu.Lock()
 			proxy.cursors = append(proxy.cursors, r.URL.Query().Get("after_seq"))
 			proxy.generations = append(proxy.generations, r.URL.Query().Get("after_generation"))
@@ -56,10 +59,11 @@ func faultSessionStream(t *testing.T, session string, fault string) *streamFault
 				if count == 1 {
 					outgoing := r.Clone(r.Context())
 					outgoing.URL.Scheme, outgoing.URL.Host = destination.Scheme, destination.Host
+					outgoing.Host = destination.Host
 					outgoing.RequestURI = ""
 					response, err := conn(t).HTTPClient().Do(outgoing)
 					if err != nil {
-						http.Error(w, err.Error(), 502)
+						http.Error(w, err.Error(), http.StatusBadGateway)
 						return
 					}
 					defer response.Body.Close()
@@ -95,7 +99,7 @@ func faultSessionStream(t *testing.T, session string, fault string) *streamFault
 				}
 				if fault == "after-history" && count == 2 {
 					w.Header().Set("Content-Type", "text/event-stream")
-					_, _ = io.WriteString(w, "data: "+`{"generation":"invalid-replacement","cursor":10,"events":[{"type":"text","text":"poison must stay hidden"}]}`+"\n\n")
+					_, _ = io.WriteString(w, "data: "+`{"generation":"invalid-replacement","cursor":10,"events":[{"type":"text","sequence":10,"data":{"run_id":"run-a","message_id":"message-a","text":"poison must stay hidden"}}]}`+"\n\n")
 					return
 				}
 				select {
@@ -104,7 +108,7 @@ func faultSessionStream(t *testing.T, session string, fault string) *streamFault
 				}
 			} else if count == 1 || fault == "repeated" {
 				w.Header().Set("Content-Type", "text/event-stream")
-				_, _ = io.WriteString(w, "data: "+`{"generation":"fault","cursor":10,"events":[{"type":"text","text":"poison must stay hidden"},{"type":"message","role":"assistant","text":false}]}`+"\n\n")
+				_, _ = io.WriteString(w, "data: "+`{"generation":"fault","cursor":10,"events":[{"type":"text","sequence":9,"data":{"run_id":"run-a","message_id":"message-a","text":"poison must stay hidden"}},{"type":"thinking","sequence":10,"data":{"run_id":"run-a","message_id":"message-a","text":false}}]}`+"\n\n")
 				return
 			}
 		}
@@ -113,7 +117,10 @@ func faultSessionStream(t *testing.T, session string, fault string) *streamFault
 	t.Cleanup(server.Close)
 	snapshot := conn(t).Snapshot()
 	snapshot.Port = server.Listener.Addr().(*net.TCPAddr).Port
-	proxy.connection = daemon.NewConnection(snapshot, nil)
+	proxy.connection, err = daemon.Attach(t.Context(), snapshot, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(proxy.connection.HTTPClient().CloseIdleConnections)
 	return proxy
 }
@@ -121,7 +128,7 @@ func faultSessionStream(t *testing.T, session string, fault string) *streamFault
 func (proxy *streamFaultProxy) requests() []string {
 	proxy.mu.Lock()
 	defer proxy.mu.Unlock()
-	return append([]string(nil), proxy.cursors...)
+	return slices.Clone(proxy.cursors)
 }
 
 // Commands run independently, like Bubble Tea: one pending stream read must
@@ -228,7 +235,7 @@ func TestTUIProtocolFailureStopsUntilTheSessionIsReopened(t *testing.T) {
 func TestTUIDeletedSessionStopsItsStreamAndStatusPolling(t *testing.T) {
 	providerRoute(t, echoReply)
 	session := daemonSession(t, newSession(t, t.TempDir()))
-	if _, err := daemon.DeleteSession(t.Context(), conn(t), session.ID, false); err != nil {
+	if _, err := daemon.DeleteSession(t.Context(), conn(t), session.ID, false, sessionCondition(t, conn(t), session.ID)); err != nil {
 		t.Fatal(err)
 	}
 	driver := driveTUI(t, &session)
@@ -240,7 +247,7 @@ func TestTUIDeletedSessionStopsItsStreamAndStatusPolling(t *testing.T) {
 	result := msg.(tui.ChatStreamResultMsg)
 	failure, ok := errors.AsType[*daemon.StreamError](result.Err)
 	api, apiOK := errors.AsType[*daemon.APIError](result.Err)
-	if !ok || failure.Kind != daemon.StreamTerminal || !apiOK || api.StatusCode != http.StatusNotFound {
+	if !ok || failure.Kind != daemon.StreamTerminal || !apiOK || api.StatusCode != http.StatusGone || api.Code != "session_deleted" {
 		t.Fatalf("deleted session did not terminate: %v", result.Err)
 	}
 	if cmd := driver.Update(tui.ChatStatusPollMsg{SessionID: session.ID, Generation: driver.App.Chat.Generation}); cmd != nil {
@@ -284,8 +291,8 @@ func TestTUIStreamEOFReconnectsFromConsumedCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	proxy.mu.Lock()
-	requests, first := append([]string(nil), proxy.cursors...), proxy.firstCursor
-	generations, firstGeneration := append([]string(nil), proxy.generations...), proxy.firstGeneration
+	requests, first := slices.Clone(proxy.cursors), proxy.firstCursor
+	generations, firstGeneration := slices.Clone(proxy.generations), proxy.firstGeneration
 	proxy.mu.Unlock()
 	if len(requests) != 2 || requests[1] != fmt.Sprint(first) || generations[1] != firstGeneration || firstGeneration == "" {
 		t.Fatalf("EOF lost consumed cursor: requests=%v, cursor=%d", requests, first)

@@ -1,237 +1,147 @@
-//// Durable transcript paging and prefix forks. These operations never start a session actor.
+//// Durable prefix forks. These operations never start a session actor.
 
 import albedo/daemon/conversation
-import albedo/daemon/events
-import albedo/daemon/notice
+import albedo/daemon/message_content as events
+import albedo/daemon/operations
+import albedo/daemon/session_configuration
 import albedo/daemon/store
+import albedo/daemon/usage
 import albedo/harness/extensions/lcm/graph as lcm_graph
 import albedo/openai_api/types
 import gleam/dynamic/decode
-import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option, None}
 import gleam/result
 import gleam/string
 import sqlight
 
-const default_page_size = 50
-
-const max_page_size = 100
-
 const incomplete_tool_result = "not executed after branch checkpoint"
-
-pub type Kind {
-  User
-  Assistant
-  Tool
-}
-
-pub type Item {
-  Item(id: Int, kind: Kind, preview: String, timestamp: Option(Int))
-}
-
-pub type Page {
-  Page(items: List(Item), next_cursor: Option(Int), has_more: Bool)
-}
 
 type Row {
   Row(seq: Int, input: types.Input, timestamp: Option(Int))
 }
 
-/// Read one bounded page directly from the durable transcript. `after` is an
-/// exclusive transcript sequence cursor; no session actor or in-memory history
-/// is involved.
-pub fn page(
-  ledger: store.Store,
-  session_id: String,
-  after: Int,
-  requested_limit: Int,
-) -> Result(Page, String) {
-  let limit = clamp_limit(requested_limit, default_page_size)
-  store.query(ledger, fn(db) {
-    use rows <- result.try(store.rows(
-      db,
-      "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? AND seq>? ORDER BY seq LIMIT ?",
-      [
-        sqlight.text(session_id),
-        sqlight.int(int.max(after, 0)),
-        sqlight.int(limit + 1),
-      ],
-      row_decoder(),
-    ))
-    use decoded <- result.try(list.try_map(rows, decode_row))
-    let has_more = list.length(decoded) > limit
-    let visible = list.take(decoded, limit)
-    let items = list.map(visible, row_item)
-    let next_cursor =
-      option.map(option.from_result(list.last(items)), fn(item) { item.id })
-    Ok(Page(items, next_cursor, has_more))
-  })
-}
-
-/// Up to `rows` transcript rows before `before` (None: the newest), rendered
-/// as the stream renders them, with `committed` markers, as a JSON body:
-/// {"events":[...],"before":first row,"more":older rows remain}.
-pub fn rendered(
-  ledger: store.Store,
-  session_id: String,
-  before: Option(Int),
-  rows: Int,
-) -> Result(String, String) {
-  use #(entries, more) <- result.try(conversation.load_tail(
-    ledger,
-    session_id,
-    before,
-    rows,
-  ))
-  let page = json.object(events.page_fields(entries, more)) |> json.to_string
-  Ok(
-    "{\"events\":["
-    <> string.join(events.rows(ledger, entries), ",")
-    <> "],"
-    <> string.drop_start(page, 1),
-  )
-}
-
-pub type Recent {
-  Recent(items: List(Item), total: Int)
-}
-
-const recent_excerpt = 400
-
-const recent_tool_excerpt = 120
-
-/// The newest conversational items of a transcript, oldest first, for the
-/// session list's preview pane. Excerpts are longer than tree previews, bodiless
-/// provider items are skipped, and `total` counts every transcript row. Like
-/// `page`, this reads only the durable ledger.
-pub fn recent(
-  ledger: store.Store,
-  session_id: String,
-  requested_limit: Int,
-) -> Result(Recent, String) {
-  let limit = clamp_limit(requested_limit, 12)
-  store.query(ledger, fn(db) {
-    use total <- result.try(store.rows(
-      db,
-      "SELECT COUNT(*) FROM transcript WHERE session=?",
-      [sqlight.text(session_id)],
-      decode.field(0, decode.int, decode.success),
-    ))
-    // Reasoning-only rows are dropped below, so read past the limit to keep
-    // the pane full.
-    use rows <- result.try(store.rows(
-      db,
-      "SELECT seq,payload,timestamp,provider FROM transcript WHERE session=? ORDER BY seq DESC LIMIT ?",
-      [sqlight.text(session_id), sqlight.int(limit * 4)],
-      row_decoder(),
-    ))
-    use decoded <- result.try(list.try_map(rows, decode_row))
-    let items =
-      decoded
-      |> list.filter_map(recent_item)
-      |> list.take(limit)
-      |> list.reverse
-    Ok(Recent(items, list.first(total) |> result.unwrap(0)))
-  })
-}
-
-fn recent_item(row: Row) -> Result(Item, Nil) {
-  let item = fn(kind, text, limit) {
-    case conversation.excerpt(text, limit) {
-      "" -> Error(Nil)
-      clean -> Ok(Item(row.seq, kind, clean, row.timestamp))
-    }
-  }
-  case row.input {
-    types.User(text) ->
-      case notice.is_notice(text) {
-        True -> Error(Nil)
-        False -> item(User, text, recent_excerpt)
-      }
-    types.UserImage(text, image) ->
-      case notice.is_notice(text) {
-        True -> Error(Nil)
-        False -> item(User, text <> image_label(image), recent_excerpt)
-      }
-    types.Assistant(text) -> item(Assistant, text, recent_excerpt)
-    types.ToolOutput(_, _, _) -> Error(Nil)
-    types.Replay(replay) ->
-      case preview_of(replay) {
-        Answer(text) -> item(Assistant, text, recent_excerpt)
-        Calls(names) ->
-          item(Tool, string.join(names, ", "), recent_tool_excerpt)
-        Bare -> Error(Nil)
-      }
-  }
-}
-
 /// Create a durable, idle session containing exactly the selected prefix plus
 /// protocol-completing results for tool calls interrupted by the checkpoint.
 /// Runtime, Python, request-strategy, and usage state are intentionally absent.
+pub type ForkCreation {
+  ForkCreation(
+    source_id: String,
+    branch_id: String,
+    checkpoint: Int,
+    creation: conversation.Creation,
+  )
+}
+
+pub fn fork_identified(
+  ledger: store.Store,
+  request: ForkCreation,
+) -> Result(operations.Receipt, String) {
+  store.query(ledger, fn(db) {
+    store.transaction(db, fn() {
+      use _ <- result.try(conversation.creation_available_in(
+        db,
+        request.branch_id,
+      ))
+      operations.admit_in(
+        db,
+        request.creation.request,
+        201,
+        request.creation.submitted,
+        None,
+        fn(db) {
+          use info <- result.try(fork_in(
+            db,
+            request.source_id,
+            request.branch_id,
+            request.checkpoint,
+          ))
+          conversation.record_creation_in(
+            db,
+            request.branch_id,
+            conversation.Creation(
+              ..request.creation,
+              resolved: json.object([
+                  #("workspace", json.string(info.cwd)),
+                  #("provider_profile", json.string(info.provider)),
+                  #("model", json.string(info.model)),
+                  #("effort", json.nullable(info.effort, json.string)),
+                ])
+                |> json.to_string,
+            ),
+          )
+        },
+      )
+    })
+  })
+}
+
 pub fn fork(
   ledger: store.Store,
   source_id: String,
   branch_id: String,
   checkpoint: Int,
 ) -> Result(conversation.Info, String) {
-  case
-    source_id != branch_id
-    && checkpoint > 0
-    && string.byte_size(branch_id) > 0
-    && string.byte_size(branch_id) <= 200
-  {
-    False -> Error("invalid branch checkpoint or session id")
-    True ->
-      store.query(ledger, fn(db) {
-        store.transaction(db, fn() {
-          use source <- result.try(conversation.read_info(db, source_id))
-          use rows <- result.try(read_prefix(db, source_id, checkpoint))
-          use _ <- result.try(case list.last(rows) {
-            Ok(row) if row.seq == checkpoint -> Ok(Nil)
-            _ -> Error("checkpoint not found")
-          })
-          use pending <- result.try(unmatched_calls(rows))
-          let title = prefix_title(rows)
-          use _ <- result.try(insert_session(db, source, branch_id, title))
-          use _ <- result.try(copy_prefix(db, source_id, branch_id, checkpoint))
-          use _ <- result.try(lcm_graph.inherit_fork_prefix(
-            db,
-            source_id,
-            branch_id,
-            checkpoint,
-            list.map(rows, fn(row) { row.seq }),
-          ))
-          use _ <- result.try(copy_extension_overrides(db, source_id, branch_id))
-          use _ <- result.try(append_incomplete_results(
-            db,
-            branch_id,
-            source.provider,
-            pending,
-          ))
-          Ok(conversation.Info(
-            branch_id,
-            title,
-            source.cwd,
-            source.provider,
-            source.model,
-            source.protocol,
-            conversation.Idle,
-            None,
-            source.effort,
-          ))
-        })
-      })
-  }
+  store.query(ledger, fn(db) {
+    store.transaction(db, fn() { fork_in(db, source_id, branch_id, checkpoint) })
+  })
 }
 
-pub fn kind_name(kind: Kind) -> String {
-  case kind {
-    User -> "user"
-    Assistant -> "assistant"
-    Tool -> "tool"
-  }
+fn fork_in(
+  db: sqlight.Connection,
+  source_id: String,
+  branch_id: String,
+  checkpoint: Int,
+) -> Result(conversation.Info, String) {
+  use _ <- result.try(
+    case
+      source_id != branch_id
+      && checkpoint > 0
+      && string.byte_size(branch_id) > 0
+      && string.byte_size(branch_id) <= 200
+    {
+      True -> Ok(Nil)
+      False -> Error("invalid branch checkpoint or session id")
+    },
+  )
+  use source <- result.try(conversation.read_info(db, source_id))
+  use desired <- result.try(session_configuration.read_in(db, source_id))
+  let source = conversation.Info(..source, cwd: desired.workspace)
+  use rows <- result.try(read_prefix(db, source_id, checkpoint))
+  use _ <- result.try(case list.last(rows) {
+    Ok(row) if row.seq == checkpoint -> Ok(Nil)
+    _ -> Error("checkpoint not found")
+  })
+  use pending <- result.try(unmatched_calls(rows))
+  let title = prefix_title(rows)
+  use _ <- result.try(insert_session(db, source, branch_id, title))
+  use _ <- result.try(copy_prefix(db, source_id, branch_id, checkpoint, rows))
+  use _ <- result.try(lcm_graph.inherit_fork_prefix(
+    db,
+    source_id,
+    branch_id,
+    checkpoint,
+    list.map(rows, fn(row) { row.seq }),
+  ))
+  use _ <- result.try(copy_selection(db, source_id, branch_id))
+  use _ <- result.try(append_incomplete_results(
+    db,
+    branch_id,
+    source.provider,
+    pending,
+  ))
+  Ok(conversation.Info(
+    branch_id,
+    title,
+    source.cwd,
+    source.provider,
+    source.model,
+    source.protocol,
+    conversation.Idle,
+    None,
+    source.effort,
+  ))
 }
 
 fn row_decoder() -> decode.Decoder(#(Int, BitArray, Option(Int))) {
@@ -248,75 +158,6 @@ fn decode_row(row: #(Int, BitArray, Option(Int))) -> Result(Row, String) {
     |> result.replace_error("invalid saved transcript item"),
   )
   Ok(Row(seq, input, timestamp))
-}
-
-/// A page's size: a non-positive request falls back to `default`.
-fn clamp_limit(requested: Int, default: Int) -> Int {
-  case requested <= 0 {
-    True -> default
-    False -> int.min(requested, max_page_size)
-  }
-}
-
-fn row_item(row: Row) -> Item {
-  let #(kind, text) = case row.input {
-    types.User(text) -> #(User, text)
-    types.UserImage(text, image) -> #(User, text <> image_label(image))
-    types.Assistant(text) -> #(Assistant, text)
-    types.ToolOutput(_, output, images) -> #(
-      Tool,
-      output <> string.concat(list.map(images, image_label)),
-    )
-    types.Replay(item) -> replay_preview(item)
-  }
-  Item(row.seq, kind, safe_preview(text), row.timestamp)
-}
-
-fn image_label(image: types.Image) -> String {
-  let #(mime, width, height, _) = types.image_meta(image)
-  " ["
-  <> mime
-  <> " "
-  <> int.to_string(width)
-  <> "x"
-  <> int.to_string(height)
-  <> "]"
-}
-
-/// What a provider item previews as: the names of its calls, its answer
-/// text, or neither.
-type Preview {
-  Calls(names: List(String))
-  Answer(String)
-  Bare
-}
-
-fn preview_of(item: types.ReplayItem) -> Preview {
-  let names = list.map(events.calls(types.Replay(item)), fn(call) { call.name })
-  case names, events.visible_assistant_text(types.Replay(item)) {
-    [_, ..], _ -> Calls(names)
-    [], Some(text) -> Answer(text)
-    [], None -> Bare
-  }
-}
-
-fn replay_preview(item: types.ReplayItem) -> #(Kind, String) {
-  case preview_of(item) {
-    Calls(names) -> #(Tool, "call " <> string.join(names, ", "))
-    Answer(text) -> #(Assistant, text)
-    Bare ->
-      case events.thinking_text(item) {
-        "" -> #(Assistant, "[provider item]")
-        text -> #(Assistant, "[reasoning] " <> text)
-      }
-  }
-}
-
-fn safe_preview(text: String) -> String {
-  case conversation.title(text) {
-    "new session" -> "[empty]"
-    preview -> preview
-  }
 }
 
 fn read_prefix(
@@ -368,7 +209,7 @@ fn insert_session(
 ) -> Result(Nil, String) {
   store.run(
     db,
-    "INSERT INTO sessions(id,title,cwd,provider,model,protocol,stage,activity_seq,last_assistant_at) SELECT ?,?,?,?,?,?,'idle',COALESCE(MAX(activity_seq),0)+1,NULL FROM sessions",
+    "INSERT INTO sessions(id,title,cwd,provider,model,protocol,effort,stage,activity_seq,last_assistant_at,created_at,activity_at) SELECT ?,?,?,?,?,?,?,'idle',COALESCE(MAX(activity_seq),0)+1,NULL,?,? FROM sessions",
     [
       sqlight.text(id),
       sqlight.text(title),
@@ -376,6 +217,9 @@ fn insert_session(
       sqlight.text(source.provider),
       sqlight.text(source.model),
       sqlight.text(conversation.protocol(source.protocol)),
+      sqlight.nullable(sqlight.text, source.effort),
+      sqlight.int(usage.now()),
+      sqlight.int(usage.now()),
     ],
   )
 }
@@ -385,19 +229,117 @@ fn copy_prefix(
   source_id: String,
   branch_id: String,
   checkpoint: Int,
+  rows: List(Row),
 ) -> Result(Nil, String) {
+  use _ <- result.try(
+    store.run(
+      db,
+      "INSERT INTO transcript(session,payload,timestamp,provider,thought_ms,row_class,turn_id) SELECT ?,payload,timestamp,provider,thought_ms,row_class,turn_id FROM transcript WHERE session=? AND seq<=? ORDER BY seq",
+      [
+        sqlight.text(branch_id),
+        sqlight.text(source_id),
+        sqlight.int(checkpoint),
+      ],
+    ),
+  )
+  use positions <- result.try(store.rows(
+    db,
+    "SELECT seq FROM transcript WHERE session=? ORDER BY seq",
+    [sqlight.text(branch_id)],
+    decode.field(0, decode.int, decode.success),
+  ))
+  list.try_each(list.zip(rows, positions), fn(pair) {
+    use _ <- result.try(conversation.index_entry_in(
+      db,
+      branch_id,
+      pair.1,
+      pair.0.input,
+    ))
+    use _ <- result.try(copy_input_metadata(
+      db,
+      source_id,
+      branch_id,
+      #(pair.0.seq, pair.1),
+      checkpoint,
+    ))
+    case pair.0.input {
+      types.ToolOutput(_, output, _) -> {
+        case
+          json.parse(
+            output,
+            decode.field("cell_id", decode.string, decode.success),
+          )
+        {
+          Error(_) -> Ok(Nil)
+          Ok(cell_id) -> {
+            use traces <- result.try(
+              conversation.traces_in(db, source_id, [cell_id]),
+            )
+            list.try_each(traces, fn(trace) {
+              store.run(
+                db,
+                "INSERT OR IGNORE INTO transcript_traces(session,cell_id,payload) VALUES(?,?,?)",
+                [
+                  sqlight.text(branch_id),
+                  sqlight.text(trace.0),
+                  sqlight.text(json.to_string(trace.1)),
+                ],
+              )
+            })
+          }
+        }
+      }
+      _ -> Ok(Nil)
+    }
+  })
+}
+
+fn copy_input_metadata(
+  db: sqlight.Connection,
+  source_id: String,
+  branch_id: String,
+  positions: #(Int, Int),
+  checkpoint: Int,
+) -> Result(Nil, String) {
+  use _ <- result.try(
+    store.run(
+      db,
+      "INSERT INTO submission_events(session,seq,operation_id,payload) SELECT ?,?,operation_id,payload FROM submission_events WHERE session=? AND seq=? ORDER BY rowid",
+      [
+        sqlight.text(branch_id),
+        sqlight.int(positions.1),
+        sqlight.text(source_id),
+        sqlight.int(positions.0),
+      ],
+    ),
+  )
+  // A marker follows its anchor row. Markers at the checkpoint itself are
+  // later inputs and do not belong to that inclusive transcript prefix.
   store.run(
     db,
-    "INSERT INTO transcript(session,payload,timestamp,provider,thought_ms,row_class) SELECT ?,payload,timestamp,provider,thought_ms,row_class FROM transcript WHERE session=? AND seq<=? ORDER BY seq",
-    [sqlight.text(branch_id), sqlight.text(source_id), sqlight.int(checkpoint)],
+    "INSERT INTO continuation_markers(operation_id,session,seq,payload,timestamp,turn_id) SELECT operation_id,?,?,payload,timestamp,turn_id FROM continuation_markers WHERE session=? AND seq=? AND seq<? ORDER BY rowid",
+    [
+      sqlight.text(branch_id),
+      sqlight.int(positions.1),
+      sqlight.text(source_id),
+      sqlight.int(positions.0),
+      sqlight.int(checkpoint),
+    ],
   )
 }
 
-fn copy_extension_overrides(
+fn copy_selection(
   db: sqlight.Connection,
   source_id: String,
   branch_id: String,
 ) -> Result(Nil, String) {
+  use _ <- result.try(
+    store.run(
+      db,
+      "INSERT INTO session_selection(session,kind,candidate,preference_key,enabled) SELECT ?,kind,candidate,preference_key,enabled FROM session_selection WHERE session=?",
+      [sqlight.text(branch_id), sqlight.text(source_id)],
+    ),
+  )
   store.run(
     db,
     "INSERT INTO session_extensions(session,name,enabled) SELECT ?,name,enabled FROM session_extensions WHERE session=?",

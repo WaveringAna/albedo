@@ -4,12 +4,14 @@
 %% one; a stamp file's mtime says how fresh it is.
 -module(albedo_project_mirror).
 
--export([digest/1, fresh/2, replace/2]).
+-export([digest/1, fresh/2, observed/1, replace/2]).
 
 -include_lib("kernel/include/file.hrl").
 
 digest(Workspace) ->
     binary:part(binary:encode_hex(crypto:hash(sha256, Workspace), lowercase), 0, 24).
+
+observed(Mirror) -> filelib:is_regular(filename:join(Mirror, ".albedo-mirror")).
 
 fresh(Mirror, WithinMs) ->
     case file:read_file_info(filename:join(Mirror, ".albedo-mirror"), [{time, posix}]) of

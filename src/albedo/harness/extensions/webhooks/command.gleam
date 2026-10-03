@@ -157,8 +157,9 @@ fn receipt(provisioned: hooks.Provisioned, generated: Bool) -> command.Outcome {
     #(
       "message",
       json.string(
-        "/webhooks/"
+        "/extensions/webhooks/hooks/"
         <> provisioned.hook.id
+        <> "/deliveries"
         <> case generated {
           True -> " · secret (copy now): " <> provisioned.secret
           False -> " · secret saved"

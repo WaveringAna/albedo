@@ -6,19 +6,11 @@
 package e2e
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
-	"maps"
-	"net"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,209 +24,6 @@ import (
 	"albedo/cli/internal/tui"
 )
 
-type acknowledgementFault string
-
-const (
-	expiredAcknowledgement     acknowledgementFault = "expired"
-	dropAcknowledgement        acknowledgementFault = "drop"
-	hideReceiptAcknowledgement acknowledgementFault = "drop-and-hide-receipt"
-	unresolvedAcknowledgement  acknowledgementFault = "unresolved"
-	truncateAcknowledgement    acknowledgementFault = "truncate"
-	rejectAcknowledgement      acknowledgementFault = "server-error"
-	cancelAcknowledgement      acknowledgementFault = "cancel"
-	emptyAcknowledgement       acknowledgementFault = "empty"
-	malformedAcknowledgement   acknowledgementFault = "malformed"
-	missingAcknowledgement     acknowledgementFault = "missing-fields"
-	negativeAcknowledgement    acknowledgementFault = "negative"
-	wrongStatusAcknowledgement acknowledgementFault = "wrong-status"
-)
-
-type acknowledgementProxy struct {
-	expireReceipt atomic.Bool
-	allowReceipt  atomic.Bool
-	failure       error
-	connection    *daemon.Connection
-	admitted      chan struct{}
-	responses     [][]byte
-	requests      []string
-	mu            sync.Mutex
-}
-
-func cutAcknowledgement(t *testing.T, path string, fault acknowledgementFault) *acknowledgementProxy {
-	t.Helper()
-	return mutateAcknowledgement(t, path, fault, nil, nil)
-}
-
-func mutateAcknowledgement(t *testing.T, path string, fault acknowledgementFault, matches func([]byte) bool, transform func([]byte) ([]byte, error)) *acknowledgementProxy {
-	t.Helper()
-	upstream := conn(t).Snapshot()
-	destination, err := url.Parse(conn(t).BaseURL())
-	if err != nil {
-		t.Fatal(err)
-	}
-	proxy := &acknowledgementProxy{admitted: make(chan struct{}, 1)}
-	transport := &http.Transport{}
-	t.Cleanup(transport.CloseIdleConnections)
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		requestBody, bodyErr := io.ReadAll(request.Body)
-		if bodyErr != nil {
-			http.Error(writer, bodyErr.Error(), http.StatusBadRequest)
-			return
-		}
-		if fault == unresolvedAcknowledgement && request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/operations/") && !proxy.allowReceipt.Load() {
-			writer.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = writer.Write([]byte(`{"error":"receipt unavailable"}`))
-			return
-		}
-		proxy.mu.Lock()
-		hideReceipt := fault == hideReceiptAcknowledgement && request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/operations/") && !slices.ContainsFunc(proxy.requests, func(path string) bool { return strings.HasPrefix(path, "GET /operations/") })
-		proxy.requests = append(proxy.requests, request.Method+" "+request.URL.Path)
-		proxy.mu.Unlock()
-		if request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/operations/") && (fault == expiredAcknowledgement || proxy.expireReceipt.Load()) {
-			writer.WriteHeader(http.StatusGone)
-			_, _ = writer.Write([]byte(`{"code":"operation_expired","error":"expired"}`))
-			return
-		}
-		if hideReceipt {
-			writer.WriteHeader(http.StatusNotFound)
-			_, _ = writer.Write([]byte(`{"code":"operation_unknown","error":"unknown"}`))
-			return
-		}
-		forwarded := request.Clone(request.Context())
-		forwarded.Body = http.NoBody
-		if len(requestBody) > 0 {
-			forwarded.Body = io.NopCloser(bytes.NewReader(requestBody))
-		}
-		forwarded.ContentLength = int64(len(requestBody))
-		forwarded.TransferEncoding = nil
-		forwarded.URL.Scheme, forwarded.URL.Host = destination.Scheme, destination.Host
-		forwarded.RequestURI = ""
-		forwarded.Host = destination.Host
-		response, forwardErr := transport.RoundTrip(forwarded)
-		if forwardErr != nil {
-			proxy.mu.Lock()
-			proxy.failure = forwardErr
-			proxy.mu.Unlock()
-			http.Error(writer, forwardErr.Error(), http.StatusBadGateway)
-			return
-		}
-		defer response.Body.Close()
-		if strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
-			for key, values := range response.Header {
-				writer.Header()[key] = values
-			}
-			writer.WriteHeader(response.StatusCode)
-			_ = http.NewResponseController(writer).Flush()
-			_, _ = io.Copy(flushingResponseWriter{writer}, response.Body)
-			return
-		}
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-		if readErr != nil {
-			proxy.mu.Lock()
-			proxy.failure = readErr
-			proxy.mu.Unlock()
-			http.Error(writer, readErr.Error(), http.StatusBadGateway)
-			return
-		}
-		isMutation := request.Method == http.MethodPost && request.URL.Path == path && (matches == nil || matches(requestBody))
-		first := false
-		if isMutation {
-			proxy.mu.Lock()
-			first = len(proxy.responses) == 0
-			proxy.responses = append(proxy.responses, body)
-			if response.StatusCode < 200 || response.StatusCode >= 300 {
-				proxy.failure = fmt.Errorf("daemon rejected mutation: %s: %s", response.Status, body)
-			}
-			proxy.mu.Unlock()
-		}
-		if isMutation && (first || fault == unresolvedAcknowledgement || fault == expiredAcknowledgement) {
-			if first {
-				proxy.admitted <- struct{}{}
-			}
-			if transform != nil {
-				transformed, transformErr := transform(body)
-				if transformErr != nil {
-					proxy.mu.Lock()
-					proxy.failure = transformErr
-					proxy.mu.Unlock()
-					http.Error(writer, transformErr.Error(), http.StatusBadGateway)
-					return
-				}
-				writer.WriteHeader(response.StatusCode)
-				_, _ = writer.Write(transformed)
-				return
-			}
-			switch fault {
-			case dropAcknowledgement, hideReceiptAcknowledgement, unresolvedAcknowledgement, expiredAcknowledgement:
-				socket, _, hijackErr := writer.(http.Hijacker).Hijack()
-				if hijackErr == nil {
-					_ = socket.Close()
-				}
-				return
-			case truncateAcknowledgement:
-				writer.Header().Set("Content-Length", strconv.Itoa(len(body)+1))
-				writer.WriteHeader(response.StatusCode)
-				_, _ = writer.Write(body[:len(body)/2])
-				return
-			case rejectAcknowledgement:
-				http.Error(writer, "acknowledgement unavailable", http.StatusServiceUnavailable)
-				return
-			case emptyAcknowledgement:
-				writer.WriteHeader(response.StatusCode)
-				return
-			case malformedAcknowledgement:
-				writer.WriteHeader(response.StatusCode)
-				_, _ = writer.Write([]byte("{"))
-				return
-			case missingAcknowledgement:
-				writer.WriteHeader(response.StatusCode)
-				_, _ = writer.Write([]byte("{}"))
-				return
-			case negativeAcknowledgement:
-				writer.WriteHeader(response.StatusCode)
-				_, _ = writer.Write([]byte(`{"ok":false,"queued":false,"submitted":false}`))
-				return
-			case wrongStatusAcknowledgement:
-				writer.WriteHeader(http.StatusCreated)
-				_, _ = writer.Write(body)
-				return
-			case cancelAcknowledgement:
-				<-request.Context().Done()
-				return
-			}
-		}
-		maps.Copy(writer.Header(), response.Header)
-		writer.WriteHeader(response.StatusCode)
-		_, _ = writer.Write(body)
-	}))
-	t.Cleanup(server.Close)
-	upstream.Port = server.Listener.Addr().(*net.TCPAddr).Port
-	proxy.connection = daemon.NewConnection(upstream, func(context.Context) (daemon.ConnectionSnapshot, error) { return upstream, nil })
-	t.Cleanup(proxy.connection.HTTPClient().CloseIdleConnections)
-	return proxy
-}
-
-func (proxy *acknowledgementProxy) assertSingleEffect(t *testing.T, operationErr error) []byte {
-	t.Helper()
-	if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](operationErr); !uncertain {
-		t.Fatalf("lost acknowledgement should be uncertain, got %v", operationErr)
-	}
-	return proxy.acceptedResponse(t)
-}
-
-func (proxy *acknowledgementProxy) acceptedResponse(t *testing.T) []byte {
-	t.Helper()
-	proxy.mu.Lock()
-	defer proxy.mu.Unlock()
-	if proxy.failure != nil {
-		t.Fatal(proxy.failure)
-	}
-	if len(proxy.responses) != 1 {
-		t.Fatalf("daemon admitted %d mutations, want one", len(proxy.responses))
-	}
-	return slices.Clone(proxy.responses[0])
-}
-
 func TestLostCreationAcknowledgementCreatesOneSession(t *testing.T) {
 	providerRoute(t, echoReply)
 	for _, fault := range []acknowledgementFault{dropAcknowledgement, truncateAcknowledgement, rejectAcknowledgement, emptyAcknowledgement, malformedAcknowledgement, missingAcknowledgement} {
@@ -247,7 +36,9 @@ func TestLostCreationAcknowledgementCreatesOneSession(t *testing.T) {
 				t.Fatal(err)
 			}
 			accepted := proxy.acceptedResponse(t)
-			var created daemon.Session
+			var created struct {
+				ID string `json:"id"`
+			}
 			if decodeErr := json.Unmarshal(accepted, &created); decodeErr != nil || created.ID == "" {
 				t.Fatalf("accepted session: %s, %v", accepted, decodeErr)
 			}
@@ -283,13 +74,7 @@ func TestRejectedCreationReceiptRecoversWithoutAllocatingSession(t *testing.T) {
 	if !ok || initial.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown provider did not reject creation: %v", err)
 	}
-	// A rejected creation has a durable receipt but no session target. An
-	// independent receipt read must recover that rejection without treating
-	// the empty target as malformed or submitting another creation.
-	receipt, err := daemon.ResolveOperation(t.Context(), conn(t), handle)
-	if err != nil || receipt.Status != "rejected" || receipt.Target != "" || receipt.OperationID != handle.ID() {
-		t.Fatalf("rejected creation receipt: %+v, %v", receipt, err)
-	}
+	// The creation resource retains its rejection without allocating a session.
 	created, err := daemon.ResolveCreation(t.Context(), conn(t), handle)
 	recovered, ok := errors.AsType[*daemon.APIError](err)
 	if !ok || recovered.StatusCode != initial.StatusCode || created.ID != "" {
@@ -318,7 +103,9 @@ func TestInvalidTUICreationAcknowledgementRecoversCreatedSession(t *testing.T) {
 			result := driver.Send(tui.FolderNewSessionMsg{Workspace: workspace})
 			driver.Update(result)
 			accepted := proxy.acceptedResponse(t)
-			var created daemon.Session
+			var created struct {
+				ID string `json:"id"`
+			}
 			if decodeErr := json.Unmarshal(accepted, &created); decodeErr != nil || created.ID == "" {
 				t.Fatalf("accepted session: %s, %v", accepted, decodeErr)
 			}
@@ -346,7 +133,7 @@ func TestInvalidSubmissionAcknowledgementSendsOneTurn(t *testing.T) {
 				t.Fatal(err)
 			}
 			id := newFaultSession(t, profile)
-			proxy := cutAcknowledgement(t, "/sessions/"+id+"/events", fault)
+			proxy := cutAcknowledgement(t, "/sessions/"+id+"/inputs/", fault)
 			client := daemon.NewChatClient(proxy.connection, id)
 			result, err := client.Send(context.Background(), "exactly one uncertain turn", nil)
 			if err != nil || result == nil || result.OperationID == "" {
@@ -379,16 +166,25 @@ func TestInvalidCommandAcknowledgementAddsOneWorkItem(t *testing.T) {
 	for _, fault := range []acknowledgementFault{truncateAcknowledgement, emptyAcknowledgement, malformedAcknowledgement, missingAcknowledgement, negativeAcknowledgement, wrongStatusAcknowledgement} {
 		t.Run(string(fault), func(t *testing.T) {
 			id := newFaultSession(t, profile)
-			path := "/sessions/" + id + "/commands"
+			path := "/extensions/work/items"
 			proxy := cutAcknowledgement(t, path, fault)
-			session := daemonSession(t, id)
-			driver := driveTUIWithConnection(t, &session, proxy.connection)
-			defer driver.App.Chat.Close()
-			driver.Dispatch(tui.ChatExecuteCommandMsg{Name: "/work", Args: "add one uncertain work item"})
-			proxy.acceptedResponse(t)
-			if driver.App.ActiveSession == nil || driver.App.ActiveSession.ID != id || !driver.App.Chat.Notices.HasError() {
-				t.Fatalf("command acknowledgement loss changed the active session or hid its error: %+v", driver.App.Chat.Notices)
+			page, err := daemon.LoadPage(t.Context(), conn(t), id, "/work")
+			if err != nil {
+				t.Fatal(err)
 			}
+			var action *daemon.PageAction
+			for index := range page.Actions {
+				candidate := &page.Actions[index]
+				if candidate.Operation.Method == http.MethodPost && candidate.Operation.PathTemplate == path {
+					action = candidate
+					break
+				}
+			}
+			if action == nil {
+				t.Fatal("work creation action missing")
+			}
+			_, err = daemon.ExecutePageAction(t.Context(), proxy.connection, id, daemon.PageActionRequest{Command: "/work", Action: *action, Session: page.Session, Form: map[string]json.RawMessage{"title": json.RawMessage(`"one uncertain work item"`), "notes": json.RawMessage(`""`), "parent_id": json.RawMessage(`null`)}})
+			proxy.assertSingleEffect(t, err)
 			listed, err := daemon.LoadPage(context.Background(), conn(t), id, "/work")
 			if err != nil {
 				t.Fatal(err)
@@ -438,12 +234,18 @@ func TestCancellationAfterAdmissionPreservesUncertainCause(t *testing.T) {
 }
 
 func TestLostSignInAcknowledgementStartsOneLocalFlow(t *testing.T) {
-	proxy := cutAcknowledgement(t, "/auth/antigravity", dropAcknowledgement)
-	_, err := daemon.StartSignIn(context.Background(), proxy.connection, "antigravity")
-	accepted := proxy.assertSingleEffect(t, err)
+	proxy := cutAcknowledgement(t, "/auth/logins/", dropAcknowledgement)
+	recovered, err := daemon.StartProviderLogin(context.Background(), proxy.connection, "antigravity", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := proxy.acceptedResponse(t)
 	var started daemon.StartedSignIn
 	if decodeErr := json.Unmarshal(accepted, &started); decodeErr != nil || started.ID == "" {
 		t.Fatalf("accepted sign-in: %s, %v", accepted, decodeErr)
+	}
+	if recovered.ID != started.ID {
+		t.Fatal("sign-in recovery changed the chosen ID")
 	}
 	t.Cleanup(func() {
 		if cancelErr := daemon.CancelSignIn(context.Background(), conn(t), started.ID); cancelErr != nil {
@@ -471,7 +273,7 @@ func TestCoreAuthenticationRefusalRecoversBeforeCreation(t *testing.T) {
 	if err != nil || created.ID == "" {
 		t.Fatalf("creation after pre-admission refusal: %+v, %v", created, err)
 	}
-	if stale.Token() != conn(t).Token() {
+	if stale.Snapshot().Token != conn(t).Snapshot().Token {
 		t.Fatal("recovery did not update credentials")
 	}
 	sessions, err := daemon.ListSessions(context.Background(), conn(t))
@@ -501,34 +303,17 @@ func newFaultSession(t *testing.T, profile string) string {
 func TestWebhookCreationMissingGeneratedSecretStopsAfterOneEffect(t *testing.T) {
 	profile := providerRoute(t, echoReply)
 	id := newFaultSession(t, profile)
-	if _, err := daemon.SelectExtension(t.Context(), conn(t), id, daemon.ExtensionSelectionRequest{Name: "webhooks", Enabled: new(true), Scope: "session"}); err != nil {
-		t.Fatal(err)
-	}
-	path := "/sessions/" + id + "/commands"
-	proxy := mutateAcknowledgement(t, path, "", func(body []byte) bool {
-		var command struct {
-			Args map[string]string `json:"args"`
-			Name string            `json:"name"`
-		}
-		return json.Unmarshal(body, &command) == nil && command.Name == "/webhooks" && command.Args["action"] == "create_in"
-	}, func(body []byte) ([]byte, error) {
+	enableExtension(t, conn(t), id, "webhooks")
+	path := "/extensions/webhooks/hooks"
+	proxy := mutateAcknowledgement(t, path, "", nil, func(body []byte) ([]byte, error) {
 		var envelope map[string]json.RawMessage
 		if err := json.Unmarshal(body, &envelope); err != nil {
 			return nil, err
 		}
-		var result map[string]json.RawMessage
-		if err := json.Unmarshal(envelope["result"], &result); err != nil {
-			return nil, err
-		}
-		if _, present := result["secret"]; !present {
+		if _, present := envelope["secret"]; !present {
 			return nil, errors.New("daemon did not generate a secret")
 		}
-		delete(result, "secret")
-		encoded, err := json.Marshal(result)
-		if err != nil {
-			return nil, err
-		}
-		envelope["result"] = encoded
+		delete(envelope, "secret")
 		return json.Marshal(envelope)
 	})
 	session := daemonSession(t, id)
@@ -540,7 +325,7 @@ func TestWebhookCreationMissingGeneratedSecretStopsAfterOneEffect(t *testing.T) 
 	}
 	driver.Dispatch(tea.KeyPressMsg{Code: 'n', Text: "n"})
 	driver.Type("missing-secret")
-	// A changed signature adds a second mutation, which must not run after the lost secret.
+	// Creation installs the signature atomically even when its secret acknowledgment is lost.
 	driver.App.WebhooksPage.Form.Inputs["header"].SetValue("x-custom-signature")
 	proxy.mu.Lock()
 	before := len(proxy.requests)
@@ -558,27 +343,31 @@ func TestWebhookCreationMissingGeneratedSecretStopsAfterOneEffect(t *testing.T) 
 		t.Fatalf("creation replayed, configured a signature, or refreshed: %v", requests)
 	}
 	var original struct {
-		Result struct{ Hook daemon.Webhook } `json:"result"`
+		Resource struct {
+			ETag  string `json:"etag"`
+			Value struct {
+				ID string `json:"id"`
+			} `json:"value"`
+		} `json:"resource"`
 	}
 	if err := json.Unmarshal(accepted, &original); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, err := daemon.RunWebhook(context.Background(), conn(t), id, daemon.WebhookRequest{Action: daemon.WebhookDelete, HookID: original.Result.Hook.ID})
-		if err != nil {
+		if _, err := daemon.DeleteWebhook(context.Background(), conn(t), original.Resource.Value.ID, original.Resource.ETag); err != nil {
 			t.Error(err)
 		}
 	})
-	listed, err := daemon.RunWebhook(t.Context(), conn(t), id, daemon.WebhookRequest{Action: daemon.WebhookList})
+	listed, err := daemon.ListWebhooks(t.Context(), conn(t), id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	count := 0
-	for _, entry := range listed.Hooks {
+	for _, entry := range listed {
 		if entry.Hook.Session == id && entry.Hook.Name == "missing-secret" {
 			count++
-			if entry.Hook.Header != "x-albedo-signature" {
-				t.Fatal("signature step ran without the generated secret")
+			if entry.Hook.Header != "x-custom-signature" {
+				t.Fatal("atomic signature configuration was lost")
 			}
 		}
 	}
@@ -602,8 +391,12 @@ func TestUnknownReceiptReplaysOriginalCreationOnce(t *testing.T) {
 	proxy.mu.Lock()
 	responses := slices.Clone(proxy.responses)
 	proxy.mu.Unlock()
-	if len(responses) != 2 || !bytes.Equal(responses[0], responses[1]) {
-		t.Fatalf("same intent replay produced different receipts: %q", responses)
+	if len(responses) != 2 {
+		t.Fatalf("expected the original PUT and one conditional retry, got %d", len(responses))
+	}
+	requests := operationRequests(proxy)
+	if len(requests) != 4 || requests[0] != requests[2] || requests[1] != requests[3] {
+		t.Fatalf("retry changed the original resource: %v", requests)
 	}
 	count := 0
 	for _, session := range daemonSessions(t) {
@@ -644,7 +437,10 @@ func TestQueuedPromptDeadlineCancelsOnlyItsOperation(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("active turn never started")
 	}
-	connection := daemon.NewConnection(conn(t).Snapshot(), nil)
+	connection, attachErr := daemon.Attach(t.Context(), conn(t).Snapshot(), nil)
+	if attachErr != nil {
+		t.Fatal(attachErr)
+	}
 	counter := &submissionCounterTransport{next: connection.HTTPClient().Transport, accepted: make(chan struct{})}
 	connection.HTTPClient().Transport = counter
 	t.Cleanup(connection.HTTPClient().CloseIdleConnections)
@@ -707,11 +503,11 @@ type submissionCounterTransport struct {
 }
 
 func (transport *submissionCounterTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/events") {
+	if request.Method == http.MethodPut && strings.Contains(request.URL.Path, "/inputs/") {
 		transport.posts.Add(1)
 	}
 	response, err := transport.next.RoundTrip(request)
-	if err == nil && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/events") && response.StatusCode == http.StatusAccepted {
+	if err == nil && request.Method == http.MethodPut && strings.Contains(request.URL.Path, "/inputs/") && response.StatusCode == http.StatusAccepted {
 		transport.acceptOnce.Do(func() { close(transport.accepted) })
 	}
 	return response, err
@@ -755,8 +551,21 @@ func TestTUICreationRecoveryRetainsSelectedSession(t *testing.T) {
 	proxy.mu.Lock()
 	responses := slices.Clone(proxy.responses)
 	proxy.mu.Unlock()
-	if len(responses) != 2 || !bytes.Equal(responses[0], responses[1]) {
-		t.Fatal("creation recovery submitted another intent")
+	var first struct {
+		ID string `json:"id"`
+	}
+	var replay struct {
+		Decision struct {
+			SessionID  string `json:"session_id"`
+			Admission  string `json:"admission"`
+			HTTPStatus int    `json:"http_status"`
+		} `json:"decision"`
+	}
+	if len(responses) != 2 || json.Unmarshal(responses[0], &first) != nil || first.ID == "" || json.Unmarshal(responses[1], &replay) != nil || replay.Decision.SessionID != first.ID || replay.Decision.Admission != "accepted" || replay.Decision.HTTPStatus != 201 {
+		t.Fatalf("creation retry lost its original accepted decision: %d responses, identity=%q replay=%+v", len(responses), first.ID, replay.Decision)
+	}
+	if recovered, err := daemon.GetSession(t.Context(), conn(t), first.ID); err != nil || recovered.Workspace != workspace {
+		t.Fatalf("recovery lost created session: %v", err)
 	}
 	count = 0
 	for _, session := range daemonSessions(t) {
@@ -770,12 +579,3 @@ func TestTUICreationRecoveryRetainsSelectedSession(t *testing.T) {
 }
 
 // Receipt fault tests also navigate sessions, whose event streams must remain live.
-type flushingResponseWriter struct{ http.ResponseWriter }
-
-func (writer flushingResponseWriter) Write(data []byte) (int, error) {
-	count, err := writer.ResponseWriter.Write(data)
-	if err == nil {
-		err = http.NewResponseController(writer.ResponseWriter).Flush()
-	}
-	return count, err
-}

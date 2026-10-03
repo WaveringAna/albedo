@@ -476,7 +476,7 @@ func (m FolderPicker) paneRule(p string, languages []daemon.LanguageShare, w int
 	lead := func() string { return DefaultStyles.Decor.Render("─ ") + crumbs(parts) + " " }
 	tail := ""
 	if len(languages) > 0 {
-		tail = " " + languageStyle(languages[0].Name, languages[0].Color).Render(strings.ToLower(languages[0].Name)) + " "
+		tail = " " + languageStyle(languages[0].Name, knownLanguageColor(languages[0].Color)).Render(strings.ToLower(languages[0].Name)) + " "
 	}
 	for len(parts) > 2 && ansi.StringWidth(lead()+tail) > w-8 {
 		parts = append([]string{"…"}, parts[2:]...)
@@ -487,7 +487,7 @@ func (m FolderPicker) paneRule(p string, languages []daemon.LanguageShare, w int
 	for _, l := range languages {
 		sum += l.Share
 		k := min(n, int(float64(n)*sum+0.5)) - used
-		rule.WriteString(languageStyle(l.Name, l.Color).Render(strings.Repeat("─", k)))
+		rule.WriteString(languageStyle(l.Name, knownLanguageColor(l.Color)).Render(strings.Repeat("─", k)))
 		used += k
 	}
 	rule.WriteString(DefaultStyles.Decor.Render(strings.Repeat("─", n-used)))
@@ -562,7 +562,7 @@ func fitTree(p daemon.FolderPreview, rows int) []string {
 func folderTree(p daemon.FolderPreview, children, top int) []string {
 	colors := map[string]string{}
 	for _, l := range p.Languages {
-		colors[l.Name] = l.Color
+		colors[l.Name] = knownLanguageColor(l.Color)
 	}
 	branch := func(last bool) string {
 		text := "├─ "
@@ -608,4 +608,11 @@ func folderTree(p daemon.FolderPreview, children, top int) []string {
 		out = append(out, branch(true)+more(hidden))
 	}
 	return out
+}
+
+func knownLanguageColor(color *string) string {
+	if color != nil {
+		return *color
+	}
+	return ""
 }

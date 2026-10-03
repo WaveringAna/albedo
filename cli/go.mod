@@ -11,11 +11,13 @@ require (
 	github.com/atotto/clipboard v0.1.4
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/charmbracelet/x/term v0.2.2
+	github.com/google/jsonschema-go v0.4.3
 	github.com/lucasb-eyer/go-colorful v1.4.1
 	github.com/mattn/go-isatty v0.0.20
 	github.com/rivo/uniseg v0.4.7
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/spf13/cobra v1.10.2
+	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/sys v0.47.0
 	golang.org/x/text v0.30.0
 )

@@ -2,189 +2,153 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
+	"net/url"
 )
 
-// CapabilityCatalog describes fresh discovery, independently of prepared prompts.
 type CapabilityCatalog struct {
-	Workspace   string             `json:"workspace"`
-	Revision    string             `json:"revision"`
-	Extensions  map[string]bool    `json:"extensions"`
-	Diagnostics []string           `json:"diagnostics"`
-	Candidates  []CatalogCandidate `json:"candidates"`
+	Workspace, Revision string
+	Extensions          map[string]bool
+	Diagnostics         []string
+	Candidates          []CatalogCandidate
+	Commands            []SessionCommand
+	Pages               []*PageDocument
 }
-
 type CatalogCandidate struct {
-	Description      *string `json:"description"`
-	ResolvedSource   *string `json:"resolved_source"`
-	PreferenceKey    *string `json:"preference_key"`
-	Diagnostic       *string `json:"diagnostic"`
-	ShadowedBy       *string `json:"shadowed_by"`
-	GlobalPreference *bool   `json:"global_preference"`
-	SessionOverride  *bool   `json:"session_override"`
-	ID               string  `json:"id"`
-	Kind             string  `json:"kind"`
-	Title            string  `json:"title"`
-	Source           string  `json:"source"`
-	Valid            bool    `json:"valid"`
-	EffectiveEnabled bool    `json:"effective_enabled"`
-	Eligible         bool    `json:"eligible"`
+	Description, ResolvedSource, PreferenceKey, Diagnostic, ShadowedBy *string
+	GlobalPreference, SessionOverride                                  *bool
+	ID, Kind, Title, Source                                            string
+	Valid, EffectiveEnabled, Eligible, Quarantined                     bool
+	Dependencies                                                       []string
+	Extension                                                          *wireExtensionMetadata
 }
-
 type CatalogCapabilityRequest struct {
-	Revision string
-	ID       string
-	Scope    string
-	Enabled  *bool
+	Revision, ID, Kind, Scope, ETag string
+	Enabled                         *bool
 }
 
-type catalogCandidateWire struct {
-	ID               *string         `json:"id"`
-	Kind             *string         `json:"kind"`
-	Title            *string         `json:"title"`
-	Source           *string         `json:"source"`
-	Valid            *bool           `json:"valid"`
-	EffectiveEnabled *bool           `json:"effective_enabled"`
-	Eligible         *bool           `json:"eligible"`
-	Description      json.RawMessage `json:"description"`
-	ResolvedSource   json.RawMessage `json:"resolved_source"`
-	PreferenceKey    json.RawMessage `json:"preference_key"`
-	Diagnostic       json.RawMessage `json:"diagnostic"`
-	ShadowedBy       json.RawMessage `json:"shadowed_by"`
-	GlobalPreference json.RawMessage `json:"global_preference"`
-	SessionOverride  json.RawMessage `json:"session_override"`
-}
+type CatalogDiscoveryError struct{ Code, Detail string }
+
+func (e *CatalogDiscoveryError) Error() string { return e.Detail }
 
 func GetCapabilityCatalog(ctx context.Context, conn *Connection, session string) (CapabilityCatalog, error) {
-	var result CapabilityCatalog
-	err := executeRead(ctx, conn, operation{Name: "get capability catalog", Method: http.MethodGet, Path: sessionPath(session, "/catalog"), Policy: readRecovery}, func(data []byte) error {
-		var wire struct {
-			Workspace   *string                `json:"workspace"`
-			Revision    *string                `json:"revision"`
-			Extensions  map[string]*bool       `json:"extensions"`
-			Diagnostics *stringCollection      `json:"diagnostics"`
-			Candidates  []catalogCandidateWire `json:"candidates"`
-		}
-		if err := json.Unmarshal(data, &wire); err != nil {
-			return err
-		}
-		if wire.Workspace == nil {
-			return fieldError("workspace")
-		}
-		if wire.Revision == nil {
-			return fieldError("revision")
-		}
-		if wire.Extensions == nil {
-			return fieldError("extensions")
-		}
-		if wire.Diagnostics == nil {
-			return fieldError("diagnostics")
-		}
-		if wire.Candidates == nil {
-			return fieldError("candidates")
-		}
-		result = CapabilityCatalog{
-			Workspace:   *wire.Workspace,
-			Revision:    *wire.Revision,
-			Extensions:  make(map[string]bool, len(wire.Extensions)),
-			Diagnostics: []string(*wire.Diagnostics),
-			Candidates:  make([]CatalogCandidate, 0, len(wire.Candidates)),
-		}
-		for name, enabled := range wire.Extensions {
-			if enabled == nil {
-				return fieldError("extensions." + name)
-			}
-			result.Extensions[name] = *enabled
-		}
-		for _, wire := range wire.Candidates {
-			if wire.ID == nil {
-				return fieldError("id")
-			}
-			if wire.Kind == nil {
-				return fieldError("kind")
-			}
-			if wire.Title == nil {
-				return fieldError("title")
-			}
-			if wire.Source == nil {
-				return fieldError("source")
-			}
-			if wire.Valid == nil {
-				return fieldError("valid")
-			}
-			if wire.EffectiveEnabled == nil {
-				return fieldError("effective_enabled")
-			}
-			if wire.Eligible == nil {
-				return fieldError("eligible")
-			}
-			candidate := CatalogCandidate{
-				ID:               *wire.ID,
-				Kind:             *wire.Kind,
-				Title:            *wire.Title,
-				Source:           *wire.Source,
-				Valid:            *wire.Valid,
-				EffectiveEnabled: *wire.EffectiveEnabled,
-				Eligible:         *wire.Eligible,
-			}
-			if candidate.ID == "" {
-				return fieldError("id")
-			}
-			if wire.Description == nil {
-				return fieldError("description")
-			}
-			if err := json.Unmarshal(wire.Description, &candidate.Description); err != nil {
-				return err
-			}
-			if wire.ResolvedSource == nil {
-				return fieldError("resolved_source")
-			}
-			if err := json.Unmarshal(wire.ResolvedSource, &candidate.ResolvedSource); err != nil {
-				return err
-			}
-			if wire.PreferenceKey == nil {
-				return fieldError("preference_key")
-			}
-			if err := json.Unmarshal(wire.PreferenceKey, &candidate.PreferenceKey); err != nil {
-				return err
-			}
-			if wire.Diagnostic == nil {
-				return fieldError("diagnostic")
-			}
-			if err := json.Unmarshal(wire.Diagnostic, &candidate.Diagnostic); err != nil {
-				return err
-			}
-			if wire.ShadowedBy == nil {
-				return fieldError("shadowed_by")
-			}
-			if err := json.Unmarshal(wire.ShadowedBy, &candidate.ShadowedBy); err != nil {
-				return err
-			}
-			if wire.GlobalPreference == nil {
-				return fieldError("global_preference")
-			}
-			if err := json.Unmarshal(wire.GlobalPreference, &candidate.GlobalPreference); err != nil {
-				return err
-			}
-			if wire.SessionOverride == nil {
-				return fieldError("session_override")
-			}
-			if err := json.Unmarshal(wire.SessionOverride, &candidate.SessionOverride); err != nil {
-				return err
-			}
-			result.Candidates = append(result.Candidates, candidate)
-		}
-		return nil
-	})
-	return result, err
+	return readCapabilityCatalog(ctx, conn, session, true)
 }
 
+func readCapabilityCatalog(ctx context.Context, conn *Connection, session string, withDiscovery bool) (CapabilityCatalog, error) {
+	var result CapabilityCatalog
+	result.Extensions = map[string]bool{}
+	result.Candidates = []CatalogCandidate{}
+	result.Commands = []SessionCommand{}
+	query := url.Values{"limit": {"200"}}
+	first := true
+	seenCandidates, seenCommands, seenTokens := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	pending := []string{}
+	var loadedRevision *string
+	loadedSeen := false
+	for {
+		var catalog wireCatalog
+		err := executeRead(ctx, conn, operation{Capability: "catalog", Name: "read session catalog", Method: http.MethodGet, Path: sessionPath(session, "/catalog?"+query.Encode()), Policy: readRecovery}, func(data []byte) error {
+			return decodeRequired(data, &catalog, "discovery", "discovery_failure", "loaded")
+		})
+		if err != nil {
+			return CapabilityCatalog{}, err
+		}
+		if catalog.Loaded.Commands == nil || (catalog.Discovery == nil) != (catalog.DiscoveryFailure != nil) {
+			return CapabilityCatalog{}, fieldError("catalog")
+		}
+		if catalog.DiscoveryFailure != nil {
+			if catalog.DiscoveryFailure.Code == "" || catalog.DiscoveryFailure.Detail == "" {
+				return CapabilityCatalog{}, fieldError("catalog discovery failure")
+			}
+			if withDiscovery {
+				return CapabilityCatalog{}, &CatalogDiscoveryError{Code: catalog.DiscoveryFailure.Code, Detail: catalog.DiscoveryFailure.Detail}
+			}
+		}
+		if withDiscovery {
+			if catalog.Discovery.Revision == "" || catalog.Discovery.Candidates == nil {
+				return CapabilityCatalog{}, fieldError("catalog discovery")
+			}
+			if first {
+				result.Workspace, result.Revision = catalog.Discovery.Workspace, catalog.Discovery.Revision
+				first = false
+			} else if result.Revision != catalog.Discovery.Revision {
+				return CapabilityCatalog{}, &APIError{StatusCode: 409, Code: "catalog_changed", Message: "the catalog changed during paging; refresh it"}
+			}
+		}
+		if !loadedSeen {
+			loadedRevision, loadedSeen = catalog.Loaded.Revision, true
+		} else if (loadedRevision == nil) != (catalog.Loaded.Revision == nil) || value(loadedRevision) != value(catalog.Loaded.Revision) {
+			return CapabilityCatalog{}, fieldError("loaded catalog revision")
+		}
+		if withDiscovery {
+			for _, candidate := range catalog.Discovery.Candidates {
+				if seenCandidates[candidate.ID] {
+					continue
+				}
+				seenCandidates[candidate.ID] = true
+				description := candidate.Description
+				item := CatalogCandidate{ID: candidate.ID, Kind: catalogKind(candidate.Kind), Title: candidate.Title, Source: candidate.Source, Description: &description, ResolvedSource: candidate.ResolvedSource, PreferenceKey: candidate.PreferenceKey, Diagnostic: nil, ShadowedBy: candidate.ShadowedBy, GlobalPreference: candidate.GlobalPreference, SessionOverride: candidate.SessionOverride, Valid: candidate.Valid, EffectiveEnabled: candidate.EffectiveEnabled, Eligible: candidate.Eligible, Quarantined: candidate.Quarantined, Dependencies: candidate.Dependencies, Extension: candidate.Extension}
+				if candidate.Diagnostic != nil {
+					detail := candidate.Diagnostic.Detail
+					item.Diagnostic = &detail
+				}
+				if candidate.Kind == "extension" {
+					result.Extensions[candidate.ID] = candidate.EffectiveEnabled
+				}
+				result.Candidates = append(result.Candidates, item)
+			}
+			for _, reason := range catalog.Discovery.Diagnostics {
+				result.Diagnostics = append(result.Diagnostics, reason.Detail)
+			}
+		}
+		for _, raw := range catalog.Loaded.Commands {
+			command, err := decodeSessionCommand(raw)
+			if err != nil {
+				return CapabilityCatalog{}, err
+			}
+			if !seenCommands[command.ID] {
+				seenCommands[command.ID] = true
+				result.Commands = append(result.Commands, command)
+			}
+		}
+		for _, page := range catalog.Pages {
+			converted, err := pageValue(page)
+			if err != nil {
+				return CapabilityCatalog{}, err
+			}
+			result.Pages = append(result.Pages, converted)
+		}
+		nextPages := []*string{catalog.Loaded.Next}
+		if withDiscovery {
+			nextPages = append(nextPages, catalog.Discovery.Next)
+		}
+		for _, next := range nextPages {
+			if next != nil && !seenTokens[*next] {
+				seenTokens[*next] = true
+				pending = append(pending, *next)
+			}
+		}
+		if len(pending) == 0 {
+			break
+		}
+		query.Set("next", pending[0])
+		pending = pending[1:]
+	}
+	return result, nil
+}
 func SetCatalogCapability(ctx context.Context, conn *Connection, session string, request CatalogCapabilityRequest) (ReloadResult, error) {
-	return reloadSettings(ctx, conn, operation{Name: "set catalog capability", Method: http.MethodPost, Path: sessionPath(session, "/catalog"), Body: struct {
-		Enabled  *bool  `json:"enabled"`
-		Revision string `json:"revision"`
-		ID       string `json:"id"`
-		Scope    string `json:"scope"`
-	}{Enabled: request.Enabled, Revision: request.Revision, ID: request.ID, Scope: request.Scope}, Policy: authRecovery})
+	return setSelection(ctx, conn, session, request.Kind, request.ID, request.Revision, request.Scope, request.ETag, request.Enabled)
+}
+
+func catalogKind(kind string) string {
+	switch kind {
+	case "extension":
+		return "extensions"
+	case "skill":
+		return "skills"
+	case "instruction":
+		return "instructions"
+	}
+	return kind
 }

@@ -20,6 +20,20 @@ import gleam/string
 
 pub type Kernel
 
+pub type Observation {
+  Observation(
+    instance_id: String,
+    build: Option(String),
+    linked: Bool,
+    stale: Option(Stale),
+    live_job_count: Int,
+    job_ids: List(String),
+  )
+}
+
+@external(erlang, "albedo_python", "observation")
+pub fn observation(kernel: Kernel) -> Result(Observation, Nil)
+
 pub type Error {
   Unavailable(String)
   Busy
@@ -261,6 +275,55 @@ pub fn interrupt(kernel: Kernel) -> Nil
 @external(erlang, "albedo_python", "stop")
 pub fn stop(kernel: Kernel) -> Result(Nil, String)
 
+@external(erlang, "albedo_python", "stop_jobs")
+pub fn stop_jobs(kernel: Kernel) -> Result(List(String), String)
+
+@external(erlang, "albedo_python", "stop_recorded")
+fn stop_recorded_native(
+  record: link.Record,
+  remote: Option(Remote),
+) -> Result(Nil, String)
+
+/// Supervise a saved namespace directly; never boot or prepare one to delete it.
+pub fn stop_recorded(
+  store: work.Store,
+  session: String,
+) -> Result(Nil, String) {
+  use published <- result.try(link.lookup(store, session))
+  use stages <- result.try(link.stages(store))
+  let records =
+    list.append(
+      option.values([published]),
+      list.filter(stages, fn(record) { record.session == session }),
+    )
+  list.try_each(records, stop_recorded_instance(store, _))
+}
+
+pub fn stop_recorded_instance(
+  store: work.Store,
+  record: link.Record,
+) -> Result(Nil, String) {
+  let remote = case location.parse(record.cwd) {
+    Ok(location.Remote(..) as at) -> {
+      use target <- result.try(
+        location.ssh_target(at)
+        |> result.replace_error("invalid recorded remote location"),
+      )
+      use #(home, _) <- result.try(
+        string.split_once(record.run_dir, remote_runs <> "/")
+        |> result.replace_error("invalid recorded remote run directory"),
+      )
+      ssh.offline(target, home)
+      |> result.map(fn(commands) { Some(Remote(commands, target, 0)) })
+    }
+    Ok(location.Local(_)) -> Ok(None)
+    Error(_) -> Error("invalid recorded kernel location")
+  }
+  use remote <- result.try(remote)
+  use _ <- result.try(stop_recorded_native(record, remote))
+  link.forget(store, record)
+}
+
 /// Let go of the kernel without ending it, as a daemon that is shutting down
 /// does: it keeps its namespace and jobs for its grace period, and the next
 /// `open` for its session attaches to it again.
@@ -369,22 +432,21 @@ pub fn open(
   case reattach(store, session, cwd, modules, boot) {
     Some(kernel) -> Ok(#(kernel, True))
     None ->
-      boot_fresh(store, session, cwd, modules, runs, boot)
-      |> result.map(fn(kernel) { #(kernel, False) })
+      boot_fresh(store, session, cwd, modules, runs, boot, False)
+      |> result.map(fn(value) { #(value.0, False) })
   }
 }
 
-/// A new kernel for the session, even while its recorded one still runs, as
-/// a replacement prepared beside it does. It becomes the recorded one.
-pub fn fresh(
+/// Prepare a replacement beside the currently published namespace.
+pub fn stage(
   store: work.Store,
   session: String,
   cwd: String,
   host: fn(String) -> String,
   modules: List(String),
-) -> Result(Kernel, Error) {
+) -> Result(#(Kernel, link.Record), Error) {
   use #(modules, runs, boot) <- result.try(booter(store, cwd, host, modules))
-  boot_fresh(store, session, cwd, modules, runs, boot)
+  boot_fresh(store, session, cwd, modules, runs, boot, True)
 }
 
 fn boot_fresh(
@@ -394,7 +456,8 @@ fn boot_fresh(
   modules: String,
   runs: Result(String, Error),
   boot: fn(link.Record, Bool) -> Result(Kernel, Error),
-) -> Result(Kernel, Error) {
+  staged: Bool,
+) -> Result(#(Kernel, link.Record), Error) {
   use runs <- result.try(runs)
   let kernel = string.slice(new_id(), 0, 16)
   let record =
@@ -409,9 +472,31 @@ fn boot_fresh(
       owned: "{}",
     )
   use _ <- result.try(
-    link.create(store, record) |> result.map_error(Unavailable),
+    case staged {
+      False -> link.create(store, record)
+      True -> link.stage(store, record)
+    }
+    |> result.map_error(Unavailable),
   )
-  boot(record, True)
+  case boot(record, True) {
+    Ok(kernel) -> Ok(#(kernel, record))
+    Error(error) -> {
+      let cleanup = {
+        use records <- result.try(link.stages(store))
+        case list.find(records, fn(item) { item.kernel == record.kernel }) {
+          Ok(saved) -> stop_recorded_instance(store, saved)
+          Error(_) -> Ok(Nil)
+        }
+      }
+      case cleanup {
+        Ok(_) -> Error(error)
+        Error(reason) ->
+          Error(Unavailable(
+            describe(error) <> "; staged cleanup failed: " <> reason,
+          ))
+      }
+    }
+  }
 }
 
 /// The session's recorded kernel attached again, never a fresh one.
@@ -588,22 +673,16 @@ pub type Stale {
   Protocol
 }
 
-/// Why this kernel should be swapped, and whether the swap was forced past
-/// its live jobs; None while it is current.
+/// Why this kernel should be swapped; None while it is current.
 @external(erlang, "albedo_python", "stale")
-pub fn stale(kernel: Kernel) -> Option(#(Stale, Bool))
+pub fn stale(kernel: Kernel) -> Option(Stale)
 
 @external(erlang, "albedo_python", "mark_stale")
-fn mark_stale(kernel: Kernel, reason: Stale) -> Nil
-
-/// Let the swap end the kernel's live jobs, as a restart did; False when the
-/// kernel is current and there is nothing to swap.
-@external(erlang, "albedo_python", "force")
-pub fn force(kernel: Kernel) -> Bool
+pub fn mark_stale(kernel: Kernel, reason: Stale) -> Nil
 
 /// What a swap carried: the names restored and those that were not, with why.
 pub type Carried {
-  Carried(reason: Stale, saved: Saved)
+  Carried(reason: Stale, saved: Saved, stopped_jobs: List(String))
 }
 
 /// Replace a stale kernel with a fresh one on the current bundle and module
@@ -612,6 +691,10 @@ pub type Carried {
 /// A busy kernel (a cell still running) answers Busy and stays; so does one
 /// whose namespace could not be written, unless it speaks another protocol,
 /// which is replaced with nothing carried.
+pub type UpgradeFailure {
+  UpgradeFailure(reason: Error, stopped_jobs: List(String))
+}
+
 pub fn upgrade(
   store: work.Store,
   session: String,
@@ -619,53 +702,107 @@ pub fn upgrade(
   host: fn(String) -> String,
   modules: List(String),
   old: Kernel,
-) -> Result(#(Kernel, Carried), Error) {
-  use #(reason, _) <- result.try(
-    stale(old) |> option.to_result(Invalid("the kernel is current")),
+) -> Result(#(Kernel, Carried), UpgradeFailure) {
+  let prepared = {
+    use reason <- result.try(
+      stale(old) |> option.to_result(Invalid("the kernel is current")),
+    )
+    use record <- result.try(
+      link.lookup(store, session) |> result.map_error(Unavailable),
+    )
+    use record <- result.try(
+      record
+      |> option.to_result(Unavailable("the session has no recorded kernel")),
+    )
+    let path = record.run_dir <> "/namespace.state"
+    use saved <- result.try(case snapshot(old, path, state_timeout), reason {
+      Ok(saved), _ -> Ok(Some(saved))
+      Error(_), Protocol -> Ok(None)
+      Error(error), _ -> Error(error)
+    })
+    use staged <- result.try(stage(store, session, cwd, host, modules))
+    Ok(#(reason, path, saved, staged))
+  }
+  use #(reason, path, saved, #(kernel, staged)) <- result.try(
+    prepared |> result.map_error(fn(error) { UpgradeFailure(error, []) }),
   )
-  use record <- result.try(
-    link.find(store, session)
-    |> option.to_result(Unavailable("the session has no recorded kernel")),
-  )
-  let path = record.run_dir <> "/namespace.state"
-  use snapshot <- result.try(case snapshot(old, path, state_timeout), reason {
-    Ok(saved), _ -> Ok(Some(saved))
-    Error(_), Protocol -> Ok(None)
-    Error(error), _ -> Error(error)
-  })
-  use kernel <- result.try(fresh(store, session, cwd, host, modules))
-  let saved = case snapshot {
-    None ->
-      Saved(
-        [],
-        [#("namespace", "the old kernel could not save it")],
-        "",
-        [],
-        [],
-      )
-    Some(snapshot) ->
-      case restore(kernel, path, state_timeout) {
-        Ok(restored) ->
+  let validated = {
+    use observed <- result.try(
+      observation(kernel)
+      |> result.replace_error(Unavailable(
+        "staged kernel observation unavailable",
+      )),
+    )
+    use _ <- result.try(case observed.linked && observed.stale == None {
+      True -> Ok(Nil)
+      False ->
+        Error(Unavailable("replacement kernel is not current and attached"))
+    })
+    use restored <- result.try(case saved {
+      None ->
+        Ok(
+          Saved(
+            [],
+            [#("namespace", "the old kernel could not save it")],
+            "",
+            [],
+            [],
+          ),
+        )
+      Some(snapshot) ->
+        restore(kernel, path, state_timeout)
+        |> result.map(fn(restored) {
           Saved(
             ..restored,
             missed: list.append(snapshot.missed, restored.missed),
             largest: snapshot.largest,
           )
-        Error(error) ->
-          Saved(
-            [],
-            [#("namespace", "restore failed: " <> describe(error))],
-            "",
-            [],
-            [],
-          )
+        })
+    })
+    use _ <- result.try(
+      link.ready(store, staged) |> result.map_error(Unavailable),
+    )
+    Ok(restored)
+  }
+  let completed = {
+    use restored <- result.try(
+      validated |> result.map_error(fn(error) { UpgradeFailure(error, []) }),
+    )
+    use stopped <- result.try(
+      stop_jobs(old)
+      |> result.map_error(fn(reason) { UpgradeFailure(Unavailable(reason), []) }),
+    )
+    use _ <- result.try(
+      link.publish(store, staged)
+      |> result.map_error(fn(reason) {
+        UpgradeFailure(Unavailable(reason), stopped)
+      }),
+    )
+    Ok(#(kernel, Carried(reason, restored, stopped)))
+  }
+  case completed {
+    Ok(value) -> Ok(value)
+    Error(failure) ->
+      case stop(kernel) {
+        Ok(_) -> Error(failure)
+        Error(cleanup) ->
+          Error(UpgradeFailure(
+            Unavailable(
+              describe(failure.reason)
+              <> "; replacement cleanup failed: "
+              <> cleanup,
+            ),
+            failure.stopped_jobs,
+          ))
       }
   }
-  case stop(old) {
-    Ok(_) -> Nil
-    Error(report) -> io.println_error("kernel upgrade: " <> report)
-  }
-  Ok(#(kernel, Carried(reason, saved)))
+}
+
+/// Reap unpublished candidates left by a daemon that stopped during staging.
+/// A ready candidate whose old link is absent was published by link.apply.
+pub fn recover_staged(storage: work.Store) -> Result(Nil, String) {
+  use stages <- result.try(link.stages(storage))
+  list.try_each(stages, stop_recorded_instance(storage, _))
 }
 
 const state_timeout = 30_000
@@ -678,8 +815,3 @@ fn describe(error: Error) -> String {
     Detached -> "the kernel was out of reach"
   }
 }
-
-/// Whether a bridge carries the kernel now: False while the port owner
-/// reattaches after a dropped connection, and for a kernel that is gone.
-@external(erlang, "albedo_python", "linked")
-pub fn linked(kernel: Kernel) -> Bool

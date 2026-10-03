@@ -43,8 +43,8 @@ ledger and paperclips scope, workspace links, recent folders, session search by 
 moves. what the daemon itself reads from a workspace goes through the
 location, and never looks for a remote path on its own disk:
 
-- `/fs/list`, `/fs/repo` and `/fs/preview` take `host:/abs` and `host:~`
-  too (see browsing).
+- `/workspaces` accepts remote `location` values such as `host:/abs` and
+  `host:~` too (see browsing).
 - AGENTS.md, SYSTEM.md and the other instruction files, and project skills,
   are read from a daemon-side mirror of the remote workspace's project
   files (`$ALBEDO_HOME/mirror/<digest>/`: root `*.md`, `.agents/*.md`,
@@ -132,11 +132,12 @@ sessions view lead remote entries with their host.
 
 ## moving a session
 
-`POST /sessions/:id/workspace {"workspace": "/abs/dir"}` answers the session's
-info. the session must be idle and the target an existing absolute directory,
+`PATCH /sessions/{session_id}?view=configuration` changes `workspace` under
+the observed `If-Match` validator. Its result distinguishes committed desired
+state from application outcomes. the session must be idle and the target an existing absolute directory,
 or a remote location (stored canonically; an absolute one isn't checked
 until a kernel boots there, a `~` one is resolved over ssh first).
-`POST /sessions` takes the same forms.
+`PUT /sessions/{session_id}` creates a new session with the same location forms.
 the kernel is dropped (python variables start fresh), the transcript stays,
 and a note records the move.
 
@@ -155,121 +156,26 @@ that.
 
 ## browsing
 
-all three routes take `path`: absolute, or starting with `~`, which expands
-to the daemon's home, or a remote `[user@]host:/abs` or `[user@]host:~/x`
-(`~` is that host's home). anything else is a 400; a path that is not an
-existing directory is a 404. errors are `{"error": "..."}`. `/health` lists
-`workspace_browser` when these routes exist.
+`GET /workspaces` lists recent workspaces. With `location`, it lists child
+folders and canonical parent, home, and host state. `include=preview` adds
+repository facts, language shares, and a bounded two-level file tree.
+[The HTTP contract](../docs/http-api-design.md#models-workspaces-hosts-and-provider-login)
+and [OpenAPI](../docs/openapi.yaml) define the requests and responses.
 
-a remote path is gathered on its host in one ssh round trip per request
-(`priv/python/albedo_gather.py`, after the host's probe, kernel.md): the
-directory entries with their stats, which `.jj`/`.git` markers exist, the
-very vcs commands `vcs.plan` names (run there with the same 2 s deadline),
-and the sizes of tracked files. the daemon reads that snapshot with the
-same code it reads its own disk with (`folders.gleam`, `vcs.gleam` over a
-`Shell`), so a remote answer is the local answer for the same tree, except
-that `path` and `home` are canonical location strings
-(`mayer@chernobog:/home/mayer/proj`, `mayer@chernobog:/home/mayer`) so a
-client can fold `~`. a repository's `root` stays the plain path on that
-host. a host without a ready probe answers 503 `{error, host, state}`
-(`needs_auth` with `control_path`, `unreachable`, `unsupported`,
-`warming`), so the picker can show it on the row.
+Locations are absolute paths, daemon-relative `~` paths, or remote
+`[user@]host:/abs` and `[user@]host:~/x` paths. Remote browsing gathers one
+snapshot over SSH after the host probe. Local and remote snapshots use the
+same folder and VCS readers. The nearest enclosing repository wins; a
+colocated `.jj` takes precedence over `.git`. VCS commands have short deadlines,
+and unavailable optional facts do not discard the folder listing.
 
-### `GET /hosts`
+Language shares use tracked file sizes and the bundled GitHub Linguist data.
+The tree shows tracked or changed paths, excluding ignored build output.
+Browsing jj uses `--ignore-working-copy` and does not create a snapshot.
 
-the hosts the picker completes:
-
-```json
-{"hosts": [{"host": "mayer@chernobog", "label": "chernobog",
-            "source": "recent", "state": "ready"},
-           {"host": "devbox", "label": "devbox", "source": "config"}]}
-```
-
-- `recent` hosts come from session workspaces, ranked as the picker ranks
-  recent folders (per session 4 within the hour, halving past a day, a week
-  and a month, summed per host).
-- `config` hosts are the `Host` names of the daemon user's
-  `~/.ssh/config` and the files it `Include`s, wildcard patterns (`*`, `?`,
-  `!`) left out, in file order, after the recent ones and without repeats.
-- `host` is the canonical `[user@]host` for `/hosts/:host` and `host:/path`;
-  `label` the display form. `state` is the cached probe's when one is
-  fresh; listing never probes.
-
-### `GET /fs/list?path=P`
-
-the directories directly inside P, for the picker's list.
-
-```json
-{"path": "/Users/dawn/proj", "home": "/Users/dawn", "truncated": false,
- "entries": [{"name": "albedo", "modified": 1790618149, "hidden": false, "vcs": "jj"}]}
-```
-
-- `path` is P expanded and normalised (no trailing slash, except `/`).
-- only directories, symlinks to directories included; sorted by name,
-  case-insensitively. at most 2000; `truncated` says there were more.
-- `modified` is the directory's mtime in unix seconds.
-- `hidden` is a leading dot. the picker hides these unless the query asks.
-- `vcs` is `"jj"` when the entry itself contains `.jj`, else `"git"` when it
-  contains `.git` (file or directory), else `null`. a stat, never a process.
-
-### `GET /fs/repo?path=P`
-
-the repository P is in, for list rows: `{"repo": Repo | null}`.
-
-```json
-{"kind": "git", "root": "/Users/dawn/proj/tangled", "branch": "master",
- "commit": "4fd0f30", "changed": 3, "touched": 1790610000}
-{"kind": "jj", "root": "/Users/dawn/proj/albedo", "change": "nznu",
- "bookmark": {"name": "main", "ahead": 2}, "changed": 1, "touched": 1790618150}
-```
-
-- the nearest enclosing root wins, walking up from P. at one level `.jj`
-  beats `.git`: a colocated repo's git reports a detached HEAD.
-- git: `branch` is null when HEAD is detached; `commit` is the short HEAD id,
-  null in an unborn repo. `changed` counts `git status --porcelain=v2` entries,
-  untracked included. `touched` is the last commit's time.
-- jj: `change` is `@`'s shortest change id (at least 4 characters).
-  `bookmark` is the bookmark `@` works on and how many changes `@` is past the
-  fork, the newest change in `@`'s history a bookmark contains
-  (`heads(::@ & ::bookmarks())`), or null. the name is one at the fork itself,
-  local or remote (a colocated repo's `name@git` counts), else the newest
-  bookmark that grew from the fork. the nearest bookmark behind `@` would often
-  be an old backup of a bookmark that has since moved on. `changed` is the files `@`
-  changes. jj runs with `--ignore-working-copy`, so browsing never snapshots
-  or writes an operation: `changed` is as fresh as the last jj command.
-- every vcs command has a short deadline. a field whose command failed or
-  timed out is null; `kind` and `root` are always there.
-
-### `GET /fs/preview?path=P`
-
-everything the preview pane shows for P.
-
-```json
-{"path": "/Users/dawn/proj/tangled", "repo": Repo,
- "languages": [{"name": "Go", "color": "#00ADD8", "share": 0.71}],
- "tree": [{"name": "spindle", "dir": true, "changed": 3, "more": 0,
-           "children": [{"name": "engine", "dir": true, "changed": 0}]},
-          {"name": "flake.nix", "dir": false, "language": "Nix", "changed": 0}],
- "more": 11}
-```
-
-- `languages`: the tracked files under P (`git ls-files` / `jj file list`),
-  bytes per language, counting only linguist's `programming` and `markup`
-  types, as github's language bar does. largest first, at most 4; `share` is
-  of all counted bytes. empty outside a repository. `color` is linguist's own
-  hex (or null): the tui adapts it to the terminal.
-- `tree`: two levels. directories first, then files, each by name; dot
-  entries left out. inside a repository only tracked or changed paths show,
-  so build output and other ignored files stay out of the way. at most 12 top-level entries (`more` counts the rest);
-  a top-level directory lists at most 4 children (its `more` counts the rest)
-  and deeper directories list none. `language` names a file's linguist
-  language, or null. `changed` counts the changed files at or under an entry.
-- language data is github linguist's `languages.yml`, shipped in
-  `priv/linguist/` and read once. a file is matched by exact filename, then by
-  its longest extension. an extension several languages claim goes to a fixed
-  ranking that favours linguist's popular languages and their primary
-  extensions (`popular.yml`), so `.md` is Markdown and `.h` is C++.
-- `share` is unrounded.
+`GET /hosts` lists recent and SSH-config targets with cached probe state.
+`POST /hosts/{host}/probe` starts or joins a probe. Clients poll the filtered
+host read until it completes; SSH sign-in remains an explicit operator action.
 
 ## the picker
 
@@ -287,7 +193,7 @@ folder (`cli/internal/tui/folder_picker.go`, `parseQuery`):
 - `chernobog:` lists that host's home, `chernobog:proj/` and
   `chernobog:~/proj/` browse under it, `chernobog:/srv/` from its root.
   everything after the last slash filters, as locally. the listing comes
-  from `/fs/list` with the location; its canonical `path` and `home` fold
+  from `/workspaces` with `location`; its canonical `path` and `home` fold
   rows to `chernobog:proj/albedo`.
 - hosts complete from `GET /hosts` (recent first, then ssh config), with the
   hosts of the sessions already listed as a fallback. a bare word still
@@ -299,7 +205,7 @@ folder (`cli/internal/tui/folder_picker.go`, `parseQuery`):
   `host:`.
 - highlighting a remote row (a recent remote folder, a host, a folder in a
   remote listing), or typing a remote listing, warms its host once per
-  picker: `POST /hosts/:host/warm`, then `GET /hosts/:host` every 750 ms
+  picker: `POST /hosts/{host}/probe`, then `GET /hosts?target={host}` every 750 ms
   until the probe settles. the row shows it quietly: faint while warming,
   plain once ready, the probe's detail in the error style when unreachable
   or unsupported, `sign in · ctrl+l` when it needs a person. ctrl+l runs the

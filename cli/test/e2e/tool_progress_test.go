@@ -25,10 +25,11 @@ import (
 
 // A raw protocol reader and the Go client attach to the same paused real
 // daemon turn. The reset snapshot must describe current activity and arrive
-// through the Go callback as live normalized progress.
+// through the Go callback as live normalized progress. Finalized file changes
+// must also survive both the live result and durable history projection.
 func TestLateChatClientRestoresNormalizedToolProgress(t *testing.T) {
 	t.Parallel()
-	const code = "from pathlib import Path\nimport time\nPath('progress-ready').write_text('ready')\nwhile not Path('finish-progress').exists(): time.sleep(0.01)\nprint('finished')"
+	const code = "from pathlib import Path\nimport time\nPath('progress-ready').write_text('ready')\nwhile not Path('finish-progress').exists(): time.sleep(0.01)\nfiles.write('trace-display.txt', 'finished trace\\n')\nprint('finished')"
 	ready, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
 	provider := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -87,7 +88,7 @@ func TestLateChatClientRestoresNormalizedToolProgress(t *testing.T) {
 	})
 
 	profile := t.Name()
-	if err := daemon.SaveProvider(context.Background(), conn(t), profile, config.Settings{
+	if err := saveAndSelectProvider(context.Background(), conn(t), profile, config.Settings{
 		Extension: "openai", BaseURL: provider.URL, APIKey: "fixture-key",
 		Model: "fixture-model", Protocol: "chat_completions",
 	}); err != nil {
@@ -155,9 +156,39 @@ func TestLateChatClientRestoresNormalizedToolProgress(t *testing.T) {
 	if running[0].Phase != "running" || running[0].CallID != generating[0].CallID {
 		t.Fatalf("running reset lost call identity or phase: generating=%+v running=%+v", generating[0], running[0])
 	}
-	if err := os.WriteFile(finishPath, []byte("finish"), 0o600); err != nil {
-		t.Fatal(err)
+	finishedTrace := errors.New("received finalized tool trace")
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	var liveTrace *daemon.ToolTrace
+	err := daemon.NewChatClient(conn(t), session).Stream(ctx, 0, func(event daemon.StreamEvent) error {
+		if event.Type == daemon.EventToolProgress && event.Progress != nil && event.Progress.Phase == "running" {
+			return os.WriteFile(finishPath, []byte("finish"), 0o600)
+		}
+		if event.Type == daemon.EventTool && event.ToolName == "python" {
+			if event.Replayed {
+				t.Error("live tool result was marked as replayed history")
+			}
+			liveTrace = event.ToolTrace
+			return finishedTrace
+		}
+		return nil
+	})
+	if !errors.Is(err, finishedTrace) {
+		t.Fatalf("finalized tool trace did not reach the Go callback: %v", err)
 	}
+	assertTrace := func(trace *daemon.ToolTrace) {
+		t.Helper()
+		if trace == nil {
+			t.Fatal("tool result lost its finalized trace")
+		}
+		for _, change := range trace.Changes {
+			if filepath.Base(change.Path) == "trace-display.txt" && change.Kind == "diff" && strings.Contains(change.Diff, "+finished trace") {
+				return
+			}
+		}
+		t.Fatalf("tool trace lost the actual file change: %+v", trace)
+	}
+	assertTrace(liveTrace)
 	deadline = time.Now().Add(30 * time.Second)
 	for {
 		status, err := client.GetStatus(t.Context())
@@ -172,19 +203,33 @@ func TestLateChatClientRestoresNormalizedToolProgress(t *testing.T) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+	history, err := client.History(t.Context(), 0, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replayedTrace *daemon.ToolTrace
+	for _, event := range history.Events {
+		if event.Type == daemon.EventTool && event.ToolName == "python" {
+			replayedTrace = event.ToolTrace
+		}
+	}
+	assertTrace(replayedTrace)
+	if !reflect.DeepEqual(liveTrace, replayedTrace) {
+		t.Fatalf("durable history changed the finalized trace: live=%+v history=%+v", liveTrace, replayedTrace)
+	}
 }
 
 func readCurrentProgress(t *testing.T, connection *daemon.Connection, session string) []daemon.ToolProgress {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	endpoint := connection.BaseURL() + "/sessions/" + url.PathEscape(session) + "/stream"
+	endpoint := connection.BaseURL() + "/sessions/" + url.PathEscape(session)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set("Accept", "text/event-stream")
-	request.Header.Set("Authorization", "Bearer "+connection.Token())
+	request.Header.Set("Authorization", "Bearer "+connection.Snapshot().Token)
 	response, err := connection.HTTPClient().Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -201,8 +246,19 @@ func readCurrentProgress(t *testing.T, connection *daemon.Connection, session st
 			continue
 		}
 		var batch struct {
-			Events          []map[string]any      `json:"events"`
-			CurrentProgress []daemon.ToolProgress `json:"currentProgress"`
+			Events   []map[string]any `json:"events"`
+			Snapshot struct {
+				CurrentProgress []struct {
+					CallID     string  `json:"call_id"`
+					ToolCallID *string `json:"tool_call_id"`
+					Name       string  `json:"name"`
+					Phase      string  `json:"phase"`
+					Preview    *struct {
+						Text   string `json:"text"`
+						Offset int    `json:"offset_scalars"`
+					} `json:"preview"`
+				} `json:"current_progress"`
+			} `json:"snapshot"`
 		}
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &batch); err != nil {
 			t.Fatal(err)
@@ -210,10 +266,21 @@ func readCurrentProgress(t *testing.T, connection *daemon.Connection, session st
 		if len(batch.Events) == 0 || batch.Events[0]["type"] != "reset" {
 			t.Fatalf("late raw attachment did not begin with a reset: %+v", batch.Events)
 		}
-		if batch.CurrentProgress == nil {
-			t.Fatal("reset omitted currentProgress")
+		if batch.Snapshot.CurrentProgress == nil {
+			t.Fatal("reset snapshot omitted current_progress")
 		}
-		return batch.CurrentProgress
+		result := []daemon.ToolProgress{}
+		for _, item := range batch.Snapshot.CurrentProgress {
+			progress := daemon.ToolProgress{CallID: item.CallID, Name: item.Name, Phase: item.Phase}
+			if item.ToolCallID != nil {
+				progress.ToolCallID = *item.ToolCallID
+			}
+			if item.Preview != nil {
+				progress.Code = &daemon.ToolCodePreview{Text: item.Preview.Text, Offset: item.Preview.Offset}
+			}
+			result = append(result, progress)
+		}
+		return result
 	}
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)

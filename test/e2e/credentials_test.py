@@ -34,7 +34,7 @@ class CredentialsTest(unittest.TestCase):
         return self.provider.requests[start:][-1]["authorization"]
 
     def summary(self, app):
-        with app.api("/auth/credentials") as response:
+        with app.api("/settings") as response:
             return response.read().decode()
 
     # exclusive: restarts the daemon to migrate global credential files
@@ -63,10 +63,15 @@ class CredentialsTest(unittest.TestCase):
         self.assertFalse((app.home / "mcp-credentials.json").exists())
         backups = {path.name.split("-before-creds-")[0] for path in self.backups(app)}
         self.assertEqual(backups, {"auth.json", "mcp-credentials.json", "config.json"})
-        # The first client to ask hears about the move; later ones do not.
-        for expected in (["auth.json", "mcp-credentials.json", "config.json"], []):
-            with app.api("/auth/credentials/migration", {}) as response:
-                self.assertEqual(json.load(response)["moved"], expected)
+        with app.api("/server") as response:
+            notices = json.load(response)["notices"]
+        migrated = " ".join(
+            notice["message"] for notice in notices if notice["kind"] == "migration"
+        )
+        for name in ("auth.json", "mcp-credentials.json", "config.json"):
+            self.assertIn(name, migrated)
+        self.assertNotIn("old-access", migrated)
+        self.assertNotIn("old-token", migrated)
         # Not even their owner reads them without a chmod first.
         self.assertEqual(
             {stat.S_IMODE(path.stat().st_mode) for path in self.backups(app)}, {0}
@@ -74,6 +79,7 @@ class CredentialsTest(unittest.TestCase):
         # The moved key still reaches the provider.
         self.assertEqual(self.authorization(app), "Bearer fixture-key")
 
+    @exclusive
     def test_clients_change_secrets_without_reading_them(self):
         # No legacy config key: clients store and rotate only this fixture's
         # credential, without depending on startup migration of config.json.
@@ -90,44 +96,80 @@ class CredentialsTest(unittest.TestCase):
         app.__enter__()
         self.addCleanup(app.__exit__, None, None, None)
         server = app.profile
-        app.api(
-            f"/auth/credentials/providers/{app.profile}",
-            {"apiKey": "fixture-key"},
-            method="PUT",
-        ).close()
-        self.assertEqual(self.authorization(app), "Bearer fixture-key")
-        app.api(
-            f"/auth/credentials/providers/{app.profile}",
-            {"apiKey": "rotated-key"},
-            method="PUT",
-        ).close()
-        self.assertEqual(self.authorization(app), "Bearer rotated-key")
 
-        def patch(body):
+        def patch(group, body):
+            route = f"/settings?group={group}"
+            with app.api(route) as response:
+                json.load(response)
+                revision = response.headers["ETag"]
             with app.api(
-                f"/auth/credentials/mcp/{server}", body, method="PATCH"
+                route,
+                body,
+                method="PATCH",
+                headers={
+                    "If-Match": revision,
+                    "Content-Type": "application/merge-patch+json",
+                },
             ) as response:
-                return json.load(response)["undo"]
+                return json.load(response)["resource"]["value"]
 
-        patch({"bearerToken": "secret-token", "headers": {"X-Team": "secret-team"}})
-        undo = patch({"bearerToken": None, "env": {"TOKEN": "secret-env"}})
+        patch("providers", {"profiles": {app.profile: {"api_key": "fixture-key"}}})
+        self.assertEqual(self.authorization(app), "Bearer fixture-key")
+        patch("providers", {"profiles": {app.profile: {"api_key": "rotated-key"}}})
+        self.assertEqual(self.authorization(app), "Bearer rotated-key")
+        value = patch(
+            "mcp",
+            {
+                "definitions": {
+                    server: {
+                        "enabled": False,
+                        "transport": "http",
+                        "url": "http://127.0.0.1:1/mcp",
+                        "secrets": {
+                            "bearer_token": "secret-token",
+                            "headers": {"X-Team": "secret-team"},
+                        },
+                    }
+                }
+            },
+        )
+        self.assertEqual(
+            value["definitions"][server]["secret_presence"],
+            {"bearer_token": True, "headers": ["X-Team"], "environment": []},
+        )
+        value = patch(
+            "mcp",
+            {
+                "definitions": {
+                    server: {
+                        "secrets": {
+                            "bearer_token": None,
+                            "environment": {"TOKEN": "secret-env"},
+                        }
+                    }
+                }
+            },
+        )
+        self.assertEqual(
+            value["definitions"][server]["secret_presence"],
+            {"bearer_token": False, "headers": ["X-Team"], "environment": ["TOKEN"]},
+        )
         summary = self.summary(app)
-        self.assertIn(app.profile, json.loads(summary)["providers"])
-        self.assertEqual(
-            json.loads(summary)["mcp"][server],
-            {"bearerToken": False, "headers": ["X-Team"], "env": ["TOKEN"]},
-        )
-        app.api(f"/auth/credentials/mcp/{server}/undo", {"token": undo}).close()
-        self.assertEqual(
-            json.loads(self.summary(app))["mcp"][server],
-            {"bearerToken": True, "headers": ["X-Team"], "env": []},
-        )
         self.assertFalse(
             any(
                 secret in summary
-                for secret in ("rotated-key", "secret-", "fixture-key")
+                for secret in (
+                    "rotated-key",
+                    "secret-token",
+                    "secret-team",
+                    "secret-env",
+                    "fixture-key",
+                )
             )
         )
+        patch("mcp", {"definitions": {server: None}})
+        with (app.home / "creds.json").open() as source:
+            self.assertNotIn(server, json.load(source).get("mcp", {}))
 
     def backups(self, app):
         return list((app.home / "backups").glob("*-before-creds-*"))

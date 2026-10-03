@@ -2,12 +2,15 @@
 
 import albedo/daemon/conversation
 import albedo/daemon/events as view
+import albedo/daemon/http_history
 import albedo/daemon/image_fit
+import albedo/daemon/message_content
 import albedo/daemon/projection
 import albedo/daemon/session_state
 import albedo/daemon/transcript
 import albedo/harness/runtime
 import albedo/openai_api/types
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -61,7 +64,7 @@ pub fn recover_pending(
       }
     })
   let pending =
-    list.flat_map(inputs, view.calls)
+    list.flat_map(inputs, message_content.calls)
     |> list.filter(fn(call) { !list.contains(completed, call.id) })
   list.map(pending, runtime.recover(host, kernel, _, images))
 }
@@ -165,16 +168,119 @@ pub fn remember_response(
   // A zero timestamp is a candidate projection, not a commit.
   case timestamp, inputs {
     0, _ | _, [] -> state
-    _, _ -> mark_committed(state)
+    _, _ ->
+      publish_committed(
+        state,
+        list.length(entries),
+        list.any(inputs, fn(input) {
+          case input {
+            types.ToolOutput(_, _, _) -> False
+            _ -> True
+          }
+        }),
+      )
   }
 }
 
-/// Tells clients which rows now cover what they have shown (see view.rows).
-fn mark_committed(
+/// Project committed rows through the same native history projection as GET.
+/// Only the newly durable range is read; a loaded transcript is never required.
+fn publish_committed(
   state: session_state.State(message),
+  count: Int,
+  publish_rows: Bool,
 ) -> session_state.State(message) {
-  case conversation.last_seq(runtime.ledger(state.host), state.info.id) {
-    Ok(seq) -> session_state.emit(state, view.committed(seq))
+  case conversation.snapshot(runtime.ledger(state.host), state.info.id) {
     Error(_) -> state
+    Ok(snapshot) -> {
+      let state = case publish_rows {
+        True -> publish_range(state, snapshot, snapshot.upper - count, 0, True)
+        False -> state
+      }
+      session_state.emit(state, view.Committed(snapshot.upper))
+    }
+  }
+}
+
+fn publish_range(
+  state: session_state.State(message),
+  snapshot: conversation.Snapshot,
+  after: Int,
+  continuation_after: Int,
+  include_rows: Bool,
+) -> session_state.State(message) {
+  case
+    conversation.read_range(
+      runtime.ledger(state.host),
+      conversation.Range(
+        snapshot,
+        conversation.After(after),
+        200,
+        continuation_after,
+      ),
+    )
+  {
+    Error(error) ->
+      session_state.emit(
+        state,
+        view.Failure(None, "history_publication_failed", error),
+      )
+    Ok(page) -> {
+      let state =
+        list.fold(http_history.project(page), state, fn(state, entry) {
+          case include_rows || entry.kind == "continuation" {
+            False -> state
+            True -> publish_entry(state, entry)
+          }
+        })
+      let marker =
+        list.fold(page.continuations, continuation_after, fn(acc, marker) {
+          int.max(acc, marker.order)
+        })
+      case page.more_continuations, page.has_more {
+        True, _ ->
+          case marker > continuation_after {
+            True -> publish_range(state, snapshot, after, marker, False)
+            False ->
+              session_state.emit(
+                state,
+                view.Failure(
+                  None,
+                  "history_publication_failed",
+                  "continuation page made no progress",
+                ),
+              )
+          }
+        False, True -> {
+          let position =
+            list.last(page.entries)
+            |> result.map(fn(row) { row.source.seq })
+            |> result.unwrap(after)
+          case position > after {
+            True -> publish_range(state, snapshot, position, marker, True)
+            False -> state
+          }
+        }
+        False, False -> state
+      }
+    }
+  }
+}
+
+fn publish_entry(
+  state: session_state.State(message),
+  entry: http_history.Entry,
+) -> session_state.State(message) {
+  case entry.kind {
+    "thinking" ->
+      case entry.turn_id, entry.thinking_ms {
+        Some(run_id), Some(elapsed) ->
+          session_state.emit(
+            state,
+            view.Thinking(run_id, entry.id, "", Some(elapsed)),
+          )
+        _, _ -> state
+      }
+    "tool_call" | "tool_result" -> state
+    _ -> session_state.emit(state, view.Message(entry))
   }
 }

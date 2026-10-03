@@ -144,10 +144,16 @@ class ProxyTests(unittest.TestCase):
         self.app = Albedo(self.provider, providers=profiles)
         self.app.__enter__()
         self.addCleanup(self.app.__exit__, None, None, None)
-        self.base = self.app.base + "/proxy/v1"
+        self.base = self.app.base + "/extensions/proxy/v1"
 
     def get_models(self):
-        return urllib.request.urlopen(self.base + "/models", timeout=10)
+        return urllib.request.urlopen(
+            urllib.request.Request(
+                self.base + "/models",
+                headers={"Authorization": "Bearer " + self.app.connection["token"]},
+            ),
+            timeout=10,
+        )
 
     def enable(self):
         self.app.write_extensions({"enabled": {"proxy": True}})
@@ -156,7 +162,11 @@ class ProxyTests(unittest.TestCase):
         request = urllib.request.Request(
             self.base + "/chat/completions",
             json.dumps(body).encode(),
-            {"Content-Type": "application/json", **(headers or {})},
+            {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + self.app.connection["token"],
+                **(headers or {}),
+            },
         )
         return urllib.request.urlopen(request, timeout=30)
 
@@ -170,7 +180,7 @@ class ProxyTests(unittest.TestCase):
         self.app.write_extensions({"enabled": {"proxy": False}})
         with self.assertRaises(urllib.error.HTTPError) as rejected:
             self.get_models()
-        self.assertEqual(rejected.exception.code, 403)
+        self.assertEqual(rejected.exception.code, 404)
         self.enable()
         with self.get_models() as response:
             listing = json.load(response)
@@ -206,34 +216,96 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(rejected.exception.code, 400)
 
     def test_ingress_limits_and_origin_refuse_before_provider_work(self):
-        path = "/proxy/v1/chat/completions"
+        path = "/extensions/proxy/v1/chat/completions"
         for framing, expected_status, code in (
-            ({"Transfer-Encoding": "chunked"}, 400, "unsupported_transfer_encoding"),
-            ({"Content-Length": "invalid"}, 400, "invalid_content_length"),
+            ({"Transfer-Encoding": "identity"}, 400, "unsupported_transfer_encoding"),
+            ({"Content-Length": "invalid"}, 400, "invalid_request"),
             ({"Content-Length": "32000001"}, 413, "request_body_too_large"),
         ):
             with self.subTest(framing=framing):
-                status, headers, body = refused_request(self.app, path, framing)
+                status, headers, body = refused_request(
+                    self.app,
+                    path,
+                    {
+                        **framing,
+                        "Authorization": "Bearer " + self.app.connection["token"],
+                    },
+                    method="POST",
+                )
                 self.assertEqual(status, expected_status)
-                self.assertEqual(json.loads(body)["code"], code)
-                self.assertEqual(headers["albedo-error-code"], code)
+                self.assertEqual(json.loads(body)["error"]["code"], code)
                 status, _, _ = refused_request(
-                    self.app, path, {**framing, "Origin": "https://attacker.example"}
+                    self.app,
+                    path,
+                    {
+                        **framing,
+                        "Origin": "https://attacker.example",
+                        "Authorization": "Bearer " + self.app.connection["token"],
+                    },
+                    method="POST",
                 )
                 self.assertEqual(status, 403)
         self.assertFalse(self.provider.requests)
 
-    def test_get_and_unknown_route_bodies_keep_anonymous_connection_usable(self):
+    def test_authentication_precedes_body_and_authenticated_unknown_routes_keep_connection_usable(
+        self,
+    ):
         for method, path, expected_status in (
-            ("GET", "/proxy/v1/models", 200),
-            ("GET", "/proxy/v1/missing", 404),
-            ("POST", "/proxy/v1/missing", 404),
+            ("GET", "/extensions/proxy/v1/models", 401),
+            ("GET", "/extensions/proxy/v1/missing", 401),
+            ("POST", "/extensions/proxy/v1/missing", 401),
         ):
             with self.subTest(method=method, path=path):
-                self.assertEqual(
-                    delayed_request(self.app, method, path, b"{}", {}),
-                    (expected_status, 200),
+                status, headers, _ = refused_request(
+                    self.app, path, {"Content-Length": "2"}, method=method
                 )
+                self.assertEqual(status, expected_status)
+                self.assertEqual(headers["www-authenticate"], "Bearer")
+                if expected_status == 401:
+                    self.assertEqual(
+                        delayed_request(
+                            self.app,
+                            method,
+                            path,
+                            b"{}",
+                            {"Authorization": "Bearer " + self.app.connection["token"]},
+                        ),
+                        (200 if path.endswith("/models") else 404, 200),
+                    )
+
+    @exclusive
+    def test_anonymous_proxy_requires_explicit_operator_opt_in(self):
+        self.enable()
+        with self.assertRaises(urllib.error.HTTPError) as rejected:
+            urllib.request.urlopen(self.base + "/models", timeout=10)
+        self.assertEqual(rejected.exception.code, 401)
+        with self.get_models() as response:
+            self.assertEqual(response.status, 200)
+        previous = self.app.env.get("ALBEDO_PROXY_ALLOW_ANONYMOUS")
+        try:
+            self.app.env["ALBEDO_PROXY_ALLOW_ANONYMOUS"] = "1"
+            self.app.restart()
+            self.base = self.app.base + "/extensions/proxy/v1"
+            with urllib.request.urlopen(self.base + "/models", timeout=10) as response:
+                self.assertEqual(response.status, 200)
+            for route in (
+                "/server",
+                "/extensions/work/items",
+                "/extensions/proxy/v1/missing",
+            ):
+                with (
+                    self.subTest(route=route),
+                    self.assertRaises(urllib.error.HTTPError) as rejected,
+                ):
+                    urllib.request.urlopen(self.app.base + route, timeout=10)
+                self.assertEqual(rejected.exception.code, 401)
+        finally:
+            if previous is None:
+                self.app.env.pop("ALBEDO_PROXY_ALLOW_ANONYMOUS", None)
+            else:
+                self.app.env["ALBEDO_PROXY_ALLOW_ANONYMOUS"] = previous
+            self.app.restart()
+            self.base = self.app.base + "/extensions/proxy/v1"
 
     def test_streamed_chat_deltas_usage_and_provider_routing(self):
         with self.post(

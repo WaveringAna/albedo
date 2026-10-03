@@ -6,7 +6,7 @@ import time
 import unittest
 import urllib.error
 
-from harness import Albedo, Provider, python, text
+from harness import Albedo, Provider, operation_id, python, text
 
 HEAVY = os.environ.get("ALBEDO_E2E_HEAVY") == "1"
 ROOTS = 4 if HEAVY else 2
@@ -40,11 +40,22 @@ class AgentsSwarmTests(unittest.TestCase):
                 started = time.monotonic()
                 for root in roots:
                     for number in range(CHILDREN):
+                        child = operation_id()
                         with app.api(
-                            f"/sessions/{root}/children",
-                            {"name": f"sp-{number}", "task": f"count to {number}"},
+                            f"/sessions/{child}",
+                            {
+                                "kind": "child",
+                                "parent_id": root,
+                                "address": f"sp-{number}",
+                                "name": f"sp-{number}",
+                                "initial_input_id": operation_id(),
+                                "task": f"count to {number}",
+                            },
+                            method="PUT",
+                            headers={"If-None-Match": "*"},
                         ) as response:
-                            children.append(json.load(response)["session"]["id"])
+                            self.assertEqual(json.load(response)["id"], child)
+                        children.append(child)
                 self.assertLess(
                     time.monotonic() - started, 30, "spawn must not await kernel boot"
                 )
@@ -54,12 +65,14 @@ class AgentsSwarmTests(unittest.TestCase):
                     answers = self.answers(app, roots)
                     tick = time.monotonic()
                     for root in roots:
-                        with app.api(f"/agents?session={root}") as response:
+                        with app.api(
+                            f"/sessions?scope=all&family_id={root}"
+                        ) as response:
                             self.assertEqual(
-                                len(json.load(response)["nodes"]), CHILDREN + 1
+                                len(json.load(response)["items"]), CHILDREN + 1
                             )
                     for child in children[::6]:
-                        with app.api(f"/sessions/{child}/status") as response:
+                        with app.api(f"/sessions/{child}?tail=0") as response:
                             json.load(response)
                     slowest = max(slowest, time.monotonic() - tick)
                     if sum(answers) == ROOTS * CHILDREN:
@@ -79,8 +92,8 @@ class AgentsSwarmTests(unittest.TestCase):
                     in record["request"]["messages"][-1].get("content", "")
                 ]
                 self.assertEqual(len(completed), ROOTS * CHILDREN)
-                with app.api("/health") as response:
-                    self.assertTrue(json.load(response)["ok"])
+                with app.api("/server") as response:
+                    self.assertEqual(json.load(response)["state"], "ready")
         finally:
             provider.close()
 
@@ -91,13 +104,21 @@ class AgentsSwarmTests(unittest.TestCase):
                 session = app.session()
                 with app.api("/sessions") as response:
                     info = next(
-                        item for item in json.load(response) if item["id"] == session
+                        item
+                        for item in json.load(response)["items"]
+                        if item["id"] == session
                     )
-                self.assertEqual(info["provider"], app.profile)
+                self.assertEqual(info["provider_profile"], app.profile)
                 with self.assertRaises(urllib.error.HTTPError) as rejected:
                     app.api(
-                        "/sessions",
-                        {"workspace": str(app.workspace), "provider": "not-configured"},
+                        f"/sessions/{operation_id()}",
+                        {
+                            "kind": "new",
+                            "workspace": str(app.workspace),
+                            "provider_profile": "not-configured",
+                        },
+                        method="PUT",
+                        headers={"If-None-Match": "*"},
                     ).close()
                 self.assertEqual(rejected.exception.code, 400)
         finally:
@@ -107,11 +128,15 @@ class AgentsSwarmTests(unittest.TestCase):
     def answers(app, roots):
         counts = []
         for root in roots:
-            with app.api(f"/sessions/{root}/preview?limit=200") as response:
+            with app.api(f"/sessions/{root}/history?limit=200") as response:
                 items = json.load(response)["items"]
             counts.append(
                 sum(
-                    item["type"] == "user" and "unreviewed" in item["preview"]
+                    item["kind"] == "user"
+                    and any(
+                        part["kind"] == "text" and "unreviewed" in part["text"]
+                        for part in item["content"]
+                    )
                     for item in items
                 )
             )

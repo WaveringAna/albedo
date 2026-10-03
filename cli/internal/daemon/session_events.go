@@ -1,0 +1,256 @@
+package daemon
+
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+)
+
+type wireChatEvent struct {
+	CallID string
+	StreamEvent
+}
+type sessionEventEnvelope struct {
+	Type     string          `json:"type"`
+	Sequence *int64          `json:"sequence"`
+	Data     json.RawMessage `json:"data"`
+}
+
+func decodeChatEvent(raw json.RawMessage) (*wireChatEvent, error) {
+	var envelope sessionEventEnvelope
+	if err := decodeRequired(raw, &envelope, "type", "data"); err != nil {
+		return nil, err
+	}
+	if envelope.Type == "" || envelope.Data == nil || string(envelope.Data) == "null" {
+		return nil, fieldError("event")
+	}
+	if envelope.Type != "reset" && envelope.Type != "failure" && (envelope.Sequence == nil || *envelope.Sequence < 1) {
+		return nil, fieldError("event sequence")
+	}
+	event := StreamEvent{Type: EventType(envelope.Type)}
+	switch envelope.Type {
+	case "reset":
+		var data struct {
+			Reason string `json:"reason"`
+		}
+		if err := decodeRequired(envelope.Data, &data, "reason"); err != nil {
+			return nil, err
+		}
+		switch data.Reason {
+		case "initial", "generation_changed", "replay_unavailable", "recovery":
+		default:
+			return nil, fieldError("reset reason")
+		}
+	case "status":
+		var data wireSessionStatus
+		if err := decodeRequired(envelope.Data, &data, "phase", "run_id", "interrupt_requested", "blocking_reason"); err != nil {
+			return nil, err
+		}
+		if err := validateSessionStatus(data); err != nil {
+			return nil, err
+		}
+		status := statusValue(data, wireKernel{})
+		event.Status = &status
+	case "input":
+		var data struct {
+			Input wireInput `json:"input"`
+		}
+		if err := decodeRequired(envelope.Data, &data, "input"); err != nil {
+			return nil, err
+		}
+		if err := validInput(data.Input); err != nil {
+			return nil, err
+		}
+		receipt := inputReceipt(data.Input)
+		event.Receipt = &receipt
+		event.OperationID = data.Input.ID
+		if data.Input.Turn != nil {
+			event.Type = EventTurnMembership
+			event.TurnID = data.Input.Turn.ID
+			event.SubmissionIDs = []string{data.Input.ID}
+		}
+	case "text", "thinking":
+		var data struct {
+			RunID     string `json:"run_id"`
+			MessageID string `json:"message_id"`
+			ElapsedMs *int64 `json:"elapsed_ms"`
+			Text      string `json:"text"`
+		}
+		if err := decodeRequired(envelope.Data, &data, "run_id", "message_id", "text"); err != nil {
+			return nil, err
+		}
+		if data.RunID == "" || data.MessageID == "" {
+			return nil, fieldError("message identity")
+		}
+		event.Text, event.TurnID = data.Text, data.RunID
+		if data.ElapsedMs != nil {
+			event.ElapsedMs = *data.ElapsedMs
+			event.ElapsedObserved = true
+		}
+	case "message":
+		var data struct {
+			Entry wireHistoryEntry `json:"entry"`
+		}
+		if err := decodeRequired(envelope.Data, &data, "entry"); err != nil {
+			return nil, err
+		}
+		entries, err := historyEntryEvents(data.Entry)
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) == 0 {
+			return nil, nil
+		}
+		event = entries[0]
+		event.Replayed = false
+	case "note":
+		var data struct {
+			Text    string            `json:"text"`
+			EntryID string            `json:"entry_id"`
+			Origin  string            `json:"origin"`
+			Mail    *wireMailMetadata `json:"mail"`
+		}
+		if err := decodeRequired(envelope.Data, &data, "entry_id", "origin", "text", "mail"); err != nil {
+			return nil, err
+		}
+		event.Text, event.Source = data.Text, data.Origin
+	case "tool_progress":
+		if len(raw) > 8192 {
+			return nil, errors.New("tool_progress exceeds 8 KiB")
+		}
+		var data struct {
+			Progress json.RawMessage `json:"progress"`
+		}
+		if err := decodeRequired(envelope.Data, &data, "progress"); err != nil {
+			return nil, err
+		}
+		progress, err := decodeToolProgress(data.Progress)
+		if err != nil {
+			return nil, err
+		}
+		event.Progress = progress
+	case "tool":
+		var data struct {
+			ToolCallID      string                `json:"tool_call_id"`
+			ProgressCallID  string                `json:"progress_call_id"`
+			Name            string                `json:"name"`
+			Arguments       json.RawMessage       `json:"arguments"`
+			Result          json.RawMessage       `json:"result"`
+			Trace           json.RawMessage       `json:"trace"`
+			ContentComplete bool                  `json:"content_complete"`
+			Reference       *wireContentReference `json:"reference"`
+		}
+		if err := decodeRequired(envelope.Data, &data, "tool_call_id", "progress_call_id", "name", "arguments", "result", "trace", "content_complete", "reference"); err != nil {
+			return nil, err
+		}
+		if data.ToolCallID == "" || data.ProgressCallID == "" || data.Name == "" {
+			return nil, fieldError("tool identity")
+		}
+		event.ToolName, event.ProgressCallID = data.Name, data.ProgressCallID
+		arguments, _ := dynamicValue(data.Arguments)
+		event.ToolArgs, _ = arguments.(map[string]any)
+		if json.Unmarshal(data.Result, &event.ToolResult) != nil {
+			event.ToolResult = string(data.Result)
+		}
+		event.ToolTrace = ParseToolTrace(data.Trace)
+		return &wireChatEvent{CallID: data.ToolCallID, StreamEvent: event}, nil
+	case "usage":
+		var data wireUsage
+		if err := decodeRequired(envelope.Data, &data, "model", "observed_at", "prompt_tokens", "cached_prompt_tokens", "cache_write_tokens", "completion_tokens", "total_tokens", "elapsed_ms", "tokens_per_second", "context_window_tokens", "cache_ttl_seconds", "cache_fade"); err != nil {
+			return nil, err
+		}
+		event.Usage = usageValue(data)
+	case "committed":
+		var data struct {
+			HighWater int64 `json:"high_water"`
+		}
+		if err := decodeRequired(envelope.Data, &data, "high_water"); err != nil {
+			return nil, err
+		}
+		if data.HighWater < 0 {
+			return nil, fieldError("history high water")
+		}
+		event.Seq = data.HighWater
+	case "turn_completed":
+		var data struct {
+			RunID      string   `json:"run_id"`
+			State      string   `json:"state"`
+			InputIDs   []string `json:"input_ids"`
+			InputCount int64    `json:"input_count"`
+			Truncated  bool     `json:"truncated"`
+		}
+		if err := decodeRequired(envelope.Data, &data, "run_id", "state", "input_ids", "input_count", "truncated"); err != nil {
+			return nil, err
+		}
+		if data.RunID == "" || data.InputIDs == nil {
+			return nil, fieldError("turn completion")
+		}
+		event.TurnID, event.SubmissionIDs = data.RunID, data.InputIDs
+		if data.State == "interrupted" {
+			event.Source = "interrupted"
+		} else if data.State == "failed" || data.State == "abandoned" {
+			event.Source = "failed"
+		} else if data.State != "completed" {
+			return nil, fieldError("turn state")
+		}
+	case "retry":
+		var data struct {
+			RunID  string         `json:"run_id"`
+			Reason wireSafeReason `json:"reason"`
+		}
+		if err := decodeRequired(envelope.Data, &data, "run_id", "attempt", "reason", "delay_ms"); err != nil {
+			return nil, err
+		}
+		event.TurnID, event.Text = data.RunID, data.Reason.Detail
+	case "compacted":
+		var data wireCompactionObservation
+		if err := json.Unmarshal(envelope.Data, &data); err != nil {
+			return nil, err
+		}
+		event.Evicted = int(data.EvictedEntries)
+		event.Summary = data.Summary
+		event.Strategy = value(data.Strategy)
+	case "error":
+		var data struct {
+			RunID   *string `json:"run_id"`
+			Code    string  `json:"code"`
+			Message string  `json:"message"`
+		}
+		if err := decodeRequired(envelope.Data, &data, "run_id", "code", "message"); err != nil {
+			return nil, err
+		}
+		event.Text, event.TurnID = data.Message, value(data.RunID)
+	case "invalidate":
+		var data struct {
+			Kind string `json:"kind"`
+			URL  string `json:"url"`
+		}
+		if err := decodeRequired(envelope.Data, &data, "kind", "url"); err != nil {
+			return nil, err
+		}
+		var resources ResourceInvalidation
+		switch data.Kind {
+		case "session":
+			resources.Session = true
+		case "settings":
+			resources.Settings = true
+		case "catalog":
+			resources.Catalog = true
+		case "context":
+			resources.Context = true
+		case "extension":
+			resources.Extension = true
+		default:
+			return nil, fieldError("invalidation kind")
+		}
+		if !strings.HasPrefix(data.URL, "/") || strings.HasPrefix(data.URL, "//") {
+			return nil, fieldError("invalidation URL")
+		}
+		event.Invalidation = &resources
+	case "failure":
+		return nil, errors.New("failure must be a terminal batch")
+	default:
+		return nil, nil
+	}
+	return &wireChatEvent{StreamEvent: event}, nil
+}

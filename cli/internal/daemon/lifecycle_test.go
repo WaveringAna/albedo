@@ -41,10 +41,11 @@ func TestUpgradeCancellationAfterShutdownDoesNotLaunchReplacement(t *testing.T) 
 	shutdownAcknowledged := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/health":
-			_, _ = fmt.Fprint(w, healthyHealth)
-		case "/shutdown":
-			_, _ = fmt.Fprint(w, `{"ok":true}`)
+		case "/server":
+			_, _ = fmt.Fprint(w, readyServer)
+		case "/server/shutdown":
+			w.WriteHeader(202)
+			_, _ = fmt.Fprint(w, `{"instance_id":"instance-a","state":"draining"}`)
 			w.(http.Flusher).Flush()
 			close(shutdownAcknowledged)
 		default:
@@ -52,7 +53,7 @@ func TestUpgradeCancellationAfterShutdownDoesNotLaunchReplacement(t *testing.T) 
 		}
 	}))
 	defer server.Close()
-	snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: ProtocolVersion, Build: "verified-build"}
+	snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: ProtocolVersion, Build: "verified-build", Digest: "verified-digest", InstanceID: "instance-a"}
 	writeDiscovery(t, home, snapshot)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -88,11 +89,37 @@ func TestUpgradeCancellationAfterShutdownDoesNotLaunchReplacement(t *testing.T) 
 }
 
 func TestDiscoveryPreservesUnsafeRecordAndLiveHealthFailures(t *testing.T) {
-	for _, status := range []int{http.StatusForbidden, http.StatusServiceUnavailable} {
+	t.Run("loaded healthy daemon", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Owner observations may queue behind work on an already ready daemon.
+			timer := time.NewTimer(750 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				_, _ = fmt.Fprint(w, readyServer)
+			case <-r.Context().Done():
+			}
+		}))
+		defer server.Close()
+		home := t.TempDir()
+		snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: ProtocolVersion, Build: "verified-build", InstanceID: "instance-a"}
+		writeDiscovery(t, home, snapshot)
+		// The live resource supplies verified build metadata missing from the record.
+		snapshot.Digest = "verified-digest"
+		discovery, err := Discover(t.Context(), home)
+		if err != nil || discovery.Kind != Running || discovery.Snapshot != snapshot || discovery.Server.State != "ready" {
+			t.Fatalf("loaded healthy daemon was not usable: %+v, %v", discovery, err)
+		}
+	})
+	for _, status := range []int{http.StatusOK, http.StatusUnauthorized, http.StatusServiceUnavailable} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(status)
-				_, _ = w.Write([]byte(`{"code":"authentication_required","error":"health refused"}`))
+				if status == http.StatusOK {
+					_, _ = w.Write([]byte(`{`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"type":"about:blank","title":"Unauthorized","status":401,"code":"authentication_required","detail":"health refused"}`))
 			}))
 			defer server.Close()
 			home := t.TempDir()
@@ -100,12 +127,18 @@ func TestDiscoveryPreservesUnsafeRecordAndLiveHealthFailures(t *testing.T) {
 			_, err := Discover(t.Context(), home)
 			failure, ok := errors.AsType[*LocalError](err)
 			expected := UnhealthyDaemon
-			if status == http.StatusForbidden {
+			if status == http.StatusUnauthorized {
 				expected = AuthenticationFailed
 			}
-			api, hasAPI := errors.AsType[*APIError](err)
-			if !ok || failure.Kind != expected || !hasAPI || api.StatusCode != status {
+			if !ok || failure.Kind != expected {
 				t.Fatalf("health failure was treated as absence: %v", err)
+			}
+			if status == http.StatusOK {
+				if _, ok := errors.AsType[*ProtocolError](err); !ok {
+					t.Fatalf("malformed health lost its protocol failure: %v", err)
+				}
+			} else if api, ok := errors.AsType[*APIError](err); !ok || api.StatusCode != status {
+				t.Fatalf("health failure lost its HTTP status: %v", err)
 			}
 		})
 	}
@@ -117,5 +150,19 @@ func TestDiscoveryPreservesUnsafeRecordAndLiveHealthFailures(t *testing.T) {
 	failure, ok := errors.AsType[*LocalError](err)
 	if !ok || failure.Kind != InvalidDiscovery {
 		t.Fatalf("malformed record was treated as absence: %v", err)
+	}
+}
+
+func TestDiscoveryRejectsChangedBuildDigest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, readyServer)
+	}))
+	t.Cleanup(server.Close)
+	home := t.TempDir()
+	writeDiscovery(t, home, ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: ProtocolVersion, Build: "verified-build", Digest: "different-digest"})
+	found, err := Discover(t.Context(), home)
+	local, ok := errors.AsType[*LocalError](err)
+	if !ok || local.Kind != InvalidDiscovery || found.Kind == Running {
+		t.Fatalf("changed executable identity accepted: %+v, %v", found, err)
 	}
 }

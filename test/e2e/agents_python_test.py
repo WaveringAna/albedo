@@ -45,7 +45,15 @@ row = await kid.messages(seq=seq, limit=200)
 print('FOUND', hits.count, row.content.startswith(f'[row #{seq}]'), 'count to three' in row.content)
 """
 
-PEEK = """kid = await agents.get({kid!r})
+PEEK = """async def paged_sessions(query='', cwd=None):
+    found = []
+    while True:
+        page = await agents.sessions(query, cwd=cwd, offset=len(found))
+        if not page:
+            return found
+        found.extend(page)
+
+kid = await agents.get({kid!r})
 print('PEEK', kid.name, kid.depth, kid.closed)
 page = await kid.messages()
 print('PEEK_READ', 'count to three' in page.content)
@@ -53,21 +61,21 @@ try:
     await kid.cancel()
 except AgentsError as error:
     print('PEEK_REFUSED', error)
-listed = await agents.sessions()
+listed = await paged_sessions()
 print('LISTED', {kid!r} in [s.id for s in listed], agents.self.id in [s.id for s in listed])
 child_session = next(s for s in listed if s.id == {kid!r})
-scouts = await agents.sessions('SCOUT', cwd=child_session.cwd)
+scouts = await paged_sessions('SCOUT', cwd=child_session.cwd)
 scout = next(s for s in scouts if s.id == {kid!r})
 print('BY_NAME', scout.name, scout.depth, scout.model, scout.cwd == child_session.cwd)
-print('ELSEWHERE', await agents.sessions(cwd='/nowhere'))
-talked = await agents.sessions('COUNT TO THREE')
+print('ELSEWHERE', await paged_sessions(cwd='/nowhere'))
+talked = await paged_sessions('COUNT TO THREE')
 said = next(s for s in talked if s.id == {kid!r})
 hit = said.matches[0]
 row = await said.messages(seq=hit['seq'], limit=200)
 print('SEARCHED', agents.self.id in [s.id for s in talked], 'count to three' in hit['preview'], 'count to three' in row.content)
 print('UNQUERIED', listed[0].matches)
-print('UNICODE', {kid!r} in [s.id for s in await agents.sessions('CAFÉ ÜNÏCODE')])
-print('NOTHING', await agents.sessions('never ' + 'said anywhere'))
+print('UNICODE', {kid!r} in [s.id for s in await paged_sessions('CAFÉ ÜNÏCODE')])
+print('NOTHING', await paged_sessions('never ' + 'said anywhere'))
 try:
     await agents.get('nobody')
 except AgentsError as error:
@@ -104,7 +112,7 @@ class AgentsPythonTests(unittest.TestCase):
             peek = re.search(r"peek ([0-9a-f]+)", user)
             if last.get("role") == "user" and peek:
                 return python(PEEK.format(kid=peek.group(1)))
-            if last.get("role") == "user" and "spawn a scout" in user:
+            if last.get("role") == "user" and user == "spawn a scout":
                 return python(LEAD)
             if last.get("role") == "user" and 'kind="task"' in user:
                 return python(CHILD)
@@ -189,11 +197,14 @@ class AgentsPythonTests(unittest.TestCase):
                 kid = match.group(1)
                 outsider = app.session()
                 app.prompt(outsider, f"peek {kid}").close()
-                peeked = wait_for(
-                    lambda: next(
-                        (r["tool"] for r in observed() if "PEEK_MISSING" in r["tool"]),
-                        None,
-                    )
+                app.idle(outsider, timeout=60)
+                delivered = [record["tool"] for record in observed() if record["tool"]]
+                peeked = next(
+                    (record for record in delivered if "PEEK_MISSING" in record), None
+                )
+                assert peeked is not None, (
+                    "PEEK turn finished without its final marker; delivered tools: "
+                    + repr(delivered)
                 )
                 self.assertIn("PEEK scout 1 False", peeked)
                 self.assertIn("PEEK_READ True", peeked)

@@ -78,7 +78,11 @@ func chooseModel(listed []providerModels, active, requested string) (modelChoice
 // switchModel moves an idle session to the chosen model without making it the
 // default for new sessions.
 func switchModel(ctx context.Context, conn *daemon.Connection, sessionID string, choice modelChoice) error {
-	_, err := daemon.SelectModel(ctx, conn, sessionID, daemon.ModelSelectionRequest{Model: choice.model, Provider: choice.provider})
+	configuration, err := daemon.GetSessionConfiguration(ctx, conn, sessionID)
+	if err != nil {
+		return err
+	}
+	_, err = daemon.SelectModel(ctx, conn, sessionID, daemon.ModelSelectionRequest{Model: choice.model, Provider: choice.provider, ETag: configuration.ETag})
 	return err
 }
 

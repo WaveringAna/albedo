@@ -121,10 +121,6 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		var ts int64
 		if evt.Timestamp != nil && *evt.Timestamp > 0 {
 			ts = *evt.Timestamp
-		} else if evt.TriggeredAt != "" {
-			if parsed, err := time.Parse(time.RFC3339, evt.TriggeredAt); err == nil {
-				ts = parsed.UnixMilli()
-			}
 		}
 		// Your message closes the previous turn. Other sources open a turn
 		// only when none is in flight.
@@ -134,7 +130,7 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		}
 		entries = append(entries, HistoryEntry{
 			Kind: EntryUser, Speaker: speaker, Text: evt.Text,
-			ClientID: evt.ClientID, Timestamp: ts,
+			Timestamp: ts,
 		})
 		if opens {
 			t.turn = newOpenTurn(ts)
@@ -149,7 +145,12 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 				t.thinkingSince = thoughtStart
 			}
 		}
-		t.thoughtMs += evt.ElapsedMs
+		if evt.ElapsedObserved && !evt.Replayed {
+			t.thinkingSince = time.Time{}
+			t.thoughtMs = evt.ElapsedMs
+		} else {
+			t.thoughtMs += evt.ElapsedMs
+		}
 		entries = append(entries, t.streamDelta(StreamKindThinking, evt.Text, agentName)...)
 	case daemon.EventToolProgress:
 		if !evt.Replayed {
@@ -206,6 +207,12 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		})
 	case daemon.EventUsage:
 		entries = t.settle(agentName)
+	case daemon.EventTurnCompleted:
+		entries = t.settle(agentName)
+		if t.turn != nil {
+			t.turn.failed = t.turn.failed || evt.Source == "failed"
+			entries = append(entries, t.closeTurn(evt.Source == "interrupted")...)
+		}
 	case daemon.EventInterrupted:
 		entries = t.settle(agentName)
 		if t.turn != nil {

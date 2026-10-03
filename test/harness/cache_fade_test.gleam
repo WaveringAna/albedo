@@ -114,6 +114,7 @@ pub fn the_ledger_measures_a_head_across_sessions_test() -> Nil {
           Some(usage),
           requests.Prefix(head, 1, Some(0), None, None),
           marks,
+          session <> "-run",
         ),
       )
     Nil

@@ -1,16 +1,21 @@
 %% Test-only structural inspection. Never returns inspected actor state.
 -module(albedo_context_snapshot_probe).
--export([benchmark/0, retention/0, actor/1, actor_json/1]).
+-export([retention/0, actor/1, actor_json/1]).
 
-capture(Inputs) -> 'manual@context_snapshot_benchmark':capture(Inputs).
-summary(Snapshot) -> 'manual@context_snapshot_benchmark':summary(Snapshot).
-page(Snapshot, Index) -> 'manual@context_snapshot_benchmark':page(Snapshot, Index).
+capture(Inputs) ->
+    Request = 'albedo@openai_api':request(<<"fixture">>, Inputs),
+    'albedo@daemon@context_snapshot':from_request(
+        {some, 1234}, <<"fixture">>, <<"responses">>, responses, Request, none).
 
 payload(Prefix, Index, Bytes) ->
     Head = iolist_to_binary([Prefix, integer_to_binary(Index), <<":">>]),
     <<Head/binary, (binary:copy(<<"x">>, Bytes - byte_size(Head)))/binary>>.
 replay(Index, Bytes) ->
-    'manual@context_snapshot_benchmark':replay(payload(<<"REPLAY_SENTINEL:">>, Index, Bytes)).
+    Encoded = iolist_to_binary(json:encode(#{type => <<"reasoning">>,
+        opaque => payload(<<"REPLAY_SENTINEL:">>, Index, Bytes)})),
+    {ok, Item} = 'gleam@json':parse(Encoded,
+        'albedo@openai_api@types':replay_decoder(responses)),
+    {replay, Item}.
 
 inline() ->
     {ok, Image} = 'albedo@openai_api@types':image(<<"image/png">>,
@@ -20,11 +25,6 @@ stored() ->
     Sentinel = payload(<<"READER_SENTINEL:">>, 1, 1048576),
     {ok, Image} = 'albedo@openai_api@types':stored_image(<<"image/png">>,
         <<"stored-hash">>, 1048576, fun() -> {ok, Sentinel} end, 10, 10, 786432),
-    Image.
-
-stored_reference() ->
-    {ok, Image} = 'albedo@openai_api@types':stored_image(<<"image/png">>,
-        <<"stored-hash">>, 4096, fun() -> {error, nil} end, 10, 10, 3072),
     Image.
 
 walk(Term, Test) when is_binary(Term) -> Test(Term);
@@ -52,109 +52,9 @@ retention() ->
      contains(Snapshot, <<"INLINE_SENTINEL:">>),
      contains(Snapshot, <<"READER_SENTINEL:">>)}.
 
-fixture(text, Count, Bytes) -> [{user, payload(<<"visible:">>, I, Bytes)} || I <- lists:seq(1, Count)];
-fixture(replay, Count, Bytes) -> [replay(I, Bytes) || I <- lists:seq(1, Count)];
-fixture(mixed, Count, Bytes) -> lists:append([
-    [{user, payload(<<"visible:">>, I, Bytes)}, replay(I, Bytes),
-     {tool_output, integer_to_binary(I), <<"output">>, [stored_reference()]}]
-    || I <- lists:seq(1, Count)]).
-
 binary_bytes(Pid) ->
     {binary, Entries} = process_info(Pid, binary),
     lists:sum(maps:values(maps:from_list([{Pointer, Bytes} || {Pointer, Bytes, _} <- Entries]))).
-measure(Name, Action) ->
-    Owner = self(),
-    Sampler = spawn(fun() -> sample(Owner, Owner, #{}) end),
-    {reductions, Before} = process_info(self(), reductions),
-    Start = erlang:monotonic_time(microsecond),
-    Value = Action(),
-    Elapsed = erlang:monotonic_time(microsecond) - Start,
-    {reductions, After} = process_info(self(), reductions),
-    Sampler ! stop,
-    Peak = receive {peak, Sample} -> Sample end,
-    {Value, #{phase => Name, wall_us => Elapsed, reductions => After - Before,
-        sampled_peak => Peak}}.
-
-sample(Owner, Parent, Peak) ->
-    receive stop -> Parent ! {peak, Peak}
-    after 1 ->
-        Current = case process_info(Owner, [memory, message_queue_len]) of
-            undefined -> #{heap_mailbox_bytes => 0, mailbox_messages => 0};
-            Info -> #{heap_mailbox_bytes => proplists:get_value(memory, Info),
-                      mailbox_messages => proplists:get_value(message_queue_len, Info)}
-        end,
-        Next = maps:merge_with(fun(_, A, B) -> max(A, B) end, Peak,
-            Current#{vm_binary_bytes => erlang:memory(binary)}),
-        sample(Owner, Parent, Next)
-    end.
-
-run(Kind, Count, Bytes, Iteration) ->
-    Parent = self(),
-    {Owner, Monitor} = spawn_monitor(fun() ->
-        Inputs = fixture(Kind, Count, Bytes),
-        benchmark_owner(Inputs, Parent, Kind, Count, Bytes, Iteration)
-    end),
-    receive {record, Owner, Record} ->
-        receive {'DOWN', Monitor, process, Owner, normal} -> ok end,
-        Record
-    end.
-
-benchmark_owner(Inputs, Parent, Kind, Count, Bytes, Iteration) ->
-    {Snapshot, Capture} = measure(capture, fun() -> capture(Inputs) end),
-    benchmark_snapshot(Snapshot, Parent, Kind, Count, Bytes, Iteration, Capture).
-benchmark_snapshot(Snapshot, Parent, Kind, Count, Bytes, Iteration, Capture) ->
-    erlang:garbage_collect(),
-    CaptureRetained = binary_bytes(self()),
-    {Summary, SummaryMetric} = measure(summary, fun() -> summary(Snapshot) end),
-    {_, First} = measure(first_page, fun() -> page(Snapshot, 0) end),
-    {Pages, All} = measure(all_pages, fun() -> all_pages(Snapshot, 0, []) end),
-    ReplacementInputs = fixture(Kind, Count, Bytes),
-    put(benchmark_snapshot, Snapshot),
-    {_, Replace} = measure(replacement, fun() -> replace(ReplacementInputs, 5) end),
-    erase(benchmark_snapshot),
-    Hash = binary:encode_hex(crypto:hash(sha256, [Summary | Pages]), lowercase),
-    benchmark_retained(Snapshot, Parent, Kind, Count, Bytes, Iteration,
-        [Capture, SummaryMetric, First, All, Replace], Hash, CaptureRetained).
-replace(_, 0) -> nil;
-replace(Inputs, Count) ->
-    %% The previous snapshot stays in the owner's dictionary during capture.
-    put(benchmark_snapshot, capture(Inputs)), replace(Inputs, Count - 1).
-benchmark_retained(Snapshot, Parent, Kind, Count, Bytes, Iteration, Metrics, Hash, CaptureRetained) ->
-    %% Tail call releases prepared inputs and rendered inspector buffers.
-    {_, Eviction} = measure(history_eviction_collection, fun() -> erlang:garbage_collect() end),
-    Retained = binary_bytes(self()),
-    TermBytes = erts_debug:flat_size(Snapshot) * erlang:system_info(wordsize),
-    Reachable = contains(Snapshot, <<"REPLAY_SENTINEL:">>),
-    {_, Idle} = measure(idle_retention, fun() -> erlang:garbage_collect() end),
-    benchmark_clear(Parent, Kind, Count, Bytes, Iteration,
-        Metrics ++ [Eviction, Idle], Retained, TermBytes, Reachable, Hash, CaptureRetained).
-
-benchmark_clear(Parent, Kind, Count, Bytes, Iteration, Metrics, Retained, TermBytes, Reachable, Hash, CaptureRetained) ->
-    {_, Clear} = measure(context_clear, fun() -> erlang:garbage_collect() end),
-    Parent ! {record, self(), #{fixture => Kind, count => Count, payload_bytes => Bytes,
-        iteration => Iteration, phases => Metrics ++ [Clear], capture_retained_binary_bytes => CaptureRetained,
-        retained_binary_bytes => Retained, cleared_binary_bytes => binary_bytes(self()),
-        snapshot_term_bytes => TermBytes, discarded_payload_reachable => Reachable,
-        output_sha256 => Hash}}.
-all_pages(Snapshot, Index, Acc) ->
-    case page(Snapshot, Index) of
-        <<"context page not found">> -> lists:reverse(Acc);
-        <<"context section not found">> -> lists:reverse(Acc);
-        Value -> all_pages(Snapshot, Index + 1, [Value | Acc])
-    end.
-benchmark() ->
-    io:put_chars(json:encode(#{otp => list_to_binary(erlang:system_info(otp_release)),
-        schedulers => erlang:system_info(schedulers_online)})), io:nl(),
-    Fixtures = [{text, N, 256} || N <- [10, 1000, 10000]] ++
-        [{replay, N, 4096} || N <- [10, 1000, 10000]] ++
-        [{replay, 1000, 65536}, {mixed, 1000, 4096}],
-    lists:foreach(fun({Kind, Count, Bytes}) ->
-        _ = run(Kind, Count, Bytes, 0),
-        lists:foreach(fun(Iteration) ->
-            io:put_chars(json:encode(run(Kind, Count, Bytes, Iteration))), io:nl()
-        end, lists:seq(1, 5))
-    end, Fixtures), nil.
-
 actor(Id) ->
     {some, Session} = 'albedo@daemon@session':live(Id),
     {ok, Pid} = 'gleam@erlang@process':subject_owner(Session),
@@ -194,7 +94,8 @@ actor(Id) ->
     {binary, AfterEntries} = process_info(Pid, binary),
     Backing = lists:sum(maps:values(maps:from_list([{Pointer, Size}
         || {Pointer, Size, _} <- AfterEntries, maps:is_key(Pointer, LargePointers)]))),
-    HistoryPage = 'albedo@daemon@session':context_page(Session, <<"history">>, 0),
+    {ok, Snapshot} = 'albedo@daemon@session':prepared_context(Session, none),
+    HistoryPage = 'albedo@daemon@context_snapshot':page(Snapshot, <<"history">>, 0),
     {_, IdleMetric} = actor_measure(Pid, idle_retention, fun() ->
         _ = 'albedo@daemon@session':report(Session),
         erlang:garbage_collect(Pid)
@@ -206,10 +107,8 @@ actor(Id) ->
         erlang:garbage_collect(Pid),
         DidRelease
     end),
-    Pending = 'albedo@daemon@session':context(Session),
-    PendingExpected = 'albedo@daemon@context_snapshot':summary(
-        'albedo@daemon@context_snapshot':pending(
-            <<"runtime session has not prepared a provider request">>)),
+    {ok, Pending} = 'albedo@daemon@session':prepared_context(Session, none),
+    {pending, _} = Pending,
     SessionMonitor = monitor(process, Pid),
     _ = 'albedo@daemon@session':close(Session),
     Stopped = receive {'DOWN', SessionMonitor, process, Pid, _} -> true after 5000 -> false end,
@@ -217,7 +116,7 @@ actor(Id) ->
       history_readable => element(1, HistoryPage) =:= ok,
       actor_binary_bytes => Retained, replay_backing_binary_bytes => Backing,
       replay_backing_before_bytes => lists:sum(maps:values(LargePointers)),
-      kernel_released => Released, context_cleared => Pending =:= PendingExpected,
+      kernel_released => Released, context_cleared => element(1, Pending) =:= pending,
       actor_stopped => Stopped, workers_terminated => true,
       phases => [EvictionMetric, IdleMetric, ClearMetric]}.
 actor_json(Id) -> iolist_to_binary(json:encode(actor(Id))).

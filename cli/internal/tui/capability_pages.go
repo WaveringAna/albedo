@@ -17,13 +17,14 @@ import (
 // CapabilityPageModel owns a dedicated session page for one source of agent
 // context. MCP servers are added and edited through one form (mcp_form.go).
 type CapabilityPageModel struct {
-	Prefs           config.CapabilityPrefs
-	Conn            *daemon.Connection
-	Form            *mcpForm
-	SessionID, Kind string
-	Items           []capabilityItem
-	Revision        string
-	Diagnostics     []string
+	Prefs                            config.CapabilityPrefs
+	Conn                             *daemon.Connection
+	Form                             *mcpForm
+	SessionID, Kind                  string
+	Items                            []capabilityItem
+	Revision                         string
+	SessionETag, GlobalETag, MCPETag string
+	Diagnostics                      []string
 	page
 	Global, ExtensionEnabled, ConfirmExtension bool
 	ConfirmDelete                              bool
@@ -35,13 +36,14 @@ type capabilityItem struct {
 	Server            config.MCPServer
 }
 type capabilityLoadedMsg struct {
-	Prefs            config.CapabilityPrefs
-	Revision         string
-	Diagnostics      []string
-	Err              error
-	Items            []capabilityItem
-	Gen              int
-	ExtensionEnabled bool
+	SessionETag, GlobalETag, MCPETag string
+	Prefs                            config.CapabilityPrefs
+	Revision                         string
+	Diagnostics                      []string
+	Err                              error
+	Items                            []capabilityItem
+	Gen                              int
+	ExtensionEnabled                 bool
 }
 type capabilitySavedMsg struct {
 	Err     error
@@ -61,34 +63,42 @@ func (m CapabilityPageModel) Init() tea.Cmd { return m.loadCmd(m.Generation) }
 func (m CapabilityPageModel) loadCmd(gen int) tea.Cmd {
 	kind := m.Kind
 	return func() tea.Msg {
-		if kind == "skills" || kind == "instructions" {
-			catalog, err := daemon.GetCapabilityCatalog(context.Background(), m.Conn, m.SessionID)
-			items := make([]capabilityItem, 0, len(catalog.Candidates))
-			for _, candidate := range catalog.Candidates {
-				if candidate.Kind == kind {
-					items = append(items, capabilityItem{ID: candidate.ID, Title: candidate.Title, Detail: candidate.Source, Candidate: candidate})
-				}
-			}
-			return capabilityLoadedMsg{Items: items, Revision: catalog.Revision, Diagnostics: catalog.Diagnostics, ExtensionEnabled: catalog.Extensions[kind], Gen: gen, Err: err}
-		}
-		if kind != "mcp" {
-			return capabilityLoadedMsg{Gen: gen, Err: errors.New("unknown capability page")}
+		catalog, err := daemon.GetCapabilityCatalog(context.Background(), m.Conn, m.SessionID)
+		if err != nil {
+			return capabilityLoadedMsg{Gen: gen, Err: err}
 		}
 		settings, err := daemon.GetSettings(context.Background(), m.Conn)
 		if err != nil {
 			return capabilityLoadedMsg{Gen: gen, Err: err}
 		}
-		items := mcpItems(settings)
-		slices.SortFunc(items, func(a, b capabilityItem) int { return strings.Compare(a.ID, b.ID) })
-		enabled := true
-		if m.Conn != nil {
-			var extensions []ExtensionItem
-			extensions, err = daemon.ListExtensions(context.Background(), m.Conn, m.SessionID)
-			if i := slices.IndexFunc(extensions, func(ext ExtensionItem) bool { return ext.Name == kind }); err == nil && i >= 0 {
-				enabled = extensions[i].Enabled
-			}
+		configuration, err := daemon.GetSessionConfiguration(context.Background(), m.Conn, m.SessionID)
+		if err != nil {
+			return capabilityLoadedMsg{Gen: gen, Err: err}
 		}
-		return capabilityLoadedMsg{Items: items, Prefs: settings.Capabilities, ExtensionEnabled: enabled, Gen: gen, Err: err}
+		items := []capabilityItem{}
+		switch kind {
+		case "mcp":
+			items = mcpItems(settings)
+			for i := range items {
+				for _, candidate := range catalog.Candidates {
+					if candidate.Kind == "mcp" && candidate.PreferenceKey != nil && *candidate.PreferenceKey == "mcp:"+items[i].ID {
+						items[i].Candidate = candidate
+					}
+				}
+			}
+		case "skills", "instructions":
+			for _, candidate := range catalog.Candidates {
+				if candidate.Kind == kind {
+					items = append(items, capabilityItem{ID: candidate.ID, Title: candidate.Title, Detail: candidate.Source, Candidate: candidate})
+				}
+			}
+		default:
+			return capabilityLoadedMsg{Gen: gen, Err: errors.New("unknown capability page")}
+		}
+		slices.SortFunc(items, func(a, b capabilityItem) int { return strings.Compare(a.ID, b.ID) })
+		enabled := catalog.Extensions[kind]
+		return capabilityLoadedMsg{Items: items, Revision: catalog.Revision, Diagnostics: catalog.Diagnostics, Prefs: settings.Capabilities, ExtensionEnabled: enabled, SessionETag: configuration.ETag, GlobalETag: settings.ETags["capabilities"], MCPETag: settings.ETags["mcp"], Gen: gen}
+
 	}
 }
 
@@ -108,8 +118,24 @@ func mcpItems(settings daemon.Settings) []capabilityItem {
 
 func (m CapabilityPageModel) enableExtensionCmd(gen int) tea.Cmd {
 	return func() tea.Msg {
-		_, err := daemon.SelectExtension(context.Background(), m.Conn, m.SessionID, daemon.ExtensionSelectionRequest{Name: m.Kind, Enabled: new(true)})
-		return capabilitySavedMsg{Gen: gen, Err: err}
+		_, err := daemon.SelectExtension(context.Background(), m.Conn, m.SessionID, daemon.ExtensionSelectionRequest{Name: m.Kind, Scope: "session", ETag: m.SessionETag, Enabled: new(true)})
+		if err != nil {
+			return capabilitySavedMsg{Gen: gen, Err: err}
+		}
+		reloaded, reloadErr := daemon.ReloadSession(context.Background(), m.Conn, m.SessionID, daemon.ReloadRequest{Target: "session"})
+		warning := reloaded.Message()
+		switch {
+		case reloadErr != nil:
+			warning = "Extension enabled; reload failed: " + reloadErr.Error()
+			if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](reloadErr); uncertain {
+				warning = "Extension enabled; reload not confirmed: " + reloadErr.Error()
+			}
+		case reloaded.Session == nil:
+			warning = "Extension enabled; reload returned no session outcome."
+		case reloaded.Session.State != "applied":
+			warning = "Extension enabled; session reload " + reloaded.Session.State + ". " + reloaded.Message()
+		}
+		return capabilitySavedMsg{Gen: gen, Warning: warning}
 	}
 }
 
@@ -123,35 +149,37 @@ func (m CapabilityPageModel) choiceCmd(item capabilityItem, enabled *bool, gen i
 	if m.Global {
 		scope = "global"
 	}
+	etag := m.SessionETag
+	if scope == "global" {
+		etag = m.GlobalETag
+	}
 	return func() tea.Msg {
 		var result daemon.ReloadResult
 		var err error
 		if m.Kind == "mcp" {
-			result, err = daemon.SetCapability(context.Background(), m.Conn, m.SessionID, daemon.CapabilitySelectionRequest{Kind: m.Kind, Name: item.ID, Scope: scope, Enabled: enabled})
+			result, err = daemon.SetCapability(context.Background(), m.Conn, m.SessionID, daemon.CapabilitySelectionRequest{Kind: m.Kind, Name: capabilityChoiceID(item, scope), Revision: m.Revision, ETag: etag, Scope: scope, Enabled: enabled})
 		} else {
-			result, err = daemon.SetCatalogCapability(context.Background(), m.Conn, m.SessionID, daemon.CatalogCapabilityRequest{Revision: m.Revision, ID: item.ID, Scope: scope, Enabled: enabled})
+			result, err = daemon.SetCatalogCapability(context.Background(), m.Conn, m.SessionID, daemon.CatalogCapabilityRequest{Revision: m.Revision, ID: item.ID, Kind: m.Kind, ETag: etag, Scope: scope, Enabled: enabled})
 		}
-		return capabilitySavedMsg{Gen: gen, Err: err, Warning: result.Warning}
+		return capabilitySavedMsg{Gen: gen, Err: err, Warning: strings.TrimSpace(result.Message + " " + result.Warning)}
 	}
 }
 
 var mcpHeaderName = regexp.MustCompile(`^[!#$%&'*+.^_` + "`" + `|~0-9A-Za-z-]+$`)
 var mcpEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z_0-9]*$`)
 
-// saveMCPCmd writes a server and its credentials together and reloads the
-// session once. If the reload fails (the server cannot connect), both are
-// restored, so a half-configured server is never left behind.
+// saveMCPCmd saves the definition and secrets together under the observed group validator.
 func (m CapabilityPageModel) saveMCPCmd(sub mcpSubmission, gen int) tea.Cmd {
 	return func() tea.Msg {
-		result, err := daemon.SaveMCP(context.Background(), m.Conn, m.SessionID, daemon.MCPUpdateRequest{Name: sub.Name, Server: &sub.Server, Secrets: sub.Secrets})
-		return capabilitySavedMsg{Gen: gen, Err: err, Warning: result.Warning}
+		result, err := daemon.SaveMCP(context.Background(), m.Conn, m.SessionID, daemon.MCPUpdateRequest{Name: sub.Name, ETag: m.MCPETag, StoredSecrets: m.storedSecrets(sub.Name), Server: &sub.Server, Secrets: sub.Secrets})
+		return capabilitySavedMsg{Gen: gen, Err: err, Warning: strings.TrimSpace(result.Message + " " + result.Warning)}
 	}
 }
 
 func (m CapabilityPageModel) deleteMCPCmd(name string, gen int) tea.Cmd {
 	return func() tea.Msg {
-		result, err := daemon.SaveMCP(context.Background(), m.Conn, m.SessionID, daemon.MCPUpdateRequest{Name: name, Server: nil, Secrets: daemon.MCPSecretsPatch{}})
-		return capabilitySavedMsg{Gen: gen, Err: err, Warning: result.Warning}
+		result, err := daemon.SaveMCP(context.Background(), m.Conn, m.SessionID, daemon.MCPUpdateRequest{Name: name, ETag: m.MCPETag, Server: nil, Secrets: daemon.MCPSecretsPatch{}})
+		return capabilitySavedMsg{Gen: gen, Err: err, Warning: strings.TrimSpace(result.Message + " " + result.Warning)}
 	}
 }
 
@@ -183,13 +211,12 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 		}
 		m.Cursor = reselect(m.Cursor, m.Items, msg.Items, func(item capabilityItem) string { return item.ID })
 		m.Items, m.Prefs, m.ExtensionEnabled, m.Error = msg.Items, msg.Prefs, msg.ExtensionEnabled, ""
-		if m.Kind != "mcp" {
-			m.Revision, m.Diagnostics = msg.Revision, msg.Diagnostics
-		}
+		m.Revision, m.Diagnostics = msg.Revision, msg.Diagnostics
+		m.SessionETag, m.GlobalETag, m.MCPETag = msg.SessionETag, msg.GlobalETag, msg.MCPETag
 		return m, nil
 	case capabilitySavedMsg:
 		if msg.Gen == m.Generation {
-			if apiErr, ok := errors.AsType[*daemon.APIError](msg.Err); ok && apiErr.Code == "stale_catalog" {
+			if apiErr, ok := errors.AsType[*daemon.APIError](msg.Err); ok && apiErr.Code == "catalog_changed" {
 				m.Saving, m.Loading, m.Error = false, true, ""
 				m.Notice = "The list changed. Review it before trying again."
 				m.Generation = nextPageGeneration()
@@ -201,7 +228,7 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 		}
 		m.Form = nil
 		m.ConfirmDelete = false
-		m.Notice = "Saved. Session reloaded."
+		m.Notice = "Saved. Reload the session to apply the selection."
 		if msg.Warning != "" {
 			m.Notice = msg.Warning
 		}
@@ -330,19 +357,18 @@ func (m CapabilityPageModel) canClear(item capabilityItem) bool {
 }
 
 func (m CapabilityPageModel) selectedEnabled(item capabilityItem) bool {
-	if m.Kind != "mcp" {
+	if item.Candidate.ID != "" || m.Kind != "mcp" {
 		if m.Global {
 			return item.Candidate.GlobalPreference == nil || *item.Candidate.GlobalPreference
 		}
 		return item.Candidate.EffectiveEnabled
 	}
 	if m.Global {
-		if value, ok := m.Prefs.Global[m.Kind][item.ID]; ok {
-			return value
+		if enabled, ok := m.Prefs.Global["mcp"][item.ID]; ok {
+			return enabled
 		}
-		return true
 	}
-	return m.Prefs.Enabled(m.SessionID, m.Kind, item.ID)
+	return item.Server.Enabled == nil || *item.Server.Enabled
 }
 
 func enabledLabel(enabled bool) string {
@@ -366,7 +392,7 @@ func (m CapabilityPageModel) View() string {
 		return strings.Join(rows, "\n")
 	}
 	if m.ConfirmExtension || (m.ConfirmDelete && len(m.Items) > 0) {
-		question := "This will reload this session. Enable the extension?"
+		question := "Enable the extension selection? Reload this session to apply it."
 		if m.ConfirmDelete {
 			question = "Its stored credentials will also be removed. Delete MCP server " + m.Items[m.Cursor].ID + "?"
 		}
@@ -469,4 +495,19 @@ func (m CapabilityPageModel) View() string {
 		}
 	}
 	return m.fit(rows)
+}
+
+func capabilityChoiceID(item capabilityItem, scope string) string {
+	if scope == "global" {
+		return item.Candidate.ID
+	}
+	return item.ID
+}
+func (m CapabilityPageModel) storedSecrets(name string) daemon.MCPSecretNames {
+	for _, item := range m.Items {
+		if item.ID == name {
+			return item.Secrets
+		}
+	}
+	return daemon.MCPSecretNames{}
 }

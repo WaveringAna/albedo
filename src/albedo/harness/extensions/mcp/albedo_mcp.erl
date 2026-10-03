@@ -1,6 +1,7 @@
 -module(albedo_mcp).
+-export([check_candidate/3]).
 
--export([prepare/4, definitions/1, context/1, offline/1, observe/3, check/4, call/3, close/1,
+-export([prepare/5, definitions/1, context/1, offline/1, observe/3, call/3, close/1,
          url_allowed/1, validate_settings/3]).
 
 -define(DEFAULT_STARTUP_MS, 20000).
@@ -15,15 +16,14 @@
 %% `Save(Name, Fingerprint, Catalogue)` replaces it. A server with a saved
 %% catalogue is advertised from it at once and dials in the background; one
 %% without connects here, since nothing else can say what it offers.
-prepare(ConfigJson, Session, Lookup, Save) ->
+prepare(ConfigJson, Ledger, Session, Lookup, Save) ->
     try
         Config = json:decode(ConfigJson),
         Servers = maps:get(<<"servers">>, Config, #{}),
         true = is_map(Servers),
         Retry = positive_ms(maps:get(<<"retryMs">>, Config, ?DEFAULT_RETRY_MS)),
-        SelectedSession = case Session of undefined -> none; _ -> {some, Session} end,
         Candidates = lists:sort(maps:to_list(Servers)),
-        Selection = case Candidates of [] -> none; _ -> SelectedSession end,
+        Selection = case Candidates of [] -> none; _ -> {some, {Ledger, Session}} end,
         case 'albedo@harness@capabilities':load(albedo_extension_settings:home(), Selection) of
             {ok, Preferences} -> open_servers(Candidates, Preferences, Retry, {Lookup, Save});
             Error -> Error
@@ -240,6 +240,7 @@ env_name(Entry) when is_list(Entry) -> hd(string:split(Entry, "=", leading)).
 
 env_reference(#{<<"env">> := Name} = Ref) when map_size(Ref) =:= 1, is_binary(Name) ->
     required_env(Name);
+env_reference(Value) when is_binary(Value) -> Value;
 env_reference(_) -> erlang:error(invalid_env_reference).
 
 required_env(Name) ->
@@ -597,31 +598,19 @@ unavailable(Name) -> <<"MCP server '", Name/binary, "' is unavailable">>.
 %% The servers that were configured and enabled but could not be reached.
 offline(#{offline := Offline}) -> Offline.
 
-%% Connects to one saved server and hangs up, so the settings form can refuse a
-%% server that cannot start. A server that is switched off, or off for `Session`
-%% when `Preferences` is true, is not tried.
-check(ConfigJson, Session, Name, Preferences) ->
-    try
-        Servers = maps:get(<<"servers">>, json:decode(ConfigJson), #{}),
-        {ok, Prefs} = 'albedo@harness@capabilities':load(albedo_extension_settings:home(), {some, Session}),
-        Wanted = Preferences =:= false orelse 'albedo@harness@capabilities':enabled(Prefs, <<"mcp">>, Name) =:= {ok, true},
-        case maps:find(Name, Servers) of
-            {ok, #{<<"enabled">> := false}} -> {ok, nil};
-            {ok, Config} when Wanted ->
-                case probe(Name, Config) of
-                    true -> {ok, nil};
-                    false -> {error, unavailable(Name)}
-                end;
-            _ -> {ok, nil}
-        end
-    catch
-        _:_ -> {error, <<"MCP configuration is invalid">>}
-    end.
-
 probe(Name, Config) ->
     case open_server(Name, Config) of
         {ok, Server} -> close_servers([Server]), true;
         _ -> false
+    end.
+
+check_candidate(Name, Config, Secrets) ->
+    case maps:get(<<"enabled">>, Config, true) of
+        false -> {ok, nil};
+        true -> case open_server_with_secrets(Name, Config, Secrets) of
+            {ok, Server} -> close_servers([Server]), {ok, nil};
+            _ -> {error, unavailable(Name)}
+        end
     end.
 
 %% Tells the handle's watcher what its session just did. `Refresh` takes the
@@ -705,7 +694,11 @@ validate_settings(Name, Server, SecretsJSON) ->
                 lists:foreach(fun(Field) ->
                     maps:foreach(fun(Target, Ref) ->
                         true = case Field of <<"headers">> -> valid_header(Target); _ -> valid_env_name(Target) end,
-                        #{<<"env">> := EnvName} = Ref, true = map_size(Ref) =:= 1, true = valid_env_name(EnvName)
+                        case Ref of
+                            #{<<"env">> := EnvName} when map_size(Ref) =:= 1 -> true = valid_env_name(EnvName);
+                            Text when is_binary(Text) -> case Field of <<"headers">> -> false = contains_newline(Text); _ -> ok end;
+                            _ -> erlang:error(invalid_source)
+                        end
                     end, maps:get(Field, Config, #{}))
                 end, [<<"headers">>, <<"env">>]),
                 case maps:get(<<"bearerTokenEnvVar">>, Config, null) of null -> ok; RefName -> true = valid_env_name(RefName) end

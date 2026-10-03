@@ -1,7 +1,8 @@
 %% Inspect real stream owners while publishers fill an unread TCP connection.
 -module(albedo_stream_pressure_probe).
 -export([pressure_json/1, subscriptions_json/0, removed_json/0,
-    progress_json/1, session_pressure_json/1, session_removed_json/1, burst_json/3]).
+    progress_json/1, session_pressure_json/1, session_removed_json/1, burst_json/3,
+    suspend_session_json/1, resume_session_json/1, worker_exit_json/3, maintenance_json/1]).
 
 rows(Table) ->
     case ets:whereis(Table) of
@@ -24,7 +25,7 @@ blocked(Owner) ->
         undefined -> 0
     end.
 
-sample({Ref, {Owner, _, Control}}) ->
+sample({Ref, {Owner, _, Control, _}}) ->
     {Count, Bytes} = case ets:lookup(albedo_bus_queues, Ref) of
         [{_, {_, C, B}}] -> {C, B};
         [] -> {0, 0}
@@ -43,15 +44,36 @@ measure() ->
         maps:merge_with(fun(_, A, B) -> max(A, B) end, Peak, sample(Row))
     end, #{count => 0, bytes => 0, mailbox => 0, mailbox_bytes => 0, blocked => 0, overflow => 0}, rows(albedo_bus)).
 
+activity_event(Id, Index, Size) ->
+    Prefix = iolist_to_binary([<<"pressure:">>, Id, <<":">>, integer_to_binary(Index), <<":">>]),
+    Remaining = max(0, min(256 - byte_size(Prefix), Size)),
+    Scalar = case Size > 4096 of true -> <<240, 159, 152, 128>>; false -> <<"x">> end,
+    Text = <<Prefix/binary, (binary:copy(Scalar, Remaining))/binary>>,
+    Line = #{kind => <<"assistant">>, text => Text},
+    json:encode(#{type => <<"activity">>, data => #{session_id => Id,
+        cursor => #{generation => <<"AAAAAAAAAAAAAAAAAAAAAA">>, sequence => Index},
+        status => #{phase => <<"idle">>, run_id => null,
+            interrupt_requested => false, blocking_reason => null},
+        current_progress => [], activity => #{lines => lists:duplicate(12, Line),
+            output_scalars => Index, output_utf8_bytes => Index,
+            observed_at => <<"2026-10-03T00:00:00Z">>,
+            latest_input => null, latest_answer => null}}}).
+
 publish(Ids, Start, Count, Size) ->
     lists:foreach(fun(Index) ->
         Id = lists:nth(1 + ((Index - 1) rem length(Ids)), Ids),
-        Text = iolist_to_binary([<<"pressure:">>, Id, <<":">>, integer_to_binary(Index), <<":">>,
-            binary:copy(<<"x">>, Size)]),
-        Event = iolist_to_binary([<<"{\"type\":\"text\",\"text\":\"">>, Text, <<"\"}">>]),
-        'albedo@daemon@bus':activity(Id, Event)
+        albedo_bus:publish(iolist_to_binary(activity_event(Id, Index, Size)))
     end, lists:seq(Start, Start + Count - 1)),
     nil.
+
+burst_event(_Id, Size) when Size > 1048576 ->
+    %% Internal admission boundary: this oversized payload is deliberately not
+    %% a valid public event and must never reach a socket.
+    json:encode(#{type => <<"invalidate">>, data => #{padding => binary:copy(<<"x">>, Size)}});
+burst_event(Id, Size) when Size =< 16 ->
+    json:encode(#{type => <<"invalidate">>, data => #{session_ids => [Id],
+        urls => [<<"/sessions/", Id/binary>>], scope_dirty => false}});
+burst_event(Id, Size) -> activity_event(Id, 1, Size).
 
 publish_batch(Ids, Published) ->
     Workers = [spawn_monitor(fun() ->
@@ -82,12 +104,13 @@ pressure(Ids, Published, Peak) when Published < 10000 ->
 pressure(_, Published, Peak) -> Peak#{published => Published, pressure => false}.
 
 burst_json(Ids, Count, Size) ->
-    [{_, {Owner, _, _}}] = rows(albedo_bus),
+    [{_, {Owner, _, _, _}}] = rows(albedo_bus),
     %% Hold the real stream handler at a barrier while testing each budget.
     ok = sys:suspend(Owner),
     try
         Peak = lists:foldl(fun(_, Acc) ->
-            publish(Ids, 1, 1, Size),
+            [Id | _] = Ids,
+            albedo_bus:publish(iolist_to_binary(burst_event(Id, Size))),
             maps:merge_with(fun(_, A, B) -> max(A, B) end, Acc, measure())
         end, measure(), lists:seq(1, Count)),
         json:encode(Peak)
@@ -155,3 +178,77 @@ progress_json(Id) ->
     json:encode(#{projection_bytes => bytes(Projection),
         projection_size => erlang:external_size(Projection),
         watchers => length(element(14, State))}).
+
+%% sys calls acknowledge suspension/resumption of the real session owner.
+suspend_session_json(Id) ->
+    {some, Session} = 'albedo@daemon@session':live(Id),
+    {ok, Owner} = 'gleam@erlang@process':subject_owner(Session),
+    ok = sys:suspend(Owner),
+    json:encode(#{suspended => true}).
+
+resume_session_json(Id) ->
+    {some, Session} = 'albedo@daemon@session':live(Id),
+    {ok, Owner} = 'gleam@erlang@process':subject_owner(Session),
+    ok = sys:resume(Owner),
+    json:encode(#{resumed => true}).
+
+%% The ready file acknowledges the monitor before the HTTP client cancels.
+worker_exit_json(Id, RunId, ReadyPath) ->
+    State = session_state(Id),
+    {some, Run} = 'albedo@daemon@turn':owner(element(9, State), RunId),
+    Worker = element(3, Run),
+    Monitor = monitor(process, Worker),
+    true = is_process_alive(Worker),
+    ok = file:write_file(ReadyPath, <<"monitor_ready">>),
+    receive
+        {'DOWN', Monitor, process, Worker, Reason} ->
+            Classification = case Reason of
+                normal -> <<"normal">>;
+                killed -> <<"killed">>;
+                _ -> <<"other">>
+            end,
+            json:encode(#{reason => Classification})
+    after 30000 ->
+        demonitor(Monitor, [flush]),
+        error(worker_still_alive)
+    end.
+
+%% Hold a real owner across several timer ticks, then let the sweep encounter
+%% its death. Calls are traced at the worker boundary, without reading registry
+%% state or assuming where its maintenance field is stored.
+maintenance_json(Id) ->
+    {some, Session} = 'albedo@daemon@session':live(Id),
+    {ok, Owner} = 'gleam@erlang@process':subject_owner(Session),
+    Module = 'albedo@daemon@maintenance',
+    {module, Module} = code:ensure_loaded(Module),
+    erlang:suspend_process(Owner),
+    erlang:trace_pattern({Module, run, 1}, true, [local]),
+    erlang:trace(all, true, [call, {tracer, self()}]),
+    try
+        Worker = receive
+            {trace, Pid, call, {Module, run, [_]}} -> Pid
+        after 3000 -> error(maintenance_not_started)
+        end,
+        Monitor = monitor(process, Worker),
+        Deadline = erlang:monotonic_time(millisecond) + 2000,
+        Workers = maintenance_calls(Module, Deadline, [Worker]),
+        exit(Owner, kill),
+        Outcome = receive
+            {'DOWN', Monitor, process, Worker, normal} -> <<"completed">>;
+            {'DOWN', Monitor, process, Worker, Reason} -> error({sweep_failed, Reason})
+        after 7000 -> error(maintenance_still_blocked)
+        end,
+        json:encode(#{admitted => length(lists:usort(Workers)), outcome => Outcome})
+    after
+        erlang:trace(all, false, [call]),
+        erlang:trace_pattern({Module, run, 1}, false, [local]),
+        catch erlang:resume_process(Owner)
+    end.
+
+maintenance_calls(Module, Deadline, Workers) ->
+    Remaining = max(0, Deadline - erlang:monotonic_time(millisecond)),
+    receive
+        {trace, Pid, call, {Module, run, [_]}} ->
+            maintenance_calls(Module, Deadline, [Pid | Workers])
+    after Remaining -> Workers
+    end.

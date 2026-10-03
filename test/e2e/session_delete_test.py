@@ -7,12 +7,15 @@ the schema, so it covers a table nobody has listed yet.
 
 import json
 import sqlite3
+import threading
 import unittest
+import urllib.parse
+import urllib.error
 
-from harness import Albedo, Provider, text
+from harness import Albedo, Provider, operation_id, text
 
-# The paperclip ledger keeps a vent's session id as provenance, not ownership.
-KEPT = {"paperclips"}
+# Paperclip provenance and retained input outcomes outlive the session.
+KEPT = {"paperclips", "input_turns"}
 
 
 def reply(request):
@@ -63,11 +66,21 @@ class SessionDeleteTests(unittest.TestCase):
 
     def compact(self, session, strategy):
         with self.app.api(
-            f"/sessions/{session}/commands",
-            {"name": "/compact", "arguments": strategy},
+            f"/sessions/{session}/compaction",
+            {"strategy": strategy},
         ) as response:
-            self.assertTrue(json.load(response)["result"]["started"])
+            self.assertEqual(json.load(response)["state"], "compacted")
         self.app.idle(session)
+
+    def delete_session(self, session):
+        resource = f"/sessions/{session}?view=configuration"
+        with self.app.api(resource) as response:
+            validator = response.getheader("ETag")
+            response.read()
+        with self.app.api(
+            resource, method="DELETE", headers={"If-Match": validator}
+        ) as response:
+            self.assertEqual(json.load(response)["state"], "complete")
 
     def assert_delete_clears(self, strategy, table, then=None):
         session = self.compacted_session(strategy)
@@ -78,8 +91,7 @@ class SessionDeleteTests(unittest.TestCase):
             self.compact(session, then)
             with self.database() as db:
                 self.assertGreater(self.rows(db, table, session), 0, table)
-        with self.app.api(f"/sessions/{session}", method="DELETE") as response:
-            self.assertEqual(response.status, 200)
+        self.delete_session(session)
         with self.database() as db:
             left = {
                 name: self.rows(db, name, session) for name in self.keyed_tables(db)
@@ -91,6 +103,62 @@ class SessionDeleteTests(unittest.TestCase):
                 "(SELECT id FROM lcm_compaction_node)"
             ).fetchone()[0]
             self.assertEqual(orphans, 0)
+
+    def test_leaf_deletion_refuses_busy_and_stale_observations(self):
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+
+        def held(request):
+            entered.set()
+            release.wait(30)
+            return text("completed before deletion")
+
+        self.provider.script = held
+        session = self.app.session()
+        resource = f"/sessions/{session}?view=configuration"
+        with self.app.api(resource) as response:
+            revision = response.headers["ETag"]
+            response.read()
+        identity = operation_id()
+        with self.app.api(
+            f"/sessions/{session}/inputs/{identity}",
+            {"kind": "message", "text": "hold deletion"},
+            method="PUT",
+        ) as response:
+            response.read()
+        self.assertTrue(entered.wait(30))
+        with self.app.api(resource) as response:
+            revision = response.headers["ETag"]
+            response.read()
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.app.api(resource, method="DELETE", headers={"If-Match": revision})
+        self.assertEqual(caught.exception.code, 409)
+        release.set()
+        self.app.idle(session)
+        with self.app.api(resource) as response:
+            revision = response.headers["ETag"]
+            response.read()
+        with self.app.api(
+            resource,
+            {"name": "changed before deletion"},
+            method="PATCH",
+            headers={"If-Match": revision},
+        ) as response:
+            response.read()
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.app.api(resource, method="DELETE", headers={"If-Match": revision})
+        self.assertEqual(caught.exception.code, 412)
+        with self.app.api(f"/sessions/{session}") as response:
+            self.assertEqual(json.load(response)["name"], "changed before deletion")
+        self.delete_session(session)
+        with self.app.api(f"/sessions/{session}/inputs/{identity}") as response:
+            receipt = json.load(response)
+        self.assertEqual(receipt["delivery"], "committed")
+        self.assertEqual(receipt["turn"]["state"], "completed")
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.app.api(f"/sessions/{session}")
+        self.assertEqual(caught.exception.code, 410)
+        self.assertEqual(json.load(caught.exception)["code"], "session_deleted")
 
     def test_rolling_and_notes_rows_go_with_the_session(self):
         self.assert_delete_clears("rolling", "compaction_notes")
@@ -105,24 +173,25 @@ class SessionDeleteTests(unittest.TestCase):
     def test_work_and_schedule_rows_go_with_the_session(self):
         session = self.app.session()
         with self.app.api(
-            f"/sessions/{session}/commands",
+            "/extensions/schedule/jobs",
             {
-                "name": "/schedule",
-                "args": {"action": "add", "details": "in:3600 build"},
+                "session_id": session,
+                "kind": "once",
+                "delay_seconds": 3600,
+                "prompt": "build",
             },
         ) as response:
             response.read()
-        # An item assigned to a session; the Python API cannot assign one.
-        with sqlite3.connect(self.app.home / "albedo.sqlite", timeout=10) as db:
-            db.execute(
-                "INSERT INTO work(title, session, cwd) VALUES('assigned', ?, '/w')",
-                (session,),
-            )
+        with self.app.api(
+            "/extensions/work/items?"
+            + urllib.parse.urlencode({"workspace": str(self.app.workspace)}),
+            {"title": "assigned", "session_id": session},
+        ) as response:
+            response.read()
         with self.database() as db:
             for table in ("work", "schedules"):
                 self.assertGreater(self.rows(db, table, session), 0, table)
-        with self.app.api(f"/sessions/{session}", method="DELETE") as response:
-            self.assertEqual(response.status, 200)
+        self.delete_session(session)
         with self.database() as db:
             for table in ("work", "schedules"):
                 self.assertEqual(self.rows(db, table, session), 0, table)

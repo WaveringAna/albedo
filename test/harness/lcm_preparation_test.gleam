@@ -2,6 +2,7 @@
 //// A long archived prefix must not be decoded by an ordinary preparation.
 
 import albedo/daemon/conversation
+import albedo/daemon/family
 import albedo/daemon/store
 import albedo/harness/extensions
 import albedo/harness/extensions/lcm/extension as lcm
@@ -30,6 +31,7 @@ pub fn below_trigger_and_stored_prior_do_not_decode_archived_payloads_test() -> 
     )
   let ledger = runtime.ledger(host)
   let assert Ok(_) = conversation.initialise(ledger)
+  let assert Ok(_) = family.initialise(ledger)
   let assert Ok(_) =
     conversation.create(
       ledger,

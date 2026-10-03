@@ -52,7 +52,7 @@ type CleanupResult struct {
 	Before, After int64
 }
 
-var storageID = regexp.MustCompile(`^[0-9a-f]{32}$`)
+var storageID = regexp.MustCompile(`^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$`)
 
 func (s *Service) PlanCleanup(ctx context.Context, options CleanupOptions) (CleanupPlan, error) {
 	var plan CleanupPlan

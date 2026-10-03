@@ -148,7 +148,11 @@ fn authenticate(context: extension.ModelContext) -> Result(wire.Auth, String) {
   case configuration.settings(context.home, context.profile, api_key) {
     Ok(key) if key != "" -> Ok(wire.ApiKey(key))
     _ -> {
-      use access <- result.try(native_access(context.home, context.session))
+      use access <- result.try(native_access(
+        context.home,
+        context.session,
+        context.profile,
+      ))
       use #(account, device, session) <- result.map(native_profile(
         access,
         context.session,
@@ -276,4 +280,8 @@ fn native_profile(
 ) -> Result(#(String, String, String), String)
 
 @external(erlang, "albedo_claude_auth", "access")
-fn native_access(home: String, session: String) -> Result(String, String)
+fn native_access(
+  home: String,
+  session: String,
+  profile: String,
+) -> Result(String, String)

@@ -28,9 +28,6 @@ func (s *Service) RunPrompt(ctx context.Context, options PromptOptions) (PromptR
 	if err != nil {
 		return PromptResult{}, err
 	}
-	if capabilityErr := daemon.CheckPromptSupport(ctx, conn); capabilityErr != nil {
-		return PromptResult{}, capabilityErr
-	}
 	var choice modelChoice
 	if model != "" {
 		profiles, profileErr := daemon.ProviderProfiles(ctx, conn)
@@ -176,7 +173,7 @@ func awaitReply(ctx context.Context, client *daemon.ChatClient, prompt string) (
 			if event.Type == daemon.EventTurnMembership && slices.Contains(event.SubmissionIDs, submissionID) {
 				turnID = event.TurnID
 			}
-			if turnID == "" {
+			if turnID == "" || event.TurnID != "" && event.TurnID != turnID {
 				continue
 			}
 			switch event.Type {
@@ -191,6 +188,12 @@ func awaitReply(ctx context.Context, client *daemon.ChatClient, prompt string) (
 			case daemon.EventTurnCompleted:
 				if event.TurnID != turnID {
 					continue
+				}
+				if event.Source == "interrupted" {
+					return "", errors.New("the turn was interrupted")
+				}
+				if event.Source == "failed" && failure == nil {
+					failure = errors.New("the turn failed")
 				}
 				if failure != nil {
 					return "", failure

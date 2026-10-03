@@ -11,8 +11,7 @@ pub fn extension() -> extension.Extension {
     [],
     [
       extension.ServicePlugin(extension.Service(
-        extension.SignedBody,
-        65_536,
+        service.admission,
         service.handle,
       )),
       extension.ManagedPlugin(fn(db, session, _) {

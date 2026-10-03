@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -11,11 +10,12 @@ type ImageMimeType string
 const (
 	ImagePNG  ImageMimeType = "image/png"
 	ImageJPEG ImageMimeType = "image/jpeg"
+	ImageGIF  ImageMimeType = "image/gif"
 	ImageWEBP ImageMimeType = "image/webp"
 )
 
 type ImageMetadata struct {
-	MimeType ImageMimeType `json:"mimeType"`
+	MimeType ImageMimeType `json:"mime_type"`
 	Width    int           `json:"width"`
 	Height   int           `json:"height"`
 	Bytes    int           `json:"bytes"`
@@ -24,48 +24,6 @@ type ImageMetadata struct {
 type ImageAttachment struct {
 	Data string `json:"data"`
 	ImageMetadata
-}
-
-var validMimeTypes = map[ImageMimeType]bool{
-	ImagePNG:  true,
-	ImageJPEG: true,
-	ImageWEBP: true,
-}
-
-// ParseImageMetadata validates raw image metadata fields and returns nil if invalid.
-func ParseImageMetadata(val any) *ImageMetadata {
-	if val == nil {
-		return nil
-	}
-
-	data, err := json.Marshal(val)
-	if err != nil {
-		return nil
-	}
-
-	var meta ImageMetadata
-	if err := json.Unmarshal(data, &meta); err != nil {
-		return nil
-	}
-
-	if !validMimeTypes[meta.MimeType] {
-		return nil
-	}
-
-	if meta.Width < 1 || meta.Width > 16384 {
-		return nil
-	}
-	if meta.Height < 1 || meta.Height > 16384 {
-		return nil
-	}
-	if int64(meta.Width)*int64(meta.Height) > 40_000_000 {
-		return nil
-	}
-	if meta.Bytes < 1 || meta.Bytes > 5*1024*1024 {
-		return nil
-	}
-
-	return &meta
 }
 
 // ImageLabel returns human-readable label for image metadata.

@@ -44,7 +44,7 @@ func (m *ChatModel) hostAuthCmd(blocked string) tea.Cmd {
 	}
 	client, ctx, id, generation := m.client, m.streamCtx, m.SessionID, m.Generation
 	return func() tea.Msg {
-		status, err := client.Host(ctx, host)
+		status, err := client.WarmHost(ctx, host)
 		if err != nil || status.State != "needs_auth" {
 			return nil
 		}

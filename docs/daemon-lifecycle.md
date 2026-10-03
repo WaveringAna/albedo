@@ -4,16 +4,9 @@ Albedo's API connection and its local process launcher have separate jobs. A
 client can attach to a supplied endpoint without reading local installation
 files, starting a process, or replacing one.
 
-## Before
+## Connection flow
 
-The CLI's connection helper read `daemon.json`, checked health, compared the
-running build with the bundled executable, and could start or replace the daemon.
-Many discovery failures looked like absence. The launcher also supplied the
-token and VM defaults, so starting the daemon independently behaved differently.
-
-## After
-
-1. `Discover` reads the local record and probes its authenticated health endpoint.
+1. `Discover` reads the local record and probes its authenticated `/server` resource.
    It reports absence, a proven stale record, or a running daemon. Invalid records,
    authentication failures, unreachable endpoints, and unhealthy daemons return
    actionable errors. A failed health check does not authorize another launch.
@@ -71,28 +64,7 @@ rediscovery callback when the endpoint is fixed. A local client can supply
 API recovery uses the supplied callback and validates the new endpoint before
 installing it. It does not know the client's home directory or executable.
 
-Attachment currently requires protocol 2 and the `operation_receipts`,
-`session_stream_generation`, and `agents_stream_overflow` capabilities. Optional
-features check their own capabilities. Authentication, malformed health, and
+Attachment requires protocol 3 and the `durable_inputs`, `session_replay`,
+`collection_invalidation`, and `tool_progress` capabilities. Optional
+features check their own capabilities. Authentication, malformed server responses, and
 capability lookup failures propagate to callers.
-
-## Implementation ownership and verification
-
-The API agent owns connection extraction, health validation, explicit recovery,
-and controlled transport tests. The launcher agent owns local discovery,
-launch/upgrade coordination, daemon defaults, bootstrap, and packaging. The
-validation agent owns isolated real-daemon lifecycle scenarios. The lead owns
-CLI policy, confirmation, integration, documentation, and final review. Shared
-files have one writer, and daemon builds run serially.
-
-Correctness tests cover independent startup and startup parity, protected records,
-operator overrides, compatible different builds, attachment failures without
-process changes, canceled waits, concurrent starters, interactive keep/restart,
-approval races, and upgrade during active sessions. Transport tests cover health
-validation and recovery boundaries that the real daemon cannot intentionally
-violate. No obsolete wire-format readers or compatibility fixtures are retained.
-
-After focused tests, verification runs Go race tests, Gleam checks, Erlang
-compilation with warnings treated as errors, Go vet, and `./test.sh`. Cross-review
-checks ownership boundaries, cancellation and resource cleanup, error handling,
-unnecessary forwarding helpers, and tests that only mirror implementation.

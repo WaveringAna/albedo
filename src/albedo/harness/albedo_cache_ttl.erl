@@ -1,5 +1,5 @@
 -module(albedo_cache_ttl).
-%% The prompt-cache TTL table behind /cache-ttl and phase 2's warmth prior:
+%% The prompt-cache TTL table supplies the initial cache-warmth estimate:
 %% a shipped default, an optional remote copy, and a local override, merged by
 %% id. Each layer file is parsed once per revision (size + mtime), like
 %% albedo_models; a malformed file keeps that layer's last good entries, and

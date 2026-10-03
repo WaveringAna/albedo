@@ -1,7 +1,7 @@
 //// Converts durable provider output into the portable model-input subset.
 //// Raw replay remains untouched only for the provider/protocol that produced it.
 
-import albedo/daemon/events
+import albedo/daemon/message_content as events
 import albedo/daemon/transcript
 import albedo/openai_api/replay
 import albedo/openai_api/types

@@ -28,6 +28,7 @@ pub fn handle(
 fn describe(error: paperclips.Error) -> #(String, String) {
   case error {
     paperclips.Invalid(message) -> #("invalid", message)
+    paperclips.Conflict -> #("conflict", "vent changed")
     paperclips.NotFound -> #("not_found", "vent not found")
     paperclips.Storage(message) -> #("storage", message)
   }

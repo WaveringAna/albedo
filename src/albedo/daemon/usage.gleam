@@ -1,7 +1,5 @@
 import albedo/harness/cache_fade
 import albedo/openai_api/types
-import gleam/json
-import gleam/list
 import gleam/option.{type Option, None, Some}
 
 /// The latest provider completion metadata for a session.
@@ -58,56 +56,6 @@ pub fn from_completion(
     None -> None
   }
   Metadata(model, recorded_at, tokens, cache)
-}
-
-/// Encodes a usage completion event. Unreported token counts are omitted so
-/// clients distinguish unknown from zero.
-pub fn event(metadata: Metadata) -> String {
-  let Metadata(model, recorded_at, tokens, cache) = metadata
-  let token_fields = case tokens {
-    Some(Tokens(
-      prompt,
-      completion,
-      cached,
-      creation,
-      write_5m,
-      write_1h,
-      reasoning,
-    )) ->
-      [
-        #("promptTokens", json.int(prompt)),
-        #("completionTokens", json.int(completion)),
-        #("totalTokens", json.int(prompt + completion)),
-      ]
-      |> opt_field("cacheCreationTokens", creation)
-      |> opt_field("cachedPromptTokens", cached)
-      |> opt_field("cacheWrite5mTokens", write_5m)
-      |> opt_field("cacheWrite1hTokens", write_1h)
-      |> opt_field("reasoningTokens", reasoning)
-    None -> []
-  }
-  let cache_fields = case cache {
-    Some(fade) -> [#("cacheFade", cache_fade.steps_json(fade))]
-    None -> []
-  }
-  json.object([
-    #("type", json.string("usage")),
-    #("model", json.string(model)),
-    #("recordedAt", json.int(recorded_at)),
-    ..list.append(token_fields, cache_fields)
-  ])
-  |> json.to_string
-}
-
-fn opt_field(
-  fields: List(#(String, json.Json)),
-  key: String,
-  value: Option(Int),
-) -> List(#(String, json.Json)) {
-  case value {
-    Some(val) -> [#(key, json.int(val)), ..fields]
-    None -> fields
-  }
 }
 
 type TimeUnit {

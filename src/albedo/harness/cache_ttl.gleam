@@ -1,5 +1,5 @@
-//// The prompt-cache TTL table: the prior phase 2's cache-warmth estimate
-//// runs on until a session's provider requests have measured the real thing.
+//// The prompt-cache TTL table supplies an initial cache-warmth estimate
+//// until the session's provider requests supply measurements.
 ////
 //// Three layers merge by id — the shipped `priv/cache-ttl.json`, an optional
 //// remote copy configured in extensions.json, and a local override in
@@ -40,7 +40,7 @@ pub type Clock {
 }
 
 /// How well the numbers are known. `Folklore` and `Unverified` are
-/// placeholders phase 2 replaces with ledger measurements.
+/// placeholders the ledger replaces with measurements.
 pub type Evidence {
   Documented
   Measured

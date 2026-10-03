@@ -105,7 +105,7 @@ fn status_style(status: paperclips.Status) -> #(Int, page.Tone) {
   }
 }
 
-fn title(vent: paperclips.Vent) -> String {
+pub fn title(vent: paperclips.Vent) -> String {
   case vent.title {
     "" -> short_title(vent.message)
     title -> title
@@ -153,7 +153,10 @@ fn short_title(message: String) -> String {
 }
 
 /// Everything the detail pane shows for one vent.
-fn detail(labels: dict.Dict(String, String), vent: paperclips.Vent) -> String {
+pub fn detail(
+  labels: dict.Dict(String, String),
+  vent: paperclips.Vent,
+) -> String {
   [
     vent.message,
     case vent.suggestion {
@@ -337,6 +340,7 @@ fn target(
 fn describe(error: paperclips.Error) -> String {
   case error {
     paperclips.Invalid(message) -> message
+    paperclips.Conflict -> "vent changed"
     paperclips.NotFound -> "vent not found"
     paperclips.Storage(message) -> message
   }

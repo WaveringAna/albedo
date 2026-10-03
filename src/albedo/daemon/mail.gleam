@@ -35,6 +35,11 @@ pub type Kind {
   Webhook
 }
 
+pub type DeliveryOwner {
+  Inbox
+  IdentifiedInput
+}
+
 pub type Letter {
   Letter(
     id: String,
@@ -65,6 +70,7 @@ CREATE TABLE IF NOT EXISTS mail (
  body TEXT NOT NULL,
  created_at INTEGER NOT NULL,
  delivered_at INTEGER,
+ delivery_owner TEXT NOT NULL DEFAULT 'mail' CHECK(delivery_owner IN ('mail','input')),
  attempts INTEGER NOT NULL DEFAULT 0,
  last_error TEXT
 );
@@ -73,7 +79,15 @@ CREATE INDEX IF NOT EXISTS mail_conversation ON mail(recipient,sender,created_at
 "
 
 pub fn initialise(db: store.Store) -> Result(Nil, String) {
-  store.query(db, fn(connection) { store.exec(connection, schema) })
+  store.query(db, fn(connection) {
+    use _ <- result.try(store.exec(connection, schema))
+    store.add_columns(connection, "mail", [
+      #(
+        "delivery_owner",
+        "TEXT NOT NULL DEFAULT 'mail' CHECK(delivery_owner IN ('mail','input'))",
+      ),
+    ])
+  })
 }
 
 fn kind_name(kind: Kind) -> String {
@@ -148,7 +162,7 @@ pub fn post(
   })
   let letter =
     Letter(id, recipient, sender, sender_name, kind, body, usage.now())
-  store.query(db, fn(connection) { insert(connection, letter) })
+  store.query(db, fn(connection) { insert(connection, letter, Inbox) })
   |> result.try(fn(inserted) {
     case inserted {
       True -> Ok(letter)
@@ -163,13 +177,14 @@ pub fn post(
 pub fn insert(
   connection: sqlight.Connection,
   letter: Letter,
+  owner: DeliveryOwner,
 ) -> Result(Bool, String) {
   let Letter(id, recipient, sender, sender_name, kind, body, created_at) =
     letter
   sqlight.query(
     "INSERT INTO mail("
       <> columns
-      <> ") SELECT ?,?,?,?,?,?,? WHERE (SELECT count(*) FROM mail WHERE recipient=? AND delivered_at IS NULL) < ? RETURNING id",
+      <> ",delivery_owner) SELECT ?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM mail WHERE recipient=? AND delivered_at IS NULL AND delivery_owner='mail') < ? RETURNING id",
     connection,
     [
       sqlight.text(id),
@@ -179,6 +194,10 @@ pub fn insert(
       sqlight.text(kind_name(kind)),
       sqlight.text(body),
       sqlight.int(created_at),
+      sqlight.text(case owner {
+        Inbox -> "mail"
+        IdentifiedInput -> "input"
+      }),
       sqlight.text(recipient),
       sqlight.int(pending_limit),
     ],
@@ -194,14 +213,18 @@ pub fn insert(
     case rows {
       [] -> False
       _ -> {
-        bus.mailed(
-          id,
-          sender,
-          sender_name,
-          recipient,
-          kind_name(kind),
-          string.byte_size(body),
-        )
+        case owner {
+          IdentifiedInput -> Nil
+          Inbox ->
+            bus.mailed(
+              id,
+              sender,
+              sender_name,
+              recipient,
+              kind_name(kind),
+              string.byte_size(body),
+            )
+        }
         True
       }
     }
@@ -214,7 +237,7 @@ pub fn pending(db: store.Store, limit: Int) -> Result(List(Letter), String) {
     db,
     "SELECT "
       <> columns
-      <> " FROM mail WHERE delivered_at IS NULL ORDER BY created_at,id LIMIT ?",
+      <> " FROM mail WHERE delivered_at IS NULL AND delivery_owner='mail' ORDER BY created_at,id LIMIT ?",
     [sqlight.int(limit)],
     decoder(),
   )

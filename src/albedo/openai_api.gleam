@@ -15,8 +15,8 @@
 //// Callbacks run in the calling process. Returning Stop closes the connection.
 //// There are no automatic retries: an interrupted attempt may have incurred cost.
 //// Replay final output using types.Replay; never flatten it to assistant text.
-//// This first adapter supports text and function tools, not audio/image input or
-//// custom tools. Function argument strings must be validated before execution.
+//// Supports text, image input, and function tools. Audio and custom tools are
+//// unsupported. Function arguments must be validated before execution.
 //// Requires Erlang/OTP 27+ for native JSON. The bounded incremental parser owns
 //// SSE framing; Gun owns streaming HTTP, flow control, and TLS verification.
 //// Requests stay as iodata.

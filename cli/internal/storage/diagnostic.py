@@ -91,6 +91,16 @@ def inspect(path, directory):
         )
         for session in sessions:
             session["bytes"] += sizes.get(session["id"], 0)
+        if "transcript_traces" in tables:
+            columns(db, "transcript_traces", {"session", "cell_id", "payload"})
+            sizes = dict(
+                db.execute(
+                    "SELECT session, COALESCE(sum(length(CAST(payload AS BLOB))),0) "
+                    "FROM transcript_traces GROUP BY session"
+                )
+            )
+            for session in sessions:
+                session["bytes"] += sizes.get(session["id"], 0)
         if "cell_traces" in tables:
             columns(db, "cell_traces", {"id", "payload"})
         if "cells" in tables:

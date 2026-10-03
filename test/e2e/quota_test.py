@@ -15,6 +15,7 @@ poller actually kept.
 """
 
 import json
+from datetime import datetime
 import os
 import stat
 import tempfile
@@ -22,6 +23,13 @@ import time
 import unittest
 
 from harness import Albedo, Provider, exclusive, text
+
+
+def milliseconds(timestamp):
+    return round(
+        datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp() * 1000
+    )
+
 
 # The busy cadence must stay distinguishable from the ordinary one, and the
 # first failure backoff waits 2x the ordinary cadence, which sets the length.
@@ -141,28 +149,32 @@ class QuotaTests(unittest.TestCase):
         self.addCleanup(self.app.__exit__, None, None, None)
 
     def readings(self):
-        with self.app.api("/quota") as response:
-            return json.load(response)["readings"]
+        with self.app.api("/server") as response:
+            return json.load(response)["quota"]
 
     def samples(self):
         """Every stored sample, newest first, through the history pages."""
-        rows, cursor = [], 0
+        rows, token = [], None
         while len(rows) < 1000:
-            with self.app.api(f"/quota?history={cursor}&limit=200") as response:
-                page = json.load(response)
+            query = "&next=" + token if token else ""
+            with self.app.api(
+                f"/server?include=quota_history&limit=200{query}"
+            ) as response:
+                page = json.load(response)["quota_history"]
             rows.extend(page["items"])
-            if not page["hasMore"]:
+            if page["next"] is None:
                 break
-            cursor = page["nextCursor"]
+            token = page["next"]
         return rows
 
     def observed(self, account):
         """One timestamp per poll of one account since the boot, oldest first."""
         return sorted(
             {
-                row["observedAt"]
+                milliseconds(row["observed_at"])
                 for row in self.samples()
-                if row["account"] == account and row["observedAt"] > self.since
+                if row["account_id"] == account
+                and milliseconds(row["observed_at"]) > self.since
             }
         )
 
@@ -192,7 +204,7 @@ class QuotaTests(unittest.TestCase):
         reading = {}
         deadline = time.monotonic() + 40
         while time.monotonic() < deadline:
-            reading = {(r["provider"], r["limitId"]): r for r in self.readings()}
+            reading = {(r["provider"], r["limit_id"]): r for r in self.readings()}
             if wanted.issubset(reading):
                 break
             time.sleep(0.25)
@@ -203,26 +215,29 @@ class QuotaTests(unittest.TestCase):
                 + self.fake_errors()
             )
         hyper = reading[("hyper", "primary")]
-        self.assertEqual(hyper["account"], "charm-hyper")
-        self.assertEqual(hyper["usedPercent"], 85.0)
-        self.assertEqual(hyper["windowSeconds"], 3600)
-        self.assertGreater(hyper["resetsAt"], int(time.time() * 1000))
+        self.assertEqual(hyper["account_id"], "charm-hyper")
+        self.assertEqual(hyper["used_percent"], 85.0)
+        self.assertEqual(hyper["window_seconds"], 3600)
+        self.assertGreater(milliseconds(hyper["resets_at"]), int(time.time() * 1000))
         self.assertEqual(hyper["status"], "ok")
         self.assertEqual(hyper["source"], "poll")
         anthropic = reading[("anthropic", "weekly")]
-        self.assertEqual(anthropic["account"], "fixture-account")
-        self.assertEqual(anthropic["usedPercent"], 5.0)
+        self.assertEqual(anthropic["account_id"], "fixture-account")
+        self.assertEqual(anthropic["used_percent"], 5.0)
         # The report plan and each limit's window label are readings too, kept
         # exactly as reported; where the report had neither, they stay null.
         self.assertEqual(anthropic["plan"], "pro")
-        self.assertEqual(anthropic["windowLabel"], "7 days")
+        self.assertEqual(anthropic["window_label"], "7 days")
         self.assertIsNone(hyper["plan"])
-        self.assertEqual(hyper["windowLabel"], "1 hour")
+        self.assertEqual(hyper["window_label"], "1 hour")
         # A failed report is recorded as a reading too, error and all; a
         # missing percentage stays unknown rather than becoming zero.
         deepseek = reading[("deepseek", "")]
-        self.assertIn("no quota", deepseek["error"])
-        self.assertIsNone(deepseek["usedPercent"])
+        self.assertEqual(set(deepseek["error"]), {"code", "detail"})
+        self.assertEqual(deepseek["error"]["code"], "quota_failed")
+        self.assertIn("no quota", deepseek["error"]["detail"])
+        self.assertLessEqual(len(deepseek["error"]["detail"]), 4096)
+        self.assertIsNone(deepseek["used_percent"])
         self.assertIsNone(deepseek["plan"])
 
         # Enough polls of each account to read a cadence off the intervals.
@@ -285,35 +300,44 @@ class QuotaTests(unittest.TestCase):
         failures = [
             row
             for row in self.samples()
-            if row["observedAt"] > self.since
+            if milliseconds(row["observed_at"]) > self.since
             and row["error"]
-            and "usage" in row["error"]
+            and "usage" in row["error"]["detail"]
         ]
         self.assertEqual(failures, [], "the usage driver failed against the fake")
         self.assertEqual(self.fake_errors(), "")
 
         # The latest reading per account and limit is the newest sample, and
         # history pages from it by row id, newest first.
-        latest = {(r["provider"], r["limitId"]): r for r in self.readings()}
-        with self.app.api("/quota?history=0") as response:
-            page = json.load(response)
+        latest = {(r["provider"], r["limit_id"]): r for r in self.readings()}
+        with self.app.api("/server?include=quota_history&limit=200") as response:
+            page = json.load(response)["quota_history"]
         samples = page["items"]
-        ids = [sample["id"] for sample in samples]
+        ids = [sample["sequence"] for sample in samples]
         self.assertTrue(
             all(later < earlier for earlier, later in zip(ids, ids[1:])),
             f"history is not newest first: {ids}",
         )
         newest = max(
-            (s for s in samples if s["provider"] == "hyper"), key=lambda s: s["id"]
+            (s for s in samples if s["provider"] == "hyper"),
+            key=lambda s: s["sequence"],
         )
         self.assertEqual(
-            newest["observedAt"], latest[("hyper", "primary")]["observedAt"]
+            newest["observed_at"], latest[("hyper", "primary")]["observed_at"]
         )
-        cursor = ids[len(ids) // 2]
-        with self.app.api(f"/quota?history={cursor}") as response:
-            older = json.load(response)
+        with self.app.api("/server?include=quota_history&limit=2") as response:
+            first = json.load(response)["quota_history"]
+        self.assertEqual(len(first["items"]), 2)
+        self.assertIsNotNone(first["next"])
+        with self.app.api(
+            f"/server?include=quota_history&limit=2&next={first['next']}"
+        ) as response:
+            older = json.load(response)["quota_history"]
+        self.assertTrue(older["items"])
         self.assertTrue(
-            all(sample["id"] < cursor for sample in older["items"]),
-            f"history after {cursor} reached newer rows: "
-            f"{[s['id'] for s in older['items']]}",
+            all(
+                sample["sequence"] < first["items"][-1]["sequence"]
+                for sample in older["items"]
+            ),
+            "quota continuation reached newer rows",
         )

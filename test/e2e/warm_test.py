@@ -12,11 +12,19 @@ request rows are the witnesses.
 """
 
 import json
+from datetime import datetime
 import threading
 import time
 import unittest
 
-from harness import Albedo, Provider, exclusive, text
+from harness import Albedo, Provider, exclusive, operation_id, text
+
+
+def milliseconds(timestamp):
+    return round(
+        datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp() * 1000
+    )
+
 
 # A prefix big enough to matter: 4096 cached tokens against the 1024 floor.
 PARENT_USAGE = {
@@ -125,29 +133,39 @@ class WarmTest(unittest.TestCase):
         ]
 
     def rows(self, session):
-        with self.app.api(f"/sessions/{session}/requests") as response:
-            return json.load(response)["rows"]
+        with self.app.api(f"/sessions/{session}/context?view=requests") as response:
+            return json.load(response)["items"]
 
-    def tree(self, session):
+    def history(self, session):
         items, after = [], 0
         while True:
             with self.app.api(
-                f"/sessions/{session}/tree?after={after}&limit=100"
+                f"/sessions/{session}/history?after={after}&limit=100"
             ) as response:
                 page = json.load(response)
             items.extend(page["items"])
-            if not page["hasMore"]:
+            if page["newer"] is None:
                 return items
-            after = page["nextCursor"]
+            after = items[-1]["position"]
 
     def swarm(self, parent=None):
         """A parent whose turn has run while its scout is still working."""
         parent = parent or self.app.session()
-        made = self.api(
-            f"/sessions/{parent}/children",
-            {"name": "scout", "task": TASK, "model": "scout/scout-model"},
-        )
-        child = made["member"]["session"]
+        child = operation_id()
+        self.app.api(
+            f"/sessions/{child}",
+            {
+                "kind": "child",
+                "parent_id": parent,
+                "address": "scout",
+                "name": "scout",
+                "initial_input_id": operation_id(),
+                "task": TASK,
+                "model": "scout/scout-model",
+            },
+            method="PUT",
+            headers={"If-None-Match": "*"},
+        ).close()
         wait_for(lambda: self.requests("/child/") or None)
         self.app.prompt(parent, "run the swarm").close()
         self.app.idle(parent)
@@ -170,19 +188,27 @@ class WarmTest(unittest.TestCase):
     @exclusive
     def test_a_session_that_disables_the_warmer_is_not_pinged(self):
         parent = self.app.session()
-        extensions = self.api(
-            f"/sessions/{parent}/extensions", {"name": "warm", "enabled": False}
-        )
-        self.assertFalse(
-            next(item["enabled"] for item in extensions if item["name"] == "warm")
-        )
+        with self.app.api(f"/sessions/{parent}?view=configuration") as response:
+            json.load(response)
+            revision = response.headers["ETag"]
+        with self.app.api(
+            f"/sessions/{parent}?view=configuration",
+            {"selection": {"extensions": {"warm": False}}},
+            method="PATCH",
+            headers={"If-Match": revision},
+        ) as response:
+            self.assertFalse(
+                json.load(response)["session"]["selection"]["effective"]["extensions"][
+                    "warm"
+                ]
+            )
         self.assert_no_pings(*self.swarm(parent))
 
     # exclusive: writes daemon-wide cache TTL and warmer settings
     @exclusive
     def test_pings_repeat_the_last_request_and_stop_at_the_budget(self):
         parent, child = self.swarm()
-        before = self.tree(parent)
+        before = self.history(parent)
 
         def two_pings():
             found = self.pings(self.requests("/parent/"))
@@ -203,28 +229,32 @@ class WarmTest(unittest.TestCase):
         )
         head = rows[0]
         for row in rows[1:]:
-            self.assertEqual(row["headHash"], head["headHash"])
-            self.assertEqual(row["inputs"], head["inputs"])
-            self.assertEqual(row["replaced"], head["replaced"])
-            self.assertEqual(row["projectionHash"], head["projectionHash"])
-            self.assertEqual(row["cacheMarks"], head["cacheMarks"])
-            self.assertEqual(row["cachedInputTokens"], 4096)
-            self.assertIsNone(row["seq"])
-            self.assertEqual(row["outcome"], "ok")
-            self.assertEqual(row["profile"], "orchestrator")
+            self.assertEqual(row["head_hash"], head["head_hash"])
+            self.assertEqual(row["input_count"], head["input_count"])
+            self.assertEqual(row["replaced_input_count"], head["replaced_input_count"])
+            self.assertEqual(row["projection_hash"], head["projection_hash"])
+            self.assertEqual(row["cache_marks"], head["cache_marks"])
+            self.assertEqual(row["cached_tokens"]["observed"], 4096)
+            self.assertEqual(row["transcript_positions"], [])
+            self.assertEqual(row["outcome"], "completed")
+            self.assertEqual(row["provider_profile"], "orchestrator")
             self.assertEqual(row["model"], "fixture-model")
         # A ping paid 4096 cached tokens: the hit the TTL model predicted.
         # Each ping is due an interval after the send before it, timed from
         # the moment the warmer sent it, which its request row stamps a little
         # later: rows apart from the turn's are bounded from the turn's.
         interval = TTL_SECONDS * 900
-        self.assertGreaterEqual(rows[1]["startedMs"], rows[0]["startedMs"] + interval)
         self.assertGreaterEqual(
-            rows[2]["startedMs"], rows[0]["startedMs"] + 2 * interval
+            milliseconds(rows[1]["started_at"]),
+            milliseconds(rows[0]["started_at"]) + interval,
+        )
+        self.assertGreaterEqual(
+            milliseconds(rows[2]["started_at"]),
+            milliseconds(rows[0]["started_at"]) + 2 * interval,
         )
 
         # The transcript is untouched by warming.
-        self.assertEqual(self.tree(parent), before)
+        self.assertEqual(self.history(parent), before)
 
         # The budget is spent: no third ping past another interval.
         time.sleep(QUIET_SECONDS)
@@ -250,18 +280,18 @@ class WarmTest(unittest.TestCase):
     def test_a_ping_restarts_the_cached_counts_fade(self):
         parent, child = self.swarm()
 
-        def fades():
-            return [
-                event["cacheFade"]
-                for event in self.app.events(parent)
-                if event["type"] == "usage"
-            ]
+        def fade():
+            with self.app.api(f"/sessions/{parent}?tail=0") as response:
+                return json.load(response)["usage"]["cache_fade"]
 
         # The fixture's clock counts the TTL from the send's start; nothing is
         # left after it.
         turn = self.rows(parent)[0]
-        expires = turn["startedMs"] + TTL_SECONDS * 1000
-        self.assertEqual(fades()[0], [{"at": expires, "cached": 0}])
+        expires = milliseconds(turn["started_at"]) + TTL_SECONDS * 1000
+        self.assertEqual(
+            [(milliseconds(step["at"]), step["cached_tokens"]) for step in fade()],
+            [(expires, 0)],
+        )
 
         # A ping resends the prefix, so the provider's clock starts over from
         # it: the fade moves to the ping's send, which the session times from
@@ -273,11 +303,20 @@ class WarmTest(unittest.TestCase):
         )
         moved = wait_for(
             lambda: next(
-                (step["at"] for step in fades()[-1] if step["at"] != expires), None
+                (
+                    milliseconds(step["at"])
+                    for step in fade()
+                    if milliseconds(step["at"]) != expires
+                ),
+                None,
             )
         )
-        self.assertLessEqual(moved, ping["startedMs"] + TTL_SECONDS * 1000)
-        self.assertGreater(moved, ping["startedMs"] + TTL_SECONDS * 1000 - 500)
+        self.assertLessEqual(
+            moved, milliseconds(ping["started_at"]) + TTL_SECONDS * 1000
+        )
+        self.assertGreater(
+            moved, milliseconds(ping["started_at"]) + TTL_SECONDS * 1000 - 500
+        )
         self.gate.set()
         self.app.idle(child)
         self.app.idle(parent)
@@ -295,7 +334,13 @@ class WarmTest(unittest.TestCase):
         self.app.prompt(parent, "real work now").close()
         self.app.idle(parent)
         self.assertIn(
-            "orchestrator reply", [item["preview"] for item in self.tree(parent)]
+            "orchestrator reply",
+            [
+                part["text"]
+                for entry in self.history(parent)
+                for part in entry["content"]
+                if part["kind"] == "text"
+            ],
         )
 
         # The work that kept the parent warm is done; warming ends with it.

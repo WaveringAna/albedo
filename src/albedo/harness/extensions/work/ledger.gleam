@@ -1,5 +1,4 @@
 import albedo/daemon/store as storage
-import albedo/harness/links
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
@@ -30,6 +29,8 @@ pub type Item {
     revision: Int,
     /// Where the item was filed: this workspace, or one linked with it.
     workspace: String,
+    created_at: String,
+    updated_at: String,
   )
 }
 
@@ -77,7 +78,7 @@ CREATE INDEX IF NOT EXISTS work_parent ON work(parent);
 CREATE INDEX IF NOT EXISTS work_session ON work(session);
 "
 
-const columns = "id,title,notes,status,parent,session,run,revision,cwd"
+const columns = "id,title,notes,status,parent,session,run,revision,cwd,created_at,updated_at"
 
 const legacy_cwd = "__albedo_legacy__"
 
@@ -132,6 +133,8 @@ fn decoder() -> decode.Decoder(Item) {
   use run <- decode.field(6, decode.optional(decode.string))
   use revision <- decode.field(7, decode.int)
   use workspace <- decode.field(8, decode.string)
+  use created_at <- decode.field(9, decode.string)
+  use updated_at <- decode.field(10, decode.string)
   decode.success(Item(
     id,
     title,
@@ -142,6 +145,8 @@ fn decoder() -> decode.Decoder(Item) {
     run,
     revision,
     workspace,
+    created_at,
+    updated_at,
   ))
 }
 
@@ -153,18 +158,31 @@ fn rows(
   storage.rows(db, sql, args, decoder()) |> result.map_error(Storage)
 }
 
-/// `cwd IN (...)` over the workspace and the ones linked with it, and its
-/// arguments: every read and change reaches the whole group, and only a new
-/// item is filed under the workspace itself.
+/// The linked scope stays inside SQLite instead of returning the whole group.
+/// Embedded work stores without the optional links table remain local.
 fn scope(
   db: sqlight.Connection,
   cwd: String,
-) -> #(String, List(sqlight.Value)) {
-  let group = links.members(db, cwd)
-  #(
-    "cwd IN (" <> string.join(list.map(group, fn(_) { "?" }), ",") <> ")",
-    list.map(group, sqlight.text),
+) -> Result(#(String, List(sqlight.Value)), Error) {
+  use tables <- result.try(
+    storage.rows(
+      db,
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='workspace_links' LIMIT 1",
+      [],
+      decode.field(0, decode.int, decode.success),
+    )
+    |> result.map_error(Storage),
   )
+  case tables {
+    [] -> Ok(#("cwd=?", [sqlight.text(cwd)]))
+    _ ->
+      Ok(
+        #(
+          "(cwd=? OR cwd IN (SELECT workspace FROM workspace_links WHERE grp=(SELECT grp FROM workspace_links WHERE workspace=?)))",
+          [sqlight.text(cwd), sqlight.text(cwd)],
+        ),
+      )
+  }
 }
 
 fn find(
@@ -172,7 +190,7 @@ fn find(
   cwd: String,
   id: Int,
 ) -> Result(List(Item), Error) {
-  let #(within, group) = scope(db, cwd)
+  use #(within, group) <- result.try(scope(db, cwd))
   rows(
     db,
     "SELECT " <> columns <> " FROM work WHERE " <> within <> " AND id=?",
@@ -200,7 +218,7 @@ pub fn list(
     True -> Error(Invalid("after >= 0 and 1 <= limit <= 200 required"))
     False ->
       storage.query(store, fn(db) {
-        let #(within, group) = scope(db, cwd)
+        use #(within, group) <- result.try(scope(db, cwd))
         rows(
           db,
           "SELECT "
@@ -226,8 +244,20 @@ pub fn create(
   notes: String,
   parent: Option(Int),
 ) -> Result(Item, Error) {
+  create_assigned(store, cwd, title, notes, parent, None, None)
+}
+
+pub fn create_assigned(
+  store: Store,
+  cwd: String,
+  title: String,
+  notes: String,
+  parent: Option(Int),
+  session: Option(String),
+  run: Option(String),
+) -> Result(Item, Error) {
   use _ <- result.try(valid_cwd(cwd))
-  use _ <- result.try(validate(title, notes, None, None))
+  use _ <- result.try(validate(title, notes, session, run))
   storage.query(store, fn(db) {
     use _ <- result.try(case parent {
       None -> Ok(Nil)
@@ -236,13 +266,15 @@ pub fn create(
     })
     rows(
       db,
-      "INSERT INTO work(cwd,title,notes,parent) VALUES(?,?,?,?) RETURNING "
+      "INSERT INTO work(cwd,title,notes,parent,session,run) VALUES(?,?,?,?,?,?) RETURNING "
         <> columns,
       [
         sqlight.text(cwd),
         sqlight.text(title),
         sqlight.text(notes),
         sqlight.nullable(sqlight.int, parent),
+        sqlight.nullable(sqlight.text, session),
+        sqlight.nullable(sqlight.text, run),
       ],
     )
   })
@@ -327,11 +359,11 @@ fn validate(
   case
     string.trim(title) == ""
     || string.byte_size(title) > 4096
-    || string.byte_size(notes) > 65_536
+    || string.byte_size(notes) > 32_768
   {
     True ->
       Error(Invalid(
-        "title must be nonempty and <= 4096 bytes; notes <= 65536 bytes",
+        "title must be nonempty and <= 4096 bytes; notes <= 32768 bytes",
       ))
     False ->
       case session, run {
@@ -357,4 +389,21 @@ pub fn to_json(item: Item) -> json.Json {
 
 pub fn initialise(store: Store) -> Result(Nil, String) {
   storage.query(store, storage.exec(_, schema))
+}
+
+/// The pending sidebar reads only the twelve records it can display.
+pub fn pending(store: Store, cwd: String) -> Result(List(Item), Error) {
+  use _ <- result.try(valid_cwd(cwd))
+  storage.query(store, fn(db) {
+    use #(within, group) <- result.try(scope(db, cwd))
+    rows(
+      db,
+      "SELECT "
+        <> columns
+        <> " FROM work WHERE "
+        <> within
+        <> " AND status IN ('active','blocked','open') ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'blocked' THEN 1 ELSE 2 END,id LIMIT 12",
+      group,
+    )
+  })
 }

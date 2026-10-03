@@ -95,19 +95,28 @@ fn resolve(
     "Antigravity",
     types.ChatCompletions,
   )
-  use access <- result.map(connect(context.home, context.session))
+  use access <- result.map(connect(
+    context.home,
+    context.session,
+    context.profile,
+  ))
   upstream(
     context.home,
     access,
     context.session,
+    context.profile,
     catalog.model(context.home, context.model, context.effort),
     user_agent(context.home),
   )
 }
 
 /// The session's current account.
-fn connect(home: String, session: String) -> Result(Access, String) {
-  use encoded <- result.try(native_access(home, session))
+fn connect(
+  home: String,
+  session: String,
+  profile: String,
+) -> Result(Access, String) {
+  use encoded <- result.try(native_access(home, session, profile))
   json.parse(encoded, access_decoder())
   |> result.replace_error("invalid Antigravity credential response")
 }
@@ -117,13 +126,14 @@ fn upstream(
   home: String,
   access: Access,
   session: String,
+  profile: String,
   model: catalog.Model,
   user_agent: String,
 ) -> extension.Upstream {
   rotation.upstream(
     catalog.endpoint,
     types.ChatCompletions,
-    pool(home, session, fn(access, request, on_event) {
+    profile_pool(home, session, profile, fn(access, request, on_event) {
       let resolved_model =
         catalog.resolve_variant(home, model.id, request.options.effort)
       let context =
@@ -153,8 +163,18 @@ pub fn pool(
   stream: fn(Access, types.Request, fn(types.Event) -> types.Control) ->
     Result(types.Turn, types.Error),
 ) -> rotation.Pool(Access) {
+  profile_pool(home, session, "", stream)
+}
+
+fn profile_pool(
+  home: String,
+  session: String,
+  profile: String,
+  stream: fn(Access, types.Request, fn(types.Event) -> types.Control) ->
+    Result(types.Turn, types.Error),
+) -> rotation.Pool(Access) {
   rotation.Pool(
-    current: fn() { connect(home, session) },
+    current: fn() { connect(home, session, profile) },
     mark: fn(access, body) {
       limited(home, access, body) |> rotation.mark_limit
     },
@@ -282,7 +302,11 @@ fn native_account(credential: Dynamic) -> oauth.Account
 fn client_id() -> String
 
 @external(erlang, "albedo_antigravity", "access")
-fn native_access(home: String, session: String) -> Result(String, String)
+fn native_access(
+  home: String,
+  session: String,
+  profile: String,
+) -> Result(String, String)
 
 @external(erlang, "albedo_antigravity", "limited")
 fn native_limited(

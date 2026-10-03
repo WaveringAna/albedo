@@ -1,13 +1,14 @@
 //go:build unix
 
-// Effort selection crosses the composer, model registry, keyboard, and daemon
-// session. Stubbed command replies cannot catch a dropped request or commit.
+// Model and extension selection cross the composer, keyboard, and daemon
+// session. Stubbed command replies cannot catch a dropped request or reload.
 package e2e
 
 import (
 	"strings"
 	"testing"
 
+	"albedo/cli/internal/daemon"
 	"albedo/cli/internal/tui"
 
 	tea "charm.land/bubbletea/v2"
@@ -16,7 +17,12 @@ import (
 
 func TestTUIEffortSelectorCommitsThroughTheDaemon(t *testing.T) {
 	providerRoute(t, echoReply)
-	d := newTUIDriver(t)
+	session := daemonSession(t, newSession(t, t.TempDir()))
+	if _, err := daemon.SelectModel(t.Context(), conn(t), session.ID, daemon.ModelSelectionRequest{Model: "o3", Effort: "high", ETag: session.ETag}); err != nil {
+		t.Fatal(err)
+	}
+	session = daemonSession(t, session.ID)
+	d := driveTUI(t, &session)
 
 	// Selecting a model goes through the real composer: enter dispatches the
 	// command, the app asks the daemon, and the answer lands in the model.
@@ -26,8 +32,8 @@ func TestTUIEffortSelectorCommitsThroughTheDaemon(t *testing.T) {
 		t.Fatalf("enter did not dispatch /model: %#v", dispatched)
 	}
 	d.Dispatch(dispatched)
-	if d.App.ActiveSession == nil || d.App.ActiveSession.Model != "o3-mini" || d.App.ActiveSession.Effort != "medium" {
-		t.Fatalf("the daemon's model switch did not land: %+v", d.App.ActiveSession)
+	if d.App.ActiveSession == nil || d.App.ActiveSession.Model != "o3-mini" || d.App.ActiveSession.Effort != "high" {
+		t.Fatalf("the daemon's model switch did not land:\n%s", d.View())
 	}
 
 	// /effort arrives as the message the command menu submits for it; the
@@ -40,7 +46,7 @@ func TestTUIEffortSelectorCommitsThroughTheDaemon(t *testing.T) {
 			t.Fatalf("the selector is missing tier %q:\n%s", tier, opened)
 		}
 	}
-	if !strings.Contains(opened, "Reasoning effort") || !strings.Contains(opened, "[medium]") {
+	if !strings.Contains(opened, "Reasoning effort") || !strings.Contains(opened, "[high]") {
 		t.Fatalf("the daemon's current tier is not selected:\n%s", opened)
 	}
 	if strings.Contains(opened, "› ") {
@@ -63,12 +69,12 @@ func TestTUIEffortSelectorCommitsThroughTheDaemon(t *testing.T) {
 	d.Dispatch(tui.ChatExecuteCommandMsg{Name: "/effort"})
 
 	// The keyboard alone moves the selection and commits it.
-	d.Key(tea.KeyRight)
-	if !strings.Contains(d.View(), "[high]") {
-		t.Fatalf("right did not select high:\n%s", d.View())
+	d.Key(tea.KeyLeft)
+	if !strings.Contains(d.View(), "[medium]") {
+		t.Fatalf("left did not select medium:\n%s", d.View())
 	}
 	committed, ok := d.Key(tea.KeyEnter).(tui.ChatExecuteCommandMsg)
-	if !ok || committed.Name != "/effort" || committed.Args != "high" {
+	if !ok || committed.Name != "/effort" || committed.Args != "medium" {
 		t.Fatalf("enter did not commit the selected tier: %#v", committed)
 	}
 	d.Dispatch(committed)
@@ -76,16 +82,89 @@ func TestTUIEffortSelectorCommitsThroughTheDaemon(t *testing.T) {
 	if strings.Contains(settled, "Reasoning effort") {
 		t.Fatalf("the selector stayed open after committing:\n%s", settled)
 	}
-	if !strings.Contains(settled, "reasoning effort set to high") || !strings.Contains(settled, "› ") {
+	if !strings.Contains(settled, "Effort saved.") || !strings.Contains(settled, "› ") {
 		t.Fatalf("the daemon's answer did not reach the chat:\n%s", settled)
 	}
-	if d.App.ActiveSession.Effort != "high" {
+	if d.App.ActiveSession.Effort != "medium" {
 		t.Fatalf("the chat kept effort %q", d.App.ActiveSession.Effort)
 	}
 
 	// The truth at the end is the daemon's session record.
-	session := daemonSession(t, d.App.ActiveSession.ID)
-	if session.Model != "o3-mini" || session.Effort != "high" {
-		t.Fatalf("session %s kept model %q effort %q, want o3-mini at high", session.ID, session.Model, session.Effort)
+	session = daemonSession(t, d.App.ActiveSession.ID)
+	if session.Model != "o3-mini" || session.Effort != "medium" {
+		t.Fatalf("session %s kept model %q effort %q, want o3-mini at medium", session.ID, session.Model, session.Effort)
+	}
+}
+
+func TestTUIExtensionPickerSwitchesCompactionStrategies(t *testing.T) {
+	profile := providerRoute(t, echoReply)
+	session := daemonSession(t, newSession(t, t.TempDir()))
+	d := driveTUI(t, &session)
+	defer d.App.Chat.Close()
+	for turn, name := range []string{"lcm", "rolling", "lcm"} {
+		d.Dispatch(tui.ChatExecuteCommandMsg{Name: "/extensions"})
+		d.Dispatch(tea.KeyPressMsg{Code: 's', Text: "s"})
+		picker := d.App.ExtensionPicker
+		index := -1
+		for i, item := range picker.Extensions {
+			if item.Name == name {
+				index = i
+				if item.Enabled {
+					t.Fatalf("strategy %s is already enabled before its switch", name)
+				}
+			}
+		}
+		if index < 0 {
+			t.Fatalf("strategy %s is missing from the actual extension picker", name)
+		}
+		for d.App.ExtensionPicker.Cursor < index {
+			d.Dispatch(tea.KeyPressMsg{Code: tea.KeyDown})
+		}
+		for d.App.ExtensionPicker.Cursor > index {
+			d.Dispatch(tea.KeyPressMsg{Code: tea.KeyUp})
+		}
+		d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
+		d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if picker := d.App.ExtensionPicker; picker.Error != "" || picker.Confirming || !strings.Contains(picker.Notice, "Reload completed.") {
+			t.Fatalf("strategy %s did not apply through the picker:\n%s", name, d.View())
+		}
+		configuration, err := daemon.GetSessionConfiguration(t.Context(), conn(t), session.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, strategy := range []string{"lcm", "rolling"} {
+			chosen := configuration.Value.Selection.Extensions[strategy]
+			if enabled := chosen != nil && *chosen; enabled != (strategy == name) {
+				t.Fatalf("single %s toggle left competing selection %+v", name, configuration.Value.Selection.Extensions)
+			}
+		}
+		client := daemon.NewChatClient(conn(t), session.ID)
+		if _, err := client.Send(t.Context(), "use the selected strategy", nil); err != nil {
+			t.Fatal(err)
+		}
+		waitIdle(t, session.ID, profile, turn+1)
+		prepared, err := daemon.GetContextSnapshot(t.Context(), conn(t), session.ID)
+		if err != nil || prepared.State != "ready" || prepared.Compaction.Strategy != name {
+			t.Fatalf("turn did not use selected strategy %s: %+v, %v", name, prepared, err)
+		}
+		if turn == 0 {
+			current := daemonSession(t, session.ID)
+			if _, err := daemon.RenameSession(t.Context(), conn(t), session.ID, "strategy review", current.ETag); err != nil {
+				t.Fatal(err)
+			}
+			// Another client edited this session while the picker was open.
+			// A stale confirmation refreshes the choices without replaying it.
+			d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
+			d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
+			picker := d.App.ExtensionPicker
+			if picker.Loading || picker.Saving || picker.Confirming || picker.Error != "" || !strings.Contains(picker.Notice, "Review the refreshed choices") {
+				t.Fatalf("stale selection did not return to review:\n%s", d.View())
+			}
+			configuration, err := daemon.GetSessionConfiguration(t.Context(), conn(t), session.ID)
+			if err != nil || configuration.Value.Selection.Extensions[name] == nil || !*configuration.Value.Selection.Extensions[name] {
+				t.Fatalf("stale confirmation changed the saved strategy: %+v, %v", configuration, err)
+			}
+		}
+		d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEscape})
 	}
 }

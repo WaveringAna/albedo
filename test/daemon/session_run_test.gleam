@@ -2,6 +2,7 @@
 //// process monitors that the external E2E API cannot control.
 
 import albedo/daemon/conversation
+import albedo/daemon/events
 import albedo/daemon/session_run
 import albedo/daemon/turn
 import albedo/daemon/usage
@@ -113,7 +114,9 @@ fn publish(owner: Subject(Owner)) -> Bool {
 }
 
 fn publish_after(owner: Subject(Owner), stop: turn.Latch) -> Bool {
-  session_run.publish_fn(owner, "run", messages(), stop, waiting: 20)("event")
+  session_run.publish_fn(owner, "run", messages(), stop, waiting: 20)(
+    events.Checkpoint,
+  )
 }
 
 pub fn publish_passes_the_owner_answer_through_test() -> Nil {
@@ -133,7 +136,7 @@ pub fn publish_passes_the_owner_answer_through_test() -> Nil {
       messages(),
       turn.latch(),
       waiting: 2000,
-    )("event")
+    )(events.Checkpoint)
     |> should.equal(keep_going)
   })
 }

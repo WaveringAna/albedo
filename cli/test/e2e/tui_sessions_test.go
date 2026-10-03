@@ -6,7 +6,6 @@
 package e2e
 
 import (
-	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -32,14 +31,15 @@ func TestTUISessionPickerPinsRenamesArchivesAndDeletes(t *testing.T) {
 			t.Fatalf("the picker does not list %s:\n%s", id, d.View())
 		}
 		d.App.SessionPicker.Cursor = i
+		d.settle(d.results(d.App.SessionPicker.PreviewCmd()))
 	}
 	ctrl := func(code rune) { d.Dispatch(tea.KeyPressMsg{Code: code, Mod: tea.ModCtrl}) }
 
 	highlight(target)
 	ctrl('s')
-	saved, err := daemon.GetSettings(context.Background(), conn(t))
-	if err != nil || !slices.Contains(saved.UI.Pinned, target) || !strings.Contains(d.View(), "pinned 1") {
-		t.Fatalf("ctrl+s did not pin %s (prefs %+v, %v):\n%s", target, saved.UI, err, d.View())
+	saved, err := daemon.GetSession(t.Context(), conn(t), target)
+	if err != nil || !saved.Pinned || !strings.Contains(d.View(), "pinned 1") {
+		t.Fatalf("ctrl+s did not pin %s (pinned %v, %v):\n%s", target, saved.Pinned, err, d.View())
 	}
 
 	ctrl('r')
@@ -52,6 +52,9 @@ func TestTUISessionPickerPinsRenamesArchivesAndDeletes(t *testing.T) {
 	}
 
 	ctrl('a')
+	if saved := daemonSession(t, target); !saved.Archived {
+		t.Fatal("ctrl+a did not archive the selected session")
+	}
 	highlight("archive")
 	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
 	highlight(target)
@@ -87,7 +90,10 @@ func TestTUINavigationRetainsPendingTurnsAndContinuation(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("active turn did not start")
 	}
-	connection := daemon.NewConnection(conn(t).Snapshot(), nil)
+	connection, err := daemon.Attach(t.Context(), conn(t).Snapshot(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	counter := &submissionCounterTransport{next: connection.HTTPClient().Transport, accepted: make(chan struct{})}
 	connection.HTTPClient().Transport = counter
 	t.Cleanup(connection.HTTPClient().CloseIdleConnections)

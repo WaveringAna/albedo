@@ -3,9 +3,8 @@ global ledger across sessions and workspaces, and let /paperclips triage
 reach the model — with a reply recorded on the vent and delivered to the
 session that filed it.
 
-The ledger is global, so the shared daemon's store carries vents from every
-test in the run, in parallel: assertions scope to the vent ids each test
-files, never to the whole listing."""
+Each scenario has an isolated daemon because the model's bounded global
+listing has no page cursor. Sessions within a scenario still share one ledger."""
 
 import ast
 import json
@@ -15,22 +14,20 @@ import unittest
 from harness import Albedo, Provider, exclusive, python, text
 
 VENT = (
-    "v = await vent('harness', 'the build lock ate my afternoon',"
-    " suggestion='prebuild the cli in test.sh', title='build lock stalls')\n"
+    "v = await vent('harness', 'a background job stopped responding',"
+    " suggestion='report the blocked job', title='job stalled')\n"
     "print(v['id'])"
 )
 
-# 200, not the default 20: the global ledger carries every parallel test's
-# vents, and a listed id must never fall off the window.
-READ_BACK = "print([(v['id'], v['status']) for v in await vents(200)])"
+READ_BACK = "print([(v['id'], v['status']) for v in await vents()])"
 
 # Prints the vent this session filed, then the whole global listing: the
 # second line proves another session's vent is visible to the model.
 VENT_AND_LIST = (
-    "v = await vent('harness', 'the build lock ate my afternoon',"
-    " suggestion='prebuild the cli in test.sh', title='build lock stalls')\n"
+    "v = await vent('harness', 'a background job stopped responding',"
+    " suggestion='report the blocked job', title='job stalled')\n"
     "print(v['id'])\n"
-    "print([v['id'] for v in await vents(200)])"
+    "print([v['id'] for v in await vents()])"
 )
 
 READER_TURN = "print('the reader turns')"
@@ -38,7 +35,7 @@ READER_TURN = "print('the reader turns')"
 # Refused without a note, closed with one, then refused as already closed.
 RESOLVE = (
     "vent_id = v['id']\n"
-    "for note in ('  ', 'test.sh prebuilds the cli in 1a2b3c', 'again'):\n"
+    "for note in ('  ', 'the blocked job now reports its state', 'again'):\n"
     "    try:\n"
     "        v = await resolve_vent(vent_id, note)\n"
     "        print('resolved:', v['status'], v['resolution'])\n"
@@ -59,7 +56,7 @@ REJECTED = (
     "    await vent('bug', '   ')\n"
     "except Exception as error:\n"
     "    print('rejected:', error)\n"
-    "print([v['id'] for v in await vents(200)"
+    "print([v['id'] for v in await vents()"
     " if v['message'] in ('no such topic', '   ')])"
 )
 
@@ -77,9 +74,11 @@ def scripting(cells):
 
 def python_results(app, session):
     return [
-        json.loads(event["result"])
-        for event in app.events(session)
-        if event.get("type") == "tool" and event.get("name") == "python"
+        json.loads(part["value"])
+        for entry in app.history(session)["items"]
+        if entry["kind"] == "tool_result" and entry["tool"]["name"] == "python"
+        for part in entry["content"]
+        if part["kind"] == "json" and part["field"] == "result"
     ]
 
 
@@ -96,36 +95,62 @@ def statuses(app, session):
 
 
 def vent_row(page, vent_id):
-    return next(row for row in page["rows"] if row["id"] == str(vent_id))
+    return next(
+        resource["value"]
+        for resource in page["items"]
+        if resource["value"]["id"] == str(vent_id)
+    )
 
 
-def glance_ids(page):
-    return {row["id"] for row in page["glance"]["rows"]}
+def glance_ids(app, session):
+    with app.api(f"/sessions/{session}?tail=0") as response:
+        glances = json.load(response)["glances"]
+    return {
+        row["id"]
+        for glance in glances
+        if glance["extension"] == "paperclips"
+        for row in glance["rows"]
+    }
 
 
-def paperclips_page(app, session):
-    return json.load(
-        app.api(
-            f"/sessions/{session}/commands",
-            {"name": "/paperclips", "args": {}},
-        )
-    )["result"]["page"]
+def paperclips_page(app):
+    with app.api("/extensions/paperclips/items?limit=200") as response:
+        return json.load(response)
 
 
-def triage(app, session, action, details):
-    return json.load(
-        app.api(
-            f"/sessions/{session}/commands",
-            {"name": "/paperclips", "args": {"action": action, "details": details}},
-        )
-    )["result"]
+def reply_to_vent(app, vent_id, message):
+    route = f"/extensions/paperclips/items/{vent_id}"
+    with app.api(route) as response:
+        json.load(response)
+        revision = response.headers["ETag"]
+    with app.api(
+        route, {"reply": message}, method="PATCH", headers={"If-Match": revision}
+    ) as response:
+        return json.load(response)
 
 
+def rename(app, session, name):
+    with app.api(f"/sessions/{session}?view=configuration") as response:
+        json.load(response)
+        revision = response.headers["ETag"]
+    app.api(
+        f"/sessions/{session}?view=configuration",
+        {"name": name},
+        method="PATCH",
+        headers={"If-Match": revision},
+    ).close()
+
+
+@exclusive
 class PaperclipsTests(unittest.TestCase):
     def remove_vents(self, app, session, ids):
         """Keeps one test's vents out of the next test's global listing."""
         for vent_id in ids:
-            triage(app, session, "remove", str(vent_id))
+            route = f"/extensions/paperclips/items/{vent_id}"
+            with app.api(route) as response:
+                json.load(response)
+                revision = response.headers["ETag"]
+            app.api(route, method="DELETE", headers={"If-Match": revision}).close()
 
     def test_vents_share_one_global_ledger(self):
         provider = scripting([VENT, VENT_AND_LIST])
@@ -152,10 +177,12 @@ class PaperclipsTests(unittest.TestCase):
                 listed = ast.literal_eval(outputs["vent-second"][1])
                 self.assertIn(ids[0], listed)
                 # and the first session's own /paperclips page shows both
-                page = paperclips_page(app, sessions[0])
-                rows = {row["id"] for row in page["rows"]}
+                page = paperclips_page(app)
+                rows = {item["value"]["id"] for item in page["items"]}
                 self.assertTrue({str(vent_id) for vent_id in ids} <= rows)
-                self.assertTrue({str(vent_id) for vent_id in ids} <= glance_ids(page))
+                self.assertTrue(
+                    {str(vent_id) for vent_id in ids} <= glance_ids(app, sessions[0])
+                )
             finally:
                 if ids:
                     self.remove_vents(app, sessions[0], ids)
@@ -174,36 +201,33 @@ class PaperclipsTests(unittest.TestCase):
                 vent_id = filed_id(app, session)
 
                 # a named session shows by name in the detail pane
-                app.api(
-                    f"/sessions/{session}", {"name": "grumpy-venter"}, method="PATCH"
-                )
+                rename(app, session, "grumpy-venter")
 
-                page = paperclips_page(app, session)
+                page = paperclips_page(app)
                 # the list shows the model's title; the detail carries the vent
                 row = vent_row(page, vent_id)
-                self.assertEqual(row["text"], "build lock stalls")
-                self.assertEqual(row["badge"], "open")
-                self.assertIn("the build lock ate my afternoon", row["detail"])
-                self.assertIn("suggestion: prebuild the cli in test.sh", row["detail"])
-                self.assertIn("by session grumpy-venter", row["detail"])
-                self.assertIn(str(vent_id), glance_ids(page))
+                self.assertEqual(row["title"], "job stalled")
+                self.assertEqual(row["status"], "open")
+                self.assertEqual(row["message"], "a background job stopped responding")
+                self.assertEqual(row["suggestion"], "report the blocked job")
+                self.assertEqual(row["session_id"], session)
+                self.assertIn(str(vent_id), glance_ids(app, session))
 
-                replied = triage(
-                    app, session, "reply", f"{vent_id} test.sh prebuilds the cli now"
-                )
-                self.assertIn("the model will be told", replied["message"])
-                self.assertEqual(replied["vent"]["status"], "acknowledged")
+                replied = reply_to_vent(app, vent_id, "the blocked job is now visible")
+                self.assertEqual(replied["notification"]["state"], "queued")
+                self.assertEqual(replied["resource"]["value"]["status"], "acknowledged")
                 self.assertEqual(
-                    replied["vent"]["reply"], "test.sh prebuilds the cli now"
+                    replied["resource"]["value"]["reply"],
+                    "the blocked job is now visible",
                 )
 
-                page = paperclips_page(app, session)
-                self.assertEqual(vent_row(page, vent_id)["badge"], "acknowledged")
+                page = paperclips_page(app)
+                self.assertEqual(vent_row(page, vent_id)["status"], "acknowledged")
                 self.assertIn(
-                    "answered: test.sh prebuilds the cli now",
-                    vent_row(page, vent_id)["detail"],
+                    "the blocked job is now visible",
+                    vent_row(page, vent_id)["reply"],
                 )
-                self.assertNotIn(str(vent_id), glance_ids(page))
+                self.assertNotIn(str(vent_id), glance_ids(app, session))
 
                 # the note reaches the model with its next turn; the ledger agrees
                 app.prompt(session, "check your vents").close()
@@ -214,7 +238,7 @@ class PaperclipsTests(unittest.TestCase):
                 # the queued note reaches the model as its own user turn
                 self.assertTrue(
                     any(
-                        "answers: test.sh prebuilds the cli now"
+                        "answers: the blocked job is now visible"
                         in str(message.get("content"))
                         for request in provider.requests
                         for message in request["request"]["messages"]
@@ -242,14 +266,15 @@ class PaperclipsTests(unittest.TestCase):
                 vent_id = filed_id(app, filer)
 
                 # the reader sees the filer's vent, attributed to its workspace
-                page = paperclips_page(app, reader)
+                page = paperclips_page(app)
                 row = vent_row(page, vent_id)
-                self.assertEqual(row["badge"], "open")
-                self.assertIn("vent-filer", row["detail"])
+                self.assertEqual(row["status"], "open")
+                self.assertEqual(row["session_id"], filer)
+                self.assertIn("vent-filer", row["workspace"])
 
-                replied = triage(app, reader, "reply", f"{vent_id} the reader answers")
-                self.assertIn("the model will be told", replied["message"])
-                self.assertEqual(replied["vent"]["status"], "acknowledged")
+                replied = reply_to_vent(app, vent_id, "the reader answers")
+                self.assertEqual(replied["notification"]["state"], "queued")
+                self.assertEqual(replied["resource"]["value"]["status"], "acknowledged")
 
                 # the note lands on the filer's next turn...
                 app.prompt(filer, "check your vents").close()
@@ -314,40 +339,39 @@ class PaperclipsTests(unittest.TestCase):
             app.restart(prepare=prepare)
             ids = {}
             try:
-                page = paperclips_page(app, session)
+                page = paperclips_page(app)
                 for text_label in ("ghost vent", "sessionless vent"):
-                    row = next(r for r in page["rows"] if r["text"] == text_label)
-                    self.assertEqual(row["badge"], "open")
+                    row = next(
+                        item["value"]
+                        for item in page["items"]
+                        if item["value"]["message"] == text_label
+                    )
+                    self.assertEqual(row["status"], "open")
                     ids[text_label] = int(row["id"])
 
-                gone = triage(
-                    app, session, "reply", f"{ids['ghost vent']} for the ghost"
-                )
-                self.assertIn("could not tell the model", gone["message"])
-                self.assertIn("the answer is kept on the vent", gone["message"])
-                self.assertEqual(gone["vent"]["status"], "acknowledged")
-                self.assertEqual(gone["vent"]["reply"], "for the ghost")
+                gone = reply_to_vent(app, ids["ghost vent"], "for the ghost")
+                self.assertNotEqual(gone["notification"]["state"], "queued")
+                self.assertEqual(gone["resource"]["value"]["status"], "acknowledged")
+                self.assertEqual(gone["resource"]["value"]["reply"], "for the ghost")
 
-                nobody = triage(
-                    app, session, "reply", f"{ids['sessionless vent']} for nobody"
-                )
-                self.assertIn("could not tell the model", nobody["message"])
-                self.assertIn("the vent records no session", nobody["message"])
-                self.assertEqual(nobody["vent"]["status"], "acknowledged")
-                self.assertEqual(nobody["vent"]["reply"], "for nobody")
+                nobody = reply_to_vent(app, ids["sessionless vent"], "for nobody")
+                self.assertNotEqual(nobody["notification"]["state"], "queued")
+                self.assertEqual(nobody["resource"]["value"]["status"], "acknowledged")
+                self.assertEqual(nobody["resource"]["value"]["reply"], "for nobody")
 
                 # the answers are on the vents, and neither stays in the glance
-                page = paperclips_page(app, session)
+                page = paperclips_page(app)
                 self.assertIn(
-                    "answered: for the ghost",
-                    vent_row(page, ids["ghost vent"])["detail"],
+                    "for the ghost",
+                    vent_row(page, ids["ghost vent"])["reply"],
                 )
                 self.assertIn(
-                    "answered: for nobody",
-                    vent_row(page, ids["sessionless vent"])["detail"],
+                    "for nobody",
+                    vent_row(page, ids["sessionless vent"])["reply"],
                 )
                 self.assertFalse(
-                    {str(vent_id) for vent_id in ids.values()} & glance_ids(page)
+                    {str(vent_id) for vent_id in ids.values()}
+                    & glance_ids(app, session)
                 )
             finally:
                 self.remove_vents(app, session, list(ids.values()))
@@ -370,20 +394,20 @@ class PaperclipsTests(unittest.TestCase):
                 self.assertEqual(len(lines), 3, output)
                 self.assertIn("refused: say what fixed the vent", lines[0])
                 self.assertEqual(
-                    lines[1], "resolved: resolved test.sh prebuilds the cli in 1a2b3c"
+                    lines[1], "resolved: resolved the blocked job now reports its state"
                 )
                 self.assertIn(f"refused: vent #{vent_id} is already resolved", lines[2])
 
                 # the user sees the closure and who made it; it leaves the glance
-                app.api(f"/sessions/{session}", {"name": "fixer"}, method="PATCH")
-                page = paperclips_page(app, session)
+                rename(app, session, "fixer")
+                page = paperclips_page(app)
                 row = vent_row(page, vent_id)
-                self.assertEqual(row["badge"], "resolved")
-                self.assertIn(
-                    "resolved by session fixer: test.sh prebuilds the cli in 1a2b3c",
-                    row["detail"],
+                self.assertEqual(row["status"], "resolved")
+                self.assertEqual(row["resolving_session_id"], session)
+                self.assertEqual(
+                    row["resolution"], "the blocked job now reports its state"
                 )
-                self.assertNotIn(str(vent_id), glance_ids(page))
+                self.assertNotIn(str(vent_id), glance_ids(app, session))
             finally:
                 if vent_id is not None:
                     self.remove_vents(app, session, [vent_id])
@@ -398,11 +422,11 @@ class PaperclipsTests(unittest.TestCase):
                 app.prompt(session, "vent").close()
                 app.idle(session)
                 vent_id = filed_id(app, session)
-                row = vent_row(paperclips_page(app, session), vent_id)
+                row = vent_row(paperclips_page(app), vent_id)
                 self.assertEqual(
-                    row["text"], "wires crossed somewhere deep in the stack"
+                    row["title"], "wires crossed somewhere deep in the stack"
                 )
-                self.assertIn("wires crossed", row["detail"])
+                self.assertIn("wires crossed", row["message"])
             finally:
                 if vent_id is not None:
                     self.remove_vents(app, session, [vent_id])

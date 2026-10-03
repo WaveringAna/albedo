@@ -4,6 +4,8 @@
 package tui
 
 import (
+	"albedo/cli/internal/testwire"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"testing"
@@ -19,18 +21,23 @@ func TestModelChangeRetainsConfirmedSelectionWhenCapFails(t *testing.T) {
 			conn := commandTestConnection(t, func(w http.ResponseWriter, _ *http.Request) {
 				requests++
 				if requests == 1 {
-					_, _ = w.Write([]byte(`{"result":{"model":"confirmed","provider":"provider","protocol":"openai","effort":null}}`))
+					writeSessionChange(w, "session", "confirmed", "provider")
+					return
+				}
+				if requests == 2 {
+					_ = json.NewEncoder(w).Encode(testwire.SettingsChange("providers", testwire.Settings()["providers"]))
 					return
 				}
 				w.WriteHeader(status)
 				_, _ = w.Write([]byte(`{}`))
 			})
-			session := &daemon.Session{ID: "session", Model: "old", Provider: "old-provider", Effort: "high"}
-			app := NewAppModel(conn, config.Profiles{}, session, "", false, nil)
+			session := &daemon.Session{ID: "session", Model: "old", Provider: "old-provider", Effort: "high", ETag: "\"session-a\""}
+			app := NewAppModel(conn, config.Profiles{ETag: "\"providers-a\"", Providers: map[string]config.Settings{"provider": {Protocol: "responses"}}}, session, "", false, nil)
+			app.SettingsETags = map[string]string{"models": "\"models-a\""}
 			t.Cleanup(app.Chat.Close)
 			app.State, app.ModelPicker.Saving, app.ModelGen = AppStateModelPicker, true, 1
 			raise := true
-			msg := app.changeModelCmd("requested", "", "", &raise, app.ModelGen)().(modelChangedMsg)
+			msg := app.changeModelCmd("requested", "provider", "", &raise, app.ModelGen, "provider/cap")().(modelChangedMsg)
 			if msg.Err == nil || msg.Selection == nil {
 				t.Fatalf("lost confirmed switch or following failure: %+v", msg)
 			}
@@ -43,10 +50,10 @@ func TestModelChangeRetainsConfirmedSelectionWhenCapFails(t *testing.T) {
 			}
 			updated, cmd := app.Update(msg)
 			app = updated.(AppModel)
-			if cmd != nil || requests != 2 {
+			if cmd != nil || requests != 3 {
 				t.Fatalf("cap failure caused another operation: requests=%d command=%v", requests, cmd != nil)
 			}
-			if app.ActiveSession.Model != "confirmed" || app.Chat.Model != "confirmed" || app.ActiveSession.Provider != "provider" || app.Chat.Provider != "provider" || app.ActiveSession.Protocol != "openai" || app.ActiveSession.Effort != "" || app.Chat.Effort != "" {
+			if app.ActiveSession.Model != "confirmed" || app.Chat.Model != "confirmed" || app.ActiveSession.Provider != "provider" || app.Chat.Provider != "provider" || app.ActiveSession.Protocol != "responses" || app.ActiveSession.Effort != "" || app.Chat.Effort != "" {
 				t.Fatalf("did not apply confirmed switch: %+v", app.ActiveSession)
 			}
 			if app.State != AppStateChat || app.ModelPicker.Saving || len(app.Chat.Notices) != 1 {
@@ -65,12 +72,13 @@ func TestModelChangeFailureDoesNotApplySelectionOrRaiseCap(t *testing.T) {
 				w.WriteHeader(status)
 				_, _ = w.Write([]byte(`{}`))
 			})
-			session := &daemon.Session{ID: "session", Model: "old", Provider: "provider", Effort: "low"}
-			app := NewAppModel(conn, config.Profiles{}, session, "", false, nil)
+			session := &daemon.Session{ID: "session", Model: "old", Provider: "provider", Effort: "low", ETag: "\"session-a\""}
+			app := NewAppModel(conn, config.Profiles{ETag: "\"providers-a\"", Providers: map[string]config.Settings{"provider": {Protocol: "responses"}}}, session, "", false, nil)
+			app.SettingsETags = map[string]string{"models": "\"models-a\""}
 			t.Cleanup(app.Chat.Close)
 			app.State, app.ModelPicker.Saving, app.ModelGen = AppStateModelPicker, true, 1
 			raise := true
-			msg := app.changeModelCmd("requested", "", "", &raise, app.ModelGen)().(modelChangedMsg)
+			msg := app.changeModelCmd("requested", "provider", "", &raise, app.ModelGen, "provider/cap")().(modelChangedMsg)
 			updated, cmd := app.Update(msg)
 			app = updated.(AppModel)
 			if msg.Err == nil || msg.Selection != nil || requests != 1 || cmd != nil {

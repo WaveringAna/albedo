@@ -34,6 +34,7 @@ func TestExtensionSaveHidesConfirmationUntilFailure(t *testing.T) {
 	m.Loading = false
 	m.Width, m.Height = 80, 20
 	m.Extensions = []ExtensionItem{{Name: "webhooks"}}
+	m.Session = true
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !m.Saving || cmd == nil {

@@ -78,7 +78,11 @@ func (s *Service) PrepareOpen(ctx context.Context, options OpenOptions) (Prepare
 
 	var initial *daemon.Session
 	if selected != nil {
-		initial = selected
+		captured, err := daemon.GetSession(ctx, conn, selected.ID)
+		if err != nil {
+			return PreparedOpen{}, err
+		}
+		initial = &captured
 	} else if configured && (fresh || len(sessions) == 0) {
 		created, createErr := daemon.CreateSession(ctx, conn, daemon.CreateSessionRequest{Workspace: absWorkspace})
 		if createErr != nil {
@@ -90,25 +94,16 @@ func (s *Service) PrepareOpen(ctx context.Context, options OpenOptions) (Prepare
 	return PreparedOpen{Connection: conn, Providers: profs, Sessions: sessions, Selected: initial, Workspace: absWorkspace, LoginRequired: !configured}, nil
 }
 
-type SessionList struct {
-	ArchiveWarning error
-	Sessions       []daemon.Session
-}
-
-func (s *Service) Sessions(ctx context.Context) (SessionList, error) {
+func (s *Service) Sessions(ctx context.Context) ([]daemon.Session, error) {
 	conn, err := s.Connect(ctx)
 	if err != nil {
-		return SessionList{}, err
+		return nil, err
 	}
 	sessions, err := daemon.ListSessions(ctx, conn)
 	if err != nil {
-		return SessionList{}, err
+		return nil, err
 	}
-	settings, warning := daemon.GetSettings(ctx, conn)
-	if warning == nil {
-		sessions = slices.DeleteFunc(sessions, func(session daemon.Session) bool { return slices.Contains(settings.UI.Archived, session.ID) })
-	}
-	return SessionList{Sessions: sessions, ArchiveWarning: warning}, nil
+	return slices.DeleteFunc(sessions, func(session daemon.Session) bool { return session.Archived }), nil
 }
 
 // matchSession finds the session whose ID is id or, failing that, the only one
@@ -178,8 +173,16 @@ func (s *Service) DeleteSessions(ctx context.Context, ids []string) error {
 		return err
 	}
 	for _, id := range ids {
-		if _, err := daemon.DeleteSession(ctx, conn, id, false); err != nil {
+		configuration, err := daemon.GetSessionConfiguration(ctx, conn, id)
+		if err != nil {
 			return err
+		}
+		result, err := daemon.DeleteSession(ctx, conn, id, false, daemon.SessionCondition{ETag: configuration.ETag})
+		if err != nil {
+			return err
+		}
+		if !result.OK {
+			return errors.New(result.Message)
 		}
 	}
 	return nil

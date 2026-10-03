@@ -33,7 +33,3 @@ func NewChatClient(conn *Connection, agentID string) *ChatClient {
 		afterSeq: -1,
 	}
 }
-
-func (c *ChatClient) ClientID() string {
-	return c.clientID
-}

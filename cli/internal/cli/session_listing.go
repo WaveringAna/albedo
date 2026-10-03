@@ -23,10 +23,16 @@ func sessionListing(sessions []daemon.Session, now time.Time) string {
 		if title == "" {
 			title = "session name unavailable"
 		}
-		shortID := session.ID
-		if len(shortID) > 8 {
-			shortID = shortID[:8]
+		prefixLength := min(8, len(session.ID))
+		for _, other := range sessions {
+			if other.ID == session.ID {
+				continue
+			}
+			for prefixLength < len(session.ID) && strings.HasPrefix(other.ID, session.ID[:prefixLength]) {
+				prefixLength++
+			}
 		}
+		shortID := session.ID[:prefixLength]
 		workspace := presentation.SessionText(strings.TrimSpace(session.Workspace))
 		if workspace == "" {
 			workspace = "—"

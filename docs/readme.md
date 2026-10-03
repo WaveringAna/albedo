@@ -8,3 +8,10 @@ discover, attach to, start, and explicitly restart a daemon.
 
 [Client API ownership](client-api.md) explains how named operations separate
 daemon requests from application commands and TUI screens.
+
+[HTTP API design](http-api-design.md) defines protocol 3, resource
+contracts, SSE recovery, extension routes, and existing TUI feature coverage.
+[OpenAPI contract](openapi.yaml) defines the exact request, response, and stream
+payload shapes for that API.
+[API architecture](http-api-architecture.md) explains state ownership and crash
+recovery.

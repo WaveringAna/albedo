@@ -1,11 +1,9 @@
-// Package daemon provides typed API access and local daemon lifecycle operations.
 package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"time"
+	"net/url"
 )
 
 type StorageFile struct {
@@ -39,117 +37,61 @@ type StorageReport struct {
 }
 
 func GetStorageReport(ctx context.Context, conn *Connection) (StorageReport, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	if err := checkCapability(ctx, conn, "storage_report", "for storage reports"); err != nil {
-		return StorageReport{}, err
-	}
-	var result StorageReport
-	err := executeRead(ctx, conn, operation{Name: "get storage report", Method: http.MethodGet, Path: "/storage/report", Policy: readRecovery}, func(data []byte) error {
-		var wire struct {
-			OldKernels []*storageFileWire `json:"old_kernels"`
-			OldBackups []*storageFileWire `json:"old_backups"`
-			DB         *struct {
-				Sessions []*struct {
-					ID    *string `json:"id"`
-					Bytes *int64  `json:"bytes"`
-				} `json:"sessions"`
-				Images    *int64 `json:"images"`
-				FreePages *int64 `json:"free_pages"`
-				PageSize  *int64 `json:"page_size"`
-			} `json:"db"`
-			Database          *int64 `json:"database"`
-			WAL               *int64 `json:"wal"`
-			Kernels           *int64 `json:"kernels"`
-			Backups           *int64 `json:"backups"`
-			Other             *int64 `json:"other"`
-			RecentBackups     *int64 `json:"recent_backups"`
-			RecentBackupCount *int   `json:"recent_backup_count"`
-		}
-		if err := json.Unmarshal(data, &wire); err != nil {
-			return err
-		}
-		if wire.DB == nil {
-			return fieldError("db")
-		}
-		for _, field := range []struct {
-			name  string
-			value *int64
-		}{
-			{"database", wire.Database}, {"wal", wire.WAL}, {"kernels", wire.Kernels}, {"backups", wire.Backups}, {"other", wire.Other}, {"recent_backups", wire.RecentBackups},
-			{"images", wire.DB.Images}, {"free_pages", wire.DB.FreePages}, {"page_size", wire.DB.PageSize},
-		} {
-			if field.value == nil || *field.value < 0 {
-				return fieldError(field.name)
-			}
-		}
-		if wire.RecentBackupCount == nil || *wire.RecentBackupCount < 0 {
-			return fieldError("recent_backup_count")
-		}
-		kernels, err := decodeStorageFiles(wire.OldKernels, "old_kernels")
+	result := StorageReport{OldKernels: []StorageFile{}, OldBackups: []StorageFile{}, DB: StorageDatabase{Sessions: []StorageSession{}}}
+	q := url.Values{"limit": {"200"}}
+	seenSessions, seenFiles, seenTokens := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for {
+		var w wireStorageReport
+		err := executeRead(ctx, conn, operation{Capability: "storage_report", Name: "read storage", Method: http.MethodGet, Path: "/storage?" + q.Encode(), Policy: readRecovery}, func(data []byte) error {
+			return decodeRequired(data, &w, "database", "sessions", "images", "files", "measured_at")
+		})
 		if err != nil {
-			return err
+			return result, err
 		}
-		backups, err := decodeStorageFiles(wire.OldBackups, "old_backups")
-		if err != nil {
-			return err
-		}
-		if wire.DB.Sessions == nil {
-			return fieldError("sessions")
-		}
-		sessions := make([]StorageSession, 0, len(wire.DB.Sessions))
-		for _, row := range wire.DB.Sessions {
-			if row == nil || row.ID == nil || *row.ID == "" {
-				return fieldError("id")
+		result.Database = w.Database.MainFileBytes
+		result.WAL = w.Database.WalBytes
+		result.DB.Images = w.Images.Bytes
+		result.DB.FreePages = w.Database.FreePageCount
+		result.DB.PageSize = w.Database.PageSizeBytes
+		result.Kernels = w.Files.Totals.KernelBytes
+		result.Backups = w.Files.Totals.BackupBytes
+		result.Other = w.Files.Totals.OtherBytes
+		result.RecentBackups = w.Files.Totals.RecentBackupBytes
+		result.RecentBackupCount = int(w.Files.Totals.RecentBackupCount)
+		for _, row := range w.Sessions.Items {
+			if !seenSessions[row.ID] {
+				seenSessions[row.ID] = true
+				result.DB.Sessions = append(result.DB.Sessions, StorageSession{ID: row.ID, Bytes: row.EstimatedContentBytes})
 			}
-			if row.Bytes == nil || *row.Bytes < 0 {
-				return fieldError("bytes")
+		}
+		for _, row := range w.Files.Items {
+			if seenFiles[row.Path] {
+				continue
 			}
-			sessions = append(sessions, StorageSession{ID: *row.ID, Bytes: *row.Bytes})
+			seenFiles[row.Path] = true
+			file := StorageFile{Path: row.Path, Bytes: row.Bytes}
+			if row.CleanupCandidate {
+				switch row.Category {
+				case "kernel":
+					result.OldKernels = append(result.OldKernels, file)
+				case "backup":
+					result.OldBackups = append(result.OldBackups, file)
+				}
+			}
 		}
-		result = StorageReport{
-			OldKernels: kernels,
-			OldBackups: backups,
-			DB: StorageDatabase{
-				Sessions:  sessions,
-				Images:    *wire.DB.Images,
-				FreePages: *wire.DB.FreePages,
-				PageSize:  *wire.DB.PageSize,
-			},
-			Database:          *wire.Database,
-			WAL:               *wire.WAL,
-			Kernels:           *wire.Kernels,
-			Backups:           *wire.Backups,
-			Other:             *wire.Other,
-			RecentBackups:     *wire.RecentBackups,
-			RecentBackupCount: *wire.RecentBackupCount,
+		if w.Sessions.Next == nil && w.Files.Next == nil {
+			return result, nil
 		}
-		return nil
-	})
-	return result, err
-}
-
-type storageFileWire struct {
-	Path  *string `json:"path"`
-	Bytes *int64  `json:"bytes"`
-}
-
-func decodeStorageFiles(rows []*storageFileWire, field string) ([]StorageFile, error) {
-	if rows == nil {
-		return nil, fieldError(field)
+		if w.Sessions.Next != nil {
+			q.Set("sessions_next", *w.Sessions.Next)
+		}
+		if w.Files.Next != nil {
+			q.Set("files_next", *w.Files.Next)
+		}
+		key := q.Encode()
+		if seenTokens[key] {
+			return result, fieldError("storage page cursor")
+		}
+		seenTokens[key] = true
 	}
-	result := make([]StorageFile, 0, len(rows))
-	for _, row := range rows {
-		if row == nil || row.Path == nil || *row.Path == "" {
-			return nil, fieldError("path")
-		}
-		if row.Bytes == nil || *row.Bytes < 0 {
-			return nil, fieldError("bytes")
-		}
-		result = append(result, StorageFile{Path: *row.Path, Bytes: *row.Bytes})
-	}
-	return result, nil
 }

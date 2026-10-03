@@ -4,9 +4,12 @@ every session command is one definition with three faces: the CLI menu, user inv
 
 ## the catalog
 
-`GET /sessions/:id/commands` lists the materialized catalog: name (the slash spelling), description, the minted python `method`, its `usage` line, declared `arguments`, and the `modelCallable`, `userTurn`, and `skill` flags. The `skill` flag marks a selected skill with a preparation function. The CLI submits these through the durable events route. Other command handlers keep their existing uncertainty policy. The CLI menu renders the catalog, merged with its presentation-only entries like `/login` and `/sessions`. The list mints the kernel bindings at boot, and the prompt's `<session_commands>` block summarizes it.
-
-`POST /sessions/:id/commands` runs one command. the body is `{name, arguments}` with raw invocation text (`{"name": "/model", "arguments": "gpt-5 anthropic"}`) or `{name, args}` with declared names (`{"name": "/model", "args": {"model": "gpt-5"}}`); `clientId` labels a submitted turn. the answer is `{"result": ...}` with the command's JSON value or `{"submitted": true}` when a user invocation submitted its turn.
+`GET /sessions/{session_id}/catalog?kind=commands` reads prepared command
+definitions separately from fresh discovery. Each definition declares its slash
+name, arguments, permissions, and delivery. Management commands identify their
+canonical HTTP operation; input commands use the identified input resource.
+The CLI combines these with presentation-only entries such as `/sessions`.
+There is no HTTP route that executes an arbitrary slash-command string.
 
 The Go client returns `daemon.APIError` for HTTP failures, retaining the status, daemon error code, and message. Use `errors.As` to inspect it. Workspace failures also unwrap to `daemon.WorkspaceMissingError` so the chat can offer a replacement folder. Capability checks return `daemon.UpgradeRequiredError`; the TUI recognizes that type when displaying catalog upgrade failures. Error wording does not control this routing.
 
@@ -27,7 +30,7 @@ Command(
 )
 ```
 
-a run executes **outside** the session actor — on the kernel's host-call process or an HTTP request process — and reaches session state only through `Context.state`, whose operations are the `StateOp` variant type in [`command.gleam`](../src/albedo/harness/command.gleam) (the exhaustive case in `session.gleam` answers them). a handler running inside the session actor must never run a command: its state calls would deadlock against itself.
+a run executes **outside** the session actor — on the kernel's host-call process — and reaches session state only through `Context.state`, whose operations are the `StateOp` variant type in [`command.gleam`](../src/albedo/harness/command.gleam) (the exhaustive case in `session.gleam` answers them). a handler running inside the session actor must never run a command: its state calls would deadlock against itself.
 
 `model_callable: False` keeps a command user-only (`/login`-class commands). a `user_turn: True` command submits its outcome as one user turn when a user invokes it and returns data when the model invokes it — one run, two callers, only the delivery differs. dispatch refuses a model invocation of a user-only command and refuses any turn submission from the model.
 

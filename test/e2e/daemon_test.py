@@ -10,9 +10,10 @@ import socket
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.parse
 
-from harness import Albedo, Provider, Reply, exclusive, python, text
+from harness import Albedo, Provider, Reply, exclusive, operation_id, python, text
 
 # More client connections than a macOS shell's default open-file limit.
 CONNECTIONS = 300
@@ -60,9 +61,10 @@ def read_response_details(connection):
     length = 0
     headers = {}
     for line in lines[0].split(b"\r\n")[1:]:
-        name, _, value = line.lower().partition(b":")
-        headers[name.strip().decode()] = value.strip().decode()
-        if name.strip() == b"content-length":
+        name, _, value = line.partition(b":")
+        name = name.strip().lower()
+        headers[name.decode()] = value.strip().decode()
+        if name == b"content-length":
             length = int(value.strip())
     while len(body) < length:
         chunk = connection.recv(65536)
@@ -76,12 +78,12 @@ def read_response(connection):
     return read_response_details(connection)[0]
 
 
-def refused_request(app, path, headers):
+def refused_request(app, path, headers, *, method="PUT"):
     """Send only headers and require a refusal and closure within two seconds."""
     address = urllib.parse.urlsplit(app.base)
     head = (
-        f"POST {path} HTTP/1.1\r\n"
-        f"Host: {address.hostname}\r\n"
+        f"{method} {path} HTTP/1.1\r\n"
+        f"Host: {address.netloc}\r\n"
         + "".join(f"{name}: {value}\r\n" for name, value in headers.items())
         + "\r\n"
     ).encode()
@@ -105,7 +107,7 @@ def delayed_request(app, method, path, body, headers):
     token = app.connection["token"]
     head = (
         f"{method} {path} HTTP/1.1\r\n"
-        f"Host: {address.hostname}\r\n"
+        f"Host: {address.netloc}\r\n"
         + "".join(f"{name}: {value}\r\n" for name, value in headers.items())
         + f"Content-Type: application/json\r\n"
         f"Content-Length: {len(body)}\r\n\r\n"
@@ -120,8 +122,8 @@ def delayed_request(app, method, path, body, headers):
         first = read_response(connection)
         connection.sendall(
             (
-                f"GET /health HTTP/1.1\r\n"
-                f"Host: {address.hostname}\r\n"
+                f"GET /server HTTP/1.1\r\n"
+                f"Host: {address.netloc}\r\n"
                 f"Authorization: Bearer {token}\r\n\r\n"
             ).encode()
         )
@@ -141,27 +143,36 @@ class DaemonTest(unittest.TestCase):
                 app.idle(session)
 
             pages = []
-            before = None
+            next_page = None
             while True:
-                suffix = "" if before is None else f"&before={before}"
-                with app.api(f"/sessions/{session}/history?rows=2{suffix}") as response:
+                query = {"limit": 2}
+                if next_page is not None:
+                    query["next"] = next_page
+                with app.api(
+                    f"/sessions/{session}/history?" + urllib.parse.urlencode(query)
+                ) as response:
                     page = json.load(response)
                 pages.append(page)
-                if not page["more"]:
+                if page["older"] is None:
                     break
-                self.assertIsInstance(page["before"], int)
-                self.assertNotEqual(page["before"], before)
-                before = page["before"]
-
+                self.assertIsInstance(page["older"], str)
+                self.assertNotEqual(page["older"], next_page)
+                next_page = page["older"]
             prompts = [
-                [event["text"] for event in page["events"] if event["type"] == "user"]
+                [
+                    part["text"]
+                    for entry in page["items"]
+                    if entry["kind"] == "user"
+                    for part in entry["content"]
+                    if part["kind"] == "text"
+                ]
                 for page in pages
             ]
             self.assertEqual(
                 [turn for turn in prompts if turn],
                 [["newest prompt"], ["middle prompt"], ["oldest prompt"]],
             )
-            self.assertFalse(pages[-1]["more"])
+            self.assertIsNone(pages[-1]["older"])
 
     # exclusive: restarts the daemon
     @exclusive
@@ -223,13 +234,16 @@ class DaemonTest(unittest.TestCase):
             before = log.stat().st_size if log.exists() else 0
 
             stop = threading.Event()
-            paths = [("GET", "/sessions", None), ("GET", "/models/fixture", None)]
+            paths = [
+                ("GET", "/sessions", None),
+                ("GET", "/providers/fixture/models", None),
+            ]
             for session in sessions:
                 paths += [
-                    ("GET", f"/sessions/{session}/status", None),
-                    ("GET", f"/sessions/{session}/tree", None),
-                    ("GET", f"/sessions/{session}/children", None),
-                    ("PATCH", f"/sessions/{session}", {"name": ""}),
+                    ("GET", f"/sessions/{session}?tail=0", None),
+                    ("GET", f"/sessions/{session}/history?view=checkpoints", None),
+                    ("GET", f"/sessions?parent_id={session}", None),
+                    ("GET", f"/sessions/{session}?view=configuration", None),
                 ]
 
             # One kept-alive connection per worker, reopened only when the
@@ -270,7 +284,9 @@ class DaemonTest(unittest.TestCase):
                 worker.start()
             try:
                 # restart() asks again while the first drain runs.
-                app.api("/shutdown", {}).close()
+                with app.api("/server") as response:
+                    instance_id = json.load(response)["instance_id"]
+                app.api("/server/shutdown", {"instance_id": instance_id}).close()
                 app.restart()
             finally:
                 stop.set()
@@ -302,12 +318,12 @@ class DaemonTest(unittest.TestCase):
             # Every shape that answers without reading its body: a plain
             # route, an ignored POST body, an unknown route, and a route that
             # answers a session actor call.
-            for method, path, status in (
-                ("GET", "/health", 200),
-                ("GET", "/nope", 404),
-                ("POST", "/auth/credentials/migration", 200),
-                ("POST", "/nope", 404),
-                ("POST", interrupt, 200),
+            for method, path, body, status in (
+                ("GET", "/server", b"{}", 200),
+                ("GET", "/nope", b"{}", 404),
+                ("PUT", f"/sessions/{session}/visits/{operation_id()}", b"{}", 200),
+                ("POST", "/nope", b"{}", 404),
+                ("POST", interrupt, b'{"run_id":null,"through_input_order":0}', 200),
             ):
                 with self.subTest(f"{method} {path}"):
                     self.assertEqual(
@@ -315,7 +331,7 @@ class DaemonTest(unittest.TestCase):
                             app,
                             method,
                             path,
-                            b"{}",
+                            body,
                             {"Authorization": "Bearer " + token},
                         ),
                         (status, 200),
@@ -327,7 +343,7 @@ class DaemonTest(unittest.TestCase):
             session = app.session()
             before = app.history(session)
             self.assertEqual(
-                delayed_request(app, "GET", "/health", b"", token), (200, 200)
+                delayed_request(app, "GET", "/server", b"", token), (200, 200)
             )
             address = urllib.parse.urlsplit(app.base)
             with socket.create_connection(
@@ -335,8 +351,8 @@ class DaemonTest(unittest.TestCase):
             ) as connection:
                 connection.sendall(
                     (
-                        f"POST /sessions/{session}/events HTTP/1.1\r\n"
-                        f"Host: {address.hostname}\r\n"
+                        f"PUT /sessions/{session}/inputs/{operation_id()} HTTP/1.1\r\n"
+                        f"Host: {address.netloc}\r\n"
                         f"Authorization: {token['Authorization']}\r\n"
                         "Content-Length: 2\r\n\r\n{"
                     ).encode()
@@ -353,20 +369,16 @@ class DaemonTest(unittest.TestCase):
             token = {"Authorization": "Bearer " + app.connection["token"]}
             session = app.session()
             before = app.history(session)
-            path = f"/sessions/{session}/events"
+            path = f"/sessions/{session}/inputs/{operation_id()}"
             for authorization in ({}, {"Authorization": "Bearer wrong"}):
                 for length in ("2", "9200001", "invalid"):
                     with self.subTest(authorization=authorization, length=length):
                         status, headers, body = refused_request(
                             app, path, {**authorization, "Content-Length": length}
                         )
-                        self.assertEqual(status, 403)
-                        self.assertEqual(
-                            json.loads(body)["code"], "authentication_required"
-                        )
-                        self.assertEqual(
-                            headers["albedo-error-code"], "authentication_required"
-                        )
+                        self.assertEqual(status, 401)
+                        self.assertEqual(json.loads(body)["status"], 401)
+                        self.assertEqual(headers["www-authenticate"].lower(), "bearer")
             for framing in (
                 {"Content-Length": "9200001"},
                 {"Content-Length": "invalid"},
@@ -388,7 +400,7 @@ class DaemonTest(unittest.TestCase):
             before = app.history(session)
             token = {"Authorization": "Bearer " + app.connection["token"]}
             for framing, expected_status in (
-                ({"Transfer-Encoding": "chunked"}, 400),
+                ({"Transfer-Encoding": "chunked", "Content-Length": "2"}, 400),
                 ({"Transfer-Encoding": "identity", "Content-Length": "0"}, 400),
                 ({"Content-Length": "-1"}, 400),
                 ({"Content-Length": "+1"}, 400),
@@ -397,14 +409,44 @@ class DaemonTest(unittest.TestCase):
             ):
                 with self.subTest(framing=framing):
                     status, _, body = refused_request(
-                        app, f"/sessions/{session}/events", {**token, **framing}
+                        app,
+                        f"/sessions/{session}/inputs/{operation_id()}",
+                        {**token, **framing},
                     )
                     self.assertEqual(status, expected_status)
-                    if "Transfer-Encoding" in framing:
-                        self.assertEqual(
-                            json.loads(body)["code"], "unsupported_transfer_encoding"
-                        )
+                    if framing.get("Transfer-Encoding") == "identity":
+                        self.assertEqual(json.loads(body)["code"], "invalid_request")
             self.assertEqual(app.history(session), before)
+
+            input_id = operation_id()
+            resource = f"/sessions/{session}/inputs/{input_id}"
+            payload = {"kind": "message", "text": "identity encoded input"}
+            status, _, _ = refused_request(
+                app,
+                resource,
+                {"Content-Encoding": "gzip", "Content-Length": "100"},
+            )
+            self.assertEqual(status, 401)
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                app.api(
+                    resource,
+                    payload,
+                    method="PUT",
+                    headers={"Content-Encoding": "gzip"},
+                )
+            self.assertEqual(caught.exception.code, 415)
+            self.assertEqual(
+                json.load(caught.exception)["code"], "unsupported_encoding"
+            )
+            self.assertEqual(app.history(session), before)
+            with app.api(
+                resource,
+                payload,
+                method="PUT",
+                headers={"Content-Encoding": "identity"},
+            ) as response:
+                self.assertEqual(response.status, 202)
+            app.idle(session)
 
     # exclusive: changes daemon startup open-file limits
     @exclusive
@@ -429,7 +471,7 @@ class DaemonTest(unittest.TestCase):
                 self.addCleanup(connection.close)
                 connections.append(connection)
             for connection in connections:
-                connection.request("GET", "/health", headers=headers)
+                connection.request("GET", "/server", headers=headers)
                 response = connection.getresponse()
                 response.read()
                 self.assertEqual(response.status, 200)
@@ -469,7 +511,7 @@ class DaemonTest(unittest.TestCase):
             deadline = time.monotonic() + 20
             while True:
                 try:
-                    with app.api("/health") as response:
+                    with app.api("/server") as response:
                         self.assertEqual(response.status, 200)
                     break
                 except OSError:
@@ -502,15 +544,82 @@ class DaemonTest(unittest.TestCase):
         self.addCleanup(provider.close)
         with Albedo(provider) as app:
             session = app.session()
+            before = app.stream_page(session)
             app.prompt(session, "think first").close()
             app.idle(session)
 
-            for source, events in (
-                ("stream", app.events(session)),
-                ("history", app.history(session)["events"]),
-            ):
-                thoughts = [event for event in events if event["type"] == "thinking"]
-                self.assertEqual(
-                    [event["text"] for event in thoughts], ["weighing it"], source
-                )
-                self.assertGreaterEqual(thoughts[0].get("elapsedMs", 0), 500, source)
+            replay = app.stream_page(session, before)
+            thoughts = [
+                event["data"]
+                for event in replay["events"]
+                if event["type"] == "thinking"
+            ]
+            self.assertEqual(
+                "".join(thought["text"] for thought in thoughts), "weighing it"
+            )
+            self.assertGreaterEqual(
+                max(thought.get("elapsed_ms", 0) for thought in thoughts), 500
+            )
+            [durable] = [
+                entry
+                for entry in app.history(session)["items"]
+                if entry["kind"] == "thinking"
+            ]
+            self.assertEqual(
+                "".join(
+                    part["text"]
+                    for part in durable["content"]
+                    if part["kind"] == "text"
+                ),
+                "weighing it",
+            )
+            self.assertGreaterEqual(durable["thinking_duration_ms"], 500)
+
+    def test_chunked_input_admission_counts_decoded_body_and_keeps_connection(self):
+        provider = Provider(lambda _: text("chunked answer"))
+        self.addCleanup(provider.close)
+        with Albedo(provider) as app:
+            session = app.session()
+            input_id = operation_id()
+            intent = {"kind": "message", "text": "chunked Café 😀"}
+            payload = json.dumps(intent, ensure_ascii=False).encode()
+            chunks = [payload[index : index + 3] for index in range(0, len(payload), 3)]
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", app.connection["port"], timeout=20
+            )
+            self.addCleanup(connection.close)
+            headers = {
+                "Authorization": "Bearer " + app.connection["token"],
+                "Content-Type": "application/json",
+            }
+            connection.request(
+                "PUT",
+                f"/sessions/{session}/inputs/{input_id}",
+                chunks,
+                headers,
+                encode_chunked=True,
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, 202)
+            self.assertEqual(json.load(response)["id"], input_id)
+            connection.request("GET", "/server", headers=headers)
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.load(response)["state"], "ready")
+            app.idle(session)
+            users = [
+                entry
+                for entry in app.history(session)["items"]
+                if entry["kind"] == "user"
+            ]
+            self.assertEqual([entry["input_id"] for entry in users], [input_id])
+            self.assertEqual(
+                [
+                    part["text"]
+                    for entry in users
+                    for part in entry["content"]
+                    if part["kind"] == "text"
+                ],
+                [intent["text"]],
+            )
+            self.assertEqual(len(provider.requests), 1)

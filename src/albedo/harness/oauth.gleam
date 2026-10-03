@@ -5,6 +5,7 @@
 import albedo/openai_api/types
 import gleam/dynamic.{type Dynamic}
 import gleam/json.{type Json}
+import gleam/option.{type Option}
 import gleam/uri
 
 pub type Login {
@@ -42,62 +43,55 @@ pub type Account {
   Account(id: String, label: String, detail: String, selected: Bool)
 }
 
-pub type Status {
-  Waiting(progress: String)
-  Exchanging(progress: String)
-  Done(account: String)
-  Failed(reason: String)
-}
+/// Durable identified login operations. The owner stores only a keyed digest
+/// of the submitted intent and safe flow metadata, never submitted values.
+@external(erlang, "albedo_oauth", "start_identified")
+pub fn start_identified(
+  home: String,
+  id: String,
+  provider: String,
+  login: Option(Login),
+  intent: String,
+) -> Result(#(Bool, String), #(Int, String, String))
 
-@external(erlang, "albedo_oauth", "start")
-pub fn start(home: String, login: Login) -> Result(#(String, String), String)
+@external(erlang, "albedo_oauth", "get_identified")
+pub fn get_identified(
+  home: String,
+  id: String,
+  logins: List(Login),
+) -> Result(String, #(Int, String, String))
 
-@external(erlang, "albedo_oauth", "status")
-pub fn status(id: String) -> Result(Status, String)
+@external(erlang, "albedo_oauth", "input_identified")
+pub fn input_identified(
+  home: String,
+  id: String,
+  match: String,
+  text: String,
+  logins: List(Login),
+) -> Result(String, #(Int, String, String))
 
-@external(erlang, "albedo_oauth", "input")
-pub fn input(id: String, text: String) -> Result(Nil, String)
+@external(erlang, "albedo_oauth", "cancel_identified")
+pub fn cancel_identified(
+  home: String,
+  id: String,
+  logins: List(Login),
+) -> Result(String, #(Int, String, String))
 
-@external(erlang, "albedo_oauth", "cancel")
-pub fn cancel(id: String) -> Result(Nil, String)
+@external(erlang, "albedo_oauth", "auth_snapshot")
+pub fn auth_snapshot(
+  home: String,
+  logins: List(Login),
+) -> Result(String, #(Int, String, String))
+
+@external(erlang, "albedo_oauth", "remove_account")
+pub fn remove_account(
+  home: String,
+  logins: List(Login),
+  id: String,
+) -> Result(Nil, #(Int, String, String))
 
 @external(erlang, "albedo_oauth", "accounts")
 pub fn accounts(home: String, login: Login) -> List(Account)
-
-@external(erlang, "albedo_oauth", "select")
-pub fn select(home: String, login: Login, id: String) -> Result(Nil, String)
-
-@external(erlang, "albedo_oauth", "remove")
-pub fn remove(home: String, login: Login, id: String) -> Result(Nil, String)
-
-pub fn status_json(status: Status) -> Json {
-  let #(state, text) = case status {
-    Waiting(text) -> #("waiting", text)
-    Exchanging(text) -> #("exchanging", text)
-    Done(text) -> #("done", text)
-    Failed(text) -> #("failed", text)
-  }
-  json.object([#("state", json.string(state)), #("message", json.string(text))])
-}
-
-pub fn login_json(login: Login) -> Json {
-  json.object([
-    #("provider", json.string(login.provider)),
-    #("label", json.string(login.label)),
-    #("detail", json.string(login.detail)),
-    #("protocol", json.string(types.protocol_name(login.protocol))),
-  ])
-}
-
-pub fn account_json(provider: String, account: Account) -> Json {
-  json.object([
-    #("provider", json.string(provider)),
-    #("id", json.string(account.id)),
-    #("label", json.string(account.label)),
-    #("detail", json.string(account.detail)),
-    #("selected", json.bool(account.selected)),
-  ])
-}
 
 pub fn authorize_url(base: String, query: List(#(String, String))) -> String {
   base <> "?" <> uri.query_to_string(query)

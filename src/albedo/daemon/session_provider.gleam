@@ -211,7 +211,11 @@ pub fn select(
               option.None -> {
                 let efforts =
                   model_efforts(state.host, state.home, provider, model)
-                Ok(resolve_effort(efforts, state.info.effort))
+                let configured =
+                  configuration.named(state.home, provider)
+                  |> result.map(fn(provider) { provider.effort })
+                  |> result.unwrap(option.None)
+                Ok(resolve_effort(efforts, state.info.effort, configured))
               }
             })
             use _ <- result.try(
@@ -261,16 +265,19 @@ pub fn select(
   }
 }
 
-fn resolve_effort(
+/// Keep a supported current level, then a supported profile default, then the
+/// model default. Explicitly requested levels are validated by the caller.
+pub fn resolve_effort(
   efforts: List(String),
   current: option.Option(String),
+  configured: option.Option(String),
 ) -> option.Option(String) {
-  case current {
-    option.Some(level) ->
-      case list.contains(efforts, level) {
-        True -> option.Some(level)
-        False -> extension.default_effort(efforts)
-      }
-    option.None -> extension.default_effort(efforts)
+  case
+    [current, configured]
+    |> list.filter_map(option.to_result(_, Nil))
+    |> list.find(list.contains(efforts, _))
+  {
+    Ok(level) -> option.Some(level)
+    Error(_) -> extension.default_effort(efforts)
   }
 }

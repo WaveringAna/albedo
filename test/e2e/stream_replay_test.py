@@ -5,6 +5,7 @@ import socket
 import sqlite3
 import subprocess
 import unittest
+import urllib.error
 
 from harness import Albedo, Provider, ROOT, exclusive, text
 
@@ -63,7 +64,13 @@ class StreamReplayTest(unittest.TestCase):
     def assert_reset_history(self, page, prompts):
         self.assertEqual(page["events"][0]["type"], "reset")
         self.assertEqual(
-            [event["text"] for event in page["events"] if event["type"] == "user"],
+            [
+                part["text"]
+                for entry in page["snapshot"]["history"]["items"]
+                if entry["kind"] == "user"
+                for part in entry["content"]
+                if part["kind"] == "text"
+            ],
             prompts,
         )
 
@@ -80,7 +87,6 @@ class StreamReplayTest(unittest.TestCase):
             restart_actor(app, session)
             self.turn(app, session, "after actor restart")
             current = app.stream_page(session)
-            self.assertGreaterEqual(current["cursor"], old["cursor"])
             replay = app.stream_page(session, old)
             self.assert_reset_history(
                 replay, ["before actor restart", "after actor restart"]
@@ -98,12 +104,12 @@ class StreamReplayTest(unittest.TestCase):
             app.restart(crash=True)
             self.turn(app, session, "after daemon restart")
             current = app.stream_page(session)
-            self.assertGreaterEqual(current["cursor"], old["cursor"])
             replay = app.stream_page(session, old)
             self.assert_reset_history(
                 replay, ["before daemon restart", "after daemon restart"]
             )
             self.assertNotEqual(replay["generation"], old["generation"])
+            self.assertEqual(replay["generation"], current["generation"])
 
     def test_same_generation_replays_only_subsequent_events_in_order(self):
         with Albedo(self.provider) as app:
@@ -118,9 +124,12 @@ class StreamReplayTest(unittest.TestCase):
             self.assertNotIn("reset", [event["type"] for event in replay["events"]])
             self.assertEqual(
                 [
-                    event["text"]
+                    part["text"]
                     for event in replay["events"]
-                    if event["type"] == "user"
+                    if event["type"] == "message"
+                    and event["data"]["entry"]["kind"] == "user"
+                    for part in event["data"]["entry"]["content"]
+                    if part["kind"] == "text"
                 ],
                 ["next prompt", "last prompt"],
             )
@@ -136,22 +145,22 @@ class StreamReplayTest(unittest.TestCase):
             session = app.session()
             self.turn(app, session, "committed history")
             old = app.stream_page(session)
+            other_generation = app.stream_page(app.session())["generation"]
             with sqlite3.connect(app.home / "albedo.sqlite") as database:
                 database.execute(
                     "ALTER TABLE transcript RENAME TO unavailable_transcript"
                 )
-            with app.api(
-                f"/sessions/{session}/stream?after_generation=other&after_seq={old['cursor']}&tail=2"
-            ) as response:
-                lines = list(response)
-            self.assertIn(b"event: error\n", lines)
-            batches = [
-                json.loads(line[6:]) for line in lines if line.startswith(b"data: ")
-            ]
-            self.assertEqual(len(batches), 1)
-            self.assertIn("could not load transcript", batches[0]["error"])
-            self.assertNotIn("generation", batches[0])
-            self.assertNotIn("cursor", batches[0])
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                app.api(
+                    f"/sessions/{session}?after_generation={other_generation}&after_seq={old['cursor']}&tail=2",
+                    headers={"Accept": "text/event-stream"},
+                )
+            self.assertEqual(caught.exception.code, 503)
+            problem = json.load(caught.exception)
+            self.assertEqual(problem["code"], "request_unavailable")
+            self.assertNotIn("snapshot", problem)
+            self.assertNotIn("generation", problem)
+            self.assertNotIn("cursor", problem)
 
     def test_evicted_cursor_resets_in_same_generation_and_initial_tail_pages_history(
         self,
@@ -168,13 +177,19 @@ class StreamReplayTest(unittest.TestCase):
             self.assert_reset_history(replay, ["oldest prompt", "newest prompt"])
             initial = app.stream_page(session, tail=2)
             self.assert_reset_history(initial, ["newest prompt"])
-            reset = initial["events"][0]
-            self.assertTrue(reset["more"])
+            history = initial["snapshot"]["history"]
+            self.assertIsNotNone(history["older"])
             with app.api(
-                f"/sessions/{session}/history?rows=2&before={reset['before']}"
+                f"/sessions/{session}/history?limit=2&next={history['older']}"
             ) as response:
                 older = json.load(response)
             self.assertEqual(
-                [event["text"] for event in older["events"] if event["type"] == "user"],
+                [
+                    part["text"]
+                    for entry in older["items"]
+                    if entry["kind"] == "user"
+                    for part in entry["content"]
+                    if part["kind"] == "text"
+                ],
                 ["oldest prompt"],
             )

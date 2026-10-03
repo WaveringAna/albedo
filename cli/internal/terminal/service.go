@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	"slices"
 	"strings"
 
 	"albedo/cli/internal/app"
@@ -34,26 +34,39 @@ func IsTTY(in io.Reader, out io.Writer) bool {
 	return inputOK && outputOK && isatty.IsTerminal(input.Fd()) && isatty.IsTerminal(output.Fd())
 }
 
-// announceMigration tells the user, once, that the daemon's start moved their
-// secrets into creds.json, and waits for enter so the TUI does not cover it.
-// The daemon answers only the first client that asks.
+// announceMigration presents retained daemon notices before the full screen opens.
 func (t *Service) announceMigration(ctx context.Context, conn *daemon.Connection) error {
-	moved, err := daemon.TakeMigration(ctx, conn)
-	if err != nil || len(moved) == 0 {
+	server, err := daemon.ProbeServer(ctx, conn)
+	if err != nil {
+		return err
+	}
+	settings, err := daemon.GetSettings(ctx, conn)
+	if err != nil {
+		return err
+	}
+	dismissed := slices.Clone(settings.UI.DismissedNotices)
+	shown := false
+	for _, notice := range server.Notices {
+		if slices.Contains(dismissed, notice.ID) {
+			continue
+		}
+		if _, err := fmt.Fprintln(t.Out, notice.Message); err != nil {
+			return err
+		}
+		dismissed = append(dismissed, notice.ID)
+		shown = true
+	}
+	if !shown {
 		return nil
 	}
-	backups := filepath.Join(t.Home, "backups", "*-before-creds-*")
-	if _, writeErr := fmt.Fprintf(t.Out, "Your credentials have been moved from %s to %s.\n", strings.Join(moved, ", "), filepath.Join(t.Home, "creds.json")); writeErr != nil {
-		return writeErr
-	}
-	if _, writeErr := fmt.Fprintf(t.Out, "The backups still contain your credentials. Once you have checked that login works,\nyou can delete those backups with:\n\n  rm -f %s\n\nPress Enter to continue. ", backups); writeErr != nil {
-		return writeErr
+	if _, err := fmt.Fprint(t.Out, "Press Enter to continue. "); err != nil {
+		return err
 	}
 	_, err = bufio.NewReader(t.In).ReadString('\n')
-	if errors.Is(err, io.EOF) {
-		return nil
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
 	}
-	return err
+	return daemon.DismissServerNotices(ctx, conn, settings.UI.ETag, dismissed)
 }
 
 // Confirmed reads a [y/N] answer. A late reply to the terminal's startup
@@ -75,7 +88,19 @@ func (t *Service) Open(ctx context.Context, prepared app.PreparedOpen) error {
 	}
 	appModel := tui.NewAppModel(prepared.Connection, prepared.Providers, prepared.Selected, prepared.Workspace, prepared.LoginRequired, t.OpenBrowser)
 	p := tea.NewProgram(appModel, tea.WithFPS(120), tea.WithInput(t.In), tea.WithOutput(t.Out))
+	stopCancellation := context.AfterFunc(ctx, func() { p.Send(tea.Quit()) })
+	defer stopCancellation()
 	final, err := p.Run()
+	closed, ok := final.(tui.AppModel)
+	if !ok {
+		closed = appModel
+	}
+	if cleanup := closed.Close(); cleanup != nil {
+		cleanup()
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if err != nil {
 		return err
 	}
@@ -93,7 +118,20 @@ func (t *Service) Login(ctx context.Context, prepared app.PreparedOpen, workspac
 		return err
 	}
 	model := tui.NewLoginAppModel(prepared.Connection, prepared.Providers, workspace, name, t.OpenBrowser)
-	_, err := tea.NewProgram(model, tea.WithFPS(120), tea.WithInput(t.In), tea.WithOutput(t.Out)).Run()
+	program := tea.NewProgram(model, tea.WithFPS(120), tea.WithInput(t.In), tea.WithOutput(t.Out))
+	stopCancellation := context.AfterFunc(ctx, func() { program.Send(tea.Quit()) })
+	defer stopCancellation()
+	final, err := program.Run()
+	closed, ok := final.(tui.AppModel)
+	if !ok {
+		closed = model
+	}
+	if cleanup := closed.Close(); cleanup != nil {
+		cleanup()
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	return err
 }
 func (t *Service) ConfirmCleanup(sessions bool) (bool, error) {

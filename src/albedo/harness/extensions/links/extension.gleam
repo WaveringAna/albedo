@@ -3,18 +3,24 @@
 //// other's memory and work items; each keeps writing its own, so a member
 //// whose folder is gone loses nothing and unlinking undoes nothing.
 
+import albedo/harness/client_api
+import gleam/http
+
 import albedo/daemon/conversation
-import albedo/daemon/folders
 import albedo/daemon/store
 import albedo/harness/command.{
   type Command, type StateOp, Argument, Command, Data, Note, UserCall,
 }
 import albedo/harness/extension
+import albedo/harness/extensions/links/ledger
+import albedo/harness/extensions/links/presence.{
+  type Presence, Gone, Here, Unknown,
+}
+import albedo/harness/extensions/links/service
 import albedo/harness/links
 import albedo/harness/location
 import albedo/harness/page
 import albedo/harness/ssh
-import gleam/erlang/process
 import gleam/int
 import gleam/json
 import gleam/list
@@ -28,6 +34,27 @@ pub fn extension() -> extension.Extension {
     "Workspaces linked into one project share memory and work items.",
     [],
     [
+      extension.ClientPlugin([
+        client_api.Command(
+          "/link",
+          client_api.Read,
+          [],
+          client_api.Operation(
+            "listLinks",
+            http.Get,
+            "/extensions/links/groups",
+            [],
+            [#("workspace", client_api.Session("/workspace"))],
+            [],
+            [],
+            json.object([]),
+          ),
+        ),
+      ]),
+      extension.ServicePlugin(extension.Service(
+        fn(_, _) { extension.Admission(extension.DaemonToken, 65_536) },
+        service.handle,
+      )),
       extension.ManagedPlugin(fn(storage, _, workspace) {
         Ok(
           extension.Managed(
@@ -38,7 +65,7 @@ pub fn extension() -> extension.Extension {
         )
       }),
     ],
-    fn(storage) { store.query(storage, links.apply) },
+    ledger.initialise,
   )
 }
 
@@ -50,7 +77,10 @@ fn context(group: List(String)) -> String {
     [_] | [] -> ""
     [_, ..linked] ->
       "This workspace is linked with "
-      <> string.join(list.map2(linked, presences(linked, 0), describe), ", ")
+      <> string.join(
+        list.map2(linked, presence.presences(linked, 0), describe),
+        ", ",
+      )
       <> ": the same project in other places. memory and the work ledger "
       <> "read across all of them, and what you write is filed in this "
       <> "workspace. A work item says where it was filed (its workspace field)."
@@ -63,65 +93,6 @@ fn describe(member: String, presence: Presence) -> String {
     _ -> member
   }
 }
-
-/// What albedo can tell about a member's folder.
-type Presence {
-  Here
-  Gone
-  /// Its host did not answer, so whether the folder exists is unknown.
-  Unknown(target: String, why: ssh.Failure)
-}
-
-/// A remote member is asked on its host; `wait_ms` bounds the wait for a
-/// host that is not ready yet.
-fn presence(member: String, wait_ms: Int) -> Presence {
-  case location.parse(member) {
-    Error(_) -> Here
-    Ok(at) ->
-      case folders.exists(at, wait_ms) {
-        Ok(True) -> Here
-        Ok(False) -> Gone
-        Error(why) ->
-          Unknown(location.ssh_target(at) |> result.unwrap(member), why)
-      }
-  }
-}
-
-/// Every member's presence at once, so members whose hosts are slow to answer
-/// wait side by side rather than one after another. A check still running at
-/// the deadline (it crashed, or the machine is starved) is ended, so no late
-/// answer lands in the caller's mailbox, and reads as unreachable.
-fn presences(members: List(String), wait_ms: Int) -> List(Presence) {
-  let started =
-    list.map(members, fn(member) {
-      let answer = process.new_subject()
-      let check =
-        process.spawn_unlinked(fn() {
-          process.send(answer, presence(member, wait_ms))
-        })
-      #(member, answer, check)
-    })
-  let deadline = now_ms() + wait_ms + folders.exists_ms + 1000
-  list.map(started, fn(started) {
-    let #(member, answer, check) = started
-    process.receive(answer, int.max(0, deadline - now_ms()))
-    |> result.lazy_unwrap(fn() {
-      process.kill(check)
-      Unknown(member, ssh.Unreachable("the check did not answer in time"))
-    })
-  })
-}
-
-fn now_ms() -> Int {
-  monotonic_time(Millisecond)
-}
-
-type TimeUnit {
-  Millisecond
-}
-
-@external(erlang, "erlang", "monotonic_time")
-fn monotonic_time(unit: TimeUnit) -> Int
 
 /// How long the page waits for a remote member's host to answer.
 const page_wait_ms = 5000
@@ -161,7 +132,7 @@ fn listing(group: List(String)) -> command.Outcome {
     [_] | [] -> []
     [own, ..linked] -> [
       page.detail_row(own, own, "here", page.Active, ""),
-      ..list.map2(linked, presences(linked, page_wait_ms), row)
+      ..list.map2(linked, presence.presences(linked, page_wait_ms), row)
     ]
   }
   Data(
@@ -230,7 +201,9 @@ fn change(
   use #(message, notes) <- result.try(case action {
     "add" -> {
       use other <- result.try(
-        location.workspace(details) |> result.map(location.to_string),
+        location.workspace(details)
+        |> result.map_error(fn(failure) { failure.detail })
+        |> result.map(location.to_string),
       )
       use _ <- result.try(case other == workspace, list.contains(group, other) {
         True, _ -> Error("that is this workspace")

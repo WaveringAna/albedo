@@ -1,7 +1,7 @@
 -module(albedo_openai_transport_test_server).
 
 -export([start/1, url/1, await_body/1, await_closed/1,
-    stop/1, raising_callback_closes/1]).
+    stop/1, owner_after_headers/1, kill_owner/1]).
 
 start(Mode) ->
     {ok, Listen} = gen_tcp:listen(0, [binary, {active, false},
@@ -23,7 +23,8 @@ await_body({fixture, Pid, _URL}) ->
 
 await_closed({fixture, Pid, _URL}) ->
     receive
-        {fixture_closed, Pid} -> true
+        {fixture_closed, Pid} -> true;
+        {fixture_error, Pid, _} -> false
     after 2000 ->
         false
     end.
@@ -32,13 +33,35 @@ stop({fixture, Pid, _URL}) ->
     exit(Pid, shutdown),
     nil.
 
-raising_callback_closes(Connection) ->
-    try albedo@openai_api@transport:with_connection(Connection,
-            fun() -> erlang:error(expected_callback_failure) end) of
-        _ -> false
-    catch
-        error:expected_callback_failure -> true;
-        _:_ -> false
+owner_after_headers(Fixture) ->
+    Parent = self(),
+    {Owner, Monitor} = spawn_monitor(fun() ->
+        {ok, Connection} = albedo_openai_transport:open(url(Fixture), [], <<>>, 2000),
+        {ok, {headers, 200, _, false}} =
+            albedo_openai_transport:receive_message(Connection),
+        Parent ! {transport_owner_ready, self()},
+        receive stop -> albedo_openai_transport:close(Connection) end
+    end),
+    receive
+        {transport_owner_ready, Owner} ->
+            demonitor(Monitor, [flush]),
+            Owner;
+        {'DOWN', Monitor, process, Owner, Reason} ->
+            error({transport_owner_failed, Reason})
+    after 2000 ->
+        exit(Owner, kill),
+        error(transport_owner_not_ready)
+    end.
+
+kill_owner(Owner) ->
+    Monitor = monitor(process, Owner),
+    exit(Owner, kill),
+    receive
+        {'DOWN', Monitor, process, Owner, killed} -> true;
+        {'DOWN', Monitor, process, Owner, _} -> false
+    after 2000 ->
+        demonitor(Monitor, [flush]),
+        false
     end.
 
 serve(Listen, Owner, Mode) ->
@@ -49,8 +72,8 @@ serve(Listen, Owner, Mode) ->
                 {ok, Body} ->
                     Owner ! {fixture_body, self(), Body},
                     respond(Socket, Mode, Owner);
-                {error, _} ->
-                    Owner ! {fixture_closed, self()}
+                {error, Reason} ->
+                    Owner ! {fixture_error, self(), Reason}
             end;
         _ ->
             gen_tcp:close(Listen)
@@ -102,20 +125,17 @@ respond(Socket, stream, Owner) ->
     receive after 40 -> ok end,
     ok = gen_tcp:send(Socket, <<"3\r\ntwo\r\n0\r\n\r\n">>),
     wait_for_close(Socket, Owner);
-respond(Socket, disconnect, Owner) ->
-    gen_tcp:close(Socket),
-    Owner ! {fixture_closed, self()};
-respond(Socket, hold, Owner) ->
+respond(Socket, close_delimited, Owner) ->
     ok = gen_tcp:send(Socket, [
-        <<"HTTP/1.1 200 OK\r\n">>,
-        <<"content-length: 100\r\n\r\n">>
+        <<"HTTP/1.0 200 OK\r\n">>,
+        <<"content-type: application/octet-stream\r\n\r\n">>
     ]),
     wait_for_close(Socket, Owner).
 
 wait_for_close(Socket, Owner) ->
-    case gen_tcp:recv(Socket, 0, 2000) of
+    case gen_tcp:recv(Socket, 0, infinity) of
         {error, closed} -> Owner ! {fixture_closed, self()};
-        {error, _} -> Owner ! {fixture_closed, self()};
+        {error, Reason} -> Owner ! {fixture_error, self(), Reason};
         {ok, _} -> wait_for_close(Socket, Owner)
     end,
     gen_tcp:close(Socket).

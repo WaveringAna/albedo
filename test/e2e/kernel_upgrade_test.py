@@ -96,9 +96,11 @@ class Swaps(unittest.TestCase):
         self.app.prompt(self.session, "run it").close()
         self.app.idle(self.session)
         results = [
-            json.loads(event["result"])
-            for event in self.app.events(self.session)
-            if event.get("type") == "tool" and event.get("name") == "python"
+            json.loads(part["value"])
+            for entry in self.app.history(self.session)["items"]
+            if entry["kind"] == "tool_result" and entry["tool"]["name"] == "python"
+            for part in entry["content"]
+            if part["kind"] == "json" and part["field"] == "result"
         ]
         request = next(
             r["request"]
@@ -109,7 +111,7 @@ class Swaps(unittest.TestCase):
         return results[-1], prompt
 
     def kernel(self):
-        with self.app.api(f"/sessions/{self.session}/status") as response:
+        with self.app.api(f"/sessions/{self.session}?tail=0") as response:
             return json.load(response)["kernel"]
 
     def stale(self):
@@ -169,11 +171,11 @@ class KernelUpgradeTests(Swaps):
         self.edit_bundle()
         self.app.restart()
         with self.app.api(
-            f"/sessions/{self.session}/commands",
-            {"name": "/kernel", "arguments": "upgrade"},
+            f"/sessions/{self.session}/kernel/upgrade",
+            {},
         ) as response:
-            result = json.load(response)["result"]
-        self.assertEqual(result["jobs"], 1, result)
+            result = json.load(response)
+        self.assertEqual(len(result["stopped_jobs"]), 1, result)
         swapped, _ = self.probe()
         self.assertIn("'new bundle'", swapped["value"])
         self.assertTrue(swapped["value"].startswith("(41,"), swapped)
@@ -220,7 +222,10 @@ class ModuleSkewTests(Swaps):
         self.app.restart(prepare=self.drop_skills)
         held, _ = self.probe()
         self.assertTrue(held["value"].startswith("(41, True,"), held)
-        self.assertEqual(self.kernel().get("reason"), "modules")
+        self.assertIn(
+            "modules",
+            [reason["code"] for reason in self.kernel()["staleness_reasons"]],
+        )
         self.wait_until_current()
         swapped, _ = self.probe()
         self.assertTrue(swapped["value"].startswith("(41, False,"), swapped)
@@ -323,16 +328,23 @@ class ProtocolSkewTests(Swaps):
         self.app.restart(prepare=prepare)
         started = time.monotonic()
         with self.app.prompt(self.session, "run it") as response:
-            operation = json.load(response)["operationId"]
-        self.app.idle(self.session)
-        self.assertLess(time.monotonic() - started, 10)
-        # The input waits, blocked with the reason, rather than lost.
-        with self.app.api(f"/operations/{operation}") as response:
-            receipt = json.load(response)
-        self.assertIn("out of step", receipt["blockingReason"] or "", receipt)
-        self.assertIn("protocol", receipt["blockingReason"])
-        with self.app.api(f"/sessions/{self.session}/status") as response:
-            self.assertEqual(json.load(response)["kernel"]["link"], "none")
+            input_id = json.load(response)["id"]
+        deadline = started + 10
+        while time.monotonic() < deadline:
+            with self.app.api(
+                f"/sessions/{self.session}/inputs/{input_id}"
+            ) as response:
+                receipt = json.load(response)
+            if receipt["blocking_reason"]:
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("incompatible kernel did not expose a blocked input")
+        self.assertEqual(receipt["delivery"], "pending")
+        self.assertIn("out of step", receipt["blocking_reason"]["detail"], receipt)
+        self.assertIn("protocol", receipt["blocking_reason"]["detail"])
+        with self.app.api(f"/sessions/{self.session}?tail=0") as response:
+            self.assertEqual(json.load(response)["kernel"]["state"], "none")
 
     def test_another_protocol_whose_snapshot_fails_is_swapped_carrying_nothing(self):
         kernel, job = self.start()

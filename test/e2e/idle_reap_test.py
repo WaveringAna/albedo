@@ -5,11 +5,12 @@ import time
 import unittest
 
 from harness import Albedo, Provider, exclusive, python, text
+from stream_pressure_test import StreamProbe
 
 
 def notes_for(app, session, cursor):
     return [
-        event["text"]
+        event["data"]["text"]
         for event in app.stream_page(session, cursor)["events"]
         if event.get("type") == "note"
     ]
@@ -64,7 +65,9 @@ class IdleReapTests(unittest.TestCase):
         self.app = Albedo(
             provider,
             protocol="responses",
-            prepare=lambda app: app.env.update(ALBEDO_IDLE_SECONDS=str(IDLE_SECONDS)),
+            prepare=lambda app: app.env.update(
+                ALBEDO_IDLE_SECONDS=str(IDLE_SECONDS), ALBEDO_INSPECT="1"
+            ),
         )
         self.app.__enter__()
         self.addCleanup(self.app.__exit__, None, None, None)
@@ -110,4 +113,26 @@ class IdleReapTests(unittest.TestCase):
         notes = notes_for(app, session, cursor)
         self.assertTrue(
             any("restored 2 variables from disk" in note for note in notes), notes
+        )
+
+    def test_blocked_sweep_admits_one_worker_and_continues_after_owner_death(self):
+        app = self.app
+        held, survivor = app.session(), app.session()
+        self.turn(held, "remember held values")
+        self.turn(survivor, "remember surviving values")
+        probe = StreamProbe(app)
+        result = probe.call("maintenance_json", f'[<<"{held}">>]')
+        self.assertEqual(result["admitted"], 1)
+        self.assertEqual(result["outcome"], "completed")
+        saved = app.home / "kernels" / f"{survivor}.state"
+        deadline = time.monotonic() + IDLE_SECONDS * 4
+        while not saved.exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertTrue(saved.exists(), "one dead owner prevented survivor release")
+        self.turn(survivor, "recall surviving values")
+        self.assertTrue(
+            any(
+                "recalled 7 [1, 2, 3]" in item.get("output", "")
+                for item in self.provider.requests[-1]["request"]["input"]
+            )
         )

@@ -283,6 +283,39 @@ pub fn call(
   run(command, context, caller, client, args)
 }
 
+/// Prepare a declared user input before durable admission. State reads remain
+/// available, while a turn command cannot submit or mutate session state as a
+/// side effect of preparation.
+pub fn prepare_input(
+  selected: Command,
+  context: Context,
+  supplied: Dict(String, String),
+) -> Result(#(String, String), String) {
+  use _ <- result.try(case selected.user_turn {
+    True -> Ok(Nil)
+    False -> Error("command is an HTTP resource operation")
+  })
+  use arguments <- result.try(check_arguments(selected, supplied))
+  let read_only =
+    Context(fn(operation) {
+      case operation {
+        ModelGet
+        | EffortGet
+        | ContextSummary
+        | ContextPage(_, _)
+        | KernelReport -> context.state(operation)
+        _ -> Error("input preparation cannot mutate session state")
+      }
+    })
+  use outcome <- result.try(
+    protect.guarded(fn() { selected.run(read_only, UserCall, arguments) }),
+  )
+  case outcome {
+    Turn(display, text) -> Ok(#(display, text))
+    Data(_) -> Error("input command did not produce a turn")
+  }
+}
+
 /// Runs one command and applies the caller policy. A user invocation of a
 /// `user_turn` command submits its turn through state and otherwise returns
 /// data; a model invocation may never submit a turn.

@@ -82,8 +82,12 @@ fn config_decoder() -> decode.Decoder(Config) {
   // images over it are refused or scaled like they are for Claude.
   use image_edge <- decode.optional_field(
     "imageEdge",
-    types.max_image_edge,
-    decode.int,
+    None,
+    decode.optional(decode.int),
   )
-  decode.success(Config(base_url, api_key, image_edge))
+  decode.success(Config(
+    base_url,
+    api_key,
+    option.unwrap(image_edge, types.max_image_edge),
+  ))
 }

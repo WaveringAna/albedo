@@ -1,6 +1,7 @@
 //// A fork inside a condensed LCM node must reuse only complete children.
 
 import albedo/daemon/conversation
+import albedo/daemon/family
 import albedo/daemon/history
 import albedo/harness/extensions
 import albedo/harness/extensions/lcm/extension as lcm
@@ -25,6 +26,7 @@ fn host(capacity: Int) -> #(runtime.Runtime, runtime.Session) {
     )
   let ledger = runtime.ledger(host)
   let assert Ok(_) = conversation.initialise(ledger)
+  let assert Ok(_) = family.initialise(ledger)
   let assert Ok(_) =
     conversation.create(
       ledger,

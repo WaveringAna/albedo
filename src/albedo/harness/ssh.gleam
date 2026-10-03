@@ -6,7 +6,7 @@
 
 import gleam/dynamic/decode
 import gleam/json.{type Json}
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 
 /// A host that is ready for a kernel.
@@ -82,20 +82,41 @@ pub fn describe(target: String, failure: Failure) -> String {
   }
 }
 
-/// The `/hosts/:host` answer: the cached probe, or `warming` while one runs.
-pub fn status(target: String) -> Json {
-  wire(target, known(target))
+pub type Observation {
+  Observation(
+    target: String,
+    state: String,
+    detail: Option(String),
+    host: Option(Host),
+    control: Option(String),
+  )
 }
 
-/// The state of a host's recent probe, without probing: `ready`,
-/// `needs_auth`, `unreachable` or `unsupported`, or None when nothing fresh
-/// is cached.
-pub fn known_state(target: String) -> Option(String) {
-  case cached(target) {
-    Ok(answer) ->
-      json.parse(answer, decode.field("state", decode.string, decode.success))
-      |> option.from_result
-    Error(Nil) -> None
+/// Read cached facts without starting a probe, or explicitly start/join one.
+pub fn observe(target: String, start: Bool) -> Observation {
+  let #(answer, probing) = case observe_cached(target, start) {
+    Ok(answer) -> #(decoded(answer), False)
+    Error(probing) -> #(Error(Warming), probing)
+  }
+  case answer {
+    Ok(host) -> Observation(target, "ready", None, Some(host), None)
+    Error(NeedsAuth(detail, control)) ->
+      Observation(target, "needs_auth", Some(detail), None, Some(control))
+    Error(Unreachable(detail)) ->
+      Observation(target, "unreachable", Some(detail), None, None)
+    Error(Unsupported(detail)) ->
+      Observation(target, "unsupported", Some(detail), None, None)
+    Error(Warming) ->
+      Observation(
+        target,
+        case probing {
+          True -> "probing"
+          False -> "unknown"
+        },
+        None,
+        None,
+        None,
+      )
   }
 }
 
@@ -106,48 +127,6 @@ pub fn config_hosts() -> List(String) {
     json.parse(answer, decode.list(decode.string)) |> result.replace_error(Nil)
   })
   |> result.unwrap([])
-}
-
-/// The `/hosts/:host/warm` answer: a fresh probe, waited for a while. A
-/// cached failure is dropped first, so signing in and warming again works.
-pub fn warm(target: String) -> Json {
-  forget(target)
-  wire(target, ready(target, 60_000))
-}
-
-fn wire(target: String, answer: Result(Host, Failure)) -> Json {
-  let fields = case answer {
-    Ok(host) -> [
-      #("state", json.string("ready")),
-      #("detail", json.string("")),
-      #("os", json.string(host.os)),
-      #("arch", json.string(host.arch)),
-      #("home", json.string(host.home)),
-    ]
-    Error(failure) -> {
-      let #(state, detail) = case failure {
-        NeedsAuth(detail, _) -> #("needs_auth", detail)
-        Unreachable(detail) -> #("unreachable", detail)
-        Unsupported(detail) -> #("unsupported", detail)
-        Warming -> #("warming", "")
-      }
-      let extra = case failure {
-        NeedsAuth(_, control) -> [#("control_path", json.string(control))]
-        Warming ->
-          case step(target) {
-            "" -> []
-            doing -> [#("step", json.string(doing))]
-          }
-        _ -> []
-      }
-      [
-        #("state", json.string(state)),
-        #("detail", json.string(detail)),
-        ..extra
-      ]
-    }
-  }
-  json.object([#("host", json.string(target)), ..fields])
 }
 
 fn decoded(answer: String) -> Result(Host, Failure) {
@@ -236,14 +215,11 @@ fn local_commands(target: String, home: String) -> Result(String, Nil)
 @external(erlang, "albedo_ssh", "probe")
 fn probe(target: String, wait_ms: Int) -> Result(String, Nil)
 
-@external(erlang, "albedo_ssh", "cached")
-fn cached(target: String) -> Result(String, Nil)
+@external(erlang, "albedo_ssh", "observe")
+fn observe_cached(target: String, refresh: Bool) -> Result(String, Bool)
 
 @external(erlang, "albedo_ssh", "config_hosts")
 fn config_hosts_json() -> Result(String, Nil)
-
-@external(erlang, "albedo_ssh", "forget")
-fn forget(target: String) -> Nil
 
 /// What a running probe is doing past connecting: `staging` while it copies
 /// albedo's bundle to the host, "" otherwise.

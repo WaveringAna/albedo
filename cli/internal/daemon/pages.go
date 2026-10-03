@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"reflect"
 )
 
 type PageTone string
@@ -14,209 +17,288 @@ const (
 )
 
 type PageRow struct {
-	ID     string   `json:"id"`
-	Text   string   `json:"text"`
-	Badge  string   `json:"badge"`
-	Tone   PageTone `json:"tone"`
-	Detail string   `json:"detail,omitempty"`
+	ID, Text, Badge, Detail string
+	Tone                    PageTone
+	wire                    wirePageRow
 }
-
 type PageAction struct {
-	Key     string   `json:"key"`
-	Label   string   `json:"label"`
-	Run     string   `json:"run"`
-	Input   string   `json:"input"` // "none" | "text" | "secret" | "choice" | "value"
-	Prompt  string   `json:"prompt,omitempty"`
-	Value   string   `json:"value,omitempty"`
-	Options []string `json:"options,omitempty"`
-	Row     bool     `json:"row"`
-	Confirm bool     `json:"confirm"`
-	Prefill bool     `json:"prefill,omitempty"`
+	ID, Key, Label, Input, Prompt, Value, Confirmation string
+	Options                                            []string
+	Row, Confirm                                       bool
+	Fields                                             []wireFormField
+	Operation                                          wireActionOperation
 }
-
 type PageGlance struct {
-	Title string    `json:"title"`
-	Rows  []PageRow `json:"rows"`
+	Title string
+	Rows  []PageRow
+	URL   string
 }
-
 type PageDocument struct {
-	Glance  *PageGlance  `json:"glance,omitempty"`
-	Title   string       `json:"title"`
-	Summary string       `json:"summary"`
-	Empty   string       `json:"empty"`
-	Rows    []PageRow    `json:"rows"`
-	Actions []PageAction `json:"actions"`
+	Glance                *PageGlance
+	Title, Summary, Empty string
+	Rows                  []PageRow
+	Actions               []PageAction
+	Session               *Session
+	read                  *pageRead
 }
-
-type pageRowWire struct {
-	ID     *string   `json:"id"`
-	Text   *string   `json:"text"`
-	Badge  *string   `json:"badge"`
-	Detail *string   `json:"detail"`
-	Tone   *PageTone `json:"tone"`
+type pageRead struct {
+	Name, Description string
+	Operation         wireActionOperation
+	Row               *PageRow
+	Form              map[string]json.RawMessage
 }
+type FormField = wireFormField
 
-type pageActionWire struct {
-	Key     *string   `json:"key"`
-	Label   *string   `json:"label"`
-	Run     *string   `json:"run"`
-	Input   *string   `json:"input"`
-	Prompt  *string   `json:"prompt"`
-	Value   *string   `json:"value"`
-	Options []*string `json:"options"`
-	Row     *bool     `json:"row"`
-	Confirm *bool     `json:"confirm"`
-	Prefill *bool     `json:"prefill"`
+func pageRowValue(row wirePageRow) PageRow {
+	return PageRow{ID: row.ID, Text: row.Text, Badge: value(row.Badge), Tone: PageTone(row.Tone), Detail: value(row.Detail), wire: row}
 }
-
-func decodePageRows(rows []pageRowWire) ([]PageRow, error) {
-	if rows == nil {
-		return nil, fieldError("rows")
+func glanceValue(glance wireGlance) *PageGlance {
+	result := &PageGlance{Title: glance.Title, URL: glance.URL}
+	for _, row := range glance.Rows {
+		result.Rows = append(result.Rows, pageRowValue(row))
 	}
-	result := make([]PageRow, 0, len(rows))
-	for _, row := range rows {
-		if row.ID == nil {
-			return nil, fieldError("id")
+	return result
+}
+func pageValue(wire wirePageDescriptor) (*PageDocument, error) {
+	if wire.Title == "" || wire.Rows == nil || wire.Actions == nil {
+		return nil, fieldError("page descriptor")
+	}
+	result := &PageDocument{Title: wire.Title, Summary: wire.Summary, Empty: wire.EmptyState, Rows: []PageRow{}, Actions: []PageAction{}}
+	for _, row := range wire.Rows {
+		result.Rows = append(result.Rows, pageRowValue(row))
+	}
+	for _, action := range wire.Actions {
+		if action.ID == "" || action.Operation.PathTemplate == "" {
+			return nil, fieldError("page action")
 		}
-		if row.Text == nil {
-			return nil, fieldError("text")
+		converted := PageAction{ID: action.ID, Key: value(action.KeyboardHint), Label: action.Label, Confirmation: value(action.Confirmation), Confirm: action.Confirmation != nil, Fields: action.Fields, Operation: action.Operation, Input: "none"}
+		for _, bindings := range []map[string]wireBinding{action.Operation.Body, action.Operation.Query, action.Operation.Path, action.Operation.Headers} {
+			for _, raw := range bindings {
+				var binding struct {
+					Source string `json:"source"`
+				}
+				if err := json.Unmarshal(raw, &binding); err != nil {
+					return nil, fieldError("page action binding")
+				}
+				converted.Row = converted.Row || binding.Source == "row"
+			}
 		}
-		if row.Badge == nil {
-			return nil, fieldError("badge")
+		for _, field := range action.Fields {
+			converted.Row = converted.Row || field.DefaultBinding.Source == "row"
 		}
-		if row.Detail == nil {
-			return nil, fieldError("detail")
+		if len(action.Fields) > 0 {
+			setActionField(&converted, action.Fields[0])
 		}
-		if row.Tone == nil {
-			return nil, fieldError("tone")
-		}
-		switch *row.Tone {
-		case TonePlain, ToneActive, ToneWarning, ToneMuted:
-		default:
-			return nil, fieldError("tone")
-		}
-		result = append(result, PageRow{ID: *row.ID, Text: *row.Text, Badge: *row.Badge, Detail: *row.Detail, Tone: *row.Tone})
+		result.Actions = append(result.Actions, converted)
+	}
+	if wire.Glance != nil {
+		result.Glance = glanceValue(*wire.Glance)
 	}
 	return result, nil
 }
-
+func setActionField(action *PageAction, field wireFormField) {
+	action.Prompt = field.Label
+	action.Input = field.Type
+	if field.Type == "integer" {
+		action.Input = "text"
+	}
+	if field.Type == "boolean" {
+		action.Input = "choice"
+		action.Options = []string{"false", "true"}
+	} else {
+		action.Options = nil
+		for _, choice := range field.Choices {
+			action.Options = append(action.Options, choice.Label)
+		}
+	}
+	if field.Type == "hidden" {
+		action.Input = "value"
+		var text string
+		if json.Unmarshal(field.Default, &text) == nil {
+			action.Value = text
+		} else {
+			action.Value = string(field.Default)
+		}
+	}
+}
 func decodePageDocument(data []byte) (*PageDocument, error) {
-	var envelope struct {
-		Page *struct {
-			Title   *string          `json:"title"`
-			Summary *string          `json:"summary"`
-			Empty   *string          `json:"empty"`
-			Rows    []pageRowWire    `json:"rows"`
-			Actions []pageActionWire `json:"actions"`
-			Glance  json.RawMessage  `json:"glance"`
-		} `json:"page"`
-	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return nil, err
-	}
-	if envelope.Page == nil {
-		return nil, fieldError("page")
-	}
-	wire := envelope.Page
-	if wire.Title == nil {
-		return nil, fieldError("title")
-	}
-	if wire.Summary == nil {
-		return nil, fieldError("summary")
-	}
-	if wire.Empty == nil {
-		return nil, fieldError("empty")
-	}
-	rows, err := decodePageRows(wire.Rows)
+	envelope, err := object(data)
 	if err != nil {
 		return nil, err
 	}
-	if wire.Actions == nil {
-		return nil, fieldError("actions")
+	page, ok := envelope["page"]
+	if !ok {
+		return nil, fieldError("page")
 	}
-	result := &PageDocument{Title: *wire.Title, Summary: *wire.Summary, Empty: *wire.Empty, Rows: rows, Actions: make([]PageAction, 0, len(wire.Actions))}
-	for _, wire := range wire.Actions {
-		if wire.Key == nil || len([]rune(*wire.Key)) != 1 {
-			return nil, fieldError("key")
+	var document wirePageDescriptor
+	if err := decodeRequired(page, &document, "title", "empty_state", "rows", "glance", "actions", "summary"); err != nil {
+		return nil, err
+	}
+	return pageValue(document)
+}
+
+func readResultPage(data []byte, name, description string) (*PageDocument, error) {
+	result, err := dynamicValue(data)
+	if err != nil {
+		return nil, err
+	}
+	if object, ok := result.(map[string]any); ok {
+		if _, described := object["page"]; described {
+			return decodePageDocument(data)
 		}
-		if wire.Label == nil {
-			return nil, fieldError("label")
+	}
+	formatted, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return &PageDocument{Title: name, Summary: description, Rows: []PageRow{{ID: "result", Text: "Result", Detail: string(formatted), Tone: TonePlain}}, Actions: []PageAction{}}, nil
+}
+
+func dynamicValue(data []byte) (any, error) {
+	if !json.Valid(data) {
+		return nil, fieldError("JSON value")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var result any
+	err := decoder.Decode(&result)
+	return result, err
+}
+
+func actionFieldValue(field wireFormField, text string) (json.RawMessage, error) {
+	if field.Type == "hidden" {
+		if err := validateFormValue(field, field.Default); err != nil {
+			return nil, err
 		}
-		if wire.Run == nil {
-			return nil, fieldError("run")
+		return field.Default, nil
+	}
+	if text == "" && field.Type != "text" && field.Type != "secret" && field.Default != nil && string(field.Default) != "null" {
+		if err := validateFormValue(field, field.Default); err != nil {
+			return nil, err
 		}
-		if wire.Row == nil {
-			return nil, fieldError("row")
+		return field.Default, nil
+	}
+	if text == "" && !field.Required && field.Type != "hidden" && (field.Default == nil || string(field.Default) == "null") {
+		return nil, nil
+	}
+	if text == "" && field.Required {
+		return nil, fmt.Errorf("%s is required", field.Label)
+	}
+	switch field.Type {
+	case "text", "secret":
+		data, err := json.Marshal(text)
+		return data, err
+	case "choice":
+		for _, choice := range field.Choices {
+			if choice.Label == text || string(choice.Value) == text {
+				return choice.Value, nil
+			}
 		}
-		if wire.Confirm == nil {
-			return nil, fieldError("confirm")
+		return nil, fmt.Errorf("choose one of the values for %s", field.Label)
+	case "boolean":
+		if text == "true" || text == "false" {
+			return json.RawMessage(text), nil
 		}
-		if wire.Input == nil {
-			return nil, fieldError("input")
+	case "integer":
+		var number int64
+		if json.Unmarshal([]byte(text), &number) == nil {
+			if field.Minimum != nil && float64(number) < *field.Minimum || field.Maximum != nil && float64(number) > *field.Maximum {
+				return nil, fmt.Errorf("%s is outside its permitted range", field.Label)
+			}
+			return json.RawMessage(text), nil
 		}
-		action := PageAction{Key: *wire.Key, Label: *wire.Label, Run: *wire.Run, Row: *wire.Row, Confirm: *wire.Confirm, Input: *wire.Input}
-		if wire.Prompt != nil {
-			action.Prompt = *wire.Prompt
+	case "hidden":
+		return field.Default, nil
+	}
+	return nil, fmt.Errorf("invalid %s value", field.Label)
+}
+
+// ParseActionField keeps values typed while the terminal edits their text representation.
+func ParseActionField(field FormField, text string) (json.RawMessage, error) {
+	return actionFieldValue(field, text)
+}
+
+func ConfigureActionField(action *PageAction, field FormField) { setActionField(action, field) }
+
+// ResolveFormField applies only the descriptor's explicit displayed-value binding.
+func ResolveFormField(field FormField, row *PageRow, session *Session) (FormField, error) {
+	if field.DefaultBinding.Source == "" {
+		return field, nil
+	}
+	if field.DefaultBinding.Source != "row" && field.DefaultBinding.Source != "session" {
+		return field, fmt.Errorf("invalid displayed default source for %s", field.Label)
+	}
+	var rowData, sessionData json.RawMessage
+	if row != nil {
+		rowData, _ = json.Marshal(row.wire)
+	}
+	if session != nil {
+		sessionData, _ = json.Marshal(session.wire)
+	}
+	binding, _ := json.Marshal(field.DefaultBinding)
+	resolved, err := resolveBinding(binding, rowData, nil, sessionData)
+	if err != nil {
+		return field, err
+	}
+	if err := validateFormValue(field, resolved); err != nil {
+		return field, err
+	}
+	field.Default = resolved
+	return field, nil
+}
+func validateFormValue(field FormField, raw json.RawMessage) error {
+	switch field.Type {
+	case "hidden":
+		if json.Valid(raw) {
+			return nil
 		}
-		if wire.Value != nil {
-			action.Value = *wire.Value
+	case "text", "secret":
+		var text string
+		if string(raw) != "null" && json.Unmarshal(raw, &text) == nil {
+			return nil
 		}
-		if wire.Prefill != nil {
-			action.Prefill = *wire.Prefill
+	case "boolean":
+		var flag bool
+		if string(raw) != "null" && json.Unmarshal(raw, &flag) == nil {
+			return nil
 		}
-		if wire.Options != nil {
-			action.Options = make([]string, len(wire.Options))
-			for index, option := range wire.Options {
-				if option == nil {
-					if action.Input == "choice" {
-						return nil, fieldError("options")
-					}
-				} else {
-					action.Options[index] = *option
+	case "integer":
+		var number int64
+		if string(raw) != "null" && json.Unmarshal(raw, &number) == nil {
+			if (field.Minimum == nil || float64(number) >= *field.Minimum) && (field.Maximum == nil || float64(number) <= *field.Maximum) {
+				return nil
+			}
+		}
+	case "choice":
+		received, err := dynamicValue(raw)
+		if err == nil {
+			for _, choice := range field.Choices {
+				candidate, err := dynamicValue(choice.Value)
+				if err == nil && reflect.DeepEqual(received, candidate) {
+					return nil
 				}
 			}
 		}
-		switch action.Input {
-		case "none":
-		case "text", "secret":
-			if wire.Prompt == nil {
-				return nil, fieldError("prompt")
-			}
-			if action.Input == "text" && wire.Prefill == nil {
-				return nil, fieldError("prefill")
-			}
-		case "value":
-			if wire.Value == nil {
-				return nil, fieldError("value")
-			}
-		case "choice":
-			if len(action.Options) == 0 {
-				return nil, fieldError("options")
-			}
-		default:
-			return nil, fieldError("input")
-		}
-		result.Actions = append(result.Actions, action)
 	}
-	if wire.Glance == nil {
-		return nil, fieldError("glance")
+	return fmt.Errorf("invalid displayed default for %s", field.Label)
+}
+
+func FormChoiceDefault(field FormField) int {
+	wanted, err := dynamicValue(field.Default)
+	if err != nil {
+		return 0
 	}
-	if string(wire.Glance) != "null" {
-		var glance struct {
-			Title *string       `json:"title"`
-			Rows  []pageRowWire `json:"rows"`
+	if field.Type == "boolean" {
+		if wanted == true {
+			return 1
 		}
-		if err := json.Unmarshal(wire.Glance, &glance); err != nil {
-			return nil, err
-		}
-		if glance.Title == nil {
-			return nil, fieldError("title")
-		}
-		rows, err := decodePageRows(glance.Rows)
-		if err != nil {
-			return nil, err
-		}
-		result.Glance = &PageGlance{Title: *glance.Title, Rows: rows}
+		return 0
 	}
-	return result, nil
+	for index, choice := range field.Choices {
+		candidate, err := dynamicValue(choice.Value)
+		if err == nil && reflect.DeepEqual(wanted, candidate) {
+			return index
+		}
+	}
+	return 0
 }

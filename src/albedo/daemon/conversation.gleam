@@ -1,12 +1,15 @@
-import albedo/daemon/events
+import albedo/daemon/family
 import albedo/daemon/image_fit
 import albedo/daemon/images
 import albedo/daemon/mail
+import albedo/daemon/message_content as events
 import albedo/daemon/migrations/conversation_columns
 import albedo/daemon/note
 import albedo/daemon/notice
 import albedo/daemon/operations
 import albedo/daemon/requests
+import albedo/daemon/session_configuration
+import albedo/daemon/session_workspace
 import albedo/daemon/store
 import albedo/daemon/transcript
 import albedo/daemon/usage
@@ -35,6 +38,333 @@ pub type Info {
     last_assistant_at: Option(Int),
     effort: Option(String),
   )
+}
+
+pub type RunCompletion {
+  RunCompletion(session_id: String, run_id: String, stage: Stage, state: String)
+}
+
+pub type Preview {
+  Preview(text: String, transcript_count: Int, truncated: Bool)
+}
+
+pub type CapturedInfo {
+  CapturedInfo(
+    info: Info,
+    pending_inputs: List(operations.Pending),
+    input_order: Int,
+    history_high_water: Int,
+    created_at: Option(Int),
+    activity_at: Option(Int),
+    revision: Int,
+    family: family.Facts,
+    continuation_high_water: Int,
+    automatic_name: String,
+    configuration: session_configuration.Configuration,
+    workspace_change: Option(session_workspace.Pending),
+    preview: Preview,
+  )
+}
+
+/// One connection turn captures metadata and the transcript boundary. Another
+/// session's writes cannot interleave these reads on the store owner.
+pub fn capture(
+  ledger: store.Store,
+  id: String,
+) -> Result(CapturedInfo, String) {
+  store.query(ledger, fn(db) { capture_in(db, id) })
+}
+
+/// Capture using the caller's connection so a collection shares one boundary.
+pub fn capture_in(
+  db: sqlight.Connection,
+  id: String,
+) -> Result(CapturedInfo, String) {
+  use info <- result.try(read_info(db, id))
+  use metadata <- result.try(store.one(
+    db,
+    "SELECT input_order,COALESCE((SELECT MAX(seq) FROM transcript WHERE session=sessions.id),0),created_at,activity_at,config_revision,COALESCE((SELECT MAX(rowid) FROM continuation_markers WHERE session=sessions.id),0),preview_text,COALESCE(transcript_count,0),preview_truncated FROM sessions WHERE id=?",
+    [sqlight.text(id)],
+    {
+      use order <- decode.field(0, decode.int)
+      use high_water <- decode.field(1, decode.int)
+      use created <- decode.field(2, decode.optional(decode.int))
+      use activity <- decode.field(3, decode.optional(decode.int))
+      use revision <- decode.field(4, decode.int)
+      use continuation_high_water <- decode.field(5, decode.int)
+      use preview_text <- decode.field(6, decode.string)
+      use transcript_count <- decode.field(7, decode.int)
+      use preview_truncated <- decode.field(8, sqlight.decode_bool())
+      decode.success(#(
+        order,
+        high_water,
+        created,
+        activity,
+        revision,
+        continuation_high_water,
+        Preview(preview_text, transcript_count, preview_truncated),
+      ))
+    },
+    "session not found",
+  ))
+  use pending <- result.try(operations.pending_in(db, id))
+  use configuration <- result.try(session_configuration.read_in(db, id))
+  use workspace_change <- result.try(session_workspace.pending_in(db, id))
+  Ok(CapturedInfo(
+    info,
+    pending,
+    metadata.0,
+    metadata.1,
+    metadata.2,
+    metadata.3,
+    metadata.4,
+    configuration.family,
+    metadata.5,
+    configuration.automatic_name,
+    configuration,
+    workspace_change,
+    metadata.6,
+  ))
+}
+
+pub type Creation {
+  Creation(
+    request: operations.Request,
+    submitted: String,
+    resolved: String,
+    name: Option(String),
+  )
+}
+
+pub type CreationRecord {
+  CreationRecord(
+    submitted: Option(String),
+    resolved: Option(String),
+    decided_at: Option(Int),
+    deleted_at: Option(Int),
+  )
+}
+
+pub type ChildCreation {
+  ChildCreation(
+    info: Info,
+    creation: Creation,
+    parent_id: String,
+    name: String,
+    input: operations.Request,
+    payload: BitArray,
+    task: mail.Letter,
+  )
+}
+
+const creation_schema = "CREATE TABLE IF NOT EXISTS session_creation(session_id TEXT PRIMARY KEY,submitted TEXT,resolved TEXT,decided_at INTEGER,deleted_at INTEGER); CREATE INDEX IF NOT EXISTS session_creation_deleted ON session_creation(deleted_at) WHERE deleted_at IS NOT NULL;"
+
+pub fn creation(
+  ledger: store.Store,
+  id: String,
+) -> Result(Option(CreationRecord), String) {
+  use rows <- result.try(
+    store.read(
+      ledger,
+      "SELECT submitted,resolved,decided_at,deleted_at FROM session_creation WHERE session_id=?",
+      [sqlight.text(id)],
+      {
+        use submitted <- decode.field(0, decode.optional(decode.string))
+        use resolved <- decode.field(1, decode.optional(decode.string))
+        use decided_at <- decode.field(2, decode.optional(decode.int))
+        use deleted_at <- decode.field(3, decode.optional(decode.int))
+        decode.success(CreationRecord(
+          submitted,
+          resolved,
+          decided_at,
+          deleted_at,
+        ))
+      },
+    ),
+  )
+  Ok(list.first(rows) |> option.from_result)
+}
+
+pub fn prune_creation(ledger: store.Store) -> Result(Nil, String) {
+  store.write(
+    ledger,
+    "DELETE FROM session_creation WHERE session_id IN (SELECT session_id FROM session_creation WHERE deleted_at IS NOT NULL AND deleted_at<? ORDER BY deleted_at LIMIT 128)",
+    [sqlight.int(usage.now() - operations.retention_ms)],
+  )
+}
+
+pub fn record_creation_in(
+  db: sqlight.Connection,
+  id: String,
+  creation: Creation,
+) -> Result(Nil, String) {
+  use _ <- result.try(
+    store.run(
+      db,
+      "INSERT INTO session_creation(session_id,submitted,resolved,decided_at) VALUES(?,?,?,?)",
+      [
+        sqlight.text(id),
+        sqlight.text(creation.submitted),
+        sqlight.text(creation.resolved),
+        sqlight.int(usage.now()),
+      ],
+    ),
+  )
+  store.run(
+    db,
+    "UPDATE sessions SET name=?,config_revision=config_revision+1 WHERE id=?",
+    [
+      sqlight.nullable(
+        sqlight.text,
+        option.then(creation.name, session_configuration.clean_name),
+      ),
+      sqlight.text(id),
+    ],
+  )
+}
+
+pub fn create_identified(
+  ledger: store.Store,
+  info: Info,
+  creation: Creation,
+) -> Result(operations.Receipt, String) {
+  store.query(ledger, fn(db) {
+    store.transaction(db, fn() {
+      use _ <- result.try(creation_available_in(db, info.id))
+      operations.admit_in(
+        db,
+        creation.request,
+        201,
+        creation.submitted,
+        None,
+        fn(db) {
+          use _ <- result.try(create_in(db, info))
+          record_creation_in(db, info.id, creation)
+        },
+      )
+    })
+  })
+}
+
+pub fn create_child_identified(
+  ledger: store.Store,
+  child: ChildCreation,
+) -> Result(operations.Receipt, String) {
+  store.query(ledger, fn(db) {
+    store.transaction(db, fn() {
+      use _ <- result.try(creation_available_in(db, child.info.id))
+      operations.admit_in(
+        db,
+        child.creation.request,
+        201,
+        child.creation.submitted,
+        None,
+        fn(db) {
+          use above <- result.try(session_configuration.read_in(
+            db,
+            child.parent_id,
+          ))
+          let info = Info(..child.info, cwd: above.workspace)
+          let creation =
+            Creation(
+              ..child.creation,
+              resolved: json.object([
+                  #("workspace", json.string(info.cwd)),
+                  #("provider_profile", json.string(info.provider)),
+                  #("model", json.string(info.model)),
+                  #("effort", json.nullable(info.effort, json.string)),
+                ])
+                |> json.to_string,
+            )
+          use _ <- result.try(
+            case
+              child.input.target == child.info.id
+              && child.input.kind != "create"
+              && child.task.id == child.input.id
+              && child.task.recipient == child.info.id
+              && child.task.sender == Some(child.parent_id)
+              && child.task.kind == mail.Task
+            {
+              True -> Ok(Nil)
+              False -> Error("invalid child task identity")
+            },
+          )
+          use _ <- result.try(case operations.check_in(db, child.input) {
+            Ok(None) -> Ok(Nil)
+            Ok(Some(_)) -> Error("input_conflict")
+            Error(error) -> Error(error)
+          })
+          use _ <- result.try(create_in(db, info))
+          use _ <- result.try(family.link_in(
+            db,
+            child.info.id,
+            child.parent_id,
+            child.name,
+          ))
+          use _ <- result.try(record_creation_in(db, child.info.id, creation))
+          use inserted <- result.try(mail.insert(
+            db,
+            child.task,
+            mail.IdentifiedInput,
+          ))
+          use _ <- result.try(case inserted {
+            True -> Ok(Nil)
+            False -> Error("child task inbox is full")
+          })
+          operations.admit_pending_in(db, child.input, child.payload, 202, "{}")
+          |> result.replace(Nil)
+        },
+      )
+    })
+  })
+}
+
+/// Creation preconditions apply before receipt recovery. A retained decision
+/// describes the original creation; it cannot authorize replacing its resource.
+pub fn creation_available_in(
+  db: sqlight.Connection,
+  id: String,
+) -> Result(Nil, String) {
+  use reason <- result.try(store.one(
+    db,
+    "SELECT CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE id=?) THEN 'session_exists' WHEN EXISTS(SELECT 1 FROM session_creation WHERE session_id=? AND deleted_at IS NOT NULL) THEN 'session_deleted' ELSE '' END",
+    [sqlight.text(id), sqlight.text(id)],
+    decode.field(0, decode.string, decode.success),
+    "creation lookup failed",
+  ))
+  case reason {
+    "" -> Ok(Nil)
+    _ -> Error(reason)
+  }
+}
+
+/// Completion and receipt expiry start together. Transcript consumption alone
+/// cannot retire an input whose worker is still running.
+pub fn finish_turn(
+  ledger: store.Store,
+  completion: RunCompletion,
+) -> Result(Int, String) {
+  let now = usage.now()
+  store.query(ledger, fn(db) {
+    store.transaction(db, fn() {
+      use _ <- result.try(operations.finish_turn_in(
+        db,
+        completion.run_id,
+        completion.state,
+        now,
+      ))
+      store.run(
+        db,
+        "UPDATE sessions SET stage=?,activity_at=?,activity_seq=(SELECT COALESCE(MAX(activity_seq),0)+1 FROM sessions) WHERE id=?",
+        [
+          sqlight.text(stage_name(completion.stage)),
+          sqlight.int(now),
+          sqlight.text(completion.session_id),
+        ],
+      )
+      |> result.replace(now)
+    })
+  })
 }
 
 /// Where a session's turn stood at its last commit. A daemon restart resumes
@@ -73,21 +403,168 @@ pub fn resumable(stage: Stage) -> Bool {
 }
 
 pub fn initialise(store: store.Store) -> Result(Nil, String) {
-  store.query(store, fn(db) {
-    use _ <- result.try(store.exec(
-      db,
-      "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER,usage_cache_creation_tokens INTEGER,effort TEXT); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT,thought_ms INTEGER,row_class TEXT CHECK(row_class IN ('user','image_fit','other'))); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);"
-        <> images.schema
-        <> requests.schema
-        <> operations.schema,
-    ))
-    use _ <- result.try(conversation_columns.apply(db))
-    use _ <- result.try(recover_sessions(db))
-    store.exec(
-      db,
-      "CREATE INDEX IF NOT EXISTS sessions_activity ON sessions(activity_seq DESC)",
-    )
+  use _ <- result.try(
+    store.query(store, fn(db) {
+      use _ <- result.try(store.exec(
+        db,
+        "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL DEFAULT 'new session',cwd TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,stage TEXT NOT NULL DEFAULT 'idle',provider TEXT,activity_seq INTEGER,last_assistant_at INTEGER,usage_model TEXT,usage_recorded_at INTEGER,usage_prompt_tokens INTEGER,usage_completion_tokens INTEGER,usage_cached_prompt_tokens INTEGER,usage_cache_creation_tokens INTEGER,effort TEXT); CREATE TABLE IF NOT EXISTS transcript(seq INTEGER PRIMARY KEY AUTOINCREMENT,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,timestamp INTEGER,provider TEXT,thought_ms INTEGER,row_class TEXT CHECK(row_class IN ('user','image_fit','other'))); CREATE INDEX IF NOT EXISTS transcript_session ON transcript(session,seq);"
+          <> images.schema
+          <> requests.schema
+          <> operations.schema
+          <> "CREATE TABLE IF NOT EXISTS transcript_calls(session TEXT NOT NULL REFERENCES sessions(id),call_id TEXT NOT NULL,seq INTEGER NOT NULL REFERENCES transcript(seq),name TEXT NOT NULL,call_index INTEGER NOT NULL,arguments_bytes INTEGER NOT NULL,PRIMARY KEY(session,call_id,seq)); CREATE INDEX IF NOT EXISTS transcript_calls_position ON transcript_calls(session,seq);"
+          <> "CREATE TABLE IF NOT EXISTS transcript_traces(session TEXT NOT NULL REFERENCES sessions(id),cell_id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(session,cell_id));"
+          <> creation_schema,
+      ))
+      use _ <- result.try(conversation_columns.apply(db))
+      use _ <- result.try(session_configuration.initialise_in(db))
+      use _ <- result.try(session_workspace.initialise_in(db))
+      use _ <- result.try(
+        store.add_columns(db, "sessions", [
+          #("preview_text", "TEXT NOT NULL DEFAULT ''"),
+          #("preview_truncated", "INTEGER NOT NULL DEFAULT 0"),
+          #("preview_position", "INTEGER NOT NULL DEFAULT 0"),
+          #("transcript_count", "INTEGER"),
+        ]),
+      )
+      use _ <- result.try(
+        store.add_columns(db, "transcript", [
+          #("summary_indexed", "INTEGER NOT NULL DEFAULT 0"),
+        ]),
+      )
+      use _ <- result.try(store.exec(
+        db,
+        "UPDATE sessions SET transcript_count=(SELECT COUNT(*) FROM transcript WHERE session=sessions.id) WHERE transcript_count IS NULL; CREATE TRIGGER IF NOT EXISTS transcript_summary_insert AFTER INSERT ON transcript BEGIN UPDATE sessions SET transcript_count=COALESCE(transcript_count,0)+1 WHERE id=NEW.session; END; CREATE TRIGGER IF NOT EXISTS transcript_summary_delete AFTER DELETE ON transcript BEGIN UPDATE sessions SET transcript_count=transcript_count-1 WHERE id=OLD.session; END",
+      ))
+      use _ <- result.try(store.exec(
+        db,
+        "DROP INDEX IF EXISTS transcript_calls_pending; DROP INDEX IF EXISTS transcript_summary_pending; CREATE INDEX IF NOT EXISTS transcript_entries_pending ON transcript(seq) WHERE calls_indexed=0 OR summary_indexed=0",
+      ))
+      use _ <- result.try(operations.initialise(db))
+      use _ <- result.try(operations.abandon_unfinished(db))
+      use _ <- result.try(
+        store.run(
+          db,
+          "UPDATE sessions SET deletion_id=NULL WHERE deletion_id IS NOT NULL",
+          [],
+        ),
+      )
+      use _ <- result.try(recover_sessions(db))
+      store.exec(
+        db,
+        "CREATE INDEX IF NOT EXISTS sessions_activity ON sessions(activity_seq DESC)",
+      )
+    }),
+  )
+  index_saved_entries(store)
+}
+
+@external(erlang, "albedo_context_snapshot", "page")
+fn preview_prefix(text: String, index: Int, scalars: Int) -> String
+
+/// Maintain bounded preview and call metadata in the source commit.
+pub fn index_entry_in(
+  db: sqlight.Connection,
+  session: String,
+  position: Int,
+  input: types.Input,
+) -> Result(Nil, String) {
+  use _ <- result.try(
+    events.calls(input)
+    |> list.index_map(fn(call, index) { #(call, index) })
+    |> list.try_each(fn(indexed) {
+      let #(call, index) = indexed
+      store.run(
+        db,
+        "INSERT OR IGNORE INTO transcript_calls(session,call_id,seq,name,call_index,arguments_bytes) VALUES(?,?,?,?,?,?)",
+        [
+          sqlight.text(session),
+          sqlight.text(call.id),
+          sqlight.int(position),
+          sqlight.text(call.name),
+          sqlight.int(index),
+          sqlight.int(string.byte_size(
+            transcript.argument_json(call.arguments) |> json.to_string,
+          )),
+        ],
+      )
+    }),
+  )
+  index_preview_in(db, session, position, input)
+}
+
+fn index_preview_in(
+  db: sqlight.Connection,
+  session: String,
+  position: Int,
+  input: types.Input,
+) -> Result(Nil, String) {
+  use _ <- result.try(case latest_user([input]) {
+    None -> Ok(Nil)
+    Some(text) -> {
+      let prefix = preview_prefix(text, 0, 256)
+      store.run(
+        db,
+        "UPDATE sessions SET preview_text=?,preview_truncated=?,preview_position=? WHERE id=? AND preview_position<?",
+        [
+          sqlight.text(prefix),
+          sqlight.int(case prefix == text {
+            True -> 0
+            False -> 1
+          }),
+          sqlight.int(position),
+          sqlight.text(session),
+          sqlight.int(position),
+        ],
+      )
+    }
   })
+  store.run(
+    db,
+    "UPDATE transcript SET calls_indexed=1,summary_indexed=1 WHERE seq=? AND session=?",
+    [sqlight.int(position), sqlight.text(session)],
+  )
+}
+
+/// Index saved rows in bounded store turns. Indexed rows are skipped, so
+/// an interrupted startup resumes its scan instead of loading the whole ledger.
+fn index_saved_entries(ledger: store.Store) -> Result(Nil, String) {
+  use count <- result.try(
+    store.query(ledger, fn(db) {
+      store.transaction(db, fn() {
+        use rows <- result.try(
+          store.rows(
+            db,
+            "SELECT seq,session,payload,calls_indexed FROM transcript WHERE calls_indexed=0 OR summary_indexed=0 ORDER BY seq LIMIT 128",
+            [],
+            {
+              use position <- decode.field(0, decode.int)
+              use session <- decode.field(1, decode.string)
+              use payload <- decode.field(2, decode.bit_array)
+              use calls_indexed <- decode.field(3, sqlight.decode_bool())
+              decode.success(#(position, session, payload, calls_indexed))
+            },
+          ),
+        )
+        use _ <- result.try(
+          list.try_each(rows, fn(row) {
+            use input <- result.try(
+              unpack(row.2, unread)
+              |> result.replace_error("invalid saved transcript item"),
+            )
+            case row.3 {
+              True -> index_preview_in(db, row.1, row.0, input)
+              False -> index_entry_in(db, row.1, row.0, input)
+            }
+          }),
+        )
+        Ok(list.length(rows))
+      })
+    }),
+  )
+  case count == 128 {
+    True -> index_saved_entries(ledger)
+    False -> Ok(Nil)
+  }
 }
 
 fn recovery_decoder() -> decode.Decoder(#(String, String, Int)) {
@@ -136,8 +613,9 @@ fn recover_sessions(db: sqlight.Connection) -> Result(Nil, String) {
     )
     store.run(
       db,
-      "UPDATE sessions SET title=?,activity_seq=CASE WHEN activity_seq IS NULL THEN ? ELSE activity_seq END WHERE id=?",
+      "UPDATE sessions SET config_revision=config_revision+CASE WHEN name IS NULL AND title<>? THEN 1 ELSE 0 END,title=?,activity_seq=CASE WHEN activity_seq IS NULL THEN ? ELSE activity_seq END WHERE id=?",
       [
+        sqlight.text(recovered_title),
         sqlight.text(recovered_title),
         sqlight.int(last_seq),
         sqlight.text(id),
@@ -226,101 +704,130 @@ pub fn read_info(db: sqlight.Connection, id: String) -> Result(Info, String) {
   )
 }
 
-/// Give a session a name that its messages no longer retitle. A blank name
-/// hands the title back to the latest message. Activity order is untouched.
-pub fn rename(
-  store: store.Store,
+/// Remove a stopped, claimed member and its dependent records atomically.
+pub fn delete_claimed(
+  ledger: store.Store,
   id: String,
-  name: String,
-) -> Result(Info, String) {
-  let name = case excerpt(name, 80) {
-    "" -> None
-    clean -> Some(clean)
-  }
-  store.query(store, fn(db) {
-    use _ <- result.try(
-      store.run(db, "UPDATE sessions SET name=? WHERE id=?", [
-        sqlight.nullable(sqlight.text, name),
-        sqlight.text(id),
-      ]),
-    )
-    read_info(db, id)
+  claim: family.DeletionClaim,
+  cleaners: List(fn(sqlight.Connection, String) -> Result(Nil, String)),
+) -> Result(Nil, String) {
+  store.query(ledger, fn(db) {
+    store.transaction(db, fn() {
+      use token <- result.try(store.one(
+        db,
+        "SELECT deletion_id FROM sessions WHERE id=?",
+        [sqlight.text(id)],
+        decode.field(0, decode.optional(decode.string), decode.success),
+        "session not found",
+      ))
+      use _ <- result.try(case token == Some(claim.token) {
+        True -> Ok(Nil)
+        False -> Error("deletion claim changed")
+      })
+      use children <- result.try(store.one(
+        db,
+        "SELECT COUNT(*) FROM session_family WHERE parent=?",
+        [sqlight.text(id)],
+        decode.field(0, decode.int, decode.success),
+        "family unavailable",
+      ))
+      use _ <- result.try(case children {
+        0 -> Ok(Nil)
+        _ -> Error("a captured child could not be removed")
+      })
+      delete_in(db, id, cleaners)
+    })
   })
 }
 
-/// The name someone gave `id`, if any.
-pub fn given_name(store: store.Store, id: String) -> Option(String) {
-  store.read(
-    store,
-    "SELECT name FROM sessions WHERE id=? AND name<>''",
-    [sqlight.text(id)],
-    decode.field(0, decode.string, decode.success),
-  )
-  |> result.unwrap([])
-  |> list.first
-  |> option.from_result
-}
-
-/// Permanently remove a session and its dependent records in one transaction.
-/// The tables here are the daemon's own; each extension's `cleaners` delete
-/// what it keeps for the session, before the session row goes.
-pub fn delete(
-  store: store.Store,
+fn delete_in(
+  db: sqlight.Connection,
   id: String,
   cleaners: List(fn(sqlight.Connection, String) -> Result(Nil, String)),
 ) -> Result(Nil, String) {
-  store.query(store, fn(db) {
+  use _ <- result.try(operations.cancel_in(db, id))
+  use _ <- result.try(operations.finish_deleted_session_in(db, id))
+  use _ <- result.try(
+    store.run(
+      db,
+      "INSERT INTO session_creation(session_id,deleted_at) VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET deleted_at=excluded.deleted_at",
+      [sqlight.text(id), sqlight.int(usage.now())],
+    ),
+  )
+  use hashes <- result.try(images.session_hashes(db, id))
+  use tables <- result.try(store.rows(
+    db,
+    "SELECT name FROM sqlite_master WHERE type='table'",
+    [],
+    decode.field(0, decode.string, decode.success),
+  ))
+  use _ <- result.try(case list.contains(tables, "session_family") {
+    True -> family.changed_in(db, id)
+    False -> Ok(Nil)
+  })
+  use cell_hashes <- result.try(case list.contains(tables, "cells") {
+    True -> journal.session_hashes(db, id)
+    False -> Ok([])
+  })
+  // Cell rows stay here: deleting them feeds the image reference count
+  // released below, in this transaction.
+  use _ <- result.try(
+    list.try_each(
+      [
+        "transcript_calls",
+        "transcript_traces",
+        "transcript",
+        "submission_events",
+        "continuation_markers",
+        "provider_requests",
+        "session_extensions",
+        "session_selection",
+        "session_family",
+        "cells",
+      ],
+      fn(table) {
+        case list.contains(tables, table) {
+          False -> Ok(Nil)
+          True -> {
+            use _ <- result.try(case table {
+              "cells" ->
+                store.run(
+                  db,
+                  "DELETE FROM cell_traces WHERE id IN (SELECT id FROM cells WHERE session=?)",
+                  [sqlight.text(id)],
+                )
+              _ -> Ok(Nil)
+            })
+            store.run(db, "DELETE FROM " <> table <> " WHERE session=?", [
+              sqlight.text(id),
+            ])
+          }
+        }
+      },
+    ),
+  )
+  use _ <- result.try(list.try_each(cleaners, fn(clean) { clean(db, id) }))
+  use _ <- result.try(
+    store.run(db, "DELETE FROM sessions WHERE id=?", [sqlight.text(id)]),
+  )
+  images.release(db, list.append(hashes, cell_hashes) |> list.unique)
+}
+
+/// Trusted agent creation still commits membership with its session row.
+pub fn create_child(
+  ledger: store.Store,
+  info: Info,
+  parent: String,
+  name: String,
+) -> Result(#(Info, family.Member), String) {
+  store.query(ledger, fn(db) {
     store.transaction(db, fn() {
-      use _ <- result.try(operations.cancel_in(db, id))
-      use hashes <- result.try(images.session_hashes(db, id))
-      use tables <- result.try(store.rows(
-        db,
-        "SELECT name FROM sqlite_master WHERE type='table'",
-        [],
-        decode.field(0, decode.string, decode.success),
-      ))
-      use cell_hashes <- result.try(case list.contains(tables, "cells") {
-        True -> journal.session_hashes(db, id)
-        False -> Ok([])
-      })
-      // Cell rows stay here: deleting them feeds the image reference count
-      // released below, in this transaction.
-      use _ <- result.try(
-        list.try_each(
-          [
-            "transcript",
-            "submission_events",
-            "continuation_markers",
-            "provider_requests",
-            "session_extensions",
-            "cells",
-          ],
-          fn(table) {
-            case list.contains(tables, table) {
-              False -> Ok(Nil)
-              True -> {
-                use _ <- result.try(case table {
-                  "cells" ->
-                    store.run(
-                      db,
-                      "DELETE FROM cell_traces WHERE id IN (SELECT id FROM cells WHERE session=?)",
-                      [sqlight.text(id)],
-                    )
-                  _ -> Ok(Nil)
-                })
-                store.run(db, "DELETE FROM " <> table <> " WHERE session=?", [
-                  sqlight.text(id),
-                ])
-              }
-            }
-          },
-        ),
-      )
-      use _ <- result.try(list.try_each(cleaners, fn(clean) { clean(db, id) }))
-      use _ <- result.try(
-        store.run(db, "DELETE FROM sessions WHERE id=?", [sqlight.text(id)]),
-      )
-      images.release(db, list.append(hashes, cell_hashes) |> list.unique)
+      use above <- result.try(session_configuration.read_in(db, parent))
+      use _ <- result.try(family.available_in(db, parent))
+      let info = Info(..info, cwd: above.workspace)
+      use _ <- result.try(create_in(db, info))
+      use member <- result.try(family.link_in(db, info.id, parent, name))
+      Ok(#(info, member))
     })
   })
 }
@@ -329,27 +836,10 @@ pub fn create(store: store.Store, info: Info) -> Result(Nil, String) {
   store.query(store, create_in(_, info))
 }
 
-pub fn create_operation(
-  ledger: store.Store,
-  info: Info,
-  request: operations.Request,
-  http_status: Int,
-  response: String,
-) -> Result(operations.Receipt, String) {
-  operations.admit(
-    ledger,
-    operations.Request(..request, target: info.id),
-    http_status,
-    response,
-    None,
-    create_in(_, info),
-  )
-}
-
 fn create_in(db: sqlight.Connection, info: Info) -> Result(Nil, String) {
   store.run(
     db,
-    "INSERT INTO sessions(id,title,cwd,provider,model,protocol,activity_seq,last_assistant_at,effort) SELECT ?,?,?,?,?,?,COALESCE(MAX(activity_seq),0)+1,?,? FROM sessions",
+    "INSERT INTO sessions(id,title,cwd,provider,model,protocol,activity_seq,last_assistant_at,effort,created_at,activity_at) SELECT ?,?,?,?,?,?,COALESCE(MAX(activity_seq),0)+1,?,?,?,? FROM sessions",
     [
       sqlight.text(info.id),
       sqlight.text(info.title),
@@ -359,6 +849,8 @@ fn create_in(db: sqlight.Connection, info: Info) -> Result(Nil, String) {
       sqlight.text(protocol(info.protocol)),
       sqlight.nullable(sqlight.int, info.last_assistant_at),
       sqlight.nullable(sqlight.text, info.effort),
+      sqlight.int(usage.now()),
+      sqlight.int(usage.now()),
     ],
   )
 }
@@ -378,31 +870,7 @@ pub fn title(text: String) -> String {
 /// spaces, runs of whitespace collapse, and anything past `limit` graphemes is
 /// cut with an ellipsis.
 pub fn excerpt(text: String, limit: Int) -> String {
-  let assert Ok(space) = string.utf_codepoint(32)
-  let clean =
-    text
-    |> string.to_utf_codepoints
-    |> list.map(fn(codepoint) {
-      let value = string.utf_codepoint_to_int(codepoint)
-      case
-        value <= 31
-        || { value >= 127 && value <= 159 }
-        || value == 173
-        || value == 8203
-        || { value >= 8206 && value <= 8207 }
-        || { value >= 8232 && value <= 8238 }
-        || { value >= 8288 && value <= 8297 }
-        || value == 65_279
-      {
-        True -> space
-        False -> codepoint
-      }
-    })
-    |> string.from_utf_codepoints
-    |> string.trim
-    |> string.split(" ")
-    |> list.filter(fn(part) { part != "" })
-    |> string.join(" ")
+  let clean = session_configuration.clean_name(text) |> option.unwrap("")
   case string.length(clean) > limit {
     True -> string.slice(clean, 0, limit - 1) <> "…"
     False -> clean
@@ -458,15 +926,27 @@ pub fn load_entries(
 
 /// Captured append boundary shared by metadata and range reads.
 pub type Snapshot {
-  Snapshot(session: String, upper: Int)
+  Snapshot(session: String, upper: Int, continuation_upper: Int)
 }
 
 pub fn snapshot(
   ledger: store.Store,
   session: String,
 ) -> Result(Snapshot, String) {
-  last_seq(ledger, session)
-  |> result.map(fn(upper) { Snapshot(session, upper) })
+  store.read(
+    ledger,
+    "SELECT COALESCE((SELECT MAX(seq) FROM transcript WHERE session=?),0),COALESCE((SELECT MAX(rowid) FROM continuation_markers WHERE session=?),0)",
+    [sqlight.text(session), sqlight.text(session)],
+    {
+      use upper <- decode.field(0, decode.int)
+      use continuation_upper <- decode.field(1, decode.int)
+      decode.success(Snapshot(session, upper, continuation_upper))
+    },
+  )
+  |> result.try(fn(rows) {
+    list.first(rows)
+    |> result.replace_error("could not capture history boundary")
+  })
 }
 
 pub type SourceStats {
@@ -785,6 +1265,40 @@ fn sourced_entry(
 }
 
 /// Decode a packed transcript row with lazy image payload reads.
+/// Resolve a committed live tool result by its actual run/call identity.
+/// Steering may append another row before the worker publishes completion;
+/// a current high-water mark is therefore not a tool result identity.
+pub fn tool_result_position(
+  ledger: store.Store,
+  session: String,
+  run_id: String,
+  call_id: String,
+) -> Result(Option(Int), String) {
+  store.query(ledger, fn(db) {
+    use rows <- result.try(
+      store.rows(
+        db,
+        "SELECT seq,payload FROM transcript WHERE session=? AND turn_id=? ORDER BY seq DESC LIMIT 200",
+        [sqlight.text(session), sqlight.text(run_id)],
+        {
+          use position <- decode.field(0, decode.int)
+          use payload <- decode.field(1, decode.bit_array)
+          decode.success(#(position, payload))
+        },
+      ),
+    )
+    Ok(
+      list.find_map(rows, fn(row) {
+        case unpack(row.1, unread) {
+          Ok(types.ToolOutput(id, _, _)) if id == call_id -> Ok(row.0)
+          _ -> Error(Nil)
+        }
+      })
+      |> option.from_result,
+    )
+  })
+}
+
 pub fn read_input(
   store: store.Store,
   payload: BitArray,
@@ -792,108 +1306,365 @@ pub fn read_input(
   unpack(payload, images.reader(store))
 }
 
-/// Rows read per step when a tail that starts on a tool result is widened.
-const tail_step_rows = 32
-
-/// At most this many extra rows widen a tail.
-const tail_step_limit = 512
-
-/// The newest `rows` transcript rows before `before` (exclusive; None reads
-/// from the end), chronological. A page never starts on a tool result, whose
-/// call would be on the page before: it is widened back to the nearest row
-/// that is not one. The flag says whether older rows remain. Clients page
-/// history with this instead of loading it whole.
-pub fn load_tail(
-  store: store.Store,
-  id: String,
-  before: Option(Int),
-  rows: Int,
-) -> Result(#(List(transcript.SourcedEntry), Bool), String) {
-  let upper = option.unwrap(before, 9_223_372_036_854_775_807)
-  use #(newest, full) <- result.try(read_before(
-    store,
-    id,
-    upper,
-    int.max(1, rows),
-  ))
-  widen(store, id, newest, full, 0)
+pub type Direction {
+  Before(position: Int)
+  After(position: Int)
 }
 
-fn widen(
-  store: store.Store,
-  id: String,
+pub type Range {
+  Range(
+    snapshot: Snapshot,
+    direction: Direction,
+    limit: Int,
+    continuation_after: Int,
+  )
+}
+
+pub type TranscriptOwnership {
+  TranscriptOwnership(
+    position: Int,
+    turn_id: Option(String),
+    input_id: Option(String),
+    display: Option(operations.Display),
+    image_fit: Option(transcript.ImageFit),
+  )
+}
+
+pub type Continuation {
+  Continuation(
+    input_id: String,
+    position: Int,
+    display: operations.Display,
+    timestamp: Option(Int),
+    turn_id: Option(String),
+    order: Int,
+  )
+}
+
+fn continuation_decoder() -> decode.Decoder(Continuation) {
+  use input_id <- decode.field(0, decode.string)
+  use position <- decode.field(1, decode.int)
+  use payload <- decode.field(2, decode.bit_array)
+  use timestamp <- decode.field(3, decode.optional(decode.int))
+  use turn_id <- decode.field(4, decode.optional(decode.string))
+  use order <- decode.field(5, decode.int)
+  decode.success(Continuation(
+    input_id,
+    position,
+    operations.decode_display(payload),
+    timestamp,
+    turn_id,
+    order,
+  ))
+}
+
+/// A committed continuation remains readable after its input receipt expires.
+pub fn continuation(
+  ledger: store.Store,
+  session: String,
+  input_id: String,
+) -> Result(Option(Continuation), String) {
+  store.read(
+    ledger,
+    "SELECT operation_id,seq,payload,timestamp,turn_id,rowid FROM continuation_markers WHERE session=? AND operation_id=?",
+    [sqlight.text(session), sqlight.text(input_id)],
+    continuation_decoder(),
+  )
+  |> result.map(fn(rows) { list.first(rows) |> option.from_result })
+}
+
+pub type SourcePage {
+  SourcePage(
+    entries: List(transcript.SourcedEntry),
+    ownership: List(TranscriptOwnership),
+    has_more: Bool,
+    has_older: Bool,
+    has_newer: Bool,
+    continuations: List(Continuation),
+    more_continuations: Bool,
+    traces: List(#(String, json.Json)),
+    tools: List(ToolAssociation),
+  )
+}
+
+pub type ToolAssociation {
+  ToolAssociation(
+    result_position: Int,
+    call_id: String,
+    name: String,
+    call_position: Int,
+    arguments: Option(String),
+    arguments_bytes: Int,
+    call_index: Int,
+  )
+}
+
+fn tool_associations_in(
+  db: sqlight.Connection,
+  session: String,
   entries: List(transcript.SourcedEntry),
-  full: Bool,
-  extra: Int,
-) -> Result(#(List(transcript.SourcedEntry), Bool), String) {
-  case entries {
-    [] -> Ok(#([], False))
-    [first, ..] ->
-      case
-        is_tool_result(first.entry.input) && full && extra < tail_step_limit
-      {
-        False -> Ok(#(entries, full))
-        True -> {
-          use #(older, older_full) <- result.try(read_before(
-            store,
-            id,
-            first.source.seq,
-            tail_step_rows,
-          ))
-          // Keep only what is needed: from the newest row that is not a
-          // tool result. Older rows left out mean more remain.
-          let skipped =
-            older
-            |> list.reverse
-            |> list.take_while(fn(item) { is_tool_result(item.entry.input) })
-            |> list.length
-          case list.length(older) - skipped - 1 {
-            head if head >= 0 ->
-              Ok(#(
-                list.append(list.drop(older, head), entries),
-                head > 0 || older_full,
-              ))
-            _ ->
-              widen(
-                store,
-                id,
-                list.append(older, entries),
-                older_full,
-                extra + tail_step_rows,
-              )
+) -> Result(List(ToolAssociation), String) {
+  let wanted =
+    list.filter_map(entries, fn(entry) {
+      case entry.entry.input {
+        types.ToolOutput(call_id, _, _) -> Ok(#(entry.source.seq, call_id))
+        _ -> Error(Nil)
+      }
+    })
+  case wanted {
+    [] -> Ok([])
+    _ -> {
+      let values = list.map(wanted, fn(_) { "(?,?)" }) |> string.join(",")
+      let arguments =
+        list.flat_map(wanted, fn(pair) {
+          [sqlight.int(pair.0), sqlight.text(pair.1)]
+        })
+      use rows <- result.try(
+        store.rows(
+          db,
+          "WITH wanted(position,call_id) AS (VALUES "
+            <> values
+            <> ") SELECT wanted.position,c.call_id,c.name,c.seq,c.arguments_bytes,c.call_index,CASE WHEN length(t.payload)<=8192 THEN t.payload ELSE NULL END FROM wanted JOIN transcript_calls c ON c.session=? AND c.call_id=wanted.call_id AND c.seq=(SELECT MAX(seq) FROM transcript_calls WHERE session=c.session AND call_id=c.call_id AND seq<wanted.position) JOIN transcript t ON t.seq=c.seq ORDER BY wanted.position",
+          list.append(arguments, [sqlight.text(session)]),
+          {
+            use result_position <- decode.field(0, decode.int)
+            use call_id <- decode.field(1, decode.string)
+            use name <- decode.field(2, decode.string)
+            use call_position <- decode.field(3, decode.int)
+            use bytes <- decode.field(4, decode.int)
+            use index <- decode.field(5, decode.int)
+            use payload <- decode.field(6, decode.optional(decode.bit_array))
+            decode.success(#(
+              result_position,
+              call_id,
+              name,
+              call_position,
+              bytes,
+              index,
+              payload,
+            ))
+          },
+        ),
+      )
+      list.try_map(rows, fn(row) {
+        use arguments <- result.try(case row.6 {
+          None -> Ok(None)
+          Some(payload) -> {
+            use input <- result.try(
+              unpack(payload, unread)
+              |> result.replace_error("invalid saved tool call"),
+            )
+            use call <- result.try(
+              events.calls(input)
+              |> list.find(fn(call) { call.id == row.1 })
+              |> result.replace_error("saved tool call association is invalid"),
+            )
+            Ok(Some(call.arguments))
           }
-        }
+        })
+        Ok(ToolAssociation(row.0, row.1, row.2, row.3, arguments, row.4, row.5))
+      })
+    }
+  }
+}
+
+/// Bound packed bodies before fetching them. The first row always advances
+/// pagination, even when one durable entry alone exceeds the page budget.
+const history_payload_bytes = 1_048_576
+
+fn history_prefix(rows: List(#(Int, Int)), used: Int, count: Int) -> Int {
+  case rows {
+    [] -> count
+    [#(_, bytes), ..rest] ->
+      case count == 0 || used + bytes <= history_payload_bytes {
+        True -> history_prefix(rest, used + bytes, count + 1)
+        False -> count
       }
   }
 }
 
-fn is_tool_result(input: types.Input) -> Bool {
-  case input {
-    types.ToolOutput(..) -> True
-    _ -> False
+/// Read a bounded chronological page through a captured append boundary.
+/// Later commits cannot leak into a reset assembled from that snapshot.
+pub fn read_range(
+  ledger: store.Store,
+  range: Range,
+) -> Result(SourcePage, String) {
+  let limit = int.min(200, int.max(1, range.limit))
+  let #(predicate, ordering, position) = case range.direction {
+    Before(position) -> #("seq<?", "DESC", position)
+    After(position) -> #("seq>?", "ASC", position)
   }
-}
-
-/// Up to `limit` rows before `upper`, chronological, and whether the read
-/// was full (so older rows may remain).
-fn read_before(
-  store: store.Store,
-  id: String,
-  upper: Int,
-  limit: Int,
-) -> Result(#(List(transcript.SourcedEntry), Bool), String) {
-  let read = images.reader(store)
-  store.query(store, fn(db) {
-    use rows <- result.try(store.rows(
-      db,
-      "SELECT seq,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq<? ORDER BY seq DESC LIMIT ?",
-      [sqlight.text(id), sqlight.int(upper), sqlight.int(limit)],
-      source_row(),
-    ))
-    use entries <- result.try(
-      list.try_map(list.reverse(rows), sourced_entry(id, _, read)),
+  let read = images.reader(ledger)
+  store.query(ledger, fn(db) {
+    // Only integer metadata crosses the first query; large packed arguments,
+    // results, and durable display bodies cannot multiply by the row limit.
+    use sizes <- result.try(
+      store.rows(
+        db,
+        "SELECT seq,length(payload)+COALESCE((SELECT length(payload) FROM submission_events WHERE session=transcript.session AND seq=transcript.seq LIMIT 1),0) FROM transcript WHERE session=? AND seq<=? AND "
+          <> predicate
+          <> " ORDER BY seq "
+          <> ordering
+          <> " LIMIT ?",
+        [
+          sqlight.text(range.snapshot.session),
+          sqlight.int(range.snapshot.upper),
+          sqlight.int(position),
+          sqlight.int(limit + 1),
+        ],
+        {
+          use seq <- decode.field(0, decode.int)
+          use bytes <- decode.field(1, decode.int)
+          decode.success(#(seq, bytes))
+        },
+      ),
     )
-    Ok(#(entries, list.length(rows) == limit))
+    let admitted = history_prefix(list.take(sizes, limit), 0, 0)
+    let more_entries = list.length(sizes) > admitted
+    use rows <- result.try(
+      store.rows(
+        db,
+        "SELECT seq,payload,timestamp,provider,thought_ms,turn_id,(SELECT operation_id FROM submission_events WHERE session=transcript.session AND seq=transcript.seq LIMIT 1),(SELECT payload FROM submission_events WHERE session=transcript.session AND seq=transcript.seq LIMIT 1) FROM transcript WHERE session=? AND seq<=? AND "
+          <> predicate
+          <> " ORDER BY seq "
+          <> ordering
+          <> " LIMIT ?",
+        [
+          sqlight.text(range.snapshot.session),
+          sqlight.int(range.snapshot.upper),
+          sqlight.int(position),
+          sqlight.int(admitted),
+        ],
+        {
+          use row <- decode.then(source_row())
+          use turn_id <- decode.field(5, decode.optional(decode.string))
+          use input_id <- decode.field(6, decode.optional(decode.string))
+          use display <- decode.field(7, decode.optional(decode.bit_array))
+          decode.success(#(
+            row,
+            TranscriptOwnership(
+              row.0,
+              turn_id,
+              input_id,
+              option.map(display, operations.decode_display),
+              unpack_fit(row.1, read) |> option.from_result,
+            ),
+          ))
+        },
+      ),
+    )
+    let selected = rows
+    let selected = case range.direction {
+      Before(_) -> list.reverse(selected)
+      After(_) -> selected
+    }
+    use entries <- result.try(
+      list.try_map(selected, fn(row) {
+        sourced_entry(range.snapshot.session, row.0, read)
+      }),
+    )
+    let cell_ids =
+      list.filter_map(entries, fn(entry) {
+        case entry.entry.input {
+          types.ToolOutput(_, output, _) ->
+            json.parse(
+              output,
+              decode.field("cell_id", decode.string, decode.success),
+            )
+            |> result.replace_error(Nil)
+          _ -> Error(Nil)
+        }
+      })
+      |> list.unique
+    use traces <- result.try(traces_in(db, range.snapshot.session, cell_ids))
+    use tools <- result.try(tool_associations_in(
+      db,
+      range.snapshot.session,
+      entries,
+    ))
+    let lower = case selected, range.direction, more_entries {
+      [first, ..], Before(_), True -> first.0.0
+      [_, ..], Before(_), False -> 0
+      [_, ..], After(position), _ -> int.max(0, position)
+      [], After(position), _ -> int.max(0, position)
+      [], Before(_), _ -> 0
+    }
+    let upper = case list.last(selected) {
+      Ok(last) -> last.0.0
+      Error(_) ->
+        case range.direction {
+          Before(position) -> int.min(range.snapshot.upper, position - 1)
+          After(_) -> range.snapshot.upper
+        }
+    }
+    use continuation_sizes <- result.try(
+      store.rows(
+        db,
+        "SELECT rowid,length(payload) FROM continuation_markers WHERE session=? AND seq>=? AND seq<=? AND rowid>? AND rowid<=? ORDER BY rowid LIMIT 201",
+        [
+          sqlight.text(range.snapshot.session),
+          sqlight.int(lower),
+          sqlight.int(upper),
+          sqlight.int(range.continuation_after),
+          sqlight.int(range.snapshot.continuation_upper),
+        ],
+        {
+          use order <- decode.field(0, decode.int)
+          use bytes <- decode.field(1, decode.int)
+          decode.success(#(order, bytes))
+        },
+      ),
+    )
+    let admitted_continuations =
+      history_prefix(list.take(continuation_sizes, 200), 0, 0)
+    use continuations <- result.try(store.rows(
+      db,
+      "SELECT operation_id,seq,payload,timestamp,turn_id,rowid FROM continuation_markers WHERE session=? AND seq>=? AND seq<=? AND rowid>? AND rowid<=? ORDER BY rowid LIMIT ?",
+      [
+        sqlight.text(range.snapshot.session),
+        sqlight.int(lower),
+        sqlight.int(upper),
+        sqlight.int(range.continuation_after),
+        sqlight.int(range.snapshot.continuation_upper),
+        sqlight.int(admitted_continuations),
+      ],
+      continuation_decoder(),
+    ))
+    use directions <- result.try(case selected {
+      [] -> Ok(#(False, False))
+      [first, ..] -> {
+        let assert Ok(last) = list.last(selected)
+        store.one(
+          db,
+          "SELECT EXISTS(SELECT 1 FROM transcript WHERE session=? AND seq<? AND seq<=?),EXISTS(SELECT 1 FROM transcript WHERE session=? AND seq>? AND seq<=?)",
+          [
+            sqlight.text(range.snapshot.session),
+            sqlight.int(first.0.0),
+            sqlight.int(range.snapshot.upper),
+            sqlight.text(range.snapshot.session),
+            sqlight.int(last.0.0),
+            sqlight.int(range.snapshot.upper),
+          ],
+          {
+            use older <- decode.field(0, sqlight.decode_bool())
+            use newer <- decode.field(1, sqlight.decode_bool())
+            decode.success(#(older, newer))
+          },
+          "history navigation unavailable",
+        )
+      }
+    })
+    Ok(SourcePage(
+      entries,
+      list.map(selected, fn(row) { row.1 }),
+      more_entries,
+      directions.0,
+      directions.1,
+      list.take(continuations, 200),
+      list.length(continuation_sizes) > admitted_continuations,
+      traces,
+      tools,
+    ))
   })
 }
 
@@ -951,15 +1722,18 @@ pub fn append_capability_update(
           ],
         ),
       )
-      store.run(
+      use position <- result.try(store.one(
         db,
-        "INSERT INTO transcript(session,payload,timestamp,row_class) VALUES(?,?,?,'user')",
+        "INSERT INTO transcript(session,payload,timestamp,row_class) VALUES(?,?,?,'user') RETURNING seq",
         [
           sqlight.text(id),
           sqlight.blob(pack(types.User(update))),
           sqlight.int(timestamp),
         ],
-      )
+        decode.field(0, decode.int, decode.success),
+        "pinned prompt update was not committed",
+      ))
+      index_entry_in(db, id, position, types.User(update))
       |> result.replace(timestamp)
     })
   })
@@ -1081,7 +1855,7 @@ pub fn commit_from(
   stage: Stage,
   provider: Option(String),
 ) -> Result(Int, String) {
-  commit_with_letters(store, id, inputs, stage, provider, None, [], [])
+  commit_with_letters(store, id, inputs, stage, provider, None, [], [], None)
   |> result.map(fn(committed) { committed.0 })
 }
 
@@ -1097,25 +1871,22 @@ pub fn commit_response(
   stage: Stage,
   provider: Option(String),
   thought_ms: Option(Int),
+  run_id: String,
 ) -> Result(#(Int, Option(Int)), String) {
-  commit_with_letters(store, id, inputs, stage, provider, thought_ms, [], [])
+  commit_with_letters(
+    store,
+    id,
+    inputs,
+    stage,
+    provider,
+    thought_ms,
+    [],
+    [],
+    Some(#(run_id, None)),
+  )
 }
 
-/// Letters and the inputs that carry them commit together, so a letter retried
-/// after a crash cannot land in the transcript twice.
-pub fn commit_letters(
-  store: store.Store,
-  id: String,
-  inputs: List(types.Input),
-  stage: Stage,
-  provider: Option(String),
-  letters: List(String),
-) -> Result(Int, String) {
-  commit_with_letters(store, id, inputs, stage, provider, None, letters, [])
-  |> result.map(fn(committed) { committed.0 })
-}
-
-/// Admission receipts retire in the same transaction that writes model input.
+/// Input consumption and turn membership commit with the model input.
 pub fn commit_operations(
   ledger: store.Store,
   id: String,
@@ -1124,6 +1895,8 @@ pub fn commit_operations(
   provider: Option(String),
   letters: List(String),
   commits: List(operations.Commit),
+  turn_id: String,
+  workspace: String,
 ) -> Result(Int, String) {
   commit_with_letters(
     ledger,
@@ -1134,6 +1907,7 @@ pub fn commit_operations(
     None,
     letters,
     commits,
+    Some(#(turn_id, Some(workspace))),
   )
   |> result.map(fn(committed) { committed.0 })
 }
@@ -1147,11 +1921,18 @@ fn commit_with_letters(
   thought_ms: Option(Int),
   letters: List(String),
   commits: List(operations.Commit),
+  turn: Option(#(String, Option(String))),
 ) -> Result(#(Int, Option(Int)), String) {
   let timestamp = usage.now()
+  let turn_id = option.map(turn, fn(value) { value.0 })
   let read = images.reader(store)
   store.query(store, fn(db) {
     store.transaction(db, fn() {
+      use _ <- result.try(case turn {
+        None -> Ok(Nil)
+        Some(#(run, workspace)) ->
+          operations.begin_turn_in(db, id, run, timestamp, workspace)
+      })
       use _ <- result.try(mail.receive(db, id, letters))
       use previous_seq <- result.try(store.one(
         db,
@@ -1173,7 +1954,7 @@ fn commit_with_letters(
           use _ <- result.try(
             store.run(
               db,
-              "INSERT INTO transcript(session,payload,timestamp,provider,thought_ms,row_class) VALUES(?,?,?,?,?,?)",
+              "INSERT INTO transcript(session,payload,timestamp,provider,thought_ms,row_class,turn_id) VALUES(?,?,?,?,?,?,?)",
               [
                 sqlight.text(id),
                 sqlight.blob(pack(input)),
@@ -1181,19 +1962,20 @@ fn commit_with_letters(
                 sqlight.nullable(sqlight.text, provider),
                 sqlight.nullable(sqlight.int, entry.thought_ms),
                 sqlight.text(transcript.row_class(input)),
+                sqlight.nullable(sqlight.text, turn_id),
               ],
             ),
           )
+          use position <- result.try(store.one(
+            db,
+            "SELECT last_insert_rowid()",
+            [],
+            decode.field(0, decode.int, decode.success),
+            "committed row sequence",
+          ))
+          use _ <- result.try(index_entry_in(db, id, position, input))
           case linked, is_assistant_row(input) {
-            None, True ->
-              store.one(
-                db,
-                "SELECT last_insert_rowid()",
-                [],
-                decode.field(0, decode.int, decode.success),
-                "committed row sequence",
-              )
-              |> result.map(Some)
+            None, True -> Ok(Some(position))
             _, _ -> Ok(linked)
           }
         }),
@@ -1211,15 +1993,16 @@ fn commit_with_letters(
         commits,
         previous_seq + 1,
         seq,
-        timestamp,
+        turn_id,
       ))
       // COALESCE keeps the old title when no new user message suggests one.
       store.run(
         db,
-        "UPDATE sessions SET stage=?,title=COALESCE(?,title),activity_seq=(SELECT COALESCE(MAX(activity_seq),0)+1 FROM sessions),last_assistant_at=CASE WHEN ?=1 THEN unixepoch() ELSE last_assistant_at END WHERE id=?",
+        "UPDATE sessions SET stage=?,title=COALESCE(?,title),activity_at=?,activity_seq=(SELECT COALESCE(MAX(activity_seq),0)+1 FROM sessions),last_assistant_at=CASE WHEN ?=1 THEN unixepoch() ELSE last_assistant_at END WHERE id=?",
         [
           sqlight.text(stage_name(stage)),
           sqlight.nullable(sqlight.text, option.map(latest_user(inputs), title)),
+          sqlight.int(timestamp),
           sqlight.int(advances_assistant),
           sqlight.text(id),
         ],
@@ -1381,10 +2164,14 @@ pub fn set_effort(
   id: String,
   effort: Option(String),
 ) -> Result(Nil, String) {
-  store.write(store, "UPDATE sessions SET effort=? WHERE id=?", [
-    sqlight.nullable(sqlight.text, effort),
-    sqlight.text(id),
-  ])
+  store.write(
+    store,
+    "UPDATE sessions SET effort=?,config_revision=config_revision+1 WHERE id=?",
+    [
+      sqlight.nullable(sqlight.text, effort),
+      sqlight.text(id),
+    ],
+  )
 }
 
 pub fn set_configuration(
@@ -1406,7 +2193,7 @@ pub fn set_configuration(
       )
       store.run(
         db,
-        "UPDATE sessions SET provider=?,model=?,protocol=?,effort=? WHERE id=?",
+        "UPDATE sessions SET provider=?,model=?,protocol=?,effort=?,config_revision=config_revision+1 WHERE id=?",
         [
           sqlight.text(provider),
           sqlight.text(model),
@@ -1419,14 +2206,41 @@ pub fn set_configuration(
   })
 }
 
-/// Workspace changes are serialized by the session actor with submissions.
-pub fn set_workspace(
-  store: store.Store,
-  id: String,
-  cwd: String,
-) -> Result(Nil, String) {
-  store.write(store, "UPDATE sessions SET cwd=? WHERE id=?", [
-    sqlight.text(cwd),
-    sqlight.text(id),
-  ])
+/// Fork-owned observations survive deletion of the original runtime journal.
+pub fn traces_in(
+  db: sqlight.Connection,
+  session: String,
+  ids: List(String),
+) -> Result(List(#(String, json.Json)), String) {
+  case ids {
+    [] -> Ok([])
+    _ -> {
+      let placeholders = list.map(ids, fn(_) { "?" }) |> string.join(",")
+      use snapshots <- result.try(
+        store.rows(
+          db,
+          "SELECT cell_id,payload FROM transcript_traces WHERE session=? AND cell_id IN ("
+            <> placeholders
+            <> ")",
+          [sqlight.text(session), ..list.map(ids, sqlight.text)],
+          {
+            use id <- decode.field(0, decode.string)
+            use payload <- decode.field(1, decode.string)
+            decode.success(#(id, payload))
+          },
+        ),
+      )
+      use captured <- result.try(
+        list.try_map(snapshots, fn(row) {
+          json.parse(row.1, decode.dynamic)
+          |> result.map(fn(value) { #(row.0, types.encode_value(value)) })
+          |> result.replace_error("invalid saved transcript trace")
+        }),
+      )
+      let missing =
+        list.filter(ids, fn(id) { !list.any(captured, fn(row) { row.0 == id }) })
+      use live <- result.try(journal.traces_in(db, missing))
+      Ok(list.append(captured, live))
+    }
+  }
 }

@@ -1,8 +1,11 @@
-// Background commands must retain their inputs across UI changes. Daemon E2E
-// tests cannot control the interval between command creation and execution.
+// Delayed controlled responses verify that commands retain captured UI inputs.
 package tui
 
 import (
+	"albedo/cli/internal/config"
+	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/testwire"
+	tea "charm.land/bubbletea/v2"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -11,229 +14,260 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"albedo/cli/internal/config"
-	"albedo/cli/internal/daemon"
-	tea "charm.land/bubbletea/v2"
 )
 
 func commandTestConnection(t *testing.T, handler http.HandlerFunc) *daemon.Connection {
 	t.Helper()
-	server := httptest.NewServer(handler)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/server" {
+			_, _ = w.Write([]byte(testwire.Server))
+			return
+		}
+		handler(w, r)
+	}))
 	t.Cleanup(server.Close)
-	return daemon.NewConnection(daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
+	conn, err := daemon.Attach(t.Context(), daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "token"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(conn.HTTPClient().CloseIdleConnections)
+	return conn
 }
-
 func awaitCommandSignal[T any](t *testing.T, ch <-chan T) T {
 	t.Helper()
 	select {
 	case value := <-ch:
 		return value
 	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for background command")
+		t.Fatal("timed out waiting for command")
 		var zero T
 		return zero
 	}
 }
 
+// A partial deletion must keep an undeleted row until an authoritative refresh.
+// A healthy daemon cannot reliably force a teardown failure during this update.
+func TestPartialDeletionKeepsUndeletedSessionAndOutcomeAfterRefresh(t *testing.T) {
+	app := NewAppModel(daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil), config.Profiles{}, nil, "", false, nil)
+	app.State = AppStateSessionPicker
+	app.Sessions = []daemon.Session{{ID: "root"}, {ID: "deleted"}}
+	app.updateSessionPickerItems()
+	result := daemon.DeletionResult{State: "partial", Deleted: 1, Remaining: 1, DeletedIDs: []string{"deleted"}, Message: "Deleted 1 sessions; 1 remain. root: kernel teardown failed"}
+	updated, command := app.Update(sessionDeletedMsg{ID: "root", Result: &result})
+	app = updated.(AppModel)
+	if command == nil || len(app.Sessions) != 1 || app.Sessions[0].ID != "root" || app.SessionPicker.notice != result.Message {
+		t.Fatalf("partial deletion invented completion: command nil=%v rows=%d id=%q notice=%q wanted=%q", command == nil, len(app.Sessions), app.Sessions[0].ID, app.SessionPicker.notice, result.Message)
+	}
+	updated, _ = app.Update(sessionsLoadedMsg{Gen: app.SessionGen, Sessions: app.Sessions, Notice: result.Message})
+	app = updated.(AppModel)
+	if app.SessionPicker.notice != result.Message {
+		t.Fatal("refresh erased the partial operation outcome")
+	}
+}
 func TestModelChangeCapturesProviderAndCapBeforeExecution(t *testing.T) {
-	for _, scenario := range []struct {
-		name                string
-		failSwitch          bool
-		failCap             bool
-		unsupportedProvider bool
-	}{
-		{name: "success"},
-		{name: "provider unsupported", unsupportedProvider: true},
-		{name: "switch fails", failSwitch: true},
-		{name: "cap fails", failCap: true},
-	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			var paths, names, capStates, capModels []string
-			var modelArgs map[string]string
+	for _, failure := range []string{"", "switch", "default", "cap"} {
+		t.Run(failure, func(t *testing.T) {
+			var paths []string
+			var switchBody map[string]string
+			var capBody map[string]map[string]bool
 			conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/health" {
-					if scenario.unsupportedProvider {
-						_, _ = w.Write([]byte(`{"ok":true,"version":2,"capabilities":[]}`))
-					} else {
-						_, _ = w.Write([]byte(`{"ok":true,"version":2,"capabilities":["session_provider"]}`))
+				paths = append(paths, r.URL.String())
+				if r.URL.Path == "/sessions/original" {
+					if r.Header.Get("If-Match") != "\"session-a\"" {
+						t.Errorf("changed session validator %s", r.Header.Get("If-Match"))
 					}
+					_ = json.NewDecoder(r.Body).Decode(&switchBody)
+					if failure == "switch" {
+						w.WriteHeader(400)
+						return
+					}
+					writeSessionChange(w, "original", "resolved", "new")
 					return
 				}
-				var body struct {
-					Name string            `json:"name"`
-					Args map[string]string `json:"args"`
+				group := r.URL.Query().Get("group")
+				if r.URL.Path != "/settings" {
+					t.Errorf("unexpected route %s", r.URL)
 				}
-				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-					t.Error(err)
-				}
-				paths = append(paths, r.URL.Path)
-				names = append(names, body.Name)
-				if body.Name == "/model" {
-					modelArgs = body.Args
-				}
-				if body.Name == "/raise-cap" {
-					capStates = append(capStates, body.Args["state"])
-					capModels = append(capModels, body.Args["model"])
-				}
-				if body.Name == "/model" && scenario.failSwitch || body.Name == "/raise-cap" && scenario.failCap {
-					http.Error(w, `{"error":"refused"}`, http.StatusBadRequest)
+				if failure == group || failure == "default" && group == "providers" || failure == "cap" && group == "models" {
+					w.WriteHeader(400)
 					return
 				}
-				_, _ = w.Write([]byte(`{"result":{"model":"resolved","provider":"new","protocol":"openai","effort":"high"}}`))
+				settings := testwire.Settings()
+				if group == "models" {
+					_ = json.NewDecoder(r.Body).Decode(&capBody)
+				}
+				_ = json.NewEncoder(w).Encode(testwire.SettingsChange(group, settings[group]))
 			})
-			session := &daemon.Session{ID: "original", Provider: "old"}
-			app := AppModel{Conn: conn, ActiveSession: session}
-			raiseCap := true
-			cmd := app.changeModelCmd("chosen", "new", "high", &raiseCap, 7)
+			session := &daemon.Session{ID: "original", Provider: "old", ETag: "\"session-a\""}
+			app := AppModel{Conn: conn, ActiveSession: session, Profiles: config.Profiles{ETag: "\"providers-a\"", Providers: map[string]config.Settings{"new": {Protocol: "responses"}}}, SettingsETags: map[string]string{"models": "\"models-a\""}}
+			raised := true
+			cmd := app.changeModelCmd("chosen", "new", "high", &raised, 7, "provider/cap")
 			session.ID, session.Provider = "changed", "new"
-			raiseCap = false
-			app.Conn, app.ActiveSession, app.ModelGen = nil, nil, 8
+			raised = false
+			app.Conn, app.ActiveSession = nil, nil
 			msg := cmd().(modelChangedMsg)
-			if msg.Gen != 7 || msg.SessionID != "original" || (msg.Err != nil) != (scenario.failSwitch || scenario.failCap || scenario.unsupportedProvider) {
-				t.Fatalf("unexpected model result: %+v", msg)
+			if msg.SessionID != "original" || msg.Gen != 7 || (msg.Err != nil) != (failure != "") {
+				t.Fatalf("captured result changed: %+v", msg)
 			}
-			if scenario.unsupportedProvider {
-				if len(names) != 0 || msg.Selection != nil {
-					t.Fatalf("unsupported provider dispatched mutation: names=%v result=%+v", names, msg)
+			if !reflect.DeepEqual(switchBody, map[string]string{"model": "chosen", "provider_profile": "new", "effort": "high"}) {
+				t.Fatalf("switch inputs changed: %v", switchBody)
+			}
+			expected := 1
+			if failure != "switch" {
+				expected = 2
+				if failure != "default" {
+					expected = 3
 				}
-				return
 			}
-			if !reflect.DeepEqual(modelArgs, map[string]string{"model": "chosen", "provider": "new", "effort": "high"}) {
-				t.Fatalf("model request used changed inputs: %v", modelArgs)
+			if len(paths) != expected {
+				t.Fatalf("wrong partial workflow %v", paths)
 			}
-			if scenario.failSwitch {
+			if failure == "switch" {
 				if msg.Selection != nil {
-					t.Fatalf("failed switch installed selection: %+v", msg.Selection)
+					t.Fatal("failed switch installed")
 				}
 			} else if msg.Selection == nil || msg.Selection.Model != "resolved" {
-				t.Fatalf("confirmed switch was lost: %+v", msg)
+				t.Fatal("confirmed switch lost")
 			}
-			wantNames := []string{"/model", "/raise-cap"}
-			wantPaths := []string{"/sessions/original/commands", "/sessions/original/commands"}
-			if scenario.failSwitch {
-				wantNames, wantPaths = wantNames[:1], wantPaths[:1]
-			} else if !reflect.DeepEqual(capStates, []string{"on"}) || !reflect.DeepEqual(capModels, []string{"resolved"}) {
-				t.Fatalf("cap used changed input or unconfirmed model: state=%v model=%v", capStates, capModels)
-			}
-			if !reflect.DeepEqual(names, wantNames) || !reflect.DeepEqual(paths, wantPaths) {
-				t.Fatalf("requests changed target or order: paths=%v commands=%v", paths, names)
+			if failure == "" && !capBody["raised_caps"]["provider/cap"] {
+				t.Fatalf("cap input changed %v", capBody)
 			}
 		})
 	}
 }
-
 func TestSessionCommandKeepsSessionWhileRequestIsRunning(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
-	var releaseOnce sync.Once
-	releaseRequest := func() { releaseOnce.Do(func() { close(release) }) }
+	var once sync.Once
+	releaseRequest := func() { once.Do(func() { close(release) }) }
 	conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/sessions/original/commands" {
-			t.Errorf("request targeted %s", r.URL.Path)
+		if r.URL.Path != "/models" || r.URL.Query().Get("model") != "current" {
+			t.Errorf("wrong effort metadata %s", r.URL)
 		}
 		close(started)
 		<-release
-		_, _ = w.Write([]byte(`{"result":{"effort":null,"message":"","available":["low","high"]}}`))
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{testwire.Model("current")}, "next": nil})
 	})
-	// Release the handler before the server cleanup, including on test failure.
 	t.Cleanup(releaseRequest)
-	session := &daemon.Session{ID: "original"}
+	session := &daemon.Session{ID: "original", Model: "current"}
 	app := AppModel{Conn: conn, ActiveSession: session}
 	cmd := app.executeCommandCmd("/effort", "", 9)
 	done := make(chan tea.Msg, 1)
 	go func() { done <- cmd() }()
 	awaitCommandSignal(t, started)
 	session.ID = "changed"
-	app.ActiveSession, app.Conn, app.CommandGen = nil, nil, 10
+	app.Conn, app.ActiveSession = nil, nil
 	releaseRequest()
 	msg := awaitCommandSignal(t, done).(commandExecutedMsg)
 	if msg.Err != nil || msg.SessionID != "original" || msg.Gen != 9 || !reflect.DeepEqual(msg.Available, []string{"low", "high"}) {
-		t.Fatalf("result read changed app state: %+v", msg)
+		t.Fatalf("result used changed app state %+v", msg)
 	}
 }
-
-func TestGlancePollingCapturesPageNames(t *testing.T) {
-	var paths, names []string
+func TestStatusAndGlancesUseOneCapturedSessionSnapshot(t *testing.T) {
+	var paths []string
 	conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ Name string }
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Error(err)
+		paths = append(paths, r.URL.Path)
+		if r.URL.RawQuery != "tail=0" {
+			t.Errorf("state polling repeated history reads: %s", r.URL)
 		}
-		paths, names = append(paths, r.URL.Path), append(names, body.Name)
-		_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"page": map[string]any{
-			"title": body.Name, "summary": "", "empty": "", "rows": []any{}, "actions": []any{},
-			"glance": map[string]any{"title": body.Name, "rows": []any{}},
-		}}})
+		session := protocolSession("original", generationA, 0)
+		session["kernel"] = map[string]any{"state": "attached", "build": "observed-build", "stale": true, "staleness_reasons": []any{map[string]any{"code": "build_changed", "detail": "A newer kernel is available."}}, "live_job_count": 3, "stage": nil, "instance_id": "observed-kernel"}
+		session["glances"] = []any{map[string]any{"extension": "first", "title": "First", "rows": []any{}, "url": "/extensions/first/items"}, map[string]any{"extension": "second", "title": "Second", "rows": []any{}, "url": "/extensions/second/items"}}
+		_ = json.NewEncoder(w).Encode(session)
 	})
-	pageFlag := true
 	session := &daemon.Session{ID: "original"}
-	app := AppModel{Conn: conn, ActiveSession: session, CommandCatalog: []daemon.SessionCommand{
-		{Name: "/first", Page: &pageFlag},
-		{Name: "/ordinary"},
-		{Name: "/second", Page: &pageFlag},
-	}}
-	cmd := app.pollGlancesCmd(3)
-	pageFlag = false
-	app.CommandCatalog[0].Name = "/changed"
+	chat := NewChatModel(session, daemon.NewChatClient(conn, session.ID))
+	t.Cleanup(chat.Close)
+	cmd := chat.statusCmd()
 	session.ID = "changed"
-	app.Conn, app.CommandCatalog, app.GlanceGen = nil, nil, 4
-	msg := cmd().(glancesPolledMsg)
-	if !reflect.DeepEqual(names, []string{"/first", "/second"}) || !reflect.DeepEqual(paths, []string{"/sessions/original/commands", "/sessions/original/commands"}) {
-		t.Fatalf("poll read changed inputs: names=%v paths=%v", names, paths)
+	chat.SessionID = "changed"
+	msg := cmd().(ChatStatusMsg)
+	if !reflect.DeepEqual(paths, []string{"/sessions/original"}) || msg.Err != nil || msg.SessionID != "original" || msg.Status == nil || len(msg.Glances) != 2 {
+		t.Fatalf("glance capture changed %+v %v", msg, paths)
 	}
-	if msg.Gen != 3 || len(msg.Glances) != 2 || msg.Glances[0].Title != "/first" || msg.Glances[1].Title != "/second" {
-		t.Fatalf("unexpected glance result: %+v", msg)
+	chat.SessionID = "original"
+	chat.Glances = []PageGlance{{Title: "confirmed"}}
+	app := AppModel{ActiveSession: &daemon.Session{ID: "original"}, Chat: chat}
+	updated, refresh := app.Update(PageViewChangedMsg{})
+	app = updated.(AppModel)
+	updated, _ = app.Update(msg)
+	app = updated.(AppModel)
+	if refresh == nil || len(app.Chat.Glances) != 1 || app.Chat.Glances[0].Title != "confirmed" {
+		t.Fatal("an earlier state read overwrote the acknowledged page change")
+	}
+	updated, _ = app.Update(refresh().(ChatStatusMsg))
+	app = updated.(AppModel)
+	if len(app.Chat.Glances) != 2 {
+		t.Fatal("the state read after the page change was discarded")
+	}
+	phase := daemon.PhaseModel
+	app.Chat.handleStreamEvent(daemon.StreamEvent{Type: "status", Status: &daemon.AgentStatus{Phase: &phase, Running: true}})
+	status := app.Chat.Status
+	if status.Phase == nil || *status.Phase != phase || !status.Running || status.KernelLink != "attached" || !status.KernelStale || status.KernelJobs == nil || *status.KernelJobs != 3 || status.KernelBuild == nil || *status.KernelBuild != "observed-build" || status.KernelInstanceID == nil || *status.KernelInstanceID != "observed-kernel" {
+		t.Fatalf("lightweight live status lost the last captured kernel observation: %+v", status)
 	}
 }
-
-func TestUIPatchCapturesValues(t *testing.T) {
+func TestUIPatchCapturesValuesAndObservedValidator(t *testing.T) {
 	for _, sessionID := range []string{"", "original"} {
-		t.Run("session="+sessionID, func(t *testing.T) {
-			var got map[string]bool
+		t.Run(sessionID, func(t *testing.T) {
+			var got map[string]any
 			conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {
-				wantPath := "/settings/ui"
-				if sessionID != "" {
-					wantPath += "/sessions/" + sessionID
+				if r.Method != "PATCH" || r.Header.Get("If-Match") != "\"seen\"" {
+					t.Errorf("conditional edit changed %s %v", r.Method, r.Header)
 				}
-				if r.URL.Path != wantPath || r.Method != http.MethodPatch {
-					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+				_ = json.NewDecoder(r.Body).Decode(&got)
+				if sessionID == "" {
+					if r.URL.String() != "/settings?group=ui" {
+						t.Errorf("wrong route %s", r.URL)
+					}
+					_ = json.NewEncoder(w).Encode(testwire.SettingsChange("ui", testwire.Settings()["ui"]))
+				} else {
+					if r.URL.String() != "/sessions/original?view=configuration" {
+						t.Errorf("wrong route %s", r.URL)
+					}
+					writeSessionChange(w, "original", "current", "provider")
 				}
-				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-					t.Error(err)
-				}
-				_, _ = w.Write([]byte(`{"thinking":true,"tools":false,"pinned":[],"archived":[],"opens":{}}`))
 			})
 			app := AppModel{Conn: conn}
+			app.SessionPicker.prefs.ETag = "\"seen\""
 			first, second := true, false
 			patch := daemon.UIPreferencesPatch{Thinking: &first, Tools: &second}
-			wanted := map[string]bool{"thinking": true, "tools": false}
 			if sessionID != "" {
-				patch = daemon.UIPreferencesPatch{Pinned: &first, Archived: &second}
-				wanted = map[string]bool{"pinned": true, "archived": false}
+				patch = daemon.UIPreferencesPatch{Pinned: &first, Archived: &second, ETag: "\"seen\""}
 			}
 			cmd := app.patchUICmd(sessionID, patch, 5)
 			first, second = false, true
-			app.Conn, app.SettingsGen = nil, 6
+			app.Conn = nil
 			msg := cmd().(uiSavedMsg)
-			if msg.Err != nil || msg.Gen != 5 || !reflect.DeepEqual(got, wanted) {
-				t.Fatalf("patch read changed inputs: body=%v result=%+v", got, msg)
+			if msg.Err != nil || msg.Gen != 5 {
+				t.Fatalf("patch failed %+v", msg)
+			}
+			if sessionID != "" {
+				got = got["preferences"].(map[string]any)
+			}
+			firstKey, secondKey := "thinking", "tools"
+			if sessionID != "" {
+				firstKey, secondKey = "pinned", "archived"
+			}
+			if got[firstKey] != true || got[secondKey] != false {
+				t.Fatalf("captured values changed %v", got)
 			}
 		})
 	}
 }
-
 func TestPreviewCallbackKeepsConnectionAcrossAppChanges(t *testing.T) {
 	conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/sessions/requested/preview" || r.URL.Query().Get("limit") != "16" {
-			t.Errorf("unexpected preview target: %s", r.URL)
+		if r.URL.String() != "/sessions/requested?tail=16" {
+			t.Errorf("unexpected preview %s", r.URL)
 		}
-		_, _ = w.Write([]byte(`{"items":[{"type":"user","preview":"hello"}],"total":1}`))
+		session := protocolSession("requested", generationA, 0)
+		session["preview"].(map[string]any)["transcript_count"] = 1
+		session["history"].(map[string]any)["items"] = []any{protocolEntry("e", "user", "hello", 1)}
+		_ = json.NewEncoder(w).Encode(session)
 	})
 	app := NewAppModel(conn, config.Profiles{}, nil, "", false, nil)
-	app.Conn, app.State = nil, AppStateChat
-	app.ActiveSession = &daemon.Session{ID: "different"}
+	app.Conn = nil
 	msg := app.SessionPicker.Fetch("requested")().(SessionPreviewMsg)
 	if msg.Err != nil || msg.ID != "requested" || msg.Preview.Total != 1 {
-		t.Fatalf("preview callback followed changed app state: %+v", msg)
+		t.Fatalf("preview followed changed app state %+v", msg)
 	}
 }

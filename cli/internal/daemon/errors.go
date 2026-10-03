@@ -22,6 +22,7 @@ type APIError struct {
 	Code       string
 	Message    string
 	StatusCode int
+	Decision   json.RawMessage
 }
 
 func (e *APIError) Error() string {
@@ -41,18 +42,18 @@ func (e *APIError) Unwrap() error { return e.Cause }
 
 func decodeAPIError(status int, body []byte) error {
 	var data struct {
-		Code      string `json:"code"`
-		Error     string `json:"error"`
-		Workspace string `json:"workspace"`
+		Code     string          `json:"code"`
+		Detail   string          `json:"detail"`
+		Title    string          `json:"title"`
+		Decision json.RawMessage `json:"decision"`
 	}
 	apiErr := &APIError{StatusCode: status}
 	if err := json.Unmarshal(body, &data); err != nil {
 		return apiErr
 	}
-	apiErr.Code, apiErr.Message = data.Code, data.Error
-	if data.Code == "workspace_missing" && data.Workspace != "" {
-		apiErr.Cause = &WorkspaceMissingError{Workspace: data.Workspace}
-		apiErr.Message = apiErr.Cause.Error()
+	apiErr.Code, apiErr.Message, apiErr.Decision = data.Code, data.Detail, data.Decision
+	if apiErr.Message == "" {
+		apiErr.Message = data.Title
 	}
 	return apiErr
 }
@@ -133,12 +134,4 @@ func (e *responseFieldError) Error() string { return e.field + ": " + e.cause.Er
 
 func fieldError(field string) error {
 	return &responseFieldError{field: field, cause: errors.New("required field is missing or invalid")}
-}
-
-type WorkspaceMissingError struct {
-	Workspace string
-}
-
-func (e *WorkspaceMissingError) Error() string {
-	return "workspace folder not found: " + e.Workspace
 }

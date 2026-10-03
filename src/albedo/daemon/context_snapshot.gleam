@@ -1,7 +1,7 @@
 //// Bounded, read-only observations of an already prepared provider request.
 //// This module never prepares history, invokes tools, or calls a provider.
 
-import albedo/daemon/events
+import albedo/daemon/message_content as events
 import albedo/daemon/usage
 import albedo/harness/compaction as context_size
 import albedo/openai_api/request as provider_request
@@ -36,7 +36,7 @@ pub type SectionKind {
   Other
 }
 
-pub opaque type Section {
+pub type Section {
   Section(
     id: String,
     label: String,
@@ -59,7 +59,7 @@ pub type CompactionStatus {
   Unknown
 }
 
-pub opaque type Compaction {
+pub type Compaction {
   Compaction(
     strategy: Option(String),
     status: CompactionStatus,
@@ -75,9 +75,10 @@ pub opaque type Compaction {
   )
 }
 
-pub opaque type Snapshot {
+pub type Snapshot {
   Pending(reason: String)
   Ready(
+    id: String,
     captured_at: Option(Int),
     provider: Option(String),
     model: String,
@@ -208,6 +209,7 @@ fn ready(
   sections: List(Section),
 ) -> Snapshot {
   Ready(
+    new_identity(),
     non_negative(captured_at),
     provider,
     model,
@@ -222,6 +224,17 @@ fn ready(
 /// Build a safe inspector view from the exact request value about to be sent.
 /// The input order and byte counts remain exact. Image bodies and opaque
 /// provider replay objects are represented without copying their payloads.
+/// Identity belongs to the immutable prepared request, not to its UI pages.
+pub fn identity(snapshot: Snapshot) -> Option(String) {
+  case snapshot {
+    Pending(_) -> None
+    Ready(id: id, ..) -> Some(id)
+  }
+}
+
+@external(erlang, "albedo_session", "new_generation")
+fn new_identity() -> String
+
 pub fn from_request(
   captured_at: Option(Int),
   provider: String,
@@ -457,6 +470,7 @@ pub fn summary(snapshot: Snapshot) -> json.Json {
         #("reason", json.string(reason)),
       ])
     Ready(
+      id,
       captured_at,
       provider,
       model,
@@ -475,6 +489,7 @@ pub fn summary(snapshot: Snapshot) -> json.Json {
           events.opt("captured_at", captured_at, json.int),
           [
             #("state", json.string("ready")),
+            #("snapshot_id", json.string(id)),
             #("model", json.string(model)),
             #("compaction", compaction_json(compacted)),
             #("sections", json.array(sections, section_json)),
@@ -484,16 +499,27 @@ pub fn summary(snapshot: Snapshot) -> json.Json {
   }
 }
 
-/// Return one bounded page of inspectable content. Binary image bodies,
-/// credentials, and other intentionally excluded values are named by `omitted`.
+pub type SectionPage {
+  SectionPage(
+    snapshot_id: String,
+    section_id: String,
+    page: Int,
+    page_count: Int,
+    text: String,
+    omitted: Option(String),
+  )
+}
+
+/// A page is capped at 8,000 Unicode scalars, at most 32,000 UTF-8 bytes.
+/// Combining marks cannot enlarge a page beyond the byte limit.
 pub fn page(
   snapshot: Snapshot,
   section_id: String,
   index: Int,
-) -> Result(json.Json, String) {
+) -> Result(SectionPage, String) {
   case snapshot {
     Pending(_) -> Error("no request has been prepared")
-    Ready(sections: sections, ..) -> {
+    Ready(id: id, sections: sections, ..) -> {
       use section <- result.try(
         list.find(sections, fn(section) { section.id == section_id })
         |> result.replace_error("context section not found"),
@@ -502,29 +528,15 @@ pub fn page(
       let pages = page_count(content)
       case index >= 0 && index < pages {
         False -> Error("context page not found")
-        True -> {
-          let fields = [
-            #("section", json.string(section.id)),
-            #("page", json.int(index)),
-            #("pages", json.int(pages)),
-            #(
-              "content",
-              json.string(string.slice(
-                content,
-                index * page_characters,
-                page_characters,
-              )),
-            ),
-          ]
-          Ok(
-            json.object(
-              list.flatten([
-                events.opt("omitted", section.omitted, json.string),
-                fields,
-              ]),
-            ),
-          )
-        }
+        True ->
+          Ok(SectionPage(
+            id,
+            section.id,
+            index,
+            pages,
+            scalar_page(content, index, page_characters),
+            section.omitted,
+          ))
       }
     }
   }
@@ -579,18 +591,22 @@ fn preview(content: String) -> String {
       " ",
     )
     |> string.trim
-  case string.length(clean) > preview_characters {
-    True -> string.slice(clean, 0, preview_characters - 1) <> "…"
-    False -> clean
+  let prefix = scalar_page(clean, 0, preview_characters)
+  case string.byte_size(prefix) < string.byte_size(clean) {
+    True -> scalar_page(clean, 0, preview_characters - 1) <> "…"
+    False -> prefix
   }
 }
 
-fn page_count(content: String) -> Int {
-  case string.length(content) {
-    0 -> 0
-    size -> { size + page_characters - 1 } / page_characters
-  }
+pub fn page_count(content: String) -> Int {
+  scalar_page_count(content, page_characters)
 }
+
+@external(erlang, "albedo_context_snapshot", "page_count")
+fn scalar_page_count(content: String, scalars_per_page: Int) -> Int
+
+@external(erlang, "albedo_context_snapshot", "page")
+fn scalar_page(content: String, index: Int, scalars_per_page: Int) -> String
 
 fn kind_name(kind: SectionKind) -> String {
   case kind {

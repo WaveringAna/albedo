@@ -17,6 +17,7 @@ for it to land; `/reload` fetches it synchronously. No live network is reached.
 
 from typing import Any
 import json
+from datetime import datetime
 import os
 import time
 import unittest
@@ -24,6 +25,13 @@ import urllib.error
 import urllib.request
 
 from harness import ROOT, Albedo, Provider, exclusive, text
+
+
+def milliseconds(timestamp):
+    return round(
+        datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp() * 1000
+    )
+
 
 SHIPPED = json.loads((ROOT / "priv" / "cache-ttl.json").read_text())
 
@@ -134,12 +142,12 @@ class CacheTtlTests(unittest.TestCase):
         self.addCleanup(self.app.__exit__, None, None, None)
 
     def table(self):
-        with self.app.api("/cache-ttl") as response:
+        with self.app.api("/models?view=cache-policy&limit=200") as response:
             return json.load(response)
 
     def resolved(self, query):
-        with self.app.api("/cache-ttl" + query) as response:
-            return json.load(response)
+        with self.app.api("/models?view=cache-policy" + query) as response:
+            return json.load(response)["matched"]
 
     def layers(self, table):
         return {layer["name"]: layer for layer in table["layers"]}
@@ -160,14 +168,14 @@ class CacheTtlTests(unittest.TestCase):
         self.assertEqual(entries["deepseek"]["clock"], "request")
         # New ids go before all earlier-layer entries and win the lookup.
         self.assertEqual(table["entries"][0]["id"], "laptop-gateway")
-        self.assertEqual(self.resolved("?host=gateway.laptop")["id"], "laptop-gateway")
+        self.assertEqual(self.resolved("&host=gateway.laptop")["id"], "laptop-gateway")
         # The replaced default keeps answering, with the override's values.
         self.assertEqual(
-            self.resolved("?host=api.deepseek.com")["note"], "local override"
+            self.resolved("&host=api.deepseek.com")["note"], "local override"
         )
         # Untouched defaults still resolve.
         self.assertEqual(
-            self.resolved("?extension=claude")["id"], "claude-subscription"
+            self.resolved("&extension=claude")["id"], "claude-subscription"
         )
 
     def test_three_layers_keep_replacements_in_place_and_new_ids_first(self):
@@ -189,19 +197,23 @@ class CacheTtlTests(unittest.TestCase):
         self.assertEqual(self.entries(table)["fixture-gateway"]["layer"], "local")
         self.assertEqual(self.entries(table)["deepseek"]["note"], "local override")
         # A fresh local rule wins before the replaced, more general gateway rule.
-        self.assertEqual(self.resolved("?host=gateway.laptop")["id"], "laptop-gateway")
+        self.assertEqual(self.resolved("&host=gateway.laptop")["id"], "laptop-gateway")
         self.assertEqual(
-            self.resolved("?host=gateway.fixture")["note"],
+            self.resolved("&host=gateway.fixture")["note"],
             "local gateway replacement",
         )
-        self.assertEqual(self.resolved("?host=api.deepseek.com")["clock"], "request")
+        self.assertEqual(self.resolved("&host=api.deepseek.com")["clock"], "request")
 
     def test_duplicate_ids_reject_the_layer_and_retain_last_good_entries(self):
         duplicate = {"entries": [LOCAL_OVERRIDE["entries"][0]] * 2}
         write_atomic(self.app.home / "cache-ttl.json", duplicate)
         table = self.table()
         self.assertFalse(self.layers(table)["local"]["loaded"])
-        self.assertIn("duplicate id: deepseek", self.layers(table)["local"]["error"])
+        failure = self.layers(table)["local"]["error"]
+        self.assertEqual(set(failure), {"code", "detail"})
+        self.assertEqual(failure["code"], "cache_policy_layer_failed")
+        self.assertIn("duplicate id: deepseek", failure["detail"])
+        self.assertLessEqual(len(failure["detail"]), 4096)
         self.assertFalse(any(entry["layer"] == "local" for entry in table["entries"]))
         write_atomic(self.app.home / "cache-ttl.json", LOCAL_OVERRIDE)
         self.assertTrue(self.layers(self.table())["local"]["loaded"])
@@ -210,7 +222,7 @@ class CacheTtlTests(unittest.TestCase):
             table = self.table()
             self.assertFalse(self.layers(table)["local"]["loaded"])
             self.assertIn(
-                "duplicate id: deepseek", self.layers(table)["local"]["error"]
+                "duplicate id: deepseek", self.layers(table)["local"]["error"]["detail"]
             )
             self.assertEqual(self.entries(table)["deepseek"]["note"], "local override")
         write_atomic(self.app.home / "cache-ttl.json", LOCAL_OVERRIDE)
@@ -218,18 +230,17 @@ class CacheTtlTests(unittest.TestCase):
 
     def test_duplicate_remote_ids_are_rejected_before_replacement(self):
         session = self.app.session()
-        with self.app.api(
-            f"/sessions/{session}/commands", {"name": "/reload", "args": {}}
-        ):
+        with self.app.api(f"/sessions/{session}/reload", {"target": "both"}):
             pass
         path = self.app.home / "cache-ttl-remote.json"
         before = path.read_bytes()
         self.provider.catalog = {"entries": [REMOTE_TABLE["entries"][0]] * 2}
-        with self.assertRaises(urllib.error.HTTPError) as rejected:
-            self.app.api(
-                f"/sessions/{session}/commands", {"name": "/reload", "args": {}}
-            )
-        self.assertIn("duplicate id", rejected.exception.read().decode())
+        with self.app.api(
+            f"/sessions/{session}/reload", {"target": "both"}
+        ) as response:
+            outcome = json.load(response)["cache_policy"]
+        self.assertEqual(outcome["state"], "failed")
+        self.assertIn("duplicate id", outcome["failure"]["detail"])
         self.assertEqual(path.read_bytes(), before)
         self.assertEqual(
             self.entries(self.table())["deepseek"]["note"], "remote override"
@@ -251,9 +262,7 @@ class CacheTtlTests(unittest.TestCase):
         self.assertEqual(
             self.entries(self.table())["deepseek"]["note"], "remote override"
         )
-        with self.app.api(
-            f"/sessions/{session}/commands", {"name": "/reload", "args": {}}
-        ):
+        with self.app.api(f"/sessions/{session}/reload", {"target": "both"}):
             pass
         os.utime(path, (timestamp, timestamp))
         self.assertEqual(
@@ -268,9 +277,9 @@ class CacheTtlTests(unittest.TestCase):
         table = self.table()
         self.assertTrue(self.layers(table)["local"]["loaded"])
         self.assertNotIn("deepseek", self.entries(table))
-        self.assertIsNone(self.resolved("?host=api.deepseek.com"))
+        self.assertIsNone(self.resolved("&host=api.deepseek.com"))
         self.assertEqual(
-            self.resolved("?extension=claude")["id"], "claude-subscription"
+            self.resolved("&extension=claude")["id"], "claude-subscription"
         )
 
     def test_malformed_local_file_keeps_the_last_good_table(self):
@@ -280,11 +289,14 @@ class CacheTtlTests(unittest.TestCase):
         table = self.table()
         local = self.layers(table)["local"]
         self.assertFalse(local["loaded"])
-        self.assertIn("not valid JSON", local["error"])
+        self.assertEqual(set(local["error"]), {"code", "detail"})
+        self.assertEqual(local["error"]["code"], "cache_policy_layer_failed")
+        self.assertIn("not valid JSON", local["error"]["detail"])
+        self.assertLessEqual(len(local["error"]["detail"]), 4096)
         entries = self.entries(table)
         self.assertEqual(entries["deepseek"]["layer"], "local")
         self.assertEqual(entries["deepseek"]["note"], "local override")
-        self.assertEqual(self.resolved("?host=gateway.laptop")["id"], "laptop-gateway")
+        self.assertEqual(self.resolved("&host=gateway.laptop")["id"], "laptop-gateway")
         # Fixing the file is picked up live, without a restart.
         write_atomic(self.app.home / "cache-ttl.json", LOCAL_OVERRIDE)
         self.assertTrue(self.layers(self.table())["local"]["loaded"])
@@ -310,17 +322,18 @@ class CacheTtlTests(unittest.TestCase):
         # The remote layer's new id sits in front of the default entries.
         self.assertEqual(ids[0], "fixture-gateway")
         self.assertEqual(
-            self.resolved("?host=gateway.fixture")["id"], "fixture-gateway"
+            self.resolved("&host=gateway.fixture")["id"], "fixture-gateway"
         )
 
     def test_session_reload_refetches_the_remote_copy(self):
         session = self.app.session()
         self.assertFalse((self.app.home / "cache-ttl-remote.json").exists())
         with self.app.api(
-            f"/sessions/{session}/commands", {"name": "/reload", "args": {}}
+            f"/sessions/{session}/reload", {"target": "both"}
         ) as response:
-            outcome = json.load(response)["result"]
-        self.assertEqual(outcome["reloaded"], "models+session")
+            outcome = json.load(response)
+        self.assertEqual(outcome["session"]["state"], "applied")
+        self.assertEqual(outcome["cache_policy"]["state"], "refreshed")
         table = self.table()
         self.assertTrue(self.layers(table)["remote"]["loaded"])
         self.assertEqual(self.entries(table)["deepseek"]["note"], "remote override")
@@ -346,15 +359,14 @@ class CacheTtlTests(unittest.TestCase):
         session = self.app.session()
         self.app.prompt(session, "hello").close()
         self.app.idle(session)
-        with self.app.api(f"/sessions/{session}/requests") as response:
-            finished = json.load(response)["rows"][0]["finishedMs"]
-        fading = [{"at": finished + 600_000}, {"at": finished + 3_600_000, "cached": 0}]
+        with self.app.api(f"/sessions/{session}/context?view=requests") as response:
+            finished = milliseconds(json.load(response)["items"][0]["ended_at"])
+        fading = [(finished + 600_000, None), (finished + 3_600_000, 0)]
 
         def latest_fade():
-            usages = [
-                event for event in self.app.events(session) if event["type"] == "usage"
-            ]
-            return usages[-1].get("cacheFade")
+            with self.app.api(f"/sessions/{session}?tail=0") as response:
+                fade = json.load(response)["usage"]["cache_fade"]
+            return [(milliseconds(step["at"]), step["cached_tokens"]) for step in fade]
 
         self.assertEqual(latest_fade(), fading)
         # The steps are stored with the usage, so a client attaching to a
@@ -374,7 +386,7 @@ class DefaultCacheTtlTests(unittest.TestCase):
         self.app.__enter__()
         self.addCleanup(self.app.__exit__, None, None, None)
 
-    def test_default_table_is_served_and_lookups_resolve(self):
+    def test_shipped_table_is_served_without_overrides(self):
         table = self.table()
         self.assertTrue(self.layers(table)["default"]["loaded"])
         self.assertIn("priv/cache-ttl.json", self.layers(table)["default"]["path"])
@@ -385,32 +397,29 @@ class DefaultCacheTtlTests(unittest.TestCase):
         )
         for entry in table["entries"]:
             self.assertEqual(entry["layer"], "default")
-        # First match in table order: the subscription entry shadows nothing,
-        # but a specific model glob beats the general host entry after it.
-        claude = self.resolved("?extension=claude")
-        self.assertEqual(claude["id"], "claude-subscription")
-        self.assertEqual(claude["policy"], "refresh")
-        self.assertEqual(claude["clock"], "request")
-        self.assertEqual([t["seconds"] for t in claude["tiers"]], [300, 3600])
-        self.assertEqual(claude["read"], 0.1)
-        deepseek = self.resolved("?host=api.deepseek.com")
-        self.assertEqual(deepseek["id"], "deepseek")
-        self.assertEqual(deepseek["policy"], "evict")
-        self.assertEqual(deepseek["survival"]["typical"], 14400)
-        # Matching is case-insensitive.
-        self.assertEqual(self.resolved("?host=API.DEEPSEEK.COM")["id"], "deepseek")
-        # A model glob within a list of patterns, ahead of the plain host rule.
-        self.assertEqual(
-            self.resolved("?host=api.openai.com&model=gpt-5.6-turbo")["id"],
-            "openai-5.6",
-        )
-        self.assertEqual(
-            self.resolved("?host=api.openai.com&model=gpt-4o")["id"], "openai"
-        )
-        self.assertIsNone(self.resolved("?extension=never-heard-of-it"))
+        shipped = {entry["id"]: entry for entry in SHIPPED["entries"]}
+        for entry in table["entries"]:
+            for field, value in shipped[entry["id"]].items():
+                if field == "match":
+                    expected = {
+                        name: ([pattern] if isinstance(pattern, str) else pattern)
+                        for name, pattern in value.items()
+                    }
+                    for name in ("extension", "host", "model"):
+                        self.assertEqual(entry[field][name], expected.get(name))
+                elif field == "survival":
+                    for name, number in value.items():
+                        self.assertEqual(entry[field][name], number)
+                elif field == "tiers":
+                    for observed, tier in zip(entry[field], value, strict=True):
+                        for name, number in tier.items():
+                            self.assertEqual(observed[name], number)
+                else:
+                    self.assertEqual(entry[field], value)
+        self.assertIsNone(self.resolved("&extension=never-heard-of-it"))
 
     def test_route_requires_authentication(self):
-        request = urllib.request.Request(self.app.base + "/cache-ttl")
+        request = urllib.request.Request(self.app.base + "/models?view=cache-policy")
         with self.assertRaises(urllib.error.HTTPError) as refused:
             urllib.request.urlopen(request, timeout=20)
-        self.assertEqual(refused.exception.code, 403)
+        self.assertEqual(refused.exception.code, 401)

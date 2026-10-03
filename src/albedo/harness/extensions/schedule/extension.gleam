@@ -1,13 +1,18 @@
 import albedo/daemon/store
+import albedo/harness/client_api
 import albedo/harness/command.{Argument, Command, Data}
 import albedo/harness/extension
 import albedo/harness/extensions/schedule/ledger
+import albedo/harness/extensions/schedule/migrations/revision
 import albedo/harness/page
+import gleam/http
 import gleam/int
 import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+
+import albedo/harness/extensions/schedule/service
 
 pub fn extension() -> extension.Extension {
   extension.Extension(
@@ -15,6 +20,28 @@ pub fn extension() -> extension.Extension {
     "Durable session prompts, recurring reminders, and idle heartbeats.",
     ["python"],
     [
+      extension.ClientPlugin([
+        client_api.Command(
+          "/schedule",
+          client_api.Read,
+          [],
+          client_api.Operation(
+            "listSchedule",
+            http.Get,
+            "/extensions/schedule/jobs",
+            [],
+            [#("session_id", client_api.Session("/id"))],
+            [],
+            [],
+            json.object([]),
+          ),
+        ),
+      ]),
+      extension.MigrationPlugin(extension.SchemaMigration(revision.apply)),
+      extension.ServicePlugin(extension.Service(
+        fn(_, _) { extension.Admission(extension.DaemonToken, 65_536) },
+        service.handle,
+      )),
       extension.CleanPlugin(fn(db, session) {
         store.forget_session(db, ["schedules"], session)
       }),

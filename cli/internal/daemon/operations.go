@@ -7,95 +7,164 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
+	"reflect"
 	"time"
 )
 
-// OperationHandle retains one intent and its exact encoded request through uncertainty.
-// Reusing this handle never creates a new operation ID.
+// OperationHandle freezes the chosen resource ID and exact admission payload.
+// Retries always use this same input or session resource.
 type OperationHandle struct {
 	id        string
 	operation operation
 	kind      string
+	sessionID string
 }
 
-func (handle *OperationHandle) ID() string { return handle.id }
+func (handle *OperationHandle) ID() string       { return handle.id }
+func (handle *OperationHandle) IsCreation() bool { return handle.kind == "creation" }
 
 func operationID() (string, error) {
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {
-		return "", fmt.Errorf("create operation ID: %w", err)
+		return "", fmt.Errorf("create resource ID: %w", err)
 	}
-	timestamp := uint64(time.Now().UnixMilli())
+	stamp := uint64(time.Now().UnixMilli())
 	for i := 5; i >= 0; i-- {
-		id[i] = byte(timestamp)
-		timestamp >>= 8
+		id[i] = byte(stamp)
+		stamp >>= 8
 	}
 	id[6] = id[6]&0x0f | 0x70
 	id[8] = id[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", id[0:4], id[4:6], id[6:8], id[8:10], id[10:16]), nil
+	return fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:]), nil
 }
 
 func NewSubmission(session string, fields SubmissionRequest) (*OperationHandle, error) {
-	id, err := operationID()
+	id := fields.SubmissionID
+	if id == "" {
+		var err error
+		id, err = operationID()
+		if err != nil {
+			return nil, err
+		}
+	}
+	kind := fields.Type
+	if kind == "" || kind == "user" {
+		kind = "message"
+	}
+	var body any
+	switch kind {
+	case "message":
+		if fields.Content == nil {
+			return nil, errors.New("message input requires text")
+		}
+		var uploaded *wireImageUpload
+		if fields.Image != nil {
+			uploaded = &wireImageUpload{MimeType: string(fields.Image.MimeType), Data: fields.Image.Data}
+		}
+		body = struct {
+			Kind     string           `json:"kind"`
+			Text     string           `json:"text"`
+			Image    *wireImageUpload `json:"image,omitempty"`
+			ClientID string           `json:"client_id,omitempty"`
+		}{kind, *fields.Content, uploaded, fields.ClientID}
+	case "continue":
+		body = struct {
+			Kind     string `json:"kind"`
+			ClientID string `json:"client_id,omitempty"`
+		}{kind, fields.ClientID}
+	case "skill":
+		body = struct {
+			Kind            string `json:"kind"`
+			CandidateID     string `json:"candidate_id"`
+			CatalogRevision string `json:"catalog_revision"`
+			Arguments       string `json:"arguments"`
+			ClientID        string `json:"client_id,omitempty"`
+		}{kind, fields.Name, fields.CatalogRevision, fields.Arguments, fields.ClientID}
+	case "command":
+		body = struct {
+			Kind      string          `json:"kind"`
+			CommandID string          `json:"command_id"`
+			Arguments json.RawMessage `json:"arguments"`
+			ClientID  string          `json:"client_id,omitempty"`
+		}{kind, fields.Name, fields.CommandArguments, fields.ClientID}
+	default:
+		return nil, fmt.Errorf("unknown input kind %q", kind)
+	}
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
-	if fields.SubmissionID == "" {
-		fields.SubmissionID = id
-	}
-	payload, err := json.Marshal(struct {
-		SubmissionRequest
-		OperationID string `json:"operationId"`
-	}{fields, id})
-	if err != nil {
-		return nil, err
-	}
-	handle := &OperationHandle{id: id, kind: fields.Type}
-	handle.operation = operation{
-		Name:   "submit message",
-		Method: http.MethodPost,
-		Path:   sessionPath(session, "/events"),
-		Body:   json.RawMessage(payload),
-		Policy: receiptRecovery,
-		Handle: handle,
-	}
+	handle := &OperationHandle{id: id, kind: kind, sessionID: session}
+	handle.operation = operation{Name: "admit input", Method: http.MethodPut, Path: sessionPath(session, "/inputs/"+id), Body: json.RawMessage(payload), Policy: receiptRecovery, Handle: handle}
 	return handle, nil
 }
+
 func NewCreation(fields CreateSessionRequest) (*OperationHandle, error) {
+	kind := fields.Kind
+	if kind == "" {
+		kind = "new"
+	}
+	var body any
+	switch kind {
+	case "new":
+		body = struct {
+			Kind      string `json:"kind"`
+			Workspace string `json:"workspace"`
+			Name      string `json:"name,omitempty"`
+			Provider  string `json:"provider_profile,omitempty"`
+			Model     string `json:"model,omitempty"`
+			Effort    string `json:"effort,omitempty"`
+		}{kind, fields.Workspace, fields.Name, fields.Provider, fields.Model, fields.Effort}
+	case "fork":
+		body = struct {
+			Kind       string `json:"kind"`
+			Source     string `json:"source_session_id"`
+			Checkpoint string `json:"checkpoint_id"`
+			Name       string `json:"name,omitempty"`
+		}{kind, fields.SourceSessionID, fields.CheckpointID, fields.Name}
+	case "child":
+		inputID, err := operationID()
+		if err != nil {
+			return nil, err
+		}
+		body = struct {
+			Kind    string `json:"kind"`
+			Parent  string `json:"parent_id"`
+			Address string `json:"address"`
+			Name    string `json:"name"`
+			InputID string `json:"initial_input_id"`
+			Task    string `json:"task"`
+			Model   string `json:"model,omitempty"`
+			Effort  string `json:"effort,omitempty"`
+		}{kind, fields.ParentID, fields.Address, fields.Name, inputID, fields.Task, fields.Model, fields.Effort}
+	default:
+		return nil, fmt.Errorf("unknown creation kind %q", kind)
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
 	id, err := operationID()
 	if err != nil {
 		return nil, err
 	}
-	payload, err := json.Marshal(struct {
-		CreateSessionRequest
-		OperationID string `json:"operationId"`
-	}{fields, id})
-	if err != nil {
-		return nil, err
-	}
-	handle := &OperationHandle{id: id}
-	handle.operation = operation{
-		Name:   "create session",
-		Method: http.MethodPost,
-		Path:   "/sessions",
-		Body:   json.RawMessage(payload),
-		Policy: receiptRecovery,
-		Handle: handle,
-	}
+	handle := &OperationHandle{id: id, kind: "creation", sessionID: id}
+	handle.operation = operation{Name: "create session", Method: http.MethodPut, Path: sessionPath(id, ""), Body: json.RawMessage(payload), Headers: http.Header{"If-None-Match": {"*"}}, Policy: receiptRecovery, Handle: handle}
 	return handle, nil
 }
 
 type OperationReceipt struct {
-	OperationID    string          `json:"operationId"`
-	Kind           string          `json:"kind"`
-	Status         string          `json:"status"`
-	Target         string          `json:"target"`
-	Result         json.RawMessage `json:"result"`
-	Error          json.RawMessage `json:"error"`
-	HTTPStatus     int             `json:"httpStatus"`
-	DeliveryStatus string          `json:"deliveryStatus"`
-	BlockingReason string          `json:"blockingReason"`
+	OperationID     string
+	Kind            string
+	Status          string
+	Target          string
+	Result          json.RawMessage
+	Error           json.RawMessage
+	HTTPStatus      int
+	DeliveryStatus  string
+	BlockingReason  string
+	TurnID          string
+	AcceptanceOrder int64
 }
 
 func (receipt OperationReceipt) Rejection() error {
@@ -105,143 +174,169 @@ func (receipt OperationReceipt) Rejection() error {
 	return decodeAPIError(receipt.HTTPStatus, receipt.Error)
 }
 
-func GetOperation(ctx context.Context, conn *Connection, id string) (OperationReceipt, error) {
-	var receipt OperationReceipt
-	err := executeRead(ctx, conn, operation{Name: "query operation", Method: http.MethodGet, Path: "/operations/" + url.PathEscape(id), Policy: readRecovery}, func(data []byte) error {
-		var wire struct {
-			OperationID    *string         `json:"operationId"`
-			Kind           *string         `json:"kind"`
-			Target         *string         `json:"target"`
-			Status         *string         `json:"status"`
-			HTTPStatus     *int            `json:"httpStatus"`
-			Result         json.RawMessage `json:"result"`
-			Error          json.RawMessage `json:"error"`
-			DeliveryStatus json.RawMessage `json:"deliveryStatus"`
-			BlockingReason json.RawMessage `json:"blockingReason"`
-		}
-		if err := json.Unmarshal(data, &wire); err != nil {
+func GetInput(ctx context.Context, conn *Connection, session, id string) (OperationReceipt, error) {
+	var input wireInput
+	err := executeRead(ctx, conn, operation{Name: "read input", Method: http.MethodGet, Path: sessionPath(session, "/inputs/"+id), Policy: readRecovery}, func(data []byte) error {
+		if err := decodeRequired(data, &input, "id", "session_id", "kind", "admission", "http_status", "problem", "accepted_at", "acceptance_order", "delivery", "blocking_reason", "transcript_position", "turn", "client_id"); err != nil {
 			return err
 		}
-		if wire.OperationID == nil || wire.Kind == nil || wire.Target == nil || wire.Status == nil || wire.HTTPStatus == nil {
-			return errors.New("incomplete operation receipt")
+		if input.ID != id || input.SessionID != session {
+			return fieldError("input identity")
 		}
-		receipt = OperationReceipt{OperationID: *wire.OperationID, Kind: *wire.Kind, Target: *wire.Target, Status: *wire.Status, HTTPStatus: *wire.HTTPStatus}
-		if receipt.OperationID != id || (receipt.Status != "accepted" && receipt.Status != "rejected") || receipt.Kind == "" || receipt.HTTPStatus < 100 || receipt.HTTPStatus > 599 {
-			return errors.New("invalid operation receipt")
-		}
-		// A rejected creation has no allocated session to name as its target.
-		if receipt.Target == "" && !(receipt.Kind == "create" && receipt.Status == "rejected") {
-			return fieldError("target")
-		}
-		if receipt.Status == "accepted" {
-			if wire.Result == nil || string(wire.Result) == "null" {
-				return fieldError("result")
-			}
-			receipt.Result = wire.Result
-		} else {
-			if wire.Error == nil || string(wire.Error) == "null" {
-				return fieldError("error")
-			}
-			receipt.Error = wire.Error
-		}
-		if wire.DeliveryStatus == nil {
-			return fieldError("deliveryStatus")
-		}
-		if wire.BlockingReason == nil {
-			return fieldError("blockingReason")
-		}
-		var delivery, reason *string
-		if err := json.Unmarshal(wire.DeliveryStatus, &delivery); err != nil {
-			return err
-		}
-		if err := json.Unmarshal(wire.BlockingReason, &reason); err != nil {
-			return err
-		}
-		if delivery != nil {
-			receipt.DeliveryStatus = *delivery
-		}
-		if reason != nil {
-			receipt.BlockingReason = *reason
-		}
-		return nil
+		return validInput(input)
 	})
-	return receipt, err
+	if err != nil {
+		return OperationReceipt{}, err
+	}
+	return inputReceipt(input), nil
 }
-
-// ResolveOperation only reads the original receipt; it never submits another request.
+func inputReceipt(input wireInput) OperationReceipt {
+	body, _ := json.Marshal(input)
+	problem, _ := json.Marshal(input.Problem)
+	receipt := OperationReceipt{OperationID: input.ID, Kind: input.Kind, Status: input.Admission, Target: input.SessionID, Result: body, Error: problem, HTTPStatus: int(input.HTTPStatus), DeliveryStatus: value(input.Delivery)}
+	receipt.AcceptanceOrder = value(input.AcceptanceOrder)
+	if input.BlockingReason != nil {
+		receipt.BlockingReason = input.BlockingReason.Detail
+	}
+	if input.Turn != nil {
+		receipt.TurnID = input.Turn.ID
+	}
+	return receipt
+}
+func validInput(input wireInput) error {
+	if input.ID == "" || input.SessionID == "" {
+		return fieldError("input identity")
+	}
+	switch input.Kind {
+	case "message", "continue", "skill", "command":
+	default:
+		return fieldError("input kind")
+	}
+	if input.Admission == "accepted" {
+		if input.HTTPStatus != 202 || input.AcceptedAt == nil || input.AcceptanceOrder == nil || *input.AcceptanceOrder < 1 || input.Problem != nil {
+			return fieldError("input admission")
+		}
+		switch value(input.Delivery) {
+		case "pending", "committed", "cancelled":
+			return nil
+		}
+	} else if input.Admission == "rejected" && input.HTTPStatus >= 400 && input.HTTPStatus <= 599 && input.Problem != nil && input.Delivery == nil && input.AcceptedAt == nil && input.AcceptanceOrder == nil && input.Turn == nil {
+		return nil
+	}
+	return fieldError("input admission")
+}
 func ResolveOperation(ctx context.Context, conn *Connection, handle *OperationHandle) (OperationReceipt, error) {
-	return GetOperation(ctx, conn, handle.ID())
+	return GetInput(ctx, conn, handle.sessionID, handle.id)
 }
 
 func executeReceipt(ctx context.Context, conn *Connection, handle *OperationHandle, statuses []int, decode func([]byte, int) error) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	for attempt := range 2 {
-		err := executeMutation(reqCtx, conn, handle.operation, statuses, decode)
+		err := executeMutation(ctx, conn, handle.operation, statuses, decode)
 		if err == nil {
 			return nil
 		}
-		if _, uncertain := errors.AsType[*UncertainOutcomeError](err); !uncertain {
-			if reqCtx.Err() != nil {
-				return uncertainOperation(handle.operation, err)
-			}
+		var uncertain *UncertainOutcomeError
+		collision := false
+		if api, ok := errors.AsType[*APIError](err); ok {
+			collision = handle.kind == "creation" && api.StatusCode == 412
+		}
+		if !errors.As(err, &uncertain) && !collision {
 			return err
 		}
-		if reqCtx.Err() != nil {
-			return err
+		if ctx.Err() != nil {
+			return uncertainOperation(handle.operation, err)
 		}
-		receipt, lookupErr := GetOperation(reqCtx, conn, handle.ID())
-		if IsOperationExpired(lookupErr) {
-			return uncertainOperation(handle.operation, lookupErr)
-		}
-		if lookupErr == nil {
-			if receipt.Status == "rejected" {
-				return receipt.Rejection()
+		if handle.kind == "creation" {
+			session, lookupErr := ResolveCreation(ctx, conn, handle)
+			if lookupErr == nil {
+				body, _ := json.Marshal(session.wire)
+				return decode(body, statuses[0])
 			}
-			if decodeErr := decode(receipt.Result, statuses[0]); decodeErr == nil {
-				return nil
+			if IsOperationExpired(lookupErr) {
+				return uncertainOperation(handle.operation, lookupErr)
+			}
+			if api, ok := errors.AsType[*APIError](lookupErr); ok {
+				if api.Code == "creation_conflict" {
+					return lookupErr
+				}
+				if len(api.Decision) > 0 && api.StatusCode >= 400 && api.StatusCode < 500 && api.StatusCode != 404 {
+					return lookupErr
+				}
+			}
+		} else {
+			receipt, lookupErr := ResolveOperation(ctx, conn, handle)
+			if lookupErr == nil {
+				if receipt.Status == "rejected" {
+					return receipt.Rejection()
+				}
+				if decodeErr := decode(receipt.Result, statuses[0]); decodeErr == nil {
+					return nil
+				}
+			}
+			if IsOperationExpired(lookupErr) {
+				return uncertainOperation(handle.operation, lookupErr)
 			}
 		}
-		if attempt == 1 || reqCtx.Err() != nil {
-			return errors.Join(err, reqCtx.Err())
+		if attempt == 1 {
+			return uncertainOperation(handle.operation, err)
 		}
 	}
-	panic("unreachable operation retry budget")
+	panic("unreachable admission retry budget")
 }
-
 func ResolveCreation(ctx context.Context, conn *Connection, handle *OperationHandle) (Session, error) {
-	receipt, err := ResolveOperation(ctx, conn, handle)
+	session, err := GetSession(ctx, conn, handle.id)
 	if err != nil {
-		if api, ok := errors.AsType[*APIError](err); ok && api.StatusCode == http.StatusGone {
-			return Session{}, err
+		if api, ok := errors.AsType[*APIError](err); ok && len(api.Decision) > 0 {
+			var decision wireCreationDecision
+			if parseErr := decodeRequired(api.Decision, &decision, "kind", "session_id", "admission", "http_status", "creation", "decided_at", "deleted_at"); parseErr != nil {
+				return Session{}, &ProtocolError{Code: "invalid_response", Operation: "read creation decision", Cause: parseErr}
+			}
+			if decision.Kind != "creation" || decision.SessionID != handle.ID() {
+				return Session{}, fieldError("creation decision identity")
+			}
+			if decision.Creation != nil && !sameCreationIntent(handle.operation.Body.(json.RawMessage), decision.Creation.Submitted) {
+				return Session{}, &APIError{StatusCode: 409, Code: "creation_conflict", Message: "the session ID belongs to another creation intent"}
+			}
 		}
-		return Session{}, uncertainOperation(handle.operation, err)
+		return Session{}, err
 	}
-	if receipt.Status == "rejected" {
-		return Session{}, decodeAPIError(receipt.HTTPStatus, receipt.Error)
+	if session.wire.Creation == nil {
+		return Session{}, fieldError("creation")
 	}
-	fields, decodeErr := object(receipt.Result)
-	if decodeErr != nil {
-		return Session{}, uncertainOperation(handle.operation, decodeErr)
+	if !sameCreationIntent(handle.operation.Body.(json.RawMessage), session.wire.Creation.Submitted) {
+		return Session{}, &APIError{StatusCode: 409, Code: "creation_conflict", Message: "the session ID belongs to another creation intent"}
 	}
-	var id string
-	if decodeErr = required(fields, "operationId", &id); decodeErr != nil || id != handle.ID() {
-		return Session{}, invalidResponse(handle.operation, "operationId", fieldError("operationId"))
-	}
-	session, decodeErr := decodeSession(receipt.Result)
-	if decodeErr != nil {
-		return Session{}, invalidResponse(handle.operation, "session", decodeErr)
-	}
+
 	return session, nil
 }
-
-func (handle *OperationHandle) IsContinuation() bool { return handle.kind == "continue" }
-
-// IsOperationExpired identifies a receipt whose admission outcome can no longer be recovered.
 func IsOperationExpired(err error) bool {
 	api, ok := errors.AsType[*APIError](err)
-	return ok && api.StatusCode == http.StatusGone && api.Code == "operation_expired"
+	return ok && api.StatusCode == http.StatusGone
+}
+
+func sameCreationIntent(expected, stored json.RawMessage) bool {
+	var left, right map[string]any
+	if json.Unmarshal(expected, &left) != nil || json.Unmarshal(stored, &right) != nil {
+		return false
+	}
+	var optional []string
+	switch left["kind"] {
+	case "new":
+		optional = []string{"name", "provider_profile", "model", "effort"}
+	case "fork":
+		optional = []string{"name"}
+	case "child":
+		optional = []string{"model", "effort"}
+	}
+	for _, key := range optional {
+		if _, ok := left[key]; !ok {
+			left[key] = nil
+		}
+	}
+	return reflect.DeepEqual(left, right)
 }

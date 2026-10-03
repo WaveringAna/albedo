@@ -1,55 +1,109 @@
 //// Daemon-owned persisted settings. Wire values are decoded before mutation.
 
-import albedo/daemon/configuration
-import albedo/harness/session_settings
-import gleam/dynamic.{type Dynamic}
-import gleam/dynamic/decode
+import albedo/harness/cache_ttl
+import albedo/harness/oauth
+import gleam/json
+import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/uri
 
-pub fn capability_decoder() -> decode.Decoder(session_settings.Change) {
-  use kind <- decode.field("kind", decode.string)
-  use name <- decode.field("name", decode.string)
-  use scope <- decode.field("scope", decode.string)
-  use enabled <- decode.field("enabled", decode.optional(decode.bool))
-  decode.success(session_settings.Capability(kind, name, scope, enabled))
+pub type Group {
+  Providers
+  MCP
+  Extensions
+  Capabilities
+  Models
+  UI
 }
 
-pub fn save_provider(
-  home: String,
-  name: String,
-  profile: String,
-) -> Result(Nil, String) {
-  use validated <- result.try(configuration.validate_profile(name, profile))
-  provider(home, name, validated, False)
+pub fn group_name(group: Group) -> String {
+  case group {
+    Providers -> "providers"
+    MCP -> "mcp"
+    Extensions -> "extensions"
+    Capabilities -> "capabilities"
+    Models -> "models"
+    UI -> "ui"
+  }
 }
 
-pub fn delete_provider(home: String, name: String) -> Result(Nil, String) {
-  provider(home, name, "{}", True)
+pub fn parse_group(name: String) -> Result(Group, String) {
+  case name {
+    "providers" -> Ok(Providers)
+    "mcp" -> Ok(MCP)
+    "extensions" -> Ok(Extensions)
+    "capabilities" -> Ok(Capabilities)
+    "models" -> Ok(Models)
+    "ui" -> Ok(UI)
+    _ -> Error("unknown settings group")
+  }
 }
 
-@external(erlang, "albedo_settings", "snapshot")
-pub fn snapshot(home: String) -> Result(String, String)
+pub type GroupSnapshot {
+  GroupSnapshot(value: String, etag: Option(String))
+}
 
-@external(erlang, "albedo_settings", "provider")
-fn provider(
+@external(erlang, "albedo_settings_http", "observe")
+pub fn observe_group(
   home: String,
-  name: String,
-  profile: String,
-  delete: Bool,
-) -> Result(Nil, String)
+  group: String,
+) -> Result(GroupSnapshot, #(Int, String, String))
 
-@external(erlang, "albedo_settings", "ui")
-pub fn patch_ui(
+@external(erlang, "albedo_settings_http", "composition_revision")
+fn saved_composition_revision(
   home: String,
-  session: String,
+) -> Result(String, #(Int, String, String))
+
+pub fn composition_revision(home: String) -> Result(String, String) {
+  saved_composition_revision(home)
+  |> result.map_error(fn(_) { "composition settings are unavailable" })
+}
+
+@external(erlang, "albedo_settings_http", "patch")
+pub fn patch_group(
+  home: String,
+  group: String,
+  etag: String,
   patch: String,
-) -> Result(String, String)
+  providers: List(String),
+  logins: List(oauth.Login),
+  resolve: fn(String) -> Result(String, String),
+  defaults: fn(List(#(String, Bool)), List(#(String, Option(Bool)))) ->
+    Result(List(#(String, Bool)), #(Int, String, String)),
+) -> Result(String, #(Int, String, String))
 
-@external(erlang, "albedo_settings", "open")
-pub fn record_open(home: String, session: String) -> Result(String, String)
+@external(erlang, "albedo_settings_http", "mcp_definitions")
+pub fn mcp_definitions(
+  home: String,
+) -> Result(List(#(String, Bool)), #(Int, String, String))
 
-@external(erlang, "albedo_settings", "forget")
-pub fn forget(home: String, session: String) -> Result(Nil, String)
-
-@external(erlang, "albedo_settings", "encode_dynamic")
-pub fn encode(value: Dynamic) -> String
+/// Public cache priors use the same lookup as model requests.
+pub fn cache_prior_json(
+  provider: String,
+  provider_extension: String,
+  endpoint: String,
+  model: String,
+) -> String {
+  let host =
+    uri.parse(endpoint)
+    |> result.map(fn(uri) { uri.host })
+    |> result.unwrap(None)
+    |> option.unwrap("")
+  let entry = cache_ttl.lookup(provider_extension, host, model)
+  let seconds =
+    option.then(entry, cache_ttl.clock_tier)
+    |> option.map(fn(tier) { tier.seconds })
+  json.object([
+    #("provider", json.string(provider)),
+    #("model", json.string(model)),
+    #("ttl_seconds", json.nullable(seconds, json.int)),
+    #(
+      "source",
+      json.string(case entry {
+        Some(entry) -> entry.source
+        None -> "unknown"
+      }),
+    ),
+  ])
+  |> json.to_string
+}

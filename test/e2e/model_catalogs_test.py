@@ -17,7 +17,7 @@ import json
 import unittest
 import urllib.parse
 
-from harness import Albedo, Provider, exclusive, text
+from harness import Albedo, Provider, exclusive, operation_id, text
 
 MODELS_CATALOG = {
     "fixture": {
@@ -107,45 +107,55 @@ class ModelCatalogReloadTests(unittest.TestCase):
             self.addCleanup((self.app.home / name).unlink, missing_ok=True)
         self.addCleanup(self.app.__exit__, None, None, None)
 
-    def listed(self, provider, query=""):
-        with self.app.api(f"/models/{provider}{query}") as response:
-            return json.load(response)
+    def listed(self, provider, endpoint=""):
+        query = urllib.parse.urlencode(
+            {"provider": provider, **({"endpoint": endpoint} if endpoint else {})}
+        )
+        with self.app.api(f"/models?{query}") as response:
+            return json.load(response)["items"]
 
     def reload(self, target):
         session = self.app.session()
         with self.app.api(
-            f"/sessions/{session}/commands",
-            {"name": "/reload", "args": {"target": target}},
+            f"/sessions/{session}/reload",
+            {"target": target},
         ) as response:
-            return json.load(response)["result"]
+            return json.load(response)
 
     def alibaba_listed(self):
-        endpoint = urllib.parse.quote(self.alibaba.url, safe="")
-        return self.listed("alibaba", f"?endpoint={endpoint}")
+        return self.listed("alibaba", self.alibaba.url)
 
     def test_reload_models_refetches_provider_lists_and_names_failures(self):
-        self.assertEqual(self.alibaba_listed(), ["qwen-stale"])
+        self.assertEqual([item["id"] for item in self.alibaba_listed()], ["qwen-stale"])
         outcome = self.reload("models")
-        catalogs = outcome["catalogs"]
-        self.assertIn("alibaba", catalogs["reloaded"])
-        self.assertIn("models", catalogs["reloaded"])
-        self.assertEqual({"codex", "antigravity", "claude"}, set(catalogs["failed"]))
-        self.assertIn("claude (", outcome["message"])
+        catalogs = {item["provider"]: item for item in outcome["models"]}
+        self.assertEqual(catalogs["alibaba"]["state"], "refreshed")
+        self.assertEqual(catalogs["models"]["state"], "refreshed")
+        self.assertEqual(
+            {"codex", "antigravity", "claude"},
+            {name for name, item in catalogs.items() if item["state"] == "failed"},
+        )
+        self.assertTrue(catalogs["claude"]["failure"])
         # The non-chat entitlement stays filtered, as on any other fetch.
-        self.assertEqual(self.alibaba_listed(), ["qwen-fresh"])
+        self.assertEqual([item["id"] for item in self.alibaba_listed()], ["qwen-fresh"])
         # A failed reload keeps the list it had.
         self.assertEqual(
-            self.listed("claude"), ["claude-fixture-6", "claude-fixture-small"]
+            [item["id"] for item in self.listed("claude")],
+            ["claude-fixture-6", "claude-fixture-small"],
         )
 
     def test_claude_picker_offers_the_api_list_with_its_facts(self):
         self.reload("models")
-        newest, small = self.listed("claude", "?details=1")
+        newest, small = self.listed("claude")
         self.assertEqual(
             [newest["id"], small["id"]], ["claude-fixture-6", "claude-fixture-small"]
         )
         self.assertEqual(
-            (newest["context"], newest["output"], newest["efforts"]),
+            (
+                newest["default_context_tokens"],
+                newest["max_output_tokens"],
+                [effort["id"] for effort in newest["efforts"]],
+            ),
             (500000, 32000, ["low", "high"]),
         )
         # No effort listed means the model takes none, not a guessed default.
@@ -211,17 +221,21 @@ class ModelCatalogSelectionTests(unittest.TestCase):
         self.addCleanup(self.app.__exit__, None, None, None)
 
     def listed(self, provider, endpoint=""):
-        query = urllib.parse.urlencode({"endpoint": endpoint, "details": "1"})
-        with self.app.api(f"/models/{provider}?{query}") as response:
-            return json.load(response)
+        query = urllib.parse.urlencode(
+            {"provider": provider, **({"endpoint": endpoint} if endpoint else {})}
+        )
+        with self.app.api(f"/models?{query}") as response:
+            return json.load(response)["items"]
 
     def test_gateway_uses_smallest_limits_and_shared_reported_capabilities(self):
         gateway = "https://gateway.example/v1"
         [shared] = self.listed("openai", gateway)
-        self.assertEqual(shared["context"], 200000)
-        self.assertEqual(shared["output"], 8000)
-        self.assertEqual(shared["input"], ["image", "text"])
-        self.assertEqual(shared["efforts"], ["medium", "high"])
+        self.assertEqual(shared["default_context_tokens"], 200000)
+        self.assertEqual(shared["max_output_tokens"], 8000)
+        self.assertEqual(shared["input_modalities"], ["image", "text"])
+        self.assertEqual(
+            [effort["id"] for effort in shared["efforts"]], ["medium", "high"]
+        )
         self.assertEqual(self.listed("openai"), [shared])
         # The reduced index must give the same answer after a daemon restart.
         self.assertTrue((self.app.home / "models.json.index").exists())
@@ -235,16 +249,19 @@ class ModelCatalogSelectionTests(unittest.TestCase):
             ["shared-model", "vendor/qualified-model"],
         )
         shared, qualified = listed
-        self.assertEqual(shared["context"], 200000)
-        self.assertEqual(shared["output"], 16000)
-        self.assertEqual(shared["input"], ["image", "text"])
-        self.assertEqual(qualified["context"], 32000)
+        self.assertEqual(shared["default_context_tokens"], 200000)
+        self.assertEqual(shared["max_output_tokens"], 16000)
+        self.assertEqual(shared["input_modalities"], ["image", "text"])
+        self.assertEqual(qualified["default_context_tokens"], 32000)
         # ChatGPT has no matching API host in models.dev; it uses OpenAI identity.
         [subscription] = self.listed("openai", "https://chatgpt.com/backend-api")
-        self.assertEqual(subscription["context"], 400000)
-        self.assertEqual(subscription["output"], 8000)
-        self.assertEqual(subscription["input"], ["text", "image", "pdf"])
-        self.assertEqual(subscription["efforts"], ["low", "medium", "high"])
+        self.assertEqual(subscription["default_context_tokens"], 400000)
+        self.assertEqual(subscription["max_output_tokens"], 8000)
+        self.assertEqual(subscription["input_modalities"], ["text", "image", "pdf"])
+        self.assertEqual(
+            [effort["id"] for effort in subscription["efforts"]],
+            ["low", "medium", "high"],
+        )
 
     def test_known_reasoning_models_keep_empty_catalog_efforts(self):
         catalog = {
@@ -275,25 +292,30 @@ class ModelCatalogSelectionTests(unittest.TestCase):
         self.assertEqual(self.listed("openai"), listed)
 
     def test_efforts_are_inferred_only_for_a_model_absent_from_a_valid_catalog(self):
-        with self.app.api(
-            "/sessions",
-            {"workspace": str(self.app.workspace), "model": "o3-unlisted"},
-        ) as response:
-            session = json.load(response)["id"]
-        with self.app.api(
-            f"/sessions/{session}/commands", {"name": "/effort"}
-        ) as response:
-            self.assertEqual(
-                json.load(response)["result"]["available"], ["low", "medium", "high"]
-            )
+        session = operation_id()
+        self.app.api(
+            f"/sessions/{session}",
+            {
+                "kind": "new",
+                "workspace": str(self.app.workspace),
+                "provider_profile": self.app.profile,
+                "model": "o3-unlisted",
+            },
+            method="PUT",
+            headers={"If-None-Match": "*"},
+        ).close()
+        query = urllib.parse.urlencode({"provider": "openai", "model": "o3-unlisted"})
+        with self.app.api(f"/models?{query}") as response:
+            [model] = json.load(response)["items"]
+        self.assertEqual(
+            [effort["id"] for effort in model["efforts"]], ["low", "medium", "high"]
+        )
         # A corrupt catalog cannot establish that the model is absent.
         (self.app.home / "models.json").write_text("{")
         self.app.restart()
-        with self.app.api(
-            "/sessions",
-            {"workspace": str(self.app.workspace), "model": "o3-unlisted"},
-        ) as response:
-            self.assertIsNone(json.load(response)["effort"])
+        with self.app.api(f"/models?{query}") as response:
+            [model] = json.load(response)["items"]
+        self.assertEqual(model["efforts"], [])
 
 
 # exclusive: seeds global Codex catalog and restarts the daemon
@@ -339,20 +361,21 @@ class CodexCachedCatalogTests(unittest.TestCase):
 
         with Albedo(provider, prepare=prepare) as app:
 
-            def listed(details=False):
-                suffix = "?details=1" if details else ""
-                with app.api("/models/codex" + suffix) as response:
-                    return json.load(response)
+            def listed():
+                with app.api("/models?provider=codex") as response:
+                    return json.load(response)["items"]
 
             expected = ["other-account", "codex-fixture"]
-            self.assertEqual(listed(), expected)
-            facts = listed(True)
+            self.assertEqual([item["id"] for item in listed()], expected)
+            facts = listed()
             self.assertEqual([item["id"] for item in facts], expected)
             model = facts[1]
-            self.assertEqual(model["context"], 200000)
-            self.assertEqual(model["maxContext"], 400000)
-            self.assertEqual(model["input"], ["text", "image"])
-            self.assertEqual(model["efforts"], ["low", "high"])
+            self.assertEqual(model["default_context_tokens"], 200000)
+            self.assertEqual(model["max_context_tokens"], 400000)
+            self.assertEqual(model["input_modalities"], ["text", "image"])
+            self.assertEqual(
+                [effort["id"] for effort in model["efforts"]], ["low", "high"]
+            )
             app.restart()
-            self.assertEqual(listed(), expected)
-            self.assertEqual(listed(True), facts)
+            self.assertEqual([item["id"] for item in listed()], expected)
+            self.assertEqual(listed(), facts)

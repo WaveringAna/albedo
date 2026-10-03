@@ -51,24 +51,26 @@ func TestStreamAuthenticationRecoveryBeforeDelivery(t *testing.T) {
 					var requests atomic.Int32
 					var deliveries atomic.Int32
 					server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-						if request.URL.Path == "/health" {
-							_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow","normalized_tool_progress"]}`))
+						if request.URL.Path == "/server" {
+							_, _ = writer.Write([]byte(readyServer))
 							return
 						}
 						if requests.Add(1) == 1 {
 							if test.marked {
-								writer.Header().Set("Albedo-Error-Code", "authentication_required")
+								writer.Header().Set("WWW-Authenticate", "Bearer")
+								writer.WriteHeader(http.StatusUnauthorized)
+							} else {
+								writer.WriteHeader(http.StatusForbidden)
 							}
-							writer.WriteHeader(http.StatusForbidden)
 							if caller.name == "chat" {
 								if test.marked {
 									_, _ = writer.Write([]byte(`{"code":"authentication_required"}`))
 								} else {
-									_, _ = writer.Write([]byte(`{"error":"denied"}`))
+									_, _ = writer.Write([]byte(`{"detail":"denied"}`))
 								}
 								return
 							}
-							// Agents inspect only the status and header. Closing the unfinished
+							// The refusal marker allows closing the unfinished
 							// body must cancel this handler without waiting for more bytes.
 							writer.(http.Flusher).Flush()
 							<-request.Context().Done()
@@ -78,11 +80,11 @@ func TestStreamAuthenticationRecoveryBeforeDelivery(t *testing.T) {
 							t.Error("stream reused old credentials")
 						}
 						writer.Header().Set("Content-Type", "text/event-stream")
-						_, _ = io.WriteString(writer, "data: {\"generation\":\"generation-a\",\"cursor\":1,\"events\":[{\"type\":\"reset\"},{\"type\":\"text\",\"session\":\"s\",\"text\":\"hello\"}],\"currentProgress\":[]}\n\n")
+						writeInitialStream(writer, caller.name)
 					}))
 					defer server.Close()
 
-					snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: test.token, Version: 2}
+					snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: test.token, Version: ProtocolVersion}
 					replacement := snapshot
 					snapshot.Token = "old"
 					conn := NewConnection(snapshot, func(context.Context) (ConnectionSnapshot, error) { return replacement, nil })
@@ -102,7 +104,11 @@ func TestStreamAuthenticationRecoveryBeforeDelivery(t *testing.T) {
 						}
 					} else {
 						failure, ok := errors.AsType[*APIError](streamErr)
-						if !ok || failure.StatusCode != http.StatusForbidden || deliveries.Load() != 0 {
+						expectedStatus := http.StatusForbidden
+						if test.marked {
+							expectedStatus = http.StatusUnauthorized
+						}
+						if !ok || failure.StatusCode != expectedStatus || deliveries.Load() != 0 {
 							t.Fatalf("refusal changed: %v deliveries=%d", streamErr, deliveries.Load())
 						}
 					}
@@ -121,19 +127,19 @@ func TestAcceptedStreamIsNeverReplayed(t *testing.T) {
 					var deliveries atomic.Int32
 					callbackFailure := errors.New("consumer stopped")
 					server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-						if request.URL.Path == "/health" {
-							_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow","normalized_tool_progress"]}`))
+						if request.URL.Path == "/server" {
+							_, _ = writer.Write([]byte(readyServer))
 							return
 						}
 						requests.Add(1)
 						if failure == "truncated body" {
-							writer.Header().Set("Content-Length", "1000")
+							writer.Header().Set("Content-Length", "1000000")
 						}
 						writer.Header().Set("Content-Type", "text/event-stream")
-						_, _ = io.WriteString(writer, "data: {\"generation\":\"generation-a\",\"cursor\":1,\"events\":[{\"type\":\"reset\"},{\"type\":\"text\",\"session\":\"s\",\"text\":\"hello\"}],\"currentProgress\":[]}\n\n")
+						writeInitialStream(writer, caller.name)
 					}))
 					defer server.Close()
-					snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "token", Version: 2}
+					snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "token", Version: ProtocolVersion}
 
 					replacement := snapshot
 					conn := NewConnection(snapshot, func(context.Context) (ConnectionSnapshot, error) { return replacement, nil })

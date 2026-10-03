@@ -2,84 +2,48 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"net/http"
-	"time"
+	"net/url"
+	"strconv"
 )
 
 type TreeCheckpoint struct {
-	Timestamp *int64 `json:"timestamp,omitempty"`
-	Type      string `json:"type"`
-	Preview   string `json:"preview"`
-	ID        int    `json:"id"`
+	Timestamp         *int64
+	Type, Preview, ID string
+	Position          int
 }
-
 type TreePage struct {
-	NextCursor *int             `json:"nextCursor"`
-	Items      []TreeCheckpoint `json:"items"`
-	HasMore    bool             `json:"hasMore"`
+	NextCursor *int
+	Items      []TreeCheckpoint
+	HasMore    bool
 }
 
-func GetSessionTree(ctx context.Context, conn *Connection, session string, after, limit int) (TreePage, error) {
-	if ctx == nil {
-		ctx = context.Background()
+func GetSessionTree(ctx context.Context, conn *Connection, id string, after, limit int) (TreePage, error) {
+	q := url.Values{"view": {"checkpoints"}, "limit": {strconv.Itoa(min(max(limit, 1), 200))}}
+	if after > 0 {
+		q.Set("after", strconv.Itoa(after))
 	}
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
 	var result TreePage
-	if err := checkCapability(ctx, conn, "session_tree", "for /tree"); err != nil {
-		return result, err
-	}
-	err := executeRead(ctx, conn, operation{Name: "get session tree", Method: http.MethodGet, Path: sessionPath(session, fmt.Sprintf("/tree?after=%d&limit=%d", after, limit)), Policy: readRecovery}, func(data []byte) error {
-		fields, err := object(data)
-		if err != nil {
+	err := executeRead(ctx, conn, operation{Name: "read checkpoints", Method: http.MethodGet, Path: sessionPath(id, "/history?"+q.Encode()), Policy: readRecovery}, func(data []byte) error {
+		var w wireCheckpointPage
+		if err := decodeRequired(data, &w, "items", "older", "newer", "high_water"); err != nil {
 			return err
 		}
-		var rows []json.RawMessage
-		if err = required(fields, "items", &rows); err != nil {
-			return err
-		}
-		if err = nullable(fields, "nextCursor", &result.NextCursor); err != nil {
-			return err
-		}
-		if err = required(fields, "hasMore", &result.HasMore); err != nil {
-			return err
-		}
-		if result.NextCursor != nil && (*result.NextCursor < 0 || *result.NextCursor <= after) {
-			return fieldError("nextCursor")
-		}
-		if result.HasMore && (result.NextCursor == nil || len(rows) == 0) {
-			return fieldError("nextCursor")
-		}
+		result.Items = []TreeCheckpoint{}
 		previous := after
-		result.Items = make([]TreeCheckpoint, 0, len(rows))
-		for _, row := range rows {
-			fields, err := object(row)
-			if err != nil {
-				return err
+		for _, row := range w.Items {
+			if row.CheckpointID == "" || row.Position <= int64(previous) {
+				return fieldError("checkpoint")
 			}
-			var item TreeCheckpoint
-			if err = required(fields, "id", &item.ID); err != nil {
-				return err
-			}
-			if err = required(fields, "type", &item.Type); err != nil {
-				return err
-			}
-			if err = required(fields, "preview", &item.Preview); err != nil {
-				return err
-			}
-			if err = nullable(fields, "timestamp", &item.Timestamp); err != nil {
-				return err
-			}
-			if item.ID <= previous {
-				return fieldError("id")
-			}
-			previous = item.ID
-			result.Items = append(result.Items, item)
+			previous = int(row.Position)
+			result.Items = append(result.Items, TreeCheckpoint{ID: row.CheckpointID, Position: int(row.Position), Type: row.TurnType, Preview: row.Preview.Text})
 		}
-		if result.HasMore && result.NextCursor != nil && *result.NextCursor != previous {
-			return fieldError("nextCursor")
+		result.HasMore = w.Newer != nil
+		if result.HasMore {
+			if len(w.Items) == 0 {
+				return fieldError("checkpoint page")
+			}
+			result.NextCursor = &previous
 		}
 		return nil
 	})

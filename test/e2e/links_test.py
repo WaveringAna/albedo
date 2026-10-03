@@ -11,6 +11,7 @@ import re
 import shutil
 import unittest
 import urllib.error
+import urllib.parse
 
 from harness import Albedo, Provider, python, text
 
@@ -35,18 +36,38 @@ class LinkTests(unittest.TestCase):
         self.app.prompt(session, "run it").close()
         self.app.idle(session)
         results = [
-            json.loads(event["result"])
-            for event in self.app.events(session)
-            if event.get("type") == "tool" and event.get("name") == "python"
+            json.loads(part["value"])
+            for entry in self.app.history(session)["items"]
+            if entry["kind"] == "tool_result" and entry["tool"]["name"] == "python"
+            for part in entry["content"]
+            if part["kind"] == "json" and part["field"] == "result"
         ]
         self.assertEqual(results[-1]["status"], "ok", results[-1])
         return results[-1]
 
-    def link(self, session, **args):
+    def group(self, workspace):
+        query = urllib.parse.urlencode({"workspace": str(workspace)})
+        with self.app.api(f"/extensions/links/groups?{query}") as response:
+            return json.load(response)
+
+    def merge(self, workspace, other):
+        group = self.group(workspace)["configuration_resource"]
+        other_group = self.group(other)["configuration_resource"]
         with self.app.api(
-            f"/sessions/{session}/commands", {"name": "/link", "args": args}
+            group["url"],
+            {"other_workspace": str(other), "other_etag": other_group["etag"]},
+            headers={"If-Match": group["etag"]},
         ) as response:
-            return json.load(response)["result"]
+            return json.load(response)
+
+    def unlink(self, workspace, member):
+        group = self.group(workspace)["configuration_resource"]
+        with self.app.api(
+            group["url"] + "&" + urllib.parse.urlencode({"member": str(member)}),
+            method="DELETE",
+            headers={"If-Match": group["etag"]},
+        ) as response:
+            return json.load(response)
 
     def memory_file(self, workspace):
         slug = re.sub(r"[^A-Za-z0-9]", "-", str(workspace))
@@ -63,13 +84,15 @@ class LinkTests(unittest.TestCase):
             "await work.create('ship the picker')",
         )
 
-        here = self.app.session(server)
-        added = self.link(here, action="add", details=str(laptop))
-        self.assertIn("linked with " + str(laptop), added["message"])
-        rows = self.link(here)["page"]["rows"]
+        self.app.session(server)
+        added = self.merge(server, laptop)
         self.assertEqual(
-            [(row["id"], row["badge"]) for row in rows],
-            [(str(server), "here"), (str(laptop), "")],
+            set(added["resource"]["value"]["members"]), {str(server), str(laptop)}
+        )
+        group = self.group(server)
+        self.assertEqual(
+            set(group["configuration_resource"]["value"]["members"]),
+            {str(server), str(laptop)},
         )
 
         # A session opened after the link starts with the linked memory and
@@ -100,14 +123,17 @@ class LinkTests(unittest.TestCase):
 
         # The laptop checkout goes away: it is shown as gone and still read.
         shutil.rmtree(laptop)
-        rows = self.link(here)["page"]["rows"]
-        self.assertEqual(rows[1]["badge"], "gone")
+        presence = {item["workspace"]: item for item in self.group(server)["presence"]}
+        self.assertEqual(presence[str(laptop)]["exists"], False)
         kept = self.cell(later, "print(memory.grep('cache key'))")
         self.assertIn("the cache key", kept["output"])
 
         # Removing it stops the reads and deletes nothing.
-        self.link(here, action="remove", details=str(laptop))
-        self.assertEqual(self.link(here)["page"]["rows"], [])
+        self.unlink(server, laptop)
+        self.assertEqual(
+            self.group(server)["configuration_resource"]["value"]["members"],
+            [str(server)],
+        )
         alone = self.cell(
             later,
             "print(memory.grep('cache key'))\n"
@@ -124,11 +150,21 @@ class LinkTests(unittest.TestCase):
         on_laptop = self.app.session(laptop)
         self.cell(on_laptop, "memory.append('the cache key is the prefix hash')")
         here, beside = self.app.session(server), self.app.session(server)
+        self.cell(here, "1")
         self.cell(beside, "1")
-        unopened = self.app.session(server)
 
-        added = self.link(here, action="add", details=str(laptop))
-        self.assertIn("told 3 open sessions", added["message"])
+        added = self.merge(server, laptop)
+        self.assertEqual(added["notification_count"], 3)
+        self.assertEqual(
+            {item["session_id"] for item in added["notifications"]},
+            {on_laptop, here, beside},
+        )
+        self.assertTrue(
+            all(
+                item["notification"]["state"] == "queued"
+                for item in added["notifications"]
+            )
+        )
 
         def next_request(session):
             self.app.prompt(session, "hi").close()
@@ -145,12 +181,13 @@ class LinkTests(unittest.TestCase):
             self.assertNotIn("the cache key", instructions)
         told, _ = next_request(on_laptop)
         self.assertIn("linked this workspace with " + str(server), told)
-        # One that never opened composes its snapshot when it does.
+        # A session created after the link starts with the linked memory.
+        unopened = self.app.session(server)
         told, instructions = next_request(unopened)
         self.assertNotIn("linked this workspace", told)
         self.assertIn("the cache key is the prefix hash", instructions)
 
-        self.link(here, action="remove", details=str(laptop))
+        self.unlink(server, laptop)
         told, _ = next_request(on_laptop)
         self.assertIn("unlinked this workspace from " + str(server), told)
         told, _ = next_request(beside)
@@ -159,15 +196,19 @@ class LinkTests(unittest.TestCase):
     def test_a_link_is_refused_for_this_workspace_and_missing_folders(self):
         workspace = self.app.root / "alone"
         workspace.mkdir()
-        session = self.app.session(workspace)
-        for details, reason in (
-            (str(workspace), "that is this workspace"),
-            (str(self.app.root / "nowhere"), "must be an existing absolute directory"),
+        self.app.session(workspace)
+        for details, status, code in (
+            (str(workspace), 409, "already_linked"),
+            (str(self.app.root / "nowhere"), 400, "invalid_request"),
         ):
             with self.assertRaises(urllib.error.HTTPError) as refused:
-                self.link(session, action="add", details=details)
-            self.assertIn(reason, refused.exception.read().decode())
-        self.assertEqual(self.link(session)["page"]["rows"], [])
+                self.merge(workspace, details)
+            self.assertEqual(refused.exception.code, status)
+            self.assertEqual(json.load(refused.exception)["code"], code)
+        self.assertEqual(
+            self.group(workspace)["configuration_resource"]["value"]["members"],
+            [str(workspace)],
+        )
 
 
 if __name__ == "__main__":

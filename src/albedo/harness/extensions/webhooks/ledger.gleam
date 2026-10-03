@@ -36,6 +36,30 @@ pub type Provisioned {
   Provisioned(hook: Hook, secret: String)
 }
 
+pub type Definition {
+  Definition(name: String, enabled: Bool, header: String, prefix: String)
+}
+
+pub type Permission {
+  Permission(session: String, agent_manage: Bool, revision: Int)
+}
+
+pub type Overview {
+  Overview(hook: Hook, pending: Int, deferral: Option(String))
+}
+
+pub type Receipt {
+  Receipt(
+    id: String,
+    hook: String,
+    session: String,
+    received_at: String,
+    delivered_at: Option(String),
+    attempts: Int,
+    deferral: Option(String),
+  )
+}
+
 pub type Error {
   Invalid(String)
   Denied
@@ -59,7 +83,8 @@ pub type Delivery {
 const schema = "
 CREATE TABLE IF NOT EXISTS webhook_permissions (
  session TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
- agent_manage INTEGER NOT NULL DEFAULT 0 CHECK(agent_manage IN (0,1))
+ agent_manage INTEGER NOT NULL DEFAULT 0 CHECK(agent_manage IN (0,1)),
+ revision INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS webhook_hooks (
  id TEXT PRIMARY KEY,
@@ -94,6 +119,11 @@ pub fn initialise(db: store.Store) -> Result(Nil, String) {
   use _ <- result.try(mail.initialise(db))
   store.query(db, fn(connection) {
     use _ <- result.try(store.exec(connection, schema))
+    use _ <- result.try(
+      store.add_columns(connection, "webhook_permissions", [
+        #("revision", "INTEGER NOT NULL DEFAULT 1"),
+      ]),
+    )
     move_inbox(connection)
   })
 }
@@ -109,7 +139,7 @@ fn move_inbox(connection: sqlight.Connection) -> Result(Nil, String) {
     delivery_decoder(),
   ))
   list.try_each(waiting, fn(delivery) {
-    mail.insert(connection, letter(delivery)) |> result.replace(Nil)
+    mail.insert(connection, letter(delivery), mail.Inbox) |> result.replace(Nil)
   })
 }
 
@@ -221,7 +251,7 @@ pub fn allow_agent(
   store.query(db, fn(connection) {
     store.run(
       connection,
-      "INSERT INTO webhook_permissions(session,agent_manage) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET agent_manage=excluded.agent_manage",
+      "INSERT INTO webhook_permissions(session,agent_manage) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET agent_manage=excluded.agent_manage,revision=revision+1",
       [sqlight.text(session), sqlight.bool(enabled)],
     )
     |> result.map_error(Storage)
@@ -347,7 +377,10 @@ pub fn to_json(hook: Hook) -> json.Json {
     #("session", json.string(hook.session)),
     #("name", json.string(hook.name)),
     #("enabled", json.bool(hook.enabled)),
-    #("url", json.string("/webhooks/" <> hook.id)),
+    #(
+      "url",
+      json.string("/extensions/webhooks/hooks/" <> hook.id <> "/deliveries"),
+    ),
     #("signatureHeader", json.string(hook.signature_header)),
     #("signaturePrefix", json.string(hook.signature_prefix)),
     #("revision", json.int(hook.revision)),
@@ -361,35 +394,287 @@ pub fn create(
   name: String,
   supplied_secret: Option(String),
 ) -> Result(Provisioned, Error) {
-  use _ <- result.try(validate_name(name))
+  create_configured(
+    db,
+    actor,
+    session,
+    Definition(name, True, "x-albedo-signature", "sha256="),
+    supplied_secret,
+  )
+}
+
+pub fn create_configured(
+  db: store.Store,
+  actor: Actor,
+  session: String,
+  definition: Definition,
+  supplied_secret: Option(String),
+) -> Result(Provisioned, Error) {
+  use _ <- result.try(validate_definition(definition))
   use secret <- result.try(secret_value(supplied_secret))
   store.query(db, fn(connection) {
+    use _ <- result.try(ensure_session(connection, session))
     use _ <- result.try(permitted(connection, actor, session))
     use existing <- result.try(
       rows(
         connection,
         "SELECT " <> columns <> " FROM webhook_hooks WHERE session=? AND name=?",
-        [sqlight.text(session), sqlight.text(name)],
+        [sqlight.text(session), sqlight.text(definition.name)],
       ),
     )
     case existing {
-      [_, ..] -> Error(Conflict)
+      [_, ..] -> Error(Invalid("name already used"))
       [] ->
         rows(
           connection,
-          "INSERT INTO webhook_hooks(id,session,name,secret) SELECT ?,?,?,? WHERE (SELECT count(*) FROM webhook_hooks WHERE session=?) < 32 RETURNING "
+          "INSERT INTO webhook_hooks(id,session,name,secret,enabled,signature_header,signature_prefix) SELECT ?,?,?,?,?,?,? WHERE (SELECT count(*) FROM webhook_hooks WHERE session=?) < 32 RETURNING "
             <> columns,
           [
             sqlight.text(new_id()),
             sqlight.text(session),
-            sqlight.text(name),
+            sqlight.text(definition.name),
             sqlight.text(secret),
+            sqlight.bool(definition.enabled),
+            sqlight.text(string.lowercase(definition.header)),
+            sqlight.text(definition.prefix),
             sqlight.text(session),
           ],
         )
-        |> result.try(one_or_conflict)
+        |> result.try(fn(rows) {
+          case rows {
+            [hook, ..] -> Ok(hook)
+            [] -> Error(Invalid("session webhook limit reached"))
+          }
+        })
         |> result.map(Provisioned(_, secret))
     }
+  })
+}
+
+fn validate_definition(definition: Definition) -> Result(Nil, Error) {
+  use _ <- result.try(validate_name(definition.name))
+  use _ <- result.try(validate_header(definition.header))
+  validate_prefix(definition.prefix)
+}
+
+/// One caller revision guards the entire configuration edit.
+pub fn patch(
+  db: store.Store,
+  actor: Actor,
+  current: Hook,
+  definition: Definition,
+) -> Result(Hook, Error) {
+  use _ <- result.try(validate_definition(definition))
+  store.query(db, fn(connection) {
+    use actual <- result.try(find_owned(
+      connection,
+      actor,
+      current.session,
+      current.id,
+    ))
+    use _ <- result.try(case actual.revision == current.revision {
+      True -> Ok(Nil)
+      False -> Error(Conflict)
+    })
+    use duplicates <- result.try(
+      rows(
+        connection,
+        "SELECT "
+          <> columns
+          <> " FROM webhook_hooks WHERE session=? AND name=? AND id<>?",
+        [
+          sqlight.text(current.session),
+          sqlight.text(definition.name),
+          sqlight.text(current.id),
+        ],
+      ),
+    )
+    use _ <- result.try(case duplicates {
+      [] -> Ok(Nil)
+      _ -> Error(Invalid("name already used"))
+    })
+    rows(
+      connection,
+      "UPDATE webhook_hooks SET name=?,enabled=?,signature_header=?,signature_prefix=?,revision=revision+1 WHERE id=? AND session=? AND revision=? RETURNING "
+        <> columns,
+      [
+        sqlight.text(definition.name),
+        sqlight.bool(definition.enabled),
+        sqlight.text(string.lowercase(definition.header)),
+        sqlight.text(definition.prefix),
+        sqlight.text(current.id),
+        sqlight.text(current.session),
+        sqlight.int(current.revision),
+      ],
+    )
+    |> result.try(one_or_conflict)
+  })
+}
+
+fn ensure_session(
+  connection: sqlight.Connection,
+  session: String,
+) -> Result(Nil, Error) {
+  query(
+    connection,
+    "SELECT id FROM sessions WHERE id=?",
+    [sqlight.text(session)],
+    decode.field(0, decode.string, decode.success),
+  )
+  |> result.try(fn(rows) {
+    case rows {
+      [] -> Error(NotFound)
+      _ -> Ok(Nil)
+    }
+  })
+}
+
+fn permission_on(
+  connection: sqlight.Connection,
+  session: String,
+) -> Result(Permission, Error) {
+  use _ <- result.try(ensure_session(connection, session))
+  query(
+    connection,
+    "SELECT agent_manage,revision FROM webhook_permissions WHERE session=?",
+    [sqlight.text(session)],
+    {
+      use enabled <- decode.field(0, decode.int)
+      use revision <- decode.field(1, decode.int)
+      decode.success(Permission(session, enabled == 1, revision))
+    },
+  )
+  |> result.map(fn(rows) {
+    list.first(rows) |> result.unwrap(Permission(session, False, 0))
+  })
+}
+
+pub fn permission(
+  db: store.Store,
+  session: String,
+) -> Result(Permission, Error) {
+  store.query(db, permission_on(_, session))
+}
+
+pub fn patch_permission(
+  db: store.Store,
+  current: Permission,
+  enabled: Bool,
+) -> Result(Permission, Error) {
+  store.query(db, fn(connection) {
+    use actual <- result.try(permission_on(connection, current.session))
+    use _ <- result.try(case actual.revision == current.revision {
+      True -> Ok(Nil)
+      False -> Error(Conflict)
+    })
+    use _ <- result.try(
+      store.run(
+        connection,
+        "INSERT INTO webhook_permissions(session,agent_manage,revision) VALUES(?,?,1) ON CONFLICT(session) DO UPDATE SET agent_manage=excluded.agent_manage,revision=revision+1",
+        [sqlight.text(current.session), sqlight.bool(enabled)],
+      )
+      |> result.map_error(Storage),
+    )
+    permission_on(connection, current.session)
+  })
+}
+
+pub fn list_page(
+  db: store.Store,
+  session: Option(String),
+  after: String,
+  limit: Int,
+) -> Result(List(Overview), Error) {
+  store.query(
+    db,
+    query(
+      _,
+      "SELECT "
+        <> columns
+        <> ",(SELECT count(*) FROM webhook_deliveries d JOIN mail m ON m.id=d.id WHERE d.hook=webhook_hooks.id AND m.delivered_at IS NULL),(SELECT m.last_error FROM webhook_deliveries d JOIN mail m ON m.id=d.id WHERE d.hook=webhook_hooks.id AND m.delivered_at IS NULL AND m.last_error IS NOT NULL ORDER BY m.created_at DESC,m.id DESC LIMIT 1)"
+        <> " FROM webhook_hooks WHERE (? IS NULL OR session=?) AND id>? ORDER BY id LIMIT ?",
+      [
+        sqlight.nullable(sqlight.text, session),
+        sqlight.nullable(sqlight.text, session),
+        sqlight.text(after),
+        sqlight.int(limit),
+      ],
+      {
+        use hook <- decode.then(decoder())
+        use pending <- decode.field(7, decode.int)
+        use deferral <- decode.field(8, decode.optional(decode.string))
+        decode.success(Overview(hook, pending, deferral))
+      },
+    ),
+  )
+}
+
+fn receipt_decoder() -> decode.Decoder(Receipt) {
+  use id <- decode.field(0, decode.string)
+  use hook <- decode.field(1, decode.string)
+  use session <- decode.field(2, decode.string)
+  use received <- decode.field(3, decode.string)
+  use delivered <- decode.field(4, decode.optional(decode.string))
+  use attempts <- decode.field(5, decode.int)
+  use deferral <- decode.field(6, decode.optional(decode.string))
+  decode.success(Receipt(
+    id,
+    hook,
+    session,
+    received,
+    delivered,
+    attempts,
+    deferral,
+  ))
+}
+
+const receipt_columns = "d.id,d.hook,d.session,d.received_at,COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ',m.delivered_at/1000.0,'unixepoch'),d.delivered_at),COALESCE(m.attempts,d.attempts),COALESCE(m.last_error,d.last_error)"
+
+/// Historical rows do not depend on the hook still existing.
+pub fn receipts(
+  db: store.Store,
+  hook: String,
+  state: String,
+  after: String,
+  limit: Int,
+) -> Result(List(Receipt), Error) {
+  store.query(db, query(
+    _,
+    "SELECT "
+      <> receipt_columns
+      <> " FROM webhook_deliveries d LEFT JOIN mail m ON m.id=d.id WHERE d.hook=? AND d.id>? AND (?='all' OR (?='pending' AND COALESCE(m.delivered_at,d.delivered_at) IS NULL) OR (?='delivered' AND COALESCE(m.delivered_at,d.delivered_at) IS NOT NULL)) ORDER BY d.id LIMIT ?",
+    [
+      sqlight.text(hook),
+      sqlight.text(after),
+      sqlight.text(state),
+      sqlight.text(state),
+      sqlight.text(state),
+      sqlight.int(limit),
+    ],
+    receipt_decoder(),
+  ))
+}
+
+pub fn receipt(
+  db: store.Store,
+  id: String,
+) -> Result(#(Receipt, BitArray), Error) {
+  store.query(db, fn(connection) {
+    query(
+      connection,
+      "SELECT "
+        <> receipt_columns
+        <> ",d.body FROM webhook_deliveries d LEFT JOIN mail m ON m.id=d.id WHERE d.id=?",
+      [sqlight.text(id)],
+      {
+        use receipt <- decode.then(receipt_decoder())
+        use body <- decode.field(7, decode.bit_array)
+        decode.success(#(receipt, body))
+      },
+    )
+    |> result.try(fn(rows) {
+      list.first(rows) |> result.replace_error(NotFound)
+    })
   })
 }
 
@@ -645,7 +930,7 @@ fn enqueue(
     case inserted {
       [] -> Ok([])
       _ ->
-        case mail.insert(connection, letter(delivery)) {
+        case mail.insert(connection, letter(delivery), mail.Inbox) {
           Ok(True) -> Ok(inserted)
           Ok(False) -> Error(Overloaded)
           Error(message) -> Error(Storage(message))

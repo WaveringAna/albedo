@@ -54,7 +54,7 @@ class KernelResetTests(unittest.TestCase):
         )
         with self.assertRaises(urllib.error.HTTPError) as rejected:
             app.prompt(session, "   ").close()
-        self.assertEqual(rejected.exception.code, 409)
+        self.assertEqual(rejected.exception.code, 400)
         self.assertEqual(self.turn(session, "after restart"), "after restart")
         self.assertEqual(self.turn(session, "ordinary turn"), "ordinary turn")
         self.assertEqual(self.turn(session, "lose kernel"), "lose kernel")
@@ -69,9 +69,11 @@ class KernelResetTests(unittest.TestCase):
         )
         self.assertEqual(self.turn(session, "still alive"), "still alive")
         users = [
-            event["text"]
-            for event in app.events(session)
-            if event.get("type") == "user"
+            part["text"]
+            for entry in app.history(session)["items"]
+            if entry["kind"] == "user"
+            for part in entry["content"]
+            if part["kind"] == "text"
         ]
         self.assertEqual(
             users,
@@ -85,5 +87,7 @@ class KernelResetTests(unittest.TestCase):
             ],
         )
         with app.api("/sessions") as response:
-            info = next(item for item in json.load(response) if item["id"] == session)
-        self.assertEqual(info["title"], "still alive")
+            info = next(
+                item for item in json.load(response)["items"] if item["id"] == session
+            )
+        self.assertEqual(info["name"], "still alive")

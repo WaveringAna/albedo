@@ -1,86 +1,68 @@
 package app
 
-// These protocol tests control stream/request ordering that real provider
-// timing cannot guarantee, including a cleanup response after caller cancellation.
+// Controlled streams verify turn membership, retries, and cleanup after cancellation.
 import (
+	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/testwire"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"albedo/cli/internal/daemon"
 )
 
 func promptTestConnection(server *httptest.Server) *daemon.Connection {
 	return daemon.NewConnection(daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
 }
-
-func TestPromptRequiresSubmissionCancellationBeforeCreatingASession(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/health" {
-			t.Errorf("unsupported prompt issued %s", request.URL.Path)
+func TestPromptRequiresDurableInputCapabilityBeforeCreatingASession(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/server" {
+			t.Errorf("unsupported prompt issued %s", r.URL)
 		}
-		_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":[]}`))
+		var resource map[string]any
+		_ = json.Unmarshal([]byte(testwire.Server), &resource)
+		resource["capabilities"] = map[string]any{}
+		_ = json.NewEncoder(w).Encode(resource)
 	}))
 	defer server.Close()
-	service := Service{Connect: func(context.Context) (*daemon.Connection, error) { return promptTestConnection(server), nil }}
+	service := Service{Connect: func(ctx context.Context) (*daemon.Connection, error) {
+		return daemon.Attach(ctx, daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "token"}, nil)
+	}}
 	_, err := service.RunPrompt(t.Context(), PromptOptions{Prompt: "hello"})
-	if _, ok := errors.AsType[*daemon.UpgradeRequiredError](err); !ok {
-		t.Fatalf("missing required capability did not prevent submission: %v", err)
+	if _, ok := errors.AsType[*daemon.CompatibilityError](err); !ok {
+		t.Fatalf("missing capability dispatched a submission: %v", err)
 	}
 }
-
+func promptEntry(id, text, run string, position int64) map[string]any {
+	return map[string]any{"id": id, "position": position, "kind": "assistant", "created_at": nil, "input_id": nil, "turn_id": run, "checkpoint_id": nil, "content_complete": true, "content": []any{map[string]any{"kind": "text", "text": text}}, "tool": nil}
+}
 func TestPromptFollowsCombinedSubmissionThroughRetryAndCompletion(t *testing.T) {
 	submitted := make(chan string, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/health":
-			_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["normalized_tool_progress"]}`))
-		case "/sessions/test/events":
-			var payload struct {
-				SubmissionID string `json:"submissionId"`
-				OperationID  string `json:"operationId"`
-			}
-			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
-				t.Error(err)
-				return
-			}
-			if payload.SubmissionID == "" {
-				t.Error("missing submission ID")
-			}
-			submitted <- payload.SubmissionID
-			writer.WriteHeader(http.StatusAccepted)
-			_ = json.NewEncoder(writer).Encode(map[string]any{"ok": true, "queued": true, "operationId": payload.OperationID})
-		case "/sessions/test/stream":
-			writer.Header().Set("Content-Type", "text/event-stream")
-			_, _ = fmt.Fprint(writer, "data: {\"generation\":\"generation-a\",\"cursor\":0,\"events\":[{\"type\":\"reset\"}],\"currentProgress\":[]}\n\n")
-			writer.(http.Flusher).Flush()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/sessions/test/inputs/"):
+			id := strings.TrimPrefix(r.URL.Path, "/sessions/test/inputs/")
+			submitted <- id
+			w.WriteHeader(202)
+			_ = json.NewEncoder(w).Encode(testwire.Input("test", id, "message", "pending"))
+		case r.URL.Path == "/sessions/test":
+			w.Header().Set("Content-Type", "text/event-stream")
+			testwire.WriteBatch(w, map[string]any{"generation": testwire.GenerationA, "cursor": 0, "snapshot": testwire.Session("test", testwire.GenerationA, 0), "events": []any{map[string]any{"type": "reset", "data": map[string]any{"reason": "initial"}}}})
+			w.(http.Flusher).Flush()
 			id := <-submitted
-			events := []map[string]any{
-				{"type": "turn_membership", "turnId": "combined", "submissionIds": []string{id, "other"}},
-				{"type": "user", "clientId": "another-client", "source": "chat", "triggeredAt": "", "text": "other contribution"},
-				{"type": "message", "role": "assistant", "text": "before retry"},
-				{"type": "error", "text": "temporary failure"},
-				{"type": "retry"},
-				{"type": "compacted", "evicted": 1, "summary": "summary"},
-				{"type": "message", "role": "assistant", "text": "combined final answer"},
-				{"type": "turn_completed", "turnId": "combined"},
-				{"type": "turn_membership", "turnId": "later", "submissionIds": []string{"other"}},
-				{"type": "message", "role": "assistant", "text": "later answer"},
-			}
-			page, _ := json.Marshal(map[string]any{"generation": "generation-a", "cursor": 1, "events": events})
-			_, _ = fmt.Fprintf(writer, "data: %s\n\n", page)
-			writer.(http.Flusher).Flush()
-			<-request.Context().Done()
+			input := testwire.Input("test", id, "message", "committed")
+			input["turn"] = map[string]any{"id": "combined", "state": "running", "input_ids": []string{id, "other"}, "input_count": 2, "truncated": false, "started_at": "2026-10-03T00:00:00Z", "ended_at": nil, "outcome": nil}
+			events := []any{testwire.Event("input", 1, map[string]any{"input": input}), testwire.Event("message", 2, map[string]any{"entry": promptEntry("m1", "before retry", "combined", 1)}), testwire.Event("error", 3, map[string]any{"run_id": "combined", "code": "temporary", "message": "temporary failure"}), testwire.Event("retry", 4, map[string]any{"run_id": "combined", "attempt": 2, "reason": map[string]any{"code": "retry", "detail": "retrying"}, "delay_ms": 0}), testwire.Event("message", 5, map[string]any{"entry": promptEntry("m2", "combined final answer", "combined", 2)}), testwire.Event("turn_completed", 6, map[string]any{"run_id": "combined", "state": "completed", "input_ids": []string{id, "other"}, "input_count": 2, "truncated": false})}
+			testwire.WriteBatch(w, map[string]any{"generation": testwire.GenerationA, "cursor": 6, "events": events})
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
 		default:
-			t.Errorf("unexpected %s", request.URL.Path)
-			writer.WriteHeader(http.StatusNotFound)
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			w.WriteHeader(404)
 		}
 	}))
 	defer server.Close()
@@ -91,54 +73,45 @@ func TestPromptFollowsCombinedSubmissionThroughRetryAndCompletion(t *testing.T) 
 		t.Fatalf("combined reply: %q %v", answer, err)
 	}
 }
-
 func TestPromptCancellationReportsSharedWorkAndCleanupFailure(t *testing.T) {
 	for _, fixture := range []struct {
 		name, outcome, want string
 		status              int
-	}{
-		{"shared", "shared_running", "shared turn is still running", 200},
-		{"cleanup failure", "", "cancellation unconfirmed", 503},
-	} {
+	}{{"shared", "shared_running", "shared turn is still running", 200}, {"cleanup failure", "", "cancellation unconfirmed", 503}} {
 		t.Run(fixture.name, func(t *testing.T) {
-			submitted := make(chan struct{})
-			cancelled := make(chan struct{})
+			submitted, cancelled := make(chan struct{}), make(chan struct{})
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-				switch request.URL.Path {
-				case "/health":
-					_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["normalized_tool_progress"]}`))
-				case "/sessions/test/events":
-					var payload struct {
-						OperationID string `json:"operationId"`
-					}
-					_ = json.NewDecoder(request.Body).Decode(&payload)
-					writer.WriteHeader(http.StatusAccepted)
-					_ = json.NewEncoder(writer).Encode(map[string]any{"ok": true, "queued": true, "operationId": payload.OperationID})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/sessions/test":
+					w.Header().Set("Content-Type", "text/event-stream")
+					testwire.WriteBatch(w, map[string]any{"generation": testwire.GenerationA, "cursor": 0, "snapshot": testwire.Session("test", testwire.GenerationA, 0), "events": []any{map[string]any{"type": "reset", "data": map[string]any{"reason": "initial"}}}})
+					w.(http.Flusher).Flush()
+					<-r.Context().Done()
+				case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/sessions/test/inputs/"):
+					id := strings.TrimPrefix(r.URL.Path, "/sessions/test/inputs/")
+					w.WriteHeader(202)
+					_ = json.NewEncoder(w).Encode(testwire.Input("test", id, "message", "pending"))
 					close(submitted)
-				case "/sessions/test/stream":
-					writer.Header().Set("Content-Type", "text/event-stream")
-					_, _ = fmt.Fprint(writer, "data: {\"generation\":\"generation-a\",\"cursor\":0,\"events\":[{\"type\":\"reset\"}],\"currentProgress\":[]}\n\n")
-					writer.(http.Flusher).Flush()
-					<-request.Context().Done()
-				case "/sessions/test/cancel-submission":
-					if request.Context().Err() != nil {
+				case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/cancel"):
+					if r.Context().Err() != nil {
 						t.Error("cleanup reused cancelled context")
 					}
-					writer.WriteHeader(fixture.status)
-					_, _ = fmt.Fprintf(writer, `{"outcome":%q}`, fixture.outcome)
+					id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/sessions/test/inputs/"), "/cancel")
+					w.WriteHeader(fixture.status)
+					_ = json.NewEncoder(w).Encode(map[string]any{"input": testwire.Input("test", id, "message", "committed"), "result": fixture.outcome})
 					close(cancelled)
 				default:
-					t.Errorf("unexpected operation: %s", request.URL.Path)
-					writer.WriteHeader(404)
+					t.Errorf("unexpected operation %s %s", r.Method, r.URL)
+					w.WriteHeader(404)
 				}
 			}))
 			defer server.Close()
 			go func() { <-submitted; cancel() }()
 			_, err := awaitReply(ctx, daemon.NewChatClient(promptTestConnection(server), "test"), "hello")
-			if err == nil || !strings.Contains(err.Error(), fixture.want) || strings.Contains(err.Error(), "stopped") {
-				t.Fatalf("cancellation report: %v", err)
+			if err == nil || !strings.Contains(err.Error(), fixture.want) {
+				t.Fatalf("cancellation report %v", err)
 			}
 			select {
 			case <-cancelled:

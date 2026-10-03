@@ -1,12 +1,13 @@
 //go:build unix
 
-// /cd crosses the composer, the folder picker, the daemon's /fs routes and
+// /cd crosses the composer, the folder picker, the daemon's workspace routes and
 // its workspace move. A fake folder source cannot show the daemon listing a
 // real directory, resolving a relative path, or keeping the new workspace.
 package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -73,8 +74,24 @@ func TestTUICdMovesTheSessionThroughThePicker(t *testing.T) {
 		t.Fatalf("the hint offers %q, not the folder the session left", offered)
 	}
 	d.Dispatch(tui.ChatExecuteCommandMsg{Name: "/link", Args: "add " + offered})
-	if view := d.View(); !strings.Contains(view, "linked with "+offered) {
-		t.Fatalf("pasting the hint did not link the folders:\n%s", view)
+	if d.App.State != tui.AppStatePageView || d.App.PageView.Doc == nil || d.App.PageView.Doc.Title != "Link workspace groups" || len(d.App.PageView.Doc.Rows) != 2 || !strings.Contains(d.View(), "complete groups will share memory and work") {
+		t.Fatalf("pasting the hint did not prepare the observed groups:\n%s", d.View())
+	}
+	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
+	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if d.App.PageView.Error != "" {
+		t.Fatal(d.App.PageView.Error)
+	}
+	group, err := daemon.LoadPage(t.Context(), conn(t), d.App.ActiveSession.ID, "/links")
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked := false
+	for _, member := range group.Rows {
+		linked = linked || member.Text == offered
+	}
+	if !linked {
+		t.Fatalf("confirmed merge omitted old workspace: %+v", group.Rows)
 	}
 }
 
@@ -90,7 +107,13 @@ func TestTUIMissingWorkspaceSendsTheTurnFromThePickedFolder(t *testing.T) {
 	}
 	session := daemonSession(t, newSession(t, gone))
 	d := driveTUI(t, &session)
+	defer d.App.Chat.Close()
 	d.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	d.App.Chat.TextArea.SetValue("keep this draft")
+	d.Dispatch(tui.FolderNewSessionMsg{Workspace: filepath.Join(root, "never-created")})
+	if d.App.State != tui.AppStateChat || d.App.ActiveSession == nil || d.App.ActiveSession.ID != session.ID || d.App.Chat.Workspace != session.Workspace || d.App.Chat.TextArea.Value() != "keep this draft" {
+		t.Fatalf("a rejected creation changed the unrelated active session:\n%s", d.View())
+	}
 	if err := os.Remove(gone); err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +159,10 @@ func TestTUIMissingWorkspaceSendsTheTurnFromThePickedFolder(t *testing.T) {
 	d.Type(root + "/fou")
 	moved, ok := d.Key(tea.KeyEnter).(tui.FolderMovedMsg)
 	if !ok || moved.Err != nil {
-		t.Fatalf("enter did not move the session: %#v", moved)
+		for cause := moved.Err; cause != nil; cause = errors.Unwrap(cause) {
+			t.Logf("workspace move cause: %T %v", cause, cause)
+		}
+		t.Fatalf("enter did not move the session: %v (message %T)", moved.Err, moved)
 	}
 	d.Update(moved)
 	waitIdle(t, session.ID, profile, 1)
@@ -164,7 +190,24 @@ func TestTUIMissingWorkspaceSendsTheTurnFromThePickedFolder(t *testing.T) {
 func TestTUISessionsByFolderOpenAndStartSessions(t *testing.T) {
 	t.Parallel()
 	providerRoute(t, echoReply)
-	root := t.TempDir()
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The system temporary directory may be inside a repository. This
+	// scenario needs a plain directory whose complete tree is visible.
+	root, err := os.MkdirTemp(cache, "albedo-go-plain-workspace-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove the plain workspace fixture: %v", err)
+		}
+	})
 	busy, empty, crowded := filepath.Join(root, "busy"), filepath.Join(root, "empty"), filepath.Join(root, "crowded")
 	for _, dir := range []string{busy, empty, crowded} {
 		if err := os.Mkdir(dir, 0o755); err != nil {
@@ -197,6 +240,10 @@ func TestTUISessionsByFolderOpenAndStartSessions(t *testing.T) {
 	}
 	d.Type(root + "/bu")
 	if view := d.View(); !strings.Contains(view, "d00/") || !strings.Contains(view, "Untitled session") {
+		preview, previewErr := daemon.PreviewFolder(t.Context(), conn(t), busy)
+		t.Logf("daemon preview: tree=%d more=%d repository=%+v error=%v", len(preview.Tree), preview.More, preview.Repo, previewErr)
+		listing, listErr := daemon.ListFolders(t.Context(), conn(t), busy)
+		t.Logf("daemon directory: entries=%d error=%v", len(listing.Entries), listErr)
 		t.Fatalf("the preview lost its tree or its sessions:\n%s", view)
 	}
 	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyRight})

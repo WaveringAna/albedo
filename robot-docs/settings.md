@@ -1,61 +1,57 @@
 # Persisted settings
 
-The daemon owns provider profiles, MCP configuration, capability choices, and shared UI preferences. Clients keep drafts, transient view state, and the connection information needed to reach the daemon. The CLI fetches settings when connecting, after a stream reset, and when opening a settings screen. There are no local-write fallbacks. CLI and daemon must both support the `settings_api` capability advertised by `/health`.
+The daemon owns global settings and each session's configuration, preferences, and selection overrides. Clients keep form drafts and connection information. The [protocol 3 design](../docs/http-api-design.md) and [OpenAPI contract](../docs/openapi.yaml) describe the HTTP resources.
 
-## HTTP contract
+## HTTP resources
 
-Every route requires `Authorization: Bearer <daemon token>` and rejects requests with an `Origin` header. `/settings` is separate from `/health`.
+Core requests use the daemon bearer token. The boundary checks host and origin before reading the body. JSON errors use `application/problem+json` with `status`, `code`, and `detail`.
 
-| Route | Request | Response or effect |
+| Resource | Read | Change |
 | --- | --- | --- |
-| `GET /settings` | None | `{profiles, mcp, capabilities, ui, credentials}` |
-| `PUT /settings/providers/:name` | `{extension, baseUrl, model, protocol, apiKey?}` | Saves and selects the profile. An omitted key preserves the saved key. An empty key removes it. |
-| `DELETE /settings/providers/:name` | None | Removes the profile and key. If it was active, selects the first remaining profile by name. |
-| `PATCH /settings/ui` | Supplied `thinking` and `tools` booleans | Returns the saved UI preferences. |
-| `PATCH /settings/ui/sessions/:id` | Supplied `pinned` and `archived` booleans | Returns the saved UI preferences. |
-| `POST /settings/ui/sessions/:id/open` | None | Increments the open count and returns UI preferences. Clients must not automatically retry this operation. |
-| `GET /sessions/:id/catalog` | None | Fresh skill and instruction candidates, preferences, extension state, and revision. |
-| `POST /sessions/:id/catalog` | `{revision, id, scope, enabled}` | Revalidates the catalog, saves the choice, and reloads the session. |
-| `POST /sessions/:id/settings/capabilities` | `{kind, name, scope, enabled}` | Saves the explicit choice and reloads the session. `enabled: null` removes the override. |
-| `PUT /sessions/:id/settings/mcp/:name` | `{server, secrets?}` | Saves the server and optional credential patch, then reloads the session. |
-| `DELETE /sessions/:id/settings/mcp/:name` | None | Removes the server and credentials, then reloads the session. |
+| Global settings | `GET /settings` or `GET /settings?group=<group>` | `PATCH /settings?group=<group>` with the group's `If-Match` validator |
+| Session configuration | `GET /sessions/<id>?view=configuration` | `PATCH /sessions/<id>?view=configuration` with `If-Match` |
+| Catalog | `GET /sessions/<id>/catalog` | Selection edits belong to session configuration or global capabilities settings |
+| Deliberate opening | The summary includes `preferences.opens` | `PUT /sessions/<id>/visits/<visit-id>` counts one client-generated UUIDv7 once |
+| Composition | The session includes desired and loaded revisions | `POST /sessions/<id>/reload` applies saved selection |
 
-`profiles` contains `{active, providers}`. Public profile fields are `extension`, `baseUrl`, `model`, `protocol`, and `hasKey`. API keys never appear in responses. `mcp` maps names to public server configuration. Its header and environment references contain environment variable names, never plaintext credentials. `credentials` has the same presence-only shape as `/auth/credentials`.
+`PATCH` uses `application/merge-patch+json`. Omitted fields preserve values. Null clears an override or removes a map entry where the schema permits it. Duplicate keys and unknown fields are rejected.
 
-Provider names contain 1 to 64 ASCII characters. The first character must be a letter or digit. Remaining characters may also be `.`, `_`, or `-`. Whitespace, including a trailing newline, is rejected when saving profiles or validating existing configuration.
+The global groups are `providers`, `mcp`, `extensions`, `capabilities`, `models`, and `ui`. The unscoped read includes each group's resource URL and validator. A successful patch returns the saved group resource and application observations: desired revision, active service revision, the count of prepared sessions needing reload, up to 200 session IDs, and warnings. `GET /sessions?needs_reload=true` pages the complete set. Global services resolve saved selection on subsequent requests. Sessions reload explicitly.
 
-`capabilities` contains `global` and `sessions`. Each scope maps capability kinds to named boolean choices. Kinds are `skills`, `instructions`, and `mcp`. A session choice overrides its global choice; an absent global choice is enabled. Mutation scope is `global` or `session`, and `enabled` is required even when null.
+Global extension defaults are validated against installed dependencies and capabilities before publication. Enabling one compaction strategy clears competing earlier true overrides to inheritance; multiple strategy enables in one patch return `400 selection_conflict`. Explicit false and null entries retain their meanings.
 
-`ui` contains `thinking`, `tools`, arrays of `pinned` and `archived` session IDs, and an `opens` map of session IDs to counts. These preferences are shared by clients. No live settings notifications are sent.
+## Provider and MCP values
 
-An MCP `secrets` patch may contain `bearerToken`, `headers`, and `env`. An absent field preserves its stored value; null removes it. Header and environment maps accept string values or null to remove one entry. A server uses the existing MCP format documented in [MCP](mcp.md).
+The providers group contains `default_profile` and `profiles`. A profile has `extension`, `endpoint`, `protocol`, `model`, nullable `effort`, nullable `image_edge`, nullable `account_id`, and read-only `has_key`. Write-only `api_key` preserves the saved key when absent and removes it when null. `account_id` binds transport authentication to that saved account. The default profile must remain present or be replaced or cleared in the same patch.
 
-Provider, UI, and snapshot errors return HTTP 400. Session settings errors return HTTP 409, including busy sessions, invalid changes, and failed reloads. Error bodies contain `{error: message}`. A successful provider mutation returns `{ok: true}`; session settings mutations return the session reload result. Failed form saves retain the draft and show the error.
+Provider names contain 1 to 64 ASCII characters. The first character is a letter or digit. Remaining characters may also be `.`, `_`, or `-`. Validation rejects whitespace, unsupported protocols, invalid endpoints, and bindings to another provider's accounts.
 
-## Skill and instruction catalog
+The MCP group contains `definitions` and accepts write-only `validate_connection`. Public environment and header entries declare `source: "literal"` or `source: "env"`. Write-only `secrets` contains `bearer_token`, `environment`, and `headers`. Reads expose only `secret_presence`. Removing a definition removes its secrets. Environment entries belong to stdio transports; headers and bearer sources belong to HTTP transports.
 
-`GET /sessions/:id/catalog` inspects the session workspace through daemon discovery. It does not prepare commands, reload extensions, or change the pinned prompt. The response contains `workspace`, an opaque `revision`, `extensions` with skills/instructions enabled booleans, bounded `diagnostics`, and `candidates`. Disabled and rejected candidates remain visible. Discovery applies metadata validation, size limits, and duplicate precedence. [Skills](skills.md) may link to external local installations and resources.
+Candidate validation checks names, source conflicts, timeouts, and transport fields before publication. Connection validation uses resolved candidate values. `validate_connection: false` skips probing and returns `validation: "skipped"`.
 
-Each candidate contains `id`, `kind`, `title`, nullable `description`, lexical `source`, nullable `resolved_source`, nullable `preference_key`, `valid`, nullable `diagnostic`, and nullable `shadowed_by`. IDs identify source locations independently of preference keys. Duplicate skill rows have separate IDs but share the validated skill-name key. Instruction keys retain `project:<display>` or `global:<display>`.
+## Session configuration and catalog
 
-`global_preference` and `session_override` are nullable booleans: null means no explicit choice. `effective_enabled` resolves the session choice, then the global choice, then the enabled default. `eligible` additionally requires a valid, winning candidate and an enabled extension. This describes fresh selection; prepared commands and prompt state can still reflect an earlier discovery until reload.
+Configuration contains explicit nullable `name`, `automatic_name`, workspace, provider profile, model, effort, preferences, selection overrides, configuration revision, and family revision. Name overrides preserve the automatic title. Preferences contain `pinned`, nullable `pin_order`, and `archived`; summaries also include shared opening counts.
 
-Catalog mutations use the row ID and revision, with `scope` set to `global` or `session`. `enabled: null` clears the explicit choice. Shadowed rows are read-only. Invalid rows with a preference key may be disabled or cleared but cannot be enabled. The daemon resolves the preference key and checks fresh discovery, workspace, preferences, and extension state under the settings mutation lock before writing. A changed revision returns HTTP 409 with `{code: "stale_catalog", error: message}` and leaves preferences and the prepared composition untouched. The client refreshes and requires a new user action; it does not replay the mutation. Inspection racing a workspace change also returns this error. Missing sessions return HTTP 404.
+Selection has separate `extensions`, `skills`, `instructions`, and `mcp` maps. Session overrides precede global preferences and defaults. MCP configured enablement also applies: a disabled definition remains unavailable.
 
-An unchanged catalog has a stable revision. Reading it or reloading unchanged extension inputs does not change the revision. Changes to bounded inspected content or file identity change the revision, including edits that preserve size and modification time. Retargeting a skill directory or its instruction link also changes the revision. Content beyond an oversized file's inspection limit is not read. This check does not make concurrent external filesystem edits atomic with a settings save.
+The catalog separates fresh discovery from loaded commands. Inspection does not boot Python, prepare composition, execute commands, or alter the pinned prompt. Candidate IDs identify sources independently of preference keys. Invalid candidates can have null preference keys. Disabled and shadowed candidates remain visible, with eligibility and diagnostics.
+
+Session selection edits carry `catalog_revision` and candidate IDs. Global capability edits carry `catalog_session_id`, `catalog_revision`, and choices; the daemon resolves preference keys. The actor checks fresh discovery under the settings lock before committing. Stale observations fail without changing configuration. Model and composition changes require an idle session.
+
+The session owner commits editable fields, preferences, and selection together on SQLite. Its response contains the saved configuration resource and a session capture from the same actor operation. Saving selection does not claim composition reloaded. Explicit reload reads persisted desired selection, preserves the namespace when routes can be rebound, and reports preparation or replacement failures.
+
+Workspace edits are standalone patches with the observed family revision. The native owner captures descendants and commits desired destinations together. Busy or parked descendants retain durable intent until cleanup and application succeed. New turns cannot start against a different active workspace.
 
 ## Persistence and recovery
 
-The existing files remain authoritative on disk: `config.json`, `extensions.json`, `capabilities.json`, `picker.json`, and `creds.json`. Updates retain unrelated sections and record fields. Legacy flat provider configuration remains available as the `default` profile. This API requires no storage migration.
+Global settings remain in `config.json`, `extensions.json`, `capabilities.json`, `picker.json`, and `creds.json`. `settings-revisions.json` stores group publication counters, including secret-only changes. The settings journal publishes affected files atomically under one home lock. Malformed or unreadable documents fail operations. Writes retain unrelated fields and use sealed, synced temporary files.
 
-`daemon/settings.gleam` owns HTTP decoding and provider/UI operations. `harness/session_settings.gleam` owns capability/MCP changes, and `harness/albedo_settings_store.erl` provides their persistence and the shared transaction support. The runtime depends on these harness operations rather than daemon settings. Provider validation stays in `daemon/configuration`; MCP validation stays in its extension. `harness/albedo_settings_lock.erl` provides one mutation lock per home, including provider defaults and extension defaults or raised caps saved through existing commands. Credential operations, OAuth account refreshes, and settings save/reload/restoration all use the same per-home lock. There are no nested locks on different settings files. Same-process nested operations retain the outer lock. The lock is released if its holder exits.
+`daemon/settings.gleam` and `albedo_settings_http.erl` own group observations and publication. Provider validation belongs to `daemon/configuration`; MCP validation belongs to its extension. OAuth refresh, profile settings, and credential writes share the home lock.
 
-`harness/capabilities.gleam` decodes capability preferences, applies session overrides to global defaults, and validates every known group before settings mutations or snapshots. Selection loads one immutable preference snapshot and validates each requested choice against it. Unscoped discovery and empty selections do not read preferences. `capabilities.json` reads and writes share a 1 MiB limit; oversized writes are rejected before replacement. `harness/albedo_capabilities.erl` provides bounded file reads.
+`daemon/session_configuration.gleam` owns SQL preferences, selection, and visit identities. `session_configure.gleam` validates and installs actor configuration. `session_preferences.gleam` imports existing picker and session capability preferences once: SQL commits an import marker before the settings journal removes imported fields. Global capability defaults remain file-owned.
 
-The daemon validates files before changing them. A malformed or unreadable document fails the operation rather than becoming an empty default. Writes seal an exclusive temporary file to mode `0600` before writing its contents, sync it, and rename it into place.
+Catalog revision includes inspected content and file identity, workspace, global composition revisions, and resolved choices. Unchanged inputs retain their revision. The settings lock does not make external filesystem edits atomic.
 
-Session settings messages enter the session actor, which checks idleness before persistence. The session then asks the runtime actor to save and reload. The runtime actor holds the mutation lock while saving, preparing the replacement composition, and restoring settings after preparation fails. The session actor never holds this lock across a call to the runtime actor. Restoration affects the settings file and credential entry involved in the mutation and preserves other credential entries. The runtime retains the previous composition on preparation failure. Errors explicitly report restoration failures. These operations are not crash-atomic transactions across multiple files.
-
-A prompt-notice save failure occurs after a successful composition reload. The daemon reports it as a warning in the reload response, so callers retain the newly applied settings.
-
-Session deletion removes its picker preferences and capability overrides in the daemon. Skill and instruction source files remain content discovered from the filesystem. `agentName`, client-specific overrides, and live settings notifications are outside this interface.
+Deletion removes the session's SQL preferences and selection. Discovered skill and instruction files remain on disk. Credential migration notices come from `GET /server`; dismissal belongs to `ui.dismissed_notices`.

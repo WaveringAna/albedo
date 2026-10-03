@@ -17,6 +17,8 @@ import (
 const (
 	pollInterval   = 10 * time.Millisecond
 	startupTimeout = 30 * time.Second
+	// A ready daemon's owner observations may queue behind other work.
+	discoveryProbeTimeout = 5 * time.Second
 )
 
 type DiscoveryKind int
@@ -30,7 +32,7 @@ const (
 type Discovery struct {
 	Kind     DiscoveryKind
 	Snapshot ConnectionSnapshot
-	Health   Health
+	Server   ServerInfo
 }
 
 type LocalOptions struct {
@@ -94,9 +96,9 @@ func Discover(ctx context.Context, homeDir string) (Discovery, error) {
 	if snapshot.Pid <= 0 || snapshot.Port < 1 || snapshot.Port > 65535 || snapshot.Token == "" || snapshot.Version <= 0 {
 		return fail(InvalidDiscovery, errors.New("daemon.json requires a positive PID, valid port, token and protocol version"))
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	probeCtx, cancel := context.WithTimeout(ctx, discoveryProbeTimeout)
 	connection := NewConnection(snapshot, nil)
-	health, err := ProbeHealth(probeCtx, connection)
+	server, err := ProbeServer(probeCtx, connection)
 	connection.HTTPClient().CloseIdleConnections()
 	cancel()
 	if err != nil {
@@ -119,12 +121,16 @@ func Discover(ctx context.Context, homeDir string) (Discovery, error) {
 		}
 		return fail(UnreachableDaemon, err)
 	}
-	if health.Version != snapshot.Version || (health.Build != "" && health.Build != snapshot.Build) ||
-		(health.Digest != "" && snapshot.Digest != "" && health.Digest != snapshot.Digest) {
-		return fail(InvalidDiscovery, errors.New("health identity does not match daemon.json"))
+	if server.Protocol != snapshot.Version || (server.Build != "" && server.Build != snapshot.Build) ||
+		(server.Digest != "" && snapshot.Digest != "" && server.Digest != snapshot.Digest) {
+		return fail(InvalidDiscovery, errors.New("server identity does not match daemon.json"))
 	}
-	discovery := Discovery{Kind: Running, Snapshot: snapshot, Health: health}
-	return discovery, CheckCompatible(health)
+	if snapshot.InstanceID != "" && snapshot.InstanceID != server.InstanceID {
+		return fail(InvalidDiscovery, errors.New("server identity does not match daemon.json"))
+	}
+	snapshot.InstanceID, snapshot.Digest = server.InstanceID, server.Digest
+	discovery := Discovery{Kind: Running, Snapshot: snapshot, Server: server}
+	return discovery, CheckCompatible(server)
 }
 
 // Rediscover waits for a verified replacement endpoint without starting one.
@@ -255,7 +261,7 @@ func Launch(parent context.Context, options LocalOptions) (*Connection, error) {
 	return launchLocal(parent, options, nil)
 }
 
-// Upgrade stops only the exact authenticated protocol-v2 daemon approved by the caller.
+// Upgrade stops only the exact authenticated protocol 3 daemon approved by the caller.
 func Upgrade(parent context.Context, options LocalOptions, approved ConnectionSnapshot) (*Connection, error) {
 	return launchLocal(parent, options, &approved)
 }
@@ -300,8 +306,8 @@ func launchLocal(parent context.Context, options LocalOptions, approved *Connect
 		if discovery.Kind != Running || discovery.Snapshot != *approved {
 			return nil, &LocalError{Kind: TargetChanged, HomeDir: home, Cause: errors.New("the daemon changed after approval; review the current daemon before restarting")}
 		}
-		if discovery.Health.Version != ProtocolVersion {
-			return nil, &CompatibilityError{Version: discovery.Health.Version}
+		if discovery.Server.Protocol != ProtocolVersion {
+			return nil, &CompatibilityError{Version: discovery.Server.Protocol}
 		}
 		connection := NewConnection(discovery.Snapshot, nil)
 		stopErr := StopDaemon(ctx, connection)
@@ -353,8 +359,11 @@ func startLocal(ctx context.Context, cmd *exec.Cmd, options LocalOptions) (*Conn
 			return Attach(ctx, discovery.Snapshot, func(ctx context.Context) (ConnectionSnapshot, error) { return Rediscover(ctx, options.HomeDir) })
 		}
 		if err != nil && ctx.Err() == nil {
+			var local *LocalError
 			var api *APIError
-			if !errors.As(err, &api) || (api.Code != "daemon_stopping" && api.Code != "daemon_unavailable") {
+			unreachable := errors.As(err, &local) && local.Kind == UnreachableDaemon
+			starting := errors.As(err, &api) && (api.Code == "daemon_stopping" || api.Code == "daemon_unavailable")
+			if !unreachable && !starting {
 				return nil, err
 			}
 		}

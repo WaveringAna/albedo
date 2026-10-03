@@ -5,9 +5,12 @@ import albedo/harness/extensions/python/kernel as python
 import albedo/harness/runtime
 import gleam/string
 import gleeunit/should
+import harness/session_fixture
 
 pub fn partial_execution_requires_explicit_replay_permission_test() -> Nil {
   let assert Ok(host) = runtime.start(":memory:")
+  session_fixture.initialise(host)
+  session_fixture.create(host, "a", "/tmp")
   let assert Ok(session) = runtime.open_session(host, "a", "/tmp")
   let assert Ok(failed) =
     runtime.execute(
@@ -38,6 +41,8 @@ pub fn partial_execution_requires_explicit_replay_permission_test() -> Nil {
 
 pub fn ambiguous_repairs_and_compile_errors_do_not_execute_test() -> Nil {
   let assert Ok(host) = runtime.start(":memory:")
+  session_fixture.initialise(host)
+  session_fixture.create(host, "a", "/tmp")
   let assert Ok(session) = runtime.open_session(host, "a", "/tmp")
   let assert Ok(failed) =
     runtime.execute(host, session, "state = 1\n(yield 1)", 5000)

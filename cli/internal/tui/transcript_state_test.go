@@ -14,6 +14,41 @@ import (
 	"albedo/cli/internal/daemon"
 )
 
+func TestObservedZeroThinkingDurationStopsLocalClock(t *testing.T) {
+	state := newTranscriptState()
+	state.apply(daemon.StreamEvent{Type: daemon.EventThinking, Text: "thought"}, "agent")
+	if state.thinkingSince.IsZero() {
+		t.Fatal("live thought did not start its local clock")
+	}
+	state.apply(daemon.StreamEvent{Type: daemon.EventThinking, ElapsedObserved: true, ElapsedMs: 0}, "agent")
+	if !state.thinkingSince.IsZero() || state.thoughtMs != 0 {
+		t.Fatal("observed zero duration was treated as an unknown duration")
+	}
+}
+
+// Completion is a separate canonical observation; the server sends no
+// synthetic interrupted event. It must settle the live tail and close the
+// turn once, including its stopped/failed footer.
+func TestCanonicalCompletionSettlesAndClosesLiveTurn(t *testing.T) {
+	for _, source := range []string{"", "interrupted", "failed"} {
+		t.Run(source, func(t *testing.T) {
+			state := newTranscriptState()
+			state.apply(daemon.StreamEvent{Type: daemon.EventUser, Text: "question", Source: "chat"}, "agent")
+			state.apply(daemon.StreamEvent{Type: daemon.EventText, Text: "answer"}, "agent")
+			entries := state.apply(daemon.StreamEvent{Type: daemon.EventTurnCompleted, Source: source}, "agent")
+			if state.turn != nil || state.activeText != "" || len(entries) != 2 || entries[0].Kind != EntryAssistant || entries[0].Text != "answer" || entries[1].Kind != EntryTurnEnd {
+				t.Fatalf("completion did not settle and close the turn: %#v", entries)
+			}
+			if source == "interrupted" && entries[1].Mood != moodStopped || source == "failed" && entries[1].Mood != moodFailed {
+				t.Fatalf("completion lost its terminal outcome: %#v", entries[1])
+			}
+			if repeated := state.apply(daemon.StreamEvent{Type: daemon.EventTurnCompleted, Source: source}, "agent"); len(repeated) != 0 {
+				t.Fatalf("repeated completion created a duplicate footer: %#v", repeated)
+			}
+		})
+	}
+}
+
 func TestChatModelSnapshotsAndHistoryOwnTheirText(t *testing.T) {
 	model := newTestChatModel(t, &daemon.Session{ID: "snapshot"})
 	model.SetSize(80, 24)

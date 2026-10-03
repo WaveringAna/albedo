@@ -26,14 +26,11 @@ class LcmPreparationTests(unittest.TestCase):
                 app.prompt(session, prompt).close()
                 app.idle(session)
             with app.api(
-                f"/sessions/{session}/commands",
-                {
-                    "name": "/compact",
-                    "arguments": "lcm",
-                },
+                f"/sessions/{session}/compaction",
+                {"strategy": "lcm"},
             ) as response:
-                result = json.load(response)["result"]
-            self.assertTrue(result["started"])
+                result = json.load(response)
+            self.assertEqual(result["state"], "compacted")
             app.idle(session)
             app.prompt(session, "after fold").close()
             app.idle(session)

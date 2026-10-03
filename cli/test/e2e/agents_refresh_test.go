@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/testwire"
 	"albedo/cli/internal/tui"
 	tea "charm.land/bubbletea/v2"
 )
@@ -35,12 +36,12 @@ func TestTUIAgentsOverflowRefreshesMembershipAndPreviews(t *testing.T) {
 	root := daemonSession(t, newSession(t, t.TempDir()))
 	create := func(name string) daemon.Session {
 		t.Helper()
-		child, err := daemon.CreateChild(t.Context(), conn(t), root.ID, daemon.ChildRequest{Name: name, Task: "finish child setup"})
+		child, err := daemon.CreateSession(t.Context(), conn(t), daemon.CreateSessionRequest{Kind: "child", ParentID: root.ID, Address: name, Name: name, Task: "finish child setup"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		waitIdle(t, child.Session.ID, profile, 1)
-		return child.Session
+		waitIdle(t, child.ID, profile, 1)
+		return child
 	}
 	removed := create("removed")
 	retained := create("old-name")
@@ -55,14 +56,16 @@ func TestTUIAgentsOverflowRefreshesMembershipAndPreviews(t *testing.T) {
 		t.Fatal(err)
 	}
 	forward := httputil.NewSingleHostReverseProxy(destination)
+	direct := forward.Director
+	forward.Director = func(r *http.Request) { direct(r); r.Host = destination.Host }
 	forward.FlushInterval = -1
 	var streams atomic.Int32
 	seedReady := make(chan struct{}, 1)
 	fragments, gap := make(chan struct{}), make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/agents/stream" && streams.Add(1) == 1 {
+		if r.URL.Path == "/sessions" && r.Header.Get("Accept") == "text/event-stream" && streams.Add(1) == 1 {
 			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = fmt.Fprint(w, "data: {\"events\":[]}\n\n")
+			_, _ = fmt.Fprint(w, "data: {\"events\":[{\"type\":\"ready\",\"data\":{\"instance_id\":\"controlled-agent-stream\"}},{\"type\":\"reset\",\"data\":{\"reason\":\"initial\"}}]}\n\n")
 			w.(http.Flusher).Flush()
 			select {
 			case <-fragments:
@@ -70,24 +73,20 @@ func TestTUIAgentsOverflowRefreshesMembershipAndPreviews(t *testing.T) {
 				return
 			}
 			events, _ := json.Marshal(map[string]any{"events": []map[string]any{
-				{"type": "text", "session": root.ID, "text": "OLD_PARTIAL_TEXT"},
-				{"type": "tool_progress", "session": root.ID, "progress": map[string]any{
-					"callId": "old-run:1:0", "name": "python", "phase": "generating",
-					"code": map[string]any{"offset": 0, "text": "OLD_PARTIAL_CODE"},
-				}},
+				{"type": "activity", "data": map[string]any{"session_id": root.ID, "cursor": map[string]any{"generation": testwire.GenerationA, "sequence": 1}, "status": map[string]any{"phase": "running", "run_id": "old-run", "interrupt_requested": false, "blocking_reason": nil}, "current_progress": []map[string]any{{"call_id": "old-run:1:0", "tool_call_id": nil, "name": "python", "phase": "generating", "intent": "", "preview": map[string]any{"offset_scalars": 0, "text": "OLD_PARTIAL_CODE", "complete": false}}}, "activity": map[string]any{"lines": []map[string]any{{"kind": "assistant", "text": "OLD_PARTIAL_TEXT", "truncated": false}}, "output_scalars": 0, "output_utf8_bytes": 0, "observed_at": "2026-10-03T00:00:00Z", "latest_input": nil, "latest_answer": nil}}},
 			}})
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", events)
 			w.(http.Flusher).Flush()
 			select {
 			case <-gap:
-				_, _ = fmt.Fprint(w, "data: {\"events\":[{\"type\":\"overflow\"}]}\n\n")
+				_, _ = fmt.Fprint(w, "data: {\"events\":[{\"type\":\"overflow\",\"data\":{\"reason\":\"subscriber_overflow\"}}]}\n\n")
 				w.(http.Flusher).Flush()
 			case <-r.Context().Done():
 			}
 			return
 		}
 		forward.ServeHTTP(w, r)
-		if r.URL.Path == "/sessions/"+root.ID+"/preview" {
+		if r.URL.Path == "/sessions/"+root.ID && r.URL.Query().Get("tail") != "" {
 			select {
 			case seedReady <- struct{}{}:
 			default:
@@ -97,7 +96,10 @@ func TestTUIAgentsOverflowRefreshesMembershipAndPreviews(t *testing.T) {
 	t.Cleanup(server.Close)
 	snapshot := conn(t).Snapshot()
 	snapshot.Port = server.Listener.Addr().(*net.TCPAddr).Port
-	connection := daemon.NewConnection(snapshot, nil)
+	connection, err := daemon.Attach(t.Context(), snapshot, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(connection.HTTPClient().CloseIdleConnections)
 	driver := driveTUIWithConnection(t, &root, connection)
 	driver.Update(tea.WindowSizeMsg{Width: 140, Height: 50})
@@ -129,10 +131,10 @@ func TestTUIAgentsOverflowRefreshesMembershipAndPreviews(t *testing.T) {
 	if !strings.Contains(driver.View(), "removed") || !strings.Contains(driver.View(), "old-name") {
 		t.Fatalf("initial membership did not load:\n%s", driver.View())
 	}
-	if _, err := daemon.RenameSession(t.Context(), conn(t), retained.ID, "renamed"); err != nil {
+	if _, err := daemon.RenameSession(t.Context(), conn(t), retained.ID, "renamed", sessionCondition(t, conn(t), retained.ID).ETag); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := daemon.DeleteSession(t.Context(), conn(t), removed.ID, false); err != nil {
+	if _, err := daemon.DeleteSession(t.Context(), conn(t), removed.ID, false, sessionCondition(t, conn(t), removed.ID)); err != nil {
 		t.Fatal(err)
 	}
 	create("new-agent")

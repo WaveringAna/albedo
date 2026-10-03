@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -21,7 +22,7 @@ func TestSubmissionFreezesContentAndOmissionAcrossLostAcknowledgement(t *testing
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == http.MethodGet {
 					w.WriteHeader(404)
-					_, _ = fmt.Fprint(w, `{"code":"operation_unknown","error":"not found"}`)
+					_, _ = fmt.Fprint(w, `{"type":"about:blank","title":"Input not found","status":404,"code":"input_unknown","detail":"not found"}`)
 					return
 				}
 				body, _ := io.ReadAll(r.Body)
@@ -38,12 +39,14 @@ func TestSubmissionFreezesContentAndOmissionAcrossLostAcknowledgement(t *testing
 					_ = connection.Close()
 					return
 				}
-				var request struct {
-					OperationID string `json:"operationId"`
+				var fields map[string]string
+				_ = json.Unmarshal(body, &fields)
+				id := strings.TrimPrefix(r.URL.Path, "/sessions/s/inputs/")
+				if r.Method != http.MethodPut || id == r.URL.Path {
+					t.Errorf("wrong admission resource %s %s", r.Method, r.URL)
 				}
-				_ = json.Unmarshal(body, &request)
 				w.WriteHeader(202)
-				_, _ = fmt.Fprintf(w, `{"ok":true,"queued":false,"operationId":%q}`, request.OperationID)
+				_ = json.NewEncoder(w).Encode(canonicalInput("s", id, fields["kind"], "pending"))
 			}))
 			defer server.Close()
 			conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "token"}, nil)
@@ -72,14 +75,14 @@ func TestSubmissionFreezesContentAndOmissionAcrossLostAcknowledgement(t *testing
 				t.Fatal(err)
 			}
 			if continuation {
-				if _, present := fields["content"]; present {
+				if _, present := fields["text"]; present {
 					t.Fatalf("continuation gained content: %s", bodies[0])
 				}
-			} else if string(fields["content"]) != `""` {
+			} else if string(fields["text"]) != `""` {
 				t.Fatalf("prepared empty content changed: %s", bodies[0])
 			}
-			if string(fields["operationId"]) != fmt.Sprintf("%q", handle.ID()) || string(fields["submissionId"]) != string(fields["operationId"]) {
-				t.Fatalf("recovery lost submission identity: %s", bodies[0])
+			if _, present := fields["submissionId"]; present {
+				t.Fatalf("input identity duplicated in body: %s", bodies[0])
 			}
 		})
 	}

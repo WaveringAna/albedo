@@ -7,13 +7,93 @@ import albedo/harness/location
 import albedo/harness/runtime
 import albedo/harness/ssh
 import gleam/int
-import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
 pub const lost_notice = "<system-note>The python kernel got reset and all variables are lost</system-note>"
+
+pub type KernelObservation {
+  KernelObservation(
+    instance_id: Option(String),
+    build: Option(String),
+    state: String,
+    stage: Option(String),
+    stale: Option(python.Stale),
+    live_job_count: Option(Int),
+  )
+}
+
+/// Capture the live kernel's facts without starting or replacing it.
+pub fn observe_kernel(
+  state: session_state.State(message),
+) -> Result(KernelObservation, String) {
+  case state.kernel {
+    None -> {
+      use loaded <- result.try(runtime.observe_loaded(state.host, state.info.id))
+      let phase = case state.booting {
+        Some(_) -> "booting"
+        None -> loaded.phase
+      }
+      Ok(
+        KernelObservation(
+          option.map(loaded.kernel, fn(observed) { observed.instance_id })
+            |> option.or(loaded.recorded_kernel_id),
+          option.then(loaded.kernel, fn(observed) { observed.build }),
+          phase,
+          preparation_stage(state.info.cwd, phase == "booting"),
+          option.then(loaded.kernel, fn(observed) { observed.stale }),
+          case loaded.kernel, phase {
+            Some(observed), _ -> Some(observed.live_job_count)
+            None, "none" -> Some(0)
+            _, _ -> None
+          },
+        ),
+      )
+    }
+    Some(kernel) -> {
+      let stage = preparation_stage(state.info.cwd, state.booting != None)
+      case runtime.kernel_observation(kernel) {
+        Ok(observed) ->
+          Ok(KernelObservation(
+            Some(observed.instance_id),
+            observed.build,
+            case state.booting, observed.linked {
+              Some(_), _ -> "booting"
+              None, True -> "attached"
+              None, False -> "reattaching"
+            },
+            stage,
+            observed.stale,
+            Some(observed.live_job_count),
+          ))
+        Error(_) ->
+          case runtime.alive(kernel) {
+            True -> Error("kernel observation unavailable")
+            False ->
+              Ok(KernelObservation(None, None, "lost", stage, None, None))
+          }
+      }
+    }
+  }
+}
+
+fn preparation_stage(workspace: String, preparing: Bool) -> Option(String) {
+  case preparing, location.parse(workspace) {
+    True, Ok(location.Remote(..) as at) ->
+      location.ssh_target(at)
+      |> result.map(ssh.step)
+      |> result.unwrap("")
+      |> fn(step) {
+        case step {
+          "" -> None
+          _ -> Some(step)
+        }
+      }
+    _, _ -> None
+  }
+}
 
 const lost_text = "python kernel restarted; earlier variables are gone, the transcript is intact"
 
@@ -151,7 +231,7 @@ fn adopted(
   text: String,
 ) -> session_state.State(message) {
   session_state.State(..state, kernel: Some(kernel), notice: Some(notice))
-  |> session_state.emit(view.text("note", text))
+  |> session_state.emit(view.note("daemon", text))
 }
 
 /// Take a kernel the runtime just opened. A session with history had a
@@ -164,7 +244,7 @@ pub fn adopt(
   case runtime.origin(kernel) {
     runtime.Resumed ->
       session_state.State(..state, kernel: Some(kernel))
-      |> session_state.emit(view.text("note", resumed_text))
+      |> session_state.emit(view.note("daemon", resumed_text))
     runtime.Upgraded(carried) ->
       adopted(state, kernel, upgraded_notice(carried), upgraded_text(carried))
     runtime.Kept -> session_state.State(..state, kernel: Some(kernel))
@@ -214,114 +294,14 @@ fn upgraded_text(carried: python.Carried) -> String {
   }
 }
 
-/// The kernel for the session status: `{stale, reason?, link, step?}`.
-/// `step` is `staging` while a kernel booting on a remote host waits for
-/// albedo's bundle to be copied there.
-pub fn kernel_json(state: session_state.State(message)) -> json.Json {
-  let reason = option.then(state.kernel, runtime.stale)
-  let link = link_name(state)
-  let step = case link, location.parse(state.info.cwd) {
-    "booting", Ok(location.Remote(..) as at) ->
-      location.ssh_target(at) |> result.map(ssh.step) |> result.unwrap("")
-    _, _ -> ""
-  }
-  json.object(
-    list.flatten([
-      [#("stale", json.bool(reason != None)), #("link", json.string(link))],
-      case reason {
-        Some(reason) -> [#("reason", json.string(stale_name(reason)))]
-        None -> []
-      },
-      case step {
-        "" -> []
-        step -> [#("step", json.string(step))]
-      },
-    ]),
-  )
-}
-
-/// How the session reaches its kernel: `booting` while one opens (a boot, or
-/// waiting for a daemon start to attach the recorded one), `attached`,
-/// `reattaching` while the bridge is down and the port owner retries, `lost`
-/// once the port owner gave up, and `none` before the session needed one.
-fn link_name(state: session_state.State(message)) -> String {
-  case state.booting, state.kernel {
-    Some(_), _ -> "booting"
-    None, None -> "none"
-    None, Some(kernel) ->
-      case runtime.alive(kernel), runtime.linked(kernel) {
-        False, _ -> "lost"
-        True, True -> "attached"
-        True, False -> "reattaching"
-      }
-  }
-}
-
-fn stale_name(reason: python.Stale) -> String {
-  case reason {
-    python.Bundle -> "bundle"
-    python.Modules -> "modules"
-    python.Protocol -> "protocol"
-  }
-}
-
-/// `/kernel`: report whether the kernel is stale and what keeps it, or, with
-/// `apply`, let a stale kernel go now so the next open swaps it, ending its
-/// live jobs. The flag says the kernel was let go.
+/// Adopt only the actual settled runtime handle carried by the completion.
 pub fn upgrade(
   state: session_state.State(message),
-  apply: Bool,
-  busy: Bool,
-) -> #(session_state.State(message), json.Json, Bool) {
-  let report = fn(message, jobs) {
-    json.object([
-      #("message", json.string(message)),
-      #("jobs", json.int(jobs)),
-      #("kernel", kernel_json(state)),
-    ])
-  }
-  case state.kernel {
-    None -> #(
-      state,
-      report(
-        "no kernel is attached to this session yet; it attaches with the next turn, and an older one is upgraded then",
-        0,
-      ),
-      False,
-    )
-    Some(kernel) -> {
-      let jobs = runtime.job_count(kernel)
-      case runtime.stale(kernel), apply, busy {
-        None, _, _ -> #(
-          state,
-          report("the kernel runs the current bundle and modules", jobs),
-          False,
-        )
-        Some(reason), False, _ -> #(
-          state,
-          report(
-            "the kernel is older ("
-              <> stale_name(reason)
-              <> "); it upgrades at the next idle moment with no live jobs, or now with /kernel upgrade, which stops its jobs",
-            jobs,
-          ),
-          False,
-        )
-        Some(_), True, True -> #(
-          state,
-          report("the session is busy; run /kernel upgrade between turns", jobs),
-          False,
-        )
-        Some(_), True, False -> {
-          let _ = runtime.force_upgrade(kernel)
-          #(
-            session_state.State(..state, kernel: None),
-            report("upgrading the kernel; its live jobs stop", jobs),
-            True,
-          )
-        }
-      }
-    }
+  report: runtime.KernelUpgrade,
+) -> session_state.State(message) {
+  case report.session {
+    Some(kernel) -> adopt(state, kernel)
+    None -> session_state.State(..state, kernel: None)
   }
 }
 

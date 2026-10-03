@@ -7,6 +7,7 @@ import albedo/harness/command.{
   ModelSelect, Refresh, ReloadCatalogs, UserCall,
 }
 import albedo/harness/extension
+import albedo/harness/extensions/commands/client
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/int
@@ -30,6 +31,7 @@ pub fn extension() -> extension.Extension {
         raise_cap(),
         effort(),
       ]),
+      extension.ClientPlugin(client.commands()),
       extension.ToolPlugin("", [], ["commands"], []),
     ],
     extension.no_initialise,

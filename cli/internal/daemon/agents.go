@@ -5,343 +5,257 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
+	"unicode/utf8"
 )
 
-// AgentEvent is one event from the daemon's agent bus.
-type AgentEvent struct {
-	Progress       *ToolProgress `json:"progress"`
-	Type           string        `json:"type"`
-	Session        string        `json:"session"`
-	Parent         string        `json:"parent"`
-	Name           string        `json:"name"`
-	Model          string        `json:"model"`
-	From           string        `json:"from"`
-	To             string        `json:"to"`
-	FromName       string        `json:"fromName"`
-	Kind           string        `json:"kind"`
-	Text           string        `json:"text"`
-	CallID         string        `json:"callId"`
-	ProgressCallID string        `json:"progressCallId"`
-	Output         string        `json:"output"`
-	Source         string        `json:"source"`
-	Depth          int           `json:"depth"`
-	Bytes          int           `json:"bytes"`
-	Running        bool          `json:"running"`
-}
+type Activity = wireActivity
+type Cursor = wireCursor
 
-type Member struct {
-	Session string `json:"session"`
-	Parent  string `json:"parent"`
-	Name    string `json:"name"`
-	Depth   int    `json:"depth"`
-	Closed  bool   `json:"closed"`
-}
-
-type ChildResult struct {
-	Session Session `json:"session"`
-	Member  Member  `json:"member"`
-}
-
-type AgentNode struct {
-	Parent  *string `json:"parent"`
-	Address *string `json:"address"`
-	Session Session `json:"session"`
-	Name    string  `json:"name"`
-	Depth   int     `json:"depth"`
-	Running bool    `json:"running"`
-	Closed  bool    `json:"closed"`
-}
-
-type AgentsSnapshot struct {
-	Root  string      `json:"root"`
-	Nodes []AgentNode `json:"nodes"`
-}
-
-type ChildRequest struct {
-	Name string `json:"name"`
-	Task string `json:"task"`
-}
-
-// StreamAgents delivers the first batch, including an empty readiness batch,
-// then nonempty batches until the stream ends or onBatch fails.
-// The caller controls cancellation, including any blocking work in onBatch.
-func StreamAgents(ctx context.Context, conn *Connection, onBatch func([]AgentEvent) error) error {
-	if err := checkCapability(ctx, conn, "normalized_tool_progress", "normalized tool progress for agent streams"); err != nil {
-		return err
+func validGeneration(generation string) bool {
+	if len(generation) != 22 {
+		return false
 	}
-	subscription := operation{Name: "stream agents", Method: http.MethodGet, Path: "/agents/stream", Policy: readRecovery}
+	for i := range len(generation) {
+		c := generation[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+type AgentEvent struct {
+	Progress                                                                                                   *ToolProgress
+	Type, Session, Parent, Name, Model, From, To, FromName, Kind, Text, CallID, ProgressCallID, Output, Source string
+	Depth, Bytes                                                                                               int
+	Running                                                                                                    bool
+	Cursor                                                                                                     *Cursor
+	Status                                                                                                     *AgentStatus
+	CurrentProgress                                                                                            []ToolProgress
+	Activity                                                                                                   *Activity
+	SessionIDs                                                                                                 []string
+	ScopeDirty                                                                                                 bool
+}
+type AgentNode struct {
+	Parent, Address *string
+	Session         Session
+	Name            string
+	Depth           int
+	Running, Closed bool
+	Cursor          *Cursor
+	Activity        Activity
+	CurrentProgress []ToolProgress
+}
+type AgentsSnapshot struct {
+	Root, FamilyRevision string
+	Nodes                []AgentNode
+}
+
+func StreamAgents(ctx context.Context, conn *Connection, onBatch func([]AgentEvent) error) error {
 	first := true
-	activeProgressBySession := make(map[string]map[string]struct{})
-	err := scanEventStream(ctx, conn, subscription, streamLimits{requireSSE: true, lineBytes: 8 * 1024 * 1024}, func(scanner *bufio.Scanner) error {
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data:") {
-				continue
-			}
-			var batch struct {
+	err := scanEventStream(ctx, conn, operation{Name: "watch sessions", Method: http.MethodGet, Path: "/sessions", Policy: readRecovery}, streamLimits{requireSSE: true, lineBytes: 1048577}, func(scanner *bufio.Scanner) error {
+		return scanSSEFrames(ctx, scanner, func(payload []byte) error {
+			var w struct {
 				Events []json.RawMessage `json:"events"`
 			}
-			if err := json.Unmarshal([]byte(strings.TrimSpace(line[5:])), &batch); err != nil {
-				return streamFailure(StreamProtocol, fmt.Errorf("invalid agent batch: %w", err))
+			if err := decodeRequired(payload, &w, "events"); err != nil {
+				return streamFailure(StreamProtocol, err)
 			}
-			if batch.Events == nil {
-				return streamFailure(StreamProtocol, errors.New("invalid agent batch: missing events"))
+			if w.Events == nil || len(w.Events) > 256 {
+				return streamFailure(StreamProtocol, fieldError("collection batch"))
 			}
-			events := make([]AgentEvent, 0, len(batch.Events))
-			for _, raw := range batch.Events {
+			events := []AgentEvent{}
+			types := []string{}
+			for _, raw := range w.Events {
 				event, err := decodeAgentEvent(raw)
 				if err != nil {
 					return streamFailure(StreamProtocol, err)
 				}
+				var kind struct {
+					Type string `json:"type"`
+				}
+				_ = json.Unmarshal(raw, &kind)
+				types = append(types, kind.Type)
 				if event != nil {
-					if event.Type == "overflow" && len(batch.Events) != 1 {
-						return streamFailure(StreamProtocol, errors.New("overflow must be the sole agent event"))
-					}
 					events = append(events, *event)
 				}
 			}
-			if len(events) == 0 && !first {
-				continue
+			if first {
+				if len(types) != 2 || types[0] != "ready" || types[1] != "reset" {
+					return streamFailure(StreamProtocol, errors.New("collection stream requires ready and reset before snapshots"))
+				}
+				first = false
+			} else {
+				for _, kind := range types {
+					if kind == "ready" || kind == "reset" {
+						return streamFailure(StreamProtocol, fieldError("collection readiness"))
+					}
+					if kind == "overflow" || kind == "failure" {
+						if len(types) != 1 {
+							return streamFailure(StreamProtocol, fieldError("terminal collection batch"))
+						}
+					}
+				}
 			}
-			nextProgressBySession, err := applyAgentProgress(events, activeProgressBySession)
-			if err != nil {
-				return streamFailure(StreamProtocol, err)
-			}
-			first = false
 			if err := onBatch(events); err != nil {
 				return streamFailure(StreamTerminal, err)
 			}
-			for session, active := range nextProgressBySession {
-				if active == nil {
-					delete(activeProgressBySession, session)
-				} else {
-					activeProgressBySession[session] = active
-				}
+			if len(types) == 1 && types[0] == "overflow" {
+				return streamFailure(StreamTransient, errors.New("collection stream overflow; capture a fresh snapshot"))
 			}
-			if len(events) == 1 && events[0].Type == "overflow" {
-				return nil
-			}
-		}
-		return nil
+			return nil
+		})
 	})
 	return classifyStreamFailure(err)
 }
-
-// Only changed sessions are staged. A nil entry removes a session after delivery.
-func applyAgentProgress(events []AgentEvent, current map[string]map[string]struct{}) (map[string]map[string]struct{}, error) {
-	staged := make(map[string]map[string]struct{})
-	for _, event := range events {
-		active, changed := staged[event.Session]
-		if !changed {
-			active = current[event.Session]
-		}
-		switch event.Type {
-		case "tool_progress":
-			if event.Progress == nil {
-				if len(active) != 0 {
-					staged[event.Session] = nil
-				}
-				continue
-			}
-			if _, exists := active[event.Progress.CallID]; exists {
-				continue
-			}
-		case "tool":
-			if _, exists := active[event.ProgressCallID]; !exists {
-				continue
-			}
-		case "running":
-			if event.Running {
-				continue
-			}
-			staged[event.Session] = nil
-			continue
-		case "interrupted", "error", "closed", "gone":
-			staged[event.Session] = nil
-			continue
-		default:
-			continue
-		}
-		if !changed || active == nil {
-			activeCopy := make(map[string]struct{}, len(active)+1)
-			for callID := range active {
-				activeCopy[callID] = struct{}{}
-			}
-			active = activeCopy
-			staged[event.Session] = active
-		}
-		if event.Type == "tool_progress" {
-			active[event.Progress.CallID] = struct{}{}
-			if len(active) > maxActiveToolProgress {
-				return nil, errors.New("too many active tool progress calls for an agent")
-			}
-		} else {
-			delete(active, event.ProgressCallID)
-			if len(active) == 0 {
-				staged[event.Session] = nil
-			}
-		}
-	}
-	return staged, nil
-}
-
-func CreateChild(ctx context.Context, conn *Connection, id string, body ChildRequest) (ChildResult, error) {
-	var result ChildResult
-	err := executeMutation(ctx, conn, operation{Name: "create child", Method: http.MethodPost, Path: sessionPath(id, "/children"), Body: body, Policy: authRecovery}, []int{201}, func(body []byte, _ int) error {
-		var err error
-		result, err = decodeChild(body)
-		return err
-	})
-	return result, err
-}
-
-func GetAgents(ctx context.Context, conn *Connection, session string) (AgentsSnapshot, error) {
-	var result AgentsSnapshot
-	err := executeRead(ctx, conn, operation{Name: "get agents", Method: http.MethodGet, Path: "/agents?session=" + url.QueryEscape(session), Policy: readRecovery}, func(data []byte) error {
-		fields, err := object(data)
-		if err != nil {
-			return err
-		}
-		if err = required(fields, "root", &result.Root); err != nil {
-			return err
-		}
-		var rows []json.RawMessage
-		if err = required(fields, "nodes", &rows); err != nil {
-			return err
-		}
-		result.Nodes = make([]AgentNode, 0, len(rows))
-		for _, row := range rows {
-			fields, err := object(row)
-			if err != nil {
-				return err
-			}
-			var node AgentNode
-			var sessionData json.RawMessage
-			if err = nullable(fields, "parent", &node.Parent); err != nil {
-				return err
-			}
-			if err = nullable(fields, "address", &node.Address); err != nil {
-				return err
-			}
-			if err = required(fields, "session", &sessionData); err != nil {
-				return err
-			}
-			node.Session, err = decodeSession(sessionData)
-			if err != nil {
-				return err
-			}
-			if err = required(fields, "name", &node.Name); err != nil {
-				return err
-			}
-			if err = required(fields, "depth", &node.Depth); err != nil {
-				return err
-			}
-			if node.Depth < 0 {
-				return fieldError("depth")
-			}
-			if err = required(fields, "running", &node.Running); err != nil {
-				return err
-			}
-			if err = required(fields, "closed", &node.Closed); err != nil {
-				return err
-			}
-			result.Nodes = append(result.Nodes, node)
-		}
-		return nil
-	})
-	return result, err
-}
-
 func decodeAgentEvent(raw json.RawMessage) (*AgentEvent, error) {
-	var header struct {
-		Type string `json:"type"`
+	var envelope struct {
+		Type string          `json:"type"`
+		Data json.RawMessage `json:"data"`
 	}
-	if err := json.Unmarshal(raw, &header); err != nil {
-		return nil, fmt.Errorf("invalid agent event: %w", err)
+	if err := decodeRequired(raw, &envelope, "type", "data"); err != nil {
+		return nil, err
 	}
-	if header.Type == "" {
-		return nil, errors.New("invalid agent event: missing type")
+	if envelope.Type == "" || envelope.Data == nil || string(envelope.Data) == "null" {
+		return nil, fieldError("collection event")
 	}
-	switch header.Type {
-	case "overflow":
-		return &AgentEvent{Type: "overflow"}, nil
-	case "spawn", "gone", "mail", "running", "text", "thinking", "tool_progress", "tool", "user", "message", "error", "interrupted", "progress", "renamed", "closed":
+	event := &AgentEvent{Type: envelope.Type}
+	switch envelope.Type {
+	case "ready", "overflow":
+	case "reset":
+		var d struct {
+			Reason string `json:"reason"`
+		}
+		if err := decodeRequired(envelope.Data, &d, "reason"); err != nil {
+			return nil, err
+		}
+		if d.Reason != "initial" {
+			return nil, fieldError("collection reset")
+		}
+	case "activity":
+		var d struct {
+			SessionID string             `json:"session_id"`
+			Cursor    Cursor             `json:"cursor"`
+			Status    wireSessionStatus  `json:"status"`
+			Progress  []wireToolProgress `json:"current_progress"`
+			Activity  Activity           `json:"activity"`
+		}
+		if err := decodeRequired(envelope.Data, &d, "session_id", "cursor", "status", "current_progress", "activity"); err != nil {
+			return nil, err
+		}
+		if d.SessionID == "" || !validGeneration(d.Cursor.Generation) || d.Cursor.Sequence < 0 || len(d.Progress) > 32 {
+			return nil, fieldError("collection activity")
+		}
+		if err := validateSessionStatus(d.Status); err != nil {
+			return nil, err
+		}
+		if err := validateActivity(d.Activity); err != nil {
+			return nil, err
+		}
+		event.Session = d.SessionID
+		event.Cursor = &d.Cursor
+		status := statusValue(d.Status, wireKernel{})
+		event.Status = &status
+		event.Running = status.Running
+		event.Activity = &d.Activity
+		event.CurrentProgress = []ToolProgress{}
+		seen := map[string]bool{}
+		for _, p := range d.Progress {
+			if seen[p.CallID] {
+				return nil, fieldError("duplicate collection progress")
+			}
+			seen[p.CallID] = true
+			data, _ := json.Marshal(p)
+			progress, err := decodeToolProgress(data)
+			if err != nil || progress == nil {
+				return nil, fieldError("collection progress")
+			}
+			event.CurrentProgress = append(event.CurrentProgress, *progress)
+		}
+	case "mail":
+		var d wireMailMetadata
+		if err := decodeRequired(envelope.Data, &d, "mail_id", "sender_session_id", "receiver_session_id", "kind", "bytes", "sender_label"); err != nil {
+			return nil, err
+		}
+		event.From, event.To, event.FromName, event.Kind, event.Bytes = value(d.SenderSessionID), d.ReceiverSessionID, value(d.SenderLabel), d.Kind, int(d.Bytes)
+	case "invalidate":
+		var d struct {
+			SessionIDs []string `json:"session_ids"`
+			ScopeDirty bool     `json:"scope_dirty"`
+		}
+		if err := decodeRequired(envelope.Data, &d, "urls", "session_ids", "scope_dirty"); err != nil {
+			return nil, err
+		}
+		event.SessionIDs, event.ScopeDirty = d.SessionIDs, d.ScopeDirty
+	case "failure":
+		var d wireSafeReason
+		if err := decodeRequired(envelope.Data, &d, "code", "detail"); err != nil {
+			return nil, err
+		}
+		return nil, streamFailure(StreamTerminal, &APIError{Code: d.Code, Message: d.Detail})
 	default:
 		return nil, nil
 	}
-	var event AgentEvent
-	if err := json.Unmarshal(raw, &event); err != nil {
-		return nil, fmt.Errorf("invalid %s agent event: %w", header.Type, err)
+	return event, nil
+}
+func GetAgents(ctx context.Context, conn *Connection, id string) (AgentsSnapshot, error) {
+	selected, err := GetSession(ctx, conn, id)
+	if err != nil {
+		return AgentsSnapshot{}, err
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, err
-	}
-	required := []string{"session"}
-	switch event.Type {
-	case "mail":
-		required = []string{"to", "bytes", "kind"}
-	case "spawn":
-		required = append(required, "parent", "name", "model", "depth")
-	case "running":
-		required = append(required, "running")
-	case "text", "thinking", "user", "message", "error", "progress":
-		required = append(required, "text")
-	case "tool_progress":
-		if len(raw) > 8*1024 {
-			return nil, errors.New("invalid tool_progress agent event: exceeds 8 KiB")
-		}
-		progress, err := decodeToolProgress(fields["progress"])
+	q := url.Values{"scope": {"all"}, "family_id": {selected.RootID}, "limit": {"200"}}
+	result := AgentsSnapshot{Root: selected.RootID, Nodes: []AgentNode{}}
+	seen := map[string]bool{}
+	for {
+		var page wireSessionPage
+		err := executeRead(ctx, conn, operation{Name: "read session family", Method: http.MethodGet, Path: "/sessions?" + q.Encode(), Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "items", "next", "family") })
 		if err != nil {
-			return nil, err
+			return result, err
 		}
-		event.Progress = progress
-		required = append(required, "progress")
-	case "tool":
-		required = append(required, "output", "callId", "progressCallId", "name")
-		if event.CallID == "" || event.ProgressCallID == "" || event.Name == "" {
-			return nil, errors.New("invalid tool agent event identity")
+		if result.FamilyRevision != "" && page.Family.Revision != result.FamilyRevision {
+			return result, &APIError{StatusCode: 409, Code: "family_changed", Message: "family changed while paging; refresh it"}
 		}
-	case "renamed":
-		required = append(required, "name")
+		result.FamilyRevision = page.Family.Revision
+		for _, row := range page.Items {
+			session := summaryValue(row)
+			session.FamilyRevision = result.FamilyRevision
+			node := AgentNode{Parent: row.ParentID, Address: row.Address, Session: session, Name: session.Title, Depth: session.Depth, Running: session.Status.Running, Closed: session.Closed, Cursor: row.Cursor, Activity: row.Activity, CurrentProgress: []ToolProgress{}}
+			for _, p := range row.CurrentProgress {
+				data, _ := json.Marshal(p)
+				progress, err := decodeToolProgress(data)
+				if err != nil || progress == nil {
+					return result, fieldError("family progress")
+				}
+				node.CurrentProgress = append(node.CurrentProgress, *progress)
+			}
+			result.Nodes = append(result.Nodes, node)
+		}
+		if page.Next == nil {
+			return result, nil
+		}
+		if seen[*page.Next] {
+			return result, fieldError("family cursor")
+		}
+		seen[*page.Next] = true
+		q.Set("next", *page.Next)
 	}
-	for _, name := range required {
-		if value, exists := fields[name]; !exists || (string(value) == "null" && name != "progress") {
-			return nil, fmt.Errorf("invalid %s agent event: missing %s", event.Type, name)
-		}
-	}
-	return &event, nil
 }
 
-func decodeChild(data []byte) (ChildResult, error) {
-	fields, err := object(data)
-	if err != nil {
-		return ChildResult{}, err
+func validateActivity(activity Activity) error {
+	if len(activity.Lines) > 12 || activity.Lines == nil || activity.OutputScalars < 0 || activity.OutputUTF8Bytes < 0 || timestampMilliseconds(activity.ObservedAt) == nil {
+		return fieldError("activity")
 	}
-	var result ChildResult
-	raw, ok := fields["session"]
-	if !ok {
-		return result, fieldError("session")
-	}
-	result.Session, err = decodeSession(raw)
-	if err != nil {
-		return ChildResult{}, err
-	}
-	member, err := object(fields["member"])
-	if err != nil {
-		return ChildResult{}, err
-	}
-	for _, field := range []struct {
-		target any
-		name   string
-	}{{&result.Member.Session, "session"}, {&result.Member.Parent, "parent"}, {&result.Member.Name, "name"}, {&result.Member.Depth, "depth"}, {&result.Member.Closed, "closed"}} {
-		if err := required(member, field.name, field.target); err != nil {
-			return ChildResult{}, err
+	for _, line := range activity.Lines {
+		if len(line.Text) > 1024 || utf8.RuneCountInString(line.Text) > 256 {
+			return fieldError("activity line")
+		}
+		switch line.Kind {
+		case "assistant", "thinking", "tool", "input", "note", "error":
+		default:
+			return fieldError("activity kind")
 		}
 	}
-	return result, nil
+	return nil
 }

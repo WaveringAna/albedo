@@ -34,12 +34,16 @@ func HomeDir() string {
 // daemon's credential store. APIKey carries a newly entered draft value;
 // HasKey is presence metadata returned by the daemon.
 type Settings struct {
-	Extension string `json:"extension,omitempty"`
-	BaseURL   string `json:"baseUrl,omitempty"`
-	APIKey    string `json:"apiKey,omitempty"`
-	Model     string `json:"model"`
-	Protocol  string `json:"protocol"`
-	HasKey    bool   `json:"hasKey,omitempty"`
+	ProfileName string  `json:"-"`
+	Effort      *string `json:"effort,omitempty"`
+	ImageEdge   *int    `json:"image_edge,omitempty"`
+	AccountID   *string `json:"account_id,omitempty"`
+	Extension   string  `json:"extension,omitempty"`
+	BaseURL     string  `json:"baseUrl,omitempty"`
+	APIKey      string  `json:"apiKey,omitempty"`
+	Model       string  `json:"model"`
+	Protocol    string  `json:"protocol"`
+	HasKey      bool    `json:"hasKey,omitempty"`
 }
 
 func validateModel(value string) (string, error) {
@@ -83,6 +87,7 @@ func (s Settings) Validate() (Settings, error) {
 	}
 
 	return Settings{
+		ProfileName: s.ProfileName, Effort: s.Effort, ImageEdge: s.ImageEdge, AccountID: s.AccountID,
 		Extension: ext,
 		BaseURL:   endpoint,
 		APIKey:    s.APIKey,
@@ -118,6 +123,7 @@ func ValidateEndpoint(value string) (string, error) {
 
 // Profiles represents the stored provider configuration.
 type Profiles struct {
+	ETag      string              `json:"-"`
 	Providers map[string]Settings `json:"providers"`
 	Active    string              `json:"active,omitempty"`
 }

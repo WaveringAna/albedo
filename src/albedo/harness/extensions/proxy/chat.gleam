@@ -2,8 +2,9 @@
 //// requests become albedo's request types, and turns and stream events
 //// become completion objects and chunks.
 
-import albedo/daemon/events
+import albedo/daemon/http_api as api
 import albedo/daemon/image
+import albedo/daemon/message_content as events
 import albedo/daemon/transcript
 import albedo/openai_api/replay
 import albedo/openai_api/types
@@ -33,27 +34,55 @@ pub type Completion {
   )
 }
 
-type Part {
+pub opaque type Part {
   Text(String)
   ImageUrl(String)
 }
 
-type Message {
+pub opaque type Message {
   Message(
     role: String,
     parts: List(Part),
     calls: List(types.ToolCall),
     call_id: String,
+    thinking: String,
   )
 }
 
 pub fn parse(body: BitArray) -> Result(Completion, String) {
-  use #(requested, messages, tools, stream, include_usage, limit, options) <- result.try(
+  use fields <- result.try(
     json.parse_bits(body, request_decoder())
     |> result.map_error(fn(error) {
       "invalid chat completion request: " <> string.inspect(error)
     }),
   )
+  from_fields(fields)
+}
+
+pub fn from_fields(
+  fields: #(
+    String,
+    List(Message),
+    List(types.Tool),
+    Bool,
+    Bool,
+    Option(Int),
+    types.Options,
+  ),
+) -> Result(Completion, String) {
+  let #(requested, messages, tools, stream, include_usage, limit, options) =
+    fields
+  use _ <- result.try(
+    case
+      list.length(tools) <= 200
+      && option.unwrap(limit, 1) > 0
+      && option.unwrap(limit, 1) <= 9_007_199_254_740_991
+    {
+      True -> Ok(Nil)
+      False -> Error("invalid tool count or token limit")
+    },
+  )
+  use _ <- result.try(validate_options(options))
   let #(profile, model) = case string.split_once(requested, "/") {
     Ok(#(profile, model)) -> #(profile, model)
     Error(_) -> #(requested, "")
@@ -71,7 +100,27 @@ pub fn parse(body: BitArray) -> Result(Completion, String) {
   ))
 }
 
-fn request_decoder() -> decode.Decoder(
+pub fn request_fields() -> List(String) {
+  [
+    "model",
+    "messages",
+    "tools",
+    "max_tokens",
+    "max_completion_tokens",
+    "temperature",
+    "top_p",
+    "stop",
+    "tool_choice",
+    "parallel_tool_calls",
+    "reasoning_effort",
+    "reasoning",
+    "response_format",
+    "stream",
+    "stream_options",
+  ]
+}
+
+pub fn request_decoder() -> decode.Decoder(
   #(
     String,
     List(Message),
@@ -82,51 +131,67 @@ fn request_decoder() -> decode.Decoder(
     types.Options,
   ),
 ) {
-  let tool = {
-    use kind <- decode.optional_field("type", "function", decode.string)
-    use name <- decode.subfield(["function", "name"], decode.string)
-    use description <- decode.then(decode.optionally_at(
-      ["function", "description"],
-      "",
-      decode.string,
-    ))
-    use parameters <- decode.then(decode.optionally_at(
-      ["function", "parameters"],
-      json.object([
-        #("type", json.string("object")),
-        #("properties", json.object([])),
-      ]),
-      decode.dynamic |> decode.map(types.encode_value),
-    ))
-    use strict <- decode.then(decode.optionally_at(
-      ["function", "strict"],
-      False,
-      decode.bool,
-    ))
-    let tool = types.Tool(name, description, parameters, strict)
-    case kind {
-      "function" -> decode.success(tool)
-      _ -> decode.failure(tool, "function tool")
-    }
-  }
-  use model <- decode.field("model", decode.string)
+  api.object(request_fields(), decode_request())
+}
+
+fn decode_request() -> decode.Decoder(
+  #(
+    String,
+    List(Message),
+    List(types.Tool),
+    Bool,
+    Bool,
+    Option(Int),
+    types.Options,
+  ),
+) {
+  let tool =
+    api.object(["type", "function"], {
+      use _ <- decode.field("type", literal("function"))
+      decode.field(
+        "function",
+        api.object(["name", "description", "parameters", "strict"], {
+          use name <- decode.field("name", api.bounded_string(256, True))
+          use description <- decode.optional_field(
+            "description",
+            "",
+            decode.string,
+          )
+          use parameters <- decode.optional_field(
+            "parameters",
+            json.object([
+              #("type", json.string("object")),
+              #("properties", json.object([])),
+            ]),
+            decode.dynamic |> decode.map(types.encode_value),
+          )
+          use strict <- decode.optional_field("strict", False, decode.bool)
+          decode.success(types.Tool(name, description, parameters, strict))
+        }),
+        decode.success,
+      )
+    })
+  use model <- decode.field("model", api.bounded_string(577, True))
   use messages <- decode.field("messages", decode.list(message_decoder()))
   use tools <- decode.optional_field("tools", [], decode.list(tool))
   use stream <- decode.optional_field("stream", False, decode.bool)
-  use include_usage <- decode.then(decode.optionally_at(
-    ["stream_options", "include_usage"],
+  use include_usage <- decode.optional_field(
+    "stream_options",
     False,
-    decode.bool,
-  ))
+    api.object(
+      ["include_usage"],
+      decode.optional_field("include_usage", False, decode.bool, decode.success),
+    ),
+  )
   use completion <- decode.optional_field(
     "max_completion_tokens",
     None,
-    decode.optional(decode.int),
+    token_limit() |> decode.map(Some),
   )
   use tokens <- decode.optional_field(
     "max_tokens",
     None,
-    decode.optional(decode.int),
+    token_limit() |> decode.map(Some),
   )
   use options <- decode.then(options_decoder())
   decode.success(#(
@@ -144,7 +209,7 @@ fn maybe(
   name: String,
   decoder: decode.Decoder(a),
 ) -> decode.Decoder(Option(a)) {
-  decode.optional_field(name, None, decode.optional(decoder), decode.success)
+  decode.optional_field(name, None, decoder |> decode.map(Some), decode.success)
 }
 
 fn options_decoder() -> decode.Decoder(types.Options) {
@@ -157,34 +222,55 @@ fn options_decoder() -> decode.Decoder(types.Options) {
           case choice {
             "auto" -> decode.success(types.AutoTool)
             "none" -> decode.success(types.NoTool)
-            "required" | "any" -> decode.success(types.AnyTool)
+            "required" -> decode.success(types.AnyTool)
             other ->
               decode.failure(types.AutoTool, "tool choice, got " <> other)
           }
         }),
       [
-        decode.at(["function", "name"], decode.string)
+        api.object(["type", "function"], {
+          use _ <- decode.field("type", literal("function"))
+          decode.field(
+            "function",
+            api.object(
+              ["name"],
+              decode.field(
+                "name",
+                api.bounded_string(256, True),
+                decode.success,
+              ),
+            ),
+            decode.success,
+          )
+        })
         |> decode.map(types.NamedTool),
       ],
     )
   let format = {
     use kind <- decode.field("type", decode.string)
     case kind {
-      "json_object" -> decode.success(Some(types.JsonObject))
+      "json_object" ->
+        api.object(["type"], decode.success(Some(types.JsonObject)))
       "json_schema" -> {
-        use name <- decode.subfield(["json_schema", "name"], decode.string)
-        use schema <- decode.subfield(
-          ["json_schema", "schema"],
-          decode.dynamic |> decode.map(types.encode_value),
+        api.object(
+          ["type", "json_schema"],
+          decode.field(
+            "json_schema",
+            api.object(["name", "description", "schema", "strict"], {
+              use name <- decode.field("name", api.bounded_string(256, False))
+              use _ <- decode.optional_field("description", "", decode.string)
+              use schema <- decode.field(
+                "schema",
+                decode.dynamic |> decode.map(types.encode_value),
+              )
+              use strict <- decode.optional_field("strict", False, decode.bool)
+              decode.success(Some(types.JsonSchema(name, schema, strict)))
+            }),
+            decode.success,
+          ),
         )
-        use strict <- decode.then(decode.optionally_at(
-          ["json_schema", "strict"],
-          False,
-          decode.bool,
-        ))
-        decode.success(Some(types.JsonSchema(name, schema, strict)))
       }
-      _ -> decode.success(None)
+      _ -> decode.failure(None, "supported response format")
     }
   }
   use temperature <- decode.then(maybe("temperature", number))
@@ -194,22 +280,24 @@ fn options_decoder() -> decode.Decoder(types.Options) {
     [],
     decode.one_of(decode.list(decode.string), [
       decode.string |> decode.map(fn(stop) { [stop] }),
-      decode.success([]),
     ]),
   )
   use tool_choice <- decode.then(maybe("tool_choice", choice))
   use parallel <- decode.then(maybe("parallel_tool_calls", decode.bool))
-  use effort <- decode.then(maybe("reasoning_effort", decode.string))
-  use nested_effort <- decode.then(decode.optionally_at(
-    ["reasoning", "effort"],
-    None,
-    decode.optional(decode.string),
+  use effort <- decode.then(maybe(
+    "reasoning_effort",
+    api.bounded_string(100, False),
   ))
-  use format <- decode.optional_field(
-    "response_format",
+  use nested_effort <- decode.optional_field(
+    "reasoning",
     None,
-    decode.optional(format) |> decode.map(option.flatten),
+    api.object(
+      ["effort"],
+      decode.field("effort", api.bounded_string(100, False), decode.success),
+    )
+      |> decode.map(Some),
   )
+  use format <- decode.optional_field("response_format", None, format)
   decode.success(types.Options(
     temperature,
     top_p,
@@ -222,36 +310,138 @@ fn options_decoder() -> decode.Decoder(types.Options) {
 }
 
 fn message_decoder() -> decode.Decoder(Message) {
-  let part = {
-    use kind <- decode.field("type", decode.string)
-    case kind {
-      "text" | "input_text" ->
-        decode.at(["text"], decode.string) |> decode.map(Text)
-      "image_url" -> {
-        use url <- decode.field(
-          "image_url",
-          decode.one_of(decode.at(["url"], decode.string), [decode.string]),
-        )
-        decode.success(ImageUrl(url))
+  let part =
+    api.object(["type", "text", "image_url"], {
+      use kind <- decode.field("type", decode.string)
+      case kind {
+        "text" ->
+          api.object(
+            ["type", "text"],
+            decode.at(["text"], decode.string) |> decode.map(Text),
+          )
+        "image_url" -> {
+          api.object(
+            ["type", "image_url"],
+            decode.field(
+              "image_url",
+              api.object(["url", "detail"], {
+                use url <- decode.field("url", decode.string)
+                use _ <- decode.optional_field(
+                  "detail",
+                  "auto",
+                  enum_string(["auto", "low", "high"]),
+                )
+                decode.success(ImageUrl(url))
+              }),
+              decode.success,
+            ),
+          )
+        }
+        other ->
+          decode.failure(Text(""), "text or image_url part, got " <> other)
       }
-      other -> decode.failure(Text(""), "text or image_url part, got " <> other)
-    }
-  }
+    })
   let content =
     decode.one_of(decode.string |> decode.map(fn(text) { [Text(text)] }), [
       decode.list(part),
       decode.optional(decode.string) |> decode.map(fn(_) { [] }),
     ])
-  use role <- decode.field("role", decode.string)
-  use parts <- decode.optional_field("content", [], content)
-  use calls <- decode.optional_field(
-    "tool_calls",
-    [],
-    decode.optional(decode.list(replay.tool_call_decoder()))
-      |> decode.map(option.unwrap(_, [])),
+  let call =
+    api.object(["id", "type", "function"], {
+      use id <- decode.field("id", api.bounded_string(270_000, True))
+      use _ <- decode.field("type", literal("function"))
+      use fields <- decode.field(
+        "function",
+        api.object(["name", "arguments"], {
+          use name <- decode.field("name", api.bounded_string(256, True))
+          use arguments <- decode.field("arguments", decode.string)
+          decode.success(#(name, arguments))
+        }),
+      )
+      decode.success(types.ToolCall(id, fields.0, fields.1))
+    })
+  api.object(
+    [
+      "role",
+      "content",
+      "name",
+      "tool_call_id",
+      "tool_calls",
+      "reasoning_content",
+    ],
+    {
+      use role <- decode.field(
+        "role",
+        enum_string(["system", "developer", "user", "assistant", "tool"]),
+      )
+      use parts <- decode.optional_field("content", [], content)
+      use _ <- decode.optional_field("name", "", api.bounded_string(256, False))
+      use calls <- decode.optional_field("tool_calls", [], decode.list(call))
+      use call_id <- decode.optional_field(
+        "tool_call_id",
+        "",
+        api.bounded_string(270_000, True),
+      )
+      use thinking <- decode.optional_field(
+        "reasoning_content",
+        None,
+        decode.optional(decode.string),
+      )
+      let message =
+        Message(role, parts, calls, call_id, option.unwrap(thinking, ""))
+      let has_image =
+        list.any(parts, fn(part) {
+          case part {
+            ImageUrl(_) -> True
+            _ -> False
+          }
+        })
+      case
+        list.length(calls) <= 200
+        && { !has_image || role == "user" }
+        && { calls == [] || role == "assistant" }
+        && { role != "tool" || call_id != "" }
+      {
+        True -> decode.success(message)
+        False -> decode.failure(message, "message fields appropriate for role")
+      }
+    },
   )
-  use call_id <- decode.optional_field("tool_call_id", "", decode.string)
-  decode.success(Message(role, parts, calls, call_id))
+}
+
+fn literal(expected: String) -> decode.Decoder(String) {
+  enum_string([expected])
+}
+
+fn token_limit() -> decode.Decoder(Int) {
+  use value <- decode.then(decode.int)
+  case value > 0 && value <= 9_007_199_254_740_991 {
+    True -> decode.success(value)
+    False -> decode.failure(value, "positive token limit")
+  }
+}
+
+fn enum_string(values: List(String)) -> decode.Decoder(String) {
+  use value <- decode.then(decode.string)
+  case list.contains(values, value) {
+    True -> decode.success(value)
+    False -> decode.failure(value, "supported value")
+  }
+}
+
+fn validate_options(options: types.Options) -> Result(Nil, String) {
+  let valid_temperature = case options.temperature {
+    None -> True
+    Some(value) -> value >=. 0.0 && value <=. 2.0
+  }
+  let valid_top_p = case options.top_p {
+    None -> True
+    Some(value) -> value >=. 0.0 && value <=. 1.0
+  }
+  case valid_temperature && valid_top_p && list.length(options.stop) <= 4 {
+    True -> Ok(Nil)
+    False -> Error("invalid sampling options")
+  }
 }
 
 /// Leading system and developer messages are the instructions. A later one
@@ -274,7 +464,7 @@ fn system(role: String) -> Bool {
 }
 
 fn input(message: Message) -> Result(List(transcript.Entry), String) {
-  let Message(role, parts, calls, call_id) = message
+  let Message(role, parts, calls, call_id, thinking) = message
   let portable = fn(inputs) {
     list.map(inputs, transcript.Entry(_, None, None, None, None))
   }
@@ -286,13 +476,20 @@ fn input(message: Message) -> Result(List(transcript.Entry), String) {
       Ok(portable([types.ToolOutput(original(call_id), text(parts), [])]))
     "assistant" ->
       case calls {
-        [] -> Ok(portable([types.Assistant(text(parts))]))
+        [] ->
+          case thinking {
+            "" -> Ok(portable([types.Assistant(text(parts))]))
+            _ ->
+              assistant(text(parts), thinking, [])
+              |> result.map(fn(item) { portable([item]) })
+          }
         calls ->
           case list.find_map(calls, fn(call) { carried(call.id) }) {
             Ok(entries) -> Ok(entries)
             Error(_) ->
               assistant(
                 text(parts),
+                thinking,
                 list.map(calls, fn(call) {
                   types.ToolCall(..call, id: original(call.id))
                 }),
@@ -392,7 +589,11 @@ fn user(parts: List(Part)) -> Result(List(types.Input), String) {
 /// Only inline images: the proxy never fetches a url on a client's behalf.
 fn data_image(url: String) -> Result(types.Image, String) {
   case string.split_once(url, ";base64,") {
-    Ok(#("data:" <> _, data)) -> image.from_base64(data)
+    Ok(#("data:image/" <> media, data)) ->
+      case list.contains(["png", "jpeg", "gif", "webp"], media) {
+        True -> image.from_base64(data)
+        False -> Error("images must use supported base64 data urls")
+      }
     _ -> Error("images must be base64 data urls")
   }
 }
@@ -407,13 +608,10 @@ fn content_json(content: String) -> Json {
 
 fn assistant(
   content: String,
+  thinking: String,
   calls: List(types.ToolCall),
 ) -> Result(types.Input, String) {
-  json.object([
-    #("role", json.string("assistant")),
-    #("content", content_json(content)),
-    #("tool_calls", json.array(calls, replay.tool_call)),
-  ])
+  replay.message(content_json(content), thinking, None, calls)
   |> json.to_string
   |> json.parse(types.replay_decoder(types.ChatCompletions))
   |> result.map(types.Replay)
@@ -457,23 +655,19 @@ pub fn completion(reply: Reply, turn: types.Turn) -> Json {
       "tool_calls",
       json.array(turn.tool_calls, call_json(None, _)),
     ))
-  envelope(
-    reply,
-    "chat.completion",
-    [
-      #(
-        "choices",
-        json.preprocessed_array([
-          json.object([
-            #("index", json.int(0)),
-            #("message", json.object(message)),
-            #("finish_reason", json.string(finish(turn.finish))),
-          ]),
+  envelope(reply, "chat.completion", [
+    #(
+      "choices",
+      json.preprocessed_array([
+        json.object([
+          #("index", json.int(0)),
+          #("message", json.object(message)),
+          #("finish_reason", json.string(finish(turn.finish))),
         ]),
-      ),
-    ]
-      |> when(turn.usage != None, #("usage", usage(turn.usage))),
-  )
+      ]),
+    ),
+    #("usage", json.nullable(turn.usage, usage)),
+  ])
 }
 
 /// The chunk announcing the assistant's turn.
@@ -527,7 +721,7 @@ pub fn closing(
     True -> [
       envelope(reply, "chat.completion.chunk", [
         #("choices", json.preprocessed_array([])),
-        #("usage", usage(turn.usage)),
+        #("usage", json.nullable(turn.usage, usage)),
       ]),
     ]
   }
@@ -539,8 +733,10 @@ pub fn error(message: String) -> Json {
     #(
       "error",
       json.object([
-        #("message", json.string(message)),
+        #("message", json.string(api.scalar_prefix(message, 4096))),
         #("type", json.string("albedo_proxy_error")),
+        #("code", json.null()),
+        #("param", json.null()),
       ]),
     ),
   ])
@@ -596,26 +792,33 @@ fn finish(finish: types.Finish) -> String {
   }
 }
 
-fn usage(usage: Option(types.Usage)) -> Json {
-  let types.Usage(input, output, cached, reasoning, ..) =
-    option.unwrap(usage, types.Usage(0, 0, None, None, None, None, None))
-  json.object(
-    [
-      #("prompt_tokens", json.int(input)),
-      #("completion_tokens", json.int(output)),
-      #("total_tokens", json.int(input + output)),
+fn usage(usage: types.Usage) -> Json {
+  let types.Usage(input, output, cached, reasoning, ..) = usage
+  let fields = [
+    #("prompt_tokens", json.int(input)),
+    #("completion_tokens", json.int(output)),
+    #("total_tokens", json.int(input + output)),
+  ]
+  let fields = case cached {
+    None -> fields
+    Some(value) -> [
       #(
         "prompt_tokens_details",
-        json.object([#("cached_tokens", json.int(option.unwrap(cached, 0)))]),
+        json.object([#("cached_tokens", json.int(value))]),
       ),
+      ..fields
     ]
-    |> when(option.is_some(reasoning), #(
-      "completion_tokens_details",
-      json.object([
-        #("reasoning_tokens", json.int(option.unwrap(reasoning, 0))),
-      ]),
-    )),
-  )
+  }
+  json.object(case reasoning {
+    None -> fields
+    Some(value) -> [
+      #(
+        "completion_tokens_details",
+        json.object([#("reasoning_tokens", json.int(value))]),
+      ),
+      ..fields
+    ]
+  })
 }
 
 fn when(

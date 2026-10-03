@@ -19,12 +19,21 @@ import (
 type captureTransport struct {
 	entered chan *http.Request
 	release chan struct{}
+	body    string
+	status  int
 }
 
 func (transport captureTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	transport.entered <- request
 	<-transport.release
-	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"ok":true}`)), Header: make(http.Header)}, nil
+	body, status := transport.body, transport.status
+	if body == "" {
+		body = `{"result":"accepted"}`
+	}
+	if status == 0 {
+		status = http.StatusOK
+	}
+	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 }
 
 func TestOperationUsesCapturedAddressAndToken(t *testing.T) {
@@ -33,7 +42,7 @@ func TestOperationUsesCapturedAddressAndToken(t *testing.T) {
 	conn.HTTPClient().Transport = transport
 	finished := make(chan error, 1)
 	go func() {
-		_, err := requestBytes(context.Background(), conn, operation{Name: "submit", Method: http.MethodPost, Path: "/events", Body: map[string]string{"text": "hello"}, Policy: authRecovery}, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 64 * 1024})
+		_, err := requestBytes(context.Background(), conn, operation{Name: "submit", Method: http.MethodPost, Path: "/sessions/s/inputs/i", Body: map[string]string{"text": "hello"}, Policy: authRecovery}, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 64 * 1024})
 		finished <- err
 	}()
 	request := <-transport.entered
@@ -63,7 +72,7 @@ func TestPooledMutationAcknowledgementLossIsNotReplayed(t *testing.T) {
 			server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				_, _ = io.Copy(io.Discard, request.Body)
 				if calls.Add(1) == 1 {
-					_, _ = writer.Write([]byte(`{"ok":true}`))
+					_, _ = writer.Write([]byte(`{"result":"accepted"}`))
 					return
 				}
 				connection, _, err := writer.(http.Hijacker).Hijack()
@@ -118,7 +127,7 @@ func TestConcurrentOperationsNeverMixConnectionSnapshots(t *testing.T) {
 	for range 4 {
 		readers.Go(func() {
 			for range 50 {
-				_, err := requestBytes(context.Background(), conn, operation{Name: "read", Method: http.MethodGet, Path: "/health", Policy: readRecovery}, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 64 * 1024})
+				_, err := requestBytes(context.Background(), conn, operation{Name: "read", Method: http.MethodGet, Path: "/server", Policy: readRecovery}, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 64 * 1024})
 				if err != nil {
 					t.Error(err)
 				}
@@ -146,45 +155,45 @@ func TestMutationAuthRecoveryBudget(t *testing.T) {
 		rediscover bool
 		repeated   bool
 	}{
-		{name: "changed credentials", marker: true, status: 403, token: "new", rediscover: true, expected: 2},
-		{name: "unchanged credentials", marker: true, status: 403, token: "old", rediscover: true, expected: 1},
+		{name: "changed credentials", marker: true, status: 401, token: "new", rediscover: true, expected: 2},
+		{name: "unchanged credentials", marker: true, status: 401, token: "old", rediscover: true, expected: 1},
 		{name: "unmarked refusal", status: 403, token: "new", rediscover: true, expected: 1},
 		{name: "unmarked unauthorized", status: 401, token: "new", rediscover: true, expected: 1},
-		{name: "marked unauthorized", marker: true, status: 401, token: "new", rediscover: true, expected: 1},
-		{name: "no discovery", marker: true, status: 403, token: "new", expected: 1},
-		{name: "repeated refusal", marker: true, status: 403, token: "new", rediscover: true, repeated: true, expected: 2},
+		{name: "marked unauthorized", marker: true, status: 401, token: "new", rediscover: true, expected: 2},
+		{name: "no discovery", marker: true, status: 401, token: "new", expected: 1},
+		{name: "repeated refusal", marker: true, status: 401, token: "new", rediscover: true, repeated: true, expected: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var calls atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-				if request.URL.Path == "/health" {
-					_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow"]}`))
+				if request.URL.Path == "/server" {
+					_, _ = writer.Write([]byte(readyServer))
 					return
 				}
 				count := calls.Add(1)
 				if count == 1 || test.repeated {
 					writer.WriteHeader(test.status)
 					if test.marker {
-						_, _ = writer.Write([]byte(`{"code":"authentication_required","error":"invalid bearer"}`))
+						_, _ = writer.Write([]byte(`{"type":"about:blank","title":"Unauthorized","status":401,"code":"authentication_required","detail":"invalid bearer"}`))
 					} else {
-						_, _ = writer.Write([]byte(`{"error":"forbidden"}`))
+						_, _ = writer.Write([]byte(`{"detail":"forbidden"}`))
 					}
 					return
 				}
 				if request.Header.Get("Authorization") != "Bearer new" {
 					t.Errorf("recovery reused old credentials")
 				}
-				_, _ = writer.Write([]byte(`{"ok":true}`))
+				_, _ = writer.Write([]byte(`{"result":"accepted"}`))
 			}))
 			defer server.Close()
 			port := server.Listener.Addr().(*net.TCPAddr).Port
 			var rediscover Rediscovery
 			if test.rediscover {
 				rediscover = func(context.Context) (ConnectionSnapshot, error) {
-					return ConnectionSnapshot{Port: port, Token: test.token, Version: 2}, nil
+					return ConnectionSnapshot{Port: port, Token: test.token, Version: ProtocolVersion}, nil
 				}
 			}
-			conn := NewConnection(ConnectionSnapshot{Port: port, Token: "old", Version: 2}, rediscover)
+			conn := NewConnection(ConnectionSnapshot{Port: port, Token: "old", Version: ProtocolVersion}, rediscover)
 			defer conn.HTTPClient().CloseIdleConnections()
 			_, err := requestBytes(context.Background(), conn, operation{Name: "mutate", Method: http.MethodPost, Path: "/mutation", Policy: authRecovery}, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 64 * 1024})
 			if calls.Load() != test.expected {
@@ -206,8 +215,8 @@ func TestMutationAuthRecoveryBudget(t *testing.T) {
 func TestReadRecoveryIncludesTruncatedBody(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/health" {
-			_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow"]}`))
+		if request.URL.Path == "/server" {
+			_, _ = writer.Write([]byte(readyServer))
 			return
 		}
 		if calls.Add(1) == 1 {
@@ -215,10 +224,10 @@ func TestReadRecoveryIncludesTruncatedBody(t *testing.T) {
 			_, _ = writer.Write([]byte(`{"ok":`))
 			return
 		}
-		_, _ = writer.Write([]byte(`[]`))
+		_, _ = writer.Write([]byte(`{"items":[],"next":null}`))
 	}))
 	defer server.Close()
-	snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "token", Version: 2}
+	snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "token", Version: ProtocolVersion}
 	conn := NewConnection(snapshot, func(context.Context) (ConnectionSnapshot, error) { return snapshot, nil })
 	defer conn.HTTPClient().CloseIdleConnections()
 	result, err := ListSessions(context.Background(), conn)
@@ -233,7 +242,7 @@ func TestMalformedMutationAcknowledgementIsUncertain(t *testing.T) {
 	defer server.Close()
 	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
 	defer conn.HTTPClient().CloseIdleConnections()
-	_, err := InterruptSession(context.Background(), conn, "s")
+	err := executeMutation(context.Background(), conn, operation{Name: "interrupt session", Method: http.MethodPost, Path: "/sessions/s/interrupt", Body: struct{}{}, Policy: noRecovery}, []int{200}, func(body []byte, _ int) error { var result wireInterruption; return json.Unmarshal(body, &result) })
 	if _, ok := errors.AsType[*UncertainOutcomeError](err); !ok {
 		t.Fatalf("invalid acknowledgement returned %v", err)
 	}
@@ -248,23 +257,23 @@ func TestMalformedMutationAcknowledgementIsUncertain(t *testing.T) {
 func TestRecordOpenDoesNotRecoverAuthentication(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/health" {
-			_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow"]}`))
+		if request.URL.Path == "/server" {
+			_, _ = writer.Write([]byte(readyServer))
 			return
 		}
 		calls.Add(1)
-		writer.WriteHeader(http.StatusForbidden)
-		_, _ = writer.Write([]byte(`{"code":"authentication_required"}`))
+		writer.WriteHeader(http.StatusUnauthorized)
+		_, _ = writer.Write([]byte(`{"type":"about:blank","title":"Unauthorized","status":401,"code":"authentication_required","detail":"invalid bearer"}`))
 	}))
 	defer server.Close()
-	snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "new", Version: 2}
+	snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "new", Version: ProtocolVersion}
 	replacement := snapshot
 	snapshot.Token = "old"
 	conn := NewConnection(snapshot, func(context.Context) (ConnectionSnapshot, error) { return replacement, nil })
 	defer conn.HTTPClient().CloseIdleConnections()
 	_, err := RecordOpen(context.Background(), conn, "test")
-	if err == nil || calls.Load() != 1 || conn.Token() != "old" {
-		t.Fatalf("open recovered authentication: %v, %d, %s", err, calls.Load(), conn.Token())
+	if err == nil || calls.Load() != 1 || conn.Snapshot().Token != "old" {
+		t.Fatalf("open recovered authentication: %v, %d, %s", err, calls.Load(), conn.Snapshot().Token)
 	}
 }
 
@@ -290,7 +299,7 @@ func TestOperationClosesResponsesAndBoundsReads(t *testing.T) {
 	}{
 		{name: "success", status: 200, content: "ok", success: true},
 		{name: "oversized success", status: 200, content: "123456"},
-		{name: "rejection", status: 403, content: `{"error":"no"}`},
+		{name: "rejection", status: 403, content: `{"detail":"no"}`},
 		{name: "server failure", status: 503, content: "bad"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

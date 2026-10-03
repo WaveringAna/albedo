@@ -7,6 +7,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -64,7 +65,7 @@ func TestPromptToASessionSwitchesItsModelWithoutChangingTheDefault(t *testing.T)
 // an empty reply; a model no provider offers fails before any session exists.
 func TestPromptReportsAFailedTurnAndAnUnknownModel(t *testing.T) {
 	profile := t.Name()
-	if err := daemon.SaveProvider(context.Background(), conn(t), profile, config.Settings{
+	if err := saveAndSelectProvider(context.Background(), conn(t), profile, config.Settings{
 		Extension: "openai",
 		BaseURL:   suite.provider.server.URL + "/t/missing",
 		APIKey:    "fixture-key",
@@ -166,9 +167,13 @@ func TestPromptTimeoutWhileQueuedDoesNotInterruptAnotherTurn(t *testing.T) {
 	if got := len(suite.provider.requests(profile)); got != 1 {
 		t.Fatalf("cancelled queued prompt still ran: %d requests", got)
 	}
-	outcome, err := client.CancelSubmission(t.Context(), "missing-submission")
-	if err != nil || outcome != "not_pending" {
-		t.Fatalf("missing cancellation: %q %v", outcome, err)
+	missing, err := client.PrepareTurn("never submitted", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.CancelSubmission(t.Context(), missing.ID())
+	if failure, ok := errors.AsType[*daemon.APIError](err); !ok || failure.StatusCode != 404 {
+		t.Fatalf("missing cancellation: %v", err)
 	}
 }
 
@@ -206,20 +211,22 @@ func TestSubmissionCancellationLeavesSharedRunningTurn(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("first turn never started")
 	}
-	if _, err := client.SendSubmission(t.Context(), "identified contribution", "shared-submission"); err != nil {
+	shared, err := client.Send(t.Context(), "identified contribution", nil)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := client.Send(t.Context(), "anonymous contribution", nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.SendSubmission(t.Context(), "cancel this queued contribution", "queued-submission"); err != nil {
+	queued, err := client.Send(t.Context(), "cancel this queued contribution", nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	outcome, cancelErr := client.CancelSubmission(t.Context(), "queued-submission")
+	outcome, cancelErr := client.CancelSubmission(t.Context(), queued.OperationID)
 	if cancelErr != nil || outcome != "cancelled_queued" {
 		t.Fatalf("queued cancellation = %q %v", outcome, cancelErr)
 	}
-	outcome, cancelErr = client.CancelSubmission(t.Context(), "queued-submission")
+	outcome, cancelErr = client.CancelSubmission(t.Context(), queued.OperationID)
 	if cancelErr != nil || outcome != "not_pending" {
 		t.Fatalf("repeated queued cancellation = %q %v", outcome, cancelErr)
 	}
@@ -231,7 +238,7 @@ func TestSubmissionCancellationLeavesSharedRunningTurn(t *testing.T) {
 		t.Fatal("shared turn never started")
 	}
 	for range 2 {
-		outcome, err := client.CancelSubmission(t.Context(), "shared-submission")
+		outcome, err := client.CancelSubmission(t.Context(), shared.OperationID)
 		if err != nil || outcome != "shared_running" {
 			t.Fatalf("shared cancellation = %q, %v", outcome, err)
 		}
@@ -285,10 +292,11 @@ func TestSubmissionCancellationRacesStartAndCompletion(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("first turn never started")
 	}
-	const submissionID = "racing-target"
-	if _, err := client.SendSubmission(t.Context(), "short target turn", submissionID); err != nil {
+	target, err := client.Send(t.Context(), "short target turn", nil)
+	if err != nil {
 		t.Fatal(err)
 	}
+	submissionID := target.OperationID
 	type cancellation struct {
 		err     error
 		outcome string
@@ -318,7 +326,7 @@ func TestSubmissionCancellationRacesStartAndCompletion(t *testing.T) {
 		t.Fatalf("unexpected racing cancellation outcome %q", cancelled.outcome)
 	}
 	waitIdle(t, id, profile, 1)
-	if _, err := client.SendSubmission(t.Context(), "hold later turn", "later-owner"); err != nil {
+	if _, err := client.Send(t.Context(), "hold later turn", nil); err != nil {
 		t.Fatal(err)
 	}
 	select {

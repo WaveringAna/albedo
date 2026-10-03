@@ -67,16 +67,23 @@ func TestTUILoginAddsAManualProviderThroughTheDaemon(t *testing.T) {
 	if !ok || picked.ID != "chat_completions" {
 		t.Fatalf("enter did not pick the protocol: %#v", picked)
 	}
-	// The catalog question goes through the real daemon, which finds no
-	// models.dev cache and answers with an empty list.
+	// The daemon may advertise endpoint defaults even without models.dev.
+	// Manual entry remains available alongside every advertised model.
 	d.Dispatch(picked)
 	expect(tui.StepModels)
-	if len(d.App.Login.Catalog) != 0 {
-		t.Fatalf("the daemon's empty catalog did not reach the model step: catalog=%v note=%q\n%s", d.App.Login.Catalog, d.App.Login.CatalogNote, d.View())
+	for {
+		selected, ok := d.App.Login.ModelPicker.Highlighted()
+		if !ok {
+			t.Fatal("model picker has no manual-entry row")
+		}
+		if selected.ID == "manual" {
+			break
+		}
+		d.Key(tea.KeyDown)
 	}
 	manual, ok := d.Key(tea.KeyEnter).(tui.PickerSelectMsg)
 	if !ok || manual.ID != "manual" {
-		t.Fatalf("an empty catalog leaves only manual entry: %#v", manual)
+		t.Fatalf("manual entry was not selectable: %#v", manual)
 	}
 	d.Dispatch(manual)
 	expect(tui.StepModel)
@@ -93,7 +100,7 @@ func TestTUILoginAddsAManualProviderThroughTheDaemon(t *testing.T) {
 		t.Fatalf("saved config: %v", err)
 	}
 	got := profiles.Providers[name]
-	want := config.Settings{Extension: "openai", BaseURL: baseURL, Model: model, Protocol: "chat_completions", HasKey: true}
+	want := config.Settings{ProfileName: name, Extension: "openai", BaseURL: baseURL, Model: model, Protocol: "chat_completions", HasKey: true}
 	if got != want {
 		t.Fatalf("config.json kept %+v, want %+v", got, want)
 	}
@@ -120,7 +127,12 @@ func preserveLoginState(t *testing.T, profile string) {
 	}
 	connection := conn(t)
 	t.Cleanup(func() {
-		if err := daemon.DeleteProvider(context.Background(), connection, profile); err != nil {
+		profiles, readErr := daemon.ProviderProfiles(context.Background(), connection)
+		if readErr != nil {
+			t.Error(readErr)
+			return
+		}
+		if err := daemon.DeleteProvider(context.Background(), connection, profile, profiles); err != nil {
 			t.Errorf("delete temporary provider %q: %v", profile, err)
 		}
 		if err := os.WriteFile(configPath, saved, 0o600); err != nil {
@@ -172,7 +184,7 @@ func TestTUILoginSavesAnAnthropicAPIKeyProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("saved config: %v", err)
 	}
-	want := config.Settings{Extension: "claude", Model: model, Protocol: "chat_completions", HasKey: true}
+	want := config.Settings{ProfileName: name, Extension: "claude", Model: model, Protocol: "chat_completions", HasKey: true}
 	if got := profiles.Providers[name]; got != want {
 		t.Fatalf("config.json kept %+v, want %+v", got, want)
 	}

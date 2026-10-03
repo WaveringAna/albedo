@@ -55,17 +55,30 @@ a broken extension loses only itself. a context plugin that will not load, a man
 
 `ModelsPlugin` supplies catalogued model facts and provider model lists. `ModelProviderPlugin` declares its models.dev namespace and resolves a tagged saved profile into an `Upstream`: a `stream` function over albedo's request, event, and turn types, plus the endpoint, replay protocol, and an `explain` for failures. A provider with its own wire format encodes an `openai_api.Exchange` and passes it with its own `stream.Reducer` to `openai_api.exchange`, which keeps HTTP, SSE framing, limits, and callbacks shared; `antigravity` does this. `LoginPlugin` supplies a browser sign-in that the daemon runs for every client; see [model authentication](auth.md#sign-in-api).
 
-`ServicePlugin(Service(authorization, body_limit, handle))` serves HTTP from the daemon while its extension is enabled globally. Sessions do not select services. Each registration declares its authorization policy and maximum body size in bytes:
+`ServicePlugin(Service(admission, handle))` serves HTTP while its extension is
+enabled globally. Sessions do not select services. `admission(path, method)`
+declares authentication and the body limit for each operation:
 
 - `DaemonToken` requires the existing daemon bearer token before the daemon reads the body.
-- `LocalAccess` permits anonymous loopback access. The [proxy](proxy.md) uses this policy with a 32,000,000-byte limit.
-- `SignedBody` leaves signature verification to the service over the buffered bytes. [Webhooks](webhooks.md) use this policy with a 65,536-byte limit. A daemon token cannot bypass signature verification.
+- `LocalAccess` permits anonymous loopback access. The [proxy](proxy.md) selects
+  it only when the operator explicitly enables anonymous access.
+- `SignedBody` leaves signature verification to the service over the buffered
+  bytes. Only the [webhook delivery POST](webhooks.md) uses this policy; its
+  limit is 65,536 bytes. A daemon token cannot bypass signature verification.
 
-The daemon refuses requests carrying an `Origin` header before authentication or body processing. Its own routes (`health`, `sessions`, `models`, `auth`, `shutdown`) always win over services and require the daemon token. Core request bodies have a 9,200,000-byte limit.
+The daemon validates host and browser origin before authentication or body
+processing. Core routes require the daemon token. Each route enforces its
+declared body limit; [OpenAPI](../docs/openapi.yaml) defines the public contract.
 
-Requests to `/<extension>/...` go to `handle(daemon, path, request, live)` with the path below the mount. `request` is a `Request(BitArray)` whose body the daemon has read once. `live` is the connection request for streamed responses. Service handlers must use the buffered body rather than read the connection again.
+Requests to `/extensions/<extension>/...` go to
+`handle(daemon, path, request, live)` with the path below the mount. `request`
+is a `Request(BitArray)` whose body the daemon has read once. `live` is the
+connection request for streamed responses. Service handlers use the buffered
+body rather than read the connection again.
 
-Uploads require a nonnegative decimal `Content-Length`. An absent length means an empty body. The daemon rejects any `Transfer-Encoding`, including chunked uploads, with `400` and `unsupported_transfer_encoding`. Invalid lengths return `400`; declared lengths above the applicable limit return `413`. The daemon consumes accepted bodies even for GET requests and unknown routes. Refusals before body consumption close the connection.
+Fixed-length and chunked uploads are supported. Invalid lengths or ambiguous
+framing return `400`; bodies above the applicable limit return `413`.
+Refusals before body consumption close the connection.
 
 `extension.Daemon` gives the service `home`, `upstream(profile, model, session)` to resolve a saved profile outside any session, catalog `models`, and the daemon's `sessions`. Set `ALBEDO_PORT` in the daemon's environment to pin its port so a service has a stable base url; the default is a free port chosen at start. Built-in dependencies keep these layers explicit: `codex -> openai -> models`. See [models](models.md) and [model authentication](auth.md).
 

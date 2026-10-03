@@ -2,7 +2,7 @@
 %% Antigravity credentials and request identity.
 
 -include_lib("kernel/include/file.hrl").
--export([access/1, access/2, limited/3, encode/1, session_number/1, uuid/1,
+-export([access/1, access/2, access/3, limited/3, encode/1, session_number/1, uuid/1,
          call_id/0, now_ms/0, user_agent/1, discovered/1, refresh/1, reload/1, expire/2,
          exchange/4, discover/3, account/1, client_id/0, accounts/1]).
 
@@ -35,13 +35,17 @@ access(Home) -> access(Home, <<>>).
 
 %% The session's account: selected first, then its sticky or hashed choice,
 %% with accounts inside a reported limit last.
-access(Home, Session0) ->
+access(Home, Session0) -> access(Home, Session0, <<>>).
+
+access(Home, Session0, Profile) ->
     Session = unicode:characters_to_binary(Session0),
     Path = albedo_credentials:creds_path(Home),
     case albedo_credentials:accounts(Path) of
         {ok, Data} ->
-            Ordered = albedo_accounts:order(?SCOPE, credentials(Data), Session, fun account_id/1),
-            first_usable(Ordered, Path, Session);
+            case albedo_credentials:bound_values(Home, Profile, credentials(Data)) of
+                {ok, Credentials} -> first_usable(albedo_accounts:order(?SCOPE, Credentials, Session, fun account_id/1), Path, Session);
+                Error -> Error
+            end;
         {error, _} -> {error, ?SIGNED_OUT}
     end.
 

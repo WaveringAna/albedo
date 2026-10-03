@@ -15,7 +15,7 @@ import unittest
 import urllib.error
 import urllib.parse
 
-from harness import Albedo, exclusive
+from harness import Albedo, exclusive, operation_id
 
 HOST = "albedo-e2e-nowhere"
 
@@ -39,19 +39,36 @@ class LocationsTest(unittest.TestCase):
         self.app = Albedo().__enter__()
         self.addCleanup(self.app.__exit__, None, None, None)
 
-    def api(self, path, body=None):
-        with self.app.api(path, body) as response:
+    def api(self, path, body=None, **options):
+        with self.app.api(path, body, **options) as response:
             return json.load(response)
 
-    def failure(self, path, body=None):
+    def failure(self, path, body=None, **options):
         with self.assertRaises(urllib.error.HTTPError) as caught:
-            self.api(path, body)
-        return caught.exception.code, json.load(caught.exception)["error"]
+            self.api(path, body, **options)
+        return caught.exception.code, json.load(caught.exception)["detail"]
 
     def create(self, workspace):
         return self.api(
-            "/sessions", {"workspace": workspace, "provider": self.app.profile}
+            f"/sessions/{operation_id()}",
+            {
+                "kind": "new",
+                "workspace": workspace,
+                "provider_profile": self.app.profile,
+            },
+            method="PUT",
+            headers={"If-None-Match": "*"},
         )
+
+    def move(self, session, workspace):
+        snapshot = self.api(f"/sessions/{session}?tail=0")
+        resource = snapshot["configuration_resource"]
+        return self.api(
+            resource["url"],
+            {"workspace": workspace, "family_revision": snapshot["family_revision"]},
+            method="PATCH",
+            headers={"If-Match": resource["etag"]},
+        )["session"]
 
     def test_remote_workspace_is_stored_canonically_with_its_location(self):
         created = self.create(f"mayer@{HOST}:/home/mayer//proj/./albedo/")
@@ -62,7 +79,12 @@ class LocationsTest(unittest.TestCase):
             (location["host"], location["user"], location["path"]),
             (HOST, "mayer", "/home/mayer/proj/albedo"),
         )
-        listed = next(s for s in self.api("/sessions") if s["id"] == created["id"])
+        query = urllib.parse.urlencode({"workspace": canonical})
+        listed = next(
+            s
+            for s in self.api("/sessions?" + query)["items"]
+            if s["id"] == created["id"]
+        )
         self.assertEqual(listed["workspace"], canonical)
 
         local = self.create(str(self.app.workspace))
@@ -97,7 +119,7 @@ class LocationsTest(unittest.TestCase):
     @exclusive
     def test_the_cli_starts_a_remote_session_without_resolving_it_locally(self):
         session = json.loads(self.app.cli("new", f"{HOST}:/srv/cli"))["session"]
-        listed = next(s for s in self.api("/sessions") if s["id"] == session)
+        listed = next(s for s in self.api("/sessions")["items"] if s["id"] == session)
         self.assertEqual(listed["workspace"], f"{HOST}:/srv/cli")
 
     def test_unusable_locations_are_rejected(self):
@@ -111,26 +133,28 @@ class LocationsTest(unittest.TestCase):
         ):
             with self.subTest(workspace=workspace):
                 status, message = self.failure(
-                    "/sessions", {"workspace": workspace, "provider": self.app.profile}
+                    f"/sessions/{operation_id()}",
+                    {
+                        "kind": "new",
+                        "workspace": workspace,
+                        "provider_profile": self.app.profile,
+                    },
+                    method="PUT",
+                    headers={"If-None-Match": "*"},
                 )
                 self.assertEqual(status, 400)
                 self.assertIn(said, message)
 
     def test_a_session_moves_to_a_remote_location_and_back(self):
         session = self.app.session()
-        moved = self.api(
-            f"/sessions/{session}/workspace", {"workspace": f"{HOST}:/srv//app/"}
-        )
+        moved = self.move(session, f"{HOST}:/srv//app/")
         self.assertEqual(moved["workspace"], f"{HOST}:/srv/app")
         self.assertEqual(moved["location"]["host"], HOST)
-        status, message = self.failure(
-            f"/sessions/{session}/workspace", {"workspace": f"{HOST}:app"}
-        )
-        self.assertEqual(status, 409)
-        self.assertIn("must be absolute", message)
-        back = self.api(
-            f"/sessions/{session}/workspace", {"workspace": str(self.app.workspace)}
-        )
+        with self.assertRaises(urllib.error.HTTPError) as invalid:
+            self.move(session, f"{HOST}:app")
+        self.assertEqual(invalid.exception.code, 400)
+        self.assertIn("must be absolute", json.load(invalid.exception)["detail"])
+        back = self.move(session, str(self.app.workspace))
         self.assertEqual(back["workspace"], str(self.app.workspace))
         self.assertIsNone(back["location"]["host"])
 
