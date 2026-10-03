@@ -86,6 +86,22 @@ def base(target: str) -> list[str]:
     return options(*multiplexing(target))
 
 
+def sign_in(target: str) -> list[str]:
+    """What a person runs in a terminal to sign in to `target` where ssh can
+    ask them: it opens the master albedo rides, which outlives it."""
+    control, persist = multiplexing(target)
+    return [
+        "ssh",
+        "-M",
+        "-fN",
+        "-o",
+        f"ControlPath={control}",
+        "-o",
+        f"ControlPersist={persist}",
+        target,
+    ]
+
+
 def options(control: str, persist: str) -> list[str]:
     """The ssh argv prefix riding the master at `control`."""
     os.makedirs(control_dir(), exist_ok=True)

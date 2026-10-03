@@ -262,6 +262,29 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         )
         settings.write_text(json.dumps({"remote": {}, "ssh": values}))
         self.assertEqual(remote._settings(), {})
+        # ssh takes a URI target with a port; its path is the remote cwd
+        self.assertEqual(
+            remote.parse_target("ssh://me@box:2222/srv/app"),
+            {"host": "ssh://me@box:2222", "remote_cwd": "/srv/app"},
+        )
+        self.assertEqual(
+            remote.parse_target("ssh://box:2222"),
+            {"host": "ssh://box:2222", "remote_cwd": None},
+        )
+
+    async def test_a_host_that_needs_a_sign_in_names_the_command_for_it(self):
+        locked = Path(tempfile.mkdtemp(prefix="albedo-locked-ssh-")) / "ssh"
+        locked.write_text(
+            "#!/bin/sh\necho 'box: Permission denied (publickey).' >&2\nexit 255\n"
+        )
+        locked.chmod(0o755)
+        with patch.object(remote, "ssh_base", lambda target: [str(locked)]):
+            with self.assertRaises(remote.RemoteError) as raised:
+                await self.connect(host="ssh://box:2222")
+        message = str(raised.exception)
+        self.assertIn("needs a person to sign in", message)
+        self.assertIn("ssh -M -fN -o ControlPath=", message)
+        self.assertIn(" ssh://box:2222`", message)
 
     async def test_connect_boots_the_kernel_and_answers_every_tool(self):
         rem = await self.connect()

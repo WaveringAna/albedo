@@ -104,7 +104,15 @@ class RemoteExecutionError(RemoteError):
 
 
 def parse_target(arg: str) -> dict[str, str | None]:
-    """Split `user@host[:/path]`; a colon not followed by a path stays in the host."""
+    """Split `user@host[:/path]` or `ssh://user@host[:port][/path]`. ssh takes
+    the URI as its target, path left out; in the scp form a colon not followed
+    by a path stays in the host."""
+    if arg.startswith("ssh://"):
+        authority, slash, path = arg.removeprefix("ssh://").partition("/")
+        return {
+            "host": f"ssh://{authority}",
+            "remote_cwd": f"/{path}" if slash else None,
+        }
     head, separator, tail = arg.partition(":")
     remote_cwd = tail if separator and tail.startswith("/") else None
     return {"host": arg if remote_cwd is None else head, "remote_cwd": remote_cwd}
@@ -155,6 +163,18 @@ def resolve(
         python = _settings().get("python")
     target["python"] = python
     return target
+
+
+def refusal(host: str, stderr: str) -> str:
+    """Why ssh could not reach `host`; a sign-in only a person can give names
+    the command that opens the master this connection would ride."""
+    if albedo_ssh.failure(stderr)[0] != "needs_auth":
+        return f"ssh target {host!r} is unreachable: {stderr.strip()[:300]}"
+    return (
+        f"ssh target {host!r} needs a person to sign in: {stderr.strip()[:300]}\n"
+        f"ask the user to run `{shlex.join(albedo_ssh.sign_in(host))}` in a terminal,"
+        " then connect again; the master it opens carries this connection"
+    )
 
 
 ssh_env = albedo_ssh.env
@@ -1279,9 +1299,7 @@ class Remote:
             str(target["host"]), "true", timeout=CONNECT_TIMEOUT
         )
         if code != 0:
-            raise RemoteError(
-                f"ssh target {target['host']!r} is unreachable: {stderr.strip()[:300]}"
-            )
+            raise RemoteError(refusal(str(target["host"]), stderr))
         if target["remote_cwd"] is None:
             code, stdout, _ = await ssh_run(
                 str(target["host"]), "pwd", timeout=CONNECT_TIMEOUT
