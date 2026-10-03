@@ -486,6 +486,36 @@ pub fn foreign_calls_carry_the_skip_signature_on_gemini_test() -> Nil {
     == ["skip_thought_signature_validator"]
 }
 
+pub fn frame_archive_images_carry_no_empty_text_part_test() -> Nil {
+  // Snapcompact's frame archive attaches images with no text after the
+  // archive prompt; Cloud Code Assist's Claude translation rejected the
+  // empty text part with "messages.0.content.2.text.text: Field required".
+  let assert Ok(first) = types.image("image/png", "aGk=", 2, 3, 2)
+  let assert Ok(second) = types.image("image/png", "aGk=", 2, 3, 2)
+  let request =
+    openai_api.request(claude, [
+      types.UserImage("the archive prompt", first),
+      types.UserImage("", second),
+    ])
+  let assert [user] =
+    at(
+      body(claude, request),
+      ["request", "contents"],
+      decode.list(decode.dynamic),
+    )
+  assert at(user, ["role"], decode.string) == "user"
+  let assert [text, first_part, second_part] =
+    at(user, ["parts"], decode.list(decode.dynamic))
+  assert at(text, ["text"], decode.string) == "the archive prompt"
+  assert at(first_part, ["inlineData", "mimeType"], decode.string)
+    == "image/png"
+  assert at(second_part, ["inlineData", "mimeType"], decode.string)
+    == "image/png"
+  let assert Error(_) =
+    decode.run(second_part, decode.at(["text"], decode.string))
+  Nil
+}
+
 pub fn empty_body_is_a_retryable_failure_test() -> Nil {
   let #(outcome, _) = reduce(gemini, [])
   assert outcome == Error(types.UnexpectedEnd)
