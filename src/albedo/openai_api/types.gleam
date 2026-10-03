@@ -48,6 +48,8 @@ pub type Client {
 
 pub const max_image_bytes = 5_242_880
 
+pub const max_image_encoded_bytes = 6_990_508
+
 pub const max_image_edge = 16_384
 
 const max_image_pixels = 40_000_000
@@ -106,7 +108,8 @@ pub fn image(
 ) -> Result(Image, Error) {
   use _ <- result.try(image_error(
     mime_type,
-    string.byte_size(data) > 0 && string.byte_size(data) <= 6_990_508,
+    string.byte_size(data) > 0
+      && string.byte_size(data) <= max_image_encoded_bytes,
     width,
     height,
     bytes,
@@ -156,7 +159,7 @@ pub fn stored_image(
 ) -> Result(Image, Error) {
   use _ <- result.try(image_error(
     mime_type,
-    size > 0 && size <= max_image_bytes,
+    size > 0 && size <= max_image_encoded_bytes,
     width,
     height,
     bytes,
