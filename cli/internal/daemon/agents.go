@@ -5,13 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
-	"net/url"
 	"unicode/utf8"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
-type Activity = wireActivity
-type Cursor = wireCursor
+type Activity = protocol.Activity
+type Cursor = protocol.Cursor
 
 func validGeneration(generation string) bool {
 	if len(generation) != 22 {
@@ -55,7 +57,9 @@ type AgentsSnapshot struct {
 
 func StreamAgents(ctx context.Context, conn *Connection, onBatch func([]AgentEvent) error) error {
 	first := true
-	err := scanEventStream(ctx, conn, operation{Name: "watch sessions", Method: http.MethodGet, Path: "/sessions", Policy: readRecovery}, streamLimits{requireSSE: true, lineBytes: 1048577}, func(scanner *bufio.Scanner) error {
+	err := scanEventStream(ctx, conn, operation{Name: "watch sessions", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewListSessionsRequest(base, nil)
+	}, Policy: readRecovery}, streamLimits{requireSSE: true, lineBytes: 1048577}, func(scanner *bufio.Scanner) error {
 		return scanSSEFrames(ctx, scanner, func(payload []byte) error {
 			var w struct {
 				Events []json.RawMessage `json:"events"`
@@ -136,11 +140,11 @@ func decodeAgentEvent(raw json.RawMessage) (*AgentEvent, error) {
 		}
 	case "activity":
 		var d struct {
-			SessionID string             `json:"session_id"`
-			Cursor    Cursor             `json:"cursor"`
-			Status    wireSessionStatus  `json:"status"`
-			Progress  []wireToolProgress `json:"current_progress"`
-			Activity  Activity           `json:"activity"`
+			SessionID string                  `json:"session_id"`
+			Cursor    Cursor                  `json:"cursor"`
+			Status    protocol.SessionStatus  `json:"status"`
+			Progress  []protocol.ToolProgress `json:"current_progress"`
+			Activity  Activity                `json:"activity"`
 		}
 		if err := decodeRequired(envelope.Data, &d, "session_id", "cursor", "status", "current_progress", "activity"); err != nil {
 			return nil, err
@@ -156,7 +160,7 @@ func decodeAgentEvent(raw json.RawMessage) (*AgentEvent, error) {
 		}
 		event.Session = d.SessionID
 		event.Cursor = &d.Cursor
-		status := statusValue(d.Status, wireKernel{})
+		status := statusValue(d.Status, protocol.Kernel{})
 		event.Status = &status
 		event.Running = status.Running
 		event.Activity = &d.Activity
@@ -175,7 +179,7 @@ func decodeAgentEvent(raw json.RawMessage) (*AgentEvent, error) {
 			event.CurrentProgress = append(event.CurrentProgress, *progress)
 		}
 	case "mail":
-		var d wireMailMetadata
+		var d protocol.MailMetadata
 		if err := decodeRequired(envelope.Data, &d, "mail_id", "sender_session_id", "receiver_session_id", "kind", "bytes", "sender_label"); err != nil {
 			return nil, err
 		}
@@ -190,7 +194,7 @@ func decodeAgentEvent(raw json.RawMessage) (*AgentEvent, error) {
 		}
 		event.SessionIDs, event.ScopeDirty = d.SessionIDs, d.ScopeDirty
 	case "failure":
-		var d wireSafeReason
+		var d protocol.SafeReason
 		if err := decodeRequired(envelope.Data, &d, "code", "detail"); err != nil {
 			return nil, err
 		}
@@ -205,12 +209,14 @@ func GetAgents(ctx context.Context, conn *Connection, id string) (AgentsSnapshot
 	if err != nil {
 		return AgentsSnapshot{}, err
 	}
-	q := url.Values{"scope": {"all"}, "family_id": {selected.RootID}, "limit": {"200"}}
+	params := protocol.ListSessionsParams{Scope: new("all"), FamilyID: &selected.RootID, Limit: new(int64(200))}
 	result := AgentsSnapshot{Root: selected.RootID, Nodes: []AgentNode{}}
 	seen := map[string]bool{}
 	for {
-		var page wireSessionPage
-		err := executeRead(ctx, conn, operation{Name: "read session family", Method: http.MethodGet, Path: "/sessions?" + q.Encode(), Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "items", "next", "family") })
+		var page protocol.SessionPage
+		err := executeRead(ctx, conn, operation{Name: "read session family", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+			return protocol.NewListSessionsRequest(base, &params)
+		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "items", "next", "family") })
 		if err != nil {
 			return result, err
 		}
@@ -239,7 +245,7 @@ func GetAgents(ctx context.Context, conn *Connection, id string) (AgentsSnapshot
 			return result, fieldError("family cursor")
 		}
 		seen[*page.Next] = true
-		q.Set("next", *page.Next)
+		params.Next = page.Next
 	}
 }
 

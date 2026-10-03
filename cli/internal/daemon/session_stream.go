@@ -5,13 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"unicode/utf8"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 type streamBatch struct {
@@ -68,12 +68,14 @@ func (c *ChatClient) StreamWithProgress(ctx context.Context, tail int, onEvent f
 	c.mu.Lock()
 	after, generation := c.afterSeq, c.afterGeneration
 	c.mu.Unlock()
-	query := url.Values{"tail": {fmt.Sprint(min(200, max(0, tail)))}}
+	params := protocol.GetSessionParams{Tail: new(int64(min(200, max(0, tail))))}
 	if generation != "" {
-		query.Set("after_generation", generation)
-		query.Set("after_seq", fmt.Sprint(after))
+		params.AfterGeneration = &generation
+		params.AfterSeq = &after
 	}
-	err := scanEventStream(ctx, c.conn, operation{Name: "watch session", Method: http.MethodGet, Path: sessionPath(c.agentID, "?"+query.Encode()), Policy: readRecovery}, streamLimits{requireSSE: true, lineBytes: 1048577, errorBytes: 65536}, func(scanner *bufio.Scanner) error { return c.readStream(ctx, scanner, onBatchConsumed, onEvent) })
+	err := scanEventStream(ctx, c.conn, operation{Name: "watch session", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetSessionRequest(base, c.agentID, &params)
+	}, Policy: readRecovery}, streamLimits{requireSSE: true, lineBytes: 1048577, errorBytes: 65536}, func(scanner *bufio.Scanner) error { return c.readStream(ctx, scanner, onBatchConsumed, onEvent) })
 	return classifyStreamFailure(err)
 }
 
@@ -135,7 +137,7 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 			if len(batch.Events) != 1 || batch.Snapshot != nil {
 				return streamFailure(StreamProtocol, fieldError("failure batch"))
 			}
-			var reason wireSafeReason
+			var reason protocol.SafeReason
 			if err := json.Unmarshal(first.Data, &reason); err != nil || reason.Code == "" {
 				return streamFailure(StreamProtocol, fieldError("failure reason"))
 			}

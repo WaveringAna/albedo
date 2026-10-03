@@ -1,6 +1,10 @@
 package daemon
 
-import "context"
+import (
+	"context"
+
+	"albedo/cli/internal/daemon/protocol"
+)
 
 type AgentPhase string
 
@@ -25,14 +29,14 @@ type AgentStatus struct {
 	KernelBuild, KernelInstanceID *string
 }
 
-func validateSessionStatus(status wireSessionStatus) error {
+func validateSessionStatus(status protocol.SessionStatus) error {
 	switch status.Phase {
 	case "idle", "preparing", "generating", "running", "interrupting", "compacting":
 		return nil
 	}
 	return fieldError("status.phase")
 }
-func statusValue(status wireSessionStatus, kernel wireKernel) AgentStatus {
+func statusValue(status protocol.SessionStatus, kernel protocol.Kernel) AgentStatus {
 	phase := PhaseIdle
 	switch status.Phase {
 	case "preparing":

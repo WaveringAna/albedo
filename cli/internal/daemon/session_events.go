@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 type wireChatEvent struct {
@@ -42,18 +44,18 @@ func decodeChatEvent(raw json.RawMessage) (*wireChatEvent, error) {
 			return nil, fieldError("reset reason")
 		}
 	case "status":
-		var data wireSessionStatus
+		var data protocol.SessionStatus
 		if err := decodeRequired(envelope.Data, &data, "phase", "run_id", "interrupt_requested", "blocking_reason"); err != nil {
 			return nil, err
 		}
 		if err := validateSessionStatus(data); err != nil {
 			return nil, err
 		}
-		status := statusValue(data, wireKernel{})
+		status := statusValue(data, protocol.Kernel{})
 		event.Status = &status
 	case "input":
 		var data struct {
-			Input wireInput `json:"input"`
+			Input protocol.Input `json:"input"`
 		}
 		if err := decodeRequired(envelope.Data, &data, "input"); err != nil {
 			return nil, err
@@ -89,7 +91,7 @@ func decodeChatEvent(raw json.RawMessage) (*wireChatEvent, error) {
 		}
 	case "message":
 		var data struct {
-			Entry wireHistoryEntry `json:"entry"`
+			Entry protocol.HistoryEntry `json:"entry"`
 		}
 		if err := decodeRequired(envelope.Data, &data, "entry"); err != nil {
 			return nil, err
@@ -105,10 +107,10 @@ func decodeChatEvent(raw json.RawMessage) (*wireChatEvent, error) {
 		event.Replayed = false
 	case "note":
 		var data struct {
-			Text    string            `json:"text"`
-			EntryID string            `json:"entry_id"`
-			Origin  string            `json:"origin"`
-			Mail    *wireMailMetadata `json:"mail"`
+			Text    string                 `json:"text"`
+			EntryID string                 `json:"entry_id"`
+			Origin  string                 `json:"origin"`
+			Mail    *protocol.MailMetadata `json:"mail"`
 		}
 		if err := decodeRequired(envelope.Data, &data, "entry_id", "origin", "text", "mail"); err != nil {
 			return nil, err
@@ -131,14 +133,14 @@ func decodeChatEvent(raw json.RawMessage) (*wireChatEvent, error) {
 		event.Progress = progress
 	case "tool":
 		var data struct {
-			ToolCallID      string                `json:"tool_call_id"`
-			ProgressCallID  string                `json:"progress_call_id"`
-			Name            string                `json:"name"`
-			Arguments       json.RawMessage       `json:"arguments"`
-			Result          json.RawMessage       `json:"result"`
-			Trace           json.RawMessage       `json:"trace"`
-			ContentComplete bool                  `json:"content_complete"`
-			Reference       *wireContentReference `json:"reference"`
+			ToolCallID      string                     `json:"tool_call_id"`
+			ProgressCallID  string                     `json:"progress_call_id"`
+			Name            string                     `json:"name"`
+			Arguments       json.RawMessage            `json:"arguments"`
+			Result          json.RawMessage            `json:"result"`
+			Trace           json.RawMessage            `json:"trace"`
+			ContentComplete bool                       `json:"content_complete"`
+			Reference       *protocol.ContentReference `json:"reference"`
 		}
 		if err := decodeRequired(envelope.Data, &data, "tool_call_id", "progress_call_id", "name", "arguments", "result", "trace", "content_complete", "reference"); err != nil {
 			return nil, err
@@ -155,7 +157,7 @@ func decodeChatEvent(raw json.RawMessage) (*wireChatEvent, error) {
 		event.ToolTrace = ParseToolTrace(data.Trace)
 		return &wireChatEvent{CallID: data.ToolCallID, StreamEvent: event}, nil
 	case "usage":
-		var data wireUsage
+		var data protocol.Usage
 		if err := decodeRequired(envelope.Data, &data, "model", "observed_at", "prompt_tokens", "cached_prompt_tokens", "cache_write_tokens", "completion_tokens", "total_tokens", "elapsed_ms", "tokens_per_second", "context_window_tokens", "cache_ttl_seconds", "cache_fade"); err != nil {
 			return nil, err
 		}
@@ -195,15 +197,15 @@ func decodeChatEvent(raw json.RawMessage) (*wireChatEvent, error) {
 		}
 	case "retry":
 		var data struct {
-			RunID  string         `json:"run_id"`
-			Reason wireSafeReason `json:"reason"`
+			RunID  string              `json:"run_id"`
+			Reason protocol.SafeReason `json:"reason"`
 		}
 		if err := decodeRequired(envelope.Data, &data, "run_id", "attempt", "reason", "delay_ms"); err != nil {
 			return nil, err
 		}
 		event.TurnID, event.Text = data.RunID, data.Reason.Detail
 	case "compacted":
-		var data wireCompactionObservation
+		var data protocol.CompactionObservation
 		if err := json.Unmarshal(envelope.Data, &data); err != nil {
 			return nil, err
 		}

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
-	"net/url"
 	"time"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 type FolderList struct {
@@ -86,16 +88,18 @@ type KnownHost struct {
 	State  string `json:"state"`
 }
 
-func workspaceDirectory(ctx context.Context, conn *Connection, location string, preview bool) (wireWorkspaceDirectory, error) {
-	q := url.Values{"location": {location}, "limit": {"200"}}
+func workspaceDirectory(ctx context.Context, conn *Connection, location string, preview bool) (protocol.WorkspaceDirectory, error) {
+	params := protocol.GetWorkspacesParams{Location: &location, Limit: new(int64(200))}
 	if preview {
-		q.Set("include", "preview")
+		params.Include = new("preview")
 	}
-	var result wireWorkspaceDirectory
+	var result protocol.WorkspaceDirectory
 	seen := map[string]bool{}
 	for {
-		var page wireWorkspaceDirectory
-		err := executeRead(ctx, conn, operation{Capability: "workspace_browsing", Name: "browse workspace", Method: http.MethodGet, Path: "/workspaces?" + q.Encode(), Policy: readRecovery}, func(data []byte) error {
+		var page protocol.WorkspaceDirectory
+		err := executeRead(ctx, conn, operation{Capability: "workspace_browsing", Name: "browse workspace", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+			return protocol.NewGetWorkspacesRequest(base, &params)
+		}, Policy: readRecovery}, func(data []byte) error {
 			return decodeRequired(data, &page, "directory", "parent", "home", "host", "items", "next")
 		})
 		if err != nil {
@@ -119,7 +123,7 @@ func workspaceDirectory(ctx context.Context, conn *Connection, location string, 
 			return result, fieldError("workspace page cursor")
 		}
 		seen[*page.Next] = true
-		q.Set("next", *page.Next)
+		params.Next = page.Next
 	}
 }
 func ListFolders(ctx context.Context, conn *Connection, path string) (FolderList, error) {
@@ -134,7 +138,7 @@ func ListFolders(ctx context.Context, conn *Connection, path string) (FolderList
 	}
 	return result, err
 }
-func previewValue(w wireWorkspacePreview, path string) (FolderPreview, error) {
+func previewValue(w protocol.WorkspacePreview, path string) (FolderPreview, error) {
 	result := FolderPreview{Path: path, More: int(w.More), Languages: []LanguageShare{}, Tree: []FolderNode{}}
 	if len(w.Repository) > 0 && string(w.Repository) != "null" {
 		var kind struct {
@@ -145,13 +149,13 @@ func previewValue(w wireWorkspacePreview, path string) (FolderPreview, error) {
 		}
 		switch kind.Kind {
 		case "git":
-			var r wireGitFacts
+			var r protocol.GitFacts
 			if err := decodeRequired(w.Repository, &r, "kind", "root", "branch", "revision", "changed", "touched_at"); err != nil {
 				return result, err
 			}
 			result.Repo = &Repo{Kind: r.Kind, Root: r.Root, Branch: value(r.Branch), Commit: value(r.Revision), Changed: intPointer(r.Changed), Touched: timestampSeconds(value(r.TouchedAt))}
 		case "jj":
-			var r wireJJFacts
+			var r protocol.JJFacts
 			if err := decodeRequired(w.Repository, &r, "kind", "root", "change_id", "revision", "changed", "touched_at", "bookmark"); err != nil {
 				return result, err
 			}
@@ -180,7 +184,10 @@ func PreviewFolder(ctx context.Context, conn *Connection, path string) (FolderPr
 	if err != nil {
 		return FolderPreview{}, err
 	}
-	return previewValue(w.Preview, w.Directory)
+	if w.Preview == nil {
+		return FolderPreview{}, fieldError("workspace preview")
+	}
+	return previewValue(*w.Preview, w.Directory)
 }
 func FolderRepo(ctx context.Context, conn *Connection, path string) (*Repo, error) {
 	preview, err := PreviewFolder(ctx, conn, path)
@@ -189,7 +196,7 @@ func FolderRepo(ctx context.Context, conn *Connection, path string) (*Repo, erro
 func MoveSession(ctx context.Context, conn *Connection, id, workspace string, condition SessionCondition) (Session, error) {
 	return patchSession(ctx, conn, id, condition.ETag, map[string]any{"workspace": workspace, "family_revision": condition.FamilyRevision})
 }
-func hostValue(w wireHost) HostStatus {
+func hostValue(w protocol.Host) HostStatus {
 	r := HostStatus{Host: w.Target, State: w.State, OS: value(w.Os), Arch: value(w.Architecture), Home: value(w.Home)}
 	if w.Detail != nil {
 		r.Detail = w.Detail.Detail
@@ -199,13 +206,15 @@ func hostValue(w wireHost) HostStatus {
 	}
 	return r
 }
-func hosts(ctx context.Context, conn *Connection) ([]wireHost, error) {
-	result := []wireHost{}
-	q := url.Values{"limit": {"200"}}
+func hosts(ctx context.Context, conn *Connection) ([]protocol.Host, error) {
+	result := []protocol.Host{}
+	params := protocol.ListHostsParams{Limit: new(int64(200))}
 	seen := map[string]bool{}
 	for {
-		var page wireHostPage
-		err := executeRead(ctx, conn, operation{Capability: "host_probes", Name: "list hosts", Method: http.MethodGet, Path: "/hosts?" + q.Encode(), Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "items", "next") })
+		var page protocol.HostPage
+		err := executeRead(ctx, conn, operation{Capability: "host_probes", Name: "list hosts", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+			return protocol.NewListHostsRequest(base, &params)
+		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "items", "next") })
 		if err != nil {
 			return nil, err
 		}
@@ -217,7 +226,7 @@ func hosts(ctx context.Context, conn *Connection) ([]wireHost, error) {
 			return nil, fieldError("host page cursor")
 		}
 		seen[*page.Next] = true
-		q.Set("next", *page.Next)
+		params.Next = page.Next
 	}
 }
 func ListHosts(ctx context.Context, conn *Connection) ([]KnownHost, error) {
@@ -246,8 +255,10 @@ func WarmHost(ctx context.Context, conn *Connection, host string) (HostStatus, e
 	}
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	var w wireHost
-	op := operation{Capability: "host_probes", Name: "probe host", Method: http.MethodPost, Path: "/hosts/" + url.PathEscape(host) + "/probe", Body: struct{}{}, Policy: noRecovery}
+	var w protocol.Host
+	op := operation{Capability: "host_probes", Name: "probe host", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewProbeHostRequestWithBody(base, host, "application/json", body)
+	}, Body: struct{}{}, Policy: noRecovery}
 	body, err := requestBytes(ctx, conn, op, responseLimits{successStatus: http.StatusAccepted, bodyBytes: 1024 * 1024, errorBytes: 64 * 1024})
 	if err != nil {
 		return HostStatus{}, err

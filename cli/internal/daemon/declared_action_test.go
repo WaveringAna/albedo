@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 func TestDeclaredActionRejectsOverlappingBodyBindingsBeforeDelivery(t *testing.T) {
@@ -100,7 +102,7 @@ func TestDeclaredActionCapturesRowBindingsAndValidatesResult(t *testing.T) {
 					_, _ = io.WriteString(w, `{"saved":true}`)
 				}
 			})
-			var operation wireActionOperation
+			var operation protocol.ActionOperation
 			if err := json.Unmarshal([]byte(`{"operation_id":"editCustomItem","method":"PATCH","path_template":"/extensions/custom/items/{id}","path":{"id":{"source":"row","pointer":"/id"}},"query":{},"headers":{"If-Match":{"source":"row","pointer":"/resource/etag"}},"body":{"/title":{"source":"form","pointer":"/title"},"/notes":{"source":"form","pointer":"/notes"}},"result_schema":{"type":"object","required":["saved"],"properties":{"saved":{"type":"boolean"}}}}`), &operation); err != nil {
 				t.Fatal(err)
 			}

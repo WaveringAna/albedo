@@ -4,47 +4,65 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"net/url"
 	"strings"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
-type CachePolicyPage = wireCachePolicyPage
+type CachePolicyPage = protocol.CachePolicyPage
 type CachePolicyQuery struct {
 	Extension, Host, Model, Next string
 	Limit                        int
 }
-type RequestRecordPage = wireRequestRecordPage
-type QuotaPage = wireQuotaPage
+type RequestRecordPage = protocol.RequestRecordPage
+type QuotaPage = protocol.QuotaPage
 
 func GetCachePolicy(ctx context.Context, conn *Connection, query CachePolicyQuery) (CachePolicyPage, error) {
-	q := url.Values{"view": {"cache-policy"}, "limit": {fmt.Sprint(min(200, max(1, query.Limit)))}}
-	for key, text := range map[string]string{"extension": query.Extension, "host": query.Host, "model": query.Model, "next": query.Next} {
-		if text != "" {
-			q.Set(key, text)
-		}
+	params := protocol.ListModelsParams{View: new("cache-policy"), Limit: new(int64(min(200, max(1, query.Limit))))}
+	if query.Extension != "" {
+		params.Extension = &query.Extension
 	}
-	var result wireCachePolicyPage
-	err := executeRead(ctx, conn, operation{Name: "inspect cache policy", Method: http.MethodGet, Path: "/models?" + q.Encode(), Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &result, "entries", "layers", "matched", "next") })
+	if query.Host != "" {
+		params.Host = &query.Host
+	}
+	if query.Model != "" {
+		params.Model = &query.Model
+	}
+	if query.Next != "" {
+		params.Next = &query.Next
+	}
+	var result protocol.CachePolicyPage
+	err := executeRead(ctx, conn, operation{Name: "inspect cache policy", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewListModelsRequest(base, &params)
+	}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &result, "entries", "layers", "matched", "next") })
 	return result, err
 }
 func GetRequestRecords(ctx context.Context, conn *Connection, session, next string, limit int) (RequestRecordPage, error) {
-	q := url.Values{"view": {"requests"}, "limit": {fmt.Sprint(min(200, max(1, limit)))}}
+	params := protocol.GetContextParams{View: new("requests"), Limit: new(int64(min(200, max(1, limit))))}
 	if next != "" {
-		q.Set("next", next)
+		params.Next = &next
 	}
-	var result wireRequestRecordPage
-	err := executeRead(ctx, conn, operation{Capability: "context", Name: "inspect provider requests", Method: http.MethodGet, Path: sessionPath(session, "/context?"+q.Encode()), Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &result, "items", "next") })
+	var result protocol.RequestRecordPage
+	err := executeRead(ctx, conn, operation{Capability: "context", Name: "inspect provider requests", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetContextRequest(base, session, &params)
+	}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &result, "items", "next") })
 	return result, err
 }
 func GetQuotaHistory(ctx context.Context, conn *Connection, next string, limit int) (QuotaPage, error) {
-	q := url.Values{"include": {"quota_history"}, "limit": {fmt.Sprint(min(200, max(1, limit)))}}
+	params := protocol.GetServerParams{Include: new("quota_history"), Limit: new(int64(min(200, max(1, limit))))}
 	if next != "" {
-		q.Set("next", next)
+		params.Next = &next
 	}
-	var result wireServer
-	err := executeRead(ctx, conn, operation{Name: "inspect quota history", Method: http.MethodGet, Path: "/server?" + q.Encode(), Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &result, "quota_history") })
-	return result.QuotaHistory, err
+	var result protocol.Server
+	err := executeRead(ctx, conn, operation{Name: "inspect quota history", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetServerRequest(base, &params)
+	}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &result, "quota_history") })
+	if err == nil && result.QuotaHistory == nil {
+		err = fieldError("quota history")
+	}
+	return value(result.QuotaHistory), err
 }
 
 // Platform inspectors are rendered locally from typed facts. Their domain APIs

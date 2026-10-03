@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"maps"
 	"net/http"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 const ProtocolVersion = 3
@@ -22,7 +25,7 @@ type ServerInfo struct {
 type ServerNotice struct{ ID, Kind, Message string }
 
 func decodeServer(body []byte) (ServerInfo, error) {
-	var server wireServer
+	var server protocol.Server
 	if err := decodeRequired(body, &server, "instance_id", "protocol", "state", "capabilities", "build", "digest", "extensions", "quota", "notices"); err != nil {
 		return ServerInfo{}, &ProtocolError{Code: "invalid_server", Operation: "read server", Cause: err}
 
@@ -41,7 +44,9 @@ func ProbeServer(ctx context.Context, conn *Connection) (ServerInfo, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	body, err := requestBytes(ctx, conn, operation{Name: "read server", Method: http.MethodGet, Path: "/server", Policy: noRecovery}, responseLimits{successStatus: 200, bodyBytes: 1048576, errorBytes: 65536})
+	body, err := requestBytes(ctx, conn, operation{Name: "read server", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetServerRequest(base, nil)
+	}, Policy: noRecovery}, responseLimits{successStatus: 200, bodyBytes: 1048576, errorBytes: 65536})
 	if err != nil {
 		return ServerInfo{}, err
 	}
@@ -92,10 +97,10 @@ func StopDaemon(ctx context.Context, conn *Connection) error {
 		}
 		instanceID = server.InstanceID
 	}
-	return executeMutation(ctx, conn, operation{Name: "stop daemon", Method: http.MethodPost, Path: "/server/shutdown", Body: struct {
-		InstanceID string `json:"instance_id"`
-	}{instanceID}, Policy: noRecovery}, []int{202}, func(data []byte, _ int) error {
-		var reply wireShutdown
+	return executeMutation(ctx, conn, operation{Name: "stop daemon", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewShutdownServerRequestWithBody(base, "application/json", body)
+	}, Body: protocol.ShutdownRequest{InstanceID: instanceID}, Policy: noRecovery}, []int{202}, func(data []byte, _ int) error {
+		var reply protocol.Shutdown
 		if err := json.Unmarshal(data, &reply); err != nil {
 			return err
 		}
@@ -118,7 +123,7 @@ func noticeValues(rows []struct {
 	return result
 }
 func DismissServerNotices(ctx context.Context, conn *Connection, etag string, ids []string) error {
-	_, err := patchSettingsGroup[wireUISettings](ctx, conn, "ui", etag, map[string]any{"dismissed_notices": ids})
+	_, err := patchSettingsGroup[protocol.UISettings](ctx, conn, "ui", etag, map[string]any{"dismissed_notices": ids})
 	return err
 }
 

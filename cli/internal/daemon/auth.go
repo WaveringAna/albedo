@@ -1,12 +1,15 @@
 package daemon
 
 import (
-	"albedo/cli/internal/config"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
+
+	"albedo/cli/internal/config"
+	"albedo/cli/internal/daemon/protocol"
 )
 
 type SignIn struct {
@@ -29,13 +32,13 @@ type SignInStatus struct {
 	Accounts                                          []Account
 }
 
-func accountValue(w wireAccount) Account {
+func accountValue(w protocol.Account) Account {
 	return Account{Provider: w.Provider, ID: w.ID, Label: w.Label, Detail: w.Detail, Selected: len(w.SelectedByProfiles) > 0, SelectedByProfiles: w.SelectedByProfiles}
 }
 func SignInList(ctx context.Context, conn *Connection) (SignIns, error) {
 	var result SignIns
-	err := executeRead(ctx, conn, operation{Capability: "provider_auth", Name: "list provider accounts", Method: http.MethodGet, Path: "/auth", Policy: readRecovery}, func(data []byte) error {
-		var w wireAuth
+	err := executeRead(ctx, conn, operation{Capability: "provider_auth", Name: "list provider accounts", BuildRequest: func(base string, body io.Reader) (*http.Request, error) { return protocol.NewGetAuthRequest(base) }, Policy: readRecovery}, func(data []byte) error {
+		var w protocol.Auth
 		if err := decodeRequired(data, &w, "providers", "accounts"); err != nil {
 			return err
 		}
@@ -53,7 +56,7 @@ func SignInList(ctx context.Context, conn *Connection) (SignIns, error) {
 	})
 	return result, err
 }
-func loginValue(w wireLogin, etag string) (SignInStatus, error) {
+func loginValue(w protocol.Login, etag string) (SignInStatus, error) {
 	if w.ID == "" || etag == "" || w.Accounts == nil {
 		return SignInStatus{}, fieldError("login")
 	}
@@ -81,18 +84,17 @@ func loginValue(w wireLogin, etag string) (SignInStatus, error) {
 // StartSignInWithID retains the same admitted intent when a transport failure is retried.
 func StartSignInWithID(ctx context.Context, conn *Connection, id, provider, flow string, values map[string]json.RawMessage) (StartedSignIn, error) {
 	result := StartedSignIn{ID: id}
-	body := map[string]any{"provider": provider, "values": nonNilMap(values)}
-	if flow != "" {
-		body["flow"] = flow
-	}
+	body := protocol.LoginRequest{Provider: provider, Flow: optionalText(flow), Values: nonNilMap(values)}
 	frozen, err := json.Marshal(body)
 	if err != nil {
 		return result, err
 	}
-	op := operation{Capability: "provider_auth", Name: "start provider login", Method: http.MethodPut, Path: "/auth/logins/" + url.PathEscape(id), Body: json.RawMessage(frozen), Validator: &result.ETag, Policy: noRecovery}
+	op := operation{Capability: "provider_auth", Name: "start provider login", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewCreateLoginRequestWithBody(base, id, "application/json", body)
+	}, Body: json.RawMessage(frozen), Validator: &result.ETag, Policy: noRecovery}
 	for attempt := range 2 {
 		err = executeMutation(ctx, conn, op, []int{201, 200}, func(data []byte, _ int) error {
-			var w wireLogin
+			var w protocol.Login
 			if err := decodeRequired(data, &w, "id", "provider", "url", "expires_at", "state", "instructions", "progress", "accounts", "failure"); err != nil {
 				return err
 			}
@@ -135,8 +137,8 @@ func StartSignInWithID(ctx context.Context, conn *Connection, id, provider, flow
 func PollSignIn(ctx context.Context, conn *Connection, id string) (SignInStatus, error) {
 	var result SignInStatus
 	var etag string
-	err := executeRead(ctx, conn, operation{Capability: "provider_auth", Name: "read provider login", Method: http.MethodGet, Path: "/auth/logins/" + url.PathEscape(id), Validator: &etag, Policy: readRecovery}, func(data []byte) error {
-		var w wireLogin
+	err := executeRead(ctx, conn, operation{Capability: "provider_auth", Name: "read provider login", BuildRequest: func(base string, body io.Reader) (*http.Request, error) { return protocol.NewGetLoginRequest(base, id) }, Validator: &etag, Policy: readRecovery}, func(data []byte) error {
+		var w protocol.Login
 		if err := decodeRequired(data, &w, "id", "provider", "url", "expires_at", "state", "instructions", "progress", "accounts", "failure"); err != nil {
 			return err
 		}
@@ -155,8 +157,10 @@ func SignInInput(ctx context.Context, conn *Connection, id, input, etag string) 
 		return err
 	}
 	var next string
-	return executeMutation(ctx, conn, operation{Capability: "provider_auth", Name: "answer provider login", Method: http.MethodPatch, Path: "/auth/logins/" + url.PathEscape(id), Body: map[string]string{"response": input}, Headers: headers, Validator: &next, Policy: noRecovery}, []int{200}, func(data []byte, _ int) error {
-		var w wireLogin
+	return executeMutation(ctx, conn, operation{Capability: "provider_auth", Name: "answer provider login", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewAnswerLoginRequestWithBody(base, id, &protocol.AnswerLoginParams{IfMatch: etag}, "application/merge-patch+json", body)
+	}, Body: protocol.LoginPatch{Response: &input}, Headers: headers, Validator: &next, Policy: noRecovery}, []int{200}, func(data []byte, _ int) error {
+		var w protocol.Login
 		if err := decodeRequired(data, &w, "id", "state", "accounts", "progress", "failure"); err != nil {
 			return err
 		}
@@ -165,7 +169,9 @@ func SignInInput(ctx context.Context, conn *Connection, id, input, etag string) 
 	})
 }
 func CancelSignIn(ctx context.Context, conn *Connection, id string) error {
-	return executeMutation(ctx, conn, operation{Capability: "provider_auth", Name: "cancel provider login", Method: http.MethodDelete, Path: "/auth/logins/" + url.PathEscape(id), Policy: noRecovery}, []int{204}, func([]byte, int) error { return nil })
+	return executeMutation(ctx, conn, operation{Capability: "provider_auth", Name: "cancel provider login", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewCancelLoginRequest(base, id)
+	}, Policy: noRecovery}, []int{204}, func([]byte, int) error { return nil })
 }
 func SelectProfileAccount(ctx context.Context, conn *Connection, profile string, account Account, profiles config.Profiles) error {
 	saved, ok := profiles.Providers[profile]
@@ -176,7 +182,9 @@ func SelectProfileAccount(ctx context.Context, conn *Connection, profile string,
 	return SaveProvider(ctx, conn, profile, saved, profiles.ETag)
 }
 func RemoveAccount(ctx context.Context, conn *Connection, id string) error {
-	return executeMutation(ctx, conn, operation{Capability: "provider_auth", Name: "remove provider account", Method: http.MethodDelete, Path: "/auth/accounts/" + url.PathEscape(id), Policy: noRecovery}, []int{204}, func([]byte, int) error { return nil })
+	return executeMutation(ctx, conn, operation{Capability: "provider_auth", Name: "remove provider account", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewDeleteAccountRequest(base, id)
+	}, Policy: noRecovery}, []int{204}, func([]byte, int) error { return nil })
 }
 
 func StartProviderLogin(ctx context.Context, conn *Connection, provider, flow string, values map[string]json.RawMessage) (StartedSignIn, error) {

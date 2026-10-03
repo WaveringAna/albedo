@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 type captureTransport struct {
@@ -242,7 +244,7 @@ func TestMalformedMutationAcknowledgementIsUncertain(t *testing.T) {
 	defer server.Close()
 	conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
 	defer conn.HTTPClient().CloseIdleConnections()
-	err := executeMutation(context.Background(), conn, operation{Name: "interrupt session", Method: http.MethodPost, Path: "/sessions/s/interrupt", Body: struct{}{}, Policy: noRecovery}, []int{200}, func(body []byte, _ int) error { var result wireInterruption; return json.Unmarshal(body, &result) })
+	err := executeMutation(context.Background(), conn, operation{Name: "interrupt session", Method: http.MethodPost, Path: "/sessions/s/interrupt", Body: struct{}{}, Policy: noRecovery}, []int{200}, func(body []byte, _ int) error { var result protocol.Interruption; return json.Unmarshal(body, &result) })
 	if _, ok := errors.AsType[*UncertainOutcomeError](err); !ok {
 		t.Fatalf("invalid acknowledgement returned %v", err)
 	}

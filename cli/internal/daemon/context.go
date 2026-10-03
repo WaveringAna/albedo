@@ -2,9 +2,10 @@ package daemon
 
 import (
 	"context"
+	"io"
 	"net/http"
-	"net/url"
-	"strconv"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 type ContextSection struct {
@@ -31,8 +32,10 @@ type ContextPage struct {
 
 func GetContextSnapshot(ctx context.Context, conn *Connection, id string) (ContextSnapshot, error) {
 	var result ContextSnapshot
-	err := executeRead(ctx, conn, operation{Capability: "context", Name: "read prepared context", Method: http.MethodGet, Path: sessionPath(id, "/context?view=summary"), Policy: readRecovery}, func(data []byte) error {
-		var w wireContextSummary
+	err := executeRead(ctx, conn, operation{Capability: "context", Name: "read prepared context", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetContextRequest(base, id, &protocol.GetContextParams{View: new("summary")})
+	}, Policy: readRecovery}, func(data []byte) error {
+		var w protocol.ContextSummary
 		if err := decodeRequired(data, &w, "state", "snapshot_id", "captured_at", "provider", "model", "protocol", "context_window_tokens", "compaction", "sections", "reason"); err != nil {
 			return err
 		}
@@ -58,10 +61,12 @@ func GetContextPage(ctx context.Context, conn *Connection, id, snapshotID, secti
 	if snapshotID == "" {
 		return ContextPage{}, fieldError("context snapshot ID")
 	}
-	q := url.Values{"view": {"section"}, "snapshot_id": {snapshotID}, "section_id": {section}, "page": {strconv.Itoa(page)}}
+	params := protocol.GetContextParams{View: new("section"), SnapshotID: &snapshotID, SectionID: &section, Page: new(int64(page))}
 	var result ContextPage
-	err := executeRead(ctx, conn, operation{Capability: "context", Name: "read prepared context section", Method: http.MethodGet, Path: sessionPath(id, "/context?"+q.Encode()), Policy: readRecovery}, func(data []byte) error {
-		var w wireContextSectionPage
+	err := executeRead(ctx, conn, operation{Capability: "context", Name: "read prepared context section", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetContextRequest(base, id, &params)
+	}, Policy: readRecovery}, func(data []byte) error {
+		var w protocol.ContextSectionPage
 		if err := decodeRequired(data, &w, "snapshot_id", "section_id", "text", "omitted", "page", "page_count"); err != nil {
 			return err
 		}

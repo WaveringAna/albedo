@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
-	"net/url"
 	"slices"
 	"strings"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 type DeletionResult struct {
@@ -51,7 +53,7 @@ type Session struct {
 	Opens            int
 	Status           AgentStatus
 	Glances          []PageGlance `json:"-"`
-	wire             wireSession
+	wire             protocol.Session
 }
 type Location struct {
 	Host  *string `json:"host"`
@@ -71,7 +73,7 @@ func SplitLocation(workspace string) (host, path string) {
 	return workspace[:i], workspace[i+1:]
 }
 
-func sessionValue(wire wireSession) Session {
+func sessionValue(wire protocol.Session) Session {
 	location := &Location{Host: wire.Location.Host, User: wire.Location.User, Path: wire.Location.Path, Label: wire.Location.Label}
 	session := Session{ID: wire.ID, Title: wire.Name, Cursor: wire.Cursor, LastAssistantAt: timestampSeconds(value(wire.ActivityAt)), Workspace: wire.Workspace, Location: location, Model: value(wire.Model), Effort: value(wire.Effort), Provider: value(wire.ProviderProfile), ETag: wire.ConfigurationResource.ETag, FamilyRevision: wire.FamilyRevision, ParentID: wire.ParentID, RootID: wire.RootID, Depth: int(wire.Depth), Closed: wire.Closed, Pinned: wire.Preferences.Pinned, Archived: wire.Preferences.Archived, Opens: int(wire.Preferences.Opens), Status: capturedStatus(wire), wire: wire}
 	for _, glance := range wire.Glances {
@@ -81,7 +83,7 @@ func sessionValue(wire wireSession) Session {
 	return session
 }
 func decodeSession(data []byte) (Session, error) {
-	var wire wireSession
+	var wire protocol.Session
 	if err := decodeRequired(data, &wire, "id", "name", "workspace", "parent_id", "root_id", "status", "preview", "preferences", "current_progress", "activity", "cursor", "creation", "configuration_resource", "history", "pending_inputs", "input_order", "kernel"); err != nil {
 		return Session{}, err
 	}
@@ -90,7 +92,7 @@ func decodeSession(data []byte) (Session, error) {
 	}
 	return sessionValue(wire), nil
 }
-func validateSession(wire wireSession) error {
+func validateSession(wire protocol.Session) error {
 	if wire.ID == "" || wire.RootID == "" || wire.Cursor == nil || !validGeneration(wire.Cursor.Generation) || wire.Cursor.Sequence < 0 || wire.ConfigurationResource.ETag == "" || wire.History.Items == nil {
 		return fieldError("session")
 	}
@@ -117,7 +119,9 @@ func CreateSessionOperation(ctx context.Context, conn *Connection, handle *Opera
 }
 func GetSession(ctx context.Context, conn *Connection, id string) (Session, error) {
 	var result Session
-	err := executeRead(ctx, conn, operation{Name: "read session", Method: http.MethodGet, Path: sessionPath(id, "?tail=0"), Policy: readRecovery}, func(data []byte) error {
+	err := executeRead(ctx, conn, operation{Name: "read session", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetSessionRequest(base, id, &protocol.GetSessionParams{Tail: new(int64(0))})
+	}, Policy: readRecovery}, func(data []byte) error {
 		var err error
 		result, err = decodeSession(data)
 		if err == nil && result.ID != id {
@@ -130,13 +134,15 @@ func GetSession(ctx context.Context, conn *Connection, id string) (Session, erro
 
 type SessionCondition struct{ ETag, FamilyRevision string }
 type SessionConfiguration struct {
-	Value wireSessionConfiguration
+	Value protocol.SessionConfiguration
 	ETag  string
 }
 
 func GetSessionConfiguration(ctx context.Context, conn *Connection, id string) (SessionConfiguration, error) {
 	var result SessionConfiguration
-	err := executeRead(ctx, conn, operation{Name: "read session configuration", Method: http.MethodGet, Path: sessionPath(id, "?view=configuration"), Validator: &result.ETag, Policy: readRecovery}, func(data []byte) error {
+	err := executeRead(ctx, conn, operation{Name: "read session configuration", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetSessionRequest(base, id, &protocol.GetSessionParams{View: new("configuration")})
+	}, Validator: &result.ETag, Policy: readRecovery}, func(data []byte) error {
 		if err := decodeRequired(data, &result.Value, "id", "name", "workspace", "preferences", "selection", "revision", "family_revision"); err != nil {
 			return err
 		}
@@ -153,8 +159,10 @@ func patchSession(ctx context.Context, conn *Connection, id, etag string, body a
 		return Session{}, err
 	}
 	var result Session
-	err = executeMutation(ctx, conn, operation{Name: "edit session configuration", Method: http.MethodPatch, Path: sessionPath(id, "?view=configuration"), Headers: headers, Body: body, Policy: authRecovery}, []int{200}, func(data []byte, _ int) error {
-		var change wireSessionChange
+	err = executeMutation(ctx, conn, operation{Name: "edit session configuration", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewPatchSessionRequestWithBody(base, id, &protocol.PatchSessionParams{View: "configuration", IfMatch: headers.Get("If-Match")}, "application/merge-patch+json", body)
+	}, Headers: headers, Body: body, Policy: authRecovery}, []int{200}, func(data []byte, _ int) error {
+		var change protocol.SessionChange
 		if err := decodeRequired(data, &change, "resource", "session", "move"); err != nil {
 			return err
 		}
@@ -182,17 +190,19 @@ func DeleteSession(ctx context.Context, conn *Connection, id string, tree bool, 
 	if err != nil {
 		return DeletionResult{}, err
 	}
-	query := url.Values{"view": {"configuration"}, "scope": {"leaf"}}
+	params := protocol.DeleteSessionParams{View: "configuration", Scope: new("leaf"), IfMatch: condition.ETag}
 	if tree {
 		if condition.FamilyRevision == "" {
 			return DeletionResult{}, errors.New("subtree deletion requires the observed family revision")
 		}
-		query.Set("scope", "subtree")
-		query.Set("family_revision", condition.FamilyRevision)
+		params.Scope = new("subtree")
+		params.FamilyRevision = &condition.FamilyRevision
 	}
 	var result DeletionResult
-	err = executeMutation(ctx, conn, operation{Name: "delete session", Method: http.MethodDelete, Path: sessionPath(id, "?"+query.Encode()), Headers: headers, Policy: authRecovery}, []int{200}, func(data []byte, _ int) error {
-		var wire wireSessionDeletion
+	err = executeMutation(ctx, conn, operation{Name: "delete session", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewDeleteSessionRequest(base, id, &params)
+	}, Headers: headers, Policy: authRecovery}, []int{200}, func(data []byte, _ int) error {
+		var wire protocol.SessionDeletion
 		if err := decodeRequired(data, &wire, "state", "deleted_count", "remaining_count", "deleted_ids", "remaining", "truncated"); err != nil {
 			return err
 		}
@@ -211,15 +221,17 @@ func DeleteSession(ctx context.Context, conn *Connection, id string, tree bool, 
 	return result, err
 }
 func ListSessions(ctx context.Context, conn *Connection) ([]Session, error) {
-	return listSessions(ctx, conn, url.Values{"scope": {"roots"}})
+	return listSessions(ctx, conn, protocol.ListSessionsParams{Scope: new("roots")})
 }
-func listSessions(ctx context.Context, conn *Connection, query url.Values) ([]Session, error) {
+func listSessions(ctx context.Context, conn *Connection, query protocol.ListSessionsParams) ([]Session, error) {
 	result := []Session{}
-	query.Set("limit", "200")
+	query.Limit = new(int64(200))
 	seen := map[string]bool{}
 	for {
-		var page wireSessionPage
-		err := executeRead(ctx, conn, operation{Name: "list sessions", Method: http.MethodGet, Path: "/sessions?" + query.Encode(), Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "items", "next") })
+		var page protocol.SessionPage
+		err := executeRead(ctx, conn, operation{Name: "list sessions", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+			return protocol.NewListSessionsRequest(base, &query)
+		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "items", "next") })
 		if err != nil {
 			return nil, err
 		}
@@ -240,13 +252,15 @@ func listSessions(ctx context.Context, conn *Connection, query url.Values) ([]Se
 			return nil, fieldError("repeated session page")
 		}
 		seen[*page.Next] = true
-		query.Set("next", *page.Next)
+		query.Next = page.Next
 	}
 	return result, nil
 }
 func GetSessionPreview(ctx context.Context, conn *Connection, id string, limit int) (SessionPreview, error) {
-	var wire wireSession
-	err := executeRead(ctx, conn, operation{Name: "read session preview", Method: http.MethodGet, Path: sessionPath(id, fmt.Sprintf("?tail=%d", min(200, max(0, limit)))), Policy: readRecovery}, func(data []byte) error { session, err := decodeSession(data); wire = session.wire; return err })
+	var wire protocol.Session
+	err := executeRead(ctx, conn, operation{Name: "read session preview", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetSessionRequest(base, id, &protocol.GetSessionParams{Tail: new(int64(min(200, max(0, limit))))})
+	}, Policy: readRecovery}, func(data []byte) error { session, err := decodeSession(data); wire = session.wire; return err })
 	if err != nil {
 		return SessionPreview{}, err
 	}
@@ -269,14 +283,14 @@ func GetSessionPreview(ctx context.Context, conn *Connection, id string, limit i
 	return result, nil
 }
 
-func summaryValue(row wireSessionSummary) Session {
-	return sessionValue(wireSession{ID: row.ID, Name: row.Name, AutomaticName: row.AutomaticName, Workspace: row.Workspace, Location: row.Location, ParentID: row.ParentID, RootID: row.RootID, Address: row.Address, Depth: row.Depth, Closed: row.Closed, CreatedAt: row.CreatedAt, ActivityAt: row.ActivityAt, ProviderProfile: row.ProviderProfile, Model: row.Model, Effort: row.Effort, Status: row.Status, Preview: row.Preview, Preferences: row.Preferences, CurrentProgress: row.CurrentProgress, Activity: row.Activity, Cursor: row.Cursor})
+func summaryValue(row protocol.SessionSummary) Session {
+	return sessionValue(protocol.Session{ID: row.ID, Name: row.Name, AutomaticName: row.AutomaticName, Workspace: row.Workspace, Location: row.Location, ParentID: row.ParentID, RootID: row.RootID, Address: row.Address, Depth: row.Depth, Closed: row.Closed, CreatedAt: row.CreatedAt, ActivityAt: row.ActivityAt, ProviderProfile: row.ProviderProfile, Model: row.Model, Effort: row.Effort, Status: row.Status, Preview: row.Preview, Preferences: row.Preferences, CurrentProgress: row.CurrentProgress, Activity: row.Activity, Cursor: row.Cursor})
 }
 func ListAllSessions(ctx context.Context, conn *Connection) ([]Session, error) {
-	return listSessions(ctx, conn, url.Values{"scope": {"all"}})
+	return listSessions(ctx, conn, protocol.ListSessionsParams{Scope: new("all")})
 }
 
-func capturedStatus(w wireSession) AgentStatus {
+func capturedStatus(w protocol.Session) AgentStatus {
 	status := statusValue(w.Status, w.Kernel)
 	status.InputOrder = w.InputOrder
 	return status

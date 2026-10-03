@@ -1,12 +1,14 @@
 package daemon
 
 import (
-	"albedo/cli/internal/config"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
-	"net/url"
 	"strings"
+
+	"albedo/cli/internal/config"
+	"albedo/cli/internal/daemon/protocol"
 )
 
 type Model struct {
@@ -32,24 +34,26 @@ type ModelContextCapRequest struct {
 
 func ListProfileModels(ctx context.Context, conn *Connection, profile config.Settings) ([]Model, error) {
 	if profile.ProfileName != "" {
-		return listModels(ctx, conn, url.Values{"provider_profile": {profile.ProfileName}})
+		return listModels(ctx, conn, protocol.ListModelsParams{ProviderProfile: &profile.ProfileName})
 	}
 	return ListModels(ctx, conn, profile.Extension, profile.BaseURL)
 }
 func ListModels(ctx context.Context, conn *Connection, provider, endpoint string) ([]Model, error) {
-	q := url.Values{"provider": {provider}}
+	params := protocol.ListModelsParams{Provider: &provider}
 	if endpoint != "" {
-		q.Set("endpoint", endpoint)
+		params.Endpoint = &endpoint
 	}
-	return listModels(ctx, conn, q)
+	return listModels(ctx, conn, params)
 }
-func listModels(ctx context.Context, conn *Connection, q url.Values) ([]Model, error) {
+func listModels(ctx context.Context, conn *Connection, params protocol.ListModelsParams) ([]Model, error) {
 	result := []Model{}
-	q.Set("limit", "200")
+	params.Limit = new(int64(200))
 	seen := map[string]bool{}
 	for {
-		var page wireModelPage
-		err := executeRead(ctx, conn, operation{Name: "list models", Method: http.MethodGet, Path: "/models?" + q.Encode(), Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "items", "next") })
+		var page protocol.ModelPage
+		err := executeRead(ctx, conn, operation{Name: "list models", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+			return protocol.NewListModelsRequest(base, &params)
+		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "items", "next") })
 		if err != nil {
 			return nil, err
 		}
@@ -73,7 +77,7 @@ func listModels(ctx context.Context, conn *Connection, q url.Values) ([]Model, e
 			return nil, fieldError("model page cursor")
 		}
 		seen[*page.Next] = true
-		q.Set("next", *page.Next)
+		params.Next = page.Next
 	}
 }
 func SelectModel(ctx context.Context, conn *Connection, id string, request ModelSelectionRequest) (ModelSelection, error) {
@@ -96,7 +100,7 @@ func ChangeModel(ctx context.Context, conn *Connection, id string, request Model
 		return selection, err
 	}
 	if request.MakeDefault {
-		change, saveErr := patchSettingsGroup[wireProviderSettings](ctx, conn, "providers", request.DefaultETag, map[string]any{"default_profile": selection.Provider, "profiles": map[string]any{selection.Provider: map[string]any{"model": selection.Model, "effort": optionalString(selection.Effort)}}})
+		change, saveErr := patchSettingsGroup[protocol.ProviderSettings](ctx, conn, "providers", request.DefaultETag, map[string]any{"default_profile": selection.Provider, "profiles": map[string]any{selection.Provider: map[string]any{"model": selection.Model, "effort": optionalString(selection.Effort)}}})
 		selection.DefaultETag = change.Resource.ETag
 		if saveErr != nil {
 			return selection, fmt.Errorf("switched session; saving the default model: %w", saveErr)
@@ -108,15 +112,15 @@ func SetModelContextCap(ctx context.Context, conn *Connection, request ModelCont
 	if request.CapKey == "" {
 		return "", fieldError("model cap key")
 	}
-	change, err := patchSettingsGroup[wireModelSettings](ctx, conn, "models", request.ETag, map[string]any{"raised_caps": map[string]bool{request.CapKey: request.Enabled}})
+	change, err := patchSettingsGroup[protocol.ModelSettings](ctx, conn, "models", request.ETag, map[string]any{"raised_caps": map[string]bool{request.CapKey: request.Enabled}})
 	return change.Resource.ETag, err
 }
 func ReadEffort(ctx context.Context, conn *Connection, session Session) (EffortResult, error) {
-	q := url.Values{"model": {session.Model}}
+	params := protocol.ListModelsParams{Model: &session.Model}
 	if session.Provider != "" {
-		q.Set("provider_profile", session.Provider)
+		params.ProviderProfile = &session.Provider
 	}
-	models, err := listModels(ctx, conn, q)
+	models, err := listModels(ctx, conn, params)
 	if err != nil {
 		return EffortResult{}, err
 	}

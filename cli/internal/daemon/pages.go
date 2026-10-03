@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 type PageTone string
@@ -19,14 +21,14 @@ const (
 type PageRow struct {
 	ID, Text, Badge, Detail string
 	Tone                    PageTone
-	wire                    wirePageRow
+	wire                    protocol.PageRow
 }
 type PageAction struct {
 	ID, Key, Label, Input, Prompt, Value, Confirmation string
 	Options                                            []string
 	Row, Confirm                                       bool
-	Fields                                             []wireFormField
-	Operation                                          wireActionOperation
+	Fields                                             []protocol.FormField
+	Operation                                          protocol.ActionOperation
 }
 type PageGlance struct {
 	Title string
@@ -43,23 +45,23 @@ type PageDocument struct {
 }
 type pageRead struct {
 	Name, Description string
-	Operation         wireActionOperation
+	Operation         protocol.ActionOperation
 	Row               *PageRow
 	Form              map[string]json.RawMessage
 }
-type FormField = wireFormField
+type FormField = protocol.FormField
 
-func pageRowValue(row wirePageRow) PageRow {
+func pageRowValue(row protocol.PageRow) PageRow {
 	return PageRow{ID: row.ID, Text: row.Text, Badge: value(row.Badge), Tone: PageTone(row.Tone), Detail: value(row.Detail), wire: row}
 }
-func glanceValue(glance wireGlance) *PageGlance {
+func glanceValue(glance protocol.Glance) *PageGlance {
 	result := &PageGlance{Title: glance.Title, URL: glance.URL}
 	for _, row := range glance.Rows {
 		result.Rows = append(result.Rows, pageRowValue(row))
 	}
 	return result
 }
-func pageValue(wire wirePageDescriptor) (*PageDocument, error) {
+func pageValue(wire protocol.PageDescriptor) (*PageDocument, error) {
 	if wire.Title == "" || wire.Rows == nil || wire.Actions == nil {
 		return nil, fieldError("page descriptor")
 	}
@@ -72,7 +74,7 @@ func pageValue(wire wirePageDescriptor) (*PageDocument, error) {
 			return nil, fieldError("page action")
 		}
 		converted := PageAction{ID: action.ID, Key: value(action.KeyboardHint), Label: action.Label, Confirmation: value(action.Confirmation), Confirm: action.Confirmation != nil, Fields: action.Fields, Operation: action.Operation, Input: "none"}
-		for _, bindings := range []map[string]wireBinding{action.Operation.Body, action.Operation.Query, action.Operation.Path, action.Operation.Headers} {
+		for _, bindings := range []map[string]protocol.Binding{action.Operation.Body, action.Operation.Query, action.Operation.Path, action.Operation.Headers} {
 			for _, raw := range bindings {
 				var binding struct {
 					Source string `json:"source"`
@@ -84,7 +86,7 @@ func pageValue(wire wirePageDescriptor) (*PageDocument, error) {
 			}
 		}
 		for _, field := range action.Fields {
-			converted.Row = converted.Row || field.DefaultBinding.Source == "row"
+			converted.Row = converted.Row || field.DefaultBinding != nil && field.DefaultBinding.Source == "row"
 		}
 		if len(action.Fields) > 0 {
 			setActionField(&converted, action.Fields[0])
@@ -96,7 +98,7 @@ func pageValue(wire wirePageDescriptor) (*PageDocument, error) {
 	}
 	return result, nil
 }
-func setActionField(action *PageAction, field wireFormField) {
+func setActionField(action *PageAction, field protocol.FormField) {
 	action.Prompt = field.Label
 	action.Input = field.Type
 	if field.Type == "integer" {
@@ -130,7 +132,7 @@ func decodePageDocument(data []byte) (*PageDocument, error) {
 	if !ok {
 		return nil, fieldError("page")
 	}
-	var document wirePageDescriptor
+	var document protocol.PageDescriptor
 	if err := decodeRequired(page, &document, "title", "empty_state", "rows", "glance", "actions", "summary"); err != nil {
 		return nil, err
 	}
@@ -165,7 +167,7 @@ func dynamicValue(data []byte) (any, error) {
 	return result, err
 }
 
-func actionFieldValue(field wireFormField, text string) (json.RawMessage, error) {
+func actionFieldValue(field protocol.FormField, text string) (json.RawMessage, error) {
 	if field.Type == "hidden" {
 		if err := validateFormValue(field, field.Default); err != nil {
 			return nil, err
@@ -222,7 +224,7 @@ func ConfigureActionField(action *PageAction, field FormField) { setActionField(
 
 // ResolveFormField applies only the descriptor's explicit displayed-value binding.
 func ResolveFormField(field FormField, row *PageRow, session *Session) (FormField, error) {
-	if field.DefaultBinding.Source == "" {
+	if field.DefaultBinding == nil {
 		return field, nil
 	}
 	if field.DefaultBinding.Source != "row" && field.DefaultBinding.Source != "session" {

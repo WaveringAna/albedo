@@ -86,6 +86,16 @@ func TestSessionReadValidatesRequiredAndNullableMembers(t *testing.T) {
 		}, false},
 		{"null array", func(session map[string]any) { session["glances"] = nil }, false},
 		{"null object", func(session map[string]any) { session["preferences"] = nil }, false},
+		{"optional progress preview omitted", func(session map[string]any) {
+			progress := canonicalProgress("call")
+			delete(progress, "preview")
+			session["current_progress"] = []any{progress}
+		}, true},
+		{"optional progress preview null", func(session map[string]any) {
+			progress := canonicalProgress("call")
+			progress["preview"] = nil
+			session["current_progress"] = []any{progress}
+		}, false},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			session := canonicalSession("s", generationA, 0)

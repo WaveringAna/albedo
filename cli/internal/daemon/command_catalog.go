@@ -4,20 +4,22 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 type CommandArgument struct {
 	Name, Description, Type string
 	Choices                 []string
 	Required                bool
-	field                   wireFormField
+	field                   protocol.FormField
 }
 type SessionCommand struct {
 	Page                                               *bool
 	Name, Description, Method, ID, Delivery, CommandID string
 	Arguments                                          []CommandArgument
 	ModelCallable, UserTurn                            bool
-	Operation                                          wireActionOperation
+	Operation                                          protocol.ActionOperation
 }
 
 func decodeSessionCommand(raw json.RawMessage) (SessionCommand, error) {
@@ -27,14 +29,14 @@ func decodeSessionCommand(raw json.RawMessage) (SessionCommand, error) {
 	if err := decodeRequired(raw, &discriminator, "delivery"); err != nil {
 		return SessionCommand{}, err
 	}
-	var command wireHTTPCommand
+	var command protocol.HTTPCommand
 	var commandID string
 	if discriminator.Delivery == "input" {
-		var input wireInputCommand
+		var input protocol.InputCommand
 		if err := decodeRequired(raw, &input, "id", "slash_name", "description", "arguments", "caller_permissions", "delivery", "command_id"); err != nil {
 			return SessionCommand{}, err
 		}
-		command = wireHTTPCommand{ID: input.ID, SlashName: input.SlashName, Description: input.Description, Arguments: input.Arguments, CallerPermissions: input.CallerPermissions, Delivery: input.Delivery}
+		command = protocol.HTTPCommand{ID: input.ID, SlashName: input.SlashName, Description: input.Description, Arguments: input.Arguments, CallerPermissions: input.CallerPermissions, Delivery: input.Delivery}
 		commandID = input.CommandID
 	} else if err := decodeRequired(raw, &command, "id", "slash_name", "description", "arguments", "caller_permissions", "delivery", "operation"); err != nil {
 		return SessionCommand{}, err

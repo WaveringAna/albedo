@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 type ExtensionSummary struct {
@@ -49,7 +51,7 @@ func ListExtensions(ctx context.Context, conn *Connection, session string) ([]Ex
 }
 func SelectExtension(ctx context.Context, conn *Connection, session string, request ExtensionSelectionRequest) ([]ExtensionSummary, error) {
 	if request.Scope == "global" {
-		_, err := patchSettingsGroup[wireExtensionSettings](ctx, conn, "extensions", request.ETag, struct {
+		_, err := patchSettingsGroup[protocol.ExtensionSettings](ctx, conn, "extensions", request.ETag, struct {
 			Defaults map[string]*bool `json:"defaults"`
 		}{map[string]*bool{request.Name: request.Enabled}})
 		if err != nil {

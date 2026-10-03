@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 func value[T any](pointer *T) T {
@@ -60,7 +62,7 @@ func decodeRequired(data []byte, target any, names ...string) error {
 	if targetType.Kind() == reflect.Pointer {
 		targetType = targetType.Elem()
 	}
-	if strings.HasPrefix(targetType.Name(), "wire") {
+	if targetType.PkgPath() == reflect.TypeFor[protocol.Session]().PkgPath() {
 		if err := validateWireFields(fields, targetType); err != nil {
 			return err
 		}
@@ -69,7 +71,7 @@ func decodeRequired(data []byte, target any, names ...string) error {
 }
 
 // Required wire members must be present, and JSON null cannot masquerade as a
-// scalar zero value. Nullable fields have pointer types in the wire structs.
+// scalar zero value. Generated field tags distinguish nullable from optional.
 func validateWireJSON(data []byte, kind reflect.Type) error {
 	if kind == reflect.TypeFor[json.RawMessage]() {
 		return nil
@@ -128,7 +130,10 @@ func validateWireFields(fields map[string]json.RawMessage, kind reflect.Type) er
 			}
 			continue
 		}
-		if string(raw) == "null" && field.Tag.Get("nullable") == "true" {
+		if string(raw) == "null" && field.Type != reflect.TypeFor[json.RawMessage]() {
+			if field.Tag.Get("nullable") != "true" {
+				return fieldError(name)
+			}
 			continue
 		}
 		if err := validateWireJSON(raw, field.Type); err != nil {
@@ -138,3 +143,11 @@ func validateWireFields(fields map[string]json.RawMessage, kind reflect.Type) er
 	return nil
 }
 func fmtField(name string, err error) error { return errors.New(name + ": " + err.Error()) }
+
+// optionalText omits unset optional request fields.
+func optionalText(text string) *string {
+	if text == "" {
+		return nil
+	}
+	return &text
+}

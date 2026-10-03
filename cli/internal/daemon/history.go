@@ -5,12 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 type HistoryPage struct {
@@ -20,12 +22,14 @@ type HistoryPage struct {
 }
 
 func (c *ChatClient) History(ctx context.Context, before int64, rows int) (*HistoryPage, error) {
-	query := url.Values{"limit": {fmt.Sprint(min(200, max(1, rows)))}}
+	params := protocol.GetHistoryParams{Limit: new(int64(min(200, max(1, rows))))}
 	if before > 0 {
-		query.Set("before", fmt.Sprint(before))
+		params.Before = &before
 	}
-	var wire wireHistoryPage
-	err := executeRead(ctx, c.conn, operation{Name: "read history", Method: http.MethodGet, Path: sessionPath(c.agentID, "/history?"+query.Encode()), Policy: readRecovery}, func(data []byte) error {
+	var wire protocol.HistoryPage
+	err := executeRead(ctx, c.conn, operation{Name: "read history", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetHistoryRequest(base, c.agentID, &params)
+	}, Policy: readRecovery}, func(data []byte) error {
 		if err := decodeRequired(data, &wire, "items", "older", "newer", "high_water"); err != nil {
 			return err
 		}
@@ -49,7 +53,7 @@ func (c *ChatClient) History(ctx context.Context, before int64, rows int) (*Hist
 	return page, err
 }
 
-func historyEvents(entries []wireHistoryEntry) ([]StreamEvent, error) {
+func historyEvents(entries []protocol.HistoryEntry) ([]StreamEvent, error) {
 	events := []StreamEvent{}
 	arguments := map[string][]json.RawMessage{}
 	for _, entry := range entries {
@@ -71,7 +75,7 @@ func historyEvents(entries []wireHistoryEntry) ([]StreamEvent, error) {
 	}
 	return events, nil
 }
-func historyEntryEvents(entry wireHistoryEntry) ([]StreamEvent, error) {
+func historyEntryEvents(entry protocol.HistoryEntry) ([]StreamEvent, error) {
 	if entry.Kind == "continuation" {
 		return nil, nil
 	}
@@ -82,13 +86,13 @@ func historyEntryEvents(entry wireHistoryEntry) ([]StreamEvent, error) {
 	var text strings.Builder
 	for _, raw := range entry.Content {
 		var part struct {
-			Kind      string               `json:"kind"`
-			Text      string               `json:"text"`
-			Field     string               `json:"field"`
-			Value     json.RawMessage      `json:"value"`
-			Image     *wireImageMetadata   `json:"image"`
-			Trace     json.RawMessage      `json:"trace"`
-			Reference wireContentReference `json:"reference"`
+			Kind      string                    `json:"kind"`
+			Text      string                    `json:"text"`
+			Field     string                    `json:"field"`
+			Value     json.RawMessage           `json:"value"`
+			Image     *protocol.ImageMetadata   `json:"image"`
+			Trace     json.RawMessage           `json:"trace"`
+			Reference protocol.ContentReference `json:"reference"`
 		}
 		if err := json.Unmarshal(raw, &part); err != nil {
 			return nil, err
@@ -177,11 +181,13 @@ func ReadEntryContent(ctx context.Context, conn *Connection, session, entry stri
 	fields := map[string][]byte{}
 	complete := map[string]bool{}
 	seen := map[string]bool{}
-	query := url.Values{}
+	params := protocol.GetHistoryContentParams{}
 	total := 0
 	for {
-		var page wireEntryContentPage
-		err := executeRead(ctx, conn, operation{Name: "read history content", Method: http.MethodGet, Path: sessionPath(session, "/history/"+url.PathEscape(entry)+"?"+query.Encode()), Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "entry_id", "parts", "next", "image") })
+		var page protocol.EntryContentPage
+		err := executeRead(ctx, conn, operation{Name: "read history content", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+			return protocol.NewGetHistoryContentRequest(base, session, entry, &params)
+		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "entry_id", "parts", "next", "image") })
 		if err != nil {
 			return nil, err
 		}
@@ -224,11 +230,11 @@ func ReadEntryContent(ctx context.Context, conn *Connection, session, entry stri
 			return nil, fieldError("repeated content page")
 		}
 		seen[*page.Next] = true
-		query.Set("next", *page.Next)
+		params.Next = page.Next
 	}
 }
 
-func hydrateHistory(ctx context.Context, conn *Connection, session string, entries []wireHistoryEntry) ([]wireHistoryEntry, error) {
+func hydrateHistory(ctx context.Context, conn *Connection, session string, entries []protocol.HistoryEntry) ([]protocol.HistoryEntry, error) {
 	result := entries
 	cloned := false
 	for i, entry := range entries {
@@ -238,8 +244,8 @@ func hydrateHistory(ctx context.Context, conn *Connection, session string, entri
 		needsContent := false
 		for _, raw := range entry.Content {
 			var part struct {
-				Kind      string               `json:"kind"`
-				Reference wireContentReference `json:"reference"`
+				Kind      string                    `json:"kind"`
+				Reference protocol.ContentReference `json:"reference"`
 			}
 			if err := json.Unmarshal(raw, &part); err != nil {
 				return nil, err
@@ -262,8 +268,8 @@ func hydrateHistory(ctx context.Context, conn *Connection, session string, entri
 		result[i].Content = nil
 		for _, raw := range entry.Content {
 			var part struct {
-				Kind      string               `json:"kind"`
-				Reference wireContentReference `json:"reference"`
+				Kind      string                    `json:"kind"`
+				Reference protocol.ContentReference `json:"reference"`
 			}
 			_ = json.Unmarshal(raw, &part)
 			if part.Kind != "reference" {
@@ -315,12 +321,12 @@ func hydrateSessionEvent(ctx context.Context, conn *Connection, session string, 
 	switch envelope.Type {
 	case "message":
 		var data struct {
-			Entry wireHistoryEntry `json:"entry"`
+			Entry protocol.HistoryEntry `json:"entry"`
 		}
 		if err := decodeRequired(envelope.Data, &data, "entry"); err != nil {
 			return nil, err
 		}
-		entries, err := hydrateHistory(ctx, conn, session, []wireHistoryEntry{data.Entry})
+		entries, err := hydrateHistory(ctx, conn, session, []protocol.HistoryEntry{data.Entry})
 		if err != nil {
 			return nil, err
 		}
@@ -334,7 +340,7 @@ func hydrateSessionEvent(ctx context.Context, conn *Connection, session string, 
 		if err := json.Unmarshal(envelope.Data, &data); err != nil {
 			return nil, err
 		}
-		var reference *wireContentReference
+		var reference *protocol.ContentReference
 		if err := json.Unmarshal(data["reference"], &reference); err != nil {
 			return nil, err
 		}
@@ -345,7 +351,7 @@ func hydrateSessionEvent(ctx context.Context, conn *Connection, session string, 
 		if err != nil {
 			return nil, err
 		}
-		prefix := sessionPath(session, "/history/")
+		prefix := "/sessions/" + url.PathEscape(session) + "/history/"
 		if parsed.IsAbs() || parsed.RawQuery != "" || !strings.HasPrefix(parsed.Path, prefix) {
 			return nil, fieldError("tool content reference")
 		}

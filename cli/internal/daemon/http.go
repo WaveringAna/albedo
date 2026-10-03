@@ -29,16 +29,17 @@ const (
 )
 
 type operation struct {
-	Handle     *OperationHandle
-	Body       any
-	Name       string
-	Method     string
-	Path       string
-	Policy     retryPolicy
-	Headers    http.Header
-	Validator  *string
-	Timeout    time.Duration
-	Capability string
+	BuildRequest func(string, io.Reader) (*http.Request, error)
+	Handle       *OperationHandle
+	Body         any
+	Name         string
+	Method       string
+	Path         string
+	Policy       retryPolicy
+	Headers      http.Header
+	Validator    *string
+	Timeout      time.Duration
+	Capability   string
 }
 
 func (c *Connection) operationEndpoint(op operation) (ConnectionSnapshot, error) {
@@ -107,11 +108,23 @@ func operationRequest(ctx context.Context, snapshot ConnectionSnapshot, operatio
 	if payload != nil {
 		reader = bytes.NewReader(payload)
 	}
-	req, err := http.NewRequestWithContext(ctx, operation.Method, fmt.Sprintf("http://127.0.0.1:%d", snapshot.Port)+operation.Path, reader)
+	base := fmt.Sprintf("http://127.0.0.1:%d/", snapshot.Port)
+	var req *http.Request
+	var err error
+	if operation.BuildRequest != nil {
+		req, err = operation.BuildRequest(base, reader)
+		if err == nil {
+			req = req.WithContext(ctx)
+		}
+	} else {
+		req, err = http.NewRequestWithContext(ctx, operation.Method, strings.TrimSuffix(base, "/")+operation.Path, reader)
+	}
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Accept", "application/json")
 	for name, values := range operation.Headers {
 		req.Header[name] = slices.Clone(values)
@@ -181,6 +194,7 @@ func requestBytes(ctx context.Context, conn *Connection, operation operation, li
 		if canceled := ctx.Err(); canceled != nil {
 			return nil, canceled
 		}
+		operation.Method = req.Method
 		res, err := conn.HTTPClient().Do(req)
 		if err != nil {
 			if attempt == 0 {
@@ -270,6 +284,7 @@ func scanEventStream(ctx context.Context, conn *Connection, operation operation,
 			return err
 		}
 		req.Header.Set("Accept", "text/event-stream")
+		operation.Method = req.Method
 		res, err := conn.HTTPClient().Do(req)
 		if err != nil {
 			if attempt == 0 {

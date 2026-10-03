@@ -2,9 +2,10 @@ package daemon
 
 import (
 	"context"
+	"io"
 	"net/http"
-	"net/url"
-	"strconv"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 type TreeCheckpoint struct {
@@ -19,13 +20,15 @@ type TreePage struct {
 }
 
 func GetSessionTree(ctx context.Context, conn *Connection, id string, after, limit int) (TreePage, error) {
-	q := url.Values{"view": {"checkpoints"}, "limit": {strconv.Itoa(min(max(limit, 1), 200))}}
+	params := protocol.GetHistoryParams{View: new("checkpoints"), Limit: new(int64(min(max(limit, 1), 200)))}
 	if after > 0 {
-		q.Set("after", strconv.Itoa(after))
+		params.After = new(int64(after))
 	}
 	var result TreePage
-	err := executeRead(ctx, conn, operation{Name: "read checkpoints", Method: http.MethodGet, Path: sessionPath(id, "/history?"+q.Encode()), Policy: readRecovery}, func(data []byte) error {
-		var w wireCheckpointPage
+	err := executeRead(ctx, conn, operation{Name: "read checkpoints", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetHistoryRequest(base, id, &params)
+	}, Policy: readRecovery}, func(data []byte) error {
+		var w protocol.CheckpointPage
 		if err := decodeRequired(data, &w, "items", "older", "newer", "high_water"); err != nil {
 			return err
 		}

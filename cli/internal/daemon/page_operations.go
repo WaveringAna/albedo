@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/url"
@@ -12,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"albedo/cli/internal/daemon/protocol"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -33,16 +36,24 @@ func LoadPage(ctx context.Context, conn *Connection, session, command string) (*
 	if command == "/ttl" || command == "/quota" || command == "/requests" {
 		return loadPlatformInspector(ctx, conn, snapshot, command)
 	}
-	var route string
+	var buildRequest func(string, io.Reader) (*http.Request, error)
 	switch command {
 	case "/work":
-		route = "/extensions/work/items?workspace=" + url.QueryEscape(snapshot.Workspace)
+		buildRequest = func(base string, _ io.Reader) (*http.Request, error) {
+			return protocol.NewListWorkRequest(base, &protocol.ListWorkParams{Workspace: snapshot.Workspace})
+		}
 	case "/paperclips":
-		route = "/extensions/paperclips/items"
+		buildRequest = func(base string, _ io.Reader) (*http.Request, error) {
+			return protocol.NewListPaperclipsRequest(base, nil)
+		}
 	case "/schedule":
-		route = "/extensions/schedule/jobs?session_id=" + url.QueryEscape(session)
+		buildRequest = func(base string, _ io.Reader) (*http.Request, error) {
+			return protocol.NewListScheduleRequest(base, &protocol.ListScheduleParams{SessionID: session})
+		}
 	case "/links":
-		route = "/extensions/links/groups?workspace=" + url.QueryEscape(snapshot.Workspace)
+		buildRequest = func(base string, _ io.Reader) (*http.Request, error) {
+			return protocol.NewGetLinkGroupRequest(base, &protocol.GetLinkGroupParams{Workspace: snapshot.Workspace})
+		}
 	default:
 		catalog, err := GetCapabilityCatalog(ctx, conn, session)
 		if err != nil {
@@ -65,7 +76,7 @@ func LoadPage(ctx context.Context, conn *Connection, session, command string) (*
 		return nil, fmt.Errorf("no declared page for %s", command)
 	}
 	var doc *PageDocument
-	err = executeRead(ctx, conn, operation{Name: "read " + command + " page", Method: http.MethodGet, Path: route, Policy: readRecovery}, func(data []byte) error { var err error; doc, err = decodePageDocument(data); return err })
+	err = executeRead(ctx, conn, operation{Name: "read " + command + " page", BuildRequest: buildRequest, Policy: readRecovery}, func(data []byte) error { var err error; doc, err = decodePageDocument(data); return err })
 	if doc != nil {
 		doc.Session = &snapshot
 	}
@@ -127,7 +138,7 @@ func ExecutePageAction(ctx context.Context, conn *Connection, session string, re
 	}
 	return extensionResult(payload), nil
 }
-func executeBoundOperation(ctx context.Context, conn *Connection, declared wireActionOperation, row *PageRow, form map[string]json.RawMessage, session *Session) ([]byte, error) {
+func executeBoundOperation(ctx context.Context, conn *Connection, declared protocol.ActionOperation, row *PageRow, form map[string]json.RawMessage, session *Session) ([]byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -145,7 +156,7 @@ func executeBoundOperation(ctx context.Context, conn *Connection, declared wireA
 		sessionData, _ = json.Marshal(session.wire)
 	}
 	formData, _ := json.Marshal(form)
-	resolve := func(raw wireBinding) (json.RawMessage, error) {
+	resolve := func(raw protocol.Binding) (json.RawMessage, error) {
 		return resolveBinding(json.RawMessage(raw), rowData, formData, sessionData)
 	}
 	route := template
@@ -284,11 +295,11 @@ func executeBoundOperation(ctx context.Context, conn *Connection, declared wireA
 func extensionResult(data []byte) CommandResult {
 	result := CommandResult{Result: data, Message: "Saved."}
 	var envelope struct {
-		Notification      *wireNotification        `json:"notification"`
-		Notifications     []wireTargetNotification `json:"notifications"`
-		Page              *wirePageDescriptor      `json:"page"`
-		Truncated         bool                     `json:"truncated"`
-		NotificationCount int64                    `json:"notification_count"`
+		Notification      *protocol.Notification        `json:"notification"`
+		Notifications     []protocol.TargetNotification `json:"notifications"`
+		Page              *protocol.PageDescriptor      `json:"page"`
+		Truncated         bool                          `json:"truncated"`
+		NotificationCount int64                         `json:"notification_count"`
 	}
 	if json.Unmarshal(data, &envelope) == nil {
 		if envelope.Notification != nil && envelope.Notification.State == "failed" {
@@ -317,19 +328,19 @@ func extensionResult(data []byte) CommandResult {
 func validateExtensionAcknowledgment(data []byte, route, method string) error {
 	switch {
 	case strings.HasPrefix(route, "/extensions/links/"):
-		var result wireLinkChange
+		var result protocol.LinkChange
 		return decodeRequired(data, &result, "resource", "notifications", "notification_count", "truncated")
 	case method == http.MethodDelete && (strings.HasPrefix(route, "/extensions/work/") || strings.HasPrefix(route, "/extensions/paperclips/") || strings.HasPrefix(route, "/extensions/schedule/")):
-		var result wireExtensionDeletion
+		var result protocol.ExtensionDeletion
 		return decodeRequired(data, &result, "id", "notification")
 	case strings.HasPrefix(route, "/extensions/work/"):
-		var result wireWorkChange
+		var result protocol.WorkChange
 		return decodeRequired(data, &result, "resource", "notification")
 	case strings.HasPrefix(route, "/extensions/paperclips/"):
-		var result wirePaperclipChange
+		var result protocol.PaperclipChange
 		return decodeRequired(data, &result, "resource", "notification")
 	case strings.HasPrefix(route, "/extensions/schedule/"):
-		var result wireScheduleChange
+		var result protocol.ScheduleChange
 		return decodeRequired(data, &result, "resource", "notification")
 	default:
 		if !json.Valid(data) {

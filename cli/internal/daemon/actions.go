@@ -3,23 +3,26 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 const completedActionTimeout = 200 * time.Second
 
-type ReloadRequest struct {
-	Target string `json:"target"`
-}
+type ReloadRequest struct{ Target string }
 
-type SessionReloadResult = wireReloadResult
-type KernelUpgradeResult = wireKernelUpgradeResult
-type CompactionResult = wireCompactionResult
+type SessionReloadResult protocol.ReloadResult
+type KernelUpgradeResult protocol.KernelUpgradeResult
+type CompactionResult protocol.CompactionResult
 
 func ReloadSession(ctx context.Context, conn *Connection, id string, request ReloadRequest) (SessionReloadResult, error) {
-	var w wireReloadResult
-	err := executeMutation(ctx, conn, operation{Name: "reload session", Method: http.MethodPost, Path: sessionPath(id, "/reload"), Body: request, Policy: noRecovery, Timeout: completedActionTimeout}, []int{200}, func(data []byte, _ int) error {
+	var w protocol.ReloadResult
+	err := executeMutation(ctx, conn, operation{Name: "reload session", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewReloadSessionRequestWithBody(base, id, "application/json", body)
+	}, Body: protocol.ReloadRequest{Target: optionalText(request.Target)}, Policy: noRecovery, Timeout: completedActionTimeout}, []int{200}, func(data []byte, _ int) error {
 		if err := decodeRequired(data, &w, "session", "models", "cache_policy"); err != nil {
 			return err
 		}
@@ -28,10 +31,10 @@ func ReloadSession(ctx context.Context, conn *Connection, id string, request Rel
 		}
 		return nil
 	})
-	return w, err
+	return SessionReloadResult(w), err
 }
 
-func (r wireReloadResult) Message() string {
+func (r SessionReloadResult) Message() string {
 	message := "Reload completed."
 	if r.Session != nil {
 		if r.Session.State != "applied" {
@@ -58,14 +61,16 @@ func (r wireReloadResult) Message() string {
 	return message
 }
 func UpgradeKernel(ctx context.Context, conn *Connection, id string) (KernelUpgradeResult, error) {
-	var w wireKernelUpgradeResult
-	err := executeMutation(ctx, conn, operation{Name: "upgrade kernel", Method: http.MethodPost, Path: sessionPath(id, "/kernel/upgrade"), Body: struct{}{}, Policy: noRecovery, Timeout: completedActionTimeout}, []int{200}, func(data []byte, _ int) error {
+	var w protocol.KernelUpgradeResult
+	err := executeMutation(ctx, conn, operation{Name: "upgrade kernel", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewUpgradeKernelRequestWithBody(base, id, "application/json", body)
+	}, Body: struct{}{}, Policy: noRecovery, Timeout: completedActionTimeout}, []int{200}, func(data []byte, _ int) error {
 		return decodeRequired(data, &w, "old_build", "new_build", "state", "stopped_jobs", "warnings", "failure", "old_kernel_id", "new_kernel_id")
 	})
-	return w, err
+	return KernelUpgradeResult(w), err
 }
 
-func (r wireKernelUpgradeResult) Message() string {
+func (r KernelUpgradeResult) Message() string {
 	message := fmt.Sprintf("Kernel %s; %d background jobs stopped.", r.State, len(r.StoppedJobs))
 	for _, warning := range r.Warnings {
 		message += " " + warning.Detail
@@ -76,18 +81,17 @@ func (r wireKernelUpgradeResult) Message() string {
 	return message
 }
 func CompactSession(ctx context.Context, conn *Connection, id, strategy string) (CompactionResult, error) {
-	body := map[string]any{}
-	if strategy != "" {
-		body["strategy"] = strategy
-	}
-	var w wireCompactionResult
-	err := executeMutation(ctx, conn, operation{Name: "compact session", Method: http.MethodPost, Path: sessionPath(id, "/compaction"), Body: body, Policy: noRecovery, Timeout: completedActionTimeout}, []int{200}, func(data []byte, _ int) error {
+	body := protocol.CompactionRequest{Strategy: optionalText(strategy)}
+	var w protocol.CompactionResult
+	err := executeMutation(ctx, conn, operation{Name: "compact session", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewCompactSessionRequestWithBody(base, id, "application/json", body)
+	}, Body: body, Policy: noRecovery, Timeout: completedActionTimeout}, []int{200}, func(data []byte, _ int) error {
 		return decodeRequired(data, &w, "selection_applied", "effective_strategy", "state", "observation", "failure")
 	})
-	return w, err
+	return CompactionResult(w), err
 }
 
-func (r wireCompactionResult) Message() string {
+func (r CompactionResult) Message() string {
 	message := "Context " + r.State + "."
 	if r.Observation != nil {
 		message += fmt.Sprintf(" %d entries evicted.", r.Observation.EvictedEntries)

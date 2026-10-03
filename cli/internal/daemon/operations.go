@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"reflect"
 	"time"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 // OperationHandle freezes the chosen resource ID and exact admission payload.
@@ -57,36 +60,17 @@ func NewSubmission(session string, fields SubmissionRequest) (*OperationHandle, 
 		if fields.Content == nil {
 			return nil, errors.New("message input requires text")
 		}
-		var uploaded *wireImageUpload
+		var uploaded *protocol.ImageUpload
 		if fields.Image != nil {
-			uploaded = &wireImageUpload{MimeType: string(fields.Image.MimeType), Data: fields.Image.Data}
+			uploaded = &protocol.ImageUpload{MimeType: string(fields.Image.MimeType), Data: fields.Image.Data}
 		}
-		body = struct {
-			Kind     string           `json:"kind"`
-			Text     string           `json:"text"`
-			Image    *wireImageUpload `json:"image,omitempty"`
-			ClientID string           `json:"client_id,omitempty"`
-		}{kind, *fields.Content, uploaded, fields.ClientID}
+		body = protocol.MessageInputRequest{Kind: kind, Text: *fields.Content, Image: uploaded, ClientID: optionalText(fields.ClientID)}
 	case "continue":
-		body = struct {
-			Kind     string `json:"kind"`
-			ClientID string `json:"client_id,omitempty"`
-		}{kind, fields.ClientID}
+		body = protocol.ContinueInputRequest{Kind: kind, ClientID: optionalText(fields.ClientID)}
 	case "skill":
-		body = struct {
-			Kind            string `json:"kind"`
-			CandidateID     string `json:"candidate_id"`
-			CatalogRevision string `json:"catalog_revision"`
-			Arguments       string `json:"arguments"`
-			ClientID        string `json:"client_id,omitempty"`
-		}{kind, fields.Name, fields.CatalogRevision, fields.Arguments, fields.ClientID}
+		body = protocol.SkillInputRequest{Kind: kind, CandidateID: fields.Name, CatalogRevision: fields.CatalogRevision, Arguments: fields.Arguments, ClientID: optionalText(fields.ClientID)}
 	case "command":
-		body = struct {
-			Kind      string          `json:"kind"`
-			CommandID string          `json:"command_id"`
-			Arguments json.RawMessage `json:"arguments"`
-			ClientID  string          `json:"client_id,omitempty"`
-		}{kind, fields.Name, fields.CommandArguments, fields.ClientID}
+		body = protocol.CommandInputRequest{Kind: kind, CommandID: fields.Name, Arguments: fields.CommandArguments, ClientID: optionalText(fields.ClientID)}
 	default:
 		return nil, fmt.Errorf("unknown input kind %q", kind)
 	}
@@ -95,7 +79,9 @@ func NewSubmission(session string, fields SubmissionRequest) (*OperationHandle, 
 		return nil, err
 	}
 	handle := &OperationHandle{id: id, kind: kind, sessionID: session}
-	handle.operation = operation{Name: "admit input", Method: http.MethodPut, Path: sessionPath(session, "/inputs/"+id), Body: json.RawMessage(payload), Policy: receiptRecovery, Handle: handle}
+	handle.operation = operation{Name: "admit input", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewPutInputRequestWithBody(base, session, id, "application/json", body)
+	}, Body: json.RawMessage(payload), Policy: receiptRecovery, Handle: handle}
 	return handle, nil
 }
 
@@ -107,36 +93,15 @@ func NewCreation(fields CreateSessionRequest) (*OperationHandle, error) {
 	var body any
 	switch kind {
 	case "new":
-		body = struct {
-			Kind      string `json:"kind"`
-			Workspace string `json:"workspace"`
-			Name      string `json:"name,omitempty"`
-			Provider  string `json:"provider_profile,omitempty"`
-			Model     string `json:"model,omitempty"`
-			Effort    string `json:"effort,omitempty"`
-		}{kind, fields.Workspace, fields.Name, fields.Provider, fields.Model, fields.Effort}
+		body = protocol.NewSessionRequest{Kind: kind, Workspace: fields.Workspace, Name: optionalText(fields.Name), ProviderProfile: optionalText(fields.Provider), Model: optionalText(fields.Model), Effort: optionalText(fields.Effort)}
 	case "fork":
-		body = struct {
-			Kind       string `json:"kind"`
-			Source     string `json:"source_session_id"`
-			Checkpoint string `json:"checkpoint_id"`
-			Name       string `json:"name,omitempty"`
-		}{kind, fields.SourceSessionID, fields.CheckpointID, fields.Name}
+		body = protocol.ForkSessionRequest{Kind: kind, SourceSessionID: fields.SourceSessionID, CheckpointID: fields.CheckpointID, Name: optionalText(fields.Name)}
 	case "child":
 		inputID, err := operationID()
 		if err != nil {
 			return nil, err
 		}
-		body = struct {
-			Kind    string `json:"kind"`
-			Parent  string `json:"parent_id"`
-			Address string `json:"address"`
-			Name    string `json:"name"`
-			InputID string `json:"initial_input_id"`
-			Task    string `json:"task"`
-			Model   string `json:"model,omitempty"`
-			Effort  string `json:"effort,omitempty"`
-		}{kind, fields.ParentID, fields.Address, fields.Name, inputID, fields.Task, fields.Model, fields.Effort}
+		body = protocol.ChildSessionRequest{Kind: kind, ParentID: fields.ParentID, Address: fields.Address, Name: fields.Name, InitialInputID: inputID, Task: fields.Task, Model: optionalText(fields.Model), Effort: optionalText(fields.Effort)}
 	default:
 		return nil, fmt.Errorf("unknown creation kind %q", kind)
 	}
@@ -149,7 +114,9 @@ func NewCreation(fields CreateSessionRequest) (*OperationHandle, error) {
 		return nil, err
 	}
 	handle := &OperationHandle{id: id, kind: "creation", sessionID: id}
-	handle.operation = operation{Name: "create session", Method: http.MethodPut, Path: sessionPath(id, ""), Body: json.RawMessage(payload), Headers: http.Header{"If-None-Match": {"*"}}, Policy: receiptRecovery, Handle: handle}
+	handle.operation = operation{Name: "create session", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewCreateSessionRequestWithBody(base, id, &protocol.CreateSessionParams{IfNoneMatch: "*"}, "application/json", body)
+	}, Body: json.RawMessage(payload), Headers: http.Header{"If-None-Match": {"*"}}, Policy: receiptRecovery, Handle: handle}
 	return handle, nil
 }
 
@@ -175,8 +142,10 @@ func (receipt OperationReceipt) Rejection() error {
 }
 
 func GetInput(ctx context.Context, conn *Connection, session, id string) (OperationReceipt, error) {
-	var input wireInput
-	err := executeRead(ctx, conn, operation{Name: "read input", Method: http.MethodGet, Path: sessionPath(session, "/inputs/"+id), Policy: readRecovery}, func(data []byte) error {
+	var input protocol.Input
+	err := executeRead(ctx, conn, operation{Name: "read input", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetInputRequest(base, session, id)
+	}, Policy: readRecovery}, func(data []byte) error {
 		if err := decodeRequired(data, &input, "id", "session_id", "kind", "admission", "http_status", "problem", "accepted_at", "acceptance_order", "delivery", "blocking_reason", "transcript_position", "turn", "client_id"); err != nil {
 			return err
 		}
@@ -190,7 +159,7 @@ func GetInput(ctx context.Context, conn *Connection, session, id string) (Operat
 	}
 	return inputReceipt(input), nil
 }
-func inputReceipt(input wireInput) OperationReceipt {
+func inputReceipt(input protocol.Input) OperationReceipt {
 	body, _ := json.Marshal(input)
 	problem, _ := json.Marshal(input.Problem)
 	receipt := OperationReceipt{OperationID: input.ID, Kind: input.Kind, Status: input.Admission, Target: input.SessionID, Result: body, Error: problem, HTTPStatus: int(input.HTTPStatus), DeliveryStatus: value(input.Delivery)}
@@ -203,7 +172,7 @@ func inputReceipt(input wireInput) OperationReceipt {
 	}
 	return receipt
 }
-func validInput(input wireInput) error {
+func validInput(input protocol.Input) error {
 	if input.ID == "" || input.SessionID == "" {
 		return fieldError("input identity")
 	}
@@ -292,7 +261,7 @@ func ResolveCreation(ctx context.Context, conn *Connection, handle *OperationHan
 	session, err := GetSession(ctx, conn, handle.id)
 	if err != nil {
 		if api, ok := errors.AsType[*APIError](err); ok && len(api.Decision) > 0 {
-			var decision wireCreationDecision
+			var decision protocol.CreationDecision
 			if parseErr := decodeRequired(api.Decision, &decision, "kind", "session_id", "admission", "http_status", "creation", "decided_at", "deleted_at"); parseErr != nil {
 				return Session{}, &ProtocolError{Code: "invalid_response", Operation: "read creation decision", Cause: parseErr}
 			}

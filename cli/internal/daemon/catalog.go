@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"context"
+	"io"
 	"net/http"
-	"net/url"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 type CapabilityCatalog struct {
@@ -20,7 +22,7 @@ type CatalogCandidate struct {
 	ID, Kind, Title, Source                                            string
 	Valid, EffectiveEnabled, Eligible, Quarantined                     bool
 	Dependencies                                                       []string
-	Extension                                                          *wireExtensionMetadata
+	Extension                                                          *protocol.ExtensionMetadata
 }
 type CatalogCapabilityRequest struct {
 	Revision, ID, Kind, Scope, ETag string
@@ -40,15 +42,17 @@ func readCapabilityCatalog(ctx context.Context, conn *Connection, session string
 	result.Extensions = map[string]bool{}
 	result.Candidates = []CatalogCandidate{}
 	result.Commands = []SessionCommand{}
-	query := url.Values{"limit": {"200"}}
+	params := protocol.GetCatalogParams{Limit: new(int64(200))}
 	first := true
 	seenCandidates, seenCommands, seenTokens := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	pending := []string{}
 	var loadedRevision *string
 	loadedSeen := false
 	for {
-		var catalog wireCatalog
-		err := executeRead(ctx, conn, operation{Capability: "catalog", Name: "read session catalog", Method: http.MethodGet, Path: sessionPath(session, "/catalog?"+query.Encode()), Policy: readRecovery}, func(data []byte) error {
+		var catalog protocol.Catalog
+		err := executeRead(ctx, conn, operation{Capability: "catalog", Name: "read session catalog", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+			return protocol.NewGetCatalogRequest(base, session, &params)
+		}, Policy: readRecovery}, func(data []byte) error {
 			return decodeRequired(data, &catalog, "discovery", "discovery_failure", "loaded")
 		})
 		if err != nil {
@@ -132,7 +136,7 @@ func readCapabilityCatalog(ctx context.Context, conn *Connection, session string
 		if len(pending) == 0 {
 			break
 		}
-		query.Set("next", pending[0])
+		params.Next = new(pending[0])
 		pending = pending[1:]
 	}
 	return result, nil

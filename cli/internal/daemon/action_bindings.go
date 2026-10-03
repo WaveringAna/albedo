@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 // Binding keys are canonical JSON pointers. Reject ancestor assignments before
 // resolving optional values so omission cannot make an ambiguous form valid.
-func validateBodyBindings(bindings map[string]wireBinding) error {
+func validateBodyBindings(bindings map[string]protocol.Binding) error {
 	for pointer := range bindings {
 		if !strings.HasPrefix(pointer, "/") {
 			return errors.New("body binding keys must be JSON pointers")

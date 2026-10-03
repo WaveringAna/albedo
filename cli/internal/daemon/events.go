@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"unicode/utf8"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 // ToolActivity records display-only execution evidence, not model-facing tool output.
@@ -186,26 +188,28 @@ func decodeToolProgress(raw json.RawMessage) (*ToolProgress, error) {
 	if len(raw) > 8192 {
 		return nil, errors.New("tool progress exceeds 8 KiB")
 	}
-	var wire wireToolProgress
+	var wire protocol.ToolProgress
 	if err := decodeRequired(raw, &wire, "call_id", "tool_call_id", "name", "phase", "intent"); err != nil {
 		return nil, err
 	}
 	if wire.CallID == "" || wire.Name == "" || len(wire.Name) > 100 || (wire.Phase != "generating" && wire.Phase != "running") {
 		return nil, fieldError("tool progress")
 	}
-	if wire.Preview.OffsetScalars < 0 || utf8.RuneCountInString(wire.Preview.Text) > 512 || len(wire.Preview.Text) > 2048 {
+	preview := value(wire.Preview)
+	if preview.OffsetScalars < 0 || utf8.RuneCountInString(preview.Text) > 512 || len(preview.Text) > 2048 {
 		return nil, fieldError("tool progress preview")
 	}
 	return progressValue(wire), nil
 }
-func progressValue(wire wireToolProgress) *ToolProgress {
+func progressValue(wire protocol.ToolProgress) *ToolProgress {
 	progress := &ToolProgress{CallID: wire.CallID, ToolCallID: value(wire.ToolCallID), Name: wire.Name, Phase: wire.Phase}
-	if wire.Preview.Text != "" || wire.Preview.OffsetScalars > 0 {
-		progress.Code = &ToolCodePreview{Text: wire.Preview.Text, Offset: int(wire.Preview.OffsetScalars)}
+	preview := value(wire.Preview)
+	if preview.Text != "" || preview.OffsetScalars > 0 {
+		progress.Code = &ToolCodePreview{Text: preview.Text, Offset: int(preview.OffsetScalars)}
 	}
 	return progress
 }
-func usageValue(wire wireUsage) *Usage {
+func usageValue(wire protocol.Usage) *Usage {
 	usage := &Usage{Model: value(wire.Model), PromptTokens: intPointer(wire.PromptTokens), CachedPromptTokens: intPointer(wire.CachedPromptTokens), CacheWriteTokens: intPointer(wire.CacheWriteTokens), CompletionTokens: intPointer(wire.CompletionTokens), TotalTokens: intPointer(wire.TotalTokens), ElapsedMs: wire.ElapsedMs, TokensPerSecond: wire.TokensPerSecond}
 	if wire.ObservedAt != nil {
 		usage.RecordedAt = timestampMilliseconds(*wire.ObservedAt)

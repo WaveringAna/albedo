@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"context"
+	"io"
 	"net/http"
-	"net/url"
+
+	"albedo/cli/internal/daemon/protocol"
 )
 
 type StorageFile struct {
@@ -38,11 +40,14 @@ type StorageReport struct {
 
 func GetStorageReport(ctx context.Context, conn *Connection) (StorageReport, error) {
 	result := StorageReport{OldKernels: []StorageFile{}, OldBackups: []StorageFile{}, DB: StorageDatabase{Sessions: []StorageSession{}}}
-	q := url.Values{"limit": {"200"}}
-	seenSessions, seenFiles, seenTokens := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	params := protocol.GetStorageParams{Limit: new(int64(200))}
+	seenSessions, seenFiles := map[string]bool{}, map[string]bool{}
+	seenTokens := map[[2]string]bool{}
 	for {
-		var w wireStorageReport
-		err := executeRead(ctx, conn, operation{Capability: "storage_report", Name: "read storage", Method: http.MethodGet, Path: "/storage?" + q.Encode(), Policy: readRecovery}, func(data []byte) error {
+		var w protocol.StorageReport
+		err := executeRead(ctx, conn, operation{Capability: "storage_report", Name: "read storage", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+			return protocol.NewGetStorageRequest(base, &params)
+		}, Policy: readRecovery}, func(data []byte) error {
 			return decodeRequired(data, &w, "database", "sessions", "images", "files", "measured_at")
 		})
 		if err != nil {
@@ -83,12 +88,12 @@ func GetStorageReport(ctx context.Context, conn *Connection) (StorageReport, err
 			return result, nil
 		}
 		if w.Sessions.Next != nil {
-			q.Set("sessions_next", *w.Sessions.Next)
+			params.SessionsNext = w.Sessions.Next
 		}
 		if w.Files.Next != nil {
-			q.Set("files_next", *w.Files.Next)
+			params.FilesNext = w.Files.Next
 		}
-		key := q.Encode()
+		key := [2]string{value(params.SessionsNext), value(params.FilesNext)}
 		if seenTokens[key] {
 			return result, fieldError("storage page cursor")
 		}

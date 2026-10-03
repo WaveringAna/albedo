@@ -1,11 +1,14 @@
 package daemon
 
 import (
-	"albedo/cli/internal/config"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"reflect"
+
+	"albedo/cli/internal/config"
+	"albedo/cli/internal/daemon/protocol"
 )
 
 type ReloadResult struct{ Reloaded, Message, Warning string }
@@ -36,8 +39,10 @@ type Settings struct {
 }
 
 func GetSettings(ctx context.Context, conn *Connection) (Settings, error) {
-	var wire wireSettings
-	err := executeRead(ctx, conn, operation{Name: "read shared settings", Method: http.MethodGet, Path: "/settings", Policy: readRecovery}, func(data []byte) error {
+	var wire protocol.Settings
+	err := executeRead(ctx, conn, operation{Name: "read shared settings", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetSettingsRequest(base, nil)
+	}, Policy: readRecovery}, func(data []byte) error {
 		return decodeRequired(data, &wire, "providers", "mcp", "extensions", "capabilities", "models", "ui", "group_resources")
 	})
 	if err != nil {
@@ -69,7 +74,7 @@ func GetSettings(ctx context.Context, conn *Connection) (Settings, error) {
 	}
 	return result, nil
 }
-func sourceValues(values map[string]wireValueSource) map[string]map[string]string {
+func sourceValues(values map[string]protocol.ValueSource) map[string]map[string]string {
 	result := map[string]map[string]string{}
 	for name, value := range values {
 		result[name] = map[string]string{"source": value.Source, "value": value.Value}
@@ -81,15 +86,6 @@ func ProviderProfiles(ctx context.Context, conn *Connection) (config.Profiles, e
 	return settings.Profiles, err
 }
 
-type settingsApplication struct {
-	DesiredRevision       string           `json:"desired_revision"`
-	ActiveServiceRevision *string          `json:"active_service_revision"`
-	NeedsReloadCount      int64            `json:"needs_reload_count"`
-	SessionIDs            []string         `json:"session_ids"`
-	Validation            string           `json:"validation"`
-	More                  bool             `json:"more"`
-	Warnings              []wireSafeReason `json:"warnings"`
-}
 type settingsChange[T any] struct {
 	Group    string `json:"group"`
 	Resource struct {
@@ -97,7 +93,7 @@ type settingsChange[T any] struct {
 		ETag  string `json:"etag"`
 		Value T      `json:"value"`
 	} `json:"resource"`
-	Application settingsApplication `json:"application"`
+	Application protocol.SettingsApplication `json:"application"`
 }
 
 func patchSettingsGroup[T any](ctx context.Context, conn *Connection, group, etag string, body any) (settingsChange[T], error) {
@@ -106,7 +102,9 @@ func patchSettingsGroup[T any](ctx context.Context, conn *Connection, group, eta
 	if err != nil {
 		return result, err
 	}
-	err = executeMutation(ctx, conn, operation{Name: "edit " + group + " settings", Method: http.MethodPatch, Path: "/settings?group=" + group, Headers: headers, Body: body, Policy: authRecovery}, []int{200}, func(data []byte, _ int) error {
+	err = executeMutation(ctx, conn, operation{Name: "edit " + group + " settings", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewPatchSettingsRequestWithBody(base, &protocol.PatchSettingsParams{Group: group, IfMatch: headers.Get("If-Match")}, "application/merge-patch+json", body)
+	}, Headers: headers, Body: body, Policy: authRecovery}, []int{200}, func(data []byte, _ int) error {
 		if err := decodeRequired(data, &result, "group", "resource", "application"); err != nil {
 			return err
 		}
@@ -148,7 +146,7 @@ func saveProvider(ctx context.Context, conn *Connection, name string, profile co
 	if selectDefault {
 		body.DefaultProfile = &name
 	}
-	_, err := patchSettingsGroup[wireProviderSettings](ctx, conn, "providers", etag, body)
+	_, err := patchSettingsGroup[protocol.ProviderSettings](ctx, conn, "providers", etag, body)
 	return err
 }
 func DeleteProvider(ctx context.Context, conn *Connection, name string, profiles config.Profiles) error {
@@ -156,7 +154,7 @@ func DeleteProvider(ctx context.Context, conn *Connection, name string, profiles
 	if profiles.Active == name {
 		body["default_profile"] = nil
 	}
-	_, err := patchSettingsGroup[wireProviderSettings](ctx, conn, "providers", profiles.ETag, body)
+	_, err := patchSettingsGroup[protocol.ProviderSettings](ctx, conn, "providers", profiles.ETag, body)
 	return err
 }
 
@@ -170,7 +168,7 @@ func SetCapability(ctx context.Context, conn *Connection, session string, reques
 }
 func setSelection(ctx context.Context, conn *Connection, session, kind, id, revision, scope, etag string, enabled *bool) (ReloadResult, error) {
 	if scope == "global" {
-		_, err := patchSettingsGroup[wireCapabilitySettings](ctx, conn, "capabilities", etag, struct {
+		_, err := patchSettingsGroup[protocol.CapabilitySettings](ctx, conn, "capabilities", etag, struct {
 			SessionID string           `json:"catalog_session_id"`
 			Revision  string           `json:"catalog_revision"`
 			Choices   map[string]*bool `json:"choices"`
@@ -228,7 +226,7 @@ func SaveMCP(ctx context.Context, conn *Connection, session string, request MCPU
 			Secrets           MCPSecretsPatch              `json:"secrets"`
 		}{Enabled: server.Enabled == nil || *server.Enabled, Transport: server.Type, Command: optionalString(server.Command), Arguments: nonNil(server.Args), CWD: optionalString(server.CWD), URL: optionalString(server.URL), Environment: nonNilMap(server.Env), Headers: nonNilMap(server.Headers), BearerTokenEnvVar: optionalString(server.BearerTokenEnvVar), EnabledTools: nonNil(server.EnabledTools), DisabledTools: nonNil(server.DisabledTools), StartupTimeout: server.StartupTimeoutMs, CallTimeout: server.CallTimeoutMs, Secrets: secrets}
 	}
-	change, err := patchSettingsGroup[wireMCPSettings](ctx, conn, "mcp", request.ETag, struct {
+	change, err := patchSettingsGroup[protocol.MCPSettings](ctx, conn, "mcp", request.ETag, struct {
 		Definitions map[string]any `json:"definitions"`
 	}{map[string]any{request.Name: definition}})
 	return applicationResult(change.Application), err
@@ -251,7 +249,7 @@ func nonNilMap[K comparable, V any](m map[K]V) map[K]V {
 	}
 	return m
 }
-func applicationResult(application settingsApplication) ReloadResult {
+func applicationResult(application protocol.SettingsApplication) ReloadResult {
 	result := ReloadResult{Message: "Saved settings."}
 	if application.NeedsReloadCount > 0 {
 		result.Message = "Saved settings; reload open sessions to apply them."
@@ -268,7 +266,7 @@ func PatchUI(ctx context.Context, conn *Connection, patch UIPreferencesPatch) (U
 	if patch.Pinned != nil || patch.Archived != nil {
 		return UIPreferences{}, errors.New("pin and archive are session preferences")
 	}
-	change, err := patchSettingsGroup[wireUISettings](ctx, conn, "ui", patch.ETag, patch)
+	change, err := patchSettingsGroup[protocol.UISettings](ctx, conn, "ui", patch.ETag, patch)
 	return UIPreferences{Thinking: change.Resource.Value.Thinking, Tools: change.Resource.Value.Tools, ETag: change.Resource.ETag}, err
 }
 func PatchSessionUI(ctx context.Context, conn *Connection, session string, patch UIPreferencesPatch) (UIPreferences, error) {
@@ -297,8 +295,10 @@ func RecordOpen(ctx context.Context, conn *Connection, session string) (UIPrefer
 	if err != nil {
 		return UIPreferences{}, err
 	}
-	var visit wireVisit
-	err = executeMutation(ctx, conn, operation{Name: "record session visit", Method: http.MethodPut, Path: sessionPath(session, "/visits/"+id), Body: struct{}{}, Policy: noRecovery}, []int{201, 200}, func(data []byte, _ int) error {
+	var visit protocol.Visit
+	err = executeMutation(ctx, conn, operation{Name: "record session visit", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewRecordVisitRequestWithBody(base, session, id, "application/json", body)
+	}, Body: struct{}{}, Policy: noRecovery}, []int{201, 200}, func(data []byte, _ int) error {
 		if err := decodeRequired(data, &visit, "visit_id", "session_id", "opens"); err != nil {
 			return err
 		}

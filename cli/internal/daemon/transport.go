@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
 	"time"
 )
 
@@ -40,8 +39,6 @@ func executeMutation(ctx context.Context, conn *Connection, operation operation,
 	}
 	return nil
 }
-
-func sessionPath(id, tail string) string { return "/sessions/" + url.PathEscape(id) + tail }
 
 func executeRead(ctx context.Context, conn *Connection, operation operation, decode func([]byte) error) error {
 	if conn == nil {
