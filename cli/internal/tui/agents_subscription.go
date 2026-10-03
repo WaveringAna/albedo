@@ -22,6 +22,7 @@ func (m *AgentsViewModel) stopStream() {
 		m.cancel = nil
 	}
 	m.Gen++
+	m.seenMail = nil
 	m.streamReady = false
 	m.snapshotInFlight, m.snapshotDirty = false, false
 }

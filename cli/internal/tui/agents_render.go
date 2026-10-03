@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"albedo/cli/internal/daemon"
 	"fmt"
 	"maps"
 	"slices"
@@ -12,6 +13,9 @@ import (
 func (m AgentsViewModel) paneHeader() []string {
 	// One column goes to the space after the divider.
 	width := m.paneWidth() - 1
+	if width <= 0 {
+		width = max(1, m.Width-2)
+	}
 	rows := make([]string, 0, 12)
 	n := m.nodes[m.selected]
 	if n == nil || width <= 0 {
@@ -23,10 +27,21 @@ func (m AgentsViewModel) paneHeader() []string {
 	switch {
 	case n.id == agentsYou:
 		state = "that's you"
-	case n.running:
-		state = "running"
 	case n.closed:
 		state = "closed"
+	case n.session.Status.Phase != nil:
+		switch *n.session.Status.Phase {
+		case daemon.PhasePreparing:
+			state = "preparing"
+		case daemon.PhaseInterrupted:
+			state = "interrupting"
+		case daemon.PhaseIdle, daemon.PhaseResting:
+			state = "idle"
+		default:
+			state = "running"
+		}
+	case n.running:
+		state = "running"
 	case n.peer:
 		state = "outside this tree"
 	}
@@ -42,6 +57,18 @@ func (m AgentsViewModel) paneHeader() []string {
 		meta = append(meta, "parent "+parent.name)
 	}
 	rows = append(rows, DefaultStyles.Faint.Render(ansi.Truncate(strings.Join(meta, " · "), width, "…")), "")
+	for _, field := range []struct{ label, text string }{{"request", n.currentRequest}, {"latest", n.latestProgress}} {
+		if field.text == "" {
+			continue
+		}
+		rows = append(rows, DefaultStyles.Muted.Render(field.label))
+		wrapped := strings.Split(ansi.Wrap(field.text, max(1, width), " "), "\n")
+		if len(wrapped) > 3 {
+			wrapped = wrapped[:3]
+			wrapped[2] = ansi.Truncate(wrapped[2], max(1, width-1), "") + "…"
+		}
+		rows = append(rows, wrapped...)
+	}
 	if len(n.mail) > 0 {
 		rows = append(rows, DefaultStyles.Muted.Render("mail"))
 		for _, mail := range n.mail[max(0, len(n.mail)-5):] {
@@ -150,12 +177,21 @@ func (m AgentsViewModel) View() string {
 	if n := m.nodes[m.selected]; n != nil && n.y+3 > bodyH {
 		offset = n.y + 3 - bodyH
 	}
+	pw := m.paneWidth()
+	stacked := 0
+	if pw == 0 {
+		stacked = min(len(m.paneHeader()), max(1, bodyH/2))
+		bodyH = max(1, bodyH-stacked)
+		offset = 0
+		if n := m.nodes[m.selected]; n != nil && n.y+3 > bodyH {
+			offset = n.y + 3 - bodyH
+		}
+	}
 	canvas := newCanvas(dagW, bodyH+offset)
 	m.drawEdges(canvas)
 	m.drawNodes(canvas)
 	pane := m.pane(bodyH)
 	divider := DefaultStyles.Decor.Render("│")
-	pw := m.paneWidth()
 	for y := range bodyH {
 		row := canvas.line(y + offset)
 		if pw > 0 {
@@ -166,6 +202,17 @@ func (m AgentsViewModel) View() string {
 			row += divider + " " + ansi.Truncate(side, pw-1, "…")
 		}
 		out = append(out, row)
+	}
+
+	if stacked > 0 {
+		rows := m.paneHeader()
+		for i := range stacked {
+			row := ""
+			if i < len(rows) {
+				row = rows[i]
+			}
+			out = append(out, ansi.Truncate(row, max(1, m.Width), "…"))
+		}
 	}
 
 	status := ""

@@ -31,6 +31,14 @@ a letter is stored first and marked delivered in the same transaction that write
 
 `ctrl+o` or `/agents` in a session shows its whole tree live: running agents pulse with their token rate, mail travels the edges as blocks. tab picks an agent, enter opens it (typing there is you, as the user), text + enter sends to it, `/spawn <name> <task>` starts a child under it.
 
+The selected agent's card shows its status, latest delivered task or message
+from its parent, and latest progress. Request and progress previews are bounded
+to 512 characters. A new parent request clears the previous progress; peer mail
+does not replace the request. Progress starts no turn and is replaced in place.
+Idle means idle, including after restart; it does not imply the task is complete.
+Narrow terminals show the card below the graph. Mail animation deduplicates IDs
+with a bounded cache, while distinct messages with identical text remain visible.
+
 The view reads `GET /sessions?scope=family&root_id={root_id}` and subscribes
 to the same collection with `Accept: text/event-stream`. Child creation and
 messages use the core session and input resources. The

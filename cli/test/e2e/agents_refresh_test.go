@@ -152,7 +152,7 @@ func TestTUIAgentsOverflowRefreshesMembershipAndPreviews(t *testing.T) {
 	close(gap)
 	pump(func() bool {
 		view := driver.View()
-		return strings.Contains(view, "renamed") && strings.Contains(view, "new-agent") && strings.Contains(view, "1 running") && !strings.Contains(view, "removed") && !strings.Contains(view, "old-name")
+		return strings.Contains(view, "renamed") && strings.Contains(view, "new-agent") && strings.Contains(view, "1 running") && !strings.Contains(view, "○ removed") && !strings.Contains(view, "○ old-name")
 	})
 	view := driver.View()
 	if strings.Contains(view, "OLD_PARTIAL") || !strings.Contains(view, "draft survives refresh") {

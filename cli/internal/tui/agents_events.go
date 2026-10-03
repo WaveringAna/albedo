@@ -70,6 +70,12 @@ func (m *AgentsViewModel) apply(event daemon.AgentEvent) bool {
 		}
 		return true
 	case "mail":
+		if event.MailID != "" {
+			if slices.Contains(m.seenMail, event.MailID) {
+				return false
+			}
+			m.seenMail = capped(append(m.seenMail, event.MailID), 256)
+		}
 		from, to := event.From, event.To
 		fromName := event.FromName
 		changed := false
@@ -110,6 +116,13 @@ func (m *AgentsViewModel) apply(event daemon.AgentEvent) bool {
 		}
 		if event.Cursor != nil && n.cursor != nil && event.Cursor.Generation == n.cursor.Generation && event.Cursor.Sequence <= n.cursor.Sequence {
 			return false
+		}
+		n.currentRequest, n.latestProgress = "", ""
+		if event.Activity.CurrentRequest != nil {
+			n.currentRequest = event.Activity.CurrentRequest.Text
+		}
+		if event.Activity.LatestProgress != nil {
+			n.latestProgress = *event.Activity.LatestProgress
 		}
 		n.cursor = event.Cursor
 		n.running = event.Running

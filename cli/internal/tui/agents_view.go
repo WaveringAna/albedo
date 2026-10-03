@@ -99,29 +99,30 @@ type agentMail struct {
 }
 
 type agentNode struct {
-	session                   daemon.Session
-	cursor                    *daemon.Cursor
-	latestInput, latestAnswer string
-	id, parent, name, model   string
-	address                   string // how its family mails it; a rename leaves it
-	progressByCallID          map[string]*daemon.ToolProgress
-	progressOrder             []string
-	previewCallID             string
-	mail                      []agentMail
-	tail                      agentTail
-	preview                   agentTail
-	revision                  uint64
-	hue                       rgb
-	rate                      float64
-	flash                     float64
-	phase                     float64
-	depth                     int
-	chars                     int
-	x, y                      int
-	lineKind                  tailKind
-	running, closed           bool
-	peer                      bool // reached by mail, outside the tree
-	seeded                    bool
+	session                        daemon.Session
+	cursor                         *daemon.Cursor
+	latestInput, latestAnswer      string
+	currentRequest, latestProgress string
+	id, parent, name, model        string
+	address                        string // how its family mails it; a rename leaves it
+	progressByCallID               map[string]*daemon.ToolProgress
+	progressOrder                  []string
+	previewCallID                  string
+	mail                           []agentMail
+	tail                           agentTail
+	preview                        agentTail
+	revision                       uint64
+	hue                            rgb
+	rate                           float64
+	flash                          float64
+	phase                          float64
+	depth                          int
+	chars                          int
+	x, y                           int
+	lineKind                       tailKind
+	running, closed                bool
+	peer                           bool // reached by mail, outside the tree
+	seeded                         bool
 }
 
 // What a tail line is, which decides how it is drawn.
@@ -141,6 +142,7 @@ type tailLine struct {
 }
 
 type AgentsViewModel struct {
+	seenMail          []string
 	pendingOperations map[string]agentPendingOperation
 	bufferedActivity  map[string]daemon.AgentEvent
 	last              time.Time
