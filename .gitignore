@@ -23,3 +23,6 @@ __pycache__/
 
 # Generated Gleam audit inventories belong outside the repository.
 /robot-docs/gleam-*-review.csv
+
+# pulled by scripts/prompts.ts
+scripts/prompts.txt
