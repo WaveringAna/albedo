@@ -115,21 +115,8 @@ go -C cli vet ./...     # native go cli vet
 gleam test              # gleam suite plus the python harnesses that hold no build lock
 ```
 
-manual performance tools:
-
-`test/manual` is opt-in: those benchmarks need a provider, a PTY, or artifacts
-from an earlier run.
-
-```sh
-# standalone PTY smoke verification of the cli
-ALBEDO_NO_BROWSER=1 python3 test/manual/go_port_smoke.py
-
-# 120Hz scrollback performance and timing evaluation
-ALBEDO_NO_BROWSER=1 python3 test/manual/go_scroll_perf.py
-
-# native heap and runtime memory attribution profile
-ALBEDO_NO_BROWSER=1 python3 test/manual/go_memory_profile.py
-```
+`test/manual` contains opt-in package and provider checks. They require a
+packaged binary or operator-supplied credentials and are outside the normal gate.
 
 todo
 - [] flesh out plugin system more

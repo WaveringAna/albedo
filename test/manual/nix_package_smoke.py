@@ -41,13 +41,15 @@ with tempfile.TemporaryDirectory(prefix="albedo-nix-smoke-") as directory:
         assert json.loads(result.stdout) == [], result.stdout
         record = json.loads((home / "daemon.json").read_text())
         req = urllib.request.Request(
-            f"http://127.0.0.1:{record['port']}/health",
+            f"http://127.0.0.1:{record['port']}/server",
             headers={"Authorization": "Bearer " + record["token"]},
         )
         with urllib.request.urlopen(req, timeout=5) as response:
-            health = json.load(response)
-        assert health["version"] == 2, health
-        print(json.dumps({"binary": binary, "sessions": [], "health": health}))
+            identity = json.load(response)
+        assert identity["protocol"] == record["version"], identity
+        assert identity["instance_id"] == record["instance_id"], identity
+        assert identity["state"] == "ready", identity
+        print(json.dumps({"binary": binary, "sessions": [], "server": identity}))
     finally:
         stop = subprocess.run(
             [binary, "daemon", "--stop"],
