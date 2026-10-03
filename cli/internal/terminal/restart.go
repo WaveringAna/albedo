@@ -21,7 +21,7 @@ func (t *Service) ConfirmRestart(ctx context.Context, running daemon.ConnectionS
 	if _, err := fmt.Fprintf(t.Out, "Albedo is already running (PID %d).\n", running.Pid); err != nil {
 		return false, err
 	}
-	if running.Build != "" && selectedBuild != "" && running.Build != selectedBuild {
+	if daemon.BuildMismatch(running.Build, selectedBuild) {
 		if _, err := fmt.Fprintln(t.Out, "The running daemon comes from a different build."); err != nil {
 			return false, err
 		}

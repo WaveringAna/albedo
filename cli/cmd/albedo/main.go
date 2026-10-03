@@ -65,15 +65,18 @@ func run(args []string) error {
 			if selectedBuild == "" {
 				selectedBuild, _ = filepath.EvalSymlinks(os.Getenv("ALBEDO_DAEMON"))
 			}
-			restart, err := term.ConfirmRestart(ctx, found.Snapshot, selectedBuild)
-			if err != nil {
-				return nil, err
+			// Only a provable build difference is worth interrupting the
+			// running daemon over; otherwise attach and keep sessions warm.
+			if daemon.BuildMismatch(found.Snapshot.Build, selectedBuild) {
+				restart, err := term.ConfirmRestart(ctx, found.Snapshot, selectedBuild)
+				if err != nil {
+					return nil, err
+				}
+				if restart {
+					return daemon.Upgrade(ctx, options, found.Snapshot)
+				}
 			}
-			if restart {
-				chosen, err = daemon.Upgrade(ctx, options, found.Snapshot)
-			} else {
-				chosen, err = daemon.Attach(ctx, found.Snapshot, rediscover)
-			}
+			chosen, err = daemon.Attach(ctx, found.Snapshot, rediscover)
 			return chosen, err
 		},
 		Existing: func(ctx context.Context) (*daemon.Connection, error) {

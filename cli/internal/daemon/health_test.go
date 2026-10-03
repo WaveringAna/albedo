@@ -16,6 +16,24 @@ import (
 
 const healthyHealth = `{"ok":true,"version":2,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow"],"build":"verified-build"}`
 
+// The restart offer must stay quiet unless both builds are known and differ;
+// an unknown build is unprovable, so attaching silently is the safe default.
+func TestBuildMismatchNeedsTwoKnownBuilds(t *testing.T) {
+	for _, tc := range []struct {
+		running, selected string
+		want              bool
+	}{
+		{running: "", selected: "selected"},
+		{running: "running", selected: ""},
+		{running: "same build", selected: "same build"},
+		{running: "old build", selected: "new build", want: true},
+	} {
+		if got := BuildMismatch(tc.running, tc.selected); got != tc.want {
+			t.Fatalf("BuildMismatch(%q, %q) = %v, want %v", tc.running, tc.selected, got, tc.want)
+		}
+	}
+}
+
 func TestAttachValidatesHealthBeforeReturningAConnection(t *testing.T) {
 	for name, body := range map[string]string{
 		"missing ok":                    `{"version":2,"capabilities":[]}`,

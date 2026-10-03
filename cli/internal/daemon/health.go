@@ -96,6 +96,14 @@ func CheckCompatible(health Health) error {
 	return nil
 }
 
+// BuildMismatch reports whether the running daemon provably came from a
+// different build. An unknown build on either side is not a mismatch: without
+// a comparison there is nothing to offer a restart over, so the caller should
+// attach instead of asking.
+func BuildMismatch(running, selected string) bool {
+	return running != "" && selected != "" && running != selected
+}
+
 // Attach validates an endpoint before exposing its API connection.
 func Attach(ctx context.Context, snapshot ConnectionSnapshot, rediscover Rediscovery) (*Connection, error) {
 	if snapshot.Port < 1 || snapshot.Port > 65535 || snapshot.Token == "" {
