@@ -32,6 +32,12 @@ files, starting a process, or replacing one.
 `albedo daemon --stop` inspects the existing daemon without prompting or starting
 one. An absent or stale daemon needs no shutdown. Discovery failures are reported.
 
+A protocol 2 daemon has no `/server` resource. When that route returns 404 and
+`daemon.json` reports a different protocol, discovery reports incompatibility.
+It preserves the record and does not authorize attachment, shutdown, or launch.
+Stop that daemon with its matching client, then launch the protocol 3 client.
+The current client does not call older API routes.
+
 ## Authentication and defaults
 
 Bearer authentication remains the same. The daemon owns its home directory and

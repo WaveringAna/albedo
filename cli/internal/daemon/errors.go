@@ -101,6 +101,9 @@ type CompatibilityError struct {
 }
 
 func (e *CompatibilityError) Error() string {
+	if e.Version != ProtocolVersion {
+		return fmt.Sprintf("daemon protocol %d is incompatible with this client; required protocol is %d. Stop the daemon with a matching client (albedo daemon --stop), then relaunch this client", e.Version, ProtocolVersion)
+	}
 	return fmt.Sprintf("daemon protocol %d is incompatible with this client; required protocol is %d; missing capabilities: %v", e.Version, ProtocolVersion, e.MissingCapabilities)
 }
 

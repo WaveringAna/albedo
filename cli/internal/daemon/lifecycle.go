@@ -47,6 +47,7 @@ const (
 	DiscoveryUnavailable LocalErrorKind = "discovery_unavailable"
 	UnreachableDaemon    LocalErrorKind = "unreachable_daemon"
 	UnhealthyDaemon      LocalErrorKind = "unhealthy_daemon"
+	IncompatibleDaemon   LocalErrorKind = "incompatible_daemon"
 	AuthenticationFailed LocalErrorKind = "authentication_failed"
 	TargetChanged        LocalErrorKind = "target_changed"
 	LauncherLockFailure  LocalErrorKind = "launcher_lock_failure"
@@ -112,6 +113,9 @@ func Discover(ctx context.Context, homeDir string) (Discovery, error) {
 		if errors.As(err, &api) {
 			if api.StatusCode == http.StatusUnauthorized || api.StatusCode == http.StatusForbidden {
 				return fail(AuthenticationFailed, err)
+			}
+			if api.StatusCode == http.StatusNotFound && snapshot.Version != ProtocolVersion {
+				return fail(IncompatibleDaemon, &CompatibilityError{Version: snapshot.Version})
 			}
 			return fail(UnhealthyDaemon, err)
 		}

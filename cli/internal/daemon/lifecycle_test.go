@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -111,7 +112,7 @@ func TestDiscoveryPreservesUnsafeRecordAndLiveHealthFailures(t *testing.T) {
 			t.Fatalf("loaded healthy daemon was not usable: %+v, %v", discovery, err)
 		}
 	})
-	for _, status := range []int{http.StatusOK, http.StatusUnauthorized, http.StatusServiceUnavailable} {
+	for _, status := range []int{http.StatusOK, http.StatusNotFound, http.StatusUnauthorized, http.StatusServiceUnavailable} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(status)
@@ -164,5 +165,47 @@ func TestDiscoveryRejectsChangedBuildDigest(t *testing.T) {
 	local, ok := errors.AsType[*LocalError](err)
 	if !ok || local.Kind != InvalidDiscovery || found.Kind == Running {
 		t.Fatalf("changed executable identity accepted: %+v, %v", found, err)
+	}
+}
+
+// A protocol 2 daemon has no /server route; the current daemon cannot produce
+// this response, so a controlled peer checks migration diagnostics and refusal.
+func TestDiscoveryExplainsOlderProtocolWithoutTreatingItAsReady(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusUnauthorized, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/server" || r.Header.Get("Authorization") != "Bearer token" {
+					t.Errorf("unexpected request while diagnosing an old daemon: %s %s", r.Method, r.URL.Path)
+				}
+				w.WriteHeader(status)
+			}))
+			t.Cleanup(server.Close)
+			home := t.TempDir()
+			snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: 2}
+			writeDiscovery(t, home, snapshot)
+			found, err := Discover(t.Context(), home)
+			failure, ok := errors.AsType[*LocalError](err)
+			expected := UnhealthyDaemon
+			switch status {
+			case http.StatusNotFound:
+				expected = IncompatibleDaemon
+			case http.StatusUnauthorized:
+				expected = AuthenticationFailed
+			}
+			if !ok || failure.Kind != expected || found.Kind == Running {
+				t.Fatalf("old discovery record authorized attachment or lost its failure: %+v, %v", found, err)
+			}
+			if status == http.StatusNotFound {
+				compatibility, ok := errors.AsType[*CompatibilityError](err)
+				if !ok || compatibility.Version != 2 || !strings.Contains(err.Error(), "matching client (albedo daemon --stop)") {
+					t.Fatalf("missing actionable protocol mismatch: %v", err)
+				}
+			}
+			data, readErr := os.ReadFile(filepath.Join(home, "daemon.json"))
+			var retained ConnectionSnapshot
+			if readErr != nil || json.Unmarshal(data, &retained) != nil || retained != snapshot {
+				t.Fatal("discovery changed the old daemon record")
+			}
+		})
 	}
 }
