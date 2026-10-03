@@ -140,8 +140,9 @@ def darwin_start(pid: int) -> str | None:
     return f"{seconds}.{micros:06d}"
 
 
-def live_members(pgid: int) -> list[int] | None:
-    """Pids in a group that are not zombies; None where /proc is unavailable."""
+def table() -> list[tuple[int, int, int, bool]] | None:
+    """Every process as (pid, ppid, pgid, zombie); None where the view is
+    unavailable or incomplete."""
     try:
         entries = os.listdir("/proc")
     except OSError:
@@ -150,7 +151,18 @@ def live_members(pgid: int) -> list[int] | None:
         # Darwin has no /proc. Ask its process table; EPERM alone never means dead.
         try:
             result = subprocess.run(
-                ["/bin/ps", "-A", "-o", "pid=", "-o", "pgid=", "-o", "stat="],
+                [
+                    "/bin/ps",
+                    "-A",
+                    "-o",
+                    "pid=",
+                    "-o",
+                    "ppid=",
+                    "-o",
+                    "pgid=",
+                    "-o",
+                    "stat=",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=0.5,
@@ -158,27 +170,70 @@ def live_members(pgid: int) -> list[int] | None:
             )
             rows = [line.split() for line in result.stdout.splitlines()]
             return [
-                int(pid)
-                for pid, group, state in rows
-                if int(group) == pgid and not state.startswith("Z")
+                (int(pid), int(ppid), int(pgid), state.startswith("Z"))
+                for pid, ppid, pgid, state in rows
             ]
         except (OSError, subprocess.SubprocessError, ValueError):
             return None
-    members = []
+    processes = []
     for entry in entries:
         if not entry.isdigit():
             continue
         try:
             with open(f"/proc/{entry}/stat", "rb") as stat:
                 fields = stat.read().rsplit(b")", 1)[1].split()
+            processes.append(
+                (int(entry), int(fields[1]), int(fields[2]), fields[0] == b"Z")
+            )
         except FileNotFoundError:
             continue  # process exited while enumerating
-        except (OSError, IndexError):
+        except (OSError, IndexError, ValueError):
             return None  # an incomplete view cannot prove the group empty
-        if fields[0] == b"Z" or fields[2] != str(pgid).encode():
+    return processes
+
+
+def live_members(pgid: int) -> list[int] | None:
+    """Pids in a group that are not zombies; None where the process table is unavailable."""
+    processes = table()
+    if processes is None:
+        return None
+    return [pid for pid, _, group, zombie in processes if group == pgid and not zombie]
+
+
+def adopted(group: Group) -> set[int]:
+    """Members of the group that a process which moved out of it still
+    parents, with their descendants in it.
+
+    ssh's ControlPersist master forks its ProxyCommand, then daemonizes out of
+    the job's group: the proxy stays behind, and ending it ends the master and
+    every later ssh that would have ridden it. Such a parent started after the
+    group's leader, from inside the job; init or a subreaper that adopted an
+    orphan was running before it, so orphans are never among these.
+    """
+    if not group.whole or group.leader is None:
+        return set()
+    processes = table()
+    if processes is None:
+        return set()
+    groups = {pid: pgid for pid, _, pgid, _ in processes}
+    members = {
+        pid: ppid
+        for pid, ppid, pgid, zombie in processes
+        if pgid == group.pgid and not zombie
+    }
+    begun = float(group.leader)
+    kept = set()
+    for pid, ppid in members.items():
+        if groups.get(ppid, group.pgid) == group.pgid:
             continue
-        members.append(int(entry))
-    return members
+        started = leader_token(ppid)
+        if started is not None and float(started) >= begun:
+            kept.add(pid)
+    while descendants := {
+        pid for pid, ppid in members.items() if ppid in kept and pid not in kept
+    }:
+        kept |= descendants
+    return kept
 
 
 def deliver(group: Group, sig: int) -> None:
@@ -259,3 +314,29 @@ async def terminate(
             )
         )
     return endings
+
+
+async def end(group: Group, leave_adopted: bool = False) -> Termination:
+    """End a job's group. Once its command has exited on its own
+    (`leave_adopted`), members a process that left the group still parents
+    are that process's (`adopted`) and stay; the rest are ended one by one."""
+    if not (leave_adopted and alive(group)):
+        return (await terminate([group]))[0]
+    signals: list[str] = []
+    failures: list[str] = []
+    rounds = 0
+    while True:
+        kept = adopted(group)
+        if not kept:
+            return (await terminate([group]))[0]
+        rest = [pid for pid in live_members(group.pgid) or [] if pid not in kept]
+        if not rest or rounds == 3:  # a member may fork while the others end
+            note = f"kept {len(kept)} that a process which left the group parents"
+            return Termination(
+                group.pgid, tuple(signals), not rest, tuple(failures), note
+            )
+        rounds += 1
+        targets = [Group(pid, leader_token(pid), whole=False) for pid in rest]
+        for ending in await terminate(targets):
+            signals += [name for name in ending.signals if name not in signals]
+            failures += ending.failures

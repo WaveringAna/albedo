@@ -5,6 +5,9 @@ session, so its program leads a process group and one signal reaches it plus
 every descendant that stayed in that group. The group
 is ended when the command ends, when its deadline passes, and at kernel
 shutdown. What survives is reported, and unfinished work keeps its running slot.
+When the command ends on its own, members a process that left the group still
+parents stay with it: ssh's ControlPersist master daemonizes out of the job
+but leaves its ProxyCommand in the group, and ending that ends the master.
 
 A job that finishes with its result unread wakes the session: the kernel tells
 the host, the host submits a user turn naming the job, and the model never has
@@ -446,7 +449,7 @@ class Job:
             self.outlet.close()
             if self.feed is not None and self.feed.pipe is None:
                 self.feed.lost()  # never started, so never read
-            ending = await self._stop()
+            ending = await self._stop(exited=self.exit_code is not None)
             if self.exit_code is None and self.process is not None:
                 self.exit_code = await self._status(self.process)
             if self.process is not None and ending.gone:
@@ -582,7 +585,9 @@ class Job:
         self._read = True  # an explicit stop is its own report; no wake is owed
         return await self._stop()
 
-    async def _stop(self) -> albedo_proc.Termination:
+    async def _stop(self, exited: bool = False) -> albedo_proc.Termination:
+        """End the group; once the command `exited` on its own, what a process
+        that left the group still parents stays with that process."""
         if self.termination is not None and self.termination.gone:
             return self.termination
         # A stopped group cannot act on TERM; let it run to hear it.
@@ -612,7 +617,7 @@ class Job:
         if self.ending is None or self.ending.done():
             group = self.claim()
             self.ending = loop.create_task(
-                _terminate_one(group) if group is not None else _unstarted()
+                albedo_proc.end(group, exited) if group is not None else _unstarted()
             )
         ending = await asyncio.shield(self.ending)
         self.termination = ending
@@ -635,11 +640,6 @@ class Job:
             f"timed_out={self.timed_out!r}, duration={self.duration!r}, "
             f"waited={self.waited!r}, bytes={self.capture.seen})"
         )
-
-
-async def _terminate_one(group: albedo_proc.Group) -> albedo_proc.Termination:
-    """One group through the ladder: the batch form with a batch of one."""
-    return (await albedo_proc.terminate([group]))[0]
 
 
 async def _unstarted() -> albedo_proc.Termination:

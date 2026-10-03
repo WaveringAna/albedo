@@ -133,6 +133,44 @@ class SupervisionTest(unittest.TestCase):
         self.assertTrue(job.termination.gone)
         self.assertFalse(pid_present(grandchild))
 
+    def test_command_exit_leaves_what_a_process_that_left_the_group_parents(self):
+        # Like ssh with ControlPersist: a master forks its proxy, daemonizes out
+        # of the job (setsid), and outlives it; the proxy stays in the group.
+        # A plain background child is an orphan once the command ends.
+        script = (
+            "import os, sys, time\n"
+            "if os.fork() == 0:\n"
+            "    proxy = os.fork()\n"
+            "    if proxy == 0:\n"
+            "        os.execvp('sleep', ['sleep', '31'])\n"
+            "    os.setsid()\n"
+            "    print('proxy', proxy, 'master', os.getpid(), flush=True)\n"
+            "    os.execvp('sleep', ['sleep', '32'])\n"
+            "orphan = os.fork()\n"
+            "if orphan == 0:\n"
+            "    os.execvp('sleep', ['sleep', '33'])\n"
+            "print('orphan', orphan, flush=True)\n"
+            "time.sleep(0.5)\n"
+        )
+        job = plugin.start([sys.executable, "-c", script], 30)
+        wait(job)
+        pids = dict(zip(*[iter(job.tail().split())] * 2))
+        proxy, master, orphan = (
+            int(pids[name]) for name in ("proxy", "master", "orphan")
+        )
+        self.addCleanup(os.kill, master, 9)
+        self.addCleanup(os.kill, proxy, 9)
+        ending, group = job.termination, job.group
+        assert ending is not None and group is not None
+        self.assertTrue(ending.gone, ending)
+        self.assertIn("kept 1 that a process which left the group", ending.note)
+        self.assertTrue(pid_present(proxy))
+        self.assertTrue(pid_present(master))
+        self.assertFalse(pid_present(orphan))
+        # A stop or a deadline still ends everything in the group.
+        self.assertTrue(run(albedo_proc.end(group)).gone)
+        self.assertEqual(albedo_proc.live_members(group.pgid), [])
+
     def test_stop_escalates_and_is_retryable(self):
         job = start("trap '' TERM; echo ready; while :; do sleep 0.2; done", timeout=30)
         self.addCleanup(lambda: run(job.stop()))
