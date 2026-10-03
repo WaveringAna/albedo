@@ -18,9 +18,11 @@ type transcriptState struct {
 	activeKind ActiveStreamKind
 	// Only the current update path appends to activeBuffer. Retained model
 	// copies read activeText, whose bytes stay unchanged after each append.
-	activeBuffer *strings.Builder
-	activeText   string
-	thoughtMs    int64
+	activeBuffer   *strings.Builder
+	activeText     string
+	thoughtMs      int64
+	activeID       string
+	activePosition int64
 
 	streamedHash uint64
 	streamedLen  int64
@@ -33,6 +35,7 @@ func newTranscriptState() transcriptState {
 func (t *transcriptState) resetStream() {
 	t.activeKind, t.activeText = StreamKindNone, ""
 	t.activeBuffer = nil
+	t.activeID, t.activePosition = "", 0
 	t.streamedHash, t.streamedLen = fnvOffset64, 0
 }
 
@@ -47,6 +50,8 @@ func (t *transcriptState) settle(agentName string) []HistoryEntry {
 	var entries []HistoryEntry
 	if t.activeKind != StreamKindNone && t.activeText != "" {
 		entry := HistoryEntry{
+			ID:        t.activeID,
+			Seq:       t.activePosition,
 			Kind:      t.activeEntryKind(),
 			Speaker:   agentName,
 			Text:      strings.Clone(t.activeText),
@@ -62,6 +67,7 @@ func (t *transcriptState) settle(agentName string) []HistoryEntry {
 	}
 	t.activeKind, t.activeText = StreamKindNone, ""
 	t.activeBuffer = nil
+	t.activeID, t.activePosition = "", 0
 	t.thinkingSince, t.thoughtMs = time.Time{}, 0
 	return entries
 }
@@ -100,6 +106,10 @@ func (t *transcriptState) streamDelta(kind ActiveStreamKind, text, agentName str
 
 // apply returns newly settled entries. The history owner stamps committed rows.
 func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []HistoryEntry {
+	// Empty provider records and agent progress are observations, not replies.
+	if evt.Type == daemon.EventMessage && evt.Text == "" || evt.Type == daemon.EventNote && evt.Source == "agent" {
+		return nil
+	}
 	thoughtStart := cmp.Or(t.lastEvent, time.Now())
 	if !evt.Replayed && evt.Type != daemon.EventThinking {
 		t.lastEvent = time.Now()
@@ -114,22 +124,19 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		t.resetStream()
 	case daemon.EventUser:
 		entries = t.settle(agentName)
-		speaker := "You"
-		if evt.Source != "" && evt.Source != "chat" {
-			speaker = evt.Source
-		}
+		speaker := inputSpeaker(evt)
 		var ts int64
 		if evt.Timestamp != nil && *evt.Timestamp > 0 {
 			ts = *evt.Timestamp
 		}
 		// Your message closes the previous turn. Other sources open a turn
 		// only when none is in flight.
-		opens := t.turn == nil || speaker == "You"
+		opens := t.turn == nil || evt.Source == "" || evt.Source == "chat"
 		if opens {
 			entries = append(entries, t.closeTurn(false)...)
 		}
 		entries = append(entries, HistoryEntry{
-			Kind: EntryUser, Speaker: speaker, Text: evt.Text,
+			Kind: EntryUser, ID: evt.EntryID, Seq: evt.Position, Source: evt.Source, MailKind: evt.MailKind, SenderSessionID: evt.SenderSessionID, Speaker: speaker, Text: evt.Text,
 			Timestamp: ts,
 		})
 		if opens {
@@ -151,6 +158,9 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		} else {
 			t.thoughtMs += evt.ElapsedMs
 		}
+		if evt.EntryID != "" {
+			t.activeID, t.activePosition = evt.EntryID, evt.Position
+		}
 		entries = append(entries, t.streamDelta(StreamKindThinking, evt.Text, agentName)...)
 	case daemon.EventToolProgress:
 		if !evt.Replayed {
@@ -162,7 +172,7 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 	case daemon.EventTool:
 		entries = t.settle(agentName)
 		entries = append(entries, HistoryEntry{
-			Kind: EntryTool, ToolName: evt.ToolName, ToolArgs: evt.ToolArgs,
+			Kind: EntryTool, ID: evt.EntryID, Seq: evt.Position, ToolName: evt.ToolName, ToolArgs: evt.ToolArgs,
 			ToolResult: evt.ToolResult, ToolTrace: evt.ToolTrace,
 			Timestamp: time.Now().UnixMilli(),
 		})
@@ -172,18 +182,26 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		t.turn.tools++
 		t.turn.touch(evt.Timestamp)
 	case daemon.EventMessage:
+		// Provider-only history entries carry checkpoints but no visible reply.
+		// They cannot consume the match for the streamed answer that follows them.
 		targetHash := fnv1a(fnvOffset64, evt.Text)
 		duplicate := t.streamedLen == int64(len(evt.Text)) && t.streamedHash == targetHash
 		t.streamedHash, t.streamedLen = fnvOffset64, 0
 		entries = t.settle(agentName)
 		if duplicate {
+			for i := len(entries) - 1; i >= 0; i-- {
+				if entries[i].Kind == EntryAssistant {
+					entries[i].ID, entries[i].Seq = evt.EntryID, evt.Position
+					break
+				}
+			}
 			return entries
 		}
 		var ts int64
 		if evt.Timestamp != nil && *evt.Timestamp > 0 {
 			ts = *evt.Timestamp
 		}
-		entries = append(entries, HistoryEntry{Kind: EntryAssistant, Speaker: agentName, Text: evt.Text, Timestamp: ts})
+		entries = append(entries, HistoryEntry{Kind: EntryAssistant, ID: evt.EntryID, Seq: evt.Position, Speaker: agentName, Text: evt.Text, Timestamp: ts})
 		if t.turn == nil {
 			t.turn = newOpenTurn(ts)
 		}
@@ -191,7 +209,7 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		t.turn.touch(evt.Timestamp)
 	case daemon.EventNote:
 		entries = t.settle(agentName)
-		entries = append(entries, HistoryEntry{Kind: EntryNote, Text: evt.Text, Timestamp: time.Now().UnixMilli()})
+		entries = append(entries, HistoryEntry{Kind: EntryNote, ID: evt.EntryID, Seq: evt.Position, Text: evt.Text, Timestamp: time.Now().UnixMilli()})
 	case daemon.EventError:
 		entries = t.settle(agentName)
 		entries = append(entries, HistoryEntry{Kind: EntryError, Text: evt.Text, Timestamp: time.Now().UnixMilli()})
@@ -202,7 +220,7 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 	case daemon.EventCompacted:
 		entries = t.settle(agentName)
 		entries = append(entries, HistoryEntry{
-			Kind: EntryCompacted, Text: evt.Summary, Evicted: evt.Evicted,
+			Kind: EntryCompacted, ID: evt.EntryID, Seq: evt.Position, Text: evt.Summary, Evicted: evt.Evicted,
 			Strategy: evt.Strategy, Timestamp: time.Now().UnixMilli(),
 		})
 	case daemon.EventUsage:
@@ -299,4 +317,14 @@ func (t *transcriptState) closeTurn(stopped bool) []HistoryEntry {
 		Kind: EntryTurnEnd, Mood: outcome(turn.failed, stopped, elapsed),
 		ElapsedMs: elapsed, Tools: turn.tools, Timestamp: end,
 	}}
+}
+
+func inputSpeaker(evt daemon.StreamEvent) string {
+	if evt.Source == "mail" {
+		return cmp.Or(evt.Speaker, "Agent")
+	}
+	if evt.Source == "" || evt.Source == "chat" {
+		return "You"
+	}
+	return evt.Source
 }

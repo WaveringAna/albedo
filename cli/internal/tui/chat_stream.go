@@ -54,6 +54,40 @@ func (m *ChatModel) forgetProgress(callID string) *daemon.ToolProgress {
 
 func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	defer m.reseedMood()
+	if evt.EntryID != "" {
+		if index := m.History.Find(evt.EntryID); index >= 0 {
+			entry := m.History.Entries()[index]
+			switch evt.Type {
+			case daemon.EventUser:
+				entry.Speaker, entry.Source = inputSpeaker(evt), evt.Source
+				entry.MailKind, entry.SenderSessionID = evt.MailKind, evt.SenderSessionID
+				entry.Text = evt.Text
+			case daemon.EventMessage:
+				entry.Text = evt.Text
+			case daemon.EventNote:
+				entry.Text = evt.Text
+			case daemon.EventTool:
+				entry.ToolArgs, entry.ToolResult, entry.ToolTrace = evt.ToolArgs, evt.ToolResult, evt.ToolTrace
+			case daemon.EventCompacted:
+				entry.Text = evt.Summary
+			}
+			if evt.Timestamp != nil {
+				entry.Timestamp = *evt.Timestamp
+			}
+			entry.Seq = evt.Position
+			entry.facts = nil
+			if Compact(entry, m.Flags) {
+				facts := factsOf(entry)
+				entry.facts = &facts
+			}
+			m.History.Replace(entry)
+			m.burstEpoch++
+			m.rebuildSettledLines()
+			return
+		}
+	}
+	matchedStream := evt.Type == daemon.EventMessage && evt.Text != "" &&
+		m.transcript.streamedLen == int64(len(evt.Text)) && m.transcript.streamedHash == fnv1a(fnvOffset64, evt.Text)
 	if evt.Replayed {
 		// Replayed events do not describe current activity; preserve live status.
 		defer func(live daemon.AgentStatus) { m.Status = live }(m.Status)
@@ -62,6 +96,16 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	entries := m.transcript.apply(evt, m.AgentName)
 	for _, entry := range entries {
 		m.appendSettledEntry(entry)
+	}
+	// Usage or thinking may have settled the stream before its saved message.
+	if matchedStream && evt.EntryID != "" && m.History.Find(evt.EntryID) < 0 {
+		history := m.History.Entries()
+		for i := len(history) - 1; i >= 0; i-- {
+			if history[i].Kind == EntryAssistant && history[i].ID == "" {
+				m.History.Identify(i, evt.EntryID, evt.Position)
+				break
+			}
+		}
 	}
 
 	switch evt.Type {

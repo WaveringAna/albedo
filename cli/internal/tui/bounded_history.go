@@ -22,7 +22,11 @@ const (
 )
 
 type HistoryEntry struct {
-	ToolArgs map[string]any
+	ID              string
+	Source          string
+	MailKind        string
+	SenderSessionID string
+	ToolArgs        map[string]any
 	// facts is what this entry contributes to a grouped row, computed once
 	// when the entry settles. Targets stay as recorded; naming is at render.
 	facts      *entryFacts
@@ -62,7 +66,7 @@ const (
 )
 
 func (e *HistoryEntry) ComputeSize() int64 {
-	size := int64(len(e.Speaker) + len(e.Text) + len(e.ToolName) + len(e.ToolResult) + 64)
+	size := int64(len(e.ID) + len(e.Source) + len(e.MailKind) + len(e.SenderSessionID) + len(e.Speaker) + len(e.Text) + len(e.ToolName) + len(e.ToolResult) + 64)
 	for k, v := range e.ToolArgs {
 		size += int64(len(k) + 16)
 		switch val := v.(type) {
@@ -136,16 +140,58 @@ func (h *BoundedHistory) Stamp(seq int64) {
 	}
 }
 
+func (h *BoundedHistory) Find(id string) int {
+	if id == "" {
+		return -1
+	}
+	return slices.IndexFunc(h.entries, func(entry HistoryEntry) bool { return entry.ID == id })
+}
+
+func (h *BoundedHistory) Identify(index int, id string, seq int64) {
+	entry := h.entries[index]
+	entry.ID, entry.Seq = id, seq
+	entry.ComputeSize()
+	h.totalBytes += entry.SizeBytes - h.entries[index].SizeBytes
+	h.entries[index] = entry
+	h.enforceBounds()
+}
+
+func (h *BoundedHistory) Replace(entry HistoryEntry) bool {
+	index := h.Find(entry.ID)
+	if index < 0 {
+		return false
+	}
+	entry.ComputeSize()
+	h.totalBytes += entry.SizeBytes - h.entries[index].SizeBytes
+	h.entries[index] = entry
+	h.enforceBounds()
+	return true
+}
+
 // Prepend puts older entries before the retained ones. It does not evict:
 // they were asked for, and the next Append trims as usual.
 func (h *BoundedHistory) Prepend(older []HistoryEntry) {
 	if len(older) == 0 {
 		return
 	}
-	for i := range older {
-		h.totalBytes += older[i].ComputeSize()
+	unique := make([]HistoryEntry, 0, len(older))
+	seen := map[string]bool{}
+	for _, entry := range h.entries {
+		if entry.ID != "" {
+			seen[entry.ID] = true
+		}
 	}
-	h.entries = slices.Concat(older, h.entries)
+	for _, entry := range older {
+		if entry.ID != "" && seen[entry.ID] {
+			continue
+		}
+		if entry.ID != "" {
+			seen[entry.ID] = true
+		}
+		h.totalBytes += entry.ComputeSize()
+		unique = append(unique, entry)
+	}
+	h.entries = slices.Concat(unique, h.entries)
 	h.evictedThrough = 0
 }
 

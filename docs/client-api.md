@@ -58,6 +58,15 @@ after delivery succeeds. A reset replaces visible history and live progress;
 older durable history remains available through paging. Collection SSE carries
 invalidations. Initial reset and overflow require authoritative refresh.
 
+History entries retain their durable `id` and `position`. Clients merge repeated
+entries by ID, including overlap between live delivery and older pages; identical
+text from different entries remains distinct. Empty assistant provider records
+do not settle a streamed reply or consume its duplicate match.
+
+`turn_type` distinguishes agent mail from user input. Optional `mail` metadata
+supplies the mail ID, sender session ID, sender label, and kind. Clients use the
+structured label, falling back to “Agent”, rather than parsing display text.
+
 The daemon owns bounded tool progress and argument parsing. Clients validate
 and render the normalized updates. Preview offsets count decoded Unicode scalar
 values. Full arguments, results, and recorded traces remain in durable history.

@@ -82,14 +82,17 @@ const awayMs = 30 * 60_000
 // rows keeps its author's name once. Verbose mode labels every message.
 func (r TranscriptRenderer) nameplate(entry HistoryEntry, flags DisplayFlags, before prior) string {
 	who := speaker(entry)
-	if !flags.Tools && who == before.speaker {
+	if !flags.Tools && who == before.speaker && entry.MailKind == "" {
 		return ""
 	}
 	style := r.Styles.Agent
-	if entry.Kind == EntryUser {
+	if entry.Kind == EntryUser && (entry.Source == "" || entry.Source == "chat") {
 		style = r.Styles.You
 	}
 	var meta []string
+	if entry.MailKind != "" {
+		meta = append(meta, entry.MailKind)
+	}
 	if clock := formatClock(entry.Timestamp); flags.Tools && clock != "" {
 		meta = append(meta, clock)
 	}
@@ -516,7 +519,7 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 			render = RenderMarkdownAnsi
 		}
 		body := render(entry.Text, width)
-		if entry.Kind == EntryUser {
+		if entry.Kind == EntryUser && (entry.Source == "" || entry.Source == "chat") {
 			body = r.foldUser(entry, body)
 		}
 		rows = append(rows, body)

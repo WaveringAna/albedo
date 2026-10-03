@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"albedo/cli/internal/daemon"
 	"cmp"
 	"context"
 	"fmt"
@@ -78,7 +79,7 @@ func (m ChatModel) olderCursor() (int64, bool) {
 // appendBlock settles entry after the entries before it.
 func (m *ChatModel) appendBlock(before []HistoryEntry, entry HistoryEntry) {
 	rows, head := m.Renderer.Settle(before, entry, m.Flags)
-	if entry.Kind == EntryUser {
+	if entry.Kind == EntryUser && (entry.Source == "" || entry.Source == "chat") {
 		m.userRows = append(m.userRows, len(m.settledLines)+head)
 	}
 	for _, row := range rows {
@@ -158,6 +159,11 @@ func (m *ChatModel) appendSettledEntry(entry HistoryEntry) {
 	if Compact(entry, m.Flags) {
 		facts := factsOf(entry)
 		entry.facts = &facts
+	}
+	if m.History.Replace(entry) {
+		m.burstEpoch++
+		m.rebuildSettledLines()
+		return
 	}
 	m.appendBlock(m.History.Entries(), entry)
 	m.History.Append(entry)
@@ -377,7 +383,13 @@ func (m *ChatModel) showOlder(msg ChatOlderLoadedMsg) ChatModel {
 		m.AddError(fmt.Sprintf("Could not load earlier messages: %v", msg.Err))
 		return *m
 	}
-	older := replayTranscript(msg.Page.Events, m.AgentName)
+	events := make([]daemon.StreamEvent, 0, len(msg.Page.Events))
+	for _, event := range msg.Page.Events {
+		if event.EntryID == "" || m.History.Find(event.EntryID) < 0 {
+			events = append(events, event)
+		}
+	}
+	older := replayTranscript(events, m.AgentName)
 	for i := range older {
 		if Compact(older[i], m.Flags) {
 			facts := factsOf(older[i])
