@@ -5,8 +5,10 @@ import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
 import albedo/daemon/event_buffer
 import albedo/daemon/events as view
+import albedo/daemon/mail
 import albedo/daemon/operations
 import albedo/daemon/session_activity
+import albedo/daemon/store
 import albedo/daemon/tool_progress
 import albedo/daemon/transcript
 import albedo/daemon/turn.{type Submission}
@@ -153,6 +155,24 @@ fn publish(state: State(message), event: view.Event) -> State(message) {
       }
     })
   let observed = view.observe(state.live_activity, event, usage.now())
+  let committed_mail = case event {
+    view.Input(outcome, _) -> outcome.receipt.delivery == Some("committed")
+    view.Message(entry) -> entry.letter != None
+    _ -> False
+  }
+  let observed = case committed_mail {
+    True -> {
+      let request =
+        store.query(runtime.ledger(state.host), fn(db) {
+          mail.parent_request_in(db, state.info.id)
+        })
+      case request {
+        Ok(request) -> session_activity.request(observed, request)
+        Error(_) -> observed
+      }
+    }
+    False -> observed
+  }
   bus.activity(state.info.id, fn() {
     json.object([
       #("type", json.string("activity")),

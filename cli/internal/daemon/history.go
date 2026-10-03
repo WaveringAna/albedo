@@ -82,7 +82,7 @@ func historyEntryEvents(entry protocol.HistoryEntry) ([]StreamEvent, error) {
 	if entry.ID == "" || entry.Position < 1 || entry.Content == nil {
 		return nil, fieldError("history entry")
 	}
-	event := StreamEvent{Timestamp: timestampMilliseconds(value(entry.CreatedAt)), TurnID: value(entry.TurnID), OperationID: value(entry.InputID), Replayed: true}
+	event := StreamEvent{EntryID: entry.ID, Position: entry.Position, TurnType: value(entry.TurnType), Timestamp: timestampMilliseconds(value(entry.CreatedAt)), TurnID: value(entry.TurnID), OperationID: value(entry.InputID), Replayed: true}
 	var text strings.Builder
 	for _, raw := range entry.Content {
 		var part struct {
@@ -138,10 +138,26 @@ func historyEntryEvents(entry protocol.HistoryEntry) ([]StreamEvent, error) {
 		}
 	}
 	event.Text = text.String()
+	if entry.Mail != nil {
+		event.Speaker = entry.Mail.SenderLabel
+		event.MailKind = entry.Mail.Kind
+		event.SenderSessionID = value(entry.Mail.SenderSessionID)
+	}
 	switch entry.Kind {
 	case "user":
 		event.Type = EventUser
-		event.Source = "chat"
+		switch event.TurnType {
+		case "agent":
+			event.Source = "mail"
+		case "webhook":
+			event.Source = "webhook"
+		case "scheduled":
+			event.Source = "job"
+		case "continue":
+			event.Source = "continue"
+		default:
+			event.Source = "chat"
+		}
 	case "assistant":
 		event.Type = EventMessage
 	case "thinking":

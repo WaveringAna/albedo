@@ -291,6 +291,10 @@ pub fn start(
       runtime.ledger(host),
       info.id,
     ))
+    use captured <- result.try(conversation.capture(
+      runtime.ledger(host),
+      info.id,
+    ))
     use pinned <- result.try(conversation.prompt_pin(
       runtime.ledger(host),
       info.id,
@@ -339,7 +343,10 @@ pub fn start(
         tool_progress: tool_progress_state.new(),
         progress_timer_token: 0,
         progress_timer: None,
-        live_activity: session_activity.new(usage.now()),
+        live_activity: session_activity.request(
+          session_activity.new(usage.now()),
+          captured.current_request,
+        ),
         announced_status: None,
       )
     // Background jobs wake this session through the kernel's jobs route; the

@@ -2,6 +2,7 @@
 
 import albedo/daemon/conversation
 import albedo/daemon/http_api
+import albedo/daemon/mail
 import albedo/daemon/message_content as events
 import albedo/daemon/note
 import albedo/daemon/transcript
@@ -35,6 +36,7 @@ pub type Entry {
     tool: Option(types.ToolCall),
     thinking_ms: Option(Int),
     turn_type: String,
+    letter: Option(mail.Letter),
   )
 }
 
@@ -45,6 +47,7 @@ pub fn project(page: conversation.SourcePage) -> List(Entry) {
         list.find(page.ownership, fn(facts) { facts.position == row.source.seq })
         |> result.unwrap(conversation.TranscriptOwnership(
           row.source.seq,
+          None,
           None,
           None,
           None,
@@ -66,6 +69,7 @@ pub fn project(page: conversation.SourcePage) -> List(Entry) {
         None,
         None,
         "continue",
+        None,
       )
     })
   list.append(entries, continuations)
@@ -102,6 +106,10 @@ fn project_row(
       tool,
       item.thought_ms,
       turn_type,
+      case kind {
+        "user" -> ownership.letter
+        _ -> None
+      },
     )
   }
   case ownership.image_fit {
@@ -126,7 +134,10 @@ fn project_row(
               case display.source {
                 "chat" | "mail" | "job" | "webhook" | "continue" -> #(
                   "user",
-                  display.text,
+                  case ownership.letter {
+                    Some(letter) if letter.kind != mail.Webhook -> letter.body
+                    _ -> display.text
+                  },
                   None,
                 )
                 _ -> #("note", display.text, Some(display.source))
@@ -283,6 +294,8 @@ pub fn encode(session_id: String, entry: Entry, byte_budget: Int) -> json.Json {
     #("id", json.string(entry.id)),
     #("position", json.int(entry.position)),
     #("kind", json.string(entry.kind)),
+    #("turn_type", json.string(entry.turn_type)),
+    #("mail", json.nullable(entry.letter, mail_metadata)),
     #("turn_id", json.nullable(entry.turn_id, json.string)),
     #("input_id", json.nullable(entry.input_id, json.string)),
     #(
@@ -460,4 +473,13 @@ pub fn checkpoint(entry: Entry) -> Option(json.Json) {
       ),
     ])
   })
+}
+
+fn mail_metadata(letter: mail.Letter) -> json.Json {
+  json.object([
+    #("mail_id", json.string(letter.id)),
+    #("sender_session_id", json.nullable(letter.sender, json.string)),
+    #("sender_label", json.string(letter.sender_name)),
+    #("kind", json.string(mail.kind_name(letter.kind))),
+  ])
 }

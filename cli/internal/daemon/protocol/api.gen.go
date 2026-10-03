@@ -47,7 +47,8 @@ type ActionOperation struct {
 
 // Activity defines model for Activity.
 type Activity struct {
-	LatestAnswer *struct {
+	CurrentRequest *AgentRequest `json:"current_request,omitempty" nullable:"true"`
+	LatestAnswer   *struct {
 		Bytes Counter `json:"bytes"`
 
 		// MessageID Opaque identity. Never infer a resource type or route from its contents.
@@ -60,7 +61,8 @@ type Activity struct {
 		InputID ID     `json:"input_id"`
 		Source  string `json:"source"`
 	} `json:"latest_input" nullable:"true"`
-	Lines []struct {
+	LatestProgress *string `json:"latest_progress,omitempty" nullable:"true"`
+	Lines          []struct {
 		Kind string `json:"kind"`
 		Text string `json:"text"`
 	} `json:"lines"`
@@ -96,6 +98,13 @@ type AdmissionProblem struct {
 	Status int64  `json:"status"`
 	Title  string `json:"title"`
 	Type   string `json:"type"`
+}
+
+// AgentRequest defines model for AgentRequest.
+type AgentRequest struct {
+	// InputID Opaque identity. Never infer a resource type or route from its contents.
+	InputID ID     `json:"input_id"`
+	Text    string `json:"text"`
 }
 
 // Auth defines model for Auth.
@@ -763,10 +772,11 @@ type HistoryEntry struct {
 	CreatedAt       *Timestamp        `json:"created_at" nullable:"true"`
 
 	// ID Opaque identity. Never infer a resource type or route from its contents.
-	ID       ID      `json:"id"`
-	InputID  *ID     `json:"input_id" nullable:"true"`
-	Kind     string  `json:"kind"`
-	Position Counter `json:"position"`
+	ID       ID           `json:"id"`
+	InputID  *ID          `json:"input_id" nullable:"true"`
+	Kind     string       `json:"kind"`
+	Mail     *HistoryMail `json:"mail,omitempty" nullable:"true"`
+	Position Counter      `json:"position"`
 
 	// ThinkingDurationMs Observed thinking duration, when recorded.
 	ThinkingDurationMs *Counter `json:"thinking_duration_ms,omitempty" nullable:"true"`
@@ -777,7 +787,18 @@ type HistoryEntry struct {
 		// ToolCallID Opaque identity. Never infer a resource type or route from its contents.
 		ToolCallID ID `json:"tool_call_id"`
 	} `json:"tool" nullable:"true"`
-	TurnID *ID `json:"turn_id" nullable:"true"`
+	TurnID   *ID     `json:"turn_id" nullable:"true"`
+	TurnType *string `json:"turn_type,omitempty"`
+}
+
+// HistoryMail defines model for HistoryMail.
+type HistoryMail struct {
+	Kind string `json:"kind"`
+
+	// MailID Opaque identity. Never infer a resource type or route from its contents.
+	MailID          ID     `json:"mail_id"`
+	SenderLabel     string `json:"sender_label"`
+	SenderSessionID *ID    `json:"sender_session_id" nullable:"true"`
 }
 
 // HistoryPage Examples: {"high_water":0,"items":[],"newer":null,"older":null}

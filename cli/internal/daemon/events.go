@@ -139,28 +139,34 @@ type CacheStep struct {
 }
 
 type StreamEvent struct {
-	Invalidation   *ResourceInvalidation
-	Status         *AgentStatus
-	Snapshot       *Session
-	Receipt        *OperationReceipt
-	OperationID    string
-	Image          *ImageMetadata
-	Usage          *Usage
-	ToolTrace      *ToolTrace
-	Timestamp      *int64
-	ToolArgs       map[string]any
-	Progress       *ToolProgress
-	TurnID         string
-	Type           EventType
-	Text           string
-	Source         string
-	Summary        string
-	Strategy       string
-	ToolName       string
-	ToolResult     string
-	ProgressCallID string
-	SubmissionIDs  []string
-	Evicted        int
+	EntryID         string
+	Position        int64
+	TurnType        string
+	Speaker         string
+	MailKind        string
+	SenderSessionID string
+	Invalidation    *ResourceInvalidation
+	Status          *AgentStatus
+	Snapshot        *Session
+	Receipt         *OperationReceipt
+	OperationID     string
+	Image           *ImageMetadata
+	Usage           *Usage
+	ToolTrace       *ToolTrace
+	Timestamp       *int64
+	ToolArgs        map[string]any
+	Progress        *ToolProgress
+	TurnID          string
+	Type            EventType
+	Text            string
+	Source          string
+	Summary         string
+	Strategy        string
+	ToolName        string
+	ToolResult      string
+	ProgressCallID  string
+	SubmissionIDs   []string
+	Evicted         int
 	// ElapsedMs is how long a replayed thought took, when the daemon timed it.
 	ElapsedMs       int64
 	ElapsedObserved bool

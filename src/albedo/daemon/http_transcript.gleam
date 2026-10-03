@@ -511,6 +511,7 @@ fn history_entry(
         None,
         None,
         "continue",
+        None,
       ))
     }
     _ -> {

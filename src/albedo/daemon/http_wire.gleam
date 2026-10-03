@@ -143,7 +143,11 @@ pub fn summary(
   }
   let activity_value = case live {
     Some(live) -> live.activity
-    None -> session_activity.new(observed_at)
+    None ->
+      session_activity.request(
+        session_activity.new(observed_at),
+        durable.current_request,
+      )
   }
   json.object([
     #("id", json.string(info.id)),

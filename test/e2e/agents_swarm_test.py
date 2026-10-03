@@ -133,10 +133,7 @@ class AgentsSwarmTests(unittest.TestCase):
             counts.append(
                 sum(
                     item["kind"] == "user"
-                    and any(
-                        part["kind"] == "text" and "unreviewed" in part["text"]
-                        for part in item["content"]
-                    )
+                    and (item.get("mail") or {}).get("kind") == "unreviewed"
                     for item in items
                 )
             )

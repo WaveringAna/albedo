@@ -560,60 +560,96 @@ pub fn committed(
 ) -> Result(Nil, String) {
   list.try_each(submissions, fn(submission) {
     let Commit(id, offset, display) = submission
-    use accepted_at <- result.try(store.one(
-      db,
-      "SELECT accepted_at FROM pending_inputs WHERE operation_id=? AND session=?",
-      [sqlight.text(id), sqlight.text(session)],
-      decode.field(0, decode.int, decode.success),
-      "pending operation missing",
-    ))
-    let seq = case offset {
-      Some(offset) -> first_seq + offset
-      None -> last_seq
-    }
-    use _ <- result.try(case offset {
-      Some(_) ->
+    case display.operation_id, offset {
+      None, Some(offset) ->
         store.run(
           db,
           "INSERT INTO submission_events(session,seq,operation_id,payload) VALUES(?,?,?,?)",
           [
             sqlight.text(session),
-            sqlight.int(seq),
+            sqlight.int(first_seq + offset),
             sqlight.text(id),
             sqlight.blob(encode_display(display)),
           ],
         )
-      None ->
-        store.run(
+      _, _ ->
+        commit_operation(
           db,
-          "INSERT INTO continuation_markers(operation_id,session,seq,payload,timestamp,turn_id) VALUES(?,?,?,?,?,?)",
-          [
-            sqlight.text(id),
-            sqlight.text(session),
-            sqlight.int(seq),
-            sqlight.blob(encode_display(display)),
-            sqlight.int(accepted_at),
-            sqlight.nullable(sqlight.text, turn_id),
-          ],
+          session,
+          id,
+          offset,
+          display,
+          first_seq,
+          last_seq,
+          turn_id,
         )
-    })
-    use _ <- result.try(
+    }
+  })
+}
+
+fn commit_operation(
+  db: sqlight.Connection,
+  session: String,
+  id: String,
+  offset: Option(Int),
+  display: Display,
+  first_seq: Int,
+  last_seq: Int,
+  turn_id: Option(String),
+) -> Result(Nil, String) {
+  use accepted_at <- result.try(store.one(
+    db,
+    "SELECT accepted_at FROM pending_inputs WHERE operation_id=? AND session=?",
+    [sqlight.text(id), sqlight.text(session)],
+    decode.field(0, decode.int, decode.success),
+    "pending operation missing",
+  ))
+  let seq = case offset {
+    Some(offset) -> first_seq + offset
+    None -> last_seq
+  }
+  use _ <- result.try(case offset {
+    Some(_) ->
       store.run(
         db,
-        "UPDATE operations SET delivery='committed',terminal_at=NULL,committed_seq=?,turn_id=?,blocking_reason=NULL WHERE id=? AND delivery='pending'",
+        "INSERT INTO submission_events(session,seq,operation_id,payload) VALUES(?,?,?,?)",
         [
+          sqlight.text(session),
           sqlight.int(seq),
-          sqlight.nullable(sqlight.text, turn_id),
           sqlight.text(id),
+          sqlight.blob(encode_display(display)),
         ],
-      ),
-    )
+      )
+    None ->
+      store.run(
+        db,
+        "INSERT INTO continuation_markers(operation_id,session,seq,payload,timestamp,turn_id) VALUES(?,?,?,?,?,?)",
+        [
+          sqlight.text(id),
+          sqlight.text(session),
+          sqlight.int(seq),
+          sqlight.blob(encode_display(display)),
+          sqlight.int(accepted_at),
+          sqlight.nullable(sqlight.text, turn_id),
+        ],
+      )
+  })
+  use _ <- result.try(
     store.run(
       db,
-      "DELETE FROM pending_inputs WHERE operation_id=? AND session=?",
-      [sqlight.text(id), sqlight.text(session)],
-    )
-  })
+      "UPDATE operations SET delivery='committed',terminal_at=NULL,committed_seq=?,turn_id=?,blocking_reason=NULL WHERE id=? AND delivery='pending'",
+      [
+        sqlight.int(seq),
+        sqlight.nullable(sqlight.text, turn_id),
+        sqlight.text(id),
+      ],
+    ),
+  )
+  store.run(
+    db,
+    "DELETE FROM pending_inputs WHERE operation_id=? AND session=?",
+    [sqlight.text(id), sqlight.text(session)],
+  )
 }
 
 pub fn begin_turn_in(

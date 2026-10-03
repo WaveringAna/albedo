@@ -63,6 +63,7 @@ pub type CapturedInfo {
     configuration: session_configuration.Configuration,
     workspace_change: Option(session_workspace.Pending),
     preview: Preview,
+    current_request: Option(mail.Request),
   )
 }
 
@@ -110,6 +111,7 @@ pub fn capture_in(
   use pending <- result.try(operations.pending_in(db, id))
   use configuration <- result.try(session_configuration.read_in(db, id))
   use workspace_change <- result.try(session_workspace.pending_in(db, id))
+  use current_request <- result.try(mail.parent_request_in(db, id))
   Ok(CapturedInfo(
     info,
     pending,
@@ -124,6 +126,7 @@ pub fn capture_in(
     configuration,
     workspace_change,
     metadata.6,
+    current_request,
   ))
 }
 
@@ -1327,6 +1330,7 @@ pub type TranscriptOwnership {
     input_id: Option(String),
     display: Option(operations.Display),
     image_fit: Option(transcript.ImageFit),
+    letter: Option(mail.Letter),
   )
 }
 
@@ -1548,11 +1552,31 @@ pub fn read_range(
               input_id,
               option.map(display, operations.decode_display),
               unpack_fit(row.1, read) |> option.from_result,
+              None,
             ),
           ))
         },
       ),
     )
+    use letters <- result.try(mail.history_in(
+      db,
+      range.snapshot.session,
+      list.filter_map(rows, fn(row) {
+        case row.1.display {
+          Some(display)
+            if display.source == "mail" || display.source == "webhook"
+          -> option.to_result(row.1.input_id, Nil)
+          _ -> Error(Nil)
+        }
+      }),
+    ))
+    let rows =
+      list.map(rows, fn(row) {
+        let letter =
+          list.find(letters, fn(letter) { Some(letter.id) == row.1.input_id })
+          |> option.from_result
+        #(row.0, TranscriptOwnership(..row.1, letter: letter))
+      })
     let selected = rows
     let selected = case range.direction {
       Before(_) -> list.reverse(selected)

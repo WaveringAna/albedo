@@ -319,6 +319,16 @@ fn activity_value(value: session_activity.Projection) -> json.Json {
     #("output_utf8_bytes", json.int(value.output_utf8_bytes)),
     #("observed_at", timestamp(value.observed_at)),
     #(
+      "current_request",
+      json.nullable(value.current_request, fn(request) {
+        json.object([
+          #("input_id", json.string(request.id)),
+          #("text", json.string(request.text)),
+        ])
+      }),
+    ),
+    #("latest_progress", json.nullable(value.latest_progress, json.string)),
+    #(
       "latest_input",
       json.nullable(value.latest_input, fn(input) {
         json.object([
@@ -519,7 +529,9 @@ pub fn observe(
         })
         |> string.concat
       case entry.kind {
-        "assistant" -> session_activity.answer(projection, entry.id, text)
+        "assistant" if text != "" ->
+          session_activity.answer(projection, entry.id, text)
+        "assistant" -> projection
         "user" ->
           case entry.input_id {
             None -> session_activity.append(projection, "input", text)
@@ -540,6 +552,11 @@ pub fn observe(
         |> result.unwrap(output)
       session_activity.append(projection, "tool", text)
     }
+    Note(_, "agent", text, None) ->
+      session_activity.Projection(
+        ..projection,
+        latest_progress: Some(http_api.scalar_prefix(text, 512)),
+      )
     Note(_, _, text, _) -> session_activity.append(projection, "note", text)
     Failure(_, _, text) -> session_activity.append(projection, "error", text)
     _ -> projection

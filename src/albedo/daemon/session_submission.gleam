@@ -92,7 +92,14 @@ pub fn commits(
         Some(_) -> acc.0 + 1
       }
       #(next, case submission.operation_id {
-        None -> acc.1
+        None ->
+          case submission.source {
+            turn.Mail(id, _) -> [
+              operations.Commit(id, position, display(submission)),
+              ..acc.1
+            ]
+            _ -> acc.1
+          }
         Some(id) -> [
           operations.Commit(id, position, display(submission)),
           ..acc.1

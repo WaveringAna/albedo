@@ -29,6 +29,7 @@ func validGeneration(generation string) bool {
 }
 
 type AgentEvent struct {
+	MailID                                                                                                     string
 	Progress                                                                                                   *ToolProgress
 	Type, Session, Parent, Name, Model, From, To, FromName, Kind, Text, CallID, ProgressCallID, Output, Source string
 	Depth, Bytes                                                                                               int
@@ -183,6 +184,7 @@ func decodeAgentEvent(raw json.RawMessage) (*AgentEvent, error) {
 		if err := decodeRequired(envelope.Data, &d, "mail_id", "sender_session_id", "receiver_session_id", "kind", "bytes", "sender_label"); err != nil {
 			return nil, err
 		}
+		event.MailID = d.MailID
 		event.From, event.To, event.FromName, event.Kind, event.Bytes = value(d.SenderSessionID), d.ReceiverSessionID, value(d.SenderLabel), d.Kind, int(d.Bytes)
 	case "invalidate":
 		var d struct {
@@ -250,6 +252,12 @@ func GetAgents(ctx context.Context, conn *Connection, id string) (AgentsSnapshot
 }
 
 func validateActivity(activity Activity) error {
+	if activity.CurrentRequest != nil && (activity.CurrentRequest.InputID == "" || len([]rune(activity.CurrentRequest.Text)) > 512) {
+		return fieldError("activity request")
+	}
+	if activity.LatestProgress != nil && len([]rune(*activity.LatestProgress)) > 512 {
+		return fieldError("activity progress")
+	}
 	if len(activity.Lines) > 12 || activity.Lines == nil || activity.OutputScalars < 0 || activity.OutputUTF8Bytes < 0 || timestampMilliseconds(activity.ObservedAt) == nil {
 		return fieldError("activity")
 	}

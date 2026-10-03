@@ -5106,6 +5106,16 @@ components:
         preview:
           offset_scalars: 0
           text: print("hello")
+    AgentRequest:
+      type: object
+      properties:
+        input_id:
+          $ref: '#/components/schemas/ID'
+        text:
+          type: string
+          maxLength: 512
+      required: [input_id, text]
+      additionalProperties: false
     Activity:
       type: object
       properties:
@@ -5143,6 +5153,15 @@ components:
                 $ref: '#/components/schemas/Counter'
             required: [input_id, source, bytes]
             additionalProperties: false
+          - type: 'null'
+        current_request:
+          anyOf:
+          - $ref: '#/components/schemas/AgentRequest'
+          - type: 'null'
+        latest_progress:
+          anyOf:
+          - type: string
+            maxLength: 512
           - type: 'null'
         latest_answer:
           anyOf:
@@ -6610,6 +6629,22 @@ components:
           $ref: '#/components/schemas/ContentReference'
       required: [kind, reference]
       additionalProperties: false
+    HistoryMail:
+      type: object
+      properties:
+        mail_id:
+          $ref: '#/components/schemas/ID'
+        sender_session_id:
+          anyOf:
+          - $ref: '#/components/schemas/ID'
+          - type: 'null'
+        sender_label:
+          type: string
+        kind:
+          type: string
+          enum: [task, message, result, unreviewed, webhook]
+      required: [mail_id, sender_session_id, sender_label, kind]
+      additionalProperties: false
     HistoryEntry:
       type: object
       properties:
@@ -6620,6 +6655,13 @@ components:
         kind:
           type: string
           enum: [user, assistant, thinking, tool_call, tool_result, note, continuation, compaction, image_fit]
+        turn_type:
+          type: string
+          enum: [user, agent, webhook, scheduled, continue]
+        mail:
+          anyOf:
+          - $ref: '#/components/schemas/HistoryMail'
+          - type: 'null'
         turn_id:
           anyOf:
           - $ref: '#/components/schemas/ID'

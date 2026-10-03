@@ -1,6 +1,7 @@
 //// One bounded live tail per session actor, shared by every subscriber.
 
 import albedo/daemon/conversation
+import albedo/daemon/mail
 import albedo/daemon/turn
 import gleam/int
 import gleam/list
@@ -37,11 +38,13 @@ pub type Projection {
     latest_input: Option(Input),
     latest_answer: Option(Answer),
     streamed_answer: Bool,
+    current_request: Option(mail.Request),
+    latest_progress: Option(String),
   )
 }
 
 pub fn new(now: Int) -> Projection {
-  Projection([], 0, 0, now, None, None, False)
+  Projection([], 0, 0, now, None, None, False, None, None)
 }
 
 pub fn status(
@@ -164,4 +167,16 @@ fn tail(text: String) -> String {
   let scalars = string.to_utf_codepoints(text)
   list.drop(scalars, int.max(0, list.length(scalars) - 256))
   |> string.from_utf_codepoints
+}
+
+/// A new parent request invalidates progress belonging to the preceding work.
+pub fn request(
+  projection: Projection,
+  request: Option(mail.Request),
+) -> Projection {
+  case request == projection.current_request {
+    True -> projection
+    False ->
+      Projection(..projection, current_request: request, latest_progress: None)
+  }
 }

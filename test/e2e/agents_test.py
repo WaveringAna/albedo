@@ -268,6 +268,121 @@ class AgentsTests(unittest.TestCase):
             ["coder"],
         )
 
+    @exclusive
+    def test_mail_attribution_and_agent_card_survive_reconnect_and_restart(self):
+        parent = self.app.session()
+        self.change(parent, {"name": "lead desk"})
+        child = self.spawn(parent, task="map wake paths")["id"]
+        self.app.idle(child)
+        self.app.idle(parent)
+        task = next(
+            entry
+            for entry in self.app.history(child)["items"]
+            if (entry.get("mail") or {}).get("kind") == "task"
+        )
+        self.assertEqual(task["turn_type"], "agent")
+        self.assertEqual(task["mail"]["sender_label"], "lead desk")
+        self.assertEqual(task["mail"]["sender_session_id"], parent)
+        self.assertEqual(task["input_id"], task["mail"]["mail_id"])
+        self.assertEqual(task["content"][0]["text"], "map wake paths")
+        # Retrying creation must not admit the initial task twice.
+        with self.assertRaises(urllib.error.HTTPError) as repeated:
+            self.api(
+                f"/sessions/{child}",
+                {
+                    "kind": "child",
+                    "parent_id": parent,
+                    "address": "coder",
+                    "name": "coder",
+                    "initial_input_id": task["input_id"],
+                    "task": "map wake paths",
+                },
+                method="PUT",
+                headers={"If-None-Match": "*"},
+            )
+        self.assertEqual(repeated.exception.code, 412)
+        self.assertEqual(
+            sum(
+                entry["id"] == task["id"] for entry in self.app.history(child)["items"]
+            ),
+            1,
+        )
+        self.assertEqual(
+            self.snapshot(child)["activity"]["current_request"]["text"],
+            "map wake paths",
+        )
+        before = self.app.stream_page(child)
+        answer = self.provider.script
+        marker = "report bounded progress"
+
+        def progress(request):
+            if (
+                request["messages"][-1].get("role") == "user"
+                and user_message(request) == marker
+            ):
+                return python('await agents.progress("tracing delivery")')
+            return answer(request)
+
+        self.provider.script = progress
+        self.send(child, marker)
+        self.app.idle(child)
+        self.app.idle(parent)
+        self.provider.script = answer
+        self.assertEqual(
+            self.snapshot(child)["activity"]["latest_progress"], "tracing delivery"
+        )
+        # A new subscriber sees progress in its authoritative reset snapshot.
+        reset = self.app.stream_page(child)
+        self.assertEqual(
+            reset["snapshot"]["activity"]["latest_progress"], "tracing delivery"
+        )
+        receipt = self.send_mail(parent, child, "also cover replay")
+        self.app.idle(child)
+        self.app.idle(parent)
+        activity = self.snapshot(child)["activity"]
+        self.assertEqual(
+            activity["current_request"],
+            {"input_id": receipt["id"], "text": "also cover replay"},
+        )
+        self.assertIsNone(activity["latest_progress"])
+        history = self.app.history(child)["items"]
+        followup = next(
+            entry for entry in history if entry["input_id"] == receipt["id"]
+        )
+        live = self.app.stream_page(child, before)
+        self.assertEqual(
+            [
+                event["data"]["entry"]
+                for event in live["events"]
+                if event["type"] == "message"
+                and event["data"]["entry"]["id"] == followup["id"]
+            ],
+            [followup],
+        )
+        # Peer messages remain visible but cannot replace the parent's request.
+        peer = self.app.session()
+        self.send_mail(peer, child, "peer observation")
+        self.app.idle(child)
+        self.app.idle(parent)
+        self.assertEqual(
+            self.snapshot(child)["activity"]["current_request"],
+            activity["current_request"],
+        )
+        forwarded = next(
+            entry
+            for entry in self.app.history(parent)["items"]
+            if (entry.get("mail") or {}).get("kind") == "unreviewed"
+        )
+        self.assertEqual(forwarded["mail"]["sender_label"], "coder")
+        self.app.restart()
+        recovered = self.snapshot(child)["activity"]
+        self.assertEqual(recovered["current_request"], activity["current_request"])
+        self.assertIsNone(recovered["latest_progress"])
+        replayed = self.app.stream_page(child)["snapshot"]["history"]["items"]
+        self.assertEqual(
+            next(entry for entry in replayed if entry["id"] == followup["id"]), followup
+        )
+
     def test_tree_snapshot_and_event_stream(self):
         parent = self.app.session()
         heard = self.listen()
@@ -601,14 +716,13 @@ class AgentsTests(unittest.TestCase):
         away = self.spawn(parent, "away")["id"]
 
         def heard():
-            return " ".join(
-                part["text"]
+            return {
+                entry["mail"]["sender_session_id"]
                 for entry in self.app.history(parent)["items"]
-                for part in entry["content"]
-                if part["kind"] == "text"
-            )
+                if entry.get("mail")
+            }
 
-        wait_for(lambda: 'from="still"' in heard() and 'from="away"' in heard())
+        wait_for(lambda: {still, away} <= heard())
         for session in (still, away, parent):
             self.app.idle(session)
         elsewhere = Path(tempfile.mkdtemp(prefix="elsewhere-", dir=self.app.root))

@@ -90,7 +90,7 @@ pub fn initialise(db: store.Store) -> Result(Nil, String) {
   })
 }
 
-fn kind_name(kind: Kind) -> String {
+pub fn kind_name(kind: Kind) -> String {
   case kind {
     Task -> "task"
     Message -> "message"
@@ -112,6 +112,60 @@ fn parse_kind(name: String) -> Result(Kind, Nil) {
 }
 
 const columns = "id,recipient,sender,sender_name,kind,body,created_at"
+
+pub type Request {
+  Request(id: String, text: String)
+}
+
+/// The parent's most recently delivered request, including ordinary follow-ups.
+pub fn parent_request_in(
+  db: sqlight.Connection,
+  recipient: String,
+) -> Result(Option(Request), String) {
+  use parents <- result.try(store.rows(
+    db,
+    "SELECT parent FROM session_family WHERE session=?",
+    [sqlight.text(recipient)],
+    decode.field(0, decode.string, decode.success),
+  ))
+  case parents {
+    [] -> Ok(None)
+    [parent, ..] ->
+      store.rows(
+        db,
+        "SELECT id,substr(body,1,512) FROM mail WHERE recipient=? AND sender=? AND kind IN ('task','message') AND delivered_at IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 1",
+        [sqlight.text(recipient), sqlight.text(parent)],
+        {
+          use id <- decode.field(0, decode.string)
+          use text <- decode.field(1, decode.string)
+          decode.success(Request(id, text))
+        },
+      )
+      |> result.map(fn(rows) { list.first(rows) |> option.from_result })
+  }
+}
+
+/// Only letters owned by this recipient may decorate its transcript entries.
+pub fn history_in(
+  db: sqlight.Connection,
+  recipient: String,
+  ids: List(String),
+) -> Result(List(Letter), String) {
+  case ids {
+    [] -> Ok([])
+    _ ->
+      store.rows(
+        db,
+        "SELECT "
+          <> columns
+          <> " FROM mail WHERE recipient=? AND id IN ("
+          <> string.join(list.map(ids, fn(_) { "?" }), ",")
+          <> ")",
+        [sqlight.text(recipient), ..list.map(ids, sqlight.text)],
+        decoder(),
+      )
+  }
+}
 
 fn decoder() -> decode.Decoder(Letter) {
   use id <- decode.field(0, decode.string)
