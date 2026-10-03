@@ -135,6 +135,7 @@ class SupervisionTest(unittest.TestCase):
 
     def test_stop_escalates_and_is_retryable(self):
         job = start("trap '' TERM; echo ready; while :; do sleep 0.2; done", timeout=30)
+        self.addCleanup(lambda: run(job.stop()))
         ready(job)  # the trap is installed before the first signal is sent
         self.assertIsNone(job.poll())  # still running
         ending = run(job.stop())
