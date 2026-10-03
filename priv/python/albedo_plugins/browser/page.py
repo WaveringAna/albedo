@@ -14,12 +14,12 @@ import time
 import uuid
 from collections import OrderedDict
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from . import javascript as js
+from .capture import CaptureLimits, FrameSession, Reference, capture_frames
 from .errors import (
     ActionOutcomeUnknown,
     BrowserError,
@@ -38,10 +38,7 @@ from .observation import (
     Node,
     Observation,
     attributes_from_node,
-    attributes_from_snapshot,
-    ax_properties,
     find,
-    walk_ax,
 )
 from .events import EventScope
 from .recovery import PageCDPSession
@@ -63,27 +60,6 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-@dataclass
-class _Session:
-    cdp: CDPSession
-    target_id: str
-    root_frame: str = ""
-    generation: int = 0
-    ready: bool = False
-    error: str | None = None
-
-
-@dataclass(frozen=True)
-class _Reference:
-    session_id: str
-    frame_id: str
-    generation: int
-    backend_id: int
-    role: str
-    name: str
-    attributes: dict[str, str]
-
-
 class Page:
     def __init__(
         self, browser: Browser, target_id: str, session_id: str, *, owned: bool
@@ -92,9 +68,9 @@ class Page:
         self.target_id = target_id
         self.cdp = PageCDPSession(self, session_id)
         self.owned = owned
-        self._sessions = {session_id: _Session(self.cdp, target_id)}
+        self._sessions = {session_id: FrameSession(self.cdp, target_id)}
         self._tasks: set[asyncio.Task[None]] = set()
-        self._snapshots: OrderedDict[str, dict[str, _Reference]] = OrderedDict()
+        self._snapshots: OrderedDict[str, dict[str, Reference]] = OrderedDict()
         self._lock = asyncio.Lock()
         self._settings_lock = asyncio.Lock()
         self._settings: dict[str, JSON] = {}
@@ -113,7 +89,7 @@ class Page:
         await self._init_session(self._sessions[session_id])
         self._main_frame = self._sessions[session_id].root_frame
 
-    async def _init_session(self, state: _Session) -> None:
+    async def _init_session(self, state: FrameSession) -> None:
         try:
             for domain in ("Page", "DOM", "Runtime", "Accessibility"):
                 await state.cdp.send(f"{domain}.enable")
@@ -156,7 +132,7 @@ class Page:
             sid = params["sessionId"]
             if sid in self._sessions:
                 return
-            child = _Session(
+            child = FrameSession(
                 CDPSession(self.browser._connection, sid),
                 params["targetInfo"]["targetId"],
             )
@@ -349,7 +325,7 @@ class Page:
                 raise
             new_sid = result["sessionId"]
             self.cdp = PageCDPSession(self, new_sid)
-            self._sessions = {new_sid: _Session(self.cdp, self.target_id)}
+            self._sessions = {new_sid: FrameSession(self.cdp, self.target_id)}
             self.browser._pages[self.target_id] = self
             self.browser._routes[new_sid] = self
             # _closed stays True until initialization and settings both succeed.
@@ -520,114 +496,13 @@ class Page:
                         "error": state.error,
                     }
                 )
-        dom_by_session = {}
-        refs: dict[str, _Reference] = {}
-        rows: list[Node] = []
-        for frame in chosen:
-            if len(rows) >= max_nodes:
-                warnings.append(
-                    {"kind": "frame_omitted_by_node_limit", "frame_id": frame["id"]}
-                )
-                continue
-            sid = frame["session_id"]
-            state = self._sessions[sid]
-            generation = state.generation
-            try:
-                if sid not in dom_by_session:
-                    dom_by_session[sid] = attributes_from_snapshot(
-                        await state.cdp.send(
-                            "DOMSnapshot.captureSnapshot",
-                            {"computedStyles": []},
-                        )
-                    )
-                raw = (
-                    await state.cdp.send(
-                        "Accessibility.getFullAXTree",
-                        {
-                            "frameId": frame["id"],
-                            "depth": max_depth,
-                        },
-                    )
-                )["nodes"]
-            except ProtocolError as exc:
-                warnings.append(
-                    {
-                        "kind": "frame_unavailable",
-                        "frame_id": frame["id"],
-                        "error": exc.to_dict(),
-                    }
-                )
-                continue
-            attributes = dom_by_session[sid]
-            nodes = walk_ax(raw)
-            raw_ids = {n["nodeId"] for n in raw}
-            if any(c not in raw_ids for n in raw for c in n.get("childIds", [])):
-                warnings.append(
-                    {"kind": "depth_or_tree_omission", "frame_id": frame["id"]}
-                )
-            ids: dict[str, str] = {}
-            for ax, parent, depth in nodes:
-                if len(rows) >= max_nodes:
-                    warnings.append({"kind": "node_limit", "frame_id": frame["id"]})
-                    break
-                row_id = f"{snapshot_id}:{len(rows) + 1}"
-                ids[ax["nodeId"]] = row_id
-                role = str(ax.get("role", {}).get("value", ""))
-                name = str(ax.get("name", {}).get("value", ""))
-                backend = ax.get("backendDOMNodeId")
-                attrs = attributes.get(backend, {})
-                actionable = bool(
-                    backend
-                    and backend in attributes
-                    and role not in {"StaticText", "RootWebArea", "InlineTextBox"}
-                )
-                ref = row_id if actionable else None
-                row: Node = {
-                    "id": row_id,
-                    "ref": ref,
-                    "role": "text" if role == "StaticText" else role,
-                    "name": name[:max_text],
-                    "frame_id": frame["id"],
-                    "parent": ids.get(parent),
-                    "depth": depth,
-                }
-                if len(name) > max_text:
-                    row["name_truncated"] = True
-                    warnings.append({"kind": "text_truncated", "node": row_id})
-                props = ax_properties(ax)
-                for key in (
-                    "disabled",
-                    "checked",
-                    "selected",
-                    "expanded",
-                    "required",
-                    "readonly",
-                    "focused",
-                    "level",
-                ):
-                    if key in props:
-                        row[key] = props[key]
-                if attrs:
-                    row["attributes"] = dict(attrs)
-                    if "href" in attrs:
-                        row["href"] = attrs["href"]
-                if "value" in ax:
-                    value = ax["value"].get("value")
-                    row["value"] = (
-                        "[redacted]" if attrs.get("type") == "password" else value
-                    )
-                    if isinstance(row["value"], str) and len(row["value"]) > max_text:
-                        row["value"] = row["value"][:max_text]
-                        warnings.append({"kind": "value_truncated", "node": row_id})
-                if ref and backend is not None:
-                    refs[ref] = _Reference(
-                        sid, frame["id"], generation, backend, role, name, dict(attrs)
-                    )
-                rows.append(row)
-            if state.generation != generation:
-                warnings.append(
-                    {"kind": "document_changed_during_capture", "frame_id": frame["id"]}
-                )
+        captured = await capture_frames(
+            chosen,
+            self._sessions,
+            CaptureLimits(snapshot_id, max_nodes, max_text, max_depth),
+        )
+        warnings.extend(captured.warnings)
+        rows, refs = captured.rows, captured.references
         self._snapshots[snapshot_id] = refs
         while len(self._snapshots) > retain:
             self._snapshots.popitem(last=False)
@@ -650,7 +525,7 @@ class Page:
             },
         }
 
-    def _ref(self, ref: str | Node) -> tuple[str, _Reference, _Session]:
+    def _ref(self, ref: str | Node) -> tuple[str, Reference, FrameSession]:
         self._check()
         key = ref.get("ref") if isinstance(ref, dict) else ref
         if not isinstance(key, str) or ":" not in key:
@@ -941,7 +816,7 @@ class Page:
             raise NotActionable("No hit-testable node at this point.") from exc
 
     async def _to_main_point(
-        self, state: _Session, x: float, y: float
+        self, state: FrameSession, x: float, y: float
     ) -> tuple[float, float]:
         """Cross OOPIF boundaries, checking each frame's embedding for occlusion."""
         visited = set()
@@ -1005,7 +880,7 @@ class Page:
         return x, y
 
     async def _click_point(
-        self, record: _Reference, state: _Session, object_id: str
+        self, record: Reference, state: FrameSession, object_id: str
     ) -> tuple[float, float]:
         await state.cdp.send(
             "DOM.scrollIntoViewIfNeeded", {"backendNodeId": record.backend_id}
@@ -1064,7 +939,7 @@ class Page:
             **({"covering": covering} if covering else {}),
         )
 
-    async def _ax_summary(self, state: _Session, backend_id: int | None) -> JSON:
+    async def _ax_summary(self, state: FrameSession, backend_id: int | None) -> JSON:
         """Name what is over a target, so "something covers it" is actionable."""
         if backend_id is None:
             return {}

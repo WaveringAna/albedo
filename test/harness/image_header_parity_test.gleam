@@ -86,7 +86,7 @@ pub fn the_kernel_reads_image_headers_the_way_the_daemon_does_test() -> Nil {
     python.execute(
       kernel,
       "headers",
-      "import base64, json, sys\nsize = sys.modules['__main__'].image_size\n"
+      "import base64, json\nfrom albedo_capture import image_size as size\n"
         <> "for data in json.loads("
         <> string.inspect(json.to_string(encoded))
         <> "):\n    print(json.dumps(size(base64.b64decode(data))))",

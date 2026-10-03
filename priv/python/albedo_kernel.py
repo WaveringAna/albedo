@@ -3,16 +3,18 @@ from __future__ import annotations
 import ast
 import albedo_api
 import albedo_bundle
+import albedo_state
+from albedo_values import Unencodable, encode
+from albedo_capture import Capture, PREVIEW, MAX_IMAGE_BYTES
 import albedo_link
 from albedo_protocol import parse_incoming
 import albedo_proc
 import albedo_shell
 from collections.abc import Awaitable, Callable, Iterable, Sequence
-from typing import Any, cast
+from typing import cast
 from types import CodeType, FrameType
 import albedo_trace
 import asyncio
-import base64
 import codecs
 import collections
 import contextvars
@@ -25,11 +27,7 @@ import reprlib
 import select
 import shutil
 import signal
-import pickle
-import types
-import struct
 import sys
-import tempfile
 import threading
 import time
 import traceback
@@ -39,13 +37,7 @@ import weakref
 CLEANUP_DEADLINE = (
     1.5  # seconds: plugins must finish cleanup inside the supervisor's patience
 )
-PREVIEW = 64 * 1024
-RETAIN = albedo_api.RAW_RETAIN
 LIMITS = {"cell": 16, "job": 64, "native": 1}  # retained captures per kind
-MAX_IMAGES = 4  # images one cell may return to the model
-# Decoded bytes across one cell's images. Base64 grows this by 4/3, and the done
-# frame must stay under the 8 MiB guard with its output preview alongside.
-MAX_IMAGE_BYTES = 5 * 1024 * 1024
 CELL: contextvars.ContextVar[Capture | None] = contextvars.ContextVar(
     "cell", default=None
 )
@@ -356,152 +348,6 @@ def host_now(method: str, args: dict[str, object]) -> object:
     raise WorkError(answer["code"], answer["message"])
 
 
-class Capture:
-    def __init__(
-        self, id: str, kind: str = "cell", max_edge: int | None = None
-    ) -> None:
-        self.id: str = id
-        self.kind: str = kind
-        self.max_edge: int | None = max_edge  # the session provider's, sent per cell
-        self.data: bytearray = bytearray()
-        self.raw_data: bytearray = (
-            bytearray()
-        )  # bytes before UTF-8 replacement, for late pipe readers
-        self.raw_seen: int = 0
-        self.tail_data: bytearray = bytearray()
-        self.seen: int = 0
-        self.trace: albedo_trace.Trace = albedo_trace.Trace()
-        self.interruption: str = "cancelled"
-        self.images: list[bytes] = []
-
-    def write(self, text: str) -> None:
-        data = text.encode("utf-8", errors="replace")
-        remaining = max(0, RETAIN - len(self.data))
-        self.data.extend(data[:remaining])
-        self.seen += len(data)
-        self.tail_data.extend(data[-PREVIEW:])
-        del self.tail_data[:-PREVIEW]
-
-    def read(self, offset: int = 0, limit: int = 4000) -> str:
-        return bytes(
-            self.data[max(0, offset) : max(0, offset) + min(max(0, limit), PREVIEW)]
-        ).decode("utf-8", errors="ignore")
-
-    def preview(self, status: str = "ok") -> str:
-        if status == "ok":
-            return self.read(0, PREVIEW)
-        return bytes(self.tail_data).decode("utf-8", errors="ignore")
-
-    def attach(self, data: bytes) -> str:
-        """Queue one image for this cell's result; raises ValueError past the limits."""
-        mime = image_type(data)
-        if mime is None:
-            raise ValueError("image must be PNG, JPEG, or WebP bytes")
-        size = image_size(data)
-        # A header this parser cannot read is left for the daemon to judge.
-        if size is not None and self.max_edge is not None:
-            _, width, height = size
-            if max(width, height) > self.max_edge:
-                raise ValueError(
-                    f"{width}x{height} image is over this model's {self.max_edge}px edge limit"
-                )
-        if len(self.images) >= MAX_IMAGES:
-            raise ValueError(f"a cell returns at most {MAX_IMAGES} images")
-        if sum(map(len, self.images)) + len(data) > MAX_IMAGE_BYTES:
-            raise ValueError(
-                f"a cell's images total at most {MAX_IMAGE_BYTES} bytes; "
-                f"this {len(data)}-byte image does not fit"
-            )
-        self.images.append(data)
-        return f"{mime}, {len(data)} bytes"
-
-    def encoded_images(self) -> list[str]:
-        return [base64.b64encode(image).decode("ascii") for image in self.images]
-
-
-def image_size(data: bytes) -> tuple[str, int, int] | None:
-    """MIME type, width and height from the header, or None. A port of
-    `dimensions/1` in albedo_image.erl, which stays the authority: the daemon
-    checks every image again, and image_header_parity_test holds the two equal."""
-    if data[:16] == b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR" and len(data) >= 24:
-        width, height = struct.unpack(">II", data[16:24])
-        return ("image/png", width, height) if width > 0 and height > 0 else None
-    if data[:2] == b"\xff\xd8":
-        return jpeg_size(data, 2)
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP" and len(data) >= 12:
-        if struct.unpack("<I", data[4:8])[0] + 8 == len(data):
-            return webp_size(data, 12)
-    return None
-
-
-JPEG_FRAMES = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7}
-JPEG_FRAMES |= {0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
-
-
-def jpeg_size(data: bytes, at: int) -> tuple[str, int, int] | None:
-    while True:
-        at = data.find(b"\xff", at)
-        if at < 0:
-            return None
-        at += 1
-        while at < len(data) and data[at] == 0xFF:
-            at += 1
-        if at >= len(data):
-            return None
-        marker = data[at]
-        if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
-            at += 1
-            continue
-        if at + 3 > len(data):
-            return None
-        length = struct.unpack(">H", data[at + 1 : at + 3])[0]
-        end = at + 1 + length
-        if length < 2 or end > len(data):
-            return None
-        if marker in JPEG_FRAMES:
-            frame = data[at + 3 : end]
-            if len(frame) < 5:
-                return None
-            height, width = struct.unpack(">HH", frame[1:5])
-            return ("image/jpeg", width, height) if width > 0 and height > 0 else None
-        if marker in (0xDA, 0xD9):
-            return None
-        at = end
-
-
-def webp_size(data: bytes, at: int) -> tuple[str, int, int] | None:
-    while at + 8 <= len(data):
-        kind = data[at : at + 4]
-        size = struct.unpack("<I", data[at + 4 : at + 8])[0]
-        body = data[at + 8 :]
-        if kind == b"VP8X" and size == 10 and len(body) >= 10:
-            width = int.from_bytes(body[4:7], "little") + 1
-            height = int.from_bytes(body[7:10], "little") + 1
-            return ("image/webp", width, height)
-        if kind == b"VP8L" and size >= 5 and len(body) >= 5 and body[0] == 0x2F:
-            bits = struct.unpack("<I", body[1:5])[0]
-            return ("image/webp", (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
-        if kind == b"VP8 " and size >= 10 and len(body) >= 10:
-            if body[3:6] == b"\x9d\x01\x2a":
-                width, height = struct.unpack("<HH", body[6:10])
-                width, height = width & 0x3FFF, height & 0x3FFF
-                return ("image/webp", width, height) if width and height else None
-        at += 8 + size + size % 2
-        if at > len(data):
-            return None
-    return None
-
-
-def image_type(data: bytes) -> str | None:
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if data.startswith(b"\xff\xd8"):
-        return "image/jpeg"
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp"
-    return None
-
-
 def attach_image(data: bytes) -> str:
     """Attach image bytes to the running cell; plugins reach this as api.attach_image."""
     capture = CELL.get()
@@ -672,14 +518,6 @@ def compile_cell(
         else None
     )
     return prefix, suffix, original
-
-
-def _target_names(node: ast.AST) -> set[str]:
-    return {
-        target.id
-        for target in ast.walk(node)
-        if isinstance(target, ast.Name) and isinstance(target.ctx, (ast.Store, ast.Del))
-    }
 
 
 def _bound_names(node: ast.AST) -> set[str]:
@@ -976,171 +814,7 @@ class Cells:
         return value
 
 
-# Saved state is the session's own namespace, written by this kernel into the
-# daemon's home. Loading pickle and replaying definitions share the transcript's trust domain.
-STATE_MAX = 64 * 1024 * 1024
-STATE_MAX_VALUE = 8 * 1024 * 1024
-DEFINITION_MAX = 256 * 1024
-DEFINITION_MAX_VALUE = 32 * 1024
 INJECTED: set[str] = {"__name__", "__builtins__", "_"}
-
-
-def engine() -> tuple[object, str]:
-    """dill when it is installed; pickle keeps plain data working without it."""
-    try:
-        import dill
-
-        dill.settings["recurse"] = True
-        return dill, "dill"
-    except ImportError:
-        return pickle, "pickle"
-
-
-def save_state(path: str) -> dict[str, object]:
-    """Serialise values and readable top-level definitions within fixed caps."""
-    serialiser, kind = cast("Any", engine())
-    payload: dict[str, bytes] = {}
-    skipped: list[dict[str, str]] = []
-    total = 0
-    largest: list[tuple[str, int]] = []
-    for name in list(NAMESPACE.keys()):
-        if name.startswith("_") or name in INJECTED:
-            continue
-        value = NAMESPACE.get(name, INJECTED)
-        if value is INJECTED:
-            continue
-        try:
-            blob = cast(bytes, serialiser.dumps(value))
-        except BaseException as error:
-            if name not in DEFINITIONS or not isinstance(
-                value, (types.FunctionType, type, types.ModuleType)
-            ):
-                skipped.append(
-                    {"name": name, "reason": f"{type(error).__name__}: {error}"[:200]}
-                )
-            continue
-        if len(blob) > STATE_MAX_VALUE:
-            if name not in DEFINITIONS or not isinstance(
-                value, (types.FunctionType, type, types.ModuleType)
-            ):
-                skipped.append(
-                    {
-                        "name": name,
-                        "reason": f"{len(blob)} bytes exceeds the per-variable cap",
-                    }
-                )
-        elif total + len(blob) > STATE_MAX:
-            skipped.append({"name": name, "reason": "saved state is full"})
-        else:
-            payload[name] = blob
-            total += len(blob)
-            if len(blob) >= 64 * 1024:
-                largest.append((name, len(blob)))
-    definitions: list[dict[str, str]] = []
-    definition_bytes = 0
-    for name, source in DEFINITIONS.items():
-        size = len(source.encode("utf-8"))
-        if size > DEFINITION_MAX_VALUE:
-            skipped.append(
-                {
-                    "name": name,
-                    "reason": f"definition is {size} bytes; per-definition cap is {DEFINITION_MAX_VALUE}",
-                }
-            )
-        elif definition_bytes + size > DEFINITION_MAX:
-            skipped.append(
-                {"name": name, "reason": "definitions are over the total source cap"}
-            )
-        else:
-            definitions.append({"name": name, "source": source})
-            definition_bytes += size
-    try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        handle, temporary = tempfile.mkstemp(
-            dir=os.path.dirname(path) or ".", prefix=os.path.basename(path) + "."
-        )
-        try:
-            with os.fdopen(handle, "wb") as file:
-                pickle.dump(
-                    {"cwd": os.getcwd(), "names": payload, "definitions": definitions},
-                    file,
-                )
-            os.replace(temporary, path)
-        except BaseException:
-            os.unlink(temporary)
-            raise
-    except OSError as error:
-        return {"error": f"could not write saved state: {error}"}
-    largest.sort(key=lambda item: item[1], reverse=True)
-    return {
-        "saved": sorted(set(payload) | {item["name"] for item in definitions}),
-        "defs": [item["name"] for item in definitions],
-        "skipped": skipped,
-        "largest": [{"name": name, "bytes": size} for name, size in largest[:5]],
-        "bytes": total,
-        "engine": kind,
-    }
-
-
-def load_state(path: str) -> dict[str, object]:
-    """Restore pickled values, then replay definitions in their saved order."""
-    try:
-        with open(path, "rb") as file:
-            saved = cast(dict[str, object], pickle.load(file))
-    except FileNotFoundError:
-        return {"restored": [], "defs": [], "failed": [], "error": "no saved state"}
-    except BaseException as error:
-        return {
-            "restored": [],
-            "defs": [],
-            "failed": [],
-            "error": f"unreadable saved state: {type(error).__name__}",
-        }
-    serialiser, kind = cast("Any", engine())
-    restored: list[str] = []
-    failed: list[dict[str, str]] = []
-    for name, blob in cast(dict[str, bytes], saved.get("names", {})).items():
-        try:
-            NAMESPACE[name] = cast(object, serialiser.loads(blob))
-        except BaseException as error:
-            failed.append(
-                {"name": name, "reason": f"{type(error).__name__}: {error}"[:200]}
-            )
-        else:
-            restored.append(name)
-    defs: list[str] = []
-    for item in cast(list[object], saved.get("definitions", [])):
-        if (
-            not isinstance(item, dict)
-            or not isinstance(item.get("name"), str)
-            or not isinstance(item.get("source"), str)
-        ):
-            continue
-        name, source = item["name"], item["source"]
-        try:
-            exec(compile(source, "<albedo:state>", "exec"), NAMESPACE)
-        except BaseException as error:
-            failed.append(
-                {"name": name, "reason": f"{type(error).__name__}: {error}"[:200]}
-            )
-        else:
-            if source not in DEFINITIONS.values():
-                key = name
-                while key in DEFINITIONS:
-                    key += "#2"
-                DEFINITIONS[key] = source
-            if name not in restored:
-                restored.append(name)
-            defs.append(name)
-    directory = saved.get("cwd")
-    if isinstance(directory, str) and os.path.isdir(directory):
-        os.chdir(directory)
-    return {
-        "restored": sorted(set(restored)),
-        "defs": defs,
-        "failed": failed,
-        "engine": kind,
-    }
 
 
 def swap_sink(capture: Capture | None) -> Capture | None:
@@ -1172,9 +846,9 @@ def state_reply(
 ) -> dict[str, object]:
     if state is None:
         state = (
-            save_state(message["path"])
+            albedo_state.save_state(message["path"], NAMESPACE, DEFINITIONS, INJECTED)
             if message["type"] == "snapshot"
-            else load_state(message["path"])
+            else albedo_state.load_state(message["path"], NAMESPACE, DEFINITIONS)
         )
     return {
         "type": "done",
@@ -1190,60 +864,6 @@ def state_reply(
 MAX_RESULT_BYTES = (
     4 * 1024 * 1024
 )  # one invoke reply ceiling, below the 8 MiB frame guard
-
-
-class Unencodable(Exception):
-    """The value cannot cross the connection; it stays a live remote reference."""
-
-
-def _wire_encode(value: object, depth: int = 0) -> object:
-    """One value as connection-crossable JSON; Unencodable means a live reference.
-
-    Dataclasses and list subclasses carry their class so the owner rebuilds the
-    real object and remote results read exactly like local ones.
-    """
-    if depth > 32:
-        raise Unencodable
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        return {"__bytes__": base64.b64encode(bytes(value)).decode("ascii")}
-    if isinstance(value, dict) and type(value) is dict:
-        return {str(key): _wire_encode(item, depth + 1) for key, item in value.items()}
-    if isinstance(value, albedo_api.Record):
-        cls = type(value)
-        return {
-            "__record__": cls.__module__ + "." + cls.__qualname__,
-            "fields": {
-                str(key): _wire_encode(item, depth + 1) for key, item in value.items()
-            },
-        }
-    if isinstance(value, (list, tuple)):
-        try:
-            if type(value) is not list:
-                cls = type(value)
-                return {
-                    "__list__": cls.__module__ + "." + cls.__qualname__,
-                    "items": [_wire_encode(item, depth + 1) for item in value],
-                }
-        except Unencodable:
-            raise
-        except (TypeError, ValueError):
-            raise Unencodable from None
-        return [_wire_encode(item, depth + 1) for item in value]
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        cls = type(value)
-        try:
-            return {
-                "__class__": cls.__module__ + "." + cls.__qualname__,
-                "fields": {
-                    field.name: _wire_encode(getattr(value, field.name), depth + 1)
-                    for field in dataclasses.fields(value)
-                },
-            }
-        except (TypeError, ValueError, AttributeError):
-            raise Unencodable from None
-    raise Unencodable
 
 
 def retain(value: object) -> str:
@@ -1312,7 +932,7 @@ def _invoke_reply(
     it would evict live references worth keeping.
     """
     try:
-        wire = _wire_encode(result)
+        wire = encode(result)
         encoded = json.dumps(wire, ensure_ascii=True)
     except (Unencodable, TypeError, ValueError, RecursionError):
         reply: dict[str, object] = {

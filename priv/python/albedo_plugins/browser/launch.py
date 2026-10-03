@@ -370,7 +370,7 @@ async def spawn(
     Auto-detects an installed executable. Uses headless mode, a temporary profile,
     loopback CDP and an OS-assigned port by default; never downloads a browser or
     silently disables its sandbox. A supplied profile must be empty or previously
-    created by this skill and is preserved on close. ``Browser.close()`` or
+    created by albedo and is preserved on close. ``Browser.close()`` or
     ``async with await spawn()`` stops owned Chrome and removes temporary data.
     ``disconnect()`` deliberately leaves it running until close or normal exit.
 

@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import importlib
 import json
 import os
 import shlex
@@ -31,6 +30,7 @@ from albedo_protocol import RemoteCall, RemoteMessage, parse_remote
 
 from albedo_api import PythonApi, ReadyList, excerpt
 import albedo_bundle
+from albedo_values import InvalidValue, decode
 import albedo_shell
 import albedo_ssh
 
@@ -232,54 +232,6 @@ async def stage(target: str) -> None:
     )
     if code != 0:
         raise RemoteBootError(f"staging failed ({code}): {stderr.strip()[:500]}")
-
-
-def _load_class(marker: str) -> type:
-    """The class a wire marker names; both bundles are identical, so it exists."""
-    module, _, qualified = marker.rpartition(".")
-    obj: Any = importlib.import_module(module)
-    for part in qualified.split("."):
-        obj = getattr(obj, part)
-    return obj
-
-
-def wire_decode(value: Any) -> Any:
-    """Rebuild real objects from wire values, so remote results read like local ones."""
-    if isinstance(value, dict):
-        if set(value) == {"__bytes__"} and isinstance(value.get("__bytes__"), str):
-            try:
-                return base64.b64decode(value["__bytes__"], validate=True)
-            except ValueError as error:
-                raise RemoteError("invalid remote byte encoding") from error
-        if set(value) == {"__class__", "fields"} and isinstance(
-            value.get("__class__"), str
-        ):
-            try:
-                return _load_class(value["__class__"])(
-                    **{key: wire_decode(item) for key, item in value["fields"].items()}
-                )
-            except Exception:
-                return {key: wire_decode(item) for key, item in value["fields"].items()}
-        if set(value) == {"__record__", "fields"} and isinstance(
-            value.get("__record__"), str
-        ):
-            fields = {key: wire_decode(item) for key, item in value["fields"].items()}
-            try:
-                return _load_class(value["__record__"])(fields)
-            except Exception:
-                return fields
-        if set(value) == {"__list__", "items"} and isinstance(
-            value.get("__list__"), str
-        ):
-            items = [wire_decode(item) for item in value["items"]]
-            try:
-                return _load_class(value["__list__"])(items)
-            except Exception:
-                return items
-        return {key: wire_decode(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [wire_decode(item) for item in value]
-    return value
 
 
 def _revive(value: Any) -> Any:
@@ -790,12 +742,15 @@ class RemoteConnection:
                 str(error.get("evalue", "")),
                 [str(line) for line in error.get("traceback", [])],
             )
+        try:
+            value = decode(reply.get("value"))
+        except InvalidValue as error:
+            raise RemoteError(str(error)) from error
         if "handle" in reply:
             handle = str(reply["handle"])
             state = reply.get("state")
             if state is not None:
                 self._mirrors[handle] = state
-            value = wire_decode(reply["value"]) if "value" in reply else None
             reference = (
                 placeholder if placeholder is not None else self._refs.get(handle)
             )
@@ -806,7 +761,7 @@ class RemoteConnection:
                 reference._value = value
             self._refs[handle] = reference
             return reference
-        return wire_decode(reply.get("value"))
+        return value
 
     async def _interrupt(self, call_id: str) -> None:
         """Best-effort: tell the remote kernel this wait is over."""
