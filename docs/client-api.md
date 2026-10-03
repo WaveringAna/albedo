@@ -1,8 +1,9 @@
 # Client API ownership
 
 The Go `daemon` package owns protocol 3. Application commands and TUI screens
-call named operations and receive typed results. The adapter constructs routes,
-encodes requests, checks responses, bounds decoding, and chooses recovery policy.
+call named operations and receive typed results. Generated code constructs
+routes and queries. The adapter checks responses, bounds decoding, and chooses
+recovery policy.
 [OpenAPI](openapi.yaml) defines the wire format;
 [HTTP API design](http-api-design.md) defines its behavior.
 
@@ -22,7 +23,16 @@ the client obtains the new summary before requesting its pages.
 ## Code organization
 
 Each domain keeps its operations and application-facing types together.
-Wire types live in `wire.go`; conversion stays inside the adapter.
+`protocol/api.gen.go` contains wire types and HTTP request builders generated
+from OpenAPI with pinned `oapi-codegen`. Conversion stays inside the adapter.
+Run `go -C cli generate ./internal/daemon` after editing the contract.
+`test.sh` checks that generation produces the checked-in file.
+
+The generator runs in `cli/tools/apigen`, outside the CLI dependency graph.
+It projects OpenAPI 3.2 to 3.1 in memory for the generator, selects raw JSON for
+unions, and preserves nullable field tags for adapter validation. The canonical
+spec remains authoritative. The adapter owns bounded response reads, semantic
+validation, authentication recovery, and SSE framing and replay.
 Session stream parsing is separate from chat operations. Transport, decoding,
 and receipt recovery are private machinery. Extension-specific result bodies
 remain explicit `json.RawMessage` values.
