@@ -17,8 +17,9 @@
 //// Replay final output using types.Replay; never flatten it to assistant text.
 //// This first adapter supports text and function tools, not audio/image input or
 //// custom tools. Function argument strings must be validated before execution.
-//// Requires Erlang/OTP 27+ for native JSON. ssevents owns SSE framing; Gun owns
-//// streaming HTTP, flow control, and TLS verification. Requests stay as iodata.
+//// Requires Erlang/OTP 27+ for native JSON. The bounded incremental parser owns
+//// SSE framing; Gun owns streaming HTTP, flow control, and TLS verification.
+//// Requests stay as iodata.
 
 import albedo/openai_api/request
 import albedo/openai_api/sse

@@ -1,13 +1,24 @@
-//// OpenAI-facing view of ssevents; framing and limits belong to the library.
+//// Incremental framing. Only newly received bytes are searched for line endings.
 
+import gleam/bit_array
 import gleam/list
-import gleam/option
 import gleam/result
-import ssevents
-import ssevents/error
+import gleam/string
 
-pub type Parser =
-  ssevents.DecodeState
+pub opaque type Parser {
+  Parser(
+    fragments: List(BitArray),
+    line_bytes: Int,
+    pending_cr: Bool,
+    bom_prefix: BitArray,
+    bom_handled: Bool,
+    name: String,
+    data: List(String),
+    data_lines: Int,
+    event_bytes: Int,
+    limit: Int,
+  )
+}
 
 pub type Event {
   Event(name: String, data: String)
@@ -19,46 +30,214 @@ pub type Error {
   Malformed(String)
 }
 
+@external(erlang, "albedo_sse_bytes", "newline")
+fn newline(bytes: BitArray) -> Int
+
+@external(erlang, "albedo_sse_bytes", "assemble")
+fn assemble(fragments: List(BitArray)) -> BitArray
+
+@external(erlang, "albedo_sse_bytes", "compact")
+fn compact(bytes: BitArray) -> BitArray
+
+@external(erlang, "albedo_sse_bytes", "field")
+fn field(line: String) -> #(String, String)
+
 pub fn new(max_event_bytes: Int) -> Parser {
-  ssevents.new_limits(
-    max_line_bytes: max_event_bytes,
-    max_event_bytes: max_event_bytes,
-    max_data_lines: max_event_bytes,
-    max_retry_value: 86_400_000,
-  )
-  |> ssevents.new_decoder_with_limits
+  case max_event_bytes < 1 {
+    True -> panic as "max_event_bytes must be >= 1"
+    False -> Nil
+  }
+  Parser([], 0, False, <<>>, False, "", [], 0, 0, max_event_bytes)
 }
 
 pub fn feed(
   parser: Parser,
   chunk: BitArray,
 ) -> Result(#(Parser, List(Event)), Error) {
-  ssevents.push(parser, chunk)
-  |> result.map(fn(pair) { #(pair.0, events(pair.1)) })
-  |> result.map_error(map_error)
-}
-
-/// ssevents flushes a final unterminated event. The protocol reducer must still
-/// recognize an explicit OpenAI terminal event; EOF alone is never success.
-pub fn finish(parser: Parser) -> Result(List(Event), Error) {
-  ssevents.finish(parser)
-  |> result.map(events)
-  |> result.map_error(map_error)
-}
-
-fn events(items: List(ssevents.Item)) -> List(Event) {
-  items
-  |> ssevents.events_of
-  |> list.map(fn(event) {
-    Event(option.unwrap(ssevents.name_of(event), ""), ssevents.data_of(event))
+  use _ <- result.try(case bit_array.bit_size(chunk) % 8 {
+    0 -> Ok(Nil)
+    _ -> Error(InvalidUtf8)
   })
+  case parser.bom_handled {
+    True -> resume(parser, chunk, [])
+    False -> {
+      let bytes = case parser.bom_prefix {
+        <<>> -> chunk
+        prefix -> bit_array.append(prefix, chunk)
+      }
+      case bytes {
+        <<>> | <<0xEF>> | <<0xEF, 0xBB>> ->
+          Ok(#(Parser(..parser, bom_prefix: compact(bytes)), []))
+        <<0xEF, 0xBB, 0xBF, rest:bytes>> ->
+          resume(
+            Parser(..parser, bom_prefix: <<>>, bom_handled: True),
+            rest,
+            [],
+          )
+        _ ->
+          resume(
+            Parser(..parser, bom_prefix: <<>>, bom_handled: True),
+            bytes,
+            [],
+          )
+      }
+    }
+  }
 }
 
-fn map_error(error: ssevents.SseError) -> Error {
-  case error {
-    error.InvalidUtf8 -> InvalidUtf8
-    error.LineTooLong(_) | error.EventTooLarge(_) | error.TooManyDataLines(_) ->
-      EventTooLarge
-    other -> Malformed(ssevents.error_to_string(other))
+fn resume(
+  parser: Parser,
+  chunk: BitArray,
+  events: List(Event),
+) -> Result(#(Parser, List(Event)), Error) {
+  case parser.pending_cr, chunk {
+    True, <<>> -> Ok(#(parser, list.reverse(events)))
+    True, _ -> {
+      use #(parser, events) <- result.try(complete_line(parser, events))
+      let chunk = case chunk {
+        <<10, rest:bytes>> -> rest
+        _ -> chunk
+      }
+      scan(parser, chunk, events)
+    }
+    False, _ -> scan(parser, chunk, events)
+  }
+}
+
+fn scan(
+  parser: Parser,
+  chunk: BitArray,
+  events: List(Event),
+) -> Result(#(Parser, List(Event)), Error) {
+  let offset = newline(chunk)
+  let length = case offset {
+    -1 -> bit_array.byte_size(chunk)
+    _ -> offset
+  }
+  case parser.line_bytes + length > parser.limit {
+    True -> Error(EventTooLarge)
+    False -> {
+      let assert <<prefix:bytes-size(length), rest:bytes>> = chunk
+      let fragments = case prefix {
+        <<>> -> parser.fragments
+        _ -> [compact(prefix), ..parser.fragments]
+      }
+      let parser =
+        Parser(
+          ..parser,
+          fragments: fragments,
+          line_bytes: parser.line_bytes + length,
+        )
+      case rest {
+        <<>> -> Ok(#(parser, list.reverse(events)))
+        <<13>> ->
+          Ok(#(Parser(..parser, pending_cr: True), list.reverse(events)))
+        _ -> {
+          use #(parser, events) <- result.try(complete_line(parser, events))
+          let rest = case rest {
+            <<13, 10, tail:bytes>> -> tail
+            <<_, tail:bytes>> -> tail
+            _ -> <<>>
+          }
+          scan(parser, rest, events)
+        }
+      }
+    }
+  }
+}
+
+fn complete_line(
+  parser: Parser,
+  events: List(Event),
+) -> Result(#(Parser, List(Event)), Error) {
+  let is_comment = case list.last(parser.fragments) {
+    Ok(<<58, _:bytes>>) -> True
+    _ -> False
+  }
+  use _ <- result.try(
+    case
+      parser.line_bytes > 0
+      && !is_comment
+      && parser.event_bytes + parser.line_bytes > parser.limit
+    {
+      True -> Error(EventTooLarge)
+      False -> Ok(Nil)
+    },
+  )
+  use line <- result.try(
+    assemble(parser.fragments)
+    |> bit_array.to_string
+    |> result.map_error(fn(_) { InvalidUtf8 }),
+  )
+  let length = parser.line_bytes
+  let parser = Parser(..parser, fragments: [], line_bytes: 0, pending_cr: False)
+  case line {
+    "" -> Ok(dispatch(parser, events))
+    _ ->
+      case string.starts_with(line, ":") {
+        True -> Ok(#(parser, events))
+        False -> {
+          let bytes = parser.event_bytes + length
+          case bytes > parser.limit {
+            True -> Error(EventTooLarge)
+            False -> {
+              let parser = Parser(..parser, event_bytes: bytes)
+              let #(name, value) = field(line)
+              case name {
+                "data" ->
+                  case parser.data_lines + 1 > parser.limit {
+                    True -> Error(EventTooLarge)
+                    False ->
+                      Ok(#(
+                        Parser(
+                          ..parser,
+                          data: [value, ..parser.data],
+                          data_lines: parser.data_lines + 1,
+                        ),
+                        events,
+                      ))
+                  }
+                "event" ->
+                  case string.contains(value, "\u{0000}") {
+                    True -> Error(Malformed("invalid SSE field: event"))
+                    False -> Ok(#(Parser(..parser, name: value), events))
+                  }
+                _ -> Ok(#(parser, events))
+              }
+            }
+          }
+        }
+      }
+  }
+}
+
+fn dispatch(parser: Parser, events: List(Event)) -> #(Parser, List(Event)) {
+  let events = case parser.data_lines > 0 {
+    True -> [
+      Event(parser.name, parser.data |> list.reverse |> string.join("\n")),
+      ..events
+    ]
+    False -> events
+  }
+  #(Parser(..parser, name: "", data: [], data_lines: 0, event_bytes: 0), events)
+}
+
+/// EOF flushes a final unterminated event; reducers still require a terminal event.
+pub fn finish(parser: Parser) -> Result(List(Event), Error) {
+  let parser = case parser.bom_prefix {
+    <<>> -> parser
+    prefix ->
+      Parser(
+        ..parser,
+        fragments: [prefix],
+        line_bytes: bit_array.byte_size(prefix),
+      )
+  }
+  case parser.line_bytes > 0 || parser.pending_cr {
+    True -> {
+      use #(parser, events) <- result.try(complete_line(parser, []))
+      Ok(dispatch(parser, events).1 |> list.reverse)
+    }
+    False -> Ok(dispatch(parser, []).1 |> list.reverse)
   }
 }

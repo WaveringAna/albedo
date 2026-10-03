@@ -33,7 +33,6 @@ packages = [
   { name = "parse_trans", version = "3.4.2", build_tools = ["rebar3"], requirements = [], otp_app = "parse_trans", source = "hex", outer_checksum = "4C25347DE3B7C35732D32E69AB43D1CEEE0BEAE3F3B3ADE1B59CBD3DD224D9CA" },
   { name = "quic", version = "1.10.0", build_tools = ["rebar3"], requirements = [], otp_app = "quic", source = "hex", outer_checksum = "19813FF3BF1B37496DEB662B41195051FDBE307D8CCEC5EC3C8EA1C7EAB0698A" },
   { name = "sqlight", version = "1.2.0", build_tools = ["gleam"], requirements = ["esqlite", "gleam_stdlib"], otp_app = "sqlight", source = "hex", outer_checksum = "841768D0A81107EE2DB46B949354F284A68B2E8098315C28A1FE3C07D206C17A" },
-  { name = "ssevents", version = "0.15.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "ssevents", source = "hex", outer_checksum = "C82B3D8CDFC691A81BF06F5825B2F820BAD273A508274BA1753673747087EB2B" },
   { name = "ssl_verify_fun", version = "1.1.7", build_tools = ["mix", "rebar3", "make"], requirements = [], otp_app = "ssl_verify_fun", source = "hex", outer_checksum = "FE4C190E8F37401D30167C8C405EDA19469F34577987C76DDE613E838BBC67F8" },
   { name = "webtransport", version = "0.4.6", build_tools = ["rebar3"], requirements = ["h2", "quic"], otp_app = "webtransport", source = "hex", outer_checksum = "CCDAC3972C5AD50FD4D857EF57C24EFFB19EBF65D872037823D4EE568245BF52" },
   { name = "yamerl", version = "0.10.0", build_tools = ["rebar3"], requirements = [], otp_app = "yamerl", source = "hex", outer_checksum = "346ADB2963F1051DC837A2364E4ACF6EB7D80097C0F53CBDC3046EC8EC4B4E6E" },
@@ -51,5 +50,4 @@ gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 gun = { version = ">= 2.6.0 and < 3.0.0" }
 mist = { version = ">= 6.0.3 and < 7.0.0" }
 sqlight = { version = ">= 1.2.0 and < 2.0.0" }
-ssevents = { version = ">= 0.15.0 and < 1.0.0" }
 yamerl = { version = ">= 0.10.0 and < 1.0.0" }
