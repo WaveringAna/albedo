@@ -27,7 +27,7 @@ func TestRestartConfirmationCancelsBlockedInput(t *testing.T) {
 	defer cancel()
 	result := make(chan error, 1)
 	go func() {
-		approved, err := service.ConfirmRestart(ctx, daemon.ConnectionSnapshot{Pid: 42}, "")
+		approved, err := service.ConfirmRestart(ctx, daemon.ConnectionSnapshot{Pid: 42}, daemon.BuildIdentity{})
 		if approved {
 			result <- errors.New("cancellation approved restart")
 			return

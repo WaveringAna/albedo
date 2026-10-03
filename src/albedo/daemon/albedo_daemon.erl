@@ -1,5 +1,6 @@
 -module(albedo_daemon).
--export([defaults/0,refuse_home/1,env/1,free_port/0,ready/3,read_config/1,directory/1,shutdown/0,rss/1,watch_parent/1,hold/1,http_request/1]).
+-include_lib("kernel/include/file.hrl").
+-export([defaults/0,refuse_home/1,env/1,free_port/0,ready/3,read_config/1,directory/1,shutdown/0,rss/1,watch_parent/1,hold/1,http_request/1,build_digest/0,tree_digest/1]).
 env(Name) -> case os:getenv(binary_to_list(Name)) of false -> <<>>; Value -> unicode:characters_to_binary(Value) end.
 %% Home and authentication belong to the daemon, including direct starts.
 defaults() ->
@@ -40,12 +41,94 @@ read_config(Home) ->
       {error,_} -> {error,nil}
     end.
 directory(Path) -> filename:pathtype(Path) =:= absolute andalso filelib:is_dir(Path).
+%% The content digest of this daemon's own build: sha256 over the sorted
+%% relative paths and bytes of every regular file under the albedo app's
+%% ebin/ and priv/ trees, symlinks followed. Memoized for the VM's life, so a
+%% tree edited under a running daemon keeps the digest it booted with. Empty
+%% when the tree cannot be read. The CLI hashes its candidate build with the
+%% same recipe (cli/internal/daemon/build_identity.go); the shared fixture in
+%% test/fixtures/build-digest pins the two implementations together.
+build_digest() ->
+    case persistent_term:get(albedo_build_digest, none) of
+        none ->
+            case compute_build_digest() of
+                <<>> -> <<>>;
+                Digest ->
+                    persistent_term:put(albedo_build_digest, Digest),
+                    Digest
+            end;
+        Digest -> Digest
+    end.
+
+compute_build_digest() ->
+    case code:lib_dir(albedo) of
+        {error, _} -> <<>>;
+        AppDir -> tree_digest(AppDir)
+    end.
+
+tree_digest(AppDir) ->
+    Subtrees = [filename:join(AppDir, Sub) || Sub <- ["ebin", "priv"]],
+    case build_files(Subtrees, []) of
+        {ok, Files} -> hash_build_files(lists:sort(Files));
+        {error, _} -> <<>>
+    end.
+
+%% Every regular file below the given roots, as {RelativePath, AbsolutePath}.
+%% A missing root contributes nothing and any other unreadable path fails the
+%% whole digest, which is the call the CLI's walker makes too.
+build_files([], Acc) -> {ok, Acc};
+build_files([Root | Rest], Acc) ->
+    case file:read_file_info(Root) of
+        {ok, #file_info{type = directory}} ->
+            case walk_build_tree(Root, unicode:characters_to_binary(filename:basename(Root)), []) of
+                {ok, Files} -> build_files(Rest, Acc ++ Files);
+                {error, _} -> {error, nil}
+            end;
+        {ok, _} -> build_files(Rest, Acc);
+        {error, enoent} -> build_files(Rest, Acc);
+        {error, _} -> {error, nil}
+    end.
+
+walk_build_tree(Dir, Rel, Acc) ->
+    case file:list_dir(Dir) of
+        {ok, Names} -> walk_build_entries(Dir, Rel, lists:sort(Names), Acc);
+        {error, _} -> {error, nil}
+    end.
+
+walk_build_entries(_Dir, _Rel, [], Acc) -> {ok, Acc};
+walk_build_entries(Dir, Rel, [Name | Rest], Acc) ->
+    Path = filename:join(Dir, Name),
+    ChildRel = <<Rel/binary, $/, (unicode:characters_to_binary(Name))/binary>>,
+    case file:read_file_info(Path) of
+        {ok, #file_info{type = directory}} ->
+            case walk_build_tree(Path, ChildRel, Acc) of
+                {ok, Files} -> walk_build_entries(Dir, Rel, Rest, Files);
+                {error, _} -> {error, nil}
+            end;
+        {ok, #file_info{type = regular}} ->
+            walk_build_entries(Dir, Rel, Rest, [{ChildRel, Path} | Acc]);
+        {ok, _} -> walk_build_entries(Dir, Rel, Rest, Acc);
+        {error, _} -> {error, nil}
+    end.
+
+hash_build_files(Files) -> hash_build_files(Files, crypto:hash_init(sha256)).
+hash_build_files([], Ctx) -> binary:encode_hex(crypto:hash_final(Ctx), lowercase);
+hash_build_files([{Rel, Path} | Rest], Ctx) ->
+    case file:read_file(Path) of
+        {ok, Bytes} -> hash_build_files(Rest, crypto:hash_update(Ctx, [Rel, Bytes]));
+        {error, _} -> <<>>
+    end.
+
 ready(Home,Port,Token) ->
     File=filename:join(Home,<<"daemon.json">>), Temp= <<File/binary,".tmp">>,
     Record=#{pid=>list_to_integer(os:getpid()),port=>Port,token=>Token,version=>2},
-    Data=json:encode(case os:getenv("ALBEDO_BUILD") of
+    Labelled=case os:getenv("ALBEDO_BUILD") of
         false -> Record;
         Build -> Record#{build=>unicode:characters_to_binary(Build)}
+    end,
+    Data=json:encode(case build_digest() of
+        <<>> -> Labelled;
+        Digest -> Labelled#{digest=>Digest}
     end),
     case file:write_file(Temp,Data,[write,sync]) of
       ok ->

@@ -20,8 +20,11 @@ token and VM defaults, so starting the daemon independently behaved differently.
 2. `Attach` validates the protocol and required capabilities, then returns an API
    connection. Build identity is update information. A different build with the
    required API remains usable.
-3. The ordinary interactive CLI offers to restart a running daemon once per
-   invocation. Keeping it is the default. The prompt warns that restarting
+3. The ordinary interactive CLI offers to restart a running daemon when the
+   candidate build may differ from the running one: the content digests decide
+   when both sides hashed their code trees, the build labels otherwise, and an
+   unprovable comparison keeps the offer. Proven sameness attaches without
+   asking. Keeping the daemon is the default. The prompt warns that restarting
    interrupts active work across sessions. Scripts keep a compatible daemon and
    report incompatibility instead of replacing it.
 4. `Launch` starts a local daemon only under the application's policy. Concurrent
@@ -41,8 +44,13 @@ one. An absent or stale daemon needs no shutdown. Discovery failures are reporte
 Bearer authentication remains the same. The daemon owns its home directory and
 token: by default it uses `~/.albedo` and generates a random token. It publishes
 `daemon.json` atomically with mode `0600` inside the private home directory. The
-record contains the endpoint, PID, protocol, token, and optional build identity.
-It is a local discovery file, not an API compatibility contract.
+record contains the endpoint, PID, protocol, token, and optional build identity:
+an `ALBEDO_BUILD` label plus a content digest of the code tree the daemon runs
+(sha256 over the sorted relative paths and bytes of every regular file under the
+application's `ebin/` and `priv/` trees, symlinks followed; the CLI hashes its
+candidate build with the same recipe, pinned across both implementations by the
+fixture in `test/fixtures/build-digest`). It is a local discovery file, not an
+API compatibility contract.
 
 The shared `priv/bin/albedo-daemon` bootstrap installs VM defaults before Erlang
 starts. Source, test snapshots, and packaged startup use that bootstrap. Deliberate

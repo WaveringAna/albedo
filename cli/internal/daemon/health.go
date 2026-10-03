@@ -17,6 +17,7 @@ type Health struct {
 	Version      int      `json:"version"`
 	Capabilities []string `json:"capabilities"`
 	Build        string   `json:"build,omitempty"`
+	Digest       string   `json:"digest,omitempty"`
 }
 
 func decodeHealth(body []byte) (Health, error) {
@@ -25,6 +26,7 @@ func decodeHealth(body []byte) (Health, error) {
 		Version      *int              `json:"version"`
 		Capabilities []json.RawMessage `json:"capabilities"`
 		Build        json.RawMessage   `json:"build"`
+		Digest       json.RawMessage   `json:"digest"`
 	}
 	invalid := func(cause error) (Health, error) {
 		return Health{}, &ProtocolError{Code: "invalid_health", Operation: "probe health", Cause: cause}
@@ -57,6 +59,14 @@ func decodeHealth(body []byte) (Health, error) {
 			return invalid(errors.New("health build must be a string"))
 		}
 		if err := json.Unmarshal(wire.Build, &health.Build); err != nil {
+			return invalid(err)
+		}
+	}
+	if len(wire.Digest) > 0 {
+		if string(wire.Digest) == "null" {
+			return invalid(errors.New("health digest must be a string"))
+		}
+		if err := json.Unmarshal(wire.Digest, &health.Digest); err != nil {
 			return invalid(err)
 		}
 	}
@@ -96,12 +106,25 @@ func CheckCompatible(health Health) error {
 	return nil
 }
 
-// BuildMismatch reports whether the running daemon provably came from a
-// different build. An unknown build on either side is not a mismatch: without
-// a comparison there is nothing to offer a restart over, so the caller should
-// attach instead of asking.
-func BuildMismatch(running, selected string) bool {
-	return running != "" && selected != "" && running != selected
+// BuildIdentity is one side of the build comparison: the daemon's recorded
+// label and, when its code tree could be hashed, the content digest.
+type BuildIdentity struct {
+	Build  string
+	Digest string
+}
+
+// BuildMismatch reports whether offering a restart is warranted: the running
+// daemon and the candidate build provably differ, or no available identity can
+// rule a difference out. Proven sameness (equal digests, or equal labels when
+// digests are unavailable) attaches quietly instead.
+func BuildMismatch(running, selected BuildIdentity) bool {
+	if running.Digest != "" && selected.Digest != "" {
+		return running.Digest != selected.Digest
+	}
+	if running.Build != "" && selected.Build != "" {
+		return running.Build != selected.Build
+	}
+	return true
 }
 
 // Attach validates an endpoint before exposing its API connection.
@@ -118,7 +141,7 @@ func Attach(ctx context.Context, snapshot ConnectionSnapshot, rediscover Redisco
 		conn.HTTPClient().CloseIdleConnections()
 		return nil, err
 	}
-	snapshot.Version, snapshot.Build = health.Version, health.Build
+	snapshot.Version, snapshot.Build, snapshot.Digest = health.Version, health.Build, health.Digest
 	conn.snapshot.Store(&snapshot)
 	return conn, nil
 }

@@ -259,6 +259,9 @@ class LifecycleTest(unittest.TestCase):
         with Albedo(prepare=prepare) as app:
             previous = dict(app.connection)
             self.assertEqual(previous["build"], "independent-compatible-build")
+            # The daemon records the content digest of the code it runs, so a
+            # client can prove a build difference without a label.
+            self.assertRegex(previous["digest"], r"^[0-9a-f]{64}$")
             app.env.pop("ALBEDO_BUILD")
             app.cli("daemon")
             self.assertEqual(

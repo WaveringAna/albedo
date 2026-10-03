@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -61,14 +60,13 @@ func run(args []string) error {
 			if found.Health.Version != daemon.ProtocolVersion {
 				return nil, daemon.CheckCompatible(found.Health)
 			}
-			selectedBuild := os.Getenv("ALBEDO_BUILD")
-			if selectedBuild == "" {
-				selectedBuild, _ = filepath.EvalSymlinks(os.Getenv("ALBEDO_DAEMON"))
-			}
-			// Only a provable build difference is worth interrupting the
-			// running daemon over; otherwise attach and keep sessions warm.
-			if daemon.BuildMismatch(found.Snapshot.Build, selectedBuild) {
-				restart, err := term.ConfirmRestart(ctx, found.Snapshot, selectedBuild)
+			// A restart offer needs a reason: a provable build difference,
+			// or a difference no digest or label can rule out. Proven
+			// sameness attaches and keeps the running sessions warm.
+			selected := daemon.SelectedBuild(options.ProjectRoot)
+			running := daemon.BuildIdentity{Build: found.Snapshot.Build, Digest: found.Snapshot.Digest}
+			if daemon.BuildMismatch(running, selected) {
+				restart, err := term.ConfirmRestart(ctx, found.Snapshot, selected)
 				if err != nil {
 					return nil, err
 				}

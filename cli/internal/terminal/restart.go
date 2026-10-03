@@ -11,7 +11,7 @@ import (
 
 // ConfirmRestart keeps input cancellation owned by Bubble Tea, rather than
 // leaving a blocked reader behind when the caller stops waiting.
-func (t *Service) ConfirmRestart(ctx context.Context, running daemon.ConnectionSnapshot, selectedBuild string) (bool, error) {
+func (t *Service) ConfirmRestart(ctx context.Context, running daemon.ConnectionSnapshot, selected daemon.BuildIdentity) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -21,7 +21,7 @@ func (t *Service) ConfirmRestart(ctx context.Context, running daemon.ConnectionS
 	if _, err := fmt.Fprintf(t.Out, "Albedo is already running (PID %d).\n", running.Pid); err != nil {
 		return false, err
 	}
-	if daemon.BuildMismatch(running.Build, selectedBuild) {
+	if daemon.BuildMismatch(daemon.BuildIdentity{Build: running.Build, Digest: running.Digest}, selected) {
 		if _, err := fmt.Fprintln(t.Out, "The running daemon comes from a different build."); err != nil {
 			return false, err
 		}

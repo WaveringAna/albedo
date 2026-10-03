@@ -2317,6 +2317,10 @@ fn daemon_route(
             "" -> fields
             build -> [#("build", json.string(build)), ..fields]
           }
+          let fields = case build_digest() {
+            "" -> fields
+            digest -> [#("digest", json.string(digest)), ..fields]
+          }
           reply(200, acknowledged(fields))
         }
       }
@@ -3042,6 +3046,9 @@ fn hold(connection: sqlight.Connection) -> Nil
 
 @external(erlang, "albedo_daemon", "ready")
 fn ready(home: String, port: Int, token: String) -> Result(Nil, String)
+
+@external(erlang, "albedo_daemon", "build_digest")
+fn build_digest() -> String
 
 @external(erlang, "albedo_daemon", "shutdown")
 fn shutdown() -> Nil

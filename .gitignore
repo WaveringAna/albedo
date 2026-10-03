@@ -1,4 +1,5 @@
 *.beam
+!test/fixtures/build-digest/ebin/**/*.beam
 *.ez
 /build
 erl_crash.dump

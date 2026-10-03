@@ -119,7 +119,8 @@ func Discover(ctx context.Context, homeDir string) (Discovery, error) {
 		}
 		return fail(UnreachableDaemon, err)
 	}
-	if health.Version != snapshot.Version || (health.Build != "" && health.Build != snapshot.Build) {
+	if health.Version != snapshot.Version || (health.Build != "" && health.Build != snapshot.Build) ||
+		(health.Digest != "" && snapshot.Digest != "" && health.Digest != snapshot.Digest) {
 		return fail(InvalidDiscovery, errors.New("health identity does not match daemon.json"))
 	}
 	discovery := Discovery{Kind: Running, Snapshot: snapshot, Health: health}

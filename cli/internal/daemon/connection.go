@@ -14,6 +14,7 @@ import (
 type ConnectionSnapshot struct {
 	Token   string `json:"token"`
 	Build   string `json:"build,omitempty"`
+	Digest  string `json:"digest,omitempty"`
 	Port    int    `json:"port"`
 	Pid     int    `json:"pid"`
 	Version int    `json:"version"`

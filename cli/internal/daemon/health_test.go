@@ -16,20 +16,30 @@ import (
 
 const healthyHealth = `{"ok":true,"version":2,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow"],"build":"verified-build"}`
 
-// The restart offer must stay quiet unless both builds are known and differ;
-// an unknown build is unprovable, so attaching silently is the safe default.
-func TestBuildMismatchNeedsTwoKnownBuilds(t *testing.T) {
+// The restart offer stays quiet only for proven sameness: equal digests, or
+// equal labels when digests are unavailable. Provable differences and
+// unprovable ones both warrant offering a restart.
+func TestBuildMismatchStaysQuietOnlyForProvenSameness(t *testing.T) {
 	for _, tc := range []struct {
-		running, selected string
+		running, selected BuildIdentity
 		want              bool
 	}{
-		{running: "", selected: "selected"},
-		{running: "running", selected: ""},
-		{running: "same build", selected: "same build"},
-		{running: "old build", selected: "new build", want: true},
+		{running: BuildIdentity{Digest: "a"}, selected: BuildIdentity{Digest: "a"}},
+		{running: BuildIdentity{Build: "same"}, selected: BuildIdentity{Build: "same"}},
+		{running: BuildIdentity{Digest: "a"}, selected: BuildIdentity{Digest: "b"}, want: true},
+		{running: BuildIdentity{Build: "x"}, selected: BuildIdentity{Build: "y"}, want: true},
+		// Digests outrank labels: identical content is one build even when
+		// the labels disagree, and different content is a mismatch even when
+		// the labels agree.
+		{running: BuildIdentity{Build: "old", Digest: "a"}, selected: BuildIdentity{Build: "new", Digest: "a"}},
+		{running: BuildIdentity{Build: "same", Digest: "a"}, selected: BuildIdentity{Build: "same", Digest: "b"}, want: true},
+		// Unprovable: one side of each identity is unknown.
+		{running: BuildIdentity{Digest: "a"}, selected: BuildIdentity{Build: "y"}, want: true},
+		{running: BuildIdentity{Build: "x"}, selected: BuildIdentity{Digest: "b"}, want: true},
+		{want: true},
 	} {
 		if got := BuildMismatch(tc.running, tc.selected); got != tc.want {
-			t.Fatalf("BuildMismatch(%q, %q) = %v, want %v", tc.running, tc.selected, got, tc.want)
+			t.Fatalf("BuildMismatch(%+v, %+v) = %v, want %v", tc.running, tc.selected, got, tc.want)
 		}
 	}
 }
@@ -47,6 +57,8 @@ func TestAttachValidatesHealthBeforeReturningAConnection(t *testing.T) {
 		"invalid capability":            `{"ok":true,"version":2,"capabilities":[false]}`,
 		"invalid build":                 `{"ok":true,"version":2,"capabilities":[],"build":false}`,
 		"null build":                    `{"ok":true,"version":2,"capabilities":[],"build":null}`,
+		"invalid digest":                `{"ok":true,"version":2,"capabilities":[],"digest":7}`,
+		"null digest":                   `{"ok":true,"version":2,"capabilities":[],"digest":null}`,
 		"missing required capabilities": `{"ok":true,"version":2,"capabilities":[]}`,
 		"unsupported protocol":          `{"ok":true,"version":3,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow"]}`,
 	} {
