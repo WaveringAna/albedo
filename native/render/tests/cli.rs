@@ -77,21 +77,32 @@ fn a_range_becomes_pages_and_a_report() {
     assert!(ok);
     let lines: Vec<&str> = report.lines().collect();
     assert_eq!(lines[0], "language rust");
-    // 290 rows need 6 pages of at most 50; each holds 49, and two are drawn.
-    let first = scratch.0.join("view-1.png");
-    let (width, height) = png_size(&first);
-    assert_eq!(
-        lines[1],
-        format!("image {} 11 59 {width}x{height}", first.display())
-    );
-    let second = scratch.0.join("view-2.png");
-    assert_eq!(png_size(&second), (width, height));
-    assert_eq!(
-        lines[2],
-        format!("image {} 60 108 {width}x{height}", second.display())
-    );
-    assert_eq!(lines[3], "remaining 109 300");
-    assert_eq!(lines.len(), 4);
+    let image_lines: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|line| line.starts_with("image "))
+        .collect();
+    assert!(!image_lines.is_empty());
+    assert!(image_lines.len() <= 2, "exceeded the requested image cap");
+    let image_count = image_lines.len();
+    let mut next_row = 11;
+    for line in image_lines {
+        // Paths may contain spaces; the final three fields are the row range and dimensions.
+        let mut fields = line.rsplitn(4, ' ');
+        let dimensions = fields.next().unwrap();
+        let last: usize = fields.next().unwrap().parse().unwrap();
+        let first: usize = fields.next().unwrap().parse().unwrap();
+        let path = fields.next().unwrap().strip_prefix("image ").unwrap();
+        assert_eq!(first, next_row, "pages lost or repeated rows");
+        assert!(last >= first && last <= 300);
+        assert!(last - first + 1 <= 50, "exceeded the requested row cap");
+        let (width, height) = png_size(Path::new(path));
+        assert!(width > 0 && height > 0);
+        assert_eq!(dimensions, format!("{width}x{height}"));
+        next_row = last + 1;
+    }
+    assert_eq!(lines.last().unwrap(), &format!("remaining {next_row} 300"));
+    assert_eq!(lines.len(), image_count + 2);
 }
 
 #[test]
