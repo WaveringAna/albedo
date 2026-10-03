@@ -29,6 +29,7 @@
       ./cli/go.sum
       ./cli/cmd
       ./cli/internal
+      ./test/fixtures/build-digest
     ];
   };
   hexPackages =
