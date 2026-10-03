@@ -167,7 +167,7 @@ async def ssh_run(
 ) -> tuple[int | None, bytes, str]:
     """One command over the control connection; its exit code is data."""
     process = await asyncio.create_subprocess_exec(
-        *ssh_base(),
+        *ssh_base(target),
         target,
         script,
         stdin=asyncio.subprocess.PIPE
@@ -563,7 +563,7 @@ class RemoteConnection:
         script = in_login_shell(inner)
         self._handshake = loop.create_future()
         self._process = await asyncio.create_subprocess_exec(
-            *ssh_base(),
+            *ssh_base(self.host),
             self.host,
             script,
             stdin=asyncio.subprocess.PIPE,
@@ -1098,7 +1098,7 @@ class FallbackJob:
         self, host: str, script: str, timeout: float, stdin: bytes | None
     ) -> "FallbackJob":
         process = await asyncio.create_subprocess_exec(
-            *ssh_base(),
+            *ssh_base(host),
             host,
             script,
             stdin=asyncio.subprocess.DEVNULL

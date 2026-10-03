@@ -1,7 +1,8 @@
 """One ssh layer for albedo: the daemon's remote kernels and the model's remote plugin.
 
-Both ride the same multiplexed control connections (`/tmp/albedo-ssh-cm/%C`),
-so a host warmed by one is warm for the other. BatchMode stays on: a host
+Both ride the same multiplexed control connection per host: the ControlPath
+the user's ssh config names, so their own ssh, colmena and git share it too,
+or `/tmp/albedo-ssh-cm/%C` when it names none. BatchMode stays on: a host
 that needs a passphrase, a second factor or a new host key answers
 `needs_auth`, and the tui opens the master in the terminal instead.
 
@@ -52,10 +53,42 @@ def control_dir() -> str:
     return control
 
 
-def base() -> list[str]:
-    """The ssh argv prefix: one multiplexed control connection per target."""
-    control = control_dir()
-    os.makedirs(control, exist_ok=True)
+def multiplexing(target: str) -> tuple[str, str]:
+    """The control path and ControlPersist for `target`: the user's own when
+    their ssh config names a ControlPath, so a master they or their tools
+    opened carries albedo too and albedo's carries theirs; else albedo's.
+    `ssh -G` only reads the config."""
+    try:
+        done = subprocess.run(
+            ["ssh", "-G", target],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        lines = done.stdout.splitlines() if done.returncode == 0 else []
+    except (OSError, subprocess.SubprocessError):
+        lines = []
+    settings = {}
+    for line in lines:
+        key, _, value = line.partition(" ")
+        settings[key] = value
+    path = settings.get("controlpath", "none")
+    if path == "none":
+        return f"{control_dir()}/%C", "600"
+    persist = settings.get("controlpersist", "no")
+    # -G expanded the path's tokens; a % left in it is literal
+    return path.replace("%", "%%"), "600" if persist in ("no", "0") else persist
+
+
+def base(target: str) -> list[str]:
+    """The ssh argv prefix for `target`, up to the target itself."""
+    return options(*multiplexing(target))
+
+
+def options(control: str, persist: str) -> list[str]:
+    """The ssh argv prefix riding the master at `control`."""
+    os.makedirs(control_dir(), exist_ok=True)
     return [
         "ssh",
         "-o",
@@ -67,9 +100,9 @@ def base() -> list[str]:
         "-o",
         "ControlMaster=auto",
         "-o",
-        f"ControlPath={control}/%C",
+        f"ControlPath={control}",
         "-o",
-        "ControlPersist=600",
+        f"ControlPersist={persist}",
     ]
 
 
@@ -125,10 +158,11 @@ def commands(target: str, home: str) -> dict[str, object]:
     directory to remove), never in the command line."""
     bundle = f"{home}/{staged_name()}"
     python = "exec python3 -u "
+    control, persist = multiplexing(target)
     answer: dict[str, object] = {
         "host": target,
-        "argv": [*base(), target],
-        "control": f"{control_dir()}/%C",
+        "argv": [*options(control, persist), target],
+        "control": control,
         "bundle": bundle,
         "bridge": in_login_shell(
             "ALBEDO_JOB_ADMISSION=1 "
@@ -177,7 +211,7 @@ def run(
     target: str, script: str, timeout: float, data: bytes | None = None
 ) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
-        [*base(), target, script],
+        [*base(target), target, script],
         input=data,
         stdin=None if data is not None else subprocess.DEVNULL,
         capture_output=True,
@@ -218,10 +252,11 @@ PROBE = (
 def probe(
     target: str, step: Callable[[str], None] = lambda _: None
 ) -> dict[str, object]:
+    control, persist = multiplexing(target)
     answer: dict[str, object] = {
         "host": target,
-        "argv": [*base(), target],
-        "control": f"{control_dir()}/%C",
+        "argv": [*options(control, persist), target],
+        "control": control,
     }
     bundle = staged_name()
     try:

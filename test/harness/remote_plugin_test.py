@@ -114,7 +114,7 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         self.environment.start()
         self.addCleanup(self.environment.stop)
         self.addCleanup(os.chdir, ROOT)
-        self.fake_ssh = patch.object(remote, "ssh_base", lambda: [FAKE_SSH])
+        self.fake_ssh = patch.object(remote, "ssh_base", lambda target: [FAKE_SSH])
         self.fake_ssh.start()
         self.addCleanup(self.fake_ssh.stop)
 

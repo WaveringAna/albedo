@@ -187,11 +187,17 @@ with backoff and `resume_kernels` treat an ssh drop as a bridge that exited.
 
 - **one ssh layer**: `priv/python/albedo_ssh.py` builds the argv (BatchMode,
   `ConnectTimeout=10`, `StrictHostKeyChecking=accept-new`,
-  `ControlMaster=auto`, `ControlPath=/tmp/albedo-ssh-cm/%C`,
-  `ControlPersist=600`), finds an agent socket, wraps commands in the
-  remote login shell and stages the bundle. the model's `remote` plugin
-  imports it, so the daemon and `remote.connect()` share masters and the
-  staged bundle.
+  `ControlMaster=auto`, a `ControlPath` and `ControlPersist`), finds an
+  agent socket, wraps commands in the remote login shell and stages the
+  bundle. the model's `remote` plugin imports it, so the daemon and
+  `remote.connect()` share masters and the staged bundle.
+- **the user's masters**: when the user's ssh config names a `ControlPath`
+  for the host (`ssh -G`, which reads no network), albedo uses that path and
+  its `ControlPersist` (600 when it says no), so a master the user opened in
+  a terminal carries albedo, and the master albedo opened carries the user's
+  own ssh, colmena and git in `run` jobs: one sign-in (one hardware-key
+  touch) per host. with none configured it is `/tmp/albedo-ssh-cm/%C` for
+  600 s.
 - **clean stdout**: every remote command is `/bin/sh -c 'exec 3>&1 1>&2;
   exec "$SHELL" -l -c "exec 1>&3 3>&-; <command>"'`, quoted with shlex in
   `albedo_ssh.in_login_shell` only. whatever the login profile prints (a
@@ -285,7 +291,8 @@ daemon shares the tui's machine, the chat offers ctrl+l: it runs
 through `tea.ExecProcess`, so ssh asks in the terminal, then warms the host,
 and the waiting turn starts on the daemon's next try; the daemon rides that
 master from then on. with a daemon elsewhere the notice says to run
-`ssh <host>` on its machine. the offer goes once the turn starts or goes
+`ssh <host>` on its machine, which carries the daemon when the user's ssh
+config multiplexes that host. the offer goes once the turn starts or goes
 away, or the session moves.
 
 ## not yet

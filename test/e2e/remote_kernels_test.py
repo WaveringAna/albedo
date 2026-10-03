@@ -26,15 +26,26 @@ from harness import Albedo, Provider, exclusive, python, text
 
 FAKE_SSH = """#!/bin/sh
 printf '%s\\n' "$*" >> {log}
+query=
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) shift 2 ;;
+    -G) query=1; shift ;;
     -*) shift ;;
     *) break ;;
   esac
 done
 target=$1
 shift
+if [ -n "$query" ]; then
+  # ssh -G only reads the config: muxed's names a ControlPath, no other does
+  if [ "$target" = muxed ]; then
+    echo "controlmaster auto"
+    echo "controlpath {mux}"
+    echo "controlpersist 1800"
+  fi
+  exit 0
+fi
 if [ "$target" = fakehost ] && [ -e {down} ]; then
   echo "ssh: connect to host fakehost port 22: Operation timed out" >&2
   exit 255
@@ -95,6 +106,7 @@ def processes(*needles):
 class RemoteKernelTests(unittest.TestCase):
     remote_home: Path
     ssh_log: Path
+    mux: Path
     python_log: Path
     down: Path
     slow_stage: Path
@@ -115,6 +127,7 @@ class RemoteKernelTests(unittest.TestCase):
             self.python_log = root / "local-python.log"
             self.down = root / "fakehost-down"
             self.slow_stage = root / "slow-stage"
+            self.mux = root / "cm-muxed"
             real = shutil.which("python3") or sys.executable
             local, remote, old = (
                 root / "local-bin",
@@ -132,6 +145,7 @@ class RemoteKernelTests(unittest.TestCase):
                     home=self.remote_home,
                     down=self.down,
                     slow=self.slow_stage,
+                    mux=self.mux,
                     path=shlex.quote(f"{remote}{os.pathsep}{app.daemon.env['PATH']}"),
                 ),
             )
@@ -367,6 +381,18 @@ class RemoteKernelTests(unittest.TestCase):
         self.assertIn("python >= 3.11", old["detail"])
         self.assertEqual(warm("locked")["state"], "needs_auth")
         self.assertEqual(warm("gone")["state"], "unreachable")
+        # A host whose ssh config names a ControlPath rides that master, so the
+        # user's own ssh and albedo share one sign-in.
+        self.assertEqual(warm("muxed")["state"], "ready")
+        muxed = [
+            line
+            for line in self.ssh_log.read_text().splitlines()
+            if " muxed " in line and "-G" not in line
+        ]
+        self.assertTrue(muxed)
+        for line in muxed:
+            self.assertIn(f"ControlPath={self.mux} ", line)
+            self.assertIn("ControlPersist=1800 ", line)
         with self.app.api("/hosts/fakehost") as response:
             self.assertEqual(json.load(response)["state"], "ready")
 
