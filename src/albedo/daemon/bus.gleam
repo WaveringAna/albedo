@@ -24,12 +24,7 @@ fn publish_activity(session: String, event: String) -> Nil {
   let kind = kind(event)
   case kind {
     // Deltas and progress are small and frequent: tag them and pass them on.
-    "text"
-    | "thinking"
-    | "arguments_delta"
-    | "tool_progress"
-    | "turn_started"
-    | "interrupted" ->
+    "text" | "thinking" | "tool_progress" | "turn_started" | "interrupted" ->
       publish(
         "{\"session\":" <> quote(session) <> "," <> string.drop_start(event, 1),
       )
@@ -40,14 +35,19 @@ fn publish_activity(session: String, event: String) -> Nil {
           #("source", json.string(field(event, "source"))),
         ]),
       )
-    "tool" ->
-      publish(
-        event_json(session, "tool", [
-          #("name", json.string(field(event, "name"))),
-          #("callId", json.string(field(event, "callId"))),
-          #("output", json.string(tool_output(field(event, "result")))),
-        ]),
-      )
+    "tool" -> {
+      let progress_id = field(event, "progressCallId")
+      let fields = [
+        #("name", json.string(field(event, "name"))),
+        #("callId", json.string(field(event, "callId"))),
+        #("output", json.string(tool_output(field(event, "result")))),
+      ]
+      let fields = case progress_id == "" {
+        True -> fields
+        False -> [#("progressCallId", json.string(progress_id)), ..fields]
+      }
+      publish(event_json(session, "tool", fields))
+    }
     _ -> Nil
   }
 }

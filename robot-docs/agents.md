@@ -35,6 +35,11 @@ routes: `GET /agents?session=<id>` (the tree), `GET /agents/stream` (batched eve
 
 The Go client decodes known agent events into `daemon.AgentEvent` before delivery to the view. Unknown event kinds are ignored. Malformed known events return a protocol error instead of supplying empty fields to the view. Tool progress uses the same typed value as the session stream.
 
+Both streams require `normalized_tool_progress`. The daemon supplies tool names,
+phases, and bounded code previews. The
+[client contract](../docs/client-api.md#live-tool-progress) defines preview limits,
+offset units, and tool-call identities.
+
 ## Stream overflow and refresh
 
 The agents stream sends an initial empty batch after subscribing. Each

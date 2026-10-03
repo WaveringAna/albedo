@@ -235,11 +235,12 @@ fn completed(
       state.streamed_output
       |> dict.to_list
       |> list.sort(fn(a, b) { int.compare(a.0, b.0) })
-      |> list.map(fn(entry) { entry.1 })
-    output -> output
+    output -> list.index_map(output, fn(value, index) { #(index, value) })
   }
-  use output <- result.try(replay_output(authoritative))
-  use tools <- result.try(function_calls(authoritative))
+  use output <- result.try(
+    replay_output(list.map(authoritative, fn(entry) { entry.1 })),
+  )
+  use #(tools, call_indices) <- result.try(function_calls(authoritative))
   let finish = case tools {
     [] -> types.Complete
     _ -> types.ToolCalls
@@ -254,6 +255,7 @@ fn completed(
       response.usage,
       finish,
       None,
+      call_indices,
     )),
   ))
 }
@@ -278,7 +280,17 @@ fn incomplete(
   Ok(#(
     State(..state, terminal: True),
     started,
-    Some(types.Turn(state.response_id, output, [], response.usage, finish, None)),
+    Some(
+      types.Turn(
+        state.response_id,
+        output,
+        [],
+        response.usage,
+        finish,
+        None,
+        [],
+      ),
+    ),
   ))
 }
 
@@ -365,9 +377,11 @@ fn replay_output(
 }
 
 fn function_calls(
-  values: List(dynamic.Dynamic),
-) -> Result(List(types.ToolCall), types.Error) {
-  list.try_fold(values, [], fn(calls, value) {
+  values: List(#(Int, dynamic.Dynamic)),
+) -> Result(#(List(types.ToolCall), List(#(String, Int))), types.Error) {
+  list.try_fold(values, #([], []), fn(acc, indexed_value) {
+    let #(calls, call_indices) = acc
+    let #(index, value) = indexed_value
     use kind <- result.try(run(
       value,
       decode.at(["type"], decode.string),
@@ -380,10 +394,10 @@ fn function_calls(
           replay.function_call_decoder(),
           "function_call output item",
         ))
-        Ok([call, ..calls])
+        Ok(#([call, ..calls], [#(call.id, index), ..call_indices]))
       }
-      _ -> Ok(calls)
+      _ -> Ok(acc)
     }
   })
-  |> result.map(list.reverse)
+  |> result.map(fn(acc) { #(list.reverse(acc.0), list.reverse(acc.1)) })
 }

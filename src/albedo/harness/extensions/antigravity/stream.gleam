@@ -215,7 +215,18 @@ fn finish(state: State) -> Result(types.Turn, types.Error) {
           )
         }),
       )
-      types.Turn(state.response_id, [item], calls, state.usage, finish, None)
+      let call_indices =
+        calls
+        |> list.index_map(fn(call, index) { #(call.id, index) })
+      types.Turn(
+        state.response_id,
+        [item],
+        calls,
+        state.usage,
+        finish,
+        None,
+        call_indices,
+      )
     }
   }
 }

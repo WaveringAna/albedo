@@ -7,11 +7,11 @@ import (
 	"sync"
 )
 
-// ChatClient retains the cursor and argument state for one stream subscription.
+// ChatClient retains the cursor and live progress keys for one subscription.
 // Callers must serialize stream subscriptions and reset operations.
 type ChatClient struct {
 	conn            *Connection
-	argumentsByCall map[string]*strings.Builder
+	progressCallIDs map[string]struct{}
 	agentID         string
 	clientID        string
 	afterSeq        int64
@@ -27,11 +27,10 @@ func NewChatClient(conn *Connection, agentID string) *ChatClient {
 	identity := make([]byte, 16)
 	_, _ = rand.Read(identity)
 	return &ChatClient{
-		conn:            conn,
-		agentID:         strings.TrimSpace(agentID),
-		clientID:        "cli-" + hex.EncodeToString(identity),
-		afterSeq:        -1,
-		argumentsByCall: make(map[string]*strings.Builder),
+		conn:     conn,
+		agentID:  strings.TrimSpace(agentID),
+		clientID: "cli-" + hex.EncodeToString(identity),
+		afterSeq: -1,
 	}
 }
 

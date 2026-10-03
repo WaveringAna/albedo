@@ -419,6 +419,7 @@ pub fn claude_stream_preserves_tool_calls_and_replay_test() -> Nil {
   let assert [call] = turn.tool_calls
   assert call.name == "bash"
   assert call.arguments == "{\"command\":\"pwd\"}"
+  assert turn.call_indices == [#("tool_1", 1)]
   assert turn.finish == types.ToolCalls
   let assert Some(usage) = turn.usage
   assert usage.input_tokens == 226

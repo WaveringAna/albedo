@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -33,7 +34,7 @@ func decodeChatEvent(data json.RawMessage) (*wireChatEvent, error) {
 		return nil, errors.New("invalid event: missing or empty type")
 	}
 	switch header.Type {
-	case EventText, EventReset, EventRetry, EventError, EventInterrupted, EventMessage, EventUser, EventThinking, EventNote, EventCompacted, EventToolProgress, EventTool, EventUsage, EventCommitted, EventTurnMembership, EventTurnCompleted, "arguments_delta", "turn_started":
+	case EventText, EventReset, EventRetry, EventError, EventInterrupted, EventMessage, EventUser, EventThinking, EventNote, EventCompacted, EventToolProgress, EventTool, EventUsage, EventCommitted, EventTurnMembership, EventTurnCompleted, "turn_started":
 	default:
 		return nil, nil
 	}
@@ -67,20 +68,10 @@ func decodeChatEvent(data json.RawMessage) (*wireChatEvent, error) {
 		if header.Type == EventUser {
 			err = require("text", "source", "triggeredAt")
 		}
-	case "arguments_delta":
-		err = require("callId", "name", "text")
-		if event.CallID == "" || event.ToolName == "" {
-			return nil, errors.New("invalid argument delta identity")
-		}
 	case EventTurnMembership:
 		err = require("turnId", "submissionIds")
-		if event.TurnID == "" || event.SubmissionIDs == nil {
+		if event.TurnID == "" || event.SubmissionIDs == nil || slices.Contains(event.SubmissionIDs, "") {
 			return nil, errors.New("invalid turn membership identity")
-		}
-		for _, id := range event.SubmissionIDs {
-			if id == "" {
-				return nil, errors.New("invalid empty submission identity")
-			}
 		}
 	case EventTurnCompleted:
 		err = require("turnId")
@@ -145,31 +136,14 @@ func decodeChatEvent(data json.RawMessage) (*wireChatEvent, error) {
 		}
 		event.Usage = &usage
 	case EventToolProgress:
-		if fieldErr := validateToolProgress(fields["progress"]); fieldErr != nil {
+		if len(data) > 8*1024 {
+			return nil, errors.New("invalid tool_progress event: exceeds 8 KiB")
+		}
+		progress, fieldErr := decodeToolProgress(fields["progress"])
+		if fieldErr != nil {
 			return nil, fieldErr
 		}
-		if progress := event.Progress; progress != nil {
-			if progress.CallID == "" || progress.Name == "" || len(progress.CallID) > 200 || len(progress.Name) > 100 {
-				return nil, errors.New("invalid tool progress event")
-			}
-			progress.Name = cleanLabel(progress.Name)
-			if intent := progress.Intent; intent != nil {
-				if (intent.Kind != "write" && intent.Kind != "edit" && intent.Kind != "read" && intent.Kind != "run") || len(intent.Target) > 300 {
-					return nil, errors.New("invalid tool progress intent")
-				}
-			}
-			if code := progress.Code; code != nil {
-				if code.Offset < 0 || (progress.Phase == "generating" && len(code.Text) > 512) || len(code.Text) > 16000 {
-					return nil, errors.New("invalid tool progress code")
-				} else if progress.Phase == "running" {
-					if progress.Intent == nil && progress.Name == "python" {
-						progress.Intent = ParsePythonIntent(code.Text)
-					}
-					head, _, _ := strings.Cut(strings.TrimSpace(code.Text), "\n")
-					progress.Code = &ToolCodePreview{Text: sanitizeControlRunes(head)}
-				}
-			}
-		}
+		event.Progress = progress
 	}
 	if err != nil {
 		return nil, err
@@ -195,20 +169,21 @@ func decodeChatEvent(data json.RawMessage) (*wireChatEvent, error) {
 	return &event, nil
 }
 
-// ResetStream discards unfinished tool arguments and starts the next stream from
-// a fresh snapshot. Call it after the subscription has stopped writing.
+// ResetStream starts the next stream from a fresh snapshot. Call it after the
+// subscription has stopped writing.
 func (c *ChatClient) ResetStream() {
 	c.mu.Lock()
-	c.argumentsByCall = make(map[string]*strings.Builder)
+	c.progressCallIDs = nil
 	c.afterSeq = -1
 	c.afterGeneration = ""
 	c.mu.Unlock()
 }
 
 type streamBatch struct {
-	Generation string            `json:"generation"`
-	Cursor     *int64            `json:"cursor"`
-	Events     []json.RawMessage `json:"events"`
+	Generation      string            `json:"generation"`
+	Cursor          *int64            `json:"cursor"`
+	Events          []json.RawMessage `json:"events"`
+	CurrentProgress json.RawMessage   `json:"currentProgress"`
 }
 
 func streamFailure(kind StreamFailureKind, cause error) error {
@@ -251,11 +226,14 @@ func (c *ChatClient) Stream(ctx context.Context, tail int, onEvent func(StreamEv
 func (c *ChatClient) StreamWithProgress(ctx context.Context, tail int, onEvent func(StreamEvent) error, onBatchConsumed func()) error {
 	defer func() {
 		// Cancellation also clears state when the request fails before reading.
-		// Transient failures and EOF retain the cursor and unfinished arguments.
+		// Transient failures and EOF retain the last consumed cursor.
 		if ctx.Err() != nil {
 			c.ResetStream()
 		}
 	}()
+	if err := checkCapability(ctx, c.conn, "normalized_tool_progress", "normalized tool progress for session streams"); err != nil {
+		return err
+	}
 
 	c.mu.Lock()
 	afterSeq, afterGeneration := c.afterSeq, c.afterGeneration
@@ -271,8 +249,8 @@ func (c *ChatClient) StreamWithProgress(ctx context.Context, tail int, onEvent f
 	}
 
 	route := "/stream?" + query.Encode()
-	operation := operation{Name: "stream session", Method: http.MethodGet, Path: sessionPath(c.agentID, route), Policy: readRecovery}
-	err := scanEventStream(ctx, c.conn, operation, streamLimits{requireSSE: true, lineBytes: 10 * 1024 * 1024, errorBytes: 64 * 1024}, func(scanner *bufio.Scanner) error {
+	subscription := operation{Name: "stream session", Method: http.MethodGet, Path: sessionPath(c.agentID, route), Policy: readRecovery}
+	err := scanEventStream(ctx, c.conn, subscription, streamLimits{requireSSE: true, lineBytes: 10 * 1024 * 1024, errorBytes: 64 * 1024}, func(scanner *bufio.Scanner) error {
 		return c.readStream(ctx, scanner, onBatchConsumed, func(event StreamEvent) error {
 			if err := onEvent(event); err != nil {
 				return streamFailure(StreamTerminal, err)
@@ -284,9 +262,6 @@ func (c *ChatClient) StreamWithProgress(ctx context.Context, tail int, onEvent f
 }
 
 func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onBatchConsumed func(), onEvent func(StreamEvent) error) error {
-	reporter := NewToolProgressReporter(func(progress *ToolProgress) error {
-		return onEvent(StreamEvent{Type: EventToolProgress, Progress: progress})
-	})
 	var eventType string
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
@@ -346,6 +321,19 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 			}
 		}
 		reset := len(events) > 0 && events[0].Type == EventReset
+		for _, event := range events {
+			if !reset && event.Type == EventTool && event.ProgressCallID == "" {
+				return streamFailure(StreamProtocol, errors.New("invalid live tool event: missing progressCallId"))
+			}
+		}
+		currentProgress, err := decodeCurrentProgress(batch.CurrentProgress, reset)
+		if err != nil {
+			return streamFailure(StreamProtocol, err)
+		}
+		progressCallIDs, err := c.nextProgressCallIDs(currentProgress, events, reset)
+		if err != nil {
+			return streamFailure(StreamProtocol, err)
+		}
 		c.mu.Lock()
 		previous, generation := c.afterSeq, c.afterGeneration
 		c.mu.Unlock()
@@ -355,44 +343,8 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 		if generation == batch.Generation && *batch.Cursor < previous && !reset {
 			return streamFailure(StreamProtocol, errors.New("stream cursor regressed without reset"))
 		}
-		if err := c.validateArgumentBatch(events); err != nil {
-			return streamFailure(StreamProtocol, err)
-		}
 		for _, event := range events {
-			switch event.Type {
-			case EventReset, EventRetry, "turn_started", EventMessage, EventInterrupted, EventError:
-				c.mu.Lock()
-				c.argumentsByCall = make(map[string]*strings.Builder)
-				c.mu.Unlock()
-				if err := reporter.Report(nil, "running"); err != nil {
-					return err
-				}
-			}
 			if event.Type == "turn_started" {
-				continue
-			}
-			if event.Type == EventTool || (event.Type == EventToolProgress && event.Progress != nil && event.Progress.Phase == "running") {
-				callID := event.CallID
-				if event.Progress != nil {
-					callID = event.Progress.CallID
-				}
-				c.mu.Lock()
-				delete(c.argumentsByCall, callID)
-				c.mu.Unlock()
-				if err := reporter.Report(nil, "running"); err != nil {
-					return err
-				}
-			}
-			if event.Type == "arguments_delta" {
-				if event.Text != "" {
-					arguments := c.appendArguments(event.CallID, event.Text)
-					call := &ToolCallAssembly{ID: event.CallID}
-					call.Function.Name = event.ToolName
-					call.Function.Arguments = arguments
-					if err := reporter.Report(call, "generating"); err != nil {
-						return err
-					}
-				}
 				continue
 			}
 			event.Replayed = reset && event.Type != EventReset
@@ -400,7 +352,13 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 				return err
 			}
 		}
+		for index := range currentProgress {
+			if err := onEvent(StreamEvent{Type: EventToolProgress, Progress: &currentProgress[index]}); err != nil {
+				return err
+			}
+		}
 		c.mu.Lock()
+		c.progressCallIDs = progressCallIDs
 		c.afterSeq = *batch.Cursor
 		c.afterGeneration = batch.Generation
 		c.mu.Unlock()
@@ -411,49 +369,71 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 	return nil
 }
 
-func (c *ChatClient) appendArguments(callID, text string) string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	arguments, exists := c.argumentsByCall[callID]
-	if !exists {
-		arguments = new(strings.Builder)
-		c.argumentsByCall[callID] = arguments
+func (c *ChatClient) nextProgressCallIDs(snapshot []ToolProgress, events []wireChatEvent, reset bool) (map[string]struct{}, error) {
+	active := make(map[string]struct{})
+	if reset {
+		for _, progress := range snapshot {
+			active[progress.CallID] = struct{}{}
+		}
+		return active, nil
 	}
-	arguments.WriteString(text)
-	return arguments.String()
-}
-
-// validateArgumentBatch checks preview limits before delivering any batch event.
-func (c *ChatClient) validateArgumentBatch(events []wireChatEvent) error {
-	sizes := make(map[string]int)
 	c.mu.Lock()
-	for id, args := range c.argumentsByCall {
-		sizes[id] = args.Len()
+	for callID := range c.progressCallIDs {
+		active[callID] = struct{}{}
 	}
 	c.mu.Unlock()
 	for _, event := range events {
 		switch event.Type {
-		case EventReset, EventRetry, "turn_started", EventMessage, EventInterrupted, EventError:
-			clear(sizes)
-		case EventTool:
-			delete(sizes, event.CallID)
+		case EventRetry, EventUser, EventMessage, EventError, EventInterrupted, EventTurnCompleted:
+			clear(active)
 		case EventToolProgress:
-			if event.Progress != nil && event.Progress.Phase == "running" {
-				delete(sizes, event.Progress.CallID)
+			if event.Progress == nil {
+				clear(active)
+			} else {
+				active[event.Progress.CallID] = struct{}{}
+				if len(active) > maxActiveToolProgress {
+					return nil, errors.New("too many active tool progress calls")
+				}
 			}
-		case "arguments_delta":
-			if event.Text == "" {
-				continue
-			}
-			sizes[event.CallID] += len(event.Text)
-			retained := 0
-			for id, size := range sizes {
-				retained += len(id) + size
-			}
-			if len(sizes) > 32 || retained > 2000000 {
-				return errors.New("too many tool argument previews for this client to display")
-			}
+		case EventTool:
+			delete(active, event.ProgressCallID)
 		}
 	}
-	return nil
+	return active, nil
+}
+
+func decodeCurrentProgress(raw json.RawMessage, reset bool) ([]ToolProgress, error) {
+	if !reset {
+		if raw != nil {
+			return nil, errors.New("invalid incremental stream batch: currentProgress is only valid on reset")
+		}
+		return nil, nil
+	}
+	if raw == nil || string(raw) == "null" {
+		return nil, errors.New("invalid reset stream batch: missing currentProgress array")
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(raw, &entries); err != nil || entries == nil {
+		return nil, errors.New("invalid reset stream batch: currentProgress must be an array")
+	}
+	progresses := make([]ToolProgress, 0, len(entries))
+	if len(entries) > maxActiveToolProgress {
+		return nil, errors.New("invalid reset stream batch: too many active tool progress calls")
+	}
+	for _, entry := range entries {
+		progress, err := decodeToolProgress(entry)
+		if err != nil {
+			return nil, fmt.Errorf("invalid reset currentProgress: %w", err)
+		}
+		if progress == nil {
+			return nil, errors.New("invalid reset currentProgress: entries must be progress objects")
+		}
+		for _, existing := range progresses {
+			if existing.CallID == progress.CallID {
+				return nil, fmt.Errorf("invalid reset currentProgress: duplicate callId %q", progress.CallID)
+			}
+		}
+		progresses = append(progresses, *progress)
+	}
+	return progresses, nil
 }

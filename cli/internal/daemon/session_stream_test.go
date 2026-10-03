@@ -1,5 +1,5 @@
-// Controlled streams exercise preview assembly across EOF, cancellation, and
-// reset boundaries that provider timing cannot reliably produce.
+// Controlled peers expose invalid batches and reconnect ordering that a conforming
+// daemon cannot produce through an E2E provider.
 package daemon
 
 import (
@@ -11,299 +11,473 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func formatPage(cursor int, events []any) string {
-	batch, _ := json.Marshal(map[string]any{"generation": "generation-a", "cursor": cursor, "events": events})
-	return fmt.Sprintf("data: %s\n\n", batch)
+func formatSessionBatch(generation string, cursor int, events []any, currentProgress any, includeCurrentProgress bool) string {
+	batch := map[string]any{"generation": generation, "cursor": cursor, "events": events}
+	if includeCurrentProgress {
+		batch["currentProgress"] = currentProgress
+	}
+	encoded, _ := json.Marshal(batch)
+	return fmt.Sprintf("data: %s\n\n", encoded)
 }
 
-func TestToolPreviewContinuesAcrossEOFAndTransientFailure(t *testing.T) {
-	var requests atomic.Int32
+func TestResetDeliversNormalizedCurrentProgressAfterReplay(t *testing.T) {
+	var requests int
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveNormalizedProgressHealth(writer, request) {
+			return
+		}
 		writer.Header().Set("Content-Type", "text/event-stream")
-		switch requests.Add(1) {
-		case 1:
-			_, _ = writer.Write([]byte(formatPage(1, []any{
+		requests++
+		if requests == 1 {
+			_, _ = fmt.Fprint(writer, formatSessionBatch("g", 8, []any{
 				map[string]any{"type": "reset"},
-				map[string]any{"type": "arguments_delta", "name": "python", "callId": "read", "text": `{"code":"read('first.py')"}`},
-				map[string]any{"type": "tool", "callId": "read", "name": "python", "args": `{"code":"read('first.py')"}`, "result": "done"},
-				map[string]any{"type": "arguments_delta", "name": "python", "callId": "edit", "text": `{"code":"edit('second`},
-			})))
-		case 2:
-			writer.WriteHeader(http.StatusServiceUnavailable)
-		case 3:
-			if cursor := request.URL.Query().Get("after_seq"); cursor != "1" {
-				t.Errorf("transient failure lost the consumed cursor: %s", cursor)
-			}
-			_, _ = writer.Write([]byte(formatPage(2, []any{
-				map[string]any{"type": "arguments_delta", "name": "python", "callId": "edit", "text": `.py')"}`},
-				map[string]any{"type": "tool_progress", "progress": map[string]any{"callId": "edit", "name": "python", "phase": "running"}},
-				map[string]any{"type": "tool", "callId": "edit", "name": "python", "args": `{"code":"edit('second.py')"}`, "result": "done"},
-			})))
-		default:
-			t.Errorf("unexpected automatic stream request: %s", request.URL)
+				map[string]any{"type": "message", "role": "assistant", "text": "durable"},
+			}, []any{map[string]any{
+				"callId": "run:2:1", "toolCallId": "native-7", "name": "python", "phase": "generating",
+				"code": map[string]any{"offset": 3, "text": "é🙂"},
+			}}, true))
+			_, _ = fmt.Fprint(writer, formatSessionBatch("g", 9, []any{
+				map[string]any{"type": "tool_progress", "progress": map[string]any{
+					"callId": "run:2:1", "toolCallId": "native-7", "name": "python", "phase": "running",
+				}},
+				map[string]any{"type": "tool", "callId": "native-7", "progressCallId": "run:2:1", "name": "python", "args": "{}", "result": "done"},
+			}, nil, false))
 		}
 	}))
 	defer server.Close()
 	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
-	var previews []string
-	var completed []string
-	consume := func(event StreamEvent) error {
-		if event.Type == EventToolProgress && event.Progress != nil && event.Progress.Code != nil {
-			previews = append(previews, event.Progress.Code.Text)
-		}
-		if event.Type == EventTool {
-			completed = append(completed, event.ToolResult)
-		}
-		return nil
-	}
-	if err := client.Stream(t.Context(), 0, consume); err != nil {
-		t.Fatal(err)
-	}
-	err := client.Stream(t.Context(), 0, consume)
-	failure, ok := errors.AsType[*StreamError](err)
-	if !ok || failure.Kind != StreamTransient {
-		t.Fatalf("server failure was not transient: %v", err)
-	}
-	if err := client.Stream(t.Context(), 0, consume); err != nil {
-		t.Fatal(err)
-	}
-	if len(previews) != 3 || previews[0] != "read('first.py')" || previews[1] != "edit('second" || previews[2] != "edit('second.py')" {
-		t.Fatalf("reconnect lost or mixed tool argument fragments: %q", previews)
-	}
-	if len(completed) != 2 {
-		t.Fatalf("lost completed tool results: %v", completed)
-	}
-}
-
-func TestStreamRejectsExcessUnfinishedCallsBeforeDeliveringTheBatch(t *testing.T) {
-	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Content-Type", "text/event-stream")
-		count := requests.Add(1)
-		switch {
-		case count <= 32:
-			events := []any{map[string]any{"type": "arguments_delta", "name": "python", "callId": fmt.Sprintf("call-%d", count), "text": `{"code":"`}}
-			if count == 1 {
-				events = append([]any{map[string]any{"type": "reset"}}, events...)
-			}
-			_, _ = writer.Write([]byte(formatPage(int(count), events)))
-		case count == 33:
-			_, _ = writer.Write([]byte(formatPage(33, []any{
-				map[string]any{"type": "text", "text": "must not escape"},
-				map[string]any{"type": "arguments_delta", "name": "python", "callId": "excess-call", "text": `{"code":"`},
-			})))
-		case count == 34:
-			if cursor := request.URL.Query().Get("after_seq"); cursor != "32" {
-				t.Errorf("rejected batch advanced the cursor: %s", cursor)
-			}
-			_, _ = writer.Write([]byte(formatPage(32, []any{})))
-		case count == 35:
-			if cursor := request.URL.Query().Get("after_seq"); cursor != "" || request.URL.Query().Has("after_generation") {
-				t.Errorf("recovery did not request a fresh snapshot: %s", cursor)
-			}
-			_, _ = writer.Write([]byte(formatPage(35, []any{
-				map[string]any{"type": "reset"},
-				map[string]any{"type": "message", "role": "assistant", "text": "recovered"},
-			})))
-		default:
-			t.Error("unexpected stream request")
-		}
-	}))
-	defer server.Close()
-	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
-	consume := func(StreamEvent) error { return nil }
-	for range 32 {
-		if err := client.Stream(t.Context(), 0, consume); err != nil {
-			t.Fatalf("accepted call rejected: %v", err)
-		}
-	}
-	err := client.Stream(t.Context(), 0, func(StreamEvent) error { t.Error("oversized batch partially delivered"); return nil })
-	failure, ok := errors.AsType[*StreamError](err)
-	if !ok || failure.Kind != StreamProtocol {
-		t.Fatalf("excess unfinished call did not fail protocol validation: %v", err)
-	}
-	if err := client.Stream(t.Context(), 0, consume); err != nil {
-		t.Fatal(err)
-	}
-	client.ResetStream()
-	var recovered bool
+	var received []StreamEvent
 	if err := client.Stream(t.Context(), 0, func(event StreamEvent) error {
-		recovered = recovered || event.Type == EventMessage && event.Text == "recovered" && event.Replayed
+		received = append(received, event)
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !recovered {
-		t.Fatal("recovery did not deliver durable history")
+	if len(received) != 5 {
+		t.Fatalf("received %d events, want reset, replay row, live snapshot, running, and result: %+v", len(received), received)
+	}
+	if received[0].Type != EventReset || !received[1].Replayed || received[1].Text != "durable" {
+		t.Fatalf("durable snapshot order or replay marking changed: %+v", received[:2])
+	}
+	snapshot := received[2]
+	if snapshot.Type != EventToolProgress || snapshot.Replayed || snapshot.Progress == nil || snapshot.Progress.CallID != "run:2:1" || snapshot.Progress.ToolCallID != "native-7" || snapshot.Progress.Code == nil || snapshot.Progress.Code.Offset != 3 || snapshot.Progress.Code.Text != "é🙂" {
+		t.Fatalf("current progress snapshot was not delivered as live normalized progress: %+v", snapshot)
+	}
+	if received[3].Progress == nil || received[3].Progress.Phase != "running" || received[4].ProgressCallID != "run:2:1" {
+		t.Fatalf("incremental progress and result correlation were lost: %+v", received[3:])
 	}
 }
 
-func TestStreamRejectsExcessArgumentBytesBeforeDeliveringTheBatch(t *testing.T) {
-	firstArguments := strings.Repeat("x", 999_999)
-	secondArguments := strings.Repeat("y", 2_000_000-len("first")-len("second")-len(firstArguments))
-	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Content-Type", "text/event-stream")
-		switch requests.Add(1) {
-		case 1:
-			_, _ = writer.Write([]byte(formatPage(1, []any{
-				map[string]any{"type": "reset"},
-				map[string]any{"type": "arguments_delta", "name": "other", "callId": "first", "text": firstArguments},
-				map[string]any{"type": "arguments_delta", "name": "other", "callId": "second", "text": secondArguments},
-			})))
-		case 2:
-			_, _ = writer.Write([]byte(formatPage(2, []any{
-				map[string]any{"type": "text", "text": "must not escape"},
-				map[string]any{"type": "arguments_delta", "name": "other", "callId": "second", "text": "!"},
-			})))
-		case 3:
-			if cursor := request.URL.Query().Get("after_seq"); cursor != "1" {
-				t.Errorf("rejected byte overflow advanced the cursor: %s", cursor)
-			}
-			_, _ = writer.Write([]byte(formatPage(1, []any{})))
-		case 4:
-			_, _ = writer.Write([]byte(formatPage(3, []any{map[string]any{"type": "reset"}})))
-			_, _ = writer.Write([]byte(formatPage(4, []any{
-				map[string]any{"type": "text", "text": "must not escape"},
-				map[string]any{"type": "arguments_delta", "name": "other", "callId": "first", "text": firstArguments},
-				map[string]any{"type": "arguments_delta", "name": "other", "callId": "second", "text": secondArguments + "!"},
-			})))
-		case 5:
-			if cursor := request.URL.Query().Get("after_seq"); cursor != "3" {
-				t.Errorf("overflow lost the preceding successful reset: %s", cursor)
-			}
-			_, _ = writer.Write([]byte(formatPage(3, []any{})))
-		default:
-			t.Error("unexpected stream request")
-		}
-	}))
-	defer server.Close()
-	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
-	consume := func(StreamEvent) error { return nil }
-	if err := client.Stream(t.Context(), 0, consume); err != nil {
-		t.Fatalf("exact byte budget rejected: %v", err)
+func TestResetSnapshotIsValidatedBeforeCallbacksAndCursorCommit(t *testing.T) {
+	tooManyCalls := make([]any, maxActiveToolProgress+1)
+	for index := range tooManyCalls {
+		tooManyCalls[index] = map[string]any{"callId": fmt.Sprintf("call-%d", index), "name": "python", "phase": "running"}
 	}
-	err := client.Stream(t.Context(), 0, func(StreamEvent) error { t.Error("overflowing batch partially delivered"); return nil })
-	failure, ok := errors.AsType[*StreamError](err)
-	if !ok || failure.Kind != StreamProtocol {
-		t.Fatalf("existing call overflow was not a protocol failure: %v", err)
-	}
-	if err := client.Stream(t.Context(), 0, consume); err != nil {
-		t.Fatal(err)
-	}
-	client.ResetStream()
-	var delivered []EventType
-	err = client.Stream(t.Context(), 0, func(event StreamEvent) error { delivered = append(delivered, event.Type); return nil })
-	failure, ok = errors.AsType[*StreamError](err)
-	if !ok || failure.Kind != StreamProtocol || len(delivered) != 1 || delivered[0] != EventReset {
-		t.Fatalf("fresh call overflow leaked a partial batch: error=%v, events=%v", err, delivered)
-	}
-	if err := client.Stream(t.Context(), 0, consume); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestCancellationStartsTheNextSubscriptionWithoutOldArguments(t *testing.T) {
-	for _, beforeHeaders := range []bool{false, true} {
-		name := "during event delivery"
-		if beforeHeaders {
-			name = "before response headers"
-		}
+	for name, progress := range map[string]any{
+		"missing":             nil,
+		"null":                json.RawMessage("null"),
+		"invalid item":        []any{map[string]any{"callId": "c", "name": "python", "phase": "other"}},
+		"too many scalars":    []any{map[string]any{"callId": "c", "name": "python", "phase": "generating", "code": map[string]any{"offset": 0, "text": strings.Repeat("x", 513)}}},
+		"too many name bytes": []any{map[string]any{"callId": "c", "name": strings.Repeat("é", 51), "phase": "running"}},
+		"oversized native id": []any{map[string]any{"callId": "c", "toolCallId": strings.Repeat("n", 201), "name": "python", "phase": "running"}},
+		"oversized event":     []any{map[string]any{"callId": "c", "name": "python", "phase": "running", "extra": strings.Repeat("x", 8192)}},
+		"too many calls":      tooManyCalls,
+		"duplicate call id": []any{
+			map[string]any{"callId": "c", "name": "python", "phase": "running"},
+			map[string]any{"callId": "c", "name": "python", "phase": "generating"},
+		},
+	} {
 		t.Run(name, func(t *testing.T) {
-			var requests atomic.Int32
-			waiting := make(chan struct{})
+			var requests int
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-				count := requests.Add(1)
-				if beforeHeaders && count == 2 {
-					close(waiting)
-					<-request.Context().Done()
+				if serveNormalizedProgressHealth(writer, request) {
 					return
 				}
 				writer.Header().Set("Content-Type", "text/event-stream")
-				arguments := `{"code":"old`
-				if count > 1 {
-					if cursor := request.URL.Query().Get("after_seq"); cursor != "" || request.URL.Query().Has("after_generation") {
-						t.Errorf("cancelled subscription retained its cursor: %s", cursor)
-					}
-					arguments = `{"code":"new()"}`
+				requests++
+				if requests == 1 {
+					_, _ = fmt.Fprint(writer, formatSessionBatch("g", 4, []any{map[string]any{"type": "reset"}, map[string]any{"type": "message", "role": "assistant", "text": "must not escape"}}, progress, name != "missing"))
+					return
 				}
-				_, _ = writer.Write([]byte(formatPage(int(count), []any{
-					map[string]any{"type": "reset"},
-					map[string]any{"type": "arguments_delta", "name": "python", "callId": "same", "text": arguments},
-				})))
+				if request.URL.Query().Get("after_seq") != "" || request.URL.Query().Has("after_generation") {
+					t.Errorf("invalid reset advanced cursor: %s", request.URL.RawQuery)
+				}
+				_, _ = fmt.Fprint(writer, formatSessionBatch("g", 5, []any{map[string]any{"type": "reset"}}, []any{}, true))
 			}))
 			defer server.Close()
 			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-			defer cancel()
-			var err error
-			if beforeHeaders {
-				if err := client.Stream(t.Context(), 0, func(StreamEvent) error { return nil }); err != nil {
-					t.Fatal(err)
-				}
-				finished := make(chan error, 1)
-				go func() { finished <- client.Stream(ctx, 0, func(StreamEvent) error { return nil }) }()
-				select {
-				case <-waiting:
-				case <-ctx.Done():
-					t.Fatal("stream never requested response headers")
-				}
-				cancel()
-				err = <-finished
-			} else {
-				err = client.Stream(ctx, 0, func(event StreamEvent) error {
-					if event.Type == EventReset {
-						return nil
-					}
-					cancel()
-					return ctx.Err()
-				})
-			}
-			if !errors.Is(err, context.Canceled) {
-				t.Fatalf("cancellation cause lost: %v", err)
-			}
-			var preview string
-			if err := client.Stream(t.Context(), 0, func(event StreamEvent) error {
-				if event.Progress != nil && event.Progress.Code != nil {
-					preview = event.Progress.Code.Text
-				}
+			var delivered []StreamEvent
+			err := client.Stream(t.Context(), 0, func(event StreamEvent) error {
+				delivered = append(delivered, event)
 				return nil
-			}); err != nil {
-				t.Fatal(err)
+			})
+			failure, ok := errors.AsType[*StreamError](err)
+			if !ok || failure.Kind != StreamProtocol || len(delivered) != 0 {
+				t.Fatalf("malformed reset snapshot escaped validation: err=%v delivered=%+v", err, delivered)
 			}
-			if preview != "new()" {
-				t.Fatalf("new subscription mixed old argument fragments: %q", preview)
+			if err := client.Stream(t.Context(), 0, func(StreamEvent) error { return nil }); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
 }
 
-func TestSnapshotEventsAreMarkedReplayed(t *testing.T) {
-	pages := formatPage(2, []any{
-		map[string]any{"type": "reset"},
-		map[string]any{"type": "thinking", "text": "earlier"},
-	}) + formatPage(3, []any{map[string]any{"type": "thinking", "text": "now"}})
+func TestStreamDeliversProgressAtUnicodeLimits(t *testing.T) {
+	name, nativeID, code := strings.Repeat("é", 50), strings.Repeat("n", 200), strings.Repeat("🙂", 512)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveNormalizedProgressHealth(writer, request) {
+			return
+		}
 		writer.Header().Set("Content-Type", "text/event-stream")
-		_, _ = writer.Write([]byte(pages))
+		_, _ = fmt.Fprint(writer, formatSessionBatch("g", 1, []any{map[string]any{"type": "reset"}}, []any{
+			map[string]any{"callId": "call", "toolCallId": nativeID, "name": name, "phase": "generating", "code": map[string]any{"offset": 13, "text": code}},
+		}, true))
 	}))
 	defer server.Close()
 	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
-	replayed := map[string]bool{}
+	var delivered *ToolProgress
 	if err := client.Stream(t.Context(), 0, func(event StreamEvent) error {
-		if event.Type == EventThinking {
-			replayed[event.Text] = event.Replayed
+		if event.Type == EventToolProgress {
+			delivered = event.Progress
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(replayed) != 2 || !replayed["earlier"] || replayed["now"] {
-		t.Fatalf("only reset snapshot events should be replayed: %v", replayed)
+	if delivered == nil || delivered.Name != name || delivered.ToolCallID != nativeID || delivered.Code == nil || delivered.Code.Text != code || delivered.Code.Offset != 13 {
+		t.Fatalf("valid Unicode progress was rejected or changed: %+v", delivered)
+	}
+}
+
+func TestResetSnapshotCallbackRunsBeforeCursorCommit(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveNormalizedProgressHealth(writer, request) {
+			return
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		requests++
+		if requests == 1 {
+			_, _ = fmt.Fprint(writer, formatSessionBatch("g", 9, []any{map[string]any{"type": "reset"}}, []any{
+				map[string]any{"callId": "run:1:0", "name": "python", "phase": "generating"},
+			}, true))
+			return
+		}
+		if request.URL.Query().Has("after_generation") || request.URL.Query().Has("after_seq") {
+			t.Errorf("callback failure committed reset cursor: %s", request.URL.RawQuery)
+		}
+		_, _ = fmt.Fprint(writer, formatSessionBatch("g", 10, []any{map[string]any{"type": "reset"}}, []any{}, true))
+	}))
+	defer server.Close()
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
+	stop := errors.New("stop after current progress")
+	err := client.Stream(t.Context(), 0, func(event StreamEvent) error {
+		if event.Type == EventToolProgress {
+			return stop
+		}
+		return nil
+	})
+	if !errors.Is(err, stop) {
+		t.Fatalf("snapshot callback failure was lost: %v", err)
+	}
+	if err := client.Stream(t.Context(), 0, func(StreamEvent) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIncrementalProgressRequiresNormalizedEvents(t *testing.T) {
+	for name, event := range map[string]any{
+		"progress missing key":       map[string]any{"type": "tool_progress", "progress": map[string]any{"name": "python", "phase": "running"}},
+		"result missing progress id": map[string]any{"type": "tool", "callId": "native", "name": "python", "args": "{}", "result": "done"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if serveNormalizedProgressHealth(writer, request) {
+					return
+				}
+				writer.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprint(writer, formatSessionBatch("g", 2, []any{map[string]any{"type": "reset"}}, []any{}, true))
+				_, _ = fmt.Fprint(writer, formatSessionBatch("g", 3, []any{event}, nil, false))
+			}))
+			defer server.Close()
+			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
+			err := client.Stream(t.Context(), 0, func(StreamEvent) error { return nil })
+			failure, ok := errors.AsType[*StreamError](err)
+			if !ok || failure.Kind != StreamProtocol {
+				t.Fatalf("non-normalized event was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestStreamCapabilityIsRequiredBeforeSubscription(t *testing.T) {
+	var streamRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/health" {
+			_, _ = fmt.Fprint(writer, `{"ok":true,"version":2,"capabilities":[]}`)
+			return
+		}
+		streamRequests++
+	}))
+	defer server.Close()
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
+	err := client.Stream(t.Context(), 0, func(StreamEvent) error { return nil })
+	if _, ok := errors.AsType[*UpgradeRequiredError](err); !ok || streamRequests != 0 {
+		t.Fatalf("stream opened without capability: err=%v requests=%d", err, streamRequests)
+	}
+}
+
+func TestStreamCapabilityCheckHonorsCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveNormalizedProgressHealth(writer, request) {
+			return
+		}
+		t.Error("stream opened after cancellation")
+	}))
+	defer server.Close()
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := client.Stream(ctx, 0, func(StreamEvent) error { return nil }); !errors.Is(err, context.Canceled) {
+		t.Fatalf("capability preflight ignored cancellation: %v", err)
+	}
+}
+
+func TestCancellationDuringCapabilityCheckClearsSavedCursor(t *testing.T) {
+	healthStarted := make(chan struct{})
+	var healthRequests, streamRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/health":
+			healthRequests++
+			if healthRequests == 2 {
+				close(healthStarted)
+				<-request.Context().Done()
+				return
+			}
+			_, _ = fmt.Fprint(writer, `{"ok":true,"version":2,"capabilities":["normalized_tool_progress"]}`)
+		case "/sessions/session/stream":
+			streamRequests++
+			writer.Header().Set("Content-Type", "text/event-stream")
+			if streamRequests == 1 {
+				_, _ = fmt.Fprint(writer, formatSessionBatch("saved", 12, []any{map[string]any{"type": "reset"}}, []any{
+					map[string]any{"callId": "saved-call", "name": "python", "phase": "generating"},
+				}, true))
+				return
+			}
+			if request.URL.Query().Has("after_generation") || request.URL.Query().Has("after_seq") {
+				t.Errorf("cancelled attachment retained its cursor: %s", request.URL.RawQuery)
+			}
+			_, _ = fmt.Fprint(writer, formatSessionBatch("fresh", 1, []any{map[string]any{"type": "reset"}}, []any{}, true))
+		default:
+			t.Errorf("unexpected request: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
+	if err := client.Stream(t.Context(), 0, func(StreamEvent) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- client.Stream(ctx, 0, func(StreamEvent) error { return nil }) }()
+	select {
+	case <-healthStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("capability request did not start")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled capability request returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("capability request did not stop after cancellation")
+	}
+	if err := client.Stream(t.Context(), 0, func(StreamEvent) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStreamRejectsIntermediateProgressOverflowBeforeDeliveryAndCursorCommit(t *testing.T) {
+	var requests int
+	var resumedCursor string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveNormalizedProgressHealth(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		requests++
+		if requests == 1 {
+			fmt.Fprint(w, formatSessionBatch("g", 7, []any{map[string]any{"type": "reset"}}, []any{}, true))
+			events := make([]any, 0, 34)
+			for i := range maxActiveToolProgress + 1 {
+				events = append(events, map[string]any{"type": "tool_progress", "progress": map[string]any{"callId": fmt.Sprintf("c%d", i), "name": "python", "phase": "generating"}})
+			}
+			events = append(events, map[string]any{"type": "tool_progress", "progress": nil})
+			fmt.Fprint(w, formatSessionBatch("g", 8, events, nil, false))
+		} else {
+			resumedCursor = r.URL.Query().Get("after_seq")
+		}
+	}))
+	defer server.Close()
+	c := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
+	callbacks := 0
+	err := c.Stream(t.Context(), 0, func(e StreamEvent) error {
+		if e.Type == EventToolProgress {
+			callbacks++
+		}
+		return nil
+	})
+	if err == nil {
+		t.Error("accepted 33 active calls then clear")
+	}
+	if callbacks != 0 {
+		t.Errorf("invalid batch delivered %d progress callbacks", callbacks)
+	}
+	if err := c.Stream(t.Context(), 0, func(StreamEvent) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if resumedCursor != "7" {
+		t.Errorf("reconnected after_seq=%q; want last valid cursor 7", resumedCursor)
+	}
+}
+
+func TestTurnCompletionReleasesActiveProgressBeforeTheNextCall(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveNormalizedProgressHealth(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		requests++
+		if requests > 1 {
+			if r.URL.Query().Get("after_generation") != "g" || r.URL.Query().Get("after_seq") != "8" {
+				t.Errorf("turn completion did not commit its cursor: %s", r.URL.RawQuery)
+			}
+			return
+		}
+		progress := make([]any, 0, maxActiveToolProgress)
+		for index := range maxActiveToolProgress {
+			progress = append(progress, map[string]any{"callId": fmt.Sprintf("old-%d", index), "name": "python", "phase": "running"})
+		}
+		fmt.Fprint(w, formatSessionBatch("g", 7, []any{map[string]any{"type": "reset"}}, progress, true))
+		fmt.Fprint(w, formatSessionBatch("g", 8, []any{
+			map[string]any{"type": "turn_completed", "turnId": "old-turn"},
+			map[string]any{"type": "tool_progress", "progress": map[string]any{"callId": "fresh", "name": "python", "phase": "generating"}},
+		}, nil, false))
+	}))
+	defer server.Close()
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
+	var latest *ToolProgress
+	if err := client.Stream(t.Context(), 0, func(event StreamEvent) error {
+		if event.Type == EventToolProgress {
+			latest = event.Progress
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || latest.CallID != "fresh" {
+		t.Fatalf("completed turn retained obsolete progress: latest=%+v", latest)
+	}
+	if err := client.Stream(t.Context(), 0, func(StreamEvent) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStreamRejectsMalformedCodeBeforeDeliveryAndKeepsReconnectCursor(t *testing.T) {
+	for name, code := range map[string]any{
+		"missing offset":    map[string]any{"text": "x"},
+		"null offset":       map[string]any{"offset": nil, "text": "x"},
+		"missing text":      map[string]any{"offset": 0},
+		"null text":         map[string]any{"offset": 0, "text": nil},
+		"string offset":     map[string]any{"offset": "0", "text": "x"},
+		"fractional offset": map[string]any{"offset": 0.5, "text": "x"},
+		"negative offset":   map[string]any{"offset": -1, "text": "x"},
+		"number text":       map[string]any{"offset": 0, "text": 1},
+		"array code":        []any{0, "x"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var requests int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveNormalizedProgressHealth(w, r) {
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				requests++
+				if requests == 1 {
+					fmt.Fprint(w, formatSessionBatch("g", 7, []any{map[string]any{"type": "reset"}}, []any{}, true))
+					fmt.Fprint(w, formatSessionBatch("g", 8, []any{
+						map[string]any{"type": "text", "text": "must stay hidden"},
+						map[string]any{"type": "tool_progress", "progress": map[string]any{"callId": "c", "name": "python", "phase": "generating", "code": code}},
+					}, nil, false))
+				} else if r.URL.Query().Get("after_seq") != "7" || r.URL.Query().Get("after_generation") != "g" {
+					t.Errorf("malformed code advanced reconnect cursor: %s", r.URL.RawQuery)
+				}
+			}))
+			defer server.Close()
+			client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
+			var delivered []StreamEvent
+			err := client.Stream(t.Context(), 0, func(event StreamEvent) error { delivered = append(delivered, event); return nil })
+			failure, ok := errors.AsType[*StreamError](err)
+			if !ok || failure.Kind != StreamProtocol || len(delivered) != 1 || delivered[0].Type != EventReset {
+				t.Fatalf("malformed code escaped validation: err=%v events=%+v", err, delivered)
+			}
+			if err := client.Stream(t.Context(), 0, func(StreamEvent) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRejectedBatchPreservesActiveCallIDsAndReconnectCursor(t *testing.T) {
+	progress := func(call string) any {
+		return map[string]any{"type": "tool_progress", "progress": map[string]any{"callId": call, "name": "python", "phase": "generating"}}
+	}
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveNormalizedProgressHealth(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		requests++
+		if requests == 1 {
+			var snapshot []any
+			for i := range maxActiveToolProgress {
+				snapshot = append(snapshot, map[string]any{"callId": fmt.Sprintf("c%d", i), "name": "python", "phase": "generating"})
+			}
+			fmt.Fprint(w, formatSessionBatch("g", 7, []any{map[string]any{"type": "reset"}}, snapshot, true))
+			fmt.Fprint(w, formatSessionBatch("g", 8, []any{
+				map[string]any{"type": "tool", "callId": "native", "progressCallId": "c0", "name": "python", "args": "{}", "result": "done"},
+				progress("replacement"), progress("overflow"), map[string]any{"type": "tool_progress", "progress": nil},
+			}, nil, false))
+		} else {
+			if r.URL.Query().Get("after_seq") != "7" || r.URL.Query().Get("after_generation") != "g" {
+				t.Errorf("invalid batch advanced cursor: %s", r.URL.RawQuery)
+			}
+			// This insertion must still overflow the untouched 32-call snapshot.
+			fmt.Fprint(w, formatSessionBatch("g", 8, []any{progress("new-call")}, nil, false))
+		}
+	}))
+	defer server.Close()
+	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
+	for attempt := range 2 {
+		callbacks := 0
+		err := client.Stream(t.Context(), 0, func(StreamEvent) error { callbacks++; return nil })
+		failure, ok := errors.AsType[*StreamError](err)
+		want := 0
+		if attempt == 0 {
+			want = 33
+		}
+		if !ok || failure.Kind != StreamProtocol || callbacks != want {
+			t.Fatalf("rejected batch changed accepted state: attempt=%d err=%v callbacks=%d want=%d", attempt, err, callbacks, want)
+		}
 	}
 }

@@ -71,7 +71,10 @@ func TestTUIAgentsOverflowRefreshesMembershipAndPreviews(t *testing.T) {
 			}
 			events, _ := json.Marshal(map[string]any{"events": []map[string]any{
 				{"type": "text", "session": root.ID, "text": "OLD_PARTIAL_TEXT"},
-				{"type": "arguments_delta", "session": root.ID, "name": "python", "callId": "old-call", "text": "{\"code\":\"OLD_PARTIAL_CODE"},
+				{"type": "tool_progress", "session": root.ID, "progress": map[string]any{
+					"callId": "old-run:1:0", "name": "python", "phase": "generating",
+					"code": map[string]any{"offset": 0, "text": "OLD_PARTIAL_CODE"},
+				}},
 			}})
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", events)
 			w.(http.Flusher).Flush()

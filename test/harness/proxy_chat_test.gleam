@@ -129,6 +129,7 @@ fn responses_turn() -> types.Turn {
     None,
     types.ToolCalls,
     None,
+    [#("call_1", 0), #("call_2", 1)],
   )
 }
 

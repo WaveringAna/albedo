@@ -4,6 +4,7 @@ import albedo/daemon/conversation
 import albedo/daemon/events as view
 import albedo/daemon/image_fit
 import albedo/daemon/requests
+import albedo/daemon/tool_progress
 import albedo/daemon/transcript
 import albedo/daemon/usage
 import albedo/harness/cache_fade
@@ -29,6 +30,11 @@ pub type Loop {
     pin: Pin,
     upstream: extension.Upstream,
     publish: fn(String) -> Bool,
+    generation: String,
+    progress_delta: fn(Int, Int, Int, String, String) -> Bool,
+    progress_running: fn(Int, Int, Int, String, String) -> Bool,
+    progress_reset: fn(Int) -> Nil,
+    progress_finish: fn(String) -> Nil,
     /// Commits inputs at a stage; a model response passes how long the
     /// model thought before it. Answers the shared daemon time and the seq
     /// of the commit's first assistant row, which the call's request row
@@ -101,7 +107,7 @@ pub fn run(
   let current_instructions = request_instructions(state)
   let request = request(state, current_instructions, history)
   state.record_context(request, prepared.observation, prepared.compacted)
-  use #(row, turn, sent) <- result.try(
+  use #(row, turn, sent, attempt) <- result.try(
     call(
       state,
       requests.Turn,
@@ -109,7 +115,7 @@ pub fn run(
       request_prefix(request, history, original, prepared.observation),
       state.publish,
       fn(event) {
-        case view.stream_event(id, step, event) {
+        case view.stream_event(event) {
           Some(serialized) ->
             case state.publish(serialized) {
               True -> types.Continue
@@ -118,6 +124,19 @@ pub fn run(
           None -> types.Continue
         }
       },
+      fn(attempt, event) {
+        case event {
+          types.ArgumentsDelta(output_index, name, fragment) ->
+            case
+              state.progress_delta(step, attempt, output_index, name, fragment)
+            {
+              True -> types.Continue
+              False -> types.Stop
+            }
+          _ -> types.Continue
+        }
+      },
+      state.progress_reset,
     )
     |> result.map_error(describe(state.upstream, _)),
   )
@@ -153,7 +172,17 @@ pub fn run(
         _ -> Error(stopped_message(turn.finish, turn.output))
       }
     calls -> {
-      use results <- result.try(list.try_map(calls, run_tool(state, _)))
+      use results <- result.try(
+        list.try_map(calls, fn(call) {
+          let output_index =
+            list.find(turn.call_indices, fn(binding) { binding.0 == call.id })
+          case output_index {
+            Ok(binding) -> run_tool(state, id, step, attempt, binding.1, call)
+            Error(_) ->
+              Error("provider completed a tool call without its output index")
+          }
+        }),
+      )
       use steering <- result.try(state.drain_steering())
       use _ <- result.try(state.commit([], conversation.Model, None))
       run(state, id, unshift(inputs, [replay, results, steering]), step + 1)
@@ -260,35 +289,60 @@ pub fn background(
     // A retry is silent: a background call never shows on the stream.
     fn(_event) { True },
     fn(_event) { types.Continue },
+    fn(_attempt, _event) { types.Continue },
+    fn(_attempt) { Nil },
   )
   |> result.map(fn(attempt) { attempt.1.usage })
   |> result.map_error(describe(state.upstream, _))
 }
 
-/// One tool call, committed before its transcript event; a client refusal
-/// between the progress event and the result cancels the turn.
-fn run_tool(state: Loop, call: types.ToolCall) -> Result(types.Input, String) {
-  case state.publish(view.progress(call, "running")) {
+/// Start a tool only after its running projection is acknowledged. Remove
+/// that projection before committing and publishing the tool result.
+fn run_tool(
+  state: Loop,
+  run_id: String,
+  step: Int,
+  attempt: Int,
+  output_index: Int,
+  call: types.ToolCall,
+) -> Result(types.Input, String) {
+  let progress_id =
+    tool_progress.progress_id(
+      generation: state.generation,
+      run_id: run_id,
+      step: step,
+      attempt: attempt,
+      output_index: output_index,
+    )
+  case state.progress_running(step, attempt, output_index, call.id, call.name) {
     False -> Error("cancelled before tool execution")
     True -> {
-      use output <- result.try(runtime.invoke(
-        state.host,
-        state.kernel,
-        call,
-        state.upstream.images,
-      ))
-      use _ <- result.try(state.commit([output], conversation.Tool, None))
-      let _ = case output {
-        types.ToolOutput(_, body, images) ->
-          state.publish(view.tool(
-            runtime.ledger(state.host),
-            call,
-            body,
-            images,
-          ))
-        _ -> True
+      let invoked =
+        runtime.invoke(state.host, state.kernel, call, state.upstream.images)
+      // Drop the running projection before committing the result. A reset
+      // racing with that commit must not snapshot the just-finished call.
+      state.progress_finish(progress_id)
+      case invoked {
+        Error(error) -> Error(error)
+        Ok(output) ->
+          case state.commit([output], conversation.Tool, None) {
+            Error(error) -> Error(error)
+            Ok(_) -> {
+              let _ = case output {
+                types.ToolOutput(_, body, images) ->
+                  state.publish(view.tool(
+                    runtime.ledger(state.host),
+                    call,
+                    body,
+                    images,
+                    Some(progress_id),
+                  ))
+                _ -> True
+              }
+              Ok(output)
+            }
+          }
       }
-      Ok(output)
     }
   }
 }
@@ -372,11 +426,19 @@ fn call(
   prefix: requests.Prefix,
   publish: fn(String) -> Bool,
   on_event: fn(types.Event) -> types.Control,
-) -> Result(#(Option(Int), types.Turn, extension.SentCall), types.Error) {
+  progress_event: fn(Int, types.Event) -> types.Control,
+  reset_progress: fn(Int) -> Nil,
+) -> Result(#(Option(Int), types.Turn, extension.SentCall, Int), types.Error) {
   retry_stream(
-    fn() {
+    fn(attempt) {
       let started = requests.now()
-      let outcome = state.upstream.stream(request, on_event)
+      let outcome =
+        state.upstream.stream(request, fn(event) {
+          case on_event(event) {
+            types.Continue -> progress_event(attempt, event)
+            types.Stop -> types.Stop
+          }
+        })
       let finished = requests.now()
       let usage = case outcome {
         Ok(turn) -> turn.usage
@@ -433,11 +495,12 @@ fn call(
         _, _ -> Nil
       }
       case outcome {
-        Ok(turn) -> Ok(#(row, turn, sent))
+        Ok(turn) -> Ok(#(row, turn, sent, attempt))
         Error(error) -> Error(error)
       }
     },
     publish,
+    reset_progress,
     1,
   )
 }
@@ -512,11 +575,12 @@ const attempts = 8
 /// Reissue transient transport and gateway failures. A failed attempt has no committed output
 /// or tool effects; discard its live previews before forwarding the next attempt.
 fn retry_stream(
-  run: fn() -> Result(a, types.Error),
+  run: fn(Int) -> Result(a, types.Error),
   publish: fn(String) -> Bool,
+  reset_progress: fn(Int) -> Nil,
   attempt: Int,
 ) -> Result(a, types.Error) {
-  case run() {
+  case run(attempt) {
     Error(error) ->
       case attempt < attempts && retryable(error) {
         False -> Error(error)
@@ -524,8 +588,9 @@ fn retry_stream(
           case publish(view.event("retry", [])) {
             False -> Error(types.Cancelled)
             True -> {
+              reset_progress(attempt)
               sleep_retry(int.bitwise_shift_left(250, attempt - 1))
-              retry_stream(run, publish, attempt + 1)
+              retry_stream(run, publish, reset_progress, attempt + 1)
             }
           }
       }
@@ -659,7 +724,7 @@ fn summarize(
       Some(max_output_tokens),
       types.defaults,
     )
-  use #(_, turn, _) <- result.try(
+  use #(_, turn, _, _) <- result.try(
     call(
       state,
       requests.Summarizer,
@@ -668,6 +733,8 @@ fn summarize(
       requests.direct_prefix(instructions, [], [types.User(prompt)]),
       state.publish,
       fn(_) { types.Continue },
+      fn(_, _) { types.Continue },
+      fn(_) { Nil },
     )
     |> result.map_error(fn(error) {
       "summarizer provider request failed: " <> describe(state.upstream, error)

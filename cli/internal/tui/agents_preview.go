@@ -153,78 +153,12 @@ func (tail *agentTail) newest(trimNewlines bool) iter.Seq[tailLine] {
 	}
 }
 
-type argumentPreviewState byte
-
-const (
-	argumentFindCode argumentPreviewState = iota
-	argumentCodeQuote
-	argumentRaw
-	argumentCode
-	argumentDone
-)
-
-type agentPreview struct {
-	lines   agentTail
-	decoder daemon.JSONStringDecoder
-	matched int
-	state   argumentPreviewState
-}
-
-// Agent previews use the first literal "code" match, exposing code while
-// the argument JSON is still incomplete.
-func (preview *agentPreview) appendArguments(text string) bool {
-	if preview.state == argumentDone {
-		return false
+// setCode replaces the preview window supplied by the daemon.
+func (tail *agentTail) setCode(code *daemon.ToolCodePreview) {
+	*tail = agentTail{}
+	if code != nil {
+		tail.write(strings.ReplaceAll(code.Text, "\t", "    "), tailCode)
 	}
-	switch preview.state {
-	case argumentFindCode, argumentCodeQuote, argumentRaw:
-		preview.lines.write(text, tailCode)
-	}
-	for i := 0; i < len(text); i++ {
-		ch := text[i]
-		switch preview.state {
-		case argumentFindCode:
-			const key = `"code"`
-			if ch == key[preview.matched] {
-				preview.matched++
-				if preview.matched == len(key) {
-					preview.state = argumentCodeQuote
-				}
-			} else {
-				preview.matched = 0
-				if ch == key[0] {
-					preview.matched = 1
-				}
-			}
-		case argumentCodeQuote:
-			switch ch {
-			case ' ', ':':
-			case '"':
-				preview.lines = agentTail{}
-				preview.lines.begin(tailCode)
-				preview.state = argumentCode
-			default:
-				preview.state = argumentRaw
-			}
-		case argumentCode:
-			preview.decoder.Append(text[i:], preview.appendCode)
-			if preview.decoder.Done() {
-				preview.state = argumentDone
-			}
-			return true
-		case argumentRaw, argumentDone:
-			return true
-		}
-	}
-	return true
-}
-
-func (preview *agentPreview) appendCode(text string) {
-	preview.lines.write(strings.ReplaceAll(text, "\t", "    "), tailCode)
-}
-
-func (preview *agentPreview) finish() {
-	preview.decoder.Finish(preview.appendCode)
 }
 
 type agentTailCache struct {
@@ -257,7 +191,7 @@ func (m *AgentsViewModel) refreshTail() {
 		}
 		return len(rows) < height
 	}
-	for line := range node.preview.lines.newest(node.lineKind == tailCode) {
+	for line := range node.preview.newest(node.lineKind == tailCode) {
 		if line.text == "" && node.lineKind != tailCode {
 			continue
 		}

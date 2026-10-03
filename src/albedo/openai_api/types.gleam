@@ -384,6 +384,10 @@ pub type Turn {
     /// How long the model spent thinking before it answered, when it did:
     /// each spell runs from the event before its thinking to the one after.
     thought_ms: Option(Int),
+    /// The exact provider output index for each completed native tool call.
+    /// This correlates streamed argument deltas with calls after provider ID
+    /// deduplication without relying on list position.
+    call_indices: List(#(String, Int)),
   )
 }
 

@@ -2,6 +2,7 @@ import albedo/daemon/note
 import albedo/daemon/notice
 import albedo/daemon/operations
 import albedo/daemon/store
+import albedo/daemon/tool_progress as progress
 import albedo/daemon/transcript
 import albedo/daemon/usage
 import albedo/harness/extensions/python/cells as journal
@@ -9,7 +10,6 @@ import albedo/openai_api/replay
 import albedo/openai_api/types
 import gleam/dict
 import gleam/dynamic/decode
-import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -24,62 +24,54 @@ pub fn text(kind: String, value: String) -> String {
   event(kind, [#("text", json.string(value))])
 }
 
-pub fn stream_event(
-  id: String,
-  step: Int,
-  incoming: types.Event,
-) -> Option(String) {
+pub fn stream_event(incoming: types.Event) -> Option(String) {
   case incoming {
     types.TextDelta(_, _, "") -> None
     types.TextDelta(_, _, value) -> Some(text("text", value))
     types.ThinkingDelta("") -> None
     types.ThinkingDelta(value) -> Some(text("thinking", value))
-    types.ArgumentsDelta(_, _, "") -> None
-    types.ArgumentsDelta(index, name, value) ->
-      Some(
-        event("arguments_delta", [
-          #(
-            "callId",
-            json.string(
-              id <> ":" <> int.to_string(step) <> ":" <> int.to_string(index),
-            ),
-          ),
-          #("name", json.string(name)),
-          #("text", json.string(value)),
-        ]),
-      )
+    types.ArgumentsDelta(_, _, _) -> None
     types.Started(_) -> Some(event("turn_started", []))
   }
 }
 
-/// A call's progress. A call with code carries its start, so a client that
-/// missed the arguments streaming can still say what it runs.
-pub fn progress(call: types.ToolCall, phase: String) -> String {
-  let code =
-    json.parse(call.arguments, decode.at(["code"], decode.string))
-    |> result.map(fn(code) {
-      [
-        #(
-          "code",
-          json.object([
-            #("offset", json.int(0)),
-            #("text", json.string(string.slice(code, 0, 2000))),
-          ]),
-        ),
-      ]
-    })
-    |> result.unwrap([])
-  event("tool_progress", [
-    #(
-      "progress",
-      json.object([
-        #("callId", json.string(call.id)),
-        #("name", json.string(call.name)),
-        #("phase", json.string(phase)),
-        ..code
-      ]),
-    ),
-  ])
+pub fn tool_progress_event(snapshot: progress.Snapshot) -> String {
+  event("tool_progress", [#("progress", tool_progress_value(snapshot))])
+}
+
+pub fn tool_progress_snapshot(snapshot: progress.Snapshot) -> String {
+  json.to_string(tool_progress_value(snapshot))
+}
+
+fn tool_progress_value(snapshot: progress.Snapshot) -> json.Json {
+  let progress.Snapshot(call_id, tool_call_id, name, phase, code) = snapshot
+  let fields = [
+    #("callId", json.string(call_id)),
+    #("name", json.string(name)),
+    #("phase", json.string(phase)),
+  ]
+  let fields = case tool_call_id {
+    Some(id) -> [#("toolCallId", json.string(id)), ..fields]
+    None -> fields
+  }
+  let fields = case code {
+    Some(#(offset, text)) -> [
+      #(
+        "code",
+        json.object([
+          #("offset", json.int(offset)),
+          #("text", json.string(text)),
+        ]),
+      ),
+      ..fields
+    ]
+    None -> fields
+  }
+  json.object(fields)
+}
+
+pub fn clear_tool_progress() -> String {
+  event("tool_progress", [#("progress", json.null())])
 }
 
 pub fn tool(
@@ -87,19 +79,25 @@ pub fn tool(
   call: types.ToolCall,
   output: String,
   images: List(types.Image),
+  progress_call_id: Option(String),
 ) -> String {
   let trace =
     json.parse(output, decode.field("cell_id", decode.string, decode.success))
     |> result.map(fn(id) { journal.trace(store, id) })
     |> result.unwrap(None)
-  event("tool", [
+  let fields = [
     #("callId", json.string(call.id)),
     #("name", json.string(call.name)),
     #("args", json.string(call.arguments)),
     #("result", json.string(output)),
     #("trace", json.nullable(trace, fn(value) { value })),
     #("images", json.array(images, image_metadata)),
-  ])
+  ]
+  let fields = case progress_call_id {
+    Some(id) -> [#("progressCallId", json.string(id)), ..fields]
+    None -> fields
+  }
+  event("tool", fields)
 }
 
 /// Text rendered as an assistant message in the transcript.
@@ -279,7 +277,7 @@ fn render_original(
     types.Assistant(_) -> assistant_message(entry.input, entry.timestamp)
     types.ToolOutput(id, output, images) ->
       case dict.get(tool_calls, id) {
-        Ok(call) -> [tool(store, call, output, images)]
+        Ok(call) -> [tool(store, call, output, images, None)]
         Error(_) -> []
       }
     types.Replay(item) -> {

@@ -34,8 +34,11 @@ values only after every callback succeeds. Initial attachment and a generation
 change require a leading reset. Within one generation, the sequence cannot
 decrease without a reset. A generation change with a reset is normal recovery.
 A change without a reset is a protocol failure. The reset replaces visible
-history and clears partial tool arguments. Older-history navigation continues
-to use transcript row IDs. Unknown event kinds are ignored.
+history and clears live tool progress. Reset batches include a `currentProgress`
+array captured with the cursor. The CLI delivers that snapshot after history as
+live progress, so attaching during a tool call restores its current tool name,
+phase, and bounded code preview. Older-history navigation uses transcript row IDs.
+Unknown event kinds are ignored.
 Missing kinds and malformed known events are protocol failures.
 
 Transport failures, ordinary EOF, HTTP 408/429, and server errors reconnect with
@@ -47,7 +50,7 @@ the subscription with a visible notice. A terminal failure also stops status
 polling for that attachment.
 
 The TUI attempts one durable transcript reset per attachment after a protocol
-failure. It clears partial tool arguments and requires the recovery stream to
+failure. It clears live tool progress and requires the recovery stream to
 begin with a reset. A second protocol failure ends automatic recovery; reopening
 the session starts a new attachment. Pending submissions and drafts remain
 available, and a stream failure does not claim that model execution finished.

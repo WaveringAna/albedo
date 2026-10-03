@@ -1565,6 +1565,30 @@ fn event_frame(
   |> string_tree.append("]}")
 }
 
+fn session_event_frame(
+  prefix: string_tree.StringTree,
+  events: List(String),
+  current_progress: List(String),
+  reset: Bool,
+) -> string_tree.StringTree {
+  let events =
+    events |> list.map(string_tree.from_string) |> string_tree.join(",")
+  let frame =
+    prefix |> string_tree.append_tree(events) |> string_tree.append("]")
+  case reset {
+    True ->
+      frame
+      |> string_tree.append(",\"currentProgress\":[")
+      |> string_tree.append_tree(
+        current_progress
+        |> list.map(string_tree.from_string)
+        |> string_tree.join(","),
+      )
+      |> string_tree.append("]}")
+    False -> frame |> string_tree.append("}")
+  }
+}
+
 /// Every bus event, batched every 100 ms so a hundred streaming agents cost the
 /// client ten frames a second, not thousands of writes. The first frame goes
 /// out on the first tick even when empty, so a client knows it is subscribed.
@@ -2272,6 +2296,7 @@ fn daemon_route(
                   "session_stream_generation",
                   "agents_stream_overflow",
                   "submission_cancellation",
+                  "normalized_tool_progress",
                   "session_provider",
                   "session_workspace",
                   "session_extensions",
@@ -2920,7 +2945,7 @@ fn stream(
         }
         Ok(page) -> {
           let events =
-            event_frame(
+            session_event_frame(
               string_tree.from_strings([
                 "{\"generation\":",
                 json.to_string(json.string(page.cursor.generation)),
@@ -2929,6 +2954,8 @@ fn stream(
                 ",\"events\":[",
               ]),
               page.events,
+              page.current_progress,
+              page.reset,
             )
           case mist.send_event(connection, mist.event(events)) {
             Error(_) -> actor.stop()

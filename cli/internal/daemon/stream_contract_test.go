@@ -34,10 +34,13 @@ func TestStreamRejectsMalformedBatchesWithoutLosingTheCursor(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var requests atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveNormalizedProgressHealth(w, r) {
+					return
+				}
 				w.Header().Set("Content-Type", "text/event-stream")
 				switch requests.Add(1) {
 				case 1:
-					_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":7,"events":[{"type":"reset"},{"type":"text","text":"accepted"}]}`+"\n\n")
+					_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":7,"events":[{"type":"reset"},{"type":"text","text":"accepted"}],"currentProgress":[]}`+"\n\n")
 				case 2:
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", batch)
 				default:
@@ -88,9 +91,12 @@ func TestStreamRejectsMalformedBatchesWithoutLosingTheCursor(t *testing.T) {
 func TestStreamIgnoresUnknownKindsAndCommitsTheirCursor(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveNormalizedProgressHealth(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		if requests.Add(1) == 1 {
-			_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":12,"events":[{"type":"reset"},{"type":"future_output","text":"not assistant output","args":false}]}`+"\n\n")
+			_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":12,"events":[{"type":"reset"},{"type":"future_output","text":"not assistant output","args":false}],"currentProgress":[]}`+"\n\n")
 		} else if got := r.URL.Query().Get("after_seq"); got != "12" {
 			t.Errorf("ignored additive batch lost cursor: %s", got)
 		}
@@ -116,16 +122,19 @@ func TestStreamIgnoresUnknownKindsAndCommitsTheirCursor(t *testing.T) {
 func TestStreamCallbackFailureRetainsCauseAndUncommittedCursor(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveNormalizedProgressHealth(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		n := requests.Add(1)
 		if n == 1 {
-			_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":7,"events":[{"type":"reset"}]}`+"\n\n")
+			_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":7,"events":[{"type":"reset"}],"currentProgress":[]}`+"\n\n")
 			return
 		}
 		if n == 3 && (r.URL.Query().Get("after_seq") != "7" || r.URL.Query().Get("after_generation") != "generation-a") {
 			t.Error("callback failure committed the batch cursor")
 		}
-		_, _ = io.WriteString(w, "data: "+`{"generation":"generation-b","cursor":8,"events":[{"type":"reset"},{"type":"text","text":"first"},{"type":"text","text":"second"}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: "+`{"generation":"generation-b","cursor":8,"events":[{"type":"reset"},{"type":"text","text":"first"},{"type":"text","text":"second"}],"currentProgress":[]}`+"\n\n")
 	}))
 	defer server.Close()
 	client := NewChatClient(NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil), "session")
@@ -168,6 +177,9 @@ func TestStreamClassifiesHTTPRefusalsWithoutRetryingThem(t *testing.T) {
 		t.Run(http.StatusText(test.status), func(t *testing.T) {
 			var requests atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveNormalizedProgressHealth(w, r) {
+					return
+				}
 				requests.Add(1)
 				w.WriteHeader(test.status)
 				_, _ = io.WriteString(w, `{"error":"stream unavailable"}`)
@@ -191,6 +203,9 @@ func TestStreamRejectsNonSSESuccessResponses(t *testing.T) {
 	for _, media := range []string{"", "text/html", "application/json"} {
 		t.Run(media, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveNormalizedProgressHealth(w, r) {
+					return
+				}
 				w.Header()["Content-Type"] = nil
 				if media != "" {
 					w.Header().Set("Content-Type", media)
@@ -214,14 +229,17 @@ func TestStreamRejectsNonSSESuccessResponses(t *testing.T) {
 func TestStreamRecoveryRequiresResetBeforeDeliveringHistory(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveNormalizedProgressHealth(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch requests.Add(1) {
 		case 1:
-			_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":20,"events":[{"type":"reset"}]}`+"\n\n")
+			_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":20,"events":[{"type":"reset"}],"currentProgress":[]}`+"\n\n")
 		case 2:
 			_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":1,"events":[{"type":"text","text":"not durable reset"}]}`+"\n\n")
 		case 3:
-			_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":1,"events":[{"type":"reset"},{"type":"message","role":"assistant","text":"durable"}]}`+"\n\n")
+			_, _ = io.WriteString(w, "data: "+`{"generation":"generation-a","cursor":1,"events":[{"type":"reset"},{"type":"message","role":"assistant","text":"durable"}],"currentProgress":[]}`+"\n\n")
 		default:
 			if r.URL.Query().Get("after_seq") != "1" {
 				t.Error("validated reset failed to commit its cursor")
@@ -273,6 +291,9 @@ func TestStreamClassifiesExplicitSSEFailures(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var requests atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveNormalizedProgressHealth(w, r) {
+					return
+				}
 				requests.Add(1)
 				w.Header().Set("Content-Type", "text/event-stream")
 				_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", test.payload)
@@ -291,23 +312,26 @@ func TestStreamClassifiesExplicitSSEFailures(t *testing.T) {
 	}
 }
 
-func TestStreamGenerationResetReplacesUnfinishedArguments(t *testing.T) {
+func TestStreamGenerationResetReplacesCurrentProgress(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveNormalizedProgressHealth(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch requests.Add(1) {
 		case 1:
 			if r.URL.Query().Has("after_seq") || r.URL.Query().Has("after_generation") {
 				t.Error("initial subscription sent a cursor")
 			}
-			_, _ = io.WriteString(w, "data: "+`{"generation":"old","cursor":10,"events":[{"type":"reset"},{"type":"arguments_delta","callId":"same","name":"python","text":"{\"code\":\"old"}]}`+"\n\n")
+			_, _ = io.WriteString(w, "data: "+`{"generation":"old","cursor":10,"events":[{"type":"reset"}],"currentProgress":[{"callId":"old:1:0","name":"python","phase":"generating","code":{"offset":0,"text":"old"}}]}`+"\n\n")
 		case 2:
 			_, _ = io.WriteString(w, "data: "+`{"generation":"new","cursor":11,"events":[{"type":"text","text":"must stay hidden"}]}`+"\n\n")
 		case 3:
 			if r.URL.Query().Get("after_seq") != "10" || r.URL.Query().Get("after_generation") != "old" {
 				t.Error("invalid generation change replaced the consumed pair")
 			}
-			_, _ = io.WriteString(w, "data: "+`{"generation":"new","cursor":1,"events":[{"type":"reset"},{"type":"arguments_delta","callId":"same","name":"python","text":"{\"code\":\"new()\"}"}]}`+"\n\n")
+			_, _ = io.WriteString(w, "data: "+`{"generation":"new","cursor":1,"events":[{"type":"reset"}],"currentProgress":[{"callId":"new:1:0","name":"python","phase":"generating","code":{"offset":0,"text":"new()"}}]}`+"\n\n")
 		default:
 			if r.URL.Query().Get("after_seq") != "1" || r.URL.Query().Get("after_generation") != "new" {
 				t.Error("successful reset failed to replace both cursor values")
@@ -340,7 +364,7 @@ func TestStreamGenerationResetReplacesUnfinishedArguments(t *testing.T) {
 		}
 	}
 	if len(previews) != 2 || previews[0] != "old" || previews[1] != "new()" {
-		t.Fatalf("reset mixed old and new arguments: %q", previews)
+		t.Fatalf("reset mixed old and new progress: %q", previews)
 	}
 }
 
@@ -348,6 +372,9 @@ func TestInitialStreamRequiresLeadingReset(t *testing.T) {
 	for _, events := range []string{`[]`, `[{"type":"text","text":"must stay hidden"}]`} {
 		t.Run(events, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveNormalizedProgressHealth(w, r) {
+					return
+				}
 				w.Header().Set("Content-Type", "text/event-stream")
 				_, _ = fmt.Fprintf(w, "data: {\"generation\":\"new\",\"cursor\":0,\"events\":%s}\n\n", events)
 			}))
@@ -394,9 +421,12 @@ func TestStreamLoadsHistoryDespiteInvalidDisplayTraces(t *testing.T) {
 			if tc.trace != "" {
 				traceField = `,"trace":` + tc.trace
 			}
-			batch := `{"generation":"generation-a","cursor":12,"events":[{"type":"reset"},{"type":"tool","callId":"call","name":"python","args":"{}","result":"saved output"` + traceField + `},{"type":"text","text":"after tool"}]}`
+			batch := `{"generation":"generation-a","cursor":12,"events":[{"type":"reset"},{"type":"tool","callId":"call","progressCallId":"run:1:0","name":"python","args":"{}","result":"saved output"` + traceField + `},{"type":"text","text":"after tool"}],"currentProgress":[]}`
 			var requests atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveNormalizedProgressHealth(w, r) {
+					return
+				}
 				w.Header().Set("Content-Type", "text/event-stream")
 				if requests.Add(1) == 1 {
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", batch)

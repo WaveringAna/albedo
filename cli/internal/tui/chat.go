@@ -304,15 +304,13 @@ type burstRowsKey struct {
 type ChatModel struct {
 	Styles Styles
 
-	streamCtx context.Context
-	Usage     *daemon.Usage
-	// inFlight is the last progress of the call the action row follows. It
-	// outlives Progress, which the result clears, so the row can still say
-	// what the call did once it ends.
-	inFlight      *daemon.ToolProgress
-	eventChan     chan streamDelivery
-	streamStopped bool
-	AttachedImage *daemon.ImageAttachment
+	streamCtx        context.Context
+	Usage            *daemon.Usage
+	progressByCallID map[string]*daemon.ToolProgress
+	progressOrder    []string
+	eventChan        chan streamDelivery
+	streamStopped    bool
+	AttachedImage    *daemon.ImageAttachment
 	// window is the context window of windowModel, read once per model so
 	// the footer can say how full the context is.
 	window  *int
@@ -324,7 +322,6 @@ type ChatModel struct {
 	dragAnchor   *Point
 	streamCancel context.CancelFunc
 	windowModel  *string
-	Progress     *daemon.ToolProgress
 	// stretch is the phase run the status face animates.
 	stretch             stretch
 	SessionID           string
@@ -336,7 +333,7 @@ type ChatModel struct {
 	Effort              string
 	Provider            string
 	CopyStatus          string
-	ToolProgressText    string
+	settledToolLabel    string
 	ThoughtProgressText string
 	Renderer            TranscriptRenderer
 
@@ -746,9 +743,47 @@ func rowBytes(rows []string) int64 {
 
 // clearAction drops the live action row; the next action starts a new one.
 func (m *ChatModel) clearAction() {
-	m.ToolProgressText = ""
-	m.inFlight = nil
+	m.settledToolLabel = ""
+	m.progressByCallID = nil
+	m.progressOrder = nil
 	m.ThoughtProgressText = ""
+}
+
+func (m ChatModel) latestProgress() *daemon.ToolProgress {
+	if len(m.progressOrder) == 0 {
+		return nil
+	}
+	return m.progressByCallID[m.progressOrder[len(m.progressOrder)-1]]
+}
+
+// Prose and thoughts occupy the action slot without discarding live calls.
+func (m ChatModel) toolLabel() string {
+	if m.transcript.activeKind != StreamKindNone || m.ThoughtProgressText != "" {
+		return ""
+	}
+	if progress := m.latestProgress(); progress != nil {
+		return actionLabel(progress, nil)
+	}
+	return m.settledToolLabel
+}
+
+func (m *ChatModel) rememberProgress(progress *daemon.ToolProgress) {
+	if m.progressByCallID == nil {
+		m.progressByCallID = make(map[string]*daemon.ToolProgress)
+	}
+	if _, exists := m.progressByCallID[progress.CallID]; exists {
+		m.progressOrder = slices.DeleteFunc(m.progressOrder, func(callID string) bool { return callID == progress.CallID })
+	}
+	m.progressByCallID[progress.CallID] = progress
+	m.progressOrder = append(m.progressOrder, progress.CallID)
+	m.settledToolLabel = ""
+}
+
+func (m *ChatModel) forgetProgress(callID string) *daemon.ToolProgress {
+	progress := m.progressByCallID[callID]
+	delete(m.progressByCallID, callID)
+	m.progressOrder = slices.DeleteFunc(m.progressOrder, func(candidate string) bool { return candidate == callID })
+	return progress
 }
 
 func (m *ChatModel) appendSettledEntry(entry HistoryEntry) {
@@ -812,7 +847,7 @@ func (m *ChatModel) refreshViewportContent() int {
 	switch {
 	case m.transcript.activeKind == StreamKindThinking && m.transcript.activeText != "" && !m.Flags.Thinking:
 		action = m.renderThought()
-	case m.ToolProgressText != "" && (m.Progress != nil || !m.Flags.Tools):
+	case m.toolLabel() != "" && (m.latestProgress() != nil || !m.Flags.Tools):
 		action = m.renderProgress()
 	case m.ThoughtProgressText != "" && !m.Flags.Thinking:
 		width := max(1, m.Renderer.BodyWidth-railWidth)
@@ -863,7 +898,7 @@ func (m ChatModel) pendingRows() []string {
 	if m.transcript.activeKind != StreamKindNone && m.transcript.activeText != "" {
 		before = append(before, HistoryEntry{Kind: m.transcript.activeEntryKind(), Speaker: m.AgentName})
 	}
-	if m.ToolProgressText != "" && (m.Progress != nil || !m.Flags.Tools) {
+	if m.toolLabel() != "" && (m.latestProgress() != nil || !m.Flags.Tools) {
 		before = append(before, HistoryEntry{Kind: EntryTool, Speaker: m.AgentName})
 	} else if m.ThoughtProgressText != "" && !m.Flags.Thinking {
 		before = append(before, HistoryEntry{Kind: EntryThinking, Speaker: m.AgentName})
@@ -940,7 +975,7 @@ func (m *ChatModel) scrollBy(rows int) {
 }
 
 func (m ChatModel) animating() bool {
-	return m.isSending || m.pendingSendCount() > 0 || m.Stopping || m.Progress != nil || m.Status.Running && !m.Status.Idle || m.reaching() != ""
+	return m.isSending || m.pendingSendCount() > 0 || m.Stopping || m.latestProgress() != nil || m.Status.Running && !m.Status.Idle || m.reaching() != ""
 }
 
 func (m *ChatModel) startAnimation() tea.Cmd {
@@ -1395,12 +1430,10 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			m.Status = *msg.Status
 			defer m.reseedMood()
 			// most polls find the session idle with nothing live to settle
-			live := m.Progress != nil || m.ToolProgressText != "" || m.ThoughtProgressText != "" || m.transcript.activeKind != StreamKindNone || m.transcript.turn != nil && m.transcript.turn.begun()
+			live := m.latestProgress() != nil || m.settledToolLabel != "" || m.ThoughtProgressText != "" || m.transcript.activeKind != StreamKindNone || m.transcript.turn != nil && m.transcript.turn.begun()
 			if live && (!m.Status.Running || m.Status.Idle) {
-				m.Progress = nil
 				m.settleActiveStream()
-				m.ToolProgressText = ""
-				m.ThoughtProgressText = ""
+				m.clearAction()
 				if m.transcript.turn != nil && m.transcript.turn.begun() {
 					for _, entry := range m.transcript.closeTurn(false) {
 						m.appendSettledEntry(entry)
@@ -1470,7 +1503,6 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || m.streamStopped {
 			return m, nil
 		}
-		m.Progress = nil
 		m.clearAction()
 		if msg.Recovering {
 			m.AddNotice(fmt.Sprintf("Stream data could not be read; refreshing history: %v", msg.Err))
@@ -1483,6 +1515,10 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		return m, nil
 
 	case ChatStreamClosedMsg:
+		if msg.SessionID == m.SessionID && msg.Generation == m.Generation {
+			m.clearAction()
+			m.refreshViewportContent()
+		}
 		return m, nil
 
 	case ChatOperationPollMsg:
@@ -1874,9 +1910,6 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		// Replayed events do not describe current activity; preserve live status.
 		defer func(live daemon.AgentStatus) { m.Status = live }(m.Status)
 	}
-	if evt.Type != daemon.EventToolProgress {
-		m.Progress = nil
-	}
 	watchedThought := !m.transcript.thinkingSince.IsZero()
 	entries := m.transcript.apply(evt, m.AgentName)
 	for _, entry := range entries {
@@ -1912,7 +1945,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		}
 	case daemon.EventText, daemon.EventThinking:
 		if evt.Text != "" {
-			m.ToolProgressText, m.ThoughtProgressText = "", ""
+			m.settledToolLabel, m.ThoughtProgressText = "", ""
 			m.Status.Running, m.Status.Idle, m.Status.Phase = true, false, &phaseReasoning
 			// A thought flushed at the buffer cap keeps its last compact line
 			// until the next delta, just like an explicitly settled thought.
@@ -1928,27 +1961,26 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		if evt.Replayed {
 			break // A progress snapshot is not an action happening now.
 		}
-		m.Progress = evt.Progress
-		if evt.Progress != nil {
-			m.ThoughtProgressText = ""
-			m.Status.Running, m.Status.Idle, m.Status.Phase = true, false, &phaseTool
-			m.inFlight = evt.Progress
-			m.ToolProgressText = actionLabel(evt.Progress, nil)
+		if evt.Progress == nil {
+			m.clearAction()
+			break
 		}
+		m.ThoughtProgressText = ""
+		m.Status.Running, m.Status.Idle, m.Status.Phase = true, false, &phaseTool
+		m.rememberProgress(evt.Progress)
 	case daemon.EventTool:
 		m.ThoughtProgressText = ""
 		m.Status.Running, m.Status.Idle = true, false
-		m.ToolProgressText = ""
 		if !evt.Replayed {
+			progress := m.forgetProgress(evt.ProgressCallID)
 			for i := len(entries) - 1; i >= 0; i-- {
 				if entries[i].Kind == EntryTool {
-					m.ToolProgressText = actionLabel(m.inFlight, &entries[i])
+					m.settledToolLabel = actionLabel(progress, &entries[i])
 					break
 				}
 			}
 		}
-		m.inFlight = nil
-	case daemon.EventMessage, daemon.EventNote, daemon.EventCompacted:
+	case daemon.EventMessage, daemon.EventTurnCompleted:
 		m.clearAction()
 	case daemon.EventError:
 		m.TurnFailed = true
@@ -1981,8 +2013,8 @@ type stretch struct {
 // the same one may well come up twice.
 func (m *ChatModel) reseedMood() {
 	now := stretch{mood: m.phaseMood()}
-	if m.Progress != nil {
-		now.call = m.Progress.CallID
+	if progress := m.latestProgress(); progress != nil {
+		now.call = progress.CallID
 	}
 	if now != m.stretch {
 		m.stretch, m.moodSeed = now, rand.Int64()
@@ -2036,43 +2068,15 @@ func (m ChatModel) sidebarWidth() int {
 	return 0
 }
 
-// intentVerbs name an intent while its call is written, while it runs, and
-// once it ran.
-var intentVerbs = map[string]struct{ generating, running, done string }{
-	"read":  {"reading", "reading", "read"},
-	"write": {"writing", "writing", "wrote"},
-	"edit":  {"editing", "editing", "edited"},
-	"run":   {"preparing", "running", "ran"},
-}
-
 // actionLabel is the action row for a call, live from its progress and then
 // from its result, so the row holds the last action until the next begins.
-// A call that said what it does (read a file, ran a command) is named by
-// that; any other is named by the call itself, as its settled tool row is.
 func actionLabel(progress *daemon.ToolProgress, result *HistoryEntry) string {
-	if progress != nil && progress.Intent != nil {
-		verbs := intentVerbs[progress.Intent.Kind]
-		verb := verbs.running
-		switch {
-		case result != nil:
-			verb = verbs.done
-		case progress.Phase == "generating":
-			verb = verbs.generating
-		}
-		label := verb + " " + progress.Intent.Target
-		if result != nil && toolFailed(*result) {
-			label += " · failed"
-		}
-		return label
-	}
 	switch {
 	case result != nil:
 		head, tail := toolRowParts(*result, toolFailed(*result), "")
 		return head + tail
 	case progress.Phase == "generating":
-		return "making a " + progress.Name + " call"
-	case progress.Code != nil && progress.Code.Text != "":
-		return toolSummary(HistoryEntry{ToolName: progress.Name, ToolArgs: map[string]any{"code": progress.Code.Text}})
+		return "generating " + progress.Name
 	}
 	return "running " + progress.Name
 }
@@ -2081,9 +2085,9 @@ func actionLabel(progress *daemon.ToolProgress, result *HistoryEntry) string {
 // generated also shows the newest end of its code.
 func (m ChatModel) renderProgress() string {
 	width := max(1, m.Renderer.BodyWidth-railWidth)
-	row := oneLine(m.ToolProgressText)
-	if m.Progress != nil && m.Progress.Phase == "generating" && m.Progress.Code != nil {
-		code := m.Progress.Code
+	row := oneLine(m.toolLabel())
+	if progress := m.latestProgress(); progress != nil && progress.Phase == "generating" && progress.Code != nil {
+		code := progress.Code
 		if text := oneLine(code.Text); text != "" {
 			row += " · "
 			if room := width - ansi.StringWidth(row); room >= 12 && ansi.StringWidth(text) > room {
@@ -2127,11 +2131,11 @@ func (m ChatModel) statusLine() string {
 	if m.isSending || m.pendingSendCount() > 0 && !m.Status.Running {
 		return "preparing"
 	}
-	if m.Progress != nil {
-		if m.Progress.Phase == "generating" {
+	if progress := m.latestProgress(); progress != nil {
+		if progress.Phase == "generating" {
 			return "generating call"
 		}
-		return "running " + m.Progress.Name
+		return "running " + progress.Name
 	}
 	if m.Status.Running && !m.Status.Idle {
 		if m.transcript.activeKind == StreamKindText {
@@ -2172,7 +2176,7 @@ func (m ChatModel) phaseMood() mood {
 		return moodConnecting
 	case m.isSending || m.pendingSendCount() > 0 && !m.Status.Running:
 		return moodPreparing
-	case m.Progress != nil:
+	case m.latestProgress() != nil:
 		return moodWorking
 	case m.transcript.activeKind == StreamKindText:
 		return moodResponding
@@ -2283,7 +2287,7 @@ func (m ChatModel) View() string {
 	}
 
 	view := m.Viewport.View()
-	if m.History.Len() == 0 && len(m.pendingUsers) == 0 && m.transcript.activeText == "" && m.ToolProgressText == "" {
+	if m.History.Len() == 0 && len(m.pendingUsers) == 0 && m.transcript.activeText == "" && m.toolLabel() == "" {
 		textWidth := max(1, min(m.Renderer.BodyWidth, m.Viewport.Width())-railWidth)
 		var emptyRows []string
 		for _, line := range wrapOrChunkLine("What would you like to work on?", textWidth) {

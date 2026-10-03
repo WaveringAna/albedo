@@ -3,8 +3,8 @@
 //
 //   - frame pacing: an idle graph must not keep scheduling animation frames,
 //     a running one must resume them exactly once (wasted CPU, double speed);
-//   - the preview decoder must reveal streamed code from incomplete JSON arguments,
-//     which a real stream only ever shows mid-flight;
+//   - normalized replacement windows must survive interleaved calls without
+//     settling another call's live preview into history;
 //   - a pending delete confirm must not outlive the agent it names;
 //   - a failed history seed must retry on the next selection, and a late
 //     error from an older generation must not unseed the live node;
@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -89,24 +88,26 @@ func TestAgentsFramesStopWhenStillAndResumeOnce(t *testing.T) {
 	}
 }
 
-// Tool previews must expose code before the argument JSON is complete.
-func TestAgentsPreviewReadsPartialJSON(t *testing.T) {
-	var preview agentPreview
-	preview.appendArguments(`{"code": "a = 1\nb = \"x\"\nprint(a`)
-	var got []string
-	for line := range preview.lines.newest(true) {
-		got = append(got, line.text)
+func TestAgentsProgressResultKeepsOtherInterleavedCall(t *testing.T) {
+	m := agentsFixture(t)
+	m.selected = "coder"
+	update := func(event daemon.AgentEvent) {
+		m, _ = m.Update(agentsEventsMsg{Gen: 1, Events: []daemon.AgentEvent{event}})
 	}
-	slices.Reverse(got)
-	want := []string{"a = 1", `b = "x"`, "print(a"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("preview = %q, want %q", got, want)
-	}
-	preview = agentPreview{}
-	preview.appendArguments(`{"code": "done\n", "timeout_ms": 5}`)
-	lines := slices.Collect(preview.lines.newest(true))
-	if len(lines) != 1 || lines[0].text != "done" {
-		t.Fatalf("a closed string stops at its quote, got %q", lines)
+	callA := &daemon.ToolProgress{CallID: "run:1:0", ToolCallID: "native-a", Name: "python", Phase: "generating", Code: &daemon.ToolCodePreview{Text: "print('a')"}}
+	callB := &daemon.ToolProgress{CallID: "run:1:1", ToolCallID: "native-b", Name: "python", Phase: "generating", Code: &daemon.ToolCodePreview{Text: "print('b')"}}
+	update(daemon.AgentEvent{Type: "tool_progress", Session: "coder", Progress: callA})
+	update(daemon.AgentEvent{Type: "tool_progress", Session: "coder", Progress: callB})
+	update(daemon.AgentEvent{Type: "tool_progress", Session: "coder", Progress: &daemon.ToolProgress{
+		CallID: callA.CallID, ToolCallID: callA.ToolCallID, Name: "python", Phase: "running",
+	}})
+	update(daemon.AgentEvent{Type: "tool_progress", Session: "coder", Progress: &daemon.ToolProgress{
+		CallID: callB.CallID, ToolCallID: callB.ToolCallID, Name: "python", Phase: "generating", Code: &daemon.ToolCodePreview{Offset: 4, Text: "print('b2')"},
+	}})
+	update(daemon.AgentEvent{Type: "tool", Session: "coder", CallID: "native-a", ProgressCallID: callA.CallID, Name: "python", Output: "done"})
+	got := ansi.Strip(m.View())
+	if strings.Count(got, "print('b2')") != 1 || strings.Contains(got, "print('b')") || !strings.Contains(got, "done") {
+		t.Fatalf("call A's result lost, appended, or duplicated call B's replacement window: %q", got)
 	}
 }
 
@@ -202,6 +203,10 @@ func TestFailedSeedRetriesOnTheNextSelection(t *testing.T) {
 func TestAgentsOverflowPreservesPendingOperationOutcomeAndDraft(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			_, _ = w.Write([]byte(`{"ok":true,"version":2,"capabilities":["normalized_tool_progress"]}`))
+			return
+		}
 		if r.URL.Path == "/agents/stream" {
 			<-r.Context().Done()
 			return
@@ -255,5 +260,25 @@ func TestAgentsOverflowPreservesPendingOperationOutcomeAndDraft(t *testing.T) {
 	rendered := ansi.Strip(m.View())
 	if !strings.Contains(rendered, "spawn refused") || !strings.Contains(rendered, "next draft") {
 		t.Fatalf("overflow lost pending outcome or draft: %s", rendered)
+	}
+}
+
+func TestAgentsTerminalEventsCannotReviveObsoleteCode(t *testing.T) {
+	for _, kind := range []string{"error", "interrupted", "closed"} {
+		t.Run(kind, func(t *testing.T) {
+			m := agentsFixture(t)
+			m.selected = "coder"
+			update := func(events ...daemon.AgentEvent) {
+				m, _ = m.Update(agentsEventsMsg{Gen: 1, Events: events})
+			}
+			update(daemon.AgentEvent{Type: "tool_progress", Session: "coder", Progress: &daemon.ToolProgress{CallID: "old", Name: "python", Phase: "generating", Code: &daemon.ToolCodePreview{Text: "obsolete_code_sentinel"}}})
+			update(daemon.AgentEvent{Type: kind, Session: "coder", Text: "failed"})
+			update(daemon.AgentEvent{Type: "tool_progress", Session: "coder", Progress: &daemon.ToolProgress{CallID: "fresh", Name: "python", Phase: "generating", Code: &daemon.ToolCodePreview{Text: "fresh_code_sentinel"}}})
+			update(daemon.AgentEvent{Type: "tool", Session: "coder", ProgressCallID: "fresh", Name: "python", Output: "finished"})
+			got := ansi.Strip(m.View())
+			if strings.Count(got, "obsolete_code_sentinel") > 1 || !strings.Contains(got, "fresh_code_sentinel") || !strings.Contains(got, "finished") {
+				t.Fatalf("%s revived obsolete code or lost the fresh result: %q", kind, got)
+			}
+		})
 	}
 }

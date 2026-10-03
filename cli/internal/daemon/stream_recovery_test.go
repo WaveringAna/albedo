@@ -52,7 +52,7 @@ func TestStreamAuthenticationRecoveryBeforeDelivery(t *testing.T) {
 					var deliveries atomic.Int32
 					server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 						if request.URL.Path == "/health" {
-							_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow"]}`))
+							_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow","normalized_tool_progress"]}`))
 							return
 						}
 						if requests.Add(1) == 1 {
@@ -78,7 +78,7 @@ func TestStreamAuthenticationRecoveryBeforeDelivery(t *testing.T) {
 							t.Error("stream reused old credentials")
 						}
 						writer.Header().Set("Content-Type", "text/event-stream")
-						_, _ = io.WriteString(writer, "data: {\"generation\":\"generation-a\",\"cursor\":1,\"events\":[{\"type\":\"reset\"},{\"type\":\"text\",\"session\":\"s\",\"text\":\"hello\"}]}\n\n")
+						_, _ = io.WriteString(writer, "data: {\"generation\":\"generation-a\",\"cursor\":1,\"events\":[{\"type\":\"reset\"},{\"type\":\"text\",\"session\":\"s\",\"text\":\"hello\"}],\"currentProgress\":[]}\n\n")
 					}))
 					defer server.Close()
 
@@ -122,7 +122,7 @@ func TestAcceptedStreamIsNeverReplayed(t *testing.T) {
 					callbackFailure := errors.New("consumer stopped")
 					server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 						if request.URL.Path == "/health" {
-							_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow"]}`))
+							_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["operation_receipts","session_stream_generation","agents_stream_overflow","normalized_tool_progress"]}`))
 							return
 						}
 						requests.Add(1)
@@ -130,7 +130,7 @@ func TestAcceptedStreamIsNeverReplayed(t *testing.T) {
 							writer.Header().Set("Content-Length", "1000")
 						}
 						writer.Header().Set("Content-Type", "text/event-stream")
-						_, _ = io.WriteString(writer, "data: {\"generation\":\"generation-a\",\"cursor\":1,\"events\":[{\"type\":\"reset\"},{\"type\":\"text\",\"session\":\"s\",\"text\":\"hello\"}]}\n\n")
+						_, _ = io.WriteString(writer, "data: {\"generation\":\"generation-a\",\"cursor\":1,\"events\":[{\"type\":\"reset\"},{\"type\":\"text\",\"session\":\"s\",\"text\":\"hello\"}],\"currentProgress\":[]}\n\n")
 					}))
 					defer server.Close()
 					snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "token", Version: 2}

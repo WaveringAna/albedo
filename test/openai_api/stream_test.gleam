@@ -16,7 +16,7 @@ pub fn responses_incomplete_never_exposes_executable_calls_test() -> Result(
   let assert Ok(#(
     _,
     [],
-    Some(types.Turn(None, [_], [], None, types.LengthLimit, None)),
+    Some(types.Turn(None, [_], [], None, types.LengthLimit, None, [])),
   )) = send(stream.new(types.Responses), "response.incomplete", data)
 }
 
@@ -103,6 +103,7 @@ pub fn chat_accumulates_interleaved_tools_usage_and_native_replay_test() -> Nil 
       Some(types.Usage(5, 8, Some(0), None, None, None, None)),
       types.ToolCalls,
       None,
+      [#("call_a", 0), #("call_b", 1)],
     )),
   )) = send(state, "", "[DONE]")
   let decoder = {
@@ -138,6 +139,7 @@ pub fn cache_usage_details_tolerate_null_and_reject_malformed_values_test() -> R
       Some(types.Usage(3, 2, None, None, None, None, None)),
       _,
       None,
+      [],
     )),
   )) = send(stream.new(types.Responses), "", responses_null)
 
@@ -155,6 +157,7 @@ pub fn cache_usage_details_tolerate_null_and_reject_malformed_values_test() -> R
       Some(types.Usage(3, 2, None, None, None, None, None)),
       _,
       None,
+      [],
     )),
   )) = send(state, "", "[DONE]")
 
@@ -271,7 +274,7 @@ pub fn chat_requires_finish_and_suppresses_partial_tools_on_limits_test() -> Nil
   let assert Ok(#(
     _,
     [],
-    Some(types.Turn(None, [message], [], None, types.LengthLimit, None)),
+    Some(types.Turn(None, [message], [], None, types.LengthLimit, None, [])),
   )) = send(state, "", "[DONE]")
   let decoder = {
     use calls <- decode.optional_field(
@@ -300,7 +303,7 @@ pub fn malformed_json_and_content_filter_finish_are_typed_test() -> Result(
   let assert Ok(#(
     _,
     [],
-    Some(types.Turn(_, _, [], _, types.ContentFiltered, None)),
+    Some(types.Turn(_, _, [], _, types.ContentFiltered, None, [])),
   )) = send(state, "", "[DONE]")
 }
 
@@ -413,6 +416,7 @@ pub fn responses_uses_streamed_done_items_when_terminal_output_is_empty_test() -
       _,
       types.ToolCalls,
       None,
+      [#("call_1", 0)],
     )),
   )) = send(state, "", completed)
   assert arguments == "{\"code\":\"20 + 22\",\"timeout_ms\":1000}"

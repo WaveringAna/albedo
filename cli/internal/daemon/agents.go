@@ -13,23 +13,24 @@ import (
 
 // AgentEvent is one event from the daemon's agent bus.
 type AgentEvent struct {
-	Progress *ToolProgress `json:"progress"`
-	Type     string        `json:"type"`
-	Session  string        `json:"session"`
-	Parent   string        `json:"parent"`
-	Name     string        `json:"name"`
-	Model    string        `json:"model"`
-	From     string        `json:"from"`
-	To       string        `json:"to"`
-	FromName string        `json:"fromName"`
-	Kind     string        `json:"kind"`
-	Text     string        `json:"text"`
-	CallID   string        `json:"callId"`
-	Output   string        `json:"output"`
-	Source   string        `json:"source"`
-	Depth    int           `json:"depth"`
-	Bytes    int           `json:"bytes"`
-	Running  bool          `json:"running"`
+	Progress       *ToolProgress `json:"progress"`
+	Type           string        `json:"type"`
+	Session        string        `json:"session"`
+	Parent         string        `json:"parent"`
+	Name           string        `json:"name"`
+	Model          string        `json:"model"`
+	From           string        `json:"from"`
+	To             string        `json:"to"`
+	FromName       string        `json:"fromName"`
+	Kind           string        `json:"kind"`
+	Text           string        `json:"text"`
+	CallID         string        `json:"callId"`
+	ProgressCallID string        `json:"progressCallId"`
+	Output         string        `json:"output"`
+	Source         string        `json:"source"`
+	Depth          int           `json:"depth"`
+	Bytes          int           `json:"bytes"`
+	Running        bool          `json:"running"`
 }
 
 type Member struct {
@@ -69,9 +70,13 @@ type ChildRequest struct {
 // then nonempty batches until the stream ends or onBatch fails.
 // The caller controls cancellation, including any blocking work in onBatch.
 func StreamAgents(ctx context.Context, conn *Connection, onBatch func([]AgentEvent) error) error {
-	operation := operation{Name: "stream agents", Method: http.MethodGet, Path: "/agents/stream", Policy: readRecovery}
+	if err := checkCapability(ctx, conn, "normalized_tool_progress", "normalized tool progress for agent streams"); err != nil {
+		return err
+	}
+	subscription := operation{Name: "stream agents", Method: http.MethodGet, Path: "/agents/stream", Policy: readRecovery}
 	first := true
-	err := scanEventStream(ctx, conn, operation, streamLimits{requireSSE: true, lineBytes: 8 * 1024 * 1024}, func(scanner *bufio.Scanner) error {
+	activeProgressBySession := make(map[string]map[string]struct{})
+	err := scanEventStream(ctx, conn, subscription, streamLimits{requireSSE: true, lineBytes: 8 * 1024 * 1024}, func(scanner *bufio.Scanner) error {
 		for scanner.Scan() {
 			line := scanner.Text()
 			if !strings.HasPrefix(line, "data:") {
@@ -102,9 +107,20 @@ func StreamAgents(ctx context.Context, conn *Connection, onBatch func([]AgentEve
 			if len(events) == 0 && !first {
 				continue
 			}
+			nextProgressBySession, err := applyAgentProgress(events, activeProgressBySession)
+			if err != nil {
+				return streamFailure(StreamProtocol, err)
+			}
 			first = false
 			if err := onBatch(events); err != nil {
 				return streamFailure(StreamTerminal, err)
+			}
+			for session, active := range nextProgressBySession {
+				if active == nil {
+					delete(activeProgressBySession, session)
+				} else {
+					activeProgressBySession[session] = active
+				}
 			}
 			if len(events) == 1 && events[0].Type == "overflow" {
 				return nil
@@ -113,6 +129,64 @@ func StreamAgents(ctx context.Context, conn *Connection, onBatch func([]AgentEve
 		return nil
 	})
 	return classifyStreamFailure(err)
+}
+
+// Only changed sessions are staged. A nil entry removes a session after delivery.
+func applyAgentProgress(events []AgentEvent, current map[string]map[string]struct{}) (map[string]map[string]struct{}, error) {
+	staged := make(map[string]map[string]struct{})
+	for _, event := range events {
+		active, changed := staged[event.Session]
+		if !changed {
+			active = current[event.Session]
+		}
+		switch event.Type {
+		case "tool_progress":
+			if event.Progress == nil {
+				if len(active) != 0 {
+					staged[event.Session] = nil
+				}
+				continue
+			}
+			if _, exists := active[event.Progress.CallID]; exists {
+				continue
+			}
+		case "tool":
+			if _, exists := active[event.ProgressCallID]; !exists {
+				continue
+			}
+		case "running":
+			if event.Running {
+				continue
+			}
+			staged[event.Session] = nil
+			continue
+		case "interrupted", "error", "closed", "gone":
+			staged[event.Session] = nil
+			continue
+		default:
+			continue
+		}
+		if !changed || active == nil {
+			activeCopy := make(map[string]struct{}, len(active)+1)
+			for callID := range active {
+				activeCopy[callID] = struct{}{}
+			}
+			active = activeCopy
+			staged[event.Session] = active
+		}
+		if event.Type == "tool_progress" {
+			active[event.Progress.CallID] = struct{}{}
+			if len(active) > maxActiveToolProgress {
+				return nil, errors.New("too many active tool progress calls for an agent")
+			}
+		} else {
+			delete(active, event.ProgressCallID)
+			if len(active) == 0 {
+				staged[event.Session] = nil
+			}
+		}
+	}
+	return staged, nil
 }
 
 func CreateChild(ctx context.Context, conn *Connection, id string, body ChildRequest) (ChildResult, error) {
@@ -195,7 +269,7 @@ func decodeAgentEvent(raw json.RawMessage) (*AgentEvent, error) {
 	switch header.Type {
 	case "overflow":
 		return &AgentEvent{Type: "overflow"}, nil
-	case "spawn", "gone", "mail", "running", "text", "thinking", "arguments_delta", "tool_progress", "tool", "user", "message", "error", "interrupted", "progress", "renamed", "closed":
+	case "spawn", "gone", "mail", "running", "text", "thinking", "tool_progress", "tool", "user", "message", "error", "interrupted", "progress", "renamed", "closed":
 	default:
 		return nil, nil
 	}
@@ -215,18 +289,23 @@ func decodeAgentEvent(raw json.RawMessage) (*AgentEvent, error) {
 		required = append(required, "parent", "name", "model", "depth")
 	case "running":
 		required = append(required, "running")
-	case "text", "thinking", "arguments_delta", "user", "message", "error", "progress":
+	case "text", "thinking", "user", "message", "error", "progress":
 		required = append(required, "text")
-		if event.Type == "arguments_delta" {
-			required = append(required, "callId", "name")
-		}
 	case "tool_progress":
-		if err := validateToolProgress(fields["progress"]); err != nil {
+		if len(raw) > 8*1024 {
+			return nil, errors.New("invalid tool_progress agent event: exceeds 8 KiB")
+		}
+		progress, err := decodeToolProgress(fields["progress"])
+		if err != nil {
 			return nil, err
 		}
+		event.Progress = progress
 		required = append(required, "progress")
 	case "tool":
-		required = append(required, "output")
+		required = append(required, "output", "callId", "progressCallId", "name")
+		if event.CallID == "" || event.ProgressCallID == "" || event.Name == "" {
+			return nil, errors.New("invalid tool agent event identity")
+		}
 	case "renamed":
 		required = append(required, "name")
 	}

@@ -18,6 +18,7 @@ import albedo/daemon/session_provider
 import albedo/daemon/session_run
 import albedo/daemon/session_state
 import albedo/daemon/session_submission
+import albedo/daemon/tool_progress as tool_progress_state
 import albedo/daemon/transcript
 import albedo/daemon/turn.{type Submission, Submission}
 import albedo/daemon/usage
@@ -71,7 +72,12 @@ pub type Cursor {
 }
 
 pub type Page {
-  Page(cursor: Cursor, reset: Bool, events: List(String))
+  Page(
+    cursor: Cursor,
+    reset: Bool,
+    events: List(String),
+    current_progress: List(String),
+  )
 }
 
 /// What a sweep needs to decide whether this session's kernel can be released.
@@ -147,6 +153,11 @@ pub type Message {
   Watch(process.Pid, fn() -> Nil)
   Consumed(process.Pid, Cursor, Bool)
   Publish(String, String, Subject(Bool))
+  ToolProgressDelta(String, Int, Int, Int, String, String, Subject(Bool))
+  ToolProgressRunning(String, Int, Int, Int, String, String, Subject(Bool))
+  ToolProgressReset(String, Int, Subject(Nil))
+  ToolProgressFinish(String, String, Subject(Nil))
+  ProgressFlush(Int)
   Commit(
     String,
     List(types.Input),
@@ -276,6 +287,9 @@ pub fn start(
         None,
         0,
         new_generation(),
+        tool_progress_state.new(),
+        0,
+        None,
       )
     // Background jobs wake this session through the kernel's jobs route; the
     // registered closure lands a completion notice as an ordinary submit, so
@@ -464,6 +478,183 @@ fn answer(
 ) -> actor.Next(State, Message) {
   process.send(reply, value)
   actor.continue(state)
+}
+
+fn tool_progress_delta(
+  state: State,
+  run_id: String,
+  step: Int,
+  attempt: Int,
+  output_index: Int,
+  name: String,
+  fragment: String,
+  reply: Subject(Bool),
+) -> actor.Next(State, Message) {
+  case turn.live(state.activity, run_id) {
+    False -> answer(state, reply, False)
+    True -> {
+      let was_enabled = tool_progress_state.enabled(state.tool_progress)
+      let had_calls = tool_progress_state.has_calls(state.tool_progress)
+      let tool_progress_state.Update(progress, snapshot, invalidates_progress) =
+        tool_progress_state.update(
+          state.tool_progress,
+          generation: state.generation,
+          run_id: run_id,
+          step: step,
+          attempt: attempt,
+          output_index: output_index,
+          incoming_name: name,
+          fragment: fragment,
+        )
+      let overflow = was_enabled && !tool_progress_state.enabled(progress)
+      let clear_previous = { invalidates_progress && had_calls } || overflow
+      let state = case clear_previous {
+        True -> invalidate_progress_timer(state)
+        False -> state
+      }
+      let state = session_state.State(..state, tool_progress: progress)
+      let state = case clear_previous {
+        True -> session_state.emit(state, view.clear_tool_progress())
+        False -> state
+      }
+      let state = case snapshot {
+        Some(snapshot) ->
+          session_state.emit(state, view.tool_progress_event(snapshot))
+        None -> state
+      }
+      answer(schedule_progress_flush(state), reply, True)
+    }
+  }
+}
+
+fn tool_progress_running(
+  state: State,
+  run_id: String,
+  step: Int,
+  attempt: Int,
+  output_index: Int,
+  tool_call_id: String,
+  name: String,
+  reply: Subject(Bool),
+) -> actor.Next(State, Message) {
+  case turn.live(state.activity, run_id) {
+    False -> answer(state, reply, False)
+    True -> {
+      let had_calls = tool_progress_state.has_calls(state.tool_progress)
+      let tool_progress_state.Update(progress, snapshot, invalidates_progress) =
+        tool_progress_state.running(
+          state.tool_progress,
+          generation: state.generation,
+          run_id: run_id,
+          step: step,
+          attempt: attempt,
+          output_index: output_index,
+          tool_call_id: tool_call_id,
+          name: name,
+        )
+      let state = case invalidates_progress && had_calls {
+        True -> invalidate_progress_timer(state)
+        False -> state
+      }
+      let state = session_state.State(..state, tool_progress: progress)
+      let state = case invalidates_progress && had_calls {
+        True -> session_state.emit(state, view.clear_tool_progress())
+        False -> state
+      }
+      let state = case snapshot {
+        Some(snapshot) ->
+          session_state.emit(state, view.tool_progress_event(snapshot))
+        None -> state
+      }
+      answer(schedule_progress_flush(state), reply, True)
+    }
+  }
+}
+
+fn tool_progress_reset(
+  state: State,
+  run_id: String,
+  attempt: Int,
+  reply: Subject(Nil),
+) -> actor.Next(State, Message) {
+  case turn.live(state.activity, run_id) {
+    False -> answer(state, reply, Nil)
+    True -> {
+      let state = invalidate_progress_timer(state)
+      let progress = tool_progress_state.reset_attempt(attempt)
+      let state = session_state.State(..state, tool_progress: progress)
+      answer(session_state.emit(state, view.clear_tool_progress()), reply, Nil)
+    }
+  }
+}
+
+fn tool_progress_finish(
+  state: State,
+  run_id: String,
+  progress_id: String,
+  reply: Subject(Nil),
+) -> actor.Next(State, Message) {
+  case turn.owner(state.activity, run_id) {
+    None -> answer(state, reply, Nil)
+    Some(_) -> {
+      let progress =
+        tool_progress_state.finish_call(state.tool_progress, progress_id)
+      let state = session_state.State(..state, tool_progress: progress)
+      answer(schedule_progress_flush(state), reply, Nil)
+    }
+  }
+}
+
+fn invalidate_progress_timer(state: State) -> State {
+  let _ = case state.progress_timer {
+    Some(timer) -> process.cancel_timer(timer)
+    None -> process.TimerNotFound
+  }
+  session_state.State(
+    ..state,
+    progress_timer_token: state.progress_timer_token + 1,
+    progress_timer: None,
+  )
+}
+
+fn schedule_progress_flush(state: State) -> State {
+  case
+    tool_progress_state.has_dirty(state.tool_progress),
+    state.progress_timer
+  {
+    False, Some(_) -> invalidate_progress_timer(state)
+    False, None | True, Some(_) -> state
+    True, None -> {
+      let token = state.progress_timer_token + 1
+      let timer = process.send_after(state.self, 100, ProgressFlush(token))
+      session_state.State(
+        ..state,
+        progress_timer_token: token,
+        progress_timer: Some(timer),
+      )
+    }
+  }
+}
+
+fn tool_progress_flush(state: State, token: Int) -> actor.Next(State, Message) {
+  case state.progress_timer, state.progress_timer_token == token {
+    Some(_), True -> {
+      let #(progress, snapshots) =
+        tool_progress_state.flush_dirty(state.tool_progress)
+      let state =
+        session_state.State(
+          ..state,
+          tool_progress: progress,
+          progress_timer: None,
+        )
+      let state =
+        list.fold(snapshots, state, fn(state, snapshot) {
+          session_state.emit(state, view.tool_progress_event(snapshot))
+        })
+      actor.continue(state)
+    }
+    _, _ -> actor.continue(state)
+  }
 }
 
 fn transition(
@@ -814,7 +1005,7 @@ fn handle(
         _ -> Error(Nil)
       }
       case replay {
-        Ok(events) -> answer(state, reply, Ok(Page(cursor, False, events)))
+        Ok(events) -> answer(state, reply, Ok(Page(cursor, False, events, [])))
         Error(_) if tail != None -> {
           let rows = option.unwrap(tail, 0)
           let page =
@@ -826,13 +1017,21 @@ fn handle(
             )
             |> result.map(fn(loaded) {
               let #(entries, more) = loaded
-              Page(cursor, True, [
-                view.event("reset", view.page_fields(entries, more)),
-                ..list.append(
-                  view.rows(runtime.ledger(state.host), entries),
-                  option.values([option.map(state.latest_usage, usage.event)]),
-                )
-              ])
+              Page(
+                cursor,
+                True,
+                [
+                  view.event("reset", view.page_fields(entries, more)),
+                  ..list.append(
+                    view.rows(runtime.ledger(state.host), entries),
+                    option.values([option.map(state.latest_usage, usage.event)]),
+                  )
+                ],
+                list.map(
+                  tool_progress_state.snapshots(state.tool_progress),
+                  view.tool_progress_snapshot,
+                ),
+              )
             })
           answer(state, reply, page)
         }
@@ -848,16 +1047,22 @@ fn handle(
               answer(
                 session_state.State(..state, history: None),
                 reply,
-                Ok(
-                  Page(cursor, True, [
+                Ok(Page(
+                  cursor,
+                  True,
+                  [
                     view.event("reset", []),
                     ..view.snapshot(
                       runtime.ledger(state.host),
                       history,
                       state.latest_usage,
                     )
-                  ]),
-                ),
+                  ],
+                  list.map(
+                    tool_progress_state.snapshots(state.tool_progress),
+                    view.tool_progress_snapshot,
+                  ),
+                )),
               )
             }
           }
@@ -869,6 +1074,41 @@ fn handle(
         True -> answer(session_state.emit(state, event), reply, True)
         False -> answer(state, reply, False)
       }
+    ToolProgressDelta(id, step, attempt, output_index, name, fragment, reply) ->
+      tool_progress_delta(
+        state,
+        id,
+        step,
+        attempt,
+        output_index,
+        name,
+        fragment,
+        reply,
+      )
+    ToolProgressRunning(
+      id,
+      step,
+      attempt,
+      output_index,
+      tool_call_id,
+      name,
+      reply,
+    ) ->
+      tool_progress_running(
+        state,
+        id,
+        step,
+        attempt,
+        output_index,
+        tool_call_id,
+        name,
+        reply,
+      )
+    ToolProgressReset(id, attempt, reply) ->
+      tool_progress_reset(state, id, attempt, reply)
+    ToolProgressFinish(id, progress_id, reply) ->
+      tool_progress_finish(state, id, progress_id, reply)
+    ProgressFlush(token) -> tool_progress_flush(state, token)
     Commit(id, inputs, stage, thought_ms, reply) ->
       case turn.owner(state.activity, id) {
         Some(_) -> {
@@ -1956,6 +2196,7 @@ fn finish_turn(
       turn.final_stage(run, outcome),
       Some(state.info.provider),
     )
+  let state = clear_tool_progress(state)
   let state = session_state.State(..state, activity: turn.Resting)
   bus.running(state.info.id, False)
   // A webhook or wake refused while this run held the session can
@@ -2203,6 +2444,10 @@ fn start_worker(
     work,
     session_run.Messages(
       Publish,
+      ToolProgressDelta,
+      ToolProgressRunning,
+      ToolProgressReset,
+      ToolProgressFinish,
       Commit,
       CommitFits,
       RecordContext,
@@ -2439,6 +2684,7 @@ fn interrupt_waiting(
   case turn.running(state.activity), waiting {
     None, True -> {
       let id = mail.new_id()
+      let state = clear_tool_progress(state)
       let state =
         session_state.State(..state, active_submissions: state.steering)
         |> session_submission.membership(id)
@@ -2469,6 +2715,7 @@ fn interrupt_waiting(
     Some(run), _ -> {
       interrupt_kernel(state)
       let _ = process.send_after(state.self, 2500, Abort(run.id))
+      let state = clear_tool_progress(state)
       answer(
         session_state.State(
           ..state,
@@ -2480,6 +2727,20 @@ fn interrupt_waiting(
         True,
       )
     }
+  }
+}
+
+fn clear_tool_progress(state: State) -> State {
+  let had_calls = tool_progress_state.has_calls(state.tool_progress)
+  let state = invalidate_progress_timer(state)
+  let state =
+    session_state.State(
+      ..state,
+      tool_progress: tool_progress_state.clear(state.tool_progress),
+    )
+  case had_calls {
+    False -> state
+    True -> session_state.emit(state, view.clear_tool_progress())
   }
 }
 

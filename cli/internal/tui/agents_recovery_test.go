@@ -32,6 +32,10 @@ func TestAgentsRefreshDiscardsDirtyAndPreviousSubscriptionReplies(t *testing.T) 
 		}
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			_, _ = fmt.Fprint(w, `{"ok":true,"version":2,"capabilities":["normalized_tool_progress"]}`)
+			return
+		}
 		switch {
 		case r.URL.Path == "/agents/stream":
 			number := streams.Add(1)

@@ -40,6 +40,8 @@ func TestPromptFollowsCombinedSubmissionThroughRetryAndCompletion(t *testing.T) 
 	submitted := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
+		case "/health":
+			_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["normalized_tool_progress"]}`))
 		case "/sessions/test/events":
 			var payload struct {
 				SubmissionID string `json:"submissionId"`
@@ -57,7 +59,7 @@ func TestPromptFollowsCombinedSubmissionThroughRetryAndCompletion(t *testing.T) 
 			_ = json.NewEncoder(writer).Encode(map[string]any{"ok": true, "queued": true, "operationId": payload.OperationID})
 		case "/sessions/test/stream":
 			writer.Header().Set("Content-Type", "text/event-stream")
-			_, _ = fmt.Fprint(writer, "data: {\"generation\":\"generation-a\",\"cursor\":0,\"events\":[{\"type\":\"reset\"}]}\n\n")
+			_, _ = fmt.Fprint(writer, "data: {\"generation\":\"generation-a\",\"cursor\":0,\"events\":[{\"type\":\"reset\"}],\"currentProgress\":[]}\n\n")
 			writer.(http.Flusher).Flush()
 			id := <-submitted
 			events := []map[string]any{
@@ -105,6 +107,8 @@ func TestPromptCancellationReportsSharedWorkAndCleanupFailure(t *testing.T) {
 			defer cancel()
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				switch request.URL.Path {
+				case "/health":
+					_, _ = writer.Write([]byte(`{"ok":true,"version":2,"capabilities":["normalized_tool_progress"]}`))
 				case "/sessions/test/events":
 					var payload struct {
 						OperationID string `json:"operationId"`
@@ -115,7 +119,7 @@ func TestPromptCancellationReportsSharedWorkAndCleanupFailure(t *testing.T) {
 					close(submitted)
 				case "/sessions/test/stream":
 					writer.Header().Set("Content-Type", "text/event-stream")
-					_, _ = fmt.Fprint(writer, "data: {\"generation\":\"generation-a\",\"cursor\":0,\"events\":[{\"type\":\"reset\"}]}\n\n")
+					_, _ = fmt.Fprint(writer, "data: {\"generation\":\"generation-a\",\"cursor\":0,\"events\":[{\"type\":\"reset\"}],\"currentProgress\":[]}\n\n")
 					writer.(http.Flusher).Flush()
 					<-request.Context().Done()
 				case "/sessions/test/cancel-submission":

@@ -73,6 +73,44 @@ API recovery cannot launch or replace a daemon.
 [Daemon attachment and local startup](daemon-lifecycle.md) describes the startup
 policy, authentication, and operator overrides.
 
+## Live tool progress
+
+Session and agents stream subscriptions require the `normalized_tool_progress`
+capability. The daemon owns argument decoding and bounded progress. Clients
+validate and render the updates.
+
+`tool_progress` carries a `progress` object with `callId`, `name`, and `phase`.
+The phase is `generating` or `running`. Optional fields are
+`toolCallId` and `code` with `offset` and `text`. Null progress clears live
+progress for the session.
+
+The daemon coalesces preview updates over 100 ms and publishes first appearance
+and running transitions immediately. Attachment snapshots include the latest
+preview, including updates awaiting publication.
+
+`callId` identifies progress across generation and execution, with a new identity
+for each actor lifetime, run, provider step, attempt, and output index.
+`toolCallId` is the native tool-call identity when available. A completed `tool`
+event keeps its native `callId` and adds `progressCallId` to end the matching
+progress.
+Durable history retains the original tool arguments and results.
+
+Each code update replaces the preview with the latest 512 Unicode scalar values,
+up to 2,048 UTF-8 bytes. `offset` counts decoded source scalars before the window.
+JSON escapes, bytes, grapheme clusters, and terminal columns are not offset units.
+Progress events have an 8 KiB limit. Names have a 100 UTF-8 byte limit and end at
+valid UTF-8 boundaries. Native IDs over 200 bytes are omitted, never truncated.
+
+Reset batches include `currentProgress`, captured with the generation and cursor.
+Clients apply history first, then the snapshot as live progress. They save the
+cursor pair after every callback succeeds. An empty array means no live tool
+progress. Incremental batches omit `currentProgress`.
+
+The daemon tracks at most 32 generating calls per provider attempt. Excess calls
+clear and disable generating previews for that attempt. Complex arguments can
+omit the preview while execution continues. Retry, cancellation, failure, and
+completion clear obsolete progress.
+
 ## Storage reports and offline diagnosis
 
 `albedo storage` attaches to an existing daemon and calls `GetStorageReport`.

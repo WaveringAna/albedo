@@ -18,6 +18,26 @@ import gleam/option.{type Option, None, Some}
 pub type Messages(message) {
   Messages(
     publish: fn(String, String, Subject(Bool)) -> message,
+    tool_progress_delta: fn(
+      String,
+      Int,
+      Int,
+      Int,
+      String,
+      String,
+      Subject(Bool),
+    ) -> message,
+    tool_progress_running: fn(
+      String,
+      Int,
+      Int,
+      Int,
+      String,
+      String,
+      Subject(Bool),
+    ) -> message,
+    tool_progress_reset: fn(String, Int, Subject(Nil)) -> message,
+    tool_progress_finish: fn(String, String, Subject(Nil)) -> message,
     commit: fn(
       String,
       List(types.Input),
@@ -76,13 +96,9 @@ pub fn try_call(
   }
 }
 
-/// The worker's publish, which also gates every tool call. A timeout only
-/// says the session actor is busy: keep streaming, the durable commit lands
-/// once it catches up. Once the session has cancelled the run, though, a
-/// timeout stops it: the kernel interrupt that backs a late-started tool
-/// cannot reach a tool outside the kernel, such as an MCP call. A dead session
-/// actor ends the stream, so no tool starts without an owner to record its
-/// result.
+/// General events tolerate a session stall while the run remains live. A
+/// cancellation or dead owner refuses continuation; progress acknowledgments
+/// use their stricter policy below.
 pub fn publish_fn(
   owner: Subject(message),
   run_id: String,
@@ -102,6 +118,95 @@ pub fn publish_fn(
       Error(TimedOut) -> !turn.raised(stop)
       Error(CalleeDown) -> False
     }
+  }
+}
+
+/// Progress acknowledgments confirm the actor applied the projection. Refuse
+/// continuation on a missing acknowledgment so unresolved fragments cannot
+/// accumulate and a tool cannot start before its running state is accepted.
+pub fn tool_progress_delta_fn(
+  owner: Subject(message),
+  run_id: String,
+  messages: Messages(message),
+  stop: turn.Latch,
+  waiting timeout: Int,
+) -> fn(Int, Int, Int, String, String) -> Bool {
+  fn(step, attempt, output_index, name, fragment) {
+    case turn.raised(stop) {
+      True -> False
+      False ->
+        case
+          try_call(
+            owner,
+            waiting: timeout,
+            sending: messages.tool_progress_delta(
+              run_id,
+              step,
+              attempt,
+              output_index,
+              name,
+              fragment,
+              _,
+            ),
+          )
+        {
+          Ok(keep_going) -> keep_going && !turn.raised(stop)
+          Error(_) -> False
+        }
+    }
+  }
+}
+
+pub fn tool_progress_running_fn(
+  owner: Subject(message),
+  run_id: String,
+  messages: Messages(message),
+  stop: turn.Latch,
+  waiting timeout: Int,
+) -> fn(Int, Int, Int, String, String) -> Bool {
+  fn(step, attempt, output_index, tool_call_id, name) {
+    case turn.raised(stop) {
+      True -> False
+      False ->
+        case
+          try_call(
+            owner,
+            waiting: timeout,
+            sending: messages.tool_progress_running(
+              run_id,
+              step,
+              attempt,
+              output_index,
+              tool_call_id,
+              name,
+              _,
+            ),
+          )
+        {
+          Ok(keep_going) -> keep_going && !turn.raised(stop)
+          Error(_) -> False
+        }
+    }
+  }
+}
+
+pub fn tool_progress_reset_fn(
+  owner: Subject(message),
+  run_id: String,
+  messages: Messages(message),
+) -> fn(Int) -> Nil {
+  fn(attempt) {
+    report(owner, messages.tool_progress_reset(run_id, attempt, _))
+  }
+}
+
+pub fn tool_progress_finish_fn(
+  owner: Subject(message),
+  run_id: String,
+  messages: Messages(message),
+) -> fn(String) -> Nil {
+  fn(progress_id) {
+    report(owner, messages.tool_progress_finish(run_id, progress_id, _))
   }
 }
 
@@ -201,48 +306,56 @@ fn report(owner: Subject(message), make: fn(Subject(Nil)) -> message) -> Nil {
 /// settles within one interval of the latch going up.
 const stop_poll_ms = 25
 
-/// A provider call the session can stop between transport events. The real
-/// stream runs in a linked helper process while the worker waits on its
-/// answer, polling the stop latch: the transport only calls back per event,
-/// so a cancel that lands while none is in flight — above all the wait for a
-/// first token — would otherwise sit unobserved until the Abort backstop
-/// kills the run 2.5s later. A raised latch ends the call as
-/// Error(Cancelled), the outcome the transport already gives a stream the
-/// worker stopped mid-event, so the loop and the transcript treat it exactly
-/// like any other cancelled stream. The helper is linked, so its crash ends
-/// the worker the way the worker's own crash would, and its death with the
-/// worker's leaves no stream behind.
-fn stoppable(
+/// Run the transport in a linked helper so cancellation and owner death can
+/// interrupt even an idle stream. Subjects and monitors are created by the
+/// worker that receives them, never by the session actor constructing its loop.
+pub fn stoppable(
   upstream: extension.Upstream,
+  owner: Subject(message),
   stop: turn.Latch,
 ) -> extension.Upstream {
   extension.Upstream(..upstream, stream: fn(request, on_event) {
-    let answer = process.new_subject()
-    let helper =
-      process.spawn(fn() {
-        process.send(answer, upstream.stream(request, on_event))
-      })
-    await_stream(helper, answer, stop)
+    case process.subject_owner(owner), turn.raised(stop) {
+      Error(_), _ | _, True -> Error(types.Cancelled)
+      Ok(owner_pid), False -> {
+        let monitor = process.monitor(owner_pid)
+        let answer = process.new_subject()
+        let helper =
+          process.spawn(fn() {
+            process.send(answer, upstream.stream(request, on_event))
+          })
+        let selector =
+          process.new_selector()
+          |> process.select_map(answer, fn(outcome) { outcome })
+          |> process.select_specific_monitor(monitor, fn(_) {
+            process.unlink(helper)
+            process.kill(helper)
+            Error(types.Cancelled)
+          })
+        let outcome = await_stream(helper, selector, stop)
+        process.demonitor_process(monitor)
+        outcome
+      }
+    }
   })
 }
 
 fn await_stream(
   helper: process.Pid,
-  answer: Subject(Result(types.Turn, types.Error)),
+  selector: process.Selector(Result(types.Turn, types.Error)),
   stop: turn.Latch,
 ) -> Result(types.Turn, types.Error) {
-  case process.receive(answer, stop_poll_ms) {
-    Ok(outcome) -> outcome
-    Error(Nil) ->
-      case turn.raised(stop) {
-        True -> {
-          // Unlink first: this kill must not reach the worker through the
-          // link as a `killed` exit, the way the helper's own crash should.
-          process.unlink(helper)
-          process.kill(helper)
-          Error(types.Cancelled)
-        }
-        False -> await_stream(helper, answer, stop)
+  case turn.raised(stop) {
+    True -> {
+      // Unlink before killing so the helper's forced exit cannot kill its worker.
+      process.unlink(helper)
+      process.kill(helper)
+      Error(types.Cancelled)
+    }
+    False ->
+      case process.selector_receive(selector, stop_poll_ms) {
+        Ok(outcome) -> outcome
+        Error(Nil) -> await_stream(helper, selector, stop)
       }
   }
 }
@@ -268,7 +381,7 @@ pub fn start(
   }
   let owner = state.self
   let stop = turn.latch()
-  let client = stoppable(client, stop)
+  let client = stoppable(client, owner, stop)
   // The worker's closures must capture these fields, never `state`: a spawn
   // copies everything its closure references, and the session state carries
   // the loaded transcript.
@@ -283,6 +396,11 @@ pub fn start(
       state.pin,
       client,
       publish_fn(owner, run_id, messages, stop, waiting: 30_000),
+      state.generation,
+      tool_progress_delta_fn(owner, run_id, messages, stop, waiting: 30_000),
+      tool_progress_running_fn(owner, run_id, messages, stop, waiting: 30_000),
+      tool_progress_reset_fn(owner, run_id, messages),
+      tool_progress_finish_fn(owner, run_id, messages),
       commit_fn(owner, run_id, messages, waiting: 10_000),
       fits_fn(owner, run_id, messages, waiting: 10_000),
       fn(request, observation, compacted) {
@@ -354,7 +472,7 @@ pub fn start_background(
   let run_id = new_id()
   let owner = state.self
   let stop = turn.latch()
-  let client = stoppable(client, stop)
+  let client = stoppable(client, owner, stop)
   // The worker's closures must capture these fields, never `state`: the
   // session state carries the loaded transcript.
   let worker =
@@ -368,6 +486,11 @@ pub fn start_background(
       // A background call must never show on the session's stream, and must
       // never block on it either.
       fn(_event) { True },
+      state.generation,
+      fn(_step, _attempt, _index, _name, _fragment) { True },
+      fn(_step, _attempt, _index, _call_id, _name) { True },
+      fn(_attempt) { Nil },
+      fn(_progress_id) { Nil },
       fn(_inputs, _stage, _thought) { Error("a background call never commits") },
       fn(_fits) { Error("a background call never commits") },
       fn(_request, _observation, _compacted) { Nil },

@@ -4,6 +4,7 @@ import albedo/daemon/bus
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
 import albedo/daemon/event_buffer
+import albedo/daemon/tool_progress
 import albedo/daemon/transcript
 import albedo/daemon/turn.{type Submission}
 import albedo/daemon/usage
@@ -47,6 +48,9 @@ pub type State(message) {
     following: Option(String),
     blocked_until: Int,
     generation: String,
+    tool_progress: tool_progress.Projection,
+    progress_timer_token: Int,
+    progress_timer: Option(process.Timer),
   )
 }
 

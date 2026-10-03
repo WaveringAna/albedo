@@ -294,7 +294,22 @@ fn finish(state: State) -> Result(types.Turn, types.Error) {
       }
     Some(other) -> types.OtherFinish(other)
   }
-  Ok(types.Turn(state.id, [item], calls, state.usage, finish, None))
+  let call_indices =
+    list.filter_map(blocks, fn(block) {
+      case block {
+        Tool(index, id, _, _) -> Ok(#(id, index))
+        _ -> Error(Nil)
+      }
+    })
+  Ok(types.Turn(
+    state.id,
+    [item],
+    calls,
+    state.usage,
+    finish,
+    None,
+    call_indices,
+  ))
 }
 
 fn native_block(block: Block) -> Result(Json, Nil) {

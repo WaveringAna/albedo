@@ -360,6 +360,7 @@ pub fn stream_reduces_thoughts_text_and_calls_test() -> Nil {
   let assert [types.ToolCall(id, "bash", "{\"command\":\"ls\"}")] =
     turn.tool_calls
   assert string.starts_with(id, "call_")
+  assert turn.call_indices == [#(id, 0)]
   let assert [item] = turn.output
   assert types.inspect_item(item, decode.at(["content"], decode.string))
     == Ok("looking")
@@ -368,6 +369,22 @@ pub fn stream_reduces_thoughts_text_and_calls_test() -> Nil {
       decode.at(["reasoning_content"], decode.string),
     )
     == Ok("weighing")
+}
+
+pub fn stream_maps_multiple_calls_to_their_emitted_output_indices_test() -> Nil {
+  let payload =
+    chunk(
+      "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"bash\",\"args\":{\"command\":\"ls\"}}},{\"functionCall\":{\"name\":\"bash\",\"args\":{\"command\":\"pwd\"}}}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":3}}",
+    )
+  let #(outcome, events) = reduce(gemini, [payload])
+  let assert Ok(turn) = outcome
+  let assert [first, second] = turn.tool_calls
+  assert turn.call_indices == [#(first.id, 0), #(second.id, 1)]
+  assert events
+    == [
+      types.ArgumentsDelta(0, "bash", "{\"command\":\"ls\"}"),
+      types.ArgumentsDelta(1, "bash", "{\"command\":\"pwd\"}"),
+    ]
 }
 
 pub fn same_model_replay_keeps_signed_parts_test() -> Nil {

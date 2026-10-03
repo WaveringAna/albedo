@@ -33,6 +33,7 @@ Example::
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 import atexit
@@ -88,7 +89,7 @@ class Reply:
     hang: bool = False
     tool_name: str = "python"
     tool_arguments: dict | None = None
-    events: list[dict] | None = None
+    events: Iterable[dict] | None = None
 
 
 def text(
@@ -352,6 +353,18 @@ class Provider:
                         }
                     )
                 if reply.kind == "python":
+                    emit(
+                        {
+                            "type": "response.output_item.added",
+                            "output_index": 0,
+                            "item": {
+                                "id": "call",
+                                "type": "function_call",
+                                "call_id": call_id,
+                                "name": reply.tool_name,
+                            },
+                        }
+                    )
                     for offset in range(0, len(arguments), owner.chunk_size):
                         emit(
                             {

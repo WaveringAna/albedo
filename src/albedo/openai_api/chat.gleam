@@ -312,16 +312,20 @@ fn delta_events(
   let arguments =
     fragments
     |> list.filter_map(fn(fragment) {
-      case fragment.arguments {
-        Some(arguments) -> {
+      case fragment.arguments, fragment.name {
+        None, None -> Error(Nil)
+        arguments, _ -> {
           // the name so far: it arrives with the call's first fragments
           let name = case dict.get(tools, fragment.index) {
             Ok(ToolBuilder(_, Some(name), _)) -> name
             _ -> ""
           }
-          Ok(types.ArgumentsDelta(fragment.index, name, arguments))
+          Ok(types.ArgumentsDelta(
+            fragment.index,
+            name,
+            option.unwrap(arguments, ""),
+          ))
         }
-        None -> Error(Nil)
       }
     })
   list.flatten([thinking, text, arguments])
@@ -411,9 +415,9 @@ fn finish(
     state.finish
     |> option.to_result(types.InvalidEvent("[DONE] before chat finish reason")),
   )
-  use tools <- result.try(case finish {
+  use #(tools, call_indices) <- result.try(case finish {
     types.ToolCalls -> complete_tools(state.tools)
-    _ -> Ok([])
+    _ -> Ok(#([], []))
   })
   let message =
     assistant_message(
@@ -442,18 +446,26 @@ fn finish(
       terminal: True,
     ),
     [],
-    Some(types.Turn(state.response_id, output, tools, state.usage, finish, None)),
+    Some(types.Turn(
+      state.response_id,
+      output,
+      tools,
+      state.usage,
+      finish,
+      None,
+      call_indices,
+    )),
   ))
 }
 
 fn complete_tools(
   builders: Dict(Int, ToolBuilder),
-) -> Result(List(types.ToolCall), types.Error) {
+) -> Result(#(List(types.ToolCall), List(#(String, Int))), types.Error) {
   builders
   |> dict.to_list
   |> list.sort(fn(a, b) { int.compare(a.0, b.0) })
-  |> list.try_fold(#([], []), fn(acc, entry) {
-    let #(seen, calls) = acc
+  |> list.try_fold(#([], [], []), fn(acc, entry) {
+    let #(seen, calls, call_indices) = acc
     let ToolBuilder(id, name, arguments) = entry.1
     case id, name {
       Some(id), Some(name) if id != "" && name != "" -> {
@@ -462,10 +474,11 @@ fn complete_tools(
           False -> id
         }
         Ok(
-          #([id, ..seen], [
-            types.ToolCall(unique_id, name, flatten(arguments)),
-            ..calls
-          ]),
+          #(
+            [id, ..seen],
+            [types.ToolCall(unique_id, name, flatten(arguments)), ..calls],
+            [#(unique_id, entry.0), ..call_indices],
+          ),
         )
       }
       _, _ ->
@@ -474,7 +487,7 @@ fn complete_tools(
         ))
     }
   })
-  |> result.map(fn(acc) { list.reverse(acc.1) })
+  |> result.map(fn(acc) { #(list.reverse(acc.1), list.reverse(acc.2)) })
 }
 
 fn assistant_message(

@@ -1,7 +1,7 @@
 %% Inspect real stream owners while publishers fill an unread TCP connection.
 -module(albedo_stream_pressure_probe).
 -export([pressure_json/1, subscriptions_json/0, removed_json/0,
-    session_pressure_json/1, session_removed_json/1, burst_json/3]).
+    progress_json/1, session_pressure_json/1, session_removed_json/1, burst_json/3]).
 
 rows(Table) ->
     case ets:whereis(Table) of
@@ -10,6 +10,7 @@ rows(Table) ->
     end.
 
 bytes(Binary) when is_binary(Binary) -> byte_size(Binary);
+bytes(Map) when is_map(Map) -> bytes(maps:to_list(Map));
 bytes(Tuple) when is_tuple(Tuple) -> bytes(tuple_to_list(Tuple));
 bytes([Head | Tail]) -> bytes(Head) + bytes(Tail);
 bytes(_) -> 0.
@@ -143,3 +144,14 @@ session_removed(Id, Left) ->
         true -> Sample;
         false -> receive after 10 -> ok end, session_removed(Id, Left - 1)
     end.
+
+%% The actor owns one projection regardless of subscriber count. Inspect that
+%% bounded value rather than copying the worker's full durable argument state.
+progress_json(Id) ->
+    State = session_state(Id),
+    Projection = lists:keyfind(projection, 1,
+        [Value || Value <- tuple_to_list(State), is_tuple(Value)]),
+    true = is_tuple(Projection),
+    json:encode(#{projection_bytes => bytes(Projection),
+        projection_size => erlang:external_size(Projection),
+        watchers => length(element(14, State))}).

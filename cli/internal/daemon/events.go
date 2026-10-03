@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -88,26 +86,21 @@ func ParseToolTrace(raw any) *ToolTrace {
 	return &trace
 }
 
-// ToolIntent indicates inferred intent of a tool call.
-type ToolIntent struct {
-	Kind   string `json:"kind"` // "write" | "edit" | "read" | "run"
-	Target string `json:"target"`
-}
-
-// ToolCodePreview is a window on a call's code: while it generates, the
-// newest end; once it runs, the first line.
+// ToolCodePreview contains the latest bounded window of decoded source code.
 type ToolCodePreview struct {
 	Text   string `json:"text"`
 	Offset int    `json:"offset"`
 }
 
 type ToolProgress struct {
-	Intent *ToolIntent      `json:"intent,omitempty"`
-	Code   *ToolCodePreview `json:"code,omitempty"`
-	CallID string           `json:"callId"`
-	Name   string           `json:"name"`
-	Phase  string           `json:"phase"` // "generating" | "running"
+	Code       *ToolCodePreview `json:"code,omitempty"`
+	ToolCallID string           `json:"toolCallId,omitempty"`
+	CallID     string           `json:"callId"`
+	Name       string           `json:"name"`
+	Phase      string           `json:"phase"` // "generating" | "running"
 }
+
+const maxActiveToolProgress = 32
 
 type EventType string
 
@@ -154,26 +147,27 @@ type CacheStep struct {
 }
 
 type StreamEvent struct {
-	OperationID   string         `json:"operationId,omitempty"`
-	Image         *ImageMetadata `json:"image,omitempty"`
-	Usage         *Usage         `json:"usage,omitempty"`
-	ToolTrace     *ToolTrace     `json:"trace,omitempty"`
-	Timestamp     *int64         `json:"timestamp,omitempty"`
-	ToolArgs      map[string]any `json:"args,omitempty"`
-	Progress      *ToolProgress  `json:"progress,omitempty"`
-	TurnID        string         `json:"turnId,omitempty"`
-	Type          EventType      `json:"type"`
-	Text          string         `json:"text,omitempty"`
-	Role          string         `json:"role,omitempty"` // "assistant"
-	Source        string         `json:"source,omitempty"`
-	TriggeredAt   string         `json:"triggeredAt,omitempty"`
-	ClientID      string         `json:"clientId,omitempty"`
-	Summary       string         `json:"summary,omitempty"`
-	Strategy      string         `json:"strategy,omitempty"`
-	ToolName      string         `json:"name,omitempty"`
-	ToolResult    string         `json:"result,omitempty"`
-	SubmissionIDs []string       `json:"submissionIds,omitempty"`
-	Evicted       int            `json:"evicted,omitempty"`
+	OperationID    string         `json:"operationId,omitempty"`
+	Image          *ImageMetadata `json:"image,omitempty"`
+	Usage          *Usage         `json:"usage,omitempty"`
+	ToolTrace      *ToolTrace     `json:"trace,omitempty"`
+	Timestamp      *int64         `json:"timestamp,omitempty"`
+	ToolArgs       map[string]any `json:"args,omitempty"`
+	Progress       *ToolProgress  `json:"progress,omitempty"`
+	TurnID         string         `json:"turnId,omitempty"`
+	Type           EventType      `json:"type"`
+	Text           string         `json:"text,omitempty"`
+	Role           string         `json:"role,omitempty"` // "assistant"
+	Source         string         `json:"source,omitempty"`
+	TriggeredAt    string         `json:"triggeredAt,omitempty"`
+	ClientID       string         `json:"clientId,omitempty"`
+	Summary        string         `json:"summary,omitempty"`
+	Strategy       string         `json:"strategy,omitempty"`
+	ToolName       string         `json:"name,omitempty"`
+	ToolResult     string         `json:"result,omitempty"`
+	ProgressCallID string         `json:"progressCallId,omitempty"`
+	SubmissionIDs  []string       `json:"submissionIds,omitempty"`
+	Evicted        int            `json:"evicted,omitempty"`
 	// ElapsedMs is how long a replayed thought took, when the daemon timed it.
 	ElapsedMs int64 `json:"elapsedMs,omitempty"`
 	// Seq is the newest transcript row an EventCommitted covers.
@@ -187,50 +181,50 @@ type StreamEvent struct {
 	Replayed bool `json:"-"`
 }
 
-func sanitizeControlRunes(s string) string {
-	var sb strings.Builder
-	for _, r := range s {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
-			sb.WriteRune(' ')
-		} else {
-			sb.WriteRune(r)
+// decodeToolProgress validates the normalized progress object before delivery.
+// A null value clears the current live progress.
+func decodeToolProgress(raw json.RawMessage) (*ToolProgress, error) {
+	if string(raw) == "null" {
+		return nil, nil
+	}
+	if len(raw) > 8*1024 {
+		return nil, errors.New("invalid tool progress: event exceeds 8 KiB")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, fmt.Errorf("invalid tool progress: %w", err)
+	}
+	for _, name := range []string{"callId", "name", "phase"} {
+		if value, exists := fields[name]; !exists || string(value) == "null" {
+			return nil, fmt.Errorf("invalid tool progress: missing %s", name)
 		}
 	}
-	return sb.String()
-}
-
-// validateToolProgress distinguishes a display reset from malformed known fields.
-func validateToolProgress(raw json.RawMessage) error {
-	if string(raw) == "null" {
-		return nil
-	}
-	var progress struct {
-		CallID *string `json:"callId"`
-		Name   *string `json:"name"`
-		Phase  *string `json:"phase"`
-		Intent *struct {
-			Kind   *string `json:"kind"`
-			Target *string `json:"target"`
-		} `json:"intent"`
-		Code *struct {
-			Text   *string `json:"text"`
-			Offset *int    `json:"offset"`
-		} `json:"code"`
-	}
+	var progress ToolProgress
 	if err := json.Unmarshal(raw, &progress); err != nil {
-		return fmt.Errorf("invalid tool progress: %w", err)
+		return nil, fmt.Errorf("invalid tool progress: %w", err)
 	}
-	if progress.CallID == nil || progress.Name == nil || progress.Phase == nil {
-		return errors.New("invalid tool progress: missing callId, name, or phase")
+	if progress.CallID == "" || progress.Name == "" || len(progress.Name) > 100 {
+		return nil, errors.New("invalid tool progress identity")
 	}
-	if *progress.Phase != "running" && *progress.Phase != "generating" {
-		return errors.New("invalid tool progress phase")
+	if progress.ToolCallID != "" && len(progress.ToolCallID) > 200 {
+		return nil, errors.New("invalid tool progress toolCallId")
 	}
-	if progress.Intent != nil && (progress.Intent.Kind == nil || progress.Intent.Target == nil) {
-		return errors.New("invalid tool progress intent")
+	if progress.Phase != "running" && progress.Phase != "generating" {
+		return nil, errors.New("invalid tool progress phase")
 	}
-	if progress.Code != nil && (progress.Code.Text == nil || progress.Code.Offset == nil) {
-		return errors.New("invalid tool progress code")
+	if progress.Code != nil {
+		var codeFields map[string]json.RawMessage
+		if err := json.Unmarshal(fields["code"], &codeFields); err != nil {
+			return nil, errors.New("invalid tool progress code")
+		}
+		for _, name := range []string{"offset", "text"} {
+			if value, exists := codeFields[name]; !exists || string(value) == "null" {
+				return nil, fmt.Errorf("invalid tool progress code: missing %s", name)
+			}
+		}
+		if progress.Code.Offset < 0 || utf8.RuneCountInString(progress.Code.Text) > 512 || len(progress.Code.Text) > 2048 {
+			return nil, errors.New("invalid tool progress code preview")
+		}
 	}
-	return nil
+	return &progress, nil
 }

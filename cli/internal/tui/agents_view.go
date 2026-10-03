@@ -94,10 +94,12 @@ type agentNode struct {
 	session                 daemon.Session
 	id, parent, name, model string
 	address                 string // how its family mails it; a rename leaves it
-	call                    string // the tool call whose arguments are streaming
+	progressByCallID        map[string]*daemon.ToolProgress
+	progressOrder           []string
+	previewCallID           string
 	mail                    []agentMail
 	tail                    agentTail
-	preview                 agentPreview
+	preview                 agentTail
 	revision                uint64
 	hue                     rgb
 	rate                    float64
@@ -284,9 +286,11 @@ func (m *AgentsViewModel) restartStream() tea.Cmd {
 	m.stopStream()
 	m.snapshotRevision++
 	for _, n := range m.nodes {
-		n.preview = agentPreview{}
+		n.preview = agentTail{}
 		n.tail = agentTail{}
-		n.call = ""
+		n.progressByCallID = nil
+		n.progressOrder = nil
+		n.previewCallID = ""
 		n.lineKind = tailText
 		n.seeded = false
 		n.revision++
@@ -760,7 +764,7 @@ func (m *AgentsViewModel) apply(event daemon.AgentEvent) bool {
 	case "running":
 		n.running = event.Running
 		if !n.running {
-			m.flushLine(n)
+			m.clearProgress(n)
 		}
 	case "text", "thinking":
 		text := event.Text
@@ -771,26 +775,36 @@ func (m *AgentsViewModel) apply(event daemon.AgentEvent) bool {
 			tail = tailThinking
 		}
 		m.stream(n, tail, text)
-	case "arguments_delta":
-		text := event.Text
-		n.chars += utf8.RuneCountInString(text)
-		n.rate += float64(len(text))
-		if call := event.CallID; call != n.call || n.lineKind != tailCode {
-			m.flushLine(n)
-			n.call = call
-		}
-		n.lineKind = tailCode
-		if n.preview.appendArguments(text) {
-			n.revision++
-		}
 	case "tool_progress":
 		progress := event.Progress
-		if progress != nil && progress.Phase == "running" {
-			m.flushLine(n)
+		if progress == nil {
+			m.clearProgress(n)
+			break
+		}
+		m.rememberProgress(n, progress)
+		if progress.Phase == "generating" {
+			n.preview.setCode(progress.Code)
+			n.previewCallID = progress.CallID
+			n.lineKind = tailCode
+			n.revision++
+		} else {
+			// A different call can still own the displayed code window. Hide it
+			// without settling it into the tail; a later snapshot can restore it.
+			if n.lineKind == tailCode {
+				n.preview = agentTail{}
+				n.previewCallID = ""
+				n.lineKind = tailText
+				n.revision++
+			} else {
+				m.flushLine(n)
+			}
 			m.pushTail(n, tailMeta, "▸ "+progress.Name)
 		}
 	case "tool":
-		m.flushLine(n)
+		if n.lineKind != tailCode || n.previewCallID == event.ProgressCallID {
+			m.flushLine(n)
+		}
+		m.removeProgress(n, event.ProgressCallID)
 		for line := range strings.SplitSeq(event.Output, "\n") {
 			if strings.TrimSpace(line) != "" {
 				m.pushTail(n, tailOutput, line)
@@ -810,9 +824,12 @@ func (m *AgentsViewModel) apply(event daemon.AgentEvent) bool {
 			m.send(id, agentsYou, max(1, len(event.Text)/4))
 		}
 	case "error":
+		m.clearProgress(n)
+		n.running = false
 		m.pushTail(n, tailMeta, "✕ "+event.Text)
 	case "interrupted":
-		m.flushLine(n)
+		m.clearProgress(n)
+		n.running = false
 		m.pushTail(n, tailMeta, "· interrupted")
 	case "progress":
 		m.flushLine(n)
@@ -821,9 +838,54 @@ func (m *AgentsViewModel) apply(event daemon.AgentEvent) bool {
 	case "renamed":
 		n.name = event.Name
 	case "closed":
+		m.clearProgress(n)
 		n.closed, n.running = true, false
 	}
 	return false
+}
+
+func (m *AgentsViewModel) clearProgress(node *agentNode) {
+	m.flushLine(node)
+	node.progressByCallID = nil
+	node.progressOrder = nil
+}
+
+func (m *AgentsViewModel) rememberProgress(node *agentNode, progress *daemon.ToolProgress) {
+	if node.progressByCallID == nil {
+		node.progressByCallID = make(map[string]*daemon.ToolProgress)
+	}
+	if _, exists := node.progressByCallID[progress.CallID]; exists {
+		node.progressOrder = slices.DeleteFunc(node.progressOrder, func(callID string) bool { return callID == progress.CallID })
+	}
+	node.progressByCallID[progress.CallID] = progress
+	node.progressOrder = append(node.progressOrder, progress.CallID)
+}
+
+func (m *AgentsViewModel) removeProgress(node *agentNode, progressCallID string) {
+	if progressCallID == "" || node.progressByCallID == nil {
+		return
+	}
+	delete(node.progressByCallID, progressCallID)
+	node.progressOrder = slices.DeleteFunc(node.progressOrder, func(callID string) bool { return callID == progressCallID })
+	if len(node.progressOrder) == 0 {
+		node.preview = agentTail{}
+		node.previewCallID = ""
+		node.lineKind = tailText
+		node.revision++
+		return
+	}
+	latest := node.progressByCallID[node.progressOrder[len(node.progressOrder)-1]]
+	if latest.Phase == "generating" {
+		node.preview.setCode(latest.Code)
+		node.previewCallID = latest.CallID
+		node.lineKind = tailCode
+		node.revision++
+	} else {
+		node.preview = agentTail{}
+		node.previewCallID = ""
+		node.lineKind = tailText
+		node.revision++
+	}
 }
 
 func (m *AgentsViewModel) label(id, fallback string) string {
@@ -852,7 +914,7 @@ func (m *AgentsViewModel) stream(n *agentNode, kind tailKind, text string) {
 	}
 	for {
 		head, rest, found := strings.Cut(text, "\n")
-		n.preview.lines.write(head, kind)
+		n.preview.write(head, kind)
 		n.revision++
 		if !found {
 			return
@@ -867,21 +929,20 @@ func (m *AgentsViewModel) stream(n *agentNode, kind tailKind, text string) {
 // the code of a finished tool call.
 func (m *AgentsViewModel) flushLine(n *agentNode) {
 	if n.lineKind == tailCode {
-		n.preview.finish()
-		lines := slices.Collect(n.preview.lines.newest(true))
+		lines := slices.Collect(n.preview.newest(true))
 		for _, line := range slices.Backward(lines) {
 			m.pushTail(n, tailCode, line.text)
 		}
 	} else {
-		for line := range n.preview.lines.newest(false) {
+		for line := range n.preview.newest(false) {
 			if strings.TrimSpace(line.text) != "" {
 				m.pushTail(n, n.lineKind, line.text)
 			}
 		}
 	}
-	n.tail.omitted = n.tail.omitted || n.preview.lines.omitted
-	n.preview = agentPreview{}
-	n.call = ""
+	n.tail.omitted = n.tail.omitted || n.preview.omitted
+	n.preview = agentTail{}
+	n.previewCallID = ""
 	n.lineKind = tailText
 	n.revision++
 }
@@ -1367,7 +1428,7 @@ func (m AgentsViewModel) paneHeader() []string {
 	if n.running {
 		live += " " + styled(n.hue, "●") + DefaultStyles.Faint.Render(" live")
 	}
-	if n.tail.omitted || n.preview.lines.omitted {
+	if n.tail.omitted || n.preview.omitted {
 		live += DefaultStyles.Faint.Render(" · earlier output omitted")
 	}
 	return append(rows, live)
