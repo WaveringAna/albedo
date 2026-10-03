@@ -36,6 +36,7 @@ CANDIDATES = 4
 LISTED = 10
 CONTEXT = 2
 PREVIEW_LINES = 2
+WITHHELD = 3
 
 
 @dataclass(frozen=True)
@@ -67,13 +68,16 @@ class Rows(ReadyList):
     """A list that prints one row per line, so a REPL result reads like output.
     Like Text, it may be awaited or used directly."""
 
-    def __init__(self, items: Iterable[object] = (), truncated: bool = False) -> None:
+    def __init__(
+        self, items: Iterable[object] = (), truncated: bool = False, note: str = ""
+    ) -> None:
         super().__init__(items)
         self.truncated = truncated
+        self.note = note
 
     def __repr__(self) -> str:
         if not self:
-            return "[]"
+            return f"[]\n{self.note}" if self.note else "[]"
         body = "\n".join(str(item) for item in self)
         return body + ("\n[truncated]" if self.truncated else "")
 
@@ -106,7 +110,7 @@ class Search(Generic[Result]):
             rows = await self._run()
             picked = rows[index]
             if isinstance(rows, Rows) and isinstance(index, slice):
-                return Rows(picked, truncated=rows.truncated)
+                return Rows(picked, truncated=rows.truncated, note=rows.note)
             return picked
 
         return Search(self._call, run, self._result)
@@ -365,10 +369,13 @@ class Files:
         literal: bool = False,
         case_sensitive: bool | None = None,
         hidden: bool = False,
+        ignored: bool = False,
     ) -> Search[Rows]:
         """Content search through ripgrep when it is installed, else pure Python.
         `path` may be one path or a list; `context=N` adds N lines around each
-        match. Await it: `await files.find(pattern)`."""
+        match. A missing path raises. Ignore files and hidden files are skipped
+        unless `ignored=True` / `hidden=True`; an empty result says what was
+        searched and skipped. Await it: `await files.find(pattern)`."""
         if not 0 <= context <= 50:
             raise ValueError("0 <= context <= 50")
         return Search(
@@ -382,6 +389,7 @@ class Files:
                 literal,
                 case_sensitive,
                 hidden,
+                ignored,
             ),
         )
 
@@ -395,9 +403,11 @@ class Files:
         literal: bool,
         case_sensitive: bool | None,
         hidden: bool,
+        ignored: bool,
     ) -> Rows:
         albedo_trace.note("search", pattern)
         targets = _targets(path)
+        _require_roots(targets)
         if not _which("rg"):
             return _fallback_find(
                 pattern,
@@ -409,36 +419,42 @@ class Files:
                 case_sensitive,
                 hidden,
             )
-        flags = ["--json"]
-        if context:
-            flags += ["-C", str(context)]
+        flags = []
         if literal:
             flags.append("-F")
         if case_sensitive is True:
             flags.append("-s")
         elif case_sensitive is False:
             flags.append("-i")
-        if hidden:
-            flags.append("--hidden")
         for value in _globs(glob):
             flags += ["-g", value]
-        command = " ".join(
-            shlex.quote(part)
-            for part in ["rg", *flags, "-e", pattern, *map(str, targets)]
-        )
+        visible = [
+            *(["--hidden"] if hidden else []),
+            *(["--no-ignore"] if ignored else []),
+        ]
+
+        def search(*extra: str) -> str:
+            return " ".join(
+                shlex.quote(part)
+                for part in ["rg", *flags, *extra, "-e", pattern, *map(str, targets)]
+            )
+
         per_match = 4 + 2 * context
         status, output = await _run(
-            f"{command} | head -n {max(1, max_results) * per_match}"
+            f"{search('--json', *visible, *(['-C', str(context)] if context else []))}"
+            f" | head -n {max(1, max_results) * per_match}"
         )
         if status not in (0, 1, None) and not output.strip():
             raise RuntimeError(f"search failed: {output.strip()[:400]}")
-        results, matched = [], 0
+        results, matched, searched = [], 0, 0
         for line in output.splitlines():
             try:
                 event = json.loads(line)
             except ValueError:
                 continue
             kind = event.get("type")
+            if kind == "summary":
+                searched = event["data"]["stats"]["searches"]
             if kind not in ("match", "context"):
                 continue
             if kind == "match" and matched >= max_results:
@@ -453,7 +469,21 @@ class Files:
                 )
             )
             matched += kind == "match"
-        return Rows(results)
+        if results:
+            return Rows(results)
+        skipped = [
+            *([] if hidden else ["hidden files"]),
+            *([] if ignored else [".gitignore/.ignore rules"]),
+        ]
+        withheld: list[str] = []
+        if skipped:
+            _, listing = await _run(
+                f"{search('-l', '--hidden', '--no-ignore')} | head -n {WITHHELD}"
+            )
+            withheld = listing.splitlines()
+        return Rows(
+            note=_empty_note(pattern, targets, searched, skipped, glob, withheld)
+        )
 
     def paths(
         self,
@@ -543,6 +573,35 @@ def _which(name: str) -> str | None:
     return None
 
 
+def _require_roots(targets: list[Path]) -> None:
+    for target in targets:
+        if not target.exists():
+            raise FileNotFoundError(_missing(target, str(target)))
+
+
+def _empty_note(
+    pattern: str,
+    targets: list[Path],
+    searched: int,
+    skipped: list[str],
+    glob: str | Sequence[str] | None,
+    withheld: list[str],
+) -> str:
+    """Why a search came back empty: where it looked, what it left out, and
+    which skipped files would have matched."""
+    roots = ", ".join(str(target.resolve()) for target in targets)
+    left_out = [*skipped, *([f"files outside glob {_globs(glob)}"] if glob else [])]
+    note = f"no matches for {pattern!r} in {roots}: {searched} files searched"
+    if left_out:
+        note += f"; skipped {', '.join(left_out)}"
+    if withheld:
+        note += (
+            f"; it matches in skipped files ({', '.join(withheld)}): "
+            "rerun with hidden=True and/or ignored=True"
+        )
+    return note
+
+
 def _fallback_find(
     pattern,
     targets: list[Path],
@@ -553,10 +612,35 @@ def _fallback_find(
     case_sensitive,
     hidden,
 ) -> Rows:
+    rows, searched = _fallback_scan(
+        pattern, targets, glob, context, max_results, literal, case_sensitive, hidden
+    )
+    if rows:
+        return rows
+    withheld = []
+    if not hidden:
+        everything, _ = _fallback_scan(
+            pattern, targets, glob, 0, WITHHELD, literal, case_sensitive, True
+        )
+        withheld = [match.path for match in everything]
+    skipped = [] if hidden else ["hidden files"]
+    return Rows(note=_empty_note(pattern, targets, searched, skipped, glob, withheld))
+
+
+def _fallback_scan(
+    pattern,
+    targets: list[Path],
+    glob,
+    context,
+    max_results,
+    literal,
+    case_sensitive,
+    hidden,
+) -> tuple[Rows, int]:
     flags = 0 if case_sensitive else re.IGNORECASE
     matcher = re.compile(re.escape(pattern) if literal else pattern, flags)
     globs = _globs(glob)
-    results, matched = [], 0
+    results, matched, searched = [], 0, 0
     for target in targets:
         for file in _walk(target, hidden):
             if not _globbed(file, globs):
@@ -565,6 +649,7 @@ def _fallback_find(
                 lines = file.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
                 continue
+            searched += 1
             hits = [
                 number for number, line in enumerate(lines, 1) if matcher.search(line)
             ]
@@ -572,7 +657,7 @@ def _fallback_find(
             shown = 0
             for number in hits:
                 if matched >= max_results:
-                    return Rows(results, truncated=True)
+                    return Rows(results, truncated=True), searched
                 for around in range(
                     max(number - context, shown + 1),
                     min(number + context, len(lines)) + 1,
@@ -587,7 +672,7 @@ def _fallback_find(
                     )
                     shown = around
                 matched += 1
-    return Rows(results)
+    return Rows(results), searched
 
 
 def _targets(path: str | Sequence[str]) -> list[Path]:

@@ -64,6 +64,29 @@ class PythonToolsTests(unittest.TestCase):
         self.assertIn("before", output)
         self.assertIn("after", output)
 
+    def test_an_empty_find_says_what_was_searched_and_skipped(self):
+        (self.app.workspace / ".ignore").write_text("ignored.txt\n")
+        (self.app.workspace / "ignored.txt").write_text("needle\n")
+        (self.app.workspace / ".dot.txt").write_text("needle\n")
+        (self.app.workspace / "plain.txt").write_text("nothing\n")
+        output = self.execute(
+            "print(await files.find('needle', '.'))\n"
+            "print(await files.find('needle', '.', hidden=True, ignored=True))"
+        )
+        self.assertIn("no matches for 'needle'", output)
+        self.assertIn("1 files searched", output)
+        self.assertIn("skipped hidden files, .gitignore/.ignore rules", output)
+        self.assertIn("ignored.txt", output)
+        self.assertIn("rerun with hidden=True and/or ignored=True", output)
+        self.assertEqual(output.count("no matches"), 1, output)
+
+    def test_find_in_a_missing_root_raises_instead_of_returning_nothing(self):
+        output = self.execute(
+            "try:\n    await files.find('needle', 'nowhere')\n"
+            "except FileNotFoundError as exc:\n    print('missing:', exc)"
+        )
+        self.assertIn("missing: nowhere not found", output)
+
     def test_a_file_result_is_awaitable_and_offers_content_and_text(self):
         (self.app.workspace / "note.txt").write_text("hello\n")
         output = self.execute(
