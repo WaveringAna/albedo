@@ -13,6 +13,7 @@ import albedo/openai_api/types
 import gleam/bit_array
 import gleam/crypto
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -160,7 +161,7 @@ pub type Budget {
 
 /// Accounts one request may move through after limits, beyond the first.
 fn budget() -> Budget {
-  Budget(8, 0, sleep)
+  Budget(8, 0, process.sleep)
 }
 
 /// Backoff when every account is briefly limited: about a minute in all.
@@ -270,6 +271,3 @@ fn served(slot: Slot, account: account) -> Nil
 
 @external(erlang, "albedo_accounts", "last_served")
 fn last_served(slot: Slot, first: account) -> account
-
-@external(erlang, "albedo_retry", "sleep")
-fn sleep(milliseconds: Int) -> Nil

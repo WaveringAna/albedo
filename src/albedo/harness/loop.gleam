@@ -17,6 +17,7 @@ import albedo/harness/extensions/python/cells as journal
 import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/json
@@ -651,7 +652,7 @@ fn retry_stream(
             False -> Error(types.Cancelled)
             True -> {
               reset_progress(attempt)
-              sleep_retry(int.bitwise_shift_left(250, attempt - 1))
+              process.sleep(int.bitwise_shift_left(250, attempt - 1))
               retry_stream(run, publish, run_id, reset_progress, attempt + 1)
             }
           }
@@ -749,9 +750,6 @@ fn retryable(error: types.Error) -> Bool {
     _ -> False
   }
 }
-
-@external(erlang, "albedo_retry", "sleep")
-fn sleep_retry(milliseconds: Int) -> Nil
 
 fn summarize(
   state: Loop,
