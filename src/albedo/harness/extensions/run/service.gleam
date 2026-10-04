@@ -5,7 +5,6 @@ import albedo/harness/client_api
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/python/kernel
-import gleam/dynamic/decode
 import gleam/http.{Get, Post}
 import gleam/http/request
 import gleam/http/response
@@ -63,25 +62,17 @@ fn dispatch(
   case req.method, path {
     Get, ["sessions", id, "jobs"] -> {
       use observed <- result.try(
-        command.context(id).state(command.KernelJobs)
+        command.context(id).state(
+          command.KernelJobs(fn(jobs, live_job_count) {
+            json.object([
+              #("page", descriptor(id, jobs)),
+              ..kernel.jobs_fields(jobs, live_job_count)
+            ])
+          }),
+        )
         |> result.map_error(failure),
       )
-      use jobs <- result.try(
-        json.parse(json.to_string(observed), {
-          use jobs <- decode.field("items", decode.list(job_decoder()))
-          decode.success(jobs)
-        })
-        |> result.replace_error(api.Failure(
-          503,
-          "kernel_unavailable",
-          "invalid kernel job observation",
-        )),
-      )
-      use fields <- result.try(api.fields(json.to_string(observed)))
-      Ok(api.reply(
-        200,
-        json.object([#("page", descriptor(id, jobs)), ..fields]),
-      ))
+      Ok(api.reply(200, observed))
     }
     Post, ["sessions", id, "jobs", job, "stop"] -> {
       use _ <- result.try(api.empty_body(req))
@@ -101,13 +92,6 @@ fn dispatch(
       Error(api.Failure(405, "method_not_allowed", "unsupported job method"))
     _, _ -> Error(api.Failure(404, "not_found", "job resource not found"))
   }
-}
-
-fn job_decoder() -> decode.Decoder(kernel.Job) {
-  use id <- decode.field("id", decode.string)
-  use pid <- decode.field("pid", decode.optional(decode.int))
-  use command <- decode.field("command", decode.string)
-  decode.success(kernel.Job(id, pid, command))
 }
 
 fn descriptor(id: String, jobs: List(kernel.Job)) -> json.Json {

@@ -278,6 +278,17 @@ pub fn job_json(job: Job) -> json.Json {
   ])
 }
 
+/// Wire fields shared by the command result and the jobs resource page.
+pub fn jobs_fields(
+  jobs: List(Job),
+  live_job_count: Option(Int),
+) -> List(#(String, json.Json)) {
+  [
+    #("items", json.array(jobs, job_json)),
+    #("live_job_count", json.nullable(live_job_count, json.int)),
+  ]
+}
+
 /// Live background jobs the kernel still supervises, local groups plus remote
 /// jobs its remote plugin reported. Zero when the kernel cannot answer.
 @external(erlang, "albedo_python", "job_count")

@@ -4,6 +4,7 @@ import albedo/daemon/store
 import albedo/harness/client_api
 import albedo/harness/command.{Data}
 import albedo/harness/extension as harness_extension
+import albedo/harness/extensions/python/kernel
 import albedo/harness/extensions/run/service
 import albedo/harness/rpc
 import gleam/dynamic/decode
@@ -48,7 +49,12 @@ fn command() -> command.Command {
     True,
     None,
     fn(ctx, _caller, _args) {
-      ctx.state(command.KernelJobs) |> result.map(Data)
+      ctx.state(
+        command.KernelJobs(fn(jobs, live_job_count) {
+          json.object(kernel.jobs_fields(jobs, live_job_count))
+        }),
+      )
+      |> result.map(Data)
     },
   )
 }

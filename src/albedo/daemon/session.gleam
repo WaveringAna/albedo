@@ -1842,20 +1842,11 @@ fn command_op(
           #("failure", json.nullable(report.failure, json.string)),
         ])
       })
-    command.KernelJobs ->
+    command.KernelJobs(project) ->
       capture(session)
       |> result.try(fn(captured) {
         case captured.kernel.running_jobs {
-          Some(jobs) ->
-            Ok(
-              json.object([
-                #("items", json.array(jobs, python.job_json)),
-                #(
-                  "live_job_count",
-                  json.nullable(captured.kernel.live_job_count, json.int),
-                ),
-              ]),
-            )
+          Some(jobs) -> Ok(project(jobs, captured.kernel.live_job_count))
           None -> Error("kernel job observation unavailable")
         }
       })

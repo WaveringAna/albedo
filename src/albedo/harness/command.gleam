@@ -8,6 +8,7 @@
 //// against the actor it is running in.
 
 import albedo/daemon/store
+import albedo/harness/extensions/python/kernel
 import albedo/harness/protect
 import albedo/harness/rpc
 import gleam/dict.{type Dict}
@@ -66,8 +67,8 @@ pub type StateOp {
   KernelReport
   /// Swap a stale kernel now, ending its live jobs as a restart would.
   KernelUpgrade
-  /// Active background jobs supervised by the session's kernel.
-  KernelJobs
+  /// Project one typed job snapshot outside the actor; the callback is pure.
+  KernelJobs(project: fn(List(kernel.Job), Option(Int)) -> json.Json)
   /// Terminate one background job by id.
   KernelStopJob(id: String)
 }

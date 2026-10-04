@@ -32,6 +32,15 @@ Command(
 
 a run executes **outside** the session actor — on the kernel's host-call process — and reaches session state only through `Context.state`, whose operations are the `StateOp` variant type in [`command.gleam`](../src/albedo/harness/command.gleam) (the exhaustive case in `session.gleam` answers them). a handler running inside the session actor must never run a command: its state calls would deadlock against itself.
 
+Internal projections keep typed state until the response is built. `KernelJobs`
+passes `List(kernel.Job)` and the optional live count to a pure projection
+callback, after capture and outside the session actor. The callback must not
+read or mutate session state. The command result and HTTP jobs page share
+`kernel.jobs_fields`; the page adds its descriptor from the same typed jobs.
+Do not encode an internal observation to JSON and parse it again to add fields
+or recover its types. Decode external input at ingress and encode the completed
+response at the wire boundary.
+
 `model_callable: False` keeps a command user-only (`/login`-class commands). a `user_turn: True` command submits its outcome as one user turn when a user invokes it and returns data when the model invokes it — one run, two callers, only the delivery differs. dispatch refuses a model invocation of a user-only command and refuses any turn submission from the model.
 
 ## python bindings
